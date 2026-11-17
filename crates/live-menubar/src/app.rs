@@ -263,6 +263,8 @@ fn updater(
     let git = update::SystemGit {
         repo: ucfg.repo.clone(),
         log: log.clone(),
+        git: ucfg.git.clone(),
+        path: update::system_tool_path(&ucfg.path),
     };
     let builder = update::SystemBuilder {
         repo: ucfg.repo.clone(),
@@ -270,6 +272,7 @@ fn updater(
         log: log.clone(),
         cargo: ucfg.cargo.clone(),
         bun: ucfg.bun.clone(),
+        path: update::system_tool_path(&ucfg.path),
     };
     let interval = Duration::from_secs(ucfg.interval_minutes.max(1) * 60);
     let me: Option<PathBuf> = std::env::current_exe().ok();

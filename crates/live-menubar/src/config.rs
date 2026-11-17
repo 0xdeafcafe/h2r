@@ -86,6 +86,14 @@ pub struct UpdateConfig {
     pub cargo: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bun: Option<PathBuf>,
+    /// git, when not on PATH or in a usual tool dir.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git: Option<PathBuf>,
+    /// Extra directories put first on the PATH of every child process
+    /// (git, git-lfs, cargo, bun, rsync), after the usual tool dirs are
+    /// added (see `update::tool_path`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub path: Vec<PathBuf>,
 }
 
 impl UpdateConfig {
@@ -118,6 +126,8 @@ struct PartialUpdate {
     mappack: Option<PathBuf>,
     cargo: Option<PathBuf>,
     bun: Option<PathBuf>,
+    git: Option<PathBuf>,
+    path: Option<Vec<PathBuf>>,
 }
 
 /// The directories defaults hang off, so tests pass temp dirs.
@@ -200,6 +210,8 @@ impl Config {
                     mappack,
                     cargo,
                     bun,
+                    git,
+                    path,
                 }) if !repo.as_os_str().is_empty() => Some(UpdateConfig {
                     repo,
                     branch: branch.unwrap_or_else(|| "master".into()),
@@ -212,6 +224,8 @@ impl Config {
                     mappack,
                     cargo,
                     bun,
+                    git,
+                    path: path.unwrap_or_default(),
                 }),
                 _ => None,
             },

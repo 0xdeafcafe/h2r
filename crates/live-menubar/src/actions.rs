@@ -78,7 +78,12 @@ pub fn menubar_spec(cfg: &Config, exe: &Path) -> AgentSpec {
             "live".into(),
             "menubar".into(),
         ],
-        environment: Vec::new(),
+        environment: vec![crate::update::path_entry(
+            cfg.update
+                .as_ref()
+                .map(|u| u.path.as_slice())
+                .unwrap_or_default(),
+        )],
         stdout: Some(log.clone()),
         stderr: Some(log),
         run_at_load: true,

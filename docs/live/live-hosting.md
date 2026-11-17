@@ -435,7 +435,8 @@ changed and install it, so the server tracks master without you running
 builds. Use a clone of its own, never the checkout you work in: updates
 stop the moment a checkout has uncommitted changes, sits on another
 branch, or has commits the remote lacks, and they never reset or stash
-anything. The web app's dashboard art is in Git LFS, so install
+your changes (the one exception is below: restoring after the updater's
+own failed merge). The web app's dashboard art is in Git LFS, so install
 `git-lfs` (`brew install git-lfs && git lfs install`) before cloning.
 
 ```
@@ -461,13 +462,24 @@ agent does).
 | `interval_minutes` | 10 | how often to check |
 | `install_dir` | `live/` | holds `bin/` (h2-live-server, h2), `web/` and the build's `target/` |
 | `disc`, `mappack` | none | re-extract game art from these when needed |
-| `cargo`, `bun` | found on PATH, `~/.cargo/bin`, `~/.bun/bin` | the tools, if elsewhere |
+| `cargo`, `bun`, `git` | found on PATH, `~/.cargo/bin`, `~/.bun/bin`, Homebrew | the tools, if elsewhere |
+| `path` | none | extra directories put first on every child's PATH |
+
+A LaunchAgent starts with only `/usr/bin:/bin:/usr/sbin:/sbin`, so every
+child the menu bar runs (git and its `git-lfs` filter, cargo, bun, rsync,
+nice) gets the inherited PATH plus `/opt/homebrew/bin`, `/usr/local/bin`,
+`~/.cargo/bin` and `~/.bun/bin`, once each, after anything in `path`. The
+agents `--install`, `--install-server` and `--install-tunnel` write set the
+same `PATH` in their plists.
 
 Each check (on the timer, or Update Now):
 
-1. `git fetch`; when `<remote>/<branch>` moved and fast-forwards,
-   `git merge --ff-only`. A dirty, diverged or off-branch checkout is
-   reported in the menu and left alone.
+1. If the repository uses Git LFS (`filter=lfs` in `.gitattributes`),
+   `git lfs version` must work; if not the check is blocked with
+   "git-lfs not found" and nothing is touched. Then `git fetch`; when
+   `<remote>/<branch>` moved and fast-forwards, `git merge --ff-only`. A
+   dirty, diverged or off-branch checkout is reported in the menu and left
+   alone.
 2. The files changed since the installed revision (kept in
    `update-state.json`) pick the builds: live-server and its path
    dependencies (from `cargo metadata`) build `h2-live-server`; the CLI's
@@ -487,6 +499,18 @@ Each check (on the timer, or Update Now):
    binary, the web app or the art changed. A stopped server stays
    stopped. When `h2` changed and the menu bar is that `h2`, it re-executes
    itself.
+
+When the updater resets the clone. Only in two cases, both about its own
+merge, never for changes you made. (a) If `git merge --ff-only` fails
+(git's stderr is shown as the failure and logged), it runs
+`git reset --hard <the old HEAD>` and `git clean -fd` in the update clone
+so the half-applied merge does not linger, and the next check retries.
+(b) If that restore itself failed, `update-state.json` keeps
+`merge_failed` = that HEAD; a later check that finds the clone dirty at
+exactly that HEAD does the same restore before going on. A dirty clone
+with no such record, or at any other HEAD, is the refusal above:
+"checkout has uncommitted changes", no reset, no stash. This is why the
+clone must be dedicated: `clean -fd` removes untracked files in it.
 
 A revision whose build failed is not retried on the timer, only by Update
 Now (fix it upstream and the next revision builds as usual).
