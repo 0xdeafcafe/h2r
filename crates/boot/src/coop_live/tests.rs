@@ -876,3 +876,103 @@ fn the_retail_host_advertises_what_the_lobby_holds() {
     lobby.sync_retail();
     assert_eq!(live.coop.lock().unwrap().len(), 2);
 }
+
+/// The game's own co-op lobby on Live, drawn from the disc (pane 1 of the
+/// pregame lobby is its co-op pane): the host with a Live guest, and the
+/// guest's view, plus the lobby's level and difficulty screens. The game's
+/// code fills the formats (`\u{e416}` a gamertag, `\u{e426}` the level and
+/// so on); the texts here stand in for those. Skipped without a disc;
+/// drawn into `H2_UI_PREVIEW_DIR` when it is set.
+#[test]
+fn the_retail_co_op_lobby_on_live_drawn_from_the_disc() {
+    let iso = std::env::var_os("H2_DISC")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../disc/halo2.iso")
+        });
+    if !iso.exists() {
+        eprintln!("no disc at {}; skipped", iso.display());
+        return;
+    }
+    use crate::ui_kit::preview::{Disc, Retail};
+    let disc = Disc::open(&iso).unwrap();
+    const LOBBY: &str = r"ui\screens\game_shell\pregame_lobby\pregame_lobby";
+    let players = ["Alpha".to_owned(), "Bravo".to_owned()];
+    // The co-op pane's texts as the game fills them for a Live co-op lobby.
+    let common = |id: u32| -> Option<String> {
+        Some(match id {
+            0x0c00_181a => "Outskirts".into(),
+            0x1100_181b => "on Heroic".into(),
+            0x1d00_181c => "Fight your way through the city to the beachhead.".into(),
+            0x0d00_1815 => "2 player(s) in party".into(),
+            0x0c00_1814 => "Alpha is the party leader".into(),
+            0x0f00_1818 | 0x0d00_1816 => String::new(),
+            _ => return None,
+        })
+    };
+    let host = |id: u32| -> Option<String> {
+        match id {
+            // Start state 9 for the leader (the co-op check lifted).
+            0x1a00_1813 => Some("Waiting for you to start the game".into()),
+            _ => common(id),
+        }
+    };
+    let guest = |id: u32| -> Option<String> {
+        match id {
+            0x1a00_1813 => Some("Waiting for Alpha to start the game".into()),
+            _ => common(id),
+        }
+    };
+    let none = |_: u32| -> Option<String> { None };
+    let shots: [(&str, Retail<'_>); 4] = [
+        (
+            "coop-lobby-host.png",
+            Retail {
+                tag: LOBBY,
+                pane: 1,
+                text: &host,
+                cells: &players,
+                footer: Some("\u{e100} SELECT  \u{e101} BACK".into()),
+            },
+        ),
+        (
+            "coop-lobby-guest.png",
+            Retail {
+                tag: LOBBY,
+                pane: 1,
+                text: &guest,
+                cells: &players,
+                footer: Some("\u{e101} BACK".into()),
+            },
+        ),
+        (
+            "coop-lobby-level.png",
+            Retail {
+                tag: r"ui\screens\game_shell\load_level\load_level_lobby",
+                pane: 0,
+                text: &none,
+                cells: &[],
+                footer: Some("\u{e100} SELECT  \u{e101} BACK".into()),
+            },
+        ),
+        (
+            "coop-lobby-difficulty.png",
+            Retail {
+                tag: r"ui\screens\game_shell\difficulty\difficulty_lobby",
+                pane: 0,
+                text: &none,
+                cells: &[],
+                footer: Some("\u{e100} SELECT  \u{e101} BACK".into()),
+            },
+        ),
+    ];
+    let out = std::env::var_os("H2_UI_PREVIEW_DIR").map(std::path::PathBuf::from);
+    for (file, r) in &shots {
+        let c = disc.render_retail(r).unwrap();
+        if let Some(dir) = &out {
+            std::fs::create_dir_all(dir).unwrap();
+            c.write_png(&dir.join(file)).unwrap();
+            eprintln!("drew {}", dir.join(file).display());
+        }
+    }
+}

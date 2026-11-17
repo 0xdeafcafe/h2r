@@ -1290,3 +1290,95 @@ server, not to each other; the phase-0 transport (`coop::link`) is not
 running in the retail-synchronous path co-op over Live uses. The friends
 screen shows no ping: friends not in the lobby have no endpoint to ping.
 
+
+## 11. The retail lobby (co-op over Live, as the game's own co-op)
+
+Section 10's list screens were ours. The Live menu's Co-op Campaign row now
+opens the game's own pregame lobby in co-op mode instead: its own level and
+difficulty screens, its player slots and gamertags, its ready state and its
+Start Game. Live adds two things only: the second player can be a Live
+friend (the lobby's Y opens the friends list and invites), and the guest
+lands in the same lobby, showing the host's level and difficulty. The list
+screens stay behind `H2_COOP_LIST_UI=1`.
+
+### 11.1 Static trace
+
+- Live menu row chosen: `0x230f92`. Its Custom Game branch (row 2, at
+  `0x231001`) calls `0x199e2e(1)`, then `0x59890(2,0,0)` to create the Live
+  squad session, and on success `0x199a03(2)`.
+- `0x199a03(mode)` (`LOBBY_MODE_SET`, stdcall, `ret 4`) sets the lobby
+  mode. Mode 0 (co-op) calls `0x63fb0`, then `0x199a92`, the campaign setup
+  that calls `LOBBY_SET_MAP` and `LOBBY_SET_DIFFICULTY`. Mode 2 (custom
+  game) calls `0x19a864`.
+- The game's own way into co-op from a lobby is the squad settings dialog
+  (row chosen `0x2bb801`, jump table `0x2bb884`). "Switch To: Co-Op Game"
+  (`0x2bba01`) is gated on byte `[0x54D5A0]` (error dialog `0x32`). After
+  the gate it calls `0x199a57`, `0x199a03(0)`, `0x121100` and `0x148d42`,
+  clears `[0x54E7CC]`, calls `0x19a76d` and closes the dialog. Error `0x32`
+  is also raised from Live menu code (`0x230888`), so the byte is not a
+  plain "networked" flag. Its meaning is not traced; the row does not go
+  through it.
+- Start state `0x19a2ce` (`LOBBY_START_STATE`, stdcall, `ret 4`): 9 is
+  ready, 7 means the co-op/teams check failed. At `0x19a3ed`..`0x19a41c`
+  co-op wants exactly two players, both on this console (`0x19ab77`). The
+  tail (`0x19a4c5`) gives 10 while the countdown runs (`0x64a60` >= 0,
+  `LOBBY_COUNTDOWN`), otherwise 9 when `0x592f0` (`LOBBY_ALL_READY`) is
+  true, else 8.
+- The status line (`0x24ffc9`) shows `coop_takes_two` (`0x0e0001ec`) for
+  state 7 in co-op mode (`0x199994`), at `0x2500ab`.
+- `pregame_lobby` (screen 14): pane 0 is multiplayer, pane 1 is co-op
+  (`level_format` `0x0c00181a`, `difficulty_format` `0x1100181b`, the level
+  description `0x1d00181c`). The player table has 16 cells on
+  `player_skin_default`. The help text says to press Y for the friends
+  list to invite. The level and difficulty screens are `load_level_lobby`
+  and `difficulty_lobby`.
+
+### 11.2 What the hooks do
+
+- `ROW_CHOSEN` (layout glue): the Co-op Campaign row arms co-op as host
+  (`Lobby::open_retail`), asks for co-op mode, rewrites the press record's
+  row to 2 and runs the original handler. The game then creates its Live
+  squad session and opens its lobby as for Custom Game.
+- `LOBBY_MODE_SET`, "co-op mode for the co-op row": within 5 s of that
+  press, the next mode 2 becomes mode 0, once. Every other row drops the
+  request.
+- `LOBBY_START_STATE`, "co-op over two consoles": while co-op is armed,
+  a 7 is answered with the tail's own result (10, 9 or 8) when the
+  session is a networked campaign with two peers and two players. The
+  session start that follows is the probe's synchronous path (section 9).
+- The pinger thread's tick (`Lobby::sync_retail`): the host advertises
+  the level and difficulty the lobby holds, so the guest's join reads
+  them.
+
+Ping: the lobby has no natural spot for it (the `active_protocol` block,
+`0x0f001818`, is the nearest, and it says what the session is, not how
+fast). Ping stays on the web.
+
+### 11.3 What needs a game run, and the lines to look for
+
+1. Pick Co-op Campaign on the Live menu. Expect
+   `coop-live: Live menu row 4 opens the custom game lobby (row 2) in co-op mode`,
+   `coop-live: hosting a co-op campaign in the game's own lobby` and
+   `coop-live: the Co-op Campaign row's lobby: mode 2 (custom game) set as 0 (co-op campaign)`.
+   The lobby should show pane 1 (level, difficulty, description).
+2. Pick a level and difficulty in the game's own screens. Expect
+   `coop-live: the lobby holds <level> on <difficulty>; advertised`.
+3. Press Y, invite a friend; the friend accepts and lands in the same
+   lobby, showing the host's level and difficulty and both gamertags.
+4. Start Game. Expect
+   `coop-live: lobby start state 7 (co-op wants one console) answered 9 for two consoles`,
+   then the probe's session start lines (section 9.2).
+
+Also to check: whether the Live menu's cursor comes back on Custom Game
+(the press record was rewritten), and whether `[0x54D5A0]` matters on
+this path.
+
+### 11.4 Previews
+
+`the_retail_co_op_lobby_on_live_drawn_from_the_disc` (in
+`crates/boot/src/coop_live/tests.rs`) draws the lobby as host and as
+guest, plus the level and difficulty screens, with
+`ui_kit::preview::Disc::render_retail`. It needs `H2_DISC` and writes to
+`H2_UI_PREVIEW_DIR`; never into git. The texts the game fills at run time
+(gamertags, status, level) are stand-ins, and the level screen's list is
+not drawn.

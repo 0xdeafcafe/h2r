@@ -368,6 +368,166 @@ impl Disc {
         }
     }
 
+    /// A retail screen at rest, as its tag lays it out: pane `r.pane`'s
+    /// bitmaps, text blocks and buttons, and its tables' cells, over the
+    /// game shell background, with the header and footer in the `wigl`
+    /// header layout. Texts come from the screen's own string table
+    /// (`unic`, English) unless `r.text` answers the block's string id; the
+    /// game's code fills the empty blocks and the format strings at run
+    /// time, which `r.text` stands in for (`Some("")` leaves one blank).
+    /// Each table cell's first text block shows `r.cells[i]`; a cell with
+    /// no entry is not drawn (the game hides empty player slots).
+    pub fn render_retail(&self, r: &Retail<'_>) -> Result<Canvas> {
+        let (screen, unic, skins) = {
+            let mut m = self.map.borrow_mut();
+            let id = m.tag(map::TagQuery::NameInGroup(r.tag, tui::SCREEN))?.id;
+            let mut src = MapSource::new(&mut m);
+            let UiTag::Screen(screen) = src.decode_tag(id)?.tag else {
+                bail!("{} is not a screen", r.tag);
+            };
+            let mut skins = HashMap::new();
+            for t in screen.panes.iter().flat_map(|p| p.tables.iter()) {
+                if let Some(id) = t.skin.id
+                    && let Ok((tree, _)) = tui::resolve_skin(&mut src, id)
+                {
+                    skins.insert(id, tree.skin);
+                }
+            }
+            drop(src);
+            let loc = tags::localization::Localization::read(&mut m)?;
+            let unic = match screen.strings.id {
+                Some(u) => Some((loc.unic(&mut m, u)?, loc)),
+                None => None,
+            };
+            (screen, unic, skins)
+        };
+        let pane = screen
+            .panes
+            .get(r.pane)
+            .with_context(|| format!("{} has no pane {}", r.tag, r.pane))?;
+        let lookup = |id: u32| -> Option<String> {
+            if let Some(t) = (r.text)(id) {
+                return Some(t);
+            }
+            let (unic, loc) = unic.as_ref()?;
+            loc.text_in(
+                unic,
+                tags::localization::StringId(id),
+                tags::localization::Language::English,
+            )
+            .ok()
+            .flatten()
+        };
+        let g = self.geometry(ListPlace::Controls)?;
+        let rgb = |v: [f32; 3]| v.map(|x| (x.clamp(0.0, 1.0) * 255.0) as u8);
+        let mut c = Canvas::new(640, 480, [0, 0, 0, 255]);
+        for p in &self.background.panes {
+            self.draw_blocks(&mut c, p.bitmaps.iter());
+        }
+        // Blocks parked off screen (9999) are the game's spares.
+        let on_screen = |rect: &Rect| rect.top.abs() < 1000 && rect.left.abs() < 1000;
+        self.draw_blocks(
+            &mut c,
+            pane.bitmaps
+                .iter()
+                .filter(|b| b.top_left.x.abs() < 1000 && b.top_left.y.abs() < 1000),
+        );
+        if screen.flags & tui::Screen::NO_HEADER == 0
+            && let Some(h) = lookup(screen.header.0)
+        {
+            c.text(
+                &self.fonts,
+                g.header_font,
+                &h,
+                g.header,
+                0,
+                rgb(g.header_colour),
+            );
+        }
+        if let Some(f) = &r.footer {
+            c.text(
+                &self.fonts,
+                g.header_font,
+                f,
+                g.footer,
+                1,
+                rgb(g.header_colour),
+            );
+        }
+        for b in &pane.buttons {
+            if let Some(img) = self.image(b.bitmap, 0) {
+                c.image(
+                    &img,
+                    i32::from(b.rect.left) + i32::from(b.bitmap_offset.x),
+                    i32::from(b.rect.top) + i32::from(b.bitmap_offset.y),
+                    255,
+                );
+            }
+            if let Some(t) = lookup(b.string.0) {
+                c.text(
+                    &self.fonts,
+                    b.font,
+                    &t,
+                    b.rect,
+                    tui::justification(b.flags),
+                    rgb(b.text_color),
+                );
+            }
+        }
+        for t in pane.text_blocks.iter().filter(|t| on_screen(&t.rect)) {
+            if let Some(text) = lookup(t.string.0).filter(|s| !s.is_empty()) {
+                c.text(
+                    &self.fonts,
+                    t.font,
+                    &text,
+                    t.rect,
+                    tui::justification(t.flags),
+                    rgb(t.text_color),
+                );
+            }
+        }
+        for table in &pane.tables {
+            let Some(skin) = table.skin.id.and_then(|id| skins.get(&id)) else {
+                continue;
+            };
+            for (i, cell) in r.cells.iter().enumerate() {
+                let Some(o) = table.cell_origin(i as i32) else {
+                    continue;
+                };
+                let (ox, oy) = (i32::from(o.x), i32::from(o.y));
+                let mut bitmaps: Vec<&tui::BitmapBlock> = skin.bitmaps.iter().collect();
+                bitmaps.sort_by_key(|b| b.render_depth_bias);
+                if let Some(b) = bitmaps.first()
+                    && let Some(img) = self.image(b.bitmap, b.image)
+                {
+                    c.image(
+                        &img,
+                        ox + i32::from(b.top_left.x),
+                        oy + i32::from(b.top_left.y) + img.height as i32,
+                        255,
+                    );
+                }
+                if let Some(t) = skin.text_blocks.first() {
+                    let at = Rect {
+                        top: (i32::from(t.rect.top) + oy) as i16,
+                        bottom: (i32::from(t.rect.bottom) + oy) as i16,
+                        left: (i32::from(t.rect.left) + ox) as i16,
+                        right: (i32::from(t.rect.right) + ox) as i16,
+                    };
+                    c.text(
+                        &self.fonts,
+                        t.font,
+                        cell,
+                        at,
+                        tui::justification(t.flags),
+                        rgb(t.text_color),
+                    );
+                }
+            }
+        }
+        Ok(c)
+    }
+
     /// `s` drawn at 640 by 480; findings outlined in red.
     pub fn render(&self, s: &ScreenSpec) -> Result<Canvas> {
         let g = self.geometry(s.list)?;
@@ -501,6 +661,19 @@ impl Disc {
         }
         Ok(c)
     }
+}
+
+/// A retail screen to draw ([`Disc::render_retail`]).
+pub struct Retail<'a> {
+    /// The screen tag's name in `mainmenu.map`.
+    pub tag: &'a str,
+    pub pane: usize,
+    /// The text for a string id, standing in for what the game's code
+    /// writes (formats, empty blocks); None takes the tag's own.
+    pub text: &'a dyn Fn(u32) -> Option<String>,
+    /// The table cells' texts (player names), one per filled slot.
+    pub cells: &'a [String],
+    pub footer: Option<String>,
 }
 
 /// An RGBA canvas in UI units: 640 by 480, origin at the centre, Y up.
