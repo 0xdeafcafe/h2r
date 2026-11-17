@@ -218,6 +218,18 @@ pub(crate) struct World {
     weapons: Vec<u32>,
 }
 
+/// A point on the unit circle that goes round as `a` grows (one turn every
+/// four units), from + − × ÷ alone. Not `sin`/`cos`: the optimiser may
+/// fuse a sin and a cos into one `sincos`, whose last bit can differ from
+/// the two calls', and the scenes must be the same in every build profile
+/// for the golden test.
+fn circle(a: f32) -> (f32, f32) {
+    // tan of a quarter of the angle, -1..1, then the rational parametrisation.
+    let u = (a % 4.0) / 2.0 - 1.0;
+    let d = 1.0 + u * u;
+    ((1.0 - u * u) / d, 2.0 * u / d)
+}
+
 fn set_vec(guest: &mut Guest, at: u32, v: [f32; 3]) {
     for (i, c) in v.into_iter().enumerate() {
         guest.set_f32(at + 4 * i as u32, c).unwrap();
@@ -431,20 +443,16 @@ impl World {
         let g = &mut self.guest;
         g.set_u32(fixture::TIME + layout::TIME_TICK, tick).unwrap();
         for (i, s) in self.units.iter().chain(&self.actors).enumerate() {
-            let a = t + i as f32;
+            let (cos, sin) = circle(t + i as f32);
             let at = body(*s);
             set_vec(
                 g,
                 at + layout::BODY_POSITION,
-                [i as f32 * 3.0 + a.cos() * 4.0, 5.0 + a.sin() * 4.0, 0.0],
+                [i as f32 * 3.0 + cos * 4.0, 5.0 + sin * 4.0, 0.0],
             );
-            set_vec(g, at + layout::BODY_FORWARD, [-a.sin(), a.cos(), 0.0]);
-            set_vec(g, at + layout::UNIT_AIM, [-a.sin(), a.cos(), 0.0]);
-            set_vec(
-                g,
-                at + layout::BODY_VELOCITY,
-                [-a.sin() / 7.5, a.cos() / 7.5, 0.0],
-            );
+            set_vec(g, at + layout::BODY_FORWARD, [-sin, cos, 0.0]);
+            set_vec(g, at + layout::UNIT_AIM, [-sin, cos, 0.0]);
+            set_vec(g, at + layout::BODY_VELOCITY, [-sin / 7.5, cos / 7.5, 0.0]);
         }
         for (i, s) in self.vehicles.iter().enumerate() {
             let at = body(*s);
@@ -455,8 +463,8 @@ impl World {
             );
         }
         for (i, s) in self.turrets.iter().enumerate() {
-            let a = t * 2.0 + i as f32;
-            set_vec(g, body(*s) + layout::UNIT_AIM, [a.cos(), a.sin(), 0.0]);
+            let (cos, sin) = circle(t * 2.0 + i as f32);
+            set_vec(g, body(*s) + layout::UNIT_AIM, [cos, sin, 0.0]);
         }
         // Two machines move (lifts); the rest stand.
         for s in self.machines.iter().take(2) {
@@ -558,9 +566,9 @@ fn fnv(text: &str) -> u64 {
 /// Each scene's output for its first 12 ticks, as hashed by [`fnv`] over
 /// [`output_json`]: what a change to the guest-side path must keep.
 const GOLDEN: [(&str, u64); 3] = [
-    ("mp16", 0x42665a3be053596f),
-    ("mp16_1000", 0xb305d4402b9475ae),
-    ("campaign100", 0xd885300f1787a685),
+    ("mp16", 0xe7c385799bca4930),
+    ("mp16_1000", 0x84e54907e5073b6c),
+    ("campaign100", 0xc97a71e1f8889f43),
 ];
 
 #[test]
