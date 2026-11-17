@@ -956,3 +956,173 @@ fn every_campaign_level_converts() {
     }
     assert!(failed.is_empty(), "{failed:#?}");
 }
+
+struct Mem(Vec<u8>);
+impl tags::geometry::RawSource for Mem {
+    fn read_raw(&mut self, p: map::RawPointer, size: u32) -> tags::Result<Vec<u8>> {
+        let s = p.offset as usize;
+        self.0
+            .get(s..s + size as usize)
+            .map(<[u8]>::to_vec)
+            .ok_or(tags::Error::Invalid("raw range"))
+    }
+}
+
+/// What the engine reads of one converted structure's clusters when it
+/// draws them, checked: the subpart mask (cluster `+0x24`) has a bit per
+/// subpart; the visibility code and reorder table are laid out as the
+/// volume pass reads them (`h1convert::structure::check_visibility`); and
+/// every predicted resource (`+0x84`) resolves: a bitmap's image below its
+/// image count (E `0x0016e663`, unchecked), a cluster below the count, no
+/// lightmap buckets. Returns the problems.
+fn check_clusters(m: &mut Map<Cursor<Vec<u8>>>, bytes: &[u8], sbsp: TagId) -> Vec<String> {
+    let word = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+    let half = |b: &[u8], at: usize| u16::from_le_bytes([b[at], b[at + 1]]);
+    let render = tags::structure::StructureRender::read(m, sbsp).unwrap();
+    let t = m.tag(sbsp).unwrap().clone();
+    let b = m.read_tag_bytes(sbsp).unwrap();
+    let view = tags::geometry::TagView::new(&b, t.location.unwrap().address);
+    let mut raw = Mem(bytes.to_vec());
+    let mut bad = Vec::new();
+    for (i, c) in render.clusters.iter().enumerate() {
+        let subparts = match tags::geometry::load_block(&c.geometry.block, &mut raw) {
+            Ok(Some(block)) => {
+                let sec = block.section();
+                let n = word(sec, 8) as usize;
+                let res = |field: u16| {
+                    block
+                        .resources()
+                        .iter()
+                        .find(|r| {
+                            r.field_offset == field
+                                && r.kind != tags::geometry::ResourceKind::VertexBuffer
+                        })
+                        .and_then(|r| block.resource(r))
+                };
+                if n > 0 {
+                    match (res(0x28), res(0x30)) {
+                        (Some(code), Some(table)) => {
+                            if let Err(e) = h1convert::structure::check_visibility(n, code, table) {
+                                bad.push(format!("cluster {i}: {e}"));
+                            }
+                        }
+                        _ => bad.push(format!("cluster {i}: no visibility code or table")),
+                    }
+                }
+                n
+            }
+            Ok(None) => 0,
+            Err(e) => {
+                bad.push(format!("cluster {i}: block: {e}"));
+                continue;
+            }
+        };
+        let mask = usize::from(half(&c.raw, 0x24));
+        if mask != subparts {
+            bad.push(format!("cluster {i}: mask of {mask}, {subparts} subparts"));
+        }
+        for e in view.block(&c.raw, 0x84, 8).unwrap() {
+            let (kind, index, id) = (half(e, 0), half(e, 2), TagId(word(e, 4)));
+            match kind {
+                0 => {
+                    let Ok(tag) = m.tag(id).cloned() else {
+                        bad.push(format!("cluster {i}: bitmap {id:?} missing"));
+                        continue;
+                    };
+                    if tag.group != FourCC(*b"bitm") {
+                        bad.push(format!("cluster {i}: {id:?} is no bitmap"));
+                        continue;
+                    }
+                    let images = word(&m.read_tag_bytes(id).unwrap(), 0x44);
+                    if u32::from(index) >= images {
+                        bad.push(format!("cluster {i}: image {index} of {images}"));
+                    }
+                }
+                3 if usize::from(index) >= render.clusters.len() => {
+                    bad.push(format!("cluster {i}: predicts cluster {index}"));
+                }
+                3 => {}
+                k => bad.push(format!("cluster {i}: predicted type {k}")),
+            }
+        }
+    }
+    bad
+}
+
+/// Every bitmap image in `m` says "not cached" (the texture cache handles
+/// `+0x28..=+0x30` none, as on every retail image): a handle of 0 reads as
+/// resident in slot 0 and the pixels are never loaded. (The LOD pointers
+/// `+0x20`, `+0x24` are none on converted images but not on the base's.)
+fn check_images(m: &mut Map<Cursor<Vec<u8>>>) -> Vec<String> {
+    let ids: Vec<_> = m
+        .tags()
+        .iter()
+        .filter(|t| t.group == FourCC(*b"bitm"))
+        .filter_map(|t| Some((t.id, t.location?.address)))
+        .collect();
+    let mut bad = Vec::new();
+    for (id, at) in ids {
+        let b = m.read_tag_bytes(id).unwrap();
+        let word = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+        let (n, p) = (word(0x44) as usize, word(0x48));
+        if n == 0 {
+            continue;
+        }
+        let p = (p - at) as usize;
+        for k in 0..n {
+            for w in [0x28, 0x2c, 0x30] {
+                if word(p + 0x74 * k + w) != u32::MAX {
+                    bad.push(format!("bitmap {id:?} image {k} +{w:#x}"));
+                }
+            }
+        }
+    }
+    bad
+}
+
+#[test]
+#[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
+fn every_campaign_level_s_clusters_are_drawn_as_the_engine_reads_them() {
+    let only = std::env::var("H1_LEVELS").ok();
+    let mut failed = Vec::new();
+    let mut levels = 0;
+    for level in h1map::disc::CAMPAIGN_LEVELS {
+        if only
+            .as_deref()
+            .is_some_and(|o| !o.split(',').any(|l| l == level))
+        {
+            continue;
+        }
+        let h1 = h1_level(level);
+        let mut base = h2_map(h1campaign::base_for(level));
+        let opts = Options {
+            objects: false,
+            ai: false,
+            ..Options::default()
+        };
+        let done = h1campaign::convert(&h1, &mut base, &opts).unwrap();
+        let mut m = Map::from_reader(Cursor::new(done.bytes.clone())).unwrap();
+        // The scenario's structures (+0x210, 0x44 each, the BSP at +0x14).
+        let scnr = m.scenario().unwrap().clone();
+        let s = m.read_tag_bytes(scnr.id).unwrap();
+        let word = |at: usize| u32::from_le_bytes(s[at..at + 4].try_into().unwrap());
+        let desc = (word(0x214) - scnr.location.unwrap().address) as usize;
+        let sbsp: Vec<_> = (0..word(0x210) as usize)
+            .map(|k| TagId(word(desc + k * 0x44 + 0x14)))
+            .collect();
+        assert_eq!(sbsp.len(), h1.structure_bsps().unwrap().len());
+        let mut bad = Vec::new();
+        for &id in &sbsp {
+            bad.extend(check_clusters(&mut m, &done.bytes, id));
+        }
+        bad.extend(check_images(&mut m));
+        println!("{level}: {} structures, {} problems", sbsp.len(), bad.len());
+        if !bad.is_empty() {
+            bad.truncate(20);
+            failed.push(format!("{level}: {bad:#?}"));
+        }
+        levels += 1;
+    }
+    assert!(levels > 0);
+    assert!(failed.is_empty(), "{failed:#?}");
+}

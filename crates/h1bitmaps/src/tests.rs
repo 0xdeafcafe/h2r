@@ -8,7 +8,7 @@ use h1map::bitmap::{BITM, Bitmap, IMAGE_LEN, Image, ImageKind, Sequence, Sprite}
 use map::build::TagSet;
 use map::{CacheType, Map, ResourceFile};
 
-use crate::convert::{LOD_ALIGN, convert_with};
+use crate::convert::{IMAGE_NONE_WORDS, LOD_ALIGN, convert_with};
 use crate::decode::{decode_image, layout_len, stack};
 
 const SWZ: u16 = 0x9;
@@ -321,6 +321,20 @@ fn a_conversion_reads_back_through_halo_2s_decoders() {
         let h1 = decode_image(h1, &data[i]).unwrap();
         assert_eq!(h2.len(), h1.len());
         assert!(h2.iter().zip(&h1).all(|(a, b)| a.rgba == b.rgba));
+        assert!(img.lods[1].is_none() && img.lods[2].is_none());
+    }
+    // As on every retail image: LOD pointers 1 and 2 and the three texture
+    // cache handles are none, so the texture cache loads the pixels
+    // instead of drawing whatever its slot 0 holds.
+    let tag = m.tag(id).unwrap().clone();
+    let at = tag.location.unwrap().address;
+    let p = m.read_tag_bytes(id).unwrap();
+    let word = |o: usize| u32::from_le_bytes(p[o..o + 4].try_into().unwrap());
+    let images = (word(0x48) - at) as usize;
+    for i in 0..2 {
+        for w in IMAGE_NONE_WORDS {
+            assert_eq!(word(images + 0x74 * i + w), u32::MAX, "image {i} +{w:#x}");
+        }
     }
 }
 

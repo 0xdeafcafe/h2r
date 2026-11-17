@@ -37,7 +37,19 @@ mod h2 {
     pub const LOD_POINTERS: usize = 0x1c;
     pub const LOD_SIZES: usize = 0x34;
     pub const RUNTIME_ID: usize = 0x4c;
+    /// The texture cache's handle for each LOD, `0xffffffff` (not
+    /// resident) on every retail image (V: all 1,686 of Coagulation's).
+    pub const CACHE_HANDLES: usize = 0x28;
 }
+
+/// Image words that are "none" (`0xffffffff`) on disc: LOD pointers 1 and
+/// 2 (`+0x20`, `+0x24`; only LOD 0 is written) and the three texture cache
+/// handles (`+0x28..+0x34`). The texture cache reads a handle other than
+/// -1 as "this LOD is already resident in that cache slot" and never loads
+/// the pixels (E `0x0012c9fb`..`0x0012ca28`, and the predictor at
+/// `0x0012cc23`), so a zero there draws whatever slot 0 holds: Halo 1's
+/// textures and lightmap drew as one flat colour.
+pub const IMAGE_NONE_WORDS: [usize; 5] = [0x20, 0x24, h2::CACHE_HANDLES, 0x2c, 0x30];
 
 /// Halo 2 LOD sizes are the layout rounded up to this.
 pub const LOD_ALIGN: usize = 128;
@@ -104,6 +116,9 @@ pub fn convert_with(
         let at = i * BitmapImage::SIZE;
         let (bytes, r) = lod_bytes(img, pixels(i)?)?;
         put_image(&mut images, at, img);
+        for w in IMAGE_NONE_WORDS {
+            images.put_u32(at + w, u32::MAX);
+        }
         images.put_u32(at + h2::LOD_SIZES, r.lod_size);
         // Every retail Halo 2 image holds its own tag's datum here.
         images.tag_id((at + h2::RUNTIME_ID) as u32, SELF_ID);
