@@ -296,7 +296,7 @@ pub struct Walk {
     pub pointers: Vec<(u32, u32, u32)>,
 }
 
-fn u32_at(bytes: &[u8], at: usize) -> u32 {
+pub(crate) fn u32_at(bytes: &[u8], at: usize) -> u32 {
     u32::from_le_bytes(bytes[at..at + 4].try_into().expect("4 bytes"))
 }
 
@@ -527,7 +527,7 @@ pub fn walk(root: &Struct, address: u32, mem: &Memory) -> Result<Walk, Detail> {
 /// that holds an address in the tag (`own`) or in a known space, or a BSP
 /// descriptor matching no region: `(offset, value)`. Raw fields are checked
 /// too: one holding an address is a misclassified pointer.
-fn stray(s: &Struct, elem: &[u8], own: (u32, u32), mem: &Memory) -> Option<(u32, u32)> {
+pub(crate) fn stray(s: &Struct, elem: &[u8], own: (u32, u32), mem: &Memory) -> Option<(u32, u32)> {
     let mut covered = vec![false; elem.len()];
     for (&o, f) in s.fields.iter().filter(|(_, f)| !matches!(f, Field::Raw)) {
         covered[o as usize..(o + f.width()) as usize].fill(true);

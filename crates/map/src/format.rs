@@ -251,7 +251,7 @@ impl<'a> From<&'a str> for TagQuery<'a> {
 }
 
 /// Which cache a raw-resource pointer addresses. These are not virtual pointers.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum ResourceFile {
     /// The map containing the pointer.
     Local,

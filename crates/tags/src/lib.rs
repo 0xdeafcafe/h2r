@@ -18,6 +18,9 @@ pub mod edit;
 pub mod rebuild;
 /// Tag layout schemas inferred from retail maps; relocation of any tag.
 pub mod schema;
+/// The loose tag repository: one position-independent file per tag, extracted
+/// from retail maps and built back into maps; see `docs/formats/tag-repo.md`.
+pub mod repo;
 pub mod wire;
 /// Object collision and physics models (`coll`, `phmo`); see `docs/formats/collision.md`.
 pub mod collision;
