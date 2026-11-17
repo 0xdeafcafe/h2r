@@ -273,6 +273,21 @@ typedef struct H2Cold {
  * failing that, drop it and take the helper. The helper path is exactly
  * the old slow access: fault order, MMIO and whole-span failure are the
  * helper's. A load's bytes land in `buf`; a store's come from it. */
+/* `width` bytes (one of H2_FAST_WIDTH_OK's) from `src` to `dst`, each as a
+ * constant-size copy: in h2_access_cold the width is not a constant, and a
+ * libc memcpy there was a call, with every register preserve_most keeps
+ * saved around it, at the first access of nearly every guest function. */
+static H2_ALWAYS_INLINE void h2_copy_width(uint8_t *dst, const uint8_t *src, uint32_t width) {
+    switch (width) {
+    case 1u: memcpy(dst, src, 1u); break;
+    case 2u: memcpy(dst, src, 2u); break;
+    case 4u: memcpy(dst, src, 4u); break;
+    case 8u: memcpy(dst, src, 8u); break;
+    case 10u: memcpy(dst, src, 10u); break;
+    case 16u: memcpy(dst, src, 16u); break;
+    default: memcpy(dst, src, width); break;
+    }
+}
 static H2_COLD H2_PRESERVE H2Cold h2_access_cold(ExecCtxOpaque *ctx, H2FastAccess *f, uint32_t held, uint32_t pc,
                                                  uint32_t addr, uint32_t width, int write, uint8_t *buf) {
     H2Cold r = {NULL, 0u};
@@ -285,8 +300,8 @@ static H2_COLD H2_PRESERVE H2Cold h2_access_cold(ExecCtxOpaque *ctx, H2FastAcces
         H2FastPage page;
         uint8_t *host;
         H2_HELD_TRY(f, g, addr, width, write, page, host, helper);
-        if (write) memcpy(host, buf, width);
-        else memcpy(buf, host, width);
+        if (write) h2_copy_width(host, buf, width);
+        else h2_copy_width(buf, host, width);
         r.held = g.data;
         return r;
     helper:

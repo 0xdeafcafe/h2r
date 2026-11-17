@@ -671,3 +671,62 @@ fn failed_writeback_keeps_exact_guest_stores_for_retry() {
         assert_eq!(d.stats().rtt_writebacks, 1, "the retry committed the level");
     }
 }
+
+/// A level drawn into and left as the target again and again, with guest
+/// stores into it (exact, and page reports of unchanged bytes) between
+/// some of the visits and during one, then written back. Leaving it reads
+/// its guest bytes only when they may have changed since its match (the
+/// stores between visits are merged when it is bound again, which makes a
+/// new match); the backend calls and the bytes written back are the same
+/// as reading them at every leave (`H2_D3D_LEAVE_READ=1`).
+fn revisits(leave_read: bool) -> (Vec<d3d::Recorded>, Vec<u8>, d3d::Stats) {
+    let (mut d, mut m, surf) = recorded();
+    d.set_leave_read(leave_read);
+    let setup = d.stats().rtt_leave_reads_skipped;
+    let back = m
+        .read_u32(d3d::GuestLayout::HALO2.device + d3d::layout::device_field::RENDER_TARGET)
+        .unwrap();
+    let data = 0x8000_0000 | TEX_DATA;
+    for visit in 0..6u32 {
+        d.set_render_target(&mut m, surf, 0).unwrap();
+        d.clear(&mut m, 0, 0, 0xF0, 0xFF00_0000 | visit, 1.0, 0)
+            .unwrap();
+        if visit == 5 {
+            // An exact store into row 2 while the level is the target.
+            m.write(data + 128, &[0xA5; 64]).unwrap();
+            d.note_write(data + 128, 64);
+        }
+        d.set_render_target(&mut m, back, 0).unwrap();
+        match visit {
+            // An exact store into row 1 while the level is on the host.
+            1 => {
+                m.write(data + 64, &[0x5A; 64]).unwrap();
+                d.note_write(data + 64, 64);
+            }
+            // The runtime reports the level's page with nothing changed.
+            3 => d.note_written_pages(data, 0x1000),
+            _ => {}
+        }
+    }
+    // A page report after the last leave: the write-back compares the
+    // guest bytes with the match, which must hold the store above.
+    d.note_written_pages(data, 0x1000);
+    d.block_on_resource(&mut m, surf).unwrap();
+    let bytes = m.read_vec(data, 256).unwrap();
+    let mut stats = d.stats();
+    stats.rtt_leave_reads_skipped -= setup;
+    (std::mem::take(&mut d.backend.calls), bytes, stats)
+}
+
+#[test]
+fn leaving_an_unwritten_level_does_not_read_it_again() {
+    let (calls, bytes, stats) = revisits(false);
+    let (read_calls, read_bytes, read_stats) = revisits(true);
+    assert_eq!(calls, read_calls, "backend calls");
+    assert_eq!(bytes, read_bytes, "level in guest memory");
+    assert_eq!(stats.rtt_writebacks, read_stats.rtt_writebacks);
+    assert_eq!(read_stats.rtt_leave_reads_skipped, 0);
+    // Six leaves: only the one after the store made while the level was
+    // the target (the last visit) reads it.
+    assert_eq!(stats.rtt_leave_reads_skipped, 5, "{stats:?}");
+}

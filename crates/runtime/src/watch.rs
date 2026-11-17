@@ -229,7 +229,6 @@ impl Guest {
     /// non-adjacent runs in the folded view. Empty when nothing changed.
     pub fn take_dirty(&mut self, id: WatchId) -> Result<Vec<DirtyRange>, WatchError> {
         let s = self.watch.get(id)?;
-        let mut out: Vec<DirtyRange> = Vec::new();
         let range = |(a, b): (usize, usize)| DirtyRange {
             addr: CONTIGUOUS_BASE | ((a as u32) << PAGE_SHIFT),
             len: ((b - a) as u32) << PAGE_SHIFT,
@@ -239,6 +238,18 @@ impl Guest {
         }
         s.any_dirty = false;
         let (lo, hi) = std::mem::replace(&mut s.dirty_words, (WORDS, 0));
+        // Room for every run up front: a run starts at a set bit whose
+        // lower neighbour is clear, so their count bounds the runs. The
+        // D3D write barrier drains at every entry, and growing the vector
+        // a run at a time reallocated it several times per drain.
+        let starts: usize = (lo..hi.min(WORDS))
+            .map(|w| {
+                let word = s.dirty[w];
+                let below = if w == 0 { 0 } else { s.dirty[w - 1] >> 63 };
+                (word & !(word << 1 | below)).count_ones() as usize
+            })
+            .sum();
+        let mut out: Vec<DirtyRange> = Vec::with_capacity(starts);
         let mut run: Option<(usize, usize)> = None;
         for w in lo..hi {
             let mut word = std::mem::take(&mut s.dirty[w]);
