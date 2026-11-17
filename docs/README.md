@@ -36,6 +36,7 @@ goals, the two-stage plan, the crate table and milestones.
 - [storage.md](runtime/storage.md): the Xbox storage boundary (`crates/vfs`): volumes, FATX names, file semantics, map overrides
 - [agent-api.md](runtime/agent-api.md): design for an agent-facing API to the running game: UI and world views, profiling by owner, snapshots, input, overrides and A/B experiments (design only; none of it is on master)
 - [checkpoints.md](runtime/checkpoints.md): the checkpoint save and revert acceptance test
+- [snapshots.md](runtime/snapshots.md): machine snapshots for `state.save`/`state.load`: what state lives outside guest RAM, the file format, phases
 - [cache-slots.md](runtime/cache-slots.md): the campaign cache-slot integration test
 - [tvos.md](runtime/tvos.md): building and deploying to Apple TV (`platform/tvos`, `H2_EMIT_TARGET=tvos`)
 - [windows.md](runtime/windows.md): cross-building the runtime and the game module as a Windows DLL from a Mac (`x86_64-pc-windows-msvc`)

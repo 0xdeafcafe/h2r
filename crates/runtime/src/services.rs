@@ -91,6 +91,15 @@ impl Runtime {
     pub fn read_tsc(&self) -> u64 {
         self.tsc.read()
     }
+    /// The time-stamp counter's last value, for a machine snapshot.
+    pub fn tsc_last(&self) -> u64 {
+        self.tsc.last()
+    }
+    /// Continue the time-stamp counter from a snapshot's
+    /// [`Runtime::tsc_last`], while no guest code runs.
+    pub fn restore_tsc_last(&self, last: u64) {
+        self.tsc.restore_last(last);
+    }
     /// Compound HLE operations use this guard, including Guest::call/ret.
     /// Release it before dispatching or invoking callbacks.
     /// Mutex contention is counted separately from the inline-memory gate.
