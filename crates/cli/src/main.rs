@@ -21,6 +21,8 @@ mod extract_shaders;
 mod fonts;
 mod h1_cmd;
 mod h1_import;
+#[cfg(unix)]
+mod lab;
 mod lighting;
 mod lights;
 mod live_accounts;
@@ -73,6 +75,8 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           (docs/runtime/agent-api.md)
   agent <call>            call a running game's agent API: status, count, query,
                           object, counters, wait, pause/step in a `-` script
+  lab <command>           run levels on another Mac over SSH: replays, frame
+                          stats, profiles (`h2 lab --help`, docs/runtime/lab.md)
   play --follow <disc>    play, rebuilding each new commit of master in the
                           background; F5 restarts into it (docs/runtime/app.md)
   settings list|get|set   our settings (field of view, frame rate, ...) in
@@ -273,6 +277,12 @@ fn main() -> Result<()> {
     }
     if cmd == "coop-probe" {
         std::process::exit(coop_probe_cmd::run(args.collect())?);
+    }
+    if cmd == "lab" {
+        #[cfg(unix)]
+        return lab::run(args.collect());
+        #[cfg(not(unix))]
+        bail!("h2 lab needs Unix sockets");
     }
     if cmd == "agent" {
         #[cfg(unix)]
