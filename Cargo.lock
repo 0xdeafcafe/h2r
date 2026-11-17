@@ -2481,6 +2481,7 @@ name = "h1objects"
 version = "0.1.0"
 dependencies = [
  "content",
+ "h1bitmaps",
  "h1convert",
  "h1map",
  "h1models",

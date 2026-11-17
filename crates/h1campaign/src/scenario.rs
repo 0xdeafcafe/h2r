@@ -572,7 +572,8 @@ pub fn replaced_fields() -> Vec<u32> {
 
 /// Writes the scenario layers into `set` (built from the base). `lean` 1
 /// leaves out the empty squads kept only because scripts name them; 2 also
-/// the seat table; 3 also the level data the scripts name (the calls that
+/// the seat table; 3 also Halo 1's textures on object models (in `lib.rs`);
+/// 4 also the level data the scripts name (the calls that
 /// name it are stubbed, their other hooks stay `none`).
 /// `bsps[k]` is Halo 1 BSP `k`, converted.
 #[allow(clippy::too_many_arguments)]
@@ -914,7 +915,7 @@ pub fn write(
                 },
                 &initial,
                 opts.sounds,
-                lean < 3,
+                lean < 4,
                 lean < 2,
                 opts.cutscenes,
             )?);
@@ -1252,7 +1253,7 @@ fn install_scripts(
         .map(|r| h1.tag(r.id).map(|t| t.name.clone()).unwrap_or_default())
         .collect();
     // Level data the scripts name (cutscene flags, camera points, titles,
-    // device groups), in h1scripts. Without it (`lean` 2), or for a name
+    // device groups), in h1scripts. Without it (`lean` 4), or for a name
     // it lacks, a call naming one is stubbed: the engine indexes these
     // blocks unchecked (`h1scripts::compile::INDEXED`).
     let level = if level_data {

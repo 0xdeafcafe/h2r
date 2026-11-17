@@ -231,7 +231,22 @@ fn check_shader_copy(
     let n = &c.h1_shader;
     let (template, got) = scenario_edit::scene::shader_bitmaps(m, id)
         .unwrap_or_else(|e| panic!("{name}: shader copy {n}: {e}"));
-    let (want_template, want) = scenario_edit::scene::shader_bitmaps(base, c.template).unwrap();
+    // A base shader the reader cannot follow (some base shaders read out of
+    // bounds) leaves only the copy to check: it reads and draws its maps.
+    let (want_template, want) = match scenario_edit::scene::shader_bitmaps(base, c.template) {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("    (shader copy {n}: its base shader unread: {e})");
+            let names: Vec<String> = got
+                .iter()
+                .filter_map(|b| m.tag(*b).ok().and_then(|t| t.name.clone()))
+                .collect();
+            for (_, h1) in &c.swapped {
+                assert!(names.contains(h1), "{name}: {n} lacks {h1}");
+            }
+            return;
+        }
+    };
     assert_eq!(template, want_template, "{name}: {n}'s template");
     assert_eq!(got.len(), want.len(), "{name}: {n}'s bitmaps");
     let h1_names: Vec<&str> = c.swapped.iter().map(|s| s.1.as_str()).collect();
@@ -333,6 +348,112 @@ fn check_skies(
         names.push(n);
     }
     names
+}
+
+/// The tags the level's ambience adds: each looping sound, each sound
+/// they play (once), each sound environment. None has a base tag's path.
+fn ambience_tags(p: &h1convert::convert::Prepared) -> usize {
+    let mut sounds: Vec<&str> = Vec::new();
+    for (_, l) in &p.ambience.backgrounds {
+        for (n, _) in &l.sounds {
+            if !sounds.contains(&n.as_str()) {
+                sounds.push(n);
+            }
+        }
+    }
+    p.ambience.backgrounds.len() + sounds.len() + p.ambience.environments.len()
+}
+
+/// The level's own background sounds and sound environments: the
+/// scenario's palettes name Halo 1's entries, each an `lsnd` or `snde`
+/// the conversion added under Halo 1's path, and each looping sound's
+/// tracks and details name `snd!` tags of Halo 1's paths. Returns the
+/// palettes' tag names.
+fn check_ambience(
+    name: &str,
+    m: &mut Map<Cursor<Vec<u8>>>,
+    p: &h1convert::convert::Prepared,
+) -> (Vec<String>, Vec<String>) {
+    use h1convert::ambience::*;
+    assert!(
+        p.ambience.notes.is_empty(),
+        "{name}: {:?}",
+        p.ambience.notes
+    );
+    let scnr = m
+        .tags()
+        .iter()
+        .find(|t| t.group == FourCC(*b"scnr"))
+        .unwrap()
+        .clone();
+    let b = m.read_tag_bytes(scnr.id).unwrap();
+    let at = scnr.location.unwrap().address;
+    let w = |b: &[u8], o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+    let mut out = (Vec::new(), Vec::new());
+    for (field, len, group, want, names) in [
+        (
+            BACKGROUND_SOUNDS,
+            BACKGROUND_SOUND,
+            *b"lsnd",
+            p.ambience
+                .backgrounds
+                .iter()
+                .map(|(_, l)| l.name.clone())
+                .collect::<Vec<_>>(),
+            &mut out.0,
+        ),
+        (
+            SOUND_ENVIRONMENTS,
+            SOUND_ENVIRONMENT,
+            *b"snde",
+            p.ambience
+                .environments
+                .iter()
+                .map(|e| e.name.clone())
+                .collect(),
+            &mut out.1,
+        ),
+    ] {
+        let count = w(&b, field) as usize;
+        // As many as the base's palette holds.
+        assert!(count <= want.len(), "{name}: {}", FourCC(group));
+        assert!(count > 0 || want.is_empty(), "{name}: no {}", FourCC(group));
+        let start = (w(&b, field + 4).wrapping_sub(at)) as usize;
+        for k in 0..count {
+            let e = start + k * len;
+            assert_eq!(w(&b, e + 0x20), FourCC(group).as_u32(), "{name}");
+            let t = m.tag(map::TagId(w(&b, e + 0x24))).unwrap().clone();
+            assert_eq!(t.group, FourCC(group), "{name}");
+            let n = t.name.clone().unwrap_or_default();
+            assert!(want.contains(&n), "{name}: {} {k} is {n}", FourCC(group));
+            names.push(n);
+        }
+    }
+    for (_, l) in &p.ambience.backgrounds {
+        let id = m
+            .tag(map::TagQuery::NameInGroup(&l.name, FourCC(*b"lsnd")))
+            .unwrap()
+            .id;
+        let lb = m.read_tag_bytes(id).unwrap();
+        let tracks = w(&lb, 0x1c) as usize;
+        assert_eq!(tracks, l.tracks.len(), "{name}: {}", l.name);
+        let la = m.tag(id).unwrap().location.unwrap().address;
+        let first = (w(&lb, 0x20).wrapping_sub(la)) as usize;
+        for (k, t) in l.tracks.iter().enumerate() {
+            let e = first + k * 0x58;
+            let sound = &t.sounds[1];
+            let d = w(&lb, e + 0x20);
+            match sound {
+                Some(s) => {
+                    let got = m.tag(map::TagId(d)).unwrap();
+                    assert_eq!(got.group, FourCC(*b"snd!"), "{name}: {}", l.name);
+                    assert_eq!(got.name.as_deref(), Some(s.as_str()), "{name}");
+                }
+                None => assert_eq!(d, u32::MAX, "{name}: {}", l.name),
+            }
+        }
+    }
+    out
 }
 
 /// The converted lightmap: the lightmap names the converted bitmap, every
@@ -591,12 +712,15 @@ fn every_multiplayer_map_converts_and_keeps_the_bases_bitmaps() {
                 + collections.len()
                 + p.textures.bitmaps.len()
                 + p.textures.copies.len()
-                + sky_tags(&p),
+                + sky_tags(&p)
+                + ambience_tags(&p),
             "{name}"
         );
         check_structure_texturing(name, &mut m, &mut base, &done.bytes, &p);
         let skies = check_skies(name, &mut m, &p);
         eprintln!("    skies: {skies:?}");
+        let (sounds, environments) = check_ambience(name, &mut m, &p);
+        eprintln!("    background sounds: {sounds:?}; sound environments: {environments:?}");
         // The engine compares every pair of clusters every tick: the
         // audibility element must cover them (the first Blood Gulch's crash).
         {

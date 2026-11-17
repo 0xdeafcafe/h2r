@@ -218,6 +218,26 @@ let ids = install_sounds(&mut set, vec![(name, c)])?;
   slot (same datum, so references to it hold), or adds one.
 - `install_sounds` does the three for a list.
 
+### Looping sounds and sound environments (`h1sounds::looping`)
+
+```rust
+let l = h1sounds::looping::read_looping(&h1, lsnd_tag)?;   // its sounds converted too
+let ids = h1sounds::looping::install_looping(&mut set, &[l])?;
+let e = h1sounds::looping::read_environment(&h1, snde_tag)?;
+h1sounds::looping::install_environment(&mut set, &snde_tag.name, &e)?;
+```
+
+Layouts of both games' `lsnd` (header, tracks, detail sounds) and `snde`
+are in the module docs. In short: Halo 1's tracks (`0xa0`) carry linear
+gains and 16-byte references at `+0x30` (start), `+0x40` (loop), `+0x50`
+(end), `+0x80`/`+0x90` (alternates); Halo 2's (`0x58`) carry decibels and
+8-byte references from `+0x14` in the same order. `snde` is the same `0x48`
+bytes in both, with four intensities linear in Halo 1 and decibels in Halo
+2. `install_looping` installs every sound the looping sounds play in one
+gestalt pass, skipping paths the set already has, and reuses an `lsnd` of
+the same path. `tests/looping_disc.rs`: every `lsnd` (734) and `snde` (63)
+on the Halo 1 disc converts, every named sound with it.
+
 ### Proof (V)
 
 `converted_sounds_read_back_sample_identical` converts onto the Halo 2

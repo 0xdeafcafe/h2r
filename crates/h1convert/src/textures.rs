@@ -68,22 +68,48 @@ pub fn h1_maps(h1: &H1Map, name: &str) -> Option<H1Maps> {
     let tag = h1
         .tags()
         .iter()
-        .find(|t| t.name == name && matches!(t.group.to_string().as_str(), "senv" | "swat"))?;
+        .find(|t| t.name == name && h1_maps_of(h1, t).is_some())?;
+    h1_maps_of(h1, tag)
+}
+
+/// The bitmaps of the Halo 1 shader `tag`, by role. D (every shader on
+/// the 13 multiplayer maps): `senv` base `+0x88`, primary detail `+0xb8`
+/// (else micro detail `+0xfc`), bump `+0x128`; `swat` base `+0x4c`;
+/// `soso` (model shaders) base `+0xa4`, detail `+0xdc`; `schi` first map
+/// `+0xd8`; `sotr` first map `+0x88`; `sgla` diffuse `+0xac`; `smet` map
+/// `+0x4c`. `None` for any other group.
+pub fn h1_maps_of(h1: &H1Map, tag: &h1map::Tag) -> Option<H1Maps> {
+    let group = tag.group.to_string();
+    if !matches!(
+        group.as_str(),
+        "senv" | "swat" | "soso" | "schi" | "sotr" | "sgla" | "smet"
+    ) {
+        return None;
+    }
     let d = h1.tag_data(tag).ok()?;
     let at = |o: usize| -> Option<h1map::TagId> {
         let r = TagRef::read(d, o)?;
         (r.group == Group::new(b"bitm") && !r.id.is_none()).then_some(r.id)
     };
-    Some(match tag.group.to_string().as_str() {
+    let base = |o: usize| H1Maps {
+        base: at(o),
+        ..H1Maps::default()
+    };
+    Some(match group.as_str() {
         "senv" => H1Maps {
             base: at(0x88),
             detail: at(0xb8).or_else(|| at(0xfc)),
             bump: at(0x128),
         },
-        _ => H1Maps {
-            base: at(0x4c),
-            ..H1Maps::default()
+        "soso" => H1Maps {
+            base: at(0xa4),
+            detail: at(0xdc),
+            bump: None,
         },
+        "swat" | "smet" => base(0x4c),
+        "schi" => base(0xd8),
+        "sotr" => base(0x88),
+        _ => base(0xac),
     })
 }
 
@@ -200,7 +226,7 @@ pub fn plan<R: Read + Seek>(
         }
         let Some(maps) = h1_maps(h1, name) else {
             out.notes
-                .push(format!("{name}: not an environment or water shader"));
+                .push(format!("{name}: not a shader whose maps this reads"));
             continue;
         };
         let shader = templates.shader(*i);
@@ -353,6 +379,115 @@ impl Retexture {
             .map(|(i, n)| heads.get(&(*i, n.as_str())).copied().unwrap_or(*i))
             .collect();
         Ok((out, used))
+    }
+}
+
+/// The Halo 2 shader converted object models copy ([`model_template`]):
+/// its tree, its roles, and the base's plain bitmaps for a role Halo 1
+/// leaves empty.
+#[derive(Debug, Clone)]
+pub struct ModelTemplate {
+    pub shader: TagId,
+    pub name: String,
+    pub roles: H2Roles,
+    /// `shaders\default_bitmaps\bitmaps\default_vector` (a flat bump).
+    pub flat_bump: Option<TagId>,
+    /// `shaders\default_bitmaps\bitmaps\default_detail` (a plain detail).
+    pub plain_detail: Option<TagId>,
+    tree: Block,
+}
+
+/// The template [`model_template`] looks for: an opaque bumped shader,
+/// the commonest on the base maps' objects.
+pub const MODEL_TEMPLATE: &str = "shaders\\shader_templates\\opaque\\tex_bump";
+
+/// The first `objects\` shader (by name) of `base` drawn with
+/// [`MODEL_TEMPLATE`] whose base map role resolves and whose tree copies.
+pub fn model_template<R: Read + Seek>(base: &mut Map<R>) -> Result<Option<ModelTemplate>> {
+    let mut candidates: Vec<(String, TagId)> = base
+        .tags()
+        .iter()
+        .filter(|t| t.group == SHAD && t.location.is_some())
+        .filter_map(|t| Some((t.name.clone()?, t.id)))
+        .filter(|(n, _)| n.starts_with("objects\\"))
+        .collect();
+    candidates.sort_by(|a, b| a.0.cmp(&b.0));
+    let find = |base: &Map<R>, name: &str| {
+        base.tags()
+            .iter()
+            .find(|t| t.group == map::FourCC(*b"bitm") && t.name.as_deref() == Some(name))
+            .map(|t| t.id)
+    };
+    let flat_bump = find(base, "shaders\\default_bitmaps\\bitmaps\\default_vector");
+    let plain_detail = find(base, "shaders\\default_bitmaps\\bitmaps\\default_detail");
+    let mut lib = ShaderLibrary::read(base).map_err(tags_err)?;
+    let mut rel: Option<Relocator> = None;
+    for (name, id) in candidates {
+        let Ok((template, _)) = scenario_edit::scene::shader_bitmaps(base, id) else {
+            continue;
+        };
+        if template != MODEL_TEMPLATE {
+            continue;
+        }
+        let Ok(roles) = h2_roles(&mut lib, base, id) else {
+            continue;
+        };
+        if roles.base.is_none() {
+            continue;
+        }
+        if rel.is_none() {
+            rel = Some(Relocator::new(Schema::builtin(), base).map_err(tags_err)?);
+        }
+        let Ok(mut tree) = rel.as_ref().expect("made").to_built(id) else {
+            continue;
+        };
+        if params_mut(&mut tree).is_none() {
+            continue;
+        }
+        return Ok(Some(ModelTemplate {
+            shader: id,
+            name,
+            roles,
+            flat_bump,
+            plain_detail,
+            tree,
+        }));
+    }
+    Ok(None)
+}
+
+impl ModelTemplate {
+    /// A copy drawing `base` as its base map and `detail` (else the plain
+    /// detail) as its detail map, its bump map flat. Returns the tree and
+    /// the roles swapped. The datums are [`FixupKind::TagId`] fixups.
+    pub fn copy(&self, base: TagId, detail: Option<TagId>) -> (Block, Vec<&'static str>) {
+        let mut tree = self.tree.clone();
+        let params = params_mut(&mut tree).expect("checked in model_template");
+        let mut swapped = Vec::new();
+        let n = params.bytes.len() / 0xc;
+        for (role, from, to) in [
+            ("base", self.roles.base, Some(base)),
+            ("detail", self.roles.detail, detail.or(self.plain_detail)),
+            ("bump", self.roles.bump, self.flat_bump),
+        ] {
+            let (Some(from), Some(to)) = (from, to) else {
+                continue;
+            };
+            let mut any = false;
+            for p in 0..n {
+                let at = p * 0xc;
+                if params.bytes[at..at + 4] == from.0.to_le_bytes() {
+                    // A fixup, so a datum not yet installed (an
+                    // `h1objects` tree's local one) is filled in later.
+                    params.fixup(at as u32, FixupKind::TagId(to));
+                    any = true;
+                }
+            }
+            if any {
+                swapped.push(role);
+            }
+        }
+        (tree, swapped)
     }
 }
 

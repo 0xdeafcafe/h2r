@@ -321,8 +321,10 @@ over every `vehi` in the converted set.
 **Navpoints** take Halo 2's `default` (0): Halo 1's navpoint types
 (`default_red`, ...) are not mapped to Halo 2's. **Tags** (looping sounds,
 effects, damage, animation graphs) resolve by the Halo 1 tag's name among
-the converted tags of the Halo 2 group; `lsnd` is not converted yet, so
-looping sounds stay `none`.
+the converted tags of the Halo 2 group. `lsnd` converts with
+`h1sounds::looping` (`read_looping`, `install_looping`; the multiplayer
+converter uses it for background sounds), but `h1campaign` doesn't call it
+yet, so looping sounds stay `none`.
 
 **AI.** Most `ai` hooks left were squads `h1ai` dropped for having no
 starting locations. Retail Halo 2 keeps such squads (06b: 28 of 170;
@@ -330,8 +332,11 @@ starting locations. Retail Halo 2 keeps such squads (06b: 28 of 170;
 locations, no actors and no order, and `h1campaign` keeps only those the
 scripts name. A level that then overflows tag memory is converted again
 without them, and if still over, without the level data and seat table
-above too (`h1campaign::convert`). b40, which sat at the bound, takes the
-second step, so its hooks are as before.
+above too, and if still over, without Halo 1's textures on the objects'
+models (`h1objects`' shader copies and bitmaps; `h1campaign::convert`).
+b40, which sat at the bound, takes the third step since the models gained
+those textures (tag memory `0xc23000` of `0xc24000`), so its hooks are as
+before and its objects draw with the base's model shader.
 Most `ai` hooks still left name Halo 1 platoons (`…_toon`) or encounters
 used as squads; Halo 2 has no platoons.
 

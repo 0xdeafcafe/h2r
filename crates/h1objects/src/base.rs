@@ -13,6 +13,9 @@ pub struct Base {
     pub meta: Metadata,
     /// Every tag with a payload: datum, group, name, payload address.
     pub tags: Vec<(TagId, FourCC, String, u32)>,
+    /// The shader converted models' materials copy, with Halo 1's bitmaps
+    /// ([`h1convert::textures::model_template`]); `None` leaves them null.
+    pub model_shader: Option<h1convert::textures::ModelTemplate>,
 }
 
 impl Base {
@@ -24,6 +27,7 @@ impl Base {
                 .iter()
                 .filter_map(|t| Some((t.id, t.group, t.name.clone()?, t.location?.address)))
                 .collect(),
+            model_shader: h1convert::textures::model_template(map).ok().flatten(),
         })
     }
 
