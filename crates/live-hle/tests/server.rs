@@ -128,12 +128,32 @@ impl Server {
             .send_bytes(bytes)
             .unwrap();
     }
+    /// GET as the operator (an admin): friends-only and invite-only
+    /// sessions' events and presence are hidden from anonymous readers.
+    fn get_as_operator<T: serde::de::DeserializeOwned>(&self, path: &str) -> T {
+        let token = sign::issue_token(
+            &self.operator,
+            &format!("server:{}", self.discovery.id),
+            &self.discovery.id,
+            lxm::READ,
+            time::OffsetDateTime::now_utc().unix_timestamp(),
+        );
+        serde_json::from_reader(
+            self.agent
+                .get(&self.url(path))
+                .set("authorization", &format!("Bearer {token}"))
+                .call()
+                .unwrap()
+                .into_reader(),
+        )
+        .unwrap()
+    }
     fn events(&self) -> Vec<WireEvent> {
-        self.get::<Page<WireEvent>>("/v1/events?from=0&limit=1000")
+        self.get_as_operator::<Page<WireEvent>>("/v1/events?from=0&limit=1000")
             .items
     }
     fn presence(&self) -> Vec<Presence> {
-        self.get::<Page<Presence>>("/v1/presence").items
+        self.get_as_operator::<Page<Presence>>("/v1/presence").items
     }
     fn until(&self, mut condition: impl FnMut() -> bool) {
         let limit = Instant::now() + Duration::from_secs(5);
