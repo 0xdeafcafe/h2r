@@ -83,6 +83,15 @@ pub enum Error {
         /// The scenario's biggest root fields, as `offset bytes`.
         fields: String,
     },
+    /// The converted map file is over the engine's size limit for its cache
+    /// type, with `music` bytes of looping sound samples in it.
+    #[error("{level}: map file {need:#x} bytes, over the engine's {max:#x} ({music:#x} of music)")]
+    FileSize {
+        level: String,
+        need: u64,
+        max: u64,
+        music: u64,
+    },
 }
 
 /// Result alias for this crate.
@@ -253,13 +262,22 @@ pub fn convert<R: Read + Seek>(h1: &H1Map, base: &mut Map<R>, opts: &Options) ->
     // scripts only name: first the empty squads kept for their names, then
     // the seat table, then Halo 1's textures on the objects' models
     // (`h1objects`' shader copies and bitmaps; the models draw with the
-    // base's model shader), then the level data (`scenario::write`'s
-    // `lean`). Calls naming level data that is not there are stubbed
+    // base's model shader), then the looping sounds (music), then the
+    // level data (`scenario::write`'s `lean`). Calls naming level data that is not there are stubbed
     // (`h1scripts::compile::INDEXED`).
+    // A map file over the engine's size limit is converted again with that
+    // much less music (and 256 KiB of margin), down to none.
     let mut lean = 0;
+    let mut music = u64::MAX;
     loop {
-        match convert_with(h1, base, opts, lean) {
-            Err(Error::TagMemory { .. }) if lean < 4 => lean += 1,
+        match convert_with(h1, base, opts, lean, music) {
+            Err(Error::TagMemory { .. }) if lean < 5 => lean += 1,
+            Err(Error::FileSize {
+                need,
+                max,
+                music: m,
+                ..
+            }) if m > 0 => music = m.saturating_sub(need - max + 0x4_0000),
             r => return r,
         }
     }
@@ -270,6 +288,7 @@ fn convert_with<R: Read + Seek>(
     base: &mut Map<R>,
     opts: &Options,
     lean: u8,
+    music: u64,
 ) -> Result<Converted> {
     let level = h1.header().name.to_ascii_lowercase();
     let mut report = Report {
@@ -335,12 +354,14 @@ fn convert_with<R: Read + Seek>(
         objects_base.as_ref(),
         opts,
         lean,
+        music,
         &mut report,
     )?;
 
     // Built without the bound, so an overflow can say by how much and
     // where the bytes went.
     set.check_tag_memory = false;
+    set.check_file_size = false;
     // The rebuilt scenario and sound gestalt first, into their old ranges.
     set.largest_built_first = true;
     let (bytes, layout) = set.build()?;
@@ -384,6 +405,19 @@ fn convert_with<R: Read + Seek>(
             max,
             groups,
             fields,
+        });
+    }
+    let limit = map::writer::cache_size_limit(set.cache_type)?;
+    if bytes.len() as u64 > limit {
+        return Err(Error::FileSize {
+            level,
+            need: bytes.len() as u64,
+            max: limit,
+            music: report
+                .scenario
+                .scripts
+                .as_ref()
+                .map_or(0, |s| s.looping_bytes),
         });
     }
     let back = Map::from_reader(std::io::Cursor::new(bytes.as_slice()))?;

@@ -386,7 +386,7 @@ impl<R: Read + Seek> MapEditor<'_, R> {
 }
 
 /// Header validator `0x122870` / per-cache size limits at `0x214ed0`.
-pub(crate) fn cache_size_limit(cache_type: crate::CacheType) -> Result<u64> {
+pub fn cache_size_limit(cache_type: crate::CacheType) -> Result<u64> {
     Ok(match cache_type {
         crate::CacheType::Campaign => 0x1180_0000,
         crate::CacheType::Multiplayer | crate::CacheType::MainMenu => 0x0500_0000,

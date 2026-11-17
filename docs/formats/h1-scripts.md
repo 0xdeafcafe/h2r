@@ -121,8 +121,40 @@ under an index nobody calls. Value types map by name; Halo 2 lacks
 - **Renamed** (`RENAMES`): `ai_magically_see_encounter` → `ai_magically_see`,
   `game_save_totally_unsafe` → `game_save_immediate`, `ai_exit_vehicle` →
   `ai_vehicle_exit`, `object_pvs_set_object` → `pvs_set_object`,
-  `object_pvs_clear` → `pvs_clear` (and `ai_attach` → `ai_attach_units`,
-  which is also a cast, so it counts as an adapter).
+  `object_pvs_clear` → `pvs_clear`, `ai_living_fraction` → `ai_strength`
+  (Halo 2's squad vitality, 0 when all are dead; a30's waits on a fraction
+  under 0.3 or at 0) (and `ai_attach` → `ai_attach_units`, which is also
+  a cast, so it counts as an adapter).
+- **Inferred** (`INFERRED`): two Halo 2 builtins no retail script calls,
+  named from the XBE because the descriptor at that index has the Halo 1
+  builtin's signature and sits where Halo 1's table puts it between named
+  neighbours. `device_get_power` 255 (`(device) -> real`, between
+  `device_set_power` 254 and `device_set_position` 256; its evaluator
+  `0x002a4780` returns the device's float at `+0x134`; d40's control
+  rooms wait on it) and `unit_has_weapon_readied` 243 (`(unit
+  object_definition) -> boolean`, after `unit_has_weapon` 242; a30's
+  sniper tutorial). `Table::build` still checks their signatures.
+  Other unnamed descriptors with plausible signatures (241 `(unit) ->
+  short`, 600 `(sound) -> long`, 586 and 587 `() -> boolean`) are not
+  named: their neighbours do not pin them down.
+- **`ai_status`** has no Halo 2 counterpart of the same scale. Halo 1's
+  XBE help text gives its scale (0 inactive, 1 noncombat, 2 guarding, 3
+  search/suspicious, 4 definite enemy, 5 visible enemy, 6 engaging);
+  Halo 2's `ai_combat_status` is compared, in its own scripts, with
+  engine globals in ascending order (`ai_combat_status_idle`, `_alert`,
+  `_active`, `_uninspected`, `_certain`, `_visible`, ...).
+  `compile::STATUS_LADDER` pairs them: Halo 1 status `k` is reached when
+  Halo 2's reaches the global for `k` (6 visible, 5 certain, 4
+  uninspected, 3 active, 2 alert, 1 idle; a visible enemy counts as
+  engaging, which is what Halo 1's waits on 6 ask). Every use in the ten
+  levels (35; a50, b30, b40) compares it with a number, and is compiled
+  as one comparison: `(> (ai_status x) 3)` as `(>= (ai_combat_status x)
+  ai_combat_status_uninspected)`, `<` and `<=` with `<`, `=` as an `and`
+  of both, a threshold off the scale as `true` or `false`. Any other use
+  is compiled as the full ladder, `(if (>= (ai_combat_status x)
+  ai_combat_status_visible) 6 (if .. 5 .. 0))`, about 54 nodes a use
+  (as a ladder everywhere b40's scripts grew by 1,188 nodes and it no
+  longer fit its tag memory).
 - **Adapter**: `Coerce` when the arity matches but types differ (argument
   nodes take Halo 2's parameter types and Halo 2's interpreter casts; a
   marker-name string becomes a `string_id` literal; a string the
@@ -215,7 +247,9 @@ retail compiler writes them; literals keep their source type.
   except the status queries in `compile::DONE_VALUES`, which return the
   value every use in the ten levels reads as done (`ai_conversation_status`
   5, `ai_command_list_status` 2, `game_all_quiet` and `game_safe_to_speak`
-  true), so a `sleep_until` on them ends;
+  true, `hud_get_timer_ticks` 32767 so d40's escape timer never runs out,
+  `ai_conversation_line` 99, past any line, for b30), so a `sleep_until`
+  on them ends;
   `Extension` keeps the call with opcode `0x8000 + Halo 1 index` and the Halo 1
   name, for the Rust VM to bind (the retail interpreter cannot run it). Both
   list each call in `Compiled::missing`. Engine globals Halo 2's scripts

@@ -307,3 +307,128 @@ fn skipped_cutscenes_on_every_level() {
         }
     }
 }
+
+/// The stubbed builtins (`Kind::Missing`) the ten levels' waits read: per
+/// builtin, the `sleep_until` and `if` conditions holding a call to it,
+/// per level, with why it is missing and Halo 1's signature. A wait reads
+/// a stub when its condition (not following script calls) calls one. A
+/// stub is handled when the compiler gives it a value its waits read as
+/// done (`DONE_VALUES`, `ai_status` on `STATUS_LADDER`, or zero where
+/// every wait reads zero as done); the rest are listed per level.
+#[test]
+#[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
+fn waits_on_stubs() {
+    use h1scripts::translate::{Kind, Table};
+    use std::collections::BTreeMap;
+    let (catalog, maps) = h1();
+    let target = h2();
+    let table = Table::build(&catalog, &target);
+    let missing = |i: u16| table.builtin(i).is_some_and(|t| t.kind == Kind::Missing);
+    // Zero is done for every wait on these (`(= 0 x)`, `(sleep x)`).
+    const ZERO_DONE: &[&str] = &[
+        "sound_impulse_time",
+        "recording_time",
+        "ai_going_to_vehicle",
+    ];
+    let handled = |b: &str| {
+        b == "ai_status"
+            || ZERO_DONE.contains(&b)
+            || h1scripts::compile::DONE_VALUES.iter().any(|d| d.0 == b)
+    };
+    // builtin -> (level -> (sleep_until count, if count))
+    let mut by: BTreeMap<String, BTreeMap<String, [usize; 2]>> = BTreeMap::new();
+    for (name, map) in &maps {
+        let t = Tables::read(map).unwrap();
+        let mut waits = [0usize; 2];
+        let mut blocked = [0usize; 2];
+        let mut still = [0usize; 2];
+        let mut left: BTreeMap<String, usize> = BTreeMap::new();
+        for n in t
+            .nodes
+            .iter()
+            .filter(|n| n.live() && !n.atom() && !n.script_call())
+        {
+            let Ok(f) = catalog.function(n.opcode()) else {
+                continue;
+            };
+            let k = match f.name.as_str() {
+                "sleep_until" => 0,
+                "if" => 1,
+                _ => continue,
+            };
+            let head = t.node(hs::Datum(n.data())).unwrap();
+            let cond = head.next();
+            if cond == hs::Datum::NULL {
+                continue;
+            }
+            waits[k] += 1;
+            let mut found = std::collections::BTreeSet::new();
+            let mut stack = vec![cond];
+            while let Some(d) = stack.pop() {
+                let x = t.node(d).unwrap();
+                if x.atom() || x.script_call() {
+                    continue;
+                }
+                if missing(x.opcode()) {
+                    found.insert(catalog.function(x.opcode()).unwrap().name.clone());
+                    continue;
+                }
+                let mut a = t.node(hs::Datum(x.data())).unwrap().next();
+                while a != hs::Datum::NULL {
+                    stack.push(a);
+                    a = t.node(a).unwrap().next();
+                }
+            }
+            if !found.is_empty() {
+                blocked[k] += 1;
+            }
+            let open: Vec<&String> = found.iter().filter(|b| !handled(b)).collect();
+            if !open.is_empty() {
+                still[k] += 1;
+                for b in open {
+                    *left.entry(b.clone()).or_default() += 1;
+                }
+            }
+            for b in found {
+                by.entry(b).or_default().entry(name.clone()).or_default()[k] += 1;
+            }
+        }
+        println!(
+            "{name}: sleep_until {} ({} read a stub, {} an unhandled one), if {} ({} read a stub, {} an unhandled one); unhandled {left:?}",
+            waits[0], blocked[0], still[0], waits[1], blocked[1], still[1]
+        );
+    }
+    let mut ranked: Vec<_> = by.iter().collect();
+    ranked.sort_by_key(|(_, l)| std::cmp::Reverse(l.values().map(|v| v[0] + v[1]).sum::<usize>()));
+    for (b, levels) in ranked {
+        let i = catalog.index_of(b).unwrap();
+        let f = catalog.function(i).unwrap();
+        let params: Vec<_> = f
+            .parameters
+            .iter()
+            .map(|&p| catalog.type_name(p).unwrap())
+            .collect();
+        let h2 = target.builtins.get(b).map(|x| {
+            let p: Vec<_> = x
+                .parameters
+                .iter()
+                .map(|&p| target.types[p as usize].as_str())
+                .collect();
+            format!(
+                "h2 {}({}) -> {}",
+                x.index,
+                p.join(" "),
+                target.types[x.return_type as usize]
+            )
+        });
+        let total: usize = levels.values().map(|v| v[0] + v[1]).sum();
+        println!(
+            "STUB {total:4} {b}({}) -> {} [{}] {} {:?}",
+            params.join(" "),
+            catalog.type_name(f.return_type).unwrap(),
+            table.builtin(i).unwrap().reason.unwrap_or(""),
+            h2.unwrap_or_default(),
+            levels
+        );
+    }
+}

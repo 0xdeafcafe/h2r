@@ -363,6 +363,13 @@ pub struct ScriptReport {
     /// (over the cap, or the gestalt's 16-bit indices).
     pub sounds: usize,
     pub sounds_dropped: usize,
+    /// Looping sounds (music and ambience) the scripts name, converted with
+    /// `h1sounds::looping`, and those left out (not in the level, failed,
+    /// or no room: `lean` 4 leaves them all out, a map over the engine's
+    /// file size limit fewer of them), and the sample bytes they added.
+    pub looping: usize,
+    pub looping_dropped: Vec<String>,
+    pub looping_bytes: u64,
     pub missing_calls: usize,
     /// Calls stubbed because a cutscene flag, camera point, title or device
     /// group they name does not resolve (`h1scripts::compile::INDEXED`).
@@ -450,8 +457,12 @@ impl std::fmt::Display for ScenarioReport {
             }
             writeln!(
                 f,
-                "    sounds: {} converted, {} left out",
-                s.sounds, s.sounds_dropped
+                "    sounds: {} converted, {} left out; looping sounds: {} converted, {} left out {:?}",
+                s.sounds,
+                s.sounds_dropped,
+                s.looping,
+                s.looping_dropped.len(),
+                s.looping_dropped
             )?;
             writeln!(
                 f,
@@ -590,8 +601,10 @@ pub fn replaced_fields() -> Vec<u32> {
 /// Writes the scenario layers into `set` (built from the base). `lean` 1
 /// leaves out the empty squads kept only because scripts name them; 2 also
 /// the seat table; 3 also Halo 1's textures on object models (in `lib.rs`);
-/// 4 also the level data the scripts name (the calls that
-/// name it are stubbed, their other hooks stay `none`).
+/// 4 also the looping sounds (music) the scripts name; 5 also the level
+/// data the scripts name (the calls that name it are stubbed, their other
+/// hooks stay `none`). Below `lean` 4, `music` caps the looping sounds'
+/// sample bytes (the map file's own bound).
 /// `bsps[k]` is Halo 1 BSP `k`, converted.
 #[allow(clippy::too_many_arguments)]
 pub fn write(
@@ -603,6 +616,7 @@ pub fn write(
     objects: Option<&h1objects::base::Base>,
     opts: &Options,
     lean: u8,
+    music: u64,
     report: &mut Report,
 ) -> Result<()> {
     let mut root = match &base.tree {
@@ -957,8 +971,9 @@ pub fn write(
                 },
                 &initial,
                 opts.sounds,
-                lean < 4,
+                lean < 5,
                 lean < 2,
+                if lean < 4 { music } else { 0 },
                 opts.cutscenes,
             )?);
         }
@@ -1264,10 +1279,22 @@ pub fn hook_value(h: &h1scripts::compile::Hook, t: &Targets) -> Option<u32> {
                     .position(|n| n.eq_ignore_ascii_case(g))
                     .map(|i| 0x4000_0000 | i as u32)
             };
-            // A squad left out (empty, over the squad cap): its encounter.
+            // A squad left out (empty, over the squad cap): the first
+            // squad of its encounter, else the encounter's squad group.
+            // Halo 2's `ai_migrate` ignores a destination with either top
+            // bit set (`0x002a54cc`, `test ecx,0C0000000h`) and
+            // `ai_attach_units` reads the low 16 bits as a squad index
+            // (`0x0027305e`), so a squad group there would do nothing or
+            // name another squad; a sibling keeps the actors in their
+            // encounter's zone, as Halo 1's migration did.
             group(&token).or_else(|| {
                 let (encounter, _) = h.token.split_once('/')?;
-                group(&encounter.chars().take(31).collect::<String>())
+                let prefix = format!("{encounter}/").to_ascii_lowercase();
+                t.squads
+                    .iter()
+                    .position(|q| q.to_ascii_lowercase().starts_with(&prefix))
+                    .map(|i| i as u32)
+                    .or_else(|| group(&encounter.chars().take(31).collect::<String>()))
             })
         }
         _ => None,
@@ -1285,6 +1312,7 @@ fn install_scripts(
     max_sounds: usize,
     level_data: bool,
     seat_table: bool,
+    music: u64,
     cutscenes: h1scripts::compile::Cutscenes,
 ) -> Result<ScriptReport> {
     use h1scripts::compile::{Missing, compile_with};
@@ -1295,7 +1323,7 @@ fn install_scripts(
         .map(|r| h1.tag(r.id).map(|t| t.name.clone()).unwrap_or_default())
         .collect();
     // Level data the scripts name (cutscene flags, camera points, titles,
-    // device groups), in h1scripts. Without it (`lean` 4), or for a name
+    // device groups), in h1scripts. Without it (`lean` 5), or for a name
     // it lacks, a call naming one is stubbed: the engine indexes these
     // blocks unchecked (`h1scripts::compile::INDEXED`).
     let level = if level_data {
@@ -1328,6 +1356,9 @@ fn install_scripts(
     h1scripts::compile::add_startup_placements(&mut c, &s.target, INITIAL_SCRIPT, initial)
         .map_err(|e| invalid(format!("scripts: {e}")))?;
     let (sounds, sounds_dropped) = install_named_sounds(h1, set, &c, max_sounds)?;
+    // The looping sounds (`lsnd`: music and ambience) the scripts start,
+    // found by the tag-name lookup below.
+    let (looping, looping_dropped, looping_bytes) = install_looping_sounds(h1, set, &c, music);
     let mut interned: HashMap<String, u32> = HashMap::new();
     for h in &c.hooks {
         if h.type_name == "string_id" && !interned.contains_key(&h.token) {
@@ -1356,7 +1387,7 @@ fn install_scripts(
         .iter()
         .filter_map(|s| {
             let t = s.tag.as_ref()?;
-            Some(((t.group, s.name.clone()?), t.id))
+            Some(((t.group, s.name.as_ref()?.to_ascii_lowercase()), t.id))
         })
         .collect();
     let mut resolved_by_level = 0;
@@ -1368,7 +1399,9 @@ fn install_scripts(
             "unit_seat_mapping" => seats.values.get(&h.token).copied(),
             ty => level.resolve(h).or_else(|| {
                 let g = h1scripts::level::tag_group(ty)?;
-                tags_by_name.get(&(g, h.token.clone())).map(|id| id.0)
+                tags_by_name
+                    .get(&(g, h.token.to_ascii_lowercase()))
+                    .map(|id| id.0)
             }),
         }
         .inspect(|_| {
@@ -1419,6 +1452,9 @@ fn install_scripts(
         samples,
         sounds: sounds.len(),
         sounds_dropped,
+        looping: looping.len(),
+        looping_dropped,
+        looping_bytes,
         missing_calls: c.missing.len(),
         unindexed: c
             .unindexed
@@ -1436,6 +1472,86 @@ fn install_scripts(
 /// Halo 1 names with the base's gestalt. When the gestalt's 16-bit indices
 /// overflow, half as many are tried, down to none. Returns each installed
 /// sound's datum by name, and how many were left out.
+/// The Halo 1 `lsnd` tags the scripts name (`looping_sound` hooks), in
+/// first-use order.
+fn looping_names(h1: &H1Map, c: &h1scripts::compile::Compiled) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for h in c.hooks.iter().filter(|h| h.type_name == "looping_sound") {
+        if !names.iter().any(|n| n.eq_ignore_ascii_case(&h.token))
+            && h1.find(h1sounds::looping::LSND, &h.token).is_some()
+        {
+            names.push(h.token.clone());
+        }
+    }
+    names
+}
+
+/// Converts and installs the looping sounds the scripts name, in first-use
+/// order while their samples fit in `budget` bytes (0 installs none).
+/// Returns the installed tags, per sound left out why, and the sample bytes
+/// added. The ones that fit go in at once or none do (a failure leaves
+/// `set` as it was).
+fn install_looping_sounds(
+    h1: &H1Map,
+    set: &mut TagSet,
+    c: &h1scripts::compile::Compiled,
+    budget: u64,
+) -> (Vec<TagId>, Vec<String>, u64) {
+    let mut loops = Vec::new();
+    let mut dropped = Vec::new();
+    let mut counted: Vec<String> = Vec::new();
+    let mut bytes = 0u64;
+    for n in looping_names(h1, c) {
+        if budget == 0 {
+            dropped.push(format!("{n}: no room"));
+            continue;
+        }
+        let tag = h1.find(h1sounds::looping::LSND, &n).expect("found above");
+        let l = match h1sounds::looping::read_looping(h1, tag) {
+            Ok(l) => l,
+            Err(e) => {
+                dropped.push(format!("{n}: {e}"));
+                continue;
+            }
+        };
+        let new: u64 = l
+            .sounds
+            .iter()
+            .filter(|(s, _)| !counted.contains(s))
+            .map(|(_, s)| sample_bytes(s))
+            .sum();
+        if bytes + new > budget {
+            dropped.push(format!("{n}: over the map file's size limit"));
+            continue;
+        }
+        bytes += new;
+        counted.extend(l.sounds.iter().map(|(s, _)| s.clone()));
+        loops.push(l);
+    }
+    let mut trial = set.clone();
+    match h1sounds::looping::install_looping(&mut trial, &loops) {
+        Ok(ids) => {
+            *set = trial;
+            (ids, dropped, bytes)
+        }
+        Err(e) => {
+            dropped.extend(loops.iter().map(|l| format!("{}: {e}", l.name)));
+            (Vec::new(), dropped, 0)
+        }
+    }
+}
+
+/// A converted sound's sample bytes in the map file, each chunk rounded up
+/// to the builder's 0x1000 alignment at most.
+fn sample_bytes(s: &h1sounds::ConvertedSound) -> u64 {
+    s.ranges
+        .iter()
+        .flat_map(|r| &r.permutations)
+        .flat_map(|p| &p.chunks)
+        .map(|c| (c.len() as u64).next_multiple_of(0x1000))
+        .sum()
+}
+
 fn install_named_sounds(
     h1: &H1Map,
     set: &mut TagSet,
