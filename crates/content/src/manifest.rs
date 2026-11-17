@@ -95,6 +95,20 @@ pub struct Variant {
     pub file: String,
     pub sha256: Sha256,
     pub origin: Origin,
+    /// Item swaps a precision game variant makes in this map at game start
+    /// (`boot::precision`; docs/game/h1-multiplayer.md, "Precision
+    /// variants"). Not part of the `MapId`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub precision: Vec<Swap>,
+}
+
+/// One `precision` swap: every netgame item naming tag datum `from` names
+/// `to` while a precision variant plays, and `from` again otherwise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Swap {
+    pub from: u32,
+    pub to: u32,
 }
 
 /// A variant's `origin`: the source of a map converted from another game

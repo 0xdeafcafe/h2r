@@ -27,6 +27,7 @@ pub mod fallback;
 pub mod fov_row;
 pub mod game_glue;
 pub mod health;
+pub mod precision;
 pub mod host_perf;
 pub mod icons;
 pub mod layout_glue;
@@ -722,10 +723,13 @@ pub fn run_hosted_with_live(
     new_maps::install_at_boot(&opts.data_root, &opts.disc);
     // The health model follows the sandbox the converted Halo 1 maps were
     // just installed in (docs/game/health.md).
-    {
+    // The VFS serves the same variant (docs/game/h1-multiplayer.md).
+    let halo1_sandbox = {
         let (store, _) = setting_defs::load(&opts.data_root, &[]);
-        health::set_halo1_sandbox(setting_defs::halo1_sandbox(&store) == "h1");
-    }
+        let sandbox = setting_defs::halo1_sandbox(&store);
+        health::set_halo1_sandbox(sandbox == "h1");
+        sandbox
+    };
     // A second campaign (docs/game/multiple-campaigns.md): read before the
     // VFS mounts, which serves its converted maps.
     let campaigns = campaigns::boot_state(&opts.data_root, &opts.disc);
@@ -735,7 +739,7 @@ pub fn run_hosted_with_live(
     // with neither, the disc is mounted as it always was.
     let maps = map_override::dir();
     let packages = map_override::packages_dir(&opts.data_root);
-    let mounted = map_override::mount_with_hashes(cfg.clone(), &opts.disc, icons.as_ref().map(|i| i.font_rewrite()), maps.as_deref(), Some(&packages), disc_hashes, &campaign_maps);
+    let mounted = map_override::mount_with_hashes(cfg.clone(), &opts.disc, icons.as_ref().map(|i| i.font_rewrite()), maps.as_deref(), Some(&packages), Some(halo1_sandbox), disc_hashes, &campaign_maps);
     if let Some(i) = &icons {
         icons::install(&loaded.runtime, Arc::clone(i))?;
     }
@@ -888,6 +892,10 @@ pub fn run_hosted_with_live(
     // regeneration, health packs, a health meter. Off (Halo 2's) until the
     // map's identity or the H2_HEALTH_MODEL debug override says Halo 1.
     let health_on = health::install(&mut features).context("installing the health model")?;
+    // Precision variants on converted Halo 1 maps in the Halo 2 sandbox
+    // (docs/game/h1-multiplayer.md): the battle rifle for the SMG at game
+    // activation, from the swaps each package's manifest records.
+    precision::install(&mut features, &packages).context("installing the precision swaps")?;
     // Stronger aim assist (docs/game/aim-assist.md): the weapons' autoaim and
     // magnetism at each map load, from the Aim Assist setting (Auto: Strong
     // while the touch controls show). Headless runs keep retail.

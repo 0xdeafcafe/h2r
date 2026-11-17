@@ -118,12 +118,42 @@ item is found in the base map by the words in its tag name.
 Halo 1 assault rifle spawn is the SMG by default and the battle rifle when
 the game variant is a precision one: its primary starting weapon is the
 battle rifle, carbine or sniper rifle (`PRECISION_STARTING_WEAPONS`).
-`h2_equivalent_precision` gives the precision item. Choosing it at game
-start needs a runtime hook, not built yet: at round start, read the
-variant's primary starting weapon, and if it is a precision weapon swap
-the item collection of the spawns that came from assault rifles (the
-converter would record which netgame equipment entries those are, e.g. in
-the package manifest). Until then both variants place the SMG.
+`h2_equivalent_precision` gives the precision item. See "Precision
+variants (**Built**)" below for how the choice is made at game start.
+
+### Precision variants (**Built**: `apply::precision_swaps`, `boot::precision`)
+
+- **The converter** places the default (the SMG) and records each swap
+  in the package manifest, on the Halo 2 sandbox variant:
+  `precision = [{ from = <SMG itmc datum>, to = <BR itmc datum> }]`. A
+  row is recorded only when its default item comes from that row alone
+  (`sandbox::default_sources`), so every netgame item naming `from` came
+  from an assault rifle. The fresh build's prune keeps each `to`
+  collection even when nothing places it. The swaps are not part of the
+  `MapId`.
+- **The hook** runs before the game activates (`0x18f000`, options in
+  `eax`). The map's tags are loaded by then: `aim_assist` writes weapon
+  tags at the same point. No item has spawned yet, because the netgame
+  equipment spawner `0x15aad0` has one caller, the per-tick update
+  `0x15ae70`. That is called only from `0x15c189` in `0x15c150`, which
+  the game tick calls at `0x13803c`.
+- **What the hook reads:**
+  - the options' game type (`+0`, 2 multiplayer);
+  - the starting weapon, byte `+0x134+0xd6` (battle rifle 3, sniper
+    rifle 10, carbine 13);
+  - the loaded map's name (`0x547898`);
+  - the scenario (`0x4e0350`), whose netgame equipment is at `+0x120`
+    (count, address; `0x90` an element). Each element's item reference
+    is at `+0x58`: the group, then the datum at `+0x5c`.
+- **What the hook writes:**
+  - in a precision variant, every item naming `from` names `to`;
+  - in any other variant, `to` goes back to `from`, because the scenario
+    stays in memory between games on the same map;
+  - the write happens in guest memory only, and only when the target is
+    a loaded tag of the item's group (`tag_get_checked`).
+- **The swap table** is read at boot from `<data>/maps/*/manifest.toml`
+  (the `h2` variant of each package), keyed by `base.map`. The hook is
+  idle in the Halo 1 sandbox, which places Halo 1's assault rifle.
 
 ## Placements plan (**Built** as `h1convert::placements`)
 
@@ -764,14 +794,9 @@ disc.
    element each). The rest are used by some maps only. The converter
    writes `+0x4c`, `+0x94`, `+0x148` and `+0x1d0` empty without an engine
    reading that allows it (above).
-4. **Precision variants** at round start (the AR rule above; not built).
-   What a hook would read: the game variant at `[game globals]+0x8+0x134`
-   (`live_telemetry` layout), its starting weapon byte at `+0xd6`
-   (`variants::record`, setting 89; battle rifle 3, sniper rifle 10,
-   carbine 13 as `community_variants::Weapon` numbers them). Still open:
-   how the hook knows which spawns came from assault rifles without tag
-   names in memory, and whether the spawner has rolled them by the game
-   start.
+4. **Precision variants**: built (above). A game run should show the
+   battle rifle on Blood Gulch's assault rifle spawns in a BR-start
+   variant and the SMG in Slayer.
 5. **The setting and the map list** (below): built, with its row.
 6. **Halo 1 sandbox**: objects, the cyborg as the player and the health
    model per variant are built (below), and Halo 1's skies. Next a HUD
@@ -815,10 +840,13 @@ by hand, into any `--out`.
   `patch.lvl` record, and 1.0 lists it. One package per map holding both
   variants, each a `[[variant]]` with its `origin` (above).
 - **Where the choice happens:** in `boot::new_maps`, which already writes
-  each new map's `.map` into its content directory at boot. It writes the
-  variant the setting names, through the resolver's variant selection
-  (above). That is the one place the game's map file is chosen for a new
-  map.
+  each new map's list record into its content directory at boot, for
+  the variant the setting names, through the resolver's variant
+  selection (above). The VFS serves the same variant: `boot` mounts the
+  package library with the same setting (`map_override::mount_with_hashes`),
+  and a rescan keeps it (`Library::reopen`). Opened without the
+  setting, the VFS served the default variant (Halo 1's) whichever
+  variant the menu listed.
 - **Names (decided):** converted maps are `h1_<map>` (`h1_beavercreek`:
   Halo 2 has its own `beavercreek`), with Halo 1's display name in the
   list.
@@ -894,8 +922,20 @@ reads `soso` (base `+0xa4`, detail `+0xdc`), `senv`, `swat`, `smet`,
 `schi`, `sotr` and `sgla`. `h1objects` converts each map once
 (`h1bitmaps`) and names the copies in the model's materials;
 campaign scenery goes through `h1objects` too, so it gets them as well.
-On Blood Gulch's sandbox 17 models are converted, 81 materials draw
-Halo 1 textures and 5 name no Halo 1 shader (`tests/sandbox_disc.rs`).
+On Blood Gulch's sandbox 17 models are converted and 81 materials draw
+Halo 1 textures. A material with no Halo 1 base map to read names the
+base's model shader itself; Blood Gulch has none. The sky model's 5
+materials name the base sky's shader (`h1convert::sky::base_sky_shader`,
+both sandboxes; `tests/sandbox_disc.rs`).
+
+A material never names no shader (NONE). The shader draw begin
+`0x1bbf0` does not skip a NONE shader: at `0x1bcb9` it only clears its
+cached words `0x485a64..0x485a70`. It still calls the draw
+`0x16b90(0x485b48, NONE, ...)`, which reads tag slot `0xffff`'s entry (past
+the table) as a `shad` and dereferences its compiled postprocess
+(`0x16bc7`, `0x16bde`). Before converter version 21, converted skies named NONE on all 5
+materials. That is the likely cause of the null read on Blood Gulch's
+first frame (pc `0x16bde`, ebp `0x485b48`, the state cache).
 
 ### Design notes
 

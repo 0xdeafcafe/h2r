@@ -113,7 +113,10 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
         .filter(|t| t.group == FourCC(*b"mode") && (t.id.0 & 0xffff) as usize >= first)
         .map(|t| (t.id, t.name.clone().unwrap_or_default()))
         .collect();
-    let (mut drawn, mut null) = (0, 0);
+    let stand_in = templates.model_shader.as_ref().map(|t| t.shader);
+    // The sky model's materials name the base sky's shader (h1convert::sky).
+    let sky_shader = p.skies.shader.expect("the base sky's shader");
+    let (mut drawn, mut null, mut stood_in, mut sky) = (0, 0, 0, 0);
     for (id, name) in &modes {
         let b = out.read_tag_bytes(*id).unwrap();
         let at = out.tag(*id).unwrap().location.unwrap().address;
@@ -124,6 +127,14 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
             let shader = TagId(w(e + 0xc));
             if shader.0 == u32::MAX {
                 null += 1;
+                continue;
+            }
+            if Some(shader) == stand_in {
+                stood_in += 1;
+                continue;
+            }
+            if shader == sky_shader {
+                sky += 1;
                 continue;
             }
             let (template, bitmaps) = scenario_edit::scene::shader_bitmaps(&mut out, shader)
@@ -137,10 +148,15 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
         }
     }
     eprintln!(
-        "models: {} converted, {drawn} materials with Halo 1 textures, {null} null",
+        "models: {} converted, {drawn} materials with Halo 1 textures, {stood_in} the base's model shader, {sky} the base sky's shader, {null} null",
         modes.len()
     );
-    assert!(drawn > 0 && drawn >= 4 * null, "{drawn} drawn, {null} null");
+    // No material is null: the shader draw does not skip a NONE shader.
+    assert_eq!(null, 0, "{drawn} drawn, {null} null");
+    assert!(
+        drawn > 0 && drawn >= 4 * stood_in,
+        "{drawn} drawn, {stood_in} stood in"
+    );
     let ctx = tags::object::Context::read(&mut out).unwrap();
     let names: std::collections::HashMap<TagId, (FourCC, String)> = out
         .tags()
@@ -211,4 +227,90 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
             .sum::<usize>(),
         vehicles
     );
+}
+
+/// Every `shad` of Blood Gulch's installed maps, both sandboxes built fresh
+/// as `h2 h1 import` builds them, has what the shader draw `0x16b90` reads
+/// before anything else: one compiled postprocess element (`shad +0x20`, its
+/// address read at `0x16bc7` and dereferenced at `0x16bde`), its template's
+/// (`stem +0x58`, `0x16bf4`) and each pass's (`spas +0x1c`). A shader
+/// without one is a null read on the first frame that draws it.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn bloodgulch_shaders_all_have_their_compiled_postprocess_in_both_sandboxes() {
+    let h1 = bloodgulch();
+    let sha = content::Sha256::of(b"bloodgulch");
+    let mut bad = Vec::new();
+    for sandbox in [Sandbox::Halo2, Sandbox::Halo1] {
+        let mut base = h2_map("coagulation");
+        let p = if sandbox == Sandbox::Halo1 {
+            let templates = Base::read(&mut base).unwrap();
+            let mut objects = Objects::new(&h1, &templates);
+            prepare_halo1(&h1, sha, &mut base, &mut objects).unwrap()
+        } else {
+            h1convert::convert::prepare(&h1, sha, &mut base, sandbox).unwrap()
+        };
+        let mopp = structure_mopp(&p.collision).unwrap();
+        let fresh = p.build_fresh(&mut base, &mopp).unwrap();
+        let manifest = p.manifest(&fresh.bytes);
+        let mut out = Map::from_reader(Cursor::new(fresh.bytes)).unwrap();
+        if sandbox == Sandbox::Halo2 {
+            // The precision swap: the SMG and the battle rifle collections,
+            // both in the fresh map (the BR kept by the prune), and the
+            // manifest records it.
+            let swaps = &p.applied.precision;
+            assert_eq!(swaps.len(), 1, "{swaps:?}");
+            for id in [swaps[0].0, swaps[0].1] {
+                let t = out.tag(id).unwrap();
+                assert_eq!(t.group, FourCC(*b"itmc"));
+                eprintln!("precision: {:#x} {:?}", id.0, t.name);
+            }
+            assert_eq!(
+                manifest.variants[0].precision,
+                [content::Swap {
+                    from: swaps[0].0.0,
+                    to: swaps[0].1.0
+                }]
+            );
+        }
+        let shaders: Vec<(TagId, String)> = out
+            .tags()
+            .iter()
+            .filter(|t| t.group == FourCC(*b"shad") && t.location.is_some())
+            .map(|t| (t.id, t.name.clone().unwrap_or_default()))
+            .collect();
+        // Every render model's materials name a shader: the shader draw
+        // begin `0x1bbf0` does not skip NONE.
+        let modes: Vec<(TagId, String)> = out
+            .tags()
+            .iter()
+            .filter(|t| t.group == FourCC(*b"mode") && t.location.is_some())
+            .map(|t| (t.id, t.name.clone().unwrap_or_default()))
+            .collect();
+        for (id, name) in &modes {
+            let b = out.read_tag_bytes(*id).unwrap();
+            let at = out.tag(*id).unwrap().location.unwrap().address;
+            let w = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+            let (count, start) = (w(0x60) as usize, w(0x64));
+            for k in 0..count {
+                let shader = w((start - at) as usize + 0x20 * k + 0xc);
+                if shader == u32::MAX {
+                    bad.push(format!("{sandbox:?} {name}: material {k} names no shader"));
+                }
+            }
+        }
+        let mut lib = tags::material::ShaderLibrary::read(&mut out).unwrap();
+        let mut drawn = 0;
+        for (id, name) in &shaders {
+            match lib.material(*id, None) {
+                Ok(_) => drawn += 1,
+                Err(e) => bad.push(format!("{sandbox:?} {name} ({:#x}): {e}", id.0)),
+            }
+        }
+        eprintln!(
+            "{sandbox:?}: {drawn} of {} shaders resolve to passes",
+            shaders.len()
+        );
+    }
+    assert!(bad.is_empty(), "{} shaders: {bad:#?}", bad.len());
 }

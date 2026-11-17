@@ -7,9 +7,20 @@
 //! Halo 1's sky `k`, or Halo 1's last when the base has more, so no element
 //! still names a base sky. Converted clusters all draw sky 0
 //! ([`crate::structure`]).
+//!
+//! A converted sky model's materials name the shader of the base sky's
+//! model ([`base_sky_shader`]) until Halo 1's sky shaders convert. They are
+//! never NONE: the shader draw begin `0x1bbf0` does not skip a NONE shader
+//! (`0x1bcb9` only clears its cached words), and the draw `0x16b90` then
+//! reads tag slot `0xffff`'s entry as a `shad` and dereferences its
+//! compiled postprocess (`0x16bc7`, `0x16bde`): a null read on the first
+//! frame that draws the sky.
 
-use map::build::TagSet;
-use map::{FourCC, TagId};
+use std::io::{Read, Seek};
+
+use map::build::{Block, FixupKind, TagSet};
+use map::{FourCC, Map, TagId};
+use tags::geometry::TagView;
 
 use crate::{Error, Result};
 
@@ -33,6 +44,64 @@ pub struct Sky {
 pub struct Skies {
     pub skies: Vec<Sky>,
     pub notes: Vec<String>,
+    /// The shader the sky models' materials name ([`base_sky_shader`]).
+    /// Without one the models are not installed.
+    pub shader: Option<TagId>,
+}
+
+/// `mode` materials block (count; pointer at `+4`), element size, and the
+/// shader reference's datum in an element.
+pub const MODE_MATERIALS: usize = 0x60;
+pub const MODE_MATERIAL: usize = 0x20;
+pub const MATERIAL_SHADER: usize = 0x08;
+
+/// The `shad` the base's first sky's model draws its first material with:
+/// scenario skies (`+0x08`) element 0, its `sky ` model (`+0x00`), that
+/// model's materials ([`MODE_MATERIALS`]).
+pub fn base_sky_shader<R: Read + Seek>(base: &mut Map<R>) -> Option<TagId> {
+    let word = |b: &[u8], o: usize| Some(u32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?));
+    let scnr = base.scenario()?.clone();
+    let bytes = base.read_tag_bytes(scnr.id).ok()?;
+    let view = TagView::new(&bytes, scnr.location?.address);
+    let skies = view.block(view.at(0, SKIES + 8).ok()?, SKIES, SKY).ok()?;
+    let sky = TagId(word(skies.first()?, 4)?);
+    let model = TagId(word(&base.read_tag_bytes(sky).ok()?, 4)?);
+    let tag = base.tag(model).ok()?.clone();
+    if tag.group != FourCC(*b"mode") {
+        return None;
+    }
+    let bytes = base.read_tag_bytes(model).ok()?;
+    let view = TagView::new(&bytes, tag.location?.address);
+    let root = view.at(0, MODE_MATERIALS + 8).ok()?;
+    view.block(root, MODE_MATERIALS, MODE_MATERIAL)
+        .ok()?
+        .iter()
+        .filter_map(|m| word(m, MATERIAL_SHADER + 4).map(TagId))
+        .find(|id| {
+            base.tag(*id)
+                .is_ok_and(|t| t.group == FourCC(*b"shad") && t.location.is_some())
+        })
+}
+
+/// Points every material of the converted `mode` tree `root` at `shader`.
+/// Returns how many it changed.
+pub fn set_material_shaders(root: &mut Block, shader: TagId) -> usize {
+    let Some(materials) = root.fixups.iter_mut().find_map(|f| match &mut f.kind {
+        FixupKind::Block { child, .. } if f.offset == MODE_MATERIALS as u32 => Some(child),
+        _ => None,
+    }) else {
+        return 0;
+    };
+    let mut n = 0;
+    for f in &mut materials.fixups {
+        if f.offset as usize % MODE_MATERIAL == MATERIAL_SHADER
+            && let FixupKind::TagRef(id) = &mut f.kind
+        {
+            *id = shader;
+            n += 1;
+        }
+    }
+    n
 }
 
 /// Converts every sky the Halo 1 scenario names.
@@ -61,18 +130,23 @@ pub fn read(h1: &h1map::H1Map) -> Skies {
 }
 
 impl Skies {
-    /// Adds each sky (and its model) to `set`; returns their datums.
+    /// Adds each sky (and its model, its materials naming [`Self::shader`])
+    /// to `set`; returns their datums. With no shader a sky goes in
+    /// without its model.
     pub fn install(&self, set: &mut TagSet) -> Result<Vec<TagId>> {
         self.skies
             .iter()
             .map(|s| {
-                h1sky::convert::install_sky(
-                    set,
-                    &s.sky,
-                    s.model.as_ref().map(|(n, c)| (n.as_str(), c.clone())),
-                    &s.name,
-                )
-                .map_err(|e| Error::Sky(format!("{}: {e}", s.name)))
+                let model = match (&s.model, self.shader) {
+                    (Some((n, c)), Some(shader)) => {
+                        let mut c = c.clone();
+                        set_material_shaders(&mut c.root, shader);
+                        Some((n.as_str(), c))
+                    }
+                    _ => None,
+                };
+                h1sky::convert::install_sky(set, &s.sky, model, &s.name)
+                    .map_err(|e| Error::Sky(format!("{}: {e}", s.name)))
             })
             .collect()
     }
@@ -126,5 +200,45 @@ mod tests {
         );
         assert_eq!(b[0x20..0x24], FourCC(*b"sky ").as_u32().to_le_bytes());
         assert_eq!(patch_scenario(&mut b, address, &[]).unwrap(), 0);
+    }
+
+    /// A converted model's materials, as `h1models::mode` lays them out:
+    /// each a null `+0x00` reference and its shader at `+0x08`.
+    #[test]
+    fn every_sky_material_names_the_shader() {
+        let mut materials = Block::zeroed(MODE_MATERIAL * 3);
+        for k in 0..3 {
+            let at = (k * MODE_MATERIAL) as u32;
+            materials.tag_ref(at, TagId::NULL);
+            materials.tag_ref(at + MATERIAL_SHADER as u32, TagId::NULL);
+        }
+        let mut root = Block::zeroed(0x100);
+        root.tag_ref(0x58, TagId::NULL);
+        root.block(MODE_MATERIALS as u32, 3, materials);
+        let shader = TagId(0xe000_0042);
+        assert_eq!(set_material_shaders(&mut root, shader), 3);
+        let FixupKind::Block { child, .. } = &root.fixups[1].kind else {
+            panic!("materials");
+        };
+        let refs: Vec<(u32, TagId)> = child
+            .fixups
+            .iter()
+            .filter_map(|f| match f.kind {
+                FixupKind::TagRef(id) => Some((f.offset, id)),
+                _ => None,
+            })
+            .collect();
+        for (offset, id) in refs {
+            let want = if offset as usize % MODE_MATERIAL == MATERIAL_SHADER {
+                shader
+            } else {
+                TagId::NULL
+            };
+            assert_eq!(id, want, "+{offset:#x}");
+        }
+        // The other references are left alone.
+        assert_eq!(root.fixups[0].kind, FixupKind::TagRef(TagId::NULL));
+        // No materials block: nothing to do.
+        assert_eq!(set_material_shaders(&mut Block::zeroed(0x100), shader), 0);
     }
 }
