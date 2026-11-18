@@ -308,7 +308,7 @@ and its description under the picture.
 | list | anchor (-215, 130), skin 0 (`ui\list_skins\default\default`: one text `[28 20 8 210]`, row background 200 wide) | the same |
 | picture | `[177 39 -30 259]` (220 by 207) | the difficulty screen's Legendary skull (`difficulty_options` image 3, 256 by 256, drawn at its size), top-left (36, 180): its visible part (17..209 across, 3..208 down) sits centred in that box, its top on the box's top |
 | description | `[-30 39 -133 260]`, font 1, colour (99, 148, 193) | the same |
-| frame | `ul_02` top left | the Controls tag's left frame (`ul_03`, `[170 -280 42 -24]`); its bottom-right one (`br_06`, `[-30 150 -286 406]`) is left out: it is where the description goes, and the old description ran into it |
+| frame | `ul_02` top left (`[177 -259 -79 -131]`, its pane 0 bitmap 1) | the same, copied from the level select at run time (`skulls_menu::FRAME`, `ListClass::frame`). None of the Controls tag's frame art is kept: its bracket (`ul_03`, `[170 -280 42 -24]`) was made for the Controls list 39 units further left on skin 2, and under this list it framed an empty box and the first row's end cap cut into it (found by the UI builder's frame check, docs/game/ui-builder.md); its bottom-right piece (`br_06`) is where the description goes |
 
 Our screens are Controls screens (the Controls constructor builds them),
 and the Controls tag puts a 508-wide two-column list across the screen.
@@ -875,8 +875,8 @@ The page (step numbers kept for the multiplayer steps below):
      difficulty"), then a blank line and "◀▶ Toggle Ⓐ Start Level Ⓑ
      Back" with the controller's button pictures (the d-pad's left and
      right, A, B) (if they show as boxes
-     or blanks, report it). Nothing over the frame art; no frame art
-     bottom right.
+     or blanks, report it). The list's left bracket wraps its top-left
+     corner as on the level select; no frame art bottom right.
    If something sits wrong, try without a rebuild and say which values
    look right: `H2_SKULLS_LIST_AT=x,y` (default `-215,130`),
    `H2_SKULLS_LIST_SKIN=n` (default 0), `H2_SKULLS_PICTURE_AT=x,y`

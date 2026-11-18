@@ -386,7 +386,7 @@ const TAG_SOURCE: u32 = 0x1fc;
 pub const TAG_COPY_SIZE: u32 =
     SCREEN_ROOT_SIZE + PANE_SIZE + LIST_BLOCK_SIZE + KEPT_BITMAPS * BITMAP_BLOCK_SIZE;
 const _: () = assert!(TAG_SOURCE + 4 <= TAG_COPY && TAG_COPY + TAG_COPY_SIZE <= 0x1000);
-const _: () = assert!(PICTURE_BLOCK + BITMAP_BLOCK_SIZE <= TAG_SOURCE);
+const _: () = assert!(FRAME_BLOCK + BITMAP_BLOCK_SIZE <= TAG_SOURCE);
 
 /// Writes at `at` a copy of the retail screen tag at `retail` with one pane
 /// (its pane 0): the first list block moved to `layout.anchor` on skin
@@ -613,6 +613,8 @@ const DESCRIPTION_BLOCK: u32 = 0x100;
 /// Where the picture's bitmap block goes, after the text block.
 const PICTURE_BLOCK: u32 = 0x140;
 const _: () = assert!(PICTURE_BLOCK >= DESCRIPTION_BLOCK + TEXT_BLOCK_SIZE);
+/// Where the frame's bitmap block goes, after the picture's.
+const FRAME_BLOCK: u32 = PICTURE_BLOCK + BITMAP_BLOCK_SIZE;
 
 /// Where a class's description block goes, the block, and where to keep
 /// each screen's widget.
@@ -624,6 +626,10 @@ pub struct Description {
     /// A picture beside it, its block written at `picture_at`.
     pub picture: Option<PictureSpec>,
     pub picture_at: u32,
+    /// Frame art of another retail screen for the list, its block written
+    /// at `frame_at` ([`ListClass::frame`]).
+    pub frame: Option<PictureSpec>,
+    pub frame_at: u32,
 }
 
 /// A screen of the `ui` model.
@@ -720,6 +726,7 @@ pub struct ListClass {
     rows: Arc<dyn Rows>,
     description: Option<TextBlock>,
     picture: Option<PictureSpec>,
+    frame: Option<PictureSpec>,
     layout: Option<ListLayout>,
     action: Option<Action>,
     buttons: Option<Buttons>,
@@ -743,6 +750,7 @@ impl ListClass {
             rows,
             description: None,
             picture: None,
+            frame: None,
             layout: None,
             action: None,
             buttons: None,
@@ -762,6 +770,15 @@ impl ListClass {
     /// ([`Rows::tint`]). Only a class with a description shows one.
     pub fn picture(mut self, spec: PictureSpec) -> Self {
         self.picture = Some(spec);
+        self
+    }
+    /// With frame art for its list: a retail screen's bitmap block placed
+    /// as `spec` says, as [`ListClass::picture`]'s is, but never tinted.
+    /// A moved list takes the frame of the screen whose layout it copies
+    /// (the skulls page: the level select's bracket). Only a class with a
+    /// description shows one.
+    pub fn frame(mut self, spec: PictureSpec) -> Self {
+        self.frame = Some(spec);
         self
     }
     /// With its list placed and skinned by `layout` ([`ListLayout`]).
@@ -1281,7 +1298,10 @@ pub async fn setup_pane_footer(
         } else {
             d.shown.set_widget(screen, widget);
             if let Some(spec) = d.picture {
-                add_picture(&cx, screen, &spec, d.picture_at, &d.shown, name).await?;
+                add_picture(&cx, screen, &spec, d.picture_at, Some(&d.shown), name).await?;
+            }
+            if let Some(spec) = d.frame {
+                add_picture(&cx, screen, &spec, d.frame_at, None, name).await?;
             }
         }
     }
@@ -1291,14 +1311,15 @@ pub async fn setup_pane_footer(
 /// Said once per run: the picture could not be made (the line says why).
 static PICTURE_MISSING: AtomicBool = AtomicBool::new(false);
 
-/// The picture: its block found through the screen list, copied to `at`,
-/// and made a bitmap widget of `screen` by the pane builder's bitmap step.
+/// The picture (or the frame): its block found through the screen list,
+/// copied to `at`, and made a bitmap widget of `screen` by the pane
+/// builder's bitmap step; a picture's widget is kept in `shown` to tint.
 async fn add_picture(
     cx: &Cx,
     screen: u32,
     spec: &PictureSpec,
     at: u32,
-    shown: &Shown,
+    shown: Option<&Shown>,
     name: &str,
 ) -> Result<(), EntryError> {
     let handle = cx
@@ -1326,7 +1347,7 @@ async fn add_picture(
             &PICTURE_MISSING,
             &format!("{name}: no picture (no memory for the widget)"),
         );
-    } else {
+    } else if let Some(shown) = shown {
         shown.set_picture(screen, widget);
     }
     Ok(())
@@ -1408,6 +1429,8 @@ impl feature::Feature for ListClass {
                 shown,
                 picture: self.picture,
                 picture_at: tables + PICTURE_BLOCK,
+                frame: self.frame,
+                frame_at: tables + FRAME_BLOCK,
             });
         let footer = self.footer;
         let setup_pane_at = b.entry("set up pane", move |cx| -> EntryFuture {
@@ -2048,6 +2071,8 @@ mod tests {
             shown: Arc::clone(&shown),
             picture: None,
             picture_at: 0,
+            frame: None,
+            frame_at: 0,
         };
         let f =
             move |cx| -> EntryFuture { Box::pin(setup_pane(cx, 0x77, Some(d.clone()), "test")) };
@@ -2336,6 +2361,8 @@ mod tests {
             shown: Arc::clone(&shown),
             picture: Some(spec()),
             picture_at: TABLES + PICTURE_BLOCK,
+            frame: None,
+            frame_at: TABLES + FRAME_BLOCK,
         };
         let f =
             move |cx| -> EntryFuture { Box::pin(setup_pane(cx, 0x77, Some(d.clone()), "test")) };
@@ -2365,6 +2392,66 @@ mod tests {
         let want = picture_block(&screen_tag(), 0x1234_0005, &spec()).unwrap();
         assert_eq!(run.guest.bytes(TABLES + PICTURE_BLOCK, 0x38).unwrap(), want);
         assert_eq!(shown.picture(SCREEN), Some(0x9800));
+    }
+
+    /// The frame comes after the picture: its own screen's tag, its block
+    /// at the frame's place, the bitmap step on it, and no tint kept.
+    #[test]
+    fn the_pane_set_up_adds_the_frame_after_the_picture() {
+        let mut g = screen_tag();
+        g.put_u32(STACK + 4, 0x55);
+        let shown = Arc::new(Shown::default());
+        let frame = PictureSpec {
+            at: [-259, 177],
+            ..spec()
+        };
+        let d = Description {
+            at: TABLES + DESCRIPTION_BLOCK,
+            block: TextBlock {
+                rect: [1, 2, 3, 4],
+                font: 1,
+                colour: [1.0; 3],
+                animation: 0,
+            },
+            shown: Arc::clone(&shown),
+            picture: Some(spec()),
+            picture_at: TABLES + PICTURE_BLOCK,
+            frame: Some(frame),
+            frame_at: TABLES + FRAME_BLOCK,
+        };
+        let f =
+            move |cx| -> EntryFuture { Box::pin(setup_pane(cx, 0x77, Some(d.clone()), "test")) };
+        let regs = Regs {
+            esp: STACK,
+            ecx: SCREEN,
+            ..Default::default()
+        };
+        let mut bitmaps = 0x9800;
+        let run = testing::run(&f, g, regs, |c, _| Regs {
+            eax: match c.target {
+                t if t == points::PANE_TEXT_ADD.base => 0x9000,
+                t if t == points::SCREEN_TAG_BY_ID.base => 0x1234_0005,
+                t if t == points::PANE_BITMAP_ADD.base => {
+                    bitmaps += 0x100;
+                    bitmaps
+                }
+                _ => 0,
+            },
+            ..Default::default()
+        });
+        assert_eq!(
+            &run.calls[5..],
+            [
+                Gc::new(points::SCREEN_TAG_BY_ID.base).args([12]),
+                Gc::new(points::PANE_BITMAP_ADD.base)
+                    .esi(SCREEN)
+                    .args([TABLES + FRAME_BLOCK]),
+            ]
+        );
+        let want = picture_block(&screen_tag(), 0x1234_0005, &frame).unwrap();
+        assert_eq!(run.guest.bytes(TABLES + FRAME_BLOCK, 0x38).unwrap(), want);
+        // The picture keeps the tint, not the frame.
+        assert_eq!(shown.picture(SCREEN), Some(0x9900));
     }
 
     /// Row text tints the picture for the focused row when the focus moves.

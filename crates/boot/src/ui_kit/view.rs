@@ -135,6 +135,15 @@ pub struct View {
     pub widgets: Vec<Widget>,
     /// The focused element's id prefix (`row.3`, `cell.2`).
     pub focus: Option<String>,
+    /// The list's anchor and skin, when the screen has one.
+    pub list: Option<ListAt>,
+}
+
+/// Where a list is and which skin draws it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct ListAt {
+    pub anchor: [i16; 2],
+    pub skin: i16,
 }
 
 impl View {
@@ -160,13 +169,13 @@ pub trait Metrics {
     fn line_height(&self, font: i16) -> i32;
 }
 
-/// Metrics without a disc: every character 8 units wide (a button glyph
-/// 16), lines 16 high, whatever the font.
+/// Metrics without a disc: every character 6 units wide (about the
+/// disc fonts' mean; a button glyph 16), lines 16 high, whatever the font.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Synthetic;
 
 impl Synthetic {
-    pub const ADVANCE: i32 = 8;
+    pub const ADVANCE: i32 = 6;
     pub const GLYPH: i32 = 16;
     pub const LINE: i32 = 16;
 }
@@ -210,7 +219,7 @@ pub struct ItemArt {
 
 /// A screen's frame art: a retail screen's bitmap at its own point (its
 /// top-left).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct PaneArt {
     pub art: Art,
     pub at: [i16; 2],
@@ -324,6 +333,7 @@ impl Geometry {
                 ..
             } => Geometry {
                 anchor,
+                visible: place.shown(),
                 item_height: 22,
                 item_colour: [0.560784, 0.694118, 0.811765],
                 label: (rect(28, 20, 8, 210), 1, 0),
@@ -361,9 +371,14 @@ fn rgb(v: [f32; 3]) -> [u8; 3] {
     v.map(|x| (x.clamp(0.0, 1.0) * 255.0) as u8)
 }
 
-/// Unfocused rows' texts, as a share of the focused colour (seen in game,
-/// not traced).
-pub const DIM: f32 = 0.55;
+/// Row text is white; an unfocused row's is drawn at this alpha. Seen in
+/// game, not traced: in the 2026-11-16 screenshot the focused row's text
+/// peaks at about (229, 230, 231) and the others' at (103, 109, 118), white
+/// at about 40% over their bar (27, 37, 56). The skin's own text colour is
+/// not what the game draws for rows.
+pub const UNFOCUSED_ALPHA: u8 = 100;
+/// Row text's colour, focused or not.
+pub const ROW_TEXT: [u8; 3] = [255, 255, 255];
 /// An unfocused row's frame alpha.
 pub const FRAME_DIM: u8 = 110;
 
@@ -454,24 +469,34 @@ pub fn view_of(s: &ScreenSpec, g: &Geometry, m: &dyn Metrics, state: &str) -> Vi
             left: r.left + ox,
             right: r.right + ox,
         };
-        let colour = rgb(if focused {
-            g.item_colour
-        } else {
-            g.item_colour.map(|v| v * DIM)
-        });
+        let alpha = if focused { 255 } else { UNFOCUSED_ALPHA };
         let (label, value) = row.cells(style);
         let (lr, lf, lj) = g.label;
-        w.push(text(
-            format!("row.{i}.label"),
-            at(lr),
-            lf,
-            lj,
-            label,
-            colour,
-        ));
+        let mut l = text(format!("row.{i}.label"), at(lr), lf, lj, label, ROW_TEXT);
+        l.alpha = alpha;
+        w.push(l);
         if let (Some(v), Some((vr, vf, vj))) = (value, g.value) {
-            w.push(text(format!("row.{i}.value"), at(vr), vf, vj, v, colour));
+            let mut t = text(format!("row.{i}.value"), at(vr), vf, vj, v, ROW_TEXT);
+            t.alpha = alpha;
+            w.push(t);
         }
+    }
+    for (k, a) in s.art.iter().enumerate() {
+        w.push(Widget {
+            id: format!("art.{k}"),
+            rect: [
+                a.at[1],
+                a.at[0],
+                a.at[1] - a.size[1] as i16,
+                a.at[0] + a.size[0] as i16,
+            ],
+            layer: Layer::Frame,
+            alpha: 255,
+            kind: Kind::Art {
+                art: a.art,
+                size: a.size,
+            },
+        });
     }
     if let (Some(d), Some(t)) = (s.description, s.description_text()) {
         let [top, left, bottom, right] = d.rect;
@@ -501,6 +526,10 @@ pub fn view_of(s: &ScreenSpec, g: &Geometry, m: &dyn Metrics, state: &str) -> Vi
         backing: Backing::GameShell,
         widgets: w,
         focus: (!s.rows.is_empty()).then(|| format!("row.{}", s.focus)),
+        list: Some(ListAt {
+            anchor: g.anchor,
+            skin: g.skin,
+        }),
     }
 }
 
@@ -538,12 +567,8 @@ mod tests {
         // Five shown, the last five.
         assert!(v.widget("row.2.label").is_none());
         assert!(v.widget("row.3.label").is_some());
-        let colour = |id: &str| match &v.widget(id).unwrap().kind {
-            Kind::Text { colour, .. } => *colour,
-            _ => unreachable!(),
-        };
-        assert_eq!(colour("row.7.label"), [98, 147, 193]);
-        assert_eq!(colour("row.6.label"), [54, 81, 106]);
+        assert_eq!(v.widget("row.7.label").unwrap().alpha, 255);
+        assert_eq!(v.widget("row.6.label").unwrap().alpha, UNFOCUSED_ALPHA);
         assert_eq!(v.widget("row.6.art.1").unwrap().alpha, FRAME_DIM);
         assert_eq!(v.widget("row.7.art.1").unwrap().alpha, 255);
     }
@@ -566,7 +591,7 @@ mod tests {
 
     #[test]
     fn synthetic_widths_count_glyphs_double() {
-        assert_eq!(Synthetic.width(1, "ab\u{e100}"), 32);
-        assert_eq!(Synthetic.width(1, "abc\nd"), 24);
+        assert_eq!(Synthetic.width(1, "ab\u{e100}"), 28);
+        assert_eq!(Synthetic.width(1, "abc\nd"), 18);
     }
 }
