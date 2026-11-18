@@ -1023,6 +1023,16 @@ fn a_direct_callee_borrows_its_callers_view() {
     // exit call where it used to release and charge.
     assert_eq!(off[0], old_off[0], "{off:?} {old_off:?}");
     assert_eq!((off[1], old_off[3]), (0, 0));
+    if std::env::var("H2_VIEW_CHARGE").as_deref() == Ok("1") {
+        // A counting module with H2_VIEW_CHARGE spends every count in the
+        // view: with one, nothing is called to settle, on the way out or
+        // before a call; only the entry's acquire is left.
+        assert_eq!((off[2], off[3]), (0, 0), "{off:?}");
+        assert_eq!(on, [1, 0, 0, 0], "{on:?}");
+        assert_eq!((old_on[0], old_on[1], old_on[3]), (7, 7, 0), "{old_on:?}");
+        assert_eq!(abi_calls(Mode::On, NEST, Some(0)), abi_calls(Mode::Disabled, NEST, None));
+        return;
+    }
     assert_eq!(off[3], old_off[1], "one exit per release: {off:?} {old_off:?}");
     // Direct: A calls B three times, B calls C each time, every return
     // inline. Each of the seven handlers used to acquire and release; now
