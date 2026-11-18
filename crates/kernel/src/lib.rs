@@ -721,6 +721,7 @@ impl Core {
             | ord::MM_SET_ADDRESS_PROTECT
             | ord::MM_QUERY_ADDRESS_PROTECT
             | ord::MM_QUERY_ALLOCATION_SIZE
+            | ord::MM_QUERY_STATISTICS
             | ord::NT_ALLOCATE_VIRTUAL_MEMORY
             | ord::NT_FREE_VIRTUAL_MEMORY
             | ord::NT_QUERY_VIRTUAL_MEMORY => {
