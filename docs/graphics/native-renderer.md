@@ -780,13 +780,20 @@ render's snapshot of the frame.
 1. **The skip and the runs** (built: `feature::native_transparents`,
    `native_render::transparent`, `impl.render.native_transparents`, off by
    default). Without a host nothing is skipped.
-2. **The layer-15 look.** `look::layer3_look`'s rules for the template's
-   layer 15 at the first level of detail, one look per pass, plus the
-   blend from the implementation's render states (`ResolvedImplementation::render_states`:
-   alpha blend enable, source and destination factors, blend op, depth
-   write, alpha test, cull): a material whose states the native pass
-   cannot express, or that reads engine render states
-   (`engine_render_states`), stays on the D3D path.
+2. **The layer-15 look** (built: `look::transparent_passes`,
+   `pass_state`). Every pass of the template's layer 15 at the first
+   level of detail, in order, each with `look::implementation_look`'s
+   rules (the ones layer 3 uses) and the pipeline state from the
+   implementation's render states (`ResolvedImplementation::render_states`,
+   decoded by `gfx` as the D3D path decodes them: blend enable, factors,
+   op and constant, colour writes, depth test and write, cull, alpha
+   test). All or nothing per material. It stays on the D3D path when a
+   pass has more than one implementation (S: which one the engine binds
+   for a transparent entry is not traced), reads engine render states
+   (`engine_render_states`), turns on fog, stencil or a depth bias, or
+   leaves blend enable, its factors or depth write to whatever the
+   previous draw left (S: the states it does not set are taken at the
+   D3D defaults).
 3. **The world's transparent parts.** Load the kind-4 parts the world
    builder now only counts into a draw table keyed by (cluster or
    placement, part), in the world's vertex buffer; the run's pass draws,

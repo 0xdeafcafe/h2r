@@ -27,6 +27,8 @@ pub mod load;
 #[cfg(feature = "gpu")]
 pub mod look;
 #[cfg(feature = "gpu")]
+pub mod pass_state;
+#[cfg(feature = "gpu")]
 pub mod program;
 pub mod model;
 #[cfg(feature = "gpu")]
