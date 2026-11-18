@@ -2281,3 +2281,67 @@ pub fn dialogue(lines: &[(&str, TagId)]) -> Result<Block> {
     set(&mut r, "vocalizations", Val::Block(items))?;
     built(d, &r)
 }
+
+/// Halo 1's foot kinds Halo 2 has at the same index (V: on every Halo 2
+/// character's `foot` kinds 0, 1, 3 and 4 play walk, run, shuffle and
+/// jump sounds and kind 2 none, as Halo 1's; `halo2_foot_survey`); kind 5
+/// (Halo 1's landing) is kept at 5 (D).
+pub const FOOT_KINDS: usize = 6;
+
+/// One `foot` element: the tag, its global material name and index.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FootLine {
+    pub material: &'static str,
+    pub index: i16,
+    pub tag: TagId,
+}
+
+/// One kind of a `foot`: its sounds and effects.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FootKind {
+    pub sounds: Vec<FootLine>,
+    pub effects: Vec<FootLine>,
+}
+
+/// `foot` elements' `+0x16`: 2 on a sound element, 1 on an effect element
+/// (V: the retail majority on each; what reads it is not established).
+const FOOT_SOUND_WORD: u16 = 2;
+const FOOT_EFFECT_WORD: u16 = 1;
+
+/// The `foot` root: one kind per element of `kinds`, each with its sounds
+/// and effects by global material.
+pub fn foot(kinds: &[FootKind]) -> Result<Block> {
+    let d = def(b"foot")?;
+    let mut r = defs::default_record(d);
+    let kd = d.child("effects").expect("foot effects");
+    let sd = d.child("effects.sounds").expect("foot sounds");
+    let ed = d.child("effects.effects").expect("foot effects.effects");
+    let mut out = Vec::new();
+    for k in kinds {
+        let mut x = defs::default_record(kd);
+        let mut sounds = Vec::new();
+        for l in &k.sounds {
+            let mut y = defs::default_record(sd);
+            set(&mut y, "sound", Val::tag(FourCC(*b"snd!"), l.tag))?;
+            set(&mut y, "unknown_8", Val::Bytes(vec![0xff; 8]))?;
+            set(&mut y, "material", Val::text(l.material))?;
+            set(&mut y, "material_index", Val::Int(l.index.into()))?;
+            set(&mut y, "unknown_16", Val::Bytes(FOOT_SOUND_WORD.to_le_bytes().to_vec()))?;
+            sounds.push(y);
+        }
+        let mut effects = Vec::new();
+        for l in &k.effects {
+            let mut y = defs::default_record(ed);
+            set(&mut y, "effect", Val::tag(FourCC(*b"effe"), l.tag))?;
+            set(&mut y, "material", Val::text(l.material))?;
+            set(&mut y, "material_index", Val::Int(l.index.into()))?;
+            set(&mut y, "unknown_16", Val::Bytes(FOOT_EFFECT_WORD.to_le_bytes().to_vec()))?;
+            effects.push(y);
+        }
+        set(&mut x, "sounds", Val::Block(sounds))?;
+        set(&mut x, "effects", Val::Block(effects))?;
+        out.push(x);
+    }
+    set(&mut r, "effects", Val::Block(out))?;
+    built(d, &r)
+}

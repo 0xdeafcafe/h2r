@@ -1,0 +1,18 @@
+# foot: material effects. Layout from the schema (layouts.txt); V: all 95
+# distinct retail foot tags on the disc round-trip byte-identical. Names
+# from the values on 05a_deltaapproach (effects_disc.rs halo2_foot_survey).
+group foot 0x8 align 4
+  0x0 block effects 0x18 align 4 -- V one element per kind, by index: 0 walk, 1 run, 3 shuffle, 4 jump on every character's (the sound names); weapons fill 10 and 15
+    0x0 unknown 0x8 seen=zero
+    0x8 block sounds 0x18 align 4 -- V one element per material that has a sound
+      0x0 tagref sound groups=snd!|lsnd
+      0x8 unknown 0x8 seen=const -- V 0xff on every element (a null reference)
+      0x10 string material -- V a global material name (matg +0x150)
+      0x14 i16 material_index -- V the index of that name among the global materials (default_material 0)
+      0x16 unknown 0x2 seen=2 -- V 2 on most elements with a sound, 1 on those with none
+    0x10 block effects 0x18 align 4 -- V one element per material that has an effect
+      0x0 tagref effect groups=effe
+      0x8 tagref secondary_effect groups=effe -- V null on characters, a second impact effect on weapons
+      0x10 string material -- V a global material name
+      0x14 i16 material_index -- V its index among the global materials
+      0x16 unknown 0x2 seen=const -- V 1 on every element seen

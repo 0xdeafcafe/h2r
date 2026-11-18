@@ -614,8 +614,7 @@ before). Every Halo 1 biped is written from the `bipd` definition
 - **The player** (`health_hud::is_player_biped`) takes the counterpart's
   HUD interfaces as health-meter copies (`*_h1_health`, docs/game/health.md),
   as the template path does.
-- **Halo 1 references with no converter here** (`unhi` HUDs,
-  `foot`, `effe`, `jpt!`, `actv`, `snd!`) are not carried: those come
+- **Halo 1 references with no converter here** (`unhi` HUDs, `effe`, `jpt!`, `actv`, `snd!`) are not carried: those come
   from the counterpart. Halo 2's `bipd` holds no weapons (`unit +0x1c0`)
   or seats (`bipd +0x1c8`) on any base biped, and its two `char`
   references (`bipd +0x300`, `+0x308`) are null on all of them: an AI's
@@ -1037,6 +1036,39 @@ the music, a level over the file limit gets a dialogue budget
 ambience is cut. A line whose sound would pass the budget is left out.
 What only a real run can confirm: that the AI plays the lines (the
 engine's reader of the vocalization list is not traced).
+
+### Material effects (`foot`)
+
+`crates/tags/src/defs/foot.txt`: all 95 distinct retail `foot` round-trip
+byte-identical. A Halo 2 `foot` is a block of kinds by index, each with a
+sounds block and an effects block of `0x18` elements: the tag (an effect
+has a second, null on characters), a global material name and, at
+`+0x14`, that name's index among the globals' materials (V: every
+element's index names its string; `default_material` 0), then a word
+that is 2 on most sound elements and 1 on every effect element (what
+reads it is not established; written as the majority). On every Halo 2
+character's `foot` the kinds 0, 1, 3 and 4 play walk, run, shuffle and
+jump sounds and kind 2 none (`halo2_foot_survey`).
+
+Halo 1's `foot` (`h1::Foot`, `halo1_foot_survey`) is the same idea: six
+kinds (`0x1c`), each 32 materials (`0x30`: an effect at `+0`, a sound at
+`+0x10`) in Halo 1's material order, the kinds named by their sounds
+(walk, run, none, shuffle, jump up, landing). Converted since version 54
+(`Converter::foot`, `rebuild::foot`): each kind at its index, each
+material's sound (`h1sounds`) and effect (`rebuild::effect`) under the
+Halo 2 name the weapons lane's `arsenal::MATERIALS` gives it, the first
+Halo 1 material winning where two share a name, with the base's index of
+that name. Retail Halo 2 feet also list `default_material` and the
+coarse classes (`soft`, `tough`, `hard`); Halo 1 has no such entries,
+so none is written. Every rebuilt biped and vehicle naming a Halo 1
+`foot` names the converted one (`obje +0x54`, `FOOT_FIELD`) in place of
+the counterpart's. V (`every_foot_converts`): 137 Halo 1 feet over the
+campaign and multiplayer maps, 3,898 sound and 306 effect elements, every
+material index naming its string on the base, every tag a converted one,
+183 rebuilt units pointing at theirs. Only a real run shows whether the
+steps play: the engine picks an element by the surface's global
+material, and the converted BSPs' surfaces may name materials other than
+these 32 (h1convert does not use this table), which then find nothing.
 
 ## Weapons, equipment, projectiles and damage (`h1objects::arsenal`)
 

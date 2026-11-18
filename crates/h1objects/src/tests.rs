@@ -1552,3 +1552,25 @@ fn dialogue_takes_the_first_slot_holding_a_sound_per_vocalization() {
     assert_eq!(els[1].at("unknown_8"), Some(&Val::Bytes(b"!dns".to_vec())));
     assert_eq!(els[1].at("sound"), Some(&Val::Datum(Target::Id(sound(1)))));
 }
+
+#[test]
+fn foot_kinds_keep_their_materials() {
+    use crate::rebuild::{FootKind, FootLine, foot};
+    use tags::defs::{self, Defs, Str, Val};
+    let k = FootKind {
+        sounds: vec![FootLine { material: "tough_terrain_dirt", index: 7, tag: local(1) }],
+        effects: vec![FootLine { material: "liquid_thin_water", index: 9, tag: local(2) }],
+    };
+    let root = foot(&[FootKind::default(), k]).unwrap();
+    let d = Defs::builtin().group(FourCC(*b"foot")).unwrap();
+    let r = defs::from_built(d, &root).unwrap();
+    let Some(Val::Block(kinds)) = r.at("effects") else { panic!() };
+    assert_eq!(kinds.len(), 2);
+    let Some(Val::Block(s)) = kinds[1].at("sounds") else { panic!() };
+    assert_eq!(s[0].at("material"), Some(&Val::String(Str::Text("tough_terrain_dirt".into()))));
+    assert_eq!(s[0].at("material_index"), Some(&Val::Int(7)));
+    assert_eq!(s[0].at("unknown_16"), Some(&Val::Bytes(vec![2, 0])));
+    let Some(Val::Block(e)) = kinds[1].at("effects") else { panic!() };
+    assert_eq!(e[0].at("material_index"), Some(&Val::Int(9)));
+    assert_eq!(e[0].at("unknown_16"), Some(&Val::Bytes(vec![1, 0])));
+}

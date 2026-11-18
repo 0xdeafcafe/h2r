@@ -658,6 +658,9 @@ impl Writer<'_> {
 /// `docs/formats/objects.md`).
 pub const DIALOGUE_FIELD: &str = "udlg_ref_8c";
 
+/// A rebuilt unit's material effects (`obje +0x54`, `foot`).
+pub const FOOT_FIELD: &str = "unit.obje.foot_ref_54";
+
 /// How the [`Converter`] builds tags.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Options {
@@ -786,6 +789,97 @@ impl<'a> Converter<'a> {
         );
         self.done.insert(tag.id.0, id);
         Ok(Some(id))
+    }
+
+    /// A Halo 1 `foot` as a Halo 2 one ([`crate::rebuild::foot`]): its
+    /// first [`crate::rebuild::FOOT_KINDS`] kinds at the same index, each
+    /// material's effect and sound under the Halo 2 global material
+    /// [`crate::arsenal::MATERIALS`] names for it (the first Halo 1
+    /// material wins where two share one). Converted once.
+    pub fn foot(&mut self, tag: &Tag, rep: &mut ObjectReport) -> Result<TagId> {
+        if let Some(id) = self.done.get(&tag.id.0) {
+            return Ok(*id);
+        }
+        let f = h1::Foot::read(self.h1, tag)?;
+        let mut kinds = Vec::new();
+        let (mut missing, mut failed) = (Vec::new(), 0usize);
+        for k in f.kinds.iter().take(crate::rebuild::FOOT_KINDS) {
+            let mut out = crate::rebuild::FootKind::default();
+            for (m, (_, name)) in k.iter().zip(crate::arsenal::MATERIALS.iter()) {
+                let Some(index) = self.base.materials.iter().position(|x| x == name) else {
+                    if (m.effect.is_some() || m.sound.is_some()) && !missing.contains(name) {
+                        missing.push(*name);
+                    }
+                    continue;
+                };
+                let line = |tag| crate::rebuild::FootLine {
+                    material: name,
+                    index: index as i16,
+                    tag,
+                };
+                if let Some(s) = m.sound
+                    && !out.sounds.iter().any(|l| l.material == *name)
+                {
+                    match self.sound(self.h1_tag(s)?, rep) {
+                        Some(id) => out.sounds.push(line(id)),
+                        None => failed += 1,
+                    }
+                }
+                if let Some(e) = m.effect
+                    && !out.effects.iter().any(|l| l.material == *name)
+                {
+                    match self.effect(self.h1_tag(e)?) {
+                        Ok(id) => out.effects.push(line(id)),
+                        Err(err) => {
+                            failed += 1;
+                            rep.no_home.push(format!("foot effect: not converted ({err})"));
+                        }
+                    }
+                }
+            }
+            kinds.push(out);
+        }
+        rep.no_home.push(format!(
+            "foot {}: {} kinds, {} sounds and {} effects by Halo 2 material; {failed} did not convert; materials not in the base: {missing:?}",
+            tag.name,
+            kinds.len(),
+            kinds.iter().map(|k| k.sounds.len()).sum::<usize>(),
+            kinds.iter().map(|k| k.effects.len()).sum::<usize>(),
+        ));
+        let root = crate::rebuild::foot(&kinds)?;
+        let id = self.tree.push(
+            &tag.name,
+            Converted {
+                group: FourCC(*b"foot"),
+                root,
+                raw: Vec::new(),
+            },
+        );
+        self.done.insert(tag.id.0, id);
+        Ok(id)
+    }
+
+    /// A rebuilt unit's root (`group`) with its object's material effects
+    /// (`obje +0x54`) Halo 1's ([`Self::foot`]): the first `foot` the
+    /// Halo 1 unit names, in place of the counterpart's. Unchanged when it
+    /// names none.
+    fn unit_foot(&mut self, group: [u8; 4], root: Block, u: &Unit, rep: &mut ObjectReport) -> Result<Block> {
+        let Some(t) = u
+            .references
+            .iter()
+            .find(|r| r.group == h1map::Group::new(b"foot"))
+            .and_then(|r| r.tag)
+        else {
+            return Ok(root);
+        };
+        let id = self.foot(self.h1_tag(t)?, rep)?;
+        let d = tags::defs::Defs::builtin()
+            .group(FourCC(group))
+            .ok_or_else(|| Error::Invalid("no unit definition".into()))?;
+        let mut r = tags::defs::from_built(d, &root).map_err(|e| Error::Invalid(e.to_string()))?;
+        r.set(FOOT_FIELD, tags::defs::Val::tag(FourCC(*b"foot"), id))
+            .map_err(|e| Error::Invalid(e.to_string()))?;
+        tags::defs::to_built(d, &r, &mut |_| None).map_err(|e| Error::Invalid(e.to_string()))
     }
 
     /// [`Self::sound`] for a dialogue line: a sound not yet converted is
@@ -1734,6 +1828,7 @@ impl<'a> Converter<'a> {
             role: role.as_ref(),
             points: &points,
         })?;
+        let root = self.unit_foot(*b"vehi", root, u, &mut rep)?;
         rep.no_home.push(format!(
             "vehi: Halo 1's type, flags (low half), camera, {} seats (label as the rider's mode, markers), {} weapons and {} powered mass points as friction or hover points; the type's role words and gears; {} attachments (looping sounds and effects) and the creation effect from Halo 1; HUD, damage and camera tracks null; {} Halo 1 references",
             u.seats.len(),
@@ -1978,6 +2073,7 @@ impl<'a> Converter<'a> {
             markers,
         };
         let root = crate::rebuild::biped(u, hlmt, &predicted, words, &parts)?;
+        let root = self.unit_foot(*b"bipd", root, u, &mut rep)?;
         let taken = crate::rebuild::reference_fields(bipd_def)
             .into_iter()
             .filter(|p| !BIPED_OWN.contains(&p.as_str()))

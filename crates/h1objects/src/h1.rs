@@ -1089,3 +1089,46 @@ impl Dialogue {
         self.lines.iter().find(|l| l.0 == at).map(|l| l.1)
     }
 }
+
+/// `foot`: material effects. `+0` a block of kinds (`0x1c` each), each
+/// with `+0` a block of materials (`0x30` each: `+0` an `effe`, `+0x10`
+/// a `snd!`), one per Halo 1 material type in
+/// [`crate::arsenal::MATERIALS`] order. V (`halo1_foot_survey`): every
+/// unit's holds six kinds of 32 materials, the kinds named by their
+/// sounds (0 `walk`, 1 `run`, 2 none, 3 `shuffle`, 4 `jump_up` /
+/// `genericjump`, 5 `jump`, the landing), the water material (28) the
+/// one with `footsteps water`.
+pub const FOOT_KIND_SIZE: usize = 0x1c;
+pub const FOOT_MATERIAL_SIZE: usize = 0x30;
+
+/// One material's effect and sound in a [`Foot`] kind.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FootMaterial {
+    pub effect: Option<TagId>,
+    pub sound: Option<TagId>,
+}
+
+/// A Halo 1 `foot`: per kind, per material.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Foot {
+    pub kinds: Vec<Vec<FootMaterial>>,
+}
+
+impl Foot {
+    pub fn read(map: &H1Map, tag: &Tag) -> Result<Self> {
+        let b = tag_bytes(map, tag, b"foot", 0xc)?;
+        let kinds = elements(map, b, 0, FOOT_KIND_SIZE)?
+            .into_iter()
+            .map(|k| {
+                Ok(elements(map, k, 0, FOOT_MATERIAL_SIZE)?
+                    .into_iter()
+                    .map(|m| FootMaterial {
+                        effect: reference(map, m, 0),
+                        sound: reference(map, m, 0x10),
+                    })
+                    .collect())
+            })
+            .collect::<Result<_>>()?;
+        Ok(Self { kinds })
+    }
+}

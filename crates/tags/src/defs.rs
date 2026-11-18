@@ -55,6 +55,7 @@ pub const FILES: &[(&str, &str)] = &[
     ("ligh.txt", include_str!("defs/ligh.txt")),
     ("deca.txt", include_str!("defs/deca.txt")),
     ("udlg.txt", include_str!("defs/udlg.txt")),
+    ("foot.txt", include_str!("defs/foot.txt")),
 ];
 
 /// One array element's layout (a group's root, a block's element, or a
