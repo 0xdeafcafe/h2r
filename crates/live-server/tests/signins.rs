@@ -148,7 +148,7 @@ async fn an_account_sees_where_it_is_signed_in_and_signs_one_out() {
     assert_eq!(r.json()["revoked"], json!([game.key.kid()]));
     let refused = h.sign_in(&game).await;
     assert_eq!(refused.status, StatusCode::UNAUTHORIZED);
-    assert!(refused.error().contains("revoked"), "{}", refused.error());
+    assert!(refused.json()["message"].as_str().unwrap_or("").contains("revoked"), "{}", refused.json());
     assert_eq!(list(&h, &game).await.status, StatusCode::UNAUTHORIZED);
     assert_eq!(h.sign_in(&laptop).await.status, StatusCode::CREATED);
     assert_eq!(h.sign_in(&phone).await.status, StatusCode::CREATED);
