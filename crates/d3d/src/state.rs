@@ -16,14 +16,16 @@ use crate::guest::{GuestError, GuestMemory};
 use crate::layout::{GuestLayout, RENDER_STATE_SLOTS, STAGE_SLOTS, STAGES};
 
 /// Reads `out.len()` words at `addr` into `out`, same limits as
-/// [`GuestMemory::read_words`].
+/// [`GuestMemory::read_words`]: one access over the whole range, so a fault
+/// reports all of it. Straight into `out`, without a staging buffer (this
+/// runs for every draw); `out` is unspecified on an error.
 fn read_words_into(mem: &dyn GuestMemory, addr: u32, out: &mut [u32]) -> Result<(), GuestError> {
-    let mut bytes = [0u8; 4 * RENDER_STATE_SLOTS];
-    let bytes = &mut bytes[..4 * out.len()];
+    let bytes: &mut [u8] = bytemuck::cast_slice_mut(out);
     crate::guest::check_range(addr, bytes.len())?;
     mem.read(addr, bytes)?;
-    for (w, c) in out.iter_mut().zip(bytes.as_chunks::<4>().0) {
-        *w = u32::from_le_bytes(*c);
+    // The guest's words are little endian; a no-op on a little-endian host.
+    for w in out.iter_mut() {
+        *w = u32::from_le(*w);
     }
     Ok(())
 }
@@ -162,12 +164,8 @@ impl StateWords {
         read_words_into(mem, layout.render_state, &mut render)?;
         // One 512-byte access, as `read_words` made: the whole range is
         // checked first and a fault reports the whole access.
-        let mut all = [0; STAGES * STAGE_SLOTS];
-        read_words_into(mem, layout.texture_state, &mut all)?;
         let mut stages = [[0; STAGE_SLOTS]; STAGES];
-        for (s, chunk) in stages.iter_mut().zip(all.as_chunks::<STAGE_SLOTS>().0) {
-            s.copy_from_slice(chunk);
-        }
+        read_words_into(mem, layout.texture_state, stages.as_flattened_mut())?;
         Ok(Self { render, stages })
     }
 
@@ -478,6 +476,38 @@ mod tests {
         m.map(l.texture_state & !0xFFF, 0x5000);
         w.write(&mut m, &l).unwrap();
         assert_eq!(StateWords::read(&m, &l).unwrap(), w);
+    }
+
+    /// Every word distinct, every byte of it significant: the read puts
+    /// each guest word, little endian, in its own slot and stage.
+    #[test]
+    fn state_read_places_every_word() {
+        let l = GuestLayout::HALO2;
+        let mut m = crate::guest::SparseMemory::new();
+        m.map(l.texture_state & !0xFFF, 0x5000);
+        let word = |i: u32| 0x0102_0304u32.wrapping_mul(i + 1) ^ (i << 24);
+        for i in 0..RENDER_STATE_SLOTS as u32 {
+            m.write_u32(l.render_state + 4 * i, word(i)).unwrap();
+        }
+        for s in 0..STAGES as u32 {
+            for i in 0..STAGE_SLOTS as u32 {
+                m.write_u32(l.texture_state_slot(s, i), word(1000 + 32 * s + i))
+                    .unwrap();
+            }
+        }
+        let w = StateWords::read(&m, &l).unwrap();
+        for i in 0..RENDER_STATE_SLOTS {
+            assert_eq!(w.render[i], word(i as u32), "render {i}");
+        }
+        for s in 0..STAGES {
+            for i in 0..STAGE_SLOTS {
+                assert_eq!(
+                    w.stages[s][i],
+                    word(1000 + 32 * s as u32 + i as u32),
+                    "stage {s} slot {i}"
+                );
+            }
+        }
     }
 
     #[test]
