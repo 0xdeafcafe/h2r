@@ -38,8 +38,8 @@ use axum::response::{IntoResponse, Response};
 use live_proto::maps::{
     self, Action, BaseInfo, CONTENT_MODERATED, CONTENT_REPORTED, CONTENT_STORED,
     CONTENT_UPLOADS_SET, ContentStored, Downloaded, HOPPER_PINS_SET, HopperPin, LayerInfo,
-    MAP_DOWNLOADED, MAP_PUBLISHED, MapAnswer, MapDetail, MapDocument, MapId, MapSummary,
-    Moderated, Reported, Sha256, Standing, Target, UploadsSet, Who,
+    MAP_DOWNLOADED, MAP_PUBLISHED, MapAnswer, MapDetail, MapDocument, MapId, MapSummary, Moderated,
+    Reported, Sha256, Standing, Target, UploadsSet, Who,
 };
 use live_proto::sign::{MAX_EVENT_SKEW_S, SignedEvent, parse_time};
 use live_proto::{Author, ErrorCode, Gamertag, Page, Xuid, lxm, streams};
@@ -61,6 +61,18 @@ pub const CONTENT_DIR: &str = "content";
 pub const MAX_IMAGE_BYTES: u64 = ::content::manifest::MAX_IMAGE_BYTES;
 const MIB: u64 = 1024 * 1024;
 
+/// The largest request body Cloudflare passes to a Worker on workers.dev
+/// and on Free and Pro zones (100 MB, decimal; larger bodies get the
+/// edge's own 413 before the Worker runs). The Worker plan does not raise
+/// it.
+pub const EDGE_BODY_BYTES: u64 = 100_000_000;
+/// The default cap on one upload, whole map or not: the largest whole MiB
+/// under [`EDGE_BODY_BYTES`], so both homes take and refuse the same
+/// bodies, with the server's own message. 95 MiB holds the delta of a map
+/// that doubles its base (Night Ops, 68 MiB), and is under the game's
+/// download cap (`live_hle::maps::MAX_DOWNLOAD`, 100 MiB).
+pub const DEFAULT_UPLOAD_BYTES: u64 = EDGE_BODY_BYTES / MIB * MIB;
+
 /// Sizes and rates for uploads (docs/live/live-admin.md, "Custom content").
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContentLimits {
@@ -77,8 +89,8 @@ pub struct ContentLimits {
 impl Default for ContentLimits {
     fn default() -> Self {
         ContentLimits {
-            layer_bytes: 32 * MIB,
-            map_bytes: 100 * MIB,
+            layer_bytes: DEFAULT_UPLOAD_BYTES,
+            map_bytes: DEFAULT_UPLOAD_BYTES,
             quota_bytes: 1024 * MIB,
             upload_rate: (0.5, 20),
         }
@@ -1666,15 +1678,30 @@ mod tests {
     #[test]
     fn limits_from_flags() {
         let d = ContentLimits::default();
-        assert_eq!(d.layer_bytes, 32 * MIB);
-        assert_eq!(d.map_bytes, 100 * MIB);
+        assert_eq!(d.layer_bytes, 95 * MIB);
+        assert_eq!(d.map_bytes, 95 * MIB);
         let l = ContentLimits::from_flags(Some("8".into()), None, Some("2048".into())).unwrap();
         assert_eq!(
             (l.layer_bytes, l.map_bytes, l.quota_bytes),
-            (8 * MIB, 100 * MIB, 2048 * MIB)
+            (8 * MIB, 95 * MIB, 2048 * MIB)
         );
         assert!(ContentLimits::from_flags(Some("0".into()), None, None).is_err());
         assert!(ContentLimits::from_flags(None, Some("lots".into()), None).is_err());
+    }
+
+    #[test]
+    fn the_default_caps_fit_the_edge_and_the_games_download() {
+        // The Worker takes ContentLimits::default() (it has no flags), so
+        // a body the native server takes by default reaches the Worker
+        // too, and is the largest whole MiB that does.
+        let d = ContentLimits::default();
+        for cap in [d.layer_bytes, d.map_bytes] {
+            assert!(cap <= EDGE_BODY_BYTES);
+            assert!(cap + MIB > EDGE_BODY_BYTES);
+            assert_eq!(cap % MIB, 0);
+        }
+        // A 68.2 MiB layer (Night Ops' delta over Containment) fits.
+        assert!(68 * MIB + MIB / 4 <= d.layer_bytes);
     }
 
     #[test]

@@ -289,6 +289,60 @@ fn a_bps_mod_grows_the_map_past_the_installed_size() {
     assert_eq!(read_file(&mut vfs, &pack_path()), edited);
 }
 
+/// A PPF3 over `records`: no block check, no undo data.
+fn ppf3(records: &[(u64, &[u8])]) -> Vec<u8> {
+    let mut p = b"PPF30\x02".to_vec();
+    p.extend([b' '; 50]);
+    p.extend([0, 0, 0, 0]);
+    for (offset, data) in records {
+        p.extend(offset.to_le_bytes());
+        p.push(data.len() as u8);
+        p.extend(*data);
+    }
+    p
+}
+
+/// A PPF whose records run past the installed map's end (as DotHalo's
+/// Canyon PPF does to Relic's `dune.map`) grows the map, zeros between, and
+/// still streams: its size in `stat` and listings, reads across the old end
+/// and off the new one.
+#[test]
+fn a_ppf_mod_with_records_past_the_end_grows_the_map() {
+    let t = TempDir::new();
+    install(&t);
+    let base = turf();
+    let n = base.len() as u64;
+    let patch = ppf3(&[(0x900, b"relic"), (n - 2, b"across"), (n + 0x40, b"tail")]);
+    package(&t, "turf-grown", "mod.ppf", &patch);
+    let mut edited = base.clone();
+    edited[0x900..0x905].copy_from_slice(b"relic");
+    edited.truncate(base.len() - 2);
+    edited.extend(b"across");
+    edited.resize(base.len() + 0x40, 0);
+    edited.extend(b"tail");
+    let edited = resigned(edited);
+
+    let mut vfs = mounted(&t, true);
+    let meta = vfs.query_path(&pack_path()).unwrap();
+    assert_eq!(meta.end_of_file, edited.len() as u64);
+    let listed = listing(&mut vfs, &format!("T:\\$c\\{PACK_OFFER}"));
+    assert!(
+        listed.contains(&("Turf.map".to_string(), edited.len() as u64)),
+        "{listed:?}"
+    );
+    assert_eq!(
+        read_at(&mut vfs, &pack_path(), n - 8, 32),
+        edited[n as usize - 8..][..32]
+    );
+    assert_eq!(read_at(&mut vfs, &pack_path(), n + 0x40, 64), b"tail");
+    assert_eq!(read_file(&mut vfs, &pack_path()), edited);
+    // The installed file on the host is never touched.
+    assert_eq!(
+        fs::read(t.offer(PACK_OFFER).join("Turf.map")).unwrap(),
+        base
+    );
+}
+
 /// A served map is read-only; the rest of the partition stays writable:
 /// saves, new files, the map pack's other files.
 #[test]

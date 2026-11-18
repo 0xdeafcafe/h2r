@@ -26,7 +26,11 @@
 //      multipart upload streamed from the request body) and a cloud save,
 //      each read back; with --admin NAME (a configured admin's gamertag,
 //      free on this server), a 2 MiB title file, more than a Durable
-//      Object's SQLite row holds, published and read back;
+//      Object's SQLite row holds, published and read back; with --big,
+//      an upload of exactly the content cap (95 MiB, the largest whole MiB
+//      under the edge's 100 MB body limit; sent to the hub once, not teed
+//      for a retry) read back, and one byte more refused by the hub's own
+//      413, not the edge's;
 //  11. with --busy N: a busy stream. N sockets follow the log while 60
 //      events are appended; how long each append takes, and how long until
 //      every socket has the event;
@@ -52,6 +56,7 @@ const adminAt = args.indexOf("--admin");
 const adminTag = adminAt >= 0 ? args[adminAt + 1] : "";
 const busyAt = args.indexOf("--busy");
 const busy = busyAt >= 0 ? Number(args[busyAt + 1]) : 0;
+const big = args.includes("--big");
 const wakeAt = args.indexOf("--wake");
 const wakeWait = wakeAt >= 0 ? Number(args[wakeAt + 1]) : 0;
 const api = base + "/v1";
@@ -390,6 +395,32 @@ if (wakeWait > 0) {
   });
   if (wrong.status !== 400) fail("r2-content-mismatch", `${wrong.status} ${await wrong.text()}`);
   if ((await fetch(`${api}/content/${"0".repeat(64)}`)).status !== 404) fail("r2-content-mismatch", "it was stored");
+
+  // The cap (live_server::content::DEFAULT_UPLOAD_BYTES), and past it.
+  if (big) {
+    const cap = 95 * 1024 * 1024;
+    const blob = random(cap);
+    const bigSha = await hex(blob);
+    t = performance.now();
+    const put = await timed(`${api}/content/${bigSha}`, {
+      method: "PUT",
+      headers: { authorization: `Bearer ${await issueToken(a!, aud, "content.write")}` },
+      body: blob,
+    });
+    if (put.r.status !== 201 && put.r.status !== 200) fail("r2-content-big-put", `${put.r.status} ${put.body}`);
+    r2.content_big_put_ms = +(performance.now() - t).toFixed(1);
+    const read = new Uint8Array(await (await fetch(`${api}/content/${bigSha}`)).arrayBuffer());
+    if (!same(read, blob)) fail("r2-content-big-get", `${read.length} bytes back, not the ${blob.length} sent`);
+    const over = new Uint8Array(cap + 1);
+    over.set(blob);
+    const refused = await fetch(`${api}/content/${await hex(over)}`, {
+      method: "PUT",
+      headers: { authorization: `Bearer ${await issueToken(a!, aud, "content.write")}` },
+      body: over,
+    });
+    const why = await refused.text();
+    if (refused.status !== 413 || !why.includes("too_large")) fail("r2-content-over-cap", `${refused.status} ${why}`);
+  }
 
   // A cloud save.
   const save = random(300 * 1024);
