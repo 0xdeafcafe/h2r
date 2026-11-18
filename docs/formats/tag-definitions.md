@@ -966,6 +966,25 @@ multiplayer map on the disc through `h2 import halo1`'s path in both
 sandboxes (26 builds), every attachment of every converted vehicle (587)
 naming a tag of its group in the built map.
 
+### Dialogue (`udlg`): definition only
+
+`crates/tags/src/defs/udlg.txt`: all 42 distinct retail `udlg` round-trip
+byte-identical. A Halo 2 `udlg` is a list of vocalizations, each a
+string ID name and a `snd!`, plus an `adlg` reference (null on every tag)
+and a per-tag string. On 05a its 17 tags use 330 names, Halo 2's AI
+vocabulary (`pain_mjr`, `dth_fall`, `seefoe`, `chr_kllfoe`, ...).
+
+Halo 1's `udlg` (`0x1010`, 61 on six levels; `effects_disc.rs`
+`halo1_dialogue_survey`) is a fixed table of `snd!` references, a
+vocalization per offset, the sound's own name saying which on every tag
+that sets it (`+0x70` pain minor, `+0xf0` death quiet, `+0x740` grenade
+throwing, `+0x360` killed enemy, ...). The two vocabularies differ, so a
+conversion needs a table from Halo 1 offsets to Halo 2 names (D), and the
+dialogue's samples are large (a30's dialogue alone is 36 MB,
+[h1-sounds.md](h1-sounds.md)), so it also needs a place in the file
+size ladder. Not built yet: rebuilt bipeds keep their counterpart's
+dialogue.
+
 ## Which converted objects use the definitions
 
 | Groups | Path | Why |

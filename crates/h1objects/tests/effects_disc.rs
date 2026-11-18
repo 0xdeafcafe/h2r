@@ -542,3 +542,75 @@ fn halo1_group_word_survey() {
         }
     }
 }
+
+/// Survey: every reference of every Halo 1 `udlg` by offset, with the
+/// last component of the names it holds there.
+#[test]
+#[ignore]
+fn halo1_dialogue_survey() {
+    let udlg = Group::new(b"udlg");
+    let mut slots: BTreeMap<usize, BTreeMap<String, usize>> = BTreeMap::new();
+    let mut lens: BTreeMap<usize, usize> = BTreeMap::new();
+    for (_, m) in h1_maps() {
+        for t in m.tags().iter().filter(|t| t.group == udlg) {
+            let b = m.tag_data(t).unwrap();
+            *lens.entry(b.len()).or_default() += 1;
+            for at in (0..b.len().saturating_sub(16)).step_by(4) {
+                if let Some(r) = TagRef::read(b, at)
+                    && !r.id.is_none()
+                    && let Ok(x) = m.tag(r.id)
+                    && x.group == r.group
+                {
+                    let tail = x.name.rsplit('\\').next().unwrap_or("").to_owned();
+                    *slots.entry(at).or_default().entry(format!("{} {tail}", r.group)).or_default() += 1;
+                }
+            }
+        }
+    }
+    println!("lengths {lens:?}");
+    for (at, names) in &slots {
+        let mut v: Vec<_> = names.iter().collect();
+        v.sort_by_key(|(_, c)| std::cmp::Reverse(**c));
+        println!("{at:#05x}: {:?}", &v[..v.len().min(3)]);
+    }
+}
+
+/// Survey: the Halo 2 base's `udlg` elements: each element's string and
+/// the group of the tag its datum names, and the root's words.
+#[test]
+#[ignore]
+fn halo2_dialogue_survey() {
+    let mut m = h2_map(&std::env::var("H2_BASE").unwrap_or_else(|_| "05a_deltaapproach".into()));
+    let base = Base::read(&mut m).unwrap();
+    let strings = m.strings().to_vec();
+    let text = |v: Option<&Val>| match v {
+        Some(Val::String(Str::Index(i))) => strings
+            .get((*i & 0xffff) as usize)
+            .cloned()
+            .flatten()
+            .unwrap_or_default(),
+        x => format!("{x:?}"),
+    };
+    let d = def(b"udlg");
+    let mut names: BTreeMap<String, usize> = BTreeMap::new();
+    let mut groups: BTreeMap<String, usize> = BTreeMap::new();
+    let mut roots: BTreeMap<String, usize> = BTreeMap::new();
+    let ids: Vec<TagId> = base.tags.iter().filter(|t| t.1 == FourCC(*b"udlg")).map(|t| t.0).collect();
+    for id in &ids {
+        let r = base.record(d, *id).unwrap();
+        *roots.entry(format!("{:?} {:?} {:?} {:?}", r.at("unknown_0"), r.at("unknown_4"), r.at("unknown_8"), r.at("string_14"))).or_default() += 1;
+        for e in block(&r, "vocalizations") {
+            *names.entry(text(e.at("vocalization"))).or_default() += 1;
+            if let Some(Val::Datum(Target::Id(t))) = e.at("sound") {
+                let g = base.tags.iter().find(|x| x.0 == *t).map(|x| x.1.to_string());
+                *groups.entry(format!("{g:?} {:?}", e.at("unknown_8"))).or_default() += 1;
+            }
+        }
+    }
+    println!("{} udlg", ids.len());
+    for (k, v) in roots.iter().take(10) { println!("root {v}: {k}"); }
+    for (k, v) in &groups { println!("datum {v}: {k}"); }
+    let all: Vec<String> = names.keys().cloned().collect();
+    println!("{}", all.join(" "));
+    println!("{} distinct names", names.len());
+}
