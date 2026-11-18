@@ -132,7 +132,12 @@ per layer draw, not one per item:
   item's mask, remember them, and ask `d3d` for the native pass. The
   list's OR word `+8` is left alone: the layer still walks its items and
   finds the world's masks clear;
-- **after** it: set the bits back.
+- **before the next layer draw** (5 and up follow 3 on the scene list,
+  in the same view): set the bits back, on each item that still holds
+  the mask the skip left. Not after the layer itself: something after the
+  body makes the chain call it through a Rust continuation, which the
+  pipelined render thread cannot run (docs/graphics/pipelined-render.md,
+  "Render-safe hooks").
 
 The layer draw then builds no entry for the world: no build call, no
 shader draw, no geometry submission, no push-buffer words. Objects,
@@ -263,23 +268,31 @@ The crate `native-render` (`crates/native-render`):
   backend that cannot).
 - **The feature `native-world`** (`crates/feature/src/native_world.rs`,
   on by default, `H2_FEATURES=impl.render.native_world=off` turns it off,
-  exact key). While it is on, pipelining is off (`pipeline_render` prints
-  `pipeline: off: native-world's layer-draw hooks run on the game
-  thread`): the observers are not render-thread safe (an after
-  continuation, guest masks, the device's pass), so on the render thread
-  every pipelined frame would fall back at its first layer draw. Making
-  them render-thread safe (no after part, an audit of the host's writes)
-  is a later step.
-  `LAYER_DRAW` is an opaque point, so both hooks are observers: before,
-  with layer 3 current, it reads the camera and the active BSP
-  (`0x004e0348`) and asks the host; when the host accepts it clears layer
-  3's bit on the BSP items whose shader the world draws; after, it sets
-  them back. Both sit inside `render-timing`'s observers
-  (`after_feature`). Two observer calls per layer draw, nothing per draw.
+  exact key). `LAYER_DRAW` is an opaque point, so the hook is one
+  observer before it: it first sets back the bits the last layer 3
+  cleared (on items that still hold the mask it left), then, with layer 3
+  current, reads the camera and the active BSP (`0x004e0348`) and asks the
+  host; when the host accepts it clears layer 3's bit on the BSP items
+  whose shader the world draws. It sits inside `render-timing`'s
+  observers (`after_feature`). One observer call per layer draw, nothing
+  per draw.
+  It runs on the pipelined render thread (context-only, nothing after the
+  body), so pipelining stays available with the world on. What it
+  touches there: the guest memory its context sees (the render's view:
+  the item masks, the camera, the active BSP, the map name); the host's
+  load state (a mutex only `ask` takes, and only the render reaches it;
+  the loader is a host thread that opens the map through the VFS's
+  mutex and never touches guest memory); the D3D device's pending
+  external pass, which the render owns while it is in flight (the sim's
+  D3D calls join first) and which is issued at the render's next D3D
+  entry, in render order, with that entry's memory.
   Tests: `crates/feature/tests/native_world.rs` (the plan with
-  `render-timing`, deep, and the layer-draw port all on; on by default
-  with pipelining off; the switch off places nothing and keeps
-  pipelining; the skip and restore on synthetic memory).
+  `render-timing`, deep, and the layer-draw port all on; alone, the chain
+  runs on the render thread; on by default with pipelining placed; the
+  switch off places nothing; the skip and its restore at the next layer
+  draw on synthetic memory, and a rebuilt list left alone);
+  `crates/boot/src/render_thread.rs` (the default plan's `LAYER_DRAW`
+  is render-thread safe).
 - **Boot glue** (`crates/boot/src/native_world_glue.rs`). The host: on a
   new (map name, active BSP address) a worker opens the loaded map
   through the VFS with its shared maps, picks the scenario BSP whose tag

@@ -1053,13 +1053,6 @@ impl Feature for PipelineRender {
             eprintln!("pipeline: off: render-census watches the render scope on the game thread");
             return Ok(());
         }
-        if crate::native_world::on(b.switches()) {
-            // Its layer-draw observers are not render-thread safe (an after
-            // continuation, guest masks, the device's pass): every pipelined
-            // frame would fall back at its first layer draw.
-            eprintln!("pipeline: off: native-world's layer-draw hooks run on the game thread");
-            return Ok(());
-        }
         let stack = b.guest_alloc(STACK_LEN, Permissions::RW)?;
         self.shared
             .stack_top

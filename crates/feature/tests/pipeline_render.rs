@@ -822,8 +822,7 @@ fn rig_tuned(
         .watch(watch)
         .print(false);
     let feature = tune(feature);
-    // The native world is on by default and turns pipelining off.
-    let mut r = Registry::new(Switches::parse("impl.render.native_world=off").unwrap());
+    let mut r = Registry::new(Switches::default());
     assert!(r.add(&feature).unwrap());
     let plan = r
         .build(&Remap::new(&[(&points::RENDER_FRAME, FRAME)]))
