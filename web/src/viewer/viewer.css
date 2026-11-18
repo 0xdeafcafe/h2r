@@ -1,23 +1,56 @@
-/* The 3D game viewer: its floating window, the view inside, and the
-   pop-out page. Flat and dark, like the stats site's game viewer. */
+/* The game viewer in the game page (GameViewer.tsx): the 2D map or the
+   3D view in a box across the content column, about 16:9 but short enough
+   that the scoreboard under it shows on a laptop; full screen, the box
+   fills the screen. Flat and dark, like the stats site's game viewer. */
 
-.v3-window { position: fixed; z-index: 60; display: flex; flex-direction: column; min-width: 320px; min-height: 260px; background: #101010; border: 1px solid #5a5a5a; box-shadow: 0 12px 40px rgba(0, 0, 0, .65), 0 0 0 1px #000; color: #ddd; font: 11px/1.3 var(--font-ui, system-ui, sans-serif); outline: none; }
-.v3-window:focus-visible { border-color: #56aacd; }
-.v3-window--max { inset: 8px; }
-.v3-bar { flex: none; display: flex; align-items: center; gap: 8px; height: 26px; padding: 0 4px 0 9px; background: linear-gradient(180deg, #3c5f8a 0, #26436a 48%, #1b3252 52%, #20395d 100%); border-bottom: 1px solid #0b1626; cursor: move; user-select: none; touch-action: none; }
-.v3-bar:focus-visible { outline: 1px solid #9ad1ee; outline-offset: -2px; }
-.v3-bar h3 { flex: 1; min-width: 0; margin: 0; overflow: hidden; font: 700 11px/26px var(--font-ui, system-ui, sans-serif); color: #fff; letter-spacing: .04em; text-transform: uppercase; text-overflow: ellipsis; white-space: nowrap; }
-.v3-bar-state { font-size: 10px; color: #b9cde4; white-space: nowrap; }
-.v3-bar-buttons { display: flex; gap: 3px; align-items: center; }
-.v3-bar-buttons button, .v3-bar-buttons a { display: inline-grid; place-items: center; min-width: 22px; height: 19px; padding: 0 5px; font: 11px/1 var(--font-ui, system-ui, sans-serif); color: #fff; text-decoration: none; cursor: pointer; background: rgba(0, 0, 0, .35); border: 1px solid rgba(255, 255, 255, .28); border-radius: 0; }
-.v3-bar-buttons button:hover, .v3-bar-buttons a:hover { background: #17668a; border-color: #56aacd; }
-.v3-bar--page { cursor: default; touch-action: auto; }
+.gv { display: flex; flex-direction: column; margin: 8px 8px 0; background: #101010; border: 1px solid #3a3a3a; color: #ddd; font: 11px/1.3 var(--font-ui, system-ui, sans-serif); }
+.gv-bar { flex: none; display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 0 5px 0 9px; background: linear-gradient(180deg, #3c5f8a 0, #26436a 48%, #1b3252 52%, #20395d 100%); border-bottom: 1px solid #0b1626; }
+.gv-bar h2 { flex: 1; min-width: 0; margin: 0; overflow: hidden; font: 700 11px/30px var(--font-ui, system-ui, sans-serif); color: #fff; letter-spacing: .04em; text-transform: uppercase; text-overflow: ellipsis; white-space: nowrap; }
+.gv-bar h2 small { margin-left: 8px; font-weight: 400; letter-spacing: 0; text-transform: none; color: #c8d8ea; }
+.gv-status { white-space: nowrap; }
+.gv-status .s-viewer-status { color: #c8d8ea; }
+.gv-buttons { display: flex; gap: 5px; align-items: center; }
+.gv-switch { display: flex; }
+.gv-buttons button { display: inline-flex; align-items: center; gap: 5px; height: 21px; padding: 0 8px; font: 700 10px/19px var(--font-ui, system-ui, sans-serif) !important; color: #fff; letter-spacing: .03em; cursor: pointer; background: rgba(0, 0, 0, .35); border: 1px solid rgba(255, 255, 255, .28); border-radius: 0; }
+.gv-switch button + button { border-left: 0; }
+.gv-buttons button:hover:not(:disabled) { background: #17668a; border-color: #56aacd; }
+.gv-buttons button.on, .gv-buttons button[aria-pressed="true"] { background: #17668a; border-color: #9ad1ee; }
+.gv-buttons button:disabled { opacity: .5; cursor: default; }
+.gv-full-button svg { display: block; }
+.gv-stage { position: relative; display: flex; flex-direction: column; width: 100%; aspect-ratio: 16 / 9; max-height: max(240px, calc(100vh - 400px)); min-height: 240px; overflow: hidden; background: #07111b; outline: none; }
+.gv-stage:focus-visible { box-shadow: inset 0 0 0 1px #56aacd; }
+.gv-stage > .s-map-tools { flex: none; }
+.gv-stage > .s-map { flex: 1; height: auto; min-height: 0; }
+.gv-stage--3d > .v3-body { position: absolute; inset: 0; }
+.gv-controls { flex: none; }
+.gv-controls .s-timeline-head { border-top: 1px solid #2a2a2a; }
+.gv-below { flex: none; }
+.gv-below .s-legend { border-top: 1px solid #2a2a2a; }
+
+/* Full screen: through the browser, or laid over the window where there is no Fullscreen API. */
+.gv:fullscreen { width: 100%; height: 100%; margin: 0; border: 0; }
+.gv--full .gv-stage { flex: 1; aspect-ratio: auto; max-height: none; min-height: 0; }
+.gv--full .gv-below { display: none; }
+.gv--window { position: fixed; inset: 0; z-index: 100; margin: 0; border: 0; }
+html.gv-locked, html.gv-locked body { overflow: hidden; }
+
+@media (max-width: 640px) {
+  .gv { margin: 6px 0 0; border-left: 0; border-right: 0; }
+  .gv-bar { flex-wrap: wrap; gap: 4px 8px; padding: 4px 6px; }
+  .gv-bar h2 { flex-basis: 100%; line-height: 18px; }
+  .gv-bar h2 small { display: block; margin: 0; }
+  .gv-status { flex: 1; }
+  .gv-buttons button { height: 28px; padding: 0 10px; }
+  .gv-full-label { display: none; }
+  .gv-full-button { min-width: 32px; justify-content: center; }
+  .gv-stage { aspect-ratio: 4 / 3; max-height: 70vh; }
+  .v3-tools > *, .v3 .v3-tools select { height: 26px; line-height: 24px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .gv, .gv * { scroll-behavior: auto !important; }
+}
+
 .v3-body { position: relative; flex: 1; min-height: 0; background: #0a1420; }
-.v3-window .replay-bar, .v3-page .replay-bar { flex: none; height: 34px; border-top: 1px solid #2a2a2a; background: #161616; }
-.v3-window .replay-bar .play, .v3-page .replay-bar .play { width: 28px; height: 23px; border-color: #777; border-radius: 0; background: #2b2b2b; }
-.v3-window .replay-time, .v3-page .replay-time { font-size: 10px; color: #bbb; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.v3-window .replay-bar select, .v3-page .replay-bar select { height: 21px; font-size: 10px; color: #ddd; background: #222; border: 1px solid #555; }
-.v3-grip { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; touch-action: none; background: linear-gradient(135deg, transparent 50%, #8a8a8a 50%, #8a8a8a 58%, transparent 58%, transparent 68%, #8a8a8a 68%, #8a8a8a 76%, transparent 76%); }
 
 .v3 { position: absolute; inset: 0; overflow: hidden; }
 .v3-host { position: absolute; inset: 0; }
@@ -47,18 +80,6 @@
 .v3-note { position: absolute; left: 8px; right: 8px; bottom: 8px; margin: 0; padding: 3px 6px; font-size: 10px; line-height: 14px; color: #c6d0db; background: rgba(0, 0, 0, .8); pointer-events: none; }
 .v3-note--mid { position: absolute; inset: auto 0; top: 45%; text-align: center; background: none; font-size: 11px; }
 .v3-fail { position: absolute; inset: 0; display: grid; place-items: center; margin: 0; padding: 24px; text-align: center; font-size: 12px; line-height: 18px; color: #c6d0db; }
-
-/* The pop-out page: the viewer fills the browser window. */
-.v3-page { position: fixed; inset: 0; display: flex; flex-direction: column; background: #101010; color: #ddd; font: 11px/1.3 var(--font-ui, system-ui, sans-serif); }
-.v3-page-inner { display: contents; }
-.v3-page > .v3-note--mid { position: static; margin: auto; }
-
-@media (max-width: 640px) {
-  .v3-window:not(.v3-window--max) { left: 4px !important; right: 4px; width: auto !important; }
-  .v3-tools > *, .v3 .v3-tools select { height: 26px; line-height: 24px; }
-  .v3-bar { height: 32px; }
-  .v3-bar-buttons button, .v3-bar-buttons a { min-width: 28px; height: 24px; }
-}
 
 /* The Show menu: what of the level to draw. */
 .v3 .v3-tools details.v3-menu { position: relative; padding: 0; height: auto; min-height: 21px; }

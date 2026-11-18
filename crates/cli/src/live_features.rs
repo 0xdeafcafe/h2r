@@ -498,6 +498,35 @@ mod tests {
         std::fs::write(std::path::Path::new(&keep).join("features.txt"), out).unwrap();
     }
 
+    /// Halo 1's Blood Gulch as converted: two one-way teleporters, each
+    /// with its own exit. Paired by identifier, each entrance links to its
+    /// own exit only; with the channel left in the team field (identifier
+    /// 0 on all four, as the converter wrote them before), both entrances
+    /// went to both exits.
+    #[test]
+    fn two_one_way_pairs_link_one_to_one_by_identifier() {
+        let flags = [
+            flag([95.6, -155.5, 1.8], 0.0, TELEPORTER_SOURCE, 0),
+            flag([40.1, -82.9, 1.8], 0.0, TELEPORTER_SOURCE, 1),
+            flag([82.8, -114.5, 0.7], 0.0, TELEPORTER_DESTINATION, 0),
+            flag([43.8, -126.2, 0.2], 0.0, TELEPORTER_DESTINATION, 1),
+        ];
+        let pairs = |flags: &[Flag]| -> Vec<(String, String)> {
+            teleporters(flags)
+                .1
+                .into_iter()
+                .map(|l| (l.from, l.to))
+                .collect()
+        };
+        let s = |a: &str, b: &str| (a.to_string(), b.to_string());
+        assert_eq!(pairs(&flags), [s("t0", "t2"), s("t1", "t3")]);
+        let lost = flags.map(|f| Flag { channel: 0, ..f });
+        assert_eq!(
+            pairs(&lost),
+            [s("t0", "t2"), s("t0", "t3"), s("t1", "t2"), s("t1", "t3")]
+        );
+    }
+
     #[test]
     fn features_serialise_as_the_contract_has_them() {
         let (teleporters, links) = teleporters(&[
