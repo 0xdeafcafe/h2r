@@ -171,8 +171,7 @@ fn pills_on_surfaces_keep_them() {
         let (mut queries, mut misses) = (0usize, Vec::new());
         for s in &surfaces {
             let n = s.vertices.len() as f32;
-            let centroid =
-                [0, 1, 2].map(|a| s.vertices.iter().map(|p| p[a]).sum::<f32>() / n);
+            let centroid = [0, 1, 2].map(|a| s.vertices.iter().map(|p| p[a]).sum::<f32>() / n);
             for p in s.vertices.iter().copied().chain([centroid]) {
                 for tol in TOLERANCES {
                     queries += 1;

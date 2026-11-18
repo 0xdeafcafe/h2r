@@ -278,7 +278,11 @@ fn mixed_key_types_and_sparse_keys() {
     // Every key comes back for a box around its own surface.
     for s in &surfaces {
         assert!(query_aabb(&code, &s.bounds()).unwrap().contains(&s.key));
-        assert!(mopp::query_box(&code, &s.bounds()).unwrap().contains(&s.key));
+        assert!(
+            mopp::query_box(&code, &s.bounds())
+                .unwrap()
+                .contains(&s.key)
+        );
     }
 }
 

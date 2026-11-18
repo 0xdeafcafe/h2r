@@ -421,7 +421,9 @@ mod tests {
         assert_eq!(q(&p, at(0.0, 0.0)), Vec::<u32>::new());
         assert_eq!(q(&p, at(0.0, 1.0)), vec![1]);
         // Past shift 0 faults.
-        let p = prog(&[0x04, 0, 0, 0, 0x04, 0, 0, 0, 0x04, 0, 0, 0, 0x04, 0, 0, 0, 0x01, 0, 0, 0]);
+        let p = prog(&[
+            0x04, 0, 0, 0, 0x04, 0, 0, 0, 0x04, 0, 0, 0, 0x04, 0, 0, 0, 0x01, 0, 0, 0,
+        ]);
         assert_eq!(query_box(&p, &on_x(0.0, 0.0)), Err(Fault::Shift { at: 16 }));
     }
 
