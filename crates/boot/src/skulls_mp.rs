@@ -532,16 +532,21 @@ impl feature::Feature for SkullsMp {
             // After any other start hook: the set is what the map loads with.
             .last();
         let s = Arc::clone(&self.0);
-        b.raw().before(&HUD_SHOWN, "Blind hides the HUD", move |c| {
-            if !s.active(BLIND) {
-                return Ok(Flow::Continue);
-            }
-            if let Some(line) = s.first(BLIND) {
-                eprintln!("{line}");
-            }
-            c.cpu.eax = 0;
-            c.ret(0).map(Flow::Return)
-        });
+        b.raw()
+            .before(&HUD_SHOWN, "Blind hides the HUD", move |c| {
+                if !s.active(BLIND) {
+                    return Ok(Flow::Continue);
+                }
+                if let Some(line) = s.first(BLIND) {
+                    eprintln!("{line}");
+                }
+                c.cpu.eax = 0;
+                c.ret(0).map(Flow::Return)
+            })
+            // Both Blind hooks read the set fixed at the game's start and
+            // answer through the registers and stack of the context they run
+            // on: the pipelined render thread runs them too.
+            .context_only();
         let s = Arc::clone(&self.0);
         b.raw()
             .before(&FIRST_PERSON_RENDER, "Blind hides the weapon", move |c| {
@@ -550,7 +555,8 @@ impl feature::Feature for SkullsMp {
                 }
                 c.cpu.eax = 0;
                 c.ret(16).map(Flow::Return)
-            });
+            })
+            .context_only();
         let s = Arc::clone(&self.0);
         b.raw().before(
             &WEAPON_FROM_PLACEMENT,

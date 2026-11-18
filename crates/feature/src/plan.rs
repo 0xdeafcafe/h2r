@@ -171,6 +171,34 @@ impl Chain {
     pub fn needs_shadow(&self) -> bool {
         !self.after.is_empty() || !self.observe_after.is_empty()
     }
+    /// Whether the placed chain may run on the pipelined render thread,
+    /// or the hooks that keep it off and why. A chain with something after
+    /// the body calls the body through its shadow with a Rust continuation,
+    /// which a fallback cannot resume, so every hook in it is refused;
+    /// otherwise the hooks not marked [`context_only`](crate::HookRef::context_only)
+    /// are.
+    pub fn render_thread(&self) -> Result<(), Vec<(&Hook, &'static str)>> {
+        let refused: Vec<_> = if self.needs_shadow() {
+            self.hooks()
+                .map(|h| {
+                    (
+                        h,
+                        "runs after the body: a Rust continuation a fallback cannot resume",
+                    )
+                })
+                .collect()
+        } else {
+            self.hooks()
+                .filter(|h| !h.context_only)
+                .map(|h| (h, "not marked context-only"))
+                .collect()
+        };
+        if refused.is_empty() {
+            Ok(())
+        } else {
+            Err(refused)
+        }
+    }
 }
 
 /// The result of [`crate::Registry::build`]: what to install.
@@ -250,6 +278,9 @@ fn place_locale(
                         after_features: Vec::new(),
                         optional: false,
                         label: "sources",
+                        // Reads edi, the sources' boot-fixed answers, and
+                        // the stack it returns through.
+                        context_only: true,
                     },
                 ));
                 "served by the locale bridge".to_owned()

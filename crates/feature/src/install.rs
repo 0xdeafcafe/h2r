@@ -280,6 +280,7 @@ fn observers(hooks: &[Hook]) -> Observers {
 
 fn place(d: &mut runtime::Dispatch, c: Chain, body: Body) {
     let (addr, point) = (c.addr, c.point);
+    let context_only = c.render_thread().is_ok();
     let observe_before = observers(&c.observe_before);
     let observe_after = Arc::new(observers(&c.observe_after));
     let before: Vec<_> = c
@@ -388,4 +389,7 @@ fn place(d: &mut runtime::Dispatch, c: Chain, body: Body) {
             }
         }
     });
+    if context_only {
+        d.mark_context_only(addr);
+    }
 }

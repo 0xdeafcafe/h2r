@@ -38,16 +38,14 @@ const LOCALIZED_STRING: u32 = 0x001a_0180;
 /// Integer 0..=100 (ECX) to the string id of its decimal text in EAX (0
 /// out of range). Plain `ret`.
 const NUMBER_STRING_ID: u32 = 0x0019_fd00;
-/// The overrides the pipelined render thread may run
-/// (docs/graphics/pipelined-render.md): the HUD's text reaches the string
-/// lookup there. Both read registers, the stack and the memory of the
-/// context they run on, write only the caller's buffer there, and
-/// otherwise run the original on that same context, so on the render
-/// thread they act on its view as the original would.
-pub const RENDER_THREAD_SAFE: &[(u32, &str)] = &[
-    (LOCALIZED_STRING, STRINGS_HOOK),
-    (NUMBER_STRING_ID, DESCRIPTIONS_HOOK),
-];
+// The string and description hooks are marked context-only
+// (`Dispatch::mark_context_only`), so the pipelined render thread runs them
+// (docs/graphics/pipelined-render.md): the HUD's text reaches the string
+// lookup there. Both read registers, the stack and the memory of the
+// context they run on, write only the caller's buffer there, and otherwise
+// run the original on that same context, so on the render thread they act
+// on its view as the original would. `community:builtins` is not marked:
+// it prints, and runs only when the variant list loads.
 const STRINGS_HOOK: &str = "community:strings";
 const DESCRIPTIONS_HOOK: &str = "community:descriptions";
 
@@ -679,6 +677,7 @@ fn register_strings(d: &mut runtime::Dispatch, o: Arc<runtime::exec::OriginalHan
         }
         Ok(o.invoke(cpu, ctx, LOCALIZED_STRING))
     });
+    d.mark_context_only(LOCALIZED_STRING);
 }
 
 fn original(rt: &runtime::Runtime, addr: u32) -> Option<Arc<runtime::exec::OriginalHandler>> {
@@ -739,6 +738,7 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<()> {
                 }
                 Ok(o.invoke(cpu, ctx, NUMBER_STRING_ID))
             });
+            d.mark_context_only(NUMBER_STRING_ID);
         }
     });
     Ok(())
@@ -806,11 +806,15 @@ mod tests {
             rt.memory().read_bytes(BUF, &mut live, 1).unwrap();
             assert!(live.iter().all(|&b| b == 0), "live RAM untouched");
         }
-        // Another hook at the same address is still refused.
-        assert!(!crate::d3d_glue::pipeline_allow(&[])(
-            LOCALIZED_STRING,
-            "other:strings"
-        ));
+        // The mark goes with the hook: another one registered at the same
+        // address is refused again.
+        rt.edit_dispatch(|d| {
+            assert!(d.is_context_only(LOCALIZED_STRING));
+            d.register_override(LOCALIZED_STRING, "other:strings", |cpu, ctx, _| {
+                ctx.runtime().memory().ret(cpu, 4)
+            });
+            assert!(!d.is_context_only(LOCALIZED_STRING));
+        });
         assert!(!crate::d3d_glue::pipeline_allow(&[])(
             BUILTINS_LOAD,
             "community:builtins"
