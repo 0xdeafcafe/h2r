@@ -13,7 +13,7 @@ use super::{AgentSource, CoreInputs, LateInputs, register_core, register_late};
 use crate::lockstep_glue;
 
 /// Every switch that adds hooks, on.
-pub(crate) const ALL_ON: &str = "impl.engine=on,impl.render=on,render-timing,render-loop,occlusion,impl.render.native_world=on";
+pub(crate) const ALL_ON: &str = "impl.engine=on,impl.render=on,render-timing,render-loop,occlusion,impl.render.native_world=on,impl.render.native_objects=on";
 
 /// What a test run has, from nothing (a headless run with no settings) to
 /// everything a test can stand in for.

@@ -312,6 +312,14 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     features
         .add(&feature::native_world::NativeWorld)
         .map_err(|e| anyhow::anyhow!("native world: {e}"))?;
+    // Objects' render models on the native GPU renderer, skinned on the
+    // GPU (H2_FEATURES=impl.render.native_objects=on, off by default;
+    // docs/graphics/native-renderer.md, stage 2). Its observers on the
+    // layer draw sit inside render-timing's and the world's; the models
+    // load per map through native_objects_glue.
+    features
+        .add(&feature::native_objects::NativeObjects)
+        .map_err(|e| anyhow::anyhow!("native objects: {e}"))?;
     // H2_UI_WATCH=1: the screen player one's input goes to, a line on each
     // change and `ui.screen` (`h2 coop test --drive`; ui_watch.rs).
     ui_watch::install(features)?;

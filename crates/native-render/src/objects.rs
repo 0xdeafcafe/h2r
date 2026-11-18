@@ -119,12 +119,14 @@ pub fn read_object(mem: &dyn GuestRead, handle: u32) -> Option<ObjectFrame> {
     })
 }
 
-/// What [`clear_objects`] cleared: the items (to restore) and the handles
-/// of the objects they belong to, each once, in list order.
+/// What [`clear_objects`] cleared: the items (to restore), the object
+/// each belongs to, and those objects' handles, each once, in list order.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ClearedObjects {
     pub layer: u32,
     pub items: Vec<u32>,
+    /// The handle of `items[i]`'s object.
+    pub owners: Vec<u32>,
     pub handles: Vec<u32>,
 }
 
@@ -143,14 +145,14 @@ pub fn item_object(mem: &dyn GuestRead, item: u32) -> Option<u32> {
 }
 
 /// Clears `layer`'s bit on every object item of the current list that
-/// `native(definition, shader)` accepts, when the current layer is `layer`
+/// `native(handle, definition, shader)` accepts, when the current layer is `layer`
 /// and `layer` is in [`REPLACED_LAYERS`]. `None` (nothing written) for
 /// another layer or an unreadable list; an unreadable item ends the walk
 /// with what was cleared so far.
 pub fn clear_objects(
     mem: &mut dyn GuestWrite,
     layer: u32,
-    native: &dyn Fn(u32, u32) -> bool,
+    native: &dyn Fn(u32, u32, u32) -> bool,
 ) -> Option<ClearedObjects> {
     if layer >= 32 || REPLACED_LAYERS & (1 << layer) == 0 || mem.read_u32(CURRENT_LAYER)? != layer {
         return None;
@@ -185,18 +187,40 @@ pub fn clear_objects(
             }
         };
         let (Some(def), Some(shader)) = (def, mem.read_u32(item + 8)) else { continue };
-        if !native(def, shader) {
+        if !native(handle, def, shader) {
             continue;
         }
         if mem.write_u32(item + 0x10, mask & !bit).is_none() {
             break;
         }
         out.items.push(item);
+        out.owners.push(handle);
         if !out.handles.contains(&handle) {
             out.handles.push(handle);
         }
     }
     Some(out)
+}
+
+/// Gives the objects `keep` refuses their bits back at once (they are not
+/// drawn natively after all) and drops them from `cleared`.
+pub fn keep_only(mem: &mut dyn GuestWrite, cleared: &mut ClearedObjects, keep: &dyn Fn(u32) -> bool) {
+    let mut back = ClearedObjects {
+        layer: cleared.layer,
+        ..Default::default()
+    };
+    let mut kept = ClearedObjects {
+        layer: cleared.layer,
+        ..Default::default()
+    };
+    for (&item, &owner) in cleared.items.iter().zip(&cleared.owners) {
+        let to = if keep(owner) { &mut kept } else { &mut back };
+        to.items.push(item);
+        to.owners.push(owner);
+    }
+    kept.handles = cleared.handles.iter().copied().filter(|&h| keep(h)).collect();
+    restore(mem, &back);
+    *cleared = kept;
 }
 
 /// Sets the bits [`clear_objects`] cleared back.
@@ -316,8 +340,9 @@ pub(crate) mod tests {
     fn only_accepted_object_items_lose_the_bit_and_get_it_back() {
         let (mut m, a, b) = scene();
         let before: Vec<u32> = (0..5).map(|i| mask(&m, i)).collect();
-        let c = clear_objects(&mut m, 3, &|def, shader| def == 0xe000_0100 || (def == 0xe000_0200 && shader != 0x10)).unwrap();
+        let c = clear_objects(&mut m, 3, &|_, def, shader| def == 0xe000_0100 || (def == 0xe000_0200 && shader != 0x10)).unwrap();
         assert_eq!(c.items, vec![ITEMS + ITEM_SIZE, ITEMS + 2 * ITEM_SIZE]);
+        assert_eq!(c.owners, vec![a, a]);
         assert_eq!(c.handles, vec![a], "one handle per object; B's material stays on D3D");
         assert_eq!(mask(&m, 0), 0b1010, "BSP untouched");
         assert_eq!(mask(&m, 1), 0b0010, "layer 1 kept");
@@ -330,11 +355,23 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn objects_that_are_not_drawn_after_all_get_their_bits_back_at_once() {
+        let (mut m, a, b) = scene();
+        let mut c = clear_objects(&mut m, 3, &|_, _, _| true).unwrap();
+        assert_eq!(c.handles, vec![a, b]);
+        keep_only(&mut m, &mut c, &|h| h == b);
+        assert_eq!((c.items.clone(), c.owners.clone(), c.handles.clone()), (vec![ITEMS + 3 * ITEM_SIZE], vec![b], vec![b]));
+        assert_eq!((mask(&m, 1), mask(&m, 2), mask(&m, 3)), (0b1010, 0b1000, 0), "A's back, B's still clear");
+        restore(&mut m, &c);
+        assert_eq!(mask(&m, 3), 0b1000);
+    }
+
+    #[test]
     fn other_layers_write_nothing() {
         let (mut m, ..) = scene();
         m.w(CURRENT_LAYER, 1);
-        assert_eq!(clear_objects(&mut m, 1, &|_, _| true), None, "not a replaced layer");
-        assert_eq!(clear_objects(&mut m, 3, &|_, _| true), None, "not the current layer");
+        assert_eq!(clear_objects(&mut m, 1, &|_, _, _| true), None, "not a replaced layer");
+        assert_eq!(clear_objects(&mut m, 3, &|_, _, _| true), None, "not the current layer");
         assert_eq!(mask(&m, 1), 0b1010);
     }
 }
