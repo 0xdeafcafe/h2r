@@ -302,7 +302,8 @@ and behind it as before); `cpu` and the `0x0002bed0` site (layer 3) drop
 by most of the world's share of the 8.26 ms, and `encode` and `submit`
 drop with the D3D draws that are gone. The pixel diff is expected to be
 large on world surfaces until step 4 (base map times lightmap only, no
-detail maps, no mipmaps, no fog-free exposure match) and small elsewhere.
+detail maps or bump, no fog-free exposure match; base maps are mipmapped
+since step 4) and small elsewhere.
 A frame where the device's `external_passes_dropped` grows has a world
 hole: it means the pass was asked for and could not be drawn.
 
@@ -413,7 +414,8 @@ device's pixel constants), or keep such materials on the fallback.
    one (no layer 3, more than one pass, an engine texture source other
    than the lightmap, unnamed engine pixel constants) stay on the D3D path.
 3. World vertices gain the tangent frame and the bucket's lighting vector;
-   textures keep their mip chains.
+   textures keep their mip chains (done: base maps upload their decoded
+   chain, `gpu::Image::from_levels`).
 4. `native-render::gpu`: one pipeline per (program, definition) through
    `shaders::link`, the uniforms filled as the D3D path fills them, one
    bind group per material.

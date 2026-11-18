@@ -264,14 +264,8 @@ fn load_ready(name: &str, bsp: u32) -> Result<Ready, load::Error> {
             let Some(l) = d.levels.into_iter().find(|l| l.face == 0 && l.level == 0) else { continue };
             // P8 decodes as L8: the index in every channel.
             let indices: Vec<u8> = l.rgba.chunks_exact(4).map(|p| p[0]).collect();
-            lightmaps.insert(
-                key,
-                Image {
-                    width: l.width,
-                    height: l.height,
-                    rgba: load::expand_page(&indices, palette),
-                },
-            );
+            let Some(page) = Image::level(l.width, l.height, load::expand_page(&indices, palette)) else { continue };
+            lightmaps.insert(key, page);
         }
     }
     // Draw only what a native material owns: the rest keeps its D3D draws.
@@ -304,18 +298,17 @@ fn keep_materials(mut world: World, native: &HashMap<u16, Image>) -> World {
     world
 }
 
-/// The first image of a bitmap, its largest level, as RGBA.
+/// The first image of a bitmap as RGBA, with its mip chain.
 fn decode_first<R: std::io::Read + std::io::Seek>(map: &mut Map<R>, files: &mut assets::ResourceFiles, id: TagId) -> Option<Image> {
     let tags::TagData::Bitmap(b) = tags::DecodedTag::read(map, id).ok()?.data else {
         return None;
     };
     let d = assets::decode_image(b.images.first()?, files).ok()?;
-    let l = d.levels.into_iter().find(|l| l.face == 0 && l.depth <= 1)?;
-    (l.rgba.len() == (l.width * l.height * 4) as usize).then_some(Image {
-        width: l.width,
-        height: l.height,
-        rgba: l.rgba,
-    })
+    let mut levels: Vec<_> = d.levels.into_iter().filter(|l| l.face == 0 && l.depth <= 1).collect();
+    levels.sort_by_key(|l| l.level);
+    // The whole decoded chain: the native pass samples with mipmaps, as
+    // the D3D path does.
+    Image::from_levels(levels.into_iter().map(|l| (l.width, l.height, l.rgba)).collect())
 }
 
 #[cfg(test)]
