@@ -108,6 +108,42 @@ pub fn argb8888_linear(width: u16, height: u16, rgba: &[u8]) -> Result<Vec<u8>> 
     Ok(out)
 }
 
+/// The inverse of [`argb8888_linear`]: `width` x `height` RGBA rows from
+/// linear `ARGB8888` bytes (B, G, R, A), rows padded to [`ROW_ALIGN`].
+pub fn rgba_from_argb8888_linear(width: u16, height: u16, lod: &[u8]) -> Result<Vec<u8>> {
+    let (w, h) = (usize::from(width), usize::from(height));
+    let pitch = (w * 4).next_multiple_of(ROW_ALIGN);
+    if h > 0 && lod.len() < pitch * (h - 1) + w * 4 {
+        return Err(Error::Invalid("LOD shorter than width x height"));
+    }
+    let mut out = Vec::with_capacity(w * h * 4);
+    for y in 0..h {
+        for p in lod[y * pitch..][..w * 4].chunks_exact(4) {
+            out.extend_from_slice(&[p[2], p[1], p[0], p[3]]);
+        }
+    }
+    Ok(out)
+}
+
+impl Template {
+    /// The template image's pixels as RGBA, when it is one linear
+    /// `ARGB8888` image whose first LOD lies in `map`'s own file.
+    pub fn rgba<R: Read + Seek>(&self, map: &mut Map<R>) -> Result<Vec<u8>> {
+        let u16_at = |o: usize| u16::from_le_bytes([self.image[o], self.image[o + 1]]);
+        let u32_at = |o: usize| u32::from_le_bytes(self.image[o..o + 4].try_into().unwrap());
+        if u16_at(at::FORMAT) != FORMAT_ARGB8888 {
+            return Err(Error::Invalid("template image is not ARGB8888"));
+        }
+        let (ptr, size) = (u32_at(at::LOD_POINTERS), u32_at(at::LOD_SIZES));
+        if ptr == u32::MAX || ptr & 0xc000_0000 != 0 {
+            return Err(Error::Invalid("template LOD is not in this map"));
+        }
+        let lod = map.read_file_range(u64::from(ptr), u64::from(size))?;
+        let (w, h) = self.size();
+        rgba_from_argb8888_linear(w, h, &lod)
+    }
+}
+
 /// Adds `name`, a bitmap shaped like `template` holding `rgba`
 /// (`width` x `height`), to `set`. Returns its datum. The set's index must
 /// have room for one more tag (for a decomposed retail map:

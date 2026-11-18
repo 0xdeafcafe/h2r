@@ -132,6 +132,15 @@ pub trait Rows: Send + Sync {
     fn tint(&self, _row: i16) -> Option<[f32; 3]> {
         None
     }
+    /// The picture's bitmap for row `row`, a `bitm` datum handle of the
+    /// loaded map, for a class with a picture ([`ListClass::picture`]);
+    /// `None` leaves it. The bitmap widget reads its block's reference
+    /// (`[widget + 0x70] + 0x1c`) at each draw (`0x2b05bb`, `0x2b0b26`),
+    /// so writing it there changes the picture, as the level select's
+    /// picture changes with its focused level.
+    fn picture(&self, _row: i16) -> Option<u32> {
+        None
+    }
     /// Text that changes while the screen is up, asked at each row text:
     /// bytes to write to guest memory first (the strings the ids this
     /// class shows are served from), and whether the description must be
@@ -510,6 +519,18 @@ pub fn set_tint(m: &mut dyn GuestMemory, widget: u32, tint: [f32; 3]) -> Result<
         m.set_u32(widget + WIDGET_TINT + 4 * i as u32, c.to_bits())?;
     }
     Ok(())
+}
+
+/// A bitmap widget's block definition (`+0x70`, set by its constructor
+/// `0x2b01eb`).
+pub const WIDGET_BLOCK: u32 = 0x70;
+
+/// Points bitmap widget `widget` at `bitm` datum `datum`: its block's
+/// reference ([`BITMAP_HANDLE`]), which the draw reads each frame. The
+/// block is our copy ([`picture_block`]), never a tag's.
+pub fn set_picture(m: &mut dyn GuestMemory, widget: u32, datum: u32) -> Result<(), MemFault> {
+    let block = m.u32(widget + WIDGET_BLOCK)?;
+    m.set_u32(block + BITMAP_HANDLE as u32, datum)
 }
 
 /// A description text of ours on the screen: a text block definition
@@ -1062,6 +1083,41 @@ pub async fn open(cx: &Cx, chain: u32, screen: &str) -> Result<(), EntryError> {
     Ok(())
 }
 
+/// Opens our screen `screen` above `over` on `over`'s own window and slot,
+/// for the player of `chain`: the loader is handed a request built as the
+/// Game Setup dialog's own rows build theirs (window `+0x74`, slot `+0x78`;
+/// `crate::skulls_mp::open_request`). Says why when it cannot.
+pub async fn push(cx: &Cx, chain: u32, over: u32, screen: &str) -> Result<(), EntryError> {
+    let Some(loader) = loader_of(screen) else {
+        eprintln!("ui: {screen} is not a screen of ours (or its class is off); not opened");
+        return Ok(());
+    };
+    let Some(mask) = cx.read(|m| player_mask(m, chain))? else {
+        eprintln!("ui: no local player for the press; {screen} not opened");
+        return Ok(());
+    };
+    let (window, slot) = crate::ui_kit::lifecycle::window_slot(cx, over)?;
+    let request = crate::skulls_mp::open_request(mask as u16, window, slot, loader);
+    let at = PUSH_REQUEST.load(Ordering::SeqCst);
+    if at == 0 {
+        eprintln!("ui: no request memory yet; {screen} not opened");
+        return Ok(());
+    }
+    eprintln!("ui: opening {screen} on window {window}, slot {slot}");
+    cx.write(|m| m.write(at, &request))?;
+    cx.call(GuestCall::new(loader).args([at])).await?;
+    Ok(())
+}
+
+/// Guest memory for [`push`]'s request (0x20 bytes), set at install
+/// ([`set_push_request`]).
+static PUSH_REQUEST: AtomicU32 = AtomicU32::new(0);
+
+/// Where [`push`] builds its request: 0x20 bytes of guest memory of ours.
+pub fn set_push_request(at: u32) {
+    PUSH_REQUEST.store(at, Ordering::SeqCst);
+}
+
 /// Row text (list slot 20): thiscall on the list, the item and a word,
 /// `ret 8`. Each of the row's texts goes to the item's text widget of that
 /// index. With `shown` (a class with a description), the focused row's
@@ -1114,6 +1170,13 @@ pub async fn row_text(
             ) {
                 cx.write(|m| set_tint(m, picture, tint))?;
             }
+            if let (Some(picture), Some(datum), Some(_)) = (
+                shown.picture(screen),
+                focused.and_then(|r| rows.picture(r)),
+                moved,
+            ) {
+                cx.write(|m| set_picture(m, picture, datum))?;
+            }
         }
     }
     Ok(Ret::new(0, 8))
@@ -1133,6 +1196,10 @@ pub async fn row_chosen(
     match rows.press(row) {
         Chosen::Stepped(msg) => eprintln!("{msg}"),
         Chosen::Open(id) => open(&cx, chain, id).await?,
+        Chosen::Push(id) => {
+            let screen = cx.entry().ecx.wrapping_sub(ui::LIST);
+            push(&cx, chain, screen, id).await?
+        }
         Chosen::Act => {
             if let Some(action) = action {
                 let screen = cx.entry().ecx.wrapping_sub(ui::LIST);
@@ -1421,6 +1488,9 @@ impl feature::Feature for ListClass {
         let rows = Arc::clone(&self.rows);
         let title = rows.title();
         let tables = b.guest_alloc(0x1000, Permissions::RW)?;
+        if PUSH_REQUEST.load(Ordering::SeqCst) == 0 {
+            set_push_request(b.guest_alloc(0x1000, Permissions::RW)?);
+        }
         let name = self.id;
         let shown = self.description.map(|_| Arc::new(Shown::default()));
         // The loader needs every address, so the entries are made first and
@@ -2062,6 +2132,9 @@ mod tests {
         fn tint(&self, row: i16) -> Option<[f32; 3]> {
             (row == 3).then_some([0.5, 0.25, 1.0])
         }
+        fn picture(&self, row: i16) -> Option<u32> {
+            (row == 3).then_some(0xe6dd_04bb)
+        }
     }
 
     #[test]
@@ -2513,7 +2586,8 @@ mod tests {
         assert_eq!(shown.picture(SCREEN), Some(0x9900));
     }
 
-    /// Row text tints the picture for the focused row when the focus moves.
+    /// Row text tints the picture for the focused row when the focus moves,
+    /// and shows the row's bitmap in it.
     #[test]
     fn row_text_tints_the_picture_for_the_focused_row() {
         const ITEM: u32 = 0x0060_0000;
@@ -2524,7 +2598,10 @@ mod tests {
         shown.set_picture(SCREEN, PICTURE);
         let mut g = guest();
         g.put_u32(STACK + 4, ITEM).put_u32(STACK + 8, 0);
-        g.map(ITEM, Item::SIZE).map(PICTURE, 0x90);
+        const BLOCK: u32 = 0x0062_0000;
+        g.map(ITEM, Item::SIZE).map(PICTURE, 0x90).map(BLOCK, 0x38);
+        g.put_u32(PICTURE + WIDGET_BLOCK, BLOCK)
+            .put_u32(BLOCK + BITMAP_HANDLE as u32, 0xe58c_036c);
         Item::at(ITEM)
             .set_row(&mut g, Some(DatumHandle::new(0x8001, 3)))
             .unwrap();
@@ -2552,6 +2629,8 @@ mod tests {
             .map(|i| f32::from_bits(run.guest.u32(PICTURE + WIDGET_TINT + 4 * i).unwrap()))
             .collect();
         assert_eq!(tint, [0.5, 0.25, 1.0]);
+        // And points it at the row's bitmap, in our copy of its block.
+        assert_eq!(run.guest.u32(BLOCK + BITMAP_HANDLE as u32).unwrap(), 0xe6dd_04bb);
         let mut m = FakeGuest::new();
         m.map(PICTURE, 0x90);
         set_tint(&mut m, PICTURE, [1.0, 0.78, 0.3]).unwrap();

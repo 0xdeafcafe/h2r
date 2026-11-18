@@ -18,7 +18,7 @@ use engine::memory::{GuestMemory, MemFault};
 use engine::view::players;
 
 use crate::guest;
-use crate::local::PadSource;
+use crate::local::{Frame, PadSource};
 
 /// Who a phantom is (docs/game/bots.md, section 9.1): the server's account
 /// and how the lobby shows it.
@@ -86,9 +86,6 @@ pub struct PhantomInfo {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
-    /// Phantom machines are not made yet: the membership step of stage 6
-    /// is still being traced (docs/game/bots.md, section 12).
-    NotBuilt,
     /// [`MAX_PHANTOMS`] already.
     Full,
     /// A phantom with that xuid is already on the books.
@@ -101,10 +98,6 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Error::NotBuilt => write!(
-                f,
-                "phantom peers are not built yet (docs/game/bots.md, stage 6)"
-            ),
             Error::Full => write!(f, "{MAX_PHANTOMS} phantoms already"),
             Error::Duplicate(x) => write!(f, "a phantom with xuid {x:016x} already"),
             Error::BadIdentity => write!(f, "a phantom needs a gamertag and a non-zero xuid"),
@@ -116,14 +109,20 @@ impl std::error::Error for Error {}
 
 struct Phantom {
     info: PhantomInfo,
-    #[allow(dead_code)] // driven once the action step lands
     source: Box<dyn PadSource>,
+    /// Its peer is in the host's session.
+    made: bool,
+    /// The tick of its last action.
+    last_tick: Option<u32>,
 }
 
 #[derive(Default)]
 struct Books {
     list: Vec<Phantom>,
     next: u32,
+    /// Machine ids of removed phantoms whose peers are still in the
+    /// session, for the game thread to take out.
+    gone: Vec<[u8; 6]>,
 }
 
 /// The phantoms of one host. Cheap to clone; clones share.
@@ -165,6 +164,8 @@ impl Phantoms {
                 state: State::Pending,
             },
             source,
+            made: false,
+            last_tick: None,
         });
         Ok(handle)
     }
@@ -177,8 +178,17 @@ impl Phantoms {
             .iter()
             .position(|p| p.info.handle == handle)
             .ok_or(Error::NoSuchPhantom(handle))?;
-        b.list.remove(i);
+        let p = b.list.remove(i);
+        if p.made {
+            b.gone.push(p.info.machine);
+        }
         Ok(())
+    }
+
+    /// No phantoms on the books and none left to take out of a session.
+    pub fn is_empty(&self) -> bool {
+        let b = self.lock();
+        b.list.is_empty() && b.gone.is_empty()
     }
 
     pub fn list(&self) -> Vec<PhantomInfo> {
@@ -211,9 +221,21 @@ impl Phantoms {
     /// id. A phantom whose player has gone goes back to pending; a failed
     /// one stays failed.
     pub fn refresh(&self, m: &dyn GuestMemory) -> Result<(), MemFault> {
+        self.refresh_where(m, false)
+    }
+
+    /// [`Phantoms::refresh`]; with `only_made`, a phantom with no peer in
+    /// the session is pending whatever the player records still hold (they
+    /// outlive a game).
+    fn refresh_where(&self, m: &dyn GuestMemory, only_made: bool) -> Result<(), MemFault> {
         let found = players_by_machine(m)?;
         for p in &mut self.lock().list {
             if matches!(p.info.state, State::Failed(_)) {
+                continue;
+            }
+            if only_made && !p.made {
+                p.info.player = None;
+                p.info.state = State::Pending;
                 continue;
             }
             let at = found
@@ -229,6 +251,145 @@ impl Phantoms {
         }
         Ok(())
     }
+}
+
+impl Phantoms {
+    /// One frame on the game thread (docs/game/bots.md §5.1). While a
+    /// multiplayer game runs and this console hosts it, pending phantoms
+    /// get a peer and a session player, and each joined phantom's source
+    /// is asked for its pad, written as its action. Removed phantoms' peers
+    /// come out. When the game ends, every phantom's peer comes out and
+    /// the phantom waits for the next game. Returns lines for the log.
+    pub fn tick(&self, m: &mut dyn GuestMemory, frame: u64) -> Result<Vec<String>, MemFault> {
+        let mut log = Vec::new();
+        let mut b = self.lock();
+        let host = session::host_session(&*m);
+        let live = session::live_session(&*m);
+
+        // Out: removed phantoms, and all of them once the game is over.
+        let mut out: Vec<[u8; 6]> = std::mem::take(&mut b.gone);
+        if host.is_err() {
+            for p in &mut b.list {
+                if p.made {
+                    out.push(p.info.machine);
+                    p.made = false;
+                    p.last_tick = None;
+                }
+            }
+        }
+        if let Some(s) = live {
+            let mut peers = Vec::new();
+            for mac in &out {
+                if let Some(i) = session::find_peer(&*m, s, *mac)? {
+                    peers.push(i);
+                }
+            }
+            // Last first, so the indices still to go stay put.
+            peers.sort_unstable_by(|a, b| b.cmp(a));
+            for i in peers {
+                session::remove_peer(m, s, i)?;
+            }
+        }
+
+        let s = match host {
+            Ok(s) => s,
+            Err(session::NotNow::NotHost) => {
+                for p in &mut b.list {
+                    if p.info.state == State::Pending {
+                        p.info.state = State::Failed("this console is not the game's host".into());
+                        log.push(format!(
+                            "bots: phantom {} failed: not the host",
+                            p.info.identity.gamertag
+                        ));
+                    }
+                }
+                drop(b);
+                self.refresh_where(&*m, true)?;
+                return Ok(log);
+            }
+            Err(_) => {
+                drop(b);
+                self.refresh_where(&*m, true)?;
+                return Ok(log);
+            }
+        };
+
+        // In: pending phantoms with no peer yet.
+        for p in &mut b.list {
+            if p.made || matches!(p.info.state, State::Failed(_)) {
+                continue;
+            }
+            let Some(config) = session::config(&*m, &p.info.identity.gamertag, p.info.team)? else {
+                continue; // no local player to copy yet
+            };
+            let mac = p.info.machine;
+            let Some(peer) = session::add_peer(m, s, mac, &p.info.identity.gamertag)? else {
+                p.info.state = State::Failed("the session has no room for another machine".into());
+                continue;
+            };
+            let id = session::player_id(p.info.identity.xuid, mac);
+            if session::add_player(m, s, peer, id, &config)?.is_none() {
+                session::remove_peer(m, s, peer)?;
+                p.info.state = State::Failed("the session has no room for another player".into());
+                continue;
+            }
+            p.made = true;
+            log.push(format!(
+                "bots: phantom {} joins (peer {peer})",
+                p.info.identity.gamertag
+            ));
+        }
+        drop(b);
+        self.refresh_where(&*m, true)?;
+
+        // Actions.
+        let tick = guest::game_tick(&*m);
+        let mut b = self.lock();
+        for p in &mut b.list {
+            if !p.made || p.info.state != State::Joined {
+                continue;
+            }
+            let mac = p.info.machine;
+            let Some(slot) = session::slot_of(&*m, mac)? else {
+                continue;
+            };
+            let Some(addr) = player_addr(&*m, mac)? else {
+                continue;
+            };
+            let Some((aim, weapon)) = session::facing(&*m, addr)? else {
+                continue;
+            };
+            let f = Frame {
+                frame,
+                tick,
+                port: 4,
+                machine: Some(mac),
+                guest: &*m,
+                joining: false,
+            };
+            let pad = p.source.pad(&f);
+            let ticks = match (tick, p.last_tick) {
+                (Some(t), Some(l)) => t.saturating_sub(l).clamp(1, 30),
+                _ => 1,
+            };
+            p.last_tick = tick;
+            let a = session::action_from_pad(&pad, aim, weapon, ticks as f32 / 30.0);
+            session::write_action(m, slot, &a)?;
+        }
+        Ok(log)
+    }
+}
+
+fn player_addr(m: &dyn GuestMemory, mac: [u8; 6]) -> Result<Option<u32>, MemFault> {
+    let Some(array) = players::array(m)? else {
+        return Ok(None);
+    };
+    for (_, p) in array.live(m, 16)? {
+        if p.listed(m)? && guest::player_machine(m, p.addr)? == mac {
+            return Ok(Some(p.addr));
+        }
+    }
+    Ok(None)
 }
 
 /// Every listed player's machine id and datum index.
@@ -253,15 +414,14 @@ pub fn global() -> &'static Phantoms {
 }
 
 /// Adds a phantom peer with `identity` on `team` (`None`: the host
-/// balances), driven by `source`. Refused with [`Error::NotBuilt`] until
-/// the game thread makes phantom machines (stage 6's membership step).
+/// balances), driven by `source` (see [`Phantoms::add`]). It joins once a
+/// multiplayer game this console hosts is running.
 pub fn add(
     identity: Identity,
     team: Option<u8>,
     source: Box<dyn PadSource>,
 ) -> Result<PhantomHandle, Error> {
-    let _ = (identity, team, source);
-    Err(Error::NotBuilt)
+    global().add(identity, team, source)
 }
 
 /// Removes a phantom peer.
@@ -279,6 +439,8 @@ pub fn list() -> Vec<PhantomInfo> {
 pub fn player(handle: PhantomHandle) -> Option<u32> {
     global().player(handle)
 }
+
+pub mod session;
 
 #[cfg(test)]
 mod tests;

@@ -162,7 +162,12 @@ active options). A re-activation of the campaign map the current game is on
 continues that game instead of ending it and starting another (which also
 spent one `POST /v1/games` per revert against the server's write rate
 limit, and a refused creation stops the sink). A different mission, a
-multiplayer map or the main menu ends it as before.
+multiplayer map or the main menu ends it as before. The revert winds the
+engine's clock back; the game's does not: from then on every tick the game
+sends (frames, kills, scores, its end) is the engine's plus an even offset
+that puts the first one past the last tick sent. Before, the reverted run's
+ticks overlapped the first's, a replay sorted them together and the player
+flicked between the two runs.
 
 Tag names are (likely) not in guest memory: nothing in the XBE refers to
 the cache header's tag-name fields, and the loader reads the tag index and

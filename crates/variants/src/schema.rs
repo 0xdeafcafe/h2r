@@ -62,6 +62,9 @@ pub struct Choice {
     pub label: String,
     /// The definition marks it as the default.
     pub default: bool,
+    /// One of ours ([`crate::extra`]), not the disc's: the game keeps and
+    /// plays it, but its retail editor does not offer it.
+    pub ours: bool,
 }
 
 /// One setting as the editor shows it.
@@ -110,12 +113,15 @@ pub enum Issue {
     Record(record::Problem),
     /// A setting holds a value its definition does not offer.
     NotOffered { id: SettingId, value: i32 },
+    /// The clean-up keeps it, but the game cannot play it
+    /// ([`record::ours`]); our editors refuse it.
+    Ours(record::Problem),
 }
 
 impl std::fmt::Display for Issue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Issue::Record(p) => write!(f, "+{:#x}: {}", p.offset, p.what),
+            Issue::Record(p) | Issue::Ours(p) => write!(f, "+{:#x}: {}", p.offset, p.what),
             Issue::NotOffered { id, value } => {
                 write!(
                     f,
@@ -363,10 +369,12 @@ impl Schema {
             .collect()
     }
 
-    /// Findings for a variant: the clean-up's rules, then every setting of
-    /// its type whose value the definition does not offer.
+    /// Findings for a variant: the clean-up's rules, our own
+    /// ([`record::ours`]), then every setting of its type whose value the
+    /// definition (with ours, [`with_extras`]) does not offer.
     pub fn validate(&self, v: &GameVariant) -> Vec<Issue> {
         let mut out: Vec<Issue> = record::check(v).into_iter().map(Issue::Record).collect();
+        out.extend(record::ours(v).into_iter().map(Issue::Ours));
         let ty = v.game_type();
         for page in self.pages_for(ty) {
             for id in page.settings {
@@ -468,7 +476,7 @@ fn setting_def(sily: &[u8], src: &mut dyn Source) -> Result<Option<SettingDef>, 
     let opts = block(sily, SILY_OPTIONS, OPTION_SIZE, MAX_OPTIONS, &mut |a, s| {
         src.read(a, s)
     })?;
-    let choices = opts
+    let retail: Vec<Choice> = opts
         .as_chunks::<OPTION_SIZE>()
         .0
         .iter()
@@ -480,6 +488,7 @@ fn setting_def(sily: &[u8], src: &mut dyn Source) -> Result<Option<SettingDef>, 
                     .and_then(|sid| src.text(unic, sid))
                     .unwrap_or_else(|| value.to_string()),
                 default: le32(o, 0).unwrap() & 1 != 0,
+                ours: false,
             }
         })
         .collect();
@@ -487,8 +496,33 @@ fn setting_def(sily: &[u8], src: &mut dyn Source) -> Result<Option<SettingDef>, 
         id,
         title,
         help,
-        choices,
+        choices: with_extras(id, retail),
     }))
+}
+
+/// A definition's choices with ours ([`crate::extra`]) merged in, the way
+/// the game's editor shows them (`boot::variant_options`). A setting the
+/// disc offers nothing for gets nothing of ours either.
+pub fn with_extras(id: SettingId, retail: Vec<Choice>) -> Vec<Choice> {
+    if retail.is_empty() {
+        return retail;
+    }
+    let values: Vec<i32> = retail.iter().map(|c| c.value).collect();
+    crate::extra::merge(id, &values)
+        .into_iter()
+        .map(|r| match r {
+            Ok(i) => retail[i].clone(),
+            Err(k) => {
+                let e = &crate::extra::OPTIONS[k];
+                Choice {
+                    value: e.value,
+                    label: e.label.into(),
+                    default: false,
+                    ours: true,
+                }
+            }
+        })
+        .collect()
 }
 
 fn tag_bytes<R: Read + Seek>(map: &mut Map<R>, tag: &map::Tag) -> Result<Vec<u8>, SchemaError> {

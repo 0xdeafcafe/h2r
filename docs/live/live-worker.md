@@ -401,7 +401,6 @@ large share of the day's requests.
    - Blobs go to R2 through the `s3://` path.
    - Rehearsed against `wrangler dev` with a read-only copy of the real log ([Rehearsal](#rehearsal-2026-11-18)).
 8. **Staging, then cutover.** [Deploy](#deploy), then the [Cutover runbook](#cutover-runbook).
-9. **Later.** The menu bar app gets a "worker" mode: deploy, tail and status in place of a local server.
 
 ## Deploy
 
@@ -646,10 +645,8 @@ under a minute.
 
 **4. Stop the Mac's writes.** This starts the downtime: from here until
 step 7, live.forbes.red answers errors (the tunnel has no server behind it).
-The user does this, not an agent. In the menu bar app (H2 Live), choose
-**Stop server**. The tunnel can stay up until step 7. So a login doesn't
-start the server again, turn off **Run at login** for the server there too.
-Or, from a terminal:
+The user does this, not an agent. The tunnel can stay up until step 7. From
+a terminal, stop the server and keep a login from starting it again:
 ```
 launchctl bootout gui/$(id -u)/red.forbes.h2live.server
 launchctl disable gui/$(id -u)/red.forbes.h2live.server
@@ -691,8 +688,8 @@ Pages, h2-live, Observability:
 `bunx wrangler@4 tail --env production` shows them live.
 
 **8. Leave the Mac's server and tunnel stopped.** They are the rollback.
-Stop the tunnel from the menu bar app (**Stop tunnel**, and turn off
-**Run at login**) once the Worker has served for a day.
+Stop the tunnel (`launchctl bootout` and `launchctl disable` for its agent, as
+in step 4) once the Worker has served for a day.
 
 ## Rollback
 
@@ -711,9 +708,9 @@ Stop the tunnel from the menu bar app (**Stop tunnel**, and turn off
    that forked is refused. Events the Worker writes after this copy (its
    sweeps, with no clients left) are not carried back. They are server
    housekeeping that the Mac's own sweep redoes.
-3. **Start the Mac's server:** menu bar app, **Start server** (and **Run
-   at login** back on). Or `launchctl enable` then `launchctl bootstrap
-   gui/$(id -u) ~/Library/LaunchAgents/red.forbes.h2live.server.plist`.
+3. **Start the Mac's server:** `launchctl enable` then `launchctl bootstrap
+   gui/$(id -u) ~/Library/LaunchAgents/red.forbes.h2live.server.plist`,
+   or run `h2 live serve` by hand.
 4. Check `curl -s https://live.forbes.red/healthz` shows the position
    from step 2.
 
@@ -758,7 +755,7 @@ Nothing, as a server:
 
 The Mac still does these:
 - **Publishing game art.** It needs the disc, and it uploads to the public bucket through the existing `s3://` path.
-- **Deploys.** `wrangler deploy` from a checkout, until the menu bar app's "worker" mode (slice 9).
+- **Deploys.** `wrangler deploy` from a checkout.
 
 `h2 live serve` keeps working for local and offline servers, where the
 machine's SQLite or Postgres log stays the default.

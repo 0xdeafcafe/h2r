@@ -53,6 +53,7 @@ fn real_h1_disc_every_sky_reads() {
     let mut maps_with_skies = 0;
     let (mut with_model, mut with_animation, mut with_fog, mut with_functions) = (0, 0, 0, 0);
     let mut lights = 0;
+    let mut fogs = 0;
     for e in &disc.maps {
         let name = h1map::disc::file_name(e);
         let map = h1_map(&mut x, h1map::disc::map_stem(e)).expect("map reads");
@@ -77,6 +78,15 @@ fn real_h1_disc_every_sky_reads() {
                 let m = map.tag(sky.model.id).expect("model resolves");
                 assert_eq!(m.group, h1map::Group::new(b"mode"), "{name} model group");
             }
+            // Each fog run: the padding words zero, a density in 0..1,
+            // and a start no farther than the opaque distance.
+            for (k, at) in h1::FOG_RUNS.into_iter().enumerate() {
+                let s = &sky.lighting_scalars;
+                assert_eq!([s[at + 3], s[at + 4]], [0.0, 0.0], "{name} fog {k} padding");
+                assert!((0.0..=1.0).contains(&s[at + 5]), "{name} fog {k} density");
+                assert!(s[at + 6] <= s[at + 7], "{name} fog {k} start past opaque");
+            }
+            fogs += sky.fogs().iter().flatten().count();
             for l in &sky.lights {
                 if !l.lens_flare.id.is_none() {
                     let lens = map.tag(l.lens_flare.id).expect("lens resolves");
@@ -96,7 +106,7 @@ fn real_h1_disc_every_sky_reads() {
     println!(
         "census: {total} skies on {maps_with_skies} of {} maps, {with_model} with a model, \
          {with_animation} with an animation graph, {with_fog} with fog, \
-         {with_functions} shader functions, {lights} sky lights",
+         {with_functions} shader functions, {lights} sky lights, {fogs} fog runs with a density",
         disc.maps.len()
     );
     assert_eq!(total, 31, "31 skies on the retail disc");

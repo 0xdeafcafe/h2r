@@ -157,7 +157,6 @@ h2 live maps publish|list ...
 h2 live assets extract [--disc PATH] [--out DIR] [--mappack ISO] [--installed DATA]
 h2 live assets check [--out DIR]
 h2 live store copy [--from DB --to DB] [--from-blobs LOC --to-blobs LOC]
-h2 live menubar [--install | --uninstall | --status ...]
 h2 live invite create [--days N] [--code TEXT] [--as GAMERTAG] [--server URL] [--data DIR]
 h2 live invite list [--as GAMERTAG] [--server URL] [--data DIR]
 h2 live invite revoke <jti> --as GAMERTAG [--server URL]

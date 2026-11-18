@@ -16,6 +16,12 @@
 //!   render the snapshot is taken inside `RENDER_FRAME`, so it has them
 //!   hidden too; both points run on the game thread.
 //!
+//! - Phantom peers ([`bots::phantom::global`], docs/game/bots.md §5.1):
+//!   before each `RENDER_FRAME`, once a multiplayer game this console hosts
+//!   runs, pending phantoms are written into the session and the game makes
+//!   their players; each joined phantom's pad becomes its action. When the
+//!   game ends they leave the session and wait for the next.
+//!
 //! With no bots every hook returns at once. The bots stay signed in until
 //! the game exits; going back to the players screen finds them joined.
 
@@ -54,6 +60,7 @@ pub fn add_from_env() {
 /// The feature over a set of local bots.
 pub struct Bots {
     local: Local,
+    phantoms: bots::phantom::Phantoms,
     /// Where `h2 bots nav` writes each map's data.
     dir: std::path::PathBuf,
     map: Arc<Mutex<String>>,
@@ -63,9 +70,14 @@ pub struct Bots {
 }
 
 impl Bots {
-    pub fn new(local: Local, data_root: &std::path::Path) -> Self {
+    pub fn new(
+        local: Local,
+        phantoms: bots::phantom::Phantoms,
+        data_root: &std::path::Path,
+    ) -> Self {
         Bots {
             local,
+            phantoms,
             dir: data_root.join("bots"),
             map: Arc::default(),
             frame: Arc::default(),
@@ -116,8 +128,9 @@ impl feature::Feature for Bots {
             });
 
         // Each frame: the pads, then the bots' views out.
-        let (local, frame, render, map, dir) = (
+        let (local, phantoms, frame, render, map, dir) = (
             self.local.clone(),
+            self.phantoms.clone(),
             Arc::clone(&self.frame),
             Arc::clone(&self.render),
             Arc::clone(&self.map),
@@ -128,13 +141,23 @@ impl feature::Feature for Bots {
             "bot pads; hide bot views",
             move |c| {
                 let bots = local.port_mask();
-                if bots == 0 {
+                let any_phantoms = !phantoms.is_empty();
+                if bots == 0 && !any_phantoms {
                     return Ok(Flow::Continue);
                 }
                 let rt = Arc::clone(c.ctx.runtime());
                 let mut mem = rt.memory();
                 let f = frame.fetch_add(1, Ordering::Relaxed);
                 load_map_data(&map, &dir, &mem);
+                if any_phantoms {
+                    match phantoms.tick(&mut *mem, f) {
+                        Ok(lines) => lines.iter().for_each(|l| eprintln!("{l}")),
+                        Err(e) => eprintln!("bots: phantoms: fault at {:#x}", e.addr),
+                    }
+                }
+                if bots == 0 {
+                    return Ok(Flow::Continue);
+                }
                 let on_players_screen = crate::ui_watch::read(&*mem)
                     .top
                     .is_some_and(|t| t.id == crate::ui_watch::JOIN_SCREEN);
@@ -235,7 +258,11 @@ pub fn install(
     data_root: &std::path::Path,
 ) -> anyhow::Result<bool> {
     let added = registry
-        .add(&Bots::new(local::global().clone(), data_root))
+        .add(&Bots::new(
+            local::global().clone(),
+            bots::phantom::global().clone(),
+            data_root,
+        ))
         .map_err(|e| anyhow::anyhow!("bots: {e}"))?;
     if !added {
         eprintln!("bots: off: switched off (H2_FEATURES)");

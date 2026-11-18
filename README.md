@@ -62,7 +62,7 @@ Heretic on an M-series Mac, against a target of 30
 | | In the game: sign-in, matchmaking, custom games browser | Built | [matchmaking](docs/live/live-matchmaking.md), [custom games](docs/live/live-custom-games.md) |
 | | Co-op campaign over Live | Built | [co-op](docs/live/live-coop.md) |
 | | Web app: dashboard, stats, live top-down map, replays, admin | Built | [web](web/README.md), [art](docs/live/live-art.md) |
-| | Hosting for friends: Docker, Cloudflare Tunnel, SQLite and R2, a menu bar app | Built | [hosting](docs/live/live-hosting.md) |
+| | Hosting for friends: Docker, Cloudflare Tunnel, SQLite and R2 | Built | [hosting](docs/live/live-hosting.md) |
 | Editor | `h2-editor`: 3D viewport, placements, game variants, playlists, Halo 1 maps | Built | [guide](docs/editor/editor-guide.md) |
 | Tools | Tag decoders (`h2 bitmap`, `sound`, `ui`, `hs`, ...), map builder, profiler, benchmarks | Built | [formats](docs/README.md), [perf](docs/perf/perf.md) |
 

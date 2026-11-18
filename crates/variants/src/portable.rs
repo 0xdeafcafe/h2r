@@ -63,7 +63,7 @@ pub fn import(text: &str) -> Result<(GameVariant, Vec<record::Problem>), Portabl
         .collect::<Result<Vec<u8>, _>>()
         .map_err(|_| PortableError::Record)?;
     let v = GameVariant::from_bytes(&bytes).map_err(|_| PortableError::Record)?;
-    let problems = record::check(&v);
+    let problems = record::refused(&v);
     Ok((v, problems))
 }
 

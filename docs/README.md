@@ -139,6 +139,7 @@ goals, the two-stage plan, the crate table and milestones.
 - [ui-screens.md](game/ui-screens.md): the UI kit for list screens of ours: ids, input, previews, the checklist
 - [skulls.md](game/skulls.md): campaign skulls per profile, the skulls menu, and our own skulls
 - [community-gametypes.md](game/community-gametypes.md): community classics (Zombies, SWAT and more) as extra built-in game variants
+- [game-options.md](game/game-options.md): game variant options retail doesn't allow (no-weapon starts, instant respawn, gravity) and names with any character (design)
 - [maps.md](game/maps.md): new, edited, patched and shared maps: packages, patches, `MapId`; foundation built
 - [campaigns.md](game/campaigns.md): design for more than one campaign, starting with Halo 1's levels in the Halo 2 engine; the converter is built for multiplayer maps only
 - [health.md](game/health.md): Halo 1's health model on Halo 2's engine: no body regeneration, health packs, a health meter (`H2_HEALTH_MODEL`; the map-load switch for Halo 1 maps is not wired yet)
@@ -167,6 +168,7 @@ goals, the two-stage plan, the crate table and milestones.
 - [live-voice.md](live/live-voice.md): voice chat, voice messages and the mute list: how the title does voice, and the host design (design only, not built)
 - [live-gamestate.md](live/live-gamestate.md): retail game-state addresses and layouts for the scoreboard and map
 - [live-telemetry.md](live/live-telemetry.md): `crates/live-telemetry`: hooks into the game, events and frames
+- [replay-fidelity.md](live/replay-fidelity.md): what replays record today (measured), the game clock that stopped the campaign flicker, and a denser tick-exact spectator track for the viewer (design, mostly not built)
 - [live-art.md](live/live-art.md): map geometry and pre-drawn views extracted from the disc for the stats site
 
 ## Editor (`editor/`)

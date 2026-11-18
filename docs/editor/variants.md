@@ -232,6 +232,17 @@ built the game's way passes the clean-up and offers only listed values),
 the XBE names in every language, and opens every built-in in the editor
 (read-only, with no issues).
 
+## Our added choices and rules
+
+`variants::extra` lists values the record keeps and plays but the retail
+editor leaves out (starting weapon "None", a 1 s respawn, more score, time
+and lives steps; docs/game/game-options.md). `Schema` merges them into each
+definition's choices (`Choice::ours`, shown "(h2recomp)" in Studio), and
+the game's own editor shows them too (`boot::variant_options`).
+`record::ours` is our rule beyond the clean-up: respawn 0 with the cycling
+modifier divides by zero in the game, so `record::refused` (the clean-up's
+rules plus ours) gates Studio's save, the hopper tool and portable import.
+
 ## Open
 
 - The signing key on our runtime (above): one in-game save settles it.

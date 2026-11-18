@@ -46,7 +46,6 @@ between.
 | iOS, iPadOS | `platform/ios/H2iOS/Assets.xcassets/AppIcon.appiconset`: one 1024 universal image, plus dark (transparent space) and tinted (grayscale) appearances | `ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon` in `platform/ios/project.yml` |
 | tvOS | `platform/tvos/H2TV/Assets.xcassets/App Icon & Top Shelf Image.brandassets`: the App Icon stack (400x240 @1x/@2x) and App Store stack (1280x768), each Front, Middle and Back; Top Shelf Image (1920x720 @1x/@2x) and Top Shelf Image Wide (2320x720 @1x/@2x) | `ASSETCATALOG_COMPILER_APPICON_NAME: "App Icon & Top Shelf Image"` in `platform/tvos/project.yml` |
 | macOS windows | `crates/app-icon/assets/AppIcon-512.png`, the plated Mac icon | `app_icon::set_dock_icon()`: the Dock icon of `h2 play` (`crates/app`) and `h2-editor` (`crates/studio`), which have no bundle |
-| Menu bar | `crates/app-icon/assets/StatusIconTemplate@2x.png` (36 px, 18 pt at 2x, black with alpha) | `h2 live menubar` (`crates/live-menubar/src/icon.rs`) draws its state on it and sets it as a template image |
 | Xbox (UWP) | `platform/xbox/Assets/` on the `xbox` branch | the AppxManifest that `uwp-host`'s `package` example writes (docs/runtime/xbox.md) |
 
 The tvOS layers sit Front over Middle over Back on one registered canvas:
@@ -76,7 +75,7 @@ Regenerate them from the sources below when something does.
   vector.
 - `unplated-numeral.svg`, `macos-optical-micro.svg`, `status-glyph.svg`,
   `lockscreen-glyph.svg`, `StatusIconTemplate.svg`: the small adaptations
-  (the isolated numeral, the 16 and 32 point Mac icon, the menu bar and
+  (the isolated numeral, the 16 and 32 point Mac icon, the status and
   lock-screen glyphs).
 
 ## Regenerating
@@ -103,5 +102,5 @@ xcrun actool platform/tvos/H2TV/Assets.xcassets --compile /tmp/tv-icon \
   --output-partial-info-plist /tmp/tv-icon/partial.plist --warnings --errors
 ```
 
-and run `cargo test -p app-icon -p live-menubar` (and `-p uwp-host` for
+and run `cargo test -p app-icon` (and `-p uwp-host` for
 the Xbox images).

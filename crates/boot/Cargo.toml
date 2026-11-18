@@ -27,6 +27,8 @@ feature = { path = "../feature" }
 engine = { path = "../engine", features = ["runtime-glue"] }
 toml = "0.9"
 font = { path = "../font" }
+# Our added game variant choices (variant_options, docs/game/game-options.md).
+variants = { path = "../variants" }
 anyhow.workspace = true
 libloading = "0.8"
 d3d = { path = "../d3d" }

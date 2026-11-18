@@ -35,7 +35,7 @@ pub struct Choice {
 
 impl Choice {
     pub fn new(origin: Origin, variant: GameVariant) -> Self {
-        let problems = record::check(&variant);
+        let problems = record::refused(&variant);
         Choice {
             origin,
             variant,

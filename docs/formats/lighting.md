@@ -144,6 +144,7 @@ editing API that automatically patches the retained bytes.
 | `sky +14` | uniform model scale | E `0x0003ebd0` assigns transform scale |
 | `sky +18` | camera translation scale | E `0x0003ebd0`: multiplies camera xyz |
 | `sky +34` | fallback object-lighting RGB | E `0x000d1a30`: used without sky lights or after occlusion |
+| `sky +48/+50/+58` | two fog blocks (stride `18`: RGB, density, start, opaque distance) and a third of stride `10` (RGB, scalar); element 0 of each, weighted by view coverage, blended into the view's atmosphere state | E `0x00131030` (from `0x0012f673`), `0x0012fb1b`; docs/formats/h1-sky.md |
 | `sky +78/+7c` | lights block, stride `34` | E `0x0003eec0`, `0x000d1a30` |
 | `sky +80` | rotation angle | E `0x0003ebd0`/`0x0003eec0`: sine/cosine |
 | Sky light `+0c/+10` | yaw/pitch angles | E `0x0003eec0`, `0x000d1a30`: spherical direction construction |

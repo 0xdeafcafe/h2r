@@ -75,7 +75,10 @@ profile; it is left out when nothing is known, and so is any field in it:
 `emblem/fg/<n>` and `emblem/bg/<n>`. Remote players have none yet, and there
 is no rank (docs/live/live-telemetry.md, "Player appearance").
 
-A frame (`tick` is the game tick, 30 per second):
+A frame (`tick` is the game tick, 30 per second; it only goes up within a
+game, as do the ticks of its events, and a frame lists only players it can
+place: a player whose unit cannot be read and who has no body or last place
+is left out, never sent at the origin):
 
 ```json
 { "game_id": "7f3c...", "tick": 5400,
@@ -201,7 +204,11 @@ above). A recorded frame also lists every machine the game has sent, at its
 latest state, so a replay can start at any second.
 
 Campaign plays as one game per mission (mode `campaign`, no scores): a
-checkpoint revert or restart of the same mission continues it.
+checkpoint revert or restart of the same mission continues it, and its
+ticks keep counting from where the game had got to although the engine's
+clock went back. Recordings from older senders run backwards there; a
+reader takes their frames and events in log order and starts each run
+after the one before (the web viewer's `GameClock`).
 
 A game start (`POST /v1/games`, `GameStarted`) may also say what kind of
 game it is; all five fields are optional and old senders leave them out:

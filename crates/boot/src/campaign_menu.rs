@@ -28,7 +28,7 @@ use crate::campaigns::{
     self, LEVEL_ARRAY, Picker, RETAIL_CAMPAIGN, Region, SELECTED_CAMPAIGN, State,
 };
 use crate::layout_glue::Gm;
-use crate::list_class::{ListClass, Rows};
+use crate::list_class::{ListClass, LiveText, Rows};
 use crate::ui::{Chosen, GuestArg};
 
 /// The picker's screen id.
@@ -45,27 +45,64 @@ pub const TITLE_ID: u32 = ID_BASE;
 const TITLE: &str = "Campaign";
 /// The most campaigns the picker lists (Halo 2 and 63 more).
 pub const MAX_ROWS: usize = 64;
+/// Each row's detail text ([`crate::campaign_info`]), the description
+/// pane's, rewritten in place while the picker is up.
+pub const INFO_IDS: crate::ui_kit::ids::Family = crate::ui_kit::ids::family("campaign picker info");
+/// The room each detail text has in guest memory, its NUL included: its
+/// placeholder's length at install.
+pub const INFO_ROOM: usize = 384;
+
+/// The picker's layout: the level select's (`skulls_menu::LIST_LAYOUT`,
+/// its list on the left), its bracket, its picture box with the focused
+/// campaign's first level's picture, and its description text under it
+/// with the campaign's detail. The level select's own picture bitmap
+/// (screen 11, pane 0, bitmap 0, `[177 39 -30 259]`, 220 by 207, its
+/// animation 13), copied and pointed at the campaign's picture
+/// (`Rows::picture`): the picture keeps the frame the level pictures carry
+/// in their pixels (`campaign_cards::framed`).
+pub const PICTURE: crate::list_class::PictureSpec = crate::list_class::PictureSpec {
+    screen_id: crate::skulls_menu::LEVEL_SELECT_SCREEN_ID as u32,
+    pane: 0,
+    bitmap: 0,
+    image: 0,
+    at: [
+        crate::skulls_menu::PICTURE_BOX[1],
+        crate::skulls_menu::PICTURE_BOX[0],
+    ],
+    animation: crate::skulls_menu::PICTURE_ANIMATION,
+};
+/// [`PICTURE`]'s size (the level pictures').
+pub const PICTURE_SIZE: [u16; 2] = [220, 207];
 
 static PREPARED: OnceLock<Arc<State>> = OnceLock::new();
+static STORE: OnceLock<Arc<settings::Store>> = OnceLock::new();
 static STRINGS: OnceLock<Vec<(u32, &'static str)>> = OnceLock::new();
 
 /// Reads the installed campaigns and builds their records against the
 /// disc's lists. Returns the state when there is at least one, after
 /// which [`strings`] and [`class`] answer. Retail ids come from the disc
-/// (`retail`: campaign ids, map ids), so ours never meet them.
-pub fn prepare(state: State) -> Arc<State> {
+/// (`retail`: campaign ids, map ids), so ours never meet them. `store`
+/// holds the Halo 1 options the detail pane shows.
+pub fn prepare(state: State, store: Option<Arc<settings::Store>>) -> Arc<State> {
     let state = Arc::new(state);
     let picker = Picker::new(&state.built);
     let mut strings: Vec<(u32, &'static str)> = vec![(TITLE_ID, TITLE)];
+    // Once a boot: the labels live as long as the game.
+    let placeholder: &'static str = Box::leak(" ".repeat(INFO_ROOM - 1).into_boxed_str());
     for (i, (_, name)) in picker.rows.iter().enumerate().take(MAX_ROWS) {
-        // Once a boot: the labels live as long as the game.
         strings.push((
             ID_BASE + 1 + i as u32,
             Box::leak(name.clone().into_boxed_str()),
         ));
+        if (i as u32) < INFO_IDS.len {
+            strings.push((INFO_IDS.id(i as u32), placeholder));
+        }
     }
     let _ = STRINGS.set(strings);
     let _ = PREPARED.set(Arc::clone(&state));
+    if let Some(store) = store {
+        let _ = STORE.set(store);
+    }
     state
 }
 
@@ -83,20 +120,71 @@ pub fn strings() -> Vec<(u32, &'static str)> {
 /// The picker's class, once [`prepare`]d.
 pub fn class() -> Option<ListClass> {
     let state = PREPARED.get()?;
-    Some(ListClass::with_rows(
-        "campaigns-screen",
-        SCREEN,
-        Arc::new(PickerRows {
-            picker: Picker::new(&state.built),
-            state: Arc::clone(state),
-        }),
-    ))
+    Some(picker_class(Arc::new(PickerRows::new(
+        Arc::clone(state),
+        STORE.get().cloned(),
+    ))))
+}
+
+/// The picker's class over `rows`: the level select's list, bracket,
+/// picture and description ([`PICTURE`]).
+pub fn picker_class(rows: Arc<PickerRows>) -> ListClass {
+    ListClass::with_rows("campaigns-screen", SCREEN, rows)
+        .layout(crate::skulls_menu::LIST_LAYOUT)
+        .description(crate::skulls_menu::DESCRIPTION_TEXT)
+        .frame(crate::skulls_menu::FRAME)
+        .picture(PICTURE)
 }
 
 /// The picker's rows.
 pub struct PickerRows {
     pub picker: Picker,
     pub state: Arc<State>,
+    /// The settings (the Halo 1 options); `None` shows none.
+    pub store: Option<Arc<settings::Store>>,
+    /// The detail text each row's string holds now, so only a change is
+    /// written.
+    written: std::sync::Mutex<Vec<String>>,
+}
+
+impl PickerRows {
+    pub fn new(state: Arc<State>, store: Option<Arc<settings::Store>>) -> Self {
+        PickerRows {
+            picker: Picker::new(&state.built),
+            state,
+            store,
+            written: Default::default(),
+        }
+    }
+    /// Each row's detail, for the profiles seen as the picker opened.
+    pub fn infos(&self) -> Vec<crate::campaign_info::Info> {
+        let seen = self.state.selection.seen();
+        let options = || {
+            self.store
+                .as_deref()
+                .map(crate::campaign_info::halo1_options)
+                .unwrap_or_default()
+        };
+        crate::campaign_info::infos(
+            &self.state.built,
+            &self.picker.rows,
+            &self.state.progress,
+            &seen.profiles,
+            &options,
+        )
+    }
+}
+
+/// `text` as the string table serves it (NUL-terminated UTF-8), cut at a
+/// character boundary to [`INFO_ROOM`].
+pub fn served(text: &str) -> Vec<u8> {
+    let mut cut = text.len().min(INFO_ROOM - 1);
+    while !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let mut b = text.as_bytes()[..cut].to_vec();
+    b.push(0);
+    b
 }
 
 impl Rows for PickerRows {
@@ -111,6 +199,31 @@ impl Rows for PickerRows {
             Ok(r) if r < self.count() => vec![(0, ID_BASE + 1 + r as u32)],
             _ => Vec::new(),
         }
+    }
+    fn description(&self, row: i16) -> Option<u32> {
+        let r = u32::try_from(row).ok()?;
+        (r < INFO_IDS.len && (r as usize) < self.count()).then(|| INFO_IDS.id(r))
+    }
+    fn picture(&self, row: i16) -> Option<u32> {
+        let id = self.picker.campaign(row)?;
+        self.state.selection.seen().pictures.get(&id).copied()
+    }
+    fn live_text(&self) -> LiveText {
+        let texts: Vec<String> = self.infos().iter().map(|i| i.text()).collect();
+        let mut written = self.written.lock().unwrap_or_else(|e| e.into_inner());
+        let mut live = LiveText::default();
+        for (row, text) in texts.iter().enumerate().take(INFO_IDS.len as usize) {
+            if written.get(row) == Some(text) {
+                continue;
+            }
+            let Some(at) = crate::layout_glue::string_address(INFO_IDS.id(row as u32)) else {
+                continue;
+            };
+            live.writes.push((at, served(text)));
+            live.redraw = true;
+        }
+        *written = texts;
+        live
     }
     fn press(&self, row: i16) -> Chosen {
         let Some(id) = self.picker.campaign(row) else {
@@ -130,6 +243,51 @@ impl Rows for PickerRows {
             )],
             loader: LEVEL_SELECT_LOADER,
         }
+    }
+}
+
+impl crate::ui_kit::spec::Describe for PickerRows {
+    /// The picker as the kit sees it: the level select's list on the left,
+    /// its bracket, the picture box with the focused campaign's picture
+    /// ([`PICTURE`]), and each row's detail ([`crate::campaign_info`]) as
+    /// its description.
+    fn spec(&self) -> crate::ui_kit::spec::ScreenSpec {
+        use crate::ui_kit::input::Input;
+        use crate::ui_kit::spec::{ListPlace, Press, RowSpec, ScreenSpec, ValueStyle};
+        use crate::ui_kit::view::{Art, PaneArt};
+        let mut s = ScreenSpec::new(SCREEN, TITLE);
+        s.ids = vec![TITLE_ID];
+        s.list = ListPlace::from(Some(crate::skulls_menu::LIST_LAYOUT));
+        s.style = ValueStyle::Inline;
+        s.description = Some(crate::skulls_menu::DESCRIPTION_TEXT.into());
+        s.inputs = vec![Input::Up, Input::Down, Input::A, Input::B];
+        let art = |p: crate::list_class::PictureSpec, size: [u16; 2]| PaneArt {
+            art: Art::Screen {
+                screen_id: p.screen_id as i16,
+                pane: p.pane as u16,
+                index: p.bitmap as u16,
+                image: p.image,
+            },
+            at: p.at,
+            size,
+            depth: 0,
+        };
+        s.art = vec![
+            art(crate::skulls_menu::FRAME, crate::skulls_menu::FRAME_SIZE),
+            art(PICTURE, PICTURE_SIZE),
+        ];
+        for (row, info) in self.infos().iter().enumerate().take(self.count()) {
+            let r = row as i16;
+            let mut ids: Vec<u32> = self.texts(r).into_iter().map(|(_, id)| id).collect();
+            ids.extend(self.description(r));
+            s.rows.push(
+                RowSpec::action(&self.picker.rows[row].1)
+                    .press(Press::Open("level select".into()))
+                    .describe(&info.text())
+                    .ids(&ids),
+            );
+        }
+        s
     }
 }
 
@@ -304,6 +462,7 @@ impl feature::Feature for Campaigns {
                 c.ret(0).map(Flow::Return)
             });
         let picker = Arc::clone(&self.picker);
+        let s = Arc::clone(st);
         b.raw()
             .before(&SCREEN_REQUEST, "the campaign picker first", move |c| {
                 let ret = {
@@ -314,6 +473,16 @@ impl feature::Feature for Campaigns {
                     return Ok(Flow::Continue);
                 }
                 let loader = picker();
+                if loader != 0 {
+                    // What the picker's detail and pictures read while it
+                    // is up.
+                    let rt = Arc::clone(c.ctx.runtime());
+                    let mem = rt.memory();
+                    s.selection.set_seen(campaigns::Seen {
+                        profiles: crate::skulls::profiles_or_default(&*mem).0,
+                        pictures: campaigns::first_pictures(&*mem),
+                    });
+                }
                 if loader != 0 && set_stack(c, 3, loader) {
                     eprintln!("campaigns: opening the campaign picker before the level select");
                 }
@@ -373,10 +542,7 @@ mod tests {
     #[test]
     fn a_press_picks_the_campaign_and_opens_the_level_select_for_it() {
         let st = Arc::new(state());
-        let rows = PickerRows {
-            picker: Picker::new(&st.built),
-            state: Arc::clone(&st),
-        };
+        let rows = PickerRows::new(Arc::clone(&st), None);
         assert_eq!(rows.count(), 3);
         assert_eq!(rows.title(), TITLE_ID);
         assert_eq!(rows.texts(1), [(0, ID_BASE + 2)]);
@@ -407,6 +573,57 @@ mod tests {
         );
         assert_eq!(st.selection.campaign(), 1);
         assert_eq!(rows.press(9), Chosen::Nothing);
+    }
+
+    /// Each row's detail is its description, rewritten in place; its
+    /// picture is its campaign's first level's, as seen when the picker
+    /// opened.
+    #[test]
+    fn each_row_describes_its_campaign_and_shows_its_picture() {
+        let st = Arc::new(state());
+        st.progress.finished("Chief", "halo1", 2, 0x1003);
+        let rows = PickerRows::new(Arc::clone(&st), None);
+        assert_eq!(rows.description(0), Some(INFO_IDS.id(0)));
+        assert_eq!(rows.description(2), Some(INFO_IDS.id(2)));
+        assert_eq!(rows.description(3), None);
+        assert_eq!(rows.picture(0), None, "nothing seen yet");
+        st.selection.set_seen(campaigns::Seen {
+            profiles: vec!["Chief".into()],
+            pictures: [(1, 0xe6dd_04bb), (2, 0xe7a0_0010)].into(),
+        });
+        assert_eq!(rows.picture(0), Some(0xe7a0_0010), "Halo 1's");
+        assert_eq!(rows.picture(1), Some(0xe6dd_04bb), "Halo 2's");
+        assert_eq!(rows.picture(2), None, "the test campaign's unseen");
+        let infos = rows.infos();
+        assert_eq!(infos[0].progress.unwrap().reached, 4, "Chief finished a50");
+        assert!(infos[1].text().starts_with(crate::campaign_info::HALO2_DESCRIPTION));
+        // Without the installed strings there is nowhere to write.
+        assert!(rows.live_text().writes.is_empty());
+        // A text is cut to its room at a character boundary.
+        let long = "é".repeat(INFO_ROOM);
+        let b = served(&long);
+        assert!(b.len() <= INFO_ROOM && b.ends_with(&[0]));
+        assert!(std::str::from_utf8(&b[..b.len() - 1]).is_ok());
+    }
+
+    /// The picker's spec: the level select's layout and art, each row's
+    /// detail as its description, every id in a family.
+    #[test]
+    fn the_picker_is_laid_out_as_the_level_select() {
+        use crate::ui_kit::spec::Describe;
+        let rows = PickerRows::new(Arc::new(state()), None);
+        let s = rows.spec();
+        assert_eq!(s.rows.len(), 3);
+        assert_eq!(s.rows[0].label, "Halo: Combat Evolved");
+        assert!(s.rows[0].description.as_deref().unwrap().contains("2001, Bungie. 10 levels."));
+        assert_eq!(s.art.len(), 2);
+        assert_eq!(s.art[1].at, [39, 177]);
+        let f = crate::ui_kit::spec::check_fallback(&s);
+        assert!(
+            f.iter().all(|f| matches!(f, crate::ui_kit::spec::Finding::Wide { .. }
+                | crate::ui_kit::spec::Finding::Description { .. })),
+            "{f:#?}"
+        );
     }
 
     #[test]

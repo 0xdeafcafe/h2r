@@ -63,6 +63,7 @@ pub const TABLE: u32 = 0x20ff_f000;
 /// Every family of ours. Keep it sorted by base.
 pub const FAMILIES: &[Family] = &[
     Family::new("community variants", 0x00ff_e000, 0x100),
+    Family::new("variant options", 0x00ff_e100, 0x100),
     Family::new("kit.example", 0x20ff_c000, 0x40),
     Family::new("kit.choices", 0x20ff_c040, 0x40),
     Family::new("co-op texts", 0x20ff_d000, 128),
@@ -77,6 +78,8 @@ pub const FAMILIES: &[Family] = &[
     Family::new("signin", TABLE + 0x0500_0000, 0x100),
     Family::new("clankers", TABLE + 0x0600_0000, 0x40),
     Family::new("ui model more", TABLE + 0x0700_0000, 0x100),
+    Family::new("map select", TABLE + 0x0800_0000, 0x40),
+    Family::new("campaign picker info", TABLE + 0x0900_0000, 0x40),
 ];
 
 const fn same(a: &str, b: &str) -> bool {

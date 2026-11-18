@@ -80,6 +80,39 @@ fn the_driver_keeps_that_many_bots_on_the_ports_no_one_else_asked_for() {
 }
 
 #[test]
+fn past_the_free_ports_the_driver_adds_phantoms() {
+    let local = Local::default();
+    let ph = bots::phantom::Phantoms::default();
+    let d = Driver::with_phantoms(local.clone(), ph.clone());
+    let log = d.apply(Want {
+        count: 5,
+        difficulty: MIXED,
+    });
+    assert_eq!(d.ports(), vec![1, 2, 3]);
+    let l = ph.list();
+    let tags: Vec<&str> = l.iter().map(|p| p.identity.gamertag.as_str()).collect();
+    assert_eq!(tags, ["Clanker 4", "Clanker 5"]);
+    assert!(
+        l.iter()
+            .all(|p| live_proto::bots::is_local_xuid(live_proto::Xuid(p.identity.xuid))),
+        "host-made xuids, never a server account's"
+    );
+    assert!(
+        log.iter().any(|l| l.contains("Clanker 4 (phantom) on")),
+        "{log:?}"
+    );
+    d.apply(Want {
+        count: 3,
+        difficulty: MIXED,
+    });
+    assert!(
+        ph.list().is_empty(),
+        "the phantoms go first, last added first"
+    );
+    assert_eq!(d.ports(), vec![1, 2, 3]);
+}
+
+#[test]
 fn a_difficulty_change_reaches_the_bots_already_there() {
     let d = Driver::new(Local::default());
     d.apply(Want {
@@ -91,7 +124,7 @@ fn a_difficulty_change_reaches_the_bots_already_there() {
             .lock()
             .unwrap()
             .iter()
-            .map(|b| b.2.load(Ordering::Relaxed))
+            .map(|b| b.1.load(Ordering::Relaxed))
             .collect()
     };
     assert_eq!(skills(&d), vec![0, 0]);
@@ -107,7 +140,7 @@ fn a_difficulty_change_reaches_the_bots_already_there() {
 fn the_driver_follows_the_store() {
     let s = store();
     let local = Local::default();
-    let d = drive(&s, local.clone());
+    let d = drive(&s, Driver::new(local.clone()));
     assert!(local.is_empty(), "off by default");
     on(&s, 3, 1);
     assert_eq!(d.ports(), vec![1, 2, 3]);
@@ -156,7 +189,7 @@ fn the_row_goes_after_the_halo1_row_on_the_plan() {
     })
     .unwrap();
     let page = Arc::new(page(store()));
-    r.add(&Texts(Arc::clone(&page))).unwrap();
+    r.add(&KitTexts(Arc::clone(&page))).unwrap();
     r.add(&page.class()).unwrap();
     r.add(&SetupRow { page }).unwrap();
     let text = r.build(&feature::Base).unwrap().text();

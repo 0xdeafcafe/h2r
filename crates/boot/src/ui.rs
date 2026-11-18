@@ -172,6 +172,12 @@ pub enum Chosen {
     Stepped(String),
     /// Open this screen.
     Open(&'static str),
+    /// Open this screen of ours on the pressing screen's own window and
+    /// slot, above it, so B comes back to it. [`Chosen::Open`] goes through
+    /// `0x149f1e`, which always says window 5: from a lobby's dialog (window
+    /// 3) the screen would open under the lobby (docs/game/skulls.md "Why
+    /// the Game Setup row broke").
+    Push(&'static str),
     /// Run the screen's own action (`list_class::ListClass::action`), as X
     /// and Start do on a class with one.
     Act,
