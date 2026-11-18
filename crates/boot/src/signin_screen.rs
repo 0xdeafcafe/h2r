@@ -54,7 +54,7 @@ use crate::ui::{Chosen, LABEL_SLOT};
 use crate::ui_kit::dialog::{Cells, DialogSpec};
 use crate::ui_kit::input::{Glyph, Prompt as Legend};
 use crate::ui_kit::spec::{Describe, RowSpec, ScreenSpec};
-use crate::ui_kit::view::Beneath;
+use crate::ui_kit::view::Opener;
 use live_hle::account_setup::SetupError;
 use live_hle::signin::{Call, Typed};
 
@@ -506,15 +506,17 @@ impl Rows for SigninRows {
     }
 }
 
-/// The prompt as a modal over the screen beneath (docs/game/ui-builder.md
-/// "Screen kinds"): its title, body, code cells, status line and legend.
-/// `call` is the server call a [`Phase::Working`] page waits on: the code
-/// stays in its cells while it is checked.
+/// The prompt as a modal over `opener`, the screen the sign-in started
+/// from (docs/game/ui-builder.md "Screen kinds"): its title, body, code
+/// cells, status line and legend. `call` is the server call a
+/// [`Phase::Working`] page waits on: the code stays in its cells while it
+/// is checked.
 pub fn dialog_for(
     prompt: Option<&Prompt>,
     entry: &CodeEntry,
     call: Option<Call>,
     now: i64,
+    opener: Opener,
 ) -> (String, Vec<Legend>, DialogSpec) {
     let a = |t: &str| Legend::new(&[Glyph::A], t);
     let b = |t: &str| Legend::new(&[Glyph::B], t);
@@ -527,7 +529,7 @@ pub fn dialog_for(
         body,
         cells,
         status,
-        beneath: Beneath::MainMenu,
+        opener,
     };
     let Some(p) = prompt else {
         return (
@@ -660,6 +662,7 @@ pub fn spec_for(
     entry: &CodeEntry,
     call: Option<Call>,
     now: i64,
+    opener: Opener,
 ) -> ScreenSpec {
     use crate::ui_kit::input::Input;
     let (label, body) = page(prompt, entry, now);
@@ -680,7 +683,7 @@ pub fn spec_for(
             .describe(&body.replace("\r\n", "\n"))
             .ids(&[TEXT_IDS[0], TEXT_IDS[2]]),
     ];
-    let (title, legend, dialog) = dialog_for(prompt, entry, call, now);
+    let (title, legend, dialog) = dialog_for(prompt, entry, call, now, opener);
     s.title = title;
     s.prompts = legend;
     s.dialog = Some(dialog);
@@ -695,7 +698,7 @@ pub fn sample_spec() -> ScreenSpec {
         controller: 0,
         phase: Phase::Code { error: None },
     };
-    spec_for(Some(&p), &CodeEntry::default(), None, 0)
+    spec_for(Some(&p), &CodeEntry::default(), None, 0, Opener::MAIN_MENU)
 }
 
 /// The prompt's pages for the preview sheet, by name ([`SigninPage`]'s
@@ -726,6 +729,8 @@ pub struct SigninState {
     pub entry: CodeEntry,
     /// The call an [`SigninEvent::Answer`] answers.
     pub call: Option<Call>,
+    /// The screen the sign-in started from, which the prompt sits over.
+    pub opener: Opener,
 }
 
 /// The sign-in prompt as a pure page (docs/game/ui-builder.md
@@ -809,11 +814,18 @@ impl crate::ui_kit::page::Page for SigninPage {
     }
 
     fn spec(&self, state: &SigninState) -> ScreenSpec {
-        spec_for(Some(&state.prompt), &state.entry, state.call, 0)
+        spec_for(
+            Some(&state.prompt),
+            &state.entry,
+            state.call,
+            0,
+            state.opener,
+        )
     }
 
     /// The code page empty, typed and refused, checking, the new-account
-    /// pages, and the end states.
+    /// pages, and the end states, over the main menu; then the code page
+    /// and a refused code over the Xbox Live menu.
     fn states(&self) -> Vec<(String, SigninState)> {
         let at = |phase: Phase, entry: &CodeEntry| SigninState {
             prompt: Prompt {
@@ -824,6 +836,7 @@ impl crate::ui_kit::page::Page for SigninPage {
             },
             entry: entry.clone(),
             call: None,
+            opener: Opener::MAIN_MENU,
         };
         let empty = CodeEntry::default();
         let mut typed = CodeEntry::default();
@@ -868,6 +881,14 @@ impl crate::ui_kit::page::Page for SigninPage {
             ("done", at(Phase::Done, &empty)),
             ("cancelled", at(Phase::Cancelled, &empty)),
         ];
+        // The same prompt over the other screen a sign-in starts from.
+        let live_menu = |mut s: SigninState| {
+            s.opener = Opener::XBOX_LIVE_MENU;
+            s
+        };
+        let wrong = states[2].1.clone();
+        states.push(("code-over-live-menu", live_menu(at(code(None), &empty))));
+        states.push(("code-wrong-over-live-menu", live_menu(wrong)));
         // A new account's prompt has no gamertag yet.
         for (name, s) in &mut states {
             if name.starts_with("gamertag") {
@@ -904,7 +925,13 @@ impl Describe for SigninRows {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs() as i64);
         let entry = self.lock().entry.clone();
-        spec_for(self.hle.signin().as_ref(), &entry, None, now)
+        spec_for(
+            self.hle.signin().as_ref(),
+            &entry,
+            None,
+            now,
+            Opener::MAIN_MENU,
+        )
     }
 }
 
@@ -1316,7 +1343,8 @@ mod tests {
             controller: 0,
             phase,
         };
-        let (title, legend, d) = dialog_for(Some(&at(code.clone())), &entry, None, 0);
+        let (title, legend, d) =
+            dialog_for(Some(&at(code.clone())), &entry, None, 0, Opener::MAIN_MENU);
         assert_eq!(title, "Sign in as Chief");
         let c = d.cells.as_ref().unwrap();
         assert_eq!(c.text, ["1", "0", "0", "0", "0", "0"]);
@@ -1326,15 +1354,27 @@ mod tests {
         assert!(glyphs.contains(&Glyph::A) && glyphs.contains(&Glyph::B));
         assert!(!glyphs.contains(&Glyph::X));
 
-        let (_, legend, d) = dialog_for(Some(&at(Phase::Working)), &entry, Some(Call::Code), 0);
+        let (_, legend, d) = dialog_for(
+            Some(&at(Phase::Working)),
+            &entry,
+            Some(Call::Code),
+            0,
+            Opener::MAIN_MENU,
+        );
         assert_eq!(d.cells.unwrap().cursor, None);
         assert_eq!(d.status.as_deref(), Some("Checking..."));
         assert_eq!(legend.len(), 1, "only B while checking");
 
-        let (title, _, d) = dialog_for(Some(&at(Phase::Gamertag { error: None })), &entry, None, 0);
+        let (title, _, d) = dialog_for(
+            Some(&at(Phase::Gamertag { error: None })),
+            &entry,
+            None,
+            0,
+            Opener::MAIN_MENU,
+        );
         assert_eq!(title, "New Xbox Live account");
         assert!(d.cells.is_none());
-        let s = spec_for(Some(&at(Phase::Done)), &entry, None, 0);
+        let s = spec_for(Some(&at(Phase::Done)), &entry, None, 0, Opener::MAIN_MENU);
         assert!(s.dialog.is_some());
         assert_eq!(
             s.rows.len(),

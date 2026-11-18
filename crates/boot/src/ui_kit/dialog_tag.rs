@@ -290,7 +290,7 @@ mod tests {
         PASSWORD_SCREEN_ID, dialog_view,
     };
     use crate::ui_kit::input::{Glyph, Prompt};
-    use crate::ui_kit::view::{Beneath, FRAME_DIM, Synthetic};
+    use crate::ui_kit::view::{FRAME_DIM, Opener, Synthetic};
     use engine::testing::FakeGuest;
 
     /// The sign-in code page with an error showing.
@@ -308,7 +308,7 @@ mod tests {
                 gap_after: Some(2),
             }),
             status: Some("That code didn't work.".into()),
-            beneath: Beneath::MainMenu,
+            opener: Opener::MAIN_MENU,
         };
         dialog_view(&s, &d, &DialogGeometry::fallback(), &Synthetic, "code")
     }

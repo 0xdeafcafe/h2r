@@ -1,5 +1,5 @@
 //! Modal dialogs (docs/game/ui-builder.md "Screen kinds"): a panel over
-//! whatever screen is beneath, as the game's own dialogs sit.
+//! the screen that opened it, as the game's own dialogs sit.
 //!
 //! The large dialog is `error_dialog_large`'s (screen 240, header layout
 //! 2): its `ul_07`/`br_07` corners and `dialog1`/`dialog2` panel, the
@@ -9,7 +9,7 @@
 //! over each, the cursor's cell lit and the rest dimmed. No retail dialog
 //! tag draws anything behind its panel (no dim layer, no widget outside
 //! the panel and corners), so a dialog's view is [`Backing::Over`] the
-//! screen beneath.
+//! screen that opened it ([`Opener`]).
 //!
 //! The body, cell row and status line are ours, laid out inside the
 //! panel between the header and the footer; [`DialogGeometry::fallback`]
@@ -21,7 +21,7 @@ use tags::ui::Rect;
 
 use crate::ui_kit::spec::{ScreenSpec, wrap};
 use crate::ui_kit::view::{
-    Art, Backing, Beneath, FRAME_DIM, Justify, Kind, Layer, Metrics, PaneArt, ROW_TEXT,
+    Art, Backing, FRAME_DIM, Justify, Kind, Layer, Metrics, Opener, PaneArt, ROW_TEXT,
     UNFOCUSED_ALPHA, View, Widget,
 };
 
@@ -41,8 +41,9 @@ pub struct DialogSpec {
     pub cells: Option<Cells>,
     /// A line under the cells (or the body): a check running, an error.
     pub status: Option<String>,
-    /// What the preview draws beneath it.
-    pub beneath: Beneath,
+    /// The screen it opened over, as it was: the preview draws it
+    /// underneath, and the dialog's texts are checked against its texts.
+    pub opener: Opener,
 }
 
 /// A row of entry cells: each one's text, the cursor's cell, and a wider
@@ -395,7 +396,7 @@ pub fn dialog_view(
     View {
         screen: s.name.clone(),
         state: state.into(),
-        backing: Backing::Over(d.beneath),
+        backing: Backing::Over(d.opener),
         widgets: w,
         focus: d
             .cells
@@ -429,7 +430,7 @@ mod tests {
                 gap_after: Some(2),
             }),
             status: status.map(String::from),
-            beneath: Beneath::MainMenu,
+            opener: Opener::MAIN_MENU,
         });
         s
     }
@@ -458,7 +459,7 @@ mod tests {
     #[test]
     fn the_cursor_cell_is_lit() {
         let v = view(&code(3, None));
-        assert_eq!(v.backing, Backing::Over(Beneath::MainMenu));
+        assert_eq!(v.backing, Backing::Over(Opener::MAIN_MENU));
         assert_eq!(v.focus.as_deref(), Some("cell.3"));
         assert_eq!(v.widget("cell.3.art").unwrap().alpha, 255);
         assert_eq!(v.widget("cell.2.art").unwrap().alpha, FRAME_DIM);

@@ -78,9 +78,9 @@ digit cells and the legend. What the game's dialogs draw behind the panel
 them rather than assumed. A modal may cover the logo, as retail dialogs
 do, so for a modal the reserved-area check ignores what the panel covers.
 Everything in it must still sit inside the panel and inside the safe
-area. The preview draws a modal over a sample screen beneath (the main
-menu), so the sheet shows it in place. This replaces the earlier plan of
-an `Own` sign-in screen on the shell backing.
+area. The preview draws a modal over the screen that opened it (its
+`Opener`, below), so the sheet shows it in place. This replaces the
+earlier plan of an `Own` sign-in screen on the shell backing.
 
 **The runtime tag recipe.** Our screens are still made by the Controls
 constructor and adopted by `list_class`. The screen-tag function
@@ -166,6 +166,7 @@ state.
 | off screen (art) | no art's visible pixels fall past the screen edge |
 | reserved | nothing overlaps the reserved areas of the screen beneath (its logo and header), unless the screen is `Own`; a modal may cover them with its panel, but everything in it stays inside the panel |
 | safe area | texts and row art stay inside the title-safe area: x ±272, y 204 down to -211 (the middle 85%, down to the bottom of retail's footer rectangle, where the game's own legends sit); frame art is exempt |
+| over the opener (modals, flagged only) | a dialog text whose ink meets a text of the screen that opened it is a `Note::OverOpener` in `Report::notes`, never an issue: retail's dialogs sit over their opener as it is, texts included |
 | contrast | every text against what is drawn under it (the view rendered without its texts), WCAG ratio at least 2.5 |
 | legend | a screen that takes inputs past up, down, A and B shows a button legend (a text with a button glyph) |
 | focus | the focused row's text is drawn on screen, and more opaque than the other rows' |
@@ -263,10 +264,11 @@ height (top 6), 55 wide and 59 apart, with 12 more between the halves. A
 digit sits over each cell. The cursor's cell and digit are lit; the
 others are dimmed (the frame and row alphas). The status line (Checking...,
 the error) sits above the legend, and the legend is in layout 2's second
-rectangle. The view's backing is `Backing::Over(Beneath::MainMenu)`. On
-the disc, the preview draws the retail main menu (`render_retail`) and
-then the dialog over it, with nothing between them, as the tags have
-nothing there. Synthetic previews draw boxes for the menu's list.
+rectangle. The view's backing is `Backing::Over(opener)`, the
+`DialogSpec`'s `Opener`. On the disc, the preview draws the opener
+(`Disc::opener_view`) and then the dialog over it, with nothing between
+them, as the tags have nothing there. Synthetic previews draw the
+opener's rows as boxes and text blocks.
 
 **The modal's checks.** `Rules::panel` is set for a dialog spec
 (`DialogGeometry::area`, the panel's and corners' box,
@@ -288,14 +290,40 @@ title, body, cells, status and glyph legend:
   Back.
 
 `spec_for` keeps the one-row list the game shows today and adds the
-dialog, which the preview, the sheet and the editor draw. All 11 states
-pass every check, synthetic and on the disc. X no longer submits: only A
+dialog, which the preview, the sheet and the editor draw. The 11 states
+are over the main menu; two more (`code-over-live-menu`,
+`code-wrong-over-live-menu`) are over the Xbox Live menu. All 13 pass
+every check, synthetic and on the disc. X no longer submits: only A
 and Start do, matching the legend (`signin_screen::ACTION_BUTTONS`).
 
-**The screen beneath is drawn in full (the user, 2026-11-18).** A
-retail dialog over the main menu has the whole menu under it: its logo,
-its list and its scrolling track lines, with no dim layer. The preview
-draws exactly that, so the backdrop stays as it is.
+**A dialog is an overlay on its opener (the user, 2026-11-18, from a
+retail screenshot).** A retail dialog sits over whatever was open when
+it opened, drawn as it was: not always the main menu, and with nothing
+hidden and no dim layer. So a `DialogSpec` names its `Opener`: the
+opener's screen tag, the pane shown, its list's rows (the game's code
+fills them) and the focused row. `Disc::opener_view` makes it a `View`:
+the game shell, the pane's bitmaps and texts in the screen's own
+strings, its header, and its rows on its own list skin with the focused
+row lit (`view_of`'s list). The preview draws that under the dialog. The
+openers so far:
+
+- `Opener::MAIN_MENU`: the main menu on the Xbox Live row (rows as
+  `ui_watch` reads them: Campaign, Xbox Live, Split Screen, System
+  Link, Settings).
+- `Opener::XBOX_LIVE_MENU`: the Xbox Live menu (screen `0xba`, pane 0)
+  on Quickmatch, with our five rows.
+
+On the disc, the code pages' legend sits over the main menu's Xbox Live
+and Split Screen rows. Over the Xbox Live menu, the title and body sit
+over its rows, and the last cell's digit over "Latest news:". Those are
+notes (`over the opener` above), not failures: retail's dialogs overlap
+their opener in the same way.
+
+Not settled: on the main menu path, the Xbox Live row opens the game's
+own account picker, `dialog_live_signin` (screen 20, loader `0x24b4a9`),
+and the logon is the picker's. So when our prompt opens, the picker may
+still be up over the main menu, and then it is the real opener. The
+game run below says which.
 
 **Where retail puts dialog text, against the logo.** The main menu
 (`main_menu`, screen 6) draws its logo (`start_screen`) at
@@ -384,9 +412,11 @@ line on stderr and on screen:
    game crashes or nothing opens, window kind 1 doesn't take a
    Controls-built screen; run again without the switch (`window kind 5`)
    to compare.
-2. On screen: the main menu (or whatever opened the prompt) stays drawn
-   under the prompt, with nothing hidden, the way a retail error dialog
-   sits over it. With kind 5 the main menu is replaced, as today.
+2. On screen: whatever opened the prompt stays drawn under it, with
+   nothing hidden, the way a retail error dialog sits over it. Note what
+   that is: the main menu, or the game's account picker
+   (`dialog_live_signin`) over it; the preview's opener follows. With
+   kind 5 the main menu is replaced, as today.
 3. The d-pad edits the code and A submits (`signin prompt: event ...`
    lines as in docs/live/live.md). The dialogs' stack takes the input
    while the prompt is up; the menu beneath doesn't move.
