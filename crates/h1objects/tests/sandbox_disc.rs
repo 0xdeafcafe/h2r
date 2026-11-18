@@ -8,6 +8,7 @@
 //! H1_ISO=... H2_DISC=... cargo test -p h1objects --test sandbox_disc -- --ignored --nocapture
 //! ```
 
+use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::{BufReader, Cursor};
 
@@ -440,7 +441,11 @@ fn bloodgulch_shaders_all_have_their_compiled_postprocess_in_both_sandboxes() {
             let mut objects = Objects::new(&h1, &templates);
             prepare_halo1(&h1, sha, &mut base, &mut objects).unwrap()
         } else {
-            h1convert::convert::prepare(&h1, sha, &mut base, sandbox).unwrap()
+            {
+            let templates = Base::read(&mut base).unwrap();
+            let mut objects = Objects::new(&h1, &templates);
+            h1convert::convert::halo1::prepare_halo2(&h1, sha, &mut base, &mut objects).unwrap()
+        }
         };
         let mopp = structure_mopp(&p.collision).unwrap();
         let fresh = p.build_fresh(&mut base, &mopp).unwrap();
@@ -648,7 +653,11 @@ fn every_fresh_map(
                 let mut objects = Objects::new(&h1, &templates);
                 prepare_halo1(&h1, sha, &mut base, &mut objects)
             } else {
-                h1convert::convert::prepare(&h1, sha, &mut base, sandbox)
+                {
+                let templates = Base::read(&mut base).unwrap();
+                let mut objects = Objects::new(&h1, &templates);
+                h1convert::convert::halo1::prepare_halo2(&h1, sha, &mut base, &mut objects)
+            }
             }
             .unwrap_or_else(|e| panic!("{name} {sandbox:?}: {e}"));
             let mopp = structure_mopp(&p.collision).unwrap();
@@ -845,4 +854,215 @@ fn print_halo2_weapon_hud_widgets() {
             i += 1;
         }
     }
+}
+
+/// Halo 1's scenery in both sandboxes' fresh maps: the scenario's scenery
+/// palette (`+0x58`) is the converted `scen`s, each with a render model,
+/// and every Halo 1 placement whose palette entry converted is placed, at
+/// Halo 1's position, on its entry.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn every_map_places_halo1_s_scenery_in_both_sandboxes() {
+    let mut bad = Vec::new();
+    let mut total = 0;
+    every_fresh_map(|name, sandbox, p, fresh| {
+        let sc = p.scenery.as_ref().expect("scenery planned");
+        let mut out = Map::from_reader(Cursor::new(fresh.bytes.clone())).unwrap();
+        let ctx = tags::object::Context::read(&mut out).unwrap();
+        let s = Scenario::read(&mut out).unwrap();
+        let b = s.block(BlockKind::Scenery);
+        println!(
+            "{name} {sandbox:?}: {} scenery placements on {} palette entries ({} left out)",
+            b.len(),
+            b.palette.len(),
+            sc.dropped
+        );
+        total += b.len();
+        for u in p.applied.unresolved.iter().filter(|u| u.starts_with("scenery")) {
+            println!("{name} {sandbox:?}: not placed: {u}");
+        }
+        if b.len() != sc.placements.len() || b.palette.len() != sc.palette.len() {
+            bad.push(format!(
+                "{name} {sandbox:?}: {} of {} placements, {} of {} palette entries",
+                b.len(),
+                sc.placements.len(),
+                b.palette.len(),
+                sc.palette.len()
+            ));
+            return;
+        }
+        for (k, r) in b.palette.iter().enumerate() {
+            let ok = r.group == FourCC(*b"scen")
+                && ctx
+                    .resolve_object(r.id)
+                    .is_ok_and(|o| o.model.as_ref().is_some_and(|m| m.render_model.is_some()));
+            if !ok {
+                bad.push(format!("{name} {sandbox:?}: palette {k} {r:?}"));
+            }
+        }
+        for i in 0..b.len() {
+            let e = b.entry(i).unwrap();
+            let want = &sc.placements[i];
+            if e[..0x20] != want[..0x20] {
+                bad.push(format!("{name} {sandbox:?}: placement {i} moved"));
+            }
+        }
+    });
+    assert!(total > 0, "no scenery placed");
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// Every `hlmt` of both sandboxes' fresh maps holds the materials the
+/// engine reads ([`h1objects::verify::hlmt_materials`]), beyond what
+/// retail's own base map already breaks: a ray's hit on an object reads
+/// its `hlmt` material of the hit's index with no bound check
+/// (`0x000d8ae0`), and the converted objects' empty blocks faulted at
+/// `0x000d8b33` in the Halo 1 sandbox.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn every_hlmt_holds_its_materials_in_both_sandboxes() {
+    let mut retail = std::collections::HashMap::new();
+    let mut bad = Vec::new();
+    let mut maps = 0;
+    every_fresh_map(|name, sandbox, _, fresh| {
+        let base_name = h1convert::convert::MAPS
+            .iter()
+            .find(|m| m.0 == name)
+            .unwrap()
+            .2;
+        let known: &Vec<String> = retail.entry(base_name).or_insert_with(|| {
+            h1objects::verify::hlmt_materials(&mut h2_map(base_name)).unwrap()
+        });
+        let mut out = Map::from_reader(Cursor::new(fresh.bytes.clone())).unwrap();
+        let lines = h1objects::verify::hlmt_materials(&mut out).unwrap();
+        let hlmts = out.tags().iter().filter(|t| t.group == FourCC(*b"hlmt")).count();
+        let new: Vec<_> = lines.into_iter().filter(|l| !known.contains(l)).collect();
+        println!("{name} {sandbox:?}: {hlmts} hlmts, {} problems", new.len());
+        bad.extend(new.into_iter().map(|l| format!("{name} {sandbox:?}: {l}")));
+        maps += 1;
+    });
+    for (base, lines) in &retail {
+        println!("retail {base}: {lines:#?}");
+    }
+    assert!(maps > 0);
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// The modes, classes and types of the graph `jmad` (at `a`): `jmad +0x34`
+/// modes (`0x14`), each `+4` classes (`0x14`), each `+4` types (`0x34`),
+/// the name first in each.
+fn jmad_tree(
+    mem: &tags::schema::Memory,
+    s: &dyn Fn(u32) -> String,
+    a: u32,
+) -> BTreeSet<(String, String, String)> {
+    let mut out = BTreeSet::new();
+    let (mn, mf) = (rw(mem, a + 0x34), rw(mem, a + 0x38));
+    for i in 0..mn {
+        let me = mf + i * 0x14;
+        let (cn, cf) = (rw(mem, me + 4), rw(mem, me + 8));
+        for c in 0..cn {
+            let ce = cf + c * 0x14;
+            let (tn, tf) = (rw(mem, ce + 4), rw(mem, ce + 8));
+            for k in 0..tn {
+                out.insert((s(rw(mem, me)), s(rw(mem, ce)), s(rw(mem, tf + k * 0x34))));
+            }
+        }
+    }
+    out
+}
+
+/// In the Halo 1 sandbox every Halo 1 hand weapon names the weapon class
+/// and type (`weap +0x288`, `+0x28c`) the converted player biped's graph
+/// holds it by in mode `combat`: a unit takes a weapon (picked up or
+/// given at spawn) only when its graph has an `idle` for them
+/// (`0x000cd6a0` -> `0x0010fcd0`), and the converted weapons named none,
+/// so the player could pick nothing up.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn every_halo1_weapon_is_held_by_the_halo1_player_graph() {
+    let mut bad = Vec::new();
+    let mut checked = 0;
+    every_fresh_map(|name, sandbox, _, fresh| {
+        if sandbox != Sandbox::Halo1 {
+            return;
+        }
+        let mut out = Map::from_reader(Cursor::new(fresh.bytes.clone())).unwrap();
+        let mem = memory(&mut out);
+        let strings = out.strings().to_vec();
+        let s = |v: u32| -> String {
+            if v == 0 {
+                return String::new();
+            }
+            strings
+                .get((v & 0xff_ffff) as usize)
+                .cloned()
+                .flatten()
+                .unwrap_or_default()
+        };
+        let tags = out.tags().to_vec();
+        let at = |id: u32| {
+            tags.iter()
+                .find(|t| t.id.0 == id && id != u32::MAX)
+                .and_then(|t| t.location.map(|l| l.address))
+        };
+        // The converted player bipeds: Halo 1 paths, not `objects\...`.
+        let graphs: Vec<_> = tags
+            .iter()
+            .filter(|t| t.group == FourCC(*b"bipd"))
+            .filter(|t| !t.name.as_deref().unwrap_or("").starts_with("objects\\"))
+            .filter_map(|t| {
+                let h = at(rw(&mem, t.location?.address + 0x38))?;
+                let j = at(rw(&mem, h + 0x14))?;
+                Some((t.name.clone().unwrap_or_default(), jmad_tree(&mem, &s, j)))
+            })
+            .collect();
+        assert!(!graphs.is_empty(), "{name}: no converted biped");
+        // The weapon types some Halo 1 graph of the map holds (the third
+        // word of `<unit> <class> <type> <action>`): a weapon whose label
+        // none holds (Derelict's flamethrower, `ft`) has no class to name.
+        let h1 = h1_map(name).unwrap();
+        let mut held = BTreeSet::new();
+        for t in h1.tags().iter().filter(|t| t.group.to_string() == "antr") {
+            for n in h1models::graph_names(&h1, t).unwrap() {
+                let n = h1models::names::map_name(&n);
+                if n.class != "any" && n.kind != "any" {
+                    held.insert(n.kind);
+                }
+            }
+        }
+        let labels: std::collections::HashMap<String, String> = h1
+            .tags()
+            .iter()
+            .filter(|t| t.group.to_string() == "weap")
+            .map(|t| {
+                let w = h1objects::h1::Weapon::read(&h1, t).unwrap();
+                (t.name.clone(), w.label)
+            })
+            .collect();
+        for t in tags.iter().filter(|t| t.group == FourCC(*b"weap")) {
+            let n = t.name.as_deref().unwrap_or("");
+            if !n.starts_with("weapons\\") {
+                continue;
+            }
+            let Some(l) = t.location else { continue };
+            let (class, kind) = (s(rw(&mem, l.address + 0x288)), s(rw(&mem, l.address + 0x28c)));
+            if !held.contains(&labels[n]) {
+                println!("{name}: {n}: label {:?} held by no Halo 1 graph", labels[n]);
+                if !(class.is_empty() && kind.is_empty()) {
+                    bad.push(format!("{name}: {n} names ({class:?}, {kind:?}) for a label no graph holds"));
+                }
+                continue;
+            }
+            checked += 1;
+            println!("{name}: {n}: {class:?} {kind:?}");
+            for (b, tree) in &graphs {
+                if !tree.contains(&("combat".into(), class.clone(), kind.clone())) {
+                    bad.push(format!("{name}: {n} ({class:?}, {kind:?}) not in {b}'s combat"));
+                }
+            }
+        }
+    });
+    assert!(checked > 0);
+    assert!(bad.is_empty(), "{bad:#?}");
 }

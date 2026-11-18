@@ -621,6 +621,15 @@ impl Graph {
     }
 }
 
+/// The animation names of the graph at `address`, without their data.
+pub fn animation_names<M: Memory + ?Sized>(m: &M, address: u32) -> Result<Vec<String>> {
+    let h = m.read(address, ANTR_HEADER)?;
+    Ok(block(m, h, ANTR_ANIMATIONS, ANIMATION_LEN)?
+        .into_iter()
+        .map(|e| name32(e, 0))
+        .collect())
+}
+
 fn data_ref<'a, M: Memory + ?Sized>(m: &'a M, e: &[u8], at: usize) -> Result<&'a [u8]> {
     let size = u32_at(e, at) as usize;
     if size == 0 {

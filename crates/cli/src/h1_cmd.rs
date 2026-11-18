@@ -11,7 +11,7 @@ use std::io::{BufReader, Cursor, Read, Seek};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use h1convert::convert::{Sandbox, known, map_name, prepare, structure_mopp};
+use h1convert::convert::{Sandbox, known, map_name, structure_mopp};
 use h1map::disc::{self, Copied, Disc};
 use h1map::{Group, H1Map, HEADER_LEN};
 use xiso::{Entry, Xiso};
@@ -933,15 +933,14 @@ pub(crate) fn prepare_mp(
 ) -> Result<h1convert::convert::Prepared> {
     let sha = content::Sha256::of(file);
     // The Halo 1 sandbox places Halo 1 objects, converted and added as
-    // new tags (docs/game/h1-multiplayer.md, "Halo 1 sandbox").
+    // new tags (docs/game/h1-multiplayer.md, "Halo 1 sandbox"); both
+    // sandboxes place Halo 1's scenery the same way.
+    let templates = h1objects::base::Base::read(base)
+        .with_context(|| format!("reading {base_name}'s object templates"))?;
+    let mut objects = h1objects::sandbox::Objects::new(h1, &templates);
     Ok(match sandbox {
-        Sandbox::Halo2 => prepare(h1, sha, base, sandbox)?,
-        Sandbox::Halo1 => {
-            let templates = h1objects::base::Base::read(base)
-                .with_context(|| format!("reading {base_name}'s object templates"))?;
-            let mut objects = h1objects::sandbox::Objects::new(h1, &templates);
-            h1convert::convert::halo1::prepare_halo1(h1, sha, base, &mut objects)?
-        }
+        Sandbox::Halo2 => h1convert::convert::halo1::prepare_halo2(h1, sha, base, &mut objects)?,
+        Sandbox::Halo1 => h1convert::convert::halo1::prepare_halo1(h1, sha, base, &mut objects)?,
     })
 }
 

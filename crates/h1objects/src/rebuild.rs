@@ -132,6 +132,159 @@ pub struct Model {
     /// Role words for the unknown spans ([`SceneryRole::hlmt`]); empty
     /// leaves them zero.
     pub words: Vec<(String, u32)>,
+    /// The materials ([`model_materials`]).
+    pub materials: Vec<ModelMaterial>,
+}
+
+/// `hlmt +0x58`: the materials, elements of [`HLMT_MATERIAL_SIZE`]. The
+/// engine maps a ray's hit on an object to a global material through it:
+/// `0x000d8ae0` (its one caller, `0x001695fb`, tests a ray against an
+/// object's model) reads element `i`'s `+0x10` for the hit's material
+/// index `i`, with no bound check, so an empty block faults reading
+/// `[0 + i*0x14 + 0x10]` (the Halo 1 sandbox's `0x000d8b33` crash).
+pub const HLMT_MATERIALS: u32 = 0x58;
+pub const HLMT_MATERIAL_SIZE: usize = 0x14;
+
+/// One `hlmt` material. V (`tests/hlmt_materials_disc.rs`, coagulation,
+/// beavercreek and 05a): on every retail `hlmt` with a `coll`, element
+/// `k` is named as the `coll`'s material `k` and there are at least as
+/// many; `+0x10` is the index in the globals' materials of the `+0xc`
+/// name (of the `+0` name when `+0xc` is empty) on all 197 elements;
+/// `+8`'s low half is `k`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelMaterial {
+    /// `+0`: the `coll` material's (or the `phmo` material's) name.
+    pub name: String,
+    /// `+0xc`: the global material's name.
+    pub global: String,
+    /// `+0x10`: its index in the globals' materials.
+    pub global_index: i16,
+}
+
+/// The global material `name` with its index in `globals` (the base's
+/// [`crate::base::Base::materials`]).
+pub fn model_material(name: &str, global: &str, globals: &[String]) -> Result<ModelMaterial> {
+    let i = globals
+        .iter()
+        .position(|g| g == global)
+        .ok_or_else(|| Error::Invalid(format!("no global material {global}")))?;
+    Ok(ModelMaterial {
+        name: sid_name(name),
+        global: global.to_owned(),
+        global_index: i as i16,
+    })
+}
+
+/// The materials of an `hlmt` whose collision model is converted from
+/// Halo 1's `coll`: one per collision material, in order, each mapped to
+/// the Halo 2 global material of its Halo 1 type
+/// ([`crate::arsenal::MATERIALS`]).
+pub fn model_materials(coll: &h1::Collision, globals: &[String]) -> Result<Vec<ModelMaterial>> {
+    coll.materials
+        .iter()
+        .enumerate()
+        .map(|(k, name)| {
+            let t = coll.material_types.get(k).copied().unwrap_or(0);
+            let (h1_type, global) = crate::arsenal::MATERIALS
+                .get(t as usize)
+                .ok_or_else(|| Error::Invalid(format!("coll material {name}: type {t}")))?;
+            model_material(name, global, globals)
+                .map_err(|e| Error::Invalid(format!("coll material {name} ({h1_type}): {e}")))
+        })
+        .collect()
+}
+
+/// The `hlmt +0x58` elements for `materials`: element `k` holds the name,
+/// `+4` `0xffff0000` and `+8` `k | 0xffff0000` (retail's most common
+/// words: 67 and 185 of 197 elements), the global name and its index.
+pub fn model_materials_block(materials: &[ModelMaterial]) -> Block {
+    let mut b = Block::zeroed(HLMT_MATERIAL_SIZE * materials.len());
+    for (k, m) in materials.iter().enumerate() {
+        let at = HLMT_MATERIAL_SIZE * k;
+        if !m.name.is_empty() {
+            b.string_id(at as u32, &m.name);
+        }
+        b.put_u32(at + 4, 0xffff_0000);
+        b.put_u32(at + 8, 0xffff_0000 | k as u32);
+        b.string_id((at + 0xc) as u32, &m.global);
+        b.put_u32(at + 0x10, m.global_index as u16 as u32);
+    }
+    b
+}
+
+/// Replaces `hlmt`'s materials with `materials`.
+pub fn set_model_materials(hlmt: &mut Block, materials: &[ModelMaterial]) {
+    let a = HLMT_MATERIALS as usize;
+    hlmt.fixups.retain(|f| f.offset != HLMT_MATERIALS);
+    hlmt.bytes[a..a + 8].fill(0);
+    if !materials.is_empty() {
+        hlmt.block(
+            HLMT_MATERIALS,
+            materials.len() as u32,
+            model_materials_block(materials),
+        );
+    }
+}
+
+/// The fixup child of `root`'s block field at `offset`, with its count.
+fn block_child(root: &Block, offset: u32) -> Option<(u32, &Block)> {
+    root.fixups.iter().find_map(|f| match &f.kind {
+        FixupKind::Block { count, child } if f.offset == offset => Some((*count, child)),
+        _ => None,
+    })
+}
+
+/// The string ID fixup of `b` at `offset`, if any.
+fn sid_at(b: &Block, offset: u32) -> Option<&str> {
+    b.fixups.iter().find_map(|f| match &f.kind {
+        FixupKind::StringId(s) if f.offset == offset => Some(s.as_str()),
+        _ => None,
+    })
+}
+
+/// `phmo +0x40`: the materials, elements of `0xc`, the name at `+0` and
+/// the global material's name at `+4` ([`sphere_physics`],
+/// [`physics_model`] write both).
+pub const PHMO_MATERIALS: u32 = 0x40;
+pub const PHMO_MATERIAL_SIZE: usize = 0xc;
+
+/// The global material name of each of a built `phmo`'s materials (`+4`,
+/// else `+0`).
+pub fn phmo_material_globals(phmo: &Block) -> Vec<String> {
+    let Some((n, child)) = block_child(phmo, PHMO_MATERIALS) else {
+        return Vec::new();
+    };
+    (0..n)
+        .map(|k| {
+            let at = k * PHMO_MATERIAL_SIZE as u32;
+            sid_at(child, at + 4)
+                .or_else(|| sid_at(child, at))
+                .unwrap_or_default()
+                .to_owned()
+        })
+        .collect()
+}
+
+/// A built `hlmt`'s materials, read back ([`set_model_materials`]).
+pub fn model_materials_of(hlmt: &Block) -> Vec<ModelMaterial> {
+    let Some((n, child)) = block_child(hlmt, HLMT_MATERIALS) else {
+        return Vec::new();
+    };
+    (0..n as usize)
+        .map(|k| {
+            let at = HLMT_MATERIAL_SIZE * k;
+            ModelMaterial {
+                name: sid_at(child, at as u32).unwrap_or_default().to_owned(),
+                global: sid_at(child, (at + 0xc) as u32).unwrap_or_default().to_owned(),
+                global_index: i16::from_le_bytes([child.bytes[at + 0x10], child.bytes[at + 0x11]]),
+            }
+        })
+        .collect()
+}
+
+/// The number of `hlmt`'s materials.
+pub fn model_material_count(hlmt: &Block) -> u32 {
+    block_child(hlmt, HLMT_MATERIALS).map_or(0, |b| b.0)
 }
 
 /// The `hlmt`.
@@ -186,7 +339,9 @@ pub fn model(m: &Model) -> Result<Block> {
         regions.push(e);
     }
     set(&mut r, "regions", Val::Block(regions))?;
-    built(d, &r)
+    let mut root = built(d, &r)?;
+    set_model_materials(&mut root, &m.materials);
+    Ok(root)
 }
 
 /// `mode +0x60`, the material list.

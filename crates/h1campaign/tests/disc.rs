@@ -1052,6 +1052,16 @@ fn every_campaign_level_converts() {
                 if !bad.is_empty() {
                     failed.push(format!("{level}: sweep {bad:#?}"));
                 }
+                // Every hlmt holds the materials the engine reads
+                // (h1objects::verify::hlmt_materials), beyond what the
+                // retail base already breaks.
+                let known = h1objects::verify::hlmt_materials(&mut base).unwrap();
+                let lines = h1objects::verify::hlmt_materials(&mut m).unwrap();
+                let new: Vec<_> = lines.into_iter().filter(|l| !known.contains(l)).collect();
+                println!("  hlmt materials: {} problems", new.len());
+                if !new.is_empty() {
+                    failed.push(format!("{level}: hlmt materials {new:#?}"));
+                }
                 // The globals' grenades are Halo 1's, converted.
                 let grenades = globals_grenades(&mut m);
                 println!("  grenades: {grenades:?}");
