@@ -1168,7 +1168,7 @@ fn views_json_and_manifest_entries_follow_the_contract() {
     assert!(top.get("depth_sorted").is_none());
     assert_eq!(top["cutaway"], true);
     assert!(v["views"][1].get("cutaway").is_none());
-    assert_eq!(top["file"], "views/top.png");
+    assert_eq!(top["file"], "views/top.webp");
     let iso = &v["views"][1];
     assert_eq!(
         (iso["width"].as_u64(), iso["height"].as_u64()),
@@ -1450,9 +1450,9 @@ fn geometry_from_the_disc() {
     fs::create_dir_all(&shots).unwrap();
     for stem in ["zanzibar", "ascension"] {
         for view in ["top", "iso-ne"] {
-            let from = out.join("map").join(stem).join(format!("views/{view}.png"));
+            let from = out.join("map").join(stem).join(format!("views/{view}.webp"));
             if from.exists() {
-                fs::copy(&from, shots.join(format!("{stem}-{view}.png"))).unwrap();
+                fs::copy(&from, shots.join(format!("{stem}-{view}.webp"))).unwrap();
             }
         }
     }
@@ -1544,7 +1544,7 @@ fn geometry_from_the_disc() {
             .enumerate()
             {
                 let spec = VIEWS.iter().find(|v| v.id == view).unwrap();
-                let path = dir.join("map").join(stem).join(format!("views/{view}.png"));
+                let path = dir.join("map").join(stem).join(format!("views/{view}.webp"));
                 let Ok(img) = image_rgba(&path) else { continue };
                 let (tw, th, t) = thumb(&img, spec.width as usize, spec.height as usize, f, bg);
                 for y in 0..th.min(cell) {
@@ -1584,7 +1584,7 @@ fn geometry_from_the_disc() {
             let path = out
                 .join("map")
                 .join(stem)
-                .join(format!("views/{}.png", spec.id));
+                .join(format!("views/{}.webp", spec.id));
             let Ok(img) = image_rgba(&path) else { continue };
             let (tw, th, t) = thumb(&img, spec.width as usize, spec.height as usize, f, bg);
             for y in 0..th {
@@ -1600,6 +1600,12 @@ fn geometry_from_the_disc() {
 }
 
 fn image_rgba(path: &Path) -> Result<Vec<u8>> {
+    if path.extension().is_some_and(|e| e == "webp") {
+        let bytes = fs::read(path)?;
+        return live_server::art_pack::decode_webp(&bytes)
+            .map(|(_, _, rgba)| rgba)
+            .context("not a WebP picture");
+    }
     let decoder = png::Decoder::new(std::io::BufReader::new(File::open(path)?));
     let mut reader = decoder.read_info()?;
     let mut buf = vec![0; reader.output_buffer_size().context("png size")?];
@@ -2392,7 +2398,7 @@ fn textured_primitives_name_their_class_material_and_share_pictures() {
         1,
         "one picture per bitmap"
     );
-    assert_eq!(doc["images"][0]["mimeType"], "image/jpeg");
+    assert_eq!(doc["images"][0]["mimeType"], "image/webp");
     let materials = doc["materials"].as_array().unwrap();
     let prims = doc["meshes"][0]["primitives"].as_array().unwrap();
     assert_eq!(prims.len(), 3);
@@ -2455,7 +2461,7 @@ fn written_levels_keep_pictures_beside_the_glb_and_tile_them_by_the_shader_s_sca
     std::fs::create_dir_all(&dir).unwrap();
     // A stale picture from an earlier extraction goes.
     std::fs::create_dir_all(dir.join("tex")).unwrap();
-    std::fs::write(dir.join("tex/stale.jpg"), b"x").unwrap();
+    std::fs::write(dir.join("tex/stale.webp"), b"x").unwrap();
     let (glb_bytes, picture_bytes) = level.write_glb(&dir).unwrap();
     let glb = std::fs::read(dir.join("map.glb")).unwrap();
     assert_eq!(glb.len(), glb_bytes);
@@ -2467,14 +2473,14 @@ fn written_levels_keep_pictures_beside_the_glb_and_tile_them_by_the_shader_s_sca
     let (doc, _) = parse_glb(&glb);
     let images = doc["images"].as_array().unwrap();
     let uris: Vec<&str> = images.iter().map(|i| i["uri"].as_str().unwrap()).collect();
-    assert_eq!(uris, ["tex/00000007.jpg", "tex/0000002a.jpg"]);
+    assert_eq!(uris, ["tex/00000007.webp", "tex/0000002a.webp"]);
     for (i, uri) in uris.iter().enumerate() {
         assert!(images[i].get("bufferView").is_none());
-        assert_eq!(images[i]["mimeType"], "image/jpeg");
+        assert_eq!(images[i]["mimeType"], "image/webp");
         let file = std::fs::read(dir.join(uri)).unwrap();
-        assert_eq!(&file[..2], [0xff, 0xd8], "a JPEG");
+        assert_eq!(&file[8..12], b"WEBP", "a WebP picture");
     }
-    assert!(!dir.join("tex/stale.jpg").exists());
+    assert!(!dir.join("tex/stale.webp").exists());
     let mut unzipped = Vec::new();
     std::io::Read::read_to_end(
         &mut flate2::read::GzDecoder::new(&std::fs::read(dir.join("map.glb.gz")).unwrap()[..]),

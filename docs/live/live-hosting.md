@@ -472,15 +472,19 @@ bucket, the server uploads the art directory once in the background to
 `art/<stamp>/...`, where the stamp is 16 hex digits of a hash over every
 file's path and size and the manifest: a new extraction is a new set of
 addresses. Each object carries its content type and `Cache-Control:
-public, max-age=31536000, immutable`; a file with a `.gz` copy is uploaded
-as that copy with `Content-Encoding: gzip`. An interrupted upload resumes
+public, max-age=31536000, immutable`; a file with a compressed copy is
+uploaded as that copy, its `.br` one with `Content-Encoding: br` (every glb
+and JSON file of a current extraction, [live-art.md](live-art.md#packing)),
+else its `.gz` one with `Content-Encoding: gzip`. An interrupted upload resumes
 on the next start (files already there are skipped), and a published
 extraction costs one request to recognise. Once it is all there, a request
 for `/art/game/<file>` is a `307` to `<public url>/art/<stamp>/<file>`,
 carrying the cache policy the file itself had: a year for a versioned
 `?v=` address, `no-cache` (asked each time) otherwise. Until then, for a
-client that does not take gzip, and on a `--private` server, the server
-serves the files itself. Art that is not shared is never published. Old
+client that does not take the published copy's encoding (Brotli, or gzip
+for older extractions), and on a `--private` server, the server serves the
+files itself, the same bytes: the `.br` copy to a browser that takes
+Brotli, the `.gz` one to one that takes gzip, else the file. Art that is not shared is never published. Old
 extractions' prefixes stay in the bucket; delete them in the dashboard if
 space matters.
 

@@ -25,6 +25,8 @@
 pub mod admin;
 pub mod app;
 pub mod art;
+#[cfg(feature = "native")]
+pub mod art_pack;
 pub mod arbitration;
 pub mod bans;
 pub mod blobs;

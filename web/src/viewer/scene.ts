@@ -15,7 +15,7 @@
 
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { gltfLoader } from "./gltf";
 import { CSS2DObject, CSS2DRenderer } from "three/examples/jsm/renderers/CSS2DRenderer.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
@@ -43,7 +43,7 @@ import { LevelAoPass } from "./aopass";
 import { machineMatrix, machineNode, placeMachine, type MachineNode } from "./machines3d";
 import { FrameObjects } from "./objects3d";
 import { buildFeatures } from "./features3d";
-import { TextureSwap, deferTextures, loadFlats, streamTextures, texturesSharing, type TexturePair } from "./textures3d";
+import { TextureSwap, deferTextures, loadFlats, mapAnisotropy, streamTextures, texturesSharing, type TexturePair } from "./textures3d";
 import { ScenarioObjects } from "./scenario3d";
 import { parseFeatures, type MapFeatures } from "../map/features";
 import type { SampledMachine } from "../state/frames";
@@ -336,7 +336,7 @@ export class ViewerScene {
     try {
       // The level comes first, drawn in its class colours; its pictures
       // follow (textures3d.ts).
-      const loader = new GLTFLoader();
+      const loader = gltfLoader();
       const pending = deferTextures(loader, url);
       const gltf = await loader.loadAsync(url);
       if (this.disposed || gen !== this.mapGen) return false;
@@ -436,6 +436,10 @@ export class ViewerScene {
   private streamPictures(pending: ReturnType<typeof deferTextures>, used: ReadonlySet<THREE.Material>, gen: number) {
     this.mapTextures = [];
     for (const p of pending) this.mapTextures.push(...texturesSharing(p.texture, used));
+    // Floors and walls seen at a glancing angle stay sharp: the GPU's most
+    // anisotropic filtering (mipmaps are made when each picture arrives).
+    const aniso = mapAnisotropy(this.renderer.capabilities.getMaxAnisotropy());
+    for (const t of this.mapTextures) t.anisotropy = aniso;
     this.texturesReady = streamTextures(pending, (p, picture) => {
       for (const t of texturesSharing(p.texture, used)) { t.image = picture; t.needsUpdate = true; }
       this.textures.refresh();
