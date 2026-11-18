@@ -49,14 +49,14 @@ use objc2_core_haptics::{
 };
 use objc2_foundation::{NSArray, NSDate, NSDefaultRunLoopMode, NSRunLoop, NSString};
 use objc2_game_controller::{
-    GCController, GCControllerButtonInput, GCControllerElement, GCDevice, GCDeviceHaptics,
-    GCExtendedGamepad, GCHapticsLocality, GCMicroGamepad, GCHapticsLocalityAll, GCHapticsLocalityDefault,
+    GCController, GCControllerButtonInput, GCControllerDirectionPad, GCControllerElement, GCDevice,
+    GCDeviceHaptics, GCDualSenseGamepad, GCDualShockGamepad, GCExtendedGamepad, GCHapticsLocality, GCMicroGamepad, GCHapticsLocalityAll, GCHapticsLocalityDefault,
     GCHapticsLocalityHandles, GCHapticsLocalityLeftHandle, GCHapticsLocalityRightHandle,
     GCPhysicalInputProfile,
 };
 
 use super::remote::RemoteSnapshot;
-use super::{ControllerSource, Locality, RawPad, RumblePlan, Snapshot, plan_rumble};
+use super::{ControllerSource, Locality, RawPad, RawTouchpad, RumblePlan, Snapshot, plan_rumble};
 
 /// Longest a CoreHaptics continuous event may last; the player loops it.
 const EVENT_SECONDS: f64 = 30.0;
@@ -400,7 +400,40 @@ fn read(gp: &GCExtendedGamepad) -> Snapshot {
             options: pressed(gp.buttonOptions()),
             left_stick_press: pressed(gp.leftThumbstickButton()),
             right_stick_press: pressed(gp.rightThumbstickButton()),
+            touchpad: read_touchpad(gp),
         }
+    }
+}
+
+/// The touchpad of a DualSense (`GCDualSenseGamepad`) or a DualShock 4
+/// (`GCDualShockGamepad`, whose elements are optional), both subclasses of
+/// the extended profile the handler is given.
+fn read_touchpad(gp: &GCExtendedGamepad) -> Option<RawTouchpad> {
+    // SAFETY: property reads on live objects, on the profile's queue.
+    let pair = |d: &GCControllerDirectionPad| unsafe { (d.xAxis().value(), d.yAxis().value()) };
+    if let Some(ds) = gp.downcast_ref::<GCDualSenseGamepad>() {
+        // SAFETY: as above.
+        return Some(unsafe {
+            RawTouchpad {
+                click: ds.touchpadButton().isPressed(),
+                primary: pair(&ds.touchpadPrimary()),
+                secondary: pair(&ds.touchpadSecondary()),
+            }
+        });
+    }
+    let ds4 = gp.downcast_ref::<GCDualShockGamepad>()?;
+    // SAFETY: as above.
+    unsafe {
+        let (click, primary, secondary) = (
+            ds4.touchpadButton()?,
+            ds4.touchpadPrimary()?,
+            ds4.touchpadSecondary()?,
+        );
+        Some(RawTouchpad {
+            click: click.isPressed(),
+            primary: pair(&primary),
+            secondary: pair(&secondary),
+        })
     }
 }
 
