@@ -409,3 +409,29 @@ fn a_live_closure_continuation_refuses_the_save() {
         "{err}"
     );
 }
+
+#[test]
+fn the_raw_disks_written_sectors_load_with_the_machine() {
+    let (a, mut machine_a) = boot(0);
+    run(&a, &mut machine_a, N);
+    // A rewritten cache database and a sector past it, as the guest's
+    // NtWriteFile on Partition0 leaves them.
+    let sector = 0x10_0000 / kernel::rawdisk::SECTOR_SIZE;
+    {
+        let disk = a.kernel.raw_disk().unwrap();
+        let mut sectors = disk.lock();
+        sectors.get_mut(&4).unwrap()[8] = 0x2a;
+        sectors.insert(sector, [0xa5; 512]);
+    }
+    let saved = a.kernel.raw_disk().unwrap().lock().clone();
+    let bytes = save(&a, &machine_a).unwrap();
+    // Written after the save: not in the snapshot.
+    a.kernel.raw_disk().unwrap().lock().insert(sector + 1, [1; 512]);
+
+    let (b, mut machine_b) = boot(0);
+    b.kernel.raw_disk().unwrap().lock().insert(sector + 2, [2; 512]);
+    load(&b, &mut machine_b, &bytes).unwrap();
+    assert_eq!(*b.kernel.raw_disk().unwrap().lock(), saved);
+    // The machine runs on from the load as before.
+    run(&b, &mut machine_b, 20);
+}

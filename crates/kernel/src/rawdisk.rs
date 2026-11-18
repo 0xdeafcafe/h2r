@@ -7,7 +7,9 @@
 //! (retail 0x2d592c) reads and rewrites with 512-byte NtReadFile/NtWriteFile.
 //! Writes are kept for the session so a rewritten database reads back, up to
 //! `limits::MAX_RAW_DISK_SECTORS` distinct sectors; a write that would retain
-//! more fails with STATUS_DISK_FULL before any byte of it is stored.
+//! more fails with STATUS_DISK_FULL before any byte of it is stored. The
+//! kernel keeps a handle on them ([`RawSectors`]) so a machine snapshot saves
+//! and restores them (docs/runtime/snapshots.md).
 //!
 //! Cache database layout, derived from the code at 0x2d59af..0x2d5b5e:
 //!
@@ -24,6 +26,7 @@
 //! for a format. A database failing the signature/version/marker checks is
 //! treated as empty.
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, MutexGuard};
 use vfs::{Backend, BasicInfo, DirectoryEntry, Error, Metadata, Result, VolumeInfo};
 
 pub const RAW_DISK_DEVICE: &str = "\\Device\\Harddisk0\\Partition0";
@@ -72,10 +75,24 @@ pub fn cache_database(entries: &[CacheEntry]) -> Result<[u8; SECTOR_SIZE as usiz
     Ok(sector)
 }
 
+/// The sectors a raw disk retains, by sector number.
+pub type Sectors = BTreeMap<u64, [u8; SECTOR_SIZE as usize]>;
+
+/// A raw disk's retained sectors, shared between the VFS backend and the
+/// kernel. The lock is a leaf: nothing else is taken while it is held.
+#[derive(Clone, Default)]
+pub struct RawSectors(Arc<Mutex<Sectors>>);
+
+impl RawSectors {
+    pub fn lock(&self) -> MutexGuard<'_, Sectors> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
 /// The raw disk. Unwritten sectors outside the synthetic ones read as zero.
 pub struct RawDisk {
     size: u64,
-    sectors: BTreeMap<u64, [u8; SECTOR_SIZE as usize]>,
+    sectors: RawSectors,
 }
 impl RawDisk {
     /// `size` is rounded down to whole sectors and must cover the database.
@@ -86,7 +103,14 @@ impl RawDisk {
         }
         let mut sectors = BTreeMap::new();
         sectors.insert(CACHE_DB_OFFSET / SECTOR_SIZE, cache_database(cache)?);
-        Ok(Self { size, sectors })
+        Ok(Self {
+            size,
+            sectors: RawSectors(Arc::new(Mutex::new(sectors))),
+        })
+    }
+    /// A handle on the sectors, for machine snapshots.
+    pub fn sectors(&self) -> RawSectors {
+        self.sectors.clone()
     }
     fn check(path: &str) -> Result<()> {
         if path.is_empty() {
@@ -118,13 +142,14 @@ impl Backend for RawDisk {
             return Ok(0);
         }
         let n = buffer.len().min((self.size - offset) as usize);
+        let sectors = self.sectors.lock();
         let mut done = 0;
         while done < n {
             let at = offset + done as u64;
             let (sector, within) = (at / SECTOR_SIZE, (at % SECTOR_SIZE) as usize);
             let count = (n - done).min(SECTOR_SIZE as usize - within);
             let out = &mut buffer[done..done + count];
-            match self.sectors.get(&sector) {
+            match sectors.get(&sector) {
                 Some(bytes) => out.copy_from_slice(&bytes[within..within + count]),
                 None => out.fill(0),
             }
@@ -140,15 +165,15 @@ impl Backend for RawDisk {
         if end > self.size {
             return Err(Error::DiskFull);
         }
+        let mut sectors = self.sectors.lock();
         if !buffer.is_empty() {
             let (first, last) = (offset / SECTOR_SIZE, (end - 1) / SECTOR_SIZE);
             let span = last - first + 1;
-            let free =
-                crate::limits::MAX_RAW_DISK_SECTORS.saturating_sub(self.sectors.len()) as u64;
+            let free = crate::limits::MAX_RAW_DISK_SECTORS.saturating_sub(sectors.len()) as u64;
             // Count only when the span could exceed the remaining budget, so
             // ordinary small writes never walk the map.
             if span > free {
-                let retained = self.sectors.range(first..=last).count() as u64;
+                let retained = sectors.range(first..=last).count() as u64;
                 if span - retained > free {
                     return Err(Error::DiskFull);
                 }
@@ -159,7 +184,7 @@ impl Backend for RawDisk {
             let at = offset + done as u64;
             let (sector, within) = (at / SECTOR_SIZE, (at % SECTOR_SIZE) as usize);
             let count = (buffer.len() - done).min(SECTOR_SIZE as usize - within);
-            self.sectors
+            sectors
                 .entry(sector)
                 .or_insert([0; SECTOR_SIZE as usize])[within..within + count]
                 .copy_from_slice(&buffer[done..done + count]);
