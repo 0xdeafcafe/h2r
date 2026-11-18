@@ -165,6 +165,12 @@ description updating with the focus, the legend's glyphs drawn as buttons, B
 going back to the screen underneath, and nothing left on screen after it
 closes.
 
+The mod repository's two screens (`boot::mods_screen`, docs/game/maps.md
+§5 "Mod downloads (in game)") are list-class screens whose rows come from
+the server, like the co-op friends list: their texts live in the
+`mod texts` id family, written when they change; a row's count is fixed
+when the screen opens.
+
 The skulls page logs `skulls page: ...` lines (docs/game/skulls.md "What it
 logs"); the sign-in prompt logs `signin prompt: ...` lines (docs/live/live.md).
 
@@ -282,8 +288,10 @@ header line up. What differs:
 - 5 or 6 Controls rows. `0x24bc12` lays out up to the list block's
   visible count, which the Controls tag gives as 6, and the Controls handler
   embeds 6 items. Yet in game our co-op screen (6 rows on the Controls tag)
-  shows 5, and the Xbox Live menu keeps room for five. The checks use the 5
-  seen; what takes one away is not found.
+  shows 5. The Xbox Live menu (a retail list, not ours) has one child item
+  widget per row, six with the co-op row, laid out in its own tag's room
+  (docs/live/live-custom-games.md §5). The checks use the 5 seen; what
+  takes one away is not found.
 - Whether the footer widget keeps our legend, or the screen's tag string
   (`0x2300cf`) overwrites it after the pane is set up.
 - Whether an overlong description clips or runs past its rectangle.

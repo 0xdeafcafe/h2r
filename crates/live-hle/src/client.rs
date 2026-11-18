@@ -115,6 +115,14 @@ pub(crate) enum Reply {
     Roster(live_proto::bots::Roster),
     /// Everyone's presence, as `GET /v1/presence` shows this console.
     Presence(Vec<live_proto::Presence>),
+    /// A page of the mod repository (docs/game/maps.md §5, "Mod downloads").
+    Mods(crate::mods::ModPage),
+    /// Where content is fetched from (the API base) and the map gate that
+    /// installs it, for a download on a thread of its own.
+    Content {
+        api: String,
+        gate: Option<Arc<crate::maps::MapGate>>,
+    },
 }
 #[derive(Clone)]
 pub(crate) struct Pending(Arc<Mutex<Option<Result<Reply, u32>>>>);
@@ -240,6 +248,11 @@ enum Work {
     Bots(live_proto::bots::RosterRequest),
     /// `GET /v1/presence`.
     ReadPresence,
+    /// `GET /v1/maps?sort=new` (the mod repository), as the first account
+    /// signed in on this console.
+    Mods { limit: u32, cursor: Option<String> },
+    /// The API base and map gate, for a mod download.
+    ContentApi,
     Wake,
 }
 /// Called on the worker with a command's result, once it has one.
@@ -443,6 +456,22 @@ impl Service {
     /// signed in on this console.
     pub fn read_presence(&self, s: &Session) -> Result<Pending, u32> {
         self.submit(s, Work::ReadPresence)
+    }
+    /// A page of the mod repository; `then` gets it on the worker.
+    pub fn mods(
+        &self,
+        s: &Session,
+        limit: u32,
+        cursor: Option<String>,
+        then: Then,
+    ) -> Result<(), u32> {
+        self.submit_then(s, Work::Mods { limit, cursor }, Some(then))
+            .map(|_| ())
+    }
+    /// The API base and map gate; `then` gets them on the worker.
+    pub fn content_api(&self, s: &Session, then: Then) -> Result<(), u32> {
+        self.submit_then(s, Work::ContentApi, Some(then))
+            .map(|_| ())
     }
     pub fn cancel(&self, s: &Session) {
         s.cancel();
@@ -1549,6 +1578,29 @@ impl Worker {
                 self.team_json::<live_proto::Page<live_proto::Presence>>(user, "/presence")
                     .map(|p| Reply::Presence(p.items))
                     .map_err(Error::result)
+            }
+            Work::Mods { limit, cursor } => {
+                let active = self
+                    .active
+                    .as_ref()
+                    .filter(|a| a.session.id == c.session.id)
+                    .ok_or(NO_SESSION)?;
+                let user = active.users.values().next().ok_or(NO_USER)?;
+                let path = crate::mods::list_path(*limit, cursor.as_deref());
+                self.team_json::<crate::mods::ModPage>(user, &path)
+                    .map(Reply::Mods)
+                    .map_err(Error::result)
+            }
+            Work::ContentApi => {
+                self.active
+                    .as_ref()
+                    .filter(|a| a.session.id == c.session.id)
+                    .ok_or(NO_SESSION)?;
+                let api = self.connection.as_ref().ok_or(NO_SESSION)?.api.clone();
+                Ok(Reply::Content {
+                    api,
+                    gate: self.maps.clone(),
+                })
             }
             Work::Wake => Ok(Reply::Done),
         }

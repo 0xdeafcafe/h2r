@@ -342,6 +342,16 @@ its help text); the list keeps five item widgets, so Content Download
 scrolls into view ([live-coop.md](live-coop.md) section 10).
 `H2_NO_COOP_ROW=1` takes it out (five rows, as above).
 
+With the co-op row the list has six rows. The add-items hook links one
+item widget of ours per row of ours (two), and the tag copy makes room for
+both (`custom_games::shift`: the list moves up 36, the blocks under it in
+its column down 50), so all six show with no scroll bar.
+
+With the mod repository on (Live and the map gate), Content Download reads
+"Mods" or "Mods (N new)", its pane's help text is ours, and it opens the
+Mods screen instead of the Map Pack dialog ([maps.md](../game/maps.md) §5,
+"Mod downloads (in game)"). `H2_NO_MODS_ROW=1` gives Content Download back.
+
 ## 7. To check in game
 
 Nothing here ran in the game. With two consoles (or two instances, per the

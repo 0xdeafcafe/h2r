@@ -60,6 +60,7 @@ pub mod map_copy;
 pub mod map_override;
 pub mod map_select;
 pub mod map_slots;
+pub mod mods_screen;
 pub mod movies_glue;
 pub mod new_maps;
 pub mod pad_speaker;
@@ -1247,6 +1248,11 @@ pub fn run_hosted_with_live(
         let on = coop_live::install(&mut features, _live.clone(), arm, host.settings.clone(), &opts.disc)?;
         custom_games::set_coop_row(on);
     }
+    // The mod repository (docs/game/maps.md §5, "Mod downloads"): the Xbox
+    // Live menu's last row opens our Mods screens in place of Content
+    // Download's Map Pack dialog.
+    let mods_on = mods_screen::install(&mut features, _live.clone(), map_gate.clone(), &opts.data_root)?;
+    custom_games::set_mods_row(mods_on);
     // H2_SNAPSHOT_PROBE=1: count, per game tick, what would stop a machine
     // snapshot (snapshot_probe.rs, docs/runtime/snapshots.md).
     let mut snapshot_probe = snapshot_probe::Probe::from_env(&mut features)?;
