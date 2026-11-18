@@ -1286,14 +1286,11 @@ fn every_halo1_weapon_is_held_by_the_halo1_player_graph() {
                 if !graph_finds(&mem, &strings, *j, ["combat", &class, &kind, "idle"]) {
                     bad.push(format!("{name}: {n}: {b}'s graph does not find combat:{class}:{kind}:idle"));
                 }
-                // Halo 1's cyborg throws only under `rifle` (`stand rifle
-                // throw-grenade`): holding a pistol-class weapon or the
-                // rocket launcher there is no throw to find (still to do).
-                let throws = graph_finds(&mem, &strings, *j, ["combat", &class, &kind, "throw_grenade"]);
-                if !throws {
-                    println!("{name}: {n}: {b}'s graph finds no combat:{class}:{kind}:throw_grenade");
-                }
-                if class == "rifle" && !throws {
+                // Halo 1's cyborg throws with every class through its slot
+                // tables (each class's throw slot names `stand rifle
+                // throw-grenade`); the converted graph names it per class.
+                // A held weapon whose path finds no throw can't throw.
+                if !graph_finds(&mem, &strings, *j, ["combat", &class, &kind, "throw_grenade"]) {
                     bad.push(format!("{name}: {n}: {b}'s graph does not find combat:{class}:{kind}:throw_grenade"));
                 }
             }

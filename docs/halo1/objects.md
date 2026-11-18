@@ -516,11 +516,17 @@ with nothing held, no first-person arms or weapon. The test held only "is in the
 Now the trees are laid out by string ID when the map is built
 ([models.md](models.md), `jmad`), and the disc tests look each weapon up
 as the engine does: `idle` under `combat`, its class and its type, and
-`idle` in its first-person graph. `throw_grenade` is found for the
-`rifle` class only: Halo 1's cyborg has `stand rifle throw-grenade` and
-no throw under `pistol` or `missile`, so a player holding the pistol,
-plasma pistol, needler or rocket launcher still finds no throw (still to
-do: which class Halo 1 falls back to).
+`idle` in its first-person graph, and `throw_grenade` under `combat`,
+its class and its type. Halo 1 has no class fallback for the throw: it
+finds a unit's animations through slot tables (per unit, weapon class
+and type, a list of animation indices), and on the cyborg every class's
+throw slot names `stand rifle throw-grenade` (V: Blood Gulch's cyborg
+`antr`, every unit and class). The converter carries those slots over:
+a slot naming another class's animation becomes an action of the
+borrowing class naming the same animation (`jmad::borrow_slots`), so the
+pistol, plasma pistol, needler and rocket launcher throw with the rifle's
+animation, as in Halo 1. The disc test fails on any weapon of any
+multiplayer map whose path finds no throw.
 
 ### Model materials (`hlmt +0x58`, **Built**, converter version 54)
 
