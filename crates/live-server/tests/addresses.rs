@@ -174,6 +174,23 @@ async fn only_the_operator_reads_addresses_in_the_log() {
         assert_eq!(e["data"]["session_id"], sid, "{who}");
     }
 
+    // The snapshot's event tail (what the edge caches for anonymous pages)
+    // is redacted the same way; the operator's is whole.
+    for (who, auth) in [
+        ("anonymous", None),
+        ("stranger", Some(h.bearer(&stranger, lxm::READ))),
+    ] {
+        let snap = get(&h, "/v1/snapshot", auth).await;
+        let tail = snap["tail"].as_array().unwrap();
+        assert!(
+            tail.iter().any(|e| e["type"] == session::CREATED),
+            "{who}: {snap}"
+        );
+        assert!(!has_address(&snap), "{who}: {snap}");
+    }
+    let snap = get(&h, "/v1/snapshot", Some(operator(&h))).await;
+    assert!(has_address(&snap["tail"]));
+
     // The same on the stream.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

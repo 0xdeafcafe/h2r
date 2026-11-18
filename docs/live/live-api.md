@@ -240,7 +240,7 @@ replays show the firing of the whole second; the same goes for `actions` and
 | `GET /v1/games/{id}/frames?from_tick=&to_tick=&format=` | recorded frames, for replay: `format=json` (the default) a page of JSON frames; `format=packed` an `application/x-h2-frames` container of packed keyframes (docs/live/live-telemetry.md, "Packed frames"), the next cursor in `x-next` and the head position in `x-position` |
 | `GET /v1/maps/{map}/outline` | top-down map outline (see below), 404 until a console has uploaded it |
 | `GET /v1/snapshot` | what a page needs on load, in one read at one log position: `{position, accounts, presence, live, ended, details, tail}`. `accounts` is `/v1/accounts?limit=1000`, `presence` is `/v1/presence`, `live` and `ended` are `/v1/games?state=…&limit=100`, `details` is `/v1/games/{id}` for every live game and the 40 newest ended ones, and `tail` is the last 300 log events up to `position` without `GameFrame` (as on the stream). Each part has the reader's visibility applied, as at its own endpoint ([Co-op games](#co-op-games)) |
-| `GET /v1/events?from=&type=&stream=&limit=` | raw log, oldest first; without the events of co-op games and sessions the reader may not see ([Co-op games](#co-op-games), "The log"): a page can be short or empty with a `next` |
+| `GET /v1/events?from=&type=&stream=&limit=` | raw log, oldest first, at most 200 a page; without the events of co-op games and sessions the reader may not see ([Co-op games](#co-op-games), "The log"): a page can be short or empty with a `next`; without network addresses for anyone but the operator ([Network addresses](#network-addresses)) |
 | `GET /v1/titles/{title}/files/{name}` | raw file bytes, `ETag` = sha256 |
 | `GET /v1/server` | the server's public facts: `{id, software, url, invite_only, private, federation, counts: {accounts, online, live_games, sessions}, position}` ([live-admin.md](live-admin.md) §5) |
 | `GET /v1/stats/summary?window=today\|7d\|30d\|all` | server-wide totals, per-player rows, maps, weapons, playlists, skulls and hourly activity over a window ([Stats summary](#stats-summary), below) |
@@ -519,6 +519,26 @@ declared address is a local-network one. When a listed session is created
 from a non-loopback IPv4, the observed address replaces any declared one
 ([live-custom-games.md](live-custom-games.md) §3–§4). Reading one session by
 ID ignores visibility. `SessionUpdated` may also set `visibility`.
+
+### Network addresses
+
+A session holds its host's network addresses: the declared
+`advertisement.addr` and `port`, the XNADDR in `advertisement.host_address`,
+and the `endpoint` the server observed (often the player's public IP). They
+are what a game joins by, so `GET /v1/sessions` and `GET /v1/sessions/{id}`
+give them to a signed-in reader (a `read` bearer: the game's matchmaking
+and join calls) and leave them out for an anonymous one.
+
+The log never shows them to anyone but the operator (a server-key token).
+Every other reader of `GET /v1/events`, `/v1/stream` and the snapshot's
+event tail, anonymous, signed in or an admin account, gets each event with
+every network address removed at any depth (`addr` and the `port` beside
+it, `endpoint`, `host_address`, `xnaddr`, `ip`, `observed`). The stored log
+is unchanged. A changed event carries `redacted: true` in its data and an
+empty `jws` (no `jws_index`): its signature covers the data as stored, so
+it would not verify against the redacted view; only the operator's read
+can be checked against signatures. Today only `SessionCreated` carries
+addresses.
 
 Lists accept `state` (default `open`), `hopper` (numeric ID), `map`, `host`
 (author or canonical gamertag), `flags` (`custom`, `hopper`, `ranked` or
