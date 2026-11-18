@@ -278,7 +278,7 @@ group vehi 0x300
   0x0 struct unit unit -- the unit layer
   0x1c8 block block_1c8 0xb0 align 4
     0x0 unknown 0x4
-    0x4 string string_4
+    0x4 string label -- V the seat's label: scripts select seats by it (the scenario's seat-mapping masks select the seats whose label starts with the script's text, h1scripts::seats, checked on 05a)
     0x8 string string_8
     0xc string string_c
     0x10 string string_10
@@ -328,7 +328,8 @@ group vehi 0x300
   0x1e4 unknown 0x4
   0x1e8 unknown 0x4
   0x1ec unknown 0x4
-  0x1f0 unknown 0x4
+  0x1f0 enum16 vehicle_type values=tank|jeep|type_2|dropship|hover|flier|turret -- E objects.md (vehicle code reads the type here); V names by the retail vehicles holding each: 0 scorpion, 1 warthog, 3 pelican, phantom and the gravity throne, 4 ghost, wraith, spectre and creep, 5 banshee, 6 the turrets (none holds 2)
+  0x1f2 unknown 0x2
   0x1f4 unknown 0x4
   0x1f8 unknown 0x4
   0x1fc unknown 0x4
@@ -381,11 +382,9 @@ group vehi 0x300
   0x278 unknown 0x4
   0x27c unknown 0x4
   0x280 unknown 0x4
-  0x284 unknown 0x4
-  0x288 unknown 0x4
+  0x284 tagref snd_ref_284 groups=snd! -- V objects.md (snd! 0x284); group word snd! or none and the datum null on every retail vehicle, so the schema could not see it
   0x28c tagref ref_28c
-  0x294 unknown 0x4
-  0x298 unknown 0x4
+  0x294 tagref foot_ref_294 groups=foot -- V objects.md (foot 0x294); group word foot and the datum null on every retail vehicle
   0x29c tagref ref_29c
   0x2a4 tagref ref_2a4
   0x2ac unknown 0x4

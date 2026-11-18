@@ -194,7 +194,10 @@ pub fn convert_model(model: &Model, name: &str, opts: &ModelOptions) -> Result<C
     h.block(0x1c, regions.len() as u32, array(regions, REGION_LEN));
     h.block(0x24, sections.len() as u32, array(sections, SECTION_LEN));
     h.block(SECTION_GROUPS as u32, 1, section_group());
-    h.put_u32(0x44, model.node_list_checksum);
+    // +0x44 stays zero, as on every retail mode. Halo 1's node list
+    // checksum was written here; a value that happens to fall in the map's
+    // address range reads as a stray pointer, and a fresh level refuses
+    // the tag (c40's "cortana powerup fx").
     h.block(0x48, nodes.len() as u32, array(nodes, NODE_LEN));
     h.block(0x58, groups.len() as u32, array(groups, MARKER_GROUP_LEN));
     h.block(0x60, materials.len() as u32, array(materials, MATERIAL_LEN));

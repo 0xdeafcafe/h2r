@@ -784,6 +784,11 @@ mod level_and_seats {
         // Retail's own rule for anything else: the label starts with it.
         assert!(h2_label_matches("pelican_p", "pelican_p_l03"));
         assert!(!h2_label_matches("pelican_p", "pelican_g"));
+        // A Halo 1 vehicle built from its definition keeps Halo 1's labels,
+        // which a role rule alone would refuse (`driver` wants `_d`).
+        assert!(h2_label_matches("CT-driver", "CT-driver"));
+        assert!(h2_label_matches("ct-driver", "CT-driver"));
+        assert!(!h2_label_matches("CT-driver", "pchair-driver"));
     }
 
     #[test]
@@ -1293,4 +1298,108 @@ fn none_unsafe_calls_naming_an_unplaced_unit_are_stubbed() {
     assert!(!body[0].atom() && body[0].opcode() == 194);
     assert!(body[1].atom() && body[1].opcode() == VOID);
     assert!(!body[2].atom() && body[2].opcode() == 196);
+}
+
+/// `(script startup main (begin (unit_open tube) (unit_close tube)))` with
+/// `tube` placed: each call is compiled as `(if (> (list_count tube) 0)
+/// (unit_open tube))`, so a `none` unit at run time is a no-op, as in
+/// Halo 1 (`NONE_UNSAFE`).
+#[test]
+fn none_unsafe_calls_are_guarded_against_none() {
+    const UNIT: u16 = 14;
+    // Halo 2's own indices: the retail casts (`hs::castable`) are by index.
+    const H2_OBJECT_LIST: u16 = 31;
+    const H2_UNIT: u16 = 51;
+    let mut types = h1_types();
+    types.push("unit".into());
+    let c = Catalog::new(
+        vec![
+            f("begin", PASS, 0x2000, &[]),
+            f("unit_open", VOID, ORDINARY, &[UNIT]),
+            f("unit_close", VOID, ORDINARY, &[UNIT]),
+            f("print", VOID, ORDINARY, &[STRING]),
+        ],
+        types,
+        ["startup", "dormant", "continuous", "static", "stub"]
+            .map(String::from)
+            .to_vec(),
+    )
+    .unwrap();
+    let mut h2 = h2_target();
+    h2.types.resize(62, String::new());
+    for (i, t) in h2.types.iter_mut().enumerate().skip(14) {
+        *t = format!("type{i}");
+    }
+    h2.types[H2_OBJECT_LIST as usize] = "object_list".into();
+    h2.types[H2_UNIT as usize] = "unit".into();
+    let b2 = |index, return_type, parameters: Vec<u16>, special| H2Builtin {
+        index,
+        return_type,
+        parameters,
+        special,
+    };
+    h2.builtins.insert("if".into(), b2(2, PASS, vec![], true));
+    h2.builtins.insert(">".into(), b2(16, BOOL, vec![], true));
+    h2.builtins.insert(
+        "list_count".into(),
+        b2(38, SHORT, vec![H2_OBJECT_LIST], false),
+    );
+    h2.builtins
+        .insert("unit_open".into(), b2(194, VOID, vec![H2_UNIT], false));
+    h2.builtins
+        .insert("unit_close".into(), b2(195, VOID, vec![H2_UNIT], false));
+    let mut b = Builder::default();
+    let call = |b: &mut Builder, k: u16, name: &str| {
+        let u = b.atom(UNIT, UNIT, "tube", 0);
+        b.call(k, VOID, name, &[u])
+    };
+    let open = call(&mut b, 1, "unit_open");
+    let close = call(&mut b, 2, "unit_close");
+    let main = b.call(0, VOID, "begin", &[open, close]);
+    let t = read(&scenario(&b, &[("main", 0, VOID, main)], &[])).unwrap();
+    let table = Table::build(&c, &h2);
+    let out = crate::compile::compile_with(
+        &t,
+        &c,
+        &table,
+        &h2,
+        Missing::Stub,
+        crate::compile::Cutscenes::Play,
+        &|_, _| true,
+        &[],
+    )
+    .unwrap();
+    assert!(out.missing.is_empty(), "{:?}", out.missing);
+    assert!(out.unindexed.is_empty());
+    assert_eq!(out.guarded.len(), 2);
+    // Both atoms naming the unit are hooks, for the converter to fill.
+    assert_eq!(out.hooks.iter().filter(|h| h.token == "tube").count(), 4);
+    let s = hs::Scenario::decode(&out.scenario_bytes(BASE), BASE).unwrap();
+    assert_eq!(s.reachable(s.roots()).unwrap().len(), out.nodes.len());
+    let kids = |d: Datum| -> (u16, Vec<Datum>) {
+        match s.expression(d).unwrap() {
+            hs::Expression::Call {
+                function, children, ..
+            } => (function, children.map(|c| c.unwrap()).collect()),
+            e => panic!("not a call: {e:?}"),
+        }
+    };
+    let (_, body) = kids(s.script("main").unwrap().root());
+    for (&d, builtin) in body.iter().zip([194, 195]) {
+        let (f, branch) = kids(d);
+        assert_eq!((f, branch.len()), (2, 2), "an if with no else");
+        let (gt, cmp) = kids(branch[0]);
+        assert_eq!((gt, cmp.len()), (16, 2));
+        let (count, list) = kids(cmp[0]);
+        assert_eq!(count, 38);
+        let x = s.node(list[0]).unwrap();
+        assert!(x.atom());
+        // The name keeps its type and is cast to a list (`0x0020a170`).
+        assert_eq!((x.opcode(), x.value_type()), (H2_UNIT, H2_OBJECT_LIST));
+        let zero = s.node(cmp[1]).unwrap();
+        assert!(zero.atom() && zero.data() == 0 && zero.value_type() == SHORT);
+        let (f, arg) = kids(branch[1]);
+        assert_eq!(f, builtin);
+        assert_eq!(s.node(arg[0]).unwrap().value_type(), H2_UNIT);
+    }
 }

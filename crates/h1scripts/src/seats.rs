@@ -121,6 +121,11 @@ pub fn h2_label_matches(token: &str, label: &str) -> bool {
     if l.is_empty() {
         return false;
     }
+    // A Halo 1 vehicle built from its definition keeps Halo 1's own labels
+    // (a10's cryotube: `CT-driver`), which the script's text names exactly.
+    if l == t {
+        return true;
+    }
     let boarding = l.contains("_b_");
     let side = |prefix: &str| {
         t.rsplit(prefix)

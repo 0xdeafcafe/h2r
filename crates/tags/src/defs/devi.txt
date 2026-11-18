@@ -1,0 +1,46 @@
+# Devices (mach, ctrl): the object header, the device layer 0xbc..0x11c,
+# then each group. Layer bounds: docs/formats/objects.md. The disc has no
+# lifi tags, so lifi has no definition (converted Halo 1 light fixtures are
+# machines: docs/formats/tag-definitions.md).
+#
+# The six rates are per second: the engine multiplies them by the seconds
+# per tick. Retail never holds a time here (a 0.02 rate is a 50 s tram
+# ride); 900 stands for "at once" in the acceleration slots.
+struct devi 0x11c
+  0x0 struct obje obje -- the obje layer
+  0xbc u32 device_flags -- E object_new reads it for device types (objects.md); 0x0011bc41 tests bit 0. V: bit 0 set on the retail devices whose position wraps (machine type 2)
+  0xc0 f32 power_rate -- V: per second; the power counterpart of the position rates (0 on most retail devices)
+  0xc4 f32 power_acceleration_rate -- V: per second; 900 where the power changes at once
+  0xc8 f32 position_rate -- E 0x00115437: the powered position step, blended with depowered_position_rate by the device's power and multiplied by the seconds per tick
+  0xcc f32 position_acceleration_rate -- V: per second; 900 where the position changes at once
+  0xd0 f32 depowered_position_rate -- E 0x00115431: the depowered position step (see position_rate)
+  0xd4 f32 depowered_position_acceleration_rate -- V: per second; 900 on every retail device with no depowered motion
+  0xd8 unknown 0x4 seen=4
+  0xdc tagref sound_ref_dc groups=snd!|effe -- V (objects.md): a snd! reference where set
+  0xe4 tagref sound_ref_e4 groups=snd!|effe -- V (objects.md): a snd! reference where set
+  0xec tagref effect_ref_ec groups=snd!|effe -- V (objects.md): an effe or snd! reference where set
+  0xf4 tagref effect_ref_f4 groups=snd!|effe -- V (objects.md): an effe or snd! reference where set
+  0xfc tagref effect_ref_fc groups=effe|snd! -- V (objects.md): an effe reference where set
+  0x104 tagref effect_ref_104 groups=effe|snd! -- V (objects.md): an effe reference where set
+  0x10c f32 delay_time -- V: seconds; set (0.4, 0.5) only on retail doors that also have effect_ref_110
+  0x110 tagref effect_ref_110 groups=effe|snd! -- V (objects.md): an effe or snd! reference where set
+  0x118 f32 activation_radius -- V: world units, set only on retail doors (1.2 to 2.6): the distance a door opens at for a nearby unit
+group mach 0x134
+  0x0 struct devi devi -- the device layer
+  0x11c enum16 machine_type values=door|platform|gear -- E 0x001153ee: type 2 wraps the position at 1.0 (0x00115475..0x00115494); 0x0011557e: type 0 runs the door timer. V: retail doors hold 0, lifts and rails 1, flywheels and hinges 2
+  0x11e u16 machine_flags -- E read at 0x001151c5. V: 3 on retail doors, 4 on retail lifts
+  0x120 f32 door_open_time -- E read at 0x0011596e. V: seconds a door stays open (1.5 on most retail doors, 30000 on doors that never close by themselves), 0 on non-doors
+  0x124 unknown 0x4 seen=3
+  0x128 unknown 0x4 seen=zero
+  0x12c u16 collision_response -- V: 0 or 1 on retail doors and lifts
+  0x12e i16 elevator_node -- V: 1 on retail lifts (their moving node), 0 elsewhere
+  0x130 unknown 0x4 seen=4
+group ctrl 0x140
+  0x0 struct devi devi -- the device layer
+  0x11c u16 control_type -- E read at 0x0011baa3
+  0x11e u16 control_trigger -- E compared with 0 at 0x0011b9fd
+  0x120 f32 control_value -- E read at 0x0011bace
+  0x124 string action_string -- E read at 0x0011ba3a. V: a string ID on every retail control but one
+  0x128 tagref ctrl_ref_128 -- V (objects.md): null on the disc
+  0x130 tagref ctrl_ref_130 -- V (objects.md): null on the disc
+  0x138 tagref ctrl_ref_138 -- V (objects.md): null on the disc

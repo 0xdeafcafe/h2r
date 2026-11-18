@@ -444,12 +444,35 @@ impl Equipment {
     }
 }
 
-/// `bipd` or `vehi`: the object header and every reference in the root;
-/// their tuning has no reviewed Halo 2 home yet (see the doc).
+/// The unit layer's seats block (`unit +0x2e4`, V: every `vehi` and
+/// `bipd` on a10, b30 and c10 reads with this stride, each seat's label,
+/// marker and camera marker printable text).
+pub const UNIT_SEATS: usize = 0x2e4;
+/// A seat element.
+pub const SEAT_SIZE: usize = 0x11c;
+
+/// One seat of a unit (`0x11c`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Seat {
+    /// `0x00` flags (Halo 1's; no Halo 2 meaning established).
+    pub flags: u32,
+    /// `0x04` the label scripts name the seat by (`W-driver`, `CT-driver`),
+    /// 32 characters.
+    pub label: String,
+    /// `0x24` the model marker the rider sits at (`driver`, `passenger`).
+    pub marker: String,
+    /// `0x84` the camera marker (`camera`, `camera rider`), empty for none.
+    pub camera_marker: String,
+}
+
+/// `bipd` or `vehi`: the object header, the seats and every reference in
+/// the root; the rest of their tuning has no reviewed Halo 2 home yet
+/// (see the doc).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Unit {
     pub group: Group,
     pub object: Object,
+    pub seats: Vec<Seat>,
     /// Every reference in the tag's bytes (root and its blocks).
     pub references: Vec<crate::refs::Found>,
 }
@@ -461,10 +484,115 @@ impl Unit {
             return Err(Error::WrongGroup(tag.group.to_string(), *b"unit"));
         }
         let b = map.tag_data(tag)?;
+        if b.len() < UNIT_SEATS + 12 {
+            return Err(Error::Truncated("unit seats"));
+        }
+        let seats = elements(map, b, UNIT_SEATS, SEAT_SIZE)?
+            .into_iter()
+            .map(|e| Seat {
+                flags: u32_at(e, 0),
+                label: name32(e, 4),
+                marker: name32(e, 0x24),
+                camera_marker: name32(e, 0x84),
+            })
+            .collect();
         Ok(Self {
             group: tag.group,
             object: Object::read(map, b)?,
+            seats,
             references: crate::refs::scan(map, b),
+        })
+    }
+}
+
+/// The device layer (`devi`) starts after the object header and ends at
+/// `0x290`, where `mach` and `ctrl` start their own words. Root sizes
+/// (V: the smallest tag of each group across the ten levels, one with no
+/// blocks): `mach` `0x324`, `ctrl` `0x318`, `lifi` `0x338`.
+pub const DEVI_SIZE: usize = 0x290;
+pub const MACH_SIZE: usize = 0x324;
+pub const CTRL_SIZE: usize = 0x318;
+pub const LIFI_SIZE: usize = 0x338;
+
+/// What a `mach` holds after the device layer.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Machine {
+    /// `0x290`: 0 door, 1 platform, 2 gear (V: the doors of every level
+    /// hold 0 or 1, the holograms and spinning displays 2; Halo 2 holds the
+    /// same three values at `mach +0x11c`).
+    pub machine_type: u16,
+    /// `0x292` (V: 1 or 3 on doors, 4 on lifts, as Halo 2's `+0x11e`).
+    pub flags: u16,
+    /// `0x294` seconds a door stays open (V: 1.5 on the small doors, as on
+    /// Halo 2's).
+    pub door_open_time: f32,
+    /// `0x2e8` (V: 0 or 1 on doors and lifts).
+    pub collision_response: u16,
+    /// `0x2ea` (V: 1 or 2 on c10's falling lift and c20's platform).
+    pub elevator_node: i16,
+}
+
+/// What a `ctrl` holds after the device layer: `0x290` type, `0x292`
+/// trigger, `0x294` value (V: all zero on the disc's nine controls).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Control {
+    pub control_type: u16,
+    pub trigger: u16,
+    pub value: f32,
+}
+
+/// `mach`, `ctrl` or `lifi`: the object header, the device layer and the
+/// group's own words.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Device {
+    pub group: Group,
+    pub object: Object,
+    /// `0x17c` (V: bit 0 set on the gears whose position loops, as Halo
+    /// 2's `devi +0xbc`).
+    pub flags: u32,
+    /// `0x180..0x198` seconds: power transition, power acceleration,
+    /// position transition, position acceleration, depowered position
+    /// transition, depowered position acceleration (V: a10's small door
+    /// 2, 2, 0.8, 0.2, 0, 0; its postprocessed per-tick inverses at
+    /// `0x274..0x28c` agree).
+    pub times: [f32; 6],
+    /// `0x200` seconds (V: 0.5 or 2 on a50's and b40's doors only).
+    pub delay_time: f32,
+    /// `0x21c` world units (V: 0.85 to 5 on doors only).
+    pub activation_radius: f32,
+    pub machine: Option<Machine>,
+    pub control: Option<Control>,
+}
+
+impl Device {
+    pub fn read(map: &H1Map, tag: &Tag) -> Result<Self> {
+        let g = &tag.group.0.to_be_bytes();
+        let size = match g {
+            b"mach" => MACH_SIZE,
+            b"ctrl" => CTRL_SIZE,
+            b"lifi" => LIFI_SIZE,
+            _ => return Err(Error::WrongGroup(tag.group.to_string(), *b"devi")),
+        };
+        let b = tag_bytes(map, tag, g, size)?;
+        Ok(Self {
+            group: tag.group,
+            object: Object::read(map, b)?,
+            flags: u32_at(b, 0x17c),
+            times: std::array::from_fn(|i| f32_at(b, 0x180 + 4 * i)),
+            delay_time: f32_at(b, 0x200),
+            activation_radius: f32_at(b, 0x21c),
+            machine: (g == b"mach").then(|| Machine {
+                machine_type: u16_at(b, 0x290),
+                flags: u16_at(b, 0x292),
+                door_open_time: f32_at(b, 0x294),
+                collision_response: u16_at(b, 0x2e8),
+                elevator_node: i16_at(b, 0x2ea),
+            }),
+            control: (g == b"ctrl").then(|| Control {
+                control_type: u16_at(b, 0x290),
+                trigger: u16_at(b, 0x292),
+                value: f32_at(b, 0x294),
+            }),
         })
     }
 }

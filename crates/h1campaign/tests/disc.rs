@@ -177,6 +177,13 @@ fn filled_profile(m: &mut Map<Cursor<Vec<u8>>>) -> Filled {
         .collect()
 }
 
+/// Root blocks the base map's retail tags always fill but other retail
+/// maps leave empty somewhere, so empty is a retail state: `vehi +0x1c8`,
+/// the seats (06a_sentinelwalls has three vehicles with none; a10's Halo
+/// ring and b30's falling box, built from the `vehi` definition, have
+/// none in Halo 1 either).
+const RETAIL_MAY_LEAVE_EMPTY: &[(FourCC, u32)] = &[(FourCC(*b"vehi"), 0x1c8)];
+
 /// Root blocks of the tag `id` that every retail tag of its group fills
 /// and this one leaves empty.
 fn empty_where_retail_fills(
@@ -190,6 +197,7 @@ fn empty_where_retail_fills(
         return Vec::new();
     };
     want.iter()
+        .filter(|at| !RETAIL_MAY_LEAVE_EMPTY.contains(&(t.group, **at)))
         .filter(|at| count_at(mem, loc.address + **at) == 0)
         .map(|at| {
             format!(
@@ -1475,12 +1483,168 @@ fn no_converted_model_on_any_campaign_level_has_a_none_material() {
     assert!(failed.is_empty(), "{failed:#?}");
 }
 
+/// a10's cryotubes, built from the `vehi` definition (`h1objects::rebuild::vehicle`;
+/// no Halo 2 template names them), are placed, pinned and fresh:
+/// `cryotube_1` and `cryotube_2` point at vehicle placements whose palette
+/// entry is the rebuilt cryotube. Read back from the converted map, the
+/// tag decodes through its definition and encodes byte-identical; its
+/// model chain resolves to tags in the map (`hlmt`, then `mode`, `coll`
+/// and `jmad`); it has one seat labelled `CT-driver`, as a10's scripts
+/// name it; and its unit fields are sane.
+#[test]
+#[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
+fn a10_cryotubes_are_placed_and_built_from_their_definition() {
+    use tags::defs::{self, Defs, Str, Target, Val};
+    use tags::repo::{MapSource, extract::SharedFiles};
+    let s = scripting();
+    let donors = donors();
+    let h1 = h1_level("a10");
+    let vehi = Defs::builtin().group(FourCC(*b"vehi")).unwrap();
+    let hlmt = Defs::builtin().group(FourCC(*b"hlmt")).unwrap();
+    for pinned in [true, false] {
+        let mut base = h2_map(h1campaign::base_for("a10"));
+        let opts = Options {
+            objects: true,
+            ai: true,
+            scripts: Some(&s),
+            sounds: 1000,
+            donors: Some(&donors),
+            pinned,
+            ..Default::default()
+        };
+        let done = h1campaign::convert(&h1, &mut base, &opts).unwrap();
+        assert!(
+            !done.report.dropped.iter().any(|d| d.contains("cryotube")),
+            "pinned {pinned}: {:?}",
+            done.report.dropped
+        );
+        let bytes = done.bytes;
+        let mut m = Map::from_reader(Cursor::new(bytes.clone())).unwrap();
+        let mem = map_memory(&mut m);
+        let scnr = m.scenario().unwrap().clone();
+        let root = m.read_tag_bytes(scnr.id).unwrap();
+        let word = |at: usize| u32::from_le_bytes(root[at..at + 4].try_into().unwrap());
+        let (count, address) = (word(0x48), word(0x4c));
+        let mut tubes = Vec::new();
+        for i in 0..count {
+            let e = mem.slice(address + i * 0x24, 0x24).unwrap();
+            let text = String::from_utf8_lossy(&e[..32])
+                .trim_end_matches('\0')
+                .to_owned();
+            if text != "cryotube_1" && text != "cryotube_2" {
+                continue;
+            }
+            let ty = i16::from_le_bytes([e[0x20], e[0x21]]);
+            let placement = i16::from_le_bytes([e[0x22], e[0x23]]);
+            assert_eq!(ty, 1, "pinned {pinned}: {text} is a vehicle name");
+            assert!(placement >= 0, "pinned {pinned}: {text} has no placement");
+            // Vehicle placements (+0x70, 0x54 each) and palette (+0x78,
+            // 0x28 each, the datum at +4).
+            let e = mem
+                .slice(word(0x74) + placement as u32 * 0x54, 0x54)
+                .unwrap();
+            let p = u16::from_le_bytes([e[0], e[1]]) as u32;
+            assert!(p < word(0x78));
+            let pe = mem.slice(word(0x7c) + p * 0x28, 0x28).unwrap();
+            let id = TagId(u32::from_le_bytes(pe[4..8].try_into().unwrap()));
+            let t = m.tag(id).unwrap().clone();
+            assert_eq!(t.group, FourCC(*b"vehi"));
+            let name = t.name.clone().unwrap_or_default();
+            assert!(name.contains("cryotube"), "{name}");
+            tubes.push((text, t.id));
+        }
+        tubes.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            tubes.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(),
+            ["cryotube_1", "cryotube_2"],
+            "pinned {pinned}"
+        );
+        assert_eq!(tubes[0].1, tubes[1].1, "one cryotube definition");
+
+        // Read back through the definitions.
+        let schema = tags::schema::Schema::builtin();
+        let mut shared = SharedFiles::default();
+        let mut src = MapSource::new(
+            schema,
+            Map::from_reader(Cursor::new(bytes)).unwrap(),
+            &mut shared,
+        )
+        .unwrap();
+        let tag = src.extract(tubes[0].1).unwrap().unwrap();
+        let r = defs::decode(vehi, &tag).unwrap();
+        let back = defs::encode(vehi, tag.key.clone(), &r, Default::default()).unwrap();
+        assert_eq!(
+            defs::canonical(&back),
+            defs::canonical(&tag),
+            "pinned {pinned}: the cryotube re-encodes byte-identical"
+        );
+        let key = |v: Option<&Val>| match v {
+            Some(Val::Ref {
+                target: Target::Key(k),
+                ..
+            })
+            | Some(Val::Datum(Target::Key(k))) => Some(k.clone()),
+            _ => None,
+        };
+        let index = src.tags().to_vec();
+        let find = |k: &tags::repo::TagKey| {
+            index
+                .iter()
+                .find(|t| t.group == k.group && t.name.as_deref() == Some(k.path.as_str()))
+                .map(|t| t.id)
+        };
+        assert_eq!(r.at("unit.obje.object_type"), Some(&Val::Enum(1)));
+        assert_eq!(r.at("vehicle_type"), Some(&Val::Enum(6)), "turret");
+        let Some(Val::Block(seats)) = r.at("block_1c8") else {
+            panic!()
+        };
+        assert_eq!(seats.len(), 1, "pinned {pinned}: one seat");
+        assert_eq!(
+            seats[0].get("label"),
+            Some(&Val::String(Str::Text("CT-driver".into())))
+        );
+        assert_eq!(
+            seats[0].get("string_8"),
+            Some(&Val::String(Str::Text("driver".into())))
+        );
+        let model = key(r.at("unit.obje.model")).expect("a model");
+        assert_eq!(model.group, FourCC(*b"hlmt"));
+        let hid = find(&model).expect("the hlmt is in the map");
+        let ht = src.extract(hid).unwrap().unwrap();
+        let h = defs::decode(hlmt, &ht).unwrap();
+        for (path, group) in [
+            ("render_model", *b"mode"),
+            ("collision_model", *b"coll"),
+            ("animation", *b"jmad"),
+        ] {
+            let k = key(h.at(path)).unwrap_or_else(|| panic!("hlmt {path}"));
+            assert_eq!(k.group, FourCC(group), "{path}");
+            assert!(
+                find(&k).is_some(),
+                "pinned {pinned}: {path} {} in the map",
+                k.path
+            );
+        }
+        let Some(Val::Block(nodes)) = h.at("nodes") else {
+            panic!()
+        };
+        assert!(!nodes.is_empty(), "the hlmt has the model's nodes");
+        println!(
+            "a10 pinned {pinned}: cryotube_1/2 placed, {} seat, {} hlmt nodes",
+            seats.len(),
+            nodes.len()
+        );
+    }
+}
+
 /// Every reached `unit_open` and `unit_close` on a10 (pinned and fresh)
-/// names a unit with a converted placement. Halo 2's evaluators send the
-/// unit a message without a `none` check, and the handler reads object
-/// header 0xffff's null pointer (`0x00113eae`, `+0x33e`), so a name whose
-/// placement is -1 faults. a10's `fast_setup` opens `cryotube_1` as the
-/// opening cinematic ends, and the cryotube has no template
+/// names a unit with a converted placement, and runs only when the unit
+/// exists: `(if (> (list_count x) 0) (unit_open x))` with the same unit.
+/// Halo 2's evaluators send the unit a message without a `none` check,
+/// and the handler reads object header 0xffff's null pointer
+/// (`0x00113eae`, `+0x33e`). a10's `fast_setup` opens `cryotube_1` as the
+/// opening cinematic ends; a placed name is still `none` when its object
+/// was not created (`a10_scripted_vehicles_can_be_created`)
 /// (`h1scripts::compile::NONE_UNSAFE`).
 #[test]
 #[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
@@ -1488,10 +1652,12 @@ fn a10_opens_and_closes_only_placed_units() {
     let s = scripting();
     let donors = donors();
     let h1 = h1_level("a10");
+    let index = |n: &str| s.target.builtins[n].index;
     let ids: Vec<(u16, &str)> = ["unit_open", "unit_close"]
         .into_iter()
-        .map(|n| (s.target.builtins[n].index, n))
+        .map(|n| (index(n), n))
         .collect();
+    let (iff, gt, count_of) = (index("if"), index(">"), index("list_count"));
     let mut bad = Vec::new();
     for pinned in [true, false] {
         let mut base = h2_map(h1campaign::base_for("a10"));
@@ -1519,8 +1685,26 @@ fn a10_opens_and_closes_only_placed_units() {
                 .to_owned();
             (text, i16::from_le_bytes([e[0x22], e[0x23]]))
         };
+        // A call's function and arguments.
+        let call = |d: hs::Datum| -> Option<(u16, Vec<hs::Datum>)> {
+            match sc.expression(d).ok()? {
+                hs::Expression::Call {
+                    function, children, ..
+                } => Some((function, children.collect::<Result<_, _>>().ok()?)),
+                _ => None,
+            }
+        };
+        let reached = sc.reachable(sc.roots()).unwrap();
+        let mut parent = std::collections::HashMap::new();
+        for &d in &reached {
+            if let Some((_, args)) = call(d) {
+                for a in args {
+                    parent.insert(a, d);
+                }
+            }
+        }
         let mut calls = 0;
-        for d in sc.reachable(sc.roots()).unwrap() {
+        for &d in &reached {
             let n = sc.node(d).unwrap();
             if n.atom() || n.script_call() {
                 continue;
@@ -1528,15 +1712,42 @@ fn a10_opens_and_closes_only_placed_units() {
             let Some(&(_, builtin)) = ids.iter().find(|i| i.0 == n.opcode()) else {
                 continue;
             };
-            let hs::Expression::Call { mut children, .. } = sc.expression(d).unwrap() else {
-                continue;
-            };
+            let Some((_, args)) = call(d) else { continue };
             calls += 1;
-            let arg = sc.node(children.next().unwrap().unwrap()).unwrap();
+            let arg = *sc.node(args[0]).unwrap();
+            let token = sc.string(arg.string_offset()).unwrap_or("?").to_owned();
+            // The guard: `(if (> (list_count x) 0) <this call>)`, x the
+            // same unit.
+            let guarded = parent
+                .get(&d)
+                .and_then(|&p| call(p))
+                .is_some_and(|(f, br)| {
+                    f == iff
+                        && br.len() == 2
+                        && br[1] == d
+                        && call(br[0]).is_some_and(|(f, cmp)| {
+                            f == gt
+                                && cmp.len() == 2
+                                && sc.node(cmp[1]).is_ok_and(|z| z.atom() && z.data() == 0)
+                                && call(cmp[0]).is_some_and(|(f, l)| {
+                                    f == count_of
+                                        && l.len() == 1
+                                        && sc.node(l[0]).is_ok_and(|x| {
+                                            x.data() == arg.data()
+                                                && sc.string(x.string_offset()).ok()
+                                                    == Some(token.as_str())
+                                        })
+                                })
+                        })
+                });
+            if !guarded {
+                bad.push(format!(
+                    "pinned {pinned}: ({builtin} {token}) is not guarded"
+                ));
+            }
             if !arg.atom() || arg.global() {
                 continue;
             }
-            let token = sc.string(arg.string_offset()).unwrap_or("?").to_owned();
             let index = arg.data() & 0xffff;
             if arg.data() == u32::MAX || index >= count {
                 bad.push(format!(
@@ -1558,4 +1769,234 @@ fn a10_opens_and_closes_only_placed_units() {
         }
     }
     assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// Every vehicle a10's scenario places (its vehicle palette) can be
+/// created: Halo 2's `vehicle_new` (`0x000eeb80`, the `vehi` type's new
+/// function) returns false when the definition's model (`hlmt`, the
+/// object's `+0x38`) has no physics model (`phmo`, the `hlmt` reference at
+/// `+0x20`; `cmp [edx+24h],-1` at `0x000eebcb`), and `object_new`
+/// (`0x000b7b40`) then deletes the object and returns `none`, so the
+/// placement's name stays `none` (a10's rebuilt cryotube: `unit_open
+/// cryotube_1` faulted at `0x00113eae` with converter version 33). Every
+/// retail vehicle's model has one; since converter version 38 a vehicle
+/// whose model has none gets a stand-in (`h1objects::rebuild::sphere_physics`).
+#[test]
+#[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
+fn a10_scripted_vehicles_can_be_created() {
+    let s = scripting();
+    let donors = donors();
+    let h1 = h1_level("a10");
+    let mut bad = Vec::new();
+    for pinned in [true, false] {
+        let mut base = h2_map(h1campaign::base_for("a10"));
+        let opts = Options {
+            objects: true,
+            ai: true,
+            scripts: Some(&s),
+            sounds: 1000,
+            donors: Some(&donors),
+            pinned,
+            ..Default::default()
+        };
+        let done = h1campaign::convert(&h1, &mut base, &opts).unwrap();
+        let mut m = Map::from_reader(Cursor::new(done.bytes)).unwrap();
+        let mem = map_memory(&mut m);
+        let scnr = m.scenario().unwrap().clone();
+        let bytes = m.read_tag_bytes(scnr.id).unwrap();
+        let word = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+        // The vehicle palette: `scnr +0x78`, 0x28 per entry, the tag
+        // reference first.
+        let (count, address) = (word(&bytes, 0x78), word(&bytes, 0x7c));
+        for i in 0..count {
+            let e = mem.slice(address + i * 0x28, 0x28).unwrap();
+            let id = TagId(word(e, 4));
+            let Ok(vehi) = m.tag(id).cloned() else {
+                continue;
+            };
+            let v = m.read_tag_bytes(id).unwrap();
+            let hlmt = TagId(word(&v, 0x38));
+            let phmo = m
+                .read_tag_bytes(hlmt)
+                .ok()
+                .map_or(u32::MAX, |h| word(&h, 0x24));
+            if phmo == u32::MAX {
+                bad.push(format!(
+                    "pinned {pinned}: palette {i} {:?}: its model has no physics model",
+                    vehi.name
+                ));
+            }
+        }
+        println!("a10 pinned {pinned}: {count} vehicle palette entries");
+    }
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// Every Halo 1 machine, control and light fixture placement on every
+/// level converts and lands in the scenario: machines then light fixtures
+/// in the machine block (`+0xa8`, `0x48` each; Halo 2 has no `lifi` tags),
+/// controls in theirs (`+0xb8`, `0x44`). Each lands with its palette entry
+/// (a `mach` or `ctrl` built from the definitions that re-encodes
+/// byte-identical), Halo 1's power and position groups (indices into the
+/// converted device groups, `+0xa0`) and its flags; every Halo 1 name of a
+/// device names its placement.
+#[test]
+#[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
+fn every_device_placement_lands_with_its_device_groups() {
+    use h1campaign::scenario::h1 as h1s;
+    use tags::defs::{self, Defs};
+    use tags::repo::{MapSource, extract::SharedFiles};
+    let s = scripting();
+    let donors = donors();
+    let only = std::env::var("H1_LEVELS").ok();
+    let mut totals = [0usize; 4];
+    for level in h1map::disc::CAMPAIGN_LEVELS {
+        if only
+            .as_deref()
+            .is_some_and(|o| !o.split(',').any(|l| l == level))
+        {
+            continue;
+        }
+        let h1 = h1_level(level);
+        let sd = h1.tag_data(h1.scenario()).unwrap().to_vec();
+        let h1_elements = |(at, stride): (usize, usize)| -> Vec<Vec<u8>> {
+            let b = h1map::Block::read(&sd, at).unwrap();
+            h1.block(b, stride)
+                .unwrap()
+                .chunks_exact(stride)
+                .map(<[u8]>::to_vec)
+                .collect()
+        };
+        let machines = h1_elements(h1s::MACHINES);
+        let fixtures = h1_elements(h1s::LIGHT_FIXTURES);
+        let controls = h1_elements(h1s::CONTROLS);
+        let groups = h1_elements(h1scripts::level::h1::DEVICE_GROUPS).len();
+        let mut base = h2_map(h1campaign::base_for(level));
+        let opts = Options {
+            objects: true,
+            ai: true,
+            scripts: Some(&s),
+            sounds: 1000,
+            donors: Some(&donors),
+            ..Default::default()
+        };
+        let done = h1campaign::convert(&h1, &mut base, &opts).unwrap();
+        let bad: Vec<_> = done
+            .report
+            .dropped
+            .iter()
+            .filter(|d| {
+                ["machines", "controls", "light fixtures"]
+                    .iter()
+                    .any(|k| d.starts_with(k))
+            })
+            .collect();
+        assert!(bad.is_empty(), "{level}: {bad:#?}");
+        let bytes = done.bytes;
+        let mut m = Map::from_reader(Cursor::new(bytes.clone())).unwrap();
+        let mem = map_memory(&mut m);
+        let scnr = m.scenario().unwrap().clone();
+        let root = m.read_tag_bytes(scnr.id).unwrap();
+        let word = |at: usize| u32::from_le_bytes(root[at..at + 4].try_into().unwrap());
+        assert_eq!(word(0xa0) as usize, groups, "{level}: device groups");
+        let schema = tags::schema::Schema::builtin();
+        let mut shared = SharedFiles::default();
+        let mut src = MapSource::new(
+            schema,
+            Map::from_reader(Cursor::new(bytes)).unwrap(),
+            &mut shared,
+        )
+        .unwrap();
+        let mut checked = std::collections::HashSet::new();
+        for (group, at, stride, sources) in [
+            (*b"mach", 0xa8usize, 0x48u32, [&machines, &fixtures]),
+            (*b"ctrl", 0xb8, 0x44, [&controls, &Vec::new()]),
+        ] {
+            let def = Defs::builtin().group(FourCC(group)).unwrap();
+            let want: Vec<(&Vec<u8>, bool)> = sources[0]
+                .iter()
+                .map(|e| (e, true))
+                .chain(sources[1].iter().map(|e| (e, false)))
+                .collect();
+            assert_eq!(
+                word(at) as usize,
+                want.len(),
+                "{level}: {} placements",
+                FourCC(group)
+            );
+            for (i, (e, own_flags)) in want.iter().enumerate() {
+                let p = mem.slice(word(at + 4) + i as u32 * stride, stride).unwrap();
+                let h16 = |b: &[u8], o: usize| i16::from_le_bytes([b[o], b[o + 1]]);
+                let h32 = |b: &[u8], o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+                assert_eq!(
+                    &p[8..0x20],
+                    &e[8..0x20],
+                    "{level} {i}: position and rotation"
+                );
+                for (h1_at, h2_at) in [(0x28, 0x34), (0x2a, 0x36)] {
+                    let (g, want) = (h16(p, h2_at), h16(e, h1_at));
+                    assert_eq!(g, want, "{level} {i}: device group at {h2_at:#x}");
+                    assert!(g == -1 || (g as usize) < groups, "{level} {i}: group {g}");
+                }
+                assert_eq!(h32(p, 0x38), h32(e, 0x2c), "{level} {i}: device flags");
+                if *own_flags {
+                    assert_eq!(h32(p, 0x3c), h32(e, 0x30), "{level} {i}: own flags");
+                }
+                let pal = u32::from(u16::from_le_bytes([p[0], p[1]]));
+                assert!(pal < word(at + 8), "{level} {i}: palette {pal}");
+                let pe = mem.slice(word(at + 12) + pal * 0x28, 0x28).unwrap();
+                let id = TagId(h32(pe, 4));
+                let t = m.tag(id).unwrap().clone();
+                assert_eq!(t.group, FourCC(group), "{level} {i}");
+                if checked.insert(id) {
+                    let tag = src.extract(id).unwrap().unwrap();
+                    let r = defs::decode(def, &tag).unwrap();
+                    let back = defs::encode(def, tag.key.clone(), &r, Default::default()).unwrap();
+                    assert_eq!(
+                        defs::canonical(&back),
+                        defs::canonical(&tag),
+                        "{level}: {:?} re-encodes byte-identical",
+                        t.name
+                    );
+                }
+            }
+        }
+        // Halo 1's names of devices name their placements.
+        let names = h1_elements(h1campaign::scenario::h1::OBJECT_NAMES);
+        let mut named = 0;
+        for (i, n) in names.iter().enumerate() {
+            let ty = i16::from_le_bytes([n[0x20], n[0x21]]);
+            let at = i16::from_le_bytes([n[0x22], n[0x23]]);
+            if !(7..=9).contains(&ty) || at < 0 {
+                continue;
+            }
+            let e = mem.slice(word(0x4c) + i as u32 * 0x24, 0x24).unwrap();
+            let (to_ty, to) = (
+                i16::from_le_bytes([e[0x20], e[0x21]]),
+                i16::from_le_bytes([e[0x22], e[0x23]]),
+            );
+            let want = match ty {
+                7 => (7, at),
+                8 => (8, at),
+                _ => (7, machines.len() as i16 + at),
+            };
+            assert_eq!((to_ty, to), want, "{level}: name {i}");
+            named += 1;
+        }
+        println!(
+            "{level}: {} machines, {} light fixtures, {} controls placed; {groups} device groups; {named} device names; {} device tags re-encoded",
+            machines.len(),
+            fixtures.len(),
+            controls.len(),
+            checked.len()
+        );
+        totals[0] += machines.len();
+        totals[1] += fixtures.len();
+        totals[2] += controls.len();
+        totals[3] += named;
+    }
+    println!(
+        "all: {} machines, {} light fixtures, {} controls, {} names",
+        totals[0], totals[1], totals[2], totals[3]
+    );
 }
