@@ -127,9 +127,11 @@ So a structure item in layer 3 is: build `0x0004cbf0`, `[0x004ba138 +
 per layer draw, not one per item:
 
 - **before** the layer draw `0x00044550` with the current layer
-  `[0x00467130] == 3` and the scene list: walk the list's items, clear
-  bit 3 of every structure item's mask (and of the list's OR word if no
-  other item keeps it), remember them, and ask `d3d` for the native pass;
+  `[0x00467130] == 3`: walk the current list (`[0x00467138]`; `+4`
+  count, `+0xc` first, `+0x14` items), clear bit 3 of every structure
+  item's mask, remember them, and ask `d3d` for the native pass. The
+  list's OR word `+8` is left alone: the layer still walks its items and
+  finds the world's masks clear;
 - **after** it: set the bits back.
 
 The layer draw then builds no entry for the world: no build call, no
@@ -215,20 +217,63 @@ is native only once its A/B is clean.
 
 ## Stage 1 as built
 
-See the crate `native-render` (`crates/native-render`):
+The crate `native-render` (`crates/native-render`), no game wiring yet:
 
-- `world`: the draw list, batches and buffers from sections (Test).
-- `load`: the scenario's BSPs and lightmaps from a map (needs the disc).
-- `camera`: the render camera from guest memory, view and projection
+- `world`: one vertex and index buffer for the whole BSP, one draw per
+  opaque part in world space (instances placed at load), sorted into
+  batches of one material and one lightmap page; transparent parts and
+  bad triangles counted and left out (Test).
+- `load`: the scenario's (BSP, lightmap) pairs, the BSP's material
+  shaders, every cluster and placed instance through `tags::structure`,
+  each with its lightmap page and palette from the group whose checksum
+  matches; P8 pages expanded through their palette (Test for the
+  expansion and the render-info rules; the map read needs the disc).
+- `camera`: the render camera record read from guest memory (rejects
+  NaN, empty viewports, `far <= near`), the view, the projection by the
+  game's aspect rule, and the W-buffer depth formula (Test).
+- `cull`: frustum planes from the view-projection, the conservative box
+  test, one indirect slot per draw whose `instance_count` a frame flips
   (Test).
-- `cull`: frustum planes, AABB tests, the indirect slots (Test).
-- `skip`: the scene list walk, clear and restore (Test).
-- `gpu`: buffers, the lightmap array, the pipeline and the pass (GPU
-  test).
+- `skip`: the current list's walk, the structure-item test, clear and
+  restore (Test, on invented guest memory).
+- `gpu`: buffers and bind groups made once, one pipeline per (colour,
+  depth) format pair, `prepare` (cull, uniform, slots) and `encode` (one
+  pass that loads and keeps the game's target and depth, one
+  `multi_draw_indexed_indirect` per batch) (GPU test:
+  `tests/gpu.rs` draws an invented wall at view depth 10 and a culled one
+  behind the camera; the colour is base × page and the depth is
+  `w_depth(10, far, D24)` within one step).
 
-Not built yet: the `d3d` external pass, the feature's two hooks, the boot
-glue that loads the world at map load, and the per-template programs
-beyond base × lightmap. The live A/B waits on those.
+### Next, in order
+
+1. **`d3d` external pass.** `Device::request_external_pass(pass)`,
+   pending like `request_depth_grid` and issued at the next push-buffer
+   drain with the bound colour surface, depth surface and viewport;
+   `Backend::external_pass(colour, depth, viewport, pass) -> bool`
+   (default `false`: the device then leaves the world to the D3D path for
+   that frame by not clearing the bits, see 2). `GfxBackend` closes its
+   open pass, hands the encoder and the two surfaces' views to the pass;
+   `ThreadedBackend` posts it; the scaled backend gives the view surfaces
+   and a scaled viewport; the interpolating backend (E1) forwards it
+   and, until it can replay a pass with a warped camera, marks the frame
+   not replayable.
+2. **The feature `native-world`** (`impl.render.native_world`, off by
+   default, exact key): a `before` and an `after` on `0x00044550`. Before,
+   with layer 3 and a world loaded for the active BSP (`0x004e0348`): read
+   the camera, ask the device for the pass (the GPU world prepared with
+   that camera on the render thread), and only when the ask is accepted,
+   `skip::clear_structure`; after, `skip::restore`. Two hooked calls per
+   layer draw, about 30 a frame, nothing per draw.
+3. **Boot glue.** On a BSP change, load the world from the disc on a
+   worker (`load::load_world` over the map and its shared resource maps,
+   the base maps and lightmap pages decoded with `assets`), then build the
+   `GpuWorld` on the render thread. Until it is ready the hook does
+   nothing and the D3D path draws the world.
+4. **Templates.** The base map per material from the shader's template
+   and bitmaps; the 03a templates moved to their translated programs
+   (above), each behind the per-material fallback (a material left out of
+   the world keeps its D3D draws: the skip tests the item's shader datum
+   against the world's set).
 
 ## Open
 
