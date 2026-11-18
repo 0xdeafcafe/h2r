@@ -360,8 +360,9 @@ struct Inner {
     last_print: Option<Instant>,
     /// The last decision pipelined (a switch either way prints a line).
     pipelining: bool,
-    /// [`Shared::watch`]'s words as last seen, and lines printed.
-    watched: Vec<Option<u32>>,
+    /// [`Shared::watch`]'s words as last seen (`None`: not yet), and lines
+    /// printed.
+    watched: Vec<Option<Watched>>,
     watch_lines: u32,
 }
 
@@ -491,6 +492,8 @@ impl PipelineRender {
     pub fn watch(mut self, words: &[u32]) -> Self {
         let s = self.shared_mut();
         s.watch = words.to_vec();
+        // Printed with the pipeline off too (`print` after this overrides).
+        s.print |= !words.is_empty();
         s.inner.get_mut().unwrap_or_else(|e| e.into_inner()).watched = vec![None; words.len()];
         self
     }
@@ -530,11 +533,24 @@ impl Feature for PipelineRender {
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         b.snapshot(SnapshotPolicy::Stateless);
-        if !self.on {
-            return Ok(());
-        }
-        if let Some(why) = &self.off_reason {
+        let off = if !self.on {
+            true
+        } else if let Some(why) = &self.off_reason {
             eprintln!("pipeline: off: {why}");
+            true
+        } else {
+            false
+        };
+        if off {
+            // The watch alone, at each frame, for the switched-off run to
+            // compare with.
+            if !self.shared.watch.is_empty() {
+                let me = Arc::clone(&self.shared);
+                b.raw()
+                    .observe_before(&points::RENDER_FRAME, "watch (pipelining off)", move |o| {
+                        watch_now(&me, o.runtime, "the game thread ran (pipelining off)")
+                    });
+            }
             return Ok(());
         }
         if b.switches().feature("render-census", false) {
@@ -1640,26 +1656,66 @@ fn parse_watch(v: Option<&str>) -> Vec<u32> {
         .collect()
 }
 
-/// Compare the watched words with their last values and print each change
-/// as seen after `stage` (a change "before the join" was the game's own,
-/// one "after the hand-back" or "after the service" a merge of ours).
+/// A watched word as seen: its value (`None`: unmapped) and whether the
+/// page that value points at is mapped (readable) in live memory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Watched {
+    value: Option<u32>,
+    target_mapped: bool,
+}
+
+impl Watched {
+    fn read(g: &Guest, va: u32) -> Watched {
+        let value = g.u32(va).ok();
+        Watched {
+            value,
+            target_mapped: value.is_some_and(|v| g.u8(v).is_ok()),
+        }
+    }
+
+    fn show(self) -> String {
+        match self.value {
+            None => "unmapped".into(),
+            Some(v) => format!(
+                "{v:#010x} (its page {})",
+                if self.target_mapped {
+                    "mapped"
+                } else {
+                    "unmapped"
+                }
+            ),
+        }
+    }
+}
+
+/// Compare the watched words with their last values and print the first
+/// sight of each, and every change of its value or of whether the page it
+/// points at is mapped, as seen after `stage` (a change "before the join"
+/// was the game's own, one "after the hand-back" or "after the service" a
+/// merge of ours).
 fn check_watch(me: &Shared, inner: &mut Inner, g: &Guest, stage: &str) {
     for (i, &va) in me.watch.iter().enumerate() {
-        let now = g.u32(va).ok();
-        let then = inner.watched[i];
-        inner.watched[i] = now;
-        if then.is_none() || then == now {
+        let now = Watched::read(g, va);
+        let then = inner.watched[i].replace(now);
+        if then == Some(now) {
             continue;
         }
         inner.watch_lines += 1;
-        if inner.watch_lines <= WATCH_LINES && me.print {
-            eprintln!(
-                "pipeline: watch {va:#010x} {} -> {} after {stage} (pipelined {}, serial {})",
-                then.map_or("unmapped".into(), |v| format!("{v:#010x}")),
-                now.map_or("unmapped".into(), |v| format!("{v:#010x}")),
-                inner.stats.pipelined,
-                inner.stats.serial.values().sum::<u64>(),
-            );
+        if inner.watch_lines > WATCH_LINES || !me.print {
+            continue;
+        }
+        let pipelined = inner.stats.pipelined;
+        let serial = inner.stats.serial.values().sum::<u64>();
+        match then {
+            None => eprintln!(
+                "pipeline: watch {va:#010x} = {} first seen after {stage} (pipelined {pipelined}, serial {serial})",
+                now.show()
+            ),
+            Some(then) => eprintln!(
+                "pipeline: watch {va:#010x} {} -> {} after {stage} (pipelined {pipelined}, serial {serial})",
+                then.show(),
+                now.show()
+            ),
         }
     }
 }
