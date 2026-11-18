@@ -858,3 +858,125 @@ to a server game id, and `Hle::set_game_id` has no caller in the boot
 yet (the server assigns the id in the telemetry sink's thread). That
 link, decoding the procedure records and the server-side check are the
 next slice.
+
+### 8.4 Slice 3: bots in ranks, and arbitration (proposed)
+
+Status: a draft for the bots lane and the coordinator to agree before it
+is built. The bots lane owns the bot accounts and their events
+(`POST /games/bots`, the roster, `bot: true` on a game's player entries;
+[bots.md](../game/bots.md) §9). This lane owns how bots are ranked and
+how arbitration checks a ranked game.
+
+The user's rules (2026-11-18):
+
+1. Bot stats are recorded separately but counted together for now.
+2. Bot rank is matched to yours.
+
+#### Bots in ranks
+
+**Who is ranked.** A finished ranked game (`kind` `matchmaking` or
+`clankermatch`, a ranked playlist) ranks every entrant through the same
+`rank::apply`, bots included: a bot is an opponent like any other
+(rule 1, counted together).
+
+- A **persistent bot** (`persistent: true` in its roster) has a standing
+  of its own that rises and falls like a human's. Its change is a
+  `RankChanged` on `rank-<bot xuid>` with `bot: true`, which is how it
+  is recorded separately.
+- A **made-up bot** (`persistent: false`) has no standing to keep. It
+  counts as an opponent at the level its roster showed, and gets no
+  `RankChanged`.
+- Host-made bots (`live_proto::bots::is_local_xuid`, System Link and
+  offline) never reach a ranked game: the server refuses them in a game
+  record (bots lane).
+
+**Separate but together.** The read model keeps bots' standings in the
+same per-playlist table and tags them as bots. Leaderboards
+(`GET /v1/ranks/{playlist}`), rank history and the stats site include
+them with `bot: true` on the row, so a later "humans only" view is a
+filter, not a migration. Career totals count them as well; `kind:
+"clankermatch"` keeps those games apart in the games log.
+
+**Clanker playlists.** The server publishes clanker playlists as their
+own hoppers (bots.md §8.3). To count together, a clanker hopper
+carries the same descriptor playlist id (`+0x08`) as the human hopper it
+mirrors. The server ranks a clankermatch game under the ranked human
+hopper with that playlist id (the *rank playlist*), and the game's
+stat read, which names that playlist id, sees the same standing in
+both. When no human hopper shares the id, the clanker hopper is its own
+rank playlist. *Needs from the bots lane:* how a descriptor is marked
+as a clanker hopper.
+
+**Matched to yours (rule 2).** The roster picks bots for the human's
+standing in the rank playlist:
+
+- `rank::bot_skill(level) -> f32`, `(level - 1) / 49`: 0 at level 1, 1
+  at level 50, continuous, as bots.md §8.2 asks. The roster's `skill`.
+- `Ranks::nearest(playlist, level, n) -> Vec<Xuid>`: up to `n`
+  persistent bots, closest level first, ties by fewest games. The bots
+  lane calls this to choose persistent bots, and fills any gap with
+  made-up bots shown at the human's level.
+- With more than one human, "yours" is the mean level of the humans in
+  the match.
+
+The roster's `rank.level` is then the bot's real level (persistent) or
+the human's (made up). `GET /v1/rank-stats` answers a made-up bot with
+its roster level, so the lobby's stat read and the roster agree; a
+persistent bot answers with its standing, as anyone else does.
+
+**Needs from the bots lane** (read model, keyed by bot xuid): whether
+it is a bot, `persistent`, the level its roster showed, and the match
+it was rostered for. Their trust rule (bots.md §9.3) decides whether a
+`bot: true` entry is accepted; ranking only reads the result.
+
+#### Arbitration
+
+A round needs linking to a server game. That does not need
+`Hle::set_game_id`: the 16 bytes the game passes to Register and Report
+start with the session id, which is also the Live session's id.
+
+1. **Game record.** `NewGame` gains `session_id` (16 hex characters,
+   matchmaking and clankermatch only). Telemetry fills it at the start
+   from the boot's locator, which grows from the playlist to
+   `{playlist, session_id}`, both from `Hle`'s own advertisement or the
+   joined session as last read.
+2. **HLE to server.** Register and Report also post to the server,
+   signed by the signed-in account, through the Live worker (never
+   waiting):
+   `POST /v1/arbitration/{session_id}/{round_id}/register` `{duration,
+   flags}` and `.../report` `{flags, procedures}` (the procedure ids
+   only, until their data is decoded). The task completes when the
+   server answers; a failure completes it as the XDK would
+   (`CANNOT_ACCESS_SERVICE`), which the game already handles.
+   `ExtendRound` is accepted and recorded the same way.
+3. **Server.** `ArbitrationRegistered` and `ArbitrationReported`,
+   written by the account on `round-<session_id>-<round_id>`; nobody
+   writes another player's.
+4. **The check, in `rank_game`.** A ranked game is ranked only if its
+   record has a `session_id` and a round registered under it:
+   - a human entrant is ranked, and counts as an opponent, only if
+     their own account registered that round;
+   - a bot entrant needs no registration: the host is the only
+     reporter for its bots (bots.md §9.2), and bots.md §9.3's roster
+     check already vouches for it;
+   - the host must have registered too;
+   - a game whose round has fewer than two ranked entrants is not
+     ranked.
+   Reports are recorded and linked, not yet compared: comparing them
+   needs the `0x8001`/`0x8003`/`0x8007` records decoded.
+5. **Order.** A report may land after `GameEnded`. Ranking still runs
+   at `GameEnded`, on the registrations, which the game makes before
+   play starts.
+
+What this stops: a host's record can no longer move a human's rank
+unless that human's own console registered the round. What it does not
+stop yet: a host misreporting the score. That waits for the decoded
+reports.
+
+**Open questions.**
+
+- Whether to keep a switch for ranking without arbitration while
+  consoles update. Proposed: no. Every client is this recomp, and the
+  ranks tests register their rounds.
+- Whether the 8-byte id in Register's first half is the session id. To
+  confirm from the game: the HLE logs both under `H2_BOOT_VERBOSE`.
