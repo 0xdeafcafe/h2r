@@ -22,15 +22,22 @@
 //! - `sr`: pages the sim interval wrote that the next render scope reads:
 //!   what a copy-on-write snapshot has to freeze (expected large).
 //!
-//! The top `rs` pages are made *sticky*: every access to them is logged, so
-//! their 64-byte lines show whether the sim really reads what the render
-//! wrote or only shares the page (`dep_lines`).
+//! In each region group (`xbe`, `game_state`, `datum`, `world_pool`,
+//! `other`) the pages most often in `rs_core` are made *sticky*
+//! (`H2_RENDER_CENSUS_LINES` per group, or `all`): the trap keeps their
+//! 64-byte line masks per guest thread, so they show whether the sim
+//! really reads what the render wrote, before writing it itself
+//! (`dep_lines`), or only shares the page.
 //!
-//! With frame stats on (`H2_FRAME_STATS=1`) hits carry the timeline phase:
-//! that is what tells D3D apart from other host code, and another guest
-//! thread's slice inside the render scope (`other` hits, left out) from
-//! the render front-end. Without them every host hit counts as `host` and
-//! every hit in the render scope as the render's.
+//! With frame stats on (`H2_FRAME_STATS=1`) hits carry the timeline phase
+//! and the running guest thread: that is what tells D3D apart from other
+//! host code, and other guest threads (counted per thread, left out of the
+//! page sets, `rs_other` when they read what the render wrote) from the
+//! game thread in both scopes. Without them every host hit counts as
+//! `host` and, in the render scope, a hit in the `cpu` phase as another
+//! thread's. The runner's Rust-handler calls (kernel exports, overrides)
+//! are counted per scope, and host writes are attributed to the handler
+//! they ran in (`runtime::trap`'s HLE census).
 //!
 //! Every `H2_RENDER_CENSUS_EVERY` frames (default 300) and when a game
 //! ends it prints `render-census:` lines and, with `H2_RENDER_CENSUS_OUT`
@@ -40,7 +47,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 use engine::points;
-use runtime::{Guest, TrapHit, TrapLog};
+use runtime::trap::NO_THREAD;
+use runtime::{Guest, HleCall, TrapHit, TrapLog};
 use timeline::phase::{self, Phase};
 
 use crate::{BuildError, Builder, Feature, Manifest};
@@ -98,6 +106,8 @@ impl Source {
 pub struct First {
     pub pc: u32,
     pub source: Source,
+    /// For the host: the Rust handler it ran in ([`TrapHit::hle`]), or 0.
+    pub hle: u32,
 }
 
 impl First {
@@ -105,6 +115,7 @@ impl First {
         First {
             pc: h.pc,
             source: Source::of(h),
+            hle: h.hle,
         }
     }
     /// `0x…` for guest code, else the source.
@@ -127,6 +138,8 @@ pub struct Writers {
     pub first: Option<First>,
     /// The first guest-code writer, if any.
     pub guest: Option<First>,
+    /// The first host (or D3D) writer, if any.
+    pub host_first: Option<First>,
     pub d3d: bool,
     pub host: bool,
 }
@@ -153,41 +166,61 @@ pub fn line_mask(page: u32, addr: u32, len: u32) -> u64 {
     (u64::MAX >> (63 - last)) & (u64::MAX << first)
 }
 
+/// A sticky page's lines in one scope, for one side (the game thread, or
+/// the other guest threads together).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Lines {
+    pub read: u64,
+    pub write: u64,
+    /// Read before the same thread wrote them in the scope.
+    pub read_first: u64,
+}
+
 /// What one scope touched, by virtual page.
 #[derive(Debug, Default)]
 pub struct ScopeSet {
     pub reads: HashMap<u32, First>,
     pub writes: HashMap<u32, Writers>,
-    /// Sticky pages' lines: (read, written).
-    pub lines: HashMap<u32, (u64, u64)>,
-    /// Hits from another guest thread inside a render scope (left out).
-    pub other_thread: u64,
+    /// Sticky pages' lines on the game thread.
+    pub lines: HashMap<u32, Lines>,
+    /// Pages other guest threads read, and their sticky lines.
+    pub other_reads: HashMap<u32, First>,
+    pub other_lines: HashMap<u32, Lines>,
+    /// Hits from other guest threads (left out of the sets above), by
+    /// thread ([`NO_THREAD`] when only the phase told).
+    pub other_thread: BTreeMap<u32, u64>,
+}
+
+/// Whether a hit is another guest thread's than `owner` (the game thread,
+/// when known). Without thread ids, in a render scope a hit in the
+/// timeline's `cpu` phase is another thread's (the owner is in `render` or
+/// a D3D phase); in a sim interval none is.
+fn is_other(thread: u32, phase: Option<Phase>, owner: Option<u32>, render: bool) -> bool {
+    match owner {
+        Some(o) if thread != NO_THREAD => thread != o,
+        _ => render && phase == Some(Phase::Guest),
+    }
 }
 
 impl ScopeSet {
-    /// `render`: hits in the timeline's `cpu` phase are another guest
-    /// thread's (the render scope's owner is in `render` or a D3D phase).
-    pub fn from_hits(hits: &[TrapHit], render: bool, sticky: &[u32]) -> Self {
+    /// `owner`: the game thread, when frame stats tell; `render`: a render
+    /// scope (see [`is_other`]).
+    pub fn from_log(log: &TrapLog, owner: Option<u32>, render: bool) -> Self {
         let mut s = ScopeSet::default();
-        for h in hits {
-            if render && phase_of(h) == Some(Phase::Guest) {
-                s.other_thread += 1;
-                continue;
+        for h in &log.hits {
+            let other = is_other(h.thread, phase_of(h), owner, render);
+            if other {
+                *s.other_thread.entry(h.thread).or_default() += 1;
             }
             let first_page = h.addr >> 12;
             let last_page = ((h.addr as u64 + h.len.max(1) as u64 - 1) >> 12) as u32;
             for p in first_page..=last_page {
-                if sticky.contains(&p) {
-                    let m = line_mask(p, h.addr, h.len);
-                    let e = s.lines.entry(p).or_default();
-                    if h.write {
-                        e.1 |= m;
-                    } else {
-                        e.0 |= m;
-                    }
-                }
                 let f = First::of(h);
-                if h.write {
+                if other {
+                    if !h.write {
+                        s.other_reads.entry(p).or_insert(f);
+                    }
+                } else if h.write {
                     let w = s.writes.entry(p).or_default();
                     w.first.get_or_insert(f);
                     match f.source {
@@ -197,12 +230,31 @@ impl ScopeSet {
                         Source::D3d => w.d3d = true,
                         Source::Host => w.host = true,
                     }
+                    if f.source != Source::Guest {
+                        w.host_first.get_or_insert(f);
+                    }
                 } else {
                     s.reads.entry(p).or_insert(f);
                 }
             }
         }
+        for l in &log.lines {
+            // A line record has no phase: without thread ids it is the
+            // game thread's.
+            let other = is_other(l.thread, None, owner, false);
+            let e = if other {
+                s.other_lines.entry(l.page).or_default()
+            } else {
+                s.lines.entry(l.page).or_default()
+            };
+            e.read |= l.read;
+            e.write |= l.write;
+            e.read_first |= l.read_first;
+        }
         s
+    }
+    pub fn other_hits(&self) -> u64 {
+        self.other_thread.values().sum()
     }
 }
 
@@ -217,11 +269,18 @@ pub struct PageStat {
     pub rw_host_only: u64,
     /// The first render writer seen (guest code first if any wrote it).
     pub render_writer: Option<First>,
+    /// The first host or D3D render writer seen, with its Rust handler.
+    pub host_writer: Option<First>,
     pub render_read: u64,
     pub render_reader: Option<First>,
-    /// Render-written, then read by the next sim interval.
+    /// Render-written, then read by the next sim interval (the game
+    /// thread); of those, outside the stack and not only our D3D layer's.
     pub rs: u64,
+    pub rs_core: u64,
     pub rs_reader: Option<First>,
+    /// Render-written, then read by another guest thread in the next sim
+    /// interval.
+    pub rs_other: u64,
     /// Render-written, then written by the next sim interval.
     pub ww: u64,
     pub ww_writer: Option<First>,
@@ -229,12 +288,22 @@ pub struct PageStat {
     pub sr: u64,
     pub sr_writer: Option<First>,
     pub sr_reader: Option<First>,
-    /// Sticky pages: lines the render wrote, lines the sim read, and lines
-    /// the sim read in the interval after a render wrote them.
+    /// Sticky pages, all on the game thread: lines the render wrote; lines
+    /// the sim read before writing them itself (`sr_lines`) and at all
+    /// (`sr_lines_any`); render-written lines the next sim read first
+    /// (`dep_lines`, the dependency) and at all (`dep_lines_any`).
     pub rw_lines: u64,
     pub sr_lines: u64,
+    pub sr_lines_any: u64,
     pub dep_lines: u64,
+    pub dep_lines_any: u64,
     pub dep_line_frames: u64,
+    /// Lines other guest threads read in sim intervals, and those of them
+    /// the render had written.
+    pub other_read_lines: u64,
+    pub dep_lines_other: u64,
+    /// Render scopes the page was sticky in.
+    pub sticky_frames: u64,
 }
 
 /// Page counts summed over frames (divide by `frames`/`pairs`).
@@ -254,13 +323,23 @@ pub struct Totals {
     pub rs: u64,
     /// `rs` without stack pages and pages only our D3D layer wrote.
     pub rs_core: u64,
+    /// Of `rs_core`, pages that were sticky (have line data).
+    pub rs_core_lined: u64,
+    /// Render-written pages another guest thread read in the next interval.
+    pub rs_other: u64,
     pub ww: u64,
     pub ww_core: u64,
     pub sr: u64,
+    /// Hits from other guest threads in render scopes / sim intervals.
     pub other_thread: u64,
-    /// Hits by our D3D layer in sim intervals: D3D calls the sim makes,
-    /// which a render thread would have to order against its own.
+    pub sim_other_thread: u64,
+    /// Hits by our D3D layer in sim intervals on the game thread: D3D calls
+    /// the sim makes, which a render thread would have to order against its
+    /// own.
     pub sim_d3d: u64,
+    /// Dependency lines on sticky pages: read first, and read at all.
+    pub dep_lines: u64,
+    pub dep_lines_any: u64,
     pub dropped: u64,
 }
 
@@ -277,11 +356,16 @@ impl Totals {
         self.sim_read += o.sim_read;
         self.rs += o.rs;
         self.rs_core += o.rs_core;
+        self.rs_core_lined += o.rs_core_lined;
+        self.rs_other += o.rs_other;
         self.ww += o.ww;
         self.ww_core += o.ww_core;
         self.sr += o.sr;
         self.other_thread += o.other_thread;
+        self.sim_other_thread += o.sim_other_thread;
         self.sim_d3d += o.sim_d3d;
+        self.dep_lines += o.dep_lines;
+        self.dep_lines_any += o.dep_lines_any;
         self.dropped += o.dropped;
     }
 
@@ -290,7 +374,7 @@ impl Totals {
         let f = |n: u64, d: u64| if d == 0 { 0.0 } else { n as f64 / d as f64 };
         let (fr, pr) = (self.frames, self.pairs);
         format!(
-            "frames={} pairs={} per-frame pages: rw={:.1} (guest {:.1} d3d_only {:.1} host_only {:.1}) render_read={:.1} sim_written={:.1} sim_read={:.1} | rs={:.1} rs_core={:.1} ww={:.1} ww_core={:.1} sr={:.1} | other_thread_hits={} sim_d3d_hits={} dropped={}",
+            "frames={} pairs={} per-frame pages: rw={:.1} (guest {:.1} d3d_only {:.1} host_only {:.1}) render_read={:.1} sim_written={:.1} sim_read={:.1} | rs={:.1} rs_core={:.1} ww={:.1} ww_core={:.1} sr={:.1} | other_thread_hits={} sim_d3d_hits={} dropped={} | rs_core_lined={:.1} rs_other={:.1} sim_other_thread_hits={} dep_lines={:.1} dep_lines_any={:.1}",
             fr,
             pr,
             f(self.rw, fr),
@@ -308,6 +392,11 @@ impl Totals {
             self.other_thread,
             self.sim_d3d,
             self.dropped,
+            f(self.rs_core_lined, pr),
+            f(self.rs_other, pr),
+            self.sim_other_thread,
+            f(self.dep_lines, pr),
+            f(self.dep_lines_any, pr),
         )
     }
 }
@@ -436,16 +525,58 @@ pub fn datum_arrays(block: &[u8]) -> Vec<(u32, String, u32, u32)> {
     out
 }
 
+/// The sticky-page group a region belongs to, or `None` for pages never
+/// made sticky (the stack, our D3D layer's own memory).
+pub fn region_group(region: &str) -> Option<&'static str> {
+    Some(match region {
+        "stack" | "d3d_globals" | "push_buffer" | "d3d_scratch" => return None,
+        "xbe_image" => "xbe",
+        "game_state" => "game_state",
+        r if r.starts_with("datum:") => "datum",
+        "world_pool" => "world_pool",
+        _ => "other",
+    })
+}
+
+/// Whether an HLE name is a wait: the kernel's waits, delays and yields.
+pub fn is_wait(name: &str) -> bool {
+    ["Wait", "Delay", "Yield", "Sleep"]
+        .iter()
+        .any(|w| name.contains(w))
+}
+
+/// Rust-handler calls to one target in one kind of scope.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HleStat {
+    /// On the game thread (or with no thread known) / on other threads.
+    pub calls: u64,
+    pub other_calls: u64,
+    /// Calls that ended in a STOP (blocked, yielded or preempted).
+    pub stops: u64,
+    pub other_stops: u64,
+}
+
 /// The census proper: pure, fed the trap's logs at each boundary.
 #[derive(Debug, Default)]
 pub struct Census {
     pub regions: Regions,
     sticky: Vec<u32>,
+    /// The game thread, from the frame stats at the render entry.
+    owner: Option<u32>,
     prev_render: Option<(HashMap<u32, Writers>, HashMap<u32, u64>)>,
     last_sim_writes: Option<HashMap<u32, First>>,
     pages: BTreeMap<u32, PageStat>,
     window: Totals,
     run: Totals,
+    /// rs_core page-frames and those with line data, by sticky group.
+    coverage: BTreeMap<&'static str, (u64, u64)>,
+    /// Other-thread hits by (render scope, thread).
+    threads: BTreeMap<(bool, u32), u64>,
+    /// Rust-handler calls by (render scope, target).
+    hle: BTreeMap<(bool, u32), HleStat>,
+    /// Render-scope page writes by the host, by (source, Rust handler).
+    host_writes: BTreeMap<(Source, u32), u64>,
+    names: HashMap<u32, String>,
 }
 
 impl Census {
@@ -461,18 +592,79 @@ impl Census {
         t.add(&self.window);
         t
     }
+    /// The game thread's id (frame stats), for telling other threads apart.
+    pub fn set_owner(&mut self, owner: Option<u32>) {
+        self.owner = owner;
+    }
+    pub fn hle(&self) -> &BTreeMap<(bool, u32), HleStat> {
+        &self.hle
+    }
+    /// Rust-handler targets without a name yet.
+    pub fn unnamed(&self) -> Vec<u32> {
+        let mut v: Vec<u32> = self
+            .hle
+            .keys()
+            .map(|&(_, t)| t)
+            .chain(self.host_writes.keys().map(|&(_, t)| t))
+            .filter(|t| *t != 0 && !self.names.contains_key(t))
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+    pub fn set_name(&mut self, target: u32, name: String) {
+        self.names.insert(target, name);
+    }
+    fn name(&self, target: u32) -> String {
+        self.names
+            .get(&target)
+            .cloned()
+            .unwrap_or_else(|| format!("{target:#010x}"))
+    }
+    fn host_label(&self, f: Option<First>) -> String {
+        match f {
+            None => "-".into(),
+            Some(f) if f.hle != 0 => self.name(f.hle),
+            Some(f) => format!("{}:no-handler", f.label()),
+        }
+    }
+
+    /// Rust-handler calls since the last boundary, made in a render scope
+    /// or a sim interval.
+    pub fn note_hle(&mut self, render: bool, calls: &[HleCall]) {
+        for c in calls {
+            let e = self.hle.entry((render, c.target)).or_default();
+            let game = match self.owner {
+                Some(o) => c.thread == o || c.thread == NO_THREAD,
+                None => true,
+            };
+            if game {
+                e.calls += c.calls;
+                e.stops += c.stops;
+            } else {
+                e.other_calls += c.calls;
+                e.other_stops += c.stops;
+            }
+        }
+    }
 
     /// A sim interval ended (the render entry): its log. Pairs it with the
     /// render scope before it.
     pub fn sim_done(&mut self, log: &TrapLog) {
-        let s = ScopeSet::from_hits(&log.hits, false, &self.sticky);
+        let s = ScopeSet::from_log(log, self.owner, false);
         let w = &mut self.window;
         w.dropped += log.dropped;
         w.sim_d3d += log
             .hits
             .iter()
-            .filter(|h| Source::of(h) == Source::D3d)
+            .filter(|h| {
+                Source::of(h) == Source::D3d && !is_other(h.thread, phase_of(h), self.owner, false)
+            })
             .count() as u64;
+        w.sim_other_thread += s.other_hits();
+        for (&t, &n) in &s.other_thread {
+            *self.threads.entry((false, t)).or_default() += n;
+        }
         if let Some((writes, lines)) = self.prev_render.take() {
             w.pairs += 1;
             w.sim_written += s.writes.len() as u64;
@@ -482,9 +674,23 @@ impl Census {
                 let stat = self.pages.entry(p).or_default();
                 if let Some(&r) = s.reads.get(&p) {
                     w.rs += 1;
-                    w.rs_core += core as u64;
                     stat.rs += 1;
                     stat.rs_reader.get_or_insert(r);
+                    if core {
+                        w.rs_core += 1;
+                        stat.rs_core += 1;
+                        let lined = self.sticky.contains(&p);
+                        w.rs_core_lined += lined as u64;
+                        if let Some(g) = region_group(self.regions.classify(p << 12)) {
+                            let c = self.coverage.entry(g).or_default();
+                            c.0 += 1;
+                            c.1 += lined as u64;
+                        }
+                    }
+                }
+                if s.other_reads.contains_key(&p) {
+                    w.rs_other += 1;
+                    stat.rs_other += 1;
                 }
                 if let Some(sw) = s.writes.get(&p) {
                     w.ww += 1;
@@ -496,12 +702,20 @@ impl Census {
                 }
             }
             for (&p, &rw_lines) in &lines {
-                let sr_lines = s.lines.get(&p).map_or(0, |l| l.0);
+                let l = s.lines.get(&p).copied().unwrap_or_default();
+                let o = s.other_lines.get(&p).copied().unwrap_or_default();
                 let stat = self.pages.entry(p).or_default();
-                stat.sr_lines |= sr_lines;
-                let dep = rw_lines & sr_lines;
+                stat.sr_lines |= l.read_first;
+                stat.sr_lines_any |= l.read;
+                let dep = rw_lines & l.read_first;
+                let dep_any = rw_lines & l.read;
                 stat.dep_lines |= dep;
+                stat.dep_lines_any |= dep_any;
                 stat.dep_line_frames += (dep != 0) as u64;
+                stat.other_read_lines |= o.read;
+                stat.dep_lines_other |= rw_lines & o.read;
+                w.dep_lines += dep.count_ones() as u64;
+                w.dep_lines_any += dep_any.count_ones() as u64;
             }
         }
         self.last_sim_writes = Some(
@@ -515,11 +729,14 @@ impl Census {
     /// A render scope ended: its log. Pairs it with the sim interval
     /// before it.
     pub fn render_done(&mut self, log: &TrapLog) {
-        let r = ScopeSet::from_hits(&log.hits, true, &self.sticky);
+        let r = ScopeSet::from_log(log, self.owner, true);
         let w = &mut self.window;
         w.frames += 1;
         w.dropped += log.dropped;
-        w.other_thread += r.other_thread;
+        w.other_thread += r.other_hits();
+        for (&t, &n) in &r.other_thread {
+            *self.threads.entry((true, t)).or_default() += n;
+        }
         w.rw += r.writes.len() as u64;
         w.render_read += r.reads.len() as u64;
         for (&p, wr) in &r.writes {
@@ -541,6 +758,13 @@ impl Census {
             if let Some(f) = wr.first {
                 stat.render_writer.get_or_insert(f);
             }
+            if let Some(h) = wr.host_first {
+                stat.host_writer.get_or_insert(h);
+                *self.host_writes.entry((h.source, h.hle)).or_default() += 1;
+            }
+        }
+        for &p in &self.sticky {
+            self.pages.entry(p).or_default().sticky_frames += 1;
         }
         let sim = self.last_sim_writes.take();
         for (&p, &f) in &r.reads {
@@ -554,25 +778,39 @@ impl Census {
                 stat.sr_reader.get_or_insert(f);
             }
         }
-        let lines: HashMap<u32, u64> = r.lines.iter().map(|(&p, l)| (p, l.1)).collect();
+        let lines: HashMap<u32, u64> = r.lines.iter().map(|(&p, l)| (p, l.write)).collect();
         for (&p, &l) in &lines {
             self.pages.entry(p).or_default().rw_lines |= l;
         }
         self.prev_render = Some((r.writes, lines));
     }
 
-    /// Makes the `k` pages most often render-written then sim-read sticky
-    /// (outside the stack); returns them.
-    pub fn pick_sticky(&mut self, k: usize) -> Vec<u32> {
-        let mut v: Vec<(u64, u32)> = self
-            .pages
-            .iter()
-            .filter(|(p, s)| s.rs != 0 && !self.regions.is_stack(**p << 12))
-            .map(|(&p, s)| (s.rs, p))
-            .collect();
-        v.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-        self.sticky = v.into_iter().take(k).map(|(_, p)| p).collect();
-        self.sticky.clone()
+    /// Makes sticky, in each region group ([`region_group`]), the pages
+    /// most often in `rs_core` (render-written, then read by the game
+    /// thread, outside the stack and our D3D layer's pages): up to
+    /// `per_region` of them, or all with `None`. Returns them.
+    pub fn pick_sticky(&mut self, per_region: Option<usize>) -> Vec<u32> {
+        let mut by: BTreeMap<&'static str, Vec<(u64, u32)>> = BTreeMap::new();
+        for (&p, s) in &self.pages {
+            if s.rs_core == 0 {
+                continue;
+            }
+            if let Some(g) = region_group(self.regions.classify(p << 12)) {
+                by.entry(g).or_default().push((s.rs_core, p));
+            }
+        }
+        let mut out = Vec::new();
+        for (_, mut v) in by {
+            v.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+            out.extend(
+                v.into_iter()
+                    .take(per_region.unwrap_or(usize::MAX))
+                    .map(|(_, p)| p),
+            );
+        }
+        out.sort_unstable();
+        self.sticky = out.clone();
+        out
     }
 
     fn top(&self, key: impl Fn(&PageStat) -> u64, n: usize) -> Vec<(u32, &PageStat)> {
@@ -587,7 +825,8 @@ impl Census {
         v
     }
 
-    /// The report: the window's summary, the run's, region counts and the
+    /// The report: the window's summary, the run's, region counts, line
+    /// coverage, other threads, Rust-handler calls, host writers and the
     /// top pages. Starts a new window.
     pub fn report(&mut self, top: usize) -> Vec<String> {
         let w = std::mem::take(&mut self.window);
@@ -596,7 +835,8 @@ impl Census {
             format!("window {}", w.line()),
             format!("run {}", self.run.line()),
         ];
-        let frames = self.run.frames;
+        let (frames, pairs) = (self.run.frames, self.run.pairs);
+        let per = |n: u64, d: u64| if d == 0 { 0.0 } else { n as f64 / d as f64 };
         // Pages in each relation by region, over the run.
         let mut by: BTreeMap<&str, [u64; 4]> = BTreeMap::new();
         for (&p, s) in &self.pages {
@@ -610,6 +850,79 @@ impl Census {
             out.push(format!(
                 "  region {region}: pages ever rw={} rs={} ww={} sr={}",
                 c[0], c[1], c[2], c[3]
+            ));
+        }
+        for (g, &(n, lined)) in &self.coverage {
+            out.push(format!(
+                "  coverage group={g} rs_core/pair={:.1} lined/pair={:.1} ({:.0}%)",
+                per(n, pairs),
+                per(lined, pairs),
+                100.0 * per(lined, n)
+            ));
+        }
+        let mut sticky_by: BTreeMap<&str, usize> = BTreeMap::new();
+        for &p in &self.sticky {
+            if let Some(g) = region_group(self.regions.classify(p << 12)) {
+                *sticky_by.entry(g).or_default() += 1;
+            }
+        }
+        for (g, n) in sticky_by {
+            out.push(format!("  sticky group={g} pages={n}"));
+        }
+        let thread = |t: u32| {
+            if t == NO_THREAD {
+                "?".to_string()
+            } else {
+                t.to_string()
+            }
+        };
+        for (&(render, t), &n) in &self.threads {
+            let (scope, d) = if render {
+                ("render", frames)
+            } else {
+                ("sim", pairs)
+            };
+            out.push(format!(
+                "  other_thread scope={scope} thread={} hits/frame={:.1}",
+                thread(t),
+                per(n, d)
+            ));
+        }
+        let mut calls: Vec<(&(bool, u32), &HleStat)> = self.hle.iter().collect();
+        calls.sort_by(|a, b| {
+            (b.0.0, b.1.calls + b.1.other_calls).cmp(&(a.0.0, a.1.calls + a.1.other_calls))
+        });
+        let mut shown: BTreeMap<bool, usize> = BTreeMap::new();
+        for (&(render, target), st) in calls {
+            let name = self.name(target);
+            let n = shown.entry(render).or_default();
+            if *n >= top && !is_wait(&name) {
+                continue;
+            }
+            *n += 1;
+            let (scope, d) = if render {
+                ("render", frames)
+            } else {
+                ("sim", pairs)
+            };
+            out.push(format!(
+                "  hle scope={scope} name={name} target={target:#010x} calls/frame game={:.2} other={:.2} stops game={} other={}{}",
+                per(st.calls, d),
+                per(st.other_calls, d),
+                st.stops,
+                st.other_stops,
+                if is_wait(&name) { " wait" } else { "" }
+            ));
+        }
+        for (&(source, hle), &n) in &self.host_writes {
+            let by = if hle != 0 {
+                self.name(hle)
+            } else {
+                format!("{}:no-handler", First { pc: 0, source, hle }.label())
+            };
+            out.push(format!(
+                "  host_writes scope=render by={by} pages/frame={:.2}",
+                per(n, frames)
             ));
         }
         let line = |kind: &str, p: u32, n: u64, a: String, b: String| {
@@ -646,33 +959,37 @@ impl Census {
                 format!("render_reader={}", label(s.sr_reader)),
             ));
         }
-        for &p in &self.sticky {
-            if let Some(s) = self.pages.get(&p) {
-                out.push(format!(
-                    "  lines page={:#010x} region={} rw_lines={:#018x} sr_lines={:#018x} dep_lines={:#018x} ({} of 64) dep_frames={}",
-                    p << 12,
-                    self.regions.classify(p << 12),
-                    s.rw_lines,
-                    s.sr_lines,
-                    s.dep_lines,
-                    s.dep_lines.count_ones(),
-                    s.dep_line_frames
-                ));
+        for (&p, s) in &self.pages {
+            if s.dep_lines | s.dep_lines_any | s.dep_lines_other == 0 {
+                continue;
             }
+            out.push(format!(
+                "  lines page={:#010x} region={} rw_lines={:#018x} sr_lines={:#018x} dep_lines={:#018x} ({} of 64) dep_frames={} dep_lines_any={:#018x} dep_lines_other={:#018x}",
+                p << 12,
+                self.regions.classify(p << 12),
+                s.rw_lines,
+                s.sr_lines,
+                s.dep_lines,
+                s.dep_lines.count_ones(),
+                s.dep_line_frames,
+                s.dep_lines_any,
+                s.dep_lines_other,
+            ));
         }
         out
     }
 
-    /// The full per-page table.
+    /// The full per-page table. The columns after `dep_line_frames` are
+    /// census v2's.
     pub fn tsv(&self) -> String {
         let t = self.totals();
         let mut s = format!(
-            "# render-census frames={} pairs={}\npage\tregion\trw\trw_guest\trw_d3d_only\trw_host_only\trender_writer\trender_read\trender_reader\trs\trs_sim_reader\tww\tww_sim_writer\tsr\tsr_sim_writer\tsr_render_reader\trw_lines\tsr_lines\tdep_lines\tdep_line_frames\n",
+            "# render-census frames={} pairs={}\npage\tregion\trw\trw_guest\trw_d3d_only\trw_host_only\trender_writer\trender_read\trender_reader\trs\trs_sim_reader\tww\tww_sim_writer\tsr\tsr_sim_writer\tsr_render_reader\trw_lines\tsr_lines\tdep_lines\tdep_line_frames\trs_core\trs_other\thost_writer\tsr_lines_any\tdep_lines_any\tother_read_lines\tdep_lines_other\tsticky_frames\n",
             t.frames, t.pairs
         );
         for (&p, st) in &self.pages {
             s += &format!(
-                "{:#010x}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:#018x}\t{:#018x}\t{:#018x}\t{}\n",
+                "{:#010x}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:#018x}\t{:#018x}\t{:#018x}\t{}\t{}\t{}\t{}\t{:#018x}\t{:#018x}\t{:#018x}\t{:#018x}\t{}\n",
                 p << 12,
                 self.regions.classify(p << 12),
                 st.rw,
@@ -693,6 +1010,14 @@ impl Census {
                 st.sr_lines,
                 st.dep_lines,
                 st.dep_line_frames,
+                st.rs_core,
+                st.rs_other,
+                self.host_label(st.host_writer),
+                st.sr_lines_any,
+                st.dep_lines_any,
+                st.other_read_lines,
+                st.dep_lines_other,
+                st.sticky_frames,
             );
         }
         s
@@ -706,8 +1031,10 @@ pub struct Options {
     pub every: u64,
     /// Pages per top list (`H2_RENDER_CENSUS_TOP`).
     pub top: usize,
-    /// Sticky pages for line detail (`H2_RENDER_CENSUS_LINES`; 0: none).
-    pub lines: usize,
+    /// Sticky pages for line detail per region group
+    /// (`H2_RENDER_CENSUS_LINES`: a number, 0 for none, or `all`; default
+    /// 64).
+    pub lines: Option<usize>,
     /// The TSV (`H2_RENDER_CENSUS_OUT`).
     pub out: Option<std::path::PathBuf>,
     /// Print the report to stderr.
@@ -725,10 +1052,42 @@ impl Options {
         Options {
             every: num("H2_RENDER_CENSUS_EVERY", 300).max(1),
             top: num("H2_RENDER_CENSUS_TOP", 20) as usize,
-            lines: num("H2_RENDER_CENSUS_LINES", 16) as usize,
+            lines: parse_lines(std::env::var("H2_RENDER_CENSUS_LINES").ok().as_deref()),
             out: std::env::var_os("H2_RENDER_CENSUS_OUT").map(Into::into),
             print: true,
         }
+    }
+}
+
+/// `H2_RENDER_CENSUS_LINES`: `all` is no budget; a number is the budget per
+/// region group; unset or unparsable is 64.
+pub fn parse_lines(v: Option<&str>) -> Option<usize> {
+    match v.map(str::trim) {
+        Some("all") => None,
+        Some(n) => Some(n.parse().unwrap_or(64)),
+        None => Some(64),
+    }
+}
+
+/// A Rust handler's name: the kernel export for a kernel token, else the
+/// override's registered name.
+fn hle_name(rt: &runtime::Runtime, target: u32) -> Option<String> {
+    if let Some(ord) = target
+        .checked_sub(runtime::kernel::KERNEL_TOKEN_BASE)
+        .filter(|v| v % 4 == 0)
+        .map(|v| v / 4)
+        && let Some(f) = runtime::kernel::function(ord)
+    {
+        return Some(format!("kernel:{}", f.name));
+    }
+    rt.read_dispatch(|d| d.override_name(target).map(str::to_owned))
+}
+
+/// Names the census's new Rust-handler targets.
+fn name_targets(census: &mut Census, rt: &runtime::Runtime) {
+    for t in census.unnamed() {
+        let name = hle_name(rt, t).unwrap_or_else(|| format!("{t:#010x}"));
+        census.set_name(t, name);
     }
 }
 
@@ -811,12 +1170,21 @@ impl Feature for RenderCensus {
         );
         let enter = move |o: &crate::Obs| {
             let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+            let calls = runtime::trap::take_hle_calls();
+            if s.armed {
+                s.census.note_hle(false, &calls);
+            }
+            if s.since_report >= opts.every {
+                // Before the memory guard: names come from the dispatch.
+                name_targets(&mut s.census, o.runtime);
+            }
             let mut g = o.guest();
             if s.armed {
                 let log = g.take_trap_hits();
                 s.census.sim_done(&log);
             } else {
                 g.install_trap(LOG_CAP);
+                runtime::trap::set_hle_census(true);
                 s.armed = true;
                 if !phase::enabled() && opts.print {
                     eprintln!(
@@ -828,6 +1196,8 @@ impl Feature for RenderCensus {
                 s.census.regions = Regions::scan(&g, &extra);
             }
             s.census.regions.set_stack(o.cpu.esp);
+            // The game thread: the one running the render entry.
+            s.census.set_owner(phase::running_guest_thread());
             if s.since_report >= opts.every {
                 s.since_report = 0;
                 report(&mut s, &opts);
@@ -841,6 +1211,7 @@ impl Feature for RenderCensus {
             g.arm_all(true, true);
             drop(g);
             drop(s);
+            let _ = runtime::trap::take_hle_calls();
             if scope {
                 phase::scope_begin(Phase::Render);
             }
@@ -854,6 +1225,8 @@ impl Feature for RenderCensus {
             if !s.armed {
                 return;
             }
+            let calls = runtime::trap::take_hle_calls();
+            s.census.note_hle(true, &calls);
             let mut g = o.guest();
             let log = g.take_trap_hits();
             s.census.render_done(&log);
@@ -880,6 +1253,7 @@ impl Feature for RenderCensus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use runtime::LineRec;
 
     const RENDER: u8 = Phase::Render as u8;
     const D3D: u8 = Phase::D3d as u8;
@@ -892,10 +1266,35 @@ mod tests {
             write,
             pc,
             phase,
+            thread: NO_THREAD,
+            hle: 0,
         }
     }
+    /// A hit on guest thread `thread`.
+    fn on(thread: u32, h: TrapHit) -> TrapHit {
+        TrapHit { thread, ..h }
+    }
     fn log(hits: Vec<TrapHit>) -> TrapLog {
-        TrapLog { hits, dropped: 0 }
+        TrapLog {
+            hits,
+            dropped: 0,
+            lines: Vec::new(),
+        }
+    }
+    /// A sticky page's lines on `thread`.
+    fn lines(page_va: u32, thread: u32, read: u64, write: u64, read_first: u64) -> LineRec {
+        LineRec {
+            page: page_va >> 12,
+            thread,
+            read,
+            write,
+            read_first,
+            accesses: 1,
+        }
+    }
+    fn with_lines(mut l: TrapLog, recs: Vec<LineRec>) -> TrapLog {
+        l.lines = recs;
+        l
     }
 
     const A: u32 = 0x8010_0000;
@@ -1006,36 +1405,209 @@ mod tests {
     }
 
     #[test]
-    fn sticky_pages_report_the_lines_the_sim_reads_after_the_render_wrote_them() {
+    fn a_dependency_line_is_one_the_sim_read_before_writing_it() {
         let mut c = census();
         render(&mut c);
         sim(&mut c);
         assert_eq!(
-            c.pick_sticky(4),
-            vec![A >> 12, B >> 12],
-            "the stack is not picked"
+            c.pick_sticky(Some(4)),
+            vec![A >> 12],
+            "rs_core only: not B (our D3D's) nor the stack"
         );
-        // Lines 0-1 written; the sim reads line 5, then line 1.
-        c.render_done(&log(vec![TrapHit {
-            addr: A,
-            len: 128,
-            write: true,
-            pc: 1,
-            phase: RENDER,
-        }]));
-        c.sim_done(&log(vec![hit(A + 5 * 64, false, 2, CPU)]));
+        // The render writes lines 0-2. The sim reads line 5; reads line 1
+        // first; writes line 2 and only then reads it.
+        c.render_done(&with_lines(
+            log(vec![hit(A, true, 1, RENDER)]),
+            vec![lines(A, NO_THREAD, 0, 0b111, 0)],
+        ));
+        c.sim_done(&with_lines(
+            log(vec![hit(A + 64, false, 2, CPU)]),
+            vec![lines(A, NO_THREAD, 1 << 5 | 0b110, 0b100, 1 << 5 | 0b10)],
+        ));
         let a = &c.pages()[&(A >> 12)];
-        assert_eq!((a.rw_lines, a.sr_lines, a.dep_lines), (0b11, 1 << 5, 0));
-        c.render_done(&log(vec![hit(A + 64, true, 1, RENDER)]));
-        c.sim_done(&log(vec![hit(A + 64 + 60, false, 2, CPU)]));
-        let a = &c.pages()[&(A >> 12)];
-        assert_eq!((a.dep_lines, a.dep_line_frames), (0b10, 1));
+        assert_eq!(a.rw_lines, 0b111);
+        assert_eq!(
+            (a.sr_lines, a.sr_lines_any),
+            (1 << 5 | 0b10, 1 << 5 | 0b110)
+        );
+        assert_eq!(
+            (a.dep_lines, a.dep_lines_any, a.dep_line_frames),
+            (0b10, 0b110, 1),
+            "line 2 was the sim's own value when it read it"
+        );
+        let t = c.totals();
+        assert_eq!((t.dep_lines, t.dep_lines_any), (1, 2));
+        assert_eq!(t.rs_core_lined, 1, "A was sticky when it was rs_core");
         let r = c.report(5);
         assert!(
             r.iter()
                 .any(|l| l.contains("lines page=0x80100000") && l.contains("(1 of 64)")),
             "{r:#?}"
         );
+        assert!(
+            r.iter()
+                .any(|l| l.contains("coverage group=other rs_core/pair=1.0 lined/pair=0.5 (50%)")),
+            "{r:#?}"
+        );
+    }
+
+    #[test]
+    fn sticky_pages_are_picked_per_region_group_within_the_budget() {
+        let mut c = census();
+        c.regions.add(0x0001_0000, 0x0010_0000, "xbe_image");
+        c.regions.add(0x8020_0000, 0x8020_2000, "datum:objects");
+        c.regions.add(0x8020_0000, 0x8030_0000, "game_state");
+        c.regions.add(0x8000_0000, 0x8010_0000, "world_pool");
+        c.regions.add(0x0040_3000, 0x0040_9000, "d3d_globals");
+        let pages = [
+            0x0001_1000u32,
+            0x0001_2000,
+            0x0001_3000,
+            0x8020_0000,
+            0x8020_4000,
+            0x8000_5000,
+            0x0040_4000,
+        ];
+        // Each page rs_core once; the second XBE page twice.
+        for round in 0..2 {
+            let hits: Vec<_> = pages
+                .iter()
+                .filter(|&&p| round == 0 || p == 0x0001_2000)
+                .map(|&p| hit(p, true, 1, RENDER))
+                .collect();
+            let reads: Vec<_> = hits.iter().map(|h| hit(h.addr, false, 2, CPU)).collect();
+            c.render_done(&log(hits));
+            c.sim_done(&log(reads));
+        }
+        assert_eq!(
+            c.pick_sticky(Some(1)),
+            vec![
+                0x0001_2000 >> 12,
+                0x8000_5000 >> 12,
+                0x8020_0000 >> 12,
+                0x8020_4000 >> 12
+            ],
+            "one per group (the most frequent XBE page), never the D3D globals"
+        );
+        assert_eq!(c.pick_sticky(None).len(), 6, "all rs_core pages");
+        assert_eq!(c.pick_sticky(Some(0)), Vec::<u32>::new());
+        c.pick_sticky(Some(2));
+        let r = c.report(5);
+        for want in [
+            "sticky group=xbe pages=2",
+            "sticky group=datum pages=1",
+            "coverage group=game_state rs_core/pair=0.5",
+        ] {
+            assert!(r.iter().any(|l| l.contains(want)), "{want}: {r:#?}");
+        }
+        assert_eq!(region_group("datum:lights"), Some("datum"));
+        assert_eq!(region_group("stack"), None);
+        assert_eq!(region_group("contiguous"), Some("other"));
+    }
+
+    #[test]
+    fn other_guest_threads_are_told_apart_by_thread_id_in_both_scopes() {
+        let mut c = census();
+        c.set_owner(Some(7));
+        // The render (thread 7) writes A; thread 9 writes E inside the scope,
+        // in a phase that would have counted as the render's.
+        c.render_done(&with_lines(
+            log(vec![
+                on(7, hit(A, true, 1, RENDER)),
+                on(9, hit(E, true, 3, RENDER)),
+            ]),
+            vec![lines(A, 7, 0, 0b1, 0), lines(A, 9, 0, 0b10, 0)],
+        ));
+        // Thread 9 reads A (and its line 0) next; the game thread reads
+        // nothing of it.
+        c.sim_done(&with_lines(
+            log(vec![
+                on(9, hit(A, false, 4, CPU)),
+                on(7, hit(D, false, 5, CPU)),
+            ]),
+            vec![lines(A, 9, 0b1, 0, 0b1)],
+        ));
+        let t = c.totals();
+        assert_eq!((t.rw, t.other_thread, t.sim_other_thread), (1, 1, 1));
+        assert_eq!((t.rs, t.rs_other), (0, 1));
+        assert!(!c.pages().contains_key(&(E >> 12)));
+        let a = &c.pages()[&(A >> 12)];
+        assert_eq!((a.rw_lines, a.dep_lines, a.dep_lines_other), (0b1, 0, 0b1));
+        let r = c.report(5);
+        for want in [
+            "other_thread scope=render thread=9 hits/frame=1.0",
+            "other_thread scope=sim thread=9 hits/frame=1.0",
+        ] {
+            assert!(r.iter().any(|l| l.contains(want)), "{want}: {r:#?}");
+        }
+    }
+
+    #[test]
+    fn handler_calls_and_host_writes_are_named_per_scope() {
+        const WAIT: u32 = 0xfff0_0000 + 4 * 189;
+        const D3D_ENTRY: u32 = 0x0030_0000;
+        let mut c = census();
+        c.set_owner(Some(7));
+        c.note_hle(
+            true,
+            &[
+                HleCall {
+                    target: WAIT,
+                    thread: 7,
+                    calls: 2,
+                    stops: 1,
+                },
+                HleCall {
+                    target: D3D_ENTRY,
+                    thread: 9,
+                    calls: 3,
+                    stops: 0,
+                },
+            ],
+        );
+        c.render_done(&log(vec![
+            TrapHit {
+                hle: D3D_ENTRY,
+                ..on(7, hit(B, true, 0, D3D))
+            },
+            on(7, hit(C, true, 0, RENDER)),
+        ]));
+        assert_eq!(c.unnamed(), vec![D3D_ENTRY, WAIT]);
+        c.set_name(WAIT, "kernel:NtWaitForSingleObjectEx".into());
+        c.set_name(D3D_ENTRY, "D3DDevice_Swap".into());
+        assert_eq!(
+            c.hle()[&(true, WAIT)],
+            HleStat {
+                calls: 2,
+                stops: 1,
+                ..HleStat::default()
+            }
+        );
+        let r = c.report(0);
+        for want in [
+            "hle scope=render name=kernel:NtWaitForSingleObjectEx target=0xfff002f4 calls/frame game=2.00 other=0.00 stops game=1 other=0 wait",
+            "host_writes scope=render by=D3DDevice_Swap pages/frame=1.00",
+            "host_writes scope=render by=host:no-handler pages/frame=1.00",
+        ] {
+            assert!(r.iter().any(|l| l.contains(want)), "{want}: {r:#?}");
+        }
+        assert!(
+            !r.iter().any(|l| l.contains("name=D3DDevice_Swap")),
+            "top 0 shows only waits: {r:#?}"
+        );
+        let tsv = c.tsv();
+        let row = tsv.lines().find(|l| l.starts_with("0x80101000")).unwrap();
+        assert!(row.contains("\tD3DDevice_Swap\t"), "{row}");
+        assert!(is_wait("kernel:KeDelayExecutionThread"));
+        assert!(!is_wait("kernel:KeQueryPerformanceCounter"));
+    }
+
+    #[test]
+    fn the_line_budget_reads_all_or_a_number() {
+        assert_eq!(parse_lines(None), Some(64));
+        assert_eq!(parse_lines(Some("all")), None);
+        assert_eq!(parse_lines(Some("8")), Some(8));
+        assert_eq!(parse_lines(Some("0")), Some(0));
     }
 
     #[test]

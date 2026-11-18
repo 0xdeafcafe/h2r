@@ -198,9 +198,8 @@ sim's. Per frame it pairs them:
 | `sim_d3d_hits` | D3D-layer hits in sim intervals: D3D calls the sim makes |
 
 Per page it keeps the first writer and reader of each relation (guest
-`pc`, or `d3d`/`host`) and, for the top `rs` pages made sticky (every
-access logged), the 64-byte lines the render wrote, the sim read, and
-their overlap (`dep_lines`). Regions: `stack` (256 KB below the render
+`pc`, or `d3d`/`host`) and, for the pages made sticky, the 64-byte lines
+the render wrote, the sim read, and their overlap (`dep_lines`). Regions: `stack` (256 KB below the render
 entry's `esp`), `push_buffer` and `d3d_scratch` (from the boot),
 `d3d_globals` (the D3D library's device and state block in the XBE,
 `0x00403000..0x00409000`), `datum:<name>` (datum arrays found in the
@@ -209,12 +208,57 @@ game-state block by their `d@t@` signature), `game_state` (the
 0x83145000` and its `0xf...` alias: tag cache, BSPs, carved buffers),
 `xbe_image` (globals), `contiguous`, `write_combined`, `other`.
 
+**Census v2 (2026-11-18).** The first run's three caveats ("Census
+results" below) are fixed:
+
+- *Sticky pages per region group.* At each report, the pages most often
+  in `rs_core` are made sticky in each group: `xbe` (`xbe_image`),
+  `game_state`, `datum` (every `datum:*`), `world_pool` and `other`
+  (contiguous, heap, the rest). The stack and our D3D layer's own memory
+  are never sticky. `H2_RENDER_CENSUS_LINES` is the budget per group
+  (default 64, `0` none, `all` every `rs_core` page). The trap keeps a
+  sticky page's line masks itself, per guest thread (`runtime::LineRec`),
+  instead of logging each access, so the budget costs slow accesses but no
+  log space. The `coverage group=…` lines give each group's `rs_core`
+  pages a frame and how many of them had line data; `rs_core_lined` in
+  the summary is the total.
+- *Order.* A sim read counts toward `sr_lines`/`dep_lines` only if the
+  same thread had not written that line earlier in the interval.
+  `sr_lines_any`/`dep_lines_any` keep the old, unordered meaning, for
+  comparison.
+- *Threads.* Every hit carries the running guest thread (from the frame
+  stats). The game thread is the one running the render entry. In both
+  scopes, other threads' hits leave the page sets and are counted per
+  thread (`other_thread scope=… thread=…`). Another thread reading a page
+  the render wrote, in the next interval, is `rs_other` (per page and
+  per frame), and its lines `dep_lines_other`. Without frame stats there
+  are no thread ids, and the census falls back to the phase rule.
+- *HLE calls.* The runner counts each Rust-handler call (kernel export
+  or override) by target and guest thread, with the calls that ended in
+  a STOP (blocked, yielded or preempted). The census splits them by scope
+  and names them (`kernel:<export>`, or the override's registered name):
+  `hle scope=render name=… calls/frame game=… other=… stops …`, the top
+  `H2_RENDER_CENSUS_TOP` per scope plus every wait (`Wait`, `Delay`,
+  `Yield`, `Sleep` in the name).
+- *Host writes by subsystem.* A host hit carries the Rust handler it ran
+  in. `host_writes scope=render by=<name>` counts render-scope pages a
+  frame by first host writer, and the TSV's `host_writer` column names
+  it per page. `<source>:no-handler` is host code outside any handler
+  (the boot loop between slices, say).
+
+The TSV keeps the first 20 columns (with `sr_lines` and `dep_lines` now
+ordered) and adds `rs_core`, `rs_other`, `host_writer`, `sr_lines_any`,
+`dep_lines_any`, `other_read_lines`, `dep_lines_other` and
+`sticky_frames`. The `lines …` report lines list every page with a
+dependency line of any kind.
+
 **Limits.** Raw RAM readers that bypass the accessors
 (`Guest::physical_ram`: the lockstep hash, snapshots) are not seen; none
 is guest code. Atomics
 (`runtime::atomic`) count as the host. A hit from another guest thread
-inside the render scope consumes that page's arming for the scope, so
-the render's own first access to it is missed (rare: count shown).
+consumes that page's arming for the scope, so the owner's own first
+access to it is missed at page level (rare: count shown). Sticky pages
+are exact per thread.
 Without frame stats every host hit is `host` and nothing is
 `other_thread`. The run is slower while the census is on (two passes
 over the mappings and a few thousand slow accesses a frame); its numbers
@@ -224,16 +268,19 @@ are page sets, not times.
 game end: `render-census: window …` and `run …` summary lines (per-frame
 averages), `region …` counts, the top `rs`, `ww` and `sr` pages
 (`H2_RENDER_CENSUS_TOP`, default 20) with region and first writer and
-reader, and `lines …` for the sticky pages (`H2_RENDER_CENSUS_LINES`,
-default 16). With `H2_RENDER_CENSUS_OUT=<path>` the full per-page table
+reader, and the v2 lines above. With `H2_RENDER_CENSUS_OUT=<path>` the full per-page table
 is rewritten there as TSV at each report.
 
 **Running it.** It needs a new `h2` binary only (no generated-code or
 image change):
 
 ```sh
-H2_FEATURES=render-census H2_FRAME_STATS=1 H2_RENDER_CENSUS_OUT=$TMPDIR/census.tsv h2 run …
+H2_FEATURES=render-census H2_FRAME_STATS=1 H2_RENDER_CENSUS_LINES=64 H2_RENDER_CENSUS_OUT=$TMPDIR/census.tsv h2 run …
 ```
+
+`H2_FRAME_STATS=1` is required for v2's thread split and handler names
+per thread. If the run is too slow with 64 sticky pages per group, lower
+the budget; the coverage lines show what is lost.
 
 Add `render-timing` to `H2_FEATURES` to get both in one run; the census
 then leaves the render scope to it.

@@ -407,6 +407,16 @@ fn guest_thread_slow(tid: u32) {
     });
 }
 
+/// The guest thread the kernel last said runs on this host thread
+/// ([`guest_thread`]); `None` between slices or while stats are off. The
+/// access trap (`runtime::trap`) tags each hit with it.
+pub fn running_guest_thread() -> Option<u32> {
+    if !enabled() {
+        return None;
+    }
+    LOCAL.with(|l| Some(l.guest.get()).filter(|&t| t != NO_THREAD))
+}
+
 /// The phase this host thread's time is going to now: [`Phase::Render`]
 /// inside the render scope on its owner's slices, [`Phase::D3d`] inside a
 /// D3D entry, [`Phase::Guest`] while another guest thread's slice
@@ -1418,6 +1428,7 @@ mod tests {
             spin(3);
         }
         guest_thread(Some(2));
+        assert_eq!(running_guest_thread(), Some(2));
         {
             let _d = enter(Phase::D3d);
             spin(2);
@@ -1433,7 +1444,9 @@ mod tests {
         assert!(thread_ns(Phase::D3d).unwrap() >= 7_000_000);
         assert_eq!(scope_entries(Phase::D3d), Some(1), "only the scoped entry");
         guest_thread(None);
+        assert_eq!(running_guest_thread(), None, "between slices");
         assert_eq!(stop(), None);
         assert!(!enabled());
+        assert_eq!(running_guest_thread(), None, "stats off");
     }
 }
