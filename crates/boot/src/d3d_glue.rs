@@ -660,6 +660,7 @@ pub fn install_with_report<B: d3d::backend::Backend + Send + 'static>(
     };
     d3d::runtime_glue::map_device_memory(&mut rt.memory(), &cfg)?;
     let device = d3d::runtime_glue::shared(cfg, backend);
+    install_occlusion_capture(&device);
     let mut out = None;
     rt.edit_dispatch(|d| {
         out = Some(d3d::register(d, Arc::clone(&device)));
@@ -905,6 +906,35 @@ fn install_write_barrier<B: d3d::backend::Backend + Send + 'static>(
         }
     });
     Ok(())
+}
+
+/// The occlusion feature's depth capture (docs/graphics/occlusion-culling.md):
+/// its observer asks the device for a grid of the main depth, recorded in
+/// order with the draws; the finished grid goes back to the feature with
+/// the W-buffer's mapping to view depth. Inert unless
+/// `impl.render.occlusion` is on (nothing asks).
+fn install_occlusion_capture<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
+    let dev = Arc::clone(device);
+    feature::occlusion::set_capture(Box::new(move |tag, width, height| {
+        let Ok(mut d) = dev.lock() else { return };
+        d.request_depth_grid(
+            tag,
+            width,
+            height,
+            Arc::new(|r: d3d::DepthGridResult, s: d3d::DepthScale| {
+                feature::occlusion::deliver(r.tag, r.width, r.height, &r.depth, w_buffer_mapping(s));
+            }),
+        );
+    }));
+}
+
+/// The W-buffer's raw depth to view depth: stored `floor(w · inv_w_far ·
+/// z_scale) / z_scale` (`z_scale` the format's full scale, `+0x948`).
+pub fn w_buffer_mapping(s: d3d::DepthScale) -> engine::render_loop::occlusion::DepthMapping {
+    engine::render_loop::occlusion::DepthMapping::WBuffer {
+        zmax: s.z_scale,
+        scale: s.inv_w_far * s.z_scale,
+    }
 }
 
 #[cfg(test)]

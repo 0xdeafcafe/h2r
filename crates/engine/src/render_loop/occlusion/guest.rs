@@ -230,6 +230,11 @@ impl Occlusion {
         Ok(t.decide(&b))
     }
 
+    /// The main view whose records are being built, if any.
+    pub fn current_view(&self) -> Option<u32> {
+        self.current.as_ref().map(|(v, _)| *v)
+    }
+
     /// The counts over every view.
     pub fn counts(&self) -> Counts {
         let mut c = Counts::default();
@@ -351,6 +356,41 @@ mod tests {
         let mut g = world(&[]);
         g.write(CAMERA + 0x36, &0u16.to_le_bytes()).unwrap();
         assert_eq!(read_camera(&g).unwrap(), None);
+    }
+
+    /// The camera's `+0x28` is the vertical FOV: the projection builder
+    /// `0x0002fb70` takes `t = tan(+0x28 / 2)` (`fptan`), scales y by `1 / t`
+    /// and x by `1 / (t · aspect)`, aspect the viewport's width over its
+    /// height (`+0x30..+0x36`). A 16:9 viewport with a 60-degree `+0x28`:
+    /// a point just inside the top edge lands in row 0, one just inside the
+    /// right edge (at the wider horizontal half-angle) in the last column,
+    /// and one just past the top edge is off screen. With the FOV taken as
+    /// horizontal, the first two would land a third of the way in.
+    #[test]
+    fn camera_fov_is_vertical_and_x_takes_the_aspect() {
+        let mut g = world(&[]);
+        let fov = 60f32.to_radians();
+        g.set_u32(CAMERA + 0x28, fov.to_bits()).unwrap();
+        for (k, v) in [0u16, 0, 360, 640].iter().enumerate() {
+            g.write(CAMERA + 0x30 + 2 * k as u32, &v.to_le_bytes())
+                .unwrap();
+        }
+        let c = read_camera(&g).unwrap().unwrap();
+        let t = (fov / 2.0).tan();
+        assert!((c.tan_half_y - t).abs() < 1e-6);
+        assert!((c.tan_half_x - t * 16.0 / 9.0).abs() < 1e-5);
+        // The camera looks down +x with z up (`world`); left is +y.
+        let d = 10.0;
+        let top = c.project([d, 0.0, d * t * 0.98], 0.01, 64, 32).unwrap();
+        assert_eq!(top.y0, 0, "{top:?}");
+        let right = c
+            .project([d, -d * t * 16.0 / 9.0 * 0.98, 0.0], 0.01, 64, 32)
+            .unwrap();
+        assert_eq!(right.x1, 63, "{right:?}");
+        assert!(c.project([d, 0.0, d * t * 1.1], 0.01, 64, 32).is_none());
+        // Just past the vertical edge but inside the horizontal one, were
+        // the FOV horizontal: still off screen.
+        assert!(c.project([d, 0.0, d * t * 1.2], 0.01, 64, 32).is_none());
     }
 
     #[test]

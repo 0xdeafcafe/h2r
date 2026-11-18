@@ -107,6 +107,17 @@ pub struct DepthGrid {
 }
 
 impl DepthGrid {
+    /// A grid from the GPU's reduction (`gfx::depth_grid`): `raw` the
+    /// largest raw depth per cell, row 0 the top, mapped to view depth.
+    /// `None` when the length does not match.
+    pub fn from_raw(width: u32, height: u32, raw: &[f32], map: DepthMapping) -> Option<Self> {
+        (raw.len() == (width * height) as usize && width > 0 && height > 0).then(|| Self {
+            width,
+            height,
+            depth: raw.iter().map(|&d| map.view_depth(d)).collect(),
+        })
+    }
+
     /// A grid with every cell far (occludes nothing).
     pub fn far(width: u32, height: u32) -> Self {
         Self {
@@ -685,6 +696,28 @@ mod tests {
         };
         assert!((p.view_depth(0.0) - 0.1).abs() < 1e-6);
         assert_eq!(p.view_depth(1.0), f32::INFINITY);
+    }
+
+    #[test]
+    fn from_raw_maps_each_cell_and_checks_the_size() {
+        // The W-buffer as the device sets it up: w far 1000, D24 scale.
+        let zs = 16_777_215.0f32;
+        let map = DepthMapping::WBuffer {
+            zmax: zs,
+            scale: zs / 1000.0,
+        };
+        let raw = [0.0, 0.1, 0.5, 1.0];
+        let g = DepthGrid::from_raw(2, 2, &raw, map).unwrap();
+        assert!(g.at(0, 0) >= 0.0 && g.at(0, 0) < 0.001);
+        assert!((g.at(1, 0) - 100.0).abs() < 0.01 && g.at(1, 0) >= 100.0);
+        assert!((g.at(0, 1) - 500.0).abs() < 0.01);
+        assert_eq!(g.at(1, 1), f32::INFINITY, "cleared depth is far");
+        assert!(DepthGrid::from_raw(3, 2, &raw, map).is_none());
+        // Near cells (the first-person weapon) stop occluding.
+        let mut g = g;
+        g.ignore_nearer(0.5);
+        assert_eq!(g.at(0, 0), f32::INFINITY);
+        assert!(g.at(1, 0) < 101.0);
     }
 
     #[test]

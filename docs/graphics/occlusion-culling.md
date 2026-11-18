@@ -107,9 +107,20 @@ reads only AL: non-zero with view kind 1 re-runs the same index.
 ### Camera and view (while the records are built)
 
 - The render camera `0x004b9da0` (0x74 bytes): position `+0`, forward
-  `+0xc`, up `+0x18`, vertical FOV `+0x28` (Code: `fptan` of half),
-  viewport `+0x30` (i16 top, left, bottom, right), near `+0x40` and far
-  `+0x44` (S). The transparent sort reads the same position.
+  `+0xc`, up `+0x18`, vertical FOV `+0x28`, viewport `+0x30` (i16 top,
+  left, bottom, right), near `+0x40` and far `+0x44` (S). The transparent
+  sort reads the same position.
+- **Why `+0x28` is vertical (Code, `0x0002fb70`, the projection's
+  builder).** It takes `t = tan(+0x28 · 0.5)` with `fptan`, the aspect as
+  `(right - left) / (bottom - top)` from `+0x30..+0x36`, and stores the x
+  scale as `1 / (t · aspect · x extent)` and the y scale as `1 / (t · y
+  extent)` (extents 1 by default): x takes the aspect, so `t` is the
+  vertical half-angle's tangent. Two things the read does not settle: with
+  `[0x00485ac2]` set (and `[0x00510c50]+5`) the aspect is multiplied by a
+  constant (`0x0045dfdc`; S: an anamorphic or widescreen mode), and the
+  frustum extents can come from the caller instead of the default. The
+  occlusion camera uses the plain viewport aspect. **This is the first
+  thing to check in game** (below).
 - The projection `0x004b9e14` (built by `0x0002fd90`): world-to-view 4x3
   at `+0`, view-to-world at `+0x34`, four frustum bounds at `+0x68`, pixel
   scales at `+0xb8`/`+0xbc` (`0x004b9ed0` is the LOD pixel scale).
@@ -147,14 +158,55 @@ light views (`0x0054aa68`) and other view kinds are never touched.
 ## The design
 
 ```text
-frame N (render thread)                frame N+1 (game thread)
-main view depth after the opaque       OBJECT_RENDER_RECORDS: camera,
-layers -> compute: max per cell        protected handles, newest depth
-of a 64x32 grid -> async readback  ->  frame from the mailbox
--> CPU: view depth, HiZ pyramid,       OBJECT_RENDER_SETUP per object:
-   paired with frame N's camera        sphere -> footprint -> pyramid max
-   -> Mailbox                          -> streak -> skip or run
+frame N, game thread                    render thread
+OBJECT_RENDER_RECORDS (main view):      .
+  arm a capture: view, frame, camera    .
+SCENE_TRANSPARENTS 0x0001e370:          .
+  capture(tag) -> Device::              .
+  request_depth_grid (pending)          .
+next D3D entry, after the drain:  --->  Backend::request_depth_grid:
+  W-buffer parameters read              DepthGrid::reduce in the command
+                                        stream after the opaque draws
+Swap                              --->  present: map; a later present:
+                                        sink(grid, W parameters)
+                                          -> occlusion::deliver: view
+                                          depth, ignore_nearer, HiZ,
+                                          Frame -> MAILBOX
+frame N+1, game thread
+OBJECT_RENDER_RECORDS: camera, protected handles, newest Frame
+OBJECT_RENDER_SETUP per object: sphere -> footprint -> pyramid max
+  -> streak -> skip or run
 ```
+
+- **Capture point** (`feature::occlusion`, observer `occlusion_capture`
+  on `SCENE_TRANSPARENTS` `0x0001e370`): the first transparents call after
+  a main view's records were built, so the depth holds the opaque layers
+  (and the dynamic lights' passes) but not the transparents or the
+  first-person chain, which `render_scene_passes` runs after it. The
+  observer tags the ask with the view index, the frame (`[0x004ba034]`)
+  and the camera read at the records build.
+- **In order with the draws** (`d3d::Device::request_depth_grid`): the
+  ask waits on the device until the next D3D entry has drained the push
+  buffer, so everything the game queued before the transparents is
+  recorded first; the grid is then recorded through
+  `Backend::request_depth_grid` (additive, default "cannot"):
+  `ThreadedBackend` posts it to the render thread, `ScaledBackend` asks
+  the view's scaled depth (what the screen shows) or the reference's,
+  `InterpBackend` passes it on (a replay never asks), boot's `DiagBackend`
+  passes it on, and `GfxBackend` records `gfx::depth_grid` into the open
+  encoder, maps it at the next present and hands it to the sink at a
+  present after the map completed (no wait). The viewport in guest pixels
+  is scaled to the texture's texels (`grid_rect`).
+- **Not recorded** (counted in `Stats::depth_grids_skipped`) when the
+  bound depth is not the device's own depth buffer, the depth is not
+  W-buffered (`SET_CONTROL0` z-perspective), the W parameters are not
+  finite, or the backend cannot (a multisampled or unsampleable depth).
+- **W-buffer to view depth** (boot's `w_buffer_mapping`): the stored depth
+  is `floor(view_depth · inv_w_far · z_scale) / z_scale`, `inv_w_far` the
+  device's `+0x944` and `z_scale` `+0x948` (`0x3f6840` scales the viewport
+  matrix by their product), so `DepthMapping::WBuffer { zmax: z_scale,
+  scale: inv_w_far · z_scale }`, which takes the far end of each stored
+  step.
 
 - **Depth grid on the GPU** (`gfx::depth_grid`, built): one compute
   thread per cell takes the largest raw depth of the pixels whose centre
@@ -207,47 +259,46 @@ occlusion: tested T culled C (P%) unknown U exempt E resets R cull X ms/frame ov
 ```
 
 `tested` counts setup calls in the main view, `unknown` the ones without
-usable depth or footprint, `cull` the hooks' own time per frame.
+usable depth or footprint, `cull` the hooks' own time per frame; the line
+ends with `grids G`, the depth frames published so far. `unknown` close
+to `tested` with `grids` not growing means no depth arrives (see "Not
+recorded" above).
 
 ## Status
 
-Built and tested (`cargo test -p engine --lib occlusion`, `cargo test -p
-gfx --test depth_grid`, `cargo test -p feature --test occlusion`):
+Built and tested, all behind `impl.render.occlusion` (exactly that key;
+`impl.render=on` does not turn it on), off by default:
 
-- the pure pyramid, projection, test, tracker and meter, with synthetic
+- the pure pyramid, projection, test, tracker and meter, and the raw grid
+  to view depth (`cargo test -p engine --lib occlusion`), with synthetic
   depth buffers and spheres;
-- the GPU grid reduction against a CPU max per cell (runs on any wgpu
-  adapter, skipped without one);
-- the guest side (`occlusion::guest`): camera, bounds, protected handles,
-  the skip's register and memory effects, over a synthetic guest;
-- the feature on the runtime (`feature::occlusion`, switch
-  `impl.render.occlusion`, exactly that key, off by default): the two
-  hooks over the synthetic generated module, skipping from the second
-  occluded frame and running the original otherwise.
+- the camera's FOV reading (`camera_fov_is_vertical_and_x_takes_the_aspect`):
+  a synthetic camera block at `0x004b9da0` with a 16:9 viewport projects
+  points at the vertical and horizontal edges where `0x0002fb70` would put
+  them. It proves the reading follows the code above, not that the game's
+  live block has no other aspect in it;
+- the GPU grid reduction against a CPU max per cell (`cargo test -p gfx
+  --test depth_grid`, any wgpu adapter);
+- the device's grid: the depth the draws before the ask left, not what
+  comes after, the W parameters, nothing when not W-buffered, on the
+  device's thread, through the render thread and through `InterpBackend`
+  (`cargo test -p d3d --test occlusion_grid`, needs
+  `DEPTH32FLOAT_STENCIL8`), and the viewport-to-texel rectangle
+  (`cargo test -p d3d --lib grid_rect`);
+- the guest side (`occlusion::guest`) and the feature on the runtime
+  (`cargo test -p feature --test occlusion`): the records, setup and
+  transparents hooks over the synthetic generated module, one capture per
+  main view and frame, grids delivered as the device would, skipping from
+  the second occluded frame and running the original otherwise.
 
-**Not built: the producer.** Nothing publishes depth frames into
-`feature::occlusion::MAILBOX` yet, so in game every test is `unknown` and
-nothing is culled: the switch measures the hooks and the object counts.
-What it needs:
+Not covered by a test: boot's glue (`install_occlusion_capture`, a few
+lines from the feature's capture to the device's ask and back) and a real
+frame.
 
-1. A capture point: the main view's depth after the opaque layers and
-   before the transparents and the first-person chain (an observer before
-   `0x0001e370` in the main view, or the render loop's `ScenePasses::at()`).
-   It records the frame (`[0x004ba034]`), the view index, the camera and
-   the depth-stencil surface.
-2. A `d3d::Backend` method, additive with a default that does nothing:
-   reduce the current depth surface's viewport rectangle with
-   `gfx::depth_grid::DepthGrid::reduce` in the recorded command stream (so
-   the threaded backend runs it on the render thread in order), map it
-   after submission, and hand finished grids back. The W-buffer's scale
-   and `Zmax` (d3d.md, "W-buffered") give `DepthMapping::WBuffer`.
-3. Boot glue: finished grids -> `DepthGrid` -> `ignore_nearer` -> `HiZ`
-   -> `Frame` with the recorded camera -> `MAILBOX.publish(view, ..)`.
-
-Then, in game: confirm the camera's FOV is vertical (a wrong FOV maps
-spheres to the wrong cells: watch for objects vanishing at the screen's
-edges), and compare `render` and the draw count with the switch on and
-off.
+**First check in game: the FOV.** With the switch on, look for objects
+that vanish while visible near the left and right screen edges (an x
+scale that is too narrow) or that are never culled while hidden (too
+wide). Then compare `render` and the draw count with the switch on and off.
 
 ## Expected saving (S)
 

@@ -54,10 +54,10 @@ pub mod vblank;
 pub mod vertex_cache;
 
 pub use backend::{
-    Backend, ChannelMask, DrawOutcome, GuestLayoutKind, PixelRect, Recorded, RecordingBackend,
+    Backend, ChannelMask, DepthGridRequest, DepthGridResult, DepthGridSink, DrawOutcome, GuestLayoutKind, PixelRect, Recorded, RecordingBackend,
     RectClear, ResolvedDraw, StreamBytes, StreamData, CachedBytes, CachedIndices, IndexData, Viewport,
 };
-pub use device::{Device, DeviceConfig, GuestRange, PresentParameters, Stats, WritebackCause, WritebackCauses};
+pub use device::{DepthScale, Device, DeviceConfig, OcclusionSink, GuestRange, PresentParameters, Stats, WritebackCause, WritebackCauses};
 pub use dirty::{UploadPolicy, WriteTracker};
 pub use events::{D3dError, Event, HleStop};
 pub use gfx_backend::{GfxBackend, SwapFinish};
