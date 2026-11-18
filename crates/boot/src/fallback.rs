@@ -187,9 +187,15 @@ fn build_state() -> &'static Mutex<State> {
         let (mut analysis, _) = crate::analyze_cached(x, crate::analysis_cache(bytes).as_deref()).unwrap();
         // The interpreter's own copy: with the stopgap, unread jump-table
         // targets become entries so the lazy lifter can reach them.
-        let unread = UNREAD_ENABLED
-            .load(std::sync::atomic::Ordering::SeqCst)
-            .then(|| UNREAD.get_or_init(|| unread_targets(bytes, &analysis)));
+        // A provisional set (another build's, see `install_unread_targets`)
+        // is checked here: this build's own set is worked out and kept.
+        let unread = UNREAD_ENABLED.load(std::sync::atomic::Ordering::SeqCst).then(|| {
+            if PROVISIONAL.load(std::sync::atomic::Ordering::SeqCst) {
+                FRESH.get_or_init(|| unread_targets(bytes, &analysis))
+            } else {
+                UNREAD.get_or_init(|| unread_targets(bytes, &analysis))
+            }
+        });
         for &addr in unread.map_or(&[][..], |u| u.all.as_slice()) {
             analysis.functions.entry(addr).or_insert(analyze::Function {
                 start: addr,
@@ -505,6 +511,10 @@ pub struct Unread {
 }
 
 static UNREAD: OnceLock<Unread> = OnceLock::new();
+/// [`UNREAD`] came from another build's cache file and is being checked
+/// in the background; [`FRESH`] is this build's own set once worked out.
+static PROVISIONAL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static FRESH: OnceLock<Unread> = OnceLock::new();
 /// Set by [`install_unread_targets`] (the stopgap) before the interpreter's
 /// analysis is built.
 static UNREAD_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -556,7 +566,17 @@ pub fn unread_targets(xbe_bytes: &[u8], analysis: &analyze::Analysis) -> Unread 
 /// Whether the switch at `site` may continue at `target` (a target its
 /// table holds; never an arbitrary address).
 fn unread_allowed(site: u32, target: u32) -> bool {
-    UNREAD.get().and_then(|u| u.by_site.get(&site)).is_some_and(|t| t.contains(&target))
+    let allowed = |u: Option<&Unread>| u.and_then(|u| u.by_site.get(&site)).is_some_and(|t| t.contains(&target));
+    if allowed(FRESH.get().or(UNREAD.get())) {
+        return true;
+    }
+    // A provisional set may lack a site this build reads short: settle it
+    // (waiting for the analysis, as the first interpreted entry would).
+    if PROVISIONAL.load(std::sync::atomic::Ordering::SeqCst) && FRESH.get().is_none() {
+        let _ = state();
+        return allowed(FRESH.get());
+    }
+    false
 }
 
 /// Boot stopgap: let the interpreter lift from every [`unread_targets`]
@@ -566,21 +586,52 @@ fn unread_allowed(site: u32, target: u32) -> bool {
 /// table holds it ([`trampoline`], [`run`]). Returns how many were
 /// registered. Retire when analyze reads these tables. Builds the
 /// interpreter's analysis now.
-pub fn install_unread_targets(rt: &runtime::Runtime) -> usize {
+pub fn install_unread_targets(rt: &Arc<runtime::Runtime>) -> usize {
     UNREAD_ENABLED.store(true, std::sync::atomic::Ordering::SeqCst);
     let bytes = *XBE.get().unwrap();
     let path = unread_cache_path(bytes);
-    match path.as_deref().and_then(read_unread_cache) {
+    let cached = path.as_deref().and_then(read_unread_cache);
+    // No file for these sources: another build's for the same image stands
+    // in while this build's is worked out in the background, rather than
+    // holding the first frame for the analysis (12-20 s when the analysis
+    // is not cached either). The analyzer seldom changes which tables it
+    // reads short, so the sets are almost always equal.
+    let stale = match (&cached, path.as_deref()) {
+        (None, Some(p)) => stale_unread_cache(p),
+        _ => None,
+    };
+    match (cached, stale) {
         // Cached: register now, and build the interpreter's analysis on a
         // thread; the first interpreted entry waits for it if it must.
-        Some(u) => {
+        (Some(u), _) => {
             let _ = UNREAD.set(u);
             eprintln!("fallback: unread jump-table targets from {}", path.as_deref().unwrap().display());
             let _ = std::thread::Builder::new().name(ANALYSIS_THREAD.into()).spawn(|| {
                 let _ = state();
             });
         }
-        None => {
+        (None, Some((old, u))) => {
+            let _ = UNREAD.set(u);
+            PROVISIONAL.store(true, std::sync::atomic::Ordering::SeqCst);
+            eprintln!(
+                "fallback: unread jump-table targets from {} for now (other sources); checking them in the background",
+                old.display()
+            );
+            let (rt, path) = (Arc::clone(rt), path.clone());
+            let _ = std::thread::Builder::new().name(ANALYSIS_THREAD.into()).spawn(move || {
+                let _ = state();
+                let (Some(fresh), Some(old)) = (FRESH.get(), UNREAD.get()) else { return };
+                if let Some(p) = path.as_deref() {
+                    write_unread_cache(p, fresh);
+                }
+                let added = register_unread(&rt, &unread_added(old, fresh));
+                eprintln!(
+                    "fallback: unread jump-table targets checked: {}",
+                    if added == 0 { "the same".to_owned() } else { format!("{added} more registered") }
+                );
+            });
+        }
+        (None, None) => {
             let _ = state();
             if let (Some(p), Some(u)) = (path.as_deref(), UNREAD.get()) {
                 write_unread_cache(p, u);
@@ -588,10 +639,16 @@ pub fn install_unread_targets(rt: &runtime::Runtime) -> usize {
         }
     }
     let Some(unread) = UNREAD.get() else { return 0 };
+    register_unread(rt, &unread.all)
+}
+
+/// Registers each of `targets` that has no generated entry or resume as a
+/// fallback entry. Returns how many.
+fn register_unread(rt: &runtime::Runtime, targets: &[u32]) -> usize {
     let tables = TABLES.get().unwrap();
     let mut n = 0;
     rt.edit_dispatch(|d| {
-        for &addr in &unread.all {
+        for &addr in targets {
             if tables.entries.contains(&addr) || tables.resumes.contains(&addr) {
                 continue;
             }
@@ -603,6 +660,28 @@ pub fn install_unread_targets(rt: &runtime::Runtime) -> usize {
         }
     });
     n
+}
+
+/// Targets in `fresh` that `old` did not have.
+fn unread_added(old: &Unread, fresh: &Unread) -> Vec<u32> {
+    fresh.all.iter().copied().filter(|t| old.all.binary_search(t).is_err()).collect()
+}
+
+/// The newest readable unread-target file for the same image as `path`
+/// (`unread-<image hash>-<sources>.txt`) but other sources.
+fn stale_unread_cache(path: &std::path::Path) -> Option<(std::path::PathBuf, Unread)> {
+    let name = path.file_name()?.to_str()?;
+    let prefix = &name[..name.rfind('-')? + 1];
+    let mut found: Vec<(std::time::SystemTime, std::path::PathBuf)> = std::fs::read_dir(path.parent()?)
+        .ok()?
+        .flatten()
+        .filter_map(|e| {
+            let n = e.file_name().to_str()?.to_owned();
+            (n != name && n.starts_with(prefix) && n.ends_with(".txt")).then_some((e.metadata().ok()?.modified().ok()?, e.path()))
+        })
+        .collect();
+    found.sort();
+    found.into_iter().rev().find_map(|(_, p)| Some((p.clone(), read_unread_cache(&p)?)))
 }
 
 /// The boot's cache directory (`H2_BOOT_CACHE`, or `$TMPDIR/h2boot-cache`),
@@ -670,6 +749,52 @@ pub fn interpret(cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> TransferAbi {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn unread(lines: &[(u32, &[u32])]) -> Unread {
+        let by_site: HashMap<u32, Vec<u32>> = lines.iter().map(|(s, t)| (*s, t.to_vec())).collect();
+        let all = by_site.values().flatten().copied().collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+        Unread { by_site, all }
+    }
+
+    /// A miss on this build's unread-target file takes the newest one the
+    /// same image left under other sources, never another image's.
+    #[test]
+    fn a_missing_unread_file_takes_the_newest_for_the_same_image() {
+        let dir = std::env::temp_dir().join(format!("unread-stale-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let want = dir.join("unread-00000000000000aa-9999999999999999.txt");
+        assert!(stale_unread_cache(&want).is_none(), "nothing there yet");
+        let at = |secs| std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs);
+        for (name, u, secs) in [
+            ("unread-00000000000000aa-1111111111111111.txt", unread(&[(0x100, &[0x110])]), 1_000),
+            ("unread-00000000000000aa-2222222222222222.txt", unread(&[(0x200, &[0x210, 0x220])]), 2_000),
+            ("unread-00000000000000bb-3333333333333333.txt", unread(&[(0x300, &[0x310])]), 3_000),
+        ] {
+            let p = dir.join(name);
+            write_unread_cache(&p, &u);
+            std::fs::File::options().append(true).open(&p).unwrap().set_modified(at(secs)).unwrap();
+        }
+        // A file being written is not a candidate.
+        std::fs::write(dir.join("unread-00000000000000aa-4444444444444444.tmp"), "zz").unwrap();
+        let (p, u) = stale_unread_cache(&want).unwrap();
+        assert_eq!(p.file_name().unwrap(), "unread-00000000000000aa-2222222222222222.txt");
+        assert_eq!(u.by_site[&0x200], [0x210, 0x220]);
+        assert_eq!(u.all, [0x210, 0x220]);
+        // This build's own file is never its own stand-in.
+        write_unread_cache(&want, &unread(&[]));
+        std::fs::File::options().append(true).open(&want).unwrap().set_modified(at(9_000)).unwrap();
+        assert_eq!(stale_unread_cache(&want).unwrap().0.file_name().unwrap(), "unread-00000000000000aa-2222222222222222.txt");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Once checked, only targets the stand-in lacked are registered.
+    #[test]
+    fn only_targets_the_stand_in_lacked_are_added() {
+        let old = unread(&[(0x100, &[0x110, 0x120])]);
+        assert_eq!(unread_added(&old, &unread(&[(0x100, &[0x110, 0x120])])), Vec::<u32>::new());
+        assert_eq!(unread_added(&old, &unread(&[(0x100, &[0x110]), (0x200, &[0x120, 0x230])])), [0x230]);
+    }
 
     /// `profile.fallbacks`: sites by instructions interpreted, with their
     /// function; past the cap only the totals move.
