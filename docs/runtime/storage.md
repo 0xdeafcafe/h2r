@@ -165,6 +165,25 @@ use and logged once; a package that cannot be used (base hash mismatch,
 damaged patch) is a warning and the disc's map is served. Read-only, like
 the disc.
 
+**Over the Map Pack's installed maps.** `PackageBackend::over_map_pack(inner,
+library, title)` (scope `PackageScope::MapPack`) does the same on the data
+partition for the Multiplayer Map Pack's maps as `h2 import-mappack`
+installs them: `TDATA\<title>\$c\<offer>\<name>.map` (any case) where the
+offer's high half is the title and its low half is in
+`content::map_pack::OFFERS` (`…0101` to `…03ff`). The base is the
+installed file at that path; PPF and IPS layers stream over it, BPS is
+materialised into the same cache, and a longer result shows its size in
+`stat` and in listings of the offer directory and reads to its end. Only
+those paths are served: every other file on the partition (saves, other
+content, the same name under another offer, the map pack package's
+`patch.lvl` and `ContentMeta.xbx`) is the host backend's, and every write
+to them passes through. A served map refuses writes, truncation and
+overwrite with `AccessDenied`; the installed file is never changed.
+`with_storage` mounts it under `VariantFiles` on Partition1 when
+`Config::map_packages` names the packages directory (the boot sets it to
+`<data>/maps` in `map_override::mount_with_hashes`); without it the
+partition is mounted as before. Tests: `crates/vfs/tests/map_pack_packages.rs`.
+
 Packages can change while the game runs (docs/game/maps.md §3, "Now"):
 
 - **When the folder is looked at.** Before a map path is looked up, and

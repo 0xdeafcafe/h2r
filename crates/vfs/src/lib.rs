@@ -23,7 +23,7 @@ pub use dir_disc::{AnyDisc, DirDiscBackend, open_disc};
 pub use disc::DiscBackend;
 pub use host::{HostBackend, METADATA_STALE, flush_pending_metadata};
 pub use map_override::{MapOverrideBackend, MapOverrideNotice};
-pub use packages::PackageBackend;
+pub use packages::{PackageBackend, Scope as PackageScope};
 pub use rewrite::{Chain, MAX_REWRITE_BYTES, Rewrite, RewriteBackend};
 pub use path::{Namespace, validate_fatx_name, validate_fatx_path, wildcard_matches};
 pub use status::{Error, Result};
@@ -63,6 +63,11 @@ pub struct Config {
     /// Converted maps on the data partition served by a sandbox choice
     /// ([`VariantFiles`]); empty unless the boot registers some.
     pub variants: ContentVariants,
+    /// Map packages (normally `<data>/maps`) served over the Multiplayer
+    /// Map Pack's maps installed on the data partition
+    /// ([`PackageBackend::over_map_pack`], docs/game/maps.md "Importing a
+    /// mod"); `None` serves the partition as it is.
+    pub map_packages: Option<PathBuf>,
 }
 impl Config {
     pub fn new(data_root: impl Into<PathBuf>, title_id: u32) -> Self {
@@ -71,6 +76,7 @@ impl Config {
             title_id,
             utility_partition: 5,
             variants: ContentVariants::default(),
+            map_packages: None,
         }
     }
     /// Host directory behind `T:`: `<data_root>/disk/Partition1/TDATA/<TITLE>`.
@@ -201,7 +207,16 @@ impl Vfs {
             }
             let device = format!("\\Device\\Harddisk0\\{name}");
             if partition == 1 {
-                vfs.mount(&device, VariantFiles::new(backend, config.variants.clone()))?;
+                let variants = config.variants.clone();
+                match &config.map_packages {
+                    Some(root) => {
+                        let library = content::Library::open(root);
+                        let packages =
+                            PackageBackend::over_map_pack(backend, library, config.title_id);
+                        vfs.mount(&device, VariantFiles::new(packages, variants))?
+                    }
+                    None => vfs.mount(&device, VariantFiles::new(backend, variants))?,
+                }
             } else {
                 vfs.mount(&device, backend)?;
             }
