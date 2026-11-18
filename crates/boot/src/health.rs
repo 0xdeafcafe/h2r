@@ -114,6 +114,12 @@ pub fn set_halo1_sandbox(on: bool) {
     HALO1_SANDBOX.store(on, Ordering::SeqCst);
 }
 
+/// Whether converted Halo 1 multiplayer maps are in their Halo 1 sandbox
+/// this run ([`set_halo1_sandbox`]).
+pub fn halo1_sandbox() -> bool {
+    HALO1_SANDBOX.load(Ordering::SeqCst)
+}
+
 /// Halo 1's campaign levels, as a converted campaign names its map.
 pub const HALO1_LEVELS: [&str; 10] = [
     "a10", "a30", "a50", "b30", "b40", "c10", "c20", "c40", "d20", "d40",

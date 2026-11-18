@@ -748,6 +748,149 @@ pub struct Structure<'a> {
     /// The lightmap bitmap (`bitm`) whose images the sections' pages
     /// index, or [`TagId::NULL`]: every cluster unlit.
     pub lightmap_bitmap: TagId,
+    /// What each cluster plays and which cluster each collision leaf is
+    /// in ([`Sound`]); the default plays nothing, every leaf in cluster 0.
+    pub sound: &'a Sound,
+}
+
+/// Ambient sound in a converted structure. The engine plays the
+/// background sound and sound environment of the listener's cluster:
+/// cluster `+0x72` and `+0x74` (i16, -1 none) index the structure's own
+/// palettes, `sbsp +0xd4` (`0x64` each) and `+0xdc` (`0x48` each) (E
+/// `0x0011bf46`, `0x0018d730`..`0x0018d8a5`, `0x0018ddf0`..`0x0018de0d`),
+/// which on every retail map hold the same tags as the scenario's
+/// (`scnr +0x250`, `+0x258`; `tests/h2_sbsp.rs`). The listener's cluster
+/// is its collision leaf's (`sbsp +0x2c`, 8 bytes, i16 cluster at `+0`).
+#[derive(Debug, Clone, Default)]
+pub struct Sound {
+    /// Palette entries: the name and the `lsnd`, then the `snde`.
+    pub backgrounds: Vec<(String, TagId)>,
+    pub environments: Vec<(String, TagId)>,
+    /// Per cluster: background sound and sound environment (-1 none).
+    pub clusters: Vec<[i16; 2]>,
+    /// Per collision leaf: its cluster.
+    pub leaves: Vec<u16>,
+}
+
+/// Halo 1's sound zones (a cluster's background sound `+0x04` and sound
+/// environment `+0x06`, i16 into the BSP's palettes; V: every Halo 1
+/// level, `tests/h1_clusters.rs`) on the converted clusters. Halo 1's
+/// clusters don't survive conversion (the render geometry is packed by
+/// lightmap page, and every cluster sees every other), so a converted
+/// cluster is only where a leaf's sound is chosen: each distinct zone,
+/// mapped by `index` to the converted palettes, gets a cluster (the most
+/// leaves' first), splitting `sections` until there are enough, and each
+/// collision leaf names the cluster of its Halo 1 cluster's zone (Halo 1's
+/// leaves, `sbsp +0xe0`, `0x10` each, i16 cluster at `+0x08`, one per
+/// collision leaf; V). A zone past the clusters there are (a section
+/// can't be split further) shares cluster 0's. Returns the per-cluster
+/// zones and per-leaf clusters for [`Sound`].
+pub fn sound_zones(
+    src: &StructureBsp,
+    collision_leaves: usize,
+    index: impl Fn([i16; 2]) -> [i16; 2],
+    sections: &mut Vec<Section>,
+) -> Result<(Vec<[i16; 2]>, Vec<u16>)> {
+    let i16_at = |b: &[u8], o: usize| i16::from_le_bytes([b[o], b[o + 1]]);
+    let zones: Vec<[i16; 2]> = src
+        .space
+        .block_at(src.root, H1_CLUSTERS, H1_CLUSTER)?
+        .iter()
+        .map(|c| index([i16_at(c, 4), i16_at(c, 6)]))
+        .collect();
+    let leaves = src.space.block_at(src.root, H1_LEAVES, H1_LEAF)?;
+    let leaf_zone: Vec<[i16; 2]> = if leaves.len() == collision_leaves {
+        leaves
+            .iter()
+            .map(|l| {
+                usize::try_from(i16_at(l, 8))
+                    .ok()
+                    .and_then(|c| zones.get(c).copied())
+                    .unwrap_or([-1, -1])
+            })
+            .collect()
+    } else {
+        vec![zones.first().copied().unwrap_or([-1, -1]); collision_leaves]
+    };
+    let mut count: Vec<([i16; 2], usize)> = Vec::new();
+    for z in &leaf_zone {
+        match count.iter_mut().find(|(c, _)| c == z) {
+            Some((_, n)) => *n += 1,
+            None => count.push((*z, 1)),
+        }
+    }
+    count.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
+    let order: Vec<[i16; 2]> = count.into_iter().map(|(z, _)| z).collect();
+    split(sections, order.len());
+    let clusters = sections.len().max(1);
+    let first = order.first().copied().unwrap_or([-1, -1]);
+    let per_cluster = (0..clusters)
+        .map(|c| order.get(c).copied().unwrap_or(first))
+        .collect();
+    let per_leaf = leaf_zone
+        .iter()
+        .map(|z| {
+            order
+                .iter()
+                .position(|o| o == z)
+                .filter(|&p| p < clusters)
+                .unwrap_or(0) as u16
+        })
+        .collect();
+    Ok((per_cluster, per_leaf))
+}
+
+/// Halo 1 `sbsp` clusters (block field, element size).
+pub const H1_CLUSTERS: usize = 0x134;
+pub const H1_CLUSTER: usize = 0x68;
+/// Halo 1 `sbsp` leaves.
+pub const H1_LEAVES: usize = 0xe0;
+pub const H1_LEAF: usize = 0x10;
+
+/// Splits `sections` until there are `n` (or none has two triangles):
+/// the largest is cut in two at its middle triangle, a part straddling
+/// the cut becoming two. The geometry and its order don't change.
+pub fn split(sections: &mut Vec<Section>, n: usize) {
+    while sections.len() < n {
+        let Some(i) = (0..sections.len())
+            .filter(|&i| sections[i].indices.len() >= 6)
+            .max_by_key(|&i| sections[i].indices.len())
+        else {
+            break;
+        };
+        let s = sections.remove(i);
+        let cut = s.indices.len() / 6 * 3;
+        let half = |range: std::ops::Range<usize>| {
+            let mut out = Section {
+                page: s.page,
+                ..Section::default()
+            };
+            let mut remap: Vec<Option<u16>> = vec![None; s.vertices.len()];
+            for p in &s.parts {
+                let (a, b) = (usize::from(p.first), usize::from(p.first + p.count));
+                let (a, b) = (a.max(range.start), b.min(range.end));
+                if a >= b {
+                    continue;
+                }
+                out.parts.push(Part {
+                    material: p.material,
+                    first: out.indices.len() as u16,
+                    count: (b - a) as u16,
+                });
+                for &i in &s.indices[a..b] {
+                    let at = *remap[usize::from(i)].get_or_insert_with(|| {
+                        out.vertices.push(s.vertices[usize::from(i)]);
+                        (out.vertices.len() - 1) as u16
+                    });
+                    out.indices.push(at);
+                }
+            }
+            out
+        };
+        let (a, b) = (half(0..cut), half(cut..s.indices.len()));
+        sections.insert(i, b);
+        sections.insert(i, a);
+    }
 }
 
 /// Checks a structure BSP's audibility the way the engine reads it:
@@ -933,6 +1076,25 @@ impl Structure<'_> {
         e
     }
 
+    /// The background sound palette (`sbsp +0xd4`), the scenario's
+    /// elements ([`crate::ambience::background_entry`]).
+    fn background_palette(&self) -> Option<(u32, Block)> {
+        palette(
+            &self.sound.backgrounds,
+            crate::ambience::BACKGROUND_SOUND,
+            crate::ambience::background_entry,
+        )
+    }
+
+    /// The sound environment palette (`sbsp +0xdc`).
+    fn environment_palette(&self) -> Option<(u32, Block)> {
+        palette(
+            &self.sound.environments,
+            crate::ambience::SOUND_ENVIRONMENT,
+            crate::ambience::environment_entry,
+        )
+    }
+
     /// One ambience (`sbsp+0x148`) or reverb (`sbsp+0x150`) sound
     /// cluster holding every cluster, which every cluster names at `+0x78`
     /// and `+0x7a`. The engine reads `[sbsp+0x14c] + 0x14 * cluster[+0x78]`
@@ -1055,6 +1217,11 @@ impl Structure<'_> {
             for o in [0x72, 0x74, 0x76, 0x7c] {
                 put16(b, o, 0xffff);
             }
+            // Background sound and sound environment ([`Sound`]).
+            if let Some(&[bg, env]) = self.sound.clusters.get(c) {
+                put16(b, 0x72, bg as u16);
+                put16(b, 0x74, env as u16);
+            }
             put16(b, 0x7e, 0);
             // Ambience and reverb sound cluster 0 (E 0x0018d7b0,
             // 0x0018dd10: indexed unchecked).
@@ -1121,8 +1288,9 @@ impl Structure<'_> {
             put16(m, 0xa, 0xffff);
         }
         let mut leaves = Block::zeroed(8 * self.collision.leaves.len());
-        for l in leaves.bytes.as_chunks_mut::<8>().0 {
-            put16(l, 0, 0); // cluster 0
+        for (k, l) in leaves.bytes.as_chunks_mut::<8>().0.iter_mut().enumerate() {
+            let c = self.sound.leaves.get(k).copied().unwrap_or(0);
+            put16(l, 0, if usize::from(c) < clusters { c } else { 0 });
         }
 
         let mut root = Block::zeroed(SBSP_ROOT);
@@ -1156,6 +1324,14 @@ impl Structure<'_> {
         root.block(0x21c, 1, Block::zeroed(ELEMENT_21C));
         root.block(0x224, 1, self.audibility());
         root.block(0x94, 1, Block::zeroed(ELEMENT_94));
+        for (field, block) in [
+            (0xd4, self.background_palette()),
+            (0xdc, self.environment_palette()),
+        ] {
+            if let Some((n, b)) = block {
+                root.block(field, n, b);
+            }
+        }
         root.block(0x148, 1, self.sound_cluster());
         root.block(0x150, 1, self.sound_cluster());
         root.block(0x234, 1, Block::zeroed(ELEMENT_234));
@@ -1189,4 +1365,22 @@ impl Structure<'_> {
         }
         Ok(set.add_bsp(sbsp, Some(ltmp)))
     }
+}
+
+/// A palette block of `entries`, `len` bytes each, made by `entry`, with
+/// each element's tag reference (`+0x20`) a fixup; `None` for none.
+fn palette(
+    entries: &[(String, TagId)],
+    len: usize,
+    entry: fn(&str, TagId) -> Vec<u8>,
+) -> Option<(u32, Block)> {
+    if entries.is_empty() {
+        return None;
+    }
+    let bytes: Vec<u8> = entries.iter().flat_map(|(n, id)| entry(n, *id)).collect();
+    let mut b = Block::new(bytes);
+    for (k, (_, id)) in entries.iter().enumerate() {
+        b.tag_ref((k * len + 0x20) as u32, *id);
+    }
+    Some((entries.len() as u32, b))
 }

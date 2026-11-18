@@ -719,6 +719,7 @@ fn every_multiplayer_map_converts_and_keeps_the_bases_bitmaps() {
         check_structure_texturing(name, &mut m, &mut base, &done.bytes, &p);
         let skies = check_skies(name, &mut m, &p);
         eprintln!("    skies: {skies:?}");
+        failures.extend(check_images(name, &mut m));
         let (sounds, environments) = check_ambience(name, &mut m, &p);
         eprintln!("    background sounds: {sounds:?}; sound environments: {environments:?}");
         // The engine compares every pair of clusters every tick: the
@@ -911,4 +912,38 @@ fn every_map_has_its_halo1_card() {
             .name,
         "The Pillar of Autumn"
     );
+}
+
+/// Every image in the map is a texture cache resource (flag `0x200`, as on
+/// every retail image; `h1bitmaps::convert::IMAGE_CACHED`). One without it
+/// is never loaded and its stage stays empty: the dark lightmap.
+fn check_images(name: &str, m: &mut Map<Cursor<Vec<u8>>>) -> Vec<String> {
+    let space = m.metadata_space().unwrap();
+    let meta = m
+        .read_file_range(space.file_offset, u64::from(space.size))
+        .unwrap();
+    let at = |a: u32, n: usize| {
+        let o = a.checked_sub(space.virtual_base)? as usize;
+        meta.get(o..o + n)
+    };
+    let word = |a: u32| at(a, 4).map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()));
+    let mut bad = Vec::new();
+    let bitmaps: Vec<_> = m
+        .tags()
+        .iter()
+        .filter(|t| t.group == FourCC(*b"bitm"))
+        .filter_map(|t| Some((t.name.clone().unwrap_or_default(), t.location?.address)))
+        .collect();
+    for (tag, a) in bitmaps {
+        let images = word(a + 0x48);
+        for k in 0..word(a + 0x44) {
+            let flags = at(images + k * 0x74 + 0xe, 2).map(|b| u16::from_le_bytes([b[0], b[1]]));
+            if flags.is_some_and(|f| f & h1bitmaps::convert::IMAGE_CACHED == 0) {
+                bad.push(format!(
+                    "{name}: {tag} image {k}: flags {flags:x?}, not a cache resource"
+                ));
+            }
+        }
+    }
+    bad
 }

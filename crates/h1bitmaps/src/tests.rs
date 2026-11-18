@@ -8,7 +8,7 @@ use h1map::bitmap::{BITM, Bitmap, IMAGE_LEN, Image, ImageKind, Sequence, Sprite}
 use map::build::TagSet;
 use map::{CacheType, Map, ResourceFile};
 
-use crate::convert::{IMAGE_NONE_WORDS, LOD_ALIGN, convert_with};
+use crate::convert::{IMAGE_CACHED, IMAGE_NONE_WORDS, LOD_ALIGN, convert_with};
 use crate::decode::{decode_image, layout_len, stack};
 
 const SWZ: u16 = 0x9;
@@ -298,7 +298,10 @@ fn a_conversion_reads_back_through_halo_2s_decoders() {
         let h1 = &bm.images[i];
         assert_eq!(img.format, tags::PixelFormat::from(h1.format.raw()));
         assert_eq!(img.dimensions, [h1.width, h1.height, h1.depth]);
-        assert_eq!((img.mip_count, img.wire.flags.0), (h1.mip_count, h1.flags));
+        assert_eq!(
+            (img.mip_count, img.wire.flags.0),
+            (h1.mip_count, h1.flags | IMAGE_CACHED)
+        );
         assert_eq!(
             (img.wire.registration_x, img.wire.registration_y),
             (h1.registration[0], h1.registration[1])
@@ -335,6 +338,14 @@ fn a_conversion_reads_back_through_halo_2s_decoders() {
         for w in IMAGE_NONE_WORDS {
             assert_eq!(word(images + 0x74 * i + w), u32::MAX, "image {i} +{w:#x}");
         }
+        // Flagged as a cache resource, as every retail image is, or the
+        // texture cache never loads it.
+        let flags = u16::from_le_bytes([p[images + 0x74 * i + 0xe], p[images + 0x74 * i + 0xf]]);
+        assert_eq!(
+            flags & IMAGE_CACHED,
+            IMAGE_CACHED,
+            "image {i} flags {flags:#x}"
+        );
     }
 }
 
