@@ -849,8 +849,12 @@ h2 agent fallbacks 20              # where the fallback interpreter runs
   has `causes` counting every frame over budget (listed or not) by
   cause (`crates/agent/src/capture.rs`, `causes`):
   `shader_compile` and `pipeline_compile` (any on the critical path),
-  `texture_uploads`, `file_io` and `gpu_readback` (more than twice the
-  window's median, and at least one), `gpu`, `render_thread` and
+  `texture_uploads` and `gpu_readback` (more than twice the window's
+  median, and at least one), `file_io` (the guest's file calls took at
+  least 2 ms of host time in the frame, on any guest thread, or at least
+  a tenth of its busy time: the `file_io_us` counter; bytes read alone
+  never count, since a read finishes inside the call at about 38 us per
+  32 KB and the I/O pool's thread is not the game's), `gpu`, `render_thread` and
   `pushbuf_decode` (that phase is at least 40% of the frame's busy time),
   else `guest_cpu` when the guest's own time is the biggest phase. These
   are what the counters show, not a proof: a frame can be slow for a
@@ -890,8 +894,9 @@ h2 agent wait '{"phase":"gameplay","map_ticks":30}' && h2 agent loads 1
 - **Now.** While no tick has come for 500 ms, `current` is the stall so
   far, with what it has counted.
 - Seeks and cache hits aren't counted (the kernel's file I/O counts bytes
-  only), and per-frame I/O stalls are the `read_bytes` and `file_io`
-  spike cause above.
+  and the host time of each file call: `read_bytes` and `file_io_us`, the
+  latter in microseconds), and per-frame I/O stalls are the `file_io_us`
+  counter and the `file_io` spike cause above.
 
 ### Test maps on disk
 
