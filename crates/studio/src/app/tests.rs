@@ -952,10 +952,27 @@ fn converting_needs_a_halo2_source_and_never_names_a_base_map() {
 
 #[test]
 fn any_multiplayer_map_on_the_halo2_source_gives_the_retail_tags() {
-    // h1convert's pick first, then the others every pick is one of.
-    assert_eq!(retail_sources("bloodgulch"), ["coagulation", "beavercreek"]);
-    assert_eq!(retail_sources("wizard"), ["beavercreek", "coagulation"]);
-    assert_eq!(retail_sources("notamap"), ["coagulation", "beavercreek"]);
+    // h1convert's pick first, then every other map its table picks, once.
+    let picks = |m: &str| h1convert::convert::known(m).map(|(_, b)| b);
+    for m in ["bloodgulch", "wizard"] {
+        let s = retail_sources(m);
+        assert_eq!(s.first().copied(), picks(m));
+        let mut d = s.clone();
+        d.sort();
+        d.dedup();
+        assert_eq!(d.len(), s.len(), "{s:?}");
+        assert!(
+            h1convert::convert::MAPS
+                .iter()
+                .all(|(_, _, b)| s.contains(b))
+        );
+    }
+    // A level the table doesn't know still gets every pick to try.
+    let mut unknown = retail_sources("notamap");
+    let mut known_map = retail_sources("bloodgulch");
+    unknown.sort();
+    known_map.sort();
+    assert_eq!(unknown, known_map);
     // A source holding only Beaver Creek serves Blood Gulch too.
     let t = Temp::new("convertretail");
     let mut app = app_with(&t);
