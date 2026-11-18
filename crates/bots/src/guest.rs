@@ -30,8 +30,19 @@ pub const BLOCK_LEN: usize = 0x1e0;
 pub const SLOT_NAME: u32 = 0xc1c;
 pub const SLOT_NAME_UNITS: usize = 32;
 
-/// In the block: the name `0x190001` writes, 16 single-byte characters,
-/// the 16th always NUL.
+/// In the block: the profile's name, UTF-16, 32 units (the profile file's
+/// `+8`: "Halo0001"). The game builds the slot's display name ([`SLOT_NAME`])
+/// from it (`0x190eb3`: slot `+0x20`, 32 units, to `+0xc1c`) at sign-in and
+/// again whenever the slot's Live state or account changes (`0x190074`,
+/// `0x18fee9`), so a name written only to [`SLOT_NAME`] does not last: on
+/// Xbox Live every bot showed the human's profile name, and the session's
+/// unique-name pass (`0x7f660`, from `0x65e37`) renamed the copies from the
+/// game's default names (`0x19fd00`: "Shadow", "Wilshire").
+pub const BLOCK_PROFILE_NAME: usize = 8;
+pub const BLOCK_PROFILE_NAME_UNITS: usize = 32;
+/// In the block: the 16 single-byte characters `0x190001` writes (the 16th
+/// always NUL; the profile UI's commit fills it, `0x24b9ce`). Empty in a
+/// saved profile; a bot's holds its name too.
 pub const BLOCK_NAME: usize = 0x48;
 pub const BLOCK_NAME_LEN: usize = 16;
 /// In the block: the controls record `0x190c34` reads (slot `+0x114`): a
@@ -76,7 +87,9 @@ pub fn bot_look(port: u32, human: &[u8]) -> [u8; 8] {
         }
     }
     let model = human.get(4).copied().filter(|&m| m < 4).unwrap_or(0);
-    [colours[0], colours[1], colours[2], colours[3], model, fg, bg, 0]
+    [
+        colours[0], colours[1], colours[2], colours[3], model, fg, bg, 0,
+    ]
 }
 
 pub fn slot(port: u32) -> u32 {
@@ -99,7 +112,21 @@ pub fn human_port(m: &dyn GuestMemory, bots: u32) -> R<Option<u32>> {
     Ok(None)
 }
 
-/// A bot's profile block: the human's, with the bot's name, its own look
+/// `name` as the block's profile name: UTF-16, at most 31 units, the rest
+/// NUL.
+pub fn profile_name_bytes(name: &str) -> [u8; BLOCK_PROFILE_NAME_UNITS * 2] {
+    let mut out = [0u8; BLOCK_PROFILE_NAME_UNITS * 2];
+    for (dst, u) in out
+        .chunks_exact_mut(2)
+        .zip(name.encode_utf16().take(BLOCK_PROFILE_NAME_UNITS - 1))
+    {
+        dst.copy_from_slice(&u.to_le_bytes());
+    }
+    out
+}
+
+/// A bot's profile block: the human's, with the bot's name (the profile
+/// name the game shows, [`BLOCK_PROFILE_NAME`], and [`BLOCK_NAME`]), its own look
 /// ([`bot_look`]: colours and emblem by `port`, the human's model) and
 /// controls that mean the same on every machine (inversion and the other
 /// flag off, the Default layouts, a fixed sensitivity). Everything else is
@@ -108,6 +135,8 @@ pub fn bot_block(human: &[u8; BLOCK_LEN], name: &str, port: u32) -> [u8; BLOCK_L
     let mut b = *human;
     let look = bot_look(port, &human[BLOCK_LOOK..BLOCK_LOOK + 16]);
     b[BLOCK_LOOK..BLOCK_LOOK + 8].copy_from_slice(&look);
+    b[BLOCK_PROFILE_NAME..BLOCK_PROFILE_NAME + BLOCK_PROFILE_NAME_UNITS * 2]
+        .copy_from_slice(&profile_name_bytes(name));
     let field = &mut b[BLOCK_NAME..BLOCK_NAME + BLOCK_NAME_LEN];
     field.fill(0);
     for (dst, c) in field[..BLOCK_NAME_LEN - 1]
@@ -154,11 +183,48 @@ pub fn bot_join(m: &dyn GuestMemory, event: u32, bots: u32) -> R<Option<u32>> {
     Ok((!signed_in(m, port)?).then_some(port))
 }
 
-/// In place of the players screen's unjoined handler for a bot's A: signs
-/// the bot in with the game's own `PROFILE_SIGN_IN` (no file, so nothing is
-/// saved), names its slot, and joins its port on the screen, as the handler
-/// does for a human once a profile is picked. `buffer` is `BLOCK_LEN` bytes
-/// of guest memory of ours. Returns as the handler does: AL 1, `ret 4`.
+/// Signs the bot on `port` in with the game's own `PROFILE_SIGN_IN` (no
+/// file, so nothing is saved): its block made from the human's
+/// ([`bot_block`]), its slot named, and, given the players screen at
+/// `screen`, its port joined on that screen as the screen's own join does
+/// once a profile is picked. `buffer` is `BLOCK_LEN` bytes of guest memory of
+/// ours. False, with nothing done, when no human has a profile to copy.
+async fn sign_in_one(
+    cx: Cx,
+    port: u32,
+    bots: u32,
+    name: &str,
+    buffer: u32,
+    screen: Option<u32>,
+) -> Result<bool, EntryError> {
+    let made = cx.write(|m| -> R<bool> {
+        let Some(human) = human_port(m, bots)? else {
+            return Ok(false);
+        };
+        let mut block = [0u8; BLOCK_LEN];
+        m.read(slot(human) + SLOT_BLOCK, &mut block)?;
+        m.write(buffer, &bot_block(&block, name, port))?;
+        Ok(true)
+    })?;
+    if !made {
+        return Ok(false);
+    }
+    cx.call(GuestCall::new(points::PROFILE_SIGN_IN.base).args([port, buffer, u32::MAX]))
+        .await?;
+    cx.write(|m| -> R<()> {
+        set_slot_name(m, port, name)?;
+        if let Some(screen) = screen {
+            let mask = m.u16(screen + SCREEN_MASK)?;
+            m.set_u16(screen + SCREEN_MASK, mask | 1 << port)?;
+        }
+        Ok(())
+    })?;
+    Ok(true)
+}
+
+/// In place of the players screen's unjoined handler for a bot's A (a
+/// script's, or a stray press): signs the bot in ([`sign_in_one`]) on the
+/// screen the handler was given. Returns as the handler does: AL 1, `ret 4`.
 pub async fn sign_in(
     cx: Cx,
     port: u32,
@@ -167,26 +233,31 @@ pub async fn sign_in(
     buffer: u32,
 ) -> Result<Ret, EntryError> {
     let screen = cx.arg(0)?;
-    let made = cx.write(|m| -> R<bool> {
-        let Some(human) = human_port(m, bots)? else {
-            return Ok(false);
-        };
-        let mut block = [0u8; BLOCK_LEN];
-        m.read(slot(human) + SLOT_BLOCK, &mut block)?;
-        m.write(buffer, &bot_block(&block, &name, port))?;
-        Ok(true)
-    })?;
-    if !made {
-        return Ok(Ret::new(1, 4));
-    }
-    cx.call(GuestCall::new(points::PROFILE_SIGN_IN.base).args([port, buffer, u32::MAX]))
-        .await?;
-    cx.write(|m| -> R<()> {
-        set_slot_name(m, port, &name)?;
-        let mask = m.u16(screen + SCREEN_MASK)?;
-        m.set_u16(screen + SCREEN_MASK, mask | 1 << port)
-    })?;
+    sign_in_one(cx, port, bots, &name, buffer, Some(screen)).await?;
     Ok(Ret::new(1, 4))
+}
+
+/// Signs the bots in `joins` (port, name) in ([`sign_in_one`], joining
+/// each on the players screen at `screen`), then calls `then` (a `fn() ret
+/// 0` the hook is answering for, so its frame still runs) and returns its
+/// EAX. A bot never presses a button to join: any press from a controller
+/// with no profile, or with a profile not on Xbox Live, opens a profile
+/// chooser somewhere (the players screen `0x252acc`, the pregame lobby
+/// `0x250cc3` and `0x2511b6`), and a chooser a bot's A reaches picks the
+/// human's profile.
+pub async fn sign_in_then(
+    cx: Cx,
+    joins: Vec<(u32, String)>,
+    bots: u32,
+    buffer: u32,
+    screen: Option<u32>,
+    then: u32,
+) -> Result<Ret, EntryError> {
+    for (port, name) in &joins {
+        sign_in_one(cx.clone(), *port, bots, name, buffer, screen).await?;
+    }
+    let r = cx.call(GuestCall::new(then)).await?;
+    Ok(Ret::new(r.eax, 0))
 }
 
 /// Signs the profiles on `ports` out with the game's own

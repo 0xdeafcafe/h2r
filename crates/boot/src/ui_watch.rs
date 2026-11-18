@@ -90,6 +90,9 @@ pub struct Top {
     pub window: u32,
     pub slot: u32,
     pub id: u32,
+    /// The screen's address (for the players' screen, its join mask at
+    /// `+8`).
+    pub screen: u32,
     /// The Xbox Live menu's restored row, on that menu.
     pub live_row: Option<u32>,
     /// The players' screen's mode ([`JOIN_SCREEN`], `+0x610`): what A on
@@ -220,6 +223,7 @@ pub fn read<M: Gm + ?Sized>(m: &M) -> Read {
                     window,
                     slot,
                     id,
+                    screen,
                     live_row,
                     mode,
                 }),
@@ -406,7 +410,13 @@ mod tests {
     #[test]
     fn a_dialog_is_any_screen_below_window_5_in_any_slot() {
         let mut f = Fake::default();
-        screen(&mut f, WINDOW_5 + 4 * STRIDE_5, 0x8000_0000, JOIN_SCREEN, 0x1);
+        screen(
+            &mut f,
+            WINDOW_5 + 4 * STRIDE_5,
+            0x8000_0000,
+            JOIN_SCREEN,
+            0x1,
+        );
         assert_eq!(dialog(&f), None, "the players screen alone");
         // A profile chooser for controller 1: the shared slot's first
         // window is now 3, which has nothing for player one, so player
@@ -523,6 +533,7 @@ mod tests {
         f.set_u32(0x8000_0000 + JOIN_MODE, 3);
         let t = top(&f).unwrap();
         assert_eq!(t.mode, Some(3));
+        assert_eq!(t.screen, 0x8000_0000, "where its join mask is");
         assert_eq!(t.line(), "ui: screen 0x1e (window 5, slot 4), mode 3");
     }
 
@@ -533,6 +544,7 @@ mod tests {
             window: 5,
             slot: 4,
             id: 9,
+            screen: 0x8000_0000,
             live_row: None,
             mode: None,
         };
