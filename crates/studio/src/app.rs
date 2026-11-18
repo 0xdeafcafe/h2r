@@ -10,6 +10,7 @@ pub(crate) mod convert;
 mod editing;
 mod library;
 pub mod map_pack;
+pub mod shared_refs;
 pub mod tag_api;
 pub mod tag_doc;
 pub mod ui_screens;
@@ -305,6 +306,8 @@ pub struct App {
     pub ui_screens: UiScreens,
     /// The tag editor's document over the open map.
     pub tags: TagDoc,
+    /// The selected tag's shared-map line, for the tag and revision.
+    tag_homes: std::cell::RefCell<Option<(map::TagId, u64, Option<String>)>>,
 }
 
 impl Default for App {
@@ -353,6 +356,7 @@ impl App {
             convert_sandbox: ConvertSandbox::Halo2,
             ui_screens: UiScreens::default(),
             tags: TagDoc::default(),
+            tag_homes: Default::default(),
         }
     }
 

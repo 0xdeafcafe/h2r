@@ -8,6 +8,7 @@ use content::map_list::{Entry, PREVIEW_LEN};
 use scenario_edit::{BlockKind, Command, Value, fixture};
 
 use super::map_pack::{self, HINT, content_root};
+use super::shared_refs::Homes;
 use super::{Action, Answer, App, ToolKind};
 
 struct Temp(PathBuf);
@@ -312,10 +313,40 @@ fn a_pack_map_saves_as_a_new_map_package_that_reopens_with_the_edit() {
     assert_eq!(app.pack_map_named("basin").unwrap().name, "Basin");
 }
 
+#[test]
+fn the_shared_map_note_names_where_raw_data_lives() {
+    let all_here = Homes {
+        local: 3,
+        ..Homes::default()
+    };
+    assert_eq!(all_here.note(), None);
+    assert_eq!(Homes::default().note(), None);
+    let away = Homes {
+        shared: 2,
+        single_player_shared: 1,
+        ..Homes::default()
+    };
+    assert_eq!(
+        away.note().unwrap(),
+        "raw data lives in a shared map: shared.map (2), single_player_shared.map (1) \
+         (read from the disc's copy)"
+    );
+    let split = Homes {
+        local: 4,
+        shared: 1,
+        ..Homes::default()
+    };
+    assert_eq!(
+        split.note().unwrap(),
+        "raw data partly in a shared map: shared.map (1), and 4 in this map"
+    );
+}
+
 /// The owner's installed Map Pack (`h2 import-mappack`, or `h2 play` with
 /// `mappack.iso` beside the disc), read only: every map listed with a
 /// name and picture in the game's order, two opened with the disc's
-/// shared maps (no geometry left unloaded), and a save that differs from the installed file only in the edit.
+/// shared maps (no geometry left unloaded), tags in `shared.map` found,
+/// and a save that differs from the installed file only in the edit.
 /// `H2_MAPPACK_DATA` names the data root (default `$TMPDIR/h2boot-data`);
 /// the disc is `$H2_DISC`, else `disc/halo2.iso`.
 #[test]
@@ -359,6 +390,16 @@ fn installed_map_pack_lists_opens_and_saves() {
         eprintln!("{}: {}", m.map, app.session.status());
         assert!(!tris.is_empty());
         assert_eq!(failed, 0, "every section loads with the disc's shared maps");
+        app.dispatch(Action::SetTool(ToolKind::Tags));
+        assert!(app.tags.is_open(), "{:?}", app.tags.error);
+        let ids: Vec<_> = app.tags.tags().iter().map(|t| t.id).collect();
+        let shared = ids
+            .iter()
+            .filter(|id| app.tag_shared_note(**id).is_some())
+            .count();
+        eprintln!("{}: {} tags, {shared} with raw data in a shared map", m.map, ids.len());
+        assert!(shared > 0, "a pack map leans on shared.map");
+        app.dispatch(Action::SetTool(ToolKind::Scenario));
         let x = flag_x(&app);
         move_flag(&mut app, x + 1.0);
         let out = scratch.0.join(format!("{}.map", m.map));
