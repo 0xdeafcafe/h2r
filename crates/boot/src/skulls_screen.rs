@@ -406,6 +406,12 @@ impl PageFlow {
     pub fn pending(&self) -> Option<Pending> {
         self.lock().0.clone()
     }
+    /// Why a machine snapshot must wait: the kept press is running (its
+    /// guest call is a continuation the machine check reports as well).
+    pub fn snapshot_live(&self) -> Option<String> {
+        (self.lock().1 == Phase::Continuing)
+            .then(|| "the Skulls page's kept difficulty press is running".into())
+    }
 }
 
 /// The press's arguments at `at`: a player chain (`[at]` the record at
@@ -592,6 +598,86 @@ pub async fn continue_level(cx: &Cx, flow: &PageFlow, p: &Pending) -> Result<boo
     Ok(true)
 }
 
+/// The page's state as a machine snapshot keeps it
+/// (docs/runtime/snapshots.md): the kept press, where the page is, and
+/// whose skulls the campaign screen shows with which options. When the
+/// page last opened is wall-clock time and is not kept: a loaded page
+/// takes Start Level at once.
+pub fn save_state(flow: &PageFlow, screen: &SkullsScreen) -> Vec<u8> {
+    use snapshot::codec::Writer;
+    let w = &mut Writer::new();
+    {
+        let kept = flow.lock();
+        match &kept.0 {
+            Some(p) => w
+                .bool(true)
+                .u32(p.list)
+                .u32(u32::from(p.row as u16))
+                .u32(p.player)
+                .str(&p.profile)
+                .bool(p.from_select),
+            None => w.bool(false),
+        };
+        let (phase, page) = match kept.1 {
+            Phase::Shown => (0, 0),
+            Phase::Closing(page) => (1, page),
+            Phase::Continuing => (2, 0),
+            Phase::Started => (3, 0),
+        };
+        w.u8(phase).u32(page);
+    }
+    match screen.profile() {
+        Some(p) => w.bool(true).str(&p),
+        None => w.bool(false),
+    };
+    // The page's only options are Halo 1's (`page_options`).
+    w.bool(!screen.options().is_empty());
+    std::mem::take(w).into_bytes()
+}
+
+/// Puts [`save_state`]'s bytes back; nothing changes unless all of them
+/// decode. A screen saved never opened is left as it is: it is opened
+/// again before it shows.
+pub fn load_state(flow: &PageFlow, screen: &SkullsScreen, bytes: &[u8]) -> Result<(), String> {
+    use snapshot::codec::Reader;
+    let e = |e: snapshot::Error| e.to_string();
+    let r = &mut Reader::new(bytes, "skulls-page");
+    let pending = if r.bool().map_err(e)? {
+        Some(Pending {
+            list: r.u32().map_err(e)?,
+            row: r.u32().map_err(e)? as u16 as i16,
+            player: r.u32().map_err(e)?,
+            profile: r.str().map_err(e)?.to_owned(),
+            from_select: r.bool().map_err(e)?,
+        })
+    } else {
+        None
+    };
+    let phase = match (r.u8().map_err(e)?, r.u32().map_err(e)?) {
+        (0, _) => Phase::Shown,
+        (1, page) => Phase::Closing(page),
+        (2, _) => Phase::Continuing,
+        (3, _) => Phase::Started,
+        (n, _) => return Err(format!("no such Skulls page phase {n}")),
+    };
+    let profile = if r.bool().map_err(e)? {
+        Some(r.str().map_err(e)?.to_owned())
+    } else {
+        None
+    };
+    let options: &'static [&'static OptionRow] = if r.bool().map_err(e)? {
+        h1_options::CAMPAIGN
+    } else {
+        &[]
+    };
+    r.finish().map_err(e)?;
+    *flow.lock() = (pending, phase);
+    if let Some(profile) = profile {
+        screen.open_with(profile, options);
+    }
+    Ok(())
+}
+
 /// The store, for the start's log line.
 static SKULLS_STORE: OnceLock<Arc<settings::Store>> = OnceLock::new();
 
@@ -718,6 +804,17 @@ impl feature::Feature for DifficultyPage {
             "the Skulls page before the level",
             move |c| row_chosen(c, &page, &seen),
         );
+        let (live, save, load) = (
+            Arc::clone(&self.flow),
+            Arc::clone(&self.flow),
+            Arc::clone(&self.flow),
+        );
+        let (shown, reopen) = (Arc::clone(&self.screen), Arc::clone(&self.screen));
+        b.snapshot(feature::SnapshotPolicy::section_forbid_while(
+            move || live.snapshot_live(),
+            move || save_state(&save, &shown),
+            move |bytes, _| load_state(&load, &reopen, bytes),
+        ));
         Ok(())
     }
 }
@@ -1249,5 +1346,50 @@ mod tests {
         assert!(text.contains("entry skulls-screen:loader"));
         assert!(text.contains("entry skulls-screen:event"));
         assert!(text.contains("entry skulls-screen:destructor"));
+    }
+
+    #[test]
+    fn a_snapshot_carries_the_kept_press_and_the_open_screen() {
+        let (f, s) = (flow(), screen());
+        s.open_with("Chief".into(), h1_options::CAMPAIGN);
+        assert!(matches!(f.start(0x7000), Step::Close(_)));
+        assert_eq!(f.snapshot_live(), None);
+        let bytes = save_state(&f, &s);
+
+        let (g, t) = (unguarded(), screen());
+        load_state(&g, &t, &bytes).unwrap();
+        assert_eq!(g.pending(), f.pending());
+        assert_eq!(g.freed(0x7000), Freed::Continue(f.pending().unwrap()));
+        assert_eq!(t.profile().as_deref(), Some("Chief"));
+        assert_eq!(t.options().len(), h1_options::CAMPAIGN.len());
+        load_state(&g, &t, &bytes).unwrap();
+        assert_eq!(save_state(&g, &t), bytes, "the same state again");
+
+        assert!(load_state(&g, &t, &bytes[..bytes.len() - 1]).is_err());
+        let mut odd = bytes.clone();
+        odd.push(0);
+        assert!(load_state(&g, &t, &odd).is_err(), "trailing bytes");
+
+        // Nothing kept and a screen never opened.
+        let (h, u) = (unguarded(), screen());
+        let empty = save_state(&h, &u);
+        load_state(&g, &t, &empty).unwrap();
+        assert_eq!(g.pending(), None);
+        assert_eq!(t.profile().as_deref(), Some("Chief"), "left as it was");
+    }
+
+    #[test]
+    fn snapshots_wait_while_the_kept_press_runs() {
+        let f = flow();
+        assert_eq!(f.snapshot_live(), None, "the page is up");
+        assert!(matches!(f.start(0x7000), Step::Close(_)));
+        assert_eq!(f.snapshot_live(), None, "closing");
+        assert!(matches!(f.freed(0x7000), Freed::Continue(_)));
+        assert_eq!(
+            f.snapshot_live().as_deref(),
+            Some("the Skulls page's kept difficulty press is running")
+        );
+        f.done();
+        assert_eq!(f.snapshot_live(), None);
     }
 }
