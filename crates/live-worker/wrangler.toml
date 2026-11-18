@@ -77,7 +77,7 @@ H2_LIVE_ID = "live-staging.forbes.red"
 H2_LIVE_INVITE_ONLY = "1"
 H2_LIVE_ADMINS = "afr"
 # Published game art (`h2 live assets publish`), shared with production:
-H2_LIVE_GAME_ART_URL = "https://live-art.forbes.red/art/04fd85d4d82e9434"
+H2_LIVE_GAME_ART_URL = "https://live-art.forbes.red/art/ef5dacb4f7872864"
 
 [[env.staging.r2_buckets]]
 binding = "BLOBS"
@@ -116,7 +116,7 @@ H2_LIVE_ID = "live.forbes.red"
 H2_LIVE_PUBLIC_URL = "https://live.forbes.red"
 H2_LIVE_INVITE_ONLY = "1"
 H2_LIVE_ADMINS = "afr"
-H2_LIVE_GAME_ART_URL = "https://live-art.forbes.red/art/04fd85d4d82e9434"
+H2_LIVE_GAME_ART_URL = "https://live-art.forbes.red/art/ef5dacb4f7872864"
 
 [[env.cutover.r2_buckets]]
 binding = "BLOBS"
@@ -151,7 +151,7 @@ H2_LIVE_ID = "live.forbes.red"
 H2_LIVE_PUBLIC_URL = "https://live.forbes.red"
 H2_LIVE_INVITE_ONLY = "1"
 H2_LIVE_ADMINS = "afr"
-H2_LIVE_GAME_ART_URL = "https://live-art.forbes.red/art/04fd85d4d82e9434"
+H2_LIVE_GAME_ART_URL = "https://live-art.forbes.red/art/ef5dacb4f7872864"
 
 [[env.production.r2_buckets]]
 binding = "BLOBS"
