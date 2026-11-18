@@ -50,6 +50,7 @@ or a short form:
   sample-stop            profile.sample.stop: writes LocalState\\profile.h2prof
   sample-status          profile.sample.status
   hostperf               host.perf: the newest host perf line
+  ui                     ui.screen: the menu screen player one's input goes to (H2_UI_WATCH=1)
 
 Input calls need no claim while nobody holds control; once a connection
 does, only it may send them. Queued steps outlive the connection and play out.
@@ -263,6 +264,7 @@ fn parse_call(words: &[String]) -> Result<(String, Value)> {
         "sample-stop" => Some(method::SAMPLE_STOP),
         "sample-status" => Some(method::SAMPLE_STATUS),
         "hostperf" => Some(method::HOST_PERF),
+        "ui" => Some(method::UI_SCREEN),
         _ => None,
     };
     if let Some(m) = bare {
@@ -508,6 +510,7 @@ mod tests {
             ("profile.sample.stop".into(), Value::Null)
         );
         assert_eq!(c("hostperf"), ("host.perf".into(), Value::Null));
+        assert_eq!(c("ui"), ("ui.screen".into(), Value::Null));
     }
 
     #[test]

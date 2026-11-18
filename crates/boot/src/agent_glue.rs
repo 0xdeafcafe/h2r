@@ -156,6 +156,21 @@ pub fn add_host_methods(agent: &agent::Agent) {
             )),
         },
     );
+    agent.add_method(
+        method::UI_SCREEN,
+        Access::Read,
+        |_| match crate::ui_watch::last() {
+            Some((age, top)) => {
+                let mut v = top.map_or_else(|| json!({ "screen": null }), |t| t.json());
+                v["age_ms"] = json!(age.as_millis() as u64);
+                Ok(v)
+            }
+            None => Err(RpcError::new(
+                code::UNAVAILABLE,
+                "no screen read yet (H2_UI_WATCH=1; read on each game tick)",
+            )),
+        },
+    );
 }
 
 impl Drop for AgentGlue {
