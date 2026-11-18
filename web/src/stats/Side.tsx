@@ -5,12 +5,13 @@
 import GametypeIcon from "../components/GametypeIcon";
 import { SkullBadges } from "../components/SkullIcon";
 import { gameMapTitle, packageLookup } from "../state/maps";
+import { isHalo1Map } from "../state/gameart";
 import { geometryChoice } from "../lib/maps";
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, type JSX } from "solid-js";
 import { A, useNavigate } from "@solidjs/router";
 import { live } from "../state/live";
 import { isCampaign, standings, teamStandings, type GameState } from "../state/reducer";
-import { campaignLabel, difficultyName, gameKind, gameTypeLabel } from "../state/gametype";
+import { campaignLabel, difficultyName, gameKind, gameTypeLabel, variantName } from "../state/gametype";
 import { OUTCOME_WORDS, campaignOutcome } from "../state/derive";
 import MapPicture, { mapPicture } from "../components/MapPicture";
 import MapCanvas, { type MapFrame } from "../components/MapCanvas";
@@ -93,22 +94,33 @@ function stillFrame(g: GameState): (t: number) => MapFrame {
 }
 
 /** A small picture of a game. With the server's game art it is the map's
- *  preview (a live game's blips drawn over it); otherwise a top-down view:
- *  live blips, or where a finished game's knockouts fell. With `top` (the
- *  game page's header) it is the map's pre-drawn top view when the server
- *  has one, with the same blips or knockouts plotted on it. */
+ *  preview (a live game's blips drawn over it); otherwise a top-down view
+ *  on the map's outline: live blips, or where a finished game's knockouts
+ *  fell; with neither, a card with the map's name. With `top` (the game
+ *  page's header) a finished game shows the map's preview too; a live one,
+ *  or a map with no preview, the pre-drawn top view when the server has
+ *  one, with the same blips or knockouts plotted on it. */
 export function MapThumb(props: { game: GameState; class?: string; large?: boolean; top?: boolean }) {
   const roster = createMemo(() => rosterFor(props.game));
   const outline = outlineFor(() => props.game.map);
   const liveSrc = liveFrameSource(props.game.game_id, roster);
   const still = stillFrame(props.game);
   const frame = (t: number) => (props.game.status === "live" ? liveSrc(t) : still(t));
-  // The package's image, else the map's preview, else its top view, else a drawn outline.
-  const preview = mapPicture(() => props.game.map, () => props.game.map_id);
+  // The package's image, else the map's preview, else its top view, else a
+  // drawn outline, else (a finished game) a plain card with the map's name.
+  const picture = mapPicture(() => props.game.map, () => props.game.map_id);
+  // A picture that fails to load (art moved, a stale publish) falls back
+  // like no picture at all, never the browser's broken-image mark.
+  const [brokenPic, setBrokenPic] = createSignal<string | null>(null);
+  const preview = () => { const p = picture(); return p && p !== brokenPic() ? p : null; };
   // Only a `top` thumbnail asks for the map's views (a views.json per map),
   // and not for a mod whose geometry isn't the base map's.
   const sameGeometry = () => geometryChoice(packageLookup(props.game.map_id)) === "base";
-  const geometry = props.top ? geometryFor(() => (sameGeometry() ? props.game.map : undefined)) : () => null;
+  // The header of a finished game shows the map's own picture (as the
+  // game's Select Map screen does) when there is one; the top view is for
+  // a live game's blips, or a map with no picture.
+  const wantTop = () => sameGeometry() && (props.game.status === "live" || !preview());
+  const geometry = props.top ? geometryFor(() => (wantTop() ? props.game.map : undefined)) : () => null;
   const [broken, setBroken] = createSignal(false);
   createEffect(on(() => props.game.map, () => setBroken(false), { defer: true }));
   const top = () => (broken() ? null : topView(geometry()?.views));
@@ -117,8 +129,9 @@ export function MapThumb(props: { game: GameState; class?: string; large?: boole
       when={top()}
       fallback={
         <span class={`s-thumb ${props.class ?? ""}`} classList={{ "s-thumb--live": props.game.status === "live", "s-thumb--pic": !!preview() }}>
-          <Show when={preview()}>{(p) => <img class="s-thumb-pic" src={p()} alt={`${gameMapTitle(props.game)} preview`} decoding="async" draggable={false} />}</Show>
-          <Show when={!preview() || props.game.status === "live"}>
+          <Show when={preview()}>{(p) => <img class="s-thumb-pic" src={p()} alt={`${gameMapTitle(props.game)} preview`} decoding="async" draggable={false} onError={() => setBrokenPic(p())} />}</Show>
+          <Show when={!preview() && props.game.status !== "live" && !outline()}><MapPlaceholder game={props.game} /></Show>
+          <Show when={props.game.status === "live" || (!preview() && outline())}>
             <MapCanvas mini={!props.large} frame={frame} roster={roster} outline={outline} still={props.game.status !== "live"} label={`Map of ${gameMapTitle(props.game)}`} />
           </Show>
           <Show when={props.game.status === "live"}><span class="s-live-tag">LIVE</span></Show>
@@ -132,6 +145,18 @@ export function MapThumb(props: { game: GameState; class?: string; large?: boole
         </span>
       )}
     </Show>
+  );
+}
+
+/** What a game's thumbnail shows with no picture of the map and no outline
+ *  to draw on: the map's name on a plain card, rather than an empty grid. */
+export function MapPlaceholder(props: { game: GameState }) {
+  return (
+    <span class="s-thumb-none" aria-hidden="true">
+      <GametypeIcon variant={isCampaign(props.game) ? null : props.game.variant} size={18} />
+      <b>{gameMapTitle(props.game)}</b>
+      <small>{isHalo1Map(props.game.map) ? "Halo 1" : isCampaign(props.game) ? "Campaign" : variantName(props.game.variant)}</small>
+    </span>
   );
 }
 
@@ -150,7 +175,7 @@ export function hostName(g: GameState): string | null {
 /** A game's headline: the variant for multiplayer, the campaign label
  *  ("Campaign Co-op") for campaign. */
 export function gameTitle(g: GameState): string {
-  return isCampaign(g) ? campaignLabel(g) : titleCase(g.variant ?? g.mode);
+  return isCampaign(g) ? campaignLabel(g) : g.variant ? variantName(g.variant) : titleCase(g.mode);
 }
 
 /** The game's type for a "Playlist:" line: "Matchmaking: <playlist>",

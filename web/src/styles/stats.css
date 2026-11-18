@@ -560,6 +560,14 @@
 .s-thumb--pic .map-canvas { position: absolute; inset: 0; }
 .s-thumb--pic.s-thumb--live .s-thumb-pic { filter: brightness(.5) saturate(.8); }
 .s-mappic { flex: none; width: 34px; height: 20px; object-fit: cover; border: 1px solid #777; }
+/* No picture and no outline: the map's name on a plain card, the steel blue
+   of the page's boxes, a faint scan-line texture in place of the tactical grid. */
+.s-thumb-none { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; padding: 4px 6px; text-align: center; background: repeating-linear-gradient(0deg, rgba(255,255,255,.025) 0 1px, transparent 1px 3px), linear-gradient(180deg, #1b3150 0%, #0d1a2b 70%, #08111c 100%); }
+.s-thumb-none b { font: bold 11px/13px var(--font-ui); color: #d9e3f0; text-transform: uppercase; letter-spacing: .04em; text-shadow: 0 1px 0 #000; overflow-wrap: anywhere; }
+.s-thumb-none small { font: 9px/11px var(--font-ui); color: #7f9cc4; }
+.s-thumb-none .gametype-icon { opacity: .8; }
+.s-overview .s-thumb-none b { font-size: 15px; line-height: 18px; }
+.s-overview .s-thumb-none small { font-size: 11px; line-height: 14px; }
 .s-grid .s-who .gametype-icon { margin-right: 0; }
 
 /* Skulls: icons, badge rows, the filter chips and the "played with" list.

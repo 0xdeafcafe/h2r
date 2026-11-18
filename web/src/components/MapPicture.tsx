@@ -4,10 +4,10 @@
 // view drawn from its geometry (`views/top.png`), else nothing, and the
 // caller shows its placeholder.
 
-import { Show, type Accessor, type JSX } from "solid-js";
+import { Show, createSignal, type Accessor, type JSX } from "solid-js";
 import { mapKey } from "../lib/gameart";
 import { pictureChoice } from "../lib/maps";
-import { gameImage, mapTitle } from "../state/gameart";
+import { artStem, gameImage, mapTitle } from "../state/gameart";
 import { gameMapTitle, packageImage } from "../state/maps";
 import { geometryFor } from "../map/geometry";
 import { topView } from "../map/views";
@@ -18,7 +18,7 @@ export function mapPicture(map: Accessor<string | null | undefined>, mapId: Acce
   const pkg = () => packageImage(mapId());
   const preview = () => {
     const m = map();
-    return m ? gameImage(mapKey(m))?.url ?? null : null;
+    return m ? gameImage(mapKey(artStem(m)))?.url ?? null : null;
   };
   const geo = geometryFor(() => (pkg() || preview() ? undefined : map() ?? undefined));
   const base = () => {
@@ -32,11 +32,14 @@ export function mapPicture(map: Accessor<string | null | undefined>, mapId: Acce
 }
 
 export default function MapPicture(props: { map: string; mapId?: string | null; class?: string; fallback?: JSX.Element }) {
-  const url = mapPicture(() => props.map, () => props.mapId);
+  const picture = mapPicture(() => props.map, () => props.mapId);
+  // One that fails to load is shown as none, never as a broken image.
+  const [broken, setBroken] = createSignal<string | null>(null);
+  const url = () => { const u = picture(); return u && u !== broken() ? u : null; };
   const alt = () => (props.mapId ? gameMapTitle({ map: props.map, map_id: props.mapId }) : mapTitle(props.map));
   return (
     <Show when={url()} fallback={props.fallback ?? null}>
-      {(u) => <img class={props.class} src={u()} alt={alt()} decoding="async" draggable={false} />}
+      {(u) => <img class={props.class} src={u()} alt={alt()} decoding="async" draggable={false} onError={() => setBroken(u())} />}
     </Show>
   );
 }

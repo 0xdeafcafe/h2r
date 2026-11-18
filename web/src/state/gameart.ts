@@ -3,10 +3,9 @@
 // none: callers then use the art pack.
 
 import { createEffect, createMemo, createRoot, createSignal } from "solid-js";
-import { compositeEmblem, countKeys, emblemCacheKey, emblemPalette, normaliseMask, loadGameArt, type EmblemSpec, type GameArt, type GameArtRef } from "../lib/gameart";
+import { compositeEmblem, countKeys, emblemCacheKey, emblemPalette, mapDisplayName, mapKey, normaliseMask, loadGameArt, resolveMapStem, type EmblemSpec, type GameArt, type GameArtRef, type MapNameSources } from "../lib/gameart";
 import { live } from "./live";
 import { loadCatalog } from "../admin/catalog";
-import { titleCase } from "../lib/format";
 import { isHalo1 } from "../map/views";
 
 const [art, setArt] = createSignal<GameArt | null>(null);
@@ -21,19 +20,28 @@ export function mapStem(map: string | null | undefined): string {
   return (map ?? "").split(/[\\/]/).pop()!.replace(/\.map$/i, "").trim().toLowerCase();
 }
 
+const nameSources = (): MapNameSources => ({ names: mapNames(), maps: art()?.manifest.maps });
+const hasPreview = (stem: string) => !!art()?.has(mapKey(stem));
+
+/** The stem the server's names and art know a map by (lib/gameart.ts
+ *  `resolveMapStem`): Halo 1's bare "bloodgulch" finds `h1_bloodgulch`. Reactive. */
+export function artStem(map: string | null | undefined): string {
+  return resolveMapStem(mapStem(map), nameSources(), hasPreview);
+}
+
 /** A map's display name: the disc's own name when the server has the
- *  catalog (multiplayer maps and campaign levels alike), else the file stem
- *  title-cased, without a campaign level's ordering prefix ("01b_"). Reactive. */
+ *  catalog (multiplayer maps and campaign levels alike), the art manifest's
+ *  for a converted Halo 1 map, else the file stem title-cased, without a
+ *  campaign level's ordering prefix ("01b_"). Reactive. */
 export function mapTitle(map: string | null | undefined): string {
-  const stem = mapStem(map);
-  return mapNames().get(stem) ?? art()?.manifest.maps?.[stem]?.name ?? titleCase(stem.replace(/^(\d{1,2}[a-z]?|h1)_(?=.)/, ""));
+  return mapDisplayName(mapStem(map), nameSources(), hasPreview);
 }
 
 /** True when the map is a Halo 1 map converted to run in Halo 2: the art
  *  manifest says so, or its stem is `h1_<map>` (map/views.ts `isHalo1`).
  *  Reactive. */
 export function isHalo1Map(map: string | null | undefined): boolean {
-  const stem = mapStem(map);
+  const stem = artStem(map);
   return !!stem && isHalo1(stem, art()?.manifest.maps?.[stem]);
 }
 

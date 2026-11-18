@@ -14,7 +14,7 @@ import { useSessions } from "../state/sessions";
 import { useStatsSummary, type SummaryStatus } from "../state/statsSummary";
 import { endedGames, isCampaign, liveGames, type GameState } from "../state/reducer";
 import { gameMapTitle } from "../state/maps";
-import { isHalo1Map } from "../state/gameart";
+import { isHalo1Map, mapTitle } from "../state/gameart";
 import { gameTypeLine } from "../state/gametype";
 import { OUTCOME_WORDS, campaignOutcome, countMedals, gameMedals, MEDAL_BY_ID, type MedalId } from "../state/derive";
 import {
@@ -37,7 +37,7 @@ import { DidYouKnow, MapPreview, MapThumb, Pills, fireteam, gameTitle } from "./
 import { ScoreLine } from "./Games";
 import { ClanEmblem } from "./clanBits";
 import { clanHref } from "./modes";
-import { agoWords, num, ratio, usDate } from "./fmt";
+import { agoWords, count, num, ratio, usDate } from "./fmt";
 
 const mapTitleOf = (m: { map: string; map_id?: string }) => gameMapTitle({ map: m.map, map_id: m.map_id ?? null });
 const skullName = (i: number) => SKULLS.find((s) => s.index === i)?.name ?? `Skull ${i}`;
@@ -105,7 +105,7 @@ function LiveNow() {
                   {(s) => (
                     <tr>
                       <td><Who xuid={s.host_xuid} name={s.host_gamertag} /> <span class="s-dim">{gametype(s)}</span></td>
-                      <td><Show when={campaignLine(s)} fallback={<span class="s-who"><Show when={s.map}><MapPreview map={s.map!} mapId={s.map_id} /></Show>{mapName(s)}</span>}>{(c) => <span class="s-who">{c()}</span>}</Show></td>
+                      <td><Show when={campaignLine(s, mapTitle)} fallback={<span class="s-who"><Show when={s.map}><MapPreview map={s.map!} mapId={s.map_id} /></Show>{mapName(s, mapTitle)}</span>}>{(c) => <span class="s-who">{c()}</span>}</Show></td>
                       <td class="hide-s">{sessionKind(s)}</td>
                       <td class="num">{seats(s).filled} of {seats(s).max}<Show when={pingText(s)}>{(p) => <span class="s-dim"> · {p()}</span>}</Show></td>
                     </tr>
@@ -323,9 +323,9 @@ function RecentFeed() {
           <A href={`/stats/games/${g.game_id}`} class="s-feed-item">
             <MapThumb game={g} />
             <span>
-              <b>{gameTitle(g)} on {gameMapTitle(g)}</b>
+              <b>{isCampaign(g) ? gameMapTitle(g) : `${gameTitle(g)} on ${gameMapTitle(g)}`}</b>
               <span class="s-feed-type">{gameTypeLine(g)}</span>
-              <small>{isCampaign(g) ? `${OUTCOME_WORDS[campaignOutcome(g)]} · ${fireteam(g)}` : `${Object.keys(g.players).length} players`} · {agoWords(g.ended_at ?? g.started_at, now())}</small>
+              <small>{isCampaign(g) ? `${OUTCOME_WORDS[campaignOutcome(g)]} · ${fireteam(g)}` : count(Object.keys(g.players).length, "player")} · {agoWords(g.ended_at ?? g.started_at, now())}</small>
             </span>
           </A>
         )}

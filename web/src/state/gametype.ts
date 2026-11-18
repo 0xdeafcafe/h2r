@@ -27,6 +27,14 @@ export function difficultyName(d: string | null | undefined): string | null {
   return DIFFICULTIES.includes(k) ? titleCase(k) : titleCase(d);
 }
 
+/** A variant's name for display. The game's own names ("King of the Hill",
+ *  "1 Flag CTF") keep their casing; a bare key ("team_slayer") is
+ *  title-cased. */
+export function variantName(v: string | null | undefined): string {
+  const t = (v ?? "").trim();
+  return /[A-Z ]/.test(t) ? t : titleCase(t);
+}
+
 type LabelOf = Pick<GameState, "mode" | "kind" | "playlist" | "online" | "players">;
 
 /** "Campaign", "Campaign Co-op" (more than one player on one machine) or
@@ -51,5 +59,5 @@ export function gameTypeLabel(g: LabelOf): string {
  *  campaign ("Campaign Co-op · Heroic"). */
 export function gameTypeLine(g: LabelOf & Pick<GameState, "variant" | "difficulty">): string {
   if (gameKind(g) === "campaign") return [campaignLabel(g), difficultyName(g.difficulty)].filter(Boolean).join(" · ");
-  return [g.variant ? titleCase(g.variant) : null, gameTypeLabel(g)].filter(Boolean).join(" · ");
+  return [g.variant ? variantName(g.variant) : null, gameTypeLabel(g)].filter(Boolean).join(" · ");
 }

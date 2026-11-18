@@ -66,17 +66,20 @@ export function parseCampaign(raw: unknown): Campaign | null {
   return { level, name: text(r.name), difficulty: d };
 }
 
-/** The level's name for display: the game's name for it, else the map stem
- *  without its ordering prefix ("03a_oldmombasa" reads "oldmombasa"). */
-export function levelName(c: Pick<Campaign, "level" | "name">): string {
-  return c.name ?? (c.level.replace(/^\d+[a-z]?_/i, "").replace(/[_-]+/g, " ").trim() || c.level);
+/** The level's name for display: the game's name for it, else `title`'s
+ *  (the app passes the disc catalog's lookup), else the map stem without its
+ *  ordering prefix ("03a_oldmombasa" reads "oldmombasa"). */
+export function levelName(c: Pick<Campaign, "level" | "name">, title?: (stem: string) => string): string {
+  if (c.name) return c.name;
+  if (title) return title(c.level);
+  return c.level.replace(/^\d+[a-z]?_/i, "").replace(/[_-]+/g, " ").trim() || c.level;
 }
 
 export const isCoop = (s: Pick<Session, "flags">): boolean => s.flags === "coop";
 
 /** "Outskirts, heroic" for a co-op session; null for any other. */
-export function campaignLine(s: Pick<Session, "flags" | "campaign">): string | null {
-  return isCoop(s) && s.campaign ? `${levelName(s.campaign)}, ${difficultyName(s.campaign.difficulty)}` : null;
+export function campaignLine(s: Pick<Session, "flags" | "campaign">, title?: (stem: string) => string): string | null {
+  return isCoop(s) && s.campaign ? `${levelName(s.campaign, title)}, ${difficultyName(s.campaign.difficulty)}` : null;
 }
 
 /** A co-op session's players by gamertag: the host first, then those who
@@ -193,7 +196,7 @@ export function sessionRow(s: Session, title?: (stem: string) => string, custom?
   const n = seats(s);
   if (isCoop(s) && s.campaign) {
     const ping = pingText(s);
-    return { key: s.session_id, label: s.host_gamertag, meta: `co-op ${levelName(s.campaign)} ${n.filled}/${n.max}${ping ? ` ${ping}` : ""}` };
+    return { key: s.session_id, label: s.host_gamertag, meta: `co-op ${levelName(s.campaign, title)} ${n.filled}/${n.max}${ping ? ` ${ping}` : ""}` };
   }
   return { key: s.session_id, label: s.host_gamertag, meta: `${custom ?? mapName(s, title)} ${n.filled}/${n.max}` };
 }
