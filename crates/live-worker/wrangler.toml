@@ -1,0 +1,40 @@
+# The Live server as a Cloudflare Worker (docs/live/live-worker.md). Not
+# deployed yet: no account, database or bucket ids here. Build with
+# `worker-build --release` (cargo install worker-build), which runs
+# wasm-bindgen and writes build/worker/shim.mjs.
+name = "h2-live"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-11-01"
+
+[build]
+command = "worker-build --release"
+
+[vars]
+# The server id: the host in every author id. It must be the id the
+# machine's server already has, or every account's author id changes.
+LIVE_SERVER_ID = "live.example.net"
+# LIVE_SERVER_KEY is a secret: `wrangler secret put LIVE_SERVER_KEY`, the
+# contents of <data>/server.key.
+
+[[d1_databases]]
+binding = "DB"
+database_name = "h2-live"
+database_id = "<from wrangler d1 create h2-live>"
+
+[[r2_buckets]]
+binding = "BLOBS"
+bucket_name = "h2-live-blobs"
+
+[durable_objects]
+bindings = [{ name = "LIVE_HUB", class_name = "LiveHub" }]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["LiveHub"]
+
+# The web app, served by Cloudflare ahead of the Worker; /v1/* and the
+# well-known document go to the Worker.
+[assets]
+directory = "../../web/dist"
+not_found_handling = "single-page-application"
+run_worker_first = ["/v1/*", "/.well-known/*", "/healthz"]
