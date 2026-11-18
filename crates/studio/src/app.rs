@@ -9,10 +9,10 @@ use std::path::{Path, PathBuf};
 pub(crate) mod convert;
 mod library;
 pub mod ui_screens;
-pub use ui_screens::{Pick, UiScreens};
 pub use convert::{Converter, Running, Written, base_for, explain, h1convert_convert};
 pub use h1convert::convert::Sandbox as ConvertSandbox;
 pub use library::{Compare, block_of, kind_of, markers as library_markers, tris as library_tris};
+pub use ui_screens::{Pick, UiScreens};
 
 use editor_core::{MapSource, Status, variant_sources};
 use hopper_edit::HopperSession;
@@ -105,6 +105,8 @@ pub enum Action {
     CopyBuiltin(String),
     SetVariantName(String),
     SetSetting(SettingId, i32),
+    /// Set the open variant's h2recomp options (its extension block).
+    SetVariantExt(variants::ext::Ext),
     /// Write the open variant to the save storage.
     SaveVariant,
     /// Back to the variant as last loaded or saved.
@@ -590,11 +592,7 @@ impl App {
                 }
             }
             Action::UiExport(dir) => match self.ui_screens.export(&dir) {
-                Ok(files) => self.info(format!(
-                    "wrote {} files to {}",
-                    files.len(),
-                    dir.display()
-                )),
+                Ok(files) => self.info(format!("wrote {} files to {}", files.len(), dir.display())),
                 Err(e) => self.error(format!("{e:#}")),
             },
             a @ (Action::OpenVariant(_)
@@ -602,6 +600,7 @@ impl App {
             | Action::CopyBuiltin(_)
             | Action::SetVariantName(_)
             | Action::SetSetting(..)
+            | Action::SetVariantExt(_)
             | Action::SaveVariant
             | Action::RevertVariant
             | Action::DeleteVariant
@@ -719,6 +718,7 @@ impl App {
                 .set_setting(id, v)
                 .map(|()| None)
                 .map_err(|e| e.to_string()),
+            Action::SetVariantExt(x) => e.set_ext(&x).map(|()| None).map_err(|e| e.to_string()),
             Action::SaveVariant => e.save().map(|()| None).map_err(|e| e.to_string()),
             Action::RevertVariant => {
                 e.revert();

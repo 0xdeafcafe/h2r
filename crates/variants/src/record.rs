@@ -345,6 +345,8 @@ pub enum RecordError {
     UnknownSetting(u32),
     #[error("setting {id} cannot hold {value}")]
     OutOfRange { id: u32, value: i32 },
+    #[error("the {0} option is out of range")]
+    ExtRange(&'static str),
 }
 
 impl GameVariant {
@@ -369,6 +371,33 @@ impl GameVariant {
 
     pub fn bytes(&self) -> &[u8; RECORD_SIZE] {
         &self.raw
+    }
+
+    /// Our extension block's bytes (`+0x10c..+0x12f`; [`crate::ext`]).
+    pub fn ext_block(&self) -> &[u8; crate::ext::LEN] {
+        self.raw[crate::ext::AT..crate::ext::AT + crate::ext::LEN]
+            .try_into()
+            .unwrap()
+    }
+
+    /// What the extension block holds.
+    pub fn ext_state(&self) -> crate::ext::Block {
+        crate::ext::Ext::decode(self.ext_block())
+    }
+
+    /// The extension options in effect (the game's own when the block is
+    /// absent or ignored).
+    pub fn ext(&self) -> crate::ext::Ext {
+        crate::ext::Ext::in_effect(self.ext_block())
+    }
+
+    /// Writes the extension block; the default clears it to zero.
+    pub fn set_ext(&mut self, e: &crate::ext::Ext) -> Result<(), RecordError> {
+        if let Some(what) = e.out_of_range() {
+            return Err(RecordError::ExtRange(what));
+        }
+        self.put(crate::ext::AT, &e.encode());
+        Ok(())
     }
 
     fn u16_at(&self, at: usize) -> u16 {
@@ -923,6 +952,41 @@ mod tests {
                 assert!(!SPARE.iter().any(|r| r.contains(&at)), "setting {}", s.0);
             }
         }
+    }
+
+    #[test]
+    fn the_extension_block_survives_the_cleanup_and_every_setter() {
+        use crate::ext::{Block, Ext};
+        let e = Ext {
+            gravity: 50,
+            unlimited_grenades: true,
+            ..Ext::default()
+        };
+        for ty in GameType::ALL {
+            let mut v = GameVariant::blank(ty);
+            assert_eq!(v.ext_state(), Block::None, "a retail record has none");
+            v.set_ext(&e).unwrap();
+            assert_eq!(v.ext(), e);
+            v.set_name("Low and loud").unwrap();
+            for s in all_settings() {
+                if let Some(x) = v.get(s) {
+                    v.set(s, x).unwrap();
+                }
+            }
+            let _ = check(&v);
+            let w = GameVariant::from_bytes(&v.to_bytes()).unwrap();
+            assert_eq!(w.ext_state(), Block::Ext(e), "{ty}");
+            v.set_ext(&Ext::default()).unwrap();
+            assert!(v.ext_block().iter().all(|&b| b == 0), "default clears");
+        }
+        let mut v = GameVariant::blank(GameType::Slayer);
+        assert_eq!(
+            v.set_ext(&Ext {
+                gravity: 1,
+                ..Ext::default()
+            }),
+            Err(RecordError::ExtRange("gravity"))
+        );
     }
 
     #[test]

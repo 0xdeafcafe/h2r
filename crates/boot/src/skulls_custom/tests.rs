@@ -239,20 +239,50 @@ fn a_pickup_is_the_skull_in_a_local_units_hands() {
 #[test]
 fn low_gravity_halves_what_the_game_sets_and_gives_it_back() {
     let mut g = Gravity::default();
-    assert_eq!(gravity_step(false, 4.0, &mut g), None);
-    assert_eq!(gravity_step(true, 4.0, &mut g), Some(2.0));
-    assert_eq!(gravity_step(true, 2.0, &mut g), None, "ours already");
-    // A script sets it (physics_set_gravity): scaled in turn.
-    assert_eq!(gravity_step(true, 8.0, &mut g), Some(4.0));
+    assert_eq!(gravity_step(1.0, 4.0, &mut g), None);
+    assert_eq!(gravity_step(GRAVITY_SCALE, 4.0, &mut g), Some(2.0));
     assert_eq!(
-        gravity_step(false, 4.0, &mut g),
-        Some(8.0),
-        "the game's back"
+        gravity_step(GRAVITY_SCALE, 2.0, &mut g),
+        None,
+        "ours already"
     );
-    assert_eq!(gravity_step(false, 8.0, &mut g), None);
+    // A script sets it (physics_set_gravity): scaled in turn.
+    assert_eq!(gravity_step(GRAVITY_SCALE, 8.0, &mut g), Some(4.0));
+    assert_eq!(gravity_step(1.0, 4.0, &mut g), Some(8.0), "the game's back");
+    assert_eq!(gravity_step(1.0, 8.0, &mut g), None);
     // Turned off after the game changed it again: left alone.
-    gravity_step(true, 4.0, &mut g);
-    assert_eq!(gravity_step(false, 3.0, &mut g), None);
+    gravity_step(GRAVITY_SCALE, 4.0, &mut g);
+    assert_eq!(gravity_step(1.0, 3.0, &mut g), None);
+}
+
+#[test]
+fn a_variants_gravity_composes_with_low_gravity_on_physics_memory() {
+    // Synthetic physics constants: the pointer, then gravity first.
+    const PC: u32 = 0x8100_0000;
+    let mut f = FakeGuest::new();
+    f.map(PHYSICS_CONSTANTS & !0xfff, 0x1000).map(PC, 0x1000);
+    f.set_u32(PHYSICS_CONSTANTS, PC).unwrap();
+    f.set_f32(PC, 4.0).unwrap();
+    let mut g = Gravity::default();
+    let tick = |f: &mut FakeGuest, scale: f32, g: &mut Gravity| {
+        let pc = f.u32(PHYSICS_CONSTANTS).unwrap();
+        let now = f.f32(pc).unwrap();
+        if let Some(v) = gravity_step(scale, now, g) {
+            f.set_f32(pc, v).unwrap();
+        }
+        f.f32(pc).unwrap()
+    };
+    // A 50% variant alone, then Low Gravity on top: a quarter.
+    assert_eq!(tick(&mut f, 0.5, &mut g), 2.0);
+    assert_eq!(tick(&mut f, 0.5, &mut g), 2.0, "held, not halved again");
+    assert_eq!(tick(&mut f, 0.5 * GRAVITY_SCALE, &mut g), 1.0);
+    // The skull off again: the variant's half of the game's value.
+    assert_eq!(tick(&mut f, 0.5, &mut g), 2.0);
+    // A 200% variant.
+    assert_eq!(tick(&mut f, 2.0, &mut g), 8.0);
+    // Nothing: the game's own back.
+    assert_eq!(tick(&mut f, 1.0, &mut g), 4.0);
+    assert_eq!(g, Gravity::default());
 }
 
 #[test]
