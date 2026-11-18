@@ -553,7 +553,7 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
         crate::rebuild::Predicted::RenderModel(mode),
         crate::rebuild::Predicted::Bitmap(bitmap),
     ];
-    let root = crate::rebuild::vehicle(&obj, Some(hlmt), &[seat], &predicted).unwrap();
+    let root = crate::rebuild::vehicle(&obj, Some(hlmt), &[seat], &predicted, 1.2).unwrap();
     let def = Defs::builtin().group(map::FourCC(*b"vehi")).unwrap();
     let got = defs::from_built(def, &root).unwrap();
     // Written again from what was read, it reads back the same and has
@@ -608,6 +608,8 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
         p.set(q, word(*w)).unwrap();
     }
     want.set(VEHI_PHYSICS, Val::Block(vec![p])).unwrap();
+    want.set("unit.camera_field_of_view", Val::Float(1.2))
+        .unwrap();
     assert_eq!(defs::diff(def, &want, &got), Vec::new());
     assert_eq!(
         got.at("block_1c8[0].label"),
@@ -989,4 +991,79 @@ fn built_physics_model_round_trips_with_every_piece() {
         ns[1].get("unknown_8"),
         Some(&Val::Bytes(vec![2, 0, 0xff, 0xff]))
     );
+}
+
+/// A rebuilt biped: the role's root and block words, then the object
+/// header, Halo 1's camera field of view and `BIPED_WORDS` over them; it
+/// reads back through the definition, nothing pinned.
+#[test]
+fn rebuilt_biped_is_the_role_with_halo_1s_header_and_words() {
+    use crate::rebuild::{BIPED_TYPE, BIPED_WORDS, RoleWords};
+    use tags::defs::{self, Defs, Target, Val};
+    let obj = crate::h1::Object {
+        object_type: 0,
+        flags: 0,
+        bounding_radius: 0.7,
+        bounding_offset: [0.0, 0.0, 0.3],
+        model: None,
+        animation: None,
+        collision: None,
+        physics: None,
+        modifier_shader: None,
+        creation_effect: None,
+        attachments: Vec::new(),
+        widgets: Vec::new(),
+    };
+    let unit = crate::h1::Unit {
+        group: h1map::Group::new(b"bipd"),
+        object: obj,
+        camera_field_of_view: 1.25,
+        biped_words: BIPED_WORDS
+            .iter()
+            .map(|w| (w.1, (w.1 as f32).to_bits()))
+            .collect(),
+        seats: Vec::new(),
+        references: Vec::new(),
+    };
+    let role = RoleWords {
+        members: vec!["a".into(), "b".into()],
+        root: vec![
+            ("unknown_1d0".into(), 7),
+            // Halo 1's own word replaces the role's.
+            (BIPED_WORDS[0].0.into(), 9),
+        ],
+        blocks: vec![(
+            "unit.block_1b8".into(),
+            vec![vec![("unknown_0".into(), 3)], vec![("unknown_4".into(), 4)]],
+        )],
+    };
+    let hlmt = map::TagId(0xe001_0002);
+    let mode = map::TagId(0xe001_0003);
+    let predicted = [crate::rebuild::Predicted::RenderModel(mode)];
+    let root = crate::rebuild::biped(&unit, Some(hlmt), &predicted, &role).unwrap();
+    let d = Defs::builtin().group(map::FourCC(*b"bipd")).unwrap();
+    let r = defs::from_built(d, &root).unwrap();
+    let again = defs::to_built(d, &r, &mut |_| None).unwrap();
+    assert_eq!(defs::from_built(d, &again).unwrap(), r);
+    let word = |p: &str| match r.at(p) {
+        Some(Val::Bytes(b)) => u32::from_le_bytes(b[..4].try_into().unwrap()),
+        x => panic!("{p}: {x:?}"),
+    };
+    assert_eq!(r.at("unit.obje.object_type"), Some(&Val::Enum(BIPED_TYPE)));
+    assert_eq!(r.at("unit.obje.bounding_radius"), Some(&Val::Float(0.7)));
+    assert_eq!(r.at("unit.camera_field_of_view"), Some(&Val::Float(1.25)));
+    assert!(matches!(
+        r.at("unit.obje.model"),
+        Some(Val::Ref { target: Target::Id(id), .. }) if *id == hlmt
+    ));
+    assert_eq!(word("unknown_1d0"), 7);
+    for (path, at) in BIPED_WORDS {
+        assert_eq!(word(path), (*at as f32).to_bits(), "{path}");
+    }
+    assert_eq!(word("unit.block_1b8[0].unknown_0"), 3);
+    assert_eq!(word("unit.block_1b8[1].unknown_4"), 4);
+    let Some(Val::Block(pr)) = r.at("unit.obje.predicted_resources") else {
+        panic!()
+    };
+    assert_eq!(pr.len(), 1);
 }

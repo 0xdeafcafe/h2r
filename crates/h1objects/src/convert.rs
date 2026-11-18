@@ -621,6 +621,10 @@ pub struct Options {
     /// field with no retail template bytes. Off by default until the
     /// rebuilt scenery has run in the game.
     pub rebuild: bool,
+    /// Build the Chief's, humans' and Covenant bipeds from the `bipd`
+    /// definition ([`crate::rebuild::biped`]) instead of on a template.
+    /// Off by default until a rebuilt biped has run in the game.
+    pub rebuild_bipeds: bool,
 }
 
 /// Builds a [`Tree`] from Halo 1 objects on one base map.
@@ -636,6 +640,8 @@ pub struct Converter<'a> {
     coll_names: HashMap<(u32, bool), Vec<(String, Vec<String>)>>,
     /// Each template `nhdt` given the health meter.
     health_huds: HashMap<TagId, TagId>,
+    /// Biped role words, per role ([`Self::biped_role`]).
+    roles: HashMap<crate::rebuild::BipedRole, Option<crate::rebuild::RoleWords>>,
 }
 
 impl<'a> Converter<'a> {
@@ -650,6 +656,7 @@ impl<'a> Converter<'a> {
             colls: HashMap::new(),
             coll_names: HashMap::new(),
             health_huds: HashMap::new(),
+            roles: HashMap::new(),
         }
     }
 
@@ -1771,7 +1778,13 @@ impl<'a> Converter<'a> {
         let hlmt = self.model(&mut rep, &u.object, None, &tag.name, true)?;
         self.object_physics(&mut rep, hlmt, &u.object, &tag.name, PhysicsKind::Vehicle)?;
         let predicted = self.predicted(&u.object)?;
-        let root = crate::rebuild::vehicle(&u.object, hlmt, &u.seats, &predicted)?;
+        let root = crate::rebuild::vehicle(
+            &u.object,
+            hlmt,
+            &u.seats,
+            &predicted,
+            u.camera_field_of_view,
+        )?;
         rep.no_home.push(format!(
             "vehi beyond the header, {} seats (label, marker, camera marker) and the turret role: definition defaults (no template); {} Halo 1 references not converted",
             u.seats.len(),
@@ -1782,6 +1795,54 @@ impl<'a> Converter<'a> {
             &tag.name,
             Converted {
                 group: FourCC(*b"vehi"),
+                root,
+                raw: Vec::new(),
+            },
+        ))
+    }
+
+    /// The role's words over the base's bipeds ([`crate::rebuild::biped_role`]),
+    /// computed once per role.
+    pub fn biped_role(
+        &mut self,
+        role: crate::rebuild::BipedRole,
+    ) -> Result<Option<crate::rebuild::RoleWords>> {
+        if let Some(w) = self.roles.get(&role) {
+            return Ok(w.clone());
+        }
+        let w = crate::rebuild::biped_role(self.base, role)?;
+        self.roles.insert(role, w.clone());
+        Ok(w)
+    }
+
+    /// A Halo 1 biped from the `bipd` definition ([`crate::rebuild::biped`]).
+    fn biped_rebuilt(
+        &mut self,
+        tag: &Tag,
+        u: &Unit,
+        role: crate::rebuild::BipedRole,
+        words: &crate::rebuild::RoleWords,
+    ) -> Result<TagId> {
+        let mut rep = Self::report(
+            tag,
+            &format!(
+                "none: rebuilt from tags::defs ({role:?} role over {} base bipeds)",
+                words.members.len()
+            ),
+        );
+        let hlmt = self.model(&mut rep, &u.object, None, &tag.name, true)?;
+        let predicted = self.predicted(&u.object)?;
+        let root = crate::rebuild::biped(u, hlmt, &predicted, words)?;
+        rep.no_home.push(format!(
+            "bipd: the role's words, Halo 1's camera field of view and {} matched words; references null (no HUD, weapons or character); {} Halo 1 references not converted",
+            crate::rebuild::BIPED_WORDS.len(),
+            u.references.iter().filter(|r| r.tag.is_some()).count()
+        ));
+        self.tree.reports.push(rep);
+        Ok(self.tree.push(
+            &tag.name,
+            Converted {
+                group: FourCC(*b"bipd"),
                 root,
                 raw: Vec::new(),
             },
@@ -2020,6 +2081,13 @@ impl<'a> Converter<'a> {
         // donor may bring): built from the definition instead of dropped.
         if &g == b"vehi" && template_candidates(&g, &tag.name).is_empty() {
             return self.vehicle_rebuilt(tag, &u);
+        }
+        if &g == b"bipd"
+            && self.options.rebuild_bipeds
+            && let Some(role) = crate::rebuild::BipedRole::of_h1(&tag.name)
+            && let Some(words) = self.biped_role(role)?
+        {
+            return self.biped_rebuilt(tag, &u, role, &words);
         }
         let (tpl, tpl_name) = self.template(&g, &tag.name, &g)?;
         let tpl_root = self.base.root(tpl)?;

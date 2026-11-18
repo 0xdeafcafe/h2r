@@ -204,7 +204,6 @@ pub const TURRET_ROLE: &[(&str, u32)] = &[
     ("unit.obje.unknown_84", 0x4120_0000),
     ("unit.obje.unknown_88", 0x3e4c_cccd),
     ("unit.obje.unknown_8c", 0x3fa0_0000),
-    ("unit.unknown_cc", 0x3f9c_61aa),
     ("unit.unknown_144", 0x4049_0fdb),
     ("unknown_210", 0x3f80_0000),
     ("unknown_23c", 0x40c0_0000),
@@ -299,10 +298,16 @@ pub fn vehicle(
     hlmt: Option<TagId>,
     seats: &[h1::Seat],
     predicted: &[Predicted],
+    camera_field_of_view: f32,
 ) -> Result<Block> {
     let d = def(b"vehi")?;
     let mut r = defs::default_record(d);
     role(&mut r, TURRET_ROLE)?;
+    set(
+        &mut r,
+        "unit.camera_field_of_view",
+        Val::Float(camera_field_of_view),
+    )?;
     set(&mut r, "unit.obje.object_type", Val::Enum(VEHICLE_TYPE))?;
     set(
         &mut r,
@@ -802,6 +807,304 @@ pub fn physics_model(bodies: &[Body], nodes: &[PhysNode]) -> Result<Block> {
             })
             .collect::<Result<Vec<_>>>()?;
         set(&mut r, "nodes", Val::Block(ns))?;
+    }
+    built(d, &r)
+}
+
+/// `obje +0` for bipeds (docs/formats/objects.md).
+pub const BIPED_TYPE: u32 = 0;
+
+/// Biped words carried from Halo 1 as they are, as (`bipd` record path,
+/// Halo 1 `bipd` offset). V: on the five pairs of a Halo 1 biped and its
+/// Halo 2 counterpart (cyborg and masterchief, marine_armored and
+/// marine, elite, grunt, jackal) the two words agree within 1 % on every
+/// pair, and no other Halo 1 word does (`tests/unit_rebuild_disc.rs`
+/// checks it). Their meaning is not established: `+0x1f4` holds 60 to 90
+/// degrees in radians, `+0x220` 0.2, `+0x26c` 0.45 to 0.5, `+0x2a0` and
+/// `+0x2a8` both 45 degrees. The camera's field of view (`unit +0xcc`,
+/// Halo 1 `+0x1a0`) is named and written separately.
+pub const BIPED_WORDS: &[(&str, usize)] = &[
+    ("unknown_1f4", 0x2f8),
+    ("unknown_220", 0x408),
+    ("unknown_26c", 0x428),
+    ("unknown_2a0", 0x360),
+    ("unknown_2a8", 0x360),
+];
+
+/// Which retail bipeds a rebuilt biped takes its unknown spans from: the
+/// Chief, humans, or the Covenant. A biped of none (flood, sentinels,
+/// the monitor) is not rebuilt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum BipedRole {
+    Chief,
+    Human,
+    Covenant,
+}
+
+impl BipedRole {
+    /// The role of a Halo 2 biped, by its path.
+    pub fn of_h2(path: &str) -> Option<Self> {
+        let n = path.rsplit('\\').next().unwrap_or(path);
+        let has = |ks: &[&str]| ks.iter().any(|k| path.contains(k));
+        if has(&["flood", "sentinel", "monitor", "gravemind", "prophet"]) {
+            return None;
+        }
+        if n.starts_with("masterchief") {
+            Some(Self::Chief)
+        } else if has(&[
+            "\\marine",
+            "\\miranda",
+            "\\crewman",
+            "\\lord_hood",
+            "\\johnson",
+            "\\cortana",
+        ]) {
+            Some(Self::Human)
+        } else if has(&[
+            "\\elite",
+            "\\grunt",
+            "\\jackal",
+            "\\brute",
+            "\\bugger",
+            "\\hunter",
+            "\\dervish",
+            "\\heretic",
+        ]) {
+            Some(Self::Covenant)
+        } else {
+            None
+        }
+    }
+
+    /// The role of a Halo 1 biped, by its path.
+    pub fn of_h1(path: &str) -> Option<Self> {
+        let has = |ks: &[&str]| ks.iter().any(|k| path.contains(k));
+        if has(&["flood", "sentinel", "monitor", "infection"]) {
+            None
+        } else if has(&["\\cyborg"]) {
+            Some(Self::Chief)
+        } else if has(&[
+            "\\marine",
+            "\\crewman",
+            "\\captain",
+            "\\pilot",
+            "\\cortana",
+            "\\keyes",
+            "\\johnson",
+            "\\bisenti",
+            "\\mendoza",
+            "\\jenkins",
+        ]) {
+            Some(Self::Human)
+        } else if has(&["\\elite", "\\grunt", "\\jackal", "\\hunter", "\\engineer"]) {
+            Some(Self::Covenant)
+        } else {
+            None
+        }
+    }
+}
+
+/// A role's words: per record path, the word at least half the role's
+/// retail bipeds hold there when it is not zero (the turret rule,
+/// [`TURRET_ROLE`]); and for each block whose elements are plain words
+/// (every field an unknown span), the element count most of the role's
+/// bipeds that have any hold, with each element's majority words.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RoleWords {
+    pub members: Vec<String>,
+    pub root: Vec<(String, u32)>,
+    pub blocks: Vec<(String, Vec<RoleElement>)>,
+}
+
+/// One block element's role words, as (path in the element, word).
+pub type RoleElement = Vec<(String, u32)>;
+
+type Tally = std::collections::BTreeMap<String, std::collections::BTreeMap<u32, usize>>;
+
+/// The 4-byte unknown spans of `d` and the structs it embeds (not its
+/// blocks), as (path, offset).
+fn word_spans(d: &StructDef, prefix: &str, at: u32, out: &mut Vec<(String, u32)>) {
+    for f in &d.fields {
+        let p = format!("{prefix}{}", f.name);
+        match &f.kind {
+            defs::Kind::Struct(s) => word_spans(s, &format!("{p}."), at + f.offset, out),
+            defs::Kind::Unknown { len: 4, .. } => out.push((p, at + f.offset)),
+            _ => {}
+        }
+    }
+}
+
+/// The plain-word blocks of `d` and the structs it embeds: (path, offset
+/// of the block field, element definition).
+fn word_blocks<'d>(
+    d: &'d StructDef,
+    prefix: &str,
+    at: u32,
+    out: &mut Vec<(String, u32, &'d StructDef)>,
+) {
+    for f in &d.fields {
+        let p = format!("{prefix}{}", f.name);
+        match &f.kind {
+            defs::Kind::Struct(s) => word_blocks(s, &format!("{p}."), at + f.offset, out),
+            defs::Kind::Block(e)
+                if e.fields
+                    .iter()
+                    .all(|x| matches!(x.kind, defs::Kind::Unknown { len: 4, .. })) =>
+            {
+                out.push((p, at + f.offset, e))
+            }
+            _ => {}
+        }
+    }
+}
+
+fn tally_words(bytes: &[u8], spans: &[(String, u32)], t: &mut Tally) {
+    for (p, o) in spans {
+        let o = *o as usize;
+        if o + 4 <= bytes.len() {
+            let w = u32::from_le_bytes(bytes[o..o + 4].try_into().expect("4"));
+            *t.entry(p.clone()).or_default().entry(w).or_default() += 1;
+        }
+    }
+}
+
+fn majority(t: &Tally) -> Vec<(String, u32)> {
+    let mut out = Vec::new();
+    for (p, vals) in t {
+        let n: usize = vals.values().sum();
+        if let Some((w, c)) = vals.iter().max_by_key(|(_, c)| **c)
+            && *w != 0
+            && 2 * c >= n
+        {
+            out.push((p.clone(), *w));
+        }
+    }
+    out
+}
+
+/// [`RoleWords`] over the bipeds of `role` the base map holds. Computed
+/// from the map at conversion time, so no retail value is kept in the
+/// source; `None` when the base has none of the role.
+pub fn biped_role(base: &crate::base::Base, role: BipedRole) -> Result<Option<RoleWords>> {
+    let d = def(b"bipd")?;
+    let mut spans = Vec::new();
+    word_spans(d, "", 0, &mut spans);
+    let mut blocks = Vec::new();
+    word_blocks(d, "", 0, &mut blocks);
+    let members: Vec<(TagId, String)> = base
+        .tags
+        .iter()
+        .filter(|t| t.1 == FourCC(*b"bipd") && BipedRole::of_h2(&t.2) == Some(role))
+        .map(|t| (t.0, t.2.clone()))
+        .collect();
+    if members.is_empty() {
+        return Ok(None);
+    }
+    let mut root = Tally::new();
+    let mut counts: Vec<std::collections::BTreeMap<usize, usize>> =
+        vec![Default::default(); blocks.len()];
+    let mut elements: Vec<Vec<Tally>> = vec![Vec::new(); blocks.len()];
+    for (id, _) in &members {
+        let bytes = base.root(*id)?;
+        tally_words(&bytes, &spans, &mut root);
+        for (k, (_, at, e)) in blocks.iter().enumerate() {
+            let mut espans = Vec::new();
+            word_spans(e, "", 0, &mut espans);
+            let mut i = 0;
+            while let Some(x) = base.element(&bytes, *at as usize, e.size as usize, i)? {
+                if elements[k].len() <= i {
+                    elements[k].push(Tally::new());
+                }
+                tally_words(&x, &espans, &mut elements[k][i]);
+                i += 1;
+            }
+            if i > 0 {
+                *counts[k].entry(i).or_default() += 1;
+            }
+        }
+    }
+    let mut out_blocks = Vec::new();
+    for (k, (path, _, _)) in blocks.iter().enumerate() {
+        let having: usize = counts[k].values().sum();
+        if 2 * having < members.len() {
+            continue;
+        }
+        let (n, _) = counts[k]
+            .iter()
+            .max_by_key(|(n, c)| (**c, **n))
+            .expect("some");
+        out_blocks.push((
+            path.clone(),
+            elements[k][..*n].iter().map(majority).collect(),
+        ));
+    }
+    Ok(Some(RoleWords {
+        members: members.into_iter().map(|m| m.1).collect(),
+        root: majority(&root),
+        blocks: out_blocks,
+    }))
+}
+
+fn role_words(r: &mut Record, words: &[(String, u32)]) -> Result<()> {
+    for (path, word) in words {
+        set(r, path, Val::Bytes(word.to_le_bytes().to_vec()))?;
+    }
+    Ok(())
+}
+
+/// A Halo 1 biped written from the `bipd` definition: the object header
+/// (type 0, Halo 1's bounding sphere, the model and its predicted
+/// resources), its role's words ([`biped_role`]), Halo 1's camera field
+/// of view and [`BIPED_WORDS`]. References stay null and blocks other than
+/// the role's plain-word ones empty: no retail template is read.
+pub fn biped(
+    unit: &h1::Unit,
+    hlmt: Option<TagId>,
+    predicted: &[Predicted],
+    role: &RoleWords,
+) -> Result<Block> {
+    let d = def(b"bipd")?;
+    let mut r = defs::default_record(d);
+    role_words(&mut r, &role.root)?;
+    for (path, elems) in &role.blocks {
+        let e = d
+            .child(path)
+            .ok_or_else(|| Error::Invalid(format!("bipd {path}")))?;
+        let mut out = Vec::new();
+        for words in elems {
+            let mut x = defs::default_record(e);
+            role_words(&mut x, words)?;
+            out.push(x);
+        }
+        set(&mut r, path, Val::Block(out))?;
+    }
+    let obj = &unit.object;
+    set(&mut r, "unit.obje.object_type", Val::Enum(BIPED_TYPE))?;
+    set(
+        &mut r,
+        "unit.obje.bounding_radius",
+        Val::Float(obj.bounding_radius),
+    )?;
+    set(
+        &mut r,
+        "unit.obje.bounding_offset",
+        Val::floats(&obj.bounding_offset),
+    )?;
+    set(
+        &mut r,
+        "unit.obje.model",
+        Val::tag(FourCC(*b"hlmt"), hlmt.unwrap_or(TagId::NULL)),
+    )?;
+    predicted_resources(b"bipd", &mut r, "unit.obje", predicted)?;
+    set(
+        &mut r,
+        "unit.camera_field_of_view",
+        Val::Float(unit.camera_field_of_view),
+    )?;
+    for (path, at) in BIPED_WORDS {
+        if let Some((_, w)) = unit.biped_words.iter().find(|x| x.0 == *at) {
+            set(&mut r, path, Val::Bytes(w.to_le_bytes().to_vec()))?;
+        }
     }
     built(d, &r)
 }

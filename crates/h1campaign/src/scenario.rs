@@ -899,6 +899,7 @@ pub fn write(
                 &mut report.dropped,
                 groups,
                 opts.devices,
+                opts.rebuild_bipeds,
             )?
         }
         None => HashMap::new(),
@@ -1220,8 +1221,10 @@ fn place_objects(
     dropped: &mut Vec<String>,
     device_groups: bool,
     devices: crate::Devices,
+    rebuild_bipeds: bool,
 ) -> Result<HashMap<(i16, i16), (i16, i16)>> {
     let mut conv = h1objects::convert::Converter::new(h1, base);
+    conv.options.rebuild_bipeds = rebuild_bipeds;
     let mut palettes = Vec::new();
     for k in &KINDS {
         let mut pal = Vec::new();

@@ -472,6 +472,12 @@ pub struct Seat {
 pub struct Unit {
     pub group: Group,
     pub object: Object,
+    /// `0x1a0` the camera's field of view, radians (Halo 2's `unit +0xcc`).
+    pub camera_field_of_view: f32,
+    /// A biped's words that Halo 2 bipeds hold at a known offset
+    /// ([`crate::rebuild::BIPED_WORDS`]), by Halo 1 offset; empty for a
+    /// vehicle.
+    pub biped_words: Vec<(usize, u32)>,
     pub seats: Vec<Seat>,
     /// Every reference in the tag's bytes (root and its blocks).
     pub references: Vec<crate::refs::Found>,
@@ -496,9 +502,20 @@ impl Unit {
                 camera_marker: name32(e, 0x84),
             })
             .collect();
+        let biped_words = if g == b"bipd" {
+            crate::rebuild::BIPED_WORDS
+                .iter()
+                .filter(|w| w.1 + 4 <= b.len())
+                .map(|w| (w.1, u32_at(b, w.1)))
+                .collect()
+        } else {
+            Vec::new()
+        };
         Ok(Self {
             group: tag.group,
             object: Object::read(map, b)?,
+            camera_field_of_view: f32_at(b, 0x1a0),
+            biped_words,
             seats,
             references: crate::refs::scan(map, b),
         })

@@ -371,8 +371,10 @@ with no retail template read:
   distinct turret-type vehicles hold one nonzero value takes that value
   (22 words in the root, 5 per seat, 4 in the physics element). Zero is
   not neutral there: they are scales, distances and angles retail never
-  leaves at zero (the object layer's `+0x6c..+0x8c`, the unit layer's
-  `+0xcc`), and `-1` halves where zero would name element 0. The table is
+  leaves at zero (the object layer's `+0x6c..+0x8c`), and `-1` halves
+  where zero would name element 0. The unit layer's `+0xcc` was a role
+  word through version 45; it is now named `camera_field_of_view` and
+  written from Halo 1's `unit +0x1a0` (below). The table is
   in code, not in the definition files, because the shared `obje` and
   `unit` structs also build scenery; the disc test recomputes it.
 - **Everything else** is the definition's default: zero, null, empty.
@@ -425,6 +427,69 @@ vehicle whose shape is not on a floor may drop or drift); and
 the rider's pose, since retail seat labels
 (`warthog_d`) also read like the riders' animation mode names (D) and the
 player's graph has no `CT-driver` mode.
+
+## Bipeds from definitions (`h1objects::Options::rebuild_bipeds`)
+
+Off by default: the template path stays what the game runs until a
+rebuilt biped has played. With the option on (h1campaign's
+`Options::rebuild_bipeds`), a Halo 1 biped with a role
+(`h1objects::rebuild::BipedRole`) is written from the `bipd` definition
+(`rebuild::biped`) instead of on a Halo 2 template:
+
+- **Roles**: the Chief (`cyborg`), humans (marines, crew, the captain,
+  pilots, Cortana, Johnson) and the Covenant (elites, grunts, jackals,
+  hunters, engineers). The flood, sentinels and the monitor have no
+  role and keep the template path.
+- **Role words** (`rebuild::biped_role`): the turret rule over the base
+  map's bipeds of the role, at conversion time, so no retail value is
+  kept in the source. Every 4-byte unknown span of the root and its
+  embedded structs where at least half the members hold one nonzero
+  value takes it; each block whose elements are all such spans takes
+  the element count most members hold (when at least half hold any),
+  each element by the same rule. On 05a_deltaapproach the Chief has one
+  member, humans four (marine, miranda, crewman, marine_female) and the
+  Covenant five.
+- **From Halo 1**: the object type (0), bounding sphere, model chain
+  (`hlmt` from the definition, as for rebuilt scenery: no `phmo`) and
+  predicted resources (the render model, then its bitmaps), the camera's
+  field of view and the five `BIPED_WORDS`.
+- **Everything else** is the definition's default; every reference is
+  null (no HUD, weapons, character, sounds or effects), so the
+  player biped has no health meter on this path.
+
+Named on the way:
+
+| Field | Evidence |
+|---|---|
+| `unit +0xcc` `camera_field_of_view` (`f32`, radians) | V: 70 degrees on every Halo 2 biped and turret with a Halo 1 counterpart, and equal to Halo 1's `unit +0x1a0` on five pairs (cyborg and masterchief, marine_armored and marine, elite, grunt, jackal). Name D: a field of view is the plain reading of 70 degrees on a unit; no reader found yet |
+
+`rebuild::BIPED_WORDS` carries five more `bipd` words from Halo 1 as they
+are: on the same five pairs each agrees within 1 % with one Halo 1 word
+(`+0x1f4` with Halo 1's `+0x2f8`, `+0x220` with `+0x408`, `+0x26c` with
+`+0x428`, `+0x2a0` and `+0x2a8` both with `+0x360`). They hold angles
+in radians and small ratios; their meaning is not established, so they
+stay unknown spans.
+
+Proof (`crates/h1objects/tests/unit_rebuild_disc.rs`, and the lib test
+`rebuilt_biped_is_the_role_with_halo_1s_header_and_words`):
+
+- `biped_words_match_halo_2s_counterparts`: the camera and the five
+  words, Halo 1 against Halo 2, on the five pairs.
+- `bipeds_rebuilt_against_the_template_path`: all 31 Halo 1 bipeds with
+  a role on the ten levels (11 without one keep the template), each
+  built both ways. The rebuilt record reads back, writes the same
+  again, pins nothing, and holds no template bytes; it has the template
+  path's object type, bounding radius and model chain (`hlmt`, `mode`,
+  `coll`, `jmad`), Halo 1's camera and words, and its role's words. The
+  Chief's rebuilt root differs from the template path's in 0 of 116
+  words (cinematic Chief: 2); the Covenant's in 19 to 44; humans' in 52
+  to 56, since the template path puts humans on the Chief.
+
+What differs from the template path, the suspects if a rebuilt biped
+misbehaves: no `phmo` (the template path borrows the template's for 29
+of the 31; grunts already run with none on both paths); no HUD, weapon,
+character or sound references; and the role's majority shapes where a
+retail biped is sized to its own model.
 
 ## Devices (`mach`, `ctrl`; `h1objects::rebuild::device`)
 
@@ -569,7 +634,8 @@ devices name their placement (a fixture's names its machine).
 | `mach`, `ctrl`, Halo 1's `lifi` (as `mach`) | definitions (only path) | no template path was ever kept |
 | `phmo` of a rebuilt vehicle or device, or a templated vehicle with none | definitions (Halo 1's collision as polyhedra; a stand-in sphere with no solid collision) | `vehicle_new` refuses a model with none; Havok sees a device only through one |
 | `scen` | template by default; definitions with `Options::rebuild` | the rebuilt scenery has not run in the game |
-| `bipd`, `vehi` with a template, `weap`, `eqip`, `proj` | template | their gameplay fields (speeds, seats, cameras, physics, weapon tuning) are unknown spans; built from zero they would not play |
+| `bipd` of a role (Chief, humans, Covenant) | template by default; definitions with `Options::rebuild_bipeds` | the rebuilt biped has not run in the game; its references are null |
+| other `bipd`, `vehi` with a template, `weap`, `eqip`, `proj` | template | their gameplay fields (speeds, seats, cameras, physics, weapon tuning) are unknown spans; built from zero they would not play |
 
 ## Open
 
@@ -583,6 +649,9 @@ devices name their placement (a fixture's names its machine).
   cells since version 43. Open: whether a device's bodies need retail's
   `block_30` node pairs, the shape header's material index table, and
   the rigid body words at `+0x18`/`+0x1c`.
+- **Rebuilt bipeds**: the HUD, weapons, character and sounds (null
+  now), whether the character physics blocks need sizing to the Halo 1
+  model, and what `BIPED_WORDS` mean.
 - **More converter paths**: the other objects (templated vehicles,
-  bipeds, weapons, equipment, projectiles), shaders (`shad` with its postprocess mirrors kept consistent),
+  weapons, equipment, projectiles), shaders (`shad` with its postprocess mirrors kept consistent),
   and the sky, each on its definition with its own comparison.
