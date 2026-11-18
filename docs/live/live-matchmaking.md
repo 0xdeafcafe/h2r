@@ -856,10 +856,11 @@ owned, with no guest pointers. §8.4 has how the server uses them.
 
 ### 8.4 Slice 3: bots in ranks, and arbitration
 
-Status: agreed with the coordinator (2026-11-18). The arbitration half
-is built. The bots half is not yet built; it waits for the bots lane's
-answers in bots.md §9 ("Interface with ranks"), and will fit them. The
-bots lane owns the bot accounts and their events
+Status: agreed with the coordinator and the bots lane (2026-11-18;
+their side is [bots.md](../game/bots.md) §9.4). The arbitration half is
+built. Of the bots half, `rank::bot_skill` and `Ranks::nearest` are
+built; the rest reads the bots lane's lookups and is built once they
+land (the list is at the end of "Bots in ranks"). The bots lane owns the bot accounts and their events
 (`POST /games/bots`, the roster, `bot: true` on a game's player entries;
 [bots.md](../game/bots.md) §9). This lane owns how bots are ranked and
 how arbitration checks a ranked game.
@@ -895,36 +896,61 @@ filter, not a migration. Career totals count them as well; `kind:
 "clankermatch"` keeps those games apart in the games log.
 
 **Clanker playlists.** The server publishes clanker playlists as their
-own hoppers (bots.md §8.3). To count together, a clanker hopper
-carries the same descriptor playlist id (`+0x08`) as the human hopper it
-mirrors. The server ranks a clankermatch game under the ranked human
-hopper with that playlist id (the *rank playlist*), and the game's
-stat read, which names that playlist id, sees the same standing in
-both. When no human hopper shares the id, the clanker hopper is its own
-rank playlist. *Needs from the bots lane:* how a descriptor is marked
-as a clanker hopper.
+own hoppers (bots.md §8.3), each with a playlist id of its own. The
+mark is in the server's hopper source, not in the game's descriptor:
+`clankers: { ranks_as: Option<u32> }` (bots.md §9.4). `ranks_as` is
+the playlist id of the human hopper whose standing it shares; that
+hopper is its *rank playlist*. A clankermatch game is ranked under the
+rank playlist, and `GET /v1/rank-stats` answers the clanker playlist's
+id with the rank playlist's standing, so the lobby shows one rank for
+both (rule 1). With `ranks_as: None` the clanker hopper is its own rank
+playlist. (An earlier draft shared the descriptor id `+0x08` instead;
+two descriptors with one id is untested against the game's validator.)
 
 **Matched to yours (rule 2).** The roster picks bots for the human's
 standing in the rank playlist:
 
 - `rank::bot_skill(level) -> f32`, `(level - 1) / 49`: 0 at level 1, 1
   at level 50, continuous, as bots.md §8.2 asks. The roster's `skill`.
-- `Ranks::nearest(playlist, level, n) -> Vec<Xuid>`: up to `n`
-  persistent bots, closest level first, ties by fewest games. The bots
-  lane calls this to choose persistent bots, and fills any gap with
-  made-up bots shown at the human's level.
+- `Ranks::nearest(playlist, level, n, bots) -> Vec<Xuid>` (built): up to
+  `n` of the persistent bot accounts `bots`, closest level first, then
+  fewest games; a bot that never played the playlist stands at level 1.
+  The roster endpoint passes its bot accounts, and fills any gap with
+  made-up bots shown at the humans' level.
 - With more than one human, "yours" is the mean level of the humans in
   the match.
 
 The roster's `rank.level` is then the bot's real level (persistent) or
-the human's (made up). `GET /v1/rank-stats` answers a made-up bot with
-its roster level, so the lobby's stat read and the roster agree; a
-persistent bot answers with its standing, as anyone else does.
+the humans' (made up). A made-up bot has no standing, so its stat read
+needs the session. `GET /v1/rank-stats` takes an optional `session=`,
+which the HLE fills from `Hle::matchmade`. It answers a bot rostered in
+that session with its roster level, so the lobby's stat read and the
+roster agree. A persistent bot answers with its standing, as anyone
+else does.
 
-**Needs from the bots lane** (read model, keyed by bot xuid): whether
-it is a bot, `persistent`, the level its roster showed, and the match
-it was rostered for. Their trust rule (bots.md §9.3) decides whether a
-`bot: true` entry is accepted; ranking only reads the result.
+**The bots lane's lookups** (bots.md §9.4, agreed):
+
+- `bot(xuid) -> Option<BotAccount { persistent }>`, from `BotIssued` on
+  `account-<xuid>`;
+- `rostered(session_id, xuid) -> Option<Rostered { persistent, level,
+  playlist }>`, from `BotsRostered` on `bots-<session_id>`, keyed by the
+  same `NewGame.session_id` that arbitration uses.
+
+A session can roster more than once (one game after another). The
+roster `rank_game` reads should then be the one in force when the game
+started: the latest `BotsRostered` before its `GameStarted`. The game
+record's acceptance check (bots.md §9.3) refuses any `bot: true` entry
+that is not rostered, so `rank_game` sees only accepted bots.
+
+**Still to build, once those lookups land:**
+
+1. In `rank_game`: a rostered bot needs no arbitration registration.
+   A persistent bot is ranked with `RankChanged { bot: true }`. A
+   made-up bot is an opponent at its roster level and gets no event.
+   `kind: "clankermatch"` is ranked under its rank playlist.
+2. In `GET /v1/rank-stats`: `session=` for made-up bots, and clanker
+   playlist ids answered with the `ranks_as` standing.
+3. On leaderboards and history: `bot: true` on bots' rows, from `bot()`.
 
 #### Arbitration (built)
 

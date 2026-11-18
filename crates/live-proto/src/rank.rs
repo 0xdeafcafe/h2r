@@ -99,6 +99,13 @@ pub fn threshold(level: u8) -> u32 {
     25 * k * k + 75 * k
 }
 
+/// A bot's skill (0 to 1) for a level (docs/game/bots.md §8.2 and §9.4):
+/// `(level - 1) / 49`, continuous, 0 at level 1 and 1 at level 50. The
+/// roster's `skill` when bots are matched to the humans' rank.
+pub fn bot_skill(level: u8) -> f32 {
+    f32::from(level.clamp(MIN_LEVEL, MAX_LEVEL) - MIN_LEVEL) / f32::from(MAX_LEVEL - MIN_LEVEL)
+}
+
 /// The level `experience` reaches, before hysteresis.
 pub fn level_for(experience: u32) -> u8 {
     (MIN_LEVEL..=MAX_LEVEL)
@@ -232,6 +239,14 @@ pub struct LeaderboardRow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn bot_skill_runs_from_level_1_to_50() {
+        assert_eq!(bot_skill(1), 0.0);
+        assert_eq!(bot_skill(50), 1.0);
+        assert_eq!(bot_skill(0), 0.0);
+        assert_eq!(bot_skill(99), 1.0);
+        assert!((bot_skill(25) - 24.0 / 49.0).abs() < 1e-6);
+    }
     #[test]
     fn live_stats_store_levels_from_zero() {
         let s = Standing {

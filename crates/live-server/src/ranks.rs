@@ -63,6 +63,56 @@ impl Ranks {
             .copied()
             .unwrap_or_default()
     }
+
+    /// Up to `n` of `bots` (persistent bot accounts) for a match at
+    /// `level` on `playlist` (docs/live/live-matchmaking.md §8.4, "Matched
+    /// to yours"): closest level first, then fewest games, then xuid. A bot
+    /// with no games there stands at level 1. The roster endpoint fills any
+    /// gap with made-up bots.
+    pub fn nearest(
+        &self,
+        playlist: &str,
+        level: u8,
+        n: usize,
+        bots: impl IntoIterator<Item = Xuid>,
+    ) -> Vec<Xuid> {
+        let mut scored: Vec<(u8, u32, Xuid)> = bots
+            .into_iter()
+            .map(|x| {
+                let s = self.standing(x, playlist);
+                (s.level.abs_diff(level), s.games, x)
+            })
+            .collect();
+        scored.sort_unstable();
+        scored.dedup_by_key(|(_, _, x)| *x);
+        scored.into_iter().take(n).map(|(_, _, x)| x).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nearest_bots_are_the_closest_level_then_the_least_played() {
+        let mut r = Ranks::default();
+        let at = |level, games| Standing {
+            level,
+            games,
+            ..Standing::default()
+        };
+        let p = r.standings.entry("1".into()).or_default();
+        p.insert(Xuid(1), at(10, 5));
+        p.insert(Xuid(2), at(12, 1));
+        p.insert(Xuid(3), at(12, 9));
+        p.insert(Xuid(4), at(30, 2));
+        // Xuid(5) has never played this playlist: level 1.
+        let bots = [Xuid(1), Xuid(2), Xuid(3), Xuid(4), Xuid(5)];
+        assert_eq!(r.nearest("1", 12, 3, bots), [Xuid(2), Xuid(3), Xuid(1)]);
+        assert_eq!(r.nearest("1", 1, 1, bots), [Xuid(5)]);
+        assert_eq!(r.nearest("1", 50, 9, bots).len(), 5);
+        assert_eq!(r.nearest("2", 1, 2, bots), [Xuid(1), Xuid(2)]);
+    }
 }
 
 pub(crate) fn project(s: &mut State, e: &RecordedEvent) {
