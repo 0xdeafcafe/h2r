@@ -67,6 +67,28 @@ mode) or in a melee lunge (`0x000e0dc0`). For `masterchief_mp` (standing
 0.725, crouching 0.5) it is about 1.1 units/s per tick of change and 6.75
 over a full stand-up. In the traces it was zero on every bounce tick.
 
+## The melee-lunge hitbox offset (Code)
+
+The Havok body of a biped is not always at its origin. When the game
+places it (`0x001d401a`), for a biped it subtracts `0x000e0d70`'s
+offset from the matrix's z: biped `+0x3aa` (a signed tick counter) ×
+tick length × 0.15 (`0x004407b8`).
+
+- A melee lunge started while not crouching (`0x000e2941`) sets biped
+  flags bits 13 and 14, shrinks the capsule to crouch height
+  (`0x001c3770`) and sets the counter to minus (standing − crouching) /
+  (tick length × 0.15): −44 ticks, a 0.22 offset, for `masterchief_mp`.
+- Outside the lunge it steps one tick toward 0 per tick (`0x000e2870`),
+  so the body slides back to the origin over about 1.5 s.
+- When the lunge ends (`0x000e0c70`), a standing capsule is tested at the
+  offset place (`0x001d5120`). If it does not fit, the crouch request is
+  set instead: a second way into forced crouch.
+
+In both traces the physics mode was 1 (ground) on every tick and bits 13
+and 14 were never set: no lunge, so the offset was 0 on every bounce.
+`world.object`'s `physics.hitbox_offset_ticks` and `hitbox_offset` show
+it directly.
+
 ## Traces (Trace)
 
 `world.object` carries a `physics` block for units (crouch, crouch
@@ -131,5 +153,8 @@ rest on the ramp side of the crease.
   and no crouch near any bounce. They cannot see a state from before
   they started. To rule it out: start a fresh game, never crouch, and
   jump onto the patch until it bounces.
+- **Lunges.** Whether a landing on the crease during the 1.5 s after a
+  lunge (body offset from the origin) bounces differently is not
+  traced.
 - **Other bounce spots.** Only this patch was traced. Whether every
   superbounce spot is a crease next to a seam is not checked.

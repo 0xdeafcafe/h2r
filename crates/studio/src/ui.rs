@@ -11,6 +11,7 @@ mod inspector;
 mod outliner;
 mod play;
 mod playlists;
+pub mod tags;
 mod ui_screens;
 mod variants;
 use std::path::PathBuf;
@@ -98,6 +99,8 @@ pub struct Studio {
     inspector: inspector::InspectorState,
     /// Play and pair (the Game panel; `crate::play`).
     pub play: play::PlayUi,
+    /// The Tags tool's UI state (its field panel's too).
+    pub tags: tags::TagsUi,
 }
 
 impl Studio {
@@ -118,6 +121,7 @@ impl Studio {
             ui_screens: ui_screens::UiScreensUi::default(),
             inspector: inspector::InspectorState::default(),
             play: play::PlayUi::default(),
+            tags: tags::TagsUi::default(),
         }
     }
 
@@ -141,6 +145,7 @@ impl Studio {
             ToolKind::Variants => self.variant_windows(ui, app, &mut actions),
             ToolKind::Playlists => self.playlist_windows(ui, app, &mut actions),
             ToolKind::UiScreens => self.ui_screen_windows(ui, app, gpu, &mut actions),
+            ToolKind::Tags => self.tag_windows(ui, app, &mut actions),
         }
         self.log_window(ui, app);
         self.status_bar(ui, app);
@@ -168,7 +173,7 @@ impl Studio {
         }
         if cmd && ui.is_key_pressed(Key::S) {
             match app.tool {
-                ToolKind::Scenario => self.save_map_dialog(app, actions),
+                ToolKind::Scenario | ToolKind::Tags => self.save_map_dialog(app, actions),
                 ToolKind::Variants => actions.push(Action::SaveVariant),
                 ToolKind::Playlists if app.hoppers.is_open() => {
                     playlists::save(app, self.dialogs, actions)
@@ -279,7 +284,7 @@ impl Studio {
             ui.separator();
             if ui.menu_item_enabled_selected_with_shortcut(
                 format!("{} Save map as...", icon::SAVE),
-                if app.tool == ToolKind::Scenario {
+                if matches!(app.tool, ToolKind::Scenario | ToolKind::Tags) {
                     "Cmd+S"
                 } else {
                     ""
@@ -474,7 +479,7 @@ impl Studio {
     /// The File menu's items for the variant and playlist tools.
     fn tool_file_menu(&mut self, ui: &Ui, app: &App, actions: &mut Vec<Action>) {
         match app.tool {
-            ToolKind::Scenario | ToolKind::UiScreens => {}
+            ToolKind::Scenario | ToolKind::UiScreens | ToolKind::Tags => {}
             ToolKind::Variants => {
                 let e = app.variants.as_ref();
                 let can_save = e.is_some_and(|e| e.is_dirty() && !e.is_read_only());
@@ -581,6 +586,23 @@ impl Studio {
         let dialogs = self.dialogs;
         ui.window(&self.keys.inspector)
             .build(|| ui_screens::inspector(ui, app, st, fonts, dialogs, actions));
+    }
+
+    /// The Tags tool: the tag tree, the fields, the raw bytes.
+    fn tag_windows(&mut self, ui: &Ui, app: &mut App, actions: &mut Vec<Action>) {
+        app.sync_tags();
+        let fonts = &self.fonts;
+        let st = &mut self.tags;
+        ui.window(self.keys.outliner.label(format!("{} Tags", icon::TREE)))
+            .build(|| tags::tree(ui, app, st, fonts, actions));
+        ui.window(
+            self.keys
+                .viewport
+                .label(format!("{} Fields", icon::SLIDERS)),
+        )
+        .build(|| tags::fields(ui, app, st, fonts, actions));
+        ui.window(self.keys.inspector.label(format!("{} Bytes", icon::INFO)))
+            .build(|| tags::hex(ui, app, st, fonts));
     }
 
     fn heading(&self, ui: &Ui, text: &str) {
@@ -1006,6 +1028,7 @@ impl Studio {
                 ToolKind::Variants => "The open game variant".to_owned(),
                 ToolKind::Playlists => "The playlist file".to_owned(),
                 ToolKind::UiScreens => "The UI screen".to_owned(),
+                ToolKind::Tags => "The map's tags".to_owned(),
             };
             ui.text(format!("{} {who} has unsaved edits.", icon::ALERT));
             ui.text_disabled(format!("Save them before {what}?"));
@@ -1038,7 +1061,7 @@ impl Studio {
                         answer = Some(Answer::SaveAs(p));
                     }
                 }
-                ToolKind::UiScreens => {}
+                ToolKind::UiScreens | ToolKind::Tags => {}
             }
             ui.same_line();
             if ui.button("Discard") {
@@ -1299,6 +1322,7 @@ fn tool_icon(tool: ToolKind) -> &'static str {
         ToolKind::Variants => icon::SLIDERS,
         ToolKind::Playlists => icon::LAYERS,
         ToolKind::UiScreens => icon::EYE,
+        ToolKind::Tags => icon::BOX,
     }
 }
 
@@ -1428,7 +1452,10 @@ fn convert_controls(
             ConvertSandbox::Halo2,
             "Halo 2 (nearest weapons and vehicles)",
         ),
-        (ConvertSandbox::Halo1, "Halo 1 (its own weapons and vehicles)"),
+        (
+            ConvertSandbox::Halo1,
+            "Halo 1 (its own weapons and vehicles)",
+        ),
     ] {
         if ui.radio_button_bool(label, app.convert_sandbox == s) && app.convert_sandbox != s {
             actions.push(Action::SetConvertSandbox(s));

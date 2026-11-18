@@ -145,6 +145,8 @@ pub struct Motion {
     pub airborne_ticks: Option<i8>,
     /// The animation the unit plays.
     pub animation: Option<Animation>,
+    /// Bipeds only: hitbox offset counter (`layout::BIPED_HITBOX_OFFSET`).
+    pub hitbox_offset: Option<i8>,
 }
 
 /// An animation manager's first channel, as the guest holds it.
