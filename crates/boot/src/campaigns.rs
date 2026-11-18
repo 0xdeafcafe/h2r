@@ -104,6 +104,11 @@ pub fn installed(
             ));
             continue;
         }
+        // An older import's manifest has no descriptions: the built-in
+        // ones show without rewriting the user's file.
+        if let Some(b) = CampaignManifest::builtin(&m.campaign.key) {
+            m.fill_from(&b);
+        }
         let before = m.levels.len();
         m.levels
             .retain(|l| dir.join(format!("{}.map", l.map)).is_file() || disc_has(&l.map));
