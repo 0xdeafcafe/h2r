@@ -56,6 +56,7 @@ pub mod pg;
 pub mod public;
 pub mod recovery;
 pub mod relay;
+pub mod reports;
 pub mod rt;
 mod sessions;
 pub mod sql;

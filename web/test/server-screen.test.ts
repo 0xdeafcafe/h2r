@@ -144,11 +144,15 @@ describe("admin gating", () => {
     expect(serverPods("invites", true).map((p) => p.run ?? p.to)).toEqual(["create", "copy", "/dash/server/accounts", "/dash/server"]);
     expect(serverPods("accounts", true).map((p) => p.to)).toEqual(["/dash/server/invites", "/dash/server/import", HALO_ADMIN, "/dash/server"]);
     expect(serverPods("import", true).map((p) => p.to)).toEqual(["/dash/server/accounts", "/dash/server/invites", HALO_ADMIN, "/dash/server"]);
+    // Player reports are the service's, on the dashboard; visitors get no pods there.
+    expect(serverPods("reports", true).map((p) => p.to)).toEqual(["/dash/server/accounts", "/dash/server/invites", "/dash/players", "/dash/server"]);
+    expect(serverPods("reports", false)).toEqual([]);
+    expect(serverPods("reports", null)).toEqual([]);
   });
 
   test("the dashboard keeps the service; the stats admin keeps only Halo's things", () => {
     // Every admin pod on the dashboard is a dashboard screen, apart from the one way into the Halo admin.
-    for (const view of ["overview", "invites", "accounts", "import"] as const) {
+    for (const view of ["overview", "invites", "accounts", "import", "reports"] as const) {
       for (const p of serverPods(view, true)) {
         if (p.to?.startsWith("/stats")) expect(p.to).toBe(HALO_ADMIN);
       }

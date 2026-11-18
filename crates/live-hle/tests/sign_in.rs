@@ -940,7 +940,7 @@ fn presence_latest_returns_packed_offline_watch_records_and_clear_removes_them()
     );
 }
 #[test]
-fn absent_query_and_feedback_return_failed_tasks_without_claiming_submission() {
+fn absent_query_fails_its_task_and_feedback_without_a_server_is_refused() {
     let mut w = World::new();
     w.logon();
     assert_eq!(
@@ -953,12 +953,18 @@ fn absent_query_and_feedback_return_failed_tasks_without_claiming_submission() {
         w.call("XOnlineQuerySearchGetResults", &[query, 0, 0, 0, 0]),
         0x80156109
     );
+    // Feedback goes to the server (tests/server.rs); with none it is
+    // refused at the call, so no task claims it was sent.
+    w.put(OUTPUT, &[0xcc; 4]);
     assert_eq!(
-        w.call("XOnlineFeedbackSend", &[0, 1, 0, 0, 0, 0, 0, OUTPUT]),
-        0
+        w.call("XOnlineFeedbackSend", &[0, 1, 0, 0, 3, 0, 0, OUTPUT]),
+        NO_SESSION
     );
-    let feedback = w.u32(OUTPUT);
-    assert_eq!(w.call("XOnlineTaskContinue", &[feedback]), 0x80151102);
+    assert_eq!(
+        w.call("XOnlineFeedbackSend", &[4, 1, 0, 0, 3, 0, 0, OUTPUT]),
+        INVALID_ARGUMENT
+    );
+    assert_eq!(w.bytes(OUTPUT, 4), vec![0xcc; 4]);
 }
 #[test]
 fn saved_logon_state_has_public_header_and_no_signing_key_material() {

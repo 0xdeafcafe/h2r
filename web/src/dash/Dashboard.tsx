@@ -31,6 +31,7 @@ import { AccountPlate, RecoverPlate, RecoveryCode, createRecovery, keepFreshReco
 import "../styles/dash-recovery.css";
 import { defaultBase, fetchWellKnown, normalizeBase, recentServers } from "../api/server";
 import { AccountsPlate, ConnectPlate, ImportPlate, InvitesPlate, ServerPlate, createServerInfo, type InviteControls } from "./Server";
+import { ReportsQueue } from "./Reports";
 import type { BladeControls } from "./Blades";
 import { fetchServerFacts, serverPods } from "../admin/server";
 import "../styles/dash-server.css";
@@ -306,7 +307,7 @@ export default function Dashboard() {
       case "server": {
         const sub = serverSub();
         if (sub !== "connect") {
-          const view = sub === "invites" || sub === "accounts" || sub === "import" ? sub : "overview";
+          const view = sub === "invites" || sub === "accounts" || sub === "import" || sub === "reports" ? sub : "overview";
           return serverPods(view, serverInfo.admin()).map((p): Sat => ({
             label: p.label, glyph: p.glyph,
             act: p.run ? () => (p.run === "create" ? blades()?.create?.() : blades()?.copy?.()) : () => go(p.to!, p.back ? "back" : "deeper"),
@@ -701,6 +702,16 @@ export default function Dashboard() {
               <Sats sats={sats()} sel={sat()} onSel={setSat} />
               <AccountsPlate info={serverInfo} go={(href) => go(href, "deeper")} bind={bindPlate("accounts")} />
               <Prompts onA={() => act("select")} onB={back} />
+            </div>
+          </Match>
+
+          <Match when={screen() === "server" && serverSub() === "reports"}>
+            <div class="dx-screen dx-pods dx-pods--form dx-pages dx-server dx-reports-screen">
+              <Sats sats={sats()} sel={sat()} onSel={setSat} />
+              <Plate small="your server" title="player reports" main>
+                <ReportsQueue />
+              </Plate>
+              <Prompts onA={select} onB={back} />
             </div>
           </Match>
 

@@ -15,6 +15,7 @@ pub mod motd;
 pub mod optimatch;
 pub mod pack;
 pub mod recovery;
+pub mod reports;
 #[doc(hidden)]
 pub mod samples;
 pub mod session;
@@ -322,6 +323,10 @@ pub mod lxm {
     pub const CONTENT_WRITE: &str = "content.write";
     /// Admin moderation of uploaded content and hopper pins.
     pub const CONTENT_MODERATE: &str = "content.moderate";
+    /// Reporting another player (docs/live/live-api.md "Player reports").
+    pub const REPORTS_WRITE: &str = "reports.write";
+    /// Admins reading and reviewing player reports.
+    pub const REPORTS_MODERATE: &str = "reports.moderate";
     /// Reading one's own cloud saves (docs/live/live-cloud-saves.md).
     pub const STORAGE_READ: &str = "storage.read";
     /// Writing and deleting one's own cloud saves.

@@ -958,7 +958,8 @@ through synthetic guest stacks; browsing every screen has not been run here.
 | `0x0006b59d`, `0x0008d1da`, title checks `0x0008c28e` / `0x0008d27a` | FriendsGetTitleName writes UTF-16 “Halo 2” for this title and an empty terminated name for uncached titles. SameTitle/SamePublisher return BOOL comparisons. |
 | `0x0006b565` | GetNatType returns the retail initial/unknown value 0. No NAT probing or claim of open NAT is made. |
 | `0x000abc70` through `0x000ac2f2` | Team and member enumerations return snapshots from the local store described below. Unknown teams fail with TEAM_NOT_FOUND (`0x8015210b`); a missing item in a successful snapshot returns E_FAIL, as retail does. |
-| `0x0008d3d0`, `0x000b388a` | FeedbackSend returns a failed task, SERVICE_TEMPORARILY_UNAVAILABLE (`0x80151102`). QuerySearch/GetResults returns QUERY_DATASET_NOT_FOUND (`0x80156109`). These optional views have no backend data yet. No feedback is claimed to be submitted. |
+| `0x0008d3d0` | FeedbackSend sends a player report to the server and completes its task when the server has it; see "Client HLE: player feedback" below. |
+| `0x000b388a` | QuerySearch/GetResults returns QUERY_DATASET_NOT_FOUND (`0x80156109`). This optional view has no backend data yet. |
 | `0x00092220` through `0x00092450`, manager `0x00074aa0` | StatWrite/GetResult accepts an owned local capture and completes successfully without attachments. StatRead/GetResult completes with missing (`NONE`) stats and zero values in the caller's arrays. See the local stats section below. |
 | `0x0022387b` | SaveLogonState writes the public 516-byte launch-state layout with users and service IDs; it contains no signing key. |
 | `0x0008e750`, manager `0x002c7410` | Message polling exposes pending game invitations. Title files use storage and never enter the player inbox. |
@@ -977,10 +978,42 @@ listed API name.
 | `XNet` | `TsAddrToInAddr` |
 
 Server-backed sessions, invitation delivery, clans and cached friend presence are
-implemented in the Client HLE sections below. Feedback storage, friend mutations
+implemented in the Client HLE sections below. Friend mutations
 outside the existing capture path, ranked arbitration and NAT traversal remain
 unfinished. Synthetic tests prove invitation discovery through bidirectional
 host UDP traffic; actual menu transitions and a full retail match are unconfirmed.
+
+## Client HLE: player feedback
+
+`XOnlineFeedbackSend` (`0x003a0890`, `crates/live-hle/src/feedback.rs`)
+takes eight stack words: the controller, the target's XUID by value (three
+words), the XDK feedback type, an `XONLINE_FEEDBACK_PARAMS` pointer (its
+one field is a wide-string pointer; the library sends it as UTF-8 of at
+most 255 bytes), the work event and the task output.
+
+The title calls it from one wrapper, `0x0008d3d0`, reached from the
+player-details screens at `0x002b89be` and `0x002b8a65`. The wrapper maps
+the screen's reason index 0..9 through a table on its stack to the
+feedback types 5, 6, 0, 1, 2, 3, 4, 12, 11, 10, and passes a params block
+whose string is null, no event, and the task slot in its task list.
+Indexes 0 and 1 (types 5 and 6, the public XDK's `POS_ATTITUDE` and
+`POS_SESSION`) are sent at once; the rest, complaints, after a
+confirmation dialog. Types 0..4 are the XDK's `NEG_NICKNAME`,
+`NEG_GAMEPLAY`, `NEG_SCREAMING`, `NEG_HARASSMENT` and `NEG_LEWDNESS`. The
+names of 10, 11 and 12 are not confirmed from code, so the server keeps
+them by number (`type_10` and so on).
+
+The HLE posts each one as a player report ([live-api.md](live-api.md)
+"Player reports") with the game id the console is in, and the task
+completes with TASK_SUCCESS when the server answers, or with the mapped
+error: INVALID_USER for an unknown player, SERVERS_BUSY when rate limited,
+CANNOT_ACCESS_SERVICE otherwise. Like the retail library (`0x003b8cbb`), it
+remembers the last 20 players each controller gave feedback on, with a bit
+per type below 8, and completes a repeat at once without sending it.
+Unlike retail, a send that failed is forgotten, so a retry is sent. Types
+the title never sends (7, 8, 9, over 12) are refused with
+INVALID_ARGUMENT; with no server the call returns NO_SESSION and makes no
+task.
 
 ## Client HLE: title storage and profile fallback
 

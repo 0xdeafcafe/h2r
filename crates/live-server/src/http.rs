@@ -168,6 +168,15 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
             post(crate::content::report_content),
         )
         .route("/v1/admin/content", get(crate::content::admin_content))
+        .route("/v1/admin/reports", get(crate::reports::get_admin_reports))
+        .route(
+            "/v1/admin/reports/{id}/{action}",
+            post(crate::reports::post_review),
+        )
+        .route(
+            "/v1/accounts/by-xuid/{xuid}/report",
+            post(crate::reports::post_report),
+        )
         .route(
             "/v1/admin/maps/{map}/{action}",
             post(crate::content::moderate_map),

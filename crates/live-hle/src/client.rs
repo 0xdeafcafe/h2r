@@ -147,6 +147,12 @@ pub(crate) enum SocialRequest {
     Answer(live_proto::mailbox::Answered),
     Join { from: Xuid, session_id: String },
 }
+/// A player report ([`crate::feedback`]).
+#[derive(Clone)]
+pub(crate) struct ReportRequest {
+    pub target: Xuid,
+    pub body: live_proto::reports::ReportRequest,
+}
 #[derive(Clone, PartialEq)]
 pub(crate) struct SocialSnapshot {
     pub friends: live_proto::Friends,
@@ -161,6 +167,7 @@ enum Work {
     Teams { user: u64, request: TeamRequest },
     Match(MatchRequest),
     Social { user: u64, request: SocialRequest },
+    Report { user: u64, request: ReportRequest },
     Wake,
 }
 struct Command {
@@ -275,6 +282,26 @@ impl Service {
     }
     pub fn social(&self, s: &Session, user: u64, request: SocialRequest) -> Result<Pending, u32> {
         self.submit(s, Work::Social { user, request })
+    }
+    /// Reports `target` for `user` (docs/live/live-api.md "Player reports").
+    pub fn report(
+        &self,
+        s: &Session,
+        user: u64,
+        target: Xuid,
+        kind: live_proto::reports::Kind,
+        reason: String,
+        game_id: Option<String>,
+    ) -> Result<Pending, u32> {
+        let request = ReportRequest {
+            target,
+            body: live_proto::reports::ReportRequest {
+                kind,
+                reason,
+                game_id,
+            },
+        };
+        self.submit(s, Work::Report { user, request })
     }
     pub fn cancel(&self, s: &Session) {
         s.cancel();
@@ -1107,6 +1134,32 @@ impl Worker {
                 self.social_request(user, request).map_err(|e| match e {
                     Error::Status(404) => FRIEND_NOT_FOUND,
                     Error::Status(400 | 403 | 409) => INVALID_ARGUMENT,
+                    _ => e.result(),
+                })
+            }
+            Work::Report { user, request } => {
+                let active = self
+                    .active
+                    .as_ref()
+                    .filter(|a| a.session.id == c.session.id)
+                    .ok_or(NO_SESSION)?;
+                let user = active.users.get(user).ok_or(NO_USER)?;
+                let body = serde_json::to_string(&request.body).map_err(|_| INVALID_ARGUMENT)?;
+                self.response(
+                    self.request(
+                        "POST",
+                        &format!("/accounts/by-xuid/{}/report", request.target),
+                        user,
+                        lxm::REPORTS_WRITE,
+                    )
+                    .set("content-type", "application/json"),
+                    Some(&body),
+                    64 * 1024,
+                )
+                .map(|_| Reply::Done)
+                .map_err(|e| match e {
+                    Error::Status(404) => INVALID_USER,
+                    Error::Status(400 | 422) => INVALID_ARGUMENT,
                     _ => e.result(),
                 })
             }
