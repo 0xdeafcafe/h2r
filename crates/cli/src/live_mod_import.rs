@@ -4,12 +4,15 @@
 //! Many old mods are whole modded `.map` files, which hold the retail map's
 //! bytes and may never be shared. Import reads the retail map the mod is
 //! for from the user's own disc (through the VFS's disc backend, so a disc
-//! image or a directory of its files), writes the difference as a patch
+//! image or a directory of its files), or, for a Multiplayer Map Pack map
+//! (containment, warlock, ...), from the user's map pack disc
+//! (`crate::live_mappack::from_iso`), writes the difference as a patch
 //! layer (`content::patch::diff`: PPF3 when the length is unchanged, which
 //! the resolver streams over the disc's map without copying, else BPS),
 //! and wraps it as a package over that base: the only blob is the delta.
 //! A mod that is already a PPF, IPS or BPS patch is checked against the
-//! base and kept as it is.
+//! base and kept as it is. The result may not be any retail map of either
+//! disc.
 //!
 //! The package's display data comes from a `mod.toml` beside the file
 //! (or `--info PATH`), every field optional:
@@ -166,12 +169,12 @@ pub fn layer_for(
                 _ => "bps",
             };
             let target = apply(base, input)
-                .context("the patch does not apply to your disc's map: is --base the right map?")?;
+                .context("the patch does not apply to your base map: is --base the right map?")?;
             (format!("mod.{ext}"), input.to_vec(), target)
         }
     };
     if target == base {
-        bail!("the mod is the same as your disc's map: there is nothing to share");
+        bail!("the mod is the same as its base map: there is nothing to share");
     }
     Ok((file, layer, target))
 }
@@ -196,9 +199,53 @@ fn read_disc_file(disc: &mut impl Backend, path: &str) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// The disc map that `bytes` is, if any (only maps of the same size are
-/// read).
-fn retail_twin(disc: &mut impl Backend, bytes: &[u8]) -> Result<Option<String>> {
+/// Where a mod's base map was read from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BaseFrom {
+    /// `maps\<map>.map` on the Halo 2 disc.
+    Disc,
+    /// The Multiplayer Map Pack disc.
+    MapPack,
+}
+
+/// The retail map `base` (lower case), from the Halo 2 disc, else from the
+/// map pack's maps `pack`.
+fn read_base(
+    disc: &mut impl Backend,
+    pack: &[crate::live_mappack::FoundMap],
+    mappack: Option<&Path>,
+    base: &str,
+) -> Result<(Vec<u8>, BaseFrom)> {
+    let path = format!("maps\\{base}.map");
+    let why = match disc.stat(&path) {
+        Ok(m) if !m.is_directory() => {
+            return Ok((read_disc_file(disc, &path)?, BaseFrom::Disc));
+        }
+        Ok(_) => format!("{path} on the disc is a directory"),
+        Err(e) => format!("{path} on the disc: {e}"),
+    };
+    if let Some(m) = pack.iter().find(|m| m.stem == base) {
+        return Ok((m.read()?, BaseFrom::MapPack));
+    }
+    match mappack {
+        Some(iso) => bail!(
+            "{why}; the map pack disc {} has no {base}.map either",
+            iso.display()
+        ),
+        None => bail!(
+            "{why}; for a Multiplayer Map Pack map give --mappack ISO \
+             (or put mappack.iso beside the disc)"
+        ),
+    }
+}
+
+/// The retail map that `bytes` is, if any, on the disc or in the map
+/// pack (only maps of the same size are read).
+fn retail_twin(
+    disc: &mut impl Backend,
+    pack: &[crate::live_mappack::FoundMap],
+    bytes: &[u8],
+) -> Result<Option<String>> {
     let entries = disc
         .read_directory("maps")
         .map_err(|e| anyhow!("listing the disc's maps: {e}"))?;
@@ -212,7 +259,12 @@ fn retail_twin(disc: &mut impl Backend, bytes: &[u8]) -> Result<Option<String>> 
         }
         let path = format!("maps\\{}", e.name);
         if Sha256::of(&read_disc_file(&mut *disc, &path)?) == want {
-            return Ok(Some(e.name));
+            return Ok(Some(format!("disc's own {}", e.name)));
+        }
+    }
+    for m in pack {
+        if m.size as usize == bytes.len() && Sha256::of(&m.read()?) == want {
+            return Ok(Some(format!("map pack's {}.map", m.stem)));
         }
     }
     Ok(None)
@@ -225,6 +277,9 @@ pub struct ImportOptions {
     pub input: PathBuf,
     /// The disc: an image or a directory of its files.
     pub disc: PathBuf,
+    /// The Multiplayer Map Pack disc image, for mods of its maps (and so a
+    /// mod is never one of its maps). None: Halo 2 disc maps only.
+    pub mappack: Option<PathBuf>,
     /// The retail map it is a mod of; else `base_map` in mod.toml.
     pub base: Option<String>,
     /// The package directory; else `<input's stem>.package` beside it.
@@ -241,6 +296,8 @@ pub struct ImportOptions {
 pub struct Imported {
     pub dir: PathBuf,
     pub manifest: Manifest,
+    /// Which disc the base map is on.
+    pub base_from: BaseFrom,
     pub layer_size: u64,
     pub input_size: u64,
 }
@@ -292,10 +349,15 @@ pub fn import(opts: &ImportOptions) -> Result<Imported> {
 
     let mut disc = vfs::open_disc(&opts.disc)
         .map_err(|e| anyhow!("opening the disc {}: {e}", opts.disc.display()))?;
-    let base_bytes = read_disc_file(&mut disc, &format!("maps\\{base}.map"))?;
+    let pack = match &opts.mappack {
+        Some(iso) => crate::live_mappack::from_iso(iso)
+            .with_context(|| format!("reading the map pack disc {}", iso.display()))?,
+        None => Vec::new(),
+    };
+    let (base_bytes, base_from) = read_base(&mut disc, &pack, opts.mappack.as_deref(), &base)?;
     let (file, layer, target) = layer_for(kind, &input, &base_bytes, &name)?;
-    if let Some(twin) = retail_twin(&mut disc, &target)? {
-        bail!("the mod is your disc's own {twin}: retail maps are never shared");
+    if let Some(twin) = retail_twin(&mut disc, &pack, &target)? {
+        bail!("the mod is your {twin}: retail maps are never shared");
     }
 
     let dir = opts.out.clone().unwrap_or_else(|| {
@@ -351,6 +413,7 @@ pub fn import(opts: &ImportOptions) -> Result<Imported> {
     Ok(Imported {
         dir,
         manifest,
+        base_from,
         layer_size: layer.len() as u64,
         input_size: input.len() as u64,
     })

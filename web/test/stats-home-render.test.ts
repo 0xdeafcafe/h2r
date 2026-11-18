@@ -64,7 +64,18 @@ describe("the stats home, rendered", () => {
     const nav = html.slice(html.indexOf('class="s-nav"'), html.indexOf("</nav>"));
     expect(nav.indexOf(STATS_NAME)).toBeLessThan(nav.indexOf("My Stats"));
     expect(nav).not.toContain("Dashboard");
-    expect(html).toMatch(/<a [^>]*href="\/" class="s-exit[^"]*"[^>]*>‹ Dashboard<\/a>/);
+    expect(html).toMatch(/<a [^>]*href="\/" class="s-exit[^"]*"[^>]*>‹ Live Dashboard<\/a>/);
+  });
+
+  test("the marks name the site h2 Uplink, not h2 live", () => {
+    // The header logo and the banner strip's mark are the Uplink wordmark.
+    const marks = [...html.matchAll(/<svg [^>]*class="wordmark[^"]*"[^>]*>/g)].map((m) => m[0]);
+    expect(marks.length).toBeGreaterThanOrEqual(2);
+    for (const m of marks) expect(m).toContain(`aria-label="${STATS_NAME}"`);
+    expect(html).not.toMatch(/h2 live Players Online/);
+    expect(html).toMatch(/\d+ Players Online \(\d+ Games? Live\)/);
+    // Every link back to the dashboard says which one.
+    for (const m of html.matchAll(/<a [^>]*href="\/"[^>]*>([^<]*)<\/a>/g)) expect(m[1]).toContain("Live Dashboard");
   });
 
   test("the crumbs start at Home", () => {

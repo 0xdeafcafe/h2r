@@ -303,6 +303,11 @@ fn a_plan_replaces_the_base_scenarios_spawns_flags_and_items() {
     let f = BlockKind::NetgameFlags;
     assert_eq!(back.get(f, 0, "type").unwrap(), Value::Int(7));
     assert_eq!(back.get(f, 0, "team").unwrap(), Value::Int(3));
+    assert_eq!(
+        back.get(f, 0, "identifier").unwrap(),
+        Value::Int(3),
+        "the channel Halo 2 pairs by"
+    );
     let e = BlockKind::NetgameEquipment;
     assert_eq!(back.block(e).len(), 1);
     assert!(back.block(BlockKind::Weapons).is_empty());

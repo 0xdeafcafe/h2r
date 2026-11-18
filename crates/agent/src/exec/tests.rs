@@ -548,7 +548,7 @@ fn methods_and_features_list() {
     a.between_slices(&mut level(), 0);
     assert_eq!(
         next(&rx)["result"].as_array().unwrap().len(),
-        method::ALL.len()
+        method::ALL.len() + agent_proto::trace::method::ALL.len()
     );
     assert_eq!(next(&rx)["result"]["plan"][1], "agent: on");
 }

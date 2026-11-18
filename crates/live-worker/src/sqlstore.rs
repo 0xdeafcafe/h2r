@@ -682,6 +682,126 @@ mod tests {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
+    /// A host's own Clankers on the Worker's composition, as on a machine
+    /// (live-server's `tests/bots.rs`, docs/game/bots.md §6): `bot: true`
+    /// players with no xuid are taken at the start and on a join, the game
+    /// record keeps them, and the stats summary gives them no row and
+    /// credits nobody's row with a kill or death against them.
+    #[tokio::test]
+    async fn a_hosts_own_clankers_are_game_only_bots_on_the_worker() {
+        use axum::{body::Body, http::Request};
+        use http_body_util::BodyExt;
+        use live_proto::sign::{
+            AccountRequest, EventBody, KeyPair, format_unix, issue_token, parse_time, sign_batch,
+        };
+        use live_proto::{Xuid, lxm};
+        use live_server::{Live, Policy, ServerIdentity, app::Timers};
+        use tower::ServiceExt;
+
+        let path = temp_db("clankers");
+        let store = SqlStore::open(Sqlite(pool(&path).await)).await.unwrap();
+        let identity = ServerIdentity::open(path.parent().unwrap(), Some("live.test")).unwrap();
+        let live = Live::start_with(Arc::new(store), identity, Policy::default(), Timers::Driven)
+            .await
+            .unwrap();
+        let call = |method: &'static str, uri: String, auth: Option<String>, body: String| {
+            let live = live.clone();
+            async move {
+                let mut req = Request::builder().method(method).uri(uri);
+                if let Some(a) = auth {
+                    req = req.header("authorization", format!("Bearer {a}"));
+                }
+                let r = live_server::http::router(live)
+                    .oneshot(req.body(Body::from(body)).unwrap())
+                    .await
+                    .unwrap();
+                let status = r.status().as_u16();
+                let body = r.into_body().collect().await.unwrap().to_bytes();
+                (
+                    status,
+                    serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null),
+                )
+            }
+        };
+        let now = live_server::app::now;
+        let key = KeyPair::generate();
+        let (status, created) = call(
+            "POST",
+            "/v1/accounts".into(),
+            None,
+            AccountRequest::sign(&key, "Host", None, "live.test", now()),
+        )
+        .await;
+        assert_eq!(status, 201, "{created}");
+        let xuid = Xuid::parse(created["xuid"].as_str().unwrap()).unwrap();
+        let author = created["id"].as_str().unwrap().to_string();
+        let token = || issue_token(&key, &author, "live.test", lxm::GAMES_WRITE, now());
+        let clanker = |index: u32| serde_json::json!({"index": index, "name": format!("Clanker {index}"), "team": 1, "local": true, "bot": true});
+        let game = serde_json::json!({
+            "console": "Den", "map": "lockout", "mode": "multiplayer", "variant": "Slayer",
+            "team_play": false, "tick": 0, "kind": "custom",
+            "players": [
+                {"index": 0, "name": "Host", "xuid": xuid, "team": 0, "local": true},
+                clanker(1)
+            ]
+        });
+        let (status, started) =
+            call("POST", "/v1/games".into(), Some(token()), game.to_string()).await;
+        assert_eq!(status, 201, "{started}");
+        let id = started["game_id"].as_str().unwrap().to_string();
+        let at = parse_time(&format_unix(now())).unwrap();
+        let bodies: Vec<EventBody> = [
+            ("PlayerJoined", serde_json::json!({"player": clanker(2)})),
+            (
+                "PlayerKilled",
+                serde_json::json!({"tick": 30, "victim": 1, "killer": 0, "kind": "kill"}),
+            ),
+            (
+                "PlayerKilled",
+                serde_json::json!({"tick": 60, "victim": 0, "killer": 2, "kind": "kill"}),
+            ),
+            (
+                "GameEnded",
+                serde_json::json!({"tick": 900, "reason": "finished", "winner": {"player": 0}}),
+            ),
+        ]
+        .into_iter()
+        .map(|(kind, data)| EventBody::new(&key, &author, &format!("game-{id}"), kind, data, at))
+        .collect();
+        let (status, body) = call(
+            "POST",
+            format!("/v1/games/{id}/events"),
+            Some(token()),
+            sign_batch(&key, &bodies),
+        )
+        .await;
+        assert_eq!(status, 201, "{body}");
+
+        let (_, g) = call("GET", format!("/v1/games/{id}"), None, String::new()).await;
+        let players = g["players"].as_array().unwrap();
+        assert_eq!(players.len(), 3, "{g}");
+        assert!(
+            players[1..]
+                .iter()
+                .all(|p| p["bot"] == true && p["xuid"].is_null())
+        );
+        let (_, v) = call(
+            "GET",
+            "/v1/stats/summary?window=all".into(),
+            None,
+            String::new(),
+        )
+        .await;
+        assert_eq!(v["totals"]["kills"], 2);
+        let rows = v["players"].as_array().unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(
+            (rows[0]["kills"].as_u64(), rows[0]["deaths"].as_u64()),
+            (Some(0), Some(0))
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
     /// Signing a device out on the Worker's own composition: the revoked
     /// key's next request gets 401, and so it does after the hub restarts
     /// and rebuilds from its log (docs/live/live-api.md "Sign-ins").
@@ -704,8 +824,16 @@ mod tests {
                 .await
                 .unwrap()
         };
-        let call = |live: Arc<Live>, method: &'static str, uri: String, auth: Option<String>, ua: &'static str, body: String| async move {
-            let mut req = Request::builder().method(method).uri(uri).header("user-agent", ua);
+        let call = |live: Arc<Live>,
+                    method: &'static str,
+                    uri: String,
+                    auth: Option<String>,
+                    ua: &'static str,
+                    body: String| async move {
+            let mut req = Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("user-agent", ua);
             if let Some(a) = auth {
                 req = req.header("authorization", format!("Bearer {a}"));
             }
@@ -715,7 +843,10 @@ mod tests {
                 .unwrap();
             let status = r.status().as_u16();
             let body = r.into_body().collect().await.unwrap().to_bytes();
-            (status, serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null))
+            (
+                status,
+                serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null),
+            )
         };
         let now = || {
             std::time::SystemTime::now()
@@ -739,35 +870,97 @@ mod tests {
         assert_eq!(status, 201, "{created}");
         let xuid = Xuid::parse(created["xuid"].as_str().unwrap()).unwrap();
         let iss = created["id"].as_str().unwrap().to_string();
-        let secret = TotpSecret::from_base32(created["recovery"]["secret"].as_str().unwrap()).unwrap();
+        let secret =
+            TotpSecret::from_base32(created["recovery"]["secret"].as_str().unwrap()).unwrap();
         let game = KeyPair::generate();
         let recover = serde_json::json!({
             "request": RecoverRequest::sign(&game, "Drifter", "live.test", now()),
             "code": format_code(secret.code_at(now())),
         });
-        let (status, body) = call(live.clone(), "POST", "/v1/accounts/Drifter/recover".into(), None, "ureq/2.12.1", recover.to_string()).await;
+        let (status, body) = call(
+            live.clone(),
+            "POST",
+            "/v1/accounts/Drifter/recover".into(),
+            None,
+            "ureq/2.12.1",
+            recover.to_string(),
+        )
+        .await;
         assert_eq!(status, 201, "{body}");
 
         let token = |key: &KeyPair, m: &str| issue_token(key, &iss, "live.test", m, now());
         let signins = format!("/v1/accounts/by-xuid/{xuid}/signins");
-        let (status, body) = call(live.clone(), "GET", signins.clone(), Some(token(&game, lxm::SIGNINS_READ)), "ureq/2.12.1", String::new()).await;
+        let (status, body) = call(
+            live.clone(),
+            "GET",
+            signins.clone(),
+            Some(token(&game, lxm::SIGNINS_READ)),
+            "ureq/2.12.1",
+            String::new(),
+        )
+        .await;
         assert_eq!(status, 200, "{body}");
-        let kinds: Vec<&str> = body["items"].as_array().unwrap().iter().map(|i| i["kind"].as_str().unwrap()).collect();
+        let kinds: Vec<&str> = body["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["kind"].as_str().unwrap())
+            .collect();
         assert_eq!(kinds, ["game", "browser"], "{body}");
 
-        let (status, body) = call(live.clone(), "DELETE", format!("{signins}/{}", game.kid()), Some(token(&laptop, lxm::SIGNINS_WRITE)), browser, String::new()).await;
+        let (status, body) = call(
+            live.clone(),
+            "DELETE",
+            format!("{signins}/{}", game.kid()),
+            Some(token(&laptop, lxm::SIGNINS_WRITE)),
+            browser,
+            String::new(),
+        )
+        .await;
         assert_eq!(status, 200, "{body}");
-        let (status, _) = call(live.clone(), "GET", signins.clone(), Some(token(&game, lxm::SIGNINS_READ)), "ureq/2.12.1", String::new()).await;
+        let (status, _) = call(
+            live.clone(),
+            "GET",
+            signins.clone(),
+            Some(token(&game, lxm::SIGNINS_READ)),
+            "ureq/2.12.1",
+            String::new(),
+        )
+        .await;
         assert_eq!(status, 401);
-        let (status, _) = call(live.clone(), "GET", signins.clone(), Some(token(&laptop, lxm::SIGNINS_READ)), browser, String::new()).await;
+        let (status, _) = call(
+            live.clone(),
+            "GET",
+            signins.clone(),
+            Some(token(&laptop, lxm::SIGNINS_READ)),
+            browser,
+            String::new(),
+        )
+        .await;
         assert_eq!(status, 200);
 
         // The hub wakes again, its read model rebuilt from its own log.
         drop(live);
         let live = boot().await;
-        let (status, _) = call(live.clone(), "GET", signins.clone(), Some(token(&game, lxm::SIGNINS_READ)), "ureq/2.12.1", String::new()).await;
+        let (status, _) = call(
+            live.clone(),
+            "GET",
+            signins.clone(),
+            Some(token(&game, lxm::SIGNINS_READ)),
+            "ureq/2.12.1",
+            String::new(),
+        )
+        .await;
         assert_eq!(status, 401);
-        let (status, body) = call(live.clone(), "GET", signins, Some(token(&laptop, lxm::SIGNINS_READ)), browser, String::new()).await;
+        let (status, body) = call(
+            live.clone(),
+            "GET",
+            signins,
+            Some(token(&laptop, lxm::SIGNINS_READ)),
+            browser,
+            String::new(),
+        )
+        .await;
         assert_eq!(status, 200, "{body}");
         assert_eq!(body["items"].as_array().unwrap().len(), 1);
         assert_eq!(body["items"][0]["name"], "Firefox on Windows");

@@ -621,7 +621,9 @@ pub fn install(
             live = (
                 alloc,
                 alloc + custom_games::TAG_SPACE,
-                alloc + custom_games::TAG_SPACE + LIVE_ITEM_SLOTS * LIVE_MAX_EXTRA * speaker_row::ITEM_SIZE,
+                alloc
+                    + custom_games::TAG_SPACE
+                    + LIVE_ITEM_SLOTS * LIVE_MAX_EXTRA * speaker_row::ITEM_SIZE,
             );
             alloc = live.2 + 0x100;
         }
@@ -658,6 +660,7 @@ pub fn install(
         custom_games::BROWSER_EVENT,
         custom_games::BROWSER_BACK_LOADER,
         custom_games::LIVE_MENU_LOADER,
+        custom_games::LIST_LAYOUT,
         speaker_row::ADD_ITEMS,
         PANE_SET,
     ];
@@ -937,7 +940,7 @@ pub fn install(
                                 let coop = custom_games::coop_row_enabled();
                                 let panes = custom_games::extended_panes(coop);
                                 let rows = custom_games::VANILLA_ITEMS + custom_games::extra_items(coop);
-                                eprintln!("custom games: xbox live menu tag has {panes} panes and room for {rows} rows");
+                                eprintln!("custom games: xbox live menu tag has {panes} panes and shows {rows} rows");
                             }
                             Some(false) => eprintln!("custom games: the xbox live menu tag is not the retail one; left alone"),
                             None => eprintln!("custom games: could not extend the xbox live menu tag"),
@@ -1186,6 +1189,35 @@ pub fn install(
                 }
                 let item = mem.u32(cpu.esp + 4)?;
                 row_texts(cpu, ctx, &mut mem, item, vec![(0, id)])
+            });
+        }
+        // The Live menu's rows, five or six, closer together than the skin's
+        // item height so they fit where retail's four do: the layout, then
+        // each row moved up to the pitch (`custom_games::repitch`). Every
+        // other list goes straight to the original.
+        if let Some(o) = originals.remove(&custom_games::LIST_LAYOUT) {
+            let sh = alias(d, &mut next_shadow, &o, custom_games::LIST_LAYOUT);
+            let told = Arc::new(AtomicBool::new(false));
+            d.register_override(custom_games::LIST_LAYOUT, "custom-games:row-pitch", move |cpu, ctx, _| {
+                let handler = cpu.esi;
+                let live = ctx.runtime().memory().u32(handler).ok() == Some(custom_games::HANDLER_VTABLE);
+                if !live {
+                    return Ok(o.invoke(cpu, ctx, custom_games::LIST_LAYOUT));
+                }
+                let told = Arc::clone(&told);
+                call_then(cpu, ctx, sh, move |_, ctx| {
+                    let mut mem = ctx.runtime().memory();
+                    let rows = speaker_row::children(&*mem, handler).map_or(0, |c| c.len() as u32);
+                    let pitch = custom_games::pitch(rows);
+                    match custom_games::repitch(&mut *mem, handler, custom_games::HANDLER_VTABLE, pitch) {
+                        Some(n) if n > 0 && !told.swap(true, Ordering::Relaxed) => {
+                            eprintln!("custom games: xbox live menu rows {pitch} apart ({rows} rows, {n} moved)")
+                        }
+                        None => eprintln!("custom games: the xbox live menu's rows could not be moved"),
+                        _ => {}
+                    }
+                    Ok(())
+                })
             });
         }
         if let Some(o) = originals.remove(&custom_games::ROW_CHOSEN) {

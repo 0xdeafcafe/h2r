@@ -5,19 +5,20 @@
 //
 // --art is the art `h2 live assets extract` wrote (default: game-art/ in the
 // server directory). The banners go into it as banner/<id>.jpg and are added
-// to its manifest.json as `banner/<id>`, so the server, and a publish of the
-// art, carry them like the rest. Run it again after each extraction (that
+// to its manifest.json as `banner/<id>`, with the manifest's .br and .gz
+// copies written again, so the server, and a publish of the art, carry them
+// like the rest. Run it again after each extraction (that
 // starts the directory afresh). --shots writes every shot alone to DIR, for
 // checking. A headless Chrome draws them: --chrome, else $CHROME, else the
 // usual install. Nothing here reads the disc or writes into the repository.
 
 import { createServer, type Plugin } from "vite";
 import solid from "vite-plugin-solid";
-import { mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, existsSync, createReadStream } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, existsSync, createReadStream } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, normalize, resolve, sep, extname } from "node:path";
 import { COMPOSITIONS, SHOTS, check, type Shot } from "./plan";
-import { applyBanners, type Manifest } from "./manifest";
+import { applyBanners, writeManifest, type Manifest } from "./manifest";
 import type { BannerRequest, BannerResult } from "./page";
 import { Cdp, defaultChrome, launchChrome } from "./chrome";
 
@@ -119,9 +120,7 @@ async function main() {
       written.push({ id: c.id, file, width: c.width, height: c.height });
     }
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Manifest;
-    const tmp = manifestPath + ".banner";
-    writeFileSync(tmp, JSON.stringify(applyBanners(manifest, written), null, 2) + "\n");
-    renameSync(tmp, manifestPath);
+    writeManifest(manifestPath, applyBanners(manifest, written));
     if (shotsDir) {
       mkdirSync(shotsDir, { recursive: true });
       for (const [k, url] of Object.entries(result.shots)) writeFileSync(join(shotsDir, k.replace("/", "-") + ".jpg"), dataUrlBytes(url));

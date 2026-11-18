@@ -669,8 +669,9 @@ impl Studio {
         });
     }
 
-    /// The Maps list's other groups: user packages, then Halo 1 (converted
-    /// packages, and the maps of an open Halo 1 source, read-only).
+    /// The Maps list's other groups: the Map Pack, user packages, then
+    /// Halo 1 (converted packages, and the maps of an open Halo 1 source,
+    /// read-only).
     fn library_lists(&self, ui: &Ui, app: &App, actions: &mut Vec<Action>) {
         let opened = app.opened_package().map(str::to_owned);
         let entry = |e: &editor_core::packages::PackageEntry, actions: &mut Vec<Action>| {
@@ -698,6 +699,28 @@ impl Studio {
                 }
             ));
         };
+        if let Some(pack) = app.mappack() {
+            ui.spacing();
+            self.heading(ui, "Map Pack");
+            let kind = if pack.is_folder() {
+                icon::FOLDER
+            } else {
+                icon::DISC
+            };
+            ui.text_disabled(format!("{kind} {}", pack.path().display()));
+            let loaded = app.loaded_map().filter(|_| opened.is_none());
+            for name in app.mappack_maps() {
+                let on = loaded == Some(name.as_str());
+                if ui
+                    .selectable_config(format!("{}  {name}##pack-{name}", icon::MAP))
+                    .selected(on)
+                    .build()
+                    && !on
+                {
+                    actions.push(Action::SelectMap(name.clone()));
+                }
+            }
+        }
         let (h1, own): (Vec<_>, Vec<_>) = app.packages().iter().partition(|e| e.halo1.is_some());
         if !own.is_empty() {
             ui.spacing();

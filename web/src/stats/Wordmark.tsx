@@ -1,65 +1,49 @@
-// The stats site's "h2 live" wordmark, drawn here as SVG strokes: squared
-// lower-case letters on a 30px cap line with a split chrome fill. No font is
-// involved, so it stays crisp at any size. Three variants are kept so the
-// owner can choose; `WORDMARK` is the one the site uses.
+// The stats site's "h2 | UPLINK" wordmark (STATS_NAME, src/brand.ts), drawn
+// here as SVG strokes: a squared chrome "h2" on a 30px cap line, a thin rule,
+// and small spaced capitals in pale blue. No font is involved, so it stays
+// crisp at any size. Original art: no real logo is traced.
 
 import { createUniqueId, type JSX } from "solid-js";
-
-export type WordmarkVariant = "chrome" | "split" | "plate";
-export const WORDMARK: WordmarkVariant = "split";
+import { STATS_NAME } from "../brand";
 
 // Centre lines on a grid: ascender 4, x-height 14, baseline 30.
 const H = "M3 4V30M3 18Q3 14 7 14H13Q17 14 17 18V30";
 const TWO = "M25 6H35Q39 6 39 10V14Q39 18 35 18H29Q25 18 25 22V28H39.500";
-const lower = (x: number) =>
-  `M${x} 4V30M${x + 9} 14V30M${x + 17} 14L${x + 24} 29.500L${x + 31} 14M${x + 39} 22H${x + 51}V18Q${x + 51} 14 ${x + 47} 14H${x + 41}Q${x + 37} 14 ${x + 37} 18V26Q${x + 37} 30 ${x + 41} 30H${x + 51}`;
-const dot = (x: number) => `M${x + 9} 4.500V8.500`;
-const caps = (x: number, t: number, b: number) => {
+
+/** "UPLINK" in capitals from `t` to `b`, starting at `x`: letters 8 wide
+ *  (L 7, I a stroke) with 6.5 between them, small rounded corners. */
+function uplink(x: number, t: number, b: number): string {
   const m = (t + b) / 2;
-  return `M${x} ${t}V${b}H${x + 7}M${x + 14} ${t}V${b}M${x + 21} ${t}L${x + 26} ${b}L${x + 31} ${t}M${x + 45} ${t}H${x + 38}V${b}H${x + 45}M${x + 38} ${m}H${x + 44}`;
-};
+  const at = [0, 14.5, 29, 42.5, 49, 63.5].map((d) => x + d);
+  const [u, p, l, i, n, k] = at as [number, number, number, number, number, number];
+  return [
+    `M${u} ${t}V${b - 2}Q${u} ${b} ${u + 2} ${b}H${u + 6}Q${u + 8} ${b} ${u + 8} ${b - 2}V${t}`,
+    `M${p} ${b}V${t}H${p + 6}Q${p + 8} ${t} ${p + 8} ${t + 2}V${m - 2}Q${p + 8} ${m} ${p + 6} ${m}H${p}`,
+    `M${l} ${t}V${b}H${l + 7}`,
+    `M${i} ${t}V${b}`,
+    `M${n} ${b}V${t}L${n + 8} ${b}V${t}`,
+    `M${k} ${t}V${b}M${k + 8} ${t}L${k + 1.500} ${m}L${k + 8} ${b}`,
+  ].join("");
+}
 
-const WIDTH: Record<WordmarkVariant, number> = { chrome: 106, split: 102, plate: 112 };
+/** The viewBox's width: the word ends at 55 + 71.5, plus half a stroke and a margin. */
+export const WORDMARK_WIDTH = 129;
 
-export default function Wordmark(props: { height?: number; variant?: WordmarkVariant; class?: string }): JSX.Element {
+export default function Wordmark(props: { height?: number; class?: string }): JSX.Element {
   const id = createUniqueId();
-  const v = () => props.variant ?? WORDMARK;
   const h = () => props.height ?? 34;
   const stroke = { fill: "none", "stroke-linejoin": "round", "stroke-linecap": "butt" } as const;
   return (
-    <svg class={`wordmark ${props.class ?? ""}`} viewBox={`0 0 ${WIDTH[v()]} 34`} width={(WIDTH[v()] * h()) / 34} height={h()} role="img" aria-label="h2 live">
+    <svg class={`wordmark ${props.class ?? ""}`} viewBox={`0 0 ${WORDMARK_WIDTH} 34`} width={(WORDMARK_WIDTH * h()) / 34} height={h()} role="img" aria-label={STATS_NAME}>
       <defs>
         <linearGradient id={`${id}c`} gradientUnits="userSpaceOnUse" x1="0" y1="3" x2="0" y2="31">
           <stop offset="0" stop-color="#fff" /><stop offset=".47" stop-color="#c9d2dc" /><stop offset=".5" stop-color="#93a0b0" /><stop offset="1" stop-color="#e4e9ef" />
         </linearGradient>
-        <linearGradient id={`${id}b`} gradientUnits="userSpaceOnUse" x1="0" y1="3" x2="0" y2="31">
-          <stop offset="0" stop-color="#cfe6fb" /><stop offset=".47" stop-color="#8fbbe3" /><stop offset=".5" stop-color="#5f8fbd" /><stop offset="1" stop-color="#a9cdee" />
-        </linearGradient>
       </defs>
-      {v() === "chrome" && (
-        <>
-          <path d={`${H}${TWO}${lower(52)}${dot(52)}`} {...stroke} stroke="#000" stroke-opacity=".7" stroke-width="4.600" transform="translate(0 1.200)" />
-          <path d={`${H}${TWO}`} {...stroke} stroke={`url(#${id}c)`} stroke-width="4.600" />
-          <path d={`${lower(52)}${dot(52)}`} {...stroke} stroke={`url(#${id}b)`} stroke-width="4.600" />
-        </>
-      )}
-      {v() === "split" && (
-        <>
-          <path d={`${H}${TWO}`} {...stroke} stroke="#000" stroke-opacity=".7" stroke-width="5.400" transform="translate(0 1.200)" />
-          <path d={`${H}${TWO}`} {...stroke} stroke={`url(#${id}c)`} stroke-width="5.400" />
-          <path d="M48.500 4V30" {...stroke} stroke="#5d7696" stroke-width="1" />
-          <path d={caps(55, 17.500, 29)} {...stroke} stroke="#9fc6ea" stroke-width="2.200" />
-        </>
-      )}
-      {v() === "plate" && (
-        <>
-          <rect x=".5" y="1.500" width="45" height="31" rx="3.500" fill={`url(#${id}c)`} stroke="#0a1420" />
-          <rect x="2" y="3" width="42" height="28" rx="2.500" fill="none" stroke="#fff" stroke-opacity=".55" />
-          <path d={`${H}${TWO}`} {...stroke} stroke="#0b1826" stroke-width="4.400" transform="translate(2.500 0)" />
-          <path d={`${lower(56)}${dot(56)}`} {...stroke} stroke="#000" stroke-opacity=".7" stroke-width="4.200" transform="translate(0 1.200)" />
-          <path d={`${lower(56)}${dot(56)}`} {...stroke} stroke={`url(#${id}c)`} stroke-width="4.200" />
-        </>
-      )}
+      <path d={`${H}${TWO}`} {...stroke} stroke="#000" stroke-opacity=".7" stroke-width="5.400" transform="translate(0 1.200)" />
+      <path d={`${H}${TWO}`} {...stroke} stroke={`url(#${id}c)`} stroke-width="5.400" />
+      <path d="M48.500 4V30" {...stroke} stroke="#5d7696" stroke-width="1" />
+      <path d={uplink(55, 17.500, 29)} {...stroke} stroke="#9fc6ea" stroke-width="2.200" />
     </svg>
   );
 }

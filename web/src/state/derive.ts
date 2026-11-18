@@ -269,6 +269,14 @@ export function nextRankAt(exp: number): number | null {
 
 /** Multiplayer totals for an account (campaign games never count); `only`
  *  narrows them to some of its games (a map, a playlist). */
+/** The knockouts of `g` a career counts: none with a Clanker bot on either
+ *  side (docs/game/bots.md §6). The game record keeps them all; a kill of a
+ *  bot, or a death to one, is game-only. */
+export function careerKills(g: GameState): Kill[] {
+  const bot = (i: number | null) => i !== null && g.players[i]?.bot === true;
+  return g.kills.filter((k) => !bot(k.victim) && !bot(k.killer));
+}
+
 export function serviceRecord(s: LiveState, xuid: Xuid, only?: (g: GameState) => boolean): ServiceRecord {
   const all = gameHistory(s, xuid);
   const hist = only ? all.filter((h) => only(h.game)) : all;
@@ -282,15 +290,21 @@ export function serviceRecord(s: LiveState, xuid: Xuid, only?: (g: GameState) =>
     const g = h.game;
     if (g.status === "ended") rec.completed++;
     if (h.won) rec.wins++;
-    rec.kills += h.kills; rec.deaths += h.deaths; rec.assists += h.assists;
-    rec.bestSpree = Math.max(rec.bestSpree, h.bestSpree);
+    const slots = new Set(h.slots);
+    // The scoreboard's counts less what bots gave or took (as far as the
+    // loaded knockouts tell).
+    const kills = careerKills(g);
+    const isBot = (i: number | null) => i !== null && g.players[i]?.bot === true;
+    const botKills = g.kills.filter((k) => k.kind === "kill" && k.killer !== null && slots.has(k.killer) && isBot(k.victim)).length;
+    const botDeaths = g.kills.filter((k) => slots.has(k.victim) && isBot(k.killer)).length;
+    rec.kills += Math.max(0, h.kills - botKills); rec.deaths += Math.max(0, h.deaths - botDeaths); rec.assists += h.assists;
+    for (const i of h.slots) rec.bestSpree = Math.max(rec.bestSpree, bestSprees(kills).get(i) ?? 0);
     if (!rec.firstPlayed || g.started_at < rec.firstPlayed) rec.firstPlayed = g.started_at;
     if (!rec.lastPlayed || g.started_at > rec.lastPlayed) rec.lastPlayed = g.started_at;
-    const slots = new Set(h.slots);
-    weapons.push(weaponBreakdown(g.kills, slots));
-    against.push(weaponsAgainst(g.kills, slots));
-    for (const [m, n] of countMedals(gameMedals(g.kills), slots)) rec.medals.set(m, (rec.medals.get(m) ?? 0) + n);
-    rec.killsSeen += g.kills.filter((k) => k.killer !== null && slots.has(k.killer)).length;
+    weapons.push(weaponBreakdown(kills, slots));
+    against.push(weaponsAgainst(kills, slots));
+    for (const [m, n] of countMedals(gameMedals(kills), slots)) rec.medals.set(m, (rec.medals.get(m) ?? 0) + n);
+    rec.killsSeen += kills.filter((k) => k.killer !== null && slots.has(k.killer)).length;
   }
   rec.weapons = mergeWeapons(weapons);
   rec.weaponsAgainst = mergeWeapons(against);
@@ -309,7 +323,7 @@ export function playedWith(s: LiveState, xuid: Xuid, mode?: GameMode): Friend[] 
   for (const g of gamesFor(s, xuid, mode)) {
     const seen = new Set<Xuid>();
     for (const p of Object.values(g.players)) {
-      if (!p.xuid || p.xuid === xuid || seen.has(p.xuid)) continue;
+      if (!p.xuid || p.bot || p.xuid === xuid || seen.has(p.xuid)) continue;
       seen.add(p.xuid);
       const f = m.get(p.xuid) ?? { xuid: p.xuid, games: 0, lastPlayed: g.started_at };
       f.games++;

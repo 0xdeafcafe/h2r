@@ -111,6 +111,7 @@ mod tests {
                 },
                 appearance: crate::event::Appearance::default(),
                 local_user: None,
+                controller: None,
                 machine: [0; 6],
                 unit: u32::MAX,
                 stats: crate::event::PlayerStats::ZERO,

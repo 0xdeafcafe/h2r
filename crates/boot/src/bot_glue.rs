@@ -4,10 +4,13 @@
 //! - The process-wide [`bots::local::global`] bots are an input backend,
 //!   added after the host's own pads, so they can be added at any time
 //!   (`H2_BOTS=<n>` adds `n` brains at boot; the agent API can add more).
-//! - On the players screen, a bot's A reaches the screen's handler for a
-//!   controller with no profile (`PLAYERS_SCREEN_UNJOINED`). For a bot the
-//!   hook answers in its place: the game's own sign-in with a profile made
-//!   from the human's ([`bots::guest::sign_in`]).
+//! - On the players screen the glue signs each bot in itself, with the
+//!   game's own sign-in and a profile made from the human's
+//!   ([`bots::guest::sign_in_then`]), before `SOUND_UPDATE`. A bot never
+//!   presses a button to join (see "The join gate"). A bot's A that still
+//!   reaches the screen's handler for a controller with no profile
+//!   (`PLAYERS_SCREEN_UNJOINED`, a sim script's) is answered the same way
+//!   ([`bots::guest::sign_in`]).
 //! - Before each `RENDER_FRAME` (the game thread) each bot's source gives
 //!   its pad for the frame ([`bots::local::Local::frame`]).
 //! - Around `RENDER_FRAME` and `SOUND_UPDATE`, the bots' local users are
@@ -22,13 +25,19 @@
 //!   their players; each joined phantom's pad becomes its action. When the
 //!   game ends they leave the session and wait for the next.
 //!
-//! **The join gate.** A bot taps A only while the players screen takes
-//! player one's input, nothing sits on windows 0 to 4 (a dialog, or the
-//! profile chooser: [`crate::ui_watch::dialog`]) and its own slot has no
-//! profile ([`join_gate`]). A tap that reached an open profile chooser
-//! picked the first profile, the human's (the user's run: four of the
-//! human's player on the players screen). Each port's gate is logged when
-//! it changes, and each tap as it starts.
+//! **The join gate.** A bot is signed in only while the players screen
+//! takes player one's input, nothing sits on windows 0 to 4 (a dialog, or
+//! the profile chooser: [`crate::ui_watch::dialog`]), its own slot has no
+//! profile, a human has one to copy and no game runs ([`to_sign_in`]).
+//! Each port's gate is logged when it changes, and each sign-in.
+//!
+//! Bots used to tap A through that gate, and every tap the game took
+//! anywhere but the players screen's own handler opened a profile chooser
+//! for the bot's controller: the pregame lobby's handler (`0x250b1e`) sends
+//! A or START from a controller with no profile to the chooser
+//! (`0x250cc3`), and a tap that reached a chooser picked the first profile,
+//! the human's (the user's runs: the human's player four times on the
+//! players screen; "pick a profile" popping up in an Xbox Live lobby).
 //!
 //! **Leaving.** A bot taken off ([`bots::local::Local::remove`]) keeps an
 //! idle pad. Before `SOUND_UPDATE`, once no game runs, the hook answers
@@ -87,15 +96,18 @@ pub fn join_gate(
         && signed_in == Some(false)
 }
 
-/// The log line for one port's gate: what it read and what it decided.
+/// The log line for one port's gate: what it read and what it decided,
+/// with the slot's flags (`flags`, slot `+0`: `0x10` a profile, `0x20`
+/// signed in to Xbox Live), for what the lobby makes of the bot.
 pub fn gate_line(
     port: u8,
     top: Option<crate::ui_watch::Top>,
     dialog: Option<crate::ui_watch::Dialog>,
     signed_in: Option<bool>,
+    flags: Option<u32>,
 ) -> String {
     let verdict = if join_gate(top, dialog, signed_in) {
-        "taps A"
+        "signs in"
     } else {
         "waits"
     };
@@ -103,12 +115,39 @@ pub fn gate_line(
     let dialog = dialog.map_or_else(
         || "none".to_owned(),
         |d| {
-            let id = d.id.map_or_else(|| "?".to_owned(), |i| format!("0x{i:02x}"));
+            let id =
+                d.id.map_or_else(|| "?".to_owned(), |i| format!("0x{i:02x}"));
             format!("{id} (window {}, slot {})", d.window, d.slot)
         },
     );
     let signed = signed_in.map_or_else(|| "?".to_owned(), |b| b.to_string());
-    format!("bots: join gate port {port}: top {top}, dialog {dialog}, signed_in {signed}: {verdict}")
+    let flags = flags.map_or_else(|| "?".to_owned(), |f| format!("{f:#x}"));
+    format!(
+        "bots: join gate port {port}: top {top}, dialog {dialog}, signed_in {signed} (slot {flags}): {verdict}"
+    )
+}
+
+/// Frames between sign-in tries (a try that did not take, as with no
+/// human profile yet, is not made every frame).
+pub const SIGN_IN_EVERY: u64 = 30;
+
+/// The ports whose bot the glue signs in now: each joining bot's port
+/// (`joining`, a mask) whose [`join_gate`] is open, while no game runs
+/// (`in_game`) and a human has a profile to copy (`human`).
+pub fn to_sign_in(
+    top: Option<crate::ui_watch::Top>,
+    dialog: Option<crate::ui_watch::Dialog>,
+    joining: u32,
+    signed_in: impl Fn(u8) -> Option<bool>,
+    human: bool,
+    in_game: bool,
+) -> Vec<u8> {
+    if in_game || !human {
+        return Vec::new();
+    }
+    (0..4u8)
+        .filter(|&p| joining & 1 << p != 0 && join_gate(top, dialog, signed_in(p)))
+        .collect()
 }
 
 /// The feature over a set of local bots.
@@ -123,8 +162,8 @@ pub struct Bots {
     sound: Arc<Mutex<Option<Hidden>>>,
     /// Each port's last join-gate line, so it is logged on a change.
     gates: Arc<Mutex<[String; 4]>>,
-    /// A sign-out is running the frame itself: its own `SOUND_UPDATE` call
-    /// must not start another.
+    /// A sign-in or sign-out is running the frame itself: its own
+    /// `SOUND_UPDATE` call must not start another.
     signing_out: Arc<AtomicBool>,
 }
 
@@ -236,8 +275,9 @@ impl feature::Feature for Bots {
                 if bots == 0 {
                     return Ok(Flow::Continue);
                 }
-                // The join gate, per port: logged when it changes, each tap
-                // as it starts.
+                // The join gate, per port, logged when it changes; a bot it
+                // lets through presses nothing (the sign-in is before
+                // SOUND_UPDATE).
                 let top = crate::ui_watch::read(&*mem).top;
                 let dialog = crate::ui_watch::dialog(&*mem);
                 let joining = local.joining_mask();
@@ -252,18 +292,17 @@ impl feature::Feature for Bots {
                         }
                         let signed_in = guest::signed_in(g, u32::from(port)).ok();
                         open[usize::from(port)] = join_gate(top, dialog, signed_in);
-                        let line = gate_line(port, top, dialog, signed_in);
+                        let flags = g.u32(guest::slot(u32::from(port))).ok();
+                        let line = gate_line(port, top, dialog, signed_in, flags);
                         if said[usize::from(port)] != line {
                             eprintln!("{line}");
                             said[usize::from(port)] = line;
                         }
-                        if open[usize::from(port)] && f % local::JOIN_EVERY == 0 {
-                            let name = local.name_on(u32::from(port)).unwrap_or_default();
-                            eprintln!("bots: {name} taps A on port {port}");
-                        }
                     }
                 }
-                local.frame(f, g, |port| open.get(usize::from(port)).copied().unwrap_or(false));
+                local.frame(f, g, |port| {
+                    open.get(usize::from(port)).copied().unwrap_or(false)
+                });
                 *lock(&render) = guest::hide(&mut *mem, bots).ok().flatten();
                 Ok(Flow::Continue)
             },
@@ -302,16 +341,63 @@ impl feature::Feature for Bots {
 
         // The listeners: the humans' ears only.
         // And, out of a game, the leaving bots signed out, then unplugged.
-        let (local, sound, busy) = (
+        // And on the players screen, the joining bots signed in.
+        let (local, sound, busy, frame) = (
             self.local.clone(),
             Arc::clone(&self.sound),
             Arc::clone(&self.signing_out),
+            Arc::clone(&self.frame),
         );
         b.raw().before(
             &points::SOUND_UPDATE,
-            "sign leaving bots out; hide bot listeners",
+            "sign bots in and leaving bots out; hide bot listeners",
             move |c| {
                 let rt = Arc::clone(c.ctx.runtime());
+                let joining = local.joining_mask();
+                if joining != 0
+                    && !busy.load(Ordering::Relaxed)
+                    && frame.load(Ordering::Relaxed) % SIGN_IN_EVERY == 0
+                {
+                    let bots = local.port_mask();
+                    let (ports, screen) = {
+                        let mem = rt.memory();
+                        let top = crate::ui_watch::read(&*mem).top;
+                        let human = guest::human_port(&*mem, bots).ok().flatten().is_some();
+                        let ports = to_sign_in(
+                            top,
+                            crate::ui_watch::dialog(&*mem),
+                            joining,
+                            |p| guest::signed_in(&*mem, u32::from(p)).ok(),
+                            human,
+                            guest::game_tick(&*mem).is_some(),
+                        );
+                        let screen = top
+                            .filter(|t| t.id == crate::ui_watch::JOIN_SCREEN)
+                            .map(|t| t.screen);
+                        (ports, screen)
+                    };
+                    if !ports.is_empty() {
+                        let joins: Vec<(u32, String)> = ports
+                            .iter()
+                            .map(|&p| {
+                                let name = local.name_on(u32::from(p)).unwrap_or_default();
+                                eprintln!("bots: signing {name} in on port {p}");
+                                (u32::from(p), name)
+                            })
+                            .collect();
+                        busy.store(true, Ordering::Relaxed);
+                        let busy = Arc::clone(&busy);
+                        let then = points::SOUND_UPDATE.base;
+                        return c.answer_async(move |cx| -> engine::entry::EntryFuture {
+                            Box::pin(async move {
+                                let r = guest::sign_in_then(cx, joins, bots, buffer, screen, then)
+                                    .await;
+                                busy.store(false, Ordering::Relaxed);
+                                r
+                            })
+                        });
+                    }
+                }
                 if !busy.load(Ordering::Relaxed) {
                     let leaving = local.leaving();
                     if !leaving.is_empty() {
@@ -398,12 +484,18 @@ fn load_map_data(seen: &Mutex<String>, dir: &std::path::Path, mem: &runtime::Gue
     let file = dir.join(bots::cache::file_name(&name, 0));
     std::thread::spawn(move || {
         let read = std::fs::read(&file);
-        let data = read.as_ref().ok().and_then(|b| bots::cache::MapData::from_bytes(b));
+        let data = read
+            .as_ref()
+            .ok()
+            .and_then(|b| bots::cache::MapData::from_bytes(b));
         match (data, read.is_ok(), auto.is_some()) {
             (Some((d, _)), ..) => {
-                let (polys, links, walls) = (d.nav.polys.len(), d.nav.edges.len(), d.walls.tris.len());
+                let (polys, links, walls) =
+                    (d.nav.polys.len(), d.nav.edges.len(), d.walls.tris.len());
                 if autonav::offer(&name, d, false) {
-                    eprintln!("bots: {name}: {polys} polygons, {links} links, {walls} wall triangles");
+                    eprintln!(
+                        "bots: {name}: {polys} polygons, {links} links, {walls} wall triangles"
+                    );
                 }
             }
             (None, false, true) => eprintln!(
@@ -451,6 +543,7 @@ mod tests {
             window: 5,
             slot: 4,
             id,
+            screen: 0x8000_0000,
             live_row: None,
             mode: Some(1),
         })
@@ -476,18 +569,60 @@ mod tests {
     }
 
     #[test]
+    fn the_glue_signs_in_only_joining_bots_whose_gate_is_open() {
+        let empty = |_: u8| Some(false);
+        // Ports 1 and 3 joining, 2 an H2_BOTS bot already in.
+        let slots = |p: u8| Some(p == 2);
+        assert_eq!(
+            to_sign_in(on(JOIN_SCREEN), None, 0b1110, slots, true, false),
+            vec![1, 3]
+        );
+        assert_eq!(
+            to_sign_in(on(JOIN_SCREEN), None, 0b0010, empty, true, false),
+            vec![1],
+            "a port with no joining bot is the human's"
+        );
+        assert!(
+            to_sign_in(on(JOIN_SCREEN), None, 0b10, empty, false, false).is_empty(),
+            "no human profile to copy yet"
+        );
+        assert!(
+            to_sign_in(on(JOIN_SCREEN), None, 0b10, empty, true, true).is_empty(),
+            "a game runs"
+        );
+        assert!(
+            to_sign_in(on(JOIN_SCREEN), CHOOSER, 0b10, empty, true, false).is_empty(),
+            "a profile chooser is open"
+        );
+        // The Xbox Live menu and anything else: never, so nothing a bot does
+        // reaches a screen that would open a chooser for it.
+        for id in [0x09, crate::custom_games::SCREEN_ID as u32] {
+            assert!(
+                to_sign_in(on(id), None, 0b10, empty, true, false).is_empty(),
+                "screen {id:#x}"
+            );
+        }
+        assert!(to_sign_in(None, None, 0b10, empty, true, false).is_empty());
+    }
+
+    #[test]
     fn the_gate_line_says_what_it_read() {
         assert_eq!(
-            gate_line(1, on(JOIN_SCREEN), None, Some(false)),
-            "bots: join gate port 1: top 0x1e, dialog none, signed_in false: taps A"
+            gate_line(1, on(JOIN_SCREEN), None, Some(false), Some(0)),
+            "bots: join gate port 1: top 0x1e, dialog none, signed_in false (slot 0x0): signs in"
         );
         assert_eq!(
-            gate_line(2, on(JOIN_SCREEN), CHOOSER, Some(false)),
-            "bots: join gate port 2: top 0x1e, dialog 0x17 (window 3, slot 4), signed_in false: waits"
+            gate_line(2, on(JOIN_SCREEN), CHOOSER, Some(false), Some(0)),
+            "bots: join gate port 2: top 0x1e, dialog 0x17 (window 3, slot 4), signed_in false (slot 0x0): waits"
         );
         assert_eq!(
-            gate_line(3, None, None, None),
-            "bots: join gate port 3: top none, dialog none, signed_in ?: waits"
+            gate_line(3, None, None, None, None),
+            "bots: join gate port 3: top none, dialog none, signed_in ? (slot ?): waits"
+        );
+        assert_eq!(
+            gate_line(1, on(0xba), None, Some(true), Some(0x10)),
+            "bots: join gate port 1: top 0xba, dialog none, signed_in true (slot 0x10): waits",
+            "a profile, not on Xbox Live"
         );
     }
 }

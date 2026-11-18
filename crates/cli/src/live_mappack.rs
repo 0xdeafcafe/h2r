@@ -42,6 +42,20 @@ pub struct FoundMap {
     pub pack: PackMap,
 }
 
+impl FoundMap {
+    /// The whole map, read from its host (`h2 live maps import` reads a
+    /// map pack base this way).
+    pub fn read(&self) -> Result<Vec<u8>> {
+        let mut f =
+            File::open(&self.host).with_context(|| format!("opening {}", self.host.display()))?;
+        let mut out = vec![0u8; self.size as usize];
+        f.seek(SeekFrom::Start(self.base))?;
+        f.read_exact(&mut out)
+            .with_context(|| format!("reading {}.map from {}", self.stem, self.host.display()))?;
+        Ok(out)
+    }
+}
+
 /// v2 record: the English name (32 UTF-16 units) and description (128),
 /// as `content::map_list` writes them.
 const NAMES: usize = 0x114;

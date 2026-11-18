@@ -1,10 +1,14 @@
 # Halo 1's HUD on converted Halo 1 maps
 
-Status (2026-11-18): the unit HUD is built and is the converted player's
-default; the switch to Halo 2's HUD is built in the boot but the
-converter does not yet record the pairs, so Halo 1's HUD always shows.
-Weapon HUDs, grenades and the HUD globals are not converted yet. Nothing
-here has been seen running. Labels as in [health.md](health.md): **E**
+Status (2026-11-18, converter v66): the unit HUD, each grenade type's
+HUD (its indicator and count) and the weapon HUDs (statics, meters,
+crosshairs and the ammunition and battery counts) are converted; Halo 1's
+HUD is the default on Halo 1 maps. The converter records each HUD pair
+and the boot swaps them on the player's choice (`halo1.hud`, "The
+switch" below). The HUD globals (`hudg`) and Halo 1's overlay elements
+are not converted. Played at v60 on Blood Gulch (the shield over the
+health bar and the grenade count's digits below its indicator, both
+fixed in v66); the weapon counts have not been seen running. Labels as in [health.md](health.md): **E**
 engine code (`h2 disasm`), **V** checked on the owner's discs, **D** a
 choice made here.
 
@@ -134,6 +138,9 @@ Halo 1's `wphi` layout, from its draw (E, Halo 1's XBE, `0x000db5d0`..,
 | meter on rounds loaded (state 1) | legacy meter on input `0x36`, loaded over the magazine (E `0x0013ae7c`; V: Halo 2's magnum) |
 | meter on heat (state 2) | input `0x31`, `[ecx+0x14]` (E `0x0013af00`; V: the beam rifle's and sentinel beam's meters) |
 | meter on battery (state 3) | input `0x38`, `1 - age` (E `0x0013af94`; V: the energy sword's) |
+| number on rounds in reserve (state 0) | number text on input `0x33` (E `0x0013aed2`, `[ecx+8]`; V: retail Halo 2's ammo counts) |
+| number on rounds loaded (state 1) | number text on input `0x30` (E `0x0013ae43`, `[ecx+6]`) |
+| number on battery (state 3) | number text on input `0x32`, `100 - age * 100` (E `0x0013aee3`; V: retail Halo 2's plasma rifle, energy sword and sentinel beam battery counts) |
 | aim crosshair overlay (type 0) | centred (E `0x000dad9e`: the crosshairs' header anchor is 4), Halo 2's battle rifle reticle's state flags |
 | aim overlay with flag bit 2 (scope lines) | the same, with the scope masks' state flags (`+0x08` bit `0x40`, zoomed only) |
 
@@ -148,7 +155,75 @@ Left out, each named in the weapon's report: split-screen-only entries
 Halo 2 input for them is established), warning crosshairs (types 3 and
 up: reload, overheat, no ammunition, no grenades; V: `hud_reticle_warnings`),
 the zoom-level readout (type 1, its sprite chosen by the zoom level),
-aim overlays shown only unzoomed (bit 6), numbers and overlay elements.
+aim overlays shown only unzoomed (bit 6), statics of colour 0 (below),
+numbers on other states (the sniper rifle's zoom readouts, states 6 and
+7, with fraction digits), numbers shown in magazines, and overlay
+elements.
+
+### The ammunition and battery counts
+
+Halo 1's weapon numbers (`wphi +0x78`, `0xa0` each; drawn at E
+`0x000dbf1e`..`0x000dc0f0` by the number draw `0x000e1a60`, the grenade
+count's) are read by `h1hud::weapon_entries` and written by
+`h1hud::weapon_number` as Halo 2 number texts, placed as the grenade
+count is (`h1hud::number_point`, "The count" below): right-justified to
+end where Halo 1's last digit cell does, the digits' ink centred on
+Halo 1's digit sprites' rows. The number element: offset `+0x24` (its
+anchor the `wphi`'s), colour `+0x48` (the draw's default, element
+`+0x24`, `0x000e1c85`), digits `+0x68`, flags `+0x69`, fraction digits
+`+0x6a`; entry `+0x78` bit 0 divides the value by the magazine size
+(`0x000dbf5f`, `0x000dc0de`: "in magazines").
+
+The values (E `0x000dbc4e`..`0x000dbc99`, from the per-magazine block
+`0x000be2f0` fills): state 0 the magazine's `+6`, state 1 its `+8`,
+state 3 `(1 - age) * 100`. Halo 2's inputs: `0x33` is `[ecx+8]`, filled
+from `0x001008f0`, which reads the magazine's `+0x22a`, the rounds in
+reserve (V: retail Halo 2's battle rifle, magnum, shotgun and rocket
+launcher counts read it); `0x30` is `[ecx+6]`, the magazine's `+0x22c`,
+the rounds loaded; `0x32` is `100 - [ecx+0x10] * 100`, the battery's
+percentage. Halo 1's magazine holds reserve then loaded at `+6`, `+8`, as
+Halo 2's does at `+0x22a`, `+0x22c` (inferred from the field order).
+Halo 2's `0x33` also counts other carried weapons' rounds of the same
+kind (`0x001008f0` past `+0x22a`; inferred, not followed).
+
+On Blood Gulch (V) the full-screen counts are one per weapon: rounds in
+reserve, three digits at (29, 3) on the assault rifle, pistol, shotgun,
+rocket launcher, sniper rifle and needler; the battery, three digits at
+(26, 3), on the plasma rifle and plasma pistol (screen type 0). Rounds
+loaded and the reserve in magazines are split-screen only.
+
+Their scale field is 0. The number draw does not read it: its scale is
+its eighth argument (E `0x000e1b3d`), 0 from the weapon HUD
+(`0x000dc0d6`), and a scale not above 0 is 1.0 (`0x000e1b58`). So they
+are not refused as scaled.
+
+Halo 1 draws leading zeros on these (flags bit 0, all of them; E
+`0x000e1f5d`..`0x000e1f6f`: without it a zero high digit ends the
+number): 60 rounds show as `060`. Halo 2's number text shows `60`; no
+padding of it is established. Halo 1 also shows only the low `digits`
+digits; Halo 2 shows them all (no count on the disc passes 999).
+
+### Statics of colour 0
+
+Halo 1's element draw (E `0x000e1320`) sets blend mode 7 (draw struct
+`+0x88`) and writes the element's colour into each vertex's diffuse
+(`+0x0c`). Mode 7 in the tables `0x0007f4e0` indexes (`0x001e9c0c`
+source, `0x001e9c30` destination, `0x001e9c54` operation; V: read from
+the disc's XBE by `hud_layout_disc`) is ONE, ONE_MINUS_SRC_ALPHA, ADD:
+premultiplied, `tex * colour + dst * (1 - tex.a * colour.a)` (the texture
+times the diffuse is inferred from the vertex layout; the texture stages
+were not read). So an element of colour `0x00000000` adds nothing and
+takes nothing away: Halo 1 does not draw it. Each ballistic weapon on
+Blood Gulch has one, `hud_ammo_alphas` on the rounds-loaded state (V:
+assault rifle, pistol, shotgun, rocket launcher, sniper rifle, needler),
+which v66's first cut drew opaque. `h1hud::static_alpha` gives such a
+static no widget (`Skip::Invisible`); for unit and grenade statics the
+converter skips it too. A colour with alpha 0 but some RGB adds the
+sprite's colour (a glow in Halo 1); Halo 2's `widget_gradient_flash`
+blends by alpha only, so it is drawn at full alpha. Any other colour's
+alpha goes into the sprite as for the unit HUD ("Colours" below): weapon
+statics now get the same `<bitmap>_alpha_<aa>` copies (their panels'
+`0xdc`).
 
 ## Grenades
 
@@ -200,10 +275,32 @@ flags 1, `hud_input1`, `ui\hud\shaders\text_flash`, centred, top left at
 
 The converter emits one text widget per type (`h1hud::grenade_count`):
 input `20 + type`, that type's grenade states, flags 1, `hud_input1`,
-`text_flash`, the grhi's anchor, justified to end (2) where Halo 1's last
-digit ends (`h1hud::number_end`). The text is Halo 2's font, not Halo 1's
-digit bitmaps; its top sits at Halo 1's y. Not carried: the low-count
-flash (`+0x148`) and the messaging part (`+0x14c`).
+`text_flash`, the grhi's anchor, font 0, justified to end (2) where
+Halo 1's last digit ends (`h1hud::number_point`). The text is Halo 2's
+font, not Halo 1's digit bitmaps. Not carried: the low-count flash
+(`+0x148`) and the messaging part (`+0x14c`).
+
+The text's font and where its digits fall:
+
+- `+0x30` (`+0x31`, `+0x32` for half and quarter screen) is a font byte:
+  0 is the engine's font 6, 1 its font 8 (E `0x22a85b`, called from the
+  string fetch at `0x22a9b1`). Font 6 is `conduit-13` (V: line 6 of
+  `maps\fonts\font_table.txt`); retail `frag_count` has 0.
+- The draw (E `0x22aa16`) puts the text's rectangle top at the widget's
+  point and the measured height under it (`0x22ac83`); a glyph's bitmap
+  top is the baseline less its y offset, the ascent on every glyph
+  (docs/formats/fonts.md), so it is the rectangle's top. `conduit-13`'s
+  digits have ink on rows 5 to 16 of their 21 (V; `h1hud::TEXT_DIGIT_INK`).
+- Halo 1's digit sprites (`hud_counter_numbers`) are 12 rows, drawn from
+  the number's point down on a top anchor.
+
+Up to v65 the text's top was Halo 1's y (3), so the digits' ink was rows
+8..20 under the indicator's top, which ends at row 17 (V: the `grhi`
+background's texels, x 82..119, y 1..17): the count stuck out of the
+bottom of the indicator, the bug seen at v60. Now the point's y is set
+so the ink is centred on Halo 1's digit sprite: y -2, ink rows 3..15,
+Halo 1's sprite rows 3..15 (`hud_layout_disc`
+`grenade_count_digits_sit_inside_the_indicator`).
 
 ## Scale
 
@@ -225,8 +322,8 @@ and foreground `0xa06986a0`. The widgets draw through
 `colors` block and six animated pixel-constant bindings), not from the
 widget; the texture's alpha is kept (`a = t0.a * c0.a`).
 
-So the converter carries the alpha: a static unit or grenade element
-whose colour's alpha is under 255 draws a copy of its bitmap with every
+So the converter carries the alpha: a static unit, grenade or weapon
+element whose colour's alpha is under 255 draws a copy of its bitmap with every
 texel's alpha scaled by it (`h1hud::scale_alpha`,
 `Converter::hud_bitmap`, `<bitmap>_alpha_<aa>`). Formats with an alpha
 byte (A8, A8Y8, A8R8G8B8) are scaled in place. The rest (block-compressed,
@@ -267,10 +364,51 @@ game activation while Halo 1's HUD is shown (the Halo 1 widgets use one
 offset in every screen mode), and at every other activation, any map,
 puts back what the table held before its first write (`hud_swap::Sensor`).
 
+## Layout: where each element lands (`hud_layout_disc`)
+
+Both games lay a sprite out the same way, so every converted widget
+stands where Halo 1 puts its element. Halo 1 (E, its XBE): `0x000e07a0`
+places the point, the offset negated across on a right anchor and down
+on a bottom one; `0x000e0330` lays the sprite `[0, w]` or `[-w, 0]` across
+and `[0, h]` or `[-h, 0]` down by the anchor, its size the sprite's
+bounds times its image's size (`h1hud::halo1_rect`). Halo 2 (E
+`0x22aff1`): the widget's registration (fractions of the sprite) lands on
+the anchor point plus the offset, the sprite's size the same product
+(`h1hud::halo2_rect`). Both draw in a 640 x 480 HUD frame (the recomp
+scales it as a whole, docs/graphics/high-resolution.md); the corners
+differ (Halo 2's are the safe area's), which moves a whole corner group
+together and nothing within it. The disc test checks the two rectangles
+equal for every element of every unit HUD on the disc, both grenade
+HUDs and every converted static and meter of Blood Gulch's weapons.
+
+### Shield over health (fixed in v66)
+
+The cyborg's shield meter sprite (122 x 31) and health meter (88 x 14)
+overlap as rectangles in Halo 1 too: the health meter sits in the shield
+sprite's lower rows. Halo 1 shows only texels with alpha, and no texel
+of the two shows in both (V, every unit HUD on the disc).
+
+Halo 2's legacy meter shader shows more. Its alpha is the texel's alpha
+plus, on the filled side, the texel's green (`h1hud::legacy_meter_alpha`;
+V: `ammo_meter`'s combiners, stage 0's `c0` fixed at `0x0000ff00`,
+stage 3's `c1` at `0xffffffff`, nothing the engine writes). Halo 1's meter
+sprites are A8Y8 with their luminance ramp carried under the clear parts
+too: the cyborg's shield meter has 1435 clear texels with a luminance,
+722 of them on the health meter's visible texels. With both meters
+full, 849 texels showed both (297 on `cyborg_mp`): the shield drawn over
+the health meter, the bug seen at v60.
+
+The converter now gives each meter its own copy, `<bitmap>_meter`, with
+every clear texel's colour made black (`h1hud::clear_meter_colour`;
+other formats decoded to linear A8R8G8B8 first). A visible texel is
+unchanged, and the copy shows exactly Halo 1's texels (checked for the
+unit meters of every map and Blood Gulch's weapon meters). Weapon meters
+get the same copy.
+
 ## Not converted yet
 
-- **Weapon numbers** (`hud#`, the ammunition counts) and **HUD globals**
-  (`hudg`).
+- **HUD globals** (`hudg`), Halo 1's weapon **overlay elements**, and
+  the split-screen numbers (rounds loaded, the reserve in magazines).
 - **Motion sensor sweep**: Halo 1 draws a sweep around its sensor
   centre; Halo 2's sensor draws its own blips only. The sweep is not
   carried.
@@ -280,7 +418,9 @@ puts back what the table held before its first write (`hud_swap::Sensor`).
 ## Tests
 
 - `cargo test -p h1objects --lib h1hud`: weapon meters on Halo 2's
-  inputs, crosshairs centred with their state flags, skipped entries;
+  inputs, weapon numbers as number texts on `0x33`, `0x30` and `0x32`
+  and the numbers refused, statics of colour 0 refused,
+  crosshairs centred with their state flags, skipped entries;
   anchors, registration, the widget bytes (inputs, shader, state, no special type or effects,
   sequences, offsets, registration), the `nhdt` holding only its widgets.
 - `cargo test -p boot --lib hud`: the swap both ways on bipeds and
@@ -302,17 +442,36 @@ puts back what the table held before its first write (`hud_swap::Sensor`).
   XBE's table.
 - `cargo test -p boot --lib hud`: also the sensor table both ways, and
   Halo 2's back on a map without a Halo 1 centre.
+- `H1_ISO=... H2_DISC=... cargo test -p h1objects --test hud_layout_disc
+  -- --ignored`: every element's rectangle as Halo 2 draws the widget
+  against Halo 1's; shield and health meters sharing no shown texel (and
+  the unconverted bitmaps sharing some on the cyborg's); the grenade
+  count's digits, in Halo 2's own font, inside the indicator and centred
+  on Halo 1's digits (and outside it at Halo 1's y); each weapon count's
+  digits, every digit at every length up to Halo 1's digit count, inside
+  its weapon's panel, ending at Halo 1's last cell and centred on Halo
+  1's digit rows; Halo 1's blend mode 7 from the XBE and Blood Gulch's
+  six colour-0 statics with no widget.
 - `H1_ISO=... cargo test -p h1objects --test hud_disc -- --ignored
   weapon_huds_read --nocapture`: prints every `wphi` chain of `$H1_MAPS`
   as read.
 
 ## What a game run should show
 
-On a converted Halo 1 map (converter version 54 or later) in the Halo 1
+On a converted Halo 1 map (converter version 66 or later) in the Halo 1
 sandbox, or a Halo 1 campaign level: Halo 1's shield and health bars top
 right, Halo 1's motion sensor frame bottom left, Halo 1's ammunition
-counter top left and its crosshair centred (the sniper's scope lines only
-zoomed), Halo 2's grenades as before. The shield bar drains from the right as the shield
+counter top left with its count (rounds in reserve; the battery's
+percentage on the plasma weapons) in Halo 2's font inside the panel,
+right-aligned where Halo 1's last digit is, without Halo 1's leading
+zeros, and its crosshair centred (the sniper's scope lines only
+zoomed), Halo 1's grenade indicator right of the ammunition counter with
+its count in Halo 2's font inside it, not below it. Nothing of
+`hud_ammo_alphas` under the ammunition panel (colour 0: Halo 1 does not
+draw it; v66's first cut did); the panel itself slightly translucent, as
+Halo 1's (alpha `0xdc`). With the shield
+full, only the shield bar's own shape is lit: nothing of it over the
+health bar under it. The shield bar drains from the right as the shield
 falls, the health bar likewise and stays down (Halo 1's health model). The
 whole HUD hides in the pause menu, under Blind and in cinematics. Each
 element should sit where Halo 1 puts it (Placement above); one that does

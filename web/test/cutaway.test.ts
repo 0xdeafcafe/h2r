@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import { CUT_MARGIN, SEE_RADIUS, clampCut, cutHeight, cutRange, meshRole, patchSeeThrough, seeThroughHides, stepCut, type SeeThrough } from "../src/viewer/cutaway";
+import { CUT_MARGIN, SEE_BEHIND, SEE_RADIUS, clampCut, cutHeight, cutRange, meshRole, patchSeeThrough, seeThroughHides, stepCut, type SeeThrough } from "../src/viewer/cutaway";
 import { buildArena, encodeGlb, enclose } from "../mock/arena";
 
 describe("what a map glb's meshes are", () => {
@@ -77,6 +77,57 @@ describe("the see-through", () => {
     expect(seeThroughHides([15, 6, 0], above)).toBe(true);
   });
 
+  // The old see-through cut everything in the cone; `inCone` is that test
+  // (a surface squarely facing the camera), to show each case below is one
+  // the cone reaches.
+  const inCone = (p: [number, number, number], at: SeeThrough) => seeThroughHides(p, at, 1);
+
+  test("open terrain: ground under and beside the line of sight stays, a crest in the way goes", () => {
+    // Behind and a little above a player on sandy ground, as the 3D view
+    // follows: the eye 8 back and 2 up, the chest 0.6 above their feet.
+    const follow: SeeThrough = { eye: [-8, 2, 0], target: [0, 0.6, 0], radius: SEE_RADIUS, floor: 0.06 };
+    const bump: [number, number, number] = [-3, 0.4, 0];
+    const beside: [number, number, number] = [-3.5, 0.3, 0.9];
+    expect(inCone(bump, follow)).toBe(true);
+    expect(inCone(beside, follow)).toBe(true);
+    // A bump in the sand between them, its slope tilted up towards the camera.
+    expect(seeThroughHides(bump, follow, 1, [-0.3, 1, 0])).toBe(false);
+    // Flat ground beside the line.
+    expect(seeThroughHides(beside, follow, 1, [0, 1, 0])).toBe(false);
+    // A dune crest the line of sight goes into: higher than the line there.
+    const crest: [number, number, number] = [-4, 1.6, 0];
+    expect(inCone(crest, follow)).toBe(true);
+    expect(seeThroughHides(crest, follow, 1, [-0.4, 1, 0])).toBe(true);
+    // The crest's steep face towards the camera; the normal either way round.
+    expect(seeThroughHides([-4.5, 1.5, 0], follow, 1, [-1, 0.3, 0])).toBe(true);
+    expect(seeThroughHides([-4.5, 1.5, 0], follow, 1, [1, -0.3, 0])).toBe(true);
+  });
+
+  test("indoors: a partition or an upper floor in the way goes; a wall beside the line and the floor underfoot stay", () => {
+    const room: SeeThrough = { eye: [0, 6, 0], target: [10, 1, 0], radius: 2, floor: 0.1 };
+    // A partition across the line, facing the camera.
+    expect(seeThroughHides([5, 3.5, 0], room, 1, [-1, 0, 0])).toBe(true);
+    // The top of an upper floor between them.
+    expect(seeThroughHides([5, 3.4, 0.3], room, 1, [0, 1, 0])).toBe(true);
+    // A corridor wall running along the line, beside it: the player is in front of it.
+    expect(inCone([5, 3.5, 0.7], room)).toBe(true);
+    expect(seeThroughHides([5, 3.5, 0.7], room, 1, [0, 0, -1])).toBe(false);
+    // A step up near the player, inside the cone, below their chest.
+    expect(inCone([7, 1.1, 0], room)).toBe(true);
+    expect(seeThroughHides([7, 1.1, 0], room, 1, [0, 1, 0])).toBe(false);
+  });
+
+  test("a surface nearly edge-on to the player is kept, so it doesn't flicker as the camera moves", () => {
+    // A wall plane passing just behind the chest: within the margin, kept
+    // whichever side the camera's small moves put it.
+    for (const dx of [-0.05, 0, 0.05]) {
+      const near: SeeThrough = { eye: [0, 1, 0], target: [10 + SEE_BEHIND * 0.5 + dx, 1, 0], radius: 2, floor: 0.1 };
+      expect(seeThroughHides([10, 1.3, 0], near, 1, [-1, 0, 0])).toBe(false);
+    }
+    // A degenerate face (no normal) is never cut.
+    expect(seeThroughHides([10, 1, 0], s, 1, [0, 0, 0])).toBe(false);
+  });
+
   test("off, or with no distance to look along, it cuts nothing", () => {
     expect(seeThroughHides([10, 1, 0], { ...s, radius: 0 })).toBe(false);
     expect(seeThroughHides([0, 1, 0], { ...s, target: s.eye })).toBe(false);
@@ -98,6 +149,9 @@ describe("the see-through", () => {
       expect(out.fragment).toContain("uniform vec4 uSeeTargets[");
       expect(out.fragment).toContain("uniform int uSeeCount;");
       expect(out.fragment.indexOf("#include <clipping_planes_fragment>")).toBeLessThan(out.fragment.indexOf("discard;"));
+      // The surface normal is taken outside every branch (derivatives need it) and tested before the discard.
+      expect(out.fragment.indexOf("dFdx(vSeeWorld)")).toBeLessThan(out.fragment.indexOf("if (uSeeCount > 0)"));
+      expect(out.fragment.indexOf("seeTarget.xyz - vSeeWorld, seeN")).toBeLessThan(out.fragment.indexOf("discard;"));
       expect(out.vertex.indexOf("#include <project_vertex>")).toBeLessThan(out.vertex.indexOf("vSeeWorld = "));
     }
     expect(patchSeeThrough("void main() {}", "void main() {}")).toBeNull();

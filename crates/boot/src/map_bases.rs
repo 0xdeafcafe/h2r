@@ -1,5 +1,6 @@
 //! The disc's own maps, hashed, for joining games on custom maps
-//! (docs/game/maps.md §5): `live_hle::maps::Bases` over the retail ISO.
+//! (docs/game/maps.md §5): `live_hle::maps::Bases` over the retail ISO and
+//! the installed Multiplayer Map Pack.
 //!
 //! [`DiscBases`] hashes `maps\<name>.map` as the disc has it, read through
 //! its own read-only [`vfs::DiscBackend`] on the ISO: below every package
@@ -13,7 +14,17 @@
 //! with the ISO's path, size and modification time: a restart against the
 //! same ISO does not read 300 MB maps again, and a different or touched ISO
 //! starts afresh.
+//!
+//! [`MapPackBases`] hashes the Multiplayer Map Pack's maps as
+//! `h2 import-mappack` installed them, byte for byte from the map pack disc
+//! (`<data>/disk/Partition1/TDATA/4D530064/$c/<offer>/<map>.map`), so the
+//! hash is the one `h2 live maps import` gives a mod on a map pack base
+//! (docs/game/maps.md, "Importing a mod"). Each file is hashed once and
+//! the hash kept in `<data>/maps/cache/mappack-hashes.toml`, stamped per
+//! map with the file's path, size and modification time. [`UserBases`] asks
+//! the disc first, then the map pack for a map pack name.
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::UNIX_EPOCH,
@@ -24,6 +35,8 @@ use vfs::Backend;
 
 /// The stamp file, under `<data>/maps/cache/`.
 pub const STAMP_FILE: &str = "disc-hashes.toml";
+/// The map pack's stamp file, under `<data>/maps/cache/`.
+pub const MAP_PACK_STAMP_FILE: &str = "mappack-hashes.toml";
 
 /// [`live_hle::maps::Bases`] over the retail ISO.
 pub struct DiscBases {
@@ -45,7 +58,7 @@ struct State {
     reads: usize,
 }
 
-/// The ISO's identity for the stamp: canonical path, size, mtime in ns.
+/// A file's identity for a stamp: canonical path, size, mtime in ns.
 fn identity(iso: &Path) -> Option<(String, u64, u128)> {
     let meta = std::fs::metadata(iso).ok()?;
     let mtime = meta
@@ -212,11 +225,200 @@ impl live_hle::maps::Bases for DiscBases {
     }
 }
 
+/// The installed copy of map pack map `map` under `data_root`, as
+/// `h2 import-mappack` writes it: `(offer directory, file name, host path)`
+/// for the first `$c\<offer>` (by name) of a map pack offer holding
+/// `<map>.map` in any case. None for a name that isn't a map pack map's.
+pub fn map_pack_file(data_root: &Path, map: &str) -> Option<(String, String, PathBuf)> {
+    if !plain(map) || !content::map_pack::is_map(map) {
+        return None;
+    }
+    let title = crate::new_maps::HALO2_TITLE;
+    let root = vfs::Config::new(data_root, title)
+        .title_data_dir()
+        .join(vfs::CONTENT_DIR);
+    let mut offers: Vec<(String, PathBuf)> = std::fs::read_dir(root)
+        .ok()?
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_str()?.to_owned();
+            let offer = u64::from_str_radix(&name, 16)
+                .ok()
+                .filter(|_| name.len() == 16)?;
+            content::map_pack::is_offer(title, offer).then(|| (name, e.path()))
+        })
+        .collect();
+    offers.sort();
+    let want = format!("{map}.map");
+    offers.into_iter().find_map(|(offer, dir)| {
+        std::fs::read_dir(&dir).ok()?.flatten().find_map(|e| {
+            let name = e.file_name().to_str()?.to_owned();
+            (name.eq_ignore_ascii_case(&want) && e.file_type().ok()?.is_file())
+                .then(|| (offer.clone(), name, e.path()))
+        })
+    })
+}
+
+/// The map pack's installed maps, hashed (module docs).
+pub struct MapPackBases {
+    data_root: PathBuf,
+    stamp_file: Option<PathBuf>,
+    state: Mutex<PackState>,
+}
+
+#[derive(Default)]
+struct PackState {
+    /// The stamp file was read.
+    loaded: bool,
+    /// By lowercase map name: the file's identity when hashed, and its hash.
+    known: HashMap<String, ((String, u64, u128), Sha256)>,
+    /// Full reads made (for tests: each file at most once).
+    reads: usize,
+}
+
+impl MapPackBases {
+    /// The maps installed under `data_root`, keeping the stamp under
+    /// `maps_dir/cache` when given. No I/O until asked.
+    pub fn new(data_root: impl Into<PathBuf>, maps_dir: Option<&Path>) -> Self {
+        MapPackBases {
+            data_root: data_root.into(),
+            stamp_file: maps_dir.map(|d| d.join(content::CACHE_DIR).join(MAP_PACK_STAMP_FILE)),
+            state: Mutex::default(),
+        }
+    }
+
+    /// How many maps were read in full so far.
+    pub fn reads(&self) -> usize {
+        self.lock().reads
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, PackState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// SHA-256 of the installed `map`, None when the map pack isn't
+    /// installed (or `map` isn't one of its maps).
+    pub fn hash(&self, map: &str) -> Option<Sha256> {
+        let key = map.to_ascii_lowercase();
+        let (_, _, file) = map_pack_file(&self.data_root, &key)?;
+        let id = identity(&file)?;
+        let mut state = self.lock();
+        if !state.loaded {
+            state.loaded = true;
+            self.load_stamp(&mut state);
+        }
+        if let Some((was, h)) = state.known.get(&key)
+            && *was == id
+        {
+            return Some(*h);
+        }
+        let h = hash_file(&file)?;
+        state.reads += 1;
+        state.known.insert(key, (id, h));
+        self.save_stamp(&state);
+        Some(h)
+    }
+
+    // [<map>] path = "...", size = n, mtime = "ns", sha256 = "hex".
+    fn load_stamp(&self, state: &mut PackState) {
+        let Some(table) = self
+            .stamp_file
+            .as_ref()
+            .and_then(|f| std::fs::read_to_string(f).ok())
+            .and_then(|t| t.parse::<toml::Table>().ok())
+        else {
+            return;
+        };
+        for (map, row) in table {
+            let get = |k: &str| row.get(k);
+            let (Some(path), Some(size), Some(mtime), Some(h)) = (
+                get("path").and_then(|v| v.as_str()),
+                get("size")
+                    .and_then(|v| v.as_integer())
+                    .and_then(|n| u64::try_from(n).ok()),
+                get("mtime")
+                    .and_then(|v| v.as_str())
+                    .and_then(|m| m.parse::<u128>().ok()),
+                get("sha256")
+                    .and_then(|v| v.as_str())
+                    .and_then(|h| h.parse::<Sha256>().ok()),
+            ) else {
+                continue;
+            };
+            if plain(&map) {
+                state.known.insert(
+                    map.to_ascii_lowercase(),
+                    ((path.to_owned(), size, mtime), h),
+                );
+            }
+        }
+    }
+
+    fn save_stamp(&self, state: &PackState) {
+        let Some(file) = &self.stamp_file else { return };
+        let mut table = toml::Table::new();
+        for (map, ((path, size, mtime), h)) in &state.known {
+            let mut row = toml::Table::new();
+            row.insert("path".into(), toml::Value::String(path.clone()));
+            row.insert(
+                "size".into(),
+                toml::Value::Integer(i64::try_from(*size).unwrap_or(i64::MAX)),
+            );
+            row.insert("mtime".into(), toml::Value::String(mtime.to_string()));
+            row.insert("sha256".into(), toml::Value::String(h.to_string()));
+            table.insert(map.clone(), toml::Value::Table(row));
+        }
+        let Ok(text) = toml::to_string(&table) else {
+            return;
+        };
+        if let Err(e) = write_stamp(file, &text) {
+            eprintln!("map bases: cannot write {}: {e}", file.display());
+        }
+    }
+}
+
+fn write_stamp(file: &Path, text: &str) -> std::io::Result<()> {
+    std::fs::create_dir_all(file.parent().unwrap_or(Path::new(".")))?;
+    let tmp = file.with_extension(format!("tmp-{}", std::process::id()));
+    std::fs::write(&tmp, text)?;
+    std::fs::rename(&tmp, file)
+}
+
+fn hash_file(path: &Path) -> Option<Sha256> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut h = content::Hasher::default();
+    let mut buf = vec![0; 1 << 20];
+    loop {
+        let n = f.read(&mut buf).ok()?;
+        if n == 0 {
+            return Some(h.finish());
+        }
+        h.update(&buf[..n]);
+    }
+}
+
+/// The user's own bases: the disc's maps, then the installed map pack's.
+pub struct UserBases {
+    pub disc: DiscBases,
+    pub map_pack: MapPackBases,
+}
+
+impl live_hle::maps::Bases for UserBases {
+    fn disc_hash(&self, map: &str) -> Option<Sha256> {
+        self.disc.disc_hash(map).or_else(|| self.map_pack.hash(map))
+    }
+}
+
 /// The join-time map gate for a boot: packages in `<data>/maps`, bases
-/// from the ISO at `disc`, sharing `hashes` with the package resolver.
+/// from the ISO at `disc` (sharing `hashes` with the package resolver)
+/// and the map pack installed under `data_root`.
 pub fn gate(disc: &Path, data_root: &Path, hashes: DiscHashes) -> Arc<live_hle::maps::MapGate> {
     let maps = crate::map_override::packages_dir(data_root);
-    let bases = DiscBases::new(disc, Some(&maps), hashes);
+    let bases = UserBases {
+        disc: DiscBases::new(disc, Some(&maps), hashes),
+        map_pack: MapPackBases::new(data_root, Some(&maps)),
+    };
     Arc::new(live_hle::maps::MapGate::new(maps, Arc::new(bases)))
 }
 
@@ -348,8 +550,130 @@ mod tests {
             &[],
         )
         .unwrap();
-        assert!(crate::map_override::map_id(&mut v, "level").is_some());
+        assert!(crate::map_override::map_id(&mut v, &t.0.join("data"), "level").is_some());
         let bases = DiscBases::new(&iso, Some(&maps), hashes);
         assert_eq!(bases.disc_hash("level"), Some(Sha256::of(LEVEL)));
+    }
+
+    const TURF: &[u8] = b"an invented map pack map";
+
+    /// Turf installed as `h2 import-mappack` lays it out (the disc's own
+    /// file name case), and a same-named file under a new map's offer.
+    fn install_turf(t: &Temp) -> PathBuf {
+        let cfg = vfs::Config::new(t.0.join("data"), crate::new_maps::HALO2_TITLE);
+        let dir = cfg.content_dir(0x4D53_0064_0000_0102);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Turf.map"), TURF).unwrap();
+        std::fs::write(dir.join("patch.lvl"), b"record").unwrap();
+        let other = cfg.content_dir(0x4D53_0064_000a_0001);
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join("gemini.map"), b"not the map pack's").unwrap();
+        dir.join("Turf.map")
+    }
+
+    #[test]
+    fn installed_map_pack_maps_hash_as_their_files_once_and_across_restarts() {
+        let t = Temp::new();
+        let data = t.0.join("data");
+        let pack = MapPackBases::new(&data, Some(&t.maps()));
+        assert_eq!(pack.hash("turf"), None, "not installed");
+        let file = install_turf(&t);
+        assert_eq!(
+            map_pack_file(&data, "TURF").map(|f| (f.0, f.1)),
+            Some(("4d53006400000102".to_string(), "Turf.map".to_string()))
+        );
+        assert_eq!(pack.hash("turf"), Some(Sha256::of(TURF)));
+        assert_eq!(pack.hash("Turf"), Some(Sha256::of(TURF)));
+        assert_eq!(pack.reads(), 1, "hashed once");
+        // Only the map pack's names, under its offers.
+        for not in ["gemini", "lockout", "patch", "..\\turf", ""] {
+            assert_eq!(pack.hash(not), None, "{not:?}");
+        }
+        assert!(t.maps().join("cache").join(MAP_PACK_STAMP_FILE).is_file());
+        let again = MapPackBases::new(&data, Some(&t.maps()));
+        assert_eq!(again.hash("turf"), Some(Sha256::of(TURF)));
+        assert_eq!(again.reads(), 0, "from the stamp");
+        // A changed file: hashed afresh.
+        std::fs::write(&file, b"another invented map, longer").unwrap();
+        let changed = MapPackBases::new(&data, Some(&t.maps()));
+        assert_eq!(
+            changed.hash("turf"),
+            Some(Sha256::of(b"another invented map, longer"))
+        );
+        assert_eq!(changed.reads(), 1);
+        // Removed: none, whatever the stamp says.
+        std::fs::remove_file(&file).unwrap();
+        assert_eq!(MapPackBases::new(&data, Some(&t.maps())).hash("turf"), None);
+        // The stamp is not a package.
+        assert!(content::Library::open(t.maps()).packages().is_empty());
+    }
+
+    #[test]
+    fn the_user_bases_are_the_disc_then_the_map_pack() {
+        let t = Temp::new();
+        let iso = iso(&t);
+        install_turf(&t);
+        let bases = UserBases {
+            disc: DiscBases::new(&iso, None, DiscHashes::default()),
+            map_pack: MapPackBases::new(t.0.join("data"), None),
+        };
+        assert_eq!(bases.disc_hash("level"), Some(Sha256::of(LEVEL)));
+        assert_eq!(bases.disc_hash("turf"), Some(Sha256::of(TURF)));
+        assert_eq!(bases.disc_hash("dune"), None, "not installed");
+        // The gate over them gives the map pack map its retail id.
+        let gate = gate(&iso, &t.0.join("data"), DiscHashes::default());
+        assert_eq!(
+            gate.retail_id("turf"),
+            Some(content::MapId::retail("turf", Sha256::of(TURF)))
+        );
+    }
+
+    /// A package on the installed Turf: served at its `$c` path, and named
+    /// by `map_override::map_id`, as the session and telemetry ask.
+    #[test]
+    fn a_package_on_a_map_pack_base_is_served_and_named() {
+        let t = Temp::new();
+        let iso = iso(&t);
+        install_turf(&t);
+        let maps = t.maps();
+        let dir = maps.join("turf-mod");
+        std::fs::create_dir_all(&dir).unwrap();
+        let patch = b"PATCH\0\0\0\0\x05OWNEDEOF";
+        std::fs::write(dir.join("a.ips"), patch).unwrap();
+        let mut m = content::Manifest::retail("turf", Sha256::of(TURF));
+        m.patches.push(content::manifest::Layer {
+            file: "a.ips".into(),
+            sha256: Sha256::of(patch),
+        });
+        std::fs::write(dir.join("manifest.toml"), m.to_toml()).unwrap();
+        let data = t.0.join("data");
+        let cfg = vfs::Config::new(&data, 0x4D530064);
+        let mut v = crate::map_override::mount(
+            cfg,
+            &iso,
+            None::<crate::map_override::tests::Upper>,
+            None,
+            Some(&maps),
+        )
+        .unwrap();
+        let path = crate::map_override::map_pack_path(&data, "turf").unwrap();
+        assert_eq!(
+            path,
+            "\\Device\\Harddisk0\\Partition1\\TDATA\\4D530064\\$c\\4d53006400000102\\Turf.map"
+        );
+        let h = v.open(&path, vfs::OpenOptions::default()).unwrap().handle;
+        let mut buf = vec![0; TURF.len()];
+        assert_eq!(
+            v.read(h, vfs::Offset::Absolute(0), &mut buf).unwrap(),
+            TURF.len()
+        );
+        v.close(h).unwrap();
+        assert_eq!(&buf[..5], b"OWNED");
+        assert_eq!(&buf[5..], &TURF[5..]);
+        assert_eq!(
+            crate::map_override::map_id(&mut v, &data, "turf"),
+            Some(m.map_id())
+        );
+        assert_eq!(crate::map_override::map_id(&mut v, &data, "dune"), None);
     }
 }

@@ -341,6 +341,9 @@ pub mod wphi {
     pub const STATIC_SIZE: usize = 0xb4;
     pub const METER_SIZE: usize = 0xb4;
     pub const NUMBER_SIZE: usize = 0xa0;
+    /// A number entry's flags byte: bit 0 shows the value in magazines
+    /// (`0x000dbf5f`).
+    pub const NUMBER_MAGAZINES: usize = 0x78;
     pub const CROSSHAIR_SIZE: usize = 0x68;
     pub const OVERLAY_SIZE: usize = 0x68;
 
@@ -460,11 +463,18 @@ pub enum WeaponEntryKind {
     Meter(WeaponState, [u8; 3]),
     /// A crosshair overlay: its crosshair's type, the overlay's flags.
     Crosshair(i16, u32),
+    /// A number (`wphi +0x78`, drawn by the number draw `0x000e1a60` as the
+    /// grenade count is, E `0x000dbf1e`..`0x000dc0f0`): the state whose
+    /// value it shows, the number element (its anchor the `wphi`'s, its
+    /// offset Halo 1's), and whether it shows that value in magazines
+    /// (entry `+0x78` bit 0: divided by the weapon's magazine size,
+    /// `0x000dbf5f`..`0x000dbf77`, `0x000dc0de`).
+    Number(WeaponState, Number, bool),
 }
 
-/// Every static, meter and crosshair overlay of the `wphi` `tag` and its
-/// children, in Halo 1's draw order (the child first, `0x000dbded`), and
-/// how many numbers and overlay elements the chain holds.
+/// Every static, meter, number and crosshair overlay of the `wphi` `tag`
+/// and its children, in Halo 1's draw order (the child first,
+/// `0x000dbded`), and how many overlay elements the chain holds.
 pub fn weapon_entries(map: &H1Map, tag: H1TagId) -> Result<(Vec<WeaponEntry>, usize)> {
     let mut out = Vec::new();
     let mut skipped = 0;
@@ -540,6 +550,33 @@ fn weapon_chain(
             colour: u32_at(e, entry::ELEMENT + h1el::COLOUR),
         });
     }
+    for e in crate::h1::elements(map, b, wphi::NUMBERS, wphi::NUMBER_SIZE)? {
+        let at = entry::ELEMENT;
+        let number = Number {
+            anchor,
+            offset: (i16_at(e, at), i16_at(e, at + 2)),
+            scale: [f32_at(e, at + 4), f32_at(e, at + 8)],
+            digits: e[at + number::DIGITS],
+            flags: e[at + number::FLAGS],
+            fraction_digits: e[at + number::FRACTION_DIGITS],
+        };
+        out.push(WeaponEntry {
+            wphi: tag,
+            kind: WeaponEntryKind::Number(
+                WeaponState::from_halo1(i16_at(e, entry::STATE)),
+                number,
+                e[wphi::NUMBER_MAGAZINES] & 1 != 0,
+            ),
+            screen: e[entry::SCREEN],
+            hidden: e[entry::FLAGS] & 1 != 0,
+            anchor,
+            offset: number.offset,
+            scale: number.scale,
+            bitmap: None,
+            sequence: 0,
+            colour: u32_at(e, at + number::COLOUR),
+        });
+    }
     use wphi::{crosshair, overlay};
     for c in crate::h1::elements(map, b, wphi::CROSSHAIRS, wphi::CROSSHAIR_SIZE)? {
         let bitmap = crate::h1::reference(map, c, crosshair::BITMAP);
@@ -561,8 +598,7 @@ fn weapon_chain(
             });
         }
     }
-    *skipped += crate::h1::elements(map, b, wphi::NUMBERS, wphi::NUMBER_SIZE)?.len()
-        + crate::h1::elements(map, b, wphi::OVERLAYS, wphi::OVERLAY_SIZE)?.len();
+    *skipped += crate::h1::elements(map, b, wphi::OVERLAYS, wphi::OVERLAY_SIZE)?.len();
     Ok(())
 }
 
@@ -635,6 +671,17 @@ pub enum Skip {
     UnzoomedOnly,
     /// Scaled ([`unscaled`]).
     Scaled([f32; 2]),
+    /// A number: a text widget ([`weapon_number`]), not a bitmap one.
+    Text,
+    /// A number on a state no Halo 2 number input reads.
+    NumberState(WeaponState),
+    /// A number shown in magazines: Halo 2's text has no divide.
+    Magazines,
+    /// A number with fraction digits.
+    Fraction,
+    /// A static whose colour is all zero: Halo 1 draws nothing of it
+    /// ([`invisible_colour`]).
+    Invisible,
 }
 
 /// The widget for weapon HUD entry `e` (its bitmap converted as
@@ -655,8 +702,14 @@ pub fn weapon_widget(
     if e.screen == SPLIT_SCREEN_ONLY {
         return Err(Skip::SplitScreen);
     }
+    if matches!(e.kind, WeaponEntryKind::Number(..)) {
+        return Err(Skip::Text);
+    }
     if !unscaled(e.scale) {
         return Err(Skip::Scaled(e.scale));
+    }
+    if matches!(e.kind, WeaponEntryKind::Static(_)) && static_alpha(e.colour).is_none() {
+        return Err(Skip::Invisible);
     }
     let bitmap = bitmap.ok_or(Skip::NothingDrawn)?;
     let (name, inputs, shader, state) = match &e.kind {
@@ -675,6 +728,7 @@ pub fn weapon_widget(
             crosshair_type::AIM => ("h1_crosshair", [0; 4], plain, AIM_STATE),
             t => return Err(Skip::CrosshairType(t)),
         },
+        WeaponEntryKind::Number(..) => unreachable!("refused above"),
     };
     Ok(Widget {
         name: name.to_owned(),
@@ -708,6 +762,37 @@ pub fn colour_alpha(colour: u32) -> u8 {
     (colour >> 24) as u8
 }
 
+/// The alpha a converted static element's sprite carries
+/// ([`scale_alpha`]) for Halo 1's element colour `colour`, `None` when
+/// Halo 1 draws nothing of it.
+///
+/// Halo 1's element draw (E `0x000e1320`, the draw struct's `+0x88` =
+/// 7) blends in Halo 1's mode 7, whose source factor is ONE, its
+/// destination factor ONE_MINUS_SRC_ALPHA and its operation ADD (E
+/// `0x0007f4e0`: the tables at `0x001e9c0c`, `0x001e9c30`, `0x001e9c54`,
+/// entry 7: `1`, `0x303`, `0x8006`, the D3D blend values). It writes the
+/// element's colour into every vertex's diffuse (`0x000e1320`, `+0x0c`);
+/// the texture is multiplied by it (inferred: the vertex layout, not the
+/// texture stage setup, was read). So what lands is `tex * colour +
+/// dst * (1 - tex.a * colour.a)`:
+///
+/// - colour `0x00000000` adds nothing and keeps all of the destination:
+///   the element is not drawn at all. Halo 1's weapon HUDs give one such
+///   static to every ballistic weapon (V: bloodgulch, `hud_ammo_alphas`
+///   on the assault rifle, pistol, shotgun, rocket launcher, sniper rifle
+///   and needler, on the "rounds loaded" state), which drew opaque in v66.
+/// - alpha 0 with a colour adds the sprite's colour over the destination
+///   (an additive glow): drawn at full alpha, the nearest Halo 2's
+///   `widget_gradient_flash` has (it blends by alpha only).
+/// - any other alpha scales the sprite's alpha (as before).
+pub fn static_alpha(colour: u32) -> Option<u8> {
+    match (colour, colour_alpha(colour)) {
+        (0, _) => None,
+        (_, 0) => Some(0xff),
+        (_, a) => Some(a),
+    }
+}
+
 /// Halo 1's pixels with every texel's alpha multiplied by `alpha` (of
 /// 255), as Halo 1's draw multiplies the sprite by its element's colour,
 /// alpha included (E `0x000e1830`: the colour `+0x34`). Halo 2's HUD shader
@@ -728,6 +813,55 @@ pub fn scale_alpha(format: h1map::bitmap::PixelFormat, px: &mut [u8], alpha: u8)
     };
     for t in px.chunks_exact_mut(stride) {
         t[at] = ((u16::from(t[at]) * u16::from(alpha) + 127) / 255) as u8;
+    }
+    Some(())
+}
+
+/// What Halo 2's legacy meter shader (`widget_legacy_meter`, the
+/// [`METER_SHADER`] the converted meters draw through) shows of a texel:
+/// its alpha plus, on the filled side, its green, at most 1.
+///
+/// The shader's combiners (V: `ui\hud\shaders\ammo_meter`'s pass, the
+/// pixel shader definition `h2 shader` prints): stage 0 takes `t2 =
+/// c0 . t0.rgb` with stage 0's `c0` fixed at `0x0000ff00` (no engine
+/// constant writes it: `c0` written mask `0x2e`), so `t2` is the texel's
+/// green; stage 1 sets `r0.a` from `hud_input1` less the blue, whose sign
+/// picks the filled side; stage 3 takes `t1.a` from stage 3's `c1`, fixed
+/// at `0xffffffff`, on the filled side; stage 4 makes the alpha `t0.a +
+/// t1.a * t2`. So a filled texel's alpha is its own plus its green.
+/// Halo 1's meter draw shows the alpha alone: a texel Halo 1 leaves clear
+/// shows on Halo 2's filled side when its colour is not black.
+pub fn legacy_meter_alpha(rgba: [u8; 4], filled: bool) -> u8 {
+    let green = if filled { rgba[1] } else { 0 };
+    rgba[3].saturating_add(green)
+}
+
+/// A Halo 1 meter sprite's pixels with the colour of every clear texel
+/// (alpha 0) made black, so the legacy meter shader leaves them clear as
+/// Halo 1 does ([`legacy_meter_alpha`]). Halo 1's meter sprites carry
+/// their luminance ramp under the clear parts too (V: `hud_unit_meters`,
+/// the cyborg's shield meter has 1435 clear texels with a luminance, up to
+/// 254, 722 of them on the health meter's texels as Halo 1 lays the two
+/// out). A visible texel is unchanged. `None` for a format whose texels
+/// are not a byte each of alpha and colour (block-compressed, 16-bit, no
+/// alpha); `AY8` and `A8` have no colour of their own and are left as
+/// they are.
+pub fn clear_meter_colour(format: h1map::bitmap::PixelFormat, px: &mut [u8]) -> Option<()> {
+    use h1map::bitmap::PixelFormat as F;
+    let (stride, alpha, colour): (usize, usize, &[usize]) = match format {
+        F::A8 | F::Ay8 => return Some(()),
+        // Y then A (h1bitmaps decode).
+        F::A8Y8 => (2, 1, &[0]),
+        // B, G, R, A.
+        F::A8R8G8B8 => (4, 3, &[0, 1, 2]),
+        _ => return None,
+    };
+    for t in px.chunks_exact_mut(stride) {
+        if t[alpha] == 0 {
+            for c in colour {
+                t[*c] = 0;
+            }
+        }
     }
     Some(())
 }
@@ -865,6 +999,67 @@ pub fn registration(anchor: Anchor) -> [f32; 2] {
     }
 }
 
+/// A rectangle in HUD pixels from the anchor's point, y down: left, top,
+/// right, bottom.
+pub type Rect = [i32; 4];
+
+/// The size in pixels of what `bm`'s sequence `seq` draws ([`sprite`]):
+/// the sprite's bounds times its image's size, as both games take it (E
+/// Halo 1 `0x000e0330`: the bounds' spans times the image's width and
+/// height; Halo 2 `0x22b1b5`..`0x22b28f`: the same spans times the
+/// image's `+4`, `+6`).
+pub fn sprite_size(bm: &h1map::bitmap::Bitmap, seq: i16) -> Option<(i32, i32)> {
+    let (b, _) = sprite(bm, seq)?;
+    let s = bm.sequences.get(usize::try_from(seq).ok()?)?;
+    let image = s.sprites.first().map_or(s.first_image, |p| p.image);
+    let img = bm.images.get(usize::try_from(image).ok()?)?;
+    Some((
+        ((b[1] - b[0]) * f32::from(img.width)).round() as i32,
+        ((b[3] - b[2]) * f32::from(img.height)).round() as i32,
+    ))
+}
+
+/// Where Halo 1 draws an element `size` pixels big with offset `offset`
+/// (Halo 1's, inward from the corner) from its anchor's point. E, Halo 1's
+/// XBE: `0x000e07a0` places the point, x times -1 on a right anchor and y
+/// on a bottom one; `0x000e0330` lays the sprite from it, `[0, w]` across
+/// on a left anchor, `[-w, 0]` on a right one, `[0, h]` down on a top
+/// anchor, `[-h, 0]` on a bottom one, centred on the centre.
+pub fn halo1_rect(anchor: Anchor, offset: (i16, i16), (w, h): (i32, i32)) -> Rect {
+    let x = i32::from(if matches!(anchor, Anchor::TopRight | Anchor::BottomRight) {
+        -offset.0
+    } else {
+        offset.0
+    });
+    let y = i32::from(if matches!(anchor, Anchor::BottomLeft | Anchor::BottomRight) {
+        -offset.1
+    } else {
+        offset.1
+    });
+    let (x0, x1) = match anchor {
+        Anchor::TopLeft | Anchor::BottomLeft => (x, x + w),
+        Anchor::TopRight | Anchor::BottomRight => (x - w, x),
+        Anchor::Centre => (x - w / 2, x - w / 2 + w),
+    };
+    let (y0, y1) = match anchor {
+        Anchor::TopLeft | Anchor::TopRight => (y, y + h),
+        Anchor::BottomLeft | Anchor::BottomRight => (y - h, y),
+        Anchor::Centre => (y - h / 2, y - h / 2 + h),
+    };
+    [x0, y0, x1, y1]
+}
+
+/// Where Halo 2 draws a bitmap widget's sprite, `size` pixels big, from
+/// its anchor's point (E `0x22aff1`): the point plus the widget's offset
+/// for the screen mode (`+0x34`) is where the registration point lands
+/// (`+0x40`, fractions of the sprite: `left + (right - left) * r`); the
+/// corners lie `(bound - registration) * image size` from it.
+pub fn halo2_rect(w: &Widget, (sw, sh): (i32, i32)) -> Rect {
+    let x0 = i32::from(w.offset.0) - (w.registration[0] * sw as f32) as i32;
+    let y0 = i32::from(w.offset.1) - (w.registration[1] * sh as f32) as i32;
+    [x0, y0, x0 + sw, y0 + sh]
+}
+
 /// The widget for Halo 1 element `e`, its bitmap converted as `bitmap`,
 /// drawn with `meter` or `plain` by its role.
 pub fn widget_for(
@@ -920,6 +1115,9 @@ pub mod text {
     /// Justification (`u16`, `0x22ac0b`): 0 the text starts at the point, 1
     /// is centred on it, 2 ends at it.
     pub const JUSTIFICATION: usize = 0x2c;
+    /// The font for fullscreen, half and quarter screen (a byte each,
+    /// E `0x22a9a4`..`0x22a9ae`; [`super::TEXT_FONT`]).
+    pub const FONTS: usize = 0x30;
     /// Offsets (two `i16`) for fullscreen, half and quarter screen
     /// (`0x22ab46`, `0x22ab38`, `0x22ab2a`).
     pub const OFFSETS: [usize; 3] = [0x40, 0x44, 0x48];
@@ -965,12 +1163,27 @@ impl TextWidget {
         w[text::FLAGS..text::FLAGS + 2].copy_from_slice(&self.flags.to_le_bytes());
         w[text::JUSTIFICATION..text::JUSTIFICATION + 2]
             .copy_from_slice(&self.justification.to_le_bytes());
+        w[text::FONTS..text::FONTS + 3].fill(TEXT_FONT);
         for at in text::OFFSETS {
             w[at..at + 2].copy_from_slice(&self.offset.0.to_le_bytes());
             w[at + 2..at + 4].copy_from_slice(&self.offset.1.to_le_bytes());
         }
         w
     }
+}
+
+/// A number element's fields after the element head (offset, scale):
+/// digits, flags, fraction digits (E `0x000e1a60`, `ebx` the element:
+/// `+0x44`, `+0x45`, `+0x46`).
+pub mod number {
+    /// The colour (ARGB): the number draw's default (`ebx+0x24`,
+    /// `0x000e1c85`; `+0x3c` disabled, `0x000e1c67`). A number element has
+    /// no bitmap reference, so its colour stands where a bitmap element's
+    /// reference does.
+    pub const COLOUR: usize = 0x24;
+    pub const DIGITS: usize = 0x44;
+    pub const FLAGS: usize = 0x45;
+    pub const FRACTION_DIGITS: usize = 0x46;
 }
 
 /// Halo 1's grenade count, the number element `grhi +0xf4` (E the number
@@ -1005,17 +1218,16 @@ pub fn grenade_number(b: &[u8]) -> Result<Option<Number>> {
         anchor,
         offset: (i16_at(b, at), i16_at(b, at + 2)),
         scale: [f32_at(b, at + 4), f32_at(b, at + 8)],
-        digits: b[at + 0x44],
-        flags: b[at + 0x45],
-        fraction_digits: b[at + 0x46],
+        digits: b[at + number::DIGITS],
+        flags: b[at + number::FLAGS],
+        fraction_digits: b[at + number::FRACTION_DIGITS],
     }))
 }
 
-/// Halo 1's digit width, `hud#` byte `+0x11` (E `0x000e1d00`; V: 9 on
-/// `ui\hud\counter`), of the digits tag the globals (`matg`) name in
-/// their first interface element (the block `+0x140`, E `0x000e1a65`,
-/// `0x000e1a77`), reference `+0xb0` (datum `+0xbc`, E `0x000e1a81`).
-pub fn digit_width(map: &H1Map) -> Result<i16> {
+/// The digits tag (`hud#`) the globals (`matg`) name in their first
+/// interface element (the block `+0x140`, E `0x000e1a65`, `0x000e1a77`),
+/// reference `+0xb0` (datum `+0xbc`, E `0x000e1a81`): its bytes.
+fn digits_tag(map: &H1Map) -> Result<&[u8]> {
     let g = map
         .tags()
         .iter()
@@ -1033,24 +1245,80 @@ pub fn digit_width(map: &H1Map) -> Result<i16> {
     if t.group != h1map::Group::new(b"hud#") {
         return Err(Error::Invalid(format!("matg +0xb0 is a {}", t.group)));
     }
-    let w = *map.tag_data(t)?.get(0x11).ok_or(Error::Truncated("hud#"))?;
+    Ok(map.tag_data(t)?)
+}
+
+/// Halo 1's digit width, `hud#` byte `+0x11` (E `0x000e1d00`; V: 9 on
+/// `ui\hud\counter`), the cell each digit of a number takes.
+pub fn digit_width(map: &H1Map) -> Result<i16> {
+    let w = *digits_tag(map)?.get(0x11).ok_or(Error::Truncated("hud#"))?;
     Ok(i16::from(w as i8))
 }
 
-/// Where Halo 1's number ends, as a Halo 2 offset from the same anchor,
-/// for a text widget justified to end there ([`JUSTIFY_RIGHT`]). Halo 1
-/// draws the digits right to left, each a digit cell (`hud#` digit width
-/// `w`) further left (E `0x000e1d00`..`0x000e1d18`), from a start that the
-/// anchor moves (E the switch `0x000e1bd1` on the anchor, table
-/// `0x000e2088`): on a left anchor right by `(cells - 2) * w`
+/// The height of Halo 1's digit sprites: the digits bitmap (`hud#` `+0x00`)
+/// sequence 0, its first sprite's height in pixels (V: 12 on
+/// `ui\hud\bitmaps\combined\hud_counter_numbers`, every digit's sprite
+/// the same height). Halo 1 draws each digit as its sprite at its own size
+/// from the digit's point (E `0x000e1a60` through the element draw).
+pub fn digit_height(map: &H1Map) -> Result<i16> {
+    let b = digits_tag(map)?;
+    let bm = crate::h1::reference(map, b, 0x00)
+        .ok_or_else(|| Error::Invalid("hud# has no bitmap".into()))?;
+    let bt = map.tag(bm)?;
+    let bm = h1map::bitmap::Bitmap::read(map, bt)?;
+    let (bounds, _) = sprite(&bm, 0).ok_or_else(|| Error::Invalid("hud# bitmap draws nothing".into()))?;
+    let s = bm.sequences.first().ok_or_else(|| Error::Invalid("hud# bitmap has no sequence".into()))?;
+    let image = s.sprites.first().map_or(s.first_image, |p| p.image);
+    let img = bm
+        .images
+        .get(usize::try_from(image).unwrap_or(usize::MAX))
+        .ok_or_else(|| Error::Invalid("hud# sprite image".into()))?;
+    Ok(((bounds[3] - bounds[2]) * f32::from(img.height)).round() as i16)
+}
+
+/// The font a Halo 2 number text draws in: the text widget's byte `+0x30`
+/// (`+0x31`, `+0x32` for half and quarter screen) picks it, 0 the engine's
+/// font 6 and 1 its font 8 (E `0x22a85b`, called from the string fetch
+/// `0x22a9b1`; the draw `0x22aa16` sets it through `0x13edb0`). Font 6 is
+/// `conduit-13` (V: `maps\fonts\font_table.txt` line 6). The converter
+/// writes 0, as retail `frag_count` and `plasma_count` hold.
+pub const TEXT_FONT: u8 = 0;
+
+/// The rows of `conduit-13`'s digits that have ink, from the text's top
+/// (start inclusive, end exclusive). The draw (E `0x22aa16`) puts the
+/// text's rectangle top at the widget's point (`+0x10` the y, the
+/// measured height under it, `0x22ac83`); a glyph's bitmap top is at the
+/// baseline less its y offset, which is the ascent on every glyph
+/// (docs/formats/fonts.md), so its first row is the rectangle's top. The
+/// digits' ink is rows 5 to 16 of their 21-row bitmaps (V: `0`..`9` of
+/// `conduit-13`, ascent 16, descent 4; `hud_layout_disc` reads them).
+pub const TEXT_DIGIT_INK: (i16, i16) = (5, 17);
+
+/// Where a Halo 2 number text justified to end ([`JUSTIFY_RIGHT`]) is
+/// placed to stand where Halo 1's number does: its x where Halo 1's last
+/// digit ends, its y so the digits' ink ([`TEXT_DIGIT_INK`]) is centred on
+/// Halo 1's digit sprites (`h` tall). As a Halo 2 offset from the same
+/// anchor.
+///
+/// Across: Halo 1 draws the digits right to left, each a digit cell
+/// (`hud#` digit width `w`) further left (E `0x000e1d00`..`0x000e1d18`),
+/// from a start that the anchor moves (E the switch `0x000e1bd1` on the
+/// anchor, table `0x000e2088`): on a left anchor right by `(cells - 2) * w`
 /// (`0x000e1bd8`), where `cells` is the digits plus one with flag `0x04`;
 /// on a right anchor not at all (`0x000e1c52`); centred by half of
 /// `(cells - 1) * w` (`0x000e1c12`). A digit's sprite lies right of its
 /// point on a left anchor, left of it on a right one and centred on it on
 /// the centre (`0x000e0330`), so the number ends at the start plus `w`,
-/// at the start, or at the start plus `w / 2`. Fraction digits are not drawn by any `grhi`
-/// on the disc and are refused.
-pub fn number_end(n: &Number, w: i16) -> Result<(i16, i16)> {
+/// at the start, or at the start plus `w / 2`.
+///
+/// Down: Halo 1's digit sprite lies below its point on a top anchor, above
+/// it on a bottom one and centred on the centre (`0x000e0330`). Halo 2's
+/// text always lies below its point (E `0x22aa16`), its digits' ink rows
+/// [`TEXT_DIGIT_INK`] under it. Putting that point at Halo 1's y drew the
+/// ink 5 rows low, out of the bottom of the grenade indicator.
+///
+/// Fraction digits are not drawn by any `grhi` on the disc and are refused.
+pub fn number_point(n: &Number, w: i16, h: i16) -> Result<(i16, i16)> {
     if n.fraction_digits != 0 {
         return Err(Error::Invalid("a number with fraction digits".into()));
     }
@@ -1060,13 +1328,22 @@ pub fn number_end(n: &Number, w: i16) -> Result<(i16, i16)> {
         Anchor::TopRight | Anchor::BottomRight => n.offset.0,
         Anchor::Centre => n.offset.0 + (cells - 1) * w / 2 + w / 2,
     };
-    Ok(to_halo2_offset(n.anchor, (x, n.offset.1)))
+    let (x, y) = to_halo2_offset(n.anchor, (x, n.offset.1));
+    // The top of Halo 1's digit sprite, in screen directions.
+    let top = match n.anchor {
+        Anchor::TopLeft | Anchor::TopRight => y,
+        Anchor::BottomLeft | Anchor::BottomRight => y - h,
+        Anchor::Centre => y - h / 2,
+    };
+    let (ink0, ink1) = TEXT_DIGIT_INK;
+    // Centre the ink on the sprite: top + h/2 = y' + (ink0 + ink1)/2.
+    Ok((x, top + (h - (ink0 + ink1)) / 2))
 }
 
 /// The text widget for grenade type `k`'s count: input `20 + k`, shown
-/// with that type's other widgets ([`GRENADE_STATES`]), ending where
-/// Halo 1's number ends ([`number_end`]).
-pub fn grenade_count(n: &Number, k: usize, w: i16, shader: TagId) -> Result<TextWidget> {
+/// with that type's other widgets ([`GRENADE_STATES`]), standing where
+/// Halo 1's number does ([`number_point`]), in [`TEXT_FONT`].
+pub fn grenade_count(n: &Number, k: usize, w: i16, h: i16, shader: TagId) -> Result<TextWidget> {
     let state = *GRENADE_STATES
         .get(k)
         .ok_or_else(|| Error::Invalid(format!("grenade type {k}")))?;
@@ -1079,7 +1356,87 @@ pub fn grenade_count(n: &Number, k: usize, w: i16, shader: TagId) -> Result<Text
         shader,
         string: TEXT_INPUT1,
         justification: JUSTIFY_RIGHT,
-        offset: number_end(n, w)?,
+        offset: number_point(n, w, h)?,
+    })
+}
+
+/// The Halo 2 text input that shows the value a Halo 1 weapon number's
+/// state does. Halo 1's number values (E `0x000dbc4e`..`0x000dbc99`): state
+/// 0 the magazine's `+6`, state 1 its `+8` (the per-magazine HUD block
+/// `0x000be2f0`: `+0x12`, `+0x0e`), state 3 `(1 - age) * 100`.
+/// Halo 2's (input switch `0x0013ad48`, its weapon block from `0x0013afa9`
+/// and `0x00100520`): `0x30` the block's `+6`, the magazine's `+0x22c`, its
+/// rounds loaded (the same field the magnum's ammo meter divides by the
+/// magazine size, `0x36`); `0x33` the block's `+8`, `0x001008f0`'s count,
+/// read from the magazine's `+0x22a`, the rounds in reserve (V: retail
+/// Halo 2's ammo counts, the battle rifle's, magnum's, shotgun's and
+/// rocket launcher's text, read it); `0x32` `100 - age * 100`
+/// (`0x0013aee3`), the battery's percentage (V: retail Halo 2's plasma
+/// rifle, energy sword and sentinel beam battery counts read it). Halo 1's magazine keeps its
+/// reserve and loaded rounds at `+6` and `+8`, the order Halo 2's keeps
+/// them in at `+0x22a` and `+0x22c` (inferred: the same field order).
+pub fn weapon_number_input(s: WeaponState) -> Option<u8> {
+    match s {
+        WeaponState::TotalAmmo => Some(0x33),
+        WeaponState::LoadedAmmo => Some(0x30),
+        WeaponState::Battery => Some(0x32),
+        _ => None,
+    }
+}
+
+/// The text widget for weapon HUD number `e`, or why it has none: Halo 2
+/// text on [`weapon_number_input`], standing where Halo 1's number does
+/// ([`number_point`], as the grenade count), with the weapon's other
+/// widgets' state flags ([`STATE`]).
+///
+/// The number's scale is not the element's: Halo 1's number draw takes
+/// its scale from its eighth argument (E `0x000e1b3d`), which the weapon
+/// HUD passes as 0 (`0x000dc0d6`), and a scale not above 0 is 1.0
+/// (`0x000e1b58`). The disc's weapon numbers hold 0 there (V).
+///
+/// Refused: hidden or split-screen-only numbers (as the bitmap entries),
+/// a colour of 0 ([`static_alpha`]), states no Halo 2 input shows (the
+/// sniper rifle's zoom numbers, states 6 and 7), numbers shown in
+/// magazines (`+0x78` bit 0: Halo 2's text cannot divide) and fraction
+/// digits ([`number_point`]). Halo 1's leading zeros (flags bit 0: a
+/// three-digit count of 60 shows `060`, E `0x000e1f5d`..`0x000e1f6f`) are
+/// not drawn: no padding of Halo 2's number text is established.
+pub fn weapon_number(
+    e: &WeaponEntry,
+    w: i16,
+    h: i16,
+    shader: TagId,
+) -> std::result::Result<TextWidget, Skip> {
+    let WeaponEntryKind::Number(state, n, magazines) = &e.kind else {
+        return Err(Skip::NothingDrawn);
+    };
+    if e.hidden {
+        return Err(Skip::Hidden);
+    }
+    if e.screen == SPLIT_SCREEN_ONLY {
+        return Err(Skip::SplitScreen);
+    }
+    if e.colour == 0 {
+        return Err(Skip::Invisible);
+    }
+    let input = weapon_number_input(*state).ok_or(Skip::NumberState(*state))?;
+    if *magazines {
+        return Err(Skip::Magazines);
+    }
+    if n.fraction_digits != 0 {
+        return Err(Skip::Fraction);
+    }
+    let offset = number_point(n, w, h).map_err(|_| Skip::Fraction)?;
+    Ok(TextWidget {
+        name: "h1_weapon_number".to_owned(),
+        inputs: [input, 0, 0, 0],
+        state: STATE,
+        anchor: n.anchor,
+        flags: TEXT_NUMBER,
+        shader,
+        string: TEXT_INPUT1,
+        justification: JUSTIFY_RIGHT,
+        offset,
     })
 }
 
@@ -1129,8 +1486,77 @@ mod tests {
             scale: [1.0, 1.0],
             bitmap: Some(H1TagId(1)),
             sequence: 6,
-            colour: 0,
+            colour: 0xdc2896ff,
         }
+    }
+
+    #[test]
+    fn a_static_of_colour_zero_is_not_drawn() {
+        assert_eq!(static_alpha(0), None);
+        assert_eq!(static_alpha(0xdc2896ff), Some(0xdc));
+        assert_eq!(static_alpha(0xffaad5ff), Some(0xff));
+        assert_eq!(static_alpha(0x002896ff), Some(0xff), "additive in Halo 1: shown");
+        let mut s = entry(WeaponEntryKind::Static(WeaponState::LoadedAmmo));
+        s.colour = 0;
+        assert_eq!(weapon_widget(&s, Some(TagId(1)), TagId(2), TagId(3)), Err(Skip::Invisible));
+        // Meters and crosshairs keep their own colour rules.
+        s.kind = WeaponEntryKind::Meter(WeaponState::LoadedAmmo, [0, 60, 1]);
+        assert!(weapon_widget(&s, Some(TagId(1)), TagId(2), TagId(3)).is_ok());
+    }
+
+    fn number_entry(state: WeaponState, magazines: bool) -> WeaponEntry {
+        // The disc's full-screen count (V: bloodgulch's assault rifle).
+        let n = Number {
+            anchor: Anchor::TopLeft,
+            offset: (29, 3),
+            scale: [0.0, 0.0],
+            digits: 3,
+            flags: 1,
+            fraction_digits: 0,
+        };
+        WeaponEntry {
+            kind: WeaponEntryKind::Number(state, n, magazines),
+            screen: 1,
+            offset: n.offset,
+            scale: n.scale,
+            bitmap: None,
+            sequence: 0,
+            colour: 0xff2896ff,
+            ..entry(WeaponEntryKind::Static(state))
+        }
+    }
+
+    #[test]
+    fn weapon_numbers_are_number_texts_on_halo2s_ammo_inputs() {
+        let e = number_entry(WeaponState::TotalAmmo, false);
+        let t = weapon_number(&e, 9, 12, TagId(7)).unwrap();
+        assert_eq!(t.inputs, [0x33, 0, 0, 0]);
+        assert_eq!((t.flags, t.string, t.justification), (TEXT_NUMBER, TEXT_INPUT1, JUSTIFY_RIGHT));
+        assert_eq!((t.anchor, t.state, t.shader), (Anchor::TopLeft, STATE, TagId(7)));
+        // Three cells from 29: the last ends at 29 + 2 * 9; the ink centred
+        // on the digit sprite's rows 3..15.
+        assert_eq!(t.offset, (47, -2));
+        let input = |s| weapon_number(&number_entry(s, false), 9, 12, TagId(7)).map(|t| t.inputs[0]);
+        assert_eq!(input(WeaponState::LoadedAmmo), Ok(0x30));
+        assert_eq!(input(WeaponState::Battery), Ok(0x32));
+        assert_eq!(input(WeaponState::Other(6)), Err(Skip::NumberState(WeaponState::Other(6))));
+        assert_eq!(input(WeaponState::Heat), Err(Skip::NumberState(WeaponState::Heat)));
+        let mags = number_entry(WeaponState::TotalAmmo, true);
+        assert_eq!(weapon_number(&mags, 9, 12, TagId(7)), Err(Skip::Magazines));
+        let mut e = number_entry(WeaponState::TotalAmmo, false);
+        e.screen = SPLIT_SCREEN_ONLY;
+        assert_eq!(weapon_number(&e, 9, 12, TagId(7)), Err(Skip::SplitScreen));
+        e.screen = 0;
+        e.colour = 0;
+        assert_eq!(weapon_number(&e, 9, 12, TagId(7)), Err(Skip::Invisible));
+        e.colour = 1;
+        if let WeaponEntryKind::Number(_, n, _) = &mut e.kind {
+            n.fraction_digits = 3;
+        }
+        assert_eq!(weapon_number(&e, 9, 12, TagId(7)), Err(Skip::Fraction));
+        // Not a bitmap widget.
+        let e = number_entry(WeaponState::TotalAmmo, false);
+        assert_eq!(weapon_widget(&e, Some(TagId(1)), TagId(2), TagId(3)), Err(Skip::Text));
     }
 
     #[test]
@@ -1231,19 +1657,21 @@ mod tests {
     #[test]
     fn halo1_numbers_end_where_their_last_digit_does() {
         // The disc's grenade count: one digit, top left, (107, 3).
-        assert_eq!(number_end(&number(Anchor::TopLeft, 1, 1), 9).unwrap(), (107, 3));
-        assert_eq!(number_end(&number(Anchor::TopLeft, 3, 0), 9).unwrap(), (125, 3));
-        assert_eq!(number_end(&number(Anchor::TopLeft, 2, 4), 9).unwrap(), (125, 3));
-        assert_eq!(number_end(&number(Anchor::BottomRight, 3, 0), 9).unwrap(), (-107, -3));
-        assert_eq!(number_end(&number(Anchor::Centre, 3, 0), 10).unwrap(), (122, 3));
+        // Across: the last digit's end. Down: conduit-13's digit ink (rows
+        // 5..17 under the point) centred on Halo 1's 12-row digit sprites.
+        assert_eq!(number_point(&number(Anchor::TopLeft, 1, 1), 9, 12).unwrap(), (107, -2));
+        assert_eq!(number_point(&number(Anchor::TopLeft, 3, 0), 9, 12).unwrap(), (125, -2));
+        assert_eq!(number_point(&number(Anchor::TopLeft, 2, 4), 9, 12).unwrap(), (125, -2));
+        assert_eq!(number_point(&number(Anchor::BottomRight, 3, 0), 9, 12).unwrap(), (-107, -20));
+        assert_eq!(number_point(&number(Anchor::Centre, 3, 0), 10, 12).unwrap(), (122, -8));
         let mut n = number(Anchor::TopLeft, 1, 0);
         n.fraction_digits = 1;
-        assert!(number_end(&n, 9).is_err());
+        assert!(number_point(&n, 9, 12).is_err());
     }
 
     #[test]
     fn a_grenade_count_is_a_number_text_on_its_type_input() {
-        let t = grenade_count(&number(Anchor::TopLeft, 1, 1), 1, 9, TagId(7)).unwrap();
+        let t = grenade_count(&number(Anchor::TopLeft, 1, 1), 1, 9, 12, TagId(7)).unwrap();
         assert_eq!(t.inputs, [21, 0, 0, 0]);
         assert_eq!(t.state, GRENADE_STATES[1]);
         let b = t.bytes();
@@ -1252,9 +1680,10 @@ mod tests {
         assert_eq!(&b[text::ANCHOR..text::ANCHOR + 4], &[Anchor::TopLeft as u8, 0, 1, 0]);
         assert_eq!(&b[text::JUSTIFICATION..text::JUSTIFICATION + 2], &[2, 0]);
         for at in text::OFFSETS {
-            assert_eq!(&b[at..at + 4], &[107, 0, 3, 0]);
+            assert_eq!(&b[at..at + 4], &[107, 0, 0xfe, 0xff], "y -2: the ink on Halo 1's digits");
         }
-        assert!(grenade_count(&number(Anchor::TopLeft, 1, 1), 2, 9, TagId(7)).is_err());
+        assert_eq!(&b[text::FONTS..text::FONTS + 4], &[TEXT_FONT, TEXT_FONT, TEXT_FONT, 0]);
+        assert!(grenade_count(&number(Anchor::TopLeft, 1, 1), 2, 9, 12, TagId(7)).is_err());
         let root = nhdt(&[], &[t]);
         let child = root
             .fixups
@@ -1301,6 +1730,43 @@ mod tests {
         assert_eq!(Anchor::from_halo1(2), Some(Anchor::BottomLeft));
         assert_eq!(Anchor::from_halo1(4), Some(Anchor::Centre));
         assert_eq!(Anchor::from_halo1(5), None);
+    }
+
+    #[test]
+    fn halo2_places_each_anchor_as_halo1_does() {
+        for anchor in [
+            Anchor::TopLeft,
+            Anchor::TopRight,
+            Anchor::BottomLeft,
+            Anchor::BottomRight,
+            Anchor::Centre,
+        ] {
+            let mut e = element(Role::Static);
+            e.anchor = anchor;
+            e.offset = to_halo2_offset(anchor, (36, 17));
+            let w = widget_for(&e, TagId(1), registration(anchor), TagId(2), TagId(3));
+            assert_eq!(halo2_rect(&w, (88, 14)), halo1_rect(anchor, (36, 17), (88, 14)), "{anchor:?}");
+        }
+        // The cyborg's health meter: 36 in from the right, 17 down.
+        assert_eq!(halo1_rect(Anchor::TopRight, (36, 17), (88, 14)), [-124, 17, -36, 31]);
+    }
+
+    #[test]
+    fn clear_meter_texels_lose_their_colour_and_stay_clear() {
+        use h1map::bitmap::PixelFormat as F;
+        // A8Y8: Y then A. A clear texel with luminance shows in Halo 2's
+        // filled part; once black it does not.
+        let mut px = vec![200, 0, 90, 255, 30, 0x40];
+        assert_eq!(legacy_meter_alpha([200, 200, 200, 0], true), 200);
+        assert_eq!(legacy_meter_alpha([200, 200, 200, 0], false), 0);
+        clear_meter_colour(F::A8Y8, &mut px).unwrap();
+        assert_eq!(px, [0, 0, 90, 255, 30, 0x40], "visible texels unchanged");
+        assert_eq!(legacy_meter_alpha([0, 0, 0, 0], true), 0);
+        let mut px = vec![1, 2, 3, 0, 4, 5, 6, 7];
+        clear_meter_colour(F::A8R8G8B8, &mut px).unwrap();
+        assert_eq!(px, [0, 0, 0, 0, 4, 5, 6, 7]);
+        assert!(clear_meter_colour(F::Dxt5, &mut [0; 16]).is_none());
+        assert!(clear_meter_colour(F::Ay8, &mut [0; 4]).is_some());
     }
 
     #[test]

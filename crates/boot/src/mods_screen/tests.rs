@@ -270,6 +270,21 @@ fn a_mod_needing_a_disc_map_says_which() {
             "Failed; press A to retry",
         ),
         (ModsError::NotSignedIn, "Sign in to Live first"),
+        // A Map Pack base: the map pack, by the map's game name.
+        (
+            ModsError::Refused(Refusal::NoMapPack {
+                name: "Relic Rockets".into(),
+                map: "dune".into(),
+            }),
+            "Needs the Map Pack's Relic",
+        ),
+        (
+            ModsError::Refused(Refusal::NoBase {
+                name: "Turf Swords".into(),
+                map: "turf".into(),
+            }),
+            "Needs the Map Pack's Turf",
+        ),
     ] {
         assert_eq!(failed_install_text(&e), says);
     }

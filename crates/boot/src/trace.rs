@@ -33,6 +33,22 @@ pub fn return_state(ret_pc: u32, seq: u64) -> [u32; 4] {
     [ret_pc, seq as u32, (seq >> 32) as u32, 0]
 }
 
+/// Makes a [`KERNEL_CALL_RETURN`] continuation again after a snapshot load
+/// (`kernel::snapshot::Rebuilders`), from its [`return_state`]: finish the
+/// record, if this trace still has it, and return to the caller.
+pub fn rebuilder(t: &Shared) -> kernel::snapshot::Rebuild {
+    let t = Arc::clone(t);
+    Box::new(move |_target: u32, state: [u32; 4]| -> runtime::Continuation {
+        let ret_pc = state[0];
+        let seq = u64::from(state[1]) | (u64::from(state[2]) << 32);
+        let t = Arc::clone(&t);
+        Box::new(move |cpu: &mut runtime::CpuAbi, _ctx: &mut runtime::ExecCtx| {
+            t.lock().unwrap().finish(seq, cpu.eax);
+            Ok::<_, runtime::GuestFault>(TransferAbi::ret(ret_pc))
+        })
+    })
+}
+
 #[derive(Debug, Clone)]
 pub struct Call {
     pub seq: u64,
@@ -360,6 +376,18 @@ mod tests {
         assert_eq!(live[0].target, SHADOW_BASE + 234 * 4);
         assert_eq!(live[0].state, Some(return_state(0x1234, 0)));
         assert_eq!(return_state(0x1234, 0x1_0000_0002), [0x1234, 2, 1, 0]);
+    }
+
+    #[test]
+    fn a_rebuilt_kernel_call_return_finishes_its_record_and_returns_to_the_caller() {
+        let rt = runtime::Runtime::new(runtime::Guest::new(), runtime::Dispatch::default());
+        let mut ctx = runtime::ExecCtx::new(Arc::clone(&rt), 3);
+        let t: Shared = Arc::new(Mutex::new(bounded(4)));
+        let seq = t.lock().unwrap().push(call(234));
+        let continuation = rebuilder(&t)(SHADOW_BASE + 234 * 4, return_state(0x1234, seq));
+        let mut cpu = runtime::CpuAbi { eax: 7, ..runtime::CpuAbi::xbox_thread() };
+        assert_eq!(continuation(&mut cpu, &mut ctx).unwrap(), TransferAbi::ret(0x1234));
+        assert_eq!(t.lock().unwrap().calls[0].result, Some(7));
     }
 
     #[test]

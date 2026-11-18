@@ -10,7 +10,7 @@
 use map::{FourCC, TagId};
 use scenario_edit::{BlockKind, Scenario, TagRef, Value};
 
-use crate::placements::{Plan, resolve};
+use crate::placements::{H2Flag, Plan, resolve};
 use crate::sandbox::{H2Item, netgame_type, vehicle_class};
 
 /// A vehicle collection (`vehc`) the base lacks, to be added when the map
@@ -220,6 +220,14 @@ pub fn apply(
         s.set(NetgameFlags, i, "facing", Value::Float(f.facing))?;
         s.set(NetgameFlags, i, "type", Value::Int(f.kind.raw().into()))?;
         s.set(NetgameFlags, i, "team", Value::Int(f.team.into()))?;
+        // Halo 2 pairs a teleporter's entrance with its exits by the
+        // identifier (`+0x14`), not the team: Halo 1's channel goes there.
+        if matches!(
+            f.kind,
+            H2Flag::TeleporterSource | H2Flag::TeleporterDestination
+        ) {
+            s.set(NetgameFlags, i, "identifier", Value::Int(f.team.into()))?;
+        }
         out.counts[1] += 1;
     }
     let names: Vec<(String, String)> = tags

@@ -40,8 +40,8 @@ use bots::mind::Skill;
 use bots::phantom::{Identity, PhantomHandle, Phantoms};
 
 use crate::h1_options_row::{self as h1row, CHANGE_MAP};
-use crate::telemetry;
 use crate::list_class::{self, Rows};
+use crate::telemetry;
 use crate::ui_kit::choice::ChoiceRow;
 use crate::ui_kit::ids::{self, Family};
 use crate::ui_kit::input::{Glyph, Prompt};
@@ -488,7 +488,12 @@ impl Driver {
 
     /// The roster in force for `session` asked for `count` at `skill`, or
     /// `None`, asking for it when it was not asked for yet.
-    fn rostered(&self, count: usize, difficulty: i64, log: &mut Vec<String>) -> Option<Vec<RosterSeat>> {
+    fn rostered(
+        &self,
+        count: usize,
+        difficulty: i64,
+        log: &mut Vec<String>,
+    ) -> Option<Vec<RosterSeat>> {
         let rosters = self.rosters.as_ref()?;
         let session = rosters.session()?;
         let asked = Asked {
@@ -519,7 +524,9 @@ impl Driver {
             }
         });
         match rosters.ask(request, done) {
-            Ok(()) => log.push(format!("asking Live for {count} bots for session {session}")),
+            Ok(()) => log.push(format!(
+                "asking Live for {count} bots for session {session}"
+            )),
             Err(e) => log.push(format!("no roster from Live: {e}")),
         }
         None
@@ -583,34 +590,57 @@ impl Driver {
         want.map_or_else(Vec::new, |w| self.apply(w))
     }
 
-    /// The server roster the next game runs with, for its record: the
-    /// roster's session, while this console still hosts it, and each
-    /// phantom it runs from the roster, by machine id.
+    /// The bots the next game runs with, for its record (docs/game/bots.md
+    /// §6): every Clanker goes out as a bot. Local bots by their ports (the
+    /// driver's and any other on the books, `sim.*`'s too), phantoms by
+    /// machine id. While a server roster is in force (its session, while
+    /// this console still hosts it), the game names that session and each
+    /// rostered phantom carries its rostered xuid; no other bot has one.
+    /// `None` when there are no bots and no roster.
     pub fn bots_in_force(&self) -> Option<telemetry::Bots> {
+        let session_id = self.roster_in_force();
+        let own = self.own.lock().unwrap_or_else(|e| e.into_inner());
+        // Only bit 0..7 can be a port.
+        let mut ports = (self.local.port_mask() & 0xff) as u8;
+        let mut machines = Vec::new();
+        for o in own.iter() {
+            match o.seat {
+                Seat::Port(p, _) => ports |= 1u8.checked_shl(u32::from(p)).unwrap_or(0),
+                Seat::Phantom(_, h) => {
+                    let xuid = if o.rostered && session_id.is_some() {
+                        o.xuid
+                    } else {
+                        0
+                    };
+                    machines.push((bots::phantom::machine_id(h), live_proto::Xuid(xuid)));
+                }
+            }
+        }
+        drop(own);
+        // Phantoms someone else added (`sim.player.add`): bots, no xuid.
+        for p in self.phantoms.iter().flat_map(|ph| ph.list()) {
+            if !machines.iter().any(|(m, _)| *m == p.machine) {
+                machines.push((p.machine, live_proto::Xuid(0)));
+            }
+        }
+        if ports == 0 && machines.is_empty() && session_id.is_none() {
+            return None;
+        }
+        Some(telemetry::Bots {
+            session_id,
+            machines,
+            ports,
+        })
+    }
+
+    /// The session of the server roster in force: the one asked for this
+    /// console's hosted session, once its answer came.
+    fn roster_in_force(&self) -> Option<String> {
         let session = self.rosters.as_ref()?.session()?;
         let r = self.roster.lock().unwrap_or_else(|e| e.into_inner());
         let asked = r.asked.as_ref().filter(|a| a.session == session)?;
         r.roster.as_ref()?;
-        let session_id = asked.session.clone();
-        drop(r);
-        let machines = self
-            .own
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .filter(|o| o.rostered)
-            .filter_map(|o| match o.seat {
-                Seat::Phantom(_, h) => Some((
-                    bots::phantom::machine_id(h),
-                    live_proto::Xuid(o.xuid),
-                )),
-                Seat::Port(..) => None,
-            })
-            .collect();
-        Some(telemetry::Bots {
-            session_id,
-            machines,
-        })
+        Some(asked.session.clone())
     }
 
     /// Adds or takes off bots to match `want`; what it did, for the log.
@@ -673,7 +703,8 @@ impl Driver {
             return log;
         };
         // The phantoms: the server's roster's bots, else host-made ones.
-        let seats: Vec<(RosterSeat, bool)> = match self.rostered(wanted, want.difficulty, &mut log) {
+        let seats: Vec<(RosterSeat, bool)> = match self.rostered(wanted, want.difficulty, &mut log)
+        {
             Some(r) => r.into_iter().take(wanted).map(|s| (s, true)).collect(),
             None => (0..wanted)
                 .map(|i| {
@@ -709,7 +740,10 @@ impl Driver {
                 .zip(&seats)
                 .all(|(h, (s, r))| h.0 == s.identity.xuid && h.1 == *r);
         if !keep {
-            while let Some(i) = own.iter().rposition(|o| matches!(o.seat, Seat::Phantom(..))) {
+            while let Some(i) = own
+                .iter()
+                .rposition(|o| matches!(o.seat, Seat::Phantom(..)))
+            {
                 let o = own.remove(i);
                 self.take_off(o.seat, &mut log);
             }
@@ -1041,8 +1075,8 @@ impl feature::Feature for SetupRow {
 }
 
 /// Adds the page, its texts, the Game Setup row and the driver. With
-/// Live, the driver's phantoms are the server's bots, and telemetry marks
-/// them (docs/game/bots.md stage 6c).
+/// Live, the driver's phantoms are the server's bots. Telemetry marks every
+/// bot (docs/game/bots.md §6, stage 6c).
 pub fn install(
     registry: &mut feature::Registry,
     store: &Arc<Store>,
@@ -1067,8 +1101,8 @@ pub fn install(
     }
     let d = drive(store, driver);
     *DRIVER.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::downgrade(&d));
-    // A game with server bots names their roster's session, and its
-    // phantom players go out as bots with their rostered xuids.
+    // Every bot goes out as a bot; a game with server bots names their
+    // roster's session, and its phantoms carry their rostered xuids.
     if let Some(t) = telemetry {
         let d = Arc::downgrade(&d);
         t.set_bots_locator(Box::new(move || d.upgrade()?.bots_in_force()));

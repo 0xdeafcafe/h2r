@@ -161,8 +161,12 @@ pub fn seen_after(page: &ModPage, seen: u64) -> u64 {
 }
 
 /// `"Lockout"` from `lockout`, `"Ascension"` from `ascension`: the base map's
-/// file name as a player reads it (first letter up, `_` as a space).
+/// file name as a player reads it (first letter up, `_` as a space). A
+/// Multiplayer Map Pack map has its game name: `"Relic"` from `dune`.
 pub fn base_title(base: &str) -> String {
+    if let Some(title) = content::map_pack::title(base) {
+        return title.to_owned();
+    }
     let mut out = String::with_capacity(base.len());
     let mut up = true;
     for c in base.chars() {
@@ -377,6 +381,9 @@ mod tests {
     fn names_and_sizes_read_as_the_screens_show_them() {
         assert_eq!(base_title("lockout"), "Lockout");
         assert_eq!(base_title("beaver_creek"), "Beaver Creek");
+        assert_eq!(base_title("dune"), "Relic");
+        assert_eq!(base_title("deltatap"), "Sanctuary");
+        assert_eq!(base_title("turf"), "Turf");
         assert_eq!(size_text(0), "1 KB");
         assert_eq!(size_text(1536), "2 KB");
         assert_eq!(size_text(3_565_158), "3.4 MB");

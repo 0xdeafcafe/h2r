@@ -5,6 +5,9 @@
 //! - `real_h1_disc_every_sky_reads`: census of every `sky ` tag on all 24
 //!   Halo 1 maps.
 //! - `real_h2_disc_every_sky_decodes`: every retail Halo 2 sky decodes.
+//! - `real_h2_disc_atmosphere_fog_reads_where_the_converter_writes`: the
+//!   retail atmosphere elements' first fog, read with the converter's
+//!   layout, and every cluster index into them.
 //! - `real_h1_disc_a30_bloodgulch_round_trip`: both skies convert (models
 //!   included), build into a v8 map, and read back equal.
 
@@ -54,6 +57,7 @@ fn real_h1_disc_every_sky_reads() {
     let (mut with_model, mut with_animation, mut with_fog, mut with_functions) = (0, 0, 0, 0);
     let mut lights = 0;
     let mut fogs = 0;
+    let mut unset_a = Vec::new();
     for e in &disc.maps {
         let name = h1map::disc::file_name(e);
         let map = h1_map(&mut x, h1map::disc::map_stem(e)).expect("map reads");
@@ -87,6 +91,17 @@ fn real_h1_disc_every_sky_reads() {
                 assert!(s[at + 6] <= s[at + 7], "{name} fog {k} start past opaque");
             }
             fogs += sky.fogs().iter().flatten().count();
+            // A fog A opaque at its start is the one shape: black, density
+            // 1, start and opaque 0 (h1::Sky::outdoor_fog).
+            if let (Some(f), None) = (sky.fogs()[0], sky.outdoor_fog()) {
+                assert_eq!(
+                    (f.color, f.max_density, f.start_distance, f.opaque_distance),
+                    ([0.0; 3], 1.0, 0.0, 0.0),
+                    "{name} {}",
+                    t.name
+                );
+                unset_a.push(format!("{name} {}", t.name));
+            }
             for l in &sky.lights {
                 if !l.lens_flare.id.is_none() {
                     let lens = map.tag(l.lens_flare.id).expect("lens resolves");
@@ -116,6 +131,8 @@ fn real_h1_disc_every_sky_reads() {
     assert_eq!(with_fog, 0);
     assert_eq!(with_functions, 2);
     assert_eq!(lights, 48);
+    println!("fog A opaque at its start: {unset_a:?}");
+    assert_eq!(unset_a.len(), 5, "a10's two, c20's, d40's space_x10 and ui's");
 }
 
 /// `H2_ISO=<iso> cargo test -p h1sky -- --ignored real_h2 --nocapture`
@@ -172,6 +189,82 @@ fn real_h2_disc_every_sky_decodes() {
     );
     assert_eq!(total, 91, "91 sky identities across the retail maps");
     assert!(lights >= 67, "most skies carry one light");
+}
+
+/// The retail control for `atmosphere`: every scenario atmosphere element
+/// on the disc read with the layout the converter writes, and every
+/// structure cluster's `+0x6f` inside its map's block.
+/// `H2_ISO=<iso> cargo test -p h1sky -- --ignored real_h2_disc_atmo --nocapture`
+#[test]
+#[ignore = "needs the Halo 2 disc ($H2_ISO)"]
+fn real_h2_disc_atmosphere_fog_reads_where_the_converter_writes() {
+    use crate::atmosphere;
+    let word = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+    let path = h2_iso();
+    let mut x = xiso::Xiso::open(BufReader::new(File::open(&path).unwrap())).unwrap();
+    let mut maps: Vec<_> = x
+        .entries()
+        .unwrap()
+        .into_iter()
+        .filter(|e| !e.is_dir && e.path.to_ascii_lowercase().starts_with("/maps/"))
+        .collect();
+    maps.sort_by_key(|e| e.path.clone());
+    let (mut elements, mut fogs, mut named) = (0, 0, 0);
+    let mut oldmombasa = None;
+    for e in maps {
+        let name = e.path.rsplit('/').next().unwrap().to_string();
+        let base = x.partition_offset() + u64::from(e.sector) * xiso::SECTOR;
+        let Ok(mut m) =
+            Map::from_region(BufReader::new(File::open(&path).unwrap()), base, e.size.into())
+        else {
+            continue;
+        };
+        let Some(sc) = m.scenario().cloned() else { continue };
+        let Ok(b) = m.read_tag_bytes(sc.id) else { continue };
+        let at = sc.location.unwrap().address;
+        let field = atmosphere::SCENARIO_FIELD as usize;
+        let n = word(&b, field) as usize;
+        let start = word(&b, field + 4).wrapping_sub(at) as usize;
+        for k in 0..n {
+            let el = &b[start + k * atmosphere::LEN..start + (k + 1) * atmosphere::LEN];
+            let fog = atmosphere::fog(el).unwrap();
+            elements += 1;
+            if fog.max_density > 0.0 {
+                fogs += 1;
+                assert!(fog.max_density <= 1.0, "{name} [{k}] density");
+                assert!(fog.opaque_distance > fog.start_distance, "{name} [{k}]");
+            }
+            if name.starts_with("03a") && k == 0 {
+                oldmombasa = Some(fog);
+            }
+        }
+        let sbsps: Vec<_> = m
+            .tags()
+            .iter()
+            .filter(|t| t.group == map::FourCC(*b"sbsp"))
+            .map(|t| (t.id, t.location.unwrap().address))
+            .collect();
+        for (id, at) in sbsps {
+            let Ok(s) = m.read_tag_bytes(id) else { continue };
+            let (cn, cat) = (word(&s, 0x9c) as usize, word(&s, 0xa0).wrapping_sub(at) as usize);
+            for c in 0..cn {
+                let a = s[cat + c * 0xb0 + 0x6f];
+                if a != 0xff {
+                    named += 1;
+                    assert!(usize::from(a) < n, "{name} cluster {c} names atmosphere {a} of {n}");
+                }
+            }
+        }
+    }
+    println!("{elements} atmosphere elements, {fogs} with a first fog, {named} clusters name one");
+    assert_eq!(elements, 34);
+    assert!(named > 0);
+    let f = oldmombasa.expect("03a has an atmosphere");
+    assert_eq!(
+        [f.max_density, f.start_distance, f.opaque_distance],
+        [0.6, 5.0, 200.0],
+        "03a's first: a brown fog, 5 to 200 units"
+    );
 }
 
 /// The lane's proof: `a30` and `bloodgulch` skies (models included) convert,

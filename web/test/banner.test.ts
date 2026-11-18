@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { COMPOSITIONS, SHOTS, camera, candidates, check, layout, mapsOf, panelWeight, placeCast, type Composition, type Shot, type Spot } from "../banner/plan";
-import { applyBanners } from "../banner/manifest";
+import { applyBanners, writeManifest } from "../banner/manifest";
+import { mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { brotliDecompressSync, gunzipSync } from "node:zlib";
 import { bannerKey, gameArt, parseManifest } from "../src/lib/gameart";
 
 const COMP: Composition = { id: "t", width: 1000, height: 200, shots: ["a", "b", "c", "d"], slant: 0.2, feather: 0.25, mark: "right" };
@@ -139,6 +143,33 @@ describe("banner manifest", () => {
     const art = gameArt("/art/game/", parseManifest(after)!);
     expect(art.get(bannerKey("home"))).toEqual({ url: "/art/game/banner/home.jpg", width: 1804, height: 360 });
     expect(art.get(bannerKey("players"))).toBeNull();
+  });
+
+  test("the manifest's compressed copies are written again with it", () => {
+    // The extraction's copies hold the manifest without the banners; the
+    // server and the publish send the Brotli copy in place of the file.
+    const dir = mkdtempSync(join(tmpdir(), "h2-banner-manifest-"));
+    try {
+      const path = join(dir, "manifest.json");
+      const old = JSON.stringify({ version: 1, images: {} });
+      writeFileSync(path, old);
+      writeFileSync(path + ".br", "stale brotli");
+      writeFileSync(path + ".gz", "stale gzip");
+      const past = new Date(Date.now() - 3_600_000);
+      for (const p of [path, path + ".br", path + ".gz"]) utimesSync(p, past, past);
+
+      const m = applyBanners(JSON.parse(old), [{ id: "home", file: "banner/home.jpg", width: 1804, height: 360 }]);
+      writeManifest(path, m);
+      const plain = readFileSync(path);
+      expect(JSON.parse(plain.toString()).images["banner/home"]).toEqual({ file: "banner/home.jpg", width: 1804, height: 360 });
+      expect(brotliDecompressSync(readFileSync(path + ".br")).equals(plain)).toBe(true);
+      expect(gunzipSync(readFileSync(path + ".gz")).equals(plain)).toBe(true);
+      // Never older than the file, so the server does not take them as stale.
+      for (const ext of [".br", ".gz"]) expect(statSync(path + ext).mtimeMs).toBeGreaterThanOrEqual(statSync(path).mtimeMs);
+      expect(() => statSync(path + ".banner")).toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("the strip's key", () => {

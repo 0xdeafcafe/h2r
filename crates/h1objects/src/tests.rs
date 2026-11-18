@@ -581,6 +581,7 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
     let seats = [crate::rebuild::seat_names(&seat, &markers)];
     let root = crate::rebuild::vehicle(&crate::rebuild::VehicleSpec {
         object: &obj,
+        bounds: None,
         hlmt: Some(hlmt),
         seats: &seats,
         predicted: &predicted,
@@ -764,6 +765,7 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
     ];
     let root = crate::rebuild::vehicle(&VehicleSpec {
         object: &obj,
+        bounds: Some((1.5, [0.1, 0.0, 0.5])),
         hlmt: None,
         seats: &seats,
         predicted: &[],
@@ -792,6 +794,20 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
     assert_eq!(got.at("block_1c8[1].unknown_20").cloned(), word(0x3d00_0000));
     assert_eq!(got.at("block_1c8[0].unknown_0").cloned(), word(0x0008_8014));
     assert_eq!(got.at("block_1c8[1].unknown_0").cloned(), word(0x60));
+    // Halo 1's entry markers face the vehicle's forward: no facing test,
+    // whatever the role's seats hold.
+    for k in 0..2 {
+        assert_eq!(
+            got.at(&format!("block_1c8[{k}].unknown_9c")).cloned(),
+            word(std::f32::consts::PI.to_bits()),
+        );
+    }
+    // The sphere given, not Halo 1's.
+    assert_eq!(got.at("unit.obje.bounding_radius"), Some(&Val::Float(1.5)));
+    assert_eq!(
+        got.at("unit.obje.bounding_offset"),
+        Some(&Val::floats(&[0.1, 0.0, 0.5]))
+    );
     assert_eq!(
         got.at("block_1c8[0].label"),
         Some(&Val::text("warthog_d"))
@@ -1073,7 +1089,7 @@ fn built_physics_model_round_trips_with_every_piece() {
         node("a", 0, 2, -1),
         node("b", 0, -1, -1),
     ];
-    let root = physics_model(&bodies, &nodes, crate::rebuild::DEVICE_BODY).unwrap();
+    let root = physics_model(&bodies, &nodes, crate::rebuild::DEVICE_BODY, &[]).unwrap();
     let def = Defs::builtin().group(map::FourCC(*b"phmo")).unwrap();
     let got = defs::from_built(def, &root).unwrap();
     let again = defs::to_built(def, &got, &mut |_| None).unwrap();
@@ -1112,7 +1128,7 @@ fn built_physics_model_round_trips_with_every_piece() {
         other => panic!("{other:?}"),
     };
     assert!(rbs.iter().all(|b| words(b) == (vec![0, 0, 2, 0], vec![0, 0, 5, 0])));
-    let biped = physics_model(&bodies, &nodes, crate::rebuild::BIPED_BODY).unwrap();
+    let biped = physics_model(&bodies, &nodes, crate::rebuild::BIPED_BODY, &[]).unwrap();
     let biped = defs::from_built(def, &biped).unwrap();
     let Some(Val::Block(brbs)) = biped.at("rigid_bodies") else {
         panic!()
@@ -1191,9 +1207,11 @@ fn built_physics_model_round_trips_with_every_piece() {
     let ns = block("nodes");
     assert_eq!(ns.len(), 3);
     assert_eq!(
-        ns[1].get("unknown_8"),
-        Some(&Val::Bytes(vec![2, 0, 0xff, 0xff]))
+        ["flags", "parent", "next_sibling", "first_child"].map(|f| ns[1].get(f).cloned()),
+        [0, 0, 2, -1].map(|v| Some(Val::Int(v)))
     );
+    // No joints asked for: no edges or constraints.
+    assert!(block("node_edges").is_empty() && block("ragdoll_constraints").is_empty());
 }
 
 /// A rebuilt biped: the role's root and block words, then the object
@@ -1706,4 +1724,56 @@ fn weapon_class_is_the_one_most_animations_name() {
     assert_eq!(m["hp"], "pistol");
     assert_eq!(m["x"], "missile");
     assert_eq!(m.len(), 3);
+}
+
+/// The rebuilt vehicle's sphere is the middle of its model's box and
+/// reaches its farthest vertex, wherever Halo 1's origin is.
+#[test]
+fn model_sphere_centres_the_model_box() {
+    use h1models::h1::{Geometry, Model, Part, Vertex};
+    let vertex = |position: [f32; 3]| Vertex {
+        position,
+        normal: [0.0, 0.0, 1.0],
+        binormal: [0.0, 1.0, 0.0],
+        tangent: [1.0, 0.0, 0.0],
+        texcoord: [0.0; 2],
+        nodes: [0, -1],
+        weights: [1.0, 0.0],
+    };
+    let part = |vs: Vec<Vertex>| Part {
+        flags: 0,
+        shader: 0,
+        centroid_nodes: [0, -1],
+        centroid_weights: [1.0, 0.0],
+        centroid: [0.0; 3],
+        vertices: vs,
+        strip: Vec::new(),
+    };
+    // A warthog-like body on wheels its origin touches: z 0 to 1.
+    let model = Model {
+        flags: 0,
+        node_list_checksum: 0,
+        lod_cutoffs: [0.0; 5],
+        base_map_scale: [1.0; 2],
+        markers: Vec::new(),
+        nodes: Vec::new(),
+        regions: Vec::new(),
+        geometries: vec![
+            Geometry {
+                flags: 0,
+                parts: vec![part(vec![vertex([-1.0, -0.5, 0.0]), vertex([1.0, 0.5, 0.6])])],
+            },
+            Geometry {
+                flags: 0,
+                parts: vec![part(vec![vertex([-0.6, 0.0, 1.0])])],
+            },
+        ],
+        shaders: Vec::new(),
+    };
+    let (r, c) = crate::rebuild::model_sphere(&model).unwrap();
+    assert_eq!(c, [0.0, 0.0, 0.5]);
+    let far = (1.0f32 + 0.25 + 0.25).sqrt();
+    assert!((r - far).abs() < 1e-6, "{r}");
+    let empty = Model { geometries: Vec::new(), ..model };
+    assert_eq!(crate::rebuild::model_sphere(&empty), None);
 }

@@ -284,7 +284,12 @@ impl Rosters for FakeLive {
 
 impl FakeLive {
     fn requests(&self) -> Vec<RosterRequest> {
-        self.asked.lock().unwrap().iter().map(|a| a.0.clone()).collect()
+        self.asked
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|a| a.0.clone())
+            .collect()
     }
     /// Answers the `i`th request.
     fn answer(&self, i: usize, r: Result<Roster, String>) {
@@ -328,7 +333,14 @@ fn past_the_free_ports_the_host_asks_live_for_bots_and_runs_its_roster() {
             .iter()
             .all(|p| live_proto::bots::is_local_xuid(Xuid(p.identity.xuid)))
     );
-    assert_eq!(d.bots_in_force(), None);
+    let before = d.bots_in_force().expect("the bots, as bots");
+    assert_eq!(before.session_id, None, "no roster yet: no session named");
+    assert_eq!(before.ports, 0b1110, "the local bots by port");
+    assert_eq!(before.machines.len(), 2);
+    assert!(
+        before.machines.iter().all(|(_, x)| x.0 == 0),
+        "no xuid without a roster"
+    );
 
     live.answer(0, Ok(roster(SESSION, 2, 0.67)));
     let l = ph.list();
@@ -336,7 +348,8 @@ fn past_the_free_ports_the_host_asks_live_for_bots_and_runs_its_roster() {
     assert_eq!(tags, ["Rusty Lugnut 1", "Rusty Lugnut 2"]);
     assert_eq!(l[1].team, Some(1));
     let bots = d.bots_in_force().expect("the roster in force");
-    assert_eq!(bots.session_id, SESSION);
+    assert_eq!(bots.session_id.as_deref(), Some(SESSION));
+    assert_eq!(bots.ports, 0b1110);
     assert_eq!(
         bots.machines,
         l.iter()
@@ -389,11 +402,21 @@ fn a_failed_roster_leaves_host_made_bots_that_no_record_names() {
     live.answer(0, Err("refused".into()));
     assert_eq!(ph.list().len(), 1);
     assert_eq!(ph.list()[0].identity.gamertag, "Clanker 4");
-    assert_eq!(d.bots_in_force(), None);
+    let bots = d.bots_in_force().expect("still bots");
+    assert_eq!(bots.session_id, None);
+    assert_eq!(
+        bots.machines,
+        vec![(ph.list()[0].machine, Xuid(0))],
+        "a bot with no xuid"
+    );
     // A roster for another session is not taken.
     s.set(COUNT.key, Value::Int(5)).unwrap();
     live.answer(1, Ok(roster("fedcba9876543210", 2, 0.33)));
-    assert!(ph.list().iter().all(|p| p.identity.gamertag.starts_with("Clanker")));
+    assert!(
+        ph.list()
+            .iter()
+            .all(|p| p.identity.gamertag.starts_with("Clanker"))
+    );
 }
 
 #[test]

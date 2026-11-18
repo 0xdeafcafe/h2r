@@ -7,6 +7,7 @@ use xiso::Xiso;
 
 #[cfg(unix)]
 mod agent_cmd;
+mod agent_flight;
 #[cfg(unix)]
 mod agent_hot_cmd;
 #[cfg(unix)]
