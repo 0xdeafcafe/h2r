@@ -1072,6 +1072,30 @@ whose objects are already drawn find their records, so the joins should be
 rare. A high count would mean the sim allocates every tick (for example,
 objects that are never drawn and are evicted each frame).
 
+The rerun had `cache_joins 0` and the rifle still dark, so this cache is
+not the cause.
+
+**Bisecting switches.** These are read at boot. All default to the
+behaviour described above.
+
+- `H2_PIPELINE_PREDICT_FRAMES=0`: the launch does not credit the frame
+  counter. The sim's tick reads it one short, as before that change, and
+  the join adds the render's views.
+- `H2_PIPELINE_SEED_REPLAY=0`: the seeds merge as bytes, with the render's
+  value winning, as before that change.
+- `H2_PIPELINE_REFUSE=<hex>,...`: the render thread refuses these guest
+  functions. A render that reaches one falls back there and finishes on
+  the game thread. A refusal makes the rest of that frame serial, so it
+  tells you something only when the function is reached late in the frame.
+
+The prediction leaves the render's own count unchanged. The launch
+snapshots before it credits live RAM, so the view counts from the serial
+value, and the "lit at" stamps the relight check `0x0003dfe0` compares
+with are the serial run's. The rig test
+`the_frame_counter_and_seed_steps_the_sim_sees_are_the_serial_runs` checks
+the count every render reaches. It fails, one high, when the snapshot is
+taken after the credit.
+
 **What the sim reads (determinism against serial).**
 
 - The frame counter `0x004ba034` is read by the sim (the particles at

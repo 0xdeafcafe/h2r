@@ -50,6 +50,23 @@ pub const ENV: &str = "H2_PIPELINE_RENDER";
 /// printed with the step it showed up after (`pipeline: watch ...`), so a
 /// run says whether a merge of ours or the game itself changed a word.
 pub const WATCH_ENV: &str = "H2_PIPELINE_WATCH";
+/// `0` turns off the frame-counter prediction ([`PipelineRender::predict_frames`]).
+pub const PREDICT_FRAMES_ENV: &str = "H2_PIPELINE_PREDICT_FRAMES";
+/// `0` turns off the seed replay ([`PipelineRender::replay_seeds`]).
+pub const SEED_REPLAY_ENV: &str = "H2_PIPELINE_SEED_REPLAY";
+/// Guest functions (hex, comma-separated) the render thread refuses, so a
+/// render that reaches one finishes on the game thread
+/// ([`PipelineRender::refuse`]): a bisecting aid.
+pub const REFUSE_ENV: &str = "H2_PIPELINE_REFUSE";
+
+/// Whether a switch is on: anything but `0`, `off` or `false`; unset is
+/// `default`.
+fn switch(value: Option<&str>, default: bool) -> bool {
+    match value.map(str::trim) {
+        None => default,
+        Some(v) => !matches!(v, "0" | "off" | "false"),
+    }
+}
 /// At most this many `pipeline: watch` lines.
 const WATCH_LINES: u32 = 200;
 /// The render thread's guest stack: as large as the game thread's own
@@ -535,6 +552,11 @@ struct Shared {
     frames_predicted: AtomicU32,
     /// Guest words whose changes are printed ([`WATCH_ENV`]).
     watch: Vec<u32>,
+    /// The launch credits the live frame counter with the views the render
+    /// will count ([`PipelineRender::predict_frames`]).
+    predict_frames: bool,
+    /// Guest functions the render thread refuses ([`REFUSE_ENV`]).
+    refuse: Vec<u32>,
     inner: Mutex<Inner>,
 }
 
@@ -557,7 +579,13 @@ impl PipelineRender {
     pub fn new() -> Self {
         let on = std::env::var(ENV).is_ok_and(|v| v == "1");
         let watch = parse_watch(std::env::var(WATCH_ENV).ok().as_deref());
-        Self::with(on, Addrs::HALO2).watch(&watch)
+        let env = |name| std::env::var(name).ok();
+        let refuse = parse_watch(env(REFUSE_ENV).as_deref());
+        Self::with(on, Addrs::HALO2)
+            .watch(&watch)
+            .predict_frames(switch(env(PREDICT_FRAMES_ENV).as_deref(), true))
+            .replay_seeds(switch(env(SEED_REPLAY_ENV).as_deref(), true))
+            .refuse(&refuse)
     }
 
     /// Explicitly on or off, with `addrs`. Prints no `pipeline:` lines
@@ -584,6 +612,8 @@ impl PipelineRender {
                 frames_next: AtomicU32::new(1),
                 frames_predicted: AtomicU32::new(0),
                 watch: Vec::new(),
+                predict_frames: true,
+                refuse: Vec::new(),
                 inner: Mutex::new(Inner {
                     exec: None,
                     setup: None,
@@ -625,6 +655,32 @@ impl PipelineRender {
     /// [`SERVICED`]); every other refused call is a fallback.
     pub fn serviced(mut self, names: &[&'static str]) -> Self {
         self.shared_mut().serviced = names.to_vec();
+        self
+    }
+
+    /// Whether the launch credits the live frame counter with the views
+    /// the render will count, so the sim's next tick reads the serial
+    /// run's value (on by default; [`PREDICT_FRAMES_ENV`]). Off, the join
+    /// adds them, after the tick read it one short.
+    pub fn predict_frames(mut self, on: bool) -> Self {
+        self.shared_mut().predict_frames = on;
+        self
+    }
+
+    /// Whether the join applies the render's random steps on top of the
+    /// sim's (on by default; [`SEED_REPLAY_ENV`]). Off, the seeds are merged
+    /// as bytes, the render's value winning.
+    pub fn replay_seeds(mut self, on: bool) -> Self {
+        if !on {
+            self.shared_mut().addrs.random = None;
+        }
+        self
+    }
+
+    /// Guest functions the render thread refuses ([`REFUSE_ENV`]): a render
+    /// reaching one falls back there and finishes on the game thread.
+    pub fn refuse(mut self, addrs: &[u32]) -> Self {
+        self.shared_mut().refuse = addrs.to_vec();
         self
     }
 
@@ -772,11 +828,33 @@ fn setup(me: &Arc<Shared>, ctx: &mut ExecCtx, addr: u32) -> Result<(), String> {
         .ok_or_else(|| format!("{addr:#010x} has no generated original"))?;
     let allow = Arc::clone(&me.allow);
     let a = me.addrs.clone();
+    // Functions to refuse on the render thread (a bisecting aid): wrapped
+    // in an override of their own on the game thread, which the fork then
+    // refuses (a new override carries no context-only mark).
+    let refused: Vec<_> = me
+        .refuse
+        .iter()
+        .map(|&at| (at, rt.resolve_original(at)))
+        .collect();
+    rt.edit_dispatch(|d| {
+        for (at, original) in refused {
+            let Some(prev) = d.override_handler(at).or(original) else {
+                continue;
+            };
+            let prev = Arc::new(prev);
+            d.register_override(
+                at,
+                format!("pipeline: refused on the render thread ({REFUSE_ENV})"),
+                move |cpu, ctx, sel| Ok(prev.invoke(cpu, ctx, sel)),
+            );
+        }
+    });
+    let refuse = me.refuse.clone();
     let mut exec = SecondExecutor::new(&rt, |at, name| {
         // Plan chains (render-loop's ports, render-timing's observers) are
         // refused: they keep Rust continuations on the executor's context,
         // which a fallback could not carry over to the game thread.
-        allow(at, name) || at == addr || at == a.frame_wait
+        !refuse.contains(&at) && (allow(at, name) || at == addr || at == a.frame_wait)
     });
     exec.max_transfers = u64::MAX;
     for w in &me.shared_watches {
@@ -1611,7 +1689,8 @@ fn hand_back(
     let present_delta = present_v.0.wrapping_sub(present_v.1);
     let frame_delta = (frame_v.0 as u32).wrapping_sub(frame_v.1 as u32);
     let frames_predicted = me.frames_predicted.load(Ordering::Relaxed);
-    if !fallback && (present_delta != predicted || frame_delta != frames_predicted) {
+    let frames_wrong = me.predict_frames && frame_delta != frames_predicted;
+    if !fallback && (present_delta != predicted || frames_wrong) {
         inner.stats.mispredicts += 1;
     }
     if !fallback {
@@ -1862,7 +1941,9 @@ fn launch(
         // tick reads the frame counter (the particles, `0x0017469d`) and
         // must see the serial run's value.
         let frames = me.frames_next.load(Ordering::Relaxed);
-        if let Ok(v) = g.u32(a.frame_counter) {
+        if me.predict_frames
+            && let Ok(v) = g.u32(a.frame_counter)
+        {
             g.set_u32(a.frame_counter, v.wrapping_add(frames))?;
             me.frames_predicted.store(frames, Ordering::Relaxed);
         }

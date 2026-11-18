@@ -78,6 +78,8 @@ const PROTECT_ORDINAL: u32 = 182;
 const BODIES: u32 = 0x2_4200;
 /// Only the render writes this page.
 const OUT: u32 = 0x2_5000;
+/// The frame counter each render counted to.
+const RENDER_SAW: u32 = OUT + 0xc00;
 /// Both write this line: the sim byte 0, the render byte 8.
 const SHARED_LINE: u32 = 0x2_6000;
 /// The D3D layer's own page (a push buffer).
@@ -212,6 +214,9 @@ fn render(
             m.set_u8(SHARED_LINE + 8, v as u8)?;
             let n = m.u32(FRAMES)? + 1;
             m.set_u32(FRAMES, n)?;
+            // What the render's frame counted to, as the lighting records'
+            // "lit at" stamps are (`0x0003dfe0`).
+            m.set_u32(RENDER_SAW + 4 * (v % 64), n)?;
             let mark = m.u32(MARK)? + 1;
             m.set_u32(MARK, mark)?;
             m.set_u8(STAMPS.0 + (v % 16), mark as u8)?;
@@ -380,6 +385,17 @@ fn rig_cfg(on: bool, serviced: &[&'static str], addrs: Addrs) -> Rig {
 
 /// [`rig_cfg`] watching guest words (`H2_PIPELINE_WATCH`).
 fn rig_full(on: bool, serviced: &[&'static str], addrs: Addrs, watch: &[u32]) -> Rig {
+    rig_tuned(on, serviced, addrs, watch, |f| f)
+}
+
+/// [`rig_full`] with the feature's switches set by `tune`.
+fn rig_tuned(
+    on: bool,
+    serviced: &[&'static str],
+    addrs: Addrs,
+    watch: &[u32],
+    tune: impl FnOnce(PipelineRender) -> PipelineRender,
+) -> Rig {
     let log: Log = Arc::default();
     let mut d = Dispatch::default();
     d.register_generated_rust(FRAME, render).unwrap();
@@ -520,6 +536,7 @@ fn rig_full(on: bool, serviced: &[&'static str], addrs: Addrs, watch: &[u32]) ->
         .serviced(serviced)
         .watch(watch)
         .print(false);
+    let feature = tune(feature);
     let mut r = Registry::new(Switches::defaults());
     assert!(r.add(&feature).unwrap());
     let plan = r
@@ -1282,6 +1299,17 @@ fn the_frame_counter_and_seed_steps_the_sim_sees_are_the_serial_runs() {
         piped.round(k, fallback);
         let saw = |r: &Rig| r.rt.memory().u32(SIM_SAW + 4 * (k % 32)).unwrap();
         assert_eq!(saw(&piped), saw(&serial), "round {k}: the frame counter");
+        // The render's own count (the "lit at" stamps): the serial
+        // run's, not the predicted value the launch gives live RAM.
+        if k > 1 {
+            let render = |r: &Rig| r.rt.memory().u32(RENDER_SAW + 4 * ((k - 1) % 64)).unwrap();
+            assert_eq!(
+                render(&piped),
+                render(&serial),
+                "round {}: the render's count",
+                k - 1
+            );
+        }
     }
     serial.finish();
     piped.finish();
@@ -1337,4 +1365,74 @@ fn a_cache_both_sides_allocate_in_is_allocated_in_the_serial_order() {
         "lookups that find their record do not join: {s:?}"
     );
     assert!(s.completed > 12, "{s:?}");
+}
+
+/// The bisecting switches: with the frame-counter prediction off the sim's
+/// tick reads the counter one short (as before it) and nothing counts as a
+/// mispredict; with the seed replay off the seeds merge as bytes (the
+/// sim's steps meanwhile are lost); with a function refused, every render
+/// that reaches it falls back there.
+#[test]
+fn the_prediction_the_seed_replay_and_refusals_switch_off_for_bisecting() {
+    let n = 24;
+    let run = |r: &mut Rig| {
+        for k in 1..=n {
+            r.round(k, false);
+        }
+        r.finish();
+    };
+    let mut serial = rig(false);
+    run(&mut serial);
+    let saw = |r: &Rig| -> Vec<u32> {
+        let m = r.rt.memory();
+        (2..=n)
+            .map(|k| m.u32(SIM_SAW + 4 * (k % 32)).unwrap())
+            .collect()
+    };
+    let seeds = |r: &Rig| {
+        let m = r.rt.memory();
+        (m.u32(RNG).unwrap(), m.u32(RNG + 4).unwrap())
+    };
+
+    let mut unpredicted = rig_tuned(true, &[], ADDRS.clone(), &[], |f| f.predict_frames(false));
+    run(&mut unpredicted);
+    let (want, got) = (saw(&serial), saw(&unpredicted));
+    assert!(
+        want.iter().zip(&got).all(|(w, g)| *g + 1 == *w),
+        "one short: {want:?} {got:?}"
+    );
+    let s = unpredicted.feature.stats();
+    assert_eq!(s.mispredicts, 0, "{s:?}");
+    assert_eq!(
+        unpredicted.rt.memory().u32(FRAMES).unwrap(),
+        serial.rt.memory().u32(FRAMES).unwrap(),
+        "the join adds the views"
+    );
+
+    let mut unreplayed = rig_tuned(true, &[], ADDRS.clone(), &[], |f| f.replay_seeds(false));
+    run(&mut unreplayed);
+    assert_eq!(saw(&unreplayed), saw(&serial));
+    assert_ne!(
+        seeds(&unreplayed),
+        seeds(&serial),
+        "the sim's effects steps are lost"
+    );
+
+    let mut refused = rig_tuned(true, &[], ADDRS.clone(), &[], |f| f.refuse(&[D3D_DRAW]));
+    run(&mut refused);
+    // (No memory comparison: the rest of each render runs on live RAM,
+    // where the next tick has moved INPUT on, as any fallback does.)
+    assert_eq!(
+        refused.rt.memory().u32(FRAMES).unwrap(),
+        serial.rt.memory().u32(FRAMES).unwrap()
+    );
+    let s = refused.feature.stats();
+    let fell: u64 = s
+        .fallbacks
+        .iter()
+        .filter(|(k, _)| k.contains("refused on the render thread"))
+        .map(|(_, v)| *v)
+        .sum();
+    assert_eq!(fell, u64::from(n), "{s:?}");
+    assert_eq!(s.completed, 0, "{s:?}");
 }
