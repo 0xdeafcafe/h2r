@@ -188,6 +188,10 @@ fn check_structure_texturing(
     }
     let mut raw = Mem(bytes.to_vec());
     for (c, s) in render.clusters.iter().zip(&p.sections) {
+        if s.indices.is_empty() {
+            // A Halo 1 cluster with no surfaces: an empty section.
+            continue;
+        }
         let got = c
             .geometry
             .load(&mut raw, Some(render.material_count as usize))
@@ -459,8 +463,8 @@ fn check_ambience(
 /// The converted lightmap: the lightmap names the converted bitmap, every
 /// lit cluster's page is one of its images, every cluster's lightmap
 /// coordinates lie in its page, and each page decodes (through Halo 2's
-/// decoder, from the converted map's own raw data) to the pixels of the
-/// Halo 1 page. Returns the number of pages.
+/// decoder, from the converted map's own raw data) to the pixels the
+/// converter cut for its cluster. Returns the number of pages.
 fn check_lightmap(
     name: &str,
     m: &mut Map<Cursor<Vec<u8>>>,
@@ -518,11 +522,16 @@ fn check_lightmap(
         .find(|t| t.name == l.source && t.group.to_string() == "bitm")
         .unwrap()
         .clone();
+    // Each page is a lit cluster's, cut from Halo 1's pages
+    // (`h1convert::clusters`; `tests/h1_clusters.rs` checks every lit
+    // vertex samples the same light there): it decodes from the map as the
+    // converter composed it, in Halo 1's page format.
     let src = h1map::bitmap::Bitmap::read(h1, &tag).unwrap();
     for (i, im) in b.images.iter().enumerate() {
         let got = assets::decode_image(im, files).unwrap();
-        let want =
-            h1bitmaps::decode::decode_image(&src.images[i], src.pixels(h1, i).unwrap()).unwrap();
+        let mut record = src.images[0].clone();
+        [record.width, record.height] = [im.dimensions[0], im.dimensions[1]];
+        let want = h1bitmaps::decode::decode_image(&record, &l.bitmap.raw[i].0).unwrap();
         assert_eq!(
             got.levels[0].rgba, want[0].rgba,
             "{name}: lightmap page {i}"

@@ -233,11 +233,11 @@ The base's old BSP region stays in the file, unused.
   coordinates, which both games store alike) and its triangles from the
   render surfaces. Triangles are turned to Halo 2's winding, decided once
   per level by majority against the packed normals: Halo 1's beavercreek
-  needed flipping. Meshes are packed into sections by lightmap page (a
-  cluster has one page, its render info's; unlit meshes last), each of
-  at most 65535 vertices and indices (the section's `u16` counts), so a
-  level becomes one cluster or more per page (Beaver Creek 14, Blood
-  Gulch 16); parts never span sections. Streams written:
+  needed flipping. Each mesh is split by the Halo 1 cluster its surfaces
+  are in, and each Halo 1 cluster becomes one section, its cluster's
+  geometry (see **Clusters and portals**; at most 65535 vertices and
+  indices, the section's `u16` counts, which no Halo 1 cluster comes near:
+  the largest has 28,398 vertices). Streams written:
   `01` position, `18` texture coordinate, `1b` frame, `1f` lightmap
   coordinate, `30` incident light direction (Halo 1's lightmap vertex
   direction, the same 11:11:10 packing; the normal where a vertex has
@@ -275,8 +275,7 @@ The base's old BSP region stays in the file, unused.
   `tests/render_fields.rs` surveys which 16-bit words of every drawn
   retail multiplayer cluster, part and section are nonzero, and which
   words of every retail bitmap image are none, and fails if a converted
-  map differs, except for the cluster's portals (Halo 1's are not
-  converted), or if a converted section's code and table are not laid
+  map differs, or if a converted section's code and table are not laid
   out as the pass reads them. `h1campaign/tests/disc.rs`
   (`every_campaign_level_s_clusters_are_drawn_as_the_engine_reads_them`)
   checks the same layout, the mask count and every predicted resource on
@@ -292,10 +291,39 @@ The base's old BSP region stays in the file, unused.
   (E `0x0012c9fb`), so every converted texture drew whatever cache slot
   0 held: the level's one flat colour. `h1bitmaps` now writes -1 there
   (`IMAGE_NONE_WORDS`).
-- **Clusters see each other.** The visibility rows have every cluster's
-  bit set, and every collision leaf is in cluster 0, so everything is
-  drawn from everywhere. Halo 1's own portals and clusters are the
-  improvement for large levels.
+- **Clusters and portals** (`h1convert::clusters`). Halo 2 draws a
+  structure by flooding portals from the camera's cluster (E
+  `0x00173130`, `0x00172840`): from a cluster it walks the portal list at
+  `+0x8c` (u16), takes each portal (`sbsp +0x5c`, `0x24` each) whose
+  plane faces the right way, which is open and whose screen rectangle
+  overlaps the current one, and draws the cluster on its far side. Until
+  converter version 40 there were no portals and every collision leaf
+  was in cluster 0, so only cluster 0 was drawn: Blood Gulch's capture
+  had one structure draw, cluster 0's cliffs, and no ground, and sky
+  showed where the level should be. Now Halo 1's clusters, portals and
+  leaves are kept. Halo 1's portal (`sbsp +0x154`, `0x40` each) has
+  Halo 2's fields in Halo 2's order: `+0x00` the cluster behind the
+  plane, `+0x02` the one in front, `+0x04` the collision plane, `+0x08`
+  centre, `+0x14` radius, and its polygon (`+0x34` in Halo 1, `+0x1c` in
+  Halo 2, 12 bytes a vertex). Both games put the cluster at `+0x00` behind
+  the plane (V, by which side of the plane each cluster's centre is: 85 of
+  Coagulation's 95 and 100 of Zanzibar's 125 portals, the rest ambiguous,
+  none the other way round; on Halo 1's disc 31 portals come out the other
+  way against thousands this way, Guess: clusters whose centre lies
+  outside them). Flags (`+0x18`) are 0: bit 3 starts a portal closed (E
+  `0x00210e43`). The converted collision BSP keeps Halo 1's planes in
+  order, so the plane index carries over. A cluster's portals are its
+  Halo 1 list (`+0x5c`, i16). Every surface goes to the first Halo 1
+  cluster whose subclusters (`+0x34`, `0x24` each, a surface index block
+  at `+0x18`) list it; a few surfaces straddle two clusters and are listed
+  by both, and a handful (37 at most, b40) are in none, which Halo 1
+  never draws either. Each collision leaf names its Halo 1 cluster (leaf
+  `+0x08`). `tests/h1_clusters.rs`: every portal lies in its plane and is
+  on both its clusters' lists, and every cluster with geometry is reached
+  through portals from every other, on every level (Chiron TL-34 has no
+  portals at all: its rooms are sealed, and Halo 1 draws them one at a
+  time too). The visibility rows (`+0x54`) still say every cluster sees
+  every other.
 - **Materials** (`h1convert::shaders`). One structure material per Halo 1
   shader, each copying the head (shader reference) of the base structure
   material it is matched to by name: the words of the Halo 1 shader's name
@@ -366,10 +394,25 @@ The base's old BSP region stays in the file, unused.
   but Sidewinder's placements grow Waterworks' metadata past the engine's
   tag memory, so they take Coagulation too.
 - **Lightmap** (Halo 1's own). One group, the structure checksum (FNV-1a
-  of the positions), the bitmap reference `+0x18` naming Halo 1's
-  lightmap bitmap converted (`h1bitmaps::convert_bitmap`: one R5G6B5
-  image per page, Halo 1's bytes unchanged), and per cluster a render
-  info `{page, -1}` (`{-1, -1}` for unlit clusters). The bitmap takes the
+  of the positions), the bitmap reference `+0x18` naming the converted
+  lightmap bitmap, and per cluster a render info `{page, -1}` (`{-1, -1}`
+  for unlit clusters). A Halo 2 cluster samples one page, its render
+  info's; a Halo 1 cluster's surfaces sample several (22 of Blood Gulch's
+  30 clusters use more than one), and a page serves several clusters. So
+  each lit cluster gets a page of its own (`clusters::lightmap_pages`,
+  `h1bitmaps::atlas`): its triangles fall into charts (triangles sharing
+  vertices), each chart takes the texels bilinear filtering reads under
+  its lightmap coordinates on its Halo 1 page, charts of one page that
+  overlap or touch are merged so no texel is taken twice, and the pieces,
+  each with a one-texel border repeating its edge, are packed by shelves
+  into the smallest power-of-two page. The lightmap coordinates move with
+  them. Surfaces Halo 1 doesn't lightmap (lights, glass, water) sample a
+  white piece. The pages keep Halo 1's format (R5G6B5) and swizzling.
+  `tests/h1_clusters.rs` samples every lit vertex on both bitmaps
+  (bilinear, clamped) on every level: all agree within one step. The
+  pages hold 1.6 to 3.9 times Halo 1's texels (power-of-two padding and
+  the borders): Blood Gulch 220,160 for 126,016, c20's largest structure
+  7.7 million for 2.9 million. The bitmap takes the
   slot of the base's own lightmap bitmap, which nothing else names
   ([Freed slots](#vehicles)), through `h1models::Converted::install_at`.
   The lightmap coordinates (stream `1f`, in every cluster section as on
@@ -474,10 +517,10 @@ Halo 1's render geometry, no portals, no instanced geometry.
 | `+0x0c` collision materials (0x14) | One per Halo 1 material: `+0x08` i16 a valid globals material index, `+0x0a` -1 | Indexed by surface material unchecked (E `0x1840d1`, `0x1844b4`); `+0x10` datum dereferenced (E `0x355e0`) |
 | `+0x14` collision BSP | The converted BSP (one element) | Element 0 used without a count (E `0x11c331`) |
 | `+0x1c`, `+0x20`, `+0x1c0` f32 | 0.0 (vehicle height clamps and a radius, off at 0) | E `0xf020c`, `0xf0254`, `0xf0288` |
-| `+0x2c` leaves (8) | One per collision leaf: cluster 0, no surface references | Indexed by leaf unchecked (E `0x11be9d` and 25 more) |
+| `+0x2c` leaves (8) | One per collision leaf: its Halo 1 cluster, no surface references | Indexed by leaf unchecked (E `0x11be9d` and 25 more) |
 | `+0x34` world bounds | Real bounds | E `0xa5ed3` |
 | `+0x54` visibility | One u32, bit 0 set | Bit matrix indexed unchecked (E `0x11c015..0x11c044`) |
-| `+0x5c` portals | Empty | Count checked (E `0x210e27`) |
+| `+0x5c` portals (0x24) | Halo 1's (see **Clusters and portals**), at most 512 | Count checked (E `0x210e27`); the open-portal mask is 16 words (E `0x210df7`) |
 | `+0x64` (0x18) | Empty, with cluster `+0x70` = `+0x71` = 0xff | Seven sites check only 0xff (E `0xf8526`, ...) |
 | `+0x84`, `+0x8c` weather | Empty; cluster `+0x76` = -1 | E `0x36cb8`, `0x385a3` |
 | `+0x94` (0x24) | One zeroed element | Every retail map has exactly this; no reader found, written to match |
@@ -555,7 +598,7 @@ multiplayer level has 1 and 1), and the count shrinks to that. Halo 1 has
 no cutoff distance or interpolation speed; the values written are ones
 retail uses. Blood Gulch gets `sound\sfx\ambience\multiplayer\bloodgultch`
 (its one track plays `countryday2`) and `mountains`. Each cluster names
-its sound (`structure::sound_zones`). Halo 1's cluster keeps its
+its sound (`clusters::sound_zones`). Halo 1's cluster keeps its
 background sound and sound environment at `+0x04` and `+0x06` (`i16`
 indices into the structure's palettes, -1 none; clusters at
 `sbsp +0x134`, `0x68` each), and each structure leaf (`+0xe0`, `0x10`
@@ -567,10 +610,9 @@ palettes (`sbsp +0xd4` and `+0xdc`, which equal the scenario's on all
 160 retail structures; [structure-bsp.md](../formats/structure-bsp.md)).
 The converter maps each Halo 1 pair through the written palettes
 (`Ambience::index`; anything not written, or past the engine's 64, is
--1), splits the largest sections until there is a cluster per distinct
-pair (most clusters are one pair: Blood Gulch and a10 have one; b30 has
-up to 14 per structure), and writes each collision leaf the cluster of
-its Halo 1 cluster's pair. `check_sound_clusters` checks the ranges on
+-1); each converted cluster is its Halo 1 cluster and plays its pair,
+and each collision leaf names its Halo 1 cluster
+(`clusters::sound_zones`). `check_sound_clusters` checks the ranges on
 every converted map. A gestalt that gains sounds is built, not pinned, and a fresh
 build now copies its base chunks from the pinned file too
 (`fresh::sound_gestalt`). `h1sounds/tests/looping_disc.rs`: all 734
@@ -798,11 +840,11 @@ whole test now takes 14 minutes in a debug build); the texture
 and lightmap coordinates read back as written; the lightmap names the
 converted bitmap, every lit cluster's page is one of its images, and each
 page decodes (Halo 2's decoder, the converted map's own raw data) to the
-Halo 1 page's pixels. Lightmap pages (clusters): beavercreek 13 (14),
-bloodgulch 15 (16), boardingaction 25 (26), carousel 28 (29), chillout 9
-(10), damnation 10 (11), hangemhigh 2 (3), longest 1 (2), prisoner 2 (3),
-putput 9 (10), ratrace 11 (12), sidewinder 23 (24), wizard 11 (12); the
-extra cluster holds the unlit surfaces. Per map (placed / Halo 1; items include
+pixels cut for its cluster. Lightmap pages (clusters): beavercreek 25
+(29), bloodgulch 30 (30), boardingaction 41 (41), carousel 36 (36),
+chillout 10 (10), damnation 12 (12), hangemhigh 1 (1), longest 1 (1),
+prisoner 1 (1), putput 9 (9), ratrace 14 (16), sidewinder 32 (35),
+wizard 18 (18); a cluster with nothing lit has no page. Per map (placed / Halo 1; items include
 vehicles, which Halo 2 places as items):
 
 | Map | Base | Triangles | Spawns | Flags | Items | Vehicles | Left out |
