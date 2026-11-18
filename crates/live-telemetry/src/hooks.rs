@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -8,7 +7,7 @@ use engine::points;
 use runtime::Runtime;
 
 use crate::config::{TelemetryConfig, TelemetrySinkConfig};
-use crate::event::{PlayerState, World};
+use crate::event::{PlayerState, Shots, World};
 use crate::layout;
 use crate::memory;
 use crate::pipeline::{Kill, Names, Pipeline, Start, Work};
@@ -31,7 +30,7 @@ pub struct Telemetry {
     last_tick: Mutex<Option<u64>>,
     /// Shots by weapon object datum since the last sample, from the weapon
     /// fire hook.
-    shots: Mutex<BTreeMap<u32, u32>>,
+    shots: Mutex<Shots>,
     /// Damage reports since the last sample, from the damage hook (oldest
     /// dropped past [`MAX_PENDING_HITS`]).
     hits: Mutex<Vec<crate::event::HitRecord>>,
@@ -55,7 +54,7 @@ impl Telemetry {
             pipeline: Pipeline::new(session, sink),
             disabled: AtomicBool::new(false),
             last_tick: Mutex::new(None),
-            shots: Mutex::new(BTreeMap::new()),
+            shots: Mutex::default(),
             hits: Mutex::new(Vec::new()),
             scan: Mutex::default(),
             maps: Mutex::new(None),
@@ -144,8 +143,7 @@ impl Telemetry {
         if shots.len() >= MAX_FIRING_WEAPONS && !shots.contains_key(&weapon) {
             shots.clear();
         }
-        let count = shots.entry(weapon).or_insert(0);
-        *count = count.saturating_add(1);
+        shots.add(weapon, 1);
     }
 
     /// The damage hook: one damage report.
