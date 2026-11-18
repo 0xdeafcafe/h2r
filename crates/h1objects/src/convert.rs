@@ -2665,7 +2665,8 @@ impl Converter<'_> {
                     return Err(Error::Invalid(format!("{} count: scaled {:?}", gt.name, n.scale)));
                 }
                 let w = crate::h1hud::digit_width(self.h1)?;
-                texts.push(crate::h1hud::grenade_count(&n, k, w, text_shader)?);
+                let h = crate::h1hud::digit_height(self.h1)?;
+                texts.push(crate::h1hud::grenade_count(&n, k, w, h, text_shader)?);
             }
             for e in crate::h1hud::grenade_elements(self.h1, &gb)? {
                 if !crate::h1hud::unscaled(e.scale) {

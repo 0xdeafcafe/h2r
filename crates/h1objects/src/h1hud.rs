@@ -920,6 +920,9 @@ pub mod text {
     /// Justification (`u16`, `0x22ac0b`): 0 the text starts at the point, 1
     /// is centred on it, 2 ends at it.
     pub const JUSTIFICATION: usize = 0x2c;
+    /// The font for fullscreen, half and quarter screen (a byte each,
+    /// E `0x22a9a4`..`0x22a9ae`; [`super::TEXT_FONT`]).
+    pub const FONTS: usize = 0x30;
     /// Offsets (two `i16`) for fullscreen, half and quarter screen
     /// (`0x22ab46`, `0x22ab38`, `0x22ab2a`).
     pub const OFFSETS: [usize; 3] = [0x40, 0x44, 0x48];
@@ -965,6 +968,7 @@ impl TextWidget {
         w[text::FLAGS..text::FLAGS + 2].copy_from_slice(&self.flags.to_le_bytes());
         w[text::JUSTIFICATION..text::JUSTIFICATION + 2]
             .copy_from_slice(&self.justification.to_le_bytes());
+        w[text::FONTS..text::FONTS + 3].fill(TEXT_FONT);
         for at in text::OFFSETS {
             w[at..at + 2].copy_from_slice(&self.offset.0.to_le_bytes());
             w[at + 2..at + 4].copy_from_slice(&self.offset.1.to_le_bytes());
@@ -1011,11 +1015,10 @@ pub fn grenade_number(b: &[u8]) -> Result<Option<Number>> {
     }))
 }
 
-/// Halo 1's digit width, `hud#` byte `+0x11` (E `0x000e1d00`; V: 9 on
-/// `ui\hud\counter`), of the digits tag the globals (`matg`) name in
-/// their first interface element (the block `+0x140`, E `0x000e1a65`,
-/// `0x000e1a77`), reference `+0xb0` (datum `+0xbc`, E `0x000e1a81`).
-pub fn digit_width(map: &H1Map) -> Result<i16> {
+/// The digits tag (`hud#`) the globals (`matg`) name in their first
+/// interface element (the block `+0x140`, E `0x000e1a65`, `0x000e1a77`),
+/// reference `+0xb0` (datum `+0xbc`, E `0x000e1a81`): its bytes.
+fn digits_tag(map: &H1Map) -> Result<&[u8]> {
     let g = map
         .tags()
         .iter()
@@ -1033,24 +1036,80 @@ pub fn digit_width(map: &H1Map) -> Result<i16> {
     if t.group != h1map::Group::new(b"hud#") {
         return Err(Error::Invalid(format!("matg +0xb0 is a {}", t.group)));
     }
-    let w = *map.tag_data(t)?.get(0x11).ok_or(Error::Truncated("hud#"))?;
+    Ok(map.tag_data(t)?)
+}
+
+/// Halo 1's digit width, `hud#` byte `+0x11` (E `0x000e1d00`; V: 9 on
+/// `ui\hud\counter`), the cell each digit of a number takes.
+pub fn digit_width(map: &H1Map) -> Result<i16> {
+    let w = *digits_tag(map)?.get(0x11).ok_or(Error::Truncated("hud#"))?;
     Ok(i16::from(w as i8))
 }
 
-/// Where Halo 1's number ends, as a Halo 2 offset from the same anchor,
-/// for a text widget justified to end there ([`JUSTIFY_RIGHT`]). Halo 1
-/// draws the digits right to left, each a digit cell (`hud#` digit width
-/// `w`) further left (E `0x000e1d00`..`0x000e1d18`), from a start that the
-/// anchor moves (E the switch `0x000e1bd1` on the anchor, table
-/// `0x000e2088`): on a left anchor right by `(cells - 2) * w`
+/// The height of Halo 1's digit sprites: the digits bitmap (`hud#` `+0x00`)
+/// sequence 0, its first sprite's height in pixels (V: 12 on
+/// `ui\hud\bitmaps\combined\hud_counter_numbers`, every digit's sprite
+/// the same height). Halo 1 draws each digit as its sprite at its own size
+/// from the digit's point (E `0x000e1a60` through the element draw).
+pub fn digit_height(map: &H1Map) -> Result<i16> {
+    let b = digits_tag(map)?;
+    let bm = crate::h1::reference(map, b, 0x00)
+        .ok_or_else(|| Error::Invalid("hud# has no bitmap".into()))?;
+    let bt = map.tag(bm)?;
+    let bm = h1map::bitmap::Bitmap::read(map, bt)?;
+    let (bounds, _) = sprite(&bm, 0).ok_or_else(|| Error::Invalid("hud# bitmap draws nothing".into()))?;
+    let s = bm.sequences.first().ok_or_else(|| Error::Invalid("hud# bitmap has no sequence".into()))?;
+    let image = s.sprites.first().map_or(s.first_image, |p| p.image);
+    let img = bm
+        .images
+        .get(usize::try_from(image).unwrap_or(usize::MAX))
+        .ok_or_else(|| Error::Invalid("hud# sprite image".into()))?;
+    Ok(((bounds[3] - bounds[2]) * f32::from(img.height)).round() as i16)
+}
+
+/// The font a Halo 2 number text draws in: the text widget's byte `+0x30`
+/// (`+0x31`, `+0x32` for half and quarter screen) picks it, 0 the engine's
+/// font 6 and 1 its font 8 (E `0x22a85b`, called from the string fetch
+/// `0x22a9b1`; the draw `0x22aa16` sets it through `0x13edb0`). Font 6 is
+/// `conduit-13` (V: `maps\fonts\font_table.txt` line 6). The converter
+/// writes 0, as retail `frag_count` and `plasma_count` hold.
+pub const TEXT_FONT: u8 = 0;
+
+/// The rows of `conduit-13`'s digits that have ink, from the text's top
+/// (start inclusive, end exclusive). The draw (E `0x22aa16`) puts the
+/// text's rectangle top at the widget's point (`+0x10` the y, the
+/// measured height under it, `0x22ac83`); a glyph's bitmap top is at the
+/// baseline less its y offset, which is the ascent on every glyph
+/// (docs/formats/fonts.md), so its first row is the rectangle's top. The
+/// digits' ink is rows 5 to 16 of their 21-row bitmaps (V: `0`..`9` of
+/// `conduit-13`, ascent 16, descent 4; `hud_layout_disc` reads them).
+pub const TEXT_DIGIT_INK: (i16, i16) = (5, 17);
+
+/// Where a Halo 2 number text justified to end ([`JUSTIFY_RIGHT`]) is
+/// placed to stand where Halo 1's number does: its x where Halo 1's last
+/// digit ends, its y so the digits' ink ([`TEXT_DIGIT_INK`]) is centred on
+/// Halo 1's digit sprites (`h` tall). As a Halo 2 offset from the same
+/// anchor.
+///
+/// Across: Halo 1 draws the digits right to left, each a digit cell
+/// (`hud#` digit width `w`) further left (E `0x000e1d00`..`0x000e1d18`),
+/// from a start that the anchor moves (E the switch `0x000e1bd1` on the
+/// anchor, table `0x000e2088`): on a left anchor right by `(cells - 2) * w`
 /// (`0x000e1bd8`), where `cells` is the digits plus one with flag `0x04`;
 /// on a right anchor not at all (`0x000e1c52`); centred by half of
 /// `(cells - 1) * w` (`0x000e1c12`). A digit's sprite lies right of its
 /// point on a left anchor, left of it on a right one and centred on it on
 /// the centre (`0x000e0330`), so the number ends at the start plus `w`,
-/// at the start, or at the start plus `w / 2`. Fraction digits are not drawn by any `grhi`
-/// on the disc and are refused.
-pub fn number_end(n: &Number, w: i16) -> Result<(i16, i16)> {
+/// at the start, or at the start plus `w / 2`.
+///
+/// Down: Halo 1's digit sprite lies below its point on a top anchor, above
+/// it on a bottom one and centred on the centre (`0x000e0330`). Halo 2's
+/// text always lies below its point (E `0x22aa16`), its digits' ink rows
+/// [`TEXT_DIGIT_INK`] under it. Putting that point at Halo 1's y drew the
+/// ink 5 rows low, out of the bottom of the grenade indicator.
+///
+/// Fraction digits are not drawn by any `grhi` on the disc and are refused.
+pub fn number_point(n: &Number, w: i16, h: i16) -> Result<(i16, i16)> {
     if n.fraction_digits != 0 {
         return Err(Error::Invalid("a number with fraction digits".into()));
     }
@@ -1060,13 +1119,22 @@ pub fn number_end(n: &Number, w: i16) -> Result<(i16, i16)> {
         Anchor::TopRight | Anchor::BottomRight => n.offset.0,
         Anchor::Centre => n.offset.0 + (cells - 1) * w / 2 + w / 2,
     };
-    Ok(to_halo2_offset(n.anchor, (x, n.offset.1)))
+    let (x, y) = to_halo2_offset(n.anchor, (x, n.offset.1));
+    // The top of Halo 1's digit sprite, in screen directions.
+    let top = match n.anchor {
+        Anchor::TopLeft | Anchor::TopRight => y,
+        Anchor::BottomLeft | Anchor::BottomRight => y - h,
+        Anchor::Centre => y - h / 2,
+    };
+    let (ink0, ink1) = TEXT_DIGIT_INK;
+    // Centre the ink on the sprite: top + h/2 = y' + (ink0 + ink1)/2.
+    Ok((x, top + (h - (ink0 + ink1)) / 2))
 }
 
 /// The text widget for grenade type `k`'s count: input `20 + k`, shown
-/// with that type's other widgets ([`GRENADE_STATES`]), ending where
-/// Halo 1's number ends ([`number_end`]).
-pub fn grenade_count(n: &Number, k: usize, w: i16, shader: TagId) -> Result<TextWidget> {
+/// with that type's other widgets ([`GRENADE_STATES`]), standing where
+/// Halo 1's number does ([`number_point`]), in [`TEXT_FONT`].
+pub fn grenade_count(n: &Number, k: usize, w: i16, h: i16, shader: TagId) -> Result<TextWidget> {
     let state = *GRENADE_STATES
         .get(k)
         .ok_or_else(|| Error::Invalid(format!("grenade type {k}")))?;
@@ -1079,7 +1147,7 @@ pub fn grenade_count(n: &Number, k: usize, w: i16, shader: TagId) -> Result<Text
         shader,
         string: TEXT_INPUT1,
         justification: JUSTIFY_RIGHT,
-        offset: number_end(n, w)?,
+        offset: number_point(n, w, h)?,
     })
 }
 
@@ -1231,19 +1299,21 @@ mod tests {
     #[test]
     fn halo1_numbers_end_where_their_last_digit_does() {
         // The disc's grenade count: one digit, top left, (107, 3).
-        assert_eq!(number_end(&number(Anchor::TopLeft, 1, 1), 9).unwrap(), (107, 3));
-        assert_eq!(number_end(&number(Anchor::TopLeft, 3, 0), 9).unwrap(), (125, 3));
-        assert_eq!(number_end(&number(Anchor::TopLeft, 2, 4), 9).unwrap(), (125, 3));
-        assert_eq!(number_end(&number(Anchor::BottomRight, 3, 0), 9).unwrap(), (-107, -3));
-        assert_eq!(number_end(&number(Anchor::Centre, 3, 0), 10).unwrap(), (122, 3));
+        // Across: the last digit's end. Down: conduit-13's digit ink (rows
+        // 5..17 under the point) centred on Halo 1's 12-row digit sprites.
+        assert_eq!(number_point(&number(Anchor::TopLeft, 1, 1), 9, 12).unwrap(), (107, -2));
+        assert_eq!(number_point(&number(Anchor::TopLeft, 3, 0), 9, 12).unwrap(), (125, -2));
+        assert_eq!(number_point(&number(Anchor::TopLeft, 2, 4), 9, 12).unwrap(), (125, -2));
+        assert_eq!(number_point(&number(Anchor::BottomRight, 3, 0), 9, 12).unwrap(), (-107, -20));
+        assert_eq!(number_point(&number(Anchor::Centre, 3, 0), 10, 12).unwrap(), (122, -8));
         let mut n = number(Anchor::TopLeft, 1, 0);
         n.fraction_digits = 1;
-        assert!(number_end(&n, 9).is_err());
+        assert!(number_point(&n, 9, 12).is_err());
     }
 
     #[test]
     fn a_grenade_count_is_a_number_text_on_its_type_input() {
-        let t = grenade_count(&number(Anchor::TopLeft, 1, 1), 1, 9, TagId(7)).unwrap();
+        let t = grenade_count(&number(Anchor::TopLeft, 1, 1), 1, 9, 12, TagId(7)).unwrap();
         assert_eq!(t.inputs, [21, 0, 0, 0]);
         assert_eq!(t.state, GRENADE_STATES[1]);
         let b = t.bytes();
@@ -1252,9 +1322,10 @@ mod tests {
         assert_eq!(&b[text::ANCHOR..text::ANCHOR + 4], &[Anchor::TopLeft as u8, 0, 1, 0]);
         assert_eq!(&b[text::JUSTIFICATION..text::JUSTIFICATION + 2], &[2, 0]);
         for at in text::OFFSETS {
-            assert_eq!(&b[at..at + 4], &[107, 0, 3, 0]);
+            assert_eq!(&b[at..at + 4], &[107, 0, 0xfe, 0xff], "y -2: the ink on Halo 1's digits");
         }
-        assert!(grenade_count(&number(Anchor::TopLeft, 1, 1), 2, 9, TagId(7)).is_err());
+        assert_eq!(&b[text::FONTS..text::FONTS + 4], &[TEXT_FONT, TEXT_FONT, TEXT_FONT, 0]);
+        assert!(grenade_count(&number(Anchor::TopLeft, 1, 1), 2, 9, 12, TagId(7)).is_err());
         let root = nhdt(&[], &[t]);
         let child = root
             .fixups
