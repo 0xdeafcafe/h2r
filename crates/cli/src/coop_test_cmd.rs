@@ -605,7 +605,13 @@ pub fn next_steps(roles: &Roles, auto: bool) -> String {
     let host = &roles.host;
     let guests = roles.guests.join(" and ");
     let joining = if auto {
-        format!("{guests} get the invitation and join by themselves")
+        // The game takes an accepted invitation only from its main menu's
+        // reader (screen 9), which no run has seen fire; the friends
+        // list's Join is the path that reaches the host (docs 12.1).
+        format!(
+            "on {guests}, the invitation is accepted by itself, but join from the friends \
+             list: Y, {host}, Join Game"
+        )
     } else {
         format!("in the lobby press Y and invite {guests}; on {guests}, accept in the friends list")
     };

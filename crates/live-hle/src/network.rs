@@ -174,12 +174,16 @@ struct State {
     peers: BTreeMap<u32, Peer>,
     qos: QosMemory,
     responder: Option<qos::Responder>,
+    /// Game traffic already said in the log: (peer IN_ADDR, guest port,
+    /// sent).
+    traffic: std::collections::BTreeSet<(u32, u16, bool)>,
 }
 pub(crate) struct Network {
     pub config: NetworkConfig,
     state: Mutex<State>,
     listeners: qos::Listeners,
     pings: qos::Pings,
+    asked: qos::Asked,
     /// The last QoS lookup said in the log, so a title that repeats one
     /// (a browser refreshing) logs it once.
     said: Mutex<String>,
@@ -206,6 +210,7 @@ impl Network {
             }),
             listeners: Arc::default(),
             pings: Arc::default(),
+            asked: Arc::default(),
             said: Mutex::default(),
         }
     }
@@ -226,6 +231,7 @@ impl Network {
             if op == NetCleanup {
                 s.keys.clear();
                 s.peers.clear();
+                s.traffic.clear();
                 s.qos.clear();
                 lock(&self.listeners).clear();
             }
@@ -251,6 +257,7 @@ impl Network {
                 self.config.address,
                 self.listeners.clone(),
                 self.pings.clone(),
+                self.asked.clone(),
             )?);
         }
         Ok(())
@@ -331,12 +338,28 @@ impl Network {
                 let mut s = lock(&self.state);
                 let from = SocketAddrV4::new(*a.ip(), base);
                 let ina = self.in_addr(&s.peers, from);
-                s.peers.entry(ina).or_insert_with(|| Peer {
+                // A peer heard first on a game channel is joining the
+                // session it asked QoS about: the title asks for its key
+                // (XNetInAddrToXnAddr) to tell its own session's players.
+                let asked = lock(&self.asked).get(a.ip()).copied().unwrap_or([0; 8]);
+                let peer = s.peers.entry(ina).or_insert_with(|| Peer {
                     xna: xnaddr(from),
                     kid: [0; 8],
                     connected: false,
                 });
+                if peer.kid == [0; 8] {
+                    peer.kid = asked;
+                }
+                let kid = peer.kid;
                 a = SocketAddrV4::new(Ipv4Addr::from(ina.to_le_bytes()), guest_port);
+                if s.traffic.insert((ina, guest_port, false)) {
+                    eprintln!(
+                        "live: xnet: first packet from {from} (as {}) on port {guest_port}, \
+                         session {}",
+                        a.ip(),
+                        hex(&kid)
+                    );
+                }
             }
         }
         a
@@ -537,11 +560,14 @@ impl Network {
                 if a[2] != 0 {
                     writable(rt, a[2], 8)?;
                 }
-                let p = lock(&self.state)
-                    .peers
-                    .get(&a[0])
-                    .cloned()
-                    .ok_or(10022u32)?;
+                let p = lock(&self.state).peers.get(&a[0]).cloned();
+                let Some(p) = p else {
+                    eprintln!(
+                        "live: xnet: the game asked about {}, which is no peer",
+                        Ipv4Addr::from(a[0].to_le_bytes())
+                    );
+                    return Err(10022);
+                };
                 write(rt, a[1], &p.xna)?;
                 if a[2] != 0 {
                     write(rt, a[2], &p.kid)?;
@@ -605,15 +631,30 @@ impl Network {
             }
             return Ok(data.len() as u32);
         }
-        let sent = host(
-            socket
-                .host
-                .send(&data, target.map(|p| self.target(p)), a[3] as i32),
-        )?;
+        let routed = target.map(|p| self.target(p));
+        let result = host(socket.host.send(&data, routed, a[3] as i32));
+        if let (Some(to), Some(at)) = (target, routed)
+            && to != at
+        {
+            self.say_sent(to, at, &result);
+        }
+        let sent = result?;
         if socket.host.datagram {
             traffic::sent(sent);
         }
         Ok(sent as u32)
+    }
+    /// The first datagram the title sends a peer on each port, said once
+    /// (and a failed one each time): a join's first packets.
+    fn say_sent(&self, to: SocketAddrV4, at: SocketAddrV4, result: &Result<usize>) {
+        let first = lock(&self.state)
+            .traffic
+            .insert((ip_word(*to.ip()), to.port(), true));
+        match result {
+            Ok(n) if first => eprintln!("live: xnet: first packet to {to} (at {at}): {n} bytes"),
+            Err(e) => eprintln!("live: xnet: a packet to {to} (at {at}) failed: error {e}"),
+            _ => {}
+        }
     }
     fn recv(&self, op: Op, a: &[u32], rt: &Runtime) -> Result<u32> {
         let socket = self.socket(a[0])?;
@@ -895,6 +936,7 @@ impl Network {
                 self.config.address,
                 self.listeners.clone(),
                 self.pings.clone(),
+                self.asked.clone(),
             );
             if let Err(e) = &started {
                 eprintln!(

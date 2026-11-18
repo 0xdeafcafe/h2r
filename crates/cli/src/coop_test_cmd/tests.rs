@@ -462,8 +462,9 @@ fn the_next_steps_name_each_window_and_its_presses() {
     assert_eq!(
         next_steps(&two, true),
         "coop test: next, on Bravo's window: Xbox Live (to sign in). Then on Alpha's window: \
-         Xbox Live > Co-op Campaign > pick a level and difficulty; Bravo get the invitation and \
-         join by themselves; then Start Game on Alpha."
+         Xbox Live > Co-op Campaign > pick a level and difficulty; on Bravo, the invitation is \
+         accepted by itself, but join from the friends list: Y, Alpha, Join Game; then Start \
+         Game on Alpha."
     );
     let three = Roles {
         host: "Alpha".into(),

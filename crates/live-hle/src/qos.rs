@@ -19,6 +19,9 @@ const PING: &[u8; 8] = b"H2PNG001";
 const PONG: &[u8; 8] = b"H2PNR001";
 pub(crate) const PING_LEN: usize = 18;
 pub(crate) const PONG_LEN: usize = 16;
+/// The session each peer last asked about and got an answer for, by its
+/// address: what a peer first heard from on a game channel is joining.
+pub(crate) type Asked = Arc<Mutex<BTreeMap<Ipv4Addr, [u8; 8]>>>;
 /// What pinging peers reported, by their address: (ms, when).
 pub(crate) type Pings = Arc<Mutex<BTreeMap<Ipv4Addr, (u16, Instant)>>>;
 pub(crate) fn ping_packet(nonce: u64, report: u16) -> [u8; PING_LEN] {
@@ -130,6 +133,7 @@ impl Responder {
         address: SocketAddrV4,
         listeners: Listeners,
         pings: Pings,
+        asked: Asked,
     ) -> std::io::Result<Self> {
         let socket = UdpSocket::bind((address.ip().to_owned(), address.port() + 2))?;
         socket.set_read_timeout(Some(Duration::from_millis(50)))?;
@@ -160,6 +164,14 @@ impl Responder {
                     }
                     let kid: [u8; 8] = input[16..24].try_into().unwrap();
                     let entry = answer(&listeners.lock().unwrap_or_else(|e| e.into_inner()), &kid);
+                    if entry.is_some()
+                        && let SocketAddr::V4(v4) = sender
+                    {
+                        asked
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .insert(*v4.ip(), kid);
+                    }
                     let Some((enabled, bandwidth, data)) = entry else {
                         if unknown.insert(kid) {
                             let ours: Vec<_> = listeners
