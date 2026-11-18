@@ -207,6 +207,8 @@ counted, and data-reference contents counted as data.
 | `snd!` | 62,012 | 50.0 % | 0 | 0 | 50.0 % | 0 | 62,012 |
 | `lsnd` | 483 | 86.3 % | 4.6 % | 0 | 9.1 % | 0 | 483 |
 | `effe` | 805 | 37.5 % | 1.6 % | 0.4 % | 5.1 % | 55.4 % | 168 |
+| `ligh` | 190 | 55.6 % | 10.0 % | 0 | 30.0 % | 4.3 % | 190 |
+| `deca` | 157 | 44.2 % | 0 | 53.5 % | 2.3 % | 0 | 157 |
 
 "Exact node tree" below the tag count means some arrays that retail lays
 out twice with equal content (data references, which carry no sharing
@@ -842,9 +844,10 @@ no retail template read:
   - sounds through `h1sounds` (`Converter::sound`, once per sound);
   - projectiles through the object converter (none convert yet on the
     disc: no template row for an effect's projectile);
-  - decals, lights, damage (`jpt!`, the weapons lane's definition is not
-    on master yet), particle systems (`pctl`) and debris (`garb`) are
-    left out and counted in the effect's report.
+  - lights and decals (since version 51, below);
+  - damage (`jpt!`, the weapons lane's definition is not on master
+    yet), particle systems (`pctl`) and debris (`garb`) are left out and
+    counted in the effect's report.
 - **particles** (Halo 1's `part`) are left out: Halo 2's are `prt3` on
   shader templates (`stem`), a separate job.
 - Everything else is the definition's default (flags, the loop event,
@@ -855,8 +858,9 @@ The converted sounds and looping sounds need the map's sound gestalt
 (`ugh!`), so a `Tree` holds them apart (`Tree::sounds`, `Tree::loops`)
 and the tags name them by placeholders (`convert::sound(k)`,
 `convert::looping(k)`). `Tree::install_audio` (called by
-`Tree::install`, and by h1campaign before the objects) adds them all or
-none, reusing a sound or looping sound the set has by path; a refusal
+`Tree::install` after the tree's own tags, so those land in the slots the
+Halo 1 sandbox's placements were promised; h1campaign calls it before
+the objects) adds them all or none, reusing a sound or looping sound the set has by path; a refusal
 (the gestalt's 16-bit indices) or `install_over` (no new slots) leaves
 every placeholder null and a note.
 
@@ -864,11 +868,12 @@ every placeholder null and a note.
 type and the marker; E `0x000bed2a` builds `ligh`, `lsnd`, `effe` and
 `cont`) are Halo 1's looping sounds (`h1sounds::looping`) and effects at
 Halo 1's markers, and its `creation_effect` Halo 1's (`obje +0xa0`).
-Lights and contrails are left out (no converter). On the ten levels:
-the warthog's, scorpion's, banshee's, pelican's, dropship's and gun
-turret's engine loops, and a30's `lifepod_entry` its effect and loop.
-The plain lifepods carry only two lights in Halo 1, so they stay quiet:
-that is Halo 1's own behaviour.
+Lights too since version 51 (below); contrails are left out (no
+converter). On the ten levels: the warthog's, scorpion's, banshee's,
+pelican's, dropship's and gun turret's engine loops and lights, and
+a30's `lifepod_entry` its effect and loop. The plain lifepods carry only
+two lights in Halo 1, which they now have; they stay quiet, as in Halo
+1.
 
 Proof (`crates/h1objects/tests/effects_disc.rs`; lib tests
 `rebuilt_effect_keeps_halo_1s_events_and_the_parts_that_convert` and
@@ -901,6 +906,66 @@ may play at a fixed level), and whether Halo 1's per-second part
 velocities need a factor (no projectile or debris part is kept yet,
 so nothing moves).
 
+### Lights (`ligh`, version 51)
+
+`crates/tags/src/defs/ligh.txt` is the Halo 2 `ligh` of
+[effects.md](effects.md) (E readers in
+[e3-lighting.md](../graphics/e3-lighting.md), "The light record"). All
+190 distinct retail lights round-trip byte-identical.
+
+Halo 1's `ligh` (`h1::Light`, `0x160`, no blocks; V on 304 lights of six
+maps, `halo1_group_word_survey` with `H1_GROUP=ligh`): `+4` a radius
+(0.05 to 15 world units), `+0x10` and `+0x14` two angles in radians (20
+to 180 degrees, a half turn on most: a sphere), `+0x38` and `+0x48` two
+colours as alpha, red, green, blue, `+0xac` a lens flare, `+0xf4` a
+duration on 59 lights in multiples of three (3 to 180, read as ticks).
+Names D.
+
+`rebuild::light` writes, with no template: a sphere of Halo 1's radius
+(radius and specular radius), or under a half-turn cutoff a frustum
+(field of view the cutoff angle, falloff and cutoff distance the
+radius, stretch 1); Halo 1's lower and upper colours as both the diffuse
+and specular colours at the two intensity bounds; flag bit 3, no shadow
+(Halo 1's dynamic lights cast none); the duration in seconds (ticks
+over 30, D); and the base's lights of that kind as a role
+(`rebuild::light_role`: the majority word of each unknown span and the
+majority brightness bounds). Lens flares are not converted. Lights are
+built for effect parts and object attachments; all 898 lights on the
+disc's maps (95 cones) rebuild and read back.
+
+### Decals (`deca`, version 51)
+
+`crates/tags/src/defs/deca.txt`: all 157 distinct retail decals
+round-trip byte-identical; the zero spans are pad. Halo 1's `deca`
+(`h1::Decal`, `0x10c`; V on 270 decals of six maps) holds the same
+fields in the same order as Halo 2's: flags (`+0`, the same bits, `8`,
+`0x68`, `0x168`), kind (`+2`, 0 to 3), the next decal (`+8`), the radius
+bounds (`+0x18`), two colours (`+0x34`, `+0x40`), the lifetime and decay
+time bounds (`+0x78`, `+0x80`, seconds; Halo 2's retail 180 and 20 sit
+there), the bitmap (`+0xd8`) and 16.0 at `+0xfc` (Halo 2's `+0xa4`).
+`rebuild::decal` writes those from Halo 1, the bitmap converted by
+`h1bitmaps`, the next decal converted in turn, and the layer, overlap
+count and `+0x18` scale from the base's decals' majority
+(`rebuild::decal_role`; Halo 1's layer, 0 to 3, is not Halo 2's 1 to 5).
+All 916 decals on the disc's maps rebuild with their bitmaps.
+
+Proof: `every_effect_rebuilds_from_its_definition` (above) also builds
+every light and decal of every map and reads them back (kind, range,
+colours; radius, lifetime, bitmap and next decal resolving in the tree):
+10,030 effect parts kept. The campaign sweep stays at lean Everything
+with 0 dangling references, b40 at tag memory 0x942000.
+
+What only a game run shows: the light's brightness against Halo 1's
+(the role's bounds with Halo 1's colours), the cone lights' look, the
+duration factor, and the decals' layer and blending (the role's layer
+for every decal).
+
+**Halo 1 sandbox import** (`sandbox_disc.rs`
+`every_map_builds_in_both_sandboxes_with_the_objects_sounds`): every
+multiplayer map on the disc through `h2 import halo1`'s path in both
+sandboxes (26 builds), every attachment of every converted vehicle (587)
+naming a tag of its group in the built map.
+
 ## Which converted objects use the definitions
 
 | Groups | Path | Why |
@@ -912,7 +977,8 @@ so nothing moves).
 | `bipd` | definitions (default since version 48); template with `Options::rebuild_bipeds` off | references from the Halo 2 counterpart, size and physics from Halo 1 |
 | `phmo` of a rebuilt biped | definitions (Halo 1's collision as polyhedra, a body per node) | the template path borrowed the template's ragdoll on other nodes |
 | `weap`, `eqip`, `proj` | template | their gameplay fields (weapon tuning) are unknown spans; built from zero they would not play |
-| `effe` (vehicles' attachments and creation effects, since version 50) | definitions (only path) | no template path; sound parts only |
+| `effe` (vehicles' attachments and creation effects, since version 50) | definitions (only path) | no template path; sound parts, and lights and decals since 51 |
+| `ligh`, `deca` (effect parts, attachments; since version 51) | definitions (only path) | no template path |
 
 ## Open
 
@@ -920,8 +986,8 @@ so nothing moves).
   `weap` tuning, `mode`'s nested blocks, and the `bitm` and `snd!` roots.
   Each needs the engine's reader found to be named.
 - **More groups:** `sky`, `proj`, `jpt!` (the second tier asked
-  for; `effe` done, its parts other than sounds open: decals, lights,
-  damage, particle systems and Halo 1's particles as `prt3`), and the other object groups (`bloc`, `garb`, `proj`, `crea`,
+  for; `effe`, `ligh` and `deca` done; open: damage parts, particle
+  systems and Halo 1's particles as `prt3`, contrails, lens flares), and the other object groups (`bloc`, `garb`, `proj`, `crea`,
   `ssce`), which `struct obje` already covers.
 - **Physics shapes from Halo 1**: built from the collision BSP's solid
   cells since version 43. Open: whether a device's bodies need retail's
