@@ -143,7 +143,11 @@ fn a_lobby_step_presses_and_reads_the_screen() {
     assert_eq!(r["screen"]["mode"], MODE_SYSTEM_LINK);
     let sent = &pads.lock().unwrap()[0];
     assert_eq!(sent["player"], 0);
-    assert_eq!(sent["steps"].as_array().unwrap().len(), 8, "3 downs and A, each released");
+    assert_eq!(
+        sent["steps"].as_array().unwrap().len(),
+        8,
+        "3 downs and A, each released"
+    );
     stop.store(true, Ordering::Relaxed);
     h.join().unwrap();
 }

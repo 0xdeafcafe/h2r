@@ -85,9 +85,11 @@ pub struct NotLanded;
 
 impl Bots for NotLanded {
     fn add_local(&mut self, _: Option<u32>, _: PadSource) -> Result<u32, String> {
-        Err("local sim players need bots::local (docs/game/bots.md stage 1), which hasn't landed; \
+        Err(
+            "local sim players need bots::local (docs/game/bots.md stage 1), which hasn't landed; \
              input.pad steers a real pad's port meanwhile"
-            .into())
+                .into(),
+        )
     }
 
     fn add_phantom(&mut self, _: &Identity, _: Option<i32>, _: PadSource) -> Result<u32, String> {

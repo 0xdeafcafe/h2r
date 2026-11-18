@@ -180,7 +180,11 @@ fn a_host_write_lands_where_the_readers_read() {
     let g = &game.g;
     let unit = Body::at(UNIT_BODY);
     assert_eq!(unit.position(g).unwrap(), [10.0, -2.5, 3.0]);
-    assert_eq!(g.f32(UNIT_BODY + l::BODY_VELOCITY).unwrap(), 0.0, "velocity zeroed");
+    assert_eq!(
+        g.f32(UNIT_BODY + l::BODY_VELOCITY).unwrap(),
+        0.0,
+        "velocity zeroed"
+    );
     assert_eq!(g.u16(UNIT_BODY + l::UNIT_TEAM).unwrap(), 1);
     let v = h.ok(&mut game, method::VIEW, json!({"roots": ["player"]}));
     let p0 = &v["player"]["0"];
@@ -235,7 +239,10 @@ fn co_op_and_client_sessions_refuse_writes_and_write_nothing() {
     assert!(e["message"].as_str().unwrap().contains("sim hash"), "{e}");
     assert_eq!(Body::at(UNIT_BODY).health(&game.g).unwrap(), 1.0);
     let s = h.ok(&mut game, method::SESSION, Value::Null);
-    assert_eq!((s["kind"].clone(), s["writes"].clone()), (json!("coop_host"), json!(false)));
+    assert_eq!(
+        (s["kind"].clone(), s["writes"].clone()),
+        (json!("coop_host"), json!(false))
+    );
 }
 
 #[test]
@@ -345,8 +352,15 @@ fn local_players_come_from_the_bots_and_take_scripted_pads() {
         method::PLAYER_PAD,
         json!({"id": "sim.1", "steps": [{"left": [0, 1], "ticks": 30}, {"buttons": ["x"], "ticks": 1}]}),
     );
-    assert_eq!((r["queued"].clone(), r["via"].clone()), (json!(2), json!("script")));
-    assert_eq!(remote.status().queued, 2, "the bot's own queue was replaced");
+    assert_eq!(
+        (r["queued"].clone(), r["via"].clone()),
+        (json!(2), json!("script"))
+    );
+    assert_eq!(
+        remote.status().queued,
+        2,
+        "the bot's own queue was replaced"
+    );
     // A write may name it by its sim id.
     let r = h.ok(
         &mut game,
@@ -359,7 +373,11 @@ fn local_players_come_from_the_bots_and_take_scripted_pads() {
     let r = h.ok(&mut game, method::PLAYER_REMOVE, json!({"id": "sim.1"}));
     assert_eq!(r["removed"], json!(["sim.1"]));
     assert_eq!(h.bots.log().removed, [Bot::Local { port: 1 }]);
-    let e = h.err(&mut game, method::PLAYER_PAD, json!({"id": "sim.1", "steps": []}));
+    let e = h.err(
+        &mut game,
+        method::PLAYER_PAD,
+        json!({"id": "sim.1", "steps": []}),
+    );
     assert_eq!(e["code"], code::GONE);
 }
 
@@ -371,7 +389,12 @@ fn phantoms_need_a_server_issued_identity() {
         method::PLAYER_ADD,
         json!({"kind": "phantom", "source": "brain"}),
     );
-    assert!(e["message"].as_str().unwrap().contains("embedded Live server"));
+    assert!(
+        e["message"]
+            .as_str()
+            .unwrap()
+            .contains("embedded Live server")
+    );
     let e = h.err(
         &mut game,
         method::PLAYER_ADD,
@@ -450,9 +473,17 @@ fn expect_judges_the_view_at_one_tick() {
     assert_eq!(v["expects"][3]["got"], 1);
     assert_eq!(v["expects"][3]["expect"], "/player/1/team ==");
     assert_eq!(v["at"]["tick"], 100);
-    let e = h.err(&mut game, method::EXPECT, json!({"checks": ["/nope/x exists"]}));
+    let e = h.err(
+        &mut game,
+        method::EXPECT,
+        json!({"checks": ["/nope/x exists"]}),
+    );
     assert_eq!(e["code"], code::INVALID_PARAMS);
-    let e = h.err(&mut game, method::EXPECT, json!({"checks": ["/at/tick ~ 1"]}));
+    let e = h.err(
+        &mut game,
+        method::EXPECT,
+        json!({"checks": ["/at/tick ~ 1"]}),
+    );
     assert_eq!(e["code"], code::INVALID_PARAMS);
 }
 

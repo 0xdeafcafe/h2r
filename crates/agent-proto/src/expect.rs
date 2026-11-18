@@ -74,8 +74,7 @@ impl Serialize for Op {
 impl<'de> Deserialize<'de> for Op {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Op, D::Error> {
         let s = String::deserialize(d)?;
-        Op::parse(&s)
-            .ok_or_else(|| serde::de::Error::custom(format!("{s}: one of {}", Op::NAMES)))
+        Op::parse(&s).ok_or_else(|| serde::de::Error::custom(format!("{s}: one of {}", Op::NAMES)))
     }
 }
 
@@ -105,8 +104,7 @@ pub fn check(got: Option<&Value>, op: Op, want: Option<&Value>) -> bool {
             let (Some(got), Some(w)) = (got, want) else {
                 return false;
             };
-            let (Some(to), Some(d)) = (w.get("to"), w.get("within").and_then(Value::as_f64))
-            else {
+            let (Some(to), Some(d)) = (w.get("to"), w.get("within").and_then(Value::as_f64)) else {
                 return false;
             };
             near(got, to, d)
@@ -263,8 +261,16 @@ mod tests {
         assert!(check(at("/nope"), Op::Ne, Some(&json!(1))));
         assert!(!check(at("/nope"), Op::Eq, Some(&Value::Null)));
         let near = |to: Value, d: f64| json!({"to": to, "within": d});
-        assert!(check(at("/p"), Op::Near, Some(&near(json!([1, 2, 3]), 0.01))));
-        assert!(!check(at("/p"), Op::Near, Some(&near(json!([1, 2, 4]), 0.5))));
+        assert!(check(
+            at("/p"),
+            Op::Near,
+            Some(&near(json!([1, 2, 3]), 0.01))
+        ));
+        assert!(!check(
+            at("/p"),
+            Op::Near,
+            Some(&near(json!([1, 2, 4]), 0.5))
+        ));
         assert!(!check(at("/p"), Op::Near, Some(&near(json!([1, 2]), 9.0))));
         assert!(check(at("/a"), Op::Near, Some(&near(json!(2.4), 0.5))));
     }
@@ -278,10 +284,7 @@ mod tests {
         .unwrap();
         assert_eq!(a, b);
         let c: Expect = serde_json::from_value(json!("/at/phase == \"gameplay\"")).unwrap();
-        assert_eq!(
-            (c.op, c.want),
-            (Op::Eq, Some(json!("gameplay")))
-        );
+        assert_eq!((c.op, c.want), (Op::Eq, Some(json!("gameplay"))));
         let d = Expect::parse("/sim/1/player exists").unwrap();
         assert_eq!((d.op, d.want), (Op::Exists, None));
     }
@@ -300,8 +303,10 @@ mod tests {
             assert!(Expect::parse(bad).is_err(), "{bad}");
         }
         assert!(
-            serde_json::from_value::<Expect>(json!({"pointer": "/a", "op": "==", "want": 1, "x": 0}))
-                .is_err()
+            serde_json::from_value::<Expect>(
+                json!({"pointer": "/a", "op": "==", "want": 1, "x": 0})
+            )
+            .is_err()
         );
     }
 
@@ -313,8 +318,14 @@ mod tests {
             Expect::parse(r#"/at/phase == "gameplay""#).unwrap(),
         ];
         let v = verdict(&answer, &expects);
-        assert_eq!((v["pass"].clone(), v["failed"].clone()), (json!(false), json!(1)));
-        assert_eq!(v["expects"][0], json!({"expect": "/count/player >=", "pass": true, "want": 2}));
+        assert_eq!(
+            (v["pass"].clone(), v["failed"].clone()),
+            (json!(false), json!(1))
+        );
+        assert_eq!(
+            v["expects"][0],
+            json!({"expect": "/count/player >=", "pass": true, "want": 2})
+        );
         assert_eq!(v["expects"][1]["got"], "menu");
         assert_eq!(v["expects"][1]["want"], "gameplay");
         let none = expects[0].judge(None);

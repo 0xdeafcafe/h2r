@@ -168,12 +168,13 @@ pub fn apply(
             format!("player.{index} has no unit now (between lives)"),
         ));
     }
-    let weapon = match (p.ammo, u) {
-        (Some(_), Some(u)) => Some(held_weapon(m, u)?.ok_or_else(|| {
-            RpcError::new(code::GONE, format!("player.{index} holds no weapon"))
-        })?),
-        _ => None,
-    };
+    let weapon =
+        match (p.ammo, u) {
+            (Some(_), Some(u)) => Some(held_weapon(m, u)?.ok_or_else(|| {
+                RpcError::new(code::GONE, format!("player.{index} holds no weapon"))
+            })?),
+            _ => None,
+        };
     let mut wrote = Vec::new();
     if let Some(t) = p.team {
         pl.set_team(m, t as i8).map_err(fault)?;

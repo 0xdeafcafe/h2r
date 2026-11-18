@@ -17,6 +17,8 @@
 //! runs too) and `host.perf` (the newest host perf line), and
 //! `render.frame` and `render.stats` (crates/agent's `render`, over
 //! [`crate::render_probe`] and the draw wrapper in [`crate::d3d_diag`]).
+//! `sim.*` ([`install_sim`]) gets its session kind from `coop_probe`'s
+//! readers ([`session_view`]).
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -58,7 +60,7 @@ impl AgentGlue {
         }
         let agent = agent::Agent::new();
         add_host_methods(&agent);
-        install_sim(&agent);
+        let _sim = install_sim(&agent);
         // On the game thread: the sampler's main target.
         crate::sampling::set_game_thread();
         let server = agent::Server::listen_on(&endpoint, agent.clone())
@@ -202,13 +204,14 @@ pub fn add_host_methods(agent: &agent::Agent) {
 }
 
 /// `sim.*` (crates/agent's `sim`): no bots backend until bots.md's
-/// `bots::local` lands, and the session kind read as `coop_probe` reads it.
-pub fn install_sim(agent: &agent::Agent) {
+/// `bots::local` lands (then pass it here, or `SimHandle::set_bots`), and
+/// the session kind read as `coop_probe` reads it.
+pub fn install_sim(agent: &agent::Agent) -> agent::sim::SimHandle {
     agent::sim::install(
         agent,
         Box::new(agent::sim::bots::NotLanded),
         Some(Box::new(session_view)),
-    );
+    )
 }
 
 /// [`crate::layout_glue::Gm`] over the agent's guest memory.

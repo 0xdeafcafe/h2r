@@ -171,12 +171,8 @@ pub enum Lobby {
 /// Reads `ui.screen`.
 pub fn screen(rpc: &mut dyn Rpc) -> Result<Screen, RpcError> {
     let v = rpc.call(method::UI_SCREEN, Value::Null)?;
-    serde_json::from_value(v.clone()).map_err(|e| {
-        RpcError::new(
-            code::UNAVAILABLE,
-            format!("ui.screen answered {v} ({e})"),
-        )
-    })
+    serde_json::from_value(v.clone())
+        .map_err(|e| RpcError::new(code::UNAVAILABLE, format!("ui.screen answered {v} ({e})")))
 }
 
 fn fail(why: String, seen: &Screen) -> RpcError {
@@ -274,12 +270,7 @@ pub fn run(rpc: &mut dyn Rpc, step: &Lobby) -> Result<Value, RpcError> {
             let b: Vec<&str> = buttons.iter().map(String::as_str).collect();
             press(rpc, &b)?;
             match expect {
-                Some(want) => done(until(
-                    rpc,
-                    want,
-                    timeout_ms.unwrap_or(STEP_MS),
-                    "press",
-                )?),
+                Some(want) => done(until(rpc, want, timeout_ms.unwrap_or(STEP_MS), "press")?),
                 None => done(screen(rpc)?),
             }
         }
@@ -294,7 +285,9 @@ pub fn run(rpc: &mut dyn Rpc, step: &Lobby) -> Result<Value, RpcError> {
             press(rpc, &b)?;
             done(until(rpc, &mode.opens(), STEP_MS, "mode")?)
         }
-        Lobby::Host { via: Host::LiveCoop } => {
+        Lobby::Host {
+            via: Host::LiveCoop,
+        } => {
             let mut s = screen(rpc)?;
             if s.screen == Some(JOIN_SCREEN) && s.mode == Some(MODE_LIVE) {
                 press(rpc, &["a"])?;
@@ -444,7 +437,13 @@ mod tests {
             .into(),
             pads: vec![],
         };
-        run(&mut m, &Lobby::Host { via: Host::LiveCoop }).unwrap();
+        run(
+            &mut m,
+            &Lobby::Host {
+                via: Host::LiveCoop,
+            },
+        )
+        .unwrap();
         assert_eq!(buttons(&m.pads[0]), ["a"]);
         assert_eq!(buttons(&m.pads[1]), ["down", "down", "down", "a"]);
     }
@@ -453,7 +452,12 @@ mod tests {
     fn steps_parse_by_action() {
         let s: Lobby =
             serde_json::from_value(json!({"action": "mode", "mode": "xbox_live"})).unwrap();
-        assert_eq!(s, Lobby::Mode { mode: Mode::XboxLive });
+        assert_eq!(
+            s,
+            Lobby::Mode {
+                mode: Mode::XboxLive
+            }
+        );
         let s: Lobby = serde_json::from_value(json!({"action": "start"})).unwrap();
         assert_eq!(s, Lobby::Start);
         let s: Lobby = serde_json::from_value(

@@ -186,9 +186,7 @@ impl Sim {
                 Bot::Phantom { .. } => None,
             },
             identity: e.identity.clone(),
-            player: self
-                .game_player(e, objects)
-                .map(|i| format!("player.{i}")),
+            player: self.game_player(e, objects).map(|i| format!("player.{i}")),
         }
     }
 
@@ -272,9 +270,8 @@ impl Sim {
         let mut out = serde_json::to_value(self.describe(n, e, &objects)).expect("serialises");
         // A local bot's team is the lobby's or a host write's, once it plays.
         if matches!(bot, Bot::Local { .. }) && p.team.is_some() {
-            out["team_pending"] = json!(
-                "set it with sim.state.set {team} once the player is in a multiplayer game"
-            );
+            out["team_pending"] =
+                json!("set it with sim.state.set {team} once the player is in a multiplayer game");
         }
         Ok(out)
     }
@@ -371,10 +368,7 @@ impl Sim {
             .objects()
             .map_err(|e| RpcError::new(code::UNAVAILABLE, e))?;
         self.game_player(e, &objects).ok_or_else(|| {
-            RpcError::new(
-                code::GONE,
-                format!("{who} isn't a player in the game yet"),
-            )
+            RpcError::new(code::GONE, format!("{who} isn't a player in the game yet"))
         })
     }
 
@@ -428,10 +422,16 @@ impl Sim {
     fn view(&mut self, roots: &[String], ctx: &mut GameCtx<'_>) -> R {
         let has = |r: &str| roots.iter().any(|x| x == r);
         let mut out = Map::new();
-        out.insert("at".into(), serde_json::to_value(&ctx.at).expect("serialises"));
+        out.insert(
+            "at".into(),
+            serde_json::to_value(&ctx.at).expect("serialises"),
+        );
         if has("session") {
             let s = self.session(ctx);
-            out.insert("session".into(), serde_json::to_value(s).expect("serialises"));
+            out.insert(
+                "session".into(),
+                serde_json::to_value(s).expect("serialises"),
+            );
         }
         for (root, m) in [
             ("ui", agent_proto::method::UI_SCREEN),

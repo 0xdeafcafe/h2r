@@ -470,7 +470,10 @@ mod tests {
             "steps": [{"buttons": ["a"], "ticks": 2}]
         }))
         .unwrap();
-        assert_eq!((p.kind, p.source, p.team), (PlayerKind::Local, SourceKind::Script, Some(1)));
+        assert_eq!(
+            (p.kind, p.source, p.team),
+            (PlayerKind::Local, SourceKind::Script, Some(1))
+        );
         assert_eq!(p.steps.len(), 1);
         assert!(
             serde_json::from_value::<AddParams>(json!({"kind": "ai", "source": "brain"})).is_err()
@@ -548,7 +551,10 @@ mod tests {
             waits: vec![],
         };
         let v = until(&mut g, &checks, 100, 10).unwrap();
-        assert_eq!((v["pass"].clone(), v["ticks"].clone()), (json!(true), json!(20)));
+        assert_eq!(
+            (v["pass"].clone(), v["ticks"].clone()),
+            (json!(true), json!(20))
+        );
         assert_eq!(g.waits[0]["until"]["ticks"], 10);
         let mut g = Game {
             polls: 0,
@@ -560,6 +566,9 @@ mod tests {
         let last = e.data.unwrap();
         assert_eq!(last["ticks"], 15);
         assert_eq!(last["expects"][0]["got"], 0);
-        assert_eq!(g.waits[1]["until"]["ticks"], 5, "the last wait stops at the timeout");
+        assert_eq!(
+            g.waits[1]["until"]["ticks"], 5,
+            "the last wait stops at the timeout"
+        );
     }
 }

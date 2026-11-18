@@ -7,6 +7,8 @@ Status: phase 1 built ([below](#phase-1-what-was-built)): the socket,
 Phase 5 ([plan and what was built](#phase-5-testing-in-the-lightest-way-plan)):
 `render.frame`, `render.stats`, spike causes, `profile.fallbacks`,
 `load.timeline`, `h2 testmap` and `h2 agent run`.
+`sim.*` (simulated players, host writes, expectations, lobby steps) built
+over a bots stand-in ([below](#sim-simulated-players-and-direct-state)).
 Everything else on this page is design; its Rust and JSON blocks are
 sketches, not code that compiles. The front end is the `h2 agent` CLI
 only: the MCP server is dropped (decided 2026-11-17).
@@ -921,7 +923,9 @@ h2 agent run grenade.txt          # one JSON verdict; exit 1 unless it passed
 -` script on one connection, plus `expect <pointer> <op> [JSON]` on the
 last answer (a JSON pointer; ops `==`, `!=`, `<`, `<=`, `>`, `>=` on
 numbers, `contains` for a substring, an array element or an object key,
-`exists`, `missing`) and `keep` (put the last answer in the verdict).
+`exists`, `missing`, and `near {"to", "within"}` since `sim`) and `keep`
+(put the last answer in the verdict). The expectations are
+`agent_proto::expect`, which `sim.expect` judges in the game too.
 The verdict is `{"pass", "failed", "ms", "calls": [{line, call, ms, ok,
 error}], "expects": [{line, expect, want, pass, got}], "kept",
 "stopped"}`. A failed expect is recorded and the script goes on; a failed
@@ -932,6 +936,178 @@ against the game.
 Not built in phase 5 so far: per-subsystem guest time (engine-phase
 spans), A/B of feature sets, features set live, kernel I/O seeks and
 cache hits, `load.level`.
+
+## `sim`: simulated players and direct state
+
+Built 2026-11-18, tested over synthetic guest memory, fakes and a socket;
+not run against the game. Agreed with the Live and co-op coordinator
+(bed6c8dc), who reviews this section.
+
+`sim.*` lets an agent test co-op, multiplayer and Live flows from one
+running game: players that aren't people, game state written directly,
+and assertions that answer pass or fail with what was seen. It never
+starts another game instance.
+
+### Methods
+
+| Method | Access | What |
+|---|---|---|
+| `sim.player.add` | act | `{kind: local\|phantom, source: script\|recording\|brain, team?, steps?, recording?, port?, identity?}`: a simulated player, `sim.<n>` |
+| `sim.player.remove` | act | `{id}` or `{all: true}` |
+| `sim.player.list` | read | the simulated players and the game player each became (`player.<i>`) |
+| `sim.player.pad` | act | `{id, steps, append?}`: pad steps (`input.pad`'s) for one |
+| `sim.state.set` | act | `{player, pos?, team?, health?, shield?, grenades?, ammo?}`: host writes |
+| `sim.view` | read | `{roots?}`: the game as one JSON document |
+| `sim.expect` | read | `{checks}`: expectations judged against `sim.view`, at one tick |
+| `sim.session` | read | the session kind and whether writes are allowed |
+
+They are game methods (`Agent::add_game_method`, `crates/agent/src/sim/`):
+answered on the game's thread with guest memory at hand, and, like
+`world.*`, at a tick boundary while the game ticks. The wire types are
+`agent_proto::sim`.
+
+**`sim.view`'s roots.** `at` (the stamp), `session`, `ui` (`ui.screen`'s
+answer, `null` without `H2_UI_WATCH=1`), `player` (by index: the
+`world` object plus `health`, `shield`, `grenades {frag, plasma}` and the
+held weapon's `ammo {loaded, reserve}`), `object` (every `world` object by
+id; only when asked for), `count` (by kind, `team` counting players per
+team, `total`), `sim` (simulated players by `<n>`, and `count`) and
+`input` (`input.state`). Pointers read straight off it:
+`/player/1/team`, `/object/vehicle.e2000003/occupied`, `/count/team/1`,
+`/sim/1/player`.
+
+**Expectations** are `h2 agent run`'s: `"<pointer> <op> [JSON]"` or
+`{"pointer", "op", "want"}`, ops `==` `!=` `<` `<=` `>` `>=` `contains`
+`exists` `missing` and `near {"to": number or array, "within": d}` (for
+positions and vitality, read from `f32`s). One implementation,
+`agent_proto::expect`, serves both: `h2 agent run` judges the last
+answer on the client, `sim.expect` judges `sim.view` in the game. Its
+answer is the verdict's fields, `{"pass", "failed", "expects": [{expect,
+pass, want, got}], "at"}`.
+
+### `h2 agent sim` and scripts
+
+There is one script format: `h2 agent run`'s. Any line may be a `sim`
+verb, and `h2 agent sim run <script>` is `h2 agent run` that also removes
+the simulated players the script added (`"cleanup"` in the verdict).
+
+```sh
+cat > bot-team.txt <<'X'
+sim session
+expect /kind == "mp_host"
+sim add local brain
+expect /port exists
+wait {"phase":"gameplay","map_ticks":30}
+sim until 600 /sim/1/player exists
+sim set sim.1 team=1 health=0.5 pos=[12.0,-3.5,2.0]
+expect /wrote contains "pos"
+sim view player sim
+expect /sim/1/player == "player.1"
+expect /player/1/team == 1
+expect /player/1/health near {"to":0.5,"within":0.01}
+sim pad sim.1 [{"left":[0,1],"ticks":60}]
+X
+h2 agent sim run bot-team.txt
+```
+
+Verbs (`crates/cli/src/agent_sim.rs`): `add <local|phantom> [source]
+[key=JSON...]`, `remove <sim.N|all>`, `list`, `pad <sim.N> <steps>
+[append]`, `set <player.N|sim.N> key=JSON...`, `view [root...]`,
+`expect <expectation>`, `until <ticks> <expectation>` (`sim.expect` every
+5 ticks until it passes; a timeout fails with the last verdict),
+`session`, `lobby ...` and `run`. In `h2 agent run`, a failed `sim
+until` is a failed call, so it stops the script.
+
+**Lobby steps** (`agent_proto::sim::menu`) press player one's pad
+(`input.pad`) and check each step on `ui.screen`, with a timeout, on the
+client, since a step spans many ticks:
+
+- `lobby mode <campaign|xbox_live|split_screen|system_link>`: from the
+  main menu, down to the row and A; expects the campaign screen or the
+  players' screen in that mode.
+- `lobby host live_coop`: from the players' screen in Xbox Live mode (or
+  the Live menu): A, then down from the restored row to Co-op Campaign
+  (row 4), A; expects the Live menu to go.
+- `lobby invite [ROW]`: Y in a lobby, then A on friend row ROW.
+- `lobby start`: A on Start Game (row 0); expects the screen to go.
+- `lobby press <b[+b...]> [JSON expect]`: any presses, then wait for
+  `{"screen", "main_menu", "mode", "not"}`.
+
+Their screen ids and rows are the ones `h2 coop test --drive` uses,
+moved to `agent_proto::sim::menu` and re-exported by `coop_drive`. Like
+the driver, they assume a menu opens on row 0; a wrong row shows as the
+wrong screen, and the step fails saying what it saw. `invite` and `start`
+follow the driver and `boot::coop_live`'s docs; neither has been pressed
+through by `sim` in a run.
+
+### Determinism
+
+`sim.session` reads the simulation mode (`coop_probe::read_sim`, docs/live/live-coop.md
+1.1) and the squad session (`coop_probe::read_session`) through boot's
+probe (`boot::agent_glue::session_view`):
+
+| Mode | Kind | `sim.state.set` |
+|---|---|---|
+| 0 | `none` (menus) | allowed (no players to write) |
+| 1 | `local` (campaign, split screen) | allowed |
+| 2, 3 | `coop_guest`, `coop_host` (synchronous) | **refused**: a write on one machine desyncs the others and trips the sim hash |
+| 4 | `mp_client` (distributed) | refused: the host owns the state and overwrites it |
+| 5 | `mp_host` (distributed) | allowed: host-authoritative |
+| unreadable | `unknown` | refused |
+
+A refusal is `INVALID_REQUEST` with the session in `data`. In co-op, drive
+players with pads instead (`sim.player.pad`, `input.pad`): pads are
+inputs, which the pad schedule carries to every machine. Writes happen at
+a tick boundary only (`UNAVAILABLE` between slices), and every value is
+checked before the first write, so a refused set writes nothing. A
+`h2 lockstep` comparison run is local (mode 1) and isn't detected: a
+write there makes the runs differ by design.
+
+### What `sim.state.set` writes
+
+At the addresses Live telemetry reads (`live_telemetry::layout`, now
+public, and `engine::view`): the player record's team (`+0xc0`); the
+unit's position (body `+0x64`, its velocity `+0x88` zeroed), team
+(`+0x138`), body and shield vitality (`+0xec`, `+0xf0`, docs/game/health.md;
+added to `engine::view::objects::Body`), grenade counts (`+0x23e`) and
+the held weapon's first magazine (`+0x22c` loaded, `+0x22a` reserve).
+Not built: spawning a player between lives (that needs the game's
+respawn, not a write), and giving weapons (an object to create). Whether
+a written position sticks for a biped in motion (the physics may keep its
+own copy) needs a game run.
+
+### The split with docs/game/bots.md
+
+What sim reuses, and what is stubbed until bed6c8dc's lane lands:
+
+- **Local players** are bots.md stage 1's local slots:
+  `bots::local::add(port, PadSource)` and `remove`. **Phantoms** are
+  stage 6's: `bots::phantom::add(identity, team, PadSource)`.
+- **The seam** is `agent::sim::bots::Bots` (`add_local`, `add_phantom`,
+  `remove`, `phantom_player`), shaped like those calls, and
+  `PadSource { Script(Remote), Recording { name, path }, Brain }`. A
+  script source is an `input::backend::remote::Remote`, the step queue
+  `input.pad` uses: sim fills it, the backend reads it each poll with
+  `state_at_tick` (then `state_read`). So a sim script is just another
+  pad source, as bots.md says the brain is.
+- **Stubbed:** the game installs `NotLanded`, which refuses every add,
+  naming the stage it needs. Tests use `FakeBots`. When `bots::local`
+  lands, its backend implements `Bots` and `boot::agent_glue::install_sim`
+  passes it instead (or `SimHandle::set_bots`).
+- A local bot with another source can still be steered: `sim.player.pad`
+  sends its steps to `input.pad` on the bot's port, which merges over the
+  bot's pad (bots.md 4.1). A phantom's pad comes only from its source.
+- A local bot's `team` is kept and reported (`team_pending`): the lobby
+  or a `sim.state.set` decides it in game.
+
+### Live
+
+Sim never talks to a Live server and never makes accounts or sessions. A
+phantom needs `identity: {xuid, gamertag}`, and the only place to get one
+is the local embedded server (`h2 play --live-local`,
+`live_server::start_embedded`), which issues bot identities and accepts
+`bot: true` only for xuids it issued. Server-side bot accounts are
+bed6c8dc's. Never point a sim run at live.forbes.red.
 
 ## Open decisions
 
