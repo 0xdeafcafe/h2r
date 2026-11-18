@@ -818,9 +818,15 @@ render's snapshot of the frame.
    that table with the entry's shader; a run's pass takes the run's
    entries when the device issues it and draws them with
    `GpuWorld::encode_transparents`.
-4. **Objects' transparent parts.** The node matrices are copied at the
-   hook into the run (as stage 2 does at layer 3), so the pass draws the
-   frame's poses.
+4. **Objects' transparent parts** (with `impl.render.native_objects` on
+   as well). The hook copies the object's node matrices and sphere into
+   the run (`transparent::RunEntry`, `objects::read_object`, as stage 2
+   does at layer 3), from the render's snapshot, so the pass draws the
+   frame's pose. An object's entry stands for all of its parts with that
+   shader (S: which section and part an object's render record names is
+   not read), so a later entry of the same object and shader in the view
+   is skipped without drawing again (the parts draw at the first one's
+   place in the order).
 5. **The live A/B**, as stage 1's: the same frame with the switch on and
    off, `external_passes_dropped` steady, and the `0x0002c19a` site's ms.
 

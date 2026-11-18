@@ -32,6 +32,7 @@ use map::{Map, TagId};
 use native_render::camera::RenderCamera;
 use native_render::gpu::Image;
 use native_render::look::{self, Stage};
+use native_render::objects::ObjectFrame;
 use native_render::program::{self, ViewInputs};
 use native_render::transparent::{Entry, Run, Source};
 use native_render::transparent_gpu::TransparentProgram;
@@ -69,8 +70,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
-    fn accepts(&self, _mem: &dyn GuestMemory, entry: &Entry) -> bool {
-        self.ready().is_some_and(|r| accepts_entry(&r.transparent_parts, entry))
+    fn accepts(&self, _mem: &dyn GuestMemory, entry: &Entry, object: Option<&ObjectFrame>) -> bool {
+        // Objects' transparent parts are not drawn here yet.
+        object.is_none() && self.ready().is_some_and(|r| accepts_entry(&r.transparent_parts, entry))
     }
 
     fn open(&self, _camera: &RenderCamera, run: Arc<Run>) -> bool {
@@ -114,7 +116,7 @@ impl d3d::ExternalPass for RunPass {
             .run
             .seal()
             .iter()
-            .filter_map(|e| Some((owner(e.source)?, e.part)))
+            .filter_map(|e| Some((owner(e.entry.source)?, e.entry.part)))
             .collect();
     }
 

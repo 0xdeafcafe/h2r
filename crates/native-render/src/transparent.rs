@@ -35,6 +35,7 @@
 use std::sync::Mutex;
 
 use crate::camera::GuestRead;
+use crate::objects::ObjectFrame;
 use crate::skip::{RENDER_RECORDS, RENDER_RECORD_SIZE};
 
 /// The geometry entries' handler.
@@ -106,13 +107,23 @@ pub fn read_entry(mem: &dyn GuestRead, data: u32) -> Option<Entry> {
     })
 }
 
+/// One entry of a run: the entry, and for an object its node matrices and
+/// sphere as the hook copied them out of the render's snapshot of the
+/// frame (`crate::objects::read_object`), so the pass draws the frame's
+/// pose whatever the next tick does to the body.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RunEntry {
+    pub entry: Entry,
+    pub object: Option<ObjectFrame>,
+}
+
 /// Consecutive native entries in the game's sort order: one external
 /// pass. The feature adds entries while the pass waits in the device; the
 /// pass takes them when the device issues it ([`Run::seal`]), after which
 /// the next native entry needs a new run (a D3D draw came between).
 #[derive(Debug, Default)]
 pub struct Run {
-    inner: Mutex<(Vec<Entry>, bool)>,
+    inner: Mutex<(Vec<RunEntry>, bool)>,
 }
 
 impl Run {
@@ -120,18 +131,19 @@ impl Run {
         Self::default()
     }
 
-    /// Adds `entry`; `false` once the run is sealed.
-    pub fn push(&self, entry: Entry) -> bool {
+    /// Adds `entry` (with its object's copy, for an object); `false` once
+    /// the run is sealed.
+    pub fn push(&self, entry: Entry, object: Option<ObjectFrame>) -> bool {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if g.1 {
             return false;
         }
-        g.0.push(entry);
+        g.0.push(RunEntry { entry, object });
         true
     }
 
     /// Takes the entries and closes the run (the device issued its pass).
-    pub fn seal(&self) -> Vec<Entry> {
+    pub fn seal(&self) -> Vec<RunEntry> {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         g.1 = true;
         std::mem::take(&mut g.0)
@@ -204,9 +216,9 @@ mod tests {
         entry(&mut m, 1, 0, u32::MAX, NO_PLACEMENT << 18);
         let e = read_entry(&m, ENTRY + DATA_OFFSET).unwrap();
         let run = Run::new();
-        assert!(run.push(e) && run.push(e));
+        assert!(run.push(e, None) && run.push(e, None));
         assert_eq!(run.seal().len(), 2);
         assert!(run.is_sealed() && run.is_empty());
-        assert!(!run.push(e));
+        assert!(!run.push(e, None));
     }
 }
