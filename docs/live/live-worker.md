@@ -1,0 +1,288 @@
+# The Live server on Cloudflare Workers
+
+Today the Live server (`live.forbes.red`) runs on a Mac at home. Every
+request crosses the home network through a Cloudflare Tunnel, which costs
+250–700 ms per request. This plan moves the whole server to Cloudflare:
+
+- the routes run in a Worker;
+- the event log lives in the hub Durable Object's own SQLite storage;
+- blobs live in R2;
+- whatever needs a single owner runs in a Durable Object.
+
+No request reaches the Mac afterwards.
+
+The code stays shared. The Worker runs live-server's own axum router, built
+without the crate's `native` feature, so the routes are not forked.
+
+## Where things live
+
+| State | Home | Why |
+|---|---|---|
+| Event log (append order, stream versions, hash chain) | `LiveHub`'s own SQLite storage (`ctx.storage.sql`) | In-process and synchronous, so a query costs no network hop. One writer keeps the append order. A batch commits whole inside `transactionSync`. |
+| Read model, dispatcher, presence, sessions, invites, accounts, rate limits | `LiveHub`, one Durable Object named `live` | This is `Live` as it is today, single-owner and in memory, rebuilt from the log on start. |
+| Event stream (`/v1/stream`), live frames, packed ticks | `LiveHub`, hibernatable WebSockets | The feed and frames come from the read model. Hibernation means idle viewers cost nothing. |
+| Game ingest (`/v1/ingest`) | `LiveHub` | Frames feed the read model and the stream. A per-game object is the fallback if one hub's CPU is not enough. |
+| Co-op relay (`/v1/sessions/{id}/relay`) | `CoopRelay`, one object per session id | Its traffic stays off the hub's thread, and the object can sit near the players (location hint). |
+| Content, cloud saves, published art | R2 bucket `BLOBS` (published art in a public bucket) | `BlobStore` over R2 (`crates/live-worker/src/r2.rs`). |
+| Title files | The hub's `blobs` table today; move to R2 | A Durable Object's SQLite row holds at most 2 MB, but a title file may be up to 2 MiB (`MAX_TITLE_FILE`). |
+| Server key | Worker secret `H2_LIVE_SERVER_KEY` | `ServerIdentity::from_secret`. The id is the variable `H2_LIVE_ID` ([Settings](#settings)). |
+| Web app | Workers static assets (`web/dist`) | Served by Cloudflare ahead of the Worker; it is immutable and cached at the edge. |
+
+### Decision: the hub's own SQLite, not D1
+
+Decided in slice 2. The log lives in `LiveHub`'s own SQLite storage. That
+storage is in-process and synchronous, and the hub is its only writer, so an
+append is a few local statements. D1 would cost a network hop for every
+query: one read per stream an append touches, then one batch.
+
+The store is `sqlstore::SqlStore` over the `Sql` trait:
+- in the Worker it runs on the hub's storage (`dosql.rs`);
+- in the tests it runs on sqlx's SQLite.
+
+Anything else that runs SQLite statements in an atomic batch, D1 included,
+fits the same trait. D1 is out of the hot path, and migration does not need
+it either ([Migrating the current data](#migrating-the-current-data)).
+
+What is given up: other Workers cannot query the log directly. Everything
+goes through the hub, as it does on a machine today.
+
+## Settings
+
+Worker variables (`[vars]` in wrangler.toml) and secrets. The names are
+`h2-live-server`'s environment names where it has them
+(`crates/live-worker/src/settings.rs`).
+
+| Name | Kind | Meaning |
+|---|---|---|
+| `H2_LIVE_ID` | variable | The server id: the host in every author id. It must stay what the machine's server had. |
+| `H2_LIVE_SERVER_KEY` | secret | The server's key, base64 as in `server.key`. |
+| `H2_LIVE_PUBLIC_URL` | variable | The URL clients use, shown in discovery. Default `https://<id>`. |
+| `H2_LIVE_ADMINS` | variable | Admin gamertags, comma-separated. |
+| `H2_LIVE_INVITE_ONLY` | variable | `1`: account creation needs an invite. |
+| `H2_LIVE_PRIVATE` | variable | `1`: reads need a token too. |
+
+A missing id or key, or a bad value, fails the hub's start. The request then
+answers 500 with the reason; the hub never runs as some other server.
+
+**The client address.** A Worker has no peer address, and every request comes
+through Cloudflare's edge, which sets `CF-Connecting-IP` itself. The hub
+marks its public URL as at the edge (`PublicUrl::set_edge`), so that header
+is the client's address.
+
+On a machine the header still counts only from loopback behind a tunnel;
+anywhere else it can be forged.
+
+## What changed to make it build (slice 1)
+
+### live-server
+
+- **Features.** A `native` feature (on by default) holds everything that
+  cannot build for `wasm32-unknown-unknown`:
+  - `sqlx` (with `pg.rs`, `sqlite.rs`, `copy.rs`, `check.rs` and `standalone.rs`), `axum-server`, `rustls`, `reqwest` and `tower-http`;
+  - object_store's file and S3 stores;
+  - tokio's net, fs and multi-thread runtime;
+  - axum's `ws`, `tokio`, `http1` and `http2`.
+
+  `cargo check -p live-server --no-default-features --target wasm32-unknown-unknown` passes, and clippy is clean.
+- **WebSocket routes.** Stream, ingest and relay are native-only (`http::sockets`). The relay's room logic stays shared.
+- **`rt`.** Spawning, sleep, timeout, interval and `Instant` go through `rt`:
+  - natively it is tokio;
+  - in a Worker it is `spawn_local`, `setTimeout` and `performance.now()`.
+
+  `std::time::Instant` panics in a Worker. A JavaScript timer is not `Send`, so it is wrapped (`send_wrapper`).
+- **`ConnectInfo`.** A Worker has no socket, so `ConnectInfo` is never set there. Nothing counts as "this machine", which turns local sign-in and the loopback-only admin details off.
+- **Blobs.** `BlobStore::from_store` takes any object store. `put_file` (uploads spooled to a temporary file) fails on a Worker; see slice 4.
+- **Shared SQL.** The SQLite statements moved to `sql.rs`, shared by `SqliteStore` and the Worker's store.
+- **Public helpers.** `BatchRows`, `BatchDecoder` and `batch_key` are public. The shared store tests are public behind the `conformance` feature.
+
+### live-proto
+
+On wasm32 it uses getrandom's JavaScript backends (0.2 `js` and 0.3 `wasm_js`) and `time`'s `wasm-bindgen` clock.
+
+### crates/live-worker
+
+- **`sqlstore`** (named `d1store` in slice 1): an `EventStore` over `Sql`. It builds and is tested natively against SQLite:
+  - it passes the shared store tests;
+  - its rows are `SqliteStore`'s own, checked in both directions on one file.
+- **`dosql`** (slice 2; it replaced slice 1's `d1`): the hub's own storage as `Sql`.
+- **`r2`**: R2 as an `ObjectStore`. It covers get, range, head, put (overwrite, create-only, if-match), delete and list; multipart and copy are not done yet.
+- **`entry`**: the fetch handler and the `LiveHub` object, which starts `Live` on its first request and answers with the router.
+- **`wrangler.toml`**: a sketch with no ids in it.
+
+### Building and running on this machine
+
+The repository pins Rust 1.98.1 (rust-toolchain.toml). Homebrew's 1.98.1 has
+no wasm32 standard library, so the Worker is built with rustup's 1.98.1
+plus the `wasm32-unknown-unknown` target and `worker-build`. That toolchain
+lives in a home of its own, so the machine's toolchain is untouched:
+
+```
+export RUSTUP_HOME=$TMPDIR/lw2/rustup CARGO_HOME=$TMPDIR/lw2/cargo   # rustup-init, once
+rustup target add wasm32-unknown-unknown; cargo install worker-build
+cd crates/live-worker && worker-build --release     # build/index.js, build/index_bg.wasm
+crates/live-worker/smoke/run.sh 1000                # wrangler dev, the smoke test, a restart
+```
+
+For the install only, `CARGO_HOME` points at the private home; the builds
+then run with `RUSTUP_HOME` alone, so cargo keeps the shared registry.
+
+The bundle is 4.4 MB of wasm, 1.35 MB gzipped. Workers allow 3 MB on the
+free plan and 10 MB on paid.
+
+`smoke/run.sh` runs `bunx wrangler@4 dev --local`: workerd and miniflare on
+this machine, with no account. It writes its own wrangler config and a dev
+server key under `$TMPDIR/live-worker-dev`.
+
+`smoke/smoke.ts` uses the web app's own sign-up, token and event code. It
+checks, in order:
+- the first request (the cold start);
+- an anonymous `/v1/snapshot`;
+- sign-up;
+- a token-signed read (sign-in);
+- an event append, read back from the log;
+- warm timings;
+- with `--seed N`, 2N more events so a restart has a log to replay.
+
+## Slice 2 results
+
+These numbers come from `smoke/run.sh 1000` under local `wrangler dev`
+(workerd on this Mac), so they are not timings at Cloudflare's edge.
+
+| What | Result |
+|---|---|
+| Cold start, empty log | 40 ms to the first answer; the hub's start took 4 ms |
+| Cold start, 2,007 events | 84 ms to the first answer; replaying the log took 49 ms, about 24 µs an event |
+| Anonymous `/v1/snapshot` | 7 ms cold, 5 ms warm (p50) on an empty log; 14 ms warm with 2,007 events (283 KB) |
+| Sign-up, two accounts | 32 ms |
+| Sign-in (a token-signed read) | 6 ms, `private, no-store` |
+| Event append | 15 ms round trip; in the hub 5 ms p50, 7 ms p90 over 2,001 appends |
+
+The cache headers are slice 1's:
+- anonymous reads: `public, s-maxage=5` with an ETag;
+- signed reads: `private, no-store`.
+
+**Replay at today's log size.** `live.forbes.red`'s log is at position 6,196.
+At this rate a full replay takes about 150 ms. It costs more if the log is
+heavy with GameFrames, which are larger to decode. Read-model snapshots
+(slice 6) can wait until the log is far larger.
+
+The hub reports its own start on the request that caused it, in a
+`server-timing: start;dur=<ms>, events;desc=<head>` header.
+
+## Cost of the relay
+
+Co-op sends about 30 packets a second per player, so a two-player session is
+60 messages a second into the relay object. The prices below are as
+published in 2025; check them again before relying on them.
+
+- **Requests.** Incoming WebSocket messages bill as requests at 20 messages
+  to 1, and outgoing messages are free.
+  - An hour is 216,000 messages, which bills as 10,800 requests.
+- **Duration.** A busy relay never hibernates. It bills 128 MB × 3,600 s =
+  450 GB-s per hour.
+
+| Plan | Included | Two-player co-op it covers | After that |
+|---|---|---|---|
+| Free (SQLite-backed Durable Objects only) | 100,000 requests and 13,000 GB-s a day | About 9 hours a day by requests (duration allows about 28). Everything else the server does shares the same 100,000. | Requests fail until the next day. |
+| Paid ($5 a month) | 1,000,000 requests and 400,000 GB-s a month | About 90 hours a month | About $0.0016 an hour in requests plus $0.0056 an hour in duration, under a cent an hour. |
+
+Game ingest and the stream add to this:
+- 1 Hz frames per live game in;
+- packed ticks out to viewers, which are free.
+
+The paid plan is the one to use. On the free plan, an evening of co-op uses a
+large share of the day's requests.
+
+## Slices (serial, about 2 hours each)
+
+1. **Feasibility (done).**
+   - live-server builds for wasm32 behind `native`.
+   - The `live-worker` crate exists, with the store tested natively, R2 and the hub.
+2. **The hub serves HTTP under `wrangler dev` (done).**
+   - The log moved into the hub's own storage ([Decision](#decision-the-hubs-own-sqlite-not-d1)).
+   - Built with `worker-build`, run with `bunx wrangler@4 dev --local`.
+   - [Settings](#settings) come from variables and secrets, and `CF-Connecting-IP` is trusted at the edge.
+   - The smoke test passes, and the cold start is measured ([Slice 2 results](#slice-2-results)).
+3. **The event stream.**
+   - Hibernatable WebSockets on the hub.
+   - `run_stream`, `catch_up` and the frame feeds go behind a small socket trait, so axum's WebSocket and the object's share one implementation.
+   - JSON and packed readers, auth messages and token expiry.
+4. **Ingest, timers and uploads.**
+   - The game's ingest socket on the hub.
+   - The spawned loops (dispatcher poll, presence sweep, the 100 ms packed tick) become an alarm plus work done on demand, so an idle hub can be evicted.
+   - Content and cloud-save uploads stream into R2 instead of a temporary file.
+   - Title files move to R2.
+5. **The co-op relay object.**
+   - `CoopRelay` per session.
+   - Membership: the hub checks it once and signs a short ticket; the relay checks the ticket.
+   - The forwarding, rate buckets and close codes of `relay.rs`.
+   - Tested with two `coop` peers against `wrangler dev`.
+6. **Cold start.**
+   - Snapshot the read model at a log position in the hub's storage (or R2), and replay only the tail.
+   - Needed if the replay is slow at today's log size; see [Slice 2 results](#slice-2-results) for the rate.
+7. **Migration tooling and a rehearsal.**
+   - Admin-only `GET /v1/admin/log` and `POST /v1/admin/log` on the hub: the whole log in pages, every event with its JWS, version and hash, private ones included. The POST runs `EventStore::import`, which checks positions and hash chains.
+   - `store copy` learns `https://HOST` as a source and a destination, signing with the server key.
+   - Blobs go to R2 through the existing `s3://` path.
+   - Rehearse against `wrangler dev`, and compare heads and hash chains with the source.
+8. **Staging, then cutover.**
+   - Deploy to a staging hostname (`live-staging.forbes.red`), playing against a copy.
+   - Then cut over, as below.
+9. **Later.** The menu bar app gets a "worker" mode: deploy, tail and status in place of a local server.
+
+## Migrating the current data
+
+The server's log is in Postgres today.
+
+The hub's storage can only be reached through the Worker, so the log goes
+in through the hub (slice 7's endpoints). No D1 is involved.
+
+1. **Move the identity.** The import is signed with the server key, so the hub needs it first.
+   - `wrangler secret put H2_LIVE_SERVER_KEY` with the contents of `server.key`.
+   - `H2_LIVE_ID` is the id in `server.json`. It must not change: every account's author id contains it.
+2. **Copy the log.** `h2 live store copy --from postgres://… --to https://<worker host>` posts the log in pages. The hub imports each page and checks positions and hash chains. A copy that stops part-way continues from the hub's head.
+3. **Checkpoints.** Subscriber checkpoints travel with the log.
+4. **Copy blobs.** `h2 live store copy --from-blobs <data dir> --to-blobs s3://h2-live-blobs`, with the R2 S3 credentials ([live-hosting.md](live-hosting.md), "Free hosting"). The public art bucket stays as it is.
+5. **Check.**
+   - The Worker's `/healthz` position equals the source head.
+   - `/v1/accounts` and `/v1/games` match the old server's answers.
+
+## Cutover, with the DNS name kept
+
+`live.forbes.red` stays a proxied DNS record. A Worker route on
+`live.forbes.red/*` runs before the record's origin (the tunnel), so adding
+the route moves traffic, and removing it moves it back. The DNS record does
+not change.
+
+1. **Rehearse.** Run a full rehearsal on the staging hostname (slice 8).
+2. **Stop writes on the Mac.** Stop the Mac's server. Clients retry; this is the downtime window, minutes at most.
+3. **Copy the tail.** Run the same `store copy` again: it continues from the hub's head.
+4. **Add the route** `live.forbes.red/*` → `h2-live` (with the static assets).
+5. **Smoke test.** Check `/healthz`, sign in, the stream and a co-op relay.
+6. **Leave the tunnel stopped.** It is the rollback path; it no longer serves anything.
+
+## Rollback
+
+1. **Remove the Worker route.** Traffic falls through to the tunnel again.
+2. **Bring the Worker's writes back to the Mac.** Before starting the Mac's server:
+   - `h2 live store copy --from https://<worker host> --to <the Mac's log>`, which reads the hub's admin log export and takes the events after the Mac's head.
+
+   The copy refuses a log that is not a continuation of its own, so a forked log cannot be merged by mistake.
+3. **Start the Mac's server and the tunnel.**
+
+Two things keep this safe:
+- Only one side writes at a time. Never run the Mac's server and the Worker against the same hostname together.
+- R2 blobs written while on the Worker (uploads, cloud saves) copy back with `store copy --from-blobs s3://h2-live-blobs --to-blobs <data dir>`.
+
+## What the Mac does afterwards
+
+Nothing, as a server:
+- the game (`h2 play`) talks to `live.forbes.red` as before;
+- the web app is served by Cloudflare.
+
+The Mac still does these:
+- **Publishing game art.** It needs the disc, and it uploads to the public bucket through the existing `s3://` path.
+- **Deploys.** `wrangler deploy` from a checkout, until the menu bar app's "worker" mode (slice 9).
+
+`h2 live serve` keeps working for local and offline servers, where the
+machine's SQLite or Postgres log stays the default.

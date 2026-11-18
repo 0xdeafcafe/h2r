@@ -7,6 +7,7 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::rejection::BytesRejection;
+#[cfg(feature = "native")]
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{DefaultBodyLimit, Path, Query as Params, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
@@ -266,7 +267,6 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         .route("/v1/stats/summary", get(crate::stats::get_summary))
         .route("/v1/admin/status", get(crate::status::get_admin_status))
         .route("/v1/events", get(list_events).post(post_event))
-        .route("/v1/stream", get(stream))
         .route(
             "/v1/sessions",
             get(crate::sessions::list).post(crate::sessions::create),
@@ -274,12 +274,11 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         .route("/v1/coop/games", get(crate::sessions::coop_games))
         .route("/v1/sessions/{id}", get(crate::sessions::detail))
         .route("/v1/sessions/{id}/events", post(crate::sessions::append))
-        .route("/v1/sessions/{id}/relay", get(crate::relay::relay))
+        .route("/v1/snapshot", get(snapshot))
         .route("/v1/games", get(list_games).post(start_game))
         .route("/v1/games/{id}", get(game))
         .route("/v1/games/{id}/frames", get(game_frames))
         .route("/v1/games/{id}/events", post(game_events))
-        .route("/v1/ingest", get(crate::ingest::ingest))
         .route("/v1/local/signin", any(crate::local_signin::redeem))
         .route(
             "/v1/{*rest}",
@@ -287,6 +286,7 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         )
         .merge(files)
         .merge(uploads)
+        .merge(sockets())
         .method_not_allowed_fallback(|| async {
             ApiError::new(ErrorCode::Invalid, "method not allowed here")
                 .into_response()
@@ -296,6 +296,22 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         .layer(axum::Extension(facts))
         .layer(middleware::from_fn(cors))
         .with_state(live)
+}
+
+/// The WebSocket routes: the event stream, the co-op relay and the game's
+/// ingest. On a Worker these are Durable Objects instead
+/// (docs/live/live-worker.md), so without `native` there are none here.
+#[cfg(feature = "native")]
+fn sockets() -> Router<Arc<Live>> {
+    Router::new()
+        .route("/v1/stream", get(stream))
+        .route("/v1/sessions/{id}/relay", get(crate::relay::relay))
+        .route("/v1/ingest", get(crate::ingest::ingest))
+}
+
+#[cfg(not(feature = "native"))]
+fn sockets() -> Router<Arc<Live>> {
+    Router::new()
 }
 
 /// What is served beside the API.
@@ -331,17 +347,33 @@ pub fn router_with_site(live: Arc<Live>, site: &Site) -> Router {
         },
     );
     api = match &site.game_art {
+        #[cfg(feature = "native")]
         Some(art) => api.merge(crate::art::routes(art, published)),
-        None => api.route(
+        _ => api.route(
             &format!("{}/{{*rest}}", crate::art::PREFIX),
             get(|| async { not_found("no game art on this server") }),
         ),
     };
-    let Some(dir) = &site.web else {
+    #[cfg(not(feature = "native"))]
+    let _ = published;
+    with_web(api, site.web.as_deref()).layer(middleware::from_fn(crate::caching::layer))
+}
+
+/// The built web app's files beside the API, `index.html` for any other
+/// path; or, with none, a JSON 404.
+#[cfg(feature = "native")]
+fn with_web(api: Router, dir: Option<&std::path::Path>) -> Router {
+    let Some(dir) = dir else {
         return api.fallback(|| async { not_found("no such endpoint") });
     };
     let index = tower_http::services::ServeFile::new(dir.join("index.html"));
     api.fallback_service(tower_http::services::ServeDir::new(dir).fallback(index))
+}
+
+/// A Worker serves the web app as static assets, ahead of this router.
+#[cfg(not(feature = "native"))]
+fn with_web(api: Router, _dir: Option<&std::path::Path>) -> Router {
+    api.fallback(|| async { not_found("no such endpoint") })
 }
 
 trait WithStatus {
@@ -601,6 +633,7 @@ impl StreamFilter {
     }
 }
 
+#[cfg(feature = "native")]
 async fn stream(
     State(live): Shared,
     Params(p): Params<HashMap<String, String>>,
@@ -637,6 +670,7 @@ async fn stream(
         }))
 }
 
+#[cfg(feature = "native")]
 pub(crate) async fn send_json<T: serde::Serialize>(
     socket: &mut WebSocket,
     msg: &T,
@@ -645,11 +679,13 @@ pub(crate) async fn send_json<T: serde::Serialize>(
     socket.send(Message::Text(text.into())).await
 }
 
+#[cfg(feature = "native")]
 async fn send(socket: &mut WebSocket, msg: &StreamMessage) -> Result<(), axum::Error> {
     let text = serde_json::to_string(msg).expect("serializes");
     socket.send(Message::Text(text.into())).await
 }
 
+#[cfg(feature = "native")]
 pub(crate) async fn close(socket: &mut WebSocket, code: u16, reason: &str) {
     let frame = CloseFrame {
         code,
@@ -680,6 +716,7 @@ fn stream_auth(live: &Live, text: &str) -> Result<(Viewer, i64), ApiError> {
     }
 }
 
+#[cfg(feature = "native")]
 /// Sends every stored event after `last` that the filter keeps, then
 /// moves `last` to at least the position the read model had reached.
 async fn catch_up(
@@ -713,6 +750,7 @@ async fn catch_up(
     }
 }
 
+#[cfg(feature = "native")]
 /// Replays from `from` (default: the head), says `caught_up`, then
 /// follows the dispatcher's feed. On a `--private` server the first
 /// message must be a token, and the socket closes when it expires unless
@@ -862,6 +900,7 @@ async fn run_stream(
     }
 }
 
+#[cfg(feature = "native")]
 /// Sends a packed reader each of its games' frames since the last
 /// keyframe that it does not have yet ([`crate::packed::Follow`]), in one
 /// message.
@@ -887,6 +926,7 @@ async fn since_keyframes(
         .map_err(|e| e.to_string())
 }
 
+#[cfg(feature = "native")]
 /// A JSON reader's next frame (never, for a packed reader).
 async fn recv_frame(
     frames: &mut Option<tokio::sync::broadcast::Receiver<Arc<crate::games::LiveFrame>>>,
@@ -897,12 +937,14 @@ async fn recv_frame(
     }
 }
 
+#[cfg(feature = "native")]
 /// What a packed reader hears: every game's ticks, or one game's batches.
 enum PackedFeed {
     All(tokio::sync::broadcast::Receiver<Arc<crate::packed::Tick>>),
     Game(tokio::sync::broadcast::Receiver<Arc<crate::packed::GameBatch>>),
 }
 
+#[cfg(feature = "native")]
 enum Packed {
     Tick(Arc<crate::packed::Tick>),
     Game(Arc<crate::packed::GameBatch>),
@@ -910,6 +952,7 @@ enum Packed {
     Closed,
 }
 
+#[cfg(feature = "native")]
 /// A packed reader's next tick or batch (never, for a JSON reader).
 async fn recv_packed(feed: &mut Option<PackedFeed>) -> Packed {
     use tokio::sync::broadcast::error::RecvError;
@@ -971,6 +1014,11 @@ async fn create_invite(
     live.authorize_operator(bearer(&headers), lxm::INVITES_WRITE)?;
     let v = crate::invites::create_operator(&live, days, p.get("code").map(String::as_str)).await?;
     Ok(json(StatusCode::CREATED, &v))
+}
+
+async fn snapshot(State(live): Shared, headers: HeaderMap) -> ApiResult<Response> {
+    let viewer = live.read_viewer(bearer(&headers))?;
+    Ok(json(StatusCode::OK, &live.snapshot(viewer).await?))
 }
 
 async fn list_games(

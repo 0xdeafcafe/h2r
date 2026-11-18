@@ -26,6 +26,9 @@ pub struct PublicUrl {
 struct Public {
     url: String,
     cloudflare: bool,
+    /// The server runs at Cloudflare's edge (a Worker): every request came
+    /// through Cloudflare, which sets `CF-Connecting-IP` itself.
+    edge: bool,
 }
 
 impl PublicUrl {
@@ -36,6 +39,18 @@ impl PublicUrl {
         *self.inner.write().unwrap() = Some(Public {
             url: url.trim_end_matches('/').to_string(),
             cloudflare,
+            edge: false,
+        });
+    }
+
+    /// Sets the URL of a server running at Cloudflare's edge (the Worker,
+    /// docs/live/live-worker.md). There is no peer address and no way
+    /// around Cloudflare, so `CF-Connecting-IP` always names the client.
+    pub fn set_edge(&self, url: &str) {
+        *self.inner.write().unwrap() = Some(Public {
+            url: url.trim_end_matches('/').to_string(),
+            cloudflare: true,
+            edge: true,
         });
     }
 
@@ -61,17 +76,20 @@ impl PublicUrl {
     /// else the peer. Without a tunnel the header is anyone's to forge, so
     /// it is ignored.
     pub fn client_ip(&self, peer: Option<SocketAddr>, headers: &HeaderMap) -> Option<IpAddr> {
-        let peer = peer?;
-        let cloudflare = self
+        let (cloudflare, edge) = self
             .inner
             .read()
             .unwrap()
             .as_ref()
-            .is_some_and(|p| p.cloudflare);
+            .map_or((false, false), |p| (p.cloudflare, p.edge));
         let forwarded_for = headers
             .get("cf-connecting-ip")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.trim().parse().ok());
+        if edge {
+            return forwarded_for;
+        }
+        let peer = peer?;
         match forwarded_for {
             Some(ip) if cloudflare && peer.ip().is_loopback() => Some(ip),
             _ => Some(peer.ip()),
@@ -327,5 +345,18 @@ mod tests {
         );
         assert_eq!(p.client_ip(Some(lo), &HeaderMap::new()), Some(lo.ip()));
         assert_eq!(p.client_ip(None, &h), None);
+    }
+
+    /// A Worker has no peer; Cloudflare's edge sets the header on every
+    /// request, so it is the client.
+    #[test]
+    fn at_the_edge_cf_connecting_ip_is_the_client() {
+        let h = headers(&[("cf-connecting-ip", "203.0.113.9")]);
+        let p = PublicUrl::default();
+        p.set_edge("https://live.example/");
+        assert_eq!(p.get().as_deref(), Some("https://live.example"));
+        assert_eq!(p.client_ip(None, &h), Some("203.0.113.9".parse().unwrap()));
+        assert_eq!(p.client_ip(None, &HeaderMap::new()), None);
+        assert_eq!(p.get_with_kind().map(|(_, cf)| cf), Some(true));
     }
 }

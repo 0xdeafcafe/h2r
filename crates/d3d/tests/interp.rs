@@ -922,3 +922,262 @@ fn reproject_leaves_the_guests_calls_alone() {
         assert_eq!(r.b.stats().lock().unwrap().captures, 5);
     }
 }
+
+/// A perspective that maps straight to pixels (screen-space UI): its axis
+/// half a screen off the middle, a focal length in pixels.
+fn pixel_perspective() -> Block {
+    let mut c = block();
+    let ui: Mat4 = [
+        [400.0, 0.0, 320.0, 0.0],
+        [0.0, -400.0, 240.0, 0.0],
+        [0.0, 0.0, 1.0, -0.1],
+        [0.0, 0.0, 1.0, 0.0],
+    ];
+    write(&mut c, CAM, Layout::Rows, 4, &ui);
+    c
+}
+
+/// A front-end frame: a pre-transformed background, menu panels drawn
+/// with a shared screen-space perspective, and text with an orthographic
+/// transform.
+fn menu_frame(r: &mut Rig) {
+    let (color, depth) = (r.color, r.depth);
+    r.b.clear(color, Some(depth), Clear::default()).unwrap();
+    r.b.draw(color, Some(depth), &draw(block(), 7, true), [None; 4])
+        .unwrap();
+    for mesh in 10..16 {
+        r.b.draw(
+            color,
+            Some(depth),
+            &draw(pixel_perspective(), mesh, false),
+            [None; 4],
+        )
+        .unwrap();
+    }
+    for mesh in [1000, 1001] {
+        r.b.draw(color, None, &draw(hud_block(), mesh, false), [None; 4])
+            .unwrap();
+    }
+    r.b.present(color, 4).unwrap();
+}
+
+fn modes() -> [Mode; 3] {
+    [
+        Mode::Replay,
+        Mode::Reproject { ahead: false },
+        Mode::Reproject { ahead: true },
+    ]
+}
+
+#[test]
+fn menu_frames_are_shown_as_the_guest_drew_them() {
+    for mode in modes() {
+        let mut r = rig_with(60, mode);
+        let before = r.calls();
+        for i in 1..=4 {
+            r.at(i * F);
+            menu_frame(&mut r);
+            r.b.idle_at(i * F + F / 2);
+        }
+        assert_eq!(
+            r.presents_since(before),
+            vec![(r.color, 4); 4],
+            "{mode:?}: only the guest's frames"
+        );
+        assert!(
+            r.draws_since(before).iter().all(|(c, _)| *c == r.color),
+            "{mode:?}: nothing drawn again"
+        );
+        assert!(warps_since(&r, before).is_empty(), "{mode:?}");
+        let st = *r.b.stats().lock().unwrap();
+        assert_eq!(
+            (st.blended_frames, st.replays, st.captures, st.warps),
+            (0, 0, 0, 0),
+            "{mode:?}"
+        );
+        assert_eq!(st.unsure, 3, "{mode:?}: every pair but the first");
+        assert!(st.to_string().contains("unsure 3"), "{st}");
+    }
+}
+
+type Mapping<'a> = &'a dyn Fn(usize) -> ([f32; 2], [f32; 2]);
+
+/// A frame of `s` whose world draws map to the target through `screen(i)`
+/// (viewport scale and offset registers) for level draw `i`.
+fn frame_mapped(r: &mut Rig, s: &Scene, screen: Mapping<'_>) {
+    let (color, depth) = (r.color, r.depth);
+    r.b.clear(color, Some(depth), Clear::default()).unwrap();
+    let world = world_block(&s.cam);
+    for (i, mesh) in [1, 2, 3].into_iter().enumerate() {
+        let mut d = draw(world, mesh, false);
+        let (scale, offset) = screen(i);
+        d.hw.viewport_scale = [scale[0], scale[1], 1.0, 0.0];
+        d.hw.viewport_offset = [offset[0], offset[1], 0.0, 0.0];
+        r.b.draw(color, Some(depth), &d, [None; 4]).unwrap();
+    }
+    r.b.draw(color, None, &draw(hud_block(), 1000, true), [None; 4])
+        .unwrap();
+    r.b.present(color, 4).unwrap();
+}
+
+#[test]
+fn reproject_holds_world_draws_that_do_not_cover_the_target_the_same_way() {
+    let full = ([320.0, -240.0], [320.5, 240.5]);
+    let cases: [(&str, Mapping<'_>); 2] = [
+        // Screen space: pixels out of the program, offset 0.
+        ("screen space", &|_| ([1.0, 1.0], [0.0, 0.0])),
+        // One world draw into the top-left quarter.
+        ("mixed", &move |i| {
+            if i == 2 {
+                ([160.0, -120.0], [160.0, 120.0])
+            } else {
+                full
+            }
+        }),
+    ];
+    for (name, screen) in cases {
+        let mut r = rig_with(60, Mode::Reproject { ahead: false });
+        let (a, b) = turning();
+        r.at(F);
+        frame_mapped(&mut r, &a, screen);
+        let before = r.calls();
+        r.at(2 * F);
+        frame_mapped(&mut r, &b, screen);
+        assert_eq!(r.presents_since(before), vec![(r.color, 4)], "{name}");
+        assert_eq!(r.b.idle_at(2 * F + F / 2), None, "{name}");
+        assert!(warps_since(&r, before).is_empty(), "{name}");
+        let st = *r.b.stats().lock().unwrap();
+        assert_eq!((st.size_mismatch, st.captures), (1, 0), "{name}");
+    }
+    // The guest's full-screen mapping (with D3D's half-pixel bias) warps.
+    let mut r = rig_with(60, Mode::Reproject { ahead: false });
+    let (a, b) = turning();
+    r.at(F);
+    frame_mapped(&mut r, &a, &|_| full);
+    r.at(2 * F);
+    frame_mapped(&mut r, &b, &|_| full);
+    let st = *r.b.stats().lock().unwrap();
+    assert_eq!((st.size_mismatch, st.warps), (0, 1));
+}
+
+#[test]
+fn a_made_frame_of_another_size_is_not_shown() {
+    for mode in modes() {
+        let mut r = rig_with(60, mode);
+        // Every surface shows at 640x480 but the guest's back buffer, at
+        // 1280x960: a private copy that missed the render scale.
+        for id in 0..64 {
+            r.b.inner_mut().extents.insert(id, (640, 480));
+        }
+        r.b.inner_mut().extents.insert(r.color, (1280, 960));
+        let (a, b) = turning();
+        r.frame(F, &a);
+        let before = r.calls();
+        r.frame(2 * F, &b);
+        r.b.idle_at(2 * F + F / 2);
+        assert_eq!(r.presents_since(before), vec![(r.color, 4)], "{mode:?}");
+        let st = *r.b.stats().lock().unwrap();
+        assert_eq!((st.size_mismatch, st.blended_frames), (1, 0), "{mode:?}");
+        assert!(st.to_string().contains("size_mismatch 1"), "{st}");
+    }
+}
+
+#[test]
+fn in_between_frames_wait_for_the_gpu() {
+    for mode in modes() {
+        let mut r = rig_with(60, mode);
+        let busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        r.b.inner_mut().gpu_busy = Some(Arc::clone(&busy));
+        let (a, b) = turning();
+        r.frame(F, &a);
+        r.frame(2 * F, &b);
+        assert_eq!(r.b.stats().lock().unwrap().blended_frames, 1);
+        // The GPU is still on that frame: the slot is dropped.
+        busy.store(true, Ordering::Release);
+        let before = r.calls();
+        assert!(r.b.idle_at(2 * F + F / 2).is_some(), "{mode:?}");
+        assert_eq!(r.calls(), before, "{mode:?}: no work queued behind it");
+        // And the next guest frame is shown as drawn.
+        r.frame(3 * F, &a);
+        assert_eq!(r.presents_since(before), vec![(r.color, 4)], "{mode:?}");
+        assert_eq!(r.b.stats().lock().unwrap().dropped, 2, "{mode:?}");
+        // Caught up: blending again.
+        busy.store(false, Ordering::Release);
+        r.frame(4 * F, &b);
+        assert_eq!(r.b.stats().lock().unwrap().blended_frames, 2, "{mode:?}");
+    }
+}
+
+#[test]
+fn a_render_target_a_frame_samples_is_kept_as_it_was_drawn() {
+    let mut r = rig(60);
+    r.b.inner_mut().sample_surfaces = true;
+    let target =
+        r.b.create_surface(D3DFormat::A8R8G8B8, 320, 240, false)
+            .unwrap();
+    let texture = r.b.surface_texture(target).unwrap().unwrap();
+    let live = *texture;
+    let mut snapshot = None;
+    for (i, s) in [scene(camera(0.0, 0.0)), scene(camera(1.0, 0.0))]
+        .iter()
+        .enumerate()
+    {
+        let (color, depth) = (r.color, r.depth);
+        r.at((i as u64 + 1) * F);
+        // The guest draws the target, samples it into the back buffer,
+        // then draws something else (a smaller pass) into it.
+        r.b.draw(target, None, &draw(block(), 40, true), [None; 4])
+            .unwrap();
+        let before = r.calls();
+        r.b.clear(color, Some(depth), Clear::default()).unwrap();
+        let world = world_block(&s.cam);
+        for mesh in [1, 2] {
+            r.b.draw(color, Some(depth), &draw(world, mesh, false), [None; 4])
+                .unwrap();
+        }
+        r.b.draw(
+            color,
+            Some(depth),
+            &draw(world, 3, false),
+            [Some(&texture), None, None, None],
+        )
+        .unwrap();
+        snapshot = r.b.inner().calls[before..].iter().find_map(|c| match c {
+            Recorded::Snapshot { surface, id, .. } if *surface == target => Some(*id),
+            _ => None,
+        });
+        r.b.draw(target, None, &draw(block(), 41, true), [None; 4])
+            .unwrap();
+        r.b.present(color, 4).unwrap();
+    }
+    let snapshot = snapshot.expect("a copy of the target as the draw read it");
+    let before = r.calls();
+    r.b.idle_at(2 * F + F / 2);
+    let replayed: Vec<_> = r.b.inner().calls[before..]
+        .iter()
+        .filter_map(|c| match c {
+            Recorded::Draw { draw, textures, .. } if draw.vertex_count == 3 => Some(textures[0]),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(replayed, vec![Some(snapshot)], "not the live view {live}");
+
+    // A surface copied into the frame is read live: held.
+    let mut r = rig(60);
+    let other =
+        r.b.create_surface(D3DFormat::A8R8G8B8, 640, 480, false)
+            .unwrap();
+    for i in 1..=2u64 {
+        r.at(i * F);
+        let s = scene(camera(i as f64, 0.0));
+        let (color, depth) = (r.color, r.depth);
+        r.b.copy_surface(other, color).unwrap();
+        for mesh in [1, 2, 3] {
+            let d = draw(world_block(&s.cam), mesh, false);
+            r.b.draw(color, Some(depth), &d, [None; 4]).unwrap();
+        }
+        r.b.present(color, 4).unwrap();
+    }
+    let st = *r.b.stats().lock().unwrap();
+    assert_eq!((st.blended_frames, st.unsure), (0, 1));
+}

@@ -1939,6 +1939,30 @@ impl Backend for GfxBackend {
         Ok(true)
     }
 
+    fn surface_extent(&self, surface: SurfaceId) -> Option<(u32, u32)> {
+        let d = *self.store.get(surface).ok()?.desc();
+        Some((d.width, d.height))
+    }
+
+    fn gpu_fence(&mut self) -> Option<Box<dyn Fn() -> bool + Send>> {
+        if self.flush().is_err() {
+            return None;
+        }
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let set = std::sync::Arc::clone(&done);
+        self.ctx.queue.on_submitted_work_done(move || {
+            set.store(true, std::sync::atomic::Ordering::Release)
+        });
+        let device = self.ctx.device.clone();
+        Some(Box::new(move || {
+            if !done.load(std::sync::atomic::Ordering::Acquire) {
+                // Runs finished callbacks; never waits.
+                let _ = device.poll(wgpu::PollType::Poll);
+            }
+            done.load(std::sync::atomic::Ordering::Acquire)
+        }))
+    }
+
     fn present_replay(
         &mut self,
         surface: SurfaceId,

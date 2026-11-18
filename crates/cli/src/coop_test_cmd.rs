@@ -779,6 +779,9 @@ struct Drive {
     drivers: Vec<coop_drive::Driver>,
     clients: Vec<Option<agent_proto::Client>>,
     started: bool,
+    /// Each game's agent socket is up (`agent: listening`): no press
+    /// before then, so a game still building isn't pressed into "stuck".
+    ready: Vec<bool>,
 }
 
 impl Drive {
@@ -802,6 +805,7 @@ impl Drive {
             drivers,
             clients: games.iter().map(|_| None).collect(),
             started: false,
+            ready: games.iter().map(|_| false).collect(),
         }
     }
 
@@ -815,6 +819,11 @@ impl Drive {
             let Some(tag) = games.get(i).map(|g| g.tag.as_str()) else {
                 continue;
             };
+            if line.starts_with("agent: listening")
+                && let Some(r) = self.ready.get_mut(i)
+            {
+                *r = true;
+            }
             for d in &mut self.drivers {
                 d.line(at, tag, &line);
             }
@@ -823,6 +832,9 @@ impl Drive {
         // Only games that are running (the guests open after the host).
         let running = sup.games.len();
         for (i, game) in games.iter().enumerate().take(running) {
+            if !self.ready.get(i).copied().unwrap_or(false) {
+                continue;
+            }
             if let Some(p) = self.drivers[i].poll(now) {
                 let line = self.drivers[i].press_line(&p);
                 sup.note(i, &line)?;

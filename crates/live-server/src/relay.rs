@@ -24,6 +24,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
+#[cfg(feature = "native")]
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
 use axum::response::Response;
@@ -33,7 +34,9 @@ use live_proto::{Author, ClientMessage, ErrorCode, Xuid, lxm};
 use tokio::sync::mpsc;
 
 use crate::app::{ApiError, Live, now};
-use crate::http::{AUTH_TIMEOUT, CLOSE_UNAUTHORIZED, MAX_WS_MESSAGE, auth_message, close};
+#[cfg(feature = "native")]
+use crate::http::close;
+use crate::http::{AUTH_TIMEOUT, CLOSE_UNAUTHORIZED, MAX_WS_MESSAGE, auth_message};
 
 /// The largest relayed message: a co-op datagram is under 900 bytes
 /// (`coop::wire::MAX_DATAGRAM`).
@@ -166,6 +169,7 @@ impl Live {
     }
 }
 
+#[cfg(feature = "native")]
 pub async fn relay(
     State(live): State<Arc<Live>>,
     Path(session): Path<String>,
@@ -220,6 +224,7 @@ impl Bucket {
     }
 }
 
+#[cfg(feature = "native")]
 async fn run(live: Arc<Live>, session: String, mut socket: WebSocket) {
     let first = tokio::time::timeout(AUTH_TIMEOUT, socket.recv()).await;
     let Ok(Some(Ok(Message::Text(text)))) = first else {
@@ -262,6 +267,7 @@ async fn run(live: Arc<Live>, session: String, mut socket: WebSocket) {
     }
 }
 
+#[cfg(feature = "native")]
 /// Runs one member's socket until it ends; the close code to send, if any.
 #[allow(clippy::too_many_arguments)]
 async fn pump(

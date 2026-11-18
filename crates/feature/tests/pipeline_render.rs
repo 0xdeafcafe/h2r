@@ -36,6 +36,12 @@ const PRESENTS: u32 = 0x2_0030;
 const FRAMES: u32 = 0x2_0040;
 const CLEAR: u32 = 0x2_0044;
 const MARK: u32 = 0x2_0048;
+/// A visit counter only the render counts (the lights' `0x004e0308`), the
+/// stamp of the one light it visits, outside the render-private marks (a
+/// light record's `+0x0c`, in the heap), and the lights it drew.
+const LIGHT_MARK: u32 = 0x2_4068;
+const LIGHT_STAMP: u32 = 0x2_406c;
+const LIGHTS_DRAWN: u32 = 0x2_4070;
 const STAMPS: (u32, u32) = (0x2_0050, 0x2_0060);
 const VBLANKS: (u32, u32) = (0x2_0060, 0x2_0068);
 /// What the sim writes and the render reads.
@@ -119,7 +125,7 @@ static ADDRS: Addrs = Addrs {
     present_counter: PRESENTS,
     frame_counter: FRAMES,
     launch_clear: CLEAR,
-    mark_counters: &[MARK],
+    mark_counters: &[MARK, LIGHT_MARK],
     mark_bytes: &[STAMPS],
     host_owned: &[VBLANKS],
     // What the kernel call answers: the render reads it after the call.
@@ -223,6 +229,15 @@ fn render(
             m.set_u8(STAMPS.0 + (v % 16), mark as u8)?;
             // The stamp, as a handle list's mark is used later in a frame.
             cpu.edi = u32::from(mark as u8);
+            // The light pass (`0x00132190`): a new count, and the light is
+            // a candidate unless its stamp holds it already.
+            let count = m.u32(LIGHT_MARK)? + 1;
+            m.set_u32(LIGHT_MARK, count)?;
+            if m.u32(LIGHT_STAMP)? != count {
+                m.set_u32(LIGHT_STAMP, count)?;
+                let drawn = m.u32(LIGHTS_DRAWN)? + 1;
+                m.set_u32(LIGHTS_DRAWN, drawn)?;
+            }
             cpu.ebp = 0;
             m.set_u8(VBLANKS.0, 0xee)?;
             m.set_u8(CLEAR, 0)?;
@@ -1470,6 +1485,31 @@ fn a_word_both_sides_wrote_keeps_the_sims_write_whole_and_is_reported() {
         assert!(report.iter().any(|l| l.contains(&va)), "{va}: {report:#?}");
     }
     assert!(piped.feature.stats().conflicts >= 8);
+}
+
+/// The dynamic lights: their visit counter `0x004e0308` only the render
+/// counts, their stamps in the light records, handed back. The join adds
+/// the render's count to live RAM's, so the next render counts past the
+/// stamps the last one left and draws the light every frame, as the serial
+/// run does (with the counter left at the sim's value, every render after
+/// the first found the light visited and drew no dynamic light).
+#[test]
+fn a_stamp_handed_back_never_matches_the_next_renders_visit_count() {
+    let n = 12;
+    let mut serial = rig(false);
+    let mut piped = rig(true);
+    for k in 1..=n {
+        serial.round(k, fallback_round(k));
+        piped.round(k, fallback_round(k));
+    }
+    serial.finish();
+    piped.finish();
+    for r in [&serial, &piped] {
+        let m = r.rt.memory();
+        assert_eq!(m.u32(LIGHTS_DRAWN).unwrap(), n + 1);
+        assert_eq!(m.u32(LIGHT_MARK).unwrap(), n + 1);
+    }
+    compare(&serial.data(), &piped.data());
 }
 
 /// A render-owned word (the D3D device's push-buffer pointer, in the game):

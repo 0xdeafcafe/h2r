@@ -791,9 +791,10 @@ features' hooks, plan chains) is refused, which ends the render there.
 
 **Hand-back** (join of a completed render): the render stack pages are
 dropped; the visit marks (`0x004de2f8..0x004e0300`, `0x004e0304..`,
-`0x004e7411`, `0x004e7418..0x004e7c18`, `0x004e7c18`, `0x004e7c20..0x004e8000`,
-counters `0x004de2fc`, `0x004e0308`, `0x004e7414`, `0x004e7c1c`) stay
-render-private; the present counter gets the render's delta less the
+`0x004e7411`, `0x004e7418..0x004e7c18`, `0x004e7c18`, `0x004e7c20..0x004e8000`)
+stay render-private; their counters (`0x004de2fc`, `0x004e0308`,
+`0x004e7414`, `0x004e7c1c`) get the render's delta (see "The dark
+first-person model" below); the present counter gets the render's delta less the
 prediction (a difference is a `mispredict`); the render-frame counter
 `0x004ba034` gets the render's delta (a frame late for particles, as the
 census row allows); `0x004e6098` and the host-owned vblank words
@@ -1173,6 +1174,37 @@ with are the serial run's. The rig test
 `the_frame_counter_and_seed_steps_the_sim_sees_are_the_serial_runs` checks
 the count every render reaches. It fails, one high, when the snapshot is
 taken after the credit.
+
+**The dark first-person model.** A capture of frame 6000 in both modes
+(every draw with its shader inputs) showed the cause. The serial frame has
+977 draws and the pipelined frame 670. The serial frame's 60 draws with a
+32x32 `Al8` volume texture and a 64x64 cube (the dynamic lights' diffuse
+and specular layers) are all missing from the pipelined frame. Among them
+is a second pass over every first-person mesh: the hands, the rifle and its
+parts. The other first-person draws match, so the pipelined render drew no
+dynamic light at all.
+
+The visible-light pass (`0x00132190`, under the scene passes) increments
+the light visit counter `0x004e0308` (`0x001321bc`). A light becomes a
+candidate in `[0x00547f98]` only when its record's stamp at `+0x0c` is not
+already equal to the counter (`0x00132a5e`, `0x001325e5`), and visiting it
+stores the counter there (`0x000c3110`). New lights start at the counter
+less one (`0x000c0328`, `0x000c07f6`). The counter was render-private, so
+live RAM kept the value from before the render, since only that pass increments it. The
+stamps, though, are in the light array in the heap (`[0x004e030c]`, 0x110
+bytes a record), outside the render-private ranges, so they were handed
+back. Each render started from the same counter, incremented it to the
+value the last render had stamped, and found every light already visited.
+The join now adds each counter's delta to live RAM, as the serial run
+counts, so the next render counts past every stamp handed back. At a
+fallback live is also never behind the view.
+
+The rig test
+`a_stamp_handed_back_never_matches_the_next_renders_visit_count` models it:
+a counter only the render increments, and a stamp outside the
+render-private ranges. Under the old join the pipelined rig drew the light
+on 3 of 13 renders, only the serial and fallback ones. Its counter and
+stamp also make every serial comparison in the rig check this.
 
 **What the sim reads (determinism against serial).**
 
