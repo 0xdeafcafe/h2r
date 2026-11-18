@@ -95,6 +95,16 @@ impl Converter<'_> {
             return Ok(Some(*id));
         }
         let p = H1Particle::read(self.h1, tag)?;
+        let got = self.particle_of(tag, &tag.name, &p)?;
+        if let Some(id) = got {
+            self.done.insert(tag.id.0, id);
+        }
+        Ok(got)
+    }
+
+    /// The `prt3` of particle `p` (from `tag`: a `part`, or a `pctl` whose
+    /// particle state `p` stands for), pushed as `name`. Not cached.
+    pub(super) fn particle_of(&mut self, tag: &Tag, name: &str, p: &H1Particle) -> Result<Option<TagId>> {
         if self.particle_role.is_none() {
             self.particle_role = Some(particles::particle_role(self.base)?);
         }
@@ -102,6 +112,7 @@ impl Converter<'_> {
             return Ok(None);
         };
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
+        rep.source = name.to_owned();
         let (want, proven) = particles::particle_stem(p.blend);
         let shader = role
             .shaders
@@ -157,17 +168,16 @@ impl Converter<'_> {
         rep.no_home.push(
             "emitter-side fields (lifespan, fade times, radius and frame animation, physics, contact deterioration, fade sizes, orientation, secondary map) not carried: Halo 2 holds them on the effect's emitter".into(),
         );
-        let root = particles::particle(&p, &role, &shader, bitmap, collision, death)?;
+        let root = particles::particle(p, &role, &shader, bitmap, collision, death)?;
         self.tree.reports.push(rep);
         let id = self.tree.push(
-            &tag.name,
+            name,
             Converted {
                 group: FourCC(*b"prt3"),
                 root,
                 raw: Vec::new(),
             },
         );
-        self.done.insert(tag.id.0, id);
         Ok(Some(id))
     }
 }
@@ -184,7 +194,21 @@ impl Converter<'_> {
         rep: &mut super::ObjectReport,
     ) -> Result<map::build::Block> {
         let events = particles::effect_particles(self.h1, tag)?;
-        let total: usize = events.iter().map(|e| e.1.len()).sum();
+        // Halo 1 particle systems (`pctl` parts) per event: tag and location.
+        let pctl = h1map::Group::new(b"pctl");
+        let systems_of: Vec<Vec<(h1map::TagId, i16)>> = crate::h1::Effect::read(self.h1, tag)?
+            .events
+            .iter()
+            .map(|ev| {
+                ev.parts
+                    .iter()
+                    .filter(|p| p.group == pctl)
+                    .filter_map(|p| Some((p.reference?, p.location)))
+                    .collect()
+            })
+            .collect();
+        let total: usize =
+            events.iter().map(|e| e.1.len()).sum::<usize>() + systems_of.iter().map(Vec::len).sum::<usize>();
         if total == 0 {
             return Ok(root);
         }
@@ -224,6 +248,22 @@ impl Converter<'_> {
                 };
                 systems.push(particles::particle_system(p, &h, id, &role, d)?);
             }
+            for (id, location) in systems_of.get(k).into_iter().flatten() {
+                let Ok(t) = self.h1.tag(*id) else { continue };
+                let states = self.particle_system_states(t)?;
+                if states.is_empty() {
+                    left += 1;
+                }
+                for (prt3, state, count) in states {
+                    systems.push(particles::particle_system(
+                        &state.as_effect_particle(count, *location),
+                        &state.as_particle(),
+                        prt3,
+                        &role,
+                        d,
+                    )?);
+                }
+            }
             if systems.is_empty() {
                 continue;
             }
@@ -235,15 +275,40 @@ impl Converter<'_> {
         }
         self.effects_open.pop();
         if left > 0 {
-            rep.no_home.push(format!("{left} particles left out (their part did not convert)"));
+            rep.no_home.push(format!("{left} particles or particle systems left out (their part or states did not convert)"));
         }
         if made == 0 {
             return Ok(root);
         }
         rep.no_home.push(format!(
-            "{made} particles as particle systems (count, lifespan, speed, cone, size, tint and alpha; distribution radius, direction, offset, angular velocity and physics not carried)"
+            "{made} particles and particle-system states as particle systems (count, lifespan, speed, cone, size, tint and alpha; distribution radius, direction, offset, angular velocity, physics and state sequences not carried)"
         ));
         r.set("events", tags::defs::Val::Block(evs)).map_err(inv)?;
         tags::defs::to_built(d, &r, &mut |_| None).map_err(inv)
+    }
+}
+
+impl Converter<'_> {
+    /// A Halo 1 `pctl`'s lasting particle states, each as a `prt3`
+    /// ([`particles::H1ParticleState::as_particle`]), with the state and its
+    /// type's initial count. Converted once.
+    pub fn particle_system_states(
+        &mut self,
+        tag: &Tag,
+    ) -> Result<Vec<(TagId, particles::H1ParticleState, u16)>> {
+        if let Some(v) = self.pctl_done.get(&tag.id.0) {
+            return Ok(v.clone());
+        }
+        let mut out = Vec::new();
+        for ty in particles::particle_system_types(self.h1, tag)? {
+            for st in ty.states.iter().filter(|s| s.lasts()) {
+                let name = format!("{}\\{}\\{}", tag.name, ty.name, st.name);
+                if let Some(id) = self.particle_of(tag, &name, &st.as_particle())? {
+                    out.push((id, st.clone(), ty.initial_count));
+                }
+            }
+        }
+        self.pctl_done.insert(tag.id.0, out.clone());
+        Ok(out)
     }
 }

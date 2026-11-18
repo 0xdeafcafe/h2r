@@ -237,8 +237,10 @@ fn every_effect_rebuilds_from_its_definition() {
                     }
                     // Halo 1's particles whose part converts
                     // (tests/particles_disc.rs checks them).
+                    // and particle systems (`pctl` parts, a system per state).
                     let systems = block(x, "particle_systems");
-                    assert!(systems.len() <= ev.particles, "{name}: particle systems");
+                    let pctl = ev.parts.iter().filter(|p| p.group == Group::new(b"pctl")).count();
+                    assert!(systems.len() <= ev.particles || pctl > 0, "{name}: particle systems");
                     for s in systems {
                         let (_, tag) = target(s, "particle");
                         let tag = tag.unwrap_or_else(|| panic!("{name}: null particle"));

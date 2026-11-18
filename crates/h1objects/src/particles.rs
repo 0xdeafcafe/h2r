@@ -735,3 +735,126 @@ pub fn particle_system(
     set(&mut s, "emitters", Val::Block(vec![e]))?;
     Ok(s)
 }
+
+// ----------------------------------------------------- particle systems
+//
+// **Halo 1 particle systems (`pctl`).** V over all 28 distinct tags
+// (`tests/particles_disc.rs` `halo1_pctl_structure_survey`): a `0x68`
+// root (`+0x38` point physics, `+0x48` update physics, `+0x50` a block of
+// 4-byte constants, `+0x5c` particle types of `0x80`). A type: `+0x0`
+// name, `+0x24` initial particle count (u16), `+0x2c` radius, `+0x54`
+// creation physics (0, 1 or 2) with `+0x5c` its 4-byte constants, `+0x68`
+// system states (`0xc0`) and `+0x74` particle states (`0x178`). A
+// particle state: `+0x0` name, `+0x20` duration bounds, `+0x28`
+// transition time bounds, `+0x30` bitmap, `+0x40` sequence index (i16),
+// `+0x48` radius bounds, `+0x58` rotation rate bounds, `+0x60` and
+// `+0x70` colour bounds (alpha, red, green, blue), `+0x84` point
+// physics, and from `+0xdc` the shader words `part` has from `+0xd4`
+// (`+0xe2` the framebuffer blend function, `part`'s `+0xda`: fire states
+// 3, smoke states 0, as on `part`).
+//
+// A particle moves through its type's particle states in order; Halo 2's
+// particle has one look. So each particle state that lasts (its duration
+// and transition not both zero) becomes its own particle system, its
+// `prt3` built from the state as a `part` ([`H1Particle`]), all created
+// with the effect part: the type's initial count each, the state's
+// duration plus transition as lifespan, its radius and colour. The
+// state sequence (fire turning to smoke), the creation physics and its
+// constants (no proven meaning: explosion `0.03 0.08 200`, jet
+// `45 0.0355 1`), the system states and the rotation rate are not
+// carried: the particles start still at the part's location.
+
+/// Halo 1 `pctl` sizes.
+pub const H1_PCTL_SIZE: usize = 0x68;
+pub const H1_PCTL_TYPE: usize = 0x80;
+pub const H1_PCTL_PARTICLE_STATE: usize = 0x178;
+
+/// One particle state of a Halo 1 particle system type.
+#[derive(Clone, Debug, PartialEq)]
+pub struct H1ParticleState {
+    pub name: String,
+    pub duration: [f32; 2],
+    pub transition: [f32; 2],
+    pub bitmap: Option<H1TagId>,
+    pub sequence: i16,
+    pub radius: [f32; 2],
+    pub colour: [[f32; 4]; 2],
+    pub blend: u16,
+}
+
+/// A Halo 1 particle system type: its initial count and particle states.
+#[derive(Clone, Debug, PartialEq)]
+pub struct H1ParticleType {
+    pub name: String,
+    pub initial_count: u16,
+    pub states: Vec<H1ParticleState>,
+}
+
+fn name32(b: &[u8]) -> String {
+    let end = b.iter().take(32).position(|c| *c == 0).unwrap_or(32.min(b.len()));
+    String::from_utf8_lossy(&b[..end]).into_owned()
+}
+
+/// The particle types of a Halo 1 `pctl`.
+pub fn particle_system_types(map: &H1Map, tag: &Tag) -> Result<Vec<H1ParticleType>> {
+    let b = tag_bytes(map, tag, b"pctl", H1_PCTL_SIZE)?;
+    let f = |x: &[u8], o: usize| f32::from_le_bytes(x[o..o + 4].try_into().expect("4"));
+    let h = |x: &[u8], o: usize| u16::from_le_bytes([x[o], x[o + 1]]);
+    let mut out = Vec::new();
+    let Some(tb) = h1map::Block::read(b, 0x5c) else { return Ok(out) };
+    for t in map.block(tb, H1_PCTL_TYPE)?.to_vec().chunks_exact(H1_PCTL_TYPE) {
+        let mut states = Vec::new();
+        if let Some(sb) = h1map::Block::read(t, 0x74) {
+            for s in map.block(sb, H1_PCTL_PARTICLE_STATE)?.chunks_exact(H1_PCTL_PARTICLE_STATE) {
+                let argb = |o: usize| [f(s, o), f(s, o + 4), f(s, o + 8), f(s, o + 0xc)];
+                states.push(H1ParticleState {
+                    name: name32(s),
+                    duration: [f(s, 0x20), f(s, 0x24)],
+                    transition: [f(s, 0x28), f(s, 0x2c)],
+                    bitmap: reference(map, s, 0x30),
+                    sequence: h(s, 0x40) as i16,
+                    radius: [f(s, 0x48), f(s, 0x4c)],
+                    colour: [argb(0x60), argb(0x70)],
+                    blend: h(s, 0xe2),
+                });
+            }
+        }
+        out.push(H1ParticleType { name: name32(t), initial_count: h(t, 0x24), states });
+    }
+    Ok(out)
+}
+
+impl H1ParticleState {
+    /// Lasts some time: its duration or transition bounds not all zero.
+    pub fn lasts(&self) -> bool {
+        self.duration[1] > 0.0 || self.transition[1] > 0.0
+    }
+
+    /// The state as a `part`: its bitmap, sequence and blend function, its
+    /// duration plus transition as lifespan.
+    pub fn as_particle(&self) -> H1Particle {
+        H1Particle {
+            flags: 0,
+            bitmap: self.bitmap,
+            collision_effect: None,
+            death_effect: None,
+            sequences: [self.sequence.max(0) as u16, 1, 0, 0],
+            blend: self.blend,
+            lifespan: [self.duration[0] + self.transition[0], self.duration[1] + self.transition[1]],
+        }
+    }
+
+    /// The state as an effect particle of `count` at `location`, still.
+    pub fn as_effect_particle(&self, count: u16, location: i16) -> H1EffectParticle {
+        let n = count.min(i16::MAX as u16) as i16;
+        H1EffectParticle {
+            location,
+            particle: None,
+            count: [n, n],
+            velocity: [0.0, 0.0],
+            velocity_cone: 0.0,
+            radius: self.radius,
+            tint: self.colour,
+        }
+    }
+}

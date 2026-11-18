@@ -725,9 +725,10 @@ fn every_effect_particle_becomes_a_particle_system() {
                     let Val::Float(dmax) = db[1] else { panic!() };
                     assert!(dmax >= TICK - 1e-6, "{name}: event shorter than a tick");
                     let dm = ((dur[0] + dur[1]) * 0.5).max(TICK);
-                    assert_eq!(ps.len(), list.len(), "{name}: one system per converted particle");
+                    // Halo 1's particles first; particle systems' states follow.
+                    assert!(ps.len() >= list.len(), "{name}: one system per converted particle");
                     let mut h = list.iter();
-                    for s in &ps {
+                    for s in &ps[..list.len()] {
                         let p = h.next().unwrap_or_else(|| panic!("{name}: more systems than particles"));
                         let Some(Val::Ref { target: Target::Id(pid), .. }) = s.at("particle") else { panic!() };
                         assert_eq!(c.tree.tags[pid.0 as usize & 0xffff].1.group, map::FourCC(*b"prt3"), "{name}");
@@ -746,5 +747,137 @@ fn every_effect_particle_becomes_a_particle_system() {
         }
     }
     println!("{systems} particle systems on {effects} effects");
+    assert!(systems > 0);
+}
+
+/// Survey: the block structure of every distinct Halo 1 `pctl`: each word
+/// that reads as a block descriptor (a small count and an address inside
+/// the tag's data), as tag-relative offsets, so the element sizes follow
+/// from the addresses. Then each tag's words from the offsets in `PCTL_AT`
+/// (`off:len` pairs, tag-relative).
+#[test]
+#[ignore]
+fn halo1_pctl_structure_survey() {
+    let mut seen = std::collections::BTreeSet::new();
+    let spans: Vec<(usize, usize)> = std::env::var("PCTL_AT")
+        .unwrap_or_default()
+        .split(',')
+        .filter_map(|s| {
+            let (a, b) = s.split_once(':')?;
+            Some((usize::from_str_radix(a.trim_start_matches("0x"), 16).ok()?, usize::from_str_radix(b.trim_start_matches("0x"), 16).ok()?))
+        })
+        .collect();
+    for (_, m) in h1_maps() {
+        for t in m.tags().iter().filter(|t| t.group == Group::new(b"pctl")) {
+            if !seen.insert(t.name.clone()) {
+                continue;
+            }
+            let b = m.tag_data(t).unwrap();
+            let base = t.data_address;
+            let mut blocks = Vec::new();
+            for o in (0..b.len().saturating_sub(8)).step_by(4) {
+                let n = u32_at(b, o);
+                let a = u32_at(b, o + 4);
+                if (1..=64).contains(&n) && a > base && ((a - base) as usize) < b.len() && (a - base) % 4 == 0 {
+                    blocks.push(format!("{o:#x}:{n}@{:#x}", a - base));
+                }
+            }
+            println!("pctl {} len {:#x}: {}", t.name, b.len(), blocks.join(" "));
+            for (at, len) in &spans {
+                println!("  {at:#x}: {}", words(b, *at, at + len));
+            }
+        }
+    }
+}
+
+/// Every Halo 1 particle system (`pctl`) an effect event names as a part
+/// becomes, after the event's particles, one particle system per lasting
+/// particle state of each type: on that state's converted `prt3`, at the
+/// part's location, its type's initial count over the event, the state's
+/// duration plus transition as lifespan, its radius as size; the part
+/// itself is no longer left out.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn every_pctl_part_becomes_particle_systems() {
+    use h1objects::base::Base;
+    use h1objects::convert::Converter;
+    use h1objects::particles::{TICK, effect_particles, particle_system_types};
+    use tags::defs::{self, Defs, Record, Target, Val};
+    let d = Defs::builtin().group(map::FourCC(*b"effe")).unwrap();
+    let blk = |r: &Record, p: &str| -> Vec<Record> {
+        match r.at(p) {
+            Some(Val::Block(b)) => b.clone(),
+            x => panic!("{p}: {x:?}"),
+        }
+    };
+    let constant = |r: &Record, p: &str| -> f32 {
+        match r.at(&format!("{p}.function")) {
+            Some(Val::Data(b)) => f32::from_le_bytes(b[4..8].try_into().unwrap()),
+            x => panic!("{p}: {x:?}"),
+        }
+    };
+    let close = |a: f32, b: f32| (a - b).abs() <= 1e-3 * (1.0 + b.abs());
+    let mid = |b: [f32; 2]| (b[0] + b[1]) * 0.5;
+    let (mut systems, mut parts, mut blends) = (0usize, 0usize, BTreeMap::<u16, usize>::new());
+    for (base_name, levels) in level_sets() {
+        let mut base_map = h2_map(base_name);
+        let base = Base::read(&mut base_map).unwrap();
+        for level in levels {
+            let Some(m) = h1_level(&level) else { continue };
+            let mut c = Converter::new(&m, &base);
+            for t in m.tags().iter().filter(|t| t.group == Group::new(b"effe")) {
+                let name = format!("{level} {}", t.name);
+                let id = c.effect(t).unwrap_or_else(|e| panic!("{name}: {e}"));
+                let e = h1objects::h1::Effect::read(&m, t).unwrap();
+                let h1p = effect_particles(&m, t).unwrap();
+                // What each event should hold: its converted particles' count,
+                // then per pctl part its lasting states.
+                let mut want = Vec::new();
+                for (ev, (dur, list)) in e.events.iter().zip(&h1p) {
+                    let first = list
+                        .iter()
+                        .filter(|p| p.particle.and_then(|i| m.tag(i).ok()).is_some_and(|pt| c.particle(pt).ok().flatten().is_some()))
+                        .count();
+                    let mut states = Vec::new();
+                    for p in ev.parts.iter().filter(|p| p.group == Group::new(b"pctl")) {
+                        let Some(pt) = p.reference.and_then(|i| m.tag(i).ok()) else { continue };
+                        parts += 1;
+                        let types = particle_system_types(&m, pt).unwrap();
+                        let conv = c.particle_system_states(pt).unwrap();
+                        assert_eq!(
+                            conv.len(),
+                            types.iter().flat_map(|t| &t.states).filter(|s| s.lasts()).count(),
+                            "{name}: {}", pt.name
+                        );
+                        for (prt3, st, n) in conv {
+                            *blends.entry(st.blend).or_default() += 1;
+                            states.push((prt3, st, n, p.location));
+                        }
+                    }
+                    want.push((*dur, first, states));
+                }
+                let built = &c.tree.tags[id.0 as usize & 0xffff].1;
+                let r = defs::from_built(d, &built.root).unwrap_or_else(|e| panic!("{name}: {e}"));
+                for (ev, (dur, first, states)) in blk(&r, "events").iter().zip(&want) {
+                    let ps = blk(ev, "particle_systems");
+                    assert_eq!(ps.len(), first + states.len(), "{name}: systems");
+                    let dm = mid(*dur).max(TICK);
+                    for (s, (prt3, st, n, loc)) in ps[*first..].iter().zip(states) {
+                        let Some(Val::Ref { target: Target::Id(pid), .. }) = s.at("particle") else { panic!() };
+                        assert_eq!(pid, prt3, "{name}");
+                        assert_eq!(c.tree.tags[pid.0 as usize & 0xffff].1.group, map::FourCC(*b"prt3"));
+                        assert_eq!(s.at("location"), Some(&Val::Int((*loc).into())), "{name}");
+                        let em = &blk(s, "emitters")[0];
+                        assert!(close(constant(em, "property_8") * 30.0 * dm, f32::from(*n)), "{name}: count");
+                        assert!(close(constant(em, "lifespan"), mid(st.duration) + mid(st.transition)), "{name}: lifespan");
+                        assert!(close(constant(em, "property_48"), st.radius[0] + st.radius[1]), "{name}: size");
+                        assert_eq!(constant(em, "property_28"), 0.0, "{name}: still");
+                        systems += 1;
+                    }
+                }
+            }
+        }
+    }
+    println!("{parts} pctl parts as {systems} particle systems; state blend functions {blends:?}");
     assert!(systems > 0);
 }

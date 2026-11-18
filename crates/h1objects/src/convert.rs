@@ -774,6 +774,9 @@ pub struct Converter<'a> {
     /// Effects whose particles are being converted (a particle's own
     /// effects that lead back to one are left out).
     effects_open: Vec<u32>,
+    /// Per Halo 1 `pctl`, its lasting particle states' `prt3`s with the
+    /// state and its type's initial count ([`Self::effect_particle_systems`]).
+    pctl_done: HashMap<u32, Vec<(TagId, crate::particles::H1ParticleState, u16)>>,
     /// Scenery role words ([`Self::scenery_role`]), computed once.
     scenery_role: Option<Option<crate::rebuild::SceneryRole>>,
     /// Per Halo 1 weapon label, the weapon class the map's graphs hold it
@@ -807,6 +810,7 @@ impl<'a> Converter<'a> {
             particle_role: None,
             emitter_role: None,
             effects_open: Vec::new(),
+            pctl_done: HashMap::new(),
             decals_open: Vec::new(),
             dialogue_bytes: 0,
             scenery_role: None,
@@ -1152,7 +1156,8 @@ impl<'a> Converter<'a> {
                 }
                 _ => None,
             };
-            if got.is_none() {
+            // Particle systems become the event's (Self::effect_particle_systems).
+            if got.is_none() && p.group != h1map::Group::new(b"pctl") {
                 *left.entry(p.group.to_string()).or_default() += 1;
             }
             targets.push(got.map(|tag| crate::rebuild::PartTarget {

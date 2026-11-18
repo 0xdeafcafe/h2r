@@ -177,6 +177,32 @@ scale words.
   being converted is left out.
 
 
+### `pctl` (particle systems) as particle systems
+
+Since converter version 59 (`particles::particle_system_types`,
+`Converter::particle_system_states`): an effect part naming a Halo 1
+`pctl` becomes particle systems of its event, after the event's own
+particles. The layout (V, all 28 distinct tags,
+`halo1_pctl_structure_survey`): a `0x68` root (`+0x38` point physics,
+`+0x48` update physics, `+0x50` 4-byte constants, `+0x5c` particle types
+of `0x80`); a type's `+0x0` name, `+0x24` initial count, `+0x2c` radius,
+`+0x54` creation physics (0, 1, 2) and `+0x5c` its 4-byte constants,
+`+0x68` system states (`0xc0`), `+0x74` particle states (`0x178`); a
+particle state's `+0x0` name, `+0x20` duration and `+0x28` transition
+bounds, `+0x30` bitmap, `+0x40` sequence index, `+0x48` radius bounds,
+`+0x58` rotation rate bounds, `+0x60`/`+0x70` colour bounds, `+0x84`
+point physics, and from `+0xdc` `part`'s shader words (`+0xe2` the blend
+function: 298 fire states 3, 104 smoke states 0).
+
+Each particle state that lasts becomes its own system, its `prt3` built
+from it as from a `part`, all created with the part: the type's initial
+count, the state's duration plus transition as lifespan, its radius and
+colour. Halo 1 moves each particle through the states in order (fire
+turning to smoke); here every state's particles appear at once. Not
+carried: the state sequence, the creation physics and its constants (no
+proven meaning), the system states, the rotation rate. The particles
+start still at the part's location.
+
 ### `cont` (root `0x144`) and contrail attachments
 
 `h1objects::particles::H1Contrail` (since converter version 55): Halo 2's
@@ -594,7 +620,11 @@ ghost) and `phmo` (cyborg, warthog, ghost); every converted `coll` passes
 `tags::collision::Collision::validate`; and every reference word pair in
 the new tags (136) names a tag of that group in the built map.
 
-`tests/particles_disc.rs`: `every_effect_particle_becomes_a_particle_system`:
+`tests/particles_disc.rs`: `every_pctl_part_becomes_particle_systems`:
+every `pctl` effect part (201 over the conversions) becomes one system
+per lasting particle state (402), on that state's `prt3`, at the part's
+location, the type's count over the event, the state's lifespan and size.
+`every_effect_particle_becomes_a_particle_system`:
 every Halo 1 effect particle whose `part` converts (42,266 over the
 campaign and multiplayer conversions) is a particle system of its event
 on the converted `prt3`, at its location, its rate times 30 times the
@@ -614,6 +644,9 @@ attachments name a contrail (236 attachments) names the converted one.
 
 ## Needs a game run
 
+- Particle systems (`pctl`): every state at once instead of in
+  sequence, and still particles (no creation physics): whether explosions
+  read as explosions.
 - Particles: the spawn count over an event, the size factor (twice the
   radius), the packed tint, null `pmov` (no gravity or drag), the base's
   role words on the systems and emitters.
