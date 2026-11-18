@@ -925,9 +925,10 @@ pub fn run_hosted_with_live(
     // Which map exactly (docs/game/maps.md §5): a package's MapId, None for the
     // disc's own map. Games and advertisements carry it as `map_id`.
     if let (Some(t), Some(vfs)) = (&_telemetry, k.vfs()) {
+        let data_root = opts.data_root.clone();
         t.set_map_id_locator(Box::new(move |map| {
             let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
-            map_override::map_id(&mut v, map)
+            map_override::map_id(&mut v, &data_root, map)
         }));
     }
     // A matchmaking game's record names its playlist and Live session
@@ -944,10 +945,11 @@ pub fn run_hosted_with_live(
         }));
     }
     if let (Some(hle), Some(vfs)) = (&_live, k.vfs()) {
+        let data_root = opts.data_root.clone();
         hle.set_map_probe(Some(Arc::new(move |g: &runtime::Guest| {
             let name = telemetry::loaded_map_name(g).ok()?;
             let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
-            map_override::map_id(&mut v, &name)
+            map_override::map_id(&mut v, &data_root, &name)
         })));
     }
     if let (Some(t), Some(vfs)) = (&_telemetry, k.vfs()) {

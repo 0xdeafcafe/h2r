@@ -22,9 +22,11 @@ const MAX_JSON: u64 = 1024 * 1024;
 /// Downloaded packages are `<data>/maps/live-<first 16 hex of the MapId>`.
 pub const DIR_PREFIX: &str = "live-";
 
-/// The user's own disc maps, for the base of a package and for retail ids.
+/// The user's own maps, for the base of a package and for retail ids.
 pub trait Bases: Send + Sync {
-    /// SHA-256 of the disc's `maps\<map>.map`, if the disc has it.
+    /// SHA-256 of the user's own `map`: the disc's `maps\<map>.map`, or for
+    /// a Multiplayer Map Pack map ([`content::map_pack`]) its copy
+    /// installed by `h2 import-mappack`. None when there is neither.
     fn disc_hash(&self, map: &str) -> Option<Sha256>;
 }
 
@@ -155,6 +157,12 @@ impl HttpFetch<'_> {
 pub enum Refusal {
     #[error("this game is on {name}, built on {map}, and your disc's {map} is not the one it needs")]
     NoBase { name: String, map: String },
+    /// The base is a Multiplayer Map Pack map, and the map pack isn't
+    /// installed here (`h2 import-mappack`).
+    #[error(
+        "this game is on {name}, built on {map} from the Multiplayer Map Pack, which isn't installed here (h2 import-mappack)"
+    )]
+    NoMapPack { name: String, map: String },
     #[error("this game's map was taken down by the server's admins: {0}")]
     TakenDown(String),
     #[error("this game's map ({0}) is not published on the server, so it cannot be downloaded")]
@@ -307,11 +315,15 @@ impl MapGate {
                 "the server's manifest for {id} is another map's"
             )));
         }
-        if !m.base.derived && self.bases.disc_hash(&m.base.map) != m.base.sha256 {
-            return Err(Refusal::NoBase {
-                name: m.package.name.clone(),
-                map: m.base.map.clone(),
-            });
+        if !m.base.derived {
+            let have = self.bases.disc_hash(&m.base.map);
+            if have != m.base.sha256 {
+                let (name, map) = (m.package.name.clone(), m.base.map.clone());
+                return Err(match have {
+                    None if content::map_pack::is_map(&map) => Refusal::NoMapPack { name, map },
+                    _ => Refusal::NoBase { name, map },
+                });
+            }
         }
         if let Some(dir) = self.local(&id) {
             return Ok(Need::Local(dir));
@@ -730,6 +742,60 @@ mod tests {
         let gone = Server::default();
         let err = gate(&maps, true).install(&gone, MapId::of(&m), &mut |_, _| {}).unwrap_err();
         assert_eq!(err, Refusal::Unpublished(MapId::of(&m)));
+        std::fs::remove_dir_all(&maps).unwrap();
+    }
+
+    /// A mod on a Map Pack base (Relic, `dune`): installed when the map
+    /// pack's copy hashes as the manifest says, refused as `NoMapPack`
+    /// when the map pack isn't installed, `NoBase` when it is but differs.
+    #[test]
+    fn a_map_pack_base_needs_the_installed_map_pack() {
+        let maps = dir("install-mappack");
+        let patch = b"PATCH invented for relic";
+        let mut m = modded(patch);
+        m.base.map = "dune".into();
+        m.package.name = "Relic Rockets".into();
+        let id = MapId::of(&m);
+        let s = server_with(&m, patch);
+        let pack = |h: Option<Sha256>| {
+            let d: HashMap<String, Sha256> =
+                h.map(|h| ("dune".to_string(), h)).into_iter().collect();
+            MapGate::new(&maps, Arc::new(Disc(d)))
+        };
+        let err = pack(None).install(&s, id, &mut |_, _| {}).unwrap_err();
+        assert_eq!(
+            err,
+            Refusal::NoMapPack {
+                name: "Relic Rockets".into(),
+                map: "dune".into()
+            }
+        );
+        assert!(err.to_string().contains("Multiplayer Map Pack"), "{err}");
+        assert!(err.to_string().contains("h2 import-mappack"), "{err}");
+        assert!(matches!(
+            pack(Some(Sha256([0x22; 32]))).install(&s, id, &mut |_, _| {}),
+            Err(Refusal::NoBase { .. })
+        ));
+        assert_eq!(Library::open(&maps).packages().len(), 0, "nothing written");
+        let dir = pack(Some(BASE)).install(&s, id, &mut |_, _| {}).unwrap();
+        assert_eq!(
+            std::fs::read(dir.join("patches/snipers.ips")).unwrap(),
+            patch
+        );
+        let active = std::fs::read_to_string(maps.join("active.toml")).unwrap();
+        assert!(
+            active.contains(&format!("dune = \"live-{}\"", &id.to_string()[..16])),
+            "{active}"
+        );
+        // A guest joining a game on it gets the same package.
+        let mut join = ad("custom", Some(id));
+        join.map = Some("dune".into());
+        let here = Library::open(&maps).packages()[0].dir.clone();
+        assert_eq!(pack(Some(BASE)).prepare(&s, &join).unwrap(), Some(here));
+        assert!(matches!(
+            pack(None).check(&s, &join),
+            Err(Refusal::NoMapPack { .. })
+        ));
         std::fs::remove_dir_all(&maps).unwrap();
     }
 

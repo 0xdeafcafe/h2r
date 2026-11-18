@@ -10,17 +10,20 @@
 //! - [`store`]: writing packages and `active.toml` (the editor's side).
 //! - [`campaign_list`]: campaigns past Halo 2's own, as 1.0's campaign level
 //!   list records (docs/halo1/campaign-picker.md).
+//! - [`map_pack`]: the Multiplayer Map Pack's maps, which packages can
+//!   take as their base.
 //! - [`patch_lvl`] and [`map_list`]: 1.0's multiplayer map list entries,
 //!   read from the Map Pack and built for new maps.
 //!
 //! Nothing here holds game data: packages name the user's disc maps by name
 //! and hash, and the tests use synthetic maps.
+pub mod campaign_list;
 mod canonical;
 mod hash;
 mod id;
-pub mod campaign_list;
 pub mod manifest;
 pub mod map_list;
+pub mod map_pack;
 pub mod patch;
 pub mod patch_lvl;
 mod resolve;

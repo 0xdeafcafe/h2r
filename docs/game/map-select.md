@@ -15,7 +15,7 @@ opens a list of categories first, in the retail Select Map dialog itself
 |---|---|---|
 | Halo 2 | the disc's maps | the game's sort order (slot `+0xc4c`), as `0x19c7e0` sorts the list |
 | Map Pack | `h2 import-mappack`'s packages | the game's sort order (130 to 210 on the user's disc) |
-| Mods | new map packages, any other content package, and a disc map a package in `<data>/maps` replaces | by name (any case), then map id |
+| Mods | new map packages, any other content package, and a disc or Map Pack map a package in `<data>/maps` replaces | by name (any case), then map id |
 | Halo: CE | converted Halo 1 maps (`h1_<map>`) | by name, then map id |
 
 A category with no maps isn't listed. With one category or none (no
@@ -47,7 +47,12 @@ path (`+0xb4c`, map-pack.md 8.1). `map_select::category_of` reads it:
 4. Any other content, new maps included, is **Mods**.
 5. A disc map that a package in `<data>/maps` replaces (not a derived
    package, and chosen for its name) is **Mods** too, under the package's
-   name (`Catalogue::with_mods`, `replacing_packages`).
+   name (`Catalogue::with_mods`, `replacing_packages`). So is a Map Pack
+   map a package replaces (a mod on a Map Pack base, maps.md "Importing a
+   mod"): its slot keeps its `t:\$C\<offer ID>\<map>` path, which the vfs
+   serves patched over the installed map. A Map Pack slot is left alone
+   when the disc has a map of the same file name (the package is the
+   disc map's).
 
 **A replaced disc map can't sit in both lists.** The vfs serves one map
 per name: `maps\containment.map` is the package chosen by the choice rule
@@ -163,7 +168,8 @@ Tests (`boot` `map_select::tests`):
 - categories from paths: the disc, the Map Pack's offer range, `h1_` in a
   new map's offer only, any other content as a mod; a disc map a package
   replaces under Mods by the package's name, the Map Pack map of the
-  same file name left alone;
+  same file name left alone; a Map Pack map a package replaces under Mods
+  by the package's name, on its own slot;
 - categories in order with empty ones hidden; Halo 2 and the Map Pack in
   the game's order; Mods and Halo 1 by name then id; a package that names
   a slot's id takes that slot;

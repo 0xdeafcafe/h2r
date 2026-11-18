@@ -622,20 +622,50 @@ signature decides), `base_map`, `category`, `image` (a PNG or JPEG beside
 it, at most 512 KiB). `h2 live maps publish DIR` reads `category` and
 `source_url` from `DIR/mod.toml`; `--category` and `--source-url` win.
 
-Not yet in the game: a package on a Map Pack base imports and publishes,
-but players can't install or play it yet. `MapGate` checks a base with
-`Bases::disc_hash`, and `boot::map_bases::DiscBases` hashes only the
-Halo 2 ISO's `maps\<map>.map`, so `install` refuses it as `NoBase`
-("Needs ... from your disc" on the Mods screen). Even installed, nothing would serve
-it: `vfs::PackageBackend` wraps the DVD and serves only `maps\<name>.map`,
-while the game opens a Map Pack map from
-`T:\$c\<offer>\<map>.map` on the hard disk, a writable host backend the
-packages layer doesn't wrap. Making it work needs both:
+**In the game.** A package on a Map Pack base installs and plays like one
+on a disc map, for a player who has the map pack installed (`h2
+import-mappack`, or `h2 play`'s automatic import):
 
-- a `Bases` that also hashes the installed Map Pack maps under
-  `<data>/disk/Partition1/TDATA/4D530064/$c` (or `mappack.iso`);
-- package serving for `TDATA\4D530064\$c\<offer>\<map>.map` with the
-  installed map as the base, limited to the Map Pack's own packages.
+- **Bases.** The Live map gate's bases (`boot::map_bases::UserBases`) are
+  the disc's maps (`DiscBases`), then, for a name in
+  `content::map_pack::MAPS`, the installed copy
+  (`MapPackBases`: `<data>/disk/Partition1/TDATA/4D530064/$c/<offer>/<map>.map`,
+  the first map pack offer, by name, that holds it, `map_pack_file`).
+  The import copies each map byte for byte (`mappack_cmd::install`,
+  `Xiso::copy_to` of the entry's size), so its SHA-256 is the one
+  `live_mappack::from_iso` gives the mod. Each file is hashed once; the
+  hash is kept in `<data>/maps/cache/mappack-hashes.toml`, stamped per map
+  with the file's path, size and modification time, so a changed or
+  reinstalled map is hashed again and a removed one has no base.
+- **Install.** `MapGate::install` (the Mods screen) and `MapGate::prepare`
+  (a guest joining a game on the mod) check the base as for a disc map.
+  Without the map pack the refusal is `Refusal::NoMapPack` ("... from the
+  Multiplayer Map Pack, which isn't installed here (h2 import-mappack)");
+  the Mods screen's Download row says "Needs the Map Pack's Relic" (the
+  map's game name, `content::map_pack::title`, as on the Map row). A map
+  pack that is installed but differs is `NoBase`, with the same row text.
+- **Serving.** The game opens a Map Pack map from
+  `T:\$c\<offer>\<map>.map`. With `vfs::Config::map_packages` set (the
+  boot sets `<data>/maps`), the data partition is wrapped in
+  `vfs::PackageBackend::over_map_pack`: the package `active.toml` (or the
+  choice rule) picks for the map is served at exactly that path, over the
+  installed file as the DVD layer serves over the disc's map (PPF and IPS
+  stream, BPS is materialised; a longer map, as when a mod grows Relic,
+  reports and reads its full size). Everything else on the partition,
+  writes included, is untouched; the served map itself is read-only.
+  Changes while the game runs (a download, a join) are seen at the map's
+  next open, and `map_slots` drops a stale cached copy, as for disc maps
+  (§3); `Vfs::rescan_maps` reaches this layer too.
+- **Map select and sessions.** `map_select::Catalogue::with_mods` lists a
+  Map Pack map whose package is chosen under Mods by the package's name,
+  on the Map Pack map's own slot (its `T:\$c` path, which the vfs serves
+  patched), as for a disc map; the disc's slot wins if the disc had a map
+  of that name. `map_override::map_id(vfs, data_root, name)` names the
+  package serving a Map Pack map (through `map_pack_path`), so games and
+  advertisements carry its `map_id` and guests fetch it.
+
+Not handled: a Map Pack map installed some other way than `h2
+import-mappack` (another offer scheme) is not served over.
 
 Limits: a mod built on a different build of the base map than the user's
 disc still imports (the delta reproduces it exactly) but is larger, and
@@ -834,7 +864,10 @@ override): `stat` and listings of `maps` give the result's size,
 `MapId`. `host_file` is the cache file for a materialised map and none
 for an overlay, which is not one region of a host file (so telemetry and
 the speaker index fall back as for any file without one).
-`PackageBackend::map_id(path)` gives the `MapId` serving a map.
+`PackageBackend::map_id(path)` gives the `MapId` serving a map. A second
+`PackageBackend` (`over_map_pack`) wraps the data partition for packages
+on a Map Pack base, serving the installed `T:\$c\<offer>\<map>.map`
+(§5, "Importing a mod").
 
 **Boot.** `<data>/maps/` is scanned at mount and again whenever it
 changes (§3). The packages layer is always mounted, even while the folder

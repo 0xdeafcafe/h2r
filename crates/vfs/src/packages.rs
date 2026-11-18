@@ -1,11 +1,21 @@
-//! A read-only backend that serves `maps\*.map` from map packages
-//! (docs/game/maps.md, `crates/content`).
+//! A backend that serves map files from map packages (docs/game/maps.md,
+//! `crates/content`), read-only for those files.
 //!
-//! [`PackageBackend`] wraps the disc. When the game names a map the disc has
-//! (`maps\<name>.map`, exactly one level down) and a package in the
+//! [`PackageBackend`] wraps one of two volumes, by its [`Scope`]:
+//!
+//! - **The disc** ([`PackageBackend::new`]): `maps\<name>.map`, exactly one
+//!   level down, for a map the disc has.
+//! - **The data partition** ([`PackageBackend::over_map_pack`]): the
+//!   Multiplayer Map Pack's maps as `h2 import-mappack` installs them,
+//!   `TDATA\<title>\$c\<offer>\<name>.map` for an offer in
+//!   [`content::map_pack::OFFERS`]. Every other path, and every write
+//!   that is not to a served map, goes to the partition untouched.
+//!
+//! When the game names such a map and a package in the
 //! [`content::Library`] serves that name, the package's result is served in
-//! its place: its size in `stat` and in listings of `maps`, its bytes in
-//! `read_at`. An offset-patched map (PPF, IPS) streams from the base with
+//! its place: its size in `stat` and in listings of the map's directory,
+//! its bytes in `read_at`. The base is the file the volume has at that
+//! path (the disc's map, or the installed map pack map). An offset-patched map (PPF, IPS) streams from the base with
 //! the patch laid over each read, so nothing is copied; a materialised map
 //! (BPS) is read from the cache file. Everything else comes from the inner
 //! backend unchanged.
@@ -13,7 +23,8 @@
 //! Each map is resolved on first use and kept; the choice is reported once
 //! through the notice callback. A package that cannot be used (a base that
 //! does not match, a damaged patch) is refused with a warning and the
-//! disc's map is served. Nothing is ever written through the VFS.
+//! volume's own map is served. A served map cannot be written or
+//! truncated (`AccessDenied`); nothing is ever written to a package.
 //!
 //! **Changes while the game runs** (docs/game/maps.md §3, "Realtime: Now"):
 //! before a map path is looked up (`stat`, so every open) and before a
@@ -40,7 +51,8 @@ use content::{
 };
 
 use crate::{
-    Backend, DirectoryEntry, Error, HostFile, MapOverrideNotice, Metadata, Result, VolumeInfo,
+    Backend, BasicInfo, DirectoryEntry, Error, HostFile, MapOverrideNotice, Metadata, Result,
+    VolumeInfo,
     map_override::{is_map_path, resize},
 };
 
@@ -55,7 +67,8 @@ enum Served {
     },
 }
 enum Base {
-    /// The disc's map, of this length.
+    /// The volume's own map at the path (the disc's, or the installed map
+    /// pack map), of this length.
     Disc(u64),
     File(FileSource),
 }
@@ -117,9 +130,86 @@ impl Stamp {
     }
 }
 
+/// Which map paths of the wrapped volume packages serve.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Scope {
+    /// The disc: `maps\<name>.map`.
+    Disc,
+    /// The data partition: the map pack's installed maps,
+    /// `TDATA\<title>\$c\<offer>\<name>.map`.
+    MapPack {
+        /// `tdata\<title as 8 hex digits>\$c\`.
+        prefix: String,
+        title: u32,
+    },
+}
+
+impl Scope {
+    /// The map pack's maps under `title`'s `T:`.
+    pub fn map_pack(title: u32) -> Self {
+        Scope::MapPack {
+            prefix: format!("tdata\\{title:08x}\\{}\\", crate::CONTENT_DIR),
+            title,
+        }
+    }
+
+    /// The map file name (`turf.map`, as the path has it) when packages
+    /// may serve `path`.
+    fn map_name<'a>(&self, path: &'a str) -> Option<&'a str> {
+        match self {
+            Scope::Disc => is_map_path(path),
+            Scope::MapPack { prefix, title } => {
+                let rest = path
+                    .get(..prefix.len())
+                    .filter(|p| p.eq_ignore_ascii_case(prefix))
+                    .map(|_| &path[prefix.len()..])?;
+                let (offer, name) = rest.split_once('\\')?;
+                let offer = u64::from_str_radix(offer, 16)
+                    .ok()
+                    .filter(|_| offer.len() == 16)?;
+                if !content::map_pack::is_offer(*title, offer) || name.contains('\\') {
+                    return None;
+                }
+                let ext = name.len().checked_sub(4).map(|i| &name.as_bytes()[i..])?;
+                ext.eq_ignore_ascii_case(b".map").then_some(name)
+            }
+        }
+    }
+
+    /// The map's stem, `turf` for `...\turf.map`.
+    fn stem<'a>(&self, path: &'a str) -> Option<&'a str> {
+        self.map_name(path).map(|n| &n[..n.len() - 4])
+    }
+
+    /// Whether a listing of `dir` holds maps packages may serve.
+    fn lists_maps(&self, dir: &str) -> bool {
+        match self {
+            Scope::Disc => dir.eq_ignore_ascii_case("maps"),
+            Scope::MapPack { .. } => self.map_name(&format!("{dir}\\x.map")).is_some(),
+        }
+    }
+
+    /// How notices name the map at `path`.
+    fn label(&self, path: &str) -> String {
+        match self {
+            Scope::Disc => path.to_string(),
+            Scope::MapPack { .. } => format!("T:{}", &path[path.find("\\$").unwrap_or(0)..]),
+        }
+    }
+
+    /// What notices call the volume's own copy.
+    fn own(&self) -> &'static str {
+        match self {
+            Scope::Disc => "the disc's copy",
+            Scope::MapPack { .. } => "the installed map pack copy",
+        }
+    }
+}
+
 pub struct PackageBackend<B> {
     inner: B,
     library: Library,
+    scope: Scope,
     /// The maps directory as last scanned.
     stamp: Stamp,
     /// By lowercase `maps\<name>.map`.
@@ -168,12 +258,35 @@ impl<B: Backend> PackageBackend<B> {
         )
     }
 
-    pub fn with_notice(inner: B, mut library: Library, mut notice: MapOverrideNotice) -> Self {
+    pub fn with_notice(inner: B, library: Library, notice: MapOverrideNotice) -> Self {
+        Self::scoped(inner, library, Scope::Disc, notice)
+    }
+
+    /// Serve `library`'s packages for the map pack's maps installed on
+    /// the data partition `inner` (title `title`'s `$c`), reporting to
+    /// stderr. Writes to everything else pass through.
+    pub fn over_map_pack(inner: B, library: Library, title: u32) -> Self {
+        Self::scoped(
+            inner,
+            library,
+            Scope::map_pack(title),
+            Box::new(|line: &str| eprintln!("map packages: {line}")),
+        )
+    }
+
+    /// Serve `library`'s packages for the paths of `scope` over `inner`.
+    pub fn scoped(
+        inner: B,
+        mut library: Library,
+        scope: Scope,
+        mut notice: MapOverrideNotice,
+    ) -> Self {
         for line in library.take_notices() {
             notice(&line);
         }
         Self {
             inner,
+            scope,
             stamp: Stamp::of(library.root()),
             library,
             files: HashMap::new(),
@@ -222,7 +335,7 @@ impl<B: Backend> PackageBackend<B> {
         let Some(slot) = self.files.get(key) else {
             return;
         };
-        let stem = is_map_path(key).map(|n| &n[..n.len() - 4]);
+        let stem = self.scope.stem(key);
         let now = stem
             .and_then(|s| self.library.choose(s))
             .map(|p| (p.dir.clone(), p.id));
@@ -244,22 +357,22 @@ impl<B: Backend> PackageBackend<B> {
 
     /// The resolved package for `path`, resolving it on first use.
     fn chosen(&mut self, path: &str) -> Option<&mut Entry> {
-        let name = is_map_path(path)?;
+        let stem = self.scope.stem(path)?;
         let key = path.to_ascii_lowercase();
         if !self.files.contains_key(&key) {
-            let stem = &name[..name.len() - 4];
             let choice = self.library.choose(stem).map(|p| (p.dir.clone(), p.id));
-            let entry = choice.as_ref().and_then(|_| self.resolve(path, name));
+            let entry = choice.as_ref().and_then(|_| self.resolve(path, stem));
             self.flush_notices();
             self.files.insert(key.clone(), Slot { choice, entry });
         }
         self.files.get_mut(&key)?.entry.as_mut()
     }
 
-    fn resolve(&mut self, path: &str, name: &str) -> Option<Entry> {
-        // Only maps the disc has: a missing name stays missing.
+    fn resolve(&mut self, path: &str, stem: &str) -> Option<Entry> {
+        // Only maps the volume has: a missing name stays missing.
         let disc = self.inner.stat(path).ok().filter(|m| !m.is_directory())?;
-        let stem = &name[..name.len() - 4];
+        let name = self.scope.label(path);
+        let own = self.scope.own();
         let mut base = InnerFile {
             inner: &mut self.inner,
             path,
@@ -268,16 +381,14 @@ impl<B: Backend> PackageBackend<B> {
         let resolved = match self.library.resolve(stem, &mut base) {
             Ok(r) => r?,
             Err(e) => {
-                (self.notice)(&format!(
-                    "warning: maps\\{name}: {e}; using the disc's copy"
-                ));
+                (self.notice)(&format!("warning: {name}: {e}; using {own}"));
                 return None;
             }
         };
         let len = resolved.len();
         if len > u64::from(u32::MAX) {
             (self.notice)(&format!(
-                "warning: maps\\{name}: {len} bytes, over the disc's 4 GiB file limit; using the disc's copy"
+                "warning: {name}: {len} bytes, over the 4 GiB file limit; using {own}"
             ));
             return None;
         }
@@ -289,15 +400,16 @@ impl<B: Backend> PackageBackend<B> {
                     BaseRef::File { file, .. } => match FileSource::new(file) {
                         Ok(f) => Base::File(f),
                         Err(e) => {
-                            (self.notice)(&format!(
-                                "warning: maps\\{name}: {e}; using the disc's copy"
-                            ));
+                            (self.notice)(&format!("warning: {name}: {e}; using {own}"));
                             return None;
                         }
                     },
                 };
                 let over = if matches!(base, Base::Disc(_)) {
-                    "the disc"
+                    match self.scope {
+                        Scope::Disc => "the disc",
+                        Scope::MapPack { .. } => "the installed map",
+                    }
                 } else {
                     "its map file"
                 };
@@ -312,17 +424,19 @@ impl<B: Backend> PackageBackend<B> {
                     Served::File { file, path: p },
                 ),
                 Err(e) => {
-                    (self.notice)(&format!(
-                        "warning: maps\\{name}: {e}; using the disc's copy"
-                    ));
+                    (self.notice)(&format!("warning: {name}: {e}; using {own}"));
                     return None;
                 }
             },
         };
         (self.notice)(&format!(
-            "maps\\{name} from package {} (map id {}; {how}; {len} bytes; disc {} bytes)",
+            "{name} from package {} (map id {}; {how}; {len} bytes; {} {} bytes)",
             resolved.package.display(),
             resolved.id,
+            match self.scope {
+                Scope::Disc => "disc",
+                Scope::MapPack { .. } => "installed",
+            },
             disc.end_of_file
         ));
         Some(Entry {
@@ -332,11 +446,19 @@ impl<B: Backend> PackageBackend<B> {
         })
     }
 
+    /// `AccessDenied` for a path a package serves now: its bytes are the
+    /// package's, not the volume's.
+    fn refuse_served(&mut self, path: &str) -> Result<()> {
+        if self.scope.map_name(path).is_some() && self.chosen(path).is_some() {
+            return Err(Error::AccessDenied);
+        }
+        Ok(())
+    }
 }
 
 impl<B: Backend> Backend for PackageBackend<B> {
     fn opened(&mut self, path: &str) {
-        if is_map_path(path).is_some() {
+        if self.scope.map_name(path).is_some() {
             let key = path.to_ascii_lowercase();
             *self.open.entry(key.clone()).or_default() += 1;
             self.chosen(path);
@@ -347,7 +469,7 @@ impl<B: Backend> Backend for PackageBackend<B> {
         self.inner.opened(path)
     }
     fn map_changed(&mut self, path: &str) -> bool {
-        let Some(name) = is_map_path(path) else {
+        let Some(stem) = self.scope.stem(path) else {
             return self.inner.map_changed(path);
         };
         let key = path.to_ascii_lowercase();
@@ -358,10 +480,7 @@ impl<B: Backend> Backend for PackageBackend<B> {
         let Some(then) = self.last_opened.get(&key).cloned() else {
             return self.inner.map_changed(path);
         };
-        let now = self
-            .library
-            .choose(&name[..name.len() - 4])
-            .map(|p| (p.dir.clone(), p.id));
+        let now = self.library.choose(stem).map(|p| (p.dir.clone(), p.id));
         self.flush_notices();
         now != then || self.inner.map_changed(path)
     }
@@ -391,13 +510,17 @@ impl<B: Backend> Backend for PackageBackend<B> {
             None => self.inner.map_id(path),
         }
     }
+    /// The disc is read-only; the data partition stays writable, all
+    /// but its served maps.
     fn read_only(&self) -> bool {
-        true
+        self.inner.read_only()
     }
     fn stat(&mut self, path: &str) -> Result<Metadata> {
         // Every open stats first: the moment to notice a changed folder,
         // unless this map is open now.
-        if is_map_path(path).is_some() && !self.open.contains_key(&path.to_ascii_lowercase()) {
+        if self.scope.map_name(path).is_some()
+            && !self.open.contains_key(&path.to_ascii_lowercase())
+        {
             self.refresh();
         }
         let mut meta = self.inner.stat(path)?;
@@ -409,7 +532,7 @@ impl<B: Backend> Backend for PackageBackend<B> {
     }
     fn read_directory(&mut self, path: &str) -> Result<Vec<DirectoryEntry>> {
         let mut entries = self.inner.read_directory(path)?;
-        if !path.eq_ignore_ascii_case("maps") {
+        if !self.scope.lists_maps(path) {
             return Ok(entries);
         }
         self.refresh();
@@ -469,5 +592,61 @@ impl<B: Backend> Backend for PackageBackend<B> {
             };
         }
         self.inner.host_file(path)
+    }
+    // Writes: a served map is the package's, read-only; everything else
+    // (the data partition's saves, content, the map pack's other files)
+    // goes to the volume as it would without packages.
+    fn create(&mut self, path: &str, directory: bool, attributes: u32) -> Result<()> {
+        self.inner.create(path, directory, attributes)
+    }
+    fn create_allocated(
+        &mut self,
+        path: &str,
+        directory: bool,
+        attributes: u32,
+        allocation: u64,
+        owner: u64,
+    ) -> Result<()> {
+        self.inner
+            .create_allocated(path, directory, attributes, allocation, owner)
+    }
+    fn overwrite_allocated(&mut self, path: &str, allocation: u64, owner: u64) -> Result<()> {
+        self.refuse_served(path)?;
+        self.inner.overwrite_allocated(path, allocation, owner)
+    }
+    fn release_allocation(&mut self, path: &str, owner: u64) -> Result<()> {
+        self.inner.release_allocation(path, owner)
+    }
+    fn write_at(&mut self, path: &str, offset: u64, buffer: &[u8]) -> Result<usize> {
+        self.refuse_served(path)?;
+        self.inner.write_at(path, offset, buffer)
+    }
+    fn set_len(&mut self, path: &str, size: u64) -> Result<()> {
+        self.refuse_served(path)?;
+        self.inner.set_len(path, size)
+    }
+    fn set_basic_info(&mut self, path: &str, basic: BasicInfo) -> Result<()> {
+        self.inner.set_basic_info(path, basic)
+    }
+    /// Removing a served map removes the volume's own copy (the base);
+    /// the path is resolved again at its next use.
+    fn remove(&mut self, path: &str) -> Result<()> {
+        self.inner.remove(path)?;
+        let key = path.to_ascii_lowercase();
+        if self.scope.map_name(path).is_some() && !self.open.contains_key(&key) {
+            self.files.remove(&key);
+        }
+        Ok(())
+    }
+    fn flush(&mut self, path: &str) -> Result<()> {
+        self.inner.flush(path)
+    }
+    fn format(&mut self) -> Result<()> {
+        self.inner.format()?;
+        self.files.clear();
+        Ok(())
+    }
+    fn cleanup(&mut self, path: &str, write_access: bool) -> Result<()> {
+        self.inner.cleanup(path, write_access)
     }
 }
