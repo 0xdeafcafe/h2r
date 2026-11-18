@@ -399,54 +399,15 @@ fn frames_draw_what_they_must() {
     }
 }
 
-/// Submitting every pass on its own (the default) and batching the passes
-/// of several targets into one submission, with or without a deadline,
-/// give the same bytes.
-#[test]
-fn batched_submissions_match_one_per_pass() {
-    let run = |per_pass: bool, after: Option<Duration>| {
-        let mut s = scene(|b| {
-            b.set_submit_per_pass(per_pass);
-            if !per_pass {
-                b.set_submit_after(after);
-            }
-        })?;
-        let mut out = Vec::new();
-        for f in 0..4 {
-            s.frame(f, SWAP_FINISH);
-            out.push(s.shown());
-        }
-        s.d.block_on_resource(&mut s.m, TEX_HEADER).unwrap();
-        let mut texels = vec![0u8; 256];
-        s.m.read(0x8000_0000 | TEX_DATA, &mut texels).unwrap();
-        out.push(texels);
-        Some((out, s.d.backend.batch_stats().submits))
-    };
-    let Some((per_pass, per_pass_submits)) = run(true, None) else {
-        return;
-    };
-    let (batched, batched_submits) = run(false, None).unwrap();
-    assert!(per_pass == batched, "the bytes differ");
-    assert!(
-        batched_submits * 8 < per_pass_submits,
-        "{batched_submits} vs {per_pass_submits}"
-    );
-    // A zero deadline: every target switch submits again.
-    let (due, due_submits) = run(false, Some(Duration::ZERO)).unwrap();
-    assert!(per_pass == due, "the bytes differ");
-    assert_eq!(due_submits, per_pass_submits);
-}
-
 /// Clearing the visibility counter is GPU work only: it rides in the
-/// frame's submission instead of submitting the passes before it.
+/// next submission instead of submitting on its own.
 #[test]
 fn a_counter_clear_does_not_submit() {
     use d3d::Backend;
-    let Some(mut s) = scene(|b| b.set_submit_after(None)) else {
+    let Some(mut s) = scene(|_| {}) else {
         return;
     };
     s.frame(0, SWAP_FINISH);
-    let before = s.d.backend.batch_stats().submits;
     s.d.set_render_target(&mut s.m, s.rtt, 0).unwrap();
     s.d.set_stream_source(&mut s.m, 0, VB_HEADER, STRIDE)
         .unwrap();
@@ -454,21 +415,21 @@ fn a_counter_clear_does_not_submit() {
     s.d.draw_vertices(&mut s.m, TRIANGLESTRIP, 4 * 16 * COPIES, 4)
         .unwrap();
     s.d.set_render_target(&mut s.m, s.back, 0).unwrap();
+    let before = s.d.backend.batch_stats().submits;
     for _ in 0..4 {
         s.d.backend.clear_pixel_count().unwrap();
     }
     assert_eq!(s.d.backend.batch_stats().submits, before);
     s.d.block_on_resource(&mut s.m, TEX_HEADER).unwrap();
-    assert_eq!(s.d.backend.batch_stats().submits, before + 1);
+    assert!(s.d.backend.batch_stats().submits <= before + 1);
     let texel = s.m.read_u32(0x8000_0000 | TEX_DATA).unwrap();
     assert_eq!(texel, 0xFF12_3456);
 }
 
-/// The ceilings, batched: a regression in any of them is churn coming
-/// back.
+/// The ceilings: a regression in any of them is churn coming back.
 #[test]
 fn per_frame_churn_stays_down() {
-    let Some(mut s) = scene(|b| b.set_submit_after(None)) else {
+    let Some(mut s) = scene(|_| {}) else {
         return;
     };
     // Warm up: rings and pools grow, pipelines compile.
@@ -477,9 +438,8 @@ fn per_frame_churn_stays_down() {
     eprintln!("{p:?}");
     // One blocking wait per frame, for the previous frame.
     assert_eq!(p.swap_waits, 1.0);
-    // One submission for the frame (the present's), not one per target
-    // switch.
-    assert_eq!(p.submits, 1.0, "{p:?}");
+    // A submission per target visit and the present's: nothing more.
+    assert_eq!(p.submits, f64::from(2 * SWITCHES + 1), "{p:?}");
     assert_eq!(p.render_passes, f64::from(2 * SWITCHES + 1), "{p:?}");
 }
 
@@ -494,19 +454,11 @@ pub fn bench() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(120);
-    for (name, finish, per_pass) in [
-        ("full wait, submit per pass", d3d::SwapFinish::Full, true),
-        (
-            "pipelined, per pass (default)",
-            d3d::SwapFinish::Pipelined,
-            true,
-        ),
-        ("pipelined, batched", d3d::SwapFinish::Pipelined, false),
+    for (name, finish) in [
+        ("full wait", d3d::SwapFinish::Full),
+        ("pipelined (default)", d3d::SwapFinish::Pipelined),
     ] {
-        let Some(mut s) = scene(|b| {
-            b.set_swap_finish(finish);
-            b.set_submit_per_pass(per_pass);
-        }) else {
+        let Some(mut s) = scene(|b| b.set_swap_finish(finish)) else {
             return;
         };
         measure(&mut s, 0, 8);
@@ -527,8 +479,8 @@ pub fn bench() {
     game_bench(frames);
 }
 
-/// [`Scene::game_frame`] under each submit policy: wall time per frame is
-/// what counts here, the GPU and the render thread overlapping (or not).
+/// [`Scene::game_frame`]: wall time per frame is what counts here, the GPU
+/// and the render thread overlapping (or not).
 fn game_bench(frames: u32) {
     let fills = std::env::var("H2_BENCH_FILLS")
         .ok()
@@ -542,55 +494,39 @@ fn game_bench(frames: u32) {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(3);
-    let us = Duration::from_micros;
-    let policies: [(&str, Option<Option<Duration>>); 6] = [
-        ("per pass", None),
-        ("batch, no deadline", Some(None)),
-        ("batch, 100 us", Some(Some(us(100)))),
-        ("batch, 250 us", Some(Some(us(250)))),
-        ("batch, 500 us", Some(Some(us(500)))),
-        ("batch, 1000 us", Some(Some(us(1000)))),
-    ];
     println!(
         "game-like frame, {}x{}, {fills} fills and {small} small draws per visit:",
         BIG.0, BIG.1
     );
-    let mut times = vec![Vec::new(); policies.len()];
-    // Interleaved rounds, the median of each: the machine is shared.
+    let mut times = Vec::new();
+    // Several rounds, the median: the machine is shared.
     for round in 0..rounds {
-        for (i, (name, policy)) in policies.iter().enumerate() {
-            let Some(mut s) = scene_sized(BIG, |b| match *policy {
-                None => b.set_submit_per_pass(true),
-                Some(after) => b.set_submit_after(after),
-            }) else {
-                return;
-            };
-            for f in 0..8 {
-                s.game_frame(f, fills, small);
-            }
-            let submits = s.d.backend.batch_stats().submits;
-            let t = Instant::now();
-            let cpu = thread_cpu();
-            for f in 8..8 + frames {
-                s.game_frame(f, fills, small);
-            }
-            let time = t.elapsed() / frames;
-            let cpu = (thread_cpu() - cpu) / frames;
-            let submits = (s.d.backend.batch_stats().submits - submits) as f64 / f64::from(frames);
-            times[i].push(time);
-            eprintln!(
-                "  round {round} {name:<20} {:>7.3} ms/frame (CPU {:>6.3} ms)  submits {submits:>5.1}",
-                time.as_secs_f64() * 1e3,
-                cpu.as_secs_f64() * 1e3,
-            );
+        let Some(mut s) = scene_sized(BIG, |_| {}) else {
+            return;
+        };
+        for f in 0..8 {
+            s.game_frame(f, fills, small);
         }
-    }
-    for ((name, _), mut t) in policies.iter().zip(times) {
-        t.sort();
-        println!(
-            "  {name:<20} median {:>7.3} ms/frame, best {:>7.3}",
-            t[t.len() / 2].as_secs_f64() * 1e3,
-            t[0].as_secs_f64() * 1e3
+        let submits = s.d.backend.batch_stats().submits;
+        let t = Instant::now();
+        let cpu = thread_cpu();
+        for f in 8..8 + frames {
+            s.game_frame(f, fills, small);
+        }
+        let time = t.elapsed() / frames;
+        let cpu = (thread_cpu() - cpu) / frames;
+        let submits = (s.d.backend.batch_stats().submits - submits) as f64 / f64::from(frames);
+        times.push(time);
+        eprintln!(
+            "  round {round} {:>7.3} ms/frame (CPU {:>6.3} ms)  submits {submits:>5.1}",
+            time.as_secs_f64() * 1e3,
+            cpu.as_secs_f64() * 1e3,
         );
     }
+    times.sort();
+    println!(
+        "  median {:>7.3} ms/frame, best {:>7.3}",
+        times[times.len() / 2].as_secs_f64() * 1e3,
+        times[0].as_secs_f64() * 1e3
+    );
 }
