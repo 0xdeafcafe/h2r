@@ -271,6 +271,43 @@ static H2_ALWAYS_INLINE void h2_gate_tick(H2FastAccess *f, H2Gate *g) {
         g->held = 0u;
     }
 }
+/* H2_ENTRY_GATE=1 (emit-time, default off): a handler with inline loads
+ * or stores takes the gate as it starts (H2_GATE_ENTER in h2gen.h, after
+ * its entry calls: acquire and the budget), and again when a direct call
+ * returns inline, instead of its first access taking it in h2_access_cold.
+ * A busy gate or no view leaves it not held, and that first access is the
+ * cold one as before. */
+#ifndef H2_ENTRY_GATE
+#define H2_ENTRY_GATE 0
+#endif
+#if H2_ENTRY_GATE && H2_FASTMEM
+#define H2_GATE_ENTER_(f, g)                                                    \
+    do {                                                                        \
+        if (!(g).held && (f)) h2_gate_adopt(&(g), h2_gate_try(f));              \
+    } while (0)
+#else
+#define H2_GATE_ENTER_(f, g) ((void)0)
+#endif
+/* H2_VIEW_CHARGE=1 (emit-time, default off; counting modules): spend the
+ * handler's count in the RAM view, inline, where it called
+ * h2abi_v1_charge, h2abi_v1_budget or h2abi_v1_exit (h2gen.h). The view's
+ * count is the runtime's to settle, and it settles it before anything that
+ * looks at the slice: every Rust helper first, acquire, and the runner after
+ * every handler it invokes (call_native). The view's budget is the slice's
+ * accesses left when last settled (all ones: none would expire), so the
+ * spend that reaches it is the one whose charge would have expired the
+ * slice, and raises SLICE on the preempt word as that charge does. */
+static H2_ALWAYS_INLINE void h2_view_spend(H2FastAccess *f, uint64_t n) {
+    uint64_t previous = f->accesses;
+    f->accesses = previous + n;
+    /* Distance to the first matching increment, including unsigned wrap. */
+    if (f->budget - previous - 1u < n) __atomic_fetch_or(f->preempt, 1u, __ATOMIC_RELEASE); /* SLICE */
+}
+/* What h2abi_v1_budget answers: the accesses left before the slice
+ * expires, or all ones when nothing would (unarmed, or already spent). */
+static H2_ALWAYS_INLINE uint64_t h2_view_left(const H2FastAccess *f) {
+    return f->budget == UINT64_MAX || f->accesses >= f->budget ? UINT64_MAX : f->budget - f->accesses;
+}
 /* Whether physical page `physical` is already marked dirty. A set bit lies
  * inside [dirty_lo, dirty_hi): every marker sets the bit and widens the
  * bounds under the gate, and the drain clears both under it. So a marked
