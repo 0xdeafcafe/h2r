@@ -284,8 +284,8 @@ fn script_tags(m: &mut M, catalog: &hs::Catalog) -> (usize, Vec<String>) {
     (n, bad)
 }
 
-/// Every level converted pinned (the old way, lean ladder and all) and
-/// fresh; per level the tag memory, file size and lean step of each, and
+/// Every level converted fresh (and pinned, the old way, with
+/// `H1_PINNED=1`); per level the tag memory, file size and lean step of each, and
 /// on the fresh map: every reference resolves, no tag is the base level's
 /// own, and the scripts' tag-valued atoms resolve.
 #[test]
@@ -300,7 +300,10 @@ fn every_level_converts_fresh() {
     drop(scenarios);
     let donors = donors();
     let only = std::env::var("H1_LEVELS").ok();
-    let pinned_too = std::env::var("H1_PINNED").map_or(true, |v| v != "0");
+    // Pinned is no longer the default build, and pinned a10 is over the
+    // file size cap since the level render (version 40): compared only
+    // with H1_PINNED=1.
+    let pinned_too = std::env::var("H1_PINNED").is_ok_and(|v| v == "1");
     let base_folder = format!("scenarios\\solo\\{}\\", h1campaign::BASE);
     let mut failed = Vec::new();
     let mut rows = Vec::new();

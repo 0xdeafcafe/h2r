@@ -701,7 +701,7 @@ The bound is `0xc24000`; the base alone is `0xaed000`.
   `unit_open`/`unit_close` runs inside `(if (> (list_count x) 0) ..)`,
   a no-op on `none` as in Halo 1 (h1-scripts.md).
   `a10_opens_and_closes_only_placed_units` checks every reached call on
-  a10, pinned and fresh, is placed and guarded;
+  a10 (fresh) is placed and guarded;
   `a10_cryotubes_are_placed_and_built_from_their_definition` checks the
   cryotubes' placements and tag; `a10_scripted_vehicles_can_be_created`
   checks every vehicle palette entry's model has one. Since converter
