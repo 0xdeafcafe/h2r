@@ -357,9 +357,19 @@ mod tests {
         // half (2, 0, 0) and half (1, 1, 0).
         let posed = [rest[0], turn_z([1.0, 0.0, 0.0])];
         assert_eq!(m.skin(&m.vertices[1], &posed), [1.5, 0.5, 0.0]);
-        // The vertex wholly on the arm (model node 1 via the map) turns with it.
-        // (0, 1, 0) is (-1, 1, 0) from the joint; turned, (-1, -1, 0) from it.
-        assert_eq!(m.skin(&m.vertices[2], &posed), [0.0, -1.0, 0.0]);
+        // Vertex 2's local node 1 is model node 0 through the map: the root,
+        // which did not move.
+        assert_eq!(m.vertices[2].nodes, [0, 0, 0, 0]);
+        assert_eq!(m.skin(&m.vertices[2], &posed), [0.0, 1.0, 0.0]);
+        // A vertex wholly on the arm turns with it: (0, 1, 0) is (-1, 1, 0)
+        // from the joint; turned, (-1, -1, 0) from it.
+        let on_arm = ModelVertex {
+            position: [0.0, 1.0, 0.0],
+            nodes: [1, 0, 0, 0],
+            weights: [1.0, 0.0, 0.0, 0.0],
+            ..ModelVertex::default()
+        };
+        assert_eq!(m.skin(&on_arm, &posed), [0.0, -1.0, 0.0]);
     }
 
     #[test]
