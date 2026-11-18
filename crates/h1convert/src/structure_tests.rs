@@ -877,6 +877,7 @@ fn portals_and_each_cluster_s_list_are_written_where_the_flood_reads_them() {
             vertices: vec![[0.0, 0.0, 0.5], [1.0, 0.0, 0.5], [1.0, 1.0, 0.5]],
         }],
         clusters: vec![vec![0], vec![0]],
+        skies: vec![1, 0],
     };
     let b = build_full(&sections, false, false, &visibility);
     let map = Map::from_reader(Cursor::new(b.bytes.clone())).unwrap();
@@ -907,7 +908,29 @@ fn portals_and_each_cluster_s_list_are_written_where_the_flood_reads_them() {
         let (ln, lp) = field(&sbsp[clusters + CLUSTER * c..], 0x8c);
         assert_eq!(ln, 1, "cluster {c}");
         assert_eq!(&sbsp[lp..lp + 2], &[0, 0]);
+        // +0x6e: the cluster's sky, the one the engine draws from it.
+        assert_eq!(sbsp[clusters + CLUSTER * c + 0x6e], [1, 0][c], "cluster {c} sky");
     }
+}
+
+#[test]
+fn a_cluster_without_a_sky_shows_its_nearest_neighbour_s() {
+    use crate::clusters::{Portal, spread_skies};
+    let portal = |a: u16, b: u16| Portal {
+        clusters: [a, b],
+        plane: 0,
+        centroid: [0.0; 3],
+        radius: 1.0,
+        vertices: Vec::new(),
+    };
+    // 0 (sky 1) - 1 (none) - 2 (none) - 3 (sky 0); 4 sealed off.
+    let portals = [portal(0, 1), portal(1, 2), portal(2, 3)];
+    assert_eq!(
+        spread_skies(vec![1, -1, -1, 0, -1], &portals, 5),
+        vec![1, 1, 0, 0, 0]
+    );
+    // A structure with no Halo 1 clusters shows sky 0.
+    assert_eq!(spread_skies(Vec::new(), &[], 2), vec![0, 0]);
 }
 
 #[test]

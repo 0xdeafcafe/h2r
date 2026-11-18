@@ -1219,7 +1219,9 @@ impl Structure<'_> {
             // can pick the BSP's own sky). +0x6d none, as retail.
             b[0x6c] = 0;
             b[0x6d] = 0xff;
-            b[0x6e] = 0; // sky: the scenario's first (E 0x0014b38d)
+            // The sky the camera sees from this cluster (E 0x0014b38d):
+            // Halo 1's ([`crate::clusters::cluster_skies`]), sky 0 without.
+            b[0x6e] = self.visibility.skies.get(c).copied().unwrap_or(0) as u8;
             b[0x6f] = 0xff;
             b[0x70] = 0xff;
             b[0x71] = 0xff;

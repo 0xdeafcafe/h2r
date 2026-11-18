@@ -330,6 +330,9 @@ pub struct Visibility {
     pub portals: Vec<Portal>,
     /// Per cluster: the portals on its boundary.
     pub clusters: Vec<Vec<u16>>,
+    /// Per cluster: the sky it shows, an index into the scenario's skies
+    /// ([`cluster_skies`]). Empty: every cluster shows sky 0.
+    pub skies: Vec<i8>,
 }
 
 impl Visibility {
@@ -399,10 +402,62 @@ pub fn portals(bsp: &StructureBsp, clusters: usize, planes: usize) -> Result<Vis
         lists.push(list);
     }
     lists.resize(clusters, Vec::new());
+    let skies = cluster_skies(bsp, &portals, clusters)?;
     Ok(Visibility {
         portals,
         clusters: lists,
+        skies,
     })
+}
+
+/// A Halo 1 cluster's sky (`+0x00`, i16): an index into the scenario's
+/// skies, -1 none (`tests/portal_flood.rs`,
+/// `halo1_clusters_name_their_sky`).
+pub const H1_CLUSTER_SKY: usize = 0x00;
+
+/// The sky each converted cluster shows (cluster `+0x6e`). Halo 2 draws
+/// one sky, the camera's cluster's (E `0x0002b865` calls `0x0014b360`,
+/// which reads `+0x6e` of the camera's cluster), where Halo 1 draws the
+/// sky of the clusters it sees. So a cluster keeps Halo 1's sky, and one
+/// with none (an interior) takes the sky of the nearest cluster through
+/// portals that has one: from inside, a window still shows the sky
+/// outside. Clusters no sky reaches, and structures with no clusters,
+/// show sky 0.
+pub fn cluster_skies(bsp: &StructureBsp, portals: &[Portal], clusters: usize) -> Result<Vec<i8>> {
+    let own: Vec<i8> = bsp
+        .space
+        .block_at(bsp.root, H1_CLUSTERS, H1_CLUSTER)?
+        .iter()
+        .map(|c| i8::try_from(i16_at(c, H1_CLUSTER_SKY)).ok().filter(|&s| s >= 0).unwrap_or(-1))
+        .collect();
+    Ok(spread_skies(own, portals, clusters))
+}
+
+/// [`cluster_skies`] over `own` (Halo 1's, -1 none): breadth first from
+/// every cluster with a sky, so each cluster without one takes its
+/// nearest's (fewest portals; on a tie, the one
+/// the search meets first).
+pub fn spread_skies(mut own: Vec<i8>, portals: &[Portal], clusters: usize) -> Vec<i8> {
+    own.resize(clusters, -1);
+    let mut next: Vec<Vec<usize>> = vec![Vec::new(); clusters];
+    for p in portals {
+        let [a, b] = p.clusters.map(usize::from);
+        if a < clusters && b < clusters {
+            next[a].push(b);
+            next[b].push(a);
+        }
+    }
+    let mut queue: std::collections::VecDeque<usize> = (0..clusters).filter(|&c| own[c] >= 0).collect();
+    while let Some(c) = queue.pop_front() {
+        let sky = own[c];
+        for &o in &next[c] {
+            if own[o] < 0 {
+                own[o] = sky;
+                queue.push_back(o);
+            }
+        }
+    }
+    own.into_iter().map(|s| s.max(0)).collect()
 }
 
 /// Each converted cluster's sound zone and each collision leaf's cluster:

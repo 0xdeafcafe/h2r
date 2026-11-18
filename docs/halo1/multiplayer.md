@@ -394,7 +394,15 @@ The base's old BSP region stays in the file, unused.
 - **The sky is Halo 1's** (`h1convert::sky`). Cluster `+0x6e` is the
   cluster's sky index into the scenario's skies (`scnr+0x8`, 8-byte
   references; E `0x0014b38d`..`0x0014b3c4`, where -1 also falls back to
-  the first sky when the scenario has one). Every cluster gets 0. Each
+  the first sky when the scenario has one). The engine draws one sky,
+  the camera's cluster's (E `0x0002b865` calls `0x0014b360`, which reads
+  that cluster's `+0x6e`, and passes its index to the sky draw
+  `0x0003ede0` through `0x004b9eec`); Halo 1 names a sky per cluster
+  (`+0x00`, i16, -1 none). Each converted cluster keeps Halo 1's, and a
+  cluster with none (an interior) takes the nearest cluster's through
+  portals, so a window still shows the sky outside
+  (`clusters::cluster_skies`; sky 0 where no sky reaches). Until
+  converter version 65 every cluster named sky 0. Each
   sky the Halo 1 scenario names is converted by `h1sky` (model, lights,
   fog colour, and a model scale that keeps it behind the level;
   docs/halo1/sky.md) and added as a new tag, and every
