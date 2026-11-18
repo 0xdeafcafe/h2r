@@ -1580,8 +1580,11 @@ small surface. Everything in it is controller input.
   - Errors: `NoSuchPort`, `PortTaken` (another bot asked for it), and
     `Full` (3 bots already).
   - If a real pad holds the port, the bot goes to the lowest free one.
-- `bots::local::remove(handle)` unplugs the bot's pad at the next input
-  sync. Its slot stays signed in until the game exits.
+- `bots::local::remove(handle)` takes the bot off the books (`list` no
+  longer has it); its pad stays plugged and idle. The boot glue signs its
+  slot out once no game runs, then unplugs the pad
+  (`Local::leaving`, `leave_step`, `Local::unplug`). Adding a bot on that
+  port before then takes the pad back.
 - `bots::local::list() -> Vec<BotInfo>` gives each bot's handle, name, the
   port it asked for, and the port it got (`None` until the input manager
   has placed it).
@@ -1631,8 +1634,8 @@ Known limits, for the agent API's `sim.*` docs (agent-api.md):
 4. A local bot signs in by pressing A only while the players screen is on
    top. One added in a lobby or mid-game does not join until that screen
    shows.
-5. `remove` on a local bot in a game unplugs its pad, which may bring up
-   the controller-disconnected prompt.
+5. `remove` on a local bot in a game leaves it standing idle until the
+   game ends; it is signed out and unplugged in the menus.
 
 ## 11. What needs a game run
 

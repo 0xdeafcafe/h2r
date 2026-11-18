@@ -10,7 +10,7 @@
 //! ([`crate::ui_kit::choice::ChoiceRow`]), laid out as the Halo 1 Options
 //! page is.
 //!
-//! **The row.** A custom game's Game Setup dialog gets a "Clankers" row,
+//! **The row.** A custom game's Game Setup dialog gets a "Clanker Options..." row,
 //! the way it gets the Halo 1 Options row (`crate::h1_options_row`, whose
 //! helpers this uses): an `after` on the list's constructor adds a row with
 //! [`ROW_ACTION`] to every list that has Change Map; `before` hooks draw
