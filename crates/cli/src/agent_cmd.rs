@@ -57,6 +57,10 @@ or a short form:
                          native render paths; `draws` lists each draw; `snap`
                          reads passes N... back as PNGs under the cache
                          directory's frames/ (waits up to 10 s for the frame)
+  loads [N]              load.timeline: the last N (8) level loads, BSP
+                         switches and stalls: stall and settle times, and the
+                         bytes read, uploads and compiles in each; a stall
+                         going on now as `current`
   fallbacks [N]          profile.fallbacks: the N (20) fallback interpreter
                          entry addresses that interpreted most, with their
                          function, hits and instructions
@@ -148,6 +152,8 @@ fn looks_like_host(w: &str) -> bool {
             && !w.starts_with("world.")
             && !w.starts_with("session.")
             && !w.starts_with("features.")
+            && !w.starts_with("load.")
+            && !w.starts_with("render.")
     }
 }
 
@@ -352,6 +358,13 @@ fn parse_call(words: &[String]) -> Result<(String, Value)> {
             },
         ),
         "query" => (method::WORLD_QUERY, json_arg(arg)?),
+        "loads" => (
+            method::LOAD_TIMELINE,
+            match arg {
+                None => Value::Null,
+                Some(_) => json!({ "last": number(arg, "loads")? }),
+            },
+        ),
         "fallbacks" => (
             method::PROFILE_FALLBACKS,
             match arg {
@@ -596,6 +609,7 @@ mod tests {
             ("profile.fallbacks".into(), json!({"top": 5}))
         );
         assert_eq!(c("fallbacks"), ("profile.fallbacks".into(), Value::Null));
+        assert_eq!(c("loads 3"), ("load.timeline".into(), json!({"last": 3})));
         assert_eq!(frame_params(&words("frame")).unwrap(), json!({"arm": true}));
         assert_eq!(
             frame_params(&words("frame draws snap 0,3")).unwrap(),

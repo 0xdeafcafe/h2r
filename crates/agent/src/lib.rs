@@ -24,6 +24,7 @@
 
 mod capture;
 mod exec;
+mod loads;
 mod reader;
 pub mod render;
 mod server;
@@ -31,6 +32,7 @@ mod tap;
 
 pub use capture::{FrameSource, Sampler, TickMark, summarise, write_csv};
 pub use exec::{Access, Agent, ConnId, HostMethod, Page, TICK_STALE, query};
+pub use loads::{LoadTracker, TimelineTotals, TotalsSource};
 pub use reader::{
     GameStatus, GuestReader, Reader, actor_object, machine_object, player_object, vehicle_object,
 };

@@ -5,7 +5,8 @@ Status: phase 1 built ([below](#phase-1-what-was-built)): the socket,
 `features.list`, `h2 serve` and `h2 agent`. Raw and recorded input and
 `profile.capture` built too ([below](#phase-3-and-4-what-was-built)).
 Phase 5 ([plan and what was built](#phase-5-testing-in-the-lightest-way-plan)):
-`render.frame`, `render.stats`, spike causes and `profile.fallbacks`.
+`render.frame`, `render.stats`, spike causes, `profile.fallbacks` and
+`load.timeline`.
 Everything else on this page is design; its Rust and JSON blocks are
 sketches, not code that compiles. The front end is the `h2 agent` CLI
 only: the MCP server is dropped (decided 2026-11-17).
@@ -840,6 +841,36 @@ h2 agent fallbacks 20              # where the fallback interpreter runs
   or below it). Kept per address in `boot::fallback::Stats::by_site`, at
   most 4096 addresses (`sites_full` says when later ones count in the
   totals only).
+
+### Load timeline
+
+```sh
+h2 agent loads                     # the last 8 loads, BSP switches and stalls
+h2 agent wait '{"phase":"gameplay","map_ticks":30}' && h2 agent loads 1
+```
+
+`load.timeline {"last": N}` (core method; 8 by default, 1 to 32 kept;
+`crates/agent/src/loads.rs`). How it behaves (**Code**, tested in
+`crates/agent` and `crates/timeline`; not run against the game):
+
+- **What a load is.** Read at each tick: the map changed (`map`), the BSP
+  changed (`bsp`), or no tick came for 500 ms (`stall`, the same point
+  the `loading` phase starts). The run's first tick ends a `boot` load
+  timed from when the agent started. Each load has a `stall` segment
+  (the last tick before to the first after) and a `settle` segment (the
+  next 30 ticks); a load cut short by the next one says `settled: false`.
+- **What each segment counted.** The difference of the frame-stats
+  running totals (`timeline::phase::totals`, new) across it: frames, ms
+  per phase (`cpu`, `gpu-wait`, `render-wait`, …) and each counter that
+  moved (`read_bytes`, `uploads`, `shaders`, `pipelines`, `readbacks`,
+  …). Frames are counted by present, so a load screen that presents
+  shows its frames; one that doesn't shows the stall's time only. With
+  frame stats off, `no_frame_stats` says the counts are missing.
+- **Now.** While no tick has come for 500 ms, `current` is the stall so
+  far, with what it has counted.
+- Seeks and cache hits aren't counted (the kernel's file I/O counts bytes
+  only), and per-frame I/O stalls are the `read_bytes` and `file_io`
+  spike cause above.
 
 Not built in phase 5 so far: per-subsystem guest time (engine-phase
 spans), A/B of feature sets, features set live, kernel I/O seeks and

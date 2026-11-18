@@ -13,10 +13,12 @@ use std::collections::BTreeMap;
 
 mod client;
 mod endpoint;
+mod load;
 mod pad;
 mod render;
 pub use client::{CallError, Client};
 pub use endpoint::Endpoint;
+pub use load::{LoadParams, LoadRecord, LoadSegment, Loads};
 pub use pad::{AtTick, Now, PAD_BUTTONS, PadParams, PadStep};
 pub use render::{
     DrawRecord, FrameParams, FrameRecord, FrameReply, FrameTotals, OpRecord, PassRecord,
@@ -81,6 +83,9 @@ pub mod method {
     pub const PROFILE_COUNTERS: &str = "profile.counters";
     pub const PROFILE_CAPTURE: &str = "profile.capture";
     pub const FEATURES: &str = "features.list";
+    /// Level loads, BSP switches and stalls: how long, and what the frames
+    /// in them read, uploaded and compiled ([`crate::LoadParams`]).
+    pub const LOAD_TIMELINE: &str = "load.timeline";
 
     /// Every method, in the order `session.methods` lists them.
     pub const ALL: &[&str] = &[
@@ -99,6 +104,7 @@ pub mod method {
         PROFILE_COUNTERS,
         PROFILE_CAPTURE,
         FEATURES,
+        LOAD_TIMELINE,
     ];
 
     /// Methods that change the run; they need `session.claim` first.

@@ -10,15 +10,17 @@ use std::sync::mpsc::{SyncSender, TrySendError};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
 use crate::capture::{self, FrameSource, Sampler, TickMark, TimelineFrames};
+use crate::loads::{LoadTracker, TimelineTotals, TotalsSource};
 use crate::tap::{self as input, AgentTap, Chain, Input};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use agent_proto::{
     At, Boundary, Capture, CaptureParams, CountParams, Counters, Counts, Event, EventKind,
-    Features, GroupBy, Kind, Notification, OBJECT_FIELDS, Object, ObjectId, ObjectParams,
-    ObjectResult, PROTOCOL, PauseParams, Phase, QueryParams, QueryResult, Request, Response,
-    RpcError, Status, StepParams, SubscribeParams, Until, WaitParams, Waited, code, method,
+    Features, GroupBy, Kind, LoadParams, Loads, Notification, OBJECT_FIELDS, Object, ObjectId,
+    ObjectParams, ObjectResult, PROTOCOL, PauseParams, Phase, QueryParams, QueryResult, Request,
+    Response, RpcError, Status, StepParams, SubscribeParams, Until, WaitParams, Waited, code,
+    method,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -113,6 +115,11 @@ struct State {
     frames: Option<Box<dyn FrameSource>>,
     /// A sampling profiler, when the game was built with one.
     sampler: Option<Box<dyn Sampler>>,
+    /// Level loads and stalls, from the ticks (`load.timeline`).
+    loads: LoadTracker,
+    /// Frame-stats running totals (`timeline::phase` unless a test sets
+    /// one).
+    totals: Option<Box<dyn TotalsSource>>,
 }
 
 /// A `profile.capture` waiting for its window to pass.
@@ -346,6 +353,11 @@ impl Agent {
         self.lock().frames = Some(frames);
     }
 
+    /// Where running frame totals for `load.timeline` come from (tests).
+    pub fn set_totals_source(&self, totals: Box<dyn TotalsSource>) {
+        self.lock().totals = Some(totals);
+    }
+
     /// The sampling profiler `profile.capture {"sample": true}` runs.
     pub fn set_sampler(&self, sampler: Box<dyn Sampler>) {
         self.lock().sampler = Some(sampler);
@@ -366,6 +378,7 @@ impl Agent {
         s.ticks += 1;
         s.last_tick = Some(Instant::now());
         s.refresh(reader, Where::Tick);
+        s.track_load();
         match s.stepping {
             Some(left) if left <= 1 => {
                 s.stepping = None;
@@ -507,6 +520,38 @@ impl State {
             paused: self.paused.is_some(),
             boundary: self.boundary.unwrap_or(Boundary::Slice),
         }
+    }
+
+    fn read_totals(&mut self) -> Option<timeline::phase::Totals> {
+        self.totals
+            .get_or_insert_with(|| Box::new(TimelineTotals))
+            .totals()
+    }
+
+    /// After a tick's refresh: feeds the load tracker.
+    fn track_load(&mut self) {
+        let totals = self.read_totals();
+        let (map, bsp, present) = (self.game.map.clone(), self.game.bsp, self.presents);
+        self.loads
+            .on_tick(Instant::now(), map, bsp, present, totals);
+    }
+
+    fn loads(&mut self, p: LoadParams) -> Result<Loads, RpcError> {
+        let n = p.last.unwrap_or(LoadParams::DEFAULT);
+        if n == 0 || n > LoadParams::KEEP {
+            return Err(RpcError::new(
+                code::INVALID_PARAMS,
+                format!("last: 1 to {}", LoadParams::KEEP),
+            ));
+        }
+        let totals = self.read_totals();
+        let (loads, current) = self.loads.report(n, Instant::now(), totals);
+        Ok(Loads {
+            at: self.at(),
+            loads,
+            current,
+            no_frame_stats: self.loads.no_frame_stats || totals.is_none(),
+        })
     }
 
     /// Reads the game's status and emits what changed.
@@ -852,6 +897,9 @@ impl State {
                 params::<ObjectParams>(p).and_then(|op| self.object(reader, op).map(to_value))
             }
             method::PROFILE_COUNTERS => self.counters().map(to_value),
+            method::LOAD_TIMELINE => params::<LoadParams>(p)
+                .and_then(|lp| self.loads(lp))
+                .map(to_value),
             method::FEATURES => Ok(to_value(Features {
                 at: self.at(),
                 plan: self.plan.clone(),
