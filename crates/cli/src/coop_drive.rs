@@ -8,21 +8,28 @@
 //! alone, and every wait has a timeout; each press is said as
 //! `coop-drive: Alpha: press a on screen 0x09 (Xbox Live)`.
 //!
-//! The paths:
+//! The paths (screens as `boot::ui_watch` names them; the main menu
+//! reads as no screen, so "the main menu" is no screen once the game has
+//! said `coop-live: lobby mode`, which it does on reaching it):
 //!
-//! * Every game: through the boot screens (START on the first, then DOWN,
-//!   A on the profile picker, as docs/runtime/BOOT.md's headless runs do)
-//!   to the main menu (screen 9); then DOWN, A for Xbox Live, which signs
-//!   it in, to the Xbox Live menu (`0xba`).
+//! * Every game: no press until the main menu, which the coop-test data
+//!   reaches by itself (boot presses only if it hasn't [`BOOT_WAIT_MS`]
+//!   after the first chance to press); then DOWN, A for Xbox Live, which
+//!   opens the players' screen (`0x1e`) in mode 3; A there opens the Xbox
+//!   Live menu (`0xba`). A wrong main menu row shows in what it opened
+//!   (the players' screen in mode 1 or 2, or the campaign's `0xee`), and
+//!   is backed out of and corrected.
 //! * The host: from the row the Live menu restores to Co-op Campaign (row
 //!   4), A; once `coop-live: hosting`, it waits for every lobby guest's
 //!   `coop-live: guest: joined`, then A on Start Game (the lobby's row 0,
 //!   `0x250fb3`), again if the start isn't seen.
-//! * A guest: B back to the main menu, where the invitation reader runs
-//!   (12.1), and a cursor move there (the reader runs on an event); if the
-//!   invitation isn't taken within [`INVITE_WAIT_MS`] of its acceptance,
-//!   Xbox Live again, Custom Game Browser (row 3), and A on the first
-//!   game once the browser has probed one.
+//! * A guest: B back to the main menu (through the players' screen),
+//!   where the invitation reader runs (12.1), and a cursor move there once
+//!   it has accepted (the reader runs on an event). A dialog or the
+//!   players' screen in mode 4 after that gets A (that is the invitation
+//!   being taken). If the game hasn't joined within [`INVITE_WAIT_MS`] of
+//!   its acceptance, Xbox Live again, Custom Game Browser (row 3), and A on
+//!   the first game once the browser has probed one.
 //! * The late guest: the same, its fallback held until
 //!   [`LATE_MS`] after the host invited it, so it joins in progress.
 
@@ -33,6 +40,14 @@ use std::collections::BTreeSet;
 pub const MAIN_MENU: u32 = 0x09;
 pub const LIVE_MENU: u32 = 0xba;
 pub const BROWSER: u32 = 0x0d;
+/// The players' screen (`boot::ui_watch::JOIN_SCREEN`) and its modes.
+pub const JOIN_SCREEN: u32 = 0x1e;
+pub const MODE_SPLIT: u32 = 1;
+pub const MODE_SYSTEM_LINK: u32 = 2;
+pub const MODE_LIVE: u32 = 3;
+pub const MODE_INVITE: u32 = 4;
+/// The campaign's screens: A on Campaign, and the one after it.
+pub const CAMPAIGN_SCREENS: [u32; 2] = [0xee, 0xd1];
 /// Live menu rows (`custom_games`).
 pub const BROWSER_ROW: u32 = 3;
 pub const COOP_ROW: u32 = 4;
@@ -46,6 +61,9 @@ pub const GAP_MS: u64 = 700;
 pub const SETTLE_MS: u64 = 1500;
 /// A boot screen that holds this long gets its press.
 pub const BOOT_SETTLE_MS: u64 = 4000;
+/// No boot presses until this long after the first chance to press: the
+/// coop-test data reaches the main menu by itself in about 19 s.
+pub const BOOT_WAIT_MS: u64 = 60_000;
 /// How long a press may take to show its screen or line.
 pub const STEP_MS: u64 = 15_000;
 /// A guest waits this long after its acceptance for the game to take the
@@ -133,6 +151,16 @@ pub struct Driver {
     screen: Option<u32>,
     screen_since: u64,
     live_row: Option<u32>,
+    /// The players' screen's mode.
+    mode: Option<u32>,
+    /// The game said `coop-live: lobby mode`: it has been at the main menu.
+    menu_seen: bool,
+    /// Presses on screens met while waiting for the invitation.
+    dialog_presses: u32,
+    /// The first poll (the harness polls once the agent socket is up).
+    first_poll: Option<u64>,
+    /// The screen appearance (its `screen_since`) a press was planned on.
+    acted: Option<u64>,
     /// The Live menu's cursor: the restored row, then our moves.
     cursor: Option<u32>,
     /// Presses queued for this step, sent [`GAP_MS`] apart.
@@ -166,6 +194,11 @@ impl Driver {
             screen: None,
             screen_since: 0,
             live_row: None,
+            mode: None,
+            menu_seen: false,
+            first_poll: None,
+            dialog_presses: 0,
+            acted: None,
             cursor: None,
             queue: Vec::new(),
             last_press: 0,
@@ -189,7 +222,8 @@ impl Driver {
     pub fn line(&mut self, now: u64, from: &str, text: &str) {
         let mine = from == self.tag;
         if mine {
-            if let Some((screen, row)) = parse_screen(text) {
+            if let Some((screen, row, mode)) = parse_screen(text) {
+                self.mode = mode;
                 if screen != self.screen {
                     self.screen = screen;
                     self.screen_since = now;
@@ -198,6 +232,9 @@ impl Driver {
                 }
                 self.live_row = row;
                 return;
+            }
+            if text.starts_with("coop-live: lobby mode ") {
+                self.menu_seen = true;
             }
             if text.starts_with("coop-auto: accepting ") {
                 self.accepted = Some(now);
@@ -287,6 +324,62 @@ impl Driver {
         now.saturating_sub(self.screen_since) >= ms
     }
 
+    /// At the main menu: screen 9, or no screen once the game has said
+    /// `coop-live: lobby mode`.
+    fn at_main(&self) -> bool {
+        self.screen == Some(MAIN_MENU) || (self.screen.is_none() && self.menu_seen)
+    }
+
+    /// The screen has held [`SETTLE_MS`] and nothing was planned on this
+    /// appearance of it yet; marks it planned.
+    fn fresh(&mut self, now: u64) -> bool {
+        if !self.held(now, SETTLE_MS) || self.acted == Some(self.screen_since) {
+            return false;
+        }
+        self.acted = Some(self.screen_since);
+        true
+    }
+
+    /// On the way to the Live menu, what the screen shown asks for: the
+    /// players' screen goes on in Xbox Live mode, a wrong main menu row is
+    /// backed out of and corrected. Whether it planned anything.
+    fn on_the_way(&mut self, now: u64) -> bool {
+        let screen = self.screen;
+        let campaign = screen.is_some_and(|s| CAMPAIGN_SCREENS.contains(&s));
+        if screen != Some(JOIN_SCREEN) && !campaign {
+            return false;
+        }
+        if !self.fresh(now) {
+            return true;
+        }
+        self.queue = match (campaign, self.mode) {
+            (true, _) => vec![
+                press("b", "the campaign: that was Campaign"),
+                press("down", "to Xbox Live"),
+                press("a", "Xbox Live"),
+            ],
+            (false, Some(MODE_LIVE) | None) => {
+                vec![press(
+                    "a",
+                    "the players' screen for Xbox Live: on to the Live menu",
+                )]
+            }
+            (false, Some(MODE_SPLIT)) => vec![
+                press("b", "that was Split Screen"),
+                press("up", "to Xbox Live"),
+                press("a", "Xbox Live"),
+            ],
+            (false, Some(MODE_SYSTEM_LINK)) => vec![
+                press("b", "that was System Link"),
+                press("up", "to Xbox Live"),
+                press("up", "to Xbox Live"),
+                press("a", "Xbox Live"),
+            ],
+            (false, Some(m)) => vec![press("b", &format!("the players' screen in mode {m}"))],
+        };
+        true
+    }
+
     /// The presses from the Live menu's restored row to `row`, then A.
     fn to_row(&self, row: u32, what: &str) -> Vec<Press> {
         let from = self.cursor.unwrap_or(0);
@@ -331,17 +424,26 @@ impl Driver {
         let screen = self.screen;
         match self.step.clone() {
             Step::Boot => {
-                if screen == Some(MAIN_MENU) {
+                let first = *self.first_poll.get_or_insert(now);
+                if self.at_main() {
                     if self.held(now, SETTLE_MS) {
                         self.go_live(now, 0);
                     }
                     return;
                 }
                 if screen == Some(LIVE_MENU) {
-                    self.at_live_menu(now);
+                    if self.held(now, SETTLE_MS) {
+                        self.at_live_menu(now);
+                    }
                     return;
                 }
-                if !self.held(now, BOOT_SETTLE_MS) {
+                if self.on_the_way(now) {
+                    self.step = Step::ToLive { at: now, tries: 0 };
+                    return;
+                }
+                // The game reaches the main menu by itself; press only if
+                // it hasn't for a long while.
+                if now.saturating_sub(first) < BOOT_WAIT_MS || !self.held(now, BOOT_SETTLE_MS) {
                     return;
                 }
                 let n = match self.boot.iter_mut().find(|(s, _)| *s == screen) {
@@ -355,17 +457,15 @@ impl Driver {
                 *n += 1;
                 // Hold off another round until the screen has held again.
                 self.screen_since = now;
-                let first = self.boot.len() == 1;
-                self.queue = match (first, k) {
-                    (true, 0) => vec![press("start", "past the intro")],
-                    (false, 0) => vec![
-                        press("down", "the profile picker: Default"),
-                        press("a", "the profile picker: Default"),
-                    ],
-                    (_, 1) => vec![press("a", "a boot screen that held")],
-                    (_, 2) => vec![press("start", "a boot screen that held")],
+                self.queue = match k {
+                    0 => vec![press("start", "no main menu after a minute")],
+                    1 => vec![press("a", "no main menu after a minute")],
+                    2 => vec![press("b", "no main menu after a minute")],
                     _ => {
-                        self.stuck(format!("boot screen {} held after 3 presses", show(screen)));
+                        self.stuck(format!(
+                            "no main menu; screen {} held after 3 presses",
+                            show(screen)
+                        ));
                         Vec::new()
                     }
                 };
@@ -375,27 +475,25 @@ impl Driver {
                     if self.held(now, SETTLE_MS) {
                         self.at_live_menu(now);
                     }
+                } else if self.on_the_way(now) {
+                    if !self.queue.is_empty() {
+                        self.step = Step::ToLive { at: now, tries };
+                    }
                 } else if now.saturating_sub(at) > STEP_MS {
                     if tries + 1 >= TRIES {
                         self.stuck(format!(
                             "no Xbox Live menu after {TRIES} tries (on {})",
                             show(screen)
                         ));
-                    } else if screen == Some(MAIN_MENU) {
-                        // The cursor wasn't where we thought: up to the top
-                        // and down to Xbox Live.
-                        let mut q = vec![press("up", "to Campaign"); 3];
-                        q.push(press("down", "to Xbox Live"));
-                        q.push(press("a", "Xbox Live"));
-                        self.queue = q;
+                    } else if self.at_main() {
+                        // A again: what it opens says where the cursor was.
+                        self.queue = vec![press("a", "Xbox Live, again")];
                         self.step = Step::ToLive {
                             at: now,
                             tries: tries + 1,
                         };
                     } else {
-                        // A sign-in screen or a wrong row: A once, then B.
-                        let b = if tries % 2 == 0 { "a" } else { "b" };
-                        self.queue = vec![press(b, "a screen on the way to Xbox Live")];
+                        self.queue = vec![press("b", "a screen on the way to Xbox Live")];
                         self.step = Step::ToLive {
                             at: now,
                             tries: tries + 1,
@@ -460,7 +558,25 @@ impl Driver {
                     self.screen_since = now;
                     return;
                 }
-                if screen != Some(MAIN_MENU) || !self.held(now, SETTLE_MS) {
+                let other = screen.is_some() && !self.at_main();
+                if screen == Some(JOIN_SCREEN) || (self.accepted.is_some() && other) {
+                    // The players' screen in mode 4 is the invitation being
+                    // taken: A. Any other screen once accepted is the
+                    // invitation dialog: A, its first button. The players'
+                    // screen otherwise: B on to the main menu.
+                    if self.dialog_presses < TRIES && self.fresh(now) {
+                        self.dialog_presses += 1;
+                        let join = self.accepted.is_some()
+                            && (screen != Some(JOIN_SCREEN) || self.mode == Some(MODE_INVITE));
+                        self.queue = if join {
+                            vec![press("a", "the invitation: go on")]
+                        } else {
+                            vec![press("b", "back to the main menu for the invitation")]
+                        };
+                    }
+                    return;
+                }
+                if !self.at_main() || !self.held(now, SETTLE_MS) {
                     return;
                 }
                 if !nudged && self.accepted.is_some() {
@@ -632,22 +748,26 @@ fn show(screen: Option<u32>) -> String {
     screen.map_or_else(|| "none".into(), |s| format!("0x{s:02x}"))
 }
 
-/// A `ui: screen` line's screen and Live menu row
-/// (`boot::ui_watch::Top::line`).
-pub fn parse_screen(text: &str) -> Option<(Option<u32>, Option<u32>)> {
+/// A `ui: screen` line's screen, Live menu row and players' screen mode
+/// (`boot::ui_watch::Read::line`).
+pub fn parse_screen(text: &str) -> Option<(Option<u32>, Option<u32>, Option<u32>)> {
     let rest = text.strip_prefix("ui: screen ")?;
-    if rest.trim() == "none" {
-        return Some((None, None));
+    if rest.starts_with("none") {
+        return Some((None, None, None));
     }
     let hex = rest.strip_prefix("0x")?;
     let end = hex
         .find(|c: char| !c.is_ascii_hexdigit())
         .unwrap_or(hex.len());
     let id = u32::from_str_radix(&hex[..end], 16).ok()?;
-    let row = rest
-        .split_once("live menu row ")
-        .and_then(|(_, r)| r.trim().parse().ok());
-    Some((Some(id), row))
+    let after = |key: &str| {
+        rest.split_once(key).and_then(|(_, r)| {
+            r.split(|c: char| !c.is_ascii_digit())
+                .next()
+                .and_then(|n| n.parse().ok())
+        })
+    };
+    Some((Some(id), after("live menu row "), after(", mode ")))
 }
 
 /// The `input.pad` params for one press: held 150 ms and two reads, so a
