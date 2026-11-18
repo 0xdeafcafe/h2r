@@ -271,6 +271,43 @@ definitions"). The vehicle rows described below (warthog, ghost,
 scorpion, banshee, pelican, dropship, wraith, gun turret, lifepods) and
 the lifepods' quiet stand-in are history, kept for the record.
 
+**Where a vehicle meets the ground (converter version 63).** Three
+things the engine reads at a vehicle's base, proved in
+`h1objects/tests/vehicle_ground_disc.rs`:
+
+- **Bounding sphere.** Halo 1 centres every vehicle's sphere on its
+  origin (`obje +0x08` zero on all of them), and its origin is where the
+  wheels or hull touch the ground: every Blood Gulch vehicle placement
+  is 1 mm above the floor. Halo 2 lights an object from that centre
+  (E: `0x000d1850` passes `obj +0x30` to `0x000d2a50`, which casts from
+  0.01 above it straight down 10 units, `0x004406e4` and `0x0045dc70`,
+  and reads the lightmap where the ray meets the structure) and finds
+  its cluster from it, then from the origin (`0x000b8600`: `obj +0x40`,
+  then `obj +0x64`; with neither in a cluster the object is outside the
+  map, `obj +4` bit 18, and the player's action search `0x00151110`,
+  which walks the clusters round the player, never offers it). A centre
+  a few millimetres under the ground leaves the vehicle unlit and,
+  outside the map, unboardable. The retail warthog's centre is 0.29
+  above its origin, inside the body; the ghost, banshee, scorpion and
+  wraith keep theirs on the origin (the wraith's 3 cm under its model),
+  so retail holds no general rule, and a centre on the contact point is
+  a centimetre of sinking from dark. A rebuilt vehicle's sphere is its model's: the middle of the box
+  round every vertex, reaching the farthest one
+  (`rebuild::model_sphere`).
+- **Entry facing.** `0x000c9040` admits a rider only when the entry
+  marker's forward points back at the rider's eye within the seat's
+  `+0x9c`. Retail entry markers face out of their door (the warthog's
+  `driver_enter`: (0.15, 0.85, 0.5)); Halo 1's `driver enter` faces the
+  vehicle's forward, so with the warthog role's 70 degrees a rider square
+  beside the door was refused; only one ahead of it, looking back, got in. Rebuilt seats hold pi there
+  (`rebuild::SEAT_ENTRY_FACING`), as the retail turrets do.
+- **Spawn height.** The ghost's hull reaches 0.143 below its origin, so
+  at Halo 1's placement it began 0.14 into the floor, where Halo 1's
+  hover mass points lifted it and Halo 2 left it. The Halo 1 sandbox
+  raises each vehicle spawn by how far its model reaches below its
+  origin (`h1convert::convert::halo1::vehicle_depth`); the Halo 2
+  sandbox's retail vehicles keep Halo 1's spot (not checked).
+
 Each object is built on the **retail Halo 2 tag that plays the same role**
 in the base map (`convert::TEMPLATES`): assault rifle on the SMG, pistol
 on the magnum, plasma rifle, needler, grenades on Halo 2's grenades,

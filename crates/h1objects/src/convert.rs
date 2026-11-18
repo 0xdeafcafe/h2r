@@ -1994,16 +1994,14 @@ impl<'a> Converter<'a> {
         let hlmt = self.model(&mut rep, &u.object, None, &tag.name, true)?;
         self.object_physics(&mut rep, hlmt, &u.object, &tag.name, PhysicsKind::Vehicle)?;
         let predicted = self.predicted(&u.object)?;
-        let markers = match u.object.model {
+        let (markers, bounds) = match u.object.model {
             Some(m) => {
-                h1models::model_from_map(self.h1, self.h1_tag(m)?, &ModelOptions::default())?
-                    .0
-                    .markers
-                    .into_iter()
-                    .map(|m| m.name)
-                    .collect()
+                let model =
+                    h1models::model_from_map(self.h1, self.h1_tag(m)?, &ModelOptions::default())?.0;
+                let bounds = crate::rebuild::model_sphere(&model);
+                (model.markers.into_iter().map(|m| m.name).collect(), bounds)
             }
-            None => Vec::new(),
+            None => (Vec::new(), None),
         };
         let seats: Vec<_> = u
             .seats
@@ -2042,6 +2040,7 @@ impl<'a> Converter<'a> {
             attachments: &attachments,
             creation_effect,
             object: &u.object,
+            bounds,
             hlmt,
             seats: &seats,
             predicted: &predicted,

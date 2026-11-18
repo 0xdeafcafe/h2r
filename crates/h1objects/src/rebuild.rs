@@ -465,6 +465,19 @@ pub const VEHI_SEATS: &str = "block_1c8";
 /// distance at `+0x98` and the angles at `+0x9c` and `+0xa0`, and within
 /// the distance at `+0xa4` of the seat's marker; zero admits no one.
 pub const SEAT_ENTRY: &[&str] = &["unknown_98", "unknown_9c", "unknown_a0", "unknown_a4"];
+/// A seat's entry-marker facing test, `+0x9c` (radians): `0x000c9040`
+/// admits a rider only when the angle between the entry marker's forward
+/// (its first axis) and the direction from the rider's eye to the marker
+/// is at least pi less this, so the marker must face the rider within it.
+/// V: retail markers face out of the door they serve (the warthog's
+/// `driver_enter` forward is (0.15, 0.85, 0.5) on the driver's side, with
+/// 70 degrees); Halo 1's `driver enter` markers face the vehicle's forward,
+/// (1, 0, 0), so a rider square beside the door, 90 degrees off, was refused
+/// (`tests/vehicle_ground_disc.rs`). A rebuilt seat holds [`ANY_FACING`].
+pub const SEAT_ENTRY_FACING: &str = "unknown_9c";
+/// [`SEAT_ENTRY_FACING`] that admits a rider from any side: pi, as every
+/// retail turret seat holds ([`TURRET_SEAT_ROLE`]).
+pub const ANY_FACING: f32 = std::f32::consts::PI;
 /// A seat's flags ([`SEAT_DRIVER`]), `+0`.
 pub const SEAT_FLAGS: &str = "unknown_0";
 /// `vehi +0x2f8`, the physics block (one element on every retail vehicle).
@@ -902,9 +915,56 @@ fn role_over(
     })
 }
 
+/// A vehicle's bounding sphere from its render model: the centre of the
+/// box around every vertex of every geometry (Halo 1 keeps them in model
+/// space at the rest pose), the radius the farthest vertex from it.
+/// `None` for a model without vertices.
+///
+/// Halo 1's own sphere is not used for vehicles: every Halo 1 vehicle on
+/// the disc centres it on the origin (`+0x08` zero), which is where the
+/// wheels or the hull touch the ground, and Halo 2 asks two things of
+/// that point (E):
+/// - the object's lighting (`0x000d1850`) is the lightmap where a ray
+///   from 0.01 above the centre (`obj +0x30`) down 10 units meets the
+///   structure (`0x000d2a50`, direction `0x004406e4` (0, 0, -10), start
+///   offset `0x0045dc70` 0.001 of it); from a centre under the ground the
+///   ray finds no floor and the vehicle is drawn unlit;
+/// - the object's location (`0x000b8600`) is the cluster holding the
+///   centre (`obj +0x40`), else the one holding the origin (`obj +0x64`);
+///   with neither, the object is outside the map (`obj +4` bit 18) and the
+///   player's action search (`0x00151110`, objects in the clusters around
+///   the player, `0x000bb050`) never offers it.
+/// Retail vehicles hold their centre inside the body: the warthog's 0.29
+/// above an origin its wheels touch 0.02 below, the ghost's on an origin
+/// 0.15 above its belly (`tests/vehicle_ground_disc.rs`).
+pub fn model_sphere(model: &h1models::h1::Model) -> Option<(f32, [f32; 3])> {
+    let mut lo = [f32::MAX; 3];
+    let mut hi = [f32::MIN; 3];
+    let mut any = false;
+    let vertices = || model.geometries.iter().flat_map(|g| &g.parts).flat_map(|p| &p.vertices);
+    for v in vertices() {
+        any = true;
+        for a in 0..3 {
+            lo[a] = lo[a].min(v.position[a]);
+            hi[a] = hi[a].max(v.position[a]);
+        }
+    }
+    if !any {
+        return None;
+    }
+    let centre: [f32; 3] = std::array::from_fn(|a| (lo[a] + hi[a]) / 2.0);
+    let radius = vertices()
+        .map(|v| (0..3).map(|a| (v.position[a] - centre[a]).powi(2)).sum::<f32>().sqrt())
+        .fold(0.0, f32::max);
+    Some((radius, centre))
+}
+
 /// What a rebuilt vehicle carries from Halo 1 ([`vehicle`]).
 pub struct VehicleSpec<'a> {
     pub object: &'a h1::Object,
+    /// The bounding sphere (radius, centre) written in place of Halo 1's
+    /// ([`model_sphere`]); `None` keeps Halo 1's.
+    pub bounds: Option<(f32, [f32; 3])>,
     pub hlmt: Option<TagId>,
     pub seats: &'a [SeatNames],
     pub predicted: &'a [Predicted],
@@ -975,16 +1035,9 @@ pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
         Val::Float(v.camera_field_of_view),
     )?;
     set(&mut r, "unit.obje.object_type", Val::Enum(VEHICLE_TYPE))?;
-    set(
-        &mut r,
-        "unit.obje.bounding_radius",
-        Val::Float(obj.bounding_radius),
-    )?;
-    set(
-        &mut r,
-        "unit.obje.bounding_offset",
-        Val::floats(&obj.bounding_offset),
-    )?;
+    let (radius, centre) = v.bounds.unwrap_or((obj.bounding_radius, obj.bounding_offset));
+    set(&mut r, "unit.obje.bounding_radius", Val::Float(radius))?;
+    set(&mut r, "unit.obje.bounding_offset", Val::floats(&centre))?;
     set(
         &mut r,
         "unit.obje.model",
@@ -1054,6 +1107,13 @@ pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
                 set(&mut e, field, Val::Bytes(w.to_le_bytes().to_vec()))?;
             }
         }
+        // Halo 1's entry markers face the vehicle's forward, not the way a
+        // rider comes from, so no facing test applies to them.
+        set(
+            &mut e,
+            SEAT_ENTRY_FACING,
+            Val::Bytes(ANY_FACING.to_bits().to_le_bytes().to_vec()),
+        )?;
         set(&mut e, "label", Val::text(&s.label))?;
         // V: Halo 2's seats hold the rider's marker at +8 (`driver`,
         // `gunner`), the entry marker at +0xc (`driver_enter`) and the

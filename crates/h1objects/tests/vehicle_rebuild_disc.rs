@@ -296,11 +296,17 @@ fn every_vehicle_rebuilds_from_its_definition() {
                 };
                 assert_eq!(flags & 0xffff, u32_at(b, H1_VEHICLE_FLAGS) & 0xffff, "{name}");
                 assert_eq!(r.at("unit.obje.object_type"), Some(&Val::Enum(1)));
-                assert_eq!(
-                    r.at("unit.obje.bounding_radius"),
-                    Some(&Val::Float(u.object.bounding_radius)),
-                    "{name}"
-                );
+                // The sphere is the model's (`rebuild::model_sphere`;
+                // `tests/vehicle_ground_disc.rs`), Halo 1's without one.
+                let model = u.object.model.map(|m| {
+                    h1models::model_from_map(&h1, h1.tag(m).unwrap(), &Default::default()).unwrap().0
+                });
+                let (radius, centre) = model
+                    .as_ref()
+                    .and_then(h1objects::rebuild::model_sphere)
+                    .unwrap_or((u.object.bounding_radius, u.object.bounding_offset));
+                assert_eq!(r.at("unit.obje.bounding_radius"), Some(&Val::Float(radius)), "{name}");
+                assert_eq!(r.at("unit.obje.bounding_offset"), Some(&Val::floats(&centre)), "{name}");
                 assert_eq!(
                     r.at("unit.camera_field_of_view"),
                     Some(&Val::Float(u.camera_field_of_view)),
