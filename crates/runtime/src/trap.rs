@@ -16,16 +16,26 @@
 //! - a hit from the host (HLE, Rust ports of guest code: `pc` 0) leaves the
 //!   page armed and logs only the first such hit per kind, so a page the
 //!   host writes first still reports the guest code that writes it later;
-//! - a *sticky* page is never disarmed and logs every access, for byte-level
-//!   detail on a few pages.
+//! - a *sticky* page is never disarmed: its first guest and first host hit
+//!   of each kind are logged as above, and every access adds to its
+//!   64-byte line masks per guest thread ([`LineRec`]), for line-level
+//!   detail without a log entry per access.
+//!
+//! Each hit carries the guest thread the kernel says is running
+//! (`timeline::phase::running_guest_thread`) and, for host hits, the Rust
+//! handler (kernel export or override) the runner is executing
+//! ([`hle_enter`]). With the HLE census on ([`set_hle_census`]) the runner
+//! also counts Rust-handler calls by target and thread ([`take_hle_calls`]).
 //!
 //! Accesses that never consult the fast table (raw [`Guest::physical_ram`]
 //! readers) are not seen.
 //!
 //! [`Guest::read_bytes`]: crate::Guest::read_bytes
 //! [`Guest::physical_ram`]: crate::Guest::physical_ram
+use std::cell::Cell;
+use std::collections::HashMap;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 const PAGES: usize = 1 << 20;
 const WORDS: usize = PAGES / 64;
@@ -42,6 +52,29 @@ pub struct TrapHit {
     /// [`timeline::phase::Phase`] at the access (`as u8`), or `u8::MAX`
     /// while frame stats are off.
     pub phase: u8,
+    /// The running guest thread, or [`NO_THREAD`] (between slices, or frame
+    /// stats off).
+    pub thread: u32,
+    /// The Rust handler the runner is executing (its target address: a
+    /// kernel token or an override's entry), or 0.
+    pub hle: u32,
+}
+
+/// [`TrapHit::thread`] when no guest thread is known.
+pub const NO_THREAD: u32 = u32::MAX;
+
+/// A sticky page's 64-byte lines touched by one guest thread since the last
+/// take (bit `i` is line `i`).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct LineRec {
+    pub page: u32,
+    pub thread: u32,
+    pub read: u64,
+    pub write: u64,
+    /// Lines read before this thread wrote them in this log.
+    pub read_first: u64,
+    /// Accesses counted.
+    pub accesses: u64,
 }
 
 /// The logged hits since the last [`take`](crate::Guest::take_trap_hits),
@@ -50,6 +83,15 @@ pub struct TrapHit {
 pub struct TrapLog {
     pub hits: Vec<TrapHit>,
     pub dropped: u64,
+    /// Sticky pages' lines, by page and thread, in no order.
+    pub lines: Vec<LineRec>,
+}
+
+#[derive(Default)]
+struct Log {
+    hits: Vec<TrapHit>,
+    dropped: u64,
+    lines: HashMap<(u32, u32), LineRec>,
 }
 
 fn bits() -> Box<[AtomicU64]> {
@@ -85,7 +127,10 @@ pub(crate) struct AccessTrap {
     /// The host's hit of that kind is already logged for this arming.
     host_read: Box<[AtomicU64]>,
     host_write: Box<[AtomicU64]>,
-    log: Mutex<TrapLog>,
+    /// A sticky page's guest hit of that kind is already logged.
+    guest_read: Box<[AtomicU64]>,
+    guest_write: Box<[AtomicU64]>,
+    log: Mutex<Log>,
     cap: usize,
 }
 
@@ -97,7 +142,9 @@ impl AccessTrap {
             sticky: bits(),
             host_read: bits(),
             host_write: bits(),
-            log: Mutex::new(TrapLog::default()),
+            guest_read: bits(),
+            guest_write: bits(),
+            log: Mutex::new(Log::default()),
             cap,
         }
     }
@@ -105,10 +152,12 @@ impl AccessTrap {
         if read {
             set(&self.read, page);
             clear(&self.host_read, page);
+            clear(&self.guest_read, page);
         }
         if write {
             set(&self.write, page);
             clear(&self.host_write, page);
+            clear(&self.guest_write, page);
         }
     }
     /// Disarms both kinds and stickiness; true if the page was armed.
@@ -152,20 +201,24 @@ impl AccessTrap {
         let last = ((addr as u64 + len as u64 - 1) >> 12) as usize;
         let mut open = PagesToOpen::default();
         let mut logged = false;
+        let thread = timeline::phase::running_guest_thread().unwrap_or(NO_THREAD);
         for page in first..=last.min(PAGES - 1) {
             if !self.armed(page, write) {
                 continue;
             }
             let sticky = test(&self.sticky, page);
-            if pc == 0 && !sticky {
-                let seen = if write {
-                    &self.host_write
-                } else {
-                    &self.host_read
-                };
-                if !claim(seen, page) {
-                    continue;
-                }
+            if sticky {
+                self.add_lines(page as u32, thread, addr, len, write);
+            }
+            let seen = match (pc == 0, write) {
+                (true, true) => Some(&self.host_write),
+                (true, false) => Some(&self.host_read),
+                (false, true) if sticky => Some(&self.guest_write),
+                (false, false) if sticky => Some(&self.guest_read),
+                _ => None,
+            };
+            if seen.is_some_and(|seen| !claim(seen, page)) {
+                continue;
             }
             if pc != 0 && !sticky {
                 if write {
@@ -183,10 +236,36 @@ impl AccessTrap {
                     write,
                     pc,
                     phase: timeline::phase::current().map_or(u8::MAX, |p| p as u8),
+                    thread,
+                    hle: if pc == 0 { HLE_NOW.with(Cell::get) } else { 0 },
                 });
             }
         }
         open
+    }
+    fn add_lines(&self, page: u32, thread: u32, addr: u32, len: usize, write: bool) {
+        let lo = (page as u64) << 12;
+        let (a, b) = (
+            (addr as u64).max(lo),
+            (addr as u64 + len as u64).min(lo + 4096),
+        );
+        if a >= b {
+            return;
+        }
+        let m = (u64::MAX >> (63 - (b - 1 - lo) / 64)) & (u64::MAX << ((a - lo) / 64));
+        let mut log = self.log.lock().unwrap_or_else(|e| e.into_inner());
+        let e = log.lines.entry((page, thread)).or_insert(LineRec {
+            page,
+            thread,
+            ..LineRec::default()
+        });
+        e.accesses += 1;
+        if write {
+            e.write |= m;
+        } else {
+            e.read_first |= m & !e.write;
+            e.read |= m;
+        }
     }
     fn push(&self, hit: TrapHit) {
         let mut log = self.log.lock().unwrap_or_else(|e| e.into_inner());
@@ -197,8 +276,87 @@ impl AccessTrap {
         }
     }
     pub(crate) fn take(&self) -> TrapLog {
-        std::mem::take(&mut *self.log.lock().unwrap_or_else(|e| e.into_inner()))
+        let log = std::mem::take(&mut *self.log.lock().unwrap_or_else(|e| e.into_inner()));
+        TrapLog {
+            hits: log.hits,
+            dropped: log.dropped,
+            lines: log.lines.into_values().collect(),
+        }
     }
+}
+
+static HLE_ON: AtomicBool = AtomicBool::new(false);
+static HLE_CALLS: Mutex<Option<HashMap<(u32, u32), HleCall>>> = Mutex::new(None);
+thread_local! {
+    static HLE_NOW: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Rust-handler calls the runner made to one target on one guest thread
+/// since the last [`take_hle_calls`].
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct HleCall {
+    /// The handler's target: a kernel token (`kernel::KERNEL_TOKEN_BASE +
+    /// 4 * ordinal`) or an override's entry.
+    pub target: u32,
+    /// The guest thread, or [`NO_THREAD`].
+    pub thread: u32,
+    pub calls: u64,
+    /// Calls that returned a STOP: the thread blocked, yielded or was
+    /// preempted inside the call.
+    pub stops: u64,
+}
+
+/// Turns the runner's Rust-handler census on or off (process-wide; off by
+/// default, when the runner pays one relaxed load per Rust-handler call).
+pub fn set_hle_census(on: bool) {
+    HLE_ON.store(on, Ordering::Relaxed);
+}
+
+/// Whether [`set_hle_census`] is on.
+#[inline]
+pub fn hle_census() -> bool {
+    HLE_ON.load(Ordering::Relaxed)
+}
+
+/// The runner is about to execute the Rust handler for `target`: counts the
+/// call and makes it the current handler for host hits. Returns the one it
+/// replaces, for [`hle_leave`].
+pub fn hle_enter(target: u32) -> u32 {
+    let thread = timeline::phase::running_guest_thread().unwrap_or(NO_THREAD);
+    hle_count(target, thread, |c| c.calls += 1);
+    HLE_NOW.with(|n| n.replace(target))
+}
+
+/// The handler [`hle_enter`] started returned (`stopped`: with a STOP).
+/// `thread` is the guest thread it was entered on.
+pub fn hle_leave(prev: u32, target: u32, thread: u32, stopped: bool) {
+    HLE_NOW.with(|n| n.set(prev));
+    if stopped {
+        hle_count(target, thread, |c| c.stops += 1);
+    }
+}
+
+fn hle_count(target: u32, thread: u32, f: impl FnOnce(&mut HleCall)) {
+    let mut m = HLE_CALLS.lock().unwrap_or_else(|e| e.into_inner());
+    let e = m
+        .get_or_insert_with(HashMap::new)
+        .entry((target, thread))
+        .or_insert(HleCall {
+            target,
+            thread,
+            ..HleCall::default()
+        });
+    f(e);
+}
+
+/// The Rust-handler calls counted since the last take, in no order.
+pub fn take_hle_calls() -> Vec<HleCall> {
+    HLE_CALLS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+        .map(|m| m.into_values().collect())
+        .unwrap_or_default()
 }
 
 /// The pages a guest hit disarmed: at most two, as the ABI's widths cross
@@ -337,7 +495,7 @@ mod tests {
     }
 
     #[test]
-    fn sticky_pages_log_every_access_and_a_protect_keeps_the_arming() {
+    fn sticky_pages_count_every_access_in_lines_and_a_protect_keeps_the_arming() {
         let mut g = guest();
         g.arm_all(true, true);
         g.set_sticky_pages(&[RW >> 12]);
@@ -345,7 +503,37 @@ mod tests {
             g.write_bytes_from(0x50 + i, RW + 64 * i, &[1], 1).unwrap();
             g.write_bytes(RW + 64 * i + 1, &[1], 1).unwrap();
         }
-        assert_eq!(hits(&mut g).len(), 6);
+        let mut b = [0];
+        // Line 1 was written first, line 5 not.
+        g.read_bytes_from(0x60, RW + 64, &mut b, 1).unwrap();
+        g.read_bytes_from(0x64, RW + 5 * 64, &mut b, 1).unwrap();
+        let log = g.take_trap_hits();
+        assert_eq!(
+            log.hits
+                .iter()
+                .map(|h| (h.addr, h.write, h.pc))
+                .collect::<Vec<_>>(),
+            [(RW, true, 0x50), (RW + 1, true, 0), (RW + 64, false, 0x60)],
+            "the first guest and first host hit of each kind, once per arming"
+        );
+        assert_eq!(
+            log.lines,
+            [LineRec {
+                page: RW >> 12,
+                thread: NO_THREAD,
+                read: 0b10_0010,
+                write: 0b111,
+                read_first: 0b10_0000,
+                accesses: 8,
+            }]
+        );
+        g.arm_all(true, true);
+        g.write_bytes_from(0x70, RW + 4, &[1], 1).unwrap();
+        assert_eq!(
+            hits(&mut g),
+            [(RW + 4, true, 0x70)],
+            "re-armed: logged again"
+        );
         assert_eq!(fast(&mut g, RW) & 3, 0);
         // A protect rebuilds the fast entries; armed kinds stay cleared.
         g.protect(RW, Permissions::RW).unwrap();
@@ -382,6 +570,36 @@ mod tests {
             [(RW, true, 0x0040_1000), (RW, false, 0x0040_2000)]
         );
         assert_eq!(fast(&mut m, RW) & 3, 3);
+    }
+
+    #[test]
+    fn host_hits_name_the_rust_handler_and_its_calls_are_counted() {
+        let mut g = guest();
+        g.arm_all(false, true);
+        // A target no other test uses: the call table is process-wide.
+        const T: u32 = 0xfff0_0aa8;
+        let prev = hle_enter(T);
+        g.set_u32(RW, 1).unwrap();
+        hle_leave(prev, T, NO_THREAD, true);
+        g.set_u32(RW + PAGE_SIZE, 1).unwrap();
+        let log = g.take_trap_hits();
+        assert_eq!(
+            log.hits.iter().map(|h| (h.addr, h.hle)).collect::<Vec<_>>(),
+            [(RW, T), (RW + PAGE_SIZE, 0)]
+        );
+        let calls: Vec<_> = take_hle_calls()
+            .into_iter()
+            .filter(|c| c.target == T)
+            .collect();
+        assert_eq!(
+            calls,
+            [HleCall {
+                target: T,
+                thread: NO_THREAD,
+                calls: 1,
+                stops: 1
+            }]
+        );
     }
 
     #[test]

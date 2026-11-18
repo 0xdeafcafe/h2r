@@ -69,7 +69,7 @@ fn the_census_pairs_render_and_sim_accesses_on_a_real_runtime() {
     let census = RenderCensus::with_options(Options {
         every: 2,
         top: 10,
-        lines: 4,
+        lines: Some(4),
         out: Some(out.clone()),
         print: false,
     })
@@ -152,10 +152,26 @@ fn the_census_pairs_render_and_sim_accesses_on_a_real_runtime() {
             s.render_writer.unwrap().pc != 0,
             "attributed to the fixture code's pc"
         );
-        assert_eq!(c.sticky(), [A >> 12, B >> 12], "picked at the report");
+        assert_eq!(
+            c.sticky(),
+            [A >> 12],
+            "picked at the report: rs_core only, never the push buffer"
+        );
         // Line detail on A after the report: frame 4 wrote line 0, and
         // nothing has read it since.
         assert_eq!(a.rw_lines, 1);
+        assert_eq!(a.sticky_frames, 2, "frames 3 and 4");
+        // The front-end runs inside the override the plan put on the leaf,
+        // on the game thread, once a frame.
+        let leaf = c.hle()[&(true, LEAF)];
+        assert_eq!((leaf.calls, leaf.other_calls), (4, 0));
+        let r = c.report(10);
+        for want in [
+            "other_thread scope=render thread=2 hits/frame=1.0",
+            "coverage group=other",
+        ] {
+            assert!(r.iter().any(|l| l.contains(want)), "{want}: {r:#?}");
+        }
     });
     let tsv = std::fs::read_to_string(&out).unwrap();
     // Written at the third entry, after the second pair.

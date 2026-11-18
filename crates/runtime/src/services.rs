@@ -128,6 +128,11 @@ impl Runtime {
     pub(crate) fn fast_memory(&self) -> *const crate::ffi::MemoryShared {
         self.memory.fast_shared()
     }
+    /// Reads the dispatch tables (override names, say) without a new
+    /// generation.
+    pub fn read_dispatch<R>(&self, f: impl FnOnce(&Dispatch) -> R) -> R {
+        f(&self.dispatch.read().unwrap_or_else(|e| e.into_inner()))
+    }
     pub fn edit_dispatch<R>(&self, f: impl FnOnce(&mut Dispatch) -> R) -> R {
         let mut d = self.dispatch.write().unwrap_or_else(|e| e.into_inner());
         let r = f(&mut d);

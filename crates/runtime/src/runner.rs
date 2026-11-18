@@ -212,7 +212,16 @@ impl Runner {
             }
             // Direct calls the handler makes spend this run's transfers.
             ctx.direct_begin(remaining);
+            // The access trap's HLE census (trap.rs): which Rust handler runs.
+            let hle = (!generated && crate::trap::hle_census()).then(|| {
+                let target = transfer.target_pc;
+                let thread = timeline::phase::running_guest_thread().unwrap_or(crate::trap::NO_THREAD);
+                (crate::trap::hle_enter(target), target, thread)
+            });
             transfer = execute(Invocation::Handler(handler), cpu, ctx, selector);
+            if let Some((prev, target, thread)) = hle {
+                crate::trap::hle_leave(prev, target, thread, transfer.kind == abi::STOP);
+            }
             remaining = ctx.direct_end(remaining);
             if generated
                 && transfer.kind == abi::STOP
