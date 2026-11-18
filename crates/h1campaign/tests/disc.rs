@@ -1474,3 +1474,88 @@ fn no_converted_model_on_any_campaign_level_has_a_none_material() {
     }
     assert!(failed.is_empty(), "{failed:#?}");
 }
+
+/// Every reached `unit_open` and `unit_close` on a10 (pinned and fresh)
+/// names a unit with a converted placement. Halo 2's evaluators send the
+/// unit a message without a `none` check, and the handler reads object
+/// header 0xffff's null pointer (`0x00113eae`, `+0x33e`), so a name whose
+/// placement is -1 faults. a10's `fast_setup` opens `cryotube_1` as the
+/// opening cinematic ends, and the cryotube has no template
+/// (`h1scripts::compile::NONE_UNSAFE`).
+#[test]
+#[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
+fn a10_opens_and_closes_only_placed_units() {
+    let s = scripting();
+    let donors = donors();
+    let h1 = h1_level("a10");
+    let ids: Vec<(u16, &str)> = ["unit_open", "unit_close"]
+        .into_iter()
+        .map(|n| (s.target.builtins[n].index, n))
+        .collect();
+    let mut bad = Vec::new();
+    for pinned in [true, false] {
+        let mut base = h2_map(h1campaign::base_for("a10"));
+        let opts = Options {
+            objects: true,
+            ai: true,
+            scripts: Some(&s),
+            sounds: 1000,
+            donors: Some(&donors),
+            pinned,
+            ..Default::default()
+        };
+        let done = h1campaign::convert(&h1, &mut base, &opts).unwrap();
+        let mut m = Map::from_reader(Cursor::new(done.bytes)).unwrap();
+        let sc = hs::Scenario::read(&mut m).unwrap();
+        let mem = map_memory(&mut m);
+        let scnr = m.scenario().unwrap().clone();
+        let bytes = m.read_tag_bytes(scnr.id).unwrap();
+        let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+        let (count, address) = (word(0x48), word(0x4c));
+        let name = |i: u32| -> (String, i16) {
+            let e = mem.slice(address + i * 0x24, 0x24).unwrap();
+            let text = String::from_utf8_lossy(&e[..32])
+                .trim_end_matches('\0')
+                .to_owned();
+            (text, i16::from_le_bytes([e[0x22], e[0x23]]))
+        };
+        let mut calls = 0;
+        for d in sc.reachable(sc.roots()).unwrap() {
+            let n = sc.node(d).unwrap();
+            if n.atom() || n.script_call() {
+                continue;
+            }
+            let Some(&(_, builtin)) = ids.iter().find(|i| i.0 == n.opcode()) else {
+                continue;
+            };
+            let hs::Expression::Call { mut children, .. } = sc.expression(d).unwrap() else {
+                continue;
+            };
+            calls += 1;
+            let arg = sc.node(children.next().unwrap().unwrap()).unwrap();
+            if !arg.atom() || arg.global() {
+                continue;
+            }
+            let token = sc.string(arg.string_offset()).unwrap_or("?").to_owned();
+            let index = arg.data() & 0xffff;
+            if arg.data() == u32::MAX || index >= count {
+                bad.push(format!(
+                    "pinned {pinned}: ({builtin} {token}) is {:#x}, {count} names",
+                    arg.data()
+                ));
+                continue;
+            }
+            let (text, placement) = name(index);
+            if placement < 0 {
+                bad.push(format!(
+                    "pinned {pinned}: ({builtin} {token}) names object name {index} {text:?}, placement {placement}"
+                ));
+            }
+        }
+        println!("a10 pinned {pinned}: {calls} unit_open/unit_close calls reached");
+        if let Some(r) = &done.report.scenario.scripts {
+            println!("a10 pinned {pinned}: stubbed {:?}", r.unindexed);
+        }
+    }
+    assert!(bad.is_empty(), "{bad:#?}");
+}

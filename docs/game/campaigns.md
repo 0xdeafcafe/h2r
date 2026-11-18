@@ -674,6 +674,14 @@ The bound is `0xc24000`; the base alone is `0xaed000`.
   reached atom of these types against its converted block on all ten
   levels. Names resolve without case (b30 and d40 named 3 and 9 flags
   and a device group in another case and lost them).
+- **Units opened or closed.** `unit_open` and `unit_close` do not check
+  their unit for `none` (`0x00113eae` reads `+0x33e` through object
+  header 0xffff's null pointer), so a call naming an object name with no
+  placement is stubbed (h1-scripts.md, Units the engine does not check for
+  none). a10 faulted there as its opening cinematic ended:
+  `fast_setup`'s `(unit_open cryotube_1)`, the cryotube having no
+  template. `a10_opens_and_closes_only_placed_units` checks every reached
+  call on a10, pinned and fresh.
 - **b40's level data.** b40 is at the tag memory bound. A level over
   it is converted again leaner (`h1campaign::convert`, `Lean`), dropping
   in turn: the empty squads kept for their names (`EmptySquads`), the

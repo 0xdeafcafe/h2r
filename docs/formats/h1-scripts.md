@@ -302,6 +302,16 @@ retail compiler writes them; literals keep their source type.
   is compiled as its type's zero and listed in `Compiled::unindexed`. The
   converter resolves these names without case, as HaloScript does (b30's
   `shaftA_control_teleflag`, d40's `enc7_7_L1`).
+- **Units the engine does not check for none**: Halo 2's `unit_open` (194)
+  and `unit_close` (195) send their unit a message (`0x000e6900`, types
+  0x17 and 0x18) whose handlers walk the object by index without a `none`
+  check, so `none` reads object header 0xffff's null pointer at
+  `0x00113eae`. A call of one of these (`compile::NONE_UNSAFE`) whose
+  direct argument is an object name (`compile::OBJECT_NAME_TYPES`) that
+  `resolves` says has no placement is stubbed and listed in
+  `Compiled::unindexed`, like an indexed value. a10's `fast_setup` opens
+  and closes `cryotube_1`, and the cryotube has no template, so the name
+  points at no placement; the open faulted as the opening cinematic ended.
 - **Cutscenes**: `compile_with(.., Cutscenes::Skip, ..)` compiles every call
   of the level's `cinematic_skip_start` script as `false` (Halo 1's path
   after a skip) and wakes a10's `fast_setup` where it wakes

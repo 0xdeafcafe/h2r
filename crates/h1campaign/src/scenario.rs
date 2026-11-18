@@ -845,6 +845,7 @@ pub fn write(
         })
         .collect();
     rep.names = names.len();
+    let names_placed: Vec<bool> = names.iter().map(|b| i16_at(&b.bytes, 0x22) >= 0).collect();
     put_block(&mut root, OBJECT_NAMES, OBJECT_NAME, names);
 
     // The base's trigger volumes are its own level's: parked, and free of
@@ -1043,6 +1044,7 @@ pub fn write(
                 &mut root,
                 &Targets {
                     names: &names,
+                    placed: &names_placed,
                     volumes: &volume_names,
                     parked,
                     squads: &squads,
@@ -1326,6 +1328,9 @@ pub const INITIAL_SCRIPT: &str = "h1_initial_encounters";
 pub struct Targets<'a> {
     /// Object names, in the scenario's order.
     pub names: &'a [String],
+    /// Whether each of `names` points at a converted placement (a name
+    /// whose palette entry did not convert points at -1).
+    pub placed: &'a [bool],
     /// Halo 1 trigger volume names, written after `parked` base volumes.
     pub volumes: &'a [&'a str],
     pub parked: usize,
@@ -1447,6 +1452,15 @@ fn install_scripts(
         Default::default()
     };
     let resolves = |ty: &str, token: &str| {
+        // An object name handed to a builtin that does not check for none
+        // (`h1scripts::compile::NONE_UNSAFE`) must name a placement.
+        if h1scripts::compile::OBJECT_NAME_TYPES.contains(&ty) {
+            return targets
+                .names
+                .iter()
+                .position(|n| n.eq_ignore_ascii_case(token))
+                .is_some_and(|i| targets.placed.get(i).copied().unwrap_or(false));
+        }
         level
             .resolve(&h1scripts::compile::Hook {
                 slot: 0,
