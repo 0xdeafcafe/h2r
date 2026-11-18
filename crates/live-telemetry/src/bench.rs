@@ -514,6 +514,7 @@ impl World {
                 pos: Some([1.0, 2.0, 3.0]),
                 body: 0.1,
                 shield: 0.05,
+                tick: None,
             });
         }
     }

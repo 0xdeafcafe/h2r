@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
 use live_proto::game::{
-    Frame, FrameActor, FrameHit, FrameMachine, FrameObject, FramePlayer, FrameVehicle, GameEnded,
-    MAX_FRAME_ACTORS, MAX_FRAME_HITS, MAX_FRAME_MACHINES, MAX_FRAME_OBJECTS, MAX_FRAME_SHOTS,
-    MAX_FRAME_VEHICLES, ObjectKind, PlayerKilled, PlayerLeft, ScoreChanged,
+    Frame, FrameActor, FrameAnim, FrameHit, FrameMachine, FrameObject, FramePlayer, FrameVehicle,
+    GameEnded, MAX_FRAME_ACTORS, MAX_FRAME_HITS, MAX_FRAME_MACHINES, MAX_FRAME_OBJECTS,
+    MAX_FRAME_SHOTS, MAX_FRAME_VEHICLES, ObjectKind, PlayerKilled, PlayerLeft, ScoreChanged,
 };
 
 use crate::event::{
@@ -470,7 +470,7 @@ impl Session {
                 .filter(|p| p.unit != u32::MAX)
                 .map(|p| (p.unit, p.player.index))
                 .collect();
-            let frame_hits = frame_hits(&hits, &player_of_unit, tags);
+            let frame_hits = frame_hits(&hits, snapshot.tick, &player_of_unit, tags);
             // Units that dealt melee damage since the last frame.
             let meleed: std::collections::BTreeSet<u32> = hits
                 .iter()
@@ -574,6 +574,9 @@ impl Session {
                         speed: observed.speed,
                         actions: observed.actions,
                         grenade: observed.grenade,
+                        anim: object
+                            .as_ref()
+                            .and_then(|o| frame_anim(o.motion.animation.as_ref(), tags)),
                         // Read from step 4 on (docs/live/replay-fidelity.md).
                         ..FramePlayer::default()
                     })
@@ -587,6 +590,7 @@ impl Session {
                 actor.speed = observed.speed;
                 actor.actions = observed.actions;
                 actor.grenade = observed.grenade;
+                actor.anim = frame_anim(object.motion.animation.as_ref(), tags);
             }
             let vehicles = frame_vehicles(snapshot, &actors, tags);
             let bodies = frame_bodies(
@@ -1184,11 +1188,25 @@ fn frame_objects_with(
     out
 }
 
+/// The animation a unit plays, named through the map's graphs; none when
+/// the graph or the animation has no name the frames take.
+fn frame_anim(
+    animation: Option<&crate::event::Animation>,
+    tags: Option<&TagNames>,
+) -> Option<FrameAnim> {
+    let a = animation?;
+    Some(FrameAnim {
+        name: tags?.animation(a)?,
+        frame: f64::from(a.frame).clamp(0.0, live_proto::game::MAX_ANIM_FRAME),
+    })
+}
+
 /// The frame's hits: attacker and victim as `p<index>` for a player's unit
 /// (or the reporting player), else the object datum; the weapon from the
 /// damage reporting type, else the damage effect's stem.
 fn frame_hits(
     hits: &[HitRecord],
+    tick: u64,
     player_of_unit: &BTreeMap<u32, u32>,
     tags: Option<&TagNames>,
 ) -> Vec<FrameHit> {
@@ -1218,7 +1236,12 @@ fn frame_hits(
                 pos,
                 amount: amount.is_finite().then_some(amount),
                 kind: Some(kind.into()),
-                ago: None,
+                // Engine ticks on both sides: the run's offset cancels.
+                ago: h
+                    .tick
+                    .and_then(|t| tick.checked_sub(t))
+                    .and_then(|a| u32::try_from(a).ok())
+                    .filter(|a| *a <= live_proto::game::MAX_FRAME_AGO),
             })
         })
         .take(MAX_FRAME_HITS)
@@ -1533,6 +1556,59 @@ mod tests {
                 ),
             ],
         )
+    }
+
+    #[test]
+    fn frames_carry_the_animation_by_name() {
+        use crate::event::Animation;
+        use crate::tags::Graph;
+        let mut session = Session::new("test", None);
+        let mut p = player(0, 0);
+        p.unit = 0x90010000;
+        session.start(&info(), vec![p.clone()]);
+        session.take_output();
+        let mut state = snapshot(2, vec![p]);
+        let mut object = armed(0x9005_0005, 0xe100_0020);
+        object.motion.animation = Some(Animation {
+            graph: 0xe100_0030,
+            inherited: -1,
+            index: 1,
+            frame: 7.25,
+        });
+        state.objects[0] = Some(object);
+        // No names yet: no animation, never a guess.
+        session.sample(&state);
+        assert_eq!(frames(&mut session)[0].players[0].anim, None);
+        session.set_tag_names(names().with_graphs([(
+            0xe100_0030,
+            Graph {
+                names: vec![None, Some("combat:rifle:any:idle".into())],
+                parents: vec![],
+            },
+        )]));
+        state.tick = 4;
+        session.sample(&state);
+        let frame = &frames(&mut session)[0];
+        assert_eq!(
+            frame.players[0].anim,
+            Some(FrameAnim {
+                name: "combat:rifle:any:idle".into(),
+                frame: 7.25
+            })
+        );
+        assert_eq!(live_proto::game::validate_frame(frame), Ok(()));
+        // An animation the graph doesn't name: none.
+        state.objects[0]
+            .as_mut()
+            .unwrap()
+            .motion
+            .animation
+            .as_mut()
+            .unwrap()
+            .index = 0;
+        state.tick = 6;
+        session.sample(&state);
+        assert_eq!(frames(&mut session)[0].players[0].anim, None);
     }
 
     #[test]
@@ -2355,6 +2431,7 @@ mod tests {
                 pos: Some([3.0, 0.0, 0.0]),
                 body: 0.25,
                 shield: 0.5,
+                tick: Some(1),
             },
             // An AI punches player 0: a melee for the AI and a weapon from
             // the damage effect's name.
@@ -2367,6 +2444,7 @@ mod tests {
                 pos: Some([0.0, 0.0, 0.0]),
                 body: 0.1,
                 shield: 0.0,
+                tick: None,
             },
             // No position: not sent.
             HitRecord {
@@ -2378,6 +2456,7 @@ mod tests {
                 pos: None,
                 body: 0.1,
                 shield: 0.0,
+                tick: None,
             },
         ];
         session.sample(&state);
@@ -2391,6 +2470,8 @@ mod tests {
         assert_eq!(shot.weapon.as_deref(), Some("battle_rifle"));
         assert_eq!(shot.kind.as_deref(), Some("bullet"));
         assert_eq!(shot.amount, Some(0.75));
+        assert_eq!(shot.ago, Some(1), "a tick before the frame's");
+        assert_eq!(frame.hits[1].ago, None, "no tick read");
         let punch = &frame.hits[1];
         assert_eq!(punch.from.as_deref(), Some("90030003"));
         assert_eq!(punch.to.as_deref(), Some("p0"));

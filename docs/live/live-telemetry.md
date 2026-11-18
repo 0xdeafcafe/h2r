@@ -409,6 +409,8 @@ without padding.
 | seat | `eg(0)` | at most 63 |
 | ticks ago | `eg(0)` count (at most 8), then `eg(1)` each | one per action, at most 900 |
 | hit ago | `eg(1)` | at most 900 |
+| anim name | `str` | `[a-z0-9_:-]{1,64}` |
+| anim frame | `eg(4)` | 1/16 of a frame, at most 32767 |
 | string | `eg(3)`: index into the stream's string table | |
 | id | `u(2)` form: 0 datum, `u(32)` (exactly 8 lowercase hex digits in JSON); 1 player `p<n>`, `eg(2)`; 2 anything else, a string index | |
 | object kind | `u(4)` | the order of the kind table above, with `bipd` 0, `vehi` 1, `weap` 2, `eqip` 3, `scen` 4, `mach` 5, `ctrl` 6, `lifi` 7, `ssce` 8, `bloc` 9, `crea` 10, `netgame` 11 |
@@ -421,7 +423,7 @@ when present.
 
 | field | wire |
 |---|---|
-| version | `u(4)`, 3 (2 still reads: no version 3 fields; 1 too: vehicles without parent and aim) |
+| version | `u(4)`, 4 (3 still reads: no anim; 2: none of version 3's fields either; 1: vehicles without parent and aim) |
 | keyframe | `u(1)` |
 | stream id | `eg(0)` |
 | sequence | `eg(8)`, one more each frame of the stream |
@@ -454,7 +456,7 @@ change in its quantised value, so jitter below the quantum costs nothing.
 
 | list | fields (key in bold) |
 |---|---|
-| player | **index `eg(2)`**, alive `u(1)`, pos, yaw, opt vehicle id, opt species string, opt aim, opt weapon string, opt shots, opt stance, opt speed, opt actions, opt grenade; version 3 adds opt velocity, opt fire, opt body, opt shield, opt seat, opt ticks ago |
+| player | **index `eg(2)`**, alive `u(1)`, pos, yaw, opt vehicle id, opt species string, opt aim, opt weapon string, opt shots, opt stance, opt speed, opt actions, opt grenade; version 3 adds opt velocity, opt fire, opt body, opt shield, opt seat, opt ticks ago; version 4 opt anim name, opt anim frame (both or neither) |
 | vehicle | **id**, kind string, pos, forward, up, occupied `u(1)`, opt parent id, opt aim (version 2; version 1 ends at occupied) |
 | actor | **id**, species string, pos, yaw, opt aim, opt weapon string, opt shots, opt team string, opt vehicle id, opt stance, opt speed, opt actions, opt grenade; version 3 adds the same six as a player |
 | hit | opt from id, opt to id, opt weapon string, pos, opt amount, opt kind string; version 3 adds opt hit ago |
@@ -477,15 +479,17 @@ encoder as it was.
 ### Compatibility
 
 The version is the first four bits; a decoder refuses versions it does not
-know. Version 3 (units' velocity, fire ticks, vitality, seat and action
-ticks, hits' ticks, the frame's cut) is written now; decoders still read
-versions 2 and 1 (recorded frames, an older game's stream), and a delta only
+know. Version 4 (units' animation) is written now; version 3 added units'
+velocity, fire ticks, vitality, seat and action ticks, hits' ticks and the
+frame's cut. Decoders still read versions 3, 2 and 1 (recorded frames, an older game's stream), and a delta only
 applies to a frame of its own version. `web/test/fixtures/pack/v1-multiplayer`
-and `v2-multiplayer` are older streams both decoders are tested on. Version
+, `v2-multiplayer` and `v3-multiplayer` are older streams both decoders are tested on. Version
 3 costs about 25% more on the sample frames when every field is filled
 (multiplayer deltas 226 to 282 bytes, campaign 651 to 788); the senders
 fill them from capture onwards (docs/live/replay-fidelity.md, step 4), and
-an absent field is one bit. Recorded `GameFrame` events written before packed frames hold the
+an absent field is one bit. Version 4's animation on every unit adds about
+a sixth again (multiplayer deltas 324 bytes, campaign 931): the frame is
+sent whole until the chunk codec predicts it. Recorded `GameFrame` events written before packed frames hold the
 JSON frame (no `packed` field) and stay readable: the server's
 `?format=json` returns them as they are, `?format=packed` packs them on
 the fly, and the web's `recordedFrame` reads both. The ingest socket takes

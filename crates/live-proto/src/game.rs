@@ -318,6 +318,9 @@ pub struct FramePlayer {
     /// [`MAX_FRAME_AGO`].
     #[serde(default, skip_serializing_if = "no_ago")]
     pub actions_ago: Option<Vec<u32>>,
+    /// The animation it plays and where in it (version 4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anim: Option<FrameAnim>,
 }
 
 fn no_shots(shots: &Option<u32>) -> bool {
@@ -343,6 +346,26 @@ pub const MAX_FRAME_SEAT: u32 = 63;
 /// Furthest back (ticks before the frame's) a one-shot may be placed: 30
 /// seconds, past any frame a server holds back.
 pub const MAX_FRAME_AGO: u32 = 900;
+
+/// Highest animation frame a frame reports (frame counts are `i16`).
+pub const MAX_ANIM_FRAME: f64 = 32767.0;
+
+/// The animation a player or actor plays: the name of the animation in the
+/// unit's graph (`combat:rifle:any:idle`, `s_kill:front:gut`) and the frame,
+/// 0 to its frame count minus one, fractional between ticks.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct FrameAnim {
+    pub name: String,
+    pub frame: f64,
+}
+
+/// An animation's name: `[a-z0-9_:-]{1,64}`.
+pub fn valid_anim_name(s: &str) -> bool {
+    (1..=64).contains(&s.len())
+        && s.bytes().all(|b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b':' || b == b'-'
+        })
+}
 
 /// The values `stance` may take.
 pub const STANCES: [&str; 5] = ["stand", "crouch", "airborne", "vehicle", "dead"];
@@ -653,6 +676,9 @@ pub struct FrameActor {
     /// [`MAX_FRAME_AGO`].
     #[serde(default, skip_serializing_if = "no_ago")]
     pub actions_ago: Option<Vec<u32>>,
+    /// The animation it plays and where in it (version 4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anim: Option<FrameAnim>,
 }
 
 /// Most actors one frame may carry.
@@ -918,6 +944,7 @@ pub fn validate_frame(frame: &Frame) -> Result<(), String> {
         }
         validate_motion(&p.stance, p.speed, &p.actions, &p.grenade)?;
         validate_v3(p.vel, p.body, p.shield, p.seat, &p.actions, &p.actions_ago)?;
+        validate_anim(&p.anim)?;
     }
     if frame.vehicles.len() > MAX_FRAME_VEHICLES {
         return Err(format!("at most {MAX_FRAME_VEHICLES} vehicles"));
@@ -965,6 +992,7 @@ pub fn validate_frame(frame: &Frame) -> Result<(), String> {
         }
         validate_motion(&a.stance, a.speed, &a.actions, &a.grenade)?;
         validate_v3(a.vel, a.body, a.shield, a.seat, &a.actions, &a.actions_ago)?;
+        validate_anim(&a.anim)?;
     }
     if frame.hits.len() > MAX_FRAME_HITS {
         return Err(format!("at most {MAX_FRAME_HITS} hits"));
@@ -1095,6 +1123,16 @@ fn validate_v3(
         }
     }
     Ok(())
+}
+
+fn validate_anim(anim: &Option<FrameAnim>) -> Result<(), String> {
+    match anim {
+        Some(a) if !valid_anim_name(&a.name) => Err("anim names must be [a-z0-9_:-]{1,64}".into()),
+        Some(a) if !(0.0..=MAX_ANIM_FRAME).contains(&a.frame) => {
+            Err(format!("anim frames must be 0 to {MAX_ANIM_FRAME}"))
+        }
+        _ => Ok(()),
+    }
 }
 
 fn length(v: [f64; 3]) -> f64 {

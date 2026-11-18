@@ -286,6 +286,39 @@ pub const UNIT_GRENADE_COUNTS: u32 = 0x23e;
 /// code against 1, 2, 3 and 5. Names from Project Cartographer's
 /// `e_biped_physics_mode`.
 pub const BIPED_PHYSICS_MODE: u32 = 0x3dc;
+
+// The animation state (docs/live/replay-fidelity.md, "Animation state").
+/// Where the object's animation manager is, `i16`: an offset from the
+/// object's own data, -1 none. Confirmed: `object_new` (`0x000b7b40`)
+/// builds the manager there (`0x000b80e0` into the constructor
+/// `0x001cafc0`) and gives it the model's graph (`0x001cb0d0`); the custom
+/// animation start (`0x001101e0`) checks it against -1 and works on
+/// `object + offset`. Read by 113 sites.
+pub const OBJECT_ANIMATION_MANAGER: u32 = 0x12a;
+/// The manager's animation graph, a `jmad` tag datum (-1 none). Confirmed:
+/// `0x001ccae0` and `0x001cb410` refuse a manager whose `+0x68` is -1 and
+/// pass it on as the channel's graph.
+pub const MANAGER_GRAPH: u32 = 0x68;
+/// The manager's first channel (of three, `0x20` bytes each, built by
+/// `0x001cafc0`): the animation it plays; the other two blend out the ones
+/// before. Confirmed: `0x001ccae0` starts an animation on the manager's own
+/// address as the channel (`0x001cb410` into the channel set `0x001c6470`).
+pub const MANAGER_CHANNEL: u32 = 0x0;
+/// A channel's graph datum (`u32`, -1 none); confirmed, `0x001c6470`
+/// writes it, `0x001c6c80` checks it.
+pub const CHANNEL_GRAPH: u32 = 0x0;
+/// A channel's animation: `i16` graph (-1 the channel's graph, else a
+/// position in its inheritance list) then `i16` animation index (-1 none).
+/// Confirmed: `0x001c6470` refuses a reference whose high half is -1 and
+/// stores it here; `0x001c6560` resolves it through `0x001daea0`.
+pub const CHANNEL_ANIMATION: u32 = 0x4;
+/// A channel's frame, `f32`, 0 to the animation's frame count minus one.
+/// Confirmed: the frame setter `0x001c6560` clamps it to that and stores it
+/// here, then advances it by the tick length times the rate at `+0x18`.
+pub const CHANNEL_FRAME: u32 = 0x1c;
+/// Offsets a manager can be at: past the object's fixed fields, inside its
+/// data.
+pub const MANAGER_OFFSETS: std::ops::Range<i16> = 0x12c..0x2000;
 pub const BIPED_MODE_GROUND: u8 = 1;
 pub const BIPED_MODE_FLYING: u8 = 2;
 pub const BIPED_MODE_MELEE: u8 = 6;

@@ -20,17 +20,17 @@ use std::collections::HashMap;
 use std::f64::consts::{PI, TAU};
 
 use crate::game::{
-    ACTIONS, Frame, FrameActor, FrameHit, FrameMachine, FrameObject, FramePlayer, FrameVehicle,
-    GRENADES, MAX_FRAME_ACTIONS, MAX_FRAME_ACTORS, MAX_FRAME_HITS, MAX_FRAME_MACHINES,
-    MAX_FRAME_OBJECTS, MAX_FRAME_VEHICLES, MAX_PLAYERS, ObjectKind, STANCES,
+    ACTIONS, Frame, FrameActor, FrameAnim, FrameHit, FrameMachine, FrameObject, FramePlayer,
+    FrameVehicle, GRENADES, MAX_ANIM_FRAME, MAX_FRAME_ACTIONS, MAX_FRAME_ACTORS, MAX_FRAME_HITS,
+    MAX_FRAME_MACHINES, MAX_FRAME_OBJECTS, MAX_FRAME_VEHICLES, MAX_PLAYERS, ObjectKind, STANCES,
 };
 
 /// The packed format's version, the first four bits of every frame. Version
-/// 3 adds a player's and actor's velocity, fire ticks, vitality, seat and
+/// 4 adds a player's and actor's animation; version 3 added a player's and actor's velocity, fire ticks, vitality, seat and
 /// action ticks, a hit's tick and a frame's cut; version 2 added a
 /// vehicle's parent and aim. Versions 1 and 2 (recorded frames, an older
-/// game's) still decode.
-pub const VERSION: u64 = 3;
+/// game's) still decode, as do version 3's.
+pub const VERSION: u64 = 4;
 /// Positions are whole multiples of 1/512 world unit (about 6 mm).
 pub const POS_SCALE: f64 = 512.0;
 /// Yaw: a full turn in 4096 steps.
@@ -47,6 +47,8 @@ pub const VEL_SCALE: f64 = 64.0;
 pub const BODY_BITS: u32 = 6;
 /// Shield vitality in 1/32 of a shield.
 pub const SHIELD_SCALE: f64 = 32.0;
+/// Animation frames in 1/16 of a frame.
+pub const ANIM_SCALE: f64 = 16.0;
 /// Machine device positions (0..1) in 10 bits.
 pub const DEVICE_BITS: u32 = 10;
 /// Most strings a stream's table holds before the encoder starts over with
@@ -422,10 +424,14 @@ const PLAYER: &[Field] = &[
     o(Kind::Uint(3)),         // shield
     o(Kind::Uint(0)),         // seat
     o(Kind::Agos),            // actions_ago
+    o(Kind::Str),             // anim name (version 4)
+    o(Kind::Uint(4)),         // anim frame
 ];
-/// Fields a version 2 player or actor has: the version 3 ones are last.
+/// Fields a version 2 or 3 player or actor has: the later ones are last.
 const V2_UNIT_FIELDS: usize = 13;
+const V3_UNIT_FIELDS: usize = 19;
 const PLAYER_V2: &[Field] = PLAYER.split_at(V2_UNIT_FIELDS).0;
+const PLAYER_V3: &[Field] = PLAYER.split_at(V3_UNIT_FIELDS).0;
 const VEHICLE: &[Field] = &[
     k(Kind::Id),
     f(Kind::Str), // kind
@@ -458,8 +464,11 @@ const ACTOR: &[Field] = &[
     o(Kind::Uint(3)),         // shield
     o(Kind::Uint(0)),         // seat
     o(Kind::Agos),            // actions_ago
+    o(Kind::Str),             // anim name (version 4)
+    o(Kind::Uint(4)),         // anim frame
 ];
 const ACTOR_V2: &[Field] = ACTOR.split_at(V2_UNIT_FIELDS).0;
+const ACTOR_V3: &[Field] = ACTOR.split_at(V3_UNIT_FIELDS).0;
 const HIT: &[Field] = &[
     o(Kind::Id),  // from
     o(Kind::Id),  // to
@@ -493,6 +502,14 @@ const LISTS: [(&[Field], usize); 5] = [
     (PLAYER, MAX_PLAYERS),
     (VEHICLE, MAX_FRAME_VEHICLES),
     (ACTOR, MAX_FRAME_ACTORS),
+    (MACHINE, MAX_FRAME_MACHINES),
+    (OBJECT, MAX_FRAME_OBJECTS),
+];
+/// Version 3's lists.
+const LISTS_V3: [(&[Field], usize); 5] = [
+    (PLAYER_V3, MAX_PLAYERS),
+    (VEHICLE, MAX_FRAME_VEHICLES),
+    (ACTOR_V3, MAX_FRAME_ACTORS),
     (MACHINE, MAX_FRAME_MACHINES),
     (OBJECT, MAX_FRAME_OBJECTS),
 ];
@@ -532,6 +549,11 @@ fn schema_of(version: u64) -> Option<Schema> {
             lists: &LISTS_V2,
             hit: HIT_V2,
             cut: false,
+        }),
+        3 => Some(Schema {
+            lists: &LISTS_V3,
+            hit: HIT,
+            cut: true,
         }),
         VERSION => Some(Schema {
             lists: &LISTS,
@@ -575,6 +597,28 @@ fn actions_val(actions: &Option<Vec<String>>) -> Result<Val> {
                 .map(Val::List)
         }
     }
+}
+
+fn anim_frame(frame: f64) -> Result<Val> {
+    if !(0.0..=MAX_ANIM_FRAME).contains(&frame) {
+        return Err(PackError::Value("anim frame out of range"));
+    }
+    qfixed(frame, ANIM_SCALE, "anim frame").map(Val::Int)
+}
+
+/// A unit's `anim` from its name and frame fields (versions 1 to 3 have
+/// neither).
+fn as_anim(e: &Entity, at: usize) -> Result<Option<FrameAnim>> {
+    let name = e.get(at).map(as_opt_str).transpose()?.flatten();
+    let frame = e.get(at + 1).map(as_opt_int).transpose()?.flatten();
+    Ok(match (name, frame) {
+        (Some(name), Some(q)) => Some(FrameAnim {
+            name,
+            frame: q as f64 / ANIM_SCALE,
+        }),
+        (None, None) => None,
+        _ => return Err(PackError::Bad("anim needs its name and frame")),
+    })
 }
 
 /// A unit's `actions_ago`: only beside actions, one each.
@@ -638,6 +682,8 @@ fn player_vals(p: &FramePlayer) -> Result<Entity> {
         })?,
         opt(p.seat, |n| Ok(Val::Int(u64::from(n))))?,
         agos_val(&p.actions, &p.actions_ago)?,
+        opt(p.anim.as_ref(), |a| string(&a.name))?,
+        opt(p.anim.as_ref(), |a| anim_frame(a.frame))?,
     ])
 }
 
@@ -686,6 +732,8 @@ fn actor_vals(a: &FrameActor) -> Result<Entity> {
         })?,
         opt(a.seat, |n| Ok(Val::Int(u64::from(n))))?,
         agos_val(&a.actions, &a.actions_ago)?,
+        opt(a.anim.as_ref(), |a| string(&a.name))?,
+        opt(a.anim.as_ref(), |a| anim_frame(a.frame))?,
     ])
 }
 
@@ -895,6 +943,7 @@ fn player_of(e: &Entity) -> Result<FramePlayer> {
             .flatten()
             .map(|n| n as u32),
         actions_ago: e.get(18).map(as_agos).transpose()?.flatten(),
+        anim: as_anim(e, 19)?,
     })
 }
 
@@ -954,6 +1003,7 @@ fn actor_of(e: &Entity) -> Result<FrameActor> {
             .flatten()
             .map(|n| n as u32),
         actions_ago: e.get(18).map(as_agos).transpose()?.flatten(),
+        anim: as_anim(e, 19)?,
     })
 }
 

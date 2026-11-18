@@ -125,6 +125,21 @@ pub struct Motion {
     pub weapons: Option<[u32; 4]>,
     /// The held weapon's first magazine: (reserve, loaded).
     pub magazine: Option<(i16, i16)>,
+    /// The animation the unit plays.
+    pub animation: Option<Animation>,
+}
+
+/// An animation manager's first channel, as the guest holds it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Animation {
+    /// The channel's `jmad` tag datum.
+    pub graph: u32,
+    /// -1 the graph itself, else a position in its inheritance list.
+    pub inherited: i16,
+    /// The animation's index in that graph.
+    pub index: i16,
+    /// The frame, 0 to the frame count minus one.
+    pub frame: f32,
 }
 
 /// A vehicle anywhere in the world.
@@ -170,6 +185,8 @@ pub struct HitRecord {
     pub pos: Option<[f64; 3]>,
     pub body: f32,
     pub shield: f32,
+    /// The engine tick the hook saw it on, when it could be read.
+    pub tick: Option<u64>,
 }
 
 /// Everything the once-per-frame object table scan finds.

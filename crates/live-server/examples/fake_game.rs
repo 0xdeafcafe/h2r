@@ -318,6 +318,11 @@ fn main() {
                         shield: Some(1.0),
                         seat: None,
                         actions_ago: (tick % 120 < 3).then(|| vec![1]),
+                        // A 30-frame run cycle, a frame a tick.
+                        anim: Some(live_proto::game::FrameAnim {
+                            name: "combat:rifle:any:move_front".into(),
+                            frame: (tick % 30) as f64,
+                        }),
                     }
                 })
                 .collect(),
