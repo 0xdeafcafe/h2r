@@ -305,6 +305,142 @@ The base map per material comes from a name rule today; step 4 moves the
 each behind the per-material fallback, with mipmaps and the template's
 detail maps and scales.
 
+## Stage 2: objects and skinning (design)
+
+Bipeds, vehicles, weapons, equipment, scenery, machines and crates: every
+object whose render model the game queues in the scene list. Geometry is
+resident per render-model tag, loaded once per map; each frame the CPU
+hands over only the drawn objects' node matrices, read from the game's own
+computed transforms in guest memory. Skinning runs in the vertex shader.
+
+### Research points (Code unless marked; `h2 disasm`)
+
+| Point | What |
+|---|---|
+| `0x004e0300` (`points::OBJECTS`) | The object datum array header `H`. Header of handle `h`: `[H+0x44] + 0xc·(h & 0xffff)`; salt `u16 +0` must equal `h >> 16`; body `[header+8]` ([live-gamestate.md](../live/live-gamestate.md)). The pool compacts, so a body address is read every frame, never kept. |
+| body `+0x00` | The object definition tag datum (`bipd`, `vehi`, `weap`, `scen`, ...). |
+| body `+0x30`, `+0x3c` | World bounding sphere: centre (3 floats), radius ([occlusion-culling.md](occlusion-culling.md)). |
+| body `+0x114` (u16), `+0x116` (i16) | **The node-matrix block**: its size in bytes and its offset from the body. `object_new` `0x000b7b40` reserves it at `0x000b800b..0x000b801e` with `0x000bc380(field 0x114, 0x34 · nodes, align 0)`, the node count from hlmt `+0x78` (at least one). `0x000bc380` writes a block reference as `+0` size and `+2` offset (`0x000bc427`, `0x000bc430`). The other blocks it places: `+0x10c` and `+0x110` (32 bytes per node, when animated), `+0x118` (10 bytes per region), `+0x11c` (8 per attachment), `+0x120`, `+0x124` (`0x18` per change colour), `+0x128`. |
+| node matrix (`0x34` bytes) | The game's `real_matrix4x3`: `+0` scale, `+4` forward, `+0x10` left, `+0x1c` up, `+0x28` position. A local point `p` goes to `scale · (p.x·forward + p.y·left + p.z·up) + position`: the bounding-sphere update `0x000bdf90..0x000be068` applies the root node exactly so, reading the block through `[body+0x116]`. The matrices are world space (the sphere it produces is the world sphere at `+0x30`). |
+| mode node `+0x28` (`0x34` bytes) | The node's inverse rest frame in the same layout (scale, then the inverse's three columns, then its position; `crates/h1models/src/tests.rs`, `node_inverse_frames_are_stored_as_columns`, and the retail check `retail_h2_mode_layouts`). A retail hlmt node is its mode node's first `0x5c` bytes (V, `crates/tags/src/defs/hlmt.txt`), so object node `i` is mode node `i`. |
+| skinning | Vertex world position `Σ wₖ · N[nₖ] · I[nₖ] · p`, with `N` the object's node matrix, `I` the mode node's inverse rest frame, `nₖ` the section's node map applied to the vertex's node index (S: that the game composes the same `N·I` for its node constants; "rest frame times inverse is the identity" is Test in h1models, the draw side is checked by the A/B). Sections without vertex nodes (classification 1) are bound to the first node of their node map, else node 0 (S). |
+| `0x0002cbf0` | Fills render record `0x004ba138 + 0x20·i` (at most `0x352` per frame, counter `0x004c0b78`): `+4` the object handle (`-1` for the BSP), `+8` a word from the caller's per-section state, `+0`, `+0xc` and `+0x1a..+0x1b` bit-packed. Its caller for objects is `0x00133f70`, which walks a per-object render state of about `0x1e4` bytes built under `0x00133ab0` (entries from `+0x48`, stride `0x18`, count `+0x166`; handle `[entry+0x44]`). Which bits are the section (LOD and permutation) is not read yet. |
+| `0x0002bed5` | The return address of the base layers' layer-3 call (`call 0x00044550` at `0x0002bed0` in `render_scene_passes`, view kinds 1 and 2). The object skip acts only there, so first-person or other-kind layer draws are never touched. |
+| `0x0004baf0`, `0x0004b5d0` | LOD choice by pixel size inside `0x00133790` ([occlusion-culling.md](occlusion-culling.md)). |
+| `0x0016d764` | Region permutation choice (Likely): the variant's region map, its regions at `+0x18`, then `0x0016dad0` ([objects.md](../formats/objects.md)). |
+| `0x00165f16` (`points::FIRST_PERSON_RENDER`) | One local player's first-person weapon and arms, after the transparents, with their own projection (camera `0x0023c110`, FOV `0x00187130`). |
+| `0x0003ddd0`, `[0x00509434]`, body `+0xcc` | The per-object render-state (lighting) cache: records of `0x100` bytes, lit per frame by `0x0003dfe0`, lighting at `+0x44..` and `+0xc0..` (layout not read; [pipelined-render.md](pipelined-render.md)). |
+
+### Skip point
+
+The same layer-draw observers as the world (`LAYER_DRAW`, an opaque
+point), under the same plan rules: **before** the layer draw, when the
+current layer is 3 and the caller is the base layers' call (`[esp] ==
+0x0002bed5`), walk the current list; an item is an object item when its
+build is `0x0004cbf0` and its render record's `+4` is a live object
+handle. It is skipped when the host draws that object's definition and
+the item's shader (`+8`) is one of the host's native materials: layer 3's
+bit cleared, the item remembered, the handle added to the view's drawn
+set (once). **After** the layer draw the bits go back. The host gets one
+external pass per view carrying, per drawn handle, the definition and the
+node matrices copied out of the body (`0x34 · count` bytes) and the
+bounding sphere.
+
+Only layer 3 in the first cut, as in stage 1: the objects' layer 1, 5, 7,
+8 and 20 entries and their dynamic-light layers (10 to 13) keep drawing
+through D3D, so self-illumination, environment maps, specular, change
+colour and dynamic lights still come from the game's own passes on top of
+the native base. Those passes depth-test `LessEqual` against the depth the
+native pass wrote; skinned on the GPU in float, the native positions match
+the translated vertex programs to within an ulp or two, not bit for bit,
+so an equal-depth pass can lose pixels on curved surfaces (the A/B shows
+how much). The skipped layers are one mask
+(`native_render::objects::REPLACED_LAYERS`); adding layers later is a mask
+change plus the shading those layers did.
+
+What the native pass draws is exactly the set of objects whose layer-3
+items it skipped. The game's own visibility, object list, attachment
+recursion and "not drawn" decisions (`0x00133790`, occlusion) have already
+run, so a held weapon, a vehicle's driver or a culled crate need no logic
+of ours. A conservative sphere-frustum test runs anyway (cheap, and a
+guard against a stale sphere).
+
+### Transform source
+
+Node matrices are read once per view at the hook, from the body
+(`[body+0x116]`, `[body+0x114] / 0x34` nodes), after the game has finished
+the frame's animation and attachment updates (the records exist, so
+`0x00133ab0`'s node pass ran). They are uploaded raw (13 floats a node)
+into one storage buffer per pass, with one small instance record per
+object (node base, inverse base). The inverse rest frames are resident
+per model. No matrix product is done on the CPU. An object whose node
+count disagrees with its model's stays on the D3D path.
+
+### LODs
+
+The game picks a LOD per object by pixel size; the native path draws the
+highest LOD present in each permutation (`Permutation::best_section`).
+Distant objects then cost more triangles than the game would draw: GPU
+work, never a missing surface. Matching the game's LOD needs the record
+bits above (the section in the record), a later step; the record would
+then also pin the permutation.
+
+### Permutations and regions
+
+The variant is the object definition's default (`0x0016d180`'s rule,
+`tags::object::Context::resolve_model`); its regions map to the render
+model's regions by name, and each region's permutation to the render
+model's by name. A model is drawn natively only when every region the
+variant lists has **exactly one** permutation. Models with a random or
+state-driven choice (marine heads, damage states, a variant changed at run
+time through `+0xb1`) stay on the D3D path until the record's section is
+read. Regions the variant does not list draw their first permutation, as
+the viewer does (S: some may be hidden in game).
+
+### First person versus third person
+
+The first-person weapon and arms are drawn by the player chain after the
+transparents (`0x0002afa0`, `FIRST_PERSON_RENDER`) with their own
+projection, not by the base layers' layer-3 call, which the caller check
+pins. They stay on the D3D path in stage 2. Natively they need the
+first-person camera (`0x0023c110`) and their nodes (the first-person model
+references nodes past its own list; `tags::model` leaves those indices
+unchecked), and they draw after the transparents, so they come with or
+after stage 3. The local player's third-person body draws natively like
+any biped when the game queues it.
+
+### Shading
+
+Like the world's first cut: the material's base map (the same name rule,
+`load::base_map`) times a lighting term. The game's per-object lighting
+lives in the render-state cache (`0x0003ddd0`, body `+0xcc`, lighting at
+record `+0x44..`), whose layout is not read; until it is, the term is a
+fixed ambient plus one directional light (`ambient + diffuse · max(n·l,
+0)`), so objects read as lit solids, not as their final look. Reading the
+cache's lighting (ambient, the dominant light's direction and colour, the
+probe's spherical harmonics, [lighting.md](../formats/lighting.md)) is the
+first look step. Materials without a decodable base map keep their D3D
+draws (the skip leaves their items alone) and are not drawn natively.
+Transparent parts (kind 4) are not in layer 3 and are left out.
+
+### Pipelined render
+
+The observers read the object array and bodies during the render. With
+`H2_PIPELINE_RENDER` the render runs one frame behind the simulation on
+its own thread, while the next tick moves the same bodies and may compact
+the pool. The feature is listed in boot's `render_thread::REFUSED`: its
+hooks keep the pipelined render on its game-thread fallback, as the
+world's do. Making it safe means copying the node matrices into the
+pipeline's frame snapshot, which is the pipeline's job, not this stage's.
+
+### Per frame on the CPU
+
+Per view: one walk of layer 3's list, one object lookup per drawn object,
+a copy of its nodes (a biped has about 50: 2.6 KB) and one sphere test.
+The render thread writes two storage buffers and issues one indexed draw
+per (object, opaque part), grouped by model and material. Nothing per
+vertex and no matrix work on the CPU.
+
 ## Open
 
 - Seams: the drawn world is welded (no T-junctions, shared edges
