@@ -5,7 +5,9 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use crate::rt::Instant;
 
 use live_proto::game::{
     self, Frame, GameCreated, GameDetail, GameEnded, GameStarted, GameSummary, NewGame, Outline,
@@ -55,14 +57,21 @@ pub struct LiveFrame {
     pub packed: Option<Vec<u8>>,
     /// The JSON stream message, made by the first JSON reader that sends
     /// the frame and shared by the rest ([`LiveFrame::json_message`]).
-    json: std::sync::OnceLock<axum::extract::ws::Utf8Bytes>,
+    json: std::sync::OnceLock<WsText>,
 }
+
+/// A WebSocket text message, shared without copying: axum's on a native
+/// server; the text itself on a Worker, whose sockets are JavaScript's.
+#[cfg(feature = "native")]
+pub type WsText = axum::extract::ws::Utf8Bytes;
+#[cfg(not(feature = "native"))]
+pub type WsText = std::sync::Arc<str>;
 
 impl LiveFrame {
     /// The frame as a JSON reader's `frame` stream message: serialised once
     /// however many JSON readers there are (it is the same for all of them;
     /// visibility only decides who gets it).
-    pub fn json_message(&self) -> axum::extract::ws::Utf8Bytes {
+    pub fn json_message(&self) -> WsText {
         self.json
             .get_or_init(|| {
                 let message = live_proto::StreamMessage::Frame {

@@ -187,7 +187,7 @@ pub struct Live {
     /// Shared game art in the public blob store, redirected to once it is
     /// uploaded ([`crate::art::PublishedArt`]).
     published_art: std::sync::OnceLock<crate::art::PublishedArt>,
-    dispatcher: tokio::task::AbortHandle,
+    dispatcher: crate::rt::Task,
 }
 
 impl Drop for Live {
@@ -432,7 +432,7 @@ impl Live {
         let feed = dispatcher.feed();
         let wake = store.wake().await?;
         let head = store.head().await?;
-        let task = tokio::spawn(dispatcher.run(wake));
+        let dispatcher = crate::rt::spawn(dispatcher.run(wake));
         let live = Live {
             store,
             model,
@@ -462,25 +462,24 @@ impl Live {
             blobs: Default::default(),
             published_art: Default::default(),
             policy,
-            dispatcher: task.abort_handle(),
+            dispatcher,
         };
         applied.wait_for(|p| *p >= head).await?;
         let live = Arc::new(live);
         // The presence and game managers; they stop with the service.
         let weak = Arc::downgrade(&live);
         let every = live.policy.sweep_every;
-        tokio::spawn(async move {
+        crate::rt::spawn(async move {
             loop {
-                tokio::time::sleep(every).await;
+                crate::rt::sleep(every).await;
                 let Some(live) = weak.upgrade() else { return };
                 live.sweep().await;
             }
         });
         // Packed readers' batches, a tick at a time.
         let weak = Arc::downgrade(&live);
-        tokio::spawn(async move {
-            let mut tick = tokio::time::interval(crate::packed::TICK);
-            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        crate::rt::spawn(async move {
+            let mut tick = crate::rt::interval(crate::packed::TICK);
             loop {
                 tick.tick().await;
                 let Some(live) = weak.upgrade() else { return };
@@ -507,6 +506,7 @@ impl Live {
     /// status (shown only to callers on this machine). Set once.
     pub fn set_data_dir(&self, dir: &std::path::Path) {
         let _ = self.data_dir.set(dir.to_path_buf());
+        #[cfg(feature = "native")]
         if self.blobs.get().is_none() {
             match crate::blobs::Blobs::dir(dir) {
                 Ok(b) => {
@@ -673,7 +673,7 @@ impl Live {
 
     pub(crate) async fn wait_applied(&self, position: u64) -> Result<(), ApiError> {
         let mut rx = self.applied.clone();
-        match tokio::time::timeout(APPLY_TIMEOUT, rx.wait_for(|p| *p >= position)).await {
+        match crate::rt::timeout(APPLY_TIMEOUT, rx.wait_for(|p| *p >= position)).await {
             Ok(Ok(_)) => Ok(()),
             _ => Err(ApiError::new(
                 ErrorCode::Unavailable,
