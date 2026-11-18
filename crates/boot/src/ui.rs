@@ -27,6 +27,12 @@ pub enum List {
     Controls,
     /// The retail Settings list (Player Profiles, Game Variants).
     Settings,
+    /// The campaign pause menu (screen 18, `crate::pause_menu`).
+    Pause,
+    /// The multiplayer pause menu (screen 195, `crate::pause_menu`): its
+    /// rows are told apart by action word, and our row `i` past the retail
+    /// ones has action `retail + i`.
+    MpPause,
     /// One of our screens, by id.
     Screen(&'static str),
 }
@@ -207,6 +213,17 @@ impl Model {
         extensions: Vec<Extension>,
         ids: Range<u32>,
     ) -> Result<Model, String> {
+        Self::with_ids(store, screens, extensions, vec![ids])
+    }
+
+    /// [`Model::new`] with its string ids from `ranges`, the first used
+    /// first.
+    pub fn with_ids(
+        store: Arc<Store>,
+        screens: Vec<Screen>,
+        extensions: Vec<Extension>,
+        ranges: Vec<Range<u32>>,
+    ) -> Result<Model, String> {
         let has_setting = |r: &Row| match r.kind {
             RowKind::Setting(k) => store.def(k).is_some(),
             RowKind::Open(_) => true,
@@ -269,19 +286,18 @@ impl Model {
                 }
             }
         }
-        let mut next = ids.start;
+        let mut free = ranges.iter().flat_map(|r| r.clone());
+        let room: usize = ranges.iter().map(|r| r.len()).sum();
         for t in texts {
             if m.strings.iter().any(|(_, s)| *s == t) {
                 continue;
             }
-            if next >= ids.end {
+            let Some(id) = free.next() else {
                 return Err(format!(
-                    "ui: more texts than the {} string ids there are",
-                    ids.len()
+                    "ui: more texts than the {room} string ids there are"
                 ));
-            }
-            m.strings.push((next, t));
-            next += 1;
+            };
+            m.strings.push((id, t));
         }
         Ok(m)
     }
@@ -324,7 +340,7 @@ impl Model {
     pub fn rows(&self, list: List) -> &[Row] {
         match list {
             List::Screen(id) => self.screen(id).map_or(&[], |s| &s.rows),
-            List::Controls | List::Settings => self
+            List::Controls | List::Settings | List::Pause | List::MpPause => self
                 .extensions
                 .iter()
                 .find(|e| e.list == list)
@@ -338,7 +354,7 @@ impl Model {
     pub fn count(&self, list: List, retail: u32) -> u32 {
         match list {
             List::Screen(_) => self.rows(list).len() as u32,
-            List::Controls | List::Settings => {
+            List::Controls | List::Settings | List::Pause | List::MpPause => {
                 match self.extensions.iter().find(|e| e.list == list) {
                     Some(e) if e.retail == retail => retail + e.rows.len() as u32,
                     _ => retail,
@@ -351,7 +367,7 @@ impl Model {
     pub fn row(&self, list: List, index: i16) -> Option<&Row> {
         let base = match list {
             List::Screen(_) => 0,
-            List::Controls | List::Settings => self
+            List::Controls | List::Settings | List::Pause | List::MpPause => self
                 .extensions
                 .iter()
                 .find(|e| e.list == list)
@@ -365,7 +381,7 @@ impl Model {
     pub fn index_of(&self, list: List, kind: &RowKind) -> Option<i16> {
         let base = match list {
             List::Screen(_) => 0,
-            List::Controls | List::Settings => self
+            List::Controls | List::Settings | List::Pause | List::MpPause => self
                 .extensions
                 .iter()
                 .find(|e| e.list == list)

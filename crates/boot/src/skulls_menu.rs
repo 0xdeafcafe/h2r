@@ -1054,7 +1054,7 @@ mod tests {
         assert!(ids.iter().all(|i| is_ours(*i)));
         assert!(
             ids.iter()
-                .all(|i| !crate::video_screen::MODEL_IDS.contains(i))
+                .all(|i| !crate::video_screen::is_model_id(*i))
         );
         assert!(
             ids.iter().all(|i| *i >= ID_BASE + 0x100),

@@ -709,7 +709,7 @@ mod tests {
         ]);
         for i in &ids {
             assert!(!taken.contains(i), "{i:#x}");
-            assert!(!crate::video_screen::MODEL_IDS.contains(i), "{i:#x}");
+            assert!(!crate::video_screen::is_model_id(*i), "{i:#x}");
             assert_eq!(ids.iter().filter(|j| *j == i).count(), 1);
         }
         // A title and three lines, broken as the game's strings are, each

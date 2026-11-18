@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use boot::setting_defs::ALL;
+use boot::setting_defs::defs;
 use settings::{Apply, Def, Flag, Kind, Store, Tier};
 
 const USAGE: &str = "usage:
@@ -34,10 +34,11 @@ pub fn set_flag(text: &str) -> Result<Flag> {
 }
 
 fn find(key: &str) -> Result<&'static Def> {
-    match ALL.iter().find(|d| d.key == key) {
-        Some(d) => Ok(d),
+    let all = defs();
+    match all.iter().find(|d| d.key == key) {
+        Some(d) => Ok(*d),
         None => {
-            let keys: Vec<&str> = ALL.iter().map(|d| d.key).collect();
+            let keys: Vec<&str> = all.iter().map(|d| d.key).collect();
             bail!("no setting {key:?}; there are {}", keys.join(", "))
         }
     }
@@ -54,6 +55,8 @@ pub fn run(args: Vec<String>) -> Result<()> {
             _ => rest.push(a),
         }
     }
+    // The voice device rows offer this host's devices.
+    boot::voice_settings::use_host_devices(&audio::voice::HostDevices);
     let env = |k: &str| std::env::var(k).ok();
     print!("{}", command(&data, &rest, &env)?);
     Ok(())
@@ -67,7 +70,7 @@ fn command(data: &Path, args: &[String], env: &dyn Fn(&str) -> Option<String>) -
     match args.as_slice() {
         ["list"] | ["list", "--all"] | [] => {
             let all = args.contains(&"--all");
-            let (store, problems) = Store::load(ALL, Some(&path), env, &[]);
+            let (store, problems) = Store::load(&defs(), Some(&path), env, &[]);
             for p in problems {
                 eprintln!("settings: {p}");
             }
@@ -79,7 +82,7 @@ fn command(data: &Path, args: &[String], env: &dyn Fn(&str) -> Option<String>) -
         }
         ["get", key] => {
             let def = find(key)?;
-            let (store, problems) = Store::load(ALL, Some(&path), env, &[]);
+            let (store, problems) = Store::load(&defs(), Some(&path), env, &[]);
             for p in problems
                 .iter()
                 .filter(|p| p.key == Some(def.key) || p.key.is_none())
@@ -116,7 +119,7 @@ fn set(
         .parse(text)
         .map_err(|e| anyhow::anyhow!("{}: {e}", def.key))?;
     // The file only: what the environment says does not stop a save.
-    let (store, problems) = Store::load(ALL, Some(path), &|_| None, &[]);
+    let (store, problems) = Store::load(&defs(), Some(path), &|_| None, &[]);
     if let Some(p) = problems.iter().find(|p| p.key.is_none()) {
         bail!("{p}");
     }

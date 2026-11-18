@@ -757,7 +757,30 @@ pub static ALL: &[&Def] = &[
     &crate::skulls_mp::MP_FAMINE,
     &crate::skulls_mp::MP_BLIND,
     &crate::skulls_mp::MP_LOW_GRAVITY,
+    // Voice chat (crate::voice_settings, the Voice screen).
+    &crate::voice_settings::INPUT_DEVICE,
+    &crate::voice_settings::OUTPUT_DEVICE,
+    &crate::voice_settings::MODE,
+    &crate::voice_settings::PTT_BUTTON,
+    &crate::voice_settings::MIC_MUTED,
+    &crate::voice_settings::INCOMING_MUTED,
+    &crate::voice_settings::INPUT_VOLUME,
+    &crate::voice_settings::OUTPUT_VOLUME,
 ];
+
+/// Every setting of this run: [`ALL`], with the voice device settings
+/// offering the host's devices once they are listed
+/// ([`crate::voice_settings::use_host_devices`]).
+pub fn defs() -> Vec<&'static Def> {
+    let [input, output] = crate::voice_settings::device_defs();
+    ALL.iter()
+        .map(|d| match d.key {
+            k if k == input.key => input,
+            k if k == output.key => output,
+            _ => *d,
+        })
+        .collect()
+}
 
 /// `H2_PAD_SPEAKER` as the controller-speaker settings read it: `0`, `1`,
 /// or a routes file whose `enabled` decides.
@@ -773,7 +796,7 @@ fn pad_speaker_env(text: &str) -> Result<Value, String> {
 /// process environment and `flags`.
 pub fn load(data: &Path, flags: &[Flag]) -> (Store, Vec<Problem>) {
     Store::load(
-        ALL,
+        &defs(),
         Some(&settings::path_in(data)),
         &|k| std::env::var(k).ok(),
         flags,
@@ -868,8 +891,25 @@ mod tests {
                 ("H2_HALO1_HUD", "halo2"),
                 ("H2_COOP_MAX_PLAYERS", "4"),
                 ("H2_COOP_JOIN_IN_PROGRESS", "0"),
+                ("H2_VOICE_INPUT", "default"),
+                ("H2_VOICE_OUTPUT", "game"),
+                ("H2_VOICE_MODE", "ptt"),
+                ("H2_VOICE_PTT_BUTTON", "back"),
+                ("H2_VOICE_MIC_MUTED", "1"),
+                ("H2_VOICE_INCOMING_MUTED", "0"),
+                ("H2_VOICE_INPUT_VOLUME", "50"),
+                ("H2_VOICE_OUTPUT_VOLUME", "80"),
             ],
         );
+        {
+            use crate::voice_settings::*;
+            let h = VoiceHandles::new(&s);
+            assert_eq!(h.mode.get(), MODE_PUSH);
+            assert_eq!(h.push_to_talk_button.get(), PTT_BACK);
+            assert!(h.mic_muted.get() && !h.incoming_muted.get());
+            assert_eq!((h.input_volume.get(), h.output_volume.get()), (50, 80));
+            assert_eq!((h.input_device.get(), h.output_device.get()), (0, 0));
+        }
         assert_eq!(coop_max_players(&s), 4);
         assert!(!coop_join_in_progress(&s));
         assert_eq!(s.get(TOUCH_ACCEL.key), Some(Value::Int(0)));

@@ -74,6 +74,7 @@ pub const FAMILIES: &[Family] = &[
     Family::new("skull row labels", TABLE + 0x0300_0000, 0x100),
     Family::new("h1 options", TABLE + 0x0400_0000, 0x40),
     Family::new("signin", TABLE + 0x0500_0000, 0x100),
+    Family::new("ui model more", TABLE + 0x0600_0000, 0x100),
 ];
 
 const fn same(a: &str, b: &str) -> bool {
