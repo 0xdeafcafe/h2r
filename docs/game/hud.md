@@ -16,12 +16,13 @@ set there; no retail `nhdt` is copied. The converted player biped (the
 cyborg, `health_hud::is_player_biped`) names it in every HUD interface
 (`unit +0x1a0`), as `<unhi name>_h1_hud`.
 
-| Halo 1 element (`unhi`) | Widget |
+| Halo 1 element (`unhi`), in draw order | Widget |
 |---|---|
-| shield panel background `+0x8c` | static, Halo 1's anchor |
-| health panel background `+0x17c` | static (null on the cyborg: skipped) |
+| HUD background `+0x24` | static, Halo 1's anchor (skipped when null) |
 | shield panel meter `+0xf4` | meter on input 16 (shield) |
+| shield panel background `+0x8c` | static, over the meter |
 | health panel meter `+0x1e4` | meter on input 17 (body) |
+| health panel background `+0x17c` | static (null on the cyborg: skipped) |
 | motion sensor background `+0x26c` | static, bottom left |
 | motion sensor foreground `+0x2d4` | static, bottom left |
 
@@ -48,8 +49,13 @@ Why it draws as Halo 1's:
 - **Placement** is Halo 1's, read from Halo 1's XBE (`disc/halo1.iso`,
   `default.xbe`, with `h2 disasm`; E below means that XBE here):
   - the unit HUD draw calls the element draw `0x000e1830` for each element
-    (`0x000db4ef` HUD background, `0x000db50f` shield background,
-    `0x000db549` the shield meter through the meter draw `0x000e1a60`);
+    in this order: the HUD background `+0x24` (`0x000dcf8f`), the shield
+    meter through the meter draw `0x000e20a0` (`0x000dd2ea`), the shield
+    panel `+0x8c` over it (`0x000dd32f`), the health meter (`0x000dd52e`),
+    the health panel `+0x17c` (`0x000dd556`), the motion sensor's
+    background `+0x26c` and foreground `+0x2d4` (`0x000dd618`,
+    `0x000dd63b`). The widgets keep that order. (`0x000db3c0`..`0x000db5c1`,
+    with the same element offsets, is the grenade HUD's draw, `grhi`.)
   - the element's sprite: its sequence (`+0x54`), the sequence's first
     sprite and its bounds (`0x000e18a0`..`0x000e18c5`);
   - the anchor is the `unhi`'s `+0` word; for the motion sensor a stand-in
@@ -103,16 +109,49 @@ through the from-scratch rebuild by group and name (`h1convert::fresh`,
 `h1campaign` keeps them through its scratch build or prune the same way
 (`h1campaign::remap_hud`) and the CLI writes the level's `.hud.toml`.
 
+## Weapon HUDs
+
+`h1hud::weapon_entries` reads a weapon's `wphi` and its children (the
+child first, as Halo 1 draws it: E `0x000dbded`; V: the assault rifle's
+`wphi` → `ui\hud\master rounds` → `ui\hud\master`), and
+`Converter::weapon_hud` writes one `nhdt` per `wphi`,
+`<wphi name>_h1_weapon_hud`. The rebuilt weapon (`convert_arsenal`) names
+it at `weap +0x2b0`; the Halo 2 counterpart's `nhdt` becomes the Halo 2
+side of the weapon's HUD pair. `weapon_hud` is the function to call for
+any other builder of a `weap`.
+
+Halo 1's `wphi` layout, from its draw (E, Halo 1's XBE, `0x000db5d0`..,
+`ebx` the `wphi`): child `+0x00`, anchor `+0x3c`, static elements `+0x60`
+(`0xb4`), meters `+0x6c` (`0xb4`), numbers `+0x78` (`0xa0`), crosshairs
+`+0x84` (`0x68`, each with overlays `+0x34`, `0x6c`), overlay elements
+`+0x90`. An entry's head: the weapon state it reads `+0`, flags `+2` (bit
+0 not drawn), screen type `+4`; the element at `+0x24`. Details in
+`h1hud::wphi`.
+
+| Halo 1 | Widget |
+|---|---|
+| static element | static, the `wphi`'s anchor, Halo 1's offset turned to screen directions, corner registration |
+| meter on rounds loaded (state 1) | legacy meter on input `0x36`, loaded over the magazine (E `0x0013ae7c`; V: Halo 2's magnum) |
+| meter on heat (state 2) | input `0x31`, `[ecx+0x14]` (E `0x0013af00`; V: the beam rifle's and sentinel beam's meters) |
+| meter on battery (state 3) | input `0x38`, `1 - age` (E `0x0013af94`; V: the energy sword's) |
+| aim crosshair overlay (type 0) | centred (E `0x000dad9e`: the crosshairs' header anchor is 4), Halo 2's battle rifle reticle's state flags |
+| aim overlay with flag bit 2 (scope lines) | the same, with the scope masks' state flags (`+0x08` bit `0x40`, zoomed only) |
+
+Halo 1's meter fills to `multiplier * value + offset` of 255 (E
+`0x000e20a0`); on the disc that is the fraction the Halo 2 input gives (V:
+the sniper rifle's 60 per round of 4 plus 1). The states are Halo 1's
+(E `0x000db6e7`..): 0 rounds in reserve, 1 rounds loaded, 2 heat, 3
+battery, 4 and 5 the second trigger's.
+
+Left out, each named in the weapon's report: split-screen-only entries
+(screen type 2), meters on rounds in reserve or the second trigger (no
+Halo 2 input for them is established), warning crosshairs (types 3 and
+up: reload, overheat, no ammunition, no grenades; V: `hud_reticle_warnings`),
+the zoom-level readout (type 1, its sprite chosen by the zoom level),
+aim overlays shown only unzoomed (bit 6), numbers and overlay elements.
+
 ## Not converted yet
 
-- **Weapon HUDs** (`wphi`): crosshairs, ammo and battery counters, zoom
-  and reticles. Seen on the disc: a weapon's `wphi +0` names a parent
-  `wphi` (assault rifle → `ui\hud\master rounds` → `ui\hud\master`)
-  whose elements draw too; bitmaps `hud_ammo_meters`, `hud_reticles`,
-  `hud_weapon_backgrounds`, `hud_reticle_warnings`, scope masks. Halo 2's
-  crosshair is a bitmap widget with anchor 4 and registration 0.5, its
-  ammo meter a legacy meter on input 54 (V: `ui\hud\magnum`). The weapons
-  lane rebuilds `weap`; the HUD reference is `weap +0x2b0`.
 - **Grenades** (`grhi`), **HUD globals** (`hudg`), **numbers** (`hud#`):
   Halo 2 draws counts as text widgets in its HUD font (`ui\hud\masterchief`
   `frag_count`), not from a numbers bitmap.
@@ -123,8 +162,9 @@ through the from-scratch rebuild by group and name (`h1convert::fresh`,
 
 ## Tests
 
-- `cargo test -p h1objects --lib h1hud`: anchors, registration, the
-  widget bytes (inputs, shader, state, no special type or effects,
+- `cargo test -p h1objects --lib h1hud`: weapon meters on Halo 2's
+  inputs, crosshairs centred with their state flags, skipped entries;
+  anchors, registration, the widget bytes (inputs, shader, state, no special type or effects,
   sequences, offsets, registration), the `nhdt` holding only its widgets.
 - `cargo test -p boot --lib hud`: the swap both ways on bipeds and
   weapons, other HUDs left alone, refused targets, the campaign tables.
@@ -134,14 +174,20 @@ through the from-scratch rebuild by group and name (`h1convert::fresh`,
 - `H1_ISO=... H2_DISC=... cargo test -p h1objects --test sandbox_disc -- --ignored`:
   Blood Gulch's player HUD in the built map: every interface names the
   `_h1_hud` `nhdt`, each widget a Halo 1 bitmap through the right shader,
-  shield and health meters present.
+  shield and health meters present; every Halo 1 weapon with a `wphi`
+  names its `_h1_weapon_hud` (Halo 1 bitmaps, Halo 2 weapon inputs); the
+  HUD pairs (the biped's and the weapons') in the manifest.
+- `H1_ISO=... cargo test -p h1objects --test hud_disc -- --ignored
+  weapon_huds_read --nocapture`: prints every `wphi` chain of `$H1_MAPS`
+  as read.
 
 ## What a game run should show
 
-On a converted Halo 1 map (converter version 50 or later) in the Halo 1
+On a converted Halo 1 map (converter version 53 or later) in the Halo 1
 sandbox, or a Halo 1 campaign level: Halo 1's shield and health bars top
-right, Halo 1's motion sensor frame bottom left, Halo 2's weapon HUD and
-grenades as before. The shield bar drains from the right as the shield
+right, Halo 1's motion sensor frame bottom left, Halo 1's ammunition
+counter top left and its crosshair centred (the sniper's scope lines only
+zoomed), Halo 2's grenades as before. The shield bar drains from the right as the shield
 falls, the health bar likewise and stays down (Halo 1's health model). The
 whole HUD hides in the pause menu, under Blind and in cinematics. Each
 element should sit where Halo 1 puts it (Placement above); one that does

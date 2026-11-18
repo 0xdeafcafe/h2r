@@ -594,6 +594,9 @@ pub struct Converter<'a> {
     health_huds: HashMap<TagId, TagId>,
     /// Widgets per converted `unhi` ([`Self::unit_hud`]).
     unit_hud_widgets: HashMap<u32, usize>,
+    /// Per converted `wphi`, its entries with no widget
+    /// ([`Self::weapon_hud`]).
+    weapon_hud_skips: HashMap<u32, Vec<String>>,
     /// Biped role words, per role ([`Self::biped_role`]).
     roles: HashMap<crate::rebuild::BipedRole, Option<crate::rebuild::RoleWords>>,
     /// Weapon, equipment, projectile and damage role words, per group
@@ -618,6 +621,7 @@ impl<'a> Converter<'a> {
             coll_names: HashMap::new(),
             health_huds: HashMap::new(),
             unit_hud_widgets: HashMap::new(),
+            weapon_hud_skips: HashMap::new(),
             roles: HashMap::new(),
             item_roles: HashMap::new(),
             vehicle_roles: HashMap::new(),
@@ -1874,6 +1878,62 @@ impl Converter<'_> {
         self.done.insert(tag.id.0, id);
         self.unit_hud_widgets.insert(tag.id.0, n);
         Ok((id, n))
+    }
+
+    /// Halo 1's weapon HUD `wphi` (and its children) as an `nhdt` written
+    /// from scratch ([`crate::h1hud::weapon_widget`]), built once per
+    /// `wphi`: the weapons' part of Halo 1's HUD, for whoever builds the
+    /// `weap` to name at `+0x2b0`. Returns the tag and, per entry with no
+    /// widget, why.
+    pub fn weapon_hud(&mut self, wphi: h1map::TagId) -> Result<(TagId, Vec<String>)> {
+        use crate::h1hud;
+        let tag = self.h1.tag(wphi)?.clone();
+        if let Some(id) = self.done.get(&tag.id.0) {
+            let skipped = self.weapon_hud_skips.get(&tag.id.0).cloned().unwrap_or_default();
+            return Ok((*id, skipped));
+        }
+        let (entries, uncounted) = h1hud::weapon_entries(self.h1, wphi)?;
+        let find = |group: &[u8; 4], name: &str| {
+            self.base
+                .find(group, name)
+                .ok_or_else(|| Error::NoTemplate(name.into()))
+        };
+        let meter = find(b"shad", h1hud::METER_SHADER)?;
+        let plain = find(b"shad", h1hud::STATIC_SHADER)?;
+        let mut widgets = Vec::new();
+        let mut skipped = Vec::new();
+        for e in &entries {
+            let drawn = match e.bitmap {
+                Some(b) => {
+                    let bt = self.h1.tag(b)?.clone();
+                    let bm = h1map::bitmap::Bitmap::read(self.h1, &bt)?;
+                    h1hud::sprite(&bm, e.sequence)
+                        .and_then(|_| self.bitmap(b))
+                }
+                None => None,
+            };
+            match h1hud::weapon_widget(e, drawn, meter, plain) {
+                Ok(w) => widgets.push(w),
+                Err(why) => skipped.push(format!("{:?}: {why:?}", e.kind)),
+            }
+        }
+        if uncounted > 0 {
+            skipped.push(format!("{uncounted} numbers and overlay elements not converted"));
+        }
+        if widgets.is_empty() {
+            return Err(Error::Invalid(format!("{}: no drawable element", tag.name)));
+        }
+        let id = self.tree.push(
+            &format!("{}{}", tag.name, h1hud::WEAPON_NHDT_SUFFIX),
+            Converted {
+                group: FourCC(*b"nhdt"),
+                root: h1hud::nhdt(&widgets),
+                raw: Vec::new(),
+            },
+        );
+        self.done.insert(tag.id.0, id);
+        self.weapon_hud_skips.insert(tag.id.0, skipped.clone());
+        Ok((id, skipped))
     }
 
     /// Points the player biped's HUD interfaces (`unit +0x1a0`) at copies

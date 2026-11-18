@@ -106,6 +106,7 @@ pub mod h1el {
 pub mod unhi {
     /// The anchor of everything but the motion sensor (`u16`).
     pub const ANCHOR: usize = 0x00;
+    pub const HUD_BACKGROUND: usize = 0x24;
     pub const SHIELD_BACKGROUND: usize = 0x8c;
     pub const SHIELD_METER: usize = 0xf4;
     pub const HEALTH_BACKGROUND: usize = 0x17c;
@@ -145,7 +146,8 @@ fn f32_at(b: &[u8], at: usize) -> f32 {
 }
 
 /// The drawable elements of the `unhi` `b` (those with a bitmap), in draw
-/// order: backgrounds before meters, the motion sensor last.
+/// order (E `0x000dcf8f`..`0x000dd63b`: the HUD background, each meter
+/// before its panel, the motion sensor last).
 pub fn unit_elements(map: &H1Map, b: &[u8]) -> Result<Vec<Element>> {
     if b.len() < unhi::SIZE {
         return Err(Error::Truncated("unhi"));
@@ -157,10 +159,11 @@ pub fn unit_elements(map: &H1Map, b: &[u8]) -> Result<Vec<Element>> {
     // (E `0x000dd5ab`: a stand-in header whose anchor word is 2 is passed
     // to the element draw `0x000e1830` in place of the `unhi`).
     let rows = [
-        ("h1_shield_background", unhi::SHIELD_BACKGROUND, Role::Static, anchor),
-        ("h1_health_background", unhi::HEALTH_BACKGROUND, Role::Static, anchor),
+        ("h1_hud_background", unhi::HUD_BACKGROUND, Role::Static, anchor),
         ("h1_shield_meter", unhi::SHIELD_METER, Role::Meter(16), anchor),
+        ("h1_shield_background", unhi::SHIELD_BACKGROUND, Role::Static, anchor),
         ("h1_health_meter", unhi::HEALTH_METER, Role::Meter(17), anchor),
+        ("h1_health_background", unhi::HEALTH_BACKGROUND, Role::Static, anchor),
         ("h1_motion_background", unhi::MOTION_BACKGROUND, Role::Static, Anchor::BottomLeft),
         ("h1_motion_foreground", unhi::MOTION_FOREGROUND, Role::Static, Anchor::BottomLeft),
     ];
@@ -201,6 +204,371 @@ pub fn to_halo2_offset(anchor: Anchor, (x, y): (i16, i16)) -> (i16, i16) {
         if right { x.saturating_neg() } else { x },
         if bottom { y.saturating_neg() } else { y },
     )
+}
+
+/// Halo 1's weapon HUD (`wphi`) layout, from its draw (E, Halo 1's XBE,
+/// `0x000db5d0`..`0x000dc0b3`, `ebx` the `wphi`; the crosshairs
+/// `0x000dac68`..`0x000db374`).
+pub mod wphi {
+    /// The child `wphi` whose elements draw too (16-byte reference; its
+    /// datum `+0x0c` is followed, `0x000dbded`).
+    pub const CHILD: usize = 0x00;
+    /// The anchor of the static elements, meters and numbers (`u16`; `+0x3c`
+    /// is passed to the element draws as their header, `0x000dbe9a`).
+    pub const ANCHOR: usize = 0x3c;
+    /// Static elements (`0x000dbe4d`), `0xb4` each.
+    pub const STATICS: usize = 0x60;
+    /// Meters (`0x000dbeaf`), `0xb4` each.
+    pub const METERS: usize = 0x6c;
+    /// Numbers (`0x000dbf1e`), `0xa0` each.
+    pub const NUMBERS: usize = 0x78;
+    /// Crosshairs (`0x000dade0`), `0x68` each.
+    pub const CROSSHAIRS: usize = 0x84;
+    /// Overlay elements, `0x68` each.
+    pub const OVERLAYS: usize = 0x90;
+    /// The crosshair types any of the chain uses, a mask (`0x000da6c3`).
+    pub const CROSSHAIR_TYPES: usize = 0x9c;
+    pub const SIZE: usize = 0xa0;
+    pub const STATIC_SIZE: usize = 0xb4;
+    pub const METER_SIZE: usize = 0xb4;
+    pub const NUMBER_SIZE: usize = 0xa0;
+    pub const CROSSHAIR_SIZE: usize = 0x68;
+    pub const OVERLAY_SIZE: usize = 0x68;
+
+    /// A static, meter or number entry's head: the weapon state it reads
+    /// (`i16`, an index into the states, `0x000dbe85`), its flags (bit 0:
+    /// not drawn, `0x000dbe6f`), its screen type (a bit index tested
+    /// against the screen mask, `0x000dbe74`); the element after it.
+    pub mod entry {
+        pub const STATE: usize = 0x00;
+        pub const FLAGS: usize = 0x02;
+        pub const SCREEN: usize = 0x04;
+        pub const ELEMENT: usize = 0x24;
+    }
+
+    /// A crosshair: its type (`i16`, tested as a bit of the active types,
+    /// `0x000dadf1`), screen type (`0x000dae12`), bitmap (reference, datum
+    /// `+0x30`, `0x000daeba`) and overlays (block `+0x34`, `0x6c` each).
+    pub mod crosshair {
+        pub const TYPE: usize = 0x00;
+        pub const SCREEN: usize = 0x04;
+        pub const BITMAP: usize = 0x24;
+        pub const OVERLAYS: usize = 0x34;
+        pub const OVERLAY_SIZE: usize = 0x6c;
+    }
+
+    /// A crosshair overlay: offset (`i16` pair) and scale as an element's,
+    /// colour `+0x24` (`0x000db0f2`), sequence `+0x46` (`0x000daed0`) and
+    /// flags `+0x48` (bit 7: not drawn, `0x000dae63`; bit 1: no sprite,
+    /// `0x000daeb2`; bit 4: spread with the weapon's error, `0x000db14d`).
+    pub mod overlay {
+        pub const OFFSET: usize = 0x00;
+        pub const SCALE: usize = 0x04;
+        pub const COLOUR: usize = 0x24;
+        pub const SEQUENCE: usize = 0x46;
+        pub const FLAGS: usize = 0x48;
+    }
+
+    /// A meter element's fill (E `0x000e20a0`): the state's value `v` (a
+    /// byte) becomes `clamp(MULTIPLIER * v + OFFSET, 0, 255)`, raised to
+    /// `MINIMUM`, the level the sprite's ramp is filled to.
+    pub mod meter {
+        pub const MINIMUM: usize = 0x45;
+        pub const MULTIPLIER: usize = 0x48;
+        pub const OFFSET: usize = 0x49;
+    }
+}
+
+/// The weapon states Halo 1's weapon HUD reads (E `0x000db6e7`..: each
+/// compared with its own low threshold, `wphi +0x14..+0x1a`, and the meters'
+/// values set from them, `0x000dbc4e`..`0x000dbc99`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WeaponState {
+    /// 0: the rounds in reserve (weapon state `+0x12`, against `+0x14`).
+    TotalAmmo,
+    /// 1: the rounds loaded (`+0x0e`, against `+0x16`).
+    LoadedAmmo,
+    /// 2: the heat (`+0x00`, a fraction; 0..255 to the meters, constant
+    /// `0x001f0aec`; times 100 against `+0x18`).
+    Heat,
+    /// 3: the battery, 1 - age (`+0x04`; 0..100 to the meters and against
+    /// `+0x1a`, constant `0x001f0bec`).
+    Battery,
+    /// 4 and 5: the same two counts of the second trigger (`+0x1c`,
+    /// `+0x18`).
+    SecondTotal,
+    SecondLoaded,
+    Other(i16),
+}
+
+impl WeaponState {
+    pub fn from_halo1(v: i16) -> Self {
+        match v {
+            0 => Self::TotalAmmo,
+            1 => Self::LoadedAmmo,
+            2 => Self::Heat,
+            3 => Self::Battery,
+            4 => Self::SecondTotal,
+            5 => Self::SecondLoaded,
+            n => Self::Other(n),
+        }
+    }
+}
+
+/// Halo 1's crosshair types (E `0x000da70a`, the table at `0x000daa18`
+/// says when each is active). 0 is the aim crosshair (V: every weapon's
+/// `hud_reticles` overlay); 1 the zoom level (`0x000da775`: the unit's
+/// zoom level, the overlay's sprite chosen by it; V: the sniper rifle's
+/// `hud_reticles_scope` sequence 1). The rest are warnings (V: their
+/// overlays are `hud_reticle_warnings`).
+pub mod crosshair_type {
+    pub const AIM: i16 = 0;
+    pub const ZOOM_LEVEL: i16 = 1;
+}
+
+/// One weapon HUD entry, as read.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WeaponEntry {
+    /// The `wphi` it is in (the weapon's own or a child).
+    pub wphi: H1TagId,
+    pub kind: WeaponEntryKind,
+    pub screen: u8,
+    pub hidden: bool,
+    pub anchor: Anchor,
+    /// Halo 1's offset (from the corner inward), scale, bitmap, sequence.
+    pub offset: (i16, i16),
+    pub scale: [f32; 2],
+    pub bitmap: Option<H1TagId>,
+    pub sequence: i16,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum WeaponEntryKind {
+    Static(WeaponState),
+    /// A meter: its state, and its fill's minimum, multiplier and offset.
+    Meter(WeaponState, [u8; 3]),
+    /// A crosshair overlay: its crosshair's type, the overlay's flags.
+    Crosshair(i16, u32),
+}
+
+/// Every static, meter and crosshair overlay of the `wphi` `tag` and its
+/// children, in Halo 1's draw order (the child first, `0x000dbded`), and
+/// how many numbers and overlay elements the chain holds.
+pub fn weapon_entries(map: &H1Map, tag: H1TagId) -> Result<(Vec<WeaponEntry>, usize)> {
+    let mut out = Vec::new();
+    let mut skipped = 0;
+    let mut seen = Vec::new();
+    weapon_chain(map, tag, &mut out, &mut skipped, &mut seen)?;
+    Ok((out, skipped))
+}
+
+fn weapon_chain(
+    map: &H1Map,
+    tag: H1TagId,
+    out: &mut Vec<WeaponEntry>,
+    skipped: &mut usize,
+    seen: &mut Vec<H1TagId>,
+) -> Result<()> {
+    if seen.contains(&tag) {
+        return Err(Error::Invalid("wphi chain loops".into()));
+    }
+    seen.push(tag);
+    let t = map.tag(tag)?;
+    let b = crate::h1::tag_bytes(map, t, b"wphi", wphi::SIZE)?;
+    if let Some(child) = crate::h1::reference(map, b, wphi::CHILD) {
+        weapon_chain(map, child, out, skipped, seen)?;
+    }
+    let raw = u16::from_le_bytes([b[wphi::ANCHOR], b[wphi::ANCHOR + 1]]);
+    let anchor =
+        Anchor::from_halo1(raw).ok_or_else(|| Error::Invalid(format!("wphi anchor {raw}")))?;
+    let el = |e: &[u8], at: usize, seq: usize| {
+        (
+            (i16_at(e, at), i16_at(e, at + 2)),
+            [f32_at(e, at + 4), f32_at(e, at + 8)],
+            crate::h1::reference(map, e, at + h1el::BITMAP),
+            i16_at(e, at + seq),
+        )
+    };
+    use wphi::entry;
+    for e in crate::h1::elements(map, b, wphi::STATICS, wphi::STATIC_SIZE)? {
+        let (offset, scale, bitmap, sequence) = el(e, entry::ELEMENT, h1el::SEQUENCE);
+        out.push(WeaponEntry {
+            wphi: tag,
+            kind: WeaponEntryKind::Static(WeaponState::from_halo1(i16_at(e, entry::STATE))),
+            screen: e[entry::SCREEN],
+            hidden: e[entry::FLAGS] & 1 != 0,
+            anchor,
+            offset,
+            scale,
+            bitmap,
+            sequence,
+        });
+    }
+    for e in crate::h1::elements(map, b, wphi::METERS, wphi::METER_SIZE)? {
+        let (offset, scale, bitmap, sequence) = el(e, entry::ELEMENT, h1el::METER_SEQUENCE);
+        let m = entry::ELEMENT;
+        out.push(WeaponEntry {
+            wphi: tag,
+            kind: WeaponEntryKind::Meter(
+                WeaponState::from_halo1(i16_at(e, entry::STATE)),
+                [
+                    e[m + wphi::meter::MINIMUM],
+                    e[m + wphi::meter::MULTIPLIER],
+                    e[m + wphi::meter::OFFSET],
+                ],
+            ),
+            screen: e[entry::SCREEN],
+            hidden: e[entry::FLAGS] & 1 != 0,
+            anchor,
+            offset,
+            scale,
+            bitmap,
+            sequence,
+        });
+    }
+    use wphi::{crosshair, overlay};
+    for c in crate::h1::elements(map, b, wphi::CROSSHAIRS, wphi::CROSSHAIR_SIZE)? {
+        let bitmap = crate::h1::reference(map, c, crosshair::BITMAP);
+        for o in crate::h1::elements(map, c, crosshair::OVERLAYS, crosshair::OVERLAY_SIZE)? {
+            let flags = u32::from_le_bytes(o[overlay::FLAGS..overlay::FLAGS + 4].try_into().unwrap());
+            out.push(WeaponEntry {
+                wphi: tag,
+                kind: WeaponEntryKind::Crosshair(i16_at(c, crosshair::TYPE), flags),
+                screen: c[crosshair::SCREEN],
+                hidden: flags & 0x80 != 0,
+                // Crosshairs are placed from the centre (E `0x000dad9e`: the
+                // header handed to their draw holds anchor 4).
+                anchor: Anchor::Centre,
+                offset: (i16_at(o, overlay::OFFSET), i16_at(o, overlay::OFFSET + 2)),
+                scale: [f32_at(o, overlay::SCALE), f32_at(o, overlay::SCALE + 4)],
+                bitmap,
+                sequence: i16_at(o, overlay::SEQUENCE),
+            });
+        }
+    }
+    *skipped += crate::h1::elements(map, b, wphi::NUMBERS, wphi::NUMBER_SIZE)?.len()
+        + crate::h1::elements(map, b, wphi::OVERLAYS, wphi::OVERLAY_SIZE)?.len();
+    Ok(())
+}
+
+/// A crosshair's state flags, shown zoomed or not: Halo 2's battle rifle
+/// reticle's (V: `ui\hud\battle_rifle` widget 3, `hud_reticles`, which
+/// stays in the scope).
+pub const AIM_STATE: [u8; 20] = [
+    0x30, 0, 0, 0, 0x03, 0, 0, 0, 0, 0, 0x11, 0, 0x04, 0, 0, 0, 0, 0, 0, 0,
+];
+
+/// A zoomed-only crosshair's state flags: Halo 2's scope masks' (V:
+/// `ui\hud\sniper_rifle` and `battle_rifle` widget 0, the scope masks,
+/// `+0x08` bit `0x40`).
+pub const ZOOM_STATE: [u8; 20] = [
+    0x90, 0x01, 0, 0, 0x01, 0, 0, 0, 0x40, 0, 0, 0, 0x04, 0, 0, 0, 0, 0, 0, 0,
+];
+
+/// Crosshair overlay flags (`wphi` crosshair overlay `+0x48`): bit 2 draws
+/// only while the type's value is above 0, bit 6 only while it is 0
+/// (`0x000dae69`, `0x000dae7c`). On the aim type that value is the zoom
+/// (V: Halo 1's sniper rifle's scope lines, `sniper_scope_crosshairs2`,
+/// have bit 2).
+pub const OVERLAY_WHEN_ZOOMED: u32 = 0x04;
+pub const OVERLAY_WHEN_UNZOOMED: u32 = 0x40;
+
+/// The suffix of a converted Halo 1 weapon HUD's name.
+pub const WEAPON_NHDT_SUFFIX: &str = "_h1_weapon_hud";
+
+/// Halo 1's screen types an entry is drawn on (`entry +4`, a bit index of
+/// the mask built at `0x000dbe16`): bit 1 is set with one local player,
+/// bit 2 with more (split screen), bit 0 unless the engine's mode
+/// `[0x0039be5c] +0x3c` is 2. The converter keeps entries for 0 and 1,
+/// a full screen; split-screen-only ones (2) are left out.
+pub const SPLIT_SCREEN_ONLY: u8 = 2;
+
+/// The Halo 2 widget input that reads what a Halo 1 meter's state does
+/// (Halo 2's input switch `0x0013ad48`, its weapon block in `ecx`):
+/// rounds loaded over the magazine's (`0x36`, `[ecx+6]/[ecx+0x0a]`,
+/// `0x0013ae7c`; V: Halo 2's magnum ammo meter), the battery (`0x38`,
+/// `1 - [ecx+0x10]`, `0x0013af94`; V: the energy sword's), the heat
+/// (`0x31`, `[ecx+0x14]`, `0x0013af00`; V: the beam rifle's and sentinel
+/// beam's meters, Halo 2's heat weapons). Halo 1 fills to
+/// `multiplier * v + offset` of 255 (`wphi::meter`): on the disc's meters
+/// that is the same fraction (V: sniper rifle 60 per round of 4 plus 1,
+/// plasma heat 1 per 255th).
+pub fn weapon_meter_input(s: WeaponState) -> Option<u8> {
+    match s {
+        WeaponState::LoadedAmmo => Some(0x36),
+        WeaponState::Battery => Some(0x38),
+        WeaponState::Heat => Some(0x31),
+        _ => None,
+    }
+}
+
+/// Why a weapon HUD entry has no widget.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Skip {
+    /// Its flags say not drawn.
+    Hidden,
+    /// Drawn on a split screen only ([`SPLIT_SCREEN_ONLY`]).
+    SplitScreen,
+    /// No bitmap, or nothing in its sequence.
+    NothingDrawn,
+    /// A meter on a state no Halo 2 input reads.
+    MeterState(WeaponState),
+    /// A crosshair of a type not converted.
+    CrosshairType(i16),
+    /// An aim overlay drawn only unzoomed: no Halo 2 state flags for it
+    /// are established.
+    UnzoomedOnly,
+}
+
+/// The widget for weapon HUD entry `e` (its bitmap converted as
+/// `bitmap`), or why it has none. Statics and meters keep Halo 1's anchor,
+/// offset turned to screen directions and corner registration, as the unit
+/// HUD's; crosshairs are centred on the screen and the sprite (E
+/// `0x000dad9e`: their header's anchor is 4; `0x000e0330` centres the
+/// sprite on anchor 4).
+pub fn weapon_widget(
+    e: &WeaponEntry,
+    bitmap: Option<TagId>,
+    meter: TagId,
+    plain: TagId,
+) -> std::result::Result<Widget, Skip> {
+    if e.hidden {
+        return Err(Skip::Hidden);
+    }
+    if e.screen == SPLIT_SCREEN_ONLY {
+        return Err(Skip::SplitScreen);
+    }
+    let bitmap = bitmap.ok_or(Skip::NothingDrawn)?;
+    let (name, inputs, shader, state) = match &e.kind {
+        WeaponEntryKind::Static(_) => ("h1_weapon_static", [0; 4], plain, STATE),
+        WeaponEntryKind::Meter(s, _) => {
+            let input = weapon_meter_input(*s).ok_or(Skip::MeterState(*s))?;
+            ("h1_weapon_meter", [input, 0, 0, 0], meter, STATE)
+        }
+        WeaponEntryKind::Crosshair(t, flags) => match *t {
+            crosshair_type::AIM if flags & OVERLAY_WHEN_UNZOOMED != 0 => {
+                return Err(Skip::UnzoomedOnly);
+            }
+            crosshair_type::AIM if flags & OVERLAY_WHEN_ZOOMED != 0 => {
+                ("h1_scope", [0; 4], plain, ZOOM_STATE)
+            }
+            crosshair_type::AIM => ("h1_crosshair", [0; 4], plain, AIM_STATE),
+            t => return Err(Skip::CrosshairType(t)),
+        },
+    };
+    Ok(Widget {
+        name: name.to_owned(),
+        inputs,
+        state,
+        anchor: e.anchor,
+        flags: 0,
+        bitmap,
+        shader,
+        sequence: e.sequence.clamp(0, i8::MAX as i16) as i8,
+        offset: to_halo2_offset(e.anchor, e.offset),
+        registration: registration(e.anchor),
+        special: 0,
+    })
 }
 
 /// A Halo 2 bitmap widget, every field of its `0x64` bytes.
@@ -343,6 +711,68 @@ pub fn nhdt(widgets: &[Widget]) -> Block {
 mod tests {
     use super::*;
     use map::build::FixupKind;
+
+    fn entry(kind: WeaponEntryKind) -> WeaponEntry {
+        WeaponEntry {
+            wphi: H1TagId(0),
+            kind,
+            screen: 0,
+            hidden: false,
+            anchor: Anchor::TopLeft,
+            offset: (6, 21),
+            scale: [1.0, 1.0],
+            bitmap: Some(H1TagId(1)),
+            sequence: 6,
+        }
+    }
+
+    #[test]
+    fn weapon_meters_read_halo2s_weapon_inputs() {
+        let m = entry(WeaponEntryKind::Meter(WeaponState::LoadedAmmo, [0, 60, 1]));
+        let w = weapon_widget(&m, Some(TagId(1)), TagId(2), TagId(3)).unwrap();
+        assert_eq!(w.inputs, [0x36, 0, 0, 0]);
+        assert_eq!(w.shader, TagId(2));
+        assert_eq!((w.anchor, w.offset, w.registration), (Anchor::TopLeft, (6, 21), [0.0, 0.0]));
+        assert_eq!(w.state, STATE);
+        let heat = entry(WeaponEntryKind::Meter(WeaponState::Heat, [0, 1, 0]));
+        assert_eq!(weapon_widget(&heat, Some(TagId(1)), TagId(2), TagId(3)).unwrap().inputs[0], 0x31);
+        let battery = entry(WeaponEntryKind::Meter(WeaponState::Battery, [0, 1, 0]));
+        assert_eq!(weapon_widget(&battery, Some(TagId(1)), TagId(2), TagId(3)).unwrap().inputs[0], 0x38);
+        let total = entry(WeaponEntryKind::Meter(WeaponState::TotalAmmo, [0, 1, 0]));
+        assert_eq!(
+            weapon_widget(&total, Some(TagId(1)), TagId(2), TagId(3)),
+            Err(Skip::MeterState(WeaponState::TotalAmmo))
+        );
+    }
+
+    #[test]
+    fn crosshairs_are_centred_and_scope_lines_show_zoomed() {
+        let mut c = entry(WeaponEntryKind::Crosshair(crosshair_type::AIM, 1));
+        c.anchor = Anchor::Centre;
+        c.offset = (-30, 30);
+        let w = weapon_widget(&c, Some(TagId(1)), TagId(2), TagId(3)).unwrap();
+        assert_eq!((w.anchor, w.registration), (Anchor::Centre, [0.5, 0.5]));
+        assert_eq!(w.offset, (-30, 30), "centre: no sign change");
+        assert_eq!((w.state, w.shader, w.inputs), (AIM_STATE, TagId(3), [0; 4]));
+        c.kind = WeaponEntryKind::Crosshair(crosshair_type::AIM, 6);
+        assert_eq!(weapon_widget(&c, Some(TagId(1)), TagId(2), TagId(3)).unwrap().state, ZOOM_STATE);
+        c.kind = WeaponEntryKind::Crosshair(crosshair_type::AIM, 0x40);
+        assert_eq!(weapon_widget(&c, Some(TagId(1)), TagId(2), TagId(3)), Err(Skip::UnzoomedOnly));
+        c.kind = WeaponEntryKind::Crosshair(9, 1);
+        assert_eq!(weapon_widget(&c, Some(TagId(1)), TagId(2), TagId(3)), Err(Skip::CrosshairType(9)));
+    }
+
+    #[test]
+    fn hidden_split_screen_and_empty_entries_have_no_widget() {
+        let mut s = entry(WeaponEntryKind::Static(WeaponState::TotalAmmo));
+        assert!(weapon_widget(&s, Some(TagId(1)), TagId(2), TagId(3)).is_ok());
+        assert_eq!(weapon_widget(&s, None, TagId(2), TagId(3)), Err(Skip::NothingDrawn));
+        s.screen = SPLIT_SCREEN_ONLY;
+        assert_eq!(weapon_widget(&s, Some(TagId(1)), TagId(2), TagId(3)), Err(Skip::SplitScreen));
+        s.screen = 1;
+        s.hidden = true;
+        assert_eq!(weapon_widget(&s, Some(TagId(1)), TagId(2), TagId(3)), Err(Skip::Hidden));
+    }
 
     #[test]
     fn halo1_offsets_point_inward_from_the_corner() {

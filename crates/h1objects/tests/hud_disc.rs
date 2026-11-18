@@ -57,3 +57,51 @@ fn every_unit_hud_reads_with_sprites() {
     eprintln!("{huds} unit HUDs on {maps} maps");
     assert!(maps >= 10 && huds > 0);
 }
+
+/// Prints every weapon HUD (`wphi`) chain of `$H1_MAPS` (default
+/// bloodgulch and a10) as `h1hud::weapon_entries` reads it, and checks
+/// each drawn entry's bitmap is a `bitm` with something in its sequence.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO)"]
+fn weapon_huds_read() {
+    let path = std::env::var("H1_ISO").expect("set H1_ISO");
+    let mut iso = xiso::Xiso::open(BufReader::new(File::open(path).unwrap())).unwrap();
+    let disc = h1map::disc::Disc::open(&mut iso).unwrap();
+    let names = std::env::var("H1_MAPS").unwrap_or_else(|_| "bloodgulch,a10".into());
+    for name in names.split(',') {
+        let e = disc.map(name).expect("map on the disc").clone();
+        let m = H1Map::from_reader(Cursor::new(iso.read(&e).unwrap())).unwrap();
+        for w in m.tags().iter().filter(|t| t.group == Group::new(b"weap")) {
+            let b = m.tag_data(w).unwrap();
+            let Some(hud) = h1objects::h1::reference(&m, b, 0x480) else {
+                continue;
+            };
+            let (entries, skipped) = h1hud::weapon_entries(&m, hud)
+                .unwrap_or_else(|e| panic!("{name} {}: {e}", w.name));
+            eprintln!("{name} {} -> {} ({skipped} numbers and overlays)", w.name, m.tag(hud).unwrap().name);
+            for x in &entries {
+                let bt = x.bitmap.map(|b| m.tag(b).unwrap().clone());
+                let drawn = match &bt {
+                    Some(bt) => {
+                        assert_eq!(bt.group, Group::new(b"bitm"));
+                        let bm = h1map::bitmap::Bitmap::read(&m, bt).unwrap();
+                        h1hud::sprite(&bm, x.sequence).is_some()
+                    }
+                    None => false,
+                };
+                eprintln!(
+                    "  {} {:?} screen {} hidden {} anchor {:?} offset {:?} scale {:?} {} seq {} drawn {drawn}",
+                    m.tag(x.wphi).unwrap().name,
+                    x.kind,
+                    x.screen,
+                    x.hidden,
+                    x.anchor,
+                    x.offset,
+                    x.scale,
+                    bt.map_or("-".into(), |t| t.name),
+                    x.sequence
+                );
+            }
+        }
+    }
+}
