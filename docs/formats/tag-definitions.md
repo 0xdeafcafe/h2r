@@ -592,11 +592,18 @@ Halo ring were already built this way.
   version 74 every point took one majority over all four, the back
   pair's word, so no converted wheel steered.
 - **Control** (`+0x1f2`, the 16 bits after `vehicle_type`,
-  `rebuild::VEHI_CONTROL`): the role's majority. V: 2 on the retail
-  scorpion, 0 on the warthog. Proved in a game run (converted Blood
-  Gulch, 2026-11-19): written 0 (the role took 4-byte spans only), the
-  converted scorpion crept at 0.05 units a second with the stick held
-  forward; set to 2 live it drove at 2.5.
+  `rebuild::VEHI_CONTROL`): the majority over the base's vehicles of the
+  same `vehicle_type`. V, every `vehi` on every map of the retail disc:
+  2 on the scorpion (the only type 0, tank) and on its two cannon
+  turrets (type 6); 0 on every other vehicle: the warthog (1); the
+  pelican, phantom, gravity throne and sentinel enforcer (3); the ghost,
+  wraith, spectre and creep (4); the banshee (5); and the other 23
+  turrets (6). So type 0 takes 2 and every other type 0
+  (`tests/vehicle_rebuild_disc.rs`, `control_follows_vehicle_type`).
+  Proved in a game run (converted Blood Gulch, 2026-11-19): written 0
+  (the role took 4-byte spans only), the converted scorpion crept at
+  0.05 units a second with the stick held forward; set to 2 live it
+  drove at 2.5.
 - **Engine gears** (`+0x268`, `0x44` each, raw curve pointers at `+0x14`,
   `+0x1c`, `+0x28`, `+0x2c`). Halo 1 has no counterpart: its `vehi` holds
   no curve or raw data, only scalar speeds, and those disagree with

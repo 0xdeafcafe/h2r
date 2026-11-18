@@ -23,6 +23,15 @@
 //!   powered points hover points, each naming a marker of the converted
 //!   model (on a node in range) and a region of Halo 1's collision; Halo
 //!   1's mass point positions are in object space; the warthog has gears.
+//! - `control_follows_vehicle_type`: on the three bases
+//!   (05a_deltaapproach, coagulation, beavercreek) `vehi +0x1f2`
+//!   ([`VEHI_CONTROL`]) is 2 on every type 0 vehicle (the scorpion, the
+//!   one tank) and 0 on every vehicle of types 1 to 5; of the turrets
+//!   (type 6) only the scorpion's two cannons hold 2 (8 to 11 hold 0 on
+//!   each base), so the type's role
+//!   ([`h1objects::rebuild::vehicle_role`]) gives 2 to type 0 and 0 to
+//!   every other type; every converted vehicle carries its role's value
+//!   (`every_vehicle_rebuilds_from_its_definition`).
 //! - `seat_flags_match_halo_2s_counterparts`: on 05a the boarding bit is
 //!   set on exactly the retail `_b_` seats; Halo 1's seat bits stay below
 //!   bit 11 and equal the counterpart seat's on most of the eight pairs'
@@ -42,7 +51,7 @@ use h1objects::base::Base;
 use h1objects::convert::{Converter, Tree, template_candidates};
 use h1objects::rebuild::{
     H1_SEAT_FLAGS, H1_VEHICLE_FLAGS, H1_VEHICLE_TYPE, SEAT_BOARDING, SEAT_DRIVER, SEAT_FLAGS, SEAT_GUNNER,
-    SEAT_NEEDS_DRIVER, SEAT_NOT_NON_PLAYER, SEAT_NOT_PLAYER, VEHI_FRICTION, VEHI_GEARS, VEHI_HOVER, VEHI_PHYSICS, VEHI_SEATS,
+    SEAT_NEEDS_DRIVER, SEAT_NOT_NON_PLAYER, SEAT_NOT_PLAYER, VEHI_CONTROL, VEHI_FRICTION, VEHI_GEARS, VEHI_HOVER, VEHI_PHYSICS, VEHI_SEATS,
 };
 use h1objects::{Converted, h1};
 use map::{FourCC, Map, TagId};
@@ -157,6 +166,40 @@ fn vehicle_type_and_flags_match_halo_2s_counterparts() {
     }
     println!("flags low halves agree on {flags_agree} of {}", PAIRS.len());
     assert!(flags_agree >= 5, "flags: {flags_agree} pairs");
+}
+
+#[test]
+#[ignore = "reads the Halo 2 disc ($H2_DISC)"]
+fn control_follows_vehicle_type() {
+    let d = def(b"vehi");
+    let (ty, ctl) = (offset(d, "vehicle_type", 0) as usize, offset(d, VEHI_CONTROL, 0) as usize);
+    for base_name in ["05a_deltaapproach", "coagulation", "beavercreek"] {
+        let mut base_map = h2_map(base_name);
+        let base = Base::read(&mut base_map).unwrap();
+        let mut types = BTreeMap::<u16, Vec<(String, u16)>>::new();
+        for t in base.tags.iter().filter(|t| t.1 == FourCC(*b"vehi")) {
+            let r = base.root(t.0).unwrap();
+            let (k, c) = (
+                u16::from_le_bytes([r[ty], r[ty + 1]]),
+                u16::from_le_bytes([r[ctl], r[ctl + 1]]),
+            );
+            println!("{base_name} type {k} control {c}: {}", t.2);
+            types.entry(k).or_default().push((t.2.clone(), c));
+        }
+        assert!(types.contains_key(&0), "{base_name}: no tank");
+        for (k, members) in &types {
+            for (name, c) in members {
+                let want = match *k {
+                    0 => 2,
+                    6 if name.starts_with("objects\\vehicles\\scorpion\\") => 2,
+                    _ => 0,
+                };
+                assert_eq!(*c, want, "{base_name} {name} (type {k})");
+            }
+            let role = h1objects::rebuild::vehicle_role(&base, *k).unwrap().unwrap();
+            assert_eq!(role.control, if *k == 0 { 2 } else { 0 }, "{base_name} type {k}");
+        }
+    }
 }
 
 /// The tree's tag a local datum names.
@@ -355,6 +398,11 @@ fn every_vehicle_rebuilds_from_its_definition() {
                         );
                     }
                     assert_eq!(flags & 0xffff_0000, role.flags_high, "{name}");
+                    assert_eq!(
+                        r.at(VEHI_CONTROL),
+                        Some(&Val::Bytes(role.control.to_le_bytes().to_vec())),
+                        "{name}: control"
+                    );
                 }
 
                 // The model chain: hlmt, mode, its coll and jmad; a phmo

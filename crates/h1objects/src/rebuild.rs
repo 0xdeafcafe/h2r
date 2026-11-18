@@ -733,11 +733,13 @@ pub struct VehicleRole {
 }
 
 /// `vehi +0x1f2`, the 16 bits after `vehicle_type`: how the driver's
-/// stick drives the vehicle. V: 2 on the retail scorpion, 0 on the
-/// warthog. Proved in a game run (2026-11-19, converted Blood Gulch): the
-/// converted scorpion, written with 0 through converter version 74 (the
-/// role took 4-byte spans only), crept at 0.05 world units a second with
-/// the stick held forward; set to 2 it drove at 2.5.
+/// stick drives the vehicle, taken by type from the role's majority. V,
+/// every `vehi` on the retail disc: 2 on the scorpion (the one type 0) and
+/// its cannon turrets, 0 on every other vehicle of every type, so type 0
+/// takes 2 and the rest 0. Proved in a game run (2026-11-19, converted
+/// Blood Gulch): the converted scorpion, written with 0 through converter
+/// version 74 (the role took 4-byte spans only), crept at 0.05 world
+/// units a second with the stick held forward; set to 2 it drove at 2.5.
 pub const VEHI_CONTROL: &str = "unknown_1f2";
 
 /// `vehi +0x2f0`, the friction points (wheels and treads: V, the
