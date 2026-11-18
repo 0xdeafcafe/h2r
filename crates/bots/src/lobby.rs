@@ -118,6 +118,31 @@ pub fn facts(m: &dyn GuestMemory) -> R<Facts> {
     Ok(f)
 }
 
+/// Whether these facts are a pregame lobby's: a squad session of a
+/// pregame type (1 or 2: `0x19a279` makes both 3, the type the lobby's
+/// input handler `0x250b1e` tests at `0x250cab` before it opens a joining
+/// controller's profile chooser) in a lobby state (3 to 8, `0x58d70`).
+/// A Live or System Link custom game lobby has one from the moment it is
+/// hosted or joined (Split Screen's players join on the players screen
+/// whatever it has). A running game keeps the session in these states
+/// too, so a caller asks about the game itself as well.
+///
+/// The bots' join gate opens on this rather than on the screen: the
+/// lobby shares its window and slot with the screens over it, and
+/// `ui_watch` reads it as no screen (the user's run: `top none` in a Live
+/// custom game lobby).
+pub fn pregame(f: &Facts) -> bool {
+    f.lobby_on
+        && f.networking
+        && matches!(f.session_type, 1 | 2)
+        && f.state.is_some_and(lobby_state)
+}
+
+/// [`pregame`] over guest memory; a read that faults is no lobby.
+pub fn in_pregame(m: &dyn GuestMemory) -> bool {
+    facts(m).is_ok_and(|f| pregame(&f))
+}
+
 /// The map check (`0x652a0`) over the peers of a session in a lobby
 /// state: 1 when a peer failed to load the map, 2 when one is still
 /// loading it, 3 when one has it and none is loading, else 4.
