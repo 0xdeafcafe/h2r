@@ -9,10 +9,17 @@
 //! reads as unplugged, and the change words report the difference as an
 //! insertion or removal at the guest's next `XGetDeviceChanges`.
 //!
+//! The input tap's cursor ([`InputTap::cursor`]) is saved too: a load
+//! seeks the installed recorder or replayer to it, so replay carries on
+//! from the read the saved run was at, and returns it for a caller that
+//! installs its tap afterwards ([`Replayer::resume`]).
+//!
 //! Refused while live: rumble requests not yet completed and acknowledged,
 //! a title launch request, save-game searches.
 //!
 //! [`InputManager::reopen`]: input::InputManager::reopen
+//! [`InputTap::cursor`]: crate::tap::InputTap::cursor
+//! [`Replayer::resume`]: crate::tap::Replayer::resume
 use crate::controllers::{DeviceChanges, OpenInput};
 use crate::{Storage, Xapi};
 use ::snapshot::codec::{Reader, Writer};
@@ -31,6 +38,8 @@ pub enum SnapshotError {
     /// Something is in flight that a snapshot cannot carry.
     Busy(Vec<String>),
     Codec(::snapshot::Error),
+    /// The installed input tap's log does not reach the saved cursor.
+    Tap(String),
 }
 
 impl std::fmt::Display for SnapshotError {
@@ -38,6 +47,7 @@ impl std::fmt::Display for SnapshotError {
         match self {
             Self::Busy(why) => write!(f, "xapi is not quiescent: {}", why.join("; ")),
             Self::Codec(e) => write!(f, "xapi section: {e}"),
+            Self::Tap(e) => write!(f, "input tap: {e}"),
         }
     }
 }
@@ -90,6 +100,7 @@ struct Saved {
     voice_ports: u32,
     microphone_changes: DeviceChanges,
     headphone_changes: DeviceChanges,
+    input_cursor: Option<u64>,
 }
 
 fn decode(bytes: &[u8]) -> Result<Saved, ::snapshot::Error> {
@@ -123,6 +134,7 @@ fn decode(bytes: &[u8]) -> Result<Saved, ::snapshot::Error> {
         voice_ports: r.u32()?,
         microphone_changes: get_changes(r)?,
         headphone_changes: get_changes(r)?,
+        input_cursor: if r.bool()? { Some(r.u64()?) } else { None },
     };
     r.finish()?;
     Ok(saved)
@@ -185,6 +197,10 @@ impl<StorageBackend: Storage> Xapi<StorageBackend> {
         w.u32(self.voice_ports);
         put_changes(w, &self.microphone_changes);
         put_changes(w, &self.headphone_changes);
+        match self.input_tap.as_ref().and_then(|t| t.cursor()) {
+            Some(cursor) => w.bool(true).u64(cursor),
+            None => w.bool(false),
+        };
         let bytes = std::mem::take(w).into_bytes();
         out.section(SECTION, VERSION, Codec::Stored, bytes)?;
         Ok(())
@@ -193,11 +209,18 @@ impl<StorageBackend: Storage> Xapi<StorageBackend> {
     /// Replace the guest-visible XAPI state with a snapshot's, after guest
     /// RAM is loaded. Anything in flight on this machine (rumble requests,
     /// a launch request, searches) belonged to the RAM the load replaced and
-    /// is dropped. The input tap is told every old handle closed and every
-    /// loaded one opened.
-    pub fn load_snapshot(&mut self, snapshot: &Snapshot<'_>) -> Result<(), SnapshotError> {
+    /// is dropped. The input tap is sought to the saved cursor first, then
+    /// told every old handle closed and every loaded one opened. Returns
+    /// the saved cursor.
+    pub fn load_snapshot(
+        &mut self,
+        snapshot: &Snapshot<'_>,
+    ) -> Result<Option<u64>, SnapshotError> {
         let bytes = snapshot.require(SECTION, VERSION..=VERSION)?;
         let saved = decode(&bytes)?;
+        if let (Some(cursor), Some(tap)) = (saved.input_cursor, self.input_tap.as_mut()) {
+            tap.seek(cursor).map_err(SnapshotError::Tap)?;
+        }
 
         for (token, open) in std::mem::take(&mut self.handles) {
             self.input.close(open.device_handle);
@@ -249,6 +272,6 @@ impl<StorageBackend: Storage> Xapi<StorageBackend> {
         self.microphone_changes = saved.microphone_changes;
         self.headphone_changes = saved.headphone_changes;
         self.set_voice_ports(host_voice);
-        Ok(())
+        Ok(saved.input_cursor)
     }
 }

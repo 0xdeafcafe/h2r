@@ -177,3 +177,51 @@ fn a_damaged_section_changes_nothing() {
     ));
     b.input_get_state(&mut memory_b, kept, 0x400).unwrap();
 }
+
+#[test]
+fn the_input_tap_carries_on_from_the_saved_cursor() {
+    use xapi::tap::{Recorder, Replayer};
+    let (mut a, mut memory_a, pads_a, handle) = played();
+    let (recorder, recording) = Recorder::new();
+    a.set_input_tap(Some(Box::new(recorder)));
+    read(&mut a, &mut memory_a, handle).0.unwrap();
+    let bytes = save(&a).unwrap();
+    pads_a.south(true);
+    sync(&mut a, &mut memory_a, &mut Signals::default()).unwrap();
+    let expected = read(&mut a, &mut memory_a, handle);
+    let log = recording.lock().unwrap().clone();
+    assert_eq!(log.reads.len(), 2);
+
+    // A replay of the saving run's recording, loaded at its cursor,
+    // answers the next read with the read the saving run made next.
+    let (mut b, mut memory_b, _) = initialized();
+    let (replayer, stats) = Replayer::new(log.clone());
+    b.set_input_tap(Some(Box::new(replayer)));
+    let snapshot = Snapshot::open(&bytes, &key()).unwrap();
+    assert_eq!(b.load_snapshot(&snapshot).unwrap(), Some(1));
+    assert_eq!(stats.lock().unwrap().replayed, 1);
+    assert_eq!(read(&mut b, &mut memory_b, handle), expected);
+    assert_eq!(stats.lock().unwrap().replayed, 2);
+    assert_eq!(stats.lock().unwrap().handle_mismatches, 0);
+
+    // A recording that has gone past the cursor forgets the later reads.
+    let (mut c, mut memory_c, _) = initialized();
+    let (recorder, recording) = Recorder::resume(log);
+    c.set_input_tap(Some(Box::new(recorder)));
+    assert_eq!(c.load_snapshot(&snapshot).unwrap(), Some(1));
+    assert_eq!(recording.lock().unwrap().reads.len(), 1);
+    read(&mut c, &mut memory_c, handle).0.unwrap();
+    assert_eq!(recording.lock().unwrap().reads.len(), 2);
+
+    // One that does not reach it refuses the load.
+    let (mut d, _, _) = initialized();
+    let (recorder, _) = Recorder::new();
+    d.set_input_tap(Some(Box::new(recorder)));
+    assert!(matches!(
+        d.load_snapshot(&snapshot),
+        Err(SnapshotError::Tap(_))
+    ));
+    // Without a tap the cursor is only reported.
+    let (mut e, _, _) = initialized();
+    assert_eq!(e.load_snapshot(&snapshot).unwrap(), Some(1));
+}

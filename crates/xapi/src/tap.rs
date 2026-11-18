@@ -37,6 +37,20 @@ pub trait InputTap: Send {
 
     /// The guest closed `handle` (`XInputClose`).
     fn closed(&mut self, _handle: u32) {}
+
+    /// Where this tap is in its log, for a machine snapshot's input cursor
+    /// (docs/runtime/snapshots.md): a recorder's read count, a replayer's
+    /// next read. `None` for a tap that keeps no log.
+    fn cursor(&self) -> Option<u64> {
+        None
+    }
+
+    /// Carry on from a loaded snapshot's cursor: a replayer answers read
+    /// `cursor` next, a recorder forgets the reads after it. Fails when the
+    /// log does not reach the cursor. A tap that keeps no log ignores it.
+    fn seek(&mut self, _cursor: u64) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// One guest read.
@@ -183,6 +197,22 @@ impl InputTap for Recorder {
                 packet: *packet,
             });
     }
+
+    fn cursor(&self) -> Option<u64> {
+        Some(self.log.lock().unwrap_or_else(|e| e.into_inner()).reads.len() as u64)
+    }
+
+    fn seek(&mut self, cursor: u64) -> Result<(), String> {
+        let mut log = self.log.lock().unwrap_or_else(|e| e.into_inner());
+        let have = log.reads.len();
+        if cursor > have as u64 {
+            return Err(format!(
+                "the recording has {have} reads, the snapshot was taken after {cursor}"
+            ));
+        }
+        log.reads.truncate(cursor as usize);
+        Ok(())
+    }
 }
 
 /// What a replay has done so far.
@@ -244,6 +274,24 @@ impl InputTap for Replayer {
         }
         *status = r.status;
         *packet = r.packet;
+    }
+
+    fn cursor(&self) -> Option<u64> {
+        Some(self.next as u64)
+    }
+
+    /// As [`Replayer::resume`]: `replayed` becomes the cursor; the other
+    /// counters keep counting.
+    fn seek(&mut self, cursor: u64) -> Result<(), String> {
+        let have = self.log.reads.len();
+        if cursor > have as u64 {
+            return Err(format!(
+                "the replayed log has {have} reads, the snapshot was taken after {cursor}"
+            ));
+        }
+        self.next = cursor as usize;
+        self.stats.lock().unwrap_or_else(|e| e.into_inner()).replayed = cursor;
+        Ok(())
     }
 }
 
