@@ -109,7 +109,7 @@ Every route and every page-level component, checked against §1.
 | Friends | `/dash/friends` | stays | Your account, with actions. |
 | Clans | `/dash/clans` | stays, renamed **teams** | The Xbox Live Teams feature: create, recruit, answer, roles (§1.2). A clan's record is the stats site's. |
 | Players | `/dash/players`, `/dash/players/:tag` | stays | Presence ("who's online"). The player pod links to the service record. |
-| Game history | `/dash/history` | stays, as a launcher | A list of recent games, each opening its stats page. It must not grow its own report. |
+| Game history | `/dash/history` | removed | The Games tab (`/dash/games`) shows recent games; the full history is the stats site's (`/stats/games`, a player's `/history`). |
 | Settings, profile, create account | `/dash/settings`, `/dash/signup` | stays | Your account. |
 | Account and recovery, recover, sign in | `/dash/account`, `/dash/recover`, `/dash/signin` | stays | Your account. |
 | Server overview | `/dash/server` | stays | Running the service. |
