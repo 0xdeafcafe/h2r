@@ -1,7 +1,8 @@
 # A second executor
 
-Status: **runtime building block, tested on synthetic code, not wired
-into the game.** It is the prerequisite for pipelined rendering
+Status: **runtime building block, tested on synthetic code; used by the
+pipelined-render prototype** (`H2_PIPELINE_RENDER=1`,
+docs/graphics/pipelined-render.md, "The prototype"). It is the prerequisite for pipelined rendering
 (docs/graphics/pipelined-render.md): run guest code on a second host
 thread, at the same time as the game thread, against a copy-on-write
 snapshot of guest RAM.
@@ -236,6 +237,15 @@ transfer: 41.1 (16 callees), 41.7 (256), 45.0 (1,024), 53.8 (4,096; median
 docs/perf/performance.md, within the noise of a shared machine.
 
 ## What remains before the render front-end can run on it
+
+Items 1-5 and 7 are built in the prototype (pipelined-render.md, "The
+prototype"); the executor gained what they needed:
+`SecondExecutor::refused_cpu` (the CPU at a refused call, so the main
+context can make it and carry the run on through the resume points;
+tested on lifted code), `last_accesses`, `revert` (undo the view's change
+to a range before the hand-back), `share_watch` with
+`Guest::adopt_watch` (item 4), and `ExecCtx::charge_accesses` (item 5).
+Items 6 and 8 are open.
 
 1. **The launch point.** An override at `render_frame_and_present`
    (`0x00223240`) that joins render `k-1`, calls `snapshot`, and hands
