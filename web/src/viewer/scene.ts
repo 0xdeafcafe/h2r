@@ -59,6 +59,9 @@ export interface SceneOptions {
   reducedMotion: boolean;
   /** Called when a player's label is clicked. */
   onPick?: (index: number) => void;
+  /** Players as the game draws them, without their rings, aim rays or
+   *  labels (still pictures: web/banner). */
+  bare?: boolean;
 }
 
 // The sun, in game coordinates: the same corner the pre-drawn views are lit from.
@@ -796,6 +799,36 @@ export class ViewerScene {
   /** Back to the whole map, in the current mode. */
   reset() { this.endFly(false); this.frameCamera(false); }
 
+  /** A still shot: the camera at `eye` looking at `at` (game coordinates)
+   *  with a vertical field of view of `fov` degrees, at once (web/banner). */
+  aim(eye: [number, number, number], at: [number, number, number], fov = this.camera.fov) {
+    this.endFly(false);
+    this.camera.fov = fov;
+    this.camera.updateProjectionMatrix();
+    this.moveCamera(new THREE.Vector3(...gameToGl(...eye)), new THREE.Vector3(...gameToGl(...at)), true);
+    this.fitNear();
+  }
+
+  /** The loaded level's playable bounds (game coordinates), or null before a map. */
+  levelBounds(): Box3 | null { return this.hasMap ? this.bounds : null; }
+
+  /** The height of the level's first surface below (x, y, z), game
+   *  coordinates, within `reach` units; null when there is none. */
+  floorBelow(x: number, y: number, z: number, reach = 20): number | null {
+    if (!this.map) return null;
+    this.raycaster.set(new THREE.Vector3(...gameToGl(x, y, z)), new THREE.Vector3(0, -1, 0));
+    this.raycaster.far = reach;
+    const hit = this.raycaster.intersectObject(this.map, true).find((h) => (h.object as THREE.Mesh).isMesh && h.object.visible);
+    this.raycaster.far = Infinity;
+    return hit ? hit.point.y : null;
+  }
+
+  /** The level's placed objects and where they stand (scenario3d.ts). */
+  spots() { return this.scenarioObjects.spots(); }
+
+  /** Settles when the level's sky model has loaded (or failed to). */
+  skyReady(): Promise<void> { return this.look.skyReady; }
+
   // ---- flycam ----
 
   get flying() { return this.fly !== null; }
@@ -1426,7 +1459,7 @@ export class ViewerScene {
         p.turn.visible = p.ring.visible = p.ray.visible = false;
         p.turn.rotation.y = yawToGl(s.yaw);
         p.turn.scale.setScalar(ride.group.scale.x);
-        p.label.visible = !p.actor || this.actorNames;
+        p.label.visible = !this.opts.bare && (!p.actor || this.actorNames);
         p.label.position.y = ride.height * ride.group.scale.x + 0.25 * S;
         p.el.classList.toggle("on", highlight === index || this.followIndex === index);
         if (s.weapon !== p.weaponName) { p.weaponName = s.weapon; p.gun.textContent = weaponLabel(s.weapon); }
@@ -1440,8 +1473,8 @@ export class ViewerScene {
       this.dress(p, s);
       const show = s.alive || (p.actor && dead);
       p.turn.visible = true;
-      p.ring.visible = !dead;
-      p.ray.visible = !dead && !p.actor;
+      p.ring.visible = !dead && !this.opts.bare;
+      p.ray.visible = !dead && !p.actor && !this.opts.bare;
       const [x, y, z] = gameToGl(s.x, s.y, s.z);
       const g = p.group, turn = p.turn;
       const big = highlight === index || this.followIndex === index;
@@ -1453,7 +1486,7 @@ export class ViewerScene {
       const yaw = yawToGl(s.yaw);
       if (g.visible !== show || g.position.x !== x || g.position.y !== y || g.position.z !== z || turn.scale.x !== k || turn.rotation.y !== yaw) this.dirty = true;
       g.visible = show;
-      p.label.visible = !dead && (!p.actor || this.actorNames);
+      p.label.visible = !dead && !this.opts.bare && (!p.actor || this.actorNames);
       g.position.set(x, y, z);
       turn.rotation.y = yaw;
       turn.scale.setScalar(k);

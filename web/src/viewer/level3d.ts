@@ -98,9 +98,10 @@ export class LevelLook {
     if (r) this.water.uWaterSky.value.setRGB(r[0], r[1], r[2], THREE.SRGBColorSpace);
     else this.water.uWaterSky.value.setRGB(0.55, 0.68, 0.8, THREE.SRGBColorSpace);
     this.weather.adopt(weatherOf(assetExtras));
+    this.skyReady = Promise.resolve();
     if (this.skyInfo?.glb) {
       const dome = new SkyDome();
-      void dome.load(skyUrl(mapUrl, this.skyInfo.glb)).then((ok) => {
+      this.skyReady = dome.load(skyUrl(mapUrl, this.skyInfo.glb)).then((ok) => {
         if (gen !== this.generation || !ok) { dome.dispose(); return; }
         this.sky = dome;
         this.scene.add(dome.group);
@@ -109,6 +110,9 @@ export class LevelLook {
     }
     this.apply();
   }
+
+  /** Settles when the current level's sky has loaded (or failed to). */
+  skyReady: Promise<void> = Promise.resolve();
 
   clear() {
     this.generation++;

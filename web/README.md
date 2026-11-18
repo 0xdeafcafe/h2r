@@ -242,6 +242,10 @@ any picture whose key it has replaces the pack's (`src/lib/gameart.ts`):
   the colours from the manifest's `palette` when it has one;
   `<Emblem emblem={...}>` takes real values (`emblemFromIndices` turns
   profile colour indices into them).
+- **Stats banners** (`banner/home`, `banner/strip`): collages of in-game
+  views of the owner's maps, drawn by `bun run banner` (`banner/`: the shot
+  list, layout and grade in `plan.ts` and `page.ts`; docs/live/live-art.md
+  "Stats banners"). `Strip` shows them; without, the pack's header art.
 - **Ranks**: our experience ladder is spread over the game's levels
   (`levelForExp`, then `rank/<1..50>`).
 - **Map previews** (`map/<map>/preview`) replace the top-down thumbnail in
