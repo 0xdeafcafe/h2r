@@ -28,11 +28,19 @@ bucket_name = "h2-live-blobs"
 
 # The hub keeps the event log in its own SQLite storage.
 [durable_objects]
-bindings = [{ name = "LIVE_HUB", class_name = "LiveHub" }]
+bindings = [
+    { name = "LIVE_HUB", class_name = "LiveHub" },
+    # One per co-op session: its relay (src/relay.rs).
+    { name = "COOP_RELAY", class_name = "CoopRelay" },
+]
 
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["LiveHub"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["CoopRelay"]
 
 # The web app, served by Cloudflare ahead of the Worker; /v1/* and the
 # well-known document go to the Worker.

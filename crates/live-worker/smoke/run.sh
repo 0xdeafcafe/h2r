@@ -6,6 +6,8 @@
 #
 #   [WAKE=S] crates/live-worker/smoke/run.sh [SEED_PAIRS] [OUT_DIR]
 #
+# BUSY=N: also follow the log with N sockets while 60 events are appended
+# (smoke.ts, step 11).
 # WAKE=S: also idle S seconds with a socket open, and check that the hub
 # hibernated and woke (smoke.ts, step 8).
 #
@@ -46,11 +48,19 @@ binding = "BLOBS"
 bucket_name = "h2-live-dev"
 
 [durable_objects]
-bindings = [{ name = "LIVE_HUB", class_name = "LiveHub" }]
+bindings = [
+    { name = "LIVE_HUB", class_name = "LiveHub" },
+    # One per co-op session: its relay (src/relay.rs).
+    { name = "COOP_RELAY", class_name = "CoopRelay" },
+]
 
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["LiveHub"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["CoopRelay"]
 EOF
 
 start() {
@@ -75,7 +85,7 @@ stop() {
 trap stop EXIT
 
 start first
-bun "$here/smoke/smoke.ts" "http://127.0.0.1:$port" --seed "$seed" --wake "${WAKE:-0}" --admin "$admin" | tee "$out/first.json"
+bun "$here/smoke/smoke.ts" "http://127.0.0.1:$port" --seed "$seed" --wake "${WAKE:-0}" --admin "$admin" --busy "${BUSY:-0}" | tee "$out/first.json"
 grep -q '"ok": true' "$out/first.json" || { echo "smoke test failed" >&2; exit 1; }
 stop
 start restart

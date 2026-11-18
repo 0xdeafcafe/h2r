@@ -387,3 +387,80 @@ async fn two_coop_peers_play_through_the_relay_when_direct_is_dead() {
     );
     assert!(h.live.relays().forwarded() > FRAMES as u64);
 }
+
+/// The hub's tickets for a relay that is not the hub (the Worker's
+/// `CoopRelay`): signed for a member, checked with the server's key,
+/// renewed while it stays a member, refused to anyone else.
+#[tokio::test]
+async fn members_get_signed_tickets_that_renew_while_they_stay_members() {
+    use live_server::relay::{Ticket, TicketReply};
+    let (h, _) = serve(Policy::default()).await;
+    let (host, guest, id) = coop(&h).await;
+    let stranger = h.create("Stranger").await;
+    let uri = format!("/v1/sessions/{id}/relay/ticket");
+    let post = |user: &User, method: &str| {
+        let bearer = h.bearer(user, method);
+        let uri = uri.clone();
+        let h = &h;
+        async move { h.call(Method::POST, &uri, &[bearer], Vec::new()).await }
+    };
+
+    let r = post(&guest, lxm::SESSIONS_RELAY).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+    let reply: TicketReply = serde_json::from_slice(&r.body).unwrap();
+    let key = h.operator.public();
+    let t = Ticket::open(key, &reply.ticket, &id, now()).unwrap();
+    assert_eq!(
+        (t.xuid, t.author.as_str()),
+        (guest.xuid, guest.author.as_str())
+    );
+    assert!(t.exp > now() && t.exp <= now() + live_server::relay::TICKET_S);
+    assert!(Ticket::open(key, &reply.ticket, "another", now()).is_err());
+    assert!(
+        Ticket::open(
+            live_proto::sign::KeyPair::generate().public(),
+            &reply.ticket,
+            &id,
+            now()
+        )
+        .is_err()
+    );
+
+    // Renewed with the ticket alone.
+    let renew = |ticket: String| {
+        let uri = uri.clone();
+        let h = &h;
+        async move {
+            h.call(
+                Method::POST,
+                &uri,
+                &[("content-type", "application/json".into())],
+                json!({ "ticket": ticket }).to_string(),
+            )
+            .await
+        }
+    };
+    let r = renew(reply.ticket.clone()).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+    let again: TicketReply = serde_json::from_slice(&r.body).unwrap();
+    assert_eq!(
+        Ticket::open(key, &again.ticket, &id, now()).unwrap().xuid,
+        guest.xuid
+    );
+    let r = renew("not.a.ticket".into()).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+
+    // Not to a stranger, nor for another method; the host gets one too.
+    assert_eq!(
+        post(&stranger, lxm::SESSIONS_RELAY).await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        post(&host, lxm::SESSIONS_WRITE).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        post(&host, lxm::SESSIONS_RELAY).await.status,
+        StatusCode::OK
+    );
+}
