@@ -269,6 +269,15 @@ fn row_chosen(c: &mut Call, request_at: u32) -> Result<Flow, GuestFault> {
     })
 }
 
+/// Why `h1-options-row` (and `clankers-row`) can't be snapshotted now: a
+/// Game Setup list's constructor is between its hooks, with the handler
+/// being built held on the host. The row itself is written into guest
+/// memory.
+pub(crate) fn building_live(building: &std::sync::Mutex<Vec<u32>>) -> Option<String> {
+    let n = building.lock().unwrap_or_else(|e| e.into_inner()).len();
+    (n != 0).then(|| format!("{n} Game Setup lists are being built"))
+}
+
 const fn list_class_window() -> u32 {
     crate::ui_kit::lifecycle::SCREEN_WINDOW
 }
@@ -292,6 +301,7 @@ impl feature::Feature for SetupRow {
         // The handler being built (ESI at entry); a stack in case of nesting.
         let building: Arc<std::sync::Mutex<Vec<u32>>> = Arc::default();
         let b2 = Arc::clone(&building);
+        let b2_live = Arc::clone(&building);
         b.raw().before(&CTOR, "note the Game Setup list", move |c| {
             b2.lock().unwrap_or_else(|e| e.into_inner()).push(c.cpu.esi);
             Ok(Flow::Continue)
@@ -332,6 +342,8 @@ impl feature::Feature for SetupRow {
         b.raw().before(&SQUAD_SETTINGS_ROW_CHOSEN, "the Halo 1 Options row's press", move |c| {
             row_chosen(c, request_at)
         });
+        let live = Arc::clone(&b2_live);
+        b.snapshot(feature::SnapshotPolicy::forbid_while(move || building_live(&live)));
         Ok(())
     }
 }
@@ -340,6 +352,16 @@ impl feature::Feature for SetupRow {
 mod tests {
     use super::*;
     use engine::testing::FakeGuest;
+
+    #[test]
+    fn a_snapshot_waits_while_a_game_setup_list_is_built() {
+        let building = std::sync::Mutex::new(Vec::new());
+        assert_eq!(building_live(&building), None);
+        building.lock().unwrap().push(0x0010_0000);
+        assert!(building_live(&building).is_some());
+        building.lock().unwrap().pop();
+        assert_eq!(building_live(&building), None);
+    }
 
     #[test]
     fn only_a_custom_games_list_on_a_halo1_map_gets_the_row() {

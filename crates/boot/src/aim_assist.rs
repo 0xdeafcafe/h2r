@@ -194,6 +194,39 @@ impl Remembered {
         self.0.is_empty()
     }
 
+    /// The fields held, as a machine snapshot keeps them
+    /// (docs/runtime/snapshots.md): without them the next activation
+    /// after a load would take a scaled value for retail and scale again.
+    pub fn save_state(&self) -> Vec<u8> {
+        let mut held: Vec<((u32, u32), Slot)> = self.0.iter().map(|(k, v)| (*k, *v)).collect();
+        held.sort_by_key(|(k, _)| *k);
+        let mut w = snapshot::codec::Writer::new();
+        w.list(&held, |w, ((datum, at), s)| {
+            w.u32(*datum).u32(*at).u32(s.retail).u32(s.written);
+        });
+        w.into_bytes()
+    }
+
+    /// Puts [`Self::save_state`]'s bytes back; nothing changes unless all
+    /// of them decode.
+    pub fn load_state(&mut self, bytes: &[u8]) -> Result<(), String> {
+        let e = |e: snapshot::Error| e.to_string();
+        let r = &mut snapshot::codec::Reader::new(bytes, "aim-assist");
+        let held = r
+            .list(16, |r| {
+                let key = (r.u32()?, r.u32()?);
+                let slot = Slot {
+                    retail: r.u32()?,
+                    written: r.u32()?,
+                };
+                Ok((key, slot))
+            })
+            .map_err(e)?;
+        r.finish().map_err(e)?;
+        self.0 = held.into_iter().collect();
+        Ok(())
+    }
+
     /// Sets every weapon's and the globals' aim-assist fields to retail
     /// times `level`'s factors. Idempotent; Default restores retail.
     pub fn apply<M: Gm>(&mut self, m: &mut M, level: Level) -> Applied {
@@ -296,6 +329,15 @@ pub fn level_now(setting: i64, mode: Option<u32>) -> Level {
 
 // ---- the feature ----
 
+/// Why `aim-assist` can't be snapshotted now: the touch player's control
+/// update is between its hooks, with slowdown and follow scaled in guest
+/// memory and their retail values only in the open window.
+pub fn snapshot_live(per_player: &player::PerPlayer) -> Option<String> {
+    per_player
+        .open()
+        .then(|| "the touch player's aim assist window is open".into())
+}
+
 /// The activation hook and what it remembers.
 pub struct AimAssist {
     setting: Setting<i64>,
@@ -391,6 +433,17 @@ impl feature::Feature for AimAssist {
                 Ok(())
             },
         );
+        let pp = Arc::clone(&self.per_player);
+        let (save, load) = (Arc::clone(&self.remembered), Arc::clone(&self.remembered));
+        b.snapshot(feature::SnapshotPolicy::section_forbid_while(
+            move || snapshot_live(&pp),
+            move || save.lock().unwrap_or_else(|e| e.into_inner()).save_state(),
+            move |bytes, _| {
+                load.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .load_state(bytes)
+            },
+        ));
         Ok(())
     }
 }

@@ -130,6 +130,10 @@ impl<T> AfterClose<T> {
     pub fn closing(&self, screen: u32) -> bool {
         self.lock().contains_key(&screen)
     }
+    /// Whether any screen is closing with work waiting.
+    pub fn waiting(&self) -> bool {
+        !self.lock().is_empty()
+    }
     /// `screen` was freed: its waiting work, if any.
     pub fn freed(&self, screen: u32) -> Option<T> {
         self.lock().remove(&screen)

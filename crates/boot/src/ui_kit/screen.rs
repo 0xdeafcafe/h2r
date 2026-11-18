@@ -205,6 +205,15 @@ impl SlotTexts {
         let base = self.base.load(Ordering::SeqCst);
         (base != 0).then(|| base + self.family.len * SLOT_LEN)
     }
+    /// Every slot written again at the next [`Self::write`]: after a
+    /// snapshot load the page holds the saved run's texts, which the
+    /// cache can't tell from its own.
+    fn rewrite_all(&self) {
+        let mut slots = self.slots.lock().unwrap_or_else(|e| e.into_inner());
+        for (_, dirty) in slots.iter_mut() {
+            *dirty = true;
+        }
+    }
     fn write(&self, m: &mut dyn GuestMemory) -> Result<(), MemFault> {
         let base = self.base.load(Ordering::SeqCst);
         if base == 0 {
@@ -352,6 +361,22 @@ impl KitScreen {
     }
     fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         m.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Why the screen can't be snapshotted now: a press waits for the
+    /// action, our keyboard is open, or work waits for a screen's free.
+    /// Each is host state (a closure, a row) the guest doesn't hold.
+    pub fn snapshot_live(&self) -> Option<String> {
+        let name = self.name;
+        if Self::lock(&self.pending).is_some() {
+            return Some(format!("{name}: a press waits for the screen's action"));
+        }
+        if let Some(row) = *Self::lock(&self.typing) {
+            return Some(format!("{name}: the keyboard for row {row} is open"));
+        }
+        self.after
+            .waiting()
+            .then(|| format!("{name}: work waits for a screen to be freed"))
     }
 
     /// A on the class's action (or X, Start): what the row left, or the
@@ -634,6 +659,21 @@ impl feature::Feature for KitTexts {
         s.texts.base.store(base, Ordering::SeqCst);
         let me = Arc::clone(s);
         b.locale().source(s.name, move |id| me.texts.address(id));
+        // The screen's state is its rows' (settings, kept outside the
+        // snapshot) and the class's; a load only has to write the texts
+        // again over the saved run's.
+        let (live, load) = (Arc::clone(s), Arc::clone(s));
+        b.snapshot(feature::SnapshotPolicy::section_forbid_while(
+            move || live.snapshot_live(),
+            Vec::new,
+            move |bytes, _| {
+                if !bytes.is_empty() {
+                    return Err(format!("{} unexpected bytes", bytes.len()));
+                }
+                load.texts.rewrite_all();
+                Ok(())
+            },
+        ));
         Ok(())
     }
 }
@@ -968,5 +1008,45 @@ mod tests {
             assert_eq!(run.result, Ok(Ret::new(0, 4)));
             assert_eq!(run.calls, expect);
         }
+    }
+
+    /// A snapshot waits for a press's action, an open keyboard and work
+    /// waiting for a free; after a load every text is written again.
+    #[test]
+    fn a_snapshot_waits_for_the_screen_and_rewrites_its_texts() {
+        use engine::testing::FakeGuest;
+        let s = Arc::new(example().0);
+        assert_eq!(s.snapshot_live(), None);
+        assert_eq!(s.press(3), Chosen::Act);
+        assert!(s.snapshot_live().is_some(), "Close waits for the action");
+        s.pending.lock().unwrap().take();
+        *s.typing.lock().unwrap() = Some(2);
+        assert!(s.snapshot_live().unwrap().contains("keyboard"));
+        s.typing.lock().unwrap().take();
+        let work: After = Arc::new(|_| Box::pin(async { Ok::<(), EntryError>(()) }));
+        assert!(s.after.then(0x0010_0000, work));
+        assert!(s.snapshot_live().is_some(), "work waits for the free");
+        assert!(s.after.freed(0x0010_0000).is_some());
+        assert_eq!(s.snapshot_live(), None);
+
+        const BASE: u32 = 0x0050_0000;
+        let mut g = FakeGuest::new();
+        g.map(BASE, IDS.len * SLOT_LEN);
+        s.texts.base.store(BASE, Ordering::SeqCst);
+        s.title();
+        s.texts.write(&mut g).unwrap();
+        let mut title = vec![0; s.title.len()];
+        g.read(BASE, &mut title).unwrap();
+        assert_eq!(title, s.title.as_bytes());
+        // A load puts the saved run's page back: the cache would not see it.
+        g.put(BASE, b"Saved\0");
+        s.title();
+        s.texts.write(&mut g).unwrap();
+        g.read(BASE, &mut title[..5]).unwrap();
+        assert_eq!(&title[..5], b"Saved");
+        s.texts.rewrite_all();
+        s.texts.write(&mut g).unwrap();
+        g.read(BASE, &mut title).unwrap();
+        assert_eq!(title, s.title.as_bytes());
     }
 }

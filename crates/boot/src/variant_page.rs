@@ -399,6 +399,10 @@ impl feature::Feature for MoreRow {
         )
         .after_feature(crate::skulls_mp_row::ROW_FEATURE);
         ROW_ON.store(true, Ordering::SeqCst);
+        // `ROW_ON` is fixed at build, the row's text and press are read
+        // from guest memory and answered by continuations the machine
+        // check sees. The page's edits are its class's, not this row's.
+        b.snapshot(feature::SnapshotPolicy::Stateless);
         Ok(())
     }
 }

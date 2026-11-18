@@ -389,3 +389,32 @@ fn the_seen_file_is_lenient() {
     assert_eq!(read_seen(&f), 7);
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn a_snapshot_waits_for_downloads_and_carries_the_open_page() {
+    let (fake, repo) = listed(three(), None);
+    assert_eq!(repo.snapshot_live(), None);
+    assert_eq!(repo.press_list(1), Chosen::Open(DETAIL));
+    let bytes = repo.save_state();
+    assert!(matches!(
+        repo.press_detail(ROW_DOWNLOAD),
+        Chosen::Stepped(_)
+    ));
+    assert!(repo.snapshot_live().is_some(), "a download is under way");
+    let (_, _, done) = fake.installs.lock().unwrap().pop().unwrap();
+    done(Ok(PathBuf::from("/data/maps/live-0202020202020202")));
+    assert_eq!(repo.snapshot_live(), None);
+
+    // Another run on another page loads it: the saved page is back.
+    let (_, other) = listed(three(), None);
+    assert_eq!(other.press_list(0), Chosen::Open(DETAIL));
+    other.load_state(&bytes).unwrap();
+    assert_eq!(other.selected().map(|e| e.id), Some(id(2)));
+    assert_eq!(
+        other.texts.get(DETAIL_TITLE).as_deref(),
+        Some("Lockout Snipers")
+    );
+    assert_eq!(other.save_state(), bytes, "the same state again");
+    assert!(other.load_state(&bytes[1..]).is_err());
+    assert_eq!(other.save_state(), bytes, "damaged bytes change nothing");
+}
