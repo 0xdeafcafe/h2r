@@ -8,6 +8,7 @@
 //! [`Action`]s.
 
 mod inspector;
+pub mod map_pack;
 mod outliner;
 mod play;
 mod playlists;
@@ -101,6 +102,8 @@ pub struct Studio {
     pub play: play::PlayUi,
     /// The Tags tool's UI state (its field panel's too).
     pub tags: tags::TagsUi,
+    /// The Maps list's Map Pack pictures.
+    pub map_pack: map_pack::MapPackUi,
 }
 
 impl Studio {
@@ -122,6 +125,7 @@ impl Studio {
             inspector: inspector::InspectorState::default(),
             play: play::PlayUi::default(),
             tags: tags::TagsUi::default(),
+            map_pack: map_pack::MapPackUi::default(),
         }
     }
 
@@ -133,7 +137,7 @@ impl Studio {
         self.shortcuts(ui, app, &mut actions);
         self.menu_bar(ui, app, &mut actions);
         self.dockspace(ui);
-        self.tools_window(ui, app, &mut actions);
+        self.tools_window(ui, app, gpu, &mut actions);
         match app.tool {
             ToolKind::Scenario => {
                 self.outliner_window(ui, app, &mut actions);
@@ -611,7 +615,14 @@ impl Studio {
         f.pop();
     }
 
-    fn tools_window(&mut self, ui: &Ui, app: &mut App, actions: &mut Vec<Action>) {
+    fn tools_window(
+        &mut self,
+        ui: &Ui,
+        app: &mut App,
+        gpu: &mut Gpu<'_>,
+        actions: &mut Vec<Action>,
+    ) {
+        let mut pack = std::mem::take(&mut self.map_pack);
         ui.window(&self.keys.tools).build(|| {
             self.heading(ui, "Tools");
             for tool in ToolKind::ALL {
@@ -652,7 +663,7 @@ impl Studio {
             }
             let loaded = app
                 .loaded_map()
-                .filter(|_| app.opened_package().is_none())
+                .filter(|_| app.opened_package().is_none() && app.opened_pack_map().is_none())
                 .map(str::to_owned);
             for name in app.maps() {
                 let on = loaded.as_deref() == Some(name.as_str());
@@ -665,8 +676,16 @@ impl Studio {
                     actions.push(Action::SelectMap(name.clone()));
                 }
             }
+            let bold = self.fonts.bold;
+            let heading = |ui: &Ui, text: &str| {
+                let f = ui.push_font(bold);
+                ui.text(text);
+                f.pop();
+            };
+            map_pack::group(ui, app, &mut pack, gpu, heading, actions);
             self.library_lists(ui, app, actions);
         });
+        self.map_pack = pack;
     }
 
     /// The Maps list's other groups: user packages, then Halo 1 (converted
@@ -686,7 +705,12 @@ impl Studio {
             }
             ui.set_item_tooltip(format!(
                 "{}\nin <data>/maps/{}{}",
-                if e.derived {
+                if e.derived && let Some(m) = app.pack_map_named(&e.map) {
+                    format!(
+                        "an edit of the Map Pack's {}, installed by the game as a new map",
+                        m.name
+                    )
+                } else if e.derived {
                     format!("a new map, loaded as {}", e.map)
                 } else {
                     format!("an edit of {}", e.map)
