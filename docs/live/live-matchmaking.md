@@ -821,10 +821,11 @@ tables. Every player starts each ranked playlist at level 1.
 
 **Stat reads.** `XOnlineStatRead` asks the server when a query names a
 leaderboard 1..100 (a possible playlist id) and any of stats 1..6:
-`GET /v1/rank-stats` ([live-api.md](live-api.md#ranks)) with every such
-leaderboard and player, through the Live worker, so the call never
-waits. The task reports 0 until the answer comes;
-`XOnlineStatReadGetResult` answers `RESULTS_UNAVAILABLE` until then.
+`GET /v1/rank-stats` ([live-api.md](live-api.md#ranks); the shared router, so
+the Worker answers it too) with every such leaderboard and player,
+through the Live worker, so the call never waits. The task reports 0
+until the answer comes; `XOnlineStatReadGetResult` answers
+`RESULTS_UNAVAILABLE` until then.
 Rank stats come back as LONGs from `rank::live_stat`: 1 experience, 2
 the level and 3 the highest level, both stored from 0 as the game does,
 and 4..6 (counters not decoded) as 0. Everything else, and every stat

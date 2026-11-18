@@ -621,6 +621,67 @@ mod tests {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
+    /// `GET /v1/rank-stats` on the Worker's own composition: the SQL
+    /// store, title files through `BlobsElsewhere`, driven timers, the
+    /// shared router. No hopper file is published, so the default one
+    /// names the ranked leaderboards (docs/live/live-matchmaking.md §8.3).
+    #[tokio::test]
+    async fn the_games_rank_read_answers_on_the_worker() {
+        use axum::{body::Body, http::Request};
+        use http_body_util::BodyExt;
+        use live_server::{
+            Live, Policy, ServerIdentity,
+            app::Timers,
+            blobs::{BlobStore, Blobs},
+            titleblobs::BlobsElsewhere,
+        };
+        use tower::ServiceExt;
+
+        let path = temp_db("rank-stats");
+        let store = SqlStore::open(Sqlite(pool(&path).await)).await.unwrap();
+        let private = BlobStore::memory();
+        let store = BlobsElsewhere::new(Arc::new(store), private.clone());
+        let identity = ServerIdentity::open(path.parent().unwrap(), Some("live.test")).unwrap();
+        let live = Live::start_with(Arc::new(store), identity, Policy::default(), Timers::Driven)
+            .await
+            .unwrap();
+        live.set_blobs(Blobs {
+            private,
+            public: None,
+        });
+        let get = |uri: &str| {
+            let live = live.clone();
+            let req = Request::get(uri).body(Body::empty()).unwrap();
+            async move {
+                let r = live_server::http::router(live).oneshot(req).await.unwrap();
+                let status = r.status();
+                let body = r.into_body().collect().await.unwrap().to_bytes();
+                (
+                    status,
+                    serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null),
+                )
+            }
+        };
+        let (status, body) = get("/v1/rank-stats?leaderboards=99,2,1&xuids=0009000000000001").await;
+        assert_eq!(status, 200, "{body}");
+        let rows: Vec<(u64, &str, u64)> = body["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| {
+                (
+                    i["leaderboard"].as_u64().unwrap(),
+                    i["playlist"].as_str().unwrap(),
+                    i["standing"]["level"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(rows, [(1, "0", 1), (2, "1", 1)]);
+        let (status, _) = get("/v1/rank-stats?leaderboards=1&xuids=nope").await;
+        assert_eq!(status, 400);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
     #[test]
     fn the_schema_splits_into_its_statements() {
         let s = script_statements(sql::SCHEMA);
