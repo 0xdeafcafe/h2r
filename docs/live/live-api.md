@@ -50,7 +50,7 @@ Event types so far (payload fields):
 | `account-<xuid>` | `FriendRequested`, `FriendAccepted`, `FriendDeclined`, `FriendRemoved` | `from`/`to`, or `by`/`friend` ([Friends](#friends), below) |
 | `gamertag-<lower>` | `GamertagReserved` | `xuid` |
 | `title-<id>-file-<name>` | `TitleFilePublished` | `title_id`, `name`, `sha256`, `size` |
-| `presence-<xuid>` | `SignedIn`, `PresenceChanged`, `SignedOut`, `PresenceExpired` | `xuid`, `state`, `game_id?`, `activity?` (below) |
+| `presence-<xuid>` | `SignedIn`, `PresenceChanged`, `SignedOut`, `PresenceExpired` | `xuid`, `state`, `game_id?`, `activity?`, `build?`, `capabilities?` (below) |
 | `game-<id>` | `GameStarted` | `game_id`, `console`, `map`, `mode` (`campaign`/`multiplayer`), `variant?`, `team_play`, `score_limit?`, `time_limit_s?`, `players`, `kind?`, `playlist?`, `playlist_id?`, `difficulty?`, `online?` (below) |
 | `game-<id>` | `PlayerJoined`, `PlayerLeft` | `player` (below) / `index` |
 | `game-<id>` | `PlayerKilled` | `tick`, `victim`, `killer?`, `weapon?`, `kind` (`kill`/`suicide`/`betrayal`/`world`) |
@@ -262,7 +262,7 @@ replays show the firing of the whole second; the same goes for `actions` and
 | `GET /v1/accounts` | accounts: `{xuid, gamertag, created_at, online}` |
 | `GET /v1/accounts/{gamertag}` | one account plus `recent_games` (without the co-op games the reader may not see: [Co-op games](#co-op-games)) |
 | `GET /v1/accounts/{gamertag}/friends` | friends with presence; pending requests in and out for the player and admins only ([Friends](#friends), below) |
-| `GET /v1/presence` | who is online now: `{xuid, gamertag, state, game_id?, activity?, since}`; a player in a game or session the reader may not see shows no `game_id` and `activity: "In a game"` ([Co-op games](#co-op-games), "Presence") |
+| `GET /v1/presence` | who is online now: `{xuid, gamertag, state, game_id?, activity?, since, build?, capabilities?}`; a player in a game or session the reader may not see shows no `game_id` and `activity: "In a game"` ([Co-op games](#co-op-games), "Presence") |
 | `GET /v1/coop/games?player=` | finished co-op campaign games, newest first ([Co-op games](#co-op-games), below) |
 | `GET /v1/games?state=live\|ended&map=&map_id=&skulls=` | game summaries: `{game_id, map, mode, kind, variant, playlist?, playlist_id?, difficulty?, online?, team_play, started_at, ended_at?, players, teams?, map_id?, skulls?}`; `map` keeps games on that base map, modded or not, `map_id` one exact map (`none`: games with no `map_id`), `skulls` (comma-separated indices, `4,6`) games that had every one of them on; without the co-op games the reader may not see ([Co-op games](#co-op-games)) |
 | `GET /v1/games/{id}` | summary plus scoreboard and the last 50 kills; 404, as for no game, for a co-op game the reader may not see ([Co-op games](#co-op-games)) |
@@ -489,6 +489,15 @@ characters (`live_proto::valid_activity`); a bad one refuses the event with
 400. It rides `SignedIn` and `PresenceChanged`, is served in `GET
 /v1/presence` and in a friend's `presence`, and is absent when unset. A
 presence event without it clears the previous one.
+
+`build` and `capabilities` say what software the player's console runs:
+its git short hash (7 to 12 lowercase hex digits, `live_proto::valid_build`)
+and up to 16 `name/version` strings of at most 32 characters
+(`live_proto::valid_capabilities`; `variant-ext/1` applies a host's variant
+options, docs/game/game-options.md section 3). A bad one refuses the event
+with 400. They ride `SignedIn` and `PresenceChanged`, are served in `GET
+/v1/presence` and in a friend's `presence` to every reader (they name
+software, not where the player is), and are absent when unset.
 
 The game side's friends enumeration makes exactly this call with the
 signed-in account's gamertag and reads `friends` (gamertag, xuid,

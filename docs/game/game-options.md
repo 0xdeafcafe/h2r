@@ -338,15 +338,30 @@ guests"):
     logs `variant options: none from the host: the host's build sends no
     variant options (an older build)`. An older host never applies a block,
     so both play the game's own rules and agree.
-  - **An older guest of a new host is not detected (not built).** The plan
-    was for clients to send their capabilities with the session join, but
-    no join reaches the host's session: the HLE never writes
-    `PlayerJoined` (the server accepts it only from the host), and guests
-    can't write to the host's stream. A capability needs a channel of its
-    own first: for example the guest's HLE writing a signed
-    `{session, capabilities}` note the host's HLE reads with the session,
-    or a field on presence. Until then the host's lobby can't name the
-    older player, and the desync below goes unannounced.
+  - **An older guest of a new host** (built): the host names it in its
+    log. Each console's presence carries its build (the git short hash,
+    7 to 12 lowercase hex digits) and its capabilities (`name/version`,
+    at most 16 of 32 characters each; this build sends `variant-ext/1`)
+    on every `SignedIn` and `PresenceChanged` (`live_proto::PresenceData`;
+    the HLE's `ServerOptions.build` and `capabilities`, which boot fills
+    from the binary's own build metadata, `app::BuildInfo`, and
+    `live_glue::CAPABILITIES`). The server checks their shape and returns
+    them on `GET /v1/presence` and in friends lists. **Privacy:** they
+    show to every reader, anonymous included, as `state` does: they name
+    the console's software, not where its player is, and a host must read
+    its guests' whether or not they are friends (the game id and activity
+    keep their own rule). At a multiplayer start with options, a Live host
+    reads its guests' XUIDs from the squad session's players
+    (`variant_ext::session_guests`: mask `S+0x111c`, 16 players at
+    `S+0x1120`, `0x13c` each, XUID at `+0`, peer at `+0xc`; docs/game/
+    bots.md) and asks the server (`Hle::players_lacking`, at most 0.5 s;
+    `live_proto::lacking`). Each guest whose presence lacks
+    `variant-ext/1` gets a line: `variant options: <gamertag> plays this
+    variant with the game's own rules (older build)`. A player with no
+    presence (a bot) is not named. The check takes XUIDs, so the Live
+    session's roster can feed it once the HLE writes `PlayerJoined`.
+    Not built: the lobby text (log lines only), and telling the older
+    player (its build can't).
 
   **The desync risk.** Halo 2's host simulates and its guests predict. A
   guest playing retail rules against a host with extras predicts wrong
@@ -627,7 +642,7 @@ own slice (8 below):
    Tests: round trips, a bad CRC ignored, the block surviving
    `record::check`, portable files and a hopper slot; gravity on synthetic
    physics memory.
-4. **Done except the older-build warnings and the lobby texts** (section 3,
+4. **Done except the lobby texts** (section 3,
    "How it reaches every player"). **Live transport:** `variant_ext` and the key on the session, the
    guest's apply at activation, capabilities on join and the warnings (the
    host's lobby, the older player where it can), System Link off with its
@@ -700,9 +715,11 @@ After slice 4 (two machines on Live, both on this build):
    `variant options: the host's for this game: Gravity 50%` and then
    `variant options: Gravity 50% (guest, the host's)`. A second game on a
    retail variant: normal gravity on both (the host sends "none").
-8. A guest on an older build joins that game: nothing warns yet (not
-   built); note how its game feels (the desync above). A new guest of an
-   older host: its log says the host's build sends none.
+8. A guest on an older build joins that game: the host's log says
+   `variant options: <gamertag> plays this variant with the game's own
+   rules (older build)` at the start; note how the older guest's game
+   feels (the desync above). Two consoles on this build: no such line. A
+   new guest of an older host: its log says the host's build sends none.
 9. Low Gravity skull with gravity 50%: a quarter of normal, on both.
 10. The same variant over System Link: normal gravity on both, and each
     log says the options are off on System Link.
@@ -825,8 +842,10 @@ After slices 6 to 8:
   guest), `heard` and `wait_for_host` (the guest's poll), the `Transport`
   feature (`variant-ext-live`) on `GAME_ACTIVATE`, and `decide` applying a
   guest's block when it came from its host.
-- Not built: telling the host about an older guest (no channel), and lobby
-  texts for that and for System Link (log lines only).
+- Older guests (built after slice 4): build and capabilities on presence,
+  the host's check at a multiplayer start and its log line (section 3,
+  "Older builds"). Not built: lobby texts for that and for System Link
+  (log lines only).
 
 ## Tests
 
@@ -857,6 +876,13 @@ tests:
   `the_row_and_the_page_are_on_the_plan`; `ui_kit::screens` checks the
   page (`variant-more-options`) with the other screens. Run
   `cargo test -p boot --tests` (the plan goldens are integration tests).
+
+Older builds: `live-proto`
+`presence_carries_a_build_and_capabilities_checked_and_optional`,
+`lacking_names_the_players_whose_build_cannot_and_skips_the_unknown`;
+`live-server` `presence_privacy::build_and_capabilities_show_to_everyone_and_are_checked`;
+`live-hle` `server::presence_says_what_a_build_can_do_and_the_host_names_older_players`;
+`boot` `variant_ext::the_host_names_its_guests_from_the_sessions_players`.
 
 The slice 4 tests: `live-proto`
 `session::variant_options_are_optional_checked_and_updated`; `live-server`

@@ -315,13 +315,6 @@ fn validate(state: &State, body: &EventBody) -> Result<(), ApiError> {
     struct KeyRevoked {
         kid: String,
     }
-    #[derive(Deserialize)]
-    struct PresenceData {
-        xuid: Xuid,
-        state: Option<String>,
-        game_id: Option<String>,
-        activity: Option<String>,
-    }
     if live_proto::mailbox::is_kind(&body.kind) {
         return crate::mailbox::validate(state, body);
     }
@@ -357,7 +350,7 @@ fn validate(state: &State, body: &EventBody) -> Result<(), ApiError> {
         | types::PRESENCE_CHANGED
         | types::SIGNED_OUT
         | types::PRESENCE_EXPIRED => {
-            let d: PresenceData = parse_data(&body.data)?;
+            let d: live_proto::PresenceData = parse_data(&body.data)?;
             if Some(d.xuid) != xuid {
                 return Err(invalid("presence xuid is not the stream's"));
             }
@@ -378,6 +371,15 @@ fn validate(state: &State, body: &EventBody) -> Result<(), ApiError> {
                 {
                     return Err(invalid(
                         "presence activity is empty, too long or has control characters",
+                    ));
+                }
+                if d.build.as_deref().is_some_and(|b| !live_proto::valid_build(b)) {
+                    return Err(invalid("presence build must be 7 to 12 lowercase hex digits"));
+                }
+                if !live_proto::valid_capabilities(&d.capabilities) {
+                    return Err(invalid(
+                        "presence capabilities are at most 16 of name/version, \
+                         lowercase, at most 32 characters each",
                     ));
                 }
             }
@@ -1159,7 +1161,10 @@ impl Live {
     }
 
     /// Who is online, with each player's game id and activity as `viewer`
-    /// may see them ([`crate::sessions::presence_for`]).
+    /// may see them ([`crate::sessions::presence_for`]). Build and
+    /// capabilities show to every reader: they name the console's software,
+    /// not where its player is, and a host reads its guests' before a game
+    /// whether or not they are friends (docs/game/game-options.md section 3).
     pub fn presence(&self, viewer: crate::sessions::Viewer) -> Page<Presence> {
         let position = self.position();
         let s = self.model.read();
@@ -1176,6 +1181,8 @@ impl Live {
                     game_id,
                     activity,
                     since: p.since.clone(),
+                    build: p.build.clone(),
+                    capabilities: p.capabilities.clone(),
                 })
             })
             .collect();
@@ -1226,6 +1233,8 @@ impl Live {
                             game_id,
                             activity,
                             since: p.since.clone(),
+                            build: p.build.clone(),
+                            capabilities: p.capabilities.clone(),
                         }
                     }),
                 })

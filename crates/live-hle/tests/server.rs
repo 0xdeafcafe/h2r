@@ -209,6 +209,18 @@ impl World {
         Self::raw_network(url, accounts, heartbeat, 31000)
     }
     fn raw_network(url: &str, accounts: Value, heartbeat: Duration, port: u16) -> Self {
+        Self::with_options(
+            url,
+            accounts,
+            port,
+            ServerOptions {
+                request_timeout: Duration::from_secs(2),
+                heartbeat_interval: heartbeat,
+                ..Default::default()
+            },
+        )
+    }
+    fn with_options(url: &str, accounts: Value, port: u16, options: ServerOptions) -> Self {
         let path = std::env::temp_dir().join(format!("h2-hle-accounts-{}.json", sign::random_id()));
         std::fs::write(&path, serde_json::to_vec(&accounts).unwrap()).unwrap();
         let hle = Hle::with_server_options(
@@ -219,11 +231,7 @@ impl World {
                 offer_new_account: false,
             },
             NetworkConfig::new(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port)),
-            ServerOptions {
-                request_timeout: Duration::from_secs(2),
-                heartbeat_interval: heartbeat,
-                ..Default::default()
-            },
+            options,
         )
         .unwrap();
         std::fs::remove_file(path).unwrap();
@@ -1882,6 +1890,78 @@ fn guests_read_the_variant_options_their_host_advertises() {
             ext: Some(ext),
             refreshed: true
         }
+    );
+}
+/// Every presence set carries the console's build and capabilities
+/// (docs/game/game-options.md section 3, "Older builds"), and a host names
+/// the players whose build lacks one: here a guest on an older build.
+#[test]
+fn presence_says_what_a_build_can_do_and_the_host_names_older_players() {
+    use live_hle::Lacking;
+    use live_proto::capability::VARIANT_EXT;
+    let s = Server::new();
+    let a = s.account("Host");
+    let b = s.account("Oldie");
+    let c = s.account("Newbie");
+    let world = |acc: &Account, port, build: Option<&str>, caps: &[&str]| {
+        World::with_options(
+            &s.embedded.url,
+            json!([acc.json()]),
+            port,
+            ServerOptions {
+                request_timeout: Duration::from_secs(2),
+                heartbeat_interval: Duration::from_millis(100),
+                build: build.map(str::to_string),
+                capabilities: caps.iter().map(|c| c.to_string()).collect(),
+                ..Default::default()
+            },
+        )
+    };
+    let wait = Duration::from_secs(5);
+    let mut host = world(&a, 31000, Some("a65fa01"), &[VARIANT_EXT]);
+    assert_eq!(
+        host.hle.players_lacking(VARIANT_EXT, &[b.xuid], wait),
+        Lacking::Unknown("not signed in to a Live server")
+    );
+    let mut old = world(&b, 32000, None, &[]);
+    // A bad build is left out rather than refused by the server.
+    let mut new = world(&c, 33000, Some("NOT-HEX"), &[VARIANT_EXT]);
+    host.logon();
+    old.logon();
+    new.logon();
+    let signed_in = |x: Xuid| {
+        s.events()
+            .into_iter()
+            .rfind(|e| e.kind == "SignedIn" && e.stream == live_proto::streams::presence(x))
+            .unwrap()
+            .data
+    };
+    let h = signed_in(a.xuid);
+    assert_eq!(h["build"], "a65fa01");
+    assert_eq!(h["capabilities"], json!([VARIANT_EXT]));
+    let o = signed_in(b.xuid);
+    assert!(o.get("build").is_none() && o.get("capabilities").is_none());
+    let n = signed_in(c.xuid);
+    assert!(n.get("build").is_none());
+    assert_eq!(n["capabilities"], json!([VARIANT_EXT]));
+    // A later presence change carries them too.
+    host.hle.set_activity(Some("Slayer")).unwrap();
+    s.until(|| {
+        s.events().into_iter().any(|e| {
+            e.kind == "PresenceChanged"
+                && e.stream == live_proto::streams::presence(a.xuid)
+                && e.data["build"] == "a65fa01"
+        })
+    });
+    // An unknown xuid (a bot) is not named; the older guest is.
+    assert_eq!(
+        host.hle
+            .players_lacking(VARIANT_EXT, &[c.xuid, b.xuid, Xuid(0x000b_0000_0000_0001)], wait),
+        Lacking::Known(vec!["Oldie".into()])
+    );
+    assert_eq!(
+        host.hle.players_lacking(VARIANT_EXT, &[c.xuid], wait),
+        Lacking::Known(Vec::new())
     );
 }
 /// Co-op over Live (docs/live/live-coop.md, "Co-op over Live built"): the

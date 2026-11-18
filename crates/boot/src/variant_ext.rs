@@ -21,6 +21,15 @@
 //! one) leaves the field out: the guest says so and plays the game's own
 //! rules.
 //!
+//! **Older guests.** Each console's presence carries its build and its
+//! capabilities ([`live_proto::capability::VARIANT_EXT`] for this one). A
+//! Live host starting a game with options asks the server for its guests'
+//! presence ([`live_hle::Hle::players_lacking`], at most [`OLDER_WAIT`])
+//! and names each guest whose build lacks it: that guest plays the
+//! game's own rules against a host with extras. The guests' XUIDs come
+//! from the squad session's players ([`session_guests`]) until the Live
+//! session's roster names them.
+//!
 //! The decision is a pure function over guest memory ([`Gm`]), read each
 //! tick after the game's (cheap: the session is read only when the block
 //! asks for something).
@@ -54,6 +63,57 @@ pub const SYSTEM_LINK: u32 = 1;
 pub const OPTIONS_VARIANT: u32 = 0x134;
 /// How long a guest's start waits for its host's options.
 pub const HOST_WAIT: Duration = Duration::from_millis(1500);
+/// How long a host's start waits for its guests' presence.
+pub const OLDER_WAIT: Duration = Duration::from_millis(500);
+
+/// The squad session's players (docs/game/bots.md, "Session S"): a mask of
+/// the 16 slots in use, then the slots, each with a 12-byte id (the XUID,
+/// then the machine id's last four) and its peer.
+pub mod players {
+    pub const MASK: u32 = 0x111c;
+    pub const AT: u32 = 0x1120;
+    pub const STRIDE: u32 = 0x13c;
+    pub const XUID: u32 = 0;
+    pub const PEER: u32 = 0xc;
+    pub const SLOTS: u32 = 16;
+}
+
+/// The XUIDs of the session's players on other machines than this one
+/// (the host's guests), in slot order. Zero XUIDs (no account) are left
+/// out.
+pub fn session_guests<M: Gm + ?Sized>(m: &M, s: &Session) -> Vec<live_proto::Xuid> {
+    let Some(mask) = m.u32(s.addr.wrapping_add(players::MASK)) else {
+        return Vec::new();
+    };
+    (0..players::SLOTS)
+        .filter(|i| mask & (1u32 << i) != 0)
+        .filter_map(|i| {
+            let at = s.addr.wrapping_add(players::AT + i * players::STRIDE);
+            let peer = m.u32(at.wrapping_add(players::PEER))?;
+            let mut x = [0u8; 8];
+            m.rd(at.wrapping_add(players::XUID), &mut x).then_some(())?;
+            let xuid = u64::from_le_bytes(x);
+            (peer != s.local_peer && xuid != 0).then_some(live_proto::Xuid(xuid))
+        })
+        .collect()
+}
+
+/// The host's lines about guests whose build can't apply its options.
+pub fn older_lines(lacking: &live_hle::Lacking) -> Vec<String> {
+    match lacking {
+        live_hle::Lacking::Known(tags) => tags
+            .iter()
+            .map(|t| {
+                format!(
+                    "variant options: {t} plays this variant with the game's own rules (older build)"
+                )
+            })
+            .collect(),
+        live_hle::Lacking::Unknown(why) => {
+            vec![format!("variant options: the guests' builds are not known: {why}")]
+        }
+    }
+}
 
 /// The block this machine took from its host for the game running now
 /// (a guest), so [`in_game`] applies it.
@@ -276,7 +336,7 @@ impl feature::Feature for Transport {
             .before(&GAME_ACTIVATE, "the host's variant options", move |c| {
                 let rt = Arc::clone(c.ctx.runtime());
                 let options = c.cpu.eax;
-                let (mode, record, session) = {
+                let (mode, record, session, guests) = {
                     let mem = rt.memory();
                     let mut record = [0u8; 0x130];
                     let ok = Gm::rd(&*mem, options.wrapping_add(OPTIONS_VARIANT), &mut record);
@@ -284,10 +344,15 @@ impl feature::Feature for Transport {
                     let class = s
                         .as_ref()
                         .and_then(|s| Gm::u32(&*mem, s.addr.wrapping_add(SESSION_NETWORK_CLASS)));
+                    let guests = s
+                        .as_ref()
+                        .map(|s| session_guests(&*mem, s))
+                        .unwrap_or_default();
                     (
                         crate::skulls::options_mode(&*mem, options),
                         ok.then_some(record),
                         s.zip(class),
+                        guests,
                     )
                 };
                 set_from_host(None);
@@ -318,6 +383,16 @@ impl feature::Feature for Transport {
                                 "variant options: sent to guests: {} (key {own:016x})",
                                 mine.summary()
                             );
+                            if !mine.is_default() {
+                                let lacking = h.players_lacking(
+                                    live_proto::capability::VARIANT_EXT,
+                                    &guests,
+                                    OLDER_WAIT,
+                                );
+                                for line in older_lines(&lacking) {
+                                    eprintln!("{line}");
+                                }
+                            }
                         }
                     }
                     Part::LiveGuest => {
@@ -542,6 +617,50 @@ mod tests {
         set_from_host(Some(half().encode()));
         assert_eq!(in_game(&f).gravity(), 0.5);
         set_from_host(None);
+    }
+
+    #[test]
+    fn the_host_names_its_guests_from_the_sessions_players() {
+        const S: u32 = 0x9000_0000;
+        let mut f = Fake::default();
+        f.wr(S, &vec![0; 0x7420]);
+        let s = Session {
+            addr: S,
+            state: 5,
+            peers: 3,
+            local_peer: 0,
+            host_peer: 0,
+            ..Session::default()
+        };
+        let player = |f: &mut Fake, slot: u32, xuid: u64, peer: u32| {
+            let at = S + players::AT + slot * players::STRIDE;
+            f.wr(at + players::XUID, &xuid.to_le_bytes());
+            f.wr(at + players::XUID + 8, &[0xaa; 4]); // the machine id's end
+            f.set_u32(at + players::PEER, peer);
+        };
+        player(&mut f, 0, 0x0009_0000_0000_0001, 0); // the host
+        player(&mut f, 1, 0x0009_0000_0000_0002, 1);
+        player(&mut f, 3, 0x0009_0000_0000_0003, 2);
+        player(&mut f, 4, 0, 2); // no account
+        player(&mut f, 5, 0x0009_0000_0000_0005, 1); // a slot not in use
+        f.set_u32(S + players::MASK, 0b1_1011);
+        assert_eq!(
+            session_guests(&f, &s),
+            [
+                live_proto::Xuid(0x0009_0000_0000_0002),
+                live_proto::Xuid(0x0009_0000_0000_0003)
+            ]
+        );
+        // The last slot's end is inside the session.
+        assert!(players::AT + players::SLOTS * players::STRIDE <= 0x4980);
+
+        let lines = older_lines(&live_hle::Lacking::Known(vec!["Oldie".into()]));
+        assert_eq!(
+            lines,
+            ["variant options: Oldie plays this variant with the game's own rules (older build)"]
+        );
+        assert!(older_lines(&live_hle::Lacking::Known(Vec::new())).is_empty());
+        assert!(older_lines(&live_hle::Lacking::Unknown("no answer"))[0].contains("no answer"));
     }
 
     #[test]
