@@ -2,9 +2,9 @@
 // takes after:
 //   - the main menu: the orb and a ring of pods and their bars, which
 //     turns to bring the selected one into focus;
-//   - list screens (live now, friends, players, game history): a tilted
+//   - list screens (live now, friends, players, game history, settings): a tilted
 //     panel of rows, a preview pod and an info plate;
-//   - pod screens (settings, a player, sign up, recovery, server, invites):
+//   - pod screens (a player, sign up, recovery, server, invites):
 //     one big pod, four small ones around it and an info plate.
 // Arrow keys (or the wheel) move, Enter (or a) selects, Escape /
 // Backspace (or b) goes back; the mouse and touch work too.
@@ -60,7 +60,7 @@ import GamesScreen from "./Games";
 import "../styles/social.css";
 import { lockedHint, menuFor, type SectionId } from "./menu";
 
-type ScreenId = "menu" | "games" | "list" | "player" | "settings" | "signup" | "recovery" | "recover" | "server" | "social" | "sessions";
+type ScreenId = "menu" | "games" | "list" | "player" | "signup" | "recovery" | "recover" | "server" | "social" | "sessions";
 
 const LABELS: Record<SectionId, () => string> = {
   live: () => "live now",
@@ -147,7 +147,6 @@ export default function Dashboard() {
     if (s === "server") return "server";
     if (s === "friends" || s === "clans") return "social";
     if (s === "sessions") return "sessions";
-    if (s === "settings") return "settings";
     // /dash/recover (and the older /dash/signup/recover): a new device takes
     // an account over; /dash/account (and /dash/signup/recovery): the
     // signed-in account. Signed out, /dash/account is the sign-in list.
@@ -195,8 +194,16 @@ export default function Dashboard() {
       : online();
   });
 
+  const settings = createMemo(() => [
+    { key: "/dash/signup", label: identity.me() ? "profile" : "sign up", glyph: "key" },
+    { key: "/dash/games", label: "games", glyph: "disc" },
+    { key: "/stats/events", label: "event log", glyph: "history" },
+    { key: "/dash/server", label: "server", glyph: "server" },
+  ] satisfies (Row & { glyph: GlyphName })[]);
+
   const rows = createMemo((): Row[] => {
     switch (section()) {
+      case "settings": return settings();
       case "live":
         return liveGames(live.state).map((g) => ({ key: g.game_id, label: gameMapTitle(g), meta: `${rowType(g)} ${clock(elapsedSeconds(g, now()))}` }));
       case "friends":
@@ -242,7 +249,8 @@ export default function Dashboard() {
       }
       return;
     }
-    if (s === "live" || s === "history") go(`/stats/games/${r.key}`, "deeper");
+    if (s === "settings") go(r.key, "deeper");
+    else if (s === "live" || s === "history") go(`/stats/games/${r.key}`, "deeper");
     else go(`/dash/${s}/${encodeURIComponent(r.label)}`, "deeper");
   }
 
@@ -281,13 +289,6 @@ export default function Dashboard() {
           { label: "career stats", glyph: "career", act: () => go(`${playerHref(a.gamertag)}/career`, "deeper") },
         ];
       }
-      case "settings":
-        return [
-          { label: identity.me() ? "profile" : "sign up", glyph: "key", act: () => go("/dash/signup", "deeper") },
-          { label: "games", glyph: "disc", act: () => go("/dash/games", "deeper") },
-          { label: "event log", glyph: "history", act: () => go("/stats/events", "deeper") },
-          { label: "server", glyph: "server", act: () => go("/dash/server", "deeper") },
-        ];
       case "recovery": {
         const ready = recovery.phase() === "ready";
         return [
@@ -589,6 +590,22 @@ export default function Dashboard() {
             <GamesScreen back={back} bind={(f) => { screenAct = f; }} />
           </Match>
 
+          <Match when={section() === "settings"}>
+            <div class="dx-screen dx-list dx-pages dx-settings">
+              <ListPanel title="settings" rows={rows()} sel={sel()} onSel={setSel} onAct={openRow} empty="" />
+              <div class="dx-preview"><BigPod wire><Glyph name={settings()[sel()]?.glyph ?? "gear"} /></BigPod></div>
+              <Plate small="h2 live" title="system status">
+                <dl>
+                  <dt>server</dt><dd>{live.wellKnown()?.id ?? new URL(live.server().base).host}</dd>
+                  <dt>link</dt><dd>{live.status() === "live" ? "connected" : live.status()}</dd>
+                  <dt>account</dt><dd>{identity.me()?.gamertag ?? "not signed in"}</dd>
+                  <dt>online</dt><dd>{online().length} <span>players</span> {liveGames(live.state).length} <span>games</span></dd>
+                </dl>
+              </Plate>
+              <Prompts onA={select} onB={back} />
+            </div>
+          </Match>
+
           <Match when={screen() === "list"}>
             <div class="dx-screen dx-list dx-pages">
               <ListPanel title={title()} rows={rows()} sel={sel()} onSel={setSel} onAct={openRow} empty={emptyText(section())} />
@@ -630,22 +647,6 @@ export default function Dashboard() {
                 <Prompts onA={select} onB={back} />
               </div>
             )}
-          </Match>
-
-          <Match when={screen() === "settings"}>
-            <div class="dx-screen dx-pods dx-pages">
-              <div class="dx-centre"><BigPod wire><Glyph name="gear" /></BigPod></div>
-              <Sats sats={sats()} sel={sat()} onSel={setSat} />
-              <Plate small="h2 live" title="settings" main>
-                <dl>
-                  <dt>server</dt><dd>{live.wellKnown()?.id ?? new URL(live.server().base).host}</dd>
-                  <dt>link</dt><dd>{live.status() === "live" ? "connected" : live.status()}</dd>
-                  <dt>account</dt><dd>{identity.me()?.gamertag ?? "not signed in"}</dd>
-                  <dt>online</dt><dd>{online().length} <span>players</span> {liveGames(live.state).length} <span>games</span></dd>
-                </dl>
-              </Plate>
-              <Prompts onA={select} onB={back} />
-            </div>
           </Match>
 
           <Match when={screen() === "signup"}>
