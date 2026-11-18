@@ -434,6 +434,23 @@ impl SecondExecutor {
     /// Merge `written` (from [`written`](Self::written), filtered as the
     /// caller likes) into `main`'s live RAM ([`Guest::hand_back`]). Takes
     /// this executor's memory guard, then `main`'s.
+    /// The bytes a [`hand_back`](Self::hand_back) of `written` would count
+    /// as conflicts (both sides changed them, to different values), without
+    /// merging: `(physical, live, view, base)` each, at most `limit`.
+    pub fn conflicts(
+        &self,
+        main: &Runtime,
+        written: &[WrittenPage],
+        limit: usize,
+    ) -> Vec<(u32, u8, u8, u8)> {
+        let Some(base) = &self.base else {
+            return Vec::new();
+        };
+        let view = self.runtime.memory();
+        let live = main.memory();
+        live.conflicts_with(&view, base, written, limit)
+    }
+
     pub fn hand_back(&mut self, main: &Runtime, written: &[WrittenPage]) -> HandBack {
         let Some(base) = &self.base else {
             return HandBack::default();

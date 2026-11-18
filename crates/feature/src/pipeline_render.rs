@@ -58,6 +58,54 @@ pub const SEED_REPLAY_ENV: &str = "H2_PIPELINE_SEED_REPLAY";
 /// render that reaches one finishes on the game thread
 /// ([`PipelineRender::refuse`]): a bisecting aid.
 pub const REFUSE_ENV: &str = "H2_PIPELINE_REFUSE";
+/// Set (not `0`): every hand-back's conflicts (bytes the sim and the render
+/// both changed, the render's value winning) are tallied by word, and the
+/// most frequent are printed every [`CONFLICT_REPORT_EVERY`] hand-backs
+/// with their virtual addresses ([`PipelineRender::report_conflicts`]).
+pub const CONFLICTS_ENV: &str = "H2_PIPELINE_CONFLICTS";
+/// Hand-backs between two conflict reports.
+pub const CONFLICT_REPORT_EVERY: u32 = 300;
+/// Words in a conflict report.
+const CONFLICT_REPORT_WORDS: usize = 32;
+
+/// The conflicts of the hand-backs since the last report, by physical word.
+#[derive(Default)]
+struct ConflictTally {
+    hand_backs: u32,
+    /// Physical word -> (bytes, the last live, view and snapshot bytes).
+    words: BTreeMap<u32, (u64, [u8; 3])>,
+}
+
+impl ConflictTally {
+    fn add(&mut self, found: &[(u32, u8, u8, u8)]) {
+        for &(p, live, view, base) in found {
+            let e = self.words.entry(p & !3).or_default();
+            e.0 += 1;
+            e.1 = [live, view, base];
+        }
+    }
+
+    /// The report lines, most conflicted words first; `virt` names a
+    /// physical address's virtual ones.
+    fn report(&self, virt: impl Fn(u32) -> Vec<u32>) -> Vec<String> {
+        let mut v: Vec<_> = self.words.iter().collect();
+        v.sort_by_key(|(p, (n, _))| (std::cmp::Reverse(*n), **p));
+        let total: u64 = self.words.values().map(|(n, _)| n).sum();
+        let mut out = vec![format!(
+            "pipeline: conflicts over {} hand-backs: {total} bytes in {} words; the most frequent:",
+            self.hand_backs,
+            self.words.len()
+        )];
+        for (p, (n, [l, w, b])) in v.into_iter().take(CONFLICT_REPORT_WORDS) {
+            let va: Vec<String> = virt(*p).iter().map(|a| format!("{a:#010x}")).collect();
+            out.push(format!(
+                "pipeline:   phys {p:#010x} va [{}] bytes {n} (last: live {l:#04x} render {w:#04x} snapshot {b:#04x})",
+                va.join(" ")
+            ));
+        }
+        out
+    }
+}
 
 /// Whether a switch is on: anything but `0`, `off` or `false`; unset is
 /// `default`.
@@ -506,6 +554,7 @@ struct Setup {
 }
 
 struct Inner {
+    conflicts: ConflictTally,
     exec: Option<Box<SecondExecutor>>,
     setup: Option<Setup>,
     flight: Option<Flight>,
@@ -557,6 +606,8 @@ struct Shared {
     predict_frames: bool,
     /// Guest functions the render thread refuses ([`REFUSE_ENV`]).
     refuse: Vec<u32>,
+    /// Tally and print the hand-backs' conflicts ([`CONFLICTS_ENV`]).
+    report_conflicts: bool,
     inner: Mutex<Inner>,
 }
 
@@ -586,6 +637,7 @@ impl PipelineRender {
             .predict_frames(switch(env(PREDICT_FRAMES_ENV).as_deref(), true))
             .replay_seeds(switch(env(SEED_REPLAY_ENV).as_deref(), true))
             .refuse(&refuse)
+            .report_conflicts(switch(env(CONFLICTS_ENV).as_deref(), false))
     }
 
     /// Explicitly on or off, with `addrs`. Prints no `pipeline:` lines
@@ -614,7 +666,9 @@ impl PipelineRender {
                 watch: Vec::new(),
                 predict_frames: true,
                 refuse: Vec::new(),
+                report_conflicts: false,
                 inner: Mutex::new(Inner {
+                    conflicts: ConflictTally::default(),
                     exec: None,
                     setup: None,
                     flight: None,
@@ -682,6 +736,24 @@ impl PipelineRender {
     pub fn refuse(mut self, addrs: &[u32]) -> Self {
         self.shared_mut().refuse = addrs.to_vec();
         self
+    }
+
+    /// Tally every hand-back's conflicts by word and print the most
+    /// frequent now and then ([`CONFLICTS_ENV`]).
+    pub fn report_conflicts(mut self, on: bool) -> Self {
+        self.shared_mut().report_conflicts = on;
+        self
+    }
+
+    /// The conflict report so far (tests): the lines
+    /// [`CONFLICTS_ENV`] prints.
+    pub fn conflict_report(&self) -> Vec<String> {
+        let inner = self.shared.lock();
+        let g = inner.exec.as_ref().map(|e| e.runtime().clone());
+        match g {
+            Some(rt) => inner.conflicts.report(|p| rt.memory().virtual_of(p)),
+            None => inner.conflicts.report(|_| Vec::new()),
+        }
     }
 
     /// Off, saying why, whatever the switch says (lockstep).
@@ -1728,6 +1800,20 @@ fn hand_back(
     }
     if !fallback {
         written.retain(|w| stack_pages.binary_search(&w.physical).is_err());
+    }
+    if me.report_conflicts {
+        let found = exec.conflicts(rt, &written, 1 << 16);
+        let t = &mut inner.conflicts;
+        t.add(&found);
+        t.hand_backs += 1;
+        if t.hand_backs.is_multiple_of(CONFLICT_REPORT_EVERY) {
+            let g = rt.memory();
+            for line in t.report(|p| g.virtual_of(p)) {
+                eprintln!("{line}");
+            }
+            drop(g);
+            *t = ConflictTally::default();
+        }
     }
     let h = exec.hand_back(rt, &written);
     inner.stats.pages += written.iter().filter(|w| w.lines != 0).count() as u64;
