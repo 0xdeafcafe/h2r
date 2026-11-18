@@ -112,12 +112,21 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                         }
                         st.1 = match out {
                             Ok(r) => {
+                                // One guard, dropped before the print: two
+                                // `lock()`s in the macro's arguments both live
+                                // to the statement's end, and the second
+                                // waited on the first forever (with `state`
+                                // held, so the render thread's next ask hung).
+                                let (draws, batches) = {
+                                    let cpu = r.cpu.lock().unwrap_or_else(|e| e.into_inner());
+                                    cpu.as_ref().map_or((0, 0), |c| (c.world.draws.len(), c.world.batches.len()))
+                                };
                                 eprintln!(
                                     "native-world: {} BSP at {:#010x}: {} draws in {} batches, {} materials native, in {:.1} s",
                                     key.0,
                                     key.1,
-                                    r.cpu.lock().unwrap().as_ref().map_or(0, |c| c.world.draws.len()),
-                                    r.cpu.lock().unwrap().as_ref().map_or(0, |c| c.world.batches.len()),
+                                    draws,
+                                    batches,
                                     r.shaders.len(),
                                     t0.elapsed().as_secs_f32()
                                 );
