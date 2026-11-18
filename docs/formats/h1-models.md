@@ -335,7 +335,7 @@ section:
 | Subparts | one per part covering its indices, `+4` = `ffff` | |
 | Node map | the nodes this geometry's vertices use, ascending | map-format.md |
 | Vertices | type `04` (s16 position, u8 node) or `06` (s16 position, two u8 nodes, u8 weights summing to 255); `19` s16 texcoords; `1b` normal, binormal, tangent repacked 11:11:10 | map-format.md |
-| Nodes (`0x60`) | name, parent `04`, first child `06`, next sibling `08`, import index -1 `0a`, default translation `0c`, rotation `18`, **default scale 1 at `28`, inverse forward/left/up at `2c`/`38`/`44`, inverse position at `50`, distance from parent at `5c`** | V2: on every lockout node, `2c`..`5c` invert the model-space default pose computed from `0c`/`18`, in our convention (vectors are the columns of R^T); `28` is 1 |
+| Nodes (`0x60`) | name, parent `04`, first child `06`, next sibling `08`, import index -1 `0a`, default translation `0c`, rotation `18`, **default scale 1 at `28`, inverse forward/left/up at `2c`/`38`/`44`, inverse position at `50`, distance from parent at `5c`** | V2: on every lockout node, `2c`..`5c` invert the model-space default pose computed from `0c`/`18`: the three vectors are the inverse's columns (the rows of the model-space rotation R); `28` is 1. V5: the same on every node of 05a's marine and grunt (`retail_h2_bipeds_pose_sanely`, rest frame times stored inverse within 5e-7). Until converter version 59 the converter wrote R's columns there, which skins a vertex of a rotated node by R twice: the twisted shards a30's marines and the first-person arms were drawn as |
 | Marker groups (`58`, `0xc`) | one per Halo 1 marker name: name, block of markers (`0x24`): i8 region (-1 = any), i8 permutation (-1 = any), i8 node, pad, translation `04`, rotation `10`, f32 `20` written 0 | V2: all 922 lockout markers sit in named groups at `58`, with a node in range and a unit rotation; `20` is 0 on 842 and nonzero on 80 (likely a scale; meaning not established) |
 | Materials (`60`, `0x20`) | first reference null, second the caller's `shad` for that shader index, or null | map-format.md |
 | Header `44` | 0, as on every retail `mode` (Halo 1's node list checksum was written here until converter version 38; one that fell in the map's address range read as a stray pointer and a fresh level refused the tag) | V |
@@ -477,12 +477,23 @@ Node names, hierarchy, default transforms, region and permutation names,
 LOD sections, marker names and instances (exact), and per-triangle indices
 all match.
 
+**Retail control** (V5, `retail_h2_bipeds_pose_sanely`, 05a). The Halo 2
+side of the round trip below is first held to retail data, so the round
+trip cannot share an assumption with the converter: a retail biped's rest
+frames times the inverse frames its `mode` stores, read as columns, are the
+identity on every node (within 5e-7; read as rows, as the converter wrote
+them until version 59, off by up to 2.0), and its own retail animations,
+decoded by `crates/tags` and composed the same way, stretch the mesh's
+triangle edges little (median 1.0, 99th percentile 1.5 to 2.4) and less
+than the same frames with conjugated rotations (2.6 to 3.5), so the decoded
+quaternions are used as they are.
+
 **Skinned round trip** (V5, `h1_disc_bipeds_skin`, converter version
-54). Each model and its graph are converted, built into a map and decoded
+59). Each model and its graph are converted, built into a map and decoded
 through `crates/tags`; every vertex is skinned the Halo 2 way (decoded
 position, node indices through the section node map, weights, the
 decoded jmad frame composed by Halo 2's rule, times the inverse frame the
-`mode` stores at node `+0x2c`) and compared with the Halo 1 vertex skinned
+`mode` stores at node `+0x2c`, read as the control reads retail's) and compared with the Halo 1 vertex skinned
 the Halo 1 way (its frame composed by Halo 1's rule, times Halo 1's own
 cached inverse). Bind pose, and the middle frame of about seven base
 animations per graph:
