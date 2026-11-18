@@ -157,6 +157,24 @@ pub mod h1 {
     pub const WEAPON_PALETTE: (usize, usize) = (0x27c, 0x30);
     pub const SCENERY: (usize, usize) = (0x210, 0x48);
     pub const SCENERY_PALETTE: (usize, usize) = (0x21c, 0x30);
+    /// Devices. **V** (`every_device_placement_lands`): on all ten levels
+    /// each block's elements tile it with these strides, every palette
+    /// index is in range, and every power and position group is -1 or a
+    /// device group.
+    pub const MACHINES: (usize, usize) = (0x294, 0x40);
+    pub const MACHINE_PALETTE: (usize, usize) = (0x2a0, 0x30);
+    pub const CONTROLS: (usize, usize) = (0x2ac, 0x40);
+    pub const CONTROL_PALETTE: (usize, usize) = (0x2b8, 0x30);
+    pub const LIGHT_FIXTURES: (usize, usize) = (0x2c4, 0x58);
+    pub const LIGHT_FIXTURE_PALETTE: (usize, usize) = (0x2d0, 0x30);
+    /// A device placement after the object fields: `i16` power group and
+    /// position group (indices into the device groups, -1 none), `u32`
+    /// device flags, then for machines and controls their own `u32` flags.
+    /// Halo 2 has the same fields in the same order ([`H2_DEVICE_FIELDS`]).
+    pub const DEVICE_POWER_GROUP: usize = 0x28;
+    pub const DEVICE_POSITION_GROUP: usize = 0x2a;
+    pub const DEVICE_FLAGS: usize = 0x2c;
+    pub const DEVICE_OWN_FLAGS: usize = 0x30;
     /// BSP switch trigger volumes: `i16` trigger volume, source BSP,
     /// destination BSP, one more. **S** (`h1_bsp_switch_volumes`): on all
     /// ten levels the only root block whose elements read so, between
@@ -540,44 +558,99 @@ fn put_block(root: &mut Block, at: u32, stride: usize, elements: Vec<Block>) {
     }
 }
 
-/// A placed kind: Halo 1 placements and palette, Halo 2 object type.
+/// Halo 2's device placement fields after the object fields (`+0x34`):
+/// the same as Halo 1's at `+0x28` ([`h1::DEVICE_POWER_GROUP`]), 12 bytes
+/// on. **V**: every machine placement on 01b, 03a, 05a and 08a and every
+/// control placement on 01b holds -1 or an index below the device group
+/// count at `+0x34` and `+0x36`, and device flags of 0 to 3 at `+0x38`.
+pub const H2_DEVICE_FIELDS: usize = 0x34;
+
+/// A placed kind: Halo 1 placements and palette and object type, Halo 2
+/// object type, and whether it is a device.
 struct Kind {
     label: &'static str,
     h1: (usize, usize),
     h1_palette: (usize, usize),
+    h1_type: i16,
     h2_type: u16,
+    device: Device,
 }
 
-const KINDS: [Kind; 5] = [
+#[derive(Clone, Copy, PartialEq)]
+enum Device {
+    No,
+    /// Machines and controls: groups, device flags and their own flags.
+    WithFlags,
+    /// Light fixtures (placed as machines): groups and device flags.
+    Fixture,
+}
+
+const KINDS: [Kind; 8] = [
     Kind {
         label: "weapons",
         h1: h1::WEAPONS,
         h1_palette: h1::WEAPON_PALETTE,
+        h1_type: 2,
         h2_type: 2,
+        device: Device::No,
     },
     Kind {
         label: "equipment",
         h1: h1::EQUIPMENT,
         h1_palette: h1::EQUIPMENT_PALETTE,
+        h1_type: 3,
         h2_type: 3,
+        device: Device::No,
     },
     Kind {
         label: "vehicles",
         h1: h1::VEHICLES,
         h1_palette: h1::VEHICLE_PALETTE,
+        h1_type: 1,
         h2_type: 1,
+        device: Device::No,
     },
     Kind {
         label: "scenery",
         h1: h1::SCENERY,
         h1_palette: h1::SCENERY_PALETTE,
+        h1_type: 6,
         h2_type: 6,
+        device: Device::No,
     },
     Kind {
         label: "bipeds",
         h1: h1::BIPEDS,
         h1_palette: h1::BIPED_PALETTE,
+        h1_type: 0,
         h2_type: 0,
+        device: Device::No,
+    },
+    Kind {
+        label: "machines",
+        h1: h1::MACHINES,
+        h1_palette: h1::MACHINE_PALETTE,
+        h1_type: 7,
+        h2_type: 7,
+        device: Device::WithFlags,
+    },
+    Kind {
+        label: "controls",
+        h1: h1::CONTROLS,
+        h1_palette: h1::CONTROL_PALETTE,
+        h1_type: 8,
+        h2_type: 8,
+        device: Device::WithFlags,
+    },
+    // Halo 2 has no lifi tags: fixtures join the machines (after them, in
+    // both the palette and the placements).
+    Kind {
+        label: "light fixtures",
+        h1: h1::LIGHT_FIXTURES,
+        h1_palette: h1::LIGHT_FIXTURE_PALETTE,
+        h1_type: 9,
+        h2_type: 7,
+        device: Device::Fixture,
     },
 ];
 
@@ -826,7 +899,21 @@ pub fn write(
         }
     }
     let placed = match objects {
-        Some(b) => place_objects(h1, set, b, &mut root, rep, &mut report.dropped)?,
+        Some(b) => {
+            // Device groups are written with the scripts' level data;
+            // without them a placement's group index would dangle.
+            let groups = opts.scripts.is_some() && !lean.leaves_out(crate::Lean::LevelData);
+            place_objects(
+                h1,
+                set,
+                b,
+                &mut root,
+                rep,
+                &mut report.dropped,
+                groups,
+                opts.devices,
+            )?
+        }
         None => HashMap::new(),
     };
     let h1_names = h1_block(h1, h1::OBJECT_NAMES)?;
@@ -838,7 +925,8 @@ pub fn write(
             b.bytes[31] = 0;
             let ty = i16_at(e, 0x20);
             let at = i16_at(e, 0x22);
-            let to = placed.get(&(ty, at)).copied().unwrap_or(-1);
+            // A light fixture's name names the machine it became.
+            let (ty, to) = placed.get(&(ty, at)).copied().unwrap_or((ty, -1));
             b.put_u16(0x20, ty as u16);
             b.put_u16(0x22, to as u16);
             b
@@ -1131,7 +1219,11 @@ fn retail_stand_in(set: &TagSet, tag: &h1map::Tag) -> Option<TagId> {
 
 /// Converts the palettes' objects, installs them, and writes the
 /// placements. Returns, per (Halo 1 object type, Halo 1 placement), the
-/// Halo 2 placement index.
+/// Halo 2 object type and placement index (a light fixture becomes a
+/// machine). `device_groups`: the level's device groups are written, so
+/// device placements may index them. `devices`: which devices are
+/// placed ([`crate::Devices`]).
+#[allow(clippy::too_many_arguments)]
 fn place_objects(
     h1: &H1Map,
     set: &mut TagSet,
@@ -1139,11 +1231,26 @@ fn place_objects(
     root: &mut Block,
     rep: &mut ScenarioReport,
     dropped: &mut Vec<String>,
-) -> Result<HashMap<(i16, i16), i16>> {
+    device_groups: bool,
+    devices: crate::Devices,
+) -> Result<HashMap<(i16, i16), (i16, i16)>> {
     let mut conv = h1objects::convert::Converter::new(h1, base);
     let mut palettes = Vec::new();
     for k in &KINDS {
         let mut pal = Vec::new();
+        let left_out = match k.device {
+            Device::No => false,
+            Device::Fixture => devices != crate::Devices::All,
+            Device::WithFlags => devices == crate::Devices::None,
+        };
+        if left_out {
+            let n = h1_block(h1, k.h1)?.len();
+            if n > 0 {
+                dropped.push(format!("{}: {n} left out to fit ({devices:?})", k.label));
+            }
+            palettes.push(pal);
+            continue;
+        }
         for e in h1_block(h1, k.h1_palette)? {
             let r = h1map::TagRef::read(e, 0).ok_or_else(|| invalid("palette reference"))?;
             let got = if r.id.is_none() {
@@ -1233,28 +1340,40 @@ fn place_objects(
 
     let mut placed = HashMap::new();
     let mut unique = 0u32;
+    let groups = if device_groups {
+        h1_block(h1, h1scripts::level::h1::DEVICE_GROUPS)?.len()
+    } else {
+        0
+    };
+    // Per Halo 2 type: palette entries, placements, and the kinds in them.
+    let mut blocks: Vec<(u16, Vec<Block>, Vec<Block>)> = Vec::new();
     for (k, pal) in KINDS.iter().zip(&palettes) {
+        let slot = match blocks.iter().position(|b| b.0 == k.h2_type) {
+            Some(i) => i,
+            None => {
+                blocks.push((k.h2_type, Vec::new(), Vec::new()));
+                blocks.len() - 1
+            }
+        };
+        let (_, entries, out) = &mut blocks[slot];
+        let first = entries.len();
         let ty = tags::object::OBJECT_TYPES[usize::from(k.h2_type)];
-        let (at, pal_at, stride) = ty.placement.expect("placeable");
-        let entries: Vec<Block> = pal
-            .iter()
-            .map(|p| {
-                let mut b = Block::zeroed(PALETTE);
-                b.tag_ref(0, p.as_ref().map_or(TagId::NULL, palette_id));
-                b
-            })
-            .collect();
+        let (_, _, stride) = ty.placement.expect("placeable");
+        entries.extend(pal.iter().map(|p| {
+            let mut b = Block::zeroed(PALETTE);
+            b.tag_ref(0, p.as_ref().map_or(TagId::NULL, palette_id));
+            b
+        }));
         let converted = pal.iter().filter(|p| p.is_some()).count();
-        put_block(root, u32::from(pal_at), PALETTE, entries);
         let src = h1_block(h1, k.h1)?;
-        let mut out = Vec::new();
+        let before = out.len();
         for (i, e) in src.iter().enumerate() {
             let p = i16_at(e, 0);
             if p < 0 || pal.get(p as usize).copied().flatten().is_none() {
                 continue;
             }
             let mut b = Block::zeroed(usize::from(stride));
-            b.put_u16(0, p as u16);
+            b.put_u16(0, (first + p as usize) as u16);
             b.put_u16(2, i16_at(e, 2) as u16);
             // Halo 1's "not placed automatically" (bit 0 of the u16 at +4)
             // is Halo 2's "not at start" (bit 0 of the u32 at +4): objects
@@ -1269,22 +1388,68 @@ fn place_objects(
             b.bytes[0x2e] = k.h2_type as u8;
             b.bytes[0x2f] = 1;
             b.put_u16(0x32, 0xffff);
-            placed.insert((k.h2_type as i16, i as i16), out.len() as i16);
+            if k.device != Device::No {
+                write_device(&mut b, e, k.device, groups);
+            }
+            placed.insert((k.h1_type, i as i16), (k.h2_type as i16, out.len() as i16));
             out.push(b);
         }
-        if out.len() < src.len() {
+        let n = out.len() - before;
+        if n < src.len() {
             dropped.push(format!(
                 "{}: {} of {} placements (their palette entry did not convert)",
                 k.label,
-                src.len() - out.len(),
+                src.len() - n,
                 src.len()
             ));
         }
         rep.placements
-            .push((k.label, out.len(), src.len(), converted, pal.len()));
+            .push((k.label, n, src.len(), converted, pal.len()));
+    }
+    for (h2_type, entries, out) in blocks {
+        let ty = tags::object::OBJECT_TYPES[usize::from(h2_type)];
+        let (at, pal_at, stride) = ty.placement.expect("placeable");
+        put_block(root, u32::from(pal_at), PALETTE, entries);
         put_block(root, u32::from(at), usize::from(stride), out);
     }
     Ok(placed)
+}
+
+/// The device fields of a placement ([`H2_DEVICE_FIELDS`]) from Halo 1's
+/// element `e` ([`h1::DEVICE_POWER_GROUP`]). A group index past the
+/// level's `groups` device groups is none (-1); none is on the disc.
+fn write_device(b: &mut Block, e: &[u8], device: Device, groups: usize) {
+    let group = |at| {
+        let g = i16_at(e, at);
+        if g >= 0 && (g as usize) < groups {
+            g
+        } else {
+            -1
+        }
+    };
+    b.put_u16(H2_DEVICE_FIELDS, group(h1::DEVICE_POWER_GROUP) as u16);
+    b.put_u16(
+        H2_DEVICE_FIELDS + 2,
+        group(h1::DEVICE_POSITION_GROUP) as u16,
+    );
+    b.put_u32(
+        H2_DEVICE_FIELDS + 4,
+        u32::from_le_bytes(
+            e[h1::DEVICE_FLAGS..h1::DEVICE_FLAGS + 4]
+                .try_into()
+                .unwrap(),
+        ),
+    );
+    if device == Device::WithFlags {
+        b.put_u32(
+            H2_DEVICE_FIELDS + 8,
+            u32::from_le_bytes(
+                e[h1::DEVICE_OWN_FLAGS..h1::DEVICE_OWN_FLAGS + 4]
+                    .try_into()
+                    .unwrap(),
+            ),
+        );
+    }
 }
 
 /// A Halo 1 trigger volume.

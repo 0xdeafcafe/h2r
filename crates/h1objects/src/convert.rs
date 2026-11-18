@@ -413,6 +413,13 @@ pub struct Tree {
 
 const LOCAL: u32 = 0xfffd_0000;
 
+/// The stand-in physics model of a rebuilt vehicle
+/// ([`crate::rebuild::sphere_physics`]): radius (world units), mass (kg),
+/// material. The sphere sits on the model origin (its centre one radius
+/// up), so a vehicle whose origin is on the floor stays put; a
+/// `hard_metal_thin_hum` global material (on the disc).
+pub const STAND_IN_SPHERE: (f32, f32, &str) = (0.05, 1000.0, "hard_metal_thin_hum");
+
 /// Stands for the `k`-th tag of a [`Tree`] until it is installed.
 pub fn local(k: usize) -> TagId {
     TagId(LOCAL | k as u32)
@@ -435,8 +442,24 @@ fn rewrite(b: &mut Block, ids: &[TagId]) {
 }
 
 impl Tree {
+    /// Adds `tag` as `name`, or `name_2`, `name_3`, ... when a tag of its
+    /// group already has that name: a map's tags are found by group and
+    /// name, so two would leave one unreachable. Halo 1 objects of two
+    /// groups can share a path (a10's `cryotube` is a `mach` and a `vehi`),
+    /// and each gets its own `hlmt`.
     fn push(&mut self, name: &str, tag: Converted) -> TagId {
-        self.tags.push((name.to_owned(), tag));
+        let taken = |n: &str| {
+            self.tags
+                .iter()
+                .any(|(m, t)| m == n && t.group == tag.group)
+        };
+        let mut unique = name.to_owned();
+        let mut k = 2;
+        while taken(&unique) {
+            unique = format!("{name}_{k}");
+            k += 1;
+        }
+        self.tags.push((unique, tag));
         local(self.tags.len() - 1)
     }
 
@@ -646,6 +669,7 @@ impl<'a> Converter<'a> {
             b"eqip" => self.equipment(tag)?,
             b"bipd" | b"vehi" => self.unit(tag)?,
             b"scen" => self.scenery(tag)?,
+            b"mach" | b"ctrl" | b"lifi" => self.device(tag)?,
             _ => return Err(Error::WrongGroup(tag.group.to_string(), *b"obje")),
         };
         self.done.insert(tag.id.0, id);
@@ -1688,14 +1712,49 @@ impl<'a> Converter<'a> {
         ))
     }
 
+    /// A Halo 1 machine, control or light fixture, from the `mach` or
+    /// `ctrl` definition ([`crate::rebuild::device`]); a light fixture is
+    /// a machine (Halo 2 has no `lifi` tags). There is no template path.
+    fn device(&mut self, tag: &Tag) -> Result<TagId> {
+        let dev = h1::Device::read(self.h1, tag)?;
+        let lifi = dev.machine.is_none() && dev.control.is_none();
+        let group = if dev.control.is_some() {
+            b"ctrl"
+        } else {
+            b"mach"
+        };
+        let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
+        rep.physics = Some("none (rebuilt devices borrow no phmo)".into());
+        let hlmt = self.model(&mut rep, &dev.object, None, &tag.name, true)?;
+        let predicted = self.predicted(&dev.object)?;
+        let root = crate::rebuild::device(&dev, hlmt, &predicted)?;
+        rep.no_home.push(
+            "devi sounds and effects (Halo 1 effe references): null; the device is silent".into(),
+        );
+        if lifi {
+            rep.no_home.push(
+                "lifi: built as a mach (platform); its light (the placement's colour and intensity) is not carried".into(),
+            );
+        }
+        self.tree.reports.push(rep);
+        Ok(self.tree.push(
+            &tag.name,
+            Converted {
+                group: FourCC(*group),
+                root,
+                raw: Vec::new(),
+            },
+        ))
+    }
+
     /// A Halo 1 vehicle no template row names, from the `vehi` definition
     /// ([`crate::rebuild::vehicle`]): a10's cryotube, chairs,
     /// fighterbomber and Halo ring. Before, these were dropped and their
     /// object names pointed nowhere.
     fn vehicle_rebuilt(&mut self, tag: &Tag, u: &Unit) -> Result<TagId> {
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs (turret role)");
-        rep.physics = Some("none (rebuilt vehicle borrows no phmo)".into());
         let hlmt = self.model(&mut rep, &u.object, None, &tag.name, true)?;
+        self.vehicle_physics(&mut rep, hlmt, &tag.name)?;
         let predicted = self.predicted(&u.object)?;
         let root = crate::rebuild::vehicle(&u.object, hlmt, &u.seats, &predicted)?;
         rep.no_home.push(format!(
@@ -1703,10 +1762,8 @@ impl<'a> Converter<'a> {
             u.seats.len(),
             u.references.iter().filter(|r| r.tag.is_some()).count()
         ));
-        if u.object.physics.is_some() {
-            rep.no_home
-                .push("phys (Halo 1 vehicle physics): no Halo 2 phmo is built".into());
-        }
+        rep.no_home
+            .push("coll/phys as Havok shapes: not built; the phmo is a stand-in sphere".into());
         self.tree.reports.push(rep);
         Ok(self.tree.push(
             &tag.name,
@@ -1716,6 +1773,53 @@ impl<'a> Converter<'a> {
                 raw: Vec::new(),
             },
         ))
+    }
+
+    /// Gives a vehicle's `hlmt` (a tree tag) the stand-in physics model
+    /// ([`crate::rebuild::sphere_physics`], [`STAND_IN_SPHERE`]) when it
+    /// has none: `vehicle_new` (`0x000eeb80`) refuses a vehicle whose model
+    /// has no physics model (`cmp [hlmt+0x24],-1` at `0x000eebcb`) and
+    /// `object_new` deletes it. A rebuilt vehicle never has one; a
+    /// templated one loses its template's when that reaches past the
+    /// converted nodes (fresh a10's `lifepod_atmosphere_entry`).
+    fn vehicle_physics(
+        &mut self,
+        rep: &mut ObjectReport,
+        hlmt: Option<TagId>,
+        name: &str,
+    ) -> Result<()> {
+        let Some(h) = hlmt.filter(|h| h.0 & 0xffff_0000 == LOCAL) else {
+            return Ok(());
+        };
+        let k = h.0 as usize & 0xffff;
+        let at = h2::HLMT_PHYSICS_MODEL as u32;
+        let root = &self.tree.tags[k].1.root;
+        let has = match root.fixups.iter().find(|f| f.offset == at) {
+            Some(f) => !matches!(f.kind, FixupKind::TagRef(TagId::NULL)),
+            None => {
+                let o = at as usize + 4;
+                root.bytes.len() >= o + 4 && root.bytes[o..o + 4] != [0xff; 4]
+            }
+        };
+        if has {
+            return Ok(());
+        }
+        let (radius, mass, material) = STAND_IN_SPHERE;
+        let phmo = self.tree.push(
+            name,
+            Converted {
+                group: FourCC(*b"phmo"),
+                root: crate::rebuild::sphere_physics(radius, [0.0, 0.0, radius], mass, material)?,
+                raw: Vec::new(),
+            },
+        );
+        let root = &mut self.tree.tags[k].1.root;
+        root.fixups.retain(|f| f.offset != at);
+        root.tag_ref(at, phmo);
+        rep.physics = Some(format!(
+            "stand-in: a {radius} wu sphere of {mass} kg on the origin (rebuild::sphere_physics); the model had none"
+        ));
+        Ok(())
     }
 
     /// The tree's tags of `group` that `b` references, in order, each once.
@@ -1794,6 +1898,13 @@ impl<'a> Converter<'a> {
                 )),
                 Err(e) => rep.no_home.push(format!("HUD: no health meter: {e}")),
             }
+        }
+        if &g == b"vehi" {
+            let hlmt = root.fixups.iter().find_map(|f| match f.kind {
+                FixupKind::TagRef(t) if f.offset == h2::MODEL as u32 && t != TagId::NULL => Some(t),
+                _ => None,
+            });
+            self.vehicle_physics(&mut rep, hlmt, &tag.name)?;
         }
         self.stopgaps(&mut rep, &tpl_root, &[h2::MODEL]);
         self.tree.reports.push(rep);

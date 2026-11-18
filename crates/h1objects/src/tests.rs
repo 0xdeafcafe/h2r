@@ -626,3 +626,124 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
         );
     }
 }
+
+#[test]
+fn device_times_become_rates_per_second() {
+    use crate::rebuild::{INSTANT_RATE, device_rates};
+    // a10's small door: power 2 s, accel 2 s; position 0.8 s, accel 0.2 s;
+    // nothing depowered.
+    let r = device_rates(&[2.0, 2.0, 0.8, 0.2, 0.0, 0.0]);
+    assert_eq!(r, [0.5, 0.5, 1.25, 5.0, 0.0, INSTANT_RATE]);
+}
+
+fn h1_device(group: &[u8; 4]) -> crate::h1::Device {
+    crate::h1::Device {
+        group: h1map::Group::new(group),
+        object: crate::h1::Object {
+            object_type: 7,
+            flags: 0,
+            bounding_radius: 1.5,
+            bounding_offset: [0.0, 0.0, 1.0],
+            model: None,
+            animation: None,
+            collision: None,
+            physics: None,
+            modifier_shader: None,
+            creation_effect: None,
+            attachments: Vec::new(),
+            widgets: Vec::new(),
+        },
+        flags: 1,
+        times: [0.0, 0.0, 4.0, 0.0, 0.0, 0.0],
+        delay_time: 0.5,
+        activation_radius: 2.6,
+        machine: (group == b"mach").then_some(crate::h1::Machine {
+            machine_type: 2,
+            flags: 3,
+            door_open_time: 1.5,
+            collision_response: 1,
+            elevator_node: 1,
+        }),
+        control: (group == b"ctrl").then_some(crate::h1::Control {
+            control_type: 1,
+            trigger: 0,
+            value: 0.0,
+        }),
+    }
+}
+
+#[test]
+fn rebuilt_devices_are_their_definitions() {
+    use crate::rebuild::{CONTROL_TYPE, FIXTURE_MACHINE_TYPE, MACHINE_TYPE, device};
+    use tags::defs::{self, Defs, Val};
+    let hlmt = map::TagId(0xe001_0002);
+    for (h1, h2, ty, machine_type) in [
+        (b"mach", b"mach", MACHINE_TYPE, Some(2)),
+        (b"lifi", b"mach", MACHINE_TYPE, Some(FIXTURE_MACHINE_TYPE)),
+        (b"ctrl", b"ctrl", CONTROL_TYPE, None),
+    ] {
+        let root = device(&h1_device(h1), Some(hlmt), &[]).unwrap();
+        let def = Defs::builtin().group(map::FourCC(*h2)).unwrap();
+        let got = defs::from_built(def, &root).unwrap();
+        let again = defs::to_built(def, &got, &mut |_| None).unwrap();
+        assert_eq!(again.fixups, root.fixups, "{}", map::FourCC(*h1));
+        assert_eq!(got.at("devi.obje.object_type"), Some(&Val::Enum(ty)));
+        assert_eq!(got.at("devi.position_rate"), Some(&Val::Float(0.25)));
+        assert_eq!(
+            got.at("devi.position_acceleration_rate"),
+            Some(&Val::Float(crate::rebuild::INSTANT_RATE))
+        );
+        assert_eq!(got.at("devi.activation_radius"), Some(&Val::Float(2.6)));
+        assert_eq!(got.at("devi.device_flags"), Some(&Val::Int(1)));
+        match machine_type {
+            Some(t) => assert_eq!(got.at("machine_type"), Some(&Val::Enum(t))),
+            None => assert_eq!(got.at("control_type"), Some(&Val::Int(1))),
+        }
+        if h1 == b"mach" {
+            assert_eq!(got.at("door_open_time"), Some(&Val::Float(1.5)));
+            assert_eq!(got.at("elevator_node"), Some(&Val::Int(1)));
+        }
+        assert!(
+            root.fixups
+                .iter()
+                .any(|f| f.offset == 0x34 && f.kind == map::build::FixupKind::TagRef(hlmt)),
+            "the model"
+        );
+    }
+}
+
+#[test]
+fn stand_in_physics_model_is_one_sphere_on_one_body() {
+    use tags::defs::{self, Defs, Val};
+    let root =
+        crate::rebuild::sphere_physics(0.05, [0.0, 0.0, 0.05], 1000.0, "hard_metal_thin_hum")
+            .unwrap();
+    let def = Defs::builtin().group(map::FourCC(*b"phmo")).unwrap();
+    let got = defs::from_built(def, &root).unwrap();
+    let again = defs::to_built(def, &got, &mut |_| None).unwrap();
+    assert_eq!(again.fixups.len(), root.fixups.len());
+    let Some(Val::Block(bodies)) = got.at("rigid_bodies") else {
+        panic!()
+    };
+    assert_eq!(bodies.len(), 1);
+    assert_eq!(bodies[0].get("shape_type"), Some(&Val::Int(0)), "a sphere");
+    assert_eq!(bodies[0].get("shape_index"), Some(&Val::Int(0)));
+    assert_eq!(bodies[0].get("node"), Some(&Val::Int(-1)));
+    let Some(Val::List(i)) = bodies[0].get("inertia_tensor_x") else {
+        panic!()
+    };
+    assert_eq!(i[0], Val::Float(0.4 * 1000.0 * 0.05 * 0.05));
+    let Some(Val::Block(spheres)) = got.at("spheres") else {
+        panic!()
+    };
+    assert_eq!(spheres.len(), 1);
+    assert_eq!(spheres[0].get("radius"), Some(&Val::Float(0.05)));
+    let Some(Val::Block(regions)) = got.at("regions") else {
+        panic!()
+    };
+    assert_eq!(regions.len(), 1, "the hlmt's physics region 0");
+    let Some(Val::Block(materials)) = got.at("materials") else {
+        panic!()
+    };
+    assert_eq!(materials.len(), 1, "the sphere's material 0");
+}

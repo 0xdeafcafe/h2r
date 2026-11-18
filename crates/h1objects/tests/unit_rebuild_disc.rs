@@ -284,7 +284,8 @@ fn a10_vehicles_without_templates_are_rebuilt() {
             assert_eq!(mode.map(|m| m.group), Some(FourCC(*b"mode")), "{}", t.name);
             for (path, group, h1_has) in [
                 ("collision_model", b"coll", u.object.collision.is_some()),
-                ("physics_model", b"phmo", false),
+                // vehicle_new refuses a model with none: the stand-in.
+                ("physics_model", b"phmo", true),
             ] {
                 let got = reference(&h, path).and_then(|x| local(&c.tree, x));
                 assert_eq!(got.is_some(), h1_has, "{}: {path}", t.name);
@@ -292,6 +293,16 @@ fn a10_vehicles_without_templates_are_rebuilt() {
                     assert_eq!(x.group, FourCC(*group));
                 }
             }
+            let phmo = reference(&h, "physics_model")
+                .and_then(|x| local(&c.tree, x))
+                .unwrap();
+            let pd = def(b"phmo");
+            let p = defs::from_built(pd, &phmo.root).expect("phmo reads");
+            let again = defs::to_built(pd, &p, &mut |_| None).unwrap();
+            assert_eq!(defs::from_built(pd, &again).unwrap(), p, "{}: phmo", t.name);
+            let mut pinned = Vec::new();
+            pinned_blocks(pd, &p, "phmo", &mut pinned);
+            assert!(pinned.is_empty(), "{}: phmo pinned {pinned:?}", t.name);
             if u.object.animation.is_some() {
                 let a = match h.at("animation") {
                     Some(Val::Datum(Target::Id(id))) => local(&c.tree, *id),

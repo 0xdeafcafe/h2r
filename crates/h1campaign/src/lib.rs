@@ -178,6 +178,33 @@ pub struct Options<'a> {
     /// level is written fresh: built from scratch ([`scratch`]), or the
     /// base pruned when that fails ([`KEEP`], `h1convert::fresh`).
     pub pinned: bool,
+    /// Which of Halo 1's devices are placed. `convert` places fewer when a
+    /// level is still over a bound with everything else left out (pinned
+    /// b40 and d40).
+    pub devices: Devices,
+}
+
+/// Which of Halo 1's devices a conversion places.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Devices {
+    /// Machines, controls and light fixtures (as machines).
+    #[default]
+    All,
+    /// Machines and controls: no light fixtures (Halo 2 has no `lifi`, so
+    /// they are lamp models that give no light).
+    NoLightFixtures,
+    /// None.
+    None,
+}
+
+impl Devices {
+    fn fewer(self) -> Option<Self> {
+        match self {
+            Self::All => Some(Self::NoLightFixtures),
+            Self::NoLightFixtures => Some(Self::None),
+            Self::None => None,
+        }
+    }
 }
 
 impl Default for Options<'_> {
@@ -192,6 +219,7 @@ impl Default for Options<'_> {
             cutscene_data: true,
             cutscene_graphs: true,
             pinned: false,
+            devices: Devices::All,
         }
     }
 }
@@ -405,7 +433,8 @@ pub fn convert<R: Read + Seek>(h1: &H1Map, base: &mut Map<R>, opts: &Options) ->
     // the clusters' background sounds (an entry left out stays in the
     // palette, silent), down to none; then without the cutscenes'
     // animation graphs (their animation data is raw in the file), which
-    // the cutscenes need to play.
+    // the cutscenes need to play. A level still over either bound places
+    // fewer devices ([`Devices`]): no light fixtures, then none.
     let mut lean = Lean::Everything;
     let mut music = u64::MAX;
     let mut ambience = u64::MAX;
@@ -417,6 +446,13 @@ pub fn convert<R: Read + Seek>(h1: &H1Map, base: &mut Map<R>, opts: &Options) ->
             Err(Error::TagMemory { need, max, .. }) if lean.next().is_some() => {
                 lean = lean.next().expect("checked");
                 retries.push(format!("tag memory {need:#x} over {max:#x}: lean {lean:?}"));
+            }
+            Err(Error::TagMemory { need, max, .. }) if opts.devices.fewer().is_some() => {
+                opts.devices = opts.devices.fewer().expect("checked");
+                retries.push(format!(
+                    "tag memory {need:#x} over {max:#x} at the end of the ladder: devices {:?}",
+                    opts.devices
+                ));
             }
             Err(Error::FileSize {
                 need,
@@ -444,6 +480,13 @@ pub fn convert<R: Read + Seek>(h1: &H1Map, base: &mut Map<R>, opts: &Options) ->
                 opts.cutscene_graphs = false;
                 retries.push(format!(
                     "file {need:#x} over {max:#x} without music or ambience: no cutscene animation graphs"
+                ));
+            }
+            Err(Error::FileSize { need, max, .. }) if opts.devices.fewer().is_some() => {
+                opts.devices = opts.devices.fewer().expect("checked");
+                retries.push(format!(
+                    "file {need:#x} over {max:#x} without music, ambience or cutscene graphs: devices {:?}",
+                    opts.devices
                 ));
             }
             Ok(mut done) => {

@@ -113,9 +113,10 @@ Each step is proven with tests; the user plays the result.
    every BSP each); a30 ran headless in the game, and with round 2's
    three-BSP cap so did a10, b30, c10, c20, c40, d20 and d40.
 4. **Objects.** Scenery, machines and doors, weapons, vehicles, equipment.
-   **Built for weapons, equipment, vehicles with a template, scenery,
-   placed bipeds, and the cyborg as the player** (§9); machines and doors
-   not yet.
+   **Built for weapons, equipment, vehicles, scenery, placed bipeds,
+   the cyborg as the player, and machines, controls and light fixtures**
+   (§9; devices since converter version 38, from the `mach` and `ctrl`
+   definitions, [tag-definitions.md](../formats/tag-definitions.md)).
 5. **AI.** Characters, encounters to squads, generated pathfinding.
    **Built** (§9): `h1ai` on retail Halo 2 characters, pathfinding from
    `crates/pathfind` in every converted BSP.
@@ -378,7 +379,7 @@ What each layer writes, from the base map up:
 | Sky | Halo 1's skies (`h1sky`), every cluster on the first; the model's materials name the base sky's shader, never NONE (`0x1bbf0` draws NONE, a null read in `0x16b90`; h1-multiplayer.md) | |
 | Scenario | The base `scnr` relocated as a block tree, replaced fields emptied. One BSP descriptor per Halo 1 BSP (`FixupKind::Bsp`, its `sbsp` and `ltmp`), so `switch_bsp`, zone and placement BSP indices keep Halo 1's meaning. The two root blocks every retail map holds one element per BSP of (survey `per_bsp_scenario_blocks`): cluster data `+0x290` (per cluster its background sound and sound environment, as the structure's cluster `+0x72`/`+0x74` names them, and the cluster's centroid, and the BSP's checksum `sbsp+0x08`) and `+0x388` (no points). BSP switch trigger volumes `+0x130`: Halo 1's (`scnr+0x39c`, 8 bytes, survey `h1_bsp_switch_volumes`) on its converted volumes | The base's own BSP switch volumes |
 | Player | The level's starting locations, each on the base's first element. The cyborg is converted and set as the campaign players' unit (`matg +0x138` elements 0 and 1, `h1convert::globals::set_player_unit`); Halo 1 health follows from the map name (`boot::health`) | |
-| Objects | Every base placement removed. Weapons, equipment, vehicles, scenery and placed bipeds from the level's palettes through `h1objects` (palettes keep Halo 1's order, a null entry for one that doesn't convert; templates in h1-objects.md), placements with unique IDs `0x4831xxxx`, origin BSP -1, source 1. Object names are Halo 1's, each pointing at its converted placement or -1. A palette entry whose template only a donor brought places the retail object itself. Halo 1's "not placed automatically" (bit 0 of the `u16` at `+4`) is written as Halo 2's "not at start" (bit 0 of the `u32` at `+4`), so cutscene casts and props wait for the scripts that create them (a10: 67 of 107 bipeds, 51 of 56 vehicles, 92 of 274 scenery) | Palette entries with no template: over shield and camouflage (no powerup on 05a), b30's falling box. Vehicles with no template (a10's cryotube, chairs, fighterbomber and Halo ring) are built from the `vehi` definition as turrets since converter version 33 (tag-definitions.md) |
+| Objects | Every base placement removed. Weapons, equipment, vehicles, scenery, placed bipeds and devices from the level's palettes through `h1objects` (palettes keep Halo 1's order, a null entry for one that doesn't convert; templates in h1-objects.md), placements with unique IDs `0x4831xxxx`, origin BSP -1, source 1. Object names are Halo 1's, each pointing at its converted placement or -1. A palette entry whose template only a donor brought places the retail object itself. Halo 1's "not placed automatically" (bit 0 of the `u16` at `+4`) is written as Halo 2's "not at start" (bit 0 of the `u32` at `+4`), so cutscene casts and props wait for the scripts that create them (a10: 67 of 107 bipeds, 51 of 56 vehicles, 92 of 274 scenery) | Palette entries with no template: over shield and camouflage (no powerup on 05a), b30's falling box. Vehicles with no template (a10's cryotube, chairs, fighterbomber and Halo ring) are built from the `vehi` definition as turrets since converter version 33, with a stand-in sphere physics model since version 38 so `vehicle_new` creates them (tag-definitions.md). Machines, controls and light fixtures (as machines) are placed since version 38 with their power and position device groups and flags; devices have no physics model, so a closed door may not block a player, and fixtures give no light |
 | Trigger volumes | The base's parked (`h1convert::convert::PARKED`, object name -1); the level's appended after them | |
 | Donors | `h1campaign::donor`: each character `h1ai`'s table names, copied whole from the first donor that has it (`03a_oldmombasa`, `04b_floodlab`, `06a_sentinelwalls`) by `h1sounds::transplant`: the tag tree, its raw, and its sounds' gestalt entries | The sentinel (its animation graph does not relocate) and the crewman (no donor) |
 | AI | `h1ai`: squad groups, squads, zones, orders, character palette. Characters the base lacks and no donor brought fall back to the marine (marine kinds) or the folder's first | Sentinels: `none` |
@@ -556,6 +557,11 @@ without (`Options::cutscene_data` off):
 | d20 | `0x3ca00` | 20 (21,412) | `0xbb1000` | `0xbab000` | `0xecc0400` |
 | d40 | none (file size; needs `0x1baa00`) | 11 | `0xbed000` | `0xbea000` | `0x11787000` |
 
+Since converter version 38 places devices, pinned b40 (tag memory,
+`0xc23000`) and pinned d40 (the file, `0x117b9800` bytes, with no music,
+ambience or cutscene graphs) place none (`Devices::None`); fresh b40 and
+d40 keep everything.
+
 a10's jump (`0x7f000`) is its scenario no longer fitting the base
 scenario's old range and being appended (`0xb512c` bytes). The lean
 ladder (`h1campaign::Lean`) drops the graphs and recordings
@@ -698,14 +704,21 @@ The bound is `0xc24000`; the base alone is `0xaed000`.
   a10, pinned and fresh, is placed and guarded;
   `a10_cryotubes_are_placed_and_built_from_their_definition` checks the
   cryotubes' placements and tag; `a10_scripted_vehicles_can_be_created`
-  (red until the rebuilt vehicles get a physics model) checks every
-  vehicle palette entry's model has one.
+  checks every vehicle palette entry's model has one. Since converter
+  version 38 a vehicle whose model has none (the rebuilt ones, and a
+  templated one whose template's physics reaches past the converted
+  nodes, as fresh a10's lifepod) gets a stand-in sphere
+  (tag-definitions.md, Vehicles with no template), so `vehicle_new`
+  creates it.
 - **b40's level data.** b40 is at the tag memory bound. A level over
   it is converted again leaner (`h1campaign::convert`, `Lean`), dropping
   in turn: the empty squads kept for their names (`EmptySquads`), the
   seat table (`SeatTable`), Halo 1's textures on object models
   (`ObjectTextures`), the music (`Music`), the cutscenes' graphs and
-  recordings (`CutsceneData`), the level data (`LevelData`). b40 still
+  recordings (`CutsceneData`), the level data (`LevelData`). A level
+  still over this bound or the file's (below) places fewer devices
+  (`Options::devices`): no light fixtures (lamp models that give no
+  light in Halo 2), then none. b40 still
   converts only without its level data (`0xc22000` of `0xc24000`): its
   74 calls naming a flag, camera point, title or device group are
   stubbed (the insertion's teleports and camera moves among them), and

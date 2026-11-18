@@ -328,7 +328,7 @@ retail compiler writes them; literals keep their source type.
   read). With converter version 33 a10 still faulted there: the rebuilt
   cryotube is placed but never created, because `vehicle_new`
   (`0x000eeb80`) refuses a model with no physics model (campaigns.md,
-  Units opened or closed).
+  Units opened or closed; version 38 gives it a stand-in one).
 - **Cutscenes**: `compile_with(.., Cutscenes::Skip, ..)` compiles every call
   of the level's `cinematic_skip_start` script as `false` (Halo 1's path
   after a skip) and wakes a10's `fast_setup` where it wakes
