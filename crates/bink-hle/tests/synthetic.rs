@@ -360,6 +360,7 @@ fn mp4_source_without_a_manifest_skips() {
             fps_num: 30,
             fps_den: 1,
         },
+        audio: None,
     });
     let src = Mp4Source::new(&dir, decoder);
     assert!(src.open("intro_60").is_none(), "not transcoded: no stream");
@@ -375,6 +376,7 @@ fn mp4_source_without_a_manifest_skips() {
                         fps_num: 30,
                         fps_den: 1,
                     },
+                    audio: None,
                 }),
             ))),
             c,
@@ -553,4 +555,488 @@ fn arena_never_adopts_existing_memory_inside_the_range() {
     assert_ne!(h, 0);
     assert_eq!(hle.arena(), Some(HLE_RESERVED.start + 0x1000));
     assert_eq!(w.u32(HLE_RESERVED.start), 0xdeca_fbad);
+}
+
+// --- installed movies, sound, the wrapper's view ------------------------
+
+use audio::Mixer;
+use bink_hle::{
+    AUDIO_STALL_MS, AudioInfo, DiscMovie, MixerAudio, MovieAudioOut, MovieDecoder, MovieVoice,
+    Selection, TranscodedSource, select, synthetic_audio_frames, synthetic_sample,
+};
+use std::sync::Mutex;
+
+const RATE: u32 = 44_100;
+
+fn synthetic(width: u32, height: u32, frames: u32, audio: bool) -> Arc<SyntheticDecoder> {
+    Arc::new(SyntheticDecoder {
+        info: StreamInfo {
+            width,
+            height,
+            frames,
+            fps_num: 30000,
+            fps_den: 1001,
+        },
+        audio: audio.then_some(AudioInfo {
+            sample_rate: RATE,
+            channels: 2,
+        }),
+    })
+}
+
+/// Any name opens the synthetic stream.
+struct Any(Arc<SyntheticDecoder>);
+impl MovieSource for Any {
+    fn open(&self, _: &str) -> Option<Box<dyn MovieStream>> {
+        self.0.open(std::path::Path::new("synthetic"))
+    }
+}
+
+/// `MixerAudio` with what it queued and played visible to the test.
+struct Counting {
+    inner: MixerAudio,
+    played: Arc<AtomicU64>,
+    queued: Arc<AtomicU64>,
+}
+struct CountingVoice {
+    inner: Box<dyn MovieVoice>,
+    played: Arc<AtomicU64>,
+    queued: Arc<AtomicU64>,
+}
+impl MovieAudioOut for Counting {
+    fn open(&self, info: AudioInfo) -> Option<Box<dyn MovieVoice>> {
+        assert_eq!(
+            info,
+            AudioInfo {
+                sample_rate: RATE,
+                channels: 2
+            }
+        );
+        self.played.store(0, Ordering::SeqCst);
+        self.queued.store(0, Ordering::SeqCst);
+        Some(Box::new(CountingVoice {
+            inner: self.inner.open(info)?,
+            played: Arc::clone(&self.played),
+            queued: Arc::clone(&self.queued),
+        }))
+    }
+}
+impl MovieVoice for CountingVoice {
+    fn queue(&mut self, pcm: &[i16]) -> bool {
+        self.queued
+            .fetch_add(pcm.len() as u64 / 2, Ordering::SeqCst);
+        self.inner.queue(pcm)
+    }
+    fn played_frames(&mut self) -> u64 {
+        let n = self.inner.played_frames();
+        self.played.store(n, Ordering::SeqCst);
+        n
+    }
+    fn flush(&mut self) {
+        self.inner.flush()
+    }
+}
+
+/// The game's mixer, rendered by hand as the audio thread would.
+struct Sound {
+    mixer: Arc<Mutex<Mixer>>,
+    played: Arc<AtomicU64>,
+    queued: Arc<AtomicU64>,
+}
+impl Sound {
+    fn new() -> (Self, Arc<dyn MovieAudioOut>) {
+        let mixer = Arc::new(Mutex::new(Mixer::new(48_000)));
+        let played = Arc::new(AtomicU64::new(0));
+        let queued = Arc::new(AtomicU64::new(0));
+        let out = Arc::new(Counting {
+            inner: MixerAudio::new(Arc::clone(&mixer)),
+            played: Arc::clone(&played),
+            queued: Arc::clone(&queued),
+        });
+        (
+            Self {
+                mixer,
+                played,
+                queued,
+            },
+            out,
+        )
+    }
+    /// Render `ms` of 48 kHz stereo output.
+    fn render(&self, ms: u32) -> Vec<f32> {
+        let mut out = vec![0.0; 48 * ms as usize * 2];
+        self.mixer.lock().unwrap().render(&mut out);
+        out
+    }
+    fn streams(&self) -> usize {
+        self.mixer.lock().unwrap().stream_count()
+    }
+}
+
+/// What the engine's wrapper does around the Bink API (docs/audio/bink-hle.md
+/// "The engine's movie wrapper"): MovieStart opens and blits the first
+/// frame; each tick asks BinkWait and, when a frame is due, runs the decode
+/// and blit (`0x1568d0`: DoFrame, NextFrame, lock, CopyToBuffer); the
+/// service (`0x155f80`) finishes on `FrameNum == Frames` or a skip button,
+/// and the stop path closes the handle.
+struct Wrapper {
+    h: u32,
+    dst: u32,
+    pitch: u32,
+    height: u32,
+    finished: bool,
+    /// The frame index of each blitted picture (byte 2 of every synthetic
+    /// pixel).
+    shown: Vec<u8>,
+}
+impl Wrapper {
+    fn start(w: &mut World, path: &str, dst: u32, pitch: u32, height: u32) -> Option<Self> {
+        w.put_str(SCRATCH, path);
+        let (h, _) = w.call(BINK_OPEN, &[SCRATCH, 0]);
+        if h == 0 {
+            return None;
+        }
+        let mut me = Self {
+            h,
+            dst,
+            pitch,
+            height,
+            finished: false,
+            shown: Vec::new(),
+        };
+        me.blit(w);
+        Some(me)
+    }
+    fn blit(&mut self, w: &mut World) {
+        w.call(BINK_DO_FRAME, &[self.h]);
+        w.call(BINK_NEXT_FRAME, &[self.h]);
+        let r = w.call(
+            BINK_COPY_TO_BUFFER,
+            &[self.h, self.dst, self.pitch, self.height, 0, 0, 0x8000_0003],
+        );
+        assert_eq!(r, (0, 0), "copy wrote pixels and popped its arguments");
+        self.shown.push(w.bytes(self.dst + 2, 1)[0]);
+    }
+    /// One engine tick; `skip` is the service's button poll.
+    fn tick(&mut self, w: &mut World, skip: bool) {
+        if self.finished {
+            return;
+        }
+        if w.call(BINK_WAIT, &[self.h]).0 == 0 {
+            self.blit(w);
+        }
+        let (frame, frames) = (w.u32(self.h + 0x0c), w.u32(self.h + 0x08));
+        if frame == frames || skip {
+            self.finished = true;
+            assert_eq!(w.call(BINK_CLOSE, &[self.h]), (0, 0));
+        }
+    }
+}
+
+fn write_manifest(dir: &std::path::Path, movies: &[(&str, u64)]) {
+    let mut m = movies::Manifest::default();
+    for (name, size) in movies {
+        let out = format!("{name} synthetic output");
+        std::fs::write(dir.join(format!("{name}.mov")), &out).unwrap();
+        m.upsert(movies::MovieEntry {
+            source_name: format!("/bink/{name}.bik"),
+            source_size: *size,
+            source_sha256: "ab".repeat(32),
+            output_name: format!("{name}.mov"),
+            output_size: out.len() as u64,
+            duration_secs: 1.0,
+            ffmpeg_version: "ffmpeg version test".into(),
+            settings: "test".into(),
+        });
+    }
+    std::fs::write(dir.join(movies::MANIFEST_NAME), m.to_json()).unwrap();
+}
+
+#[test]
+fn mode_is_picked_from_what_is_installed() {
+    let dir = std::env::temp_dir().join(format!("bink-hle-select-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let disc: Vec<DiscMovie> = [("attract_60", 10), ("credits_60", 20), ("intro_60", 30)]
+        .iter()
+        .map(|(n, s)| DiscMovie {
+            path: format!("/bink/{n}.bik"),
+            size: *s,
+        })
+        .collect();
+    let decoder = synthetic(4, 2, 3, false);
+    let mode = |sel: &Selection| {
+        let (_, _, _, mode) = world(|c| BinkHle::with_clock(sel.source(decoder.clone()), c));
+        mode
+    };
+
+    // Off: no directory at all.
+    let off = select(None, &disc, true);
+    assert_eq!(mode(&off), Mode::Skip);
+    assert!(off.to_string().starts_with("skip (off"), "{off}");
+
+    // None installed.
+    let none = select(Some(&dir), &disc, true);
+    assert!(matches!(none, Selection::NoneInstalled(_)));
+    assert_eq!(mode(&none), Mode::Skip);
+    assert!(
+        none.to_string().starts_with("skip (none installed"),
+        "{none}"
+    );
+
+    // Current: all three.
+    write_manifest(
+        &dir,
+        &[("attract_60", 10), ("credits_60", 20), ("intro_60", 30)],
+    );
+    let current = select(Some(&dir), &disc, true);
+    assert!(current.is_playback());
+    assert!(
+        current.to_string().starts_with("playback (3 transcoded"),
+        "{current}"
+    );
+    let (mut w, hle, _, playing) =
+        world(|c| BinkHle::with_clock(current.source(decoder.clone()), c));
+    assert_eq!(playing, Mode::Playback);
+    w.put_str(SCRATCH, "d:\\bink\\intro_60.bik");
+    assert_ne!(
+        w.call(BINK_OPEN, &[SCRATCH, 0]).0,
+        0,
+        "a current movie opens"
+    );
+    assert!(hle.requests()[0].played);
+    // No decoder on this platform: skip even with movies installed.
+    let nodec = select(Some(&dir), &disc, false);
+    assert_eq!(nodec, Selection::NoDecoder);
+    assert_eq!(mode(&nodec), Mode::Skip);
+
+    // Stale: transcoded from another disc (every size differs).
+    write_manifest(
+        &dir,
+        &[("attract_60", 11), ("credits_60", 21), ("intro_60", 31)],
+    );
+    let stale = select(Some(&dir), &disc, true);
+    assert!(matches!(stale, Selection::Stale(_)));
+    assert_eq!(mode(&stale), Mode::Skip);
+    assert!(stale.to_string().starts_with("skip (stale"), "{stale}");
+
+    // Partly stale: only the current movie is offered; the stale one is a
+    // clean NULL from BinkOpen (the wrapper's failed-open path).
+    write_manifest(&dir, &[("attract_60", 11), ("intro_60", 30)]);
+    let partial = select(Some(&dir), &disc, true);
+    assert_eq!(
+        partial,
+        Selection::Playback {
+            dir: dir.clone(),
+            names: vec!["intro_60".into()]
+        }
+    );
+    let (mut w, _, _, _) = world(|c| BinkHle::with_clock(partial.source(decoder.clone()), c));
+    w.put_str(SCRATCH, "d:\\bink\\attract_60.bik");
+    assert_eq!(w.call(BINK_OPEN, &[SCRATCH, 0]), (0, 0));
+    w.put_str(SCRATCH, "d:\\bink\\intro_60.bik");
+    assert_ne!(w.call(BINK_OPEN, &[SCRATCH, 0]).0, 0);
+    // The source alone honours the same list.
+    let only = TranscodedSource::new(&dir, decoder.clone()).only(["INTRO_60"]);
+    assert!(only.open("intro_60").is_some());
+    assert!(only.open("attract_60").is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn frames_reach_the_locked_texture_and_mark_its_pages_written() {
+    // The wrapper locks a linear 32-bit texture and hands its address and
+    // pitch to CopyToBuffer. D3D learns about the new texels from the
+    // runtime's write watch, as for any guest store.
+    const PHYS: u32 = 0x03f0_0000;
+    const TEX: u32 = 0x8000_0000 | PHYS;
+    let (w_, h_, pitch) = (16u32, 8u32, 16 * 4 + 32); // padded rows
+    let (mut w, _, _, _) =
+        world(|c| BinkHle::with_clock(Some(Arc::new(Any(synthetic(w_, h_, 5, false)))), c));
+    let id = {
+        let mut m = w.ctx.memory();
+        m.map(TEX, 0x2000, PHYS, Permissions::RW).unwrap();
+        let id = m.subscribe_writes("test d3d");
+        m.watch_writes(id, TEX, 0x2000).unwrap();
+        assert!(m.take_dirty(id).unwrap().is_empty());
+        id
+    };
+    let mut wrap = Wrapper::start(&mut w, "d:\\bink\\intro_60.bik", TEX, pitch, h_).unwrap();
+    let dirty = w.ctx.memory().take_dirty(id).unwrap();
+    assert_eq!(dirty.len(), 1, "{dirty:x?}");
+    assert_eq!((dirty[0].addr, dirty[0].len), (TEX, 0x1000));
+    // Every row of frame 0, at the texture's pitch; the padding untouched.
+    for y in 0..h_ {
+        let row = w.bytes(TEX + y * pitch, pitch as usize);
+        for x in 0..w_ as usize {
+            assert_eq!(
+                &row[x * 4..x * 4 + 4],
+                &[x as u8, y as u8, 0, 0xff],
+                "({x},{y})"
+            );
+        }
+        assert!(
+            row[w_ as usize * 4..].iter().all(|b| *b == 0),
+            "row {y} padding"
+        );
+    }
+    // The next due frame replaces it and dirties the page again.
+    w.clock.0.fetch_add(34, Ordering::SeqCst);
+    wrap.tick(&mut w, false);
+    assert_eq!(wrap.shown, [0, 1]);
+    assert_eq!(w.bytes(TEX, 4), [4, 0, 1, 0xff]);
+    assert_eq!(w.ctx.memory().take_dirty(id).unwrap().len(), 1);
+}
+
+#[test]
+fn the_wrapper_sees_the_end_of_the_movie_and_closes_cleanly() {
+    let (sound, out) = Sound::new();
+    let frames = 12;
+    let (mut w, hle, _, _) = world(|c| {
+        let hle = BinkHle::with_clock(Some(Arc::new(Any(synthetic(4, 2, frames, true)))), c);
+        hle.set_audio_out(out);
+        hle
+    });
+    let dst = SCRATCH + 0x4000;
+    let mut wrap = Wrapper::start(&mut w, "d:\\bink\\credits_60.bik", dst, 16, 2).unwrap();
+    assert_eq!(
+        sound.streams(),
+        1,
+        "the movie's voice is in the game's mixer"
+    );
+    // 30 ms ticks with 30 ms of sound rendered between them, as a running
+    // game would; the wall clock moves too.
+    let mut ticks = 0;
+    while !wrap.finished {
+        sound.render(30);
+        w.clock.0.fetch_add(30, Ordering::SeqCst);
+        wrap.tick(&mut w, false);
+        ticks += 1;
+        assert!(ticks < 100, "never finished: shown {:?}", wrap.shown);
+    }
+    // Every frame once, in order, until FrameNum == Frames ended it. The
+    // wrapper blits (DoFrame, NextFrame, Copy) before its service checks
+    // `FrameNum == Frames` (0x15601c), so it stops after the picture before
+    // the last one, as with the original player.
+    assert_eq!(wrap.shown, (0..frames as u8 - 1).collect::<Vec<_>>());
+    // 11 pictures at 29.97 fps is ~370 ms: about 12 ticks of 30 ms.
+    assert!((11..=15).contains(&ticks), "{ticks} ticks");
+    assert_eq!(hle.open_streams(), 0);
+    assert_eq!(sound.streams(), 0, "closing removed the voice");
+    assert_eq!(w.u32(wrap.h + 0x08), 0, "HBINK cleared");
+    // The next movie starts from a clean slate.
+    let again = Wrapper::start(&mut w, "d:\\bink\\attract_60.bik", dst, 16, 2).unwrap();
+    assert_eq!(again.shown, [0]);
+    assert_eq!(w.u32(again.h + 0x0c), 2);
+    assert_eq!(sound.streams(), 1);
+}
+
+#[test]
+fn a_skip_mid_movie_closes_cleanly() {
+    let (sound, out) = Sound::new();
+    let (mut w, hle, _, _) = world(|c| {
+        let hle = BinkHle::with_clock(Some(Arc::new(Any(synthetic(4, 2, 300, true)))), c);
+        hle.set_audio_out(out);
+        hle
+    });
+    let dst = SCRATCH + 0x4000;
+    let mut wrap = Wrapper::start(&mut w, "d:\\bink\\intro_60.bik", dst, 16, 2).unwrap();
+    for _ in 0..10 {
+        sound.render(33);
+        w.clock.0.fetch_add(33, Ordering::SeqCst);
+        wrap.tick(&mut w, false);
+    }
+    assert!(wrap.shown.len() >= 9, "{:?}", wrap.shown);
+    assert!(sound.played.load(Ordering::SeqCst) > 0);
+    // A button: the service stops the movie at once.
+    assert!(w.u32(wrap.h + 0x0c) < 300);
+    wrap.tick(&mut w, true);
+    assert!(wrap.finished);
+    assert_eq!(hle.open_streams(), 0);
+    assert_eq!(sound.streams(), 0, "the voice is gone, nothing left queued");
+    assert!(
+        sound.render(50).iter().all(|s| *s == 0.0),
+        "silence after the skip"
+    );
+    // Calls a late tick could still make on the old handle do nothing.
+    let h = wrap.h;
+    assert_eq!(w.call(BINK_WAIT, &[h]), (0, 0));
+    assert_eq!(w.call(BINK_DO_FRAME, &[h]), (0, 0));
+    assert_eq!(w.call(BINK_NEXT_FRAME, &[h]), (0, 0));
+    assert_eq!(w.call(BINK_COPY_TO_BUFFER, &[h, dst, 16, 2, 0, 0, 3]).0, 1);
+    assert_eq!(w.call(BINK_CLOSE, &[h]), (0, 0));
+    // The handle is reused for the next movie, from its first frame and
+    // the start of its sound.
+    let next = Wrapper::start(&mut w, "d:\\bink\\attract_60.bik", dst, 16, 2).unwrap();
+    assert_eq!(next.h, h);
+    assert_eq!(next.shown, [0]);
+    assert_eq!(sound.played.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn sound_plays_at_the_movie_rate_through_the_mixer_and_paces_the_video() {
+    let (sound, out) = Sound::new();
+    let movie = synthetic(4, 2, 150, true); // ~5 s
+    let (mut w, _, _, _) = world(|c| {
+        let hle = BinkHle::with_clock(Some(Arc::new(Any(movie.clone()))), c);
+        hle.set_audio_out(out);
+        hle
+    });
+    w.put_str(SCRATCH, "intro_60.bik");
+    let (h, _) = w.call(BINK_OPEN, &[SCRATCH, 0]);
+    // Opening queues sound ahead, starting at the first sample.
+    let primed = sound.queued.load(Ordering::SeqCst);
+    assert!(
+        (RATE as u64 * 4 / 10..=RATE as u64 * 6 / 10).contains(&primed),
+        "{primed} frames queued"
+    );
+    // One second of output in the audio thread's 5 ms periods, with the
+    // game polling BinkWait every 10 ms. The wall clock stands still: only
+    // the sound moves the movie.
+    let mut out = Vec::new();
+    for i in 0..200 {
+        out.extend(sound.render(5));
+        if i % 2 == 1 {
+            w.call(BINK_WAIT, &[h]);
+        }
+    }
+    let played = sound.played.load(Ordering::SeqCst);
+    // 1 s at 44.1 kHz, less at most the 10 ms packet still in flight.
+    assert!(
+        (RATE as u64 - 441..=RATE as u64).contains(&played),
+        "{played} frames played in 1 s"
+    );
+    // It is the movie's track, not silence (resampled to 48 kHz).
+    let peak = out.iter().fold(0f32, |m, s| m.max(s.abs()));
+    assert!(peak > 0.1, "peak {peak}");
+    assert_ne!(synthetic_sample(0, 1), synthetic_sample(0, 0));
+    // The movie clock is ~1000 ms: frame 30 (967 ms) is due, frame 32
+    // (1034 ms) is not.
+    let at = |w: &mut World, n: u32| {
+        w.ctx.memory().set_u32(h + 0x0c, n).unwrap();
+        w.call(BINK_WAIT, &[h]).0
+    };
+    assert_eq!(at(&mut w, 30), 0);
+    assert_eq!(at(&mut w, 32), 1);
+    // NextFrame from frame 2 jumps to the frame the sound has reached:
+    // video drops frames to stay with the sound.
+    w.ctx.memory().set_u32(h + 0x0c, 2).unwrap();
+    w.call(BINK_NEXT_FRAME, &[h]);
+    let f = w.u32(h + 0x0c);
+    assert!((30..=31).contains(&f), "jumped to {f}");
+
+    // If the output stops consuming, the wall clock carries on from the
+    // sound's position once AUDIO_STALL_MS has passed.
+    w.clock.0.fetch_add(AUDIO_STALL_MS, Ordering::SeqCst);
+    assert_eq!(at(&mut w, 40), 1, "still on the sound clock");
+    w.clock.0.fetch_add(400, Ordering::SeqCst);
+    assert_eq!(at(&mut w, 40), 0, "wall clock took over: ~1.65 s");
+    assert_eq!(at(&mut w, 52), 1);
+
+    // The whole track is the video's length.
+    let a = AudioInfo {
+        sample_rate: RATE,
+        channels: 2,
+    };
+    assert_eq!(synthetic_audio_frames(&movie.info, &a), 220_721);
 }

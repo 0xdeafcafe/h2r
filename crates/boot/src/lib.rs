@@ -52,6 +52,7 @@ pub mod lockstep_glue;
 pub mod map_bases;
 pub mod map_override;
 pub mod map_slots;
+pub mod movies_glue;
 pub mod new_maps;
 pub mod pad_speaker;
 pub use live_telemetry as telemetry;
@@ -536,10 +537,15 @@ pub struct RunOpts {
     pub trace: Option<PathBuf>,
     /// Register crates/d3d's adapters (headless).
     pub d3d: bool,
-    /// Register crates/bink-hle in skip mode.
+    /// Register crates/bink-hle: playback of the movies installed in
+    /// `movies`, skip mode for the rest (movies_glue.rs).
     pub bink: bool,
     /// Register crates/dsound's overrides (headless mixer).
     pub dsound: bool,
+    /// Where `h2 movies` installed the transcoded movies
+    /// (`movies_glue::default_dir()` by default). The ones current for the
+    /// disc play; `None` skips every movie (`--no-movies`).
+    pub movies: Option<PathBuf>,
 }
 
 fn describe(ev: Option<&Event>, thread: u32) -> String {
@@ -1138,8 +1144,18 @@ pub fn run_hosted_with_live(
         h.set_tick_note(why.to_owned());
     }
     if opts.bink {
-        let hle = bink_hle::BinkHle::new(None);
-        loaded.runtime.edit_dispatch(|d| bink_hle::register(d, &hle));
+        // A lockstep run compares schedules; movie pacing follows the wall
+        // clock when the sound stalls, so it skips them.
+        let why_off = lockstep_on.then_some("lockstep");
+        movies_glue::install(
+            &loaded.runtime,
+            opts.movies.as_deref(),
+            &opts.disc,
+            why_off,
+            ds.as_ref().map(dsound_glue::Audio::mixer),
+        );
+    } else {
+        eprintln!("movies: off (--no-bink: the original player runs)");
     }
     let tr = trace::install_bounded(&loaded.runtime, opts.trace.as_deref(), host.trace_limit.unwrap_or(usize::MAX))?;
     let mut m = kernel::Machine::new(

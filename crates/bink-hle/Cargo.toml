@@ -7,6 +7,8 @@ license.workspace = true
 [dependencies]
 runtime.workspace = true
 movies.workspace = true
+# Movie sound goes into the game's own mixer (audio_out.rs); no device code.
+audio = { path = "../audio", default-features = false }
 
 [dev-dependencies]
 xiso.workspace = true

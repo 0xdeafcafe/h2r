@@ -73,6 +73,12 @@ pub const COMPLETION_RATE: kernel::periodic::Rate = kernel::periodic::Rate { num
 pub const IDLE_LIMIT_TICKS: u64 = 10 * 10_000_000;
 
 impl Audio {
+    /// The mixer the output renders, for other sound that should go out
+    /// with the game's (the movies' voices, movies_glue.rs).
+    pub fn mixer(&self) -> Arc<Mutex<audio::Mixer>> {
+        Arc::clone(&self.mixer)
+    }
+
     /// Something in the mixer can still finish and signal: a playing buffer
     /// or a stream with queued packets.
     pub fn pending(&self) -> bool {

@@ -990,6 +990,35 @@ fn the_frame_skips_sparse_backdrop_and_the_views_cut_it_away() {
 }
 
 #[test]
+fn a_low_poly_level_keeps_its_large_floor_triangles_in_frame() {
+    // Detail in one corner of a field of large floor quads, a few
+    // triangles a grid cell (Halo 1's terrain is built so).
+    let mut tris = Vec::new();
+    for i in 0..10 {
+        for j in 0..10 {
+            let (x, y) = (i as f32 * 2.0, j as f32 * 2.0);
+            tris.extend(cuboid([x, y, 0.0], [x + 1.0, y + 1.0, 1.0]));
+        }
+    }
+    // 128 units across: grid cells of 2, a quad's two triangles in two
+    // diagonal cells of its four.
+    for i in 0..32 {
+        for j in 0..32 {
+            let (x, y) = (i as f32 * 4.0, j as f32 * 4.0);
+            let q = [[x, y, 0.0], [x + 4.0, y, 0.0], [x + 4.0, y + 4.0, 0.0], [x, y + 4.0, 0.0]];
+            tris.push(tri([q[0], q[1], q[2]]));
+            tris.push(tri([q[0], q[2], q[3]]));
+        }
+    }
+    let mesh = build_mesh(&tris);
+    let dense = frame(&mesh);
+    let sparse = frame_with(&mesh, SPARSE_LEAST);
+    assert!(sparse.max[0] > 125.0 && sparse.max[1] > 125.0, "{sparse:?}");
+    assert!(dense.max[0] < 40.0 && dense.max[1] < 40.0, "framed out by default: {dense:?}");
+    assert!(sparse.min[0] <= 0.0 && sparse.min[1] <= 0.0, "{sparse:?}");
+}
+
+#[test]
 fn sparse_height_tails_behind_a_gap_are_left_out() {
     let mut z: Vec<f32> = (0..100).map(|i| 50.0 + i as f32 * 0.1).collect();
     assert_eq!(z_range(&z), (50.0, 59.9));
@@ -1184,6 +1213,19 @@ fn views_json_and_manifest_entries_follow_the_contract() {
             views: Some("map/stem/views.json".into()),
             kind: Some(MapKind::Campaign),
             bsps: Some(3),
+            ..Default::default()
+        },
+    );
+    // A converted Halo 1 map says so and carries its name.
+    manifest.maps.insert(
+        "h1_stem".into(),
+        MapEntry {
+            geometry: Some("map/h1_stem/map.glb".into()),
+            kind: Some(MapKind::Multiplayer),
+            bsps: Some(1),
+            game: Some("halo1".into()),
+            name: Some("Invented Name".into()),
+            ..Default::default()
         },
     );
     let j = serde_json::to_value(&manifest).unwrap();
@@ -1191,6 +1233,11 @@ fn views_json_and_manifest_entries_follow_the_contract() {
         j["maps"]["stem"],
         serde_json::json!({"geometry": "map/stem/map.glb", "views": "map/stem/views.json",
                            "kind": "campaign", "bsps": 3})
+    );
+    assert_eq!(
+        j["maps"]["h1_stem"],
+        serde_json::json!({"geometry": "map/h1_stem/map.glb", "kind": "multiplayer", "bsps": 1,
+                           "game": "halo1", "name": "Invented Name"})
     );
     let back: crate::live_art::Manifest = serde_json::from_value(j).unwrap();
     assert_eq!(back, manifest);

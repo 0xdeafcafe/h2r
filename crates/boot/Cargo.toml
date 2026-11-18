@@ -39,6 +39,8 @@ x87 = { path = "../x87" }
 dsound = { path = "../dsound" }
 audio = { path = "../audio", default-features = false }
 bink-hle = { path = "../bink-hle" }
+# Where `h2 movies` installs (movies_glue).
+movies.workspace = true
 xapi = { path = "../xapi" }
 live-hle = { path = "../live-hle" }
 live-telemetry = { path = "../live-telemetry" }

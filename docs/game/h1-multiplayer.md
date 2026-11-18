@@ -1039,6 +1039,19 @@ converter version to bump (`CONVERTER_VERSION`, `crates/cli/src/h1_import.rs`),
 [campaigns.md](campaigns.md) §10. `h2 h1 convert` still converts one map
 by hand, into any `--out`.
 
+## On the stats site and in the viewers (**Built**: `cli::live_halo1`)
+
+`h2 live assets extract` (and `h2 play --live-local`) draws every converted
+map, multiplayer and campaign, like a Halo 2 map: geometry, sky, the five
+views and a preview, keyed by the name the game reports (`h1_<map>`, or
+the campaign level's), so live games and recordings on them plot on their
+map ([live-art.md](../live/live-art.md#halo-1-maps)). The manifest marks
+them `"game": "halo1"`; the site labels them Halo 1, names them from the
+manifest, and does not call a converted map "modded" or its geometry
+changed. The native viewer (`viewer`, `bsp`, `shadowlab`) opens them by
+the same name from the data root (`$H2_DATA`, else the default), or any
+`.map` by path, with the Halo 2 disc's shared maps.
+
 ## The setting and the map list (design)
 
 - **Row:** `multiplayer.halo1_sandbox`, a choice `halo1` (default) /

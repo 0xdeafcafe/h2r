@@ -30,6 +30,8 @@ copies. Nothing is ever written next to it.
 | `--no-stopgaps` | | run on the bare kernel: no boot stopgaps or wrappers, and no fallback interpreter (an unsupported instruction stops the run where generated code reported it) |
 | `--fresh-data` | | empty `<data>/disk` and `<data>/metadata` first; refused, deleting nothing, if the disc, image or `--out` is inside either |
 | `--no-d3d`, `--no-dsound`, `--no-bink`, `--no-xapi` | | leave that HLE crate unregistered |
+| `--movies DIR` | app data (`~/Library/Application Support/h2recomp/movies`) | where `h2 movies` installed the transcodes; the current ones play ([bink-hle.md](../audio/bink-hle.md)); the run logs `movies: playback (...)` or `movies: skip (...)` |
+| `--no-movies` | | skip every movie (Bink HLE skip mode) |
 | `--no-mappack` | | skip installing a `mappack.iso` beside the disc into `--data` (`H2_MAPPACK=0` does the same; [map-pack.md](../game/map-pack.md)) |
 
 | Environment | Effect |

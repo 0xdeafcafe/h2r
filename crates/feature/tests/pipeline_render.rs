@@ -25,6 +25,36 @@ const FRAME_WAIT: u32 = 0x1_3000;
 /// does), through a Rust continuation; the callback calls the kernel.
 const D3D_CALLBACK: u32 = 0x1_2200;
 const CALLBACK: u32 = 0x1_4000;
+/// The sim's I/O request through the pool (as `0x001208b0` and
+/// `0x001209c0` make one): wait on the pool mutex, take a request, queue
+/// it, release the mutex, release the worker's semaphore.
+const SIM_IO: u32 = 0x1_6000;
+/// The async I/O pool (a live range, as `0x004e0354..0x004e28f4` is): the
+/// handle words of its mutex and the worker's semaphore, the free list's
+/// head, the queue's length and requests, and the kernel's side (the
+/// mutex's owner count, the semaphore's count). Four requests of 0x10
+/// bytes: +0 who asked, +4 its completion's place in the order, +0xc the
+/// free list's link.
+const POOL: u32 = 0x2_4a00;
+const POOL_MUTEX: u32 = POOL;
+const POOL_SEM: u32 = POOL + 4;
+const POOL_FREE: u32 = POOL + 8;
+const POOL_QUEUED: u32 = POOL + 0xc;
+const POOL_OWNED: u32 = POOL + 0x10;
+const POOL_COUNT: u32 = POOL + 0x14;
+const POOL_QUEUE: u32 = POOL + 0x20;
+const POOL_REQUESTS: u32 = POOL + 0x40;
+const POOL_END: u32 = POOL + 0x80;
+/// The worker's completions, in order: who asked, one word each.
+const COMPLETED: u32 = 0x2_4b00;
+const COMPLETED_N: u32 = 0x2_4afc;
+const MUTEX_HANDLE: u32 = 0x4d;
+const SEM_HANDLE: u32 = 0x53;
+const WAIT_ORDINAL: u32 = 234;
+const RELEASE_MUTANT_ORDINAL: u32 = 221;
+const RELEASE_SEMAPHORE_ORDINAL: u32 = 222;
+/// Render mode 7: the render queues a request through the pool.
+const MODE_IO: u32 = 7;
 /// KeQuerySystemTime(PLARGE_INTEGER): stdcall, one argument.
 const KERNEL_ORDINAL: u32 = 128;
 
@@ -129,9 +159,15 @@ static ADDRS: Addrs = Addrs {
     mark_bytes: &[STAMPS],
     host_owned: &[VBLANKS],
     // What the kernel call answers: the render reads it after the call.
-    live_bytes: &[(KERNEL_OUT, KERNEL_OUT + 4), (QUEUE, QUEUE + 4)],
+    live_bytes: &[
+        (KERNEL_OUT, KERNEL_OUT + 4),
+        (QUEUE, QUEUE + 4),
+        (POOL, POOL_END),
+    ],
     render_owned: &[],
     io_queue: QUEUE,
+    io_free: Some((POOL_FREE, 0xc, 4)),
+    io_handles: &[POOL_MUTEX, POOL_SEM],
     warmup: 0,
     after_fallback: 0,
     random: Some((RNG_PTR, &[0, 4])),
@@ -262,6 +298,36 @@ fn render(
             m.set_u32(cpu.esp, INPUT)?;
             m.call(cpu, D3D_DRAW, FRAME + 0x10)
         }
+        s if s == FRAME + 0x10 && m.u32(FALLBACK)? == MODE_IO => {
+            // The request this frame asks for, as the render's cache
+            // requests do.
+            pool_wait(&mut m, cpu)?;
+            m.call(cpu, kernel::function_token(WAIT_ORDINAL), FRAME + 0x40)
+        }
+        s if s == FRAME + 0x40 => {
+            let id = 0x100 + m.u32(INPUT)?;
+            pool_queue(&mut m, id)?;
+            pool_release_mutex(&mut m, cpu)?;
+            m.call(
+                cpu,
+                kernel::function_token(RELEASE_MUTANT_ORDINAL),
+                FRAME + 0x50,
+            )
+        }
+        s if s == FRAME + 0x50 => {
+            pool_release_semaphore(&mut m, cpu)?;
+            m.call(
+                cpu,
+                kernel::function_token(RELEASE_SEMAPHORE_ORDINAL),
+                FRAME + 0x60,
+            )
+        }
+        s if s == FRAME + 0x60 => {
+            // The previous count's local, never read (as `0x001209c0`'s).
+            cpu.esp += 4;
+            drop(m);
+            render(cpu, ctx, FRAME + 0x20)
+        }
         s if s == FRAME + 0x10 => {
             if m.u32(FALLBACK)? == 2 {
                 return m.call(cpu, D3D_CALLBACK, FRAME + 0x20);
@@ -370,6 +436,152 @@ fn probe(m: &Guest, esp: u32) -> Result<(), runtime::GuestFault> {
 }
 
 /// The guest callback D3D_CALLBACK calls: the kernel, then return.
+/// The sim's request through the pool (`SIM_IO`), asked for by `0x200 +
+/// INPUT`.
+fn sim_io(
+    cpu: &mut CpuAbi,
+    ctx: &mut ExecCtx,
+    sel: u32,
+) -> Result<TransferAbi, runtime::GuestFault> {
+    let rt = Arc::clone(ctx.runtime());
+    let mut m = rt.memory();
+    match sel {
+        SIM_IO => {
+            pool_wait(&mut m, cpu)?;
+            m.call(cpu, kernel::function_token(WAIT_ORDINAL), SIM_IO + 0x10)
+        }
+        s if s == SIM_IO + 0x10 => {
+            let id = 0x200 + m.u32(INPUT)?;
+            pool_queue(&mut m, id)?;
+            pool_release_mutex(&mut m, cpu)?;
+            m.call(
+                cpu,
+                kernel::function_token(RELEASE_MUTANT_ORDINAL),
+                SIM_IO + 0x20,
+            )
+        }
+        s if s == SIM_IO + 0x20 => {
+            pool_release_semaphore(&mut m, cpu)?;
+            m.call(
+                cpu,
+                kernel::function_token(RELEASE_SEMAPHORE_ORDINAL),
+                SIM_IO + 0x30,
+            )
+        }
+        s if s == SIM_IO + 0x30 => {
+            cpu.esp += 4;
+            m.ret(cpu, 0)
+        }
+        _ => unreachable!("selector {sel:#x}"),
+    }
+}
+
+/// `WaitForSingleObject(pool mutex, INFINITE)`'s kernel call: handle,
+/// mode, alertable, no timeout.
+fn pool_wait(m: &mut Guest, cpu: &mut CpuAbi) -> Result<(), runtime::GuestFault> {
+    let handle = m.u32(POOL_MUTEX)?;
+    for v in [0, 0, 1, handle] {
+        cpu.esp -= 4;
+        m.set_u32(cpu.esp, v)?;
+    }
+    Ok(())
+}
+
+/// Takes the free list's head, marks it `id`'s and queues it.
+fn pool_queue(m: &mut Guest, id: u32) -> Result<(), runtime::GuestFault> {
+    let req = m.u32(POOL_FREE)?;
+    assert_ne!(req, 0, "a free request");
+    m.set_u32(POOL_FREE, m.u32(req + 0xc)?)?;
+    m.set_u32(req, id)?;
+    m.set_u32(req + 0xc, 0)?;
+    let n = m.u32(POOL_QUEUED)?;
+    m.set_u32(POOL_QUEUE + 4 * n, req)?;
+    m.set_u32(POOL_QUEUED, n + 1)
+}
+
+/// `ReleaseMutex(pool mutex)`'s kernel call: no previous count.
+fn pool_release_mutex(m: &mut Guest, cpu: &mut CpuAbi) -> Result<(), runtime::GuestFault> {
+    let handle = m.u32(POOL_MUTEX)?;
+    for v in [0, handle] {
+        cpu.esp -= 4;
+        m.set_u32(cpu.esp, v)?;
+    }
+    Ok(())
+}
+
+/// `ReleaseSemaphore(worker's semaphore, 1, &local)`'s kernel call.
+fn pool_release_semaphore(m: &mut Guest, cpu: &mut CpuAbi) -> Result<(), runtime::GuestFault> {
+    cpu.esp -= 4;
+    let local = cpu.esp;
+    m.set_u32(local, 0xffff_ffff)?;
+    let handle = m.u32(POOL_SEM)?;
+    for v in [local, 1, handle] {
+        cpu.esp -= 4;
+        m.set_u32(cpu.esp, v)?;
+    }
+    Ok(())
+}
+
+/// The kernel's side of the pool, on the game thread: the mutex (taken
+/// twice is an error the test sees), and the semaphore, whose release runs
+/// the worker at once (as the game's runs while the game thread waits): it
+/// completes every queued request in order, records who asked, and puts
+/// the request back on the free list.
+fn pool_kernel(d: &mut Dispatch) {
+    d.register_override(
+        kernel::function_token(WAIT_ORDINAL),
+        "NtWaitForSingleObjectEx",
+        |cpu, ctx, _| {
+            let mut m = ctx.memory();
+            if m.u32(cpu.esp + 4)? == MUTEX_HANDLE {
+                let owned = m.u32(POOL_OWNED)?;
+                assert_eq!(owned, 0, "the pool mutex is free");
+                m.set_u32(POOL_OWNED, owned + 1)?;
+            }
+            cpu.eax = 0;
+            m.ret(cpu, 16)
+        },
+    );
+    d.register_override(
+        kernel::function_token(RELEASE_MUTANT_ORDINAL),
+        "NtReleaseMutant",
+        |cpu, ctx, _| {
+            let mut m = ctx.memory();
+            let owned = m.u32(POOL_OWNED)?;
+            cpu.eax = if owned == 1 { 0 } else { 0xc000_0046 };
+            m.set_u32(POOL_OWNED, owned.saturating_sub(1))?;
+            m.ret(cpu, 8)
+        },
+    );
+    d.register_override(
+        kernel::function_token(RELEASE_SEMAPHORE_ORDINAL),
+        "NtReleaseSemaphore",
+        |cpu, ctx, _| {
+            let mut m = ctx.memory();
+            let previous = m.u32(cpu.esp + 12)?;
+            let count = m.u32(POOL_COUNT)?;
+            if previous != 0 {
+                m.set_u32(previous, count)?;
+            }
+            // The worker: every queued request, in order.
+            for i in 0..m.u32(POOL_QUEUED)? {
+                let req = m.u32(POOL_QUEUE + 4 * i)?;
+                let n = m.u32(COMPLETED_N)?;
+                let who = m.u32(req)?;
+                m.set_u32(COMPLETED + 4 * n, who)?;
+                m.set_u32(COMPLETED_N, n + 1)?;
+                m.set_u32(req + 4, n + 1)?;
+                let free = m.u32(POOL_FREE)?;
+                m.set_u32(req + 0xc, free)?;
+                m.set_u32(POOL_FREE, req)?;
+            }
+            m.set_u32(POOL_QUEUED, 0)?;
+            cpu.eax = 0;
+            m.ret(cpu, 12)
+        },
+    );
+}
+
 fn callback(
     cpu: &mut CpuAbi,
     ctx: &mut ExecCtx,
@@ -424,9 +636,14 @@ fn rig_tuned(
         let mut m = rt.memory();
         ctx.call_guest(cpu, &mut m, CALLBACK, |cpu, ctx| ctx.memory().ret(cpu, 0))
     });
-    for at in [0x10, 0x20, 0x30] {
+    for at in [0x10, 0x20, 0x30, 0x40, 0x50, 0x60] {
         d.register_resume(FRAME + at, FRAME, FRAME + at).unwrap();
     }
+    d.register_generated_rust(SIM_IO, sim_io).unwrap();
+    for at in [0x10, 0x20, 0x30] {
+        d.register_resume(SIM_IO + at, SIM_IO, SIM_IO + at).unwrap();
+    }
+    pool_kernel(&mut d);
     let main: Arc<Mutex<Option<Arc<Runtime>>>> = Arc::default();
     {
         let (log, main) = (Arc::clone(&log), Arc::clone(&main));
@@ -522,6 +739,18 @@ fn rig_tuned(
     // The world path: globals point at a record with +0x1120 set.
     g.set_u32(GLOBALS, GLOBALS_RECORD).unwrap();
     g.set_u32(RNG_PTR, RNG).unwrap();
+    // The pool: its handles, and every request free.
+    g.set_u32(POOL_MUTEX, MUTEX_HANDLE).unwrap();
+    g.set_u32(POOL_SEM, SEM_HANDLE).unwrap();
+    for r in 0..4 {
+        let next = if r == 3 {
+            0
+        } else {
+            POOL_REQUESTS + 0x10 * (r + 1)
+        };
+        g.set_u32(POOL_REQUESTS + 0x10 * r + 0xc, next).unwrap();
+    }
+    g.set_u32(POOL_FREE, POOL_REQUESTS).unwrap();
     g.set_u32(RNG, 0x1234_5678).unwrap();
     g.set_u32(RNG + 4, 0x9abc_def0).unwrap();
     g.set_u8(GLOBALS_RECORD + 0x1120, 1).unwrap();
@@ -1540,5 +1769,157 @@ fn a_render_owned_word_the_sim_also_changed_keeps_the_renders_value() {
     for k in 1..=3 {
         let va = format!("va [{:#010x}]", OUT + 4 * k);
         assert!(report.iter().any(|l| l.contains(&va)), "{va}: {report:#?}");
+    }
+}
+
+/// Rounds `1..=n`: on `render_io` rounds the render queues a request
+/// through the pool (as its cache requests do); on `sim_io` rounds the sim
+/// queues one before the frame, with the last render still in flight.
+fn io_rounds(r: &mut Rig, n: u32, render_io: impl Fn(u32) -> bool, sim_io: impl Fn(u32) -> bool) {
+    for k in 1..=n {
+        {
+            let mut m = r.rt.memory();
+            m.set_u32(INPUT, k).unwrap();
+            let mode = if render_io(k) { MODE_IO } else { 0 };
+            m.set_u32(FALLBACK, mode).unwrap();
+            m.set_u8(CLEAR, 1).unwrap();
+        }
+        if sim_io(k) {
+            r.run(SIM_IO);
+        }
+        r.run(FRAME);
+    }
+}
+
+/// Who asked for each completion, in the worker's order.
+fn completions(r: &Rig) -> Vec<u32> {
+    let m = r.rt.memory();
+    let n = m.u32(COMPLETED_N).unwrap();
+    (0..n).map(|i| m.u32(COMPLETED + 4 * i).unwrap()).collect()
+}
+
+/// The render's I/O pool calls (wait on the pool mutex, queue, release it,
+/// release the worker's semaphore) no longer stop it: it carries on on its
+/// own thread, and the game thread makes the calls at the join, in order.
+/// A sim request while a render is in flight joins it first, so the worker
+/// completes the render's request before the tick's, as in the serial run:
+/// the same requests, completed in the same order, and the same memory.
+#[test]
+fn the_renders_pool_requests_overlap_the_sim_and_complete_in_the_serial_order() {
+    let n = 24;
+    let render_io = |k: u32| k.is_multiple_of(2);
+    let sim_io = |k: u32| k.is_multiple_of(5);
+    let mut serial = rig(false);
+    let mut piped = rig(true);
+    io_rounds(&mut serial, n, render_io, sim_io);
+    io_rounds(&mut piped, n, render_io, sim_io);
+    serial.finish();
+    piped.finish();
+    compare(&serial.data(), &piped.data());
+    let order = completions(&serial);
+    let requests =
+        (1..=n).filter(|&k| render_io(k)).count() + (1..=n).filter(|&k| sim_io(k)).count();
+    // (The closing serial frame repeats the last round's request.)
+    assert_eq!(order.len(), requests + usize::from(render_io(n)));
+    // Render 4's request before the sim's of round 5, after round 4's.
+    assert_eq!(&order[..4], &[0x102, 0x104, 0x205, 0x106]);
+    assert_eq!(completions(&piped), order);
+    let s = piped.feature.stats();
+    assert_eq!(s.completed, n as u64, "{s:?}");
+    assert!(s.fallbacks.is_empty(), "{s:?}");
+    // No render stopped for a pool call.
+    assert!(s.serviced.is_empty(), "{s:?}");
+    let render_requests = (1..=n).filter(|&k| render_io(k)).count() as u64;
+    assert_eq!(s.io_deferred, 3 * render_requests, "{s:?}");
+    assert_eq!(s.io_mismatches, 0, "{s:?}");
+    // Only the sim's requests waited, each for the render in flight.
+    let sim_requests = (1..=n).filter(|&k| sim_io(k)).count() as u64;
+    assert_eq!(s.io_joins, sim_requests, "{s:?}");
+    assert_eq!(s.io_stalls, sim_requests, "{s:?}");
+    assert_eq!(s.io_other_thread, 0, "{s:?}");
+}
+
+/// The render's requests alone: no frame stalls on I/O, and the pool sees
+/// the requests the serial run's does.
+#[test]
+fn a_render_queueing_io_every_frame_never_stalls() {
+    let n = 16;
+    let mut serial = rig(false);
+    let mut piped = rig(true);
+    io_rounds(&mut serial, n, |_| true, |_| false);
+    io_rounds(&mut piped, n, |_| true, |_| false);
+    serial.finish();
+    piped.finish();
+    compare(&serial.data(), &piped.data());
+    assert_eq!(completions(&piped), completions(&serial));
+    let s = piped.feature.stats();
+    assert_eq!(s.completed, n as u64, "{s:?}");
+    assert!(s.serviced.is_empty(), "{s:?}");
+    assert_eq!(s.io_stalls, 0, "{s:?}");
+    assert_eq!(s.io_stall, Duration::ZERO, "{s:?}");
+    assert_eq!(s.io_deferred, 3 * n as u64, "{s:?}");
+}
+
+/// `H2_PIPELINE_DEFER_IO=0`: each pool call stops the render until the
+/// game thread makes it at the join (serviced), and every such frame is an
+/// I/O stall, counted with its time on the `pipeline:` line.
+#[test]
+fn with_deferral_off_each_pool_call_stops_the_render_and_counts_a_stall() {
+    let n = 12;
+    let render_io = |k: u32| k.is_multiple_of(2);
+    let mut serial = rig(false);
+    let mut piped = rig_tuned(
+        true,
+        &[
+            "NtWaitForSingleObjectEx",
+            "NtReleaseMutant",
+            "NtReleaseSemaphore",
+        ],
+        ADDRS.clone(),
+        &[],
+        |f| f.defer_io(false),
+    );
+    io_rounds(&mut serial, n, render_io, |_| false);
+    io_rounds(&mut piped, n, render_io, |_| false);
+    serial.finish();
+    piped.finish();
+    compare(&serial.data(), &piped.data());
+    assert_eq!(completions(&piped), completions(&serial));
+    let s = piped.feature.stats();
+    let frames = (1..=n).filter(|&k| render_io(k)).count() as u64;
+    assert_eq!(s.io_deferred, 0, "{s:?}");
+    assert_eq!(
+        s.serviced.get("kernel:NtWaitForSingleObjectEx"),
+        Some(&frames)
+    );
+    assert_eq!(s.io_stalls, frames, "{s:?}");
+    assert!(s.io_stall > Duration::ZERO, "{s:?}");
+    let line = s.line();
+    assert!(line.contains(&format!("io_stalls {frames} (")), "{line}");
+    assert!(line.contains("io_deferred 0 io_joins 0"), "{line}");
+}
+
+/// A request off the free list (being read, or queued) at the launch makes
+/// the frame serial (`io_busy`): the worker's own pool calls, made while
+/// the game thread waits, are not ordered against the render's.
+#[test]
+fn a_request_off_the_free_list_makes_the_frame_serial() {
+    for defer in [true, false] {
+        let mut piped = rig_tuned(true, &[], ADDRS.clone(), &[], |f| f.defer_io(defer));
+        // Request 0 taken (the worker reading it).
+        piped
+            .rt
+            .memory()
+            .set_u32(POOL_FREE, POOL_REQUESTS + 0x10)
+            .unwrap();
+        piped.round(1, false);
+        let s = piped.feature.stats();
+        if defer {
+            assert_eq!(s.serial.get("io_busy"), Some(&1), "{s:?}");
+            assert_eq!(s.pipelined, 0, "{s:?}");
+        } else {
+            assert_eq!(s.pipelined, 1, "{s:?}");
+        }
+        piped.finish();
     }
 }

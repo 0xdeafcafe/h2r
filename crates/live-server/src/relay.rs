@@ -169,6 +169,133 @@ impl Live {
     }
 }
 
+/// The type of a relay ticket's JWS.
+pub const TYP_RELAY_TICKET: &str = "h2live-relay-ticket";
+/// How long a relay ticket lasts. A relay asks the hub for a new one when
+/// its ticket has run out, so membership is checked again this often.
+pub const TICKET_S: i64 = 15;
+
+/// What the hub signs when an account may use a session's relay: who, for
+/// which session, until when. A relay that is not the hub (the Worker's
+/// `CoopRelay` object) checks it with the server's public key instead of
+/// reading the read model itself.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Ticket {
+    pub session: String,
+    pub xuid: Xuid,
+    /// The account's author id.
+    pub author: String,
+    /// The account's token's `exp`: the socket closes then (with the
+    /// leeway) unless a fresh token comes.
+    pub token_exp: i64,
+    /// When this ticket runs out (unix seconds).
+    pub exp: i64,
+}
+
+impl Ticket {
+    /// When the socket's token has run out, leeway included.
+    pub fn token_deadline(&self) -> i64 {
+        self.token_exp + TOKEN_LEEWAY_S
+    }
+
+    /// Opens a ticket signed by `key` for `session`, not yet run out at
+    /// `now`.
+    pub fn open(
+        key: &live_proto::sign::PublicKey,
+        compact: &str,
+        session: &str,
+        now: i64,
+    ) -> Result<Ticket, ApiError> {
+        let bad = |m: &str| ApiError::new(ErrorCode::Forbidden, format!("relay ticket: {m}"));
+        let jws = live_proto::sign::Jws::parse(compact).map_err(|e| bad(&e.to_string()))?;
+        jws.verify(key).map_err(|e| bad(&e.to_string()))?;
+        let payload = jws
+            .json_payload(TYP_RELAY_TICKET)
+            .map_err(|e| bad(&e.to_string()))?;
+        let t: Ticket = serde_json::from_value(payload).map_err(|e| bad(&e.to_string()))?;
+        if t.session != session {
+            return Err(bad("for another session"));
+        }
+        if t.exp < now {
+            return Err(bad("run out"));
+        }
+        Ok(t)
+    }
+}
+
+/// `POST /v1/sessions/{id}/relay/ticket`'s answer.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TicketReply {
+    pub ticket: String,
+    pub exp: i64,
+}
+
+impl Live {
+    fn sign_ticket(&self, t: &Ticket) -> TicketReply {
+        TicketReply {
+            ticket: self.identity.key.sign_json(TYP_RELAY_TICKET, t),
+            exp: t.exp,
+        }
+    }
+
+    /// A ticket for the relay of `session`, for the account behind a
+    /// `sessions.relay` token (its `jti` is spent here).
+    pub fn relay_ticket(
+        &self,
+        bearer: Option<&str>,
+        session: &str,
+    ) -> Result<TicketReply, ApiError> {
+        let raw = bearer.ok_or_else(|| {
+            ApiError::new(
+                ErrorCode::Unauthorized,
+                "this needs Authorization: Bearer <token>",
+            )
+        })?;
+        let token_exp = self.authenticate_until(raw, lxm::SESSIONS_RELAY)?;
+        let author = Author::parse(
+            &Token::parse(raw)
+                .map_err(|_| ApiError::new(ErrorCode::Unauthorized, "token"))?
+                .claims
+                .iss,
+        );
+        let Some(Author::Account { xuid, .. }) = author.clone() else {
+            return Err(ApiError::new(
+                ErrorCode::Forbidden,
+                "the relay is for accounts",
+            ));
+        };
+        self.relay_member(session, xuid)?;
+        Ok(self.sign_ticket(&Ticket {
+            session: session.to_string(),
+            xuid,
+            author: author.expect("parsed").to_string(),
+            token_exp,
+            exp: now() + TICKET_S,
+        }))
+    }
+
+    /// A new ticket for the holder of one that has (nearly) run out, if it
+    /// is still a member and its token has not run out.
+    pub fn renew_relay_ticket(
+        &self,
+        compact: &str,
+        session: &str,
+    ) -> Result<TicketReply, ApiError> {
+        let now = now();
+        // A ticket that has just run out may be renewed: the relay asks
+        // when it finds one past its time.
+        let old = Ticket::open(self.identity.key.public(), compact, session, now - TICKET_S)?;
+        if old.token_deadline() < now {
+            return Err(ApiError::new(ErrorCode::Unauthorized, "token expired"));
+        }
+        self.relay_member(session, old.xuid)?;
+        Ok(self.sign_ticket(&Ticket {
+            exp: now + TICKET_S,
+            ..old
+        }))
+    }
+}
+
 #[cfg(feature = "native")]
 pub async fn relay(
     State(live): State<Arc<Live>>,

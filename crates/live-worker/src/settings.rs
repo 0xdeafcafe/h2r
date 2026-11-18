@@ -10,6 +10,7 @@
 //! | `H2_LIVE_ADMINS` | variable | admin gamertags, comma-separated |
 //! | `H2_LIVE_INVITE_ONLY` | variable | `1`: account creation needs an invite |
 //! | `H2_LIVE_PRIVATE` | variable | `1`: reads need a token too |
+//! | `H2_LIVE_GAME_ART_URL` | variable | published game art, `<public bucket URL>/art/<stamp>` ([`crate::site`]) |
 
 use live_server::admin::Admins;
 use live_server::{Policy, ServerIdentity};
@@ -20,6 +21,7 @@ pub const PUBLIC_URL: &str = "H2_LIVE_PUBLIC_URL";
 pub const ADMINS: &str = "H2_LIVE_ADMINS";
 pub const INVITE_ONLY: &str = "H2_LIVE_INVITE_ONLY";
 pub const PRIVATE: &str = "H2_LIVE_PRIVATE";
+pub const GAME_ART_URL: &str = "H2_LIVE_GAME_ART_URL";
 
 /// What the hub starts with.
 pub struct Settings {

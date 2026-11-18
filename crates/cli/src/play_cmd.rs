@@ -20,6 +20,7 @@ const USAGE: &str = "usage:
           [--title TEXT] [--tile I/N]
           [--no-audio] [--no-gamepads] [--no-vsync] [--unpaced] [--bindings FILE] [--status]
           [--fps 30|60|120|uncapped] [--input-timeline FILE] [--frame-stats] [--no-watermark] [--no-mappack] [--no-halo1]
+          [--movies DIR | --no-movies]
           [--live | --live-server URL | --live-local | --offline] [--gamertag NAME] [--invite CODE]
           [--signin-terminal]
           [--live-listen ADDR] [--live-tunnel [--live-tunnel-name NAME
@@ -49,6 +50,10 @@ A halo1.iso next to the disc is converted into --data on the way in (its
 campaign under Campaign, its multiplayer maps in the map list), again only
 when the disc or the converter changed; a warning never stops the game.
 --no-halo1 or H2_HALO1=0 skips it (docs/game/campaigns.md).
+The intro, attract and credits movies play, with their sound, when `h2 movies`
+has installed them for this disc (in --movies DIR, by default the app data
+directory); otherwise, or with --no-movies, the game skips them, as `h2 run`
+does. The log says which (`movies: playback (...)` or `movies: skip (...)`).
 --fps (or H2_FPS) sets how often the window presents: 30, the default, is the
 game's own rate and today's behaviour; 60, 120 and uncapped only redraw the
 newest game frame more often for now, with no smoothing (the game itself
@@ -509,6 +514,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let mut transfers = 50_000_000u64;
     let mut disc = None;
     let mut audio = true;
+    let mut movies = boot::movies_glue::default_dir();
     let mut no_mappack = false;
     let mut no_halo1 = false;
     let mut follow_status = None;
@@ -569,6 +575,8 @@ pub fn run(args: Vec<String>) -> Result<()> {
                 );
             }
             "--no-audio" => audio = false,
+            "--movies" => movies = Some(PathBuf::from(val()?)),
+            "--no-movies" => movies = None,
             "--no-mappack" => no_mappack = true,
             "--no-halo1" => no_halo1 = true,
             "--no-gamepads" => config.gamepads = false,
@@ -702,6 +710,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         bink: true,
         dsound: true,
         xapi: true,
+        movies,
     };
     // Before the window: the session (and an embedded server) lives until
     // the game is over.

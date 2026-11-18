@@ -12,7 +12,7 @@ the workspace's wgpu 30, `dear-imgui-winit` for the window,
 `dear-imguizmo` for the 3D gizmo, `rfd` for the system's file dialogs. No
 web views, no scripting. It runs unbundled, so it sets its own Dock icon
 (`app_icon::set_dock_icon`, [art/app-icon](../../art/app-icon/README.md)).
-It hosts three tools:
+It hosts four tools:
 
 - **Scenario**: the scenario editor (`crates/scenario-edit`,
   [scenario-editor.md](scenario-editor.md)): placements on a map, in a 3D
@@ -21,6 +21,9 @@ It hosts three tools:
   [variants.md](variants.md)).
 - **Playlists**: `multiplayer_hopper.dat`, the 16 matchmaking playlists
   the game downloads from Live (`crates/hopper-edit`, below).
+- **UI Screens**: our native game screens drawn, stepped and checked
+  offline (`boot::ui_kit`, [ui-builder.md](../game/ui-builder.md);
+  below).
 
 Nothing in the editor contains game data. Map names and everything else
 it shows come from your own disc at run time.
@@ -406,6 +409,53 @@ To put a saved file on a Live server, run `h2 live hopper import <file>`
 on the server's machine (docs/live/live-admin.md); the editor does not
 publish by itself.
 
+## UI Screens
+
+The UI builder's preview, checks and pages (docs/game/ui-builder.md) in
+the editor. `app/ui_screens.rs` (`UiScreens`) holds the state, with no
+UI; `ui/ui_screens.rs` draws it.
+
+- **The tree**: `boot::ui_kit::screens::NAMES`, each with its page's
+  named states (`Page::states`), then the disc's retail screens
+  (`preview::Disc::retail_screens`, every `wgit` tag of `mainmenu.map`).
+- **The picture**: a native pick is `screens::live(name)` gone to its
+  state; its spec becomes a `View` (`view_of`) drawn by
+  `preview::render_view` from the editor's disc (`App::sync_ui_disc`: the
+  open source when it is a disc image) or the synthetic source. A retail
+  pick is `Disc::render_retail` (pane 0, the tag's own texts), not
+  checked. The canvas goes to a `Rgba8Unorm` texture registered with the
+  renderer (not sRGB, as the viewport's), re-uploaded when the shot's
+  `rev` changes.
+- **Overlays**, clipped to the picture: widget rectangles
+  (`Widget::pixels`), the rules' title-safe and reserved areas, and the
+  findings' widgets (`layout::Issue::ids`) in red; a finding hovered in
+  the inspector outlines its widgets thicker. The widget under the mouse
+  is the topmost whose rectangle holds it (`UiScreens::widget_at`); the
+  inspector shows its entry of `View::json`.
+- **The pad** sends `Action::UiPress(Input)` to the `Live` page; the
+  effect goes to the log. List screens step their real `ListClass`
+  over an in-memory profile store, so nothing is written.
+- **Export** (`Action::UiExport(dir)`): the PNG, the JSON and
+  `preview::write_sheet`'s files, refused inside a Git checkout (any
+  folder with `.git` at or above it).
+
+**Why the studio depends on `boot`.** The pure parts (view, spec,
+preview, checks) could move to a crate of their own, but the pages can't:
+a list page steps the screen's real `ListClass`, rows and stores, which
+are `boot`'s. Moving them all would split the screens from their glue, so
+the studio takes `boot` as a library (it already builds for `h2`; no
+game module is built or loaded).
+
+`--ui-screen <screen>/<state>` (the state defaults to the first) and
+`--ui-press up,a,...` set the tool up for a headless screenshot.
+
+Tests: `app::ui_screens::tests` (the tree, drawing without a disc,
+presses, hover and JSON, findings with their widgets, export and its
+refusal; `with_the_disc` is ignored without `H2_DISC`), and
+`headless::tests::the_ui_screens_tool_steps_a_page_through_its_widgets`,
+which clicks the tree, the pad and hovers the title through the
+test-engine hooks.
+
 ## Code
 
 The tools' logic lives in UI-free crates with their own tests; the
@@ -471,7 +521,9 @@ last. The flags that set the scene up:
 | `--select <block>:<index>` | select a placement (`vehicles:0`, `netgameequipment:3`) |
 | `--focus` | focus the camera on the selection |
 | `--camera <yaw>,<pitch>,<distance>` | orbit the camera (degrees, world units), after `--focus` |
-| `--tool scenario\|variants\|playlists` | show that tool |
+| `--tool scenario\|variants\|playlists\|ui-screens` | show that tool |
+| `--ui-screen <screen>/<state>` | show a screen of ours in the UI Screens tool |
+| `--ui-press <inputs>` | then press these on it (`up,right,a`) |
 | `--variant <n>` | open built-in variant `n` |
 | `--copy-variant <name>` | copy it to an editable variant named `<name>` |
 | `--hopper <file>\|default --playlist <1..16>` | open a playlist file (or the default lineup) at a playlist |
@@ -516,7 +568,7 @@ h2-editor --disc disc/halo2.iso --pick ascension --select netgameequipment:0 \
 the script, cropped to the menu.*
 
 `scripts/editor-screenshots.sh` renders the user guide's pictures this way
-from your disc, into `docs/images/editor/` (editor-guide.md §10).
+from your disc, into `docs/images/editor/` (editor-guide.md §11).
 `headless::tests::renders_the_studio_offscreen` does the same over the
 scenario crate's invented test map, and skips when the machine has no
 wgpu adapter.

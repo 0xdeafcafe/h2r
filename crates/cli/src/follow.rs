@@ -416,6 +416,7 @@ const PLAY_VALUE_FLAGS: &[&str] = &[
     "--input-timeline",
     "--bindings",
     "--follow-status",
+    "--movies",
 ];
 
 #[derive(Debug, PartialEq, Eq)]

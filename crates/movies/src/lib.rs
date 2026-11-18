@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod install;
 mod sha256;
+pub mod status;
 pub use sha256::{Sha256, hex};
 
 /// File name of the manifest inside the movie directory.
@@ -125,7 +126,7 @@ impl Manifest {
     /// free pass); a size/mtime stamp from install time avoids re-hashing,
     /// and any other change falls back to a full hash. Legacy CLI manifests
     /// have no hashes and are checked by size alone.
-    fn verified_output(&self, dir: &Path, entry: &MovieEntry) -> Option<PathBuf> {
+    pub(crate) fn verified_output(&self, dir: &Path, entry: &MovieEntry) -> Option<PathBuf> {
         let path = locate_entry(dir, entry)?;
         if self.output_sha256.is_empty() {
             return Some(path);

@@ -141,7 +141,13 @@ fn build_state() -> &'static Mutex<State> {
         let a: &'static analyze::Analysis = Box::leak(Box::new(analysis));
         let lifter = lift::Lifter::new(a, x).unwrap();
         let functions = a.functions.keys().copied().collect();
-        eprintln!("fallback: analyzed the image for the interpreter in {:.1}s", t.elapsed().as_secs_f64());
+        // Built whether or not anything is ever interpreted: the safety
+        // net is ready, not in use. The exit line ("fallback: N entries")
+        // and `H2_HOST_PERF` ("fallback N/frame") count what ran.
+        eprintln!(
+            "fallback: interpreter safety net ready (image analysed in {:.1}s); nothing runs on it unless generated code stops, counted at exit",
+            t.elapsed().as_secs_f64()
+        );
         Mutex::new(State { lifter, functions, cache: HashMap::new() })
     })
 }

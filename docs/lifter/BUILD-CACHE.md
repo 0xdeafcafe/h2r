@@ -291,10 +291,20 @@ file as before.
 ## Rust dependency builds
 
 Rust compilation is separate from these generated-code caches. A machine
-may use `sccache` as Cargo's `build.rustc-wrapper` to share registry artifacts
-across worktrees. Cargo reads configuration from ancestor directories, so
-a config below the repository root may apply only to nested worktrees.
-Avoid committing machine-specific cache paths or requiring sccache for
-other developers. `RUSTC_WRAPPER=` disables a configured wrapper for one
-command. Give each worktree its own `CARGO_TARGET_DIR`; generated C object
-sharing does not require sharing Cargo target directories.
+may set a caching rustc wrapper (kache, sccache) as Cargo's
+`build.rustc-wrapper`. Cargo reads configuration from ancestor directories,
+so a config below the repository root may apply only to nested worktrees.
+Avoid committing machine-specific cache paths or requiring a wrapper for
+other developers.
+
+Leave a configured wrapper on. Commands in these docs don't clear
+`RUSTC_WRAPPER`: a wrapper that hardlinks its outputs (kache) is what keeps
+many worktree targets cheap, and clearing it makes every target a full
+private copy (13 GB and more each). If a wrapper serves a stale artifact
+(errors that contradict the source), `touch` the edited file rather than
+turning the wrapper off. Use one wrapper per machine: running a second one
+(sccache next to kache) keeps a second full store.
+
+Give each worktree its own `CARGO_TARGET_DIR`; generated C object sharing
+does not require sharing Cargo target directories. `h2 disk clean` removes
+idle targets and stale artifacts (see `docs/dev/disk.md`).

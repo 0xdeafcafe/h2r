@@ -15,6 +15,8 @@ mod coop_probe_cmd;
 mod coop_drive;
 mod coop_test_cmd;
 mod coop_verdict;
+#[cfg(unix)]
+mod disk_cmd;
 mod effects;
 mod emit_cache;
 mod emit_output;
@@ -43,6 +45,7 @@ mod live_weather;
 mod live_admin;
 mod live_cmd;
 mod live_maps;
+mod live_halo1;
 mod live_mappack;
 mod live_query;
 mod live_recovery;
@@ -81,6 +84,9 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           stats, profiles (`h2 lab --help`, docs/runtime/lab.md)
   play --follow <disc>    play, rebuilding each new commit of master in the
                           background; F5 restarts into it (docs/runtime/app.md)
+  disk clean [--yes]      remove merged idle worktrees, idle Cargo targets and
+                          stale build artifacts; a dry run without --yes
+                          (docs/dev/disk.md)
   settings list|get|set   our settings (field of view, frame rate, ...) in
                           <data>/settings.toml (docs/game/settings-menu.md)
   lockstep <a> <b>        compare two H2_LOCKSTEP traces; exit 1 if they differ
@@ -126,7 +132,7 @@ const USAGE: &str = "usage: h2 <command> [disc]
   import-mappack <iso> [--data DIR]
                           install the Multiplayer Map Pack disc's maps into the
                           emulated hard disk (docs/game/map-pack.md)
-  movies <iso> --out DIR [--ffmpeg PATH] [--force]
+  movies <iso> [--out DIR] [--ffmpeg PATH] [--force]
                           convert the Bink movies to MP4 with your own ffmpeg
                           (optional; exit 3 if ffmpeg is missing, 4 if unusable)
   effect <map> <tag>      print an effects-family tag (effe tree); --all <map|all> validates the family
@@ -292,6 +298,12 @@ fn main() -> Result<()> {
         return lab::run(args.collect());
         #[cfg(not(unix))]
         bail!("h2 lab needs Unix sockets");
+    }
+    if cmd == "disk" {
+        #[cfg(unix)]
+        return disk_cmd::run(args.collect());
+        #[cfg(not(unix))]
+        bail!("h2 disk clean needs Unix");
     }
     if cmd == "agent" {
         #[cfg(unix)]

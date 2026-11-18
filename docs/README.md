@@ -76,7 +76,7 @@ goals, the two-stage plan, the crate table and milestones.
 - [dsound.md](audio/dsound.md): the guest-facing DirectSound shim (`crates/dsound`): call sites, buffers, streams, audio stats
 - [wma.md](audio/wma.md): ASF demuxing and native WMAv2 decoding (`crates/asf`, `crates/wma`)
 - [playstation-audio.md](audio/playstation-audio.md): DualSense/DS4 speaker routing, mute button and microphone design
-- [bink-hle.md](audio/bink-hle.md): the Bink player replacement (`crates/bink-hle`): skip mode, playback design
+- [bink-hle.md](audio/bink-hle.md): the Bink player replacement (`crates/bink-hle`): playback of installed movies with sound, skip mode
 - [movies.md](audio/movies.md): optional Bink movie conversion with your own ffmpeg (`h2 movies`)
 
 ## Performance (`perf/`)
@@ -141,6 +141,7 @@ goals, the two-stage plan, the crate table and milestones.
 - [maps.md](game/maps.md): new, edited, patched and shared maps: packages, patches, `MapId`; foundation built
 - [campaigns.md](game/campaigns.md): design for more than one campaign, starting with Halo 1's levels in the Halo 2 engine; the converter is built for multiplayer maps only
 - [health.md](game/health.md): Halo 1's health model on Halo 2's engine: no body regeneration, health packs, a health meter (`H2_HEALTH_MODEL`; the map-load switch for Halo 1 maps is not wired yet)
+- [bots.md](game/bots.md): design for multiplayer bots (Clankers): one brain feeding controller input, local slots then phantom peers, the Clankers Game Setup page, Clankermatch, and the bot roster interface with the server
 - [multiple-campaigns.md](game/multiple-campaigns.md): how 1.0's menus list campaign levels and keep progress, and the campaign picker and per-campaign progress built on them
 - [h1-multiplayer.md](game/h1-multiplayer.md): Halo 1's 13 disc multiplayer maps converted onto Halo 2 base maps (`h2 h1 convert`): collision, structure BSP, MOPP, placements, packages with variants; the Halo 1 sandbox and map list are not built
 - [map-pack.md](game/map-pack.md): the Multiplayer Map Pack disc, `h2 import-mappack` and how 1.0 lists its maps
@@ -171,3 +172,7 @@ goals, the two-stage plan, the crate table and milestones.
 - [editor.md](editor/editor.md): the editor for developers (`crates/studio`, Dear ImGui + wgpu): window, the tools, Halo 1 maps and converting, the playlist format rules, code layout, scripted headless screenshots (`--do`, `--crop`, `--callout`), viewport gaps
 - [scenario-editor.md](editor/scenario-editor.md): the scenario placement editor (`crates/scenario-edit`): blocks, fields, save rules, packages
 - [variants.md](editor/variants.md): the game variant record, its schema and saved files (`crates/variants`)
+
+## Development machine (`dev/`)
+
+- [disk.md](dev/disk.md): `h2 disk clean` removes merged idle worktrees, idle Cargo targets and stale artifacts; an hourly LaunchAgent runs it when disk is low

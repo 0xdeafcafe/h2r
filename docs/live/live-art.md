@@ -45,7 +45,9 @@ map/<stem>/sky.glb          the level's sky model (when it has one)
 
 `kind` is `"multiplayer"` or `"campaign"` (the map's cache type); `bsps` is
 how many structure BSPs `map.glb` holds. Both are absent in manifests from
-older builds. Paths are relative to the manifest. A map whose geometry could
+older builds. A converted Halo 1 map's entry also has `"game": "halo1"` and
+`"name"`, its display name ([Halo 1 maps](#halo-1-maps)); Halo 2's own maps
+have neither. Paths are relative to the manifest. A map whose geometry could
 not be read is listed under `skipped` as `map/<stem>/geometry` and has no
 entry; a single BSP of a level that could not be read is listed as
 `map/<stem>/bsp_<index>` and the level keeps its other BSPs.
@@ -317,6 +319,62 @@ Each map opens with the retail disc's shared maps, like a disc map. A map
 whose stem the disc (or an earlier source) already has is not added
 again. The maps found are part of the art's cache key, so installing the
 map pack later extracts again. Nothing of them is in the repository.
+
+### Halo 1 maps
+
+The Halo 1 maps `h2 import halo1` (or `h2 play`'s automatic import)
+converted into Halo 2 maps under the runtime data root
+([campaigns.md](../game/campaigns.md#10-importing-built-clih1_import),
+[h1-multiplayer.md](../game/h1-multiplayer.md)) get the same art as the
+disc's maps: `map.glb`, `sky.glb`, the views and a preview, extracted by
+the same code (`live_halo1`). They are real Halo 2 cache files, opened
+with the Halo 2 disc's shared maps.
+
+- **Where.** `h2 live assets extract` reads them from the data root its
+  `--installed DATA` names (default: the one `h2 play` uses);
+  `h2 play --live-local` reads the default data root. Campaign levels are
+  `<data>/campaigns/halo1/<level>.map`, named by that folder's
+  `campaign.toml` and pictured by its `cards/<level>.png`. Multiplayer maps
+  are the `<data>/maps/<dir>/manifest.toml` packages with a variant whose
+  `origin.game` is `halo1`: the Halo 1 sandbox's map (`h1/`) when there is
+  one, else the first (the level is the same in both), named and pictured
+  by the package (`name`, `image`).
+- **`--halo1 ISO`** runs the import into that data root first (only what
+  its stamp says is missing or stale) and then extracts. Without it the
+  extractor uses whatever is converted already; it never reads the Halo 1
+  disc itself.
+- **Names.** Each map is keyed by the name the game reports it by, the
+  cache header's short name (`+0x198`): `h1_<map>` for a multiplayer map,
+  the level's own name for a campaign level. So a live game or recording on
+  one finds its geometry as a Halo 2 game does. A stem the Halo 2 disc (or
+  the map pack) already has is never taken by a Halo 1 map. The game's
+  staged copy of a converted multiplayer map
+  (`<data>/disk/.../$c/<offer>/`, beside `h2recomp-map.toml`, which
+  `live_mappack` finds like a map pack map) gives way to the Halo 1 entry.
+- **Manifest.** The entry carries `"game": "halo1"` and `"name"` (the
+  package's or campaign list's). `map/<stem>/preview` is the import's PNG,
+  copied as it is; a map without one lists `map/<stem>/preview` under
+  `skipped`. Halo 1 maps are not in the catalog (`catalog.json`): their map
+  list records are the import's, not the disc's.
+- **Cache key.** Each converted map's path, size and header, and
+  `<data>/campaigns/halo1/import.stamp` (the Halo 1 disc's hash and the
+  converter version), join the art's cache key, so a new conversion
+  extracts again and an unchanged one does not.
+- **Frame.** Halo 1 levels are low-poly: a canyon floor is a few dozen
+  large triangles, one or two to a frame grid cell, which [the
+  frame](#pipeline) (step 3, at least 3 triangles a dense cell) would leave
+  out. For a Halo 1 map any triangle makes a cell dense
+  (`Level::with_sparse_frame`); Halo 2's maps keep the rule as it was.
+- **Shared blocks.** The converter places identical tag blocks once, so a
+  converted render model's blocks may lie in another tag's payload.
+  `tags::model::RenderModelGeometry::read_in` then decodes the model
+  against the whole metadata from the tag's address (as
+  `collision::Bsp::read` does for collision); the extractor passes the
+  metadata it has read already.
+- **What differs.** The campaign levels' scripts are the converter's; when
+  they do not decompile, no BSP is flagged cinematic and the level lists
+  `map/<stem>/cinematic` under `skipped` (all its BSPs are drawn). Nothing
+  of the maps is in the repository; the tests build invented packages.
 
 ### `views.json`
 

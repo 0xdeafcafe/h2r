@@ -544,6 +544,7 @@ dependencies = [
 name = "bink-hle"
 version = "0.1.0"
 dependencies = [
+ "audio",
  "movies",
  "runtime",
  "xiso",
@@ -646,6 +647,7 @@ dependencies = [
  "live-telemetry",
  "lockstep",
  "map",
+ "movies",
  "perf",
  "png",
  "runtime",
@@ -937,6 +939,7 @@ dependencies = [
  "cloud-saves",
  "content",
  "d3d",
+ "diskclean",
  "dsound",
  "emit",
  "flate2",
@@ -1541,6 +1544,14 @@ dependencies = [
  "option-ext",
  "redox_users",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "diskclean"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libc",
 ]
 
 [[package]]
@@ -6325,6 +6336,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "app-icon",
+ "boot",
  "content",
  "dear-imgui-rs",
  "dear-imgui-wgpu",
@@ -6341,6 +6353,7 @@ dependencies = [
  "pollster",
  "rfd",
  "scenario-edit",
+ "serde_json",
  "variants",
  "wgpu",
  "winit",
