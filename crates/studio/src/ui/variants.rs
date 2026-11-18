@@ -262,8 +262,15 @@ fn setting_row(
             let mut out = None;
             if let Some(_c) = ui.begin_combo(&wid, shown) {
                 for c in &d.choices {
+                    // Ours: the game plays it; its own editor shows it too
+                    // under h2recomp (docs/game/game-options.md).
+                    let label = if c.ours {
+                        format!("{}  (h2recomp)", c.label)
+                    } else {
+                        c.label.clone()
+                    };
                     if ui
-                        .selectable_config(&c.label)
+                        .selectable_config(&label)
                         .selected(c.value == value)
                         .build()
                         && c.value != value

@@ -647,6 +647,7 @@ dependencies = [
  "tags",
  "timeline",
  "toml",
+ "variants",
  "vfs",
  "x87",
  "xapi",

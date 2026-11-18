@@ -609,6 +609,36 @@ pub fn check(v: &GameVariant) -> Vec<Problem> {
     c.out
 }
 
+/// Respawn time (setting 17).
+pub const RESPAWN: SettingId = SettingId(17);
+/// Respawn time modifier (setting 25): 0 inheritance, 1 cycling, 2 none.
+pub const RESPAWN_MODIFIER: SettingId = SettingId(25);
+/// The modifier's cycling value.
+pub const CYCLING: i32 = 1;
+
+/// Our own rules, beyond the game's clean-up: records the clean-up keeps
+/// but the game cannot play (docs/game/game-options.md). Cycling rounds
+/// each wait up to a multiple of the respawn time, dividing by it
+/// (`0x15d11f`): with a respawn time of 0 the host divides by zero.
+pub fn ours(v: &GameVariant) -> Vec<Problem> {
+    let mut out = Vec::new();
+    if v.get(RESPAWN) == Some(0) && v.get(RESPAWN_MODIFIER) == Some(CYCLING) {
+        out.push(Problem {
+            offset: field(RESPAWN).unwrap().offset,
+            what: "a respawn time of 0 with cycling respawns divides by zero in the game".into(),
+        });
+    }
+    out
+}
+
+/// Everything our editors refuse to save or link: the clean-up's rules,
+/// then [`ours`].
+pub fn refused(v: &GameVariant) -> Vec<Problem> {
+    let mut out = check(v);
+    out.extend(ours(v));
+    out
+}
+
 struct Checker<'a> {
     v: &'a GameVariant,
     out: Vec<Problem>,
@@ -813,6 +843,86 @@ mod tests {
         r.set_game_type(GameType::Oddball);
         r.raw[1] = 1;
         assert_eq!(check(&r)[0].offset, 0);
+    }
+
+    /// docs/game/game-options.md, "The options to add": values the editor
+    /// never offers but the clean-up keeps. They load, save and travel
+    /// like any other value; one past each limit is refused.
+    #[test]
+    fn the_cleanup_keeps_values_the_editor_never_offers() {
+        let wider: &[(u32, i32, i32)] = &[
+            (89, 1, 0x15),  // starting weapon "None"; 0x15 is past the byte's limit
+            (89, 20, 0x15), // a weapon slot the editor does not list
+            (94, 15, 0x15), // the same for the secondary weapon
+            (17, 0, -1),    // respawn time 0 (instant)
+            (17, 0x7fff, 0x8000),
+            (2, 0x7fff, 0x8000),  // score to win
+            (10, 0x7fff, 0x8000), // time limit, seconds
+            (16, 0x7fff, 0x8000), // lives
+            (18, 0x7fff, 0x8000), // suicide penalty
+            (26, 0x7fff, 0x8000), // betrayal penalty
+            (93, 8, 9),           // team count: stored, but no editor row
+        ];
+        for &(id, ok, bad) in wider {
+            let mut v = GameVariant::blank(GameType::Slayer);
+            v.set(SettingId(id), ok).unwrap();
+            assert!(check(&v).is_empty(), "{id}={ok}: {:?}", check(&v));
+            let back = GameVariant::from_bytes(&v.to_bytes()).unwrap();
+            assert_eq!(back.get(SettingId(id)), Some(ok));
+            if v.set(SettingId(id), bad).is_ok() {
+                assert!(!check(&v).is_empty(), "{id}={bad} should be refused");
+            }
+        }
+    }
+
+    #[test]
+    fn respawn_zero_with_cycling_is_refused() {
+        let mut v = GameVariant::blank(GameType::Slayer);
+        v.set(RESPAWN, 0).unwrap();
+        for (modifier, refused_) in [(0, false), (CYCLING, true), (2, false)] {
+            v.set(RESPAWN_MODIFIER, modifier).unwrap();
+            assert!(check(&v).is_empty(), "the game keeps it");
+            assert_eq!(!refused(&v).is_empty(), refused_, "modifier {modifier}");
+        }
+        v.set(RESPAWN, 1).unwrap();
+        assert!(
+            refused(&v).is_empty(),
+            "1 s with cycling divides by one second"
+        );
+    }
+
+    /// docs/game/game-options.md, "Where the extension lives": the bytes
+    /// the clean-up never looks at, for every game type. Anything written
+    /// there passes the clean-up and survives a byte round trip.
+    #[test]
+    fn the_cleanup_ignores_the_spare_bytes() {
+        const SPARE: [std::ops::Range<usize>; 5] =
+            [0x5c..0x74, 0x8c..0xa4, 0xb8..0xcc, 0xd8..0xf0, 0x10c..0x130];
+        for ty in GameType::ALL {
+            let mut v = GameVariant::blank(ty);
+            match ty {
+                GameType::Ctf | GameType::Assault => v.set(SettingId(91), 1).unwrap(),
+                GameType::Territories => {
+                    for s in [74, 98, 99] {
+                        v.set(SettingId(s), 1).unwrap();
+                    }
+                }
+                _ => {}
+            }
+            assert!(check(&v).is_empty(), "{ty}: {:?}", check(&v));
+            for r in SPARE.iter().cloned().chain([2..3]) {
+                for i in r {
+                    v.raw[i] = 0xa5;
+                }
+            }
+            assert!(check(&v).is_empty(), "{ty}: {:?}", check(&v));
+            assert_eq!(GameVariant::from_bytes(&v.to_bytes()).unwrap(), v);
+            // No setting the game's writer knows lives there.
+            for s in all_settings() {
+                let at = field(s).unwrap().offset;
+                assert!(!SPARE.iter().any(|r| r.contains(&at)), "setting {}", s.0);
+            }
+        }
     }
 
     #[test]
