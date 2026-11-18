@@ -346,7 +346,7 @@ with no retail template read:
   model's `hlmt +0x20` physics model is null (`cmp [hlmt+0x24],-1` at
   `0x000eebcb`), and `object_new` then deletes the vehicle, so through
   version 37 a rebuilt vehicle was placed but never created. Version 38
-  gave each a stand-in sphere; since version 42 the `phmo` is Halo 1's
+  gave each a stand-in sphere; since version 43 the `phmo` is Halo 1's
   collision as Havok shapes (Physics models from Halo 1, below): one
   rigid body on the object (node -1) holding every collision node's
   solid cells, placed by the model's default pose, of Halo 1's `phys`
@@ -456,8 +456,8 @@ written as a machine of type platform (no behaviour of its own); its
 light is not carried. Sounds and effects stay null (Halo 1's are `effe`
 tags the converter does not build). Havok, which moves the player, sees a
 device only through a physics model, and Halo 1's have none; through
-version 41 a closed door showed, animated and stopped bullets (its
-`coll`) but did not block the player. Since version 42 a device with
+version 42 a closed door showed, animated and stopped bullets (its
+`coll`) but did not block the player. Since version 43 a device with
 solid collision gets a `phmo` built from it (below): one rigid body per
 collision node, on the model node of the same name, so each part moves
 with its node as the door opens, as the disc's doors have (V:
@@ -509,14 +509,15 @@ The layout follows the disc's polyhedron physics models (V:
   materials are not carried.
 - the shapes' Havok headers and pointers stay zero; the engine writes
   them at load (`0x001ea9c0`).
-- no block of a `phmo` is shared with another tag (since version 43,
-  `tags::repo::build::IN_PLACE`). The loader turns each rigid body's and
+- no block of a `phmo` is shared with another tag
+  (`tags::repo::build::IN_PLACE`). The loader turns each rigid body's and
   list child's `{type, index}` reference into a pointer in the block
   itself, so a block two tags share is resolved twice and the second
   pass reads a pointer as a reference: the resolver (`0x001eaf30`)
   returns null for it. A fresh map shares equal blocks between tags by
-  content, and version 42's a10 faulted at `0x002fc139` (the list's
-  bounding box reading its first child), its cryotube vehicle and
+  content, and the first build of these models (a10, 42 on its branch)
+  faulted at `0x002fc139` (the list's bounding box reading its first
+  child), its cryotube vehicle and
   machine having equal list children; three a10 doors shared rigid
   bodies the same way. `physics_models_load_as_the_engine_reads_them`
   (h1campaign `disc.rs`) checks every converted map's physics models
@@ -579,7 +580,7 @@ devices name their placement (a fixture's names its machine).
   for), and the other object groups (`bloc`, `garb`, `proj`, `crea`,
   `ssce`), which `struct obje` already covers.
 - **Physics shapes from Halo 1**: built from the collision BSP's solid
-  cells since version 42. Open: whether a device's bodies need retail's
+  cells since version 43. Open: whether a device's bodies need retail's
   `block_30` node pairs, the shape header's material index table, and
   the rigid body words at `+0x18`/`+0x1c`.
 - **More converter paths**: the other objects (templated vehicles,
