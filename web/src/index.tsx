@@ -43,6 +43,7 @@ const Clans = lazy(parts.clans);
 const ClanPage = lazy(() => parts.clans().then((m) => ({ default: m.ClanPage })));
 const Admin = lazy(parts.admin);
 const SignIn = lazy(parts.signin);
+const DashboardConcept = lazy(() => import("./dash/concepts/Concept"));
 const Viewer3DPage = lazy(() => import("./viewer/Popout"));
 
 const idle = (f: () => void) =>
@@ -64,6 +65,7 @@ const OldPlayer = () => <Navigate href={`/stats/players/${useParams().tag}`} />;
 render(
   () => (
     <Router root={Veil}>
+      <Route path="/dash/concepts/:concept" matchFilters={{ concept: ["orbital", "silverline", "switchboard"] }} component={DashboardConcept} />
       <Route path="/dash/teams" component={() => <Navigate href="/dash/clans" />} />
       <Route path="/dash/teams/:tag" component={() => <Navigate href={`/dash/clans/${useParams().tag}`} />} />
       <Route path={["/", "/dash/:section", "/dash/:section/:tag"]} component={Dashboard} />
