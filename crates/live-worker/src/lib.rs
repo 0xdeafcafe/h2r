@@ -10,6 +10,7 @@
 //! [`sqlstore`] and [`settings`] build and are tested on this machine as
 //! well. The Worker itself (`entry`, `dosql`, `r2`) builds only for wasm32.
 
+pub mod doretry;
 pub mod settings;
 pub mod site;
 pub mod sqlstore;

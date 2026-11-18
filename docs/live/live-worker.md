@@ -314,6 +314,36 @@ instead, which spawns none of them:
 
 So an idle hub, sockets open or not, has nothing pending, and hibernates.
 
+## Deploys and retries
+
+A deploy resets every Durable Object: calls in flight throw ("Durable
+Object reset because its code was updated", "Network connection lost") with
+`retryable` set, and the hub replays its log on the next call. The fetch
+handler (`entry::fetch_retrying`, decisions in `doretry`, unit-tested on
+this machine) answers such a throw by:
+- calling again, 100 ms then 400 ms later (3 calls in all), if the request is
+  safe to repeat: GET, HEAD, OPTIONS, PUT, DELETE, `POST /v1/presence/ping`,
+  and the signed-event POSTs (`/v1/events`, `/v1/sessions/{id}/events`), which
+  the hub takes once by their nonce, a guard rebuilt from the log;
+- otherwise, or when the calls run out, `503` with `Retry-After: 2` and the
+  API's error body (`unavailable`), not a bare 500, so a client knows to
+  come back;
+- an overloaded object (`overloaded`) gets the 503 at once: calling again
+  would only add to its load.
+
+Anything else thrown surfaces as before. The single-use token guard (`jti`)
+is in the hub's memory and is lost on a reset, so a repeat with the same
+token is accepted; that is why only requests that are idempotent or nonce-
+guarded are repeated here. The game client has its own retries and a grace
+before it calls the connection lost ([live.md](live.md) "Outages"), and the
+restarted hub renews presence, session and game deadlines, so a deploy does
+not expire anyone who is still pinging.
+
+Sockets (`/v1/stream`, ingest, the co-op relay) are closed by a deploy;
+their attachments survive hibernation, not a deploy. The relay is not used
+by the game at runtime yet; for the telemetry ingest socket's reconnect,
+see [live-telemetry.md](live-telemetry.md).
+
 ## The co-op relay
 
 `/v1/sessions/{id}/relay` goes to a `CoopRelay` Durable Object named by

@@ -70,9 +70,66 @@ async fn fetch(
             .id_from_name(HUB_NAME)?
             .get_stub()?,
     };
-    let resp = stub.fetch_with_request(Request::try_from(req)?).await?;
+    let method = req.method().as_str().to_string();
+    let resp = fetch_retrying(&stub, Request::try_from(req)?, &method, &path).await?;
     let resp: worker::HttpResponse = resp.try_into()?;
     Ok(resp.map(axum::body::Body::new))
+}
+
+/// Calls the object, again if a deploy reset it under a request that is
+/// safe to repeat; a 503 with `Retry-After` if it cannot be reached
+/// ([`crate::doretry`]).
+async fn fetch_retrying(
+    stub: &worker::Stub,
+    req: Request,
+    method: &str,
+    path: &str,
+) -> Result<Response> {
+    use crate::doretry::{self, Outcome, Thrown};
+    let mut attempt = 1;
+    loop {
+        // Each attempt sends a copy (the body teed), so a retry has its own.
+        let error = match stub.fetch_with_request(req.clone()?).await {
+            Ok(resp) => return Ok(resp),
+            Err(e) => e,
+        };
+        let original = error.to_js_value();
+        let flag = |name: &str| {
+            js_sys::Reflect::get(&original, &JsValue::from_str(name))
+                .ok()
+                .and_then(|v| v.as_bool())
+        };
+        let thrown = Thrown {
+            retryable: flag("retryable"),
+            overloaded: flag("overloaded"),
+            message: error.to_string(),
+        };
+        match doretry::decide(&thrown, method, path, attempt) {
+            Outcome::Retry(pause) => {
+                worker::console_log!(
+                    "live: {method} {path} attempt {attempt} threw ({}), retrying",
+                    thrown.message
+                );
+                worker::Delay::from(pause).await;
+                attempt += 1;
+            }
+            Outcome::Unavailable => {
+                worker::console_log!(
+                    "live: {method} {path} unavailable after {attempt} attempt(s): {}",
+                    thrown.message
+                );
+                let mut resp = Response::from_bytes(
+                    doretry::unavailable_body(&thrown.message).into_bytes(),
+                )?
+                .with_status(503);
+                resp.headers_mut()
+                    .set("retry-after", &doretry::RETRY_AFTER_S.to_string())?;
+                resp.headers_mut().set("content-type", "application/json")?;
+                return Ok(resp);
+            }
+            Outcome::Fail => return Err(error),
+        }
+    }
 }
 
 #[durable_object]
