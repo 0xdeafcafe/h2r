@@ -986,7 +986,22 @@ skipped light never reaches.
    so every light keeps its D3D passes.
 2. **The light's constants**: trace `0x0004a1e0` and `0x00048ee0` and
    port them as pure functions of `Light` and the `ligh` definition, with
-   tests against invented lights. Started (Code):
+   tests against invented lights. `0x0004a1e0` and `0x000497a0` are done
+   (Code): `engine::light_constants::light_globals` returns the whole
+   block below, reading guest memory and writing none, and
+   `LightGlobals::write` stores it. The arithmetic is the original's
+   instruction for instruction, SSE through the `simd` crate under the
+   caller's MXCSR and the special frame's x87 block through `x87::abi`
+   under its control word, so the words are bit-equal (NaNs, rounding
+   modes and precisions included); the image's constants are read at their
+   addresses. `0x001650a0` (the sphere's screen bounds) is the caller's to
+   answer, and `0x0003a550` (the scissor) the caller's to run after.
+   `engine/tests/light_constants_differential.rs` runs the original,
+   lifted, on the IR interpreter from seeded states (records, contexts of
+   each type, the special frame, every colour scale mode, projected and
+   whole-viewport rectangles, float edge values, three MXCSR and x87
+   modes) and compares all memory; `engine/tests/light_constants.rs` checks
+   invented lights. What the trace found:
    - `0x0004a1e0` (`ret 0x10`, about 250 instructions): EAX the light
      record's `+0x84` (so `[EAX+0x50]` is the record's colour A at
      `+0xd4`, `+0x5c` colour B, `+0x68`..`+0x84` the record's words
@@ -1005,8 +1020,20 @@ skipped light never reaches.
      instructions, `ret 0x20`: the light's frustum and gel projection
      into `0x0048597c`, `0x00485a0c`, `0x00485a1c`, `0x00485a2c`) and
      `0x0003a550` (the scissor from that rectangle, through D3D).
+   - `0x000497a0` builds a 31-word frame block: the origin (the
+     context's `+0x2c`, or, for a definition with flags `0x20` and
+     `0x40000`, the globals at `0x004b9da0` moved along the light's axes
+     by an x87 sway of sines and cosines of its first two words), the
+     projection rows (by context type: 0 the context's and the light's
+     up vector, 2 cross products of the axes over the projection's
+     extents, 1 none), forward times -1 over the depth range, either a
+     constant vector or the projective tail (definition word `+0x8e` is
+     1), the record's offsets `+0xf0` and `+0xf4` along forward, and both
+     colours times the scale, halved over 1 or quartered over 2 (mode at
+     `0x00485a2c`) and clamped to `[0, 1]`. Words a path does not set
+     keep their old values, so the port reads them.
    - `0x00048ee0` (about 400 instructions): the shadow projection, `0x28`
-     dwords at `0x004c9798`.
+     dwords at `0x004c9798`. Not ported yet: next.
    These globals are what the layer-12/13 templates' engine inputs read,
    so the port's output is that block, compared word for word with the
    game's in a test that runs on recorded inputs.

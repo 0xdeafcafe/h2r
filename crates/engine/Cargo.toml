@@ -8,6 +8,10 @@ description = "Hand-written Rust replacements for Halo 2 engine functions, over 
 [dependencies]
 # Field names for the accessors `record!` generates (src/view.rs).
 paste = "1"
+# For src/light_constants.rs: the original's SSE and x87 arithmetic, bit
+# for bit.
+simd.workspace = true
+x87.workspace = true
 # For src/runtime_glue.rs (feature `runtime-glue`): registration of the
 # adapters with the runtime's dispatch table.
 runtime = { workspace = true, optional = true }
