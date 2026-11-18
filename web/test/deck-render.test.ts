@@ -9,6 +9,7 @@ import { SERIES } from "../src/deck/palette";
 import { sideOf } from "../src/dash/cross";
 
 let html = "";
+let usage = "";
 const ROUTER = `${import.meta.dir}/../node_modules/@solidjs/router/dist/index.jsx`;
 
 beforeAll(async () => {
@@ -35,6 +36,11 @@ beforeAll(async () => {
   html = renderToString(() => createComponent(Router, {
     url: "/dash/admin/style",
     get children() { return createComponent(Route, { path: "/dash/admin/style", component: StylePage }); },
+  }));
+  const { default: UsagePage } = await import("../src/deck/UsagePage");
+  usage = renderToString(() => createComponent(Router, {
+    url: "/dash/admin/usage",
+    get children() { return createComponent(Route, { path: "/dash/admin/usage", component: UsagePage }); },
   }));
 });
 
@@ -80,5 +86,20 @@ describe("the dense dashboard style page", () => {
 
   test("the sample data says it is a sample", () => {
     expect(html).toContain("fixed sample data");
+  });
+});
+
+describe("the Live admin usage page", () => {
+  test("is on the dashboard side, under the server in the trail", () => {
+    expect(sideOf("/dash/admin/usage")).toBe("dash");
+    expect(usage).toContain(">live admin<");
+    expect(usage).toMatch(/href="\/dash\/server" class="dk-back[ "]/);
+  });
+
+  test("signed out it reads nothing and asks for an admin's sign-in, with no filters or numbers", () => {
+    expect(usage).toContain("sign in first");
+    expect(usage).toMatch(/href="\/dash\/signin"/);
+    expect(usage).not.toContain("dk-tile");
+    expect(usage).not.toContain("top accounts by");
   });
 });

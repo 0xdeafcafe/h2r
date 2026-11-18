@@ -143,3 +143,13 @@
 @media (forced-colors: active) {
   .dk-panel, .dk-face, .dk-well, .dk-table-wrap { clip-path: none; border: 1px solid CanvasText; }
 }
+
+/* ---- states: a nested grid, a refetch holding the last answer, notes ---- */
+.dk-subgrid { max-width: none; margin: 0; }
+.dk-stale { opacity: .55; }
+@media (prefers-reduced-motion: no-preference) { .dk-subgrid { transition: opacity .15s; } }
+.dk-state { padding: 10px 14px; border: 1px solid rgba(155, 227, 78, .3); background: rgba(3, 18, 3, .7); color: var(--ink-2); }
+.dk-state b { margin-right: 6px; }
+.dk-state--bad { border-color: var(--bad); color: var(--ink); }
+.dk-state--bad b { color: var(--bad); }
+.dk-dim { color: var(--ink-3); }

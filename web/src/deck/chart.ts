@@ -103,6 +103,9 @@ export function columnPath(x: number, y: number, w: number, h: number, r = 4): s
 
 export interface Series { key: string; label: string; values: readonly number[] }
 
+/** A row of ranked bars; `other` is the folded tail. */
+export interface RankRow { key: string; label: string; value: number; other?: boolean; href?: string }
+
 /** Stacked segments per index, bottom first: `[y0, y1]` per series, in the series' order. */
 export function stack(series: readonly Series[]): { key: string; spans: [number, number][] }[] {
   const n = Math.max(0, ...series.map((s) => s.values.length));

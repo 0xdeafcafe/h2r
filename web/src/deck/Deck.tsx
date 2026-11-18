@@ -10,7 +10,7 @@ import { For, Index, Show, createMemo, createSignal, onCleanup, onMount, type JS
 import { A, useNavigate } from "@solidjs/router";
 import {
   areaPath, columnPath, linePath, nearestIndex, niceTicks, peak, scale, shares, shortDay, sortRows, stack,
-  type Day, type Delta, type Series, type SortDir,
+  type Day, type Delta, type RankRow, type Series, type SortDir,
 } from "./chart";
 import { ACCENT, BASELINE, GRID, QUIET, WELL, seriesColor } from "./palette";
 import "../styles/deck.css";
@@ -312,7 +312,6 @@ export function SeriesTable(props: { days: readonly Day[]; series: readonly Seri
 
 // ---------- bars ----------
 
-export interface RankRow { key: string; label: string; value: number; other?: boolean; href?: string }
 
 /** Ranked horizontal bars, one hue, largest first, the value at each tip;
  *  an "other" row in the quiet hue. Bars share one baseline and one scale. */

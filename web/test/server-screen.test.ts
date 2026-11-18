@@ -18,6 +18,7 @@ import {
   serverPods,
   adminSourceWords,
   HALO_ADMIN,
+  LIVE_ADMIN_USAGE,
 } from "../src/admin/server";
 import type { LocalAccount } from "../src/state/account";
 import { canonicalJson, parseJws, b64urlDecode } from "../src/state/verify";
@@ -142,7 +143,7 @@ describe("admin gating", () => {
     const admin = serverPods("overview", true);
     expect(admin.map((p) => p.to)).toEqual(["/dash/server/invites", "/dash/server/accounts", HALO_ADMIN, "/dash/server/connect"]);
     expect(serverPods("invites", true).map((p) => p.run ?? p.to)).toEqual(["create", "copy", "/dash/server/accounts", "/dash/server"]);
-    expect(serverPods("accounts", true).map((p) => p.to)).toEqual(["/dash/server/invites", "/dash/server/import", HALO_ADMIN, "/dash/server"]);
+    expect(serverPods("accounts", true).map((p) => p.to)).toEqual(["/dash/server/invites", "/dash/server/import", LIVE_ADMIN_USAGE, "/dash/server"]);
     expect(serverPods("import", true).map((p) => p.to)).toEqual(["/dash/server/accounts", "/dash/server/invites", HALO_ADMIN, "/dash/server"]);
     // Player reports are the service's, on the dashboard; visitors get no pods there.
     expect(serverPods("reports", true).map((p) => p.to)).toEqual(["/dash/server/accounts", "/dash/server/invites", "/dash/players", "/dash/server"]);
@@ -158,6 +159,7 @@ describe("admin gating", () => {
       }
     }
     expect(HALO_ADMIN).toBe("/stats/admin");
+    expect(LIVE_ADMIN_USAGE).toBe("/dash/admin/usage");
   });
 });
 

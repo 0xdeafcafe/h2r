@@ -198,7 +198,7 @@ export async function fetchServerFacts(api: string, fetchFn: typeof fetch = fetc
   return parseServerFacts(await r.json());
 }
 
-async function adminGet(api: string, path: string, aud: string, me: LocalAccount, fetchFn: typeof fetch): Promise<unknown> {
+export async function adminGet(api: string, path: string, aud: string, me: LocalAccount, fetchFn: typeof fetch): Promise<unknown> {
   const token = await issueToken(me, aud, ADMIN_READ);
   const r = await fetchFn(`${api}${path}`, { headers: { accept: "application/json", authorization: `Bearer ${token}` } });
   if (!r.ok) return fail(r);
@@ -278,6 +278,9 @@ export type ServerView = "overview" | "invites" | "accounts" | "import" | "repor
  *  dashboard. */
 export const HALO_ADMIN = "/stats/admin";
 
+/** The Live admin's usage screen (docs/live/web-boundary.md §5), in the dense style. */
+export const LIVE_ADMIN_USAGE = "/dash/admin/usage";
+
 /** The pods of each server screen. Admin tools only for an admin
  *  (`isMeAdmin() === true`); everyone else, and anyone while that is still
  *  unknown, gets the visitor's set. Importing an account is open to
@@ -322,7 +325,7 @@ export function serverPods(view: ServerView, admin: boolean | null): ServerPod[]
       return [
         { label: "invites", glyph: "key", to: "/dash/server/invites" },
         { label: "import account", glyph: "download", to: "/dash/server/import" },
-        { label: "halo admin", glyph: "gear", to: HALO_ADMIN },
+        { label: "usage", glyph: "history", to: LIVE_ADMIN_USAGE },
         { label: "your server", glyph: "globe", to: "/dash/server", back: true },
       ];
     case "import":

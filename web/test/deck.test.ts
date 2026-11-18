@@ -6,8 +6,9 @@ import {
   scale, shares, shortDay, sortRows, stack, topN,
 } from "../src/deck/chart";
 import { SERIES, seriesColor } from "../src/deck/palette";
-import { UPLOAD_KINDS, messagesOf, uploaded, usageMock } from "../src/deck/mock";
-import { tileValue, usageView } from "../src/deck/usageView";
+import { mockOverview, usageMock } from "../src/deck/mock";
+import { messagesOf, tileValue, uploadOf, usageView } from "../src/deck/usageView";
+import { UPLOAD_KINDS } from "../src/admin/usage";
 
 describe("days", () => {
   test("a range ends on its last day, oldest first, across a month end", () => {
@@ -171,15 +172,18 @@ describe("the sample data and the usage view", () => {
     expect(m.days.at(-1)!.day).toBe("2026-11-18");
   });
 
+  const view = (s: typeof m, range: number, top?: number) =>
+    usageView(mockOverview(s, range), mockOverview(s, range * 2), "2026-11-18", range, top);
+
   test("a range's charts cover exactly its days, each series a value a day", () => {
-    const v = usageView(m, "2026-11-18", 14);
+    const v = view(m, 14);
     expect(v.days).toEqual(dayRange("2026-11-18", 14));
     for (const s of [...v.upload, ...v.messages, ...v.people, ...v.events]) expect(s.values).toHaveLength(14);
     expect(v.upload.map((s) => s.key)).toEqual(UPLOAD_KINDS.map((k) => k.key));
   });
 
   test("tiles total the range and compare with the range before", () => {
-    const v = usageView(m, "2026-11-18", 7);
+    const v = view(m, 7);
     const last7 = m.days.slice(-7), prev7 = m.days.slice(-14, -7);
     const events = v.tiles.find((t) => t.key === "events")!;
     expect(events.value).toBe(last7.reduce((a, d) => a + d.events, 0));
@@ -188,36 +192,48 @@ describe("the sample data and the usage view", () => {
     const msgs = v.tiles.find((t) => t.key === "messages")!;
     expect(msgs.value).toBe(last7.reduce((a, d) => a + messagesOf(d), 0));
     const up = v.tiles.find((t) => t.key === "uploaded")!;
+    expect(up.value).toBe(last7.reduce((a, d) => a + uploadOf(d), 0));
     expect(up.bytes).toBe(true);
     expect(tileValue(up, bytes)).toMatch(/ (MB|GB)$/);
     expect(tileValue(events, bytes)).toBe(compact(events.value));
+    expect(v.tiles.map((t) => t.key)).toEqual(["uploaded", "events", "messages", "games", "sign_ins", "reports"]);
+    expect(v.tiles.find((t) => t.key === "reports")!.upIsGood).toBe(false);
+  });
+
+  test("without the wider read the tiles show no change", () => {
+    const v = usageView(mockOverview(m, 7), null, "2026-11-18", 7);
+    expect(v.tiles.every((t) => t.delta === null)).toBe(true);
   });
 
   test("a range reaching before the data is zero there, not missing", () => {
-    const v = usageView(usageMock("2026-11-18", 10), "2026-11-18", 30);
+    const v = view(usageMock("2026-11-18", 10), 30);
     expect(v.days).toHaveLength(30);
     expect(v.events[0]!.values.slice(0, 20).every((x) => x === 0)).toBe(true);
-    expect(v.tiles.find((t) => t.key === "games")!.delta.text).toBe("new");
+    expect(v.tiles.find((t) => t.key === "games")!.delta!.text).toBe("new");
   });
 
   test("event types: the biggest first, the tail folded into one quiet other row", () => {
-    const v = usageView(m, "2026-11-18", 30, 5);
+    const o = mockOverview(m, 30);
+    const v = usageView(o, null, "2026-11-18", 30, 5);
     expect(v.eventTypes).toHaveLength(6);
     expect(v.eventTypes[0]!.label).toBe("GameFrame");
     const other = v.eventTypes.at(-1)!;
-    expect(other).toMatchObject({ other: true, label: `${m.event_types.length - 5} other types` });
-    expect(v.eventTypes.reduce((a, r) => a + r.value, 0)).toBe(m.event_types.reduce((a, t) => a + t.count, 0));
+    expect(other).toMatchObject({ other: true, label: `${o.event_types.length - 5} other types` });
+    expect(v.eventTypes.reduce((a, r) => a + r.value, 0)).toBe(o.event_types.reduce((a, t) => a + t.count, 0));
   });
 
-  test("stored drops kinds with nothing stored (the relay) and totals the rest", () => {
-    const v = usageView(m, "2026-11-18", 30);
-    expect(v.stored.some((r) => r.key === "relay")).toBe(false);
-    expect(v.storedTotal).toBe(Object.values(m.stored).reduce((a, b) => a + b, 0));
-    expect(v.stored.map((r) => r.value)).toEqual([...v.stored.map((r) => r.value)].sort((a, b) => b - a));
+  test("stored drops kinds with nothing stored and totals the rest, biggest first", () => {
+    const o = { ...mockOverview(m, 30), stored: { events: 5, content: 0, saves: 9 } };
+    const v = usageView(o, null, "2026-11-18", 30);
+    expect(v.stored.map((r) => r.key)).toEqual(["saves", "events"]);
+    expect(v.storedTotal).toBe(14);
   });
 
-  test("an account's upload is the sum of its kinds", () => {
-    const a = m.accounts[0]!;
-    expect(uploaded(a)).toBe(a.bytes_up.events + a.bytes_up.frames + a.bytes_up.content + a.bytes_up.relay);
+  test("an account's upload and messages are the sums of their kinds", () => {
+    for (const a of m.accounts) {
+      expect(a.uploaded).toBe(a.up.events + a.up.frames + a.up.content + a.up.saves);
+      expect(a.messages_total).toBe(a.messages.friend_requests + a.messages.invites);
+      expect(a.stored_total).toBe(a.stored.events + a.stored.content + a.stored.saves);
+    }
   });
 });
