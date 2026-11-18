@@ -6,7 +6,8 @@
 //! method (or the NOT_YET stub) answer. Its [`Provider::methods`] replace
 //! the [`super::METHODS`] entries of the same name in `session.methods`
 //! (so a planned method turns "ready" when its definition has
-//! `planned: None`), and add new ones.
+//! `planned: None`), and add new ones. A method still planned answers
+//! NOT_YET before its params are checked or any provider is asked.
 //!
 //! Edits go through the tool's [`Action`]s and [`App::perform`], as the
 //! built-in namespaces do, so the window and the API stay one path:

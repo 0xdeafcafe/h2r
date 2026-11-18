@@ -595,12 +595,8 @@ impl Api {
                 ));
             }
         };
-        check_params(d, &params)?;
-        for p in &mut self.providers {
-            if let Some(r) = p.call(app, method, &params) {
-                return r;
-            }
-        }
+        // A planned method (no provider has defined it) is not built
+        // whatever its params: say so first.
         if let Some(lane) = d.planned {
             let mut e = err(
                 code::NOT_YET,
@@ -608,6 +604,12 @@ impl Api {
             );
             e.data = Some(json!({ "lane": lane, "method": method }));
             return Err(e);
+        }
+        check_params(d, &params)?;
+        for p in &mut self.providers {
+            if let Some(r) = p.call(app, method, &params) {
+                return r;
+            }
         }
         let p = P(&params);
         match method.split('.').next().unwrap_or("") {

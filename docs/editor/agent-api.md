@@ -201,7 +201,8 @@ pub trait Provider {
 and adds one line to `seams::register`. A provider answers ahead of the
 built-in methods and the planned stubs (`None` falls through to them); its
 `methods()` replace the table's entries of the same name, so a planned
-method lists as `ready` once its definition has `planned: None`. Params
+method lists as `ready` once its definition has `planned: None` (until
+then it answers `NOT_YET` whatever its params). Params
 reach it already checked against its shape. Its edits go through the
 tool's own actions and `App::perform`, as the built-in namespaces do, so
 the window and the API stay one path.
