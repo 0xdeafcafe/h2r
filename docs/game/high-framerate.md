@@ -764,10 +764,13 @@ No image rebuild: it is Rust in `d3d` and `boot`. Rebuild the `h2` binary.
 H2_FEATURES=impl.render.interpolate h2 play --fps 60 ...
 ```
 
-At exit it prints `d3d: interpolation: frames F blended B held H replays R
-substituted draws D snapped S deferred P size_mismatch Z unsure U dropped X;
-replay mode: N frames, A ms avg, M ms max`. `Z`, `U` and `X` count frames
-shown as the guest drew them by the guards below ("Guards"). `N` counts every frame the replay made (blended presents and
+At exit (and every 5 s while running) it prints `d3d: interpolation:
+frames F blended B held H replays R substituted draws D snapped S deferred
+P size_mismatch Z (extent Ze mapping Zm screen Zs overlay Zo) unsure U
+(camera Uc unpinned Up) dropped X; replay mode: N frames, A ms avg, M ms
+max`. `Z`, `U` and `X` count frames shown as the guest drew them by the
+guards below ("Guards"), `Z` and `U` split by the guard that held them.
+`N` counts every frame the replay made (blended presents and
 in-between frames) and the times are the render thread's wall time for
 each: its draws, plus `present_replay` for in-between frames (the
 guest's own present is not counted: it would happen anyway). That is
@@ -866,20 +869,40 @@ part instead (section 8).
     (`surface_texture`) keeps a snapshot of it taken right after the draw,
     so a replay never sees what the guest drew into the target since (a
     smaller pass, the next frame's image), which drew the picture at the
-    wrong size. A depth view, or a surface copied into the frame, cannot be
-    kept: the frame is held (`unsure`).
+    wrong size. A surface copied into the frame cannot be kept: the frame
+    is held (`unsure`, `unpinned`). Shadow maps need nothing: the texture a
+    depth level is sampled through (`Backend::depth_level_texture`) is
+    the backend's copy of its texels at that point, made once each time
+    the level is drawn, not a view. (The first version held every frame
+    that sampled one, which held most of gameplay.)
   - *Only centred perspective cameras* (`Persp::centred`: no shear, the
     axis within 5% of the screen's middle, a sane focal length). A
     perspective into pixels (screen-space UI, menus) is not a camera to
-    move: held (`unsure`).
-  - *E1's world draws must all map onto the whole target the same way*
-    (`Screen::covers_target`, `Screen::same`): the warp zooms and turns
-    about the screen's centre, so a screen-space mapping (offset 0) or a
-    sub-viewport would put the picture in the wrong place. Held
-    (`size_mismatch`).
+    move: held (`unsure`, `camera`).
+  - *E1 warps only a world it can show lands where the guest drew it*
+    (`interp::backend::world_screen`), else held (`size_mismatch`):
+    - `mapping`: every world draw's program must have a viewport
+      transform the replay can read (`interp::epilogue`, below), the same
+      as the camera draw's, covering the whole target, unscissored; partial
+      clears in the world hold too. Halo 2's programs apply their own
+      viewport constants (`c[10]` scale, `c[11]` offset, hardware
+      numbering), not D3D's `c-38`/`c-37` that the push-buffer registers
+      (`ResolvedDraw::hw`) hold. The first version read the registers, so
+      the guard checked a mapping the draws never used, and the overscan
+      (about clip-space 0) and the warp (about the registers' centre)
+      disagreed: the picture moved by a tenth of the difference between
+      the two centres, the jump toward the top-left seen on loading
+      screens and in scope zoom.
+    - `screen`: a world draw in screen space (pre-transformed, fixed
+      function, or without a centred perspective: an orthographic quad, a
+      perspective into pixels) is not part of the turning world: it would
+      be zoomed, or shrunk by the overscan and turned.
+    - `overlay`: a draw that uses the camera after the overlay starts
+      (a level draw after the first-person weapon) would go on top of the
+      turned world unturned.
   - *A made frame must show at the guest's frame's host size*
     (`Backend::surface_extent`, the view's scaled copy through
-    `ScaledBackend`), else it is not shown (`size_mismatch`).
+    `ScaledBackend`), else it is not shown (`size_mismatch`, `extent`).
   - *One made frame on the GPU at a time* (`Backend::gpu_fence`): while
     the last one is unfinished, idle slots are dropped and the guest's
     frames are shown as drawn (`dropped`), so replay work never queues up
@@ -1034,12 +1057,28 @@ against E1's world image per guest frame plus its warped frames.
 - **The world image, once per guest frame.** At the guest's present, the
   world's ops (clears, copies, draws) are drawn again into a world copy of
   the presented surface (and of its depth surfaces) with **overscan**:
-  every perspective block in those draws (camera, objects drawn with
-  world-view-projection, own projections) has its clip `x` and `y` scaled
-  by `1 / 1.1` (`reproject::OVERSCAN`), so the image covers 10% more of
-  the view in each direction. The guest's own frame can't be used: it is
-  not overscanned, and with no pass tag there is no point mid-frame to copy
-  it at.
+  each draw's own viewport scale (the `x` and `y` components its
+  program's epilogue multiplies by) is scaled by `1 / 1.1`
+  (`reproject::OVERSCAN`), so the picture shrinks about the screen's
+  centre and the image covers 10% more of the view in each direction (the
+  host clips in its own clip space, after the viewport transform, so what
+  lands outside the guest's frustum but inside the target is drawn). The
+  clip position is the guest's, so whatever else a program computes from
+  it is unchanged: Halo 2 has many programs that look a screen-space
+  texture up from it (`dp4 oT0.x, r12, c[8]`), which the first version,
+  scaling the camera's clip `x` and `y` instead, read at the wrong texel.
+  The guest's own frame can't be used: it is not overscanned, and with no
+  pass tag there is no point mid-frame to copy it at.
+- **The viewport transform** (`interp::epilogue`). The scale and offset
+  are found in each program's microcode, once per program: a symbolic run
+  that follows `oPos` from the clip position through `clip * k`, `1 / w`
+  and `+ o` with `k`, `o` constant components, and accepts the program
+  only when `oPos.xy` ends as `clip.xy / w * scale + offset`, `oPos.w` as
+  the clip `w`, and the scale components are read and flow nowhere else
+  (relative reads only above them, as skinning's are). D3D's epilogue
+  (`c-38`/`c-37`), Halo 2's (`c[10]`/`c[11]`) and a divide-first form with
+  scale and offset in one register are read; a pass-through (`mov oPos,
+  v0`) or a program that reads its window position back is not.
 - **The warp, per shown frame** (`Backend::warp_surface`, `gfx::blit::
   Warper`, `crates/gfx/shaders/warp.wgsl`). One full-screen pass draws the
   world image into the private copy of the presented surface through a
@@ -1048,8 +1087,9 @@ against E1's world image per guest frame plus its warped frames.
   the overscan, `R_N` frame N's camera rotation and `R_d` the display
   camera's (`reproject::display_rotation`: slerped from N-1 to N at alpha,
   or from N on by alpha with `_ahead`; a cut gives N's). It is mapped to
-  texture coordinates through the world draws' viewport, sampled linear,
-  clamped at the edge. No depth: a pure rotation needs none.
+  texture coordinates through the camera draw's viewport transform (the
+  one every world draw shares), sampled linear, clamped at the edge. No
+  depth: a pure rotation needs none.
 - **The overlay on top.** The depth surfaces the overlay uses get private
   copies cleared to far depth and zero stencil (the world under the
   overlay is a picture now), then the overlay's ops replay unchanged:
@@ -1101,12 +1141,19 @@ the same split on the synthetic scenes.
 `cargo test -p d3d --lib interp` adds `reproject`'s own: the warp samples
 the world image where it drew a point for a turned display camera; no turn
 gives the overscan zoom; display rotations blend, run ahead and snap on
-cuts. `cargo test -p d3d --test interp` adds, through the recording
-backend:
+cuts; and `epilogue`'s: D3D's and Halo 2's epilogues and a divide-first
+one are read, screen-space lookups from the clip position are allowed,
+pass-throughs, missing divides, a scale read or a window position read
+elsewhere, a second clip `w` and a relative read below the scale are not,
+and through the shader interpreter the overscan moves the position about
+the centre and leaves the rest alone. `cargo test -p d3d --test interp`
+adds, through the recording backend (the test draws run a real program
+with Halo 2's epilogue, `c[10]`/`c[11]`):
 
 - at the guest's present: the guest's calls, then the world image (clear
   and level draws, no weapon or HUD) into a surface of its own with the
-  camera's clip `x`, `y` scaled by the overscan, then a warp into the shown
+  program's viewport scale times the overscan and the camera untouched,
+  then a warp into the shown
   surface, a depth-only clear, the weapon and HUD with their own constants,
   and the present with the guest's flags; the warp at alpha 0 is not the
   plain zoom;
@@ -1118,7 +1165,22 @@ backend:
 - two views hold the guest's frame; D's line carries its own frame count
   and cost and E1's carries world images and warps;
 - the guest's own calls are the same as through a plain recording backend
-  in both E1 variants, and nothing is read back.
+  in both E1 variants, and nothing is read back;
+- a shadow map the world samples (`depth_level_texture`) blends in D and
+  both E1 variants;
+- world draws whose program maps elsewhere than D3D's registers say
+  (screen space, a quarter of the target) hold; a pre-transformed,
+  orthographic, fixed-function, unknown-program or scissored world draw
+  holds; a level draw after the weapon holds; a loading screen (a
+  pre-transformed background, particles with a centred camera, text) is
+  shown as drawn;
+- run through the shader interpreter, a world-image draw looks a
+  screen-space texture up at the same texel as the guest's draw while its
+  position moves in by the overscan about the centre;
+- the held counters name the guard.
+
+`cargo test -p d3d --test interp_gpu` draws E1 through the XDK's own
+epilogue (`c-38`/`c-37`).
 
 `cargo test -p gfx --lib warp` validates the warp shader with naga.
 `cargo test -p boot --lib interpolation` checks the switches (off by
@@ -1135,3 +1197,11 @@ default; reproject wins over interpolate, `_ahead` over plain).
    pass boundary with a wider projection set by the guest, instead of a
    second world draw (that halves its cost), and 120 Hz (a warp per
    display frame is cheap).
+4. After the guards above, a live run's held split says what still keeps
+   gameplay at 30: `size_mismatch (... mapping M screen S overlay O)`
+   names the guard. Not yet seen: whether Halo 2's world has
+   pre-transformed draws before the overlay, level draws after the
+   first-person weapon, or the five programs that read their window
+   position back (each holds E1), and whether its loading screen is held
+   by one of them or is a centred camera scene the warp now shows
+   correctly.

@@ -10,13 +10,15 @@
 //! `H = M_w * R_N * R_dᵀ * M_d⁻¹`, where `M` is the projection acting on
 //! directions (rows 0, 1 and 3 of `K`, columns 0-2), `M_w` the overscanned
 //! one the world image was drawn with, `R_N` the tick camera's rotation
-//! and `R_d` the display camera's. The viewport (`SET_VIEWPORT_SCALE` and
-//! `OFFSET`, pixels = ndc * scale + offset) turns it into texture
-//! coordinates.
+//! and `R_d` the display camera's. The program's viewport transform
+//! (pixels = ndc * scale + offset, [`super::epilogue`]) turns it into
+//! texture coordinates; the overscan scales that transform's scale, so in
+//! normalised device coordinates it is `diag(s, s, 1)` either way.
 
 use super::camera::Persp;
+use super::epilogue::Epilogue;
 use super::math::{Mat4, Quat};
-use super::model::{FrameModel, Kind, Tuning, read4, write};
+use super::model::{FrameModel, Kind, Tuning};
 use crate::backend::ResolvedDraw;
 use crate::shader::Constants;
 
@@ -39,23 +41,16 @@ pub struct Screen {
 }
 
 impl Screen {
-    /// From a world draw: its viewport registers, or D3D's default mapping
-    /// over the target when they were never set.
-    pub fn of(draw: &ResolvedDraw) -> Screen {
-        let size = [draw.target.width as f64, draw.target.height as f64];
-        let s = draw.hw.viewport_scale;
-        let o = draw.hw.viewport_offset;
-        if s[0] == 0.0 || s[1] == 0.0 {
-            return Screen {
-                scale: [size[0] / 2.0, -size[1] / 2.0],
-                offset: [size[0] / 2.0, size[1] / 2.0],
-                size,
-            };
-        }
+    /// Where `draw`'s program puts its clip position, through the
+    /// viewport scale and offset its epilogue reads (`epilogue`, found in
+    /// its microcode: Halo 2's programs keep their own, not D3D's
+    /// `c58`/`c59` that `draw.hw` holds).
+    pub fn of(draw: &ResolvedDraw, epilogue: &Epilogue) -> Screen {
+        let (scale, offset) = epilogue.read(&draw.shader.constants);
         Screen {
-            scale: [s[0] as f64, s[1] as f64],
-            offset: [o[0] as f64, o[1] as f64],
-            size,
+            scale,
+            offset,
+            size: [draw.target.width as f64, draw.target.height as f64],
         }
     }
 
@@ -184,37 +179,30 @@ pub fn display_rotation(
 }
 
 /// The constants the world draws (`..world_draws`) are drawn with into the
-/// world image: every perspective block's clip `x` and `y` scaled by `s`.
+/// world image: each program's own viewport scale (`epilogues[i]`) times
+/// `s`, so the picture shrinks by `s` about the screen's centre and the
+/// view covers `1 / s` as much. The clip position stays as the guest's,
+/// so anything else a program computes from it (screen-space texture
+/// lookups, fog) is unchanged. A draw without an epilogue keeps its own
+/// constants (the caller holds such frames).
 pub fn overscan(
-    model: &FrameModel,
+    epilogues: &[Option<Epilogue>],
     world_draws: usize,
     s: f64,
     constants: &dyn Fn(usize) -> Constants,
 ) -> Vec<Option<Constants>> {
-    let mut out = vec![None; model.draws.len()];
-    for (i, d) in model.draws.iter().enumerate().take(world_draws) {
-        let blocks: Vec<_> = d
-            .blocks
-            .iter()
-            .filter(|b| matches!(b.kind, Kind::Camera | Kind::World(_) | Kind::Local(_)))
-            .collect();
-        if blocks.is_empty() {
-            continue;
-        }
-        let mut c = *constants(i);
-        for b in blocks {
-            let mut m = read4(&c, b.reg as usize, b.layout);
-            for j in 0..4 {
-                m[0][j] *= s;
-                m[1][j] *= s;
-            }
-            write(&mut c, b.reg as usize, b.layout, 4, &m);
-        }
-        let mut block = crate::shader::spare_constants();
-        *std::sync::Arc::get_mut(&mut block).expect("a spare block is unshared") = c;
-        out[i] = Some(block);
-    }
-    out
+    epilogues
+        .iter()
+        .enumerate()
+        .map(|(i, e)| {
+            let e = e.as_ref().filter(|_| i < world_draws)?;
+            let mut block = crate::shader::spare_constants();
+            let c = std::sync::Arc::get_mut(&mut block).expect("a spare block is unshared");
+            *c = *constants(i);
+            e.overscan(c, s);
+            Some(block)
+        })
+        .collect()
 }
 
 /// The first draw that goes on top of the warped world: the first draw with
