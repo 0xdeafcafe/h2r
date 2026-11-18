@@ -684,7 +684,7 @@ impl<'a> Converter<'a> {
         // The converted model has no variants; the engine then uses none.
         root.bytes[h2::DEFAULT_VARIANT..h2::DEFAULT_VARIANT + 4].fill(0);
         let template_hlmt = self.base.reference(&root.bytes, h2::MODEL);
-        let hlmt = self.model(rep, obj, template_hlmt, name)?;
+        let hlmt = self.model(rep, obj, template_hlmt, name, false)?;
         root.tag_ref(h2::MODEL as u32, hlmt.unwrap_or(TagId::NULL));
         if obj.physics.is_some() {
             rep.no_home.push(
@@ -696,19 +696,20 @@ impl<'a> Converter<'a> {
     }
 
     /// The `hlmt` and the converted tags under it. `None` when the Halo 1
-    /// object has no render model.
+    /// object has no render model. `rebuild`: the `hlmt` and the `mode`'s
+    /// materials from the definitions ([`crate::rebuild`]), no template.
     fn model(
         &mut self,
         rep: &mut ObjectReport,
         obj: &h1::Object,
         template_hlmt: Option<TagId>,
         name: &str,
+        rebuild: bool,
     ) -> Result<Option<TagId>> {
         let Some(mode_id) = obj.model else {
             return Ok(None);
         };
         let scenery = h1::OBJECT_TYPES.get(obj.object_type as usize) == Some(&b"scen");
-        let rebuild = self.options.rebuild && scenery;
         let mode_tag = self.h1_tag(mode_id)?;
         let (h1_model, mode) = match self.done.get(&mode_tag.id.0) {
             // Converted already (shared by two objects): only the Halo 1
@@ -948,7 +949,7 @@ impl<'a> Converter<'a> {
         let object = h1::Object::read(self.h1, self.h1.tag_data(tag)?)?;
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
         rep.physics = Some("none (rebuilt scenery borrows no phmo)".into());
-        let hlmt = self.model(&mut rep, &object, None, &tag.name)?;
+        let hlmt = self.model(&mut rep, &object, None, &tag.name, true)?;
         let root = crate::rebuild::scenery(&object, hlmt)?;
         rep.no_home.push(
             "scen beyond the object header's bounds and model: definition defaults (no template)"
@@ -1683,9 +1684,92 @@ impl<'a> Converter<'a> {
         ))
     }
 
+    /// A Halo 1 vehicle no template row names, from the `vehi` definition
+    /// ([`crate::rebuild::vehicle`]): a10's cryotube, chairs,
+    /// fighterbomber and Halo ring. Before, these were dropped and their
+    /// object names pointed nowhere.
+    fn vehicle_rebuilt(&mut self, tag: &Tag, u: &Unit) -> Result<TagId> {
+        let mut rep = Self::report(tag, "none: rebuilt from tags::defs (turret role)");
+        rep.physics = Some("none (rebuilt vehicle borrows no phmo)".into());
+        let hlmt = self.model(&mut rep, &u.object, None, &tag.name, true)?;
+        let predicted = self.predicted(&u.object)?;
+        let root = crate::rebuild::vehicle(&u.object, hlmt, &u.seats, &predicted)?;
+        rep.no_home.push(format!(
+            "vehi beyond the header, {} seats (label, marker, camera marker) and the turret role: definition defaults (no template); {} Halo 1 references not converted",
+            u.seats.len(),
+            u.references.iter().filter(|r| r.tag.is_some()).count()
+        ));
+        if u.object.physics.is_some() {
+            rep.no_home
+                .push("phys (Halo 1 vehicle physics): no Halo 2 phmo is built".into());
+        }
+        self.tree.reports.push(rep);
+        Ok(self.tree.push(
+            &tag.name,
+            Converted {
+                group: FourCC(*b"vehi"),
+                root,
+                raw: Vec::new(),
+            },
+        ))
+    }
+
+    /// The tree's tags of `group` that `b` references, in order, each once.
+    fn locals_in(&self, b: &Block, group: FourCC, out: &mut Vec<TagId>) {
+        for f in &b.fixups {
+            match &f.kind {
+                FixupKind::Block { child, .. }
+                | FixupKind::Data(child)
+                | FixupKind::Pointer(child) => self.locals_in(child, group, out),
+                FixupKind::TagId(t) | FixupKind::TagRef(t) => {
+                    let k = t.0 as usize & 0xffff;
+                    if t.0 & 0xffff_0000 == LOCAL
+                        && self.tree.tags.get(k).is_some_and(|c| c.1.group == group)
+                        && !out.contains(t)
+                    {
+                        out.push(*t);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// The resources an object built from scratch predicts
+    /// ([`crate::rebuild::Predicted`]): its converted render model, then
+    /// every converted bitmap its shaders draw. V: every retail vehicle
+    /// lists its `mode` once (`+0` 2, `+2` -1) and its bitmaps (`+0` 0,
+    /// `+2` 0), the model first.
+    fn predicted(&self, obj: &h1::Object) -> Result<Vec<crate::rebuild::Predicted>> {
+        let Some(m) = obj.model else {
+            return Ok(Vec::new());
+        };
+        let Some(&mode) = self.done.get(&self.h1_tag(m)?.id.0) else {
+            return Ok(Vec::new());
+        };
+        let mut out = vec![crate::rebuild::Predicted::RenderModel(mode)];
+        let Some((_, conv)) = self.tree.tags.get(mode.0 as usize & 0xffff) else {
+            return Ok(out);
+        };
+        let mut shaders = Vec::new();
+        self.locals_in(&conv.root, FourCC(*b"shad"), &mut shaders);
+        let mut bitmaps = Vec::new();
+        for s in shaders {
+            let (_, c) = &self.tree.tags[s.0 as usize & 0xffff];
+            self.locals_in(&c.root, FourCC(*b"bitm"), &mut bitmaps);
+        }
+        out.extend(bitmaps.into_iter().map(crate::rebuild::Predicted::Bitmap));
+        Ok(out)
+    }
+
     fn unit(&mut self, tag: &Tag) -> Result<TagId> {
         let u = Unit::read(self.h1, tag)?;
         let g: [u8; 4] = tag.group.0.to_be_bytes();
+        // No template row at all (not merely one the base lacks, which a
+        // donor may bring): built from the definition instead of dropped.
+        if &g == b"vehi" && template_candidates(&g, &tag.name).is_empty() {
+            return self.vehicle_rebuilt(tag, &u);
+        }
         let (tpl, tpl_name) = self.template(&g, &tag.name, &g)?;
         let tpl_root = self.base.root(tpl)?;
         let mut rep = Self::report(tag, &tpl_name);

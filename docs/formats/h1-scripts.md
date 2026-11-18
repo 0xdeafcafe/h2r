@@ -310,8 +310,12 @@ retail compiler writes them; literals keep their source type.
   direct argument is an object name (`compile::OBJECT_NAME_TYPES`) that
   `resolves` says has no placement is stubbed and listed in
   `Compiled::unindexed`, like an indexed value. a10's `fast_setup` opens
-  and closes `cryotube_1`, and the cryotube has no template, so the name
-  points at no placement; the open faulted as the opening cinematic ended.
+  and closes `cryotube_1`; while the cryotube had no template the name
+  pointed at no placement and the open faulted as the opening cinematic
+  ended. Since converter version 33 the cryotube is built from the `vehi`
+  definition and placed ([tag-definitions.md](tag-definitions.md),
+  Vehicles with no template), so a10 stubs none of these; the stub stays
+  as the safety net for any other unplaced name.
 - **Cutscenes**: `compile_with(.., Cutscenes::Skip, ..)` compiles every call
   of the level's `cinematic_skip_start` script as `false` (Halo 1's path
   after a skip) and wakes a10's `fast_setup` where it wakes

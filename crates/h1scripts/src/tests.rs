@@ -784,6 +784,11 @@ mod level_and_seats {
         // Retail's own rule for anything else: the label starts with it.
         assert!(h2_label_matches("pelican_p", "pelican_p_l03"));
         assert!(!h2_label_matches("pelican_p", "pelican_g"));
+        // A Halo 1 vehicle built from its definition keeps Halo 1's labels,
+        // which a role rule alone would refuse (`driver` wants `_d`).
+        assert!(h2_label_matches("CT-driver", "CT-driver"));
+        assert!(h2_label_matches("ct-driver", "CT-driver"));
+        assert!(!h2_label_matches("CT-driver", "pchair-driver"));
     }
 
     #[test]

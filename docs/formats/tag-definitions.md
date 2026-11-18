@@ -1,9 +1,11 @@
 # Typed tag definitions (`tags::defs`)
 
 Status: **Built** (2026-11-18) for 14 groups, each proven against every
-retail tag of the group on the disc. **One converter path uses them**,
-opt-in: Halo 1 scenery built with no template bytes
-(`h1objects::Options::rebuild`). It is **not yet run in the game**.
+retail tag of the group on the disc. **Two converter paths use them**:
+Halo 1 vehicles that no Halo 2 template stands in for (a10's cryotube,
+chairs, fighterbomber and Halo ring), **on by default** since converter
+version 33, and Halo 1 scenery, opt-in (`h1objects::Options::rebuild`).
+Neither has run in the game yet.
 Evidence labels are those of [map-format.md](map-format.md): **E**
 engine code, **V** checked on the owner's disc, **D** a naming or
 interpretation choice made here.
@@ -320,6 +322,105 @@ of them. If the rebuilt scenery misbehaves (fades out, never draws at a
 distance, or is lit differently), those words are the first suspects:
 name them from the engine's readers, then give them defaults.
 
+## Vehicles with no template (`h1objects::rebuild::vehicle`)
+
+A Halo 1 vehicle that no row of `h1objects::convert::TEMPLATES` names
+used to be dropped, its palette entry null and its object names pointing
+at placement -1. a10 has five: the cryotube, the pilot and pod chairs, the
+fighterbomber and the Halo ring. The scripts seat the player in the
+cryotube and open it as the opening cinematic ends (`unit_open
+cryotube_1`), which faulted until the name was stubbed
+(`h1scripts::compile::NONE_UNSAFE`, kept as the safety net for any other
+unplaced name). Now such a vehicle is written from the `vehi` definition,
+with no retail template read:
+
+- **Object header**: object type 1, Halo 1's bounding radius and offset,
+  the model, and the predicted resources: the converted `mode` (`+0` kind
+  2, `+2` -1), then every converted bitmap its shaders draw (kind 0, index
+  0). V: every retail vehicle on the disc lists some, its `mode` once in
+  that form and first, its bitmaps in that form.
+- **`hlmt` and `mode` materials**: as rebuilt scenery (above). Collision is
+  Halo 1's converted `coll`; the animation graph Halo 1's converted
+  `antr`; no physics model (Halo 1's cryotube has no `phys`).
+- **Vehicle type** (`vehi +0x1f0`, named below): turret, Halo 2's
+  stationary vehicle. Turrets hold no wheels, treads, hover points or
+  engine raw (`+0x268`, `+0x2e8`, `+0x2f0` empty on every one), and their
+  one physics element (`+0x2f8`) is zero but for four `-1` halves.
+- **Seats** (`+0x1c8`): one per Halo 1 seat (Halo 1's `unit +0x2e4`,
+  `0x11c` each, V on a10, b30 and c10: label `+4`, marker `+0x24`, camera
+  marker `+0x84`, each 32 characters). The Halo 2 seat takes Halo 1's
+  `label` (so a10's `CT-driver` is the text its scripts name; the seat
+  table matches a label equal to the script's text before any role rule),
+  the marker at `+8` and the camera marker at `+0x60` (D: retail's values
+  there are marker names, `driver`, `gunner`, `camera_rider`).
+- **The turret role** (`TURRET_ROLE`, `TURRET_SEAT_ROLE`,
+  `TURRET_PHYSICS_ROLE`): every 4-byte unknown span of the root, the
+  seats and the physics element where at least half of Halo 2's 25
+  distinct turret-type vehicles hold one nonzero value takes that value
+  (22 words in the root, 5 per seat, 4 in the physics element). Zero is
+  not neutral there: they are scales, distances and angles retail never
+  leaves at zero (the object layer's `+0x6c..+0x8c`, the unit layer's
+  `+0xcc`), and `-1` halves where zero would name element 0. The table is
+  in code, not in the definition files, because the shared `obje` and
+  `unit` structs also build scenery; the disc test recomputes it.
+- **Everything else** is the definition's default: zero, null, empty.
+  Blocks left empty that some retail vehicles fill: the unit's weapons,
+  camera tracks and HUD, the seats' camera tracks and HUD, attachments,
+  functions. A Halo 1 vehicle with no seats (a10's Halo ring, b30's
+  falling box) has none in Halo 2 either; three retail vehicles on
+  06a_sentinelwalls have none, so `every_campaign_level_converts`' sweep
+  accepts an empty `vehi +0x1c8`. Halo 1's seat flags, camera angles and
+  other unit tuning have no established Halo 2 home and are not carried
+  (listed in the object report).
+
+Fields named for this (V, the disc proof above still round-trips all 71
+retail vehicles byte-identical with no pinned values):
+
+| Field | Evidence |
+|---|---|
+| `vehi +0x1f0` `vehicle_type` (`enum16`: tank, jeep, type_2, dropship, hover, flier, turret) | E: objects.md (vehicle type). V: the names by the retail vehicles holding each value: 0 scorpion, 1 warthog, 3 pelican, phantom and gravity throne, 4 ghost, wraith, spectre and creep, 5 banshee, 6 the turrets; none holds 2 |
+| `vehi +0x1c8` seat `label` | V: the scenario's seat-mapping masks select seats by it (`h1scripts::seats`, on 05a) |
+| `vehi +0x284` `snd_ref_284`, `+0x294` `foot_ref_294` (were unknown) | V: objects.md lists snd! and foot here; the group word is `snd!`/none and `foot` and the datum null on every retail vehicle, so the schema could not see them. As unknown spans a fresh tag held zero, which names tag 0 |
+
+Proof (`H1_ISO=... H2_DISC=...`):
+
+```sh
+cargo test --release -p h1objects --test unit_rebuild_disc -- --ignored --nocapture
+cargo test --release -p h1campaign --test disc a10_cryotubes -- --ignored --nocapture
+```
+
+- `turret_role_is_the_retail_turrets_majority`: recomputes the role table
+  from every distinct retail vehicle of type turret and fails if it
+  differs from the code's.
+- `a10_vehicles_without_templates_are_rebuilt`: all five a10 vehicles
+  convert; each reads back through the definition and writes the same
+  tree; nothing is pinned; the predicted resources are the tree's `mode`
+  then its bitmaps; the model chain (`hlmt`, `mode`, `coll`,
+  `jmad`) is in the tree; the `hlmt` has the model's nodes; one seat per
+  Halo 1 seat with its label and marker; the one physics element; the two
+  null references null.
+- `a10_cryotubes_are_placed_and_built_from_their_definition` (pinned and
+  fresh): `cryotube_1` and `cryotube_2` name vehicle placements whose
+  palette entry is the cryotube; read back out of the converted map it
+  decodes and encodes byte-identical, its `hlmt`, `mode`, `coll` and
+  `jmad` are tags in the map, and it has one seat, `CT-driver`, at marker
+  `driver`.
+
+What to watch in the game: the player seated in the cryotube during
+a10's opening, and getting out when the scripts open it. The first
+suspects if that goes wrong: the vehicle has no physics model, which no
+retail turret lacks; and the rider's pose, since retail seat labels
+(`warthog_d`) also read like the riders' animation mode names (D) and the
+player's graph has no `CT-driver` mode.
+
+## Which converted objects use the definitions
+
+| Groups | Path | Why |
+|---|---|---|
+| `vehi` with no template row | definitions (default) | nothing else to build on |
+| `scen` | template by default; definitions with `Options::rebuild` | the rebuilt scenery has not run in the game |
+| `bipd`, `vehi` with a template, `weap`, `eqip`, `proj` | template | their gameplay fields (speeds, seats, cameras, physics, weapon tuning) are unknown spans; built from zero they would not play |
+
 ## Open
 
 - **Unknown spans** are largest in the unit layer (`bipd`, `vehi`), the
@@ -328,6 +429,6 @@ name them from the engine's readers, then give them defaults.
 - **More groups:** `sky`, `effe`, `proj`, `jpt!` (the second tier asked
   for), and the device and other object groups (`bloc`, `mach`, `ctrl`,
   `garb`, `proj`, `crea`, `ssce`), which `struct obje` already covers.
-- **More converter paths**: the other objects (weapons, vehicles,
-  bipeds), shaders (`shad` with its postprocess mirrors kept consistent),
+- **More converter paths**: the other objects (templated vehicles,
+  bipeds, weapons, equipment, projectiles), shaders (`shad` with its postprocess mirrors kept consistent),
   and the sky, each on its definition with its own comparison.

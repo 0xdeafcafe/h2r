@@ -165,8 +165,9 @@ pub const INDEXED: &[&str] = &[
 /// object and its children by index (`0x000e92e0`): `none` takes header
 /// 0xffff, whose object pointer is null, and the read of its `+0x33e` at
 /// `0x00113eae` faults. a10's `fast_setup` opens `cryotube_1` as its
-/// cinematic ends, and the cryotube has no template, so the name has no
-/// placement. A call whose direct argument is an object name that will not
+/// cinematic ends; while the cryotube had no template the name had no
+/// placement (it is built from its definition now, `h1objects::rebuild`,
+/// and this stays the safety net for any other unplaced name). A call whose direct argument is an object name that will not
 /// resolve to a placement ([`compile_with`]'s `resolves`, with a type from
 /// [`OBJECT_NAME_TYPES`]) is stubbed and listed in
 /// [`Compiled::unindexed`], as for [`INDEXED`].

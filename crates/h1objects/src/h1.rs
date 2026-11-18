@@ -444,12 +444,35 @@ impl Equipment {
     }
 }
 
-/// `bipd` or `vehi`: the object header and every reference in the root;
-/// their tuning has no reviewed Halo 2 home yet (see the doc).
+/// The unit layer's seats block (`unit +0x2e4`, V: every `vehi` and
+/// `bipd` on a10, b30 and c10 reads with this stride, each seat's label,
+/// marker and camera marker printable text).
+pub const UNIT_SEATS: usize = 0x2e4;
+/// A seat element.
+pub const SEAT_SIZE: usize = 0x11c;
+
+/// One seat of a unit (`0x11c`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Seat {
+    /// `0x00` flags (Halo 1's; no Halo 2 meaning established).
+    pub flags: u32,
+    /// `0x04` the label scripts name the seat by (`W-driver`, `CT-driver`),
+    /// 32 characters.
+    pub label: String,
+    /// `0x24` the model marker the rider sits at (`driver`, `passenger`).
+    pub marker: String,
+    /// `0x84` the camera marker (`camera`, `camera rider`), empty for none.
+    pub camera_marker: String,
+}
+
+/// `bipd` or `vehi`: the object header, the seats and every reference in
+/// the root; the rest of their tuning has no reviewed Halo 2 home yet
+/// (see the doc).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Unit {
     pub group: Group,
     pub object: Object,
+    pub seats: Vec<Seat>,
     /// Every reference in the tag's bytes (root and its blocks).
     pub references: Vec<crate::refs::Found>,
 }
@@ -461,9 +484,22 @@ impl Unit {
             return Err(Error::WrongGroup(tag.group.to_string(), *b"unit"));
         }
         let b = map.tag_data(tag)?;
+        if b.len() < UNIT_SEATS + 12 {
+            return Err(Error::Truncated("unit seats"));
+        }
+        let seats = elements(map, b, UNIT_SEATS, SEAT_SIZE)?
+            .into_iter()
+            .map(|e| Seat {
+                flags: u32_at(e, 0),
+                label: name32(e, 4),
+                marker: name32(e, 0x24),
+                camera_marker: name32(e, 0x84),
+            })
+            .collect();
         Ok(Self {
             group: tag.group,
             object: Object::read(map, b)?,
+            seats,
             references: crate::refs::scan(map, b),
         })
     }

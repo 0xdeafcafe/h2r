@@ -177,6 +177,13 @@ fn filled_profile(m: &mut Map<Cursor<Vec<u8>>>) -> Filled {
         .collect()
 }
 
+/// Root blocks the base map's retail tags always fill but other retail
+/// maps leave empty somewhere, so empty is a retail state: `vehi +0x1c8`,
+/// the seats (06a_sentinelwalls has three vehicles with none; a10's Halo
+/// ring and b30's falling box, built from the `vehi` definition, have
+/// none in Halo 1 either).
+const RETAIL_MAY_LEAVE_EMPTY: &[(FourCC, u32)] = &[(FourCC(*b"vehi"), 0x1c8)];
+
 /// Root blocks of the tag `id` that every retail tag of its group fills
 /// and this one leaves empty.
 fn empty_where_retail_fills(
@@ -190,6 +197,7 @@ fn empty_where_retail_fills(
         return Vec::new();
     };
     want.iter()
+        .filter(|at| !RETAIL_MAY_LEAVE_EMPTY.contains(&(t.group, **at)))
         .filter(|at| count_at(mem, loc.address + **at) == 0)
         .map(|at| {
             format!(
@@ -1473,6 +1481,160 @@ fn no_converted_model_on_any_campaign_level_has_a_none_material() {
         }
     }
     assert!(failed.is_empty(), "{failed:#?}");
+}
+
+/// a10's cryotubes, built from the `vehi` definition (`h1objects::rebuild::vehicle`;
+/// no Halo 2 template names them), are placed, pinned and fresh:
+/// `cryotube_1` and `cryotube_2` point at vehicle placements whose palette
+/// entry is the rebuilt cryotube. Read back from the converted map, the
+/// tag decodes through its definition and encodes byte-identical; its
+/// model chain resolves to tags in the map (`hlmt`, then `mode`, `coll`
+/// and `jmad`); it has one seat labelled `CT-driver`, as a10's scripts
+/// name it; and its unit fields are sane.
+#[test]
+#[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
+fn a10_cryotubes_are_placed_and_built_from_their_definition() {
+    use tags::defs::{self, Defs, Str, Target, Val};
+    use tags::repo::{MapSource, extract::SharedFiles};
+    let s = scripting();
+    let donors = donors();
+    let h1 = h1_level("a10");
+    let vehi = Defs::builtin().group(FourCC(*b"vehi")).unwrap();
+    let hlmt = Defs::builtin().group(FourCC(*b"hlmt")).unwrap();
+    for pinned in [true, false] {
+        let mut base = h2_map(h1campaign::base_for("a10"));
+        let opts = Options {
+            objects: true,
+            ai: true,
+            scripts: Some(&s),
+            sounds: 1000,
+            donors: Some(&donors),
+            pinned,
+            ..Default::default()
+        };
+        let done = h1campaign::convert(&h1, &mut base, &opts).unwrap();
+        assert!(
+            !done.report.dropped.iter().any(|d| d.contains("cryotube")),
+            "pinned {pinned}: {:?}",
+            done.report.dropped
+        );
+        let bytes = done.bytes;
+        let mut m = Map::from_reader(Cursor::new(bytes.clone())).unwrap();
+        let mem = map_memory(&mut m);
+        let scnr = m.scenario().unwrap().clone();
+        let root = m.read_tag_bytes(scnr.id).unwrap();
+        let word = |at: usize| u32::from_le_bytes(root[at..at + 4].try_into().unwrap());
+        let (count, address) = (word(0x48), word(0x4c));
+        let mut tubes = Vec::new();
+        for i in 0..count {
+            let e = mem.slice(address + i * 0x24, 0x24).unwrap();
+            let text = String::from_utf8_lossy(&e[..32])
+                .trim_end_matches('\0')
+                .to_owned();
+            if text != "cryotube_1" && text != "cryotube_2" {
+                continue;
+            }
+            let ty = i16::from_le_bytes([e[0x20], e[0x21]]);
+            let placement = i16::from_le_bytes([e[0x22], e[0x23]]);
+            assert_eq!(ty, 1, "pinned {pinned}: {text} is a vehicle name");
+            assert!(placement >= 0, "pinned {pinned}: {text} has no placement");
+            // Vehicle placements (+0x70, 0x54 each) and palette (+0x78,
+            // 0x28 each, the datum at +4).
+            let e = mem
+                .slice(word(0x74) + placement as u32 * 0x54, 0x54)
+                .unwrap();
+            let p = u16::from_le_bytes([e[0], e[1]]) as u32;
+            assert!(p < word(0x78));
+            let pe = mem.slice(word(0x7c) + p * 0x28, 0x28).unwrap();
+            let id = TagId(u32::from_le_bytes(pe[4..8].try_into().unwrap()));
+            let t = m.tag(id).unwrap().clone();
+            assert_eq!(t.group, FourCC(*b"vehi"));
+            let name = t.name.clone().unwrap_or_default();
+            assert!(name.contains("cryotube"), "{name}");
+            tubes.push((text, t.id));
+        }
+        tubes.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            tubes.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(),
+            ["cryotube_1", "cryotube_2"],
+            "pinned {pinned}"
+        );
+        assert_eq!(tubes[0].1, tubes[1].1, "one cryotube definition");
+
+        // Read back through the definitions.
+        let schema = tags::schema::Schema::builtin();
+        let mut shared = SharedFiles::default();
+        let mut src = MapSource::new(
+            schema,
+            Map::from_reader(Cursor::new(bytes)).unwrap(),
+            &mut shared,
+        )
+        .unwrap();
+        let tag = src.extract(tubes[0].1).unwrap().unwrap();
+        let r = defs::decode(vehi, &tag).unwrap();
+        let back = defs::encode(vehi, tag.key.clone(), &r, Default::default()).unwrap();
+        assert_eq!(
+            defs::canonical(&back),
+            defs::canonical(&tag),
+            "pinned {pinned}: the cryotube re-encodes byte-identical"
+        );
+        let key = |v: Option<&Val>| match v {
+            Some(Val::Ref {
+                target: Target::Key(k),
+                ..
+            })
+            | Some(Val::Datum(Target::Key(k))) => Some(k.clone()),
+            _ => None,
+        };
+        let index = src.tags().to_vec();
+        let find = |k: &tags::repo::TagKey| {
+            index
+                .iter()
+                .find(|t| t.group == k.group && t.name.as_deref() == Some(k.path.as_str()))
+                .map(|t| t.id)
+        };
+        assert_eq!(r.at("unit.obje.object_type"), Some(&Val::Enum(1)));
+        assert_eq!(r.at("vehicle_type"), Some(&Val::Enum(6)), "turret");
+        let Some(Val::Block(seats)) = r.at("block_1c8") else {
+            panic!()
+        };
+        assert_eq!(seats.len(), 1, "pinned {pinned}: one seat");
+        assert_eq!(
+            seats[0].get("label"),
+            Some(&Val::String(Str::Text("CT-driver".into())))
+        );
+        assert_eq!(
+            seats[0].get("string_8"),
+            Some(&Val::String(Str::Text("driver".into())))
+        );
+        let model = key(r.at("unit.obje.model")).expect("a model");
+        assert_eq!(model.group, FourCC(*b"hlmt"));
+        let hid = find(&model).expect("the hlmt is in the map");
+        let ht = src.extract(hid).unwrap().unwrap();
+        let h = defs::decode(hlmt, &ht).unwrap();
+        for (path, group) in [
+            ("render_model", *b"mode"),
+            ("collision_model", *b"coll"),
+            ("animation", *b"jmad"),
+        ] {
+            let k = key(h.at(path)).unwrap_or_else(|| panic!("hlmt {path}"));
+            assert_eq!(k.group, FourCC(group), "{path}");
+            assert!(
+                find(&k).is_some(),
+                "pinned {pinned}: {path} {} in the map",
+                k.path
+            );
+        }
+        let Some(Val::Block(nodes)) = h.at("nodes") else {
+            panic!()
+        };
+        assert!(!nodes.is_empty(), "the hlmt has the model's nodes");
+        println!(
+            "a10 pinned {pinned}: cryotube_1/2 placed, {} seat, {} hlmt nodes",
+            seats.len(),
+            nodes.len()
+        );
+    }
 }
 
 /// Every reached `unit_open` and `unit_close` on a10 (pinned and fresh)

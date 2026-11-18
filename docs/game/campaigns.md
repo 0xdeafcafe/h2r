@@ -378,7 +378,7 @@ What each layer writes, from the base map up:
 | Sky | Halo 1's skies (`h1sky`), every cluster on the first; the model's materials name the base sky's shader, never NONE (`0x1bbf0` draws NONE, a null read in `0x16b90`; h1-multiplayer.md) | |
 | Scenario | The base `scnr` relocated as a block tree, replaced fields emptied. One BSP descriptor per Halo 1 BSP (`FixupKind::Bsp`, its `sbsp` and `ltmp`), so `switch_bsp`, zone and placement BSP indices keep Halo 1's meaning. The two root blocks every retail map holds one element per BSP of (survey `per_bsp_scenario_blocks`): cluster data `+0x290` (per cluster its background sound and sound environment, as the structure's cluster `+0x72`/`+0x74` names them, and the cluster's centroid, and the BSP's checksum `sbsp+0x08`) and `+0x388` (no points). BSP switch trigger volumes `+0x130`: Halo 1's (`scnr+0x39c`, 8 bytes, survey `h1_bsp_switch_volumes`) on its converted volumes | The base's own BSP switch volumes |
 | Player | The level's starting locations, each on the base's first element. The cyborg is converted and set as the campaign players' unit (`matg +0x138` elements 0 and 1, `h1convert::globals::set_player_unit`); Halo 1 health follows from the map name (`boot::health`) | |
-| Objects | Every base placement removed. Weapons, equipment, vehicles, scenery and placed bipeds from the level's palettes through `h1objects` (palettes keep Halo 1's order, a null entry for one that doesn't convert; templates in h1-objects.md), placements with unique IDs `0x4831xxxx`, origin BSP -1, source 1. Object names are Halo 1's, each pointing at its converted placement or -1. A palette entry whose template only a donor brought places the retail object itself. Halo 1's "not placed automatically" (bit 0 of the `u16` at `+4`) is written as Halo 2's "not at start" (bit 0 of the `u32` at `+4`), so cutscene casts and props wait for the scripts that create them (a10: 67 of 107 bipeds, 51 of 56 vehicles, 92 of 274 scenery) | Palette entries with no template: over shield and camouflage (no powerup on 05a), a10's cryotube, chairs, fighterbomber and Halo ring, b30's falling box |
+| Objects | Every base placement removed. Weapons, equipment, vehicles, scenery and placed bipeds from the level's palettes through `h1objects` (palettes keep Halo 1's order, a null entry for one that doesn't convert; templates in h1-objects.md), placements with unique IDs `0x4831xxxx`, origin BSP -1, source 1. Object names are Halo 1's, each pointing at its converted placement or -1. A palette entry whose template only a donor brought places the retail object itself. Halo 1's "not placed automatically" (bit 0 of the `u16` at `+4`) is written as Halo 2's "not at start" (bit 0 of the `u32` at `+4`), so cutscene casts and props wait for the scripts that create them (a10: 67 of 107 bipeds, 51 of 56 vehicles, 92 of 274 scenery) | Palette entries with no template: over shield and camouflage (no powerup on 05a), b30's falling box. Vehicles with no template (a10's cryotube, chairs, fighterbomber and Halo ring) are built from the `vehi` definition as turrets since converter version 33 (tag-definitions.md) |
 | Trigger volumes | The base's parked (`h1convert::convert::PARKED`, object name -1); the level's appended after them | |
 | Donors | `h1campaign::donor`: each character `h1ai`'s table names, copied whole from the first donor that has it (`03a_oldmombasa`, `04b_floodlab`, `06a_sentinelwalls`) by `h1sounds::transplant`: the tag tree, its raw, and its sounds' gestalt entries | The sentinel (its animation graph does not relocate) and the crewman (no donor) |
 | AI | `h1ai`: squad groups, squads, zones, orders, character palette. Characters the base lacks and no donor brought fall back to the marine (marine kinds) or the folder's first | Sentinels: `none` |
@@ -679,9 +679,13 @@ The bound is `0xc24000`; the base alone is `0xaed000`.
   header 0xffff's null pointer), so a call naming an object name with no
   placement is stubbed (h1-scripts.md, Units the engine does not check for
   none). a10 faulted there as its opening cinematic ended:
-  `fast_setup`'s `(unit_open cryotube_1)`, the cryotube having no
-  template. `a10_opens_and_closes_only_placed_units` checks every reached
-  call on a10, pinned and fresh.
+  `fast_setup`'s `(unit_open cryotube_1)`, the cryotube then having no
+  template. Since converter version 33 the cryotube is built from its
+  definition and placed (tag-definitions.md, Vehicles with no template),
+  and a10 stubs no `unit_open`/`unit_close`.
+  `a10_opens_and_closes_only_placed_units` checks every reached call on
+  a10, pinned and fresh; `a10_cryotubes_are_placed_and_built_from_their_definition`
+  checks the cryotubes' placements and tag.
 - **b40's level data.** b40 is at the tag memory bound. A level over
   it is converted again leaner (`h1campaign::convert`, `Lean`), dropping
   in turn: the empty squads kept for their names (`EmptySquads`), the

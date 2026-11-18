@@ -514,3 +514,115 @@ fn rebuilt_scenery_has_only_definition_bytes() {
         })
     );
 }
+
+/// A rebuilt vehicle (a10's cryotube and the other Halo 1 vehicles with no
+/// template): the `vehi` definition's defaults, the turret role, the
+/// header and one seat per Halo 1 seat; it reads back through the
+/// definition and writes the same builder tree again.
+#[test]
+fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
+    use crate::rebuild::{
+        ROLE_VEHICLE_TYPE, TURRET_PHYSICS_ROLE, TURRET_ROLE, TURRET_SEAT_ROLE, VEHI_PHYSICS,
+        VEHI_SEATS,
+    };
+    use tags::defs::{self, Defs, Str, Target, Val};
+    let obj = crate::h1::Object {
+        object_type: 1,
+        flags: 0,
+        bounding_radius: 0.9,
+        bounding_offset: [0.0, 0.0, 0.45],
+        model: None,
+        animation: None,
+        collision: None,
+        physics: None,
+        modifier_shader: None,
+        creation_effect: None,
+        attachments: Vec::new(),
+        widgets: Vec::new(),
+    };
+    let seat = crate::h1::Seat {
+        flags: 0,
+        label: "CT-driver".into(),
+        marker: "driver".into(),
+        camera_marker: "camera".into(),
+    };
+    let hlmt = map::TagId(0xe001_0002);
+    let mode = map::TagId(0xe001_0003);
+    let bitmap = map::TagId(0xe001_0004);
+    let predicted = [
+        crate::rebuild::Predicted::RenderModel(mode),
+        crate::rebuild::Predicted::Bitmap(bitmap),
+    ];
+    let root = crate::rebuild::vehicle(&obj, Some(hlmt), &[seat], &predicted).unwrap();
+    let def = Defs::builtin().group(map::FourCC(*b"vehi")).unwrap();
+    let got = defs::from_built(def, &root).unwrap();
+    // Written again from what was read, it reads back the same and has
+    // the same fixups (a reference's group word under a fixup is the
+    // builder's to fill, so `from_built` reads it as 0).
+    let again = defs::to_built(def, &got, &mut |_| None).unwrap();
+    assert_eq!(again.fixups, root.fixups);
+    assert_eq!(defs::from_built(def, &again).unwrap(), got);
+
+    let word = |w: u32| Val::Bytes(w.to_le_bytes().to_vec());
+    let mut want = defs::default_record(def);
+    for (p, w) in TURRET_ROLE {
+        want.set(p, word(*w)).unwrap();
+    }
+    want.set("unit.obje.object_type", Val::Enum(1)).unwrap();
+    want.set("unit.obje.bounding_radius", Val::Float(0.9))
+        .unwrap();
+    want.set("unit.obje.bounding_offset", Val::floats(&[0.0, 0.0, 0.45]))
+        .unwrap();
+    want.set(
+        "unit.obje.model",
+        Val::Ref {
+            group: 0,
+            target: Target::Id(hlmt),
+        },
+    )
+    .unwrap();
+    want.set("vehicle_type", Val::Enum(ROLE_VEHICLE_TYPE))
+        .unwrap();
+    let mut s = defs::default_record(def.child(VEHI_SEATS).unwrap());
+    for (p, w) in TURRET_SEAT_ROLE {
+        s.set(p, word(*w)).unwrap();
+    }
+    s.set("label", Val::text("CT-driver")).unwrap();
+    s.set("string_8", Val::text("driver")).unwrap();
+    s.set("string_60", Val::text("camera")).unwrap();
+    want.set(VEHI_SEATS, Val::Block(vec![s])).unwrap();
+    let pr = def.child("unit.obje.predicted_resources").unwrap();
+    let res = [(0xffff_0002u32, mode), (0, bitmap)]
+        .iter()
+        .map(|(w, id)| {
+            let mut x = defs::default_record(pr);
+            x.set("unknown_0", word(*w)).unwrap();
+            x.set("tag", Val::Datum(Target::Id(*id))).unwrap();
+            x
+        })
+        .collect();
+    want.set("unit.obje.predicted_resources", Val::Block(res))
+        .unwrap();
+    let mut p = defs::default_record(def.child(VEHI_PHYSICS).unwrap());
+    for (q, w) in TURRET_PHYSICS_ROLE {
+        p.set(q, word(*w)).unwrap();
+    }
+    want.set(VEHI_PHYSICS, Val::Block(vec![p])).unwrap();
+    assert_eq!(defs::diff(def, &want, &got), Vec::new());
+    assert_eq!(
+        got.at("block_1c8[0].label"),
+        Some(&Val::String(Str::Text("CT-driver".into())))
+    );
+    // References a fresh vehicle must not point at tag 0: the two the
+    // schema could not see are null references, not zero words.
+    for r in ["snd_ref_284", "foot_ref_294"] {
+        assert_eq!(
+            got.at(r),
+            Some(&Val::Ref {
+                group: u32::MAX,
+                target: Target::Null
+            }),
+            "{r}"
+        );
+    }
+}
