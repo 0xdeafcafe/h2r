@@ -194,6 +194,73 @@ pub struct Options<'a> {
     /// Halo 1's characters, weapons and vehicles, or Halo 2's nearest
     /// ([`h2assets`], docs/game/campaigns.md §5).
     pub assets: h2assets::Assets,
+    /// What conversions of this level onto this base share (its two
+    /// asset variants): each BSP prepared once. `None` prepares its own.
+    pub shared: Option<&'a Shared>,
+}
+
+/// What a level's conversions onto one base share ([`Options::shared`]):
+/// its BSPs, prepared once (`structure::prepare_all` reads only the Halo 1
+/// map, the base and the level's palettes, never the assets or devices),
+/// for each ambience budget a conversion asks.
+#[derive(Default)]
+pub struct Shared {
+    #[allow(clippy::type_complexity)]
+    bsps: std::sync::Mutex<
+        Vec<(u64, std::sync::Arc<std::sync::OnceLock<Option<std::sync::Arc<PreparedBsps>>>>)>,
+    >,
+}
+
+/// The BSPs prepared, and their report lines.
+struct PreparedBsps {
+    bsps: Vec<structure::Prepared>,
+    reports: Vec<structure::BspReport>,
+}
+
+impl Shared {
+    /// The BSPs for `budget`: prepared by `prepare` the first time, the
+    /// same afterwards (a conversion asking while another prepares waits
+    /// for it). A failure is not kept: the next prepares its own.
+    fn bsps(
+        &self,
+        budget: u64,
+        prepare: impl FnOnce() -> Result<PreparedBsps>,
+    ) -> Result<std::sync::Arc<PreparedBsps>> {
+        let cell = {
+            let mut all = self.bsps.lock().unwrap_or_else(|e| e.into_inner());
+            match all.iter().find(|(b, _)| *b == budget) {
+                Some((_, c)) => c.clone(),
+                None => {
+                    let c = std::sync::Arc::default();
+                    all.push((budget, std::sync::Arc::clone(&c)));
+                    c
+                }
+            }
+        };
+        let mut prepare = Some(prepare);
+        let mut failed = None;
+        let got = cell.get_or_init(|| match prepare.take().expect("once")() {
+            Ok(p) => Some(std::sync::Arc::new(p)),
+            Err(e) => {
+                failed = Some(e);
+                None
+            }
+        });
+        if let Some(e) = failed {
+            // Not kept: the next conversion prepares again.
+            self.bsps
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .retain(|(_, c)| !std::sync::Arc::ptr_eq(c, &cell));
+            return Err(e);
+        }
+        match got {
+            Some(p) => Ok(p.clone()),
+            // Another conversion's preparing failed while this one waited:
+            // its own error.
+            None => Ok(std::sync::Arc::new(prepare.take().expect("not run")()?)),
+        }
+    }
 }
 
 /// Which of Halo 1's devices a conversion places.
@@ -234,6 +301,7 @@ impl Default for Options<'_> {
             devices: Devices::All,
             rebuild_bipeds: true,
             assets: h2assets::Assets::Halo1,
+            shared: None,
         }
     }
 }
@@ -544,9 +612,20 @@ fn convert_with<R: Read + Seek>(
     let scnr = scenario::BaseScenario::read(base)?;
     let mut ambience = h1convert::ambience::read(h1);
     report.ambience_silenced = scenario::bound_ambience(&mut ambience, ambience_budget);
-    let bsps = phase::time("bsp", || {
-        structure::prepare_all(h1, base, &scnr, &ambience, &mut report)
-    })?;
+    let prepare = |base: &mut Map<R>| -> Result<PreparedBsps> {
+        let mut r = Report::default();
+        let bsps = phase::time("bsp", || structure::prepare_all(h1, base, &scnr, &ambience, &mut r))?;
+        Ok(PreparedBsps {
+            bsps,
+            reports: r.bsps,
+        })
+    };
+    let prepared = match opts.shared {
+        Some(s) => s.bsps(ambience_budget, || prepare(base))?,
+        None => std::sync::Arc::new(prepare(base)?),
+    };
+    report.bsps.extend(prepared.reports.iter().cloned());
+    let bsps = &prepared.bsps;
     let objects_base = if opts.objects {
         let mut b = phase::time("base templates", || h1objects::base::Base::read(base))
             .map_err(|e| invalid(format!("base: {e}")))?;

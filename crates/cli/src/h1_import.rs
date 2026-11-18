@@ -582,6 +582,8 @@ struct H1Entry {
     /// Its jobs not yet done.
     jobs: usize,
     map: Arc<OnceLock<Result<Arc<(Vec<u8>, H1Map)>, String>>>,
+    /// What a level's two variants share beyond the map (its BSPs).
+    campaign: Arc<h1campaign::Shared>,
 }
 
 /// The real converter: maps from the Halo 1 disc, bases from the Halo 2
@@ -762,8 +764,15 @@ impl DiscConverter {
             .as_ref()
             .map_err(|e| anyhow!("{e}"))?;
         let mut base = self.h2_base(h1campaign::base_for(level))?;
+        let shared = self
+            .h1_maps
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(level)
+            .map(|e| e.campaign.clone());
         let opts = h1campaign::Options {
             assets,
+            shared: shared.as_deref(),
             ..h1_cmd::campaign_options(scripting, Some(donors))
         };
         let done = h1map::phase::time("convert", || h1campaign::convert(h1, &mut base, &opts))?;
