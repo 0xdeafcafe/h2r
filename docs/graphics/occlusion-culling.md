@@ -201,12 +201,37 @@ OBJECT_RENDER_SETUP per object: sphere -> footprint -> pyramid max
   bound depth is not the device's own depth buffer, the depth is not
   W-buffered (`SET_CONTROL0` z-perspective), the W parameters are not
   finite, or the backend cannot (a multisampled or unsampleable depth).
-- **W-buffer to view depth** (boot's `w_buffer_mapping`): the stored depth
-  is `floor(view_depth · inv_w_far · z_scale) / z_scale`, `inv_w_far` the
-  device's `+0x944` and `z_scale` `+0x948` (`0x3f6840` scales the viewport
-  matrix by their product), so `DepthMapping::WBuffer { zmax: z_scale,
-  scale: inv_w_far · z_scale }`, which takes the far end of each stored
-  step.
+- **W-buffer to view depth**: the stored depth is `floor(view_depth ·
+  z_scale / far) / z_scale`, `z_scale` the device's `+0x948` (D24's full
+  scale) and `far` the camera's far plane (below), so
+  `DepthMapping::w_buffer(1 / far, z_scale)`, which takes the far end of
+  each stored step. Boot hands the grid over with the device's W
+  parameters (`w_buffer_mapping`: `+0x944`, `+0x948`); the feature
+  rescales it to the camera's far read with the capture
+  (`DepthMapping::with_w_far`).
+
+### The W scale (Code, confirmed by the probe)
+
+The device's `+0x944` (1 / w far) is not the scale Halo's draws use. D3D
+derives it in `SetTransform(D3DTS_PROJECTION)` (`0x3f7ff0`), and the game
+never calls that, so it stays at the identity projection's 1. The game
+scales w itself:
+
+- `render_game_views` stores the global near and far (`0x00485ad4`,
+  `0x00485ad8`) in the render camera's `+0x40` and `+0x44`
+  (`0x002236d0`, `0x002236e7`).
+- `0x00012a50` and `0x00013450` build the program clip range from the
+  same globals: `[near / far · zs, far / far · zs]`, `zs` the float at
+  `0x0045dd40` (D24's full scale), clamped to `[0, zs]`.
+- `0x00012d72` writes it to the device's program clip shadow `+0x1C10` /
+  `+0x1C14` and sets `+0x1C18` bit 1 (the game owns it), so D3D's own
+  `[944 · 93C · 948, 948]` is never pushed.
+
+So w reaches the W-buffer scaled by `zs / far`. The first probe run in Old
+Mombasa showed the mismatch: `w far 1.00`, finite depths `0.00..0.04`
+(up to `0.26` on long views), 1929 of 2048 cells under the 0.5-unit floor,
+nothing culled. Rescaled by the camera's far, those raw values read as
+`raw · far` units (`the_observed_raw_values_map_to_street_depths_with_the_camera_far`).
 
 - **Depth grid on the GPU** (`gfx::depth_grid`, built): one compute
   thread per cell takes the largest raw depth of the pixels whose centre
@@ -255,14 +280,45 @@ wall whose shadow falls on visible ground is the one visible difference
 Once a second, with the switch on:
 
 ```text
-occlusion: tested T culled C (P%) unknown U exempt E resets R cull X ms/frame over F frames
+occlusion: tested T culled C (P%) unknown U (no depth N) exempt E resets R cull X ms/frame over F frames grids G
+occlusion probe: object H depth D radius R near N rect x X0..X1 y Y0..Y1 of 64x32 grid max M -> occluded|visible streak S age A; grid 2048 cells far F near-dropped K depth A..B w far W z scale Z
 ```
 
 `tested` counts setup calls in the main view, `unknown` the ones without
-usable depth or footprint, `cull` the hooks' own time per frame; the line
-ends with `grids G`, the depth frames published so far. `unknown` close
-to `tested` with `grids` not growing means no depth arrives (see "Not
-recorded" above).
+usable depth or footprint (`no depth` those without a depth frame at
+most two frames old), `cull` the hooks' own time per frame; `grids` the
+depth frames published so far. `unknown` close to `tested` with `grids`
+not growing means no depth arrives (see "Not recorded" above).
+
+The probe line is one object from the window, the one that came nearest
+to being occluded (`near - max` largest; with no margin anywhere, the
+largest object, then the farthest): its sphere's centre view depth,
+the inflated radius, the nearest depth of its bounds, the grid rectangle,
+the farthest grid depth the pyramid read over it, the answer, its streak
+and the depth's age in frames. Its second half is the newest grid as
+delivered: far (cleared) cells, cells the 0.5-unit floor dropped, the
+nearest and farthest finite view depths before the drop, and the W
+parameters it was mapped with (`w far` is the camera's far plane the
+grid was rescaled to, or `1 / +0x944` when the camera gave none). How to
+read it:
+
+| Probe says | Means |
+|---|---|
+| `far` near 2048 | the grid holds no opaque depth (taken before the draws, or another texture) |
+| `near-dropped` near 2048, depths under 0.5 | the W scale is too small for what the draws stored (the first run: `w far 1.00`, fixed by "The W scale") |
+| depths far beyond the street, `max` huge | the W scale is too large |
+| sane depths, `max` far, `near` beyond the walls | the rectangle misses the wall: projection, FOV, viewport or y flip |
+| `occluded` but `culled 0` | the streak never reaches 2 (`age`, `no depth`) |
+
+Tests: `a_w_buffered_wall_at_20_hides_an_object_at_60` (engine: raw
+W-buffer values of a 640x480 wall at 20 through the mapping, the drop,
+the pyramid and the tracker; the object at 60 behind it is skipped from
+the second frame with depth, the probe reads the wall's depth over its
+rectangle), `a_w_scale_off_by_the_far_plane_hides_nothing_and_the_probe_says_why`,
+`a_wall_stored_with_the_game_w_scale_hides_an_object_at_60`, and the
+feature's runtime test, which delivers a wall stored with the game's
+scale under the device's parameters (w far 1) and a camera far in the
+guest's camera block: the object behind it is skipped.
 
 ## Status
 

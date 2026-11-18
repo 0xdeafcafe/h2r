@@ -35,7 +35,6 @@ pub mod scale;
 mod shell;
 mod surface;
 pub mod watermark;
-pub mod health_meter;
 pub mod worker;
 
 use std::sync::{Arc, Mutex};
@@ -55,7 +54,6 @@ pub use overlay::{Banner, Notice, NoticeKind};
 pub use pacing::{PaceAction, PacePolicy, PaceStats, Pacer, VBlank, WindowedRate};
 pub use scale::{DisplayAspect, Scaling, Viewport};
 pub use watermark::{BuildInfo, LiveStats, Watermark};
-pub use health_meter::HealthMeter;
 
 /// Shell settings.
 #[derive(Clone, Debug)]
@@ -122,9 +120,6 @@ pub struct AppConfig {
     /// (docs/runtime/app.md "Watermark"). F3 toggles it; F3 does not reach the
     /// guest while one is configured.
     pub watermark: Option<Watermark>,
-    /// A Halo 1 style health meter over the game image, while its value is
-    /// `Some` (docs/game/health.md "HUD").
-    pub health_meter: Option<HealthMeter>,
 }
 
 impl Default for AppConfig {
@@ -155,7 +150,6 @@ impl Default for AppConfig {
             closer: None,
             banner: None,
             watermark: None,
-            health_meter: None,
         }
     }
 }

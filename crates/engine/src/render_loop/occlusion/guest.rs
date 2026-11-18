@@ -42,6 +42,20 @@ pub const VIEW_INDEX: u32 = 0x004b_a050;
 pub const VIEW_PLAYER: u32 = 0x004b_9ed8;
 /// The frame counter `render_views` increments.
 pub const FRAME: u32 = 0x004b_a034;
+/// The camera's far plane (`+0x44`; `render_game_views` stores the global
+/// far there at `0x002236e7`, the near at `+0x40`). The game's W-buffer
+/// scale is `z_scale / far`: `0x00012a50` and `0x00013450` build the
+/// program clip range `[near / far · z_scale, z_scale]` from the same
+/// globals and `0x00012d72` writes it to the device's `+0x1C10` as the
+/// game's own (`+0x1C18` bit 1).
+pub const CAMERA_FAR: u32 = CAMERA + 0x44;
+
+/// The w far the game's W-buffer is scaled by (the camera's far plane),
+/// when it is finite and positive.
+pub fn read_w_far(m: &dyn GuestMemory) -> Result<Option<f32>, MemFault> {
+    let far = m.f32(CAMERA_FAR)?;
+    Ok((far.is_finite() && far > 0.0).then_some(far))
+}
 
 /// The camera as the game left it for this view.
 pub fn read_camera(m: &dyn GuestMemory) -> Result<Option<Camera>, MemFault> {
@@ -235,6 +249,20 @@ impl Occlusion {
         self.current.as_ref().map(|(v, _)| *v)
     }
 
+    /// The most telling test over every view since the last call
+    /// ([`Tracker::take_probe`]).
+    pub fn take_probe(&mut self) -> Option<Probe> {
+        let mut best: Option<Probe> = None;
+        for t in self.trackers.values_mut() {
+            if let Some(p) = t.take_probe()
+                && best.as_ref().is_none_or(|b| p.better(b))
+            {
+                best = Some(p);
+            }
+        }
+        best
+    }
+
     /// The counts over every view.
     pub fn counts(&self) -> Counts {
         let mut c = Counts::default();
@@ -244,6 +272,7 @@ impl Occlusion {
             c.unknown += t.counts.unknown;
             c.exempt += t.counts.exempt;
             c.resets += t.counts.resets;
+            c.no_depth += t.counts.no_depth;
         }
         c
     }

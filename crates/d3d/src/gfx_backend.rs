@@ -565,19 +565,21 @@ impl GfxBackend {
     }
 
     /// Hands every mapped occlusion grid to its sink (no wait: a grid whose
-    /// map has not completed waits for a later present).
+    /// map has not completed waits for a later present), oldest first: the
+    /// feature drops the asks older than a delivered one, so a newer grid
+    /// handed over first would lose the older.
     fn deliver_depth_grids(&mut self) {
         let mut i = 0;
         while i < self.depth_grids.len() {
             let (g, tag, _) = &self.depth_grids[i];
             if g.failed() {
-                self.depth_grids.swap_remove(i);
+                self.depth_grids.remove(i);
                 continue;
             }
             let tag = *tag;
             match g.try_take() {
                 Some(depth) => {
-                    let (g, _, sink) = self.depth_grids.swap_remove(i);
+                    let (g, _, sink) = self.depth_grids.remove(i);
                     sink(crate::backend::DepthGridResult {
                         tag,
                         width: g.width,

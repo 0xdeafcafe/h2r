@@ -44,6 +44,14 @@ const FALLBACK: u32 = 0x2_4010;
 const WAITS: u32 = 0x2_4020;
 const KERNEL_OUT: u32 = 0x2_4038;
 const KERNEL_CALLS: u32 = 0x2_4040;
+/// Bytes of stack the render's entry probes below its `esp`, page by page,
+/// as `_chkstk` does for a large frame (0 for none).
+const DEEP: u32 = 0x2_4050;
+/// Set: the sim frees objects (below) and the render's tail reads one.
+const CHURN: u32 = 0x2_4054;
+/// Object table: a body pointer per index (0: freed), and the bodies.
+const OBJECTS: u32 = 0x2_4100;
+const BODIES: u32 = 0x2_4200;
 /// Only the render writes this page.
 const OUT: u32 = 0x2_5000;
 /// Both write this line: the sim byte 0, the render byte 8.
@@ -52,7 +60,9 @@ const SHARED_LINE: u32 = 0x2_6000;
 const PUSH: u32 = 0x2_7000;
 const DATA_LEN: u32 = 0x8000;
 
-const STACK_TOP: u32 = 0x4_0000;
+/// The game thread's stack: as large as Halo 2's (its main thread's).
+const GAME_STACK: u32 = 0x4_0000;
+const STACK_TOP: u32 = 0x10_0000;
 
 static ADDRS: Addrs = Addrs {
     frame_wait: FRAME_WAIT,
@@ -65,6 +75,8 @@ static ADDRS: Addrs = Addrs {
     mark_counters: &[MARK],
     mark_bytes: &[STAMPS],
     host_owned: &[VBLANKS],
+    // What the kernel call answers: the render reads it after the call.
+    live_bytes: &[(KERNEL_OUT, KERNEL_OUT + 4)],
 };
 
 /// What the D3D entries saw, in order: (entry, value read at INPUT, ran on
@@ -100,7 +112,12 @@ fn render(
     let mut m = rt.memory();
     match sel {
         FRAME => {
+            probe(&m, cpu.esp)?;
             let v = m.u32(INPUT)?;
+            // The object this frame draws, picked from the frame's state and
+            // kept in a register (as a handle list built early in the
+            // frame is used late).
+            cpu.esi = v % 16;
             m.set_u32(OUT + 4 * (v % 64), v.wrapping_mul(3))?;
             m.set_u8(SHARED_LINE + 8, v as u8)?;
             let n = m.u32(FRAMES)? + 1;
@@ -118,6 +135,15 @@ fn render(
             if m.u32(FALLBACK)? == 2 {
                 return m.call(cpu, D3D_CALLBACK, FRAME + 0x20);
             }
+            if m.u32(FALLBACK)? == 3 {
+                // The answer to a local on the stack (as the semaphore's
+                // previous count is).
+                cpu.esp -= 8;
+                let local = cpu.esp;
+                cpu.esp -= 4;
+                m.set_u32(cpu.esp, local)?;
+                return m.call(cpu, kernel::function_token(KERNEL_ORDINAL), FRAME + 0x20);
+            }
             if m.u32(FALLBACK)? != 0 {
                 cpu.esp -= 4;
                 m.set_u32(cpu.esp, KERNEL_OUT)?;
@@ -127,9 +153,27 @@ fn render(
             render(cpu, ctx, FRAME + 0x20)
         }
         s if s == FRAME + 0x20 => {
-            // After the kernel: what it answered goes to OUT too.
-            let k = m.u32(KERNEL_OUT)?;
+            // After the kernel (on the game thread in a fallback, still on
+            // the render stack): a deep frame here too.
+            probe(&m, cpu.esp)?;
+            // The object picked at the entry, through the table: freed by
+            // a later tick, its body is gone (a null read).
+            if m.u32(CHURN)? != 0 {
+                let body = m.u32(OBJECTS + 4 * cpu.esi)?;
+                let radius = m.u32(body + 0x3c)?;
+                m.set_u32(OUT + 0x900 + 4 * cpu.esi, radius)?;
+            }
+            // What the kernel answered goes to OUT too.
+            let k = if m.u32(FALLBACK)? == 3 {
+                let k = m.u32(cpu.esp)?;
+                cpu.esp += 8;
+                k
+            } else {
+                m.u32(KERNEL_OUT)?
+            };
             m.set_u32(OUT + 0x800, k)?;
+            // Per frame too, so a later frame does not hide a wrong one.
+            m.set_u32(OUT + 0xa00 + 4 * cpu.esi, k)?;
             m.call(cpu, FRAME_WAIT, FRAME + 0x30)
         }
         s if s == FRAME + 0x30 => {
@@ -139,6 +183,19 @@ fn render(
         }
         _ => unreachable!("selector {sel:#x}"),
     }
+}
+
+/// `_chkstk`'s probes: a read of every page of a DEEP-byte frame below
+/// `esp`, down to its last byte.
+fn probe(m: &Guest, esp: u32) -> Result<(), runtime::GuestFault> {
+    let deep = m.u32(DEEP)?;
+    let low = esp - deep;
+    let mut at = esp;
+    while at > low {
+        at -= 0x1000.min(at - low);
+        m.u32(at)?;
+    }
+    Ok(())
 }
 
 /// The guest callback D3D_CALLBACK calls: the kernel, then return.
@@ -158,6 +215,11 @@ fn callback(
 }
 
 fn rig(on: bool) -> Rig {
+    rig_with(on, &[])
+}
+
+/// `serviced`: the kernel calls the game thread makes for the render.
+fn rig_with(on: bool, serviced: &[&'static str]) -> Rig {
     let log: Log = Arc::default();
     let mut d = Dispatch::default();
     d.register_generated_rust(FRAME, render).unwrap();
@@ -225,7 +287,7 @@ fn rig(on: bool) -> Rig {
     let mut g = Guest::new();
     g.map_zeroed(CODE, 0x1_0000, Permissions::RX).unwrap();
     g.map_zeroed(DATA, DATA_LEN, Permissions::RW).unwrap();
-    g.map_zeroed(STACK_TOP - 0x1_0000, 0x1_0000, Permissions::RW)
+    g.map_zeroed(STACK_TOP - GAME_STACK, GAME_STACK, Permissions::RW)
         .unwrap();
     // The world path: globals point at a record with +0x1120 set.
     g.set_u32(GLOBALS, GLOBALS_RECORD).unwrap();
@@ -239,6 +301,7 @@ fn rig(on: bool) -> Rig {
             |addr, _| [D3D_DRAW, D3D_SIM, D3D_CALLBACK].contains(&addr),
             &[],
         )
+        .serviced(serviced)
         .print(false);
     let mut r = Registry::new(Switches::defaults());
     assert!(r.add(&feature).unwrap());
@@ -298,8 +361,15 @@ impl Rig {
             m.set_u8(STAMPS.0 + 8 + (k % 8), mark as u8).unwrap();
             m.set_u8(CLEAR, 1).unwrap();
             m.set_u8(VBLANKS.0 + 1, k as u8).unwrap();
+            if m.u32(CHURN).unwrap() != 0 {
+                // This tick spawns object k and frees the last one.
+                let (now, last) = (k % 16, (k + 15) % 16);
+                m.set_u32(BODIES + 0x40 * now + 0x3c, 100 + k).unwrap();
+                m.set_u32(OBJECTS + 4 * now, BODIES + 0x40 * now).unwrap();
+                m.set_u32(OBJECTS + 4 * last, 0).unwrap();
+            }
         }
-        if k % 3 == 0 {
+        if k.is_multiple_of(3) {
             self.run(D3D_SIM);
         }
         self.run(FRAME);
@@ -478,4 +548,164 @@ fn a_refusal_under_a_rust_continuation_stops_with_its_name_serial_runs_it() {
         Some(&1),
         "{s:?}"
     );
+}
+
+#[test]
+fn a_render_as_deep_as_the_game_threads_stack_runs_pipelined_and_in_fallbacks() {
+    // The game's first world frame probes a frame of over 128 KiB
+    // (`_chkstk`); the render stack was 128 KiB and that read faulted just
+    // under it. The render may use what the game thread could serially.
+    let deep = GAME_STACK - 0x1000;
+    let mut serial = rig(false);
+    let mut piped = rig(true);
+    for r in [&mut serial, &mut piped] {
+        r.rt.memory().set_u32(DEEP, deep).unwrap();
+    }
+    for k in 1..=8 {
+        serial.round(k, fallback_round(k));
+        piped.round(k, fallback_round(k));
+    }
+    serial.finish();
+    piped.finish();
+    compare(&serial.data(), &piped.data());
+    let s = piped.feature.stats();
+    assert_eq!(s.pipelined, 8, "{s:?}");
+    assert_eq!(s.completed, 7, "{s:?}");
+    assert_eq!(s.fallbacks.get("kernel:KeQuerySystemTime"), Some(&1));
+}
+
+#[test]
+fn switched_on_it_runs_menu_frames_serially_and_launches_nothing() {
+    // Off the world path (menus, loading screens): the original, on the
+    // game thread, with the same memory as the feature off.
+    let mut serial = rig(false);
+    let mut piped = rig(true);
+    for r in [&mut serial, &mut piped] {
+        let mut m = r.rt.memory();
+        m.set_u32(GLOBALS, 0).unwrap();
+        m.set_u32(DEEP, GAME_STACK - 0x1000).unwrap();
+    }
+    for k in 1..=20 {
+        serial.round(k, false);
+        piped.round(k, false);
+        assert!(!piped.feature.in_flight());
+    }
+    assert_eq!(
+        serial.data(),
+        piped.data(),
+        "no mark, counter or byte differs"
+    );
+    let s = piped.feature.stats();
+    assert_eq!(s.pipelined, 0, "{s:?}");
+    assert_eq!(s.serial.get("not_world"), Some(&20), "{s:?}");
+    assert!(piped.log.lock().unwrap().iter().all(|e| !e.2));
+}
+
+/// Rounds 1..=n with objects spawned and freed each tick; `fallback_round`
+/// frames make the kernel call in the middle of the render.
+fn churn(r: &mut Rig, n: u32, call: u32) -> Option<Event> {
+    r.rt.memory().set_u32(CHURN, 1).unwrap();
+    for k in 1..=n {
+        {
+            let mut m = r.rt.memory();
+            m.set_u32(INPUT, k).unwrap();
+            m.set_u8(SHARED_LINE, k as u8).unwrap();
+            let call = if fallback_round(k) { call } else { 0 };
+            m.set_u32(FALLBACK, call).unwrap();
+            m.set_u8(CLEAR, 1).unwrap();
+            let (now, last) = (k % 16, (k + 15) % 16);
+            m.set_u32(BODIES + 0x40 * now + 0x3c, 100 + k).unwrap();
+            m.set_u32(OBJECTS + 4 * now, BODIES + 0x40 * now).unwrap();
+            m.set_u32(OBJECTS + 4 * last, 0).unwrap();
+        }
+        let (event, _) = r.run_to_end(FRAME);
+        if !matches!(event, Some(Event::HarnessExit)) {
+            return event;
+        }
+    }
+    None
+}
+
+#[test]
+fn a_fallback_finishing_the_render_on_live_ram_reads_the_next_ticks_objects() {
+    // The game's crash at present 2803: a render refused at the async I/O
+    // pool's mutex finished on the game thread against live RAM, a tick
+    // later; an object its frame had listed was freed by then, and the
+    // object setup read the body's radius (+0x3c) through a null pointer.
+    let mut serial = rig(false);
+    assert_eq!(
+        churn(&mut serial, 12, 1),
+        None,
+        "serially every frame is fine"
+    );
+    let mut piped = rig(true);
+    let event = churn(&mut piped, 12, 1);
+    let Some(Event::MemoryFault { fault, .. }) = event else {
+        panic!("{event:?}")
+    };
+    assert_eq!(fault.addr, 0x3c, "{fault:?}");
+    assert_eq!(
+        piped
+            .feature
+            .stats()
+            .fallbacks
+            .get("kernel:KeQuerySystemTime"),
+        Some(&1)
+    );
+}
+
+#[test]
+fn a_serviced_kernel_call_keeps_the_render_on_its_own_frame() {
+    // The same frames with the call serviced: the game thread makes it, the
+    // render carries on on its thread against its snapshot, and reads the
+    // object its frame listed. The answer goes to a live byte range (1) or
+    // to a local on the render's stack (3).
+    for call in [1, 3] {
+        serviced_rounds(call);
+    }
+}
+
+fn serviced_rounds(call: u32) {
+    let n = rounds();
+    let mut serial = rig(false);
+    let mut piped = rig_with(true, &["KeQuerySystemTime"]);
+    assert_eq!(churn(&mut serial, n, call), None);
+    assert_eq!(churn(&mut piped, n, call), None);
+    serial.finish();
+    piped.finish();
+    compare(&serial.data(), &piped.data());
+    let s = piped.feature.stats();
+    let calls = (1..=n).filter(|&k| fallback_round(k)).count() as u64;
+    assert!(s.fallbacks.is_empty(), "{s:?}");
+    assert_eq!(s.completed, n as u64, "{s:?}");
+    assert_eq!(s.serviced.get("kernel:KeQuerySystemTime"), Some(&calls));
+    // The kernel ran on the game thread, once per call, as serially, and
+    // its answer (a live byte range) reached the render.
+    let kernel = |r: &Rig| r.rt.memory().u32(KERNEL_CALLS).unwrap();
+    assert_eq!(kernel(&piped), kernel(&serial));
+    assert_eq!(kernel(&piped), calls as u32);
+    let out = |r: &Rig| r.rt.memory().u32(OUT + 0x800).unwrap();
+    assert_eq!(out(&piped), out(&serial));
+    assert_eq!(piped.rt.memory().u32(WAITS).unwrap(), n + 1);
+}
+
+#[test]
+fn a_serviced_call_under_a_rust_continuation_carries_on_too() {
+    // The render thread keeps its own context, continuation and all.
+    let mut serial = rig(false);
+    serial.round(1, false);
+    serial.rt.memory().set_u32(FALLBACK, 2).unwrap();
+    serial.run(FRAME);
+    let mut piped = rig_with(true, &["KeQuerySystemTime"]);
+    piped.round(1, false);
+    piped.rt.memory().set_u32(INPUT, 2).unwrap();
+    piped.rt.memory().set_u32(FALLBACK, 2).unwrap();
+    piped.run(FRAME);
+    // The serial last frame without the callback's call.
+    piped.rt.memory().set_u32(FALLBACK, 0).unwrap();
+    piped.finish();
+    let s = piped.feature.stats();
+    assert!(s.fallbacks.is_empty(), "{s:?}");
+    assert_eq!(s.serviced.get("kernel:KeQuerySystemTime"), Some(&1));
+    assert_eq!(piped.rt.memory().u32(KERNEL_CALLS).unwrap(), 1);
 }

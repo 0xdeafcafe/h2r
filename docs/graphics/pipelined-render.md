@@ -773,7 +773,15 @@ plain `ret`). On the game thread, at each entry:
    present counter `0x00485aa0` + 1 (the predicted present), the one-shot
    byte `0x004e6098` cleared. Then **launch** `0x00223240` (the generated
    original) on the render host thread with the entry's registers and its
-   own 128 KB guest stack from the feature arena, and return to the game.
+   own 256 KiB guest stack from the feature arena, and return to the game.
+   The stack is as large as the game thread's own (the main thread's size
+   in the XBE header), because the front-end may use as much as it does
+   serially. The first build gave it 128 KiB, and the first world frame
+   crashed: a function under the render probes (`_chkstk`, `0x00320560`)
+   a frame of over 128 KiB, and the probe read the unmapped page under the
+   render stack (`MemoryFault ... Read, Unmapped` about 128 KiB below
+   `esp`). A fallback runs the rest of the render on the game thread but
+   still on this stack, so the same limit holds there.
 
 On the render thread the executor's dispatch has the generated original
 at `0x00223240` and a no-op at `0x0012b2e0`; it may run the D3D layer's
@@ -807,7 +815,37 @@ sim's D3D calls on the game thread (the `0x3f…` entries, wrapped at the
 first frame) join the render first; one from another guest thread is not
 ordered (`d3d_other_thread`).
 
-**Fallbacks.** A refused call does not rerun the frame: draws already
+**Serviced calls.** The async I/O pool's lock (`NtWaitForSingleObjectEx`
+on its mutex, `NtReleaseMutant`, `NtReleaseSemaphore` to wake the
+worker; `SERVICED`) does not fall back. At the join the game thread
+makes the call itself, on its own context (the kernel sees the thread
+the render runs for serially), with the render's stack copied to live
+RAM from `esp`'s page up and the pool's bytes (`Addrs::live_bytes`,
+`0x004e0354..0x004e28ec`) brought in step: the render's changes go to
+live RAM, live RAM's bytes come back into the view. The stack comes back
+too (the semaphore's previous count is a local), and the render carries
+on on its own thread (`SecondExecutor::resume`, a return to the call's
+return address) against its snapshot. The join waits for it and settles
+again: it completes, or makes another serviced call, or falls back. The
+pool is left out of the final merge. While the render holds the pool
+lock no guest thread runs, because the game thread is waiting in the
+join, so the render's pool changes and the worker's never interleave.
+This is what the async I/O row of "Every dependency line" needs, without
+the request-queue port. The frame costs its render time on the game
+thread from the first serviced call on.
+
+Why it matters: the first build made these calls fallbacks, about 40% of
+gameplay frames in Old Mombasa. A fallback runs the rest of the render
+against live RAM, which is a tick ahead of the frame the render started
+on. At present 2803 the frame's object list (built against the snapshot)
+named an object the tick had since deleted, and the object render setup
+(`OBJECT_RENDER_SETUP` `0x00133790`) read the body's sphere radius
+(`+0x3c`) through the null body pointer: `MemoryFault ... addr: 3c`, on
+the render stack, on the game thread.
+
+**Fallbacks.** A fallback is still unsound in that way, so any refused
+call other than the serviced ones should be rare. A refused call does
+not rerun the frame: draws already
 made would be made twice and the device's own state could not be rolled
 back. Instead everything the render wrote is handed back (its stack too;
 the mark counters take the larger value, the marks themselves are
@@ -829,12 +867,13 @@ the next tick boundary after it passes.
 **Output.** Once a second, from the game thread:
 
 ```text
-pipeline: frames pipelined 58 completed 41 serial [loading 2] fallbacks 17 [kernel:<export> 12, <override> 5] d3d_joins 0 d3d_other_thread 0 join_wait 11.20ms hand_back 0.40ms snapshot 1.10ms render 25.70ms pages 231.0 conflicts 3 mispredicts 0
+pipeline: frames pipelined 58 completed 41 serial [loading 2] fallbacks 17 [kernel:<export> 12, <override> 5] serviced 40 [kernel:NtReleaseMutant 20, kernel:NtWaitForSingleObjectEx 20] d3d_joins 0 d3d_other_thread 0 join_wait 11.20ms hand_back 0.40ms snapshot 1.10ms render 25.70ms pages 231.0 conflicts 3 mispredicts 0
 ```
 
 (an illustration of the shape, not a measurement). `completed` frames
 ran entirely on the render thread; `fallbacks` by the call that stopped
-them (`kernel:` for kernel imports, else the override's name); times are
+them (`kernel:` for kernel imports, else the override's name);
+`serviced` the calls the game thread made for the render; times are
 per pipelined frame: the game thread's wait at the join, the hand-back,
 the snapshot, and the render thread's run; `pages` handed back per frame.
 
@@ -845,14 +884,26 @@ points) and sim, run serially and pipelined over 120 rounds
 fallback frames finished on the game thread with the kernel called once
 each and one frame wait a frame, D3D reads from the launch snapshot while
 the sim has moved on, sim D3D calls after the render's, a snapshot
-waiting one frame, a refusal under a continuation stopping by name.
+waiting one frame, a refusal under a continuation stopping by name, a
+render probing a frame as deep as a game-sized thread stack (pipelined
+and in a fallback; it faults with a 128 KiB render stack), and menu
+frames with the feature on running serially with nothing launched and
+the same memory as off. With objects created and freed every tick: a
+fallback reads the next tick's freed object and faults at `0x3c`, the
+crash above; the same call serviced keeps the render on its own frame,
+the memory equal to the serial run's, the kernel called once a call on
+the game thread, its answer reaching the render through a live range and
+through a stack local; a serviced call under a Rust continuation
+carries on too.
 `crates/emit/tests/second_executor.rs`: lifted x86 refused at a kernel
 call carries on on the main context from the refused CPU (twenty rounds).
 `crates/d3d/tests/registration.rs`: a real D3D entry on the executor (the
 recording backend) reads the snapshot and writes the view.
 
 **Not done** (fallbacks cover them; the `pipeline:` lines say which
-first): executor-safe kernel time reads; the async I/O requests and the
+first): executor-safe kernel time reads; the async I/O requests made
+without the game thread (serviced calls make the frame wait for the
+join; the port queues them, build plan 3.5) and the
 texture and geometry caches (build plan 3.5); the game-time bracket
 (3.4); census v2's `game_state`/`datum`/`world_pool` lines; render-loop
 ports on the render thread (they are refused at their entry); the render
