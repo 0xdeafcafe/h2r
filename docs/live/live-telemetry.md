@@ -59,7 +59,8 @@ shots"):
   counts go to the players holding those weapons and add up until their
   next frame. A weapon change or death drops the pending count. Shots of a
   tick the worker folds into another (see "Threads") are added to the one
-  it keeps.
+  it keeps. The ticks they were on go out as `fire` (see "Velocity, seat,
+  vitality and fire").
 
 Frames also carry `vehicles` and `actors` ([live-gamestate.md](live-gamestate.md),
 "AI bipeds, teams and vehicles"):
@@ -218,6 +219,95 @@ rows. The table is used only if the file's scenario datum equals the
 guest's (tag index header `[0x00547f00]+0x0c`), since both indexes hold the
 same salted datums. Without a match, or without a locator (tests, a raw
 XBE), `species` and `weapon` are left out.
+
+## Velocity, seat, vitality and fire
+
+Players and actors carry the protocol's version 3 unit fields from capture
+(docs/live/replay-fidelity.md, step 4). Offsets and evidence are in
+`crates/live-telemetry/src/layout.rs`; all are confirmed by static reading
+of the retail XBE.
+
+- `vel`: body `+0x88`, sent as read, in world units **a second**. The
+  engine keeps the field per second, not per tick: the projectile update
+  (from `0x000f8ee2`) loads the seconds per tick (`T+0x04`), takes gravity
+  times it off the velocity's z and moves the position (`+0x64`) by the
+  velocity times it (`0x000f97df`..`0x000f9803`), and projectile creation
+  adds the tag's initial velocity (`proj +0x17c`, 400 for a bullet, world
+  units a second) straight in (`0x000f8487`). It is an object field, so
+  bipeds and vehicles hold the same unit. A rider sends the velocity of what
+  its `pos` is: the vehicle's, or the mount's for a gunner. Absent when the
+  read faults or is not finite, or faster than `MAX_FRAME_SPEED` (1000 a
+  second); a standing unit sends zeros, which cost nothing in a delta once
+  sent. A dead player sends none.
+- `seat`: unit `+0x1fc` (`i16`, -1 none), the index in the vehicle
+  definition's seats block. `unit_new` sets it to -1 (`0x000c44c1`), the
+  enter-vehicle routine (`0x000ea1f0`) indexes the seats block with it and
+  stores it (`0x000ea405`), leaving stores -1 (`0x000ea995`). Sent only
+  with `vehicle`, at most 63.
+- `body` and `shield`: `+0xec` and `+0xf0` (`f32`, 1.0 full), as
+  `object_get_health` (`0x002a1a20`) and `object_get_shield`
+  (`0x002a1a90`) read them: both 0 while the body-depleted damage flag is
+  set. Sent clamped to 0..1 and 0..4 (an overshield charges past 1).
+  Bodies (stance `dead`) carry none.
+- `fire`: each tick's fire-hook count for the held weapon also sets bit 0
+  of a 32-bit mask, after moving the mask older by the ticks since the
+  last shot (bits past 32 ticks drop off). The frame sends the mask as of
+  its tick, so bit `k` is a shot on `tick - k`, beside `shots`, the count;
+  both reset at each frame. Actors' masks are kept by weapon datum, like
+  their counts. A weapon change, death or campaign revert drops them.
+
+`actions_ago` and hits' `ago` are not filled yet.
+
+### Rate: 15 Hz, players included
+
+Frames stay on even ticks (15 Hz) for everything, players included. A
+players-only frame on odd ticks does not fit the current protocol: a
+frame's lists are complete, so an odd frame without actors, vehicles and
+machines says they are gone. The viewer would drop them for a tick, and the
+packed delta of the next even frame would carry every actor again whole
+(no previous entity to match), a keyframe's worth of bytes 15 times a
+second. Sending everything every tick doubles the world scan's game-thread
+cost (it runs on frame ticks only, `pipeline.rs`) and the bytes, while the
+server forwards at most 15 frames a second (`FRAME_INTERVAL`, 66 ms,
+`crates/live-server/src/games.rs`) and records the first frame of each
+wall-clock second, so the extra frames would be dropped or folded before
+anyone saw them. With `vel` and `fire` filled, the viewer can place each
+shot on its tick and interpolate between 15 Hz samples with the velocity
+(Hermite) at no extra rate.
+
+What 30 Hz players would need: a frame flag (packed version 5, JSON
+`partial: true`) meaning "these lists are unchanged since the last full
+frame", so an odd frame carries players only and the delta encoder matches
+against the last full frame's other lists; the session building one each
+odd tick (the snapshot already reads players every tick); the server's
+throttle letting players-only frames through (or the chunk recorder of
+step 5 taking every frame); and the 15-delta keyframe interval and `seq`
+counting the odd frames too. `tick_offset` staying even keeps full frames
+on even ticks either way.
+
+### Bandwidth (estimates, until the bench runs)
+
+From the packed codes (`pack.rs`): a delta sends a changed `vel` as three
+`seg(4)` differences in 1/64 unit a second. A unit walking a curve at about
+4 units a second changes it by some 17 steps a component a frame, about
+22 bits with the field's flag (about 2.75 bytes); a still or steadily
+moving one costs nothing after the first frame. `body` and `shield` cost
+about 2 bytes a unit in a keyframe and nothing until they change; `fire`
+about half a byte on a frame its unit fired; `seat` a few bits on entering a
+vehicle.
+
+| scene (bench fixture) | before, B a frame | estimate with vel, fire, seat, vitality | per minute |
+|---|---:|---:|---:|
+| `mp16` (16 players circling) | 325 | about 375 | about 330 KiB (286 before) |
+| `mp16_1000` | 407 | about 455 | about 400 KiB (357 before) |
+| `campaign100` (all 100 actors circling) | 1330 | about 1610 | about 1.4 MiB (1.2 before) |
+
+The fixture moves every unit on a curve, so these are an upper end; in a
+real campaign most actors stand still and cost nothing extra. The bench
+fixture now sets the units' velocity in units a second (it was a per-tick
+guess) and full vitality. `cargo test --release -p live-telemetry --lib
+bench -- --ignored --nocapture` measures them; replace these estimates with
+its numbers.
 
 ## Player appearance
 
@@ -840,32 +930,36 @@ relying on live output, check in this order:
    copy at `+0x18`, appearance at `+0x118` inside it) joined by player
    `+0x28`, checked against the profile editor's colours and emblem; and
    where remote players' appearance lives in the `0x21c` player record.
-7. Frame models: `species` for both bipeds, `weapon` names for each
+7. Velocity, seat and vitality: `vel` against `speed` (a running Spartan
+   a few units a second, as the static reading says, not 30 times that), riders' `vel` the vehicle's, `seat` 0 for a Warthog
+   driver and the gunner's on the turret, `body`/`shield` falling with
+   hits and recharging, an overshield above 1.
+8. Frame models: `species` for both bipeds, `weapon` names for each
    multiplayer weapon (the map-file lookup by short name), `aim` following
    the reticle (and not lagging it: `+0x15c` is the other candidate),
    `shots` matching trigger pulls (battle rifle 3 per burst, shotgun 1 per
    pull, plasma weapons and the sentinel beam counted at all), and the fire
    hook installing (stderr says when it does not).
-8. Campaign: one game per mission across deaths and reverts; actors'
+9. Campaign: one game per mission across deaths and reverts; actors'
    `+0x12c`/`+0x13c` split (allies, enemies, Flood, the Arbiter's levels);
    the team names (likely: tag-definition order); vehicle `up` for banshees;
    that dropship-mounted turrets (vehicles parented to vehicles) look right
    (their `+0x64` is parent-relative and is sent as is).
-9. Stance and actions: crouch, airborne and the biped physics mode values
+10. Stance and actions: crouch, airborne and the biped physics mode values
    (likely, from Project Cartographer's names); that a jump and a melee
    (hit and miss) each show once; that reloads, weapon swaps, grenade
    throws and pickups each show once and not when firing; the grenade type
    names (likely 0 frag, 1 plasma).
-10. Hits: that `0x000d9640` runs once per damage instance on the host
+11. Hits: that `0x000d9640` runs once per damage instance on the host
     (its four callers include a network path, `0x0009c76e`); the reporting
     type order (likely, from Project Cartographer); body and shield amounts
     as vitality fractions (likely); a grenade's or vehicle's weapon falls
     back to the damage effect's stem.
-11. Machines: object type 7 is a machine and the scarab is one (its `mach`
+12. Machines: object type 7 is a machine and the scarab is one (its `mach`
     tag is in `03a`/`03b`); `+0x1a` matching map.glb's machine names; the
     device position `+0x140` moving 0 to 1 as doors open and elevators
     travel (likely); the active BSP switching between campaign zones.
-12. Scenario objects: crates knocked about in campaign show as moved in the
+13. Scenario objects: crates knocked about in campaign show as moved in the
     3D viewer and settle where they stop; a weapon picked up off the floor
     and a multiplayer spawn's weapon after a pickup go gone and come back
     on respawn (`+0xaf`); scenery destroyed (for example glass or barrels)

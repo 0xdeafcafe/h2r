@@ -314,12 +314,14 @@ Do not cache body pointers between snapshots: the object memory pool can compact
 | object origin | `+0x64` | `f32[3]` | confirmed | Written by transform setter `0x000b7430` |
 | forward/facing vector | `+0x70` | `f32[3]` | confirmed | Written by `0x000b7430`; used by `0x000ba160` |
 | up vector | `+0x7c` | `f32[3]` | confirmed | Written by `0x000b7430` |
-| translational velocity | `+0x88` | `f32[3]` | confirmed | Recovered velocity writer |
+| translational velocity | `+0x88` | `f32[3]` | confirmed | Recovered velocity writer; world units a second, not a tick: the projectile update moves `+0x64` by it times the seconds per tick (`0x000f97df`..`0x000f9803`) |
 | concrete object type | `+0xaa` | `u8` | confirmed | HaloScript/object type tests |
+| body vitality | `+0xec` | `f32` | confirmed | `object_get_health` `0x002a1a20` (0 while body-depleted) |
+| shield vitality | `+0xf0` | `f32` | confirmed | `object_get_shield` `0x002a1a90` (0 while body-depleted) |
 | damage flags | `+0x10a` | `u16` | confirmed | Bit 2 is body-depleted, set by `0x000d6800` |
 | unit's player datum | `+0x13c` | `u32` | confirmed | `0x0014de90`; retail Xbox differs from Vista's `+0x140` |
 | previous player datum | `+0x140` | `u32` | confirmed | Unlink path `0x0014cad0` |
-| vehicle seat index | `+0x1fc` | `i16` | likely | Unit/vehicle death and seat consumers; optional |
+| vehicle seat index | `+0x1fc` | `i16` | confirmed | `unit_new` sets -1 (`0x000c44c1`); the enter-vehicle routine `0x000ea1f0` indexes the vehicle's seats block (stride `0xb0`) with it and stores it (`0x000ea405`); leaving stores -1 (`0x000ea995`) |
 
 For an unparented unit, marker position is `body+0x64`, and heading is `atan2(forward.y, forward.x)`; the world is Z-up. `0x000ba160` shows that parented objects compose their local transform with a parent node matrix. Therefore, for a player in a vehicle, the cheap robust path is:
 

@@ -108,6 +108,17 @@ pub struct ObjectState {
     pub team: Option<i16>,
     /// Movement and inventory state for `stance` and `actions`.
     pub motion: Motion,
+    /// The velocity of what `pos` is (the vehicle's, or the mount's, when
+    /// riding; else the unit's own), world units a second (body `+0x88`);
+    /// `None` when its read faulted or is not finite.
+    pub velocity: Option<[f64; 3]>,
+    /// The seat of `vehicle` the unit is in (`+0x1fc`); `None` when -1 or
+    /// not read.
+    pub seat: Option<u16>,
+    /// Body and shield vitality (`+0xec`, `+0xf0`; 1.0 full), both 0 once
+    /// the body is depleted, as `object_get_health` reads them; `None` when
+    /// not read or not finite.
+    pub vitality: Option<(f64, f64)>,
 }
 
 /// What a unit's stance and one-shot actions are worked out from (each

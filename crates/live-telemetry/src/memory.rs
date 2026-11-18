@@ -435,6 +435,8 @@ pub(crate) fn object_in(objects: &Objects, datum: u32) -> ReadResult<Option<Obje
     let [mut pos, mut forward, mut up] = pose(guest, body)?;
     let mut vehicle_definition = None;
     let mut mount = None;
+    // Whose transform `pos` is: the unit's, else what it rides.
+    let mut moving = body;
     let parent = guest.u32(body + layout::BODY_PARENT)?;
     let vehicle = match objects.body(parent)? {
         Some((layout::OBJECT_TYPE_VEHICLE, parent_body)) => {
@@ -447,10 +449,21 @@ pub(crate) fn object_in(objects: &Objects, datum: u32) -> ReadResult<Option<Obje
             let at = mounted.map_or(parent_body, |(_, b)| b);
             mount = mounted.map(|(m, _)| m);
             [pos, forward, up] = pose(guest, at)?;
+            moving = at;
             Some(parent)
         }
         _ => None,
     };
+    let velocity = vector(guest, moving + layout::BODY_VELOCITY)
+        .ok()
+        .filter(|v| v.iter().all(|c| c.is_finite()));
+    let seat = guest
+        .u16(body + layout::UNIT_SEAT)
+        .ok()
+        .map(|s| s as i16)
+        .filter(|s| *s >= 0)
+        .map(|s| s as u16);
+    let vitality = vitality(guest, body).ok().flatten();
     if !pos.iter().chain(forward.iter()).all(|v| v.is_finite()) {
         return Ok(None);
     }
@@ -466,7 +479,22 @@ pub(crate) fn object_in(objects: &Objects, datum: u32) -> ReadResult<Option<Obje
         vehicle_definition,
         team,
         motion,
+        velocity,
+        seat,
+        vitality,
     }))
+}
+
+/// Body and shield vitality of the object whose data is at `body`, as
+/// `object_get_health` and `object_get_shield` read them: both 0 once the
+/// body is depleted; `None` when either is not finite.
+fn vitality(guest: &Guest, body: u32) -> ReadResult<Option<(f64, f64)>> {
+    if guest.u16(body + layout::BODY_DAMAGE_FLAGS)? & layout::BODY_DEPLETED != 0 {
+        return Ok(Some((0.0, 0.0)));
+    }
+    let health = f64::from(guest.f32(body + layout::BODY_VITALITY)?);
+    let shield = f64::from(guest.f32(body + layout::BODY_SHIELD_VITALITY)?);
+    Ok((health.is_finite() && shield.is_finite()).then_some((health, shield)))
 }
 
 /// The vehicle a vehicle (body at `body`) is mounted on, and that one's
@@ -2103,6 +2131,64 @@ mod tests {
         assert!(!cinematic(&guest).unwrap());
         snapshot_into(&guest, &mut out, &mut Vec::new()).unwrap();
         assert!(!out.cinematic);
+    }
+
+    #[test]
+    fn unit_velocity_seat_and_vitality() {
+        let mut guest = fixture::memory();
+        let unit = fixture::object_datum(1);
+        fixture::put_object(&mut guest, 1, u32::MAX);
+        let body = fixture::BODY + 0x1000;
+        for (i, v) in [3.0f32, -4.0, 0.5].into_iter().enumerate() {
+            guest
+                .set_f32(body + layout::BODY_VELOCITY + 4 * i as u32, v)
+                .unwrap();
+        }
+        guest.set_u16(body + layout::UNIT_SEAT, u16::MAX).unwrap();
+        guest.set_f32(body + layout::BODY_VITALITY, 0.75).unwrap();
+        guest
+            .set_f32(body + layout::BODY_SHIELD_VITALITY, 2.5)
+            .unwrap();
+        let o = object(&guest, unit).unwrap().unwrap();
+        assert_eq!(o.velocity, Some([3.0, -4.0, 0.5]), "world units a second");
+        assert_eq!(o.seat, None, "-1: in no seat");
+        assert_eq!(o.vitality, Some((0.75, 2.5)));
+        // A depleted body has none left, as the game's getters say.
+        guest
+            .set_u16(body + layout::BODY_DAMAGE_FLAGS, layout::BODY_DEPLETED)
+            .unwrap();
+        let o = object(&guest, unit).unwrap().unwrap();
+        assert_eq!(o.vitality, Some((0.0, 0.0)));
+        guest.set_u16(body + layout::BODY_DAMAGE_FLAGS, 0).unwrap();
+        guest
+            .set_f32(body + layout::BODY_SHIELD_VITALITY, f32::NAN)
+            .unwrap();
+        let o = object(&guest, unit).unwrap().unwrap();
+        assert_eq!(o.vitality, None, "not finite: not read");
+        // In a vehicle's third seat: the seat, and the vehicle's velocity
+        // (its transform is where the rider is).
+        fixture::put_vehicle(&mut guest, 2);
+        let vehicle = fixture::BODY + 2 * 0x1000;
+        for (i, v) in [10.0f32, 0.0, -1.0].into_iter().enumerate() {
+            guest
+                .set_f32(vehicle + layout::BODY_VELOCITY + 4 * i as u32, v)
+                .unwrap();
+        }
+        guest
+            .set_u32(body + layout::BODY_PARENT, fixture::object_datum(2))
+            .unwrap();
+        guest.set_u16(body + layout::UNIT_SEAT, 2).unwrap();
+        let o = object(&guest, unit).unwrap().unwrap();
+        assert_eq!(o.vehicle, Some(fixture::object_datum(2)));
+        assert_eq!(o.seat, Some(2));
+        assert_eq!(o.velocity, Some([10.0, 0.0, -1.0]));
+        assert_eq!(o.motion.velocity, [3.0, -4.0, 0.5], "motion keeps its own");
+        // A velocity that is not finite is not read.
+        guest
+            .set_f32(vehicle + layout::BODY_VELOCITY, f32::INFINITY)
+            .unwrap();
+        let o = object(&guest, unit).unwrap().unwrap();
+        assert_eq!(o.velocity, None);
     }
 
     #[test]
