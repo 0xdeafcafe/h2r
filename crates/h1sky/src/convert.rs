@@ -5,18 +5,19 @@
 //! sky's lights as child blocks. What maps where, and what has no Halo 2
 //! home, is listed in `docs/formats/h1-sky.md`.
 //!
-//! Synthesised defaults (not read from the source sky, which has no such
+//! Synthesised values (not read from the source sky, which has no such
 //! field): the light flags `15`, the retail-common value; the root word at
-//! `+0x10` `0`; model scale `1.0` (Halo 1 sky models are authored full
-//! size); camera translation scale `1.0` (the Halo 1 sky box stays centred
-//! on the camera). Lens flares stay null: converting `lens` tags is not
-//! this crate's job.
+//! `+0x10` `0`; the model scale, the least that keeps the whole sky behind
+//! the level ([`model_scale`]: Halo 1 sky models are authored full size,
+//! but some come within a hundred units of the camera); camera translation
+//! scale `1.0` (the Halo 1 sky box stays centred on the camera). Lens
+//! flares stay null: converting `lens` tags is not this crate's job.
 
 use map::build::{Block, FixupKind, TagSet};
 use map::{CacheType, FourCC, TagId};
 
-use crate::h1;
 use crate::Result;
+use crate::h1;
 
 /// Flags written into each converted light's parameter record: the value on
 /// 49 of 91 retail skies. Halo 1's light flags (1 or 3) have a different,
@@ -25,8 +26,9 @@ pub const LIGHT_FLAGS: u32 = 15;
 
 /// Builds the Halo 2 `sky ` tree for `sky`. `model` is the datum of the
 /// converted render model ([`h1models::model_from_map`] output, installed
-/// into the same set), or `None` for skies with no model.
-pub fn convert_sky(sky: &h1::Sky, model: Option<TagId>) -> h1models::Converted {
+/// into the same set), or `None` for skies with no model; `model_scale`
+/// goes to `+0x14` ([`model_scale`]).
+pub fn convert_sky(sky: &h1::Sky, model: Option<TagId>, model_scale: f32) -> h1models::Converted {
     let mut root = Block::zeroed(crate::h2::ROOT_LEN);
     root.fixup(
         crate::h2::layout::MODEL as u32,
@@ -37,7 +39,7 @@ pub fn convert_sky(sky: &h1::Sky, model: Option<TagId>) -> h1models::Converted {
         FixupKind::TagRef(TagId::NULL),
     );
     root.put_u32(crate::h2::layout::WORD_10, 0);
-    root.put_f32(crate::h2::layout::MODEL_SCALE, 1.0);
+    root.put_f32(crate::h2::layout::MODEL_SCALE, model_scale);
     root.put_f32(crate::h2::layout::CAMERA_TRANSLATION_SCALE, 1.0);
     let empty = || Block::zeroed(0);
     root.fixup(
@@ -100,10 +102,7 @@ fn light_block(light: &h1::SkyLight) -> Block {
     p.put_f32(crate::h2::params::CUTOFF, light.cutoff_angle);
     b.fixup(
         crate::h2::light::PARAMS as u32,
-        FixupKind::Block {
-            count: 1,
-            child: p,
-        },
+        FixupKind::Block { count: 1, child: p },
     );
     b
 }
@@ -122,14 +121,27 @@ fn array(elements: Vec<Block>, stride: usize) -> Block {
     out
 }
 
+/// A Halo 1 sky read for conversion: the tag, its converted render model
+/// (tag path and tree) when it has one, and the model scale that keeps it
+/// behind the level it was read with ([`model_scale`]).
+#[derive(Debug, Clone)]
+pub struct FromMap {
+    /// The Halo 1 sky tag.
+    pub sky: h1::Sky,
+    /// The render model's tag path and conversion.
+    pub model: Option<(String, h1models::Converted)>,
+    /// `sky +0x14`.
+    pub model_scale: f32,
+}
+
 /// Reads the `sky ` tag `tag` of `map`, and converts its render model when
-/// it has one. Pair the model with [`install_sky`], which installs both
-/// into one set and links the reference.
-pub fn sky_from_map(
-    map: &h1map::H1Map,
-    tag: &h1map::Tag,
-) -> Result<(h1::Sky, Option<(String, h1models::Converted)>)> {
+/// it has one. The model scale is the least that puts every surface of the
+/// model at least [`level_reach`] of `map` from the camera. Pair the model
+/// with [`install_sky`], which installs both into one set and links the
+/// reference.
+pub fn sky_from_map(map: &h1map::H1Map, tag: &h1map::Tag) -> Result<FromMap> {
     let sky = h1::Sky::from_map(map, tag)?;
+    let mut model_scale = 1.0;
     let model = if sky.model.id.is_none() {
         None
     } else {
@@ -140,10 +152,40 @@ pub fn sky_from_map(
                 tag.group
             )));
         }
-        let (_, converted) = h1models::model_from_map(map, tag, &h1models::mode::ModelOptions::default())?;
+        let (h1_model, converted) =
+            h1models::model_from_map(map, tag, &h1models::mode::ModelOptions::default())?;
+        model_scale = self::model_scale(nearest_surface(&h1_model), level_reach(map));
         Some((tag.name.clone(), converted))
     };
-    Ok((sky, model))
+    Ok(FromMap {
+        sky,
+        model,
+        model_scale,
+    })
+}
+
+/// The farthest one point of `map`'s level can be from another: the
+/// diagonal of the box around every structure BSP's world bounds. 0 for a
+/// map with no BSP that reads.
+pub fn level_reach(map: &h1map::H1Map) -> f32 {
+    let mut lo = [f32::INFINITY; 3];
+    let mut hi = [f32::NEG_INFINITY; 3];
+    for r in map.structure_bsps().unwrap_or_default() {
+        let Ok(bsp) = map.structure_bsp(&r) else {
+            continue;
+        };
+        let b = bsp.world_bounds();
+        for a in 0..3 {
+            if b[2 * a].is_finite() && b[2 * a + 1].is_finite() && b[2 * a] <= b[2 * a + 1] {
+                lo[a] = lo[a].min(b[2 * a]);
+                hi[a] = hi[a].max(b[2 * a + 1]);
+            }
+        }
+    }
+    if (0..3).any(|a| lo[a] > hi[a]) {
+        return 0.0;
+    }
+    len(sub(hi, lo))
 }
 
 /// Installs `model` (if any) and the converted `sky` into `set`, linking
@@ -154,12 +196,13 @@ pub fn install_sky(
     sky: &h1::Sky,
     model: Option<(&str, h1models::Converted)>,
     name: &str,
+    model_scale: f32,
 ) -> Result<TagId> {
     let model_id = match model {
         Some((model_name, converted)) => Some(converted.install(set, model_name)?),
         None => None,
     };
-    Ok(convert_sky(sky, model_id).install(set, name)?)
+    Ok(convert_sky(sky, model_id, model_scale).install(set, name)?)
 }
 
 /// Builds a set holding one converted sky and returns its bytes and the
@@ -169,17 +212,137 @@ pub fn build_sky_map(
     sky: &h1::Sky,
     model: Option<(&str, h1models::Converted)>,
     name: &str,
+    model_scale: f32,
 ) -> Result<(Vec<u8>, TagId, Option<TagId>)> {
     let mut set = TagSet::new(CacheType::Multiplayer, "h1skytest", "invented\\h1skytest");
-    let id = install_sky(&mut set, sky, model, name)?;
+    let id = install_sky(&mut set, sky, model, name, model_scale)?;
     let model_id = set
         .slots
         .iter()
         .enumerate()
         .filter(|(i, s)| {
-            s.tag.as_ref().is_some_and(|t| *i != id.index() as usize && t.group == FourCC(*b"mode"))
+            s.tag
+                .as_ref()
+                .is_some_and(|t| *i != id.index() as usize && t.group == FourCC(*b"mode"))
         })
         .find_map(|(i, _)| set.slots[i].tag.as_ref().map(|t| t.id));
     let (bytes, _) = set.build().map_err(crate::Error::Map)?;
     Ok((bytes, id, model_id))
+}
+
+/// Triangles whose plane passes closer than this to the sky's origin are
+/// seen edge-on from the camera (Halo 1 draws a sky around the eye): they
+/// cover no area on screen at any scale, so they don't bound it.
+pub const EDGE_ON: f32 = 1.0;
+
+/// How near the camera any surface of a Halo 1 sky model comes, in the
+/// model's own units: the least distance from its origin to a triangle
+/// that isn't seen edge-on ([`EDGE_ON`]). `None` for a model with no such
+/// triangle.
+pub fn nearest_surface(model: &h1models::h1::Model) -> Option<f32> {
+    let mut nearest: Option<f32> = None;
+    for part in model.geometries.iter().flat_map(|g| &g.parts) {
+        for t in h1models::h1::strip_triangles(&part.strip) {
+            let Some([a, b, c]) = t
+                .iter()
+                .map(|&i| part.vertices.get(usize::from(i)).map(|v| v.position))
+                .collect::<Option<Vec<_>>>()
+                .and_then(|v| <[[f32; 3]; 3]>::try_from(v).ok())
+            else {
+                continue;
+            };
+            let n = cross(sub(b, a), sub(c, a));
+            let len = dot(n, n).sqrt();
+            if len == 0.0 || (dot(n, a) / len).abs() < EDGE_ON {
+                continue;
+            }
+            let d = origin_to_triangle(a, b, c);
+            nearest = Some(nearest.map_or(d, |m| m.min(d)));
+        }
+    }
+    nearest
+}
+
+/// The model scale (`sky +0x14`) that keeps every surface of a sky whose
+/// nearest one is `nearest` from its origin ([`nearest_surface`]) at least
+/// `reach` from the camera: never below 1.
+///
+/// Halo 1 draws its sky first and the level over it, so a sky surface
+/// nearer the eye than the level (a30's distant ground, 113 units below
+/// the camera) still sits behind it. Halo 2 draws the sky after the opaque
+/// level, depth-tested (the scene loop's sky step, E `0x0002c0bc` calling
+/// `0x0003ede0` after layers 1 to 6), centred on the camera when the
+/// camera translation scale is 1 (E `0x0003ebd0`: the translation is that
+/// scale times the camera position). Scaling the model about the camera
+/// leaves its picture unchanged and only moves it back in depth, so a
+/// level no wider than `reach` is always drawn in front of it.
+pub fn model_scale(nearest: Option<f32>, reach: f32) -> f32 {
+    match nearest {
+        Some(d) if d > 0.0 && reach > d => reach / d,
+        _ => 1.0,
+    }
+}
+
+fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn len(a: [f32; 3]) -> f32 {
+    dot(a, a).sqrt()
+}
+
+fn lerp(a: [f32; 3], d: [f32; 3], t: f32) -> [f32; 3] {
+    [a[0] + t * d[0], a[1] + t * d[1], a[2] + t * d[2]]
+}
+
+/// Distance from the origin to triangle `abc`: the closest point by the
+/// triangle's Voronoi regions (vertices, edges, face).
+fn origin_to_triangle(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> f32 {
+    let p = [0.0; 3];
+    let (ab, ac, ap) = (sub(b, a), sub(c, a), sub(p, a));
+    let (d1, d2) = (dot(ab, ap), dot(ac, ap));
+    if d1 <= 0.0 && d2 <= 0.0 {
+        return len(a);
+    }
+    let bp = sub(p, b);
+    let (d3, d4) = (dot(ab, bp), dot(ac, bp));
+    if d3 >= 0.0 && d4 <= d3 {
+        return len(b);
+    }
+    let vc = d1 * d4 - d3 * d2;
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+        return len(lerp(a, ab, d1 / (d1 - d3)));
+    }
+    let cp = sub(p, c);
+    let (d5, d6) = (dot(ab, cp), dot(ac, cp));
+    if d6 >= 0.0 && d5 <= d6 {
+        return len(c);
+    }
+    let vb = d5 * d2 - d1 * d6;
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+        return len(lerp(a, ac, d2 / (d2 - d6)));
+    }
+    let va = d3 * d6 - d5 * d4;
+    if va <= 0.0 && d4 - d3 >= 0.0 && d5 - d6 >= 0.0 {
+        return len(lerp(b, sub(c, b), (d4 - d3) / ((d4 - d3) + (d5 - d6))));
+    }
+    let denom = 1.0 / (va + vb + vc);
+    let (v, w) = (vb * denom, vc * denom);
+    len([
+        a[0] + ab[0] * v + ac[0] * w,
+        a[1] + ab[1] * v + ac[1] * w,
+        a[2] + ab[2] * v + ac[2] * w,
+    ])
 }

@@ -28,8 +28,7 @@ fn putf(b: &mut [u8], at: usize, v: f32) {
 /// the root's offset in it.
 fn invented_sky() -> (Vec<u8>, usize) {
     let root_at = 0x100;
-    let mut bytes =
-        vec![0u8; root_at + h1::ROOT_LEN + h1::FUNCTION_LEN + 2 * h1::LIGHT_LEN];
+    let mut bytes = vec![0u8; root_at + h1::ROOT_LEN + h1::FUNCTION_LEN + 2 * h1::LIGHT_LEN];
     let root = root_at;
     // Model reference (null) at 0x00, animation (null) at 0x10.
     put(&mut bytes, root, h1map::Group::new(b"mode").0);
@@ -41,7 +40,10 @@ fn invented_sky() -> (Vec<u8>, usize) {
     put(&mut bytes, root + 0xa4, 0xffff_ffff);
     // Lighting scalars: first RGB, a fraction, the second RGB.
     let scalars = root + h1::LIGHTING_SCALARS;
-    for (i, v) in [0.3f32, 0.4, 0.5, 0.25, 0.6, 0.7, 0.8].into_iter().enumerate() {
+    for (i, v) in [0.3f32, 0.4, 0.5, 0.25, 0.6, 0.7, 0.8]
+        .into_iter()
+        .enumerate()
+    {
         putf(&mut bytes, scalars + 4 * i, v);
     }
     // Shader-function element right after the root, then the lights.
@@ -55,17 +57,37 @@ fn invented_sky() -> (Vec<u8>, usize) {
         BASE + functions as u32,
     );
     put(&mut bytes, root + h1::layout::LIGHTS, 2);
-    put(&mut bytes, root + h1::layout::LIGHTS + 4, BASE + lights as u32);
+    put(
+        &mut bytes,
+        root + h1::layout::LIGHTS + 4,
+        BASE + lights as u32,
+    );
     for (i, (yaw, pitch, color, power, cutoff)) in [
-        (0.174_533, 0.698_132, [0.9f32, 0.89, 0.79], 1.8f32, 0.003_490_7),
-        (-std::f32::consts::FRAC_PI_6, 1.741_548, [0.70, 0.63, 0.58], 0.8, 0.349_066),
+        (
+            0.174_533,
+            0.698_132,
+            [0.9f32, 0.89, 0.79],
+            1.8f32,
+            0.003_490_7,
+        ),
+        (
+            -std::f32::consts::FRAC_PI_6,
+            1.741_548,
+            [0.70, 0.63, 0.58],
+            0.8,
+            0.349_066,
+        ),
     ]
     .into_iter()
     .enumerate()
     {
         let e = lights + i * h1::LIGHT_LEN;
         // Lens flare reference (null).
-        put(&mut bytes, e + h1::light::LENS_FLARE, h1map::Group::new(b"lens").0);
+        put(
+            &mut bytes,
+            e + h1::light::LENS_FLARE,
+            h1map::Group::new(b"lens").0,
+        );
         put(&mut bytes, e + h1::light::LENS_FLARE + 12, 0xffff_ffff);
         put(&mut bytes, e + h1::light::CONSTANT, 0x006e_7500);
         put(&mut bytes, e + h1::light::FLAGS, if i == 0 { 3 } else { 1 });
@@ -125,7 +147,7 @@ fn a_truncated_root_is_refused() {
 fn converted_sky_round_trips_through_a_built_map() {
     let sky = read_invented();
     let (bytes, id, model_id) =
-        convert::build_sky_map(&sky, None, "levels\\test\\tiny\\tiny sky").expect("builds");
+        convert::build_sky_map(&sky, None, "levels\\test\\tiny\\tiny sky", 2.5).expect("builds");
     assert!(model_id.is_none());
     let mut map = Map::from_reader(Cursor::new(bytes)).expect("map reads");
     let out = h2::Sky::read_from_map(&mut map, id).expect("decodes");
@@ -134,7 +156,7 @@ fn converted_sky_round_trips_through_a_built_map() {
     assert!(out.model.is_null(), "no model in the set");
     assert!(out.unused_ref.is_null());
     assert_eq!(out.word_10, 0);
-    assert_eq!(out.model_scale, 1.0);
+    assert_eq!(out.model_scale, 2.5, "the scale given");
     assert_eq!(out.camera_translation_scale, 1.0);
     assert_eq!(out.fallback_rgb, sky.ambient_first_rgb());
     assert_eq!(out.word_44, 0.0);
@@ -174,7 +196,11 @@ fn h2_decoder_follows_blocks_to_foreign_addresses() {
     let away = 0x8072_0000u32;
     put(&mut payload, h2::layout::BITMAP_LAYERS + 4, away);
     put(&mut payload, h2::layout::LIGHTS, 1);
-    put(&mut payload, h2::layout::LIGHTS + 4, away + h2::BITMAP_LAYER_LEN as u32);
+    put(
+        &mut payload,
+        h2::layout::LIGHTS + 4,
+        away + h2::BITMAP_LAYER_LEN as u32,
+    );
     // The foreign bytes: a bitmap-layer element, a light record and its
     // params element.
     let mut foreign = vec![0u8; h2::BITMAP_LAYER_LEN + h2::LIGHT_LEN + h2::PARAMS_LEN];
@@ -213,4 +239,83 @@ fn h2_decoder_follows_blocks_to_foreign_addresses() {
     let p = l.params.as_ref().unwrap();
     assert_eq!(p.flags, 12);
     assert_eq!(p.color, [1.0, 0.95, 0.87]);
+}
+
+/// An invented one-part model: a strip of the given points.
+fn strip_model(points: &[[f32; 3]]) -> h1models::h1::Model {
+    let vertex = |p: [f32; 3]| h1models::h1::Vertex {
+        position: p,
+        normal: [0.0, 0.0, 1.0],
+        binormal: [0.0, 1.0, 0.0],
+        tangent: [1.0, 0.0, 0.0],
+        texcoord: [0.0; 2],
+        nodes: [0, -1],
+        weights: [1.0, 0.0],
+    };
+    h1models::h1::Model {
+        flags: 0,
+        node_list_checksum: 0,
+        lod_cutoffs: [0.0; 5],
+        base_map_scale: [1.0; 2],
+        markers: Vec::new(),
+        nodes: Vec::new(),
+        regions: Vec::new(),
+        geometries: vec![h1models::h1::Geometry {
+            flags: 0,
+            parts: vec![h1models::h1::Part {
+                flags: 0,
+                shader: 0,
+                centroid_nodes: [0, -1],
+                centroid_weights: [1.0, 0.0],
+                centroid: [0.0; 3],
+                vertices: points.iter().copied().map(vertex).collect(),
+                strip: (0..points.len() as u16).collect(),
+            }],
+        }],
+        shaders: Vec::new(),
+    }
+}
+
+/// A ground plate 100 units under the camera, as a30's sky has, and a far
+/// dome triangle: the plate decides, at its nearest point (straight down).
+#[test]
+fn the_nearest_sky_surface_is_the_closest_point_of_any_triangle() {
+    let m = strip_model(&[
+        [-1000.0, -1000.0, -100.0],
+        [1000.0, -1000.0, -100.0],
+        [-1000.0, 1000.0, -100.0],
+        [1000.0, 1000.0, -100.0],
+    ]);
+    let d = convert::nearest_surface(&m).expect("a surface");
+    assert!((d - 100.0).abs() < 1e-3, "{d}");
+    // Past a vertex: the closest point is the corner.
+    let corner = strip_model(&[
+        [300.0, 400.0, 0.5],
+        [900.0, 400.0, 0.5],
+        [300.0, 900.0, 10.0],
+    ]);
+    let d = convert::nearest_surface(&corner).expect("a surface");
+    assert!(
+        (d - (300.0f32 * 300.0 + 400.0 * 400.0 + 0.25).sqrt()).abs() < 1e-2,
+        "{d}"
+    );
+}
+
+/// A triangle in a plane through the camera is a line on screen at any
+/// scale: it doesn't pull the sky back.
+#[test]
+fn edge_on_triangles_do_not_bound_the_scale() {
+    let m = strip_model(&[[10.0, -500.0, 0.0], [10.0, 500.0, 0.0], [5000.0, 0.0, 0.0]]);
+    assert_eq!(convert::nearest_surface(&m), None);
+    assert_eq!(convert::model_scale(None, 800.0), 1.0);
+}
+
+/// The scale moves the nearest surface out to the level's reach, and never
+/// shrinks a sky that is already farther.
+#[test]
+fn the_model_scale_puts_the_sky_past_the_level() {
+    let s = convert::model_scale(Some(100.0), 840.0);
+    assert!((s * 100.0 - 840.0).abs() < 1e-3, "{s}");
+    assert_eq!(convert::model_scale(Some(5613.0), 200.0), 1.0);
+    assert_eq!(convert::model_scale(Some(0.0), 200.0), 1.0);
 }

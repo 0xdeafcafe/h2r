@@ -167,17 +167,20 @@ pub struct Prepared {
     pub ambience: crate::ambience::Ambience,
     /// Per cluster, the background sound and sound environment it plays
     /// (indices into the scenario's palettes as written, -1 none), and
-    /// per collision leaf its cluster ([`structure::sound_zones`]).
+    /// per collision leaf its cluster ([`crate::clusters::sound_zones`]).
     pub sound_clusters: Vec<[i16; 2]>,
     pub sound_leaves: Vec<u16>,
+    /// Halo 1's portals and each cluster's list of them
+    /// ([`crate::clusters::portals`]).
+    pub visibility: crate::clusters::Visibility,
     /// Whether triangles were flipped to Halo 2's winding.
     pub flipped: bool,
     /// The base's trigger volumes, moved out of the level when built.
     pub trigger_volumes: usize,
     /// World bounds.
     pub bounds: [f32; 6],
-    /// The converted lightmap: Halo 1's lightmap bitmap as a Halo 2 one
-    /// (one image per page, colour) and the slot it takes (the base's own
+    /// The converted lightmap: one page per lit cluster, cut from Halo 1's
+    /// lightmap bitmap ([`crate::clusters::lightmap_bitmap`]) and the slot it takes (the base's own
     /// lightmap bitmap's, free once the lightmap is replaced). `None` when
     /// the Halo 1 structure has no lightmap bitmap or the base none to
     /// replace: then every cluster is unlit.
@@ -388,7 +391,8 @@ pub fn prepare<R: Read + Seek>(
             })
         })
         .collect();
-    let mut sections = structure::pack(&meshes, &material);
+    let laid = crate::clusters::lay_out(h1, &src, &mut meshes, &material, col.planes.len())?;
+    let sections = laid.sections;
 
     let scnr = base
         .scenario()
@@ -418,12 +422,10 @@ pub fn prepare<R: Read + Seek>(
             .min(room[1])
             .min(crate::ambience::MAX_PALETTE),
     ];
-    let (sound_clusters, sound_leaves) = structure::sound_zones(
-        &src,
-        collision.leaves.len(),
-        |z| ambience.index(0, z, written),
-        &mut sections,
-    )?;
+    let (sound_clusters, sound_leaves) =
+        crate::clusters::sound_zones(&src, collision.leaves.len(), |z| {
+            ambience.index(0, z, written)
+        })?;
     let sbsp_at = base
         .tag(sbsp)?
         .location
@@ -475,18 +477,17 @@ pub fn prepare<R: Read + Seek>(
 
     // The base's lightmap bitmap's slot takes the converted lightmap.
     let lightmap_slot = slots::lightmap_bitmap(base, ltmp)?;
-    let pages = h1bitmaps::lightmap_pages(h1, &src)?;
-    let lightmap = match (&pages.tag, lightmap_slot) {
-        (Some(tag), Some(slot)) => {
-            let (bm, bitmap, _) = h1bitmaps::convert_bitmap(h1, tag)?;
-            Some(Lightmap {
-                source: tag.name.clone(),
-                pages: bm.images.len(),
-                bitmap,
-                slot,
-                replaces: base.tag(slot)?.name.clone().unwrap_or_default(),
-            })
-        }
+    let lightmap = match (
+        crate::clusters::lightmap_bitmap(h1, &src, &laid.pages)?,
+        lightmap_slot,
+    ) {
+        (Some((source, bm, bitmap)), Some(slot)) => Some(Lightmap {
+            source,
+            pages: bm.images.len(),
+            bitmap,
+            slot,
+            replaces: base.tag(slot)?.name.clone().unwrap_or_default(),
+        }),
         _ => None,
     };
     // Built vehicle collections are added after the base's tags when the
@@ -518,6 +519,7 @@ pub fn prepare<R: Read + Seek>(
         },
         ambience,
         sound_clusters,
+        visibility: laid.visibility,
         sound_leaves,
         flipped,
         trigger_volumes,
@@ -735,6 +737,7 @@ impl Prepared {
             templates: &templates,
             lightmap_bitmap,
             sound: &sound,
+            visibility: &self.visibility,
         };
         let section = structure.write(&mut set, self.sbsp, self.ltmp)?;
 

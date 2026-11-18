@@ -15,6 +15,7 @@
 //! from `$H1_ISO`.
 #![forbid(unsafe_code)]
 
+pub mod atlas;
 pub mod convert;
 pub mod decode;
 

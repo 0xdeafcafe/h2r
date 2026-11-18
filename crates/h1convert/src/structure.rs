@@ -3,12 +3,11 @@
 //!
 //! What every field is and why it may be empty is in
 //! docs/game/h1-multiplayer.md, "The converted structure BSP"; the render
-//! geometry layout is docs/formats/structure-bsp.md. In short: Halo 1's
-//! rendered triangles become one or more clusters (a cluster's section
-//! holds at most 65535 vertices and indices, so a large level takes
-//! several), every cluster sees every other one, every collision leaf is in
-//! cluster 0, and the lightmap has one group with no bitmap. Materials
-//! name shaders the base map already has.
+//! geometry layout is docs/formats/structure-bsp.md. In short: each of
+//! Halo 1's clusters becomes one, with its rendered triangles, its portals
+//! and its own lightmap page ([`crate::clusters`]), and each collision leaf
+//! names its Halo 1 cluster. Materials name shaders the base map already
+//! has.
 //!
 //! The structure's Havok MOPP code (`sbsp+0x1e0`) comes from outside, as
 //! bytes: [`crate::convert::structure_mopp`].
@@ -37,6 +36,8 @@ pub const LIGHTMAP_GROUP: usize = 0x68;
 pub const SECTION: usize = 0x44;
 /// Part element size.
 pub const PART: usize = 0x48;
+/// Bytes of a raw block's frame: `blkh`, the data size, and `blkf`.
+pub const RAW_FRAME: usize = 12;
 /// Part kind written: opaque, the kind of every retail multiplayer
 /// structure part (0 and 5 are not drawn, E `0x000410fc`; 4 transparent).
 pub const PART_KIND: u16 = 2;
@@ -105,19 +106,24 @@ pub struct Mesh {
     /// The lightmap page (image of the lightmap bitmap) its lightmap
     /// coordinates address; `None` when unlit.
     pub page: Option<u16>,
+    /// The Halo 1 cluster its surfaces are in.
+    pub cluster: u16,
     /// Vertices.
     pub vertices: Vec<Vertex>,
     /// Triangles, as indices into `vertices`.
     pub triangles: Vec<[u32; 3]>,
 }
 
-/// Halo 1's render geometry, one mesh per lightmap material.
-/// `shader_name` names a Halo 1 shader reference's tag.
+/// Halo 1's render geometry, one mesh per lightmap material and cluster
+/// ([`crate::clusters::surface_clusters`]; a surface no cluster lists is
+/// dropped, as Halo 1 never draws it). `shader_name` names a Halo 1 shader
+/// reference's tag.
 pub fn meshes(
     bsp: &StructureBsp,
     shader_name: impl Fn(h1map::TagRef) -> String,
 ) -> Result<Vec<Mesh>> {
     let surfaces = bsp.render_surfaces()?;
+    let owner = crate::clusters::surface_clusters(bsp, surfaces.len())?;
     let mut out = Vec::new();
     for l in bsp.lightmaps()? {
         for m in l.materials {
@@ -145,12 +151,14 @@ pub fn meshes(
                     incident: m.lightmap_vertices.get(i).map_or(v.frame[0], |l| l.normal),
                 })
                 .collect();
-            out.push(Mesh {
-                shader: shader_name(m.shader),
-                page: u16::try_from(l.bitmap).ok(),
+            let triangles: Vec<[u32; 3]> = tris.iter().map(|t| t.map(u32::from)).collect();
+            out.extend(crate::clusters::split_by_cluster(
+                &shader_name(m.shader),
+                u16::try_from(l.bitmap).ok(),
                 vertices,
-                triangles: tris.iter().map(|t| t.map(u32::from)).collect(),
-            });
+                &triangles,
+                &owner[first..end],
+            ));
         }
     }
     Ok(out)
@@ -278,8 +286,12 @@ pub fn part_sphere(s: &Section, p: &Part) -> ([f32; 3], f32, [f32; 6]) {
 /// unlit last, and otherwise in their order). `material[i]` is mesh `i`'s
 /// structure material. A mesh can span sections; a part never does.
 pub fn pack(meshes: &[Mesh], material: &[u16]) -> Vec<Section> {
+    pack_order(meshes, material, (0..meshes.len()).collect())
+}
+
+/// [`pack`] over the meshes `order` names.
+pub fn pack_order(meshes: &[Mesh], material: &[u16], mut order: Vec<usize>) -> Vec<Section> {
     const MAX_INDICES: usize = SECTION_MAX / 3 * 3;
-    let mut order: Vec<usize> = (0..meshes.len()).collect();
     order.sort_by_key(|&i| meshes[i].page.map_or(u32::MAX, u32::from));
     let mut out = vec![Section::default()];
     for (m, &mat) in order.iter().map(|&i| (&meshes[i], &material[i])) {
@@ -350,6 +362,13 @@ fn fourcc(s: &[u8; 4]) -> [u8; 4] {
 /// `blkf`) and its resource table (16-byte entries), as
 /// docs/formats/structure-bsp.md, "Raw block" and "Block resource".
 pub fn raw_block(s: &Section) -> (Vec<u8>, Vec<[u8; 16]>) {
+    if s.indices.is_empty() {
+        let mut block = fourcc(b"blkh").to_vec();
+        block.extend(0u32.to_le_bytes());
+        block.extend([0u8; SECTION]);
+        block.extend(fourcc(b"blkf"));
+        return (block, Vec::new());
+    }
     let mut parts = Vec::with_capacity(s.parts.len() * PART);
     let mut subparts = Vec::with_capacity(s.parts.len() * 8);
     for (i, p) in s.parts.iter().enumerate() {
@@ -751,6 +770,9 @@ pub struct Structure<'a> {
     /// What each cluster plays and which cluster each collision leaf is
     /// in ([`Sound`]); the default plays nothing, every leaf in cluster 0.
     pub sound: &'a Sound,
+    /// The portals and each cluster's portal list
+    /// ([`crate::clusters::portals`]); the default has none.
+    pub visibility: &'a crate::clusters::Visibility,
 }
 
 /// Ambient sound in a converted structure. The engine plays the
@@ -770,127 +792,6 @@ pub struct Sound {
     pub clusters: Vec<[i16; 2]>,
     /// Per collision leaf: its cluster.
     pub leaves: Vec<u16>,
-}
-
-/// Halo 1's sound zones (a cluster's background sound `+0x04` and sound
-/// environment `+0x06`, i16 into the BSP's palettes; V: every Halo 1
-/// level, `tests/h1_clusters.rs`) on the converted clusters. Halo 1's
-/// clusters don't survive conversion (the render geometry is packed by
-/// lightmap page, and every cluster sees every other), so a converted
-/// cluster is only where a leaf's sound is chosen: each distinct zone,
-/// mapped by `index` to the converted palettes, gets a cluster (the most
-/// leaves' first), splitting `sections` until there are enough, and each
-/// collision leaf names the cluster of its Halo 1 cluster's zone (Halo 1's
-/// leaves, `sbsp +0xe0`, `0x10` each, i16 cluster at `+0x08`, one per
-/// collision leaf; V). A zone past the clusters there are (a section
-/// can't be split further) shares cluster 0's. Returns the per-cluster
-/// zones and per-leaf clusters for [`Sound`].
-pub fn sound_zones(
-    src: &StructureBsp,
-    collision_leaves: usize,
-    index: impl Fn([i16; 2]) -> [i16; 2],
-    sections: &mut Vec<Section>,
-) -> Result<(Vec<[i16; 2]>, Vec<u16>)> {
-    let i16_at = |b: &[u8], o: usize| i16::from_le_bytes([b[o], b[o + 1]]);
-    let zones: Vec<[i16; 2]> = src
-        .space
-        .block_at(src.root, H1_CLUSTERS, H1_CLUSTER)?
-        .iter()
-        .map(|c| index([i16_at(c, 4), i16_at(c, 6)]))
-        .collect();
-    let leaves = src.space.block_at(src.root, H1_LEAVES, H1_LEAF)?;
-    let leaf_zone: Vec<[i16; 2]> = if leaves.len() == collision_leaves {
-        leaves
-            .iter()
-            .map(|l| {
-                usize::try_from(i16_at(l, 8))
-                    .ok()
-                    .and_then(|c| zones.get(c).copied())
-                    .unwrap_or([-1, -1])
-            })
-            .collect()
-    } else {
-        vec![zones.first().copied().unwrap_or([-1, -1]); collision_leaves]
-    };
-    let mut count: Vec<([i16; 2], usize)> = Vec::new();
-    for z in &leaf_zone {
-        match count.iter_mut().find(|(c, _)| c == z) {
-            Some((_, n)) => *n += 1,
-            None => count.push((*z, 1)),
-        }
-    }
-    count.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
-    let order: Vec<[i16; 2]> = count.into_iter().map(|(z, _)| z).collect();
-    split(sections, order.len());
-    let clusters = sections.len().max(1);
-    let first = order.first().copied().unwrap_or([-1, -1]);
-    let per_cluster = (0..clusters)
-        .map(|c| order.get(c).copied().unwrap_or(first))
-        .collect();
-    let per_leaf = leaf_zone
-        .iter()
-        .map(|z| {
-            order
-                .iter()
-                .position(|o| o == z)
-                .filter(|&p| p < clusters)
-                .unwrap_or(0) as u16
-        })
-        .collect();
-    Ok((per_cluster, per_leaf))
-}
-
-/// Halo 1 `sbsp` clusters (block field, element size).
-pub const H1_CLUSTERS: usize = 0x134;
-pub const H1_CLUSTER: usize = 0x68;
-/// Halo 1 `sbsp` leaves.
-pub const H1_LEAVES: usize = 0xe0;
-pub const H1_LEAF: usize = 0x10;
-
-/// Splits `sections` until there are `n` (or none has two triangles):
-/// the largest is cut in two at its middle triangle, a part straddling
-/// the cut becoming two. The geometry and its order don't change.
-pub fn split(sections: &mut Vec<Section>, n: usize) {
-    while sections.len() < n {
-        let Some(i) = (0..sections.len())
-            .filter(|&i| sections[i].indices.len() >= 6)
-            .max_by_key(|&i| sections[i].indices.len())
-        else {
-            break;
-        };
-        let s = sections.remove(i);
-        let cut = s.indices.len() / 6 * 3;
-        let half = |range: std::ops::Range<usize>| {
-            let mut out = Section {
-                page: s.page,
-                ..Section::default()
-            };
-            let mut remap: Vec<Option<u16>> = vec![None; s.vertices.len()];
-            for p in &s.parts {
-                let (a, b) = (usize::from(p.first), usize::from(p.first + p.count));
-                let (a, b) = (a.max(range.start), b.min(range.end));
-                if a >= b {
-                    continue;
-                }
-                out.parts.push(Part {
-                    material: p.material,
-                    first: out.indices.len() as u16,
-                    count: (b - a) as u16,
-                });
-                for &i in &s.indices[a..b] {
-                    let at = *remap[usize::from(i)].get_or_insert_with(|| {
-                        out.vertices.push(s.vertices[usize::from(i)]);
-                        (out.vertices.len() - 1) as u16
-                    });
-                    out.indices.push(at);
-                }
-            }
-            out
-        };
-        let (a, b) = (half(0..cut), half(cut..s.indices.len()));
-        sections.insert(i, b);
-        sections.insert(i, a);
-    }
 }
 
 /// Checks a structure BSP's audibility the way the engine reads it:
@@ -1120,10 +1021,13 @@ impl Structure<'_> {
     /// them: its own geometry block, the lightmap image its render info
     /// names, and every bitmap its parts' shaders draw with (image 0).
     pub fn predicted(&self, set: &TagSet, c: usize, sbsp: TagId) -> Vec<(u16, u16, TagId)> {
-        let Some(s) = self.sections.get(c).filter(|s| !s.indices.is_empty()) else {
+        let Some(s) = self.sections.get(c) else {
             return Vec::new();
         };
         let mut out = vec![(PREDICT_CLUSTER_GEOMETRY, c as u16, sbsp)];
+        if s.indices.is_empty() {
+            return out;
+        }
         if let Some(page) = s.page
             && self.lightmap_bitmap != TagId::NULL
             && u32::from(page) < bitmap_images(set, self.lightmap_bitmap)
@@ -1202,7 +1106,13 @@ impl Structure<'_> {
             if s.page.is_some() && self.lightmap_bitmap != TagId::NULL {
                 put16(b, 0x26, LIGHTING_FLAGS);
             }
-            for (k, v) in s.bounds().iter().enumerate() {
+            // An empty cluster's bounds are inverted, as retail's are.
+            let bounds = if s.vertices.is_empty() {
+                [f32::MAX, -f32::MAX].repeat(3).try_into().expect("6")
+            } else {
+                s.bounds()
+            };
+            for (k, v) in bounds.iter().enumerate() {
                 b[0x54 + 4 * k..0x58 + 4 * k].copy_from_slice(&v.to_le_bytes());
             }
             // +0x6c: the cluster's first sky, 0 (E 0x00130f60 reads it
@@ -1229,12 +1139,17 @@ impl Structure<'_> {
             put16(b, 0x7a, 0);
             // The structure checksum, as every retail cluster repeats it.
             put32(b, 0x94, self.checksum);
-            if s.indices.is_empty() {
-                // No raw block: pointer none, everything else zero.
-                put32(b, 0x28, u32::MAX);
-                put32(b, 0x40, u32::MAX);
-                continue;
+            // The portals on its boundary (u16 each), which the flood
+            // crosses to the clusters it draws (E 0x001728ba).
+            if let Some(list) = self.visibility.clusters.get(c).filter(|l| !l.is_empty()) {
+                let bytes: Vec<u8> = list.iter().flat_map(|p| p.to_le_bytes()).collect();
+                cluster_elements.block((at + 0x8c) as u32, list.len() as u32, Block::new(bytes));
             }
+            let b = &mut cluster_elements.bytes[at..at + CLUSTER];
+            // A cluster with no geometry (a Halo 1 cluster the portals pass
+            // through) gets a raw block that is only the header and an
+            // empty section struct, as retail's do (V: 95 of the disc's
+            // 4,191 clusters, each 0x50 bytes with no resources).
             let predicted = self.predicted(set, c, sbsp);
             let mut list = Block::zeroed(PREDICTED_RESOURCE * predicted.len());
             for (k, &(kind, index, tag)) in predicted.iter().enumerate() {
@@ -1245,7 +1160,7 @@ impl Structure<'_> {
             let (block, table) = raw_block(s);
             put32(b, 0x2c, block.len() as u32);
             put32(b, 0x30, SECTION as u32);
-            put32(b, 0x34, (block.len() - 12 - SECTION) as u32);
+            put32(b, 0x34, (block.len() - RAW_FRAME - SECTION) as u32);
             put16(b, 0x44, 0x24);
             b[0x46] = 0;
             b[0x47] = 1;
@@ -1254,9 +1169,13 @@ impl Structure<'_> {
             let base = at as u32;
             cluster_elements
                 .raw(base + 0x28, RawRef::Local(raw))
-                .block(base + 0x38, table.len() as u32, Block::new(table.concat()))
-                .block(base + 0x84, predicted.len() as u32, list)
                 .tag_id(base + 0x40, sbsp);
+            if !table.is_empty() {
+                cluster_elements.block(base + 0x38, table.len() as u32, Block::new(table.concat()));
+            }
+            if !predicted.is_empty() {
+                cluster_elements.block(base + 0x84, predicted.len() as u32, list);
+            }
         }
 
         let count = self.materials.len().max(1);
@@ -1311,6 +1230,20 @@ impl Structure<'_> {
         let vis = self.visibility();
         root.block(0x54, vis.len() as u32, Block::new(vis));
         root.block(0x9c, clusters as u32, cluster_elements);
+        let portals = &self.visibility.portals;
+        if !portals.is_empty() {
+            let mut block = Block::new(self.visibility.portal_bytes());
+            for (k, p) in portals.iter().enumerate() {
+                if !p.vertices.is_empty() {
+                    block.block(
+                        (crate::clusters::PORTAL * k + 0x1c) as u32,
+                        p.vertices.len() as u32,
+                        Block::new(f32s(p.vertices.iter().flatten().copied())),
+                    );
+                }
+            }
+            root.block(0x5c, portals.len() as u32, block);
+        }
         root.block(0xa4, count as u32, materials);
         root.block(
             0x1e0,

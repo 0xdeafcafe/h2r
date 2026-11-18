@@ -42,6 +42,7 @@ fn meshes() -> Vec<Mesh> {
         Mesh {
             shader: "a".into(),
             page: None,
+            cluster: 0,
             vertices: [
                 [0.0, 0.0, 0.0],
                 [1.0, 0.0, 0.0],
@@ -55,6 +56,7 @@ fn meshes() -> Vec<Mesh> {
         Mesh {
             shader: "b".into(),
             page: None,
+            cluster: 1,
             vertices: [[0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [0.0, 1.0, 1.0]]
                 .map(vertex)
                 .to_vec(),
@@ -108,6 +110,21 @@ fn build_lit(sections: &[Section], lit: bool) -> Built {
 /// environment, cluster `c` playing background `c % 2` (environment 0 on
 /// even clusters, none on odd), and leaf `k` in cluster `k % clusters`.
 fn build_with(sections: &[Section], lit: bool, sounds: bool) -> Built {
+    build_full(
+        sections,
+        lit,
+        sounds,
+        &crate::clusters::Visibility::default(),
+    )
+}
+
+/// [`build_with`], with `visibility`'s portals.
+fn build_full(
+    sections: &[Section],
+    lit: bool,
+    sounds: bool,
+    visibility: &crate::clusters::Visibility,
+) -> Built {
     let mut set = TagSet::new(CacheType::Multiplayer, "t", "invented\\t");
     for g in [b"matg", b"scnr", b"sbsp", b"ltmp"] {
         set.add_group(FourCC(*g), None, None);
@@ -187,6 +204,7 @@ fn build_with(sections: &[Section], lit: bool, sounds: bool) -> Built {
         templates: &t,
         lightmap_bitmap,
         sound: &sound,
+        visibility,
     };
     let section = s.write(&mut set, sbsp, ltmp).unwrap();
     let mut descriptor = Block::zeroed(0x44);
@@ -325,6 +343,7 @@ fn large_geometry_splits_into_clusters_that_see_each_other() {
     let mesh = Mesh {
         shader: "a".into(),
         page: None,
+        cluster: 0,
         vertices,
         triangles,
     };
@@ -776,8 +795,7 @@ fn a_table_of_n_or_a_key_on_many_leaves_is_refused() {
 
 #[test]
 fn clusters_name_their_sounds_and_leaves_their_cluster() {
-    let mut sections = pack(&meshes(), &[0, 1]);
-    split(&mut sections, 2);
+    let sections = crate::clusters::pack_clusters(&meshes(), &[0, 1], 2).unwrap();
     assert_eq!(sections.len(), 2);
     let b = build_with(&sections, false, true);
     let map = Map::from_reader(Cursor::new(b.bytes.clone())).unwrap();
@@ -818,39 +836,153 @@ fn clusters_name_their_sounds_and_leaves_their_cluster() {
 }
 
 #[test]
-fn split_cuts_the_largest_section_and_keeps_every_triangle() {
-    let sections = pack(&meshes(), &[0, 1]);
-    let triangles = |ss: &[Section]| -> Vec<([[u32; 3]; 3], u16)> {
-        let mut out = Vec::new();
-        for s in ss {
-            for p in &s.parts {
-                let first = usize::from(p.first);
-                for t in s.indices[first..first + usize::from(p.count)]
-                    .as_chunks::<3>()
-                    .0
-                {
-                    out.push((
-                        t.map(|i| s.vertices[usize::from(i)].position.map(f32::to_bits)),
-                        p.material,
-                    ));
-                }
+fn portals_and_each_cluster_s_list_are_written_where_the_flood_reads_them() {
+    use crate::clusters::{PORTAL, Portal, Visibility};
+    let sections = crate::clusters::pack_clusters(&meshes(), &[0, 1], 2).unwrap();
+    let visibility = Visibility {
+        portals: vec![Portal {
+            clusters: [0, 1],
+            plane: 2,
+            centroid: [0.5, 0.5, 0.5],
+            radius: 0.75,
+            vertices: vec![[0.0, 0.0, 0.5], [1.0, 0.0, 0.5], [1.0, 1.0, 0.5]],
+        }],
+        clusters: vec![vec![0], vec![0]],
+    };
+    let b = build_full(&sections, false, false, &visibility);
+    let map = Map::from_reader(Cursor::new(b.bytes.clone())).unwrap();
+    let at = map.tag(b.sbsp).unwrap().location.unwrap().address;
+    let mut m = map;
+    let sbsp = m.read_tag_bytes(b.sbsp).unwrap();
+    let field = |b: &[u8], o: usize| -> (usize, usize) {
+        (
+            word(b, o) as usize,
+            word(b, o + 4).wrapping_sub(at) as usize,
+        )
+    };
+    let f32_at = |o: usize| f32::from_le_bytes(sbsp[o..o + 4].try_into().unwrap());
+    // sbsp +0x5c: 0x24 each, the clusters, plane, centre, radius, open.
+    let (n, p) = field(&sbsp, 0x5c);
+    assert_eq!(n, 1);
+    let e = &sbsp[p..p + PORTAL];
+    assert_eq!(&e[..4], &[0, 0, 1, 0]);
+    assert_eq!(word(e, 4), 2);
+    assert_eq!([f32_at(p + 8), f32_at(p + 0x14)], [0.5, 0.75]);
+    assert_eq!(word(e, 0x18), 0, "open");
+    let (vn, vp) = field(e, 0x1c);
+    assert_eq!(vn, 3);
+    assert_eq!([f32_at(vp + 12), f32_at(vp + 32)], [1.0, 0.5]);
+    // Each cluster's +0x8c list names the portal.
+    let (_, clusters) = field(&sbsp, 0x9c);
+    for c in 0..2 {
+        let (ln, lp) = field(&sbsp[clusters + CLUSTER * c..], 0x8c);
+        assert_eq!(ln, 1, "cluster {c}");
+        assert_eq!(&sbsp[lp..lp + 2], &[0, 0]);
+    }
+}
+
+#[test]
+fn a_cluster_too_big_for_one_section_is_refused() {
+    let mut vertices = Vec::new();
+    let mut triangles = Vec::new();
+    for i in 0..(SECTION_MAX as u32 / 3 + 1) {
+        for p in [
+            [i as f32, 0.0, 0.0],
+            [i as f32, 1.0, 0.0],
+            [i as f32, 0.0, 1.0],
+        ] {
+            vertices.push(vertex(p));
+        }
+        triangles.push([3 * i, 3 * i + 1, 3 * i + 2]);
+    }
+    let mesh = Mesh {
+        shader: "a".into(),
+        page: None,
+        cluster: 1,
+        vertices,
+        triangles,
+    };
+    assert!(crate::clusters::pack_clusters(std::slice::from_ref(&mesh), &[0], 2).is_err());
+    let small = &meshes()[..1];
+    let sections = crate::clusters::pack_clusters(small, &[0], 3).unwrap();
+    assert_eq!(
+        sections.len(),
+        3,
+        "a cluster with nothing gets an empty section"
+    );
+    assert!(sections[1].indices.is_empty() && sections[2].indices.is_empty());
+}
+
+#[test]
+fn each_cluster_gets_one_lightmap_page_sampling_what_its_meshes_did() {
+    // Cluster 0 samples pages 0 and 1, and has an unlit mesh; cluster 1
+    // has only the unlit one; cluster 2 samples page 1.
+    let mut ms = meshes();
+    ms[0].page = Some(0);
+    ms[0].cluster = 0;
+    ms[1].page = None;
+    ms[1].cluster = 0;
+    let mut second = meshes()[0].clone();
+    second.page = Some(1);
+    second.cluster = 0;
+    for (k, v) in second.vertices.iter_mut().enumerate() {
+        v.lightmap = [0.1 * k as f32, 0.5];
+    }
+    let mut unlit = meshes()[1].clone();
+    unlit.cluster = 1;
+    let mut third = second.clone();
+    third.cluster = 2;
+    ms.extend([second, unlit, third]);
+    let before = ms.clone();
+    let pages = crate::clusters::lightmap_pages(&mut ms, &[[16, 16], [32, 8]], 3).unwrap();
+    assert_eq!(pages.len(), 2, "cluster 1 has nothing lit");
+    let image = |m: &Mesh| m.page;
+    assert_eq!(
+        ms.iter().map(image).collect::<Vec<_>>(),
+        [Some(0), Some(0), Some(0), None, Some(1)]
+    );
+    // Cluster 0's page: a piece of page 0, one of page 1, one of white.
+    let kinds: Vec<Option<u16>> = pages[0].pieces.iter().map(|p| p.page).collect();
+    assert_eq!(kinds, [Some(0), Some(1), None]);
+    // Every lit vertex lands on the same texel of its source, moved.
+    for (b, a) in before.iter().zip(&ms) {
+        let (Some(src), Some(dst)) = (b.page, a.page) else {
+            continue;
+        };
+        let page = &pages[usize::from(dst)];
+        let piece = page.pieces.iter().find(|p| p.page == Some(src)).unwrap();
+        for (vb, va) in b.vertices.iter().zip(&a.vertices) {
+            let texel = |uv: f32, n: u32| uv * n as f32;
+            for k in 0..2 {
+                let from = texel(vb.lightmap[k], piece.page_size[k]) - piece.from[k] as f32;
+                let to = texel(va.lightmap[k], page.size[k])
+                    - (piece.at[k] + h1bitmaps::atlas::BORDER) as f32;
+                assert!((from - to).abs() < 1e-3, "{from} vs {to}");
             }
         }
-        out
-    };
-    let before = triangles(&sections);
-    let mut split_up = sections.clone();
-    split(&mut split_up, sections.len() + 3);
-    assert!(split_up.len() > sections.len());
-    assert_eq!(triangles(&split_up), before);
-    for s in &split_up {
-        assert!(!s.indices.is_empty());
-        let mut at = 0;
-        for p in &s.parts {
-            assert_eq!(usize::from(p.first), at, "parts tile the indices");
-            at += usize::from(p.count);
-        }
-        assert_eq!(at, s.indices.len());
-        assert!(s.indices.iter().all(|&i| usize::from(i) < s.vertices.len()));
     }
+}
+
+#[test]
+fn a_cluster_with_no_geometry_gets_retail_s_empty_raw_block() {
+    let sections = crate::clusters::pack_clusters(&meshes()[..1], &[0], 2).unwrap();
+    let b = build(&sections);
+    let map = Map::from_reader(Cursor::new(b.bytes.clone())).unwrap();
+    let at = map.tag(b.sbsp).unwrap().location.unwrap().address;
+    let mut m = map;
+    let sbsp = m.read_tag_bytes(b.sbsp).unwrap();
+    let clusters = word(&sbsp, 0xa0).wrapping_sub(at) as usize;
+    let c = &sbsp[clusters + CLUSTER..clusters + 2 * CLUSTER];
+    assert_ne!(word(c, 0x28), u32::MAX, "a raw block");
+    assert_eq!(
+        [word(c, 0x2c), word(c, 0x30), word(c, 0x34)],
+        [0x50, SECTION as u32, 0]
+    );
+    assert_eq!(word(c, 0x40), b.sbsp.0);
+    assert_eq!(word(c, 0x38), 0, "no resources");
+    assert_eq!(word(c, 0x84), 1, "its own geometry predicted");
+    assert_eq!(
+        f32::from_le_bytes(c[0x54..0x58].try_into().unwrap()),
+        f32::MAX
+    );
 }

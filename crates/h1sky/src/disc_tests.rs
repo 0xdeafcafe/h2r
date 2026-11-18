@@ -65,7 +65,8 @@ fn real_h1_disc_every_sky_reads() {
             maps_with_skies += 1;
         }
         for t in skies {
-            let sky = h1::Sky::from_map(&map, t).unwrap_or_else(|e| panic!("{name} {}: {e}", t.name));
+            let sky =
+                h1::Sky::from_map(&map, t).unwrap_or_else(|e| panic!("{name} {}: {e}", t.name));
             total += 1;
             with_model += usize::from(!sky.model.id.is_none());
             with_animation += usize::from(!sky.animation.id.is_none());
@@ -179,12 +180,17 @@ fn real_h1_disc_a30_bloodgulch_round_trip() {
         let tag = map
             .find(h1map::Group::new(b"sky "), sky_path)
             .unwrap_or_else(|| panic!("{map_name} has {sky_path}"));
-        let (sky, model) = convert::sky_from_map(&map, tag).expect("sky reads");
+        let convert::FromMap {
+            sky,
+            model,
+            model_scale,
+        } = convert::sky_from_map(&map, tag).expect("sky reads");
         let model = model.unwrap_or_else(|| panic!("{map_name}'s sky has a model"));
         let (bytes, id, model_id) = convert::build_sky_map(
             &sky,
             Some((model.0.as_str(), model.1)),
             &tag.name,
+            model_scale,
         )
         .expect("builds");
         let model_id = model_id.expect("the model is in the set");
@@ -195,7 +201,7 @@ fn real_h1_disc_a30_bloodgulch_round_trip() {
         let model_tag = built.tag(model_id).unwrap();
         assert_eq!(model_tag.group, map::FourCC(*b"mode"));
         assert_eq!(out.fallback_rgb, sky.ambient_first_rgb());
-        assert_eq!(out.model_scale, 1.0);
+        assert_eq!(out.model_scale, model_scale);
         assert_eq!(out.camera_translation_scale, 1.0);
         assert_eq!(out.rotation, 0.0);
         assert_eq!(out.lights.len(), sky.lights.len(), "{map_name} light count");
@@ -215,4 +221,64 @@ fn real_h1_disc_a30_bloodgulch_round_trip() {
             out.fallback_rgb
         );
     }
+}
+
+/// Every Halo 1 sky with a model, converted with its level: no surface of
+/// it (but those seen edge-on) comes nearer the camera than the farthest
+/// two points of the level are apart, so the level, drawn first, always
+/// hides it where they overlap; and skies already that far keep scale 1.
+/// a30's distant ground (68 units from the camera on `skydusk1`) is the
+/// case that cut through the level at scale 1.
+///
+/// `H1_ISO=<iso> cargo test -p h1sky -- --ignored real_h1_disc_every_sky_stays --nocapture`
+#[test]
+#[ignore = "needs the Halo 1 disc ($H1_ISO)"]
+fn real_h1_disc_every_sky_stays_behind_its_level() {
+    let path = h1_iso();
+    let mut x = xiso::Xiso::open(BufReader::new(File::open(&path).unwrap())).unwrap();
+    let disc = h1map::disc::Disc::open(&mut x).unwrap();
+    let stems: Vec<String> = disc
+        .maps
+        .iter()
+        .map(|e| h1map::disc::map_stem(e).to_string())
+        .collect();
+    let (mut checked, mut scaled) = (0, 0);
+    for name in stems {
+        let map = h1_map(&mut x, &name).expect("map reads");
+        let reach = convert::level_reach(&map);
+        for t in map
+            .tags()
+            .iter()
+            .filter(|t| t.group == h1map::Group::new(b"sky "))
+        {
+            let from = convert::sky_from_map(&map, t).expect("sky converts");
+            if from.sky.model.id.is_none() {
+                continue;
+            }
+            let m = map.tag(from.sky.model.id).unwrap();
+            let (model, _) = h1models::model_from_map(&map, m, &Default::default()).unwrap();
+            let nearest = convert::nearest_surface(&model).expect("a sky model has a surface");
+            let s = from.model_scale;
+            println!(
+                "{name} {}: nearest {nearest:.1}, reach {reach:.1}, scale {s:.3}",
+                t.name
+            );
+            assert!(s >= 1.0, "{name} {}: scale {s}", t.name);
+            assert!(
+                nearest * s >= reach * 0.999,
+                "{name} {}: nearest {} inside the level's reach {reach}",
+                t.name,
+                nearest * s
+            );
+            if nearest >= reach {
+                assert_eq!(s, 1.0, "{name} {}: already behind the level", t.name);
+            } else {
+                scaled += 1;
+            }
+            checked += 1;
+        }
+    }
+    println!("{checked} skies checked, {scaled} scaled");
+    assert_eq!(checked, 25, "25 skies with a model on the disc");
+    assert!(scaled > 0, "a30's sky comes inside its level at scale 1");
 }

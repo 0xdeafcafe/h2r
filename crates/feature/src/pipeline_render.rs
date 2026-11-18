@@ -126,10 +126,14 @@ impl Addrs {
             (0x004e_7c20, 0x004e_8000),
         ],
         host_owned: &[(0x0048_5ab0, 0x0048_5ac0), (0x0055_e6b8, 0x0055_e6c0)],
-        // The async I/O pool (`async_io_initialize` `0x00120a90`): queue
-        // words, mutex and semaphore handles, the requests from
-        // `0x004e0368` and the free-list head at `0x004e28e8`.
-        live_bytes: &[(0x004e_0354, 0x004e_28ec)],
+        // The async I/O pool (`async_io_initialize` `0x00120a90`): the
+        // words from `0x004e0354` (the pool mutex `0x004e0358`, the queue
+        // mutex `0x004e035c`, the worker's semaphore `0x004e0360`, the
+        // sequence `0x004e0364`), the 150 requests from `0x004e0368`, the
+        // free-list head `0x004e28e8`, the queue head `0x004e28ec` (the
+        // worker `0x00120c40` takes the request there) and the request
+        // count `0x004e28f0`.
+        live_bytes: &[(0x004e_0354, 0x004e_28f4)],
     };
 }
 
@@ -747,6 +751,7 @@ fn settle(
     // changes too, and none through the merge.
     if let Some(live) = &live {
         live.push(&exec, &rt);
+        exec.unflush(&live.flushed, &live.skip);
         for p in &live.pieces {
             exec.revert(p.physical, p.last.len() as u32);
         }
@@ -858,9 +863,16 @@ struct LivePiece {
     last: Vec<u8>,
 }
 
-/// The live ranges of a render that has made serviced calls.
+/// The live ranges of a render that has made serviced calls, and what it
+/// has flushed to live RAM.
 struct LiveSync {
     pieces: Vec<LivePiece>,
+    /// The view's bytes of each page at its last flush.
+    flushed: BTreeMap<u32, Box<[u8]>>,
+    /// Physical ranges a flush leaves alone: render-private (the marks),
+    /// handed back by delta (the counters), never handed back (host-owned,
+    /// the launch clear) or synced on their own (the live ranges).
+    skip: Vec<(u32, u32)>,
 }
 
 impl LiveSync {
@@ -868,18 +880,32 @@ impl LiveSync {
     fn new(a: &Addrs, exec: &SecondExecutor, rt: &Runtime) -> LiveSync {
         let g = rt.memory();
         let base = exec.base().map(|b| b.bytes());
-        let mut pieces = Vec::new();
+        let mut live = Vec::new();
         for &range in a.live_bytes {
             for (va, physical, len) in va_pieces(&g, range) {
                 let last = base
                     .and_then(|b| b.get(physical as usize..(physical + len) as usize))
                     .map(<[u8]>::to_vec);
                 if let Some(last) = last {
-                    pieces.push(LivePiece { va, physical, last });
+                    live.push(LivePiece { va, physical, last });
                 }
             }
         }
-        LiveSync { pieces }
+        let mut skip = Vec::new();
+        for &r in a.mark_bytes.iter().chain(a.host_owned).chain(a.live_bytes) {
+            skip.extend(pieces(&g, r));
+        }
+        for &va in a.mark_counters {
+            skip.extend(pieces(&g, (va, va + 4)));
+        }
+        skip.extend(pieces(&g, (a.present_counter, a.present_counter + 8)));
+        skip.extend(pieces(&g, (a.frame_counter, a.frame_counter + 4)));
+        skip.extend(pieces(&g, (a.launch_clear, a.launch_clear + 1)));
+        LiveSync {
+            pieces: live,
+            flushed: BTreeMap::new(),
+            skip,
+        }
     }
 
     /// The bytes the render changed since the last sync, to live RAM.
@@ -957,7 +983,7 @@ fn service(
     me: &Arc<Shared>,
     cpu: &mut CpuAbi,
     ctx: &mut ExecCtx,
-    exec: Box<SecondExecutor>,
+    mut exec: Box<SecondExecutor>,
     at: CpuAbi,
     ret: u32,
     predicted: u64,
@@ -966,9 +992,18 @@ fn service(
 ) -> Result<TransferAbi, GuestFault> {
     let rt = Arc::clone(ctx.runtime());
     let top = me.stack_top.load(Ordering::Relaxed);
-    let live = live.unwrap_or_else(|| LiveSync::new(&me.addrs, &exec, &rt));
+    let mut live = live.unwrap_or_else(|| LiveSync::new(&me.addrs, &exec, &rt));
     copy_stack(&exec.runtime().memory(), &mut rt.memory(), at.esp, top);
     live.push(&exec, &rt);
+    // Everything else the render wrote so far, so another guest thread the
+    // call wakes (the I/O worker reading a request's fields and what they
+    // point at) sees it.
+    let h = exec.flush(&rt, &mut live.flushed, &live.skip);
+    {
+        let mut inner = me.lock();
+        inner.stats.bytes += h.bytes as u64;
+        inner.stats.conflicts += h.conflicts as u64;
+    }
     let saved = *cpu;
     // The call as the render made it, its return address replaced by ours.
     let mut c = at;

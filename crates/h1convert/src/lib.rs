@@ -8,6 +8,7 @@
 //! - [`placements`]: spawns, flags and item spawns for the Halo 2 sandbox.
 //! - [`apply`]: a plan written into a base map's scenario.
 //! - [`structure`]: the converted structure BSP and lightmap.
+//! - [`clusters`]: Halo 1's clusters, portals and per-cluster lightmaps.
 //! - [`shaders`]: the base shader each Halo 1 shader draws with.
 //! - [`slots`]: tag-index slots a conversion may reuse for new tags.
 //! - [`convert`]: a whole map, onto a base, with its package manifest.
@@ -19,6 +20,7 @@
 
 pub mod ambience;
 pub mod apply;
+pub mod clusters;
 pub mod collision;
 pub mod compact;
 pub mod convert;

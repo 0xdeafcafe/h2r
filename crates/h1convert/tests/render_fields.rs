@@ -76,8 +76,10 @@ fn compared(record: Record, at: usize) -> bool {
 /// Fields retail always fills that a converted structure leaves empty, and
 /// why. Everything else retail always fills, every converted map must.
 const NOT_CONVERTED: &[(Record, usize, &str)] = &[
-    // Cluster portals: Halo 1's portals are not converted; every cluster
-    // sees every other through the visibility table instead.
+    // Cluster portals: Halo 1's are converted (`h1convert::clusters`), but
+    // a level that is one cluster (Hang 'Em High, Longest, Prisoner) or
+    // sealed rooms (Chiron TL-34) has none, where every retail cluster has
+    // some.
     (Record::Cluster, 0x8c, "portal count"),
     (Record::Cluster, 0x90, "portal pointer"),
     (Record::Cluster, 0x92, "portal pointer"),
