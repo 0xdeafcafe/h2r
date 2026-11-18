@@ -33,12 +33,6 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "off by default; the Rust ports park in Rust continuations around their guest calls",
     ),
     (
-        "native-world",
-        "*",
-        "pipelining is off with it: its layer-draw observers clear and restore the item masks \
-         around the layer (an after continuation) and hand the device a pass",
-    ),
-    (
         "native-objects",
         "*",
         "off by default; its layer-draw observers read object bodies and node matrices the next \
@@ -143,7 +137,7 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
 #[cfg(test)]
 mod tests {
     use super::REFUSED;
-    use crate::registration::tests::{ALL_ON, Case, NATIVE_WORLD_OFF, registry};
+    use crate::registration::tests::{ALL_ON, Case, registry};
 
     fn refused(feature: &str, point: &str) -> Option<usize> {
         REFUSED
@@ -152,22 +146,17 @@ mod tests {
     }
 
     /// Every hook boot's features place, with every switch that adds one
-    /// on (the native world, on by default, in one build and off in another,
-    /// and the census in a third, since pipelining is off with either),
-    /// either runs on the pipelined render thread or is listed in
+    /// on (and the census in a second build, since pipelining is off with
+    /// it), either runs on the pipelined render thread or is listed in
     /// [`REFUSED`] with its reason, and every listed entry is still used.
     /// The ones the render path meets in a default run (the locale lookups,
-    /// Blind) are context-only.
+    /// Blind, the native world's layer draw) are context-only.
     #[test]
     fn every_feature_hook_runs_on_the_render_thread_or_says_why_not() {
         let mut unlisted = Vec::new();
         let mut used = vec![false; REFUSED.len()];
         let mut safe = Vec::new();
-        for switches in [
-            ALL_ON.to_owned(),
-            format!("{ALL_ON},{NATIVE_WORLD_OFF}"),
-            format!("{ALL_ON},{NATIVE_WORLD_OFF},render-census"),
-        ] {
+        for switches in [String::new(), ALL_ON.to_owned(), format!("{ALL_ON},render-census")] {
             let plan = registry(&Case::full(&switches)).build(&feature::Base).unwrap();
             for c in plan.chains.values() {
                 match c.render_thread() {
@@ -206,6 +195,7 @@ mod tests {
             "LOCALE_EXISTS",
             "HUD_SHOWN",
             "FIRST_PERSON_RENDER",
+            "LAYER_DRAW",
         ] {
             assert!(safe.contains(&p), "{p} runs on the render thread");
         }

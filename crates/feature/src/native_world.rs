@@ -2,24 +2,31 @@
 //! of the game's layer-3 entries (docs/graphics/native-renderer.md, stage
 //! 1). On by default ([`DEFAULT`]); `H2_FEATURES=impl.render.native_world=off`
 //! turns it off (exactly that key: `impl.render=off` does not, since this
-//! one changes what draws the world). While it is on, pipelining is off
-//! (`pipeline_render`): these observers are not render-thread safe, so
-//! every pipelined frame would fall back at its first layer draw.
+//! one changes what draws the world).
 //!
-//! Two observers on the layer draw `LAYER_DRAW` (`0x00044550`), an opaque
-//! point, so nothing here replaces guest code:
+//! One observer before the layer draw `LAYER_DRAW` (`0x00044550`), an
+//! opaque point, so nothing here replaces guest code:
 //!
-//! - before, when the current layer is 3: read the render camera and the
+//! - first it sets back the bits it cleared at the last layer 3 (the
+//!   layers after 3 on the scene list, 5 and up, come next in the same
+//!   view, so the bits are back before anything reads them again), each
+//!   only if the item still holds the mask it left ([`restore_pending`]);
+//! - then, when the current layer is 3: read the render camera and the
 //!   active BSP, ask the [`Host`] (boot's glue: the GPU world and the D3D
 //!   device) for the native pass, and when it accepts, clear layer 3's bit
 //!   on the BSP items whose shader it draws
 //!   ([`native_render::skip::clear_structure`]): the layer then builds no
-//!   entry for them;
-//! - after: set the bits back, so guest memory after the layer is as it
-//!   was.
+//!   entry for them.
 //!
-//! Both sit inside `render-timing`'s observers at the point
-//! (`after_feature`), so its layer stage holds them.
+//! Nothing runs after the body, so the chain needs no Rust continuation,
+//! and the observer is context-only: it reads and writes the memory its
+//! context sees (on the pipelined render thread, the render's view), and
+//! the host's pass request goes to the D3D device in render order, as the
+//! render's own D3D calls do. So the pipelined render runs it on its own
+//! thread (docs/graphics/pipelined-render.md, "Render-safe hooks").
+//!
+//! It sits inside `render-timing`'s observers at the point
+//! (`after_feature`), so its layer stage holds it.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -38,9 +45,7 @@ pub const SWITCH: &str = "impl.render.native_world";
 /// The switch's value when `H2_FEATURES` does not name it.
 pub const DEFAULT: bool = true;
 
-/// Whether the native world is on. Pipelining is off with it
-/// (`pipeline_render`): its layer-draw observers are not render-thread safe,
-/// so every pipelined frame would fall back at its first layer draw.
+/// Whether the native world is on.
 pub fn on(switches: &crate::Switches) -> bool {
     switches.feature(SWITCH, DEFAULT)
 }
@@ -72,8 +77,20 @@ pub trait Host: Send + Sync {
 }
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
-/// Bits cleared by the observer before the layer draw in progress.
-static CLEARED: Mutex<Option<Cleared>> = Mutex::new(None);
+/// Bits cleared at the last layer 3, with each item's mask as it was left,
+/// until the next layer draw sets them back. One render runs at a time
+/// (on the render thread, or on the game thread serially or after a
+/// fallback, which carries on the same render against live RAM), so the
+/// next layer draw that reads this is the same render's.
+static CLEARED: Mutex<Option<Pending>> = Mutex::new(None);
+
+/// What [`before_layer`] cleared and the masks it left.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Pending {
+    pub cleared: Cleared,
+    /// The mask each item of `cleared` was left with.
+    pub left: Vec<u32>,
+}
 static VIEWS: AtomicU64 = AtomicU64::new(0);
 static DRAWN: AtomicU64 = AtomicU64::new(0);
 static ITEMS: AtomicU64 = AtomicU64::new(0);
@@ -107,8 +124,10 @@ impl GuestWrite for Mem<'_> {
     }
 }
 
-/// The observer before the layer draw, on any guest memory.
+/// The observer before the layer draw, on any guest memory: the last layer
+/// 3's bits back, then this layer's skip.
 pub fn before_layer(mem: &mut dyn GuestMemory) {
+    restore_pending(mem);
     let mut m = Mem(mem);
     if m.read_u32(skip::CURRENT_LAYER) != Some(LIGHTMAP_LAYER) {
         return;
@@ -132,16 +151,25 @@ pub fn before_layer(mem: &mut dyn GuestMemory) {
             let (v, d, i) = counts();
             eprintln!("native-world: {d} of {v} layer-3 views drawn natively, {i} world items skipped");
         }
-        *CLEARED.lock().unwrap_or_else(|e| e.into_inner()) = Some(c);
+        let left = c.items.iter().map(|&item| m.read_u32(item + 0x10).unwrap_or(0)).collect();
+        *CLEARED.lock().unwrap_or_else(|e| e.into_inner()) = Some(Pending { cleared: c, left });
     }
 }
 
-/// The observer after the layer draw: the bits back.
-pub fn after_layer(mem: &mut dyn GuestMemory) {
-    let Some(c) = CLEARED.lock().unwrap_or_else(|e| e.into_inner()).take() else {
+/// Sets back the bits the last layer 3 cleared, on the items that still
+/// hold the mask it left: an item list built again since (a new frame
+/// whose render never reached another layer draw) is left alone.
+pub fn restore_pending(mem: &mut dyn GuestMemory) {
+    let Some(p) = CLEARED.lock().unwrap_or_else(|e| e.into_inner()).take() else {
         return;
     };
-    skip::restore(&mut Mem(mem), &c);
+    let mut m = Mem(mem);
+    let bit = 1u32 << p.cleared.layer;
+    for (&item, &left) in p.cleared.items.iter().zip(&p.left) {
+        if m.read_u32(item + 0x10) == Some(left) {
+            let _ = m.write_u32(item + 0x10, left | bit);
+        }
+    }
 }
 
 pub struct NativeWorld;
@@ -161,13 +189,8 @@ impl Feature for NativeWorld {
                 let mut g = o.guest();
                 before_layer(&mut *g);
             })
-            .after_feature(crate::render_timing::ID);
-        b.raw()
-            .observe_after(&points::LAYER_DRAW, "native_world_restore", |o| {
-                let mut g = o.guest();
-                after_layer(&mut *g);
-            })
-            .after_feature(crate::render_timing::ID);
+            .after_feature(crate::render_timing::ID)
+            .context_only();
         b.snapshot(crate::SnapshotPolicy::Stateless);
         Ok(())
     }

@@ -69,9 +69,10 @@ pub struct MaterialProgram {
 /// world-space classification, [`crate::look::world_program`]), or says
 /// why it stays on the D3D path.
 pub fn compile(look: &PassLook, microcode: &[u8]) -> Result<MaterialProgram, String> {
-    if look.engine_pixel_constants {
-        // Their inputs are not named yet (spas +0x38 through 0x00019ca0).
-        return Err("engine-driven pixel constants".into());
+    if look.per_draw_inputs {
+        // Resolved with the instance's inputs only; per-draw ones (object
+        // functions, lighting, time) are not evaluated here.
+        return Err("per-draw engine inputs".into());
     }
     let program = vsh::Program::parse(microcode).map_err(|e| format!("vertex program: {e:?}"))?;
     let unsupplied = program.inputs_read() & !INPUT_MASK;
@@ -542,9 +543,9 @@ mod tests {
     }
 
     #[test]
-    fn engine_pixel_constants_keep_the_material_on_the_d3d_path() {
-        let look = PassLook { engine_pixel_constants: true, ..plain_look() };
-        assert_eq!(compile(&look, &plain_program()).unwrap_err(), "engine-driven pixel constants");
+    fn per_draw_engine_inputs_keep_the_material_on_the_d3d_path() {
+        let look = PassLook { per_draw_inputs: true, ..plain_look() };
+        assert_eq!(compile(&look, &plain_program()).unwrap_err(), "per-draw engine inputs");
         assert!(compile(&plain_look(), b"").unwrap_err().starts_with("vertex program"), "no microcode");
     }
 
@@ -558,7 +559,7 @@ mod tests {
             pixel_shader: shaders::PixelShaderDef::default().to_bytes(),
             vertex_constants: vec![Register { index: 19, value: [2.0, 3.0, 0.0, 0.0], written: 0b0011, origin: Origin::Instance }],
             vertex_defaults: Vec::new(),
-            engine_pixel_constants: false,
+            per_draw_inputs: false,
         }
     }
 

@@ -1,8 +1,9 @@
 //! The `native-world` feature (docs/graphics/native-renderer.md): its plan
-//! next to every other hook on the layer draw, and its two observers on
-//! synthetic guest memory: the BSP items the host draws lose layer 3's bit
-//! for the layer and get it back after; nothing changes without a host,
-//! in another layer, or for a shader the host leaves to the D3D path.
+//! next to every other hook on the layer draw, its one observer on
+//! synthetic guest memory (the BSP items the host draws lose layer 3's bit
+//! for the layer and get it back at the next layer draw; nothing changes
+//! without a host, in another layer, or for a shader the host leaves to
+//! the D3D path), and its chain on the pipelined render thread.
 
 use std::sync::{Arc, Mutex};
 
@@ -25,10 +26,26 @@ fn the_plan_orders_it_inside_render_timing_with_the_layer_ports() {
         Err(c) => panic!("refused: {c:?}"),
     };
     let text = plan.text();
-    assert!(text.contains("native_world_skip") && text.contains("native_world_restore"), "{text}");
+    assert!(text.contains("native_world_skip"), "{text}");
+    assert!(!text.contains("native_world_restore"), "nothing after the body: {text}");
 }
 
-/// The plan text with the native world and a pipeline that is on.
+/// Alone at the layer draw, the chain runs on the pipelined render thread:
+/// one context-only observer before, nothing after.
+#[test]
+fn its_layer_draw_chain_runs_on_the_render_thread() {
+    let mut r = Registry::new(Switches::default());
+    assert!(r.add(&NativeWorld).unwrap());
+    let plan = r.build(&Base).unwrap();
+    let chain = plan
+        .chains
+        .values()
+        .find(|c| c.point.name == "LAYER_DRAW")
+        .expect("placed at the layer draw");
+    assert!(!chain.needs_shadow());
+    assert!(chain.render_thread().is_ok());
+}
+
 #[test]
 fn material_programs_are_off_unless_asked_and_need_the_world() {
     let on = |s: &str| native_world::programs_on(&Switches::parse(s).unwrap());
@@ -38,6 +55,7 @@ fn material_programs_are_off_unless_asked_and_need_the_world() {
     assert!(!on("impl.render=on"), "looked up exactly, not through impl.render");
 }
 
+/// The plan text with the native world and a pipeline that is on.
 fn plan_with_pipeline(switches: &str) -> String {
     use feature::pipeline_render::{Addrs, PipelineRender};
     let pipeline = PipelineRender::with(true, Addrs::HALO2).print(false);
@@ -48,11 +66,11 @@ fn plan_with_pipeline(switches: &str) -> String {
 }
 
 #[test]
-fn it_is_on_by_default_and_turns_pipelining_off() {
+fn it_is_on_by_default_and_keeps_pipelining() {
     assert!(native_world::DEFAULT);
     let text = plan_with_pipeline("");
     assert!(text.contains("native_world_skip"), "{text}");
-    assert!(!text.contains("pipelined frame"), "{text}");
+    assert!(text.contains("pipelined frame"), "{text}");
 }
 
 #[test]
@@ -115,12 +133,12 @@ fn masks(m: &FlatMemory) -> Vec<u32> {
 }
 
 #[test]
-fn the_world_items_skip_layer_3_and_get_it_back() {
+fn the_world_items_skip_layer_3_and_get_it_back_at_the_next_layer_draw() {
     // No host yet: nothing changes.
     let mut m = guest();
     native_world::before_layer(&mut m);
     assert_eq!(masks(&m), vec![0b1010; 3]);
-    native_world::after_layer(&mut m);
+    native_world::restore_pending(&mut m);
 
     let stub = Arc::new(Stub {
         asked: Mutex::default(),
@@ -140,13 +158,24 @@ fn the_world_items_skip_layer_3_and_get_it_back() {
         assert_eq!(asked[0].0, BSP);
         assert_eq!(asked[0].1.far, 1024.0);
     }
-    native_world::after_layer(&mut m);
-    assert_eq!(masks(&m), vec![0b1010; 3]);
 
-    // Another layer: the host is not asked.
-    m.set_u32(CURRENT_LAYER, 1).unwrap();
+    // The next layer draw (layer 5) sets the bit back first, and the host
+    // is not asked for it.
+    m.set_u32(CURRENT_LAYER, 5).unwrap();
     native_world::before_layer(&mut m);
-    native_world::after_layer(&mut m);
     assert_eq!(masks(&m), vec![0b1010; 3]);
     assert_eq!(stub.asked.lock().unwrap().len(), 1);
+
+    // Nothing pending: another layer draw changes nothing.
+    native_world::before_layer(&mut m);
+    assert_eq!(masks(&m), vec![0b1010; 3]);
+
+    // An item list built again before the next layer draw (another value
+    // in the cleared item's mask): its mask is left alone.
+    m.set_u32(CURRENT_LAYER, 3).unwrap();
+    native_world::before_layer(&mut m);
+    assert_eq!(masks(&m)[0], 0b0010);
+    m.set_u32(ITEMS + 0x10, 0b0100).unwrap();
+    native_world::restore_pending(&mut m);
+    assert_eq!(masks(&m)[0], 0b0100, "not the mask the skip left: not touched");
 }

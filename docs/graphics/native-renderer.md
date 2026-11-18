@@ -132,7 +132,12 @@ per layer draw, not one per item:
   item's mask, remember them, and ask `d3d` for the native pass. The
   list's OR word `+8` is left alone: the layer still walks its items and
   finds the world's masks clear;
-- **after** it: set the bits back.
+- **before the next layer draw** (5 and up follow 3 on the scene list,
+  in the same view): set the bits back, on each item that still holds
+  the mask the skip left. Not after the layer itself: something after the
+  body makes the chain call it through a Rust continuation, which the
+  pipelined render thread cannot run (docs/graphics/pipelined-render.md,
+  "Render-safe hooks").
 
 The layer draw then builds no entry for the world: no build call, no
 shader draw, no geometry submission, no push-buffer words. Objects,
@@ -263,23 +268,31 @@ The crate `native-render` (`crates/native-render`):
   backend that cannot).
 - **The feature `native-world`** (`crates/feature/src/native_world.rs`,
   on by default, `H2_FEATURES=impl.render.native_world=off` turns it off,
-  exact key). While it is on, pipelining is off (`pipeline_render` prints
-  `pipeline: off: native-world's layer-draw hooks run on the game
-  thread`): the observers are not render-thread safe (an after
-  continuation, guest masks, the device's pass), so on the render thread
-  every pipelined frame would fall back at its first layer draw. Making
-  them render-thread safe (no after part, an audit of the host's writes)
-  is a later step.
-  `LAYER_DRAW` is an opaque point, so both hooks are observers: before,
-  with layer 3 current, it reads the camera and the active BSP
-  (`0x004e0348`) and asks the host; when the host accepts it clears layer
-  3's bit on the BSP items whose shader the world draws; after, it sets
-  them back. Both sit inside `render-timing`'s observers
-  (`after_feature`). Two observer calls per layer draw, nothing per draw.
+  exact key). `LAYER_DRAW` is an opaque point, so the hook is one
+  observer before it: it first sets back the bits the last layer 3
+  cleared (on items that still hold the mask it left), then, with layer 3
+  current, reads the camera and the active BSP (`0x004e0348`) and asks the
+  host; when the host accepts it clears layer 3's bit on the BSP items
+  whose shader the world draws. It sits inside `render-timing`'s
+  observers (`after_feature`). One observer call per layer draw, nothing
+  per draw.
+  It runs on the pipelined render thread (context-only, nothing after the
+  body), so pipelining stays available with the world on. What it
+  touches there: the guest memory its context sees (the render's view:
+  the item masks, the camera, the active BSP, the map name); the host's
+  load state (a mutex only `ask` takes, and only the render reaches it;
+  the loader is a host thread that opens the map through the VFS's
+  mutex and never touches guest memory); the D3D device's pending
+  external pass, which the render owns while it is in flight (the sim's
+  D3D calls join first) and which is issued at the render's next D3D
+  entry, in render order, with that entry's memory.
   Tests: `crates/feature/tests/native_world.rs` (the plan with
-  `render-timing`, deep, and the layer-draw port all on; on by default
-  with pipelining off; the switch off places nothing and keeps
-  pipelining; the skip and restore on synthetic memory).
+  `render-timing`, deep, and the layer-draw port all on; alone, the chain
+  runs on the render thread; on by default with pipelining placed; the
+  switch off places nothing; the skip and its restore at the next layer
+  draw on synthetic memory, and a rebuilt list left alone);
+  `crates/boot/src/render_thread.rs` (the default plan's `LAYER_DRAW`
+  is render-thread safe).
 - **Boot glue** (`crates/boot/src/native_world_glue.rs`). The host: on a
   new (map name, active BSP address) a worker opens the loaded map
   through the VFS with its shared maps, picks the scenario BSP whose tag
@@ -396,12 +409,29 @@ The pixel side is the implementation's final pixel shader definition
 (variants built, instance colours patched), translated by `shaders::psh`.
 For `lightmap_tex_detail` it combines base (stage 0) and detail (stage 1,
 `x2`), the bump map (stage 2) dotted with the tangent-space lighting
-vector (`v1`) and view vector (`v0`), and the lightmap (stage 3). Two of
-its combiner constants are engine-driven (`c0` of stages 4 and 5: the
-specular amount and the lightmap's tint): spas `+0x38` bindings through
-`0x00019ca0`, whose inputs are not named yet. Until they are, the pass
-can take them from the D3D path's last value for the same program (the
-device's pixel constants), or keep such materials on the fallback.
+vector (`v1`) and view vector (`v0`), and the lightmap (stage 3). Its
+`c0` constants of the specular stages (4 and 5) are marked engine-driven
+(`h2 shader` prints "engine constants", mask `0x30`), traced (Code,
+`h2 disasm`, the 03a pass's bindings read off the disc):
+
+- The per-pixel implementation has one spas `+0x38` binding through
+  `0x00019ca0`: mode 3 (the alpha channel), no transform, engine scalar
+  21. Its input masks (spas `+0x104..+0x114`, the inputs `0x0001ae70`
+  evaluates before the draw, bit `n` input `n`) are scalar 21 and integer
+  5 (the fragment selector), nothing else.
+- Scalar 21 is `0x000337e0`, which returns `0x485a6c`; integers 4 and 5
+  are `0x485a64/0x485a68`. `0x0001bbf0` copies all three from the `shad`
+  (`+0x44`, `+0x3e`, `+0x40`) before each draw. So the "engine" constant
+  is the instance's own specular scalar, the same on every draw of the
+  shader, and `tags::material` already resolves it into the pixel shader
+  definition (`EngineInputs::for_shader`). The stage-5 `c0.rgb` is an
+  instance colour.
+- `ResolvedImplementation::per_draw_inputs` says when an implementation
+  reads anything else (another scalar, any vector, another integer, by
+  mask, binding or fragment selector); only those stay on the fallback.
+  Of the pass's other implementations the per-vertex one has the same
+  masks; the dynamic one reads engine vectors (lighting), but the world
+  pass uses the per-pixel one.
 
 #### Order of work
 
@@ -412,7 +442,7 @@ device's pixel constants), or keep such materials on the fallback.
    definition, stage textures (instance bitmaps with their image, the
    lightmap), sampler states and instance constants. Materials without
    one (no layer 3, more than one pass, an engine texture source other
-   than the lightmap, unnamed engine pixel constants) stay on the D3D path.
+   than the lightmap, per-draw engine inputs) stay on the D3D path.
 3. World vertices gain the tangent frame and the bucket's lighting vector;
    textures keep their mip chains (done: base maps upload their decoded
    chain, `gpu::Image::from_levels`).
@@ -426,7 +456,7 @@ device's pixel constants), or keep such materials on the fallback.
      vector, lightmap uv) and fills the instance constants by their
      written components, `c[172] = (1, 1, 0, 0)` and identity model rows
      `c[50..52]` (the vertices are already placed). It refuses, and the
-     material keeps stage 1's look: engine pixel constants, a program
+     material keeps stage 1's look: per-draw engine inputs, a program
      reading other inputs, a translation warning, a non-2D fetch, a
      sampled stage with nothing bound, signed channels on the lightmap.
      Signed channels of a stage bitmap are stored biased (`s + 128`) as
