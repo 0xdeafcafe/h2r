@@ -77,6 +77,7 @@ export default function Events() {
               <div><dt>Failed</dt><dd classList={{ warn: v().bad > 0 }}>{num(v().bad)}</dd></div>
               <div><dt>Unchecked</dt><dd>{num(v().unknown)}</dd></div>
               <div><dt>Unsigned</dt><dd>{num(v().unsigned)}</dd></div>
+              <div title="addresses hidden, signature checked by the server only"><dt>Redacted</dt><dd>{num(v().redacted)}</dd></div>
             </dl>
           </Panel>
           <Panel title="Event Types" sub="seen this session; pick one to filter">
