@@ -354,15 +354,34 @@ fn a10_vehicles_without_templates_are_rebuilt() {
                 panic!()
             };
             assert_eq!(seats.len(), u.seats.len(), "{}: seats", t.name);
+            // A marker the model lacks is written empty (`seat_names`: the
+            // engine fails a name it cannot find; a10's fighterbomber and
+            // dropships name a `driver` their models lack).
+            let markers: Vec<String> = u
+                .object
+                .model
+                .map(|m| {
+                    h1models::model_from_map(&h1, h1.tag(m).unwrap(), &Default::default())
+                        .unwrap()
+                        .0
+                        .markers
+                        .into_iter()
+                        .map(|m| m.name)
+                        .collect()
+                })
+                .unwrap_or_default();
             for (k, s) in u.seats.iter().enumerate() {
                 let p = format!("{VEHI_SEATS}[{k}]");
                 assert_eq!(
                     text(&r, &format!("{p}.label")),
                     h1models::names::map_name(&s.label).mode
                 );
+                let has = markers.iter().any(|m| m.eq_ignore_ascii_case(&s.marker));
                 assert_eq!(
                     text(&r, &format!("{p}.string_8")).to_ascii_lowercase(),
-                    s.marker.to_ascii_lowercase()
+                    if has { s.marker.to_ascii_lowercase() } else { String::new() },
+                    "{}: seat {k}",
+                    t.name
                 );
                 assert!(!s.label.is_empty(), "{}: seat {k} has a label", t.name);
             }
@@ -830,14 +849,22 @@ fn bipeds_rebuilt_against_the_template_path() {
 
             // References: the model chain and physics model are Halo 1's
             // (tree tags); the player's HUD is the counterpart's with the
-            // health meter (tree tags); every other reference field is the
+            // health meter (tree tags); the material effects are Halo 1's
+            // `foot` where it names one (a tree tag, since converter
+            // version 54); every other reference field is the
             // counterpart's as it holds it. Every reference resolves to a
             // tag of its group.
             let cr = base.record(d, cid).unwrap();
             let player = h1objects::health_hud::is_player_biped(&t.name);
+            let h1_foot = u.references.iter().any(|x| x.group == h1map::Group::new(b"foot") && x.tag.is_some());
             let mut from_counterpart = 0;
             for path in reference_fields(d) {
                 if BIPED_OWN.contains(&path.as_str()) || (player && path == BIPD_HUD) {
+                    continue;
+                }
+                if h1_foot && path == h1objects::convert::FOOT_FIELD {
+                    let f = reference(&r, &path).and_then(|x| local(&c.tree, x));
+                    assert_eq!(f.map(|x| x.group), Some(FourCC(*b"foot")), "{}: Halo 1's foot", t.name);
                     continue;
                 }
                 assert_eq!(
@@ -865,13 +892,20 @@ fn bipeds_rebuilt_against_the_template_path() {
                 .filter(|x| resolves(&c.tree, &base, x.2).unwrap().1)
                 .count();
             // The hlmt's damage, dialogue and camouflage come from the
-            // counterpart's.
+            // counterpart's; the dialogue is Halo 1's where it converts (a
+            // tree udlg, since converter version 52).
             let chr = base
                 .record(hd, reference(&cr, "unit.obje.model").unwrap())
                 .unwrap();
             for path in reference_fields(hd) {
                 if MODEL_OWN.contains(&path.as_str()) {
                     continue;
+                }
+                if path == h1objects::convert::DIALOGUE_FIELD {
+                    if let Some(x) = reference(&hr, &path).and_then(|x| local(&c.tree, x)) {
+                        assert_eq!(x.group, FourCC(*b"udlg"), "{}: Halo 1's dialogue", t.name);
+                        continue;
+                    }
                 }
                 assert_eq!(
                     norm(hr.at(&path)),
