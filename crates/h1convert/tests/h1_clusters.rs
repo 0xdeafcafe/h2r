@@ -165,8 +165,9 @@ fn portals_join_every_cluster_in_their_planes() {
 /// Every level's render geometry laid out by cluster
 /// (`h1convert::clusters::lay_out`): one section per Halo 1 cluster, each
 /// lit one on a page of its own, and every lit vertex sampling the same
-/// light there as on its Halo 1 page (filtered bilinearly, clamped at the
-/// edge, from both bitmaps decoded; within one step of 255). Prints each structure's page texels against Halo 1's.
+/// light there as on its Halo 1 page, halved onto Halo 2's scale
+/// (filtered bilinearly, clamped at the edge, from both bitmaps decoded;
+/// within half a 5-bit step and one step of 255). Prints each structure's page texels against Halo 1's.
 #[test]
 #[ignore = "reads the Halo 1 disc ($H1_ISO)"]
 fn every_cluster_samples_its_own_lightmap_page_as_halo1_did() {
@@ -239,7 +240,11 @@ fn every_cluster_samples_its_own_lightmap_page_as_halo1_did() {
                     samples += 1;
                     let want = texel(&decode_source[usize::from(p)], b.vertices[i].lightmap);
                     let got = texel(&decode_atlas[usize::from(q)], a.vertices[i].lightmap);
-                    differ += usize::from(want.iter().zip(&got).any(|(a, b)| (a - b).abs() > 1.0));
+                    // Half Halo 1's light (`h1bitmaps::atlas::to_halo2_light`):
+                    // within half a 5-bit step, and one 8-bit step of filtering.
+                    differ += usize::from(
+                        want.iter().zip(&got).take(3).any(|(a, b)| (a / 2.0 - b).abs() > 255.0 / 62.0 + 1.0),
+                    );
                 }
             }
             assert!(
