@@ -87,7 +87,7 @@ pub fn compile_pass(
         return Err("per-draw engine inputs".into());
     }
     let program = vsh::Program::parse(microcode).map_err(|e| format!("vertex program: {e:?}"))?;
-    let unsupplied = program.inputs_read() & !INPUT_MASK;
+    let unsupplied = program.inputs_read() & !INPUT_MASK & !defaults_mask(&look.vertex_defaults);
     if unsupplied != 0 {
         return Err(format!("vertex program reads registers we do not supply ({unsupplied:#06x})"));
     }
@@ -186,6 +186,19 @@ pub fn bias_signed(image: &mut Image, signed: [bool; 4]) {
             }
         }
     }
+}
+
+/// Bit `n` for each `v<n>` the pass itself sets before its draws
+/// (`SET_VERTEX_DATA4F_M`, `0x00018e3b`, a whole register): the D3D path
+/// reads those for any input the vertex layout does not stream. The
+/// translated program reads them from `xvs.defaults[n]`, which
+/// [`compile_pass`] fills from the same registers; the inputs a
+/// [`WorldVertex`] supplies still come from the vertex.
+pub fn defaults_mask(defaults: &[Register]) -> u16 {
+    defaults
+        .iter()
+        .filter(|r| r.index < 16 && r.written == 0xf)
+        .fold(0, |m, r| m | 1 << r.index)
 }
 
 /// Writes the components `r` writes into its register of `regs`.
@@ -676,6 +689,36 @@ mod tests {
         let reads_v9 = program(&[Inst::mac(MacOp::Mov, Some(O::v(9)), None, None).to_out(false, OutReg::Pos, 0xf)]);
         let e = compile(&plain_look(), &reads_v9).unwrap_err();
         assert!(e.contains("do not supply"), "{e}");
+    }
+
+    #[test]
+    fn registers_the_pass_sets_come_from_its_defaults() {
+        use shaders::vsh::encode::{Inst, Operand as O, program};
+        use shaders::vsh::{MacOp, OutReg};
+        // 03a's transparents read v10 and v11 (mask 0x0c00), colours the
+        // pass sets with SET_VERTEX_DATA4F_M.
+        let reads = program(&[
+            Inst::mac(MacOp::Dp4, Some(O::v(0)), Some(O::c(0)), None).to_out(false, OutReg::Pos, 0xf),
+            Inst::mac(MacOp::Mov, Some(O::v(10)), None, None).to_out(false, OutReg::D0, 0xf),
+            Inst::mac(MacOp::Mov, Some(O::v(11)), None, None).to_out(false, OutReg::D1, 0xf),
+            Inst::mac(MacOp::Mov, Some(O::v(1)), None, None).to_out(false, OutReg::T(0), 0xf),
+        ]);
+        let colour = |index, value| Register { index, value, written: 0xf, origin: Origin::Instance };
+        let look = PassLook {
+            vertex_defaults: vec![colour(10, [0.45, 0.47, 0.43, 0.0]), colour(11, [0.29, 0.27, 0.25, 0.0])],
+            ..plain_look()
+        };
+        let p = compile(&look, &reads).expect("v10 and v11 are the pass's");
+        shaders::validate(&p.wgsl).expect("valid WGSL");
+        assert!(p.wgsl.contains("xvs.defaults[10]") && p.wgsl.contains("xvs.defaults[11]"));
+        assert_eq!(p.vertex.defaults[10], [0.45, 0.47, 0.43, 0.0]);
+        assert_eq!(p.vertex.defaults[11], [0.29, 0.27, 0.25, 0.0]);
+        // Only v11 set: v10 is still nobody's.
+        let only_11 = PassLook { vertex_defaults: vec![colour(11, [0.0; 4])], ..plain_look() };
+        let e = compile(&only_11, &reads).unwrap_err();
+        assert!(e.contains("(0x0400)"), "{e}");
+        assert_eq!(defaults_mask(&[colour(1, [0.0; 4]), colour(10, [0.0; 4])]), 0x0402);
+        assert_eq!(defaults_mask(&[Register { written: 0b0111, ..colour(10, [0.0; 4]) }]), 0);
     }
 
     #[test]

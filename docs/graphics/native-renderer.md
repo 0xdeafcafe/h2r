@@ -457,7 +457,11 @@ vector (`v1`) and view vector (`v0`), and the lightmap (stage 3). Its
      written components, `c[172] = (1, 1, 0, 0)` and identity model rows
      `c[50..52]` (the vertices are already placed). It refuses, and the
      material keeps stage 1's look: per-draw engine inputs, a program
-     reading other inputs, a translation warning, a non-2D fetch, a
+     reading other inputs (but those the pass sets itself with
+     `SET_VERTEX_DATA4F_M`, `0x00018e3b`: the resolved
+     `vertex_defaults`, read from `xvs.defaults[n]`; 03a's transparents
+     read `v10` and `v11`, two colours, mask `0x0c00`), a translation
+     warning, a non-2D fetch, a
      sampled stage with nothing bound, signed channels on the lightmap.
      Signed channels of a stage bitmap are stored biased (`s + 128`) as
      the D3D path stores them.
