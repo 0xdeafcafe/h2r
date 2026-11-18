@@ -112,10 +112,25 @@ fn node(prims: &mut [Prim], mut f: Frame, mut r: Region) -> Vec<u8> {
     // subtrees stay in their parent's frame: smaller code, near as tight.
     while prims.len() >= ZOOM_MIN_SURFACES {
         let span = (0..3).map(|a| u[a].1 - u[a].0).max().unwrap_or(0);
-        // Cells 0..=254 after the zoom, so exclusive tops fit a byte.
-        let k = (1..=f.shift.min(4)).rev().find(|&k| (span + 1) << k <= 255);
-        let Some(k) = k else { break };
         let b = [u[0].0, u[1].0, u[2].0];
+        // The finest zoom whose frame holds the union with its top cell at
+        // most 254, so exclusive tops fit a byte. Bounding the span alone
+        // (`(span + 1) << k <= 255`) gives up a level wherever the span is
+        // a power of two (with it, our programs over the retail BSPs grew
+        // from 10.15 to 11.05 MB); the union's real top reaches 255 far
+        // less often.
+        let k = (1..=f.shift.min(4)).rev().find(|&k| {
+            if (span + 1) << k > 256 {
+                return false;
+            }
+            let g = Frame {
+                shift: f.shift - k,
+                offset: [0, 1, 2].map(|a| (f.offset[a] + b[a]) << k),
+                key_offset: f.key_offset,
+            };
+            union(prims, &g).iter().all(|&(_, hi)| hi <= 254)
+        });
+        let Some(k) = k else { break };
         out.extend([k as u8, b[0] as u8, b[1] as u8, b[2] as u8]);
         for a in 0..3 {
             f.offset[a] = (f.offset[a] + b[a]) << k;
