@@ -60,8 +60,10 @@ again, and so a screen can be seen and checked before anyone runs the game.
    tests then check it without the disc, and against the disc when it's
    there (below).
 5. **Preview it.**
-   `h2 ui preview <screen> [--focus N] [--disc disc.iso] [--out file.png]`
-   prints the log line and every check, then draws the screen. The test
+   `h2 ui preview <screen> [--state NAME|all] [--focus N] [--disc disc.iso] [--out DIR]`
+   prints the log line and every check, then draws each state as a PNG
+   with a JSON of its widget rects beside it; `h2 ui sheet` draws every
+   screen in every state on one page (docs/game/ui-builder.md). The test
    `ui_kit::screens::tests::preview_and_check_against_the_disc` with
    `H2_UI_PREVIEW_DIR=<dir>` draws every screen at its first and last row.
    Previews go to a scratch or keep directory, never into git (they come from
