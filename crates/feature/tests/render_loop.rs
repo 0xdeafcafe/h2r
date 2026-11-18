@@ -344,6 +344,8 @@ struct Under<P> {
     point: &'static engine::points::Point,
     callees: &'static [u32],
     cleanup: fn(u32) -> u32,
+    /// Callees that return with ECX as they found it (the port relies on it).
+    keep_ecx: &'static [u32],
     start: StartFn<P>,
     resume: ResumeFn<P>,
 }
@@ -371,7 +373,11 @@ fn both<P>(
                 target, cleanup, ..
             } => {
                 want.push((target, snapshot(&r)));
+                let ecx = r.ecx;
                 [r.eax, r.ecx, r.edx] = answer(want.len() - 1, target);
+                if u.keep_ecx.contains(&target) {
+                    r.ecx = ecx;
+                }
                 r.esp += cleanup;
                 step = (u.resume)(&mut m, &mut r, &mut g).unwrap();
             }
@@ -384,6 +390,7 @@ fn both<P>(
     for &target in u.callees {
         let log = Arc::clone(&log);
         let cleanup = u.cleanup;
+        let keep_ecx = u.keep_ecx.contains(&target);
         d.register_override(target, format!("stub {target:#x}"), move |cpu, ctx, _| {
             let mut l = log.lock().unwrap();
             l.push((
@@ -392,7 +399,11 @@ fn both<P>(
                     cpu.eax, cpu.ecx, cpu.edx, cpu.ebx, cpu.ebp, cpu.esi, cpu.edi,
                 ],
             ));
+            let ecx = cpu.ecx;
             [cpu.eax, cpu.ecx, cpu.edx] = answer(l.len() - 1, target);
+            if keep_ecx {
+                cpu.ecx = ecx;
+            }
             ctx.memory().ret(cpu, cleanup(target))
         });
     }
@@ -459,6 +470,7 @@ fn the_runtime_runs_the_rust_scene_passes() {
         point: &points::RENDER_SCENE_PASSES,
         callees: &sp::CALLEES,
         cleanup: sp::cleanup,
+        keep_ecx: &[],
         start: ScenePasses::start,
         resume: ScenePasses::resume,
     };
@@ -502,6 +514,7 @@ fn the_runtime_runs_the_rust_game_view() {
         point: &points::RENDER_GAME_VIEW,
         callees: &gv::CALLEES,
         cleanup: gv::cleanup,
+        keep_ecx: &[],
         start: GameView::start,
         resume: GameView::resume,
     };
@@ -525,4 +538,129 @@ fn the_runtime_runs_the_rust_game_view() {
     assert_eq!(got, want, "the runtime's calls are the port's");
     assert_eq!(runtime, direct);
     assert_eq!(runtime[4], STACK + 4 + gv::RET_CLEANUP, "ret 8");
+}
+
+/// The render-state list's guest: a context at `0x00600000` whose list
+/// holds every kind of entry (each `SetRenderState_Simple` type, a deferred
+/// state, state 0x88, setters with both value copies, colours), one entry
+/// repeated and one the D3D shadow already holds.
+fn states_guest() -> Guest {
+    use engine::render_loop::states as st;
+    const CTX: u32 = 0x0060_0000;
+    let mut g = scene_guest();
+    g.map_zeroed(0x003f_0000, 0x0001_0000, Permissions::RX)
+        .unwrap();
+    g.map_zeroed(0x0040_0000, 0x0005_0000, Permissions::RW)
+        .unwrap();
+    g.set_u32(CTX + 0x20, CTX + 0x100).unwrap();
+    g.set_u32(CTX + 0x13c, CTX + 0x200).unwrap();
+    // Definitions: (state, type).
+    let defs = [
+        (0x10, 2),
+        (0x11, 1),
+        (0x12, 0),
+        (0x60, 2),
+        (0x88, 1),
+        (0x89, 2),
+        (0x8a, 1),
+        (0x13, 1),
+        (0x8b, 2),
+        (0x14, 2),
+    ];
+    for (i, (state, ty)) in defs.into_iter().enumerate() {
+        g.set_u32(st::DEFS + 4 * i as u32, state | ty << 24)
+            .unwrap();
+    }
+    // Entries: (definition, source, n); source 1 a float, 0 a colour.
+    let entries = [
+        (0, 1, 0),
+        (0, 1, 0),
+        (1, 1, 1),
+        (2, 1, 2),
+        (3, 1, 3),
+        (4, 1, 4),
+        (5, 1, 5),
+        (6, 1, 6),
+        (7, 1, 7),
+        (8, 0, 0),
+        (9, 0, 1),
+    ];
+    for (i, (def, source, n)) in entries.into_iter().enumerate() {
+        g.set_u32(CTX + 0x200 + 4 * i as u32, def | source << 8 | n << 24)
+            .unwrap();
+    }
+    let floats = [2.7f32, 0.5, 0.25, 9.5, 1.0, 3.2, 7.0, 4.0];
+    for (n, f) in floats.into_iter().enumerate() {
+        g.set_u32(CTX + 0x5c + 4 * n as u32, f.to_bits()).unwrap();
+    }
+    g.set_u32(st::SHADOW + 4 * 0x13, 4.0f32.to_bits()).unwrap();
+    g.set_u32(st::SHADOW + 4 * 0x12, 0x00ab_cdef).unwrap();
+    for s in 0..0x5c {
+        g.set_u32(st::HEADERS + 4 * s, 0x0004_0000 | s << 2)
+            .unwrap();
+    }
+    g.set_u32(st::ALPHA_SCALE, 255.0f32.to_bits()).unwrap();
+    g.set_u32(st::DEVICE, CTX + 0x800).unwrap();
+    g.set_u32(CTX + 0x300, entries.len() as u32 * 0x200)
+        .unwrap();
+    g.set_u32(STACK + 4, CTX + 0x300).unwrap();
+    g
+}
+
+/// `impl.render.states` and `impl.render.states_skip` on the runtime: the
+/// calls the runtime makes are the port's (Simple, the colour, setters
+/// popping their argument), with the runtime's x87 control word; the
+/// skipping port makes two Simple calls fewer (the repeat and the state
+/// the shadow holds).
+#[test]
+fn the_runtime_runs_the_rust_render_states() {
+    use engine::memory::GuestMemory;
+    use engine::render_loop::states::{self as st, Mode, RenderStates};
+    let callees: &'static [u32] =
+        Vec::leak([&[st::SIMPLE, st::COLOUR][..], &st::SETTERS[..]].concat());
+    let entry = Regs {
+        ebx: 0x0060_0000,
+        esp: STACK,
+        ..entry()
+    };
+    let exact: StartFn<RenderStates> =
+        |r: &mut Regs, m: &mut dyn GuestMemory| RenderStates::start(r, m, 0x037f, Mode::Exact);
+    let skip: StartFn<RenderStates> = |r: &mut Regs, m: &mut dyn GuestMemory| {
+        RenderStates::start(r, m, 0x037f, Mode::SkipRedundant)
+    };
+    let mut simple = Vec::new();
+    for (switch, start) in [
+        ("impl.render.states=on", exact),
+        ("impl.render.states_skip=on", skip),
+    ] {
+        let u = Under {
+            switch,
+            point: &points::RENDER_STATES,
+            callees,
+            cleanup: st::cleanup,
+            // The port reads the definition through ECX after the colour.
+            keep_ecx: &[st::COLOUR],
+            start,
+            resume: RenderStates::resume,
+        };
+        let (want, got, direct, runtime) = both(&u, states_guest, entry);
+        let targets: Vec<u32> = got.iter().map(|c| c.0).collect();
+        for t in [
+            st::SIMPLE,
+            st::COLOUR,
+            0x003f_5c70,
+            0x003f_5370,
+            0x003f_5ba0,
+        ] {
+            assert!(targets.contains(&t), "{t:#x} not reached: {targets:#x?}");
+        }
+        assert_eq!(got, want, "{switch}: the runtime's calls are the port's");
+        assert_eq!(runtime, direct, "{switch}");
+        assert_eq!(runtime[4], STACK + 4 + st::RET_CLEANUP, "ret 4");
+        // 2.7 rounds to nearest under the default control word.
+        let first = got.iter().find(|c| c.0 == st::SIMPLE).unwrap();
+        assert_eq!(first.1[2], 3, "{switch}: fistp(2.7)");
+        simple.push(targets.iter().filter(|&&t| t == st::SIMPLE).count());
+    }
+    assert_eq!(simple[0], simple[1] + 2, "{simple:?}");
 }
