@@ -903,14 +903,23 @@ pub fn pipeline_render(i: Option<&Installed>) -> feature::pipeline_render::Pipel
         Some(i) => i.barrier.clone(),
         None => Vec::new(),
     };
+    let allow = pipeline_allow(&entries);
+    feature::pipeline_render::PipelineRender::new().with_d3d(entries, allow, &[WATCH_OWNER])
+}
+
+/// The overrides the pipelined render thread may run: the D3D entries and
+/// their shadows, the port I/O stubs, and the render-safe hooks of other
+/// features (by address and name, so a different hook placed there later
+/// is refused).
+pub fn pipeline_allow(entries: &[u32]) -> impl Fn(u32, &str) -> bool + Send + Sync + 'static {
     let allowed: std::collections::BTreeSet<u32> =
         entries.iter().copied().chain(d3d::abi::PORT_IO.iter().map(|p| p.0)).collect();
     let shadows = [BARRIER_SHADOW, D3D_SHADOW];
-    feature::pipeline_render::PipelineRender::new().with_d3d(
-        entries,
-        move |addr, _| allowed.contains(&addr) || shadows.iter().any(|&s| (s..s + 0x1000).contains(&addr)),
-        &[WATCH_OWNER],
-    )
+    move |addr, name| {
+        allowed.contains(&addr)
+            || shadows.iter().any(|&s| (s..s + 0x1000).contains(&addr))
+            || crate::community_variants::RENDER_THREAD_SAFE.contains(&(addr, name))
+    }
 }
 
 /// The D3D write barrier (docs/graphics/d3d.md "Integration", step 3) on the

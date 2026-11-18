@@ -178,6 +178,10 @@ pub struct Options<'a> {
     /// level is written fresh: built from scratch ([`scratch`]), or the
     /// base pruned when that fails ([`KEEP`], `h1convert::fresh`).
     pub pinned: bool,
+    /// Build the Chief, humans and the Covenant from the `bipd` definition
+    /// (`h1objects::convert::Options::rebuild_bipeds`) instead of on
+    /// Halo 2 templates. Off by default until it has run in the game.
+    pub rebuild_bipeds: bool,
     /// Which of Halo 1's devices are placed. `convert` places fewer when a
     /// level is still over a bound with everything else left out (pinned
     /// b40 and d40).
@@ -220,6 +224,7 @@ impl Default for Options<'_> {
             cutscene_graphs: true,
             pinned: false,
             devices: Devices::All,
+            rebuild_bipeds: false,
         }
     }
 }

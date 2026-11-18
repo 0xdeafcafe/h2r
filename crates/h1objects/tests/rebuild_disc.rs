@@ -149,7 +149,10 @@ fn rebuilt_scenery_matches_the_template_path_on_every_written_field() {
             }
             let mut a = Converter::new(&h1, &base);
             let mut b = Converter::new(&h1, &base);
-            b.options = Options { rebuild: true };
+            b.options = Options {
+                rebuild: true,
+                ..Default::default()
+            };
             let (ia, ib) = match (a.object(t), b.object(t)) {
                 (Ok(x), Ok(y)) => (x, y),
                 (x, y) => {

@@ -113,6 +113,51 @@ pub struct Addrs {
     pub warmup: u32,
     /// Frames that run serially after a fallback.
     pub after_fallback: u32,
+    /// Random seeds both the sim and the render step: a pointer word and
+    /// the seed offsets in the struct it points at, each stepped `x * a +
+    /// c` ([`RANDOM_A`], [`RANDOM_C`]). The join counts the render's steps
+    /// and applies as many to live RAM's seed, which the sim has stepped
+    /// meanwhile, so no draw is replayed and the total stays the serial
+    /// run's. Never merged as bytes.
+    pub random: Option<(u32, &'static [u32])>,
+}
+
+/// The game's random step (`0x00027be8`: `imul 0x19660d`, `add
+/// 0x3c6ef35f`).
+pub const RANDOM_A: u32 = 0x0019_660d;
+pub const RANDOM_C: u32 = 0x3c6e_f35f;
+/// Steps the join looks for between a seed's snapshot and render values.
+const RANDOM_STEPS: u32 = 1 << 16;
+
+/// `n` such that `n` steps take `from` to `to`, if at most
+/// [`RANDOM_STEPS`].
+fn random_steps(from: u32, to: u32) -> Option<u32> {
+    let mut x = from;
+    for n in 0..=RANDOM_STEPS {
+        if x == to {
+            return Some(n);
+        }
+        x = x.wrapping_mul(RANDOM_A).wrapping_add(RANDOM_C);
+    }
+    None
+}
+
+/// The seeds' addresses, through live RAM's pointer.
+fn random_words(a: &Addrs, g: &Guest) -> Vec<u32> {
+    let Some((ptr, offsets)) = a.random else {
+        return Vec::new();
+    };
+    match g.u32(ptr) {
+        Ok(at) if at != 0 => offsets.iter().map(|&o| at.wrapping_add(o)).collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn random_step(mut x: u32, n: u32) -> u32 {
+    for _ in 0..n {
+        x = x.wrapping_mul(RANDOM_A).wrapping_add(RANDOM_C);
+    }
+    x
 }
 
 impl Addrs {
@@ -151,6 +196,10 @@ impl Addrs {
         io_queue: 0x004e_28ec,
         warmup: 150,
         after_fallback: 30,
+        // `[0x004e7408]`: +0 the game's seed (object updates, `0x001032a0`,
+        // which the render reaches), +4 the effects seed (the render's
+        // `0x00027be0` and the particles' `0x00174089`).
+        random: Some((0x004e_7408, &[0, 4])),
     };
 }
 
@@ -391,6 +440,11 @@ struct Shared {
     world_run: AtomicU32,
     /// Frames still to run serially after a fallback.
     serial_left: AtomicU32,
+    /// Views (`frame_counter` steps) the next launch adds for the render
+    /// (the last completed frame's), and what the render in flight was
+    /// credited with at its launch.
+    frames_next: AtomicU32,
+    frames_predicted: AtomicU32,
     /// Guest words whose changes are printed ([`WATCH_ENV`]).
     watch: Vec<u32>,
     inner: Mutex<Inner>,
@@ -439,6 +493,8 @@ impl PipelineRender {
                 setup_failed: AtomicBool::new(false),
                 world_run: AtomicU32::new(0),
                 serial_left: AtomicU32::new(0),
+                frames_next: AtomicU32::new(1),
+                frames_predicted: AtomicU32::new(0),
                 watch: Vec::new(),
                 inner: Mutex::new(Inner {
                     exec: None,
@@ -1020,6 +1076,9 @@ impl LiveSync {
         skip.extend(pieces(&g, (a.present_counter, a.present_counter + 8)));
         skip.extend(pieces(&g, (a.frame_counter, a.frame_counter + 4)));
         skip.extend(pieces(&g, (a.launch_clear, a.launch_clear + 1)));
+        for va in random_words(a, &g) {
+            skip.extend(pieces(&g, (va, va + 4)));
+        }
         LiveSync {
             pieces: live,
             flushed: BTreeMap::new(),
@@ -1407,13 +1466,35 @@ fn hand_back(
             .collect();
         (read(present, 8), read(frame, 4), marks)
     };
+    // The random seeds: (va, physical, view, snapshot).
+    let seeds: Vec<(u32, u32, u32, u32)> = {
+        let g = rt.memory();
+        let view = exec.runtime().memory();
+        let base = exec.base().map(|b| b.bytes());
+        random_words(a, &g)
+            .into_iter()
+            .filter_map(|va| {
+                let p = physical(&g, va)?;
+                let base = read_phys(base?, p, 4) as u32;
+                Some((va, p, read_phys(view.physical_ram(), p, 4) as u32, base))
+            })
+            .collect()
+    };
     let present_delta = present_v.0.wrapping_sub(present_v.1);
     let frame_delta = (frame_v.0 as u32).wrapping_sub(frame_v.1 as u32);
-    if !fallback && present_delta != predicted {
+    let frames_predicted = me.frames_predicted.load(Ordering::Relaxed);
+    if !fallback && (present_delta != predicted || frame_delta != frames_predicted) {
         inner.stats.mispredicts += 1;
+    }
+    if !fallback {
+        // What the next launch predicts: as many views as this frame.
+        me.frames_next.store(frame_delta, Ordering::Relaxed);
     }
     for (p, n) in excluded {
         exec.revert(p, n);
+    }
+    for &(_, p, _, _) in &seeds {
+        exec.revert(p, 4);
     }
     for r in [present.map(|p| (p, 8)), frame.map(|p| (p, 4))]
         .into_iter()
@@ -1452,10 +1533,29 @@ fn hand_back(
             v.wrapping_add(present_delta).wrapping_sub(predicted),
         );
     }
-    if frame_delta != 0
+    // The launch added the predicted views already, so the sim's next tick
+    // read the count a serial run would have.
+    if frame_delta != frames_predicted
         && let Ok(v) = g.u32(a.frame_counter)
     {
-        let _ = g.set_u32(a.frame_counter, v.wrapping_add(frame_delta));
+        let _ = g.set_u32(
+            a.frame_counter,
+            v.wrapping_add(frame_delta).wrapping_sub(frames_predicted),
+        );
+    }
+    me.frames_predicted.store(0, Ordering::Relaxed);
+    // The render's random steps on top of the sim's: no draw replayed, and
+    // the steps add up to the serial run's.
+    for (va, _, view, base) in seeds {
+        if view == base {
+            continue;
+        }
+        let Ok(live) = g.u32(va) else { continue };
+        let next = match random_steps(base, view) {
+            Some(n) => random_step(live, n),
+            None => view,
+        };
+        let _ = g.set_u32(va, next);
     }
     if fallback {
         // The rest of the render runs live: the live counters must not be
@@ -1629,6 +1729,14 @@ fn launch(
         let a = &me.addrs;
         if let Ok(v) = g.u64(a.present_counter) {
             g.set_u64(a.present_counter, v.wrapping_add(predicted))?;
+        }
+        // The views the render will count, as the present: the sim's next
+        // tick reads the frame counter (the particles, `0x0017469d`) and
+        // must see the serial run's value.
+        let frames = me.frames_next.load(Ordering::Relaxed);
+        if let Ok(v) = g.u32(a.frame_counter) {
+            g.set_u32(a.frame_counter, v.wrapping_add(frames))?;
+            me.frames_predicted.store(frames, Ordering::Relaxed);
         }
         g.set_u8(a.launch_clear, 0)?;
     }

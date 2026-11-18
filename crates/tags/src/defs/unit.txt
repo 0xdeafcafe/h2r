@@ -5,7 +5,7 @@ struct unit 0x1c8
   0xbc unknown 0x4
   0xc0 unknown 0x4
   0xc4 tagref effe_ref_c4 -- V
-  0xcc unknown 0x4
+  0xcc f32 camera_field_of_view -- V radians: 70 degrees on every Halo 2 biped and turret with a Halo 1 counterpart, and equal to Halo 1's unit +0x1a0 on the cyborg, marine, elite, grunt and jackal pairs (h1objects tests/unit_rebuild_disc.rs); name D
   0xd0 unknown 0x4
   0xd4 string string_d4
   0xd8 unknown 0x4
