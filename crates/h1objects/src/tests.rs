@@ -51,6 +51,8 @@ fn templates_pick_the_role_and_the_more_specific_name_first() {
     assert!(t(b"proj", "weapons\\plasma grenade\\plasma grenade").contains("plasma_grenade"));
     // Vehicles have no template: every one is built from its definition.
     assert_eq!(t(b"vehi", "vehicles\\ghost\\ghost_mp"), "-");
+    // Nor does scenery (converter version 50).
+    assert_eq!(t(b"scen", "scenery\\rocks\\boulder\\boulder"), "-");
     assert!(t(b"bipd", "characters\\anything").contains("masterchief"));
     assert_eq!(t(b"proj", "weapons\\assault rifle\\bullet"), "-");
     assert_eq!(sid_name(" Front Left-Tire "), "front_left_tire");

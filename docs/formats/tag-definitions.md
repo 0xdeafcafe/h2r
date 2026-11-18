@@ -4,7 +4,8 @@ Status: **Built** (2026-11-18) for 14 groups, each proven against every
 retail tag of the group on the disc. **Two converter paths use them**:
 Halo 1 vehicles that no Halo 2 template stands in for (a10's cryotube,
 chairs, fighterbomber and Halo ring), **on by default** since converter
-version 33, and Halo 1 scenery, opt-in (`h1objects::Options::rebuild`).
+version 33, and Halo 1 scenery, the only scenery path since converter
+version 50.
 Neither has run in the game yet.
 Evidence labels are those of [map-format.md](map-format.md): **E**
 engine code, **V** checked on the owner's disc, **D** a naming or
@@ -268,59 +269,84 @@ summary:
 - **`lsnd`**: the Halo 2 layout the Halo 1 sound converter writes
   (`h1sounds::looping`), D.
 
-## Scenery rebuilt from definitions (`h1objects::Options::rebuild`)
+## Scenery from definitions (`h1objects::rebuild::scenery`)
 
-With `Converter::options.rebuild` set, a Halo 1 scenery object becomes
-three tags written from the definitions (`h1objects::rebuild`), with no
-retail template read:
+Since converter version 50 every Halo 1 scenery object becomes three tags
+written from the definitions (`h1objects::rebuild`), with no retail
+template read; the template path (Delta Halo's `statue_shard_large`) and
+`Options::rebuild` are gone:
 
 - **`scen`**: `default_record`, then the object type (6), Halo 1's
-  bounding radius and offset, and the model.
-- **`hlmt`**: the render, collision and animation models (no physics
-  model), the nodes (`h1models::mode::hlmt_nodes`), and the regions with
-  the collision and physics region and permutation of each (the same
-  `region_map` as the template path).
-- **`mode`**: converted as before (`h1models::mode`, already written
-  from zero), its **material list** rewritten from the definition: one
-  material per Halo 1 shader, the shader set or null, everything else at
-  its default.
+  bounding radius and offset, the model, the predicted resources (the
+  converted `mode` as kind 2 index -1, then every converted bitmap its
+  shaders draw as kind 0, as devices and vehicles), and the scenery role
+  words (below) in the unknown spans.
+- **`hlmt`**: the render, collision and animation models, no physics
+  model, the nodes (`h1models::mode::hlmt_nodes`), the regions with the
+  collision and physics region and permutation of each (`region_map`),
+  and the scenery role words.
+- **`mode`**: converted as before (`h1models::mode`, written from zero),
+  its **material list** rewritten from the definition: one material per
+  Halo 1 shader, the shader set or null, everything else at its default.
 
-The template path stays the default until the rebuilt scenery has run in
-the game.
+**Role words** (`rebuild::scenery_role`, the rule of the turret and biped
+roles): per 4-byte unknown span of the `scen` and of the `hlmt` its model
+is, the word at least half the base map's scenery holds there when it is
+not zero, computed from the base at conversion time. V (2026-11-18): on
+05a (56 scenery) the object header's `0x6c..0x8c` (nine floats, the same
+words as the turret role's `0x6c..0x74`) and the `hlmt`'s `0x34..0x44`
+(five decreasing floats); coagulation (12) and beavercreek (17) give the
+same object words (beavercreek also `0x1c`) and no `hlmt` majority.
 
-**Comparison, V (2026-11-18)** (`rebuild_disc`, a10, a30, b30, c10 and
-Blood Gulch on `05a_deltaapproach`, 158 scenery objects):
+**Physics.** None of the rebuilt scenery gets a `phmo`: Havok sees it
+through its `coll`'s BSP physics slots, one per BSP (h1-objects.md,
+"Collision for Havok"). Retail holds both forms (V: 05a 11 scenery with
+collision and no `phmo`, 5 with one; beavercreek 6 and 3; coagulation 0
+and 6), and the slots key Halo 1's own surfaces exactly, where a built
+`phmo` is the BSP's solid cells (an enclosing hull past 64).
+
+**Not carried:** Halo 1's attachments (on the ten levels and the
+multiplayer maps: 58 `ligh`, 24 `effe`, 13 `lsnd`, 5 `pctl`; no light or
+particle definition exists here yet, and effects are their own lane) and
+widgets. The attachment block is empty and each object's report lists
+what was left.
+
+**Proof, V (2026-11-18)** (`tests/rebuild_disc.rs`):
 
 ```sh
-H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso H1_LEVELS=a10,a30,b30,c10,bloodgulch \
+H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso \
   cargo test --release -p h1objects --test rebuild_disc -- --ignored --nocapture
 ```
 
-Both paths' `scen`, `hlmt` and `mode` are read back through the
-definitions and diffed. **Every field the conversion writes agrees**:
+- `every_scenery_rebuilds_from_its_definition`: 237 scenery objects (the
+  ten levels on 05a, the multiplayer maps on coagulation and beavercreek)
+  convert; `scen`, `hlmt` and `mode` read back through the definitions,
+  write the same again, pin nothing, and name only converted tags (2
+  materials take the base's model shader, the shader conversion's
+  stand-in for a Halo 1 shader it cannot read); no report holds a
+  template stopgap; the type, bounds, model chain (collision and
+  animation exactly where Halo 1 has them), region count and role words
+  are as above; every `coll` (109) has a BSP physics slot per BSP; every
+  model is predicted first, 545 bitmaps after.
+- `retail_scenery_has_bsp_physics_and_predicts_its_model`: the retail
+  facts above (both physics forms, the model predicted first, kind words
+  `0xffff0002` for `mode` and `0` for `bitm`; `hlmt` `block_58` and
+  `block_84` empty on 26 and 29 of 05a's 56).
 
-- object type, bounds, default variant and model;
-- the `hlmt` model chain, nodes, regions and permutations (names and
-  collision/physics bytes), and variants;
-- the whole `mode`, materials included.
+**Comparison with the template path** (before it was removed, commit
+`c1a8c1fa`: 187 objects with the template on their base; the 50 on the
+multiplayer bases had none, since neither carries the statue). Every
+field agreed but these, all the statue's own:
 
-The rebuilt tags contain no pinned block. What differs is exactly what
-the template contributed:
+| Field | Template path | Rebuilt |
+|---|---|---|
+| `scen.object.predicted_resources` | the statue's 8, pinned | the object's model and bitmaps |
+| `hlmt.block_58`, `hlmt.block_84` | the statue's one element each, pinned | empty (retail-valid, above) |
+| `scen.object.unknown_18`, `scen.unknown_bc`, `hlmt.unknown_28`, `unknown_2c`, `unknown_a4`, `unknown_e4` | the statue's values | zero (no retail majority) |
+| null references (`bloc`, `shad`, `effe`, `foot`, `phys`, `udlg`) | group word kept, datum null | `0xffffffff` both |
 
-| Field | Template path | Rebuilt | Why |
-|---|---|---|---|
-| `scen.object.predicted_resources` | the statue's block, pinned at its retail address | empty | the statue's resources, not the converted object's |
-| `hlmt.block_58`, `hlmt.block_84` | the statue's one-element blocks, pinned | empty | typed only; unknown role |
-| `scen.object.unknown_18`, `unknown_6c..unknown_8c` (10 words), `scen.unknown_bc` | the statue's values | zero | unknown spans |
-| `hlmt.unknown_28`..`unknown_44` (7 words), `unknown_a4`, `unknown_e4` | the statue's values | zero | unknown spans |
-| null references: `scen.object` `bloc_ref_3c`, `shad_ref_44`, `creation_effect`, `foot_ref_54`; `hlmt` `phys_ref_18`, `udlg_ref_8c`, `shad_ref_94`, `shad_ref_f0` | group word kept, datum null | `0xffffffff` both | both null |
-
-The unknown spans are the risk to check in game. In retail these
-words are floats on most scenery (the `seen=` of `scen` `0x6c..0x8c`
-and `hlmt` `0x28..0x44`), and zero may not be a neutral value for all
-of them. If the rebuilt scenery misbehaves (fades out, never draws at a
-distance, or is lit differently), those words are the first suspects:
-name them from the engine's readers, then give them defaults.
+The `coll` was the same tag on both paths. The role words matched the
+statue's wherever they are set.
 
 ## Vehicles with no template (`h1objects::rebuild::vehicle`)
 
@@ -803,7 +829,7 @@ devices name their placement (a fixture's names its machine).
 | `vehi` | definitions (only path, since version 49) | the vehicle template path was removed |
 | `mach`, `ctrl`, Halo 1's `lifi` (as `mach`) | definitions (only path) | no template path was ever kept |
 | `phmo` of a rebuilt vehicle or device, or a templated vehicle with none | definitions (Halo 1's collision as polyhedra; a stand-in sphere with no solid collision) | `vehicle_new` refuses a model with none; Havok sees a device only through one |
-| `scen` | template by default; definitions with `Options::rebuild` | the rebuilt scenery has not run in the game |
+| `scen` | definitions (only path, since version 50) | the scenery template path was removed |
 | `bipd` | definitions (default since version 48); template with `Options::rebuild_bipeds` off | references from the Halo 2 counterpart, size and physics from Halo 1 |
 | `phmo` of a rebuilt biped | definitions (Halo 1's collision as polyhedra, a body per node) | the template path borrowed the template's ragdoll on other nodes |
 | `weap`, `eqip`, `proj` | template | their gameplay fields (weapon tuning) are unknown spans; built from zero they would not play |

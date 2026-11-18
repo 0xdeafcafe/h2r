@@ -162,11 +162,6 @@ pub const TEMPLATES: &[(&[u8; 4], &[&str], &str)] = &[
         &["health"],
         "objects\\weapons\\grenade\\frag_grenade\\frag_grenade",
     ),
-    (
-        b"scen",
-        &[],
-        "scenarios\\objects\\solo\\deltatemple\\statue_shard_large\\statue_shard_large",
-    ),
 ];
 
 /// Every template row that matches a Halo 1 tag of `group` at `path`, in
@@ -605,10 +600,6 @@ impl Writer<'_> {
 /// How the [`Converter`] builds tags.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Options {
-    /// Scenery from typed definitions (the default); off builds it on the
-    /// retail template. Kept only for the comparison in
-    /// `tests/rebuild_disc.rs`.
-    pub rebuild: bool,
     /// Build bipeds from the `bipd` definition ([`crate::rebuild::biped`])
     /// instead of on a template: Halo 1's model, collision size and
     /// physics, the role's words, and the references of the Halo 2
@@ -620,7 +611,6 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
-            rebuild: true,
             rebuild_bipeds: true,
         }
     }
@@ -1020,9 +1010,6 @@ impl<'a> Converter<'a> {
     /// its `coll`'s BSP physics slots, as retail static scenery (no
     /// `phmo`; docs/formats/h1-objects.md, "Collision for Havok").
     fn scenery(&mut self, tag: &Tag) -> Result<TagId> {
-        if !self.options.rebuild {
-            return self.scenery_templated(tag);
-        }
         let object = h1::Object::read(self.h1, self.h1.tag_data(tag)?)?;
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
         let hlmt = self.model(&mut rep, &object, None, &tag.name, true)?;
@@ -1045,27 +1032,6 @@ impl<'a> Converter<'a> {
                 "obje widgets: {widgets} Halo 1 widgets (flags, antennas) not carried"
             ));
         }
-        self.tree.reports.push(rep);
-        Ok(self.tree.push(
-            &tag.name,
-            Converted {
-                group: FourCC(*b"scen"),
-                root,
-                raw: Vec::new(),
-            },
-        ))
-    }
-
-    fn scenery_templated(&mut self, tag: &Tag) -> Result<TagId> {
-        let object = h1::Object::read(self.h1, self.h1.tag_data(tag)?)?;
-        let (tpl, tpl_name) = self.template(b"scen", &tag.name, b"scen")?;
-        let tpl_root = self.base.root(tpl)?;
-        let mut rep = Self::report(tag, &tpl_name);
-        let mut root = Block::new(tpl_root.clone());
-        self.header(&mut rep, &mut root, &object, &tag.name)?;
-        rep.no_home
-            .push("scen tuning (pathfinding and lightmapping policy): the template's".into());
-        self.stopgaps(&mut rep, &tpl_root, &[h2::MODEL]);
         self.tree.reports.push(rep);
         Ok(self.tree.push(
             &tag.name,
