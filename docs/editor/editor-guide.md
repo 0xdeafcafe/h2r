@@ -930,14 +930,16 @@ count spilling out of its box.
     HUD's widgets read; the ones the editor does not know are 1 until you
     type a value.
 - **Inspector** (right):
-  - **Widget**: the selected widget's fields, by section: its anchor
-    (which corner of the frame, or the centre), flags and special type;
-    its art (bitmap, shader, sequence); its placement (offset and
-    registration) for the screen mode shown; its inputs; and its state
-    flags (when it shows and hides). Text widgets have their string,
-    justification and font instead of art. Hover a field's name for its
-    offset in the widget and where its meaning comes from. Each change is
-    an undo step (typing in one field is one step).
+  - **Widget**: the selected widget's fields, in the same field panel as
+    the **Tags** tool (section 9): its name, inputs, the words that show
+    and hide it, anchor (which corner of the frame, or the centre),
+    flags, bitmap and shader (pick from the map's tags), the sequence,
+    offset and registration for each screen mode, and its special type;
+    a text widget has its string, fonts and offsets instead of art.
+    Hover a field for what it means and where that comes from. A text's
+    **Justification** sits above the panel under **HUD fields** (the
+    panel shows those bytes as a size it cannot change). Each change is
+    an undo step of the HUD tool (typing in one field is one step).
   - **Checks**: art that half covers other art, art off the screen or
     outside the frame, and text that spills out of the art it sits on, or
     over other text. Hover one to outline its widgets in red. Art that
@@ -965,6 +967,7 @@ and text other than numbers (a text shows its string's name, such as
 
 To open the editor straight on a HUD: `h2-editor --hud-map lockout --hud
 masterchief --hud-widget shield_meter`.
+
 ## 9. Tags: every field of a tag
 
 **Tags** shows every tag of the open map and lets you change any field of

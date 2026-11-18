@@ -5,11 +5,13 @@
 //! and the save in the inspector. State lives in [`crate::app::HudTool`]
 //! and [`hud_edit::HudSession`]; everything goes back as [`Action`]s.
 //!
-//! The field panel ([`properties`]) is drawn from `hud_edit::layout`'s
-//! field tables, one row per [`hud_edit::layout::Field`]. That table is the
-//! seam for the studio's generic labelled tag field editor: when it lands,
-//! it can take these rows (label, offset, type, proof) and the widget's
-//! `get`/`set` instead of the small editors here.
+//! The selected widget's fields ([`properties`]) are the studio's generic
+//! field panel ([`crate::fields::panel`]) over the widget's element, named
+//! by the `nhdt` definition (`tags/src/defs/nhdt.txt`); its writes come
+//! back as [`Action::HudWrite`], so the HUD tool keeps one history and one
+//! save. Fields the panel cannot edit (bytes the schema types as a raw
+//! pointer or size: the text justification) keep a row from
+//! `hud_edit::layout`'s field tables.
 
 use std::path::PathBuf;
 
@@ -22,7 +24,10 @@ use hud_edit::place::{self, Proof};
 use hud_edit::state::{self, Grenade, Source};
 use hud_edit::{HudState, Value, WidgetKey, WidgetKind};
 
-use crate::app::{Action, App, HudTool};
+use tags::registry::Kind as RegKind;
+
+use crate::app::{Action, App, HudTool, TagAction};
+use crate::fields::{self, PanelState};
 use crate::theme::{self, Fonts, icon};
 use crate::viewport::Gpu;
 
@@ -56,6 +61,8 @@ pub struct HudUi {
     /// points per HUD pixel.
     pub shown: Option<([f32; 2], f32)>,
     drag: Option<Drag>,
+    /// The generic field panel's state for the selected widget.
+    panel: PanelState,
     /// The finding under the mouse: its widgets light up.
     hot: Option<usize>,
     filter: String,
@@ -462,7 +469,7 @@ pub fn inspector(
     };
     heading(ui, fonts, "Widget");
     match app.hud.selected {
-        Some(key) => properties(ui, &mut app.hud, key, actions),
+        Some(key) => properties(ui, &mut app.hud, &mut st.panel, key, actions),
         None => ui.text_disabled("Click a widget in the picture or the list."),
     }
     ui.spacing();
@@ -569,33 +576,63 @@ fn rules(ui: &Ui, _fonts: &Fonts) {
 }
 
 /// The selected widget's fields, grouped, from the layout's field table.
-fn properties(ui: &Ui, h: &mut HudTool, key: WidgetKey, actions: &mut Vec<Action>) {
-    let mode = h.state.mode;
+fn properties(ui: &Ui, h: &mut HudTool, panel: &mut PanelState, key: WidgetKey, actions: &mut Vec<Action>) {
     let Some(s) = h.session.as_mut() else { return };
+    let Some(hud_id) = s.current else { return };
     let Some(w) = s.hud().and_then(|hud| hud.widget(key)).cloned() else {
         ui.text_disabled("The widget is gone.");
         return;
     };
     ui.text(format!("{} ({:?} {})", w.name, key.kind, key.index));
     ui.text_disabled(format!("at {:#010x}{}", w.address, if w.is_dirty() { ", edited" } else { "" }));
-    let mut group = "";
-    for f in key.kind.fields() {
-        // Only the mode shown's per-mode fields.
-        if f.mode.is_some_and(|m| m != mode) {
-            continue;
+    // The widget's element in the generic field panel (names from the
+    // nhdt definition); its writes become HUD edits (undo, the dirty
+    // marker and the save stay the HUD tool's).
+    let block = match key.kind {
+        WidgetKind::Bitmap => hud_edit::layout::ROOT_BITMAPS,
+        WidgetKind::Text => hud_edit::layout::ROOT_TEXTS,
+    };
+    let path = [(block as u32, key.index as u32)];
+    let layout = h.fields.resolve(hud_id, &path).map(|(_, l)| l);
+    // The fields the panel cannot edit (the schema types their bytes as a
+    // raw pointer or size, or nothing names them): the HUD tool's rows.
+    let own: Vec<&Field> = key
+        .kind
+        .fields()
+        .iter()
+        .filter(|f| {
+            layout.as_ref().is_none_or(|l| {
+                l.fields.iter().find(|d| d.offset as usize <= f.offset && (f.offset as u32) < d.offset + d.kind.width()).is_none_or(|d| {
+                    matches!(d.kind, RegKind::Raw | RegKind::RawSize { .. } | RegKind::Unknown { .. } | RegKind::Pad { .. })
+                })
+            })
+        })
+        .collect();
+    if !own.is_empty() {
+        ui.separator_with_text("HUD fields");
+        for f in own {
+            let _id = ui.push_id(f.key);
+            ui.align_text_to_frame_padding();
+            ui.text_disabled(f.label);
+            ui.set_item_tooltip(format!("{:#x}  {}", f.offset, f.proof));
+            ui.same_line_with_pos(130.0);
+            ui.set_next_item_width(-1.0);
+            if let Some(v) = field(ui, s, &w, f) {
+                actions.push(Action::HudSet(key, f.key.to_owned(), v, true));
+            }
         }
-        if f.group != group {
-            group = f.group;
-            ui.separator_with_text(group);
-        }
-        let _id = ui.push_id(f.key);
-        ui.align_text_to_frame_padding();
-        ui.text_disabled(f.label);
-        ui.set_item_tooltip(format!("{:#x}  {}", f.offset, f.proof));
-        ui.same_line_with_pos(130.0);
-        ui.set_next_item_width(-1.0);
-        if let Some(v) = field(ui, s, &w, f) {
-            actions.push(Action::HudSet(key, f.key.to_owned(), v, true));
+    }
+    ui.separator_with_text("Fields");
+    let mut out = Vec::new();
+    fields::panel(ui, &h.fields, hud_id, &path, panel, &mut out);
+    for a in out {
+        match a {
+            Action::Tag(TagAction::Write(w)) => actions.push(Action::HudWrite(w)),
+            Action::Tag(TagAction::Block { .. }) => {
+                actions.push(Action::HudRefused("a widget's blocks (effects) are edited in the Tags tool".into()))
+            }
+            Action::Tag(TagAction::Seal | TagAction::Select(_)) => {}
+            other => actions.push(other),
         }
     }
 }

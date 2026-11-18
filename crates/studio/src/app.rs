@@ -174,6 +174,12 @@ pub enum Action {
     HudState(Box<hud_edit::HudState>),
     /// Write the map with the HUD edits as a new `.map`.
     HudSaveAs(PathBuf),
+    /// A write from the generic field panel into the selected widget's
+    /// element (an HUD edit, with the HUD tool's undo).
+    HudWrite(TagWrite),
+    /// The field panel asked for something the HUD tool leaves to the Tags
+    /// tool: why.
+    HudRefused(String),
     // Tags.
     /// A tag editor command: select a tag, write a field, change a block.
     Tag(TagAction),
@@ -694,6 +700,14 @@ impl App {
                 self.hud.redraw();
             }
             Action::HudSaveAs(path) => self.hud_save_as(&path),
+            Action::HudWrite(w) => {
+                let r = match self.hud.session.as_mut() {
+                    Some(s) => s.write(w.address, &w.bytes, &w.label, w.merge).map(drop),
+                    None => Err(anyhow::anyhow!("no HUD open")),
+                };
+                self.hud_result(r);
+            }
+            Action::HudRefused(why) => self.error(why),
             Action::Tag(a) => self.run_tag(a),
             a @ (Action::OpenVariant(_)
             | Action::NewVariant(_)

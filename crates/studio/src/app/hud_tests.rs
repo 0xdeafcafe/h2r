@@ -93,3 +93,42 @@ fn opening_another_map_asks_about_unsaved_edits_and_save_as_writes() {
     app.dispatch(Action::HudOpenMap("out".into()));
     assert_eq!(app.hud.offset(STRAY), Some((40, -60)));
 }
+
+/// The generic field panel's writes are HUD edits: the widget changes,
+/// the field panel's document shows it, one undo puts both back, and a
+/// write outside the widget's record is refused.
+#[test]
+fn field_panel_writes_are_hud_edits() {
+    use crate::app::TagWrite;
+    let (_t, _, mut app) = open("panel");
+    app.dispatch(Action::HudSelect(Some(STRAY)));
+    let s = app.hud.session.as_ref().unwrap();
+    let hud = s.current.unwrap();
+    let at = s.hud().unwrap().widget(STRAY).unwrap().address;
+    // The registry names the stray's element from the nhdt definition.
+    let (element, layout) = app.hud.fields.resolve(hud, &[(0x08, 2)]).unwrap();
+    assert_eq!(element, at);
+    let anchor = layout.fields.iter().find(|f| f.offset == 0x1c).unwrap();
+    assert_eq!((anchor.name.as_str(), anchor.named), ("anchor", true));
+    let write = |address: u32, bytes: Vec<u8>| {
+        Action::HudWrite(TagWrite {
+            tag: hud,
+            address,
+            bytes,
+            label: "offset_full".into(),
+            merge: Some(1),
+        })
+    };
+    app.dispatch(write(at + 0x34, 12i16.to_le_bytes().to_vec()));
+    assert_eq!(app.hud.offset(STRAY), Some((12, -48)));
+    assert_eq!(app.hud.fields.read(at + 0x34, 2).unwrap(), 12i16.to_le_bytes());
+    assert!(app.tool_dirty(ToolKind::Hud));
+    assert!(app.can_undo());
+    app.dispatch(Action::Undo);
+    assert_eq!(app.hud.offset(STRAY), Some((40, -48)));
+    assert_eq!(app.hud.fields.read(at + 0x34, 2).unwrap(), 40i16.to_le_bytes());
+    assert!(!app.tool_dirty(ToolKind::Hud));
+    // Outside every widget: refused, logged, nothing changes.
+    app.dispatch(write(at + 0x1000, vec![1]));
+    assert!(!app.tool_dirty(ToolKind::Hud));
+}

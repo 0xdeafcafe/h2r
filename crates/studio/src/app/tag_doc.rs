@@ -391,6 +391,16 @@ impl TagDoc {
         self.rev += 1;
     }
 
+    /// Show `bytes` at `address` without an undo step: for a tool that
+    /// keeps its own edits and history (the HUD tool) and draws them with
+    /// [`crate::fields::panel`]. Outside the metadata, nothing.
+    pub fn mirror(&mut self, address: u32, bytes: &[u8]) {
+        let len = bytes.len() as u32;
+        if self.read(address, len).is_some_and(|now| now != bytes) {
+            self.put(address, bytes);
+        }
+    }
+
     /// Write a field, as one undo step (or merged into the last by key).
     pub fn write(&mut self, w: TagWrite) -> Result<(), String> {
         let len = u32::try_from(w.bytes.len()).map_err(|_| "too long")?;

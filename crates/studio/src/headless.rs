@@ -649,6 +649,8 @@ mod tests {
             rgba.as_chunks::<4>().0.iter().step_by(97).copied().collect();
         assert!(distinct.len() > 8);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// The Tags tool through its widgets: open the weapon group in the
     /// tree, pick the weapon, tick a flag and pick an enum value in the
     /// field panel. The edits land in the document, as undo steps, and

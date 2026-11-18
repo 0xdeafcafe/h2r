@@ -15,7 +15,7 @@ use hud_edit::{HudSession, HudState, Mode, Value, WidgetKey};
 use map::TagId;
 use scenario_edit::MapSource as EditSource;
 
-use super::App;
+use super::{App, TagDoc};
 
 /// The picture of the HUD shown and its findings.
 pub struct Shot {
@@ -35,6 +35,10 @@ pub struct HudTool {
     pub zoom: f32,
     pub show_rects: bool,
     pub show_frame: bool,
+    /// The open map's tags for the generic field panel: loaded with the
+    /// session, its bytes mirrored from the session's widgets on every
+    /// change (the session keeps the edits and their history).
+    pub fields: TagDoc,
     shot: Option<Shot>,
     rev: u64,
 }
@@ -49,6 +53,7 @@ impl Default for HudTool {
             zoom: 1.0,
             show_rects: true,
             show_frame: true,
+            fields: TagDoc::default(),
             shot: None,
             rev: 0,
         }
@@ -59,8 +64,15 @@ impl HudTool {
     pub fn is_dirty(&self) -> bool {
         self.session.as_ref().is_some_and(HudSession::is_dirty)
     }
+    /// Forget the picture (drawn again when next shown) and show the
+    /// session's widget bytes in the field panel's document.
     pub fn redraw(&mut self) {
         self.shot = None;
+        if let Some(s) = &self.session {
+            for (address, bytes) in s.widget_bytes() {
+                self.fields.mirror(address, bytes);
+            }
+        }
     }
     /// The HUD shown's picture, drawn when anything changed.
     pub fn shot(&mut self) -> Option<&Shot> {
@@ -94,8 +106,12 @@ impl HudTool {
         Some(s.hud()?.widget(key)?.offset(self.state.mode))
     }
     fn open(&mut self, source: EditSource, name: &str) -> Result<usize> {
-        let s = HudSession::open(source, name)?;
+        let mut s = HudSession::open(source, name)?;
         let n = s.huds.len();
+        self.fields = TagDoc::default();
+        if let Err(e) = self.fields.load(s.map_mut()) {
+            self.fields.error = Some(format!("{e}"));
+        }
         let first = s.huds.first().map(|e| e.id);
         self.session = Some(s);
         self.opened = Some(name.to_owned());

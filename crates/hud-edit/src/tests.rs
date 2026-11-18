@@ -330,3 +330,64 @@ fn placed_checks_and_png_without_the_ui() {
     assert!(e.contains("Git checkout"), "{e}");
     assert!(!inside.exists());
 }
+
+/// A generic field panel writes bytes at an address: inside one widget it
+/// is an edit like any other (undo, merge by key); across or outside a
+/// widget it is refused.
+#[test]
+fn byte_writes_inside_a_widget_are_edits() {
+    let (_t, _, mut s, player, _) = open();
+    s.select(player).unwrap();
+    let w = s.hud().unwrap().widget(bitmap(1)).unwrap().clone();
+    // The fullscreen offset x (+0x34) by bytes, twice with one merge key.
+    for x in [5i16, 7] {
+        let key = s.write(w.address + 0x34, &x.to_le_bytes(), "offset_full", Some(9)).unwrap();
+        assert_eq!(key, bitmap(1));
+    }
+    assert_eq!(s.history().count(), 1);
+    assert_eq!(s.hud().unwrap().widget(bitmap(1)).unwrap().offset(Mode::Full), (7, -56));
+    assert!(s.write(w.address + 0x62, &[0; 4], "across", None).is_err());
+    assert!(s.write(w.address.wrapping_sub(0x1000), &[0], "outside", None).is_err());
+    let mirrored: Vec<_> = s.widget_bytes().filter(|(a, _)| *a == w.address).collect();
+    assert_eq!(&mirrored[0].1[0x34..0x36], &7i16.to_le_bytes());
+    s.undo().unwrap();
+    assert!(!s.is_dirty());
+}
+
+/// The `nhdt` definition the generic field panel labels widgets from
+/// (`tags/src/defs/nhdt.txt`) has the widget blocks where the layout says
+/// and a typed field over every field of the tables; only the two spans
+/// the schema types otherwise are left to the HUD tool's own rows.
+#[test]
+fn the_nhdt_definition_agrees_with_the_layout_tables() {
+    use crate::layout::{self, BITMAP_FIELDS, TEXT_FIELDS};
+    use tags::defs::{Defs, Kind};
+    let root = Defs::builtin().group(map::FourCC(*b"nhdt")).expect("an nhdt definition");
+    assert_eq!(root.size as usize, layout::ROOT_SIZE);
+    let block = |at: usize| match &root.fields.iter().find(|f| f.offset as usize == at).unwrap().kind {
+        Kind::Block(s) => s.clone(),
+        k => panic!("{at:#x} is {k:?}"),
+    };
+    for (at, size, fields) in [
+        (layout::ROOT_BITMAPS, layout::BITMAP_SIZE, BITMAP_FIELDS),
+        (layout::ROOT_TEXTS, layout::TEXT_SIZE, TEXT_FIELDS),
+    ] {
+        let def = block(at);
+        assert_eq!(def.size as usize, size);
+        for f in fields {
+            let range = crate::model::Widget::value_range(f);
+            let d = def
+                .fields
+                .iter()
+                .find(|d| d.offset as usize <= range.start && range.start < (d.offset + d.kind.width()) as usize)
+                .unwrap();
+            assert!(range.end <= (d.offset + d.kind.width()) as usize, "{} spans fields", f.key);
+            let ok = match &d.kind {
+                Kind::Unknown { .. } | Kind::Pad { .. } => false,
+                Kind::RawSize { .. } => f.key == "justify",
+                _ => true,
+            };
+            assert!(ok, "{} ({:#x}) is {} {:?}", f.key, f.offset, d.name, d.kind);
+        }
+    }
+}

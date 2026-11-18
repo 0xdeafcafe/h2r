@@ -169,6 +169,47 @@ impl HudSession {
         )
     }
 
+    /// Writes `bytes` at metadata `address` inside one widget of the
+    /// current HUD: the entry point for a generic field panel, which knows
+    /// addresses, not field keys. `merge` (the panel's merge key) joins
+    /// the step to the last one with the same key. Bytes outside one
+    /// widget's record (a nested block's elements) are refused: they are
+    /// the Tags tool's.
+    pub fn write(&mut self, address: u32, bytes: &[u8], label: &str, merge: Option<u64>) -> Result<WidgetKey> {
+        let hud = self.hud().context("no HUD open")?;
+        let end = address
+            .checked_add(u32::try_from(bytes.len())?)
+            .context("write past the address space")?;
+        let w = hud
+            .widgets
+            .iter()
+            .find(|w| w.address <= address && end <= w.address + w.bytes.len() as u32)
+            .with_context(|| {
+                format!("{address:#x} is not inside one widget of {}: edit it in the Tags tool", hud.name)
+            })?;
+        let key = w.key;
+        let at = (address - w.address) as usize;
+        let merge_key = format!("{key:?}:bytes:{}", merge.unwrap_or(u64::from(address)));
+        self.change(key, &format!("set {label}"), merge_key, merge.is_some(), |w| {
+            w.bytes[at..at + bytes.len()].copy_from_slice(bytes);
+        })?;
+        Ok(key)
+    }
+
+    /// Every widget of every HUD read so far, with its metadata address
+    /// and its bytes edits applied (for a view of the map's bytes, such as
+    /// the field panel's document, to mirror).
+    pub fn widget_bytes(&self) -> impl Iterator<Item = (u32, &[u8])> {
+        self.open
+            .values()
+            .flat_map(|h| h.widgets.iter().map(|w| (w.address, w.bytes.as_slice())))
+    }
+
+    /// The open map, to read more of it (the field panel's document).
+    pub fn map_mut(&mut self) -> &mut Map<MapReader> {
+        &mut self.map
+    }
+
     fn change(
         &mut self,
         key: WidgetKey,

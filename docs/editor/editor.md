@@ -760,8 +760,9 @@ test-engine hooks.
 ## HUD
 
 The developer's page is [hud-editor.md](hud-editor.md): the placement
-rules and their proof, the checks, the save, and the seam for the
-generic field editor. `app/hud.rs` (`HudTool`) holds the tool's state
+rules and their proof, the checks, the save, and how the widget fields
+use the generic field panel (`fields.rs`, named by
+`tags/src/defs/nhdt.txt`) with the HUD tool's own history. `app/hud.rs` (`HudTool`) holds the tool's state
 and its `Hud*` actions; `ui/hud.rs` draws it; the logic is
 `crates/hud-edit`.
 

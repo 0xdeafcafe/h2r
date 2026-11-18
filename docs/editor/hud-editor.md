@@ -23,9 +23,9 @@ the game, **D** assumed here.
 - `crates/hud-edit` (no UI):
   - `layout`: the `nhdt` root (`+0x08` bitmap widgets, `0x64` each;
     `+0x10` text widgets, `0x54` each; E `0x13a532`) and every widget
-    field with the address that reads it; the **field tables**
-    (`BITMAP_FIELDS`, `TEXT_FIELDS`), plain rows of label, offset, type,
-    section, screen mode and proof.
+    field with the address that reads it; the field tables
+    (`BITMAP_FIELDS`, `TEXT_FIELDS`) that edits by key use (`HudSession::set`)
+    and the definition `tags/src/defs/nhdt.txt` agrees with.
   - `place`: the placement maths and `RULES`, each with its proof.
   - `state`: `HudState` (what the HUD is drawn at), the inputs it gives
     (`HudState::input`), and the engine's widget gate (`shown`).
@@ -36,15 +36,17 @@ the game, **D** assumed here.
     `assets::decode_image`) and the disc's fonts (`font`), and where each
     widget landed (`Placed`: point, rectangle, shown, covered pixels).
   - `checks`: the findings.
-  - `session`: `HudSession`: the open map, edits with undo and redo (a
-    drag is one step), and `save_as` through `map::writer::MapEditor`.
+  - `session`: `HudSession`: the open map, edits by field key, by offset
+    (`move_to`) or by address and bytes (`write`, for the field panel),
+    undo and redo (a drag is one step), and `save_as` through
+    `map::writer::MapEditor`.
   - `fixture` (feature `fixture`): an invented map for tests, built with
     `map::build` (its bitmap through `h1bitmaps`).
 - `crates/studio`: `app/hud.rs` (`HudTool`: the session, the state, the
   selection, the picture and findings; the `Hud*` actions) and
   `ui/hud.rs` (the windows: maps, HUDs and widgets in the outliner; the
-  picture and the state in the centre; the field panel, checks, HUDs
-  drawn with it, placement rules and save in the inspector).
+  picture and the state in the centre; the generic field panel, checks,
+  HUDs drawn with it, placement rules and save in the inspector).
 
 ## Placement
 
@@ -109,18 +111,33 @@ source. The output is the source byte for byte but for those runs and
 the header checksum (`+0x2d0`). A tag reference's edit changes its datum
 only. Nothing grows, so nothing moves.
 
-## The field panel and the generic field editor
+## The field panel
 
-The property panel is drawn from `layout::BITMAP_FIELDS` and
-`TEXT_FIELDS`: one row per field, with `Widget::get_field` and
-`HudSession::set` (by field key) as the accessors; the per-mode rows show
-for the screen mode on view. The studio's generic labelled tag field
-editor (the `fields` panel and registry, branch `studio-tags`) can take
-these tables as a registry entry for the `nhdt` widget records and replace
-`ui/hud.rs::properties` and `field` without touching `hud-edit`: the rows
-carry the label, offset, type and proof such a panel needs, and edits go
-through `Action::HudSet(widget, field key, value, merge)` so undo, the
-dirty marker and the save stay as they are.
+The inspector shows the selected widget's element in the studio's generic
+field panel (`studio::fields::panel`, the Tags tool's), named by the `nhdt`
+definition `crates/tags/src/defs/nhdt.txt`: anchor (an enum), flags,
+inputs, the show and hide words of the gate (word A's known bits named),
+bitmap and shader references with the tag picker, sequences, offsets and
+registrations per screen mode, the special type, and the effects blocks
+(shown; their elements are the Tags tool's).
+
+The HUD tool keeps one history and one save: its own `TagDoc` is loaded
+with the session and only shows bytes. The panel's writes come back as
+`Action::HudWrite` and go to `HudSession::write` (address and bytes, which
+must fall inside one widget record), and after every change the session's
+widget bytes are mirrored into the document (`TagDoc::mirror`, no undo
+step). Block changes are refused with a note.
+
+Two spans keep the schema's type in the definition, because the schema
+(inferred from the disc) types them so and the definitions must agree with
+it: `+0x18` (`raw_18`; E `0x13ac8f` reads `+0x18..+0x1a` as the gate's
+weapon thresholds) and, in text widgets, `+0x2c` (`rawsize_2c`; E
+`0x22ac0b` reads it as the justification). The panel shows them as
+structural and does not edit them, so the HUD tool keeps a row from
+`hud_edit::layout`'s tables for every field the panel cannot edit (today
+the justification). A test (`the_nhdt_definition_agrees_with_the_layout_tables`)
+keeps the definition and the tables together. Correcting the schema's
+inference for those spans would let the panel take them too.
 
 ## Not modelled
 
