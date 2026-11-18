@@ -132,7 +132,7 @@ fn a_difficulty_change_reaches_the_bots_already_there() {
             .lock()
             .unwrap()
             .iter()
-            .map(|b| b.1.load(Ordering::Relaxed))
+            .map(|b| b.skill.load(Ordering::Relaxed))
             .collect()
     };
     assert_eq!(skills(&d), vec![0, 0]);
@@ -169,6 +169,230 @@ fn the_driver_follows_the_store() {
     assert_eq!(d.ports(), vec![1]);
     s.set(ENABLED.key, Value::Bool(false)).unwrap();
     assert!(local.is_empty());
+}
+
+// --- Server rosters (stage 6c) ---
+
+use live_proto::Xuid;
+use live_proto::bots::{
+    Colors, Emblem, Personality, Roster, RosterBot, RosterRequest, SERVER_XUID_MARK,
+};
+
+fn roster(session: &str, n: u64, skill: f32) -> Roster {
+    Roster {
+        match_id: session.into(),
+        bots: (1..=n)
+            .map(|i| RosterBot {
+                xuid: Xuid(SERVER_XUID_MARK | (0x100 * n + i)),
+                gamertag: live_proto::Gamertag::new(&format!("Rusty Lugnut {i}")).unwrap(),
+                persistent: false,
+                emblem: Emblem {
+                    foreground: 12,
+                    background: 3,
+                    colors: [1, 7, i as u8],
+                },
+                colors: Colors {
+                    primary: 4,
+                    secondary: 9,
+                },
+                rank: None,
+                team: (i == 2).then_some(1),
+                skill,
+                personality: Personality {
+                    seed: 1000 + i,
+                    taunt: 0.1,
+                    ..Personality::default()
+                },
+            })
+            .collect(),
+    }
+}
+
+#[test]
+fn a_roster_becomes_phantom_identities_and_brains() {
+    let seats = roster_seats(&roster("0123456789abcdef", 2, 0.67));
+    assert_eq!(seats.len(), 2);
+    let a = &seats[0];
+    assert_eq!(a.identity.xuid, SERVER_XUID_MARK | 0x201);
+    assert_eq!(a.identity.gamertag, "Rusty Lugnut 1");
+    assert_eq!(a.identity.emblem, [12, 3, 1, 7, 1]);
+    assert_eq!(a.identity.colors, [4, 9]);
+    assert_eq!(a.team, None, "null: the host balances");
+    assert_eq!(seats[1].team, Some(1), "the roster's team when it has one");
+    assert_eq!(a.skill, Skill::Heroic);
+    assert_eq!((a.seed, a.taunt), (1001, 0.1));
+}
+
+#[test]
+fn a_rosters_skill_is_the_nearest_named_difficulty() {
+    use live_proto::bots::{EASY, HEROIC, LEGENDARY, NORMAL};
+    assert_eq!(
+        [EASY, NORMAL, HEROIC, LEGENDARY].map(skill_of),
+        Skill::ALL,
+        "the four named skills"
+    );
+    assert_eq!(skill_of(0.1), Skill::Easy);
+    assert_eq!(skill_of(0.45), Skill::Normal);
+    assert_eq!(skill_of(0.62), Skill::Heroic);
+    assert_eq!(skill_of(0.9), Skill::Legendary);
+    assert_eq!(
+        [0, 1, 2, 3].map(request_skill),
+        [Some(EASY), Some(NORMAL), Some(HEROIC), Some(LEGENDARY)]
+    );
+    assert_eq!(request_skill(MIXED), None, "Mixed: the server picks");
+}
+
+type Done = Box<dyn FnOnce(Result<Roster, String>) + Send>;
+
+#[derive(Default)]
+struct FakeLive {
+    session: Mutex<Option<String>>,
+    asked: Mutex<Vec<(RosterRequest, Option<Done>)>>,
+}
+
+impl Rosters for FakeLive {
+    fn session(&self) -> Option<String> {
+        self.session.lock().unwrap().clone()
+    }
+    fn ask(&self, request: RosterRequest, done: Done) -> Result<(), String> {
+        self.asked.lock().unwrap().push((request, Some(done)));
+        Ok(())
+    }
+}
+
+impl FakeLive {
+    fn requests(&self) -> Vec<RosterRequest> {
+        self.asked.lock().unwrap().iter().map(|a| a.0.clone()).collect()
+    }
+    /// Answers the `i`th request.
+    fn answer(&self, i: usize, r: Result<Roster, String>) {
+        let done = self.asked.lock().unwrap()[i].1.take().unwrap();
+        done(r);
+    }
+}
+
+fn rostered_driver(session: Option<&str>) -> (Arc<Store>, Arc<FakeLive>, Phantoms, Arc<Driver>) {
+    let s = store();
+    let live = Arc::new(FakeLive::default());
+    *live.session.lock().unwrap() = session.map(str::to_owned);
+    let ph = Phantoms::default();
+    let d = drive(
+        &s,
+        Driver::with_phantoms(Local::default(), ph.clone()).with_rosters(live.clone()),
+    );
+    (s, live, ph, d)
+}
+
+#[test]
+fn past_the_free_ports_the_host_asks_live_for_bots_and_runs_its_roster() {
+    const SESSION: &str = "0123456789abcdef";
+    let (s, live, ph, d) = rostered_driver(Some(SESSION));
+    on(&s, 5, 2);
+    assert_eq!(d.ports(), vec![1, 2, 3]);
+    assert_eq!(
+        live.requests(),
+        vec![RosterRequest {
+            session_id: SESSION.into(),
+            playlist: None,
+            count: 2,
+            skill: Some(live_proto::bots::HEROIC),
+            teams: false,
+        }],
+        "the phantoms only, at the page's difficulty"
+    );
+    // Until the answer, host-made phantoms; the game record names none.
+    assert!(
+        ph.list()
+            .iter()
+            .all(|p| live_proto::bots::is_local_xuid(Xuid(p.identity.xuid)))
+    );
+    assert_eq!(d.bots_in_force(), None);
+
+    live.answer(0, Ok(roster(SESSION, 2, 0.67)));
+    let l = ph.list();
+    let tags: Vec<&str> = l.iter().map(|p| p.identity.gamertag.as_str()).collect();
+    assert_eq!(tags, ["Rusty Lugnut 1", "Rusty Lugnut 2"]);
+    assert_eq!(l[1].team, Some(1));
+    let bots = d.bots_in_force().expect("the roster in force");
+    assert_eq!(bots.session_id, SESSION);
+    assert_eq!(
+        bots.machines,
+        l.iter()
+            .map(|p| (p.machine, Xuid(p.identity.xuid)))
+            .collect::<Vec<_>>(),
+        "each rostered phantom by its machine id"
+    );
+    assert!(
+        bots.machines
+            .iter()
+            .all(|(_, x)| live_proto::bots::is_server_xuid(*x))
+    );
+
+    // The page's difficulty never changes a roster bot's skill; it asks
+    // for a new roster, which replaces the old.
+    s.set(DIFFICULTY.key, Value::Int(3)).unwrap();
+    assert_eq!(live.requests().len(), 2);
+    assert_eq!(live.requests()[1].skill, Some(live_proto::bots::LEGENDARY));
+    s.set(COUNT.key, Value::Int(6)).unwrap();
+    assert_eq!(live.requests().len(), 3, "a count change asks again");
+    assert_eq!(live.requests()[2].count, 3);
+    live.answer(1, Ok(roster(SESSION, 2, 1.0)));
+    assert_eq!(ph.list().len(), 3, "an old answer is dropped");
+    assert!(
+        ph.list()
+            .iter()
+            .all(|p| live_proto::bots::is_local_xuid(Xuid(p.identity.xuid)))
+    );
+    live.answer(2, Ok(roster(SESSION, 3, 1.0)));
+    let l = ph.list();
+    assert_eq!(l.len(), 3);
+    assert!(
+        l.iter()
+            .all(|p| p.identity.xuid >> 8 & 0xff == 3 && p.identity.gamertag.starts_with("Rusty")),
+        "the new roster's bots: {l:?}"
+    );
+    assert_eq!(d.bots_in_force().unwrap().machines.len(), 3);
+
+    // Fewer than the free ports: no phantoms, nothing asked.
+    s.set(COUNT.key, Value::Int(2)).unwrap();
+    assert!(ph.list().is_empty());
+    assert_eq!(live.requests().len(), 3);
+    assert_eq!(d.bots_in_force().unwrap().machines, vec![]);
+}
+
+#[test]
+fn a_failed_roster_leaves_host_made_bots_that_no_record_names() {
+    let (s, live, ph, d) = rostered_driver(Some("0123456789abcdef"));
+    on(&s, 4, 1);
+    live.answer(0, Err("refused".into()));
+    assert_eq!(ph.list().len(), 1);
+    assert_eq!(ph.list()[0].identity.gamertag, "Clanker 4");
+    assert_eq!(d.bots_in_force(), None);
+    // A roster for another session is not taken.
+    s.set(COUNT.key, Value::Int(5)).unwrap();
+    live.answer(1, Ok(roster("fedcba9876543210", 2, 0.33)));
+    assert!(ph.list().iter().all(|p| p.identity.gamertag.starts_with("Clanker")));
+}
+
+#[test]
+fn a_session_made_after_the_page_was_set_gets_its_roster() {
+    let (s, live, ph, d) = rostered_driver(None);
+    on(&s, 4, 0);
+    assert!(live.requests().is_empty(), "no session: host-made, no ask");
+    assert_eq!(ph.list().len(), 1);
+    assert!(d.refresh().is_empty());
+    *live.session.lock().unwrap() = Some("00000000000000aa".into());
+    d.refresh();
+    assert_eq!(live.requests().len(), 1);
+    assert_eq!(live.requests()[0].session_id, "00000000000000aa");
+    assert_eq!(live.requests()[0].count, 1);
+    assert!(d.refresh().is_empty(), "asked once");
+    live.answer(0, Ok(roster("00000000000000aa", 1, 0.0)));
+    assert_eq!(ph.list()[0].identity.gamertag, "Rusty Lugnut 1");
+    // Without Live, nothing to refresh.
+    let plain = Driver::with_phantoms(Local::default(), Phantoms::default());
+    assert!(plain.refresh().is_empty());
+    assert_eq!(plain.bots_in_force(), None);
 }
 
 #[test]

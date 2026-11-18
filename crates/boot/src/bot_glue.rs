@@ -145,9 +145,12 @@ impl feature::Feature for Bots {
                 if bots == 0 && !any_phantoms {
                     return Ok(Flow::Continue);
                 }
+                let f = frame.fetch_add(1, Ordering::Relaxed);
+                // A Live session made after the Clankers page was set gets
+                // its roster (docs/game/bots.md stage 6c).
+                crate::clankers::frame(f);
                 let rt = Arc::clone(c.ctx.runtime());
                 let mut mem = rt.memory();
-                let f = frame.fetch_add(1, Ordering::Relaxed);
                 load_map_data(&map, &dir, &mem);
                 if any_phantoms {
                     match phantoms.tick(&mut *mem, f) {

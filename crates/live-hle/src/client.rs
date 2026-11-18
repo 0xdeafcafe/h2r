@@ -68,6 +68,9 @@ pub(crate) enum Reply {
     /// A mute list, oldest first.
     Mutes(Vec<u64>),
     Ranks(Vec<live_proto::rank::LeaderboardRow>),
+    /// A bot roster for the host's session (docs/game/bots.md §9.1), not
+    /// yet checked.
+    Roster(live_proto::bots::Roster),
 }
 #[derive(Clone)]
 pub(crate) struct Pending(Arc<Mutex<Option<Result<Reply, u32>>>>);
@@ -187,12 +190,18 @@ enum Work {
         leaderboards: Vec<u32>,
         xuids: Vec<u64>,
     },
+    /// `POST /games/bots` (docs/game/bots.md §9.1), as the host of the
+    /// request's session.
+    Bots(live_proto::bots::RosterRequest),
     Wake,
 }
+/// Called on the worker with a command's result, once it has one.
+pub(crate) type Then = Box<dyn FnOnce(Result<Reply, u32>) + Send>;
 struct Command {
     session: Session,
     work: Work,
     result: Pending,
+    then: Option<Then>,
 }
 pub(crate) struct Service {
     sender: SyncSender<Command>,
@@ -236,7 +245,7 @@ impl Service {
                     }
                     let wait = next_ping.saturating_duration_since(Instant::now());
                     match receiver.recv_timeout(wait) {
-                        Ok(command) => {
+                        Ok(mut command) => {
                             let result = worker.run(&command);
                             if let Err(error) = result
                                 && !command.session.cancelled()
@@ -253,6 +262,9 @@ impl Service {
                                 {
                                     command.session.status.store(lost(error), Ordering::Release);
                                 }
+                            }
+                            if let Some(then) = command.then.take() {
+                                then(result.clone());
                             }
                             command.result.finish(result);
                         }
@@ -271,15 +283,36 @@ impl Service {
         })
     }
     fn submit(&self, session: &Session, work: Work) -> Result<Pending, u32> {
+        self.submit_then(session, work, None)
+    }
+    fn submit_then(
+        &self,
+        session: &Session,
+        work: Work,
+        then: Option<Then>,
+    ) -> Result<Pending, u32> {
         let result = Pending::new();
         self.sender
             .try_send(Command {
                 session: session.clone(),
                 work,
                 result: result.clone(),
+                then,
             })
             .map_err(|_| TASK_BUSY)?;
         Ok(result)
+    }
+    /// Asks the server for a bot roster for the host's session
+    /// (`POST /games/bots`, docs/game/bots.md §9.1); `then` gets the
+    /// answer on the worker.
+    pub fn bots(
+        &self,
+        s: &Session,
+        request: live_proto::bots::RosterRequest,
+        then: Then,
+    ) -> Result<(), u32> {
+        self.submit_then(s, Work::Bots(request), Some(then))
+            .map(|_| ())
     }
     pub fn logon(&self, s: &Session, accounts: Vec<Account>) -> Result<Pending, u32> {
         self.submit(s, Work::Logon(accounts))
@@ -1332,6 +1365,32 @@ impl Worker {
                 self.team_json::<Rows>(user, &path)
                     .map(|r| Reply::Ranks(r.items))
                     .map_err(Error::result)
+            }
+            Work::Bots(request) => {
+                let active = self
+                    .active
+                    .as_ref()
+                    .filter(|a| a.session.id == c.session.id)
+                    .ok_or(NO_SESSION)?;
+                // The account that made the session hosts it.
+                let user = active
+                    .matches
+                    .get(&request.session_id)
+                    .and_then(|x| active.users.get(x))
+                    .or_else(|| active.users.values().next())
+                    .ok_or(NO_USER)?;
+                let body = serde_json::to_string(request).map_err(|_| INVALID_ARGUMENT)?;
+                self.json::<live_proto::bots::Roster>(
+                    self.request("POST", "/games/bots", user, lxm::GAMES_WRITE)
+                        .set("content-type", "application/json"),
+                    Some(&body),
+                )
+                .map(Reply::Roster)
+                .map_err(|e| match e {
+                    Error::Status(404 | 409) => MATCH_INVALID_SESSION,
+                    Error::Status(400 | 413 | 422) => INVALID_ARGUMENT,
+                    _ => e.result(),
+                })
             }
             Work::Wake => Ok(Reply::Done),
         }

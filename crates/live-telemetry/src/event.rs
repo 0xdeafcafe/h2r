@@ -65,6 +65,9 @@ pub struct PlayerState {
     /// The local player slot (0..3) this player plays from, or `None` for a
     /// remote player.
     pub local_user: Option<u8>,
+    /// The player's machine id (player `+0x14`): a phantom bot's is its
+    /// own made-up one (docs/game/bots.md §5.1).
+    pub machine: [u8; 6],
     pub unit: u32,
     pub stats: PlayerStats,
 }

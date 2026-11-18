@@ -791,6 +791,38 @@ impl State {
         let p = live_proto::optimatch::playlist(&seen.get(&id)?.advertisement.attributes)?;
         Some((p, id))
     }
+    /// The Live session this console hosts (16 lowercase hex digits):
+    /// the advertisement it made last, while it still stands.
+    pub fn hosted_session(&self) -> Option<String> {
+        self.sessions.current_id().map(|id| live_proto::sign::hex(&id))
+    }
+    /// Asks the server for a bot roster (`POST /games/bots`,
+    /// docs/game/bots.md §9.1); `done` gets the checked roster, or why
+    /// there is none, on the Live worker. Never waits.
+    pub fn roster_bots(
+        &self,
+        request: live_proto::bots::RosterRequest,
+        done: Box<dyn FnOnce(std::result::Result<live_proto::bots::Roster, String>) + Send>,
+    ) -> std::result::Result<(), String> {
+        let service = self.service.as_ref().ok_or("Live is not connected")?;
+        let session = self.session().ok_or("not signed in to Live")?;
+        service
+            .bots(
+                &session,
+                request,
+                Box::new(move |r| {
+                    done(match r {
+                        Ok(Reply::Roster(roster)) => roster
+                            .check()
+                            .map(|()| roster)
+                            .map_err(|e| format!("the server's roster: {e}")),
+                        Ok(_) => Err("not a roster".into()),
+                        Err(code) => Err(format!("the server refused: {code:#010x}")),
+                    })
+                }),
+            )
+            .map_err(|code| format!("Live is busy ({code:#010x})"))
+    }
     /// Asks the server for session `id` again (its answer lands in the
     /// worker's [`crate::client::Seen`]); the request, when one could be
     /// sent, and where the answer goes.

@@ -1252,11 +1252,64 @@ list for the user to play (§11).
        roster in force at a game's start, refusals at start and on a join,
        persistent bots from the operator first in playlist rosters, their
        gamertags held).
-   - **Still to do (6c), the console side:** the host asks for the roster
-     (live-hle, with Live on) and turns each entry into a
-     `bots::phantom::Identity` and a brain at its skill; telemetry marks
-     phantom players `bot: true` with their rostered xuid. Clankermatch's
-     `MatchProposed` carries the same roster (stage 8, with sbmm-ranked).
+   - **Built (6c), the console side:**
+     - `live_hle::Hle::hosted_session` (the advertisement this console made
+       last, while it stands) and `Hle::roster_bots`: `POST
+       /v1/games/bots` on the Live worker with a `games.write` token of the
+       account that made the session; the answer is
+       `Roster::check`ed and handed to a callback on the worker. Never
+       waits.
+     - `boot::clankers::Driver::with_rosters` (installed with Live): when
+       the page wants more bots than free ports and this console hosts a
+       Live session, the driver asks for a roster of the phantoms' count,
+       at the page's difficulty (`request_skill`: Easy 0, Normal 0.33,
+       Heroic 0.67, Legendary 1; Mixed asks for none, so Normal). It asks
+       again when the count, the difficulty or the session changes (the
+       bots' frame hook checks the session about once a second, so a
+       session made after the page was set gets one); an answer to an
+       older ask is dropped.
+     - Until a roster comes, or when none does (refused, Live off, System
+       Link, offline), phantoms are host-made, as in 6b. Once it comes,
+       they all go and the roster's bots replace them
+       (`clankers::roster_seats`): xuid, gamertag, emblem and colours as
+       the `Identity`; the roster's team when not null; a brain at the
+       nearest named skill (`skill_of`), seeded with the personality's
+       seed and taunting at its `taunt` (Taunts off still makes it 0). The
+       page's difficulty never changes a roster bot's skill.
+     - Telemetry (`live_telemetry::Bots`, from the driver's
+       `bots_in_force` through `Telemetry::set_bots_locator`, asked at
+       each multiplayer start): a custom game names the roster's session
+       as `NewGame.session_id`, and each player whose machine id
+       (`PlayerState::machine`, player `+0x14`) is a rostered phantom's
+       goes out with its xuid and `bot: true`, on `GameStarted` and on a
+       later `PlayerJoined`. Local-port Clankers, and phantoms with a
+       host-made xuid, go out with neither: a `0x000E` xuid is never sent.
+     - Not yet: `teams` is always false in the request (the page does not
+       know the gametype), and local-port Clankers are not rostered.
+       Clankermatch's `MatchProposed` carries the same roster (stage 8,
+       with sbmm-ranked).
+     - Tests: `cargo test -p boot --tests clankers` (roster to identities
+       and brains; the skill mapping; the driver asking, running the
+       roster, asking again on a count or difficulty change, dropping an
+       old answer, keeping host-made bots on a refusal or another
+       session's roster, asking once a session appears);
+       `-p live-telemetry --lib session` (rostered phantoms as bots with
+       their xuids at the start and on a join, no local xuids, the
+       session named; none without a roster); `-p live-hle --test server
+       roster` (a real roster from the embedded server for the advertised
+       session, refused for another).
+   - **Game run (the user), 6c**: as 6b, with Live (`h2 play
+     --live-local`, or a Live server). Host a custom game over Live; on
+     the Clankers page set On and Count 5.
+     1. The log says `clankers: asking Live for 2 bots for session …`,
+        then `clankers: Live rostered bots for session …` and two
+        `… (phantom, rostered) on` lines with made-up gamertags (not
+        "Clanker 4").
+     2. Start Slayer: the phantoms join under those gamertags.
+     3. After the game, the web's game page shows them as bots, with the
+        same names; the server log shows no refused game record.
+     4. Set Count to 4 in the lobby: a new ask, a new roster of one.
+     5. Over System Link the phantoms are still "Clanker 4" and up.
    - In-memory phantom machines, peers and players; action conversion and
      storage; network drop and keep-alive.
    - **`bots::phantom::add` and `remove`** keep the signatures they have

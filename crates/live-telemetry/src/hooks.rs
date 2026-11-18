@@ -15,7 +15,7 @@ use crate::pipeline::{Kill, Names, Pipeline, Start, Work};
 use crate::server::ServerSink;
 use crate::session::{Playlist, Session};
 use crate::sink::{JsonlSink, Sink};
-use crate::tags::{MapIdLocator, MapLocator, PlaylistLocator};
+use crate::tags::{BotsLocator, MapIdLocator, MapLocator, PlaylistLocator};
 
 /// Weapons with uncollected shots are few (only those fired since the last
 /// completed tick); past this many the counts are dropped, not grown.
@@ -45,6 +45,8 @@ pub struct Telemetry {
     map_ids: Mutex<Option<MapIdLocator>>,
     /// Names the starting game's playlist; set by the boot with Live.
     playlists: Mutex<Option<PlaylistLocator>>,
+    /// Names the starting game's bot roster; set by the boot with Live.
+    bots: Mutex<Option<BotsLocator>>,
 }
 
 impl Telemetry {
@@ -59,6 +61,7 @@ impl Telemetry {
             maps: Mutex::new(None),
             map_ids: Mutex::new(None),
             playlists: Mutex::new(None),
+            bots: Mutex::new(None),
         }
     }
 
@@ -86,6 +89,13 @@ impl Telemetry {
     /// the start, so a ranked game is recorded as one.
     pub fn set_playlist_locator(&self, locator: PlaylistLocator) {
         *self.playlists.lock().unwrap() = Some(locator);
+    }
+
+    /// Lets each multiplayer game name the server bot roster it runs with
+    /// (docs/game/bots.md stage 6c): asked at the start, so the game names
+    /// the roster's session and its phantom bots go out as bots.
+    pub fn set_bots_locator(&self, locator: BotsLocator) {
+        *self.bots.lock().unwrap() = Some(locator);
     }
 
     /// The skulls the next multiplayer games run with (the host's set as
@@ -218,6 +228,11 @@ impl Telemetry {
                 .map(|locate| locate());
             if let Some(playlist) = playlist {
                 self.configure(move |s| s.set_playlist(playlist));
+            }
+            let bots = self.bots.lock().unwrap().as_ref().map(|locate| locate());
+            // Asked every start, so a game without a roster names none.
+            if let Some(bots) = bots {
+                self.configure(move |s| s.set_bots(bots));
             }
         }
         let tick = info.tick;

@@ -237,6 +237,7 @@ fn players_into(
             local_user: u8::try_from(local_user)
                 .ok()
                 .filter(|u| u32::from(*u) < layout::PLAYER_SLOT_COUNT),
+            machine: player.machine(guest).map_err(fault)?,
             unit: engine::handle::raw_or_none(player.unit(guest).map_err(fault)?),
             stats,
         });
