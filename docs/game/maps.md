@@ -405,8 +405,8 @@ Agreed with the Live session:
   shows "needs download (N KB)".
 - The server is a content store keyed by SHA-256 (`PUT`/`GET
   /v1/content/{hash}`), separate from title files: hash checked on upload,
-  stored once, immutable. Caps: patches about 32 MiB, user maps about
-  100 MiB, a per-account quota. Uploads are signed by the author's key; the
+  stored once, immutable. Caps: 95 MiB for a patch or a user map (under
+  Cloudflare's 100 MB request body), a per-account quota. Uploads are signed by the author's key; the
   manifest is a signed document.
 - **Only patches, packs and user-made maps are ever shared, never retail
   bytes.** The server refuses blobs whose hash matches a known retail map.
@@ -461,8 +461,9 @@ geometry is extracted from the patched map.
 - **Content store** (`crates/live-server/src/content.rs`, API in
   [live-api.md](../live/live-api.md) "Custom maps"). Blobs by SHA-256 under
   `<data>/content/<aa>/<sha256>`, checked on upload, kept once, immutable;
-  caps 32 MiB (patches, packs, images) and 100 MiB (a whole map: the body
-  starts with `daeh`), a 1 GiB per-account quota, a per-account rate. A
+  caps of 95 MiB on patches, packs and images and on a whole map (the
+  body starts with `daeh`), the largest whole MiB under the Worker's
+  100 MB request body, a 1 GiB per-account quota, a per-account rate. A
   package is a `MapPublished` event its author signs; the server validates
   the manifest, computes `MapId::of`, and refuses it while a layer is
   missing.
