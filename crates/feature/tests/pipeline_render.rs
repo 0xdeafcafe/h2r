@@ -56,6 +56,12 @@ const OBJECTS: u32 = 0x2_4100;
 const QUEUE: u32 = 0x2_4060;
 const REQUESTS: u32 = 0x2_4400;
 const WORKER_READ: u32 = 0x2_4064;
+/// A page mapped read-only; the render makes it writable (mode 6).
+const PROTECTED: u32 = 0x3_0000;
+/// NtYieldExecution: refused, not serviced (mode 5's fallback).
+const YIELD_ORDINAL: u32 = 238;
+/// MmSetAddressProtect(base, size, protect): stdcall, three arguments.
+const PROTECT_ORDINAL: u32 = 182;
 const BODIES: u32 = 0x2_4200;
 /// Only the render writes this page.
 const OUT: u32 = 0x2_5000;
@@ -82,6 +88,9 @@ static ADDRS: Addrs = Addrs {
     host_owned: &[VBLANKS],
     // What the kernel call answers: the render reads it after the call.
     live_bytes: &[(KERNEL_OUT, KERNEL_OUT + 4), (QUEUE, QUEUE + 4)],
+    io_queue: QUEUE,
+    warmup: 0,
+    after_fallback: 0,
 };
 
 /// What the D3D entries saw, in order: (entry, value read at INPUT, ran on
@@ -130,6 +139,9 @@ fn render(
             let mark = m.u32(MARK)? + 1;
             m.set_u32(MARK, mark)?;
             m.set_u8(STAMPS.0 + (v % 16), mark as u8)?;
+            // The stamp, as a handle list's mark is used later in a frame.
+            cpu.edi = u32::from(mark as u8);
+            cpu.ebp = 0;
             m.set_u8(VBLANKS.0, 0xee)?;
             m.set_u8(CLEAR, 0)?;
             cpu.esp -= 4;
@@ -139,6 +151,14 @@ fn render(
         s if s == FRAME + 0x10 => {
             if m.u32(FALLBACK)? == 2 {
                 return m.call(cpu, D3D_CALLBACK, FRAME + 0x20);
+            }
+            if m.u32(FALLBACK)? == 6 {
+                // The page made writable, then written at FRAME + 0x20.
+                for v in [4, 0x1000, PROTECTED] {
+                    cpu.esp -= 4;
+                    m.set_u32(cpu.esp, v)?;
+                }
+                return m.call(cpu, kernel::function_token(PROTECT_ORDINAL), FRAME + 0x20);
             }
             if m.u32(FALLBACK)? == 4 {
                 // An I/O request: a record outside the live ranges (a
@@ -169,6 +189,23 @@ fn render(
             render(cpu, ctx, FRAME + 0x20)
         }
         s if s == FRAME + 0x20 => {
+            let mode = m.u32(FALLBACK)?;
+            if mode == 5 && cpu.ebp == 0 {
+                // After the serviced call, a refused one: a fallback.
+                cpu.ebp = 5;
+                return m.call(cpu, kernel::function_token(YIELD_ORDINAL), FRAME + 0x20);
+            }
+            if cpu.ebp == 5 {
+                // The rest of the render (live, on the game thread, where the
+                // mode word is the next tick's already) sees the stamp its
+                // frame made before the serviced call.
+                cpu.ebp = 0;
+                let stamp = u32::from(m.u8(STAMPS.0 + cpu.esi)?);
+                m.set_u32(OUT + 0xb00 + 4 * cpu.esi, u32::from(stamp == cpu.edi))?;
+            }
+            if mode == 6 {
+                m.set_u32(PROTECTED + 4 * cpu.esi, 0x600 + cpu.esi)?;
+            }
             // After the kernel (on the game thread in a fallback, still on
             // the render stack): a deep frame here too.
             probe(&m, cpu.esp)?;
@@ -236,6 +273,11 @@ fn rig(on: bool) -> Rig {
 
 /// `serviced`: the kernel calls the game thread makes for the render.
 fn rig_with(on: bool, serviced: &[&'static str]) -> Rig {
+    rig_cfg(on, serviced, ADDRS.clone())
+}
+
+/// [`rig_with`] with other addresses (the guards' settings).
+fn rig_cfg(on: bool, serviced: &[&'static str], addrs: Addrs) -> Rig {
     let log: Log = Arc::default();
     let mut d = Dispatch::default();
     d.register_generated_rust(FRAME, render).unwrap();
@@ -289,6 +331,25 @@ fn rig_with(on: bool, serviced: &[&'static str]) -> Rig {
         m.ret(cpu, 0)
     });
     d.register_override(
+        kernel::function_token(YIELD_ORDINAL),
+        "NtYieldExecution",
+        |cpu, ctx, _| {
+            cpu.eax = 0;
+            ctx.memory().ret(cpu, 0)
+        },
+    );
+    d.register_override(
+        kernel::function_token(PROTECT_ORDINAL),
+        "MmSetAddressProtect",
+        |cpu, ctx, _| {
+            let mut m = ctx.memory();
+            let (base, size) = (m.u32(cpu.esp + 4)?, m.u32(cpu.esp + 8)?);
+            m.protect_range(base, size, Permissions::RW)
+                .expect("a mapped page");
+            m.ret(cpu, 12)
+        },
+    );
+    d.register_override(
         kernel::function_token(KERNEL_ORDINAL),
         "KeQuerySystemTime",
         |cpu, ctx, _| {
@@ -318,6 +379,7 @@ fn rig_with(on: bool, serviced: &[&'static str]) -> Rig {
     g.map_zeroed(DATA, DATA_LEN, Permissions::RW).unwrap();
     g.map_zeroed(STACK_TOP - GAME_STACK, GAME_STACK, Permissions::RW)
         .unwrap();
+    g.map_zeroed(PROTECTED, 0x1000, Permissions::READ).unwrap();
     // Request records in use before: completion bytes set.
     for slot in 0..16 {
         g.set_u8(REQUESTS + 0x10 * slot + 8, 1).unwrap();
@@ -328,7 +390,7 @@ fn rig_with(on: bool, serviced: &[&'static str]) -> Rig {
     g.prepare_fast_pages();
     let rt = Runtime::new(g, d);
     *main.lock().unwrap() = Some(Arc::clone(&rt));
-    let feature = PipelineRender::with(on, ADDRS.clone())
+    let feature = PipelineRender::with(on, addrs)
         .with_d3d(
             vec![D3D_DRAW, D3D_SIM, D3D_CALLBACK],
             |addr, _| [D3D_DRAW, D3D_SIM, D3D_CALLBACK].contains(&addr),
@@ -637,7 +699,10 @@ fn switched_on_it_runs_menu_frames_serially_and_launches_nothing() {
 /// Rounds 1..=n with objects spawned and freed each tick; `fallback_round`
 /// frames make the kernel call in the middle of the render.
 fn churn(r: &mut Rig, n: u32, call: u32) -> Option<Event> {
-    r.rt.memory().set_u32(CHURN, 1).unwrap();
+    // Mode 5 falls back on purpose, and a fallback's rest of the render
+    // runs on live RAM a tick ahead: it would read the freed objects (the
+    // hazard the first test shows), so its frames read none.
+    r.rt.memory().set_u32(CHURN, u32::from(call != 5)).unwrap();
     for k in 1..=n {
         {
             let mut m = r.rt.memory();
@@ -768,4 +833,97 @@ fn a_serviced_call_under_a_rust_continuation_carries_on_too() {
     assert!(s.fallbacks.is_empty(), "{s:?}");
     assert_eq!(s.serviced.get("kernel:KeQuerySystemTime"), Some(&1));
     assert_eq!(piped.rt.memory().u32(KERNEL_CALLS).unwrap(), 1);
+}
+
+#[test]
+fn a_fallback_after_a_flush_hands_back_the_marks_the_flush_left_out() {
+    // A serviced call flushes the render's writes but not its visit marks;
+    // a later refused call falls back, and the rest of the render runs on
+    // live RAM: it must see the stamps its frame made, though their page
+    // was not stored to again after the flush.
+    let n = 20;
+    let mut serial = rig(false);
+    let mut piped = rig_with(true, &["KeQuerySystemTime"]);
+    assert_eq!(churn(&mut serial, n, 5), None);
+    assert_eq!(churn(&mut piped, n, 5), None);
+    serial.finish();
+    piped.finish();
+    compare(&serial.data(), &piped.data());
+    let s = piped.feature.stats();
+    let calls = (1..=n).filter(|&k| fallback_round(k)).count() as u64;
+    assert_eq!(s.fallbacks.get("kernel:NtYieldExecution"), Some(&calls));
+    let m = piped.rt.memory();
+    for k in (1..=n).filter(|&k| fallback_round(k)) {
+        assert_eq!(m.u32(OUT + 0xb00 + 4 * (k % 16)).unwrap(), 1, "{k}");
+    }
+}
+
+#[test]
+fn a_serviced_protection_change_reaches_the_renders_view() {
+    // MmSetAddressProtect on the render thread: the game thread makes it,
+    // and the view's page gets the same protection, so the render's write
+    // to the page it just made writable lands as it would serially.
+    let n = 12;
+    let mut serial = rig(false);
+    let mut piped = rig_with(true, &["MmSetAddressProtect"]);
+    assert_eq!(churn(&mut serial, n, 6), None);
+    assert_eq!(churn(&mut piped, n, 6), None);
+    serial.finish();
+    piped.finish();
+    compare(&serial.data(), &piped.data());
+    let s = piped.feature.stats();
+    assert!(s.fallbacks.is_empty(), "{s:?}");
+    assert!(
+        s.serviced.contains_key("kernel:MmSetAddressProtect"),
+        "{s:?}"
+    );
+    let (sm, pm) = (serial.rt.memory(), piped.rt.memory());
+    for i in 0..16 {
+        let at = PROTECTED + 4 * i;
+        assert_eq!(pm.u32(at).unwrap(), sm.u32(at).unwrap(), "{at:#x}");
+    }
+}
+
+#[test]
+fn the_guards_run_warm_up_busy_io_and_after_fallback_frames_serially() {
+    let addrs = Addrs {
+        warmup: 3,
+        after_fallback: 2,
+        ..ADDRS.clone()
+    };
+    let mut piped = rig_cfg(true, &[], addrs);
+    // Three world frames of warm-up, then pipelined.
+    for k in 1..=4 {
+        piped.round(k, false);
+    }
+    let s = piped.feature.stats();
+    assert_eq!(s.serial.get("warmup"), Some(&3), "{s:?}");
+    assert_eq!(s.pipelined, 1, "{s:?}");
+    // Requests queued: serial while the queue has any.
+    piped.rt.memory().set_u32(QUEUE, REQUESTS).unwrap();
+    piped.round(5, false);
+    piped.round(6, false);
+    piped.rt.memory().set_u32(QUEUE, 0).unwrap();
+    assert_eq!(piped.feature.stats().serial.get("io_busy"), Some(&2));
+    // A fallback (the kernel call at round 7 is not serviced here): the
+    // next two frames are serial.
+    piped.round(7, true);
+    for k in 8..=11 {
+        piped.round(k, false);
+    }
+    let s = piped.feature.stats();
+    assert_eq!(
+        s.fallbacks.get("kernel:KeQuerySystemTime"),
+        Some(&1),
+        "{s:?}"
+    );
+    assert_eq!(s.serial.get("after_fallback"), Some(&2), "{s:?}");
+    // A menu frame starts the warm-up again.
+    piped.rt.memory().set_u32(GLOBALS, 0).unwrap();
+    piped.round(12, false);
+    piped.rt.memory().set_u32(GLOBALS, GLOBALS_RECORD).unwrap();
+    piped.round(13, false);
+    let s = piped.feature.stats();
+    assert_eq!(s.serial.get("warmup"), Some(&4), "{s:?}");
+    piped.finish();
 }
