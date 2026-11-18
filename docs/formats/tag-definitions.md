@@ -628,10 +628,15 @@ devices name their placement (a fixture's names its machine).
 
 ## Weapons, equipment, projectiles and damage (`h1objects::arsenal`)
 
-Since converter version 48 every Halo 1 `weap`, `eqip` and `proj`, and
+With `Options::rebuild_items` every Halo 1 `weap`, `eqip` and `proj`, and
 the `jpt!` its projectiles deal, is written from its definition with no
-retail template bytes; the template path for these groups is gone
-(`crates/h1objects/src/arsenal.rs`, `convert_arsenal.rs`). `proj.txt`
+retail template bytes (`crates/h1objects/src/arsenal.rs`,
+`convert_arsenal.rs`). **Off by default**: the template path stays what
+the game runs, because the campaign sweep (h1campaign
+`every_campaign_level_converts`, on a10 and b40) finds two things every
+retail tag has and the rebuild lacks: material responses on every
+rebuilt `proj` (`+0x19c` empty) and modes in the converted first-person
+graphs (`jmad +0x54` empty). With the option off the sweep is clean. `proj.txt`
 and `jpt_.txt` are new; all 47 retail projectiles and 135 damage effects
 round-trip byte-identical (the proof above, now 18 groups). Building one
 starts from the definition default, then:
@@ -707,7 +712,7 @@ first-person graph animates Halo 1's arm nodes.
 | `phmo` of a rebuilt vehicle or device, or a templated vehicle with none | definitions (Halo 1's collision as polyhedra; a stand-in sphere with no solid collision) | `vehicle_new` refuses a model with none; Havok sees a device only through one |
 | `scen` | template by default; definitions with `Options::rebuild` | the rebuilt scenery has not run in the game |
 | `bipd` of a role (Chief, humans, Covenant) | template by default; definitions with `Options::rebuild_bipeds` | the rebuilt biped has not run in the game; its references are null |
-| `weap`, `eqip`, `proj`, and the `jpt!` the projectiles deal | definitions (only path, since version 48) | role words over the base plus Halo 1's values; Halo 2 references only where Halo 1 has nothing converted |
+| `weap`, `eqip`, `proj`, and the `jpt!` the projectiles deal | template by default; definitions with `Options::rebuild_items` | the rebuilt projectiles have no material responses and the first-person graphs no modes (the campaign sweep); not run in the game |
 | other `bipd`, `vehi` with a template | template | their gameplay fields (speeds, seats, cameras, physics) are unknown spans; built from zero they would not play |
 
 ## Open

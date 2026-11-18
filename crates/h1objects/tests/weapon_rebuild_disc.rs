@@ -245,6 +245,7 @@ fn every_weapon_equipment_and_projectile_rebuilds() {
         };
         maps += 1;
         let mut c = Converter::new(&h1, base);
+        c.options.rebuild_items = true;
         let mut sources: HashMap<TagId, &h1map::Tag> = HashMap::new();
         for t in h1.tags() {
             let g = t.group.0.to_be_bytes();

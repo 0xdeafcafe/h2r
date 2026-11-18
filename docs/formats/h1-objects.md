@@ -153,14 +153,13 @@ moments, `5c` inertia matrices (2 x `0x24`), `68` powered mass points
 
 ## Building Halo 2 tags (Design)
 
-**Weapons, equipment, projectiles and damage** are written from their
-typed definitions since converter version 48, with Halo 1's values and
-no template bytes ([tag-definitions.md](tag-definitions.md), Weapons,
-equipment, projectiles and damage). The template rows below for `weap`,
-`eqip` and `proj` now only name the Halo 2 counterpart whose references
-(HUD, effects, sounds, melee damage) fill the slots Halo 1 has nothing
-converted for; the offset tables and "no Halo 2 home" notes for these
-groups describe the template path that was replaced.
+`Options::rebuild_items` (off by default) builds **weapons, equipment,
+projectiles and damage** from their typed definitions, with Halo 1's
+values and no template bytes ([tag-definitions.md](tag-definitions.md),
+Weapons, equipment, projectiles and damage). On that path the template
+rows below for `weap`, `eqip` and `proj` only name the Halo 2
+counterpart whose references (HUD, effects, sounds, melee damage) fill
+the slots Halo 1 has nothing converted for.
 
 `Options::rebuild` (off by default) builds scenery with no template:
 the `scen`, its `hlmt` and its `mode`'s material list are written field by
