@@ -22,6 +22,7 @@ use map::{FourCC, TagId};
 use crate::base::Base;
 use crate::coll::{convert_collision, put_sid};
 use crate::h1::{self, Equipment, Projectile, Unit, Weapon};
+use crate::health_hud;
 use crate::{Error, Result};
 
 /// Retail Halo 2 template per Halo 1 object: Halo 1 group, words that must
@@ -596,6 +597,9 @@ pub struct Converter<'a> {
     done: HashMap<u32, TagId>,
     colls: HashMap<(u32, bool), TagId>,
     coll_names: HashMap<(u32, bool), Vec<(String, Vec<String>)>>,
+    /// Each template `nhdt` given the health meter, and the meter shader.
+    health_huds: HashMap<TagId, TagId>,
+    health_shader: Option<TagId>,
 }
 
 impl<'a> Converter<'a> {
@@ -609,6 +613,8 @@ impl<'a> Converter<'a> {
             done: HashMap::new(),
             colls: HashMap::new(),
             coll_names: HashMap::new(),
+            health_huds: HashMap::new(),
+            health_shader: None,
         }
     }
 
@@ -1699,6 +1705,14 @@ impl<'a> Converter<'a> {
         if &g == b"vehi" && quiet_stand_in(&tag.name) {
             self.drop_looping_attachments(&mut rep, &mut root, &tpl_root)?;
         }
+        if &g == b"bipd" && health_hud::is_player_biped(&tag.name) {
+            match self.health_hud(&mut root, &tpl_root) {
+                Ok(n) => rep.no_home.push(format!(
+                    "HUD: the template's with Halo 1's health meter ({n} interfaces; docs/game/health.md)"
+                )),
+                Err(e) => rep.no_home.push(format!("HUD: no health meter: {e}")),
+            }
+        }
         self.stopgaps(&mut rep, &tpl_root, &[h2::MODEL]);
         self.tree.reports.push(rep);
         Ok(self.tree.push(
@@ -1710,6 +1724,176 @@ impl<'a> Converter<'a> {
             },
         ))
     }
+}
+
+impl Converter<'_> {
+    /// Points the player biped's HUD interfaces (`unit +0x1a0`) at copies
+    /// of their `nhdt` with the health meter ([`health_hud`]). Returns how
+    /// many interfaces it points.
+    fn health_hud(&mut self, root: &mut Block, tpl_root: &[u8]) -> Result<usize> {
+        use health_hud::{HUD_INTERFACE_SIZE, UNIT_HUD_INTERFACES};
+        let count = crate::base::u32_at(tpl_root, UNIT_HUD_INTERFACES) as usize;
+        if count == 0 {
+            return Err(Error::Invalid("the template unit has no HUD".into()));
+        }
+        let mut elements = Block::new(vec![0; count * HUD_INTERFACE_SIZE]);
+        for i in 0..count {
+            let e = self
+                .base
+                .element(tpl_root, UNIT_HUD_INTERFACES, HUD_INTERFACE_SIZE, i)?
+                .ok_or(Error::Truncated("unit HUD interfaces"))?;
+            // Unchanged unless every interface resolves: a null here would
+            // leave the player with no HUD at all.
+            let nhdt = self.base.reference(&e, 0).ok_or_else(|| {
+                Error::Invalid(format!("HUD interface {i} names no nhdt in the base map"))
+            })?;
+            let id = self.health_nhdt(nhdt)?;
+            elements.tag_ref((i * HUD_INTERFACE_SIZE) as u32, id);
+        }
+        root.block(UNIT_HUD_INTERFACES as u32, count as u32, elements);
+        Ok(count)
+    }
+
+    /// The template `nhdt` with the health widget added, built once.
+    fn health_nhdt(&mut self, nhdt: TagId) -> Result<TagId> {
+        use health_hud::{BITMAP_WIDGET_SIZE, NHDT_BITMAP_WIDGETS, NHDT_ROOT};
+        if let Some(id) = self.health_huds.get(&nhdt) {
+            return Ok(*id);
+        }
+        let name = self
+            .base
+            .name(nhdt)
+            .map(|(_, n)| n.to_owned())
+            .ok_or_else(|| Error::NoTemplate(format!("nhdt {nhdt:?}")))?;
+        let root = self.base.head(nhdt, NHDT_ROOT as u64)?;
+        let count = crate::base::u32_at(&root, NHDT_BITMAP_WIDGETS) as usize;
+        let address = crate::base::u32_at(&root, NHDT_BITMAP_WIDGETS + 4);
+        let widgets = self
+            .base
+            .meta
+            .slice(address, (count * BITMAP_WIDGET_SIZE) as u64)?
+            .to_vec();
+        let shield = health_hud::shield_meter(&widgets)
+            .ok_or_else(|| Error::Invalid(format!("{name} has no shield meter")))?;
+        let at = shield * BITMAP_WIDGET_SIZE;
+        let shield_shader = self
+            .base
+            .reference(
+                &widgets[at..at + BITMAP_WIDGET_SIZE],
+                health_hud::widget::SHADER,
+            )
+            .ok_or_else(|| Error::Invalid(format!("{name}: the shield meter has no shader")))?;
+        let shader = self.health_shader(shield_shader)?;
+        let (block, n) = health_hud::widgets_with_health(&widgets, shader)
+            .ok_or_else(|| Error::Invalid(format!("{name} has no shield meter")))?;
+        let mut out = Block::new(root);
+        out.block(NHDT_BITMAP_WIDGETS as u32, n, block);
+        let id = self.tree.push(
+            &format!("{name}{}", health_hud::NHDT_SUFFIX),
+            Converted {
+                group: FourCC(*b"nhdt"),
+                root: out,
+                raw: Vec::new(),
+            },
+        );
+        self.health_huds.insert(nhdt, id);
+        Ok(id)
+    }
+
+    /// The first postprocess element of shader `id`, its animated
+    /// properties' bytes, and each property's mapping function.
+    fn shader_properties(&self, id: TagId) -> Result<ShaderProperties> {
+        use health_hud::{
+            POSTPROCESS_PROPERTIES, POSTPROCESS_SIZE, PROPERTY_FUNCTION, PROPERTY_SIZE,
+            SHAD_POSTPROCESS, SHAD_ROOT,
+        };
+        let root = self.base.head(id, SHAD_ROOT as u64)?;
+        let postprocess = self
+            .base
+            .element(&root, SHAD_POSTPROCESS, POSTPROCESS_SIZE, 0)?
+            .ok_or(Error::Truncated("shader postprocess"))?;
+        let count = crate::base::u32_at(&postprocess, POSTPROCESS_PROPERTIES) as usize;
+        let address = crate::base::u32_at(&postprocess, POSTPROCESS_PROPERTIES + 4);
+        let properties = self
+            .base
+            .meta
+            .slice(address, (count * PROPERTY_SIZE) as u64)?
+            .to_vec();
+        let functions = properties
+            .as_chunks::<PROPERTY_SIZE>()
+            .0
+            .iter()
+            .map(|p| {
+                let len = crate::base::u32_at(p, PROPERTY_FUNCTION);
+                let at = crate::base::u32_at(p, PROPERTY_FUNCTION + 4);
+                Ok(if len == 0 {
+                    Vec::new()
+                } else {
+                    self.base.meta.slice(at, len.into())?.to_vec()
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(ShaderProperties {
+            root,
+            postprocess,
+            properties,
+            functions,
+        })
+    }
+
+    /// The meter shader ([`health_hud::METER_SHADER`]) with its fill
+    /// mapped onto the range the shield meter's shader uses, built once.
+    fn health_shader(&mut self, shield_shader: TagId) -> Result<TagId> {
+        use health_hud::{
+            POSTPROCESS_PROPERTIES, PROPERTY_FUNCTION, PROPERTY_SIZE, SHAD_POSTPROCESS,
+        };
+        if let Some(id) = self.health_shader {
+            return Ok(id);
+        }
+        let meter = self
+            .base
+            .find(b"shad", health_hud::METER_SHADER)
+            .ok_or_else(|| Error::NoTemplate(health_hud::METER_SHADER.into()))?;
+        let range = self
+            .shader_properties(shield_shader)?
+            .functions
+            .iter()
+            .find_map(|f| health_hud::function_range(f))
+            .ok_or_else(|| Error::Invalid("the shield shader has no ranged input".into()))?;
+        let m = self.shader_properties(meter)?;
+        let count = m.functions.len();
+        let mut properties = Block::new(m.properties);
+        for (i, f) in m.functions.iter().enumerate() {
+            if !f.is_empty() {
+                properties.data(
+                    (i * PROPERTY_SIZE + PROPERTY_FUNCTION) as u32,
+                    Block::new(health_hud::with_range(f, range)),
+                );
+            }
+        }
+        let mut postprocess = Block::new(m.postprocess);
+        postprocess.block(POSTPROCESS_PROPERTIES as u32, count as u32, properties);
+        let mut out = Block::new(m.root);
+        out.block(SHAD_POSTPROCESS as u32, 1, postprocess);
+        let id = self.tree.push(
+            health_hud::SHADER_NAME,
+            Converted {
+                group: FourCC(*b"shad"),
+                root: out,
+                raw: Vec::new(),
+            },
+        );
+        self.health_shader = Some(id);
+        Ok(id)
+    }
+}
+
+/// A shader's bytes as [`Converter::shader_properties`] reads them.
+struct ShaderProperties {
+    root: Vec<u8>,
+    postprocess: Vec<u8>,
+    properties: Vec<u8>,
+    functions: Vec<Vec<u8>>,
 }
 
 /// Halo 1 weapon data this conversion does not carry.

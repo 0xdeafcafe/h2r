@@ -32,6 +32,7 @@ pub mod base;
 pub mod coll;
 pub mod convert;
 pub mod h1;
+pub mod health_hud;
 pub mod query;
 pub mod rebuild;
 pub mod refs;
