@@ -27,13 +27,16 @@ Per map, keyed by the map stem the art manifest already uses
 (`map/<stem>/preview`):
 
 ```
-map/<stem>/map.glb          glTF 2.0 binary: the level's render geometry
-map/<stem>/map.glb.gz       the same, gzipped (the server sends it when it can)
-map/<stem>/tex/<id>.jpg     the surface pictures map.glb names (or .png)
+map/<stem>/map.glb          glTF 2.0 binary: the level's render geometry (meshopt)
+map/<stem>/map.glb.br       the same, Brotli (and .gz, gzip): see Packing
+map/<stem>/tex/<id>.webp    the surface pictures map.glb names
 map/<stem>/views.json       the pre-drawn views and how to plot on them
-map/<stem>/views/<id>.png   top, iso-ne, iso-nw, iso-sw, iso-se
+map/<stem>/views/<id>.webp  top, iso-ne, iso-nw, iso-sw, iso-se
 map/<stem>/sky.glb          the level's sky model (when it has one)
 ```
+
+Every glb and JSON file has `.br` and `.gz` copies beside it
+([Packing](#packing)).
 
 `manifest.json` gains a `maps` object (absent when nothing was extracted):
 
@@ -53,7 +56,7 @@ entry; a single BSP of a level that could not be read is listed as
 `map/<stem>/bsp_<index>` and the level keeps its other BSPs.
 `GEOMETRY_VERSION` is 1 (`views.json` is unchanged; the web viewer checks
 it); the art's `EXTRACTOR_VERSION` (part of the cache
-key) is 19, so a disc extracted by an older build is extracted again
+key) is 21, so a disc extracted by an older build is extracted again
 (10 added the layers, the sky and `extras.name`; 12 the surface
 pictures, texture coordinates and the `scenario` node; 13 the base map
 from the shader's passes, pictures as files beside `map.glb`, the gzip
@@ -63,7 +66,8 @@ reflection tints and shaders whose compiled data another shader shares;
 17 the weather volumes and the sky light's glow; 18 turrets as parts that aim;
 19 the title and save images, `title/image` and `title/save-image`;
 20 solid shaders whose template name only contains "overlay" keep their
-textures).
+textures; 21 packing (Brotli and gzip copies, meshopt where it pays), WebP
+pictures and views, surface pictures at the disc's full size).
 
 ### `map.glb`
 
@@ -110,13 +114,15 @@ textures).
   (listed in `extensionsUsed`, not required: a reader without it draws
   the picture once per stored repeat). Each picture is stored once per
   bitmap however many shaders use it, as its own file beside `map.glb`:
-  the image has a `uri` (`tex/<bitmap tag id, 8 hex digits>.jpg`, `m`
+  the image has a `uri` (`tex/<bitmap tag id, 8 hex digits>.webp`, `m`
   after the id for a cut-out's alpha-kept copy), a `mimeType` and
   `extras` `width` and `height`, and no buffer view, so the geometry loads
   without them and each picture caches on its own (`tex/` is rewritten
-  with `map.glb`). JPEG (quality 80) when opaque, else PNG; at most 512 pixels a
-  side, every picture of a level halved until they total at most 6 MiB
-  (no retail level needs it). Machines and placed objects get looks the
+  with `map.glb`). WebP (lossy, quality 90; a cut-out's alpha kept
+  exactly, [Packing](#packing)) at the bitmap's full stored size (the
+  discs' largest are 1024 pixels a side; the cap is 2048), every picture of
+  a level halved until they total at most 32 MiB (no retail level needs
+  it). Machines and placed objects get looks the
   same way. Detail maps, bump maps, lightmaps and the shaders' colour
   parameters are not used.
 - **Machines.** When the scenario places machines (`mach` objects: doors,
@@ -260,8 +266,11 @@ art URL the site builds carries the manifest's `source` stamp (`?v=<first
 16 characters>`, `web/src/map/geometry.ts`); the picture and sky URLs
 keep it. The art server (`crates/live-server/src/art.rs`) answers a
 stamped request with `Cache-Control: private, max-age=31536000,
-immutable` and anything else with `no-cache`, and sends a file's `.gz`
-copy, when there is one, to a browser that takes gzip. A new extraction
+immutable` and anything else with `no-cache`, and sends a file's `.br`
+copy to a browser that takes Brotli, else its `.gz` copy to one that takes
+gzip ([Packing](#packing)). The glTF loader (`web/src/viewer/gltf.ts`)
+has meshoptimizer's decoder; the pictures get the GPU's most anisotropic
+filtering (up to 16) and mipmaps. A new extraction
 has a new stamp, so nothing stale is kept. Measured on a 10-core Mac,
 Chrome, cache off, median of five (time to the first drawn frame /
 fully textured, ms):
@@ -395,10 +404,10 @@ with the Halo 2 disc's shared maps.
   "views": [
     { "id": "top", "kind": "ortho", "width": 2048, "height": 2048,
       "world_to_pixel": [[a, b, c, d], [e, f, g, h]],
-      "file": "views/top.png", "up": "north", "cutaway": true,
+      "file": "views/top.webp", "up": "north", "cutaway": true,
       "elevation_deg": 90, "scale": 21.4, "forward": [0, 0, -1] },
     { "id": "iso-ne", "kind": "ortho", "width": 2048, "height": 1536,
-      "world_to_pixel": [[...], [...]], "file": "views/iso-ne.png",
+      "world_to_pixel": [[...], [...]], "file": "views/iso-ne.webp",
       "depth_sorted": true, "azimuth_deg": 45, "elevation_deg": 30,
       "scale": 18.2, "forward": [-0.61, -0.61, -0.5] }
   ] }
@@ -424,11 +433,98 @@ with the Halo 2 disc's shared maps.
 
 ### Pictures
 
-RGBA PNG with a transparent background, so the site can put them on its own
+RGBA WebP (lossy, quality 85, alpha kept exactly) with a transparent background, so the site can put them on its own
 backdrop. Colours are our own calm palette (light warm grey floors, slate
 walls, muted teal water and green foliage) lit by a fixed sun high in the
 north-west (hillshade convention: shadows fall to the lower right of the top
 view), the same for every view.
+
+## Packing
+
+The last step of an extraction (`crates/live-server/src/art_pack.rs`,
+`pack`) readies the art for the web, so both homes send the same bytes:
+the art server (`/art/game/`, `--share-game-art`) and the published copy
+the Worker redirects to ([live-worker.md](live-worker.md)).
+
+- **Pictures are WebP.** Surface pictures (`tex/<id>.webp`) are lossy
+  quality 90 at the disc's full stored size (they were JPEG quality 80,
+  PNG for cut-outs, at most 512 pixels a side); pre-drawn views
+  (`views/<id>.webp`) lossy quality 85 (they were barely compressed PNG,
+  1.3 MB each). A cut-out keeps its alpha exactly (a lossless alpha
+  plane) and the colour under clear pixels, so it cuts and filters as it
+  did. Every browser the app supports decodes WebP with
+  `createImageBitmap`, off the main thread. The stats site's small
+  pictures (emblems, ranks, medals, previews) stay PNG: emblems are
+  composited from their exact masks.
+- **Brotli and gzip copies.** Every glb and JSON file gets `<file>.br`
+  (quality 11, 16 MiB window) and `<file>.gz` (level 9). The art server
+  sends the `.br` copy to a browser that takes Brotli, else the `.gz` one;
+  the publish uploads the `.br` copy with `Content-Encoding: br`. Brotli is
+  decoded by the browser's network stack, before any script sees it.
+  Pictures get no copies (they are compressed already).
+- **Meshopt, where it pays.** A glb's vertex and index data is compressed
+  with `EXT_meshopt_compression` (meshoptimizer's codecs, lossless, no
+  quantisation or filters; the index codec may rotate a triangle's corners,
+  keeping its winding) only when that makes its Brotli copy at least 5 %
+  smaller. On unquantised floats meshopt's byte deltas defeat Brotli's
+  matching: every level's `map.glb` came out bigger on the wire (all 59
+  levels together 120 MiB against 74 MiB as Brotli alone), so levels stay
+  plain; 10 model glbs keep it. A glb that uses it lists it in
+  `extensionsRequired`; `web/src/viewer/gltf.ts` gives every glTF loader
+  meshoptimizer's WebAssembly decoder (shipped with three.js). Quantising
+  positions, normals and texture coordinates (`KHR_mesh_quantization`) is
+  what would make meshopt pay for levels; not done yet.
+- **Content-addressed by extraction.** Published files live under
+  `art/<stamp>/`, the stamp a hash of every file's path and size and the
+  manifest: a new extraction is a new set of addresses, so every object is
+  `Cache-Control: public, max-age=31536000, immutable`, the manifest too.
+  The Worker's redirect to it is cacheable for five minutes (a
+  `?v=<stamp>` address for a year). The web app loads the manifest
+  through the redirect and every other file from the directory it was
+  redirected to (`web/src/lib/gameart.ts` `artBase`): no redirect per file.
+- **Coverage.** `art_pack::coverage` follows the manifest as the viewer
+  and the stats site do: `images`; per map its `map.glb`, `views.json` and
+  each view's picture, the pictures each glb names and its sky
+  (`asset.extras.sky.glb`, with the sky's own pictures); every biped,
+  weapon and vehicle glb; `catalog.json`. `h2 live assets publish`
+  refuses art whose manifest names a file the directory lacks, and prints
+  what it holds.
+
+Measured on the retail disc, the map pack disc and the Halo 1 disc (59
+levels: 36 Halo 2 and map pack, 23 converted Halo 1; 91 models), extractor
+18 against 21, bytes as stored and as sent (the compressed copy when there
+is one):
+
+| | files | before, stored | before, sent | after, stored | after, sent |
+|---|---|---|---|---|---|
+| level geometry (`map.glb`) | 59 | 343.7 MiB | 116.6 MiB (gzip) | 343.7 MiB | 73.6 MiB (Brotli) |
+| surface pictures (`tex/`) | 4,319 | 71.3 MiB (≤ 512 px JPEG/PNG) | 71.3 MiB | 64.6 MiB (full size WebP) | 64.6 MiB |
+| pre-drawn views | 295 | 370.8 MiB (PNG) | 370.8 MiB | 19.8 MiB (WebP) | 19.8 MiB |
+| models (bipeds, vehicles, weapons) | 91 | 89.0 MiB | 89.0 MiB | 87.9 MiB | 51.9 MiB |
+| skies (`sky.glb`) | 54 | 2.8 MiB | 2.8 MiB | 2.8 MiB | 1.8 MiB |
+| JSON (manifest, views, catalog) | 61 | 0.3 MiB | 0.3 MiB | 0.3 MiB | 0.05 MiB |
+| stats pictures (PNG) | 299 | 4.2 MiB | 4.2 MiB | 4.2 MiB | 4.2 MiB |
+| **total** | 5,178 | **882 MiB** | **655 MiB** | **523 MiB** | **216 MiB** |
+
+The biggest level, `a10` (Halo 1's Pillar of Autumn), sends 4.5 MiB (was
+15.6); the largest now, `03a_oldmombasa`, 6.8 MiB.
+
+Loading a level in headless Chrome (the development Mac, cache off, the
+harness loads `map.glb` with the viewer's loader and streams its pictures
+with `textures3d.ts`; median of three, ms to geometry / fully textured,
+and what came over the wire):
+
+| | before | after |
+|---|---|---|
+| `a10`, local | 156 / 211, 6.9 MiB | 204 / 271, 4.7 MiB |
+| `a10`, 50 Mbit/s | 911 / 1233 | 602 / 944 |
+| `03b_newmombasa` (189 pictures), local | 134 / 271, 8.7 MiB | 149 / 642, 6.9 MiB |
+| `03b_newmombasa`, 50 Mbit/s | 834 / 1797 | 661 / 1757 |
+
+On a real connection the smaller bytes win. Locally, decoding the full-size
+pictures (four times the pixels of the old 512-pixel cap) costs time after
+the level is already drawn; GPU-ready textures (KTX2/Basis) are the next
+step for that and for video memory.
 
 ## Pipeline
 
@@ -599,7 +695,7 @@ view), the same for every view.
    scale by the passes, most a scale (a carpet 6 × 6, rubber mats 16 ×
    16). Decoded once per bitmap (the
    largest stored level, DXT and swizzle as `assets::decode_image` does),
-   box-filtered down to 512 pixels; solid looks are made opaque (their
+   box-filtered down to 2048 pixels (none is larger); solid looks are made opaque (their
    alpha is a specular or blend mask); cut-out looks (`alpha_test`) have
    their alpha stretched so its strongest value is opaque, then doubled,
    so cutting at a half keeps what is at least a quarter: the leaves of

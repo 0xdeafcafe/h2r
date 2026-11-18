@@ -13,7 +13,7 @@
 // This file pulls in three.js, so it is only ever loaded lazily.
 
 import * as THREE from "three";
-import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { gltfLoader } from "./gltf";
 
 export interface SkyFog {
   colour: [number, number, number];
@@ -147,7 +147,7 @@ export class SkyDome {
   async load(url: string): Promise<boolean> {
     let gltf;
     try {
-      gltf = await new GLTFLoader().loadAsync(url);
+      gltf = await gltfLoader().loadAsync(url);
     } catch {
       return false;
     }

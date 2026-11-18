@@ -48,14 +48,14 @@ mod tests {
             game_art(base, "/art/game/manifest.json", None),
             Some(GameArt::Redirect {
                 to: "https://art.example.net/art/0123456789abcdef/manifest.json".into(),
-                cache_control: "no-cache",
+                cache_control: "public, max-age=300",
             })
         );
         assert_eq!(
             game_art(base, "/art/game/map/x/map.glb", Some("v=1")),
             Some(GameArt::Redirect {
                 to: "https://art.example.net/art/0123456789abcdef/map/x/map.glb".into(),
-                cache_control: "private, max-age=31536000, immutable",
+                cache_control: "public, max-age=31536000, immutable",
             })
         );
         assert_eq!(
