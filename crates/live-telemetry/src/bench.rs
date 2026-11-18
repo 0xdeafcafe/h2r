@@ -11,7 +11,9 @@
 //!
 //! The golden test (not ignored) runs each scene for a few ticks and
 //! compares a hash of every event and frame the session produced, so a
-//! speed-up that changes the output fails.
+//! speed-up that changes the output fails. Another (not ignored) fails if
+//! the game thread's tick allocates once steady:
+//! `cargo test -p live-telemetry --lib bench::the_game_threads_tick_does_not_allocate`.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -602,6 +604,46 @@ fn scenes_produce_the_golden_output() {
                 "{name}: output changed (TELEMETRY_GOLDEN_UPDATE=1 writes it to $TMPDIR)"
             );
         }
+    }
+}
+
+/// The game thread's half of a tick (the weapon-fire and damage hooks'
+/// entry points, the tick's guest reads and the queue push) allocates
+/// nothing once its lists have grown, in every scene, frame ticks and the
+/// ticks between alike. The worker's allocations are its own thread's and
+/// are not counted (the counter is per thread).
+#[test]
+fn the_game_threads_tick_does_not_allocate() {
+    // Long enough for every recycled list to have grown.
+    const WARM: u32 = 40;
+    const COUNTED: u32 = 60;
+    for scene in &SCENES {
+        let mut world = World::new(scene);
+        let telemetry = start(&world, NullSink);
+        let mut allocating = Vec::new();
+        for tick in 2..2 + WARM + COUNTED {
+            world.advance(tick);
+            let (a0, b0) = allocs();
+            world.hooks(&telemetry, scene, tick);
+            let observed = telemetry.observe_tick(&world.guest);
+            let (a1, b1) = allocs();
+            assert_eq!(observed, Ok(true), "{}: tick {tick}", scene.name);
+            telemetry.pipeline.settle();
+            if tick >= 2 + WARM && a1 > a0 {
+                allocating.push((tick, a1 - a0, b1 - b0));
+            }
+        }
+        // An unchanged tick reads only the clock.
+        let (a0, _) = allocs();
+        assert_eq!(telemetry.observe_tick(&world.guest), Ok(false));
+        assert_eq!(allocs().0, a0, "{}: an unchanged tick allocated", scene.name);
+        assert!(
+            allocating.is_empty(),
+            "{}: ticks that allocated on the game thread (tick, allocations, bytes): {allocating:?}",
+            scene.name
+        );
+        assert_eq!(telemetry.pipeline.folded_ticks(), 0);
+        assert!(!telemetry.disabled());
     }
 }
 

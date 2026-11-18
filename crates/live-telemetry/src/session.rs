@@ -1367,7 +1367,7 @@ mod tests {
             objects: players.iter().map(|_| None).collect(),
             players,
             teams: Vec::new(),
-            shots: BTreeMap::new(),
+            shots: Default::default(),
             actors: Vec::new(),
             vehicles: Vec::new(),
             machines: Vec::new(),

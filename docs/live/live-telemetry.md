@@ -228,15 +228,44 @@ settings are queued in order with them. One worker thread
 (`crates/live-telemetry/src/pipeline.rs`) runs the session over the queue
 in order: it builds the events and frames (ids, species, weapon, team and
 stance names, actor order, placements), loads the map's tag names at a
-match start, and hands everything to the sink. It sleeps until woken:
-everything queued wakes it except a tick between frames (odd), which waits
-for the next frame tick or anything else, at most 100 ms (a wake costs the
-game thread a system call).
+match start, and hands everything to the sink, which diffs, packs, signs,
+serialises and sends on that thread too.
+
+Ticks do not wake the worker: on the game thread a wake is a system call
+(a futex wake on Linux, `pthread_cond_signal` with a waiter on macOS). In
+a game the worker polls the queue every 33 ms (one tick), so a tick waits
+at most that long before the worker takes it, and a batch is usually two
+ticks. After a second with no work (a menu, a paused game) it parks, and
+the next tick wakes it once. Starts, kills, ends and settings always wake
+it; they are a few a minute.
 
 The worker hands each snapshot back cleared and the game thread fills it
 again, so a steady game allocates nothing for it: the lists keep their
 room, and the roster keeps its names for the next read while the players'
 datums and names are unchanged.
+
+What the game thread does per tick, and nothing else:
+
+| step | what | cost |
+|---|---|---|
+| weapon-fire hook | add one to the weapon's count: a sorted list that keeps its room (`event::Shots`) | a lock nobody else takes, a binary search |
+| damage hook | read the report's fields, push one record (newest 256 kept) | a few guest reads |
+| tick hook | read the game clock; an unchanged tick stops here | one read |
+| | take a cleared snapshot from the worker's spares | an uncontended lock (the worker holds it for one push) |
+| | read the roster (no names while unchanged), team scores, the players' objects | about 5 µs for 16 players |
+| | frame ticks: the object-header scan into kept lists (actors, vehicles, machines, placed objects, bodies) | 5–25 µs (bench) |
+| | swap the hooks' shots and hits into it, push it | an uncontended lock (the worker holds it to swap the queue out) |
+
+No allocation once the lists have grown (the first few ticks of a game),
+no system call, and no lock the worker holds for more than a swap or a
+push. The guest is read as raw values (positions, datums, flags);
+everything that turns them into a frame (names, ids, stance, speed,
+actions, actor order, diffs against the last frame, packing) is the
+worker's. Starts, kills and ends allocate (they read the roster and, at a
+start, the scenario's placements); they are events, not ticks.
+`bench::the_game_threads_tick_does_not_allocate` (not ignored, in
+`cargo test -p live-telemetry`) fails if a steady tick allocates on the
+game thread in any bench scene, and if an unchanged tick does.
 
 The queue holds every start, kill, end and setting. Ticks are bounded: with
 four waiting (the worker behind, say a slow sink), a new tick is folded
@@ -719,6 +748,29 @@ What is left on the game thread is reading the guest: the snapshot (about
 5 µs for 16 players) and the scan, which in the fixture is mostly the
 first touch of each object's body (the fixture spaces bodies 4 KiB apart;
 the game packs them).
+
+The telemetry-store lane (2026-11-18) took the last of the game thread's
+per-tick costs off it. It was not measured on the machine it was written
+on (no cargo runs there); the numbers below are what to expect and what to
+check with the bench command above:
+
+| scene | allocs per tick before | after | frame tick before | expected | other tick before | expected |
+|---|---:|---:|---:|---:|---:|---:|
+| mp16 | 4 | 0 | 10.6 | 8–10 | 4.9 | 4–5 |
+| mp16_1000 | 4 | 0 | 21.2 | 18–21 | 4.7 | 4–5 |
+| campaign100 | 4 | 0 | 25.6 | 22–25 | 1.0 | 1.0 |
+
+The four allocations were the roster walk's list (`Datums::live` collects
+the live player slots; the read now walks the slots in place) and the shots
+map's B-tree node (a `BTreeMap` frees its nodes on `clear`; `event::Shots`
+is a sorted list that keeps its room, iterated in the same order, so frames
+are unchanged). The frame tick also no longer wakes the worker (the worker
+polls in a game, see "Threads"): a futex wake is 1–5 µs on a loaded
+machine, more when it lands on a sleeping core. An unchanged tick now reads
+the clock and stops, where it read the whole roster first. The zero is
+enforced by `bench::the_game_threads_tick_does_not_allocate`; the µs are
+expected, so read them from `guest.json` (`frame_tick.total.p50_us`,
+`other_tick.total.p50_us`, `*.allocs_per_tick`).
 
 The fourth lane worked on the server and the web page. Server, before and
 after, both at a load average of 177 to 188, so read the numbers as
