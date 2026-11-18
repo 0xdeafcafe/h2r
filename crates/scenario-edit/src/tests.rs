@@ -186,6 +186,51 @@ fn moving_a_weapon_patches_only_its_position_and_the_checksum() {
     assert_eq!(out[e + 0x24..e + 0x54], src[e + 0x24..e + 0x54]);
 }
 
+/// Another tag's bytes (the tag editor's edits) save with the scenario's
+/// edits and change nothing else but the checksum; the scenario's own
+/// payload is refused.
+#[test]
+fn other_tags_patches_save_with_the_scenario_s() {
+    let src = fixture();
+    let mut s = read(src.clone());
+    // The weapon tag's payload (slot 2, at metadata +0x1100).
+    let weap = META + 0x1100;
+    s.set_tag_patches(vec![(weap + 4, vec![1, 2, 3])]).unwrap();
+    s.set(
+        BlockKind::Weapons,
+        0,
+        "position",
+        Value::Vec3([7.0, 1.0, 2.0]),
+    )
+    .unwrap();
+    let out = write(&src, &s);
+    let d = diff(&src, &out);
+    let at = META_FILE + 0x1100 + 4;
+    assert_eq!(out[at..at + 3], [1, 2, 3]);
+    let x = sfile(WEAPONS_AT + 8);
+    for (lo, hi) in &d {
+        let ok = (*lo >= at && *hi <= at + 3)
+            || (*lo >= x && *hi <= x + 4)
+            || *lo >= 0x2d0 && *hi <= 0x2d4;
+        assert!(ok, "{lo:#x}..{hi:#x} changed");
+    }
+    open(out).validate_checksum().unwrap();
+    assert!(matches!(
+        s.set_tag_patches(vec![(META + SCNR as u32 + 0x10, vec![0])]),
+        Err(Error::Refused(_))
+    ));
+    // Cleared: nothing is left of them.
+    s.set_tag_patches(Vec::new()).unwrap();
+    s.set(
+        BlockKind::Weapons,
+        0,
+        "position",
+        Value::Vec3([0.0, 1.0, 2.0]),
+    )
+    .unwrap();
+    assert_eq!(write(&src, &s), src);
+}
+
 #[test]
 fn every_editable_field_writes_only_its_own_bytes() {
     let src = fixture();
