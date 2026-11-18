@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use common::*;
 use d3d::{
-    Backend, Device, ExternalPass, ExternalTarget, GfxBackend, InterpBackend, RecordingBackend,
+    Backend, Device, ExternalPass, ExternalTarget, GfxBackend, GuestMemory, InterpBackend, RecordingBackend,
     SparseMemory, SwapFinish, ThreadedBackend, UploadPolicy,
 };
 use gfx::GfxContext;
@@ -121,6 +121,34 @@ fn the_pass_comes_through_the_render_thread() {
 fn the_interpolating_backend_passes_it_on() {
     let Some(b) = backend() else { return };
     run(ThreadedBackend::new(InterpBackend::new(b, || 0)).unwrap());
+}
+
+/// Keeps the view constants it is given.
+struct Constants(Arc<Mutex<Option<Vec<[f32; 4]>>>>);
+
+impl ExternalPass for Constants {
+    fn encode(&mut self, _t: ExternalTarget<'_>) {}
+    fn view_constants(&mut self, c: &[[f32; 4]; d3d::VIEW_CONSTANTS]) {
+        *self.0.lock().unwrap() = Some(c.to_vec());
+    }
+}
+
+#[test]
+fn the_pass_gets_the_view_constants_after_the_drain() {
+    let (mut d, mut m) = create(RecordingBackend::default(), UploadPolicy::Always);
+    set_states(&mut d, &mut m);
+    let src = MISC + 0x3000;
+    for (i, v) in [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0].into_iter().enumerate() {
+        m.write_u32(src + 4 * i as u32, v.to_bits()).unwrap();
+    }
+    // c[0] and c[1] (hardware numbering), queued before the request.
+    d.set_vertex_shader_constant(&mut m, 0, src, 2, true).unwrap();
+    let got = Arc::default();
+    d.request_external_pass(Box::new(Constants(Arc::clone(&got))));
+    d.drain_until_callback(&mut m).unwrap();
+    let c = got.lock().unwrap().clone().expect("given at issue, with or without a backend that draws it");
+    assert_eq!(c.len(), d3d::VIEW_CONSTANTS);
+    assert_eq!((c[0], c[1]), ([1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]));
 }
 
 #[test]

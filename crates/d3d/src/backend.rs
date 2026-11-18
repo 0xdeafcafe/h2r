@@ -266,7 +266,19 @@ pub trait ExternalPass: Send {
     /// copy of the targets: twice under the render scale (the 1x
     /// reference and the scaled view), with the same frame each time.
     fn encode(&mut self, target: ExternalTarget<'_>);
+
+    /// The device's vertex constants `c[0..VIEW_CONSTANTS]` (hardware
+    /// numbering) when the pass is issued, after the drain: the view's
+    /// own (view-projection, viewport fix-up), for a pass that runs the
+    /// game's vertex programs. Called once, on the device's thread, before
+    /// the backend gets the pass.
+    fn view_constants(&mut self, _constants: &[[f32; 4]; VIEW_CONSTANTS]) {}
 }
+
+/// How many vertex constants [`ExternalPass::view_constants`] gives: the
+/// per-view block the game uploads before a view's draws
+/// (docs/graphics/native-renderer.md, "What a world pass reads").
+pub const VIEW_CONSTANTS: usize = 18;
 
 /// What an [`ExternalPass`] draws into.
 pub struct ExternalTarget<'a> {

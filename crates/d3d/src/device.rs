@@ -1657,7 +1657,9 @@ impl<B: Backend> Device<B> {
         }
     }
 
-    fn issue_external_pass(&mut self, mem: &mut dyn GuestMemory, pass: Box<dyn crate::backend::ExternalPass>) {
+    fn issue_external_pass(&mut self, mem: &mut dyn GuestMemory, mut pass: Box<dyn crate::backend::ExternalPass>) {
+        let constants: [[f32; 4]; crate::backend::VIEW_CONSTANTS] = std::array::from_fn(|r| self.constant(r));
+        pass.view_constants(&constants);
         let issued = (|| -> Option<bool> {
             if self.render_target == 0 || self.depth_stencil == 0 {
                 return None;
