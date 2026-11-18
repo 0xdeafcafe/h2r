@@ -5,7 +5,10 @@
 //! its pass, a D3D light between them starts a new run, a new view forgets
 //! the open run, and nothing is skipped without a host, for a light the
 //! host does not draw, a record that is gone or fails its checks, or when
-//! the device cannot.
+//! the device cannot draw the pass or do the passes' tail. A skipped light
+//! leaves the guest words the tail zeroes at zero, after the host's device
+//! side of the tail with the game's clip words (the device side itself:
+//! d3d's `light_tail` test); a light left to D3D leaves them alone.
 
 use std::sync::{Arc, Mutex};
 
@@ -16,7 +19,7 @@ use feature::native_lights::{self, Host, NativeLights};
 use feature::plan::Base;
 use feature::{Registry, Switches};
 use native_render::camera::{RENDER_CAMERA, RenderCamera};
-use native_render::lights::{Light, Run};
+use native_render::lights::{Light, Run, TAIL_CLIP, TAIL_ZEROES};
 
 #[test]
 fn the_switch_off_places_nothing() {
@@ -62,6 +65,8 @@ const ESP: u32 = 0x0060_0000;
 struct Stub {
     runs: Mutex<Vec<Arc<Run>>>,
     refuse: Mutex<bool>,
+    tails: Mutex<Vec<[u32; 2]>>,
+    refuse_tail: Mutex<bool>,
 }
 
 impl Host for Stub {
@@ -76,6 +81,28 @@ impl Host for Stub {
         self.runs.lock().unwrap().push(run);
         true
     }
+    fn tail(&self, _mem: &mut dyn GuestMemory, clip: [u32; 2]) -> bool {
+        if *self.refuse_tail.lock().unwrap() {
+            return false;
+        }
+        self.tails.lock().unwrap().push(clip);
+        true
+    }
+}
+
+/// The tail's words set as a drawn light's passes leave them mid-way.
+fn dirty(m: &mut FlatMemory) {
+    for &(addr, _) in &TAIL_ZEROES {
+        m.set_u8(addr, 0x5a).unwrap();
+    }
+}
+
+fn zeroed(m: &FlatMemory) -> bool {
+    TAIL_ZEROES.iter().all(|&(addr, bytes)| m.bytes(addr, bytes as usize).unwrap().iter().all(|&b| b == 0))
+}
+
+fn untouched(m: &FlatMemory) -> bool {
+    TAIL_ZEROES.iter().all(|&(addr, _)| m.u8(addr).unwrap() == 0x5a)
 }
 
 fn put(m: &mut FlatMemory, at: u32, v: &[f32]) {
@@ -127,6 +154,8 @@ fn guest() -> FlatMemory {
     put(&mut m, c + 0x28, &[1.2]);
     m.set_u32(c + 0x34, 480 | (640 << 16)).unwrap();
     put(&mut m, c + 0x40, &[0.0625, 1024.0]);
+    m.set_u32(TAIL_CLIP[0], 0x3f80_0000).unwrap();
+    m.set_u32(TAIL_CLIP[1], 0x4b7f_ffff).unwrap();
     m
 }
 
@@ -140,23 +169,32 @@ fn native_lights_join_runs_between_the_d3d_lights() {
     let c = light(&mut m, 4, 0xe000_0010);
 
     // No host yet: every light keeps its passes.
+    dirty(&mut m);
     let esp = call(&mut m, a, false);
-    assert!(!native_lights::on_light(&m, esp));
+    assert!(!native_lights::on_light(&mut m, esp));
+    assert!(untouched(&m));
 
     let stub = Arc::new(Stub::default());
     native_lights::set_host(stub.clone());
     native_lights::new_view();
 
-    // A (shadowed) and B: one run, one pass asked for; the record is copied.
+    // A (shadowed) and B: one run, one pass asked for; the record is copied,
+    // and the tail done: the device side with the game's clip words, then
+    // the guest words zeroed.
     let esp = call(&mut m, a, true);
-    assert!(native_lights::on_light(&m, esp));
+    assert!(native_lights::on_light(&mut m, esp));
+    assert!(zeroed(&m));
+    assert_eq!(*stub.tails.lock().unwrap(), vec![[0x3f80_0000, 0x4b7f_ffff]]);
     let esp = call(&mut m, b, false);
-    assert!(native_lights::on_light(&m, esp));
+    assert!(native_lights::on_light(&mut m, esp));
     assert_eq!(stub.runs.lock().unwrap().len(), 1);
     // A definition the host does not draw: its passes run, and their first
     // draw is the device's next entry, which issues the pass (seals the run).
+    dirty(&mut m);
     let esp = call(&mut m, d3d, false);
-    assert!(!native_lights::on_light(&m, esp));
+    assert!(!native_lights::on_light(&mut m, esp));
+    assert!(untouched(&m), "a D3D light's own tail zeroes them");
+    assert_eq!(stub.tails.lock().unwrap().len(), 2);
     let first = stub.runs.lock().unwrap()[0].seal();
     assert_eq!(first.iter().map(|l| l.handle).collect::<Vec<_>>(), vec![a, b]);
     let l = first[0];
@@ -167,13 +205,13 @@ fn native_lights_join_runs_between_the_d3d_lights() {
     assert!(!first[1].shadow);
     // C comes after the D3D light: a run of its own.
     let esp = call(&mut m, c, false);
-    assert!(native_lights::on_light(&m, esp));
+    assert!(native_lights::on_light(&mut m, esp));
     assert_eq!(stub.runs.lock().unwrap().len(), 2);
 
     // The next view's lights: the open run is not joined.
     native_lights::new_view();
     let esp = call(&mut m, a, false);
-    assert!(native_lights::on_light(&m, esp));
+    assert!(native_lights::on_light(&mut m, esp));
     assert_eq!(stub.runs.lock().unwrap().len(), 3);
     assert_eq!(stub.runs.lock().unwrap()[1].len(), 1);
 
@@ -182,20 +220,31 @@ fn native_lights_join_runs_between_the_d3d_lights() {
     native_lights::new_view();
     *stub.refuse.lock().unwrap() = true;
     let esp = call(&mut m, b, false);
-    assert!(!native_lights::on_light(&m, esp));
+    assert!(!native_lights::on_light(&mut m, esp));
     *stub.refuse.lock().unwrap() = false;
     let esp = call(&mut m, b, false);
-    assert!(native_lights::on_light(&m, esp));
+    assert!(native_lights::on_light(&mut m, esp));
     assert_eq!(stub.runs.lock().unwrap().len(), 4);
 
     // A stale datum (another salt) and a record that fails its checks (a
     // colour out of range): not read, so D3D.
     let esp = call(&mut m, a ^ 0x0001_0000, false);
-    assert!(!native_lights::on_light(&m, esp));
+    assert!(!native_lights::on_light(&mut m, esp));
     put(&mut m, DATA + light::RECORD_SIZE as u32 * 4 + 0xd4, &[2.0]);
     let esp = call(&mut m, c, false);
-    assert!(!native_lights::on_light(&m, esp));
+    assert!(!native_lights::on_light(&mut m, esp));
+
+    // The device cannot do the tail: the light keeps its passes, the words
+    // are left alone and no run opens.
+    native_lights::new_view();
+    dirty(&mut m);
+    *stub.refuse_tail.lock().unwrap() = true;
+    let esp = call(&mut m, a, false);
+    assert!(!native_lights::on_light(&mut m, esp));
+    assert!(untouched(&m));
+    assert_eq!(stub.runs.lock().unwrap().len(), 4);
+    *stub.refuse_tail.lock().unwrap() = false;
 
     let (lights, skipped, runs) = native_lights::counts();
-    assert_eq!((lights, skipped, runs), (10, 5, 4));
+    assert_eq!((lights, skipped, runs), (11, 5, 4));
 }

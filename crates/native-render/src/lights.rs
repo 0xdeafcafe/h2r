@@ -24,9 +24,10 @@
 //!   the view's target back, and zeroes both flag words.
 //!
 //! The skip is that call's: a `before` answers `ret 0x10` for a light the
-//! native renderer draws, so none of its layers is built or drawn. The
-//! flag words it would have set and zeroed stay zero, and the D3D state it
-//! would have reset at its end is the state it found. The bookkeeping in
+//! native renderer draws, so none of its layers is built or drawn; the
+//! hook does the call's tail itself (the device side through the host,
+//! then [`TAIL_ZEROES`]), so a skipped light leaves what a drawn one
+//! does. The bookkeeping in
 //! `0x00031c80` (the list, the gather, the records) still runs. Lights are
 //! met in the visible list's order; consecutive native lights share one
 //! [`Run`], one external pass the device issues at its next entry (the next
@@ -41,6 +42,18 @@ pub const RENDER_DYNAMIC_LIGHTS: u32 = 0x0003_1c80;
 pub const RENDER_LIGHT_PASSES: u32 = 0x0003_1170;
 /// Its stack arguments' bytes (`ret 0x10`).
 pub const LIGHT_PASSES_CLEANUP: u32 = 0x10;
+/// The guest stores of its tail (`0x000314d7`, `0x000314dd`, `0x0003150b`,
+/// `0x00031511`), `(address, bytes)`, each zero: a skipped light makes
+/// them too, so the next reader sees what a drawn light leaves.
+pub const TAIL_ZEROES: [(u32, u32); 4] = [
+    (0x0048_58bc, 1),
+    (0x004b_843c, 4),
+    (0x004b_a018, 1),
+    (0x004b_a014, 4),
+];
+/// The two words the tail's depth-clip restore (`0x00015720`) puts into the
+/// device's programmable clip range.
+pub const TAIL_CLIP: [u32; 2] = [0x0048_5adc, 0x0048_5ae0];
 
 /// One dynamic light as the hook copied it out of the render's snapshot
 /// of the frame (the record's world frame is refreshed for attached lights

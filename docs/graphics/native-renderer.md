@@ -905,11 +905,35 @@ definition flags).
 One `before` on `RENDER_LIGHT_PASSES`, context-only: for a light the
 host draws (`native_render::lights::Light`, the record copied with
 `feature::native_lights::read_light` and its checks), it answers
-`ret 0x10`, so none of the light's layers is built or drawn and no guest
-memory changes. The flag words it would have set stay at the zero it
-leaves them at, and the D3D state it resets at its end (stencil,
-scissor, target) is the state it found. The gather before the call still
-runs (its CPU, 1.88 ms on the census run, is the next target, below).
+`ret 0x10`, so none of the light's layers is built or drawn. It does the
+passes' tail first, so a skipped light leaves what a drawn one does,
+whatever the state it found (after layer 7, stencil may still be on):
+
+- the device side, through the host (`Host::tail`, which calls
+  `d3d::Device::light_passes_tail` at that point of the render, so in
+  render order): what is queued drains as before any entry, then
+  `SetRenderState_StencilEnable(FALSE)` and `SetScissors(0, FALSE, NULL)`
+  through the code their entries run, and the game's depth-clip restore
+  `0x00015720` (the words at `0x00485adc`/`0x00485ae0` into the
+  programmable clip range, its game-owned bit, the viewport fragment
+  `0x3f6190` at the put pointer). A push-buffer callback queued first, or
+  no push-buffer room, refuses the tail with nothing set and the light
+  keeps its D3D passes (d3d's `light_tail` test: the same device, guest
+  globals, push buffer and next draw as the game's tail);
+- then the guest words the tail zeroes (`lights::TAIL_ZEROES`:
+  `0x004858bc`, `0x004b843c` and the per-light flags `0x004ba014`,
+  `0x004ba018`), in the memory the hook's context sees (the render's
+  snapshot on the render thread), as the world's mask restores are.
+
+The tail's last call, the view's target back (`0x00014bc0` with
+`[0x004858b8]`), is not repeated: a skipped light never moved the target,
+and every way into the call leaves the view's target bound (the layer
+begins draw every layer but 10 into `[0x004858b8]`, and layer 10's users,
+this tail and the object shadows', set it back). S until the A/B; a
+guard that compares the device's bound target with the one at
+`RENDER_DYNAMIC_LIGHTS` is the fallback if it is not. The gather before
+the call still runs (its CPU, 1.88 ms on the census run, is the next
+target, below).
 
 Order uses the external pass as stage 3 does: consecutive native lights
 join one `lights::Run`, whose pass the device issues at its next entry,

@@ -12,7 +12,12 @@
 //! - a `before` on the light passes: when the [`Host`] draws the light
 //!   (its record copied with [`read_light`]), add it to the open [`Run`]
 //!   and answer `ret 0x10` in place of the passes, so none of the light's
-//!   layers is built or drawn. Without an open run, ask the host for one:
+//!   layers is built or drawn, and do the passes' tail as they would:
+//!   the host's device side first ([`Host::tail`]: stencil off, no
+//!   scissors, the depth-clip range and viewport, through the device in
+//!   render order), then the guest words the tail zeroes
+//!   (`lights::TAIL_ZEROES`), so a skipped light leaves what a drawn one
+//!   does. Without an open run, ask the host for one:
 //!   it asks the device for an external pass that takes the run's lights
 //!   when the device issues it, at its next entry, which is the next D3D
 //!   light's first draw (or what follows the lights). A sealed run is
@@ -21,10 +26,12 @@
 //! - an observer before the dynamic lights: forgets the open run, so a run
 //!   never spans two views (or a pass the device dropped).
 //!
-//! Nothing here writes guest memory: there is no restore. The light is
-//! read from the memory the hook's context sees, which on the render thread
-//! is the render's snapshot of the frame; an attached light's frame was
-//! refreshed just before the call.
+//! The light is read, and the tail's words written, in the memory the
+//! hook's context sees, which on the render thread is the render's
+//! snapshot of the frame; an attached light's frame was refreshed just
+//! before the call. The target the tail sets back (`0x00014bc0` with the
+//! view's target) is not set again: a skipped light never left it (S: every
+//! way into the call leaves the view's target bound; the A/B checks).
 //!
 //! With `render-timing` on nothing is placed: its timed light passes need
 //! the body's end, which a skipped light never reaches.
@@ -37,7 +44,7 @@ use engine::memory::GuestMemory;
 use engine::points;
 use engine::render::light;
 use native_render::camera::{GuestRead, RENDER_CAMERA, RenderCamera};
-use native_render::lights::{LIGHT_PASSES_CLEANUP, Light, Run};
+use native_render::lights::{LIGHT_PASSES_CLEANUP, Light, Run, TAIL_CLIP, TAIL_ZEROES};
 
 use crate::{BuildError, Builder, Feature, Flow, Manifest};
 
@@ -59,6 +66,10 @@ pub trait Host: Send + Sync {
     /// pass seals the run when the device issues it. `false`: nothing
     /// asked (the light goes to the D3D path).
     fn open(&self, camera: &RenderCamera, run: Arc<Run>) -> bool;
+    /// The device side of the passes' tail, at this point of the render
+    /// (`d3d::Device::light_passes_tail`, with `clip` the game's clip-range
+    /// words). `false`: not done, the light goes to the D3D path.
+    fn tail(&self, mem: &mut dyn GuestMemory, clip: [u32; 2]) -> bool;
 }
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
@@ -118,9 +129,9 @@ pub fn read_light(mem: &dyn GuestMemory, handle: u32, shadow: bool, weight: f32)
 
 /// The light passes' `before`, on any guest memory: `esp` at the entry
 /// (the return address; the light datum, position, shadow byte and weight
-/// above it). `true` when the light joined a native run and the passes
-/// must not run.
-pub fn on_light(mem: &dyn GuestMemory, esp: u32) -> bool {
+/// above it). `true` when the light joined a native run, the tail is done
+/// and the passes must not run.
+pub fn on_light(mem: &mut dyn GuestMemory, esp: u32) -> bool {
     LIGHTS.fetch_add(1, Ordering::Relaxed);
     let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
         return false;
@@ -138,11 +149,29 @@ pub fn on_light(mem: &dyn GuestMemory, esp: u32) -> bool {
     if !host.accepts(mem, &light) {
         return false;
     }
+    let (Ok(near), Ok(far)) = (mem.u32(TAIL_CLIP[0]), mem.u32(TAIL_CLIP[1])) else {
+        return false;
+    };
+    // The device side first (a light it cannot finish stays on D3D, and
+    // the tail done early is the state that light's own tail ends with).
+    // Then the guest words; a light that goes on to D3D sets and zeroes
+    // them again.
+    if !host.tail(mem, [near, far]) || !zero_tail(mem) {
+        return false;
+    }
     if !join(&*host, &Ro(mem), light) {
         return false;
     }
     SKIPPED.fetch_add(1, Ordering::Relaxed);
     true
+}
+
+/// The guest words the passes' tail zeroes; `false` when one cannot be
+/// written (nothing is skipped then).
+pub fn zero_tail(mem: &mut dyn GuestMemory) -> bool {
+    TAIL_ZEROES
+        .iter()
+        .all(|&(addr, bytes)| mem.write(addr, &[0u8; 4][..bytes as usize]).is_ok())
 }
 
 /// Adds the light to the open run, or opens one; `false` when no pass
@@ -195,8 +224,8 @@ impl Feature for NativeLights {
             .before(&points::RENDER_LIGHT_PASSES, "native_lights_skip", |c| {
                 let rt = Arc::clone(c.ctx.runtime());
                 let skip = {
-                    let mem = rt.memory();
-                    on_light(&*mem, c.cpu.esp)
+                    let mut mem = rt.memory();
+                    on_light(&mut *mem, c.cpu.esp)
                 };
                 if skip {
                     c.ret(LIGHT_PASSES_CLEANUP).map(Flow::Return)

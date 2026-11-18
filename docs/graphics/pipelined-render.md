@@ -1038,8 +1038,10 @@ Marked now:
 - `native-lights`' `before` on `RENDER_LIGHT_PASSES` (one dynamic light's
   layers) and its observer before `RENDER_DYNAMIC_LIGHTS`, the same shape:
   the `before` answers `ret 0x10` for a light the native renderer draws,
-  copying the light record from the frame's snapshot, and writes no guest
-  memory. Not placed with `render-timing` on.
+  copying the light record from the frame's snapshot, after the passes'
+  tail: the device side through the host in render order, then the
+  tail's guest words zeroed in the memory its context sees. Not placed
+  with `render-timing` on.
 
 Everything else is in `boot::render_thread::REFUSED`, with its reason:
 
