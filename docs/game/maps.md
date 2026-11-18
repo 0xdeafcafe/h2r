@@ -682,10 +682,11 @@ disc's):
 
 1. Xbox Live menu: six rows, all on screen, no scroll bar: Quickmatch,
    OptiMatch, Custom Game, Custom Game Browser, Co-op Campaign, Mods.
-   - The first row sits a little under the header (21 units), the hint
-     texts and the Y callout under the list sit lower than retail, and
-     nothing overlaps the footer. stderr: `custom games: xbox live menu
-     tag has 6 panes and room for 6 rows`.
+   - The first row and the hint block ("PRESS ... ANYTIME TO ACCESS")
+     are where retail has them; the rows stand closer together (29
+     units) and the last ends above the hint block. stderr: `custom
+     games: xbox live menu tag has 6 panes and shows 6 rows` and `custom
+     games: xbox live menu rows 29 apart (6 rows, 5 moved)`.
    - The last row reads "Mods (N new)" (N = maps published since you last
      opened it; all of them the first time), and its help text reads
      "Download maps other players made and shared on your Live server."
