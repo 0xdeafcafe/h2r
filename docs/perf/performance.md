@@ -784,3 +784,37 @@ No exception flag other than PE and C1 differs. Most results are within one
 f64 ulp, as expected; the tails are the operand's own rounding to 53 bits,
 amplified near zeros of sin and cos (and of log2 at x near 1), and for large
 angles the operand error alone is up to |x| * 2^-53 of angle. Not turned on.
+
+## The D3D write barrier runs its entry in place (2026-11-18)
+
+Old Mombasa on the perf serve (03a, E1 on, 6,947 game-thread samples at
+1 kHz, shares because the machine was at load 50-90): every D3D entry went
+through `boot::d3d_glue`'s write barrier, which drained the watch and then
+reached the real handler as a guest call to a shadow address, with a boxed
+Rust continuation to return to the caller. Per D3D call that is two more
+runner transfers (the call to the shadow and the return to the token),
+a `Box` allocated and freed, a continuation slot and a token resolve. In
+the profile: `Continuations::insert` 0.53%, `Dispatch::resolve_resume`
+0.35%, the barrier closure itself 0.27% plus 0.23% in `malloc`, the free in
+`handler::execute` 0.37%, and a share of `Runner::run_inner`'s 4.8% self
+time (two of the transfers per call), about 2-3% of the game thread.
+
+Now the barrier wraps the entry's own override (`barrier_handler`, the
+pattern `pipeline_render` and `profile_override` already use): drain, then
+`OriginalHandler::invoke` in place. The guest sees the same registers,
+memory and return; the one difference is the dead stack word under the
+caller's `ESP` after the call, which keeps the caller's return address (as
+on the Xbox) instead of a token. Nothing is drained on return, as before:
+an entry that calls guest code before returning still leaves the stores
+made meanwhile for the next entry. The shadow page at `0xa0ff_4000` is gone.
+
+Proof (`crates/boot/tests/write_barrier.rs`): a real wrapped entry
+(`D3DResource_AddRef`) returns to its caller within one runner transfer
+with its stdcall cleanup, no live continuation and its pre-call store
+drained; and `barrier_handler` around an entry that returns through a guest
+call keeps the store that call made dirty after the return, while the
+store before the call went to the device first.
+
+`StateWords::read` (every draw) reads the guest's words straight into the
+arrays instead of through a zeroed byte buffer and a second array: about
+2.3 KB less copying per draw (`state_read_places_every_word`).

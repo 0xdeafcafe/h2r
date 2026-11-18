@@ -21,6 +21,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Per-draw program-key lookups (nv2a::Nv2aShaders).
 rustc-hash = "2"
+# Guest words read straight into `u32` arrays (state::read_words_into).
+bytemuck = "1"
 
 [dev-dependencies]
 pollster = "1"
