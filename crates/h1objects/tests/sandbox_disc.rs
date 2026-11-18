@@ -225,7 +225,8 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
     // The player's HUD carries Halo 1's health meter (docs/game/health.md
     // "HUD"): every HUD interface names the converted nhdt, which has the
     // shield meter and, after it, a widget on the body input with the
-    // shield meter's state flags, bitmap and anchor.
+    // shield meter's state flags and anchor, drawing the sword battery's
+    // strip just above it.
     {
         use h1objects::health_hud::{self as hh, widget};
         let space = out.metadata_space().unwrap();
@@ -274,12 +275,37 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
                 s[widget::STATE..0x20],
                 "{name}: the shield's gate"
             );
-            assert_eq!(
-                h[widget::BITMAP + 4..widget::BITMAP + 8],
-                s[widget::BITMAP + 4..widget::BITMAP + 8]
+            let name_of = |at: usize| &names[&TagId(w(h, at + 4))].1;
+            assert_eq!(name_of(widget::BITMAP), hh::STRIP_BITMAP, "{name}");
+            assert_eq!(name_of(widget::SHADER), hh::STRIP_SHADER, "{name}");
+            // The strip and the shield meter as the HUD places them: the
+            // bitmaps' first images, registered at the top left, the strip
+            // GAP pixels above the shield meter in every screen mode.
+            let image = |r: &[u8], at: usize| {
+                let bitm = TagId(w(r, at + 4));
+                let root = bytes(
+                    out.tag(bitm).unwrap().location.unwrap().address,
+                    hh::BITM_IMAGES + 8,
+                );
+                let im = bytes(w(&root, hh::BITM_IMAGES + 4), hh::BITM_IMAGE_SIZE);
+                let half = |o: usize| i16::from_le_bytes([im[o], im[o + 1]]);
+                (half(4), half(6))
+            };
+            assert_eq!(image(h, widget::BITMAP), hh::STRIP_SIZE, "{name}");
+            assert_eq!(image(s, widget::BITMAP), hh::SHIELD_SIZE[0], "{name}");
+            assert!(
+                s[widget::REGISTRATION..widget::REGISTRATION_END]
+                    .iter()
+                    .all(|b| *b == 0),
+                "{name}: the shield meter is registered at its top left"
             );
-            let shader = TagId(w(h, widget::SHADER + 4));
-            assert_eq!(names[&shader].1, hh::SHADER_NAME);
+            for (mode, at) in widget::OFFSETS.iter().enumerate() {
+                let strip = hh::Rect::at(hh::offset(h, *at), hh::STRIP_SIZE);
+                let shield = hh::Rect::at(hh::offset(s, *at), hh::SHIELD_SIZE[mode]);
+                assert!(!strip.overlaps(&shield), "{name} mode {mode}");
+                assert_eq!(shield.y0 - strip.y1, hh::GAP, "{name} mode {mode}");
+                eprintln!("{name} mode {mode}: strip {strip:?}, shield {shield:?}");
+            }
             eprintln!("player HUD interface {i}: {name}, health widget after {n} widgets");
         }
     }
