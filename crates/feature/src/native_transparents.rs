@@ -42,6 +42,11 @@ pub const ID: &str = "native-transparents";
 /// The switch, looked up exactly.
 pub const SWITCH: &str = "impl.render.native_transparents";
 
+/// Whether the native transparents are on (off by default).
+pub fn on(switches: &crate::Switches) -> bool {
+    switches.feature(SWITCH, false)
+}
+
 /// What draws the transparents: boot's glue over the GPU and the device.
 pub trait Host: Send + Sync {
     /// Whether the host draws `entry` natively now (its geometry and its
@@ -137,7 +142,7 @@ impl Feature for NativeTransparents {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        if !b.switches().feature(SWITCH, false) {
+        if !on(b.switches()) {
             return Ok(());
         }
         b.raw()

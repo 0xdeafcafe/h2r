@@ -328,8 +328,9 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     // The sorted transparents' geometry on the native GPU renderer
     // (H2_FEATURES=impl.render.native_transparents=on, off by default;
     // docs/graphics/native-renderer.md, stage 3): a context-only skip on
-    // the geometry entries' handler, in the game's sort order. Without a
-    // host (none is installed yet) every entry keeps its D3D draw.
+    // the geometry entries' handler, in the game's sort order. Its host
+    // (native_transparents_glue, installed with the world's) draws the
+    // native world's transparent parts; everything else keeps its D3D draw.
     features
         .add(&feature::native_transparents::NativeTransparents)
         .map_err(|e| anyhow::anyhow!("native transparents: {e}"))?;

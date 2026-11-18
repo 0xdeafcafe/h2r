@@ -808,8 +808,16 @@ render's snapshot of the frame.
    and compare, cull) and its blend constant set per draw. A run's pass
    loads the target and depth and draws, per entry in order, the part
    with each of its passes, over the whole target (the programs carry
-   the viewport). Boot's host accepts an entry when its part and
-   material are loaded.
+   the viewport). Boot's host is built too (`boot::native_transparents_glue`, over the
+   native world's loaded BSP, so the native world must be on): at load,
+   each transparent material's passes compiled all or nothing and their
+   stage images decoded, then the parts that can draw (a compiled
+   material, and its lightmap page when a pass samples it), with one line
+   on stderr: how many materials and parts, and why the rest stay on the
+   D3D path. It accepts a cluster or placement entry whose part is in
+   that table with the entry's shader; a run's pass takes the run's
+   entries when the device issues it and draws them with
+   `GpuWorld::encode_transparents`.
 4. **Objects' transparent parts.** The node matrices are copied at the
    hook into the run (as stage 2 does at layer 3), so the pass draws the
    frame's poses.
