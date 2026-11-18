@@ -843,6 +843,24 @@ named an object the tick had since deleted, and the object render setup
 (`+0x3c`) through the null body pointer: `MemoryFault ... addr: 3c`, on
 the render stack, on the game thread.
 
+**Flushes.** A serviced call can wake another guest thread that runs
+before the call returns: the semaphore release wakes the I/O worker
+(`0x00120c40`), which takes the queue head `0x004e28ec` and calls the
+request's handler (`[request+0x34]`) on its fields. Those fields are
+copied from the requester's stack (`[request+8..+0x30]`) and point at
+the requester's memory: the file name, a handle out-pointer at
+`+0x14`, the completion byte at `[request+0x38]` that the worker sets
+to 1. So before each serviced call everything the render wrote so far
+goes to live RAM (`SecondExecutor::flush`, against the bytes each page
+had at its last flush; the marks, the counters, the host-owned words and
+the live ranges are left alone). Before the final hand-back,
+`SecondExecutor::unflush` puts every byte unchanged since its flush back
+to the snapshot's value in the view, so the merge leaves what live RAM
+did with it since (the worker's completion byte) alone. The first build
+synced only `0x004e0354..0x004e28ec`, one word short of the queue head:
+the worker read a null head and crashed at `0x00120c79`
+(`call [esi+0x34]`, `addr: 34`) on the first pipelined frame.
+
 **Fallbacks.** A fallback is still unsound in that way, so any refused
 call other than the serviced ones should be rare. A refused call does
 not rerun the frame: draws already

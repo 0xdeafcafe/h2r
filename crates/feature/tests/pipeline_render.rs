@@ -51,6 +51,11 @@ const DEEP: u32 = 0x2_4050;
 const CHURN: u32 = 0x2_4054;
 /// Object table: a body pointer per index (0: freed), and the bodies.
 const OBJECTS: u32 = 0x2_4100;
+/// The I/O queue head (a live range, as the game's pool is), the request
+/// records (outside it), and what the worker read through one.
+const QUEUE: u32 = 0x2_4060;
+const REQUESTS: u32 = 0x2_4400;
+const WORKER_READ: u32 = 0x2_4064;
 const BODIES: u32 = 0x2_4200;
 /// Only the render writes this page.
 const OUT: u32 = 0x2_5000;
@@ -76,7 +81,7 @@ static ADDRS: Addrs = Addrs {
     mark_bytes: &[STAMPS],
     host_owned: &[VBLANKS],
     // What the kernel call answers: the render reads it after the call.
-    live_bytes: &[(KERNEL_OUT, KERNEL_OUT + 4)],
+    live_bytes: &[(KERNEL_OUT, KERNEL_OUT + 4), (QUEUE, QUEUE + 4)],
 };
 
 /// What the D3D entries saw, in order: (entry, value read at INPUT, ran on
@@ -134,6 +139,17 @@ fn render(
         s if s == FRAME + 0x10 => {
             if m.u32(FALLBACK)? == 2 {
                 return m.call(cpu, D3D_CALLBACK, FRAME + 0x20);
+            }
+            if m.u32(FALLBACK)? == 4 {
+                // An I/O request: a record outside the live ranges (a
+                // buffer pointer and a completion byte the worker sets),
+                // queued at QUEUE (a live range), then the kernel call
+                // wakes the worker.
+                let rec = REQUESTS + 0x10 * cpu.esi;
+                m.set_u32(rec, OUT)?;
+                m.set_u32(rec + 4, rec + 8)?;
+                m.set_u8(rec + 8, 0)?;
+                m.set_u32(QUEUE, rec)?;
             }
             if m.u32(FALLBACK)? == 3 {
                 // The answer to a local on the stack (as the semaphore's
@@ -281,6 +297,19 @@ fn rig_with(on: bool, serviced: &[&'static str]) -> Rig {
             let n = m.u32(KERNEL_CALLS)? + 1;
             m.set_u32(KERNEL_CALLS, n)?;
             m.set_u32(out, 0x1000 + n)?;
+            // The I/O worker this call wakes, as the game's runs while the
+            // game thread is in the call: it takes the queued request,
+            // reads its buffer through the record's pointer and sets the
+            // record's completion byte.
+            let q = m.u32(QUEUE)?;
+            if q != 0 {
+                let buf = m.u32(q)?;
+                let first = m.u32(buf)?;
+                let done = m.u32(q + 4)?;
+                m.set_u8(done, 1)?;
+                m.set_u32(WORKER_READ, first)?;
+                m.set_u32(QUEUE, 0)?;
+            }
             m.ret(cpu, 4)
         },
     );
@@ -289,6 +318,10 @@ fn rig_with(on: bool, serviced: &[&'static str]) -> Rig {
     g.map_zeroed(DATA, DATA_LEN, Permissions::RW).unwrap();
     g.map_zeroed(STACK_TOP - GAME_STACK, GAME_STACK, Permissions::RW)
         .unwrap();
+    // Request records in use before: completion bytes set.
+    for slot in 0..16 {
+        g.set_u8(REQUESTS + 0x10 * slot + 8, 1).unwrap();
+    }
     // The world path: globals point at a record with +0x1120 set.
     g.set_u32(GLOBALS, GLOBALS_RECORD).unwrap();
     g.set_u8(GLOBALS_RECORD + 0x1120, 1).unwrap();
@@ -687,6 +720,33 @@ fn serviced_rounds(call: u32) {
     let out = |r: &Rig| r.rt.memory().u32(OUT + 0x800).unwrap();
     assert_eq!(out(&piped), out(&serial));
     assert_eq!(piped.rt.memory().u32(WAITS).unwrap(), n + 1);
+}
+
+#[test]
+fn the_worker_a_serviced_call_wakes_reads_the_request_the_render_wrote() {
+    // The game's crash at present 1744: the render queued I/O requests and
+    // the serviced semaphore release woke the worker, which took a request
+    // whose fields the render had written only in its view (the queue head
+    // `0x004e28ec` was past the synced pool range, and a request's fields
+    // point at the requester's memory). Here the queue head is synced but
+    // the record is not in any live range: the serviced call flushes what
+    // the render wrote, and the worker's completion byte is not undone by
+    // the final merge (the record was in use before: its byte was 1).
+    serviced_rounds(4);
+    let mut serial = rig(false);
+    let mut piped = rig_with(true, &["KeQuerySystemTime"]);
+    churn(&mut serial, 20, 4);
+    churn(&mut piped, 20, 4);
+    serial.finish();
+    piped.finish();
+    let m = piped.rt.memory();
+    for k in (1..=20).filter(|&k| fallback_round(k)) {
+        assert_eq!(m.u8(REQUESTS + 0x10 * (k % 16) + 8).unwrap(), 1, "{k}");
+    }
+    assert_eq!(
+        m.u32(WORKER_READ).unwrap(),
+        serial.rt.memory().u32(WORKER_READ).unwrap()
+    );
 }
 
 #[test]

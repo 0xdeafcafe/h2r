@@ -184,6 +184,57 @@ impl Guest {
     }
 }
 
+impl Guest {
+    /// [`hand_back`](Self::hand_back) for one page against `reference` (the
+    /// page's bytes as `view` had them when they were last merged, or the
+    /// snapshot's): every byte where `view` differs from `reference` takes
+    /// `view`'s value, except in the physical ranges `skip`. Reported to
+    /// this Guest's write watch. Call it under this Guest's memory guard.
+    pub fn merge_page(
+        &mut self,
+        view: &Guest,
+        reference: &[u8],
+        physical: u32,
+        skip: &[(u32, u32)],
+    ) -> HandBack {
+        let start = physical as usize & !(PAGE_SIZE as usize - 1);
+        let mut out = HandBack::default();
+        if start >= RAM_SIZE || reference.len() != PAGE_SIZE as usize {
+            return out;
+        }
+        let end = start + PAGE_SIZE as usize;
+        let skip: Vec<(usize, usize)> = skip
+            .iter()
+            .map(|&(s, n)| (s as usize, s as usize + n as usize))
+            .filter(|&(s, e)| s < end && e > start)
+            .collect();
+        let skipped = |at: usize| skip.iter().any(|&(s, e)| (s..e).contains(&at));
+        for (i, &was) in reference.iter().enumerate() {
+            let at = start + i;
+            let v = view.ram[at];
+            if v == was || skipped(at) {
+                continue;
+            }
+            let l = &mut self.ram[at];
+            if *l != was && *l != v {
+                out.conflicts += 1;
+            }
+            *l = v;
+            out.bytes += 1;
+        }
+        if out.bytes != 0 && self.watch.active() {
+            self.watch.note(start, PAGE_SIZE as usize);
+        }
+        out
+    }
+
+    /// The bytes of physical page `physical` (page-aligned).
+    pub fn physical_page(&self, physical: u32) -> Option<&[u8]> {
+        let start = physical as usize & !(PAGE_SIZE as usize - 1);
+        self.ram.get(start..start + PAGE_SIZE as usize)
+    }
+}
+
 fn changed_lines(ram: &[u8], base: &[u8], physical: usize) -> u64 {
     let start = physical & !(PAGE_SIZE as usize - 1);
     if start >= RAM_SIZE {
