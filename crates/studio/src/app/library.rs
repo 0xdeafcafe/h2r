@@ -252,12 +252,10 @@ impl App {
                 return;
             }
         };
-        // The shared caches come from the open disc, when there is one.
+        // The shared caches come from the open disc (or folder), else the
+        // default disc, when there is one.
         let anchor = self
-            .source
-            .as_ref()
-            .and_then(|s| s.location("shared").ok())
-            .map(|(path, region)| EditSource::region(path, region))
+            .shared_anchor()
             .unwrap_or_else(|| EditSource::file(maps.join(&entry.dir).join("package.map")));
         let source = EditSource {
             bytes: Some(Arc::from(bytes)),

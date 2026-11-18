@@ -19,8 +19,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use boot::map_select::{self, Catalogue, Category};
+use scenario_edit::MapSource as EditSource;
 
-use super::App;
+use super::{App, ToolKind};
 
 /// What the Map Pack group says when nothing is installed.
 pub const HINT: &str = "Not installed: put mappack.iso next to halo2.iso and start the game \
@@ -175,5 +176,107 @@ impl App {
                 self.pack_notes.push(n);
             }
         }
+    }
+
+    /// Why `path` may not be written by "Save map as": it is inside the
+    /// installed content (`T:\$c`), the Map Pack's own files among it.
+    pub fn save_refusal(&self, path: &Path) -> Option<String> {
+        let canon = |p: &Path| {
+            p.canonicalize().ok().or_else(|| {
+                let parent = p.parent()?.canonicalize().ok()?;
+                Some(parent.join(p.file_name()?))
+            })
+        };
+        let target = canon(path)?;
+        let root = canon(&content_root(&self.data_root()));
+        if root.is_some_and(|r| target.starts_with(r))
+            || self
+                .pack
+                .iter()
+                .any(|m| canon(&m.path).as_deref() == Some(target.as_path()))
+        {
+            return Some(format!(
+                "refusing to write {}: that is the game's installed content (the Map Pack's \
+                 files stay as installed). Save as a package, or pick a folder of your own",
+                path.display()
+            ));
+        }
+        None
+    }
+
+    /// Where a map with no disc base of its own (a Map Pack map, a new
+    /// map's package) finds the shared caches: the open source's
+    /// `shared.map`, else the default disc's (`H2_DISC`, `disc/halo2.iso`).
+    /// `None` when there is no Halo 2 disc or maps folder to take them from.
+    pub(super) fn shared_anchor(&self) -> Option<EditSource> {
+        if let Some((path, region)) = self.source.as_ref().and_then(|s| s.location("shared").ok())
+        {
+            return Some(EditSource::region(path, region));
+        }
+        let disc = editor_core::default_disc(None)?;
+        let maps = EditSource::disc_maps(&disc).ok()?;
+        maps.into_iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case("shared"))
+            .map(|(_, s)| s)
+    }
+
+    /// Open a Map Pack map (by [`PackMap::map`] or its offer directory)
+    /// in the scenario tool, and through it every tool that reads the
+    /// open map (Tags, the viewport).
+    pub(super) fn open_pack_map(&mut self, key: &str) {
+        let Some(m) = self
+            .pack
+            .iter()
+            .find(|m| m.map.eq_ignore_ascii_case(key) || m.offer.eq_ignore_ascii_case(key))
+            .cloned()
+        else {
+            self.error(format!(
+                "no Map Pack map {key}: the Map Pack lists {}",
+                if self.pack.is_empty() {
+                    "nothing (not installed)".to_owned()
+                } else {
+                    self.pack.iter().map(|m| m.map.as_str()).collect::<Vec<_>>().join(", ")
+                }
+            ));
+            return;
+        };
+        let bytes = match std::fs::read(&m.path) {
+            Ok(b) => b,
+            Err(e) => {
+                self.error(format!("{}: {e}", m.path.display()));
+                return;
+            }
+        };
+        let anchor = self.shared_anchor();
+        let shared_from = anchor.as_ref().map(|a| a.path.clone());
+        let source = EditSource {
+            bytes: Some(Arc::from(bytes)),
+            ..anchor.unwrap_or_else(|| EditSource::file(&m.path))
+        };
+        let key = format!("mappack:{}", m.offer);
+        if let Err(e) = self.session.open_derived(source, &m.map, None, &key) {
+            self.error(format!("{} ({}): {e}", m.name, m.map));
+            return;
+        }
+        self.forget_library_state();
+        self.loaded = Some(m.map.clone());
+        self.saved_path = None;
+        self.tool = ToolKind::Scenario;
+        self.opened_pack = Some(m.map.clone());
+        let msg = format!("opened Map Pack {} ({}): {}", m.name, m.map, self.session.status());
+        self.info(msg);
+        match shared_from {
+            Some(p) => self.info(format!("{}: shared caches from {}", m.map, p.display())),
+            None => self.error(format!(
+                "{}: no Halo 2 disc for shared.map: open the disc (or set H2_DISC); parts \
+                 kept in the shared maps are not shown",
+                m.map
+            )),
+        }
+    }
+
+    /// The Map Pack map a package's map name is, if any.
+    pub fn pack_map_named(&self, map: &str) -> Option<&PackMap> {
+        self.pack.iter().find(|m| m.map.eq_ignore_ascii_case(map))
     }
 }

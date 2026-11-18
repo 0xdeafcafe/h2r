@@ -82,6 +82,9 @@ pub enum Action {
     ///
     /// [`PackageEntry::key`]: editor_core::packages::PackageEntry::key
     OpenPackageEntry(String),
+    /// Open an installed Map Pack map (by its map name, `warlock`, or its
+    /// offer directory): [`map_pack::PackMap`].
+    OpenMapPack(String),
     /// Show a map of the open Halo 1 source, read-only.
     SelectHalo1Map(String),
     /// Draw a converted map's Halo 1 source over it.
@@ -185,11 +188,21 @@ impl Action {
             Action::Quit => ToolKind::ALL.into_iter().find(|t| app.tool_dirty(*t)),
             Action::OpenSource(_) => dirty(ToolKind::Scenario),
             Action::SelectMap(name)
-                if app.loaded.as_deref() != Some(name.as_str()) || app.opened_package.is_some() =>
+                if app.loaded.as_deref() != Some(name.as_str())
+                    || app.opened_package.is_some()
+                    || app.opened_pack.is_some() =>
             {
                 dirty(ToolKind::Scenario)
             }
             Action::OpenPackageEntry(key) if app.opened_package.as_deref() != Some(key) => {
+                dirty(ToolKind::Scenario)
+            }
+            Action::OpenMapPack(key)
+                if app
+                    .opened_pack
+                    .as_deref()
+                    .is_none_or(|o| !o.eq_ignore_ascii_case(key)) =>
+            {
                 dirty(ToolKind::Scenario)
             }
             Action::SelectHalo1Map(_) => dirty(ToolKind::Scenario),
@@ -555,9 +568,14 @@ impl App {
             // Re-picking the open map keeps it (and its edits).
             Action::SelectMap(name)
                 if self.loaded.as_deref() == Some(name.as_str())
-                    && self.opened_package.is_none() => {}
+                    && self.opened_package.is_none()
+                    && self.opened_pack.is_none() => {}
             Action::SelectMap(name) => self.select_map(&name),
             Action::SaveMapAs(path) => {
+                if let Some(why) = self.save_refusal(&path) {
+                    self.error(why);
+                    return;
+                }
                 let r = self.session.save_as(&path);
                 if self.session_result(r).is_some() {
                     self.saved_path = Some(path);
@@ -570,10 +588,17 @@ impl App {
                     self.refresh_packages();
                     if self.packages.iter().any(|e| e.key() == form.dir) {
                         self.opened_package = Some(form.dir.clone());
+                        self.opened_pack = None;
                     }
                 }
             }
             Action::OpenPackageEntry(key) => self.open_package_entry(&key),
+            Action::OpenMapPack(key)
+                if self
+                    .opened_pack
+                    .as_deref()
+                    .is_some_and(|o| o.eq_ignore_ascii_case(&key)) => {}
+            Action::OpenMapPack(key) => self.open_pack_map(&key),
             Action::SelectHalo1Map(name) => self.select_halo1_map(&name),
             Action::SetOverlay(on) => self.set_overlay(on),
             Action::ConvertHalo1(sandbox) => self.start_convert(sandbox),

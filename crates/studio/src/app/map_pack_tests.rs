@@ -5,10 +5,10 @@
 use std::path::{Path, PathBuf};
 
 use content::map_list::{Entry, PREVIEW_LEN};
-use scenario_edit::fixture;
+use scenario_edit::{BlockKind, Command, Value, fixture};
 
 use super::map_pack::{self, HINT, content_root};
-use super::App;
+use super::{Action, Answer, App, ToolKind};
 
 struct Temp(PathBuf);
 impl Temp {
@@ -85,6 +85,36 @@ fn app_with(t: &Temp) -> App {
     app
 }
 
+fn move_flag(app: &mut App, x: f32) {
+    app.session
+        .apply(Command::set(
+            BlockKind::NetgameFlags,
+            0,
+            "position",
+            Value::Vec3([x, 3.0, 3.0]),
+        ))
+        .unwrap();
+}
+
+fn flag_x(app: &App) -> f32 {
+    app.session
+        .scenario()
+        .unwrap()
+        .get(BlockKind::NetgameFlags, 0, "position")
+        .unwrap()
+        .as_vec3()
+        .unwrap()[0]
+}
+
+/// The byte offsets where `a` and `b` differ (same length).
+fn diff(a: &[u8], b: &[u8]) -> Vec<usize> {
+    assert_eq!(a.len(), b.len(), "the length changed");
+    (0..a.len()).filter(|&i| a[i] != b[i]).collect()
+}
+
+/// The header checksum the writer recomputes (`+0x2d0`).
+const CHECKSUM: std::ops::Range<usize> = 0x2d0..0x2d4;
+
 #[test]
 fn the_map_pack_lists_installed_maps_as_the_games_select_map_does() {
     let t = Temp::new("list");
@@ -139,4 +169,210 @@ fn nothing_installed_is_an_empty_group_with_the_hint() {
     assert!(app.map_pack().is_empty());
     assert!(HINT.contains("mappack.iso") && HINT.contains("h2 import-mappack"));
     assert!(!HINT.contains('\n'), "one line");
+}
+
+#[test]
+fn a_pack_map_opens_in_the_scenario_tool_and_the_tags_tool() {
+    let t = Temp::new("open");
+    three(&t);
+    let mut app = app_with(&t);
+    app.dispatch(Action::OpenMapPack("spire".into()));
+    assert_eq!(app.loaded_map(), Some("spire"));
+    assert_eq!(app.opened_pack_map(), Some("spire"));
+    assert_eq!(app.opened_package(), None);
+    assert!(app.session.is_open());
+    assert!(app.session.is_derived(), "no disc base: it opens from its bytes");
+    assert_eq!(app.tool, ToolKind::Scenario);
+    // The offer directory names it too.
+    app.dispatch(Action::OpenMapPack("4d53006400000101".into()));
+    assert_eq!(app.opened_pack_map(), Some("ridge"));
+    // Every tool that reads the open map reads it.
+    app.dispatch(Action::SetTool(ToolKind::Tags));
+    assert!(app.tags.is_open(), "{:?}", app.tags.error);
+    assert!(!app.tags.tags().is_empty());
+    assert!(app.title().starts_with("ridge"));
+    // An unknown name says what there is.
+    app.dispatch(Action::OpenMapPack("nowhere".into()));
+    let last = format!("{:?}", app.status().unwrap());
+    assert!(last.contains("basin, spire, ridge"), "{last}");
+    assert_eq!(app.opened_pack_map(), Some("ridge"));
+}
+
+#[test]
+fn unsaved_edits_hold_opening_another_pack_map() {
+    let t = Temp::new("guard");
+    three(&t);
+    let mut app = app_with(&t);
+    app.dispatch(Action::OpenMapPack("ridge".into()));
+    move_flag(&mut app, 4.0);
+    // Re-picking the open map keeps the edits.
+    app.dispatch(Action::OpenMapPack("RIDGE".into()));
+    assert!(app.pending().is_none());
+    assert!((flag_x(&app) - 4.0).abs() < 1e-6);
+    app.dispatch(Action::OpenMapPack("basin".into()));
+    assert_eq!(app.pending_tool(), Some(ToolKind::Scenario));
+    app.resolve(Answer::Cancel);
+    assert_eq!(app.opened_pack_map(), Some("ridge"));
+    app.dispatch(Action::OpenMapPack("basin".into()));
+    app.resolve(Answer::Discard);
+    assert_eq!(app.opened_pack_map(), Some("basin"));
+    assert!(!app.is_dirty());
+}
+
+#[test]
+fn save_as_round_trips_byte_exact_but_for_the_edit_and_never_touches_the_pack() {
+    let t = Temp::new("saveas");
+    let paths = three(&t);
+    let original = std::fs::read(&paths[0]).unwrap();
+    let mut app = app_with(&t);
+    app.dispatch(Action::OpenMapPack("ridge".into()));
+
+    // Unedited: the same bytes.
+    let same = t.0.join("same.map");
+    app.dispatch(Action::SaveMapAs(same.clone()));
+    assert_eq!(std::fs::read(&same).unwrap(), original);
+
+    // One field: its 4 bytes (and the checksum) change, nothing else.
+    move_flag(&mut app, 7.0);
+    let out = t.0.join("ridge.map");
+    app.dispatch(Action::SaveMapAs(out.clone()));
+    assert!(!app.is_dirty());
+    let saved = std::fs::read(&out).unwrap();
+    let changed: Vec<usize> = diff(&original, &saved)
+        .into_iter()
+        .filter(|i| !CHECKSUM.contains(i))
+        .collect();
+    assert!(!changed.is_empty() && changed.len() <= 4, "{changed:?}");
+    assert!(changed.last().unwrap() - changed[0] < 4, "one float: {changed:?}");
+    // The same edit on the same map opened as a loose file writes the
+    // same bytes: the pack path adds nothing of its own.
+    let mut loose = App::new();
+    loose.set_data_root(t.0.join("other"));
+    let copy = t.0.join("loose").join("ridge.map");
+    std::fs::create_dir_all(copy.parent().unwrap()).unwrap();
+    std::fs::write(&copy, &original).unwrap();
+    loose.dispatch(Action::OpenSource(copy));
+    move_flag(&mut loose, 7.0);
+    let out2 = t.0.join("loose.map");
+    loose.dispatch(Action::SaveMapAs(out2.clone()));
+    assert_eq!(std::fs::read(&out2).unwrap(), saved);
+
+    // The installed files: refused, unchanged.
+    move_flag(&mut app, 8.0);
+    app.dispatch(Action::SaveMapAs(paths[0].clone()));
+    assert!(format!("{:?}", app.status().unwrap()).contains("installed content"));
+    let beside = paths[0].with_file_name("ridge-copy.map");
+    app.dispatch(Action::SaveMapAs(beside.clone()));
+    assert!(!beside.exists(), "nothing new written into $c");
+    assert!(app.is_dirty());
+    assert_eq!(std::fs::read(&paths[0]).unwrap(), original);
+}
+
+#[test]
+fn a_pack_map_saves_as_a_new_map_package_that_reopens_with_the_edit() {
+    let t = Temp::new("package");
+    let paths = three(&t);
+    let original = std::fs::read(&paths[1]).unwrap();
+    let mut app = app_with(&t);
+    app.dispatch(Action::OpenMapPack("basin".into()));
+    move_flag(&mut app, 9.0);
+    let form = app.session.form_defaults();
+    assert_eq!(form.dir, "basin-edit");
+    app.dispatch(Action::SavePackage(form));
+    assert!(!app.is_dirty(), "{:?}", app.status());
+    assert_eq!(app.opened_package(), Some("basin-edit"));
+    assert_eq!(app.opened_pack_map(), None);
+    // A new map's package: the whole pack map, then the edit. The game
+    // installs it as a map of its own (boot::new_maps); the pack's file
+    // stays as it was.
+    let pkgs = scenario_edit::package::packages_for(&app.session.maps_dir(), "basin");
+    let p = pkgs.iter().find(|p| p.dir_name() == "basin-edit").unwrap();
+    assert!(p.manifest.base.derived);
+    assert_eq!(p.manifest.patches.len(), 2);
+    assert_eq!(std::fs::read(&paths[1]).unwrap(), original);
+    // The resolved package is the pack map with only the edit changed.
+    let entry = app
+        .packages()
+        .iter()
+        .find(|e| e.key() == "basin-edit")
+        .unwrap()
+        .clone();
+    let resolved =
+        editor_core::packages::read_map(&app.session.maps_dir(), &entry, None).unwrap();
+    let changed: Vec<usize> = diff(&original, &resolved)
+        .into_iter()
+        .filter(|i| !CHECKSUM.contains(i))
+        .collect();
+    assert!(!changed.is_empty() && changed.len() <= 4, "{changed:?}");
+    // The pack map from the list is unedited; the package has the edit.
+    app.dispatch(Action::OpenMapPack("basin".into()));
+    assert!((flag_x(&app) - 9.0).abs() > 1e-6);
+    app.dispatch(Action::OpenPackageEntry("basin-edit".into()));
+    assert!((flag_x(&app) - 9.0).abs() < 1e-6);
+    assert_eq!(app.pack_map_named("basin").unwrap().name, "Basin");
+}
+
+/// The owner's installed Map Pack (`h2 import-mappack`, or `h2 play` with
+/// `mappack.iso` beside the disc), read only: every map listed with a
+/// name and picture in the game's order, two opened with the disc's
+/// shared maps (no geometry left unloaded), and a save that differs from the installed file only in the edit.
+/// `H2_MAPPACK_DATA` names the data root (default `$TMPDIR/h2boot-data`);
+/// the disc is `$H2_DISC`, else `disc/halo2.iso`.
+#[test]
+#[ignore = "needs the installed Map Pack (H2_MAPPACK_DATA) and disc/halo2.iso (or $H2_DISC)"]
+fn installed_map_pack_lists_opens_and_saves() {
+    let data = std::env::var_os("H2_MAPPACK_DATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(content::store::default_data_root);
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let disc =
+        std::env::var_os("H2_DISC").map_or_else(|| root.join("disc/halo2.iso"), PathBuf::from);
+    let mut app = App::new();
+    let scratch = Temp::new("real");
+    app.set_data_root(data.clone());
+    app.dispatch(Action::OpenSource(disc));
+    let maps = app.map_pack().to_vec();
+    eprintln!(
+        "map pack: {}",
+        maps.iter()
+            .map(|m| format!("{} ({}, sort {})", m.name, m.map, m.sort))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    assert_eq!(maps.len(), 9, "the nine maps");
+    let mut ids: Vec<u32> = maps.iter().map(|m| m.id).collect();
+    ids.sort();
+    ids.dedup();
+    assert_eq!(ids.len(), 9);
+    assert!(maps.windows(2).all(|w| (w[0].sort, w[0].id) <= (w[1].sort, w[1].id)));
+    for m in &maps {
+        assert!(!m.name.is_empty());
+        let p = m.picture.as_ref().unwrap();
+        assert_eq!(p.rgba.len(), 220 * 207 * 4);
+    }
+    for m in [&maps[0], maps.last().unwrap()] {
+        let before = std::fs::metadata(&m.path).unwrap();
+        let original = std::fs::read(&m.path).unwrap();
+        app.dispatch(Action::OpenMapPack(m.map.clone()));
+        assert_eq!(app.opened_pack_map(), Some(m.map.as_str()), "{:?}", app.status());
+        let (tris, failed) = app.session.world();
+        eprintln!("{}: {}", m.map, app.session.status());
+        assert!(!tris.is_empty());
+        assert_eq!(failed, 0, "every section loads with the disc's shared maps");
+        let x = flag_x(&app);
+        move_flag(&mut app, x + 1.0);
+        let out = scratch.0.join(format!("{}.map", m.map));
+        app.dispatch(Action::SaveMapAs(out.clone()));
+        let saved = std::fs::read(&out).unwrap();
+        let changed: Vec<usize> = diff(&original, &saved)
+            .into_iter()
+            .filter(|i| !CHECKSUM.contains(i))
+            .collect();
+        assert!(!changed.is_empty() && changed.len() <= 4, "{changed:?}");
+        std::fs::remove_file(&out).unwrap();
+        let after = std::fs::metadata(&m.path).unwrap();
+        assert_eq!(before.modified().unwrap(), after.modified().unwrap());
+        app.dispatch(Action::OpenMapPack(maps[1].map.clone()));
+        app.resolve(Answer::Discard);
+    }
 }
