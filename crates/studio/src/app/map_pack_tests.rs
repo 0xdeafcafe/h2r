@@ -133,7 +133,7 @@ fn the_map_pack_lists_installed_maps_as_the_games_select_map_does() {
     assert_eq!(maps[0].sort, 110);
     assert_eq!(maps[0].description, "Basin, invented for a test.");
     // Any case on the host, as FATX.
-    assert_eq!(maps[0].path, paths[1]);
+    assert_eq!(maps[0].path.as_ref(), Some(&paths[1]));
     // The picture is the record's, turned from B, G, R, A to RGBA.
     let pic = maps[0].picture.as_ref().unwrap();
     assert_eq!((pic.width, pic.height), (220, 207));
@@ -429,8 +429,10 @@ fn installed_map_pack_lists_opens_and_saves() {
         assert_eq!(p.rgba.len(), 220 * 207 * 4);
     }
     for m in [&maps[0], maps.last().unwrap()] {
-        let before = std::fs::metadata(&m.path).unwrap();
-        let original = std::fs::read(&m.path).unwrap();
+        // Listed from the install (no map pack disc is open here).
+        let path = m.path.clone().expect("an installed map");
+        let before = std::fs::metadata(&path).unwrap();
+        let original = std::fs::read(&path).unwrap();
         app.dispatch(Action::OpenMapPack(m.map.clone()));
         assert_eq!(app.opened_pack_map(), Some(m.map.as_str()), "{:?}", app.status());
         let (tris, failed) = app.session.world();
@@ -458,7 +460,7 @@ fn installed_map_pack_lists_opens_and_saves() {
             .collect();
         assert!(!changed.is_empty() && changed.len() <= 4, "{changed:?}");
         std::fs::remove_file(&out).unwrap();
-        let after = std::fs::metadata(&m.path).unwrap();
+        let after = std::fs::metadata(&path).unwrap();
         assert_eq!(before.modified().unwrap(), after.modified().unwrap());
         app.dispatch(Action::OpenMapPack(maps[1].map.clone()));
         app.resolve(Answer::Discard);
