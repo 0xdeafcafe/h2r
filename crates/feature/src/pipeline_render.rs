@@ -156,8 +156,10 @@ pub struct Addrs {
     /// A byte the render clears (per view) and the sim sets: cleared live
     /// at the launch, never handed back.
     pub launch_clear: u32,
-    /// Visit-mark counters (32-bit): render-private. At a fallback, live
-    /// takes the larger of the two values.
+    /// Visit-mark counters (32-bit): the render counts in its view, and the
+    /// join adds its count to live RAM's (by delta, as the serial run
+    /// counts), since some of the stamps (the lights' at `+0x0c`) are
+    /// handed back. At a fallback live is also never behind the view.
     pub mark_counters: &'static [u32],
     /// Visit-mark flags and stamps: render-private; merged at a fallback.
     pub mark_bytes: &'static [Range],
@@ -1766,9 +1768,9 @@ fn hand_back(
                 _ => (0, 0),
             }
         };
-        let marks: Vec<(u32, u64)> = marks
+        let marks: Vec<(u32, (u64, u64))> = marks
             .iter()
-            .map(|&(va, p)| (va, read(Some(p), 4).0))
+            .map(|&(va, p)| (va, read(Some(p), 4)))
             .collect();
         (read(present, 8), read(frame, 4), marks)
     };
@@ -1887,16 +1889,20 @@ fn hand_back(
         };
         let _ = g.set_u32(va, next);
     }
-    if fallback {
-        // The rest of the render runs live: the live counters must not be
-        // behind any stamp it has made or will make.
-        for (va, v) in mark_values {
-            if let Ok(l) = g.u32(va)
-                && (v as u32).wrapping_sub(l) as i32 > 0
-            {
-                let _ = g.set_u32(va, v as u32);
-            }
+    // The visit counters by delta, as the serial run counts: live RAM must
+    // never be behind a stamp the render handed back. Some stamps live
+    // outside the render-private ranges (each light record's at `+0x0c`,
+    // counted by `0x004e0308`): with the counter left at the sim's value,
+    // the next render counted to the stamps the last one left, found every
+    // light visited and drew no dynamic light at all. At a fallback the
+    // rest of the render runs live, so it is also never behind the view.
+    for (va, (view, base)) in mark_values {
+        let Ok(live) = g.u32(va) else { continue };
+        let mut next = live.wrapping_add((view as u32).wrapping_sub(base as u32));
+        if fallback && (view as u32).wrapping_sub(next) as i32 > 0 {
+            next = view as u32;
         }
+        let _ = g.set_u32(va, next);
     }
     if !me.watch.is_empty() {
         let stage = if fallback {
