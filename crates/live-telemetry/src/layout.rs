@@ -286,6 +286,20 @@ pub const UNIT_GRENADE_COUNTS: u32 = 0x23e;
 /// code against 1, 2, 3 and 5. Names from Project Cartographer's
 /// `e_biped_physics_mode`.
 pub const BIPED_PHYSICS_MODE: u32 = 0x3dc;
+/// Unit flags (`u32`). Bit 23 is the crouch request: the crouch update at
+/// `0x000dd83f` tests it, and the biped physics update sets it at
+/// `0x000e291b` while crouch is held and clears it at `0x000e2928` only
+/// when the character physics reports room to stand (`0x001e59d8`), which
+/// is why a biped under a low ceiling stays crouched with the button up.
+pub const UNIT_FLAGS: u32 = 0x134;
+pub const UNIT_FLAG_CROUCH: u32 = 1 << 23;
+/// Biped flags (`u16`). Bit 0 counts airborne ticks into
+/// `BIPED_AIRBORNE_TICKS` (`0x000dd608`); `0x000e4050` (the airborne test
+/// the crouch-to-velocity terms use) wants it set. likely: bit 0 airborne.
+pub const BIPED_FLAGS: u32 = 0x348;
+/// Ticks bit 0 of `BIPED_FLAGS` has been set (`i8`, capped at 127;
+/// `0x000dd611`).
+pub const BIPED_AIRBORNE_TICKS: u32 = 0x399;
 pub const BIPED_MODE_GROUND: u8 = 1;
 pub const BIPED_MODE_FLYING: u8 = 2;
 pub const BIPED_MODE_MELEE: u8 = 6;
