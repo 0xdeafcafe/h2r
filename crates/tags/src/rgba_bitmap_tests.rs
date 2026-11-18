@@ -125,6 +125,23 @@ fn a_new_bitmap_takes_the_template_s_shape_and_its_own_pixels() {
         .read_file_range(u64::from(lod.pointer.offset), u64::from(lod.size))
         .unwrap();
     assert_eq!(px, argb8888_linear(6, 3, &rgba).unwrap());
+    // And read back as RGBA, as the menu rewrite reads its template.
+    let back = Template::read(&mut out, id).unwrap();
+    assert_eq!(back.rgba(&mut out).unwrap(), rgba);
+}
+
+#[test]
+fn linear_argb8888_reads_back_as_rgba_rows() {
+    let rgba: Vec<u8> = (0..5 * 4 * 4).map(|i| i as u8).collect();
+    let lod = argb8888_linear(5, 4, &rgba).unwrap();
+    assert_eq!(rgba_from_argb8888_linear(5, 4, &lod).unwrap(), rgba);
+    // The last row's padding may be missing; a row short is refused.
+    assert_eq!(rgba_from_argb8888_linear(5, 4, &lod[..64 * 3 + 20]).unwrap(), rgba);
+    assert!(rgba_from_argb8888_linear(5, 4, &lod[..64 * 3 + 19]).is_err());
+    // The fixture's LOD (128 bytes for 6x3) is too short to be pixels.
+    let (mut map, template_id) = fixture();
+    let t = Template::read(&mut map, template_id).unwrap();
+    assert!(t.rgba(&mut map).is_err());
 }
 
 #[test]
