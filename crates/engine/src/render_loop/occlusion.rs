@@ -89,6 +89,22 @@ impl DepthMapping {
     /// the fragment stage stores it (`floor` of the scaled w, clamped to
     /// the full scale, over the full scale, as an `f32` in the host's depth
     /// texture): what the GPU grid reads back.
+    /// A W mapping rescaled to the w far the draws really used: Halo's
+    /// own vertex constants and clip range scale w by `z_scale / far`, `far`
+    /// the render camera's far plane (docs/graphics/occlusion-culling.md,
+    /// "The W scale"), while the device's `+0x944` stays at the identity
+    /// projection's 1 (the game never calls `SetTransform`). Keeps the
+    /// full scale; other mappings, and a `far` that is not finite and
+    /// positive, are left as they are.
+    pub fn with_w_far(self, far: f32) -> Self {
+        match self {
+            DepthMapping::WBuffer { zmax, .. } if far.is_finite() && far > 0.0 => {
+                DepthMapping::w_buffer(1.0 / far, zmax)
+            }
+            m => m,
+        }
+    }
+
     pub fn w_buffer_store(view_depth: f32, inv_w_far: f32, z_scale: f32) -> f32 {
         let w = (view_depth as f64 * inv_w_far as f64 * z_scale as f64).clamp(0.0, z_scale as f64);
         (w.floor() / z_scale as f64) as f32
@@ -560,10 +576,19 @@ impl Probe {
     }
 
     /// The more telling of two probes: the one nearer to being occluded,
-    /// then the farther object, then the newer.
+    /// then (all equally far from it, as when every rectangle reads far)
+    /// the larger object, whose rectangle covers more of the grid, then
+    /// the farther, then the newer. Radius before depth so a far speck
+    /// (a casing, a decal-sized object) does not win every window.
     fn better(&self, other: &Probe) -> bool {
         let (a, b) = (self.margin(), other.margin());
-        a > b || (a == b && self.depth >= other.depth)
+        if a != b {
+            return a > b;
+        }
+        if self.radius != other.radius {
+            return self.radius > other.radius;
+        }
+        self.depth >= other.depth
     }
 }
 
@@ -1335,6 +1360,121 @@ mod tests {
             line.contains("near-dropped 2048 depth 0.20..0.20 w far 50.00"),
             "{line}"
         );
+    }
+
+    /// The Old Mombasa probe's raw values: the device reports w far 1 (its
+    /// `+0x944` at the identity projection) and D24's full scale, and the
+    /// grid's finite depths read 0.00..0.04 (streets) up to 0.26 (long
+    /// views). Mapped with the device's scale they are all under the
+    /// 0.5-unit floor (what the run saw: 1929 of 2048 cells dropped).
+    /// Rescaled to the game's own w far (the camera's `+0x44`; 1000 here,
+    /// a test value) they are street depths: 0.04 is 40 units, 0.26 is
+    /// 260, and nothing in 1..500 drops.
+    #[test]
+    fn the_observed_raw_values_map_to_street_depths_with_the_camera_far() {
+        let device = DepthMapping::w_buffer(1.0, D24);
+        let far = 1000.0;
+        let game = device.with_w_far(far);
+        assert_eq!(game, DepthMapping::w_buffer(1.0 / far, D24));
+        for (raw, want) in [
+            (0.0012f32, 1.2f32),
+            (0.04, 40.0),
+            (0.23, 230.0),
+            (0.26, 260.0),
+        ] {
+            assert!(device.view_depth(raw) < 0.5, "device scale: {raw}");
+            let v = game.view_depth(raw);
+            assert!((v - want).abs() < 1e-3 * want, "{raw} -> {v}, want {want}");
+        }
+        // The stored values of a street, 1..500 units, as the game's scale
+        // stores them, read back where they were and survive the drop.
+        let mut raw = Vec::new();
+        for w in [1.0f32, 5.0, 20.0, 60.0, 250.0, 500.0] {
+            raw.push(DepthMapping::w_buffer_store(w, 1.0 / far, D24));
+        }
+        let mut g = DepthGrid::from_raw(6, 1, &raw, game).unwrap();
+        assert_eq!(g.ignore_nearer(0.5), 0);
+        for (i, w) in [1.0f32, 5.0, 20.0, 60.0, 250.0, 500.0].iter().enumerate() {
+            let v = g.depth[i];
+            assert!(v >= *w && v - w < 1e-3 + w * 1e-6, "{w} -> {v}");
+        }
+        let mut g = DepthGrid::from_raw(6, 1, &raw, device).unwrap();
+        // The device's scale reads them as w / 1000: all but the 500-unit
+        // one (0.5) drop.
+        assert_eq!(g.ignore_nearer(0.5), 5, "the device's scale");
+        // Other mappings, and a bad far, are left alone.
+        assert_eq!(DepthMapping::Linear.with_w_far(far), DepthMapping::Linear);
+        assert_eq!(device.with_w_far(0.0), device);
+        assert_eq!(device.with_w_far(f32::NAN), device);
+    }
+
+    /// End to end with the game's scale: a 640x480 W-buffer of a wall at
+    /// 20 stored as the game stores it (w scaled by `z_scale / far`), read
+    /// with the device's mapping (w far 1) rescaled to the camera's far,
+    /// hides an object at 60 from the second frame with depth.
+    #[test]
+    fn a_wall_stored_with_the_game_w_scale_hides_an_object_at_60() {
+        let far = 1000.0;
+        let raw = DepthMapping::w_buffer_store(20.0, 1.0 / far, D24);
+        let buf: Vec<f32> = (0..640 * 480)
+            .map(|i| if i % 640 < 480 { raw } else { 1.0 })
+            .collect();
+        let map = DepthMapping::w_buffer(1.0, D24).with_w_far(far);
+        let frame = |n| {
+            let mut grid = DepthGrid::reduce(&buf, 640, 480, 64, 32, map);
+            grid.ignore_nearer(0.5);
+            Arc::new(Frame {
+                hiz: HiZ::build(grid),
+                camera: cam43(),
+                frame: n,
+            })
+        };
+        let tx = cam43().tan_half_x;
+        let hidden = Bounds {
+            key: 1,
+            center: [60.0, 60.0 * tx * 0.4, 0.0],
+            radius: 1.0,
+            exempt: false,
+        };
+        let mut t = Tracker::new(Rules::default());
+        let mut skips = Vec::new();
+        for n in 1..=3u64 {
+            t.begin(n, cam43(), (n > 1).then(|| frame(n - 1)));
+            skips.push(t.decide(&hidden));
+        }
+        assert_eq!(skips, vec![false, false, true]);
+        let p = t.take_probe().unwrap();
+        assert!((20.0..20.01).contains(&p.max), "{p:?}");
+    }
+
+    /// With every rectangle reading far (no margin to compare), the probe
+    /// picks the larger object, not the farthest speck.
+    #[test]
+    fn the_probe_prefers_a_larger_object_when_nothing_is_close() {
+        let f = Footprint {
+            x0: 0,
+            y0: 0,
+            x1: 1,
+            y1: 1,
+            near: 10.0,
+        };
+        let p = |radius, depth| Probe {
+            key: 0,
+            depth,
+            radius,
+            footprint: f,
+            grid: (64, 32),
+            max: f32::INFINITY,
+            occluded: false,
+            streak: 0,
+            age: 1,
+        };
+        assert!(p(3.0, 20.0).better(&p(0.05, 50.0)));
+        assert!(!p(0.05, 50.0).better(&p(3.0, 20.0)));
+        // A finite margin still wins over size.
+        let mut close = p(0.05, 50.0);
+        close.max = 49.0;
+        assert!(close.better(&p(3.0, 20.0)));
     }
 
     #[test]

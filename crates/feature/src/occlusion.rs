@@ -59,6 +59,9 @@ struct Shot {
     view: u32,
     frame: u64,
     camera: Camera,
+    /// The w far the game scaled this view's W-buffer by (the camera's
+    /// far plane, [`guest::read_w_far`]).
+    w_far: Option<f32>,
 }
 
 /// The grid size asked for.
@@ -86,8 +89,12 @@ pub fn set_capture(f: CaptureFn) {
 }
 
 /// A finished grid for `tag`: raw depths (row 0 the top) and their mapping
-/// to view depth. Publishes the view's [`Frame`]; unknown tags (too old,
-/// or from before a restart) are dropped. Never blocks on the game.
+/// to view depth as the device sees it. A W mapping is rescaled to the
+/// game's own w far, the camera's far plane read with the capture
+/// ([`DepthMapping::with_w_far`]): the game scales w itself and the
+/// device's `+0x944` stays at 1. Publishes the view's [`Frame`]; unknown
+/// tags (too old, or from before a restart) are dropped. Never blocks on
+/// the game.
 pub fn deliver(tag: u64, width: u32, height: u32, raw: &[f32], map: DepthMapping) {
     let shot = {
         let mut f = INFLIGHT.lock().unwrap();
@@ -98,6 +105,10 @@ pub fn deliver(tag: u64, width: u32, height: u32, raw: &[f32], map: DepthMapping
         f.drain(..=i).next_back().map(|(_, s)| s)
     };
     let Some(shot) = shot else { return };
+    let map = match shot.w_far {
+        Some(far) => map.with_w_far(far),
+        None => map,
+    };
     let Some(mut grid) = DepthGrid::from_raw(width, height, raw, map) else {
         return;
     };
@@ -170,6 +181,7 @@ impl Feature for OcclusionCull {
                             view,
                             frame: frame as u64,
                             camera,
+                            w_far: guest::read_w_far(&*mem).ok().flatten(),
                         });
                     }
                 }

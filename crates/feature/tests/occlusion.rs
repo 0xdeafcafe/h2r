@@ -7,8 +7,9 @@
 //! that is not skipped reaches the original (EAX 41). `SCENE_TRANSPARENTS`
 //! stands at the fixture's `eax = 1; ret` (0x403005): its observer asks the
 //! capture function for a grid, and the test answers as the D3D device
-//! would: raw W-buffer values (w far 500, D24S8) of a wall at view depth
-//! 20 over the whole view, mapped as boot maps the device's grids.
+//! would: the raw W-buffer of a wall at view depth 20 over the whole view,
+//! stored with the game's own w scale (D24S8 over the camera's far plane)
+//! and handed over with the device's W parameters (w far 1).
 
 use std::sync::{Arc, Mutex};
 
@@ -31,6 +32,8 @@ const BODIES: u32 = 0x61_2000;
 const LIST: u32 = 0x61_3000;
 const FLAGS: u32 = 0x61_3100;
 const HANDLES: u32 = 0x61_3200;
+/// The camera's far plane (`+0x44`), a test value.
+const FAR: f32 = 1000.0;
 
 fn handle(i: u32) -> u32 {
     0xe000_0000 | (i + 1) << 16 | i
@@ -91,6 +94,8 @@ fn runtime() -> Arc<Runtime> {
     // Viewport top 0, left 0, bottom 480, right 480.
     g.set_u32(CAMERA + 0x30, 0).unwrap();
     g.set_u32(CAMERA + 0x34, 480 | 480 << 16).unwrap();
+    // The far plane the game scales its W-buffer by.
+    g.set_u32(CAMERA_FAR, FAR.to_bits()).unwrap();
     Runtime::new(g, d)
 }
 
@@ -189,16 +194,19 @@ fn the_feature_skips_occluded_objects_from_the_second_frame() {
         // A second transparents call in the frame asks for nothing.
         call(&rt, TRANSPARENTS, CpuAbi::default());
         assert!(asked.lock().unwrap().is_empty());
-        // The device's grid: the W-buffer's raw depth of the wall, with
-        // the W parameters of the moment (`+0x944`, `+0x948`).
-        let (inv_w_far, z_scale) = (1.0f32 / 500.0, 16_777_215.0f32);
-        let raw = vec![DepthMapping::w_buffer_store(20.0, inv_w_far, z_scale); (w * h) as usize];
-        feature::occlusion::deliver(tag, w, h, &raw, DepthMapping::w_buffer(inv_w_far, z_scale));
+        // The device's grid as the game leaves it: w stored with the
+        // game's own scale (`z_scale / far`, far the camera's `+0x44`),
+        // handed over with the device's W parameters, which stay at the
+        // identity projection's (`+0x944` 1, `+0x948` D24's full scale).
+        let z_scale = 16_777_215.0f32;
+        let raw = vec![DepthMapping::w_buffer_store(20.0, 1.0 / FAR, z_scale); (w * h) as usize];
+        feature::occlusion::deliver(tag, w, h, &raw, DepthMapping::w_buffer(1.0, z_scale));
     }
     assert_eq!(feature::occlusion::published(), 3);
-    let (grid, _) = feature::occlusion::last_grid().unwrap();
+    let (grid, map) = feature::occlusion::last_grid().unwrap();
     assert_eq!((grid.cells, grid.far, grid.dropped), (2048, 0, 0));
     assert!((20.0..20.01).contains(&grid.nearest), "{grid:?}");
+    assert_eq!(map, DepthMapping::w_buffer(1.0 / FAR, 16_777_215.0));
     assert_eq!(skipped, vec![vec![], vec![], vec![1]]);
     let flags: Vec<u8> = (0..4)
         .map(|i| rt.memory().u8(FLAGS + 2 * i).unwrap())
