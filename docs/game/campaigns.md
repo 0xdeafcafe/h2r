@@ -151,29 +151,122 @@ map (`<data>/campaigns/halo1/<map>.map`) as `maps\<map>.map`.
 
 Chosen per game on the campaign's game options screen: **Halo 1 assets**
 (default) or **Halo 2 assets**, kept as `campaign.halo1_assets`. The
-import is to write both variants of each level. With Halo 2 assets, Halo 1's
-characters, weapons and vehicles are swapped for their nearest Halo 2
-equivalents (assault rifle to SMG or battle rifle, and so on; the table
-gets fixed in step 4). The setting picks which file the VFS serves when
-the level loads. Halo 1's cutscenes are animated on Halo 1's skeletons, so
-with Halo 2 assets they need retargeting; until that exists, cutscenes
-keep Halo 1's characters in both variants. They play on eight of the ten
-levels (§9, Cutscenes).
+import writes both variants of each level (**Built**, tests only). The
+setting picks which file the VFS serves when the level loads.
 
-**Serving the choice (Built, tests only).** `boot::h1_variants::set_campaign_assets`
-flips the `vfs::SandboxChoice` the campaign maps backend serves by
-(`vfs::CampaignMapsBackend::with_assets`). A level's Halo 2-assets map
-goes beside its Halo 1 map, in an `h2` folder as the multiplayer packages
-have: `<data>/campaigns/halo1/h2/<level>.map`
-(`h1_variants::campaign_alternate`). **The importer does not write it
-yet**, so with Halo 2 assets chosen each level is served from its Halo 1
-map, and the first open says so once on stderr: `campaigns: a30: no Halo 2
-assets level (<path>); serving its Halo 1 map`. The choice applies at the
-level's next open: an open map keeps its file, and `map_changed` lets
-`boot::map_slots` drop a cached copy of the other file (slots 4 and 5).
-Each file has its own `MapId`. Tests: `vfs`
+**The Halo 2-assets variant (Built: `h1campaign::h2assets`,
+`Options::assets`).** The level is converted as the Halo 1 one is
+(structure, sky, scenery, devices, AI, scripts, sounds), except that the
+weapon, equipment and vehicle palettes, the starting profiles' weapons and
+the player name **retail Halo 2 tags**: the base's (05a), or copied whole
+from a donor map off the Halo 2 disc (`h2assets::wanted`, then
+`donor::bring`, as the characters are). A Halo 1 tag is recognised by
+words in its path; the Halo 2 tag by its group and the last part of its
+name (`h2assets::find`). No tag list is copied from either game.
+
+| Halo 1 | Halo 2 | Why |
+|---|---|---|
+| Assault rifle | SMG | The user's multiplayer rule ([h1-multiplayer.md](h1-multiplayer.md)): both automatic; a campaign has no game variant to make it the battle rifle |
+| Pistol | Magnum | Same slot, the user's multiplayer choice |
+| Plasma pistol, plasma rifle, needler, sniper rifle, rocket launcher, shotgun | The same | |
+| Fuel rod (`plasma_cannon`) | Fuel rod gun (`flak_cannon`) | Halo 2's campaign has one (multiplayer's table makes it the rocket launcher only because multiplayer lacks it) |
+| Flamethrower | Shotgun | Close range; Halo 2 has none (multiplayer's choice) |
+| Energy sword | Energy blade | |
+| Frag and plasma grenades | Halo 2's | The globals keep the base's grenade types (Halo 1's are not written) |
+| Health pack | Halo 1's, converted | Halo 1's health model stays whatever the assets (§6) |
+| Ammo pickups | Left out | Halo 2 has none, and the Halo 1 weapons they fill are gone |
+| Warthog, rocket warthog | Warthog | The gauss warthog is a model variant a campaign placement does not name |
+| Ghost, scorpion, banshee, wraith | The same | |
+| Shade (`c gun turret`) | Covenant turret (`c_turret_ap`) | |
+| Pelican, Covenant dropship, lifepod | Halo 1's, converted | Set pieces: the scripts fly them with Halo 1's recorded and custom animations and load the AI into their seats |
+| The cyborg (the player) | Master Chief (`masterchief`) | Set as the campaign players' unit (`matg +0x138`) |
+| Cutscene props (`..._cinematic`: a10's scorpion) | Halo 1's, converted | Cutscenes keep Halo 1's objects |
+| Vehicles flown by a recording (`..._playback`: d20's banshee) | Halo 1's, converted | The recording replays Halo 1's controls, which on Halo 2's vehicle would fly another path |
+
+A Halo 2 tag neither the base nor a donor has leaves the Halo 1 object
+in place (converted); a `dropped` line says so.
+
+**Kept Halo 1's in both variants:**
+
+- **Placed bipeds.** They are the cutscenes' casts and the levels'
+  bodies. Halo 1's cutscenes are animated on Halo 1's skeletons, so with
+  Halo 2 assets they need retargeting; until that exists, cutscenes keep
+  Halo 1's characters in both variants. They play on eight of the ten
+  levels (§9, Cutscenes).
+- **The AI's characters** are retail Halo 2 `char` tags in both
+  (`h1ai::convert::character_for`): their bipeds and weapons are Halo 2's
+  already, squads name them the same way (squad weapons -1, the
+  character's own). The disc test checks the two variants pick the same
+  characters.
+- **Scenery, devices, sounds, text**: the level.
+
+**The scripts' references.** Object names point at the placements as
+before (the palette entry changed, not the placement). Each swap is kept
+as an alias (`h2assets::Aliases`): the scripts' `object_definition`
+atoms (`unit_has_weapon`, ...) and their reference block resolve a Halo
+1 tag name to the Halo 2 tag placed for it. `object_definition` atoms
+now resolve by tag name in the Halo 1 variant too (they were `none`).
+Seat mappings already match Halo 2 vehicles' seats by role
+(`h1scripts::seats`).
+
+**Writing and serving it.** `h2 import halo1` writes it as the job
+`<level>/h2` after every other job (Halo 1's assets are the default),
+to `<data>/campaigns/halo1/h2/<level>.map`
+(`h1_variants::campaign_alternate`), with no HUD pairs and no manifest of
+its own. `boot::h1_variants::set_campaign_assets` flips the
+`vfs::SandboxChoice` the campaign maps backend serves by
+(`vfs::CampaignMapsBackend::with_assets`). With Halo 2 assets chosen and
+no such file (an import older than converter version 55), the level is
+served from its Halo 1 map and the first open says so once on stderr:
+`campaigns: a30: no Halo 2 assets level (<path>); serving its Halo 1
+map`. The choice applies at the level's next open: an open map keeps its
+file, and `map_changed` lets `boot::map_slots` drop a cached copy of the
+other file (slots 4 and 5). Each file has its own `MapId`. The Halo 1
+map's HUD pairs (`<level>.hud.toml`) name its own datums, so `boot::hud_swap`
+skips them while a level's Halo 2-assets map is served
+(`hud_swap::campaign_halo2_levels`).
+
+Tests: `h1campaign` `h2assets::tests` (the table, finding a role by
+name, aliases); `vfs`
 `campaign_maps::tests::the_assets_choice_picks_the_level_at_its_next_open`,
-`without_a_halo2_assets_level_the_halo1_one_is_served`.
+`without_a_halo2_assets_level_the_halo1_one_is_served`; `cli`
+`h1_import::tests` (the job list and where `<level>/h2` writes); `boot`
+`hud_swap::tests::campaign_levels_read_their_hud_files`. Against the
+discs (ignored): `H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso cargo
+test --release -p h1campaign --test assets -- --ignored --nocapture`
+builds both variants of every level (`H1_LEVELS=a30,b40` for some): each
+from scratch, every reference resolving, every script tag atom naming a
+tag of its group; in the Halo 2 variant no Halo 1 item the table swaps
+is placed or given, the player is the Chief, the AI's characters are the
+Halo 1 variant's. Measured (2026-11-18,
+converter version 55, 260 s for all twenty):
+
+| Level | Tag memory, Halo 1 / Halo 2 assets | File, Halo 1 / Halo 2 | References resolving, Halo 2 |
+|---|---|---|---|
+| a10 | `0x8bc000` / `0x89f000` | 197,134,336 / 194,950,144 | 29,799/29,799 |
+| a30 | `0x8c1000` / `0x88d000` | 117,349,376 / 113,353,216 | 28,652/28,652 |
+| a50 | `0x8cd000` / `0x8c4000` | 165,808,128 / 163,699,200 | 30,143/30,143 |
+| b30 | `0x86c000` / `0x82e000` | 130,685,952 / 126,113,792 | 29,138/29,138 |
+| b40 | `0x966000` / `0x8f5000` | 210,296,832 / 202,618,880 | 30,708/30,708 |
+| c10 | `0x8a4000` / `0x892000` | 187,266,048 / 184,510,464 | 29,330/29,330 |
+| c20 | `0x787000` / `0x770000` | 157,552,128 / 155,148,800 | 21,997/21,997 |
+| c40 | `0x89b000` / `0x834000` | 218,715,136 / 211,270,656 | 27,788/27,788 |
+| d20 | `0x8a7000` / `0x885000` | 176,786,432 / 174,510,592 | 27,310/27,310 |
+| d40 | `0x8cf000` / `0x89b000` | 258,213,376 / 254,423,552 | 28,061/28,061 |
+
+Both variants of every level build from scratch with 0 dangling
+references and every script tag atom resolving; the Halo 2 variant is a
+little smaller everywhere. Every retail tag the table names was already in
+05a (no donor was needed). Swapped on the ten levels: the assault rifle,
+pistol, sniper rifle, rocket launcher, shotgun, needler, plasma pistol and
+rifle, both grenades, the warthog, ghost, scorpion, banshee, wraith and
+shade; ammo pickups dropped (26 palette entries).
+
+**Only a game run shows:** Halo 2 weapons and vehicles in Halo 1's
+encounters; the Chief in Halo 1's cutscenes that move the player (the
+casts are Halo 1's, but a script may animate `(player0)`); Halo 1's
+health model and meter on Halo 2's Chief; Halo 1's scripted drops with
+Halo 1 pelicans and dropships carrying Halo 2 vehicles and AI.
 
 ## 6. Health (the exception)
 
@@ -805,7 +898,9 @@ unrunnable on every level.
    owner's discs (2026-11-17) that is 36 maps (ten levels, 13 multiplayer
    maps in two sandboxes) in about 90 s of a release build, the disc's
    hash included. Later starts print `halo1: up to date (36 maps from
-   halo1.iso)` and go straight on.
+   halo1.iso)` and go straight on. Since converter version 55 each level's
+   Halo 2-assets variant (§5) comes after those, ten more jobs (46),
+   `halo1: [37/46] campaign a10 (Halo 2 assets): done`.
 3. Sign in, **Campaign**, then **Halo: Combat Evolved**, the picker's first row (Halo 2 is second):
    the ten levels, a10 to d40, as far as the profile has got. Halo 1's
    multiplayer maps are `h1_<map>` in the multiplayer map list (Custom
@@ -831,8 +926,9 @@ map. `--copy-source` also copies the disc's campaign maps unchanged to
 
 | Job | Output | Read by |
 |---|---|---|
-| each of a10 .. d40 | `<data>/campaigns/halo1/<level>.map`, `campaign.toml` (`content::campaign_list::HALO1`); not yet its Halo 2-assets map, `<data>/campaigns/halo1/h2/<level>.map` (§5) | the campaign picker and lists (`boot::campaigns`), `vfs::CampaignMapsBackend` as `maps\<level>.map`, `--level` (`level_boot::resolve_in`) |
+| each of a10 .. d40 | `<data>/campaigns/halo1/<level>.map`, `campaign.toml` (`content::campaign_list::HALO1`) | the campaign picker and lists (`boot::campaigns`), `vfs::CampaignMapsBackend` as `maps\<level>.map`, `--level` (`level_boot::resolve_in`) |
 | each Halo 1 multiplayer map on the disc (`h1convert::convert::MAPS`), Halo 2 then Halo 1 sandbox | `<data>/maps/h1_<map>/{h2,h1}/h1_<map>.map`, `manifest.toml` | `boot::new_maps`, the `multiplayer.halo1_sandbox` setting picks the variant |
+| then each level's Halo 2-assets variant, job `<level>/h2` (§5) | `<data>/campaigns/halo1/h2/<level>.map` | `vfs::CampaignMapsBackend::with_assets` when `campaign.halo1_assets` is Halo 2 |
 
 Campaign levels are written fresh from their base (§9); multiplayer maps
 fresh from their default base (`--pinned` for either keeps the base).
@@ -859,8 +955,10 @@ A map that failed is not tried again until one of those: a failure from
 a converter bug stays a failure until the converter changes.
 
 **Tests.** `cli` `h1_import::tests` (12): the job list (campaign in play
-order, then the multiplayer maps the disc has, both sandboxes); where each
-writes (the folders `boot::new_maps` and the campaigns read); the stamp
+order, then the multiplayer maps the disc has, both sandboxes, then each
+level's Halo 2-assets variant); where each writes (the folders
+`boot::new_maps` and the campaigns read, the variant where
+`h1_variants::campaign_alternate` looks); the stamp
 reads back; an unchanged disc is not hashed again and keeps its outcomes,
 another disc or converter version starts again; what is pending; a map
 that fails or panics is recorded, the stamp saved after each, the rest
@@ -879,7 +977,8 @@ Against the discs (ignored): `H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso
 cargo test --release -p cli --bin h2 h1_import::tests::real -- --ignored
 --nocapture` imports everything into a scratch data root, imports again
 (nothing to do), and checks `boot::new_maps` lists every `h1_<map>`, the
-picker's Halo 1 lists the ten levels, the VFS serves each level's map, and
+picker's Halo 1 lists the ten levels, the VFS serves each level's map
+(and its Halo 2-assets map when those are chosen), and
 `--level` resolves each (`H1_JOBS=a30,bloodgulch` for some).
 
 **Found missing, and fixed:** `h2 play --level` and `H2_LEVEL` knew only
