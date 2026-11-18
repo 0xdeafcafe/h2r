@@ -101,9 +101,12 @@ links redirect there) is the record, laid out like
 a mid-2000s game stats site: a fixed 902px column on a navy page, a header
 with the Welcome box, a black nav strip, breadcrumbs, a banner strip, then a
 290px menu column (pill menu, People Finder, reports, Recent Games) beside
-the content. The nav's tabs start with the home, "h2 live Online"; the
-way back to the dashboard is the small "‹ Dashboard" chip in the header's
-corner, not a tab, and every page's breadcrumbs start at "Home" (`/games/halo2`).
+the content. The header's logo and the banner strip's mark are the
+"h2 | UPLINK" wordmark (`stats/Wordmark.tsx`, original art), so the site
+reads as `STATS_NAME` throughout. The nav's tabs start with the home,
+"h2 Uplink"; the way back to the dashboard is the small "‹ Live Dashboard"
+chip in the header's corner (`DASH_NAME`, as are the other links back to
+it), not a tab, and every page's breadcrumbs start at "Home" (`/games/halo2`).
 Pages: the home (`/games/halo2`, `stats/Home.tsx`: live now with the live games,
 players online and open games; the last 24 hours and all-time totals;
 leaderboards for today, this week, this month or all time (`?window=`):

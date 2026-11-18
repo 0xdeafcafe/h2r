@@ -35,7 +35,7 @@ describe("nav and crumbs", () => {
 
   test("the way out goes to the dashboard and says so", () => {
     expect(DASHBOARD_EXIT.href).toBe("/");
-    expect(DASHBOARD_EXIT.label).toContain("Dashboard");
+    expect(DASHBOARD_EXIT.label).toBe("‹ Live Dashboard");
     expect(HOME_CRUMB).toEqual(["Home", "/games/halo2"]);
   });
 

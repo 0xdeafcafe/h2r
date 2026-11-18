@@ -171,8 +171,12 @@ fn art_files(dir: &Path) -> std::io::Result<Vec<(String, u64)>> {
 }
 
 /// The extraction's stamp: 16 hex digits of a SHA-256 over every file's
-/// path and size and the manifest's bytes. A new extraction (a new
-/// extractor, another disc) is a new stamp, so a new set of addresses.
+/// path and size, which representation of it is published ([`encoded`]:
+/// plain, `br` or `gzip`) and that representation's size, and the
+/// manifest's bytes. A new extraction (a new extractor, another disc) is a
+/// new stamp, so a new set of addresses; so is any change to what would be
+/// uploaded (a compressed copy written again, or dropped as stale), since
+/// published objects are immutable and the old addresses stay cached.
 pub fn stamp(dir: &Path) -> std::io::Result<String> {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
@@ -180,6 +184,14 @@ pub fn stamp(dir: &Path) -> std::io::Result<String> {
         h.update(rel.as_bytes());
         h.update([0]);
         h.update(size.to_le_bytes());
+        let plain = dir.join(&rel);
+        let (coding, source) = match encoded(&plain) {
+            Some((p, enc)) => (enc, std::fs::metadata(p)?.len()),
+            None => ("identity", size),
+        };
+        h.update(coding.as_bytes());
+        h.update([0]);
+        h.update(source.to_le_bytes());
     }
     h.update(std::fs::read(dir.join(MANIFEST))?);
     let hex: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
@@ -189,13 +201,22 @@ pub fn stamp(dir: &Path) -> std::io::Result<String> {
 /// The compressed copy of `plain` a client is sent instead, and its
 /// `Content-Encoding`: the Brotli one (`<file>.br`, written by
 /// [`crate::art_pack`]) when there is one, else the gzip one (`<file>.gz`,
-/// older extractions' `map.glb.gz`). What is published is the same.
+/// older extractions' `map.glb.gz`). What is published is the same. A copy
+/// older than its plain file (by modification time) is stale, written
+/// before the file was changed (`bun run banner` rewriting the manifest),
+/// and is ignored.
 fn encoded(plain: &Path) -> Option<(PathBuf, &'static str)> {
+    let plain_modified = std::fs::metadata(plain).and_then(|m| m.modified()).ok();
     [("br", "br"), ("gz", "gzip")]
         .into_iter()
         .find_map(|(ext, enc)| {
             let p = PathBuf::from(format!("{}.{ext}", plain.display()));
-            p.is_file().then_some((p, enc))
+            let m = std::fs::metadata(&p).ok().filter(|m| m.is_file())?;
+            let stale = match (m.modified().ok(), plain_modified) {
+                (Some(copy), Some(plain)) => copy < plain,
+                _ => false,
+            };
+            (!stale).then_some((p, enc))
         })
 }
 
@@ -857,5 +878,96 @@ mod tests {
         assert!(!versioned(Some("version=1")));
         assert!(!versioned(None));
         assert_eq!(cache_control(false), "no-cache");
+    }
+
+    /// A compressed copy older than its plain file (the manifest rewritten
+    /// after extraction, by `bun run banner`) is stale: it is neither served
+    /// nor published, and a fresh one is. The stamp follows what is
+    /// published, so a copy going stale, or being written again, is a new
+    /// stamp.
+    #[test]
+    fn stale_compressed_copies_are_skipped_and_change_the_stamp() {
+        use std::time::{Duration, SystemTime};
+        let dir = std::env::temp_dir().join(format!("h2-art-stale-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = dir.join(MANIFEST);
+        let br = dir.join("manifest.json.br");
+        let gz = dir.join("manifest.json.gz");
+        let set = |p: &Path, t: SystemTime| {
+            std::fs::File::options()
+                .write(true)
+                .open(p)
+                .unwrap()
+                .set_modified(t)
+                .unwrap();
+        };
+        let t0 = SystemTime::now() - Duration::from_secs(3600);
+        std::fs::write(&manifest, r#"{"images":{}}"#).unwrap();
+        std::fs::write(&br, b"brotli").unwrap();
+        std::fs::write(&gz, b"gzipped").unwrap();
+        set(&manifest, t0);
+        set(&br, t0 + Duration::from_secs(1));
+        set(&gz, t0 + Duration::from_secs(1));
+        // Fresh copies: the Brotli one is used.
+        assert_eq!(encoded(&manifest), Some((br.clone(), "br")));
+        let fresh = stamp(&dir).unwrap();
+
+        // The manifest rewritten after its copies (same size, so only the
+        // representation differs): both copies are stale, the plain file
+        // goes up.
+        std::fs::write(&manifest, r#"{"images":[]}"#).unwrap();
+        set(&manifest, t0 + Duration::from_secs(2));
+        assert_eq!(encoded(&manifest), None);
+        let plain = stamp(&dir).unwrap();
+        assert_ne!(plain, fresh, "a stale copy dropped is a new stamp");
+
+        // Only the gzip copy written again: it is used, and the stamp moves.
+        set(&gz, t0 + Duration::from_secs(3));
+        assert_eq!(encoded(&manifest), Some((gz.clone(), "gzip")));
+        let gzipped = stamp(&dir).unwrap();
+        assert_ne!(gzipped, plain);
+
+        // Both written again: Brotli again, a stamp of its own.
+        std::fs::write(&br, b"brotli, longer").unwrap();
+        set(&br, t0 + Duration::from_secs(3));
+        assert_eq!(encoded(&manifest), Some((br.clone(), "br")));
+        let again = stamp(&dir).unwrap();
+        assert_ne!(again, gzipped);
+        // A Brotli copy of another size is another stamp.
+        std::fs::write(&br, b"brotli").unwrap();
+        set(&br, t0 + Duration::from_secs(3));
+        assert_ne!(stamp(&dir).unwrap(), again);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// `publish` uploads the plain file in place of a stale compressed copy.
+    #[cfg(feature = "native")]
+    #[tokio::test]
+    async fn publishing_skips_a_stale_compressed_copy() {
+        use std::time::{Duration, SystemTime};
+        let root = std::env::temp_dir().join(format!("h2-art-stale-pub-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (dir, bucket) = (root.join("art"), root.join("bucket"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&bucket).unwrap();
+        let manifest = dir.join(MANIFEST);
+        std::fs::write(&manifest, br#"{"source":"banner"}"#).unwrap();
+        std::fs::write(dir.join("manifest.json.br"), b"old brotli").unwrap();
+        let old = SystemTime::now() - Duration::from_secs(3600);
+        std::fs::File::options()
+            .write(true)
+            .open(dir.join("manifest.json.br"))
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        let none = |_: &str| None;
+        let to = format!("file:{}", bucket.display());
+        let (report, _, _) = publish_to(&dir, &to, "https://art.example.net/", &none)
+            .await
+            .unwrap();
+        let key = bucket.join(format!("art/{}/{MANIFEST}", report.stamp));
+        assert_eq!(std::fs::read(key).unwrap(), br#"{"source":"banner"}"#);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }
