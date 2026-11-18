@@ -558,7 +558,7 @@ async fn a_rostered_bot_is_an_account_that_never_signs_in() {
     );
     let id = h.start_game(&a, game).await;
 
-    let v = h.get(&format!("/v1/accounts/{}", b0.gamertag)).await;
+    let v = h.get(&format!("/v1/accounts/{}", b0.gamertag.to_string().replace(' ', "%20"))).await;
     assert_eq!(
         v.status,
         StatusCode::OK,
@@ -615,7 +615,7 @@ async fn a_rostered_bot_is_an_account_that_never_signs_in() {
     let r = h
         .call(
             Method::POST,
-            &format!("/v1/accounts/{}/recover", b0.gamertag),
+            &format!("/v1/accounts/{}/recover", b0.gamertag.to_string().replace(' ', "%20")),
             &[],
             json!({
                 "request": live_proto::recovery::RecoverRequest::sign(

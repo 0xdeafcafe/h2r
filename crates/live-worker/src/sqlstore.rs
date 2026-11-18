@@ -897,7 +897,7 @@ mod tests {
         assert_eq!(status, 201, "{roster}");
         let bot = &roster["bots"][0];
         let tag = bot["gamertag"].as_str().unwrap();
-        let (status, v) = call("GET", format!("/v1/accounts/{tag}"), None, String::new()).await;
+        let (status, v) = call("GET", format!("/v1/accounts/{}", tag.replace(' ', "%20")), None, String::new()).await;
         assert_eq!(status, 200, "{v}");
         assert_eq!(v["bot"], true);
         assert_eq!(v["xuid"], bot["xuid"]);
