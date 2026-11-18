@@ -10,6 +10,7 @@ import Veil from "./dash/Veil";
 import StatsLayout, { Title } from "./stats/Layout";
 import { live } from "./state/live";
 import { startGameArt } from "./state/gameart";
+import { ThemeColor } from "./themeColor";
 
 // The dashboard (the front page) is in the main chunk; the stats pages,
 // admin and sign-in are chunks of their own that come in once the browser
@@ -67,7 +68,7 @@ const OldPlayer = () => <Navigate href={`/stats/players/${useParams().tag}`} />;
 
 render(
   () => (
-    <Router root={Veil}>
+    <Router root={(p) => <><ThemeColor /><Veil {...p} /></>}>
       <Route path="/dash/teams" component={() => <Navigate href="/dash/clans" />} />
       <Route path="/dash/teams/:tag" component={() => <Navigate href={`/dash/clans/${useParams().tag}`} />} />
       <Route path="/dash/admin/style" component={DeckStyle} />

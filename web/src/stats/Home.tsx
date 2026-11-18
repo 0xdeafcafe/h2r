@@ -1,4 +1,4 @@
-// The stats home ("h2 live Online", /stats): what is happening now (players
+// The stats home (STATS_NAME, /stats): what is happening now (players
 // online, live games, open games), the server's numbers for the last day and
 // all time, leaderboards over a window, the weapon and map of the week, maps,
 // weapons, game types and skulls, an activity heatmap, clan standings and the
@@ -38,6 +38,7 @@ import { ScoreLine } from "./Games";
 import { ClanEmblem } from "./clanBits";
 import { clanHref } from "./modes";
 import { agoWords, count, num, ratio, usDate } from "./fmt";
+import { STATS_NAME } from "../brand";
 
 const mapTitleOf = (m: { map: string; map_id?: string }) => gameMapTitle({ map: m.map, map_id: m.map_id ?? null });
 const skullName = (i: number) => SKULLS.find((s) => s.index === i)?.name ?? `Skull ${i}`;
@@ -396,8 +397,8 @@ export function HomeView(props: { win: StatsWindow; week: StatsSummary | null; w
       <Strip kind="home" />
       <div class="s-cols s-cols--over">
         <aside class="s-left">
-          <Title>h2 live Online</Title>
-          <Pills label="h2 live Online" items={[
+          <Title>{STATS_NAME}</Title>
+          <Pills label={STATS_NAME} items={[
             { label: `Live Now (${liveGames(live.state).length})`, href: "#live" },
             { label: "Games Spotlight", href: "/stats/games" },
             { label: "Players & Leaderboards", href: "/stats/players" },

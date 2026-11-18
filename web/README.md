@@ -85,7 +85,8 @@ Signed in it is live now, games, find a game, friends, players,
 account (recovery code, authenticator, devices, sign out) and settings;
 profile and the server (`/dash/server`: service admin) sit under settings.
 Open **Games** (`/dash/games`) and select **Halo 2** to see recent games and,
-when signed in, your service record. **View stats** opens `/stats`.
+when signed in, your service record. Its link to the stats site (named by
+`STATS_NAME` in `src/brand.ts`) opens `/stats`.
 The Halo admin area (MOTD, playlists, custom content) is on the stats site
 at `/stats/admin` ([docs/live/live-admin.md](../docs/live/live-admin.md)).
 Keyboard: arrows move, Enter (or `a`) selects,
@@ -465,6 +466,54 @@ a translucent column with an arrow along its push
 with chevrons, reading the extras from the head of the glb (a streamed read
 that stops after the JSON, never the meshes). Both have a "Lifts &
 teleporters" button when the map has any.
+
+## Names, icons and link previews
+
+**Names.** `src/brand.ts` holds the two product names: `SITE_NAME` ("h2
+live", the service and the dashboard) and `STATS_NAME` (the stats site,
+"h2 Uplink"), plus the two sides' theme colours. Renaming is a one-line
+change there; routes never change with a name. `vite.config.ts` writes the
+names into `index.html` (`%H2_SITE_NAME%`, `%H2_STATS_NAME%`), and the
+server reads them back out of the built HTML for link previews. Names
+considered for the stats site, avoiding anyone's trademarks as a product
+name: **h2 Uplink** (chosen: a terminal you dial into for the record, in
+the network-era voice of the old stats sites), h2 Debrief, h2 Dispatch,
+Combat Record (too close to the Service Record pages), h2 Archive, and the
+old "h2 live Online".
+
+**Icons.** `bun run brand` draws the favicons (`favicon.ico` at 16, 32 and
+48 from the hand-tuned micro icon, `favicon.svg`), the Apple touch icon,
+the manifest's 192, 512 and maskable 512 icons, `manifest.webmanifest` and
+the default link-preview card (`og/default.jpg`, 1200 x 630) into
+`public/`, from the project's own icon art (`art/app-icon/`, the iOS,
+tvOS and Mac exports; `brand/plan.ts` lists them). A headless Chrome draws
+them. Rerun it when the art or a name changes and commit the results:
+they are our art, not the game's.
+
+**Link previews.** The app renders in the browser and crawlers run no
+script, so the server writes each page's `<title>`, description, theme
+colour, Open Graph and Twitter card tags into `index.html` in place of the
+block between `<!-- page-meta -->` and `<!-- /page-meta -->`
+(`crates/live-server/src/page_meta.rs`). A player's page gets their record
+(games, wins, kills, K/D from the public stats), a game's its variant, map,
+score, winner and players, a clan's its name, members and motto; other
+pages their section. Only what an anonymous reader may see is used: a
+hidden game or a private server gives the section's preview. The machine's
+server does it in its SPA fallback; the Worker for the paths
+`wrangler.toml` sends it first, reading `index.html` through the `ASSETS`
+binding and asking the hub (`GET /v1/page-meta?path=`) only for a page that
+names a player, game or clan. Pages stay `no-cache`.
+
+Every page shares the default card for now. Planned: per-game and
+per-player cards (a game's map picture, score and players; a player's
+emblem and record) drawn on request at `/og/game/{id}.png` and
+`/og/player/{tag}.png`, in Rust so both homes share it (a small rasteriser
+such as `resvg`/`tiny-skia` with an OFL font embedded, built for wasm32 as
+well), the map picture fetched from the published game art
+(`H2_LIVE_GAME_ART_URL`, never from the repository), and the result kept
+by the CDN under a key that includes the game's log position (an ended
+game's card never changes). The open questions are the Worker's wasm size
+and CPU budget for a 1200 x 630 render.
 
 ## Architecture
 

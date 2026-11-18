@@ -4,6 +4,7 @@
 
 import { beforeAll, describe, expect, test } from "bun:test";
 import { plugin } from "bun";
+import { STATS_NAME } from "../src/brand";
 
 let html = "";
 let unsupported = "";
@@ -61,7 +62,7 @@ beforeAll(async () => {
 describe("the stats home, rendered", () => {
   test("the nav has the home tab first and the dashboard as a way out, not a tab", () => {
     const nav = html.slice(html.indexOf('class="s-nav"'), html.indexOf("</nav>"));
-    expect(nav.indexOf("h2 live Online")).toBeLessThan(nav.indexOf("My Stats"));
+    expect(nav.indexOf(STATS_NAME)).toBeLessThan(nav.indexOf("My Stats"));
     expect(nav).not.toContain("Dashboard");
     expect(html).toMatch(/<a [^>]*href="\/" class="s-exit[^"]*"[^>]*>‹ Dashboard<\/a>/);
   });

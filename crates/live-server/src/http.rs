@@ -306,6 +306,7 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         )
         .route("/v1/server", get(crate::status::get_server))
         .route("/v1/stats/summary", get(crate::stats::get_summary))
+        .route("/v1/page-meta", get(page_meta))
         .route("/v1/ranks/{playlist}", get(crate::ranks::leaderboard))
         .route("/v1/rank-stats", get(crate::ranks::stats))
         .route(
@@ -399,6 +400,7 @@ pub fn router_with_web(live: Arc<Live>, dir: Option<&std::path::Path>) -> Router
 /// when there is no game art.
 pub fn router_with_site(live: Arc<Live>, site: &Site) -> Router {
     let published = live.published_art().cloned();
+    let pages = live.clone();
     let mut api = api_router(
         live,
         crate::status::SiteFacts {
@@ -415,23 +417,72 @@ pub fn router_with_site(live: Arc<Live>, site: &Site) -> Router {
     };
     #[cfg(not(feature = "native"))]
     let _ = published;
-    with_web(api, site.web.as_deref()).layer(middleware::from_fn(crate::caching::layer))
+    with_web(api, pages, site.web.as_deref()).layer(middleware::from_fn(crate::caching::layer))
 }
 
 /// The built web app's files beside the API, `index.html` for any other
 /// path; or, with none, a JSON 404.
 #[cfg(feature = "native")]
-fn with_web(api: Router, dir: Option<&std::path::Path>) -> Router {
+fn with_web(api: Router, live: Arc<Live>, dir: Option<&std::path::Path>) -> Router {
     let Some(dir) = dir else {
         return api.fallback(|| async { not_found("no such endpoint") });
     };
-    let index = tower_http::services::ServeFile::new(dir.join("index.html"));
-    api.fallback_service(tower_http::services::ServeDir::new(dir).fallback(index))
+    let index = dir.join("index.html");
+    let page = get(move |State(live): Shared, req: Request| {
+        let index = index.clone();
+        async move { app_page(&live, &index, &req).await }
+    })
+    .with_state(live);
+    // `/` too: the app's HTML is always the page's, never the bare file.
+    let files = tower_http::services::ServeDir::new(dir)
+        .append_index_html_on_directories(false)
+        .fallback(page);
+    api.fallback_service(files)
+}
+
+/// The app's HTML for a page: `index.html` with the page's link preview
+/// ([`crate::page_meta`]), read afresh so a new build shows at once.
+#[cfg(feature = "native")]
+async fn app_page(live: &Live, index: &std::path::Path, req: &Request) -> Response {
+    let Ok(html) = tokio::fs::read_to_string(index).await else {
+        return not_found("no web app").into_response();
+    };
+    let path = req.uri().path();
+    let sent = |name: &str| req.headers().get(name).and_then(|v| v.to_str().ok());
+    let origin = crate::page_meta::origin(
+        live.public.get().as_deref(),
+        sent("host"),
+        sent("x-forwarded-proto"),
+    );
+    let meta = crate::page_meta::describe(live, path);
+    let body = crate::page_meta::page_html(&html, &meta, &origin, path);
+    (
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/html; charset=utf-8"),
+        )],
+        body,
+    )
+        .into_response()
+}
+
+/// `GET /v1/page-meta?path=`: what a page of the web app is, for its link
+/// preview ([`crate::page_meta`]). The Worker asks this for pages that
+/// name a player, game or clan; the machine's server reads it directly.
+async fn page_meta(
+    State(live): Shared,
+    Params(p): Params<HashMap<String, String>>,
+) -> ApiResult<Response> {
+    let path = p.get("path").map_or("/", String::as_str);
+    Ok(json(
+        StatusCode::OK,
+        &crate::page_meta::describe(&live, path),
+    ))
 }
 
 /// A Worker serves the web app as static assets, ahead of this router.
 #[cfg(not(feature = "native"))]
-fn with_web(api: Router, _dir: Option<&std::path::Path>) -> Router {
+fn with_web(api: Router, _live: Arc<Live>, _dir: Option<&std::path::Path>) -> Router {
     api.fallback(|| async { not_found("no such endpoint") })
 }
 

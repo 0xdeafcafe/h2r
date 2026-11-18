@@ -17,6 +17,7 @@ import { adminState } from "../admin/state";
 import { DASHBOARD_EXIT, STATS_HOME, statsNav } from "./modes";
 import { gameImage } from "../state/gameart";
 import { bannerKey } from "../lib/gameart";
+import { STATS_NAME } from "../brand";
 
 const playerHref = (tag: string) => `/stats/players/${encodeURIComponent(tag)}`;
 
@@ -42,7 +43,7 @@ export default function StatsLayout(props: { children?: JSX.Element }) {
       <div class="s-column">
         <header class="s-top">
           <A href={DASHBOARD_EXIT.href} end class="s-exit" title={DASHBOARD_EXIT.title}>{DASHBOARD_EXIT.label}</A>
-          <A href={STATS_HOME} class="s-logo" aria-label="h2 live stats home"><Wordmark height={40} /></A>
+          <A href={STATS_HOME} class="s-logo" aria-label={`${STATS_NAME} home`}><Wordmark height={40} /></A>
           <div class="s-welcome">
             <Show
               when={identity.me()}

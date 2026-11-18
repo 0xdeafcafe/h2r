@@ -2,6 +2,7 @@
 // path or `?tab=` asks for campaign. Pure, so routing is testable.
 
 import type { GameMode } from "../state/reducer";
+import { STATS_NAME } from "../brand";
 
 export type SpotlightTab = "live" | "recent" | "team" | "ffa" | "campaign";
 const SPOTLIGHT: SpotlightTab[] = ["live", "recent", "team", "ffa", "campaign"];
@@ -32,7 +33,7 @@ export function recordHref(gamertag: string, mode: GameMode): string {
  *  site says clan, and /stats/teams/:id redirects here. */
 export const clanHref = (id: string) => `/stats/clans/${encodeURIComponent(id)}`;
 
-/** The stats site's home: "h2 live Online" in the nav, "Home" in the crumbs. */
+/** The stats site's home: its name (STATS_NAME) in the nav, "Home" in the crumbs. */
 export const STATS_HOME = "/stats";
 export const HOME_CRUMB: [string, string] = ["Home", STATS_HOME];
 
@@ -44,7 +45,7 @@ export interface NavItem { label: string; href: string; end?: boolean }
 /** The nav strip's tabs, home first. The dashboard is not one of them. */
 export function statsNav(me: { gamertag: string } | null, admin: boolean): NavItem[] {
   return [
-    { label: "h2 live Online", href: STATS_HOME, end: true },
+    { label: STATS_NAME, href: STATS_HOME, end: true },
     { label: "My Stats", href: me ? `/stats/players/${encodeURIComponent(me.gamertag)}` : "/dash/signup" },
     { label: "Games", href: "/stats/games" },
     { label: "Players", href: "/stats/players", end: true },
