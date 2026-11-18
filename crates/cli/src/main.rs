@@ -87,6 +87,9 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           (docs/runtime/agent-api.md)
   agent <call>            call a running game's agent API: status, count, query,
                           object, counters, wait, pause/step in a `-` script
+  studio <call>           call h2-editor's agent API (the open window, or
+                          `h2-editor --serve`): maps, tags, placements,
+                          variants, playlists, UI screens (docs/editor/agent-api.md)
   lab <command>           run levels on another Mac over SSH: replays, frame
                           stats, profiles (`h2 lab --help`, docs/runtime/lab.md)
   play --follow <disc>    play, rebuilding each new commit of master in the
@@ -315,6 +318,9 @@ fn main() -> Result<()> {
         return agent_cmd::run(args.collect());
         #[cfg(not(unix))]
         bail!("h2 agent needs Unix sockets");
+    }
+    if cmd == "studio" {
+        return studio_proto::cli::run("h2 studio", args.collect());
     }
     if cmd == "testmap" {
         return testmap_cmd::run(args.collect());

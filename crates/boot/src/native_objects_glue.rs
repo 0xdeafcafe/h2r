@@ -17,11 +17,18 @@
 //! - **Per view.** The device gets an `ObjectsPass` with the camera and the
 //!   objects' node matrices; on the render thread it uploads the queued
 //!   models, packs and culls the objects, and draws them skinned.
+//! - **Transparent parts** (stage 3, with `impl.render.native_transparents`
+//!   on too). The worker also takes each transparent material with a
+//!   single layer-15 pass, no alpha test and a base map that decodes (S:
+//!   drawn as the base map with the models' lighting and the pass's blend);
+//!   the definition's node count and its shaders' materials are published
+//!   in [`Models::transparents`] for the transparents' host
+//!   (`native_transparents_glue`), which draws them run by run.
 
 use std::collections::{HashMap, HashSet};
 use std::io::BufReader;
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use engine::memory::GuestMemory;
 use feature::native_objects::{Host, NativeSet};
@@ -33,7 +40,9 @@ use native_render::load;
 use native_render::model::Model;
 use native_render::model_gpu::GpuModels;
 use native_render::model_load;
+use native_render::look;
 use native_render::objects::ObjectFrame;
+use native_render::pass_state::PassState;
 
 use crate::native_world_glue::{Raw, decode_first, locate, region};
 
@@ -42,15 +51,85 @@ struct CpuModel {
     definition: u32,
     model: Model,
     base_maps: HashMap<u16, Image>,
+    /// The transparent materials taken: base map and pass state.
+    transparents: Vec<(u16, Image, PassState)>,
+}
+
+/// One definition's transparent parts the native pass draws.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct ObjectTransparents {
+    /// The model's node count (an object with another is not drawn).
+    pub(crate) nodes: usize,
+    /// Shader tag index -> the model-local materials that use it.
+    pub(crate) shaders: HashMap<u16, Vec<u16>>,
+}
+
+impl ObjectTransparents {
+    /// The materials an object's entry with `shader` draws, when its node
+    /// count is the model's.
+    pub(crate) fn materials(&self, nodes: usize, shader: u32) -> Option<&[u16]> {
+        if nodes != self.nodes {
+            return None;
+        }
+        self.shaders.get(&(shader as u16)).map(Vec::as_slice)
+    }
 }
 
 /// One map's models: queued, uploaded, and which definition is which.
 #[derive(Default)]
-struct Models {
+pub(crate) struct Models {
     pending: Mutex<Vec<CpuModel>>,
     gpu: Mutex<Option<GpuModels>>,
     /// Definition tag index -> uploaded model.
-    index: Mutex<HashMap<u16, u32>>,
+    pub(crate) index: Mutex<HashMap<u16, u32>>,
+    /// Definition tag index -> its transparent parts, published after the
+    /// model is queued.
+    pub(crate) transparents: Mutex<HashMap<u16, ObjectTransparents>>,
+}
+
+impl Models {
+    /// The materials object `o`'s transparent entry with `shader` draws.
+    pub(crate) fn transparent_materials(&self, o: &ObjectFrame, shader: u32) -> Option<Vec<u16>> {
+        let t = self.transparents.lock().unwrap_or_else(|e| e.into_inner());
+        t.get(&(o.definition as u16))?.materials(o.nodes.len(), shader).map(<[u16]>::to_vec)
+    }
+}
+
+/// The installed host's state, for the transparents' host.
+static CURRENT: Mutex<Option<Arc<Mutex<Option<MapState>>>>> = Mutex::new(None);
+
+/// The current map's models (`None` before the first view of a map, or
+/// without the host).
+pub(crate) fn current_models() -> Option<Arc<Models>> {
+    let state = CURRENT.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
+    let st = state.lock().unwrap_or_else(|e| e.into_inner());
+    st.as_ref().map(|s| Arc::clone(&s.models))
+}
+
+/// Uploads the queued models (and their transparent materials) on the
+/// render thread; the models' GPU side, locked.
+pub(crate) fn upload_pending<'a>(models: &'a Models, t: &d3d::ExternalTarget<'_>) -> MutexGuard<'a, Option<GpuModels>> {
+    let mut guard = models.gpu.lock().unwrap_or_else(|e| e.into_inner());
+    let gpu = guard.get_or_insert_with(|| GpuModels::new(t.device, t.queue));
+    let pending = std::mem::take(&mut *models.pending.lock().unwrap_or_else(|e| e.into_inner()));
+    let mut index = models.index.lock().unwrap_or_else(|e| e.into_inner());
+    for cpu in pending {
+        let CpuModel {
+            definition,
+            model,
+            mut base_maps,
+            transparents,
+        } = cpu;
+        let i = gpu.add_model(t.device, t.queue, model, &mut |m| base_maps.remove(&m));
+        for (material, image, state) in transparents {
+            // Checked on the worker; a refusal here leaves those parts
+            // undrawn for this model.
+            let _ = gpu.set_transparent(t.device, t.queue, i, material, Some(image), state);
+        }
+        index.insert(definition as u16, i);
+    }
+    drop(index);
+    guard
 }
 
 struct MapState {
@@ -125,9 +204,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
 
 /// Installs the host on the device (beside the world's).
 pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
+    let state = Arc::new(Mutex::new(None));
+    *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&state));
     feature::native_objects::set_host(Arc::new(Glue {
         device: Arc::clone(device),
-        state: Arc::new(Mutex::new(None)),
+        state,
     }));
 }
 
@@ -149,10 +230,18 @@ fn spawn_worker(name: String, models: Arc<Models>, state: Arc<Mutex<Option<MapSt
             while let Ok(def) = rx.recv() {
                 let t0 = std::time::Instant::now();
                 match load_model(&mut opened, def) {
-                    Ok((cpu, shaders)) => {
+                    Ok((cpu, shaders, transparents)) => {
                         let nodes = cpu.model.inverse_binds.len();
                         let draws = cpu.model.draws.len();
+                        let see_through = cpu.model.transparents.len();
                         models.pending.lock().unwrap_or_else(|e| e.into_inner()).push(cpu);
+                        if !transparents.shaders.is_empty() {
+                            models
+                                .transparents
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .insert(def as u16, transparents);
+                        }
                         // Published after the model is queued: a pass that
                         // sees the definition finds the model.
                         let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
@@ -163,7 +252,7 @@ fn spawn_worker(name: String, models: Arc<Models>, state: Arc<Mutex<Option<MapSt
                         s.set = Arc::new(set);
                         loaded += 1;
                         eprintln!(
-                            "native-objects: {name}: definition {def:#010x}: {draws} draws, {nodes} nodes, in {:.0} ms ({loaded} models native, {refused} left to D3D)",
+                            "native-objects: {name}: definition {def:#010x}: {draws} draws, {see_through} transparent, {nodes} nodes, in {:.0} ms ({loaded} models native, {refused} left to D3D)",
                             t0.elapsed().as_secs_f32() * 1000.0
                         );
                     }
@@ -184,6 +273,9 @@ struct Opened {
     ctx: tags::object::Context,
     raw: Raw,
     decoded: HashMap<TagId, Option<Image>>,
+    /// The shader tags, read at the first transparent material (`None`
+    /// when they do not read: transparents stay on D3D).
+    lib: Option<Option<tags::material::ShaderLibrary>>,
 }
 
 fn open(name: &str) -> Result<Opened, load::Error> {
@@ -206,6 +298,7 @@ fn open(name: &str) -> Result<Opened, load::Error> {
         ctx,
         raw: Raw(files),
         decoded: HashMap::new(),
+        lib: None,
     })
 }
 
@@ -218,9 +311,42 @@ fn tag_of(map: &Map<BufReader<std::fs::File>>, datum: u32) -> Option<TagId> {
     map.tags().iter().find(|t| t.id.0 & 0xffff == datum & 0xffff).map(|t| t.id)
 }
 
+/// `bitmap`'s first image, decoded once per map.
+fn decoded(o: &mut Opened, bitmap: TagId) -> Option<Image> {
+    if let Some(i) = o.decoded.get(&bitmap) {
+        return i.clone();
+    }
+    let i = decode_first(&mut o.map, &mut o.raw.0, bitmap);
+    o.decoded.insert(bitmap, i.clone());
+    i
+}
+
+/// A transparent material the models' pass can stand in for: one layer-15
+/// pass without an alpha test (S), and its shader's base map.
+fn transparent_material(o: &mut Opened, shader: TagId) -> Option<(Image, PassState)> {
+    if o.lib.is_none() {
+        let lib = tags::material::ShaderLibrary::read(&mut o.map);
+        if let Err(e) = &lib {
+            eprintln!("native-objects: the shader tags do not read ({e}); objects' transparents stay on D3D");
+        }
+        o.lib = Some(lib.ok());
+    }
+    let material = o.lib.as_mut()?.as_mut()?.material(shader, None).ok()?;
+    let state = match look::transparent_passes(&material).ok()?.as_slice() {
+        [one] => one.state,
+        _ => return None,
+    };
+    if state.alpha_test.is_some() {
+        return None;
+    }
+    let bitmap = load::base_map(&mut o.map, shader)?;
+    Some((decoded(o, bitmap)?, state))
+}
+
 /// Loads definition `def`'s model with its base maps; the shader indices
-/// it draws. Materials without a base map leave the model.
-fn load_model(o: &mut Opened, def: u32) -> Result<(CpuModel, Vec<u16>), load::Error> {
+/// it draws, and its transparent parts the native pass takes. Materials
+/// without a base map leave the model.
+fn load_model(o: &mut Opened, def: u32) -> Result<(CpuModel, Vec<u16>, ObjectTransparents), load::Error> {
     let id = tag_of(&o.map, def).ok_or("no such tag")?;
     let loaded = model_load::load_object_model(&mut o.map, &o.ctx, &mut o.raw, id)?;
     let mut base_maps = HashMap::new();
@@ -228,20 +354,25 @@ fn load_model(o: &mut Opened, def: u32) -> Result<(CpuModel, Vec<u16>), load::Er
     for m in loaded.model.materials() {
         let Some(&shader) = loaded.shaders.get(usize::from(m)) else { continue };
         let Some(bitmap) = load::base_map(&mut o.map, shader) else { continue };
-        let image = match o.decoded.get(&bitmap) {
-            Some(i) => i.clone(),
-            None => {
-                let i = decode_first(&mut o.map, &mut o.raw.0, bitmap);
-                o.decoded.insert(bitmap, i.clone());
-                i
-            }
-        };
-        if let Some(image) = image {
+        if let Some(image) = decoded(o, bitmap) {
             base_maps.insert(m, image);
             shaders.push(shader.0 as u16);
         }
     }
-    let model = keep_materials(loaded.model, &base_maps);
+    let mut transparents = Vec::new();
+    let mut table = ObjectTransparents {
+        nodes: loaded.model.inverse_binds.len(),
+        shaders: HashMap::new(),
+    };
+    for m in loaded.model.transparent_materials() {
+        let Some(&shader) = loaded.shaders.get(usize::from(m)) else { continue };
+        if let Some((image, state)) = transparent_material(o, shader) {
+            transparents.push((m, image, state));
+            table.shaders.entry(shader.0 as u16).or_default().push(m);
+        }
+    }
+    let kept: HashSet<u16> = transparents.iter().map(|t| t.0).collect();
+    let model = keep_materials(loaded.model, &base_maps, &kept);
     if model.draws.is_empty() {
         return Err("no material with a base map".into());
     }
@@ -250,14 +381,18 @@ fn load_model(o: &mut Opened, def: u32) -> Result<(CpuModel, Vec<u16>), load::Er
             definition: def,
             model,
             base_maps,
+            transparents,
         },
         shaders,
+        table,
     ))
 }
 
-/// The model without the draws of materials left to the D3D path.
-fn keep_materials(mut model: Model, native: &HashMap<u16, Image>) -> Model {
+/// The model without the draws of materials left to the D3D path (opaque
+/// ones without a base map, transparent ones not taken).
+fn keep_materials(mut model: Model, native: &HashMap<u16, Image>, transparent: &HashSet<u16>) -> Model {
     model.draws.retain(|d| native.contains_key(&d.material));
+    model.transparents.retain(|d| transparent.contains(&d.material));
     model
 }
 
@@ -270,19 +405,9 @@ struct ObjectsPass {
 
 impl d3d::ExternalPass for ObjectsPass {
     fn encode(&mut self, t: d3d::ExternalTarget<'_>) {
-        let mut guard = self.models.gpu.lock().unwrap_or_else(|e| e.into_inner());
-        let gpu = guard.get_or_insert_with(|| GpuModels::new(t.device, t.queue));
-        let pending = std::mem::take(&mut *self.models.pending.lock().unwrap_or_else(|e| e.into_inner()));
-        let mut index = self.models.index.lock().unwrap_or_else(|e| e.into_inner());
-        for cpu in pending {
-            let CpuModel {
-                definition,
-                model,
-                mut base_maps,
-            } = cpu;
-            let i = gpu.add_model(t.device, t.queue, model, &mut |m| base_maps.remove(&m));
-            index.insert(definition as u16, i);
-        }
+        let mut guard = upload_pending(&self.models, &t);
+        let Some(gpu) = guard.as_mut() else { return };
+        let index = self.models.index.lock().unwrap_or_else(|e| e.into_inner());
         let inputs: Vec<ObjectInput<'_>> = self
             .objects
             .iter()
@@ -331,12 +456,25 @@ mod tests {
         };
         let model = Model {
             draws: vec![draw(0, 0), draw(1, 3), draw(1, 6), draw(2, 9)],
+            transparents: vec![draw(3, 12), draw(4, 15)],
             inverse_binds: vec![NodeMatrix::IDENTITY],
             ..Model::default()
         };
         let native: HashMap<u16, Image> = [(1, Image::solid([1; 4])), (2, Image::solid([1; 4]))].into_iter().collect();
-        let m = keep_materials(model, &native);
+        let m = keep_materials(model, &native, &[4].into_iter().collect());
         assert_eq!(m.draws.iter().map(|d| (d.material, d.first_index)).collect::<Vec<_>>(), vec![(1, 3), (1, 6), (2, 9)]);
         assert_eq!(m.materials(), vec![1, 2]);
+        assert_eq!(m.transparent_materials(), vec![4]);
+    }
+
+    #[test]
+    fn an_objects_transparent_entry_names_its_shaders_materials_at_the_models_node_count() {
+        let t = ObjectTransparents {
+            nodes: 2,
+            shaders: [(0x42, vec![3, 5])].into_iter().collect(),
+        };
+        assert_eq!(t.materials(2, 0xe123_0042), Some(&[3, 5][..]));
+        assert_eq!(t.materials(3, 0xe123_0042), None, "another node count");
+        assert_eq!(t.materials(2, 0xe123_0043), None, "another shader");
     }
 }

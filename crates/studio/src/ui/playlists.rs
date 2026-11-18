@@ -16,7 +16,7 @@ use hopper_edit::{EditView, Format};
 use live_proto::hopper::{HOPPERS, MAX_DESCRIPTION, MAX_NAME, MAX_RECORDS, MAX_STRING, MAX_TITLE};
 use variants::GameVariant;
 
-use crate::app::{Action, App};
+use crate::app::{Action, App, PlaylistEdit};
 use crate::theme::{self, Fonts, icon};
 
 /// The playlist tool's own UI state.
@@ -288,6 +288,8 @@ fn entries_table(
     let chances = model::chances(h);
     let n = h.records.len();
     let mut op = None;
+    let mut weight = None;
+    let mut add = false;
     let mut pick: Option<(usize, GameVariant)> = None;
     let flags = TableFlags::ROW_BG | TableFlags::BORDERS_INNER_V | TableFlags::RESIZABLE;
     if let Some(_t) = ui.begin_table_with_flags("##entries", 7, flags) {
@@ -335,7 +337,7 @@ fn entries_table(
                 .speed(0.2)
                 .build(ui, &mut w);
             if c {
-                r.dwords[0] = w.clamp(1, MAX_WEIGHT as i32) as u32;
+                weight = Some((i, w.clamp(1, MAX_WEIGHT as i32) as u32));
             }
             fr.changed(ui, c, key(("weight", sel, i)));
             ui.table_next_column();
@@ -350,7 +352,7 @@ fn entries_table(
     }
     let d = ui.begin_disabled_with_cond(n >= MAX_RECORDS);
     if ui.button(format!("{} Add an entry", icon::PLUS)) {
-        model::add_record(h);
+        add = true;
     }
     d.end();
     ui.set_item_tooltip("Copies the last entry");
@@ -359,13 +361,39 @@ fn entries_table(
     {
         fr.error = Some(format!("entry {}: {e}", i + 1));
     }
+    // The row buttons, weights and Add are the command layer's playlist
+    // edits, as the agent API's playlist.entry calls.
+    let (playlist, mut edits) = (sel, Vec::new());
+    if let Some((entry, weight)) = weight {
+        edits.push(PlaylistEdit::Weight {
+            playlist,
+            entry,
+            weight,
+        });
+    }
+    if add {
+        edits.push(PlaylistEdit::Add { playlist });
+    }
     if let Some(op) = op {
-        let _ = match op {
-            RowOp::Up(i) => model::move_record(h, i, -1),
-            RowOp::Down(i) => model::move_record(h, i, 1),
-            RowOp::Copy(i) => model::duplicate_record(h, i),
-            RowOp::Remove(i) => model::remove_record(h, i),
-        };
+        edits.push(match op {
+            RowOp::Up(entry) => PlaylistEdit::Move {
+                playlist,
+                entry,
+                to: entry.saturating_sub(1),
+            },
+            RowOp::Down(entry) => PlaylistEdit::Move {
+                playlist,
+                entry,
+                to: (entry + 1).min(n.saturating_sub(1)),
+            },
+            RowOp::Copy(entry) => PlaylistEdit::Duplicate { playlist, entry },
+            RowOp::Remove(entry) => PlaylistEdit::Remove { playlist, entry },
+        });
+    }
+    for e in edits {
+        if let Err(err) = e.apply_to(h) {
+            fr.error = Some(err);
+        }
     }
 }
 

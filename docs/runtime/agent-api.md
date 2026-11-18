@@ -261,6 +261,24 @@ can point at.
   stamped tick gives a per-tick movement trace.
   `physics.havok_pos` and `havok_velocity` are the object's first Havok
   body; [`havok.*`](#havok-the-physics-world) has every body and contact.
+  Bipeds also carry `physics.support` (**Code**, layout in
+  `live-telemetry`'s `layout.rs`, `BIPED_SUPPORT_*` and
+  `CHARACTER_CONTACT_*`): what the biped physics update (`0x000dd990`)
+  keeps of the ground. `flags` is biped `+0x349`, the high byte of the
+  biped flags word at `+0x348` (`copied`: its bit 4, biped flags bit 12, set
+  when this tick's update copied a support contact, `0x000ddeda`);
+  `words` are `+0x354..+0x364` (what supports the biped, all `ffffffff`
+  for nothing); `point`, `normal` and `contact_point` are `+0x368`,
+  `+0x374` and `+0x380` (the support contact's normal and point,
+  `0x000dde99..0x000ddef5`); `ground_state` is `+0x3ec`, the vector the
+  ground test `0x001f19c0` measures first. `contacts` are the character
+  contacts that test walks, on the biped's physics component (`+0x88`,
+  count `+0x8c`, `0x48` each, at most 32): `key` (`+0x04`, the shape key),
+  `other` (`+0x14`), `point` (`+0x1c`), `normal` (`+0x28`), `value`
+  (`+0x38`; the first pass wants it at least 1e-4) and `flags` (`+0x44`).
+  These are the contacts the airborne bit is decided from, unlike
+  `havok.contacts`, which lists the solver's contact constraints. Step a
+  replay (`claim`, `pause`, `step 1`) to read them tick by tick.
 - `world.raycast`, `world.visible {from: "camera" | player}`: what the player
   can see, for both "is this on screen" and closed-loop movement.
 - `world.overhead {bsp, size}` renders a top-down map image with numbered

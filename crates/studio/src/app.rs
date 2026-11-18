@@ -6,6 +6,7 @@
 //! it directly.
 use std::path::{Path, PathBuf};
 
+pub mod commands;
 pub(crate) mod convert;
 pub mod hud;
 mod editing;
@@ -15,6 +16,7 @@ pub mod shared_refs;
 pub mod tag_api;
 pub mod tag_doc;
 pub mod ui_screens;
+pub use commands::{PlaylistEdit, Refused};
 pub use convert::{
     Built, Converter, Input as ConvertInput, Running, Written, explain, from_scratch,
     retail_sources,
@@ -103,6 +105,36 @@ pub enum Action {
     SetConvertSandbox(ConvertSandbox),
     Undo,
     Redo,
+    /// Undo or redo in a given tool, whichever is shown (the agent API's
+    /// `doc.undo`).
+    UndoIn(ToolKind),
+    RedoIn(ToolKind),
+    /// Set one field of a placement, checked by the scenario first. Edits
+    /// with the same merge key in a row are one undo step (a drag).
+    SetField {
+        block: BlockKind,
+        index: usize,
+        field: String,
+        value: scenario_edit::Value,
+        merge: Option<u64>,
+    },
+    /// Edit a field of every selected placement (the inspector), one undo
+    /// step; edits with the same merge key in a row stay one.
+    EditSelection {
+        field: String,
+        edit: scenario_edit::session::FieldEdit,
+        merge: u64,
+    },
+    /// End a run of merged edits: the next edit is a new undo step.
+    SealEdit,
+    /// Move a placement (and turn it, given yaw, pitch and roll) as one
+    /// undo step.
+    MovePlacement {
+        block: BlockKind,
+        index: usize,
+        position: [f32; 3],
+        ypr: Option<[f32; 3]>,
+    },
     Select(Option<(BlockKind, usize)>),
     /// Add a placement to the selection, or take it out (Ctrl/Cmd+click).
     ToggleSelect((BlockKind, usize)),
@@ -208,6 +240,8 @@ pub enum Action {
     LoadVariantFile(PathBuf),
     /// Re-read the saved variants for the picker.
     RefreshPickerVariants,
+    /// Edit the open playlist file, as one undo step.
+    EditPlaylist(PlaylistEdit),
 
     /// Quit the app.
     Quit,
@@ -296,6 +330,8 @@ pub struct App {
     /// The preset picked for the shown playlist, before it is applied.
     pub hopper_preset: Option<usize>,
     log: Vec<LogLine>,
+    /// Lines ever logged (the log drops its oldest past [`LOG_LIMIT`]).
+    logged: u64,
     started: std::time::Instant,
     quit: bool,
     /// The outliner's filter text.
@@ -365,6 +401,7 @@ impl App {
             hopper_selected: 0,
             hopper_preset: None,
             log: Vec::new(),
+            logged: 0,
             started: std::time::Instant::now(),
             quit: false,
             filter: String::new(),
@@ -535,6 +572,7 @@ impl App {
         self.push(Status::Error(msg.into()));
     }
     fn push(&mut self, status: Status) {
+        self.logged += 1;
         self.log.push(LogLine {
             status,
             at: self.started.elapsed().as_secs_f64(),
@@ -607,7 +645,7 @@ impl App {
     }
 
     /// Drop a tool's open document and its edits.
-    fn close_tool(&mut self, tool: ToolKind) {
+    pub(crate) fn close_tool(&mut self, tool: ToolKind) {
         match tool {
             ToolKind::Scenario => {
                 self.session.close();
@@ -666,8 +704,30 @@ impl App {
                 let r = self.session.open_package(&dir);
                 self.session_result(r);
             }
-            Action::Undo => self.undo_redo(true),
-            Action::Redo => self.undo_redo(false),
+            Action::Undo => self.undo_redo(self.tool, true),
+            Action::Redo => self.undo_redo(self.tool, false),
+            Action::UndoIn(tool) => self.undo_redo(tool, true),
+            Action::RedoIn(tool) => self.undo_redo(tool, false),
+            Action::SetField {
+                block,
+                index,
+                field,
+                value,
+                merge,
+            } => self.set_field(block, index, &field, value, merge),
+            Action::EditSelection { field, edit, merge } => {
+                if let Err(e) = self.session.edit_selection(&field, edit, merge) {
+                    self.error(e.to_string());
+                }
+            }
+            Action::SealEdit => self.session.seal(),
+            Action::MovePlacement {
+                block,
+                index,
+                position,
+                ypr,
+            } => self.move_placement(block, index, position, ypr),
+            Action::EditPlaylist(edit) => self.edit_playlist(edit),
             Action::Select(sel) => self.session.select(sel),
             Action::ToggleSelect(e) => self.session.toggle_select(e),
             Action::SelectMany(all) => self.session.select_many(all),
@@ -772,8 +832,8 @@ impl App {
         }
     }
 
-    fn undo_redo(&mut self, undo: bool) {
-        let done = match self.tool {
+    fn undo_redo(&mut self, tool: ToolKind, undo: bool) {
+        let done = match tool {
             ToolKind::Scenario => {
                 let done = if undo {
                     self.session.undo()
@@ -817,7 +877,7 @@ impl App {
         match (done, undo) {
             (false, true) => self.info("nothing to undo"),
             (false, false) => self.info("nothing to redo"),
-            (true, _) if !matches!(self.tool, ToolKind::Scenario | ToolKind::Tags | ToolKind::Hud) => {
+            (true, _) if !matches!(tool, ToolKind::Scenario | ToolKind::Tags | ToolKind::Hud) => {
                 self.info(if undo { "undone" } else { "redone" })
             }
             _ => {}

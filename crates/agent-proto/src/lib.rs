@@ -658,6 +658,58 @@ pub struct Physics {
     pub havok_pos: Option<[f64; 3]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub havok_velocity: Option<[f64; 3]>,
+    /// Bipeds: the ground support the physics update keeps and the
+    /// character contacts its ground test walks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub support: Option<Support>,
+}
+
+/// A biped's ground support as the engine keeps it (biped `+0x349`,
+/// `+0x354..+0x388`, `+0x3ec`) and its physics component's character
+/// contacts (component `+0x88`, `0x48` each). Raw words stay whole: what
+/// most of them mean is not traced yet.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Support {
+    /// Biped `+0x349` (the high byte of the biped flags at `+0x348`), 2 hex
+    /// digits; bit 4 (`10`, biped flags bit 12) is set when this tick's
+    /// update copied a support contact.
+    pub flags: String,
+    /// Bit 4 of `flags`.
+    pub copied: bool,
+    /// Biped `+0x354..+0x364`, 8 hex digits each: what supports the biped
+    /// (all `ffffffff` when nothing does).
+    pub words: Vec<String>,
+    /// Biped `+0x368`.
+    pub point: [f64; 3],
+    /// Biped `+0x374`: the support contact's normal.
+    pub normal: [f64; 3],
+    /// Biped `+0x380`: the support contact's point.
+    pub contact_point: [f64; 3],
+    /// Biped `+0x3ec`: the ground mode's state vector.
+    pub ground_state: [f64; 3],
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contacts: Vec<CharacterContact>,
+}
+
+/// One character contact of a biped's physics component.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CharacterContact {
+    /// `+0x04`, 8 hex digits: the shape key (`key >> 29` its type; 1 a
+    /// structure surface, index in the low 16 bits).
+    pub key: String,
+    /// `+0x14`, 8 hex digits.
+    pub other: String,
+    /// `+0x1c`.
+    pub point: [f64; 3],
+    /// `+0x28`.
+    pub normal: [f64; 3],
+    /// `+0x38`: the first pass of the ground test takes the contact only
+    /// when its magnitude is at least 1e-4.
+    pub value: f64,
+    /// `+0x44`, 8 hex digits.
+    pub flags: String,
 }
 
 /// Field names a query's `fields` may keep (`id` and `kind` are always

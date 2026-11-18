@@ -799,13 +799,50 @@ render's snapshot of the frame.
    kind-4 parts in the world's vertex and index buffers, keyed by
    (cluster or placement, the part's index in its section; the loader now
    keeps every part in place, a part not drawn as an empty one), their
-   lightmap pages in the lightmap array. Left: the run's pass draws,
-   per entry in order, that part with each layer-15 pass's program and
-   blend, depth tested, writing depth only where the state says so. Boot's
-   host accepts an entry when its part and material are loaded.
-4. **Objects' transparent parts.** The node matrices are copied at the
-   hook into the run (as stage 2 does at layer 3), so the pass draws the
-   frame's poses.
+   lightmap pages in the lightmap array. The GPU side is built too
+   (`transparent_gpu::TransparentSet`, `GpuWorld::encode_transparents`):
+   each material's passes compiled with `program::compile_pass` (the
+   world programs' translation plus the pass's alpha test) and uploaded
+   with the same per-program code as the world's (`program::Gpu`), one
+   pipeline per pass with its `PassState` (blend, write mask, depth write
+   and compare, cull) and its blend constant set per draw. A run's pass
+   loads the target and depth and draws, per entry in order, the part
+   with each of its passes, over the whole target (the programs carry
+   the viewport). Boot's host is built too (`boot::native_transparents_glue`, over the
+   native world's loaded BSP, so the native world must be on): at load,
+   each transparent material's passes compiled all or nothing and their
+   stage images decoded, then the parts that can draw (a compiled
+   material, and its lightmap page when a pass samples it), with one line
+   on stderr: how many materials and parts, and why the rest stay on the
+   D3D path. It accepts a cluster or placement entry whose part is in
+   that table with the entry's shader; a run's pass takes the run's
+   entries when the device issues it and draws them with
+   `GpuWorld::encode_transparents`.
+4. **Objects' transparent parts** (with `impl.render.native_objects` on
+   as well). The hook copies the object's node matrices and sphere into
+   the run (`transparent::RunEntry`, `objects::read_object`, as stage 2
+   does at layer 3), from the render's snapshot, so the pass draws the
+   frame's pose. An object's entry stands for all of its parts with that
+   shader (S: which section and part an object's render record names is
+   not read), so a later entry of the same object and shader in the view
+   is skipped without drawing again (the parts draw at the first one's
+   place in the order). On the GPU (`model_gpu`) a model keeps its
+   transparent parts in its index buffer, in their own draw table
+   (`Model::transparents`); the caller sets each transparent material's
+   base map and pass state (`GpuModels::set_transparent`; S: an
+   alpha-tested pass is refused, the models' shader has no alpha test
+   yet), and `GpuModels::encode_transparents` draws a run's object items
+   in order with the models' shading and the base map's alpha
+   (`fs_transparent`), each pass's blend and depth state, and the run's
+   node matrices in buffers of its own, so runs and the opaque objects'
+   pass in one submit do not overwrite each other's. In boot, the objects'
+   worker takes a definition's transparent materials with one layer-15
+   pass, no alpha test and a base map that decodes, and publishes the
+   definition's node count and each shader's materials; the transparents'
+   host accepts an object entry when its definition is published with
+   the copy's node count and the entry's shader, and a run's pass draws
+   its entries in order as segments: consecutive world entries through
+   the world's pass, consecutive objects through the models'.
 5. **The live A/B**, as stage 1's: the same frame with the switch on and
    off, `external_passes_dropped` steady, and the `0x0002c19a` site's ms.
 
