@@ -146,14 +146,15 @@ pub(crate) struct Sessions {
     advertised: Vec<[u8; 8]>,
     /// The sessions the title looked up (FindFromID): joins it started.
     looked_up: BTreeSet<[u8; 8]>,
+    /// The last find line said and when ([`say_once_per`]).
+    said_find: Option<(String, std::time::Instant)>,
 }
 /// The host's multiplayer skulls as of now (None for none), read with guest
 /// memory held: it must take no lock that guest memory may come after.
 pub type SkullsProbe = std::sync::Arc<dyn Fn(&Guest) -> Option<Vec<u8>> + Send + Sync>;
 /// Reads the `MapId` of the map the host has loaded, when a package serves
 /// it; None for the disc's own map.
-pub type MapProbe =
-    std::sync::Arc<dyn Fn(&Guest) -> Option<live_proto::maps::MapId> + Send + Sync>;
+pub type MapProbe = std::sync::Arc<dyn Fn(&Guest) -> Option<live_proto::maps::MapId> + Send + Sync>;
 /// Reads the host's visibility out of guest memory (boot: the squad
 /// session's privacy), or None when there is none to read.
 pub type VisibilityProbe = std::sync::Arc<dyn Fn(&Guest) -> Option<Visibility> + Send + Sync>;
@@ -352,7 +353,8 @@ impl Sessions {
     }
     fn advertised(&mut self, id: [u8; 8]) {
         self.current = Some(id);
-        self.advertised.retain(|a| *a != id && self.records.contains_key(a));
+        self.advertised
+            .retain(|a| *a != id && self.records.contains_key(a));
         self.advertised.push(id);
     }
     /// The co-op lobby to invite to: the newest advertisement that carries
@@ -827,7 +829,10 @@ impl Sessions {
                 find,
             } => {
                 if let Some(id) = find {
-                    eprintln!("{}", find_line(&id, &rows));
+                    let line = find_line(&id, &rows);
+                    if say_once_per(&mut self.said_find, &line, FIND_REPEAT) {
+                        eprintln!("{line}");
+                    }
                 }
                 let rows: Vec<_> = rows
                     .into_iter()
@@ -879,6 +884,26 @@ impl Sessions {
             }
         }
     }
+}
+/// A find line repeated within this is not said again. The main menu's
+/// friend view looks a friend's session up every frame until the title is
+/// signed in to Live (`0x002b6690`; the result is dropped at `0x000901c1`
+/// until the logon task's result is 1), sixty lines a second.
+const FIND_REPEAT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Whether to say `line`: not if it was the last said, within `within`.
+fn say_once_per(
+    last: &mut Option<(String, std::time::Instant)>,
+    line: &str,
+    within: std::time::Duration,
+) -> bool {
+    if let Some((said, at)) = last
+        && said == line
+        && at.elapsed() < within
+    {
+        return false;
+    }
+    *last = Some((line.to_owned(), std::time::Instant::now()));
+    true
 }
 /// What FindFromID found: the host's endpoint (QoS answers on its port
 /// + 2), or why the join stops here.
@@ -1218,5 +1243,21 @@ mod tests {
         assert!(ping_moved(Some(30), Some(36)));
         assert!(!ping_moved(Some(200), Some(215)), "under a tenth");
         assert!(ping_moved(Some(200), Some(225)));
+    }
+}
+
+#[cfg(test)]
+mod say_tests {
+    use super::*;
+
+    #[test]
+    fn a_repeated_find_line_is_said_once_per_window() {
+        let mut last = None;
+        let window = std::time::Duration::from_secs(30);
+        assert!(say_once_per(&mut last, "a", window));
+        assert!(!say_once_per(&mut last, "a", window));
+        assert!(say_once_per(&mut last, "b", window));
+        assert!(say_once_per(&mut last, "a", window));
+        assert!(say_once_per(&mut last, "a", std::time::Duration::ZERO));
     }
 }

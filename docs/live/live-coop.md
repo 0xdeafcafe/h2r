@@ -1490,12 +1490,37 @@ by the server (the 011442 run said neither, as the wait was dropped before
 the server's answer queued it). If the title took it but never looked the
 session up (FindFromID) within 15 s, it is offered again, up to three times.
 
-The reader is a delegate on UI screen 9 (made by `0x0022f11e`, opened
-through `0x001483c3`); when it finds an invitation it opens the two-button
-dialog for error `0x7d` (`0x0019b5af`, first button `0x0022f36f`). Which
-screen 9 is, and so where a guest must be for an accepted invitation to be
-taken, is not established; in the 011442 run Bravo was in the Xbox Live
-menu and the custom games browser, and it was never taken.
+The reader is a delegate on UI screen 9 (made by `0x0022f11e`); when it
+finds an invitation it opens the two-button dialog for error `0x7d`
+(`0x0019b5af`, first button `0x0022f36f`). Screen 9 is the main menu:
+`0x001483c3`, which the shell calls to put up the root menu (at boot and
+after a game), opens it unless it is the first boot's intro
+(`0x0014741b`) or the case at `0x001484c0` (`0x002310b7`). The delegate
+is an event, not a per-frame poll: in the 023123 run Bravo sat on the main
+menu from before the acceptance until it pressed Xbox Live, and it was
+never called. So `h2 coop test --auto` tells the guests to join from the
+friends list (Y, the host, Join Game), the path the 023244 run took to the
+host's QoS.
+
+Two paths look a session up (`0x000900e0`, FindFromID at `0x00090121`):
+the friend view's updater (`0x002b65b8`, call `0x002b6690`), which looks a
+friend's session up, probes it (QoS) and decodes its data to show it; and
+the join itself (`0x0006f4b0`, call `0x0006f6d9`), which then probes the
+squad's id and decodes (states 3: no result, 4: no probe, 5: no QoS info,
+6: no data). The result parser (`0x00090160`) copies the slot counts
+without checking them; it drops the result unless the title's own Live
+logon is done (`0x000901c1`, `0x0006cd50() == 1`). On the main menu,
+before Xbox Live, that fails and the friend view looks again the next
+frame: the 023244 run's sixty `find session` lines a second, all `0 of 0`.
+The `0 of 0` slots stop nothing (the title passes 0 to
+XOnlineMatchSessionCreate for its co-op lobby); repeated find lines are
+now said once per 30 s.
+
+The 023123 run's lobby was advertised twice (81113027... at +24.2,
+deleted at +24.25, then 8201114c... at +34.2): both the XNetUnregisterKey
+and the delete are the title's own calls (the HLE deletes a session only
+when asked), as the lobby re-advertises once it settles. The host invites
+again to the new one and the guest accepts the newer invitation.
 
 The reader drops a record whose FILETIME at +100 is not before the
 guest's own KeQuerySystemTime (`0x0022f3d7`) or is 15 minutes or more
@@ -1564,6 +1589,17 @@ at its own address. Peers are now told apart by IP and base port
 ([live.md](live.md), XNetXnAddrToInAddr): a game on this Mac's IP is
 `169.254.(base >> 8).(base & 255)` to the others, so `address made`
 lines show those addresses.
+
+After the squad's QoS (the 023244 run: `contacted, 172 bytes of data` on
+both guests), the join stopped with no dialog and no XNetConnect. A peer
+the host first hears on a game channel used to have key id 0, so the
+host's XNetInAddrToXnAddr on the sender could not place it in its session;
+it now carries the session that address last probed (`qos::Asked`). The
+first datagram each way between a game and a peer is logged:
+`live: xnet: first packet to <ina>:<port> (at <ip>:<port>)` and
+`live: xnet: first packet from <ip>:<base> (as <ina>) on port <port>,
+session <id>`, a failed send each time, and an XNetInAddrToXnAddr for an
+address that is no peer.
 
 A probe now tries three times, 100 ms each (once, 50 ms before): three
 games on one Mac run at a few frames a second, and a single short window

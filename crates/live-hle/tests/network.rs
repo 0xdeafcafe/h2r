@@ -919,6 +919,53 @@ fn a_probe_for_the_squads_id_gets_the_lobby_data_set_under_the_server_id() {
     assert_eq!(a.get(q + 14, 2), vec![172, 0]);
     assert_eq!(a.get(a.u32(q + 16), 172), vec![0xab; 172]);
 }
+/// A guest that probed the host's session and then sends on a game
+/// channel is, to the host, a peer of that session: the host's
+/// XNetInAddrToXnAddr on the sender gives its address and the session's
+/// key id (it was zero, so the title couldn't place the joiner).
+#[test]
+fn a_joiner_heard_on_a_game_channel_carries_the_session_it_probed() {
+    let (mut guest, mut host) = pair();
+    host.key();
+    let kid = host.get(KID, 8);
+    host.put(DATA, b"synthetic-lobby");
+    assert_eq!(host.call("XNetQosListen", &[KID, DATA, 15, 0, 5]), 0);
+    guest.put(KID, &kid);
+    guest.put(KEY, &host.get(KEY, 16));
+    assert_eq!(guest.call("XNetRegisterKey", &[KID, KEY]), 0);
+    let ina = guest.peer(&host);
+    guest.word(SET, XNA);
+    guest.word(SET + 4, KID);
+    guest.word(SET + 8, KEY);
+    let args = [1, SET, SET + 4, SET + 8, 0, 0, 0, 1, 0, 0, 0, OUT];
+    assert_eq!(guest.call("XNetQosLookup", &args), 0);
+    assert_eq!(guest.get(guest.u32(OUT) + 8, 1), vec![0xb]);
+    let sg = guest.socket(17);
+    let sh = host.socket(17);
+    guest.bind(sg, 1000);
+    host.bind(sh, 1000);
+    let to_host = SocketAddrV4::new(Ipv4Addr::from(ina.to_le_bytes()), 1000);
+    assert_eq!(guest.sendto(sg, to_host, b"join-request"), 12);
+    assert_eq!(host.readable(sh), 1);
+    assert_eq!(host.recvfrom(sh, 64), 12);
+    let from = host.get(ADDR + 4, 4);
+    assert_eq!(from, ina_of(&guest).octets().to_vec());
+    let from = u32::from_le_bytes(from.try_into().unwrap());
+    assert_eq!(host.call("XNetInAddrToXnAddr", &[from, XNA, KID + 0x80]), 0);
+    assert_eq!(host.get(KID + 0x80, 8), kid, "the session it probed");
+    assert_eq!(
+        host.get(XNA + 8, 2),
+        guest.config.address.port().to_be_bytes()
+    );
+    // And the reply reaches the guest, which hears it from the host.
+    assert_eq!(
+        host.sendto(sh, SocketAddrV4::new(ina_of(&guest), 1000), b"accept"),
+        6
+    );
+    assert_eq!(guest.readable(sg), 1);
+    assert_eq!(guest.recvfrom(sg, 64), 6);
+    assert_eq!(guest.get(ADDR + 4, 4), ina_of(&host).octets().to_vec());
+}
 #[test]
 fn qos_rejects_invalid_counts_flags_pointers_and_cleans_up_allocations() {
     let mut w = World::new();
