@@ -566,6 +566,11 @@ fn convert_with<R: Read + Seek>(
     let sounds = ambience.install(&mut set)?.bounded();
     report.ambience_bytes = set.raw.iter().map(|r| r.bytes.len() as u64).sum::<u64>() - raw_before;
 
+    // Halo 1's indoor fog, if the level has one, is the scenario's
+    // atmosphere element 0, which every skyless cluster names
+    // (`scenario::indoor_fog`).
+    let indoor = scenario::indoor_fog(h1).map(|_| 0u8);
+
     // Every Halo 1 BSP: the base's slots first, then new sbsp/ltmp tags
     // under Halo 1's names.
     let mut slots = Vec::new();
@@ -577,7 +582,7 @@ fn convert_with<R: Read + Seek>(
                 set.add_tag(map::FourCC(*b"ltmp"), &b.name, TagPayload::Empty)?,
             ),
         };
-        let section = b.write(&mut set, sbsp, ltmp, &sounds)?;
+        let section = b.write(&mut set, sbsp, ltmp, &sounds, indoor)?;
         if !opts.pinned {
             // A fresh level's BSPs are Halo 1's, named so in every slot.
             for id in [sbsp, ltmp] {
