@@ -719,7 +719,7 @@ fn read_source(path: &Path, map: Option<&str>) -> Result<(Vec<u8>, H1Map)> {
 }
 
 /// A Halo 2 map's bytes from the disc.
-fn read_h2_map(disc: &Path, name: &str) -> Result<Vec<u8>> {
+pub(crate) fn read_h2_map(disc: &Path, name: &str) -> Result<Vec<u8>> {
     crate::safe_out::protect(disc);
     let f = File::open(disc).with_context(|| format!("opening {}", disc.display()))?;
     let mut iso = Xiso::open(BufReader::new(f))?;

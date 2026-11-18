@@ -38,6 +38,7 @@ pub mod structure;
 use std::io::{Read, Seek};
 
 use h1map::H1Map;
+use h1map::phase;
 use map::{Map, TagId};
 use std::collections::HashMap;
 
@@ -543,9 +544,12 @@ fn convert_with<R: Read + Seek>(
     let scnr = scenario::BaseScenario::read(base)?;
     let mut ambience = h1convert::ambience::read(h1);
     report.ambience_silenced = scenario::bound_ambience(&mut ambience, ambience_budget);
-    let bsps = structure::prepare_all(h1, base, &scnr, &ambience, &mut report)?;
+    let bsps = phase::time("bsp", || {
+        structure::prepare_all(h1, base, &scnr, &ambience, &mut report)
+    })?;
     let objects_base = if opts.objects {
-        let mut b = h1objects::base::Base::read(base).map_err(|e| invalid(format!("base: {e}")))?;
+        let mut b = phase::time("base templates", || h1objects::base::Base::read(base))
+            .map_err(|e| invalid(format!("base: {e}")))?;
         if lean.leaves_out(Lean::ObjectTextures) {
             b.model_shader = None;
         }
@@ -553,7 +557,7 @@ fn convert_with<R: Read + Seek>(
     } else {
         None
     };
-    let mut set = TagSet::from_map(base)?;
+    let mut set = phase::time("tag set", || TagSet::from_map(base))?;
     let scenario_path = manifest::scenario_path(&level);
     set.name = level.clone();
     set.scenario_path = scenario_path.clone();
@@ -563,7 +567,7 @@ fn convert_with<R: Read + Seek>(
     // The level's background sounds and sound environments, which the
     // clusters and the scenario's palettes name.
     let raw_before: u64 = set.raw.iter().map(|r| r.bytes.len() as u64).sum();
-    let sounds = ambience.install(&mut set)?.bounded();
+    let sounds = phase::time("ambience", || ambience.install(&mut set))?.bounded();
     report.ambience_bytes = set.raw.iter().map(|r| r.bytes.len() as u64).sum::<u64>() - raw_before;
 
     // Every Halo 1 BSP: the base's slots first, then new sbsp/ltmp tags
@@ -577,7 +581,7 @@ fn convert_with<R: Read + Seek>(
                 set.add_tag(map::FourCC(*b"ltmp"), &b.name, TagPayload::Empty)?,
             ),
         };
-        let section = b.write(&mut set, sbsp, ltmp, &sounds)?;
+        let section = phase::time("bsp", || b.write(&mut set, sbsp, ltmp, &sounds))?;
         if !opts.pinned {
             // A fresh level's BSPs are Halo 1's, named so in every slot.
             for id in [sbsp, ltmp] {
@@ -601,20 +605,22 @@ fn convert_with<R: Read + Seek>(
         if opts.objects && opts.assets == h2assets::Assets::Halo2 {
             wanted.extend(h2assets::wanted(h1, &set, d)?);
         }
-        donor::bring(d, &mut set, &wanted, &mut report)?;
+        phase::time("donors", || donor::bring(d, &mut set, &wanted, &mut report))?;
     }
-    scenario::write(
-        h1,
-        &mut set,
-        &scnr,
-        &slots,
-        &sounds,
-        objects_base.as_ref(),
-        opts,
-        lean,
-        [music, dialogue],
-        &mut report,
-    )?;
+    phase::time("scenario", || {
+        scenario::write(
+            h1,
+            &mut set,
+            &scnr,
+            &slots,
+            &sounds,
+            objects_base.as_ref(),
+            opts,
+            lean,
+            [music, dialogue],
+            &mut report,
+        )
+    })?;
 
     // Built without the bound, so an overflow can say by how much and
     // where the bytes went.
@@ -622,7 +628,9 @@ fn convert_with<R: Read + Seek>(
     set.check_file_size = false;
     // The rebuilt scenario and sound gestalt first, into their old ranges.
     set.largest_built_first = true;
-    let (mut bytes, mut layout) = set.build()?;
+    let built_map = phase::time("build map", || set.build());
+    let (mut bytes, mut layout) = built_map?;
+    let _build = phase::start("build map");
     if !opts.pinned {
         let sections: Vec<usize> = slots.iter().map(|s| s.section).collect();
         // From scratch ([`scratch`]); the base pruned ([`fresh`]) when

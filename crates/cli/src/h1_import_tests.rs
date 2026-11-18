@@ -12,7 +12,8 @@ fn stems(v: &[&str]) -> Vec<String> {
 }
 
 #[test]
-fn jobs_are_levels_in_play_order_then_multiplayer_maps_in_both_sandboxes_then_halo2_assets_levels() {
+fn jobs_are_levels_in_play_order_then_multiplayer_maps_in_both_sandboxes_then_halo2_assets_levels()
+{
     let j = jobs(&stems(&[
         "ui",
         "bloodgulch",
@@ -166,10 +167,10 @@ fn pending_is_what_is_not_done_or_whose_map_is_gone() {
 }
 
 /// Fails `a30`, panics on `bloodgulch/h1`, converts the rest.
-struct Flaky(Vec<String>);
+struct Flaky(std::sync::Mutex<Vec<String>>);
 impl Converter for Flaky {
-    fn convert(&mut self, job: &Job) -> Result<()> {
-        self.0.push(job.key());
+    fn convert(&self, job: &Job) -> Result<()> {
+        self.0.lock().unwrap().push(job.key());
         match job.key().as_str() {
             "a30" => bail!("no room"),
             "bloodgulch/h1" => panic!("converter bug"),
@@ -182,13 +183,14 @@ impl Converter for Flaky {
 fn a_failing_or_panicking_map_is_recorded_and_the_rest_go_on() {
     let todo = jobs(&stems(&["a10", "a30", "bloodgulch", "d40"]));
     let mut s = Stamp::default();
-    let mut conv = Flaky(Vec::new());
+    let conv = Flaky(Default::default());
     let mut saves = Vec::new();
     let mut lines = Vec::new();
-    let sum = run_jobs(
+    let (sum, times) = run_jobs(
         &todo,
+        1,
         &mut s,
-        &mut conv,
+        &conv,
         &mut |st| {
             saves.push(st.done.len());
             Ok(())
@@ -203,7 +205,8 @@ fn a_failing_or_panicking_map_is_recorded_and_the_rest_go_on() {
             skipped: 0
         }
     );
-    assert_eq!(conv.0.len(), 8, "every map was tried");
+    assert_eq!(conv.0.lock().unwrap().len(), 8, "every map was tried");
+    assert_eq!(times.len(), 6, "a time for each map converted");
     assert_eq!(saves, [1, 2, 3, 4, 5, 6, 7, 8], "saved after each map");
     assert_eq!(s.done["a30"], Err("no room".into()));
     assert!(
@@ -230,6 +233,74 @@ fn a_failing_or_panicking_map_is_recorded_and_the_rest_go_on() {
         lines[6].starts_with("[7/8] campaign a30 (Halo 2 assets): done"),
         "{lines:?}"
     );
+}
+
+/// On several workers: every job runs once, each outcome is in the stamp,
+/// a line and a save for each, whatever order they finish in.
+#[test]
+fn jobs_run_on_several_workers_each_once() {
+    let todo = jobs(&stems(&["a10", "a30", "bloodgulch", "d40", "sidewinder"]));
+    let mut s = Stamp::default();
+    let conv = Flaky(Default::default());
+    let mut saves = 0;
+    let mut lines = Vec::new();
+    let (sum, times) = run_jobs(
+        &todo,
+        4,
+        &mut s,
+        &conv,
+        &mut |_| {
+            saves += 1;
+            Ok(())
+        },
+        &mut |l| lines.push(l),
+    );
+    assert_eq!((sum.converted, sum.failed), (todo.len() - 2, 2));
+    let mut tried = conv.0.lock().unwrap().clone();
+    tried.sort();
+    let mut want: Vec<String> = todo.iter().map(Job::key).collect();
+    want.sort();
+    assert_eq!(tried, want, "each job once");
+    assert_eq!(s.done.len(), todo.len());
+    assert_eq!(saves, todo.len());
+    assert_eq!(lines.len(), todo.len());
+    assert_eq!(times.len(), todo.len() - 2);
+    let report = timing_text(Duration::from_secs(3), 4, &times);
+    assert!(report.contains("4 workers"), "{report}");
+    assert!(report.contains("sidewinder/h2"), "{report}");
+}
+
+#[test]
+fn jobs_start_campaign_first_each_beside_the_jobs_sharing_its_map() {
+    let todo = jobs(&stems(&["a10", "a30", "bloodgulch", "sidewinder"]));
+    let keys: Vec<String> = schedule(&todo).iter().map(Job::key).collect();
+    assert_eq!(
+        keys,
+        [
+            "a10",
+            "a10/h2",
+            "a30",
+            "a30/h2",
+            "bloodgulch/h2",
+            "bloodgulch/h1",
+            "sidewinder/h2",
+            "sidewinder/h1"
+        ]
+    );
+    // Only what is to do.
+    let some = [todo[1], todo[4]];
+    assert_eq!(schedule(&some), some);
+}
+
+#[test]
+fn workers_follow_the_cores_the_memory_and_the_override() {
+    assert_eq!(workers_with(None, 10, Some(64 << 30)), 10);
+    assert_eq!(workers_with(None, 10, Some(16 << 30)), 5);
+    assert_eq!(workers_with(None, 10, Some(1 << 30)), 1);
+    assert_eq!(workers_with(None, 4, None), 4);
+    assert_eq!(workers_with(Some("2"), 10, Some(64 << 30)), 2);
+    assert_eq!(workers_with(Some("0"), 10, None), 1);
+    assert_eq!(workers_with(Some("x"), 3, None), 3);
 }
 
 #[test]
@@ -326,21 +397,13 @@ fn real_import_is_found_by_the_game() {
                         .any(|o| *o == j.key().split('/').next().unwrap())
             })
             .collect();
-        let mut conv = DiscConverter {
-            h1_path: h1.clone(),
-            iso,
-            disc,
-            h2: h2.clone(),
-            data: data.clone(),
-            scripting: None,
-            donors: None,
-            card_ui: None,
-        };
+        let conv = DiscConverter::new(h1.clone(), iso, disc, h2.clone(), data.clone());
         let mut s = Stamp::default();
-        run_jobs(&todo, &mut s, &mut conv, &mut |_| Ok(()), &mut |l| {
+        run_jobs(&todo, workers(), &mut s, &conv, &mut |_| Ok(()), &mut |l| {
             eprintln!("{l}");
             lines.push(l)
         })
+        .0
     } else {
         let r = Request {
             h1_iso: &h1,
@@ -479,7 +542,11 @@ fn real_import_is_found_by_the_game() {
             let want = std::fs::read(&file).unwrap();
             assert_eq!(&head[..], &want[..0x800], "{path} (Halo 2 assets)");
             let m = map::Map::from_reader(Cursor::new(want)).unwrap();
-            assert_eq!(m.header().scenario_path, l.scenario, "{path} (Halo 2 assets)");
+            assert_eq!(
+                m.header().scenario_path,
+                l.scenario,
+                "{path} (Halo 2 assets)"
+            );
         }
     }
     if std::env::var_os("H1_IMPORT_DATA").is_none() {
@@ -507,20 +574,16 @@ fn every_multiplayer_job_builds_in_both_sandboxes() {
     let mut iso = Xiso::open(BufReader::new(f)).unwrap();
     let disc = Disc::open(&mut iso).unwrap();
     let stems: Vec<String> = disc.maps.iter().map(|e| map_stem(e).to_owned()).collect();
-    let mut conv = DiscConverter {
-        h1_path: h1.clone(),
-        iso,
-        disc,
-        h2,
-        data: PathBuf::new(),
-        scripting: None,
-        donors: None,
-        card_ui: None,
-    };
+    let conv = DiscConverter::new(h1.clone(), iso, disc, h2, PathBuf::new());
     let mut built = 0;
     for job in jobs(&stems) {
-        let Job::Multiplayer(name, sandbox) = job else { continue };
-        if only.as_deref().is_some_and(|o| !o.split(',').any(|m| m == name)) {
+        let Job::Multiplayer(name, sandbox) = job else {
+            continue;
+        };
+        if only
+            .as_deref()
+            .is_some_and(|o| !o.split(',').any(|m| m == name))
+        {
             continue;
         }
         conv.multiplayer(name, sandbox)

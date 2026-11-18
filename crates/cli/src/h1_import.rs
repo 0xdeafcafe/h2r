@@ -26,7 +26,9 @@ use std::fs::File;
 use std::io::{BufReader, Cursor, Read};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use h1convert::convert::{Sandbox, known, map_name, structure_mopp, variant_file};
@@ -74,6 +76,14 @@ impl Job<'_> {
             Job::Campaign(l) => l.to_string(),
             Job::CampaignHalo2(l) => format!("{l}/h2"),
             Job::Multiplayer(m, s) => format!("{m}/{}", s.name()),
+        }
+    }
+
+    /// The Halo 1 map it converts.
+    pub fn source(&self) -> &str {
+        match self {
+            Job::Campaign(l) | Job::CampaignHalo2(l) => l,
+            Job::Multiplayer(m, _) => m,
         }
     }
 
@@ -277,9 +287,21 @@ pub fn pending<'a>(jobs: &[Job<'a>], stamp: &Stamp, data: &Path) -> Vec<Job<'a>>
         .collect()
 }
 
-/// Converts one map and writes it.
-pub trait Converter {
-    fn convert(&mut self, job: &Job) -> Result<()>;
+/// The order [`import`] starts `todo` in: the campaign levels first (the
+/// longest jobs, so the short ones fill in at the end), each beside its
+/// other variant, then each multiplayer map's sandboxes together, so the
+/// jobs that share a Halo 1 map run close together and it is read once.
+pub fn schedule<'a>(todo: &[Job<'a>]) -> Vec<Job<'a>> {
+    let first = |j: &Job| todo.iter().position(|t| t.source() == j.source());
+    let mut out = todo.to_vec();
+    out.sort_by_key(|j| (matches!(j, Job::Multiplayer(..)), first(j)));
+    out
+}
+
+/// Converts one map and writes it. Called from several threads at once
+/// ([`run_jobs`]), one job each.
+pub trait Converter: Sync {
+    fn convert(&self, job: &Job) -> Result<()>;
 }
 
 /// What a run did.
@@ -291,44 +313,196 @@ pub struct Summary {
     pub skipped: usize,
 }
 
-/// Runs `todo` in order, one line each through `say`; a failure (or a
-/// panic) in one is recorded and the rest go on. The stamp is saved after
-/// each.
+/// One job's time: the whole of it, and its phases
+/// ([`h1map::phase`]), each phase's own time.
+#[derive(Clone, Debug)]
+pub struct JobTime {
+    pub key: String,
+    pub total: Duration,
+    pub phases: h1map::phase::Phases,
+    /// What the conversion noted (its retries).
+    pub notes: Vec<String>,
+}
+
+/// How many jobs [`import`] runs at once: `H2_IMPORT_JOBS` when set, else
+/// one per core, and no more than one per [`JOB_MEMORY`] of the machine's
+/// memory.
+pub fn workers() -> usize {
+    workers_with(
+        std::env::var("H2_IMPORT_JOBS").ok().as_deref(),
+        std::thread::available_parallelism().map_or(1, |n| n.get()),
+        memory_bytes(),
+    )
+}
+
+/// The most one job holds at its peak (a campaign level: its base, the
+/// level, the tag set and the map built from it), rounded up.
+pub const JOB_MEMORY: u64 = 3 << 30;
+
+fn workers_with(env: Option<&str>, cores: usize, memory: Option<u64>) -> usize {
+    if let Some(n) = env.and_then(|v| v.trim().parse::<usize>().ok()) {
+        return n.max(1);
+    }
+    let by_memory = memory.map_or(usize::MAX, |m| (m / JOB_MEMORY) as usize);
+    cores.min(by_memory).max(1)
+}
+
+/// The machine's memory, where the system says.
+fn memory_bytes() -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut v: u64 = 0;
+        let mut len = std::mem::size_of::<u64>();
+        // SAFETY: `hw.memsize` is a 64-bit integer; `v` and `len` describe
+        // a buffer that size.
+        let r = unsafe {
+            libc::sysctlbyname(
+                c"hw.memsize".as_ptr(),
+                (&raw mut v).cast(),
+                &mut len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        (r == 0 && v > 0).then_some(v)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let text = std::fs::read_to_string("/proc/meminfo").ok()?;
+        let kb: u64 = text
+            .lines()
+            .find_map(|l| l.strip_prefix("MemTotal:"))?
+            .trim()
+            .trim_end_matches("kB")
+            .trim()
+            .parse()
+            .ok()?;
+        Some(kb * 1024)
+    }
+}
+
+/// Runs `todo` on `workers` threads, taking jobs in order; a line each
+/// through `say` as each finishes; a failure (or a panic) in one is
+/// recorded and the rest go on. The stamp is saved after each. Returns
+/// each converted job's time too.
 pub fn run_jobs(
     todo: &[Job],
+    workers: usize,
     stamp: &mut Stamp,
-    conv: &mut dyn Converter,
+    conv: &dyn Converter,
     save: &mut dyn FnMut(&Stamp) -> Result<()>,
     say: &mut dyn FnMut(String),
-) -> Summary {
+) -> (Summary, Vec<JobTime>) {
     let mut sum = Summary::default();
-    for (i, job) in todo.iter().enumerate() {
-        let t = Instant::now();
-        let r = catch_unwind(AssertUnwindSafe(|| conv.convert(job)))
-            .unwrap_or_else(|p| Err(anyhow!("panicked: {}", panic_text(&p))));
-        let n = format!("[{}/{}]", i + 1, todo.len());
-        match &r {
-            Ok(()) => {
-                sum.converted += 1;
-                say(format!(
-                    "{n} {}: done ({:.1} s)",
-                    job.label(),
-                    t.elapsed().as_secs_f32()
-                ));
+    let mut times = Vec::new();
+    let next = AtomicUsize::new(0);
+    let (tx, rx) = mpsc::channel();
+    std::thread::scope(|s| {
+        for _ in 0..workers.clamp(1, todo.len().max(1)) {
+            let tx = tx.clone();
+            let next = &next;
+            s.spawn(move || {
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(job) = todo.get(i) else { break };
+                    let t = Instant::now();
+                    let (r, rec) = h1map::phase::record(|| {
+                        catch_unwind(AssertUnwindSafe(|| conv.convert(job)))
+                            .unwrap_or_else(|p| Err(anyhow!("panicked: {}", panic_text(&p))))
+                    });
+                    let time = JobTime {
+                        key: job.key(),
+                        total: t.elapsed(),
+                        phases: rec.phases,
+                        notes: rec.notes,
+                    };
+                    if tx.send((job, r, time)).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        drop(tx);
+        for (n, (job, r, time)) in rx.iter().enumerate() {
+            let n = format!("[{}/{}]", n + 1, todo.len());
+            match &r {
+                Ok(()) => {
+                    sum.converted += 1;
+                    say(format!(
+                        "{n} {}: done ({:.1} s)",
+                        job.label(),
+                        time.total.as_secs_f32()
+                    ));
+                    times.push(time);
+                }
+                Err(e) => {
+                    sum.failed += 1;
+                    say(format!("{n} {}: failed: {e:#}", job.label()));
+                }
             }
-            Err(e) => {
-                sum.failed += 1;
-                say(format!("{n} {}: failed: {e:#}", job.label()));
+            stamp
+                .done
+                .insert(job.key(), r.map_err(|e| format!("{e:#}")));
+            if let Err(e) = save(stamp) {
+                say(format!("could not save the import stamp: {e:#}"));
             }
         }
-        stamp
-            .done
-            .insert(job.key(), r.map_err(|e| format!("{e:#}")));
-        if let Err(e) = save(stamp) {
-            say(format!("could not save the import stamp: {e:#}"));
+    });
+    (sum, times)
+}
+
+/// The timing report's file, in `<data>/campaigns/halo1/`.
+pub const TIMING_FILE: &str = "import-timing.txt";
+
+/// The timing report: the run's wall time and workers, each phase's time
+/// over every job (most first), then each job's.
+pub fn timing_text(wall: Duration, workers: usize, times: &[JobTime]) -> String {
+    let secs = |d: &Duration| d.as_secs_f64();
+    let mut all: Vec<(&'static str, Duration)> = Vec::new();
+    for (name, d) in times.iter().flat_map(|t| t.phases.iter()) {
+        match all.iter_mut().find(|(n, _)| n == name) {
+            Some((_, t)) => *t += *d,
+            None => all.push((name, *d)),
         }
     }
-    sum
+    all.sort_by(|a, b| b.1.cmp(&a.1));
+    let jobs: Duration = times.iter().map(|t| t.total).sum();
+    let mut s = format!(
+        "# h2 import halo1: where the time went (converter version {CONVERTER_VERSION})\n\
+         wall {:.1} s, {workers} workers, {} jobs, {:.1} s of job time\n",
+        secs(&wall),
+        times.len(),
+        secs(&jobs)
+    );
+    s += "\nphases over every job (each phase's own time):\n";
+    for (n, d) in &all {
+        let pct = if jobs.is_zero() {
+            0.0
+        } else {
+            100.0 * secs(d) / secs(&jobs)
+        };
+        s += &format!("  {n:<24} {:>8.2} s {pct:>5.1}%\n", secs(d));
+    }
+    s += "\njobs:\n";
+    for t in times {
+        let mut phases = t.phases.clone();
+        phases.sort_by(|a, b| b.1.cmp(&a.1));
+        let ph: Vec<String> = phases
+            .iter()
+            .filter(|(_, d)| d.as_millis() >= 50)
+            .map(|(n, d)| format!("{n} {:.2}", secs(d)))
+            .collect();
+        s += &format!(
+            "  {:<24} {:>7.2} s  {}\n",
+            t.key,
+            secs(&t.total),
+            ph.join(", ")
+        );
+        for n in &t.notes {
+            s += &format!("  {:<24}            {n}\n", "");
+        }
+    }
+    s
 }
 
 fn panic_text(p: &Box<dyn std::any::Any + Send>) -> String {
@@ -338,76 +512,201 @@ fn panic_text(p: &Box<dyn std::any::Any + Send>) -> String {
         .unwrap_or_else(|| "(no message)".into())
 }
 
+/// A Halo 1 map shared by the jobs that convert it.
+#[derive(Default)]
+struct H1Entry {
+    /// Its jobs not yet done.
+    jobs: usize,
+    map: Arc<OnceLock<Result<Arc<(Vec<u8>, H1Map)>, String>>>,
+}
+
 /// The real converter: maps from the Halo 1 disc, bases from the Halo 2
-/// disc, written under the data root.
+/// disc, written under the data root. Shared by the workers: what more
+/// than one job reads (the scripts' tables, the donors, `ui.map`, the
+/// Halo 2 bases) is read once, by the first job that needs it.
 struct DiscConverter {
     h1_path: PathBuf,
-    iso: Xiso<BufReader<File>>,
+    iso: Mutex<Xiso<BufReader<File>>>,
     disc: Disc,
     h2: PathBuf,
     data: PathBuf,
-    /// Built once, for the first campaign level.
-    scripting: Option<Result<Option<h1campaign::Scripting>, String>>,
-    /// Read once, for the first campaign level.
-    donors: Option<h1campaign::donor::Donors>,
-    /// The disc's `ui.map` (the multiplayer maps' cards), read once.
-    card_ui: Option<Option<H1Map>>,
+    scripting: OnceLock<Result<Option<h1campaign::Scripting>, String>>,
+    donors: OnceLock<Result<h1campaign::donor::Donors, String>>,
+    /// The disc's `ui.map` (the maps' cards).
+    card_ui: OnceLock<Option<H1Map>>,
+    /// The Halo 2 maps' bytes by name, each read once.
+    bases: Mutex<BTreeMap<String, Arc<OnceLock<Result<Arc<Vec<u8>>, String>>>>>,
+    /// The Halo 1 maps read, by name, while a job still to finish
+    /// converts it (a level's two variants, a map's two sandboxes): each
+    /// is read and inflated once.
+    h1_maps: Mutex<BTreeMap<String, H1Entry>>,
+    /// Held while a job writes: the packages' and the campaign's
+    /// manifests are read, merged and written again.
+    write: Mutex<()>,
 }
 
 impl DiscConverter {
+    fn new(
+        h1_path: PathBuf,
+        iso: Xiso<BufReader<File>>,
+        disc: Disc,
+        h2: PathBuf,
+        data: PathBuf,
+    ) -> Self {
+        DiscConverter {
+            h1_path,
+            iso: Mutex::new(iso),
+            disc,
+            h2,
+            data,
+            scripting: OnceLock::new(),
+            donors: OnceLock::new(),
+            card_ui: OnceLock::new(),
+            bases: Mutex::new(BTreeMap::new()),
+            h1_maps: Mutex::new(BTreeMap::new()),
+            write: Mutex::new(()),
+        }
+    }
+
+    /// Keeps each Halo 1 map `todo` converts once read until its last job
+    /// there is done.
+    fn expect(&self, todo: &[Job]) {
+        let mut maps = self.h1_maps.lock().unwrap_or_else(|e| e.into_inner());
+        for j in todo {
+            maps.entry(j.source().to_owned()).or_default().jobs += 1;
+        }
+    }
+
+    /// `job` is done with its Halo 1 map: let it go after the last.
+    fn release(&self, job: &Job) {
+        let mut maps = self.h1_maps.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(e) = maps.get_mut(job.source()) {
+            e.jobs = e.jobs.saturating_sub(1);
+            if e.jobs == 0 {
+                maps.remove(job.source());
+            }
+        }
+    }
+
+    /// A Halo 2 map from the Halo 2 disc, opened on its own copy of the
+    /// bytes (the conversion changes it).
+    fn h2_base(&self, name: &str) -> Result<map::Map<Cursor<Vec<u8>>>> {
+        let cell = self
+            .bases
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(name.to_owned())
+            .or_default()
+            .clone();
+        let bytes = cell
+            .get_or_init(|| {
+                h1map::phase::time("read halo 2 base", || {
+                    h1_cmd::read_h2_map(&self.h2, name)
+                        .map(Arc::new)
+                        .map_err(|e| format!("{e:#}"))
+                })
+            })
+            .as_ref()
+            .map_err(|e| anyhow!("{e}"))?;
+        h1map::phase::time("open halo 2 base", || {
+            map::Map::from_reader(Cursor::new(bytes.as_ref().clone()))
+                .with_context(|| format!("reading {name}.map"))
+        })
+    }
+
     /// A multiplayer job's map, converted and built as the import writes
     /// it (fresh: nothing of the base pinned), with its preparation.
     fn multiplayer(
-        &mut self,
+        &self,
         name: &str,
         sandbox: Sandbox,
     ) -> Result<(h1convert::convert::Prepared, h1convert::fresh::Fresh)> {
-        let (file, h1) = self.read(name)?;
+        let source = self.h1_map(name)?;
+        let (file, h1) = (&source.0, &source.1);
         let base_name = known(name).map_or("beavercreek", |k| k.1);
-        let mut base = h1_cmd::h2_base(&self.h2, base_name)?;
-        let p = h1_cmd::prepare_mp(&h1, &file, &mut base, base_name, sandbox)?;
-        let mopp = structure_mopp(&p.collision)?;
-        let f = p.build_fresh(&mut base, &mopp)?;
+        let mut base = self.h2_base(base_name)?;
+        let p = h1map::phase::time("convert", || {
+            h1_cmd::prepare_mp(h1, file, &mut base, base_name, sandbox)
+        })?;
+        let mopp = h1map::phase::time("mopp", || structure_mopp(&p.collision))?;
+        let f = h1map::phase::time("build map", || p.build_fresh(&mut base, &mopp))?;
         Ok((p, f))
     }
 
-    fn read(&mut self, name: &str) -> Result<(Vec<u8>, H1Map)> {
+    /// A Halo 1 map off the disc, read once while [`Self::expect`]ed jobs
+    /// still need it.
+    fn h1_map(&self, name: &str) -> Result<Arc<(Vec<u8>, H1Map)>> {
+        let cell = self
+            .h1_maps
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(name)
+            .map(|e| e.map.clone());
+        let Some(cell) = cell else {
+            return Ok(Arc::new(self.read(name)?));
+        };
+        cell.get_or_init(|| self.read(name).map(Arc::new).map_err(|e| format!("{e:#}")))
+            .clone()
+            .map_err(|e| anyhow!("{e}"))
+    }
+
+    fn read(&self, name: &str) -> Result<(Vec<u8>, H1Map)> {
         let e = self
             .disc
             .map(name)
             .with_context(|| format!("no {name}.map on the disc"))?
             .clone();
-        let bytes = self.iso.read(&e)?;
-        let m =
-            H1Map::from_reader(Cursor::new(bytes.as_slice())).with_context(|| e.path.clone())?;
+        let bytes = h1map::phase::time("read halo 1 map", || {
+            self.iso.lock().unwrap_or_else(|e| e.into_inner()).read(&e)
+        })?;
+        let m = h1map::phase::time("open halo 1 map", || {
+            H1Map::from_reader(Cursor::new(bytes.as_slice())).with_context(|| e.path.clone())
+        })?;
         Ok((bytes, m))
+    }
+
+    fn card_ui(&self) -> Option<&H1Map> {
+        self.card_ui
+            .get_or_init(|| self.read("ui").ok().map(|(_, m)| m))
+            .as_ref()
     }
 
     /// A campaign level converted as the import writes it, with `assets`.
     fn campaign(
-        &mut self,
+        &self,
         level: &str,
         assets: h1campaign::h2assets::Assets,
     ) -> Result<h1campaign::Converted> {
-        let (_, h1) = self.read(level)?;
-        if self.scripting.is_none() {
-            self.scripting = Some(
-                h1_cmd::campaign_scripting(&self.h1_path, &self.h2).map_err(|e| format!("{e:#}")),
-            );
-        }
-        if self.donors.is_none() {
-            self.donors = Some(h1_cmd::campaign_donors(&self.h2)?);
-        }
-        let scripting = match self.scripting.as_ref().expect("set") {
+        let source = self.h1_map(level)?;
+        let h1 = &source.1;
+        let scripting = self.scripting.get_or_init(|| {
+            h1map::phase::time("scripts' tables", || {
+                h1_cmd::campaign_scripting(&self.h1_path, &self.h2).map_err(|e| format!("{e:#}"))
+            })
+        });
+        let scripting = match scripting {
             Ok(s) => s.as_ref(),
             Err(e) => bail!("the scripts' tables: {e}"),
         };
-        let mut base = h1_cmd::h2_base(&self.h2, h1campaign::base_for(level))?;
+        let donors = self
+            .donors
+            .get_or_init(|| {
+                h1map::phase::time("read donors", || {
+                    h1_cmd::campaign_donors(&self.h2).map_err(|e| format!("{e:#}"))
+                })
+            })
+            .as_ref()
+            .map_err(|e| anyhow!("{e}"))?;
+        let mut base = self.h2_base(h1campaign::base_for(level))?;
         let opts = h1campaign::Options {
             assets,
-            ..h1_cmd::campaign_options(scripting, self.donors.as_ref())
+            ..h1_cmd::campaign_options(scripting, Some(donors))
         };
-        Ok(h1campaign::convert(&h1, &mut base, &opts)?)
+        let done = h1map::phase::time("convert", || h1campaign::convert(h1, &mut base, &opts))?;
+        for r in &done.report.retries {
+            h1map::phase::note(|| format!("converted again: {r}"));
+        }
+        Ok(done)
     }
 
     fn out(&self, root: PathBuf) -> Result<OutDir> {
@@ -415,10 +714,28 @@ impl DiscConverter {
         // convert of the same map.
         Ok(OutDir::new(root, true)?.protecting(&self.h1_path))
     }
+
+    fn lock_write(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.write.lock().unwrap_or_else(|e| e.into_inner())
+    }
 }
 
 impl Converter for DiscConverter {
-    fn convert(&mut self, job: &Job) -> Result<()> {
+    fn convert(&self, job: &Job) -> Result<()> {
+        // Its Halo 1 map let go however the job ends, a panic included.
+        struct Release<'c, 'j>(&'c DiscConverter, &'j Job<'j>);
+        impl Drop for Release<'_, '_> {
+            fn drop(&mut self) {
+                self.0.release(self.1);
+            }
+        }
+        let _release = Release(self, job);
+        self.convert_job(job)
+    }
+}
+
+impl DiscConverter {
+    fn convert_job(&self, job: &Job) -> Result<()> {
         match *job {
             Job::CampaignHalo2(level) => {
                 let done = self.campaign(level, h1campaign::h2assets::Assets::Halo2)?;
@@ -428,36 +745,39 @@ impl Converter for DiscConverter {
                 let file = Job::CampaignHalo2(level).output(&self.data);
                 let dir = file.parent().context("the variant's folder")?;
                 let name = file.file_name().context("the variant's file")?;
-                self.out(dir.to_path_buf())?
-                    .write(&[name.to_string_lossy().into_owned()], &done.bytes)?;
+                let _w = self.lock_write();
+                h1map::phase::time("write", || -> Result<()> {
+                    self.out(dir.to_path_buf())?
+                        .write(&[name.to_string_lossy().into_owned()], &done.bytes)?;
+                    Ok(())
+                })?;
             }
             Job::Campaign(level) => {
                 let done = self.campaign(level, h1campaign::h2assets::Assets::Halo1)?;
-                let dir = campaign_dir(&self.data);
-                h1_cmd::write_campaign_level(
-                    &self.out(dir.clone())?,
-                    &dir,
-                    level,
-                    &done.bytes,
-                    &done.report.scenario.hud_swaps,
-                    done.report.scenario.hud_sensor,
-                )?;
                 // Its picture for the level select (boot::campaign_cards).
-                if self.card_ui.is_none() {
-                    self.card_ui = Some(self.read("ui").ok().map(|(_, m)| m));
-                }
                 let card = self
-                    .card_ui
-                    .as_ref()
-                    .and_then(|ui| ui.as_ref())
+                    .card_ui()
                     .and_then(|ui| h1convert::ui::campaign_card(ui, level).ok().flatten());
-                if let Some(c) = card {
-                    let mut png = Vec::new();
-                    assets::png::write_rgba(&mut png, c.width, c.height, &c.rgba)?;
-                    let name = format!("{}.png", level.to_ascii_lowercase());
-                    self.out(dir.clone())?
-                        .write(&[boot::campaign_cards::CARDS_DIR.to_owned(), name], &png)?;
-                }
+                let dir = campaign_dir(&self.data);
+                let _w = self.lock_write();
+                h1map::phase::time("write", || -> Result<()> {
+                    h1_cmd::write_campaign_level(
+                        &self.out(dir.clone())?,
+                        &dir,
+                        level,
+                        &done.bytes,
+                        &done.report.scenario.hud_swaps,
+                        done.report.scenario.hud_sensor,
+                    )?;
+                    if let Some(c) = card {
+                        let mut png = Vec::new();
+                        assets::png::write_rgba(&mut png, c.width, c.height, &c.rgba)?;
+                        let name = format!("{}.png", level.to_ascii_lowercase());
+                        self.out(dir.clone())?
+                            .write(&[boot::campaign_cards::CARDS_DIR.to_owned(), name], &png)?;
+                    }
+                    Ok(())
+                })?;
             }
             Job::Multiplayer(name, sandbox) => {
                 let (p, f) = self.multiplayer(name, sandbox)?;
@@ -466,22 +786,20 @@ impl Converter for DiscConverter {
                     name: f.name,
                     bytes: f.bytes,
                 };
-                if self.card_ui.is_none() {
-                    self.card_ui = Some(self.read("ui").ok().map(|(_, m)| m));
-                }
                 let card = self
-                    .card_ui
-                    .as_ref()
-                    .and_then(|ui| ui.as_ref())
+                    .card_ui()
                     .and_then(|ui| h1convert::ui::mp_card(ui, name).ok().flatten());
                 let root = content::store::maps_dir(&self.data);
-                h1_cmd::write_mp_package(
-                    &self.out(root.clone())?,
-                    &root,
-                    sandbox,
-                    &done,
-                    card.as_ref(),
-                )?;
+                let _w = self.lock_write();
+                h1map::phase::time("write", || {
+                    h1_cmd::write_mp_package(
+                        &self.out(root.clone())?,
+                        &root,
+                        sandbox,
+                        &done,
+                        card.as_ref(),
+                    )
+                })?;
             }
         }
         Ok(())
@@ -563,18 +881,36 @@ pub fn import(r: &Request, say: &mut dyn FnMut(String)) -> Result<Summary> {
         r.h1_iso.display(),
         r.data.display()
     ));
-    let mut conv = DiscConverter {
-        h1_path: r.h1_iso.to_path_buf(),
+    let conv = DiscConverter::new(
+        r.h1_iso.to_path_buf(),
         iso,
         disc,
-        h2: r.h2_disc.to_path_buf(),
-        data: r.data.to_path_buf(),
-        scripting: None,
-        donors: None,
-        card_ui: None,
-    };
+        r.h2_disc.to_path_buf(),
+        r.data.to_path_buf(),
+    );
     let data = r.data.to_path_buf();
-    let mut sum = run_jobs(&todo, &mut stamp, &mut conv, &mut |s| s.write(&data), say);
+    let workers = workers();
+    let wall = Instant::now();
+    let order = schedule(&todo);
+    conv.expect(&order);
+    let (mut sum, times) = run_jobs(
+        &order,
+        workers,
+        &mut stamp,
+        &conv,
+        &mut |s| s.write(&data),
+        say,
+    );
+    let report = timing_text(wall.elapsed(), workers, &times);
+    let path = campaign_dir(r.data).join(TIMING_FILE);
+    match std::fs::write(&path, report) {
+        Ok(()) => say(format!(
+            "{:.1} s with {workers} workers; where the time went: {}",
+            wall.elapsed().as_secs_f32(),
+            path.display()
+        )),
+        Err(e) => say(format!("could not write {}: {e}", path.display())),
+    }
     sum.skipped = skipped;
     Ok(sum)
 }

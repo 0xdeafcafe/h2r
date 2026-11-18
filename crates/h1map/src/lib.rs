@@ -22,6 +22,7 @@
 pub mod bitmap;
 pub mod bsp;
 pub mod disc;
+pub mod phase;
 mod format;
 mod reader;
 pub mod scenario;
