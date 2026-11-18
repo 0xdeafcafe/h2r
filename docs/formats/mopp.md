@@ -176,7 +176,8 @@ cut off from it, where the sphere VM keeps it.
 `build(&[Surface]) -> Code` over polygons with keys:
 
 1. Origin = surface bounds' minimum minus a pad (1 cm + 0.01 % of the
-   extent); scale = `(2^24 − 4096) / (extent + 2 pad)`.
+   extent); scale = `(2^24 − 65536 − 4096) / (extent + 2 pad)`, so no
+   surface reaches root cell 255.
 2. Each surface's box is quantized to full units: `floor − 2`, `ceil + 2`
    (covers the sphere VM's rounding).
 3. Recursive split: zoom (`01..04`) as far as the subtree's union fits a
@@ -187,10 +188,20 @@ cut off from it, where the sphere VM keeps it.
    (low child ≤ 255 bytes), `23..25` (≤ 64 KiB) or `23..25` plus a `07`
    jump to the high child. Leaves emit `30..53`. The root sets the key
    base with `0b`.
-4. Invariant: every surface of a node lies in `0..=255` of the node's
-   frame, so every operand fits a byte; the tracked region follows the
-   engine's branch rule (a query in a gap between L and H still enters the
-   low child).
+4. Upper bounds are exclusive: a split's `L` and a bound check's `h` are
+   one past the top cell of the surfaces below them, as the box query
+   needs (see [The box query](#the-box-query)); the sphere query only
+   gets one cell looser. Through converter version 71 they were the top
+   cell itself, and the box query dropped a surface once a body's box
+   started in that cell. That is the suspect for converted Blood Gulch's
+   blue ramp, where the live player's ground contact went at x 43.56 and
+   the player fell; `h1convert/tests/ramp_contacts.rs` runs the box query
+   there.
+5. Invariant: every surface of a node lies in `0..=254` of the node's
+   frame (a zoom stops where the union would pass 254), so every operand,
+   exclusive tops included, fits a byte; the tracked region follows the
+   sphere query's branch rule (a query in a gap between L and H still
+   enters the low child).
 
 It emits only `01..04`, `07`, `09`, `0a`, `0b`, `10..12`, `23..28`,
 `30..53` (no diagonals, no `29..2b`, no properties). Byte equality with
