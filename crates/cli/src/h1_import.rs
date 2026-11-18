@@ -288,13 +288,24 @@ pub fn pending<'a>(jobs: &[Job<'a>], stamp: &Stamp, data: &Path) -> Vec<Job<'a>>
 }
 
 /// The order [`import`] starts `todo` in: the campaign levels first (the
-/// longest jobs, so the short ones fill in at the end), each beside its
-/// other variant, then each multiplayer map's sandboxes together, so the
-/// jobs that share a Halo 1 map run close together and it is read once.
-pub fn schedule<'a>(todo: &[Job<'a>]) -> Vec<Job<'a>> {
-    let first = |j: &Job| todo.iter().position(|t| t.source() == j.source());
+/// longest jobs, so the short ones fill in at the end), then the
+/// multiplayer maps; within each, every map's first job before any map's
+/// second, so a map's second job starts once its first has read it (a
+/// level's two variants and a map's two sandboxes share the read), and
+/// the biggest maps (`size`, its file on the disc) first.
+pub fn schedule<'a>(todo: &[Job<'a>], size: impl Fn(&str) -> u64) -> Vec<Job<'a>> {
+    let round = |j: &Job| {
+        let i = todo.iter().position(|t| t == j).unwrap_or(0);
+        todo[..i].iter().filter(|t| t.source() == j.source()).count()
+    };
     let mut out = todo.to_vec();
-    out.sort_by_key(|j| (matches!(j, Job::Multiplayer(..)), first(j)));
+    out.sort_by_key(|j| {
+        (
+            matches!(j, Job::Multiplayer(..)),
+            round(j),
+            std::cmp::Reverse(size(j.source())),
+        )
+    });
     out
 }
 
@@ -713,7 +724,7 @@ impl DiscConverter {
             self.iso.lock().unwrap_or_else(|e| e.into_inner()).read(&e)
         })?;
         let m = h1map::phase::time("open halo 1 map", || {
-            H1Map::from_reader(Cursor::new(bytes.as_slice())).with_context(|| e.path.clone())
+            H1Map::from_bytes(&bytes).with_context(|| e.path.clone())
         })?;
         Ok((bytes, m))
     }
@@ -946,7 +957,7 @@ pub fn import(r: &Request, say: &mut dyn FnMut(String)) -> Result<Summary> {
     let data = r.data.to_path_buf();
     let workers = workers();
     let wall = Instant::now();
-    let order = schedule(&todo);
+    let order = schedule(&todo, |m| conv.disc.map(m).map_or(0, |e| u64::from(e.size)));
     conv.expect(&order);
     let (mut sum, times) = run_jobs(
         &order,
