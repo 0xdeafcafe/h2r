@@ -589,7 +589,7 @@ Halo ring were already built this way.
   retail warthog's front pair holds `0x26`, its back pair `0x32`): a
   point ahead of the powered points' middle takes the majority over the
   role's steering points, the rest the majority over the others. Through
-  version 74 every point took one majority over all four, the back
+  version 75 every point took one majority over all four, the back
   pair's word, so no converted wheel steered.
 - **Control** (`+0x1f2`, the 16 bits after `vehicle_type`,
   `rebuild::VEHI_CONTROL`): the majority over the base's vehicles of the
@@ -635,7 +635,7 @@ Halo ring were already built this way.
   The two games share the layout: Halo 2's
   `globals\default_unit_camera_track` holds Halo 1's default unit
   track's nine points value for value (`tests/vehicle_camera_disc.rs`).
-  Through version 74 no seat named a track, so the engine used that
+  Through version 75 no seat named a track, so the engine used that
   default, whose top point is 3.9 above the camera marker where the
   warthog's own is 3.5 (Halo 1) or 2.05 (the retail warthog's). A seat
   Halo 1 gives no track (the scorpion's passengers) still names none.

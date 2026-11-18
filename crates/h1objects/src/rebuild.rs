@@ -738,7 +738,7 @@ pub struct VehicleRole {
 /// its cannon turrets, 0 on every other vehicle of every type, so type 0
 /// takes 2 and the rest 0. Proved in a game run (2026-11-19, converted
 /// Blood Gulch): the converted scorpion, written with 0 through converter
-/// version 74 (the role took 4-byte spans only), crept at 0.05 world
+/// version 75 (the role took 4-byte spans only), crept at 0.05 world
 /// units a second with the stick held forward; set to 2 it drove at 2.5.
 pub const VEHI_CONTROL: &str = "unknown_1f2";
 
@@ -766,7 +766,7 @@ pub const HOVER_REGION: &str = "string_34";
 /// V: on the retail warthog the two front points hold `0x26` and the two
 /// back ones `0x32`: the front pair alone has bit 2, the back pair alone
 /// bit 4 (a hand-brake wheel's). Taken as one majority over all four, as
-/// through converter version 74, every converted wheel held the back
+/// through converter version 75, every converted wheel held the back
 /// pair's word and none steered.
 pub const FRICTION_FLAGS: &str = "unknown_4";
 pub const FRICTION_STEERS: u32 = 1 << 2;
