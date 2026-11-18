@@ -26,8 +26,11 @@
 //! layers are the exception: a `schi` with two maps, a 1×1 mask first and
 //! a tiled cloud texture second.
 //!
-//! **Halo 2's side.** Three templates the base's own sky draws with
-//! (D: Coagulation's sky shaders):
+//! **Halo 2's side.** Three sky stems (D: Coagulation's sky shaders), each
+//! a [`crate::shad`] layout the shader is rebuilt with from the `shad`
+//! definition. The sky stems are on most maps but not in `shared.map`;
+//! without one, the shared transparent stem stands in
+//! ([`SkyTemplates::layout`]).
 //!
 //! - `sky_one_alpha_env`: stage 3's bitmap is the picture (`rgb = t3.rgb ×
 //!   t3.a` plus a stage-2 term the template's default bitmap leaves black;
@@ -51,24 +54,33 @@
 //! has four bitmap parameters and three pairs; every pair is set to the
 //! picture's scale (the other stages hold uniform default bitmaps).
 //!
-//! The copy is the template's whole tree ([`Relocator::to_built`]), named
-//! for the Halo 1 shader, with the bitmap parameters and vectors changed
-//! (and their blocks' sharing keys cleared). Animation the template
-//! carries stays.
+//! The shader is new, named for the Halo 1 shader; no Halo 2 shader's
+//! bytes are copied.
+//!
+//! **Scrolling.** A map's 2D animation is three runs of (u16 source, u16
+//! function, f32 period, f32 phase, f32 scale), u, v and rotation, at
+//! `+0xa4` (`schi`) or `+0x2c` (`sotr`); D (every sky and transparent
+//! shader on the disc): the function is mostly 6, a slide (a sawtooth),
+//! periods from 1 to 250 s, negative on some (reversed), scale ±1 or 2.
+//! A cloud layer's tile scrolls as Halo 1's slides it (source 0, game
+//! time, function 6), through `two_alpha_clouds`' texture transform
+//! ([`shad::CLOUDS_TREE`]): the offset runs from 0 to the scale over the
+//! period, from the scale to 0 when the period is negative.
 //!
 //! Lost: the masked star layers of the night and dusk domes (the picture
-//! alone draws), the per-map colour functions, and `schi` animation.
+//! alone draws), the per-map colour functions, the phase, rotation, the
+//! other animation functions (cosine, noise, spark: a handful), and
+//! scrolling on the picture and additive layers.
 
+use std::collections::HashMap;
 use std::io::{Read, Seek};
 
 use h1map::{Group, H1Map, TagRef};
-use map::build::{Block, FixupKind};
-use map::{FourCC, Map, TagId};
-use tags::material::{ShaderLibrary, TextureSource};
-use tags::schema::{Relocator, Schema};
-use tags::shader::SHAD;
+use map::build::Block;
+use map::{Map, TagId};
 
-use crate::textures::{block_child, h1_maps_of};
+use crate::shad;
+use crate::textures::h1_maps_of;
 
 /// Halo 1 sky shader fields (module docs).
 pub const BLEND: usize = 0x2c;
@@ -77,20 +89,17 @@ pub const MAPS: usize = 0x54;
 /// (element size, bitmap reference, u scale) of `schi` and `sotr` maps.
 pub const SCHI_MAP: (usize, usize, usize) = (0xdc, 0x6c, 0x54);
 pub const SOTR_MAP: (usize, usize, usize) = (0x64, 0x1c, 0x04);
+/// A map's u animation run (`schi`, `sotr`); v follows `0x10` later.
+pub const SCHI_ANIMATION: usize = 0xa4;
+pub const SOTR_ANIMATION: usize = 0x2c;
+/// Halo 1's slide (sawtooth) animation function.
+pub const SLIDE: u16 = 6;
 
-pub const ALPHA_TEMPLATE: &str = "shaders\\shader_templates\\transparent\\sky_one_alpha_env";
-pub const CLOUDS_TEMPLATE: &str = "shaders\\shader_templates\\transparent\\two_alpha_clouds";
-pub const ADDITIVE_TEMPLATE: &str = "shaders\\shader_templates\\transparent\\one_add_illum_detail";
+pub const ALPHA_TEMPLATE: &str = shad::SKY_PICTURE.stem;
+pub const CLOUDS_TEMPLATE: &str = shad::SKY_CLOUDS.stem;
+pub const ADDITIVE_TEMPLATE: &str = shad::SKY_ADDITIVE.stem;
 /// The plain white bitmap the additive copies draw on stage 2.
 pub const WHITE: &str = "shaders\\default_bitmaps\\bitmaps\\color_white";
-
-/// Postprocess (`shad +0x20`) blocks: bitmap parameters, vectors.
-const PARAMS: u32 = 0x04;
-const PARAM: usize = 0xc;
-const VECTORS: u32 = 0x14;
-const VECTOR: usize = 0x10;
-/// `one_add_illum_detail`'s tint vector.
-const TINT: usize = 4;
 
 /// One map of a Halo 1 sky shader.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -98,6 +107,30 @@ pub struct SkyMap {
     pub bitmap: h1map::TagId,
     /// u and v scale.
     pub scale: [f32; 2],
+    /// Its LOD offset ([`shad::lod_offset`]).
+    pub lod_offset: f32,
+    /// Its u and v scrolling (module docs).
+    pub scroll: [Option<shad::Slide>; 2],
+}
+
+/// The slide of a map element's animation run at `at`: source 0 (game
+/// time), function [`SLIDE`], a period and scale not 0.
+fn slide(e: &[u8], at: usize) -> Option<shad::Slide> {
+    let u16_at = |o: usize| Some(u16::from_le_bytes(e.get(o..o + 2)?.try_into().ok()?));
+    let f32_at = |o: usize| Some(f32::from_le_bytes(e.get(o..o + 4)?.try_into().ok()?));
+    if u16_at(at)? != 0 || u16_at(at + 2)? != SLIDE {
+        return None;
+    }
+    let (period, scale) = (f32_at(at + 4)?, f32_at(at + 12)?);
+    if !period.is_finite() || !scale.is_finite() || period == 0.0 || scale == 0.0 {
+        return None;
+    }
+    let (from, to) = if period > 0.0 { (0.0, scale) } else { (scale, 0.0) };
+    Some(shad::Slide {
+        period: period.abs(),
+        from,
+        to,
+    })
 }
 
 /// A Halo 1 sky shader, as the conversion needs it.
@@ -120,7 +153,8 @@ pub fn read_h1(h1: &H1Map, id: h1map::TagId) -> Option<H1SkyShader> {
     let f32_at = |b: &[u8], at: usize| -> Option<f32> {
         Some(f32::from_le_bytes(b.get(at..at + 4)?.try_into().ok()?))
     };
-    let chicago = tag.group == Group::new(b"schi");
+    // `scex` (chicago extended) reads as `schi` (`editor_core::halo1_art`).
+    let chicago = tag.group == Group::new(b"schi") || tag.group == Group::new(b"scex");
     let layout = if chicago {
         Some(SCHI_MAP)
     } else if tag.group == Group::new(b"sotr") {
@@ -137,9 +171,12 @@ pub fn read_h1(h1: &H1Map, id: h1map::TagId) -> Option<H1SkyShader> {
                 .chunks_exact(size)
                 .filter_map(|e| {
                     let r = TagRef::read(e, bitmap)?;
+                    let anim = if chicago { SCHI_ANIMATION } else { SOTR_ANIMATION };
                     (r.group == Group::new(b"bitm") && !r.id.is_none()).then_some(SkyMap {
                         bitmap: r.id,
                         scale: [f32_at(e, scale)?, f32_at(e, scale + 4)?],
+                        lod_offset: shad::h1_lod_offset(h1, r.id),
+                        scroll: [slide(e, anim), slide(e, anim + 0x10)],
                     })
                 })
                 .collect();
@@ -152,6 +189,8 @@ pub fn read_h1(h1: &H1Map, id: h1map::TagId) -> Option<H1SkyShader> {
                 vec![SkyMap {
                     bitmap: base,
                     scale: [1.0, 1.0],
+                    lod_offset: shad::h1_lod_offset(h1, base),
+                    scroll: [None, None],
                 }],
             )
         }
@@ -179,6 +218,16 @@ pub enum Recipe {
     Additive(usize),
 }
 
+impl Recipe {
+    /// The scrolling the recipe draws: a cloud layer's tile's.
+    pub fn scroll(self, s: &H1SkyShader) -> [Option<shad::Slide>; 2] {
+        match self {
+            Recipe::Clouds { tile, .. } => s.maps.get(tile).map_or([None, None], |m| m.scroll),
+            _ => [None, None],
+        }
+    }
+}
+
 /// The recipe for `s` (module docs). `None` with no maps.
 pub fn recipe(s: &H1SkyShader) -> Option<Recipe> {
     let one = |m: &SkyMap| m.scale == [1.0, 1.0];
@@ -196,209 +245,80 @@ pub fn recipe(s: &H1SkyShader) -> Option<Recipe> {
     })
 }
 
-/// A base shader to copy: its tree, and which bitmap parameter each
-/// texture stage of its first pass samples.
-#[derive(Debug, Clone)]
-pub struct Template {
-    pub shader: TagId,
-    pub name: String,
-    pub stages: [Option<usize>; 4],
-    tree: Block,
-}
-
-impl Template {
-    /// A template from `tree` (a `shad` tree) whose stage `s` samples
-    /// bitmap parameter `stages[s]`.
-    pub fn new(shader: TagId, name: String, tree: Block, stages: [Option<usize>; 4]) -> Self {
-        Self {
-            shader,
-            name,
-            stages,
-            tree,
-        }
-    }
-}
-
-/// The base's sky templates, and the shader a material falls back to.
+/// The base's stems and default bitmaps the sky shaders are rebuilt with,
+/// and the shader a material falls back to.
 #[derive(Debug, Clone, Default)]
 pub struct SkyTemplates {
-    pub alpha: Option<Template>,
-    pub clouds: Option<Template>,
-    pub additive: Option<Template>,
-    /// [`WHITE`] on the base.
-    pub white: Option<TagId>,
-    /// For a material with no copy: the base sky's own shader
+    pub library: shad::Library,
+    /// For a material with no shader: the base sky's own shader
     /// ([`crate::sky::base_sky_shader`]), never NONE (`crate::sky`).
     pub fallback: Option<TagId>,
 }
 
-/// Finds the templates on `base`: for each, the first `shad` drawn with
-/// it, `scenarios\skies\` ones first, then by name, whose tree copies and
-/// whose stages resolve.
+/// The base's stems, default bitmaps and fallback sky shader.
 pub fn sky_templates<R: Read + Seek>(base: &mut Map<R>) -> SkyTemplates {
-    let mut out = SkyTemplates {
+    SkyTemplates {
+        library: shad::Library::read(base),
         fallback: crate::sky::base_sky_shader(base),
-        white: base
-            .tags()
-            .iter()
-            .find(|t| t.group == FourCC(*b"bitm") && t.name.as_deref() == Some(WHITE))
-            .map(|t| t.id),
-        ..SkyTemplates::default()
-    };
-    let mut candidates: Vec<(bool, String, TagId)> = base
-        .tags()
-        .iter()
-        .filter(|t| t.group == SHAD && t.location.is_some())
-        .filter_map(|t| {
-            let n = t.name.clone()?;
-            Some((!n.starts_with("scenarios\\skies\\"), n, t.id))
-        })
-        .collect();
-    candidates.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
-    let Ok(mut lib) = ShaderLibrary::read(base) else {
-        return out;
-    };
-    let Ok(rel) = Relocator::new(Schema::builtin(), base) else {
-        return out;
-    };
-    for (_, name, id) in candidates {
-        if out.alpha.is_some() && out.clouds.is_some() && out.additive.is_some() {
-            break;
-        }
-        let Ok((template, params)) = scenario_edit::scene::shader_bitmaps(base, id) else {
-            continue;
-        };
-        let slot = match template.as_str() {
-            ALPHA_TEMPLATE => &mut out.alpha,
-            CLOUDS_TEMPLATE => &mut out.clouds,
-            ADDITIVE_TEMPLATE => &mut out.additive,
-            _ => continue,
-        };
-        if slot.is_some() {
-            continue;
-        }
-        let Ok(material) = lib.material(id, None) else {
-            continue;
-        };
-        let Some(imp) = material
-            .layers
-            .iter()
-            .filter(|l| l.lod == 0)
-            .flat_map(|l| &l.passes)
-            .find_map(|p| p.implementations.first())
-        else {
-            continue;
-        };
-        let mut stages = [None; 4];
-        for (s, stage) in stages.iter_mut().enumerate() {
-            if let Some(TextureSource::Bitmap { bitmap, .. }) = imp.textures[s].map(|t| t.source)
-                && bitmap != TagId::NULL
-            {
-                *stage = params.iter().position(|&p| p == bitmap);
-            }
-        }
-        let Ok(tree) = rel.to_built(id) else {
-            continue;
-        };
-        *slot = Some(Template::new(id, name, tree, stages));
     }
-    out
-}
-
-/// The postprocess child block at `at` (bitmap parameters, vectors) of a
-/// `shad` tree, with the sharing key cleared on it and the blocks above.
-fn postprocess_mut(root: &mut Block, at: u32) -> Option<&mut Block> {
-    root.share = None;
-    let pp = block_child(root, 0x20)?;
-    pp.share = None;
-    let b = block_child(pp, at)?;
-    b.share = None;
-    Some(b)
-}
-
-/// Points bitmap parameter `p` at `id`, replacing any fixup there.
-fn set_param(params: &mut Block, p: usize, id: TagId) -> Option<()> {
-    let at = (p * PARAM) as u32;
-    if p * PARAM + 4 > params.bytes.len() {
-        return None;
-    }
-    params.fixups.retain(|f| f.offset != at);
-    params.bytes[p * PARAM..p * PARAM + 4].copy_from_slice(&id.0.to_le_bytes());
-    params.fixup(at, FixupKind::TagId(id));
-    Some(())
-}
-
-/// Writes vector `k` (four f32s), when the block has it.
-fn set_vector(vectors: &mut Block, k: usize, v: [f32; 4]) {
-    let at = k * VECTOR;
-    if let Some(dst) = vectors.bytes.get_mut(at..at + VECTOR) {
-        for (i, x) in v.iter().enumerate() {
-            dst[4 * i..4 * i + 4].copy_from_slice(&x.to_le_bytes());
-        }
-    }
-}
-
-/// Sets vector pair `p` (u row `2p`, v row `2p + 1`) to `scale`.
-fn set_pair(vectors: &mut Block, p: usize, scale: [f32; 2]) {
-    set_vector(vectors, 2 * p, [scale[0], 0.0, 0.0, 0.0]);
-    set_vector(vectors, 2 * p + 1, [0.0, scale[1], 0.0, 0.0]);
 }
 
 impl SkyTemplates {
-    /// The copy for `recipe`, each map of the shader given as its
-    /// installed bitmap's datum and scale (`maps`, indexed as
-    /// [`H1SkyShader::maps`]). `None` when the template, a stage or a
-    /// map is missing.
-    pub fn copy(&self, recipe: Recipe, maps: &[Option<(TagId, [f32; 2])>]) -> Option<Block> {
-        let map = |k: usize| maps.get(k).copied().flatten();
-        // (template, [(stage, datum, scale)], the tint to whiten)
-        let (t, binds, tint) = match recipe {
-            Recipe::Picture(k) => {
-                let (id, s) = map(k)?;
-                (self.alpha.as_ref()?, vec![(3, id, s)], false)
+    /// The layout `recipe` draws with: the sky stem ([`shad::SKY_PICTURE`],
+    /// [`shad::SKY_CLOUDS`], [`shad::SKY_ADDITIVE`]) when the base has
+    /// it, else the shared transparent one ([`shad::ONE_ALPHA_ENV`],
+    /// [`shad::ONE_ADD_ILLUM`]; a cloud layer then draws its tile alone).
+    /// `None` when the base has neither.
+    pub fn layout(&self, recipe: Recipe) -> Option<&'static shad::Layout> {
+        let (sky, shared) = match recipe {
+            Recipe::Picture(_) => (&shad::SKY_PICTURE, &shad::ONE_ALPHA_ENV),
+            Recipe::Clouds { .. } => (&shad::SKY_CLOUDS, &shad::ONE_ALPHA_ENV),
+            Recipe::Additive(_) => (&shad::SKY_ADDITIVE, &shad::ONE_ADD_ILLUM),
+        };
+        [sky, shared].into_iter().find(|l| self.library.has(l))
+    }
+
+    /// The rebuilt shader for `recipe`, each map of the shader given as
+    /// its installed bitmap's datum, scale and LOD offset (`maps`, indexed
+    /// as [`H1SkyShader::maps`]). `None` when no layout fits or a map is
+    /// missing. `scroll` is the scrolling map's (a cloud layer's tile),
+    /// drawn when the layout animates.
+    pub fn copy(
+        &self,
+        recipe: Recipe,
+        maps: &[Option<(TagId, [f32; 2], f32)>],
+        scroll: [Option<shad::Slide>; 2],
+    ) -> Option<Block> {
+        let layout = self.layout(recipe)?;
+        let bound = |k: usize| {
+            maps.get(k)
+                .copied()
+                .flatten()
+                .map(|(id, scale, lod_offset)| shad::Bound {
+                    id,
+                    scale,
+                    lod_offset,
+                })
+        };
+        let mut m = HashMap::new();
+        match recipe {
+            Recipe::Picture(k) | Recipe::Additive(k) => {
+                m.insert(shad::Role::Base, bound(k)?);
             }
             Recipe::Clouds { mask, tile } => {
-                let (m, ms) = map(mask)?;
-                let (t, ts) = map(tile)?;
-                (self.clouds.as_ref()?, vec![(1, m, ms), (2, t, ts)], false)
+                if layout == &shad::SKY_CLOUDS {
+                    m.insert(shad::Role::Mask, bound(mask)?);
+                    m.insert(shad::Role::Tile, bound(tile)?);
+                } else {
+                    m.insert(shad::Role::Base, bound(tile)?);
+                }
             }
-            Recipe::Additive(k) => {
-                let (id, s) = map(k)?;
-                let white = self.white?;
-                (
-                    self.additive.as_ref()?,
-                    vec![(1, id, s), (2, white, [1.0, 1.0])],
-                    true,
-                )
-            }
+        }
+        let extras = shad::Extras {
+            scroll: Some(scroll),
+            ..shad::Extras::default()
         };
-        let mut tree = t.tree.clone();
-        let mut pairs = Vec::new();
-        {
-            let params = postprocess_mut(&mut tree, PARAMS)?;
-            for &(stage, id, scale) in &binds {
-                let p = t.stages[stage]?;
-                set_param(params, p, id)?;
-                pairs.push((p, scale));
-            }
-        }
-        if let Some(vectors) = postprocess_mut(&mut tree, VECTORS) {
-            if matches!(recipe, Recipe::Picture(_)) {
-                let n = vectors.bytes.len() / (2 * VECTOR);
-                for p in 0..n {
-                    set_pair(vectors, p, pairs[0].1);
-                }
-            } else {
-                for &(p, scale) in &pairs {
-                    set_pair(vectors, p, scale);
-                }
-            }
-            if tint && let Some(w) = vectors.bytes.get(TINT * VECTOR + 12..TINT * VECTOR + 16) {
-                let w = f32::from_le_bytes(w.try_into().expect("4"));
-                set_vector(vectors, TINT, [1.0, 1.0, 1.0, w]);
-            }
-        }
-        Some(tree)
+        self.library.build_with(layout, &m, &extras).ok()
     }
 }
 
@@ -417,6 +337,8 @@ mod tests {
                 .map(|(k, &scale)| SkyMap {
                     bitmap: h1map::TagId(0xe000_0000 + k as u32),
                     scale,
+                    lod_offset: 0.0,
+                    scroll: [None, None],
                 })
                 .collect(),
         }
@@ -452,160 +374,160 @@ mod tests {
         assert_eq!(recipe(&glow), Some(Recipe::Additive(2)));
     }
 
-    /// A `shad` tree shaped as the templates are: root `+0x20` one
-    /// postprocess element, its `+0x04` bitmap parameters and `+0x14`
-    /// vectors.
-    fn tree(params: &[u32], vectors: usize) -> Block {
-        let mut p = Block::zeroed(params.len() * PARAM);
-        for (k, id) in params.iter().enumerate() {
-            p.bytes[k * PARAM..k * PARAM + 4].copy_from_slice(&id.to_le_bytes());
-            p.fixup((k * PARAM) as u32, FixupKind::TagId(TagId(*id)));
-        }
-        p.share = Some(1);
-        let mut v = Block::zeroed(vectors * VECTOR);
-        for k in 0..vectors {
-            set_vector(&mut v, k, [0.5; 4]);
-        }
-        let mut pp = Block::zeroed(0x7c);
-        pp.block(PARAMS, params.len() as u32, p);
-        pp.block(VECTORS, vectors as u32, v);
-        let mut root = Block::zeroed(0x54);
-        root.block(0x20, 1, pp);
-        root
-    }
-
-    fn parts(root: &Block) -> (Vec<(u32, TagId)>, Vec<[f32; 4]>) {
-        let pp = match &root.fixups[0].kind {
-            FixupKind::Block { child, .. } => child,
-            _ => panic!("postprocess"),
-        };
-        let child = |at: u32| {
-            pp.fixups
-                .iter()
-                .find_map(|f| match &f.kind {
-                    FixupKind::Block { child, .. } if f.offset == at => Some(child),
-                    _ => None,
-                })
-                .expect("child")
-        };
-        let ids = child(PARAMS)
-            .fixups
+    fn library(stems: &[&'static shad::Layout]) -> SkyTemplates {
+        let stems: Vec<(&'static str, TagId)> = stems
             .iter()
-            .filter_map(|f| match f.kind {
-                FixupKind::TagId(id) => Some((f.offset, id)),
-                _ => None,
+            .enumerate()
+            .map(|(k, l)| (l.stem, TagId(0xe100_0000 + k as u32)))
+            .collect();
+        let fixed: Vec<(shad::Fixed, shad::Bound)> = shad::Fixed::ALL
+            .iter()
+            .enumerate()
+            .map(|(k, &f)| {
+                (
+                    f,
+                    shad::Bound {
+                        id: TagId(0xe200_0000 + k as u32),
+                        scale: [1.0, 1.0],
+                        lod_offset: 1.0,
+                    },
+                )
             })
             .collect();
-        let v = child(VECTORS)
-            .bytes
-            .as_chunks::<VECTOR>()
-            .0
-            .iter()
-            .map(|c| {
-                std::array::from_fn(|i| f32::from_le_bytes(c[4 * i..4 * i + 4].try_into().unwrap()))
-            })
-            .collect();
-        (ids, v)
-    }
-
-    fn templates() -> SkyTemplates {
         SkyTemplates {
-            // Coagulation's layouts: the picture parameter 2 on stage 3.
-            alpha: Some(Template::new(
-                TagId(1),
-                "alpha".into(),
-                tree(&[0xa0, 0xa1, 0xa2, 0xa3], 6),
-                [Some(0), Some(1), Some(3), Some(2)],
-            )),
-            // Tile parameter 0 on stage 2, mask parameter 1 on stage 1.
-            clouds: Some(Template::new(
-                TagId(2),
-                "clouds".into(),
-                tree(&[0xb0, 0xb1, 0xb2], 4),
-                [None, Some(1), Some(0), None],
-            )),
-            additive: Some(Template::new(
-                TagId(3),
-                "additive".into(),
-                tree(&[0xc0, 0xc1], 8),
-                [None, Some(0), Some(1), None],
-            )),
-            white: Some(TagId(0xff)),
+            library: shad::Library::new(&stems, &fixed),
             fallback: Some(TagId(9)),
         }
     }
 
+    fn read(tree: &Block) -> tags::defs::Record {
+        tags::defs::from_built(shad::shad_def(), tree).unwrap()
+    }
+
+    fn floats(r: &tags::defs::Record, path: &str) -> Vec<f32> {
+        match r.at(path) {
+            Some(tags::defs::Val::List(v)) => v
+                .iter()
+                .map(|x| match x {
+                    tags::defs::Val::Float(f) => *f,
+                    _ => f32::NAN,
+                })
+                .collect(),
+            other => panic!("{path}: {other:?}"),
+        }
+    }
+
+    fn bitmap(r: &tags::defs::Record, k: usize) -> Option<tags::defs::Val> {
+        r.at(&format!("postprocess[0].bitmaps[{k}].bitmap")).cloned()
+    }
+
+    fn id(v: u32) -> Option<tags::defs::Val> {
+        Some(tags::defs::Val::Datum(tags::defs::Target::Id(TagId(v))))
+    }
+
     #[test]
-    fn a_picture_copy_draws_the_picture_on_stage_3_at_its_scale() {
-        let t = templates();
+    fn a_picture_draws_on_the_sky_stem_at_its_scale() {
+        let t = library(&[&shad::SKY_PICTURE, &shad::ONE_ALPHA_ENV]);
         let tree = t
             .copy(
                 Recipe::Picture(1),
-                &[None, Some((TagId(0x77), [12.0, 6.0]))],
+                &[None, Some((TagId(0x77), [12.0, 6.0], 2.0))],
+                [None, None],
             )
             .unwrap();
-        let (ids, v) = parts(&tree);
-        assert_eq!(
-            ids,
-            [
-                (0x0, TagId(0xa0)),
-                (0xc, TagId(0xa1)),
-                (0x24, TagId(0xa3)),
-                (0x18, TagId(0x77)),
-            ]
-        );
+        let r = read(&tree);
+        assert_eq!(bitmap(&r, 2), id(0x77), "the picture on stage 3");
         for p in 0..3 {
-            assert_eq!(v[2 * p], [12.0, 0.0, 0.0, 0.0]);
-            assert_eq!(v[2 * p + 1], [0.0, 6.0, 0.0, 0.0]);
+            assert_eq!(
+                floats(&r, &format!("postprocess[0].vectors[{}].vector", 2 * p)),
+                [12.0, 0.0, 0.0, 0.0]
+            );
+            assert_eq!(
+                floats(&r, &format!("postprocess[0].vectors[{}].vector", 2 * p + 1)),
+                [0.0, 6.0, 0.0, 0.0]
+            );
         }
-        // The template is untouched; the copy's changed blocks aren't shared.
-        assert_eq!(parts(&t.alpha.as_ref().unwrap().tree).1[0], [0.5; 4]);
-        assert_eq!(tree.share, None);
-        // A missing map: no copy.
-        assert!(t.copy(Recipe::Picture(0), &[None]).is_none());
+        // A missing map: no shader.
+        assert!(t.copy(Recipe::Picture(0), &[None], [None, None]).is_none());
+        // Without the sky stem, the shared transparent one.
+        let shared = library(&[&shad::ONE_ALPHA_ENV]);
+        assert_eq!(shared.layout(Recipe::Picture(0)), Some(&shad::ONE_ALPHA_ENV));
+        assert!(library(&[]).layout(Recipe::Picture(0)).is_none());
     }
 
     #[test]
-    fn a_cloud_copy_scales_each_parameter_by_its_own_pair() {
-        let tree = templates()
+    fn a_cloud_layer_scales_its_mask_and_tile_apart() {
+        let tree = library(&[&shad::SKY_CLOUDS])
             .copy(
                 Recipe::Clouds { mask: 0, tile: 1 },
                 &[
-                    Some((TagId(0x10), [1.0, 1.0])),
-                    Some((TagId(0x11), [6.0, 6.0])),
+                    Some((TagId(0x10), [1.0, 1.0], 1.0)),
+                    Some((TagId(0x11), [6.0, 6.0], 1.0)),
+                ],
+                [
+                    Some(shad::Slide {
+                        period: 120.0,
+                        from: 0.0,
+                        to: 1.0,
+                    }),
+                    None,
                 ],
             )
             .unwrap();
-        let (ids, v) = parts(&tree);
-        assert!(ids.contains(&(0xc, TagId(0x10))), "mask on parameter 1");
-        assert!(ids.contains(&(0x0, TagId(0x11))), "tile on parameter 0");
-        assert_eq!(ids.len(), 3);
-        assert_eq!(
-            &v[..4],
-            [
-                [6.0, 0.0, 0.0, 0.0],
-                [0.0, 6.0, 0.0, 0.0],
-                [1.0, 0.0, 0.0, 0.0],
-                [0.0, 1.0, 0.0, 0.0]
-            ]
-        );
+        let r = read(&tree);
+        // The tile scrolls in u: ten transform components on the clouds
+        // tree, u offset a 120 s ramp from 0 to 1, v offset still.
+        let n = |p: &str| match r.at(p) {
+            Some(tags::defs::Val::Block(v)) => v.len(),
+            _ => 0,
+        };
+        assert_eq!(n("postprocess[0].properties"), 10);
+        assert_eq!(n("postprocess[0].animations"), 3);
+        assert_eq!(n("postprocess[0].layers"), 25);
+        let prop = |k: usize| {
+            let Some(tags::defs::Val::Data(b)) = r.at(&format!("postprocess[0].properties[{k}].function")) else {
+                panic!("property {k}")
+            };
+            let Some(tags::defs::Val::Float(period)) = r.at(&format!("postprocess[0].properties[{k}].input_b")) else {
+                panic!("period {k}")
+            };
+            (*period, tags::effects::function::Function::parse(b).unwrap())
+        };
+        let value = |k: usize, t: f32| {
+            let (period, f) = prop(k);
+            let x = (t / period).rem_euclid(1.0);
+            let v = f.evaluate(x, 0.0).clamp(0.0, 1.0);
+            (f.range[1] - f.range[0]) * v + f.range[0]
+        };
+        assert!((value(4, 30.0) - 0.25).abs() < 1e-3, "u offset a quarter in");
+        assert!((value(4, 90.0) - 0.75).abs() < 1e-3);
+        assert_eq!(value(5, 30.0), 0.0, "v still");
+        assert_eq!(value(1, 0.0), 6.0, "u scale");
+        assert_eq!(value(2, 0.0), 6.0, "v scale");
+        assert_eq!(value(0, 0.0), 1.0);
+        assert_eq!(value(9, 0.0), 0.0);
+        assert_eq!(bitmap(&r, 0), id(0x11), "tile on parameter 0");
+        assert_eq!(bitmap(&r, 1), id(0x10), "mask on parameter 1");
+        let v = |k: usize| floats(&r, &format!("postprocess[0].vectors[{k}].vector"));
+        assert_eq!(v(0), [6.0, 0.0, 0.0, 0.0]);
+        assert_eq!(v(1), [0.0, 6.0, 0.0, 0.0]);
+        assert_eq!(v(2), [1.0, 0.0, 0.0, 0.0]);
+        assert_eq!(v(3), [0.0, 1.0, 0.0, 0.0]);
     }
 
     #[test]
-    fn an_additive_copy_draws_the_picture_over_white_untinted() {
-        let tree = templates()
-            .copy(Recipe::Additive(0), &[Some((TagId(0x20), [1.0, 1.0]))])
+    fn an_additive_layer_draws_the_picture_over_white_untinted() {
+        let t = library(&[&shad::SKY_ADDITIVE]);
+        let tree = t
+            .copy(Recipe::Additive(0), &[Some((TagId(0x20), [1.0, 1.0], 1.0))], [None, None])
             .unwrap();
-        let (ids, v) = parts(&tree);
-        assert_eq!(ids, [(0x0, TagId(0x20)), (0xc, TagId(0xff))]);
-        assert_eq!(v[TINT], [1.0, 1.0, 1.0, 0.5]);
-        assert_eq!(v[5], [0.5; 4], "other vectors kept");
-        let mut no_white = templates();
-        no_white.white = None;
-        assert!(
-            no_white
-                .copy(Recipe::Additive(0), &[Some((TagId(0x20), [1.0, 1.0]))])
-                .is_none()
+        let r = read(&tree);
+        assert_eq!(bitmap(&r, 0), id(0x20));
+        let white = t.library.build(&shad::SKY_ADDITIVE, &HashMap::new()).unwrap();
+        assert_eq!(bitmap(&r, 1), bitmap(&read(&white), 1), "white on stage 2");
+        assert_eq!(
+            floats(&r, "postprocess[0].vectors[4].vector"),
+            [1.0, 1.0, 1.0, 0.0]
         );
     }
 }

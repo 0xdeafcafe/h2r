@@ -23,6 +23,15 @@
 //!   powered points hover points, each naming a marker of the converted
 //!   model (on a node in range) and a region of Halo 1's collision; Halo
 //!   1's mass point positions are in object space; the warthog has gears.
+//! - `seat_flags_match_halo_2s_counterparts`: on 05a the boarding bit is
+//!   set on exactly the retail `_b_` seats; Halo 1's seat bits stay below
+//!   bit 11 and equal the counterpart seat's on most of the eight pairs'
+//!   seats, the driver bit on every one.
+//! - `every_seat_passes_the_engines_boarding_rule`: every seat of every
+//!   vehicle (campaign and both sandboxes) passes the engine's enter-seat
+//!   search for the converted Halo 1 player and, on the sandboxes, Halo
+//!   2's `masterchief_mp`: flags, markers, entry distances and angles, and
+//!   the label's enter animation.
 
 use std::collections::{BTreeMap, HashSet};
 use std::fs::File;
@@ -32,7 +41,8 @@ use h1map::H1Map;
 use h1objects::base::Base;
 use h1objects::convert::{Converter, Tree, template_candidates};
 use h1objects::rebuild::{
-    H1_VEHICLE_FLAGS, H1_VEHICLE_TYPE, VEHI_FRICTION, VEHI_GEARS, VEHI_HOVER, VEHI_PHYSICS, VEHI_SEATS,
+    H1_SEAT_FLAGS, H1_VEHICLE_FLAGS, H1_VEHICLE_TYPE, SEAT_BOARDING, SEAT_DRIVER, SEAT_FLAGS, SEAT_GUNNER,
+    SEAT_NEEDS_DRIVER, SEAT_NOT_NON_PLAYER, SEAT_NOT_PLAYER, VEHI_FRICTION, VEHI_GEARS, VEHI_HOVER, VEHI_PHYSICS, VEHI_SEATS,
 };
 use h1objects::{Converted, h1};
 use map::{FourCC, Map, TagId};
@@ -305,10 +315,11 @@ fn every_vehicle_rebuilds_from_its_definition() {
                         h1models::names::map_name(&s.label).mode,
                         "{name}: seat {k} label"
                     );
-                    assert_eq!(
-                        text(&r, &format!("{p}.string_8")).to_ascii_lowercase(),
-                        s.marker.to_ascii_lowercase(),
-                        "{name}: seat {k} marker"
+                    // Halo 1's marker, or none where the model lacks it.
+                    let m = text(&r, &format!("{p}.string_8"));
+                    assert!(
+                        m.is_empty() || m.eq_ignore_ascii_case(&s.marker),
+                        "{name}: seat {k} marker {m:?}"
                     );
                 }
                 // Weapons: each a converted weap in the tree.
@@ -491,4 +502,281 @@ fn powered_mass_points_become_friction_and_hover_points() {
         }
         let _ = d;
     }
+}
+
+/// A seat element's 4-byte unknown word at `field`.
+fn word(x: &Record, field: &str) -> u32 {
+    match x.get(field) {
+        Some(Val::Bytes(b)) if b.len() == 4 => u32::from_le_bytes(b[..4].try_into().unwrap()),
+        v => panic!("{field}: {v:?}"),
+    }
+}
+
+fn string(x: &Record, field: &str, strings: &[Option<String>]) -> String {
+    match x.get(field) {
+        Some(Val::String(Str::Text(t))) => t.clone(),
+        Some(Val::String(Str::Index(w))) => strings
+            .get((w & 0xff_ffff) as usize)
+            .cloned()
+            .flatten()
+            .unwrap_or_default(),
+        _ => String::new(),
+    }
+}
+
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn seat_flags_match_halo_2s_counterparts() {
+    let mut base_map = h2_map("05a_deltaapproach");
+    let base = Base::read(&mut base_map).unwrap();
+    let strings = base_map.strings().to_vec();
+    let d = def(b"vehi");
+    let mut levels = BTreeMap::new();
+    let (mut matched, mut agree) = (0, 0);
+    // Every retail seat on 05a: a boarding seat (`_b_` in its label, h1-scripts.md
+    // "Seats") holds SEAT_BOARDING, no other does.
+    for t in base.tags.iter().filter(|t| t.1 == FourCC(*b"vehi")) {
+        let r = base.record(d, t.0).unwrap();
+        let Some(Val::Block(seats)) = r.at(VEHI_SEATS) else { panic!() };
+        for x in seats {
+            let label = string(x, "label", &strings);
+            assert_eq!(
+                word(x, SEAT_FLAGS) & SEAT_BOARDING != 0,
+                label.contains("_b_"),
+                "{}: {label}",
+                t.2
+            );
+        }
+    }
+    for (level, h1_name, h2_name) in PAIRS {
+        let h1 = levels.entry(*level).or_insert_with(|| h1_level(level).unwrap());
+        let t = h1
+            .tags()
+            .iter()
+            .find(|t| t.name == *h1_name && t.group.0.to_be_bytes() == *b"vehi")
+            .unwrap();
+        let u = h1::Unit::read(h1, t).unwrap();
+        let r = base.record(d, base.find(b"vehi", h2_name).unwrap()).unwrap();
+        let Some(Val::Block(seats)) = r.at(VEHI_SEATS) else { panic!() };
+        for s in &u.seats {
+            let mode = h1models::names::map_name(&s.label).mode;
+            let Some(x) = seats.iter().find(|x| string(x, "label", &strings) == mode) else {
+                continue;
+            };
+            let h2 = word(x, SEAT_FLAGS);
+            matched += 1;
+            assert_eq!(s.flags & !H1_SEAT_FLAGS, 0, "{h1_name} {}: Halo 1 bits", s.label);
+            assert_eq!(s.flags & SEAT_DRIVER, h2 & SEAT_DRIVER, "{h1_name} {}: driver", s.label);
+            if s.flags & H1_SEAT_FLAGS == h2 & H1_SEAT_FLAGS {
+                agree += 1;
+            }
+            println!("{h1_name} {}: {:#05x} vs {mode} {h2:#07x}", s.label, s.flags);
+        }
+    }
+    println!("Halo 1's seat bits equal the counterpart's on {agree} of {matched} seats");
+    assert!(matched >= 8 && 2 * agree > matched, "{agree} of {matched}");
+}
+
+/// The animations the engine's seat search asks the rider's graph for
+/// under the seat's label (`0x000c7160` calls `0x0010f9b0` with each of the
+/// five string IDs at `0x00467430`): a seat whose label has none of them
+/// in the rider's graph is never entered.
+const ENTER: [&str; 5] = ["enter", "enter_a", "enter_b", "enter_c", "enter_d"];
+
+/// A graph's modes and, for each, every action name under it (any weapon
+/// class and type).
+fn modes(r: &Record, strings: &[Option<String>]) -> BTreeMap<String, HashSet<String>> {
+    let mut out = BTreeMap::<String, HashSet<String>>::new();
+    let Some(Val::Block(ms)) = r.at("modes") else { return out };
+    for m in ms {
+        let e = out.entry(string(m, "name", strings)).or_default();
+        let Some(Val::Block(cs)) = m.get("classes") else { continue };
+        for c in cs {
+            let Some(Val::Block(ts)) = c.get("types") else { continue };
+            for t in ts {
+                let Some(Val::Block(xs)) = t.get("actions") else { continue };
+                e.extend(xs.iter().map(|a| string(a, "name", strings)));
+            }
+        }
+    }
+    out
+}
+
+/// Whether `graph` lets a rider enter a seat labelled `label`.
+fn enters(graph: &BTreeMap<String, HashSet<String>>, label: &str) -> bool {
+    graph.get(label).is_some_and(|a| ENTER.iter().any(|e| a.contains(*e)))
+}
+
+/// A marker group of the converted model `groups` by `name`, with its
+/// instance count.
+fn instances(groups: &[Record], name: &str) -> usize {
+    groups
+        .iter()
+        .find(|g| g.get("name") == Some(&Val::String(Str::Text(name.to_owned()))))
+        .map_or(0, |g| match g.get("markers") {
+            Some(Val::Block(m)) => m.len(),
+            _ => 0,
+        })
+}
+
+/// The converted graph of the converted unit `id`.
+fn converted_graph(tree: &Tree, group: &[u8; 4], id: TagId) -> Option<BTreeMap<String, HashSet<String>>> {
+    let r = defs::from_built(def(group), &local(tree, id)?.root).ok()?;
+    let h = defs::from_built(def(b"hlmt"), &local(tree, reference(&r, "unit.obje.model")?)?.root).ok()?;
+    let Some(Val::Datum(Target::Id(a))) = h.at("animation") else { return None };
+    let g = defs::from_built(def(b"jmad"), &local(tree, *a)?.root).ok()?;
+    Some(modes(&g, &[]))
+}
+
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn every_seat_passes_the_engines_boarding_rule() {
+    // The enter-seat search (`0x000c8bb0`) over each seat of each
+    // vehicle, as the engine applies it to a rider:
+    // - the seat's flags let the rider in (`0x000c8c87`): not closed to
+    //   players nor to non-players, not a boarding seat (`0x000c92c0`),
+    //   and a seat needing a driver is not the driver's;
+    // - the entry marker (`+0xc`, `0x000c6fb0`) and the rider's marker
+    //   (`+8`, `0x000c7160`) resolve through `0x000b8d30`: an empty name
+    //   is the object's origin, a name the model lacks fails the seat;
+    // - the entry tests (`0x000c9040`) compare the rider's distance and
+    //   angles with the seat's `+0x98`, `+0x9c`, `+0xa0`, `+0xa4`: zero
+    //   admits no one;
+    // - the rider's graph has the seat's label as a mode with one of
+    //   [`ENTER`] (`0x000c7160`).
+    // The riders: each level's converted Halo 1 player (`cyborg`,
+    // `cyborg_mp`), and on the multiplayer bases Halo 2's sandbox player
+    // (`masterchief_mp`). Each seat whose label Halo 1's own player graph
+    // has an enter animation for must take the converted player, and on
+    // the sandboxes, where it is a driver's or gunner's, Halo 2's.
+    let only = std::env::var("H1_LEVELS").ok();
+    let mut sets: Vec<(&str, Vec<String>)> = vec![(
+        "05a_deltaapproach",
+        h1map::disc::CAMPAIGN_LEVELS.iter().map(|s| s.to_string()).collect(),
+    )];
+    for mp in ["coagulation", "beavercreek"] {
+        sets.push((
+            mp,
+            h1convert::convert::MAPS
+                .iter()
+                .filter(|m| m.2 == mp)
+                .map(|m| m.0.to_string())
+                .collect(),
+        ));
+    }
+    let d = def(b"vehi");
+    let mut seats_checked = 0;
+    let mut failures = Vec::new();
+    for (base_name, levels) in sets {
+        let mut base_map = h2_map(base_name);
+        let base = Base::read(&mut base_map).unwrap();
+        let strings = base_map.strings().to_vec();
+        let multiplayer = base_name != "05a_deltaapproach";
+        // Halo 2's sandbox player.
+        let sandbox = multiplayer.then(|| {
+            let id = base.find(b"bipd", "objects\\characters\\masterchief\\masterchief_mp").unwrap();
+            let b = base.record(def(b"bipd"), id).unwrap();
+            let h = base.record(def(b"hlmt"), reference(&b, "unit.obje.model").unwrap()).unwrap();
+            let Some(Val::Datum(Target::Id(a))) = h.at("animation") else { panic!() };
+            modes(&base.record(def(b"jmad"), *a).unwrap(), &strings)
+        });
+        for level in levels {
+            if only.as_deref().is_some_and(|o| !o.split(',').any(|x| x == level)) {
+                continue;
+            }
+            let Some(h1) = h1_level(&level) else { continue };
+            let mut c = Converter::new(&h1, &base);
+            // The level's Halo 1 player and its graph, converted.
+            let mut players = Vec::new();
+            for t in h1.tags().iter().filter(|t| {
+                t.group.0.to_be_bytes() == *b"bipd" && t.name.rsplit('\\').next().is_some_and(|n| n.starts_with("cyborg"))
+            }) {
+                let u = h1::Unit::read(&h1, t).unwrap();
+                let h1_graph =
+                    h1models::graph_from_map(&h1, h1.tag(u.object.animation.unwrap()).unwrap(), None)
+                        .unwrap()
+                        .0;
+                let id = c.object(t).unwrap();
+                let g = converted_graph(&c.tree, b"bipd", id).unwrap_or_else(|| panic!("{level} {}: graph", t.name));
+                players.push((t.name.clone(), h1_graph, g));
+            }
+            assert!(!players.is_empty(), "{level}: a cyborg");
+            for t in h1.tags().iter().filter(|t| t.group.0.to_be_bytes() == *b"vehi") {
+                let name = format!("{level} {}", t.name);
+                let u = h1::Unit::read(&h1, t).unwrap();
+                let id = c.object(t).unwrap_or_else(|e| panic!("{name}: {e}"));
+                let r = defs::from_built(d, &local(&c.tree, id).unwrap().root).unwrap();
+                let h = defs::from_built(def(b"hlmt"), &local(&c.tree, reference(&r, "unit.obje.model").unwrap()).unwrap().root).unwrap();
+                let mode = defs::from_built(def(b"mode"), &local(&c.tree, reference(&h, "render_model").unwrap()).unwrap().root).unwrap();
+                let Some(Val::Block(groups)) = mode.at("marker_groups") else { panic!() };
+                let Some(Val::Block(seats)) = r.at(VEHI_SEATS) else { panic!() };
+                for (k, (x, s)) in seats.iter().zip(&u.seats).enumerate() {
+                    seats_checked += 1;
+                    let mut fail = |why: String| failures.push(format!("{base_name}: {name} seat {k} {}: {why}", s.label));
+                    assert_eq!(s.flags & !H1_SEAT_FLAGS, 0, "{name}: Halo 1 seat bits");
+                    let f = word(x, SEAT_FLAGS);
+                    if f & (SEAT_NOT_PLAYER | SEAT_NOT_NON_PLAYER | SEAT_BOARDING) != 0 {
+                        fail(format!("flags {f:#x} keep riders out"));
+                    }
+                    if f & SEAT_NEEDS_DRIVER != 0 && f & SEAT_DRIVER != 0 {
+                        fail(format!("flags {f:#x}: the driver's seat needs a driver"));
+                    }
+                    for field in ["unknown_98", "unknown_9c", "unknown_a0", "unknown_a4"] {
+                        let v = f32::from_bits(word(x, field));
+                        if !(v > 0.0) {
+                            fail(format!("{field} {v}"));
+                        }
+                    }
+                    let marker = text(x, "string_8");
+                    if !marker.is_empty() && instances(groups, &marker) == 0 {
+                        fail(format!("rider marker {marker:?} not on the model"));
+                    }
+                    let entry = text(x, "string_c");
+                    if !entry.is_empty() && instances(groups, &entry) == 0 {
+                        fail(format!("entry marker {entry:?} not on the model"));
+                    }
+                    let label = text(x, "label");
+                    for (who, h1_graph, g) in &players {
+                        let h1_enters = h1_graph
+                            .animations
+                            .iter()
+                            .any(|a| a.name.eq_ignore_ascii_case(&format!("{} enter", s.label)));
+                        if h1_enters && !enters(g, &label) {
+                            fail(format!("{who}'s graph has no {label}:enter"));
+                        }
+                    }
+                    // Halo 2's sandbox player rides what Halo 1's player
+                    // drives and guns; its graph has no Halo 1 passenger
+                    // modes it lacks in Halo 2 (the scorpion's sides), a
+                    // graph's matter, listed.
+                    let h1_player = players.iter().any(|(_, h1_graph, _)| {
+                        h1_graph
+                            .animations
+                            .iter()
+                            .any(|a| a.name.eq_ignore_ascii_case(&format!("{} enter", s.label)))
+                    });
+                    if let Some(g) = &sandbox
+                        && h1_player
+                        && !enters(g, &label)
+                    {
+                        if f & (SEAT_DRIVER | SEAT_GUNNER) != 0 {
+                            fail(format!("masterchief_mp's graph has no {label}:enter"));
+                        } else {
+                            println!("{base_name}: {name} seat {k}: masterchief_mp has no {label}:enter");
+                        }
+                    }
+                    println!(
+                        "{base_name}: {name} seat {k} {label}: flags {f:#x}, marker {marker:?} entry {entry:?}, radius {}",
+                        f32::from_bits(word(x, "unknown_98"))
+                    );
+                }
+            }
+        }
+    }
+    for f in &failures {
+        println!("FAIL {f}");
+    }
+    println!("{seats_checked} seats, {} failures", failures.len());
+    assert!(seats_checked > 100, "{seats_checked} seats");
+    assert!(failures.is_empty(), "{} seats fail the boarding rule", failures.len());
 }

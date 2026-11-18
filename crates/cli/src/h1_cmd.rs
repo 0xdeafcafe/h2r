@@ -11,7 +11,7 @@ use std::io::{BufReader, Cursor, Read, Seek};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use h1convert::convert::{Sandbox, known, map_name, prepare, structure_mopp};
+use h1convert::convert::{Sandbox, known, map_name, structure_mopp};
 use h1map::disc::{self, Copied, Disc};
 use h1map::{Group, H1Map, HEADER_LEN};
 use xiso::{Entry, Xiso};
@@ -933,15 +933,14 @@ pub(crate) fn prepare_mp(
 ) -> Result<h1convert::convert::Prepared> {
     let sha = content::Sha256::of(file);
     // The Halo 1 sandbox places Halo 1 objects, converted and added as
-    // new tags (docs/game/h1-multiplayer.md, "Halo 1 sandbox").
+    // new tags (docs/game/h1-multiplayer.md, "Halo 1 sandbox"); both
+    // sandboxes place Halo 1's scenery the same way.
+    let templates = h1objects::base::Base::read(base)
+        .with_context(|| format!("reading {base_name}'s object templates"))?;
+    let mut objects = h1objects::sandbox::Objects::new(h1, &templates);
     Ok(match sandbox {
-        Sandbox::Halo2 => prepare(h1, sha, base, sandbox)?,
-        Sandbox::Halo1 => {
-            let templates = h1objects::base::Base::read(base)
-                .with_context(|| format!("reading {base_name}'s object templates"))?;
-            let mut objects = h1objects::sandbox::Objects::new(h1, &templates);
-            h1convert::convert::halo1::prepare_halo1(h1, sha, base, &mut objects)?
-        }
+        Sandbox::Halo2 => h1convert::convert::halo1::prepare_halo2(h1, sha, base, &mut objects)?,
+        Sandbox::Halo1 => h1convert::convert::halo1::prepare_halo1(h1, sha, base, &mut objects)?,
     })
 }
 
@@ -1075,6 +1074,7 @@ fn convert_campaign(a: &ConvertArgs, h1: &H1Map) -> Result<()> {
         &level,
         &done.bytes,
         &done.report.scenario.hud_swaps,
+        done.report.scenario.hud_sensor,
     )?;
     println!(
         "wrote {} ({} bytes)",
@@ -1121,6 +1121,7 @@ pub(crate) fn write_campaign_level(
     level: &str,
     bytes: &[u8],
     hud: &[[map::TagId; 3]],
+    sensor: Option<[i16; 2]>,
 ) -> Result<Vec<PathBuf>> {
     let manifest_name = h1campaign::manifest::file_name();
     let existing = std::fs::read_to_string(out_dir.join(manifest_name)).ok();
@@ -1137,6 +1138,7 @@ pub(crate) fn write_campaign_level(
                 halo2: halo2.0,
             })
             .collect(),
+        sensor,
     };
     written.push(out.write(&[content::LevelHud::file_name(level)], pairs.to_toml().as_bytes())?);
     if existing.as_deref() != Some(manifest.as_str()) {

@@ -196,6 +196,11 @@ pub struct Trigger {
 pub struct Weapon {
     pub object: Object,
     pub flags: u32,
+    /// `0x30c` (`char[32]`): the weapon's animation label, the weapon type
+    /// of the units' graphs (`stand rifle ar idle`): `ar`, `hp`, `sg`,
+    /// `pr`, `rl`, `sr`, `pp`, `ne`, `ft`; `cg`, `cannon`, `gun` on vehicle
+    /// weapons. V (Blood Gulch, every `weap`).
+    pub label: String,
     /// `0x338` seconds.
     pub ready_time: f32,
     pub ready_effect: Option<TagId>,
@@ -299,6 +304,7 @@ impl Weapon {
         Ok(Self {
             object: Object::read(map, b)?,
             flags: u32_at(b, 0x308),
+            label: name32(b, 0x30c),
             ready_time: f32_at(b, 0x338),
             ready_effect: reference(map, b, 0x33c),
             heat_recovery_threshold: f32_at(b, 0x34c),
@@ -682,6 +688,12 @@ pub struct Collision {
     pub references: Vec<crate::refs::Found>,
     /// `0x234` materials (`0x48`), a name each.
     pub materials: Vec<String>,
+    /// Each material's type (`+0x24`, `u16`): an index into Halo 1's
+    /// material types, [`crate::arsenal::MATERIALS`] order (V:
+    /// `hlmt_materials_disc`, Blood Gulch: stone for boulders, wood for
+    /// trees, cyborg armor for the cyborg, rubber, metal and glass for
+    /// the warthog).
+    pub material_types: Vec<u16>,
     /// `0x240`.
     pub regions: Vec<CollRegion>,
     /// `0x24c` modifiers (`0x34`): counted only.
@@ -732,6 +744,10 @@ impl Collision {
             materials: elements(map, b, 0x234, 0x48)?
                 .into_iter()
                 .map(|m| name32(m, 0))
+                .collect(),
+            material_types: elements(map, b, 0x234, 0x48)?
+                .into_iter()
+                .map(|m| i16_at(m, 0x24) as u16)
                 .collect(),
             regions,
             modifiers: Block::read(b, 0x24c).map_or(0, |b| b.count),

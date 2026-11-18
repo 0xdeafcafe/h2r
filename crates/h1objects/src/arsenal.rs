@@ -309,7 +309,22 @@ pub struct WeaponParts {
     pub halo2: Halo2Refs,
     pub barrel_halo2: Vec<Halo2Refs>,
     pub firing_effects: Vec<Vec<Halo2Refs>>,
+    /// The weapon class and type a unit's graph holds it by
+    /// ([`WEAPON_CLASS`], [`WEAPON_TYPE_NAME`]); `None` leaves both null.
+    pub animation: Option<(String, String)>,
 }
+
+/// `weap +0x288`, `+0x28c`: the weapon class and type (string IDs) the
+/// holder's animation graph is looked up by. A unit takes a weapon only
+/// when its graph has an animation for them: `0x000cd6a0` (called by
+/// `unit_add_weapon` `0x000cd0c0` at `0x000cd12e`, and by the pickup
+/// paths at `0x000e8a63` and `0x000ea475`) passes them with mode
+/// `current` (sid `0x101`, or the seat's) to `0x0010fcd0`, which asks
+/// `0x001cc3f0` for action `idle` (sid `0xc`) and refuses on none. Retail:
+/// the SMG `rifle`/`smg`, the magnum `pistol`/`hp`, the rocket launcher
+/// `missile`/`rl`, vehicle guns `fixed`/`gun`.
+pub const WEAPON_CLASS: &str = "string_288";
+pub const WEAPON_TYPE_NAME: &str = "string_28c";
 
 /// The `weap` root from Halo 1's weapon `w` (the bytes of its tag: `b`).
 pub fn weapon(w: &h1::Weapon, b: &[u8], parts: &WeaponParts, role: &Role) -> Result<Block> {
@@ -318,6 +333,10 @@ pub fn weapon(w: &h1::Weapon, b: &[u8], parts: &WeaponParts, role: &Role) -> Res
     words(&mut r, &role.root)?;
     refs(&mut r, &parts.halo2)?;
     header(&mut r, "item.obje", WEAPON_TYPE, &w.object, parts.hlmt)?;
+    if let Some((class, kind)) = &parts.animation {
+        set(&mut r, WEAPON_CLASS, Val::text(class))?;
+        set(&mut r, WEAPON_TYPE_NAME, Val::text(kind))?;
+    }
     rebuild::predicted_resources(b"weap", &mut r, "item.obje", &parts.predicted)?;
     for (path, at) in WEAPON_WORDS {
         word(&mut r, path, u32_at(b, *at))?;

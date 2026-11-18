@@ -2503,6 +2503,7 @@ dependencies = [
  "map",
  "mopp",
  "scenario-edit",
+ "shaders",
  "tags",
  "thiserror 2.0.21",
  "xbe",
@@ -2535,6 +2536,7 @@ dependencies = [
 name = "h1objects"
 version = "0.1.0"
 dependencies = [
+ "assets",
  "content",
  "h1bitmaps",
  "h1convert",
@@ -2546,6 +2548,7 @@ dependencies = [
  "scenario-edit",
  "tags",
  "thiserror 2.0.21",
+ "xbe",
  "xiso",
 ]
 
@@ -2569,6 +2572,7 @@ dependencies = [
  "h1map",
  "h1models",
  "map",
+ "tags",
  "thiserror 2.0.21",
  "xiso",
 ]

@@ -30,6 +30,8 @@ use crate::{Error, Result};
 
 #[path = "convert_arsenal.rs"]
 mod arsenal_conv;
+#[path = "convert_flares.rs"]
+pub mod flares_conv;
 
 /// Retail Halo 2 template per Halo 1 object: Halo 1 group, words that must
 /// all be in the Halo 1 tag path, Halo 2 tag. First match wins.
@@ -323,6 +325,9 @@ pub struct Tree {
     /// The HUD each owner (the player biped) can switch between at game
     /// start (`boot::hud`; docs/game/hud.md).
     pub hud_swaps: Vec<HudSwap>,
+    /// Where the player's Halo 1 HUD centres the motion sensor's blips
+    /// ([`crate::h1hud::sensor_centre`]), for `boot::hud_swap`.
+    pub hud_sensor: Option<[i16; 2]>,
 }
 
 /// One owner's two HUDs: Halo 1's ([`crate::h1hud`]), which the owner
@@ -731,6 +736,9 @@ pub struct Converter<'a> {
     done: HashMap<u32, TagId>,
     colls: HashMap<(u32, bool), TagId>,
     coll_names: HashMap<(u32, bool), Vec<(String, Vec<String>)>>,
+    /// Per converted `coll`, the `hlmt` materials it needs
+    /// ([`crate::rebuild::model_materials`]).
+    coll_materials: HashMap<(u32, bool), Vec<crate::rebuild::ModelMaterial>>,
     /// Each template `nhdt` given the health meter.
     health_huds: HashMap<TagId, TagId>,
     /// Widgets per converted `unhi` ([`Self::unit_hud`]).
@@ -738,6 +746,8 @@ pub struct Converter<'a> {
     /// Per converted `wphi`, its entries with no widget
     /// ([`Self::weapon_hud`]).
     weapon_hud_skips: HashMap<u32, Vec<String>>,
+    /// HUD bitmaps with an element colour's alpha ([`Self::hud_bitmap`]).
+    hud_bitmaps: HashMap<(u32, u8), TagId>,
     /// Biped role words, per role ([`Self::biped_role`]).
     roles: HashMap<crate::rebuild::BipedRole, Option<crate::rebuild::RoleWords>>,
     /// Weapon, equipment, projectile and damage role words, per group
@@ -757,6 +767,9 @@ pub struct Converter<'a> {
     decals_open: Vec<u32>,
     /// Scenery role words ([`Self::scenery_role`]), computed once.
     scenery_role: Option<Option<crate::rebuild::SceneryRole>>,
+    /// Per Halo 1 weapon label, the weapon class the map's graphs hold it
+    /// under ([`Self::weapon_class`]), computed once.
+    weapon_classes: Option<HashMap<String, String>>,
 }
 
 impl<'a> Converter<'a> {
@@ -770,9 +783,11 @@ impl<'a> Converter<'a> {
             done: HashMap::new(),
             colls: HashMap::new(),
             coll_names: HashMap::new(),
+            coll_materials: HashMap::new(),
             health_huds: HashMap::new(),
             unit_hud_widgets: HashMap::new(),
             weapon_hud_skips: HashMap::new(),
+            hud_bitmaps: HashMap::new(),
             roles: HashMap::new(),
             item_roles: HashMap::new(),
             vehicle_roles: HashMap::new(),
@@ -783,6 +798,7 @@ impl<'a> Converter<'a> {
             decals_open: Vec::new(),
             dialogue_bytes: 0,
             scenery_role: None,
+            weapon_classes: None,
         }
     }
 
@@ -1008,10 +1024,10 @@ impl<'a> Converter<'a> {
             self.light_roles.insert(kind, role);
         }
         let role = self.light_roles[&kind].as_ref();
-        let root = crate::rebuild::light(&l, role)?;
+        let mut root = crate::rebuild::light(&l, role)?;
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
-        if l.lens_flare.is_some() {
-            rep.no_home.push("lens flare: not converted".into());
+        if let Some(lens) = self.flare_for_light(l.lens_flare, &mut rep) {
+            root = flares_conv::light_with_flare(&root, lens)?;
         }
         self.tree.reports.push(rep);
         let id = self.tree.push(
@@ -1111,6 +1127,7 @@ impl<'a> Converter<'a> {
                         }
                     }
                 }
+                (Some(id), b"garb") => self.effect_garbage(id, &mut rep),
                 (Some(id), b"proj") => {
                     let t = self.h1_tag(id)?;
                     match self.object(t) {
@@ -1405,6 +1422,24 @@ impl<'a> Converter<'a> {
         hlmt.tag_ref(h2::HLMT_COLLISION as u32, coll.map_or(TagId::NULL, |c| c.0));
         hlmt.tag_ref(h2::HLMT_ANIMATION as u32, jmad.unwrap_or(TagId::NULL));
         hlmt.bytes[h2::HLMT_VARIANTS..h2::HLMT_VARIANTS + 8].fill(0);
+        // The materials of the converted coll, not the template's: a
+        // hit's material index reads them (crate::rebuild::HLMT_MATERIALS).
+        // A borrowed phmo's shapes index the template's materials: those
+        // past the coll's stay, each named as its global material.
+        let mut materials = coll.map_or_else(Vec::new, |c| self.coll_materials[&c.1].clone());
+        if has_phmo {
+            let mut k = materials.len();
+            while let Some(e) = self.base.element(&hlmt.bytes, crate::rebuild::HLMT_MATERIALS as usize, crate::rebuild::HLMT_MATERIAL_SIZE, k)? {
+                let i = i16::from_le_bytes([e[0x10], e[0x11]]);
+                let g = usize::try_from(i)
+                    .ok()
+                    .and_then(|i| self.base.materials.get(i))
+                    .ok_or_else(|| Error::Invalid(format!("{name}: template hlmt material {k}: global {i}")))?;
+                materials.push(crate::rebuild::model_material(g, g, &self.base.materials)?);
+                k += 1;
+            }
+        }
+        crate::rebuild::set_model_materials(&mut hlmt, &materials);
         // One node per render-model node: the engine sizes an object's node
         // matrices by this count, and the converted model and graph write
         // one per their node (h1models::mode::hlmt_nodes).
@@ -1544,6 +1579,7 @@ impl<'a> Converter<'a> {
             nodes: (count, nodes),
             regions,
             words,
+            materials: coll.map_or_else(Vec::new, |c| self.coll_materials[&c.1].clone()),
         })?;
         if obj.animation.is_none() {
             rep.no_home
@@ -1612,6 +1648,32 @@ impl<'a> Converter<'a> {
         Ok(r)
     }
 
+    /// The weapon class a Halo 1 weapon `label` (its animation label,
+    /// the units' weapon type) is held under: of every animation of every
+    /// graph on the map named `<unit> <class> <label> <action>`
+    /// ([`h1models::names::map_name`], which names the converted `jmad`
+    /// tree too), the class most of them name (ties: the first by name).
+    /// `None` when no graph holds the label.
+    pub fn weapon_class(&mut self, label: &str) -> Result<Option<String>> {
+        if self.weapon_classes.is_none() {
+            let mut votes: HashMap<(String, String), usize> = HashMap::new();
+            let antr = h1map::Group::new(b"antr");
+            for t in self.h1.tags().iter().filter(|t| t.group == antr) {
+                for name in h1models::graph_names(self.h1, t)? {
+                    let n = h1models::names::map_name(&name);
+                    if n.class != "any" && n.kind != "any" {
+                        *votes.entry((n.kind, n.class)).or_default() += 1;
+                    }
+                }
+            }
+            self.weapon_classes = Some(weapon_classes(votes));
+        }
+        Ok(self
+            .weapon_classes
+            .as_ref()
+            .and_then(|m| m.get(label).cloned()))
+    }
+
     /// The converted `coll` for Halo 1's `t`, with or without BSP physics
     /// slots (each built once; a second form, when two objects need both,
     /// gets a suffixed name). Returns the tag and its key in `coll_names`.
@@ -1648,6 +1710,10 @@ impl<'a> Converter<'a> {
                 .iter()
                 .map(|r| (r.name.clone(), r.permutations.clone()))
                 .collect(),
+        );
+        self.coll_materials.insert(
+            key,
+            crate::rebuild::model_materials(&h1c, &self.base.materials)?,
         );
         self.coll_reports.push((name, cr));
         Ok((id, key))
@@ -1719,6 +1785,40 @@ impl<'a> Converter<'a> {
         self.cached(tag, conv).ok()
     }
 
+    /// The Halo 1 bitmap `id` for a HUD element whose colour's alpha is
+    /// `alpha`: the bitmap itself at 255, else a copy with its alpha scaled
+    /// (`h1hud::scale_alpha`, or `h1hud::alpha_scaled_argb` for a format
+    /// without an alpha byte), `<name>_alpha_<alpha>`, built once.
+    fn hud_bitmap(&mut self, id: h1map::TagId, alpha: u8) -> Option<TagId> {
+        if alpha == 0xff {
+            return self.bitmap(id);
+        }
+        let key = (id.0, alpha);
+        if let Some(t) = self.hud_bitmaps.get(&key) {
+            return Some(*t);
+        }
+        let tag = self.h1.tag(id).ok()?.clone();
+        let bm = h1map::bitmap::Bitmap::read(self.h1, &tag).ok()?;
+        // Byte-alpha formats scale in place; the rest (DXT, 16-bit, no
+        // alpha) are decoded and rewritten as linear A8R8G8B8.
+        let mut scaled = bm.clone();
+        let mut pixels = Vec::with_capacity(bm.images.len());
+        for (i, img) in bm.images.iter().enumerate() {
+            let mut px = bm.pixels(self.h1, i).ok()?.to_vec();
+            if crate::h1hud::scale_alpha(img.format, &mut px, alpha).is_none() {
+                let (argb, out) = crate::h1hud::alpha_scaled_argb(img, &px, alpha).ok()?;
+                scaled.images[i] = argb;
+                px = out;
+            }
+            pixels.push(px);
+        }
+        let (conv, _) =
+            h1bitmaps::convert::convert_with(&scaled, |i| Ok(std::mem::take(&mut pixels[i]))).ok()?;
+        let out = self.tree.push(&format!("{}_alpha_{alpha:02x}", tag.name), conv);
+        self.hud_bitmaps.insert(key, out);
+        Some(out)
+    }
+
     fn cached(&mut self, t: &Tag, conv: Converted) -> Result<TagId> {
         if let Some(id) = self.done.get(&t.id.0) {
             return Ok(*id);
@@ -1761,13 +1861,21 @@ impl<'a> Converter<'a> {
         rep.physics = Some("none (no Halo 1 collision to build from)".into());
         self.object_physics(&mut rep, hlmt, &dev.object, &tag.name, PhysicsKind::Device)?;
         let predicted = self.predicted(&dev.object)?;
-        let root = crate::rebuild::device(&dev, hlmt, &predicted)?;
+        let mut root = crate::rebuild::device(&dev, hlmt, &predicted)?;
         rep.no_home.push(
             "devi sounds and effects (Halo 1 effe references): null; the device is silent".into(),
         );
         if lifi {
+            // A light fixture's light is its attachments (Halo 1's ligh at
+            // its markers): carried on the machine, which the engine's
+            // attachment builder lights (E 0x000bed2a).
+            let b = self.h1.tag_data(tag)?;
+            let (attachments, _) = self.object_effects(b, &dev.object, &mut rep)?;
+            if !attachments.is_empty() {
+                root = flares_conv::with_attachments(b"mach", &root, &attachments)?;
+            }
             rep.no_home.push(
-                "lifi: built as a mach (platform); its light (the placement's colour and intensity) is not carried".into(),
+                "lifi: built as a mach (platform) with its attachments; the placement's colour and intensity are not carried".into(),
             );
         }
         self.tree.reports.push(rep);
@@ -2087,6 +2195,10 @@ impl<'a> Converter<'a> {
                     ));
                     match self.unit_hud(u) {
                         Ok((h1, n)) => {
+                            match self.sensor_centre(u) {
+                                Ok(c) => self.tree.hud_sensor = Some(c),
+                                Err(e) => rep.no_home.push(format!("HUD: motion sensor centre: {e}")),
+                            }
                             rep.no_home.push(format!(
                                 "HUD: Halo 1's ({n} widgets; docs/game/hud.md), Halo 2's at the switch"
                             ));
@@ -2209,9 +2321,25 @@ impl<'a> Converter<'a> {
                 raw: Vec::new(),
             },
         );
+        // Every phmo material has an hlmt material: the built shapes name
+        // material 0, and a hit on one reads the hlmt's element of that
+        // index (crate::rebuild::HLMT_MATERIALS).
+        let mut extra = Vec::new();
+        let have = crate::rebuild::model_material_count(&self.tree.tags[k].1.root) as usize;
+        for g in crate::rebuild::phmo_material_globals(&self.tree.tags[phmo.0 as usize & 0xffff].1.root)
+            .iter()
+            .skip(have)
+        {
+            extra.push(crate::rebuild::model_material(g, g, &self.base.materials)?);
+        }
         let root = &mut self.tree.tags[k].1.root;
         root.fixups.retain(|f| f.offset != at);
         root.tag_ref(at, phmo);
+        if !extra.is_empty() {
+            let mut all = crate::rebuild::model_materials_of(root);
+            all.extend(extra);
+            crate::rebuild::set_model_materials(root, &all);
+        }
         rep.physics = Some(how);
         Ok(())
     }
@@ -2437,6 +2565,20 @@ impl Converter<'_> {
     /// Halo 1's unit HUD of `u` (its `unhi`) as an `nhdt` written from
     /// scratch ([`crate::h1hud`]), built once per `unhi`. Returns the tag
     /// and its widget count.
+    /// Where the unit's Halo 1 HUD (`unhi`) centres the motion sensor
+    /// ([`crate::h1hud::sensor_centre`]).
+    pub fn sensor_centre(&self, u: &crate::h1::Unit) -> Result<[i16; 2]> {
+        let unhi = u
+            .references
+            .iter()
+            .filter(|r| r.group == h1map::Group::new(b"unhi"))
+            .find_map(|r| r.tag)
+            .ok_or_else(|| Error::Invalid("no unhi".into()))?;
+        let tag = self.h1.tag(unhi)?;
+        let b = crate::h1::tag_bytes(self.h1, tag, b"unhi", crate::h1hud::unhi::SIZE)?;
+        crate::h1hud::sensor_centre(b)
+    }
+
     pub fn unit_hud(&mut self, u: &crate::h1::Unit) -> Result<(TagId, usize)> {
         let unhi = u
             .references
@@ -2458,8 +2600,12 @@ impl Converter<'_> {
         };
         let meter = find(b"shad", crate::h1hud::METER_SHADER)?;
         let plain = find(b"shad", crate::h1hud::STATIC_SHADER)?;
+        let text_shader = find(b"shad", crate::h1hud::TEXT_SHADER)?;
         let mut widgets = Vec::new();
         for e in &elements {
+            if !crate::h1hud::unscaled(e.scale) {
+                return Err(Error::Invalid(format!("{}: scaled {:?}", e.name, e.scale)));
+            }
             let bt = self.h1.tag(e.bitmap)?.clone();
             let bm = h1map::bitmap::Bitmap::read(self.h1, &bt)?;
             if crate::h1hud::sprite(&bm, e.sequence).is_none() {
@@ -2468,8 +2614,15 @@ impl Converter<'_> {
                     e.name, bt.name, e.sequence
                 )));
             }
+            // A static element's colour alpha goes into its sprite (the
+            // motion sensor's background is a faint disc in Halo 1); a
+            // meter's colour is elsewhere in its element and stays out.
+            let alpha = match e.role {
+                crate::h1hud::Role::Static => crate::h1hud::colour_alpha(e.colour),
+                crate::h1hud::Role::Meter(_) => 0xff,
+            };
             let bitmap = self
-                .bitmap(e.bitmap)
+                .hud_bitmap(e.bitmap, alpha)
                 .ok_or_else(|| Error::Invalid(format!("bitmap {} unconverted", bt.name)))?;
             let reg = crate::h1hud::registration(e.anchor);
             widgets.push(crate::h1hud::widget_for(e, bitmap, reg, meter, plain));
@@ -2477,12 +2630,49 @@ impl Converter<'_> {
         if widgets.is_empty() {
             return Err(Error::Invalid(format!("{}: no drawable element", tag.name)));
         }
+        // Halo 1's grenade HUDs (docs/game/hud.md "Grenades"): each type's
+        // grhi, shown while that type is selected, after the unit's.
+        let grenades = crate::h1hud::grenade_huds(self.h1)?;
+        let mut texts = Vec::new();
+        for (k, g) in grenades.iter().enumerate().take(crate::h1hud::GRENADE_STATES.len()) {
+            let Some(g) = g else { continue };
+            let gt = self.h1.tag(*g)?.clone();
+            let gb = crate::h1::tag_bytes(self.h1, &gt, b"grhi", crate::h1hud::grhi::SIZE)?.to_vec();
+            // Its count, a Halo 2 number text on the type's input.
+            if let Some(n) = crate::h1hud::grenade_number(&gb)? {
+                if !crate::h1hud::unscaled(n.scale) {
+                    return Err(Error::Invalid(format!("{} count: scaled {:?}", gt.name, n.scale)));
+                }
+                let w = crate::h1hud::digit_width(self.h1)?;
+                texts.push(crate::h1hud::grenade_count(&n, k, w, text_shader)?);
+            }
+            for e in crate::h1hud::grenade_elements(self.h1, &gb)? {
+                if !crate::h1hud::unscaled(e.scale) {
+                    return Err(Error::Invalid(format!("{}: scaled {:?}", gt.name, e.scale)));
+                }
+                let bt = self.h1.tag(e.bitmap)?.clone();
+                let bm = h1map::bitmap::Bitmap::read(self.h1, &bt)?;
+                if crate::h1hud::sprite(&bm, e.sequence).is_none() {
+                    return Err(Error::Invalid(format!(
+                        "{}: {} draws nothing in sequence {}",
+                        gt.name, bt.name, e.sequence
+                    )));
+                }
+                let bitmap = self
+                    .hud_bitmap(e.bitmap, crate::h1hud::colour_alpha(e.colour))
+                    .ok_or_else(|| Error::Invalid(format!("bitmap {} unconverted", bt.name)))?;
+                let reg = crate::h1hud::registration(e.anchor);
+                let mut w = crate::h1hud::widget_for(&e, bitmap, reg, meter, plain);
+                w.state = crate::h1hud::GRENADE_STATES[k];
+                widgets.push(w);
+            }
+        }
         let n = widgets.len();
         let id = self.tree.push(
             &format!("{}{}", tag.name, crate::h1hud::NHDT_SUFFIX),
             Converted {
                 group: FourCC(*b"nhdt"),
-                root: crate::h1hud::nhdt(&widgets),
+                root: crate::h1hud::nhdt(&widgets, &texts),
                 raw: Vec::new(),
             },
         );
@@ -2538,7 +2728,7 @@ impl Converter<'_> {
             &format!("{}{}", tag.name, h1hud::WEAPON_NHDT_SUFFIX),
             Converted {
                 group: FourCC(*b"nhdt"),
-                root: h1hud::nhdt(&widgets),
+                root: h1hud::nhdt(&widgets, &[]),
                 raw: Vec::new(),
             },
         );
@@ -2630,3 +2820,15 @@ impl Converter<'_> {
     }
 }
 
+/// Per weapon type, the class with the most `votes` ((type, class) ->
+/// animations), ties to the first class by name.
+pub fn weapon_classes(votes: HashMap<(String, String), usize>) -> HashMap<String, String> {
+    let mut best: HashMap<String, (usize, String)> = HashMap::new();
+    for ((kind, class), n) in votes {
+        let e = best.entry(kind).or_insert((0, String::new()));
+        if n > e.0 || (n == e.0 && class < e.1) {
+            *e = (n, class);
+        }
+    }
+    best.into_iter().map(|(k, (_, c))| (k, c)).collect()
+}

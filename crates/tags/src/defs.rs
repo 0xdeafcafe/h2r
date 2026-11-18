@@ -51,11 +51,14 @@ pub const FILES: &[(&str, &str)] = &[
     ("jmad.txt", include_str!("defs/jmad.txt")),
     ("snd_.txt", include_str!("defs/snd_.txt")),
     ("lsnd.txt", include_str!("defs/lsnd.txt")),
+    ("sky_.txt", include_str!("defs/sky_.txt")),
     ("effe.txt", include_str!("defs/effe.txt")),
     ("ligh.txt", include_str!("defs/ligh.txt")),
     ("deca.txt", include_str!("defs/deca.txt")),
     ("udlg.txt", include_str!("defs/udlg.txt")),
     ("foot.txt", include_str!("defs/foot.txt")),
+    ("lens.txt", include_str!("defs/lens.txt")),
+    ("garb.txt", include_str!("defs/garb.txt")),
 ];
 
 /// One array element's layout (a group's root, a block's element, or a
