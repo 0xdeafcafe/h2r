@@ -126,6 +126,8 @@ fn guest(layout: Layout, store: Arc<settings::Store>) -> app::worker::GuestFn {
             // (movies::install); skipped where there is no decoder.
             movies: boot::movies_glue::Movies::Auto,
         };
+        // Live presence says which build this is (docs/game/game-options.md 3).
+        boot::live_glue::set_build(app::BuildInfo::baked().sha);
         let r = boot::run_hosted_with_live(&xbe, &layout.module, &opts, hosted, &live);
         vfs::flush_pending_metadata();
         // Pushes what is still waiting.

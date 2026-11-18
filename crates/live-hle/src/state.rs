@@ -858,6 +858,13 @@ impl State {
         });
         (pending, Some(service.seen.clone()))
     }
+    /// Asks the server for everyone's presence; the request, when one
+    /// could be sent (signed in to a server).
+    pub fn read_presence(&self) -> Option<crate::client::Pending> {
+        let service = self.service.as_ref()?;
+        let session = self.session()?;
+        service.read_presence(&session).ok()
+    }
     pub fn set_visibility_probe(&mut self, probe: Option<crate::sessions::VisibilityProbe>) {
         self.sessions.set_probe(probe);
     }

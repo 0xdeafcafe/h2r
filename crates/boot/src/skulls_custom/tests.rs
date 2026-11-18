@@ -558,3 +558,24 @@ fn the_found_message_is_ours() {
         );
     }
 }
+
+/// A variant's Unlimited Grenades tops up every player's unit, a remote
+/// player's too (the host's counts are the game's), and leaves a unit with
+/// more alone.
+#[test]
+fn a_variants_unlimited_grenades_reach_every_players_unit() {
+    let mut g = game();
+    g.put_u16(PLAYER_DATA + 0x28, 0xffff); // a remote player
+    assert!(local_units(&g).unwrap().is_empty());
+    assert_eq!(player_units(&g, false).unwrap().len(), 1);
+    assert_eq!(variant_grenades(&mut g).unwrap(), 1);
+    assert_eq!(g.u8(BODY + UNIT_GRENADES).unwrap(), GRENADE_CAP as u8);
+    assert_eq!(g.u8(BODY + UNIT_GRENADES + 1).unwrap(), GRENADE_CAP as u8);
+    assert_eq!(variant_grenades(&mut g).unwrap(), 0, "already full");
+    g.put_u8(BODY + UNIT_GRENADES, 7);
+    assert_eq!(variant_grenades(&mut g).unwrap(), 0);
+    assert_eq!(g.u8(BODY + UNIT_GRENADES).unwrap(), 7, "more is kept");
+    // No players array (the menus): nothing, no fault.
+    g.put_u32(engine::points::PLAYERS.base, 0);
+    assert_eq!(variant_grenades(&mut g).unwrap(), 0);
+}

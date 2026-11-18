@@ -40,6 +40,12 @@ pub struct ServerOptions {
     /// connection is lost. A refused account (a ban, a bad key) ends it at
     /// once.
     pub connection_grace: Duration,
+    /// This console's build (its git short hash, [`live_proto::valid_build`])
+    /// and what it can do ([`live_proto::capability`]), sent with every
+    /// presence set (docs/game/game-options.md section 3, "Older builds").
+    /// A build that isn't valid is left out, as are bad capabilities.
+    pub build: Option<String>,
+    pub capabilities: Vec<String>,
 }
 impl Default for ServerOptions {
     fn default() -> Self {
@@ -49,6 +55,8 @@ impl Default for ServerOptions {
             maps: None,
             retry: Retry::default(),
             connection_grace: Duration::from_secs(90),
+            build: None,
+            capabilities: Vec::new(),
         }
     }
 }
@@ -105,6 +113,8 @@ pub(crate) enum Reply {
     /// A bot roster for the host's session (docs/game/bots.md §9.1), not
     /// yet checked.
     Roster(live_proto::bots::Roster),
+    /// Everyone's presence, as `GET /v1/presence` shows this console.
+    Presence(Vec<live_proto::Presence>),
 }
 #[derive(Clone)]
 pub(crate) struct Pending(Arc<Mutex<Option<Result<Reply, u32>>>>);
@@ -228,6 +238,8 @@ enum Work {
     /// `POST /games/bots` (docs/game/bots.md §9.1), as the host of the
     /// request's session.
     Bots(live_proto::bots::RosterRequest),
+    /// `GET /v1/presence`.
+    ReadPresence,
     Wake,
 }
 /// Called on the worker with a command's result, once it has one.
@@ -265,6 +277,7 @@ impl Service {
                 let mut worker = Worker {
                     base,
                     maps: options.maps.clone(),
+                    software: Software::from_options(&options),
                     agent,
                     connection: None,
                     active: None,
@@ -426,6 +439,11 @@ impl Service {
             },
         )
     }
+    /// Everyone's presence (`GET /v1/presence`), read as the first account
+    /// signed in on this console.
+    pub fn read_presence(&self, s: &Session) -> Result<Pending, u32> {
+        self.submit(s, Work::ReadPresence)
+    }
     pub fn cancel(&self, s: &Session) {
         s.cancel();
         let _ = self.submit(s, Work::Wake);
@@ -459,9 +477,26 @@ struct Active {
     /// connection is lost once this is [`Worker::grace`] old.
     failing_since: Option<Instant>,
 }
+/// What this console's presence says it runs ([`ServerOptions::build`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Software {
+    pub build: Option<String>,
+    pub capabilities: Vec<String>,
+}
+impl Software {
+    pub fn from_options(o: &ServerOptions) -> Self {
+        Self {
+            build: o.build.clone().filter(|b| live_proto::valid_build(b)),
+            capabilities: Some(o.capabilities.clone())
+                .filter(|c| live_proto::valid_capabilities(c))
+                .unwrap_or_default(),
+        }
+    }
+}
 struct Worker {
     base: String,
     maps: Option<Arc<crate::maps::MapGate>>,
+    software: Software,
     agent: ureq::Agent,
     connection: Option<Connection>,
     active: Option<Active>,
@@ -696,7 +731,11 @@ impl Worker {
             &self.author(user),
             &streams::presence(Xuid(user.xuid)),
             kind,
-            presence_data(Xuid(user.xuid), presence),
+            presence_data(
+                Xuid(user.xuid),
+                presence,
+                (kind != types::SIGNED_OUT).then_some(&self.software),
+            ),
             time::OffsetDateTime::now_utc(),
         )
         .sign(&user.key);
@@ -1494,6 +1533,17 @@ impl Worker {
                     _ => e.result(),
                 })
             }
+            Work::ReadPresence => {
+                let active = self
+                    .active
+                    .as_ref()
+                    .filter(|a| a.session.id == c.session.id)
+                    .ok_or(NO_SESSION)?;
+                let user = active.users.values().next().ok_or(NO_USER)?;
+                self.team_json::<live_proto::Page<live_proto::Presence>>(user, "/presence")
+                    .map(|p| Reply::Presence(p.items))
+                    .map_err(Error::result)
+            }
             Work::Wake => Ok(Reply::Done),
         }
     }
@@ -1646,12 +1696,25 @@ fn path_part(s: &str) -> String {
     out
 }
 
-/// A presence event's data. `activity` is left out when there is none, so a
-/// server that predates it reads the same bytes.
-pub(crate) fn presence_data(xuid: Xuid, presence: &Presence) -> serde_json::Value {
+/// A presence event's data. `activity`, `build` and `capabilities` are
+/// left out when there are none, so a server that predates them reads the
+/// same bytes. `software` is None for a sign-out.
+pub(crate) fn presence_data(
+    xuid: Xuid,
+    presence: &Presence,
+    software: Option<&Software>,
+) -> serde_json::Value {
     let mut data = json!({"xuid": xuid, "state": presence.state, "game_id": presence.game_id});
     if let Some(a) = &presence.activity {
         data["activity"] = json!(a);
+    }
+    if let Some(s) = software {
+        if let Some(b) = &s.build {
+            data["build"] = json!(b);
+        }
+        if !s.capabilities.is_empty() {
+            data["capabilities"] = json!(s.capabilities);
+        }
     }
     data
 }

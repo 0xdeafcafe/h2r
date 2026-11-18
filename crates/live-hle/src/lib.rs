@@ -154,6 +154,16 @@ pub enum HostVariantExt {
     },
 }
 
+/// What a host knows of its players' builds ([`Hle::players_lacking`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Lacking {
+    /// Nothing known: not signed in to a server, or no answer in time; why.
+    Unknown(&'static str),
+    /// The gamertags of the players whose presence lacks the capability,
+    /// in the order asked; empty when every player with a presence has it.
+    Known(Vec<String>),
+}
+
 /// A friend, as the co-op screen's friends list shows them
 /// ([`Hle::friends`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -454,6 +464,47 @@ impl Hle {
                 ext: session.advertisement.variant_ext.clone(),
                 refreshed,
             },
+        }
+    }
+    /// Which of `xuids` (the players of this console's game: the session's
+    /// roster, or the game's own player list) are on a build without
+    /// `capability`, from their presence ([`live_proto::lacking`]). Waits at
+    /// most `wait` for the server; call with no guest memory held, it never
+    /// takes guest memory. A player with no presence (a bot) is not named.
+    pub fn players_lacking(
+        &self,
+        capability: &str,
+        xuids: &[live_proto::Xuid],
+        wait: std::time::Duration,
+    ) -> Lacking {
+        if xuids.is_empty() {
+            return Lacking::Known(Vec::new());
+        }
+        let Some(pending) = self
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .read_presence()
+        else {
+            return Lacking::Unknown("not signed in to a Live server");
+        };
+        let until = std::time::Instant::now() + wait;
+        loop {
+            match pending.take() {
+                Some(Ok(client::Reply::Presence(all))) => {
+                    return Lacking::Known(
+                        live_proto::lacking(capability, xuids, &all)
+                            .iter()
+                            .map(|p| p.gamertag.as_str().to_string())
+                            .collect(),
+                    );
+                }
+                Some(_) => return Lacking::Unknown("the server's presence read failed"),
+                None if std::time::Instant::now() >= until => {
+                    return Lacking::Unknown("the server did not answer in time");
+                }
+                None => std::thread::sleep(std::time::Duration::from_millis(5)),
+            }
         }
     }
     /// The host's variant options for the game it starts (docs/game/

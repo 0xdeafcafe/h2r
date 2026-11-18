@@ -47,6 +47,10 @@ pub struct Presence {
     pub state: String,
     pub game_id: Option<String>,
     pub activity: Option<String>,
+    /// The console's build and capabilities ([`live_proto::Presence::build`]);
+    /// public, unlike the game id and activity.
+    pub build: Option<String>,
+    pub capabilities: Vec<String>,
     pub since: String,
     /// Unix seconds of the last presence event or ping; the presence
     /// manager expires it a TTL later.
@@ -292,16 +296,7 @@ struct KeyRevoked {
     kid: String,
 }
 
-#[derive(Deserialize)]
-struct PresenceData {
-    xuid: Xuid,
-    #[serde(default)]
-    state: Option<String>,
-    #[serde(default)]
-    game_id: Option<String>,
-    #[serde(default)]
-    activity: Option<String>,
-}
+use live_proto::PresenceData;
 
 fn data<T: DeserializeOwned>(e: &RecordedEvent) -> Option<T> {
     match serde_json::from_value(e.body.data.clone()) {
@@ -598,6 +593,8 @@ impl Model {
                         state,
                         game_id: d.game_id,
                         activity: d.activity,
+                        build: d.build,
+                        capabilities: d.capabilities,
                         since,
                         last_seen: at,
                         private_sessions,

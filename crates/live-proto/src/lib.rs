@@ -499,6 +499,99 @@ pub struct Presence {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activity: Option<String>,
     pub since: String,
+    /// The build the player's console runs (its git short hash), when it
+    /// says; [`valid_build`]. Shown to every reader, as `state` is: it
+    /// names software, not where the player is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<String>,
+    /// What that build can do ([`capability`]); [`valid_capabilities`].
+    /// Shown to every reader, as `build` is.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
+}
+
+impl Presence {
+    /// Whether the console announced `capability`.
+    pub fn has(&self, capability: &str) -> bool {
+        self.capabilities.iter().any(|c| c == capability)
+    }
+}
+
+/// The data of a `SignedIn`, `PresenceChanged`, `SignedOut` or
+/// `PresenceExpired` event: what a console sets for one of its players.
+/// `build` and `capabilities` ride on the first two; an older server
+/// ignores them, an older console leaves them out.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PresenceData {
+    pub xuid: Xuid,
+    #[serde(default)]
+    pub state: Option<String>,
+    #[serde(default)]
+    pub game_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
+}
+
+/// Capabilities a console's build announces on presence, `name/version`
+/// (docs/game/game-options.md section 3, "Older builds").
+pub mod capability {
+    /// Applies a Live host's variant options: the extension block in the
+    /// record's spare bytes, taken from the host's session (slice 4).
+    pub const VARIANT_EXT: &str = "variant-ext/1";
+}
+
+/// The most capabilities one presence carries.
+pub const PRESENCE_CAPABILITIES_MAX: usize = 16;
+/// The longest capability, in bytes.
+pub const CAPABILITY_MAX: usize = 32;
+
+/// Whether `build` may be a presence's build: a git short hash, 7 to 12
+/// lowercase hex digits.
+pub fn valid_build(build: &str) -> bool {
+    (7..=12).contains(&build.len())
+        && build
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// Whether `c` may be a capability: `name/version`, the name lowercase
+/// letters, digits and `-`, the version digits, at most [`CAPABILITY_MAX`]
+/// bytes.
+pub fn valid_capability(c: &str) -> bool {
+    let Some((name, version)) = c.split_once('/') else {
+        return false;
+    };
+    c.len() <= CAPABILITY_MAX
+        && !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && !version.is_empty()
+        && version.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// Whether `c` may be a presence's capabilities: at most
+/// [`PRESENCE_CAPABILITIES_MAX`], each [`valid_capability`].
+pub fn valid_capabilities(c: &[String]) -> bool {
+    c.len() <= PRESENCE_CAPABILITIES_MAX && c.iter().all(|c| valid_capability(c))
+}
+
+/// The players among `xuids` whose presence lacks `capability`, in the
+/// order of `xuids`. A player with no presence (a bot, someone signed out)
+/// is left out: nothing says what it runs. The host's check of its guests
+/// before a game with variant options (docs/game/game-options.md section
+/// 3); `xuids` may come from the session's roster or the game's own
+/// player list.
+pub fn lacking<'a>(capability: &str, xuids: &[Xuid], presence: &'a [Presence]) -> Vec<&'a Presence> {
+    xuids
+        .iter()
+        .filter_map(|x| presence.iter().find(|p| p.xuid == *x))
+        .filter(|p| !p.has(capability))
+        .collect()
 }
 
 /// The longest presence `activity`, in characters.
@@ -541,6 +634,12 @@ pub struct FriendPresence {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activity: Option<String>,
     pub since: String,
+    /// As [`Presence::build`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<String>,
+    /// As [`Presence::capabilities`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
 }
 
 /// One entry of the `friends` list of `GET /v1/accounts/{gamertag}/friends`.
@@ -939,6 +1038,8 @@ mod wire_tests {
                     game_id: Some("7f3c".into()),
                     activity: None,
                     since: "2026-11-15T20:15:00.000Z".into(),
+                    build: None,
+                    capabilities: Vec::new(),
                 }),
             }],
             requests_in: vec![FriendRequest {
@@ -992,5 +1093,86 @@ mod wire_tests {
         }))
         .unwrap();
         assert!(gone.friends[0].presence.is_none());
+    }
+
+    #[test]
+    fn presence_carries_a_build_and_capabilities_checked_and_optional() {
+        for ok in ["a65fa01", "a65fa010", "0123456789ab"] {
+            assert!(valid_build(ok), "{ok}");
+        }
+        for bad in ["", "a65fa0", "0123456789abc", "A65FA01", "a65fa0g", "unknown"] {
+            assert!(!valid_build(bad), "{bad}");
+        }
+        for ok in [capability::VARIANT_EXT, "a/0", "x-2/10"] {
+            assert!(valid_capability(ok), "{ok}");
+        }
+        let long = format!("{}/1", "a".repeat(CAPABILITY_MAX - 1));
+        for bad in [
+            "",
+            "variant-ext",
+            "variant-ext/",
+            "/1",
+            "Variant-ext/1",
+            "variant_ext/1",
+            "variant-ext/1a",
+            "variant-ext/1/2",
+            long.as_str(),
+        ] {
+            assert!(!valid_capability(bad), "{bad}");
+        }
+        let many = vec![capability::VARIANT_EXT.to_string(); PRESENCE_CAPABILITIES_MAX];
+        assert!(valid_capabilities(&many));
+        let too_many = vec![capability::VARIANT_EXT.to_string(); PRESENCE_CAPABILITIES_MAX + 1];
+        assert!(!valid_capabilities(&too_many));
+        assert!(valid_capabilities(&[]));
+
+        // Left out when there are none, so an older reader sees the same
+        // bytes; read back when there are.
+        let bare: PresenceData = serde_json::from_value(serde_json::json!({
+            "xuid": "0009000000000001", "state": "online", "game_id": null
+        }))
+        .unwrap();
+        assert_eq!((bare.build.as_deref(), bare.capabilities.len()), (None, 0));
+        let v = serde_json::to_value(&bare).unwrap();
+        assert!(v.get("build").is_none() && v.get("capabilities").is_none());
+        let full: PresenceData = serde_json::from_value(serde_json::json!({
+            "xuid": "0009000000000001", "state": "online", "game_id": null,
+            "build": "a65fa01", "capabilities": ["variant-ext/1"]
+        }))
+        .unwrap();
+        assert_eq!(full.build.as_deref(), Some("a65fa01"));
+        assert_eq!(full.capabilities, [capability::VARIANT_EXT]);
+    }
+
+    #[test]
+    fn lacking_names_the_players_whose_build_cannot_and_skips_the_unknown() {
+        let p = |x: u64, tag: &str, caps: &[&str]| Presence {
+            xuid: Xuid(x),
+            gamertag: Gamertag::new(tag).unwrap(),
+            state: "playing".into(),
+            game_id: None,
+            activity: None,
+            since: "2026-11-18T20:00:00.000Z".into(),
+            build: None,
+            capabilities: caps.iter().map(|c| c.to_string()).collect(),
+        };
+        let presence = [
+            p(1, "Host", &[capability::VARIANT_EXT]),
+            p(2, "New", &["other/1", capability::VARIANT_EXT]),
+            p(3, "Old", &[]),
+            p(4, "Older", &["variant-ext/0"]),
+            p(9, "Elsewhere", &[]),
+        ];
+        let named: Vec<_> = lacking(
+            capability::VARIANT_EXT,
+            &[Xuid(4), Xuid(2), Xuid(3), Xuid(7)],
+            &presence,
+        )
+        .iter()
+        .map(|p| p.gamertag.as_str().to_string())
+        .collect();
+        // 7 has no presence (a bot): nothing says what it runs.
+        assert_eq!(named, ["Older", "Old"]);
+        assert!(lacking(capability::VARIANT_EXT, &[], &presence).is_empty());
     }
 }

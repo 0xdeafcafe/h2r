@@ -231,6 +231,8 @@ fn perf_cmd(cmd: &str, _: Vec<String>) -> Result<()> {
 }
 
 fn main() -> Result<()> {
+    // Live presence says which build this is (docs/game/game-options.md 3).
+    boot::live_glue::set_build(app::BuildInfo::baked().sha);
     let mut args = std::env::args().skip(1);
     let Some(cmd) = args.next() else { bail!("{USAGE}") };
     if cmd == "lighting" {
