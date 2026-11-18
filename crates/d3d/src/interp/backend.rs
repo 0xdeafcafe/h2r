@@ -1764,6 +1764,23 @@ where
         self.inner.request_depth_grid(surface, request, sink)
     }
 
+    fn supports_external_pass(&self) -> bool {
+        self.inner.supports_external_pass()
+    }
+
+    fn external_pass(
+        &mut self,
+        color: Self::Surface,
+        depth: Self::Surface,
+        request: crate::backend::ExternalPassRequest,
+        pass: Box<dyn crate::backend::ExternalPass>,
+    ) -> Result<bool, String> {
+        // A replay redraws recorded draws, not passes: until it can redraw
+        // this one with its warped camera, the frame is held, not blended.
+        self.unpinned = true;
+        self.inner.external_pass(color, depth, request, pass)
+    }
+
     fn depth_level_texture(
         &mut self,
         surface: Self::Surface,

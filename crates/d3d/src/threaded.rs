@@ -416,6 +416,7 @@ pub struct ThreadedBackend<B: Backend + 'static> {
     bc: bool,
     sample_surfaces: bool,
     sample_depth: bool,
+    external_pass: bool,
     /// `inner.can_mirror()`.
     mirror: bool,
     next_surface: u32,
@@ -441,6 +442,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
         let judge = inner.judge();
         let sample_surfaces = inner.can_sample_surfaces();
         let sample_depth = inner.can_sample_depth_surfaces();
+        let external_pass = inner.supports_external_pass();
         let mirror = inner.can_mirror();
         let s = Arc::clone(&shared);
         let join = std::thread::Builder::new()
@@ -537,6 +539,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
             bc,
             sample_surfaces,
             sample_depth,
+            external_pass,
             mirror,
             next_surface: 1,
             next_texture: 1,
@@ -1155,6 +1158,33 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
 
     fn can_sample_depth_surfaces(&self) -> bool {
         self.sample_depth
+    }
+
+    fn supports_external_pass(&self) -> bool {
+        self.external_pass
+    }
+
+    fn external_pass(
+        &mut self,
+        color: u32,
+        depth: u32,
+        request: crate::backend::ExternalPassRequest,
+        pass: Box<dyn crate::backend::ExternalPass>,
+    ) -> Result<bool, String> {
+        self.check()?;
+        if !self.external_pass {
+            return Ok(false);
+        }
+        // In order with the draws before it, on the render thread.
+        let shared = Arc::clone(&self.shared);
+        self.post(move |w| {
+            let (c, d) = (w.surface(color)?, w.surface(depth)?);
+            if !w.inner.external_pass(c, d, request, pass)? {
+                shared.miss("external_pass returned false".into());
+            }
+            Ok(())
+        });
+        Ok(true)
     }
 
     fn request_depth_grid(

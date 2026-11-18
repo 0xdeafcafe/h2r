@@ -543,6 +543,18 @@ impl<B: Backend> Backend for DiagBackend<B> {
     ) -> Result<bool, String> {
         self.inner.request_depth_grid(surface, request, sink)
     }
+    fn supports_external_pass(&self) -> bool {
+        self.inner.supports_external_pass()
+    }
+    fn external_pass(
+        &mut self,
+        color: Self::Surface,
+        depth: Self::Surface,
+        request: d3d::ExternalPassRequest,
+        pass: Box<dyn d3d::ExternalPass>,
+    ) -> Result<bool, String> {
+        self.inner.external_pass(color, depth, request, pass)
+    }
     fn warp_surface(&mut self, src: Self::Surface, dst: Self::Surface, h: [[f32; 3]; 3]) -> Result<bool, String> {
         self.inner.warp_surface(src, dst, h)
     }

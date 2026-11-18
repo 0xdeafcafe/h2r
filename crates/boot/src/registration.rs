@@ -304,6 +304,14 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     features
         .add(&feature::occlusion::OcclusionCull)
         .map_err(|e| anyhow::anyhow!("occlusion: {e}"))?;
+    // The static world on the native GPU renderer
+    // (H2_FEATURES=impl.render.native_world=on, off by default;
+    // docs/graphics/native-renderer.md). Its observers on the layer draw
+    // run after render-timing's; the world's map file comes from the
+    // locator boot sets (native_world_glue::set_locator).
+    features
+        .add(&feature::native_world::NativeWorld)
+        .map_err(|e| anyhow::anyhow!("native world: {e}"))?;
     // H2_UI_WATCH=1: the screen player one's input goes to, a line on each
     // change and `ui.screen` (`h2 coop test --drive`; ui_watch.rs).
     ui_watch::install(features)?;

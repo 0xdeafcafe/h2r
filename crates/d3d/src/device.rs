@@ -313,6 +313,11 @@ pub struct Stats {
     /// Asks not recorded (another depth bound, not W-buffered, the
     /// backend cannot).
     pub depth_grids_skipped: u64,
+    /// External passes recorded ([`Device::request_external_pass`]).
+    pub external_passes: u64,
+    /// External passes dropped (no colour or depth bound, the backend
+    /// refused).
+    pub external_passes_dropped: u64,
     /// Draws handed to the backend (including skipped ones).
     pub draws: u64,
     /// Inline (push-buffer) immediate draws among them.
@@ -776,6 +781,9 @@ pub struct Device<B: Backend> {
     /// An occlusion depth grid asked for ([`Device::request_depth_grid`]),
     /// issued after the next drain.
     pending_grid: Option<GridAsk>,
+    /// An external pass asked for ([`Device::request_external_pass`]),
+    /// issued after the next drain.
+    pending_external: Option<Box<dyn crate::backend::ExternalPass>>,
     /// Display state: flicker filter, persisted surface, vertical blank.
     display: display::Display<B::Surface>,
     /// Render-to-texture targets, by surface header ([`RttTarget`]).
@@ -960,6 +968,7 @@ impl<B: Backend> Device<B> {
             encode: None,
             hw: HwState::default(),
             pending_grid: None,
+            pending_external: None,
             display: display::Display::default(),
             rtt: HashMap::default(),
             rtt_epoch: 0,
@@ -1598,6 +1607,9 @@ impl<B: Backend> Device<B> {
                 if let Some(ask) = self.pending_grid.take() {
                     self.issue_depth_grid(mem, ask);
                 }
+                if let Some(pass) = self.pending_external.take() {
+                    self.issue_external_pass(mem, pass);
+                }
                 Ok(None)
             }
             Err(e) => {
@@ -1625,6 +1637,49 @@ impl<B: Backend> Device<B> {
             height,
             sink,
         });
+    }
+
+    /// Whether the backend can draw an external pass: asked before the
+    /// guest skips work the pass replaces.
+    pub fn can_external_pass(&self) -> bool {
+        self.backend.supports_external_pass()
+    }
+
+    /// Asks for `pass` to draw into the bound colour target and depth with
+    /// the current viewport (docs/graphics/native-renderer.md): recorded
+    /// after the next drain of the push buffer (the next D3D entry), in
+    /// order with the draws queued before it. A newer ask replaces one not
+    /// issued yet. Dropped (counted in `external_passes_dropped`) when no
+    /// colour or depth is bound or the backend refuses.
+    pub fn request_external_pass(&mut self, pass: Box<dyn crate::backend::ExternalPass>) {
+        if self.pending_external.replace(pass).is_some() {
+            self.stats.external_passes_dropped += 1;
+        }
+    }
+
+    fn issue_external_pass(&mut self, mem: &mut dyn GuestMemory, pass: Box<dyn crate::backend::ExternalPass>) {
+        let issued = (|| -> Option<bool> {
+            if self.render_target == 0 || self.depth_stencil == 0 {
+                return None;
+            }
+            let (color, depth) = self.current_targets(mem, "external pass").ok()?;
+            let depth = depth?;
+            let d = self.header_desc(mem, self.render_target).ok()?;
+            let dev = mem.read_u32(self.cfg.layout.p_device).ok()?;
+            let z_scale = f32::from_bits(mem.read_u32(dev + field::Z_SCALE).ok()?);
+            let v = self.viewport;
+            let request = crate::backend::ExternalPassRequest {
+                rect: (v.x, v.y, v.width, v.height),
+                surface_size: (d.width, d.height),
+                z_scale: if z_scale.is_finite() && z_scale > 0.0 { z_scale } else { 16_777_215.0 },
+            };
+            self.backend.external_pass(color, depth, request, pass).ok()
+        })();
+        if issued == Some(true) {
+            self.stats.external_passes += 1;
+        } else {
+            self.stats.external_passes_dropped += 1;
+        }
     }
 
     fn issue_depth_grid(&mut self, mem: &mut dyn GuestMemory, ask: GridAsk) {
