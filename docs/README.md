@@ -141,6 +141,7 @@ goals, the two-stage plan, the crate table and milestones.
 - [maps.md](game/maps.md): new, edited, patched and shared maps: packages, patches, `MapId`; foundation built
 - [campaigns.md](game/campaigns.md): design for more than one campaign, starting with Halo 1's levels in the Halo 2 engine; the converter is built for multiplayer maps only
 - [health.md](game/health.md): Halo 1's health model on Halo 2's engine: no body regeneration, health packs, a health meter (`H2_HEALTH_MODEL`; the map-load switch for Halo 1 maps is not wired yet)
+- [bots.md](game/bots.md): design for multiplayer bots (Clankers): one brain feeding controller input, local slots then phantom peers, the Clankers Game Setup page, Clankermatch, and the bot roster interface with the server
 - [multiple-campaigns.md](game/multiple-campaigns.md): how 1.0's menus list campaign levels and keep progress, and the campaign picker and per-campaign progress built on them
 - [h1-multiplayer.md](game/h1-multiplayer.md): Halo 1's 13 disc multiplayer maps converted onto Halo 2 base maps (`h2 h1 convert`): collision, structure BSP, MOPP, placements, packages with variants; the Halo 1 sandbox and map list are not built
 - [map-pack.md](game/map-pack.md): the Multiplayer Map Pack disc, `h2 import-mappack` and how 1.0 lists its maps
