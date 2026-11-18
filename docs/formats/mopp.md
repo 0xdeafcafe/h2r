@@ -51,16 +51,17 @@ Coordinates are integers in a 24-bit space per axis: `full =
 so it sees the top 8 bits; rescale opcodes zoom in. Every operand of the
 axis opcodes is a byte in the current frame.
 
-The XBE has three interpreters. One byte table per interpreter maps the
-opcode to a handler, and the three tables put every opcode in the same
-handler class (E: tables at `0x00300860`, `0x003016a8`, `0x0030284c`;
-dword tables at `0x003007e0`, `0x00301628`, `0x003027cc`):
+The XBE has four interpreters. One byte table per interpreter maps the
+opcode to a handler, and the tables put every opcode in the same handler
+class (E: tables at `0x00300860`, `0x003016a8`, `0x0030284c`, `0x002fff20`;
+dword tables at `0x003007e0`, `0x00301628`, `0x003027cc`, `0x002ffea0`):
 
 | Interpreter | Query | Entry | Evidence |
 |---|---|---|---|
 | `0x00300290` | Sphere, integer. Setup `0x003008d0`: centre `round(p * scale) - 1` per axis (x87 `fistp` of an f32 product), radius `round(r * scale)`; root state: centre `>> 16`, radius `(r >> 16) + 1`, shift 16 | E |
 | `0x003009e0` | Ray between two points, float (setup `0x00301720`; scale times a constant from `0x0045dcac` for the root frame) | E (kind of query: Guess from the setup) |
 | `0x00301a60` | Segment or cast with a per-axis tolerance, float | E (kind of query: Guess from its operands) |
+| `0x002ff8b0` | Box, integer. Setup `0x00300150`: `lo = round(min * scale) - 1`, `hi = round(max * scale) - 1` per axis; per frame `L = (lo >> s) - offset`, `H = (hi >> s) + 1 - offset`. Its tests differ from the sphere VM's (see [The box query](#the-box-query)) | E |
 
 The interpreter state is 0x28 bytes (E `0x00300290`): the query in frame
 units (`+0x00..+0x0c`), frame offsets (`+0x10..+0x18`), key offset
@@ -121,11 +122,42 @@ therefore treat each frame coordinate `v` as the finer interval `[v, v +
 (below); without it, it missed 970 of 2.3 million. The sphere VM's `+ 1`
 on the diagonal radius is the engine's allowance for the same thing.
 
-## The model (`mopp::vm`)
+### The box query
+
+`0x002ff8b0` is the query that keeps a body's contacts with the
+structure (E): the BV-tree agent's collide (`0x002ea530` → `0x002e9d90`)
+takes the other body's box (`0x002e9140`: its shape's AABB at the
+collision tolerance, grown by its linear motion), queries the MOPP
+shape's slot `+0x30` (`0x002df640`, or the structure shape's override
+`0x001eea50`, which calls it and filters instanced keys), and keeps one
+child agent per key returned. A key missing from one tick's answer drops
+that surface's contact points (`0x001d06c0`); a biped's ground contact
+list (physics component `+0x88`) is filled by the contact callback
+`0x00277b80` through `0x001d0400`. The float cast `0x00301a60` is the
+static linear cast (`0x002eb670`, registered at `0x002ebc0b`), not this
+path.
+
+Its tests, with `L` and `H` as in the table (`H` is one past the box's top
+cell):
+
+| Opcode | Box VM (`0x002ff8b0`) |
+|---|---|
+| `10..1c`, `23..25` (`L_op H_op`) | low child only when `L < L_op`; high child only when `H > H_op`; a box in neither visits neither (`0x002ffa52`, `0x002ffa85`, `0x002ffafe`). Diagonals sum `L` for + terms and `−H` for − terms (lower), `H` and `−L` (upper), against `m·op − k` |
+| `20..22` (`s`) | low child when `L <= s`, high child when `H > s` (`0x002ffac7`) |
+| `26..28` (`l h`) | ends when `H < l` or `L >= h` (`0x002ffb73`) |
+| `29..2b` | ends when `hi < l24` or `lo > h24` (`0x002ffb9d`) |
+
+So `L_op` and a bound check's `h` are exclusive upper bounds here: a box
+whose low corner lies in the same frame cell as a primitive's top cell is
+cut off from it, where the sphere VM keeps it.
+
+## The model (`mopp::vm`, `mopp::boxvm`)
 
 - `query_sphere(code, centre, radius)`: `0x00300290` to the bit,
   including the centre's `- 1` and the radius's `+ 1`.
-- `query_aabb(code, aabb)`: the same opcode semantics on per-axis
+- `query_box(code, aabb)`: `0x00300150` and `0x002ff8b0` to the bit,
+  the engine's box query above.
+- `query_aabb(code, aabb)`: the sphere VM's opcode semantics on per-axis
   intervals. Each box axis becomes `[floor(min) − 1, ceil(max) + 1]` in
   full units; diagonals as above. This is not an engine function; it is
   the generalisation the compiler and the tests need.
@@ -144,7 +176,8 @@ on the diagonal radius is the engine's allowance for the same thing.
 `build(&[Surface]) -> Code` over polygons with keys:
 
 1. Origin = surface bounds' minimum minus a pad (1 cm + 0.01 % of the
-   extent); scale = `(2^24 − 4096) / (extent + 2 pad)`.
+   extent); scale = `(2^24 − 65536 − 4096) / (extent + 2 pad)`, so no
+   surface reaches root cell 255.
 2. Each surface's box is quantized to full units: `floor − 2`, `ceil + 2`
    (covers the sphere VM's rounding).
 3. Recursive split: zoom (`01..04`) as far as the subtree's union fits a
@@ -155,10 +188,20 @@ on the diagonal radius is the engine's allowance for the same thing.
    (low child ≤ 255 bytes), `23..25` (≤ 64 KiB) or `23..25` plus a `07`
    jump to the high child. Leaves emit `30..53`. The root sets the key
    base with `0b`.
-4. Invariant: every surface of a node lies in `0..=255` of the node's
-   frame, so every operand fits a byte; the tracked region follows the
-   engine's branch rule (a query in a gap between L and H still enters the
-   low child).
+4. Upper bounds are exclusive: a split's `L` and a bound check's `h` are
+   one past the top cell of the surfaces below them, as the box query
+   needs (see [The box query](#the-box-query)); the sphere query only
+   gets one cell looser. Through converter version 71 they were the top
+   cell itself, and the box query dropped a surface once a body's box
+   started in that cell. That is the suspect for converted Blood Gulch's
+   blue ramp, where the live player's ground contact went at x 43.56 and
+   the player fell; `h1convert/tests/ramp_contacts.rs` runs the box query
+   there.
+5. Invariant: every surface of a node lies in `0..=254` of the node's
+   frame (a zoom stops where the union would pass 254), so every operand,
+   exclusive tops included, fits a byte; the tracked region follows the
+   sphere query's branch rule (a query in a gap between L and H still
+   enters the low child).
 
 It emits only `01..04`, `07`, `09`, `0a`, `0b`, `10..12`, `23..28`,
 `30..53` (no diagonals, no `29..2b`, no properties). Byte equality with
@@ -177,7 +220,11 @@ separating-axis test).
 | Retail, 78 BSPs | yes | 0 of 2,321,215 | 0 | 1.05 | 1.03 | 10.37 MB |
 | Ours, 78 BSPs | yes | 0 | 0 | 1.04 | 1.02 | 10.15 MB |
 
-(Sphere: the engine-exact sphere VM with the sphere around each box.)
+(Sphere: the engine-exact sphere VM with the sphere around each box.
+Box misses are the box model's, `query_aabb`. The engine's box query,
+`query_box`, also misses 0 on both. Ours is version 72's compiler, with
+exclusive tops: 10,148,336 bytes. While the low child's tracked region was widened by a cell,
+it was 11,047,968 bytes.)
 Ours keys every structure surface exactly once and leaves no byte
 unreached. Per BSP with more than 100 surfaces, ours returns 1.01 to 1.28
 surfaces per touching one (retail 1.02 to 1.39); on the eight BSPs of 6 to

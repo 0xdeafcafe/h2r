@@ -1240,6 +1240,9 @@ a_local_bot_carries_its_bot_account`, `bun test test/bots.test.ts` in
 **Game run (the user):** `h2 play --live-local` (or a Live server), sign
 in on port 0, host a Live custom game, Clankers On, Count 3.
 
+`h2 bots test` (§13) runs steps 1, 4 and 5 with no one at the controller
+and prints a verdict.
+
 1. The log says `clankers: asking Live for 3 bots for session …`, then
    `Clanker 1 is <gamertag> on Xbox Live (bot account 000b…)` for each
    port, then `bots: <gamertag> on port 1 is on Xbox Live as its own bot
@@ -2146,3 +2149,98 @@ Still open:
   (zoom?); the layout is in §5.1.
 - Which font slots draw player names in the lobby, scoreboard and carnage
   report.
+
+## 13. Testing (`h2 bots test`)
+
+`h2 bots test` runs §9.5's game run with no one at the controller: one
+command that ends in a verdict. It is built on `h2 coop test --drive`'s
+pieces (docs/live/live-coop.md section 12): the same process supervisor,
+account making and `input.pad` presses.
+
+```sh
+h2 bots test [--count 5] [--map lockout] [--keep] [--timeout 360]
+h2 bots verdict <bots.log>   # the verdict of a log again
+```
+
+**What it does.**
+
+1. Starts a Live server in its own process on `127.0.0.1:8077`
+   (`--server-port`), with a throwaway store under
+   `$TMPDIR/h2-bots-test/run-<time>/` (`--root`), and makes the account
+   **Tester** there.
+2. Opens one `h2 play` window signed in as Tester (`--live-server`, its own
+   data and Live directory, `--no-mappack --no-halo1`), with
+   `--set clankers.enabled=true --set clankers.count=N`. So Clankers is On
+   at Count N for this run with no menu work (the page's rows show it
+   locked). N is `--count`, 5 by default: 3 local bots on ports 1 to 3 and
+   2 phantoms. The window builds the game into `--out` first when `--out`
+   has none, as `h2 play` does.
+3. Presses through the menus over the game's agent socket
+   (`crates/cli/src/bots_drive.rs`). The game runs with `H2_UI_WATCH=1`, and
+   every press waits on a `ui: screen` line, a game line or the agent API's
+   phase: Xbox Live (the players' screen, where the local bots join), the
+   Live menu's Custom Game row (retail row 2), then the pregame lobby. Once
+   every local bot is on Xbox Live, or after 90 s, it presses A on Start
+   Game, and again (UP, A) if the phase has not left `menu` within 40 s.
+   Each press is a `bots-drive:` line.
+4. Watches the game's `bots:`, `clankers:` and Live lines, the agent API's
+   `session.status` (phase, mode, map), the server's session for Tester
+   (`GET /v1/sessions?host=Tester`: filled slots) and, once in gameplay,
+   the newest game record (`GET /v1/games`: players with `bot: true`).
+   What it reads goes into the merged log as `bots-test:` lines.
+5. Stops once every check has passed (3 s more for the last lines), the
+   game closes or stops, or after `--timeout`. It prints the verdict,
+   closes the game, deletes the run's data and exits non-zero if a check
+   failed. With `--keep` the game stays open, and the command with it (it
+   is the Live server), until the window closes; the data is kept.
+
+**The checks**, in the order a run reaches them. Each prints as passed or
+failed with the log lines that show it, and the verdict names the first
+failure:
+
+| # | Check | Passes on |
+|---|---|---|
+| 1 | Signed in to Xbox Live | `live: playing as Tester` |
+| 2 | Clankers on | `clankers: Clanker P on (...)` for each local port |
+| 3 | Hosting a Live custom game | `coop-live: lobby mode 2` or `live: session ... advertised` |
+| 4 | Live roster of bot accounts | `clankers: asking Live for N bots for session S`, then `clankers: Live rostered bots for session S` |
+| 5 | Local bots signed in (join gate) | per port, `bots: join gate port P: screen ... : signs in` and `bots: signing ... on port P ...`; it says whether on the players screen or in the lobby |
+| 6 | Local bots on Xbox Live as bot accounts | per port, `clankers: Clanker P is G on Xbox Live (bot account 000b...)` and `bots: G on port P is on Xbox Live as its own bot account` |
+| 7 | Start Game: start state ready | `bots: start state 9` (or 10, the countdown) |
+| 8 | Gameplay on a map | `session.status` phase `gameplay`, not campaign; with `--map`, on that map |
+| 9 | Phantoms joined | `bots: phantom G joins (peer K)` for each phantom, and no phantom failure |
+| 10 | The Live session holds 1 + N players | the session's filled slots reach 1 + N |
+| 11 | The game record has the bots | at least N players with `bot: true` on the server's game record |
+
+A failed check says what is missing and why, as far as the log does: for
+step 5 each missing port's last join gate lines (screen, dialog,
+`signed_in`); for 3 the last presses and screen; for 4 whether the roster
+was asked for at all; for 6 the port's guest or offline line; for 7 the
+start state's blocking check, or that Start was never pressed; for 9 the
+phantoms' `waits` lines. Lines that look like trouble anywhere (a panic,
+the guest thread exiting, a fault, a stuck driver, a refusal, a timeout)
+are listed under `trouble:`.
+
+**Where things go.** The merged log is
+`<root>/logs/<time>/bots.log` and the game's whole stderr
+`<root>/logs/<time>/Tester.log`; both paths print at the start and the
+end. `h2 bots verdict bots.log` prints a log's verdict again (and exits
+non-zero on a failure).
+
+**Notes.**
+
+- `--map` only checks the map played. The menus are not driven through
+  Game Setup's Change Map, so the game plays the lobby's default map; a
+  `--map` other than that fails step 8, saying which map was played.
+- The phantoms join when the game starts, not in the lobby (§5.1); step 10
+  counts the most filled slots the server saw over the whole run.
+- `h2 play` builds the game into `--out` when `--out` has none, or has one
+  from another image. Run it with the same `H2_OPT` as that build, or the
+  window recompiles first. A first build can outlast `--timeout`; build
+  first (or raise `--timeout`).
+- One game at a time: the server port and Tester's account are the run's
+  own, but a second `h2 bots test` needs another `--server-port` and
+  `--root`.
+
+**Tests:** `cargo test -p cli bots_` (the verdict from log lines, the
+driver's presses, the arguments).

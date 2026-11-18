@@ -8,8 +8,17 @@
 //! union of its surfaces' boxes, so a box query returns the surfaces whose
 //! quantized boxes it overlaps.
 //!
+//! Upper bounds are written exclusive: a two-plane split's low maximum and
+//! a bound check's maximum are one past the top cell. The engine's box
+//! query (`0x002ff8b0`, [`crate::query_box`]), which keeps bodies'
+//! contacts, enters the low child only when the box's low cell is below
+//! the operand and ends at a bound check when it is not; the sphere query
+//! enters for anything up to and including it, so the extra cell only
+//! loosens that one.
+//!
 //! Invariant: every primitive in a node lies inside the node's frame,
-//! `0..=255` on each axis, so every operand fits a byte.
+//! `0..=254` on each axis, so every operand, exclusive tops included, fits
+//! a byte.
 
 use crate::code::{Code, FULL_BITS, RETAIL_INFO, ROOT_SHIFT};
 use crate::geom::Surface;
@@ -18,8 +27,10 @@ use crate::geom::Surface;
 /// engine's rounding (sphere centres `round(p) - 1`, E `0x003008fd`) can
 /// never miss it.
 const PAD: i64 = 2;
-/// Headroom left at the top of the 24-bit space.
-const TOP_MARGIN: f64 = 4096.0;
+/// Headroom left at the top of the 24-bit space: one root cell (so no
+/// primitive reaches root cell 255 and its exclusive top fits a byte) and
+/// a little more.
+const TOP_MARGIN: f64 = 65536.0 + 4096.0;
 /// An inner node checks an axis when that trims at least 1/this of the
 /// region it inherits.
 const INNER_CHECK_SHARE: i64 = 8;
@@ -101,9 +112,25 @@ fn node(prims: &mut [Prim], mut f: Frame, mut r: Region) -> Vec<u8> {
     // subtrees stay in their parent's frame: smaller code, near as tight.
     while prims.len() >= ZOOM_MIN_SURFACES {
         let span = (0..3).map(|a| u[a].1 - u[a].0).max().unwrap_or(0);
-        let k = (1..=f.shift.min(4)).rev().find(|&k| (span + 1) << k <= 256);
-        let Some(k) = k else { break };
         let b = [u[0].0, u[1].0, u[2].0];
+        // The finest zoom whose frame holds the union with its top cell at
+        // most 254, so exclusive tops fit a byte. Bounding the span alone
+        // (`(span + 1) << k <= 255`) gives up a level wherever the span is
+        // a power of two (with it, our programs over the retail BSPs grew
+        // from 10.15 to 11.05 MB); the union's real top reaches 255 far
+        // less often.
+        let k = (1..=f.shift.min(4)).rev().find(|&k| {
+            if (span + 1) << k > 256 {
+                return false;
+            }
+            let g = Frame {
+                shift: f.shift - k,
+                offset: [0, 1, 2].map(|a| (f.offset[a] + b[a]) << k),
+                key_offset: f.key_offset,
+            };
+            union(prims, &g).iter().all(|&(_, hi)| hi <= 254)
+        });
+        let Some(k) = k else { break };
         out.extend([k as u8, b[0] as u8, b[1] as u8, b[2] as u8]);
         for a in 0..3 {
             f.offset[a] = (f.offset[a] + b[a]) << k;
@@ -133,8 +160,8 @@ fn node(prims: &mut [Prim], mut f: Frame, mut r: Region) -> Vec<u8> {
         };
         let worth = trim.saturating_mul(share) >= width;
         if trim > 0 && worth {
-            debug_assert!(0 <= u[a].0 && u[a].1 <= 255);
-            out.extend([0x26 + a as u8, u[a].0 as u8, u[a].1 as u8]);
+            debug_assert!(0 <= u[a].0 && u[a].1 <= 254);
+            out.extend([0x26 + a as u8, u[a].0 as u8, (u[a].1 + 1) as u8]);
             r[a] = u[a];
         }
     }
@@ -192,9 +219,14 @@ fn node(prims: &mut [Prim], mut f: Frame, mut r: Region) -> Vec<u8> {
         .map(|p| frame_box(p, &f).0[axis])
         .min()
         .unwrap_or(0);
-    // The engine visits the low child when hi < high_min or lo <= low_max,
-    // so a query there has lo <= max(low_max, high_min - 1); it visits the
-    // high child only when hi >= high_min (E 0x003003cd).
+    // The region only decides which bound checks are worth emitting. The
+    // box query enters the low child only with lo <= low_max (the operand
+    // is low_max + 1, exclusive); the sphere query also enters with lo one
+    // past it, which only lets it return a little more. Tracking lo <=
+    // max(low_max, high_min - 1) keeps the checks retail-sized: widening
+    // it to low_max + 1 cost 9 % more code over the retail BSPs (10.15 to
+    // 11.05 MB). Both queries enter the high child only when hi >=
+    // high_min (E 0x003003cd, 0x002ffa85).
     let mut r_low = r;
     r_low[axis].1 = r_low[axis].1.min(low_max.max(high_min - 1));
     let mut r_high = r;
@@ -202,7 +234,8 @@ fn node(prims: &mut [Prim], mut f: Frame, mut r: Region) -> Vec<u8> {
     let low_code = node(low, f, r_low);
     let high_code = node(high, f, r_high);
 
-    let (lm, hm) = (low_max as u8, high_min as u8);
+    debug_assert!(low_max <= 254);
+    let (lm, hm) = ((low_max + 1) as u8, high_min as u8);
     if low_code.len() <= 0xff {
         out.extend([0x10 + axis as u8, lm, hm, low_code.len() as u8]);
         out.extend(low_code);
