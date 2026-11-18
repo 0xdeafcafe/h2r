@@ -98,8 +98,14 @@ impl JointClass {
             plane: (-plane, plane),
         };
         match self {
-            JointClass::Knee => Joint::Hinge { min: -75.0, max: 5.0 },
-            JointClass::Elbow => Joint::Hinge { min: -65.0, max: 10.0 },
+            JointClass::Knee => Joint::Hinge {
+                min: -75.0,
+                max: 5.0,
+            },
+            JointClass::Elbow => Joint::Hinge {
+                min: -65.0,
+                max: 10.0,
+            },
             JointClass::Hip => rag(5.0, 30.0, 45.0),
             JointClass::Shoulder => rag(7.5, 45.0, 45.0),
             JointClass::Neck => rag(30.0, 30.0, 20.0),
@@ -317,14 +323,21 @@ mod tests {
         // elsewhere.
         for l in &links {
             let hinge = matches!(l.class.joint(), Joint::Hinge { .. });
-            assert_eq!(hinge, matches!(l.class, JointClass::Knee | JointClass::Elbow));
+            assert_eq!(
+                hinge,
+                matches!(l.class, JointClass::Knee | JointClass::Elbow)
+            );
         }
 
         let parents: Vec<i16> = s.iter().map(|n| n.1).collect();
         // A quarter turn about z on every node, so the frames are not
         // trivially the identity.
         let q = std::f32::consts::FRAC_PI_4;
-        let r = [[q.cos() * 1.0, -q.sin(), 0.0], [q.sin(), q.cos(), 0.0], [0.0, 0.0, 1.0]];
+        let r = [
+            [q.cos() * 1.0, -q.sin(), 0.0],
+            [q.sin(), q.cos(), 0.0],
+            [0.0, 0.0, 1.0],
+        ];
         let rest: Vec<Transform> = s.iter().map(|n| Transform { r, t: n.2 }).collect();
         let cs = constraints(&links, &bodies, &parents, &rest);
         let world = |node: i16| relative(&parents, &rest, -1, node);
@@ -354,10 +367,17 @@ mod tests {
                 }
             }
             // The child's frame sits on the child's origin.
-            let own = if child == c.node_a { c.frame_a } else { c.frame_b };
+            let own = if child == c.node_a {
+                c.frame_a
+            } else {
+                c.frame_b
+            };
             assert_eq!(own.position, [0.0; 3]);
         }
-        let knee = cs.iter().find(|c| c.class == JointClass::Knee && c.node_b == 4).unwrap();
+        let knee = cs
+            .iter()
+            .find(|c| c.class == JointClass::Knee && c.node_b == 4)
+            .unwrap();
         let p = knee.frame_a.position;
         assert!((p[0] - 0.2).abs() < 1e-6 && p[1].abs() < 1e-6, "{p:?}");
     }
@@ -418,7 +438,11 @@ mod tests {
         let body_nodes = [0i16, 1, 4, 2, 5, 12];
         let bodies: Vec<crate::rebuild::Body> = body_nodes
             .iter()
-            .map(|&node| crate::rebuild::Body { node, pieces: vec![cube(0.05)], mass: 5.0 })
+            .map(|&node| crate::rebuild::Body {
+                node,
+                pieces: vec![cube(0.05)],
+                mass: 5.0,
+            })
             .collect();
         let pnodes: Vec<crate::rebuild::PhysNode> = s
             .iter()
@@ -432,7 +456,10 @@ mod tests {
         let parents: Vec<i16> = s.iter().map(|n| n.1).collect();
         let rest: Vec<Transform> = s
             .iter()
-            .map(|n| Transform { r: Transform::IDENTITY.r, t: n.2 })
+            .map(|n| Transform {
+                r: Transform::IDENTITY.r,
+                t: n.2,
+            })
             .collect();
         let ls = links(&nodes, &body_nodes).unwrap();
         let cs = constraints(&ls, &body_nodes, &parents, &rest);
@@ -440,7 +467,10 @@ mod tests {
             .unwrap();
         let def = Defs::builtin().group(map::FourCC(*b"phmo")).unwrap();
         let got = defs::from_built(def, &root).unwrap();
-        assert_eq!(defs::to_built(def, &got, &mut |_| None).unwrap().bytes, root.bytes);
+        assert_eq!(
+            defs::to_built(def, &got, &mut |_| None).unwrap().bytes,
+            root.bytes
+        );
         let block = |r: &defs::Record, p: &str| match r.at(p) {
             Some(Val::Block(b)) => b.clone(),
             other => panic!("{p}: {other:?}"),
@@ -460,13 +490,22 @@ mod tests {
                 assert_eq!(int(e, "node_a"), int(c, "header.node_a"));
                 assert_eq!(int(e, "node_b"), int(c, "header.node_b"));
                 let r = &block(e, "constraints")[0];
-                assert_eq!((int(r, "constraint_type"), int(r, "constraint_index")), (kind, i as i64));
-                assert_eq!(r.at("friction"), Some(&Val::Float(crate::rebuild::JOINT_FRICTION)));
+                assert_eq!(
+                    (int(r, "constraint_type"), int(r, "constraint_index")),
+                    (kind, i as i64)
+                );
+                assert_eq!(
+                    r.at("friction"),
+                    Some(&Val::Float(crate::rebuild::JOINT_FRICTION))
+                );
             }
         }
         let knee = &hinges[0];
         assert_eq!(knee.at("min_angle"), Some(&Val::Float(-75.0)));
-        assert_eq!((int(knee, "header.node_a"), int(knee, "header.node_b")), (1, 4));
+        assert_eq!(
+            (int(knee, "header.node_a"), int(knee, "header.node_b")),
+            (1, 4)
+        );
         let phmo_nodes = block(&got, "nodes");
         assert_eq!(int(&phmo_nodes[4], "parent"), 1);
         assert_eq!(int(&phmo_nodes[4], "flags"), 0);

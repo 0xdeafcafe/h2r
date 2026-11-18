@@ -20,11 +20,11 @@ use std::fs::File;
 use std::io::{BufReader, Cursor};
 
 use h1map::H1Map;
+use h1objects::Converted;
 use h1objects::base::Base;
 use h1objects::convert::{Converter, Tree};
 use h1objects::physics::Transform;
 use h1objects::ragdoll::{self, Frame, JointClass};
-use h1objects::Converted;
 use map::build::{Block, FixupKind};
 use map::{FourCC, Map, TagId};
 use tags::defs::{self, Defs, Record, StructDef, Target, Val};
@@ -134,7 +134,10 @@ struct Read {
 /// constraint kinds.
 fn constraints(p: &Record) -> Vec<Read> {
     let edges = block(p, "node_edges");
-    let bodies: Vec<i64> = block(p, "rigid_bodies").iter().map(|b| int(b, "node")).collect();
+    let bodies: Vec<i64> = block(p, "rigid_bodies")
+        .iter()
+        .map(|b| int(b, "node"))
+        .collect();
     for other in ["block_f0"] {
         assert!(block(p, other).is_empty(), "{other}");
     }
@@ -143,16 +146,24 @@ fn constraints(p: &Record) -> Vec<Read> {
         for (i, c) in block(p, path).iter().enumerate() {
             let (a, b) = (int(c, "header.node_a"), int(c, "header.node_b"));
             let e = &edges[int(c, "header.edge") as usize];
-            assert_eq!((int(e, "node_a"), int(e, "node_b")), (a, b), "{path}[{i}] edge");
+            assert_eq!(
+                (int(e, "node_a"), int(e, "node_b")),
+                (a, b),
+                "{path}[{i}] edge"
+            );
             let refs = block(e, "constraints");
             assert!(
                 refs.iter()
-                    .any(|r| (int(r, "constraint_type"), int(r, "constraint_index")) == (kind, i as i64)),
+                    .any(|r| (int(r, "constraint_type"), int(r, "constraint_index"))
+                        == (kind, i as i64)),
                 "{path}[{i}]: its edge does not name it"
             );
             let ba = bodies.iter().position(|&n| n == a);
             let bb = bodies.iter().position(|&n| n == b);
-            assert!(ba.is_some() && bb.is_some() && ba != bb, "{path}[{i}] bodies {a} {b}");
+            assert!(
+                ba.is_some() && bb.is_some() && ba != bb,
+                "{path}[{i}] bodies {a} {b}"
+            );
             let limits = if kind == 1 {
                 vec![(float(c, "min_angle"), float(c, "max_angle"))]
             } else {
@@ -205,12 +216,22 @@ fn frames_meet(c: &Read, parents: &[i16], rest: &[Transform], tol: f32, axes: f3
 
 /// The retail biped `name`'s physics model, node names, parents and rest
 /// transforms (from its render model).
-fn retail(base: &Base, strings: &[Option<String>], name: &str) -> Option<(Record, Vec<String>, Vec<i16>, Vec<Transform>)> {
+fn retail(
+    base: &Base,
+    strings: &[Option<String>],
+    name: &str,
+) -> Option<(Record, Vec<String>, Vec<i16>, Vec<Transform>)> {
     let id = base.find(b"bipd", name)?;
     let b = base.record(def(b"bipd"), id).unwrap();
-    let h = base.record(def(b"hlmt"), reference(&b, "unit.obje.model")?).unwrap();
-    let p = base.record(def(b"phmo"), reference(&h, "physics_model")?).unwrap();
-    let m = base.record(def(b"mode"), reference(&h, "render_model")?).unwrap();
+    let h = base
+        .record(def(b"hlmt"), reference(&b, "unit.obje.model")?)
+        .unwrap();
+    let p = base
+        .record(def(b"phmo"), reference(&h, "physics_model")?)
+        .unwrap();
+    let m = base
+        .record(def(b"mode"), reference(&h, "render_model")?)
+        .unwrap();
     let nodes = block(&m, "nodes");
     let names = nodes
         .iter()
@@ -224,7 +245,10 @@ fn retail(base: &Base, strings: &[Option<String>], name: &str) -> Option<(Record
             _ => String::new(),
         })
         .collect();
-    let parents = nodes.iter().map(|n| int(n, "parent_index") as i16).collect();
+    let parents = nodes
+        .iter()
+        .map(|n| int(n, "parent_index") as i16)
+        .collect();
     let rest = nodes
         .iter()
         .map(|n| {
@@ -313,7 +337,11 @@ fn the_converted_cyborgs_ragdoll_against_retail() {
                 c.limits
             );
             // Kinds by class, as crate::ragdoll assigns them.
-            let want = if matches!(class, JointClass::Knee | JointClass::Elbow) { 1 } else { 2 };
+            let want = if matches!(class, JointClass::Knee | JointClass::Elbow) {
+                1
+            } else {
+                2
+            };
             assert_eq!(c.kind, want, "{name}: {class:?}");
             kinds.insert(class, c.kind);
             // The frames: the child's on its origin, and both meet at rest
@@ -330,7 +358,10 @@ fn the_converted_cyborgs_ragdoll_against_retail() {
                 let fa = c.fa.carried(&ragdoll::relative(&parents, &rest, -1, c.a));
                 let fb = c.fb.carried(&ragdoll::relative(&parents, &rest, -1, c.b));
                 assert!(near(fa.position, fb.position, 2e-3), "{name}: {c:?}");
-                assert!(near(own.forward, [-1.0, 0.0, 0.0], 0.05), "{name}: twist axis {c:?}");
+                assert!(
+                    near(own.forward, [-1.0, 0.0, 0.0], 0.05),
+                    "{name}: twist axis {c:?}"
+                );
             }
             for (k, &(lo, hi)) in c.limits.iter().enumerate() {
                 let e = range.entry((class, k)).or_insert((f32::MAX, f32::MIN));
@@ -359,9 +390,17 @@ fn the_converted_cyborgs_ragdoll_against_retail() {
         other => panic!("{other:?}"),
     };
     let chief = base
-        .record(def(b"bipd"), base.find(b"bipd", "objects\\characters\\masterchief\\masterchief").unwrap())
+        .record(
+            def(b"bipd"),
+            base.find(b"bipd", "objects\\characters\\masterchief\\masterchief")
+                .unwrap(),
+        )
         .unwrap();
-    println!("bipd +0x1f0: converted {:#x}, chief {:#x}", word(&r), word(&chief));
+    println!(
+        "bipd +0x1f0: converted {:#x}, chief {:#x}",
+        word(&r),
+        word(&chief)
+    );
     assert_eq!(word(&r) >> 11 & 1, word(&chief) >> 11 & 1);
     let hl = local(&conv.tree, reference(&r, "unit.obje.model").unwrap()).unwrap();
     let h = defs::from_built(def(b"hlmt"), &hl.root).unwrap();
@@ -378,7 +417,11 @@ fn the_converted_cyborgs_ragdoll_against_retail() {
     let parents: Vec<i16> = pnodes.iter().map(|n| int(n, "parent") as i16).collect();
     let cs = constraints(&p);
     let bodies = block(&p, "rigid_bodies");
-    println!("converted cyborg: {} bodies, {} constraints", bodies.len(), cs.len());
+    println!(
+        "converted cyborg: {} bodies, {} constraints",
+        bodies.len(),
+        cs.len()
+    );
     assert_eq!(cs.len() + 1, bodies.len(), "a tree over the bodies");
     let (mut hinges, mut rags) = (0, 0);
     for c in &cs {
@@ -391,18 +434,28 @@ fn the_converted_cyborgs_ragdoll_against_retail() {
             names[ch as usize],
             c.limits
         );
-        if c.kind == 1 { hinges += 1 } else { rags += 1 }
+        if c.kind == 1 {
+            hinges += 1
+        } else {
+            rags += 1
+        }
         if let Some(&k) = kinds.get(&class) {
             assert_eq!(c.kind, k, "{class:?}: retail's kind");
         }
         for (k, &(lo, hi)) in c.limits.iter().enumerate() {
             assert!(lo <= hi, "{class:?}: {lo} > {hi}");
             if let Some(&(rlo, rhi)) = range.get(&(class, k)) {
-                assert!(rlo <= lo && hi <= rhi, "{class:?} limit {k}: ({lo}, {hi}) outside retail's ({rlo}, {rhi})");
+                assert!(
+                    rlo <= lo && hi <= rhi,
+                    "{class:?} limit {k}: ({lo}, {hi}) outside retail's ({rlo}, {rhi})"
+                );
             }
         }
     }
-    assert!(hinges >= 2 && rags >= 3, "knees and elbows hinge; hips, shoulders, head ragdoll");
+    assert!(
+        hinges >= 2 && rags >= 3,
+        "knees and elbows hinge; hips, shoulders, head ragdoll"
+    );
 
     // The engine's post-process view: the decoder reads the built model
     // and its validation passes.
