@@ -121,6 +121,15 @@ impl WriteWatch {
             }
         }
     }
+    /// Forget every subscriber's dirty pages (a copy-on-write view starting
+    /// over, `Guest::cow_refresh`).
+    pub(crate) fn clear_dirty(&mut self) {
+        for s in &mut self.subscribers {
+            s.dirty.fill(0);
+            s.any_dirty = false;
+            s.dirty_words = (WORDS, 0);
+        }
+    }
     /// Recompute the union after a watched set changed. O(subscribers * 256).
     fn refresh(&mut self) {
         self.union.fill(0);

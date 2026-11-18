@@ -1,0 +1,432 @@
+//! A second executor: one guest call at a time, on whichever host thread
+//! owns it, against a copy-on-write snapshot of the main runtime's guest
+//! RAM (docs/runtime/second-executor.md, section 3).
+//!
+//! It is its own [`Runtime`] (own memory gate, page table, time-stamp
+//! counter, interrupt queue) with its own [`ExecCtx`], over a view Guest
+//! ([`Guest::cow_refresh`]). Its dispatch tables are copied once from the
+//! main runtime: generated handlers and resumes as they are; every HLE
+//! override the caller does not allow, and every kernel import, refused.
+//! No kernel scheduler runs it: no slices, no interrupts, no waits.
+
+use crate::dispatch::Handler;
+use crate::guest::{FrozenRam, HandBack, PAGE_SIZE, RAM_SIZE, WrittenPage};
+use crate::watch::{CONTIGUOUS_BASE, WatchId};
+use crate::{
+    CopyKind, CpuAbi, Event, ExecCtx, Guest, GuestFault, Runner, Runtime, TransferAbi, abi, kernel,
+};
+use std::sync::{Arc, Mutex};
+
+/// The `ExecCtx::thread_id` of an executor's context: no kernel thread has
+/// it.
+pub const EXECUTOR_THREAD_ID: u32 = 0xe0e0_0001;
+
+/// An HLE entry or kernel import the executor would not run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refusal {
+    /// The address called: an override's guest address or a kernel import
+    /// token ([`kernel::function_token`]).
+    pub target: u32,
+    /// The override's name, or the kernel import's.
+    pub name: String,
+    /// The kernel import's ordinal, for a kernel call.
+    pub ordinal: Option<u32>,
+    /// The return address on the guest stack at the call, if readable.
+    pub return_pc: Option<u32>,
+}
+
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum ExecutorError {
+    #[error(
+        "second executor refused {} ({:#010x}{}), called from {:x?}",
+        .0.name,
+        .0.target,
+        .0.ordinal.map(|o| format!(", kernel ordinal {o}")).unwrap_or_default(),
+        .0.return_pc
+    )]
+    Refused(Refusal),
+    #[error("second executor stopped with {transfer:?}: {event:?}")]
+    Fault {
+        transfer: TransferAbi,
+        event: Option<Event>,
+    },
+    #[error("second executor run cancelled")]
+    Cancelled,
+    #[error("second executor could not set up the call's stack: {0}")]
+    Stack(GuestFault),
+    #[error("second executor has no snapshot to run against")]
+    NoSnapshot,
+}
+
+/// A call that returned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CallOutcome {
+    /// Guest memory accesses the call made: what the main thread's logical
+    /// clock would have been charged for it.
+    pub accesses: u64,
+}
+
+/// Stops an executor's run at its next safe point, from any thread.
+#[derive(Clone)]
+pub struct CancelHandle(Arc<Runtime>);
+impl CancelHandle {
+    pub fn cancel(&self) {
+        self.0.request_preempt(crate::preempt::REQUEST);
+    }
+}
+
+pub struct SecondExecutor {
+    runtime: Arc<Runtime>,
+    ctx: ExecCtx,
+    watch: WatchId,
+    base: Option<FrozenRam>,
+    refused: Arc<Mutex<Option<Refusal>>>,
+    pub max_transfers: u64,
+}
+
+fn refusal(refused: &Arc<Mutex<Option<Refusal>>>, target: u32, name: &str) -> Handler {
+    let refused = refused.clone();
+    let name = name.to_string();
+    let import = target
+        .checked_sub(kernel::KERNEL_TOKEN_BASE)
+        .filter(|v| v.is_multiple_of(4))
+        .and_then(|v| kernel::function(v / 4))
+        .copied();
+    Handler::Rust(Arc::new(
+        move |cpu: &mut CpuAbi, ctx: &mut ExecCtx, _selector| {
+            let return_pc = ctx.memory().u32(cpu.esp).ok();
+            *refused.lock().unwrap_or_else(|e| e.into_inner()) = Some(Refusal {
+                target,
+                name: import.map_or_else(|| name.clone(), |i| i.name.to_string()),
+                ordinal: import.map(|i| i.ordinal),
+                return_pc,
+            });
+            // A kernel call keeps its usual record (arguments and all), as a
+            // fault rather than a stop: nothing will service it.
+            let event = match import {
+                Some(i) => kernel::stop(cpu, ctx, i)?.event_id,
+                None => ctx.emit(Event::UnsupportedTarget {
+                    pc: return_pc.unwrap_or(cpu.eip),
+                    target,
+                    kind: abi::CALL,
+                    route: abi::ENTRY,
+                }),
+            };
+            Ok(TransferAbi::fault(event))
+        },
+    ))
+}
+
+impl SecondExecutor {
+    /// An executor sharing `main`'s generated code. `allow(addr, name)`
+    /// picks the HLE overrides it may run (on its own thread, against its
+    /// own memory); kernel imports are refused unless allowed the same way
+    /// by their token address. Nothing runs until [`snapshot`](Self::snapshot).
+    pub fn new(main: &Runtime, allow: impl Fn(u32, &str) -> bool) -> Self {
+        let refused = Arc::new(Mutex::new(None));
+        let mut dispatch = main.fork_dispatch(&allow, |addr, name| refusal(&refused, addr, name));
+        for import in kernel::FUNCTION_IMPORTS {
+            let token = kernel::function_token(import.ordinal);
+            if dispatch.override_name(token).is_none() || !allow(token, import.name) {
+                dispatch.register_override_handler(
+                    token,
+                    import.name.to_string(),
+                    refusal(&refused, token, import.name),
+                );
+            }
+        }
+        let mut guest = Guest::new();
+        let watch = guest.subscribe_writes("second executor");
+        guest
+            .watch_writes(watch, CONTIGUOUS_BASE, RAM_SIZE as u32)
+            .expect("all of RAM is a valid watch range");
+        let runtime = Runtime::new(guest, dispatch);
+        let mut ctx = ExecCtx::new(runtime.clone(), EXECUTOR_THREAD_ID);
+        // Count accesses and take host requests (cancel); never expire.
+        ctx.arm_preemption(0);
+        Self {
+            runtime,
+            ctx,
+            watch,
+            base: None,
+            refused,
+            max_transfers: Runner::default().max_transfers,
+        }
+    }
+
+    /// The executor's own runtime (its view's memory, its dispatch).
+    pub fn runtime(&self) -> &Arc<Runtime> {
+        &self.runtime
+    }
+    /// The executor's context, between calls.
+    pub fn context(&mut self) -> &mut ExecCtx {
+        &mut self.ctx
+    }
+    pub fn cancel_handle(&self) -> CancelHandle {
+        CancelHandle(self.runtime.clone())
+    }
+
+    /// Freeze `main`'s guest RAM as it is now: the view the next calls run
+    /// against, and the base its writes are compared with. Takes `main`'s
+    /// memory guard (so no store is in flight), after reading its guest
+    /// time, which takes the kernel lock: call it with no runtime lock held.
+    /// The executor's time-stamp counter continues from `main`'s and its
+    /// clock stands at `main`'s guest time now.
+    pub fn snapshot(&mut self, main: &Runtime) -> CopyKind {
+        let time = main.guest_time();
+        self.runtime
+            .set_guest_clock(time.map(|t| Arc::new(move || Some(t)) as crate::tsc::GuestClock));
+        let mut view = self.runtime.memory();
+        let live = main.memory();
+        self.runtime.restore_tsc_last(main.tsc_last());
+        let kind = view.cow_refresh(&live);
+        self.base = Some(live.freeze_ram().0);
+        kind
+    }
+
+    /// Call guest `entry` with `args` (pushed right to left, then a return
+    /// to [`crate::exec::HARNESS_EXIT`]) on `cpu`'s stack in the view, and
+    /// run it on this thread until it returns. `cpu.esp` must be in the
+    /// view's writable memory. `cpu` is left as the call left it.
+    pub fn call(
+        &mut self,
+        cpu: &mut CpuAbi,
+        entry: u32,
+        args: &[u32],
+    ) -> Result<CallOutcome, ExecutorError> {
+        if self.base.is_none() {
+            return Err(ExecutorError::NoSnapshot);
+        }
+        {
+            let mut memory = self.ctx.memory();
+            for &v in args.iter().rev().chain([crate::exec::HARNESS_EXIT].iter()) {
+                let esp = cpu.esp.wrapping_sub(4);
+                memory.set_u32(esp, v).map_err(ExecutorError::Stack)?;
+                cpu.esp = esp;
+            }
+        }
+        *self.refused.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        self.ctx.take_slice_spent();
+        let t = Runner {
+            max_transfers: self.max_transfers,
+        }
+        .run(cpu, &mut self.ctx, entry);
+        let accesses = self.ctx.take_slice_spent();
+        if t.kind == abi::STOP && cpu.eip == crate::exec::HARNESS_EXIT {
+            return Ok(CallOutcome { accesses });
+        }
+        if t.kind == abi::STOP && t.event_id == 0 && self.ctx.take_preempted().is_some() {
+            return Err(ExecutorError::Cancelled);
+        }
+        if let Some(r) = self
+            .refused
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            return Err(ExecutorError::Refused(r));
+        }
+        Err(ExecutorError::Fault {
+            transfer: t,
+            event: self.ctx.event(t.event_id).cloned(),
+        })
+    }
+
+    /// The physical pages the view stored to since the snapshot (or the
+    /// last call of this), with the lines that differ from the snapshot,
+    /// in address order.
+    pub fn written(&mut self) -> Vec<WrittenPage> {
+        let Some(base) = &self.base else {
+            return Vec::new();
+        };
+        // Taking the guard publishes the inline C stores' dirty bits.
+        let mut view = self.runtime.memory();
+        let ranges = view
+            .take_dirty(self.watch)
+            .expect("the executor's own subscription");
+        ranges
+            .into_iter()
+            .flat_map(|r| (r.addr..r.addr + r.len).step_by(PAGE_SIZE as usize))
+            .map(|a| a & !CONTIGUOUS_BASE)
+            .map(|physical| WrittenPage {
+                physical,
+                lines: view.changed_lines(base, physical),
+            })
+            .collect()
+    }
+
+    /// Merge `written` (from [`written`](Self::written), filtered as the
+    /// caller likes) into `main`'s live RAM ([`Guest::hand_back`]). Takes
+    /// this executor's memory guard, then `main`'s.
+    pub fn hand_back(&mut self, main: &Runtime, written: &[WrittenPage]) -> HandBack {
+        let Some(base) = &self.base else {
+            return HandBack::default();
+        };
+        let view = self.runtime.memory();
+        let mut live = main.memory();
+        live.hand_back(&view, base, written)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Dispatch;
+    use crate::guest::Permissions;
+
+    const CODE: u32 = 0x10000;
+    const DATA: u32 = 0x20000;
+    const STACK: u32 = 0x30000;
+    const HOOK: u32 = 0x11000;
+
+    fn assert_send<T: Send>() {}
+
+    fn main_runtime() -> Arc<Runtime> {
+        let mut g = Guest::new();
+        g.map_zeroed(CODE, 0x2000, Permissions::RX).unwrap();
+        g.map_zeroed(DATA, 0x1000, Permissions::RW).unwrap();
+        g.map_zeroed(STACK - 0x1000, 0x1000, Permissions::RW)
+            .unwrap();
+        let mut d = Dispatch::default();
+        // A Rust "guest function": reads [DATA], writes it + arg at DATA+4,
+        // returns it in eax (stdcall, one argument).
+        d.register_override(CODE, "body", |cpu, ctx, _| {
+            let mut m = ctx.memory();
+            let arg = m.u32(cpu.esp + 4)?;
+            let v = m.u32(DATA)?;
+            m.set_u32(DATA + 4, v + arg)?;
+            let ret = m.u32(cpu.esp)?;
+            cpu.esp += 8;
+            cpu.eax = v;
+            Ok(TransferAbi::ret(ret))
+        });
+        d.register_override(HOOK, "hle hook", |cpu, ctx, _| {
+            let ret = ctx.memory().u32(cpu.esp)?;
+            cpu.esp += 4;
+            Ok(TransferAbi::ret(ret))
+        });
+        d.register_override(
+            kernel::function_token(128),
+            "KeQuerySystemTime",
+            |_, _, _| unreachable!(),
+        );
+        Runtime::new(g, d)
+    }
+
+    #[test]
+    fn executor_is_send() {
+        assert_send::<SecondExecutor>();
+        assert_send::<CancelHandle>();
+    }
+
+    #[test]
+    fn a_call_runs_on_the_snapshot_and_its_writes_stay_private() {
+        let main = main_runtime();
+        main.memory().set_u32(DATA, 5).unwrap();
+        let mut exec = SecondExecutor::new(&main, |addr, _| addr == CODE);
+        assert!(matches!(
+            exec.call(&mut CpuAbi::default(), CODE, &[]),
+            Err(ExecutorError::NoSnapshot)
+        ));
+        exec.snapshot(&main);
+        main.memory().set_u32(DATA, 9).unwrap();
+        let mut cpu = CpuAbi {
+            esp: STACK,
+            ..CpuAbi::default()
+        };
+        let out = exec.call(&mut cpu, CODE, &[3]).unwrap();
+        assert_eq!(
+            (cpu.eax, cpu.esp),
+            (5, STACK),
+            "read the frozen 5, stdcall popped its argument"
+        );
+        assert!(
+            out.accesses == 0,
+            "a Rust override is not charged; generated code is"
+        );
+        assert_eq!(exec.runtime().memory().u32(DATA + 4).unwrap(), 8);
+        assert_eq!(
+            main.memory().u32(DATA + 4).unwrap(),
+            0,
+            "the view's write did not leak"
+        );
+        let written = exec.written();
+        // DATA's page and the stack page.
+        assert_eq!(written.len(), 2, "{written:x?}");
+        let data_page = written
+            .iter()
+            .find(|p| p.lines == 1)
+            .expect("DATA's line 0 changed");
+        let merged = exec.hand_back(&main, &[*data_page]);
+        assert_eq!(merged.bytes, 1);
+        assert_eq!(main.memory().u32(DATA + 4).unwrap(), 8);
+        assert_eq!(
+            main.memory().u32(DATA).unwrap(),
+            9,
+            "the live side's own write stays"
+        );
+    }
+
+    #[test]
+    fn kernel_calls_and_disallowed_hle_are_refused_by_name() {
+        let main = main_runtime();
+        let mut exec = SecondExecutor::new(&main, |addr, _| addr == CODE);
+        exec.snapshot(&main);
+        let mut cpu = CpuAbi {
+            esp: STACK,
+            ..CpuAbi::default()
+        };
+        match exec.call(&mut cpu, HOOK, &[]) {
+            Err(ExecutorError::Refused(r)) => {
+                assert_eq!(
+                    r,
+                    Refusal {
+                        target: HOOK,
+                        name: "hle hook".into(),
+                        ordinal: None,
+                        return_pc: Some(crate::exec::HARNESS_EXIT)
+                    }
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        // Registered on main (KeQuerySystemTime) and not (KeTickCount's
+        // neighbour KeBugCheck, 95): both refused, never run.
+        for (ordinal, name) in [(128, "KeQuerySystemTime"), (95, "KeBugCheck")] {
+            let mut cpu = CpuAbi {
+                esp: STACK,
+                ..CpuAbi::default()
+            };
+            let e = exec
+                .call(&mut cpu, kernel::function_token(ordinal), &[0x1234])
+                .unwrap_err();
+            let ExecutorError::Refused(r) = &e else {
+                panic!("{e:?}")
+            };
+            assert_eq!((r.ordinal, r.name.as_str()), (Some(ordinal), name));
+            assert!(e.to_string().contains(name), "{e}");
+        }
+    }
+
+    #[test]
+    fn an_allowed_override_runs_and_cancel_stops_a_run() {
+        let main = main_runtime();
+        let mut exec = SecondExecutor::new(&main, |addr, _| addr == HOOK);
+        exec.snapshot(&main);
+        let mut cpu = CpuAbi {
+            esp: STACK,
+            ..CpuAbi::default()
+        };
+        exec.call(&mut cpu, HOOK, &[]).unwrap();
+        assert_eq!(cpu.esp, STACK);
+        exec.cancel_handle().cancel();
+        let mut cpu = CpuAbi {
+            esp: STACK,
+            ..CpuAbi::default()
+        };
+        assert!(matches!(
+            exec.call(&mut cpu, HOOK, &[]),
+            Err(ExecutorError::Cancelled)
+        ));
+    }
+}

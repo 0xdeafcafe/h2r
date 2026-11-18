@@ -230,6 +230,38 @@ impl Dispatch {
     pub(crate) fn stop_recovery(&self) -> Option<Arc<StopRecovery>> {
         self.stop_recovery.clone()
     }
+    /// A copy for a second executor ([`crate::executor`]): the generated
+    /// handlers, resumes and stop recovery hook as they are, and each
+    /// override, enabled or not, kept where `keep(addr, name)` says so and
+    /// otherwise replaced by `refuse(addr, name)` (enabled).
+    pub(crate) fn fork(
+        &self,
+        keep: impl Fn(u32, &str) -> bool,
+        refuse: impl Fn(u32, &str) -> Handler,
+    ) -> Dispatch {
+        let overrides = self
+            .overrides
+            .iter()
+            .map(|(&addr, o)| {
+                let o = if keep(addr, &o.name) {
+                    o.clone()
+                } else {
+                    Override {
+                        name: o.name.clone(),
+                        handler: refuse(addr, &o.name),
+                        enabled: true,
+                    }
+                };
+                (addr, o)
+            })
+            .collect();
+        Dispatch {
+            generated: self.generated.clone(),
+            overrides,
+            resumes: self.resumes.clone(),
+            stop_recovery: self.stop_recovery.clone(),
+        }
+    }
     pub fn has_generated(&self, addr: u32) -> bool {
         self.generated.contains_key(&addr)
     }

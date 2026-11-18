@@ -181,6 +181,17 @@ impl Runtime {
             _ => None,
         }
     }
+    /// [`Dispatch::fork`] of this runtime's tables, under their read lock.
+    pub(crate) fn fork_dispatch(
+        &self,
+        keep: impl Fn(u32, &str) -> bool,
+        refuse: impl Fn(u32, &str) -> Handler,
+    ) -> Dispatch {
+        self.dispatch
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .fork(keep, refuse)
+    }
     pub fn resolve_original(&self, pc: u32) -> Option<OriginalHandler> {
         self.dispatch
             .read()

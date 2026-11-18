@@ -6,6 +6,8 @@
 pub mod abi;
 pub mod atomic;
 mod continuation;
+#[allow(unsafe_code)]
+mod cow;
 pub mod cpu;
 #[allow(unsafe_code)]
 pub mod direct;
@@ -13,6 +15,7 @@ pub mod dispatch;
 mod entry_stats;
 pub mod events;
 pub mod exec;
+pub mod executor;
 #[allow(unsafe_code)]
 pub mod ffi;
 mod frames;
@@ -33,6 +36,7 @@ pub mod watch;
 
 pub use abi::{GuestFn, TransferAbi};
 pub use continuation::ContinuationInfo;
+pub use cow::CopyKind;
 pub use cpu::CpuAbi;
 pub use dispatch::Dispatch;
 pub use exec::{Event, ExecCtx, FaultReport, GuestFrame, Runner, Runtime};
