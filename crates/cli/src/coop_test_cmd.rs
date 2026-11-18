@@ -738,7 +738,7 @@ pub fn stamp(secs: i64) -> String {
 /// stops the games (they get it too, from the terminal) and this process
 /// still prints the checklist. The games start with the mask reset.
 #[cfg(unix)]
-fn watch_interrupts() -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+pub(crate) fn watch_interrupts() -> std::sync::Arc<std::sync::atomic::AtomicBool> {
     use std::sync::atomic::{AtomicBool, Ordering};
     let flag = std::sync::Arc::new(AtomicBool::new(false));
     // SAFETY: plain libc signal-mask calls on a local, initialised set.
@@ -770,7 +770,7 @@ fn watch_interrupts() -> std::sync::Arc<std::sync::atomic::AtomicBool> {
 }
 
 #[cfg(not(unix))]
-fn watch_interrupts() -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+pub(crate) fn watch_interrupts() -> std::sync::Arc<std::sync::atomic::AtomicBool> {
     Default::default()
 }
 
@@ -899,6 +899,9 @@ pub struct Supervisor {
     /// Every game line since [`Supervisor::take_lines`], with its game and
     /// time in ms, when kept (`--drive`).
     lines: Option<Vec<(usize, u64, String)>>,
+    /// Which game lines go into the merged log ([`coop_verdict::wanted`]
+    /// unless [`Supervisor::with_filter`] says otherwise).
+    filter: fn(&str) -> bool,
 }
 
 /// The line the game prints when its guest thread stops (a crash or an
@@ -927,7 +930,14 @@ impl Supervisor {
             crashed: None,
             stopping: false,
             lines: None,
+            filter: coop_verdict::wanted,
         })
+    }
+
+    /// Merges the game lines `filter` keeps instead (`h2 bots test`).
+    pub fn with_filter(mut self, filter: fn(&str) -> bool) -> Self {
+        self.filter = filter;
+        self
     }
 
     /// Starts `game` with `program` (the `h2` binary; tests pass a shell).
@@ -993,7 +1003,7 @@ impl Supervisor {
                     let secs = self.start.elapsed().as_secs_f64();
                     let (tag, _, log, _) = &mut self.games[i];
                     writeln!(log, "{line}")?;
-                    if coop_verdict::wanted(&line) {
+                    if (self.filter)(&line) {
                         let merged = coop_verdict::format_line(secs, tag, &line);
                         writeln!(self.merged, "{merged}")?;
                         eprintln!("{merged}");
@@ -1080,6 +1090,21 @@ impl Supervisor {
         }
         self.stopping = true;
         Some((i, why))
+    }
+
+    /// Asks every game to close (SIGTERM).
+    pub fn close_all(&mut self) {
+        self.close_others(usize::MAX);
+    }
+
+    /// Kills every game still running (after [`Supervisor::close_all`] was
+    /// not enough).
+    pub fn kill_all(&mut self) {
+        for (_, child, _, _) in &mut self.games {
+            if matches!(child.try_wait(), Ok(None)) {
+                let _ = child.kill();
+            }
+        }
     }
 
     /// Asks every game but `except` to close (SIGTERM), as closing its

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use bots::autonav::{Region, Source, Worker};
 
-const USAGE: &str = "usage: h2 bots nav <map-name-or-file|all> [--force] [--disc disc.iso] [--data DIR]\n\nBuilds each structure BSP's nav mesh and line-of-sight walls from its\ncollision and writes <data>/bots/<map>.<bsp>.bots, which the bots load\nwhen the map does. `all` builds the disc's multiplayer maps whose file is\nmissing or stale (another generator version, or another map file); add\n--force to build them all. A named map is always built. The game does\nthis by itself when it runs (H2_BOTS_NAV_AUTO=0 turns that off).\n--data defaults to the data root `h2 play` uses.";
+const USAGE: &str = "usage: h2 bots nav <map-name-or-file|all> [--force] [--disc disc.iso] [--data DIR]\n       h2 bots test|verdict ... (`h2 bots test --help`)\n\nBuilds each structure BSP's nav mesh and line-of-sight walls from its\ncollision and writes <data>/bots/<map>.<bsp>.bots, which the bots load\nwhen the map does. `all` builds the disc's multiplayer maps whose file is\nmissing or stale (another generator version, or another map file); add\n--force to build them all. A named map is always built. The game does\nthis by itself when it runs (H2_BOTS_NAV_AUTO=0 turns that off).\n--data defaults to the data root `h2 play` uses.";
 
 pub(super) fn run(args: Vec<String>) -> Result<()> {
     let mut args = args.into_iter();
