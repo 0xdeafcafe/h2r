@@ -1255,6 +1255,9 @@ above where they differ.
   `GameEnded` carries the last tick seen, but its `at` (the game's
   `ended_at`) is when the server gave up, so a game's length is
   `(GameEnded.tick - GameStarted.tick) / 30`, not `ended_at - started_at`.
+  A `lost` game that never got past its start tick (the console went quiet
+  before its first frame) has length 0: its wall clock is only the
+  server's wait, and stats count none of it as time played.
 - **`recent_games`** on an account is the latest 10.
 - **Account creation** payload is `{gamertag, jwk, invite?, aud, iat}`;
   `aud` is the server id from the well-known document and `iat` must be
