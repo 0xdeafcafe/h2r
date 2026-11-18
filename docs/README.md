@@ -76,7 +76,7 @@ goals, the two-stage plan, the crate table and milestones.
 - [dsound.md](audio/dsound.md): the guest-facing DirectSound shim (`crates/dsound`): call sites, buffers, streams, audio stats
 - [wma.md](audio/wma.md): ASF demuxing and native WMAv2 decoding (`crates/asf`, `crates/wma`)
 - [playstation-audio.md](audio/playstation-audio.md): DualSense/DS4 speaker routing, mute button and microphone design
-- [bink-hle.md](audio/bink-hle.md): the Bink player replacement (`crates/bink-hle`): skip mode, playback design
+- [bink-hle.md](audio/bink-hle.md): the Bink player replacement (`crates/bink-hle`): playback of installed movies with sound, skip mode
 - [movies.md](audio/movies.md): optional Bink movie conversion with your own ffmpeg (`h2 movies`)
 
 ## Performance (`perf/`)

@@ -24,11 +24,13 @@ pub const EXIT_NO_FFMPEG: i32 = 3;
 pub const EXIT_FFMPEG_UNUSABLE: i32 = 4;
 pub const EXIT_INTERRUPTED: i32 = 130;
 
-const USAGE: &str = "usage: h2 movies [<iso>] --out DIR [--ffmpeg PATH] [--force] [--only NAME]
+const USAGE: &str = "usage: h2 movies [<iso>] [--out DIR] [--ffmpeg PATH] [--force] [--only NAME]
 
 Converts the Bink (.bik) movies on the disc to H.264/AAC MP4 using your own
 ffmpeg, which must include the Bink decoder. The movies are optional: without
-them the game simply skips them.
+them the game simply skips them. --out defaults to the app data directory
+(~/Library/Application Support/h2recomp/movies), where `h2 play` and `h2 run`
+look for them (their --movies DIR names another).
 
 exit codes: 0 all done, 1 a movie failed, 2 bad arguments,
             3 ffmpeg not found (movies are optional), 4 ffmpeg cannot be used,
@@ -58,7 +60,11 @@ pub fn parse_args(args: &[String]) -> Result<Args, String> {
             _ => return Err(format!("unexpected argument {a}")),
         }
     }
-    Ok(Args { iso, out: out.ok_or("--out DIR is required")?, ffmpeg, force, only })
+    let out = match out {
+        Some(o) => o,
+        None => movies::install::app_movies_dir().map_err(|e| format!("--out DIR is required ({e})"))?,
+    };
+    Ok(Args { iso, out, ffmpeg, force, only })
 }
 
 // ---------------------------------------------------------------- ffmpeg
@@ -558,7 +564,8 @@ mod tests {
         );
         let a = parse_args(&s(&["--out", "o"])).unwrap();
         assert_eq!((a.iso, a.ffmpeg, a.force), (None, None, false));
-        assert!(parse_args(&s(&["d.iso"])).is_err()); // --out required
+        // --out defaults to the app data directory play and run read.
+        assert_eq!(parse_args(&s(&["d.iso"])).unwrap().out, movies::install::app_movies_dir().unwrap());
         assert!(parse_args(&s(&["--out"])).is_err());
         assert!(parse_args(&s(&["--out", "o", "--bogus"])).is_err());
         assert!(parse_args(&s(&["a.iso", "b.iso", "--out", "o"])).is_err());
@@ -601,7 +608,7 @@ mod tests {
         let o = d.join("out");
         let o = o.to_str().unwrap();
         assert_eq!(run_with(s(&["--help"]), None), EXIT_OK);
-        assert_eq!(run_with(s(&["x.iso"]), None), EXIT_USAGE);
+        assert_eq!(run_with(s(&["x.iso", "--bogus"]), None), EXIT_USAGE);
         // ffmpeg missing: distinct code, before the disc is even opened.
         assert_eq!(run_with(s(&["nope.iso", "--out", o]), Some("/nonexistent-h2".into())), EXIT_NO_FFMPEG);
         let missing = d.join("missing");

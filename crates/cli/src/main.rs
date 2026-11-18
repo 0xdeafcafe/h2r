@@ -126,7 +126,7 @@ const USAGE: &str = "usage: h2 <command> [disc]
   import-mappack <iso> [--data DIR]
                           install the Multiplayer Map Pack disc's maps into the
                           emulated hard disk (docs/game/map-pack.md)
-  movies <iso> --out DIR [--ffmpeg PATH] [--force]
+  movies <iso> [--out DIR] [--ffmpeg PATH] [--force]
                           convert the Bink movies to MP4 with your own ffmpeg
                           (optional; exit 3 if ffmpeg is missing, 4 if unusable)
   effect <map> <tag>      print an effects-family tag (effe tree); --all <map|all> validates the family

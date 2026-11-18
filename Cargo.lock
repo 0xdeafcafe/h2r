@@ -647,6 +647,7 @@ dependencies = [
  "live-telemetry",
  "lockstep",
  "map",
+ "movies",
  "perf",
  "png",
  "runtime",
