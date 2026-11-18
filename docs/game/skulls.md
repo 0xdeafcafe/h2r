@@ -168,41 +168,78 @@ lines say each hook ran the first time.
 
 ## Menu (built)
 
-**The flow** is level select (or New Campaign) → difficulty → the Skulls
-page → the level. The page comes only when the pressing player's profile
-(the one signed in on that player's slot, else `default`) has collected
-at least one skull, retail's or ours; with none, the difficulty starts
-the level as retail does. There is no Skulls row on the difficulty list
-any more: the list is retail's four rows.
+**The flow** is level select (or New Campaign) → difficulty → the Game
+Options page → the level. The page comes when the pressing player's
+profile (the one signed in on that player's slot, else `default`) has
+collected at least one skull, retail's or ours, or when the level is a
+Halo 1 level (its Halo 1 options, `boot::h1_options::CAMPAIGN`); with
+neither, the difficulty starts the level as retail does. There is no
+Skulls row on the difficulty list: the list is retail's four rows.
 
 The page (`boot::skulls_screen`, feature `skulls-page` for the hook and
-`skulls-screen` for the screen's class):
+`skulls-screen` for the screen's class), titled "Game Options":
 
-- **Buttons**: **left or right** (d-pad or left stick) on a collected
-  skull flips it On or Off (the store is written at once; either
-  direction flips, as a two-value row with arrows on both sides wraps);
-  on a locked one it does nothing and says why on stderr. **A, X or
-  Start** starts the level on the difficulty chosen, with the skulls
-  marked On, so A pressed over and over goes from the level list through
-  the difficulty and the page into the game. B goes back to the
-  difficulty list (the generic back handler, as on every screen of ours);
-  choosing a difficulty there opens the page again. There is no Start
-  row: the list is the skulls only. Every description ends with the
-  prompt "◀▶ Toggle Ⓐ Start Level Ⓑ Back" in the font's button glyphs
-  (U+E10A and U+E10B the d-pad's left and right, U+E100, U+E101; each
-  icon set draws its own; the screen's own button bar is still the
-  Controls screen's).
-- **Rows**: every skull, gold first ("Gold and silver"
-  below), then our six ("Our skulls"), each one label with its state as
-  a value to step: "Mythic: < On >", "Mythic: < Off >", and
-  "Mythic: Locked". The list skin the page uses has one text per row, so
-  the state is in the label. (The multiplayer screen keeps "Mythic: On"
-  and A as its toggle.)
+- **Rows**: "Start Level" first (focused when the page opens), then a
+  Halo 1 level's options ("Assets: < Halo 1 >", "HUD: < Halo 1 >",
+  docs/game/h1-multiplayer.md "Halo 1 options"), then every skull, gold
+  first ("Gold and silver" below), then our six ("Our skulls"), each one
+  label with its state as a value to step: "Mythic: < On >", "Mythic: <
+  Off >", and "Mythic: Locked". The list skin has one text per row, so the
+  state is in the label. (The multiplayer screen keeps "Mythic: On" and A
+  as its toggle.)
+- **Buttons**, as the game's own lists: **A** selects the focused row. On
+  Start Level it starts the level on the difficulty chosen, with the
+  options and the skulls marked On; on an option or a skull it changes it.
+  **Left or right** (d-pad or left stick) changes an option or a collected
+  skull too (the store is written at once; either direction flips a
+  two-value row). A locked skull does nothing and says why on stderr.
+  **B** goes back to the difficulty list (the generic back handler, as on
+  every screen of ours); choosing a difficulty there opens the page again.
+  X and Start do nothing (`ListClass::action_buttons(&[])`): X going on to
+  the level was a mystery to the player. A pressed over and over still
+  goes from the level list through the difficulty and the page into the
+  game, since Start Level is the first row.
+- **Footer**: "◀▶ CHANGE  Ⓐ SELECT  Ⓑ BACK" in the font's button glyphs.
 - **Right column**: the skull picture, gold or silver for the focused
   skull's tier and dimmed (to 60%) while it is locked, and under it the
-  description: tier, what it does, where it is found and whether only on
-  Legendary (for a locked skull that is how to unlock it), then the
-  button prompt.
+  description: for a skull its tier, what it does, where it is found and
+  whether only on Legendary; for an option both choices; for Start Level
+  what it does.
+- **Height**: the list lays out 13 rows (`skulls_menu::VISIBLE_ROWS`) from
+  the level select's anchor down to the footer band, and scrolls for the
+  rest. It used to lay out the Controls tag's 6 (5 seen), a third of the
+  page: our tag copy kept the Controls list block's visible count, and the
+  Controls handler embeds only six item widgets. The copy now writes the
+  layout's count (`ListLayout::visible`), and the class's list gets the
+  rows past six as item widgets of ours, linked by the "add items" hook
+  (`list_class::extra_items`, `layout_glue`), as the Controls screen's own
+  added rows are.
+- **Going back**: the picture and the description fade with the page.
+  They had no animation (the bitmap block's was cleared, the text block's
+  zero), so through the page's out transition they stayed fully drawn, the
+  skull over the difficulty screen's own skull coming back in. They now
+  carry the level select's own animations (as its tag stores them:
+  picture 13, description 11, `skulls_menu::PICTURE_ANIMATION`,
+  `DESCRIPTION_ANIMATION`; checked against the disc).
+
+**Going on** (`skulls_screen::action`, `Continue::for_press`):
+
+- From the level select or New Campaign (the difficulty list's mode 0),
+  Start Level runs the kept difficulty press at once, from the page's own
+  row press, with the page still up. The press pushes the loading screen
+  onto window 5 slot 4 over the page, as it would have over the difficulty
+  screen: the level loads straight away. The first builds closed the page
+  and ran the press once the stack had freed it: the page animated out and
+  the difficulty screen came back before the level loaded, and a Start
+  pressed while the page was still opening went back and never loaded (the
+  press then ran from inside the stack's free of the page while the stack
+  was still settling its top screen). With no close there is nothing to
+  race. Closing and pressing at once (the very first build) put the
+  loading screen over a page still closing, and the close took it down.
+- From a lobby's Game Setup (mode 1, `0x2bb945`), the press only stores the
+  lobby's difficulty and animates the difficulty screen out; with the page
+  on top that would leave the page up over the lobby. So there the page
+  closes as B does and the press runs once it is freed, as before.
 
 How the flow is made (static reading, not seen running):
 
@@ -223,14 +260,12 @@ How the flow is made (static reading, not seen running):
   `0x149f1e(1 << player, loader)`, never running the original.
   Otherwise the original runs. The kept press is only replaced by the
   next difficulty press and only dropped once it has run.
-- A, X or Start (`skulls_screen::action`): A on any row is the row's
-  press, which for this page is the class's action (`Chosen::Act`). Our
-  class's screen vtable has its own slot 10 (`list_class::event`): event
-  kind 5 with button 2 (X) or 12 (Start) runs the same action; kinds 2
-  and 4 (left and right) step the focused row (`0x24c447` on the list,
-  then `Rows::sideways`); everything else goes to `0x2300ea`. The action
-  only closes the page with `0x14800c` on its own window and slot, as B
-  does.
+- Start Level (`skulls_screen::action`): A on that row is the row's
+  press, which for it is the class's action (`Chosen::Act`). Our class's
+  screen vtable has its own slot 10 (`list_class::event`): kinds 2 and 4
+  (left and right) step the focused row (`0x24c447` on the list, then
+  `Rows::sideways`); everything else, X and Start included, goes to
+  `0x2300ea`.
 - The events (static reading): the controller update `0x1907d6` raises,
   per local player, one button event a frame (kind 5, `+4` the player,
   `+8` the button: 0 A, 1 B, 2 X, 3 Y, 4 black, 5 white, 12 Start,
@@ -248,21 +283,20 @@ How the flow is made (static reading, not seen running):
   by that list, and the dispatch stops there; it is not seen again. As
   a guard all the same, a continue within 50 ms of the page opening
   (`skulls_screen::GUARD`, `H2_SKULLS_GUARD_MS=n` to change it) is
-  dropped: `skulls page: A/X/Start <n> ms after the page opened: the
+  dropped: `skulls page: Start Level <n> ms after the page opened: the
   press that opened it; ignored`. Two presses of a thumb are further
   apart than that, so A spammed goes straight through.
 - The page freed (`skulls_screen::freed`): our class's slot 0
   (`list_class::destructor`) runs the Controls destructor, then tells the
   flow. The stack calls slot 0 when the closed screen's out transition
   has ended (`0x235233`), so the difficulty screen is the top one again.
-  For the page A, X or Start closed, `skulls_screen::continue_level` checks
+  For a page Start Level closed (mode 1), `skulls_screen::continue_level` checks
   the kept list is still a difficulty list (vtable `0x45d688`), writes a
   player chain and the row to a page of ours, and calls `0x2c9d38` on the
   kept list; the hook lets that one call through. So the start is
   retail's own, from either loader, and never runs into a closing screen.
-- `H2_SKULLS_CONTINUE=now` runs the press right after the close (the
-  first build's order, which stuck); `=stay` runs it with the page still
-  up. For trying other orders in game only.
+- `H2_SKULLS_CONTINUE=freed` or `=stay` forces either order, for trying
+  in game only.
 
 **The layout** is the campaign level select's
 (`ui\screens\game_shell\load_level\load_level`, screen 11, mainmenu.map;

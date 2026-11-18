@@ -571,6 +571,7 @@ mod tests {
             skin: 0,
             anchor: [-215, 130],
             bitmaps_left_of: 0,
+            visible: 0,
         };
         let r = checked(&s);
         assert!(
@@ -586,6 +587,7 @@ mod tests {
             skin: 0,
             anchor: [-215, 130],
             bitmaps_left_of: i16::MIN,
+            visible: 0,
         };
         s.art = crate::ui_kit::screens::skulls_art()[..1].to_vec();
         assert_eq!(checked(&s).issues, vec![]);

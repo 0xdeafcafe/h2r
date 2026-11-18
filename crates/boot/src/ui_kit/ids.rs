@@ -72,6 +72,7 @@ pub const FAMILIES: &[Family] = &[
     Family::new("skulls", TABLE + 0x0100_0000, 0x100),
     Family::new("campaign picker", TABLE + 0x0200_0000, 65),
     Family::new("skull row labels", TABLE + 0x0300_0000, 0x100),
+    Family::new("h1 options", TABLE + 0x0400_0000, 0x40),
     Family::new("signin", TABLE + 0x0500_0000, 0x100),
 ];
 

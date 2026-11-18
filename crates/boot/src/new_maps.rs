@@ -55,6 +55,10 @@ pub struct Report {
     /// Packages left out, with why.
     pub skipped: Vec<String>,
     pub notices: Vec<String>,
+    /// Converted maps with a variant per sandbox: the path 1.0 opens on
+    /// the data partition and the two variant files, served by the choice
+    /// made for the next game (`crate::h1_variants`).
+    pub variants: Vec<(String, vfs::VariantPair)>,
 }
 
 impl Report {
@@ -100,6 +104,17 @@ pub fn install_at_boot(data_root: &Path, disc: &Path) {
         Ok(r) => {
             for n in &r.notices {
                 eprintln!("new maps: {n}");
+            }
+            let table = crate::h1_variants::mp_variants();
+            table.clear();
+            for (path, pair) in &r.variants {
+                table.register(path, pair.clone());
+            }
+            if !r.variants.is_empty() {
+                eprintln!(
+                    "new maps: {} converted map(s) follow the sandbox chosen per game",
+                    r.variants.len()
+                );
             }
             if let Some(l) = r.line() {
                 eprintln!("{l}");
@@ -190,6 +205,9 @@ pub fn install(data_root: &Path, disc: &mut dyn Disc) -> Result<Report> {
             match install_one(lib, &cfg, p, id, base, first, disc, template.as_deref()) {
                 Ok((offer, wrote)) => {
                     keep.insert(offer);
+                    if let Some(pair) = variant_pair(p) {
+                        report.variants.push((content_path(offer, &p.manifest.base.map), pair));
+                    }
                     if wrote {
                         report.materialised.push(p.manifest.base.map.clone());
                     }
@@ -218,6 +236,36 @@ pub fn install(data_root: &Path, disc: &mut dyn Disc) -> Result<Report> {
         }
     }
     Ok(report)
+}
+
+/// The data partition's path of a package's map, as 1.0 opens it
+/// (`T:\$c\<offer>\<map>.map`, T: being `TDATA\<title>`).
+pub fn content_path(offer: u64, map: &str) -> String {
+    format!(
+        "TDATA\\{HALO2_TITLE:08X}\\{}\\{}\\{map}.map",
+        vfs::CONTENT_DIR,
+        vfs::content_dir_name(offer)
+    )
+}
+
+/// A converted map's two sandbox variants, when its package has both
+/// files (docs/game/h1-multiplayer.md): read from its manifest, each with
+/// the `MapId` it has when loaded.
+pub fn variant_pair(p: &Package) -> Option<vfs::VariantPair> {
+    let text = std::fs::read_to_string(p.dir.join(content::manifest::MANIFEST_FILE)).ok()?;
+    let full = content::Manifest::from_toml(&text).ok()?;
+    let file = |sandbox: &str| {
+        let v = full.variant(sandbox)?;
+        let file = p.dir.join(content::manifest::relative(&v.file).ok()?);
+        file.is_file().then(|| vfs::VariantFile {
+            file,
+            id: Some(full.select_variant(Some(sandbox)).map_id()),
+        })
+    };
+    Some(vfs::VariantPair {
+        h1: file("h1")?,
+        h2: file("h2")?,
+    })
 }
 
 fn parse_offer(name: &str) -> Option<u64> {

@@ -312,7 +312,10 @@ impl Disc {
         };
         Ok(Geometry {
             anchor,
-            visible: usize::try_from(list.visible_items).unwrap_or(0).min(SHOWN),
+            visible: match place {
+                ListPlace::Moved { visible, .. } if visible > 0 => place.shown(),
+                _ => usize::try_from(list.visible_items).unwrap_or(0).min(SHOWN),
+            },
             item_height: top - bottom,
             label: (label_rect, label_font, label_just),
             value: texts.get(1).map(|t| (t.0, t.1, t.2)),
@@ -1208,23 +1211,27 @@ impl From<'_> {
 
 /// Writes `<screen>-<state>.png` and `<screen>-<state>.json` (the view,
 /// every widget's rect) into `dir` for each of `states`, and returns the
-/// pictures by `screen/state`.
+/// pictures by `screen/state`. `screen` is the preview's name for it
+/// ([`crate::ui_kit::screens::NAMES`]), not the spec's: the campaign and
+/// Halo 1 Game Options pages are both `skulls` specs, and named by the
+/// spec the second overwrote the first's files.
 pub fn write_states(
     from: &From<'_>,
     dir: &Path,
+    screen: &str,
     states: &[(String, ScreenSpec)],
 ) -> Result<Vec<(String, Canvas)>> {
     std::fs::create_dir_all(dir).with_context(|| dir.display().to_string())?;
     let mut out = Vec::new();
     for (state, s) in states {
         let (v, c) = from.draw(s, state)?;
-        let stem = format!("{}-{state}", s.name);
+        let stem = format!("{screen}-{state}");
         c.write_png(&dir.join(format!("{stem}.png")))?;
         std::fs::write(
             dir.join(format!("{stem}.json")),
             serde_json::to_string_pretty(&v.json())?,
         )?;
-        out.push((format!("{}/{state}", s.name), c));
+        out.push((format!("{screen}/{state}"), c));
     }
     Ok(out)
 }
@@ -1237,7 +1244,7 @@ pub fn write_sheet(from: &From<'_>, dir: &Path) -> Result<std::path::PathBuf> {
     let mut tiles = Vec::new();
     for name in screens::NAMES {
         let states = screens::states(name).with_context(|| format!("no states for {name}"))?;
-        tiles.extend(write_states(from, dir, &states)?);
+        tiles.extend(write_states(from, dir, name, &states)?);
     }
     let path = dir.join("sheet.png");
     sheet(&tiles, 4).write_png(&path)?;

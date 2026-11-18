@@ -95,6 +95,7 @@ pub const TEXT_BLOCK: TextBlock = TextBlock {
     rect: [110, -40, -130, 300],
     font: 1,
     colour: [0.388235, 0.580392, 0.756863],
+    animation: 0,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -333,6 +333,7 @@ impl Geometry {
                 ..
             } => Geometry {
                 anchor,
+                visible: place.shown(),
                 item_height: 22,
                 item_colour: [0.560784, 0.694118, 0.811765],
                 label: (rect(28, 20, 8, 210), 1, 0),

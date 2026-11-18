@@ -593,10 +593,11 @@ pub const SANDBOX_HALO2: i64 = 2;
 
 pub static HALO1_SANDBOX: Def = Def {
     key: "multiplayer.halo1_sandbox",
-    label: "Halo 1 Maps",
-    help: "Which sandbox converted Halo 1 maps play with: Halo 1's weapons, \
-           vehicles and health packs, or Halo 2's. Applies at the next launch, \
-           when new maps are installed (docs/game/h1-multiplayer.md).",
+    label: "Sandbox",
+    help: "Which sandbox converted Halo 1 multiplayer maps play with: Halo 1's \
+           weapons, vehicles and health packs, or Halo 2's. Chosen on the \
+           pregame lobby's Halo 1 Options screen; applies at the next game's map \
+           load (docs/game/h1-multiplayer.md).",
     kind: Kind::Choice(&[
         Choice {
             value: SANDBOX_HALO1,
@@ -617,15 +618,86 @@ pub static HALO1_SANDBOX: Def = Def {
         ("halo2", Value::Int(SANDBOX_HALO2)),
     ],
     parse_env: None,
-    apply: Apply::Restart,
+    apply: Apply::Live,
     scope: Scope::Sim,
     tier: Tier::User,
-    // Last on our Video screen, after Aim Assist (docs/game/settings-menu.md).
-    menu: Some(Menu {
-        screen: "video",
-        order: 60,
-    }),
+    // On the pregame lobby's Halo 1 Options screen (crate::h1_options), not
+    // in Settings: it is chosen per game.
+    menu: None,
 };
+
+/// [`HALO1_ASSETS`]'s and [`HALO1_HUD`]'s values: Halo 1's or Halo 2's.
+pub const HALO1: i64 = 1;
+pub const HALO2: i64 = 2;
+
+/// Halo 1's or Halo 2's, as a setting's two choices.
+const HALO_CHOICES: &[Choice] = &[
+    Choice {
+        value: HALO1,
+        name: "h1",
+        label: "Halo 1",
+    },
+    Choice {
+        value: HALO2,
+        name: "h2",
+        label: "Halo 2",
+    },
+];
+
+/// Which assets a Halo 1 campaign level is played with (the level variant,
+/// docs/game/campaigns.md §5). On the campaign's Game Options page
+/// (crate::h1_options).
+pub static HALO1_ASSETS: Def = Def {
+    key: "campaign.halo1_assets",
+    label: "Assets",
+    help: "Which characters, weapons and vehicles a Halo 1 campaign level plays \
+           with: Halo 1's own, converted, or Halo 2's. Chosen on the Game Options \
+           page before the level; applies at the level's load \
+           (docs/game/campaigns.md).",
+    kind: Kind::Choice(HALO_CHOICES),
+    default: Value::Int(HALO1),
+    env: Some("H2_HALO1_ASSETS"),
+    flag: None,
+    aliases: &[("halo1", Value::Int(HALO1)), ("halo2", Value::Int(HALO2))],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::Sim,
+    tier: Tier::User,
+    menu: None,
+};
+
+/// Which HUD a Halo 1 map (campaign or multiplayer) shows: Halo 1's or
+/// Halo 2's (crate::hud). On both Halo 1 options screens.
+pub static HALO1_HUD: Def = Def {
+    key: "halo1.hud",
+    label: "HUD",
+    help: "Which HUD Halo 1 maps show: Halo 1's or Halo 2's. Chosen on the Halo 1 \
+           options screens; applies at the next game start.",
+    kind: Kind::Choice(HALO_CHOICES),
+    default: Value::Int(HALO1),
+    env: Some("H2_HALO1_HUD"),
+    flag: None,
+    aliases: &[("halo1", Value::Int(HALO1)), ("halo2", Value::Int(HALO2))],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::View,
+    tier: Tier::User,
+    menu: None,
+};
+
+/// Whether `def` (one of the Halo 1 or Halo 2 choices) is Halo 1's in
+/// `store`.
+pub fn is_halo1(store: &Store, def: &Def) -> bool {
+    match store.get(def.key) {
+        Some(Value::Int(v)) => v != HALO2,
+        _ => true,
+    }
+}
+
+/// The content variant [`HALO1_ASSETS`] names in `store`: `h1` or `h2`.
+pub fn halo1_assets(store: &Store) -> &'static str {
+    if is_halo1(store, &HALO1_ASSETS) { "h1" } else { "h2" }
+}
 
 /// The content variant [`HALO1_SANDBOX`] names in `store`: `h1` or `h2`.
 pub fn halo1_sandbox(store: &Store) -> &'static str {
@@ -656,6 +728,8 @@ pub static ALL: &[&Def] = &[
     &TOUCH_ACCEL,
     &TOUCH_AUTO_FIRE,
     &HALO1_SANDBOX,
+    &HALO1_ASSETS,
+    &HALO1_HUD,
     // The campaign skulls, kept per profile (crate::skulls, docs/game/skulls.md).
     &crate::skulls::SKULLS[0],
     &crate::skulls::SKULLS[1],
@@ -790,6 +864,8 @@ mod tests {
                 ("H2_TOUCH_LOOK_ACCEL", "off"),
                 ("H2_TOUCH_AUTO_FIRE", "1"),
                 ("H2_HALO1_SANDBOX", "h2"),
+                ("H2_HALO1_ASSETS", "h2"),
+                ("H2_HALO1_HUD", "halo2"),
                 ("H2_COOP_MAX_PLAYERS", "4"),
                 ("H2_COOP_JOIN_IN_PROGRESS", "0"),
             ],
@@ -799,6 +875,8 @@ mod tests {
         assert_eq!(s.get(TOUCH_ACCEL.key), Some(Value::Int(0)));
         assert_eq!(s.get(TOUCH_AUTO_FIRE.key), Some(Value::Bool(true)));
         assert_eq!(halo1_sandbox(&s), "h2");
+        assert_eq!(halo1_assets(&s), "h2");
+        assert!(!is_halo1(&s, &HALO1_HUD));
         assert_eq!(s.get(TOUCH_LOOK.key), Some(Value::Int(7)));
         assert_eq!(s.get(TOUCH_CROUCH.key), Some(Value::Int(TOUCH_CROUCH_HOLD)));
         assert_eq!(s.get(TOUCH_GYRO.key), Some(Value::Int(0)));
@@ -972,7 +1050,7 @@ mod tests {
         let (s, p) = with_env(&data, &[]);
         assert!(p.is_empty(), "{p:?}");
         assert_eq!(halo1_sandbox(&s), "h1");
-        assert_eq!(HALO1_SANDBOX.apply, Apply::Restart);
+        assert_eq!(HALO1_SANDBOX.apply, Apply::Live, "it counts from the next game");
         std::fs::write(
             settings::path_in(&data),
             "[multiplayer]\nhalo1_sandbox = \"h2\"\n",

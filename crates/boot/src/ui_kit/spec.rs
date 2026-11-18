@@ -172,7 +172,21 @@ pub enum ListPlace {
         anchor: [i16; 2],
         /// The Controls tag's frame art kept: bitmaps left of this x.
         bitmaps_left_of: i16,
+        /// Rows laid out before it scrolls; 0 keeps the Controls six
+        /// ([`ListLayout::visible`]).
+        visible: i16,
     },
+}
+
+impl ListPlace {
+    /// The rows shown: a layout's own count, else [`crate::ui_kit::preview::SHOWN`]
+    /// (the Controls tag's six, of which the game shows five).
+    pub fn shown(self) -> usize {
+        match self {
+            ListPlace::Moved { visible, .. } if visible > 0 => visible as usize,
+            _ => crate::ui_kit::preview::SHOWN,
+        }
+    }
 }
 
 impl From<Option<ListLayout>> for ListPlace {
@@ -181,6 +195,7 @@ impl From<Option<ListLayout>> for ListPlace {
             skin: l.skin,
             anchor: l.anchor,
             bitmaps_left_of: l.bitmaps_left_of,
+            visible: l.visible,
         })
     }
 }

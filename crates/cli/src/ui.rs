@@ -551,7 +551,7 @@ fn preview(args: Vec<String>) -> Result<()> {
             );
         }
     }
-    for (label, _) in preview::write_states(&from, &dir, &states)? {
+    for (label, _) in preview::write_states(&from, &dir, &name, &states)? {
         let file = label.replace('/', "-");
         println!("wrote {}", dir.join(format!("{file}.png")).display());
     }

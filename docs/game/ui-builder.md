@@ -65,9 +65,22 @@ Page   ── state + input ──▶ step() ──▶ (new state, Effect)    pu
 **Backing.** A `Dialog` or `CodeEntry` is `Over` (drawn over the screen
 beneath, as the game's own dialogs are) or `Own` (it carries the game shell
 backing, `framing_center` from screen 5, under its panel, so the screen
-beneath doesn't matter). The sign-in prompt is `Own`: it opens over the
-title screen, in-game menus or the main menu, and must not depend on any
-of them.
+beneath doesn't matter).
+
+**Decision (2026-11-18, the user): sign-in is a modal.** The sign-in
+prompt and its new-account gamertag and invite pages are `Over` dialogs,
+not full screens. They sit over whatever is beneath (the title screen, the
+main menu, in game) the way the game's own dialogs do, in the large dialog
+layout of `error_dialog_large` and `dialog_live_password` (header layout
+2, about 536 wide): that dialog's own `dialog1`/`dialog2` panel art, the
+digit cells and the legend. What the game's dialogs draw behind the panel
+(a dim layer or nothing) is copied from the retail dialog tags, read off
+them rather than assumed. A modal may cover the logo, as retail dialogs
+do, so for a modal the reserved-area check ignores what the panel covers.
+Everything in it must still sit inside the panel and inside the safe
+area. The preview draws a modal over a sample screen beneath (the main
+menu), so the sheet shows it in place. This replaces the earlier plan of
+an `Own` sign-in screen on the shell backing.
 
 **The runtime tag recipe.** Our screens are still made by the Controls
 constructor and adopted by `list_class`. The screen-tag function
@@ -150,7 +163,7 @@ state.
 | frame provenance | frame art borrowed from a retail screen with a list sits with that list where that screen puts it (same anchor and skin) |
 | covered (art) | frame art from a screen without a list is covered by other art or text over at most 24 visible pixels (alpha at least 24) |
 | off screen (art) | no art's visible pixels fall past the screen edge |
-| reserved | nothing overlaps the reserved areas of the screen beneath (its logo and header), unless the screen is `Own` |
+| reserved | nothing overlaps the reserved areas of the screen beneath (its logo and header), unless the screen is `Own`; a modal may cover them with its panel, but everything in it stays inside the panel |
 | safe area | texts and row art stay inside the title-safe area: x ±272, y 204 down to -211 (the middle 85%, down to the bottom of retail's footer rectangle, where the game's own legends sit); frame art is exempt |
 | contrast | every text against what is drawn under it (the view rendered without its texts), WCAG ratio at least 2.5 |
 | legend | a screen that takes inputs past up, down, A and B shows a button legend (a text with a button glyph) |
@@ -194,6 +207,25 @@ The checks' first findings, fixed:
 - **The co-op screens had no legend.** They now have footers (`A SELECT`,
   `START START GAME` or `READY`, `B BACK`), set in game from the co-op
   text table (`coop_live::prompts`).
+
+**The full-height Game Options list (master's 13 rows).** The skulls
+page became the Game Options page, and its list now lays out 13 rows
+(`skulls_menu::VISIBLE_ROWS`), down to y -156. The level select's bracket
+(`ul_02`, `[177 -259 -79 -131]`) ends at -79, so rows 8 to 13 run past
+the bottom of its image, and its visible art ends sooner, about the fourth
+row. Nothing is flagged, and that is right: the bracket is a top-left
+corner piece, not a box. The level select itself lays out 16 rows at the
+same anchor under the same bracket (its list block's visible count), so
+rows running past it are retail's own composition. A "list longer than
+its frame" check would flag the game's screen, so there is none.
+`ListPlace::Moved` carries the layout's visible count, and both
+geometries (synthetic and disc) draw that many rows. The bracket now also
+plays its own animation from the level select (2, read off the disc,
+`skulls_menu::FRAME_ANIMATION`), so it slides out with the page and isn't
+left drawn over the screen coming back on B. The sheet's files are named
+by the preview's screen name, not the spec's: `skulls.h1` and `skulls`
+are both `skulls` specs, and the Halo 1 page's tiles overwrote the
+campaign page's.
 
 Calibrations the checks needed, each against the game's own screens:
 

@@ -556,3 +556,60 @@ fn a_converted_map_installs_the_sandbox_the_setting_names() {
     assert_eq!(ids[0], ids[1]);
     assert_eq!(dirs(data).len(), 1);
 }
+
+/// The install reports both variants of a converted map at the path 1.0
+/// opens, and a VFS given them serves the one chosen for the next game,
+/// whatever the boot materialised.
+#[test]
+fn a_converted_map_is_served_in_the_sandbox_chosen_per_game() {
+    let t = Temp::new("per-game");
+    let data = &t.0;
+    let d = data.join("maps").join("h1_gulch");
+    for (s, seed) in [("h1", 7), ("h2", 9)] {
+        std::fs::create_dir_all(d.join(s)).unwrap();
+        std::fs::write(d.join(s).join("h1_gulch.map"), body(seed)).unwrap();
+    }
+    let variant = |s: &str, seed: u8| {
+        format!(
+            "[[variant]]\nfile = \"{s}/h1_gulch.map\"\nsha256 = \"{}\"\n\
+             origin = {{ game = \"halo1\", map = \"gulch\", sandbox = \"{s}\", source_sha256 = \"{}\" }}\n",
+            Sha256::of(&body(seed)),
+            Sha256([7; 32])
+        )
+    };
+    std::fs::write(
+        d.join("manifest.toml"),
+        format!(
+            "[package]\nformat = 1\nname = \"Gulch\"\n[base]\nmap = \"h1_gulch\"\nderived = true\n{}{}",
+            variant("h1", 7),
+            variant("h2", 9)
+        ),
+    )
+    .unwrap();
+    let r = install(data, &mut disc()).unwrap();
+    let offer = r.installed[0].1;
+    assert_eq!(r.variants.len(), 1, "{r:?}");
+    let (path, pair) = &r.variants[0];
+    assert_eq!(path, &content_path(offer, "h1_gulch"));
+    assert!(path.starts_with("TDATA\\4D530064\\$c\\"), "{path}");
+    assert_eq!(std::fs::read(&pair.h1.file).unwrap(), body(7));
+    assert_eq!(std::fs::read(&pair.h2.file).unwrap(), body(9));
+    assert_ne!(pair.h1.id, pair.h2.id);
+    // The path names the file the install wrote.
+    let host = data.join("disk").join("Partition1").join(path.replace('\\', "/"));
+    assert!(host.is_file(), "{}", host.display());
+
+    let mut cfg = vfs::Config::new(data, HALO2_TITLE);
+    for (p, pair) in &r.variants {
+        cfg.variants.register(p, pair.clone());
+    }
+    let choice = cfg.variants.choice().clone();
+    let mut v = vfs::Vfs::with_storage(cfg).unwrap();
+    let name = format!("{}\\{path}", vfs::DATA_DEVICE);
+    assert_eq!(v.host_file(&name).unwrap().path, pair.h1.file);
+    choice.set_halo1(false);
+    let served = v.host_file(&name).unwrap();
+    assert_eq!(served.path, pair.h2.file);
+    assert_eq!(served.len, body(9).len() as u64);
+    assert_eq!(v.map_id(&name), pair.h2.id);
+}
