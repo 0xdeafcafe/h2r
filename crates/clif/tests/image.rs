@@ -12,7 +12,6 @@
 #[path = "../../emit/tests/common/mod.rs"]
 mod common;
 
-use std::path::Path;
 use std::time::Instant;
 
 /// The newest analysis in boot's cache (`H2_BOOT_CACHE`, default
