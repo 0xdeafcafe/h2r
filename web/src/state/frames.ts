@@ -260,6 +260,18 @@ function blendPlayers(from: readonly FramePlayer[], to: readonly FramePlayer[] |
   return out;
 }
 
+/** Whether a frame player is nowhere: exactly at the origin facing +x,
+ *  what older senders wrote for a player whose unit they could not read
+ *  (or a dead one who never stood anywhere). Never drawn there. */
+export function unplaced(p: FramePlayer): boolean {
+  return p.pos[0] === 0 && p.pos[1] === 0 && p.pos[2] === 0 && p.yaw === 0;
+}
+
+/** `f` without its unplaced players (`f` itself when it has none). */
+export function withoutUnplaced(f: Frame): Frame {
+  return f.players.some(unplaced) ? { ...f, players: f.players.filter((p) => !unplaced(p)) } : f;
+}
+
 /** Index of the last frame with tick <= `tick` in a tick-sorted array, or -1. */
 export function findFrame(frames: readonly Frame[], tick: number): number {
   let lo = 0, hi = frames.length - 1, ans = -1;
@@ -556,6 +568,7 @@ export class FrameBuffer {
   }
 
   push(frame: Frame, now: number): void {
+    frame = withoutUnplaced(frame);
     const last = this.frames[this.frames.length - 1];
     if (last && frame.tick <= last.tick) {
       if (frame.tick < last.tick - TICKS_PER_SECOND * 5) {
