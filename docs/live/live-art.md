@@ -61,7 +61,9 @@ copy and the map pack maps; 15 vehicles in their own colours, the
 reflection tints and shaders whose compiled data another shader shares;
 16 vehicles' turrets and hull decals that double what is under them;
 17 the weather volumes and the sky light's glow; 18 turrets as parts that aim;
-19 the title and save images, `title/image` and `title/save-image`).
+19 the title and save images, `title/image` and `title/save-image`;
+20 solid shaders whose template name only contains "overlay" keep their
+textures).
 
 ### `map.glb`
 
