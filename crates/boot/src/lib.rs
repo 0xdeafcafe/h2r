@@ -546,10 +546,10 @@ pub struct RunOpts {
     pub bink: bool,
     /// Register crates/dsound's overrides (headless mixer).
     pub dsound: bool,
-    /// Where `h2 movies` installed the transcoded movies
-    /// (`movies_glue::default_dir()` by default). The ones current for the
-    /// disc play; `None` skips every movie (`--no-movies`).
-    pub movies: Option<PathBuf>,
+    /// Which movies may play: those `h2 movies` installed and current for
+    /// the disc (`movies_glue::Movies`; level boots and headless runs skip
+    /// by default, `--no-movies` always).
+    pub movies: movies_glue::Movies,
 }
 
 fn describe(ev: Option<&Event>, thread: u32) -> String {
@@ -969,6 +969,8 @@ pub fn run_hosted_with_live(
     } else {
         None
     };
+    // No window: a headless run, which skips the movies by default.
+    let headless = host.gfx.is_none();
     let mut d3d_calls = match (opts.d3d, host.gfx.take()) {
         (false, _) => None,
         (true, Some(b)) => Some(match host.gfx_view.take() {
@@ -1171,14 +1173,15 @@ pub fn run_hosted_with_live(
         h.set_tick_note(why.to_owned());
     }
     if opts.bink {
-        // A lockstep run compares schedules; movie pacing follows the wall
-        // clock when the sound stalls, so it skips them.
-        let why_off = lockstep_on.then_some("lockstep");
+        // A lockstep run compares schedules and movie pacing follows the
+        // wall clock, so it skips them; so, by default, do level boots and
+        // headless runs.
+        let why_off = movies_glue::why_off(&opts.movies, lockstep_on, level_name.as_deref(), headless);
         movies_glue::install(
             &loaded.runtime,
-            opts.movies.as_deref(),
+            &opts.movies,
             &opts.disc,
-            why_off,
+            why_off.as_deref(),
             ds.as_ref().map(dsound_glue::Audio::mixer),
         );
     } else {

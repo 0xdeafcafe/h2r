@@ -127,7 +127,7 @@ unreadable movie resolves to `None`.
 `h2 movies [<iso>] [--out <dir>] [--ffmpeg PATH] [--force] [--only NAME]` is the
 older standalone exporter in `crates/cli`. `--out` defaults to the app data
 directory (`movies::install::app_movies_dir()`), which is where `h2 play`
-and `h2 run` look (`--movies DIR` elsewhere); see
+looks (`--movies DIR` elsewhere, which headless `h2 run` needs to play them); see
 [bink-hle.md](bink-hle.md) for how a run decides to play them. It still writes H.264/AAC MP4,
 requires `--force` to replace existing output, and does not use the new
 resumable app installer. Its exit codes remain 0 success, 1 failure, 2 bad
