@@ -30,6 +30,7 @@ pub mod fallback;
 pub mod fov_row;
 pub mod game_glue;
 pub mod health;
+pub mod h1_variants;
 pub mod precision;
 pub mod render_thread;
 pub mod host_perf;
@@ -711,7 +712,9 @@ pub fn run_hosted_with_live(
     // is unreachable (docs/live/live.md, "Client HLE: Live not set up").
     live_notice::install(&loaded.runtime, live).context("installing the Live notice")?;
     std::fs::create_dir_all(&opts.data_root)?;
-    let cfg = vfs::Config::new(&opts.data_root, x.certificate.title_id);
+    let mut cfg = vfs::Config::new(&opts.data_root, x.certificate.title_id);
+    // Converted Halo 1 maps follow the sandbox chosen per game (h1_variants).
+    cfg.variants = h1_variants::mp_variants();
     if opts.xapi && host.input.is_none() {
         let (input, keyboard) = input::InputManager::with_keyboard_pad(Default::default())?;
         host.input = Some(input);
@@ -728,15 +731,10 @@ pub fn run_hosted_with_live(
     // under T:\$c, which the main menu reads for its map list
     // (docs/game/maps.md §4); before the VFS lists that folder.
     new_maps::install_at_boot(&opts.data_root, &opts.disc);
-    // The health model follows the sandbox the converted Halo 1 maps were
-    // just installed in (docs/game/health.md).
-    // The VFS serves the same variant (docs/game/h1-multiplayer.md).
-    let halo1_sandbox = {
-        let (store, _) = setting_defs::load(&opts.data_root, &[]);
-        let sandbox = setting_defs::halo1_sandbox(&store);
-        health::set_halo1_sandbox(sandbox == "h1");
-        sandbox
-    };
+    // The Halo 1 maps' sandbox and the campaign's assets start as the
+    // settings say; the pregame screen changes them per game, and the VFS
+    // and the health model follow (h1_variants, docs/game/h1-multiplayer.md).
+    let halo1_sandbox = h1_variants::init_from_store(&setting_defs::load(&opts.data_root, &[]).0);
     // A second campaign (docs/game/multiple-campaigns.md): read before the
     // VFS mounts, which serves its converted maps.
     let campaigns = campaigns::boot_state(&opts.data_root, &opts.disc);
