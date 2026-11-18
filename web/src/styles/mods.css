@@ -1,0 +1,71 @@
+/* The mod repository (stats/Mods.tsx): the browser's filter bar and rows,
+   and one mod's page. Same flat greys, thin rules and small type as the
+   rest of the stats site. */
+
+.s-mods-wrap { padding: 8px; }
+.s-mod-filters label { color: #d6d6d6; }
+.s-mod-filters select { max-width: 130px; }
+.s-toolbar.s-mod-filters input { width: 130px; }
+.s-mod-filters .s-mod-clear, .s-mod-filters .s-mod-author { margin-left: 4px; white-space: nowrap; }
+.s-mod-pager { display: flex; align-items: center; gap: 6px; }
+.s-mod-pager button:disabled { color: #555; cursor: default; }
+
+.s-mods { display: block; }
+.s-mods--busy { opacity: .6; }
+.s-mod { display: grid; grid-template-columns: 128px minmax(0, 1fr); gap: 10px; padding: 7px 8px; border-top: 1px solid #000; }
+.s-mod:nth-child(odd) { background: #1a1a1a; }
+.s-mod:nth-child(even) { background: #232323; }
+.s-mod:hover { background: #2a3038; }
+
+.s-mod-pic { display: block; width: 128px; height: 72px; overflow: hidden; background: #0d0d0d; border: 1px solid #444; }
+.s-mod-pic img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.s-mod-pic:hover { border-color: #7f9db9; text-decoration: none !important; }
+.s-mod-nopic {
+  display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; padding: 4px;
+  font: bold 11px/13px var(--font-ui); text-align: center; color: #8a96a6;
+  background: repeating-linear-gradient(135deg, #141a22 0 6px, #10151c 6px 12px);
+}
+
+.s-mod-body { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.s-mod-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.stats .s-mod-name { font: bold 14px/17px var(--font-ui); color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stats .s-mod-name:hover { color: var(--s-link); }
+.stats .s-mod-tag {
+  flex: none; margin-left: auto; padding: 0 6px; font-size: 10px; line-height: 15px; color: #dfe7f2;
+  border: 1px solid #33496a; border-radius: 3px; background: #0e1a2c;
+}
+.stats .s-mod-tag:hover { color: #fff; border-color: #6f93c4; text-decoration: none; }
+.s-mod-by { font-size: 11px; color: #c9c9c9; }
+.s-mod-desc { font-size: 11px; color: #9d9d9d; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.s-mod-meta { display: flex; flex-wrap: wrap; gap: 0; margin-top: auto !important; font-size: 11px; color: #d6d6d6; }
+.s-mod-meta li + li::before { content: "|"; margin: 0 7px; color: #555; }
+
+/* One mod. */
+.s-mod-page { padding: 8px; }
+.s-mod-hero { aspect-ratio: 16 / 9; max-height: 330px; width: 100%; overflow: hidden; background: #0d0d0d; border: 1px solid #444; }
+.s-mod-hero img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.s-mod-hero .s-mod-nopic { font-size: 16px; line-height: 20px; }
+.s-mod-top { display: grid; grid-template-columns: minmax(0, 1fr) 200px; gap: 12px; padding: 10px 2px 4px; }
+.s-mod-by--big { font-size: 12px; margin-bottom: 6px !important; }
+.s-mod-desc-full { font-size: 12px; line-height: 17px; color: #d6d6d6; white-space: pre-line; }
+.s-mod-source { margin-top: 8px !important; font-size: 11px; color: #9d9d9d; }
+.s-mod-facts { padding: 4px 8px; background: #141414; border: 1px solid #333; }
+.s-mod-get { margin-top: 8px; padding: 7px 9px; font-size: 11px; line-height: 15px; color: #c9c9c9; background: #101e33; border: 1px solid #2a3d59; }
+.s-mod-get b { display: block; margin-bottom: 2px; }
+.s-mod-get .s-bad { margin-top: 4px; }
+
+.s-mod-base { display: grid; grid-template-columns: 128px minmax(0, 1fr); gap: 10px; align-items: center; padding: 0 8px 10px; font-size: 11px; }
+.s-mod-base p { margin-top: 2px !important; }
+.s-mod-layers { margin: 0 8px 10px; }
+.s-mod-layers code, .s-mod-base code { font: 11px var(--font-mono, monospace); color: #d6d6d6; }
+.s-grid tbody tr.s-mod-total { background: #101e33; }
+.s-mod-report { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 0 8px 12px; font-size: 11px; }
+.s-mod-report .s-linkbtn { margin-left: auto; font-size: 11px !important; }
+.s-mod-note { font-size: 11px; line-height: 15px; color: #c9c9c9; }
+.s-mod-cats li.on a { color: #fff; font-weight: bold; }
+
+@media (max-width: 760px) {
+  .s-mod { grid-template-columns: 96px minmax(0, 1fr); }
+  .s-mod-pic { width: 96px; height: 54px; }
+  .s-mod-top { grid-template-columns: minmax(0, 1fr); }
+}

@@ -69,10 +69,7 @@ fn a_published_package_is_fetched_over_http_and_installed() {
         sha256: sha,
     }];
     let id = MapId::of(&m);
-    let doc = MapDocument {
-        manifest: m,
-        image: None,
-    };
+    let doc = MapDocument::new(m, None);
     let jws = EventBody::new(
         &key,
         &author,

@@ -22,7 +22,7 @@ describe("nav and crumbs", () => {
     const nav = statsNav(null, false);
     expect(nav[0]).toEqual({ label: STATS_NAME, href: STATS_HOME, end: true });
     expect(nav.some((n) => n.href === "/" || /dashboard/i.test(n.label))).toBe(false);
-    expect(nav.map((n) => n.label)).toEqual([STATS_NAME, "My Stats", "Games", "Players", "Clans", "Event Log", "Server"]);
+    expect(nav.map((n) => n.label)).toEqual([STATS_NAME, "My Stats", "Games", "Players", "Clans", "Mods", "Event Log", "Server"]);
   });
 
   test("my stats follows the signed-in account, and admins get their tab", () => {

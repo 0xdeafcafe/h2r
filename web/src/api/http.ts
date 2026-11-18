@@ -156,8 +156,10 @@ export function api(t: ServerTarget, reader: Reader = async () => null) {
         throw e;
       }
     },
-    /** Published map packages, newest first (docs/game/maps.md §5); one page. */
-    maps: async (q: { base?: string; author?: string; limit?: number; cursor?: string } = {}, s?: AbortSignal) =>
+    /** Published map packages (docs/game/maps.md §5); one page. `sort`
+     *  is `new` (the default) or `popular`; `q` matches name, description,
+     *  credit, author and base map. Sent without a token. */
+    maps: async (q: { sort?: "new" | "popular"; base?: string; author?: string; category?: string; q?: string; limit?: number; cursor?: string | null } = {}, s?: AbortSignal) =>
       page<unknown>(await getJson(u("/maps", q), s)),
     /** Every published package, following cursors (bounded). */
     allMaps: (q: { base?: string; author?: string } = {}, s?: AbortSignal) => all<unknown>("/maps", { ...q, limit: 100 }, s, 20),

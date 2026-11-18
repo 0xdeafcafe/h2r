@@ -981,6 +981,7 @@ dependencies = [
  "time",
  "timeline",
  "tokio",
+ "toml",
  "tungstenite 0.26.2",
  "ureq",
  "vfs",
