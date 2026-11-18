@@ -63,6 +63,9 @@ pub const PAUSE_LOADER: u32 = 0x0023_20c4;
 /// Its rows' datum array name and the rows the game makes.
 pub const PAUSE_LIST_NAME: u32 = 0x0045_9134;
 pub const PAUSE_ROWS: u32 = 5;
+/// Its Controller Settings row (row 3: closes the menu and opens screen
+/// 200). Our rows go below it, and row 4 moves down past them.
+pub const PAUSE_CONTROLLER_ROW: i16 = 3;
 
 /// The multiplayer pause menu.
 pub const MP_SCREEN_ID: i16 = 195;
@@ -71,6 +74,9 @@ pub const MP_LOADER: u32 = 0x0014_75c7;
 /// it knows (0 to 5): ours follow.
 pub const MP_LIST_NAME: u32 = 0x0045_93a8;
 pub const MP_ACTIONS: u32 = 6;
+/// Its Controller Settings action (opens screen 200, or player settings),
+/// shown in every game: our rows go below it.
+pub const MP_CONTROLLER_ACTION: i16 = 1;
 /// The rows' datum array at handler `+0x70`; a row's action word at datum
 /// `+2`; an item widget's row handle at `+0x70`.
 pub const LIST_ROWS: u32 = 0x70;
@@ -125,7 +131,10 @@ pub fn actions(m: &dyn GuestMemory, list: u32) -> Result<Vec<i16>, MemFault> {
 /// added.
 pub fn add_actions(m: &mut dyn GuestMemory, list: u32, ours: &[i16]) -> Result<Vec<i16>, String> {
     let have = actions(m, list).map_err(|e| format!("{e:?}"))?;
-    let array = DatumArray::at(m.u32(list.wrapping_add(LIST_ROWS)).map_err(|e| format!("{e:?}"))?);
+    let array = DatumArray::at(
+        m.u32(list.wrapping_add(LIST_ROWS))
+            .map_err(|e| format!("{e:?}"))?,
+    );
     let mut added = Vec::new();
     for &a in ours.iter().filter(|a| !have.contains(a)) {
         let h = array
@@ -141,6 +150,49 @@ pub fn add_actions(m: &mut dyn GuestMemory, list: u32, ours: &[i16]) -> Result<V
         added.push(a);
     }
     Ok(added)
+}
+
+/// The actions in `have` (the list's, in row order) with `ours` moved to
+/// just below action `after`; `have` unchanged without it.
+pub fn ordered(have: &[i16], ours: &[i16], after: i16) -> Vec<i16> {
+    let Some(at) = have.iter().position(|a| *a == after) else {
+        return have.to_vec();
+    };
+    let mut out: Vec<i16> = have.iter().copied().filter(|a| !ours.contains(a)).collect();
+    let at = out
+        .iter()
+        .position(|a| *a == have[at])
+        .map_or(out.len(), |i| i + 1);
+    let mine: Vec<i16> = ours.iter().copied().filter(|a| have.contains(a)).collect();
+    out.splice(at..at, mine);
+    out
+}
+
+/// Puts our rows below action `after` on the list at `list`: the rows are
+/// told apart by their action word only, so the words are written again
+/// in the new order, row by row. Returns the order.
+pub fn order_actions(
+    m: &mut dyn GuestMemory,
+    list: u32,
+    ours: &[i16],
+    after: i16,
+) -> Result<Vec<i16>, MemFault> {
+    let have = actions(m, list)?;
+    let want = ordered(&have, ours, after);
+    if want == have {
+        return Ok(want);
+    }
+    let array = DatumArray::at(m.u32(list.wrapping_add(LIST_ROWS))?);
+    let hw = array.header_field(m, engine::datum::layout::HIGH_WATER)?;
+    let mut next = want.iter();
+    for i in 0..hw.max(0) {
+        if let Some(elem) = array.get_absolute(m, i)?
+            && let Some(a) = next.next()
+        {
+            m.set_u16(elem.wrapping_add(ROW_ACTION), *a as u16)?;
+        }
+    }
+    Ok(want)
 }
 
 /// The action of the row whose handle is `row` on the list at `list`.
@@ -214,7 +266,8 @@ fn mp_row_chosen(c: &mut Call, model: &Model, request_at: u32) -> Result<Flow, G
         return Ok(Flow::Continue);
     };
     // The store is read with no guest memory held.
-    let Some(Chosen::Open(screen)) = model.row(List::MpPause, action).map(|r| model.press(r)) else {
+    let Some(Chosen::Open(screen)) = model.row(List::MpPause, action).map(|r| model.press(r))
+    else {
         return c.ret(8).map(Flow::Return);
     };
     let loader = list_class::loader_of(screen);
@@ -256,22 +309,29 @@ impl feature::Feature for MpPauseRows {
             let Some(list) = building.lock().unwrap_or_else(|e| e.into_inner()).pop() else {
                 return Ok(());
             };
-            match add_actions(&mut *c.ctx.runtime().memory(), list, &ours) {
+            let mut m = c.ctx.runtime().memory();
+            match add_actions(&mut *m, list, &ours) {
                 Ok(added) if !added.is_empty() => {
                     eprintln!("pause menu: multiplayer list gets rows with actions {added:?}")
                 }
                 Ok(_) => {}
                 Err(why) => eprintln!("pause menu: multiplayer rows not added: {why}"),
             }
+            if let Err(e) = order_actions(&mut *m, list, &ours, MP_CONTROLLER_ACTION) {
+                eprintln!("pause menu: multiplayer rows left last: {e:?}");
+            }
             Ok(())
         });
         let (m, seen) = (Arc::clone(&self.model), Arc::new(AtomicBool::new(false)));
         b.raw()
-            .before(&MP_MENU_ROW_TEXT, "our pause rows' text", move |c| mp_row_text(c, &m, &seen));
+            .before(&MP_MENU_ROW_TEXT, "our pause rows' text", move |c| {
+                mp_row_text(c, &m, &seen)
+            });
         let m = Arc::clone(&self.model);
-        b.raw().before(&MP_MENU_ROW_CHOSEN, "our pause rows' press", move |c| {
-            mp_row_chosen(c, &m, request_at)
-        });
+        b.raw()
+            .before(&MP_MENU_ROW_CHOSEN, "our pause rows' press", move |c| {
+                mp_row_chosen(c, &m, request_at)
+            });
         Ok(())
     }
 }
