@@ -196,6 +196,17 @@ function mapPreview(index: number): Uint8Array | null {
   });
 }
 
+/** An invented title tile (`title/image`) and save picture
+ *  (`title/save-image`): a ring on a field, nothing of the game's. */
+function titleTile(save: boolean): Uint8Array {
+  const size = save ? 64 : 128;
+  return render(size, size, (x, y) => {
+    const r = Math.hypot(x, y), band = r > 0.42 && r < 0.62, dot = r < 0.14;
+    const field: Px = save ? [0.08, 0.2 + 0.15 * (1 - y), 0.42, 1] : [0.12 + 0.1 * (1 - y), 0.32, 0.1, 1];
+    return band || dot ? [0.86, 0.94, 0.72, 1] : field;
+  });
+}
+
 const PACK_RANKS = ["01-newcomer", "02-regular", "03-contender", "04-veteran", "05-ace", "06-headliner", "07-vanguard-spare", "08-legend"];
 
 export interface MockGameArt {
@@ -234,6 +245,8 @@ export function mockGameArt(packDir: string): MockGameArt {
     const i = MAPS.findIndex((m) => m.outline === l.outline);
     if (n % 4 !== 3 && i >= 0 && l.outline) add(`map/${l.name}/preview`, `map/${l.name}.png`, 320, 180, () => encodePng(mapPreview(i)!, 320, 180));
   });
+  add("title/image", "title/image.png", 128, 128, () => encodePng(titleTile(false), 128, 128));
+  add("title/save-image", "title/save-image.png", 64, 64, () => encodePng(titleTile(true), 64, 64));
   const manifest: GameArtManifest = {
     version: 1,
     source: "mock",

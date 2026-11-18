@@ -10,7 +10,7 @@
 // Backspace (or b) goes back; the mouse and touch work too.
 
 import { gameMapTitle } from "../state/maps";
-import { For, Match, Show, Switch, createEffect, createMemo, createSignal, on, onCleanup, onMount, untrack } from "solid-js";
+import { For, Match, Show, Switch, createEffect, createMemo, createSignal, on, onCleanup, onMount, untrack, type JSX } from "solid-js";
 import { useNavigate, useParams } from "@solidjs/router";
 import { live } from "../state/live";
 import { identity, download } from "../state/identity";
@@ -91,7 +91,7 @@ function menuHome(s: SectionId): SectionId {
 /** The orb's centre on the stage, and how far the ring turns per item (for the orb's skins). */
 const ORB_X = 444, ORB_Y = 318, RING_STEP_DEG = 24;
 
-interface Row { key: string; label: string; meta?: string }
+interface Row { key: string; label: string; meta?: string; icon?: JSX.Element }
 interface Sat { label: string; glyph: GlyphName; act?: () => void; lit?: boolean }
 
 // Kept outside the component: the route remounts it between "/" and
@@ -823,6 +823,7 @@ export function ListPanel(props: { title: string; rows: Row[]; sel: number; onSe
               onMouseEnter={() => props.onSel(i())}
               onClick={() => props.onAct(i())}
             >
+              <Show when={r.icon}><span class="dx-row-icon">{r.icon}</span></Show>
               <span class="dx-row-label">{r.label}</span>
               <Show when={r.meta}><span class="dx-row-meta">{r.meta}</span></Show>
             </div>
