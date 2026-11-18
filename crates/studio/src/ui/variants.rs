@@ -6,6 +6,7 @@
 use std::path::PathBuf;
 
 use dear_imgui_rs::{TableColumnFlags, TableColumnWidth, TableFlags, TreeNodeFlags, Ui};
+use variants::ext::{self, Ext};
 use variants::panel::{Origin, strip_icon};
 use variants::record::{self, Kind};
 use variants::{GameType, GameVariant, SettingId, VariantEditor};
@@ -200,8 +201,61 @@ pub fn settings(ui: &Ui, app: &App, st: &mut VariantsUi, fonts: &Fonts, actions:
                 }
             }
         }
+        if let Some(x) = more_options(ui, v) {
+            actions.push(Action::SetVariantExt(x));
+        }
     });
     disabled.end();
+}
+
+/// Our options the record has no field for, in its extension block
+/// (docs/game/game-options.md section 3). Only the ones the game applies
+/// are shown; the rest arrive with their slices. Returns the new options
+/// when the user changed one.
+fn more_options(ui: &Ui, v: &GameVariant) -> Option<Ext> {
+    if !ui.collapsing_header("More options (h2recomp)##variant-ext", TreeNodeFlags::NONE) {
+        return None;
+    }
+    if let ext::Block::Ignored(why) = v.ext_state() {
+        ui.text_colored(
+            theme::WARN,
+            format!(
+                "{} The stored options are ignored ({why}); editing replaces them.",
+                icon::INFO
+            ),
+        );
+    }
+    let now = v.ext();
+    let mut next = now;
+    let flags = TableFlags::ROW_BG | TableFlags::BORDERS_INNER_V;
+    let _t = ui.begin_table_with_flags("##variant-ext-table", 2, flags)?;
+    ui.table_setup_column(
+        "Setting",
+        TableColumnFlags::NONE,
+        Some(TableColumnWidth::Fixed(230.0)),
+    );
+    ui.table_setup_column(
+        "Value",
+        TableColumnFlags::NONE,
+        Some(TableColumnWidth::Stretch(1.0)),
+    );
+    ui.table_next_row();
+    ui.table_next_column();
+    ui.align_text_to_frame_padding();
+    ui.text("Gravity (%)");
+    ui.set_item_tooltip(
+        "Gravity for everyone, as a percent of the game's. The Low Gravity \
+         skull halves it again. Applied by the host and on Live (not on \
+         System Link, where every machine plays the game's own).",
+    );
+    ui.table_next_column();
+    ui.set_next_item_width(-1.0);
+    let mut g = i32::from(now.gravity);
+    let (lo, hi) = (*ext::GRAVITY.start(), *ext::GRAVITY.end());
+    if ui.slider_i32("##ext-gravity", &mut g, i32::from(lo), i32::from(hi)) {
+        next.gravity = g.clamp(lo.into(), hi.into()) as u16;
+    }
+    (next != now).then_some(next)
 }
 
 /// Keeps a typed name within the record's limit.
