@@ -163,6 +163,12 @@ only code that touches Objective-C. Tests drive the mapping and the
   report retains pressure below that threshold. Face buttons keep their
   physical position (south = A).
 - **Menu / Options** are Start / Back; stick clicks are the thumb buttons.
+- **Touchpad** (DualSense through `GCDualSenseGamepad`, DualShock 4 through
+  `GCDualShockGamepad`): the click and up to two fingers (-1..1, +Y up, (0, 0)
+  for no finger) go to `HostPadState::touchpad`. The guest pad never gets
+  them. `input::touchpad::Gestures` turns them into swipes, clicks and
+  two-finger taps for the debug menu ([docs/runtime/debug-menu.md](../runtime/debug-menu.md)),
+  which watches every pad through `InputManager::set_gate`.
 - **Rumble.** `GCDeviceHaptics.createEngineWithLocality:` gives one
   CoreHaptics engine per handle: left handle for the heavy motor, right for
   the light one. Each runs a looping 30 s continuous event whose intensity is

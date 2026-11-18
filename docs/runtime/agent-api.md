@@ -1137,6 +1137,7 @@ bed6c8dc's. Never point a sim run at live.forbes.red.
 - [level-boot.md](level-boot.md), [checkpoints.md](checkpoints.md)
 - [lab.md](lab.md): `h2 lab`, runs on a second Mac over SSH with replays and frame stats
 - [hot-iteration.md](../graphics/hot-iteration.md): `edit.*` (live tag edits) and `render.*` (hot WGSL overrides, parameters, toggles)
+- [debug-menu.md](debug-menu.md): the in-game debug menu, an in-process client of this API; `settings.list`/`settings.set`, `perf.overlay` and `cheat.list`/`cheat.set`
 - [hs_vm.md](../engine/hs_vm.md)
 - [docs/live](../live/): the Live service, the other reader of
   `live-telemetry`

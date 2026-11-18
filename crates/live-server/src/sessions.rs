@@ -456,7 +456,7 @@ fn mark_redacted(w: &mut live_proto::WireEvent) {
 /// Whether an event of a private kind shows to `viewer`, from its data:
 /// game invitations to their sender and recipient, friend events to the
 /// two accounts and the friends of either, content and player reports to
-/// admins only.
+/// admins only, bans to the banned player.
 /// Anonymous readers see none of them, so a public read stays safe to
 /// cache. Admins and the operator see everything.
 pub fn kind_shows_to(s: &State, e: &RecordedEvent, viewer: Viewer) -> bool {
@@ -470,6 +470,9 @@ pub fn kind_shows_to(s: &State, e: &RecordedEvent, viewer: Viewer) -> bool {
         live_proto::maps::CONTENT_REPORTED
         | live_proto::reports::PLAYER_REPORTED
         | live_proto::reports::REPORT_REVIEWED => false,
+        live_proto::bans::ACCOUNT_BANNED | live_proto::bans::ACCOUNT_UNBANNED => {
+            matches!(viewer, Viewer::Account(me) if xuid("target") == Some(me))
+        }
         mailbox::SENT | mailbox::ANSWERED => {
             let Viewer::Account(me) = viewer else {
                 return false;

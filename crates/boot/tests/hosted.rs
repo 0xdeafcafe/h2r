@@ -87,6 +87,8 @@ fn the_host_paces_feeds_and_stops_the_run() {
             }
         })),
         pad_speaker: None,
+        debug_menu: None,
+        perf_overlay: None,
         settings: None,
         input: Some(input),
         keyboard: Some(keyboard),

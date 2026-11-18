@@ -7,6 +7,7 @@
 //   - /dash/server/invites: an admin makes, copies and revokes invite codes;
 //   - /dash/server/accounts: an admin's view of the accounts and the admins;
 //   - /dash/server/reports: an admin's queue of player reports (Reports.tsx);
+//   - /dash/server/bans: an admin's list of bans, with lift (Bans.tsx);
 //   - /dash/server/import: anyone signs this browser in as an account the
 //     CLI exported;
 //   - /dash/server/connect: the switcher to another server.
@@ -265,6 +266,7 @@ export function AccountsPlate(props: { info: ServerInfo; go: (href: string) => v
     return [
       { key: "players", label: "every player", value: "players", act: () => props.go("/dash/players") },
       { key: "reports", label: "player reports", value: "review", act: () => props.go("/dash/server/reports") },
+      { key: "bans", label: "bans", value: "lift", act: () => props.go("/dash/server/bans") },
       { key: "import", label: "import account", value: "account file", act: () => props.go("/dash/server/import") },
       ...(s?.admins ?? []).map((a): Blade => ({ key: `admin-${a.gamertag}`, label: <>admin <b class="dx-blade-name">{a.gamertag}</b></>, value: adminSourceWords(a.source) })),
     ];

@@ -52,6 +52,13 @@ pub const SAVE_CHECKPOINT: &str = "insert into subscriptions (name, position) va
      on conflict (name) do update set position = excluded.position";
 pub const CHECKPOINTS: &str = "select name, position from subscriptions order by name";
 
+/// Adds `?4` to the usage counter (`?1` day, `?2` account, `?3` metric).
+pub const ADD_USAGE: &str = "insert into usage (day, account, metric, n) values (?1, ?2, ?3, ?4)
+     on conflict (day, account, metric) do update set n = usage.n + excluded.n";
+/// Drops the days before `?1`; dayless counters stay.
+pub const PRUNE_USAGE: &str = "delete from usage where day <> '' and day < ?1";
+pub const USAGE: &str = "select day, account, metric, n from usage";
+
 /// A list as a JSON array, for `json_each`.
 pub fn json_list(items: &[String]) -> String {
     serde_json::to_string(items).expect("strings serialize")

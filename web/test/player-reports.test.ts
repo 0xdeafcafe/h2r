@@ -92,3 +92,24 @@ describe("the calls", () => {
     await expect(reviewReport("http://h/v1", "localhost", me(), 7, "dismiss", "", f)).rejects.toMatchObject({ status: 409, code: "conflict" });
   });
 });
+
+describe("the mock's report queue", async () => {
+  const { Reports } = await import("../mock/reports");
+  const { Admin } = await import("../mock/admin");
+  const { World } = await import("../mock/world");
+  const world = new World();
+  const reports = new Reports(world, new Admin(world, false));
+  const call = (method: string, path: string, auth?: string, body?: unknown) =>
+    reports.handle(new Request("http://m" + path, { method, headers: auth ? { authorization: auth } : {}, body: body === undefined ? undefined : JSON.stringify(body) }), new URL("http://m" + path));
+
+  test("reads like the server's queue, and only admins read it", async () => {
+    expect((await call("GET", "/v1/admin/reports"))!.status).toBe(401);
+    expect(await call("GET", "/v1/maps")).toBeNull();
+    // The view the server would give an admin parses into open complaints only.
+    const v = parseReports(reports.view("open"));
+    expect(v.items.length).toBeGreaterThan(0);
+    expect(v.items.every((r) => r.negative && !r.review)).toBe(true);
+    const all = parseReports(reports.view("all"));
+    expect(all.items).toHaveLength(reports.reports.length);
+  });
+});

@@ -181,12 +181,48 @@ fn perception_finds_the_bot_and_the_living_others() {
 }
 
 #[test]
+fn a_phantom_perceives_itself_by_machine_id() {
+    let ps = vec![
+        (0, 0, 0, [0.0; 3], X, false),
+        (-1, -1, 1, [5.0, 1.0, 0.0], [0.0, 1.0, 0.0], false),
+        (-1, -1, 2, [9.0, 0.0, 0.0], X, false),
+    ];
+    let mut g = game(&ps, true, &[0]);
+    let mine = [0xc1, 0xa4, 0, 0, 0, 7];
+    for (k, b) in (0u32..).zip(mine) {
+        g.put_u8(PLAYERS_DATA + 0x21c + PLAYER_MACHINE + k, b);
+        g.put_u8(
+            PLAYERS_DATA + 2 * 0x21c + PLAYER_MACHINE + k,
+            if k == 5 { 8 } else { b },
+        );
+    }
+    let p = perceive_as(&g, Who::Machine(mine)).unwrap();
+    assert_eq!(p.me.map(|m| m.position), Some([5.0, 1.0, 0.0]));
+    let ids: Vec<u32> = p.others.iter().map(|s| s.id).collect();
+    assert_eq!(ids, vec![0, 2], "the human and the other phantom");
+    // A remote player is never a port's bot, whatever its controller field.
+    assert_eq!(perceive(&g, 0xffff_ffff).unwrap().me, None);
+}
+
+#[test]
 fn the_tick_comes_from_the_game_time() {
     let mut g = three();
     g.map(0x0068_0000, 0x10)
         .put_u32(points::GAME_TIME.base, 0x0068_0000)
         .put_u32(0x0068_0000 + GAME_TIME_TICK, 1234);
     assert_eq!(perceive(&g, 1).unwrap().tick, 1234);
+}
+
+#[test]
+fn there_is_no_game_tick_in_the_menus() {
+    assert_eq!(game_tick(&FakeGuest::new()), None, "unmapped");
+    let mut g = three();
+    g.put_u32(points::GAME_TIME.base, 0);
+    assert_eq!(game_tick(&g), None, "no game-time record");
+    g.map(0x0068_0000, 0x10)
+        .put_u32(points::GAME_TIME.base, 0x0068_0000)
+        .put_u32(0x0068_0000 + GAME_TIME_TICK, 7);
+    assert_eq!(game_tick(&g), Some(7));
 }
 
 #[test]

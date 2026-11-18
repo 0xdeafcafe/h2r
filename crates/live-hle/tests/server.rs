@@ -3154,3 +3154,68 @@ fn stat_reads_of_a_ranked_playlist_answer_with_the_players_rank() {
     assert_eq!(stat(&w, 1, 0), (0, 0));
     assert_eq!(w.call("XOnlineTaskClose", &[task]), 0);
 }
+
+impl Server {
+    /// Bans `who` as the operator (docs/live/live-admin.md "Bans").
+    fn ban(&self, who: &Account) {
+        let token = sign::issue_token(
+            &self.operator,
+            &format!("server:{}", self.discovery.id),
+            &self.discovery.id,
+            lxm::REPORTS_MODERATE,
+            time::OffsetDateTime::now_utc().unix_timestamp(),
+        );
+        self.agent
+            .post(&self.url(&format!("/v1/admin/bans/{}", who.xuid)))
+            .set("authorization", &format!("Bearer {token}"))
+            .send_string(r#"{"reason":"testing"}"#)
+            .unwrap();
+    }
+}
+
+#[test]
+fn a_banned_account_signs_in_to_the_account_dialog() {
+    let server = Server::new();
+    let banned = server.account("Banned");
+    server.ban(&banned);
+    let mut w = World::new(&server.embedded.url, &[&banned]);
+    let h = w.begin(&[0]);
+    // 0x80151200: the game's result 2, dialog 0x27 (docs/live/live-boundary.md).
+    assert_eq!(w.wait(h), ACCOUNT_REQUIRES_MANAGEMENT);
+    assert_eq!(
+        w.call("XOnlineLogonTaskGetResults", &[h]),
+        ACCOUNT_REQUIRES_MANAGEMENT
+    );
+    assert!(!server.events().iter().any(|e| e.kind == types::SIGNED_IN));
+}
+
+#[test]
+fn a_ban_mid_session_reaches_the_persistent_connection_task() {
+    let server = Server::new();
+    let player = server.account("Player");
+    let mut w = World::new(&server.embedded.url, &[&player]);
+    let h = w.logon();
+    server.ban(&player);
+    let deadline = Instant::now() + Duration::from_secs(4);
+    loop {
+        let status = w.call("XOnlineTaskContinue", &[h]);
+        if status == ACCOUNT_REQUIRES_MANAGEMENT {
+            break;
+        }
+        assert_eq!(
+            status & 0x8000_0000,
+            0,
+            "{status:#x} until the next heartbeat"
+        );
+        assert!(Instant::now() < deadline, "the heartbeat never saw the ban");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        w.call("XOnlineLogonTaskGetResults", &[h]),
+        ACCOUNT_REQUIRES_MANAGEMENT
+    );
+    assert_eq!(
+        w.hle.server_status().last_error,
+        ACCOUNT_REQUIRES_MANAGEMENT
+    );
+}

@@ -49,6 +49,11 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "RENDER_FRAME",
         "after render_frame_and_present, on the game thread",
     ),
+    (
+        "map-copy",
+        "CACHE_COPY_STEP",
+        "the loading screen's cache copy on the game thread; steps it with guest calls",
+    ),
     // Game-thread points: the simulation, the UI and the level start.
     ("h1-health", "OBJECT_DAMAGE_UPDATE", AFTER),
     ("h1-health", "BODY_RESTORE", AFTER),
@@ -70,6 +75,7 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     ),
     ("skulls-custom", "GAME_TICK", AFTER),
     ("touch-glue", "GAME_TICK", AFTER),
+    ("cheats", "GAME_TICK", AFTER),
     ("layouts-value", "CONTROLS_ROW_TEXT", AFTER),
     ("controls-text", "CONTROLS_ROW_TEXT", AFTER),
     // Local bots: the game thread's frame, sound and players screen. Around
@@ -108,6 +114,12 @@ mod tests {
         r.add(&crate::map_slots::MapSlots {
             vfs: Arc::new(std::sync::Mutex::new(vfs::Vfs::new())),
         })
+        .unwrap();
+        r.add(&crate::map_copy::MapCopy).unwrap();
+        r.add(&crate::cheats::CheatsFeature(
+            Arc::new(std::sync::Mutex::new(crate::cheats::Cheats::default())),
+            false,
+        ))
         .unwrap();
         crate::skulls::install(&mut r, store.clone()).unwrap();
         crate::skulls_mp::install(&mut r, store.clone(), None, None).unwrap();

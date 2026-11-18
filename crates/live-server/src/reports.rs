@@ -235,7 +235,7 @@ fn text(field: &str, raw: &str) -> ApiResult<String> {
 }
 
 impl Live {
-    fn who_is(&self, xuid: Xuid) -> Who {
+    pub(crate) fn who_is(&self, xuid: Xuid) -> Who {
         Who {
             xuid,
             gamertag: self
@@ -429,7 +429,7 @@ impl Live {
 
 type Shared = State<Arc<Live>>;
 
-fn body_json<T: serde::de::DeserializeOwned + Default>(
+pub(crate) fn body_json<T: serde::de::DeserializeOwned + Default>(
     body: Result<Bytes, BytesRejection>,
 ) -> ApiResult<T> {
     let bytes = body.map_err(|e| invalid(e.body_text()))?;

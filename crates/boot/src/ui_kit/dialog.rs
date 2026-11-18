@@ -82,10 +82,17 @@ const fn rect(top: i16, left: i16, bottom: i16, right: i16) -> Rect {
 }
 
 /// Our parts' places, inside the panel between the header (bottom 73) and
-/// the footer (top -83): the body under the title, the cells at the
-/// passcode dialog's own height (its cells' top is 6), the status line
-/// above the legend.
-pub const BODY_TOP: i16 = 66;
+/// the footer (top -83). The main menu stays drawn in full under a dialog
+/// (docs/game/ui-builder.md "The modal dialog"), and its logo is at
+/// `[45 -255 -19 257]`: the band from the body's top down to [`STRIP_BOTTOM`]
+/// is the panel's cleanest. The body starts where retail's dialog texts
+/// do (72 and 74); a code page's body stays in the band, and a one-line
+/// body has the status line under it there when two lines fit (they don't
+/// at the disc's font 1, 19 units a line in a 27-unit band). The cells are at the passcode
+/// dialog's own height (its cells' top is 6). Otherwise the status line
+/// sits above the legend ([`STATUS`]).
+pub const BODY_TOP: i16 = 72;
+pub const STRIP_BOTTOM: i16 = 45;
 pub const CELL_TOP: i16 = 6;
 pub const STATUS: Rect = rect(-51, -243, -80, 255);
 /// The text column's edges: the header layout's title rectangle's.
@@ -178,6 +185,85 @@ pub fn cell_lefts(n: usize, width: i32, gap_after: Option<usize>) -> Vec<i32> {
         .collect()
 }
 
+/// The placement the layout pins (the `placement` check, run for every
+/// modal by [`crate::ui_kit::layout::check`]): what of `v` breaks it.
+/// The body starts at [`BODY_TOP`]; with cells, its ink stays above
+/// [`STRIP_BOTTOM`] and every cell is at [`CELL_TOP`]; a one-line status
+/// under a one-line body sits in that band when two lines fit there.
+pub fn placement(v: &View, m: &dyn Metrics) -> Vec<(String, &'static str)> {
+    use crate::ui_kit::layout::ink;
+    let mut out = Vec::new();
+    let Some(body) = v.widget("body") else {
+        return vec![("body".into(), "a dialog has a body")];
+    };
+    if body.rect[0] != BODY_TOP {
+        out.push((
+            "body".into(),
+            "the body starts at 72, as retail's dialog texts do",
+        ));
+    }
+    let Kind::Text { font, .. } = &body.kind else {
+        return out;
+    };
+    let lh = m.line_height(*font);
+    let body_ink = ink(body, m);
+    let cells = v
+        .widgets
+        .iter()
+        .filter(|w| w.id.starts_with("cell.") && w.id.ends_with(".art"));
+    let mut has_cells = false;
+    for c in cells {
+        has_cells = true;
+        if c.rect[0] != CELL_TOP {
+            out.push((
+                c.id.clone(),
+                "cells sit at the passcode dialog's height (top 6)",
+            ));
+        }
+    }
+    if has_cells && body_ink.is_some_and(|r| r.bottom < STRIP_BOTTOM) {
+        out.push((
+            "body".into(),
+            "a code page's body stays above the logo (down to 45)",
+        ));
+    }
+    let one_line = |w: &Widget| w.text().is_some_and(|t| !t.contains('\n'));
+    let fits = i32::from(BODY_TOP) - 2 * lh >= i32::from(STRIP_BOTTOM);
+    if let Some(st) = v.widget("status")
+        && fits
+        && one_line(body)
+        && one_line(st)
+        && ink(st, m).is_some_and(|r| r.top > BODY_TOP || r.bottom < STRIP_BOTTOM)
+    {
+        out.push((
+            "status".into(),
+            "under a one-line body, the status is in the band above the logo",
+        ));
+    }
+    out
+}
+
+/// Where the status line goes: under a one-line body in the band above
+/// the logo when a line of it fits there, else above the legend.
+pub fn status_place(
+    d: &DialogSpec,
+    body_lines: usize,
+    g: &DialogGeometry,
+    m: &dyn Metrics,
+) -> Rect {
+    let lh = m.line_height(g.body_font);
+    let top = i32::from(BODY_TOP) - lh;
+    let one_line = d
+        .status
+        .as_ref()
+        .is_some_and(|st| m.width(g.body_font, st) <= i32::from(RIGHT - LEFT));
+    if body_lines == 1 && one_line && top - lh >= i32::from(STRIP_BOTTOM) {
+        rect(top as i16, LEFT, STRIP_BOTTOM, RIGHT)
+    } else {
+        STATUS
+    }
+}
+
 /// Dialog `d` of spec `s` as a [`View`] in state `state`: the panel, the
 /// title, the body, the cells, the status and the legend, over the screen
 /// beneath.
@@ -223,7 +309,7 @@ pub fn dialog_view(
         rgb(g.header_colour),
     ));
     let body_bottom = if d.cells.is_some() {
-        CELL_TOP + 8
+        STRIP_BOTTOM
     } else {
         STATUS.top + 8
     };
@@ -231,6 +317,15 @@ pub fn dialog_view(
     let lines = wrap(&d.body, i32::from(RIGHT - LEFT), &|x| {
         m.width(g.body_font, x)
     });
+    let status_at = status_place(d, lines.len(), g, m);
+    let body = if status_at == STATUS {
+        body
+    } else {
+        Rect {
+            bottom: status_at.top,
+            ..body
+        }
+    };
     w.push(text(
         "body",
         body,
@@ -277,10 +372,10 @@ pub fn dialog_view(
         }
     }
     if let Some(st) = &d.status {
-        let lines = wrap(st, STATUS.width(), &|x| m.width(g.body_font, x));
+        let lines = wrap(st, status_at.width(), &|x| m.width(g.body_font, x));
         w.push(text(
             "status",
-            STATUS,
+            status_at,
             g.body_font,
             Justify::Left,
             lines.join("\n"),
@@ -422,4 +517,72 @@ mod tests {
             "{issues:?}"
         );
     }
+
+    /// Metrics with 12-unit lines, so two fit in the band above the logo.
+    struct Short;
+    impl Metrics for Short {
+        fn width(&self, f: i16, t: &str) -> i32 {
+            Synthetic.width(f, t)
+        }
+        fn line_height(&self, _f: i16) -> i32 {
+            12
+        }
+    }
+
+    /// The body at 72; the status under a one-line body in the band above
+    /// the logo when two lines fit there, above the legend when not; and
+    /// the placement check pins each.
+    #[test]
+    fn the_body_and_status_keep_above_the_logo() {
+        let s = code(0, Some("Wrong code."));
+        let d = s.dialog.as_ref().unwrap();
+        let g = DialogGeometry::fallback();
+        let v = dialog_view(&s, d, &g, &Short, "t");
+        assert_eq!(v.widget("body").unwrap().rect[0], BODY_TOP);
+        assert_eq!(
+            v.widget("status").unwrap().rect,
+            [60, LEFT, STRIP_BOTTOM, RIGHT]
+        );
+        assert_eq!(placement(&v, &Short), vec![]);
+        // Synthetic lines are 16: two don't fit in 27, so the status
+        // stays above the legend.
+        let v16 = dialog_view(&s, d, &g, &Synthetic, "t");
+        let st = v16.widget("status").unwrap().rect;
+        assert_eq!(st, [STATUS.top, STATUS.left, STATUS.bottom, STATUS.right]);
+        assert_eq!(placement(&v16, &Synthetic), vec![]);
+
+        let broken = |f: &dyn Fn(&mut View)| {
+            let mut v = v.clone();
+            f(&mut v);
+            placement(&v, &Short)
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect::<Vec<_>>()
+        };
+        let at = |v: &mut View, id: &str, r: [i16; 4]| {
+            v.widgets.iter_mut().find(|w| w.id == id).unwrap().rect = r;
+        };
+        assert_eq!(broken(&|v| at(v, "status", STATUS_RECT)), ["status"]);
+        assert_eq!(broken(&|v| at(v, "body", [66, LEFT, 45, RIGHT])), ["body"]);
+        assert_eq!(
+            broken(&|v| at(v, "cell.2.art", [10, -63, -39, -8])),
+            ["cell.2.art"]
+        );
+        let long = "word ".repeat(200);
+        assert_eq!(
+            broken(&|v| {
+                if let Some(Widget {
+                    kind: Kind::Text { text, .. },
+                    ..
+                }) = v.widgets.iter_mut().find(|w| w.id == "body")
+                {
+                    *text = long.trim().replace(' ', "\n");
+                }
+            }),
+            ["body"],
+            "a code page's body running into the logo"
+        );
+    }
+
+    const STATUS_RECT: [i16; 4] = [STATUS.top, STATUS.left, STATUS.bottom, STATUS.right];
 }

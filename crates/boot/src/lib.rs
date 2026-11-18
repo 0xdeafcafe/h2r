@@ -21,6 +21,7 @@ pub mod coop_players;
 pub mod coop_probe;
 pub mod campaign_cards;
 pub mod campaign_menu;
+pub mod cheats;
 pub mod campaigns;
 pub mod custom_games;
 pub mod d3d_diag;
@@ -51,8 +52,10 @@ pub mod keyboard_glue;
 pub mod live_glue;
 pub mod live_notice;
 pub mod agent_glue;
+pub mod debug_menu_glue;
 pub mod lockstep_glue;
 pub mod map_bases;
+pub mod map_copy;
 pub mod map_override;
 pub mod map_slots;
 pub mod movies_glue;
@@ -78,6 +81,7 @@ pub mod ui;
 pub mod ui_kit;
 pub mod ui_watch;
 pub mod bot_glue;
+pub mod clankers;
 pub mod video_screen;
 pub mod snapshot_probe;
 pub mod sse;
@@ -652,6 +656,12 @@ pub struct Host {
     /// kernel (for its logical clock). Returning false ends the run
     /// (outcome `HostStop`).
     pub between_slices: Option<BetweenSlices>,
+    /// Our debug menu (docs/runtime/debug-menu.md): its calls go to the
+    /// agent (`H2_AGENT`'s, else a local one with no socket), and it gets
+    /// the menu's host methods (`settings.*`, `perf.overlay`, `cheat.*`).
+    pub debug_menu: Option<debug_menu::Shared>,
+    /// The perf overlay's on/off switch, for `perf.overlay`.
+    pub perf_overlay: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// Called once with the kernel's VFS when it is attached, before the
     /// game runs: `h2 play` watches U: through it for cloud saves
     /// (`vfs::Vfs::set_change_observer`, docs/live/live-cloud-saves.md).
@@ -812,6 +822,9 @@ pub fn run_hosted_with_live(
         }
         features.add(&map_slots::MapSlots { vfs }).map_err(|e| anyhow::anyhow!("map slots: {e}"))?;
     }
+    // Maps copy to their cache slots several steps a loading frame, not one
+    // (docs/runtime/cache-slots.md, "Copy speed on the loading screen").
+    features.add(&map_copy::MapCopy).map_err(|e| anyhow::anyhow!("map copy: {e}"))?;
     // Frame species and weapon names come from the loaded map's tag names,
     // which stay on disc: let telemetry find the map file through the VFS.
     // Which map exactly (docs/game/maps.md §5): a package's MapId, None for the
@@ -978,6 +991,10 @@ pub fn run_hosted_with_live(
     if opts.xapi {
         bot_glue::add_from_env();
         bot_glue::install(&mut features, &opts.data_root).context("installing the bots")?;
+        // The Clankers page and its Game Setup row (stage 7).
+        if let Some(store) = host.settings.as_ref() {
+            clankers::install(&mut features, store).context("installing the Clankers page")?;
+        }
     }
     // The iOS touch controls' game side (docs/runtime/ios.md): direct
     // look into player one's facing, and the layout from player one's
@@ -1083,8 +1100,11 @@ pub fn run_hosted_with_live(
             }
         }
         Some(path) => Some(agent_glue::AgentGlue::install(&mut features, path, xa.as_deref(), input_replay)?),
+        // The debug menu talks to an agent: a local one, with no socket.
+        None if host.debug_menu.is_some() => Some(agent_glue::AgentGlue::local()),
         None => None,
     };
+    let watch_overrides = agent_glue::socket_from_env().is_some();
     // edit.* and render.* on the agent (hot_glue.rs, docs/graphics/hot-iteration.md).
     if let Some(a) = &agent {
         let maps = k.vfs().map(|vfs| -> hot_glue::MapLocator {
@@ -1094,7 +1114,13 @@ pub fn run_hosted_with_live(
                 Some(telemetry::MapFile { path: file.path, offset: file.offset, len: file.len })
             })
         });
-        hot_glue::install(&a.agent, &loaded.runtime, maps);
+        hot_glue::install(&a.agent, &loaded.runtime, maps, watch_overrides);
+    }
+    // The debug menu's host methods and connection (debug_menu_glue.rs).
+    if let Some(a) = &agent {
+        debug_menu_glue::install(host.debug_menu.as_ref(), &a.agent, host.settings.clone(), host.perf_overlay.clone());
+        // Our cheats (cheats.rs): refused in co-op and lockstep runs.
+        cheats::install(&mut features, &a.agent, &loaded.runtime, lockstep_on)?;
     }
     // The Rust datum, tag and locale functions, when H2_FEATURES has
     // impl.engine=on (off by default).
@@ -1259,6 +1285,10 @@ pub fn run_hosted_with_live(
     // H2_FRAME_STATS=1: frame times split by phase (docs/perf/frame-budget.md).
     // `h2 play --frame-stats` may have started them already.
     let frame_stats = timeline::phase::enabled() || timeline::phase::start_from_env();
+    let gpu = !headless || std::env::var_os("H2_BOOT_GFX").is_some();
+    if let Some(note) = d3d_glue::frame_stats_gpu_note(frame_stats && d3d_calls.is_some(), gpu) {
+        eprintln!("{note}");
+    }
     // H2_EFFECT_CENSUS=1: a line per new timed light (EXPLOSION for a
     // grenade-sized one) and an exit summary (effect_census.rs).
     let mut effect_census = effect_census::requested_by(std::env::var(effect_census::ENV).ok().as_deref()).then(|| {

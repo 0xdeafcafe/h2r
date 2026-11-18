@@ -243,13 +243,13 @@ impl Service {
                                 if matches!(command.work, Work::Presence { .. })
                                     && matches!(
                                         error,
-                                        CANNOT_ACCESS_SERVICE | INVALID_USER | SERVERS_BUSY
+                                        CANNOT_ACCESS_SERVICE
+                                            | INVALID_USER
+                                            | SERVERS_BUSY
+                                            | ACCOUNT_REQUIRES_MANAGEMENT
                                     )
                                 {
-                                    command
-                                        .session
-                                        .status
-                                        .store(CONNECTION_LOST, Ordering::Release);
+                                    command.session.status.store(lost(error), Ordering::Release);
                                 }
                             }
                             command.result.finish(result);
@@ -379,11 +379,15 @@ enum Error {
     Protocol,
     TooLarge,
     Team(live_proto::team::TeamError),
+    /// The server refused the account: it is banned
+    /// (docs/live/live-admin.md "Bans").
+    Banned,
 }
 impl Error {
     fn result(self) -> u32 {
         match self {
             Self::Team(error) => error.hresult(),
+            Self::Banned => ACCOUNT_REQUIRES_MANAGEMENT,
             Self::Status(401 | 403 | 404) => INVALID_USER,
             Self::Status(429 | 503) => SERVERS_BUSY,
             Self::TooLarge => BUFFER_TOO_SMALL,
@@ -393,6 +397,16 @@ impl Error {
 }
 fn now() -> i64 {
     time::OffsetDateTime::now_utc().unix_timestamp()
+}
+/// What the persistent connection task reports when a request made while
+/// signed in fails: a ban as the account-management result the game
+/// shows its account dialog for, anything else as a lost connection.
+fn lost(error: u32) -> u32 {
+    if error == ACCOUNT_REQUIRES_MANAGEMENT {
+        error
+    } else {
+        CONNECTION_LOST
+    }
 }
 impl Worker {
     fn response(
@@ -409,8 +423,11 @@ impl Worker {
             ureq::Error::Status(code, response) => {
                 let mut data = Vec::new();
                 let _ = response.into_reader().take(4096).read_to_end(&mut data);
-                let team = serde_json::from_slice::<serde_json::Value>(&data)
-                    .ok()
+                let body = serde_json::from_slice::<serde_json::Value>(&data).ok();
+                if body.as_ref().is_some_and(|v| v["error"] == "banned") {
+                    return Error::Banned;
+                }
+                let team = body
                     .and_then(|v| v.get("team_error").cloned())
                     .and_then(|v| serde_json::from_value(v).ok());
                 team.map(Error::Team).unwrap_or(Error::Status(code))
@@ -1275,7 +1292,7 @@ impl Worker {
                     active
                         .session
                         .status
-                        .store(CONNECTION_LOST, Ordering::Release);
+                        .store(lost(e.result()), Ordering::Release);
                 }
             }
         }

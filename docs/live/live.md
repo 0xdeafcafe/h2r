@@ -1016,6 +1016,18 @@ the title never sends (7, 8, 9, over 12) are refused with
 INVALID_ARGUMENT; with no server the call returns NO_SESSION and makes no
 task.
 
+## Client HLE: bans
+
+A banned account's writes are refused with `banned` ([live-admin.md](live-admin.md)
+§9). The HLE's HTTP worker reads that error body and maps it to
+`0x80151200`, account requires management, wherever it would map a
+status: a logon whose `SignedIn` is refused fails with it, both as the
+task's result and in every user's per-user HRESULT, which the game turns
+into result 2 and its account dialog `0x27`. A ban during a session shows
+on the next heartbeat (or presence update): the persistent logon task's
+status becomes `0x80151200` instead of CONNECTION_LOST, so
+`XOnlineTaskContinue` and `XOnlineLogonTaskGetResults` return it.
+
 ## Client HLE: title storage and profile fallback
 
 The signed-in resource manager `0x0008e240`, called each network update by

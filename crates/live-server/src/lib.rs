@@ -25,6 +25,7 @@
 pub mod admin;
 pub mod app;
 pub mod art;
+pub mod bans;
 pub mod blobs;
 pub mod caching;
 #[cfg(feature = "native")]
@@ -72,6 +73,7 @@ pub mod stream;
 mod teams;
 pub mod title_headers;
 pub mod titleblobs;
+pub mod usage;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;

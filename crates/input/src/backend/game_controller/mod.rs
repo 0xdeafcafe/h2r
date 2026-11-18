@@ -22,7 +22,7 @@
 
 use crate::backend::HostBackend;
 use crate::gamepad::Rumble;
-use crate::host::{HostButton, HostPad, HostPadId, HostPadState};
+use crate::host::{HostButton, HostPad, HostPadId, HostPadState, Touchpad};
 
 #[cfg(target_vendor = "apple")]
 mod apple;
@@ -55,6 +55,38 @@ pub struct Snapshot {
     pub options: bool,
     pub left_stick_press: bool,
     pub right_stick_press: bool,
+    /// A DualSense's or DualShock 4's touchpad (`GCDualSenseGamepad`,
+    /// `GCDualShockGamepad`): the click and the two finger positions as
+    /// read, a lifted finger at exactly (0, 0) ([`touch_finger`]).
+    pub touchpad: Option<RawTouchpad>,
+}
+
+/// A touchpad as the framework reports it: `touchpadButton`, and
+/// `touchpadPrimary` / `touchpadSecondary` as x, y in -1..=1 (+y up).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RawTouchpad {
+    pub click: bool,
+    pub primary: (f32, f32),
+    pub secondary: (f32, f32),
+}
+
+/// A finger from a touchpad axis pair. The framework has no "touching"
+/// flag on these elements and returns a lifted finger to the centre, so
+/// exactly (0, 0) reads as no finger (a resting finger is never exactly
+/// there for long); anything not finite too.
+pub fn touch_finger(p: (f32, f32)) -> Option<(f32, f32)> {
+    let ok = p.0.is_finite() && p.1.is_finite() && p != (0.0, 0.0);
+    ok.then(|| (p.0.clamp(-1.0, 1.0), p.1.clamp(-1.0, 1.0)))
+}
+
+impl RawTouchpad {
+    pub fn to_touchpad(self) -> Touchpad {
+        Touchpad {
+            click: self.click,
+            primary: touch_finger(self.primary),
+            secondary: touch_finger(self.secondary),
+        }
+    }
 }
 
 /// One connected controller as a platform source reports it.
@@ -163,6 +195,7 @@ pub fn map_snapshot(s: &Snapshot) -> HostPadState {
     st.right_trigger = s.right_trigger;
     // The framework already applies its own deadzones.
     st.prefiltered = true;
+    st.touchpad = s.touchpad.map(RawTouchpad::to_touchpad);
     st.analog_buttons = Some([s.a, s.b, s.x, s.y, s.right_shoulder, s.left_shoulder].map(unit));
     st
 }
@@ -437,6 +470,31 @@ mod tests {
             | Buttons::DPAD_UP
             | Buttons::DPAD_RIGHT;
         assert_eq!(g.buttons, want);
+    }
+
+    #[test]
+    fn the_touchpad_passes_through_and_never_reaches_the_guest() {
+        let s = Snapshot {
+            touchpad: Some(RawTouchpad {
+                click: true,
+                primary: (0.5, -2.0),
+                secondary: (0.0, 0.0),
+            }),
+            ..Default::default()
+        };
+        let st = map_snapshot(&s);
+        assert_eq!(
+            st.touchpad,
+            Some(Touchpad {
+                click: true,
+                primary: Some((0.5, -1.0)),
+                secondary: None,
+            })
+        );
+        assert_eq!(map_snapshot(&Snapshot::default()).touchpad, None, "no touchpad");
+        assert_eq!(gp(&s), gp(&Snapshot::default()), "the game has no touchpad");
+        assert_eq!(touch_finger((f32::NAN, 0.2)), None);
+        assert_eq!(touch_finger((0.0, 0.1)), Some((0.0, 0.1)));
     }
 
     #[test]

@@ -6,6 +6,8 @@
 //! No runtime and no I/O, so the recomp can link it without tokio.
 
 pub mod audit;
+pub mod bans;
+pub mod bots;
 pub mod game;
 pub mod hopper;
 pub mod jcs;
@@ -658,6 +660,9 @@ pub enum ErrorCode {
     TooLarge,
     /// 429.
     RateLimited,
+    /// 403: the account is banned (docs/live/live-admin.md "Bans"); the
+    /// message says until when.
+    Banned,
     /// 501: in the contract, not built yet.
     Unimplemented,
     /// 503 (and 500).

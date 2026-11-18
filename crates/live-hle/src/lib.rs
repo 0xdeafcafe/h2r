@@ -73,6 +73,9 @@ pub mod status {
     pub const CANNOT_ACCESS_SERVICE: u32 = 0x8015_1001;
     pub const SERVERS_BUSY: u32 = 0x8015_1003;
     pub const CONNECTION_LOST: u32 = 0x8015_1004;
+    /// The account needs attention on the dashboard: what a banned account
+    /// gets (docs/live/live-boundary.md, game result 2, dialog 0x27).
+    pub const ACCOUNT_REQUIRES_MANAGEMENT: u32 = 0x8015_1200;
     pub const BUFFER_TOO_SMALL: u32 = 0x8015_0001;
     pub const MATCH_INVALID_SESSION: u32 = 0x8015_5100;
     pub const MATCH_INVALID_DATA_TYPE: u32 = 0x8015_5102;
