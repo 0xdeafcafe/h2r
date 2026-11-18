@@ -931,15 +931,54 @@ dump whose return address is a continuation token (`0xb...`) and whose
 arguments point into the render stack (in the feature arena) is a
 serviced call, so it is also a sign of pipelined frames.
 
-**Watching words** (`H2_PIPELINE_WATCH=0x485a80,0x4e034c`). Every change
-to a listed guest word prints `pipeline: watch <addr> <old> -> <new>
-after <step>`, at most 200 lines. A step says who changed it: `the game
+**Watching words** (`H2_PIPELINE_WATCH=0x485a80,0x4e034c`). The first
+sight of each listed guest word prints `pipeline: watch <addr> = <value>
+(its page mapped|unmapped) first seen after <step>`, and every change of
+the value, or of whether the page it points at is mapped, prints
+`pipeline: watch <addr> <old> -> <new> after <step>`; at most 200 lines.
+With `H2_PIPELINE_RENDER` unset the watch still runs, at each
+`render_frame_and_present` entry (`the game thread ran (pipelining off)`),
+and nothing else of the feature is installed (no render stack in the
+arena): the run to compare with. A step says who changed it: `the game
 thread ran (at a frame / before the hand-back / before a service)` is the
 game or another guest thread; `a serviced kernel call` is the kernel
 call; `the frame wait and the launch` covers the launch's counter writes;
 `the hand-back`, `the hand-back before a fallback` and `a service's stack
 copy, push and flush` are merges of the feature's. It is the switch that
 settles whether a bad global came from a merge.
+
+From the first check on, the watched words' pages also carry a write trap
+on live memory (`Guest::set_trap_focus`, `crates/runtime/src/trap.rs`):
+every write over a watched word through the checked path prints at once
+`trap: focus <word> = <value> written by pc <pc> (<addr>+<len>, thread
+<guest thread>, hle <handler>, host thread <name>)` (400 lines at most),
+so a write in the middle of a frame that is followed by a crash before
+the next check is still named. `pc 0` is the host (HLE, a Rust port);
+`hle` is then the kernel export or override running. Not seen: raw
+physical writers (the feature's merges, which the step lines cover). The
+trapped pages stay on the slow path for the rest of the run.
+
+Run 7 (2026-11-18) had `0x00485a80 = 0x804d9f58` at every check while the
+game thread faulted at `0x1958f` with `edx = 0xfbdc19a8`, which `mov
+edx,[0x485A80]` at `0x19585` loaded in the same serial frame, the first
+after 6 pipelined ones (no other branch reaches `0x19585..0x19599`; the
+jump table at `0x19b68` enters the case at `0x19581`). So the word was
+written in that frame before the read and the crash came before the next
+check: the focus trap names that write.
+
+**The view stack leak (fixed).** The trap named `pc 0x2bc19` on the game
+thread: the `rep movsd` that pushes a view, copying a 0x298-byte record to
+`0x004850d0 + 0x298 * depth` after `inc [0x0046701c]` (popped at
+`0x13c44`; pushed also at `0x2c736`, `0x2c83d`, `0x2cace`). At depth 3
+the record covers `0x00485a80` and the globals after it. The depth had
+leaked one: a pipelined render pushed a view, made a serviced call (whose
+flush gave live RAM the pushed depth), popped the view after it, and its
+hand-back, comparing the view with the snapshot, saw the depth at its
+snapshot value and left live RAM at the pushed one. Every byte a render
+changed and put back after a flush did the same. The join now flushes one
+last time against what the earlier flushes gave live RAM before the
+hand-back, so live RAM ends at the render's final bytes; the render stack
+is left out of that flush (a fallback copies it whole from the view).
 
 **Tests.** `crates/feature/tests/pipeline_render.rs`: a synthetic render
 front-end (a Rust function registered as generated code with resume

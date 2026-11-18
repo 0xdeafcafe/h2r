@@ -49,6 +49,13 @@ const KERNEL_CALLS: u32 = 0x2_4040;
 const DEEP: u32 = 0x2_4050;
 /// Set: the sim frees objects (below) and the render's tail reads one.
 const CHURN: u32 = 0x2_4054;
+/// A view stack depth (as `0x0046701c`): the render pushes a view at its
+/// entry and pops it after its kernel call, and stores the view's record at
+/// `VIEWS + 4 * depth`. Balanced in every frame; a depth left one deeper
+/// moves every later record one slot up (the game's 0x298-byte records run
+/// into the globals after them).
+const VIEW_DEPTH: u32 = 0x2_4058;
+const VIEWS: u32 = 0x2_4700;
 /// Object table: a body pointer per index (0: freed), and the bodies.
 const OBJECTS: u32 = 0x2_4100;
 /// The I/O queue head (a live range, as the game's pool is), the request
@@ -144,6 +151,10 @@ fn render(
             cpu.ebp = 0;
             m.set_u8(VBLANKS.0, 0xee)?;
             m.set_u8(CLEAR, 0)?;
+            // Push a view: its record at the new depth.
+            let depth = m.u32(VIEW_DEPTH)? + 1;
+            m.set_u32(VIEW_DEPTH, depth)?;
+            m.set_u32(VIEWS + 4 * (depth % 64), v)?;
             cpu.esp -= 4;
             m.set_u32(cpu.esp, INPUT)?;
             m.call(cpu, D3D_DRAW, FRAME + 0x10)
@@ -206,6 +217,10 @@ fn render(
             if mode == 6 {
                 m.set_u32(PROTECTED + 4 * cpu.esi, 0x600 + cpu.esi)?;
             }
+            // Pop the view pushed at the entry (after the kernel call, so a
+            // serviced call's flush sees it pushed).
+            let depth = m.u32(VIEW_DEPTH)?;
+            m.set_u32(VIEW_DEPTH, depth.wrapping_sub(1))?;
             // After the kernel (on the game thread in a fallback, still on
             // the render stack): a deep frame here too.
             probe(&m, cpu.esp)?;
@@ -989,15 +1004,124 @@ fn a_watched_word_reports_each_change_once() {
     let n = rounds();
     let mut watched = rig_full(true, &[], ADDRS.clone(), &[INPUT]);
     let mut plain = rig(true);
+    // Switched off, the watch still runs at each frame.
+    let mut off = rig_full(false, &[], ADDRS.clone(), &[INPUT]);
     for k in 1..=n {
         watched.round(k, false);
         plain.round(k, false);
+        off.round(k, false);
     }
     watched.finish();
     plain.finish();
+    off.finish();
     assert_eq!(watched.feature.stats().pipelined, u64::from(n));
-    // Seen first at round 1's frame; each later round changed it once.
-    assert_eq!(watched.feature.watch_lines(), n - 1);
+    // The first value at round 1's frame, then each later round's change.
+    assert_eq!(watched.feature.watch_lines(), n);
+    assert_eq!(off.feature.watch_lines(), n);
+    assert_eq!(off.feature.stats().pipelined, 0);
     assert_eq!(plain.feature.watch_lines(), 0);
     compare(&plain.data(), &watched.data());
+    // Each write over the word after the first frame, as it happened: the
+    // sim's (rounds 2..=n, the host here: pc 0) with the value it wrote.
+    for r in [&watched, &off] {
+        let hits = r.rt.memory().focus_hits();
+        let values: Vec<u32> = hits
+            .iter()
+            .map(|&(w, v, _)| {
+                assert_eq!(w, INPUT);
+                v
+            })
+            .collect();
+        assert_eq!(values, (2..=n).collect::<Vec<_>>());
+        assert!(hits.iter().all(|(_, _, h)| h.write && h.pc == 0));
+    }
+    assert!(plain.rt.memory().focus_hits().is_empty());
+}
+
+/// While a render is in flight the game maps a fresh page, writes it, and
+/// makes the read-only page writable and writes that: the join (a completed
+/// render, a fallback, a serviced call's flush) and the next launch keep
+/// the live mappings, protections and bytes; the render never touches them.
+#[test]
+fn mappings_the_game_makes_while_a_render_is_in_flight_survive_the_join() {
+    const FRESH: u32 = 0x5_0000;
+    for (mode, serviced) in [(0, false), (1, false), (1, true)] {
+        let mut r = if serviced {
+            rig_with(true, &["KeQuerySystemTime"])
+        } else {
+            rig(true)
+        };
+        r.round(1, mode == 1);
+        assert!(r.feature.in_flight());
+        {
+            let mut m = r.rt.memory();
+            m.map_zeroed(FRESH, 0x1000, Permissions::RW).unwrap();
+            m.set_u32(FRESH + 0x10, 0x1234_5678).unwrap();
+            m.protect(PROTECTED, Permissions::RW).unwrap();
+            m.set_u8(PROTECTED + 0x20, 0x5a).unwrap();
+        }
+        for k in 2..=4 {
+            r.round(k, mode == 1);
+            let m = r.rt.memory();
+            assert_eq!(
+                m.u32(FRESH + 0x10).unwrap(),
+                0x1234_5678,
+                "mode {mode} round {k}"
+            );
+            assert_eq!(
+                m.u8(PROTECTED + 0x20).unwrap(),
+                0x5a,
+                "mode {mode} round {k}"
+            );
+        }
+        r.finish();
+        let mut m = r.rt.memory();
+        assert_eq!(m.u32(FRESH + 0x10).unwrap(), 0x1234_5678, "mode {mode}");
+        m.set_u8(PROTECTED + 0x21, 1).expect("still writable");
+        assert!(
+            m.mappings().iter().any(|p| p.virtual_start <= FRESH
+                && u64::from(FRESH) < u64::from(p.virtual_start) + u64::from(p.len)),
+            "mode {mode}: the fresh page is still mapped"
+        );
+        let s = r.feature.stats();
+        assert!(s.pipelined >= 4, "mode {mode}: {s:?}");
+        if serviced {
+            assert!(!s.serviced.is_empty(), "{s:?}");
+        } else if mode == 1 {
+            assert!(!s.fallbacks.is_empty(), "{s:?}");
+        }
+    }
+}
+
+/// The render pushes a view before a serviced call and pops it after: the
+/// service's flush gives live RAM the pushed depth, and the pop puts the
+/// view's word back to its snapshot value, which a hand-back against the
+/// snapshot does not see. Live RAM must end at the popped depth, or every
+/// later frame's records land one slot deeper (Halo 2's view stack at
+/// `0x0046701c` ran its 0x298-byte records over `0x00485a80` this way).
+#[test]
+fn a_view_pushed_across_a_serviced_call_and_popped_after_ends_popped_in_live_ram() {
+    let n = 30;
+    let mut serial = rig(false);
+    let mut piped = rig_with(true, &["KeQuerySystemTime"]);
+    for k in 1..=n {
+        serial.round(k, true);
+        piped.round(k, true);
+        if k > 1 {
+            // The last frame joined: its depth is back to 0.
+            assert_eq!(piped.rt.memory().u32(VIEW_DEPTH).unwrap(), 0, "round {k}");
+        }
+    }
+    serial.finish();
+    piped.finish();
+    let s = piped.feature.stats();
+    assert_eq!(
+        s.serviced.get("kernel:KeQuerySystemTime"),
+        Some(&u64::from(n))
+    );
+    assert!(s.fallbacks.is_empty(), "{s:?}");
+    assert_eq!(piped.rt.memory().u32(VIEW_DEPTH).unwrap(), 0);
+    // Every frame's record went to the first slot.
+    assert_eq!(piped.rt.memory().u32(VIEWS + 8).unwrap(), 0);
+    compare(&serial.data(), &piped.data());
 }

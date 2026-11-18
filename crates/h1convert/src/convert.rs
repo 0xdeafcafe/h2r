@@ -514,7 +514,7 @@ pub fn prepare<R: Read + Seek>(
         material_shaders,
         textures,
         skies: crate::sky::Skies {
-            shader: crate::sky::base_sky_shader(base),
+            templates: crate::sky_shaders::sky_templates(base),
             ..crate::sky::read(h1)
         },
         ambience,

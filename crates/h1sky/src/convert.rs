@@ -132,6 +132,9 @@ pub struct FromMap {
     pub model: Option<(String, h1models::Converted)>,
     /// `sky +0x14`.
     pub model_scale: f32,
+    /// The Halo 1 shader of each of the model's materials, in material
+    /// order (the converted model's material `k` is Halo 1's shader `k`).
+    pub shaders: Vec<h1map::TagId>,
 }
 
 /// Reads the `sky ` tag `tag` of `map`, and converts its render model when
@@ -142,6 +145,7 @@ pub struct FromMap {
 pub fn sky_from_map(map: &h1map::H1Map, tag: &h1map::Tag) -> Result<FromMap> {
     let sky = h1::Sky::from_map(map, tag)?;
     let mut model_scale = 1.0;
+    let mut shaders = Vec::new();
     let model = if sky.model.id.is_none() {
         None
     } else {
@@ -155,12 +159,14 @@ pub fn sky_from_map(map: &h1map::H1Map, tag: &h1map::Tag) -> Result<FromMap> {
         let (h1_model, converted) =
             h1models::model_from_map(map, tag, &h1models::mode::ModelOptions::default())?;
         model_scale = self::model_scale(nearest_surface(&h1_model), level_reach(map));
+        shaders = h1_model.shaders.iter().map(|s| s.tag).collect();
         Some((tag.name.clone(), converted))
     };
     Ok(FromMap {
         sky,
         model,
         model_scale,
+        shaders,
     })
 }
 

@@ -184,6 +184,7 @@ fn real_h1_disc_a30_bloodgulch_round_trip() {
             sky,
             model,
             model_scale,
+            ..
         } = convert::sky_from_map(&map, tag).expect("sky reads");
         let model = model.unwrap_or_else(|| panic!("{map_name}'s sky has a model"));
         let (bytes, id, model_id) = convert::build_sky_map(

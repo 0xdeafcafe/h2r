@@ -215,10 +215,10 @@ pub struct BaseScenario {
     /// With a tree: the old bytes other tags' arrays still use, as
     /// (address, end). They stay as unowned metadata.
     pub keep: Vec<(u32, u32)>,
-    /// The shader converted sky models' materials name
-    /// (`h1convert::sky::base_sky_shader`): never NONE, which the shader
-    /// draw `0x16b90` does not survive.
-    pub sky_shader: Option<TagId>,
+    /// The base's sky shaders converted sky models' materials copy, and
+    /// the one a material falls back to
+    /// (`h1convert::sky_shaders::sky_templates`).
+    pub sky_templates: h1convert::sky_shaders::SkyTemplates,
 }
 
 fn u32_at(b: &[u8], at: usize) -> Result<u32> {
@@ -246,7 +246,7 @@ impl BaseScenario {
             tree: None,
             refusal: None,
             keep: Vec::new(),
-            sky_shader: h1convert::sky::base_sky_shader(base),
+            sky_templates: h1convert::sky_shaders::sky_templates(base),
         };
         match s.relocate(base)? {
             Ok((t, keep)) => {
@@ -840,28 +840,11 @@ pub fn write(
     let mut skies = Vec::new();
     for r in &mp.skies {
         let tag = h1.tag(r.id)?;
-        let h1sky::convert::FromMap {
-            sky,
-            model,
-            model_scale,
-        } = h1sky::convert::sky_from_map(h1, tag).map_err(|e| invalid(format!("sky: {e}")))?;
-        // The model's materials name the base sky's shader; without one the
-        // sky goes in without its model (h1convert::sky).
-        let model = match (model, base.sky_shader) {
-            (Some((n, mut c)), Some(shader)) => {
-                h1convert::sky::set_material_shaders(&mut c.root, shader);
-                Some((n, c))
-            }
-            _ => None,
-        };
-        let id = h1sky::convert::install_sky(
-            set,
-            &sky,
-            model.as_ref().map(|(n, c)| (n.as_str(), c.clone())),
-            &tag.name,
-            model_scale,
-        )
-        .map_err(|e| invalid(format!("sky: {e}")))?;
+        // Each material names a copy of a base sky shader drawing Halo 1's
+        // bitmaps (h1convert::sky_shaders).
+        let id = h1convert::sky::Sky::from_map(h1, tag)
+            .and_then(|sky| sky.install(set, &base.sky_templates))
+            .map_err(|e| invalid(format!("sky: {e}")))?;
         let mut e = Block::zeroed(8);
         e.tag_ref(0, id);
         skies.push(e);

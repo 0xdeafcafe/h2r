@@ -504,7 +504,7 @@ fn params_mut(root: &mut Block) -> Option<&mut Block> {
 }
 
 /// The child block at `at` (a non-empty tag block field) of `b`.
-fn block_child(b: &mut Block, at: u32) -> Option<&mut Block> {
+pub(crate) fn block_child(b: &mut Block, at: u32) -> Option<&mut Block> {
     b.fixups.iter_mut().find_map(|f| match &mut f.kind {
         FixupKind::Block { count, child } if f.offset == at && *count > 0 => Some(child),
         _ => None,

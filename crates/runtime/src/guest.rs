@@ -857,11 +857,51 @@ impl Guest {
     pub fn take_trap_hits(&mut self) -> crate::trap::TrapLog {
         self.trap.as_ref().map(|t| t.take()).unwrap_or_default()
     }
+    /// Watch the 32-bit words at `words` for writes: their pages are armed
+    /// for good (sticky), and every write through the checked path that
+    /// overlaps one of them (generated code, the interpreter, HLE and Rust
+    /// through this Guest; not raw physical writers) is printed at once as
+    /// `trap: focus <word> = <value> written by pc <pc> ...` and kept in
+    /// [`focus_hits`](Self::focus_hits). Installs the trap if none is.
+    pub fn set_trap_focus(&mut self, words: &[u32]) {
+        self.install_trap(1024);
+        let Some(trap) = &self.trap else {
+            return;
+        };
+        trap.set_focus(words);
+        for &w in words {
+            for page in [w >> 12, (w + 3) >> 12] {
+                let p = page as usize;
+                trap.arm(p, true, true);
+                trap.set_sticky(p, true);
+                if let Some(fast) = &mut self.fast_pages {
+                    fast[p].permissions &= !3;
+                }
+            }
+        }
+    }
+    /// The focus writes so far: (word, value written, the access).
+    pub fn focus_hits(&self) -> Vec<(u32, u32, crate::trap::TrapHit)> {
+        self.trap
+            .as_ref()
+            .map(|t| t.focus_hits())
+            .unwrap_or_default()
+    }
     /// A guest (`pc` non-zero) or host access the slow path allowed.
     fn trap_note(&mut self, pc: u32, addr: u32, len: usize, write: bool) {
         let Some(trap) = &self.trap else {
             return;
         };
+        if write {
+            for word in trap.focus_overlaps(addr, len) {
+                let value = self
+                    .fold_address(word)
+                    .map(|p| (p & !crate::watch::CONTIGUOUS_BASE) as usize)
+                    .and_then(|p| self.ram.get(p..p + 4))
+                    .map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+                trap.focus_hit(word, value, pc, addr, len);
+            }
+        }
         let open = trap.note(pc, addr, len, write);
         if open.is_empty() {
             return;
