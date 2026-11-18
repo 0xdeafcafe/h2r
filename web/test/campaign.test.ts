@@ -226,13 +226,13 @@ describe("routing", () => {
     expect(historyMode("team")).toBe("multiplayer");
   });
 
-  test("clans live under /stats/clans", () => {
-    expect(clanHref("abc123")).toBe("/stats/clans/abc123");
+  test("clans live under /games/halo2/clans", () => {
+    expect(clanHref("abc123")).toBe("/games/halo2/clans/abc123");
   });
 
   test("service record halves", () => {
-    expect(recordHref("Sneaky Pete", "multiplayer")).toBe("/stats/players/Sneaky%20Pete");
-    expect(recordHref("Sneaky Pete", "campaign")).toBe("/stats/players/Sneaky%20Pete/campaign");
+    expect(recordHref("Sneaky Pete", "multiplayer")).toBe("/games/halo2/players/Sneaky%20Pete");
+    expect(recordHref("Sneaky Pete", "campaign")).toBe("/games/halo2/players/Sneaky%20Pete/campaign");
   });
 });
 

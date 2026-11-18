@@ -24,6 +24,7 @@ import ViewMap from "../map/ViewMap";
 import { topView } from "../map/views";
 import { Panel } from "./Layout";
 import { randomStart, stepIndex } from "../lib/motd";
+import { STATS_ROOT } from "../routes";
 
 export interface PillDef { label: JSX.Element; href: string; end?: boolean }
 
@@ -46,8 +47,8 @@ export function PeopleFinder() {
     const t = who().trim();
     if (!t) return;
     const a = Object.values(live.state.accounts).find((x) => x.gamertag.toLowerCase() === t.toLowerCase());
-    if (!a) { navigate(`/stats/players?q=${encodeURIComponent(t)}`); return; }
-    const base = `/stats/players/${encodeURIComponent(a.gamertag)}`;
+    if (!a) { navigate(`${STATS_ROOT}/players?q=${encodeURIComponent(t)}`); return; }
+    const base = `${STATS_ROOT}/players/${encodeURIComponent(a.gamertag)}`;
     navigate(where() === "record" ? base : `${base}/${where()}`);
   }
   return (
@@ -216,7 +217,7 @@ export function RecentGames(props: { games: GameState[]; title?: string; empty?:
       <div class="s-box-body">
         <Show when={g()} keyed fallback={<p class="s-recent-empty">{props.empty ?? "No games on record yet."}</p>}>
           {(game) => (
-            <A href={`/stats/games/${game.game_id}`} class="s-recent-item">
+            <A href={`${STATS_ROOT}/games/${game.game_id}`} class="s-recent-item">
               <MapThumb game={game} />
               <ul>
                 <li class="s-recent-title"><GametypeIcon variant={game.variant} />{gameTitle(game)}</li>

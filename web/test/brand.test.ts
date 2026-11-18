@@ -114,6 +114,6 @@ describe("icons", () => {
     expect(m.start_url).toBe("/");
     expect(m.icons.some((i) => i.purpose === "maskable" && i.sizes === "512x512")).toBe(true);
     expect(m.icons.filter((i) => i.type === "image/png").map((i) => i.sizes)).toEqual(["192x192", "512x512", "512x512"]);
-    expect(m.shortcuts[0]).toEqual({ name: STATS_NAME, short_name: STATS_NAME, url: "/stats" });
+    expect(m.shortcuts[0]).toEqual({ name: STATS_NAME, short_name: STATS_NAME, url: "/games/halo2" });
   });
 });

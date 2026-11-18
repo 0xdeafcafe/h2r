@@ -1,6 +1,8 @@
 //! What the Worker answers itself, ahead of the hub: the game art at
-//! `/art/game/*`, and the app's pages (the built `index.html` with each
-//! page's link preview, [`live_server::page_meta`]).
+//! `/art/game/*`, the stats site's old addresses (`/stats/*`, a 301 to
+//! the same page under `/games/halo2`, in entry.rs), and the app's pages
+//! (the built `index.html` with each page's link preview,
+//! [`live_server::page_meta`]).
 //!
 //! The Worker has no art files (they are the owner's, extracted from their
 //! disc). Art published to a public bucket (`h2 live assets publish`,
@@ -102,7 +104,10 @@ mod tests {
             "/stats/x",
             "/players",
             "/players/x",
+            "/games",
             "/games/x",
+            "/games/halo2",
+            "/games/halo2/players/x",
             "/events",
             "/signin",
         ] {
@@ -120,14 +125,22 @@ mod tests {
     #[test]
     fn only_pages_naming_something_ask_the_hub() {
         assert_eq!(
-            page_meta_url("/stats/players/Two Words&x"),
-            Some("https://hub/v1/page-meta?path=/stats/players/Two%20Words%26x".into())
+            page_meta_url("/games/halo2/players/Two Words&x"),
+            Some("https://hub/v1/page-meta?path=/games/halo2/players/Two%20Words%26x".into())
         );
         assert_eq!(
-            page_meta_url("/stats/games/0123"),
-            Some("https://hub/v1/page-meta?path=/stats/games/0123".into())
+            page_meta_url("/games/halo2/games/0123"),
+            Some("https://hub/v1/page-meta?path=/games/halo2/games/0123".into())
         );
-        for path in ["/", "/dash/players", "/stats", "/stats/games"] {
+        for path in [
+            "/",
+            "/dash/players",
+            "/games",
+            "/games/halo2",
+            "/games/halo2/games",
+            // Redirected before any preview.
+            "/stats/players/x",
+        ] {
             assert_eq!(page_meta_url(path), None, "{path}");
         }
     }

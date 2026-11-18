@@ -20,6 +20,7 @@ import { BigPod, Glyph, Plate, Prompts } from "./parts";
 import type { Action } from "./input";
 import { ListPanel } from "./Dashboard";
 import { ClanEmblem, friendPresence, presenceLine } from "../stats/clanBits";
+import { STATS_ROOT } from "../routes";
 
 interface Row { key: string; label: string; meta?: string }
 interface Act { label: string; run: () => void | Promise<unknown>; danger?: boolean }
@@ -33,7 +34,7 @@ export interface SocialProps {
   bind: (fn: ((a: Action) => boolean) | null) => void;
 }
 
-const stats = (tag: string) => `/stats/players/${encodeURIComponent(tag)}`;
+const stats = (tag: string) => `${STATS_ROOT}/players/${encodeURIComponent(tag)}`;
 
 export default function SocialScreen(props: SocialProps) {
   return (
@@ -219,7 +220,7 @@ function FriendsScreen(props: SocialProps) {
         if (k === "out") return [{ label: "cancel request", run: () => social.write(friendWrites.remove(me().xuid, x)), danger: true }, profile];
         const p = friendPresence({ xuid: x, presence: doc()?.friends.find((y) => y.xuid === x)?.presence ?? null });
         const out: Act[] = [];
-        if (p.game_id) out.push({ label: "watch game", run: () => props.go(`/stats/games/${p.game_id}`, "deeper") });
+        if (p.game_id) out.push({ label: "watch game", run: () => props.go(`${STATS_ROOT}/games/${p.game_id}`, "deeper") });
         out.push(profile, { label: "service record", run: () => props.go(stats(r.label), "deeper") });
         out.push(confirm() === x
           ? { label: "really remove", danger: true, run: () => { setConfirm(null); return social.write(friendWrites.remove(me().xuid, x)); } }
@@ -278,7 +279,7 @@ function TeamsScreen(props: SocialProps) {
         const t = team(r);
         if (!t) return [];
         const open: Act = { label: "open", run: () => props.go(`/dash/clans/${t.id}`, "deeper") };
-        const page: Act = { label: "clan page", run: () => props.go(`/stats/clans/${t.id}`, "deeper") };
+        const page: Act = { label: "clan page", run: () => props.go(`${STATS_ROOT}/clans/${t.id}`, "deeper") };
         if (roleOf(t, identity.me()?.xuid) === "recruit") return [
           { label: "join", run: () => social.write(teamWrites.answer(t.id, true)) },
           { label: "decline", danger: true, run: () => social.write(teamWrites.answer(t.id, false)) },
@@ -392,7 +393,7 @@ function TeamScreen(props: SocialProps & { id: string }) {
               out.push({ label: "decline", danger: true, run: () => social.write(teamWrites.answer(tm.id, false)) });
             }
             const p = friendPresence({ xuid: target, presence: null });
-            if (p.game_id) out.push({ label: "watch game", run: () => props.go(`/stats/games/${p.game_id}`, "deeper") });
+            if (p.game_id) out.push({ label: "watch game", run: () => props.go(`${STATS_ROOT}/games/${p.game_id}`, "deeper") });
             out.push({ label: "profile", run: () => props.go(`/dash/players/${encodeURIComponent(m.identity.gamertag)}`, "deeper") });
             if (x === target && role !== "recruit" && role !== "leader") out.push({ label: "leave clan", danger: true, run: () => social.write(teamWrites.remove(tm.id, x)) });
             if (x && x !== target && target !== tm.creator && can(tm, x, PRIV.removeMember)) {

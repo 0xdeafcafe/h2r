@@ -1,4 +1,4 @@
-// The stats home (STATS_NAME, /stats): what is happening now (players
+// The stats home (STATS_NAME, /games/halo2): what is happening now (players
 // online, live games, open games), the server's numbers for the last day and
 // all time, leaderboards over a window, the weapon and map of the week, maps,
 // weapons, game types and skulls, an activity heatmap, clan standings and the
@@ -39,6 +39,7 @@ import { ClanEmblem } from "./clanBits";
 import { clanHref } from "./modes";
 import { agoWords, count, num, ratio, usDate } from "./fmt";
 import { STATS_NAME } from "../brand";
+import { STATS_ROOT, statsPath } from "../routes";
 
 const mapTitleOf = (m: { map: string; map_id?: string }) => gameMapTitle({ map: m.map, map_id: m.map_id ?? null });
 const skullName = (i: number) => SKULLS.find((s) => s.index === i)?.name ?? `Skull ${i}`;
@@ -58,7 +59,7 @@ function Who(props: { xuid: string; name: string; size?: number }) {
 
 function LiveCard(props: { game: GameState }) {
   const g = () => props.game;
-  const href = () => `/stats/games/${g().game_id}`;
+  const href = () => `${STATS_ROOT}/games/${g().game_id}`;
   return (
     <A href={href()} class="s-livecard" aria-label={`${gameTitle(g())} on ${gameMapTitle(g())}, live`}>
       <MapThumb game={g()} />
@@ -95,7 +96,7 @@ function LiveNow() {
         <For each={games().slice(0, 4)} fallback={<p class="s-empty">No games in progress right now. The next one shows up here as it starts.</p>}>
           {(g) => <LiveCard game={g} />}
         </For>
-        <Show when={games().length > 4}><p class="s-items-more"><A href="/stats/games">{games().length - 4} more live {games().length - 4 === 1 ? "game" : "games"}</A></p></Show>
+        <Show when={games().length > 4}><p class="s-items-more"><A href={statsPath("/games")}>{games().length - 4} more live {games().length - 4 === 1 ? "game" : "games"}</A></p></Show>
         <Show when={open().length}>
           <div class="s-grid-wrap s-open">
             <table class="s-grid">
@@ -318,10 +319,10 @@ function RecentFeed() {
   const games = createMemo(() => endedGames(live.state, 6));
   return (
     <section class="s-sec s-feed">
-      <header><h3>Recent Games</h3><A href="/stats/games?games=recent" class="s-block-right">see all games</A></header>
+      <header><h3>Recent Games</h3><A href={statsPath("/games?games=recent")} class="s-block-right">see all games</A></header>
       <For each={games()} fallback={<p class="s-tod-empty">No games on record yet. The lobby is warming up.</p>}>
         {(g) => (
-          <A href={`/stats/games/${g.game_id}`} class="s-feed-item">
+          <A href={`${STATS_ROOT}/games/${g.game_id}`} class="s-feed-item">
             <MapThumb game={g} />
             <span>
               <b>{isCampaign(g) ? gameMapTitle(g) : `${gameTitle(g)} on ${gameMapTitle(g)}`}</b>
@@ -400,9 +401,9 @@ export function HomeView(props: { win: StatsWindow; week: StatsSummary | null; w
           <Title>{STATS_NAME}</Title>
           <Pills label={STATS_NAME} items={[
             { label: `Live Now (${liveGames(live.state).length})`, href: "#live" },
-            { label: "Games Spotlight", href: "/stats/games" },
-            { label: "Players & Leaderboards", href: "/stats/players" },
-            { label: "Clans", href: "/stats/clans" },
+            { label: "Games Spotlight", href: statsPath("/games") },
+            { label: "Players & Leaderboards", href: statsPath("/players") },
+            { label: "Clans", href: statsPath("/clans") },
             me() ? { label: "My Service Record", href: playerHref(me()!.gamertag) } : { label: "Sign Up for h2 live", href: "/dash/signup" },
           ]} />
           <Panel title="Server Report" sub={`as of ${usDate(new Date(now()).toISOString())}`} class="s-report">
@@ -445,7 +446,7 @@ export function HomeView(props: { win: StatsWindow; week: StatsSummary | null; w
             )}
           </Show>
           <Title class="s-title--tabs" help="Counted by the server from every game's events. Kills, K/D, wins and sprees are multiplayer's; campaign has its own boards.">Leaderboards</Title>
-          <Tabs label="Window" active={win()} tabs={STATS_WINDOWS.map((w) => ({ id: w.id, label: w.label, href: w.id === "7d" ? "/stats" : `/stats?window=${w.id}` }))} />
+          <Tabs label="Window" active={win()} tabs={STATS_WINDOWS.map((w) => ({ id: w.id, label: w.label, href: w.id === "7d" ? STATS_ROOT : `${STATS_ROOT}?window=${w.id}` }))} />
           <div class="s-matte s-home">
             <Show when={sum()} fallback={
               <p class="s-empty">{status() === "unsupported"

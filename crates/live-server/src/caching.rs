@@ -165,7 +165,7 @@ mod tests {
             Some(REVALIDATE)
         );
         assert_eq!(policy("/", false, ok, true), Some(REVALIDATE));
-        assert_eq!(policy("/stats/games", false, ok, true), Some(REVALIDATE));
+        assert_eq!(policy("/games/halo2/games", false, ok, true), Some(REVALIDATE));
         assert_eq!(policy("/v1/games", false, ok, false), Some(PUBLIC));
         assert_eq!(policy("/v1/snapshot", false, ok, false), Some(PUBLIC));
         assert_eq!(policy("/v1/stats/summary", false, ok, false), Some(PUBLIC));

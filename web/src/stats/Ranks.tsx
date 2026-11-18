@@ -10,6 +10,7 @@ import { poll } from "../state/sessions";
 import { DEFAULT_PLAYLISTS, changeText, parseBoard, parseHistory, parseRanks, playlistName, progress, winRate, type BoardRow, type RankEntry, type Standing } from "../lib/ranks";
 import { Title, playerHref } from "./Layout";
 import { usDateTime } from "./fmt";
+import { STATS_ROOT } from "../routes";
 
 type Status = "loading" | "ok" | "unsupported" | "error";
 const REFRESH_MS = 15000;
@@ -26,7 +27,7 @@ function statusText(s: Status, empty: string): string {
   return s === "loading" ? "Reading ranks…" : s === "unsupported" ? "This server doesn't keep ranks." : s === "error" ? "The server didn't answer." : empty;
 }
 
-/** `/stats/ranks/:playlist?`: one ranked playlist's leaderboard. */
+/** `/games/halo2/ranks/:playlist?`: one ranked playlist's leaderboard. */
 export default function RanksPage() {
   const params = useParams();
   const playlist = () => params.playlist ?? "1";
@@ -51,7 +52,7 @@ export default function RanksPage() {
       </Title>
       <nav class="s-pad">
         <For each={Object.keys(DEFAULT_PLAYLISTS)}>
-          {(id, i) => <>{i() ? " · " : ""}<A href={`/stats/ranks/${id}`}>{playlistName(id)}</A></>}
+          {(id, i) => <>{i() ? " · " : ""}<A href={`${STATS_ROOT}/ranks/${id}`}>{playlistName(id)}</A></>}
         </For>
       </nav>
       <div class="s-grid-wrap">
@@ -78,7 +79,7 @@ export default function RanksPage() {
   );
 }
 
-/** `/stats/players/:tag/ranks`: a player's ranks and the last games of each. */
+/** `/games/halo2/players/:tag/ranks`: a player's ranks and the last games of each. */
 export function PlayerRanksPage() {
   const params = useParams();
   const [ranks, setRanks] = createSignal<Array<[string, Standing]>>([]);
@@ -106,11 +107,11 @@ export function PlayerRanksPage() {
         <For each={ranks()}>
           {([id, s]) => (
             <section class="s-pad">
-              <h2><A href={`/stats/ranks/${id}`}>{playlistName(id)}</A>: level {s.level}</h2>
+              <h2><A href={`${STATS_ROOT}/ranks/${id}`}>{playlistName(id)}</A>: level {s.level}</h2>
               <p>{s.experience} XP · highest level {s.highest} · {s.games} games · {winRate(s)} won</p>
               <ul>
                 <For each={history()[id] ?? []}>
-                  {(e) => <li><A href={`/stats/games/${e.gameId}`}>{usDateTime(e.at)}</A>: {changeText(e)}</li>}
+                  {(e) => <li><A href={`${STATS_ROOT}/games/${e.gameId}`}>{usDateTime(e.at)}</A>: {changeText(e)}</li>}
                 </For>
               </ul>
             </section>

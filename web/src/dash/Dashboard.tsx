@@ -62,6 +62,7 @@ import "../styles/social.css";
 import { DASH_NAME } from "../brand";
 import Legal from "../components/Legal";
 import { lockedHint, menuFor, type SectionId } from "./menu";
+import { STATS_ROOT, statsPath } from "../routes";
 
 type ScreenId = "menu" | "games" | "list" | "player" | "settings" | "signup" | "recovery" | "recover" | "server" | "social" | "sessions" | "signins";
 
@@ -124,7 +125,7 @@ function gameLine(g: GameState): string {
   return top ? `${top.name} ${top.score.score}` : "no score yet";
 }
 
-const playerHref = (tag: string) => `/stats/players/${encodeURIComponent(tag)}`;
+const playerHref = (tag: string) => `${STATS_ROOT}/players/${encodeURIComponent(tag)}`;
 
 /** A route segment as typed: the router hands it over still encoded. */
 function safeDecode(s: string): string {
@@ -244,7 +245,7 @@ export default function Dashboard() {
       }
       return;
     }
-    if (s === "live") go(`/stats/games/${r.key}`, "deeper");
+    if (s === "live") go(`${STATS_ROOT}/games/${r.key}`, "deeper");
     else go(`/dash/${s}/${encodeURIComponent(r.label)}`, "deeper");
   }
 
@@ -279,7 +280,7 @@ export default function Dashboard() {
           ];
         }
         return [...base,
-          { label: me ? "compare" : "leaderboard", glyph: "compare", act: () => go(me ? `${playerHref(me.gamertag)}/career?compare=${encodeURIComponent(a.gamertag)}` : "/stats/players", "deeper") },
+          { label: me ? "compare" : "leaderboard", glyph: "compare", act: () => go(me ? `${playerHref(me.gamertag)}/career?compare=${encodeURIComponent(a.gamertag)}` : statsPath("/players"), "deeper") },
           { label: "career stats", glyph: "career", act: () => go(`${playerHref(a.gamertag)}/career`, "deeper") },
         ];
       }
@@ -287,7 +288,7 @@ export default function Dashboard() {
         return [
           { label: identity.me() ? "profile" : "sign up", glyph: "key", act: () => go("/dash/signup", "deeper") },
           { label: "games", glyph: "disc", act: () => go("/dash/games", "deeper") },
-          { label: "event log", glyph: "history", act: () => go("/stats/events", "deeper") },
+          { label: "event log", glyph: "history", act: () => go(statsPath("/events"), "deeper") },
           { label: "server", glyph: "server", act: () => go("/dash/server", "deeper") },
         ];
       case "recovery": {
