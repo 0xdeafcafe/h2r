@@ -55,9 +55,21 @@ pub enum Swap {
     Drop(&'static str),
 }
 
+const CINEMATIC: &str = "a cutscene prop; cutscenes keep Halo 1's objects";
+const PLAYBACK: &str = "flown by a recorded animation made for Halo 1's vehicle";
+
 /// Halo 1 group, words that must all be in the Halo 1 path (`_` read as a
 /// space), and the swap. First match wins, so specific rows come first.
 pub const SWAPS: &[(&[u8; 4], &[&str], Swap)] = &[
+    // Cutscene props (a10's `scorpion_cinematic`): animated by Halo 1's
+    // cutscenes, which keep Halo 1's objects in both variants.
+    (b"weap", &["cinematic"], Swap::Keep(CINEMATIC)),
+    (b"vehi", &["cinematic"], Swap::Keep(CINEMATIC)),
+    (b"eqip", &["cinematic"], Swap::Keep(CINEMATIC)),
+    // Flown by a recorded animation (d20's `banshee_oldplayback`): the
+    // recording replays Halo 1's controls, which on Halo 2's vehicle would
+    // fly another path.
+    (b"vehi", &["playback"], Swap::Keep(PLAYBACK)),
     // Weapons. As multiplayer's table except the fuel rod.
     (b"weap", &["plasma pistol"], Swap::Retail("plasma_pistol")),
     (b"weap", &["plasma rifle"], Swap::Retail("plasma_rifle")),
@@ -291,6 +303,14 @@ mod tests {
             swap_for(b"vehi", "vehicles\\pelican\\pelican"),
             Swap::Keep(_)
         ));
+        assert_eq!(
+            swap_for(b"vehi", "vehicles\\scorpion\\scorpion_cinematic"),
+            Swap::Keep(CINEMATIC)
+        );
+        assert_eq!(
+            swap_for(b"vehi", "vehicles\\banshee\\banshee_oldplayback"),
+            Swap::Keep(PLAYBACK)
+        );
         assert!(matches!(
             swap_for(b"eqip", "powerups\\health pack"),
             Swap::Keep(_)
