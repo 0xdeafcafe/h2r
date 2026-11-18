@@ -2085,3 +2085,108 @@ pub fn decal(
     )?;
     built(d, &r)
 }
+
+/// Halo 1 dialogue slot (`udlg` offset, [`h1::UDLG_SIZE`]) to the Halo 2
+/// vocalization that plays its sound, in priority order: where two slots
+/// name one vocalization the first that holds a sound wins.
+///
+/// The slot names (in the comments) are V: the sound names Halo 1's
+/// dialogue tags hold there. The Halo 2 names are retail vocalization
+/// names (V: every one is the string of an element of the base maps'
+/// `udlg` tags, `halo2_dialogue_survey`). Pairing them is D, by meaning,
+/// but for pain and death, where the multiplayer elite's and the
+/// Chief's dialogue tags give the bridge (V): their `death` sound plays
+/// for `dth`, `dth_mjr`, `dth_slnt`, `dth_slw` and `dth_hdsht`, their
+/// `deathfall` / `fall_death` for `dth_fall`, their `pain` for
+/// `pain_mjr`. Halo 1 slots with no line here (the hurt and killed
+/// variants by weapon and by species, the replies, the search and
+/// vehicle chatter) have no Halo 2 vocalization close enough.
+pub const DIALOGUE: &[(usize, &str)] = &[
+    (0x010, "look_noncmbt"),     // idle_non_combat
+    (0x020, "look_cmbt"),        // idle_combat
+    (0x030, "panic"),            // panic_run_away
+    (0x070, "pain"),             // painminor
+    (0x080, "pain_mjr"),         // painmajor
+    (0x090, "pain_shld"),        // painshield
+    (0x0a0, "pain_fall"),        // painfalling
+    (0x0c0, "scrn"),             // screampain
+    (0x0f0, "dth_slnt"),         // deathquiet
+    (0x100, "dth_mjr"),          // deathviolent
+    (0x100, "dth"),              // deathviolent
+    (0x110, "dth_fall"),         // deathfalling
+    (0x140, "dth_fall"),         // deathflying
+    (0x120, "dth_slw"),          // deathagonizing
+    (0x130, "dth_hdsht"),        // deathinstant
+    (0x100, "dth_hdsht"),        // deathviolent
+    (0x360, "chr_kllfoe"),       // killedenemy
+    (0x420, "chr_kllfoe_blt"),   // killedenemybullet
+    (0x380, "prs_plr_kll"),      // killedenemyplayer
+    (0x610, "lmnt_deadally"),    // frienddied
+    (0x620, "lmnt_deadplr"),     // friendplayerdied
+    (0x6a0, "betray"),           // friendbetrayed
+    (0x6d0, "seefoe"),           // newcombatalone
+    (0x6f0, "foundfoe"),         // oldenemysighted
+    (0x700, "seefoe_srprs"),     // unexpectedenemy
+    (0x710, "chckallybdy"),      // deadfriendfound
+    (0x740, "strk_grnd"),        // grenadethrowing
+    (0x750, "warn_incmn_grnd"),  // grenadesighted
+    (0x840, "srchstart"),        // searchstart
+    (0x8c0, "newordr_advance"),  // advance
+    (0x8e0, "newordr_retreat"),  // retreat
+    (0x9b0, "tnt"),              // taunt
+    (0x9d0, "flee"),             // flee
+    (0xa40, "entervcl"),         // vehicleentry
+    (0xb20, "srprs"),            // surprise
+    (0xb30, "brsrk"),            // berserk
+    (0xb40, "melee"),            // meleeattack
+    (0xb50, "dive"),             // dive
+    (0xbd0, "pstcmbt"),          // celebration
+    (0xbe0, "chkfoebdy"),        // checkbodyenemy
+    (0xc00, "shotfoebdy"),       // shootingdeadenemy
+];
+
+/// The vocalizations a Halo 1 dialogue tag gives, each with the slot its
+/// sound is in ([`DIALOGUE`]), first slot holding a sound winning.
+pub fn dialogue_lines(d: &h1::Dialogue) -> Vec<(&'static str, usize, h1map::TagId)> {
+    let mut out: Vec<(&'static str, usize, h1map::TagId)> = Vec::new();
+    for &(at, voc) in DIALOGUE {
+        if out.iter().any(|l| l.0 == voc) {
+            continue;
+        }
+        if let Some(s) = d.line(at) {
+            out.push((voc, at, s));
+        }
+    }
+    out
+}
+
+/// `udlg +0`: the 'adlg' group word of a null reference every retail
+/// dialogue tag holds (V: the 42 distinct ones, `+4` -1).
+const UDLG_GROUP: [u8; 4] = *b"glda";
+/// `udlg` element `+8`: the 'snd!' group word of the datum that follows
+/// (V: every retail element).
+const UDLG_SOUND_GROUP: [u8; 4] = *b"!dns";
+
+/// The `udlg` root: one element per line, its vocalization and its
+/// sound (a datum: a converted sound's placeholder). `+8` and the
+/// trailing string are zero, as on every retail dialogue tag of the
+/// base (V, `halo2_dialogue_survey`).
+pub fn dialogue(lines: &[(&str, TagId)]) -> Result<Block> {
+    let d = def(b"udlg")?;
+    let mut r = defs::default_record(d);
+    set(&mut r, "unknown_0", Val::Bytes(UDLG_GROUP.to_vec()))?;
+    set(&mut r, "unknown_4", Val::Bytes(vec![0xff; 4]))?;
+    let el = d.child("vocalizations").expect("udlg vocalizations");
+    let items = lines
+        .iter()
+        .map(|(voc, sound)| {
+            let mut x = defs::default_record(el);
+            set(&mut x, "vocalization", Val::text(voc))?;
+            set(&mut x, "unknown_8", Val::Bytes(UDLG_SOUND_GROUP.to_vec()))?;
+            set(&mut x, "sound", Val::Datum(defs::Target::Id(*sound)))?;
+            Ok(x)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    set(&mut r, "vocalizations", Val::Block(items))?;
+    built(d, &r)
+}

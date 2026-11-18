@@ -1468,3 +1468,37 @@ fn rebuilt_decal_keeps_halo_1s_fields_and_the_roles_layer() {
     assert!(matches!(r.at("bitmap"), Some(Val::Ref { target: Target::Id(id), .. }) if *id == local(2)));
     assert!(matches!(r.at("next_decal"), Some(Val::Ref { target: Target::Id(id), .. }) if *id == local(1)));
 }
+
+#[test]
+fn dialogue_takes_the_first_slot_holding_a_sound_per_vocalization() {
+    use crate::convert::sound;
+    use crate::h1::Dialogue;
+    use crate::rebuild::{dialogue, dialogue_lines};
+    use tags::defs::{self, Defs, Str, Target, Val};
+    let s = |k: u32| h1map::TagId(0xe000_0000 | k);
+    // deathviolent (0x100) and deathinstant (0x130), no deathquiet.
+    let d = Dialogue {
+        lines: vec![(0x100, s(1)), (0x130, s(2)), (0x020, s(3)), (0x0b0, s(4))],
+    };
+    let got: Vec<_> = dialogue_lines(&d).iter().map(|l| (l.0, l.1)).collect();
+    // dth_hdsht from deathinstant before deathviolent; 0x0b0 has no line.
+    assert_eq!(
+        got,
+        vec![
+            ("look_cmbt", 0x020),
+            ("dth_mjr", 0x100),
+            ("dth", 0x100),
+            ("dth_hdsht", 0x130),
+        ]
+    );
+    let root = dialogue(&[("dth", sound(0)), ("pain", sound(1))]).unwrap();
+    let def = Defs::builtin().group(FourCC(*b"udlg")).unwrap();
+    let r = defs::from_built(def, &root).unwrap();
+    assert_eq!(r.at("unknown_0"), Some(&Val::Bytes(b"glda".to_vec())));
+    assert_eq!(r.at("unknown_4"), Some(&Val::Bytes(vec![0xff; 4])));
+    let Some(Val::Block(els)) = r.at("vocalizations") else { panic!() };
+    assert_eq!(els.len(), 2);
+    assert_eq!(els[1].at("vocalization"), Some(&Val::String(Str::Text("pain".into()))));
+    assert_eq!(els[1].at("unknown_8"), Some(&Val::Bytes(b"!dns".to_vec())));
+    assert_eq!(els[1].at("sound"), Some(&Val::Datum(Target::Id(sound(1)))));
+}

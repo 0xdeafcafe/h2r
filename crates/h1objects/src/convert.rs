@@ -715,6 +715,11 @@ impl Writer<'_> {
     }
 }
 
+/// The `hlmt` field a rebuilt biped's converted dialogue goes in: the
+/// model's dialogue (`+0x8c`, `udlg`; V: where retail models name theirs,
+/// `docs/formats/objects.md`).
+pub const DIALOGUE_FIELD: &str = "udlg_ref_8c";
+
 /// How the [`Converter`] builds tags.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Options {
@@ -729,6 +734,11 @@ pub struct Options {
     /// counterpart ([`crate::rebuild::COUNTERPARTS`]). On by default; off
     /// builds them on templates.
     pub rebuild_bipeds: bool,
+    /// The most sample bytes the rebuilt bipeds' dialogue
+    /// ([`Converter::dialogue`]) may add in sounds no other object
+    /// plays; a line whose sound would pass it is left out. `u64::MAX`
+    /// (the default) for all, 0 for none.
+    pub dialogue_budget: u64,
 }
 
 impl Default for Options {
@@ -736,6 +746,7 @@ impl Default for Options {
         Self {
             rebuild: false,
             rebuild_bipeds: true,
+            dialogue_budget: u64::MAX,
         }
     }
 }
@@ -748,6 +759,9 @@ pub struct Converter<'a> {
     pub tree: Tree,
     /// Every converted `coll` and what it holds, in build order.
     pub coll_reports: Vec<(String, crate::coll::CollisionReport)>,
+    /// Sample bytes of the sounds first converted for dialogue
+    /// ([`Self::dialogue`]).
+    pub dialogue_bytes: u64,
     done: HashMap<u32, TagId>,
     colls: HashMap<(u32, bool), TagId>,
     coll_names: HashMap<(u32, bool), Vec<(String, Vec<String>)>>,
@@ -788,7 +802,83 @@ impl<'a> Converter<'a> {
             light_roles: HashMap::new(),
             decal_role: None,
             decals_open: Vec::new(),
+            dialogue_bytes: 0,
         }
+    }
+
+    /// A Halo 1 dialogue tag as a Halo 2 `udlg`
+    /// ([`crate::rebuild::dialogue`]): one vocalization per slot of
+    /// [`crate::rebuild::DIALOGUE`] holding a sound, the sound converted
+    /// with `h1sounds`, within [`Options::dialogue_budget`]. Converted
+    /// once; `None` when no line converts.
+    pub fn dialogue(&mut self, tag: &Tag, rep: &mut ObjectReport) -> Result<Option<TagId>> {
+        if let Some(id) = self.done.get(&tag.id.0) {
+            return Ok(Some(*id));
+        }
+        let d = h1::Dialogue::read(self.h1, tag)?;
+        let wanted = crate::rebuild::dialogue_lines(&d);
+        let mut lines = Vec::new();
+        let mut over = 0;
+        for (voc, _, s) in &wanted {
+            let st = self.h1_tag(*s)?;
+            match self.dialogue_sound(st, rep) {
+                Some(id) => lines.push((*voc, id)),
+                None => over += 1,
+            }
+        }
+        rep.no_home.push(format!(
+            "udlg {}: {} of {} slots holding a sound as Halo 2 vocalizations ({} lines; {over} left out)",
+            tag.name,
+            wanted.len(),
+            d.lines.len(),
+            lines.len(),
+        ));
+        if lines.is_empty() {
+            return Ok(None);
+        }
+        let root = crate::rebuild::dialogue(&lines)?;
+        let id = self.tree.push(
+            &tag.name,
+            Converted {
+                group: FourCC(*b"udlg"),
+                root,
+                raw: Vec::new(),
+            },
+        );
+        self.done.insert(tag.id.0, id);
+        Ok(Some(id))
+    }
+
+    /// [`Self::sound`] for a dialogue line: a sound not yet converted is
+    /// taken only while [`Self::dialogue_bytes`] stays within the budget.
+    fn dialogue_sound(&mut self, tag: &Tag, rep: &mut ObjectReport) -> Option<TagId> {
+        if let Some(k) = self.sound_index.get(&tag.id.0) {
+            return k.map(sound);
+        }
+        let c = match h1sounds::Sound::read(self.h1, tag)
+            .and_then(|s| h1sounds::convert_sound(&s, self.h1.bytes()))
+        {
+            Ok(c) => c,
+            Err(e) => {
+                rep.no_home.push(format!("snd! {}: not converted ({e})", tag.name));
+                self.sound_index.insert(tag.id.0, None);
+                return None;
+            }
+        };
+        let size: u64 = c
+            .ranges
+            .iter()
+            .flat_map(|r| &r.permutations)
+            .map(|p| p.size() as u64)
+            .sum();
+        if self.dialogue_bytes + size > self.options.dialogue_budget {
+            return None;
+        }
+        self.dialogue_bytes += size;
+        self.tree.sounds.push((tag.name.clone(), c));
+        let k = self.tree.sounds.len() - 1;
+        self.sound_index.insert(tag.id.0, Some(k));
+        Some(sound(k))
     }
 
     /// A Halo 1 decal from the `deca` definition
@@ -2375,6 +2465,23 @@ impl<'a> Converter<'a> {
         let counterpart = self.base.record(bipd_def, cid)?;
         let hlmt = self.model(&mut rep, &u.object, None, &tag.name, true)?;
         let counterpart_hlmt = self.base.reference(&self.base.root(cid)?, h2::MODEL);
+        // Halo 1's dialogue: the first `udlg` the unit names (its
+        // dialogue variants block), in place of the counterpart's. V:
+        // 125 of the 169 bipeds over the campaign and multiplayer maps
+        // name one; 21 name more than one (variants Halo 2's single
+        // model dialogue cannot hold; `every_dialogue_converts`).
+        let udlg = match u
+            .references
+            .iter()
+            .find(|r| r.group == h1map::Group::new(b"udlg"))
+            .and_then(|r| r.tag)
+        {
+            Some(t) => {
+                let t = self.h1_tag(t)?;
+                self.dialogue(t, &mut rep)?
+            }
+            None => None,
+        };
         if let (Some(h), Some(ch)) = (hlmt, counterpart_hlmt) {
             let hd = tags::defs::Defs::builtin()
                 .group(FourCC(*b"hlmt"))
@@ -2388,6 +2495,11 @@ impl<'a> Converter<'a> {
             for (path, v) in &fields {
                 r.set(path, v.clone())
                     .map_err(|e| Error::Invalid(e.to_string()))?;
+            }
+            if let Some(d) = udlg {
+                r.set(DIALOGUE_FIELD, tags::defs::Val::tag(FourCC(*b"udlg"), d))
+                    .map_err(|e| Error::Invalid(e.to_string()))?;
+                rep.no_home.push("hlmt: dialogue converted from Halo 1's".into());
             }
             *root = tags::defs::to_built(hd, &r, &mut |_| None)
                 .map_err(|e| Error::Invalid(e.to_string()))?;

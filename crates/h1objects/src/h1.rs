@@ -1054,3 +1054,38 @@ impl Decal {
         })
     }
 }
+
+/// `udlg`: `0x1010` bytes, a fixed table of `snd!` references, one per
+/// line a character can say, `0x10` apart from `+0x10`. V: all 102
+/// distinct dialogue tags on the disc are `0x1010` bytes and hold only
+/// `snd!` references; the slot names below are the last component of
+/// the sound names the tags put there (`tests/effects_disc.rs`
+/// `halo1_dialogue_survey`), so each offset is one line whatever the
+/// character (`0x0f0` holds `deathquiet` on 68 tags and `death_quiet`
+/// on 17).
+pub const UDLG_SIZE: usize = 0x1010;
+
+/// A Halo 1 dialogue tag: its sounds by slot offset ([`UDLG_SIZE`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Dialogue {
+    /// The slots that name a sound, by offset.
+    pub lines: Vec<(usize, TagId)>,
+}
+
+impl Dialogue {
+    pub fn read(map: &H1Map, tag: &Tag) -> Result<Self> {
+        let b = tag_bytes(map, tag, b"udlg", UDLG_SIZE)?;
+        let snd = Group::new(b"snd!");
+        let lines = (0x10..UDLG_SIZE)
+            .step_by(0x10)
+            .filter(|at| TagRef::read(b, *at).is_some_and(|r| r.group == snd))
+            .filter_map(|at| reference(map, b, at).map(|t| (at, t)))
+            .collect();
+        Ok(Self { lines })
+    }
+
+    /// The sound in slot `at`.
+    pub fn line(&self, at: usize) -> Option<TagId> {
+        self.lines.iter().find(|l| l.0 == at).map(|l| l.1)
+    }
+}

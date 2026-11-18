@@ -345,6 +345,9 @@ pub struct ScenarioReport {
     pub object_sounds: usize,
     pub object_loops: usize,
     pub object_sound_bytes: u64,
+    /// Of those, the sample bytes of the sounds only the rebuilt bipeds'
+    /// dialogue plays (within the size ladder's dialogue budget).
+    pub dialogue_bytes: u64,
     /// The player biped, converted and set as the campaign players' unit.
     pub player_biped: Option<String>,
     /// `None` when the scenario was rebuilt from the base's relocated tree
@@ -448,8 +451,8 @@ impl std::fmt::Display for ScenarioReport {
         )?;
         writeln!(
             f,
-            "  object sounds: {}, looping sounds: {} ({:#x} sample bytes)",
-            self.object_sounds, self.object_loops, self.object_sound_bytes
+            "  object sounds: {}, looping sounds: {} ({:#x} sample bytes, {:#x} of dialogue)",
+            self.object_sounds, self.object_loops, self.object_sound_bytes, self.dialogue_bytes
         )?;
         writeln!(
             f,
@@ -748,7 +751,8 @@ pub fn fresh_root() -> Block {
 /// Writes the scenario layers into `set` (built from the base), leaving
 /// out what `lean` says ([`crate::Lean`]; object textures are left out in
 /// `lib.rs`). Unless `lean` leaves out the music, `music` caps the looping
-/// sounds' sample bytes (the map file's own bound).
+/// sounds' sample bytes (the map file's own bound) and `dialogue` the
+/// rebuilt bipeds' dialogue sounds'.
 /// `bsps[k]` is Halo 1 BSP `k`, converted.
 #[allow(clippy::too_many_arguments)]
 pub fn write(
@@ -760,7 +764,7 @@ pub fn write(
     objects: Option<&h1objects::base::Base>,
     opts: &Options,
     lean: crate::Lean,
-    music: u64,
+    [music, dialogue]: [u64; 2],
     report: &mut Report,
 ) -> Result<()> {
     // A fresh level's scenario is written from nothing ([`fresh_root`]);
@@ -911,6 +915,7 @@ pub fn write(
                 groups,
                 opts.devices,
                 opts.rebuild_bipeds,
+                dialogue,
             )?
         }
         None => HashMap::new(),
@@ -1233,9 +1238,11 @@ fn place_objects(
     device_groups: bool,
     devices: crate::Devices,
     rebuild_bipeds: bool,
+    dialogue: u64,
 ) -> Result<HashMap<(i16, i16), (i16, i16)>> {
     let mut conv = h1objects::convert::Converter::new(h1, base);
     conv.options.rebuild_bipeds = rebuild_bipeds;
+    conv.options.dialogue_budget = dialogue;
     let mut palettes = Vec::new();
     for k in &KINDS {
         let mut pal = Vec::new();
@@ -1316,6 +1323,7 @@ fn place_objects(
         },
         None => None,
     };
+    rep.dialogue_bytes = conv.dialogue_bytes;
     let mut tree = std::mem::take(&mut conv.tree);
     rep.object_tags = tree.tags.len();
     // The sounds the objects' effects and attachments play, with the

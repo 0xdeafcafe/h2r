@@ -600,6 +600,8 @@ fn halo2_dialogue_survey() {
     for id in &ids {
         let r = base.record(d, *id).unwrap();
         *roots.entry(format!("{:?} {:?} {:?} {:?}", r.at("unknown_0"), r.at("unknown_4"), r.at("unknown_8"), r.at("string_14"))).or_default() += 1;
+        let tag_name = base.tags.iter().find(|x| x.0 == *id).map(|x| x.2.clone()).unwrap_or_default();
+        println!("{tag_name}: string_14 {:?}, {} lines", text(r.at("string_14")), block(&r, "vocalizations").len());
         for e in block(&r, "vocalizations") {
             *names.entry(text(e.at("vocalization"))).or_default() += 1;
             if let Some(Val::Datum(Target::Id(t))) = e.at("sound") {
@@ -631,6 +633,333 @@ fn halo2_dialogue_survey() {
             .collect();
         if !other.is_empty() {
             println!("{v}: {other:?}");
+        }
+    }
+}
+
+/// Every Halo 1 dialogue tag of the ten campaign levels and the
+/// multiplayer maps converts to a `udlg` from its definition: the
+/// vocalizations are [`h1objects::rebuild::DIALOGUE`]'s for the slots
+/// holding a sound, each a name the base's own dialogue uses, each sound
+/// one the tree converted; it reads back with no pinned bytes. Every
+/// rebuilt biped whose Halo 1 unit names a dialogue tag points its
+/// model's dialogue at the converted one.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn every_dialogue_converts() {
+    let mut sets: Vec<(&str, Vec<String>)> = vec![(
+        "05a_deltaapproach",
+        h1map::disc::CAMPAIGN_LEVELS
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+    )];
+    for mp in ["coagulation", "beavercreek"] {
+        sets.push((
+            mp,
+            h1convert::convert::MAPS
+                .iter()
+                .filter(|m| m.2 == mp)
+                .map(|m| m.0.to_string())
+                .collect(),
+        ));
+    }
+    let udlg = Group::new(b"udlg");
+    let (mut tags, mut lines, mut slots) = (0usize, 0usize, 0usize);
+    let (mut bipeds, mut speaking, mut two) = (0usize, 0usize, 0usize);
+    let mut sample_bytes = 0u64;
+    for (base_name, levels) in sets {
+        let mut base_map = h2_map(base_name);
+        let base = Base::read(&mut base_map).unwrap();
+        // The base's own vocalization names.
+        let strings = base_map.strings().to_vec();
+        let mut vocab = std::collections::BTreeSet::new();
+        for (id, g, _, _) in base.tags.iter() {
+            if *g != FourCC(*b"udlg") {
+                continue;
+            }
+            let r = base.record(def(b"udlg"), *id).unwrap();
+            for e in block(&r, "vocalizations") {
+                if let Some(Val::String(Str::Index(i))) = e.at("vocalization") {
+                    if let Some(Some(s)) = strings.get((*i & 0xffff) as usize) {
+                        vocab.insert(s.clone());
+                    }
+                }
+            }
+        }
+        for (_, voc) in h1objects::rebuild::DIALOGUE {
+            assert!(
+                base_name != "05a_deltaapproach" || vocab.contains(*voc),
+                "{voc}: not a vocalization on {base_name}"
+            );
+        }
+        for level in levels {
+            let Some(m) = h1_level(&level) else { continue };
+            let mut c = Converter::new(&m, &base);
+            let mut rep = Default::default();
+            let mut got = Vec::new();
+            for t in m.tags().iter().filter(|t| t.group == udlg) {
+                let id = c
+                    .dialogue(t, &mut rep)
+                    .unwrap_or_else(|e| panic!("{level} {}: {e}", t.name));
+                got.push((t, id));
+            }
+            let mut rebuilt = Vec::new();
+            for t in m.tags().iter().filter(|t| t.group == Group::new(b"bipd")) {
+                let u = h1::Unit::read(&m, t).unwrap();
+                let named: Vec<_> = u
+                    .references
+                    .iter()
+                    .filter(|r| r.group == udlg && r.tag.is_some())
+                    .collect();
+                bipeds += 1;
+                speaking += usize::from(!named.is_empty());
+                two += usize::from(named.len() > 1);
+                if let Ok(id) = c.object(t) {
+                    rebuilt.push((t, id, named.first().and_then(|r| r.tag)));
+                }
+            }
+            sample_bytes += c.dialogue_bytes;
+            let tree = &c.tree;
+            for (t, id) in &got {
+                let name = format!("{level} {}", t.name);
+                let d = h1::Dialogue::read(&m, t).unwrap();
+                let want = h1objects::rebuild::dialogue_lines(&d);
+                tags += 1;
+                slots += d.lines.len();
+                let Some(id) = id else {
+                    assert!(want.is_empty(), "{name}: no udlg for {} lines", want.len());
+                    continue;
+                };
+                let got = &tree.tags[id.0 as usize & 0xffff].1;
+                assert_eq!(got.group, FourCC(*b"udlg"), "{name}");
+                let r = read_back(got, &name);
+                let els = block(&r, "vocalizations");
+                assert_eq!(els.len(), want.len(), "{name}");
+                for (e, (voc, _, _)) in els.iter().zip(&want) {
+                    assert_eq!(&text(e, "vocalization"), voc, "{name}");
+                    assert!(vocab.contains(*voc) || base_name != "05a_deltaapproach");
+                    let Some(Val::Datum(Target::Id(s))) = e.at("sound") else {
+                        panic!("{name} {voc}: no sound");
+                    };
+                    assert_eq!(resolve(tree, *s), Some(FourCC(*b"snd!")), "{name} {voc}");
+                }
+                lines += els.len();
+            }
+            for (t, id, named) in &rebuilt {
+                let b = &tree.tags[id.0 as usize & 0xffff].1;
+                if b.group != FourCC(*b"bipd") {
+                    continue;
+                }
+                let r = defs::from_built(def(b"bipd"), &b.root).unwrap();
+                let (_, Some(h)) = target(&r, "unit.obje.model") else {
+                    continue;
+                };
+                if h.0 & PLACEHOLDER != h1objects::convert::local(0).0 {
+                    continue;
+                }
+                let hl = &tree.tags[h.0 as usize & 0xffff].1;
+                let hr = defs::from_built(def(b"hlmt"), &hl.root).unwrap();
+                let (_, d) = target(&hr, h1objects::convert::DIALOGUE_FIELD);
+                if let Some(n) = named {
+                    let want = got.iter().find(|g| g.0.id == *n).and_then(|g| g.1);
+                    if want.is_some() {
+                        assert_eq!(d, want, "{level} {}: model dialogue", t.name);
+                    }
+                }
+            }
+        }
+    }
+    println!(
+        "{tags} dialogue tags, {slots} slots holding a sound, {lines} Halo 2 lines, {sample_bytes:#x} sample bytes; {bipeds} bipeds, {speaking} name dialogue, {two} name more than one"
+    );
+}
+
+/// Every Halo 1 dialogue tag of the ten campaign levels and the
+/// multiplayer maps converts to a `udlg` from its definition: the
+/// vocalizations are [`h1objects::rebuild::DIALOGUE`]'s for the slots
+/// holding a sound, each a name the base's own dialogue uses, each sound
+/// one the tree converted; it reads back with no pinned bytes. Every
+/// rebuilt biped whose Halo 1 unit names a dialogue tag points its
+/// model's dialogue at the converted one.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn every_dialogue_converts() {
+    let mut sets: Vec<(&str, Vec<String>)> = vec![(
+        "05a_deltaapproach",
+        h1map::disc::CAMPAIGN_LEVELS
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+    )];
+    for mp in ["coagulation", "beavercreek"] {
+        sets.push((
+            mp,
+            h1convert::convert::MAPS
+                .iter()
+                .filter(|m| m.2 == mp)
+                .map(|m| m.0.to_string())
+                .collect(),
+        ));
+    }
+    let udlg = Group::new(b"udlg");
+    let (mut tags, mut lines, mut slots) = (0usize, 0usize, 0usize);
+    let (mut bipeds, mut speaking, mut two) = (0usize, 0usize, 0usize);
+    let mut sample_bytes = 0u64;
+    for (base_name, levels) in sets {
+        let mut base_map = h2_map(base_name);
+        let base = Base::read(&mut base_map).unwrap();
+        // The base's own vocalization names.
+        let strings = base_map.strings().to_vec();
+        let mut vocab = std::collections::BTreeSet::new();
+        for (id, g, _, _) in base.tags.iter() {
+            if *g != FourCC(*b"udlg") {
+                continue;
+            }
+            let r = base.record(def(b"udlg"), *id).unwrap();
+            for e in block(&r, "vocalizations") {
+                if let Some(Val::String(Str::Index(i))) = e.at("vocalization") {
+                    if let Some(Some(s)) = strings.get((*i & 0xffff) as usize) {
+                        vocab.insert(s.clone());
+                    }
+                }
+            }
+        }
+        for (_, voc) in h1objects::rebuild::DIALOGUE {
+            assert!(
+                base_name != "05a_deltaapproach" || vocab.contains(*voc),
+                "{voc}: not a vocalization on {base_name}"
+            );
+        }
+        for level in levels {
+            let Some(m) = h1_level(&level) else { continue };
+            let mut c = Converter::new(&m, &base);
+            let mut rep = Default::default();
+            let mut got = Vec::new();
+            for t in m.tags().iter().filter(|t| t.group == udlg) {
+                let id = c
+                    .dialogue(t, &mut rep)
+                    .unwrap_or_else(|e| panic!("{level} {}: {e}", t.name));
+                got.push((t, id));
+            }
+            let mut rebuilt = Vec::new();
+            for t in m.tags().iter().filter(|t| t.group == Group::new(b"bipd")) {
+                let u = h1::Unit::read(&m, t).unwrap();
+                let named: Vec<_> = u
+                    .references
+                    .iter()
+                    .filter(|r| r.group == udlg && r.tag.is_some())
+                    .collect();
+                bipeds += 1;
+                speaking += usize::from(!named.is_empty());
+                two += usize::from(named.len() > 1);
+                if let Ok(id) = c.object(t) {
+                    rebuilt.push((t, id, named.first().and_then(|r| r.tag)));
+                }
+            }
+            sample_bytes += c.dialogue_bytes;
+            let tree = &c.tree;
+            for (t, id) in &got {
+                let name = format!("{level} {}", t.name);
+                let d = h1::Dialogue::read(&m, t).unwrap();
+                let want = h1objects::rebuild::dialogue_lines(&d);
+                tags += 1;
+                slots += d.lines.len();
+                let Some(id) = id else {
+                    assert!(want.is_empty(), "{name}: no udlg for {} lines", want.len());
+                    continue;
+                };
+                let got = &tree.tags[id.0 as usize & 0xffff].1;
+                assert_eq!(got.group, FourCC(*b"udlg"), "{name}");
+                let r = read_back(got, &name);
+                let els = block(&r, "vocalizations");
+                assert_eq!(els.len(), want.len(), "{name}");
+                for (e, (voc, _, _)) in els.iter().zip(&want) {
+                    assert_eq!(&text(e, "vocalization"), voc, "{name}");
+                    assert!(vocab.contains(*voc) || base_name != "05a_deltaapproach");
+                    let Some(Val::Datum(Target::Id(s))) = e.at("sound") else {
+                        panic!("{name} {voc}: no sound");
+                    };
+                    assert_eq!(resolve(tree, *s), Some(FourCC(*b"snd!")), "{name} {voc}");
+                }
+                lines += els.len();
+            }
+            for (t, id, named) in &rebuilt {
+                let b = &tree.tags[id.0 as usize & 0xffff].1;
+                if b.group != FourCC(*b"bipd") {
+                    continue;
+                }
+                let r = defs::from_built(def(b"bipd"), &b.root).unwrap();
+                let (_, Some(h)) = target(&r, "unit.obje.model") else {
+                    continue;
+                };
+                if h.0 & PLACEHOLDER != h1objects::convert::local(0).0 {
+                    continue;
+                }
+                let hl = &tree.tags[h.0 as usize & 0xffff].1;
+                let hr = defs::from_built(def(b"hlmt"), &hl.root).unwrap();
+                let (_, d) = target(&hr, h1objects::convert::DIALOGUE_FIELD);
+                if let Some(n) = named {
+                    let want = got.iter().find(|g| g.0.id == *n).and_then(|g| g.1);
+                    if want.is_some() {
+                        assert_eq!(d, want, "{level} {}: model dialogue", t.name);
+                    }
+                }
+            }
+        }
+    }
+    println!(
+        "{tags} dialogue tags, {slots} slots holding a sound, {lines} Halo 2 lines, {sample_bytes:#x} sample bytes; {bipeds} bipeds, {speaking} name dialogue, {two} name more than one"
+    );
+}
+
+/// Survey: Halo 1 `foot` tags: the root's block fields (count at each
+/// offset), and every reference in the tag's bytes by offset with its
+/// group, for the layout of the material effects.
+#[test]
+#[ignore]
+fn halo1_foot_survey() {
+    let foot = Group::new(b"foot");
+    let want = std::env::var("H1_LEVELS").unwrap_or_else(|_| "a10".into());
+    for (stem, m) in h1_maps() {
+        if !want.split(',').any(|w| w == stem) {
+            continue;
+        }
+        for t in m.tags().iter().filter(|t| t.group == foot) {
+            let b = m.tag_data(t).unwrap();
+            println!("{stem} {} len {:#x}", t.name, b.len());
+            for at in (0..0x40.min(b.len())).step_by(4) {
+                if let Some(k) = Block::read(b, at)
+                    && k.count > 0
+                    && k.count < 0x100
+                {
+                    println!("  root {at:#x}: count {} address {:#x}", k.count, k.address);
+                }
+            }
+            let mut last = 0;
+            for at in (0..b.len().saturating_sub(16)).step_by(4) {
+                if let Some(r) = TagRef::read(b, at)
+                    && (r.group == Group::new(b"effe") || r.group == Group::new(b"snd!"))
+                {
+                    let n = if r.id.is_none() {
+                        "-".to_owned()
+                    } else {
+                        m.tag(r.id).map(|x| x.name.rsplit('\\').next().unwrap_or("").to_owned()).unwrap_or_default()
+                    };
+                    println!("  {at:#06x} (+{:#x}) {} {n}", at - last, r.group);
+                    last = at;
+                }
+            }
+            for at in (0..b.len().saturating_sub(12)).step_by(4) {
+                if let Some(k) = Block::read(b, at)
+                    && k.count > 0
+                    && k.count < 0x40
+                    && k.address >> 28 == 8
+                    && at >= 0x40
+                {
+                    println!("  block? {at:#x}: count {}", k.count);
+                }
+            }
         }
     }
 }

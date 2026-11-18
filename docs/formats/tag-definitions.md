@@ -588,7 +588,7 @@ before). Every Halo 1 biped is written from the `bipd` definition
 - **The player** (`health_hud::is_player_biped`) takes the counterpart's
   HUD interfaces as health-meter copies (`*_h1_health`, docs/game/health.md),
   as the template path does.
-- **Halo 1 references with no converter here** (`unhi` HUDs, `udlg`,
+- **Halo 1 references with no converter here** (`unhi` HUDs,
   `foot`, `effe`, `jpt!`, `actv`, `snd!`) are not carried: those come
   from the counterpart. Halo 2's `bipd` holds no weapons (`unit +0x1c0`)
   or seats (`bipd +0x1c8`) on any base biped, and its two `char`
@@ -966,24 +966,51 @@ multiplayer map on the disc through `h2 import halo1`'s path in both
 sandboxes (26 builds), every attachment of every converted vehicle (587)
 naming a tag of its group in the built map.
 
-### Dialogue (`udlg`): definition only
+### Dialogue (`udlg`)
 
 `crates/tags/src/defs/udlg.txt`: all 42 distinct retail `udlg` round-trip
 byte-identical. A Halo 2 `udlg` is a list of vocalizations, each a
 string ID name and a `snd!`, plus an `adlg` reference (null on every tag)
-and a per-tag string. On 05a its 17 tags use 330 names, Halo 2's AI
-vocabulary (`pain_mjr`, `dth_fall`, `seefoe`, `chr_kllfoe`, ...).
+and a per-tag string (a three-letter designator, `jon`, `grf`, `dop`;
+null on the Chief's, the multiplayer elite's and the drone's). On 05a
+its 17 tags use 330 names, Halo 2's AI vocabulary (`pain_mjr`,
+`dth_fall`, `seefoe`, `chr_kllfoe`, ...).
 
-Halo 1's `udlg` (`0x1010`, 61 on six levels; `effects_disc.rs`
-`halo1_dialogue_survey`) is a fixed table of `snd!` references, a
-vocalization per offset, the sound's own name saying which on every tag
-that sets it (`+0x70` pain minor, `+0xf0` death quiet, `+0x740` grenade
-throwing, `+0x360` killed enemy, ...). The two vocabularies differ, so a
-conversion needs a table from Halo 1 offsets to Halo 2 names (D), and the
-dialogue's samples are large (a30's dialogue alone is 36 MB,
-[h1-sounds.md](h1-sounds.md)), so it also needs a place in the file
-size ladder. Not built yet: rebuilt bipeds keep their counterpart's
-dialogue.
+Halo 1's `udlg` (`0x1010`; 102 distinct on the disc, `effects_disc.rs`
+`halo1_dialogue_survey`) is a fixed table of `snd!` references, a line
+per offset, the sound's own name saying which on every tag that sets it
+(`+0x70` pain minor, `+0xf0` death quiet, `+0x740` grenade throwing,
+`+0x360` killed enemy, ...).
+
+Converted since version 52 (`h1objects::rebuild::DIALOGUE`,
+`Converter::dialogue`): a table from Halo 1 offsets to Halo 2
+vocalization names, 41 pairs. The Halo 1 slot names are V (the sound
+names); the Halo 2 names are V (every one is used by a retail `udlg` on
+05a; the disc test asserts it); the pairing is D by meaning, except pain
+and death, where the two retail dialogue tags whose sounds are not named
+after the vocalization (the Chief's and the multiplayer elite's) give
+the bridge: their `death` plays for `dth`, `dth_mjr`, `dth_slnt`,
+`dth_slw` and `dth_hdsht`, their falling death for `dth_fall`, their
+`pain` for `pain_mjr`. Where two slots feed one vocalization the first
+holding a sound wins. The hurt and killed lines by weapon and species,
+the replies, the search and vehicle chatter have no Halo 2 name close
+enough and are left out. The root's `adlg` word, null datum and `snd!`
+group words are as on every retail tag; the designator string is null
+(D: what reads it is not established).
+
+A rebuilt biped's model (`hlmt +0x8c`, `DIALOGUE_FIELD`) names the
+converted dialogue of the first `udlg` its Halo 1 unit names, in place
+of the counterpart's. V (`every_dialogue_converts`, ten campaign levels
+and the multiplayer maps): 102 tags, 6,502 slots holding a sound, 2,140
+Halo 2 lines, all reading back with no pinned bytes and every sound a
+converted one; 125 of 169 bipeds name dialogue, 21 more than one (only
+the first is kept). The sounds are large (0xa0acae4 sample bytes over
+all maps), so h1campaign's file size ladder has a dialogue step: after
+the music, a level over the file limit gets a dialogue budget
+(`Options::dialogue_budget`) that much smaller, down to none, before the
+ambience is cut. A line whose sound would pass the budget is left out.
+What only a real run can confirm: that the AI plays the lines (the
+engine's reader of the vocalization list is not traced).
 
 ## Which converted objects use the definitions
 
