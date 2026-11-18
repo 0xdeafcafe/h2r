@@ -165,10 +165,22 @@ async fn fetch_retrying(
     path: &str,
 ) -> Result<Response> {
     use crate::doretry::{self, Outcome, Thrown};
+    // Each attempt sends a copy (the body teed), so a retry has its own;
+    // a big body is sent once instead, as the tee would hold all of it.
+    let length = req
+        .headers()
+        .get("content-length")?
+        .and_then(|v| v.trim().parse::<u64>().ok());
+    let kept = doretry::keeps_body(req.inner().body().is_some(), length);
+    let mut req = Some(req);
     let mut attempt = 1;
     loop {
-        // Each attempt sends a copy (the body teed), so a retry has its own.
-        let error = match stub.fetch_with_request(req.clone()?).await {
+        let call = if kept {
+            req.as_ref().expect("kept for every attempt").clone()?
+        } else {
+            req.take().expect("a body that is not kept is sent once")
+        };
+        let error = match stub.fetch_with_request(call).await {
             Ok(resp) => return Ok(resp),
             Err(e) => e,
         };
@@ -183,7 +195,7 @@ async fn fetch_retrying(
             overloaded: flag("overloaded"),
             message: error.to_string(),
         };
-        match doretry::decide(&thrown, method, path, attempt) {
+        match doretry::decide_kept(&thrown, method, path, attempt, kept) {
             Outcome::Retry(pause) => {
                 worker::console_log!(
                     "live: {method} {path} attempt {attempt} threw ({}), retrying",
@@ -197,10 +209,9 @@ async fn fetch_retrying(
                     "live: {method} {path} unavailable after {attempt} attempt(s): {}",
                     thrown.message
                 );
-                let mut resp = Response::from_bytes(
-                    doretry::unavailable_body(&thrown.message).into_bytes(),
-                )?
-                .with_status(503);
+                let mut resp =
+                    Response::from_bytes(doretry::unavailable_body(&thrown.message).into_bytes())?
+                        .with_status(503);
                 resp.headers_mut()
                     .set("retry-after", &doretry::RETRY_AFTER_S.to_string())?;
                 resp.headers_mut().set("content-type", "application/json")?;

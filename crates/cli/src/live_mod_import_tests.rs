@@ -477,6 +477,41 @@ fn a_map_pack_mod_becomes_a_delta_over_the_map_pack_map() {
     assert_eq!(out.manifest.base.sha256, Some(Sha256::of(&p.warlock)));
     assert_eq!(std::fs::read(out.dir.join("mod.ppf")).unwrap(), ppf);
 
+    // A PPF whose records run past the map's end, block check and all (as
+    // DotHalo's Canyon PPF for Relic): the map grows, zeros between, and
+    // the PPF is kept as it is.
+    let n = p.warlock.len() as u64;
+    let mut grows = b"PPF30\x02".to_vec();
+    grows.extend([b' '; 50]);
+    grows.extend([0, 1, 0, 0]);
+    grows.extend(&p.warlock[0x9320..0x9320 + 1024]);
+    for (offset, data) in [
+        (0x100, &b"canyon"[..]),
+        (n - 3, &b"across"[..]),
+        (n + 0x200, &b"end"[..]),
+    ] {
+        grows.extend(u64::to_le_bytes(offset));
+        grows.push(data.len() as u8);
+        grows.extend(data);
+    }
+    let input = p.f.mod_dir("canyon", "Canyon.ppf", &grows, None);
+    let out = import(&p.opts(input, "warlock")).unwrap();
+    assert_eq!(std::fs::read(out.dir.join("mod.ppf")).unwrap(), grows);
+    let made = apply(&p.warlock, &grows).unwrap();
+    assert_eq!(made.len() as u64, n + 0x203);
+    assert_eq!(&made[0x100..0x106], b"canyon");
+    assert_eq!(&made[n as usize - 3..n as usize + 3], b"across");
+    assert!(
+        made[n as usize + 3..n as usize + 0x200]
+            .iter()
+            .all(|b| *b == 0)
+    );
+    assert_eq!(&made[n as usize + 0x200..], b"end");
+    // Against another base its block check refuses it.
+    let input = p.f.mod_dir("canyon2", "Canyon.ppf", &grows, None);
+    let err = format!("{:#}", import(&p.opts(input, "containment")).unwrap_err());
+    assert!(err.contains("block check"), "{err}");
+
     // A Halo 2 disc map is still read from the disc with the map pack given.
     let input = p.f.mod_dir("l", "l.map", &grown_mod(&p.f.lockout), None);
     let out = import(&p.opts(input, "lockout")).unwrap();

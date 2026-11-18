@@ -142,7 +142,7 @@ the details are in §7):
 
 | Format | Era | Shape | Status |
 |---|---|---|---|
-| PPF 1/2/3 | 2004- | absolute-offset byte runs; PPF3 has 64-bit offsets and an optional undo block | **Built**: block check, PPF2 input size, PPF3 undo data checked against the base; FILE_ID.DIZ read |
+| PPF 1/2/3 | 2004- | absolute-offset byte runs; PPF3 has 64-bit offsets and an optional undo block | **Built**: block check, PPF2 input size, PPF3 undo data checked against the base; FILE_ID.DIZ read; records past the end grow the file, as ApplyPPF's seek-and-write does |
 | IPS / BPS | generic | offset runs / copy-from-source deltas with CRCs | **Built**: IPS with RLE, growth and the truncation extension; BPS with all four actions and its three CRC32s |
 | SPPF ("Super PPF") | 2006 | the map split into 4 blocks, so a size change only shifts to the end of its block; can add files to the map | no public spec |
 | Serenity | 2005-07 | 35 blocks plus one per tag; embeds author, description and image | no public spec |
@@ -405,8 +405,8 @@ Agreed with the Live session:
   shows "needs download (N KB)".
 - The server is a content store keyed by SHA-256 (`PUT`/`GET
   /v1/content/{hash}`), separate from title files: hash checked on upload,
-  stored once, immutable. Caps: patches about 32 MiB, user maps about
-  100 MiB, a per-account quota. Uploads are signed by the author's key; the
+  stored once, immutable. Caps: 95 MiB for a patch or a user map (under
+  Cloudflare's 100 MB request body), a per-account quota. Uploads are signed by the author's key; the
   manifest is a signed document.
 - **Only patches, packs and user-made maps are ever shared, never retail
   bytes.** The server refuses blobs whose hash matches a known retail map.
@@ -461,8 +461,9 @@ geometry is extracted from the patched map.
 - **Content store** (`crates/live-server/src/content.rs`, API in
   [live-api.md](../live/live-api.md) "Custom maps"). Blobs by SHA-256 under
   `<data>/content/<aa>/<sha256>`, checked on upload, kept once, immutable;
-  caps 32 MiB (patches, packs, images) and 100 MiB (a whole map: the body
-  starts with `daeh`), a 1 GiB per-account quota, a per-account rate. A
+  caps of 95 MiB on patches, packs and images and on a whole map (the
+  body starts with `daeh`), the largest whole MiB under the Worker's
+  100 MB request body, a 1 GiB per-account quota, a per-account rate. A
   package is a `MapPublished` event its author signs; the server validates
   the manifest, computes `MapId::of`, and refuses it while a layer is
   missing.
@@ -842,9 +843,9 @@ package changes (§3):
   of the patched bytes, which is then written at +0x2d0 as a last run,
   when the result starts with the `daeh` header and is at least 0x800
   bytes. Reads lay the runs over the base as they stream; nothing is
-  copied. PPF records past the base's end are refused (PPF patches a
-  fixed-size image); IPS may grow the file (zeros where nothing is
-  written) and truncate it.
+  copied. A PPF or IPS record past the base's end grows the file (zeros
+  where nothing is written), as ApplyPPF and IPS tools do, up to 4 GiB
+  (`content::patch::MAX_LEN`); IPS may also truncate it.
 - **Materialised** (any BPS layer): the result is built in memory once,
   checksum repaired, and written atomically (a temporary file, then a
   rename) to `cache/<MapId>.map`. A later resolution of the same `MapId`
@@ -897,7 +898,13 @@ one layer:
   1-byte record, so it never does.
 - any other length (a grown block): **BPS**: SourceRead where bytes match
   in place, SourceCopy that continues the last copy or finds a 64-byte
-  source block through a hash index, TargetRead for new bytes.
+  source block through a hash index, TargetCopy the same way over the new
+  bytes already written (data a mod added twice, padding), TargetRead for
+  the rest. For Night Ops (a 95.7 MiB map over 47.6 MiB Containment)
+  about 7.8 MiB of the new bytes repeat earlier new bytes, so TargetCopy
+  takes the 68.2 MiB delta to about 60 MiB; 03a_oldmombasa holds 65.7 MiB
+  of its blocks, but a package's base is the map it replaces, so that
+  cannot be its source.
 
 Both reproduce the edited bytes exactly, **header checksum included**. The
 editor's map writer leaves the checksum right, so the resolver's repair at

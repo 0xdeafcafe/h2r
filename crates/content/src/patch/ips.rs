@@ -20,7 +20,7 @@ pub fn parse_ips(bytes: &[u8]) -> Result<OffsetPatch, PatchError> {
             why: "no PATCH magic".into(),
         });
     }
-    let mut patch = OffsetPatch::new(F, true);
+    let mut patch = OffsetPatch::new(F);
     let mut at = 5;
     loop {
         let Some(head) = bytes.get(at..at + 3) else {

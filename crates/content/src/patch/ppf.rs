@@ -15,6 +15,12 @@
 //! PPF2 and PPF3 may end with a FILE_ID.DIZ block:
 //! `@BEGIN_FILE_ID.DIZ`, the text, `@END_FILE_ID.DIZ`, then the text's
 //! length (`u32` in PPF2, `u16` in PPF3). All numbers are little-endian.
+//!
+//! A record past the end of the input grows the file, zeros between: the
+//! format says nothing either way, and ApplyPPF (the reference applicator)
+//! opens the file for update, seeks to each record's offset and writes, so
+//! a record past the end extends it. DotHalo's PPFs for maps that grew
+//! (Canyon, a Relic remake, adds 2.4 MB to `dune.map`) rely on it.
 use super::{OffsetPatch, PatchError, Source, truncated};
 
 const F: &str = "PPF";
@@ -162,7 +168,7 @@ impl Ppf {
             }
         };
         let offset_size = if version == 3 { 8 } else { 4 };
-        let mut patch = OffsetPatch::new(F, false);
+        let mut patch = OffsetPatch::new(F);
         let mut undo = Vec::new();
         let mut at = 0;
         while at < body.len() {
@@ -355,8 +361,38 @@ pub(crate) mod tests {
         p.extend(b"ok");
         let ppf = Ppf::parse(&p).unwrap();
         assert_eq!(ppf.patch.runs()[0].offset, big);
+        // Past 4 GiB: refused, where a reader would otherwise make the
+        // whole file of zeros.
         let e = Overlay::new(0x1000).apply(&ppf.patch).unwrap_err();
-        assert!(e.to_string().contains("cannot grow"), "{e}");
+        assert!(e.to_string().contains("past the 4 GiB"), "{e}");
+    }
+
+    #[test]
+    fn records_past_the_end_grow_the_file() {
+        // As a DotHalo PPF for a map that grew: a block check against the
+        // base, a record across the base's end, and one well past it with
+        // zeros between.
+        let base = base();
+        let n = base.len() as u64;
+        let records: &[(u64, &[u8])] = &[(0x10, b"in"), (n - 4, b"across"), (n + 0x20, b"tail")];
+        let ppf = Ppf::parse(&build(3, &base, records, false, true, None)).unwrap();
+        let got = apply(&ppf, &base).unwrap();
+        let mut want = base.clone();
+        want[0x10..0x12].copy_from_slice(b"in");
+        want.truncate(base.len() - 4);
+        want.extend(b"across");
+        want.resize(base.len() + 0x20, 0);
+        want.extend(b"tail");
+        assert_eq!(got, want);
+        // The block check still holds the base to the one it was made for.
+        let mut other = base.clone();
+        other[0x9320] ^= 1;
+        assert!(apply(&ppf, &other).is_err());
+        // PPF2 too: its input size is the base's, before it grew.
+        let ppf = Ppf::parse(&build(2, &base, &[(n, b"!")], false, true, None)).unwrap();
+        let got = apply(&ppf, &base).unwrap();
+        assert_eq!(got.len(), base.len() + 1);
+        assert_eq!(got[base.len()], b'!');
     }
 
     #[test]

@@ -113,6 +113,12 @@ mod tests {
             s.policy.public.get_with_kind(),
             Some(("https://live.example.net".into(), true))
         );
+        // Upload caps as the native server's defaults, which fit under the
+        // edge's request body limit (live_server::content).
+        use live_server::content::{ContentLimits, EDGE_BODY_BYTES};
+        assert_eq!(s.policy.content, ContentLimits::default());
+        assert!(s.policy.content.layer_bytes <= EDGE_BODY_BYTES);
+        assert!(s.policy.content.map_bytes <= EDGE_BODY_BYTES);
     }
 
     #[test]

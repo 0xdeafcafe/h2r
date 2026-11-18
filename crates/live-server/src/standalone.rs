@@ -47,8 +47,8 @@ pub const USAGE: &str = "usage: h2-live-server --data DIR [options]
                           names the client, and the URL's host is the id on
                           first start
   --tls-cert PEM --tls-key PEM | --insecure-http
-  --content-layer-mib N   largest uploaded patch, pack or image (default 32)
-  --content-map-mib N     largest uploaded whole map (default 100)
+  --content-layer-mib N   largest uploaded patch, pack or image (default 95)
+  --content-map-mib N     largest uploaded whole map (default 95)
   --content-quota-mib N   content one account may store (default 1024)
 
 Retail map hashes the content store refuses: DIR/retail-maps.sha256

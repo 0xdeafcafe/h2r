@@ -81,6 +81,20 @@ pub fn repeatable(method: &str, path: &str) -> bool {
     }
 }
 
+/// The largest body kept for a second call. A retry needs its own copy of
+/// the body, made by teeing the request, and the runtime holds every byte
+/// of the branch kept back in the isolate's memory (128 MB) until the
+/// first call finishes: a 95 MiB content upload would not fit beside the
+/// rest. Title files (2 MiB) and cloud saves (about 4 MiB) are under it.
+pub const KEEP_BODY_BYTES: u64 = 8 << 20;
+
+/// Whether a request's body may be kept for a retry: it has none, or says
+/// it is at most [`KEEP_BODY_BYTES`]. One without a length (streamed in
+/// chunks) could be any size, so it is sent once.
+pub fn keeps_body(has_body: bool, content_length: Option<u64>) -> bool {
+    !has_body || content_length.is_some_and(|n| n <= KEEP_BODY_BYTES)
+}
+
 /// What to do after call `attempt` (1-based) of a `method` `path` request
 /// threw `thrown`.
 pub fn decide(thrown: &Thrown, method: &str, path: &str, attempt: u32) -> Outcome {
@@ -95,6 +109,16 @@ pub fn decide(thrown: &Thrown, method: &str, path: &str, attempt: u32) -> Outcom
         Outcome::Retry(Duration::from_millis(100 << (2 * (attempt - 1))))
     } else {
         Outcome::Unavailable
+    }
+}
+
+/// [`decide`] for a request whose body was or was not kept
+/// ([`keeps_body`]): one sent without a copy cannot be sent again, so a
+/// retry becomes the 503, and the client sends it again itself.
+pub fn decide_kept(thrown: &Thrown, method: &str, path: &str, attempt: u32, kept: bool) -> Outcome {
+    match decide(thrown, method, path, attempt) {
+        Outcome::Retry(_) if !kept => Outcome::Unavailable,
+        o => o,
     }
 }
 
@@ -203,6 +227,28 @@ mod tests {
         assert!(!repeatable("POST", "/v1/sessions//events"));
         assert!(!repeatable("POST", "/v1/sessions/a/b/events"));
         assert!(!repeatable("PATCH", "/v1/events"));
+    }
+
+    #[test]
+    fn a_big_or_unsized_body_is_sent_once_and_a_reset_under_it_is_a_503() {
+        assert!(keeps_body(false, None), "a GET: nothing to keep");
+        assert!(keeps_body(true, Some(0)));
+        assert!(keeps_body(true, Some(KEEP_BODY_BYTES)));
+        assert!(!keeps_body(true, Some(KEEP_BODY_BYTES + 1)));
+        assert!(!keeps_body(true, None), "chunked: any size");
+        let reset = thrown(Some(true), None, "Network connection lost.");
+        let path = "/v1/content/00";
+        assert_eq!(
+            decide_kept(&reset, "PUT", path, 1, true),
+            Outcome::Retry(Duration::from_millis(100))
+        );
+        assert_eq!(
+            decide_kept(&reset, "PUT", path, 1, false),
+            Outcome::Unavailable
+        );
+        // Not a reset: as before, kept or not.
+        let bug = thrown(None, None, "RangeError: out of bounds");
+        assert_eq!(decide_kept(&bug, "PUT", path, 1, false), Outcome::Fail);
     }
 
     #[test]
