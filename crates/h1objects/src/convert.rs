@@ -381,6 +381,29 @@ pub enum PhysicsKind {
     Biped,
 }
 
+/// The ragdoll constraints of a built biped: its bodies joined over
+/// Halo 1's model nodes ([`crate::ragdoll`]), the frames from the nodes'
+/// rest transforms. Empty when the skeleton does not map.
+pub fn biped_ragdoll(
+    nodes: &[h1models::h1::Node],
+    bodies: &[crate::rebuild::Body],
+) -> Vec<crate::ragdoll::Constraint> {
+    let named: Vec<(&str, i16)> = nodes.iter().map(|n| (n.name.as_str(), n.parent)).collect();
+    let body_nodes: Vec<i16> = bodies.iter().map(|b| b.node).collect();
+    let Some(links) = crate::ragdoll::links(&named, &body_nodes) else {
+        return Vec::new();
+    };
+    let parents: Vec<i16> = nodes.iter().map(|n| n.parent).collect();
+    let rest: Vec<crate::physics::Transform> = nodes
+        .iter()
+        .map(|n| crate::physics::Transform {
+            r: h1models::mode::quat_matrix(n.rotation),
+            t: n.translation,
+        })
+        .collect();
+    crate::ragdoll::constraints(&links, &body_nodes, &parents, &rest)
+}
+
 /// Stands for the `k`-th tag of a [`Tree`] until it is installed.
 pub fn local(k: usize) -> TagId {
     TagId(LOCAL | k as u32)
@@ -2482,8 +2505,18 @@ impl<'a> Converter<'a> {
         } else {
             crate::rebuild::DEVICE_BODY
         };
+        let joints = if kind == PhysicsKind::Biped {
+            biped_ragdoll(&model.nodes, &bodies)
+        } else {
+            Vec::new()
+        };
+        let how = match (kind, joints.len()) {
+            (PhysicsKind::Biped, 0) => format!("{how}; no ragdoll (skeleton not mapped, crate::ragdoll::links)"),
+            (PhysicsKind::Biped, n) => format!("{how}; ragdoll of {n} constraints (crate::ragdoll)"),
+            _ => how,
+        };
         Ok(Some((
-            crate::rebuild::physics_model(&bodies, &nodes, words)?,
+            crate::rebuild::physics_model(&bodies, &nodes, words, &joints)?,
             how,
         )))
     }
