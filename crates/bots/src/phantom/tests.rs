@@ -154,8 +154,10 @@ fn no_players_array_means_no_players() {
 }
 
 #[test]
-fn the_free_add_still_refuses_until_machines_are_made() {
-    assert_eq!(add(who(1, "A"), None, idle()), Err(Error::NotBuilt));
+fn the_free_functions_use_the_global_books() {
+    let h = add(who(0x0123_4567_89ab, "Global"), None, idle()).unwrap();
+    assert!(list().iter().any(|p| p.handle == h));
+    remove(h).unwrap();
     assert_eq!(
         remove(PhantomHandle(12345)),
         Err(Error::NoSuchPhantom(PhantomHandle(12345)))

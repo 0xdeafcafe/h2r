@@ -521,7 +521,7 @@ player, and the game does the rest.
 | `+0x4990` | most peers |
 | `+0x72d8` | the local peer (skipped for views) |
 | `+0x72dc` | peer channels, 16 × `0x14` (`0x5f900`) |
-| `+0x741c` | state: 5 lobby, 6 to 8 in game |
+| `+0x741c` | state: 5 in the lobby **and in a running game**; 6 to 8 [guess] leaving, host migration and disbanding |
 | `+0x7618` | membership change counter |
 
 - **Peer**: `+0x00` XNADDR (`0x24` bytes), whose 6-byte MAC at `+0xa` **is
@@ -558,31 +558,72 @@ validated by `0x14d0a0`): `+0` flags, `+4` yaw and `+8` pitch (finite),
 `+0x21` weapon indices (-1 or 0 to 3, different), `+0x22` grenade (-1, 0,
 1). Not yet named: which flag bits are crouch and jump.
 
-**Recipe on the host** (game thread, before `0x68140`; only when the
-simulation mode is 5, the state 5 to 8, and peers < 16 and < `+0x4990`):
+**The session state.** A running game stays in state 5. The per-frame
+membership code (`0x83220`, `0x8327b..0x83299`) goes on only in state 5
+when the state is 5 to 8; otherwise it frees every simulation view and
+drops the simulation's network state (`0x6b040`). 6 is set after the
+leave message `0xd` (`0x61450`), 7 by `0x614a0` and 8 at `0x61646`. So
+"in a game" is state 5 with a game loaded, never 6 to 8.
 
-1. **Peer.** An XNADDR with the phantom's machine id at `+0xa`, then
-   `0x5fbd0(S, S+0x54, &xnaddr, 0, -1, NULL)` (stdcall, `ret 0x18`): it
-   writes the peer, its user slots -1, and the channel entry unconnected.
-   Write the peer's name; `[S+0x4c]++` and `S+0x7618++`.
-2. **Player.** `0x60000(peer, 0, &id12)` with EBX = S (stdcall, `ret 0xc`)
-   gives a slot. Write the slot's controller (0..3, not -1), the requested
-   configuration, and in a game also the effective one (`0x65cb0`, which
-   computes it, returns early in states 6 to 8); bump both counters again.
-3. The game does the rest over the next frames: machine, player, slot.
-4. **Each tick**, after `0x1870a0`: `0x6a3b0` with the machine id, user 0;
-   if a slot comes back, `0x847d0` with the action.
-5. **Removal**: `0x60200`/`0x601e0` remove the player, `0x5fe20` the peer
-   (not yet read for a peer with no channel).
+**Recipe on the host, as built** (`bots::phantom::session`): the writes
+the game's own functions make, done from the game thread before each
+`RENDER_FRAME`, only while a multiplayer game runs, the simulation mode is
+5 (distributed server), the session state is 5 and its class 4.
 
-**Open, for a run**: a real client opens a channel to every peer's XNADDR
-(`0x5cb80` → `0x76aa0`) and, in the lobby, drops a peer whose channel dies
-(`0x5a090` → `0x5fda0`; that loop does not run in states 6 to 8). Either
-our network layer answers for phantom addresses on clients, or phantoms
-join only once the game runs. Also open: what the lobby's ready check
-(`0x5f970`) reads from a peer's properties, what `0x62e30` and the veto
-object at `[S+0x78a8]` refuse, and whether `+0x72d8` is the host or the
-local peer.
+1. **Peer** (as `0x5fbd0(S, n, &xnaddr, 0, -1, NULL)` and `0x5f900`):
+   `S+0x54` + 1; the peer cleared; its MAC (`+0xa`) the phantom's machine
+   id; its name at `+0x28` (15 units); its four user slots -1. The channel
+   entry: valid 1, connected 0, channel -1, `+8` and `+0xc` -1. Then
+   `[S+0x4c]` + 1 and `S+0x7618` + 1, as the host's join (`0x5c720`).
+2. **Player** (as `0x60000`/`0x600f0` and the add-player message
+   `0x5f05d`): the lowest free slot of `S+0x111c`, refused when the id is
+   in the session already or `S+0x1118` is at `S+0x4994`. Id (12 bytes:
+   the xuid, then the machine id's last four), peer, user 0, controller 0
+   (never -1: the diff skips -1), both configurations, `+0x138` 0; the
+   peer's slot and player count; mask and count; both counters + 1.
+3. **Configuration**: the host's own player's (`+0xd4`, `0x90` bytes)
+   with the phantom's name (UTF-16 at `+0`, up to 15) and its team at
+   `+0x7c` when it has one.
+4. The game does the rest over the next frames: machine, player, slot.
+5. **Actions**, each frame: the slot is the simulation slot whose MAC
+   (`+0x18`) is the phantom's; the action goes in at `+0x2c` and the
+   stamp at `+0x28` is the game tick, as `0x847d0`'s server path stores
+   it, without its rounding. The server reuses it for 2 s, so ticks
+   between frames are covered.
+6. **Removal** (as `0x5fe20`): the peer's players out (mask, count, the
+   peer's slots), later players' peer indices and the session's peer
+   indices (`+0x40`, `+0x72d8`, `+0x50`) down one, the peers and channel
+   entries above it moved down, the last cleared, `S+0x54` - 1, counters
+   + 1. Not done: its tail call `0x5a2e0`. Phantoms leave last first.
+
+**The action from a pad** (`session::action_from_pad`): yaw and pitch
+are absolute world angles (`0x186f99`, `0x824d0`), so the right stick
+turns from the unit's facing: yaw minus x, pitch plus y, at 3 rad/s
+[guess, tuned in a run]. The left stick is the throttle (forward; strafe
+[guess] positive to the left), the right trigger `+0x14` (fire), the left
+`+0x18` (grenades), the weapon the unit's current (`+0x212`). The rest is
+what passes `0x14d0a0`: the second weapon, grenade type and `+0x24` -1,
+target and aim block zero. **Buttons are not mapped**: the flag bits come
+from abstract buttons k0..k15 in `0x185be0` (k0 → `0x2`, k4 → `0x30`, k5
+→ `0x4|0x100000|0x2000000`, k6 → `0x4000000`, k7 → `0x10040`, k12 →
+`0x80`, k13 → `0x100`; `+0x1c` bits from k2 and k3), and which pad button
+each k is is not traced. So a phantom does not jump, crouch or melee yet.
+
+**Open, for a run**:
+
+- **Clients and the phantom's address.** A real client opens a channel to
+  every peer's XNADDR (`0x5cb80` → `0x76aa0`, `0x5d237`) and its drop loop
+  (`0x5a090` → `0x5fda0`) runs in state 5, which is the running game too.
+  So on a client a phantom may be dropped locally, in the lobby or in the
+  game. If a run shows it, our network layer has to answer for phantom
+  addresses on clients. The host is safe: its loop drops only connected
+  peers.
+- What the lobby's ready check (`0x5f970`) reads from a peer's properties
+  (phantoms leave the session when the game ends, so they are not in the
+  lobby yet), what `0x62e30` and the veto object at `[S+0x78a8]` refuse,
+  and whether `+0x72d8` is the host or the local peer.
+- Colours and emblem in the configuration ([guess] `+0x40..+0x7b`); a
+  phantom wears the host's until then.
 
 ### 5.2 Why phantoms are needed
 
@@ -1045,10 +1086,42 @@ list for the user to play (§11).
      - `live_proto::bots`: the roster (§9.1) and its request, checked by
        §9.1's rules, and `local_xuid` for host-made identities (high bits
        `0x000E`; server accounts carry `0x0009`).
-     - The free `bots::phantom::add` still answers `NotBuilt`: the game
-       side (6b) makes the machines.
-   - **Next (6b):** the recipe (§5.1) on the game thread; the pad to the
-     action record; removal; the System Link client question.
+   - **Built (6b):**
+     - `bots::phantom::session`: the session recipe of §5.1 as memory
+       writes (peer, player, removal), the configuration, the simulation
+       slot, the action record and the action from a pad.
+     - `Phantoms::tick`, from `boot::bot_glue` before each `RENDER_FRAME`:
+       while a multiplayer game this console hosts runs, pending phantoms
+       get a peer and a player; each joined one's source is asked for its
+       pad (`Frame { port: 4, machine: Some(id) }`) and the pad becomes its
+       action. A removed phantom's peer comes out. **Phantoms join only
+       once the game runs**: when it ends they leave the session and wait
+       for the next game, so the lobby never holds one. On a client, or a
+       local game, they fail ("not the host"); with no room, the one that
+       does not fit fails.
+     - `bots::phantom::add` works (the `NotBuilt` error is gone).
+     - The Clankers page's count past the free ports adds phantoms:
+       "Clanker 4" and up, host-made xuids (`live_proto::bots::local_xuid`),
+       the page's difficulty, the host's team. A lower count takes them
+       off first.
+   - **Game run (the user), 6b**: needs two consoles, a host and a real
+     System Link client.
+     1. On the host, `h2 play`, System Link, host a custom game; on the
+        Clankers page set On and Count 5 (3 local Clankers and 2 phantoms;
+        the log says `clankers: Clanker 4 (phantom) on`).
+     2. The client joins; start Slayer. The host's log says `bots: phantom
+        Clanker 4 joins (peer N)` once the game runs.
+     3. On the host's scoreboard: Clanker 4 and 5, wearing the host's
+        colours. Do they spawn, turn, walk and shoot? They do not jump or
+        melee yet.
+     4. On the client: are they on the scoreboard, do they move, and do
+        they stay for the whole game (§5.1, "Clients and the phantom's
+        address")?
+     5. Back in the lobby they are gone; the next game they join again.
+     6. Send the `bots:` and `clankers:` lines, and anything odd in the
+        turning: 3 rad/s and the strafe sign are guesses.
+     7. Also useful: on the host, the session state and the network life
+        cycle (`0x527334`) during the game.
    - **Then (6c):** the server's bot identities, below, with sbmm-ranked's
      persistent bots.
    - In-memory phantom machines, peers and players; action conversion and
@@ -1136,8 +1209,9 @@ list for the user to play (§11).
      The setting persists, so with `enabled` left on, the bots are added
      at the next boot too, and join any players screen, campaign
      included.
-   - Up to 3 bots play until stage 6. A count over the free ports adds
-     what fits and says so in the log.
+   - Past the free ports the count adds phantom peers (stage 6b), which
+     join once a hosted game runs; without phantoms (tests) it adds what
+     fits and says so in the log.
    - Tests:
      - the settings in `setting_defs::ALL`, and off by default;
      - Mixed by port;
@@ -1217,14 +1291,13 @@ small surface. Everything in it is controller input.
       `mind::Mind` (with the loaded map's nav mesh and walls) in a
       multiplayer game, and is idle elsewhere.
 - `bots::phantom::add(Identity, team: Option<u8>, Box<dyn PadSource>)`
-  has its final signature but returns `Err(NotBuilt)` until stage 6b
-  makes machines. `Identity` is the roster's xuid, gamertag, emblem and
-  colours (§9.1).
+  puts a phantom on the books; it joins once a multiplayer game this
+  console hosts runs (§5.1). `Identity` is the roster's xuid, gamertag,
+  emblem and colours (§9.1); emblem and colours are not applied yet.
 - `bots::phantom::remove(handle)`, `list() -> Vec<PhantomInfo>` (handle,
   identity, team, machine id, `player: Option<u32>`, `state: Pending |
   Joined | Failed(reason)`) and `player(handle) -> Option<u32>` work on the
-  process-wide `Phantoms` (`phantom::global()`). Errors: `NotBuilt`,
-  `Full` (15), `Duplicate(xuid)`, `BadIdentity`, `NoSuchPhantom`.
+  process-wide `Phantoms` (`phantom::global()`). Errors: `Full` (15), `Duplicate(xuid)`, `BadIdentity`, `NoSuchPhantom`.
 - `Frame::machine` is a phantom's machine id (`None` for a local bot; a
   phantom's `port` is 4). A source finds its own player with
   `guest::perceive_as(Who::Machine(id))`.

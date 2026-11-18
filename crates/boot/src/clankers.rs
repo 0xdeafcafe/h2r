@@ -37,6 +37,7 @@ use settings::{Apply, Choice, Def, Kind, Scope, Store, Tier, Unit, Value};
 
 use bots::local::{self, BotHandle, Local};
 use bots::mind::Skill;
+use bots::phantom::{Identity, PhantomHandle, Phantoms};
 
 use crate::h1_options_row::{self as h1row, CHANGE_MAP};
 use crate::list_class::{self, Rows};
@@ -51,8 +52,6 @@ pub const FEATURE: &str = "clankers";
 pub const SCREEN: &str = "clankers";
 /// The Game Setup row's feature (`features.clankers-row`).
 pub const ROW_FEATURE: &str = "clankers-row";
-/// The page's texts as a locale source.
-pub const TEXTS_FEATURE: &str = "clankers-texts";
 /// The page's string ids.
 pub const IDS: Family = ids::family("clankers");
 /// Our Game Setup row's action: after the Halo 1 Options row's 10 (retail
@@ -217,19 +216,6 @@ pub fn page(store: Arc<Store>) -> KitScreen {
     ])
 }
 
-/// The page's texts, as a locale source of its own id (the kit's
-/// [`KitTexts`] under [`TEXTS_FEATURE`]).
-pub struct Texts(pub Arc<KitScreen>);
-
-impl feature::Feature for Texts {
-    fn manifest(&self) -> Manifest {
-        Manifest::new(TEXTS_FEATURE, "The Clankers page's texts").doc("docs/game/bots.md")
-    }
-    fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        KitTexts(Arc::clone(&self.0)).build(b)
-    }
-}
-
 // --- The driver -----------------------------------------------------------
 
 /// The skill of a bot on `port` at difficulty `d` (a [`DIFFICULTY`] value):
@@ -294,17 +280,38 @@ impl Want {
     }
 }
 
-/// Keeps the page's bots in a [`Local`].
+/// Where one of the page's bots is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Seat {
+    /// A local bot on this controller port.
+    Port(u8, BotHandle),
+    /// A phantom peer, the `n`th of the page's bots (from 1).
+    Phantom(u32, PhantomHandle),
+}
+
+/// Keeps the page's bots: local bots on free ports first, then, with
+/// phantoms, phantom peers for the rest (docs/game/bots.md, stage 6).
 pub struct Driver {
     local: Local,
-    own: Mutex<Vec<(u8, BotHandle, Arc<AtomicU8>)>>,
+    phantoms: Option<Phantoms>,
+    own: Mutex<Vec<(Seat, Arc<AtomicU8>)>>,
 }
 
 impl Driver {
+    /// Local bots only.
     pub fn new(local: Local) -> Self {
         Driver {
             local,
+            phantoms: None,
             own: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Local bots, then phantoms.
+    pub fn with_phantoms(local: Local, phantoms: Phantoms) -> Self {
+        Driver {
+            phantoms: Some(phantoms),
+            ..Driver::new(local)
         }
     }
 
@@ -314,45 +321,79 @@ impl Driver {
         let mut log = Vec::new();
         // Fewer: the last added go first.
         while own.len() > want.count {
-            let (port, h, _) = own.pop().expect("more than wanted");
-            match self.local.remove(h) {
-                Ok(()) => log.push(format!("Clanker {port} off")),
-                Err(e) => log.push(format!("Clanker {port}: {e}")),
+            let (seat, _) = own.pop().expect("more than wanted");
+            let (name, r) = match seat {
+                Seat::Port(port, h) => (
+                    format!("Clanker {port}"),
+                    self.local.remove(h).map_err(|e| e.to_string()),
+                ),
+                Seat::Phantom(n, h) => (
+                    phantom_name(n),
+                    self.phantoms
+                        .as_ref()
+                        .map_or(Ok(()), |p| p.remove(h).map_err(|e| e.to_string())),
+                ),
+            };
+            match r {
+                Ok(()) => log.push(format!("{name} off")),
+                Err(e) => log.push(format!("{name}: {e}")),
             }
         }
-        for (port, _, s) in own.iter() {
+        for (seat, s) in own.iter() {
             s.store(
-                skill_index(skill(want.difficulty, *port)),
+                skill_index(skill(want.difficulty, seat_port(*seat))),
                 Ordering::Relaxed,
             );
         }
-        // More: on the lowest port no bot asked for.
+        // More: on the lowest port no bot asked for, then as phantoms.
         while own.len() < want.count {
             let taken: Vec<u8> = self.local.list().iter().map(|b| b.wanted).collect();
-            let Some(port) = (1..=3u8).find(|p| !taken.contains(p)) else {
-                log.push(format!(
-                    "{} asked for, {} on this machine: no free port",
-                    want.count,
-                    own.len()
-                ));
-                break;
-            };
+            let n = own.len() as u32 + 1;
+            let free = (1..=3u8).find(|p| !taken.contains(p));
+            let port = free.unwrap_or(((n - 1) % 3 + 1) as u8);
             let k = skill(want.difficulty, port);
             let s = Arc::new(AtomicU8::new(skill_index(k)));
             let src = Clanker {
-                brain: bots::Brain::new(k, 0xc1a4 ^ u64::from(port)),
+                brain: bots::Brain::new(k, 0xc1a4 ^ u64::from(n)),
                 skill: Arc::clone(&s),
             };
-            match self
-                .local
-                .add(port, &format!("Clanker {port}"), Box::new(src))
-            {
-                Ok(h) => {
-                    log.push(format!("Clanker {port} on ({k:?})"));
-                    own.push((port, h, s));
+            let added = match (free, &self.phantoms) {
+                (Some(port), _) => self
+                    .local
+                    .add(port, &format!("Clanker {port}"), Box::new(src))
+                    .map(|h| (format!("Clanker {port}"), Seat::Port(port, h)))
+                    .map_err(|e| e.to_string()),
+                (None, Some(ph)) => {
+                    let id = Identity {
+                        xuid: live_proto::bots::local_xuid(n).0,
+                        gamertag: phantom_name(n),
+                        ..Default::default()
+                    };
+                    ph.add(id, None, Box::new(src))
+                        .map(|h| {
+                            (
+                                format!("{} (phantom)", phantom_name(n)),
+                                Seat::Phantom(n, h),
+                            )
+                        })
+                        .map_err(|e| e.to_string())
+                }
+                (None, None) => {
+                    log.push(format!(
+                        "{} asked for, {} on this machine: no free port",
+                        want.count,
+                        own.len()
+                    ));
+                    break;
+                }
+            };
+            match added {
+                Ok((name, seat)) => {
+                    log.push(format!("{name} on ({k:?})"));
+                    own.push((seat, s));
                 }
                 Err(e) => {
-                    log.push(format!("Clanker {port}: {e}"));
+                    log.push(format!("Clanker {n}: {e}"));
                     break;
                 }
             }
@@ -360,8 +401,19 @@ impl Driver {
         log
     }
 
-    /// The ports of the bots it keeps.
+    /// The ports of the local bots it keeps.
     pub fn ports(&self) -> Vec<u8> {
+        self.seats()
+            .into_iter()
+            .filter_map(|s| match s {
+                Seat::Port(p, _) => Some(p),
+                Seat::Phantom(..) => None,
+            })
+            .collect()
+    }
+
+    /// Every bot it keeps, in the order added.
+    pub fn seats(&self) -> Vec<Seat> {
         self.own
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -371,9 +423,22 @@ impl Driver {
     }
 }
 
-/// Starts the driver over `store`: matches it now and on every change.
-pub fn drive(store: &Arc<Store>, local: Local) -> Arc<Driver> {
-    let d = Arc::new(Driver::new(local));
+fn phantom_name(n: u32) -> String {
+    format!("Clanker {n}")
+}
+
+/// The port a seat's Mixed skill follows: its own, or for the `n`th bot
+/// as a phantom, 1 to 3 in turn.
+fn seat_port(s: Seat) -> u8 {
+    match s {
+        Seat::Port(p, _) => p,
+        Seat::Phantom(n, _) => ((n - 1) % 3 + 1) as u8,
+    }
+}
+
+/// Starts `driver` over `store`: matches it now and on every change.
+pub fn drive(store: &Arc<Store>, driver: Driver) -> Arc<Driver> {
+    let d = Arc::new(driver);
     let run = {
         let (d, store) = (Arc::clone(&d), Arc::downgrade(store));
         move |_: &Value| {
@@ -550,7 +615,7 @@ impl feature::Feature for SetupRow {
 pub fn install(registry: &mut feature::Registry, store: &Arc<Store>) -> anyhow::Result<()> {
     let page = Arc::new(page(Arc::clone(store)));
     registry
-        .add(&Texts(Arc::clone(&page)))
+        .add(&KitTexts(Arc::clone(&page)))
         .map_err(|e| anyhow::anyhow!("clankers texts: {e}"))?;
     registry
         .add(&page.class())
@@ -559,7 +624,10 @@ pub fn install(registry: &mut feature::Registry, store: &Arc<Store>) -> anyhow::
         .add(&SetupRow { page })
         .map_err(|e| anyhow::anyhow!("clankers row: {e}"))?;
     // The driver lives as long as the store's change callbacks hold it.
-    let _ = drive(store, local::global().clone());
+    let _ = drive(
+        store,
+        Driver::with_phantoms(local::global().clone(), bots::phantom::global().clone()),
+    );
     Ok(())
 }
 
