@@ -11,9 +11,21 @@ export class ApiError extends Error {
   }
 }
 
+/** A read sent with a token gets `auth=1` in its URL: the server answers it
+ *  `private, no-store`, and a CDN that keys on the URL never hands it the
+ *  anonymous copy (or the anonymous reader this one). */
+export function withAuthMark(url: string): string {
+  const u = new URL(url);
+  u.searchParams.set("auth", "1");
+  return u.toString();
+}
+
 async function getJson<T>(url: string, signal?: AbortSignal, bearer?: string | null): Promise<T> {
   const headers: Record<string, string> = { accept: "application/json" };
-  if (bearer) headers.authorization = `Bearer ${bearer}`;
+  if (bearer) {
+    headers.authorization = `Bearer ${bearer}`;
+    url = withAuthMark(url);
+  }
   const r = await fetch(url, { signal, headers });
   if (!r.ok) {
     let code = "http_" + r.status, message = r.statusText;
@@ -130,7 +142,9 @@ export function api(t: ServerTarget, reader: Reader = async () => null) {
         (cursor) => u("/games/" + encodeURIComponent(id) + "/frames", { from_tick, to_tick, cursor, format: "packed" }),
         async (url, init) => {
           const token = await who();
-          return fetch(url, token ? { ...init, headers: { ...(init.headers as Record<string, string>), authorization: `Bearer ${token}` } } : init);
+          return token
+            ? fetch(withAuthMark(url), { ...init, headers: { ...(init.headers as Record<string, string>), authorization: `Bearer ${token}` } })
+            : fetch(url, init);
         },
         s,
       ),
@@ -169,8 +183,11 @@ export function api(t: ServerTarget, reader: Reader = async () => null) {
     session: (id: string, s?: AbortSignal) => getJson<{ session: unknown; position?: number }>(u("/sessions/" + encodeURIComponent(id)), s),
     /** Server-wide stats over a window (docs/live/live-api.md "Stats summary"); the raw body. */
     statsSummary: async (window: string, s?: AbortSignal) => getJson<unknown>(u("/stats/summary", { window }), s, await who()),
+    /** What a page load needs, in one read (`GET /v1/snapshot`); a server
+     *  without it answers 404. */
+    snapshot: async (s?: AbortSignal) => getJson<SnapshotBody>(u("/snapshot"), s, await who()),
     /** One page of the log; `from` is exclusive. */
-    events: async (q: { from?: number; type?: string; stream?: string; limit?: number; cursor?: string }, s?: AbortSignal) =>
+    events: async (q: { from?: number; type?: string; stream?: string; limit?: number; cursor?: string; exclude?: string }, s?: AbortSignal) =>
       page<WireEvent>(await getJson(u("/events", q), s, await who())),
     /** Every event of one stream, following cursors. */
     streamEvents: async (stream: string, s?: AbortSignal) => (await all<WireEvent>("/events", { stream, limit: 1000 }, s)).items,
@@ -183,3 +200,16 @@ export function api(t: ServerTarget, reader: Reader = async () => null) {
 }
 
 export type Api = ReturnType<typeof api>;
+
+/** `GET /v1/snapshot`: each part as its own endpoint answers it. */
+export interface SnapshotBody {
+  position: number;
+  accounts: Page<AccountSummary>;
+  presence: Page<PresenceEntry>;
+  live: Page<GameSummary>;
+  ended: Page<GameSummary>;
+  /** Every live game's detail and the newest ended ones'. */
+  details: GameDetail[];
+  /** The log before `position`, without GameFrames. */
+  tail: WireEvent[];
+}

@@ -25,3 +25,11 @@ base64 = "0.22"
 getrandom = "0.3"
 time = { version = "0.3", features = ["formatting", "parsing"] }
 flate2 = "1"
+
+# For the Cloudflare Worker (crates/live-worker): randomness and the clock
+# from JavaScript on wasm32-unknown-unknown. getrandom 0.2 comes in through
+# the RustCrypto traits (rand_core 0.6).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.3", features = ["wasm_js"] }
+getrandom02 = { package = "getrandom", version = "0.2", features = ["js"] }
+time = { version = "0.3", features = ["wasm-bindgen"] }

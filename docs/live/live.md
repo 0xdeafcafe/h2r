@@ -175,6 +175,9 @@ that, with a notice saying how to copy it; [live-hosting.md](live-hosting.md#fre
 `--listen` `127.0.0.1:8074`, `--server` `$H2_LIVE_SERVER` or
 `http://127.0.0.1:8074`, `--data` the server directory below.
 
+The same server can also run as a Cloudflare Worker, with no machine of
+yours in the path: [live-worker.md](live-worker.md) (in progress).
+
 Host data lives in `~/Library/Application Support/h2recomp/live`, beside
 the movies directory and the VFS data root ([storage.md](../runtime/storage.md)):
 

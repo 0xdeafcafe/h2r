@@ -17,13 +17,21 @@
 //! clients. Run it with `h2 live serve`, or alone with `h2-live-server`
 //! ([`standalone`], the Docker image).
 
+// Without `native` this is the Worker's build (crates/live-worker): the
+// sockets, SQL drivers and file serving are left out, and what only they
+// used goes unused.
+#![cfg_attr(not(feature = "native"), allow(dead_code, unused_imports))]
+
 pub mod admin;
 pub mod app;
 pub mod art;
 pub mod blobs;
+pub mod caching;
+#[cfg(feature = "native")]
 pub mod check;
 pub mod cloud_saves;
 pub mod content;
+#[cfg(feature = "native")]
 pub mod copy;
 pub mod default_hopper;
 pub mod default_motd;
@@ -33,18 +41,24 @@ pub mod games;
 pub mod guard;
 pub mod http;
 pub mod identity;
+#[cfg(feature = "native")]
 pub mod ingest;
 pub mod invites;
 pub mod local_signin;
 mod mailbox;
 pub mod model;
 pub mod packed;
+#[cfg(feature = "native")]
 pub mod pg;
 pub mod public;
 pub mod recovery;
 pub mod relay;
+pub mod rt;
 mod sessions;
+pub mod sql;
+#[cfg(feature = "native")]
 pub mod sqlite;
+#[cfg(feature = "native")]
 pub mod standalone;
 pub mod stats;
 pub mod status;
@@ -59,6 +73,15 @@ use std::sync::Arc;
 use anyhow::{Context, Result, bail};
 
 pub use app::{ApiError, Live, MAX_TITLE_FILE, Policy};
+
+/// The peer's address, as axum's listener records it. A Worker has no
+/// socket: there the type exists but is never set, so no request counts
+/// as from this machine.
+#[cfg(feature = "native")]
+pub use axum::extract::ConnectInfo;
+#[cfg(not(feature = "native"))]
+#[derive(Debug, Clone, Copy)]
+pub struct ConnectInfo<T>(pub T);
 pub use identity::ServerIdentity;
 pub use sessions::{CoopGame, CoopLink, Viewer};
 
@@ -108,11 +131,13 @@ impl BlobFlags {
     }
 }
 
+#[cfg(feature = "native")]
 /// `sqlite://<data>/live.db`.
 pub fn default_db(data_dir: &std::path::Path) -> String {
     sqlite::url_for(&data_dir.join(DB_FILE))
 }
 
+#[cfg(feature = "native")]
 /// The log to open when `--db` is not given: SQLite in the data directory
 /// for a new server, or one that already has it. A server from before
 /// SQLite was the default kept its log in [`DEFAULT_DB`]: if that database
@@ -164,6 +189,7 @@ pub(crate) fn redact(url: &str) -> String {
     }
 }
 
+#[cfg(feature = "native")]
 /// Why a connection failed, without the URL's credentials.
 pub(crate) fn db_error(db: &str, e: &sqlx::Error) -> anyhow::Error {
     let why = e
@@ -193,6 +219,7 @@ pub fn art_notice(art: &art::GameArt) -> String {
     }
 }
 
+#[cfg(feature = "native")]
 /// Serves until the process is stopped.
 pub async fn serve(config: Config) -> Result<()> {
     check_bind(config.listen, config.tls.is_some(), config.insecure_http)?;
@@ -300,6 +327,7 @@ pub async fn serve(config: Config) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "native")]
 /// A server running inside another program (`h2 play --live-local`) on its own
 /// tokio runtime. Dropping it stops it.
 pub struct Embedded {
@@ -311,6 +339,7 @@ pub struct Embedded {
     runtime: Option<tokio::runtime::Runtime>,
 }
 
+#[cfg(feature = "native")]
 impl Drop for Embedded {
     fn drop(&mut self) {
         if let Some(rt) = self.runtime.take() {
@@ -331,6 +360,7 @@ pub fn file_store_dir(data_dir: &std::path::Path) -> PathBuf {
     data_dir.join("log")
 }
 
+#[cfg(feature = "native")]
 /// Starts a server on `listen` (port 0: a free one). Postgres at `db` if it
 /// is reachable (the database is created if missing), else the file store
 /// in `data_dir` ([`filestore`]), so accounts, friends, title files and
@@ -352,6 +382,7 @@ pub fn start_embedded(
     start_embedded_with(db, listen, data_dir, site, policy)
 }
 
+#[cfg(feature = "native")]
 /// [`start_embedded`] with a policy of the caller's (tests: an
 /// invite-only server).
 pub fn start_embedded_with(
@@ -450,7 +481,7 @@ pub fn start_embedded_with(
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "native"))]
 mod tests {
     use super::*;
 

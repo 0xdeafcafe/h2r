@@ -1,27 +1,43 @@
 use super::*;
 use crate::coop_verdict::parse_line;
 
-/// A small model of the menus the drivers press through: enough of each
-/// screen to answer the presses the drivers make, and the lines the games
-/// print on the way.
+/// A model of the menus as runs showed them (20261118-092343 and the
+/// static trace in `boot::ui_watch`): the game reaches the main menu by
+/// itself, which reads as no screen and says `coop-live: lobby mode`;
+/// Xbox Live opens the players' screen (`0x1e`) in mode 3, whose A opens
+/// the Live menu; B on the Live menu goes back to the players' screen and
+/// B there to the main menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum At {
+    Boot,
+    Main,
+    Join(u32),
+    Campaign,
+    Settings,
+    Live,
+    Lobby,
+    Browser,
+    Dialog,
+    Level,
+}
+
 struct Game {
     tag: String,
     host: bool,
-    screen: Option<u32>,
+    at: At,
     /// The cursor on the screen shown (main menu, Live menu, lobby).
     row: u32,
+    /// The main menu's cursor, kept while away from it.
+    main_row: u32,
     /// The row the Live menu restores (`0x510a18`).
     live_row: u32,
-    signed_in: bool,
     accepted: bool,
     joined: bool,
-    /// The boot screens: intro, profile picker.
-    boot: u32,
 }
 
-const INTRO: u32 = 0x50;
-const PROFILES: u32 = 0x51;
 const LOBBY: u32 = 0x40;
+const DIALOG: u32 = 0x7d;
+const SETTINGS: u32 = 0x55;
 
 struct World {
     games: Vec<Game>,
@@ -29,10 +45,11 @@ struct World {
     due: Vec<(u64, usize, String)>,
     /// The main menu's invitation reader works on a cursor move.
     reader_works: bool,
+    /// The main menu puts its cursor back on Campaign when it comes back.
+    main_resets: bool,
     late_accept_ms: u64,
     started: bool,
     lines: Vec<String>,
-    presses: Vec<String>,
 }
 
 impl World {
@@ -43,23 +60,22 @@ impl World {
             .map(|(i, t)| Game {
                 tag: t.to_string(),
                 host: i == 0,
-                screen: None,
+                at: At::Boot,
                 row: 0,
+                main_row: 0,
                 live_row: 0,
-                signed_in: false,
                 accepted: false,
                 joined: false,
-                boot: 0,
             })
             .collect();
         World {
             games,
             due: Vec::new(),
             reader_works,
+            main_resets: false,
             late_accept_ms: 0,
             started: false,
             lines: Vec::new(),
-            presses: Vec::new(),
         }
     }
 
@@ -67,72 +83,83 @@ impl World {
         self.due.push((at, g, text.into()));
     }
 
-    fn show(&mut self, now: u64, g: usize, screen: Option<u32>) {
-        self.games[g].screen = screen;
-        let line = match screen {
-            None => "ui: screen none".to_string(),
-            Some(s) if s == LIVE_MENU => format!(
-                "ui: screen 0x{s:02x} (window 5, slot 4), live menu row {}",
+    /// Game `g` moves to `to`; its `ui: screen` line follows.
+    fn go(&mut self, now: u64, g: usize, to: At) {
+        let from = self.games[g].at;
+        if from == At::Main {
+            self.games[g].main_row = self.games[g].row;
+        }
+        self.games[g].at = to;
+        let line = match to {
+            At::Boot | At::Main | At::Level => {
+                "ui: screen none (slot 4: no window; slot 0: no window)".to_string()
+            }
+            At::Join(m) => format!("ui: screen 0x1e (window 5, slot 4), mode {m}"),
+            At::Campaign => "ui: screen 0xee (window 1, slot 4)".into(),
+            At::Settings => format!("ui: screen 0x{SETTINGS:02x} (window 5, slot 4)"),
+            At::Live => format!(
+                "ui: screen 0xba (window 5, slot 4), live menu row {}",
                 self.games[g].live_row
             ),
-            Some(s) => format!("ui: screen 0x{s:02x} (window 5, slot 4)"),
+            At::Lobby => format!("ui: screen 0x{LOBBY:02x} (window 5, slot 4)"),
+            At::Browser => "ui: screen 0x0d (window 5, slot 4)".into(),
+            At::Dialog => format!("ui: screen 0x{DIALOG:02x} (window 0, slot 4)"),
+        };
+        self.games[g].row = match to {
+            At::Main if self.main_resets => 0,
+            At::Main => self.games[g].main_row,
+            At::Live => {
+                let r = self.games[g].live_row;
+                if r <= 3 { r } else { 0 }
+            }
+            _ => 0,
         };
         self.emit(now + 50, g, line);
     }
 
     /// Game `g` gets `button` at `now`.
     fn press(&mut self, now: u64, g: usize, button: &str) {
-        let screen = self.games[g].screen;
-        let tag = self.games[g].tag.clone();
-        self.presses.push(format!("{tag} {button} {screen:?}"));
-        match (screen, button) {
-            (Some(INTRO), "start") => {
-                self.games[g].boot = 1;
-                self.show(now, g, Some(PROFILES));
-            }
-            (Some(PROFILES), "down") => self.games[g].row = 1,
-            (Some(PROFILES), "a") if self.games[g].row == 1 => {
-                self.games[g].row = 0;
-                self.show(now, g, Some(MAIN_MENU));
-            }
-            (Some(MAIN_MENU), "down") => {
-                self.games[g].row = (self.games[g].row + 1).min(4);
+        let at = self.games[g].at;
+        let row = self.games[g].row;
+        match (at, button) {
+            (At::Main, "down") => {
+                self.games[g].row = (row + 1).min(4);
                 self.nudge(now, g);
             }
-            (Some(MAIN_MENU), "up") => {
-                self.games[g].row = self.games[g].row.saturating_sub(1);
+            (At::Main, "up") => {
+                self.games[g].row = row.saturating_sub(1);
                 self.nudge(now, g);
             }
-            (Some(MAIN_MENU), "a") if self.games[g].row == MAIN_LIVE_ROW => {
-                if !self.games[g].signed_in {
-                    self.games[g].signed_in = true;
-                    self.emit(now + 100, g, "coop-live: lobby mode 4294967295");
-                }
-                let r = self.games[g].live_row;
-                self.games[g].row = if r <= 3 { r } else { 0 };
-                self.show(now, g, Some(LIVE_MENU));
+            (At::Main, "a") => {
+                let to = match row {
+                    0 => At::Campaign,
+                    1 => At::Join(MODE_LIVE),
+                    2 => At::Join(MODE_SPLIT),
+                    3 => At::Join(MODE_SYSTEM_LINK),
+                    _ => At::Settings,
+                };
+                self.go(now, g, to);
             }
-            (Some(LIVE_MENU), "down") => self.games[g].row = (self.games[g].row + 1).min(5),
-            (Some(LIVE_MENU), "up") => self.games[g].row = self.games[g].row.saturating_sub(1),
-            (Some(LIVE_MENU), "b") => {
-                // The main menu keeps its cursor on Xbox Live.
-                self.games[g].row = MAIN_LIVE_ROW;
-                self.show(now, g, Some(MAIN_MENU));
-            }
-            (Some(LIVE_MENU), "a") => match self.games[g].row {
+            (At::Campaign | At::Settings, "b") => self.go(now, g, At::Main),
+            (At::Join(MODE_LIVE), "a") => self.go(now, g, At::Live),
+            (At::Join(MODE_INVITE), "a") => self.join(now, g),
+            (At::Join(_), "b") => self.go(now, g, At::Main),
+            (At::Dialog, "a") => self.go(now, g, At::Join(MODE_INVITE)),
+            (At::Live, "down") => self.games[g].row = (row + 1).min(5),
+            (At::Live, "up") => self.games[g].row = row.saturating_sub(1),
+            (At::Live, "b") => self.go(now, g, At::Join(MODE_LIVE)),
+            (At::Live, "a") => match row {
                 COOP_ROW => {
                     self.games[g].live_row = 2;
-                    self.games[g].row = 0;
                     self.emit(now + 10, g, "custom games: row chosen active");
                     self.emit(
                         now + 20,
                         g,
                         "coop-live: hosting a co-op campaign in the game's own lobby",
                     );
-                    self.show(now, g, Some(LOBBY));
+                    self.go(now, g, At::Lobby);
                     if self.games[g].host {
-                        for (i, other) in self.games.iter().enumerate().skip(1) {
-                            let _ = i;
+                        for other in self.games.iter().skip(1) {
                             let line = format!("coop-auto: invited {} to session 839a", other.tag);
                             self.due.push((now + 300, 0, line));
                         }
@@ -146,21 +173,24 @@ impl World {
                         g,
                         "live: join: qos lookup: 10.0.3.7:31002 session 839a: contacted, 172 bytes of data",
                     );
-                    self.show(now, g, Some(BROWSER));
+                    self.go(now, g, At::Browser);
                 }
                 _ => {}
             },
-            (Some(BROWSER), "a") if self.games[0].screen == Some(LOBBY) || self.started => {
+            (At::Browser, "a") if self.games[0].at == At::Lobby || self.started => {
                 self.join(now, g);
             }
-            (Some(BROWSER), "b") => {
-                let r = self.games[g].live_row;
-                self.games[g].row = r;
-                self.show(now, g, Some(LIVE_MENU));
-            }
-            (Some(LOBBY), "a") if self.games[g].host && self.games[g].row == 0 => {
+            (At::Browser, "b") => self.go(now, g, At::Live),
+            (At::Lobby, "a") if self.games[g].host && row == 0 => {
                 let guests = self.games.iter().filter(|o| o.joined).count();
-                self.emit(now + 50, g, format!("coop-live: lobby start state 7 (co-op wants one console) answered 9 for {} consoles", guests + 1));
+                self.emit(
+                    now + 50,
+                    g,
+                    format!(
+                        "coop-live: lobby start state 7 (co-op wants one console) answered 9 for {} consoles",
+                        guests + 1
+                    ),
+                );
                 self.emit(now + 100, g, "session start returned 1");
                 self.emit(
                     now + 200,
@@ -168,7 +198,7 @@ impl World {
                     "coop-probe: simulation mode sync-server (2) at tick 0",
                 );
                 self.started = true;
-                self.show(now, g, None);
+                self.go(now, g, At::Level);
             }
             _ => {}
         }
@@ -182,7 +212,7 @@ impl World {
                 g,
                 "coop-auto: joining Alpha's session 839a (the game took the invitation)",
             );
-            self.join(now, g);
+            self.go(now, g, At::Dialog);
         }
     }
 
@@ -196,27 +226,30 @@ impl World {
             g,
             "coop-live: guest: joined Alpha's co-op session 839a",
         );
-        self.show(now + 500, g, Some(LOBBY));
+        self.go(now + 500, g, At::Lobby);
     }
 
     /// Runs every driver against the model until all are done or `limit`.
+    /// Each game reaches the main menu by itself, as runs do: a moment of
+    /// `0xb6`, then no screen and `coop-live: lobby mode`.
     fn run(&mut self, drivers: &mut [Driver], limit: u64) -> u64 {
         for g in 0..self.games.len() {
-            self.games[g].screen = Some(INTRO);
-            self.emit(
-                1000,
-                g,
-                format!("ui: screen 0x{INTRO:02x} (window 0, slot 4)"),
-            );
+            let t = 17_000 + 1000 * g as u64;
+            self.emit(t, g, "ui: screen 0xb6 (window 1, slot 4)");
+            self.due.push((t + 300, g, "\u{0}main".into()));
+            self.emit(t + 700, g, "coop-live: lobby mode 4294967295");
         }
         let mut now = 0;
         while now < limit {
-            // Lines due now, in order, to every driver.
             self.due.sort_by_key(|d| d.0);
             while let Some(i) = self.due.iter().position(|d| d.0 <= now) {
                 let (_, g, text) = self.due.remove(i);
+                if text == "\u{0}main" {
+                    self.go(now, g, At::Main);
+                    continue;
+                }
                 let tag = self.games[g].tag.clone();
-                // A guest accepts the host's invitation once signed in.
+                // A guest accepts the host's invitation by itself.
                 if let Some(rest) = text.strip_prefix("coop-auto: invited ") {
                     let who = rest.split(' ').next().unwrap().to_string();
                     if let Some(j) = self.games.iter().position(|o| o.tag == who) {
@@ -291,13 +324,23 @@ fn at_of(lines: &[String], p: &str) -> usize {
 fn screen_lines_parse() {
     assert_eq!(
         parse_screen("ui: screen 0x09 (window 5, slot 4)"),
-        Some((Some(9), None))
+        Some((Some(9), None, None))
     );
     assert_eq!(
         parse_screen("ui: screen 0xba (window 5, slot 4), live menu row 3"),
-        Some((Some(0xba), Some(3)))
+        Some((Some(0xba), Some(3), None))
     );
-    assert_eq!(parse_screen("ui: screen none"), Some((None, None)));
+    assert_eq!(
+        parse_screen("ui: screen 0x1e (window 5, slot 4), mode 3"),
+        Some((Some(0x1e), None, Some(3)))
+    );
+    assert_eq!(parse_screen("ui: screen none"), Some((None, None, None)));
+    assert_eq!(
+        parse_screen(
+            "ui: screen none (slot 4: window 1 active 0x0 pending 0x1 list []; slot 0: no window)"
+        ),
+        Some((None, None, None))
+    );
     assert_eq!(parse_screen("coop-live: hosting"), None);
 }
 
@@ -355,10 +398,25 @@ fn a_working_invitation_reader_needs_no_browser() {
     let all = w.lines.join("\n");
     assert!(d.iter().all(|d| matches!(d.step, Step::Done)), "{all}");
     assert!(!has(&w.lines, "Custom Game Browser"), "{all}");
+    // The dialog's A, then the players' screen in mode 4: A.
     assert!(
         has(
             &w.lines,
-            "Bravo: press down on screen 0x09 (a cursor move for the invitation reader)"
+            "Bravo: press a on screen 0x7d (the invitation: go on)"
+        ),
+        "{all}"
+    );
+    assert!(
+        has(
+            &w.lines,
+            "Bravo: press a on screen 0x1e (the invitation: go on)"
+        ),
+        "{all}"
+    );
+    assert!(
+        has(
+            &w.lines,
+            "Bravo: press down on screen none (a cursor move for the invitation reader)"
         ),
         "{all}"
     );
@@ -389,22 +447,69 @@ fn the_late_guest_joins_after_the_start() {
 }
 
 #[test]
-fn a_boot_screen_that_never_moves_is_given_up_on() {
+fn no_boot_press_for_a_minute_then_three_then_stuck() {
     let mut d = Driver::new("Bravo", Role::Guest);
     d.line(0, "Bravo", "ui: screen 0x77 (window 5, slot 4)");
     let mut presses = Vec::new();
-    for t in (0..120_000).step_by(100) {
+    for t in (0..200_000).step_by(100) {
         if let Some(p) = d.poll(t) {
-            presses.push(p.button);
+            presses.push((t, p.button));
         }
     }
-    assert_eq!(presses, ["start", "a", "start"]);
+    assert!(presses[0].0 >= BOOT_WAIT_MS, "{presses:?}");
+    let buttons: Vec<_> = presses.iter().map(|p| p.1).collect();
+    assert_eq!(buttons, ["start", "a", "b"]);
     assert!(d.done());
     assert!(
         d.take_said()
             .iter()
-            .any(|s| s.contains("stuck: boot screen 0x77"))
+            .any(|s| s.contains("stuck: no main menu; screen 0x77"))
     );
+}
+
+#[test]
+fn a_main_menu_that_comes_back_on_campaign_is_corrected() {
+    let tags = ["Alpha", "Bravo"];
+    let mut w = World::new(&tags, false);
+    w.main_resets = true;
+    let mut d = drivers(&tags, false);
+    w.run(&mut d, 600_000);
+    let all = w.lines.join("\n");
+    assert!(d.iter().all(|d| matches!(d.step, Step::Done)), "{all}");
+    // Bravo's fallback A landed on Campaign: B, DOWN, A.
+    assert!(
+        has(
+            &w.lines,
+            "Bravo: press b on screen 0xee (the campaign: that was Campaign)"
+        ),
+        "{all}"
+    );
+    assert!(!has(&w.lines, "Alpha | ui: screen 0xd1"), "{all}");
+}
+
+#[test]
+fn the_players_screen_in_another_mode_says_which_row_it_was() {
+    let mut d = Driver::new("Bravo", Role::Guest);
+    d.line(0, "Bravo", "ui: screen none");
+    d.line(10, "Bravo", "coop-live: lobby mode 4294967295");
+    let mut t = 0;
+    let mut pressed = Vec::new();
+    while t < 5000 {
+        if let Some(p) = d.poll(t) {
+            pressed.push(p.button);
+        }
+        t += 100;
+    }
+    assert_eq!(pressed, ["down", "a"]);
+    // That was System Link (row 3): back, up twice, A.
+    d.line(t, "Bravo", "ui: screen 0x1e (window 5, slot 4), mode 2");
+    while t < 12_000 {
+        if let Some(p) = d.poll(t) {
+            pressed.push(p.button);
+        }
+        t += 100;
+    }
+    assert_eq!(pressed, ["down", "a", "b", "up", "up", "a"]);
 }
 
 #[test]
@@ -503,6 +608,51 @@ fn the_recorded_run_leads_to_the_presses_it_needed() {
         "{:?}",
         bravo.step
     );
+}
+
+/// The 2026-11-18 (092343) run, the first with `ui: screen` lines (its
+/// presses were made by hand): no press before the main menu, Xbox Live
+/// once it is there, and A on the players' screen.
+#[test]
+fn the_first_screen_run_presses_only_at_the_main_menu() {
+    let log = include_str!("run-092343.log");
+    let mut bravo = Driver::new("Bravo", Role::Guest);
+    let mut presses = Vec::new();
+    let lines: Vec<(u64, &str, &str)> = log
+        .lines()
+        .filter_map(|l| {
+            let (tag, text) = parse_line(l)?;
+            let secs: f64 = l[2..l.find(']')?].parse().ok()?;
+            Some(((secs * 1000.0) as u64, tag, text))
+        })
+        .collect();
+    let mut next = 0;
+    // The harness polls from the socket's line on (+0.913 for Bravo).
+    for now in (913..90_000).step_by(100) {
+        while next < lines.len() && lines[next].0 <= now {
+            let (at, tag, text) = lines[next];
+            bravo.line(at, tag, text);
+            next += 1;
+        }
+        if let Some(p) = bravo.poll(now) {
+            presses.push((now, p.button, bravo.press_line(&p)));
+        }
+    }
+    let all: Vec<String> = presses.iter().map(|p| format!("{} {}", p.0, p.2)).collect();
+    let all = all.join("\n");
+    // Nothing before the main menu (none after `lobby mode` at +19.456).
+    assert!(presses[0].0 >= 19_456 + 1000, "{all}");
+    assert_eq!((presses[0].1, presses[1].1), ("down", "a"), "{all}");
+    assert!(presses[1].2.contains("on screen none (Xbox Live"), "{all}");
+    // The players' screen at +73.754: A on to the Live menu.
+    let join = presses.iter().find(|p| p.0 >= 73_754).expect(&all);
+    assert_eq!(join.1, "a", "{all}");
+    assert!(
+        join.2
+            .contains("on screen 0x1e (the players' screen for Xbox Live"),
+        "{all}"
+    );
+    assert!(!bravo.done(), "{all}");
 }
 
 #[test]

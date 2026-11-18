@@ -47,8 +47,11 @@ export function startGameArt() {
   if (started) return;
   started = true;
   createRoot(() => {
+    // The base, not the target: discovery replaces the target with one at
+    // the same base, which must not load the art again.
+    const serverBase = createMemo(() => live.server().base);
     createEffect(() => {
-      const base = live.server().base;
+      const base = serverBase();
       setArt(null);
       setMapNames(new Map());
       if (missed(base)) return;

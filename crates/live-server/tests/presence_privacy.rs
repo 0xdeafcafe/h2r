@@ -170,6 +170,41 @@ async fn presence_seen_by(visibility: session::Visibility) -> Vec<(&'static str,
             .find(|p| p["gamertag"] == "Host")
             .unwrap()
             .clone();
+        // The page-load snapshot shows this reader what the lists do, and
+        // only an anonymous one may be kept by a shared cache.
+        let snap = get("/v1/snapshot".into()).await;
+        assert_eq!(snap["presence"]["items"], list["items"], "{name}");
+        for state in ["live", "ended"] {
+            let games = get(format!("/v1/games?state={state}&limit=100")).await;
+            assert_eq!(snap[state]["items"], games["items"], "{name} {state}");
+        }
+        let shown: Vec<_> = snap["details"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["game_id"].clone())
+            .collect();
+        let listed: Vec<_> = snap["live"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|g| g["game_id"].clone())
+            .collect();
+        assert_eq!(
+            shown, listed,
+            "{name}: a detail for each live game it may see"
+        );
+        let headers: Vec<_> = u.map(|u| h.bearer(u, lxm::READ)).into_iter().collect();
+        for uri in ["/v1/snapshot", "/v1/presence", "/v1/games"] {
+            let r = h.call(Method::GET, uri, &headers, Body::empty()).await;
+            let cache = r.headers["cache-control"].to_str().unwrap();
+            if u.is_some() {
+                assert_eq!(cache, live_server::caching::PRIVATE, "{name} {uri}");
+                assert!(!r.headers.contains_key("etag"), "{name} {uri}");
+            } else {
+                assert_eq!(cache, live_server::caching::PUBLIC, "{name} {uri}");
+            }
+        }
         let friends = get("/v1/accounts/Friend/friends".into()).await;
         let log = get(format!("/v1/events?stream=presence-{}", a.xuid)).await;
         let ev = log["items"].as_array().unwrap().last().unwrap().clone();
