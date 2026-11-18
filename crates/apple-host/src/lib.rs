@@ -93,6 +93,8 @@ fn guest(layout: Layout, store: Arc<settings::Store>) -> app::worker::GuestFn {
             render_thread: boot::d3d_glue::render_thread_requested(),
             audio_sink: Some(audio_sink()),
             pad_speaker: None,
+            debug_menu: None,
+            perf_overlay: None,
             settings: Some(store),
             trace_limit: Some(TRACE_LIMIT),
             level: None,
