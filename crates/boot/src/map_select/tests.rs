@@ -320,10 +320,7 @@ fn the_boot_s_features_plan_together_with_the_campaigns() {
     r.add(&crate::list_class::ListClass::with_rows(
         "campaigns-screen",
         crate::campaign_menu::SCREEN,
-        Arc::new(crate::campaign_menu::PickerRows {
-            picker: crate::campaigns::Picker::new(&campaigns.built),
-            state: Arc::clone(&campaigns),
-        }),
+        Arc::new(crate::campaign_menu::PickerRows::new(Arc::clone(&campaigns), None)),
     ))
     .unwrap();
     r.add(&MapSelect {
