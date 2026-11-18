@@ -295,6 +295,7 @@ struct Shared {
     /// A fallback's rest of the render is running on the game thread: its
     /// frame wait has run at the launch already.
     resuming: AtomicBool,
+    setup_failed: AtomicBool,
     inner: Mutex<Inner>,
 }
 
@@ -336,6 +337,7 @@ impl PipelineRender {
                 in_flight: AtomicBool::new(false),
                 drain: AtomicBool::new(false),
                 resuming: AtomicBool::new(false),
+                setup_failed: AtomicBool::new(false),
                 inner: Mutex::new(Inner {
                     exec: None,
                     setup: None,
@@ -454,7 +456,9 @@ fn frame(
 ) -> Result<TransferAbi, GuestFault> {
     me.game_thread.store(ctx.thread_id, Ordering::Relaxed);
     if let Err(e) = setup(me, ctx, addr) {
-        eprintln!("pipeline: off: {e}");
+        if !me.setup_failed.swap(true, Ordering::Relaxed) {
+            eprintln!("pipeline: off: {e}");
+        }
         let original = ctx
             .runtime()
             .resolve_original(addr)
@@ -586,6 +590,9 @@ fn setup(me: &Arc<Shared>, ctx: &mut ExecCtx, addr: u32) -> Result<(), String> {
     let (jobs, rx) = sync_channel::<Job>(1);
     std::thread::Builder::new()
         .name("h2-pipeline-render".into())
+        // Generated code nests host frames for guest direct calls; the game
+        // thread is the process's main thread (8 MB). Reserved, not touched.
+        .stack_size(64 << 20)
         .spawn(move || {
             while let Ok(mut job) = rx.recv() {
                 let t = Instant::now();
