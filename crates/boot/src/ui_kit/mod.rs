@@ -2,6 +2,7 @@
 //! than hand-wired, so the mistakes earlier screens made cannot be made
 //! again (docs/game/ui-screens.md).
 //!
+//! - [`choice`]: a row of many choices over a setting ([`choice::ChoiceRow`]).
 //! - [`ids`]: the one registry of string-id families, checked at compile
 //!   time.
 //! - [`input`]: events as inputs, named glyphs and legends, the opener's
@@ -14,6 +15,7 @@
 //! - [`preview`]: a screen drawn offline from the disc's tags and fonts.
 //! - [`page`]: a screen's behaviour as a pure state machine, table-tested.
 
+pub mod choice;
 pub mod ids;
 pub mod input;
 pub mod layout;

@@ -268,7 +268,7 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
 }
 
 /// The screens `h2 ui preview` knows, by name.
-pub const NAMES: [&str; 10] = [
+pub const NAMES: [&str; 11] = [
     "skulls",
     "skulls.h1",
     "skulls.mp",
@@ -279,6 +279,7 @@ pub const NAMES: [&str; 10] = [
     "signin-code",
     "account",
     "kit.example",
+    "kit.choices",
 ];
 
 /// Every named state of screen `name` for the preview sheet: a list's
@@ -305,6 +306,27 @@ pub fn live(name: &str) -> Option<Box<dyn Live>> {
         "account" => Some(Box::new(Driven::new(AccountPage))),
         _ => Some(Box::new(Driven::new(list_page(name)?))),
     }
+}
+
+/// The kit's choice rows on a page laid out as Game Options is (the
+/// level select's list, the description pane, the legend in the footer):
+/// what a page such as a bots page's Count and Difficulty looks like.
+pub fn choices_example(store: Arc<settings::Store>) -> crate::ui_kit::screen::KitScreen {
+    use crate::ui_kit::choice::example::{COUNT, LEVEL};
+    crate::ui_kit::screen::KitScreen::new(
+        "kit-choices",
+        "kit.choices",
+        crate::ui_kit::ids::family("kit.choices"),
+        "Choices",
+    )
+    .layout(skulls_menu::LIST_LAYOUT, ValueStyle::Inline)
+    .description(skulls_menu::DESCRIPTION_TEXT)
+    .row(COUNT.row(Arc::clone(&store)))
+    .row(LEVEL.row(store))
+    .prompts(&[
+        Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
+        Prompt::new(&[Glyph::B], "Back"),
+    ])
 }
 
 /// Screen `name`'s page when it is a list screen: its real class over a
@@ -386,6 +408,10 @@ pub fn list_page(name: &str) -> Option<ListPage> {
         }
         "kit.example" => {
             let s = Arc::new(crate::ui_kit::screen::example().0);
+            list(ListPage::new(s.class(), described(&s)))
+        }
+        "kit.choices" => {
+            let s = Arc::new(choices_example(crate::ui_kit::choice::example::store()));
             list(ListPage::new(s.class(), described(&s)))
         }
         _ => None,
