@@ -151,8 +151,15 @@ impl Converter<'_> {
         let mut parts = arsenal::WeaponParts {
             hlmt,
             predicted,
+            animation: self.weapon_class(&w.label)?.map(|c| (c, w.label.clone())),
             ..Default::default()
         };
+        if parts.animation.is_none() {
+            rep.no_home.push(format!(
+                "weapon label {:?}: no graph on the map holds it under a weapon class; class and type left null (no unit can hold it)",
+                w.label
+            ));
+        }
         if let Some((_, root)) = &cp {
             parts.halo2 = arsenal::halo2_refs(
                 self.base,

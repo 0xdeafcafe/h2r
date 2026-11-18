@@ -73,7 +73,7 @@ effect, `2f8` detonation effect (V1: groups).
 
 | Offset | Field | Evidence |
 |---|---|---|
-| `308` | u32 flags; `30c` label | S |
+| `308` | u32 flags; `30c` label (`char[32]`): the weapon type the units' graphs animate it by (`stand rifle ar idle`): `ar`, `hp`, `sg`, `pr`, `rl`, `sr`, `pp`, `ne`, `ft`; `cg`, `cannon`, `gun` on vehicle guns | S; V1 (every Blood Gulch `weap`) |
 | `338` | f32 ready time, `33c` ready effect | S, V1 |
 | `34c`..`360` | heat recovery threshold, overheated threshold, detonation threshold, detonation fraction, heat loss per second, illumination | S; V1 (set on the plasma rifle, zero on the assault rifle) |
 | `374`, `384` | overheated, detonation effects | S |
@@ -341,6 +341,33 @@ converted model does not share (open question below).
 | `eqip` | `12c`, `130` | powerup type, powerup time | [health.md](../game/health.md) |
 
 Halo 1 speeds are multiplied by 30 (per tick to per second).
+
+### Weapon class and type (`weap +0x288`, `+0x28c`, **Built**, converter version 55)
+
+A unit takes a weapon, picked up or given at spawn, only when its
+animation graph holds it. `0x000cd6a0` (called by `unit_add_weapon`
+`0x000cd0c0` at `0x000cd12e`, and on the pickup paths at `0x000e8a63` and
+`0x000ea475`) passes the weapon's class (`+0x288`) and type (`+0x28c`)
+string IDs, with mode `current` (sid `0x101`) or the seat's, to
+`0x0010fcd0`; that asks `0x001cc3f0` for action `idle` (sid `0xc`) and
+refuses the weapon when there is none (E). Retail: the SMG `rifle`/`smg`,
+the magnum `pistol`/`hp`, the rocket launcher `missile`/`rl`, vehicle guns
+`fixed`/`gun` (V, Coagulation). The rebuilt weapons left both null, so in
+the Halo 1 sandbox the player could pick nothing up and so never fired.
+
+Halo 1 keeps only the type on the weapon (its label, `+0x30c`); the class
+is where the units' graphs put that type (`stand rifle ar idle`). The
+converter (`Converter::weapon_class`) takes, over every animation of every
+graph on the map, the class most of them name the label under, through
+the same naming the converted `jmad` tree uses (`h1models::names`): the
+assault rifle `rifle`/`ar`, pistol `pistol`/`hp`, shotgun `rifle`/`sg`,
+plasma rifle `rifle`/`pr`, sniper rifle `rifle`/`sr`, rocket launcher
+`missile`/`rl`, needler `pistol`/`ne`, plasma pistol `pistol`/`pp`. A label
+no graph holds (Derelict's flamethrower, `ft`) gets neither, with a
+report line. V: `tests/sandbox_disc.rs`
+(`every_halo1_weapon_is_held_by_the_halo1_player_graph`): on every
+multiplayer map, every Halo 1 hand weapon of the Halo 1 sandbox names a
+class and type the converted player biped's graph holds in mode `combat`.
 
 ### Model materials (`hlmt +0x58`, **Built**, converter version 54)
 

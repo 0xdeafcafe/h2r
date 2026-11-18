@@ -1419,3 +1419,25 @@ fn hlmt_materials_follow_the_collision_materials() {
     let no_glass = &globals[..1];
     assert!(model_materials(&c, no_glass).is_err());
 }
+
+/// A weapon type's class is the one most of the map's animations name it
+/// under; a tie goes to the first class by name.
+#[test]
+fn weapon_class_is_the_one_most_animations_name() {
+    use std::collections::HashMap;
+    let votes: HashMap<(String, String), usize> = [
+        (("ar", "rifle"), 40),
+        (("ar", "pistol"), 2),
+        (("hp", "pistol"), 30),
+        (("x", "rifle"), 3),
+        (("x", "missile"), 3),
+    ]
+    .into_iter()
+    .map(|((k, c), n)| ((k.to_owned(), c.to_owned()), n))
+    .collect();
+    let m = crate::convert::weapon_classes(votes);
+    assert_eq!(m["ar"], "rifle");
+    assert_eq!(m["hp"], "pistol");
+    assert_eq!(m["x"], "missile");
+    assert_eq!(m.len(), 3);
+}

@@ -196,6 +196,11 @@ pub struct Trigger {
 pub struct Weapon {
     pub object: Object,
     pub flags: u32,
+    /// `0x30c` (`char[32]`): the weapon's animation label, the weapon type
+    /// of the units' graphs (`stand rifle ar idle`): `ar`, `hp`, `sg`,
+    /// `pr`, `rl`, `sr`, `pp`, `ne`, `ft`; `cg`, `cannon`, `gun` on vehicle
+    /// weapons. V (Blood Gulch, every `weap`).
+    pub label: String,
     /// `0x338` seconds.
     pub ready_time: f32,
     pub ready_effect: Option<TagId>,
@@ -299,6 +304,7 @@ impl Weapon {
         Ok(Self {
             object: Object::read(map, b)?,
             flags: u32_at(b, 0x308),
+            label: name32(b, 0x30c),
             ready_time: f32_at(b, 0x338),
             ready_effect: reference(map, b, 0x33c),
             heat_recovery_threshold: f32_at(b, 0x34c),

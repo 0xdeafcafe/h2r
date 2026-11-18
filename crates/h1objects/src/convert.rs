@@ -584,6 +584,9 @@ pub struct Converter<'a> {
     vehicle_roles: HashMap<u16, Option<crate::rebuild::VehicleRole>>,
     /// Scenery role words ([`Self::scenery_role`]), computed once.
     scenery_role: Option<Option<crate::rebuild::SceneryRole>>,
+    /// Per Halo 1 weapon label, the weapon class the map's graphs hold it
+    /// under ([`Self::weapon_class`]), computed once.
+    weapon_classes: Option<HashMap<String, String>>,
 }
 
 impl<'a> Converter<'a> {
@@ -603,6 +606,7 @@ impl<'a> Converter<'a> {
             item_roles: HashMap::new(),
             vehicle_roles: HashMap::new(),
             scenery_role: None,
+            weapon_classes: None,
         }
     }
 
@@ -1023,6 +1027,32 @@ impl<'a> Converter<'a> {
         let r = crate::rebuild::scenery_role(self.base)?;
         self.scenery_role = Some(r.clone());
         Ok(r)
+    }
+
+    /// The weapon class a Halo 1 weapon `label` (its animation label,
+    /// the units' weapon type) is held under: of every animation of every
+    /// graph on the map named `<unit> <class> <label> <action>`
+    /// ([`h1models::names::map_name`], which names the converted `jmad`
+    /// tree too), the class most of them name (ties: the first by name).
+    /// `None` when no graph holds the label.
+    pub fn weapon_class(&mut self, label: &str) -> Result<Option<String>> {
+        if self.weapon_classes.is_none() {
+            let mut votes: HashMap<(String, String), usize> = HashMap::new();
+            let antr = h1map::Group::new(b"antr");
+            for t in self.h1.tags().iter().filter(|t| t.group == antr) {
+                for name in h1models::graph_names(self.h1, t)? {
+                    let n = h1models::names::map_name(&name);
+                    if n.class != "any" && n.kind != "any" {
+                        *votes.entry((n.kind, n.class)).or_default() += 1;
+                    }
+                }
+            }
+            self.weapon_classes = Some(weapon_classes(votes));
+        }
+        Ok(self
+            .weapon_classes
+            .as_ref()
+            .and_then(|m| m.get(label).cloned()))
     }
 
     /// The converted `coll` for Halo 1's `t`, with or without BSP physics
@@ -1901,3 +1931,15 @@ impl Converter<'_> {
     }
 }
 
+/// Per weapon type, the class with the most `votes` ((type, class) ->
+/// animations), ties to the first class by name.
+pub fn weapon_classes(votes: HashMap<(String, String), usize>) -> HashMap<String, String> {
+    let mut best: HashMap<String, (usize, String)> = HashMap::new();
+    for ((kind, class), n) in votes {
+        let e = best.entry(kind).or_insert((0, String::new()));
+        if n > e.0 || (n == e.0 && class < e.1) {
+            *e = (n, class);
+        }
+    }
+    best.into_iter().map(|(k, (_, c))| (k, c)).collect()
+}
