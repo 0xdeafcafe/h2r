@@ -1143,8 +1143,27 @@ skipped light never reaches.
      definition's words `+0x8a` and `+0x80`; scalar 16 reads falloff word
      0 (`0x000336fb`). Which of them each lightaccum implementation binds
      is in its `spas` external constants (`ResolvedImplementation`, mode 4
-     a vector); resolving a light pass with `EngineInputs` filled from the
-     light's block is the next step.
+     a vector). Scalar 16 is falloff word 0 when below 1, else 1; integer
+     7 is the definition's bit 1 clear; integer 6 (`0x0003409f`) also
+     tests bit 13 of an argument not traced, so it is not supplied.
+   - **The look and the program** (Code; `native_render::light_look`).
+     `tags::material` now reports every input an implementation reads
+     (`ResolvedImplementation::input_reads`: its masks, its engine
+     constant bindings' sources and its fragment selectors).
+     `engine_inputs` fills the light's inputs over the instance's
+     (`LightInputs`, from `LightGlobals`); the host resolves the material
+     with them (`ShaderLibrary::material`) and `light_look` takes the
+     chosen implementation of layer 12 or 13, refusing passes that read
+     inputs nobody supplies, animated ones, engine-driven states, and
+     engine textures but 1 (`Normalization`, bound as a cube), 9
+     (`Attenuation`, a volume) and 10 (`Gel`, 2D): the shadow maps (13,
+     8) keep a shadowed light on the D3D path. `compile_light` translates
+     it through the same code as the world's and transparents' passes
+     (`program::translate_pass`), and `light_vertex` puts the light's
+     frame constants into `c[31]`..`c[39]`. Next: the host side
+     (resolving the light's materials, the engine textures from the
+     globals' rasterizer bitmaps and the gel, the pass's draw over the
+     lit parts).
 
 4. **Objects**, through the models as stage 3's objects.
 5. **Shadows**: layer 10 into our depth texture, the term in the light's
