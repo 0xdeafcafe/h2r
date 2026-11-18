@@ -405,6 +405,78 @@ look overlays, read by `0x0010e530`) is laid out. The first channel alone
 gives the base pose. Validate on one game: a standing player should read
 an `idle` animation whose frame loops, and a running one a `move_*` one.
 
+## Why bodies floated, and the viewer now (built)
+
+Players and AI hovered above the floor, slid, and floated in mid-air in
+and around vehicles. Five causes, each fixed where it starts:
+
+1. **Straight lines between sparse samples.** Recorded frames are about a
+   second apart, and the sampler drew a straight line between them. A
+   runner over a crest went through the air above it; one going down
+   stairs or into a dip hung over it. On a synthetic hill (the fixture in
+   `web/test/live-motion.test.ts`) the line is more than 0.15 units off
+   the ground. Now, when both samples carry `vel`, the path between them
+   is a cubic Hermite curve that leaves and arrives at the game's
+   velocities (`frames.ts`, `hermite`; gaps up to 2 s; longer ones, and
+   older senders without `vel`, stay straight).
+2. **Easing on top.** `smoothPlayers` eased every sample towards the last
+   shown place (18/s), so a body walking downhill trailed above its slope.
+   A sample with a velocity is already on the game's path: it is now taken
+   as it is (aim still eased). Older samples keep the easing.
+3. **No floor.** Even a good curve between two ground points isn't the
+   ground. A biped the game has on its feet (stance `stand` or `crouch`,
+   alive, not riding) is now put on the level's surface under it when
+   there is one between 0.6 below and 0.35 above where the samples have it
+   (`viewer/ground.ts`). The probe is a downward ray on the level glb,
+   machines left out, once per biped per 0.08 units moved, at most 16 an
+   update, the surface's plane used in between. In the air, dead or
+   riding, a body stays exactly where the frames put it. On the fixture
+   hill the feet are within 0.02 of the ground at every sample.
+4. **The model's own origin.** The extractor stands each biped on its
+   lowest vertex, but the game draws a model at its origin, which is what
+   the frames' position is. Extractor 22 writes how far it lifted the
+   model (`asset.extras.lift`) and the viewer lowers the model by as much
+   (`prepareBiped`), so the feet are where the game's are, not on top of
+   the lowest vertex. Art before 22 has no `lift` and draws as before.
+5. **Riders drawn at the vehicle's origin.** A rider's position is the
+   vehicle's (the telemetry replaces it), and the viewer hid riders
+   behind the vehicle. A rider is now drawn at the vehicle model's
+   `seat_` node for their seat, turned with the vehicle, in the seat's
+   pose (below). The node comes from the seat table (`seats` in the art's
+   models table, extractor 22, by the frame's `seat` index), else from the
+   animation mode's role (`warthog_d` driver, `_g` gunner, `_p` passenger,
+   `scorpion_p_lf` the left-front passenger), else (older senders) a
+   mounted turret's rider is its gunner and a vehicle's first rider its
+   driver. With no node or no seat pose in the glb (art before 22, a
+   Phantom with no seat markers) the rider stays hidden, as before.
+
+**The game's animation.** A frame's `anim` (version 4) names the
+animation the game plays, `mode:class:type:action`. The viewer maps it to
+the glb's clips (`anim.ts`, `gameAnim`): `idle`, `walk`, `run`, the
+strafing and backing-up states `run_left`/`run_right`/`run_back` and
+`walk_*`, `crouch` and `crouch_run`/`crouch_left`/`crouch_right`/
+`crouch_back`, `airborne`, `land`, `land_hard`, `grenade`, `melee`,
+`reload`, `fire`, `switch`, `die`, `dead`, and for a rider `seat_<mode>`.
+It plays that clip **at the game's frame**: the clip time is
+`frame / 30` (a frame a tick), wrapped for loops and held at the end
+otherwise, and the clip doesn't run on by itself, so it keeps the game's
+pace and stops with the replay (`BipedAnimator.setLoopAt`). Between
+samples the frame is interpolated when one animation runs on at about the
+game's pace, else carried on from the nearer sample a frame a tick
+(`blendAnim`). A strafe or a backward run plays its own clip with the
+legs facing the aim; art before extractor 22 falls back to `run`/`walk`
+with the legs turned to the movement as before. Without `anim` (older
+senders, or a name with no clip state) the stance-and-speed guess stays.
+Speed and leg heading come from `vel` when the frames have it.
+
+**Shots on their tick.** A frame with a `fire` mask has its shots drawn
+as the clock passes each one's tick (`fireTicks`, `ShotQueue`), the fire
+clip with them, instead of the whole frame's count at the frame's tick.
+Older frames keep the count.
+
+What the viewer doesn't use yet: `body`/`shield`, `actions_ago` and hits'
+`ago`, and live extrapolation past the newest frame.
+
 ## The theater
 
 theater.md records a game's **inputs** (pad reads, network receives,

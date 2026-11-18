@@ -58,24 +58,108 @@ export function paceScale(state: AnimState, speed: number | null | undefined): n
   return Math.min(2, Math.max(0.5, speed / (state === "walk" ? WALK_PACE : RUN_PACE)));
 }
 
-const STATE_FALLBACK: Partial<Record<AnimState, AnimState[]>> = {
+const STATE_FALLBACK: Record<string, string[]> = {
   run: ["walk", "idle"], walk: ["run", "idle"], crouch: ["idle"], airborne: ["idle"], idle: [],
   // Art before the shared clips: its `die` was already the dead pose.
   dead: ["die"], land_hard: ["land"],
+  // Art before extractor 22 has no strafing, backing up or crouched moving.
+  run_back: ["walk_back", "run", "walk", "idle"], run_left: ["walk_left", "run", "walk", "idle"], run_right: ["walk_right", "run", "walk", "idle"],
+  walk_back: ["run_back", "walk", "run", "idle"], walk_left: ["run_left", "walk", "run", "idle"], walk_right: ["run_right", "walk", "run", "idle"],
+  crouch_run: ["crouch", "idle"], crouch_back: ["crouch_run", "crouch", "idle"], crouch_left: ["crouch_run", "crouch", "idle"], crouch_right: ["crouch_run", "crouch", "idle"],
 };
 
 /** The clip to play for a state with the held weapon's class: that class's,
  *  else the rifle's, the unarmed, or any class that has the state; a loop
  *  the glb lacks falls back to a nearer loop (run to walk to idle), a
- *  one-shot it lacks is simply not played (null). */
-export function clipFor(clips: Iterable<string>, cls: string, state: AnimState): string | null {
+ *  one-shot it lacks is simply not played (null). A seat (`seat_<mode>`)
+ *  the glb has no pose for is sat in standing idle. */
+export function clipFor(clips: Iterable<string>, cls: string, state: AnimState | string): string | null {
   const have = clips instanceof Set ? (clips as Set<string>) : new Set(clips);
-  for (const s of [state, ...(STATE_FALLBACK[state] ?? [])]) {
+  const fallback = STATE_FALLBACK[state] ?? (state.startsWith("seat_") ? ["idle"] : []);
+  for (const s of [state, ...fallback]) {
     for (const c of [cls, "rifle", "unarmed"]) if (have.has(`${c}:${s}`)) return `${c}:${s}`;
     const any = [...have].filter((n) => n.endsWith(":" + s)).sort()[0];
     if (any) return any;
   }
   return null;
+}
+
+// ---- the game's own animation ----
+
+/** What the game's animation (its name in the unit's graph,
+ *  `mode:class:type:action[:variant]`) shows, as the glbs name their
+ *  clips: the state, the class when the name has a weapon class, and
+ *  whether it repeats. Null for an action the glbs have no state for (the
+ *  viewer then goes by stance and speed). A unit in a vehicle sits in its
+ *  seat's mode (`warthog_d`, `ghost_d`): state `seat_<mode>`. */
+export interface GameAnim {
+  state: string;
+  cls: string | null;
+  loop: boolean;
+  /** The engine's mode: the seat's for a rider. */
+  mode: string;
+}
+
+/** Modes that are a stance on foot, not a seat. */
+const FOOT_MODES = new Set(["combat", "crouch", "any"]);
+/** Classes that say nothing about the weapon held. */
+const NO_CLASS = new Set(["any"]);
+
+const MOVES: Record<string, string> = {
+  walk_front: "walk", walk_back: "walk_back", walk_left: "walk_left", walk_right: "walk_right",
+  move_front: "run", move_back: "run_back", move_left: "run_left", move_right: "run_right",
+};
+const CROUCH_MOVES: Record<string, string> = {
+  walk_front: "crouch_run", move_front: "crouch_run", walk_back: "crouch_back", move_back: "crouch_back",
+  walk_left: "crouch_left", move_left: "crouch_left", walk_right: "crouch_right", move_right: "crouch_right",
+};
+
+function actionState(action: string, crouched: boolean): { state: string; loop: boolean } | null {
+  const a = action.replace(/:var\d+$/, "");
+  if (a === "idle" || a === "turn_left" || a === "turn_right" || a.startsWith("aim_") || a.startsWith("look_")) return { state: crouched ? "crouch" : "idle", loop: true };
+  const move = (crouched ? CROUCH_MOVES : MOVES)[a];
+  if (move) return { state: move, loop: true };
+  if (a.startsWith("airborne") || a.startsWith("jump")) return { state: "airborne", loop: false };
+  if (a === "land_soft" || a === "land") return { state: "land", loop: false };
+  if (a === "land_hard") return { state: "land_hard", loop: false };
+  if (a.startsWith("throw_grenade")) return { state: "grenade", loop: false };
+  if (a.startsWith("melee")) return { state: "melee", loop: false };
+  if (a.startsWith("reload")) return { state: "reload", loop: false };
+  if (a.startsWith("fire")) return { state: "fire", loop: false };
+  if (a === "ready" || a === "put_away") return { state: "switch", loop: false };
+  if (a.startsWith("landing_dead") || a === "dead") return { state: "dead", loop: false };
+  if (/(^|_|:)kill(:|_|$)/.test(a) || a.startsWith("dying") || a === "die") return { state: "die", loop: false };
+  return null;
+}
+
+export function gameAnim(name: string, riding: boolean): GameAnim | null {
+  const parts = name.split(":");
+  if (parts.length < 2) return null;
+  const mode = parts[0]!;
+  const cls = parts.length >= 3 && !NO_CLASS.has(parts[1]!) ? parts[1]! : null;
+  const action = parts.length >= 4 ? parts.slice(3).join(":") : parts[parts.length - 1]!;
+  if (riding) return { state: `seat_${mode}`, cls, loop: true, mode };
+  const st = actionState(action, mode === "crouch");
+  // A mode we don't know on foot (a stunned or flaming one) is moved like combat.
+  return st ? { ...st, cls, mode: FOOT_MODES.has(mode) ? mode : "combat" } : null;
+}
+
+/** Where in a clip `duration` seconds long the game's `frame` is: the
+ *  game runs its animations a frame a tick, 30 a second, as the clips are
+ *  sampled. A loop wraps (its last frame runs into its first), anything
+ *  else holds its last frame. */
+export function clipTime(frame: number, duration: number, loop: boolean): number {
+  const t = Math.max(0, frame) / 30;
+  if (!(duration > 0)) return 0;
+  if (!loop) return Math.min(t, duration);
+  const period = duration + 1 / 30;
+  return Math.min(duration, t % period);
+}
+
+/** Whether a state moves the legs on their own (backing up, strafing):
+ *  then they face the aim and the clip does the turning. */
+export function sideways(state: string): boolean {
+  return /_(back|left|right)$/.test(state);
 }
 
 /** The one-shot an action starts, if any: a jump shows as the airborne

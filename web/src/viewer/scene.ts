@@ -26,12 +26,13 @@ import type { MapFrame } from "../components/MapCanvas";
 import type { RosterEntry } from "../map/render";
 import { gameToGl, yawToGl } from "../map/views";
 import { FLASH_MS, ShotQueue, flashAlpha } from "../map/shots";
-import { MODEL_SCALE, actorColour, bipedFile, modelUrl, vehicleBasis, vehicleBox, vehicleFile, weaponFile, weaponLabel, type PlayerModels } from "./models";
+import { MODEL_SCALE, actorColour, bipedFile, modelUrl, seatNodeFor, seatState, vehicleBasis, vehicleBox, vehicleFile, weaponFile, weaponLabel, type PlayerModels } from "./models";
 import type { SampledVehicle } from "../state/frames";
 import { Projectiles, lookFor, shotEnd, type Look } from "./projectiles";
 import { ModelLibrary, type BipedAnimator, type BipedInstance, type WeaponInstance } from "./players3d";
 import { smoothPlayers, smoothVehicles, type SmoothPlayer } from "./sync";
-import { BipedAnim, HELD, SpeedMeter, actionShot, aimAngles, actorAim, clipFor, legTwist, paceScale, weaponClass, wrapAngle, type OneShot } from "./anim";
+import { BipedAnim, HELD, MAX_TWIST, SpeedMeter, WALK_SPEED, actionShot, aimAngles, actorAim, clipFor, clipTime, gameAnim, legTwist, paceScale, sideways, weaponClass, wrapAngle, type OneShot } from "./anim";
+import { GroundCache, type Floor } from "./ground";
 import { Bodies, bodyPlace, type Place } from "./bodies";
 import { EventFeed } from "../map/events";
 import { Effects3D } from "./effects3d";
@@ -128,6 +129,8 @@ interface VehicleObj {
   kind: string;
   /** Its model's turrets (viewer/turrets.ts), in the glb's order. */
   turrets: TurretObj[];
+  /** Its model's `seat_` nodes, by name. */
+  seats: Map<string, THREE.Object3D>;
 }
 
 /** One shot on screen: a tracer and its muzzle flash. */
@@ -154,6 +157,8 @@ export class ViewerScene {
   private gtao: GTAOPass | null = null;
   private aoWanted = true;
   private map: THREE.Object3D | null = null;
+  /** The floor under each biped, probed on the loaded level (ground.ts). */
+  private floors: GroundCache | null = null;
   private ground: THREE.Mesh;
   private grid: THREE.Object3D | null = null;
   private gridKey = "";
@@ -218,6 +223,8 @@ export class ViewerScene {
   private e0 = new THREE.Euler();
   private v1 = new THREE.Vector3();
   private v2 = new THREE.Vector3();
+  private v3 = new THREE.Vector3();
+  private v4 = new THREE.Vector3();
   private q0 = new THREE.Quaternion();
   private bounds: Box3 | null = null;
   private hasMap = false;
@@ -418,6 +425,7 @@ export class ViewerScene {
       });
       this.features = parseFeatures(assetExtras);
       this.map = root;
+      this.floors = new GroundCache((x, y, z, reach) => this.floorProbe(x, y, z, reach));
       this.scene.add(root);
       this.hasMap = true;
       if (this.grid) { this.scene.remove(this.grid); this.grid = null; this.gridKey = ""; }
@@ -486,7 +494,7 @@ export class ViewerScene {
       const group = new THREE.Group();
       group.add(box);
       this.scene.add(group);
-      o = { group, box, boxMat, model: null, key: "", height: 1.2, kind: m.kind, turrets: [] };
+      o = { group, box, boxMat, model: null, key: "", height: 1.2, kind: m.kind, turrets: [], seats: new Map() };
       this.looseMachines.set(m.id, o);
     }
     const mod = this.models, file = mod?.table.objects[m.kind];
@@ -666,6 +674,7 @@ export class ViewerScene {
       for (const m of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) m.dispose();
     });
     this.map = null;
+    this.floors = null;
     for (const b of this.bodies.clear()) this.dropBody(b.obj);
     this.zone.reset();
     this.look.clear();
@@ -835,6 +844,29 @@ export class ViewerScene {
     const hit = this.raycaster.intersectObject(this.map, true).find((h) => (h.object as THREE.Mesh).isMesh && h.object.visible);
     this.raycaster.far = Infinity;
     return hit ? hit.point.y : null;
+  }
+
+  /** The first surface facing up below (x, y, z) within `reach`, game
+   *  coordinates, with its normal: the level as it lies, without its
+   *  machines (a lift is somewhere else a moment later). */
+  private floorProbe(x: number, y: number, z: number, reach: number): Floor | null {
+    if (!this.map) return null;
+    this.raycaster.set(this.v3.set(...gameToGl(x, y, z)), this.v4.set(0, -1, 0));
+    this.raycaster.far = reach;
+    const hits = this.raycaster.intersectObject(this.map, true);
+    this.raycaster.far = Infinity;
+    for (const h of hits) {
+      if (!(h.object as THREE.Mesh).isMesh || !h.object.visible || !h.face) continue;
+      let machine = false;
+      for (let o: THREE.Object3D | null = h.object; o && o !== this.map; o = o.parent) if (o.name === "machines") { machine = true; break; }
+      if (machine) continue;
+      const n = h.face.normal.clone().transformDirection(h.object.matrixWorld);
+      // Seen from above: a face turned down is the underside of something.
+      if (n.y <= 0) continue;
+      const [px, py, pz] = [h.point.x, -h.point.z, h.point.y];
+      return { x: px, y: py, z: pz, nx: n.x, ny: -n.z, nz: n.y };
+    }
+    return null;
   }
 
   /** The level's placed objects and where they stand (scenario3d.ts). */
@@ -1041,7 +1073,7 @@ export class ViewerScene {
       const group = new THREE.Group();
       group.add(box);
       this.scene.add(group);
-      o = { group, box, boxMat, model: null, key: "", height: 1, kind: "", turrets: [] };
+      o = { group, box, boxMat, model: null, key: "", height: 1, kind: "", turrets: [], seats: new Map() };
       this.vehicles.set(v.id, o);
     }
     const m = this.models;
@@ -1055,6 +1087,8 @@ export class ViewerScene {
       o.model = template ? this.library.instantiateVehicle(template, empty ? null : colour, empty) : null;
       if (o.model) o.group.add(o.model);
       o.turrets = o.model ? findTurrets(o.model) : [];
+      o.seats = new Map();
+      o.model?.traverse((n) => { if (n.name.startsWith("seat_") && !o!.seats.has(n.name)) o!.seats.set(n.name, n); });
       o.box.visible = !o.model;
       const [len, wid, tall] = vehicleBox(v.kind);
       o.box.scale.set(len, tall, wid);
@@ -1163,23 +1197,67 @@ export class ViewerScene {
    *  can only squat. Reduced motion leaves the model in its pose. */
   private animate(p: PlayerObj, s: SmoothPlayer, now: number, dt: number) {
     const measured = p.meter.update(s.x, s.y, dt);
-    const speed = s.speed ?? measured;
+    // The game's velocity, when the frames carry it, is the speed and the heading.
+    const speed = s.vel ? Math.hypot(s.vel[0], s.vel[1]) : s.speed ?? measured;
+    const heading = s.vel ? (speed >= WALK_SPEED ? Math.atan2(s.vel[1], s.vel[0]) : null) : p.meter.heading;
     const st = p.anim.update(now, { alive: s.alive, stance: s.stance, speed, z: s.z });
-    const squat = st.loop === "crouch" ? 0.7 : 1;
+    // The game's own animation, when the frames name it (version 4).
+    const game = s.anim ? gameAnim(s.anim.name, false) : null;
+    const squat = (game ? game.state.startsWith("crouch") : st.loop === "crouch") ? 0.7 : 1;
     if (p.body.scale.y !== squat) { p.body.scale.y = squat; this.dirty = true; }
     const an = p.biped?.animator;
     if (!an || this.opts.reducedMotion) return;
-    this.aimBody(p, s, an, st.loop === "walk" || st.loop === "run" ? p.meter.heading : null, dt);
-    const cls = this.clipClass(s);
-    an.setLoop(clipFor(an.names, cls, st.loop), paceScale(st.loop, speed), HELD.has(st.loop));
+    const cls = game?.cls ?? this.clipClass(s);
+    const clip = game ? clipFor(an.names, cls, game.state) : null;
+    const moving = game ? !sideways(game.state) && /^(walk|run|crouch_run)$/.test(game.state) : st.loop === "walk" || st.loop === "run";
+    this.aimBody(p, s, an, moving ? heading : null, dt);
+    if (game && clip && s.anim) {
+      // Where the game has it, at its frame: no guessing from the speed.
+      an.setLoopAt(clip, clipTime(s.anim.frame, (an.duration(clip) ?? 0) / 1000, game.loop));
+    } else {
+      an.setLoop(clipFor(an.names, cls, st.loop), paceScale(st.loop, speed), HELD.has(st.loop));
+    }
     if (st.shotId !== p.shotId) {
       p.shotId = st.shotId;
       // Anything but landing is done with the arms: unless they stand still, the legs carry on with the loop.
       const landing = st.shot === "land" || st.shot === "land_hard";
-      if (st.shot) an.playOnce(clipFor(an.names, cls, st.shot), !landing && st.loop !== "idle");
+      // The game's own animation lands already, and shows what it is playing itself.
+      const shown = !!clip && (landing || st.shot === game?.state);
+      if (st.shot && !shown) an.playOnce(clipFor(an.names, cls, st.shot), !landing && (game ? game.state !== "idle" : st.loop !== "idle"));
     }
     an.update(dt);
     this.dirty = true;
+  }
+
+  /** Sits a rider in their seat: at the vehicle model's `seat_` node for
+   *  it, turned with the vehicle, in the seat's pose (the game's animation
+   *  at its frame when the frames name it). False when there is nowhere to
+   *  put them or no pose to put them in: the vehicle stands for them. */
+  private sit(p: PlayerObj, s: SmoothPlayer, ride: VehicleObj, turret: boolean, first: boolean, dt: number): boolean {
+    const an = p.biped?.animator;
+    if (!an || !ride.model || !ride.seats.size || this.opts.reducedMotion) return false;
+    const mode = s.anim ? s.anim.name.split(":")[0]! : null;
+    const name = seatNodeFor([...ride.seats.keys()], { seat: s.seat, mode, turret, first }, this.models?.table.seats?.[ride.kind]);
+    const node = name ? ride.seats.get(name) : undefined;
+    if (!node || !name) return false;
+    const game = s.anim ? gameAnim(s.anim.name, true) : null;
+    const state = game?.state ?? seatState(ride.kind, name);
+    // Only a pose made for a seat: standing idle in one pokes out of it.
+    const clip = clipFor(an.names, game?.cls ?? this.clipClass(s), state);
+    if (!clip || !clip.endsWith(":" + state)) return false;
+    ride.group.updateMatrixWorld(true);
+    node.getWorldPosition(p.group.position);
+    node.getWorldQuaternion(p.turn.quaternion);
+    p.turn.scale.setScalar(MODEL_SCALE);
+    an.setLoopAt(clip, s.anim ? clipTime(s.anim.frame, (an.duration(clip) ?? 0) / 1000, true) : 0);
+    // The head and gun turn from the seat towards the aim, as far as a body in a seat turns.
+    const { yaw, pitch } = aimAngles(s.aim);
+    const fwd = this.v3.set(1, 0, 0).applyQuaternion(p.turn.quaternion);
+    const twist = wrapAngle(yaw - Math.atan2(-fwd.z, fwd.x));
+    an.aim(pitch, Math.max(-MAX_TWIST / 2, Math.min(MAX_TWIST / 2, twist)));
+    an.update(dt);
+    this.dirty = true;
+    return true;
   }
 
   /** Points a model where its player looks: the legs follow the movement
@@ -1460,18 +1538,37 @@ export class ViewerScene {
       this.dirty = true;
     }
 
+    this.floors?.begin();
+    this.floors?.keep(this.shown);
+    // The first rider seen in each vehicle: its driver, when the frames don't say.
+    const firstRider = new Map<string, number>();
+    for (const [index, s] of this.shown) if (s.vehicle && s.alive && !firstRider.has(hullOf(s.vehicle)!)) firstRider.set(hullOf(s.vehicle)!, index);
     for (const [index, s] of this.shown) {
       const info = s.actor ? { name: weaponLabel(s.species) || "AI", colour: actorColour(s.actor.team) } : roster.get(index);
       const p = this.player(index, info, !!s.actor);
-      const ride = s.vehicle ? this.vehicles.get(hullOf(s.vehicle)!) : undefined;
+      const hull = s.vehicle ? hullOf(s.vehicle)! : null;
+      const ride = hull ? this.vehicles.get(hull) : undefined;
       if (ride && s.alive) {
-        // In a vehicle: the vehicle stands for them, and carries their label.
+        this.dress(p, s);
         const g = p.group;
+        const seated = this.sit(p, s, ride, s.vehicle !== hull, firstRider.get(hull!) === index, dt);
+        if (seated) {
+          // In their seat, drawn; the label above the vehicle.
+          g.visible = !this.isEyes(index);
+          p.turn.visible = true;
+          p.ring.visible = p.ray.visible = false;
+          p.label.visible = !this.opts.bare && (!p.actor || this.actorNames);
+          p.label.position.y = ride.height * ride.group.scale.x + 0.25 * S - (g.position.y - ride.group.position.y);
+          p.el.classList.toggle("on", highlight === index || this.followIndex === index);
+          if (s.weapon !== p.weaponName) { p.weaponName = s.weapon; p.gun.textContent = weaponLabel(s.weapon); }
+          continue;
+        }
+        // In a vehicle with no seat to show them in: the vehicle stands for them, and carries their label.
         if (p.turn.visible || !g.visible || !g.position.equals(ride.group.position)) this.dirty = true;
         g.visible = !this.isEyes(index);
         g.position.copy(ride.group.position);
         p.turn.visible = p.ring.visible = p.ray.visible = false;
-        p.turn.rotation.y = yawToGl(s.yaw);
+        p.turn.rotation.set(0, yawToGl(s.yaw), 0);
         p.turn.scale.setScalar(ride.group.scale.x);
         p.label.visible = !this.opts.bare && (!p.actor || this.actorNames);
         p.label.position.y = ride.height * ride.group.scale.x + 0.25 * S;
@@ -1489,7 +1586,9 @@ export class ViewerScene {
       p.turn.visible = true;
       p.ring.visible = !dead && !this.opts.bare;
       p.ray.visible = !dead && !p.actor && !this.opts.bare;
-      const [x, y, z] = gameToGl(s.x, s.y, s.z);
+      // On their feet, on the floor (ground.ts); in the air or dead, where the frames have them.
+      const feet = this.floors ? this.floors.place(index, s) : s.z;
+      const [x, y, z] = gameToGl(s.x, s.y, feet);
       const g = p.group, turn = p.turn;
       const big = highlight === index || this.followIndex === index;
       // A capsule (and every ring) grows with the map so it can be found. A
@@ -1502,7 +1601,8 @@ export class ViewerScene {
       g.visible = show && !this.isEyes(index);
       p.label.visible = !dead && !this.opts.bare && (!p.actor || this.actorNames);
       g.position.set(x, y, z);
-      turn.rotation.y = yaw;
+      // Level again after a seat that leaned with its vehicle.
+      turn.rotation.set(0, yaw, 0);
       turn.scale.setScalar(k);
       // The ring fits what it is under: a model's footprint, or the capsule's.
       p.ring.scale.setScalar(p.biped ? k * p.biped.height * 1.25 * (big ? 1.25 : 1) : k);

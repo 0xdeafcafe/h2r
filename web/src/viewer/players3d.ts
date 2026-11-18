@@ -162,6 +162,20 @@ export class BipedAnimator {
     if (cur) cur.timeScale = timeScale;
   }
 
+  /** Makes `name` the base clip at `time` seconds, as the game has it:
+   *  it doesn't run on by itself, the next call says where it is (so it
+   *  keeps the game's pace, and stops when the replay pauses). Cross-fades
+   *  from the last clip as `setLoop` does. */
+  setLoopAt(name: string | null, time: number): void {
+    this.setLoop(name, 0);
+    const cur = this.loop ? this.action(this.loop) : null;
+    if (!cur) return;
+    // Held where it is put: no wrapping or finishing of its own.
+    cur.setLoop(THREE.LoopRepeat, Infinity);
+    cur.clampWhenFinished = false;
+    cur.time = Math.max(0, Math.min(time, cur.getClip().duration));
+  }
+
   /** Plays a clip once over the loop; false when the glb hasn't got it.
    *  `upperOnly` leaves the legs to the loop: a reload on the run keeps running. */
   playOnce(name: string | null, upperOnly = false): boolean {
@@ -426,8 +440,13 @@ export function prepareBiped(g: Loaded): BipedTemplate | null {
   root.updateWorldMatrix(true, true);
   const box = new THREE.Box3().setFromObject(root);
   if (box.isEmpty()) return null;
-  const extras = (g.asset?.extras ?? {}) as { height?: unknown };
+  const extras = (g.asset?.extras ?? {}) as { height?: unknown; lift?: unknown };
   const height = typeof extras.height === "number" && extras.height > 0 ? extras.height : Math.max(0.01, box.max.y);
+  // The extractor stood the model on its lowest vertex (extractor 22 says
+  // by how much); the game draws it at its own origin, which is where the
+  // frames place a unit. Taken back off, so the feet are where the game's are.
+  const lift = typeof extras.lift === "number" && Number.isFinite(extras.lift) && Math.abs(extras.lift) < 1 ? extras.lift : 0;
+  root.position.y -= lift;
   if (!findNode(root, "head")) {
     const head = new THREE.Object3D();
     head.name = "head";

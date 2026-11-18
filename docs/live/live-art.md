@@ -56,7 +56,7 @@ entry; a single BSP of a level that could not be read is listed as
 `map/<stem>/bsp_<index>` and the level keeps its other BSPs.
 `GEOMETRY_VERSION` is 1 (`views.json` is unchanged; the web viewer checks
 it); the art's `EXTRACTOR_VERSION` (part of the cache
-key) is 21, so a disc extracted by an older build is extracted again
+key) is 22, so a disc extracted by an older build is extracted again
 (10 added the layers, the sky and `extras.name`; 12 the surface
 pictures, texture coordinates and the `scenario` node; 13 the base map
 from the shader's passes, pictures as files beside `map.glb`, the gzip
@@ -67,7 +67,9 @@ reflection tints and shaders whose compiled data another shader shares;
 19 the title and save images, `title/image` and `title/save-image`;
 20 solid shaders whose template name only contains "overlay" keep their
 textures; 21 packing (Brotli and gzip copies, meshopt where it pays), WebP
-pictures and views, surface pictures at the disc's full size).
+pictures and views, surface pictures at the disc's full size; 22 the
+bipeds' strafing, backwards and crouched movement clips, the vehicle seat
+poses `any:seat_<mode>`, the models' `seats` table and `asset.extras.lift`).
 
 ### `map.glb`
 
@@ -905,7 +907,10 @@ extracted):
                                            "class": "rifle",
                                            "ballistics": { "kind": "bullet", "speed": 400,
                                                            "final_speed": 400, "rate": 6.5 } } },
-            "vehicles": { "warthog": { "glb": "models/vehicle/warthog.glb" } } }
+            "vehicles": { "warthog": { "glb": "models/vehicle/warthog.glb" } },
+            "seats": { "warthog": [ { "label": "warthog_d", "node": "seat_driver" },
+                                    { "label": "warthog_p", "node": "seat_passenger" },
+                                    { "label": "warthog_g", "node": "seat_gunner" } ] } }
 ```
 
 `vehicles` is absent when there are none. `clips` (a biped's animations,
@@ -919,6 +924,19 @@ tag (`crates/cli/src/live_weapons.rs` has the offsets and how they were
 established) and drives the viewer's tracers, bolts and rockets. Version 1
 had none of these and unskinned bipeds; a version 1 reader that skips the
 version check still draws the version 2 files (below).
+
+`seats` (extractor 22) lists, by vehicle stem, the vehicle's seats in the
+order of its tag's seats block (`vehi +0x1c8`, stride `0xb0`;
+crates/tags/src/defs/unit.txt), the block the unit's seat index
+(`unit +0x1fc`, telemetry's `seat`) indexes: element `i` is seat `i`.
+`label` is the seat's label (string ID at `+4`), the rider's animation
+mode, so `any:seat_<label>` is the biped clip that seats the rider (the
+example's order is illustrative; the tag's order is what is written). `node` is the vehicle glb's `seat_` node for the seat's marker
+(string ID at `+8`, named as in pipeline step 8), or `null` when the
+marker is not a seat marker or the model has no such node (the rider is
+then placed by the reader's own rule). A vehicle without seats is not
+listed, and `seats` is absent when no vehicle has any. The vehicle's own
+entry under `vehicles` is unchanged.
 
 Art from an older extractor (the manifest's `extractor` below the running
 `h2`'s) is stale: before version 2 its bipeds had no clips, so the viewer's
@@ -1070,7 +1088,12 @@ Keys (what telemetry sends):
   normals; the palette is the engine's, not the tag's) and detail maps are
   not used.
 - `asset.extras`: `generator`, `models_version` (2) and, for bipeds,
-  `height` (game units, feet to the top of the head).
+  `height` (game units, feet to the top of the head) and `lift` (game
+  units, extractor 22): how far the model was raised to put its lowest
+  vertex on the floor (pipeline step 7), positive when raised. The game
+  draws a biped at its object origin, not lowest vertex on the floor, so
+  a reader that lowers the model by `lift` puts the model's own origin at
+  the object's position.
 - A biped stands with its feet on the origin plane (lowest vertex at
   glTF y = 0) and faces glTF +x (game +x, yaw 0). It holds a rifle in its
   idle stance (or its own idle, below), and that posed shape is what the
@@ -1089,13 +1112,21 @@ Keys (what telemetry sends):
   `ball` (what multiplayer weapons are held with; `dual`, vehicle seats and
   AI-only classes are left out), states `idle`, `walk`, `run`, `crouch`,
   `airborne`, `land`, `land_hard`, `grenade`, `melee`, `reload`, `fire`,
-  `switch`, each only where the graph has it; and `any:die`, `any:dead`
-  for every class (before extractor 13, `die` per class was the dead
-  pose). Every joint has a `rotation`
+  `switch`, then the movement states (extractor 22) `run_back`,
+  `run_left`, `run_right`, `walk_back`, `walk_left`, `walk_right`,
+  `crouch_run`, `crouch_back`, `crouch_left`, `crouch_right`, each only
+  where the graph has it; and `any:die`, `any:dead` for every class
+  (before extractor 13, `die` per class was the dead pose). After those,
+  one seat pose per vehicle seat mode of the graph, `any:seat_<mode>`
+  with `<mode>` the engine's animation mode as the seat names it
+  (`any:seat_warthog_d`, `any:seat_warthog_g`, `any:seat_ghost_d`,
+  `any:seat_scorpion_p_lf`, ...; extractor 22): the seated rider, one
+  frame. Every joint has a `rotation`
   channel (normalised i16 `VEC4`, the core glTF option) and a
   `translation` channel (float `VEC3`), `LINEAR`, one key per frame at
   30 fps; a channel that never changes in the clip has a single key at
-  time 0. The clip keeps the floor of the default pose (no root motion: the
+  time 0, so a seat pose has one key at time 0 on every channel. The clip
+  keeps the floor of the default pose (no root motion: the
   game moves the biped, not the animation).
 - A vehicle is in its neutral pose (below), origin at the vehicle's object
   origin, facing glTF +x. `asset.extras.pose` names the frame used
@@ -1107,7 +1138,9 @@ of it mesh and textures), elite 2,744 triangles, 58 clips and 2.8 MB
 likewise), 22 weapons of 430 to 1,400 triangles and 60 to
 380 KB; 34 campaign characters of 330 to 4,800 triangles, 0 to 56 clips
 and 0.2 to 2.8 MB; 38 vehicles of 26 to 4,750 triangles and 26 KB to 1.7 MB. The
-whole step takes about 0.6 s on 10 cores.
+whole step takes about 0.6 s on 10 cores. (Counted at extractor 21,
+before the movement clips and seat poses; the disc test prints the
+current counts.)
 
 ## Pipeline
 
@@ -1169,6 +1202,21 @@ whole step takes about 0.6 s on 10 cores.
    `walk_front` (walk), `move_front` (run), `airborne` (the whole leap:
    the game has no take-off clip), `land_soft` (land), `land_hard`
    (land_hard) in mode `combat`, and `idle` in mode `crouch` (crouch).
+   The movement states are actions of the same kind, after a class's
+   other states: `move_back`, `move_left`, `move_right` (`run_back`,
+   `run_left`, `run_right`), `walk_back`, `walk_left`, `walk_right` (the
+   same names) in mode `combat`, and `move_front`, `move_back`,
+   `move_left`, `move_right` in mode `crouch` (`crouch_run`,
+   `crouch_back`, `crouch_left`, `crouch_right`).
+   Seat poses: a mode is a vehicle seat when it is not `combat` or
+   `crouch` and a `_`-separated word after its first is `d`, `g` or `p`
+   (driver, gunner, passenger: `warthog_d`, `spectre_g`, `scorpion_p_lf`,
+   `c_turret_ap_d`, `pelican_p_l01`); generic, matched at run time. Each
+   seat mode in graph order gives `any:seat_<mode>` from its `idle`
+   action: class `rifle` (a passenger holding a weapon), else `any`, else
+   the first class the mode has, type `any` before the others. Only its
+   first frame is sampled. A seat mode without an `idle` (or whose idle
+   is an aim grid) has no pose.
    Dying and lying dead are the same for every class, so they are written
    once as `any:die` and `any:dead`, first in the glb: `die` is the death
    animation of a soft kill from the front (`s_kill:front:gut`, its first
@@ -1189,8 +1237,15 @@ whole step takes about 0.6 s on 10 cores.
    default pose's value. An overlay (`fire_1`) adds its change since its
    first frame to the default pose: rotation `default × first⁻¹ × frame`,
    translation `default + frame − first`. Scale channels are dropped. A
-   biped glb over 3.25 MiB loses whole classes, `ball`, then `flag`, then
-   `unarmed`, until it fits (the elite keeps its sword clips).
+   biped glb over 3.25 MiB is made to fit (`next_size_drop`): first the
+   movement clips of every class but `rifle` go, a class at a time, last
+   of the class list first (`ball`, `flag`, `unarmed`, `sword`,
+   `support`, `missile`, `pistol`); then whole classes, last first
+   (`ball`, `flag`, `unarmed`, ...; the rifle's movement goes only with
+   the rifle class); only then the shared `any` clips (dying and the seat
+   poses, which are one frame each and cost little). The elite keeps its
+   sword clips; the report's animation note names what was dropped
+   (`ball moves`, `flag`, ...).
 10. **Weapon class.** The string ID at `weap +0x288` (D: every multiplayer
     weapon names a class of the player graphs there: `rifle` for the
     battle rifle, carbine, shotgun, SMG and the snipers, `pistol` for the
@@ -1237,7 +1292,10 @@ is the rotation `tags::anim_sample` gives the node (to 6e-8). It checks
 true scale (the spartan 0.6 to 0.8 units tall, the elite taller, the
 Warthog 1.5 to 3 long), the looks (change-colour maps on the spartan, elite
 and banshee, the elite's glow, the Warthog's glass, the spartan's shine),
-that the elite keeps its sword clips, and the battle rifle's, plasma rifle's
+that the elite keeps its sword clips, that the spartan has `rifle:run_left`,
+`rifle:run_back`, `rifle:crouch_run` and `any:seat_warthog_d` and the
+Warthog's `seats` a `warthog_d` (it prints every vehicle's seats, the
+spartan's seat poses and every biped's `lift`), and the battle rifle's, plasma rifle's
 and rocket launcher's ballistics. `shaders_from_the_disc` (same flags)
 writes `shaders.txt`: every player biped's and vehicle's materials with
 their template, bitmaps (name, format, size, role) and instance colours and
@@ -1255,7 +1313,10 @@ Do not commit anything they write.
   `reload`, `melee` and `fire` are one representative weapon type's for the
   whole class (the battle rifle's for `rifle`, and so on), and `any:die`
   is one death animation for every way of dying (multiplayer deaths are
-  ragdolls in the game). No turning, strafing or backwards clips, no aim. Characters without a rifle stance
+  ragdolls in the game). Strafing, backwards and crouched movement are
+  separate clips (extractor 22), not blended by speed or direction; a
+  glb over the size cap may lose them for its less held classes. No
+  turning clips, no aim. Characters without a rifle stance
   use their own idle (grunts the pistol one, hunters and flood forms the
   unarmed one, prophets and sentinels a combat idle); Lord Hood has no idle
   and stands in his rest pose.
@@ -1266,7 +1327,10 @@ Do not commit anything they write.
   the game's exact hinge. A Warthog is always the chaingun one (a gauss
   Warthog is the same tag in another variant). A
   vehicle with no seat markers has no `seat_` nodes, and a seat node is the
-  marker's frame, not a seated pose.
+  marker's frame; the rider's seated pose is the biped's
+  `any:seat_<label>` clip, one still frame (no steering, aiming or
+  entering), and the seat's mode is matched by its name's `_d`, `_g`,
+  `_p` words.
 - `COLOR_0` change-colour weights are per vertex, so their edges are as
   coarse as the mesh; the per-pixel map in `extras.h2.change_colour` is
   exact. Only the primary and secondary colours are tinted.
