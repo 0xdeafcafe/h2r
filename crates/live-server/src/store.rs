@@ -49,16 +49,12 @@ impl NewEvent {
 /// rows with the same JWS, so a page of them opens (base64 and JSON) the
 /// batch once, not once a row, and shares one copy of its JWS.
 #[derive(Default)]
-pub(crate) struct BatchDecoder {
+pub struct BatchDecoder {
     batch: Option<(Arc<str>, Vec<EventBody>)>,
 }
 
 impl BatchDecoder {
-    pub(crate) fn decode(
-        &mut self,
-        jws: &str,
-        jws_index: Option<usize>,
-    ) -> Result<NewEvent, SignError> {
+    pub fn decode(&mut self, jws: &str, jws_index: Option<usize>) -> Result<NewEvent, SignError> {
         let Some(i) = jws_index else {
             return NewEvent::decode(jws, None);
         };
@@ -82,7 +78,7 @@ impl BatchDecoder {
 
 /// The key a batch JWS is stored under in the databases' `batches` table:
 /// hex(sha256(jws)).
-pub(crate) fn batch_key(jws: &str) -> String {
+pub fn batch_key(jws: &str) -> String {
     format!("{:x}", Sha256::digest(jws.as_bytes()))
 }
 
@@ -90,7 +86,7 @@ pub(crate) fn batch_key(jws: &str) -> String {
 /// whether that row still has to be written: once a batch, however many
 /// events it has.
 #[derive(Default)]
-pub(crate) struct BatchRows {
+pub struct BatchRows {
     last: Option<(Arc<str>, String)>,
 }
 
@@ -98,11 +94,7 @@ impl BatchRows {
     /// For an event about to be stored: `None` if it is a single event
     /// (its row keeps its own JWS), else its batch's key and whether this
     /// is the first of the batch's events here (so the batch row is due).
-    pub(crate) fn key(
-        &mut self,
-        jws: &Arc<str>,
-        jws_index: Option<usize>,
-    ) -> Option<(String, bool)> {
+    pub fn key(&mut self, jws: &Arc<str>, jws_index: Option<usize>) -> Option<(String, bool)> {
         jws_index?;
         if let Some((last, key)) = &self.last
             && last == jws
@@ -155,8 +147,13 @@ pub enum StoreError {
         expected: u64,
         actual: u64,
     },
+    #[cfg(feature = "native")]
     #[error("database: {0}")]
     Db(#[from] sqlx::Error),
+    /// A database reached some other way (the Worker's D1), its error as
+    /// text.
+    #[error("database: {0}")]
+    Backend(String),
     /// The file-backed store ([`crate::filestore`]) could not read or
     /// write its directory.
     #[error("store files: {0}")]
@@ -501,9 +498,10 @@ impl EventStore for MemoryStore {
     }
 }
 
-/// The behaviour every store must have; run against both implementations.
-#[cfg(test)]
-pub(crate) mod conformance {
+/// The behaviour every store must have; run against every implementation
+/// (the Worker's D1 store too, through the `conformance` feature).
+#[cfg(any(test, feature = "conformance"))]
+pub mod conformance {
     use super::*;
     use live_proto::sign::KeyPair;
     use serde_json::json;

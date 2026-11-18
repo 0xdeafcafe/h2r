@@ -3,7 +3,9 @@
 
 use std::collections::HashMap;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use crate::rt::Instant;
 
 /// Keys seen recently. Each entry lives until its expiry (unix seconds);
 /// expired entries are pruned as new ones arrive.

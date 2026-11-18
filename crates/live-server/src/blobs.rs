@@ -27,7 +27,9 @@ use std::sync::Arc;
 use bytes::Bytes;
 use futures_util::StreamExt;
 use futures_util::stream::BoxStream;
+#[cfg(feature = "native")]
 use object_store::aws::AmazonS3Builder;
+#[cfg(feature = "native")]
 use object_store::local::LocalFileSystem;
 use object_store::memory::InMemory;
 use object_store::path::Path as Key;
@@ -211,6 +213,7 @@ impl S3Config {
 }
 
 impl BlobStore {
+    #[cfg(feature = "native")]
     /// `root` (created if missing): today's data-directory layout.
     pub fn dir(root: &Path) -> Result<Self> {
         std::fs::create_dir_all(root)?;
@@ -233,6 +236,7 @@ impl BlobStore {
         }
     }
 
+    #[cfg(feature = "native")]
     /// A bucket at `config`'s endpoint (R2: `https://<account id>.r2.
     /// cloudflarestorage.com`), keys under `prefix`. Path-style requests,
     /// conditional puts by ETag (R2 and MinIO take If-Match/If-None-Match).
@@ -267,6 +271,7 @@ impl BlobStore {
         })
     }
 
+    #[cfg(feature = "native")]
     /// Opens `location`; `public` picks the public store's S3 settings.
     pub fn open(
         location: &Location,
@@ -279,6 +284,17 @@ impl BlobStore {
             Location::S3 { bucket, prefix } => {
                 Self::s3(bucket, prefix, &S3Config::from_env(env, public)?)
             }
+        }
+    }
+
+    /// Any other object store, such as the Worker's R2 bucket binding
+    /// (crates/live-worker), described as `describe` in messages.
+    pub fn from_store(store: Arc<dyn ObjectStore>, describe: &str) -> Self {
+        BlobStore {
+            store,
+            root: None,
+            describe: describe.into(),
+            public_url: None,
         }
     }
 
@@ -348,6 +364,20 @@ impl BlobStore {
                 return Ok(());
             }
         }
+        #[cfg(not(feature = "native"))]
+        return {
+            let _ = (k, meta);
+            Err(BlobError::Config(
+                "no files to upload from on a Worker: put the bytes".into(),
+            ))
+        };
+        #[cfg(feature = "native")]
+        self.put_file_parts(k, file, meta).await
+    }
+
+    /// [`BlobStore::put_file`] to an object store: in parts, as it is read.
+    #[cfg(feature = "native")]
+    async fn put_file_parts(&self, k: Key, file: &Path, meta: &Meta) -> Result<()> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let mut writer = object_store::buffered::BufWriter::new(self.store.clone(), k);
         if !self.is_dir() {
@@ -554,6 +584,7 @@ pub struct Blobs {
 }
 
 impl Blobs {
+    #[cfg(feature = "native")]
     /// The data directory, as servers always kept blobs.
     pub fn dir(data_dir: &Path) -> Result<Self> {
         Ok(Blobs {
@@ -562,6 +593,7 @@ impl Blobs {
         })
     }
 
+    #[cfg(feature = "native")]
     /// `--blobs` (default: the data directory), `--public-blobs` with
     /// `--public-blobs-url`. A public store needs its URL: without one there
     /// is nothing to send clients to.
@@ -599,6 +631,7 @@ impl Blobs {
     }
 }
 
+#[cfg(feature = "native")]
 fn check_public_url(url: &str) -> Result<()> {
     let ok = (url.starts_with("https://") || url.starts_with("http://"))
         && !url.contains('?')
