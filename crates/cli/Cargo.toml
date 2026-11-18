@@ -44,6 +44,8 @@ boot.workspace = true
 bots = { path = "../bots" }
 # `h2 agent` and `h2 serve` (docs/runtime/agent-api.md).
 agent-proto = { path = "../agent-proto" }
+# h2 studio: the editor's agent API client (docs/editor/agent-api.md).
+studio-proto = { path = "../studio-proto" }
 # Our settings (play --set, h2 settings).
 settings = { path = "../settings" }
 timeline = { path = "../timeline" }

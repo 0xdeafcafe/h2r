@@ -33,6 +33,11 @@ It hosts six tools:
 Nothing in the editor contains game data. Map names and everything else
 it shows come from your own disc at run time.
 
+Agents drive the editor through its agent API, [agent-api.md](agent-api.md):
+every edit the window makes as a JSON method on a local socket, answered
+by the open window (the user sees the edits land) or by `h2-editor
+--serve` with no window; `h2 studio` is the client.
+
 ## Running it
 
 ```

@@ -1,0 +1,12 @@
+[package]
+name = "studio-proto"
+description = "The studio agent API's names, short forms and client: JSON-RPC 2.0 over a local Unix socket, as the game's agent API (docs/editor/agent-api.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+agent-proto = { path = "../agent-proto" }
+anyhow.workspace = true
+serde_json.workspace = true

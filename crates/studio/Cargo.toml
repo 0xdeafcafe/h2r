@@ -52,6 +52,8 @@ serde_json.workspace = true
 
 # Play and pair (src/play.rs): the agent API's wire types and client.
 agent-proto = { path = "../agent-proto" }
+# The agent API (src/api): method names, short forms and the client.
+studio-proto = { path = "../studio-proto" }
 
 [dev-dependencies]
 # The HUD tool's tests draw the invented HUD map.

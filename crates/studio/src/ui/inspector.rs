@@ -21,7 +21,7 @@ use scenario_edit::layout::{FieldDef, FieldType, Role};
 use scenario_edit::session::FieldEdit;
 use scenario_edit::{BlockKind, Scenario, TagRef, Value};
 
-use crate::app::App;
+use crate::app::{Action, App};
 use crate::theme::{self, icon};
 
 /// Text typed into the searchable combos.
@@ -160,14 +160,16 @@ pub fn draw(ui: &Ui, bold: dear_imgui_rs::FontId, app: &mut App, state: &mut Ins
             p.stride
         ));
     }
-    for (field, e) in edits {
-        let key = merge_key(&selection, field);
-        if let Err(err) = app.session.edit_selection(field, e, key) {
-            app.error(err.to_string());
-        }
+    // Through the command layer, as the agent API's edits.
+    for (field, edit) in edits {
+        app.dispatch(Action::EditSelection {
+            field: field.to_owned(),
+            edit,
+            merge: merge_key(&selection, field),
+        });
     }
     if done {
-        app.session.seal();
+        app.dispatch(Action::SealEdit);
     }
 }
 
