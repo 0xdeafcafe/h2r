@@ -60,8 +60,15 @@ const customMaps = process.env.H2_MOCK_CUSTOM_MAPS !== "0";
 if (customMaps) world.customMap = customFor;
 const historyMin = Number(process.env.H2_MOCK_HISTORY_MIN ?? 20);
 const t0 = performance.now();
+const quiet = !!process.env.H2_MOCK_QUIET && process.env.H2_MOCK_QUIET !== "0";
+// Quiet with no history: not even the game the first step would start.
+if (quiet && historyMin <= 0) world.quiet = true;
 world.seed(historyMin * 60_000);
 console.log(`[mock] seeded ${world.log.length} events (${historyMin} min of history) in ${Math.round(performance.now() - t0)} ms`);
+// H2_MOCK_QUIET=1: the games in progress end and no more start, so the
+// stats home shows its "nothing live" panel (with H2_MOCK_HISTORY_MIN=0, no
+// games at all).
+if (quiet) world.hush();
 // Friends and teams (mock/social.ts): seeded before the world goes live.
 const social = new Social(world);
 social.seed();

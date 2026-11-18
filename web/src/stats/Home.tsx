@@ -15,10 +15,10 @@ import { useStatsSummary, type SummaryStatus } from "../state/statsSummary";
 import { endedGames, isCampaign, liveGames, type GameState } from "../state/reducer";
 import { gameMapTitle } from "../state/maps";
 import { isHalo1Map, mapTitle } from "../state/gameart";
-import { gameTypeLine } from "../state/gametype";
+import { difficultyName, gameTypeLine } from "../state/gametype";
 import { OUTCOME_WORDS, campaignOutcome, countMedals, gameMedals, MEDAL_BY_ID, type MedalId } from "../state/derive";
 import {
-  DAYS, STATS_WINDOWS, clanStandings, heatmap, hourName, hoursOf, kd, leaderboards, level, ofTheWeek, peak, shares,
+  DAYS, STATS_WINDOWS, alsoPopular, clanStandings, dailyGames, heatmap, missionOfTheWeek, nonZeroRows, hourName, hoursOf, kd, leaderboards, level, ofTheWeek, peak, shares,
   statsWindow, type Board, type StatsSummary, type StatsWindow, type Totals,
 } from "../lib/statsHome";
 import { campaignLine, gametype, listed, mapName, pingText, seats, sortSessions, kind as sessionKind } from "../lib/sessions";
@@ -27,15 +27,16 @@ import { titleCase } from "../lib/format";
 import { now } from "../lib/now";
 import { useMotd } from "../state/motd";
 import { motdMessages } from "../lib/motd";
-import Emblem from "../components/Emblem";
 import WeaponIcon from "../components/WeaponIcon";
 import SkullIcon from "../components/SkullIcon";
 import MedalIcon from "../components/MedalIcon";
 import GametypeIcon from "../components/GametypeIcon";
 import { Crumbs, Derived, Panel, Strip, Tabs, Title, playerHref } from "./Layout";
-import { DidYouKnow, MapPreview, MapThumb, Pills, fireteam, gameTitle } from "./Side";
+import { DidYouKnow, MapPreview, MapThumb, Pills, Who, fireteam, gameTitle } from "./Side";
 import { ScoreLine } from "./Games";
 import { ClanEmblem } from "./clanBits";
+import LiveIdle from "./LiveIdle";
+import MapPicture from "../components/MapPicture";
 import { clanHref } from "./modes";
 import { agoWords, count, num, ratio, usDate } from "./fmt";
 import { STATS_NAME } from "../brand";
@@ -43,17 +44,6 @@ import { STATS_ROOT, statsPath } from "../routes";
 
 const mapTitleOf = (m: { map: string; map_id?: string }) => gameMapTitle({ map: m.map, map_id: m.map_id ?? null });
 const skullName = (i: number) => SKULLS.find((s) => s.index === i)?.name ?? `Skull ${i}`;
-
-/** A player's link by account: their gamertag now, else the name they played under. */
-function Who(props: { xuid: string; name: string; size?: number }) {
-  const tag = () => live.state.accounts[props.xuid]?.gamertag ?? props.name;
-  return (
-    <span class="s-who">
-      <Emblem seed={props.xuid} size={props.size ?? 16} />
-      <Show when={live.state.accounts[props.xuid]} fallback={<span>{tag()}</span>}><A href={playerHref(tag())}>{tag()}</A></Show>
-    </span>
-  );
-}
 
 // ---------- live now ----------
 
@@ -75,7 +65,7 @@ function LiveCard(props: { game: GameState }) {
   );
 }
 
-function LiveNow() {
+function LiveNow(props: { week: StatsSummary | null }) {
   const games = createMemo(() => [...liveGames(live.state)].sort((a, b) =>
     Number(isCampaign(a)) - Number(isCampaign(b)) || Object.keys(b.players).length - Object.keys(a.players).length));
   const online = createMemo(() => Object.values(live.state.accounts).filter((a) => a.online).length);
@@ -93,7 +83,7 @@ function LiveNow() {
         </span>
       </div>
       <div class="s-matte s-live">
-        <For each={games().slice(0, 4)} fallback={<p class="s-empty">No games in progress right now. The next one shows up here as it starts.</p>}>
+        <For each={games().slice(0, 4)} fallback={<LiveIdle week={props.week} />}>
           {(g) => <LiveCard game={g} />}
         </For>
         <Show when={games().length > 4}><p class="s-items-more"><A href={statsPath("/games")}>{games().length - 4} more live {games().length - 4 === 1 ? "game" : "games"}</A></p></Show>
@@ -187,33 +177,116 @@ function Bars<T>(props: { rows: T[]; value: (r: T) => number; label: (r: T) => J
 
 function OfTheWeek(props: { sum: StatsSummary | null }) {
   const pick = createMemo(() => (props.sum ? ofTheWeek(props.sum) : { weapon: null, map: null }));
+  const mission = createMemo(() => (props.sum && !pick().weapon ? missionOfTheWeek(props.sum) : null));
+  const others = createMemo(() => (props.sum ? alsoPopular(props.sum, pick().map) : []));
   const weaponShare = () => {
     const w = pick().weapon, t = props.sum?.totals.kills ?? 0;
     return w && t ? Math.round((w.kills / t) * 100) : 0;
   };
+  const mapShare = (games: number) => {
+    const t = props.sum?.totals.games ?? 0;
+    return t ? Math.round((games / t) * 100) : 0;
+  };
   return (
     <div class="s-week">
-      <Panel title="Weapon of the Week" sub="most kills, last 7 days" class="s-week-box">
-        <Show when={pick().weapon} fallback={<p class="s-recent-empty">No kills this week yet.</p>}>
-          {(w) => (
+      <Show when={pick().weapon} fallback={
+        <Show when={mission()}>
+          {(m) => (
+            <Panel title="Mission of the Week" sub="most played campaign level, last 7 days" class="s-week-box">
+              <div class="s-week-body">
+                <span class="s-week-art"><MapPreview map={m().map} mapId={m().map_id} /></span>
+                <div><b>{mapTitleOf(m())}</b><span>{num(m().games)} {m().games === 1 ? "run" : "runs"}</span><span class="s-dim">{mapShare(m().games)}% of all games</span></div>
+              </div>
+            </Panel>
+          )}
+        </Show>
+      }>
+        {(w) => (
+          <Panel title="Weapon of the Week" sub="most kills, last 7 days" class="s-week-box">
             <div class="s-week-body">
               <span class="s-week-art s-week-art--weapon"><WeaponIcon weapon={w().weapon} width={112} /></span>
               <div><b>{titleCase(w().weapon)}</b><span>{num(w().kills)} kills</span><span class="s-dim">{weaponShare()}% of all kills</span></div>
             </div>
-          )}
-        </Show>
-      </Panel>
+          </Panel>
+        )}
+      </Show>
       <Panel title="Map of the Week" sub="most games played, last 7 days" class="s-week-box">
         <Show when={pick().map} fallback={<p class="s-recent-empty">No games this week yet.</p>}>
           {(m) => (
-            <div class="s-week-body">
-              <span class="s-week-art"><MapPreview map={m().map} mapId={m().map_id} /></span>
-              <div><b>{mapTitleOf(m())}</b><span>{num(m().games)} {m().games === 1 ? "game" : "games"}</span><span class="s-dim">{num(m().kills)} kills</span></div>
-            </div>
+            <>
+              <div class="s-week-body">
+                <span class="s-week-art"><MapPreview map={m().map} mapId={m().map_id} /></span>
+                <div>
+                  <b>{mapTitleOf(m())}</b>
+                  <span>{num(m().games)} {m().games === 1 ? "game" : "games"}</span>
+                  <span class="s-dim">{m().kills ? `${num(m().kills)} kills` : `${mapShare(m().games)}% of all games`}</span>
+                </div>
+              </div>
+              <Show when={others().length}>
+                <div class="s-week-also">
+                  <h4>Also popular</h4>
+                  <ul>
+                    <For each={others()}>
+                      {(o) => <li title={`${mapTitleOf(o)}: ${num(o.games)} ${o.games === 1 ? "game" : "games"}`}><MapPicture map={o.map} mapId={o.map_id} class="s-mappic" fallback={<span class="s-week-also-none" />} /><span>{mapTitleOf(o)}</span><small>{num(o.games)}</small></li>}
+                    </For>
+                  </ul>
+                </div>
+              </Show>
+            </>
           )}
         </Show>
       </Panel>
     </div>
+  );
+}
+
+/** The newest campaign level finished, Legendary or Heroic first (within
+ *  the loaded games), with its art: a young server's best story. */
+function LatestClear() {
+  const clear = createMemo(() => {
+    const done = endedGames(live.state, 200, "campaign").filter((g) => campaignOutcome(g) === "complete");
+    return done.find((g) => g.difficulty === "legendary" || g.difficulty === "heroic") ?? done[0] ?? null;
+  });
+  return (
+    <Show when={clear()}>
+      {(g) => (
+        <Panel title="Latest Campaign Clear" sub={g().difficulty === "legendary" || g().difficulty === "heroic" ? `newest on ${difficultyName(g().difficulty)}` : "newest level finished"} class="s-clear">
+          <A href={`/stats/games/${g().game_id}`} class="s-clear-body">
+            <MapThumb game={g()} />
+            <span>
+              <b>{gameMapTitle(g())}</b>
+              <Show when={difficultyName(g().difficulty)}>{(d) => <span class={`s-clear-diff s-clear-diff--${g().difficulty}`}>{d()}</span>}</Show>
+              <small>{fireteam(g())}</small>
+              <small>{agoWords(g().ended_at ?? g().started_at, now())}</small>
+            </span>
+          </A>
+        </Panel>
+      )}
+    </Show>
+  );
+}
+
+/** Games started per day, a small column chart under the Daily Count. */
+function DailySpark(props: { sum: StatsSummary | null }) {
+  const days = createMemo(() => (props.sum ? dailyGames(props.sum.activity, now(), 14) : []));
+  const max = () => Math.max(1, ...days().map((d) => d.games));
+  const total = () => days().reduce((a, d) => a + d.games, 0);
+  return (
+    <Show when={total() > 0}>
+      <figure class="s-spark">
+        <figcaption><span>Games per day</span><small>last 14 days</small></figcaption>
+        <ol aria-label="Games started per day, last 14 days">
+          <For each={days()}>
+            {(d, i) => (
+              <li title={`${usDate(d.day.toISOString())}: ${d.games} ${d.games === 1 ? "game" : "games"}`} classList={{ today: i() === days().length - 1 }}>
+                <i style={{ height: `${d.games ? Math.max(8, (d.games / max()) * 100) : 0}%` }} />
+                <span class="sr-only">{usDate(d.day.toISOString())}: {d.games}</span>
+              </li>
+            )}
+          </For>
+        </ol>
+      </figure>
+    </Show>
   );
 }
 
@@ -370,15 +443,17 @@ export default function Home() {
   // The week's summary feeds the "of the week" boxes and the totals; the chosen window the boards.
   const week = useStatsSummary(() => "7d");
   const chosen = useStatsSummary(() => (win() === "7d" ? null : win()));
+  // The last 30 days' hourly activity for the Daily Count's per-day chart.
+  const month = useStatsSummary(() => (win() === "30d" ? null : "30d"));
   return (
-    <HomeView win={win()} week={week.summary()} weekStatus={week.status()}
+    <HomeView win={win()} week={week.summary()} weekStatus={week.status()} month={win() === "30d" ? chosen.summary() : month.summary()}
       sum={win() === "7d" ? week.summary() : chosen.summary()} status={win() === "7d" ? week.status() : chosen.status()} />
   );
 }
 
 /** The page itself, given the summaries: what the route renders, and what
  *  tests render with made-up numbers. */
-export function HomeView(props: { win: StatsWindow; week: StatsSummary | null; weekStatus: SummaryStatus; sum: StatsSummary | null; status: SummaryStatus }) {
+export function HomeView(props: { win: StatsWindow; week: StatsSummary | null; weekStatus: SummaryStatus; sum: StatsSummary | null; status: SummaryStatus; month?: StatsSummary | null }) {
   const win = () => props.win;
   const sum = () => props.sum;
   const status = () => props.status;
@@ -389,6 +464,7 @@ export function HomeView(props: { win: StatsWindow; week: StatsSummary | null; w
   const motd = useMotd();
   const tips = createMemo(() => motdMessages(motd()));
   const accounts = createMemo(() => Object.keys(live.state.accounts).length);
+  const online = createMemo(() => Object.values(live.state.accounts).filter((a) => a.online).length);
   const since = () => (sum()?.from ? Date.parse(sum()!.from!) : win() === "all" ? 0 : now() - 7 * 86_400_000);
   const mapRows = () => (sum()?.maps ?? []).slice(0, 6);
   const weaponRows = () => (sum()?.weapons ?? []).slice(0, 6);
@@ -411,32 +487,43 @@ export function HomeView(props: { win: StatsWindow; week: StatsSummary | null; w
               {(s) => (
                 <>
                   <dl class="s-rows">
-                    <div><dt>Games on Record</dt><dd>{num(s().all_time.games)}</dd></div>
-                    <div><dt>Kills on Record</dt><dd>{num(s().all_time.kills)}</dd></div>
-                    <div><dt>Hours Played</dt><dd>{num(hoursOf(s().all_time.player_seconds))}</dd></div>
-                    <div><dt>Legendary Levels</dt><dd>{num(s().all_time.legendary)}</dd></div>
-                    <div><dt>Accounts</dt><dd>{num(accounts())}</dd></div>
+                    <For each={nonZeroRows([
+                      { label: "Games on Record", n: s().all_time.games, always: true },
+                      { label: "Kills on Record", n: s().all_time.kills },
+                      { label: "Campaign Games", n: s().all_time.campaign },
+                      { label: "Co-op Games", n: s().all_time.coop },
+                      { label: "Hours Played", n: hoursOf(s().all_time.player_seconds) },
+                      { label: "Legendary Levels", n: s().all_time.legendary },
+                      { label: "Accounts", n: accounts(), always: true },
+                    ], 6)}>{(r) => <div><dt>{r.label}</dt><dd>{r.value}</dd></div>}</For>
                   </dl>
                   <div class="s-report-sub"><h3>Daily Count</h3><p>last 24 hours</p></div>
                   <div class="s-daily">
                     <span class="s-daily-mark" aria-hidden="true" />
                     <dl class="s-rows">
-                      <div><dt>Games</dt><dd>{num(s().last_24h.games)}</dd></div>
-                      <div><dt>Campaign</dt><dd>{num(s().last_24h.campaign)}</dd></div>
-                      <div><dt>Kills</dt><dd>{num(s().last_24h.kills)}</dd></div>
-                      <div><dt>K/D (server)</dt><dd>{kd(s().last_24h.kills, s().last_24h.deaths).toFixed(2)}</dd></div>
+                      <For each={nonZeroRows([
+                        { label: "Games", n: s().last_24h.games, always: true },
+                        { label: "Campaign", n: s().last_24h.campaign },
+                        { label: "Kills", n: s().last_24h.kills },
+                        { label: "K/D (server)", n: s().last_24h.kills + s().last_24h.deaths, text: kd(s().last_24h.kills, s().last_24h.deaths).toFixed(2) },
+                        { label: "Campaign Deaths", n: s().last_24h.campaign_deaths },
+                        { label: "Hours Played", n: hoursOf(s().last_24h.player_seconds) },
+                        { label: "Accounts Online", n: online() },
+                      ], 4)}>{(r) => <div><dt>{r.label}</dt><dd>{r.value}</dd></div>}</For>
                     </dl>
                   </div>
+                  <DailySpark sum={props.month ?? null} />
                 </>
               )}
             </Show>
           </Panel>
           <OfTheWeek sum={week.summary()} />
+          <LatestClear />
           <Show when={sum()}>{(s) => <Clans sum={s()} />}</Show>
           <DidYouKnow messages={tips()} />
         </aside>
         <div class="s-right">
-          <LiveNow />
+          <LiveNow week={week.summary()} />
           <Show when={week.summary()}>
             {(s) => (
               <div class="s-tallies">

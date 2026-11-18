@@ -125,23 +125,7 @@ export function createReplaySession(game: Accessor<GameState>, roster: Accessor<
   const frame = (t: number): MapFrame => {
     const tl = timeline();
     if (!tl || !clock) return { players: [], markers: [], seen: null };
-    const at = clock.tickAt(t);
-    const r = roster();
-    const fade = 6 * TICKS_PER_SECOND;
-    return {
-      players: tl.sample(at),
-      actors: tl.sampleActors(at),
-      vehicles: tl.sampleVehicles(at),
-      hits: tl.sampleHits(at),
-      bsp: tl.sampleBsp(at),
-      machines: tl.sampleMachines(at),
-      objects: tl.sampleObjects(at),
-      cinematic: tl.cinematicAt(at),
-      markers: tl.killsBetween(at - fade, at).filter((k) => k.at).map((k) => ({
-        ...k.at!, alpha: 1 - (at - k.tick) / fade, colour: r.get(k.victim)?.colour ?? "#555",
-      })),
-      seen: boundsOf(tl),
-    };
+    return replayFrame(tl, clock.tickAt(t), roster());
   };
 
   return {
@@ -211,6 +195,27 @@ export function createReplaySession(game: Accessor<GameState>, roster: Accessor<
   };
 }
 
+/** The map frame of a recording at tick `at`: players, actors, vehicles
+ *  and the knockouts of the last six seconds, fading. The game page's
+ *  replay and the stats home's "last game" loop both draw from it. */
+export function replayFrame(tl: ReplayTimeline, at: number, r: Map<number, RosterEntry>): MapFrame {
+  const fade = 6 * TICKS_PER_SECOND;
+  return {
+    players: tl.sample(at),
+    actors: tl.sampleActors(at),
+    vehicles: tl.sampleVehicles(at),
+    hits: tl.sampleHits(at),
+    bsp: tl.sampleBsp(at),
+    machines: tl.sampleMachines(at),
+    objects: tl.sampleObjects(at),
+    cinematic: tl.cinematicAt(at),
+    markers: tl.killsBetween(at - fade, at).filter((k) => k.at).map((k) => ({
+      ...k.at!, alpha: 1 - (at - k.tick) / fade, colour: r.get(k.victim)?.colour ?? "#555",
+    })),
+    seen: boundsOf(tl),
+  };
+}
+
 const boundsCache = new WeakMap<ReplayTimeline, MapFrame["seen"]>();
 function boundsOf(tl: ReplayTimeline): MapFrame["seen"] {
   let b = boundsCache.get(tl);
@@ -226,7 +231,7 @@ function boundsOf(tl: ReplayTimeline): MapFrame["seen"] {
 }
 
 /** Kill and score events rebuilt from client state, if the REST log is unavailable. */
-function eventsFromState(g: GameState): WireEvent[] {
+export function eventsFromState(g: GameState): WireEvent[] {
   return g.kills.map((k) => ({
     position: k.position, stream: "game-" + g.game_id, version: 0, type: "PlayerKilled", at: k.at,
     data: { tick: k.tick, victim: k.victim, killer: k.killer, weapon: k.weapon, kind: k.kind },

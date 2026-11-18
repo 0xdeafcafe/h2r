@@ -90,6 +90,20 @@ describe("the stats home, rendered", () => {
     expect(grid.match(/<td class="lv\d"/g)!.length).toBe(7 * 24);
   });
 
+  test("with nothing live and no games on record, Live Now shows a map montage, not an empty box", () => {
+    const panel = html.slice(html.indexOf('id="live"'), html.indexOf('class="s-tallies"'));
+    expect(panel).toContain("s-idle-montage");
+    expect(panel).toContain("Pick a map, start a game");
+    expect(panel).toContain("The next one shows up here as it starts.");
+    expect(panel).not.toContain('class="s-empty"');
+  });
+
+  test("the menu column drops zero rows and keeps the ones that always count", () => {
+    const report = html.slice(html.indexOf("Server Report"), html.indexOf("Daily Count"));
+    expect(report).toContain("Games on Record");
+    expect(report).toContain("Accounts");
+  });
+
   test("a server without the summary says so and still shows what is live", () => {
     expect(unsupported).toContain("publish leaderboards yet");
     expect(unsupported).toContain("Live Now");

@@ -6,7 +6,7 @@ import { For, Show, createMemo, createSignal, createEffect, on } from "solid-js"
 import { A, useParams } from "@solidjs/router";
 import { live } from "../state/live";
 import { isCampaign, type GameState, type Kill } from "../state/reducer";
-import { LOST_NOTE, OUTCOME_WORDS, campaignOutcome, deathsOf } from "../state/derive";
+import { LOST_NOTE, deathsOf } from "../state/derive";
 import { difficultyName, gameTypeLine } from "../state/gametype";
 import CampaignReport, { PlayerName, campaignPlayers } from "./CampaignReport";
 import Scoreboard from "../components/Scoreboard";
@@ -16,7 +16,7 @@ import { Block, Crumbs, Title } from "./Layout";
 import Carnage from "./Carnage";
 import GametypeIcon from "../components/GametypeIcon";
 import { SkullBadges } from "../components/SkullIcon";
-import { MapThumb, gameTitle, hostName } from "./Side";
+import { MapThumb, gameTitle, hostName, resultWords } from "./Side";
 import { hms, usDateTime, agoWords } from "./fmt";
 import { teamStandings, standings } from "../state/reducer";
 import { colourFor, elapsedSeconds, gameSeconds, liveFrameSource, rosterFor, teamName } from "../lib/game";
@@ -72,13 +72,7 @@ export default function Game() {
 function Header(props: { game: GameState }) {
   const g = () => props.game;
   const campaign = () => isCampaign(g());
-  const result = () => {
-    const w = g().winner;
-    if (g().status !== "ended") return "In progress";
-    if (campaign()) return OUTCOME_WORDS[campaignOutcome(g())];
-    if (!w) return g().end_reason === "quit" ? "Ended early" : g().end_reason === "lost" ? "Unfinished" : "No winner";
-    return "team" in w ? `${teamName(w.team)} Team won` : `${g().players[w.player]?.name ?? "Someone"} placed 1st`;
-  };
+  const result = () => resultWords(g());
   const host = () => hostName(g());
   return (
     <>
