@@ -778,6 +778,39 @@ fn map_ticks_count_from_each_map_load() {
     );
 }
 
+/// A snapshot loaded mid-cutscene still answers `cinematic`, and the
+/// map's ticks count on from the saved ones rather than from a map change.
+#[test]
+fn a_snapshot_carries_the_cutscene_and_the_maps_ticks() {
+    let a = Agent::new();
+    let mut g = level();
+    a.set_cinematic(true);
+    a.on_tick(&mut g);
+    a.on_tick(&mut g);
+    let bytes = a.save_state();
+
+    let b = Agent::new();
+    assert!(b.load_state(&bytes[..bytes.len() - 1]).is_err());
+    assert_eq!(
+        b.save_state(),
+        Agent::new().save_state(),
+        "bad bytes change nothing"
+    );
+    b.load_state(&bytes).unwrap();
+    assert_eq!(b.save_state(), bytes, "the same state again");
+    let (c, rx) = client(&b);
+    ask(&b, c, 1, method::STATUS, Value::Null);
+    b.on_tick(&mut g);
+    let v = next(&rx);
+    assert_eq!(
+        (
+            v["result"]["at"]["phase"].clone(),
+            v["result"]["at"]["map_ticks"].clone()
+        ),
+        (json!("cinematic"), json!(3))
+    );
+}
+
 // ---- from the real-game runs ----
 
 /// A read between slices while the game ticks could catch a tick half done

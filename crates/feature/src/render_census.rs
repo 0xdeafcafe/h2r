@@ -1135,6 +1135,20 @@ impl RenderCensus {
     pub fn with_census<R>(&self, f: impl FnOnce(&mut Census) -> R) -> R {
         f(&mut self.state.lock().unwrap_or_else(|e| e.into_inner()).census)
     }
+    /// Why a machine snapshot must wait (docs/runtime/snapshots.md): from
+    /// the first render frame on, the access trap is armed on every mapped
+    /// page and its log, sticky pages and the census are host state a
+    /// snapshot does not carry. Nothing disarms it, so a run with the
+    /// census on cannot be snapshotted after its first frame.
+    pub fn snapshot_live(&self) -> Option<String> {
+        trap_live(&self.state)
+    }
+}
+
+/// [`RenderCensus::snapshot_live`] over the shared state.
+fn trap_live(state: &Mutex<State>) -> Option<String> {
+    let armed = state.lock().unwrap_or_else(|e| e.into_inner()).armed;
+    armed.then(|| "the render census's access trap is armed".into())
 }
 
 fn report(s: &mut State, opts: &Options) {
@@ -1246,6 +1260,8 @@ impl Feature for RenderCensus {
                 }
             })
             .optional();
+        let state = Arc::clone(&self.state);
+        b.snapshot(crate::SnapshotPolicy::forbid_while(move || trap_live(&state)));
         Ok(())
     }
 }
@@ -1254,6 +1270,23 @@ impl Feature for RenderCensus {
 mod tests {
     use super::*;
     use runtime::LineRec;
+
+    #[test]
+    fn a_snapshot_waits_once_the_trap_is_armed() {
+        let c = RenderCensus::with_options(Options {
+            every: 300,
+            top: 20,
+            lines: None,
+            out: None,
+            print: false,
+        });
+        assert_eq!(c.snapshot_live(), None);
+        c.state.lock().unwrap().armed = true;
+        assert_eq!(
+            c.snapshot_live().as_deref(),
+            Some("the render census's access trap is armed")
+        );
+    }
 
     const RENDER: u8 = Phase::Render as u8;
     const D3D: u8 = Phase::D3d as u8;

@@ -417,6 +417,11 @@ impl feature::Feature for TelemetryFeature {
                     t.protect(|| t.kill(&o.guest(), attacker, victim, betrayal));
                 }
             });
+        // Observers only: nothing here writes the guest or feeds back into
+        // it. The session is an outbound record of the run; a load winds
+        // the engine's tick, which the session reads as a campaign revert
+        // (a `cut`) or a jump, and the run goes on (docs/runtime/snapshots.md).
+        b.snapshot(feature::SnapshotPolicy::Stateless);
         Ok(())
     }
 }

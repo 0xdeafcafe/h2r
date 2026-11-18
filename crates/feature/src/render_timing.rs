@@ -706,6 +706,21 @@ impl RenderTiming {
         s.run.add(&t);
         s.run.clone()
     }
+
+    /// Why a machine snapshot must wait (docs/runtime/snapshots.md): a
+    /// stage is open, between its before and after observers, so the stage
+    /// stack (and, for the frame, the frame stats' render scope) is host
+    /// state a load could not match. Between frames there is nothing but
+    /// counts, which a load only leaves discontinuous.
+    pub fn snapshot_live(&self) -> Option<String> {
+        stage_live(&self.state)
+    }
+}
+
+/// [`RenderTiming::snapshot_live`] over the shared state.
+fn stage_live(state: &Mutex<State>) -> Option<String> {
+    let depth = state.lock().unwrap_or_else(|e| e.into_inner()).stages.depth();
+    (depth != 0).then(|| format!("{depth} render stages are open"))
 }
 
 /// A point for each scene and shader-draw callee: the table's own where it
@@ -839,6 +854,8 @@ impl Feature for RenderTiming {
                 h.optional();
             }
         }
+        let state = Arc::clone(&self.state);
+        b.snapshot(crate::SnapshotPolicy::forbid_while(move || stage_live(&state)));
         Ok(())
     }
 }
@@ -1042,6 +1059,20 @@ mod tests {
         assert_eq!(time(Stage::ShaderBegin), 2);
         assert_eq!(t.calls[Stage::Fmod as usize], 1);
         assert_eq!(t.render_ns(), 13);
+    }
+
+    #[test]
+    fn a_snapshot_waits_while_a_stage_is_open() {
+        let t = RenderTiming::with_clock(Arc::new(|| Some(Now::new(0, 0))));
+        assert_eq!(t.snapshot_live(), None);
+        t.state.lock().unwrap().stages.enter(Stage::Frame, g(0));
+        t.state.lock().unwrap().stages.enter(Stage::Views, g(1));
+        assert_eq!(
+            t.snapshot_live().as_deref(),
+            Some("2 render stages are open")
+        );
+        assert!(t.state.lock().unwrap().stages.leave(Stage::Frame, g(2)));
+        assert_eq!(t.snapshot_live(), None);
     }
 
     #[test]
