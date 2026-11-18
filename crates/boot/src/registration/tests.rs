@@ -13,7 +13,10 @@ use super::{AgentSource, CoreInputs, LateInputs, register_core, register_late};
 use crate::lockstep_glue;
 
 /// Every switch that adds hooks, on.
-pub(crate) const ALL_ON: &str = "impl.engine=on,impl.render=on,render-timing,render-loop,occlusion,impl.render.native_world=on";
+pub(crate) const ALL_ON: &str = "impl.engine=on,impl.render=on,render-timing,render-loop,occlusion";
+/// Added to [`ALL_ON`]: the native world (on by default) off, so the
+/// pipelined render places its hooks (it is off while the native world is on).
+pub(crate) const NATIVE_WORLD_OFF: &str = "impl.render.native_world=off";
 
 /// What a test run has, from nothing (a headless run with no settings) to
 /// everything a test can stand in for.
@@ -159,12 +162,14 @@ fn the_plan_builds_with_default_switches() {
 }
 
 /// Every switch that adds hooks on (the census in a second build, since
-/// pipelining is off with it), with everything a test can supply.
+/// pipelining is off with it, and the native world off in a third, since
+/// pipelining is off with that too), with everything a test can supply.
 #[test]
 fn the_plan_builds_with_every_hook_switch_on() {
     assert_builds(&Case::none(ALL_ON));
     assert_builds(&Case::full(ALL_ON));
     assert_builds(&Case::full(&format!("{ALL_ON},render-census")));
+    assert_builds(&Case::full(&format!("{ALL_ON},{NATIVE_WORLD_OFF}")));
 }
 
 /// Each optional piece alone and in every combination, with the default
@@ -175,7 +180,8 @@ fn the_plan_builds_with_every_hook_switch_on() {
 #[test]
 fn the_plan_builds_with_every_combination_of_optional_features() {
     let mut failures = Vec::new();
-    for switches in ["", ALL_ON] {
+    let pipelined = format!("{ALL_ON},{NATIVE_WORLD_OFF}");
+    for switches in ["", ALL_ON, pipelined.as_str()] {
         for bits in 0u32..(1 << 8) {
             let on = |n: u32| bits & (1 << n) != 0;
             let case = Case {

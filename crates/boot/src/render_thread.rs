@@ -131,7 +131,7 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
 #[cfg(test)]
 mod tests {
     use super::REFUSED;
-    use crate::registration::tests::{ALL_ON, Case, registry};
+    use crate::registration::tests::{ALL_ON, Case, NATIVE_WORLD_OFF, registry};
 
     fn refused(feature: &str, point: &str) -> Option<usize> {
         REFUSED
@@ -140,7 +140,8 @@ mod tests {
     }
 
     /// Every hook boot's features place, with every switch that adds one
-    /// on (the census in a second build, since pipelining is off with it),
+    /// on (the native world, on by default, in one build and off in another,
+    /// and the census in a third, since pipelining is off with either),
     /// either runs on the pipelined render thread or is listed in
     /// [`REFUSED`] with its reason, and every listed entry is still used.
     /// The ones the render path meets in a default run (the locale lookups,
@@ -150,7 +151,11 @@ mod tests {
         let mut unlisted = Vec::new();
         let mut used = vec![false; REFUSED.len()];
         let mut safe = Vec::new();
-        for switches in [ALL_ON.to_owned(), format!("{ALL_ON},render-census")] {
+        for switches in [
+            ALL_ON.to_owned(),
+            format!("{ALL_ON},{NATIVE_WORLD_OFF}"),
+            format!("{ALL_ON},{NATIVE_WORLD_OFF},render-census"),
+        ] {
             let plan = registry(&Case::full(&switches)).build(&feature::Base).unwrap();
             for c in plan.chains.values() {
                 match c.render_thread() {
