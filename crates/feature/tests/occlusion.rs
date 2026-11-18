@@ -7,7 +7,8 @@
 //! that is not skipped reaches the original (EAX 41). `SCENE_TRANSPARENTS`
 //! stands at the fixture's `eax = 1; ret` (0x403005): its observer asks the
 //! capture function for a grid, and the test answers as the D3D device
-//! would, with a wall at view depth 5 over the whole view.
+//! would: raw W-buffer values (w far 500, D24S8) of a wall at view depth
+//! 20 over the whole view, mapped as boot maps the device's grids.
 
 use std::sync::{Arc, Mutex};
 
@@ -54,10 +55,10 @@ fn runtime() -> Arc<Runtime> {
     // Objects: 0 the player, 1 behind the wall, 2 in front of it, 3 behind
     // the wall and held by the player.
     let centers = [
-        [20.0f32, 0.0, 0.0],
-        [20.0, 3.0, 1.0],
-        [3.0, 0.0, 0.0],
-        [20.0, -1.0, 0.0],
+        [60.0f32, 0.0, 0.0],
+        [60.0, 3.0, 1.0],
+        [10.0, 0.0, 0.0],
+        [60.0, -1.0, 0.0],
     ];
     g.set_u32(OBJECTS, ARRAY).unwrap();
     g.set_u32(ARRAY + OBJECTS_DATA, DATA).unwrap();
@@ -188,10 +189,16 @@ fn the_feature_skips_occluded_objects_from_the_second_frame() {
         // A second transparents call in the frame asks for nothing.
         call(&rt, TRANSPARENTS, CpuAbi::default());
         assert!(asked.lock().unwrap().is_empty());
-        let raw = vec![5.0f32; (w * h) as usize];
-        feature::occlusion::deliver(tag, w, h, &raw, DepthMapping::Linear);
+        // The device's grid: the W-buffer's raw depth of the wall, with
+        // the W parameters of the moment (`+0x944`, `+0x948`).
+        let (inv_w_far, z_scale) = (1.0f32 / 500.0, 16_777_215.0f32);
+        let raw = vec![DepthMapping::w_buffer_store(20.0, inv_w_far, z_scale); (w * h) as usize];
+        feature::occlusion::deliver(tag, w, h, &raw, DepthMapping::w_buffer(inv_w_far, z_scale));
     }
     assert_eq!(feature::occlusion::published(), 3);
+    let (grid, _) = feature::occlusion::last_grid().unwrap();
+    assert_eq!((grid.cells, grid.far, grid.dropped), (2048, 0, 0));
+    assert!((20.0..20.01).contains(&grid.nearest), "{grid:?}");
     assert_eq!(skipped, vec![vec![], vec![], vec![1]]);
     let flags: Vec<u8> = (0..4)
         .map(|i| rt.memory().u8(FLAGS + 2 * i).unwrap())
