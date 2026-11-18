@@ -6,7 +6,10 @@
 //!
 //! - campaign levels: `<data>/campaigns/halo1/<level>.map` and
 //!   `campaign.toml`, which the campaign picker lists and
-//!   `vfs::CampaignMapsBackend` serves as `maps\<level>.map`;
+//!   `vfs::CampaignMapsBackend` serves as `maps\<level>.map`, and each
+//!   level's Halo 2-assets variant, `<data>/campaigns/halo1/h2/<level>.map`
+//!   (`boot::h1_variants::campaign_alternate`), served instead when the
+//!   game's campaign assets are Halo 2's;
 //! - multiplayer maps: the package `<data>/maps/h1_<map>/` with both
 //!   variants, which `boot::new_maps` puts in the map list.
 //!
@@ -41,7 +44,7 @@ use crate::safe_out::OutDir;
 /// use) changes the maps they write**: every import stamped with an older
 /// version is converted again at the next `h2 play`, so `--follow` users
 /// get the new maps after the merge.
-pub const CONVERTER_VERSION: u32 = 54;
+pub const CONVERTER_VERSION: u32 = 55;
 
 /// The stamp's file, in `<data>/campaigns/halo1/`.
 pub const STAMP_FILE: &str = "import.stamp";
@@ -57,6 +60,9 @@ const SANDBOXES: [Sandbox; 2] = [Sandbox::Halo2, Sandbox::Halo1];
 pub enum Job<'a> {
     /// A campaign level, `a10` .. `d40`.
     Campaign(&'a str),
+    /// A campaign level's Halo 2-assets variant (docs/game/campaigns.md
+    /// §5).
+    CampaignHalo2(&'a str),
     /// A multiplayer map in one sandbox.
     Multiplayer(&'a str, Sandbox),
 }
@@ -66,6 +72,7 @@ impl Job<'_> {
     pub fn key(&self) -> String {
         match self {
             Job::Campaign(l) => l.to_string(),
+            Job::CampaignHalo2(l) => format!("{l}/h2"),
             Job::Multiplayer(m, s) => format!("{m}/{}", s.name()),
         }
     }
@@ -74,6 +81,7 @@ impl Job<'_> {
     pub fn label(&self) -> String {
         match self {
             Job::Campaign(l) => format!("campaign {l}"),
+            Job::CampaignHalo2(l) => format!("campaign {l} (Halo 2 assets)"),
             Job::Multiplayer(m, s) => format!(
                 "multiplayer {m} ({} sandbox)",
                 if *s == Sandbox::Halo1 {
@@ -89,6 +97,10 @@ impl Job<'_> {
     pub fn output(&self, data: &Path) -> PathBuf {
         match self {
             Job::Campaign(l) => campaign_dir(data).join(h1campaign::manifest::map_file(l)),
+            Job::CampaignHalo2(l) => {
+                let level = Job::Campaign(l).output(data);
+                boot::h1_variants::campaign_alternate(&level).unwrap_or(level)
+            }
             Job::Multiplayer(m, s) => content::store::maps_dir(data)
                 .join(map_name(m))
                 .join(variant_file(m, *s)),
@@ -103,7 +115,8 @@ pub fn campaign_dir(data: &Path) -> PathBuf {
 
 /// The jobs for a disc whose `maps/` holds `stems`: each campaign level it
 /// has, in play order, then each multiplayer map the converter knows, in
-/// its table's order, in both sandboxes.
+/// its table's order, in both sandboxes, then each level's Halo 2-assets
+/// variant (the default assets are Halo 1's, so those come first).
 pub fn jobs(stems: &[String]) -> Vec<Job<'static>> {
     let has = |n: &str| stems.iter().any(|s| s.eq_ignore_ascii_case(n));
     let mut out: Vec<Job> = CAMPAIGN_LEVELS
@@ -114,6 +127,12 @@ pub fn jobs(stems: &[String]) -> Vec<Job<'static>> {
     for (m, _, _) in h1convert::convert::MAPS.iter().filter(|(m, _, _)| has(m)) {
         out.extend(SANDBOXES.map(|s| Job::Multiplayer(m, s)));
     }
+    out.extend(
+        CAMPAIGN_LEVELS
+            .iter()
+            .filter(|l| has(l))
+            .map(|l| Job::CampaignHalo2(l)),
+    );
     out
 }
 
@@ -364,6 +383,33 @@ impl DiscConverter {
         Ok((bytes, m))
     }
 
+    /// A campaign level converted as the import writes it, with `assets`.
+    fn campaign(
+        &mut self,
+        level: &str,
+        assets: h1campaign::h2assets::Assets,
+    ) -> Result<h1campaign::Converted> {
+        let (_, h1) = self.read(level)?;
+        if self.scripting.is_none() {
+            self.scripting = Some(
+                h1_cmd::campaign_scripting(&self.h1_path, &self.h2).map_err(|e| format!("{e:#}")),
+            );
+        }
+        if self.donors.is_none() {
+            self.donors = Some(h1_cmd::campaign_donors(&self.h2)?);
+        }
+        let scripting = match self.scripting.as_ref().expect("set") {
+            Ok(s) => s.as_ref(),
+            Err(e) => bail!("the scripts' tables: {e}"),
+        };
+        let mut base = h1_cmd::h2_base(&self.h2, h1campaign::base_for(level))?;
+        let opts = h1campaign::Options {
+            assets,
+            ..h1_cmd::campaign_options(scripting, self.donors.as_ref())
+        };
+        Ok(h1campaign::convert(&h1, &mut base, &opts)?)
+    }
+
     fn out(&self, root: PathBuf) -> Result<OutDir> {
         // Ours to replace: whatever is there came from an import or a
         // convert of the same map.
@@ -374,24 +420,19 @@ impl DiscConverter {
 impl Converter for DiscConverter {
     fn convert(&mut self, job: &Job) -> Result<()> {
         match *job {
+            Job::CampaignHalo2(level) => {
+                let done = self.campaign(level, h1campaign::h2assets::Assets::Halo2)?;
+                // Beside the level's map, in `h2/`: no HUD pairs (its
+                // player and weapons are Halo 2's) and no manifest (the
+                // level is listed once, by its Halo 1 map).
+                let file = Job::CampaignHalo2(level).output(&self.data);
+                let dir = file.parent().context("the variant's folder")?;
+                let name = file.file_name().context("the variant's file")?;
+                self.out(dir.to_path_buf())?
+                    .write(&[name.to_string_lossy().into_owned()], &done.bytes)?;
+            }
             Job::Campaign(level) => {
-                let (_, h1) = self.read(level)?;
-                if self.scripting.is_none() {
-                    self.scripting = Some(
-                        h1_cmd::campaign_scripting(&self.h1_path, &self.h2)
-                            .map_err(|e| format!("{e:#}")),
-                    );
-                }
-                if self.donors.is_none() {
-                    self.donors = Some(h1_cmd::campaign_donors(&self.h2)?);
-                }
-                let scripting = match self.scripting.as_ref().expect("set") {
-                    Ok(s) => s.as_ref(),
-                    Err(e) => bail!("the scripts' tables: {e}"),
-                };
-                let mut base = h1_cmd::h2_base(&self.h2, h1campaign::base_for(level))?;
-                let opts = h1_cmd::campaign_options(scripting, self.donors.as_ref());
-                let done = h1campaign::convert(&h1, &mut base, &opts)?;
+                let done = self.campaign(level, h1campaign::h2assets::Assets::Halo1)?;
                 let dir = campaign_dir(&self.data);
                 h1_cmd::write_campaign_level(
                     &self.out(dir.clone())?,
