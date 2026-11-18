@@ -321,6 +321,9 @@ fn every_level_converts_fresh() {
         };
         let mut pinned_bad = std::collections::BTreeSet::new();
         let mut pinned_sounds = None;
+        // The pinned build's retries: over the file size, it is converted
+        // again with less music, so its trimmed sounds differ by design.
+        let mut pinned_retries = Vec::new();
         let before = pinned_too.then(|| {
             opts.pinned = true;
             let p = h1campaign::convert(&h1, &mut base, &opts).unwrap();
@@ -329,6 +332,7 @@ fn every_level_converts_fresh() {
             let pmem = memory(&mut pm);
             pinned_bad = reference_sweep(&pm, &pmem).1.into_iter().collect();
             pinned_sounds = Some(h1convert::compact::map_entries(&mut pm, &p.bytes).unwrap());
+            pinned_retries = p.report.retries.clone();
             let profiles = start_profiles(&mut pm, &h1);
             assert!(
                 profiles.is_empty(),
@@ -368,6 +372,29 @@ fn every_level_converts_fresh() {
             .filter_map(|t| t.name.clone())
             .filter(|n| n.starts_with(&base_folder) || n.starts_with("scenarios\\multi\\"))
             .collect();
+        // Every vehicle's `+0x2f8` elements hold at most 4 physics entries
+        // (`+0x38`; the load loop `0x205550` has room for 4): no template
+        // address read as junk (h1objects/tests/sandbox_disc.rs).
+        let mut vehicles = 0;
+        for t in m.tags().to_vec() {
+            let (Some(l), true) = (t.location, t.group == FourCC(*b"vehi")) else {
+                continue;
+            };
+            let word = |a: u32| {
+                mem.slice(a, 4)
+                    .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+            };
+            let count = word(l.address + 0x2f8).unwrap_or(u32::MAX);
+            let first = word(l.address + 0x2fc).unwrap_or(0);
+            for k in 0..count.min(16) {
+                vehicles += 1;
+                let n = word(first + k * 0x2a0 + 0x38).unwrap_or(u32::MAX);
+                if n > 4 || count > 16 {
+                    failed.push(format!("{level}: {:?} [{k}] physics count {n:#x}", t.name));
+                }
+            }
+        }
+        println!("  {vehicles} vehicle physics elements, each 4 entries or fewer");
         let profile_bad = start_profiles(&mut m, &h1);
         if !profile_bad.is_empty() {
             failed.push(format!("{level}: starting profiles {profile_bad:#?}"));
@@ -424,7 +451,10 @@ fn every_level_converts_fresh() {
                         after.len() - differ.len(),
                         differ.len()
                     );
-                    if !differ.is_empty() {
+                    if !pinned_retries.is_empty() {
+                        println!("  pinned build retried: {pinned_retries:?}");
+                    }
+                    if !differ.is_empty() && pinned_retries.is_empty() {
                         failed.push(format!(
                             "{level}: sounds differ from pinned: {:?}",
                             &differ[..differ.len().min(8)]

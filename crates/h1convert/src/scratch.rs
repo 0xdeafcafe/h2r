@@ -30,6 +30,7 @@ use tags::repo::{
     Body, BuildOptions, LooseTag, MapSource, Node, RawRes, Region, TagKey, TagSource, Tree,
     closure, to_tag_set,
 };
+use tags::schema::{Field, Struct};
 
 use crate::fresh::Keep;
 use crate::{Error, Result};
@@ -154,11 +155,65 @@ fn built_here(g: FourCC) -> bool {
     BUILT_HERE.iter().any(|b| g == FourCC(**b))
 }
 
-/// Every datum `b` names: reference fixups and every 4-aligned word equal
-/// to a datum of `set` (the scripts' atoms, the simulation table).
-fn datums(b: &Block, set: &TagSet, out: &mut Vec<TagId>) {
-    for w in b.bytes.as_chunks::<4>().0 {
-        let d = TagId(u32::from_le_bytes(*w));
+/// The offsets in `b` (elements of `s`) of the schema's reference datums:
+/// a [`Field::TagRef`]'s datum (`+4`) and a [`Field::TagId`].
+fn ref_words(b: &Block, s: &Struct) -> Vec<usize> {
+    let size = s.size.max(1) as usize;
+    let mut out = Vec::new();
+    for i in 0..b.bytes.len() / size {
+        for (&o, f) in &s.fields {
+            match f {
+                Field::TagRef => out.push(i * size + o as usize + 4),
+                Field::TagId => out.push(i * size + o as usize),
+                _ => {}
+            }
+        }
+    }
+    out.retain(|&k| k + 4 <= b.bytes.len());
+    out
+}
+
+/// The words of `b` that may name a datum of `set`: in the scenario's tree
+/// (`untyped`) every 4-aligned word (the scripts' atoms, the simulation
+/// table); elsewhere the schema's reference words (`s`) and every word
+/// laid out as a reference, the group of the tag it names just before it.
+/// A bare word match would take a BSP's vertex index pairs for datums.
+fn datum_words(b: &Block, s: Option<&Struct>, set: &TagSet, untyped: bool) -> Vec<usize> {
+    let all = (0..b.bytes.len() / 4 * 4).step_by(4);
+    if untyped {
+        return all.collect();
+    }
+    let word = |k: usize| u32::from_le_bytes(b.bytes[k..k + 4].try_into().expect("4"));
+    let mut out: Vec<usize> = all
+        .filter(|&k| k >= 4)
+        .filter(|&k| {
+            key_of(set, TagId(word(k))).is_some_and(|key| {
+                let g = word(k - 4);
+                g == u32::from_le_bytes(key.group.0) || g == u32::from_be_bytes(key.group.0)
+            })
+        })
+        .collect();
+    out.extend(s.map(|s| ref_words(b, s)).unwrap_or_default());
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// The layout of the child block at `offset` of a block of `s` elements.
+fn child_struct(s: &Struct, offset: u32) -> Option<&Struct> {
+    match s.fields.get(&(offset % s.size.max(1)))? {
+        Field::Block(c) => Some(c),
+        _ => None,
+    }
+}
+
+/// Every datum `b` names: reference fixups and, in the scenario's tree
+/// (`untyped`), every 4-aligned word equal to a datum of `set` (the
+/// scripts' atoms, the simulation table); elsewhere only the words the
+/// schema (`s`, the layout of `b`'s elements) marks as references.
+fn datums(b: &Block, s: Option<&Struct>, set: &TagSet, untyped: bool, out: &mut Vec<TagId>) {
+    for k in datum_words(b, s, set, untyped) {
+        let d = TagId(u32::from_le_bytes(b.bytes[k..k + 4].try_into().expect("4")));
         if d.0 != u32::MAX && key_of(set, d).is_some() {
             out.push(d);
         }
@@ -166,7 +221,8 @@ fn datums(b: &Block, set: &TagSet, out: &mut Vec<TagId>) {
     for f in &b.fixups {
         match &f.kind {
             FixupKind::Block { child, .. } | FixupKind::Data(child) | FixupKind::Pointer(child) => {
-                datums(child, set, out)
+                let c = s.and_then(|s| child_struct(s, f.offset));
+                datums(child, c, set, untyped, out)
             }
             FixupKind::TagRef(t) | FixupKind::TagId(t) => out.push(*t),
             FixupKind::TagOffset { tag, .. } => out.push(*tag),
@@ -275,9 +331,10 @@ pub fn build(
     }
     roots.extend(extra.iter().filter_map(|&d| key_of(set, d)));
     let mut named = Vec::new();
-    for (id, _) in &here {
+    for (id, key) in &here {
         if let Some(TagPayload::Built(b)) = set.tag(*id).map(|t| &t.payload) {
-            datums(b, set, &mut named);
+            let layout = tags::schema::Schema::builtin().groups.get(&key.group);
+            datums(b, layout, set, key.group == FourCC(*b"scnr"), &mut named);
         }
     }
     for d in named {
@@ -356,6 +413,7 @@ pub fn build(
         raws: HashMap::new(),
         sections: HashMap::new(),
         words: 0,
+        untyped: false,
         error: None,
     };
     let mut payloads = Vec::new();
@@ -364,7 +422,12 @@ pub fn build(
             continue;
         };
         let mut b = b.clone();
-        cx.block(&mut b, &mut out);
+        cx.untyped = key.group == FourCC(*b"scnr");
+        cx.block(
+            &mut b,
+            tags::schema::Schema::builtin().groups.get(&key.group),
+            &mut out,
+        );
         payloads.push((new_id[key], b));
     }
     if let Some(e) = cx.error {
@@ -389,6 +452,12 @@ struct Transfer<'a> {
     raws: HashMap<usize, RawId>,
     sections: HashMap<usize, usize>,
     words: usize,
+    /// Whether every word outside the fixups that equals a datum is
+    /// renamed: in the scenario (script nodes, the simulation table). In a
+    /// BSP or lightmap only the schema's reference fields are: their
+    /// geometry holds index pairs that look like datums (a collision
+    /// edge's two `u16` vertices).
+    untyped: bool,
     error: Option<Error>,
 }
 
@@ -401,7 +470,7 @@ impl Transfer<'_> {
     }
 
     /// `b` (a tree of `self.set`) rewritten for `out`.
-    fn block(&mut self, b: &mut Block, out: &mut TagSet) {
+    fn block(&mut self, b: &mut Block, s: Option<&Struct>, out: &mut TagSet) {
         let covered: HashSet<u32> = b
             .fixups
             .iter()
@@ -416,7 +485,8 @@ impl Transfer<'_> {
                 f.offset..f.offset + n
             })
             .collect();
-        for k in (0..b.bytes.len() / 4 * 4).step_by(4) {
+        let words = datum_words(b, s, self.set, self.untyped);
+        for k in words {
             if covered.contains(&(k as u32)) {
                 continue;
             }
@@ -431,7 +501,10 @@ impl Transfer<'_> {
             match &mut f.kind {
                 FixupKind::Block { child, .. }
                 | FixupKind::Data(child)
-                | FixupKind::Pointer(child) => self.block(child, out),
+                | FixupKind::Pointer(child) => {
+                    let c = s.and_then(|s| child_struct(s, f.offset));
+                    self.block(child, c, out)
+                }
                 FixupKind::TagRef(t) | FixupKind::TagId(t) => *t = self.id(*t),
                 FixupKind::TagOffset { .. } => {
                     self.error.get_or_insert(Error::Fresh(
@@ -525,5 +598,22 @@ mod tests {
         assert_ne!(k1, Some(42));
         // The gestalt shares nothing.
         assert_eq!(key(&set, u), None);
+    }
+
+    #[test]
+    fn only_words_laid_out_as_references_name_tags_outside_the_scenario() {
+        let mut set = TagSet::new(CacheType::Multiplayer, "m", "s");
+        let shad = tag(&mut set, b"shad", "cliff");
+        let mut bytes = Vec::new();
+        // A word that happens to equal the datum (a pair of vertex indices).
+        bytes.extend_from_slice(&[0; 4]);
+        bytes.extend_from_slice(&shad.0.to_le_bytes());
+        // The same datum laid out as a reference: its group, then the datum.
+        bytes.extend_from_slice(&u32::from_le_bytes(*b"shad").to_le_bytes());
+        bytes.extend_from_slice(&shad.0.to_le_bytes());
+        let b = Block::new(bytes);
+        assert_eq!(datum_words(&b, None, &set, false), vec![12]);
+        // In the scenario's tree every word may be a datum.
+        assert_eq!(datum_words(&b, None, &set, true), vec![0, 4, 8, 12]);
     }
 }

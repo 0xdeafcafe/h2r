@@ -398,6 +398,12 @@ fn every_fresh_map(
             let fresh = p
                 .build_fresh(&mut base, &mopp)
                 .unwrap_or_else(|e| panic!("{name} {sandbox:?}: {e}"));
+            // Built from scratch, not the pruned fallback.
+            assert!(
+                fresh.report.scratch.is_some(),
+                "{name} {sandbox:?}: not from scratch: {:?}",
+                fresh.report.scratch_failed
+            );
             each(name, sandbox, &p, &fresh);
         }
     }
