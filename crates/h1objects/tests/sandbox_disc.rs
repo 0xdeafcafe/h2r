@@ -502,18 +502,40 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
                 assert_eq!(sg, FourCC(*b"shad"));
                 let input = x[widget::INPUTS];
                 // A meter draws its copy with clear texels black.
+                // A static draws its copy with the colour's alpha.
                 let bitmap = if input != 0 {
                     bitmap.strip_suffix("_meter").unwrap_or_else(|| panic!("{name}: meter {bitmap}")).to_owned()
                 } else {
-                    bitmap
+                    bitmap.rsplit_once("_alpha_").map_or(bitmap.clone(), |(s, _)| s.to_owned())
                 };
                 assert!(h1_bitmaps.contains(&bitmap), "{name}: {bitmap} is Halo 1's");
+                // Colour 0 draws nothing in Halo 1 (h1hud::static_alpha).
+                assert!(!bitmap.ends_with("hud_ammo_alphas"), "{name}: a colour-0 static");
                 assert!([0, 0x31, 0x36, 0x38].contains(&input), "{name}: input {input}");
                 if x[widget::ANCHOR] == h1hud::Anchor::Centre as u8 {
                     centred += 1;
                 }
             }
-            eprintln!("{wname}: {name}, {n} widgets, {centred} centred");
+            // Its count: a number text on Halo 2's reserve or battery
+            // input (h1hud::weapon_number_input), reading hud_input1
+            // through text_flash.
+            let texts = w(&root, h1hud::NHDT_TEXT_WIDGETS) as usize;
+            let tb = match texts {
+                0 => Vec::new(),
+                _ => bytes(w(&root, h1hud::NHDT_TEXT_WIDGETS + 4), texts * h1hud::text::SIZE),
+            };
+            let mut counts = Vec::new();
+            for t in tb.as_chunks::<{ h1hud::text::SIZE }>().0 {
+                assert_eq!(w(t, h1hud::text::STRING), 0x0a00_05cf, "{name}: hud_input1");
+                assert_eq!(u16::from_le_bytes([t[h1hud::text::FLAGS], t[h1hud::text::FLAGS + 1]]), h1hud::TEXT_NUMBER);
+                let (sg, shader) = names[&TagId(w(t, h1hud::text::SHADER + 4))].clone();
+                assert_eq!((sg, shader.as_str()), (FourCC(*b"shad"), h1hud::TEXT_SHADER));
+                counts.push(t[h1hud::text::INPUTS]);
+            }
+            if !wname.contains("flamethrower") && !wname.starts_with("vehicles") {
+                assert!(counts == [0x33] || counts == [0x32], "{name}: counts {counts:x?}");
+            }
+            eprintln!("{wname}: {name}, {n} widgets, {centred} centred, counts {counts:x?}");
             weapons += 1;
         }
         assert!(weapons >= 5, "{weapons} Halo 1 weapons with Halo 1 HUDs");
