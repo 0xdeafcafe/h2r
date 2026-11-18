@@ -16,7 +16,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
 const USAGE: &str = "usage: h2-editor [--disc <iso> | --map <file.map> | --folder <maps dir>] \
-[--halo1 <iso|maps dir>] [--data <dir>] [--package <dir>[#H1|#H2]] [--halo1-map <map> [--convert h2|h1]] [--overlay on|off] [--tool scenario|tags|variants|playlists|ui-screens] [--tag <group>:<path>] [--ui-screen <screen>/<state> [--ui-press up,a,...]] [--pick <map>] [--select <block>:<index>] [--hopper <file.dat>|default] \
+[--halo1 <iso|maps dir>] [--mappack <iso|folder>] [--data <dir>] [--package <dir>[#H1|#H2]] [--halo1-map <map> [--convert h2|h1]] [--overlay on|off] [--tool scenario|tags|variants|playlists|ui-screens] [--tag <group>:<path>] [--ui-screen <screen>/<state> [--ui-press up,a,...]] [--pick <map>] [--select <block>:<index>] [--hopper <file.dat>|default] \
 [--variant <built-in index>] [--copy-variant <name>] [--playlist <1..16>] [--preset <n>] \
 [--focus] [--camera <yaw>,<pitch>,<distance>] [--dialog unsaved|package] \
 [--no-disc] [--nudge <x>,<y>,<z>] [--page <variant settings page>] [--screenshot <out.png> [--size <w>x<h>] [--scale <s>] [--do <steps>] \
@@ -28,6 +28,8 @@ type <text>, key <name>[*n], wait <frames>, sleep <ms>, wheel <dy>. A target: x,
 struct Args {
     source: Option<PathBuf>,
     halo1: Option<PathBuf>,
+    /// The Halo 2 Map Pack (`--mappack`), else found beside the disc.
+    mappack: Option<PathBuf>,
     halo1_map: Option<String>,
     /// Convert the shown Halo 1 map (waiting for it) and open the result.
     convert: Option<studio::app::ConvertSandbox>,
@@ -71,6 +73,7 @@ fn args() -> Result<Args> {
     let mut a = Args {
         source: None,
         halo1: None,
+        mappack: None,
         halo1_map: None,
         convert: None,
         overlay: None,
@@ -112,6 +115,7 @@ fn args() -> Result<Args> {
             "--disc" | "--map" | "--folder" => a.source = Some(value()?.into()),
             "--data" => a.data = Some(value()?.into()),
             "--halo1" => a.halo1 = Some(value()?.into()),
+            "--mappack" => a.mappack = Some(value()?.into()),
             "--halo1-map" => a.halo1_map = Some(value()?),
             "--convert" => {
                 a.convert = Some(match value()?.as_str() {
@@ -256,7 +260,15 @@ fn main() -> Result<()> {
     }
     app.refresh_packages();
     let disc = editor_core::default_disc(args.source.clone()).filter(|_| !args.no_disc);
+    // The Map Pack: --mappack, else $H2_MAPPACK_ISO, else mappack.iso beside
+    // the disc just found, else disc/mappack.iso. Opened after the disc, so
+    // its maps resolve their shared caches from it.
+    let mappack = editor_core::mappack::default_source(args.mappack.clone(), disc.as_deref())
+        .filter(|_| !args.no_disc);
     if let Some(src) = disc {
+        app.dispatch(Action::OpenSource(src));
+    }
+    if let Some(src) = mappack {
         app.dispatch(Action::OpenSource(src));
     }
     // Halo 1 maps: --halo1, else $H1_ISO, $H1_MAP_DIR or disc/halo1.iso.

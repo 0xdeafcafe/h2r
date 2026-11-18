@@ -322,6 +322,20 @@ impl Play {
                 .map_err(|e| format!("writing {}: {e}", out.display()))?;
             Some(dir)
         };
+        // A Map Pack map plays from the editor's bytes (the map override) on
+        // the Halo 2 disc. `h2 play` installs the map pack itself from beside
+        // that disc (`mappack.iso`); say so when this one is elsewhere.
+        if app.is_mappack_map(&level)
+            && let Some(pack) = app.mappack().map(|p| p.path().to_owned())
+        {
+            let found = editor_core::mappack::beside(&disc);
+            if !found.is_some_and(|f| matches!((f.canonicalize(), pack.canonicalize()), (Ok(a), Ok(b)) if a == b)) {
+                app.info(format!(
+                    "Play: {level} is a Map Pack map and {} is not beside the disc, so h2 play will not install the map pack; it plays from the editor's copy. Put the pack beside the disc as mappack.iso to install it as well",
+                    pack.display()
+                ));
+            }
+        }
         self.launches += 1;
         let socket = launch::socket_for_launch(self.launches);
         if let Some(d) = socket.parent() {
