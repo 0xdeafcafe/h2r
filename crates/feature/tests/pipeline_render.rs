@@ -989,15 +989,76 @@ fn a_watched_word_reports_each_change_once() {
     let n = rounds();
     let mut watched = rig_full(true, &[], ADDRS.clone(), &[INPUT]);
     let mut plain = rig(true);
+    // Switched off, the watch still runs at each frame.
+    let mut off = rig_full(false, &[], ADDRS.clone(), &[INPUT]);
     for k in 1..=n {
         watched.round(k, false);
         plain.round(k, false);
+        off.round(k, false);
     }
     watched.finish();
     plain.finish();
+    off.finish();
     assert_eq!(watched.feature.stats().pipelined, u64::from(n));
-    // Seen first at round 1's frame; each later round changed it once.
-    assert_eq!(watched.feature.watch_lines(), n - 1);
+    // The first value at round 1's frame, then each later round's change.
+    assert_eq!(watched.feature.watch_lines(), n);
+    assert_eq!(off.feature.watch_lines(), n);
+    assert_eq!(off.feature.stats().pipelined, 0);
     assert_eq!(plain.feature.watch_lines(), 0);
     compare(&plain.data(), &watched.data());
+}
+
+/// While a render is in flight the game maps a fresh page, writes it, and
+/// makes the read-only page writable and writes that: the join (a completed
+/// render, a fallback, a serviced call's flush) and the next launch keep
+/// the live mappings, protections and bytes; the render never touches them.
+#[test]
+fn mappings_the_game_makes_while_a_render_is_in_flight_survive_the_join() {
+    const FRESH: u32 = 0x5_0000;
+    for (mode, serviced) in [(0, false), (1, false), (1, true)] {
+        let mut r = if serviced {
+            rig_with(true, &["KeQuerySystemTime"])
+        } else {
+            rig(true)
+        };
+        r.round(1, mode == 1);
+        assert!(r.feature.in_flight());
+        {
+            let mut m = r.rt.memory();
+            m.map_zeroed(FRESH, 0x1000, Permissions::RW).unwrap();
+            m.set_u32(FRESH + 0x10, 0x1234_5678).unwrap();
+            m.protect(PROTECTED, Permissions::RW).unwrap();
+            m.set_u8(PROTECTED + 0x20, 0x5a).unwrap();
+        }
+        for k in 2..=4 {
+            r.round(k, mode == 1);
+            let m = r.rt.memory();
+            assert_eq!(
+                m.u32(FRESH + 0x10).unwrap(),
+                0x1234_5678,
+                "mode {mode} round {k}"
+            );
+            assert_eq!(
+                m.u8(PROTECTED + 0x20).unwrap(),
+                0x5a,
+                "mode {mode} round {k}"
+            );
+        }
+        r.finish();
+        let mut m = r.rt.memory();
+        assert_eq!(m.u32(FRESH + 0x10).unwrap(), 0x1234_5678, "mode {mode}");
+        m.set_u8(PROTECTED + 0x21, 1).expect("still writable");
+        assert!(
+            m.mappings().iter().any(|p| p.virtual_start <= FRESH
+                && u64::from(FRESH) < u64::from(p.virtual_start) + u64::from(p.len)),
+            "mode {mode}: the fresh page is still mapped"
+        );
+        let s = r.feature.stats();
+        assert!(s.pipelined >= 4, "mode {mode}: {s:?}");
+        if serviced {
+            assert!(!s.serviced.is_empty(), "{s:?}");
+        } else if mode == 1 {
+            assert!(!s.fallbacks.is_empty(), "{s:?}");
+        }
+    }
 }

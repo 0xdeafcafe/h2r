@@ -931,9 +931,15 @@ dump whose return address is a continuation token (`0xb...`) and whose
 arguments point into the render stack (in the feature arena) is a
 serviced call, so it is also a sign of pipelined frames.
 
-**Watching words** (`H2_PIPELINE_WATCH=0x485a80,0x4e034c`). Every change
-to a listed guest word prints `pipeline: watch <addr> <old> -> <new>
-after <step>`, at most 200 lines. A step says who changed it: `the game
+**Watching words** (`H2_PIPELINE_WATCH=0x485a80,0x4e034c`). The first
+sight of each listed guest word prints `pipeline: watch <addr> = <value>
+(its page mapped|unmapped) first seen after <step>`, and every change of
+the value, or of whether the page it points at is mapped, prints
+`pipeline: watch <addr> <old> -> <new> after <step>`; at most 200 lines.
+With `H2_PIPELINE_RENDER` unset the watch still runs, at each
+`render_frame_and_present` entry (`the game thread ran (pipelining off)`),
+and nothing else of the feature is installed (no render stack in the
+arena): the run to compare with. A step says who changed it: `the game
 thread ran (at a frame / before the hand-back / before a service)` is the
 game or another guest thread; `a serviced kernel call` is the kernel
 call; `the frame wait and the launch` covers the launch's counter writes;
