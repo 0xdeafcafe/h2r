@@ -132,9 +132,65 @@ pub(crate) struct AccessTrap {
     guest_write: Box<[AtomicU64]>,
     log: Mutex<Log>,
     cap: usize,
+    /// Words whose writes are always printed and kept
+    /// ([`crate::Guest::set_trap_focus`]), and those writes.
+    focus: Mutex<Vec<u32>>,
+    focus_hits: Mutex<Vec<(u32, u32, TrapHit)>>,
 }
 
+/// Focus writes kept (the first ones; later ones are still printed).
+const FOCUS_KEEP: usize = 4096;
+/// Focus writes printed.
+const FOCUS_PRINT: usize = 400;
+
 impl AccessTrap {
+    pub(crate) fn set_focus(&self, words: &[u32]) {
+        *self.focus.lock().unwrap_or_else(|e| e.into_inner()) = words.to_vec();
+    }
+    /// The focus words `[addr, addr + len)` overlaps.
+    pub(crate) fn focus_overlaps(&self, addr: u32, len: usize) -> Vec<u32> {
+        let focus = self.focus.lock().unwrap_or_else(|e| e.into_inner());
+        let (a, b) = (addr as u64, addr as u64 + len as u64);
+        focus
+            .iter()
+            .copied()
+            .filter(|&w| (w as u64) < b && a < w as u64 + 4)
+            .collect()
+    }
+    /// A write over focus word `word`, which now holds `value`.
+    pub(crate) fn focus_hit(&self, word: u32, value: u32, pc: u32, addr: u32, len: usize) {
+        let hit = TrapHit {
+            addr,
+            len: len as u32,
+            write: true,
+            pc,
+            phase: timeline::phase::current().map_or(u8::MAX, |p| p as u8),
+            thread: timeline::phase::running_guest_thread().unwrap_or(NO_THREAD),
+            hle: if pc == 0 { HLE_NOW.with(Cell::get) } else { 0 },
+        };
+        let mut hits = self.focus_hits.lock().unwrap_or_else(|e| e.into_inner());
+        if hits.len() < FOCUS_PRINT {
+            eprintln!(
+                "trap: focus {word:#010x} = {value:#010x} written by pc {pc:#010x} ({addr:#010x}+{len}, thread {}, hle {:#010x}, host thread {:?})",
+                if hit.thread == NO_THREAD {
+                    "?".to_string()
+                } else {
+                    hit.thread.to_string()
+                },
+                hit.hle,
+                std::thread::current().name().unwrap_or("?"),
+            );
+        }
+        if hits.len() < FOCUS_KEEP {
+            hits.push((word, value, hit));
+        }
+    }
+    pub(crate) fn focus_hits(&self) -> Vec<(u32, u32, TrapHit)> {
+        self.focus_hits
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
     pub(crate) fn new(cap: usize) -> Self {
         Self {
             read: bits(),
@@ -146,6 +202,8 @@ impl AccessTrap {
             guest_write: bits(),
             log: Mutex::new(Log::default()),
             cap,
+            focus: Mutex::new(Vec::new()),
+            focus_hits: Mutex::new(Vec::new()),
         }
     }
     pub(crate) fn arm(&self, page: usize, read: bool, write: bool) {
@@ -616,5 +674,38 @@ mod tests {
         let log = g.take_trap_hits();
         assert_eq!((log.hits.len(), log.dropped), (2, 2));
         assert_eq!(g.take_trap_hits(), TrapLog::default());
+    }
+
+    /// A focus word: every write over it, from guest code or the host, is
+    /// kept with the value it left and the writer's pc, however often the
+    /// page is written; writes beside it are not, and the page stays on
+    /// the slow path.
+    #[test]
+    fn focus_words_keep_every_write_over_them_with_its_pc() {
+        let mut g = guest();
+        let word = RW + 0x1a80;
+        g.set_trap_focus(&[word]);
+        assert_eq!(fast(&mut g, word) & 3, 0, "the page leaves the fast path");
+        g.write_bytes_from(0x1958, word, &0x804d_9f58u32.to_le_bytes(), 4)
+            .unwrap();
+        g.write_bytes_from(0x2000, word + 8, &[1; 4], 4).unwrap();
+        g.write_bytes_from(0x2daa, word - 2, &[0xa8, 0x19, 0xdc, 0xfb, 0, 0], 1)
+            .unwrap();
+        g.set_u32(word, 7).unwrap();
+        g.write_bytes_from(0x3000, word - 4, &[2; 4], 4).unwrap();
+        let got: Vec<(u32, u32, u32)> = g
+            .focus_hits()
+            .iter()
+            .map(|&(w, v, h)| (w, v, h.pc))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (word, 0x804d_9f58, 0x1958),
+                (word, 0x0000_fbdc, 0x2daa),
+                (word, 7, 0),
+            ]
+        );
+        assert_eq!(fast(&mut g, word) & 3, 0, "still on the slow path");
     }
 }

@@ -1006,6 +1006,21 @@ fn a_watched_word_reports_each_change_once() {
     assert_eq!(off.feature.stats().pipelined, 0);
     assert_eq!(plain.feature.watch_lines(), 0);
     compare(&plain.data(), &watched.data());
+    // Each write over the word after the first frame, as it happened: the
+    // sim's (rounds 2..=n, the host here: pc 0) with the value it wrote.
+    for r in [&watched, &off] {
+        let hits = r.rt.memory().focus_hits();
+        let values: Vec<u32> = hits
+            .iter()
+            .map(|&(w, v, _)| {
+                assert_eq!(w, INPUT);
+                v
+            })
+            .collect();
+        assert_eq!(values, (2..=n).collect::<Vec<_>>());
+        assert!(hits.iter().all(|(_, _, h)| h.write && h.pc == 0));
+    }
+    assert!(plain.rt.memory().focus_hits().is_empty());
 }
 
 /// While a render is in flight the game maps a fresh page, writes it, and
