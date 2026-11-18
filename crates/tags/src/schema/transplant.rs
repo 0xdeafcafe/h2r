@@ -469,6 +469,71 @@ impl<'s> Unpinner<'s> {
         same.error.map_or(Ok(()), Err)
     }
 
+    /// Rehome the source blocks of a tag a conversion built from a source
+    /// tag's bytes (a template copied, some fields replaced): every block
+    /// field of `count` elements of `s` in `block` that still holds a raw
+    /// address into the source metadata, not a fixup, becomes a depth-first
+    /// tree of what it points at, local raw copied. Fixup children are
+    /// walked the same way. Words that are no metadata address stay.
+    /// Returns the fields rehomed and, as `(offset, address)`, the ones
+    /// that point into the metadata but whose subtree the schema refuses
+    /// (left as they are).
+    pub fn rehome<R: Read + Seek>(
+        &mut self,
+        s: &super::Struct,
+        block: &mut map::build::Block,
+        count: u32,
+        src: &mut Map<R>,
+        dst: &mut TagSet,
+    ) -> crate::Result<(usize, Vec<(u32, u32)>)> {
+        use map::build::FixupKind;
+        let mut done = 0;
+        let mut refused = Vec::new();
+        for i in 0..count {
+            for (&o, f) in &s.fields {
+                let Field::Block(child) = f else { continue };
+                let off = i * s.size + o;
+                if off as usize + 8 > block.bytes.len() {
+                    continue;
+                }
+                if let Some(fx) = block.fixups.iter_mut().find(|x| x.offset == off) {
+                    if let FixupKind::Block { count, child: sub } = &mut fx.kind {
+                        let (n, r) = self.rehome(child, sub, *count, src, dst)?;
+                        done += n;
+                        refused.extend(r);
+                    }
+                    continue;
+                }
+                let c = super::u32_at(&block.bytes, off as usize);
+                let a = super::u32_at(&block.bytes, off as usize + 4);
+                if c == 0 || a == 0 || self.rel.memory.region(a).is_none() {
+                    continue;
+                }
+                if super::check_subtree(child, a, c, (0, 0), &self.rel.memory, &mut vec![off])
+                    .is_err()
+                {
+                    refused.push((off, a));
+                    continue;
+                }
+                let cx = super::TreeCtx {
+                    mem: &self.rel.memory,
+                    salt: self.rel.salt,
+                    own: (0, 0),
+                    stays: &|_| false,
+                };
+                let mut sub = super::tree(child, &cx, a, c);
+                self.localise(child, &mut sub, c, src, dst)?;
+                if child.size == 1 && child.fields.is_empty() {
+                    block.fixup(off, FixupKind::Data(sub));
+                } else {
+                    block.block(off, c, sub);
+                }
+                done += 1;
+            }
+        }
+        Ok((done, refused))
+    }
+
     /// Make every tag of `ids` built, in its own slot of `dst`: a
     /// depth-first tree ([`Relocator::to_built`]) with local raw copied, or
     /// an alias when it has no bytes of its own. Checks every tag first;

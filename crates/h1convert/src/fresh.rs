@@ -54,6 +54,13 @@ pub struct FreshReport {
     /// `scnr` root block fields the converted scenario fills but the
     /// schema cannot copy (left empty), with why.
     pub scenario_skipped: Vec<(u32, String)>,
+    /// Block fields of built tags (converted on a template) that held the
+    /// template's addresses, copied as trees ([`Unpinner::rehome`]):
+    /// `group name: fields`.
+    pub rehomed: Vec<String>,
+    /// Of those, the ones the schema refused, left pointing at nothing:
+    /// `group name +offset -> address`.
+    pub stale: Vec<String>,
     /// Sound gestalt chunks whose raw data was copied.
     pub sound_chunks: usize,
     /// Bytes of the low-detail bitmap region copied.
@@ -200,6 +207,34 @@ pub fn unpin_all<R: Read + Seek>(
             )));
         }
     };
+    // Tags the conversion built on a template (the Halo 1 sandbox's
+    // objects) keep the template's blocks by address: the pinned map's,
+    // which a fresh map does not have.
+    for slot in &pinned.slots {
+        let Some(t) = &slot.tag else { continue };
+        if t.group == ugh || t.id == pinned.scenario {
+            continue;
+        }
+        let (TagPayload::Built(_), Some(root)) = (&t.payload, schema.groups.get(&t.group)) else {
+            continue;
+        };
+        let Some(TagPayload::Built(block)) = fresh.tag_mut(t.id).map(|t| &mut t.payload) else {
+            continue;
+        };
+        let mut block = std::mem::replace(block, map::build::Block::zeroed(0));
+        let got = u.rehome(root, &mut block, 1, src, fresh);
+        fresh.tag_mut(t.id).expect("in the set").payload = TagPayload::Built(block);
+        let (n, refused) = got.map_err(tags_error)?;
+        let name = slot.name.as_deref().unwrap_or("");
+        if n > 0 {
+            report.rehomed.push(format!("{} {name}: {n}", t.group));
+        }
+        report.stale.extend(
+            refused
+                .into_iter()
+                .map(|(o, a)| format!("{} {name} +{o:#x} -> {a:#x}", t.group)),
+        );
+    }
     if let Some((id, g)) = gestalt {
         report.sound_chunks = sound_gestalt(&mut u, src, fresh, id, g)?;
         report.unpinned += 1;

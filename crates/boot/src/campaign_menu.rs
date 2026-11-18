@@ -145,13 +145,19 @@ fn ensure(c: &mut Call, state: &State) {
     }
     let rt = Arc::clone(c.ctx.runtime());
     let mut mem = rt.memory();
-    match campaigns::extend(
+    let cards = state
+        .cards
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    match campaigns::extend_with_cards(
         &mut *mem,
         &state.built,
         &Region {
             base,
             len: Region::LEN,
         },
+        &cards,
     ) {
         Ok(r) if r.already || r.no_lists => {}
         Ok(r) => eprintln!("{}", r.line()),
@@ -354,6 +360,7 @@ mod tests {
             built: cl::build(&ms, &[1], &[0x65]).unwrap(),
             selection: Selection::default(),
             progress: Progress::memory(),
+            cards: Default::default(),
         }
     }
 

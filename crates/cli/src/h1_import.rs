@@ -41,7 +41,7 @@ use crate::safe_out::OutDir;
 /// use) changes the maps they write**: every import stamped with an older
 /// version is converted again at the next `h2 play`, so `--follow` users
 /// get the new maps after the merge.
-pub const CONVERTER_VERSION: u32 = 27;
+pub const CONVERTER_VERSION: u32 = 28;
 
 /// The stamp's file, in `<data>/campaigns/halo1/`.
 pub const STAMP_FILE: &str = "import.stamp";
@@ -365,6 +365,21 @@ impl Converter for DiscConverter {
                 let done = h1campaign::convert(&h1, &mut base, &opts)?;
                 let dir = campaign_dir(&self.data);
                 h1_cmd::write_campaign_level(&self.out(dir.clone())?, &dir, level, &done.bytes)?;
+                // Its picture for the level select (boot::campaign_cards).
+                if self.card_ui.is_none() {
+                    self.card_ui = Some(self.read("ui").ok().map(|(_, m)| m));
+                }
+                let card = self
+                    .card_ui
+                    .as_ref()
+                    .and_then(|ui| ui.as_ref())
+                    .and_then(|ui| h1convert::ui::campaign_card(ui, level).ok().flatten());
+                if let Some(c) = card {
+                    let mut png = Vec::new();
+                    assets::png::write_rgba(&mut png, c.width, c.height, &c.rgba)?;
+                    let name = format!("{}.png", level.to_ascii_lowercase());
+                    self.out(dir.clone())?.write(&[boot::campaign_cards::CARDS_DIR.to_owned(), name], &png)?;
+                }
             }
             Job::Multiplayer(name, sandbox) => {
                 let (file, h1) = self.read(name)?;

@@ -28,6 +28,53 @@ pub trait Rewrite: Send {
     fn skipped(&mut self, _path: &str) {}
 }
 
+/// No rewrite: wants nothing.
+impl<R: Rewrite> Rewrite for Option<R> {
+    fn wants(&self, path: &str) -> bool {
+        self.as_ref().is_some_and(|r| r.wants(path))
+    }
+    fn rewrite(&mut self, path: &str, original: &[u8]) -> Option<Vec<u8>> {
+        self.as_mut()?.rewrite(path, original)
+    }
+    fn skipped(&mut self, path: &str) {
+        if let Some(r) = self {
+            r.skipped(path)
+        }
+    }
+}
+
+/// Two rewrites, the first's output the second's input. A file either
+/// wants is rewritten; one neither changes is served unchanged.
+pub struct Chain<A, B>(pub A, pub B);
+
+impl<A: Rewrite, B: Rewrite> Rewrite for Chain<A, B> {
+    fn wants(&self, path: &str) -> bool {
+        self.0.wants(path) || self.1.wants(path)
+    }
+    fn rewrite(&mut self, path: &str, original: &[u8]) -> Option<Vec<u8>> {
+        let first = if self.0.wants(path) {
+            self.0.rewrite(path, original)
+        } else {
+            None
+        };
+        let input = first.as_deref().unwrap_or(original);
+        let second = if self.1.wants(path) {
+            self.1.rewrite(path, input)
+        } else {
+            None
+        };
+        second.or(first)
+    }
+    fn skipped(&mut self, path: &str) {
+        if self.0.wants(path) {
+            self.0.skipped(path);
+        }
+        if self.1.wants(path) {
+            self.1.skipped(path);
+        }
+    }
+}
+
 pub struct RewriteBackend<B, R> {
     inner: B,
     rewrite: R,
@@ -363,5 +410,52 @@ mod tests {
             );
         }
         assert_eq!(large.rewrite.0, 1);
+    }
+
+    /// Appends `!` to files under `other`.
+    struct Bang;
+    impl Rewrite for Bang {
+        fn wants(&self, path: &str) -> bool {
+            path.to_ascii_lowercase().starts_with("other")
+        }
+        fn rewrite(&mut self, _path: &str, original: &[u8]) -> Option<Vec<u8>> {
+            Some([original, b"!"].concat())
+        }
+    }
+
+    #[test]
+    fn a_chain_rewrites_what_either_wants_one_after_the_other() {
+        let files = vec![
+            ("fonts\\a", b"ab".to_vec()),
+            ("fonts\\no", b"!keep".to_vec()),
+            ("other", b"xyz".to_vec()),
+            ("rest", b"r".to_vec()),
+        ];
+        let mut b = RewriteBackend::new(
+            Mem { files, reads: 0 },
+            Chain(Some(Double(0)), Chain(None::<Double>, Bang)),
+        );
+        assert_eq!(read_all(&mut b, "fonts\\a"), b"abab");
+        assert_eq!(read_all(&mut b, "other"), b"xyz!");
+        assert_eq!(read_all(&mut b, "fonts\\no"), b"!keep", "declined by both");
+        assert_eq!(read_all(&mut b, "rest"), b"r");
+        assert!(!b.rewrite.wants("rest"));
+        assert_eq!(b.rewrite.0.as_ref().unwrap().0, 2);
+
+        // Both want it: the second sees the first's output.
+        struct Both;
+        impl Rewrite for Both {
+            fn wants(&self, _: &str) -> bool {
+                true
+            }
+            fn rewrite(&mut self, _: &str, original: &[u8]) -> Option<Vec<u8>> {
+                Some([original, b"+"].concat())
+            }
+        }
+        let mut c = Chain(Both, Bang);
+        assert_eq!(c.rewrite("other", b"o").unwrap(), b"o+!");
+        // The second declining keeps the first's.
+        let mut d = Chain(Both, None::<Bang>);
+        assert_eq!(d.rewrite("other", b"o").unwrap(), b"o+");
     }
 }

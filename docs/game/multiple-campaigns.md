@@ -146,7 +146,7 @@ picture = "01b_spacestation"  # optional: a Halo 2 level whose picture it shows
 ```
 
 `campaign_list::HALO1` is Halo 1's: a10, a30, a50, b30, b40, c10, c20,
-c40, d20, d40 with their names (no pictures yet). `campaign_list::FIXTURE`
+c40, d20, d40 with their names; their pictures are Halo 1's own ("Pictures", below). `campaign_list::FIXTURE`
 is a **test campaign** of three retail Halo 2 levels (Outskirts, Delta
 Halo, Gravemind, named "(2)", each with its own picture), so the picker
 can be seen before any converted map exists. At boot
@@ -176,6 +176,45 @@ tag back from the file); it does nothing when the lists already hold our
 first campaign, and nothing when the loaded map has no list. A campaign
 level's own globals have a start list too, which the next-level lookup
 reads after a level is won; the hook there extends it the same way.
+
+### Pictures (`campaign_cards`)
+
+The level select's pictures are mainmenu's
+`ui\code_global_bitmaps\campaign0` to `campaign19`, one per list slot: 220x207 linear `ARGB8888`
+(rows padded to 896 bytes, LOD `0x2d480`). The last five belong to the
+free slots, so they are not reused.
+
+- **At import**, `h2 import halo1` writes each level's Halo 1 picture as
+  `<data>/campaigns/halo1/cards/<level>.png`. The picture is the top-left
+  139x113 of its `ui\shell\bitmaps\sp_levels` image
+  (`h1convert::ui::campaign_card`).
+- **At boot**, `campaign_cards::CardRewrite` reads the cards of the
+  levels listed.
+- **When the VFS first serves `maps\mainmenu.map`**, CardRewrite adds one
+  `bitm` per card. It is a `vfs::Rewrite`, chained after the button
+  icons' font rewrite (`vfs::Chain`).
+  - The disc's map is decomposed with every tag where it was
+    (`TagSet::from_map`), and the index is given room for more tags.
+  - Each card is scaled to cover 220x207: centred, the overflow cropped,
+    bilinear.
+  - Each card becomes a bitmap shaped like `campaign0`
+    (`tags::rgba_bitmap`): its header and image record copied, then its
+    own pixels as a new raw resource, its own datum, and cache handles
+    `-1`. The tag is named `ui\code_global_bitmaps\<key>_<level>`.
+  - Tag memory grows one page, from `0x1d3000` to `0x1d4000`. That is
+    past the builder's main-menu bound, which is only the largest retail
+    main menu (map-format.md: no loader constant, the arena limits it, and
+    the arena holds a campaign map's `0xc24000`). So the bound is lifted
+    for this rebuild.
+  - The map is built again with a fresh checksum. The header checksum's
+    one reader is the cache copy's compare (`0x214618`), and it passes.
+  - The datums go into `State::cards`.
+- `campaigns::extend_with_cards` gives a level with a card that picture,
+  ahead of its `picture` level's.
+- Retail tags keep their bytes and addresses. On the user's disc the map
+  stays under the rewrite's 64 MiB limit (the boot disc test). If the
+  rewrite fails, mainmenu is served as it is and levels keep the pictures
+  they had.
 
 ### Hooks (`campaign_menu::Campaigns`, feature `campaigns`)
 
@@ -261,6 +300,21 @@ reads the multiplayer list, which campaign ids never reach.
   installed campaigns and the reasons others aren't; the picker's rows.
   Each extension is checked through transcriptions of the game's readers
   (`0x19c270`, `0x19c6d0` with its 20-entry limit, `0x19c440`, `0x19c1f0`).
+- `tags` `rgba_bitmap::tests` (3): BGRA rows padded to 64 bytes and the
+  LOD to 128 (220x207 gives the retail `0x2d480`); a new bitmap takes the
+  template's shape and its own pixels on a decomposed map, the template
+  untouched; a bad template refused.
+- `boot` `campaign_cards::tests` (4, and 1 ignored): cover scaling; cards
+  into a mainmenu-shaped map with every retail tag's bytes kept; the
+  rewrite wants mainmenu only and fills the table; cards read per
+  campaign folder. The ignored test, `the_disc_s_mainmenu_takes_ten_cards`,
+  puts ten cards into the disc's mainmenu: every retail tag is unchanged,
+  each card is a 220x207 `0x2d480`-byte LOD holding the scaled pixels,
+  the checksum is good, tag memory grows by at most two pages (it grows
+  by one), and the map is under 64 MiB (61.6 MB). The rebuild takes 31 ms.
+  `H2_DISC=disc/halo2.iso cargo test -p boot --lib campaign_cards --
+  --ignored`.
+- `vfs` `rewrite::tests::a_chain_rewrites_what_either_wants_one_after_the_other`.
 - `vfs` `campaign_maps::tests` (2): a map the disc lacks is served from
   its campaign folder (stat, read, listing, host file, `MapId`); the
   disc's own map is never shadowed; a missing host file stays missing.
@@ -323,8 +377,11 @@ starts and chains levels from records it was never shipped with.
 - Where a level ends the campaign: Halo 2's last level is followed by the
   credits through scripts; a campaign's last level (no next id) returns to
   the menu as `0x163610` returns 0. Unchecked in a run.
-- Whether the free slots' own pictures are blank placeholders or images
-  (they render as whatever the slot's bitmap holds); Halo 1 levels need
-  their own art from the Halo 1 disc at import time.
+- Whether the free slots' own pictures are blank placeholders or images.
+  Halo 1's levels no longer use them ("Pictures").
+- Whether the engine accepts mainmenu with its index tail cleared and one
+  page more tag memory than retail's. The
+  converted maps already do (h1-sounds.md, "Open questions"). Only a run
+  can show the pictures.
 - The campaign record's name: campaign 1 has none on the user's disc; we
   fill ours, and nothing is known to read them.
