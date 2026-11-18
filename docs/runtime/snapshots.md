@@ -1,12 +1,15 @@
 # Machine snapshots (design)
 
-Status: phases 1 and 2 built. Phase 1 ([below](#phase-1-what-was-built)):
-the file format, the guest RAM page codec, the store, the guest layout and
-RAM restore, and the time-stamp counter, in `crates/snapshot` and
-`crates/runtime`, with the input tap's resume in `crates/xapi`. Phase 2
-([below](#phase-2-the-quiescence-probe)): `Machine::quiescent`, per-feature
-snapshot policies and the opt-in `H2_SNAPSHOT_PROBE`. Nothing saves or
-loads a running game yet. Everything after phase 2 on this page is design.
+Status: phases 1 and 2 built, phase 3 partly. Phase 1
+([below](#phase-1-what-was-built)): the file format, the guest RAM page
+codec, the store, the guest layout and RAM restore, and the time-stamp
+counter, in `crates/snapshot` and `crates/runtime`, with the input tap's
+resume in `crates/xapi`. Phase 2 ([below](#phase-2-the-quiescence-probe)):
+`Machine::quiescent`, per-feature snapshot policies and the opt-in
+`H2_SNAPSHOT_PROBE`. Phase 3 ([below](#phase-3-what-was-built)): the
+kernel's `Core`, the machine's threads and their continuation pools, and
+the VFS's read-only open files. Nothing saves or loads a running game yet.
+Whatever is not marked built on this page is design.
 
 This is phase 5 of the [agent API](agent-api.md): `state.save {name}` and
 `state.load {name}`. A user plays to a heavy fight and saves; agents load
@@ -145,7 +148,7 @@ otherwise), **Ignore** (diagnostics). Sources are **Code** unless marked.
 | Preempt words | `Runtime::words` | Rebuild | Per-context wake hints, authoritative state is elsewhere. |
 | Per-context: CPU | `Thread::cpu: CpuAbi`, `cpu.rs` | Save | Canonical, host-independent by design ("versioned C types transport canonical state"). |
 | Per-context: stashed transfer | `ExecCtx::preempted` | Save | Plain `TransferAbi`. |
-| Per-context: continuations | `ExecCtx::continuations` | Quiesce | Rust closures. |
+| Per-context: continuations | `ExecCtx::continuations` | Quiesce | Rust closures. Rebuildable ones are saved: the whole pool's slot generations and reuse order too, since the tokens are on the guest stack. Built. |
 | Per-context: slice | `ExecCtx::slice` | Save (S) | Budget counters. Likely re-armed per slice, so empty at a boundary; check. |
 | Per-context: direct-call block, resolve cache, fast memory view | `direct.rs`, `ExecCtx::resolved`, `fast_memory` | Rebuild | Caches keyed by dispatch generation. A load makes fresh contexts. |
 | Per-context: shadow call stack, events | `frames.rs`, `events.rs` | Ignore | Diagnostics; "never affects control flow". |
@@ -161,7 +164,8 @@ otherwise), **Ignore** (diagnostics). Sources are **Code** unless marked.
 | Logical clock | `Core::clock: Clock`, `clock.rs` | Save | Already restorable: `Clock::resume(epoch, advances, charging)`. `work_carry` too. |
 | Timers and DPC queue | `Core::timers`, `dpcs` | Save | Records keyed by guest address. |
 | Periodic sources | `Core::periodic: Periodic`, `periodic.rs` | Save + Check | Schedule fields (`origin`, `next`, `owed`, `missed`, `queued`) are data; `handler` is a Rust closure registered at boot, matched by id and name. |
-| Files | `Core::files`, `file_handles`, `files.rs` | Save | Each kernel file handle maps to a `vfs::Handle`; re-opened through VFS on load (below). |
+| Files | `Core::files`, `file_handles`, `files.rs` | Save | Each kernel file handle maps to a `vfs::Handle`; re-opened through VFS on load (below). Built. |
+| Raw disk device | `rawdisk::RawDisk`, a VFS backend holding up to 2 MiB of written sectors (the cache database) in host memory | Save (not built) | Made fresh by `set_shared_vfs` at boot, so a load sees the boot's sectors, not the saved run's. |
 | Kernel memory allocator | `Core::memory: memory::Memory`, `memory.rs` | Save | Allocator bookkeeping over guest pages. |
 | Config, console, launch page, TLS template, KPCR, bridge | `Core::console`, `launch_page`, `tls`, `kpcr`, `bridge`, `data` | Check | Set by the boot. |
 | Deferred signals | `Kernel::deferred` | Quiesce | Drained every slice. |
@@ -171,8 +175,8 @@ otherwise), **Ignore** (diagnostics). Sources are **Code** unless marked.
 
 | State | Where | Decision | Why |
 |---|---|---|---|
-| Open files: path, mount, options, position, enumeration cursor, delete flag | `Vfs::objects: OpenFile`, `vfs/src/lib.rs` | Save | Re-open by path and seek on load, keeping `vfs::Handle` and kernel handle numbers. Read-only map and disc files are always safe. |
-| Share-mode sets, next handle | `Vfs::pending`, `cleanup_pending`, `next_handle` | Save | |
+| Open files: path, mount, options, position, enumeration cursor, delete flag | `Vfs::objects: OpenFile`, `vfs/src/lib.rs` | Save | Re-open by device and path on load, keeping `vfs::Handle` and kernel handle numbers. Read-only objects only: a save refuses while one is open for writing or deletion. Built. |
+| Delete-pending sets, next handle | `Vfs::pending`, `cleanup_pending`, `next_handle` | Save | `next_handle` built; a save refuses while a delete is pending. |
 | Host file descriptors, write-behind queue, reservations | `HostBackend`, `WriteBehind`, `vfs/src/host.rs`, `write_behind.rs` | Rebuild | Flush (`vfs::flush_pending_metadata`) before saving. |
 | Files on the host disk (saves, cache partitions) | the data root | Not in the snapshot (S) | A load after the game wrote a save or a cache file sees the newer file. Phase 3 either records the writable files' contents or refuses while one is open for writing. |
 | Map overrides | `MapOverrideBackend` | Rebuild | Opened at boot. |
@@ -262,8 +266,10 @@ boundary that passes the quiescence check:
    mappings and RAM in place (`Guest::restore_with`, which decodes straight
    into the guest's store). Built.
 4. Runtime: TSC (built). Kernel: `Core` whole, then the machine's threads
-   with fresh `ExecCtx`s carrying the saved CPU and stashed transfer.
-5. VFS: close every open object, re-open the saved ones by path, seek.
+   with fresh `ExecCtx`s carrying the saved CPU and continuation pool
+   (built).
+5. VFS: close every open object, re-open the saved ones by path, seek
+   (built, read-only objects).
 6. Devices: D3D bindings and GPU-model state, surfaces; dsound objects,
    mixer, WMA sessions, re-pinned events.
 7. XAPI handles, input tap cursor (resume replay, or continue recording),
@@ -348,8 +354,9 @@ None needs a game run until the last step of phase 5.
    which blockers were live. Tests: synthetic machines with a thread
    blocked in a guest callback, a queued interrupt, a DPC. The user's one
    run with the probe on in a fight answers the biggest unknown.
-3. **Kernel and machine.** Sections for `Core` and the machine's threads;
-   VFS re-open; xapi handles; tap cursor; feature statics. Tests: the
+3. **Kernel and machine.** Partly built (below): sections for `Core` and
+   the machine's threads; VFS re-open. Left: xapi handles; tap cursor
+   wiring; feature statics; the raw disk. Tests: the
    kernel crate's existing synthetic threads (`kernel/tests`): run a
    synthetic multi-threaded guest for N slices, snapshot, run M more and
    hash; load into a freshly booted machine, run M and compare hashes
@@ -530,6 +537,63 @@ aim assist, sign-in strings, kit screens, settings rows) and the host
 subsystems (d3d, dsound, xapi, bink, live, lockstep), which are phase 4.
 The D3D frame wait keeps Rust state across yields that no machine check
 sees, so `host d3d` stays a blocker until phase 4 audits it.
+
+## Phase 3: what was built
+
+Tests over synthetic machines (`kernel/tests/snapshot.rs`): three guest
+threads sharing an event, sleeping on different periods and reading a
+read-only VFS file at its position run N slices and are saved (RAM, TSC,
+`kcore`, `machine`); the original runs M more. A machine booted the same
+way loads the file and runs M; every slice's digest (mapped RAM, clock,
+CPUs, scheduled thread) matches, then whole RAM, schedule, clock, TSC and
+VFS state. One created thread returns from its start routine after the
+load, through its rebuilt continuation. Also: a snapshot loads twice into
+one machine; a machine booted with other data exports refuses it; a live
+closure continuation refuses the save.
+
+- `runtime`: `ContinuationLayout` (`ExecCtx::continuation_layout`,
+  `restore_continuations`): the pool as plain data, every slot's
+  generation and the reuse order, so tokens made after a load are the
+  saved run's. A live closure that is not rebuildable refuses the save; a
+  load with no rebuilder for an origin changes nothing.
+- `kernel::snapshot`: `Machine::save_snapshot` (refuses unless
+  `quiescent()`) and `load_snapshot`, sections `kcore` and `machine`, on
+  the snapshot crate's codec. A `Persist` trait; `persist_struct!`
+  destructures without `..`, and `save_core` destructures `Core` whole,
+  so a new field does not compile until it is given a decision. Saved:
+  every table in the inventory, the clock with its history and charging
+  bit, periodic schedules (put back onto the booted source of the same ID
+  and name, which keeps its Rust handler). Checked against the booted
+  machine: KPCR, export bridge, data exports, title ID, utility partition.
+  Kept from it: TLS template, console config, image sections, storage
+  handle, diagnostics. `Rebuilders` maps a continuation origin to a
+  factory; the kernel's thread return is built in.
+- `vfs::Vfs::state`/`restore_state`: open objects by device and path, with
+  handle numbers, options, position and search cursor (entries are read
+  again at load). Refuses while an object can write or delete, or a delete
+  is pending; a load looks every file up before it closes anything.
+- `boot::trace::rebuilder`: the kernel-call trace's return continuation,
+  the one blocker the Old Mombasa probe run found, for `Rebuilders`.
+
+Design changes from the plan above: the kernel depends on `crates/snapshot`
+for the codec. The machine's own scheduling state (`schedule`, `drained`,
+`dpc_stack_top`, `preemptions`) is saved; its config fields
+(`preempt_slice`, `max_transfers_per_slice`, `pacer`) stay the booted
+machine's. Per-context event logs are not saved (diagnostics; a quiescent
+resume transfer carries no event). Writable files are refused rather than
+recorded.
+
+Left for phase 3:
+
+- xapi: open pad handles and `next_handle`, device-change words, rebound
+  to ports through `InputManager::open` with their polling parameters; the
+  input crate's per-port packet numbers. Wire the tap cursor
+  (`Replayer::resume`) into the same section.
+- Feature sections for the statics set during play (`h1-health` must call
+  `set_mode` again from the loaded map; skulls; lockstep counters).
+- The raw disk's written sectors (inventory above).
+- A load into a running game drops the old contexts' fast-memory views and
+  direct-call blocks with them; untested outside synthetic machines.
 
 ## Related
 
