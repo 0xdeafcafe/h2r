@@ -253,6 +253,7 @@ fn start(sink: &mut ServerSink) -> String {
             },
             appearance: Appearance::default(),
             local_user: None,
+            controller: None,
             unit: u32::MAX,
             stats: PlayerStats::ZERO,
             machine: [0; 6],

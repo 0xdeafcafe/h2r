@@ -63,6 +63,10 @@ pub struct PlayerState {
     /// The local player slot (0..3) this player plays from, or `None` for a
     /// remote player.
     pub local_user: Option<u8>,
+    /// The controller port (0..3) a local player plays from (player
+    /// `+0x24`), or `None` for a remote player. A Clanker on a local slot
+    /// is known by its port (docs/game/bots.md §4.1).
+    pub controller: Option<u8>,
     /// The player's machine id (player `+0x14`): a phantom bot's is its
     /// own made-up one (docs/game/bots.md §5.1).
     pub machine: [u8; 6],

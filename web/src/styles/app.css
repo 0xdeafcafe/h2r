@@ -46,6 +46,8 @@ code { font-family: var(--font-mono); }
 .score-name { overflow: hidden; text-overflow: ellipsis; max-width: 130px; }
 .stats .score-name a { color: #fff; }
 .score-name small { color: #ccc; }
+/* A Clanker bot's mark beside its name (components/bits.tsx BotTag), sized like the LIVE tag. */
+.bot-tag { display: inline-block; margin-left: 4px; padding: 0 3px; font: bold 9px/13px var(--font-ui); letter-spacing: .04em; color: #dfe7f2; background: #33496a; vertical-align: 1px; }
 .score-score { font-weight: bold; }
 .team-head { display: flex; justify-content: space-between; align-items: center; padding: 0 6px 0 8px; font: bold 12px/24px var(--font-ui); color: #fff; background: color-mix(in srgb, var(--team-colour) 88%, #000); border-bottom: 1px solid #666; }
 .team-head strong { font-size: 14px; }

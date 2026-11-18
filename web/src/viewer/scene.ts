@@ -87,6 +87,8 @@ interface PlayerObj {
   gun: HTMLElement;
   colour: string;
   name: string;
+  /** A Clanker bot: its label carries a BOT mark. */
+  bot: boolean;
   /** The model in use and the glb it came from; null while it's a capsule. */
   biped: BipedInstance | null;
   bipedUrl: string | null;
@@ -1106,8 +1108,8 @@ export class ViewerScene {
 
   private player(index: number, info: RosterEntry | undefined, actor = false): PlayerObj {
     let p = this.players.get(index);
-    const colour = info?.colour ?? "#999", name = info?.name ?? `Player ${index + 1}`;
-    if (p && p.colour === colour && p.name === name) return p;
+    const colour = info?.colour ?? "#999", name = info?.name ?? `Player ${index + 1}`, bot = info?.bot === true;
+    if (p && p.colour === colour && p.name === name && p.bot === bot) return p;
     if (p) this.removePlayer(p);
     const c = new THREE.Color(colour);
     const body = new THREE.Mesh(this.geoBody, new THREE.MeshStandardMaterial({ color: c, roughness: 0.5, metalness: 0.1, emissive: c, emissiveIntensity: 0.18 }));
@@ -1125,7 +1127,15 @@ export class ViewerScene {
     const pip = document.createElement("i");
     pip.style.background = colour;
     const gun = document.createElement("small");
-    el.append(pip, document.createTextNode(name), gun);
+    el.append(pip, document.createTextNode(name));
+    if (bot) {
+      const tag = document.createElement("b");
+      tag.className = "v3-bot";
+      tag.textContent = "BOT";
+      tag.title = "A Clanker bot";
+      el.append(tag);
+    }
+    el.append(gun);
     if (!actor) el.addEventListener("pointerdown", (e) => { e.stopPropagation(); this.opts.onPick?.(index); });
     const label = new CSS2DObject(el);
     label.center.set(0.5, 1);
@@ -1135,7 +1145,7 @@ export class ViewerScene {
     group.add(turn, ring, ray, label);
     this.scene.add(group);
     if (actor) el.classList.add("v3-label--ai");
-    p = { group, turn, body, arrow, ring, ray, rayMat, label, el, gun, colour, name, biped: null, bipedUrl: null, weapon: null, weaponUrl: null, weaponName: null, actor, anim: new BipedAnim(), meter: new SpeedMeter(), legs: 0, shotId: 0, wasAlive: null, lastAlive: null };
+    p = { group, turn, body, arrow, ring, ray, rayMat, label, el, gun, colour, name, bot, biped: null, bipedUrl: null, weapon: null, weaponUrl: null, weaponName: null, actor, anim: new BipedAnim(), meter: new SpeedMeter(), legs: 0, shotId: 0, wasAlive: null, lastAlive: null };
     this.players.set(index, p);
     return p;
   }

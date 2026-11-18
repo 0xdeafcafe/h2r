@@ -11,7 +11,7 @@ import { difficultyName, gameTypeLine } from "../state/gametype";
 import CampaignReport, { PlayerName, campaignPlayers } from "./CampaignReport";
 import Scoreboard from "../components/Scoreboard";
 import KillFeed from "../components/KillFeed";
-import { VerifySummary } from "../components/bits";
+import { BotTag, VerifySummary } from "../components/bits";
 import { Block, Crumbs, Title } from "./Layout";
 import Carnage from "./Carnage";
 import GametypeIcon from "../components/GametypeIcon";
@@ -167,7 +167,7 @@ function Legend(props: { game: GameState }) {
     <div class="s-legend" aria-label="Map legend">
       <Show
         when={props.game.team_play}
-        fallback={<For each={standings(props.game)}>{(s) => <span><i style={{ background: colourFor(props.game, s.team, s.index) }} />{s.name}</span>}</For>}
+        fallback={<For each={standings(props.game)}>{(s) => <span><i style={{ background: colourFor(props.game, s.team, s.index) }} />{s.name}<Show when={s.bot}><BotTag /></Show></span>}</For>}
       >
         <For each={teamStandings(props.game)}>{(t) => <span><i style={{ background: colourFor(props.game, t.team, 0) }} />{teamName(t.team)} Team</span>}</For>
       </Show>

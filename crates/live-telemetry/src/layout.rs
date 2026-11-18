@@ -58,6 +58,9 @@ pub const PLAYER_SALT: u32 = Player::SALT;
 pub const PLAYER_FLAGS: u32 = Player::FLAGS;
 #[allow(dead_code)]
 pub const PLAYER_LOCAL_USER: u32 = Player::LOCAL_USER;
+/// The local controller index (`i32`, `-1` for a remote player;
+/// docs/live/live-gamestate.md, Players).
+pub const PLAYER_CONTROLLER: u32 = 0x24;
 #[allow(dead_code)]
 pub const PLAYER_UNIT: u32 = Player::UNIT;
 #[allow(dead_code)]
