@@ -14,7 +14,7 @@ use boot::ui_kit::page::Live;
 use boot::ui_kit::preview::{self, Canvas, Disc, Retail};
 use boot::ui_kit::screens;
 use boot::ui_kit::spec::ScreenSpec;
-use boot::ui_kit::view::{View, view_of};
+use boot::ui_kit::view::View;
 
 /// What the tool shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -218,7 +218,7 @@ impl UiScreens {
             None => preview::From::Synthetic,
         };
         let src = from.source();
-        let view = view_of(&spec, &from.geometry(spec.list)?, src, state);
+        let view = from.view(&spec, state)?;
         let canvas = preview::render_view(&view, src);
         let rules = Rules::for_spec(&spec);
         let mut findings = Vec::new();
@@ -411,13 +411,14 @@ mod tests {
         assert!(s.widget_at([-5.0, -5.0]).is_none());
     }
 
-    /// The findings name their widgets: sign-in has no legend yet.
+    /// The findings name their widgets; the sign-in dialog has none.
     #[test]
     fn findings_come_with_their_widgets() {
         let mut s = UiScreens::default();
         s.select(native("signin-code", "code")).unwrap();
-        let f = &s.shot().unwrap().findings;
-        assert!(f.iter().any(|f| f.text.contains("no legend")), "{f:?}");
+        let shot = s.shot().unwrap();
+        assert_eq!(shot.findings, vec![]);
+        assert!(shot.view.as_ref().unwrap().widget("cell.0.art").is_some());
         let issue = layout::Issue::Fit { id: "row.0".into() };
         assert_eq!(issue.ids(), ["row.0"]);
     }

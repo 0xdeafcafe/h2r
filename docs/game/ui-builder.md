@@ -58,7 +58,7 @@ Page   ── state + input ──▶ step() ──▶ (new state, Effect)    pu
 | Kind | Built from | Header | Use |
 |---|---|---|---|
 | `List` | the Controls tag (today's `KitScreen`) | header layout 0 | settings-style lists over the game shell |
-| `Dialog` | our tag recipe: dialog backing art, a body text, a skin 0 list of buttons | layout 3 (small, 256 wide) or 2 (large, 536 wide) | questions, progress, errors |
+| `Dialog` | our tag recipe: dialog backing art, a body text, a skin 0 list of buttons | layout 3 (small: title 244 wide, panel 278) or 2 (large: title 498 wide, panel 536) | questions, progress, errors |
 | `CodeEntry` | `Dialog` large, plus N cells: the Live passcode dialog's box art (screen 21's `password` blocks) with a digit text over each, the cursor cell tinted bright | layout 2 | the sign-in code |
 | keyboard handoff | any kind; `Effect::Keyboard(field)` opens the game's keyboard (`signin_keyboard`), the typed text comes back as an `Input::Typed` | — | gamertag, invite |
 
@@ -145,8 +145,9 @@ h2 ui sheet [--synthetic] [--out DIR]                    # every screen x state,
   readable too. `cargo test` draws the synthetic sheet; the disc test with
   `H2_UI_SHEET_DIR=<dir>` draws the real one.
 
-The dialog kinds are not built yet. Today's screens come in as
-`ScreenSpec`s, from their `Page` (slice 4, below).
+Today's screens come in as `ScreenSpec`s, from their `Page` (slice 4,
+below). A spec with `ScreenSpec::dialog` set is drawn as a modal
+(slice 6, "The modal dialog" below).
 
 ## The checks
 
@@ -184,8 +185,8 @@ disc for the screens our art comes from (Controls 39, level select 11).
 - every screen in every state passes against the disc with nothing
   skipped (the disc test).
 
-One finding is left on purpose: sign-in has no legend until it is rebuilt
-(slice 6).
+No finding is left on purpose. Sign-in's missing legend was the last,
+and slice 6 gave it one.
 
 The checks' first findings, fixed:
 
@@ -233,6 +234,83 @@ Calibrations the checks needed, each against the game's own screens:
 - the contrast floor is 2.5 (the game's own rows sit at about 2.9);
 - synthetic text is 6 units per character (about the disc fonts' mean),
   so the CI checks don't flag text that fits on the disc.
+
+## The modal dialog (slice 6)
+
+**What the retail dialogs are.** Read off every dialog tag in
+`mainmenu.map` (`h2 ui mainmenu <tag>`): `error_dialog_ok` (8),
+`confirmation_dialog` (33), `dialog_live_signin` (20), `tcr_dialog` (238),
+`dialog_live_password` (21) and `error_dialog_large` (240). Each is the
+same four bitmaps: the `ul_07` and `br_07` corners and the `dialog1` and
+`dialog2` panel halves. Then come the header, one text block, and a list,
+a button or the password cells. None has a full-screen bitmap, a dim
+layer, or any widget outside its panel and corners. The small dialogs
+(root flag bit 0) use header layout 3, whose title is 244 wide. The large one
+(flag 8) uses layout 2: its title is at `[93 -243 73 255]` and its second
+rectangle, the legend, at `[-83 -243 -103 240]`. The panel art is an edge
+glow, not a fill. `dialog1` has a mean alpha of 10 and a peak of 87;
+`dialog2` has a mean of 5 and a peak of 61. Whatever is drawn beneath
+shows through almost untouched.
+
+**What we draw.** `ui_kit::dialog`: a `DialogSpec` (body, optional entry
+`Cells`, status line, the `Beneath` screen) on a `ScreenSpec`, drawn by
+`dialog_view` with `DialogGeometry`. The geometry is the disc's
+(`Disc::dialog_geometry`) or `DialogGeometry::fallback`, and the disc test
+holds the two equal. It draws error_dialog_large's panel and corners
+(`Layer::Panel`), the title in layout 2's header, our body under it, and
+six `password` cells from screen 21. The cells sit at that dialog's own
+height (top 6), 55 wide and 59 apart, with 12 more between the halves. A
+digit sits over each cell. The cursor's cell and digit are lit; the
+others are dimmed (the frame and row alphas). The status line (Checking...,
+the error) sits above the legend, and the legend is in layout 2's second
+rectangle. The view's backing is `Backing::Over(Beneath::MainMenu)`. On
+the disc, the preview draws the retail main menu (`render_retail`) and
+then the dialog over it, with nothing between them, as the tags have
+nothing there. Synthetic previews draw boxes for the menu's list.
+
+**The modal's checks.** `Rules::panel` is set for a dialog spec
+(`DialogGeometry::area`, the panel's and corners' box,
+`[153 -273 -161 331]`). Every text and cell must sit inside it (the new
+`panel` check, `Issue::OutsidePanel`), as well as inside the safe area.
+The reserved-area check skips the panel's art and anything inside the
+panel. Panel art is held neither to a list nor to its pixels: content
+sits on it by design. Entry cells count as groups for the focus and
+overlap checks, the same way rows do (`cell.N.art`, `cell.N.text`).
+
+**Sign-in as a dialog.** `signin_screen::dialog_for` gives each page its
+title, body, cells, status and glyph legend:
+
+- the code page: up/down Digit, left/right Move, A Sign in, B Cancel;
+- Checking: the code in its cells with no cursor, "Checking...", and B
+  Cancel only;
+- the gamertag and invite pages: A Type it, B Cancel;
+- the account pages and the end pages: A Make it, Try again or Done, or B
+  Back.
+
+`spec_for` keeps the one-row list the game shows today and adds the
+dialog, which the preview, the sheet and the editor draw. All 11 states
+pass every check, synthetic and on the disc. X no longer submits: only A
+and Start do, matching the legend (`signin_screen::ACTION_BUTTONS`).
+
+**Open: is the screen beneath drawn at all?** Drawn over the main menu,
+the menu's Halo 2 logo shows straight through the panel, across the body
+and the cells, because the panel art is nearly transparent. Every retail
+dialog's header sits at y 93, the same height as that logo, so a retail
+dialog over a fully drawn main menu would be just as unreadable. That
+points to the engine, not the tags, deciding what is beneath a dialog. A
+window may draw only the top screen of its stack (window 5 is the main
+menu's, docs/game/skulls.md), or the engine may dim the screen in code.
+One screenshot settles it: a retail dialog in game over the main menu
+(`dialog_live_signin`, from Xbox Live with no account). If the engine
+draws only the top screen, `Beneath` becomes the game shell background
+alone. That is one variant, and the panel check doesn't change.
+
+**Not built yet: the runtime.** In game, the prompt is still the
+one-row list on the Controls layout. Serving the dialog needs the tag
+recipe ("Screen kinds" above): a tag copy with header layout 2, the
+panel and cell art, and our text blocks. It also needs the dialog opened
+the way the game opens its own (the window, and whether the screen
+beneath stays drawn). Both need a game run.
 
 ## Behaviour
 
@@ -296,8 +374,10 @@ Behaviour the tables changed:
 - **Back cancels sign-in.** Back closed the screen through the Controls
   handler without telling the HLE, so the logon stayed pending. The hook
   now takes Back as B.
-- **X checks the code**, as Start does: both are the class's action
-  buttons. The legend will say A only (slice 6).
+- **X no longer checks the code.** X and Start were both the class's
+  action buttons, so a stray X sent a half-typed code. Now only A and
+  Start submit, matching the legend (`signin_screen::ACTION_BUTTONS`,
+  Start alone), and X does nothing.
 
 `h2 ui preview <screen> [--state S] --press up,right,a` steps a page,
 prints each effect and the summary, and draws where it ends as
@@ -347,6 +427,9 @@ A game run has to show:
   screen is up;
 - the backing's blend: whether `framing_center` and `dialog1`/`dialog2`
   draw as opaque as the preview shows;
+- what a dialog has beneath it: the screen under it on its window's
+  stack, drawn in full, dimmed by the engine, or not drawn (slice 6,
+  "Open: is the screen beneath drawn at all?");
 - transitions and animations (the preview draws everything at rest);
 - input timing: key repeat, the opener-press guard, and the keyboard's
   return;

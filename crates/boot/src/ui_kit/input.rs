@@ -204,13 +204,26 @@ impl Prompt {
     }
 }
 
+/// A prompt's glyphs two spaces apart: the fonts draw the d-pad's left
+/// and right arrows edge to edge, so side by side they read as one
+/// diamond, and the footer font's space is narrow enough that one still
+/// left them touching (the Game Options footer, 2026-11-18).
+pub const GLYPH_GAP: &str = "  ";
+
+fn glyphs(gs: &[Glyph]) -> String {
+    gs.iter()
+        .map(|g| g.char().to_string())
+        .collect::<Vec<_>>()
+        .join(GLYPH_GAP)
+}
+
 /// The legend as the font draws it: each prompt's glyphs, a space, its
 /// words; prompts three spaces apart (retail's own legends' spacing).
 pub fn legend(prompts: &[Prompt]) -> String {
     prompts
         .iter()
         .map(|p| {
-            let g: String = p.glyphs.iter().map(|g| g.char()).collect();
+            let g = glyphs(&p.glyphs);
             format!("{g} {}", p.text)
         })
         .collect::<Vec<_>>()
@@ -224,7 +237,7 @@ pub fn footer_legend(prompts: &[Prompt]) -> String {
     prompts
         .iter()
         .map(|p| {
-            let g: String = p.glyphs.iter().map(|g| g.char()).collect();
+            let g = glyphs(&p.glyphs);
             format!("{g} {}", p.text.to_uppercase())
         })
         .collect::<Vec<_>>()
@@ -352,7 +365,7 @@ mod tests {
         ];
         assert_eq!(
             legend(&p),
-            "\u{e10a}\u{e10b} Toggle   \u{e100} Start Level   \u{e101} Back"
+            "\u{e10a}  \u{e10b} Toggle   \u{e100} Start Level   \u{e101} Back"
         );
         assert_eq!(
             legend_named(&p),
