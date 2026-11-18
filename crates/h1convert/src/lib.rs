@@ -26,6 +26,7 @@ pub mod compact;
 pub mod convert;
 pub mod fresh;
 pub mod globals;
+pub mod lens;
 pub mod placements;
 pub mod query;
 pub mod sandbox;

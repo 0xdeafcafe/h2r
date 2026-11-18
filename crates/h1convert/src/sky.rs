@@ -47,6 +47,9 @@ pub struct Sky {
     pub shaders: Vec<Option<H1SkyShader>>,
     /// The Halo 1 bitmaps they draw: (Halo 1 id, name, conversion).
     pub bitmaps: Vec<(h1map::TagId, String, h1models::Converted)>,
+    /// Per sky light, its lens flare ([`crate::lens`]), where it has one
+    /// that reads.
+    pub flares: Vec<Option<crate::lens::Flare>>,
 }
 
 /// The level's skies, and why any didn't convert.
@@ -131,8 +134,19 @@ impl Sky {
                 bitmaps.push((m.bitmap, t.name.clone(), c));
             }
         }
+        let flares = f
+            .sky
+            .lights
+            .iter()
+            .map(|l| {
+                (!l.lens_flare.id.is_none())
+                    .then(|| crate::lens::Flare::read(h1, l.lens_flare.id).ok())
+                    .flatten()
+            })
+            .collect();
         Ok(Self {
             name: tag.name.clone(),
+            flares,
             sky: f.sky,
             model: f.model,
             model_scale: f.model_scale,
@@ -192,8 +206,22 @@ impl Sky {
             }
             None => None,
         };
-        h1sky::convert::install_sky(set, &self.sky, model, &self.name, self.model_scale)
-            .map_err(|e| err(&e))
+        // Each light's lens flare (`sky` light `+0x14`; E `0x0003eec0`
+        // submits it), with its bitmap; one that doesn't install stays null.
+        let flares: Vec<Option<TagId>> = self
+            .flares
+            .iter()
+            .map(|f| f.as_ref().and_then(|f| f.install(set).ok()))
+            .collect();
+        h1sky::convert::install_sky_with_flares(
+            set,
+            &self.sky,
+            model,
+            &self.name,
+            self.model_scale,
+            &flares,
+        )
+        .map_err(|e| err(&e))
     }
 }
 

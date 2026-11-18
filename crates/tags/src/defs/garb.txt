@@ -1,0 +1,7 @@
+# garb: garbage, an item an effect or a dying object throws (debris).
+# Evidence: docs/formats/effects.md ("garb"). E the engine object type
+# table (0x00468630) has garb at index 4 with no scenario placement block;
+# V the disc's only retail garb is the item layer and 0xa8 zero bytes.
+group garb 0x1d4 align 4
+  0x0 struct item item -- the item layer (item.txt)
+  0x12c unknown 0xa8 seen=zero
