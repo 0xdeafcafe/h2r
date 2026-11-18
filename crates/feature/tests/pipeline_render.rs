@@ -1437,28 +1437,36 @@ fn the_prediction_the_seed_replay_and_refusals_switch_off_for_bisecting() {
     assert_eq!(s.completed, 0, "{s:?}");
 }
 
-/// `H2_PIPELINE_CONFLICTS`: a word the sim writes while the render that
-/// also writes it is in flight is a conflict at the hand-back (the
-/// render's value wins), tallied by word and named by its virtual address.
+/// A word the sim writes while the render that also writes it is in
+/// flight (render k, then tick k + 1, in serial order): the sim's write is
+/// the later one, so its whole word stays, as in the serial run (the byte
+/// merge used to keep the render's bytes and the sim's others, a word part
+/// each, as the first-person node matrices and the animation scratch at
+/// `0x00504410` were). `H2_PIPELINE_CONFLICTS` names each such word by its
+/// virtual address.
 #[test]
-fn the_conflict_report_names_the_words_both_sides_wrote() {
-    let mut r = rig_tuned(true, &[], ADDRS.clone(), &[], |f| f.report_conflicts(true));
-    for k in 1..=8 {
-        r.round(k, false);
-        // Render k is in flight and writes OUT + 4 * k; so does the sim.
-        r.rt.memory().set_u32(OUT + 4 * k, 0xdead_0000 + k).unwrap();
+fn a_word_both_sides_wrote_keeps_the_sims_write_whole_and_is_reported() {
+    let run = |on: bool| {
+        let mut r = rig_tuned(on, &[], ADDRS.clone(), &[], |f| f.report_conflicts(true));
+        for k in 1..=8 {
+            r.round(k, false);
+            // Render k is in flight and writes OUT + 4 * k; so does the sim.
+            r.rt.memory().set_u32(OUT + 4 * k, 0xdead_0000 + k).unwrap();
+        }
+        r.finish();
+        r
+    };
+    let (serial, piped) = (run(false), run(true));
+    compare(&serial.data(), &piped.data());
+    // (The last, 8, the closing serial frame draws over in both runs.)
+    for k in 1..8 {
+        assert_eq!(piped.rt.memory().u32(OUT + 4 * k).unwrap(), 0xdead_0000 + k);
     }
-    r.finish();
-    let report = r.feature.conflict_report();
-    assert!(
-        report[0].contains("8 hand-backs") || report[0].contains("9 hand-backs"),
-        "{report:#?}"
-    );
+    let report = piped.feature.conflict_report();
+    assert!(report[0].contains("8 hand-backs"), "{report:#?}");
     for k in 1..=8 {
         let va = format!("va [{:#010x}]", OUT + 4 * k);
         assert!(report.iter().any(|l| l.contains(&va)), "{va}: {report:#?}");
     }
-    // Byte by byte: the render's byte where it changed one (3 over 0), the
-    // sim's elsewhere. A conflicted word ends up mixed.
-    assert_eq!(r.rt.memory().u32(OUT + 4).unwrap(), 0xdead_0003);
+    assert!(piped.feature.stats().conflicts >= 8);
 }
