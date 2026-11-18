@@ -1,12 +1,13 @@
-# 60 and 120 fps (design; phase 1 built, phase 2 first slice built)
+# 60 and 120 fps (design; phase 1 built, phase 2 first slice and E1 built)
 
 **State.** Phase 1, the determinism harness, is built (section 6). The
 setting `H2_FPS=30|60|120|uncapped` (`h2 play --fps`) exists. On its own,
 above 30 it only makes the window present the newest guest frame more
 often. Phase 2's first slice, the interpolated replay at 60 for a single
-gameplay view, is built behind `H2_FEATURES=impl.render.interpolate` and
-has not been run in the game yet (section 7). 120 waits on measured
-headroom.
+gameplay view, is built behind `H2_FEATURES=impl.render.interpolate`
+(section 7), and E1, rotation-only reprojection, next to it behind
+`H2_FEATURES=impl.render.reproject` so the two can be compared (section 8).
+Neither has been run in the game yet. 120 waits on measured headroom.
 
 This is the design for an opt-in presentation mode at 60 or 120 fps, or
 whatever a variable-refresh (VRR) display wants. The hard requirement is that
@@ -298,7 +299,7 @@ code more often, which this design avoids by not running it more often.
 | **C. Guest render sub-frames** (Cartographer: write interpolated transforms into guest memory, run the guest renderer, restore) | unchanged if every side effect is undone | kept, if isolation holds | +render cost per presented frame | best: the game culls, sorts and spawns effects at the interpolated camera | fallback |
 | **D. Host replay with interpolated matrices** (this design) | unchanged by construction | kept | no guest instructions; replays share the render thread and GPU, so the guest waits more at the frame-in-flight limit, the `D3DSWAP_FINISH` wait and read-back drains when the render thread is the slower side | camera and object motion smooth; particles move at 30 Hz | **recommended** |
 | E. Image-space frame generation (reprojection with depth and motion) | unchanged | kept | as D, less render work | disocclusion smears, HUD and transparency artefacts | not worth it in general |
-| E1. Rotation-only reprojection of frame N's world colour | unchanged | kept | as D, one full-screen pass per display frame | camera turns smooth (most of what players see at 30), translation and objects step at 30 Hz; needs overscan for the edges | **first thing to compare against D** |
+| E1. Rotation-only reprojection of frame N's world colour | unchanged | kept | as D, one full-screen pass per display frame | camera turns smooth (most of what players see at 30), translation and objects step at 30 Hz; needs overscan for the edges | **built as D's comparison** (section 8) |
 | F. Extrapolation (render ahead of the newest tick) | unchanged | kept, but drawn wrong | as D | no added latency, but overshoots on every sudden change: landings, collisions, the bounce itself | camera aim only |
 
 **E1, the cheap comparison.** Capture frame N's world colour before the
@@ -311,8 +312,8 @@ frame, independent of the draw count, so it fits 60 and 120 where D's
 geometry replay (below) does not yet. It does nothing for strafing or
 moving objects. The reviews of this page recommend building E1 first and
 judging D against it; the first slice of D was already far along when that
-came in, so it is built behind its switch and E1 is the next lane
-(section 7).
+came in, so D was built first (section 7) and E1 next to it, as a second
+mode of the same wrapper (section 8).
 
 C is what a mature PC mod does, and it renders more correctly than D. It
 loses here for two reasons. Guest CPU is our bottleneck: a level frame is
@@ -498,7 +499,9 @@ Two answers, in order:
   design wants: which draws are the world, which the first-person weapon,
   which the HUD, and where E1 captures the world colour. It is not wired to
   the device yet; the first slice tells views apart by viewport and target
-  size, and draws by their constants (section 7).
+  size, and draws by their constants (section 7), and E1 finds the overlay
+  by a rule on the classified draws (section 8, which also says why the tag
+  is not wired yet).
 
 ## 4. Super bouncing
 
@@ -734,8 +737,8 @@ arrivals.
    off, then the same at `H2_FPS=120` under `h2 play` (the trace must
    match). Any mismatch with the mode off is a runtime determinism bug to
    fix before phase 2.
-2. Phase 2: first slice built (section 7). Next there: run it, E1 for
-   comparison, bundles.
+2. Phase 2: first slice built (section 7), E1 built next to it (section
+   8). Next there: run both and compare, bundles.
 3. A per-present hash on the render-thread side, now that replays exist,
    to show the replay path leaves `Device` state unchanged in a real run
    (the synthetic test in section 7 shows it for the backend calls).
@@ -762,7 +765,13 @@ H2_FEATURES=impl.render.interpolate h2 play --fps 60 ...
 ```
 
 At exit it prints `d3d: interpolation: frames F blended B held H replays R
-substituted draws D snapped S deferred P`.
+substituted draws D snapped S deferred P; replay mode: N frames, A ms avg,
+M ms max`. `N` counts every frame the replay made (blended presents and
+in-between frames) and the times are the render thread's wall time for
+each: its draws, plus `present_replay` for in-between frames (the
+guest's own present is not counted: it would happen anyway). That is
+encode and submit; the GPU's own time is not in it. E1 prints its own
+part instead (section 8).
 
 ### How it works
 
@@ -929,10 +938,162 @@ backend):
    classify in gameplay (the stats line's `blended` against `held`), do
    objects blend, what pops. Then the phase 1 harness with the switch on:
    the per-tick trace must match a run with it off.
-2. E1, rotation-only reprojection, as the comparison (section 3).
+2. ~~E1, rotation-only reprojection, as the comparison~~: built (section
+   8). Run both and compare.
 3. Bundles or reused passes, so a replay costs uniform writes, not a
-   re-encode; then measure replay cost against 16.7 and 8.3 ms.
+   re-encode; the exit line now measures the replay's render-thread cost
+   against 16.7 and 8.3 ms.
 4. The pass tag from `ScenePasses::at()` and an object tag, replacing the
-   viewport key and the draw signature.
+   viewport key, the draw signature and E1's overlay rule (section 8 says
+   what it takes).
 5. One display scheduler: let the replay drive the window's redraws.
 6. Shadows, reflections, projected lights, particles (care list).
+
+## 8. E1: rotation-only reprojection (built, next to D)
+
+The comparison section 3 asks for, as a second mode of the same
+`InterpBackend`: same recording, classification, pacing, private surfaces
+and safety rules as section 7; only how an in-between frame is made
+differs. Built and tested on synthetic draw lists only; not run in the
+game yet.
+
+### Switches
+
+| switch | effect |
+|---|---|
+| `H2_FEATURES=impl.render.reproject` | E1, the display camera's rotation blended between frames N-1 and N (one frame behind, like D) |
+| `H2_FEATURES=impl.render.reproject_ahead` | E1 with the rotation carried on past N by alpha of the last turn (F, extrapolation, for aim only): no added latency for turning, overshoots when a turn stops |
+| `H2_FEATURES=impl.render.interpolate` | D (section 7). With a reproject switch also on, E1 wins |
+
+Off by default; exact switches only (`impl.render=on` turns none of them
+on). Same rules as D: render thread only, off under `H2_PIPELINE_RENDER`,
+the Frame Rate row above 30 (in-between frames at 60). No image rebuild:
+Rust in `d3d`, `gfx` and `boot`. Rebuild and reinstall the `h2` binary.
+
+```sh
+H2_FEATURES=impl.render.reproject h2 play --fps 60 ...
+H2_FEATURES=impl.render.reproject_ahead h2 play --fps 60 ...
+H2_FEATURES=impl.render.interpolate h2 play --fps 60 ...   # D, to compare
+```
+
+At exit, after the common counters:
+`; reproject mode: C world images A ms avg M ms max, W warped frames A ms
+avg M ms max`. A world image is the per-guest-frame draw described below;
+a warped frame is one shown frame (the warp, the overlay draws, and for
+in-between frames their present), at the guest's present and in between.
+Times are render-thread wall time measured the same way as D's `replay
+mode` part, so the two runs' lines compare directly: D's per-frame cost
+against E1's world image per guest frame plus its warped frames.
+
+### How it works
+
+- **The overlay.** Without a pass tag, the draws that go on top unwarped
+  are found on the classified frame (`interp::reproject::overlay_start`):
+  from the first draw with a projection of its own (the first-person
+  weapon and hands) after the world has started, or from the first draw
+  after the last one that uses the camera (the HUD), whichever comes
+  first. Everything before it is the world.
+- **The world image, once per guest frame.** At the guest's present, the
+  world's ops (clears, copies, draws) are drawn again into a world copy of
+  the presented surface (and of its depth surfaces) with **overscan**:
+  every perspective block in those draws (camera, objects drawn with
+  world-view-projection, own projections) has its clip `x` and `y` scaled
+  by `1 / 1.1` (`reproject::OVERSCAN`), so the image covers 10% more of
+  the view in each direction. The guest's own frame can't be used: it is
+  not overscanned, and with no pass tag there is no point mid-frame to copy
+  it at.
+- **The warp, per shown frame** (`Backend::warp_surface`, `gfx::blit::
+  Warper`, `crates/gfx/shaders/warp.wgsl`). One full-screen pass draws the
+  world image into the private copy of the presented surface through a
+  homography `H = M_w R_N R_dᵀ M_d⁻¹` (`reproject::homography`), where
+  `M_d` is frame N's projection acting on directions, `M_w` the same with
+  the overscan, `R_N` frame N's camera rotation and `R_d` the display
+  camera's (`reproject::display_rotation`: slerped from N-1 to N at alpha,
+  or from N on by alpha with `_ahead`; a cut gives N's). It is mapped to
+  texture coordinates through the world draws' viewport, sampled linear,
+  clamped at the edge. No depth: a pure rotation needs none.
+- **The overlay on top.** The depth surfaces the overlay uses get private
+  copies cleared to far depth and zero stencil (the world under the
+  overlay is a picture now), then the overlay's ops replay unchanged:
+  weapon, hands and HUD exactly as the guest drew them in frame N.
+- **When.** The guest's present shows the warped frame at its alpha (as D
+  shows its replay); idle slots show further warps on the same pacing
+  grid. Only frames with exactly one camera view and a world blend:
+  split-screen, menus and loads hold the guest's frame as drawn, as do
+  gaps, open pixel counts and frames without a camera. `warp_surface`
+  needs a single-sample target, which every surface made through
+  `Backend::create_surface` is; a backend that can't warp answers so, and
+  E1 turns itself off for the run with a message, like any replay error.
+
+### What a player will see (expected, not yet seen)
+
+- Camera turns at 60; with `_ahead`, without the extra frame of lag on
+  turns but with a small overshoot when a turn stops.
+- Strafing, walking, vehicles and every moving object at 30 Hz: the image
+  only rotates. Things near the camera judder against the turn more than
+  far ones do (no parallax).
+- The first-person weapon, hands and HUD at 30 Hz, steady on screen while
+  the world turns under them.
+- A slightly softer world: the overscanned image is magnified 1.1x with
+  linear filtering. Fast flicks beyond 10% of the view in one frame show
+  smeared edge pixels.
+- Transparent effects, particles and anything else drawn before the
+  overlay turn with the world (correct for things far away).
+- **Cost.** One extra world draw per guest frame (about one D replay, so
+  half of D's two replays per guest frame at 60), plus per shown frame a
+  full-screen pass and the overlay's few draws. Through `ScaledBackend`
+  the world image is drawn at both the reference and the view, as D's
+  replays are. The exit line gives the measured numbers for both modes.
+
+### The pass tag
+
+`ScenePasses::at()` (`engine::render_loop::scene`) is not wired here. It is
+the return address of the call in progress inside the port of
+`render_scene_passes`, on the game's thread. Getting it to the replay
+needs a per-draw tag captured at `Device` draw time (a new `ResolvedDraw`
+field, set at every place one is built, in the device code lane D is
+changing for view routing), a way for the render-loop feature to publish
+the address to the device, and then the map from return addresses to
+world, weapon and HUD passes, which needs a game run to read off. That is
+a slice of its own; the overlay rule above stands in until then and gives
+the same split on the synthetic scenes.
+
+### Tests
+
+`cargo test -p d3d --lib interp` adds `reproject`'s own: the warp samples
+the world image where it drew a point for a turned display camera; no turn
+gives the overscan zoom; display rotations blend, run ahead and snap on
+cuts. `cargo test -p d3d --test interp` adds, through the recording
+backend:
+
+- at the guest's present: the guest's calls, then the world image (clear
+  and level draws, no weapon or HUD) into a surface of its own with the
+  camera's clip `x`, `y` scaled by the overscan, then a warp into the shown
+  surface, a depth-only clear, the weapon and HUD with their own constants,
+  and the present with the guest's flags; the warp at alpha 0 is not the
+  plain zoom;
+- in between: only a warp, the clear, the overlay and a present (no world
+  draws); at alpha 1 the warp is exactly the overscan zoom, then nothing
+  more;
+- `_ahead`: the present shows N's rotation (the zoom), and half a frame on
+  it turns the opposite way from the blended mode's alpha 0, half as far;
+- two views hold the guest's frame; D's line carries its own frame count
+  and cost and E1's carries world images and warps;
+- the guest's own calls are the same as through a plain recording backend
+  in both E1 variants, and nothing is read back.
+
+`cargo test -p gfx --lib warp` validates the warp shader with naga.
+`cargo test -p boot --lib interpolation` checks the switches (off by
+default; reproject wins over interpolate, `_ahead` over plain).
+
+### Left
+
+1. Run it in game next to D (commands above) and compare: smoothness of
+   turns, the softness from the overscan, the `reproject mode` costs
+   against D's `replay mode`.
+2. The pass tag (above), to place the overlay split on the guest's own
+   passes.
+3. If E1 is kept: draw the world image by copying the guest's frame at the
+   pass boundary with a wider projection set by the guest, instead of a
+   second world draw (that halves its cost), and 120 Hz (a warp per
+   display frame is cheap).

@@ -922,7 +922,8 @@ pub fn run_hosted_with_live(
     #[cfg(feature = "perf")]
     let _ = d3d::RENDER_THREAD_START.set(|| perf::register_current_thread("render"));
     // In-between frames at the display rate (docs/game/high-framerate.md,
-    // "Phase 2"): `impl.render.interpolate`, render thread only.
+    // "Phase 2" and "E1"): `impl.render.interpolate` or
+    // `impl.render.reproject`, render thread only.
     let interp = if opts.d3d && host.gfx.is_some() {
         d3d_glue::interpolation(host.settings.as_ref(), host.render_thread)
     } else {

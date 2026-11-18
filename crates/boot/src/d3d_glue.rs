@@ -236,39 +236,71 @@ pub fn render_thread_requested() -> bool {
     render_thread_from(std::env::var("H2_RENDER_THREAD").ok().as_deref())
 }
 
-/// The frame-rate setting's reader for the interpolated replay
-/// (`d3d::InterpBackend`, docs/game/high-framerate.md "Phase 2"), when it
-/// is asked for: `impl.render.interpolate` in `H2_FEATURES` (that exact
-/// switch; `impl.render=on` does not include it). It needs the render
-/// thread, and is off under `H2_PIPELINE_RENDER` (the lockstep harness
-/// cannot certify that combination). The rate follows the Frame Rate row
-/// (`graphics.fps`, `H2_FPS`, `--fps`): 30 replays nothing.
+/// What [`interpolation`] turns on: the frame-rate setting's reader and how
+/// in-between frames are made.
+pub struct Interpolation {
+    pub rate: Box<dyn Fn() -> u32 + Send>,
+    pub mode: d3d::interp::Mode,
+}
+
+/// In-between frames (`d3d::InterpBackend`, docs/game/high-framerate.md
+/// "Phase 2" and "E1"), when asked for in `H2_FEATURES` by exact switch
+/// (`impl.render=on` does not include them): `impl.render.interpolate`
+/// replays the frame with blended matrices (Design D);
+/// `impl.render.reproject` warps frame N's world image by the camera's
+/// turn instead (E1, blended one frame behind), and
+/// `impl.render.reproject_ahead` the same with the turn carried on past N.
+/// They need the render thread and are off under `H2_PIPELINE_RENDER` (the
+/// lockstep harness cannot certify that combination). The rate follows the
+/// Frame Rate row (`graphics.fps`, `H2_FPS`, `--fps`): 30 makes nothing.
 pub fn interpolation(
     settings: Option<&std::sync::Arc<settings::Store>>,
     render_thread: bool,
-) -> Option<Box<dyn Fn() -> u32 + Send>> {
+) -> Option<Interpolation> {
     let switches = feature::Switches::from_env().ok()?;
-    interpolation_from(
+    let mode = interp_mode(
         switches.feature("impl.render.interpolate", false),
-        render_thread,
-        std::env::var("H2_PIPELINE_RENDER").ok().as_deref(),
-    )
-    .then(|| -> Box<dyn Fn() -> u32 + Send> {
-        eprintln!(
+        switches.feature("impl.render.reproject", false),
+        switches.feature("impl.render.reproject_ahead", false),
+    )?;
+    if !interpolation_from(true, render_thread, std::env::var("H2_PIPELINE_RENDER").ok().as_deref()) {
+        return None;
+    }
+    match mode {
+        d3d::interp::Mode::Replay => eprintln!(
             "d3d: interpolated replay on (impl.render.interpolate): in-between frames at up to {} fps while the frame rate is above 30",
             d3d::interp::pacing::MAX_REPLAY_HZ
-        );
-        match settings {
-            Some(store) => {
-                let fps = store.handle::<u32>(crate::setting_defs::FPS.key);
-                Box::new(move || fps.get())
-            }
-            None => {
-                let fps = fps_from(std::env::var("H2_FPS").ok().as_deref());
-                Box::new(move || fps)
-            }
+        ),
+        d3d::interp::Mode::Reproject { ahead } => eprintln!(
+            "d3d: rotation-only reprojection on (impl.render.reproject{}): in-between frames at up to {} fps while the frame rate is above 30, one gameplay view only",
+            if ahead { "_ahead" } else { "" },
+            d3d::interp::pacing::MAX_REPLAY_HZ
+        ),
+    }
+    let rate: Box<dyn Fn() -> u32 + Send> = match settings {
+        Some(store) => {
+            let fps = store.handle::<u32>(crate::setting_defs::FPS.key);
+            Box::new(move || fps.get())
         }
-    })
+        None => {
+            let fps = fps_from(std::env::var("H2_FPS").ok().as_deref());
+            Box::new(move || fps)
+        }
+    };
+    Some(Interpolation { rate, mode })
+}
+
+/// The mode the switches ask for: reprojection wins over the replay, and
+/// `reproject_ahead` over `reproject`; none of them, none.
+pub fn interp_mode(interpolate: bool, reproject: bool, ahead: bool) -> Option<d3d::interp::Mode> {
+    use d3d::interp::Mode;
+    if ahead {
+        Some(Mode::Reproject { ahead: true })
+    } else if reproject {
+        Some(Mode::Reproject { ahead: false })
+    } else {
+        interpolate.then_some(Mode::Replay)
+    }
 }
 
 /// [`interpolation`]'s decision: the switch, the render thread, and
@@ -278,11 +310,11 @@ pub fn interpolation_from(switch: bool, render_thread: bool, pipeline_render: Op
         return false;
     }
     if !render_thread {
-        eprintln!("d3d: impl.render.interpolate needs the render thread (H2_RENDER_THREAD=0 is set): off");
+        eprintln!("d3d: in-between frames (impl.render.interpolate, impl.render.reproject) need the render thread (H2_RENDER_THREAD=0 is set): off");
         return false;
     }
     if pipeline_render.is_some_and(|v| v != "0") {
-        eprintln!("d3d: impl.render.interpolate is off under H2_PIPELINE_RENDER");
+        eprintln!("d3d: in-between frames (impl.render.interpolate, impl.render.reproject) are off under H2_PIPELINE_RENDER");
         return false;
     }
     true
@@ -304,14 +336,18 @@ pub fn install_threaded<B>(
     rt: &runtime::Runtime,
     backend: B,
     extra: Option<ExtraReport>,
-    interp: Option<Box<dyn Fn() -> u32 + Send>>,
+    interp: Option<Interpolation>,
 ) -> anyhow::Result<Installed>
 where
     B: d3d::backend::Backend + Send + 'static,
     B::Texture: Sync,
 {
     match interp {
-        Some(rate) => install_with_report(rt, d3d::ThreadedBackend::new(d3d::InterpBackend::new(backend, rate))?, extra),
+        Some(Interpolation { rate, mode }) => install_with_report(
+            rt,
+            d3d::ThreadedBackend::new(d3d::InterpBackend::new(backend, rate).with_mode(mode))?,
+            extra,
+        ),
         None => install_with_report(rt, d3d::ThreadedBackend::new(backend)?, extra),
     }
 }
@@ -957,6 +993,17 @@ mod tests {
         assert!(interpolation_from(true, true, Some("0")));
         assert!(!interpolation_from(true, false, None), "no render thread");
         assert!(!interpolation_from(true, true, Some("1")), "pipelined render");
+    }
+
+    #[test]
+    fn interpolation_modes_from_their_switches() {
+        use d3d::interp::Mode;
+        assert_eq!(interp_mode(false, false, false), None, "off by default");
+        assert_eq!(interp_mode(true, false, false), Some(Mode::Replay));
+        assert_eq!(interp_mode(false, true, false), Some(Mode::Reproject { ahead: false }));
+        assert_eq!(interp_mode(true, true, false), Some(Mode::Reproject { ahead: false }), "reprojection wins");
+        assert_eq!(interp_mode(false, false, true), Some(Mode::Reproject { ahead: true }));
+        assert_eq!(interp_mode(true, true, true), Some(Mode::Reproject { ahead: true }));
         assert_eq!(fps_from(None), 30);
         assert_eq!(fps_from(Some("60")), 60);
         assert_eq!(fps_from(Some("uncapped")), 0);

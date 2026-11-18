@@ -493,6 +493,20 @@ pub trait Backend: Send {
     ) -> Result<(), String> {
         self.present_with_gamma(surface, 0, gamma)
     }
+    /// Draws colour surface `src` over all of `dst` (same guest size)
+    /// through a projective warp: `dst`'s texel at normalised `(u, v)`
+    /// samples `src` at `h * (u, v, 1)` (rows), filtered, clamped to the
+    /// edge. Host-only (the interpolated reprojection, [`crate::interp`]).
+    /// `Ok(false)`: the backend cannot (the default).
+    fn warp_surface(
+        &mut self,
+        src: Self::Surface,
+        dst: Self::Surface,
+        h: [[f32; 3]; 3],
+    ) -> Result<bool, String> {
+        let _ = (src, dst, h);
+        Ok(false)
+    }
     /// Host-only work a render thread runs when it has nothing queued (the
     /// interpolated replay's in-between frames). Returns when it wants to
     /// be called again; `None` (the default) waits for the next command.
@@ -883,6 +897,15 @@ pub enum Recorded {
     },
     /// `clear_pixel_count`.
     ClearPixelCount,
+    /// `warp_surface`.
+    Warp {
+        /// Source.
+        src: u32,
+        /// Destination.
+        dst: u32,
+        /// The homography (rows).
+        h: [[f32; 3]; 3],
+    },
     /// `report_pixel_count`.
     ReportPixelCount {
         /// The ticket handed out.
@@ -1071,6 +1094,10 @@ impl Backend for RecordingBackend {
     fn present(&mut self, surface: u32, flags: u32) -> Result<(), String> {
         self.calls.push(Recorded::Present { surface, flags });
         Ok(())
+    }
+    fn warp_surface(&mut self, src: u32, dst: u32, h: [[f32; 3]; 3]) -> Result<bool, String> {
+        self.calls.push(Recorded::Warp { src, dst, h });
+        Ok(true)
     }
     fn present_with_gamma(
         &mut self,
