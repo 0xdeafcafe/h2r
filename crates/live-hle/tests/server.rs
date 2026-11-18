@@ -3300,3 +3300,51 @@ fn the_mute_list_is_the_servers_and_get_returns_what_add_was_given() {
     other.logon();
     assert_eq!(mute_get(&mut other), [(rude.xuid.0, 0)]);
 }
+#[test]
+fn arbitration_registers_and_reports_the_round_as_the_signed_in_account() {
+    const ROUND: u32 = DATA + 0x12000;
+    const PROCEDURES: u32 = DATA + 0x13000;
+    let server = Server::new();
+    let account = server.account("Arbiter");
+    let mut w = World::new(&server.embedded.url, &[&account]);
+    w.logon();
+    let session_id = 0x8877_6655_4433_2211u64;
+    w.put(ROUND, &session_id.to_le_bytes());
+    assert_eq!(w.call("XOnlineArbitrationCreateRoundID", &[ROUND + 8]), OK);
+    let round_id = u64::from_le_bytes(w.bytes(ROUND + 8, 8).try_into().unwrap());
+    let (session_hex, round_hex) = (
+        sign::hex(&session_id.to_le_bytes()),
+        sign::hex(&round_id.to_le_bytes()),
+    );
+
+    assert_eq!(
+        w.call("XOnlineArbitrationRegister", &[ROUND, 300, 0xc, 0, OUT]),
+        OK
+    );
+    let task = w.u32(OUT);
+    assert_eq!(w.wait(task), TASK_SUCCESS);
+    assert_eq!(w.call("XOnlineTaskClose", &[task]), OK);
+    w.put(PROCEDURES, &[0; 0x88]);
+    w.put(PROCEDURES, &0x8001u16.to_le_bytes());
+    assert_eq!(
+        w.call(
+            "XOnlineArbitrationReport",
+            &[ROUND, 1, PROCEDURES, 0, 3, 0, OUT]
+        ),
+        OK
+    );
+    let task = w.u32(OUT);
+    assert_eq!(w.wait(task), TASK_SUCCESS);
+
+    let stream = live_proto::arbitration::stream(&session_hex, &round_hex);
+    let events: Vec<WireEvent> = server
+        .events()
+        .into_iter()
+        .filter(|e| e.stream == stream)
+        .collect();
+    let kinds: Vec<&str> = events.iter().map(|e| e.kind.as_str()).collect();
+    assert_eq!(kinds, ["ArbitrationRegistered", "ArbitrationReported"]);
+    let body = SignedEvent::open(&events[1].jws).unwrap().body;
+    assert_eq!(body.data["xuid"], account.xuid.to_string());
+    assert_eq!(body.data["procedures"], json!([0x8001]));
+}

@@ -185,6 +185,8 @@ pub struct State {
     pub presence_context: HashMap<u64, Vec<String>>,
     /// Per-playlist ranks, from the `rank-*` streams (crate::ranks).
     pub ranks: crate::ranks::Ranks,
+    /// Arbitration rounds, from the `round-*` streams (crate::arbitration).
+    pub arbitration: crate::arbitration::Rounds,
 }
 
 impl State {
@@ -475,6 +477,10 @@ impl Model {
         }
         if b.stream.starts_with("rank-") {
             crate::ranks::project(&mut s, e);
+            return;
+        }
+        if b.stream.starts_with("round-") {
+            crate::arbitration::project(&mut s, e);
             return;
         }
         if b.stream.starts_with("game-") {

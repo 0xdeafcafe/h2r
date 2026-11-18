@@ -87,6 +87,10 @@ pub struct Changed {
     pub after: Standing,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub bot: bool,
+    /// The arbitration round that ranked the game: `{session_id}-{round_id}`
+    /// (docs/live/live-matchmaking.md §8.4). A round ranks one game.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub round: Option<String>,
 }
 
 /// Experience needed for `level` (1..=50): level 1 needs none.
@@ -353,9 +357,11 @@ mod tests {
             before: Standing::default(),
             after: Standing::default(),
             bot: false,
+            round: None,
         };
         let v = serde_json::to_value(&c).unwrap();
         assert!(v.get("bot").is_none());
+        assert!(v.get("round").is_none());
         assert_eq!(serde_json::from_value::<Changed>(v).unwrap(), c);
     }
 }

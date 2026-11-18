@@ -17,7 +17,7 @@ use axum::{
     response::Response,
 };
 use live_proto::{
-    Xuid,
+    Author, Xuid,
     game::Winner,
     hopper::{HALO_2_HOPPER_FILE, HOPPERS, HopperFile},
     rank::{self, Changed, Entrant, LeaderboardRow, Standing},
@@ -50,6 +50,9 @@ pub struct Ranks {
     pub history: HashMap<(Xuid, String), VecDeque<HistoryEntry>>,
     /// Games already ranked (a second end never ranks twice).
     pub games: BTreeSet<String>,
+    /// Arbitration rounds that have ranked a game (`{session}-{round}`):
+    /// a round ranks one game.
+    pub rounds: BTreeSet<String>,
 }
 
 impl Ranks {
@@ -73,6 +76,9 @@ pub(crate) fn project(s: &mut State, e: &RecordedEvent) {
     };
     let r = &mut s.ranks;
     r.games.insert(c.game_id.clone());
+    if let Some(round) = &c.round {
+        r.rounds.insert(round.clone());
+    }
     r.standings
         .entry(c.playlist.clone())
         .or_default()
@@ -212,11 +218,13 @@ impl Live {
     }
 
     /// Ranks a finished ranked matchmaking game once: one `RankChanged` per
-    /// player with an account. Anything else (custom, campaign, unranked,
-    /// lost contact, already ranked) writes nothing.
+    /// player with an account who registered the game's arbitration round
+    /// (its session's latest round the host registered that has not ranked
+    /// a game). Anything else (custom, campaign, unranked, lost contact, no
+    /// session or round, already ranked) writes nothing.
     pub(crate) async fn rank_game(&self, game_id: &str) -> Result<(), ApiError> {
         let _guard = self.rank_writes.lock().await;
-        let (playlist, entrants) = {
+        let (playlist, entrants, round) = {
             let s = self.model.read();
             if s.ranks.games.contains(game_id) {
                 return Ok(());
@@ -235,7 +243,23 @@ impl Live {
             if !finished || started.kind() != "matchmaking" {
                 return Ok(());
             }
-            (playlist, entrants(g))
+            // Arbitration (docs/live/live-matchmaking.md §8.4): the host's
+            // latest unused round in the game's session; only the humans
+            // whose own account registered it are ranked.
+            let Some(session) = started.session_id.as_deref() else {
+                return Ok(());
+            };
+            let Some(Author::Account { xuid: host, .. }) = Author::parse(&g.started.host) else {
+                return Ok(());
+            };
+            let Some((round, r)) = s.arbitration.for_game(session, host, &s.ranks.rounds) else {
+                return Ok(());
+            };
+            let entrants: Vec<Entrant> = entrants(g)
+                .into_iter()
+                .filter(|e| r.registered.contains_key(&e.xuid))
+                .collect();
+            (playlist, entrants, format!("{session}-{round}"))
         };
         if entrants.len() < 2 || !self.ranked_playlist(&playlist).await {
             return Ok(());
@@ -260,6 +284,7 @@ impl Live {
                     before: *before,
                     after,
                     bot: false,
+                    round: Some(round.clone()),
                 };
                 self.server_event(
                     rank::stream(e.xuid),

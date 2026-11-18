@@ -965,7 +965,7 @@ through synthetic guest stacks; browsing every screen has not been run here.
 | `0x0022387b` | SaveLogonState writes the public 516-byte launch-state layout with users and service IDs; it contains no signing key. |
 | `0x0008e750`, manager `0x002c7410` | Message polling exposes pending game invitations. Title files use storage and never enter the player inbox. |
 
-These 7 entries still stop by API name because their backend behavior is not
+These 4 entries still stop by API name because their backend behavior is not
 implemented. Their menu/game fallbacks are a separate follow-up slice; the
 storage entries below no longer stop. Prefixes in the table are part of each
 listed API name.
@@ -974,14 +974,12 @@ listed API name.
 |---|---|
 | `XOnline` | `TitleUpdate` |
 | `XOnlineFriends` | `Remove`, `AnswerRequest` |
-| `XOnlineMutelist` | `Add`, `Remove` |
-| `XOnlineArbitration` | `ExtendRound` |
 | `XNet` | `TsAddrToInAddr` |
 
 Server-backed sessions, invitation delivery, clans and cached friend presence are
 implemented in the Client HLE sections below. Friend mutations
-outside the existing capture path, checking ranked arbitration against the
-games log ([live-matchmaking.md](live-matchmaking.md) §8.3) and NAT traversal
+outside the existing capture path, comparing ranked arbitration reports
+([live-matchmaking.md](live-matchmaking.md) §8.4) and NAT traversal
 remain unfinished. Synthetic tests prove invitation discovery through bidirectional
 host UDP traffic; actual menu transitions and a full retail match are unconfirmed.
 

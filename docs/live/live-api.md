@@ -210,6 +210,7 @@ game it is; all five fields are optional and old senders leave them out:
 |---|---|---|
 | `kind` | `custom`, `matchmaking`, `campaign` | `campaign` exactly when `mode` is; absent means `campaign` for campaign mode, else `custom` |
 | `playlist`, `playlist_id` | hopper name (1-32 characters, no control characters), id `[A-Za-z0-9_-]{1,64}` | matchmaking only; with no `playlist`, the server names it from the served hopper file when `playlist_id` is a descriptor index there |
+| `session_id` | the Live session, 16 lowercase hex digits (the game's 8 bytes in order) | matchmaking only; ranking finds the game's arbitration round by it ([Arbitration](#arbitration)) |
 | `difficulty` | `easy`, `normal`, `heroic`, `legendary` | campaign only |
 | `online` | boolean | campaign only: co-op partners on other machines (Live co-op, not sent yet); split-screen co-op is more than one player without it |
 
@@ -1246,4 +1247,28 @@ may write those streams. A standing is
 `playlist` is the hopper descriptor index, as sessions and games name it.
 A leaderboard is the playlist id the hopper file gives that descriptor,
 which is what the game's `XOnlineStatRead` names.
+A game is ranked only for the players who registered its arbitration
+round ([Arbitration](#arbitration)); each `RankChanged` names that round
+as `round`, `{session}-{round}`, and a round ranks one game.
+
+## Arbitration
+
+The game's `XOnlineArbitration` calls, posted by the Live HLE once for
+each account signed in on the console
+([live-matchmaking.md](live-matchmaking.md) §8.4). Each takes a
+`games.write` token of the account. `session` and `round` are 16
+lowercase hex digits. The server writes `ArbitrationRegistered`,
+`ArbitrationExtended` or `ArbitrationReported`, server-signed, on
+`round-<session>-<round>`, with `{session_id, round_id, xuid}` and the
+call's fields; `xuid` is the token's account. Nobody writes these through
+`/v1/events`.
+
+| endpoint | body | result |
+|---|---|---|
+| `POST /v1/arbitration/{session}/{round}/register` | `{duration, flags}` | 201 with `{position}`; 200, writing nothing, when the account already registered |
+| `POST /v1/arbitration/{session}/{round}/extend` | `{duration}` | 201; 409 unless the account registered the round |
+| `POST /v1/arbitration/{session}/{round}/report` | `{flags, procedures}`: the stat procedure ids, at most 1000 | 201; 200 when the account already reported; 409 unless it registered |
+
+An id that is not 16 lowercase hex digits, or another call name, is a
+404.
 

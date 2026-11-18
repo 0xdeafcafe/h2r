@@ -386,15 +386,15 @@ impl Hle {
             None => Joined::Unknown { session: id },
         }
     }
-    /// The playlist (hopper descriptor index, as game records name it) of
-    /// the game about to start, for its record (docs/live/live-matchmaking.md
-    /// §8): the playlist this console's advertisement names when it hosts,
-    /// else the joined session's as last read. `None` for a custom game or
-    /// when nothing says. Never waits and never takes guest memory, so the
-    /// game-start hook may call it.
-    pub fn playlist(&self) -> Option<u32> {
+    /// The playlist (hopper descriptor index, as game records name it) and
+    /// Live session id (16 hex digits) of the game about to start, for its
+    /// record (docs/live/live-matchmaking.md §8.3, §8.4): this console's
+    /// advertisement when it hosts, else the joined session as last read.
+    /// `None` for a custom game or when nothing says. Never waits and never
+    /// takes guest memory, so the game-start hook may call it.
+    pub fn matchmade(&self) -> Option<(u32, String)> {
         let keys = self.network.registered_keys();
-        self.lock().playlist(&keys)
+        self.lock().matchmade(&keys)
     }
     /// What the host of the session this console joined advertised as its
     /// skulls: [`Hle::joined`]'s answer, for the skulls.

@@ -103,6 +103,10 @@ pub struct Playlist {
     pub name: Option<String>,
     /// The hopper descriptor index.
     pub id: String,
+    /// The Live session it is played in (16 hex digits), which its
+    /// arbitration round is registered under (docs/live/live-matchmaking.md
+    /// §8.4).
+    pub session_id: Option<String>,
 }
 
 impl Session {
@@ -242,6 +246,7 @@ impl Session {
             players: players.iter().map(|p| p.wire_player()).collect(),
             kind: Some(kind.into()),
             playlist: playlist.as_ref().and_then(|p| p.name.clone()),
+            session_id: playlist.as_ref().and_then(|p| p.session_id.clone()),
             playlist_id: playlist.map(|p| p.id),
             difficulty,
             // Live co-op does not exist yet.
@@ -1721,12 +1726,14 @@ mod tests {
         session.set_playlist(Some(Playlist {
             name: Some("Team Slayer".into()),
             id: "3".into(),
+            session_id: Some("0123456789abcdef".into()),
         }));
         session.start(&info(), vec![player(0, 0)]);
         let game = started(&mut session);
         assert_eq!(game.kind.as_deref(), Some("matchmaking"));
         assert_eq!(game.playlist.as_deref(), Some("Team Slayer"));
         assert_eq!(game.playlist_id.as_deref(), Some("3"));
+        assert_eq!(game.session_id.as_deref(), Some("0123456789abcdef"));
 
         // A playlist never makes a campaign game a matchmaking one.
         session.start(&campaign(), vec![player(0, 0)]);

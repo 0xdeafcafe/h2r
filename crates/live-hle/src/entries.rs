@@ -154,7 +154,7 @@ pub const ENTRIES: &[Entry] = &[
     entry(0x003ad1a6, "XOnlineStorageGetProgress", 4, Operation::Storage(crate::storage_api::Op::Progress)),
     entry(0x003adc4c, "XOnlineArbitrationCreateRoundID", 1, Operation::Arbitration(crate::arbitration::Op::CreateRoundId)),
     entry(0x003ae32b, "XOnlineArbitrationRegister", 5, Operation::Arbitration(crate::arbitration::Op::Register)),
-    entry(0x003ae33a, "XOnlineArbitrationExtendRound", 4, Operation::Stop),
+    entry(0x003ae33a, "XOnlineArbitrationExtendRound", 4, Operation::Arbitration(crate::arbitration::Op::Extend)),
     entry(0x003ae36a, "XOnlineArbitrationReport", 7, Operation::Arbitration(crate::arbitration::Op::Report)),
     entry(0x003aeba5, "XOnlineTeamEnumerateGetResults", 3, Operation::Teams(crate::teams::Op::Results)),
     entry(0x003aebb0, "XOnlineTeamMembersEnumerateGetResults", 3, Operation::Teams(crate::teams::Op::MemberResults)),

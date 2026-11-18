@@ -8,8 +8,9 @@ Search returns real sessions, filtered by the decoded procedure-1
 parameters: playlist, the party's level window and room for the party,
 closest mean level first (§7). The game widens its own window and hosts
 when nothing is found, so OptiMatch needs no server matcher. Ranked games
-are ranked by the server from the games log (§8); checking arbitration
-reports against it, and NAT traversal, remain design.
+are ranked by the server from the games log, for the players who
+registered the game's arbitration round (§8.4); comparing arbitration
+reports, and NAT traversal, remain design.
 Current contracts are in [live-api.md](live-api.md#sessions) and
 [live.md](live.md#client-hle-game-invitations-and-joining). The sections below
 retain the static call trace and phased design; implemented details there defer
@@ -846,23 +847,19 @@ against a running ranked game:
 | entry | arguments | what we do |
 |---|---|---|
 | `CreateRoundID` `0x003adc4c` | out pointer | eight random bytes, nonzero |
-| `Register` `0x003ae32b` | pointer to 16 bytes (session id, round id), a duration-like word, flags (`0xc` or `0x1c`), event (0), task out | accepted; the task succeeds at once |
-| `Report` `0x003ae36a` | the same 16 bytes, count (≤ 1000), `0x88`-byte stat procedure records (u16 id `0x8001`/`0x8003`/`0x8007`, a pointer at `+0x18`), 0, flags (bits 0 and 1), event (0), task out | accepted; the procedure ids are kept, their data is not decoded; the task succeeds at once |
-| `ExtendRound` `0x003ae33a` | | still a stop |
+| `Register` `0x003ae32b` | pointer to 16 bytes (session id, round id), a duration-like word, flags (`0xc` or `0x1c`), event (0), task out | posted to the server (§8.4) |
+| `ExtendRound` `0x003ae33a` | the same 16 bytes, a duration, event (0), task out (likely) | posted to the server |
+| `Report` `0x003ae36a` | the same 16 bytes, count (≤ 1000), `0x88`-byte stat procedure records (u16 id `0x8001`/`0x8003`/`0x8007`, a pointer at `+0x18`), 0, flags (bits 0 and 1), event (0), task out | posted to the server with the procedure ids; their data is not decoded |
 
-Registrations and reports are kept in the HLE (`Hle::arbitration`, the
-last 256), owned, with no guest pointers. Nothing goes to the server
-and nothing checks them yet: the server's ranking does not depend on
-them. Checking a report against the games log needs the round linked
-to a server game id, and `Hle::set_game_id` has no caller in the boot
-yet (the server assigns the id in the telemetry sink's thread). That
-link, decoding the procedure records and the server-side check are the
-next slice.
+The HLE also keeps every call (`Hle::arbitration`, the last 256),
+owned, with no guest pointers. §8.4 has how the server uses them.
 
-### 8.4 Slice 3: bots in ranks, and arbitration (proposed)
+### 8.4 Slice 3: bots in ranks, and arbitration
 
-Status: a draft for the bots lane and the coordinator to agree before it
-is built. The bots lane owns the bot accounts and their events
+Status: agreed with the coordinator (2026-11-18). The arbitration half
+is built. The bots half is not yet built; it waits for the bots lane's
+answers in bots.md §9 ("Interface with ranks"), and will fit them. The
+bots lane owns the bot accounts and their events
 (`POST /games/bots`, the roster, `bot: true` on a game's player entries;
 [bots.md](../game/bots.md) §9). This lane owns how bots are ranked and
 how arbitration checks a ranked game.
@@ -929,54 +926,69 @@ it is a bot, `persistent`, the level its roster showed, and the match
 it was rostered for. Their trust rule (bots.md §9.3) decides whether a
 `bot: true` entry is accepted; ranking only reads the result.
 
-#### Arbitration
+#### Arbitration (built)
 
-A round needs linking to a server game. That does not need
-`Hle::set_game_id`: the 16 bytes the game passes to Register and Report
-start with the session id, which is also the Live session's id.
+A round is linked to a server game by its session, so this does not
+need `Hle::set_game_id`. The 16 bytes the game passes to Register,
+ExtendRound and Report start with the session id, which is also the
+Live session's id. Ids are written as the game's 8 bytes in order, 16
+lowercase hex digits.
 
-1. **Game record.** `NewGame` gains `session_id` (16 hex characters,
-   matchmaking and clankermatch only). Telemetry fills it at the start
-   from the boot's locator, which grows from the playlist to
-   `{playlist, session_id}`, both from `Hle`'s own advertisement or the
-   joined session as last read.
-2. **HLE to server.** Register and Report also post to the server,
-   signed by the signed-in account, through the Live worker (never
-   waiting):
-   `POST /v1/arbitration/{session_id}/{round_id}/register` `{duration,
-   flags}` and `.../report` `{flags, procedures}` (the procedure ids
-   only, until their data is decoded). The task completes when the
-   server answers; a failure completes it as the XDK would
-   (`CANNOT_ACCESS_SERVICE`), which the game already handles.
-   `ExtendRound` is accepted and recorded the same way.
-3. **Server.** `ArbitrationRegistered` and `ArbitrationReported`,
-   written by the account on `round-<session_id>-<round_id>`; nobody
-   writes another player's.
-4. **The check, in `rank_game`.** A ranked game is ranked only if its
-   record has a `session_id` and a round registered under it:
-   - a human entrant is ranked, and counts as an opponent, only if
-     their own account registered that round;
-   - a bot entrant needs no registration: the host is the only
-     reporter for its bots (bots.md §9.2), and bots.md §9.3's roster
-     check already vouches for it;
-   - the host must have registered too;
-   - a game whose round has fewer than two ranked entrants is not
-     ranked.
-   Reports are recorded and linked, not yet compared: comparing them
-   needs the `0x8001`/`0x8003`/`0x8007` records decoded.
-5. **Order.** A report may land after `GameEnded`. Ranking still runs
-   at `GameEnded`, on the registrations, which the game makes before
-   play starts.
+1. **Game record.** `NewGame.session_id`, matchmaking games only. The
+   boot's playlist locator answers `Hle::matchmade`: the playlist and
+   the session, both from this console's own advertisement, else from
+   the joined session as last read. Telemetry puts both on the game.
+2. **HLE to server.** Register, ExtendRound and Report post through the
+   Live worker, never waiting, once for every account signed in on the
+   console:
+   `POST /v1/arbitration/{session}/{round}/register` `{duration, flags}`,
+   `.../extend` `{duration}` and `.../report` `{flags, procedures}` (the
+   procedure ids only, until their data is decoded). The task reports 0
+   until the server answers. It then succeeds, or completes with the
+   failure's status as the Live worker maps it (an unreachable server is
+   `CANNOT_ACCESS_SERVICE`). With no server (System Link, offline), the
+   calls are only kept and complete at once.
+3. **Server.** `ArbitrationRegistered`, `ArbitrationExtended` and
+   `ArbitrationReported` are server-signed on
+   `round-<session>-<round>`, carrying the token's account as `xuid`.
+   Nobody posts them through `/v1/events`.
+   - A second registration or report by the same account writes
+     nothing.
+   - Extending or reporting a round the account did not register is a
+     409.
+4. **The check, in `rank_game`.** The game's round is the latest round
+   in its session that the host registered and that has not ranked a
+   game yet. `RankChanged.round` (`{session}-{round}`) records it, so a
+   round ranks one game. Only the entrants who registered that round
+   are ranked, and only they count as opponents. A game with no
+   `session_id`, no such round, or fewer than two ranked entrants is
+   not ranked. There is no switch to rank without arbitration: every
+   client is this recomp.
+   - Bots will need no registration, because the host vouches for its
+     bots (bots.md §9.2, §9.3). That comes with the bots half; until
+     then a bot in a ranked game is not ranked.
+   - Reports are recorded and linked, but not yet compared. Comparing
+     them needs the `0x8001`/`0x8003`/`0x8007` records decoded.
+5. **Order.** A report may land after `GameEnded`. Ranking runs at
+   `GameEnded`, on the registrations, which the game makes before play
+   starts.
 
 What this stops: a host's record can no longer move a human's rank
 unless that human's own console registered the round. What it does not
 stop yet: a host misreporting the score. That waits for the decoded
 reports.
 
-**Open questions.**
+**Game-run check (the user).** Run with `H2_BOOT_VERBOSE=1` and play a
+ranked matchmaking game on two consoles. Each console logs
+`live arbitration: session <id> round <id> (advertising <id>): …` for
+Register, and again for Report.
 
-- Whether to keep a switch for ranking without arbitration while
-  consoles update. Proposed: no. Every client is this recomp, and the
-  ranks tests register their rounds.
-- Whether the 8-byte id in Register's first half is the session id. To
-  confirm from the game: the HLE logs both under `H2_BOOT_VERBOSE`.
+- On the host, `session` should equal `advertising`.
+- On the joining console, `session` should be the host's `advertising`
+  id.
+- The game's record on the server should carry that same `session_id`,
+  and the game should rank both players.
+
+If `session` matches neither, the first 8 bytes are not the session id.
+Then rounds cannot be linked this way, and nobody is ranked: send the
+log lines.

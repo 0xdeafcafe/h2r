@@ -768,12 +768,13 @@ impl State {
             .find(|k| !own.contains(k))
             .map(|k| live_proto::sign::hex(k))
     }
-    /// The playlist of the game about to start: the one this console's
-    /// own advertisement names, else the joined session's as last read.
+    /// The playlist and session (hex) of the game about to start: this
+    /// console's own advertisement, else the joined session as last read.
     /// No request is made.
-    pub fn playlist(&self, keys: &[[u8; 8]]) -> Option<u32> {
-        if let Some(p) = self.sessions.current_playlist() {
-            return Some(p);
+    pub fn matchmade(&self, keys: &[[u8; 8]]) -> Option<(u32, String)> {
+        if let (Some(p), Some(id)) = (self.sessions.current_playlist(), self.sessions.current_id())
+        {
+            return Some((p, live_proto::sign::hex(&id)));
         }
         let id = self.joined_session(keys)?;
         let seen = self
@@ -782,7 +783,8 @@ impl State {
             .seen
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        live_proto::optimatch::playlist(&seen.get(&id)?.advertisement.attributes)
+        let p = live_proto::optimatch::playlist(&seen.get(&id)?.advertisement.attributes)?;
+        Some((p, id))
     }
     /// Asks the server for session `id` again (its answer lands in the
     /// worker's [`crate::client::Seen`]); the request, when one could be
@@ -978,7 +980,19 @@ impl State {
             if op != crate::arbitration::Op::CreateRoundId && !self.connected() {
                 return Ok(NO_SESSION);
             }
-            return self.arbitration.invoke(op, a, m, &mut self.storage);
+            let session = self.session();
+            let advertising = self.sessions.current_id();
+            return self.arbitration.invoke(
+                op,
+                a,
+                m,
+                crate::arbitration::Context {
+                    storage: &mut self.storage,
+                    service: self.service.as_ref(),
+                    session: session.as_ref(),
+                    advertising,
+                },
+            );
         }
         if let Stats(op) = op {
             if self.online_refs == 0 {
