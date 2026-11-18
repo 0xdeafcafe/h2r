@@ -83,6 +83,8 @@ pub mod ui_watch;
 pub mod bot_glue;
 pub mod clankers;
 pub mod video_screen;
+pub mod voice_settings;
+pub mod pause_menu;
 pub mod snapshot_probe;
 pub mod sse;
 pub mod sweep_diag;

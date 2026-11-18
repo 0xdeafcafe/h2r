@@ -512,6 +512,10 @@ pub fn run(args: Vec<String>) -> Result<()> {
     if args.iter().any(|a| a == "--follow") {
         return crate::follow::run(args);
     }
+    // The host's microphones and outputs, for the Voice screen's device
+    // rows and `--set voice.input_device=...`: listed once, before any
+    // setting is read.
+    boot::voice_settings::use_host_devices(&audio::voice::HostDevices);
     let tmp = std::env::temp_dir();
     let mut out = tmp.join("h2boot");
     let mut data = content::store::default_data_root();

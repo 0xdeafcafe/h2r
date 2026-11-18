@@ -337,6 +337,23 @@ points! { ALL;
     /// The top-level Settings list's row chosen (thiscall on the list, the
     /// player chain and a pointer to the row).
     SETTINGS_ROW_CHOSEN @ 0x002b_1da9: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/game/settings-menu.md";
+    /// The campaign pause menu's row text (screen 18, `dialog_pause`):
+    /// switches on the item's row, 0 to 4; any other row gets the null id.
+    PAUSE_ROW_TEXT @ 0x0023_1f6c: [fn(list: ecx, item: stack 0, word: stack 1) ret 8]; "docs/game/settings-menu.md";
+    /// The campaign pause menu's row chosen: rows 0 to 3 have their own
+    /// press, and every other row runs row 4's.
+    PAUSE_ROW_CHOSEN @ 0x0023_1fe3: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/game/settings-menu.md";
+    /// The multiplayer pause menu's list handler constructor (screen 195,
+    /// `mp_menu`): ESI the handler, one stack argument. Makes the rows'
+    /// datum array (room for six) and adds a datum per row it shows, the
+    /// row's action word at datum `+2`.
+    MP_MENU_LIST_CTOR @ 0x0023_2708: [fn(list: esi, a: stack 0) ret 4]; "docs/game/settings-menu.md";
+    /// The multiplayer pause menu's row text: looks the row's action up in
+    /// a table of six.
+    MP_MENU_ROW_TEXT @ 0x0023_284e: [fn(list: ecx, item: stack 0, word: stack 1) ret 8]; "docs/game/settings-menu.md";
+    /// The multiplayer pause menu's row chosen: actions 0 to 4 have their
+    /// own press, and every other action runs action 5's.
+    MP_MENU_ROW_CHOSEN @ 0x0023_28b5: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/game/settings-menu.md";
     /// The Controls list's row text: the label and value of rows 0 to 5.
     CONTROLS_ROW_TEXT @ 0x002c_8548: [fn(list: ecx, item: stack 0, word: stack 1) ret 8]; "docs/game/settings-menu.md";
     /// The Controls list's row chosen (rows past 4 open the vibration
