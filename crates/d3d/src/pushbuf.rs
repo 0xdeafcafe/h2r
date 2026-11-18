@@ -330,6 +330,15 @@ impl Immediate {
         &self.regs
     }
 
+    /// An assembler with no `Begin` open whose persistent registers are
+    /// `regs` (a snapshot load).
+    pub fn with_registers(regs: ImmediateVertex) -> Self {
+        Self {
+            regs,
+            ..Self::default()
+        }
+    }
+
     /// `D3DDevice_Begin` (also `BEGIN_END` with a primitive).
     pub fn begin(&mut self, primitive: PrimitiveType, at: u32) -> Result<(), PushError> {
         if self.open.is_some() {
