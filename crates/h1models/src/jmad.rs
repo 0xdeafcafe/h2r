@@ -343,6 +343,12 @@ pub fn convert_graph(g: &Graph, skeleton: Option<&[AnimNode]>) -> Result<(Conver
         })
         .collect::<Vec<_>>();
 
+    // Each level of the tree in ascending string-ID order, as retail: the
+    // engine finds a mode, class, type and action by binary search
+    // (`0x001dd560`, from the graph lookup `0x001db170`), so a level in
+    // name order hides names (no `rifle` class: the cyborg refused the
+    // assault rifle). String IDs are known only when the map is built.
+    let sorted_array = |e: Vec<Block>, stride: usize| array(e, stride).sorted_by_string_id(stride as u32);
     let modes_any: Vec<String> = tree.keys().cloned().collect();
     let modes = tree
         .into_iter()
@@ -365,19 +371,19 @@ pub fn convert_graph(g: &Graph, skeleton: Option<&[AnimNode]>) -> Result<(Conver
                                 .collect::<Vec<_>>();
                             let mut b = Block::zeroed(TYPE_LEN);
                             b.string_id(0, &kind);
-                            b.block(4, actions.len() as u32, array(actions, ACTION_LEN));
+                            b.block(4, actions.len() as u32, sorted_array(actions, ACTION_LEN));
                             b
                         })
                         .collect::<Vec<_>>();
                     let mut b = Block::zeroed(CLASS_LEN);
                     b.string_id(0, &class);
-                    b.block(4, types.len() as u32, array(types, TYPE_LEN));
+                    b.block(4, types.len() as u32, sorted_array(types, TYPE_LEN));
                     b
                 })
                 .collect::<Vec<_>>();
             let mut b = Block::zeroed(MODE_LEN);
             b.string_id(0, &mode);
-            b.block(4, classes.len() as u32, array(classes, CLASS_LEN));
+            b.block(4, classes.len() as u32, sorted_array(classes, CLASS_LEN));
             b
         })
         .collect::<Vec<_>>();
@@ -398,7 +404,7 @@ pub fn convert_graph(g: &Graph, skeleton: Option<&[AnimNode]>) -> Result<(Conver
     // tests/weapon_rebuild_disc.rs in h1objects). Other graphs leave it
     // empty, as before (its meaning in unit graphs is not established).
     let first_person = !modes_any.is_empty() && modes_any.iter().all(|m| m == crate::names::FIRST_PERSON_MODE);
-    h.block(0x34, modes.len() as u32, array(modes, MODE_LEN));
+    h.block(0x34, modes.len() as u32, sorted_array(modes, MODE_LEN));
     if first_person {
         let mut p = Block::zeroed(8);
         p.string_id(0, crate::names::FIRST_PERSON_MODE)

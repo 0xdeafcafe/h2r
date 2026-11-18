@@ -810,3 +810,44 @@ fn a_header_template_and_low_detail_raw_reach_the_header() {
     t.set.header_template = Some(vec![0; 0x10]);
     assert!(t.set.build().is_err(), "a template is a whole header");
 }
+
+/// A block marked sorted by string ID is laid out in ascending string-ID
+/// order (the engine's binary search, `0x001dd560`), whatever order its
+/// elements were made in: a longer name sorts after a shorter one (the
+/// length is the ID's top byte), and among new strings of one length the
+/// one interned first sorts first. Each element's other fixups move with
+/// it.
+#[test]
+fn a_block_sorted_by_string_id_is_laid_out_in_id_order() {
+    let mut t = tiny();
+    // Interned in this order: "zz" (index 2), "aa" (3).
+    t.set.intern("zz").unwrap();
+    t.set.intern("aa").unwrap();
+    let names = ["unarmed", "aa", "rifle", "zz", "existing"];
+    let mut elements = Block::zeroed(names.len() * 0xc);
+    for (i, n) in names.iter().enumerate() {
+        let at = (i * 0xc) as u32;
+        elements.string_id(at, n).put_u32(at as usize + 4, i as u32);
+        elements.tag_id(at + 8, t.globals);
+    }
+    let mut root = Block::zeroed(8);
+    root.block(0, names.len() as u32, elements.sorted_by_string_id(0xc));
+    let id = t
+        .set
+        .add_tag(cc(b"thng"), "invented\\sorted", TagPayload::Built(root))
+        .unwrap();
+    let mut map = read(t.set.build().unwrap().0);
+    let b = map.read_tag_bytes(id).unwrap();
+    let ids: Vec<u32> = (0..names.len()).map(|i| word(&b, 8 + i * 0xc)).collect();
+    let order: Vec<u32> = (0..names.len()).map(|i| word(&b, 8 + i * 0xc + 4)).collect();
+    assert!(ids.windows(2).all(|w| (w[0] as i32) < (w[1] as i32)), "{ids:x?}");
+    // "zz" (2) and "aa" (3), then "rifle", then "unarmed" and "existing"
+    // (7 and 8 bytes).
+    assert_eq!(order, [3, 1, 2, 0, 4]);
+    let strings = map.strings().to_vec();
+    for (i, &w) in ids.iter().enumerate() {
+        let name = strings[(w & 0xff_ffff) as usize].as_deref().unwrap();
+        assert_eq!(name, names[order[i] as usize]);
+        assert_eq!(word(&b, 8 + i * 0xc + 8), t.globals.0);
+    }
+}
