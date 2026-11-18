@@ -264,6 +264,15 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         )
         .route("/v1/server", get(crate::status::get_server))
         .route("/v1/stats/summary", get(crate::stats::get_summary))
+        .route("/v1/ranks/{playlist}", get(crate::ranks::leaderboard))
+        .route(
+            "/v1/accounts/{gamertag}/ranks",
+            get(crate::ranks::player_ranks),
+        )
+        .route(
+            "/v1/accounts/{gamertag}/ranks/{playlist}",
+            get(crate::ranks::player_history),
+        )
         .route("/v1/admin/status", get(crate::status::get_admin_status))
         .route("/v1/events", get(list_events).post(post_event))
         .route(

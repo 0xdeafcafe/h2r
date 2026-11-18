@@ -14,6 +14,7 @@ pub mod maps;
 pub mod motd;
 pub mod optimatch;
 pub mod pack;
+pub mod rank;
 pub mod recovery;
 #[doc(hidden)]
 pub mod samples;

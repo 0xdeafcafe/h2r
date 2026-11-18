@@ -165,6 +165,8 @@ pub struct Live {
     creates: RateLimiter,
     team_writes: tokio::sync::Mutex<()>,
     pub(crate) session_writes: tokio::sync::Mutex<()>,
+    /// Serializes ranking, so a game is ranked once.
+    pub(crate) rank_writes: tokio::sync::Mutex<()>,
     pub(crate) local_signin: crate::local_signin::Offers,
     pub(crate) relays: crate::relay::Relays,
     pub(crate) invites: Arc<crate::invites::Invites>,
@@ -228,7 +230,11 @@ fn may_write(author: &Author, stream: &str, kind: &str) -> bool {
             && stream.starts_with("mailbox-")
             && live_proto::mailbox::is_kind(kind);
     }
-    if stream.starts_with("session-") || live_proto::maps::KINDS.contains(&kind) {
+    if stream.starts_with("session-")
+        || stream.starts_with("rank-")
+        || kind == live_proto::rank::CHANGED
+        || live_proto::maps::KINDS.contains(&kind)
+    {
         return false;
     }
     if live_proto::team::Action::is_kind(kind) {
@@ -472,6 +478,7 @@ impl Live {
             creates: RateLimiter::new(policy.create_rate.0, policy.create_rate.1),
             team_writes: Default::default(),
             session_writes: Default::default(),
+            rank_writes: Default::default(),
             local_signin: Default::default(),
             relays: Default::default(),
             invites,

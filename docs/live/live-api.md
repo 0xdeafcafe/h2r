@@ -1004,3 +1004,22 @@ above where they differ.
   `aud` is the server id from the well-known document and `iat` must be
   within 5 minutes of the server's clock. The fixed test vector is
   `account_request_vector` in `crates/live-proto/src/sign.rs`.
+
+## Ranks
+
+Per-playlist ranks ([live-matchmaking.md](live-matchmaking.md) §8): a
+level 1..50 and experience for each player in each ranked playlist. The
+server writes them, as server-signed `RankChanged` events on
+`rank-<xuid>`, when a finished ranked matchmaking game ends; nobody else
+may write those streams. A standing is
+`{level, experience, highest, games, wins}`. Reads are public, or need
+`read` on a private server.
+
+| endpoint | result |
+|---|---|
+| `GET /v1/accounts/{who}/ranks` | `{xuid, ranks: {playlist: standing}, position}`; `who` is a gamertag or XUID; 404 if unknown |
+| `GET /v1/accounts/{who}/ranks/{playlist}` | `{xuid, playlist, standing, history, position}`: `history` is the last 100 changes, newest first, `{game_id, at, position, before, after}` |
+| `GET /v1/ranks/{playlist}?limit=` | `{playlist, items, position}`: `{xuid, gamertag, ...standing}`, by level then experience; `limit` 1..1000, default 100 |
+
+`playlist` is the hopper descriptor index, as sessions and games name it.
+

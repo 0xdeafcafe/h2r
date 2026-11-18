@@ -183,6 +183,8 @@ pub struct State {
     /// sessions, so the log can hide the event's game id and activity from
     /// readers who may not see them.
     pub presence_context: HashMap<u64, Vec<String>>,
+    /// Per-playlist ranks, from the `rank-*` streams (crate::ranks).
+    pub ranks: crate::ranks::Ranks,
 }
 
 impl State {
@@ -469,6 +471,10 @@ impl Model {
         }
         if b.stream.starts_with("session-") {
             crate::sessions::project(&mut s, e, at);
+            return;
+        }
+        if b.stream.starts_with("rank-") {
+            crate::ranks::project(&mut s, e);
             return;
         }
         if b.stream.starts_with("game-") {
