@@ -10,6 +10,7 @@ use wgpu::util::DeviceExt;
 
 use crate::camera::{Mat4, RenderCamera};
 use crate::cull::{CullStats, Frustum, IndirectSlot, SLOT_SIZE, cull, indirect_slots};
+use crate::program::{ProgramSet, ViewInputs};
 use crate::world::{LightmapKey, World, WorldVertex};
 
 /// An RGBA8 image (linear rows, no padding) with its smaller levels.
@@ -112,11 +113,14 @@ pub struct GpuWorld {
     batch_layout: wgpu::BindGroupLayout,
     shader: wgpu::ShaderModule,
     pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat), wgpu::RenderPipeline>,
+    /// Materials drawn with their own programs ([`crate::program`]); the
+    /// rest draw with stage 1's.
+    programs: Option<ProgramSet>,
 }
 
 const SHADER: &str = include_str!("world.wgsl");
 
-fn texture(device: &wgpu::Device, queue: &wgpu::Queue, image: &Image, label: &str) -> wgpu::TextureView {
+pub(crate) fn texture(device: &wgpu::Device, queue: &wgpu::Queue, image: &Image, label: &str) -> wgpu::TextureView {
     let size = wgpu::Extent3d {
         width: image.width.max(1),
         height: image.height.max(1),
@@ -324,11 +328,30 @@ impl GpuWorld {
             batch_layout,
             shader,
             pipelines: HashMap::new(),
+            programs: None,
         }
     }
 
     pub fn world(&self) -> &World {
         &self.world
+    }
+
+    /// Draws `programs`' materials with their own programs from now on.
+    pub fn set_programs(&mut self, programs: ProgramSet) {
+        self.programs = Some(programs);
+    }
+
+    /// How many materials draw with their own programs.
+    pub fn program_count(&self) -> usize {
+        self.programs.as_ref().map_or(0, ProgramSet::len)
+    }
+
+    /// The frame's view for the programs' uniforms (the device's view
+    /// constants, the target's sizes and depth scale).
+    pub fn prepare_programs(&self, queue: &wgpu::Queue, view: &ViewInputs) {
+        if let Some(p) = &self.programs {
+            p.prepare(queue, view);
+        }
     }
 
     fn pipeline(&mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat) -> &wgpu::RenderPipeline {
@@ -400,7 +423,9 @@ impl GpuWorld {
     }
 
     /// Records the pass: loads and keeps the target and depth, draws every
-    /// batch with its slot range.
+    /// batch with its slot range. `target_size` is the colour target's in
+    /// texels: a batch drawn with its own program covers it all (the
+    /// game's viewport is in its vertex program's constants).
     #[allow(clippy::too_many_arguments)]
     pub fn encode(
         &mut self,
@@ -411,8 +436,12 @@ impl GpuWorld {
         depth: &wgpu::TextureView,
         depth_format: wgpu::TextureFormat,
         viewport: PassViewport,
+        target_size: (u32, u32),
     ) {
         self.pipeline(device, color_format, depth_format);
+        if let Some(p) = &mut self.programs {
+            p.pipelines(device, color_format, depth_format);
+        }
         let pipeline = &self.pipelines[&(color_format, depth_format)];
         let has_stencil = depth_format.has_stencil_aspect();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -444,13 +473,34 @@ impl GpuWorld {
         if self.slots.is_empty() {
             return;
         }
-        pass.set_viewport(viewport.x, viewport.y, viewport.width, viewport.height, 0.0, 1.0);
-        pass.set_pipeline(pipeline);
-        pass.set_bind_group(0, &self.frame_group, &[]);
         pass.set_vertex_buffer(0, self.vertices.slice(..));
         pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
-        for (b, group) in self.world.batches.iter().zip(&self.batch_groups) {
-            pass.set_bind_group(1, group, &[]);
+        // Which pipeline is bound: None before the first batch, Some(false)
+        // stage 1's, Some(true) a material program's (its groups are set
+        // per batch).
+        let mut own: Option<bool> = None;
+        for (i, (b, group)) in self.world.batches.iter().zip(&self.batch_groups).enumerate() {
+            let program = self
+                .programs
+                .as_ref()
+                .and_then(|p| p.batch(i, b.material, color_format, depth_format));
+            if let Some((program, uniforms, textures)) = program {
+                if own != Some(true) {
+                    pass.set_viewport(0.0, 0.0, target_size.0 as f32, target_size.1 as f32, 0.0, 1.0);
+                }
+                own = Some(true);
+                pass.set_pipeline(program);
+                pass.set_bind_group(0, uniforms, &[]);
+                pass.set_bind_group(1, textures, &[]);
+            } else {
+                if own != Some(false) {
+                    pass.set_viewport(viewport.x, viewport.y, viewport.width, viewport.height, 0.0, 1.0);
+                    pass.set_pipeline(pipeline);
+                    pass.set_bind_group(0, &self.frame_group, &[]);
+                }
+                own = Some(false);
+                pass.set_bind_group(1, group, &[]);
+            }
             pass.multi_draw_indexed_indirect(&self.indirect, u64::from(b.first_draw) * SLOT_SIZE, b.draw_count);
         }
     }

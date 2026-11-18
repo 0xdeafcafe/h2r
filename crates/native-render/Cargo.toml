@@ -9,12 +9,13 @@ license.workspace = true
 default = ["gpu"]
 # The map loader and the wgpu pass. Without it only the pure parts
 # (world, camera, cull, skip) build: what the feature crate's hooks need.
-gpu = ["dep:map", "dep:tags", "dep:wgpu"]
+gpu = ["dep:map", "dep:tags", "dep:wgpu", "dep:shaders"]
 
 [dependencies]
 map = { workspace = true, optional = true }
 tags = { workspace = true, optional = true }
 wgpu = { version = "30", optional = true }
+shaders = { path = "../shaders", optional = true }
 bytemuck = { version = "1", features = ["derive"] }
 
 [dev-dependencies]

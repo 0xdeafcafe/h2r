@@ -157,6 +157,7 @@ fn the_world_draws_lit_with_the_games_w_depth() {
         &dv,
         wgpu::TextureFormat::Depth32Float,
         viewport,
+        (SIZE, SIZE),
     );
     ctx.queue.submit([enc.finish()]);
 

@@ -3529,6 +3529,7 @@ dependencies = [
  "gfx",
  "map",
  "pollster",
+ "shaders",
  "tags",
  "wgpu",
 ]
