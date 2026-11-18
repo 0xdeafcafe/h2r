@@ -41,46 +41,6 @@ const LEAF_CHECK_SHARE: i64 = 32;
 /// retail's and slightly tighter (docs/formats/mopp.md).
 const ZOOM_MIN_SURFACES: usize = 8;
 
-/// Converter version 71's behaviour, piece by piece, to measure what each
-/// of version 72's changes costs in code size (tests/disc.rs
-/// `size_by_change`). Not for output.
-#[doc(hidden)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Legacy {
-    /// `TOP_MARGIN` 4096.
-    pub margin: bool,
-    /// Inclusive tops on splits and bound checks.
-    pub inclusive_tops: bool,
-    /// Zoom on the span alone, tops up to 255.
-    pub zoom: bool,
-    /// The low child's tracked region ends at `low_max`, not `low_max + 1`.
-    pub region: bool,
-}
-
-thread_local! {
-    static LEGACY: std::cell::Cell<Legacy> = const {
-        std::cell::Cell::new(Legacy {
-            margin: false,
-            inclusive_tops: false,
-            zoom: false,
-            region: false,
-        })
-    };
-}
-fn legacy() -> Legacy {
-    LEGACY.with(|l| l.get())
-}
-
-/// [`build`] with some of version 72's changes undone. Measurement only:
-/// with `inclusive_tops` the program is wrong for the engine's box query.
-#[doc(hidden)]
-pub fn build_legacy(surfaces: &[Surface], l: Legacy) -> Code {
-    LEGACY.with(|c| c.set(l));
-    let code = build(surfaces);
-    LEGACY.with(|c| c.set(Legacy::default()));
-    code
-}
-
 #[derive(Clone, Copy)]
 struct Prim {
     key: u32,
@@ -168,7 +128,7 @@ fn node(prims: &mut [Prim], mut f: Frame, mut r: Region) -> Vec<u8> {
                 offset: [0, 1, 2].map(|a| (f.offset[a] + b[a]) << k),
                 key_offset: f.key_offset,
             };
-            legacy().zoom || union(prims, &g).iter().all(|&(_, hi)| hi <= 254)
+            union(prims, &g).iter().all(|&(_, hi)| hi <= 254)
         });
         let Some(k) = k else { break };
         out.extend([k as u8, b[0] as u8, b[1] as u8, b[2] as u8]);
@@ -200,13 +160,8 @@ fn node(prims: &mut [Prim], mut f: Frame, mut r: Region) -> Vec<u8> {
         };
         let worth = trim.saturating_mul(share) >= width;
         if trim > 0 && worth {
-            let top = if legacy().inclusive_tops {
-                u[a].1
-            } else {
-                debug_assert!(0 <= u[a].0 && u[a].1 <= 254);
-                u[a].1 + 1
-            };
-            out.extend([0x26 + a as u8, u[a].0 as u8, top as u8]);
+            debug_assert!(0 <= u[a].0 && u[a].1 <= 254);
+            out.extend([0x26 + a as u8, u[a].0 as u8, (u[a].1 + 1) as u8]);
             r[a] = u[a];
         }
     }
@@ -264,29 +219,23 @@ fn node(prims: &mut [Prim], mut f: Frame, mut r: Region) -> Vec<u8> {
         .map(|p| frame_box(p, &f).0[axis])
         .min()
         .unwrap_or(0);
-    // The sphere query visits the low child when hi < high_min or lo <=
-    // the operand, so a query there has lo <= max(low_max + 1, high_min -
-    // 1); both queries visit the high child only when hi >= high_min (E
-    // 0x003003cd, 0x002ffa85).
+    // The region only decides which bound checks are worth emitting. The
+    // box query enters the low child only with lo <= low_max (the operand
+    // is low_max + 1, exclusive); the sphere query also enters with lo one
+    // past it, which only lets it return a little more. Tracking lo <=
+    // max(low_max, high_min - 1) keeps the checks retail-sized: widening
+    // it to low_max + 1 cost 9 % more code over the retail BSPs (10.15 to
+    // 11.05 MB). Both queries enter the high child only when hi >=
+    // high_min (E 0x003003cd, 0x002ffa85).
     let mut r_low = r;
-    let reach = if legacy().region {
-        low_max
-    } else {
-        low_max + 1
-    };
-    r_low[axis].1 = r_low[axis].1.min(reach.max(high_min - 1));
+    r_low[axis].1 = r_low[axis].1.min(low_max.max(high_min - 1));
     let mut r_high = r;
     r_high[axis].0 = r_high[axis].0.max(high_min);
     let low_code = node(low, f, r_low);
     let high_code = node(high, f, r_high);
 
-    let lm = if legacy().inclusive_tops {
-        low_max
-    } else {
-        debug_assert!(low_max <= 254);
-        low_max + 1
-    };
-    let (lm, hm) = (lm as u8, high_min as u8);
+    debug_assert!(low_max <= 254);
+    let (lm, hm) = ((low_max + 1) as u8, high_min as u8);
     if low_code.len() <= 0xff {
         out.extend([0x10 + axis as u8, lm, hm, low_code.len() as u8]);
         out.extend(low_code);
@@ -333,8 +282,7 @@ pub fn build(surfaces: &[Surface]) -> Code {
     let pad = 0.01 + extent * 1e-4;
     let offset = min.map(|m| (f64::from(m) - pad) as f32);
     let full_top = f64::from(1u32 << FULL_BITS);
-    let margin = if legacy().margin { 4096.0 } else { TOP_MARGIN };
-    let scale = ((full_top - margin) / (extent + 2.0 * pad)) as f32;
+    let scale = ((full_top - TOP_MARGIN) / (extent + 2.0 * pad)) as f32;
     let mut code = Code {
         offset,
         scale,
