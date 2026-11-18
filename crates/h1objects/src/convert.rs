@@ -311,6 +311,20 @@ pub struct ObjectReport {
 pub struct Tree {
     pub tags: Vec<(String, Converted)>,
     pub reports: Vec<ObjectReport>,
+    /// The HUD each owner (the player biped) can switch between at game
+    /// start (`boot::hud`; docs/game/hud.md).
+    pub hud_swaps: Vec<HudSwap>,
+}
+
+/// One owner's two HUDs: Halo 1's ([`crate::h1hud`]), which the owner
+/// names as built, and Halo 2's with the health strip
+/// ([`crate::health_hud`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HudSwap {
+    /// The `bipd` or `weap` whose HUD reference switches.
+    pub owner: TagId,
+    pub halo1: TagId,
+    pub halo2: TagId,
 }
 
 const LOCAL: u32 = 0xfffd_0000;
@@ -342,6 +356,12 @@ pub enum PhysicsKind {
 /// Stands for the `k`-th tag of a [`Tree`] until it is installed.
 pub fn local(k: usize) -> TagId {
     TagId(LOCAL | k as u32)
+}
+
+/// The tree index `t` names, when it is one of the tree's own tags
+/// ([`local`]) rather than a base-map tag.
+pub fn local_index(t: TagId) -> Option<usize> {
+    (t.0 & 0xffff_0000 == LOCAL).then_some((t.0 & 0xffff) as usize)
 }
 
 fn rewrite(b: &mut Block, ids: &[TagId]) {
@@ -572,6 +592,11 @@ pub struct Converter<'a> {
     coll_names: HashMap<(u32, bool), Vec<(String, Vec<String>)>>,
     /// Each template `nhdt` given the health meter.
     health_huds: HashMap<TagId, TagId>,
+    /// Widgets per converted `unhi` ([`Self::unit_hud`]).
+    unit_hud_widgets: HashMap<u32, usize>,
+    /// Per converted `wphi`, its entries with no widget
+    /// ([`Self::weapon_hud`]).
+    weapon_hud_skips: HashMap<u32, Vec<String>>,
     /// Biped role words, per role ([`Self::biped_role`]).
     roles: HashMap<crate::rebuild::BipedRole, Option<crate::rebuild::RoleWords>>,
     /// Weapon, equipment, projectile and damage role words, per group
@@ -595,6 +620,8 @@ impl<'a> Converter<'a> {
             colls: HashMap::new(),
             coll_names: HashMap::new(),
             health_huds: HashMap::new(),
+            unit_hud_widgets: HashMap::new(),
+            weapon_hud_skips: HashMap::new(),
             roles: HashMap::new(),
             item_roles: HashMap::new(),
             vehicle_roles: HashMap::new(),
@@ -1439,6 +1466,7 @@ impl<'a> Converter<'a> {
         }
         self.object_physics(&mut rep, hlmt, &u.object, &tag.name, PhysicsKind::Biped)?;
         let predicted = self.predicted(&u.object)?;
+        let mut swap = None;
         let hud = if health_hud::is_player_biped(&tag.name) {
             let tpl_root = self.base.root(cid)?;
             match self.health_interfaces(&tpl_root) {
@@ -1447,7 +1475,19 @@ impl<'a> Converter<'a> {
                         "HUD: {cname}'s with Halo 1's health meter ({} interfaces; docs/game/health.md)",
                         ids.len()
                     ));
-                    Some(ids)
+                    match self.unit_hud(u) {
+                        Ok((h1, n)) => {
+                            rep.no_home.push(format!(
+                                "HUD: Halo 1's ({n} widgets; docs/game/hud.md), Halo 2's at the switch"
+                            ));
+                            swap = Some((h1, ids[0]));
+                            Some(vec![h1; ids.len()])
+                        }
+                        Err(e) => {
+                            rep.no_home.push(format!("HUD: no Halo 1 HUD: {e}"));
+                            Some(ids)
+                        }
+                    }
                 }
                 Err(e) => {
                     rep.no_home.push(format!("HUD: no health meter: {e}"));
@@ -1485,14 +1525,22 @@ impl<'a> Converter<'a> {
             u.references.iter().filter(|r| r.tag.is_some()).count()
         ));
         self.tree.reports.push(rep);
-        Ok(self.tree.push(
+        let id = self.tree.push(
             &tag.name,
             Converted {
                 group: FourCC(*b"bipd"),
                 root,
                 raw: Vec::new(),
             },
-        ))
+        );
+        if let Some((halo1, halo2)) = swap {
+            self.tree.hud_swaps.push(HudSwap {
+                owner: id,
+                halo1,
+                halo2,
+            });
+        }
+        Ok(id)
     }
 
     /// Gives an object's `hlmt` (a tree tag) a physics model built from
@@ -1775,6 +1823,119 @@ impl<'a> Converter<'a> {
 }
 
 impl Converter<'_> {
+    /// Halo 1's unit HUD of `u` (its `unhi`) as an `nhdt` written from
+    /// scratch ([`crate::h1hud`]), built once per `unhi`. Returns the tag
+    /// and its widget count.
+    pub fn unit_hud(&mut self, u: &crate::h1::Unit) -> Result<(TagId, usize)> {
+        let unhi = u
+            .references
+            .iter()
+            .filter(|r| r.group == h1map::Group::new(b"unhi"))
+            .find_map(|r| r.tag)
+            .ok_or_else(|| Error::Invalid("no unhi".into()))?;
+        let tag = self.h1.tag(unhi)?.clone();
+        if let Some(id) = self.done.get(&tag.id.0) {
+            let n = self.unit_hud_widgets.get(&tag.id.0).copied().unwrap_or(0);
+            return Ok((*id, n));
+        }
+        let b = crate::h1::tag_bytes(self.h1, &tag, b"unhi", crate::h1hud::unhi::SIZE)?.to_vec();
+        let elements = crate::h1hud::unit_elements(self.h1, &b)?;
+        let find = |group: &[u8; 4], name: &str| {
+            self.base
+                .find(group, name)
+                .ok_or_else(|| Error::NoTemplate(name.into()))
+        };
+        let meter = find(b"shad", crate::h1hud::METER_SHADER)?;
+        let plain = find(b"shad", crate::h1hud::STATIC_SHADER)?;
+        let mut widgets = Vec::new();
+        for e in &elements {
+            let bt = self.h1.tag(e.bitmap)?.clone();
+            let bm = h1map::bitmap::Bitmap::read(self.h1, &bt)?;
+            if crate::h1hud::sprite(&bm, e.sequence).is_none() {
+                return Err(Error::Invalid(format!(
+                    "{}: {} draws nothing in sequence {}",
+                    e.name, bt.name, e.sequence
+                )));
+            }
+            let bitmap = self
+                .bitmap(e.bitmap)
+                .ok_or_else(|| Error::Invalid(format!("bitmap {} unconverted", bt.name)))?;
+            let reg = crate::h1hud::registration(e.anchor);
+            widgets.push(crate::h1hud::widget_for(e, bitmap, reg, meter, plain));
+        }
+        if widgets.is_empty() {
+            return Err(Error::Invalid(format!("{}: no drawable element", tag.name)));
+        }
+        let n = widgets.len();
+        let id = self.tree.push(
+            &format!("{}{}", tag.name, crate::h1hud::NHDT_SUFFIX),
+            Converted {
+                group: FourCC(*b"nhdt"),
+                root: crate::h1hud::nhdt(&widgets),
+                raw: Vec::new(),
+            },
+        );
+        self.done.insert(tag.id.0, id);
+        self.unit_hud_widgets.insert(tag.id.0, n);
+        Ok((id, n))
+    }
+
+    /// Halo 1's weapon HUD `wphi` (and its children) as an `nhdt` written
+    /// from scratch ([`crate::h1hud::weapon_widget`]), built once per
+    /// `wphi`: the weapons' part of Halo 1's HUD, for whoever builds the
+    /// `weap` to name at `+0x2b0`. Returns the tag and, per entry with no
+    /// widget, why.
+    pub fn weapon_hud(&mut self, wphi: h1map::TagId) -> Result<(TagId, Vec<String>)> {
+        use crate::h1hud;
+        let tag = self.h1.tag(wphi)?.clone();
+        if let Some(id) = self.done.get(&tag.id.0) {
+            let skipped = self.weapon_hud_skips.get(&tag.id.0).cloned().unwrap_or_default();
+            return Ok((*id, skipped));
+        }
+        let (entries, uncounted) = h1hud::weapon_entries(self.h1, wphi)?;
+        let find = |group: &[u8; 4], name: &str| {
+            self.base
+                .find(group, name)
+                .ok_or_else(|| Error::NoTemplate(name.into()))
+        };
+        let meter = find(b"shad", h1hud::METER_SHADER)?;
+        let plain = find(b"shad", h1hud::STATIC_SHADER)?;
+        let mut widgets = Vec::new();
+        let mut skipped = Vec::new();
+        for e in &entries {
+            let drawn = match e.bitmap {
+                Some(b) => {
+                    let bt = self.h1.tag(b)?.clone();
+                    let bm = h1map::bitmap::Bitmap::read(self.h1, &bt)?;
+                    h1hud::sprite(&bm, e.sequence)
+                        .and_then(|_| self.bitmap(b))
+                }
+                None => None,
+            };
+            match h1hud::weapon_widget(e, drawn, meter, plain) {
+                Ok(w) => widgets.push(w),
+                Err(why) => skipped.push(format!("{:?}: {why:?}", e.kind)),
+            }
+        }
+        if uncounted > 0 {
+            skipped.push(format!("{uncounted} numbers and overlay elements not converted"));
+        }
+        if widgets.is_empty() {
+            return Err(Error::Invalid(format!("{}: no drawable element", tag.name)));
+        }
+        let id = self.tree.push(
+            &format!("{}{}", tag.name, h1hud::WEAPON_NHDT_SUFFIX),
+            Converted {
+                group: FourCC(*b"nhdt"),
+                root: h1hud::nhdt(&widgets),
+                raw: Vec::new(),
+            },
+        );
+        self.done.insert(tag.id.0, id);
+        self.weapon_hud_skips.insert(tag.id.0, skipped.clone());
+        Ok((id, skipped))
+    }
+
     /// Points the player biped's HUD interfaces (`unit +0x1a0`) at copies
     /// of their `nhdt` with the health meter ([`health_hud`]). Returns how
     /// many interfaces it points.

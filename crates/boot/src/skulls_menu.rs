@@ -41,10 +41,10 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use settings::Store;
 
+use crate::h1_options::OptionRow;
 use crate::layout_glue::Gm;
 #[cfg(test)]
 use crate::layout_glue::ID_BASE;
-use crate::h1_options::OptionRow;
 use crate::list_class::{ListLayout, PictureSpec, Rows, TextBlock};
 use crate::skulls::{self, ABOUT, COUNT, SKULLS, State, TOTAL};
 use crate::ui::{Chosen, LABEL_SLOT};
@@ -125,9 +125,33 @@ pub const FOOTER_ID: u32 = SKULLS_ID_BASE + 0x13;
 pub const LIST_LAYOUT: ListLayout = ListLayout {
     skin: 0,
     anchor: [-215, 130],
-    bitmaps_left_of: 0,
+    bitmaps_left_of: i16::MIN,
     visible: VISIBLE_ROWS,
 };
+
+/// The level select's own screen id.
+pub const LEVEL_SELECT_SCREEN_ID: i16 = 11;
+
+/// The list's frame: the level select's left bracket (`ul_02`, its pane 0
+/// bitmap 1, `[177 -259 -79 -131]`, 128 by 256), at its own place, made
+/// for this list at this anchor. The Controls tag's bracket (`ul_03`) was
+/// made for the Controls list, 39 units further left and on another skin:
+/// kept under this list it framed an empty box and the first row's end cap
+/// cut its arm off (docs/game/ui-builder.md, slice 3), so none of the
+/// Controls frame art is kept ([`LIST_LAYOUT`]`.bitmaps_left_of`).
+pub const FRAME: PictureSpec = PictureSpec {
+    screen_id: LEVEL_SELECT_SCREEN_ID as u32,
+    pane: 0,
+    bitmap: 1,
+    image: 0,
+    at: [-259, 177],
+    animation: FRAME_ANIMATION,
+};
+/// [`FRAME`]'s animation: the bracket's own in the level select (read off
+/// the disc), so it slides with the page as there.
+pub const FRAME_ANIMATION: u16 = 2;
+/// [`FRAME`]'s image size.
+pub const FRAME_SIZE: [u16; 2] = [128, 256];
 
 /// Rows the page's list lays out before it scrolls: from the anchor down to
 /// the footer band, one skin-0 item (22 units) each. The Controls tag's six
@@ -661,7 +685,9 @@ impl Rows for SkullsScreen {
         match self.mode() {
             Mode::Campaign => match self.page_row(row) {
                 Some(PageRow::Start) => Chosen::Act,
-                Some(_) => self.press_line(row).map_or(Chosen::Nothing, Chosen::Stepped),
+                Some(_) => self
+                    .press_line(row)
+                    .map_or(Chosen::Nothing, Chosen::Stepped),
                 None => Chosen::Nothing,
             },
             Mode::Multiplayer => self
@@ -1126,7 +1152,11 @@ mod tests {
         assert_eq!(s.tint(first), Some(tint(Gold, State::Locked)));
         assert_eq!(s.tint(last), Some(tint(Silver, State::Locked)));
         skulls::record_pickup(&st, &names(&["Chief"]), ORDER[0]);
-        assert_eq!(s.tint(first), Some(tint(Gold, State::On)), "collected and on");
+        assert_eq!(
+            s.tint(first),
+            Some(tint(Gold, State::On)),
+            "collected and on"
+        );
         assert_eq!(s.tint(s.count() as i16), None);
         let mp = SkullsScreen::multiplayer(Arc::clone(&st));
         mp.open("Chief".into());
@@ -1168,10 +1198,10 @@ mod tests {
     }
 
     /// The list (default skin rows: text and background to 210 right of the
-    /// anchor) stays left of the picture column; the frame art kept is the
-    /// Controls tag's left of the centre (`ul_03`, `[170 -280 42 -24]`), and
-    /// its bottom-right piece (`br_06`, `[-30 150 -286 406]`, which the old
-    /// description ran into) is left out by `bitmaps_left_of`.
+    /// anchor) stays left of the picture column; none of the Controls
+    /// frame art is kept (`ul_03` `[170 -280 42 -24]`, `br_06`
+    /// `[-30 150 -286 406]`), and the level select's bracket frames the list
+    /// from its left.
     #[test]
     fn the_columns_do_not_overlap_and_the_frame_stays_clear() {
         const ROW_RIGHT: i16 = 210;
@@ -1182,17 +1212,13 @@ mod tests {
             "list {list_right} left of the picture {bl}"
         );
         assert!(list_right < DESCRIPTION_TEXT.rect[1]);
-        let (ul_03_right, br_06_left) = (-24, 150);
-        assert!(
-            ul_03_right < LIST_LAYOUT.bitmaps_left_of,
-            "the left frame is kept"
-        );
-        assert!(
-            br_06_left >= LIST_LAYOUT.bitmaps_left_of,
-            "the right frame is not"
-        );
-        assert!(PICTURE.at[0] >= LIST_LAYOUT.bitmaps_left_of);
-        assert!(DESCRIPTION_TEXT.rect[1] >= LIST_LAYOUT.bitmaps_left_of);
+        // No Controls frame art is kept: every bitmap's x is at least the
+        // least there is.
+        assert_eq!(LIST_LAYOUT.bitmaps_left_of, i16::MIN);
+        // The bracket's left edge is left of the list, and its right edge
+        // over the list's first column, as on the level select.
+        assert!(FRAME.at[0] < LIST_LAYOUT.anchor[0]);
+        assert!(FRAME.at[0] + FRAME_SIZE[0] as i16 > LIST_LAYOUT.anchor[0]);
         let [top, left, bottom, right] = DESCRIPTION_TEXT.rect;
         assert!(
             top <= 240 && bottom >= -240 && left >= -320 && right <= 320,
@@ -1409,6 +1435,9 @@ mod disc {
         // select's own do.
         assert_eq!(p.text_blocks[0].animation.0, DESCRIPTION_ANIMATION);
         assert_eq!(p.bitmaps[0].animation.0, PICTURE_ANIMATION);
+        let f = &p.bitmaps[FRAME.bitmap as usize];
+        assert_eq!(f.animation.0, FRAME_ANIMATION, "the bracket's own");
+        assert_eq!([f.top_left.x, f.top_left.y], FRAME.at);
         // The rows end above the footer band of the tag the page copies.
         let path = std::env::var_os("H2_DISC")
             .map(PathBuf::from)
@@ -1416,13 +1445,16 @@ mod disc {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../disc/halo2.iso")
             });
         let d = crate::ui_kit::preview::Disc::open(&path).unwrap();
-        let footer = d.shared.header_layouts[usize::from(d.controls.header_layout())].secondary;
+        let footer = d.shared.header_layouts[d.controls.header_layout()].secondary;
         let last_bottom = LIST_LAYOUT.anchor[1] - VISIBLE_ROWS * ITEM_HEIGHT;
         assert!(
             last_bottom > footer.top,
             "{last_bottom} runs into the footer at {}",
             footer.top
         );
-        assert!(VISIBLE_ROWS < l.visible_items, "the level select's own runs further");
+        assert!(
+            VISIBLE_ROWS < l.visible_items,
+            "the level select's own runs further"
+        );
     }
 }

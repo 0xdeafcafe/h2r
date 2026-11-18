@@ -8,7 +8,7 @@
 //! let done = h1convert::convert::halo1::convert_halo1(&h1, sha, &mut base_map, &mut objects)?;
 //! ```
 
-use h1convert::convert::halo1::{Halo1Objects, ObjectTags};
+use h1convert::convert::halo1::{Halo1Objects, HudTag, ObjectTags};
 use h1map::{Group, H1Map};
 
 use crate::base::Base;
@@ -61,12 +61,23 @@ impl Halo1Objects for Objects<'_> {
             })
             .collect();
         let tags = tree.tags;
+        let tag = |id: map::TagId| match crate::convert::local_index(id) {
+            Some(k) => HudTag::Added(k),
+            None => HudTag::Base(id),
+        };
+        let hud_swaps = tree
+            .hud_swaps
+            .iter()
+            .map(|s| [tag(s.owner), tag(s.halo1), tag(s.halo2)])
+            .collect();
         ObjectTags {
+            hud_swaps,
             count: tags.len(),
             install: Box::new(move |set| {
                 Tree {
                     tags: tags.clone(),
                     reports: Vec::new(),
+                    hud_swaps: Vec::new(),
                 }
                 .install(set)
                 .map_err(|e| e.to_string())

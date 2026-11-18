@@ -135,6 +135,7 @@ pub fn class(
     ListClass::with_rows(skulls_menu::FEATURE, SCREEN, screen)
         .description(block)
         .picture(picture)
+        .frame(skulls_menu::FRAME)
         .layout(layout)
         .action(act)
         .action_buttons(&[])

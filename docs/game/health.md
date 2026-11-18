@@ -8,7 +8,9 @@ the model from the loaded map's name (`health::model_for_map`): converted
 Halo 1 multiplayer maps (`h1_<map>`) in the Halo 1 sandbox and Halo 1's
 campaign levels get Halo 1's; the debug override `H2_HEALTH_MODEL` still
 beats it ([h1-multiplayer.md](h1-multiplayer.md), "Halo 1 sandbox").
-Started 2026-11-16.
+Started 2026-11-16. Since converter version 50 the converted player
+shows Halo 1's own HUD ([hud.md](hud.md)); the HUD with the health strip
+below is the Halo 2 alternative the HUD switch selects.
 
 Halo 1 has a shield that recharges over a health bar that doesn't, and
 health packs that refill it. Halo 2 has a shield over hidden body health

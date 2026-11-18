@@ -12,10 +12,14 @@
 //!   records, replays and presents, on the render thread.
 //! - [`reproject`]: E1, the rotation-only reprojection: the world image
 //!   with overscan, the warp's homography, the display rotation.
+//! - [`epilogue`]: where a vertex program puts its clip position on the
+//!   target (its own viewport transform, read from its microcode), which
+//!   E1 warps through and overscans.
 //! - [`camera`] and [`math`]: perspective matrices split and rebuilt.
 
 pub mod backend;
 pub mod camera;
+pub mod epilogue;
 pub mod math;
 pub mod model;
 pub mod pacing;

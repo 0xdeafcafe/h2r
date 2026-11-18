@@ -210,25 +210,51 @@ impl Converter<'_> {
             None => None,
         };
         parts.first_person = (fp_model, fp_anim);
+        // Halo 1's weapon HUD (docs/game/hud.md): `+0x2b0` names it, and the
+        // counterpart's becomes the Halo 2 side of the weapon's HUD pair.
+        let mut halo2_hud = None;
+        if let Some(wphi) = w.hud {
+            match self.weapon_hud(wphi) {
+                Ok((nhdt, skipped)) => {
+                    match parts.halo2.iter_mut().find(|r| r.0 == "hud") {
+                        Some(r) => {
+                            halo2_hud = Some(r.2);
+                            r.2 = nhdt;
+                        }
+                        None => parts.halo2.push(("hud".into(), FourCC(*b"nhdt"), nhdt)),
+                    }
+                    for s in skipped {
+                        rep.no_home.push(format!("HUD: {s}"));
+                    }
+                }
+                Err(e) => rep.no_home.push(format!("HUD: Halo 1's does not convert: {e}")),
+            }
+        }
         let role = self.item_role(b"weap")?;
         let root = arsenal::weapon(&w, &bytes, &parts, &role)?;
         for (p, g, id) in &parts.halo2 {
             let n = self.base.name(*id).map_or("?", |n| n.1);
             rep.no_home.push(format!("Halo 2 reference {p}: {g} {n}"));
         }
-        if w.hud.is_some() {
-            rep.no_home
-                .push("HUD: Halo 1's wphi has no converter; the Halo 2 counterpart's nhdt".into());
-        }
         self.tree.reports.push(rep);
-        Ok(self.tree.push(
+        let id = self.tree.push(
             &tag.name,
             Converted {
                 group: FourCC(*b"weap"),
                 root,
                 raw: Vec::new(),
             },
-        ))
+        );
+        if let (Some(halo2), Some((_, _, halo1))) =
+            (halo2_hud, parts.halo2.iter().find(|r| r.0 == "hud"))
+        {
+            self.tree.hud_swaps.push(super::HudSwap {
+                owner: id,
+                halo1: *halo1,
+                halo2,
+            });
+        }
+        Ok(id)
     }
 
     /// `counterpart`: the Halo 2 projectile the counterpart weapon's barrel

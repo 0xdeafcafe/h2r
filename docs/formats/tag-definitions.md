@@ -866,10 +866,11 @@ starts from the definition default, then:
   (impact, and detonation: Halo 1's attached detonation damage or the
   first `jpt!` its detonation effect names). The slots Halo 1 has nothing
   converted for take the **Halo 2 counterpart's reference** (the
-  `TEMPLATES` row; references only): the HUD (`nhdt`; Halo 1's `wphi` has
-  no converter), melee damage, effects and sounds (Halo 1's `effe` and
+  `TEMPLATES` row; references only): melee damage, effects and sounds (Halo 1's `effe` and
   most `snd!` are not converted), the barrels' firing effects. A
-  projectile takes no `jpt!` from Halo 2.
+  projectile takes no `jpt!` from Halo 2. The HUD (`+0x2b0`) is Halo 1's
+  `wphi` converted (`Converter::weapon_hud`, docs/game/hud.md); the
+  counterpart's `nhdt` is the weapon's Halo 2 HUD in its HUD pair.
 
 Named on the way (V: `weapon_rebuild_disc`
 `halo_1_and_halo_2_pairs_agree_on_the_named_fields`, Blood Gulch's

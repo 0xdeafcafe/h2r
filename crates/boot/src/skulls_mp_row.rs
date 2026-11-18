@@ -52,6 +52,7 @@ pub fn mp_class(
     ListClass::with_rows(MP_FEATURE, MP_SCREEN, screen)
         .description(block)
         .picture(picture)
+        .frame(crate::skulls_menu::FRAME)
         .layout(layout)
 }
 

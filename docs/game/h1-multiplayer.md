@@ -785,8 +785,9 @@ choice means). Adding an option is a setting in `setting_defs` (choices
 - **HUD:** `boot::hud` is the switch only: each game start picks
   `HudStyle::Halo1` on a Halo 1 map (an `h1_` map or a Halo 1 campaign
   level) with Halo 1's chosen, else Halo 2's, and logs
-  `hud: <map>: Halo 1 HUD`. Nothing draws a Halo 1 HUD yet; it is the
-  Halo 1 HUD lane's to read `hud::style()`.
+  `hud: <map>: Halo 1 HUD`. `boot::hud_swap` draws it: at game
+  activation it points the converted owners' HUD references at Halo 1's
+  or Halo 2's `nhdt` by the same rule (docs/game/hud.md).
 
 **Serving the chosen sandbox (Built, tests only).** The choice is
 `boot::h1_variants` (`set_mp_sandbox`, set from the setting at boot and
