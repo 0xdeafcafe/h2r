@@ -358,6 +358,19 @@ fn every_weapon_equipment_and_projectile_rebuilds() {
             targets(d, &r, &String::from_utf8_lossy(&g), &mut refs, &mut pinned);
             assert!(pinned.is_empty(), "{level} {name}: pinned {pinned:?}");
             for (p, word, t) in &refs {
+                // Converted sounds and looping sounds (a projectile's Halo 1
+                // attachments) are placeholders the install resolves.
+                let kind = t.0 & 0xffff_0000;
+                let k = t.0 as usize & 0xffff;
+                if kind == h1objects::convert::sound(0).0 {
+                    assert!(k < c.tree.sounds.len(), "{level} {name} {p}: sound {k}");
+                    continue;
+                }
+                if kind == h1objects::convert::looping(0).0 {
+                    assert!(k < c.tree.loops.len(), "{level} {name} {p}: looping sound {k}");
+                    assert!(*word == 0 || *word == map::FourCC(*b"lsnd").as_u32(), "{level} {name} {p}");
+                    continue;
+                }
                 match local(&c.tree, *t) {
                     Some(x) => {
                         if *word != 0 && *word != u32::MAX {

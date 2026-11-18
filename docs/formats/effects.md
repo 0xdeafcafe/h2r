@@ -207,6 +207,34 @@ particle lifespan (**E**: the engine takes `1 / max(value, minimum)`), and the
 properties at `+0x7c` and `+0x8c` (`properties[7]`, `[8]`) are the shape and
 velocity inputs (**E**, same function). The remaining slots are unnamed. Then
 five f32 (`+0x9c..+0xb0`, `unknown_9c`) and two u32 (`+0xb0`, `+0xb4`).
+Further **E** (the emitter update `0x00247470`, the particle creator
+`0x00247950`, the initialiser `0x00249170`):
+
+- `+0x08` property: the spawn rate. `0x00247100` evaluates it times 30
+  (`[0x45dcfc]`); `0x00247470` adds that times its first argument to an
+  accumulator (`+0xc` of the emitter instance) and creates a particle per
+  whole unit (`0x0024773b..0x0024779e`). The argument comes from the
+  particle system's update (`0x00248970`, from `0x00175270`, from
+  `0x00178c80`'s fourth argument, from `0x00179020`), and is the event's
+  step in seconds: `0x001792b0` cuts the effect update's `dt` to the
+  event's remaining time (`+0x64 - +0x60`), and the effect update
+  (`0x00176e40`, in the game tick at `0x00138069`) passes the game
+  time's tick length `[0x510c54]+4` (1/30 s; docs/game/high-framerate.md).
+  So the rate is particles per tick: an event of `d` seconds spawns
+  `rate x 30 x d`, a one-tick event (retail's most common duration)
+  `rate`. When the system's `+0xc` bit 9 is set the burst is
+  spread evenly over the step (`0x002476d0`).
+- `+0x18` lifespan: `1 / max(value, 0.01)` (`[0x45dc7c]`).
+- `+0x28` initial speed: it scales the unit direction the shape gives
+  (`0x00249a35`).
+- `+0x38` initial rotation in degrees: times `1/360` (`[0x45e28c]`) into
+  the particle's rotation in turns (`+0x34`).
+- `+0x8c` in shape 0 is a cone angle in degrees: times `pi/180`
+  (`[0x45dc54]`) against a random azimuth times `2 pi`.
+
+The Halo 1 converter writes Halo 1's effect particles on these slots
+(docs/formats/h1-objects.md, "Effect particles").
+
 `prt3` tags embed the same particle-system and emitter records (`prt3` block at
 `+0x84`), decoded with the same types.
 

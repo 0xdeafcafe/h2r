@@ -10,6 +10,19 @@
 //! in), packed into one power-of-two image ([`pack`]), and its lightmap
 //! coordinates moved to match ([`Piece::map`]). [`compose`] cuts and pastes
 //! the texels and makes the Halo 2 bitmap.
+//!
+//! The pages hold half Halo 1's light ([`to_halo2_light`]). Halo 2's
+//! structure lighting passes draw albedo × page × 2 with a flat bump
+//! (`tex_bump`'s and `tex_bump_detail_blend_detail`'s, run on the CPU in
+//! `h1convert/tests/lightmap_light.rs`, `the_lighting_pass_is_twice_page_times_albedo`),
+//! so a page texel of 0.5 is the albedo as it is, and retail pages leave
+//! that headroom (Coagulation's: 99 % of texels at most 0.82 in their
+//! brightest channel). Halo 1's pages are the albedo's multiplier
+//! itself: Blood Gulch's, the same level lit by Halo 1, have half their
+//! texels at 1.0 in their brightest channel, full light where Halo 2's
+//! scale has room above (`h1convert/tests/lightmap_light.rs`,
+//! `halo1_pages_are_lit_on_twice_halo2s_scale`), and taken as they are,
+//! Halo 2's ×2 drew Blood Gulch's ground saturated yellow.
 
 use h1map::bitmap::{Bitmap, Image, Sequence};
 use h1map::{H1Map, Tag};
@@ -181,6 +194,7 @@ pub fn compose(map: &H1Map, tag: &Tag, pages: &[ClusterPage]) -> Result<(Bitmap,
         for piece in &p.pieces {
             paste(&mut out, w, bpt, piece, &linear, &source.images)?;
         }
+        to_halo2_light(&mut out, first.format)?;
         if first.swizzled() {
             out = gfx::swizzle::swizzle(&out, w, h, 1, bpt)
                 .map_err(|e| Error::Invalid(format!("cluster page: {e:?}")))?;
@@ -208,6 +222,37 @@ pub fn compose(map: &H1Map, tag: &Tag, pages: &[ClusterPage]) -> Result<(Bitmap,
     };
     let (converted, _) = convert_with(&bitmap, |i| Ok(pixels[i].clone()))?;
     Ok((bitmap, converted))
+}
+
+/// Halves every texel's colour in `texels` (linear, `format`): Halo 1's
+/// light (the albedo's multiplier) on Halo 2's scale (half of it, which
+/// the lighting pass doubles; module docs). Each channel is rounded to
+/// the nearest step, halves up, so Halo 1's full light (31 or 63) is a
+/// step above half and the pass's ×2 clamps to full. 16-bit R5G6B5 and
+/// 32-bit (A|X)8R8G8B8 pages; alpha is kept.
+pub fn to_halo2_light(texels: &mut [u8], format: h1map::bitmap::PixelFormat) -> Result<()> {
+    use h1map::bitmap::PixelFormat as F;
+    let half = |v: u16| v.div_ceil(2);
+    match format {
+        F::R5G6B5 => {
+            for t in texels.chunks_exact_mut(2) {
+                let v = u16::from_le_bytes([t[0], t[1]]);
+                let (r, g, b) = (half(v >> 11), half((v >> 5) & 0x3f), half(v & 0x1f));
+                t.copy_from_slice(&((r << 11) | (g << 5) | b).to_le_bytes());
+            }
+        }
+        F::A8R8G8B8 | F::X8R8G8B8 => {
+            for t in texels.chunks_exact_mut(4) {
+                for c in &mut t[..3] {
+                    *c = half(u16::from(*c)) as u8;
+                }
+            }
+        }
+        f => {
+            return Err(Error::Unsupported(format!("lightmap pages of format {f:?}")));
+        }
+    }
+    Ok(())
 }
 
 /// Copies one piece (border included) into the row-major page `out`.
@@ -259,6 +304,30 @@ fn paste(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn halo1_light_halves_onto_halo2s_scale() {
+        use h1map::bitmap::PixelFormat as F;
+        // R5G6B5: full white, black, and (17, 40, 3).
+        let px = |r: u16, g: u16, b: u16| ((r << 11) | (g << 5) | b).to_le_bytes();
+        let mut t: Vec<u8> = [px(31, 63, 31), px(0, 0, 0), px(17, 40, 3)].concat();
+        to_halo2_light(&mut t, F::R5G6B5).unwrap();
+        assert_eq!(t, [px(16, 32, 16), px(0, 0, 0), px(9, 20, 2)].concat());
+        // Each channel within half a step of half Halo 1's value, and
+        // twice it (the lighting pass) within a step of Halo 1's.
+        for v in 0u16..32 {
+            let mut t = px(v, 0, 0).to_vec();
+            to_halo2_light(&mut t, F::R5G6B5).unwrap();
+            let h = u16::from_le_bytes([t[0], t[1]]) >> 11;
+            assert!((f32::from(h) - f32::from(v) / 2.0).abs() <= 0.5, "{v} -> {h}");
+            assert!((f32::from(2 * h).min(31.0) - f32::from(v)).abs() <= 1.0, "{v} -> {h}");
+        }
+        // 32-bit: colour halved, alpha kept.
+        let mut t = vec![255u8, 128, 7, 200];
+        to_halo2_light(&mut t, F::A8R8G8B8).unwrap();
+        assert_eq!(t, [128, 64, 4, 200]);
+        assert!(to_halo2_light(&mut [0u8; 8], F::Dxt1).is_err());
+    }
 
     #[test]
     fn the_footprint_is_the_texels_bilinear_filtering_reads() {

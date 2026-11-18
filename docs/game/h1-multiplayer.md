@@ -424,9 +424,19 @@ The base's old BSP region stays in the file, unused.
   each with a one-texel border repeating its edge, are packed by shelves
   into the smallest power-of-two page. The lightmap coordinates move with
   them. Surfaces Halo 1 doesn't lightmap (lights, glass, water) sample a
-  white piece. The pages keep Halo 1's format (R5G6B5) and swizzling.
+  white piece. The pages keep Halo 1's format (R5G6B5) and swizzling,
+  at half Halo 1's light (`h1bitmaps::atlas::to_halo2_light`): Halo 2's
+  lighting pass draws `2 × page × albedo`
+  (`tests/lightmap_light.rs`, the pass run on the CPU for every retail
+  `tex_bump` and `tex_bump_detail_blend_detail` on Coagulation), and a
+  Halo 1 page is the albedo's multiplier itself. Blood Gulch and
+  Coagulation, one valley with one ground albedo, show it: half of
+  Blood Gulch's texels are at full light in their brightest channel,
+  99 % of Coagulation's at most 0.85. Taken as they were, the ×2 drew
+  Blood Gulch's ground saturated yellow and its cliffs bright orange.
   `tests/h1_clusters.rs` samples every lit vertex on both bitmaps
-  (bilinear, clamped) on every level: all agree within one step. The
+  (bilinear, clamped) on every level: all agree with half Halo 1's
+  light within half a 5-bit step. The
   pages hold 1.6 to 3.9 times Halo 1's texels (power-of-two padding and
   the borders): Blood Gulch 220,160 for 126,016, c20's largest structure
   7.7 million for 2.9 million. The bitmap takes the

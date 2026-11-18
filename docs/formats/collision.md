@@ -235,7 +235,47 @@ Names for 5 and 6 are positional only.
 | `+0x50`, `+0x60`, `+0x70` | inertia tensor, three rows of xyz (w unused) | D; V: symmetric on every body |
 
 The element is kept verbatim in `RigidBody::raw`; `+0x18..+0x38` (four words,
-a 1.0 and a 0.05-like value) are not interpreted.
+a 1.0 and a 0.05-like value) are not interpreted by the reader. What the
+engine does with the first words when it adds a body to the Havok world:
+
+| Offset | Meaning | Evidence |
+|---|---|---|
+| `+0x18 u16` bit 1 | the body goes on collision layer 2 instead of its default layer | E: `0x001d5bf0` passes the bit to `0x001d70d0`, which takes 2 over the default from `0x001d69d0` |
+| `+0x18 u16` bit 0 | read at `0x001d5d81` (set, or the object is a vehicle, sets a local flag); effect not established | E (read only) |
+| `+0x1a u16` | motion: 0..5 become Havok motions 2..7 (7 fixed, 6 keyframed) | E: jump table `0x001d5bd4` in `0x001d5940` |
+| `+0x1e u16` | not established (1 on every retail biped body) | V |
+
+How a body's motion and layer are chosen (E, `0x001d5940` and callers):
+
+- An object whose header byte `+2` bit 0 is clear, other than a machine,
+  gets every body fixed (motion 7).
+- Object creation (`0x001cf19c`) asks for keyframed bodies: a body that is
+  not fixed becomes keyframed (6) unless its node (`+0xc8` block, `+4` bit 0)
+  is flagged. The other callers (`0x001d56c0`, `0x001d5747`, `0x001d6c2d`)
+  do not ask, and the motion stays as `+0x1a` says; which of them is the
+  ragdoll is not established.
+- The default layer (`0x001d69d0`): fixed bodies 1 (12 on a vehicle);
+  otherwise by object type through the tables at `0x001d6ab0` and
+  `0x001d6ac4`. A biped's is 9, or 11 when its `bipd` byte `+0x10a` has
+  bit 2.
+- `0x001c302d` enables every layer pair, then disables a fixed list
+  (through `0x002df990`). Layer 2 collides only with layers 0, 1 and 2.
+  Layer 1 collides with everything but 7, 8 and 14; layer 9 with 0, 1, 3,
+  5 to 9, 12 and 14.
+
+V (`h1objects/tests/biped_physics_disc.rs`, `retail_rigid_body_words_by_kind`):
+every body of the Chief's and the Covenant's ragdolls (`masterchief`,
+`elite`, `brute`, `hunter`, `jackal`, `bugger`; 59 bodies) holds flags 3,
+motion 2 and `+0x1e` 1. The grunt's hold flags 1, the marines' 0. Vehicles,
+devices and scenery mostly hold flags 0.
+
+So a living Chief's bodies sit on layer 2 whether fixed or keyframed, and
+meet only layers 0 to 2. Converted Halo 1 bipeds held flags 0 until
+converter 58, which put their bodies on layer 1 (fixed) or 9 (keyframed),
+where they meet most other layers. They now take the Chief's 3
+(`rebuild::BIPED_BODY`). Which layer the structure and the player's own
+movement queries use is not established, so whether this caused the
+standing bounce needs a run.
 
 ### Structural validation (`PhysicsModel::validate`)
 
@@ -256,6 +296,33 @@ inside the remaining code block. Polyhedra are limited to 4,096 planes and
 vertices, and plane x vertex work is budgeted (`MAX_VALIDATE_WORK`); exported
 hull faces are deduplicated by vertex set and capped by `MAX_OBJ_TRIANGLES`.
 Capsules are built along their end-point axis, not a fixed one.
+
+## What the engine does with a BSP
+
+How the engine answers "which surface" from the blocks above; modelled in
+`h1convert::surface_query` and checked on the disc by
+`crates/h1convert/tests/collision_engine.rs`. The same code serves object
+and structure BSPs.
+
+| Step | Rule | Evidence |
+|---|---|---|
+| Vector test `0x001de6d0` | Recursive over the 3D tree with `t` in `[t0, t1]`. Both ends on one side (`d >= 0` is front): that child. Else split at `t = -(n.o - d)/(n.v)`, near child first (back when `n.v > 0`), then the far child, remembering the crossed plane. Leaf states: solid 3, a leaf with flag bit 0 2, any other leaf 1. A front-facing hit (query flag bit 0) is state 1 or 2 followed by 3, the surface looked up in the previous leaf; a back-facing one (bit 1) 3 followed by 1 or 2; unless query bit 2, 2 followed by 2 is a two-sided hit. A surface with flag bit 1 is skipped under query bit 3, flag bit 3 under bit 4 | E |
+| Fall-through | When the lookup finds no surface (`-1`) the walk goes on: the segment passes into solid unreported | E `0x001de8f1`, `0x001de921` |
+| Reference matcher `0x001dea00` | Every reference of the leaf whose `plane & 0x7fff` is the crossed plane (the flip bit is not compared); the point is projected and the 2D tree walked from the reference's node; a surface is accepted when `0x001debd0` puts the point inside its ring (and, for a breakable surface, its bit is set in the breakable mask) | E |
+| Projection | Dominant axis: z when `|nz| >= |ny|` and `|nz| >= |nx|`, else y when `|ny| >= |nx|`, else x. Sign `(n[axis] > 0) != flip`. Table `0x00440b94` (three `i16` per entry, `(axis, sign)`): x `(z, y)`, `(y, z)`; y `(x, z)`, `(z, x)`; z `(y, x)`, `(x, y)` | E `0x001dea5c`..`0x001deb4c`, `0x001de0c2`..`0x001de1e1` |
+| 2D point walk `0x00296520` | Front child (`+0xe`) when `a*u + b*v - d >= 0`, else back (`+0xc`); a child `0xffff` is none | E |
+| Volume query `0x001ddea0` (sphere) | At a node the sphere straddles, the plane is recorded with bit 15 set before the back child and clear before the front child; in a leaf only references whose `plane` (flip bit included) equals a recorded entry are walked, with the 2D sphere walk `0x001de220`. So a reference's flip bit must say the leaf is on its plane's back | E |
+| Breakable mask `0x4ed280` | Filled with ones at map reset (`0x00183ec0`): every breakable surface starts intact; Havok's structure key filter `0x001ef451` and the matcher skip a breakable surface only once its bit is cleared | E |
+| Havok surface shape `0x001edd00` | Havok's child shape for a structure key is the surface's ring as one polygon, its vertices written inline after a `0x20`-byte header with no count check | E |
+
+V (every retail structure BSP on the Halo 2 disc, 2,427,337 surfaces
+reached through 2D references): each surface's centroid, projected by
+its reference's plane and flip, walks its reference's 2D tree back to
+it, every time; every reference is on its leaf's path on the side its
+flip bit says (1,596,791 references); leaf flag bit 0 is set exactly on
+leaves whose references reach a two-sided surface (one leaf of 611,684
+differs); rings have at most 8 vertices. Halo 1's data meets all of it
+(below and [h1-map-format.md](h1-map-format.md)).
 
 ## Not established
 
