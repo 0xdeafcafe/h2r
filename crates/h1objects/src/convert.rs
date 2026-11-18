@@ -750,6 +750,8 @@ pub struct Converter<'a> {
     weapon_hud_skips: HashMap<u32, Vec<String>>,
     /// HUD bitmaps with an element colour's alpha ([`Self::hud_bitmap`]).
     hud_bitmaps: HashMap<(u32, u8), TagId>,
+    /// Meter copies of Halo 1 bitmaps ([`Self::meter_bitmap`]), by tag.
+    meter_bitmaps: HashMap<u32, TagId>,
     /// Biped role words, per role ([`Self::biped_role`]).
     roles: HashMap<crate::rebuild::BipedRole, Option<crate::rebuild::RoleWords>>,
     /// Weapon, equipment, projectile and damage role words, per group
@@ -800,6 +802,7 @@ impl<'a> Converter<'a> {
             unit_hud_widgets: HashMap::new(),
             weapon_hud_skips: HashMap::new(),
             hud_bitmaps: HashMap::new(),
+            meter_bitmaps: HashMap::new(),
             roles: HashMap::new(),
             item_roles: HashMap::new(),
             vehicle_roles: HashMap::new(),
@@ -1840,6 +1843,37 @@ impl<'a> Converter<'a> {
         Some(out)
     }
 
+    /// The Halo 1 bitmap `id` for a HUD meter: a copy with the colour of
+    /// every clear texel made black (`h1hud::clear_meter_colour`; a format
+    /// without an alpha byte is decoded and rewritten as linear A8R8G8B8
+    /// first, `h1hud::alpha_scaled_argb` at 255), so Halo 2's legacy meter
+    /// shader leaves clear what Halo 1 leaves clear
+    /// (`h1hud::legacy_meter_alpha`). `<name>_meter`, built once.
+    fn meter_bitmap(&mut self, id: h1map::TagId) -> Option<TagId> {
+        if let Some(t) = self.meter_bitmaps.get(&id.0) {
+            return Some(*t);
+        }
+        let tag = self.h1.tag(id).ok()?.clone();
+        let bm = h1map::bitmap::Bitmap::read(self.h1, &tag).ok()?;
+        let mut cleared = bm.clone();
+        let mut pixels = Vec::with_capacity(bm.images.len());
+        for (i, img) in bm.images.iter().enumerate() {
+            let mut px = bm.pixels(self.h1, i).ok()?.to_vec();
+            if crate::h1hud::clear_meter_colour(img.format, &mut px).is_none() {
+                let (argb, mut out) = crate::h1hud::alpha_scaled_argb(img, &px, 0xff).ok()?;
+                crate::h1hud::clear_meter_colour(argb.format, &mut out)?;
+                cleared.images[i] = argb;
+                px = out;
+            }
+            pixels.push(px);
+        }
+        let (conv, _) =
+            h1bitmaps::convert::convert_with(&cleared, |i| Ok(std::mem::take(&mut pixels[i]))).ok()?;
+        let out = self.tree.push(&format!("{}_meter", tag.name), conv);
+        self.meter_bitmaps.insert(id.0, out);
+        Some(out)
+    }
+
     fn cached(&mut self, t: &Tag, conv: Converted) -> Result<TagId> {
         if let Some(id) = self.done.get(&t.id.0) {
             return Ok(*id);
@@ -2642,9 +2676,11 @@ impl Converter<'_> {
                 crate::h1hud::Role::Static => crate::h1hud::colour_alpha(e.colour),
                 crate::h1hud::Role::Meter(_) => 0xff,
             };
-            let bitmap = self
-                .hud_bitmap(e.bitmap, alpha)
-                .ok_or_else(|| Error::Invalid(format!("bitmap {} unconverted", bt.name)))?;
+            let bitmap = match e.role {
+                crate::h1hud::Role::Static => self.hud_bitmap(e.bitmap, alpha),
+                crate::h1hud::Role::Meter(_) => self.meter_bitmap(e.bitmap),
+            }
+            .ok_or_else(|| Error::Invalid(format!("bitmap {} unconverted", bt.name)))?;
             let reg = crate::h1hud::registration(e.anchor);
             widgets.push(crate::h1hud::widget_for(e, bitmap, reg, meter, plain));
         }
@@ -2730,8 +2766,10 @@ impl Converter<'_> {
                 Some(b) => {
                     let bt = self.h1.tag(b)?.clone();
                     let bm = h1map::bitmap::Bitmap::read(self.h1, &bt)?;
-                    h1hud::sprite(&bm, e.sequence)
-                        .and_then(|_| self.bitmap(b))
+                    let meter = matches!(e.kind, h1hud::WeaponEntryKind::Meter(..));
+                    h1hud::sprite(&bm, e.sequence).and_then(|_| {
+                        if meter { self.meter_bitmap(b) } else { self.bitmap(b) }
+                    })
                 }
                 None => None,
             };
