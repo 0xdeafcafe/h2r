@@ -148,6 +148,26 @@ impl Server {
         )
         .unwrap()
     }
+    /// The operator's view of the player-report queue (all of it).
+    fn reports(&self) -> Vec<Value> {
+        let token = sign::issue_token(
+            &self.operator,
+            &format!("server:{}", self.discovery.id),
+            &self.discovery.id,
+            lxm::REPORTS_MODERATE,
+            time::OffsetDateTime::now_utc().unix_timestamp(),
+        );
+        let v: Value = serde_json::from_reader(
+            self.agent
+                .get(&self.url("/v1/admin/reports?state=all"))
+                .set("authorization", &format!("Bearer {token}"))
+                .call()
+                .unwrap()
+                .into_reader(),
+        )
+        .unwrap();
+        v["items"].as_array().unwrap().clone()
+    }
     fn events(&self) -> Vec<WireEvent> {
         self.get_as_operator::<Page<WireEvent>>("/v1/events?from=0&limit=1000")
             .items
@@ -2995,5 +3015,94 @@ fn optimatch_searches_find_sessions_in_the_partys_level_window() {
         search(&mut peer, -1, None, 0),
         0,
         "the custom games browser"
+    );
+}
+
+/// `XOnlineFeedbackSend` as the title's wrapper 0x0008d3d0 calls it:
+/// controller, the target's XUID by value, the feedback type, a params
+/// block, no event, the task output.
+fn feedback(w: &mut World, target: Xuid, kind: u32, params: u32) -> u32 {
+    w.call(
+        "XOnlineFeedbackSend",
+        &[
+            0,
+            target.0 as u32,
+            (target.0 >> 32) as u32,
+            0,
+            kind,
+            params,
+            0,
+            OUT,
+        ],
+    )
+}
+
+#[test]
+fn feedback_reaches_the_admins_as_player_reports() {
+    let server = Server::new();
+    let reporter = server.account("Reporter");
+    let target = server.account("Target");
+    let mut w = World::new(&server.embedded.url, &[&reporter]);
+    w.logon();
+    // A params block with no string, as Halo sends it.
+    w.word(DATA + 0x5000, 0);
+    let params = DATA + 0x5000;
+
+    // Harassment (3): a task that completes once the server has it.
+    assert_eq!(feedback(&mut w, target.xuid, 3, params), 0);
+    let task = w.u32(OUT);
+    assert_eq!(w.wait(task), TASK_SUCCESS);
+    assert_eq!(w.call("XOnlineTaskClose", &[task]), 0);
+    let reports = server.reports();
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0]["kind"], "harassment");
+    assert_eq!(reports[0]["target"]["gamertag"], "Target");
+    assert_eq!(reports[0]["by"]["gamertag"], "Reporter");
+
+    // A repeat completes at once without a request, as retail does.
+    assert_eq!(feedback(&mut w, target.xuid, 3, params), 0);
+    assert_eq!(w.call("XOnlineTaskContinue", &[w.u32(OUT)]), TASK_SUCCESS);
+    // A commendation (5), and type 12 twice: types from 8 up have no
+    // local memory, so the server folds the second into the first.
+    for kind in [5, 12, 12] {
+        assert_eq!(feedback(&mut w, target.xuid, kind, params), 0);
+        let task = w.u32(OUT);
+        assert_eq!(w.wait(task), TASK_SUCCESS, "type {kind}");
+    }
+    let kinds: Vec<_> = server
+        .reports()
+        .iter()
+        .map(|r| r["kind"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(kinds, ["type_12", "good_attitude", "harassment"]);
+
+    // A string in the params block is the report's reason.
+    let text: Vec<u8> = "Rude words"
+        .encode_utf16()
+        .chain([0])
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    w.put(DATA + 0x5100, &text);
+    w.word(DATA + 0x5010, DATA + 0x5100);
+    assert_eq!(feedback(&mut w, target.xuid, 4, DATA + 0x5010), 0);
+    assert_eq!(w.wait(w.u32(OUT)), TASK_SUCCESS);
+    assert_eq!(server.reports()[0]["reason"], "Rude words");
+
+    // An account the server doesn't know fails the task, and is not
+    // remembered as sent: the retry goes to the server again.
+    for _ in 0..2 {
+        assert_eq!(feedback(&mut w, Xuid(0x0009_ffff_ffff_ffff), 1, params), 0);
+        assert_eq!(w.wait(w.u32(OUT)), INVALID_USER);
+    }
+    // Types Halo never sends are refused at the call.
+    assert_eq!(feedback(&mut w, target.xuid, 7, params), INVALID_ARGUMENT);
+    assert_eq!(server.reports().len(), 4);
+    // Nobody but admins reads them in the log.
+    assert!(
+        server
+            .get::<Page<WireEvent>>("/v1/events?from=0&limit=1000")
+            .items
+            .iter()
+            .all(|e| e.kind != live_proto::reports::PLAYER_REPORTED)
     );
 }

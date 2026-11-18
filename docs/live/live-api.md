@@ -240,7 +240,7 @@ replays show the firing of the whole second; the same goes for `actions` and
 | `GET /v1/games/{id}/frames?from_tick=&to_tick=&format=` | recorded frames, for replay: `format=json` (the default) a page of JSON frames; `format=packed` an `application/x-h2-frames` container of packed keyframes (docs/live/live-telemetry.md, "Packed frames"), the next cursor in `x-next` and the head position in `x-position` |
 | `GET /v1/maps/{map}/outline` | top-down map outline (see below), 404 until a console has uploaded it |
 | `GET /v1/snapshot` | what a page needs on load, in one read at one log position: `{position, accounts, presence, live, ended, details, tail}`. `accounts` is `/v1/accounts?limit=1000`, `presence` is `/v1/presence`, `live` and `ended` are `/v1/games?state=…&limit=100`, `details` is `/v1/games/{id}` for every live game and the 40 newest ended ones, and `tail` is the last 300 log events up to `position` without `GameFrame` (as on the stream). Each part has the reader's visibility applied, as at its own endpoint ([Co-op games](#co-op-games)) |
-| `GET /v1/events?from=&type=&stream=&limit=` | raw log, oldest first, at most 200 a page; without the events of co-op games and sessions the reader may not see ([Co-op games](#co-op-games), "The log"): a page can be short or empty with a `next`; without network addresses for anyone but the operator ([Network addresses](#network-addresses)); invitations, friend events and content reports only to whom they concern ([Private events](#private-events)) |
+| `GET /v1/events?from=&type=&stream=&limit=` | raw log, oldest first, at most 200 a page; without the events of co-op games and sessions the reader may not see ([Co-op games](#co-op-games), "The log"): a page can be short or empty with a `next`; without network addresses for anyone but the operator ([Network addresses](#network-addresses)); invitations, friend events, content and player reports only to whom they concern ([Private events](#private-events)) |
 | `GET /v1/titles/{title}/files/{name}` | raw file bytes, `ETag` = sha256 |
 | `GET /v1/server` | the server's public facts: `{id, software, url, invite_only, private, federation, counts: {accounts, online, live_games, sessions}, position}` ([live-admin.md](live-admin.md) §5) |
 | `GET /v1/stats/summary?window=today\|7d\|30d\|all` | server-wide totals, per-player rows, maps, weapons, playlists, skulls and hourly activity over a window ([Stats summary](#stats-summary), below) |
@@ -556,13 +556,15 @@ event tail). The stored log is unchanged.
 | `GameInviteSent`, `GameInviteAnswered` | the invitation's sender and recipient |
 | `FriendRequested`, `FriendAccepted`, `FriendDeclined`, `FriendRemoved` | the two accounts and the current friends of either |
 | `ContentReported` | admins only |
+| `PlayerReported`, `ReportReviewed` | admins only ([Player reports](#player-reports)) |
 
 Admin accounts and the operator read all of them; anonymous readers none,
 so an anonymous read stays safe for the edge cache. Other readers get the
 log without them, the same way as hidden co-op events (a page can be short
 with a `next`). The game and the web read these through their own calls
 (`/v1/accounts/by-xuid/{xuid}/mailbox` for the owner,
-`/v1/accounts/{gamertag}/friends`, `/v1/admin/content` for admins), not
+`/v1/accounts/{gamertag}/friends`, `/v1/admin/content` and
+`/v1/admin/reports` for admins), not
 the log. The friends read keeps friendships public and pending requests
 for the player ([Friends](#friends)).
 
@@ -739,6 +741,40 @@ admin). Lists leave out taken-down packages.
 
 The client side (`h2 live maps publish DIR`, `h2 live maps list`, and the
 join-time download) is in [maps.md](../game/maps.md) §5, "As built".
+
+## Player reports
+
+A player reports another, from the game's player-details screens (the Live
+HLE's `XOnlineFeedbackSend`, [live.md](live.md) "Client HLE: player
+feedback") or any client:
+
+| endpoint | authentication | result |
+|---|---|---|
+| `POST /v1/accounts/by-xuid/{xuid}/report` | account token, `lxm: reports.write`; `{kind, reason?, game_id?}` | 201 `{ok, position, duplicate: false}`; 200 `{ok, position, duplicate: true}` for a repeat |
+
+`kind` is one of `gamertag`, `gameplay`, `screaming`, `harassment`,
+`lewdness` (complaints), `good_attitude`, `good_session` (commendations),
+or `type_10`, `type_11`, `type_12` (complaints the game offers whose XDK
+names are not confirmed; see [live-boundary.md](live-boundary.md)).
+`reason` is the reporter's words, at most 500 characters (the game sends
+none); `game_id` the game they were in.
+
+- A player can't report themselves (400); an unknown XUID is 404; the
+  operator's token is 403 (reports come from accounts).
+- A repeat of a report still open (same reporter, player and kind) appends
+  nothing and answers 200 with the first report's position. Once an admin
+  has reviewed it, the same complaint can be filed again. Commendations are
+  never reviewed, so each counts once per pair of players.
+- Each account files at most ten reports at once, then one every six
+  minutes (429), on top of the usual per-method write limit. Repeats do not
+  count.
+
+The report is a server-signed `PlayerReported` event (`{target, by, kind,
+reason?, game_id?}`) on `reports-<target xuid>`, readable by admins only
+([Private events](#private-events)). Admins review reports through
+`/v1/admin/reports` ([live-admin.md](live-admin.md) §8). No one else learns
+of a report: not the reported player, and not the reporter what became of
+it.
 
 ## Cloud saves
 

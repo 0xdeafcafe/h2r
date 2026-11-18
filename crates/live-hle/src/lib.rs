@@ -7,6 +7,7 @@ pub mod account_setup;
 mod auto;
 mod client;
 mod config;
+mod feedback;
 mod invites;
 pub mod maps;
 mod messages;

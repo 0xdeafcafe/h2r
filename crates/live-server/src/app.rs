@@ -181,6 +181,12 @@ pub struct Live {
     pub(crate) stats: Arc<crate::stats::Stats>,
     pub(crate) uploads: RateLimiter,
     pub(crate) content_writes: tokio::sync::Mutex<()>,
+    /// Player reports and their reviews (docs/live/live-admin.md).
+    pub(crate) reports: Arc<crate::reports::Reports>,
+    /// Reports per reporting account ([`crate::reports::RATE`]).
+    pub(crate) report_rate: RateLimiter,
+    /// Holds a report's duplicate check and its append together.
+    pub(crate) report_writes: tokio::sync::Mutex<()>,
     /// Each account's own cloud saves (docs/live/live-cloud-saves.md).
     pub(crate) cloud: crate::cloud_saves::CloudSaves,
     /// Unix seconds the service started.
@@ -233,7 +239,11 @@ fn may_write(author: &Author, stream: &str, kind: &str) -> bool {
             && stream.starts_with("mailbox-")
             && live_proto::mailbox::is_kind(kind);
     }
-    if stream.starts_with("session-") || live_proto::maps::KINDS.contains(&kind) {
+    if stream.starts_with("session-")
+        || stream.starts_with("reports-")
+        || live_proto::maps::KINDS.contains(&kind)
+        || live_proto::reports::KINDS.contains(&kind)
+    {
         return false;
     }
     if live_proto::team::Action::is_kind(kind) {
@@ -456,6 +466,8 @@ impl Live {
         dispatcher.subscribe(recovery.clone());
         let catalog = Arc::new(crate::content::Catalog::default());
         dispatcher.subscribe(catalog.clone());
+        let reports = Arc::new(crate::reports::Reports::default());
+        dispatcher.subscribe(reports.clone());
         let stats = Arc::new(crate::stats::Stats::with_model(model.clone()));
         dispatcher.subscribe(stats.clone());
         let mut applied = dispatcher.applied();
@@ -488,6 +500,9 @@ impl Live {
             stats,
             uploads: RateLimiter::new(policy.content.upload_rate.0, policy.content.upload_rate.1),
             content_writes: Default::default(),
+            reports,
+            report_rate: RateLimiter::new(crate::reports::RATE.0, crate::reports::RATE.1),
+            report_writes: Default::default(),
             cloud: Default::default(),
             started_at: now(),
             data_dir: Default::default(),

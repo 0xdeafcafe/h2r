@@ -62,7 +62,7 @@ There is another verified tail jump at `0x0008d9de` to the already-listed `XNetC
 | `0x003a0841` | XONLINE | 1 | `XOnlineMutelistStartup` | likely | 2 / 2 | 0x00058a90 creates global mute-list task with event/task output. |
 | `0x003a084c` | XONLINE | 1 | `XOnlineMutelistAdd` | likely | 2 / 4 | 0x00058c10 passes controller and 12-byte XUID by value, then refreshes mute list. |
 | `0x003a086e` | XONLINE | 1 | `XOnlineMutelistRemove` | likely | 2 / 4 | 0x00058c60 mirrors Add with removal operation and refresh. |
-| `0x003a0890` | XONLINE | 1 | `XOnlineFeedbackSend` | likely | 6 / 8 | 0x0008d3d0 supplies controller, by-value XUID, feedback type/parameters, event/task. |
+| `0x003a0890` | XONLINE | 1 | `XOnlineFeedbackSend` | likely | 6 / 8 | 0x0008d3d0 supplies controller, by-value XUID, feedback type (from its reason table 5, 6, 0, 1, 2, 3, 4, 12, 11, 10), a params block with a null string, event 0, task. Body 0x003b8efe sends the string as UTF-8 of at most 255 bytes; 0x003b8cbb skips repeats per controller. Decoded in live.md, "Client HLE: player feedback". |
 | `0x003a08c0` | XONLINE | 1 | `XOnlineStatWrite` | likely | 4 / 4 | 0x000923c0 sends count/stat-spec array/event/task; body serializes stat values. |
 | `0x003a08cb` | XONLINE | 1 | `XOnlineStatRead` | likely | 4 / 4 | 0x00092220 requests count/stat-spec array/event/task; body builds read request. |
 | `0x003a08d6` | XONLINE | 1 | `XOnlineStatReadGetResult` | likely | 5 / 5 | 0x00092330 supplies task, count/specs and extra-buffer length/pointer. |

@@ -16,14 +16,12 @@ pub(crate) enum Op {
     NatType,
     SameTitle,
     SamePublisher,
-    Feedback,
     Query,
     QueryResults,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
     Friends,
-    Feedback,
     Query,
 }
 struct Task {
@@ -106,7 +104,6 @@ impl Menu {
     pub fn poll(&self, h: u32) -> Option<u32> {
         self.tasks.get(&h).map(|t| match t.kind {
             Kind::Friends if !t.finished => TASK_RESULTS_AVAILABLE,
-            Kind::Feedback => SERVICE_TEMPORARILY_UNAVAILABLE,
             Kind::Query => QUERY_DATASET_NOT_FOUND,
             _ => TASK_SUCCESS,
         })
@@ -217,7 +214,7 @@ impl Menu {
                     INVALID_ARGUMENT
                 },
             ),
-            FriendsEnumerate | Feedback | Query => {
+            FriendsEnumerate | Query => {
                 if !connected {
                     return Ok(NO_SESSION);
                 }
@@ -227,15 +224,6 @@ impl Menu {
                             return Ok(INVALID_ARGUMENT);
                         }
                         (a[1], a[2], Kind::Friends)
-                    }
-                    Feedback => {
-                        if a[0] >= 4 {
-                            return Ok(INVALID_ARGUMENT);
-                        }
-                        if a[5] != 0 {
-                            m.check(a[5], 4, Access::Read, 1)?;
-                        }
-                        (a[6], a[7], Kind::Feedback)
                     }
                     Query => (a[8], a[9], Kind::Query),
                     _ => unreachable!(),
