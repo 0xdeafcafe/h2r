@@ -1932,7 +1932,7 @@ mod tests {
         assert_eq!(sent.shots, Some(3));
         assert_eq!(sent.fire, Some(0b11), "ticks 2 and 1");
         // No shots: neither count nor mask.
-        state.shots = BTreeMap::new();
+        state.shots.clear();
         state.tick = 3;
         session.sample(&state);
         state.tick = 4;
@@ -1951,7 +1951,7 @@ mod tests {
         unit.velocity = Some([2000.0, 0.0, 0.0]);
         state.objects[0] = Some(unit.clone());
         state.tick = 6;
-        state.shots = BTreeMap::new();
+        state.shots.clear();
         session.sample(&state);
         let f = frames(&mut session);
         let sent = &f[0].players[0];
@@ -1974,7 +1974,7 @@ mod tests {
         state.shots = [(gun, 1)].into_iter().collect();
         session.sample(&state);
         state.tick = 8;
-        state.shots = BTreeMap::new();
+        state.shots.clear();
         state.actors = vec![crate::event::ActorState {
             datum: 0x9008_0008,
             object: grunt,
@@ -2031,7 +2031,7 @@ mod tests {
             s.objects[0] = Some(at(pos));
             s.actors = vec![actor(3, [9.0, 9.0, 0.0], 1)];
             s.bsp = Some(1);
-            s.shots.insert(rifle, 2);
+            s.shots.add(rifle, 2);
             s.hits = vec![HitRecord {
                 code: 7,
                 effect: 0,
