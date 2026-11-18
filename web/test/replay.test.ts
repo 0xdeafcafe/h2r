@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import type { Frame } from "../src/api/types";
+import type { Frame, WireEvent } from "../src/api/types";
 import { ReplayClock, ReplayTimeline } from "../src/state/replay";
+import { FrameBuffer } from "../src/state/frames";
 import { ev, resetPos } from "./helpers";
 
 const frame = (tick: number, x: number, alive = true): Frame => ({
-  game_id: "g", tick, players: [{ index: 0, alive, pos: [x, 0, 0], yaw: 0 }, { index: 1, alive: true, pos: [0, x, 0], yaw: 0 }],
+  game_id: "g", tick, players: [{ index: 0, alive, pos: [x, 0, 1], yaw: 0 }, { index: 1, alive: true, pos: [0, x, 1], yaw: 0 }],
 });
 
 function timeline() {
@@ -17,8 +18,7 @@ function timeline() {
     ev("PlayerKilled", "game-g", { tick: 80, victim: 0, killer: 1, kind: "kill" }),
     ev("GameEnded", "game-g", { tick: 120, reason: "finished", winner: 1 }),
   ];
-  // Out of order on purpose: the timeline sorts.
-  return new ReplayTimeline([frames[2]!, frames[0]!, frames[3]!, frames[1]!], events);
+  return new ReplayTimeline(frames, events);
 }
 
 describe("ReplayTimeline", () => {
@@ -57,11 +57,86 @@ describe("ReplayTimeline", () => {
     expect(t.killsBetween(40, 80)).toHaveLength(1);
   });
 
-  test("GameFrame events are merged with fetched frames", () => {
+  test("the game's GameFrame events stand in for fetched frames they cover", () => {
     resetPos();
-    const t = new ReplayTimeline([frame(0, 0)], [ev("GameFrame", "game-g", frame(30, 3)), ev("GameFrame", "game-g", frame(0, 99))]);
+    const t = new ReplayTimeline([frame(0, 0)], [ev("GameFrame", "game-g", frame(0, 1)), ev("GameFrame", "game-g", frame(30, 3))]);
     expect(t.frames.map((f) => f.tick)).toEqual([0, 30]);
-    expect(t.frames[0]!.players[0]!.pos[0]).toBe(0);
+    expect(t.frames[0]!.players[0]!.pos[0]).toBe(1);
+    // Fewer GameFrame events than fetched frames (a log read cut short):
+    // the fetched frames.
+    resetPos();
+    const u = new ReplayTimeline([frame(0, 0), frame(30, 3), frame(60, 6)], [ev("GameFrame", "game-g", frame(0, 1))]);
+    expect(u.frames.map((f) => f.players[0]!.pos[0])).toEqual([0, 3, 6]);
+  });
+});
+
+/** A campaign recording from before the game clock kept counting through
+ *  reverts (docs/live/replay-fidelity.md): the player walks along x from
+ *  100 to 130, the game reverts to a checkpoint (tick 300 again) and they
+ *  walk from 500, then the mission restarts (tick 4) at -50. */
+function rewound() {
+  resetPos();
+  const frames: Frame[] = [];
+  const events: WireEvent[] = [ev("GameStarted", "game-g", { tick: 0 })];
+  const at = (tick: number, x: number) => {
+    const f = frame(tick, x);
+    frames.push(f);
+    events.push(ev("GameFrame", "game-g", f));
+  };
+  for (let i = 0; i <= 3; i++) at(300 + 30 * i, 100 + 10 * i);
+  events.push(ev("PlayerKilled", "game-g", { tick: 391, victim: 0, kind: "world" }));
+  // The revert's first second: a kill before its first recorded frame.
+  events.push(ev("PlayerKilled", "game-g", { tick: 305, victim: 0, kind: "world", pos: [501, 0, 0] }));
+  for (let i = 0; i <= 3; i++) at(310 + 30 * i, 500 + 10 * i);
+  for (let i = 0; i <= 3; i++) at(4 + 30 * i, -50 - 10 * i);
+  events.push(ev("GameEnded", "game-g", { tick: 100, reason: "lost" }));
+  return { frames, events };
+}
+
+describe("a recording whose ticks run backwards (campaign reverts)", () => {
+  const xs = (t: ReplayTimeline) => t.frames.map((f) => f.players[0]!.pos[0]);
+
+  for (const from of ["events", "fetched frames"] as const) {
+    test(`plays its runs one after another, from the ${from}`, () => {
+      const { frames, events } = rewound();
+      const t = new ReplayTimeline(frames, from === "events" ? events : events.filter((e) => e.type !== "GameFrame"));
+      expect(xs(t)).toEqual([100, 110, 120, 130, 500, 510, 520, 530, -50, -60, -70, -80]);
+      const ticks = t.frames.map((f) => f.tick);
+      for (let i = 1; i < ticks.length; i++) expect(ticks[i]!).toBeGreaterThan(ticks[i - 1]!);
+      expect(t.startTick).toBe(300);
+      expect(t.endTick).toBe(ticks[ticks.length - 1]! + 6);
+      // A cut starts each later run: the second's at its first frame or
+      // the kill just before it.
+      expect(t.cuts).toHaveLength(2);
+      expect(t.cuts[0]!).toBeGreaterThan(ticks[3]!);
+      expect(t.cuts[0]!).toBeLessThanOrEqual(ticks[4]!);
+      expect(t.cuts[1]).toBe(ticks[8]!);
+    });
+  }
+
+  test("never flicks between runs while playing", () => {
+    const { frames, events } = rewound();
+    const t = new ReplayTimeline(frames, events);
+    let last = t.sample(t.startTick)[0]!.x, flips = 0;
+    for (let tick = t.startTick; tick <= t.endTick; tick += 1) {
+      const x = t.sample(tick)[0]!.x;
+      if (Math.abs(x - last) > 50) flips++;
+      last = x;
+    }
+    expect(flips).toBe(2);
+  });
+
+  test("events land in the run they happened in", () => {
+    const { frames, events } = rewound();
+    const t = new ReplayTimeline(frames, events);
+    const [first, second] = t.kills;
+    // Between the first run's last frame and the second's first.
+    expect(first!.tick).toBe(391);
+    expect(second!.tick).toBeGreaterThan(t.frames[3]!.tick);
+    expect(second!.tick).toBeLessThan(t.frames[4]!.tick);
+    expect(second!.at).toEqual({ x: 501, y: 0, z: 0 });
+    // The first kill's place comes from its own run's frames.
+    expect(first!.at!.x).toBeCloseTo(130);
   });
 });
 
@@ -92,5 +167,27 @@ describe("kill positions", () => {
     resetPos();
     const t = new ReplayTimeline([frame(0, 0), frame(30, 3)], [ev("PlayerKilled", "game-g", { tick: 15, victim: 0, kind: "world", pos: [7, 8, 9] })]);
     expect(t.kills[0]!.at).toEqual({ x: 7, y: 8, z: 9 });
+  });
+});
+
+describe("players sent at the origin (older senders, nowhere known)", () => {
+  test("are not drawn there: they hold where they were, or wait to appear", () => {
+    resetPos();
+    const origin = (tick: number, alive: boolean): Frame => ({
+      game_id: "g", tick, players: [{ index: 0, alive, pos: [0, 0, 0], yaw: 0 }, { index: 1, alive: true, pos: [0, 40, 0], yaw: 0 }],
+    });
+    const t = new ReplayTimeline([frame(0, 40), origin(30, true), frame(60, 42), origin(90, false)], []);
+    for (let tick = 0; tick <= 90; tick += 3) {
+      const p = t.sample(tick).find((q) => q.index === 0);
+      if (p) expect(Math.hypot(p.x, p.y, p.z)).toBeGreaterThan(30);
+    }
+    expect(t.sample(90).find((q) => q.index === 1)!.y).toBe(40);
+  });
+
+  test("and the live buffer leaves them out too", () => {
+    const b = new FrameBuffer();
+    b.push({ game_id: "g", tick: 0, players: [{ index: 0, alive: false, pos: [0, 0, 0], yaw: 0 }, { index: 1, alive: true, pos: [5, 5, 5], yaw: 1 }] }, 0);
+    expect(b.frames[0]!.players.map((p) => p.index)).toEqual([1]);
+    expect(b.bounds.minX).toBe(5);
   });
 });
