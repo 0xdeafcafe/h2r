@@ -1,6 +1,6 @@
-import { createRenderEffect, lazy, type JSX } from "solid-js";
+import { lazy } from "solid-js";
 import { render } from "solid-js/web";
-import { Navigate, Route, Router, useLocation, useParams } from "@solidjs/router";
+import { Navigate, Route, Router, useParams } from "@solidjs/router";
 import "./styles/theme.css";
 import "./styles/app.css";
 import "./styles/dash.css";
@@ -43,27 +43,14 @@ const Clans = lazy(parts.clans);
 const ClanPage = lazy(() => parts.clans().then((m) => ({ default: m.ClanPage })));
 const Admin = lazy(parts.admin);
 const SignIn = lazy(parts.signin);
-const ConceptPage = lazy(() => import("./dash/concepts/Concept"));
 const Viewer3DPage = lazy(() => import("./viewer/Popout"));
 
 const idle = (f: () => void) =>
   "requestIdleCallback" in globalThis ? requestIdleCallback(f, { timeout: 3000 }) : setTimeout(f, 1500);
 addEventListener("load", () => idle(() => { for (const load of Object.values(parts)) void load(); }));
 
-// A direct visit to a design preview needs only the local fixtures. Start
-// discovery on the first ordinary route, including a client-side exit.
-function AppRoot(props: { children?: JSX.Element }) {
-  const location = useLocation();
-  let started = false;
-  createRenderEffect(() => {
-    if (!started && !/^\/dash\/concepts(?:\/|$)/.test(location.pathname)) {
-      started = true;
-      live.start();
-      startGameArt();
-    }
-  });
-  return <Veil>{props.children}</Veil>;
-}
+live.start();
+startGameArt();
 
 function NotFound() {
   return <div class="s-full"><Title class="s-title--bar">Page Not Found</Title><p class="s-pad">That page isn't here. Try the links above.</p></div>;
@@ -76,10 +63,7 @@ const OldPlayer = () => <Navigate href={`/stats/players/${useParams().tag}`} />;
 
 render(
   () => (
-    <Router root={AppRoot}>
-      <Route path={["/dash/concepts", "/dash/concepts/refined"]} component={() => <Navigate href="/?finish=refined" />} />
-      <Route path="/dash/concepts/:concept" matchFilters={{ concept: ["orbital", "silverline", "switchboard"] }} component={ConceptPage} />
-      <Route path="/dash/concepts/*invalid" component={() => <Navigate href="/dash/concepts" />} />
+    <Router root={Veil}>
       <Route path="/dash/teams" component={() => <Navigate href="/dash/clans" />} />
       <Route path="/dash/teams/:tag" component={() => <Navigate href={`/dash/clans/${useParams().tag}`} />} />
       <Route path={["/", "/dash/:section", "/dash/:section/:tag"]} component={Dashboard} />

@@ -29,12 +29,12 @@ export function Orb(props: { turn?: number }) {
       <svg class="dx-orb-svg" viewBox="-170 -170 340 340">
         <defs>
           <radialGradient id="dxo-body" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="104" fx="16" fy="26">
-            <stop offset="0" stop-color="#fffc92" />
-            <stop offset=".24" stop-color="#f7f44c" />
-            <stop offset=".5" stop-color="#e1eb35" />
-            <stop offset=".7" stop-color="#b6df2a" />
-            <stop offset=".87" stop-color="#6fc81f" />
-            <stop offset="1" stop-color="#3a9c14" />
+            <stop offset="0" stop-color="#ffffbb" />
+            <stop offset=".24" stop-color="#e9fa71" />
+            <stop offset=".5" stop-color="#cde848" />
+            <stop offset=".7" stop-color="#8cc52f" />
+            <stop offset=".87" stop-color="#439429" />
+            <stop offset="1" stop-color="#194e22" />
           </radialGradient>
           <radialGradient id="dxo-back" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="128">
             <stop offset=".5" stop-color="#0c4a08" stop-opacity=".5" />
