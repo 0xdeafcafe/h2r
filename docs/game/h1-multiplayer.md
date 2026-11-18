@@ -1005,20 +1005,34 @@ salt `0xe174 + n` (`TagSet::from_map`), so the spawns name each new tag's
 datum before it exists (`convert::halo1::added_datum`), and the build
 checks the datums came out so.
 
-Each netgame equipment spawn names its object, not a collection. The
-spawner rolls an `itmc` or `vehc` and places any other object tag as it
-is (E `0x0015aad0`); a respawn time of 0 on a non-collection takes the
-engine's default (E `0x0015ac83`). Type 0 (weapons) keeps a weapon the
-globals' weapon list doesn't know (E `0x0015a640`: `0x0015eb80` returns
--1 and the item is kept); vehicle types 1 to 7 and the powerup types keep
-the item while the variant leaves the map's default (E `0x0015a4d0`,
-`0x0015a5b0`). Types: weapons 0; warthog 1, ghost 2, scorpion 3; grenades
-8; camouflage, overshield and the health pack 9.
+**Each netgame equipment spawn names a collection built from Halo 1's**
+(converter version 50). The spawner `0x0015aad0` reads the entry's item
+(`+0x58` group, `+0x5c` datum) and rolls it with `0x0019f1a0` only when
+the group is `itmc` or `vehc` (E `0x0015ab12`..`0x0015ab23`); any other
+group leaves the item -1, and `0x0015ab8b` returns without placing.
+Through version 49 each Halo 1 sandbox spawn named its `weap`, `eqip` or
+`vehi` directly (the doc then read `0x0015aad0` as placing any other tag
+as it is), so **no weapon, grenade, powerup or vehicle ever spawned** in
+the Halo 1 sandbox: the user's "no weapons and no vehicles in the world"
+on Blood Gulch, from the first Halo 1 sandbox build. Now
+`convert::halo1` builds one `itmc` per Halo 1 item collection a spawn
+uses (each converted item at Halo 1's weight; Halo 1's respawn time as
+the root `i16` at `+8`, which the spawner reads when the spawn's own
+`+0xe` is 0, E `0x0015ac83`..`0x0015acb0`) and one `vehc` per Halo 1
+vehicle, added right after the objects so the spawns name their datums.
+`0x0019f1a0` returns a one-entry collection's item whatever its weight
+(E `0x0019f227`), and rolls the weights otherwise. Types: weapons 0;
+warthog 1, ghost 2, scorpion 3; grenades 8; camouflage, overshield and
+the health pack 9. Type 0 keeps a weapon the globals' weapon list
+doesn't know (E `0x0015a640`: `0x0015eb80` returns -1 and the item is
+kept); vehicle types 1 to 7 and the powerup types keep the item while
+the variant leaves the map's default (E `0x0015a4d0`, `0x0015a5b0`).
 
 `h1objects/tests/sandbox_disc.rs` converts Blood Gulch onto Coagulation
 and reads every netgame equipment spawn of the built map back: 43 of 43
-(35 items, 8 vehicles), each naming a tag this conversion added, of its
-group, with a render model (`tags::object::Context`). 68 tags are added:
+(35 items, 8 vehicles), each naming an `itmc` or `vehc` this conversion
+added, whose entries name added objects of the collection's kind, each
+with a render model (`tags::object::Context`). 68 tags are added:
 8 weapons with their projectiles, camouflage, overshield, the health pack
 (on the overshield template), both grenades, warthog, ghost and scorpion,
 and the cyborg (`characters\cyborg_mp\cyborg_mp`, on `masterchief_mp`):
@@ -1059,6 +1073,19 @@ elements 2 and 3 at the converted cyborg and clears the word;
 sandbox's disc test checks both elements name the added cyborg, which
 decodes with a render model. The first-person arms stay Halo 2's (element
 `+0x0`).
+
+**The player's camera and hands (converter version 50).** A rebuilt
+biped names its model's Halo 1 markers in the unit's marker fields
+(`h1objects::rebuild::UNIT_MARKERS`): the camera at `unit +0xd4`
+(`head`), and the weapon markers at `+0x158`/`+0x15c` (`right hand`,
+`left hand`), which `0x000d0870` passes to the attach `0x0010cec0` when
+a unit takes a weapon. Halo 1's units hold no marker names (its engine
+uses fixed ones) and the rebuild left all three empty, so the cyborg's
+camera sat at its origin (the feet in view, the view low: the user's
+report on Blood Gulch) and its weapons had no marker to attach to (the
+player held nothing; the converted Blood Gulch had no item to pick up
+either, above). The disc test checks the cyborg's three fields name
+markers of its render model.
 
 **The health model per variant (Built, `boot::health`).** At each game
 start the loaded map's name (`0x547898`) picks the model

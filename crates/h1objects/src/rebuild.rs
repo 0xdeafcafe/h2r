@@ -1646,7 +1646,35 @@ pub struct BipedParts {
     /// HUD interfaces in place of the counterpart's ([`BIPD_HUD`]): the
     /// player's, with the health meter.
     pub hud: Option<Vec<TagId>>,
+    /// The converted model's marker names ([`UNIT_MARKERS`]).
+    pub markers: Vec<String>,
 }
+
+/// The unit's marker names, each the Halo 1 marker the Halo 1 engine uses
+/// for it, written when the converted model has that marker:
+///
+/// - `unit +0xd4`, the camera marker: `head`. V: `head` on the retail
+///   `masterchief` and `masterchief_mp`, whose models have a `head`
+///   marker. Left empty, the camera sits at the biped's origin, its feet
+///   (a converted cyborg through converter version 49: "the camera sits
+///   low, the feet are visible").
+/// - `unit +0x158` and `+0x15c`, the markers a held weapon attaches to,
+///   right and left hand: `right hand`, `left hand`. E `0x000d0870`: a
+///   weapon is attached with `0x0010cec0` (to `0x000b8ee0`) at the unit's
+///   `+0x158` marker, or `+0x15c` for the left hand, the weapon's own
+///   marker named by unit `+0x160` (else weapon `+0x284`). V: retail
+///   `right_hand`/`left_hand` (Chief) and `right_hand_elite`/
+///   `left_hand_elite`, each a marker of their models. Halo 1's units hold
+///   no marker names (the cyborg's `bipd` has none: its engine uses fixed
+///   ones), and its models name them with spaces.
+///
+/// `+0x160` stays empty: the weapon's own marker (`right_hand_mc` on the
+/// Chief) is not on a Halo 1 weapon model.
+pub const UNIT_MARKERS: [(&str, &str); 3] = [
+    ("unit.string_d4", "head"),
+    ("unit.string_158", "right hand"),
+    ("unit.string_15c", "left hand"),
+];
 
 /// The Halo 2 biped a Halo 1 biped takes its references from, by words in
 /// the Halo 1 path (all must appear), first match the base holds. The
@@ -1756,6 +1784,11 @@ pub fn biped(
         "unit.camera_field_of_view",
         Val::Float(unit.camera_field_of_view),
     )?;
+    for (path, marker) in UNIT_MARKERS {
+        if parts.markers.iter().any(|m| m == marker) {
+            set(&mut r, path, Val::text(marker))?;
+        }
+    }
     for (path, at) in BIPED_WORDS {
         if let Some((_, w)) = unit.biped_words.iter().find(|x| x.0 == *at) {
             set(&mut r, path, Val::Bytes(w.to_le_bytes().to_vec()))?;
