@@ -71,10 +71,6 @@ harness = false
 name = "render_churn"
 harness = false
 
-[[bench]]
-name = "scale_bench"
-harness = false
-
 # Guest-thread us per draw, draw sharing on and off (tests/draw_frame).
 [[bench]]
 name = "draw_main"
