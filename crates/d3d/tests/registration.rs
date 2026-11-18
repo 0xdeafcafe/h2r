@@ -330,3 +330,68 @@ fn gfx_backend_registration_type_checks() {
             .on_present(|_, _, _, _, _| {})
     };
 }
+
+/// A D3D entry run by a second executor (docs/graphics/pipelined-render.md,
+/// "The prototype") reads its arguments from the executor's snapshot and
+/// writes the executor's view, not the live RAM the main side keeps
+/// changing; the hand-back brings its writes over.
+#[test]
+fn an_entry_on_a_second_executor_reads_and_writes_its_snapshot() {
+    use runtime::executor::SecondExecutor;
+    let mut h = harness(None);
+    h.ok(0x3f5240, regs(0x40, PP_DEVICE), &[PARAMS]);
+    let main = Arc::clone(h.ctx.runtime());
+    let data = MISC + 0x400;
+    let put = |rt: &Runtime, v: [f32; 4]| {
+        let mut m = rt.memory();
+        for (i, f) in v.iter().enumerate() {
+            m.set_u32(data + 4 * i as u32, f.to_bits()).unwrap();
+        }
+    };
+    put(&main, [1.0, 2.0, 3.0, 4.0]);
+    let entries: Vec<u32> = abi::entries::<RecordingBackend>()
+        .iter()
+        .map(|e| e.addr)
+        .collect();
+    let mut exec = SecondExecutor::new(&main, move |addr, _| entries.contains(&addr));
+    exec.snapshot(&main);
+    // The main side moves on after the snapshot.
+    put(&main, [9.0, 9.0, 9.0, 9.0]);
+    // SetVertexShaderConstant1(register 5): ECX = 5 + 96, EDX = data; it
+    // keeps the guest shadow of the constants.
+    let register = 5 + 96;
+    let shadow = d3d::GuestLayout::HALO2.vs_constants + 16 * register;
+    let mut cpu = CpuAbi {
+        ecx: register,
+        edx: data,
+        esp: STACK - 0x800,
+        ..CpuAbi::default()
+    };
+    std::thread::scope(|s| {
+        s.spawn(|| exec.call(&mut cpu, 0x3f71d0, &[]))
+            .join()
+            .unwrap()
+    })
+    .unwrap();
+    let read = |rt: &Runtime| -> Vec<f32> {
+        let m = rt.memory();
+        (0..4)
+            .map(|i| f32::from_bits(m.u32(shadow + 4 * i).unwrap()))
+            .collect()
+    };
+    assert_eq!(
+        read(exec.runtime()),
+        [1.0, 2.0, 3.0, 4.0],
+        "the snapshot's data, in the view"
+    );
+    assert_eq!(read(&main), [0.0; 4], "nothing live before the hand-back");
+    assert!(h.device.lock().unwrap().last_stop().is_none());
+    let written = exec.written();
+    exec.hand_back(&main, &written);
+    assert_eq!(read(&main), [1.0, 2.0, 3.0, 4.0]);
+    assert_eq!(
+        main.memory().u32(data).unwrap(),
+        9f32.to_bits(),
+        "the main side's own write stays"
+    );
+}
