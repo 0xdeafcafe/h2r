@@ -46,8 +46,16 @@ use crate::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 pub const ID: &str = "pipeline-render";
 /// `H2_PIPELINE_RENDER=1` turns it on.
 pub const ENV: &str = "H2_PIPELINE_RENDER";
-/// The render thread's guest stack.
-pub const STACK_LEN: u32 = 0x2_0000;
+/// The render thread's guest stack: as large as the game thread's own
+/// (the XBE header's stack size for the main thread, 256 KiB), since the
+/// front-end runs there serially and may use as much. 128 KiB was not
+/// enough: the first world frame reaches a function whose `_chkstk`
+/// (`0x00320560`) probes a frame of over 128 KiB, which faulted just below
+/// the render stack (an unmapped read about 128 KiB under its `esp`).
+pub const STACK_LEN: u32 = 0x4_0000;
+
+/// Two words: (virtual, physical) or (physical, length).
+type Pair = (u32, u32);
 
 /// A byte range of guest memory `[start, end)` (virtual).
 pub type Range = (u32, u32);
@@ -85,6 +93,12 @@ pub struct Addrs {
     /// Words the host and the game thread own (the vblank counter and the
     /// swap records the vblank callback writes): never handed back.
     pub host_owned: &'static [Range],
+    /// Shared with other guest threads under a kernel lock the render takes
+    /// through a serviced call ([`SERVICED`]): around each such call the
+    /// render's changes go to live RAM and live RAM's bytes come back into
+    /// the view, so the render works on the live copy while it holds the
+    /// lock. Left out of the final merge.
+    pub live_bytes: &'static [Range],
 }
 
 impl Addrs {
@@ -112,8 +126,26 @@ impl Addrs {
             (0x004e_7c20, 0x004e_8000),
         ],
         host_owned: &[(0x0048_5ab0, 0x0048_5ac0), (0x0055_e6b8, 0x0055_e6c0)],
+        // The async I/O pool (`async_io_initialize` `0x00120a90`): queue
+        // words, mutex and semaphore handles, the requests from
+        // `0x004e0368` and the free-list head at `0x004e28e8`.
+        live_bytes: &[(0x004e_0354, 0x004e_28ec)],
     };
 }
+
+/// Kernel calls the game thread makes for the render at the join, after
+/// which the render carries on on its own thread against its snapshot: the
+/// async I/O pool's lock (`0x001208b0`/`0x001209c0`: wait on the mutex,
+/// release it, release the worker's semaphore). Their only memory effects
+/// are on the render stack (copied both ways) and in [`Addrs::live_bytes`].
+/// Any other refused call is a fallback: the rest of the render on the game
+/// thread against live RAM, which has moved on by the sim's ticks since the
+/// launch.
+pub const SERVICED: &[&str] = &[
+    "NtWaitForSingleObjectEx",
+    "NtReleaseMutant",
+    "NtReleaseSemaphore",
+];
 
 /// Why a frame ran serially.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -150,6 +182,9 @@ pub struct Stats {
     pub serial: BTreeMap<&'static str, u64>,
     /// Fallbacks by the call that stopped the render.
     pub fallbacks: BTreeMap<String, u64>,
+    /// Calls the game thread made for the render, the render carrying on
+    /// on its thread after each.
+    pub serviced: BTreeMap<String, u64>,
     /// Joins a sim D3D call made (the render still in flight).
     pub d3d_joins: u64,
     /// D3D calls from another guest thread while a render was in flight
@@ -181,12 +216,8 @@ impl Stats {
             pipelined: self.pipelined - then.pipelined,
             completed: self.completed - then.completed,
             serial: sub(&self.serial, &then.serial),
-            fallbacks: self
-                .fallbacks
-                .iter()
-                .map(|(k, v)| (k.clone(), v - then.fallbacks.get(k).copied().unwrap_or(0)))
-                .filter(|(_, v)| *v != 0)
-                .collect(),
+            fallbacks: sub_named(&self.fallbacks, &then.fallbacks),
+            serviced: sub_named(&self.serviced, &then.serviced),
             d3d_joins: self.d3d_joins - then.d3d_joins,
             d3d_other_thread: self.d3d_other_thread - then.d3d_other_thread,
             join_wait: self.join_wait - then.join_wait,
@@ -220,13 +251,21 @@ impl Stats {
         fb.sort_by_key(|(_, v)| std::cmp::Reverse(**v));
         let fallbacks: u64 = self.fallbacks.values().sum();
         let fb: Vec<String> = fb.iter().map(|(k, v)| format!("{k} {v}")).collect();
+        let serviced: u64 = self.serviced.values().sum();
+        let sv: Vec<String> = self
+            .serviced
+            .iter()
+            .map(|(k, v)| format!("{k} {v}"))
+            .collect();
         format!(
-            "pipeline: frames pipelined {} completed {} serial [{}] fallbacks {} [{}] d3d_joins {} d3d_other_thread {} join_wait {:.2}ms hand_back {:.2}ms snapshot {:.2}ms render {:.2}ms pages {:.1} conflicts {} mispredicts {}",
+            "pipeline: frames pipelined {} completed {} serial [{}] fallbacks {} [{}] serviced {} [{}] d3d_joins {} d3d_other_thread {} join_wait {:.2}ms hand_back {:.2}ms snapshot {:.2}ms render {:.2}ms pages {:.1} conflicts {} mispredicts {}",
             self.pipelined,
             self.completed,
             serial.join(", "),
             fallbacks,
             fb.join(", "),
+            serviced,
+            sv.join(", "),
             self.d3d_joins,
             self.d3d_other_thread,
             ms(self.join_wait, joins),
@@ -240,6 +279,13 @@ impl Stats {
     }
 }
 
+fn sub_named(a: &BTreeMap<String, u64>, b: &BTreeMap<String, u64>) -> BTreeMap<String, u64> {
+    a.iter()
+        .map(|(k, v)| (k.clone(), v - b.get(k).copied().unwrap_or(0)))
+        .filter(|(_, v)| *v != 0)
+        .collect()
+}
+
 /// What a render run sends back.
 struct Done {
     exec: Box<SecondExecutor>,
@@ -250,7 +296,9 @@ struct Done {
 struct Job {
     exec: Box<SecondExecutor>,
     cpu: CpuAbi,
-    entry: u32,
+    /// `Some(entry)`: call it; `None`: carry on from `cpu.eip` after a
+    /// serviced call.
+    entry: Option<u32>,
     reply: SyncSender<Done>,
 }
 
@@ -286,6 +334,7 @@ struct Shared {
     allow: Arc<AllowFn>,
     d3d_entries: Vec<u32>,
     shared_watches: Vec<&'static str>,
+    serviced: Vec<&'static str>,
     print: bool,
     stack_top: AtomicU32,
     /// The guest thread that runs `0x00223240` (0 before the first frame).
@@ -331,6 +380,7 @@ impl PipelineRender {
                 allow: Arc::new(|_, _| false),
                 d3d_entries: Vec::new(),
                 shared_watches: Vec::new(),
+                serviced: SERVICED.to_vec(),
                 print: on,
                 stack_top: AtomicU32::new(0),
                 game_thread: AtomicU32::new(0),
@@ -368,6 +418,13 @@ impl PipelineRender {
         s.d3d_entries = entries;
         s.allow = Arc::new(allow);
         s.shared_watches = watches.to_vec();
+        self
+    }
+
+    /// The kernel calls the game thread makes for the render (default
+    /// [`SERVICED`]); every other refused call is a fallback.
+    pub fn serviced(mut self, names: &[&'static str]) -> Self {
+        self.shared_mut().serviced = names.to_vec();
         self
     }
 
@@ -596,7 +653,10 @@ fn setup(me: &Arc<Shared>, ctx: &mut ExecCtx, addr: u32) -> Result<(), String> {
         .spawn(move || {
             while let Ok(mut job) = rx.recv() {
                 let t = Instant::now();
-                let result = job.exec.call(&mut job.cpu, job.entry, &[]);
+                let result = match job.entry {
+                    Some(entry) => job.exec.call(&mut job.cpu, entry, &[]),
+                    None => job.exec.resume(&mut job.cpu),
+                };
                 let _ = job.reply.send(Done {
                     exec: job.exec,
                     result,
@@ -631,7 +691,7 @@ fn join_then(
     let wait = t.elapsed();
     me.in_flight.store(false, Ordering::Release);
     let Ok(Done {
-        mut exec,
+        exec,
         result,
         render,
     }) = done
@@ -643,11 +703,56 @@ fn join_then(
             backtrace: Vec::new(),
         })));
     };
+    {
+        let mut inner = me.lock();
+        inner.stats.join_wait += wait;
+        inner.stats.render += render;
+    }
+    settle(me, cpu, ctx, exec, result, flight.predicted, None, k)
+}
+
+/// A render run ended: hand it back and run `k` (completed); make its
+/// kernel call here and carry it on on the render thread (serviced); or
+/// hand everything back and run its rest here (fallback).
+#[allow(clippy::too_many_arguments)]
+fn settle(
+    me: &Arc<Shared>,
+    cpu: &mut CpuAbi,
+    ctx: &mut ExecCtx,
+    mut exec: Box<SecondExecutor>,
+    result: Result<CallOutcome, ExecutorError>,
+    predicted: u64,
+    live: Option<LiveSync>,
+    k: Cont,
+) -> Result<TransferAbi, GuestFault> {
     let rt = Arc::clone(ctx.runtime());
+    if let Err(ExecutorError::Refused(r)) = &result
+        && r.ordinal.is_some()
+        && me.serviced.contains(&r.name.as_str())
+        && let (Some(at), Some(ret)) = (exec.refused_cpu(), r.return_pc)
+    {
+        let accesses = exec.last_accesses();
+        ctx.charge_accesses(accesses);
+        let mut inner = me.lock();
+        inner.stats.accesses += accesses;
+        *inner
+            .stats
+            .serviced
+            .entry(format!("kernel:{}", r.name))
+            .or_default() += 1;
+        drop(inner);
+        return service(me, cpu, ctx, exec, at, ret, predicted, live, k);
+    }
+    // The live ranges went to live RAM at each serviced call: their last
+    // changes too, and none through the merge.
+    if let Some(live) = &live {
+        live.push(&exec, &rt);
+        for p in &live.pieces {
+            exec.revert(p.physical, p.last.len() as u32);
+        }
+    }
     let t = Instant::now();
     let mut inner = me.lock();
-    inner.stats.join_wait += wait;
-    inner.stats.render += render;
     let stack_pages = inner
         .setup
         .as_ref()
@@ -661,7 +766,7 @@ fn join_then(
                 &mut inner,
                 &mut exec,
                 &rt,
-                flight.predicted,
+                predicted,
                 false,
                 &stack_pages,
             );
@@ -696,7 +801,7 @@ fn join_then(
                 &mut inner,
                 &mut exec,
                 &rt,
-                flight.predicted,
+                predicted,
                 true,
                 &stack_pages,
             );
@@ -722,7 +827,7 @@ fn join_then(
                 &mut inner,
                 &mut exec,
                 &rt,
-                flight.predicted,
+                predicted,
                 true,
                 &stack_pages,
             );
@@ -743,6 +848,211 @@ fn join_then(
             backtrace: Vec::new(),
         }))),
     }
+}
+
+/// One page-bounded piece of an [`Addrs::live_bytes`] range, and its bytes
+/// as the view last had them in step with live RAM.
+struct LivePiece {
+    va: u32,
+    physical: u32,
+    last: Vec<u8>,
+}
+
+/// The live ranges of a render that has made serviced calls.
+struct LiveSync {
+    pieces: Vec<LivePiece>,
+}
+
+impl LiveSync {
+    /// Starts from the snapshot's bytes.
+    fn new(a: &Addrs, exec: &SecondExecutor, rt: &Runtime) -> LiveSync {
+        let g = rt.memory();
+        let base = exec.base().map(|b| b.bytes());
+        let mut pieces = Vec::new();
+        for &range in a.live_bytes {
+            for (va, physical, len) in va_pieces(&g, range) {
+                let last = base
+                    .and_then(|b| b.get(physical as usize..(physical + len) as usize))
+                    .map(<[u8]>::to_vec);
+                if let Some(last) = last {
+                    pieces.push(LivePiece { va, physical, last });
+                }
+            }
+        }
+        LiveSync { pieces }
+    }
+
+    /// The bytes the render changed since the last sync, to live RAM.
+    fn push(&self, exec: &SecondExecutor, rt: &Runtime) {
+        let view = exec.runtime().memory();
+        let mut live = rt.memory();
+        for p in &self.pieces {
+            let mut v = vec![0u8; p.last.len()];
+            let mut l = vec![0u8; p.last.len()];
+            if view.read_bytes(p.va, &mut v, 1).is_err()
+                || live.read_bytes(p.va, &mut l, 1).is_err()
+            {
+                continue;
+            }
+            let mut changed = false;
+            for (i, (&v, &last)) in v.iter().zip(&p.last).enumerate() {
+                if v != last {
+                    l[i] = v;
+                    changed = true;
+                }
+            }
+            if changed {
+                let _ = live.write_bytes(p.va, &l, 1);
+            }
+        }
+    }
+
+    /// Live RAM's bytes into the view.
+    fn pull(&mut self, exec: &SecondExecutor, rt: &Runtime) {
+        let live = rt.memory();
+        let mut view = exec.runtime().memory();
+        for p in &mut self.pieces {
+            let mut l = vec![0u8; p.last.len()];
+            if live.read_bytes(p.va, &mut l, 1).is_ok() && view.write_bytes(p.va, &l, 1).is_ok() {
+                p.last = l;
+            }
+        }
+    }
+}
+
+/// Each page-bounded piece of `[start, end)` as (virtual, physical, len).
+fn va_pieces(g: &Guest, (start, end): Range) -> Vec<(u32, u32, u32)> {
+    let mut out = Vec::new();
+    let mut va = start;
+    while va < end {
+        let next = ((va & !0xfff) + 0x1000).min(end);
+        if let Some(p) = physical(g, va) {
+            out.push((va, p, next - va));
+        }
+        va = next;
+    }
+    out
+}
+
+/// Copies the render stack from `esp`'s page to its top, `from` to `to`.
+fn copy_stack(from: &Guest, to: &mut Guest, esp: u32, top: u32) {
+    let start = (esp & !0xfff).max(top.saturating_sub(STACK_LEN));
+    if start >= top {
+        return;
+    }
+    let mut b = vec![0u8; (top - start) as usize];
+    if from.read_bytes(start, &mut b, 1).is_ok() {
+        let _ = to.write_bytes(start, &b, 1);
+    }
+}
+
+/// A serviced call: the render stopped at kernel call `at` (returning to
+/// `ret`). Make the call here, on the game thread's context (the kernel
+/// sees the thread the render runs for serially) with the render's stack
+/// and live ranges brought over, then carry the render on on its own
+/// thread against its snapshot, and settle again. The render never reads
+/// what the sim did since the launch.
+#[allow(clippy::too_many_arguments)]
+fn service(
+    me: &Arc<Shared>,
+    cpu: &mut CpuAbi,
+    ctx: &mut ExecCtx,
+    exec: Box<SecondExecutor>,
+    at: CpuAbi,
+    ret: u32,
+    predicted: u64,
+    live: Option<LiveSync>,
+    k: Cont,
+) -> Result<TransferAbi, GuestFault> {
+    let rt = Arc::clone(ctx.runtime());
+    let top = me.stack_top.load(Ordering::Relaxed);
+    let live = live.unwrap_or_else(|| LiveSync::new(&me.addrs, &exec, &rt));
+    copy_stack(&exec.runtime().memory(), &mut rt.memory(), at.esp, top);
+    live.push(&exec, &rt);
+    let saved = *cpu;
+    // The call as the render made it, its return address replaced by ours.
+    let mut c = at;
+    c.esp = at.esp.wrapping_add(4);
+    let me2 = Arc::clone(me);
+    let t = {
+        let mut mem = rt.memory();
+        ctx.call_guest_named(
+            &mut c,
+            &mut mem,
+            at.eip,
+            "pipeline: a kernel call for the render",
+            move |cpu, ctx| {
+                let done = *cpu;
+                *cpu = saved;
+                carry_on(&me2, cpu, ctx, exec, at, ret, done, predicted, live, k)
+            },
+        )
+    };
+    match t {
+        Ok(t) if t.kind == abi::CALL => {
+            *cpu = c;
+            Ok(t)
+        }
+        other => other,
+    }
+}
+
+/// After a serviced call: its results into the view, the render on.
+#[allow(clippy::too_many_arguments)]
+fn carry_on(
+    me: &Arc<Shared>,
+    cpu: &mut CpuAbi,
+    ctx: &mut ExecCtx,
+    exec: Box<SecondExecutor>,
+    at: CpuAbi,
+    ret: u32,
+    done: CpuAbi,
+    predicted: u64,
+    mut live: LiveSync,
+    k: Cont,
+) -> Result<TransferAbi, GuestFault> {
+    let rt = Arc::clone(ctx.runtime());
+    let top = me.stack_top.load(Ordering::Relaxed);
+    copy_stack(&rt.memory(), &mut exec.runtime().memory(), at.esp, top);
+    live.pull(&exec, &rt);
+    let mut r = at;
+    r.eax = done.eax;
+    r.ecx = done.ecx;
+    r.edx = done.edx;
+    r.esp = done.esp;
+    r.eip = ret;
+    let jobs = me.lock().setup.as_ref().map(|s| s.jobs.clone());
+    let (tx, rx) = sync_channel(1);
+    let sent = jobs.is_some_and(|j| {
+        j.send(Job {
+            exec,
+            cpu: r,
+            entry: None,
+            reply: tx,
+        })
+        .is_ok()
+    });
+    let t = Instant::now();
+    let finished = if sent { rx.recv().ok() } else { None };
+    let Some(Done {
+        exec,
+        result,
+        render,
+    }) = finished
+    else {
+        return Ok(TransferAbi::fault(ctx.emit(Event::Unsupported {
+            pc: cpu.eip,
+            mnemonic: "pipeline".into(),
+            detail: "the render thread died".into(),
+            backtrace: Vec::new(),
+        })));
+    };
+    {
+        let mut inner = me.lock();
+        inner.stats.join_wait += t.elapsed();
+        inner.stats.render += render;
+    }
+    settle(me, cpu, ctx, exec, result, predicted, Some(live), k)
 }
 
 fn short(e: &ExecutorError) -> &'static str {
@@ -847,7 +1157,7 @@ fn hand_back(
             physical(&g, a.frame_counter),
         )
     };
-    let (marks, excluded): (Vec<(u32, u32)>, Vec<(u32, u32)>) = {
+    let (marks, excluded): (Vec<Pair>, Vec<Pair>) = {
         let g = rt.memory();
         let marks = a
             .mark_counters
@@ -1050,7 +1360,7 @@ fn launch(
         .send(Job {
             exec,
             cpu: render_cpu,
-            entry: addr,
+            entry: Some(addr),
             reply: tx,
         })
         .is_err()

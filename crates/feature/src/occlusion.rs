@@ -29,7 +29,9 @@ use std::time::Instant;
 use engine::points;
 use engine::render_loop::Regs;
 use engine::render_loop::occlusion::guest::{self, Mailbox, Occlusion};
-use engine::render_loop::occlusion::{Camera, DepthGrid, DepthMapping, Frame, HiZ, Meter, Rules};
+use engine::render_loop::occlusion::{
+    Camera, DepthGrid, DepthMapping, Frame, GridSummary, HiZ, Meter, Rules, probe_line,
+};
 use runtime::guest::{Access, FaultReason};
 use runtime::{CpuAbi, GuestFault};
 
@@ -57,6 +59,9 @@ struct Shot {
     view: u32,
     frame: u64,
     camera: Camera,
+    /// The w far the game scaled this view's W-buffer by (the camera's
+    /// far plane, [`guest::read_w_far`]).
+    w_far: Option<f32>,
 }
 
 /// The grid size asked for.
@@ -73,6 +78,9 @@ static CAPTURE: Mutex<Option<CaptureFn>> = Mutex::new(None);
 static INFLIGHT: Mutex<Vec<(u64, Shot)>> = Mutex::new(Vec::new());
 static NEXT_TAG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 static PUBLISHED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// The newest published grid at a glance and its mapping, for the
+/// `occlusion probe:` line.
+static LAST_GRID: Mutex<Option<(GridSummary, DepthMapping)>> = Mutex::new(None);
 
 /// Installs the capture function (boot: the D3D device's
 /// `request_depth_grid`). Called once; only used with the switch on.
@@ -81,8 +89,12 @@ pub fn set_capture(f: CaptureFn) {
 }
 
 /// A finished grid for `tag`: raw depths (row 0 the top) and their mapping
-/// to view depth. Publishes the view's [`Frame`]; unknown tags (too old,
-/// or from before a restart) are dropped. Never blocks on the game.
+/// to view depth as the device sees it. A W mapping is rescaled to the
+/// game's own w far, the camera's far plane read with the capture
+/// ([`DepthMapping::with_w_far`]): the game scales w itself and the
+/// device's `+0x944` stays at 1. Publishes the view's [`Frame`]; unknown
+/// tags (too old, or from before a restart) are dropped. Never blocks on
+/// the game.
 pub fn deliver(tag: u64, width: u32, height: u32, raw: &[f32], map: DepthMapping) {
     let shot = {
         let mut f = INFLIGHT.lock().unwrap();
@@ -93,10 +105,16 @@ pub fn deliver(tag: u64, width: u32, height: u32, raw: &[f32], map: DepthMapping
         f.drain(..=i).next_back().map(|(_, s)| s)
     };
     let Some(shot) = shot else { return };
+    let map = match shot.w_far {
+        Some(far) => map.with_w_far(far),
+        None => map,
+    };
     let Some(mut grid) = DepthGrid::from_raw(width, height, raw, map) else {
         return;
     };
-    grid.ignore_nearer(MIN_OCCLUDER);
+    let mut summary = grid.summary();
+    summary.dropped = grid.ignore_nearer(MIN_OCCLUDER);
+    *LAST_GRID.lock().unwrap() = Some((summary, map));
     MAILBOX.publish(
         shot.view,
         Frame {
@@ -106,6 +124,12 @@ pub fn deliver(tag: u64, width: u32, height: u32, raw: &[f32], map: DepthMapping
         },
     );
     PUBLISHED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The newest published grid at a glance and its mapping (the
+/// `occlusion probe:` line's second half).
+pub fn last_grid() -> Option<(GridSummary, DepthMapping)> {
+    *LAST_GRID.lock().unwrap()
 }
 
 /// Grids published so far.
@@ -157,6 +181,7 @@ impl Feature for OcclusionCull {
                             view,
                             frame: frame as u64,
                             camera,
+                            w_far: guest::read_w_far(&*mem).ok().flatten(),
                         });
                     }
                 }
@@ -166,6 +191,15 @@ impl Feature for OcclusionCull {
                     let now = epoch().elapsed().as_nanos() as u64;
                     if let Some(line) = st.meter.tick(now, st.occ.counts()) {
                         eprintln!("{line} grids {}", published());
+                        // One object's test and what the newest grid held,
+                        // so a run can tell a grid that occludes nothing
+                        // from a test that never reaches it.
+                        let probe = st.occ.take_probe();
+                        let grid = last_grid();
+                        eprintln!(
+                            "{}",
+                            probe_line(probe.as_ref(), grid.as_ref().map(|(g, m)| (g, *m)))
+                        );
                     }
                 }
             });

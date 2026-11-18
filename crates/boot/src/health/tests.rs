@@ -182,28 +182,6 @@ fn apply_hold_writes_back_only_a_rise() {
 }
 
 #[test]
-fn the_meter_shows_local_health_only_under_halo1_without_a_hud_meter() {
-    let _l = model_lock();
-    let mut g = game();
-    force(Some(HealthModel::Halo1));
-    set_hud_has_meter(false);
-    assert_eq!(meter_now(&g), Some(0.5));
-    set_hud_has_meter(true);
-    assert_eq!(meter_now(&g), None, "the map's HUD draws it");
-    set_hud_has_meter(false);
-    g.put_u16(BODY + 0x10a, 0x4);
-    assert_eq!(meter_now(&g), None, "dead: no meter");
-    g.put_u16(BODY + 0x10a, 0);
-    force(Some(HealthModel::Halo2));
-    assert_eq!(meter_now(&g), None);
-    force(None);
-    publish_meter(Some(0.25));
-    assert_eq!(overlay_meter(), Some(0.25));
-    publish_meter(None);
-    assert_eq!(overlay_meter(), None);
-}
-
-#[test]
 fn the_lines_say_what_happened() {
     assert_eq!(
         restore_line(UNIT, Some(0.3), true, HealthModel::Halo1),
@@ -211,12 +189,12 @@ fn the_lines_say_what_happened() {
     );
     assert!(restore_line(UNIT, Some(1.0), false, HealthModel::Halo1).contains("refused"));
     assert_eq!(
-        start_line(HealthModel::Halo2, false, false),
+        start_line(HealthModel::Halo2, false),
         "health: game start: Halo 2 model"
     );
     assert_eq!(
-        start_line(HealthModel::Halo1, true, false),
-        "health: game start: Halo 1 model (debug override H2_HEALTH_MODEL): no body regeneration; meter drawn by the window"
+        start_line(HealthModel::Halo1, true),
+        "health: game start: Halo 1 model (debug override H2_HEALTH_MODEL): no body regeneration; the health meter is in a converted Halo 1 map's HUD"
     );
 }
 

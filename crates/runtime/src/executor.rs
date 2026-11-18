@@ -275,13 +275,35 @@ impl SecondExecutor {
                 cpu.esp = esp;
             }
         }
+        self.run_from(cpu, TransferAbi::jump(entry))
+    }
+
+    /// Carry a run on by returning to `cpu.eip` with `cpu` as it is (nothing
+    /// pushed; generated code's resume points take it):
+    /// after an [`ExecutorError::Refused`] whose call someone else made, with
+    /// `eip` the call's return address, `esp` past its arguments and the
+    /// result in `eax`/`edx`. The run ends where the first [`call`](Self::call)
+    /// would have: at its return to [`crate::exec::HARNESS_EXIT`]. The view
+    /// and the context's continuations are as the refusal left them.
+    pub fn resume(&mut self, cpu: &mut CpuAbi) -> Result<CallOutcome, ExecutorError> {
+        if self.base.is_none() {
+            return Err(ExecutorError::NoSnapshot);
+        }
+        self.run_from(cpu, TransferAbi::ret(cpu.eip))
+    }
+
+    fn run_from(
+        &mut self,
+        cpu: &mut CpuAbi,
+        transfer: TransferAbi,
+    ) -> Result<CallOutcome, ExecutorError> {
         *self.refused.lock().unwrap_or_else(|e| e.into_inner()) = None;
         self.refused_cpu = None;
         self.ctx.take_slice_spent();
         let t = Runner {
             max_transfers: self.max_transfers,
         }
-        .run(cpu, &mut self.ctx, entry);
+        .run_from(cpu, &mut self.ctx, transfer);
         let accesses = self.ctx.take_slice_spent();
         self.last_accesses = accesses;
         if t.kind == abi::STOP && cpu.eip == crate::exec::HARNESS_EXIT {

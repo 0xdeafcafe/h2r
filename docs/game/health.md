@@ -1,7 +1,9 @@
 # Health: Halo 1's model on Halo 2's engine
 
-Status: the hooks, the window meter and the switch are built and confirmed in
-the game by the owner (2026-11-17). Since 2026-11-17 the game start picks
+Status: the hooks and the switch are built and confirmed in the game by the
+owner (2026-11-17). Since 2026-11-18 the health meter is part of Halo 2's
+HUD (below, "The health meter in the HUD"); the window's overlay meter is
+gone. Its placement is not yet confirmed in a game run. Since 2026-11-17 the game start picks
 the model from the loaded map's name (`health::model_for_map`): converted
 Halo 1 multiplayer maps (`h1_<map>`) in the Halo 1 sandbox and Halo 1's
 campaign levels get Halo 1's; the debug override `H2_HEALTH_MODEL` still
@@ -62,8 +64,51 @@ code.
 | `0x13a720` | the shield's state flags for the HUD (low, empty, ...) |
 
 So Halo 2's HUD can already show the body: a widget on input 17. The
-shield meter is (likely) a `nhdt` widget on input 16; which widget in
-`masterchief`'s `nhdt` was not read (this repo has no `nhdt` layout yet).
+shield meter does not use input 16: it is the widget with special type 5,
+whose draw reads the shield itself (below).
+
+### HUD draw and its gates (confirmed)
+
+Asserted by `health_xbe.rs` `every_hud_widget_is_drawn_behind_the_same_gates`.
+
+| Address | What |
+|---|---|
+| `0x13954b` | the HUD render: calls HUD_SHOWN (`0x13939b`) first and returns at `0x1396ba` when it says no; then fills the HUD state (`0x13992a`) and draws each `nhdt` of the HUD (`0x1394b9`, from `0x1395cd` and `0x1395f5`) |
+| `0x13939b` | HUD_SHOWN: a per-user state (`0x155760`: 2 hides, 3 asks `0x155d60`), the HUD-enabled byte `[0x510c4c]+0x1d2`, and in a campaign the Blind skull's byte (`0x4f55e2`). The multiplayer Blind hook (`skulls_mp`) answers 0 here |
+| `0x1394b9` | draws the unit's and the weapons' `nhdt`s, each through `0x13a532` |
+| `0x13a532` | one `nhdt`: bitmap widgets (`+0x08` count, `+0x0c` address, `0x64` each): the widget's state gate `0x13ac87` on widget `+0x08`, its inputs `0x13ad48` from widget `+0x04`, the draw `0x22aff1`; text widgets (`+0x10`, `0x54`) and effects (`+0x20`, `0x50`) the same way |
+| `0x22aff1` | a bitmap widget's draw: copies its four input floats to the HUD shader inputs (`0x4e6980`, `hud_input1`..`4`), places it by screen mode (fullscreen, half, quarter: offsets `+0x34`, `+0x38`, `+0x3c`), then switches on the special type `+0x60`. Type 5, the shield meter, reads the HUD state's shield (`+0x2c`) and draws up to five layers (overshield) with its own colours |
+| unit `+0x1a0` | the unit's HUD interfaces: a block of 8-byte `nhdt` references (D: `masterchief` and `masterchief_mp` name `ui\hud\masterchief` twice) |
+
+D (read from `shared.map`'s `ui\hud\masterchief`, not kept): 8 bitmap
+widgets; the shield meter is widget 3 (special type 5, inputs none,
+anchor 2, offset (-1, -98) fullscreen and (-1, -76) split, bitmap
+`ui\hud\bitmaps\new_hud\meters\shield_meter`, shader
+`ui\hud\shaders\shield_test`, whose fill functions map `hud_input1`/`2`
+to 0.2156..0.992, the span of the arc's gradient). Widget 4,
+`shield_mask`, flashes on input 22 (shield low). The motion tracker sits
+at the same anchor, (-1, -84) fullscreen and (-1, -63) split.
+
+How a widget lands on screen (E, `0x22ae21` and `0x22aff1`): the
+sequence byte for the screen mode (`+0x30`, `+0x31`, `+0x32`) picks the
+bitmap's sequence, whose first image (or the second, `0x22acb4`) is
+drawn whole at its own size in HUD pixels; a bitmap with no sequences
+draws image 0. The registration point (`+0x40`, two floats per screen
+mode, a fraction of the width and height; 0 for the shield meter and the
+motion tracker) lands on the anchor point plus the offset. Flags `+0x1e`
+bits 0 and 1 mirror the texture only. At 640 x 480 fullscreen the bottom
+left anchor is (48, 444), 7.5% in: the motion tracker's 83 x 83 rim is
+at x 47..129, y 360..442, as a frame of a10 shows.
+
+D (shared.map's bitmaps, read, not kept): `shield_meter` is 128 x 32
+fullscreen (sequence 0) and 64 x 32 split (sequence 2); what shows of it
+is columns 0..82 and rows 0..24, a 10-row band across the top with the
+shield emblem at its left, then two wings either side of the tracker.
+`disintegrator_meter`, sequence 0, is a 92 x 8 bar, opaque but for a
+chamfered bottom-left corner, its blue rising from 0 at column 13 to 1 at
+the right edge. Halo 2 draws it as the energy sword's battery meter
+(`ui\hud\plasma_sword` widget 3, input 56, shader
+`ui\hud\shaders\ammo_meter`).
 
 ### Damage bleeds through (confirmed)
 
@@ -95,45 +140,78 @@ plan:
   not written by this function.
 - **Health packs**: no hook needed. An observer on `BODY_RESTORE` logs
   each use.
-- **HUD**: a converted Halo 1 map's HUD draws the meter itself (below).
-  When the map's HUD has none, the window draws a Halo 1 style meter over
-  the game image: eight segments, blue, red at a quarter or less
-  (`crates/app/src/health_meter.rs`), right edge and top at 95.5% and
-  11.5% of the image by default, under Halo 2's shield meter in the top
-  right. `H2_HEALTH_METER_AT=right,top` (fractions) moves it without a
-  rebuild. It shows local user 0's health (split screen: user 0 only).
+- **HUD**: the converted player's HUD draws the meter (below, "The
+  health meter in the HUD"). Nothing on the host draws one.
 - **Damage**: unchanged.
 
-### The switch (for the campaigns and h1-mp lanes)
+### The health meter in the HUD
 
-`boot::health::set_mode` has no caller outside this module and its tests
-(checked in the tree, 2026-11-17). The converter and the map load have to
-call it; until they do the model is Halo 2's on every map.
+Built by the converter (`h1objects::health_hud`, converter version 37),
+so it is data the game draws, not a host overlay:
 
-```rust
-use boot::health::{self, HealthModel};
-// At every game start, from the map's identity:
-health::set_mode(if is_halo1_map { HealthModel::Halo1 } else { HealthModel::Halo2 });
-// When the converted map's HUD has the body widget (so the window's meter stays off):
-health::set_hud_has_meter(true);
-```
+- The converted Halo 1 player biped (`is_player_biped`: the Halo 1 biped
+  named like `cyborg`, which both the multiplayer Halo 1 sandbox and the
+  campaign make the player) gets its own HUD interfaces (`unit +0x1a0`),
+  each naming a copy of the template's `nhdt` called
+  `<name>_h1_health` (`ui\hud\masterchief_h1_health`).
+- That `nhdt` has one more bitmap widget, after the others: made from
+  the shield meter's widget (same state flags, anchor and flags) with
+  input 0 set to **17** (the body), special type 0 (so the shield code of
+  `0x22aff1` does not run), no effects, registered at its top left, and
+  drawing Halo 2's own thin meter strip: the energy sword's battery meter,
+  bitmap `ui\hud\bitmaps\new_hud\meters\disintegrator_meter` sequence 0
+  with shader `ui\hud\shaders\ammo_meter` (template `widget_legacy_meter`:
+  fills the bitmap where its blue is below `hud_input1`, so from the left
+  as the body goes 0..1; fixed colours, the ammo counters' blue, elite
+  colours with `hud_elite`). The pairing is retail's, unchanged.
+- It sits on the shield meter's left edge with its bottom `GAP` = 2 HUD
+  pixels above the shield meter's top, in every screen mode: offsets
+  (-1, -108) fullscreen and (-1, -86) split. At 640 x 480 fullscreen that
+  is x 47..138, y 336..343 for the strip and x 47..129, y 346..370 for
+  what shows of the shield meter (its whole bitmap is x 47..174,
+  y 346..377): no overlap, rows 344 and 345 between them. It covers
+  nothing of the shield meter, its emblem or the tracker; it is 9 pixels
+  longer than the shield band, to the right.
 
-`set_mode` stays until set again, so call it for every map, not only
-Halo 1's. It is read on the next object update; calling it from a
-`GAME_ACTIVATE` hook or before `OPTIONS_QUEUE` both work. `mode()` is the
-model in force.
+v33 drew a copy of the shield meter's own bitmap raised 10 pixels: a
+second shield bar over the first, hiding the emblem. Not kept.
+
+**Why it hides with the shield.** It is a widget of the same `nhdt` as
+the shield meter, so it is drawn by the same `0x13a532` pass, only after
+HUD_SHOWN said yes (Blind, the HUD-enabled byte, the per-user state), and
+it has the shield meter's state flags, so the per-widget gate `0x13ac87`
+answers the same for both. Whatever hides the shield meter (menus, pause,
+cinematics, Blind, death) hides it; it scales and moves with split
+screen and the safe area as the shield meter does. No hook is involved.
+
+**Where it exists.** Halo 1's model runs on converted Halo 1 maps in the
+Halo 1 sandbox and on Halo 1's campaign levels (`model_for_map`), and
+those are exactly the maps whose player is the converted cyborg. The
+Halo 2 sandbox keeps Halo 2's player and HUD (and Halo 2's model). A
+retail map under the debug override `H2_HEALTH_MODEL=halo1` has no meter.
+
+If the base map has no `disintegrator_meter` bitmap or `ammo_meter`
+shader, or the template HUD no shield
+meter, the conversion goes on without the meter and the biped's report
+says `HUD: no health meter: ...`.
+
+### The switch
+
+At every game start the feature sets the model from the loaded map's name
+(`model_for_map`); `set_mode` stays until set again. It is read on the
+next object update. `mode()` is the model in force.
 
 ### Debug switch: `H2_HEALTH_MODEL=halo1`
 
 **A debug switch, not a setting.** It forces a model on every map,
 whatever the map says (`halo2` forces retail's). The boot says
-`health: DEBUG OVERRIDE ...` when it is set. Use it to try the model and
-the window's meter on a retail level.
+`health: DEBUG OVERRIDE ...` when it is set. Use it to try the model on a
+retail level (which has no health meter: its HUD is retail's).
 
 ### What it logs
 
 - `health: hooks installed via feature plan at 0xd5de0 (regeneration), 0xd6790 (health pack log); model now Halo 2`
-- each game start: `health: game start: Halo 1 model (debug override H2_HEALTH_MODEL): no body regeneration; meter drawn by the window`
+- each game start: `health: game start: Halo 1 model (debug override H2_HEALTH_MODEL): no body regeneration; the health meter is in a converted Halo 1 map's HUD`
 - the first held regeneration of a game: `health: Halo 1 model: held a player's body at 0.412 (Halo 2 would have regenerated it to 0.430); said once per game`
 - each health pack: `health: health pack: object 0x..., a player's body at 0.300, restored to full (Halo 1 model)`
 - `H2_FEATURES` with `h1-health` off leaves Halo 2's model everywhere.
@@ -148,11 +226,7 @@ For a Halo 1 health pack (Halo 1 `eqip` with a health powerup):
 - place it as equipment (scenario equipment or netgame equipment) like
   any other.
 
-For the HUD, in the converted biped's `nhdt`: a copy of the shield meter's
-widget, moved under it, with its input set to **17** (unit body) where the
-shield's has 16; then call `set_hud_has_meter(true)`. Open: the `nhdt`
-layout (where the widget block and its input bytes are) is not in this
-repo yet.
+For the HUD: built (above, "The health meter in the HUD").
 
 Optional, belt and braces: a converted Halo 1 biped's damage info body
 recharge fraction (`hlmt` damage info `+0x38`) of 0 stops regeneration in
@@ -161,45 +235,64 @@ player is Halo 2's biped.
 
 ## Tests
 
-- `cargo test -p boot --lib health` (8): the model switch and override,
-  the hold rule, which objects are sampled, write-back, the meter value,
-  the log lines, and the hooks on a feature plan around stand-ins for the
-  damage update and body restore on the runtime fixture module
-  (regeneration held for a player only under Halo 1, damage kept, a
-  restore kept, the override).
-- `cargo test -p app --lib health_meter` (4): segments, colours,
-  placement, the handle.
+- `cargo test -p boot --lib health`: the model switch and override,
+  the hold rule, which objects are sampled, write-back, the log lines,
+  and the hooks on a feature plan around stand-ins for the damage update
+  and body restore on the runtime fixture module (regeneration held for a
+  player only under Halo 1, damage kept, a restore kept, the override).
+- `cargo test -p h1objects --lib health_hud` (5, invented bytes and
+  `ui\hud\masterchief`'s offsets): the shield meter is the special-type-5
+  widget; the health widget reads input 17 (not 16), has no special type
+  or effects, sequence 0, top-left registration, and keeps every byte the
+  state gate `0x13ac87` reads (`+0x08`..`+0x1b`), the anchor and flags;
+  in each screen mode its rectangle overlaps neither the shield meter's
+  nor the motion tracker's, starts at the shield's left edge and ends 2
+  pixels above it, and at 640 x 480 the three are where the a10 frame
+  puts them; the widget block gains exactly it, referencing the strip
+  bitmap and shader; only the cyborg is the player biped.
 - `H2_XBE=disc/default.xbe cargo test -p boot --test health_xbe -- --ignored`
-  (5): every address above.
+  (6): every address above, and `every_hud_widget_is_drawn_behind_the_same_gates`
+  (HUD_SHOWN before every `nhdt` draw, Blind's byte, one gate, inputs and
+  draw per widget, the special type).
+- `H1_ISO=... H2_DISC=... cargo test -p h1objects --test sandbox_disc -- --ignored`:
+  Blood Gulch in the Halo 1 sandbox: every HUD interface of the player
+  names a `*_h1_health` `nhdt` with exactly one body widget, the shield
+  meter's gate bytes, the strip bitmap and shader; the strip's image is
+  92 x 8 and the shield meter's 128 x 32 in the built map, and placed by
+  their offsets they do not overlap, 2 pixels apart, in every screen mode.
 
 ## Only a game run can show
 
 - That the hold is invisible: no flicker of the HUD or of the "recharging"
   sound/effect while health is held.
-- The window meter's look and place against Halo 2's shield meter.
+- The HUD meter's look against Halo 2's shield meter (the strip's
+  colours, its 9 extra pixels to the right), in fullscreen and split
+  screen.
 - A health pack in a real level (none exist in retail maps; needs a
   converted map, or Forge placing an `eqip` of type 5).
 
 Steps for the user:
 
-1. `H2_HEALTH_MODEL=halo1 h2 play --level 01b_spacestation` (any campaign
-   level; or start one from the menu).
-2. Stderr shows `health: DEBUG OVERRIDE`, then at the level
-   `health: game start: Halo 1 model ...`.
-3. Top right, under the shield meter: an eight-segment blue meter, full.
-4. Take damage until the shield breaks and the meter drops, then hide.
-   The shield recharges; the meter (and the body) must **not** come back.
-   Stderr says `held a player's body at ...` once.
-5. Low health turns the lit segments red. Dying hides the meter until
-   respawn (full again).
-6. Without the variable the meter never shows and the body regenerates as
-   retail.
-7. If the meter sits wrong: `H2_HEALTH_METER_AT=0.95,0.13` and so on.
+1. Play a converted Halo 1 map (converter version 37 or later): a Halo 1
+   campaign level, or a Halo 1 multiplayer map in the Halo 1 sandbox.
+2. Stderr shows `health: game start: Halo 1 model ...`.
+3. Bottom left, a thin straight strip 2 pixels above the shield bar,
+   full, the shield bar and its emblem whole beneath it.
+4. Take damage until the shield breaks and the strip shortens from the
+   right, then hide. The shield recharges; the strip (and the body) must
+   **not** come back. Stderr says `held a player's body at ...` once.
+5. The strip hides with the rest of the HUD: pause menu, cinematics,
+   Blind, death (and comes back full at respawn).
+6. A retail map, or a Halo 1 map in the Halo 2 sandbox, has no strip and
+   regenerates as retail.
+7. If the strip sits wrong, change `health_hud::GAP` or `offsets` and bump
+   the converter version.
 
 ## Open questions
 
-- The `nhdt` layout, and which widget is the shield meter, for the
-  converter's health widget.
+- Whether the health strip should turn red when low, as Halo 1's did: the
+  meter shader's colours are fixed; a low colour needs a shader whose
+  colour follows an input.
 - Whether Halo 1's AI bodies regenerate in Halo 2 when converted (their
   character vitality block decides; the hold is for players only).
 - Network: the hold runs where the simulation runs (host); a client

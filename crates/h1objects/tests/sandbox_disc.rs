@@ -206,6 +206,7 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
     let gb = out.read_tag_bytes(g.id).unwrap();
     let gw = |at: usize| u32::from_le_bytes(gb[at..at + 4].try_into().unwrap());
     let reps = (gw(PLAYER_REPRESENTATION + 4) - g.location.unwrap().address) as usize;
+    let mut player = TagId::NULL;
     for e in [2, 3] {
         let at = reps + e * PLAYER_REPRESENTATION_SIZE + REPRESENTATION_UNIT;
         let id = TagId(gw(at + 4));
@@ -219,6 +220,94 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
         let o = ctx.resolve_object(id).unwrap();
         assert!(o.model.as_ref().is_some_and(|m| m.render_model.is_some()));
         eprintln!("player representation {e}: {name}");
+        player = id;
+    }
+    // The player's HUD carries Halo 1's health meter (docs/game/health.md
+    // "HUD"): every HUD interface names the converted nhdt, which has the
+    // shield meter and, after it, a widget on the body input with the
+    // shield meter's state flags and anchor, drawing the sword battery's
+    // strip just above it.
+    {
+        use h1objects::health_hud::{self as hh, widget};
+        let space = out.metadata_space().unwrap();
+        let meta = out
+            .read_file_range(space.file_offset, u64::from(space.size))
+            .unwrap();
+        let bytes = |a: u32, n: usize| {
+            let o = (a - space.virtual_base) as usize;
+            meta[o..o + n].to_vec()
+        };
+        let w = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+        let unit = bytes(out.tag(player).unwrap().location.unwrap().address, 0x1a8);
+        let count = w(&unit, hh::UNIT_HUD_INTERFACES) as usize;
+        assert!(count > 0, "the player has no HUD");
+        let huds = bytes(
+            w(&unit, hh::UNIT_HUD_INTERFACES + 4),
+            count * hh::HUD_INTERFACE_SIZE,
+        );
+        for i in 0..count {
+            let id = TagId(w(&huds, i * hh::HUD_INTERFACE_SIZE + 4));
+            let (grp, name) = &names[&id];
+            assert_eq!(*grp, FourCC(*b"nhdt"));
+            assert!(name.ends_with(hh::NHDT_SUFFIX), "interface {i}: {name}");
+            let root = bytes(
+                out.tag(id).unwrap().location.unwrap().address,
+                hh::NHDT_ROOT,
+            );
+            let n = w(&root, hh::NHDT_BITMAP_WIDGETS) as usize;
+            let widgets = bytes(
+                w(&root, hh::NHDT_BITMAP_WIDGETS + 4),
+                n * hh::BITMAP_WIDGET_SIZE,
+            );
+            let shield = hh::shield_meter(&widgets).expect("a shield meter");
+            let s = &widgets[shield * hh::BITMAP_WIDGET_SIZE..][..hh::BITMAP_WIDGET_SIZE];
+            let health: Vec<&[u8]> = widgets
+                .as_chunks::<{ hh::BITMAP_WIDGET_SIZE }>()
+                .0
+                .iter()
+                .filter(|x| x[widget::INPUTS] == hh::INPUT_BODY)
+                .map(|x| x.as_slice())
+                .collect();
+            assert_eq!(health.len(), 1, "{name}: one body widget");
+            let h = health[0];
+            assert_eq!(
+                h[widget::STATE..0x20],
+                s[widget::STATE..0x20],
+                "{name}: the shield's gate"
+            );
+            let name_of = |at: usize| &names[&TagId(w(h, at + 4))].1;
+            assert_eq!(name_of(widget::BITMAP), hh::STRIP_BITMAP, "{name}");
+            assert_eq!(name_of(widget::SHADER), hh::STRIP_SHADER, "{name}");
+            // The strip and the shield meter as the HUD places them: the
+            // bitmaps' first images, registered at the top left, the strip
+            // GAP pixels above the shield meter in every screen mode.
+            let image = |r: &[u8], at: usize| {
+                let bitm = TagId(w(r, at + 4));
+                let root = bytes(
+                    out.tag(bitm).unwrap().location.unwrap().address,
+                    hh::BITM_IMAGES + 8,
+                );
+                let im = bytes(w(&root, hh::BITM_IMAGES + 4), hh::BITM_IMAGE_SIZE);
+                let half = |o: usize| i16::from_le_bytes([im[o], im[o + 1]]);
+                (half(4), half(6))
+            };
+            assert_eq!(image(h, widget::BITMAP), hh::STRIP_SIZE, "{name}");
+            assert_eq!(image(s, widget::BITMAP), hh::SHIELD_SIZE[0], "{name}");
+            assert!(
+                s[widget::REGISTRATION..widget::REGISTRATION_END]
+                    .iter()
+                    .all(|b| *b == 0),
+                "{name}: the shield meter is registered at its top left"
+            );
+            for (mode, at) in widget::OFFSETS.iter().enumerate() {
+                let strip = hh::Rect::at(hh::offset(h, *at), hh::STRIP_SIZE);
+                let shield = hh::Rect::at(hh::offset(s, *at), hh::SHIELD_SIZE[mode]);
+                assert!(!strip.overlaps(&shield), "{name} mode {mode}");
+                assert_eq!(shield.y0 - strip.y1, hh::GAP, "{name} mode {mode}");
+                eprintln!("{name} mode {mode}: strip {strip:?}, shield {shield:?}");
+            }
+            eprintln!("player HUD interface {i}: {name}, health widget after {n} widgets");
+        }
     }
     assert_eq!(
         ours.keys()

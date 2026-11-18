@@ -1045,9 +1045,9 @@ first frame (pc `0x16bde`, ebp `0x485b48`, the state cache).
 Halo 2's physics. The health subsystem of campaigns.md §6 is shared with
 the campaign: no body regeneration, health packs refill on pickup, a
 health meter under the shield meter, on for Halo 1 maps in this variant.
-Hooks (docs/game/health.md): call `boot::health::set_mode(HealthModel::Halo1
-| Halo2)` at every game start, and `boot::health::set_hud_has_meter(true)`
-once a converted HUD (`nhdt`) has a body widget (input 17). A health pack
+Hooks (docs/game/health.md): the game start sets the model from the map's
+name; the converted cyborg's HUD (`nhdt`) has a widget on the body
+(input 17), built by `h1objects::health_hud`. A health pack
 is an `eqip` with `+0x12c` = 5 (i16) and `+0x130` > 0; retail Halo 2
 already handles that powerup type, so no hook is needed.
 
