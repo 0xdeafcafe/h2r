@@ -288,6 +288,10 @@ points! { ALL;
     /// Builds a layer's entries (0x18 bytes each) into the caller's buffer;
     /// the count in EAX. Stdcall `(list, arg, layer, buffer)`.
     LAYER_BUILD @ 0x0003_bab0: [fn(list: stack 0, arg: stack 1, layer: stack 2, buffer: stack 3) -> eax ret 16]; "docs/graphics/layer-draw.md";
+    /// The engine's qsort: ECX the count, EAX the base, stack `(size,
+    /// compare, context)`, `ret 0xc`. The layer build sorts its entries
+    /// with it (comparators `0x0003bb80`, `0x0003bbd0` for layer 5).
+    LAYER_SORT @ 0x0013_da70: [opaque]; "docs/graphics/layer-draw.md";
     /// Shader draw begin: per draw.
     SHADER_DRAW_BEGIN @ 0x0001_bbf0: [opaque], Hot; "docs/formats/shader-instances.md";
     /// `submit_structure_or_model_geometry`: per draw.
