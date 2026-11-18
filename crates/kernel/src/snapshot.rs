@@ -27,7 +27,8 @@ pub use snapshot::Error as CodecError;
 
 pub const KCORE: Tag = Tag::new("kcore");
 pub const MACHINE: Tag = Tag::new("machine");
-const KCORE_VERSION: u32 = 1;
+/// 2: the raw disk's written sectors follow the periodic schedules.
+const KCORE_VERSION: u32 = 2;
 const MACHINE_VERSION: u32 = 1;
 
 #[derive(Debug, thiserror::Error)]
@@ -366,6 +367,9 @@ fn save_core(core: &Core, w: &mut Writer) -> Result<(), SnapshotError> {
         file_handles,
         // Saved through the VFS's own state: open objects by path.
         storage,
+        // The raw disk's sectors (the cache database), which live in host
+        // memory behind the VFS.
+        raw_disk,
         links,
         timers,
         mutant_owners,
@@ -421,6 +425,7 @@ fn save_core(core: &Core, w: &mut Writer) -> Result<(), SnapshotError> {
         id.put(w);
         p.save(w);
     }
+    raw_disk.as_ref().map(|d| d.lock().clone()).put(w);
     Ok(())
 }
 
@@ -501,7 +506,19 @@ fn load_core(core: &mut Core, bytes: &[u8]) -> Result<(), SnapshotError> {
             }
         }
     }
+    let disk: Option<crate::rawdisk::Sectors> = Persist::get(r)?;
     r.finish()?;
+    if disk.is_some() != core.raw_disk.is_some() {
+        return Err(SnapshotError::Mismatch(
+            "the kernel's raw disk is mounted on one machine only".into(),
+        ));
+    }
+    if disk
+        .as_ref()
+        .is_some_and(|d| d.len() > crate::limits::MAX_RAW_DISK_SECTORS)
+    {
+        return Err(corrupt("more raw disk sectors than the disk keeps").into());
+    }
     // The VFS checks every saved file before it changes anything.
     match (&vfs, &core.storage) {
         (Some(state), Some(storage)) => storage
@@ -547,6 +564,9 @@ fn load_core(core: &mut Core, bytes: &[u8]) -> Result<(), SnapshotError> {
     core.persistent = persistent;
     for (id, schedule) in schedules {
         core.periodic.get_mut(&id).unwrap().restore(schedule);
+    }
+    if let (Some(saved), Some(sectors)) = (disk, &core.raw_disk) {
+        *sectors.lock() = saved;
     }
     Ok(())
 }

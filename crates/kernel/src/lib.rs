@@ -178,6 +178,9 @@ pub(crate) struct Core {
     deferred_failures: Vec<DeferredSignal>,
     dropped_deferred_failures: u64,
     storage: Option<Arc<Mutex<vfs::Vfs>>>,
+    /// The raw disk's written sectors, when the kernel mounted it
+    /// (`set_shared_vfs`).
+    raw_disk: Option<rawdisk::RawSectors>,
     title_id: Option<u32>,
     utility_partition: u8,
     console: ConsoleConfig,
@@ -319,6 +322,7 @@ impl Kernel {
                 deferred_failures: Vec::new(),
                 dropped_deferred_failures: 0,
                 storage: None,
+                raw_disk: None,
                 title_id: config.title_id,
                 utility_partition: config.utility_partition,
                 files: BTreeMap::new(),
@@ -487,9 +491,11 @@ impl Kernel {
                     .collect();
                 let disk = rawdisk::RawDisk::new(rawdisk::DISK_SIZE, &cache)
                     .map_err(|_| Error::Invalid("raw disk"))?;
+                let sectors = disk.sectors();
                 shared
                     .mount(rawdisk::RAW_DISK_DEVICE, disk)
                     .map_err(|_| Error::Invalid("raw disk mount"))?;
+                core.raw_disk = Some(sectors);
             }
         }
         core.storage = Some(storage);
@@ -499,6 +505,10 @@ impl Kernel {
     /// Kernel services lock kernel state -> guest memory -> VFS.
     pub fn vfs(&self) -> Option<Arc<Mutex<vfs::Vfs>>> {
         self.lock().storage.clone()
+    }
+    /// The raw disk's written sectors, when the kernel mounted the device.
+    pub fn raw_disk(&self) -> Option<rawdisk::RawSectors> {
+        self.lock().raw_disk.clone()
     }
     pub fn data_export(&self, ordinal: u32) -> Option<u32> {
         self.lock().data.get(&ordinal).copied()

@@ -837,6 +837,123 @@ impl Custom {
         .ok_or_else(|| format!("{map} has no skull weapon tag"))
     }
 
+    /// Why a machine snapshot must wait: our guest calls are queued for the
+    /// next tick or running.
+    fn snapshot_live(&self) -> Option<String> {
+        if self.reentry.load(Ordering::SeqCst) {
+            return Some("our skulls' guest calls are running".into());
+        }
+        let queued = self.work.lock().unwrap_or_else(|e| e.into_inner()).len();
+        (queued != 0).then(|| format!("{queued} of our skulls' guest calls are queued"))
+    }
+
+    /// The run's state as a machine snapshot keeps it
+    /// (docs/runtime/snapshots.md): the campaign's set, what was said and
+    /// found this game, the tick count, the level's skull and the effects'
+    /// gravity and falls. The variant decision is only for the log.
+    fn save_state(&self) -> Vec<u8> {
+        use snapshot::codec::Writer;
+        let opt = |w: &mut Writer, v: Option<u32>| {
+            w.bool(v.is_some()).u32(v.unwrap_or(0));
+        };
+        let w = &mut Writer::new();
+        w.u32(CAMPAIGN.load(Ordering::SeqCst))
+            .u32(self.said.load(Ordering::SeqCst))
+            .u32(self.found.load(Ordering::SeqCst))
+            .u32(self.ticks.load(Ordering::SeqCst));
+        {
+            let level = self.level.lock().unwrap_or_else(|e| e.into_inner());
+            match &level.key {
+                Some((map, scenario)) => w.bool(true).str(map).u32(*scenario),
+                None => w.bool(false),
+            };
+            let spot = level
+                .spot
+                .and_then(|spot| SPOTS.iter().position(|s| std::ptr::eq(s, spot)));
+            opt(w, spot.map(|i| i as u32));
+            opt(w, level.tag);
+            opt(w, level.object);
+            w.bool(level.uncollected).bool(level.queued);
+        }
+        let g = *self.gravity.lock().unwrap_or_else(|e| e.into_inner());
+        opt(w, g.written.map(f32::to_bits));
+        opt(w, g.game.map(f32::to_bits));
+        let mut falls: Vec<(u32, Fall)> = self
+            .falls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|(k, v)| (*k, *v))
+            .collect();
+        falls.sort_by_key(|(k, _)| *k);
+        w.list(&falls, |w, (k, f)| {
+            w.u32(*k).bool(f.airborne).u32(f.vz.to_bits());
+        });
+        std::mem::take(w).into_bytes()
+    }
+
+    /// Puts [`Self::save_state`]'s bytes back; nothing changes unless all
+    /// of them decode.
+    fn load_state(&self, bytes: &[u8]) -> Result<(), String> {
+        use snapshot::codec::Reader;
+        let r = &mut Reader::new(bytes, "skulls-custom");
+        let opt = |r: &mut Reader<'_>| -> Result<Option<u32>, snapshot::Error> {
+            let some = r.bool()?;
+            let v = r.u32()?;
+            Ok(some.then_some(v))
+        };
+        let e = |e: snapshot::Error| e.to_string();
+        let campaign = r.u32().map_err(e)?;
+        let said = r.u32().map_err(e)?;
+        let found = r.u32().map_err(e)?;
+        let ticks = r.u32().map_err(e)?;
+        let key = if r.bool().map_err(e)? {
+            Some((r.str().map_err(e)?.to_owned(), r.u32().map_err(e)?))
+        } else {
+            None
+        };
+        let spot = match opt(r).map_err(e)? {
+            Some(i) => Some(SPOTS.get(i as usize).ok_or("no such skull spot")?),
+            None => None,
+        };
+        let level = Level {
+            key,
+            spot,
+            tag: opt(r).map_err(e)?,
+            object: opt(r).map_err(e)?,
+            uncollected: r.bool().map_err(e)?,
+            queued: r.bool().map_err(e)?,
+        };
+        let gravity = Gravity {
+            written: opt(r).map_err(e)?.map(f32::from_bits),
+            game: opt(r).map_err(e)?.map(f32::from_bits),
+        };
+        let falls = r
+            .list(9, |r| {
+                let datum = r.u32()?;
+                let airborne = r.bool()?;
+                let vz = f32::from_bits(r.u32()?);
+                Ok((datum, Fall { airborne, vz }))
+            })
+            .map_err(e)?;
+        r.finish().map_err(e)?;
+
+        CAMPAIGN.store(campaign, Ordering::SeqCst);
+        if let Some(t) = &self.telemetry {
+            t.set_campaign_custom_skulls(live_proto::skulls::normalize(
+                Active(campaign).indices().iter().map(|i| *i as u8),
+            ));
+        }
+        self.said.store(said, Ordering::SeqCst);
+        self.found.store(found, Ordering::SeqCst);
+        self.ticks.store(ticks, Ordering::SeqCst);
+        *self.level.lock().unwrap_or_else(|e| e.into_inner()) = level;
+        *self.gravity.lock().unwrap_or_else(|e| e.into_inner()) = gravity;
+        *self.falls.lock().unwrap_or_else(|e| e.into_inner()) = falls.into_iter().collect();
+        self.work.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        Ok(())
+    }
+
     /// After each tick: the effects, then the hidden skull of the level.
     fn after_tick(&self, rt: &Arc<runtime::Runtime>) {
         let mut mem = rt.memory();
@@ -1164,6 +1281,16 @@ impl feature::Feature for SkullsCustom {
             s.after_tick(&rt);
             Ok(())
         });
+        let (live, save, load) = (
+            Arc::clone(&self.0),
+            Arc::clone(&self.0),
+            Arc::clone(&self.0),
+        );
+        b.snapshot(feature::SnapshotPolicy::section_forbid_while(
+            move || live.snapshot_live(),
+            move || save.save_state(),
+            move |bytes, _| load.load_state(bytes),
+        ));
         Ok(())
     }
 }

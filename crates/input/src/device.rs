@@ -436,6 +436,55 @@ impl InputManager {
         device.pending.push(request);
         Ok(ERROR_IO_PENDING)
     }
+
+    /// What a machine snapshot keeps of the device on `port`
+    /// (docs/runtime/snapshots.md): its published state, whose packet
+    /// number the guest compares, and its polling parameters. `None` when
+    /// the port is empty.
+    pub fn port_snapshot(&self, port: PortIndex) -> Option<PortSnapshot> {
+        self.ports[port.get()]
+            .device
+            .as_ref()
+            .map(|d| PortSnapshot {
+                published: d.published,
+                polling: d.polling,
+            })
+    }
+
+    /// Put a saved port's published state and polling parameters on the
+    /// device now on `port`, so packet numbers continue from the saved
+    /// run's. The host's own state is published over it at the next
+    /// `sync` or `poll` (held keys are not carried). Returns false when the
+    /// port is empty: the loaded handle then reads as unplugged.
+    pub fn restore_port(&mut self, port: PortIndex, saved: PortSnapshot) -> bool {
+        match &mut self.ports[port.get()].device {
+            Some(d) => {
+                d.published = saved.published;
+                d.polling = saved.polling;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// A handle on the device instance now on `port`, for a handle a
+    /// machine snapshot loads. On an empty port it is stale from the start
+    /// and stays stale after an insertion, like a handle to a pad that was
+    /// unplugged.
+    pub fn reopen(&self, port: PortIndex) -> Handle {
+        Handle {
+            port,
+            generation: self.ports[port.get()].generation,
+        }
+    }
+}
+
+/// A port's device as a machine snapshot keeps it
+/// ([`InputManager::port_snapshot`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PortSnapshot {
+    pub published: State,
+    pub polling: PollingParameters,
 }
 
 fn publish(d: &mut Device) {
@@ -842,5 +891,51 @@ mod tests {
         let b = s.to_bytes();
         assert_eq!(&b[0..4], &1u32.to_le_bytes());
         assert_eq!(b[4 + 2], 255);
+    }
+
+    #[test]
+    fn a_restored_port_continues_the_saved_packet_numbers() {
+        let (mut a, sh_a) = setup();
+        sh_a.lock().unwrap().pads = vec![pad(1, true)];
+        a.sync();
+        sh_a.lock().unwrap().pads = vec![pad(1, false)];
+        a.sync();
+        let h = a.open(p(0)).unwrap();
+        let polling = PollingParameters {
+            auto_poll: false,
+            interrupt_out: true,
+            input_interval: 4,
+            output_interval: 16,
+        };
+        a.set_polling_parameters(h, polling).unwrap();
+        let saved = a.port_snapshot(p(0)).unwrap();
+        assert_eq!(saved.published.packet_number, 2);
+        assert_eq!(saved.polling, polling);
+        assert_eq!(a.port_snapshot(p(1)), None);
+
+        // Another manager whose pad has seen no input loads it.
+        let (mut b, sh_b) = setup();
+        sh_b.lock().unwrap().pads = vec![pad(7, true)];
+        b.sync();
+        assert!(b.restore_port(p(0), saved));
+        assert!(!b.restore_port(p(1), saved));
+        let h = b.reopen(p(0));
+        assert_eq!(b.peek_state(h).unwrap(), saved.published);
+        assert_eq!(b.polling_parameters(h).unwrap(), polling);
+        // Auto-poll is off, as saved: the host's pressed A shows only after
+        // a poll, as the saved run's next packet.
+        b.sync();
+        assert_eq!(b.peek_state(h).unwrap(), saved.published);
+        b.poll(h).unwrap();
+        assert_eq!(b.peek_state(h).unwrap().packet_number, 3);
+
+        // A handle reopened on an empty port stays unplugged after a pad
+        // arrives there.
+        let stale = b.reopen(p(1));
+        assert_eq!(b.peek_state(stale), Err(InputError::NotConnected));
+        sh_b.lock().unwrap().pads = vec![pad(7, true), pad(8, false)];
+        b.sync();
+        assert!(b.open(p(1)).is_ok());
+        assert_eq!(b.peek_state(stale), Err(InputError::NotConnected));
     }
 }

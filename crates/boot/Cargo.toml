@@ -58,6 +58,8 @@ iced-x86 = { version = "1", default-features = false, features = ["std", "decode
 timeline = { path = "../timeline" }
 # The determinism harness (H2_LOCKSTEP, H2_INPUT_RECORD, H2_INPUT_REPLAY).
 lockstep = { path = "../lockstep" }
+# Machine snapshots: feature sections' codec (docs/runtime/snapshots.md).
+snapshot = { path = "../snapshot" }
 # The agent API (H2_AGENT; docs/runtime/agent-api.md).
 agent = { path = "../agent" }
 agent-proto = { path = "../agent-proto" }

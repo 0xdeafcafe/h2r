@@ -666,6 +666,7 @@ dependencies = [
  "serde",
  "serde_json",
  "settings",
+ "snapshot",
  "tags",
  "timeline",
  "toml",
@@ -8015,6 +8016,7 @@ dependencies = [
  "libloading",
  "lift",
  "runtime",
+ "snapshot",
  "vfs",
  "xbe",
 ]
