@@ -49,7 +49,9 @@ fn parse_verb(domain: &str, w: &[String]) -> Result<(String, Value)> {
     let (m, p) = match (domain, verb) {
         (_, "start") => {
             most(4)?;
-            let ids = w.get(1).with_context(|| format!("{domain} start needs object ids"))?;
+            let ids = w
+                .get(1)
+                .with_context(|| format!("{domain} start needs object ids"))?;
             let mut p = json!({ "objects": list(ids) });
             if let Some(f) = w.get(2) {
                 p["fields"] = json!(list(f));
@@ -79,10 +81,13 @@ fn parse_verb(domain: &str, w: &[String]) -> Result<(String, Value)> {
                 w.get(1).map_or(Value::Null, |p| json!({ "path": p })),
             )
         }
-        _ => bail!("{domain}: start, stop, status{}", match domain {
-            "flight" => ", dump or show",
-            _ => "",
-        }),
+        _ => bail!(
+            "{domain}: start, stop, status{}",
+            match domain {
+                "flight" => ", dump or show",
+                _ => "",
+            }
+        ),
     };
     if p.is_null() {
         most(1)?;
@@ -175,9 +180,10 @@ mod tests {
 
     #[test]
     fn show_takes_a_file_and_filters() {
-        let (file, f) =
-            show_args(&w("f.jsonl --from 10 --to 20 --field physics.crouch --field input"))
-                .unwrap();
+        let (file, f) = show_args(&w(
+            "f.jsonl --from 10 --to 20 --field physics.crouch --field input",
+        ))
+        .unwrap();
         assert_eq!(file, "f.jsonl");
         assert_eq!(
             f,

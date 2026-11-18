@@ -1188,8 +1188,8 @@ synthetic packets; nothing here was run against the game):
   The world is read once a tick when either recorder runs, and not at all
   otherwise. A paused game writes no rows; each `session.step` tick does.
 - **`trace.start {objects, fields?, path?}`.** 1 to 64 ids. Streams rows
-  to `path` (absolute, or relative to the cache directory's `traces/`;
-  default `traces/trace-<ms>.jsonl`; an existing file is replaced) through
+  to `path` (a bare file name in the cache directory's `traces/`, since
+  the socket may be unauthenticated TCP; default `traces/trace-<ms>.jsonl`; an existing file is replaced) through
   one buffered writer, flushed every 30 rows, at `trace.stop` and at exit:
   memory doesn't grow with length. `trace.stop` and `trace.status` give
   `rows`, `bytes`, `first_tick`, `last_tick`, `path` and `error` (a write

@@ -152,11 +152,17 @@ fn a_trace_writes_one_row_per_tick_with_the_fields_asked_for() {
         r.tick();
     }
     let s = r.call(method::TRACE_STATUS, Value::Null).unwrap();
-    assert_eq!((s["active"].clone(), s["rows"].clone()), (json!(true), json!(100)));
+    assert_eq!(
+        (s["active"].clone(), s["rows"].clone()),
+        (json!(true), json!(100))
+    );
     let s = r.call(method::TRACE_STOP, Value::Null).unwrap();
     assert_eq!(s["active"], false);
     assert_eq!(s["rows"], 100);
-    assert_eq!((s["first_tick"].clone(), s["last_tick"].clone()), (json!(2), json!(101)));
+    assert_eq!(
+        (s["first_tick"].clone(), s["last_tick"].clone()),
+        (json!(2), json!(101))
+    );
 
     // Rows after the stop aren't written.
     r.tick();
@@ -181,12 +187,18 @@ fn a_trace_writes_one_row_per_tick_with_the_fields_asked_for() {
 
     // The last trace's counts stay for trace.status; a new one may start.
     let s = r.call(method::TRACE_STATUS, Value::Null).unwrap();
-    assert_eq!((s["active"].clone(), s["rows"].clone()), (json!(false), json!(100)));
+    assert_eq!(
+        (s["active"].clone(), s["rows"].clone()),
+        (json!(false), json!(100))
+    );
     let s = r
         .call(method::TRACE_START, json!({"objects": ["player.0"]}))
         .unwrap();
     let fresh = s["path"].as_str().unwrap();
-    assert!(fresh.starts_with(dir.join("traces/trace-").to_str().unwrap()), "{fresh}");
+    assert!(
+        fresh.starts_with(dir.join("traces/trace-").to_str().unwrap()),
+        "{fresh}"
+    );
     r.tick();
     r.call(method::TRACE_STOP, Value::Null).unwrap();
     let one = super::tests::rows(fresh);
@@ -225,10 +237,20 @@ fn bad_trace_and_flight_requests_are_refused() {
         json!({"objects": ["player.0"], "fields": ["shoes"]}),
         json!({"objects": ["player.0"], "every": 2}),
     ] {
-        assert_eq!(err_code(r.call(method::TRACE_START, p.clone())), code::INVALID_PARAMS, "{p}");
+        assert_eq!(
+            err_code(r.call(method::TRACE_START, p.clone())),
+            code::INVALID_PARAMS,
+            "{p}"
+        );
     }
-    assert_eq!(err_code(r.call(method::TRACE_STOP, Value::Null)), code::INVALID_REQUEST);
-    assert_eq!(r.call(method::TRACE_STATUS, Value::Null).unwrap()["active"], false);
+    assert_eq!(
+        err_code(r.call(method::TRACE_STOP, Value::Null)),
+        code::INVALID_REQUEST
+    );
+    assert_eq!(
+        r.call(method::TRACE_STATUS, Value::Null).unwrap()["active"],
+        false
+    );
     r.call(method::TRACE_START, json!({"objects": ["player.0"]}))
         .unwrap();
     assert_eq!(
@@ -238,12 +260,21 @@ fn bad_trace_and_flight_requests_are_refused() {
 
     for s in [0, 601] {
         assert_eq!(
-            err_code(r.call(method::FLIGHT_START, json!({"objects": ["player.0"], "seconds": s}))),
+            err_code(r.call(
+                method::FLIGHT_START,
+                json!({"objects": ["player.0"], "seconds": s})
+            )),
             code::INVALID_PARAMS
         );
     }
-    assert_eq!(err_code(r.call(method::FLIGHT_DUMP, Value::Null)), code::INVALID_REQUEST);
-    assert_eq!(err_code(r.call(method::FLIGHT_STOP, Value::Null)), code::INVALID_REQUEST);
+    assert_eq!(
+        err_code(r.call(method::FLIGHT_DUMP, Value::Null)),
+        code::INVALID_REQUEST
+    );
+    assert_eq!(
+        err_code(r.call(method::FLIGHT_STOP, Value::Null)),
+        code::INVALID_REQUEST
+    );
     r.call(method::FLIGHT_START, json!({"objects": ["player.0"]}))
         .unwrap();
     assert_eq!(
@@ -281,7 +312,10 @@ fn the_flight_recorder_keeps_the_last_seconds_with_their_input() {
             json!({"objects": ["player.0"], "fields": ["physics"], "seconds": 1}),
         )
         .unwrap();
-    assert_eq!((s["capacity"].clone(), s["rows"].clone()), (json!(30), json!(0)));
+    assert_eq!(
+        (s["capacity"].clone(), s["rows"].clone()),
+        (json!(30), json!(0))
+    );
 
     for n in 0..75u32 {
         // Two reads a tick; A held on the second from tick 70 on.
@@ -295,8 +329,14 @@ fn the_flight_recorder_keeps_the_last_seconds_with_their_input() {
         r.tick();
     }
     let s = r.call(method::FLIGHT_STATUS, Value::Null).unwrap();
-    assert_eq!((s["rows"].clone(), s["ticks"].clone()), (json!(30), json!(75)));
-    assert_eq!((s["first_tick"].clone(), s["last_tick"].clone()), (json!(46), json!(75)));
+    assert_eq!(
+        (s["rows"].clone(), s["ticks"].clone()),
+        (json!(30), json!(75))
+    );
+    assert_eq!(
+        (s["first_tick"].clone(), s["last_tick"].clone()),
+        (json!(46), json!(75))
+    );
 
     let s = r
         .call(method::FLIGHT_DUMP, json!({"path": "crouch.jsonl"}))
@@ -332,15 +372,25 @@ fn the_flight_recorder_keeps_the_last_seconds_with_their_input() {
         "{}",
         shown[1]
     );
-    assert!(shown[1].ends_with("in0[a L[0.0, 1.0] R[0.0, 0.0]]"), "{}", shown[1]);
+    assert!(
+        shown[1].ends_with("in0[a L[0.0, 1.0] R[0.0, 0.0]]"),
+        "{}",
+        shown[1]
+    );
 
     // Still running after a dump; a stop drops the ring and the tap's reads.
     r.tick();
     let s = r.call(method::FLIGHT_STOP, Value::Null).unwrap();
-    assert_eq!((s["active"].clone(), s["ticks"].clone()), (json!(false), json!(76)));
+    assert_eq!(
+        (s["active"].clone(), s["ticks"].clone()),
+        (json!(false), json!(76))
+    );
     tap.read(0x5800_0000, &mut status, &mut p);
     assert!(tap::lock(&r.a.input_for_tests()).flight.is_none());
-    assert_eq!(r.call(method::FLIGHT_STATUS, Value::Null).unwrap()["active"], false);
+    assert_eq!(
+        r.call(method::FLIGHT_STATUS, Value::Null).unwrap()["active"],
+        false
+    );
 }
 
 #[test]
@@ -359,7 +409,10 @@ fn a_flood_of_reads_between_ticks_is_counted_not_kept() {
     r.tick();
     let s = r.call(method::FLIGHT_DUMP, Value::Null).unwrap();
     let rows = rows(s["path"].as_str().unwrap());
-    assert_eq!(rows[0].input.as_ref().unwrap().len(), InputRead::MAX_PER_TICK);
+    assert_eq!(
+        rows[0].input.as_ref().unwrap().len(),
+        InputRead::MAX_PER_TICK
+    );
     assert_eq!(rows[0].input_dropped, 36);
     assert_eq!(rows[1].input, Some(vec![]));
     assert_eq!(rows[1].input_dropped, 0);
@@ -404,4 +457,18 @@ fn the_flight_ring_is_bounded_by_bytes_too() {
     assert!(f.ring.len() < 50 && !f.ring.is_empty());
     assert_eq!(f.ring.back().unwrap().0, Some(49), "the newest is kept");
     assert_eq!(f.ticks, 50);
+}
+
+#[test]
+fn a_path_is_only_a_file_name_under_the_cache() {
+    let dir = scratch("paths");
+    let mut r = Rig::new(&dir);
+    r.tick();
+    for bad in ["/tmp/x.jsonl", "../x.jsonl", "a/b.jsonl", ".", ""] {
+        let e = r.call(
+            method::TRACE_START,
+            json!({"objects": ["player.0"], "path": bad}),
+        );
+        assert!(e.is_err(), "{bad:?} was accepted");
+    }
 }

@@ -861,7 +861,11 @@ impl State {
                 method::ALL
                     .iter()
                     .map(|m| (*m).to_owned())
-                    .chain(agent_proto::trace::method::ALL.iter().map(|m| (*m).to_owned()))
+                    .chain(
+                        agent_proto::trace::method::ALL
+                            .iter()
+                            .map(|m| (*m).to_owned()),
+                    )
                     .chain(self.host.keys().cloned())
                     .chain(self.game_methods.keys().cloned())
                     .collect::<Vec<String>>(),

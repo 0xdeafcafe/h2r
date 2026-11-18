@@ -331,7 +331,10 @@ mod tests {
 
     #[test]
     fn show_names_a_bad_line() {
-        let e = show("{\"ticks\":1,\"objects\":{}}\nnot json\n", &ShowFilter::default());
+        let e = show(
+            "{\"ticks\":1,\"objects\":{}}\nnot json\n",
+            &ShowFilter::default(),
+        );
         assert!(e.unwrap_err().starts_with("line 2:"));
     }
 

@@ -298,7 +298,7 @@ impl Recorders {
                     ));
                 }
                 let sel = Selection::new(p.objects, p.fields)?;
-                let path = place(dir, "traces", "trace", p.path.as_deref());
+                let path = place(dir, "traces", "trace", p.path.as_deref())?;
                 let file = create(&path).map_err(|e| {
                     RpcError::new(
                         code::UNAVAILABLE,
@@ -320,9 +320,11 @@ impl Recorders {
                 Ok(v)
             }
             method::TRACE_STOP => {
-                let t = self.trace.as_mut().filter(|t| t.out.is_some()).ok_or_else(|| {
-                    RpcError::new(code::INVALID_REQUEST, "no trace is running")
-                })?;
+                let t = self
+                    .trace
+                    .as_mut()
+                    .filter(|t| t.out.is_some())
+                    .ok_or_else(|| RpcError::new(code::INVALID_REQUEST, "no trace is running"))?;
                 t.stop();
                 Ok(to_value(t.status(at)))
             }
@@ -365,7 +367,7 @@ impl Recorders {
             method::FLIGHT_DUMP => {
                 let p: DumpParams = params(p)?;
                 let f = self.flight.as_ref().ok_or_else(not_flying)?;
-                let path = place(dir, "flights", "flight", p.path.as_deref());
+                let path = place(dir, "flights", "flight", p.path.as_deref())?;
                 f.dump(&path).map_err(|e| {
                     RpcError::new(
                         code::UNAVAILABLE,
@@ -400,16 +402,33 @@ fn not_flying() -> RpcError {
     )
 }
 
-/// `path` as asked (relative ones under `dir/sub`), or a fresh name there.
-fn place(dir: &Path, sub: &str, stem: &str, path: Option<&str>) -> PathBuf {
+/// `path` as a bare file name under `dir/sub`, or a fresh name there. The
+/// socket may be TCP with no authentication, so a caller never picks where
+/// outside the cache directory the game writes.
+fn place(dir: &Path, sub: &str, stem: &str, path: Option<&str>) -> Result<PathBuf, RpcError> {
     match path {
-        Some(p) if Path::new(p).is_absolute() => PathBuf::from(p),
-        Some(p) => dir.join(sub).join(p),
+        Some(p) => {
+            let name = Path::new(p);
+            let bare = matches!(
+                name.components().collect::<Vec<_>>().as_slice(),
+                [std::path::Component::Normal(_)]
+            );
+            if !bare {
+                return Err(RpcError::new(
+                    code::INVALID_PARAMS,
+                    format!(
+                        "path must be a file name (it goes under {}/{sub})",
+                        dir.display()
+                    ),
+                ));
+            }
+            Ok(dir.join(sub).join(name))
+        }
         None => {
             let ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_millis());
-            dir.join(sub).join(format!("{stem}-{ms}.jsonl"))
+            Ok(dir.join(sub).join(format!("{stem}-{ms}.jsonl")))
         }
     }
 }
