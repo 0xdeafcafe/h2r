@@ -141,6 +141,9 @@ pub(crate) struct Sessions {
     coop_ping: Option<u16>,
     /// The session advertised last: the lobby's current one.
     current: Option<[u8; 8]>,
+    /// The sessions advertised, oldest first (at most [`MAX_SESSIONS`]
+    /// kept): what [`Sessions::lobby_id`] picks from.
+    advertised: Vec<[u8; 8]>,
     /// The sessions the title looked up (FindFromID): joins it started.
     looked_up: BTreeSet<[u8; 8]>,
 }
@@ -346,6 +349,27 @@ impl Sessions {
     /// ids are random, so the smallest is no guide).
     pub fn current_id(&self) -> Option<[u8; 8]> {
         self.current.filter(|id| self.records.contains_key(id))
+    }
+    fn advertised(&mut self, id: [u8; 8]) {
+        self.current = Some(id);
+        self.advertised.retain(|a| *a != id && self.records.contains_key(a));
+        self.advertised.push(id);
+    }
+    /// The co-op lobby to invite to: the newest advertisement that carries
+    /// a co-op campaign, so a session the console opened on its way (the
+    /// Xbox Live menu's, a custom game's) is never taken for it; without
+    /// one, the newest.
+    pub fn lobby_id(&self) -> Option<[u8; 8]> {
+        self.advertised
+            .iter()
+            .rev()
+            .find(|id| {
+                self.records
+                    .get(*id)
+                    .is_some_and(|r| r.session.campaign.is_some())
+            })
+            .copied()
+            .or_else(|| self.current_id())
     }
     /// Whether the title looked `id` up (FindFromID) since sign-in.
     pub fn looked_up(&self, id: &[u8; 8]) -> bool {
@@ -584,7 +608,7 @@ impl Sessions {
                         debug("advertise", &session);
                     }
                     if op == Op::Create {
-                        self.current = Some(id);
+                        self.advertised(id);
                     }
                     self.records.insert(id, Record { session, key });
                     self.tasks.insert(h, Task::Session { id, key });
@@ -780,7 +804,7 @@ impl Sessions {
                         row.endpoint.addr,
                         row.endpoint.port
                     );
-                    self.current = Some(id);
+                    self.advertised(id);
                 }
                 self.records.insert(
                     id,
@@ -865,16 +889,21 @@ fn find_line(id: &[u8; 8], rows: &[live_proto::session::Session]) -> String {
         Some(r) if r.state != "open" => {
             format!("live: join: find session {id}: the session is {}", r.state)
         }
-        Some(r) => format!(
-            "live: join: find session {id}: {} hosts it at {}:{} ({}), {} of {} public slots \
-             open",
-            r.host_gamertag,
-            r.endpoint.addr,
-            r.endpoint.port,
-            r.endpoint.source,
-            r.advertisement.slots.public_open,
-            r.advertisement.slots.public_open + r.advertisement.slots.public_filled,
-        ),
+        Some(r) => {
+            let s = r.advertisement.slots;
+            format!(
+                "live: join: find session {id}: {} hosts it at {}:{} ({}), slots open: {} of {} \
+                 public, {} of {} private",
+                r.host_gamertag,
+                r.endpoint.addr,
+                r.endpoint.port,
+                r.endpoint.source,
+                s.public_open,
+                s.public_open + s.public_filled,
+                s.private_open,
+                s.private_open + s.private_filled,
+            )
+        }
     }
 }
 fn debug(action: &str, session: &LocalSession) {

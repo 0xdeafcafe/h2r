@@ -78,6 +78,39 @@ pub(crate) struct Listener {
     pub enabled: bool,
     pub data: Vec<u8>,
     pub bandwidth: u32,
+    /// When its data was last set non-empty (a running count), so the
+    /// newest lobby data wins ([`answer`]).
+    pub data_set: u64,
+}
+/// What the responder answers about `kid`: (enabled, bandwidth, data), or
+/// None for a session this console doesn't listen for.
+///
+/// A host's lobby has two ids: the XNKID the title made for its squad and
+/// listens on with no data, and the session id the server gave its
+/// advertisement, which gets the lobby data. A joining guest probes the
+/// squad's id and the title's join (`0x0006f5f5`) fails on no data
+/// ("network problems", `error_join_data_decode_failure`). So an enabled
+/// listener without data answers with the newest data this console
+/// listens with.
+pub(crate) fn answer(
+    listeners: &BTreeMap<[u8; 8], Listener>,
+    kid: &[u8; 8],
+) -> Option<(bool, u32, Vec<u8>)> {
+    let entry = listeners.get(kid)?;
+    if !entry.enabled {
+        return Some((false, entry.bandwidth, Vec::new()));
+    }
+    let data = if entry.data.is_empty() {
+        listeners
+            .values()
+            .filter(|l| l.enabled && !l.data.is_empty())
+            .max_by_key(|l| l.data_set)
+            .map(|l| l.data.clone())
+            .unwrap_or_default()
+    } else {
+        entry.data.clone()
+    };
+    Some((true, entry.bandwidth, data))
 }
 #[derive(Default)]
 pub(crate) struct Info {
@@ -126,12 +159,8 @@ impl Responder {
                         continue;
                     }
                     let kid: [u8; 8] = input[16..24].try_into().unwrap();
-                    let entry = listeners
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .get(&kid)
-                        .cloned();
-                    let Some(entry) = entry else {
+                    let entry = answer(&listeners.lock().unwrap_or_else(|e| e.into_inner()), &kid);
+                    let Some((enabled, bandwidth, data)) = entry else {
                         if unknown.insert(kid) {
                             let ours: Vec<_> = listeners
                                 .lock()
@@ -152,22 +181,17 @@ impl Responder {
                         }
                         continue;
                     };
-                    let data = if entry.enabled {
-                        entry.data.as_slice()
-                    } else {
-                        &[]
-                    };
                     let mut response = Vec::with_capacity(23 + data.len());
                     response.extend_from_slice(REPLY);
                     response.extend_from_slice(&input[8..16]);
-                    response.push(if entry.enabled {
+                    response.push(if enabled {
                         3 | if data.is_empty() { 0 } else { 8 }
                     } else {
                         7
                     });
-                    response.extend_from_slice(&entry.bandwidth.to_le_bytes());
+                    response.extend_from_slice(&bandwidth.to_le_bytes());
                     response.extend_from_slice(&(data.len() as u16).to_le_bytes());
-                    response.extend_from_slice(data);
+                    response.extend_from_slice(&data);
                     let _ = socket.send_to(&response, sender);
                 }
             })?;
@@ -251,6 +275,33 @@ mod tests {
         // Anything else is not a ping.
         assert!(answer_ping(&[0; PING_LEN], sender, &pings).is_none());
         assert!(answer_ping(&ping_packet(1, 1)[..17], sender, &pings).is_none());
+    }
+
+    #[test]
+    fn a_listener_without_data_answers_with_the_newest_lobby_data() {
+        let squad = [0x86, 0x99, 0xd9, 0x7a, 0xea, 0xb8, 0x46, 0xec];
+        let session = [0x83, 0xbd, 0x67, 0x94, 0x78, 0x74, 0x7d, 0xf9];
+        let old = [0x82, 1, 2, 3, 4, 5, 6, 7];
+        let on = |data: &[u8], data_set| Listener {
+            enabled: true,
+            data: data.to_vec(),
+            bandwidth: 7,
+            data_set,
+        };
+        let mut l = BTreeMap::new();
+        l.insert(squad, on(&[], 0));
+        // Nothing to lend yet: no data.
+        assert_eq!(answer(&l, &squad), Some((true, 7, vec![])));
+        l.insert(old, on(b"older lobby", 1));
+        l.insert(session, on(&[0xab; 172], 2));
+        assert_eq!(answer(&l, &squad), Some((true, 7, vec![0xab; 172])));
+        assert_eq!(answer(&l, &session).unwrap().2.len(), 172);
+        assert_eq!(answer(&l, &old).unwrap().2, b"older lobby");
+        // Disabled: no data, and lends none.
+        l.get_mut(&session).unwrap().enabled = false;
+        assert_eq!(answer(&l, &session), Some((false, 7, vec![])));
+        assert_eq!(answer(&l, &squad).unwrap().2, b"older lobby");
+        assert_eq!(answer(&l, &[9; 8]), None);
     }
 
     #[test]

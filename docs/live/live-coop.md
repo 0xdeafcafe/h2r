@@ -1472,7 +1472,10 @@ on by `H2_COOP_AUTO_INVITE=<gamertags>` on the host and
 invitation. They print `coop-auto: invited Bravo to session <id>` and
 `coop-auto: accepting Alpha's invitation to session <id>`.
 
-The lobby's session is the one advertised last (`Sessions::current_id`):
+The lobby's session is the newest advertisement carrying a co-op campaign,
+else the one advertised last (`Sessions::lobby_id`), so a session a game
+opens on its way (the Xbox Live menu's, a custom game's) is never taken for
+it:
 a lobby that re-advertises gets a new random id, so the host invites
 again to that one, and a guest accepts only an invitation newer than the
 last it accepted. An older invitation names a session the host left; a
@@ -1482,9 +1485,17 @@ When the title reads the accepted invitation
 (`XOnlineFriendsGetAcceptedGameInvite`, from its reader `0x0022f3b5`), the
 guest prints `coop-auto: joining Alpha's session <id> (the game took the
 invitation)` (without `--auto`: `live: join: the game took ...`). If it
-hasn't after 20 s, it says so once. If the title took it but never looked
-the session up (FindFromID) within 15 s, it is offered again, up to three
-times.
+hasn't after 20 s, it says so once: queued but untaken, or never confirmed
+by the server (the 011442 run said neither, as the wait was dropped before
+the server's answer queued it). If the title took it but never looked the
+session up (FindFromID) within 15 s, it is offered again, up to three times.
+
+The reader is a delegate on UI screen 9 (made by `0x0022f11e`, opened
+through `0x001483c3`); when it finds an invitation it opens the two-button
+dialog for error `0x7d` (`0x0019b5af`, first button `0x0022f36f`). Which
+screen 9 is, and so where a guest must be for an accepted invitation to be
+taken, is not established; in the 011442 run Bravo was in the Xbox Live
+menu and the custom games browser, and it was never taken.
 
 The reader drops a record whose FILETIME at +100 is not before the
 guest's own KeQuerySystemTime (`0x0022f3d7`) or is 15 minutes or more
@@ -1535,6 +1546,24 @@ Each step is now in the games' logs and `coop.log`:
 | `live: join: find session <id>: <host> hosts it at <ip>:<port> ...` (or `no such session`, `the session is <state>`) | the guest's FindFromID |
 | `live: join: qos lookup: <ip>:<port+2> session <id>: contacted, N bytes of data` (or `no answer in 3 tries ...`, `nothing on that port`) | the guest's QoS probe |
 | `live: join: <ip>:<port> for session <id>: address made` / `connecting to ...` | XNetXnAddrToInAddr and XNetConnect |
+
+The 2026-11-18 (011442) run with these lines showed the failing step: the
+host listens on two ids, its squad's XNKID (made by the title, listened on
+with no data: `XNetQosListen` flags 5, `0x00073243`) and the session id the
+server gave its advertisement (with the 172-byte lobby data). A joining
+guest probes the squad's id; with no data the title's join decode
+(`0x0006f5f5`, state 6) fails: `error_join_data_decode_failure`. The HLE's
+responder now answers an enabled listener without data with the newest
+lobby data the console listens with (`qos::answer`). The `0 of 0 public
+slots` in that run's find line did not stop the join (the guest went on to
+probe); the line now shows the private slots too.
+
+That run also had all three games on one IP, which the HLE told apart by IP
+alone: a host heard both guests as one peer and every game saw the others
+at its own address. Peers are now told apart by IP and base port
+([live.md](live.md), XNetXnAddrToInAddr): a game on this Mac's IP is
+`169.254.(base >> 8).(base & 255)` to the others, so `address made`
+lines show those addresses.
 
 A probe now tries three times, 100 ms each (once, 50 ms before): three
 games on one Mac run at a few frames a second, and a single short window

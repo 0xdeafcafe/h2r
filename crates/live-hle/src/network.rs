@@ -300,6 +300,25 @@ impl Network {
             None => a,
         }
     }
+    /// The IN_ADDR the title knows the peer whose XNet base is `remote`
+    /// by: the one it has; else its IP, unless that is this console's own
+    /// or another peer's (games on one Mac share an IP: 31000, 31010,
+    /// 31020 on 10.0.3.7), when one is made from the port
+    /// ([`NetworkConfig::shared_ip_in_addr`]). Peers are told apart by
+    /// IP and port, so each game on a Mac is a player of its own.
+    fn in_addr(&self, peers: &BTreeMap<u32, Peer>, remote: SocketAddrV4) -> u32 {
+        if let Some((ina, _)) = peers
+            .iter()
+            .find(|(_, p)| endpoint(&p.xna).ok() == Some(remote))
+        {
+            return *ina;
+        }
+        let real = ip_word(*remote.ip());
+        if remote.ip() != self.config.address.ip() && !peers.contains_key(&real) {
+            return real;
+        }
+        ip_word(NetworkConfig::shared_ip_in_addr(remote.port()))
+    }
     fn source(&self, mut a: SocketAddrV4, socket: &Socket) -> SocketAddrV4 {
         let guest_port = *lock(&socket.guest_port);
         if (1000..=1006).contains(&guest_port) {
@@ -310,12 +329,14 @@ impl Network {
                 .filter(|p| *p > 0 && *p <= 65529)
             {
                 let mut s = lock(&self.state);
-                s.peers.entry(ip_word(*a.ip())).or_insert_with(|| Peer {
-                    xna: xnaddr(SocketAddrV4::new(*a.ip(), base)),
+                let from = SocketAddrV4::new(*a.ip(), base);
+                let ina = self.in_addr(&s.peers, from);
+                s.peers.entry(ina).or_insert_with(|| Peer {
+                    xna: xnaddr(from),
                     kid: [0; 8],
                     connected: false,
                 });
-                a.set_port(guest_port);
+                a = SocketAddrV4::new(Ipv4Addr::from(ina.to_le_bytes()), guest_port);
             }
         }
         a
@@ -478,8 +499,8 @@ impl Network {
                 let remote = endpoint(&xna)?;
                 let kid: [u8; 8] = read(rt, a[1], 8)?.try_into().unwrap();
                 writable(rt, a[2], 4)?;
-                let ip = ip_word(*remote.ip());
                 let mut s = lock(&self.state);
+                let ip = self.in_addr(&s.peers, remote);
                 if !s.keys.contains_key(&kid) {
                     eprintln!(
                         "live: join: {remote} for session {}: no key registered for it",
@@ -489,8 +510,9 @@ impl Network {
                 }
                 if !s.peers.contains_key(&ip) {
                     eprintln!(
-                        "live: join: {remote} for session {}: address made",
-                        hex(&kid)
+                        "live: join: {remote} for session {}: address made ({})",
+                        hex(&kid),
+                        Ipv4Addr::from(ip.to_le_bytes())
                     );
                 }
                 if let Some(old) = s.peers.get(&ip)
@@ -896,6 +918,9 @@ impl Network {
             entry.enabled = false;
         }
         if let Some(data) = data {
+            if !data.is_empty() {
+                entry.data_set = DATA_SET.fetch_add(1, Ordering::Relaxed);
+            }
             entry.data = data;
         }
         if a[4] & 8 != 0 {
@@ -1005,6 +1030,8 @@ impl Network {
         Ok(0)
     }
 }
+/// Orders listeners' data ([`qos::answer`]).
+static DATA_SET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 fn hex(kid: &[u8; 8]) -> String {
     live_proto::sign::hex(kid)
 }
