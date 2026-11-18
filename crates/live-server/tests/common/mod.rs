@@ -286,3 +286,39 @@ pub fn two_player_game(host: &User) -> Value {
         ]
     })
 }
+
+/// Every event on `/v1/stream` from the start, as `auth` (a read token).
+pub async fn streamed(addr: std::net::SocketAddr, token: Option<String>) -> Vec<Value> {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+    let q = if token.is_some() {
+        "?from=0&auth=1"
+    } else {
+        "?from=0"
+    };
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/v1/stream{q}"))
+        .await
+        .unwrap();
+    if let Some(t) = token {
+        ws.send(Message::Text(
+            json!({"kind": "auth", "token": t}).to_string().into(),
+        ))
+        .await
+        .unwrap();
+    }
+    let mut out = Vec::new();
+    loop {
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next())
+            .await
+            .expect("a message in time")
+            .unwrap()
+            .unwrap();
+        let Message::Text(t) = msg else { continue };
+        let v: Value = serde_json::from_str(&t).unwrap();
+        match v["kind"].as_str() {
+            Some("event") => out.push(v["event"].clone()),
+            Some("caught_up") => return out,
+            _ => {}
+        }
+    }
+}

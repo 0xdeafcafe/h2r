@@ -977,7 +977,8 @@ impl Live {
     }
 
     pub async fn events(&self, query: &Query) -> Result<Page<WireEvent>, ApiError> {
-        self.events_for(query, crate::sessions::Viewer::Admin).await
+        self.events_for(query, crate::sessions::Viewer::Operator)
+            .await
     }
 
     /// `GET /v1/events` as `viewer` reads it: the events it may not see
@@ -998,7 +999,7 @@ impl Live {
             let s = self.model.read();
             read.iter()
                 .filter_map(|e| match viewer {
-                    crate::sessions::Viewer::Admin => Some(e.to_wire()),
+                    crate::sessions::Viewer::Operator => Some(e.to_wire()),
                     _ => crate::sessions::wire_for(&s, e, viewer),
                 })
                 .collect()
@@ -1155,10 +1156,18 @@ impl Live {
                 })
             })
             .collect();
-        let mut requests_in: Vec<FriendRequest> =
-            relations.incoming.iter().filter_map(&request).collect();
-        let mut requests_out: Vec<FriendRequest> =
-            relations.outgoing.iter().filter_map(&request).collect();
+        // Friendships are public; pending requests are the player's own
+        // (and the admins'), so anyone else, anonymous included, gets none.
+        let own = viewer.is_admin() || viewer == crate::sessions::Viewer::Account(a.xuid);
+        let pending = |v: &[(Xuid, String)]| -> Vec<FriendRequest> {
+            if own {
+                v.iter().filter_map(&request).collect()
+            } else {
+                Vec::new()
+            }
+        };
+        let mut requests_in = pending(&relations.incoming);
+        let mut requests_out = pending(&relations.outgoing);
         friends.sort_by_key(|f| f.gamertag.key());
         requests_in.sort_by_key(|r| r.gamertag.key());
         requests_out.sort_by_key(|r| r.gamertag.key());

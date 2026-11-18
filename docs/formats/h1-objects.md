@@ -124,6 +124,12 @@ camouflage, 4 full-spectrum vision, **5 health**, 6 grenade), `30a` i16
 grenade type, `30c` f32 powerup time, `310` pickup sound. V1 (the health
 pack is type 5 with a positive time; the grenades are type 6).
 
+### `effe` and attachments
+
+Read field by field since converter version 50 (`h1::Effect`,
+`h1::attachments`): layout and evidence in
+[tag-definitions.md](tag-definitions.md), "Effects from definitions".
+
 ### `bipd`, `vehi`, `scen`
 
 Read as the `obje` header (plus every reference, `refs::scan`, for the

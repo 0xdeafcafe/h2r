@@ -269,15 +269,36 @@ resolve), `+4` u32 (0/1), `+8` `bitm` reference (class **V** on all 4,970
 non-null), `+0x10` f32 value, `+0x14` three f32 (colour-like), `+0x20` an
 8-byte block descriptor that is empty everywhere on the disc (kept raw).
 
-Property slots: slot 0's functions carry flag byte `0x10`. **E**: the
-evaluator at `0x00246cd0` only shows that a nonzero high nibble bypasses the
-scalar range mapping (`0x00246cfc` jumps to the modifier step at
-`0x00246d33`). That slot 0 is therefore a colour is a **hypothesis**, not
-established: no consumer of the prt3 root was found to confirm it. Which
-scalar is which (size, rotation, alpha, frame, ...) is likewise not
-established: no engine reader of the prt3 root was located, so the slots are
-`properties[0..5]` and unnamed. Slot 3 is the one that usually uses a nonzero
-input (11) with an add modifier.
+Property slots and root fields: **E**, from the per-particle draw
+callback `0x00224550` (passed by `0x002243c0` to `0x00175610`, which walks
+each emitter's particles at `[0x51EC84]` with the root as context `[0]`;
+the `prt3` accessor vtable is at `0x004535f0`, `PRTM`'s at `0x00453598`
+with another layout).
+
+| Root field | Meaning | Evidence |
+|---|---|---|
+| `+0x1c` property | colour (RGB, the colour evaluator `0x00246d80`) | **E** `0x002245ad`; times the emitter tint per channel (`0x00224639`), clamped to 0..1 |
+| `+0x2c` property | alpha | **E** `0x002245bb`; times the emitter alpha (`0x002245ca`), clamped |
+| `+0x3c` property | size | **E** `0x00224ca7`; times the emitter size (`0x00224caf`); vtable `+0x4c` (`0x00224350`) gives the bound `max(lo, hi)` used for the radius (`0x00248936`) |
+| `+0x4c` property | rotation, in turns | **E** `0x00224595`, times 2 pi (`0x002245a0`) |
+| `+0x5c` property | sprite frame, 0..1 over the sequence | **E** `0x002248b6`, times the sequence's sprite count, floored; the fraction blends to the next frame |
+| `+0x00` flags (u32 with `+0x02`) | `0x2`/`0x4` random U/V mirror; `0x8` frame range ends on the last sprite; `0x10` sequence per particle; `0x20` no frame blend; `0x80`/`0x100` colour also times the particle's own colour x2; `0x200` dies at rest; `0x2000` rotation +90 degrees; `0x10000` (`+0x02` bit 0) the static quad and UV instead of bitmap sprites | **E** `0x002246f0`, `0x00224907`, `0x002245d5`, `0x002242f0`, `0x00224c75`, `0x002246e0` |
+| `+0x04` u16 | vertex shader selector (+7 into the table at `0x0023ec09`) | **E** `0x00224405`; its meaning per value not established |
+| `+0x08`, `+0x0a` i16 | first sequence and sequence count (with flag `0x10`) | **E** `0x00224856..0x00224891` |
+| `+0x6c` reference | collision effect (`effe`, `foot` or `snd!`), once per particle | **E** pmov kind 1 `0x002b953b` |
+| `+0x74` reference | death effect (`effe`, `foot` or `snd!`) | **E** `0x00248340`, `0x00246e60` |
+| `+0x98` u32 | mask of the particle inputs the functions use | **E** `0x002244f6`, `0x0022456a`, filled by `0x00173ba0` from `0x00248df0` |
+| `+0x9c` f32[4] | sprite quad corners | **E** copied at `0x00224714` to `0x0023ed30`; corner order not established |
+| `+0xac` f32[4] | UV window (u0, u1, v0, v1) | **E** `0x002246f3..0x002247e7` |
+
+Size, colour and alpha come together per particle: alpha = clamp(`+0x2c`
+x emitter alpha), RGB = clamp(`+0x1c` x emitter tint), size = `+0x3c` x
+emitter size; the emitter's own properties (`+0x48` size, `+0x58` tint,
+`+0x68` alpha) are evaluated per emitter or per particle by its `+0xb0`
+bits. `0x0023ed30` writes one particle's vertex (position, size,
+rotation, colour, both frames' UV, the quad) for the vertex shader to
+expand. pmov movement kinds dispatch at `0x002b8da0` (kind 1 is the
+collision bounce, `0x002b9060`).
 
 Names that exist only as **S** (skip/delay/duration, velocity and cone
 bounds, beam, acceleration) are vocabulary, not findings: they label fields
@@ -312,15 +333,12 @@ emitter record (in `effe`, stride `0xb8`) supplies lifespan (property at
 emitter `+0x18`, the engine takes `1 / max(value, minimum)`), an emission
 shape selector at `+0x78` (eight shapes, jump table `0x00249a74`) and the
 shape/velocity properties at `+0x7c` and `+0x8c` (**E** `0x00249170`).
-Not known: which prt3 property slot drives which attribute, the meaning of
-`flags`, `flags_98`, `quad` and `uv` (presumably sprite extent and texture
-window), and the movement kinds. A drawable sprite quad (bitmap from the first
-shader parameter with a bitmap, size/colour/alpha from the properties) therefore
-cannot be asserted yet; there is no `step` helper for that reason.
+The slots and root fields are now named (the table above); the
+movement kinds beyond kind 1 (collision) are not.
 
 ### Open items
 
-- Roles of the five prt3 property slots and the root flag fields.
+- prt3 flags `0x1`, `0x40`, `0x400`, `0x800`, `0x1000`, `0x4000`; the `+0x04` shader values.
 - Contents of the `+0x7c` 4-byte records (8 distinct values in 50 instances).
 - The embedded post-process record's nested blocks (bitmaps referenced there
   are not in `references()`).

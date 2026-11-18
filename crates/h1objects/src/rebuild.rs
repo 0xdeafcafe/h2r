@@ -673,6 +673,10 @@ pub struct VehicleSpec<'a> {
     /// Halo 1's powered mass points: friction points where the role has
     /// them, else hover points where it has those, else none.
     pub points: &'a [Point],
+    /// Halo 1's attachments that convert ([`object_effects`]).
+    pub attachments: &'a [AttachmentSpec],
+    /// Halo 1's creation effect, converted.
+    pub creation_effect: Option<TagId>,
 }
 
 /// A Halo 1 vehicle written from the `vehi` definition, no retail template
@@ -745,6 +749,13 @@ pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
         Val::Int(i64::from(high | (v.flags & 0xffff))),
     )?;
     predicted_resources(b"vehi", &mut r, "unit.obje", predicted)?;
+    object_effects(
+        b"vehi",
+        &mut r,
+        "unit.obje",
+        v.attachments,
+        v.creation_effect,
+    )?;
     let wdef = d.child("unit.weapons").expect("unit weapons");
     let weapons = v
         .weapons
@@ -1857,5 +1868,480 @@ pub fn biped(
             set(&mut r, &path, v)?;
         }
     }
+    built(d, &r)
+}
+
+/// What a Halo 2 effect part creates: the group word the engine dispatches
+/// on (`effe` part `+8`: the reference's group, `obje` for any object;
+/// docs/formats/effects.md), the reference's group, and the converted tag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PartTarget {
+    pub type_group: [u8; 4],
+    pub group: [u8; 4],
+    pub tag: TagId,
+}
+
+/// The group word an effect part dispatches on for a tag of `group`:
+/// objects create through `obje` (V: on the disc every part whose
+/// reference is an object group holds `obje` at `+8`).
+pub fn part_type_group(group: [u8; 4]) -> [u8; 4] {
+    const OBJECTS: [&[u8; 4]; 13] = [
+        b"bipd", b"vehi", b"weap", b"eqip", b"garb", b"proj", b"scen", b"mach", b"ctrl", b"lifi",
+        b"ssce", b"bloc", b"crea",
+    ];
+    if OBJECTS.iter().any(|g| **g == group) {
+        *b"obje"
+    } else {
+        group
+    }
+}
+
+/// A Halo 1 effect written from the `effe` definition, no retail template
+/// read: the locations' marker names, and per event Halo 1's skip
+/// fraction, delay and duration and the parts `target` gives a converted
+/// tag for (`None` leaves the part out), each with Halo 1's creation
+/// medium, location, flags, velocity, cone, angular velocity, radius
+/// modifier and scale words (the two parts hold them in the same order,
+/// `h1::EffectPart`). Particles, the loop events and the flags are not
+/// carried (no Halo 2 meaning established); everything else is the
+/// definition's default.
+pub fn effect(
+    e: &h1::Effect,
+    target: &mut dyn FnMut(&h1::EffectPart) -> Option<PartTarget>,
+) -> Result<Block> {
+    let d = def(b"effe")?;
+    let mut r = defs::default_record(d);
+    let loc_def = d.child("locations").expect("effe locations");
+    let locations = e
+        .locations
+        .iter()
+        .map(|m| {
+            let mut x = defs::default_record(loc_def);
+            set(&mut x, "marker", Val::text(m))?;
+            Ok(x)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    set(&mut r, "locations", Val::Block(locations))?;
+    let ev_def = d.child("events").expect("effe events");
+    let part_def = d.child("events.parts").expect("effe parts");
+    let mut events = Vec::new();
+    for ev in &e.events {
+        let mut x = defs::default_record(ev_def);
+        set(&mut x, "skip_fraction", Val::Float(ev.skip_fraction))?;
+        set(&mut x, "delay_bounds", Val::floats(&ev.delay_bounds))?;
+        set(&mut x, "duration_bounds", Val::floats(&ev.duration_bounds))?;
+        let mut parts = Vec::new();
+        for p in &ev.parts {
+            let Some(t) = target(p) else { continue };
+            let mut y = defs::default_record(part_def);
+            set(&mut y, "create_in", Val::Int(p.create_in.into()))?;
+            set(&mut y, "location", Val::Int(p.location.into()))?;
+            set(&mut y, "flags", Val::Int(p.flags.into()))?;
+            set(
+                &mut y,
+                "type_group",
+                Val::Int(u32::from_be_bytes(t.type_group).into()),
+            )?;
+            set(&mut y, "reference", Val::tag(FourCC(t.group), t.tag))?;
+            set(&mut y, "velocity_bounds", Val::floats(&p.velocity_bounds))?;
+            set(
+                &mut y,
+                "velocity_cone_angle",
+                Val::Float(p.velocity_cone_angle),
+            )?;
+            set(
+                &mut y,
+                "angular_velocity_bounds",
+                Val::floats(&p.angular_velocity_bounds),
+            )?;
+            set(
+                &mut y,
+                "radius_modifier_bounds",
+                Val::floats(&p.radius_modifier_bounds),
+            )?;
+            set(&mut y, "a_scales", Val::Int(p.a_scales.into()))?;
+            set(&mut y, "b_scales", Val::Int(p.b_scales.into()))?;
+            parts.push(y);
+        }
+        set(&mut x, "parts", Val::Block(parts))?;
+        events.push(x);
+    }
+    set(&mut r, "events", Val::Block(events))?;
+    built(d, &r)
+}
+
+/// One attachment of a rebuilt object: the attached tag (`ligh`, `lsnd`,
+/// `effe` or `cont`; E `0x000bed2a` builds these) and its marker.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AttachmentSpec {
+    pub group: [u8; 4],
+    pub tag: TagId,
+    pub marker: String,
+}
+
+/// Sets `path.attachments` (the object header's, `obje +0x94`) and
+/// `path.creation_effect` on a rebuilt record.
+pub fn object_effects(
+    group: &[u8; 4],
+    r: &mut Record,
+    path: &str,
+    attachments: &[AttachmentSpec],
+    creation_effect: Option<TagId>,
+) -> Result<()> {
+    let e = def(group)?
+        .child(&format!("{path}.attachments"))
+        .expect("obje attachments");
+    let mut out = Vec::new();
+    for a in attachments {
+        let mut x = defs::default_record(e);
+        set(&mut x, "type", Val::tag(FourCC(a.group), a.tag))?;
+        set(&mut x, "marker", Val::text(&a.marker))?;
+        out.push(x);
+    }
+    set(r, &format!("{path}.attachments"), Val::Block(out))?;
+    set(
+        r,
+        &format!("{path}.creation_effect"),
+        Val::tag(FourCC(*b"effe"), creation_effect.unwrap_or(TagId::NULL)),
+    )
+}
+
+/// `ligh +0` bit 3: the light casts no shadow (E,
+/// docs/graphics/e3-lighting.md). Halo 1's dynamic lights cast none.
+pub const LIGHT_NO_SHADOW: u32 = 1 << 3;
+/// `ligh +4` kinds written: sphere and frustum (a projected cone).
+pub const LIGHT_SPHERE: u32 = 0;
+pub const LIGHT_FRUSTUM: u32 = 2;
+
+/// The base map's lights of one kind, as the turret rule takes them: the
+/// majority word of every 4-byte unknown span, and the majority
+/// brightness bounds. `None` when the base has no light of the kind.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LightRole {
+    pub words: RoleWords,
+    pub brightness: [f32; 2],
+}
+
+pub fn light_role(base: &crate::base::Base, kind: u32) -> Result<Option<LightRole>> {
+    let d = def(b"ligh")?;
+    let kind_at = field_offset(d, "kind")? as usize;
+    let bright_at = field_offset(d, "brightness")? as usize;
+    let mut members = Vec::new();
+    let mut bright = std::collections::BTreeMap::<(u32, u32), usize>::new();
+    for t in base.tags.iter().filter(|t| t.1 == FourCC(*b"ligh")) {
+        let bytes = base.head(t.0, d.size.into())?;
+        if u32::from(u16::from_le_bytes([bytes[kind_at], bytes[kind_at + 1]])) != kind
+        {
+            continue;
+        }
+        *bright
+            .entry((
+                crate::base::u32_at(&bytes, bright_at),
+                crate::base::u32_at(&bytes, bright_at + 4),
+            ))
+            .or_default() += 1;
+        members.push((t.2.clone(), bytes));
+    }
+    if members.is_empty() {
+        return Ok(None);
+    }
+    let (b, _) = bright
+        .iter()
+        .max_by_key(|(w, c)| (**c, std::cmp::Reverse(**w)))
+        .expect("some");
+    Ok(Some(LightRole {
+        words: role_over(base, d, &members)?,
+        brightness: [f32::from_bits(b.0), f32::from_bits(b.1)],
+    }))
+}
+
+/// A Halo 1 light written from the `ligh` definition, no retail template
+/// read: a sphere of Halo 1's radius, or a frustum (Halo 1's cutoff angle
+/// as the field of view, its radius as the range), Halo 1's two colours as
+/// the diffuse and specular colours at the two intensity bounds, no
+/// shadow, Halo 1's duration in seconds (ticks over 30), and the kind's
+/// role words and brightness ([`LightRole`]); everything else the
+/// definition's default.
+pub fn light(l: &h1::Light, role: Option<&LightRole>) -> Result<Block> {
+    let d = def(b"ligh")?;
+    let mut r = defs::default_record(d);
+    if let Some(role) = role {
+        role_words(&mut r, &role.words.root)?;
+        set(&mut r, "brightness", Val::floats(&role.brightness))?;
+    } else {
+        set(&mut r, "brightness", Val::floats(&[1.0, 1.0]))?;
+    }
+    set(&mut r, "flags", Val::Int(LIGHT_NO_SHADOW.into()))?;
+    if l.is_cone() {
+        set(&mut r, "kind", Val::Enum(LIGHT_FRUSTUM))?;
+        set(&mut r, "height_stretch", Val::Float(1.0))?;
+        set(&mut r, "field_of_view", Val::Float(l.cutoff_angle))?;
+        set(&mut r, "falloff_distance", Val::Float(l.radius))?;
+        set(&mut r, "cutoff_distance", Val::Float(l.radius))?;
+    } else {
+        set(&mut r, "kind", Val::Enum(LIGHT_SPHERE))?;
+        set(&mut r, "radius", Val::Float(l.radius))?;
+        set(&mut r, "specular_radius", Val::Float(l.radius))?;
+    }
+    let rgb = |c: &[f32; 4]| Val::floats(&[c[1], c[2], c[3]]);
+    for (name, c) in [
+        ("diffuse_colour_lower", &l.colour_lower),
+        ("diffuse_colour_upper", &l.colour_upper),
+        ("specular_colour_lower", &l.colour_lower),
+        ("specular_colour_upper", &l.colour_upper),
+    ] {
+        set(&mut r, name, rgb(c))?;
+    }
+    if l.duration_ticks > 0.0 {
+        set(
+            &mut r,
+            "duration",
+            Val::Float(l.duration_ticks / crate::convert::TICKS_PER_SECOND),
+        )?;
+    }
+    built(d, &r)
+}
+
+/// The base map's decals as a role: the majority layer, maximum
+/// overlapping count and `+0x18` scale word (the turret rule, no retail
+/// value in the source). `None` when the base has no decal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DecalRole {
+    pub layer: u16,
+    pub max_overlapping: u16,
+    pub scale_18: u32,
+}
+
+pub fn decal_role(base: &crate::base::Base) -> Result<Option<DecalRole>> {
+    let d = def(b"deca")?;
+    let mut tallies: [std::collections::BTreeMap<u32, usize>; 3] = Default::default();
+    let mut n = 0;
+    for t in base.tags.iter().filter(|t| t.1 == FourCC(*b"deca")) {
+        let b = base.head(t.0, d.size.into())?;
+        n += 1;
+        *tallies[0].entry(u16::from_le_bytes([b[4], b[5]]).into()).or_default() += 1;
+        *tallies[1].entry(u16::from_le_bytes([b[6], b[7]]).into()).or_default() += 1;
+        *tallies[2].entry(crate::base::u32_at(&b, 0x18)).or_default() += 1;
+    }
+    if n == 0 {
+        return Ok(None);
+    }
+    let top = |t: &std::collections::BTreeMap<u32, usize>| {
+        *t.iter()
+            .max_by_key(|(w, c)| (**c, std::cmp::Reverse(**w)))
+            .expect("some")
+            .0
+    };
+    Ok(Some(DecalRole {
+        layer: top(&tallies[0]) as u16,
+        max_overlapping: top(&tallies[1]) as u16,
+        scale_18: top(&tallies[2]),
+    }))
+}
+
+/// A Halo 1 decal written from the `deca` definition, no retail template
+/// read: Halo 1's flags, kind, radius, colours, lifetime, decay time and
+/// sprite extent (the two hold them in the same order), the converted
+/// next decal and bitmap, and the role's layer, overlap count and scale
+/// ([`DecalRole`]; Halo 1's layer enumeration is not Halo 2's).
+pub fn decal(
+    x: &h1::Decal,
+    next: Option<TagId>,
+    bitmap: Option<TagId>,
+    role: Option<&DecalRole>,
+) -> Result<Block> {
+    let d = def(b"deca")?;
+    let mut r = defs::default_record(d);
+    set(&mut r, "flags", Val::Int(x.flags.into()))?;
+    set(&mut r, "kind", Val::Int(x.kind.into()))?;
+    let role = role.copied().unwrap_or(DecalRole {
+        layer: 1,
+        max_overlapping: 8,
+        scale_18: 0.75f32.to_bits(),
+    });
+    set(&mut r, "layer", Val::Int(role.layer.into()))?;
+    set(&mut r, "max_overlapping", Val::Int(role.max_overlapping.into()))?;
+    set(&mut r, "unknown_18", Val::Bytes(role.scale_18.to_le_bytes().to_vec()))?;
+    set(&mut r, "next_decal", Val::tag(FourCC(*b"deca"), next.unwrap_or(TagId::NULL)))?;
+    set(&mut r, "radius", Val::floats(&x.radius))?;
+    set(&mut r, "colour_lower", Val::floats(&x.colour_lower))?;
+    set(&mut r, "colour_upper", Val::floats(&x.colour_upper))?;
+    set(&mut r, "lifetime_bounds", Val::floats(&x.lifetime))?;
+    set(&mut r, "decay_time_bounds", Val::floats(&x.decay_time))?;
+    set(&mut r, "bitmap", Val::tag(FourCC(*b"bitm"), bitmap.unwrap_or(TagId::NULL)))?;
+    set(
+        &mut r,
+        "maximum_sprite_extent",
+        Val::Float(x.maximum_sprite_extent),
+    )?;
+    built(d, &r)
+}
+
+/// Halo 1 dialogue slot (`udlg` offset, [`h1::UDLG_SIZE`]) to the Halo 2
+/// vocalization that plays its sound, in priority order: where two slots
+/// name one vocalization the first that holds a sound wins.
+///
+/// The slot names (in the comments) are V: the sound names Halo 1's
+/// dialogue tags hold there. The Halo 2 names are retail vocalization
+/// names (V: every one is the string of an element of the base maps'
+/// `udlg` tags, `halo2_dialogue_survey`). Pairing them is D, by meaning,
+/// but for pain and death, where the multiplayer elite's and the
+/// Chief's dialogue tags give the bridge (V): their `death` sound plays
+/// for `dth`, `dth_mjr`, `dth_slnt`, `dth_slw` and `dth_hdsht`, their
+/// `deathfall` / `fall_death` for `dth_fall`, their `pain` for
+/// `pain_mjr`. Halo 1 slots with no line here (the hurt and killed
+/// variants by weapon and by species, the replies, the search and
+/// vehicle chatter) have no Halo 2 vocalization close enough.
+pub const DIALOGUE: &[(usize, &str)] = &[
+    (0x010, "look_noncmbt"),     // idle_non_combat
+    (0x020, "look_cmbt"),        // idle_combat
+    (0x030, "panic"),            // panic_run_away
+    (0x070, "pain"),             // painminor
+    (0x080, "pain_mjr"),         // painmajor
+    (0x090, "pain_shld"),        // painshield
+    (0x0a0, "pain_fall"),        // painfalling
+    (0x0c0, "scrn"),             // screampain
+    (0x0f0, "dth_slnt"),         // deathquiet
+    (0x100, "dth_mjr"),          // deathviolent
+    (0x100, "dth"),              // deathviolent
+    (0x110, "dth_fall"),         // deathfalling
+    (0x140, "dth_fall"),         // deathflying
+    (0x120, "dth_slw"),          // deathagonizing
+    (0x130, "dth_hdsht"),        // deathinstant
+    (0x100, "dth_hdsht"),        // deathviolent
+    (0x360, "chr_kllfoe"),       // killedenemy
+    (0x420, "chr_kllfoe_blt"),   // killedenemybullet
+    (0x380, "prs_plr_kll"),      // killedenemyplayer
+    (0x610, "lmnt_deadally"),    // frienddied
+    (0x620, "lmnt_deadplr"),     // friendplayerdied
+    (0x6a0, "betray"),           // friendbetrayed
+    (0x6d0, "seefoe"),           // newcombatalone
+    (0x6f0, "foundfoe"),         // oldenemysighted
+    (0x700, "seefoe_srprs"),     // unexpectedenemy
+    (0x710, "chckallybdy"),      // deadfriendfound
+    (0x740, "strk_grnd"),        // grenadethrowing
+    (0x750, "warn_incmn_grnd"),  // grenadesighted
+    (0x840, "srchstart"),        // searchstart
+    (0x8c0, "newordr_advance"),  // advance
+    (0x8e0, "newordr_retreat"),  // retreat
+    (0x9b0, "tnt"),              // taunt
+    (0x9d0, "flee"),             // flee
+    (0xa40, "entervcl"),         // vehicleentry
+    (0xb20, "srprs"),            // surprise
+    (0xb30, "brsrk"),            // berserk
+    (0xb40, "melee"),            // meleeattack
+    (0xb50, "dive"),             // dive
+    (0xbd0, "pstcmbt"),          // celebration
+    (0xbe0, "chkfoebdy"),        // checkbodyenemy
+    (0xc00, "shotfoebdy"),       // shootingdeadenemy
+];
+
+/// The vocalizations a Halo 1 dialogue tag gives, each with the slot its
+/// sound is in ([`DIALOGUE`]), first slot holding a sound winning.
+pub fn dialogue_lines(d: &h1::Dialogue) -> Vec<(&'static str, usize, h1map::TagId)> {
+    let mut out: Vec<(&'static str, usize, h1map::TagId)> = Vec::new();
+    for &(at, voc) in DIALOGUE {
+        if out.iter().any(|l| l.0 == voc) {
+            continue;
+        }
+        if let Some(s) = d.line(at) {
+            out.push((voc, at, s));
+        }
+    }
+    out
+}
+
+/// `udlg +0`: the 'adlg' group word of a null reference every retail
+/// dialogue tag holds (V: the 42 distinct ones, `+4` -1).
+const UDLG_GROUP: [u8; 4] = *b"glda";
+/// `udlg` element `+8`: the 'snd!' group word of the datum that follows
+/// (V: every retail element).
+const UDLG_SOUND_GROUP: [u8; 4] = *b"!dns";
+
+/// The `udlg` root: one element per line, its vocalization and its
+/// sound (a datum: a converted sound's placeholder). `+8` and the
+/// trailing string are zero, as on every retail dialogue tag of the
+/// base (V, `halo2_dialogue_survey`).
+pub fn dialogue(lines: &[(&str, TagId)]) -> Result<Block> {
+    let d = def(b"udlg")?;
+    let mut r = defs::default_record(d);
+    set(&mut r, "unknown_0", Val::Bytes(UDLG_GROUP.to_vec()))?;
+    set(&mut r, "unknown_4", Val::Bytes(vec![0xff; 4]))?;
+    let el = d.child("vocalizations").expect("udlg vocalizations");
+    let items = lines
+        .iter()
+        .map(|(voc, sound)| {
+            let mut x = defs::default_record(el);
+            set(&mut x, "vocalization", Val::text(voc))?;
+            set(&mut x, "unknown_8", Val::Bytes(UDLG_SOUND_GROUP.to_vec()))?;
+            set(&mut x, "sound", Val::Datum(defs::Target::Id(*sound)))?;
+            Ok(x)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    set(&mut r, "vocalizations", Val::Block(items))?;
+    built(d, &r)
+}
+
+/// Halo 1's foot kinds Halo 2 has at the same index (V: on every Halo 2
+/// character's `foot` kinds 0, 1, 3 and 4 play walk, run, shuffle and
+/// jump sounds and kind 2 none, as Halo 1's; `halo2_foot_survey`); kind 5
+/// (Halo 1's landing) is kept at 5 (D).
+pub const FOOT_KINDS: usize = 6;
+
+/// One `foot` element: the tag, its global material name and index.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FootLine {
+    pub material: &'static str,
+    pub index: i16,
+    pub tag: TagId,
+}
+
+/// One kind of a `foot`: its sounds and effects.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FootKind {
+    pub sounds: Vec<FootLine>,
+    pub effects: Vec<FootLine>,
+}
+
+/// `foot` elements' `+0x16`: 2 on a sound element, 1 on an effect element
+/// (V: the retail majority on each; what reads it is not established).
+const FOOT_SOUND_WORD: u16 = 2;
+const FOOT_EFFECT_WORD: u16 = 1;
+
+/// The `foot` root: one kind per element of `kinds`, each with its sounds
+/// and effects by global material.
+pub fn foot(kinds: &[FootKind]) -> Result<Block> {
+    let d = def(b"foot")?;
+    let mut r = defs::default_record(d);
+    let kd = d.child("effects").expect("foot effects");
+    let sd = d.child("effects.sounds").expect("foot sounds");
+    let ed = d.child("effects.effects").expect("foot effects.effects");
+    let mut out = Vec::new();
+    for k in kinds {
+        let mut x = defs::default_record(kd);
+        let mut sounds = Vec::new();
+        for l in &k.sounds {
+            let mut y = defs::default_record(sd);
+            set(&mut y, "sound", Val::tag(FourCC(*b"snd!"), l.tag))?;
+            set(&mut y, "unknown_8", Val::Bytes(vec![0xff; 8]))?;
+            set(&mut y, "material", Val::text(l.material))?;
+            set(&mut y, "material_index", Val::Int(l.index.into()))?;
+            set(&mut y, "unknown_16", Val::Bytes(FOOT_SOUND_WORD.to_le_bytes().to_vec()))?;
+            sounds.push(y);
+        }
+        let mut effects = Vec::new();
+        for l in &k.effects {
+            let mut y = defs::default_record(ed);
+            set(&mut y, "effect", Val::tag(FourCC(*b"effe"), l.tag))?;
+            set(&mut y, "material", Val::text(l.material))?;
+            set(&mut y, "material_index", Val::Int(l.index.into()))?;
+            set(&mut y, "unknown_16", Val::Bytes(FOOT_EFFECT_WORD.to_le_bytes().to_vec()))?;
+            effects.push(y);
+        }
+        set(&mut x, "sounds", Val::Block(sounds))?;
+        set(&mut x, "effects", Val::Block(effects))?;
+        out.push(x);
+    }
+    set(&mut r, "effects", Val::Block(out))?;
     built(d, &r)
 }

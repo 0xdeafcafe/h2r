@@ -153,7 +153,7 @@ fn tree_placeholders_become_datums() {
             ("invented\\c".into(), tag(b"weap", &[(8, local(1))])),
         ],
         reports: Vec::new(),
-        hud_swaps: Vec::new(),
+        ..Tree::default()
     };
     let check = |set: TagSet, ids: &[TagId]| {
         let (bytes, _) = set.build().unwrap();
@@ -588,6 +588,8 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
         weapons: &[weapon],
         role: None,
         points: &[],
+        attachments: &[],
+        creation_effect: None,
     })
     .unwrap();
     let def = Defs::builtin().group(map::FourCC(*b"vehi")).unwrap();
@@ -748,6 +750,8 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
         weapons: &[],
         role: Some(&role),
         points: &points,
+        attachments: &[],
+        creation_effect: None,
     })
     .unwrap();
     let def = Defs::builtin().group(map::FourCC(*b"vehi")).unwrap();
@@ -1346,4 +1350,227 @@ fn rebuilt_biped_is_sized_to_halo_1_and_takes_its_counterparts_references() {
         assert!(close(f(&format!("{p}.unknown_78")), 0.2 * k));
         assert_eq!(f(&format!("{p}.unknown_3c")), 0.0, "the child pointer");
     }
+}
+
+#[test]
+fn rebuilt_effect_keeps_halo_1s_events_and_the_parts_that_convert() {
+    use crate::h1::{Effect, EffectEvent, EffectPart};
+    use crate::rebuild::{PartTarget, effect, part_type_group};
+    use tags::defs::{self, Defs, Str, Target, Val};
+    let part = |group: &[u8; 4], location| EffectPart {
+        create_in: 1,
+        violence_mode: 0,
+        location,
+        flags: 1,
+        group: h1map::Group::new(group),
+        reference: Some(h1map::TagId(0xe000_0001)),
+        velocity_bounds: [1.0, 2.0],
+        velocity_cone_angle: 0.5,
+        angular_velocity_bounds: [-1.0, 1.0],
+        radius_modifier_bounds: [0.5, 1.5],
+        a_scales: 0x20,
+        b_scales: 0,
+    };
+    let e = Effect {
+        flags: 0,
+        loop_start_event: -1,
+        loop_stop_event: -1,
+        locations: vec!["invented marker".into(), String::new()],
+        events: vec![EffectEvent {
+            skip_fraction: 0.25,
+            delay_bounds: [0.0, 0.5],
+            duration_bounds: [1.0 / 30.0, 1.0 / 30.0],
+            parts: vec![part(b"snd!", 0), part(b"deca", 1), part(b"proj", 1)],
+            particles: 3,
+        }],
+    };
+    let root = effect(&e, &mut |p| {
+        let g = p.group.0.to_be_bytes();
+        (&g != b"deca").then(|| PartTarget {
+            type_group: part_type_group(g),
+            group: g,
+            tag: crate::convert::local(7),
+        })
+    })
+    .unwrap();
+    let d = Defs::builtin().group(FourCC(*b"effe")).unwrap();
+    let r = defs::from_built(d, &root).unwrap();
+    let Some(Val::Block(locs)) = r.at("locations") else { panic!() };
+    assert_eq!(locs.len(), 2);
+    assert_eq!(
+        locs[0].at("marker"),
+        Some(&Val::String(Str::Text("invented marker".into())))
+    );
+    assert_eq!(locs[1].at("marker"), Some(&Val::String(Str::Null)));
+    let Some(Val::Block(events)) = r.at("events") else { panic!() };
+    assert_eq!(events[0].at("skip_fraction"), Some(&Val::Float(0.25)));
+    let Some(Val::Block(parts)) = events[0].at("parts") else { panic!() };
+    // The decal has no converter: two parts, the sound and the projectile.
+    assert_eq!(parts.len(), 2);
+    let word = |g: &[u8; 4]| Val::Int(u32::from_be_bytes(*g).into());
+    assert_eq!(parts[0].at("type_group"), Some(&word(b"snd!")));
+    assert_eq!(parts[1].at("type_group"), Some(&word(b"obje")));
+    assert_eq!(parts[1].at("location"), Some(&Val::Int(1)));
+    assert_eq!(parts[0].at("create_in"), Some(&Val::Int(1)));
+    assert_eq!(parts[0].at("a_scales"), Some(&Val::Int(0x20)));
+    assert_eq!(parts[0].at("velocity_bounds"), Some(&Val::floats(&[1.0, 2.0])));
+    assert!(matches!(
+        parts[0].at("reference"),
+        Some(Val::Ref { target: Target::Id(id), .. }) if *id == crate::convert::local(7)
+    ));
+    let Some(Val::Block(systems)) = events[0].at("particle_systems") else { panic!() };
+    assert!(systems.is_empty());
+}
+
+#[test]
+fn audio_placeholders_become_null_when_the_sounds_have_no_room() {
+    // A tree whose tag names a sound and a looping sound it holds none of:
+    // installing over donor slots adds no sound, so both become null.
+    let t = tag(b"effe", &[(0, crate::convert::sound(0)), (8, crate::convert::looping(0))]);
+    let mut set = TagSet::new(CacheType::Multiplayer, "h1test", "invented\\h1test");
+    set.add_group(FourCC(*b"effe"), None, None);
+    let donor = set
+        .add_tag(FourCC(*b"effe"), "invented\\donor", TagPayload::Built(Block::zeroed(4)))
+        .unwrap();
+    let tree = Tree {
+        tags: vec![("invented\\effect".into(), t)],
+        ..Tree::default()
+    };
+    tree.install_over(&mut set, &[donor]).unwrap();
+    let Some(TagPayload::Built(root)) = set.slots[donor.index()].tag.as_ref().map(|e| &e.payload)
+    else {
+        panic!()
+    };
+    let ids: Vec<TagId> = root
+        .fixups
+        .iter()
+        .filter_map(|f| match f.kind {
+            map::build::FixupKind::TagRef(t) => Some(t),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ids, vec![TagId::NULL, TagId::NULL]);
+}
+
+#[test]
+fn rebuilt_light_is_halo_1s_sphere_or_cone_with_its_colours() {
+    use crate::h1::Light;
+    use tags::defs::{self, Defs, Val};
+    let mut l = Light {
+        flags: 0,
+        radius: 2.5,
+        falloff_angle: std::f32::consts::PI,
+        cutoff_angle: std::f32::consts::PI,
+        colour_lower: [1.0, 0.1, 0.2, 0.3],
+        colour_upper: [1.0, 0.4, 0.5, 0.6],
+        duration_ticks: 15.0,
+        lens_flare: None,
+    };
+    let d = Defs::builtin().group(FourCC(*b"ligh")).unwrap();
+    let r = defs::from_built(d, &crate::rebuild::light(&l, None).unwrap()).unwrap();
+    assert_eq!(r.at("kind"), Some(&Val::Enum(0)));
+    assert_eq!(r.at("radius"), Some(&Val::Float(2.5)));
+    assert_eq!(r.at("flags"), Some(&Val::Int(8)));
+    assert_eq!(r.at("duration"), Some(&Val::Float(0.5)));
+    assert_eq!(r.at("diffuse_colour_lower"), Some(&Val::floats(&[0.1, 0.2, 0.3])));
+    assert_eq!(r.at("specular_colour_upper"), Some(&Val::floats(&[0.4, 0.5, 0.6])));
+    l.cutoff_angle = 1.0;
+    let r = defs::from_built(d, &crate::rebuild::light(&l, None).unwrap()).unwrap();
+    assert_eq!(r.at("kind"), Some(&Val::Enum(2)));
+    assert_eq!(r.at("field_of_view"), Some(&Val::Float(1.0)));
+    assert_eq!(r.at("cutoff_distance"), Some(&Val::Float(2.5)));
+    assert_eq!(r.at("radius"), Some(&Val::Float(0.0)));
+}
+
+#[test]
+fn rebuilt_decal_keeps_halo_1s_fields_and_the_roles_layer() {
+    use crate::h1::Decal;
+    use crate::rebuild::{DecalRole, decal};
+    use tags::defs::{self, Defs, Target, Val};
+    let x = Decal {
+        flags: 8,
+        kind: 2,
+        layer: 0,
+        next: None,
+        radius: [0.1, 0.2],
+        colour_lower: [0.1, 0.2, 0.3],
+        colour_upper: [0.4, 0.5, 0.6],
+        lifetime: [10.0, 12.0],
+        decay_time: [1.0, 2.0],
+        bitmap: None,
+        maximum_sprite_extent: 16.0,
+    };
+    let role = DecalRole {
+        layer: 3,
+        max_overlapping: 5,
+        scale_18: 0.5f32.to_bits(),
+    };
+    let d = Defs::builtin().group(FourCC(*b"deca")).unwrap();
+    let root = decal(&x, Some(local(1)), Some(local(2)), Some(&role)).unwrap();
+    let r = defs::from_built(d, &root).unwrap();
+    assert_eq!(r.at("flags"), Some(&Val::Int(8)));
+    assert_eq!(r.at("kind"), Some(&Val::Int(2)));
+    assert_eq!(r.at("layer"), Some(&Val::Int(3)));
+    assert_eq!(r.at("max_overlapping"), Some(&Val::Int(5)));
+    assert_eq!(r.at("radius"), Some(&Val::floats(&[0.1, 0.2])));
+    assert_eq!(r.at("decay_time_bounds"), Some(&Val::floats(&[1.0, 2.0])));
+    assert_eq!(r.at("maximum_sprite_extent"), Some(&Val::Float(16.0)));
+    assert!(matches!(r.at("bitmap"), Some(Val::Ref { target: Target::Id(id), .. }) if *id == local(2)));
+    assert!(matches!(r.at("next_decal"), Some(Val::Ref { target: Target::Id(id), .. }) if *id == local(1)));
+}
+
+#[test]
+fn dialogue_takes_the_first_slot_holding_a_sound_per_vocalization() {
+    use crate::convert::sound;
+    use crate::h1::Dialogue;
+    use crate::rebuild::{dialogue, dialogue_lines};
+    use tags::defs::{self, Defs, Str, Target, Val};
+    let s = |k: u32| h1map::TagId(0xe000_0000 | k);
+    // deathviolent (0x100) and deathinstant (0x130), no deathquiet.
+    let d = Dialogue {
+        lines: vec![(0x100, s(1)), (0x130, s(2)), (0x020, s(3)), (0x0b0, s(4))],
+    };
+    let got: Vec<_> = dialogue_lines(&d).iter().map(|l| (l.0, l.1)).collect();
+    // dth_hdsht from deathinstant before deathviolent; 0x0b0 has no line.
+    assert_eq!(
+        got,
+        vec![
+            ("look_cmbt", 0x020),
+            ("dth_mjr", 0x100),
+            ("dth", 0x100),
+            ("dth_hdsht", 0x130),
+        ]
+    );
+    let root = dialogue(&[("dth", sound(0)), ("pain", sound(1))]).unwrap();
+    let def = Defs::builtin().group(FourCC(*b"udlg")).unwrap();
+    let r = defs::from_built(def, &root).unwrap();
+    assert_eq!(r.at("unknown_0"), Some(&Val::Bytes(b"glda".to_vec())));
+    assert_eq!(r.at("unknown_4"), Some(&Val::Bytes(vec![0xff; 4])));
+    let Some(Val::Block(els)) = r.at("vocalizations") else { panic!() };
+    assert_eq!(els.len(), 2);
+    assert_eq!(els[1].at("vocalization"), Some(&Val::String(Str::Text("pain".into()))));
+    assert_eq!(els[1].at("unknown_8"), Some(&Val::Bytes(b"!dns".to_vec())));
+    assert_eq!(els[1].at("sound"), Some(&Val::Datum(Target::Id(sound(1)))));
+}
+
+#[test]
+fn foot_kinds_keep_their_materials() {
+    use crate::rebuild::{FootKind, FootLine, foot};
+    use tags::defs::{self, Defs, Str, Val};
+    let k = FootKind {
+        sounds: vec![FootLine { material: "tough_terrain_dirt", index: 7, tag: local(1) }],
+        effects: vec![FootLine { material: "liquid_thin_water", index: 9, tag: local(2) }],
+    };
+    let root = foot(&[FootKind::default(), k]).unwrap();
+    let d = Defs::builtin().group(FourCC(*b"foot")).unwrap();
+    let r = defs::from_built(d, &root).unwrap();
+    let Some(Val::Block(kinds)) = r.at("effects") else { panic!() };
+    assert_eq!(kinds.len(), 2);
+    let Some(Val::Block(s)) = kinds[1].at("sounds") else { panic!() };
+    assert_eq!(s[0].at("material"), Some(&Val::String(Str::Text("tough_terrain_dirt".into()))));
+    assert_eq!(s[0].at("material_index"), Some(&Val::Int(7)));
+    assert_eq!(s[0].at("unknown_16"), Some(&Val::Bytes(vec![2, 0])));
+    let Some(Val::Block(e)) = kinds[1].at("effects") else { panic!() };
+    assert_eq!(e[0].at("material_index"), Some(&Val::Int(9)));
+    assert_eq!(e[0].at("unknown_16"), Some(&Val::Bytes(vec![1, 0])));
 }

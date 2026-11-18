@@ -1570,7 +1570,7 @@ fn sessions_two_guests_publish_find_parse_update_and_delete() {
     let lo = host.u32(MATCH_ID);
     let hi = host.u32(MATCH_ID + 4);
     assert_eq!(host.hle.local_sessions()[0].id.to_vec(), id);
-    let rows: Page<live_proto::session::Session> = s.get("/v1/sessions");
+    let rows: Page<live_proto::session::Session> = s.get_as_operator("/v1/sessions");
     assert_eq!(rows.items.len(), 1);
     assert_eq!(rows.items[0].xnkid, sign::hex(&id));
     assert_eq!(rows.items[0].endpoint.port, 31000);
@@ -1755,7 +1755,7 @@ fn guests_read_the_skulls_their_host_advertises() {
     host.hle.set_skulls_probe(None);
     host.hle.set_session_skulls(Some(vec![4, 6]));
     s.until(|| {
-        s.get::<Page<live_proto::session::Session>>("/v1/sessions")
+        s.get_as_operator::<Page<live_proto::session::Session>>("/v1/sessions")
             .items[0]
             .advertisement
             .skulls
@@ -1771,7 +1771,7 @@ fn guests_read_the_skulls_their_host_advertises() {
     );
     host.hle.set_session_skulls(None);
     s.until(|| {
-        s.get::<Page<live_proto::session::Session>>("/v1/sessions")
+        s.get_as_operator::<Page<live_proto::session::Session>>("/v1/sessions")
             .items[0]
             .advertisement
             .skulls
@@ -1989,7 +1989,7 @@ fn browser_search_rows_follow_the_hosts_visibility_setting() {
     assert_eq!(host.wait(create), TASK_SUCCESS);
     assert_eq!(host.hle.local_sessions()[0].visibility, Visibility::Friends);
     // The advertisement says so on the server.
-    let doc: Value = s.get("/v1/sessions?state=open&visibility=friends");
+    let doc: Value = s.get_as_operator("/v1/sessions?state=open&visibility=friends");
     assert_eq!(
         doc["items"],
         json!([]),
@@ -2019,7 +2019,7 @@ fn browser_search_rows_follow_the_hosts_visibility_setting() {
     // Changing the setting updates the open lobby at once, with a signed event.
     host.hle.set_session_visibility(Visibility::Public);
     s.until(|| {
-        s.get::<Page<live_proto::session::Session>>("/v1/sessions")
+        s.get_as_operator::<Page<live_proto::session::Session>>("/v1/sessions")
             .items
             .len()
             == 1
@@ -2027,7 +2027,7 @@ fn browser_search_rows_follow_the_hosts_visibility_setting() {
     assert_eq!(match_search(&mut stranger, 1, 0, cap).2, 1);
     host.hle.set_session_visibility(Visibility::Invite);
     s.until(|| {
-        s.get::<Page<live_proto::session::Session>>("/v1/sessions")
+        s.get_as_operator::<Page<live_proto::session::Session>>("/v1/sessions")
             .items
             .is_empty()
     });
@@ -2116,7 +2116,7 @@ fn the_titles_privacy_probe_decides_a_new_advertisement() {
         .unwrap();
     assert_eq!(created.data["advertisement"]["visibility"], "invite");
     assert!(
-        s.get::<Page<live_proto::session::Session>>("/v1/sessions")
+        s.get_as_operator::<Page<live_proto::session::Session>>("/v1/sessions")
             .items
             .is_empty()
     );
@@ -2188,7 +2188,7 @@ fn sessions_typed_results_are_owned_bounded_and_signout_closes_advertisement() {
     assert_eq!(peer.bytes(BUFFER, 40), vec![0xcc; 40]);
     assert_eq!(host.call("XOnlineTaskClose", &[logon]), 0);
     s.until(|| {
-        s.get::<Page<live_proto::session::Session>>("/v1/sessions")
+        s.get_as_operator::<Page<live_proto::session::Session>>("/v1/sessions")
             .items
             .is_empty()
     });

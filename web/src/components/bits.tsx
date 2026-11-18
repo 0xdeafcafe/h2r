@@ -3,7 +3,7 @@
 import { Show } from "solid-js";
 import { A } from "@solidjs/router";
 import type { AccountState } from "../state/reducer";
-import { countResults, summaryLine, type VerifyResult } from "../state/verify";
+import { countResults, summaryLine, verifyMarkText, type VerifyResult } from "../state/verify";
 import { live } from "../state/live";
 
 export type PresenceKind = "playing" | "online" | "away" | "offline";
@@ -39,23 +39,12 @@ export function PresenceBadge(props: { account: AccountState | undefined }) {
 
 export function VerifyMark(props: { position: number; compact?: boolean }) {
   const r = (): VerifyResult | undefined => live.verify[props.position];
-  const label = () => {
-    const x = r();
-    if (!x) return "checking signature";
-    switch (x.status) {
-      case "verified": return "signature verified";
-      case "bad": return `bad signature: ${x.reason ?? "does not verify"}`;
-      case "unsigned": return "not signed";
-      default: return `could not check: ${x.reason ?? "unknown"}`;
-    }
-  };
+  const m = () => verifyMarkText(r());
   return (
-    <span class={`verify verify--${r()?.status ?? "pending"}`} title={label()} aria-label={label()}>
-      <span class="verify__icon" aria-hidden="true">
-        {{ verified: "✓", bad: "!", unsigned: "–", unknown: "?" }[r()?.status ?? "unknown"] ?? "…"}
-      </span>
+    <span class={`verify verify--${r()?.status ?? "pending"}`} title={m().label} aria-label={m().label}>
+      <span class="verify__icon" aria-hidden="true">{m().icon}</span>
       <Show when={!props.compact}>
-        <span class="verify__text">{{ verified: "verified", bad: "tampered?", unsigned: "unsigned", unknown: "unchecked" }[r()?.status ?? "unknown"] ?? "checking"}</span>
+        <span class="verify__text">{m().text}</span>
       </Show>
     </span>
   );

@@ -745,6 +745,63 @@ fn every_starting_location_stands_on_the_converted_floor() {
     assert!(bad.is_empty(), "{bad:#?}");
 }
 
+/// Every Halo 1 multiplayer map in both sandboxes through the importer's
+/// path (`prepare_halo1` or `prepare`, then `build_fresh`, as `h2 import
+/// halo1`): each builds (the Halo 1 objects land at the datums the
+/// placements name, their sounds installed after them), and in the Halo 1
+/// sandbox every attachment of every vehicle names a tag of its group in
+/// the built map.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn every_map_builds_in_both_sandboxes_with_the_objects_sounds() {
+    let mut maps = 0;
+    let mut attachments = 0;
+    every_fresh_map(|name, sandbox, _, fresh| {
+        maps += 1;
+        if sandbox != Sandbox::Halo1 {
+            return;
+        }
+        let m = Map::from_reader(Cursor::new(fresh.bytes.clone())).unwrap();
+        let d = tags::defs::Defs::builtin().group(FourCC(*b"vehi")).unwrap();
+        let tags: Vec<(TagId, FourCC)> = m.tags().iter().map(|t| (t.id, t.group)).collect();
+        let mut shared = tags::repo::extract::SharedFiles::default();
+        let mut src = tags::repo::MapSource::new(
+            tags::schema::Schema::builtin(),
+            Map::from_reader(Cursor::new(fresh.bytes.clone())).unwrap(),
+            &mut shared,
+        )
+        .unwrap();
+        for (id, g) in &tags {
+            if *g != FourCC(*b"vehi") {
+                continue;
+            }
+            // The base's own vehicles point into the shared maps; the
+            // converted ones are whole in this map.
+            let Ok(Ok(tag)) = src.extract(*id) else { continue };
+            let r = tags::defs::decode(d, &tag).unwrap();
+            let Some(tags::defs::Val::Block(att)) = r.at("unit.obje.attachments") else {
+                panic!("{name}: attachments")
+            };
+            for a in att {
+                let Some(tags::defs::Val::Ref { group, target }) = a.at("type") else { panic!() };
+                // A loose tag names its target by group and path.
+                let tags::defs::Target::Key(k) = target else {
+                    panic!("{name}: attachment {target:?}")
+                };
+                assert_eq!(k.group.as_u32(), *group, "{name}");
+                assert!(
+                    m.tags().iter().any(|t| t.group == k.group && t.name.as_deref() == Some(k.path.as_str())),
+                    "{name}: {k:?} not in the map"
+                );
+                attachments += 1;
+            }
+        }
+        println!("{name}: built in the Halo 1 sandbox");
+    });
+    println!("{maps} builds, {attachments} vehicle attachments resolved");
+    assert!(maps > 0);
+}
+
 /// Prints Halo 2's weapon HUD widgets on coagulation (inputs, state flags,
 /// anchor, special type): the evidence for the inputs and states the
 /// converted Halo 1 weapon HUDs use.

@@ -2517,6 +2517,7 @@ dependencies = [
  "h1convert",
  "h1map",
  "h1models",
+ "h1sounds",
  "map",
  "mopp",
  "scenario-edit",
