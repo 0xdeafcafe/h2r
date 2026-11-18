@@ -474,6 +474,31 @@ pub trait Backend: Send {
     /// Marks this thread's frame-stat boundary. Asynchronous backends
     /// forward queued statistics without waiting for the render thread.
     fn frame_stats(&mut self) {}
+    /// When the guest called `Swap` for the present that comes next, read
+    /// on the guest's thread (a render thread passes it along with the
+    /// present). Only the interpolated replay uses it
+    /// ([`crate::interp`]); the default ignores it.
+    fn stamp_present(&mut self, at: std::time::Instant) {
+        let _ = at;
+    }
+    /// Shows a host-only frame between the guest's presents (an
+    /// interpolated replay, [`crate::interp`]): the present hook sees it,
+    /// but it is not a guest frame, so frame counters, shader upkeep and
+    /// the `D3DSWAP_FINISH` wait are left alone where a backend has them.
+    /// The default presents with no flags.
+    fn present_replay(
+        &mut self,
+        surface: Self::Surface,
+        gamma: Option<&[u8; 768]>,
+    ) -> Result<(), String> {
+        self.present_with_gamma(surface, 0, gamma)
+    }
+    /// Host-only work a render thread runs when it has nothing queued (the
+    /// interpolated replay's in-between frames). Returns when it wants to
+    /// be called again; `None` (the default) waits for the next command.
+    fn idle(&mut self) -> Option<std::time::Instant> {
+        None
+    }
     /// Shows `surface` (`Swap`). `flags` are the guest's `D3DSWAP_*` flags.
     fn present(&mut self, surface: Self::Surface, flags: u32) -> Result<(), String>;
     /// Presents with the current DAC ramp. Backends without a display may ignore it.

@@ -920,6 +920,13 @@ pub fn run_hosted_with_live(
     // Sample the render thread too when profiling.
     #[cfg(feature = "perf")]
     let _ = d3d::RENDER_THREAD_START.set(|| perf::register_current_thread("render"));
+    // In-between frames at the display rate (docs/game/high-framerate.md,
+    // "Phase 2"): `impl.render.interpolate`, render thread only.
+    let interp = if opts.d3d && host.gfx.is_some() {
+        d3d_glue::interpolation(host.settings.as_ref(), host.render_thread)
+    } else {
+        None
+    };
     let mut d3d_calls = match (opts.d3d, host.gfx.take()) {
         (false, _) => None,
         (true, Some(b)) => Some(match host.gfx_view.take() {
@@ -939,12 +946,12 @@ pub fn run_hosted_with_live(
                 }
                 let report = Some(d3d_glue::scale_report(&mut b));
                 if host.render_thread {
-                    d3d_glue::install_with_report(&loaded.runtime, d3d::ThreadedBackend::new(b)?, report)?
+                    d3d_glue::install_threaded(&loaded.runtime, b, report, interp)?
                 } else {
                     d3d_glue::install_with_report(&loaded.runtime, b, report)?
                 }
             }
-            None if host.render_thread => d3d_glue::install_with(&loaded.runtime, d3d::ThreadedBackend::new(b)?)?,
+            None if host.render_thread => d3d_glue::install_threaded(&loaded.runtime, b, None, interp)?,
             None => d3d_glue::install_with(&loaded.runtime, b)?,
         }),
         (true, None) => Some(d3d_glue::install(&loaded.runtime)?),

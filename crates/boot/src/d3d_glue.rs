@@ -236,6 +236,86 @@ pub fn render_thread_requested() -> bool {
     render_thread_from(std::env::var("H2_RENDER_THREAD").ok().as_deref())
 }
 
+/// The frame-rate setting's reader for the interpolated replay
+/// (`d3d::InterpBackend`, docs/game/high-framerate.md "Phase 2"), when it
+/// is asked for: `impl.render.interpolate` in `H2_FEATURES` (that exact
+/// switch; `impl.render=on` does not include it). It needs the render
+/// thread, and is off under `H2_PIPELINE_RENDER` (the lockstep harness
+/// cannot certify that combination). The rate follows the Frame Rate row
+/// (`graphics.fps`, `H2_FPS`, `--fps`): 30 replays nothing.
+pub fn interpolation(
+    settings: Option<&std::sync::Arc<settings::Store>>,
+    render_thread: bool,
+) -> Option<Box<dyn Fn() -> u32 + Send>> {
+    let switches = feature::Switches::from_env().ok()?;
+    interpolation_from(
+        switches.feature("impl.render.interpolate", false),
+        render_thread,
+        std::env::var("H2_PIPELINE_RENDER").ok().as_deref(),
+    )
+    .then(|| -> Box<dyn Fn() -> u32 + Send> {
+        eprintln!(
+            "d3d: interpolated replay on (impl.render.interpolate): in-between frames at up to {} fps while the frame rate is above 30",
+            d3d::interp::pacing::MAX_REPLAY_HZ
+        );
+        match settings {
+            Some(store) => {
+                let fps = store.handle::<u32>(crate::setting_defs::FPS.key);
+                Box::new(move || fps.get())
+            }
+            None => {
+                let fps = fps_from(std::env::var("H2_FPS").ok().as_deref());
+                Box::new(move || fps)
+            }
+        }
+    })
+}
+
+/// [`interpolation`]'s decision: the switch, the render thread, and
+/// `H2_PIPELINE_RENDER` unset or `0`.
+pub fn interpolation_from(switch: bool, render_thread: bool, pipeline_render: Option<&str>) -> bool {
+    if !switch {
+        return false;
+    }
+    if !render_thread {
+        eprintln!("d3d: impl.render.interpolate needs the render thread (H2_RENDER_THREAD=0 is set): off");
+        return false;
+    }
+    if pipeline_render.is_some_and(|v| v != "0") {
+        eprintln!("d3d: impl.render.interpolate is off under H2_PIPELINE_RENDER");
+        return false;
+    }
+    true
+}
+
+/// `H2_FPS` as the setting stores it: 0 for uncapped, 30 when unset or
+/// unreadable.
+pub fn fps_from(value: Option<&str>) -> u32 {
+    match value.map(str::trim) {
+        Some("uncapped" | "unlimited" | "max") => 0,
+        Some(v) => v.parse().unwrap_or(30),
+        None => 30,
+    }
+}
+
+/// `backend` on a render thread, behind the interpolated replay when
+/// `interp` (from [`interpolation`]) is given.
+pub fn install_threaded<B>(
+    rt: &runtime::Runtime,
+    backend: B,
+    extra: Option<ExtraReport>,
+    interp: Option<Box<dyn Fn() -> u32 + Send>>,
+) -> anyhow::Result<Installed>
+where
+    B: d3d::backend::Backend + Send + 'static,
+    B::Texture: Sync,
+{
+    match interp {
+        Some(rate) => install_with_report(rt, d3d::ThreadedBackend::new(d3d::InterpBackend::new(backend, rate))?, extra),
+        None => install_with_report(rt, d3d::ThreadedBackend::new(backend)?, extra),
+    }
+}
+
 /// [`render_thread_requested`] for a given value of the variable: only
 /// `0` turns it off.
 pub fn render_thread_from(value: Option<&str>) -> bool {
@@ -843,6 +923,19 @@ mod tests {
         assert!(all_black(&px));
         px[4 * 9 + 1] = 1;
         assert!(!all_black(&px));
+    }
+
+    #[test]
+    fn interpolation_needs_its_switch_and_the_render_thread() {
+        assert!(!interpolation_from(false, true, None), "off by default");
+        assert!(interpolation_from(true, true, None));
+        assert!(interpolation_from(true, true, Some("0")));
+        assert!(!interpolation_from(true, false, None), "no render thread");
+        assert!(!interpolation_from(true, true, Some("1")), "pipelined render");
+        assert_eq!(fps_from(None), 30);
+        assert_eq!(fps_from(Some("60")), 60);
+        assert_eq!(fps_from(Some("uncapped")), 0);
+        assert_eq!(fps_from(Some("nonsense")), 30);
     }
 
     #[test]

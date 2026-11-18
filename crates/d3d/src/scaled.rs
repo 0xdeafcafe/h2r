@@ -1709,6 +1709,26 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         Ok(())
     }
 
+    fn present_replay(
+        &mut self,
+        surface: Self::Surface,
+        gamma: Option<&[u8; 768]>,
+    ) -> Result<(), String> {
+        // A host-only frame (crate::interp): shown by the view when it has
+        // the surface; not a frame boundary (no scale or lighting change).
+        if self.view.reference_present_reads(&self.reference) {
+            self.settle()?;
+        }
+        match self.live(surface.view) {
+            Some(v) if !self.frame_failed => self.view.present_replay(v, gamma),
+            _ => {
+                self.settle()?;
+                self.view
+                    .present_reference(&self.reference, surface.reference, 0, gamma)
+            }
+        }
+    }
+
     fn clear_rects(
         &mut self,
         color: Self::Surface,
