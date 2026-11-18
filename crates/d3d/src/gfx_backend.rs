@@ -198,6 +198,8 @@ pub struct GfxBackend {
     pub(crate) count_samples: bool,
     /// Fills of scaled surfaces from guest-size ones, made on first use.
     pub(crate) blitter: Option<gfx::blit::Blitter>,
+    /// The interpolated reprojection's warp pass (made on first use).
+    warper: Option<gfx::blit::Warper>,
     /// The latest queue submission.
     last_submit: Option<wgpu::SubmissionIndex>,
     /// The latest submission when the previous frame was presented: what a
@@ -323,6 +325,7 @@ impl GfxBackend {
             scales: HashMap::new(),
             count_samples: true,
             blitter: None,
+            warper: None,
             last_submit: None,
             prev_frame_end: None,
             swap_finish: SwapFinish::from_env(),
@@ -1905,6 +1908,33 @@ impl Backend for GfxBackend {
         gamma: Option<&[u8; 768]>,
     ) -> Result<(), String> {
         self.present_from(None, surface, flags, gamma)
+    }
+
+    fn warp_surface(
+        &mut self,
+        src: SurfaceId,
+        dst: SurfaceId,
+        h: [[f32; 3]; 3],
+    ) -> Result<bool, String> {
+        self.flush()?;
+        let s = self.store.get(src).map_err(|e| e.to_string())?;
+        let d = self.store.get(dst).map_err(|e| e.to_string())?;
+        if d.desc().samples > 1 {
+            // A multisampled target would load its stale samples over
+            // the warp at the next pass.
+            return Ok(false);
+        }
+        let (src_view, dst_view, format) = (s.view().clone(), d.view().clone(), d.wgpu_format());
+        let mut enc = self.ctx.device.create_command_encoder(&Default::default());
+        self.store
+            .resolve_msaa(&mut enc, src)
+            .map_err(|e| e.to_string())?;
+        let ctx = &self.ctx;
+        self.warper
+            .get_or_insert_with(|| gfx::blit::Warper::new(ctx))
+            .warp(ctx, &mut enc, &src_view, &dst_view, format, h);
+        self.submit(enc);
+        Ok(true)
     }
 
     fn present_replay(

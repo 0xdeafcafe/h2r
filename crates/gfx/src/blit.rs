@@ -174,3 +174,136 @@ impl Blitter {
         pass.draw(0..3, 0..1);
     }
 }
+
+/// Draws a source texture over an entire destination view through a
+/// projective warp: destination texel `(u, v)` (normalised) samples the
+/// source at `H * (u, v, 1)` with linear filtering, clamped to the edge.
+/// d3d's interpolated reprojection turns the camera between ticks with it.
+pub struct Warper {
+    module: wgpu::ShaderModule,
+    bgl: wgpu::BindGroupLayout,
+    layout: wgpu::PipelineLayout,
+    pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
+    sampler: wgpu::Sampler,
+}
+
+impl Warper {
+    /// Creates the warp shader and sampler.
+    pub fn new(ctx: &GfxContext) -> Self {
+        let d = &ctx.device;
+        let module = d.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("warp"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/warp.wgsl").into()),
+        });
+        let entry = |binding, visibility, ty| wgpu::BindGroupLayoutEntry { binding, visibility, ty, count: None };
+        let bgl = d.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("warp"),
+            entries: &[
+                entry(
+                    0,
+                    wgpu::ShaderStages::FRAGMENT,
+                    wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                ),
+                entry(
+                    1,
+                    wgpu::ShaderStages::FRAGMENT,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                ),
+                entry(2, wgpu::ShaderStages::FRAGMENT, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
+            ],
+        });
+        let layout = d.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("warp"),
+            bind_group_layouts: &[Some(&bgl)],
+            immediate_size: 0,
+        });
+        let sampler = d.create_sampler(&wgpu::SamplerDescriptor {
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            ..Default::default()
+        });
+        Self { module, bgl, layout, pipelines: HashMap::new(), sampler }
+    }
+
+    /// Records a pass drawing `src` warped by `h` (rows) over all of `dst`
+    /// (a single-sampled colour view of format `dst_format`).
+    pub fn warp(
+        &mut self,
+        ctx: &GfxContext,
+        encoder: &mut wgpu::CommandEncoder,
+        src: &wgpu::TextureView,
+        dst: &wgpu::TextureView,
+        dst_format: wgpu::TextureFormat,
+        h: [[f32; 3]; 3],
+    ) {
+        let (module, layout) = (&self.module, &self.layout);
+        let pipeline = self.pipelines.entry(dst_format).or_insert_with(|| {
+            ctx.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("warp"),
+                layout: Some(layout),
+                vertex: wgpu::VertexState { module, entry_point: Some("vs_main"), compilation_options: Default::default(), buffers: &[] },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module,
+                    entry_point: Some("fs_main"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState { format: dst_format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        });
+        let params: Vec<f32> = h.iter().flat_map(|r| [r[0], r[1], r[2], 0.0]).collect();
+        let buffer = ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("warp params"),
+            contents: bytemuck::cast_slice(&params),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("warp"),
+            layout: &self.bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(src) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+            ],
+        });
+        crate::churn::pass();
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("warp"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: dst,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+        pass.draw(0..3, 0..1);
+    }
+}
+
+#[cfg(test)]
+mod warp_tests {
+    #[test]
+    fn the_warp_shader_validates() {
+        use wgpu::naga;
+        let module = naga::front::wgsl::parse_str(include_str!("../shaders/warp.wgsl")).expect("parses");
+        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty())
+            .validate(&module)
+            .expect("validates");
+    }
+}
