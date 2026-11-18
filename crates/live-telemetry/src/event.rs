@@ -131,6 +131,8 @@ pub struct Motion {
     pub biped_flags: Option<u16>,
     /// Bipeds only: airborne tick count (`layout::BIPED_AIRBORNE_TICKS`).
     pub airborne_ticks: Option<i8>,
+    /// Bipeds only: hitbox offset counter (`layout::BIPED_HITBOX_OFFSET`).
+    pub hitbox_offset: Option<i8>,
 }
 
 /// A vehicle anywhere in the world.

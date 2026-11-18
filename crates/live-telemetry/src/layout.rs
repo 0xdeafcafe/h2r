@@ -300,6 +300,16 @@ pub const BIPED_FLAGS: u32 = 0x348;
 /// Ticks bit 0 of `BIPED_FLAGS` has been set (`i8`, capped at 127;
 /// `0x000dd611`).
 pub const BIPED_AIRBORNE_TICKS: u32 = 0x399;
+/// Hitbox offset counter (`i8`). A melee lunge started standing sets it
+/// to minus (standing − crouching height) / (tick length ×
+/// `HITBOX_OFFSET_RATE`) (`0x000e29b4`) and shrinks the capsule to
+/// crouch height; it steps one tick toward 0 each tick outside the lunge
+/// (`0x000e2890`). While it is not 0 the Havok body is placed
+/// at the object's origin minus `counter × tick length ×
+/// HITBOX_OFFSET_RATE` in z (`0x000e0d70`, used at `0x001d405b`).
+pub const BIPED_HITBOX_OFFSET: u32 = 0x3aa;
+/// Units per second the hitbox offset decays by (`0x004407b8`).
+pub const HITBOX_OFFSET_RATE: f32 = 0.15;
 pub const BIPED_MODE_GROUND: u8 = 1;
 pub const BIPED_MODE_FLYING: u8 = 2;
 pub const BIPED_MODE_MELEE: u8 = 6;
