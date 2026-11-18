@@ -11,7 +11,8 @@
 //! the level ([`model_scale`]: Halo 1 sky models are authored full size,
 //! but some come within a hundred units of the camera); camera translation
 //! scale `1.0` (the Halo 1 sky box stays centred on the camera). Lens
-//! flares stay null: converting `lens` tags is not this crate's job.
+//! flares are converted by the caller (`h1convert::lens`) and passed in
+//! by datum, one per light ([`convert_sky_with_flares`]); null otherwise.
 
 use map::build::{Block, FixupKind, TagSet};
 use map::{CacheType, FourCC, TagId};
@@ -29,6 +30,18 @@ pub const LIGHT_FLAGS: u32 = 15;
 /// into the same set), or `None` for skies with no model; `model_scale`
 /// goes to `+0x14` ([`model_scale`]).
 pub fn convert_sky(sky: &h1::Sky, model: Option<TagId>, model_scale: f32) -> h1models::Converted {
+    convert_sky_with_flares(sky, model, model_scale, &[])
+}
+
+/// [`convert_sky`] with light `k`'s lens flare (`+0x14`) naming
+/// `flares[k]` (a converted Halo 1 `lens`); a light past the slice or
+/// with `None` keeps a null flare.
+pub fn convert_sky_with_flares(
+    sky: &h1::Sky,
+    model: Option<TagId>,
+    model_scale: f32,
+    flares: &[Option<TagId>],
+) -> h1models::Converted {
     let mut root = Block::zeroed(crate::h2::ROOT_LEN);
     root.fixup(
         crate::h2::layout::MODEL as u32,
@@ -66,7 +79,12 @@ pub fn convert_sky(sky: &h1::Sky, model: Option<TagId>, model_scale: f32) -> h1m
             child: empty(),
         },
     );
-    let lights: Vec<Block> = sky.lights.iter().map(light_block).collect();
+    let lights: Vec<Block> = sky
+        .lights
+        .iter()
+        .enumerate()
+        .map(|(k, l)| light_block(l, flares.get(k).copied().flatten()))
+        .collect();
     let count = lights.len() as u32;
     root.fixup(
         crate::h2::layout::LIGHTS as u32,
@@ -84,13 +102,13 @@ pub fn convert_sky(sky: &h1::Sky, model: Option<TagId>, model_scale: f32) -> h1m
 }
 
 /// One Halo 2 light record (`0x34` bytes) with its parameter child.
-fn light_block(light: &h1::SkyLight) -> Block {
+fn light_block(light: &h1::SkyLight, flare: Option<TagId>) -> Block {
     let mut b = Block::zeroed(crate::h2::LIGHT_LEN);
     b.put_f32(crate::h2::light::YAW, light.direction[0]);
     b.put_f32(crate::h2::light::PITCH, light.direction[1]);
     b.fixup(
         crate::h2::light::LENS_FLARE as u32,
-        FixupKind::TagRef(TagId::NULL),
+        FixupKind::TagRef(flare.unwrap_or(TagId::NULL)),
     );
     let mut p = Block::zeroed(crate::h2::PARAMS_LEN);
     p.put_u32(crate::h2::params::FLAGS, LIGHT_FLAGS);
@@ -204,11 +222,24 @@ pub fn install_sky(
     name: &str,
     model_scale: f32,
 ) -> Result<TagId> {
+    install_sky_with_flares(set, sky, model, name, model_scale, &[])
+}
+
+/// [`install_sky`] with the lights' lens flares
+/// ([`convert_sky_with_flares`]).
+pub fn install_sky_with_flares(
+    set: &mut TagSet,
+    sky: &h1::Sky,
+    model: Option<(&str, h1models::Converted)>,
+    name: &str,
+    model_scale: f32,
+    flares: &[Option<TagId>],
+) -> Result<TagId> {
     let model_id = match model {
         Some((model_name, converted)) => Some(converted.install(set, model_name)?),
         None => None,
     };
-    Ok(convert_sky(sky, model_id, model_scale).install(set, name)?)
+    Ok(convert_sky_with_flares(sky, model_id, model_scale, flares).install(set, name)?)
 }
 
 /// Builds a set holding one converted sky and returns its bytes and the
