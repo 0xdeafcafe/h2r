@@ -165,7 +165,18 @@ pub(crate) struct State {
     /// The network's registered keys for the stat read in progress
     /// ([`State::set_read_keys`]): they name the session joined.
     read_keys: Option<Vec<[u8; 8]>>,
+    /// The bot accounts the server leased to this console for this logon
+    /// (docs/game/bots.md §9.5): every bot of each roster it answered
+    /// [`State::roster_bots`] with, by xuid, with its gamertag. A local
+    /// Clanker signed in as one of these passes a user change without a
+    /// key; no other xuid outside the accounts file does. Cleared when the
+    /// logon ends.
+    leased: Leased,
 }
+
+/// The bot accounts leased to this console ([`State::roster_bots`]).
+pub(crate) type Leased = std::sync::Arc<std::sync::Mutex<BTreeMap<u64, String>>>;
+
 impl State {
     pub fn new(
         accounts: Vec<Account>,
@@ -205,6 +216,7 @@ impl State {
             auto: crate::auto::Auto::from_env(),
             guest_now: None,
             read_keys: None,
+            leased: Leased::default(),
         }
     }
     pub fn set_accounts(&mut self, accounts: Vec<Account>) {
@@ -277,18 +289,37 @@ impl State {
             if id == 0 {
                 continue;
             }
-            let Some(account) = self.accounts.iter().find(|a| a.xuid == id) else {
+            if let Some(account) = self.accounts.iter().find(|a| a.xuid == id) {
+                dst.copy_from_slice(&record(account));
+            } else if let Some(tag) = self.leased_bot(id) {
+                dst.copy_from_slice(&bot_record(id, &tag));
+            } else {
                 return Ok(None);
-            };
-            dst.copy_from_slice(&record(account));
+            }
             dst[8..12].copy_from_slice(&src[8..12]); // Includes the guest slot number.
         }
         Ok(Some(users))
+    }
+    /// The gamertag of the bot account `xuid`, when the server leased it
+    /// to this console in a roster this logon (docs/game/bots.md §9.5).
+    fn leased_bot(&self, xuid: u64) -> Option<String> {
+        if !live_proto::bots::is_server_xuid(live_proto::Xuid(xuid)) {
+            return None;
+        }
+        self.leased
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&xuid)
+            .cloned()
     }
     fn clear_logon(&mut self, m: &mut Guest) -> Result<()> {
         if let (Some(service), Some(session)) = (&self.service, self.session()) {
             service.cancel(&session);
         }
+        self.leased
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
         self.user_ids = [0; 4];
         self.user_flags = [0; 4];
         self.state_flags = [1; 4];
@@ -493,9 +524,24 @@ impl State {
             }
         }
     }
+    /// Controller `c`'s user when it is one of the accounts file's (a
+    /// human or its guest), else 0: a leased bot account has no key, so
+    /// the server is never asked anything on its behalf.
+    fn service_user(&self, c: usize) -> u64 {
+        let id = self.user_ids[c];
+        if self.accounts.iter().any(|a| a.xuid == id) {
+            id
+        } else {
+            0
+        }
+    }
     fn presence(&self, controller: u32) -> std::result::Result<Option<Pending>, u32> {
         if controller >= 4 || self.user_ids[controller as usize] == 0 {
             return Err(INVALID_USER);
+        }
+        if self.service_user(controller as usize) == 0 {
+            // A leased bot: no presence of its own (docs/game/bots.md §9.5).
+            return Ok(None);
         }
         match (&self.service, self.session()) {
             (Some(service), Some(session)) => service
@@ -812,7 +858,9 @@ impl State {
     /// The Live session this console hosts (16 lowercase hex digits):
     /// the advertisement it made last, while it still stands.
     pub fn hosted_session(&self) -> Option<String> {
-        self.sessions.current_id().map(|id| live_proto::sign::hex(&id))
+        self.sessions
+            .current_id()
+            .map(|id| live_proto::sign::hex(&id))
     }
     /// Asks the server for a bot roster (`POST /games/bots`,
     /// docs/game/bots.md §9.1); `done` gets the checked roster, or why
@@ -824,6 +872,7 @@ impl State {
     ) -> std::result::Result<(), String> {
         let service = self.service.as_ref().ok_or("Live is not connected")?;
         let session = self.session().ok_or("not signed in to Live")?;
+        let leased = self.leased.clone();
         service
             .bots(
                 &session,
@@ -832,7 +881,16 @@ impl State {
                     done(match r {
                         Ok(Reply::Roster(roster)) => roster
                             .check()
-                            .map(|()| roster)
+                            .map(|()| {
+                                // The roster's bots are leased to this
+                                // console: its Clankers may sign in as them.
+                                let mut l = leased.lock().unwrap_or_else(|e| e.into_inner());
+                                for b in &roster.bots {
+                                    l.insert(b.xuid.0, b.gamertag.as_str().to_owned());
+                                }
+                                drop(l);
+                                roster
+                            })
                             .map_err(|e| format!("the server's roster: {e}")),
                         Ok(_) => Err("not a roster".into()),
                         Err(code) => Err(format!("the server refused: {code:#010x}")),
@@ -1604,7 +1662,7 @@ impl State {
                             for i in 0..4 {
                                 self.invites.refresh(
                                     i,
-                                    self.user_ids[i],
+                                    self.service_user(i),
                                     self.service.as_ref(),
                                     session.as_ref(),
                                 );
@@ -1970,6 +2028,16 @@ fn record(account: &Account) -> [u8; USER_SIZE] {
     let mut r = [0; USER_SIZE];
     r[..8].copy_from_slice(&account.xuid.to_le_bytes());
     r[12..12 + account.gamertag.len()].copy_from_slice(account.gamertag.as_bytes());
+    r
+}
+/// A leased bot account's record: its xuid and gamertag, as an account's
+/// own player ([`State::leased_bot`]). It has no key, so no service logon
+/// is made for it.
+fn bot_record(xuid: u64, gamertag: &str) -> [u8; USER_SIZE] {
+    let mut r = [0; USER_SIZE];
+    r[..8].copy_from_slice(&xuid.to_le_bytes());
+    let tag = &gamertag.as_bytes()[..gamertag.len().min(15)];
+    r[12..12 + tag.len()].copy_from_slice(tag);
     r
 }
 

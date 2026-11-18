@@ -556,11 +556,23 @@ fn the_glue_signs_bots_in_with_no_press_then_runs_the_frame() {
 
 #[test]
 fn with_no_players_screen_the_bots_sign_in_and_no_mask_is_touched() {
+    // The pregame lobby's join (bot_glue::Screen::Lobby): the game's
+    // profile sign-in for each bot, then the frame; the session's
+    // local-player pass (0x65770) adds them, so nothing else is called.
     let mut g = FakeGuest::new();
     slots(&mut g);
     g.put_u32(slot(0), SLOT_PROFILE);
     let run = sign_in_then_run(g, None);
     assert_eq!(run.result, Ok(Ret::new(0x77, 0)));
+    let targets: Vec<(u32, u32)> = run
+        .calls
+        .iter()
+        .map(|c| (c.target, c.args.first().copied().unwrap_or(0)))
+        .collect();
+    let sign_in = points::PROFILE_SIGN_IN.base;
+    assert_eq!(targets[..2], [(sign_in, 1), (sign_in, 3)]);
+    assert_eq!(targets.len(), 3, "then the frame, nothing else");
+    assert_eq!(targets[2].0, 0x0012_5b40);
     assert!(signed_in(&run.guest, 1).unwrap() && signed_in(&run.guest, 3).unwrap());
     assert_eq!(run.guest.u16(SCREEN + SCREEN_MASK).unwrap(), 0b1);
 }
@@ -777,4 +789,126 @@ fn the_slot_summary_says_profile_live_and_guest() {
     assert_eq!(slot_summary(&g, 1), "port 1 0x30 Live guest 1");
     assert_eq!(slot_summary(&g, 2), "port 2 0x10 offline");
     assert_eq!(slot_summary(&g, 3), "port 3 0x0 empty");
+}
+
+fn bot(n: u64) -> BotAccount {
+    BotAccount {
+        xuid: 0x000b_0000_0000_0100 | n,
+        gamertag: format!("Rusty Lugnut {n}"),
+    }
+}
+
+/// docs/game/bots.md §9.5: a bot with a leased account is on Live as that
+/// account: the game's writes as for a guest, but its own xuid, user
+/// flags with no guest number and its own gamertag, so the guest numbers
+/// stay free and a real guest of the human still gets guest 1.
+#[test]
+fn a_bot_goes_on_live_as_its_own_account_not_a_guest() {
+    let mut g = lobby(true, &[1, 2]);
+    for p in 1..=2u32 {
+        assert_eq!(
+            go_live_as(&mut g, p, 0b0110, &bot(u64::from(p))).unwrap(),
+            GoLive::Account { host: 0 },
+            "port {p}"
+        );
+        assert_eq!(g.u32(slot(p)).unwrap(), SLOT_PROFILE | SLOT_LIVE);
+        let a = account(&g, p).unwrap();
+        assert_eq!(account_xuid(&a), bot(u64::from(p)).xuid);
+        assert_eq!(guest_number(&a), 0, "an account's own player");
+        let flags = u32::from_le_bytes(a[ACCOUNT_FLAGS..ACCOUNT_FLAGS + 4].try_into().unwrap());
+        assert_eq!(flags, 0x0001_0000, "the host's flags, no guest number");
+        let tag = format!("Rusty Lugnut {p}");
+        assert_eq!(&a[0xc..0xc + tag.len()], tag.as_bytes());
+        assert_eq!(a[0xc + tag.len()], 0);
+        assert_eq!(&a[0x6c..0x70], &0x1234u32.to_le_bytes(), "the logon result");
+        let id = g.bytes(slot(p) + SLOT_ID, ID_LEN).unwrap();
+        assert_eq!(id, a[..ID_LEN].to_vec());
+        let user = LOCAL_USERS + p * LOCAL_USER_STRIDE + LOCAL_USER_ID;
+        assert_eq!(g.bytes(user, ID_LEN).unwrap(), id);
+        assert_eq!(
+            g.utf16(slot(p) + SLOT_NAME, SLOT_NAME_UNITS).unwrap(),
+            tag,
+            "shown by its gamertag"
+        );
+    }
+    // Twice is once.
+    assert_eq!(
+        go_live_as(&mut g, 1, 0b0110, &bot(1)).unwrap(),
+        GoLive::Already
+    );
+    // Every guest number is still free for a real guest.
+    assert_eq!(free_guest_number(&g, 0).unwrap(), Some(1));
+    // The human is untouched.
+    assert_eq!(account(&g, 0).unwrap(), afr_account(0));
+}
+
+/// A bot on Live as a guest (no account leased yet) moves to its account
+/// when one comes, giving its guest number back; and a new roster's
+/// account replaces an old one.
+#[test]
+fn a_guest_bot_moves_to_its_account_and_a_new_account_replaces_the_old() {
+    let mut g = lobby(true, &[1]);
+    assert_eq!(
+        go_live(&mut g, 1, 0b10, "Clanker 1").unwrap(),
+        GoLive::Guest { host: 0, number: 1 }
+    );
+    assert_eq!(free_guest_number(&g, 0).unwrap(), Some(2));
+    assert_eq!(
+        go_live_as(&mut g, 1, 0b10, &bot(1)).unwrap(),
+        GoLive::Account { host: 0 }
+    );
+    assert_eq!(free_guest_number(&g, 0).unwrap(), Some(1));
+    assert_eq!(
+        go_live_as(&mut g, 1, 0b10, &bot(7)).unwrap(),
+        GoLive::Account { host: 0 }
+    );
+    assert_eq!(account_xuid(&account(&g, 1).unwrap()), bot(7).xuid);
+}
+
+/// Offline and in System Link nothing changes; with the human gone from
+/// Live the bot leaves too, with its offline id and name back.
+#[test]
+fn without_a_human_on_live_a_bot_account_stays_off_or_leaves() {
+    let mut g = lobby(false, &[1]);
+    assert_eq!(
+        go_live_as(&mut g, 1, 0b10, &bot(1)).unwrap(),
+        GoLive::NoHost
+    );
+    assert_eq!(g.u32(slot(1)).unwrap(), SLOT_PROFILE);
+    assert_eq!(account(&g, 1).unwrap(), [0; ACCOUNT_LEN]);
+
+    let mut g = lobby(true, &[1]);
+    let offline = slot_id(&g, 1).unwrap();
+    assert_eq!(offline, [0xee; ID_LEN]);
+    go_live_as(&mut g, 1, 0b10, &bot(1)).unwrap();
+    // The host's logon fails: the game signs out the slots with its id.
+    g.put_u32(slot(0), SLOT_PROFILE);
+    assert!(leave_live(&mut g, 1, &offline, "Clanker 1").unwrap());
+    assert_eq!(g.u32(slot(1)).unwrap(), SLOT_PROFILE);
+    assert_eq!(account(&g, 1).unwrap(), [0; ACCOUNT_LEN]);
+    assert_eq!(slot_id(&g, 1).unwrap(), offline);
+    let user = LOCAL_USERS + LOCAL_USER_STRIDE + LOCAL_USER_ID;
+    assert_eq!(g.bytes(user, ID_LEN).unwrap(), offline.to_vec());
+    assert_eq!(
+        g.utf16(slot(1) + SLOT_NAME, SLOT_NAME_UNITS).unwrap(),
+        "Clanker 1"
+    );
+    assert!(
+        !leave_live(&mut g, 1, &offline, "Clanker 1").unwrap(),
+        "once"
+    );
+}
+
+#[test]
+fn a_long_gamertag_is_cut_to_fit_the_record() {
+    let a = bot_account_record(
+        &afr_account(2),
+        &BotAccount {
+            xuid: 0x000b_0000_0000_0001,
+            gamertag: "ABCDEFGHIJKLMNOPQRS".into(),
+        },
+    );
+    assert_eq!(&a[0xc..0x1b], b"ABCDEFGHIJKLMNO");
+    assert_eq!(a[0x1b], 0);
+    assert_eq!(guest_number(&a), 0);
 }

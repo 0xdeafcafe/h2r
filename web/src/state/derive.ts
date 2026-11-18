@@ -284,6 +284,9 @@ export function serviceRecord(s: LiveState, xuid: Xuid, only?: (g: GameState) =>
     games: hist.length, completed: 0, wins: 0, kills: 0, deaths: 0, assists: 0, kd: null, bestSpree: 0,
     firstPlayed: null, lastPlayed: null, exp: 0, rank: RANKS[0]![1], weapons: [], weaponsAgainst: [], medals: new Map(), killsSeen: 0,
   };
+  // A bot account's own career counts everything it did, against humans and
+  // bots alike (docs/game/bots.md §6); a human's leaves every bot out.
+  const botAcct = s.accounts[xuid]?.bot === true;
   const weapons: WeaponRow[][] = [];
   const against: WeaponRow[][] = [];
   for (const h of hist) {
@@ -293,10 +296,10 @@ export function serviceRecord(s: LiveState, xuid: Xuid, only?: (g: GameState) =>
     const slots = new Set(h.slots);
     // The scoreboard's counts less what bots gave or took (as far as the
     // loaded knockouts tell).
-    const kills = careerKills(g);
+    const kills = botAcct ? g.kills : careerKills(g);
     const isBot = (i: number | null) => i !== null && g.players[i]?.bot === true;
-    const botKills = g.kills.filter((k) => k.kind === "kill" && k.killer !== null && slots.has(k.killer) && isBot(k.victim)).length;
-    const botDeaths = g.kills.filter((k) => slots.has(k.victim) && isBot(k.killer)).length;
+    const botKills = botAcct ? 0 : g.kills.filter((k) => k.kind === "kill" && k.killer !== null && slots.has(k.killer) && isBot(k.victim)).length;
+    const botDeaths = botAcct ? 0 : g.kills.filter((k) => slots.has(k.victim) && isBot(k.killer)).length;
     rec.kills += Math.max(0, h.kills - botKills); rec.deaths += Math.max(0, h.deaths - botDeaths); rec.assists += h.assists;
     for (const i of h.slots) rec.bestSpree = Math.max(rec.bestSpree, bestSprees(kills).get(i) ?? 0);
     if (!rec.firstPlayed || g.started_at < rec.firstPlayed) rec.firstPlayed = g.started_at;

@@ -19,7 +19,7 @@ import Emblem from "../components/Emblem";
 import MedalIcon from "../components/MedalIcon";
 import RankIcon from "../components/RankIcon";
 import WeaponIcon from "../components/WeaponIcon";
-import { PresenceBadge, VerifySummary } from "../components/bits";
+import { BotTag, PresenceBadge, VerifySummary } from "../components/bits";
 import { Crumbs, Derived, Pager, Panel, Tabs, Title, playerHref } from "./Layout";
 import GametypeIcon from "../components/GametypeIcon";
 import { SkullBadges } from "../components/SkullIcon";
@@ -41,7 +41,12 @@ function useAccount() {
   // Games older than the snapshot: load the ones the server lists for them.
   createEffect(on(() => [tag(), live.loadMode()] as const, ([t, mode]) => {
     if (mode === "snapshot") return;
-    live.api().account(t).then((a) => { for (const g of (a.recent_games ?? []).slice(0, 25)) void live.ensureGame(g.game_id); }, () => {});
+    live.api().account(t).then((a) => {
+      // A bot account isn't in the accounts list (bots.md §6): add it from
+      // the answer so its page renders instead of "Player Not Found".
+      if (a.bot === true && !accountByGamertag(live.state, t)) live.addAccounts([a]);
+      for (const g of (a.recent_games ?? []).slice(0, 25)) void live.ensureGame(g.game_id);
+    }, () => {});
   }));
   return { tag, acct };
 }
@@ -71,7 +76,7 @@ export function PlayerStrip(props: { account: AccountState; rec: ServiceRecord }
       <A href={playerHref(props.account.gamertag)} class="s-id-emblem"><Emblem seed={props.account.xuid} size={68} /></A>
       <span class="s-id-rank"><RankIcon rank={rankIndex(props.rec.exp)} exp={props.rec.exp} size={40} /></span>
       <div class="s-id-name">
-        <h2><A href={playerHref(props.account.gamertag)}>{props.account.gamertag}</A></h2>
+        <h2><A href={playerHref(props.account.gamertag)}>{props.account.gamertag}</A><Show when={props.account.bot}> <BotTag /></Show></h2>
         <div>Service Tag: {serviceTag(props.account.gamertag, props.account.xuid)}</div>
         <div><Derived note="Rank comes from EXP: one point per completed game, two more per win. Derived in your browser.">{props.rec.rank}, Grade {rankIndex(props.rec.exp) + 1}</Derived> · <PresenceBadge account={props.account} /></div>
       </div>
@@ -168,7 +173,7 @@ export function ServiceRecordPage() {
               ]} />
               <RecentGames games={hist().slice(0, 12).map((h) => h.game)} title="Recent h2 live Games" empty="Their first chapter is still ahead." />
               <PlayedWith account={a()} />
-              <PlayerSocial account={a()} />
+              <Show when={!a().bot}><PlayerSocial account={a()} /></Show>
               <PeopleFinder />
             </aside>
             <div class="s-right">

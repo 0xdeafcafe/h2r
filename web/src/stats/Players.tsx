@@ -26,7 +26,8 @@ export default function Players() {
   const PER = 20;
   const rows = createMemo(() =>
     // Multiplayer records only: campaign games never count on a leaderboard.
-    Object.values(live.state.accounts).map((a) => ({ a, rec: serviceRecord(live.state, a.xuid), campaign: gamesFor(live.state, a.xuid, "campaign").length })));
+    // Bots have pages but never a place in the browse list (bots.md §6).
+    Object.values(live.state.accounts).filter((a) => !a.bot).map((a) => ({ a, rec: serviceRecord(live.state, a.xuid), campaign: gamesFor(live.state, a.xuid, "campaign").length })));
   type R = ReturnType<typeof rows>[number];
   const ranked = createMemo(() => {
     const key = board();

@@ -62,7 +62,8 @@ export function VerifySummary(props: { positions: () => number[] }) {
 }
 
 /** The mark beside a Clanker bot's name (docs/game/bots.md §6): it plays
- *  in the game record, but has no Live account and no player page. */
+ *  like a player. A bot with a server account has a player page; a host's
+ *  own Clanker has neither account nor page. */
 export function BotTag() {
-  return <span class="bot-tag" title="A Clanker bot: no Live account, no stats page">BOT</span>;
+  return <span class="bot-tag" title="A bot: plays like a player, never a person">BOT</span>;
 }

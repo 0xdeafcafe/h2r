@@ -209,6 +209,8 @@ export type KillKind = "kill" | "suicide" | "betrayal" | "world";
 
 // Event payloads.
 export interface AccountCreated { xuid: Xuid; gamertag: string }
+/** A bot account issued by the server (stream `bot-<xuid>`, xuid in the 0x000B range). */
+export interface BotIssued { xuid: Xuid; gamertag: string; persistent?: boolean; emblem?: unknown; colors?: unknown; personality?: unknown }
 export interface GamertagReserved { xuid: Xuid }
 export interface TitleFilePublished { title_id: string; name: string; sha256: string; size: number }
 export interface PresenceData { xuid: Xuid; state?: string; game_id?: GameId | null; /** What the player is doing, e.g. "Co-op: Outskirts". */ activity?: string | null }
@@ -280,7 +282,9 @@ export type StreamMessage =
  *  `position` the log head when it was read. */
 export interface ListResponse<T> { items: T[]; next: string | null; position: number }
 
-export interface AccountSummary { xuid: Xuid; gamertag: string; created_at?: string; online?: boolean; admin?: boolean }
+/** `bot` is true for a bot account (docs/game/bots.md §6); absent for humans.
+ *  `GET /v1/accounts` never lists bots; `GET /v1/accounts/{tag}` answers for one. */
+export interface AccountSummary { xuid: Xuid; gamertag: string; created_at?: string; online?: boolean; admin?: boolean; bot?: boolean }
 
 export interface PresenceEntry { xuid: Xuid; gamertag: string; state: string; game_id?: GameId | null; activity?: string | null; since: string }
 

@@ -179,6 +179,9 @@ struct Bot {
     /// Taken off the books; plugged with an idle pad until the glue has
     /// signed it out ([`leave_step`]).
     leaving: bool,
+    /// The bot account it is on Xbox Live as, once the server leased one
+    /// (docs/game/bots.md §9.5); `None`: the human's guest, or offline.
+    account: Option<crate::guest::BotAccount>,
 }
 
 #[derive(Default)]
@@ -217,6 +220,7 @@ impl Local {
             b.source = source;
             b.leaving = false;
             b.pad = HostPadState::default();
+            b.account = None;
             return Ok(b.handle);
         }
         if s.bots.len() >= MAX_LOCAL {
@@ -232,8 +236,45 @@ impl Local {
             pad: HostPadState::default(),
             source,
             leaving: false,
+            account: None,
         });
         Ok(handle)
+    }
+
+    /// Gives the bot `handle` the bot account it goes on Xbox Live as
+    /// (`None`: none, so it is the human's guest there).
+    pub fn set_account(
+        &self,
+        handle: BotHandle,
+        account: Option<crate::guest::BotAccount>,
+    ) -> Result<(), Error> {
+        let mut s = self.lock();
+        let b = s
+            .bots
+            .iter_mut()
+            .find(|b| b.handle == handle && !b.leaving)
+            .ok_or(Error::NoSuchBot(handle))?;
+        b.account = account;
+        Ok(())
+    }
+
+    /// The bot account of the bot on `port` (on the books), if it has one.
+    pub fn account_on(&self, port: u32) -> Option<crate::guest::BotAccount> {
+        self.lock()
+            .bots
+            .iter()
+            .filter(|b| !b.leaving)
+            .find(|b| b.port.map(u32::from) == Some(port))
+            .and_then(|b| b.account.clone())
+    }
+
+    /// The bot account of the bot `handle`, if it has one.
+    pub fn account_of(&self, handle: BotHandle) -> Option<crate::guest::BotAccount> {
+        self.lock()
+            .bots
+            .iter()
+            .find(|b| b.handle == handle && !b.leaving)
+            .and_then(|b| b.account.clone())
     }
 
     /// Takes a bot off the books. Its pad stays plugged, idle, until the
