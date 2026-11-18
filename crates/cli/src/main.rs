@@ -17,7 +17,10 @@ mod testmap_cmd;
 mod anim;
 mod bitmap;
 mod boot_cmd;
+mod bots_drive;
 mod bots_nav;
+mod bots_test_cmd;
+mod bots_verdict;
 mod collision;
 mod coop_probe_cmd;
 mod coop_drive;
@@ -120,6 +123,10 @@ const USAGE: &str = "usage: h2 <command> [disc]
   collision --all <map|all>  validate every coll/phmo tag (all = every disc map)
   bots nav <map|all>      build the bots' nav mesh and walls into <data>/bots
                           (docs/game/bots.md)
+  bots test               Clankers in a Live custom game, unattended: a local
+                          server, the menus pressed, a verdict (--count N, --map,
+                          --keep, --timeout; docs/game/bots.md, Testing)
+  bots verdict <bots.log> print a bots test's verdict again
   lighting <map>          lighting/atmosphere summary; --bsp N; --page N --out DIR
   lighting --all          validate every disc map (optional <map> for one map)
   sound <map> <tag>       export a snd! tag to WAV; --all <map> validates every sound
@@ -284,7 +291,11 @@ fn main() -> Result<()> {
         return collision::run(args.collect());
     }
     if cmd == "bots" {
-        return bots_nav::run(args.collect());
+        let args: Vec<String> = args.collect();
+        if matches!(args.first().map(String::as_str), Some("test" | "verdict")) {
+            return bots_test_cmd::run(args);
+        }
+        return bots_nav::run(args);
     }
     if cmd == "anim" {
         return anim::run(args.collect());
