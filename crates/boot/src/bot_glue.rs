@@ -11,6 +11,12 @@
 //!   reaches the screen's handler for a controller with no profile
 //!   (`PLAYERS_SCREEN_UNJOINED`, a sim script's) is answered the same way
 //!   ([`bots::guest::sign_in`]).
+//! - With a human on Xbox Live, out of a game, each signed-in bot goes on
+//!   Live as the human's guest ([`bots::guest::go_live`], [`to_go_live`]),
+//!   as an Xbox signs in a guest. Offline and in System Link, nothing.
+//! - A Start press in the pregame lobby (`PREGAME_LOBBY_INPUT`) while bots
+//!   are in logs the game's start state and what holds it back
+//!   ([`bots::lobby::start_state_then`]), before the next `SOUND_UPDATE`.
 //! - Before each `RENDER_FRAME` (the game thread) each bot's source gives
 //!   its pad for the frame ([`bots::local::Local::frame`]).
 //! - Around `RENDER_FRAME` and `SOUND_UPDATE`, the bots' local users are
@@ -150,6 +156,49 @@ pub fn to_sign_in(
         .collect()
 }
 
+/// The ports whose bot the glue signs in to Xbox Live as a guest of the
+/// human now ([`bots::guest::go_live`]): each bot on the books (`bots`, a
+/// mask) whose slot has a profile and is not on Xbox Live (`slot`, its
+/// flags; `None` unread), while a human is on Xbox Live (`host_live`,
+/// [`bots::guest::live_host`]) and no game runs (`in_game`). Offline and in
+/// System Link with no one on Live, none: nothing changes there.
+pub fn to_go_live(
+    bots: u32,
+    slot: impl Fn(u8) -> Option<u32>,
+    host_live: bool,
+    in_game: bool,
+) -> Vec<u8> {
+    if in_game || !host_live {
+        return Vec::new();
+    }
+    (0..4u8)
+        .filter(|&p| bots & 1 << p != 0)
+        .filter(|&p| {
+            slot(p).is_some_and(|f| f & guest::SLOT_PROFILE != 0 && f & guest::SLOT_LIVE == 0)
+        })
+        .collect()
+}
+
+/// The log line for what [`bots::guest::go_live`] did for the bot on
+/// `port`.
+pub fn go_live_line(port: u8, name: &str, r: guest::GoLive) -> String {
+    use guest::GoLive::*;
+    match r {
+        Guest { host, number } => format!(
+            "bots: {name} on port {port} is on Xbox Live as guest {number} of port {host}'s account"
+        ),
+        NoHost => format!("bots: {name} on port {port} stays offline: no one is on Xbox Live"),
+        NoProfile => format!("bots: {name} on port {port} has no profile to take on Xbox Live"),
+        Already => format!("bots: {name} on port {port} is on Xbox Live already"),
+        Full => format!(
+            "bots: {name} on port {port} stays offline: the account has three guests already"
+        ),
+        NoLocalUser => {
+            format!("bots: {name} on port {port} stays offline: its slot has no local user")
+        }
+    }
+}
+
 /// The feature over a set of local bots.
 pub struct Bots {
     local: Local,
@@ -165,6 +214,10 @@ pub struct Bots {
     /// A sign-in or sign-out is running the frame itself: its own
     /// `SOUND_UPDATE` call must not start another.
     signing_out: Arc<AtomicBool>,
+    /// Each port's last Xbox Live guest line, so it is logged on a change.
+    live: Arc<Mutex<[String; 4]>>,
+    /// A Start press in the lobby waits for its start-state line.
+    pressed: Arc<AtomicBool>,
 }
 
 impl Bots {
@@ -183,6 +236,8 @@ impl Bots {
             sound: Arc::default(),
             gates: Arc::default(),
             signing_out: Arc::default(),
+            live: Arc::default(),
+            pressed: Arc::default(),
         }
     }
 }
@@ -239,6 +294,25 @@ impl feature::Feature for Bots {
                 eprintln!("bots: signing {name} in on port {port}");
                 c.answer_async(move |cx| Box::pin(guest::sign_in(cx, port, bots, name, buffer)))
             });
+
+        // A Start press in the lobby while bots are in: the start state is
+        // logged before the next SOUND_UPDATE (once per press).
+        let (local, pressed) = (self.local.clone(), Arc::clone(&self.pressed));
+        b.raw().observe_before(
+            &points::PREGAME_LOBBY_INPUT,
+            "bots: note a Start press",
+            move |o| {
+                if local.port_mask() == 0 {
+                    return;
+                }
+                let Some(event) = o.arg_u32("event") else {
+                    return;
+                };
+                if let Ok(Some(_)) = bots::lobby::start_press(&*o.guest(), event) {
+                    pressed.store(true, Ordering::Relaxed);
+                }
+            },
+        );
 
         // Each frame: the pads, then the bots' views out.
         let (local, phantoms, frame, render, map, dir, gates) = (
@@ -342,17 +416,70 @@ impl feature::Feature for Bots {
         // The listeners: the humans' ears only.
         // And, out of a game, the leaving bots signed out, then unplugged.
         // And on the players screen, the joining bots signed in.
-        let (local, sound, busy, frame) = (
+        let (local, sound, busy, frame, live, pressed) = (
             self.local.clone(),
             Arc::clone(&self.sound),
             Arc::clone(&self.signing_out),
             Arc::clone(&self.frame),
+            Arc::clone(&self.live),
+            Arc::clone(&self.pressed),
         );
         b.raw().before(
             &points::SOUND_UPDATE,
             "sign bots in and leaving bots out; hide bot listeners",
             move |c| {
                 let rt = Arc::clone(c.ctx.runtime());
+                // A Start press: the game's start state and what holds it.
+                if !busy.load(Ordering::Relaxed) && pressed.swap(false, Ordering::Relaxed) {
+                    let mask = local.port_mask();
+                    let ports: Vec<u32> = (0..4u32).filter(|&p| mask & 1 << p != 0).collect();
+                    busy.store(true, Ordering::Relaxed);
+                    let busy = Arc::clone(&busy);
+                    let then = points::SOUND_UPDATE.base;
+                    return c.answer_async(move |cx| -> engine::entry::EntryFuture {
+                        Box::pin(async move {
+                            let r = bots::lobby::start_state_then(cx, ports, then).await;
+                            busy.store(false, Ordering::Relaxed);
+                            r.map(|(line, ret)| {
+                                eprintln!("{line}");
+                                ret
+                            })
+                        })
+                    });
+                }
+                // Bots with a profile go on Xbox Live as the human's guests.
+                let joined = local.joining_mask();
+                if joined != 0 && frame.load(Ordering::Relaxed) % SIGN_IN_EVERY == 0 {
+                    let mut mem = rt.memory();
+                    let bots = local.port_mask();
+                    let host_live = guest::live_host(&*mem, bots).ok().flatten().is_some();
+                    let ports = to_go_live(
+                        joined,
+                        |p| guest::slot_flags(&*mem, u32::from(p)).ok(),
+                        host_live,
+                        guest::game_tick(&*mem).is_some(),
+                    );
+                    let mut said = lock(&live);
+                    for p in 0..4u8 {
+                        if !ports.contains(&p) {
+                            said[usize::from(p)].clear();
+                        }
+                    }
+                    for p in ports {
+                        let name = local.name_on(u32::from(p)).unwrap_or_default();
+                        let line = match guest::go_live(&mut *mem, u32::from(p), bots, &name) {
+                            Ok(r) => go_live_line(p, &name, r),
+                            Err(e) => format!(
+                                "bots: {name} on port {p}: Xbox Live: fault at {:#x}",
+                                e.addr
+                            ),
+                        };
+                        if said[usize::from(p)] != line {
+                            eprintln!("{line}");
+                            said[usize::from(p)] = line;
+                        }
+                    }
+                }
                 let joining = local.joining_mask();
                 if joining != 0
                     && !busy.load(Ordering::Relaxed)
@@ -603,6 +730,51 @@ mod tests {
             );
         }
         assert!(to_sign_in(None, None, 0b10, empty, true, false).is_empty());
+    }
+
+    const PROFILE: u32 = guest::SLOT_PROFILE;
+    const LIVE: u32 = guest::SLOT_PROFILE | guest::SLOT_LIVE;
+
+    #[test]
+    fn bots_go_on_live_only_with_a_human_on_live_and_out_of_a_game() {
+        // The human on port 0, three bots signed in to profiles.
+        let slots = |p: u8| Some(if p == 0 { LIVE } else { PROFILE });
+        assert_eq!(to_go_live(0b1110, slots, true, false), vec![1, 2, 3]);
+        // Offline, or System Link with no one on Live: nothing changes.
+        assert!(to_go_live(0b1110, slots, false, false).is_empty());
+        // Never during a game.
+        assert!(to_go_live(0b1110, slots, true, true).is_empty());
+        // Only bots' ports: the human's is never touched.
+        assert_eq!(to_go_live(0b0010, slots, true, false), vec![1]);
+    }
+
+    #[test]
+    fn a_bot_goes_on_live_once_it_has_a_profile_and_once_only() {
+        // Port 1 on Live already, port 2 still joining (no profile), port 3
+        // unread.
+        let slots = |p: u8| match p {
+            1 => Some(LIVE),
+            2 => Some(0),
+            3 => None,
+            _ => Some(LIVE),
+        };
+        assert!(to_go_live(0b1110, slots, true, false).is_empty());
+        // Once port 2 has its profile, it goes on.
+        let slots = |p: u8| Some(if p == 2 { PROFILE } else { LIVE });
+        assert_eq!(to_go_live(0b1110, slots, true, false), vec![2]);
+    }
+
+    #[test]
+    fn the_go_live_line_says_whose_guest() {
+        use guest::GoLive;
+        assert_eq!(
+            go_live_line(1, "Clanker 1", GoLive::Guest { host: 0, number: 1 }),
+            "bots: Clanker 1 on port 1 is on Xbox Live as guest 1 of port 0's account"
+        );
+        assert_eq!(
+            go_live_line(3, "Clanker 3", GoLive::Full),
+            "bots: Clanker 3 on port 3 stays offline: the account has three guests already"
+        );
     }
 
     #[test]

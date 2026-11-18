@@ -13,6 +13,7 @@ pub mod brain;
 pub mod cache;
 pub mod emote;
 pub mod guest;
+pub mod lobby;
 pub mod local;
 pub mod los;
 pub mod mind;
