@@ -1700,7 +1700,7 @@ invitation; one log line per QoS target; and a QoS probe for a session
 the host doesn't listen for coming back uncontacted after its tries,
 while the current one is answered with its data.
 
-### 12.5 Driving the host's menus (not built)
+### 12.5 Driving the host's menus (the plan; built as 12.6)
 
 `--auto` stops at the menus. What exists to press through them:
 
@@ -1739,6 +1739,65 @@ own Live menu rows change (Co-op Campaign moved the rows down), and on
 the profile screen, which a fresh data dir shows and a reused one may not.
 A press in the wrong place is harmless in the menus but confusing in a
 report. Until (1) and (2) exist, the line in step 4 above is the guide.
+
+### 12.6 `--drive`: nobody presses
+
+`h2 coop test --players 3 --auto --late --drive` runs the whole test
+without a press. The three parts of 12.5:
+
+1. **Input.** `input.pad` already exists on every game's agent socket
+   (the agent's tap at XAPI, merged over the live pad, so the keyboard
+   still works). The harness sends one short step per press: the button
+   for 150 ms and at least two pad reads.
+2. **Screens.** With `H2_UI_WATCH=1` (which `--drive` sets), a game prints
+   `ui: screen 0x09 (window 5, slot 4)` whenever the screen that takes
+   player one's input changes, and `ui.screen` answers it on the agent
+   socket (`h2 agent --socket <path> ui`). On the Xbox Live menu the line
+   adds the row the menu restores its cursor to (`, live menu row 3`,
+   `0x510a18`). `boot::ui_watch` holds the layout. [local] It is read
+   statically: the input dispatcher `0x147dbe`, the push `0x147f6d`, the
+   channel test `0x1473b6` and the delivery `0x23515d`. [guess] It has
+   not been seen in a run. The focused row is not read: list focus goes
+   through widget virtual calls (`0x24c447` → `0x24bae6` → `0x22ed7a`).
+   The driver counts its own moves from the restored row instead.
+3. **The script** (`crates/cli/src/coop_drive.rs`). There is one driver
+   per game. Each reads its game's `ui: screen` lines and every game's
+   co-op lines, and asks for one press at a time, at least 0.7 s apart.
+   A press happens only once a screen has held for 1.5 s, or after a line
+   it waited for. Every step has a 15 s timeout and up to 4 tries; after
+   that the driver says `coop-drive: <tag>: stuck: ...; press on its
+   window` and stops for that game. Each press goes into coop.log as
+   `coop-drive: Alpha: press a on screen 0xba row 4 (Co-op Campaign)`.
+
+| Game | Path |
+|---|---|
+| every game | First boot screen held 4 s: START. Each later boot screen: DOWN, A (the profile picker's Default, as docs/runtime/BOOT.md). Main menu (`0x09`): DOWN, A (Xbox Live, which signs in). The guests come back to Xbox Live a second time with A only, since their cursor is still on it |
+| host | Live menu (`0xba`): from the restored row to row 4, A. Wait for `coop-live: hosting`; `custom games: opening the browser` means it landed on row 3, so B and try again. Wait for every lobby guest's `coop-live: guest: joined`, then A on Start Game (the lobby's row 0, `0x250fb3` → `0x251050`). If `session start returned 1` or `simulation mode sync-server` doesn't follow, UP, A |
+| guest | Live menu: B back to the main menu, where the invitation reader runs (12.1). Once `coop-auto: accepting`: DOWN, UP (the reader runs on an event, perhaps a controller event). If the game hasn't joined 20 s after the acceptance (or 5 min with no acceptance), A for Xbox Live, row 3 (Custom Game Browser), A. Once the browser has probed a game (`live: join: qos lookup`) and 1.5 s have passed, A on the first game. Done at `coop-live: guest: joined` |
+| late guest | As a guest, but the browser fallback waits until 120 s after the host invited it, so it joins in progress |
+
+[guess] Not seen in a run:
+- the boot screens' ids;
+- whether the profile picker wants DOWN, A with this data;
+- whether the main menu opens with Campaign focused. If not, the
+  driver goes up 3 rows and down 1, then tries again;
+- whether a sign-in screen sits between the main menu and the Live menu.
+  If one does, the driver presses A, then B, on a screen it doesn't know;
+- the lobby's id.
+
+The `ui: screen` lines in coop.log answer all of these on the first run.
+
+Tests (`cargo test -p cli --bin h2 coop_drive`, `-p boot --lib ui_watch`):
+- A model of the menus runs three games without the invitation reader
+  (the 023244 run's case: both guests join through the browser, the host
+  starts after both).
+- The same model runs with a working reader (no browser) and with a late
+  guest (it joins after the start).
+- A boot screen that never moves ends in `stuck`.
+- A wrong Live menu row is backed out of.
+- The 023244 run's own lines (`coop_drive/run-023244.log`) are replayed:
+  the host waits in its lobby, and Bravo is nudged at its acceptance and
+  goes for the browser 20 s after it.
 
 ## 13. More than two players
 

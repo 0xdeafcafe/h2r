@@ -12,6 +12,7 @@ mod bitmap;
 mod boot_cmd;
 mod collision;
 mod coop_probe_cmd;
+mod coop_drive;
 mod coop_test_cmd;
 mod coop_verdict;
 mod effects;

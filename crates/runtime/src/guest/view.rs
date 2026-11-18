@@ -27,9 +27,13 @@ pub struct HandBack {
     pub lines: usize,
     /// Bytes the view had changed, now in the live Guest.
     pub bytes: usize,
-    /// Of those, bytes the live side had changed too, to another value:
-    /// the view's value won.
+    /// Bytes both sides changed, in a word both changed, where the view's
+    /// byte differs from the live side's: counted whichever side's word
+    /// stayed.
     pub conflicts: usize,
+    /// Of `conflicts`, those in render-owned ranges, where the view's word
+    /// won.
+    pub owned_conflicts: usize,
 }
 
 /// A frozen copy of physical RAM: what a view started from.
@@ -148,6 +152,22 @@ impl Guest {
         base: &FrozenRam,
         written: &[WrittenPage],
     ) -> HandBack {
+        self.hand_back_owned(view, base, written, &[])
+    }
+
+    /// [`hand_back`](Self::hand_back), except that in the physical ranges
+    /// `owned` (`[start, end)`) the view owns the words: a word both sides
+    /// changed takes the view's value whole (still a counted conflict, and
+    /// an `owned_conflict`). For state only the render may change between
+    /// its launch and its join, such as the D3D device and its push buffer,
+    /// where a live change is not a later serial write.
+    pub fn hand_back_owned(
+        &mut self,
+        view: &Guest,
+        base: &FrozenRam,
+        written: &[WrittenPage],
+        owned: &[(u32, u32)],
+    ) -> HandBack {
         let base = base.bytes();
         let mut out = HandBack::default();
         for page in written {
@@ -176,9 +196,16 @@ impl Guest {
                         continue;
                     }
                     if live[word.clone()] != base[word.clone()] {
-                        out.conflicts += (w..w + 4)
+                        let n = (w..w + 4)
                             .filter(|&k| view[k] != base[k] && live[k] != view[k])
                             .count();
+                        out.conflicts += n;
+                        let physical = (at + w) as u32;
+                        if owned.iter().any(|&(s, e)| (s..e).contains(&physical)) {
+                            out.owned_conflicts += n;
+                            out.bytes += (w..w + 4).filter(|&k| live[k] != view[k]).count();
+                            live[word.clone()].copy_from_slice(&view[word]);
+                        }
                         continue;
                     }
                     for k in word {
@@ -468,16 +495,18 @@ mod tests {
             ]
         );
         let before = live.u32(0x10000).unwrap();
-        let merged = live.hand_back(&view, &base, &written);
         // The word at 0x10000 and the byte at 0x11040 both sides changed:
-        // the live side's words stay whole (4 + 1 of the view's bytes not
-        // taken); the view's other changes land.
+        // the live side's word stays whole at 0x10000 (4 of the view's
+        // bytes not taken); 0x11040 is in a view-owned range, so the view's
+        // word lands there whole. The view's other changes land.
+        let merged = live.hand_back_owned(&view, &base, &written, &[(0x1040, 0x1044)]);
         assert_eq!(
             merged,
             HandBack {
                 lines: 5,
-                bytes: 1 + 4,
-                conflicts: 4 + 1
+                bytes: 1 + 4 + 1,
+                conflicts: 4 + 1,
+                owned_conflicts: 1
             }
         );
         assert_eq!(merged.conflicts, found.len());
@@ -488,7 +517,7 @@ mod tests {
         );
         assert_eq!(live.u8(0x10001).unwrap(), 0x11);
         assert_eq!(live.u8(0x10fff).unwrap(), 0xbb);
-        assert_eq!(live.u8(0x11040).unwrap(), 0x22, "conflict: the live side's");
+        assert_eq!(live.u8(0x11040).unwrap(), 0xcc, "owned: the view's");
         assert_eq!(live.read::<4>(0x1303e).unwrap(), [0xdd; 4]);
         // Bytes the view left alone keep the live side's values.
         assert_eq!(live.u32(0x10004).unwrap(), 1);

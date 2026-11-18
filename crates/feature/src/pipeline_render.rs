@@ -170,6 +170,12 @@ pub struct Addrs {
     /// the view, so the render works on the live copy while it holds the
     /// lock. Left out of the final merge.
     pub live_bytes: &'static [Range],
+    /// State only the render changes between its launch and its join (the
+    /// D3D device; the sim's D3D calls join first): where the sim's side
+    /// changed a word the render changed too, the render's word wins at the
+    /// hand-back, not the sim's ([`PipelineRender::render_owned`] adds
+    /// ranges known at run time, such as the push buffer).
+    pub render_owned: &'static [Range],
     /// The async I/O queue head (0: none): requests queued and not yet
     /// done make the next frame serial (`io_busy`).
     pub io_queue: u32,
@@ -324,6 +330,10 @@ impl Addrs {
         // worker `0x00120c40` takes the request there) and the request
         // count `0x004e28f0`.
         live_bytes: &[(0x004e_0354, 0x004e_28f4)],
+        // The D3D device (`d3d::GuestLayout::HALO2`: 0x928 words from
+        // `0x00404fe0`, the push buffer's put pointer at +0) and the device
+        // pointer `0x00407488`.
+        render_owned: &[(0x0040_4fe0, 0x0040_7480), (0x0040_7488, 0x0040_748c)],
         io_queue: 0x004e_28ec,
         warmup: 150,
         after_fallback: 30,
@@ -431,6 +441,9 @@ pub struct Stats {
     pub pages: u64,
     pub bytes: u64,
     pub conflicts: u64,
+    /// Of `conflicts`, those in render-owned words ([`Addrs::render_owned`]),
+    /// where the render's word won.
+    pub owned_conflicts: u64,
     /// Joins where the render presented a different number of times than
     /// the launch predicted.
     pub mispredicts: u64,
@@ -462,6 +475,7 @@ impl Stats {
             pages: self.pages - then.pages,
             bytes: self.bytes - then.bytes,
             conflicts: self.conflicts - then.conflicts,
+            owned_conflicts: self.owned_conflicts - then.owned_conflicts,
             mispredicts: self.mispredicts - then.mispredicts,
             accesses: self.accesses - then.accesses,
         }
@@ -493,7 +507,7 @@ impl Stats {
             .map(|(k, v)| format!("{k} {v}"))
             .collect();
         format!(
-            "pipeline: frames pipelined {} completed {} serial [{}] fallbacks {} [{}] serviced {} [{}] d3d_joins {} cache_joins {} d3d_other_thread {} join_wait {:.2}ms hand_back {:.2}ms snapshot {:.2}ms render {:.2}ms pages {:.1} conflicts {} mispredicts {}",
+            "pipeline: frames pipelined {} completed {} serial [{}] fallbacks {} [{}] serviced {} [{}] d3d_joins {} cache_joins {} d3d_other_thread {} join_wait {:.2}ms hand_back {:.2}ms snapshot {:.2}ms render {:.2}ms pages {:.1} conflicts {} (render-owned {}) mispredicts {}",
             self.pipelined,
             self.completed,
             serial.join(", "),
@@ -510,6 +524,7 @@ impl Stats {
             ms(self.render, joins),
             self.pages as f64 / joins as f64,
             self.conflicts,
+            self.owned_conflicts,
             self.mispredicts,
         )
     }
@@ -608,6 +623,9 @@ struct Shared {
     refuse: Vec<u32>,
     /// Tally and print the hand-backs' conflicts ([`CONFLICTS_ENV`]).
     report_conflicts: bool,
+    /// [`Addrs::render_owned`] and the ranges
+    /// [`PipelineRender::render_owned`] added.
+    render_owned: Vec<Range>,
     inner: Mutex<Inner>,
 }
 
@@ -643,6 +661,7 @@ impl PipelineRender {
     /// Explicitly on or off, with `addrs`. Prints no `pipeline:` lines
     /// until [`print`](Self::print).
     pub fn with(on: bool, addrs: Addrs) -> Self {
+        let render_owned = addrs.render_owned.to_vec();
         PipelineRender {
             on,
             off_reason: None,
@@ -667,6 +686,7 @@ impl PipelineRender {
                 predict_frames: true,
                 refuse: Vec::new(),
                 report_conflicts: false,
+                render_owned,
                 inner: Mutex::new(Inner {
                     conflicts: ConflictTally::default(),
                     exec: None,
@@ -742,6 +762,14 @@ impl PipelineRender {
     /// frequent now and then ([`CONFLICTS_ENV`]).
     pub fn report_conflicts(mut self, on: bool) -> Self {
         self.shared_mut().report_conflicts = on;
+        self
+    }
+
+    /// More guest ranges the render owns between its launch and its join
+    /// ([`Addrs::render_owned`]): the D3D push buffer, wherever the host
+    /// put it.
+    pub fn render_owned(mut self, ranges: &[Range]) -> Self {
+        self.shared_mut().render_owned.extend_from_slice(ranges);
         self
     }
 
@@ -1815,7 +1843,16 @@ fn hand_back(
             *t = ConflictTally::default();
         }
     }
-    let h = exec.hand_back(rt, &written);
+    let owned: Vec<(u32, u32)> = {
+        let g = rt.memory();
+        me.render_owned
+            .iter()
+            .flat_map(|&r| pieces(&g, r))
+            .map(|(p, n)| (p, p + n))
+            .collect()
+    };
+    let h = exec.hand_back_owned(rt, &written, &owned);
+    inner.stats.owned_conflicts += h.owned_conflicts as u64;
     inner.stats.pages += written.iter().filter(|w| w.lines != 0).count() as u64;
     inner.stats.bytes += h.bytes as u64;
     inner.stats.conflicts += h.conflicts as u64;

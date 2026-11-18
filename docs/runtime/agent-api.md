@@ -587,8 +587,12 @@ How it behaves (**Code**, with tests in `crates/agent`):
   control. `boot::agent_glue` adds `profile.sample.start`, `.stop` and
   `.status` (the in-process sampler, with boot's `perf` feature;
   [xbox.md](xbox.md) "Profiling on the console") and `host.perf` (the
-  last host perf line). The input methods are host methods too, added
-  with the agent's input tap (phase 3 below).
+  last host perf line), and `ui.screen` (`h2 agent ui`): with
+  `H2_UI_WATCH=1`, the menu screen player one's input goes to, read each
+  tick (`boot::ui_watch`; `{"screen", "window", "slot",
+  "live_menu_row", "age_ms"}`, docs/live/live-coop.md 12.6). The input
+  methods are host methods too, added with the agent's input tap (phase 3
+  below).
 
 Not built in phase 1: fade detection, the UI stack, HUD, snapshots,
 input, overrides, experiments, live switch changes. (The MCP front end
