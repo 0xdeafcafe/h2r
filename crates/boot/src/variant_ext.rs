@@ -4,16 +4,33 @@
 //! section 3). Slice 3 applies gravity, through the Low Gravity code in
 //! [`crate::skulls_custom`]; the other options arrive with their slices.
 //!
-//! **Who applies it.** A machine alone, or the host of a Live game. Never
-//! on System Link (decided 6a: extras are off there, so every machine
-//! plays the game's own rules), and never as a Live guest until the host's
-//! block reaches guests through the Live session (slice 4): the game's
-//! wire drops the spare bytes, so a guest's record has none of its own.
+//! **Who applies it.** A machine alone, the host of a Live game, and a
+//! Live guest whose block came from its host. Never on System Link
+//! (decided 6a: extras are off there, so every machine plays the game's
+//! own rules).
+//!
+//! **How a guest gets it** ([`Transport`]). The game's wire drops the
+//! spare bytes, so a guest's record has none of its own. At each
+//! multiplayer start (`GAME_ACTIVATE`, the options in EAX, before the game
+//! copies them into the globals) a Live host puts its record's block and
+//! the variant's [`key`] on its session (`NewSession.variant_ext`), and a
+//! Live guest asks the server for its host's session until the key there
+//! is its own record's (the host may publish a moment after the guest
+//! starts; at most [`HOST_WAIT`]), then writes the block into the options
+//! the game is about to copy. A host whose build sends nothing (an older
+//! one) leaves the field out: the guest says so and plays the game's own
+//! rules.
 //!
 //! The decision is a pure function over guest memory ([`Gm`]), read each
 //! tick after the game's (cheap: the session is read only when the block
 //! asks for something).
 
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use feature::{BuildError, Builder, Flow, Manifest};
+use live_hle::HostVariantExt;
+use live_proto::session::VariantExt;
 use variants::ext::{self, Ext};
 
 use crate::coop_probe::{self, Session};
@@ -32,6 +49,35 @@ pub const BLOCK: u32 = ACTIVE_VARIANT + ext::AT as u32;
 /// Not the `+0x4980` byte the lobby setters check (`0x63f00`).
 pub const SESSION_NETWORK_CLASS: u32 = 0x18;
 pub const SYSTEM_LINK: u32 = 1;
+/// The active options' variant record (`O + 0x134`; the options pointer is
+/// EAX at `GAME_ACTIVATE`).
+pub const OPTIONS_VARIANT: u32 = 0x134;
+/// How long a guest's start waits for its host's options.
+pub const HOST_WAIT: Duration = Duration::from_millis(1500);
+
+/// The block this machine took from its host for the game running now
+/// (a guest), so [`in_game`] applies it.
+static FROM_HOST: Mutex<Option<[u8; ext::LEN]>> = Mutex::new(None);
+
+fn from_host() -> Option<[u8; ext::LEN]> {
+    *FROM_HOST.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn set_from_host(b: Option<[u8; ext::LEN]>) {
+    *FROM_HOST.lock().unwrap_or_else(|e| e.into_inner()) = b;
+}
+
+/// Which variant a record is, the same on the host and its guests: FNV-1a
+/// over the name (`+4`, 0x40 bytes) and the engine (`+0x44`), which the
+/// game's wire carries whole. Two variants alike in both share a key.
+pub fn key(record: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in record.get(0x04..0x48).unwrap_or(&[]) {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
 
 /// What this machine does with the active variant's block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,8 +114,9 @@ impl Decision {
 }
 
 /// Decides for a variant's options and the squad session (`class` its
-/// network class at `+0x18`).
-pub fn decide(e: Ext, session: Option<(&Session, u32)>) -> Decision {
+/// network class at `+0x18`); `host_sent` when a guest's block came from
+/// its host.
+pub fn decide(e: Ext, session: Option<(&Session, u32)>, host_sent: bool) -> Decision {
     if e.is_default() {
         return Decision::Retail;
     }
@@ -85,10 +132,15 @@ pub fn decide(e: Ext, session: Option<(&Session, u32)>) -> Decision {
                     ext: e,
                     who: "host",
                 }
+            } else if host_sent {
+                Decision::Apply {
+                    ext: e,
+                    who: "guest, the host's",
+                }
             } else {
                 Decision::Off {
                     ext: e,
-                    why: "a guest gets the host's options through Live, not built yet",
+                    why: "a guest applies only what its host sent through Live",
                 }
             }
         }
@@ -119,7 +171,190 @@ pub fn in_game<M: Gm + ?Sized>(m: &M) -> Decision {
     let class = s
         .as_ref()
         .and_then(|s| m.u32(s.addr.wrapping_add(SESSION_NETWORK_CLASS)));
-    decide(e, s.as_ref().zip(class))
+    decide(e, s.as_ref().zip(class), from_host() == Some(b))
+}
+
+/// What a guest does with what it heard of its host's options, for a
+/// record whose key is `own`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Heard {
+    /// Write this block (all zero: the host's variant has none).
+    Take([u8; ext::LEN]),
+    /// Not yet: the host's session names another variant (its last game's).
+    Wait,
+    /// Nothing will come: why.
+    Nothing(String),
+}
+
+pub fn heard(h: &HostVariantExt, own: u64) -> Heard {
+    match h {
+        HostVariantExt::NotJoined => Heard::Nothing("no joined Live session".into()),
+        HostVariantExt::Unknown { session } => {
+            Heard::Nothing(format!("session {session} was never read from the server"))
+        }
+        HostVariantExt::Known { ext: None, .. } => Heard::Nothing(
+            "the host's build sends no variant options (an older build): the game's own rules"
+                .into(),
+        ),
+        HostVariantExt::Known { ext: Some(v), .. } => {
+            match (v.bytes(), u64::from_str_radix(&v.key, 16)) {
+                (Some(b), Ok(k)) if k == own => Heard::Take(b),
+                (Some(_), Ok(_)) => Heard::Wait,
+                _ => Heard::Nothing("the host's variant options are malformed".into()),
+            }
+        }
+    }
+}
+
+/// This machine's part at a multiplayer start, from the squad session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Part {
+    /// No networked game: nothing to send or take.
+    Alone,
+    /// System Link: extras off.
+    SystemLink,
+    LiveHost,
+    LiveGuest,
+}
+
+pub fn part(session: Option<(&Session, u32)>) -> Part {
+    match session {
+        Some((s, class)) if s.live() && s.peers > 1 => {
+            if class == SYSTEM_LINK {
+                Part::SystemLink
+            } else if s.is_host() {
+                Part::LiveHost
+            } else {
+                Part::LiveGuest
+            }
+        }
+        _ => Part::Alone,
+    }
+}
+
+/// Asks `ask` (the HLE, waiting at most its argument) until the host's
+/// options are for this variant, for at most `budget`.
+pub fn wait_for_host(
+    own: u64,
+    budget: Duration,
+    ask: impl Fn(Duration) -> HostVariantExt,
+) -> Heard {
+    let until = Instant::now() + budget;
+    loop {
+        let left = until.saturating_duration_since(Instant::now());
+        match heard(&ask(left.min(Duration::from_millis(500))), own) {
+            Heard::Wait if !left.is_zero() => std::thread::sleep(Duration::from_millis(100)),
+            Heard::Wait => {
+                return Heard::Nothing(format!(
+                    "the host's session named another variant for {} ms",
+                    budget.as_millis()
+                ));
+            }
+            h => return h,
+        }
+    }
+}
+
+/// The feature id (`features.variant-ext-live` switches it).
+pub const FEATURE: &str = "variant-ext-live";
+
+/// Sends a Live host's options to its guests and takes them on a guest,
+/// at each multiplayer start.
+pub struct Transport {
+    pub hle: Option<Arc<live_hle::Hle>>,
+}
+
+impl feature::Feature for Transport {
+    fn manifest(&self) -> Manifest {
+        Manifest::new(FEATURE, "Game variant options sent to Live guests")
+            .doc("docs/game/game-options.md")
+    }
+    fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        use feature::points::GAME_ACTIVATE;
+        let hle = self.hle.clone();
+        b.raw()
+            .before(&GAME_ACTIVATE, "the host's variant options", move |c| {
+                let rt = Arc::clone(c.ctx.runtime());
+                let options = c.cpu.eax;
+                let (mode, record, session) = {
+                    let mem = rt.memory();
+                    let mut record = [0u8; 0x130];
+                    let ok = Gm::rd(&*mem, options.wrapping_add(OPTIONS_VARIANT), &mut record);
+                    let s = coop_probe::read_session(&*mem);
+                    let class = s
+                        .as_ref()
+                        .and_then(|s| Gm::u32(&*mem, s.addr.wrapping_add(SESSION_NETWORK_CLASS)));
+                    (
+                        crate::skulls::options_mode(&*mem, options),
+                        ok.then_some(record),
+                        s.zip(class),
+                    )
+                };
+                set_from_host(None);
+                let (Some(crate::skulls_mp::MODE_MULTIPLAYER), Some(record)) = (mode, record)
+                else {
+                    return Ok(Flow::Continue);
+                };
+                let mut block = [0u8; ext::LEN];
+                block.copy_from_slice(&record[ext::AT..ext::AT + ext::LEN]);
+                let own = key(&record);
+                let mine = Ext::in_effect(&block);
+                match part(session.as_ref().map(|(s, c)| (s, *c))) {
+                    Part::Alone => {}
+                    Part::SystemLink => {
+                        if !mine.is_default() {
+                            eprintln!(
+                                "variant options: {} off: System Link plays the game's own rules",
+                                mine.summary()
+                            );
+                        }
+                    }
+                    Part::LiveHost => {
+                        if let Some(h) = &hle {
+                            // Every start, extras or not: a guest waits for this
+                            // game's key, so a stale one must not linger.
+                            h.set_session_variant_ext(Some(VariantExt::new(&block, own)));
+                            eprintln!(
+                                "variant options: sent to guests: {} (key {own:016x})",
+                                mine.summary()
+                            );
+                        }
+                    }
+                    Part::LiveGuest => {
+                        let Some(h) = &hle else {
+                            return Ok(Flow::Continue);
+                        };
+                        match wait_for_host(own, HOST_WAIT, |w| h.host_variant_ext(w)) {
+                            Heard::Take(b) => {
+                                if b != block {
+                                    let mut mem = rt.memory();
+                                    let at = options
+                                        .wrapping_add(OPTIONS_VARIANT)
+                                        .wrapping_add(ext::AT as u32);
+                                    if !Gm::wr(&mut *mem, at, &b) {
+                                        eprintln!(
+                                            "variant options: the host's could not be written"
+                                        );
+                                        return Ok(Flow::Continue);
+                                    }
+                                }
+                                set_from_host(Some(b));
+                                eprintln!(
+                                    "variant options: the host's for this game: {}",
+                                    Ext::in_effect(&b).summary()
+                                );
+                            }
+                            Heard::Wait => {}
+                            Heard::Nothing(why) => {
+                                eprintln!("variant options: none from the host: {why}")
+                            }
+                        }
+                    }
+                }
+                Ok(Flow::Continue)
+            });
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -178,27 +413,135 @@ mod tests {
     #[test]
     fn alone_or_hosting_applies_system_link_and_guests_dont() {
         let e = half();
-        assert_eq!(decide(Ext::default(), None), Decision::Retail);
-        assert_eq!(decide(e, None).gravity(), 0.5, "no session: local");
+        assert_eq!(decide(Ext::default(), None, false), Decision::Retail);
+        assert_eq!(decide(e, None, false).gravity(), 0.5, "no session: local");
         let solo = session(1, true);
-        assert_eq!(decide(e, Some((&solo, 2))).gravity(), 0.5, "one machine");
+        assert_eq!(
+            decide(e, Some((&solo, 2)), false).gravity(),
+            0.5,
+            "one machine"
+        );
         let host = session(3, true);
         assert!(matches!(
-            decide(e, Some((&host, 2))),
+            decide(e, Some((&host, 2)), false),
             Decision::Apply { who: "host", .. }
         ));
         assert!(matches!(
-            decide(e, Some((&host, SYSTEM_LINK))),
+            decide(e, Some((&host, SYSTEM_LINK)), false),
             Decision::Off { .. }
         ));
         let guest = session(3, false);
-        assert!(matches!(decide(e, Some((&guest, 2))), Decision::Off { .. }));
-        assert_eq!(decide(e, Some((&guest, 2))).gravity(), 1.0);
+        assert!(matches!(
+            decide(e, Some((&guest, 2)), false),
+            Decision::Off { .. }
+        ));
+        assert_eq!(decide(e, Some((&guest, 2)), false).gravity(), 1.0);
         assert!(
-            decide(e, Some((&host, SYSTEM_LINK)))
+            decide(e, Some((&host, SYSTEM_LINK)), false)
                 .line()
                 .contains("System Link")
         );
+    }
+
+    #[test]
+    fn a_live_guest_applies_only_what_its_host_sent() {
+        let e = half();
+        let guest = session(3, false);
+        assert!(matches!(
+            decide(e, Some((&guest, 2)), true),
+            Decision::Apply {
+                who: "guest, the host's",
+                ..
+            }
+        ));
+        // System Link never, whatever was heard.
+        assert!(matches!(
+            decide(e, Some((&guest, SYSTEM_LINK)), true),
+            Decision::Off { .. }
+        ));
+        assert_eq!(part(None), Part::Alone);
+        assert_eq!(part(Some((&session(1, true), 2))), Part::Alone);
+        assert_eq!(part(Some((&session(3, true), 2))), Part::LiveHost);
+        assert_eq!(part(Some((&guest, 2))), Part::LiveGuest);
+        assert_eq!(part(Some((&guest, SYSTEM_LINK))), Part::SystemLink);
+    }
+
+    #[test]
+    fn the_key_is_the_name_and_engine_only() {
+        let mut a = [0u8; 0x130];
+        a[4..8].copy_from_slice(&[b'S', 0, b'l', 0]);
+        a[0x44] = 2;
+        let mut b = a;
+        b[0x48] = 0xff; // a field past the engine
+        b[0x10c..0x130].fill(7); // the block itself
+        assert_eq!(key(&a), key(&b));
+        b[0x44] = 3;
+        assert_ne!(key(&a), key(&b));
+        let mut c = a;
+        c[6] = b'L';
+        assert_ne!(key(&a), key(&c));
+    }
+
+    #[test]
+    fn a_guest_waits_for_its_hosts_key_and_says_why_not() {
+        let block = half().encode();
+        let known = |k: u64| HostVariantExt::Known {
+            session: "s".into(),
+            ext: Some(VariantExt::new(&block, k)),
+            refreshed: true,
+        };
+        assert_eq!(heard(&known(7), 7), Heard::Take(block));
+        assert_eq!(heard(&known(8), 7), Heard::Wait);
+        let older = HostVariantExt::Known {
+            session: "s".into(),
+            ext: None,
+            refreshed: true,
+        };
+        assert!(matches!(heard(&older, 7), Heard::Nothing(w) if w.contains("older build")));
+        assert!(matches!(
+            heard(&HostVariantExt::NotJoined, 7),
+            Heard::Nothing(_)
+        ));
+        let bad = HostVariantExt::Known {
+            session: "s".into(),
+            ext: Some(VariantExt {
+                block: "00".into(),
+                key: "7".into(),
+            }),
+            refreshed: true,
+        };
+        assert!(matches!(heard(&bad, 7), Heard::Nothing(w) if w.contains("malformed")));
+        // The host publishes on its third answer: the guest waits for it.
+        let asked = std::sync::atomic::AtomicU32::new(0);
+        let got = wait_for_host(7, Duration::from_secs(5), |_| {
+            let n = asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            known(if n < 2 { 6 } else { 7 })
+        });
+        assert_eq!(got, Heard::Take(block));
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 3);
+        // A host stuck on another variant: the guest gives up.
+        let got = wait_for_host(7, Duration::from_millis(250), |_| known(6));
+        assert!(matches!(got, Heard::Nothing(w) if w.contains("another variant")));
+    }
+
+    #[test]
+    fn a_guest_with_its_hosts_block_applies_it_in_game() {
+        use coop_probe::layout as l;
+        use engine::points::{NETWORK_READY, SQUAD_SESSION};
+        const S: u32 = 0x9000_0000;
+        let mut f = game(crate::skulls_mp::MODE_MULTIPLAYER, &half());
+        f.wr(S, &vec![0; 0x7420]);
+        f.wr(NETWORK_READY.base, &[1]);
+        f.set_u32(SQUAD_SESSION.base, S);
+        f.set_u32(S + l::STATE, 5);
+        f.set_u32(S + l::PEERS, 2);
+        f.set_u32(S + l::HOST_PEER, 1);
+        f.set_u32(S + SESSION_NETWORK_CLASS, 2);
+        set_from_host(None);
+        assert_eq!(in_game(&f).gravity(), 1.0, "not from the host");
+        set_from_host(Some(half().encode()));
+        assert_eq!(in_game(&f).gravity(), 0.5);
+        set_from_host(None);
     }
 
     #[test]

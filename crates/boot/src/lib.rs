@@ -989,6 +989,11 @@ pub fn run_hosted_with_live(
         _telemetry.clone(),
     )
     .context("installing the multiplayer skulls")?;
+    // The game variant's options sent to Live guests at each multiplayer
+    // start (docs/game/game-options.md section 3).
+    features
+        .add(&variant_ext::Transport { hle: _live.clone() })
+        .map_err(|e| anyhow::anyhow!("variant options transport: {e}"))?;
     // Our own skulls (from 15): hidden in campaign levels, their effects
     // ours on the tick (docs/game/skulls.md "Our skulls"). The skull weapon's
     // tag comes from the loaded map's file, found through the VFS.

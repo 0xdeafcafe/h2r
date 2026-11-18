@@ -458,6 +458,7 @@ fn coop_session(skulls: Option<Vec<u8>>) -> live_proto::session::Session {
                 difficulty: 2,
             }),
             ping_ms: None,
+            variant_ext: None,
         },
         since: String::new(),
         last_activity: 0,

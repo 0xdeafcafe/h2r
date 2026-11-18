@@ -594,7 +594,10 @@ Create takes `addr` (IPv4 or null), `port`, `host_address` (36 XNADDR bytes),
 omitted on the wire; `friends`; `invite`) and `map_id` (64 hex digits,
 exactly which map: see "Custom maps" below; omitted when none) and `skulls`
 (the host's multiplayer skulls, ascending indices, only 4 and 6; omitted
-when none; docs/game/skulls.md "In multiplayer"). The ID's datatype bits must agree. Limits are 16 total slots,
+when none; docs/game/skulls.md "In multiplayer") and `variant_ext`
+(`{block, key}`: the game variant's extension block for the host's next
+game, 72 lowercase hex digits, and the variant's key, 16; omitted when the
+host sends none; docs/game/game-options.md section 3). The ID's datatype bits must agree. Limits are 16 total slots,
 64 attributes, 400 UTF-16 units per string, 800 bytes per blob, 256 bytes per
 metadata string and 32 open advertisements per host. Unknown input fields are
 rejected; addresses must be unicast IPv4 and ports 1..65529.
@@ -612,9 +615,10 @@ fields.
 Only the authenticated host may append events, signed with its registered key:
 
 - `SessionUpdated`: optional slots, attributes (full replacement), name, map,
-  visibility, `map_id` or `skulls` (absent keeps the current one; `skulls: []`
-  turns them all off). A server from before `skulls` refuses an update that
-  has it, so the HLE sends it only when the host's set changed.
+  visibility, `map_id`, `skulls` or `variant_ext` (absent keeps the current
+  one; `skulls: []` turns them all off; a `variant_ext` replaces the last).
+  A server from before `skulls` refuses an update that has it, so the HLE
+  sends it only when the host's set changed; the same for `variant_ext`.
 - `PlayerJoined`: `{xuid, slot?}`; the account must exist and not be in the
   roster, which is bounded to 16. Slot is an optional display string.
 - `PlayerLeft`: `{xuid}`; the account must be in the roster.

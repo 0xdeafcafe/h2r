@@ -137,6 +137,23 @@ pub enum HostSkulls {
     },
 }
 
+/// What a guest knows of its host's variant options
+/// ([`Hle::host_variant_ext`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostVariantExt {
+    /// No session joined.
+    NotJoined,
+    /// Joined `session`, whose advertisement was never read.
+    Unknown { session: String },
+    /// Joined `session`, whose host advertised `ext` (None: a host that
+    /// sends none, an older build); `refreshed` when read just now.
+    Known {
+        session: String,
+        ext: Option<live_proto::session::VariantExt>,
+        refreshed: bool,
+    },
+}
+
 /// A friend, as the co-op screen's friends list shows them
 /// ([`Hle::friends`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -408,6 +425,28 @@ impl Hle {
                 refreshed,
             },
         }
+    }
+    /// What the host of the session this console joined advertised as its
+    /// variant options for the next game: [`Hle::joined`]'s answer.
+    pub fn host_variant_ext(&self, wait: std::time::Duration) -> HostVariantExt {
+        match self.joined(wait) {
+            Joined::NotJoined => HostVariantExt::NotJoined,
+            Joined::Unknown { session } => HostVariantExt::Unknown { session },
+            Joined::Known { session, refreshed } => HostVariantExt::Known {
+                session: session.session_id.clone(),
+                ext: session.advertisement.variant_ext.clone(),
+                refreshed,
+            },
+        }
+    }
+    /// The host's variant options for the game it starts (docs/game/
+    /// game-options.md section 3): advertisements carry them from now, and
+    /// open ones are updated at once. No guest memory access.
+    pub fn set_session_variant_ext(&self, ext: Option<live_proto::session::VariantExt>) {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_session_variant_ext(ext)
     }
     /// Arms (Some) or leaves (None) a co-op campaign on this console's lobby
     /// (docs/live/live-coop.md, "Co-op over Live"): its advertisements become

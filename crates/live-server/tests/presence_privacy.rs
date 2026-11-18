@@ -41,6 +41,7 @@ fn coop(visibility: session::Visibility) -> NewSession {
             difficulty: 2,
         }),
         ping_ms: None,
+        variant_ext: None,
     }
 }
 
