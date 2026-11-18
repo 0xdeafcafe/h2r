@@ -274,12 +274,23 @@ pub const TURRET_ROLE: &[(&str, u32)] = &[
     ("unknown_2e0", 0x3f80_0000),
 ];
 
-/// [`TURRET_ROLE`] for each seat (`vehi +0x1c8` elements).
+/// [`TURRET_ROLE`] for each seat (`vehi +0x1c8` elements), over the turret
+/// vehicles' driver seats ([`SEAT_DRIVER`], the seat a turret's rider
+/// works it from; 8 on the disc): every boarding and passenger seat left
+/// out, the entry tests ([`SEAT_ENTRY`]: 1, pi and 70 degrees, 2) have a
+/// majority, and none of them may be zero. The flags have none; a seat's
+/// are Halo 1's ([`seat_flags`]).
 pub const TURRET_SEAT_ROLE: &[(&str, u32)] = &[
     ("unknown_24", 0x3de3_8e39),
     ("unknown_28", 0x3de3_8e39),
+    ("unknown_2c", 0x3dcc_cccd),
+    ("unknown_3c", 0xffff_0005),
     ("unknown_58", 0x3f80_0000),
     ("unknown_5c", 0x3f80_0000),
+    ("unknown_98", 0x3f80_0000),
+    ("unknown_9c", 0x4049_0fdb),
+    ("unknown_a0", 0x3f9c_61aa),
+    ("unknown_a4", 0x4000_0000),
     ("unknown_ac", 0xffff_ffff),
 ];
 
@@ -295,6 +306,12 @@ pub const TURRET_PHYSICS_ROLE: &[(&str, u32)] = &[
 
 /// `vehi +0x1c8`, the seats block.
 pub const VEHI_SEATS: &str = "block_1c8";
+/// A seat's entry tests: `0x000c9040` admits a rider only within the
+/// distance at `+0x98` and the angles at `+0x9c` and `+0xa0`, and within
+/// the distance at `+0xa4` of the seat's marker; zero admits no one.
+pub const SEAT_ENTRY: &[&str] = &["unknown_98", "unknown_9c", "unknown_a0", "unknown_a4"];
+/// A seat's flags ([`SEAT_DRIVER`]), `+0`.
+pub const SEAT_FLAGS: &str = "unknown_0";
 /// `vehi +0x2f8`, the physics block (one element on every retail vehicle).
 pub const VEHI_PHYSICS: &str = "block_2f8";
 
@@ -360,8 +377,68 @@ pub const H1_VEHICLE_TYPE: usize = 0x2f4;
 /// the vehicle type's role ([`VehicleRole::flags_high`]).
 pub const H1_VEHICLE_FLAGS: usize = 0x2f0;
 
+/// Seat flags (`vehi +0x1c8` element `+0`, the word the definition leaves
+/// unknown) the engine's boarding code reads. The enter-seat search
+/// (`0x000c8bb0`) skips a seat with [`SEAT_NOT_PLAYER`] for a unit with a
+/// player (`+0x13c` set) and one with [`SEAT_NOT_NON_PLAYER`] for any other
+/// unit, and a seat with [`SEAT_NEEDS_DRIVER`] while the vehicle has no
+/// driver (`+0x248`); `0x000c92c0` treats a seat with [`SEAT_BOARDING`] as
+/// a boarding seat, entered only to take the seat its `+0x3e` names from
+/// its rider. V: on 05a every retail boarding seat (`warthog_b_d`,
+/// `ghost_b_l`, ...) holds [`SEAT_BOARDING`] and no other seat does; every
+/// driver seat (`warthog_d`, `ghost_d`, `c_turret_ap_d`) holds
+/// [`SEAT_DRIVER`], and the touch layout reads the same bit for the
+/// driver (`boot::touch_glue`).
+pub const SEAT_DRIVER: u32 = 1 << 2;
+/// The gunner seat (V: Halo 1's `W-gunner` and every retail turret seat).
+pub const SEAT_GUNNER: u32 = 1 << 3;
+/// See [`SEAT_DRIVER`].
+pub const SEAT_NEEDS_DRIVER: u32 = 1 << 9;
+/// See [`SEAT_DRIVER`].
+pub const SEAT_BOARDING: u32 = 1 << 11;
+/// See [`SEAT_DRIVER`].
+pub const SEAT_NOT_PLAYER: u32 = 1 << 16;
+/// See [`SEAT_DRIVER`].
+pub const SEAT_NOT_NON_PLAYER: u32 = 1 << 17;
+/// The seat flag bits Halo 1 holds (its seat `+0`), which a rebuilt seat
+/// takes from Halo 1: Halo 1 sets none above bit 10, and on the eight
+/// pairs of `tests/vehicle_rebuild_disc.rs` its bits agree with the Halo 2
+/// counterpart's seat of the same label on most seats and on the driver
+/// bit on every one.
+pub const H1_SEAT_FLAGS: u32 = 0x7ff;
+
+/// What a seat is to its rider, by its flags: the role words a rebuilt
+/// seat takes are those of the base's seats of the same kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SeatKind {
+    Driver = 0,
+    Gunner = 1,
+    Passenger = 2,
+}
+
+impl SeatKind {
+    pub fn of(flags: u32) -> Self {
+        if flags & SEAT_DRIVER != 0 {
+            Self::Driver
+        } else if flags & SEAT_GUNNER != 0 {
+            Self::Gunner
+        } else {
+            Self::Passenger
+        }
+    }
+}
+
+/// A rebuilt seat's flags: Halo 1's bits ([`H1_SEAT_FLAGS`]) over the
+/// rest of the role's word, less the bits that would keep a rider out
+/// (Halo 1 seats are neither boarding seats nor closed to players or
+/// non-players).
+pub fn seat_flags(h1_flags: u32, role: u32) -> u32 {
+    let closed = H1_SEAT_FLAGS | SEAT_BOARDING | SEAT_NOT_PLAYER | SEAT_NOT_NON_PLAYER;
+    (role & !closed) | (h1_flags & H1_SEAT_FLAGS)
+}
+
 /// A seat as the rebuilt vehicle writes it: Halo 2's names for Halo 1's
-/// seat ([`seat_names`]).
+/// seat ([`seat_names`]) and Halo 1's flags.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SeatNames {
     /// `label`: the rider's animation mode, the name the converted biped
@@ -379,6 +456,8 @@ pub struct SeatNames {
     pub enter_marker: String,
     /// `string_60`, the camera marker, empty for none.
     pub camera_marker: String,
+    /// Halo 1's seat flags ([`seat_flags`]).
+    pub flags: u32,
 }
 
 /// Halo 2's names for a Halo 1 seat on a model with `markers` (Halo 1's
@@ -403,6 +482,7 @@ pub fn seat_names(seat: &h1::Seat, markers: &[String]) -> SeatNames {
             String::new()
         },
         camera_marker: found(&seat.camera_marker),
+        flags: seat.flags,
     }
 }
 
@@ -415,8 +495,11 @@ pub struct VehicleRole {
     /// The root's words and its plain-word blocks (the physics element,
     /// `block_2f8`; `unit.block_1a8`, `unit.block_1b8`).
     pub words: RoleWords,
-    /// Each seat's words: the majority over every seat of every member.
-    pub seat: Vec<(String, u32)>,
+    /// A seat's words by its kind ([`SeatKind`] order): the majority over
+    /// the members' seats of that kind, boarding seats left out (a rebuilt
+    /// seat is one a unit rides, [`SEAT_BOARDING`]); a kind no member has
+    /// takes the majority over all their other seats.
+    pub seats: [Vec<(String, u32)>; 3],
     /// The high half of `vehicle_flags` most members hold.
     pub flags_high: u32,
     /// The words of each friction (wheel and tread) point, `+0x2f0`: the
@@ -518,7 +601,8 @@ pub fn vehicle_role(base: &crate::base::Base, vehicle_type: u16) -> Result<Optio
     let words = role_over(base, d, &members)?;
     let mut sspans = Vec::new();
     word_spans(seat_def, "", 0, &mut sspans);
-    let mut seats = Tally::new();
+    let mut seats: [Tally; 3] = Default::default();
+    let mut ridden = Tally::new();
     let mut flags = std::collections::BTreeMap::<u32, usize>::new();
     for (_, bytes) in &members {
         *flags
@@ -526,8 +610,13 @@ pub fn vehicle_role(base: &crate::base::Base, vehicle_type: u16) -> Result<Optio
             .or_default() += 1;
         let mut i = 0;
         while let Some(x) = base.element(bytes, seat_at, seat_def.size as usize, i)? {
-            tally_words(&x, &sspans, &mut seats);
             i += 1;
+            let f = crate::base::u32_at(&x, 0);
+            if f & SEAT_BOARDING != 0 {
+                continue;
+            }
+            tally_words(&x, &sspans, &mut seats[SeatKind::of(f) as usize]);
+            tally_words(&x, &sspans, &mut ridden);
         }
     }
     let flags_high = flags
@@ -580,7 +669,7 @@ pub fn vehicle_role(base: &crate::base::Base, vehicle_type: u16) -> Result<Optio
     }
     Ok(Some(VehicleRole {
         words,
-        seat: majority(&seats),
+        seats: seats.map(|t| majority(if t.is_empty() { &ridden } else { &t })),
         flags_high,
         friction: all_elements(base, &members, fat, fdef)?,
         hover: all_elements(base, &members, hat, hdef)?,
@@ -769,9 +858,18 @@ pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
     for s in v.seats {
         let mut e = defs::default_record(seat_def);
         match v.role {
-            Some(x) => role_words(&mut e, &x.seat)?,
+            Some(x) => role_words(&mut e, &x.seats[SeatKind::of(s.flags) as usize])?,
             None => role(&mut e, TURRET_SEAT_ROLE)?,
         }
+        let role_flags = match e.get(SEAT_FLAGS) {
+            Some(Val::Bytes(b)) if b.len() == 4 => u32::from_le_bytes(b[..4].try_into().expect("4")),
+            _ => 0,
+        };
+        set(
+            &mut e,
+            SEAT_FLAGS,
+            Val::Bytes(seat_flags(s.flags, role_flags).to_le_bytes().to_vec()),
+        )?;
         set(&mut e, "label", Val::text(&s.label))?;
         // V: Halo 2's seats hold the rider's marker at +8 (`driver`,
         // `gunner`), the entry marker at +0xc (`driver_enter`) and the
