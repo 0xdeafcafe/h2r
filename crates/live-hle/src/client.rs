@@ -65,6 +65,7 @@ pub(crate) enum Reply {
     Matches(Vec<live_proto::session::Session>),
     Social(SocialSnapshot),
     InviteAccepted(live_proto::mailbox::Invite),
+    Ranks(Vec<live_proto::rank::LeaderboardRow>),
 }
 #[derive(Clone)]
 pub(crate) struct Pending(Arc<Mutex<Option<Result<Reply, u32>>>>);
@@ -162,12 +163,28 @@ pub(crate) struct SocialSnapshot {
 enum Work {
     Logon(Vec<Account>),
     Change(Vec<Account>),
-    Presence { user: u64, value: Presence },
+    Presence {
+        user: u64,
+        value: Presence,
+    },
     File(&'static str, u32),
-    Teams { user: u64, request: TeamRequest },
+    Teams {
+        user: u64,
+        request: TeamRequest,
+    },
     Match(MatchRequest),
-    Social { user: u64, request: SocialRequest },
-    Report { user: u64, request: ReportRequest },
+    Social {
+        user: u64,
+        request: SocialRequest,
+    },
+    Report {
+        user: u64,
+        request: ReportRequest,
+    },
+    Ranks {
+        leaderboards: Vec<u32>,
+        xuids: Vec<u64>,
+    },
     Wake,
 }
 struct Command {
@@ -302,6 +319,22 @@ impl Service {
             },
         };
         self.submit(s, Work::Report { user, request })
+    }
+    /// The standings the game's stats read asks for: every player on every
+    /// leaderboard (docs/live/live-matchmaking.md §8.1).
+    pub fn ranks(
+        &self,
+        s: &Session,
+        leaderboards: Vec<u32>,
+        xuids: Vec<u64>,
+    ) -> Result<Pending, u32> {
+        self.submit(
+            s,
+            Work::Ranks {
+                leaderboards,
+                xuids,
+            },
+        )
     }
     pub fn cancel(&self, s: &Session) {
         s.cancel();
@@ -1172,6 +1205,31 @@ impl Worker {
                 let user = active.users.get(user).ok_or(NO_USER)?;
                 self.teams_request(user, request.clone())
                     .map(Reply::Teams)
+                    .map_err(Error::result)
+            }
+            Work::Ranks {
+                leaderboards,
+                xuids,
+            } => {
+                let active = self
+                    .active
+                    .as_ref()
+                    .filter(|a| a.session.id == c.session.id)
+                    .ok_or(NO_SESSION)?;
+                let user = active.users.values().next().ok_or(NO_USER)?;
+                let boards: Vec<String> = leaderboards.iter().map(u32::to_string).collect();
+                let xuids: Vec<String> = xuids.iter().map(|x| Xuid(*x).to_string()).collect();
+                let path = format!(
+                    "/rank-stats?leaderboards={}&xuids={}",
+                    boards.join(","),
+                    xuids.join(","),
+                );
+                #[derive(serde::Deserialize)]
+                struct Rows {
+                    items: Vec<live_proto::rank::LeaderboardRow>,
+                }
+                self.team_json::<Rows>(user, &path)
+                    .map(|r| Reply::Ranks(r.items))
                     .map_err(Error::result)
             }
             Work::Wake => Ok(Reply::Done),

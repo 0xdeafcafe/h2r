@@ -33,6 +33,11 @@ pub type MapLocator = Box<dyn Fn(&str) -> Option<MapFile> + Send + Sync>;
 /// with `boot::map_override::map_id`.
 pub type MapIdLocator = Box<dyn Fn(&str) -> Option<live_proto::maps::MapId> + Send + Sync>;
 
+/// The playlist of the game starting, asked at each multiplayer start; the
+/// boot answers it with `live_hle::Hle::playlist`. It runs with guest
+/// memory held, so it must not wait.
+pub type PlaylistLocator = Box<dyn Fn() -> Option<crate::session::Playlist> + Send + Sync>;
+
 const BIPED: [u8; 4] = *b"bipd";
 const WEAPON: [u8; 4] = *b"weap";
 const VEHICLE: [u8; 4] = *b"vehi";

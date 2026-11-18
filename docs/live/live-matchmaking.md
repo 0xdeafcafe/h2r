@@ -7,8 +7,9 @@ has Live working in the game (2026-11-17).
 Search returns real sessions, filtered by the decoded procedure-1
 parameters: playlist, the party's level window and room for the party,
 closest mean level first (§7). The game widens its own window and hosts
-when nothing is found, so OptiMatch needs no server matcher. Ranked
-arbitration and NAT traversal remain design.
+when nothing is found, so OptiMatch needs no server matcher. Ranked games
+are ranked by the server from the games log (§8); checking arbitration
+reports against it, and NAT traversal, remain design.
 Current contracts are in [live-api.md](live-api.md#sessions) and
 [live.md](live.md#client-hle-game-invitations-and-joining). The sections below
 retain the static call trace and phased design; implemented details there defer
@@ -169,9 +170,11 @@ procedures, report data). Stats go out with `XOnlineStatWrite`
 leaderboard reads use `XOnlineStatRead` and the query service above. The
 compiled-in matchmaking attribute names at `0x0046ddc0` (`games-played`,
 `games-quit`, ...) are the per-player stats schema the hopper file
-overrides ([live-motd.md](live-motd.md) §1.2). All of these are stops
-today (stat reads answer `STAT_USER_NOT_FOUND`, query searches
-`QUERY_DATASET_NOT_FOUND`); none is needed for the first phases.
+overrides ([live-motd.md](live-motd.md) §1.2). Stat writes are
+accepted and kept locally; stat reads of a playlist's leaderboard get
+the player's rank from the server (§8.3), other stats read as absent;
+arbitration is accepted and kept locally (§8.3); query searches answer
+`QUERY_DATASET_NOT_FOUND`.
 
 ### 1.5 Known versus to confirm
 
@@ -814,9 +817,43 @@ tables. Every player starts each ranked playlist at level 1.
   ([live-api.md](live-api.md#ranks)). The stats site shows them at
   `/stats/ranks/{playlist}` and `/stats/players/{tag}/ranks`.
 
-Still to do (next slice): serve the standings to the game through
-`XOnlineStatRead` (leaderboard = playlist id, stats 1..6) so the lobby
-shows them and they feed the search window (§7); accept and check
-`XOnlineArbitrationRegister`/`Report` against the games log; and set
-`playlist_id` on games from the session the console hosted or joined
-(telemetry has the field; nothing sets it yet).
+### 8.3 The game's side: stat reads, playlist ids, arbitration
+
+**Stat reads.** `XOnlineStatRead` asks the server when a query names a
+leaderboard 1..100 (a possible playlist id) and any of stats 1..6:
+`GET /v1/rank-stats` ([live-api.md](live-api.md#ranks)) with every such
+leaderboard and player, through the Live worker, so the call never
+waits. The task reports 0 until the answer comes;
+`XOnlineStatReadGetResult` answers `RESULTS_UNAVAILABLE` until then.
+Rank stats come back as LONGs from `rank::live_stat`: 1 experience, 2
+the level and 3 the highest level, both stored from 0 as the game does,
+and 4..6 (counters not decoded) as 0. Everything else, and every stat
+of a read the server failed, is NONE, which the game reads as zero:
+level 1, as before reads reached the server.
+
+**Playlist ids on games.** At each multiplayer start telemetry asks the
+boot's playlist locator, which asks `Hle::playlist`: the hopper index
+(session attribute 1) of this console's own advertisement, else of the
+session it joined, as last read. Neither waits nor takes guest memory.
+A game with one is `kind: "matchmaking"` with that `playlist_id`; the
+server names the playlist from its hopper file. The rules in §8.2 then
+rank it.
+
+**Arbitration.** Read from the retail call sites, not yet checked
+against a running ranked game:
+
+| entry | arguments | what we do |
+|---|---|---|
+| `CreateRoundID` `0x003adc4c` | out pointer | eight random bytes, nonzero |
+| `Register` `0x003ae32b` | pointer to 16 bytes (session id, round id), a duration-like word, flags (`0xc` or `0x1c`), event (0), task out | accepted; the task succeeds at once |
+| `Report` `0x003ae36a` | the same 16 bytes, count (≤ 1000), `0x88`-byte stat procedure records (u16 id `0x8001`/`0x8003`/`0x8007`, a pointer at `+0x18`), 0, flags (bits 0 and 1), event (0), task out | accepted; the procedure ids are kept, their data is not decoded; the task succeeds at once |
+| `ExtendRound` `0x003ae33a` | | still a stop |
+
+Registrations and reports are kept in the HLE (`Hle::arbitration`, the
+last 256), owned, with no guest pointers. Nothing goes to the server
+and nothing checks them yet: the server's ranking does not depend on
+them. Checking a report against the games log needs the round linked
+to a server game id, and `Hle::set_game_id` has no caller in the boot
+yet (the server assigns the id in the telemetry sink's thread). That
+link, decoding the procedure records and the server-side check are the
+next slice.

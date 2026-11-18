@@ -209,7 +209,7 @@ game it is; all five fields are optional and old senders leave them out:
 | field | values | rules |
 |---|---|---|
 | `kind` | `custom`, `matchmaking`, `campaign` | `campaign` exactly when `mode` is; absent means `campaign` for campaign mode, else `custom` |
-| `playlist`, `playlist_id` | hopper name (1-32 characters, no control characters), id `[A-Za-z0-9_-]{1,64}` | matchmaking only |
+| `playlist`, `playlist_id` | hopper name (1-32 characters, no control characters), id `[A-Za-z0-9_-]{1,64}` | matchmaking only; with no `playlist`, the server names it from the served hopper file when `playlist_id` is a descriptor index there |
 | `difficulty` | `easy`, `normal`, `heroic`, `legendary` | campaign only |
 | `online` | boolean | campaign only: co-op partners on other machines (Live co-op, not sent yet); split-screen co-op is more than one player without it |
 
@@ -1102,6 +1102,9 @@ may write those streams. A standing is
 | `GET /v1/accounts/{who}/ranks` | `{xuid, ranks: {playlist: standing}, position}`; `who` is a gamertag or XUID; 404 if unknown |
 | `GET /v1/accounts/{who}/ranks/{playlist}` | `{xuid, playlist, standing, history, position}`: `history` is the last 100 changes, newest first, `{game_id, at, position, before, after}` |
 | `GET /v1/ranks/{playlist}?limit=` | `{playlist, items, position}`: `{xuid, gamertag, ...standing}`, by level then experience; `limit` 1..1000, default 100 |
+| `GET /v1/rank-stats?leaderboards=&xuids=` | `{items, position}`: the game's stats read. `leaderboards` are playlist ids (a descriptor's `+0x08`), `xuids` players, both comma-separated, at most 32 and 64 (400 beyond). One `{xuid, leaderboard, playlist, standing}` per player per leaderboard that is a ranked playlist in the served hopper file; a player with no games there is level 1; other leaderboards have no rows |
 
 `playlist` is the hopper descriptor index, as sessions and games name it.
+A leaderboard is the playlist id the hopper file gives that descriptor,
+which is what the game's `XOnlineStatRead` names.
 

@@ -340,10 +340,13 @@ impl Live {
     pub async fn start_game(
         &self,
         bearer: Option<&str>,
-        new: NewGame,
+        mut new: NewGame,
     ) -> Result<GameCreated, ApiError> {
         let author = self.authenticate(bearer, lxm::GAMES_WRITE)?;
         self.rate_limit(&author, lxm::GAMES_WRITE)?;
+        if new.playlist.is_none() {
+            new.playlist = self.playlist_name(new.playlist_id.as_deref()).await;
+        }
         game::validate_new(&new).map_err(invalid)?;
         let game_id = random_game_id();
         let started = GameStarted {

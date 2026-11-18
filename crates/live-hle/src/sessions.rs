@@ -353,6 +353,12 @@ impl Sessions {
     pub fn current_id(&self) -> Option<[u8; 8]> {
         self.current.filter(|id| self.records.contains_key(id))
     }
+    /// The playlist (hopper index) of the session this console advertised
+    /// last, while it still does; `None` for a custom game's.
+    pub fn current_playlist(&self) -> Option<u32> {
+        let id = self.current_id()?;
+        live_proto::optimatch::playlist(&self.records.get(&id)?.session.attributes)
+    }
     fn advertised(&mut self, id: [u8; 8]) {
         self.current = Some(id);
         self.advertised

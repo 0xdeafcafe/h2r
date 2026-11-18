@@ -3106,3 +3106,51 @@ fn feedback_reaches_the_admins_as_player_reports() {
             .all(|e| e.kind != live_proto::reports::PLAYER_REPORTED)
     );
 }
+#[test]
+fn stat_reads_of_a_ranked_playlist_answer_with_the_players_rank() {
+    // Leaderboard 1 is the default hopper file's Rumble Pit (ranked);
+    // 99 is no playlist, so it has no rows.
+    const SPECS: u32 = DATA + 0x10000;
+    const VALUES: u32 = DATA + 0x11000;
+    let server = Server::new();
+    let account = server.account("Ranked Player");
+    let mut w = World::new(&server.embedded.url, &[&account]);
+    w.logon();
+    let spec = |w: &World, i: u32, board: u32, ids: &[u16]| {
+        let p = SPECS + i * 24;
+        w.put(p, &[0; 24]);
+        w.put(p, &account.xuid.0.to_le_bytes());
+        w.word(p + 12, board);
+        w.word(p + 16, ids.len() as u32);
+        w.word(p + 20, VALUES + i * 0x100);
+        for (j, id) in ids.iter().enumerate() {
+            let s = VALUES + i * 0x100 + j as u32 * 16;
+            w.put(s, &[0xcc; 16]);
+            w.put(s, &id.to_le_bytes());
+        }
+    };
+    spec(&w, 0, 1, &[1, 2, 3, 6, 9]);
+    spec(&w, 1, 99, &[2]);
+    assert_eq!(w.call("XOnlineStatRead", &[2, SPECS, 0, OUT]), 0);
+    let task = w.u32(OUT);
+    assert_eq!(w.wait(task), TASK_SUCCESS);
+    assert_eq!(
+        w.call("XOnlineStatReadGetResult", &[task, 2, SPECS, 0, 0]),
+        0
+    );
+    let stat = |w: &World, i: u32, j: u32| {
+        let b = w.bytes(VALUES + i * 0x100 + j * 16 + 4, 8);
+        (
+            u32::from_le_bytes(b[..4].try_into().unwrap()),
+            u32::from_le_bytes(b[4..].try_into().unwrap()),
+        )
+    };
+    // A player with no ranked games: experience 0, level 1 and highest 1
+    // (stored from 0), all LONGs; stat 9 is not a rank stat.
+    for j in 0..4 {
+        assert_eq!(stat(&w, 0, j), (1, 0), "stat {j}");
+    }
+    assert_eq!(stat(&w, 0, 4), (0, 0));
+    assert_eq!(stat(&w, 1, 0), (0, 0));
+    assert_eq!(w.call("XOnlineTaskClose", &[task]), 0);
+}
