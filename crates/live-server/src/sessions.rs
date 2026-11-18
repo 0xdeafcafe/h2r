@@ -452,14 +452,70 @@ fn mark_redacted(w: &mut live_proto::WireEvent) {
     w.jws_index = None;
 }
 
-/// A log event as `viewer` reads it: None when hidden ([`event_shows_to`]).
-/// Anyone but the operator gets it without network addresses
+/// Whether an event of a private kind shows to `viewer`, from its data:
+/// game invitations to their sender and recipient, friend events to the
+/// two accounts and the friends of either, content reports to admins only.
+/// Anonymous readers see none of them, so a public read stays safe to
+/// cache. Admins and the operator see everything.
+pub fn kind_shows_to(s: &State, e: &RecordedEvent, viewer: Viewer) -> bool {
+    use live_proto::{Xuid, mailbox, types};
+    if viewer.is_admin() {
+        return true;
+    }
+    let b = &e.body;
+    let xuid = |k: &str| b.data[k].as_str().and_then(|v| Xuid::parse(v).ok());
+    match b.kind.as_str() {
+        live_proto::maps::CONTENT_REPORTED => false,
+        mailbox::SENT | mailbox::ANSWERED => {
+            let Viewer::Account(me) = viewer else {
+                return false;
+            };
+            let Some(to) = b
+                .stream
+                .strip_prefix("mailbox-")
+                .and_then(|v| Xuid::parse(v).ok())
+            else {
+                return false;
+            };
+            let from = if b.kind == mailbox::SENT {
+                xuid("from")
+            } else {
+                b.data["invite_id"]
+                    .as_u64()
+                    .and_then(|id| s.mailboxes.get(&to)?.get(&id))
+                    .map(|i| i.from)
+            };
+            me == to || from == Some(me)
+        }
+        types::FRIEND_REQUESTED
+        | types::FRIEND_ACCEPTED
+        | types::FRIEND_DECLINED
+        | types::FRIEND_REMOVED => {
+            let Viewer::Account(me) = viewer else {
+                return false;
+            };
+            let (a, c) = if b.kind == types::FRIEND_REMOVED {
+                (xuid("by"), xuid("friend"))
+            } else {
+                (xuid("from"), xuid("to"))
+            };
+            [a, c]
+                .into_iter()
+                .flatten()
+                .any(|x| x == me || s.is_friends(x, me))
+        }
+        _ => true,
+    }
+}
+
+/// A log event as `viewer` reads it: None when hidden ([`event_shows_to`],
+/// [`kind_shows_to`]). Anyone but the operator gets it without network addresses
 /// ([`strip_addresses`]); a presence event whose details the reader may not
 /// see has them replaced ([`presence_for`]). Either way a changed event is
 /// marked `redacted: true` with its signature withheld (`jws` empty: it
 /// signed the stored data).
 pub fn wire_for(s: &State, e: &RecordedEvent, viewer: Viewer) -> Option<live_proto::WireEvent> {
-    if !event_shows_to(s, &e.body.stream, viewer) {
+    if !event_shows_to(s, &e.body.stream, viewer) || !kind_shows_to(s, e, viewer) {
         return None;
     }
     let mut w = e.to_wire();
