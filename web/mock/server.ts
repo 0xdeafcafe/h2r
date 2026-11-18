@@ -4,6 +4,9 @@
 // H2_MOCK_STATIC=<dir> also serves a built app (SPA fallback to index.html).
 // H2_MOCK_GAME_ART=1 serves a fake /art/game manifest (see mock/gameart.ts);
 // without it /art/game has no pictures, like a server with no game art.
+// H2_MOCK_GAME_ART_DIR=<dir> serves a real extraction (`h2 live assets
+// extract --out <dir>`, from your own disc) at /art/game instead, as is,
+// for looking at the pages with it; nothing of it is kept.
 // The mock's own map geometry (mock/arena.ts: map.glb, views.json and view
 // pictures for the maps that have an arena) is served under /art/game either
 // way, in a manifest of its own when there is no game art;
@@ -44,6 +47,7 @@ import { Content, customFor } from "./content";
 import { Reports } from "./reports";
 import { Bans } from "./bans";
 import { Mutes } from "./mutes";
+import { CloudSaves } from "./cloudsaves";
 import { hasAllSkulls, parseSkullsParam } from "../src/lib/skulls";
 import { StatsFold, archive } from "./stats";
 
@@ -128,8 +132,11 @@ const reports = new Reports(world, admin);
 const bans = new Bans(world, admin, reports);
 // Mute lists (mock/mutes.ts).
 const mutes = new Mutes(world, admin);
+// Cloud saves (mock/cloudsaves.ts).
+const cloudSaves = new CloudSaves(world);
 if (admin.everyoneAdmin) console.log("[mock] H2_MOCK_ADMIN: accounts signed up in the browser are admins");
 const staticDir = process.env.H2_MOCK_STATIC;
+const artDir = process.env.H2_MOCK_GAME_ART_DIR || null;
 const art = process.env.H2_MOCK_GAME_ART && process.env.H2_MOCK_GAME_ART !== "0" ? mockGameArt(new URL("../public/art", import.meta.url).pathname) : null;
 const indoor = !!process.env.H2_MOCK_INDOOR && process.env.H2_MOCK_INDOOR !== "0";
 const geometry = process.env.H2_MOCK_MAP_GEOMETRY === "0" ? null : mockMapGeometry({ indoor, furniture });
@@ -232,6 +239,8 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
   if (ban) return json(ban.body, ban.status);
   const mut = mutes.handle(req, u);
   if (mut) return json(mut.body, mut.status);
+  const cs = cloudSaves.handle(req, u);
+  if (cs) return cs instanceof Response ? cs : json(cs.body, cs.status);
   const con = await content.handle(req, u, (bytes) => new Response(bytes as Uint8Array<ArrayBuffer>, { headers: { "content-type": "image/png", "cache-control": "max-age=3600", ...CORS } }));
   if (con) return con instanceof Response ? con : json(con.body, con.status);
 
@@ -382,6 +391,13 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
 
   if (path.startsWith("/art/game/")) {
     const name = decodeURIComponent(path.slice("/art/game/".length));
+    if (artDir) {
+      const file = Bun.file(`${artDir}/${name}`);
+      const safe = name.split("/").every((seg) => seg && seg !== "." && seg !== ".." && !seg.includes("\\"));
+      return safe && (await file.exists())
+        ? new Response(file, { headers: { "cache-control": "no-cache", ...CORS } })
+        : err(404, "not_found", "no game art");
+    }
     if (name === "manifest.json" && (art || geometry || models)) {
       const base = art?.manifest ?? { version: 1, source: "mock-geometry", images: {} };
       return json({ ...base, ...(geometry ? { maps: geometry.maps } : {}), ...(models ? { models: models.models } : {}) });

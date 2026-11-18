@@ -11,6 +11,7 @@
 pub mod bitmap;
 pub mod png;
 pub mod resource;
+pub mod xpr;
 
 pub use bitmap::{DecodedImage, Level, d3d_format, decode_image, texture_desc};
 pub use resource::{Region, ResourceFiles};

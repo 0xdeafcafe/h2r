@@ -1161,6 +1161,8 @@ to the manifest. Keys (a client looks a key up in
 | `weapon/<0..18>` | weapon silhouettes (small, single-mask: blue channel with matching alpha); aliases `weapon/energy_sword`, `plasma_pistol`, `plasma_rifle`, `sniper_rifle`, `rocket_launcher`, `smg`, `beam_rifle`, `sentinel_beam` (by eye; the others have only an index) |
 | `medal/<0..31>` | medals, full colour; aliases `medal/double_kill`, `triple_kill`, `killtacular`, `kill_frenzy`, `killtrocity`, `killimanjaro`, `killing_spree`, `running_riot`, `rampage`, `berserker`, `overkill`, `sniper_kill`, `splatter`, `bone_cracker`, `assassin`, `stick_it`, `flag_carrier_kill`, `bomb_carrier_kill`, `flag_returned`, `bomb_returned` (by eye; the spree order is inferred from the medals' growing number of points) |
 | `map/<map>/preview` | a multiplayer map's preview picture; `<map>` is the map file name without `.map` |
+| `title/image` | the game's title image, from the executable's `$$XTIMAGE` section (128x128): what the original dashboard showed as the game's tile |
+| `title/save-image` | the game's save image, from `$$XSIMAGE` (64x64): the picture of a save that has no `SaveImage.xbx` of its own |
 
 `palette` is the player colour palette, `#rrggbb` by colour index (the
 colours are stored at 4 bits per channel); empty, with a `skipped` entry,

@@ -19,12 +19,12 @@
 }
 .dx-games .dx-rows { height: calc(var(--u) * 60); padding-right: calc(var(--u) * 4); }
 .dx-games .dx-plate {
-  left: calc(var(--u) * 610); top: calc(var(--u) * 100); width: calc(var(--u) * 510);
+  left: calc(var(--u) * 610); top: calc(var(--u) * 64); width: calc(var(--u) * 510);
 }
 .dx-games .dx-plate h2 { font-size: calc(var(--u) * 37); }
 .dx-games .dx-plate h3 {
   display: flex; align-items: baseline; justify-content: space-between; gap: 1em;
-  margin: calc(var(--u) * 14) 0 calc(var(--u) * 5); padding-top: calc(var(--u) * 9);
+  margin: calc(var(--u) * 10) 0 calc(var(--u) * 3); padding-top: calc(var(--u) * 7);
   border-top: 1px solid #a0bf755e; color: #d6eaaa;
   font: 600 calc(var(--u) * 15)/1.2 var(--f-cond); letter-spacing: .13em;
 }
@@ -34,14 +34,15 @@
 .dx-game-history { list-style: none; padding: 0; margin: 0; }
 .dx-game-history li {
   display: flex; align-items: center; justify-content: space-between; gap: 1em;
-  padding: calc(var(--u) * 5) 0; border-bottom: 1px solid #96bc6a33;
+  padding: calc(var(--u) * 3) 0; border-bottom: 1px solid #96bc6a33;
 }
 .dx-game-history li:last-child { border-bottom: 0; }
 .dx-game-history li div { min-width: 0; }
 .dx-game-history strong, .dx-game-history small {
   display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.dx-game-history strong { color: #e6f3ce; font-size: calc(var(--u) * 21); letter-spacing: .035em; }
+.dx-game-history strong { color: #e6f3ce; font-size: calc(var(--u) * 19); line-height: 1.15; letter-spacing: .035em; }
+.dx-game-history small { font-size: calc(var(--u) * 14); }
 .dx-game-history small { color: #bbd39c; text-transform: none; letter-spacing: .025em; }
 .dx-game-history time { flex: none; font-size: calc(var(--u) * 15); }
 .dx-games .dx-game-record {
@@ -50,11 +51,13 @@
 .dx-game-record div { display: flex; flex-direction: column-reverse; }
 .dx-game-record dt { font-size: calc(var(--u) * 13); }
 .dx-game-record dt::after { content: none; }
-.dx-games .dx-game-record dd { font-size: calc(var(--u) * 23); line-height: 1.1; }
+.dx-games .dx-game-record dd { font-size: calc(var(--u) * 21); line-height: 1.1; }
+.dx-game-record-row { display: flex; align-items: center; justify-content: space-between; gap: calc(var(--u) * 16); }
 .dx-games .dx-game-stats {
-  height: calc(var(--u) * 38); margin-top: calc(var(--u) * 15); padding: 0 calc(var(--u) * 18);
+  flex: none; height: calc(var(--u) * 38); padding: 0 calc(var(--u) * 18);
   border-color: #9fbe66; color: #ddeeae; font-weight: 600; gap: calc(var(--u) * 18);
 }
+.dx-games .dx-plate-body > .dx-game-stats { margin-top: calc(var(--u) * 15); }
 .dx-games .dx-game-stats:is(:hover, :focus) { background: #d7ec83; color: #213814; outline: 1px solid #eaffad; }
 
 @media (max-aspect-ratio: 4/5) {
@@ -68,4 +71,61 @@
   .dx-games .dx-plate { left: calc(var(--u) * 10); top: calc(var(--u) * 242); width: calc(var(--u) * 380); }
   .dx-games .dx-plate h2 { font-size: calc(var(--u) * 29); }
   .dx-games .dx-game-stats { min-height: 40px; }
+}
+
+/* ---- the disc's own pictures (Games.tsx TITLE_IMAGE), drawn stand-ins without them ---- */
+.dx-games .dx-row-icon { flex: none; display: grid; place-items: center; width: calc(var(--u) * 34); height: calc(var(--u) * 34); margin-left: calc(var(--u) * -8); }
+.dx-title-tile, .dx-game-tile, .dx-game-pod-tile, .dx-save-pic { display: block; object-fit: cover; image-rendering: auto; }
+.dx-title-tile { width: 100%; height: 100%; border-radius: calc(var(--u) * 3); box-shadow: 0 0 0 1px #c9ec8f80, 0 0 calc(var(--u) * 6) #8ce84666; }
+/* A stand-in tile: a disc in a green square, nothing of the game's. */
+.dx-title-tile--drawn, .dx-save-pic--drawn {
+  background:
+    radial-gradient(circle at 50% 50%, #1d3a12 0 9%, #d8e9bd 10% 13%, transparent 14%),
+    radial-gradient(circle at 50% 50%, #c9dfaa 0 36%, #6f8f63 37% 40%, transparent 41%),
+    linear-gradient(160deg, #3f8f1c, #0f4806);
+}
+.dx-game-pod-tile {
+  width: 62%; aspect-ratio: 1; border-radius: calc(var(--u) * 6);
+  transform: perspective(300px) rotateX(18deg) rotateZ(-14deg);
+  box-shadow: 0 0 0 2px #d8e9bd, 0 0 calc(var(--u) * 22) #b8ff7a88;
+}
+.dx-games .dx-plate .dx-game-tile {
+  position: absolute; right: calc(var(--u) * 2); top: calc(var(--u) * -54); width: calc(var(--u) * 64); height: calc(var(--u) * 64);
+  border-radius: calc(var(--u) * 4); box-shadow: 0 0 0 1.5px #d8e9bd, 0 0 calc(var(--u) * 12) #a8ff6a77;
+}
+
+/* ---- saved games, as the original Memory screen listed them ---- */
+.dx-game-quota { height: calc(var(--u) * 6); margin: calc(var(--u) * 2) 0 calc(var(--u) * 6); border-radius: calc(var(--u) * 3); background: #0a3204; box-shadow: inset 0 0 0 1px #96bc6a55; overflow: hidden; }
+.dx-game-quota i { display: block; height: 100%; min-width: calc(var(--u) * 3); background: linear-gradient(90deg, #8ce846, #e6f79a); }
+.dx-game-saves { list-style: none; padding: 0; margin: 0; max-height: calc(var(--u) * 128); overflow-y: auto; scrollbar-width: none; }
+.dx-game-saves::-webkit-scrollbar { display: none; }
+.dx-game-saves li { border-bottom: 1px solid #96bc6a33; }
+.dx-game-saves li:last-child { border-bottom: 0; }
+.dx-game-saves li > button {
+  display: flex; align-items: center; gap: calc(var(--u) * 10); width: 100%; padding: calc(var(--u) * 4) calc(var(--u) * 6);
+  border: 0; border-radius: calc(var(--u) * 3); background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.dx-game-saves li > button:is(:hover, :focus) { background: #d7ec83; color: #213814; outline: 1px solid #eaffad; }
+.dx-game-saves li > button:is(:hover, :focus) :is(strong, small, em) { color: #213814; }
+.dx-save-pic { flex: none; width: calc(var(--u) * 36); height: calc(var(--u) * 36); border-radius: calc(var(--u) * 2); box-shadow: 0 0 0 1px #c9ec8f80; }
+.dx-game-saves span { flex: 1; min-width: 0; }
+.dx-game-saves strong, .dx-game-saves span small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dx-game-saves strong { color: #e6f3ce; font-size: calc(var(--u) * 18); letter-spacing: .035em; text-transform: none; }
+.dx-game-saves span small { color: #bbd39c; font-size: calc(var(--u) * 13); text-transform: none; letter-spacing: .025em; }
+.dx-game-saves em { flex: none; display: flex; flex-direction: column; align-items: flex-end; font-style: normal; color: #e6f3ce; font-size: calc(var(--u) * 18); line-height: 1; }
+.dx-game-saves em small { color: #bbd39c; font-size: calc(var(--u) * 11); letter-spacing: .12em; }
+.dx-game-saves li.busy { opacity: .5; }
+.dx-save-ask { display: flex; align-items: center; gap: calc(var(--u) * 10); padding: calc(var(--u) * 4) calc(var(--u) * 6) calc(var(--u) * 7) calc(var(--u) * 52); color: #f6ffd8; font-size: calc(var(--u) * 14); }
+.dx-save-ask span { flex: 1; }
+.dx-save-ask button {
+  padding: calc(var(--u) * 2) calc(var(--u) * 12); border: 1px solid #9fbe66; border-radius: calc(var(--u) * 10); background: none;
+  color: #ddeeae; font: inherit; text-transform: uppercase; letter-spacing: .1em; cursor: pointer;
+}
+.dx-save-ask button:first-of-type { border-color: #ffb36b; color: #ffd9a8; }
+.dx-save-ask button:is(:hover, :focus) { background: #d7ec83; color: #213814; }
+
+@media (max-aspect-ratio: 4/5) {
+  .dx-games .dx-plate .dx-game-tile { width: calc(var(--u) * 52); height: calc(var(--u) * 52); top: calc(var(--u) * -48); }
+  .dx-game-saves { max-height: none; }
+  .dx-game-saves li > button { min-height: 44px; }
 }
