@@ -57,6 +57,9 @@ or a short form:
                          native render paths; `draws` lists each draw; `snap`
                          reads passes N... back as PNGs under the cache
                          directory's frames/ (waits up to 10 s for the frame)
+  fallbacks [N]          profile.fallbacks: the N (20) fallback interpreter
+                         entry addresses that interpreted most, with their
+                         function, hits and instructions
   render                 render.stats: in-between frames and why they held,
                          the pipelined render, native render path calls
 
@@ -349,6 +352,13 @@ fn parse_call(words: &[String]) -> Result<(String, Value)> {
             },
         ),
         "query" => (method::WORLD_QUERY, json_arg(arg)?),
+        "fallbacks" => (
+            method::PROFILE_FALLBACKS,
+            match arg {
+                None => Value::Null,
+                Some(_) => json!({ "top": number(arg, "fallbacks")? }),
+            },
+        ),
         "object" => (
             method::WORLD_OBJECT,
             json!({ "id": arg.context("object needs an id, e.g. actor.e1230045")? }),
@@ -581,6 +591,11 @@ mod tests {
         assert_eq!(c("hostperf"), ("host.perf".into(), Value::Null));
         assert_eq!(c("ui"), ("ui.screen".into(), Value::Null));
         assert_eq!(c("render"), ("render.stats".into(), Value::Null));
+        assert_eq!(
+            c("fallbacks 5"),
+            ("profile.fallbacks".into(), json!({"top": 5}))
+        );
+        assert_eq!(c("fallbacks"), ("profile.fallbacks".into(), Value::Null));
         assert_eq!(frame_params(&words("frame")).unwrap(), json!({"arm": true}));
         assert_eq!(
             frame_params(&words("frame draws snap 0,3")).unwrap(),
@@ -634,6 +649,7 @@ mod tests {
             "capture",
             "capture soon",
             "capture 30 loud",
+            "fallbacks many",
         ] {
             assert!(parse_call(&words(s)).is_err(), "{s}");
         }

@@ -129,6 +129,9 @@ pub mod method {
     pub const SAMPLE_STATUS: &str = "profile.sample.status";
     /// The newest host perf line (`boot::host_perf`).
     pub const HOST_PERF: &str = "host.perf";
+    /// The fallback interpreter's entry addresses, by instructions
+    /// interpreted (`{"top": 20}`): where generated code still stops.
+    pub const PROFILE_FALLBACKS: &str = "profile.fallbacks";
     /// The menu screen player one's input goes to (`H2_UI_WATCH=1`,
     /// `boot::ui_watch`): `{"screen", "window", "slot", "live_menu_row"}`.
     pub const UI_SCREEN: &str = "ui.screen";
@@ -784,6 +787,12 @@ pub struct Spike {
     pub counts: BTreeMap<String, u64>,
     /// Its biggest phases, biggest first (pacing left out).
     pub top: Vec<String>,
+    /// Why it was slow, as far as its counters and phases say:
+    /// `shader_compile`, `pipeline_compile`, `texture_uploads`, `file_io`,
+    /// `gpu_readback`, `gpu`, `render_thread`, `pushbuf_decode`,
+    /// `guest_cpu` (see docs/runtime/agent-api.md, phase 5).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub causes: Vec<String>,
 }
 
 /// What a capture's frames say.
@@ -805,6 +814,10 @@ pub struct CaptureStats {
     /// Frames over the budget; `spikes` lists the worst of them.
     pub over_budget: usize,
     pub spikes: Vec<Spike>,
+    /// Every frame over the budget (listed or not) counted by each of its
+    /// causes.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub causes: BTreeMap<String, usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

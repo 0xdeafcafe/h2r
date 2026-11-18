@@ -145,6 +145,30 @@ pub fn add_host_methods(agent: &agent::Agent) {
         agent.set_sampler(Box::new(BootSampler));
     }
     agent::render::add_methods(agent, &agent::render::PROBE, crate::render_probe::sources());
+    agent.add_method(method::PROFILE_FALLBACKS, Access::Read, |v| {
+        let top = match v.get("top") {
+            None => 20,
+            Some(n) => n
+                .as_u64()
+                .filter(|n| (1..=500).contains(n))
+                .ok_or_else(|| RpcError::new(code::INVALID_PARAMS, "top: 1 to 500"))?
+                as usize,
+        };
+        if let Some(o) = v.as_object()
+            && let Some(k) = o.keys().find(|k| *k != "top")
+        {
+            return Err(RpcError::new(
+                code::INVALID_PARAMS,
+                format!("unknown field {k}"),
+            ));
+        }
+        let stats = crate::fallback::STATS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .unwrap_or_default();
+        Ok(stats.sites_json(top))
+    });
     agent.add_method(method::SAMPLE_STATUS, Access::Read, |_| {
         Ok(crate::sampling::status())
     });
@@ -214,6 +238,10 @@ mod tests {
         };
         let r = call(method::RENDER_STATS, Value::Null);
         assert!(r["result"]["paths"].is_object(), "{r}");
+        let r = call(method::PROFILE_FALLBACKS, json!({"top": 3}));
+        assert!(r["result"]["top"].is_array(), "{r}");
+        let r = call(method::PROFILE_FALLBACKS, json!({"top": 0}));
+        assert_eq!(r["error"]["code"], code::INVALID_PARAMS, "{r}");
         let r = call(method::RENDER_FRAME, Value::Null);
         assert_eq!(r["result"]["armed"], false, "{r}");
         let r = call(method::INPUT_STATE, Value::Null);

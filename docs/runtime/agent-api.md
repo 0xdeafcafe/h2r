@@ -5,7 +5,7 @@ Status: phase 1 built ([below](#phase-1-what-was-built)): the socket,
 `features.list`, `h2 serve` and `h2 agent`. Raw and recorded input and
 `profile.capture` built too ([below](#phase-3-and-4-what-was-built)).
 Phase 5 ([plan and what was built](#phase-5-testing-in-the-lightest-way-plan)):
-`render.frame` and `render.stats`.
+`render.frame`, `render.stats`, spike causes and `profile.fallbacks`.
 Everything else on this page is design; its Rust and JSON blocks are
 sketches, not code that compiles. The front end is the `h2 agent` CLI
 only: the MCP server is dropped (decided 2026-11-17).
@@ -815,6 +815,31 @@ adds them; types in `crates/agent-proto/src/render.rs`, logic in
   `render_scene_passes`, `layer_sort`, `render_states`,
   `transparent_sort`); `counters` the frame-stats window's line. Each is
   `null` where that piece isn't running.
+
+### Hitch causes and fallback hits
+
+```sh
+h2 agent capture 900               # spikes now say why, and "causes" counts them
+h2 agent fallbacks 20              # where the fallback interpreter runs
+```
+
+- **Causes.** Each spike in `profile.capture` has `causes`, and the reply
+  has `causes` counting every frame over budget (listed or not) by
+  cause (`crates/agent/src/capture.rs`, `causes`):
+  `shader_compile` and `pipeline_compile` (any on the critical path),
+  `texture_uploads`, `file_io` and `gpu_readback` (more than twice the
+  window's median, and at least one), `gpu`, `render_thread` and
+  `pushbuf_decode` (that phase is at least 40% of the frame's busy time),
+  else `guest_cpu` when the guest's own time is the biggest phase. These
+  are what the counters show, not a proof: a frame can be slow for a
+  reason nothing counts.
+- **Fallbacks.** `profile.fallbacks {"top": N}` (host method; 20 by
+  default, 1 to 500): the fallback interpreter's totals and its entry
+  addresses ranked by instructions interpreted, each with hits, x87
+  instructions and the function it is in (the nearest analysed start at
+  or below it). Kept per address in `boot::fallback::Stats::by_site`, at
+  most 4096 addresses (`sites_full` says when later ones count in the
+  totals only).
 
 Not built in phase 5 so far: per-subsystem guest time (engine-phase
 spans), A/B of feature sets, features set live, kernel I/O seeks and
