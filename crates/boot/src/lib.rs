@@ -60,6 +60,7 @@ pub mod pad_speaker;
 pub use live_telemetry as telemetry;
 pub mod sha;
 pub mod shim;
+pub mod sim_bots;
 pub mod speaker_row;
 pub mod setting_defs;
 pub mod skulls;

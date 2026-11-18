@@ -70,6 +70,7 @@ or a short form:
   render                 render.stats: in-between frames and why they held,
                          the pipelined render, native render path calls
 {HOT}
+{SIM}
 
 Input calls need no claim while nobody holds control; once a connection
 does, only it may send them. Queued steps outlive the connection and play out.
@@ -83,7 +84,9 @@ script stops at its first error).";
 
 /// [`USAGE`] with the hot-iteration forms (`agent_hot_cmd`) in place.
 fn usage() -> String {
-    USAGE.replace("{HOT}", crate::agent_hot_cmd::USAGE)
+    USAGE
+        .replace("{HOT}", crate::agent_hot_cmd::USAGE)
+        .replace("{SIM}", crate::agent_sim::USAGE)
 }
 
 pub fn run(args: Vec<String>) -> Result<()> {
@@ -134,7 +137,13 @@ pub fn run(args: Vec<String>) -> Result<()> {
     match first.as_str() {
         "-" => script(&mut c),
         "watch" => watch(&mut c, &rest[1..]),
-        "run" => run_script(&mut c, &rest[1..]),
+        "run" => run_script(&mut c, &rest[1..], false),
+        "sim" if rest.get(1).is_some_and(|w| w == "run") => run_script(&mut c, &rest[2..], true),
+        "sim" => {
+            let v = sim(&mut c, &rest[1..])?;
+            println!("{}", serde_json::to_string_pretty(&v)?);
+            Ok(())
+        }
         "frame" => {
             let v = frame(&mut c, &rest)?;
             println!("{}", serde_json::to_string_pretty(&v)?);
@@ -165,6 +174,7 @@ fn looks_like_host(w: &str) -> bool {
             && !w.starts_with("load.")
             && !w.starts_with("edit.")
             && !w.starts_with("render.")
+            && !w.starts_with("sim.")
     }
 }
 
@@ -212,6 +222,8 @@ fn script(c: &mut Client) -> Result<()> {
         }
         let v = if words[0] == "frame" {
             frame(c, &words)?
+        } else if words[0] == "sim" {
+            sim(c, &words[1..])?
         } else {
             let (m, p) = parse_call(&words)?;
             call(c, &m, p)?
@@ -226,8 +238,20 @@ pub(crate) fn split_words(line: &str) -> Result<Vec<String>> {
     split(line)
 }
 
-/// `h2 agent run`: the script, then its verdict.
-fn run_script(c: &mut Client, args: &[String]) -> Result<()> {
+/// A `sim` verb (`agent_sim`); an error prints as `call`'s do.
+fn sim(c: &mut Client, words: &[String]) -> Result<Value> {
+    match crate::agent_sim::call(c, words) {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            eprintln!("{}", serde_json::to_string_pretty(&e)?);
+            std::process::exit(1);
+        }
+    }
+}
+
+/// `h2 agent run`: the script, then its verdict. `sim run` (`sim`) also
+/// removes the simulated players once a script has added any.
+fn run_script(c: &mut Client, args: &[String], sim: bool) -> Result<()> {
     let [path] = args else {
         bail!("run needs one script file (or - for stdin)")
     };
@@ -237,11 +261,17 @@ fn run_script(c: &mut Client, args: &[String]) -> Result<()> {
         std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?
     };
     let lines = crate::agent_run::parse(&text, split)?;
-    let verdict = crate::agent_run::execute(
+    let mut added = false;
+    let mut verdict = crate::agent_run::execute(
         &lines,
         |words| {
             if words[0] == "frame" {
                 return frame(c, words).map_err(|e| format!("{e:#}"));
+            }
+            if words[0] == "sim" {
+                added |= words.get(1).is_some_and(|w| w == "add");
+                return crate::agent_sim::call(c, &words[1..])
+                    .map_err(|e| serde_json::to_string(&e).unwrap_or_default());
             }
             let (m, p) = parse_call(words).map_err(|e| format!("{e:#}"))?;
             c.call(&m, p).map_err(|e| match e {
@@ -251,6 +281,9 @@ fn run_script(c: &mut Client, args: &[String]) -> Result<()> {
         },
         |ms| std::thread::sleep(Duration::from_millis(ms)),
     );
+    if sim && added {
+        verdict["cleanup"] = crate::agent_sim::cleanup(c);
+    }
     println!("{}", serde_json::to_string_pretty(&verdict)?);
     if verdict["pass"] != true {
         std::process::exit(1);

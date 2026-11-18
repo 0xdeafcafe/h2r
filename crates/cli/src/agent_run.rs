@@ -8,8 +8,12 @@
 //! - `expect <pointer> <op> [JSON]`: checks the last call's answer at a
 //!   JSON pointer (`/at/phase`, `/total`, `/spikes/0/causes`). Ops: `==`,
 //!   `!=`, `<`, `<=`, `>`, `>=` (numbers), `contains` (a string's
-//!   substring, an array's element, an object's key), `exists`, `missing`.
+//!   substring, an array's element, an object's key), `exists`, `missing`,
+//!   `near` (`{"to": number or array, "within": d}`).
 //! - `keep`: put the last call's answer in the verdict.
+//!
+//! The expectations are `agent_proto::expect`'s, which `sim.expect` judges
+//! in the game too. Lines may be `sim ...` verbs (`h2 agent sim`).
 //!
 //! A failed `expect` is recorded and the script goes on; a call that fails
 //! ends it (what follows would act on an unknown state). The verdict:
@@ -18,6 +22,8 @@
 
 use std::time::Instant;
 
+use agent_proto::expect::Expect;
+pub use agent_proto::expect::{Op, check};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
@@ -25,56 +31,8 @@ use serde_json::{Value, json};
 pub enum Line {
     Call(Vec<String>),
     Sleep(u64),
-    Expect {
-        pointer: String,
-        op: Op,
-        want: Option<Value>,
-    },
+    Expect(Expect),
     Keep,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Op {
-    Eq,
-    Ne,
-    Lt,
-    Le,
-    Gt,
-    Ge,
-    Contains,
-    Exists,
-    Missing,
-}
-
-impl Op {
-    fn parse(s: &str) -> Option<Op> {
-        Some(match s {
-            "==" => Op::Eq,
-            "!=" => Op::Ne,
-            "<" => Op::Lt,
-            "<=" => Op::Le,
-            ">" => Op::Gt,
-            ">=" => Op::Ge,
-            "contains" => Op::Contains,
-            "exists" => Op::Exists,
-            "missing" => Op::Missing,
-            _ => return None,
-        })
-    }
-
-    fn name(self) -> &'static str {
-        match self {
-            Op::Eq => "==",
-            Op::Ne => "!=",
-            Op::Lt => "<",
-            Op::Le => "<=",
-            Op::Gt => ">",
-            Op::Ge => ">=",
-            Op::Contains => "contains",
-            Op::Exists => "exists",
-            Op::Missing => "missing",
-        }
-    }
 }
 
 /// The script's lines, numbered from 1, with `split` doing the words.
@@ -102,12 +60,8 @@ pub fn parse(
                 let (Some(pointer), Some(op)) = (words.get(1), words.get(2)) else {
                     bail!("line {n}: expect <pointer> <op> [JSON]");
                 };
-                if !(pointer.is_empty() || pointer.starts_with('/')) {
-                    bail!("line {n}: a JSON pointer starts with / ({pointer})");
-                }
-                let op = Op::parse(op).with_context(|| {
-                    format!("line {n}: {op}: one of == != < <= > >= contains exists missing")
-                })?;
+                let op = Op::parse(op)
+                    .with_context(|| format!("line {n}: {op}: one of {}", Op::NAMES))?;
                 let want = match words.get(3) {
                     None => None,
                     Some(w) => Some(
@@ -115,54 +69,18 @@ pub fn parse(
                             .with_context(|| format!("line {n}: not JSON: {w}"))?,
                     ),
                 };
-                let needs = !matches!(op, Op::Exists | Op::Missing);
-                if needs != want.is_some() || words.len() > 4 {
-                    bail!(
-                        "line {n}: {} {}",
-                        op.name(),
-                        if needs {
-                            "needs one JSON value"
-                        } else {
-                            "takes no value"
-                        }
-                    );
+                if words.len() > 4 {
+                    bail!("line {n}: expect <pointer> <op> [JSON], one JSON value");
                 }
-                Line::Expect {
-                    pointer: pointer.clone(),
-                    op,
-                    want,
-                }
+                Line::Expect(
+                    Expect::new(pointer, op, want).map_err(|e| anyhow::anyhow!("line {n}: {e}"))?,
+                )
             }
             _ => Line::Call(words),
         };
         out.push((n, parsed));
     }
     Ok(out)
-}
-
-/// Whether `got` (absent: `None`) passes `op want`.
-pub fn check(got: Option<&Value>, op: Op, want: Option<&Value>) -> bool {
-    let num = |v: Option<&Value>| v.and_then(Value::as_f64);
-    let cmp = |f: fn(f64, f64) -> bool| match (num(got), num(want)) {
-        (Some(a), Some(b)) => f(a, b),
-        _ => false,
-    };
-    match op {
-        Op::Exists => got.is_some(),
-        Op::Missing => got.is_none(),
-        Op::Eq => got.is_some() && got == want,
-        Op::Ne => got != want,
-        Op::Lt => cmp(|a, b| a < b),
-        Op::Le => cmp(|a, b| a <= b),
-        Op::Gt => cmp(|a, b| a > b),
-        Op::Ge => cmp(|a, b| a >= b),
-        Op::Contains => match (got, want) {
-            (Some(Value::String(s)), Some(Value::String(w))) => s.contains(w.as_str()),
-            (Some(Value::Array(a)), Some(w)) => a.contains(w),
-            (Some(Value::Object(o)), Some(Value::String(k))) => o.contains_key(k),
-            _ => false,
-        },
-    }
 }
 
 /// Runs the lines: `call` makes one call from its words, `sleep` waits.
@@ -197,19 +115,9 @@ pub fn execute(
                     }
                 }
             }
-            Line::Expect { pointer, op, want } => {
-                let got = last.as_ref().and_then(|v| v.pointer(pointer));
-                let pass = check(got, *op, want.as_ref());
-                let mut e = json!({ "line": n, "expect": format!("{pointer} {}", op.name()), "pass": pass });
-                if let Some(w) = want {
-                    e["want"] = w.clone();
-                }
-                if !pass {
-                    e["got"] = got.cloned().unwrap_or(Value::Null);
-                    if last.is_none() {
-                        e["why"] = json!("no call answered before it");
-                    }
-                }
+            Line::Expect(x) => {
+                let mut e = x.judge(last.as_ref());
+                e["line"] = json!(n);
                 expects.push(e);
             }
         }

@@ -40,7 +40,7 @@ use h1objects::base::Base;
 use h1objects::convert::{Converter, Tree, template_candidates};
 use h1objects::rebuild::{
     BIPD_HUD, BIPD_PILLS, BIPD_SIZE, BIPED_BODY, BIPED_OWN, BIPED_TYPE, BIPED_WORDS, BipedRole,
-    MODEL_OWN, ROLE_VEHICLE_TYPE, TURRET_PHYSICS_ROLE, TURRET_ROLE, TURRET_SEAT_ROLE, VEHI_PHYSICS,
+    MODEL_OWN, ROLE_VEHICLE_TYPE, TURRET_PHYSICS_ROLE, TURRET_ROLE, TURRET_SEAT_ROLE, VEHI_PHYSICS, SEAT_DRIVER,
     VEHI_SEATS, biped_shapes, reference_fields, usable_size,
 };
 use h1objects::{Converted, h1};
@@ -145,6 +145,12 @@ fn majority(t: &BTreeMap<String, BTreeMap<u32, usize>>) -> Vec<(String, u32)> {
     out
 }
 
+/// A driver's seat: its flags (`+0`, the unknown word) hold
+/// [`SEAT_DRIVER`].
+fn driver(x: &Record) -> bool {
+    matches!(x.get("unknown_0"), Some(Val::Bytes(b)) if u32::from_le_bytes(b[..4].try_into().unwrap()) & SEAT_DRIVER != 0)
+}
+
 fn table(t: &[(&str, u32)]) -> Vec<(String, u32)> {
     let mut v: Vec<(String, u32)> = t.iter().map(|(p, w)| (p.to_string(), *w)).collect();
     v.sort();
@@ -199,7 +205,9 @@ fn turret_role_is_the_retail_turrets_majority() {
                 (VEHI_PHYSICS, phys_def, &mut phys),
             ] {
                 if let Some(Val::Block(e)) = r.at(block) {
-                    for x in e {
+                    // The seats: the driver's (`rebuild::SEAT_DRIVER`),
+                    // the seat a turret's rider works it from.
+                    for x in e.iter().filter(|x| block != VEHI_SEATS || driver(x)) {
                         tally(sub, x, "", out);
                     }
                 }

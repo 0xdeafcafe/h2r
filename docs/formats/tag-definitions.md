@@ -398,7 +398,10 @@ with no retail template read:
   `TURRET_PHYSICS_ROLE`): every 4-byte unknown span of the root, the
   seats and the physics element where at least half of Halo 2's 25
   distinct turret-type vehicles hold one nonzero value takes that value
-  (22 words in the root, 5 per seat, 4 in the physics element). Zero is
+  (22 words in the root, 4 in the physics element). The seat table is
+  over those vehicles' 8 driver seats (11 words, the entry distances and
+  angles among them); through version 54 it was over every seat, where
+  the entry words have no majority and stayed zero. Zero is
   not neutral there: they are scales, distances and angles retail never
   leaves at zero (the object layer's `+0x6c..+0x8c`), and `-1` halves
   where zero would name element 0. The unit layer's `+0xcc` was a role
@@ -482,6 +485,38 @@ Halo ring were already built this way.
   converted `mode` keeps them (Halo 1's, spaces included). The scripts
   keep Halo 1's text: `h1scripts::seats` matches a label equal to the
   text's mode.
+- **Seat flags and boarding** (`+0`; `rebuild::seat_flags`). The
+  engine's enter-seat search (`0x000c8bb0`) skips a seat whose flags
+  close it to the rider (bit 16 for a unit with a player, bit 17 for any
+  other), one needing a driver (bit 9) while the vehicle has none, and
+  treats bit 11 as a boarding seat (`0x000c92c0`: entered only to take
+  the seat its `+0x3e` names). It then needs the entry marker (`+0xc`,
+  `0x000c6fb0`) and the rider's marker (`+8`, `0x000c7160`) on the
+  model (through `0x000b8d30`: an empty name is the object's origin, a
+  missing one fails), the rider within the seat's distances and angles
+  (`+0x98`, `+0x9c`, `+0xa0`, `+0xa4`, `0x000c9040`; zero admits no
+  one), and the rider's graph to hold the label as a mode with `enter`
+  or `enter_a`..`enter_d` (`0x0010f9b0`, the string IDs at
+  `0x00467430`). Through version 54 a seat took the majority over every
+  retail seat of its type, and most retail seats are boarding seats
+  (the warthog has four beside two ridden ones), so every rebuilt seat
+  was a boarding seat with no driver bit and no vehicle could be
+  entered. Now a seat's words are the majority over the role's seats of
+  its kind (driver bit 2, gunner bit 3, passenger; boarding seats left
+  out), and its flags are Halo 1's bits 0..10 over the rest of that
+  word less bits 11, 16 and 17. An entry word the role leaves zero
+  (coagulation's hover drivers share no ghost angle) takes the turret
+  drivers' value, and a marker the model lacks is written empty, the
+  origin (a10's fighterbomber and the dropships name a `driver` their
+  models do not have). V: on 05a bit 11 is set on exactly the
+  retail seats labelled `_b_`; Halo 1 sets no bit above 10; on the eight
+  pairs Halo 1's bits 0..10 equal the counterpart seat's on most seats
+  and the driver bit on every one (`seat_flags_match_halo_2s_counterparts`).
+  `every_seat_passes_the_engines_boarding_rule` applies the rule to
+  every seat of every vehicle on the ten campaign levels and both
+  sandboxes, for the converted Halo 1 player and, on the sandboxes, Halo
+  2's `masterchief_mp` (on the seats Halo 1's player enters; Halo 2's
+  graph has no mode for the scorpion's side seats, listed, not failed).
 - **Friction and hover points** (`+0x2f0`, `+0x2e8`). Halo 1's
   counterparts are the `phys` mass points with a powered mass point:
   the warthog's four tires and the ghost's hull and two wings, the same
@@ -513,7 +548,8 @@ Halo ring were already built this way.
   base map's vehicles of the same `vehicle_type`, at conversion time:
   each 4-byte unknown span of the root, every seat, every friction and
   hover point, the plain-word blocks (the physics element `+0x2f8`, `unit
-  +0x1a8`, `+0x1b8`), the gears and the flags' high half. On 05a: jeep
+  +0x1a8`, `+0x1b8`), the gears and the flags' high half; the seats by
+  kind (above). On 05a: jeep
   the warthog, tank the scorpion, hover the ghost and wraith, flier the
   banshee, dropship the pelican and phantom. The turret type keeps the
   disc-wide turret tables, as does a type the base has none of.

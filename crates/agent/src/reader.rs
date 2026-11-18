@@ -3,7 +3,7 @@
 //! `live-telemetry`'s readers, which are tested against synthetic guest
 //! memory, and only converts their types to the wire's.
 
-use std::ops::Deref;
+use std::ops::DerefMut;
 
 use agent_proto::{Kind, Object, ObjectId};
 use live_telemetry::{ActorState, MachineState, ObjectState, PlayerState, VehicleState};
@@ -23,6 +23,13 @@ pub trait Reader {
     fn status(&mut self) -> GameStatus;
     /// Every object the API lists, unfiltered. Called per world request.
     fn objects(&mut self) -> Result<Vec<Object>, String>;
+    /// Runs `f` on guest memory, for the `sim.*` methods' own reads and
+    /// their host writes (at a tick boundary). False where there is no
+    /// guest (the default).
+    fn with_guest(&mut self, f: &mut dyn FnMut(&mut dyn engine::GuestMemory)) -> bool {
+        let _ = f;
+        false
+    }
 }
 
 /// Reads through a function that locks guest memory for each read, so the
@@ -34,7 +41,7 @@ pub struct GuestReader<F> {
 impl<F, G> GuestReader<F>
 where
     F: Fn() -> G,
-    G: Deref<Target = Guest>,
+    G: DerefMut<Target = Guest>,
 {
     pub fn new(guest: F) -> Self {
         GuestReader { guest }
@@ -44,8 +51,14 @@ where
 impl<F, G> Reader for GuestReader<F>
 where
     F: Fn() -> G,
-    G: Deref<Target = Guest>,
+    G: DerefMut<Target = Guest>,
 {
+    fn with_guest(&mut self, f: &mut dyn FnMut(&mut dyn engine::GuestMemory)) -> bool {
+        let mut g = (self.guest)();
+        f(&mut *g);
+        true
+    }
+
     fn status(&mut self) -> GameStatus {
         let g = (self.guest)();
         let info = live_telemetry::game_info(&g).ok();

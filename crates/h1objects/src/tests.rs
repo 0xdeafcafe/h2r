@@ -565,7 +565,7 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
         widgets: Vec::new(),
     };
     let seat = crate::h1::Seat {
-        flags: 0,
+        flags: 0x1d,
         label: "CT-driver".into(),
         marker: "driver".into(),
         camera_marker: "camera".into(),
@@ -578,7 +578,7 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
         crate::rebuild::Predicted::Bitmap(bitmap),
     ];
     let weapon = map::TagId(0xe001_0005);
-    let markers = vec!["driver".to_string(), "driver enter".to_string()];
+    let markers = vec!["driver".to_string(), "driver enter".to_string(), "camera".to_string()];
     let seats = [crate::rebuild::seat_names(&seat, &markers)];
     let root = crate::rebuild::vehicle(&crate::rebuild::VehicleSpec {
         object: &obj,
@@ -634,6 +634,8 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
     // Marker names as the converted model keeps them (Halo 1's).
     s.set("string_c", Val::text("driver enter")).unwrap();
     s.set("string_60", Val::text("camera")).unwrap();
+    // Halo 1's seat flags: the driver's, so the rider drives.
+    s.set("unknown_0", word(0x1d)).unwrap();
     want.set(VEHI_SEATS, Val::Block(vec![s])).unwrap();
     let pr = def.child("unit.obje.predicted_resources").unwrap();
     let res = [(0xffff_0002u32, mode), (0, bitmap)]
@@ -716,7 +718,17 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
                 vec![vec![("unknown_48".into(), 0xbf80_0000)]],
             )],
         },
-        seat: vec![("unknown_20".into(), 0x3f00_0000)],
+        // Driver, gunner and passenger seats' words; the driver's flags
+        // carry a bit Halo 1 lacks (kept), a boarding bit and a closed-to-
+        // players bit (dropped) and a gunner bit (Halo 1's bits win).
+        seats: [
+            vec![
+                ("unknown_0".into(), 0x0009_8808),
+                ("unknown_20".into(), 0x3f00_0000),
+            ],
+            vec![("unknown_20".into(), 0x3e00_0000)],
+            vec![("unknown_20".into(), 0x3d00_0000)],
+        ],
         flags_high: 0x0012_0000,
         friction: Some(vec![("unknown_8".into(), 0x4160_0000)]),
         hover: None,
@@ -736,12 +748,21 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
         },
     ];
     let seat = crate::h1::Seat {
-        flags: 0,
+        flags: 0x14,
         label: "W-driver".into(),
         marker: "driver".into(),
         camera_marker: String::new(),
     };
-    let seats = [crate::rebuild::seat_names(&seat, &[])];
+    let passenger = crate::h1::Seat {
+        flags: 0x60,
+        label: "W-passenger".into(),
+        marker: "passenger".into(),
+        camera_marker: String::new(),
+    };
+    let seats = [
+        crate::rebuild::seat_names(&seat, &[]),
+        crate::rebuild::seat_names(&passenger, &[]),
+    ];
     let root = crate::rebuild::vehicle(&VehicleSpec {
         object: &obj,
         hlmt: None,
@@ -767,7 +788,11 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
         got.at("block_2f8[0].unknown_48").cloned(),
         word(0xbf80_0000)
     );
+    // Each seat takes its kind's words.
     assert_eq!(got.at("block_1c8[0].unknown_20").cloned(), word(0x3f00_0000));
+    assert_eq!(got.at("block_1c8[1].unknown_20").cloned(), word(0x3d00_0000));
+    assert_eq!(got.at("block_1c8[0].unknown_0").cloned(), word(0x0008_8014));
+    assert_eq!(got.at("block_1c8[1].unknown_0").cloned(), word(0x60));
     assert_eq!(
         got.at("block_1c8[0].label"),
         Some(&Val::text("warthog_d"))
