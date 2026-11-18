@@ -858,9 +858,10 @@ owned, with no guest pointers. §8.4 has how the server uses them.
 
 Status: agreed with the coordinator and the bots lane (2026-11-18;
 their side is [bots.md](../game/bots.md) §9.4). The arbitration half is
-built. Of the bots half, `rank::bot_skill` and `Ranks::nearest` are
-built; the rest reads the bots lane's lookups and is built once they
-land (the list is at the end of "Bots in ranks"). The bots lane owns the bot accounts and their events
+built. The bots half is built for matchmaking games; the clanker
+playlist pieces wait on the bots lane's `clankermatch` kind and
+`ranks_as` mark (the list is at the end of "Bots in ranks"). The bots
+lane owns the bot accounts and their events
 (`POST /games/bots`, the roster, `bot: true` on a game's player entries;
 [bots.md](../game/bots.md) §9). This lane owns how bots are ranked and
 how arbitration checks a ranked game.
@@ -922,19 +923,22 @@ standing in the rank playlist:
 
 The roster's `rank.level` is then the bot's real level (persistent) or
 the humans' (made up). A made-up bot has no standing, so its stat read
-needs the session. `GET /v1/rank-stats` takes an optional `session=`,
-which the HLE fills from `Hle::matchmade`. It answers a bot rostered in
-that session with its roster level, so the lobby's stat read and the
-roster agree. A persistent bot answers with its standing, as anyone
-else does.
+needs the session. `GET /v1/rank-stats` takes an optional `session=`
+(16 lowercase hex digits, else a 400). The HLE fills it on the stats
+read with the session this console hosts, else the one it joined. It
+answers a made-up bot of that session's latest roster with its roster
+level, when the roster's playlist is the leaderboard's, so the lobby's
+stat read and the roster agree. A persistent bot answers with its
+standing, as anyone else does.
 
-**The bots lane's lookups** (bots.md §9.4, agreed):
+**The bots lane's lookups** (bots.md §9.4, built), on `State.bots`:
 
-- `bot(xuid) -> Option<BotAccount { persistent }>`, from `BotIssued` on
-  `account-<xuid>`;
-- `rostered(session_id, xuid) -> Option<Rostered { persistent, level,
-  playlist }>`, from `BotsRostered` on `bots-<session_id>`, keyed by the
-  same `NewGame.session_id` that arbitration uses.
+- `bot(xuid) -> Option<&Issued>`, from `BotIssued` on `bot-<xuid>`;
+- `rostered(session_id, xuid, before) -> Option<(&Rostered,
+  &RosteredBot { persistent, level, team, skill })>`, from
+  `BotsRostered` on `bots-<session_id>`, keyed by the same
+  `NewGame.session_id` that arbitration uses. `Rostered.playlist` is
+  the roster's playlist.
 
 A session can roster more than once (one game after another). The
 roster `rank_game` reads should then be the one in force when the game
@@ -942,15 +946,24 @@ started: the latest `BotsRostered` before its `GameStarted`. The game
 record's acceptance check (bots.md §9.3) refuses any `bot: true` entry
 that is not rostered, so `rank_game` sees only accepted bots.
 
-**Still to build, once those lookups land:**
+**Built** (`crates/live-server/src/ranks.rs`, tested in
+`tests/ranks.rs`):
 
-1. In `rank_game`: a rostered bot needs no arbitration registration.
-   A persistent bot is ranked with `RankChanged { bot: true }`. A
-   made-up bot is an opponent at its roster level and gets no event.
-   `kind: "clankermatch"` is ranked under its rank playlist.
-2. In `GET /v1/rank-stats`: `session=` for made-up bots, and clanker
-   playlist ids answered with the `ranks_as` standing.
-3. On leaderboards and history: `bot: true` on bots' rows, from `bot()`.
+1. In `rank_game`: an entrant rostered in the game's session, in the
+   roster in force at its `GameStarted` (`before` is the game's
+   position), needs no arbitration registration. A persistent bot is
+   ranked with `RankChanged { bot: true }`. A made-up bot is an
+   opponent at its roster level and gets no event.
+2. `GET /v1/rank-stats` takes `session=` for made-up bots; the HLE
+   sends it.
+3. Leaderboard rows, `GET /v1/accounts/{bot}/ranks` and its history
+   carry `bot: true` for a bot, with the bot's gamertag; a bot's xuid
+   or gamertag finds its pages.
+
+**Still to build, once the bots lane has them:** `kind:
+"clankermatch"` (not yet in `GAME_KINDS`) ranked under its rank
+playlist, and clanker playlist ids answered on `GET /v1/rank-stats`
+with the `ranks_as` standing (the mark is not in the hopper source yet).
 
 #### Arbitration (built)
 
@@ -977,22 +990,34 @@ lowercase hex digits.
 3. **Server.** `ArbitrationRegistered`, `ArbitrationExtended` and
    `ArbitrationReported` are server-signed on
    `round-<session>-<round>`, carrying the token's account as `xuid`.
-   Nobody posts them through `/v1/events`.
+   Nobody posts them through `/v1/events`. The session must be one the
+   server knows (404 otherwise). Any account may register its round:
+   the session's `players` are not checked, because the HLE does not post
+   session membership (`PlayerJoined` on `session-<id>`) yet. A
+   registration alone ranks nobody; see the next item.
    - A second registration or report by the same account writes
      nothing.
    - Extending or reporting a round the account did not register is a
      409.
-4. **The check, in `rank_game`.** The game's round is the latest round
-   in its session that the host registered and that has not ranked a
-   game yet. `RankChanged.round` (`{session}-{round}`) records it, so a
-   round ranks one game. Only the entrants who registered that round
+4. **The check, in `rank_game`.** Only the session host's own game
+   record is ranked: its `GameStarted.host` must be the session's
+   `host_xuid`. The server trusts that record (who played, who won); the
+   host is the console that ran the game. A player can be added to it
+   only by the host, or by its own account (a guest re-joining); only
+   the host ends it; an xuid is in it once (live-api.md, Clarifications
+   10). The game's round is the latest round in its session that the
+   host registered before the game's `GameStarted` and that has not
+   ranked a game yet. `ArbitrationUsed` on the round's stream marks it
+   spent once the game is ranked, even when nobody's standing moved (one
+   side only, or fewer than two ranked entrants), and
+   `RankChanged.round` (`{session}-{round}`) names it, so a round ranks
+   one game. Only the entrants who registered that round
    are ranked, and only they count as opponents. A game with no
    `session_id`, no such round, or fewer than two ranked entrants is
    not ranked. There is no switch to rank without arbitration: every
    client is this recomp.
-   - Bots will need no registration, because the host vouches for its
-     bots (bots.md §9.2, §9.3). That comes with the bots half; until
-     then a bot in a ranked game is not ranked.
+   - Rostered bots need no registration, because the host vouches for
+     its bots (bots.md §9.2, §9.3); see "Bots in ranks".
    - Reports are recorded and linked, but not yet compared. Comparing
      them needs the `0x8001`/`0x8003`/`0x8007` records decoded.
 5. **Order.** A report may land after `GameEnded`. Ranking runs at

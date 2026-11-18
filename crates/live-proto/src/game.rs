@@ -771,6 +771,11 @@ pub fn validate(kind: &str, data: &Value, players: &[Player]) -> Result<(), Stri
             if known(d.player.index) {
                 return Err(format!("player {} is already in the game", d.player.index));
             }
+            if let Some(x) = d.player.xuid
+                && players.iter().any(|p| p.xuid == Some(x))
+            {
+                return Err(format!("{x} is already in the game"));
+            }
             if players.len() >= MAX_PLAYERS {
                 return Err("the game is full".into());
             }
@@ -829,6 +834,15 @@ pub fn validate_new(game: &NewGame) -> Result<(), String> {
     let mut seen = std::collections::HashSet::new();
     if !game.players.iter().all(|p| seen.insert(p.index)) {
         return Err("player indexes must be unique".into());
+    }
+    let mut seen = std::collections::HashSet::new();
+    if !game
+        .players
+        .iter()
+        .filter_map(|p| p.xuid)
+        .all(|x| seen.insert(x))
+    {
+        return Err("player xuids must be unique".into());
     }
     if game.players.iter().any(|p| p.name.chars().count() > 32) {
         return Err("player names are at most 32 characters".into());

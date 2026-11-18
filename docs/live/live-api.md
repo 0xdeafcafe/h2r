@@ -1213,6 +1213,12 @@ Settled after the first client was built against this page.
    returning a list (item 3) of frames, at most 600 per page, oldest first.
    `GameFrame.data` is the frame plus `source` (the ingesting author id).
 9. **`PlayerKilled`** carries `pos`, the victim's position.
+10. **Who writes a game** (2026-11-18). The server trusts the host's
+    record. Only the host ends the game (`GameEnded`; 403 from anyone
+    else, who leaves with `PlayerLeft`). A `PlayerJoined` from anyone but
+    the host must be the author's own account, not a bot (403). An xuid
+    can be in a game once at a time: a `NewGame` naming one twice, or a
+    `PlayerJoined` for an xuid already in, is a 400.
 10. **`GameStarted`** carries `tick`, the game tick it started at.
 11. **Keys.** `GET /v1/accounts/{gamertag}/keys` and
     `GET /v1/accounts/by-xuid/{xuid}/keys` both return
@@ -1269,15 +1275,22 @@ may write those streams. A standing is
 |---|---|
 | `GET /v1/accounts/{who}/ranks` | `{xuid, ranks: {playlist: standing}, position}`; `who` is a gamertag or XUID; 404 if unknown |
 | `GET /v1/accounts/{who}/ranks/{playlist}` | `{xuid, playlist, standing, history, position}`: `history` is the last 100 changes, newest first, `{game_id, at, position, before, after}` |
-| `GET /v1/ranks/{playlist}?limit=` | `{playlist, items, position}`: `{xuid, gamertag, ...standing}`, by level then experience; `limit` 1..1000, default 100 |
-| `GET /v1/rank-stats?leaderboards=&xuids=` | `{items, position}`: the game's stats read. `leaderboards` are playlist ids (a descriptor's `+0x08`), `xuids` players, both comma-separated, at most 32 and 64 (400 beyond). One `{xuid, leaderboard, playlist, standing}` per player per leaderboard that is a ranked playlist in the served hopper file; a player with no games there is level 1; other leaderboards have no rows |
+| `GET /v1/ranks/{playlist}?limit=` | `{playlist, items, position}`: `{xuid, gamertag, ...standing}`, with `bot: true` on a bot's row, by level then experience; `limit` 1..1000, default 100 |
+| `GET /v1/rank-stats?leaderboards=&xuids=&session=` | `{items, position}`: the game's stats read. `leaderboards` are playlist ids (a descriptor's `+0x08`), `xuids` players, both comma-separated, at most 32 and 64 (400 beyond). One `{xuid, leaderboard, playlist, standing}` per player per leaderboard that is a ranked playlist in the served hopper file; a player with no games there is level 1; other leaderboards have no rows. Optional `session` (16 lowercase hex digits, else 400): a made-up bot of that session's latest roster, on the roster's playlist, answers its roster level |
 
 `playlist` is the hopper descriptor index, as sessions and games name it.
 A leaderboard is the playlist id the hopper file gives that descriptor,
 which is what the game's `XOnlineStatRead` names.
 A game is ranked only for the players who registered its arbitration
 round ([Arbitration](#arbitration)); each `RankChanged` names that round
-as `round`, `{session}-{round}`, and a round ranks one game.
+as `round`, `{session}-{round}`, and a round ranks one game. Only the
+session host's own record is ranked (`GameStarted.host` is the session's
+`host_xuid`), by the latest round it registered before the game started.
+A bot
+rostered in the game's session (`POST /v1/games/bots`) needs no
+registration: a persistent bot is ranked, its `RankChanged` marked
+`bot: true`; a made-up bot is an opponent at its roster level and gets
+none. A bot's rank pages answer by its xuid or gamertag, with `bot: true`.
 
 ## Arbitration
 
@@ -1288,8 +1301,11 @@ each account signed in on the console
 lowercase hex digits. The server writes `ArbitrationRegistered`,
 `ArbitrationExtended` or `ArbitrationReported`, server-signed, on
 `round-<session>-<round>`, with `{session_id, round_id, xuid}` and the
-call's fields; `xuid` is the token's account. Nobody writes these through
-`/v1/events`.
+call's fields; `xuid` is the token's account. The session must be one the
+server knows (404 otherwise). When a game is ranked by a round, the
+server also writes `ArbitrationUsed` `{session_id, round_id, game_id}`
+there, whether or not anyone's standing moved; the round ranks no other
+game. Nobody writes these through `/v1/events`.
 
 | endpoint | body | result |
 |---|---|---|

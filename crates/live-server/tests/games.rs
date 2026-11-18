@@ -905,3 +905,100 @@ async fn game_art_is_loopback_only_unless_shared() {
         .unwrap();
     std::fs::remove_dir_all(&art).unwrap();
 }
+
+#[tokio::test]
+async fn players_join_themselves_and_only_the_host_ends_the_game() {
+    let h = harness().await;
+    let host = h.create("Host").await;
+    let guest = h.create("Guest").await;
+    let friend = h.create("Friend").await;
+    let game = json!({
+        "console": "Den", "map": "lockout", "mode": "multiplayer", "variant": "Slayer",
+        "team_play": true, "tick": 0,
+        "players": [
+            {"index": 0, "name": "Host", "xuid": host.xuid, "team": 0, "local": true},
+            {"index": 1, "name": "Guest", "xuid": guest.xuid, "team": 1}
+        ]
+    });
+    // A record naming one account twice is refused.
+    let mut twice = game.clone();
+    twice["players"][1]["xuid"] = json!(host.xuid);
+    let r = h
+        .call(
+            Method::POST,
+            "/v1/games",
+            &[h.bearer(&host, lxm::GAMES_WRITE)],
+            twice.to_string(),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+
+    let id = h.start_game(&host, game).await;
+    let join = |by: &User, index: u32, who: &User| {
+        h.batch(
+            by,
+            &id,
+            &[(
+                "PlayerJoined",
+                json!({"tick": 10, "player":
+                    {"index": index, "name": "P", "xuid": who.xuid, "team": 0}}),
+            )],
+        )
+    };
+    // A guest cannot add anyone else.
+    assert_eq!(
+        h.post_batch(&guest, &id, join(&guest, 2, &friend))
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    // An account already in the game cannot join it again.
+    assert_eq!(
+        h.post_batch(&host, &id, join(&host, 2, &guest))
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    // The host adds a player; one who left may join again as themselves.
+    assert_eq!(
+        h.post_batch(&host, &id, join(&host, 2, &friend))
+            .await
+            .status,
+        StatusCode::CREATED
+    );
+    let left = h.batch(
+        &host,
+        &id,
+        &[("PlayerLeft", json!({"tick": 20, "index": 2}))],
+    );
+    assert_eq!(
+        h.post_batch(&host, &id, left).await.status,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        h.post_batch(&friend, &id, join(&friend, 3, &friend))
+            .await
+            .status,
+        StatusCode::CREATED
+    );
+
+    // A guest cannot end the game (it leaves instead); the host does.
+    let end = |by: &User| {
+        h.batch(
+            by,
+            &id,
+            &[(
+                "GameEnded",
+                json!({"tick": 900, "reason": "quit", "winner": {"team": 0}}),
+            )],
+        )
+    };
+    assert_eq!(
+        h.post_batch(&guest, &id, end(&guest)).await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        h.post_batch(&host, &id, end(&host)).await.status,
+        StatusCode::CREATED
+    );
+}

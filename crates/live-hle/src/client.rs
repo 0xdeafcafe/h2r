@@ -186,6 +186,7 @@ enum Work {
     Ranks {
         leaderboards: Vec<u32>,
         xuids: Vec<u64>,
+        game_session: Option<String>,
     },
     Wake,
 }
@@ -337,18 +338,22 @@ impl Service {
         self.submit(s, Work::Mute { user, target, mute })
     }
     /// The standings the game's stats read asks for: every player on every
-    /// leaderboard (docs/live/live-matchmaking.md §8.1).
+    /// leaderboard (docs/live/live-matchmaking.md §8.3). `game_session`,
+    /// the Live session this console is in (hex), lets made-up bots answer
+    /// with the level their roster showed (§8.4).
     pub fn ranks(
         &self,
         s: &Session,
         leaderboards: Vec<u32>,
         xuids: Vec<u64>,
+        game_session: Option<String>,
     ) -> Result<Pending, u32> {
         self.submit(
             s,
             Work::Ranks {
                 leaderboards,
                 xuids,
+                game_session,
             },
         )
     }
@@ -1311,6 +1316,7 @@ impl Worker {
             Work::Ranks {
                 leaderboards,
                 xuids,
+                game_session,
             } => {
                 let active = self
                     .active
@@ -1320,11 +1326,14 @@ impl Worker {
                 let user = active.users.values().next().ok_or(NO_USER)?;
                 let boards: Vec<String> = leaderboards.iter().map(u32::to_string).collect();
                 let xuids: Vec<String> = xuids.iter().map(|x| Xuid(*x).to_string()).collect();
-                let path = format!(
+                let mut path = format!(
                     "/rank-stats?leaderboards={}&xuids={}",
                     boards.join(","),
                     xuids.join(","),
                 );
+                if let Some(id) = game_session {
+                    path.push_str(&format!("&session={id}"));
+                }
                 #[derive(serde::Deserialize)]
                 struct Rows {
                     items: Vec<live_proto::rank::LeaderboardRow>,

@@ -162,6 +162,9 @@ pub(crate) struct State {
     /// The guest's system time for the call in progress, when it is the
     /// accepted-invitation read ([`State::set_guest_now`]).
     guest_now: Option<u64>,
+    /// The network's registered keys for the stat read in progress
+    /// ([`State::set_read_keys`]): they name the session joined.
+    read_keys: Option<Vec<[u8; 8]>>,
 }
 impl State {
     pub fn new(
@@ -201,6 +204,7 @@ impl State {
             activity: None,
             auto: crate::auto::Auto::from_env(),
             guest_now: None,
+            read_keys: None,
         }
     }
     pub fn set_accounts(&mut self, accounts: Vec<Account>) {
@@ -620,6 +624,20 @@ impl State {
     pub fn set_guest_now(&mut self, now: Option<u64>) {
         self.guest_now = now;
     }
+    /// The registered keys for the next stat read (read before this lock,
+    /// as [`crate::Hle::matchmade`] does), so it can name the session this
+    /// console is in.
+    pub fn set_read_keys(&mut self, keys: Option<Vec<[u8; 8]>>) {
+        self.read_keys = keys;
+    }
+    /// The Live session (hex) this console advertises, else the one it
+    /// joined.
+    fn game_session(&self, keys: &[[u8; 8]]) -> Option<String> {
+        self.sessions
+            .current_id()
+            .map(|id| live_proto::sign::hex(&id))
+            .or_else(|| self.joined_session(keys))
+    }
     /// The title's read of the accepted invitation, said in the log when
     /// one was there.
     fn accepted_invite(&mut self, m: &mut Guest, out: u32) -> std::result::Result<u32, Error> {
@@ -1001,6 +1019,8 @@ impl State {
             if matches!(op, crate::stats::Op::Read | crate::stats::Op::Write) && !self.connected() {
                 return Ok(NO_SESSION);
             }
+            let keys = self.read_keys.take().unwrap_or_default();
+            let game_session = self.game_session(&keys);
             let session = self.session();
             return self.stats.invoke(
                 op,
@@ -1010,6 +1030,7 @@ impl State {
                     storage: &mut self.storage,
                     service: self.service.as_ref(),
                     session: session.as_ref(),
+                    game_session,
                 },
             );
         }
