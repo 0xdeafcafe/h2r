@@ -505,6 +505,7 @@ async fn host_session(h: &Harness, u: &User) -> String {
         skulls: None,
         campaign: None,
         ping_ms: None,
+        variant_ext: None,
     };
     let r = h
         .call(
