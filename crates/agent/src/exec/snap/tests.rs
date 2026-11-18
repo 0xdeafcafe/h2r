@@ -273,7 +273,13 @@ fn names_and_params_are_checked_before_any_wait() {
     }
     assert!(!a.snapshot_pending());
     // Replacing is asked for.
-    ask(&a, c, 8, state::SAVE, json!({"name": "taken", "replace": true}));
+    ask(
+        &a,
+        c,
+        8,
+        state::SAVE,
+        json!({"name": "taken", "replace": true}),
+    );
     a.between_slices(&mut Game(1), 0);
     a.run_snapshots(&mut m);
     assert_eq!(next(&rx)["result"]["name"], "taken");

@@ -227,12 +227,7 @@ impl agent::Snapshots for Shelf {
 
 /// The build key: the image's build stamp, and the switches, features and
 /// host parts that decide what is hooked and what holds state.
-pub fn build_key(
-    stamp: String,
-    switches: &str,
-    plan: &feature::Plan,
-    host: &[&str],
-) -> BuildKey {
+pub fn build_key(stamp: String, switches: &str, plan: &feature::Plan, host: &[&str]) -> BuildKey {
     let features: Vec<&str> = plan.snapshot.iter().map(|f| f.id).collect();
     BuildKey {
         stamp,
@@ -399,7 +394,9 @@ impl agent::SnapshotMachine for BootMachine<'_> {
             .iter()
             .flat_map(|p| {
                 let name = p.name();
-                p.blockers().into_iter().map(move |w| format!("{name}: {w}"))
+                p.blockers()
+                    .into_iter()
+                    .map(move |w| format!("{name}: {w}"))
             })
             .collect();
         out.extend(
@@ -521,7 +518,10 @@ impl Part for KernelPart<'_> {
 }
 
 /// `d3d`.
-struct D3dPart<'a>(&'a dyn crate::d3d_glue::DeviceSnapshot, &'a runtime::Runtime);
+struct D3dPart<'a>(
+    &'a dyn crate::d3d_glue::DeviceSnapshot,
+    &'a runtime::Runtime,
+);
 
 impl Part for D3dPart<'_> {
     fn name(&self) -> &'static str {

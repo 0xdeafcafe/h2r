@@ -45,7 +45,8 @@ impl Part for Fake {
             .require(Tag::new(self.name), 1..=1)
             .map_err(|e| e.to_string())?;
         let mut r = Reader::new(&bytes, "fake");
-        self.value.set(r.u64().map_err(|e| e.to_string())? + self.skew);
+        self.value
+            .set(r.u64().map_err(|e| e.to_string())? + self.skew);
         Ok(())
     }
 }
@@ -61,10 +62,8 @@ struct World {
 
 impl World {
     fn new(test: &str) -> World {
-        let root = std::env::temp_dir().join(format!(
-            "h2-snapshot-glue-{test}-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("h2-snapshot-glue-{test}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let build = BuildKey {
             stamp: "xbe 0 generator 0".into(),

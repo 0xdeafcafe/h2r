@@ -837,7 +837,10 @@ pub trait Backend: Send {
     /// ([`gfx::convert::depth_channels`]), one 2D level of the surface's
     /// size, as of the work queued so far, without reading back.
     /// `Ok(None)`: the backend cannot (the default).
-    fn depth_level_texture(&mut self, surface: Self::Surface) -> Result<Option<Self::Texture>, String> {
+    fn depth_level_texture(
+        &mut self,
+        surface: Self::Surface,
+    ) -> Result<Option<Self::Texture>, String> {
         let _ = surface;
         Ok(None)
     }
@@ -872,7 +875,9 @@ pub trait Backend: Send {
         desc: &TextureDesc,
         options: gfx::texture::DecodeOptions,
     ) -> Result<Option<Self::Texture>, String> {
-        let _ = (depth, format, width, height, pitch, generation, offset, desc, options);
+        let _ = (
+            depth, format, width, height, pitch, generation, offset, desc, options,
+        );
         Ok(None)
     }
     /// Whether the backend keeps the alias mirror: a buffer on its side
@@ -893,7 +898,9 @@ pub trait Backend: Send {
     /// of 4), after the work queued so far.
     fn mirror_write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), String> {
         let _ = bytes;
-        Err(format!("the backend has no alias mirror (write at {offset:#x})"))
+        Err(format!(
+            "the backend has no alias mirror (write at {offset:#x})"
+        ))
     }
     /// Encodes a render-to-texture surface into the mirror from byte
     /// `offset` as `format` texels laid out as `layout`, exactly the bytes
@@ -931,7 +938,9 @@ pub trait Backend: Send {
     /// Reads `len` mirror bytes from `offset` (multiples of 4) after the
     /// work queued so far: a GPU round trip.
     fn mirror_read(&mut self, offset: u32, len: u32) -> Result<Vec<u8>, String> {
-        Err(format!("the backend has no alias mirror (read {len} at {offset:#x})"))
+        Err(format!(
+            "the backend has no alias mirror (read {len} at {offset:#x})"
+        ))
     }
 }
 

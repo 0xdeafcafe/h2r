@@ -35,18 +35,17 @@ pub trait DeviceSnapshot: Send + Sync {
     fn blockers(&self) -> Vec<String>;
     /// The `d3d` section. Writes guest memory (render targets written
     /// back), so it runs before guest RAM is saved.
-    fn save(
-        &self,
-        rt: &runtime::Runtime,
-        out: &mut snapshot::SnapshotWriter,
-    ) -> Result<(), String>;
+    fn save(&self, rt: &runtime::Runtime, out: &mut snapshot::SnapshotWriter)
+    -> Result<(), String>;
     /// After guest RAM is loaded.
     fn load(&self, snapshot: &snapshot::Snapshot<'_>) -> Result<(), String>;
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> DeviceSnapshot for Mutex<d3d::Device<B>> {
     fn blockers(&self) -> Vec<String> {
-        self.lock().unwrap_or_else(|e| e.into_inner()).snapshot_blockers()
+        self.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .snapshot_blockers()
     }
     fn save(
         &self,
@@ -56,14 +55,15 @@ impl<B: d3d::backend::Backend + Send + 'static> DeviceSnapshot for Mutex<d3d::De
         let mut device = self.lock().unwrap_or_else(|e| e.into_inner());
         let mut guest = rt.memory();
         let mut mem = d3d::runtime_glue::GuestAdapter::new(&mut guest);
-        device.save_snapshot(&mut mem, out).map_err(|e| e.to_string())
+        device
+            .save_snapshot(&mut mem, out)
+            .map_err(|e| e.to_string())
     }
     fn load(&self, snapshot: &snapshot::Snapshot<'_>) -> Result<(), String> {
         let mut device = self.lock().unwrap_or_else(|e| e.into_inner());
         device.load_snapshot(snapshot).map_err(|e| e.to_string())
     }
 }
-
 
 /// `d3d::register` on a headless `RecordingBackend`, or, with
 /// `H2_BOOT_GFX=<dir>`, on a headless `GfxBackend` with the nv2a shader
@@ -98,7 +98,10 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
 /// guest frames shown meanwhile as `frame-NNNNN.png` ([`BetweenShots`]). Without
 /// `H2_BOOT_GFX` (nothing is drawn) and under the lighting A/B, `interp`
 /// is ignored.
-pub fn install_headless(rt: &runtime::Runtime, interp: Option<Interpolation>) -> anyhow::Result<Installed> {
+pub fn install_headless(
+    rt: &runtime::Runtime,
+    interp: Option<Interpolation>,
+) -> anyhow::Result<Installed> {
     match std::env::var_os("H2_BOOT_GFX") {
         None => install_with(rt, Headless::default()),
         Some(dir) => {
@@ -107,11 +110,15 @@ pub fn install_headless(rt: &runtime::Runtime, interp: Option<Interpolation>) ->
             // `never`: render on the GPU but write no screenshots (benchmarks).
             let every: u64 = match std::env::var("H2_BOOT_GFX_EVERY").ok().as_deref() {
                 Some("never") => u64::MAX,
-                v => v.and_then(|v| v.parse().ok()).filter(|&n| n > 0).unwrap_or(30),
+                v => v
+                    .and_then(|v| v.parse().ok())
+                    .filter(|&n| n > 0)
+                    .unwrap_or(30),
             };
             let scale = d3d::render_scale().map_err(anyhow::Error::msg)?;
             let lighting = d3d::scaled::lighting().map_err(anyhow::Error::msg)?;
-            let ctx = gfx::GfxContext::headless().map_err(|e| anyhow::anyhow!("gfx headless context: {e}"))?;
+            let ctx = gfx::GfxContext::headless()
+                .map_err(|e| anyhow::anyhow!("gfx headless context: {e}"))?;
             // `H2_BOOT_GFX_SHADOWS=N`: also the first N frames that sample
             // a shadow map (`d3d_diag::samples_shadow_map`, the same frames
             // in every run of the same input) and show something, whatever
@@ -133,11 +140,17 @@ pub fn install_headless(rt: &runtime::Runtime, interp: Option<Interpolation>) ->
             // `shadow_limit`: how many shadow-map frames it may add.
             // `between`: the in-between frames' shared state, for the
             // backend that shows them.
-            let shots = |suffix: &'static str, shadow_limit: u64, between: Option<Arc<BetweenShots>>| {
+            let shots = |suffix: &'static str,
+                         shadow_limit: u64,
+                         between: Option<Arc<BetweenShots>>| {
                 let dir = dir.clone();
                 let mut swaps = 0u64;
                 let mut shadows = 0u64;
-                move |ctx: &gfx::GfxContext, store: &gfx::surface::SurfaceStore, id, _flags, _gamma: Option<&[u8; 768]>| {
+                move |ctx: &gfx::GfxContext,
+                      store: &gfx::surface::SurfaceStore,
+                      id,
+                      _flags,
+                      _gamma: Option<&[u8; 768]>| {
                     swaps += 1;
                     // An in-between frame's neighbours: this frame after
                     // one now; before one later, from a GPU copy.
@@ -150,7 +163,8 @@ pub fn install_headless(rt: &runtime::Runtime, interp: Option<Interpolation>) ->
                         }
                         None => false,
                     };
-                    let regular = (swaps == 1 && every != u64::MAX) || swaps.is_multiple_of(every) || around;
+                    let regular =
+                        (swaps == 1 && every != u64::MAX) || swaps.is_multiple_of(every) || around;
                     let shadow = !regular
                         && shadows < shadow_limit
                         && crate::d3d_diag::samples_shadow_map(swaps);
@@ -170,7 +184,9 @@ pub fn install_headless(rt: &runtime::Runtime, interp: Option<Interpolation>) ->
                 // `scale` (`d3d::LightingAb`). `frame-N-retail.png` and
                 // `frame-N-e3.png` are a pair from the same frame.
                 let scale = scale.max(2);
-                let reference = configure_gfx(d3d::GfxBackend::new(share_context(&ctx)).on_present(shots("-1x", 0, None)));
+                let reference = configure_gfx(
+                    d3d::GfxBackend::new(share_context(&ctx)).on_present(shots("-1x", 0, None)),
+                );
                 // Every shadow-map frame is compared between the views; the
                 // first `H2_BOOT_GFX_SHADOWS` (default 40) that differ are
                 // written as pairs. `H2_BOOT_GFX_EVERY` writes both views'
@@ -180,28 +196,49 @@ pub fn install_headless(rt: &runtime::Runtime, interp: Option<Interpolation>) ->
                 let mut retail_shots = shots("-retail", 0, None);
                 let held = Arc::clone(&ab);
                 let mut retail_swaps = 0u64;
-                let retail_hook = move |ctx: &gfx::GfxContext, store: &gfx::surface::SurfaceStore, id, flags, gamma: Option<&[u8; 768]>| {
-                    retail_swaps += 1;
-                    if crate::d3d_diag::samples_shadow_map(retail_swaps) {
-                        match read_rgba(ctx, store, id) {
-                            Ok((px, _, _)) => held.lock().unwrap().pending = Some((retail_swaps, px)),
-                            Err(e) => eprintln!("boot: lighting A/B {retail_swaps}: {e}"),
+                let retail_hook =
+                    move |ctx: &gfx::GfxContext,
+                          store: &gfx::surface::SurfaceStore,
+                          id,
+                          flags,
+                          gamma: Option<&[u8; 768]>| {
+                        retail_swaps += 1;
+                        if crate::d3d_diag::samples_shadow_map(retail_swaps) {
+                            match read_rgba(ctx, store, id) {
+                                Ok((px, _, _)) => {
+                                    held.lock().unwrap().pending = Some((retail_swaps, px))
+                                }
+                                Err(e) => eprintln!("boot: lighting A/B {retail_swaps}: {e}"),
+                            }
                         }
-                    }
-                    retail_shots(ctx, store, id, flags, gamma);
-                };
+                        retail_shots(ctx, store, id, flags, gamma);
+                    };
                 let mut e3_shots = shots("-e3", 0, None);
                 let held = Arc::clone(&ab);
                 let (dir_ab, mut e3_swaps, mut written) = (dir.clone(), 0u64, 0u64);
-                let e3_hook = move |ctx: &gfx::GfxContext, store: &gfx::surface::SurfaceStore, id, flags, gamma: Option<&[u8; 768]>| {
+                let e3_hook = move |ctx: &gfx::GfxContext,
+                                    store: &gfx::surface::SurfaceStore,
+                                    id,
+                                    flags,
+                                    gamma: Option<&[u8; 768]>| {
                     e3_swaps += 1;
                     if crate::d3d_diag::samples_shadow_map(e3_swaps) {
                         let result = read_rgba(ctx, store, id).and_then(|(px, w, h)| {
                             let retail = held.lock().unwrap().compare(e3_swaps, &px);
                             if let Some(retail) = retail.filter(|_| written < pairs) {
                                 written += 1;
-                                write_png(&dir_ab.join(format!("frame-{e3_swaps:05}-retail.png")), &retail, w, h)?;
-                                write_png(&dir_ab.join(format!("frame-{e3_swaps:05}-e3.png")), &px, w, h)?;
+                                write_png(
+                                    &dir_ab.join(format!("frame-{e3_swaps:05}-retail.png")),
+                                    &retail,
+                                    w,
+                                    h,
+                                )?;
+                                write_png(
+                                    &dir_ab.join(format!("frame-{e3_swaps:05}-e3.png")),
+                                    &px,
+                                    w,
+                                    h,
+                                )?;
                             }
                             Ok(())
                         });
@@ -211,16 +248,29 @@ pub fn install_headless(rt: &runtime::Runtime, interp: Option<Interpolation>) ->
                     }
                     e3_shots(ctx, store, id, flags, gamma);
                 };
-                let retail = configure_gfx(d3d::GfxBackend::new(share_context(&ctx)).on_present(retail_hook));
+                let retail = configure_gfx(
+                    d3d::GfxBackend::new(share_context(&ctx)).on_present(retail_hook),
+                );
                 let e3 = configure_gfx(d3d::GfxBackend::new(ctx).on_present(e3_hook));
                 if interp.is_some() {
-                    eprintln!("d3d: in-between frames are off under the lighting A/B (H2_BOOT_GFX_LIGHTING_AB)");
+                    eprintln!(
+                        "d3d: in-between frames are off under the lighting A/B (H2_BOOT_GFX_LIGHTING_AB)"
+                    );
                 }
-                let mut b = d3d::lighting_ab(reference, retail, e3, scale).map_err(anyhow::Error::msg)?;
-                eprintln!("d3d: lighting A/B at {scale}x (H2_BOOT_GFX_LIGHTING_AB): a retail and an E3 view of one run; the guest sees a 1x reference");
-                let (retail_report, e3_report) = (scale_report(b.reference_mut()), scale_report(&mut b));
+                let mut b =
+                    d3d::lighting_ab(reference, retail, e3, scale).map_err(anyhow::Error::msg)?;
+                eprintln!(
+                    "d3d: lighting A/B at {scale}x (H2_BOOT_GFX_LIGHTING_AB): a retail and an E3 view of one run; the guest sees a 1x reference"
+                );
+                let (retail_report, e3_report) =
+                    (scale_report(b.reference_mut()), scale_report(&mut b));
                 let report: ExtraReport = Box::new(move || {
-                    format!("retail view: {}\ne3 view: {}\n{}", retail_report(), e3_report(), ab.lock().unwrap().report())
+                    format!(
+                        "retail view: {}\ne3 view: {}\n{}",
+                        retail_report(),
+                        e3_report(),
+                        ab.lock().unwrap().report()
+                    )
                 });
                 return if render_thread_requested() {
                     install_with_report(rt, d3d::ThreadedBackend::new(b)?, Some(report))
@@ -243,9 +293,12 @@ pub fn install_headless(rt: &runtime::Runtime, interp: Option<Interpolation>) ->
                         .on_present(shots("", shadow_shots, Some(Arc::clone(&between))))
                         .on_present_replay(between.hook(dir.clone(), "")),
                 );
-                let mut b = d3d::ScaledBackend::new(reference, view, scale).map_err(anyhow::Error::msg)?;
+                let mut b =
+                    d3d::ScaledBackend::new(reference, view, scale).map_err(anyhow::Error::msg)?;
                 b.set_lighting(lighting);
-                eprintln!("d3d: rendering at {scale}x (H2_RENDER_SCALE), {lighting:?} lighting (H2_LIGHTING); the guest sees a 1x reference");
+                eprintln!(
+                    "d3d: rendering at {scale}x (H2_RENDER_SCALE), {lighting:?} lighting (H2_LIGHTING); the guest sees a 1x reference"
+                );
                 let report = scale_report(&mut b);
                 return if render_thread_requested() {
                     install_threaded(rt, b, Some(report), interp)
@@ -322,7 +375,11 @@ pub struct BetweenShot {
 
 impl BetweenShots {
     pub fn new(limit: u64) -> Arc<Self> {
-        Arc::new(Self { limit, state: Mutex::default(), kept: Mutex::new(None) })
+        Arc::new(Self {
+            limit,
+            state: Mutex::default(),
+            kept: Mutex::new(None),
+        })
     }
 
     fn state(&self) -> std::sync::MutexGuard<'_, BetweenState> {
@@ -340,7 +397,10 @@ impl BetweenShots {
         if write {
             s.shown = Some(n);
         }
-        GuestShot { write, keep: !write && s.written < self.limit }
+        GuestShot {
+            write,
+            keep: !write && s.written < self.limit,
+        }
     }
 
     /// The next in-between frame's file name (`suffix` after the swap
@@ -354,14 +414,23 @@ impl BetweenShots {
         s.written += 1;
         s.since += 1;
         let swap = s.swap;
-        let before = (swap > 0 && s.shown != Some(swap)).then(|| format!("frame-{swap:05}{suffix}.png"));
+        let before =
+            (swap > 0 && s.shown != Some(swap)).then(|| format!("frame-{swap:05}{suffix}.png"));
         s.shown = Some(swap);
-        Some(BetweenShot { name: format!("frame-{swap:05}{suffix}-between-{:02}.png", s.since), before })
+        Some(BetweenShot {
+            name: format!("frame-{swap:05}{suffix}-between-{:02}.png", s.since),
+            before,
+        })
     }
 
     /// Copies guest frame `id` on the GPU, for [`Self::next_between`]'s
     /// `before`.
-    fn keep(&self, ctx: &gfx::GfxContext, store: &gfx::surface::SurfaceStore, id: gfx::surface::SurfaceId) {
+    fn keep(
+        &self,
+        ctx: &gfx::GfxContext,
+        store: &gfx::surface::SurfaceStore,
+        id: gfx::surface::SurfaceId,
+    ) {
         let mut kept = self.kept.lock().unwrap_or_else(|e| e.into_inner());
         if let Err(e) = store.keep_color(ctx, id, &mut kept) {
             *kept = None;
@@ -372,7 +441,9 @@ impl BetweenShots {
     /// Writes the kept guest frame as `path`.
     fn write_kept(&self, ctx: &gfx::GfxContext, path: &std::path::Path) -> anyhow::Result<()> {
         let kept = self.kept.lock().unwrap_or_else(|e| e.into_inner());
-        let k = kept.as_ref().ok_or_else(|| anyhow::anyhow!("no copy of the guest frame"))?;
+        let k = kept
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("no copy of the guest frame"))?;
         let (mut px, order, (w, h)) = k.read(ctx);
         opaque_rgba(&mut px, order);
         write_png(path, &px, w, h)
@@ -385,8 +456,14 @@ impl BetweenShots {
         self: &Arc<Self>,
         dir: std::path::PathBuf,
         suffix: &'static str,
-    ) -> impl FnMut(&gfx::GfxContext, &gfx::surface::SurfaceStore, gfx::surface::SurfaceId, u32, Option<&[u8; 768]>) + Send + 'static
-    {
+    ) -> impl FnMut(
+        &gfx::GfxContext,
+        &gfx::surface::SurfaceStore,
+        gfx::surface::SurfaceId,
+        u32,
+        Option<&[u8; 768]>,
+    ) + Send
+    + 'static {
         let me = Arc::clone(self);
         move |ctx, store, id, _flags, _gamma| {
             let Some(shot) = me.next_between(suffix) else {
@@ -416,7 +493,11 @@ fn configure_gfx(mut backend: d3d::GfxBackend) -> d3d::GfxBackend {
     }
     // H2_GFX_MERGE_CHECK=N: compare merged and per-draw passes in
     // frame N and print what differs.
-    backend.set_merge_check(std::env::var("H2_GFX_MERGE_CHECK").ok().and_then(|v| v.parse().ok()));
+    backend.set_merge_check(
+        std::env::var("H2_GFX_MERGE_CHECK")
+            .ok()
+            .and_then(|v| v.parse().ok()),
+    );
     // The persistent pipeline cache (H2_PIPELINE_CACHE, default in
     // the user's cache directory): prewarm last run's pipelines.
     match d3d::pipeline_store::default_path() {
@@ -500,7 +581,11 @@ pub fn interpolation(
         switches.feature("impl.render.reproject", false),
         switches.feature("impl.render.reproject_ahead", false),
     )?;
-    if !interpolation_from(true, render_thread, std::env::var("H2_PIPELINE_RENDER").ok().as_deref()) {
+    if !interpolation_from(
+        true,
+        render_thread,
+        std::env::var("H2_PIPELINE_RENDER").ok().as_deref(),
+    ) {
         return None;
     }
     match mode {
@@ -546,7 +631,12 @@ pub fn interp_mode(interpolate: bool, reproject: bool, ahead: bool) -> Option<d3
 /// the headless GPU backend `H2_BOOT_GFX` makes (`boot_gfx`) runs on one
 /// unless `H2_RENDER_THREAD=0` (`env_render_thread`). `None`: no GPU
 /// backend (the headless recorder draws nothing to make frames from).
-pub fn interp_render_thread(windowed: bool, host_render_thread: bool, boot_gfx: bool, env_render_thread: bool) -> Option<bool> {
+pub fn interp_render_thread(
+    windowed: bool,
+    host_render_thread: bool,
+    boot_gfx: bool,
+    env_render_thread: bool,
+) -> Option<bool> {
     if windowed {
         Some(host_render_thread)
     } else if boot_gfx {
@@ -558,16 +648,24 @@ pub fn interp_render_thread(windowed: bool, host_render_thread: bool, boot_gfx: 
 
 /// [`interpolation`]'s decision: the switch, the render thread, and
 /// `H2_PIPELINE_RENDER` unset or `0`.
-pub fn interpolation_from(switch: bool, render_thread: bool, pipeline_render: Option<&str>) -> bool {
+pub fn interpolation_from(
+    switch: bool,
+    render_thread: bool,
+    pipeline_render: Option<&str>,
+) -> bool {
     if !switch {
         return false;
     }
     if !render_thread {
-        eprintln!("d3d: in-between frames (impl.render.interpolate, impl.render.reproject) need the render thread (H2_RENDER_THREAD=0 is set): off");
+        eprintln!(
+            "d3d: in-between frames (impl.render.interpolate, impl.render.reproject) need the render thread (H2_RENDER_THREAD=0 is set): off"
+        );
         return false;
     }
     if pipeline_render.is_some_and(|v| v != "0") {
-        eprintln!("d3d: in-between frames (impl.render.interpolate, impl.render.reproject) are off under H2_PIPELINE_RENDER");
+        eprintln!(
+            "d3d: in-between frames (impl.render.interpolate, impl.render.reproject) are off under H2_PIPELINE_RENDER"
+        );
         return false;
     }
     true
@@ -634,7 +732,9 @@ fn read_rgba(
     store: &gfx::surface::SurfaceStore,
     id: gfx::surface::SurfaceId,
 ) -> anyhow::Result<(Vec<u8>, u32, u32)> {
-    let (mut px, order) = store.read_color(ctx, id).map_err(|e| anyhow::anyhow!("{e:?}"))?;
+    let (mut px, order) = store
+        .read_color(ctx, id)
+        .map_err(|e| anyhow::anyhow!("{e:?}"))?;
     let d = store.get(id).map_err(|e| anyhow::anyhow!("{e:?}"))?.desc();
     opaque_rgba(&mut px, order);
     Ok((px, d.width, d.height))
@@ -709,7 +809,11 @@ impl AbCompare {
             self.differ,
             self.compared,
             self.noise,
-            if first.is_empty() { String::new() } else { format!(" (first: {})", first.join(", ")) }
+            if first.is_empty() {
+                String::new()
+            } else {
+                format!(" (first: {})", first.join(", "))
+            }
         )
     }
 }
@@ -744,7 +848,12 @@ pub struct Headless(RecordingBackend);
 impl Headless {
     fn forget<T>(&mut self, r: T) -> T {
         use d3d::backend::Recorded;
-        if self.0.calls.last().is_some_and(|c| !matches!(c, Recorded::Surface { .. } | Recorded::DestroySurface { .. })) {
+        if self.0.calls.last().is_some_and(|c| {
+            !matches!(
+                c,
+                Recorded::Surface { .. } | Recorded::DestroySurface { .. }
+            )
+        }) {
             self.0.calls.pop();
         }
         r
@@ -760,7 +869,13 @@ impl d3d::backend::Backend for Headless {
     type Surface = u32;
     type Texture = u32;
 
-    fn create_surface(&mut self, format: gfx::D3DFormat, width: u32, height: u32, depth: bool) -> Result<u32, String> {
+    fn create_surface(
+        &mut self,
+        format: gfx::D3DFormat,
+        width: u32,
+        height: u32,
+        depth: bool,
+    ) -> Result<u32, String> {
         self.0.create_surface(format, width, height, depth)
     }
     fn destroy_surface(&mut self, surface: u32) -> Result<(), String> {
@@ -793,7 +908,10 @@ impl d3d::backend::Backend for Headless {
         depth: Option<u32>,
         draw: d3d::backend::ResolvedDraw,
         textures: [Option<&u32>; 4],
-    ) -> (Result<d3d::backend::DrawOutcome, String>, Vec<d3d::backend::StreamBytes>) {
+    ) -> (
+        Result<d3d::backend::DrawOutcome, String>,
+        Vec<d3d::backend::StreamBytes>,
+    ) {
         let r = self.0.draw_owned(color, depth, draw, textures);
         self.forget(r)
     }
@@ -852,11 +970,21 @@ impl d3d::backend::Backend for Headless {
     fn gpu_fence(&mut self) -> Option<Box<dyn Fn() -> bool + Send>> {
         self.0.gpu_fence()
     }
-    fn present_with_gamma(&mut self, surface: u32, flags: u32, gamma: Option<&[u8; 768]>) -> Result<(), String> {
+    fn present_with_gamma(
+        &mut self,
+        surface: u32,
+        flags: u32,
+        gamma: Option<&[u8; 768]>,
+    ) -> Result<(), String> {
         let r = self.0.present_with_gamma(surface, flags, gamma);
         self.forget(r)
     }
-    fn clear_rects(&mut self, color: u32, depth: Option<u32>, clear: &d3d::backend::RectClear) -> Result<d3d::backend::DrawOutcome, String> {
+    fn clear_rects(
+        &mut self,
+        color: u32,
+        depth: Option<u32>,
+        clear: &d3d::backend::RectClear,
+    ) -> Result<d3d::backend::DrawOutcome, String> {
         let r = self.0.clear_rects(color, depth, clear);
         self.forget(r)
     }
@@ -886,7 +1014,12 @@ impl d3d::backend::Backend for Headless {
         let r = self.0.copy_surface(src, dst);
         self.forget(r)
     }
-    fn write_surface(&mut self, surface: u32, desc: &gfx::texture::TextureDesc, bytes: &[u8]) -> Result<bool, String> {
+    fn write_surface(
+        &mut self,
+        surface: u32,
+        desc: &gfx::texture::TextureDesc,
+        bytes: &[u8],
+    ) -> Result<bool, String> {
         let r = self.0.write_surface(surface, desc, bytes);
         self.forget(r)
     }
@@ -923,7 +1056,12 @@ impl d3d::backend::Backend for Headless {
         // Never called: the recorder does not sample depth surfaces.
         self.0.depth_level_texture(surface)
     }
-    fn create_texture_target(&mut self, format: gfx::D3DFormat, width: u32, height: u32) -> Result<u32, String> {
+    fn create_texture_target(
+        &mut self,
+        format: gfx::D3DFormat,
+        width: u32,
+        height: u32,
+    ) -> Result<u32, String> {
         self.0.create_texture_target(format, width, height)
     }
     fn can_sample_surfaces(&self) -> bool {
@@ -942,11 +1080,29 @@ impl d3d::backend::Backend for Headless {
     fn mirror_write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), String> {
         self.0.mirror_write(offset, bytes)
     }
-    fn mirror_store(&mut self, surface: u32, format: gfx::D3DFormat, width: u32, height: u32, layout: d3d::backend::GuestLayoutKind, offset: u32) -> Result<(), String> {
-        self.0.mirror_store(surface, format, width, height, layout, offset)
+    fn mirror_store(
+        &mut self,
+        surface: u32,
+        format: gfx::D3DFormat,
+        width: u32,
+        height: u32,
+        layout: d3d::backend::GuestLayoutKind,
+        offset: u32,
+    ) -> Result<(), String> {
+        self.0
+            .mirror_store(surface, format, width, height, layout, offset)
     }
-    fn mirror_load(&mut self, surface: u32, format: gfx::D3DFormat, width: u32, height: u32, layout: d3d::backend::GuestLayoutKind, offset: u32) -> Result<(), String> {
-        self.0.mirror_load(surface, format, width, height, layout, offset)
+    fn mirror_load(
+        &mut self,
+        surface: u32,
+        format: gfx::D3DFormat,
+        width: u32,
+        height: u32,
+        layout: d3d::backend::GuestLayoutKind,
+        offset: u32,
+    ) -> Result<(), String> {
+        self.0
+            .mirror_load(surface, format, width, height, layout, offset)
     }
     fn mirror_read(&mut self, offset: u32, len: u32) -> Result<Vec<u8>, String> {
         self.0.mirror_read(offset, len)
@@ -970,13 +1126,18 @@ impl d3d::backend::Backend for Headless {
         desc: &gfx::texture::TextureDesc,
         options: gfx::texture::DecodeOptions,
     ) -> Result<Option<u32>, String> {
-        self.0.depth_alias_texture(depth, format, width, height, pitch, generation, offset, desc, options)
+        self.0.depth_alias_texture(
+            depth, format, width, height, pitch, generation, offset, desc, options,
+        )
     }
 }
 
 /// [`install`] on the caller's backend (a host window's `GfxBackend`, with
 /// its present hook already attached).
-pub fn install_with<B: d3d::backend::Backend + Send + 'static>(rt: &runtime::Runtime, backend: B) -> anyhow::Result<Installed> {
+pub fn install_with<B: d3d::backend::Backend + Send + 'static>(
+    rt: &runtime::Runtime,
+    backend: B,
+) -> anyhow::Result<Installed> {
     install_with_report(rt, backend, None)
 }
 
@@ -998,8 +1159,14 @@ pub fn install_with_report<B: d3d::backend::Backend + Send + 'static>(
         upload,
         nv2a_window: Some(NV2A_BASE),
         ..DeviceConfig::halo2(
-            GuestRange { addr: PUSH_BASE, len: PUSH_LEN },
-            GuestRange { addr: SCRATCH_BASE, len: 0x1000 },
+            GuestRange {
+                addr: PUSH_BASE,
+                len: PUSH_LEN,
+            },
+            GuestRange {
+                addr: SCRATCH_BASE,
+                len: 0x1000,
+            },
         )
     };
     d3d::runtime_glue::map_device_memory(&mut rt.memory(), &cfg)?;
@@ -1022,9 +1189,15 @@ pub fn install_with_report<B: d3d::backend::Backend + Send + 'static>(
         );
     });
     let r = out.unwrap();
-    let entries: Vec<u32> = r.implemented.iter().chain(&r.stopping).map(|e| e.0).collect();
+    let entries: Vec<u32> = r
+        .implemented
+        .iter()
+        .chain(&r.stopping)
+        .map(|e| e.0)
+        .collect();
     install_write_barrier(rt, &device, &entries)?;
-    let vblank: Option<kernel::periodic::Handler> = Some(Box::new(d3d::vblank::clocked_vblanks(Arc::clone(&device))));
+    let vblank: Option<kernel::periodic::Handler> =
+        Some(Box::new(d3d::vblank::clocked_vblanks(Arc::clone(&device))));
     let snapshot: Arc<dyn DeviceSnapshot> = device.clone();
     let dev = device;
     Ok(Installed {
@@ -1036,7 +1209,9 @@ pub fn install_with_report<B: d3d::backend::Backend + Send + 'static>(
             let mut ev: std::collections::BTreeMap<String, u64> = Default::default();
             for e in d.take_events() {
                 let k = match e {
-                    d3d::Event::DrawSkipped { entry, reason } => format!("draw skipped in {entry}: {reason}"),
+                    d3d::Event::DrawSkipped { entry, reason } => {
+                        format!("draw skipped in {entry}: {reason}")
+                    }
                     d3d::Event::BadState(b) => format!("bad state {b:?}"),
                     other => format!("{other:?}"),
                 };
@@ -1045,9 +1220,21 @@ pub fn install_with_report<B: d3d::backend::Backend + Send + 'static>(
             }
             let mut ev: Vec<_> = ev.into_iter().collect();
             ev.sort_by_key(|e| std::cmp::Reverse(e.1));
-            let ev: String = ev.iter().take(40).map(|(k, n)| format!("\n  event {n:>8}  {k}")).collect();
-            let extra = extra.as_ref().map(|f| format!("\n{}", f())).unwrap_or_default();
-            format!("stats {:?}; last stop {:?}{ev}\n{}{extra}", d.stats(), d.last_stop(), draw_stats.lock().unwrap().report())
+            let ev: String = ev
+                .iter()
+                .take(40)
+                .map(|(k, n)| format!("\n  event {n:>8}  {k}"))
+                .collect();
+            let extra = extra
+                .as_ref()
+                .map(|f| format!("\n{}", f()))
+                .unwrap_or_default();
+            format!(
+                "stats {:?}; last stop {:?}{ev}\n{}{extra}",
+                d.stats(),
+                d.last_stop(),
+                draw_stats.lock().unwrap().report()
+            )
         }),
         implemented: r.implemented.len(),
         stopping: r.stopping.len(),
@@ -1067,8 +1254,6 @@ pub fn describe(i: &Installed) -> String {
     )
 }
 
-
-
 /// The NV2A register window crates/d3d maps and stores at device+0x934
 /// (`DeviceConfig::nv2a_window`): the retail 0xfd000000 cannot be used, as
 /// the runtime keeps the NV2A aperture free of RAM mappings.
@@ -1084,22 +1269,27 @@ const CREATE_DEVICE: u32 = 0x003f_5240;
 /// handler moves to a shadow address and a continuation runs once it
 /// returns.
 pub fn install_back_surfaces(rt: &runtime::Runtime) -> anyhow::Result<()> {
-    rt.memory().map_zeroed(D3D_SHADOW, 0x1000, runtime::guest::Permissions::RX)?;
+    rt.memory()
+        .map_zeroed(D3D_SHADOW, 0x1000, runtime::guest::Permissions::RX)?;
     let device = d3d::GuestLayout::HALO2.device;
     let shadow = D3D_SHADOW;
     rt.edit_dispatch(|d| {
-        let prev = d.register_override(CREATE_DEVICE, "boot:CreateDevice+back surfaces", move |cpu, ctx, _| {
-            let rt = Arc::clone(ctx.runtime());
-            let mut mem = rt.memory();
-            let ret_pc = mem.u32(cpu.esp)?;
-            cpu.esp = cpu.esp.wrapping_add(4);
-            ctx.call_guest(cpu, &mut mem, shadow, move |cpu, ctx| {
-                if cpu.eax == 0 {
-                    back_surfaces(&mut ctx.runtime().memory(), device);
-                }
-                Ok(runtime::TransferAbi::ret(ret_pc))
-            })
-        });
+        let prev = d.register_override(
+            CREATE_DEVICE,
+            "boot:CreateDevice+back surfaces",
+            move |cpu, ctx, _| {
+                let rt = Arc::clone(ctx.runtime());
+                let mut mem = rt.memory();
+                let ret_pc = mem.u32(cpu.esp)?;
+                cpu.esp = cpu.esp.wrapping_add(4);
+                ctx.call_guest(cpu, &mut mem, shadow, move |cpu, ctx| {
+                    if cpu.eax == 0 {
+                        back_surfaces(&mut ctx.runtime().memory(), device);
+                    }
+                    Ok(runtime::TransferAbi::ret(ret_pc))
+                })
+            },
+        );
         if let Some(prev) = prev {
             d.restore_override(shadow, prev);
         }
@@ -1121,7 +1311,11 @@ pub const WC_BASE: u32 = 0xf000_0000;
 /// given `WC_BASE | start` as an extra alias; see `run`).
 pub fn map_reserved_write_combined(rt: &runtime::Runtime) -> anyhow::Result<()> {
     let mut mem = rt.memory();
-    let rs: Vec<_> = mem.physical_reservations().iter().map(|r| (r.id, r.physical_start, r.len)).collect();
+    let rs: Vec<_> = mem
+        .physical_reservations()
+        .iter()
+        .map(|r| (r.id, r.physical_start, r.len))
+        .collect();
     for (id, start, len) in rs {
         mem.map_reserved(id, WC_BASE | start, len, runtime::guest::Permissions::RW)?;
     }
@@ -1132,11 +1326,18 @@ pub fn map_write_combined(mem: &mut runtime::Guest, va: u32, len: u32) -> anyhow
     let m = mem
         .mappings()
         .iter()
-        .find(|m| m.virtual_start <= va && va as u64 + len as u64 <= m.virtual_start as u64 + m.len as u64)
+        .find(|m| {
+            m.virtual_start <= va && va as u64 + len as u64 <= m.virtual_start as u64 + m.len as u64
+        })
         .map(|m| m.physical_start + (va - m.virtual_start))
         .ok_or_else(|| anyhow::anyhow!("{va:#x}: not one mapping"))?;
     let phys = m;
-    mem.map(0xf000_0000 | (va & 0x0fff_ffff), len, phys, runtime::guest::Permissions::RW)?;
+    mem.map(
+        0xf000_0000 | (va & 0x0fff_ffff),
+        len,
+        phys,
+        runtime::guest::Permissions::RW,
+    )?;
     Ok(())
 }
 
@@ -1150,27 +1351,49 @@ pub fn map_write_combined(mem: &mut runtime::Guest, va: u32, len: u32) -> anyhow
 pub fn back_surfaces(mem: &mut runtime::Guest, device: u32) {
     use d3d::layout::device_field as field;
     for f in [field::BACK_BUFFER, field::DEPTH_STENCIL] {
-        let Ok(header) = mem.u32(device + f) else { continue };
+        let Ok(header) = mem.u32(device + f) else {
+            continue;
+        };
         if header == 0 || mem.u32(header + 4).is_ok_and(|d| d != 0) {
             continue;
         }
-        let Ok(size) = mem.u32(header + 16) else { continue };
-        let (w, h, pitch) = ((size & 0xfff) + 1, ((size >> 12) & 0xfff) + 1, ((size >> 24) + 1) * 64);
-        let len = (pitch * h).max(w * 4).next_multiple_of(0x1000);
-        let Some(phys) = mem.find_free_physical(len, 0..0x0400_0000, 0x1_0000) else {
-            crate::log::note(&format!("back surface {header:#x}: no free physical memory"));
+        let Ok(size) = mem.u32(header + 16) else {
             continue;
         };
-        if mem.map(0x8000_0000 | phys, len, phys, runtime::guest::Permissions::RW).is_err() {
+        let (w, h, pitch) = (
+            (size & 0xfff) + 1,
+            ((size >> 12) & 0xfff) + 1,
+            ((size >> 24) + 1) * 64,
+        );
+        let len = (pitch * h).max(w * 4).next_multiple_of(0x1000);
+        let Some(phys) = mem.find_free_physical(len, 0..0x0400_0000, 0x1_0000) else {
+            crate::log::note(&format!(
+                "back surface {header:#x}: no free physical memory"
+            ));
+            continue;
+        };
+        if mem
+            .map(
+                0x8000_0000 | phys,
+                len,
+                phys,
+                runtime::guest::Permissions::RW,
+            )
+            .is_err()
+        {
             crate::log::note(&format!("back surface {header:#x}: no room at {phys:#x}"));
             continue;
         }
-        let _ = mem.map(0xf000_0000 | phys, len, phys, runtime::guest::Permissions::RW);
+        let _ = mem.map(
+            0xf000_0000 | phys,
+            len,
+            phys,
+            runtime::guest::Permissions::RW,
+        );
         let _ = mem.write_bytes(0x8000_0000 | phys, &vec![0; len as usize], 1);
         let _ = mem.set_u32(header + 4, phys);
     }
 }
-
 
 /// The write barrier's write-watch owner: it drains its subscription by id
 /// through whichever Guest the entry runs against, so a pipelined render
@@ -1200,8 +1423,11 @@ pub fn pipeline_render(i: Option<&Installed>) -> feature::pipeline_render::Pipel
 /// hooks, docs/graphics/pipelined-render.md): the D3D entries,
 /// CreateDevice's shadow, and the port I/O stubs.
 pub fn pipeline_allow(entries: &[u32]) -> impl Fn(u32, &str) -> bool + Send + Sync + 'static {
-    let allowed: std::collections::BTreeSet<u32> =
-        entries.iter().copied().chain(d3d::abi::PORT_IO.iter().map(|p| p.0)).collect();
+    let allowed: std::collections::BTreeSet<u32> = entries
+        .iter()
+        .copied()
+        .chain(d3d::abi::PORT_IO.iter().map(|p| p.0))
+        .collect();
     move |addr, _| allowed.contains(&addr) || (D3D_SHADOW..D3D_SHADOW + 0x1000).contains(&addr)
 }
 
@@ -1231,7 +1457,8 @@ fn install_write_barrier<B: d3d::backend::Backend + Send + 'static>(
     let id = {
         let mut mem = rt.memory();
         let id = mem.subscribe_writes(WATCH_OWNER);
-        mem.watch_writes(id, CONTIGUOUS_BASE, 0x0400_0000).map_err(|e| anyhow::anyhow!("{e}"))?;
+        mem.watch_writes(id, CONTIGUOUS_BASE, 0x0400_0000)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
         id
     };
     rt.edit_dispatch(|d| {
@@ -1246,7 +1473,11 @@ fn install_write_barrier<B: d3d::backend::Backend + Send + 'static>(
                     dv.note_written_pages(r.addr, r.len);
                 }
             };
-            d.register_override(addr, "boot:d3d write barrier", barrier_handler(prev, id, note));
+            d.register_override(
+                addr,
+                "boot:d3d write barrier",
+                barrier_handler(prev, id, note),
+            );
         }
     });
     Ok(())
@@ -1267,7 +1498,11 @@ pub fn barrier_handler(
     prev: runtime::exec::OriginalHandler,
     id: runtime::WatchId,
     note: impl Fn(&[runtime::DirtyRange]) + Send + Sync + 'static,
-) -> impl Fn(&mut runtime::CpuAbi, &mut runtime::ExecCtx, u32) -> Result<runtime::TransferAbi, runtime::GuestFault>
+) -> impl Fn(
+    &mut runtime::CpuAbi,
+    &mut runtime::ExecCtx,
+    u32,
+) -> Result<runtime::TransferAbi, runtime::GuestFault>
 + Send
 + Sync
 + 'static {
@@ -1286,7 +1521,9 @@ pub fn barrier_handler(
 /// order with the draws; the finished grid goes back to the feature with
 /// the W-buffer's mapping to view depth. Inert unless
 /// `impl.render.occlusion` is on (nothing asks).
-fn install_occlusion_capture<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
+fn install_occlusion_capture<B: d3d::backend::Backend + Send + 'static>(
+    device: &d3d::abi::SharedDevice<B>,
+) {
     let dev = Arc::clone(device);
     feature::occlusion::set_capture(Box::new(move |tag, width, height| {
         let Ok(mut d) = dev.lock() else { return };
@@ -1295,7 +1532,13 @@ fn install_occlusion_capture<B: d3d::backend::Backend + Send + 'static>(device: 
             width,
             height,
             Arc::new(|r: d3d::DepthGridResult, s: d3d::DepthScale| {
-                feature::occlusion::deliver(r.tag, r.width, r.height, &r.depth, w_buffer_mapping(s));
+                feature::occlusion::deliver(
+                    r.tag,
+                    r.width,
+                    r.height,
+                    &r.depth,
+                    w_buffer_mapping(s),
+                );
             }),
         );
     }));
@@ -1318,8 +1561,14 @@ mod tests {
     #[test]
     fn frame_stats_without_a_gpu_say_the_gpu_counters_stay_zero() {
         let note = frame_stats_gpu_note(true, false).unwrap();
-        assert!(note.contains("draws") && note.contains("passes") && note.contains("stay 0"), "{note}");
-        assert!(note.contains("H2_BOOT_GFX=<dir> H2_BOOT_GFX_EVERY=never"), "{note}");
+        assert!(
+            note.contains("draws") && note.contains("passes") && note.contains("stay 0"),
+            "{note}"
+        );
+        assert!(
+            note.contains("H2_BOOT_GFX=<dir> H2_BOOT_GFX_EVERY=never"),
+            "{note}"
+        );
         assert_eq!(frame_stats_gpu_note(true, true), None);
         assert_eq!(frame_stats_gpu_note(false, false), None);
     }
@@ -1368,7 +1617,10 @@ mod tests {
         assert!(interpolation_from(true, true, None));
         assert!(interpolation_from(true, true, Some("0")));
         assert!(!interpolation_from(true, false, None), "no render thread");
-        assert!(!interpolation_from(true, true, Some("1")), "pipelined render");
+        assert!(
+            !interpolation_from(true, true, Some("1")),
+            "pipelined render"
+        );
     }
 
     #[test]
@@ -1386,19 +1638,43 @@ mod tests {
     #[test]
     fn in_between_captures_stop_at_their_limit() {
         let (keep, write, skip) = (
-            GuestShot { write: false, keep: true },
-            GuestShot { write: true, keep: false },
-            GuestShot { write: false, keep: false },
+            GuestShot {
+                write: false,
+                keep: true,
+            },
+            GuestShot {
+                write: true,
+                keep: false,
+            },
+            GuestShot {
+                write: false,
+                keep: false,
+            },
         );
         let shot = |name: &str, before: Option<&str>| {
-            Some(BetweenShot { name: name.into(), before: before.map(Into::into) })
+            Some(BetweenShot {
+                name: name.into(),
+                before: before.map(Into::into),
+            })
         };
         let b = BetweenShots::new(3);
         assert_eq!(b.guest_swap(10), keep, "no in-between yet: only a GPU copy");
-        assert_eq!(b.next_between(""), shot("frame-00010-between-01.png", Some("frame-00010.png")), "its neighbour before, from the copy");
-        assert_eq!(b.next_between(""), shot("frame-00010-between-02.png", None), "written once");
+        assert_eq!(
+            b.next_between(""),
+            shot("frame-00010-between-01.png", Some("frame-00010.png")),
+            "its neighbour before, from the copy"
+        );
+        assert_eq!(
+            b.next_between(""),
+            shot("frame-00010-between-02.png", None),
+            "written once"
+        );
         assert_eq!(b.guest_swap(11), write, "its neighbour after");
-        assert_eq!(b.next_between(""), shot("frame-00011-between-01.png", None), "already written");
+        assert_eq!(
+            b.next_between(""),
+            shot("frame-00011-between-01.png", None),
+            "already written"
+        );
         assert_eq!(b.guest_swap(12), write, "the last one's neighbour after");
         assert_eq!(b.next_between(""), None, "the limit reached");
         assert_eq!(b.guest_swap(13), skip);
@@ -1452,7 +1728,11 @@ mod tests {
                 files += 1 + usize::from(s.before.is_some());
             }
         }
-        assert_eq!(files, 2 + 3, "frames 1 and 2 between, guest frames 1, 2 and 3");
+        assert_eq!(
+            files,
+            2 + 3,
+            "frames 1 and 2 between, guest frames 1, 2 and 3"
+        );
     }
 
     #[test]
@@ -1460,10 +1740,23 @@ mod tests {
         use d3d::interp::Mode;
         assert_eq!(interp_mode(false, false, false), None, "off by default");
         assert_eq!(interp_mode(true, false, false), Some(Mode::Replay));
-        assert_eq!(interp_mode(false, true, false), Some(Mode::Reproject { ahead: false }));
-        assert_eq!(interp_mode(true, true, false), Some(Mode::Reproject { ahead: false }), "reprojection wins");
-        assert_eq!(interp_mode(false, false, true), Some(Mode::Reproject { ahead: true }));
-        assert_eq!(interp_mode(true, true, true), Some(Mode::Reproject { ahead: true }));
+        assert_eq!(
+            interp_mode(false, true, false),
+            Some(Mode::Reproject { ahead: false })
+        );
+        assert_eq!(
+            interp_mode(true, true, false),
+            Some(Mode::Reproject { ahead: false }),
+            "reprojection wins"
+        );
+        assert_eq!(
+            interp_mode(false, false, true),
+            Some(Mode::Reproject { ahead: true })
+        );
+        assert_eq!(
+            interp_mode(true, true, true),
+            Some(Mode::Reproject { ahead: true })
+        );
         assert_eq!(fps_from(None), 30);
         assert_eq!(fps_from(Some("60")), 60);
         assert_eq!(fps_from(Some("uncapped")), 0);
@@ -1484,7 +1777,9 @@ mod tests {
     #[test]
     fn headless_keeps_only_surface_lifetimes() {
         let mut b = Headless::default();
-        let s = b.create_surface(gfx::D3DFormat::LinA8R8G8B8, 64, 64, false).unwrap();
+        let s = b
+            .create_surface(gfx::D3DFormat::LinA8R8G8B8, 64, 64, false)
+            .unwrap();
         let desc = gfx::texture::TextureDesc {
             format: gfx::D3DFormat::LinA8R8G8B8,
             kind: gfx::texture::TextureKind::D2,
@@ -1497,7 +1792,16 @@ mod tests {
         let bytes = vec![0u8; 64 * 64 * 4];
         for _ in 0..1000 {
             b.write_surface(s, &desc, &bytes).unwrap();
-            b.clear(s, None, gfx::Clear { color: Some([0.0; 4]), depth: None, stencil: None }).unwrap();
+            b.clear(
+                s,
+                None,
+                gfx::Clear {
+                    color: Some([0.0; 4]),
+                    depth: None,
+                    stencil: None,
+                },
+            )
+            .unwrap();
             b.present(s, 0).unwrap();
         }
         assert_eq!(b.held(), 1, "only the surface creation is held");

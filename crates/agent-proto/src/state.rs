@@ -181,7 +181,10 @@ mod tests {
     #[test]
     fn params_are_strict() {
         let p: SaveParams = serde_json::from_value(json!({"name": "a"})).unwrap();
-        assert_eq!((p.name.as_str(), p.replace, p.max_ticks), ("a", false, None));
+        assert_eq!(
+            (p.name.as_str(), p.replace, p.max_ticks),
+            ("a", false, None)
+        );
         assert!(serde_json::from_value::<SaveParams>(json!({"name": "a", "x": 1})).is_err());
         assert!(serde_json::from_value::<LoadParams>(json!({})).is_err());
         let f: ForkParams =

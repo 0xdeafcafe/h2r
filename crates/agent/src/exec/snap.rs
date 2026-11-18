@@ -49,9 +49,18 @@ pub trait SnapshotMachine {
 
 #[derive(Debug, Clone, PartialEq)]
 enum Op {
-    Save { name: String, replace: bool },
-    Load { name: String },
-    Fork { from: String, name: String, replace: bool },
+    Save {
+        name: String,
+        replace: bool,
+    },
+    Load {
+        name: String,
+    },
+    Fork {
+        from: String,
+        name: String,
+        replace: bool,
+    },
 }
 
 pub(crate) struct Job {
@@ -262,9 +271,8 @@ impl State {
                     max_ticks(sp.max_ticks)?,
                 ))
             }),
-            proto::method::LOAD => params::<LoadParams>(p).and_then(|lp| {
-                Ok((Op::Load { name: lp.name }, max_ticks(lp.max_ticks)?))
-            }),
+            proto::method::LOAD => params::<LoadParams>(p)
+                .and_then(|lp| Ok((Op::Load { name: lp.name }, max_ticks(lp.max_ticks)?))),
             _ => params::<ForkParams>(p).and_then(|fp| {
                 Ok((
                     Op::Fork {
