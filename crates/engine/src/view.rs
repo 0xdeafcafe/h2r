@@ -373,6 +373,11 @@ pub mod objects {
             position @ 0x64: Vec3,
             forward @ 0x70: Vec3,
             up @ 0x7c: Vec3,
+            /// Body vitality, 0 to 1 (docs/game/health.md: the HUD state
+            /// copies it, regeneration and damage write it).
+            health @ 0xec: f32,
+            /// Shield vitality (docs/game/health.md, the HUD's shield).
+            shield @ 0xf0: f32,
             /// Bit 2: body depleted.
             damage_flags @ 0x10a: u16,
         }

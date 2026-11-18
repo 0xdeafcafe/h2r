@@ -61,6 +61,7 @@ pub mod pad_speaker;
 pub use live_telemetry as telemetry;
 pub mod sha;
 pub mod shim;
+pub mod sim_bots;
 pub mod speaker_row;
 pub mod setting_defs;
 pub mod skulls;
@@ -76,6 +77,7 @@ pub mod steam_speaker;
 pub mod ui;
 pub mod ui_kit;
 pub mod ui_watch;
+pub mod bot_glue;
 pub mod video_screen;
 pub mod snapshot_probe;
 pub mod sse;
@@ -950,6 +952,13 @@ pub fn run_hosted_with_live(
     // magnetism at each map load, from the Aim Assist setting (Auto: Strong
     // while the touch controls show). Headless runs keep retail.
     aim_assist::install(&mut features, host.settings.clone()).context("installing the aim assist")?;
+    // Local bots (docs/game/bots.md, stage 1): pads on controller ports,
+    // signed in on the players screen, their views and listeners hidden.
+    // `H2_BOTS` adds brains at boot; idle with none.
+    if opts.xapi {
+        bot_glue::add_from_env();
+        bot_glue::install(&mut features, &opts.data_root).context("installing the bots")?;
+    }
     // The iOS touch controls' game side (docs/runtime/ios.md): direct
     // look into player one's facing, and the layout from player one's
     // seat and weapon. Idle while no touch controls show.
@@ -1009,6 +1018,10 @@ pub fn run_hosted_with_live(
         (true, Some(open)) => Some(dsound_glue::install_with_sinks(&loaded.runtime, &k, xbe_bytes, open, pad)?),
         (true, None) => Some(dsound_glue::install(&loaded.runtime, &k, xbe_bytes)?),
     };
+    if let Some(input) = host.input.as_mut() {
+        // Local bots' pads (docs/game/bots.md): after the host's own.
+        input.add_backend(Box::new(bots::local::global().backend()));
+    }
     let (xa, pad) = match (opts.xapi, host.input.take()) {
         (false, _) => (None, None),
         (true, Some(input)) => (Some(xapi_glue::register_with(&loaded.runtime, &k, input)?), host.keyboard.take()),
