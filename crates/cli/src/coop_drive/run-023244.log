@@ -1,0 +1,67 @@
+# host Alpha
+# guest Bravo
+# late Charlie
+[+0.031] Alpha | live: playing as Alpha (0009d7e882ecd47d) on http://127.0.0.1:8075
+[+0.232] Charlie | live: playing as Charlie (000921eea626d1f4) on http://127.0.0.1:8075
+[+0.237] Bravo | live: playing as Bravo (0009f6de65cac40f) on http://127.0.0.1:8075
+[+0.399] Alpha | coop-live: co-op takes up to 3 players (coop.max_players)
+[+0.403] Alpha | coop-live: 15 campaign levels (15 named)
+[+0.697] Bravo | coop-live: 15 campaign levels (15 named)
+[+0.717] Charlie | coop-live: 15 campaign levels (15 named)
+[+64.527] Bravo | coop-live: lobby mode 4294967295
+[+66.858] Charlie | coop-live: lobby mode 4294967295
+[+68.758] Alpha | coop-live: lobby mode 4294967295
+[+70.756] Alpha | custom games: xbox live menu tag has 6 panes and room for 5 rows
+[+70.772] Alpha | custom games: row text active
+[+72.222] Alpha | custom games: row chosen active
+[+72.222] Alpha | coop-live: hosting a co-op campaign in the game's own lobby
+[+72.222] Alpha | coop-live: Live menu row 4 opens the custom game lobby (row 2) in co-op mode
+[+72.222] Alpha | live: xnet: key for session 896546b39455108f registered
+[+72.222] Alpha | live: qos: listening for session 896546b39455108f on 10.0.3.7:31002: on, 0 bytes of data
+[+72.223] Alpha | coop-live: the Co-op Campaign row's lobby: mode 2 (custom game) set as 0 (co-op campaign)
+[+72.226] Alpha | coop-probe: session 0x52e0f8: state 5, peers 1 (max 16), players 1 (max 16), host (host peer 0, local 0/0), protocol 1 (synchronous), difficulty 1, campaign 1 map 105, privacy 0, class 1
+[+72.230] Alpha | coop-probe: simulation mode local (1) at tick 2000
+[+72.258] Alpha | live: session 81c63b1f2e66da94 advertised for 10.0.3.7:31000
+[+72.258] Alpha | coop-auto: invited Bravo to session 81c63b1f2e66da94
+[+72.258] Alpha | coop-auto: invited Charlie to session 81c63b1f2e66da94
+[+72.259] Alpha | live: xnet: key for session 81c63b1f2e66da94 registered
+[+72.259] Alpha | live: qos: listening for session 81c63b1f2e66da94 on 10.0.3.7:31002: on, 0 bytes of data
+[+72.259] Alpha | live: qos: listening for session 81c63b1f2e66da94 on 10.0.3.7:31002: on, 172 bytes of data
+[+72.271] Alpha | coop-probe: joinable: true (retail false; players 1 of 16, difficulty 0x1)
+[+72.277] Alpha | coop-live: lobby start state 7
+[+72.282] Alpha | live: xnet: key for session 81c63b1f2e66da94 unregistered
+[+72.299] Alpha | live: session 81c63b1f2e66da94 deleted
+[+72.549] Alpha | coop-live: the lobby holds Cairo Station on Normal; advertised
+[+82.553] Alpha | live: session 839a2f4f068ec03d advertised for 10.0.3.7:31000
+[+82.553] Alpha | coop-auto: invited Bravo to session 839a2f4f068ec03d
+[+82.553] Alpha | coop-auto: invited Charlie to session 839a2f4f068ec03d
+[+82.553] Alpha | live: xnet: key for session 839a2f4f068ec03d registered
+[+82.553] Alpha | live: qos: listening for session 839a2f4f068ec03d on 10.0.3.7:31002: on, 0 bytes of data
+[+82.553] Alpha | live: qos: listening for session 839a2f4f068ec03d on 10.0.3.7:31002: on, 172 bytes of data
+[+82.589] Bravo | coop-auto: accepting Alpha's invitation to session 839a2f4f068ec03d
+[+85.717] Charlie | live: join: find session 839a2f4f068ec03d: Alpha hosts it at 10.0.3.7:31000 (declared), slots open: 0 of 0 public, 0 of 0 private
+[+86.707] Charlie | custom games: xbox live menu tag has 6 panes and room for 5 rows
+[+86.724] Charlie | custom games: row text active
+[+93.296] Bravo | live: join: find session 839a2f4f068ec03d: Alpha hosts it at 10.0.3.7:31000 (declared), slots open: 0 of 0 public, 0 of 0 private
+[+96.258] Bravo | coop-live: lobby mode 4294967295
+[+98.558] Bravo | custom games: xbox live menu tag has 6 panes and room for 5 rows
+[+98.576] Bravo | custom games: row text active
+[+99.713] Bravo | custom games: row chosen active
+[+99.714] Bravo | custom games: opening the browser
+[+99.737] Bravo | live: join: qos lookup: 10.0.3.7:31002 session 839a2f4f068ec03d: contacted, 172 bytes of data
+[+100.814] Bravo | live: xnet: key for session 896546b39455108f registered
+[+100.814] Bravo | live: qos: listening for session 896546b39455108f on 10.0.3.7:31012: on, 0 bytes of data
+[+100.814] Bravo | live: join: 10.0.3.7:31000 for session 896546b39455108f: address made (169.254.121.24)
+[+100.822] Bravo | live: join: qos lookup: 10.0.3.7:31002 session 896546b39455108f: contacted, 172 bytes of data
+[+102.092] Bravo | coop-auto: Alpha's invitation to session 839a2f4f068ec03d is accepted but the game hasn't taken it after 20s (its reader runs from one menu screen; docs/live/live-coop.md 12.1)
+[+105.290] Charlie | custom games: row chosen active
+[+105.290] Charlie | custom games: opening the browser
+[+105.311] Charlie | live: join: qos lookup: 10.0.3.7:31002 session 839a2f4f068ec03d: contacted, 172 bytes of data
+[+106.341] Charlie | live: xnet: key for session 896546b39455108f registered
+[+106.341] Charlie | live: qos: listening for session 896546b39455108f on 10.0.3.7:31022: on, 0 bytes of data
+[+106.341] Charlie | live: join: 10.0.3.7:31000 for session 896546b39455108f: address made (169.254.121.24)
+[+106.347] Charlie | live: join: qos lookup: 10.0.3.7:31002 session 896546b39455108f: contacted, 172 bytes of data
+[+108.857] Bravo | live: qos: stopped listening for session 896546b39455108f
+[+108.857] Bravo | live: xnet: key for session 896546b39455108f unregistered
+[+114.379] Charlie | live: qos: stopped listening for session 896546b39455108f
+[+114.379] Charlie | live: xnet: key for session 896546b39455108f unregistered
