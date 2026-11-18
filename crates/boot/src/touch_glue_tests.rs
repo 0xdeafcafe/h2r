@@ -67,8 +67,8 @@ fn world() -> (Fake, u32) {
     f.f(PC0 + PC_PITCH_MIN, -1.0);
     f.f(PC0 + PC_PITCH_MAX, 1.0);
     f.set_u32(PC0 + PC_TARGET, NONE);
-    f.f(PC0 + PC_AUTOAIM, 0.0);
-    f.f(PC0 + PC_MAGNETISM, 0.0);
+    f.f(PC0 + PC_CONE, 0.0);
+    f.f(PC0 + PC_PULL, 0.0);
     f.u8_at(unit + UNIT_WEAPON, 0xff);
     f.u8_at(unit + UNIT_LEFT_WEAPON, 0xff);
     f.set_u16(unit + UNIT_SEAT, 0xffff);
@@ -204,7 +204,7 @@ fn on_target_needs_a_target_and_strength() {
     assert!(!on_target(&f, PC0));
     f.set_u32(PC0 + PC_TARGET, 0xe001_0001);
     assert!(!on_target(&f, PC0), "a target with no strength");
-    f.f(PC0 + PC_MAGNETISM, 0.4);
+    f.f(PC0 + PC_PULL, 0.4);
     assert!(on_target(&f, PC0));
     f.set_u32(PC0 + PC_TARGET, NONE);
     assert!(!on_target(&f, PC0));
@@ -255,7 +255,7 @@ fn the_tick_applies_the_turn_with_zoom_and_slowdown() {
         "zoomed 2x: half"
     );
     f.set_u32(PC0 + PC_TARGET, 0xe001_0001);
-    f.f(PC0 + PC_AUTOAIM, 1.0);
+    f.f(PC0 + PC_CONE, 1.0);
     tick(&mut f, (0.2, 0.0), 1.0);
     let want = 0.7 - 0.2 * input::touch_look::ON_TARGET_SCALE as f32;
     assert!(

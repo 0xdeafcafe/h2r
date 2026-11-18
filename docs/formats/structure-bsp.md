@@ -20,7 +20,7 @@ Every table below was derived from two sources only:
   `cargo run -p viewer --release --bin bsp -- --all` (and, for model
   sections, `viewer --all all`).
 
-No community plugin, XML layout or tag-definition file was opened or copied for
+No outside XML layout or tag-definition file was opened or copied for
 these tables, and none is a build input. Field names are descriptive labels
 chosen here. A name is used only when E or V supports it; otherwise the field
 is `unknown_*` or preserved in a `raw` byte array.

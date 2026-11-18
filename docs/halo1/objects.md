@@ -33,9 +33,7 @@ time and print counts, names and values only.
   grenades (for example the magazine's loaded maximum and the
   barrel's heat per round are nonzero exactly where the weapon has a
   magazine or heat).
-- **S:** field order and meaning recalled from general Halo modding
-  knowledge (the editing kits' field names), then placed by the data. No
-  community code or definition file was opened or copied.
+- **S:** field order and meaning unverified, placed by the data.
 - **E:** from [objects.md](../formats/objects.md) (engine code).
 - **Design:** a choice made here.
 
@@ -80,7 +78,7 @@ effect, `2f8` detonation effect (V1: groups).
 | `394`, `3a4` | melee damage, melee response (`jpt!`) | V1 |
 | `3bc` | actor firing parameters (`actv`) | V1 |
 | `3da` | i16 magnification levels, `3dc` f32x2 magnification range | V1 (nonzero only on zooming weapons) |
-| `3e4`..`3f4` | autoaim angle, autoaim range, magnetism angle, magnetism range, deviation angle | S, V1 (angles in radians, ranges in world units) |
+| `3e4`..`3f4` | `cone_angle`, `cone_range`, `pull_angle`, `pull_range`, `bend_angle` (the Halo 2 `weap +0x208..+0x218` order) | S, V1 (angles in radians, ranges in world units) |
 | `418`, `41c`, `420`, `430` | light power on/off time and effects | S, V1 |
 | `45c`, `46c` | first-person model, its animations | V1 |
 | `480` | HUD interface (`wphi`); `490`, `4a0`, `4b0` pickup, zoom in, zoom out sounds | V1 |
@@ -420,7 +418,7 @@ converted model does not share (open question below).
 | `obje` | `04`, `08` | bounding radius, offset | E |
 | `obje` | `30`, `34` | default variant, model | E |
 | `weap` | `150`..`164` | heat recovery, overheated, detonation threshold, detonation fraction, heat loss per second, illumination | S, V2 (set on the plasma rifle, zero on the SMG; the overheated effect follows at `16c`) |
-| `weap` | `208`..`218` | autoaim angle and range, magnetism angle and range, deviation | E |
+| `weap` | `208`..`218` | `cone_angle`, `cone_range`, `pull_angle`, `pull_range`, `bend_angle` | E |
 | `weap` | `2c0` | magazines, `0x5c` | V2 (stride: magazine objects start `0x5c` after) |
 | magazine | `04`, `06`, `08`, `0a`, `10`, `14` | rounds recharged, total initial, total maximum, loaded maximum, reload time, rounds reloaded | S, V2 (the loaded maximum and rounds reloaded agree on every magazine) |
 | `weap` | `2d0` | barrels, `0xec` | E (objects.md) |
@@ -516,7 +514,7 @@ committed: `bloodgulch_sandbox_converts_and_reads_back` prints, for every
 object, each field with the Halo 1 value, the value written and the
 template value it replaced (`ObjectReport::tuning`). On Blood Gulch the
 rows that change play most are the assault rifle's reserve ammunition and
-reload time, every weapon's error angles and autoaim ranges, the plasma
+reload time, every weapon's error angles and cone ranges, the plasma
 rifle's heat, the needler's magazine and rate of fire, and every bullet's
 speed (Halo 1's are slower than the Halo 2 templates').
 

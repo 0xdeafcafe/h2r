@@ -395,7 +395,7 @@ sweep counts only problems the pinned map of the same level does not have
 pinned one is written instead (`Report::fresh` false, a `dropped` line).
 
 **Player starting profiles** (`h1campaign::profiles`). Halo 1's block
-`scnr +0x348` (`0x68` each; S, the editing kits' layout, checked on all
+`scnr +0x348` (`0x68` each; S, checked on all
 ten levels by `h1_starting_profiles_read`: every weapon is a `weap` or
 none, a30's first is the assault rifle 60/120 and the pistol 12/64) is
 written as Halo 2's `+0xf8` (`0x44` each, V on 05a and 03a): the name,

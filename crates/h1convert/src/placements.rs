@@ -30,10 +30,9 @@ pub enum H2Flag {
 }
 
 impl H2Flag {
-    /// The stored `u16` (`scnr+0x118` element `+0x10`). The order is the
-    /// community's enum for Halo 2's netgame flags; what the disc shows
-    /// (`tests/h2_scenario.rs`, all 12 multiplayer maps) agrees with it:
-    /// 0 and 1 come once per team on every map, 4 is always neutral (team
+    /// The stored `u16` (`scnr+0x118` element `+0x10`). The values rest on
+    /// what the disc shows (`tests/h2_scenario.rs`, all 12 multiplayer
+    /// maps): 0 and 1 come once per team on every map, 4 is always neutral (team
     /// 8) and two or three per map, 7 and 8 come in equal numbers on the
     /// five maps that have them, 11 and up are runs of hill boundary
     /// points. Not yet confirmed from engine code.

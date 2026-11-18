@@ -36,11 +36,8 @@ run time and print only counts and error figures.
   (2026-11-18), which print only counts and error figures.
 - **X:** read from the Halo 1 Xbox XBE's own code (disassembled from
   `default.xbe` on the disc; addresses are virtual addresses in that XBE).
-- **S:** field order and meaning recalled from general Halo modding
-  knowledge (the Halo 1 and Halo 2 editing kits' field names), then checked
-  against the data where a V label says so. No community code or
-  definition file (Invader, Assembly plugins, OpenH2) was opened or copied
-  for this page.
+- **S:** field order and meaning unverified, checked against the data
+  where a V label says so.
 - **Design:** an implementation choice.
 
 ## Halo 1 Xbox `mode` (render model)

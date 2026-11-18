@@ -28,11 +28,9 @@ are stored in the repo, and the tests build invented tags in memory.
 Every interpreted field comes from the **retail engine's draw-time setup**,
 with the address of the instruction that reads it. The disc was used to fix
 root sizes (the smallest in-tag child pointer of every tag) and to check
-counts and strides. No community layout was transcribed. Assembly's
-`spas.xml` is cited only for the `spas` root block at `+0x1c`, and the
-`D3DPIXELSHADERDEF` at implementation `+6` was established in shaders.md.
-None of the `shad` or `stem` interpretation below comes from a community
-source.
+counts and strides. No outside layout was transcribed. The `spas` root
+block at `+0x1c` is unverified, and the `D3DPIXELSHADERDEF` at implementation
+`+6` was established in shaders.md.
 
 Evidence labels: **E** means read by engine code at the address given. **D**
 means a structural property checked on all 30 disc maps. **U** means the

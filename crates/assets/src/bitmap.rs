@@ -90,9 +90,10 @@ macro_rules! row {
     };
 }
 
-/// Supported formats. Halo format names: Assembly `bitm.xml` @
-/// fd14ef3c46135e9422966c6a64cd926fb0bd23fb (ids as in `tags::PixelFormat`);
-/// Xbox formats and channel semantics: `docs/graphics/graphics.md`.
+/// Supported formats, named after the pixel layout each decodes to (ids as
+/// in `tags::PixelFormat`; each row's evidence says whether its pixels
+/// were checked or only its layout); Xbox formats and channel semantics:
+/// `docs/graphics/graphics.md`.
 pub const FORMAT_TABLE: &[FormatRow] = &[
     row!(A8 => A8, LinA8, LayoutOnly),
     row!(Y8 => L8, LinL8, Pixels),

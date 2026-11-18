@@ -300,7 +300,7 @@ fn h2_retail_census() {
     for (n, (k, maps)) in &chars {
         println!(
             "char {n:<62} type {:<15} {}",
-            k.map(|k| ActorType(k).name()).unwrap_or("?"),
+            k.map_or_else(|| "?".to_owned(), |k| ActorType(k).name()),
             maps.join(",")
         );
     }

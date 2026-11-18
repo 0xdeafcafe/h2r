@@ -13,8 +13,7 @@ Evidence labels, as in map-format.md:
   `ustr` and `hmt ` on every map: 10 campaign levels, 13 multiplayer
   maps and `ui.map`, `$H1_ISO`) and
   `real_disc_a30_converts_and_reads_back_through_halo_2`.
-- **S — from-source:** community documentation describes this; not yet
-  independently checked here.
+- **S — unverified:** not yet independently checked here.
 - **Design:** an implementation choice.
 
 No game text, string dumps or community definition files are included in

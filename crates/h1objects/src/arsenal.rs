@@ -50,11 +50,11 @@ pub const WEAPON_WORDS: &[(&str, usize)] = &[
     ("unknown_15c", 0x358), // heat detonation fraction
     ("unknown_160", 0x35c), // heat loss per second
     ("unknown_164", 0x360), // heat illumination
-    ("unknown_208", 0x3e4), // autoaim angle
-    ("unknown_20c", 0x3e8), // autoaim range
-    ("unknown_210", 0x3ec), // magnetism angle
-    ("unknown_214", 0x3f0), // magnetism range
-    ("unknown_218", 0x3f4), // deviation angle
+    ("unknown_208", 0x3e4), // aim cone angle
+    ("unknown_20c", 0x3e8), // aim cone range
+    ("unknown_210", 0x3ec), // pull angle
+    ("unknown_214", 0x3f0), // pull range
+    ("unknown_218", 0x3f4), // bend angle
 ];
 
 /// Barrel words from the Halo 1 trigger by offset (S, V2; the template

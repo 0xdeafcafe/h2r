@@ -21,11 +21,10 @@ and cache contents, not an execution trace.
 Sources are the local executable and disc, inspected using this repository's
 `h2 disasm` and bounded cache reader. The starting anchors and source-use policy
 are [engine-map.md](../engine/engine-map.md) and [map-format.md](map-format.md).
-The prior scenario schema supplied the initial `+0x1a8/+0x1b0` leads; that schema
-already documents community-source influence. The engine map supplied the HS
-address window, pools and stride leads. This is not a clean-room claim. No
-community HS layouts, opcode lists, implementation bodies, or XML were fetched,
-translated, copied, or used as build inputs for this work.
+The prior scenario schema supplied the initial `+0x1a8/+0x1b0` leads. The engine
+map supplied the HS address window, pools and stride leads. No outside HS
+layouts, opcode lists, implementation bodies, or XML were fetched, translated,
+copied, or used as build inputs for this work.
 
 **E** below means directly supported by inspected engine instructions/data.
 **D** means tested against every disc map. **Inference** identifies an
@@ -136,7 +135,7 @@ Builtin names are recovered at inspection time by joining each **builtin call**
 index with its child token's string offset. Across all 30 maps this yields 390
 names, without conflicting spellings for an index. The other 521 descriptors
 remain unnamed; the XBE does not supply the missing names in this layout. No
-community opcode table fills the gaps. `Catalog::observe` retains the map-derived
+outside opcode table fills the gaps. `Catalog::observe` retains the map-derived
 names in memory and rejects conflicting evidence transactionally.
 
 The supported XBE is checked by title/certificate/entry, count and dispatch

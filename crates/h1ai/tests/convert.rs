@@ -237,7 +237,10 @@ fn encounters_become_groups_zones_squads_and_orders() {
             .iter()
             .any(|o| o.name == "walk" && o.primary_areas.is_empty())
     );
-    assert_eq!(plan.command_scripts[0].atoms, [("go to", [1, -1])]);
+    assert_eq!(
+        plan.command_scripts[0].atoms,
+        [("atom 1".to_owned(), [1, -1])]
+    );
 }
 
 #[test]

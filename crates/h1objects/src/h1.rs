@@ -222,13 +222,13 @@ pub struct Weapon {
     /// `0x3da` magnification levels, `0x3dc` magnification range.
     pub magnification_levels: i16,
     pub magnification_range: [f32; 2],
-    /// `0x3e4` autoaim angle, `0x3e8` autoaim range, `0x3ec` magnetism
-    /// angle, `0x3f0` magnetism range, `0x3f4` deviation angle.
-    pub autoaim_angle: f32,
-    pub autoaim_range: f32,
-    pub magnetism_angle: f32,
-    pub magnetism_range: f32,
-    pub deviation_angle: f32,
+    /// `0x3e4` aim cone angle, `0x3e8` aim cone range, `0x3ec` pull
+    /// angle, `0x3f0` pull range, `0x3f4` bend angle.
+    pub cone_angle: f32,
+    pub cone_range: f32,
+    pub pull_angle: f32,
+    pub pull_range: f32,
+    pub bend_angle: f32,
     /// `0x45c` first-person model, `0x46c` its animations, `0x480` HUD
     /// interface (`wphi`), `0x490` pickup sound.
     pub first_person_model: Option<TagId>,
@@ -319,11 +319,11 @@ impl Weapon {
             melee_response: reference(map, b, 0x3a4),
             magnification_levels: i16_at(b, 0x3da),
             magnification_range: bounds(b, 0x3dc),
-            autoaim_angle: f32_at(b, 0x3e4),
-            autoaim_range: f32_at(b, 0x3e8),
-            magnetism_angle: f32_at(b, 0x3ec),
-            magnetism_range: f32_at(b, 0x3f0),
-            deviation_angle: f32_at(b, 0x3f4),
+            cone_angle: f32_at(b, 0x3e4),
+            cone_range: f32_at(b, 0x3e8),
+            pull_angle: f32_at(b, 0x3ec),
+            pull_range: f32_at(b, 0x3f0),
+            bend_angle: f32_at(b, 0x3f4),
             first_person_model: reference(map, b, 0x45c),
             first_person_animations: reference(map, b, 0x46c),
             hud: reference(map, b, 0x480),

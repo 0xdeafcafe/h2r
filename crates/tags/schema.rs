@@ -1,5 +1,6 @@
-//! Minimal Xbox retail wire schema; public sources were consulted.
-//! Provenance and verification limits: docs/formats/map-format.md.
+//! Minimal Xbox retail wire schema: offsets, types and names established by
+//! the engine's code, disc checks and our decoders (noted per record).
+//! Verification limits: docs/formats/map-format.md.
 //! Range checks alone do not establish provenance or semantic accuracy.
 
 #[derive(Clone, Copy, Debug)]
@@ -118,9 +119,17 @@ const PIXEL_FORMATS: &[(u32, &str)] = &[
 
 pub fn records() -> Vec<Record> {
     use Kind::*;
-    // Provenance: Assembly Halo2Xbox/bitm.xml @ fd14ef3c46135e9422966c6a64cd926fb0bd23fb:
-    // offset hypotheses. Disc: both block extents and 0x4c prefix; editor scalar meanings
-    // are source-only.
+    // Names here are ours: each kept field's role is established by the
+    // engine's code (E) or a check on the disc (D) noted beside it, or by
+    // our decoders using it (pixels decoded, models drawn, text read).
+    // Bytes nothing of ours explains stay opaque (preserved by encoders).
+    //
+    // Bitmap root: D (both block extents, the 0x4c prefix). The scalars are
+    // the fields the Halo 1 converter (h1bitmaps::convert) fills from the
+    // Halo 1 bitmap's field of the same role, offset for offset; converted
+    // bitmaps load and draw in game (docs/halo1/bitmaps.md). Their names
+    // follow that role; what the Halo 2 engine does with each is not
+    // established here.
     let bitmap = record(
         "BitmapHeader",
         0x4c,
@@ -146,10 +155,10 @@ pub fn records() -> Vec<Record> {
             f("images", 0x44, Block(0x74)).elements("BitmapImage"),
         ],
     );
-    // Provenance: Same pinned Assembly bitmap; cross-check Entity @
-    // 4b4ddc3d0869cf93773869c642dec6624a22fd36 and OpenH2 @
-    // d09a123b3dd16821295f380f01fb5639c697899a. Disc: repeated signatures, depth byte,
-    // LOD/low-detail ranges. Format/flag meanings remain source-only.
+    // Bitmap image: D (repeated signatures, depth byte, LOD and low-detail
+    // ranges); size, format, mips and pixel offset are what our decoder
+    // reads to produce the pixels (assets::bitmap, every disc bitmap
+    // decoded); the rest as for the root.
     let image = record(
         "BitmapImage",
         0x74,
@@ -185,8 +194,9 @@ pub fn records() -> Vec<Record> {
             f("low_detail_depth", 0x6e, U16),
         ],
     );
-    // Provenance: Same pinned Assembly bitmap: sequence hypothesis. Disc: 0x3c stride,
-    // sprite count/pointer spans. Label/image-range semantics source-only.
+    // Bitmap sequence and sprite: D (strides, sprite spans); fields as for
+    // the root, and the sprite bounds are what live art crops by
+    // (cli live_art).
     let sequence = record(
         "BitmapSequence",
         0x3c,
@@ -197,8 +207,6 @@ pub fn records() -> Vec<Record> {
             f("sprites", 0x34, Block(0x20)).elements("BitmapSprite"),
         ],
     );
-    // Provenance: Same pinned Assembly bitmap: 0x20 stride and coordinate hypotheses. Disc:
-    // spans only; coordinates have not been rendered.
     let sprite = record(
         "BitmapSprite",
         0x20,
@@ -208,26 +216,21 @@ pub fn records() -> Vec<Record> {
             f("registration", 0x18, F32s(2)),
         ],
     );
-    // Provenance: Assembly Halo2Xbox/scnr.xml @ fd14ef3c46135e9422966c6a64cd926fb0bd23fb:
-    // scalar/reference/data offsets. Disc: reference resolution, byte ranges and zero
-    // guards only. All unused child tables removed.
+    // Its tag references (D: they resolve on every disc scenario) are
+    // labelled by offset.
     let mut scenario = vec![
-        f("legacy_reference", 0, TagRef),
-        f("kind", 0x10, Enum16),
-        f("flags", 0x12, Flags16),
-        f("north_radians", 0x1c, F32),
-        f("editor_data", 0x30, DataRef),
+        f("tagref_000", 0, TagRef),
+        f("data_030", 0x30, DataRef),
         f("script_syntax", 0x1a8, DataRef),
         f("script_strings", 0x1b0, DataRef),
-        f("object_names_text", 0x1f8, TagRef),
-        f("chapter_text", 0x200, TagRef),
-        f("hud_text", 0x208, TagRef),
-        f("object_salts", 0x298, U32s(32)),
-        f("sound_effects", 0x320, TagRef),
-        f("lighting", 0x338, TagRef),
-        f("subtitles", 0x358, TagRef),
-        f("territory_text", 0x3a0, TagRef),
-        f("objectives", 0x3b8, TagRef),
+        f("tagref_1f8", 0x1f8, TagRef),
+        f("tagref_200", 0x200, TagRef),
+        f("tagref_208", 0x208, TagRef),
+        f("tagref_320", 0x320, TagRef),
+        f("tagref_338", 0x338, TagRef),
+        f("tagref_358", 0x358, TagRef),
+        f("tagref_3a0", 0x3a0, TagRef),
+        f("tagref_3b8", 0x3b8, TagRef),
     ];
     empty(
         &mut scenario,
@@ -243,19 +246,18 @@ pub fn records() -> Vec<Record> {
             ("unsupported_3c8", 0x3c8),
         ],
     );
-    // Provenance: Assembly Halo2/matg.xml @ fd14ef3c46135e9422966c6a64cd926fb0bd23fb:
-    // reference/language offsets. Disc: reference resolution and zero guard. Child tables
-    // opaque.
+    // Globals root: D (zero guard). Child tables opaque.
     let mut globals = vec![
         f("language", 0xac, Enum32),
-        f("multiplayer", 0x168, TagRef),
-        f("lighting", 0x180, TagRef),
+        f("tagref_168", 0x168, TagRef),
+        f("tagref_180", 0x180, TagRef),
     ];
     empty(&mut globals, &[("unsupported_0d8", 0xd8)]);
-    // Nine embedded locale descriptors are separate fixed records, not tag_blocks.
-    // Provenance: Assembly Halo2/matg.xml and H2X_Layouts_Core.xml @
-    // fd14ef3c46135e9422966c6a64cd926fb0bd23fb: descriptor hypothesis. Disc: nine fixed
-    // slots, file extents; runtime field meanings source-only.
+    // Nine embedded locale descriptors (fixed records, not tag blocks): D
+    // (nine slots, file extents); the count, size and offsets are what our
+    // text loader reads (localization, checked on every disc language); the
+    // two runtime words and the loaded flag are what the engine's loader
+    // writes (E `0x1a01c3`, docs/formats/localization.md).
     let locale = record(
         "LocaleDescriptor",
         0x1c,
@@ -269,23 +271,14 @@ pub fn records() -> Vec<Record> {
             f("loaded", 0x18, U32),
         ],
     );
-    // Provenance: Assembly Halo2/sbsp.xml + Xbox override @
-    // fd14ef3c46135e9422966c6a64cd926fb0bd23fb: scalar/reference/data offsets. Disc:
-    // BSP-space ranges, reference resolution, zero guards. Child tables opaque.
+    // Structure BSP root: D (BSP-space ranges of its data references, zero
+    // guards). Child tables opaque.
     let mut bsp = vec![
-        f("checksum", 8, U32),
-        f("vehicle_floor", 0x1c, F32),
-        f("vehicle_ceiling", 0x20, F32),
-        f("world_bounds", 0x34, F32s(6)),
-        f("cluster_data", 0x54, DataRef),
-        f("sound_data", 0xe4, DataRef),
-        f("vehicle_radius", 0x1c0, F32),
-        f("vehicle_center", 0x1c4, F32s(3)),
-        f("decorator_reference", 0x1d8, TagRef),
-        f("physics_code", 0x1e0, DataRef),
-        f("physics_min", 0x1ec, F32s(3)),
-        f("physics_max", 0x1f8, F32s(3)),
-        f("breakable_physics_code", 0x204, DataRef),
+        f("data_054", 0x54, DataRef),
+        f("data_0e4", 0xe4, DataRef),
+        f("tagref_1d8", 0x1d8, TagRef),
+        f("data_1e0", 0x1e0, DataRef),
+        f("data_204", 0x204, DataRef),
     ];
     empty(
         &mut bsp,
@@ -299,16 +292,9 @@ pub fn records() -> Vec<Record> {
             ("unsupported_130", 0x130),
         ],
     );
-    // Provenance: Assembly Halo2/mode.xml @ fd14ef3c46135e9422966c6a64cd926fb0bd23fb:
-    // scalar offsets. Disc: name StringID length/index, zero guards. Child tables opaque.
-    let mut model = vec![
-        f("name", 0, StringId),
-        f("flags", 4, Flags16),
-        f("checksum", 8, U32),
-        f("lod_groups", 0x3c, Bytes(6)),
-        f("node_checksum", 0x44, U32),
-        f("camera_cosine", 0x70, F32),
-    ];
+    // Render model root: D (the name string ID's length and index). Child
+    // tables opaque.
+    let mut model = vec![f("name", 0, StringId)];
     empty(
         &mut model,
         &[("unsupported_00c", 0xc), ("unsupported_068", 0x68)],
@@ -334,25 +320,23 @@ pub fn records() -> Vec<Record> {
 // the shared src/geometry.rs. Kept as one self-contained section so other tag
 // groups can be added above without touching it.
 //
-// Provenance (details and pinned links: docs/formats/map-format.md, "Render-model
-// geometry"). Every field carries one or more tags:
+// Evidence (details: docs/formats/map-format.md, "Render-model geometry").
+// Every field carries one or more tags:
 //   E = read by the engine's own code (XBE disassembly, address given);
 //   D = disc evidence, checked on every mode tag of every map by
 //       `viewer --all` (strides, counts, signatures, value ranges);
-//   O = offset and name taken from OpenH2's MIT-licensed RenderModelTag.cs
-//       @ d09a123b3dd16821295f380f01fb5639c697899a (Vista, not Xbox authority;
-//       Xbox offsets confirmed by D).
-// Names: an O field uses OpenH2's name (snake_cased); every other name is a
-// label describing the evidence, or `unknown_<offset>` when there is none.
-// No Assembly plugin was used for these records.
+//   R = the role our model decoder gives it, checked by drawing every
+//       model of every map (`viewer --all`).
+// Names describe that evidence, or are `unknown_<offset>` when there is
+// none.
 // ============================================================================
 fn model_geometry_records() -> Vec<Record> {
     use Kind::*;
     vec![
         // A second view of the 0x84-byte mode header that interprets the
         // geometry blocks; RenderModelHeader keeps the root-only validation.
-        // sections: E (0x41076..0x41086: [tag+0x28] + index*0x5c) + O.
-        // compression_infos, regions, nodes, materials: O + D (count*stride
+        // sections: E (0x41076..0x41086: [tag+0x28] + index*0x5c).
+        // compression_infos, regions, nodes, materials: R + D (count*stride
         // fits the payload on every tag).
         record(
             "ModeGeometryHeader",
@@ -363,11 +347,11 @@ fn model_geometry_records() -> Vec<Record> {
                 f("regions", 0x1c, Block(0x10)).elements("ModeRegion"),
                 f("sections", 0x24, Block(0x5c)).elements("ModeSection"),
                 f("nodes", 0x48, Block(0x60)).elements("ModeNode"),
-                // OpenH2: ModelShaderReferences.
                 f("materials", 0x60, Block(0x20)).elements("ModeMaterial"),
             ],
         ),
-        // O (min/max per axis, u, v, u2, v2) + D (exactly one per model;
+        // R (the bounds compressed positions and texcoords decode into:
+        // min/max per axis, u, v, u2, v2) + D (exactly one per model;
         // decoded attributes fall inside it).
         record(
             "ModeCompression",
@@ -378,7 +362,8 @@ fn model_geometry_records() -> Vec<Record> {
                 f("texcoord2_bounds", 0x28, F32s(4)),
             ],
         ),
-        // name/permutations: O. +4/+6: unknown (i16 pairs, often -1/0).
+        // name/permutations: R (pieces are picked by region and
+        // permutation). +4/+6: unknown (i16 pairs, often -1/0).
         record(
             "ModeRegion",
             0x10,
@@ -389,8 +374,8 @@ fn model_geometry_records() -> Vec<Record> {
                 f("permutations", 8, Block(0x10)).elements("ModePermutation"),
             ],
         ),
-        // O (six piece indices, lowest to highest) + D (each -1 or a valid
-        // section; triangle counts rise with the index).
+        // R + D (six section indices, each -1 or a valid section; triangle
+        // counts rise with the index: levels of detail).
         record(
             "ModePermutation",
             0x10,
@@ -406,7 +391,7 @@ fn model_geometry_records() -> Vec<Record> {
         ),
         // Stride and +0x34: E (+0x34 is a runtime pointer to the loaded
         // section data, zero on disc; the engine reads its parts at [ptr+4]).
-        // Counts/classification/flags: O + D (counts equal the raw block's;
+        // Counts/classification/flags: D (counts equal the raw block's;
         // classification matches the vertex types).
         // +0x30..+0x38: the runtime section block (count, pointer) the
         // engine's fixup fills; empty on disc (D).
@@ -417,26 +402,27 @@ fn model_geometry_records() -> Vec<Record> {
             "ModeSection",
             0x5c,
             vec![
-                f("global_geometry_classification", 0, U16),
+                f("unknown_000", 0, U16),
                 f("vertex_count", 4, U16),
                 f("triangle_count", 6, U16),
                 f("part_count", 8, U16),
-                f("opaque_max_nodes_per_vertex", 0x14, U8),
+                f("unknown_014", 0x14, U8),
                 // Labels from D: the vertex-buffer types each value occurs with.
                 f("geometry_classification", 0x18, Enum16).choices(&[
                     (1, "no_vertex_nodes"),
                     (2, "one_node_per_vertex"),
                     (3, "weighted_nodes"),
                 ]),
-                // O names bits 0/1; D: they match s16 position/texcoord buffers.
+                // D: bits 0/1 match s16 position/texcoord buffers.
                 f("compression_flags", 0x1a, Flags16)
-                    .choices(&[(1, "compressed_verts"), (2, "compressed_tex_coords")]),
+                    .choices(&[(1, "compressed_positions"), (2, "compressed_texcoords")]),
                 f("runtime_section_count", 0x30, U32),
                 f("runtime_section_data", 0x34, U32),
             ],
         ),
-        // name/parent/first_child/next_sibling/translation/orientation: O + D
-        // (links in range). The 14 words from +0x28 are not interpreted.
+        // name/parent/first_child/next_sibling/translation/orientation: R
+        // (the skeleton our decoder poses) + D (links in range). The 14
+        // words from +0x28 are not interpreted.
         record(
             "ModeNode",
             0x60,

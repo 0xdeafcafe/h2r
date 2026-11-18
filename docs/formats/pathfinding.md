@@ -21,7 +21,7 @@ Code:
 
 Evidence labels as in [map-format.md](map-format.md): **V** checked on the
 owner's disc (all 64 campaign BSPs that carry pathfinding, unless a level
-is named), **S** from public sources, not checked. No engine code was read
+is named), **S** unverified. No engine code was read
 for this page (see "Open questions"), so nothing here is labelled E. Field
 names are ours. No disc bytes, dumps or per-map listings are committed;
 tests use invented data, and the disc test is `#[ignore]`.
@@ -54,11 +54,6 @@ spawns.
 | `48` | u32 structure checksum | | V: equals `sbsp+08` on every BSP |
 | `4c`..`6c` | four blocks | | V: always empty; refused when not |
 | `6c` | user-placed hints, one element | `48` | V: count is 1 on every BSP; nine child blocks of editor source geometry (points, rays, jump-like records). Not interpreted |
-
-S: community tag definitions call these blocks sectors, links, refs, BSP2D
-nodes, surface flags, vertices, object refs, pathfinding hints, instanced
-geometry refs, structure checksum, and user-placed hints, in this order.
-The order matches the disc; the `+20` block would be "surface flags".
 
 ### Sector (8)
 
@@ -133,11 +128,8 @@ and y. `PathfindingData::sector_for_surface` does exactly that.
 Flag bits, `01a_tutorial`, for observation only. Sector: bits 0, 3, 4 on
 the common floor value `0x19`; bits 2, 5 only on sectors not reached from
 collision; bit 13 almost only on sectors that are. Link: bits 6 and 7 only
-on two-sided links; bits 0, 1, 9 to 13 on both kinds. S: community
-definitions name sector bits (pathfindable, walkable, floor, wall
-directions, crouchable, stairs, ...) and link bits (from collision edge,
-intersection, threshold, ledge, wall base, start/end corner, ...). Which
-bit is which is not established here.
+on two-sided links; bits 0, 1, 9 to 13 on both kinds. What each bit
+means is not established here.
 
 ## Generator (`pathfind::generate`)
 

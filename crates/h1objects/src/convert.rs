@@ -203,10 +203,10 @@ pub mod h2 {
     pub const ATTACHMENTS: usize = 0x94;
     pub const ATTACHMENT: usize = 0x18;
     /// `weap` root.
-    pub const AUTOAIM_ANGLE: usize = 0x208;
-    pub const AUTOAIM_RANGE: usize = 0x20c;
-    pub const MAGNETISM_ANGLE: usize = 0x210;
-    pub const MAGNETISM_RANGE: usize = 0x214;
+    pub const CONE_ANGLE: usize = 0x208;
+    pub const CONE_RANGE: usize = 0x20c;
+    pub const PULL_ANGLE: usize = 0x210;
+    pub const PULL_RANGE: usize = 0x214;
     pub const BARRELS: usize = 0x2d0;
     pub const MAGAZINE_SIZE: usize = 0x5c;
     /// Barrel element.

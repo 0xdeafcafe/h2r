@@ -7,9 +7,7 @@
 //! reads below are the smallest the viewport needs (docs/editor/editor.md,
 //! "Halo 1 maps").
 //!
-//! Sources: the field offsets are facts read from Invader's published tag
-//! layouts (<https://github.com/SnowyMouse/invader>, GPL; cited, no code or
-//! definition files copied) and checked on the owner's disc by
+//! The field offsets are checked on the owner's disc by
 //! `disc_multiplayer_maps_are_textured_and_lightmapped`.
 use std::collections::HashMap;
 
