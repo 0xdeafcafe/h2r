@@ -348,6 +348,15 @@ impl Live {
             new.playlist = self.playlist_name(new.playlist_id.as_deref()).await;
         }
         game::validate_new(&new).map_err(invalid)?;
+        // Bots (docs/game/bots.md §9.3): the session's roster as it is now,
+        // which is the one in force when GameStarted lands.
+        crate::bots::check_players(
+            &self.model.read(),
+            new.session_id.as_deref(),
+            u64::MAX,
+            &new.players,
+        )
+        .map_err(invalid)?;
         let game_id = random_game_id();
         let started = GameStarted {
             game_id: game_id.clone(),
@@ -430,8 +439,18 @@ impl Live {
             game::validate(&b.kind, &b.data, &players)
                 .map_err(|m| invalid(format!("event {i}: {m}")))?;
             match b.kind.as_str() {
-                game::PLAYER_JOINED => players
-                    .push(serde_json::from_value(b.data["player"].clone()).expect("validated")),
+                game::PLAYER_JOINED => {
+                    let p: game::Player =
+                        serde_json::from_value(b.data["player"].clone()).expect("validated");
+                    crate::bots::check_players(
+                        &self.model.read(),
+                        game.started.game.session_id.as_deref(),
+                        game.position,
+                        [&p],
+                    )
+                    .map_err(|m| invalid(format!("event {i}: {m}")))?;
+                    players.push(p);
+                }
                 game::PLAYER_LEFT => {
                     players.retain(|p| Some(p.index as u64) != b.data["index"].as_u64())
                 }

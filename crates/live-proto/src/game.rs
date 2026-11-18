@@ -60,6 +60,16 @@ pub struct Player {
     /// (docs/live/live-telemetry.md, Player appearance).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub appearance: Option<Appearance>,
+    /// A bot (docs/game/bots.md §9.2): the server accepts it only for an
+    /// xuid in the session's roster.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot: Option<bool>,
+}
+
+impl Player {
+    pub fn is_bot(&self) -> bool {
+        self.bot == Some(true)
+    }
 }
 
 /// A player's colours and emblem: `primary`..`quaternary` index the art
@@ -120,10 +130,12 @@ pub struct NewGame {
     pub playlist: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub playlist_id: Option<String>,
-    /// Matchmaking only: the Live session the game was played in (16
+    /// Multiplayer only: the Live session the game was played in (16
     /// lowercase hex digits, `arbitration::valid_id`). A ranked game ranks
     /// the humans who registered an arbitration round under it
-    /// (docs/live/live-matchmaking.md §8.4).
+    /// (docs/live/live-matchmaking.md §8.4); a game with bots names the
+    /// session whose roster they came from (docs/game/bots.md §9.4), custom
+    /// games too.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     /// Campaign only: `easy`, `normal`, `heroic` or `legendary`.
@@ -821,6 +833,14 @@ pub fn validate_new(game: &NewGame) -> Result<(), String> {
     if game.players.iter().any(|p| p.name.chars().count() > 32) {
         return Err("player names are at most 32 characters".into());
     }
+    if game.players.iter().any(Player::is_bot) {
+        if game.session_id.is_none() {
+            return Err("a game with bots names the session they were rostered for".into());
+        }
+        if game.players.iter().any(|p| p.is_bot() && p.xuid.is_none()) {
+            return Err("a bot has its rostered xuid".into());
+        }
+    }
     if let Some(kind) = &game.kind {
         if !GAME_KINDS.contains(&kind.as_str()) {
             return Err("kind must be custom, matchmaking or campaign".into());
@@ -844,8 +864,8 @@ pub fn validate_new(game: &NewGame) -> Result<(), String> {
         return Err("playlist_id must be [A-Za-z0-9_-]{1,64}".into());
     }
     if let Some(id) = &game.session_id {
-        if kind != "matchmaking" {
-            return Err("session_id is for matchmaking games".into());
+        if kind == "campaign" {
+            return Err("session_id is for multiplayer games".into());
         }
         if !crate::arbitration::valid_id(id) {
             return Err("session_id must be 16 lowercase hex digits".into());
@@ -1518,6 +1538,7 @@ mod tests {
                 team: 0,
                 local: Some(true),
                 appearance: None,
+                bot: None,
             },
             Player {
                 index: 1,
@@ -1526,6 +1547,7 @@ mod tests {
                 team: 1,
                 local: None,
                 appearance: None,
+                bot: None,
             },
         ]
     }
@@ -2003,12 +2025,51 @@ mod tests {
             ..mm.clone()
         };
         assert!(validate_new(&upper).is_err());
+        let campaign = NewGame {
+            mode: "campaign".into(),
+            kind: Some("campaign".into()),
+            playlist_id: None,
+            ..mm.clone()
+        };
+        assert!(validate_new(&campaign).is_err());
         let custom = NewGame {
             kind: Some("custom".into()),
             playlist_id: None,
             ..mm.clone()
         };
-        assert!(validate_new(&custom).is_err());
+        assert_eq!(validate_new(&custom), Ok(()), "a custom game with bots names one too");
+    }
+
+    #[test]
+    fn bots_come_with_their_session_and_xuid() {
+        let bot = Player {
+            index: 1,
+            name: "Clanker".into(),
+            xuid: Some(Xuid(0x000b_0000_0000_0001)),
+            team: 0,
+            local: Some(true),
+            appearance: None,
+            bot: Some(true),
+        };
+        let game = NewGame {
+            map: "lockout".into(),
+            mode: "multiplayer".into(),
+            kind: Some("custom".into()),
+            session_id: Some("0123456789abcdef".into()),
+            players: vec![bot.clone()],
+            ..NewGame::default()
+        };
+        assert_eq!(validate_new(&game), Ok(()));
+        let no_session = NewGame {
+            session_id: None,
+            ..game.clone()
+        };
+        assert!(validate_new(&no_session).is_err());
+        let no_xuid = NewGame {
+            players: vec![Player { xuid: None, ..bot }],
+            ..game
+        };
+        assert!(validate_new(&no_xuid).is_err());
     }
 
     #[test]

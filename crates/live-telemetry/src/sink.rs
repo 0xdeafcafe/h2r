@@ -104,6 +104,7 @@ mod tests {
                     team: 0,
                     local: Some(true),
                     appearance: None,
+                    bot: None,
                 },
                 appearance: crate::event::Appearance::default(),
                 local_user: None,

@@ -481,20 +481,11 @@ pub fn wants_row(actions: &[i16]) -> bool {
     actions.contains(&CHANGE_MAP) && !actions.contains(&ROW_ACTION)
 }
 
-/// Adds a row with [`ROW_ACTION`] to the list at `list`; the new count.
+/// Adds a row with [`ROW_ACTION`] to the list at `list`, under Quick
+/// Options (and the Halo 1 Options row) and above the "Switch To:" rows;
+/// the new count.
 pub fn add_row(m: &mut dyn GuestMemory, list: u32) -> Result<usize, String> {
-    let e = |e: engine::memory::MemFault| format!("{e:?}");
-    let actions = h1row::setup_actions(m, list).map_err(e)?;
-    let array =
-        engine::datum::DatumArray::at(m.u32(list.wrapping_add(h1row::SETUP_ROWS)).map_err(e)?);
-    let h = array.new_datum(m).map_err(e)?.ok_or("the list is full")?;
-    let elem = array
-        .try_get(m, h)
-        .map_err(e)?
-        .ok_or("the new row is not there")?;
-    m.set_u16(elem.wrapping_add(h1row::SETUP_ACTION), ROW_ACTION as u16)
-        .map_err(e)?;
-    Ok(actions.len() + 1)
+    h1row::insert_row(m, list, ROW_ACTION)
 }
 
 /// The row on the Game Setup dialog, and what its press opens.

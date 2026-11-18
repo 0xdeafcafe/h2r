@@ -279,7 +279,7 @@ pub async fn revoke(
 }
 
 /// The operator: a token signed by the server key.
-fn operator(live: &Live, bearer: Option<&str>) -> Result<Author, ApiError> {
+pub(crate) fn operator(live: &Live, bearer: Option<&str>) -> Result<Author, ApiError> {
     let author = live.authenticate(bearer, LXM_ADMIN_WRITE)?;
     if !matches!(author, Author::Server(_)) {
         return Err(forbidden(

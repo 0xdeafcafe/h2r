@@ -779,7 +779,9 @@ choice means). Adding an option is a setting in `setting_defs` (choices
 
 - **Multiplayer:** the pregame Game Setup dialog (squad settings, screen
   23; list ctor `0x2bb4d2`, row text `0x2bb74f`, row chosen `0x2bb801`)
-  gets a "Halo 1 Options" row after Change Map when the lobby's map
+  gets a "Halo 1 Options" row under Quick Options, above the "Switch
+  To:" rows (Change Map 0, Change Rules 1, Quick Options 4, Switch To 6
+  to 8, from the row text table `0x2bb74f`), when the lobby's map
   (`0x51098c`, set by `0x19a6f2`) is a converted map: its content
   package's `h2recomp-map.toml` names an `h1_` map
   (`h1_options_row::converted_map_name`). Only custom lobbies have Change
