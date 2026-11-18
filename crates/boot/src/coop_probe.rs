@@ -1396,6 +1396,8 @@ pub fn install_live(
             crate::coop_players::install(registry, Arc::clone(&arm))?;
             // Join in progress (section 14), on the same arm.
             crate::coop_jip::install(registry, Arc::clone(&arm))?;
+            // The latency line a second (section 15).
+            crate::coop_latency::install(registry, Arc::clone(&arm))?;
             Ok(Some(arm))
         }
         Ok(false) => Ok(None),

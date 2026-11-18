@@ -15,6 +15,7 @@ pub mod aim_assist;
 pub mod community_variants;
 pub mod controls_text;
 pub mod coop_jip;
+pub mod coop_latency;
 pub mod coop_live;
 pub mod coop_players;
 pub mod coop_probe;
