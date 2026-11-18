@@ -39,6 +39,12 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
          around the layer (an after continuation) and hand the device a pass",
     ),
     (
+        "native-objects",
+        "*",
+        "off by default; its layer-draw observers read object bodies and node matrices the next \
+         tick moves while a pipelined render runs, and clear and restore item masks around the layer",
+    ),
+    (
         "render-census",
         "*",
         "off by default, and pipelining is off with it (it watches the render on the game thread)",
