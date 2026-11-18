@@ -383,21 +383,23 @@ impl feature::Feature for MoreRow {
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         use engine::points::{VARIANT_OPTIONS_ROW_CHOSEN, VARIANT_OPTIONS_ROW_TEXT};
         let request_at = b.guest_alloc(0x1000, Permissions::RW)?;
-        b.raw().before(
-            &VARIANT_OPTIONS_ROW_TEXT,
-            "the More Options row's text",
-            row_text,
-        )
-        // The Skulls row hooks both points too. The two act on different
-        // rows (more_row() sits after the Skulls row), so the order is
-        // only for the plan: ours runs inside the Skulls row's hooks.
-        .after_feature(crate::skulls_mp_row::ROW_FEATURE);
-        b.raw().before(
-            &VARIANT_OPTIONS_ROW_CHOSEN,
-            "the More Options row's press",
-            move |c| row_chosen(c, request_at),
-        )
-        .after_feature(crate::skulls_mp_row::ROW_FEATURE);
+        b.raw()
+            .before(
+                &VARIANT_OPTIONS_ROW_TEXT,
+                "the More Options row's text",
+                row_text,
+            )
+            // The Skulls row hooks both points too. The two act on different
+            // rows (more_row() sits after the Skulls row), so the order is
+            // only for the plan: ours runs inside the Skulls row's hooks.
+            .after_feature(crate::skulls_mp_row::ROW_FEATURE);
+        b.raw()
+            .before(
+                &VARIANT_OPTIONS_ROW_CHOSEN,
+                "the More Options row's press",
+                move |c| row_chosen(c, request_at),
+            )
+            .after_feature(crate::skulls_mp_row::ROW_FEATURE);
         ROW_ON.store(true, Ordering::SeqCst);
         // `ROW_ON` is fixed at build, the row's text and press are read
         // from guest memory and answered by continuations the machine

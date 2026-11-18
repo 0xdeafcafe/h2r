@@ -663,7 +663,9 @@ impl feature::Feature for CheatsFeature {
             .after_feature(crate::touch_glue::FEATURE)
             .after_feature(crate::skulls_custom::FEATURE);
         let live = Arc::clone(&self.0);
-        b.snapshot(feature::SnapshotPolicy::forbid_while(move || snapshot_live(&live)));
+        b.snapshot(feature::SnapshotPolicy::forbid_while(move || {
+            snapshot_live(&live)
+        }));
         Ok(())
     }
 }

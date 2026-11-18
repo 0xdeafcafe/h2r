@@ -1261,7 +1261,9 @@ impl Feature for RenderCensus {
             })
             .optional();
         let state = Arc::clone(&self.state);
-        b.snapshot(crate::SnapshotPolicy::forbid_while(move || trap_live(&state)));
+        b.snapshot(crate::SnapshotPolicy::forbid_while(move || {
+            trap_live(&state)
+        }));
         Ok(())
     }
 }

@@ -1053,7 +1053,9 @@ impl feature::Feature for Strings {
         b.locale()
             .source("signin text", move |id| rows.string(base, id));
         let rows = Arc::clone(&self.0);
-        b.snapshot(feature::SnapshotPolicy::forbid_while(move || snapshot_live(&rows.typing)));
+        b.snapshot(feature::SnapshotPolicy::forbid_while(move || {
+            snapshot_live(&rows.typing)
+        }));
         Ok(())
     }
 }

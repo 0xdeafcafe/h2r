@@ -59,10 +59,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use crate::h1_options::{self, OptionRow};
 use crate::layout_glue::chosen_row;
 use crate::list_class::{self, Action, ListClass, ListLayout, OnFree, PictureSpec, TextBlock};
 use crate::skulls;
-use crate::h1_options::{self, OptionRow};
 use crate::skulls_menu::{self, SkullsScreen};
 use crate::ui_kit::input::OpenerGuard;
 use crate::ui_kit::lifecycle;
@@ -768,7 +768,11 @@ fn row_chosen(c: &mut Call, page: &DifficultyPage, seen: &AtomicBool) -> Result<
     eprintln!(
         "{}{}",
         pending.kept_line(),
-        if options.is_empty() { "" } else { "; with the Halo 1 options" }
+        if options.is_empty() {
+            ""
+        } else {
+            "; with the Halo 1 options"
+        }
     );
     page.screen.open_with(pending.profile.clone(), options);
     let mask = 1u32 << pending.player;
@@ -1151,7 +1155,9 @@ mod tests {
         let opened = f.opened_at().unwrap();
         assert!(matches!(f.begin_at(opened), Err(Step::TooSoon(_))));
         assert_eq!(f.pending().map(|p| p.row), Some(1), "kept: not dropped");
-        let p = f.begin_at(opened + GUARD).expect("the press, at the guard's end");
+        let p = f
+            .begin_at(opened + GUARD)
+            .expect("the press, at the guard's end");
         assert_eq!(p.row, 1);
         assert_eq!(f.begin_at(opened + GUARD), Err(Step::Busy));
     }
@@ -1187,7 +1193,11 @@ mod tests {
             );
         }
         assert!(r.sideways(1, true).unwrap().contains("no profile"));
-        assert_eq!(r.sideways(0, true), None, "Start Level has nothing to change");
+        assert_eq!(
+            r.sideways(0, true),
+            None,
+            "Start Level has nothing to change"
+        );
     }
 
     /// A Halo 1 level's page: Start Level, its options, then the skulls,
@@ -1202,7 +1212,10 @@ mod tests {
             options: h1_options::CAMPAIGN,
             ..press(2, 0)
         };
-        assert_eq!(f.difficulty(p), Decision::Page(kept(2), h1_options::CAMPAIGN));
+        assert_eq!(
+            f.difficulty(p),
+            Decision::Page(kept(2), h1_options::CAMPAIGN)
+        );
         let r = screen();
         r.open_with("Chief".into(), h1_options::CAMPAIGN);
         assert_eq!(r.count(), 1 + 2 + skulls::TOTAL);
@@ -1210,7 +1223,10 @@ mod tests {
             r.page_row(1),
             Some(skulls_menu::PageRow::Option(&h1_options::ASSETS))
         );
-        assert_eq!(r.page_row(2), Some(skulls_menu::PageRow::Option(&h1_options::HUD)));
+        assert_eq!(
+            r.page_row(2),
+            Some(skulls_menu::PageRow::Option(&h1_options::HUD))
+        );
         assert_eq!(r.row_of_skull(crate::skulls::by_tier()[0]), Some(3));
     }
 

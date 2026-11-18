@@ -1109,7 +1109,9 @@ impl feature::Feature for Probe {
                 .optional();
         }
         let (arm, st) = (Arc::clone(&self.arm), Arc::clone(&self.state));
-        b.snapshot(feature::SnapshotPolicy::forbid_while(move || probe_live(&arm, &st)));
+        b.snapshot(feature::SnapshotPolicy::forbid_while(move || {
+            probe_live(&arm, &st)
+        }));
         Ok(())
     }
 }

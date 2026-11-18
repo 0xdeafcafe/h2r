@@ -334,7 +334,9 @@ impl feature::Feature for CoopJip {
         // lines and `ENABLED` is the settings' value read at boot. The
         // lifted check's call is a continuation the machine check sees.
         let arm = Arc::clone(&self.arm);
-        b.snapshot(feature::SnapshotPolicy::forbid_while(move || arm.snapshot_live()));
+        b.snapshot(feature::SnapshotPolicy::forbid_while(move || {
+            arm.snapshot_live()
+        }));
 
         if stages.lift {
             let arm = Arc::clone(&self.arm);

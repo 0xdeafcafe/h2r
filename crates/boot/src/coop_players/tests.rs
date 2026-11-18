@@ -479,7 +479,10 @@ fn players_block_snapshots_while_armed_or_spawning() {
     lock(&st).spawning = Some(0x0002_0002);
     assert_eq!(
         players_live(&arm, &st),
-        Some(format!("player {}'s spawn is running", index_of(0x0002_0002)))
+        Some(format!(
+            "player {}'s spawn is running",
+            index_of(0x0002_0002)
+        ))
     );
     lock(&st).spawning = None;
     // Flags left from the session: not a blocker once disarmed.

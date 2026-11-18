@@ -1072,7 +1072,9 @@ impl feature::Feature for SetupRow {
             .after_feature(h1row::ROW_FEATURE);
         // The page's state is its kit screen's (`ui-kit-texts.*`), the
         // bots' the settings store's.
-        b.snapshot(feature::SnapshotPolicy::forbid_while(move || h1row::building_live(&live)));
+        b.snapshot(feature::SnapshotPolicy::forbid_while(move || {
+            h1row::building_live(&live)
+        }));
         Ok(())
     }
 }

@@ -67,8 +67,7 @@ pub fn halo1_chosen() -> bool {
 /// `h1_<map>`, or one of Halo 1's campaign levels) with Halo 1's chosen.
 pub fn style_for_map(name: &str, halo1_chosen: bool) -> HudStyle {
     let name = name.trim().to_ascii_lowercase();
-    let halo1_map =
-        name.starts_with("h1_") || crate::health::HALO1_LEVELS.contains(&name.as_str());
+    let halo1_map = name.starts_with("h1_") || crate::health::HALO1_LEVELS.contains(&name.as_str());
     if halo1_map && halo1_chosen {
         HudStyle::Halo1
     } else {
@@ -115,19 +114,21 @@ impl feature::Feature for Hud {
             .doc("docs/halo1/multiplayer.md")
     }
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        b.game().on_start("pick the HUD style", |o| {
-            match crate::health::loaded_map_name(&*o.guest()) {
+        b.game().on_start(
+            "pick the HUD style",
+            |o| match crate::health::loaded_map_name(&*o.guest()) {
                 Ok(name) => {
                     let s = start(&name);
                     eprintln!("hud: {name}: {} HUD", s.name());
                 }
-                Err(e) => eprintln!("hud: the map's name could not be read ({e:?}); style unchanged"),
-            }
-        });
-        b.snapshot(feature::SnapshotPolicy::section(
-            save_state,
-            |bytes, _| load_state(bytes),
-        ));
+                Err(e) => {
+                    eprintln!("hud: the map's name could not be read ({e:?}); style unchanged")
+                }
+            },
+        );
+        b.snapshot(feature::SnapshotPolicy::section(save_state, |bytes, _| {
+            load_state(bytes)
+        }));
         Ok(())
     }
 }

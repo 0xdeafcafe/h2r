@@ -110,9 +110,12 @@ pub fn converted_map_name(content_root: &Path, map_id: u32) -> Option<String> {
         crate::new_maps::HALO2_TITLE,
         content::map_list::offer_content(map_id),
     );
-    let text =
-        std::fs::read_to_string(content_root.join(vfs::content_dir_name(offer)).join(crate::new_maps::MARKER))
-            .ok()?;
+    let text = std::fs::read_to_string(
+        content_root
+            .join(vfs::content_dir_name(offer))
+            .join(crate::new_maps::MARKER),
+    )
+    .ok()?;
     let t: toml::Table = toml::from_str(&text).ok()?;
     t.get("map")?.as_str().map(str::to_owned)
 }
@@ -166,10 +169,15 @@ pub fn insert_row(m: &mut dyn GuestMemory, list: u32, action: i16) -> Result<usi
     }
     let order = placed(&actions, action);
     if elems.len() != order.len() {
-        return Err(format!("{} rows after adding, not {}", elems.len(), order.len()));
+        return Err(format!(
+            "{} rows after adding, not {}",
+            elems.len(),
+            order.len()
+        ));
     }
     for (elem, a) in elems.into_iter().zip(&order) {
-        m.set_u16(elem.wrapping_add(SETUP_ACTION), *a as u16).map_err(e)?;
+        m.set_u16(elem.wrapping_add(SETUP_ACTION), *a as u16)
+            .map_err(e)?;
     }
     Ok(order.len())
 }
@@ -254,11 +262,17 @@ fn row_chosen(c: &mut Call, request_at: u32) -> Result<Flow, GuestFault> {
     else {
         eprintln!(
             "h1 options: not opened (player {player:?}, stack {stack:?}, class {})",
-            if list_class::loader_of(h1_options::SCREEN).is_some() { "on" } else { "off" }
+            if list_class::loader_of(h1_options::SCREEN).is_some() {
+                "on"
+            } else {
+                "off"
+            }
         );
         return c.ret(8).map(Flow::Return);
     };
-    eprintln!("h1 options: opening the Halo 1 Options screen (player {player}) on window {window}, slot {slot}");
+    eprintln!(
+        "h1 options: opening the Halo 1 Options screen (player {player}) on window {window}, slot {slot}"
+    );
     let request = crate::skulls_mp::open_request(1 << player, window, slot, loader);
     c.answer_async(move |cx| -> EntryFuture {
         Box::pin(async move {
@@ -287,8 +301,11 @@ const fn list_class_slot() -> u32 {
 
 impl feature::Feature for SetupRow {
     fn manifest(&self) -> Manifest {
-        Manifest::new(ROW_FEATURE, "The Halo 1 Options row on a custom game's Game Setup")
-            .doc("docs/halo1/multiplayer.md")
+        Manifest::new(
+            ROW_FEATURE,
+            "The Halo 1 Options row on a custom game's Game Setup",
+        )
+        .doc("docs/halo1/multiplayer.md")
     }
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         use engine::points::{
@@ -336,14 +353,20 @@ impl feature::Feature for SetupRow {
             Ok(())
         });
         let seen = Arc::new(AtomicBool::new(false));
-        b.raw().before(&SQUAD_SETTINGS_ROW_TEXT, "the Halo 1 Options row's text", move |c| {
-            row_text(c, &seen)
-        });
-        b.raw().before(&SQUAD_SETTINGS_ROW_CHOSEN, "the Halo 1 Options row's press", move |c| {
-            row_chosen(c, request_at)
-        });
+        b.raw().before(
+            &SQUAD_SETTINGS_ROW_TEXT,
+            "the Halo 1 Options row's text",
+            move |c| row_text(c, &seen),
+        );
+        b.raw().before(
+            &SQUAD_SETTINGS_ROW_CHOSEN,
+            "the Halo 1 Options row's press",
+            move |c| row_chosen(c, request_at),
+        );
         let live = Arc::clone(&b2_live);
-        b.snapshot(feature::SnapshotPolicy::forbid_while(move || building_live(&live)));
+        b.snapshot(feature::SnapshotPolicy::forbid_while(move || {
+            building_live(&live)
+        }));
         Ok(())
     }
 }
@@ -368,7 +391,10 @@ mod tests {
         assert!(wants_row(&[0, 1, 2], Some("h1_bloodgulch")));
         assert!(!wants_row(&[0, 1, 2], Some("lockout")), "not a Halo 1 map");
         assert!(!wants_row(&[0, 1, 2], None), "a disc map");
-        assert!(!wants_row(&[1, 2], Some("h1_bloodgulch")), "no Change Map: not a custom game");
+        assert!(
+            !wants_row(&[1, 2], Some("h1_bloodgulch")),
+            "no Change Map: not a custom game"
+        );
         assert!(!wants_row(&[0, 10], Some("h1_bloodgulch")), "already there");
     }
 
@@ -379,7 +405,11 @@ mod tests {
         let custom = [CHANGE_MAP, 1, QUICK_OPTIONS, 6, 8];
         let h1 = placed(&custom, OPTIONS_ACTION);
         assert_eq!(h1, [0, 1, 4, OPTIONS_ACTION, 6, 8]);
-        assert_eq!(placed(&h1, 11), [0, 1, 4, OPTIONS_ACTION, 11, 6, 8], "Clankers after it");
+        assert_eq!(
+            placed(&h1, 11),
+            [0, 1, 4, OPTIONS_ACTION, 11, 6, 8],
+            "Clankers after it"
+        );
         assert_eq!(placed(&[0, 1, 4], 11), [0, 1, 4, 11], "no Switch To: last");
         assert_eq!(placed(&[2, 3, 7, 8], 11), [2, 3, 11, 7, 8]);
     }
@@ -389,7 +419,10 @@ mod tests {
         let root = std::env::temp_dir().join(format!("h2-h1row-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let id = content::map_list::LIST_ID_FIRST + 3;
-        let offer = vfs::offer_id(crate::new_maps::HALO2_TITLE, content::map_list::offer_content(id));
+        let offer = vfs::offer_id(
+            crate::new_maps::HALO2_TITLE,
+            content::map_list::offer_content(id),
+        );
         let dir = root.join(vfs::content_dir_name(offer));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
@@ -397,7 +430,10 @@ mod tests {
             "source = \"h1_bloodgulch\"\nmap = \"h1_bloodgulch\"\nmap_id = \"00\"\n",
         )
         .unwrap();
-        assert_eq!(converted_map_name(&root, id).as_deref(), Some("h1_bloodgulch"));
+        assert_eq!(
+            converted_map_name(&root, id).as_deref(),
+            Some("h1_bloodgulch")
+        );
         assert_eq!(converted_map_name(&root, id + 1), None, "no package");
         assert_eq!(converted_map_name(&root, 3), None, "a retail id");
         assert_eq!(converted_map_name(&root, u32::MAX), None, "no map");
@@ -424,7 +460,13 @@ mod tests {
         .unwrap();
         let text = r.build(&feature::Base).unwrap().text();
         assert!(text.contains("0x002bb4d2 SQUAD_SETTINGS_LIST_CTOR: before [h1-options-row:note the Game Setup list] -> original -> after [h1-options-row:add the Halo 1 Options row]"), "{text}");
-        assert!(text.contains("SQUAD_SETTINGS_ROW_TEXT: before [h1-options-row:"), "{text}");
-        assert!(text.contains("SQUAD_SETTINGS_ROW_CHOSEN: before [h1-options-row:"), "{text}");
+        assert!(
+            text.contains("SQUAD_SETTINGS_ROW_TEXT: before [h1-options-row:"),
+            "{text}"
+        );
+        assert!(
+            text.contains("SQUAD_SETTINGS_ROW_CHOSEN: before [h1-options-row:"),
+            "{text}"
+        );
     }
 }

@@ -860,7 +860,8 @@ pub struct Skulls {
 
 impl feature::Feature for Skulls {
     fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new(FEATURE, "Campaign skulls kept per profile").doc("docs/game/skulls.md")
+        feature::Manifest::new(FEATURE, "Campaign skulls kept per profile")
+            .doc("docs/game/skulls.md")
     }
     fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
         use feature::points::{OPTIONS_QUEUE as QUEUE, SKULL_STOCK};

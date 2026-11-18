@@ -719,7 +719,11 @@ impl RenderTiming {
 
 /// [`RenderTiming::snapshot_live`] over the shared state.
 fn stage_live(state: &Mutex<State>) -> Option<String> {
-    let depth = state.lock().unwrap_or_else(|e| e.into_inner()).stages.depth();
+    let depth = state
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .stages
+        .depth();
     (depth != 0).then(|| format!("{depth} render stages are open"))
 }
 
@@ -855,7 +859,9 @@ impl Feature for RenderTiming {
             }
         }
         let state = Arc::clone(&self.state);
-        b.snapshot(crate::SnapshotPolicy::forbid_while(move || stage_live(&state)));
+        b.snapshot(crate::SnapshotPolicy::forbid_while(move || {
+            stage_live(&state)
+        }));
         Ok(())
     }
 }

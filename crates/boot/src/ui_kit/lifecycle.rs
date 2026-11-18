@@ -28,10 +28,7 @@ pub const SCREEN_SLOT: u32 = 0x78;
 /// `screen`'s window and slot.
 pub fn window_slot(cx: &Cx, screen: u32) -> Result<(u32, u32), EntryError> {
     Ok(cx.read(|m| -> Result<_, MemFault> {
-        Ok((
-            m.u32(screen + SCREEN_WINDOW)?,
-            m.u32(screen + SCREEN_SLOT)?,
-        ))
+        Ok((m.u32(screen + SCREEN_WINDOW)?, m.u32(screen + SCREEN_SLOT)?))
     })?)
 }
 

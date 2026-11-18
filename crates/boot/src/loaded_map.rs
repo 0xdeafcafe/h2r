@@ -20,8 +20,11 @@ pub struct LoadedMap;
 
 impl Feature for LoadedMap {
     fn manifest(&self) -> Manifest {
-        Manifest::new("loaded_map", "Publishes the loaded map's name to the host panel")
-            .doc("docs/runtime/level-boot.md")
+        Manifest::new(
+            "loaded_map",
+            "Publishes the loaded map's name to the host panel",
+        )
+        .doc("docs/runtime/level-boot.md")
     }
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         // A read-only observer on the game-start point, like `hud`'s and

@@ -1618,7 +1618,9 @@ impl feature::Feature for CoopScreens {
                 .after_feature(crate::skulls_custom::FEATURE);
         }
         let lobby = Arc::clone(&self.lobby);
-        b.snapshot(feature::SnapshotPolicy::forbid_while(move || screens_live(&lobby)));
+        b.snapshot(feature::SnapshotPolicy::forbid_while(move || {
+            screens_live(&lobby)
+        }));
         Ok(())
     }
 }

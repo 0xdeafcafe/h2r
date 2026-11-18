@@ -224,7 +224,11 @@ pub fn read_table(packages: &Path) -> Table {
             if !v.hud.is_empty() {
                 out.insert(
                     m.base.map.to_ascii_lowercase(),
-                    MapHud { sandboxed: true, swaps: v.hud.clone(), sensor: v.hud_sensor },
+                    MapHud {
+                        sandboxed: true,
+                        swaps: v.hud.clone(),
+                        sensor: v.hud_sensor,
+                    },
                 );
             }
         }
@@ -256,7 +260,11 @@ pub fn read_campaign_table(data_root: &Path) -> Table {
             {
                 out.insert(
                     level.to_owned(),
-                    MapHud { sandboxed: false, swaps: h.hud, sensor: h.sensor },
+                    MapHud {
+                        sandboxed: false,
+                        swaps: h.hud,
+                        sensor: h.sensor,
+                    },
                 );
             }
         }
@@ -324,7 +332,9 @@ impl feature::Feature for HudSwap {
                     .get(&key)
                     .filter(|h| !h.sandboxed || crate::health::halo1_sandbox())
                     // The Halo 2-assets map of a campaign level is served.
-                    .filter(|_| crate::h1_variants::campaign_assets_halo1() || !halo2_levels.contains(&key));
+                    .filter(|_| {
+                        crate::h1_variants::campaign_assets_halo1() || !halo2_levels.contains(&key)
+                    });
                 // From the map and the choice directly, not `hud::style()`,
                 // so the order against the style's game-start observer does
                 // not matter.
@@ -343,7 +353,10 @@ impl feature::Feature for HudSwap {
                 let centre = hud.and_then(|h| h.sensor);
                 let mut sensor = sensor.lock().unwrap_or_else(|e| e.into_inner());
                 match sensor.activate(&mut *mem, centre, style) {
-                    Ok(true) => eprintln!("hud: {name}: motion sensor centred for {}'s HUD", style.name()),
+                    Ok(true) => eprintln!(
+                        "hud: {name}: motion sensor centred for {}'s HUD",
+                        style.name()
+                    ),
                     Ok(false) => {}
                     Err(e) => eprintln!("hud: {name}: motion sensor table unwritable ({e:?})"),
                 }
