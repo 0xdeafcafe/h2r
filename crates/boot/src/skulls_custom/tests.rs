@@ -586,7 +586,8 @@ fn a_snapshot_carries_the_runs_skull_state() {
     let saved_campaign = CAMPAIGN.load(Ordering::SeqCst);
     CAMPAIGN.store(Active::of(&[LOW_GRAVITY]).0, Ordering::SeqCst);
     a.said.store(0b101, Ordering::SeqCst);
-    a.found.store(Active::of(&[FALL_DAMAGE]).0, Ordering::SeqCst);
+    a.found
+        .store(Active::of(&[FALL_DAMAGE]).0, Ordering::SeqCst);
     a.ticks.store(812, Ordering::SeqCst);
     *a.level.lock().unwrap() = Level {
         key: Some(("03a_oldmombasa".into(), 0xe174_0000)),

@@ -147,7 +147,10 @@ impl crate::Plan {
             })
             .collect();
         let same = ours.len() == saved.len()
-            && ours.iter().zip(saved).all(|((id, _), (sid, _))| *id == sid.as_str());
+            && ours
+                .iter()
+                .zip(saved)
+                .all(|((id, _), (sid, _))| *id == sid.as_str());
         if !same {
             let names = |ids: Vec<&str>| ids.join(", ");
             return Err(format!(

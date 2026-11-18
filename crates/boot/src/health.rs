@@ -280,10 +280,21 @@ impl State {
     /// loaded map (`set_mode` at game start, from guest memory), so a load
     /// rebuilds it.
     fn live(&self) -> Option<String> {
-        if self.armed.load(Ordering::Relaxed) || self.pending.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+        if self.armed.load(Ordering::Relaxed)
+            || self
+                .pending
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_some()
+        {
             return Some("a damage update is between its hooks".into());
         }
-        if self.restore.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+        if self
+            .restore
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+        {
             return Some("a body restore is between its hooks".into());
         }
         None

@@ -426,10 +426,18 @@ fn the_raw_disks_written_sectors_load_with_the_machine() {
     let saved = a.kernel.raw_disk().unwrap().lock().clone();
     let bytes = save(&a, &machine_a).unwrap();
     // Written after the save: not in the snapshot.
-    a.kernel.raw_disk().unwrap().lock().insert(sector + 1, [1; 512]);
+    a.kernel
+        .raw_disk()
+        .unwrap()
+        .lock()
+        .insert(sector + 1, [1; 512]);
 
     let (b, mut machine_b) = boot(0);
-    b.kernel.raw_disk().unwrap().lock().insert(sector + 2, [2; 512]);
+    b.kernel
+        .raw_disk()
+        .unwrap()
+        .lock()
+        .insert(sector + 2, [2; 512]);
     load(&b, &mut machine_b, &bytes).unwrap();
     assert_eq!(*b.kernel.raw_disk().unwrap().lock(), saved);
     // The machine runs on from the load as before.

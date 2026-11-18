@@ -34,11 +34,7 @@ fn load(xapi: &mut Xapi<Utility>, bytes: &[u8]) {
     xapi.load_snapshot(&snapshot).unwrap();
 }
 
-fn read(
-    xapi: &mut Xapi<Utility>,
-    memory: &mut Memory,
-    handle: u32,
-) -> (Result<(), Error>, State) {
+fn read(xapi: &mut Xapi<Utility>, memory: &mut Memory, handle: u32) -> (Result<(), Error>, State) {
     let result = xapi.input_get_state(memory, handle, 0x400);
     let bytes = memory::read::<{ State::SIZE }>(&*memory, 0x400).unwrap();
     let gamepad = <[u8; input::Gamepad::SIZE]>::try_from(&bytes[4..]).unwrap();

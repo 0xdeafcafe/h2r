@@ -43,7 +43,11 @@ mod tests {
             presents: 0,
             notes: Vec::new(),
         });
-        save_features(&mut w, &[("lockstep", vec![1; 16]), ("h1-health", Vec::new())]).unwrap();
+        save_features(
+            &mut w,
+            &[("lockstep", vec![1; 16]), ("h1-health", Vec::new())],
+        )
+        .unwrap();
         let file = w.finish().unwrap();
         let snapshot = Snapshot::open(&file, &build).unwrap();
         assert_eq!(

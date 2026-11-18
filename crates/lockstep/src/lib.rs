@@ -491,8 +491,8 @@ impl Recorder {
     }
 
     fn load_counters(&self, bytes: &[u8]) -> Result<(), String> {
-        let bytes = <[u8; 16]>::try_from(bytes)
-            .map_err(|_| format!("{} bytes, not 16", bytes.len()))?;
+        let bytes =
+            <[u8; 16]>::try_from(bytes).map_err(|_| format!("{} bytes, not 16", bytes.len()))?;
         let (ticks, presents) = bytes.split_at(8);
         self.resume_counters(
             u64::from_le_bytes(ticks.try_into().expect("8 bytes")),

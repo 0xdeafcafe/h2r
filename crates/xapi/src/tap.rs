@@ -199,7 +199,13 @@ impl InputTap for Recorder {
     }
 
     fn cursor(&self) -> Option<u64> {
-        Some(self.log.lock().unwrap_or_else(|e| e.into_inner()).reads.len() as u64)
+        Some(
+            self.log
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .reads
+                .len() as u64,
+        )
     }
 
     fn seek(&mut self, cursor: u64) -> Result<(), String> {
@@ -290,7 +296,10 @@ impl InputTap for Replayer {
             ));
         }
         self.next = cursor as usize;
-        self.stats.lock().unwrap_or_else(|e| e.into_inner()).replayed = cursor;
+        self.stats
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .replayed = cursor;
         Ok(())
     }
 }

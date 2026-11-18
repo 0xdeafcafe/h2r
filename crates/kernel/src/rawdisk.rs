@@ -184,9 +184,7 @@ impl Backend for RawDisk {
             let at = offset + done as u64;
             let (sector, within) = (at / SECTOR_SIZE, (at % SECTOR_SIZE) as usize);
             let count = (buffer.len() - done).min(SECTOR_SIZE as usize - within);
-            sectors
-                .entry(sector)
-                .or_insert([0; SECTOR_SIZE as usize])[within..within + count]
+            sectors.entry(sector).or_insert([0; SECTOR_SIZE as usize])[within..within + count]
                 .copy_from_slice(&buffer[done..done + count]);
             done += count;
         }

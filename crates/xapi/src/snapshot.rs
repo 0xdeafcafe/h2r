@@ -106,7 +106,9 @@ struct Saved {
 fn decode(bytes: &[u8]) -> Result<Saved, ::snapshot::Error> {
     let r = &mut Reader::new(bytes, "xapi");
     let next_handle = r.u32()?;
-    let handles = r.list(5 + State::SIZE, |r| Ok((r.u32()?, get_port(r)?, get_state(r)?)))?;
+    let handles = r.list(5 + State::SIZE, |r| {
+        Ok((r.u32()?, get_port(r)?, get_state(r)?))
+    })?;
     if handles.len() > MAX_HANDLES {
         return Err(corrupt("too many handles"));
     }
@@ -212,10 +214,7 @@ impl<StorageBackend: Storage> Xapi<StorageBackend> {
     /// is dropped. The input tap is sought to the saved cursor first, then
     /// told every old handle closed and every loaded one opened. Returns
     /// the saved cursor.
-    pub fn load_snapshot(
-        &mut self,
-        snapshot: &Snapshot<'_>,
-    ) -> Result<Option<u64>, SnapshotError> {
+    pub fn load_snapshot(&mut self, snapshot: &Snapshot<'_>) -> Result<Option<u64>, SnapshotError> {
         let bytes = snapshot.require(SECTION, VERSION..=VERSION)?;
         let saved = decode(&bytes)?;
         if let (Some(cursor), Some(tap)) = (saved.input_cursor, self.input_tap.as_mut()) {
