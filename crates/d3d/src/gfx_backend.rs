@@ -1599,6 +1599,8 @@ impl Backend for GfxBackend {
             depth_format: df,
             viewport: crate::backend::external_viewport(&request, size),
             z_scale: request.z_scale,
+            guest_size: request.surface_size,
+            size,
         });
         self.open = Some((enc, passes + 1));
         Ok(true)

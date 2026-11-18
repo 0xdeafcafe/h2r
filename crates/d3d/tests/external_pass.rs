@@ -24,6 +24,7 @@ struct Seen {
     z_scale: f32,
     color: wgpu::TextureFormat,
     depth_is_depth: bool,
+    sizes: ((u32, u32), (u32, u32)),
 }
 
 type Got = Arc<Mutex<Vec<Seen>>>;
@@ -38,6 +39,7 @@ impl ExternalPass for Probe {
             z_scale: t.z_scale,
             color: t.color_format,
             depth_is_depth: t.depth_format.is_depth_stencil_format(),
+            sizes: (t.guest_size, t.size),
         });
         drop(t.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("probe"),
@@ -100,6 +102,7 @@ fn run<B: Backend>(b: B) {
     assert_eq!(seen.viewport, [0.0, 0.0, 64.0, 64.0]);
     assert_eq!(seen.z_scale, 16_777_215.0, "D24S8 full scale");
     assert!(seen.depth_is_depth);
+    assert_eq!(seen.sizes, ((64, 64), (64, 64)), "guest and texel sizes at 1x");
     assert!(!seen.color.is_depth_stencil_format());
     let events = d.take_events();
     assert!(events.is_empty(), "{events:?}");

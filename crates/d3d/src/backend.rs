@@ -294,6 +294,11 @@ pub struct ExternalTarget<'a> {
     /// The depth format's full scale as the guest's W-buffer uses it
     /// (device `+0x948`).
     pub z_scale: f32,
+    /// The colour target's size in guest pixels (what the game's viewport
+    /// constants are in) and in this copy's texels (larger under the
+    /// render scale).
+    pub guest_size: (u32, u32),
+    pub size: (u32, u32),
 }
 
 /// Where and how an [`ExternalPass`] runs, in guest terms.
