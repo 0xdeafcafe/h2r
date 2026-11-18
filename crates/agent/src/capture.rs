@@ -113,13 +113,23 @@ fn medians(frames: &[FrameSample]) -> [u64; COUNTERS] {
     })
 }
 
+/// Host time in file I/O, in the frame, that makes `file_io` a cause: 2 ms
+/// (or a tenth of the frame's busy time, whichever is less).
+pub const FILE_IO_MIN_US: u64 = 2_000;
+
 /// Why a frame over budget was slow, from its counters (against what a
 /// frame of the window usually counts, `typical`) and its phases:
 ///
 /// - `shader_compile`, `pipeline_compile`: any shader translated or render
 ///   pipeline built on the critical path;
-/// - `texture_uploads`, `file_io`, `gpu_readback`: more uploads, file
-///   bytes or blocking readbacks than twice the usual (and at least one);
+/// - `texture_uploads`, `gpu_readback`: more uploads or blocking readbacks
+///   than twice the usual (and at least one);
+/// - `file_io`: file I/O took time: the guest's file calls (any guest
+///   thread) spent at least [`FILE_IO_MIN_US`] (2 ms) of host time in the
+///   frame, or at least a tenth of its busy time (`file_io_us`). Bytes read
+///   are not the test: a read costs about 38 us per 32 KB and finishes
+///   inside the call, so a frame that read some bytes was no slower than
+///   one that read none;
 /// - `gpu`, `render_thread`, `pushbuf_decode`: that phase is at least 40%
 ///   of the frame's busy time;
 /// - `guest_cpu`: none of those, and the guest's own time (`cpu` plus
@@ -137,13 +147,14 @@ pub fn causes(s: &FrameSample, typical: &[u64; COUNTERS]) -> Vec<String> {
     if above(Counter::Uploads) {
         out.push("texture_uploads");
     }
-    if above(Counter::ReadBytes) {
-        out.push("file_io");
-    }
     if above(Counter::Readbacks) {
         out.push("gpu_readback");
     }
     let busy = s.busy_ns().max(1);
+    let io_us = count(Counter::FileIoUs);
+    if io_us >= FILE_IO_MIN_US || (io_us > 0 && io_us * 1000 * 10 >= busy) {
+        out.push("file_io");
+    }
     let share = |p: Phase| s.phase_ns[p as usize] as f64 / busy as f64;
     for (p, name) in [
         (Phase::Wait, "gpu"),
@@ -370,9 +381,10 @@ mod tests {
         let mut b = frame(21, 500, 10, 40, 100);
         b.counts[Counter::Uploads as usize] = 3;
         assert_eq!(causes(&b, &typical), ["gpu"]);
-        // A level streaming in.
+        // A level streaming in: the file calls took 6 ms.
         let mut c = frame(22, 600, 40, 2, 100);
         c.counts[Counter::ReadBytes as usize] = 1 << 20;
+        c.counts[Counter::FileIoUs as usize] = 6_000;
         assert_eq!(causes(&c, &typical), ["file_io"]);
         // Nothing counted: the guest's own time.
         let d = frame(23, 700, 60, 2, 100);
@@ -384,6 +396,25 @@ mod tests {
         assert_eq!(s.causes["shader_compile"], 1);
         assert_eq!(s.causes["guest_cpu"], 1, "counted for unlisted spikes too");
         assert_eq!(s.causes.values().sum::<usize>(), 5);
+    }
+
+    #[test]
+    fn bytes_read_without_time_are_not_file_io() {
+        let typical = [0; COUNTERS];
+        // 1 MB read, 0.4 ms in file calls of a 42 ms frame: guest time.
+        let mut f = frame(1, 100, 40, 2, 100);
+        f.counts[Counter::ReadBytes as usize] = 1 << 20;
+        f.counts[Counter::FileIoUs as usize] = 400;
+        assert_eq!(causes(&f, &typical), ["guest_cpu"]);
+        // 2 ms is material on its own.
+        f.counts[Counter::FileIoUs as usize] = 2_000;
+        assert!(causes(&f, &typical).contains(&"file_io".to_owned()));
+        // A tenth of a short frame is material too (1.2 ms of 12 ms).
+        let mut g = frame(2, 200, 10, 2, 100);
+        g.counts[Counter::FileIoUs as usize] = 1_200;
+        assert!(causes(&g, &typical).contains(&"file_io".to_owned()));
+        g.counts[Counter::FileIoUs as usize] = 1_100;
+        assert!(!causes(&g, &typical).contains(&"file_io".to_owned()));
     }
 
     #[test]

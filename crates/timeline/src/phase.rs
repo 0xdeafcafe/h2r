@@ -153,10 +153,14 @@ pub enum Counter {
     /// Of [`Passes`](Self::Passes): side passes (alias mirror, depth
     /// aliases and levels, masked clears).
     PassSide = 15,
+    /// Host wall time, in microseconds, the guest spent in file I/O calls
+    /// (open, read, write, metadata, directory queries), on any guest
+    /// thread: the async I/O pool's thread competes with the game's.
+    FileIoUs = 16,
 }
 
 /// Number of [`Counter`]s.
-pub const COUNTERS: usize = 16;
+pub const COUNTERS: usize = 17;
 
 impl Counter {
     pub const ALL: [Counter; COUNTERS] = [
@@ -176,6 +180,7 @@ impl Counter {
         Counter::PassDiscard,
         Counter::PassCounted,
         Counter::PassSide,
+        Counter::FileIoUs,
     ];
 
     pub fn label(self) -> &'static str {
@@ -196,6 +201,7 @@ impl Counter {
             Counter::PassDiscard => "pass_discard",
             Counter::PassCounted => "pass_counted",
             Counter::PassSide => "pass_side",
+            Counter::FileIoUs => "file_io_us",
         }
     }
 }

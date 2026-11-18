@@ -190,7 +190,19 @@ fn offset(memory: &Guest, pointer: u32, write: bool) -> Result<vfs::Result<Offse
 }
 
 impl Core {
+    /// Runs one guest file call, charging its host wall time (microseconds,
+    /// rounded) to `Counter::FileIoUs` on whichever thread made it.
     pub(crate) fn file_call(&mut self, memory: &mut Guest, a: &Args) -> Result<Action, GuestFault> {
+        if !timeline::phase::enabled() {
+            return self.file_call_inner(memory, a);
+        }
+        let start = timeline::now_ns();
+        let r = self.file_call_inner(memory, a);
+        let ns = timeline::now_ns().saturating_sub(start);
+        timeline::phase::count(timeline::phase::Counter::FileIoUs, (ns + 500) / 1000);
+        r
+    }
+    fn file_call_inner(&mut self, memory: &mut Guest, a: &Args) -> Result<Action, GuestFault> {
         if memory.u8(self.kpcr + crate::layout::kpcr::IRQL)? != 0 {
             return Ok(Action::Stop("file operation above PASSIVE_LEVEL"));
         }
