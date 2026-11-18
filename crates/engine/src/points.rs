@@ -462,6 +462,19 @@ points! { ALL;
     /// Apply one update record (stack): player entries, the player-set
     /// change (`+0xDD0`, mask `+0xDD4`), events, the save flag (`+0x403C`).
     SIM_UPDATE_APPLY @ 0x0006_83a0: [opaque], Optional; "docs/live/live-coop.md";
+    /// Synchronous: send this console's player actions for the tick to
+    /// the machine that builds the updates (message `0x28`, `0x180`
+    /// bytes, up to four local players).
+    SIM_ACTIONS_SEND @ 0x0008_5fc0: [opaque], Optional; "docs/live/live-coop.md";
+    /// Synchronous: a peer's actions arrived (from the `0x28` handler
+    /// `0x949d0`).
+    SIM_ACTIONS_RECEIVE @ 0x0008_5f50: [opaque], Optional; "docs/live/live-coop.md";
+    /// Synchronous: send one tick's update record to one peer's view
+    /// (message `0x27`; queued instead while that view is joining).
+    SIM_UPDATE_SEND @ 0x0008_60b0: [opaque], Optional; "docs/live/live-coop.md";
+    /// Synchronous: an update arrived; run the ticks it allows (from the
+    /// `0x27` handler `0x94990`).
+    SIM_CATCH_UP @ 0x0006_98e0: [opaque], Optional; "docs/live/live-coop.md";
     /// Save the game state (checkpoint): the save callbacks, then the
     /// writer `0x2151f0`.
     GAME_STATE_SAVE @ 0x0012_3e20: [opaque], Optional; "docs/runtime/checkpoints.md";

@@ -15,6 +15,9 @@ Join in progress (a friend joins a running campaign, nobody reverts) is
 traced and its protocol built on tests in
 [section 14](#14-join-in-progress), and wired through the retail
 synchronous join (14.9); it needs its first game run.
+Latency on the synchronous path is budgeted, measured by a
+`coop-live: latency` line, and prediction assessed in
+[section 15](#15-latency-and-prediction).
 
 In short:
 
@@ -2155,3 +2158,160 @@ invitation, so have the level running by then. The lines, in order:
 Then play a minute: a desync shows as the out-of-sync latch (1.3) and
 the existing `coop-live`/`coop-probe` lines. If the retail path stops at
 2 to 4, the fallback is 14.7's protocol.
+
+## 15. Latency, and prediction
+
+The question (2026-11-18): can the network game state be made to lag
+less, and how does the game predict? Co-op over Live runs the retail
+synchronous path: one console builds every tick's update from everyone's
+actions, the others run only the updates they receive. A guest's own
+press therefore shows only after a round trip. This section is a static
+reading (`h2 disasm`) and our own code; no game run. The `coop-live:
+latency` line (15.4) is how a run will put numbers on it.
+
+### 15.1 Which console does what
+
+[local] By what the code does (the simulation globals `*0x004cf77c`,
+mode at `+8`):
+
+- **The update builder** (mode 2 in the "after" step `0x000684e0`):
+  `0x00069880` walks the peer views and `0x000860b0` sends each the
+  whole tick's record (message `0x27`) **at once**, through the channel
+  send `0x00075e80`; a view still joining gets it queued instead
+  (`0x000869a0`). No batching of ticks at this layer.
+- **A follower** (mode 3): `0x00069040` sends this console's actions for
+  the tick (message `0x28`, `0x180` bytes: a sequence number, the update
+  number minus one, up to four local players' `0x5c` byte actions) at
+  once through `0x00085fc0`, and takes its records from the queue the
+  network fills (`0x0006ac30`). The `0x27` handler `0x00094990` calls
+  the catch-up `0x000698e0`, which runs `game_tick` while ticks are
+  pending: an update is simulated as soon as the game reads it.
+- [open] The name table at `0x00468c64` puts sync-client at index 2 and
+  sync-server at 3, the reverse of these behaviours; either the table
+  is not indexed by this mode or section 1.3's labels are swapped. The
+  roles above are what matter here.
+
+[local] The update record is bit-packed (`0x000b2710` encodes through
+`0x00087d00`, field by field), so the `0x4048` passed to the channel is
+a ceiling, not the datagram size.
+
+### 15.2 The budget of one press
+
+A guest presses a button; how long until its own screen shows it. Times
+for a LAN, a 30 Hz tick (33 ms) and the window at 60 Hz.
+
+| hop | what waits | size or period | whose | tunable |
+|---|---|---|---|---|
+| 1 | the press waits for the game's pad read (`XInputGetState`, once a tick) | 0 to 33 ms, 17 on average | retail [guess: once a tick] | no |
+| 2 | our pad layer: host devices feed the XInput state as they report (the Steam pad thread polls every 4 ms, `input::steam_pad`) | 0 to 4 ms | ours [local] | not worth it |
+| 3 | the follower sends its actions (`0x00085fc0`, at once) | 0 | retail [local] | |
+| 4 | the channel and link layers (`0x00075e80` to `0x00095580`) packetise and hand to XNet | [guess] same frame | retail | no |
+| 5 | our Winsock HLE (`live_hle::network`): one `sendto` per datagram, no queue, no timer | microseconds | ours [local] | `H2_XNET_LOWDELAY` (15.3) |
+| 6 | the wire: direct UDP between the XNet ports (base to base+6); the Live relay is not on this path (it carries only the phase-0 pad link) | LAN under 1 ms wired, 2 to 10 ms Wi-Fi | network | wired beats Wi-Fi |
+| 7 | the builder reads its sockets once per main-loop pass, then builds the next tick's update from the actions it has (it does not wait for late ones) | 0 to 33 ms | retail [guess for the poll; local that the build does not wait] | no; measured as "guest input waited" |
+| 8 | the update goes out (`0x000860b0`, at once) and back over the wire | as 4 to 6 | | |
+| 9 | the follower reads its sockets once per main-loop pass, then the catch-up simulates at once | 0 to 33 ms | retail [guess for the poll] | no |
+| 10 | the frame is drawn and presented (our render thread, vsync) | one display frame, 17 ms at 60 Hz | ours [local, high-framerate.md] | `graphics.fps` |
+
+Split screen on one console pays 1 and 10: about 35 ms. The synchronous
+path adds 6 twice, 7 and 9: on a wired LAN about 35 ms more on
+average (up to 70), so about 70 ms in all; over the internet add the
+round trip. [guess] None of the added part is ours: our layers add
+microseconds (5) and a display frame we already pay offline (10). There
+is no fixed input delay in the synchronous path [local: the follower
+sends at once, the builder builds without waiting]; the waits are the
+two 30 Hz polls and the wire.
+
+### 15.3 What was changed (ours, tested)
+
+- **The latency line** (`boot::coop_latency`, feature `coop-latency`,
+  on the co-op arm; off with `H2_COOP_LATENCY=0`). Once a second:
+  `coop-live: latency guest: 30 updates/s, apart 33/33/34 ms; input to update 41/52/80 ms (min/median/max); net 31 in / 30 out datagrams/s, 6.2 / 2.1 KiB/s, largest 900 B`
+  on a guest, and on the host
+  `coop-live: latency host: 30 updates out/s; guest input waited 2/17/33 ms for the next update (min/median/max); net ...`.
+  "Input to update" is from the guest sending its actions to the next
+  update arriving: hops 4 to 9 minus the guest's own poll. The points
+  are `SIM_ACTIONS_SEND` (`0x85fc0`), `SIM_ACTIONS_RECEIVE`
+  (`0x85f50`), `SIM_UPDATE_SEND` (`0x860b0`) and `SIM_CATCH_UP`
+  (`0x698e0`), observed only. Tests: the window's min/median/max, a
+  guest's and a host's measurements on made-up timelines, the traffic
+  rate, the switch, the plan.
+- **Traffic counters** (`live_hle::traffic`): datagrams and bytes each
+  way and the largest datagram, for the line. A datagram near or over
+  the path MTU (about 1400 bytes) is fragmented, and one lost fragment
+  loses the update: the line shows whether that happens.
+- **A kept receive buffer.** Our `recv`/`recvfrom` allocated and zeroed
+  a 64 KiB buffer on every call, and the game polls its sockets every
+  pass, mostly finding nothing; a buffer kept per thread now does. Work
+  removed, timing unchanged, so no switch.
+- **`H2_XNET_LOWDELAY=1`** marks the title's UDP sockets IP_TOS `0xb8`
+  (DSCP EF): on Wi-Fi with WMM they go in the voice queue, the one that
+  waits least when the air is busy. Opt-in (it changes queuing), best
+  effort (a refused option is ignored).
+
+Checked and left: there is no relay hop on the game path (6), no
+Nagle (the game's sockets are UDP; `TCP_NODELAY` passes through for
+any TCP), and our `select` waits exactly as long as the game asks.
+
+### 15.4 Prediction
+
+**Retail's distributed modes** (multiplayer). [local] In the "after"
+step, mode 4 calls `0x00069a00` with the record's `+8`/`+0xc` and
+`0x00069b50` with the player mask `+0x5cc` and the per-player entries
+`+0x610` (`0x7c` bytes each), where the synchronous modes send the
+whole record. The image names "simulation distributed view",
+"replication-entity", "replication-event", "replication-game-results"
+and a "predicted data" pool (`.rdata` strings; docs/game/theater.md).
+[community] Halo 2 multiplayer is host-authoritative: a client
+simulates its own player from its own input at once and sends its
+control to the host, the host replicates objects (entities) and events
+back, and the client's own player is corrected when the host's state
+disagrees. [guess] The per-player entries are that control, and the
+"predicted data" pool the client's speculative copies. Not traced: the
+correction (how a client reconciles its own biped with the host's).
+
+**The synchronous path has none.** [local] A follower's ticks run only
+from received updates (the catch-up); nothing runs ahead of them.
+
+**Could campaign run distributed?** [guess] Not cheaply. Replication
+carries objects and events; campaign also needs AI (actors, squads,
+encounters), the scripts (hs threads, cinematics, the camera, objectives,
+BSP switches and zone sets, checkpoints) and device machines, which
+multiplayer never replicates because it never has them. In distributed
+mode a client would show replicated units without the state that drives
+them, and every script effect that is not an object (a cutscene camera,
+a BSP switch, fade, music, a checkpoint) would need replicating. That is
+a new replication layer for most of campaign: months, with the
+synchronous path's exactness given up.
+
+**Prediction on the synchronous path.** Two levels:
+
+1. **Look prediction (camera only).** On a guest, rotate the drawn
+   camera by the look input not yet in a received update, with the
+   game's own look-rate rule (`0x001870a0`, high-framerate.md "Input
+   latency and aim"); when the update arrives, its real aim replaces
+   the prediction. The simulation never sees it, so it cannot desync;
+   a mismatch shows as a small correction. Aim is what players feel.
+   Cost: the look-rate rule, the camera hook on the render path, and
+   the guest's own pending inputs (it sent them, so it has them). About
+   a week or two; low risk. This is the recommendation.
+2. **Full prediction (rollback).** Run the guest's game ahead on its own
+   input and roll back to each received update, replaying. It would
+   remove the round trip from movement too. Cost: a game-state snapshot
+   (`0x3fe000` bytes) per tick and re-simulating several ticks per
+   frame (each tick is real guest work); sound, effects and the render
+   would replay; the snapshot work (docs/runtime/snapshots.md) is the
+   base. Months, high risk; not before 1 is measured.
+
+### 15.5 What needs a game run
+
+`h2 coop test --players 2 --auto`. In a level, read the two `coop-live: latency`
+lines once a second and the `coop-live: ping` line:
+
+- the guest's "input to update" median should be close to ping plus
+  the host's "guest input waited" median; the rest is the two polls;
+- "apart" near 33 ms says one update per tick; larger gaps are the
+  host's frame rate or loss;
+- "largest" over about 1400 B says updates fragment;
+- then the same with `H2_XNET_LOWDELAY=1` on both, on Wi-Fi, and
+  compare the medians and maxima.
