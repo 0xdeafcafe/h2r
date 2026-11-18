@@ -579,3 +579,64 @@ fn a_variants_unlimited_grenades_reach_every_players_unit() {
     g.put_u32(engine::points::PLAYERS.base, 0);
     assert_eq!(variant_grenades(&mut g).unwrap(), 0);
 }
+
+#[test]
+fn a_snapshot_carries_the_runs_skull_state() {
+    let a = Custom::new(Arc::new(store()), None, None, false);
+    let saved_campaign = CAMPAIGN.load(Ordering::SeqCst);
+    CAMPAIGN.store(Active::of(&[LOW_GRAVITY]).0, Ordering::SeqCst);
+    a.said.store(0b101, Ordering::SeqCst);
+    a.found.store(Active::of(&[FALL_DAMAGE]).0, Ordering::SeqCst);
+    a.ticks.store(812, Ordering::SeqCst);
+    *a.level.lock().unwrap() = Level {
+        key: Some(("03a_oldmombasa".into(), 0xe174_0000)),
+        spot: Some(&SPOTS[2]),
+        tag: Some(0xe1b2_0042),
+        object: None,
+        uncollected: true,
+        queued: false,
+    };
+    *a.gravity.lock().unwrap() = Gravity {
+        written: Some(2.5),
+        game: Some(5.0),
+    };
+    a.falls.lock().unwrap().insert(
+        0xe2a0_0003,
+        Fall {
+            airborne: true,
+            vz: -7.25,
+        },
+    );
+    a.falls.lock().unwrap().insert(
+        0xe2a0_0001,
+        Fall {
+            airborne: false,
+            vz: 0.0,
+        },
+    );
+    assert_eq!(a.snapshot_live(), None);
+    let bytes = a.save_state();
+
+    let b = Custom::new(Arc::new(store()), None, None, false);
+    CAMPAIGN.store(0, Ordering::SeqCst);
+    b.load_state(&bytes).unwrap();
+    assert_eq!(campaign(), Active::of(&[LOW_GRAVITY]));
+    assert_eq!(b.found.load(Ordering::SeqCst), Active::of(&[FALL_DAMAGE]).0);
+    assert_eq!(b.ticks.load(Ordering::SeqCst), 812);
+    {
+        let level = b.level.lock().unwrap();
+        assert!(std::ptr::eq(level.spot.unwrap(), &SPOTS[2]));
+        assert_eq!(level.key, Some(("03a_oldmombasa".into(), 0xe174_0000)));
+        assert!(level.uncollected);
+    }
+    assert_eq!(b.falls.lock().unwrap()[&0xe2a0_0003].vz, -7.25);
+    assert_eq!(b.save_state(), bytes, "the same state again");
+    // Damaged bytes change nothing.
+    assert!(b.load_state(&bytes[..bytes.len() - 1]).is_err());
+    assert_eq!(b.save_state(), bytes);
+
+    // Queued guest calls hold a snapshot off.
+    b.work.lock().unwrap().push(Work::Wake { datum: 1 });
+    assert!(b.snapshot_live().unwrap().contains("queued"));
+    CAMPAIGN.store(saved_campaign, Ordering::SeqCst);
+}
