@@ -765,8 +765,9 @@ H2_FEATURES=impl.render.interpolate h2 play --fps 60 ...
 ```
 
 At exit it prints `d3d: interpolation: frames F blended B held H replays R
-substituted draws D snapped S deferred P; replay mode: N frames, A ms avg,
-M ms max`. `N` counts every frame the replay made (blended presents and
+substituted draws D snapped S deferred P size_mismatch Z unsure U dropped X;
+replay mode: N frames, A ms avg, M ms max`. `Z`, `U` and `X` count frames
+shown as the guest drew them by the guards below ("Guards"). `N` counts every frame the replay made (blended presents and
 in-between frames) and the times are the render thread's wall time for
 each: its draws, plus `present_replay` for in-between frames (the
 guest's own present is not counted: it would happen anyway). That is
@@ -857,6 +858,32 @@ part instead (section 8).
   runs while a pixel count is open (cleared, not yet reported), so no
   replay draw lands in a visibility count. A replay error turns the replay
   off for the rest of the run instead of stopping the game.
+- **Guards** (added after the first window run, where E1 glitched on
+  the front end: the picture jumping in size toward the top-left). Both
+  modes:
+  - *Render targets a frame samples are copied as the draw read them.* A
+    recorded draw that samples a render target through a live view
+    (`surface_texture`) keeps a snapshot of it taken right after the draw,
+    so a replay never sees what the guest drew into the target since (a
+    smaller pass, the next frame's image), which drew the picture at the
+    wrong size. A depth view, or a surface copied into the frame, cannot be
+    kept: the frame is held (`unsure`).
+  - *Only centred perspective cameras* (`Persp::centred`: no shear, the
+    axis within 5% of the screen's middle, a sane focal length). A
+    perspective into pixels (screen-space UI, menus) is not a camera to
+    move: held (`unsure`).
+  - *E1's world draws must all map onto the whole target the same way*
+    (`Screen::covers_target`, `Screen::same`): the warp zooms and turns
+    about the screen's centre, so a screen-space mapping (offset 0) or a
+    sub-viewport would put the picture in the wrong place. Held
+    (`size_mismatch`).
+  - *A made frame must show at the guest's frame's host size*
+    (`Backend::surface_extent`, the view's scaled copy through
+    `ScaledBackend`), else it is not shown (`size_mismatch`).
+  - *One made frame on the GPU at a time* (`Backend::gpu_fence`): while
+    the last one is unfinished, idle slots are dropped and the guest's
+    frames are shown as drawn (`dropped`), so replay work never queues up
+    ahead of the guest's frames.
 
 ### Correctness items from the reviews
 
@@ -927,6 +954,17 @@ backend):
 - turning the setting to 30 mid-run goes back to plain presents;
 - through `ThreadedBackend`, the render thread's idle step draws
   in-between frames.
+
+Also, through the recording backend: menu frames (a screen-space
+perspective shared by the panels, orthographic text, a pre-transformed
+background) are shown as drawn in D and both E1 variants; E1 holds world
+draws in screen space or in a sub-viewport; a made frame of another host
+size is not shown; slots are dropped while the GPU is busy; a sampled
+render target replays from its snapshot, and a copied-in surface holds.
+`cargo test -p d3d --test interp_gpu` runs D and E1 on the GPU through
+`ScaledBackend` at 2x and 3x: every presented frame is the guest's size
+at that scale, D's made frames have the guest's pixels exactly and E1's
+(a still camera) agree within filtering on over 98% of pixels.
 
 `cargo test -p boot --lib interpolation` checks the switch's decision
 (off by default, needs the render thread, off under

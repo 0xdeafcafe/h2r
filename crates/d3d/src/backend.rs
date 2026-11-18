@@ -536,6 +536,22 @@ pub trait Backend: Send {
         let _ = (src, dst, h);
         Ok(false)
     }
+    /// The size in host texels of what `surface` shows when presented (a
+    /// view backend's scaled copy, say). Host-only: the interpolated
+    /// replay checks its frames against the guest's with it
+    /// ([`crate::interp`]). `None` (the default): not known.
+    fn surface_extent(&self, surface: Self::Surface) -> Option<(u32, u32)> {
+        let _ = surface;
+        None
+    }
+    /// Submits the work recorded so far and returns a check that answers
+    /// whether the GPU has finished it, without waiting. Host-only: the
+    /// interpolated replay drops an in-between frame while the last one is
+    /// still on the GPU, so its work never queues up ahead of the guest's
+    /// frames ([`crate::interp`]). `None` (the default): never behind.
+    fn gpu_fence(&mut self) -> Option<Box<dyn Fn() -> bool + Send>> {
+        None
+    }
     /// Host-only work a render thread runs when it has nothing queued (the
     /// interpolated replay's in-between frames). Returns when it wants to
     /// be called again; `None` (the default) waits for the next command.
@@ -994,6 +1010,12 @@ pub struct RecordingBackend {
     /// Whether it answers [`Backend::depth_level_texture`] (lazy depth
     /// levels); off by default.
     pub sample_depth: bool,
+    /// What [`Backend::surface_extent`] answers, by surface (none listed:
+    /// not known).
+    pub extents: std::collections::HashMap<u32, (u32, u32)>,
+    /// While set, the checks [`Backend::gpu_fence`] hands out answer that
+    /// the GPU is still busy. `None` (the default): no fences.
+    pub gpu_busy: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl RecordingBackend {
@@ -1137,6 +1159,15 @@ impl Backend for RecordingBackend {
     fn present(&mut self, surface: u32, flags: u32) -> Result<(), String> {
         self.calls.push(Recorded::Present { surface, flags });
         Ok(())
+    }
+    fn surface_extent(&self, surface: u32) -> Option<(u32, u32)> {
+        self.extents.get(&surface).copied()
+    }
+    fn gpu_fence(&mut self) -> Option<Box<dyn Fn() -> bool + Send>> {
+        let busy = self.gpu_busy.clone()?;
+        Some(Box::new(move || {
+            !busy.load(std::sync::atomic::Ordering::Acquire)
+        }))
     }
     fn warp_surface(&mut self, src: u32, dst: u32, h: [[f32; 3]; 3]) -> Result<bool, String> {
         self.calls.push(Recorded::Warp { src, dst, h });
