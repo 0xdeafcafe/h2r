@@ -1,0 +1,16 @@
+[package]
+name = "native-render"
+description = "Native GPU renderer: the static world (structure BSP) loaded once from the map's tags, culled and drawn with indirect draws (docs/graphics/native-renderer.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+map.workspace = true
+tags.workspace = true
+wgpu = "30"
+bytemuck = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+gfx = { path = "../gfx" }
+pollster = "1"
