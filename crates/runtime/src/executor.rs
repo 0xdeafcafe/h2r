@@ -452,12 +452,23 @@ impl SecondExecutor {
     }
 
     pub fn hand_back(&mut self, main: &Runtime, written: &[WrittenPage]) -> HandBack {
+        self.hand_back_owned(main, written, &[])
+    }
+
+    /// [`hand_back`](Self::hand_back) with the physical ranges `owned`
+    /// view-owned ([`Guest::hand_back_owned`]).
+    pub fn hand_back_owned(
+        &mut self,
+        main: &Runtime,
+        written: &[WrittenPage],
+        owned: &[(u32, u32)],
+    ) -> HandBack {
         let Some(base) = &self.base else {
             return HandBack::default();
         };
         let view = self.runtime.memory();
         let mut live = main.memory();
-        live.hand_back(&view, base, written)
+        live.hand_back_owned(&view, base, written, owned)
     }
 }
 

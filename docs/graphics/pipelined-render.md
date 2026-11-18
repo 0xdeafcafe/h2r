@@ -800,8 +800,11 @@ census row allows); `0x004e6098` and the host-owned vblank words
 (`0x00485ab0..0x00485ac0`, `0x0055e6b8..0x0055e6c0`) never come back.
 Every other byte the render changed is merged byte by byte against the
 snapshot (`Guest::hand_back`: a render-only page comes back whole, a page
-both wrote keeps the sim's bytes the render did not change, a byte both
-changed is a counted conflict, the render's value wins). The stamp array
+both wrote keeps the sim's bytes the render did not change, and an aligned
+word both changed keeps the sim's value whole and is a counted conflict,
+because in serial order the tick runs after the render; in the
+render-owned ranges, the D3D device and its push buffer, the render's word
+wins instead). The stamp array
 from `0x004e7c20` is assumed to end at the page (the census saw up to
 `0x004e7d7f`); its real end is still to read.
 
@@ -1090,9 +1093,7 @@ behaviour described above.
 - `H2_PIPELINE_CONFLICTS=1`: tallies each hand-back's conflicts by word
   (bytes both sides changed, to different values). Every 300 hand-backs
   it prints the 32 most frequent, with their physical and virtual
-  addresses and the last live, render and snapshot bytes. The merge is
-  byte by byte, so a conflicted word ends up mixed: the render's bytes
-  where it changed them, the sim's elsewhere.
+  addresses and the last live, render and snapshot bytes.
 
 The bisect at afde6702 ruled out the prediction, the seed replay and the
 lightmap sample: `H2_PIPELINE_REFUSE=0xd1850` gave 0 fallbacks, so no
@@ -1100,6 +1101,70 @@ relight sample runs on the render thread in steady state. The `pipeline:`
 lines of that run report about 21,000 conflicts a second, roughly 350
 bytes a frame, against single digits in the first prototype runs. Two-writer state on
 that scale is the next lead for the unlit dynamic objects.
+
+**Conflicts follow serial order.** The conflict log of 2026-11-18 showed
+where those bytes are:
+
+- `0x00504410..0x005044d0` is the animation sampler's scratch: frame
+  indices clamped to the animation's frame count (`+0x14`), blend fields at
+  `0x00504464..0x005044b0`, the codec selector at `0x00504450` read by the
+  dispatch at `0x00279860`, temporary vectors at `0x00504410` and
+  `0x00504430`, and a pointer at `0x005044c0`. The writers are the animation
+  evaluation `0x002798a0`, the codec readers in `0x0027a6e0..0x0028d000`
+  (thousands of references to the scratch), `0x001c73a0` and `0x001e12b0`.
+  The tick runs them for the animation update and the render runs them for
+  the first-person model. It looks like per-call scratch, and if it is, the
+  final value is all that matters. That has not been checked.
+- The heap words in `0x82e055xx..0x82e14cxx` (contiguous memory, also
+  mapped at `0xf2e...`) repeat at a 0x34-byte stride, the size of a
+  `real_matrix4x3`. They are probably node matrices that both sides write.
+  Their writers are not traced yet.
+- `0x004dc2xx..0x004dc3xx` are not identified yet.
+
+The hand-back used to merge byte by byte, with the render's byte winning.
+A word both sides wrote then came back mixed: the render's bytes where it
+changed them and the sim's elsewhere. A float or pointer made from two
+writers is a value neither side wrote, and the next render and tick read it
+(a node matrix that is half one pose and half another, for example). In
+serial order render k runs before tick k + 1, so the sim's write is the
+later one. `Guest::hand_back` now keeps the sim's whole word wherever both
+sides changed it, and takes the render's bytes only in words the sim left
+alone. That is the serial run's result for every word, whichever side
+owns it. The rig test
+`a_word_both_sides_wrote_keeps_the_sims_write_whole_and_is_reported`
+fails at its serial comparison under the old byte merge.
+
+The flushes the serviced calls make (`Guest::merge_page`) still let the
+view win per byte. A flush hands the render's bytes over in the middle of
+the frame, before the sim's later writes, so the next hand-back's word
+rule applies to anything the sim writes after it.
+
+**Render-owned state.** With the sim's word winning everywhere, a run
+stopped at present 3917, after 1713 pipelined frames, inside the render:
+`D3DDevice_SetRenderState_Dxt1NoiseEnable` read a push-buffer put pointer
+(device `+0`, `0x00404fe0`) behind what the host had already consumed. The
+previous hand-back had found the put pointer changed on both sides and kept
+live RAM's older value. Between a render's launch and its join only the
+render may change the D3D device, because the sim's D3D calls join first.
+So a live change there is not a later serial write, and the render's word
+has to stand. `Addrs::render_owned` lists the device (`0x00404fe0`, 0x928
+words) and the device pointer `0x00407488`. Boot adds the push buffer and
+the device's surface scratch (`PipelineRender::render_owned`, from
+`PUSH_BASE` to the end of the scratch page). In those ranges a word both
+sides changed takes the render's whole word (`Guest::hand_back_owned`).
+It still counts as a conflict and is also counted as render-owned (the
+`(render-owned N)` after `conflicts` on the `pipeline:` line). The rig test
+`a_render_owned_word_the_sim_also_changed_keeps_the_renders_value` checks
+both rules in one run.
+
+Which live-side write changed the put pointer is still open. All the
+device's direct references are in the D3D library (`0x003fxxxx`), but game
+code pushes inline through the device pointer `[0x00407488]` (for example
+in `0x00116de0..0x00117000` and `0x0019f880..0x0019fc20`). If any of that
+runs in the tick while a render is in flight, the sim writes into the same
+push buffer from the same put pointer. Its commands are then lost, as they
+were under the byte merge. A steady render-owned count in the `pipeline:`
+line would show it, and those pushes would need a join like the D3D calls.
 
 The prediction leaves the render's own count unchanged. The launch
 snapshots before it credits live RAM, so the view counts from the serial
