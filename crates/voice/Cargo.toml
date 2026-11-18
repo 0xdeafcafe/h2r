@@ -1,0 +1,11 @@
+[package]
+name = "voice"
+description = "The communicator under the title's own voice engine: microphone and headphone media objects over host capture and playback (docs/live/live-voice.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# The overrides in `hle`: dispatch, guest memory, call_guest.
+runtime.workspace = true

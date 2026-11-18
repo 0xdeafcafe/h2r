@@ -6717,6 +6717,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "voice"
+version = "0.1.0"
+dependencies = [
+ "runtime",
+]
+
+[[package]]
 name = "vsimd"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

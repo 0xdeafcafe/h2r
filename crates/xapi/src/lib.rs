@@ -16,7 +16,7 @@ mod vfs_saves;
 pub mod vfs_storage;
 
 pub use cache::CacheSelection;
-pub use config::{CacheDrive, CacheGlobals, CachePartition, Config, DeviceTypes};
+pub use config::{CacheDrive, CacheGlobals, CachePartition, Config, DeviceTypes, VoiceTypes};
 pub use controllers::{Events, PendingSignal, SignalBatch, SignalReport};
 pub use launch::{LAUNCH_DATA_SIZE, LaunchRequest};
 pub use memory::{GuestMemory, MemoryFault};
@@ -70,6 +70,11 @@ pub struct Xapi<StorageBackend> {
     completions: VecDeque<Completion>,
     signals: VecDeque<PendingSignal>,
     changes: DeviceChanges,
+    /// The communicator ports ([`Xapi::set_voice_ports`]): one change state
+    /// per type, since the engine consumes each type's changes separately.
+    voice_ports: u32,
+    microphone_changes: DeviceChanges,
+    headphone_changes: DeviceChanges,
     launch_request: Option<LaunchRequest>,
     pending_search: Option<PendingSearch>,
     searches: std::collections::BTreeMap<u32, PendingSearch>,
@@ -97,6 +102,9 @@ impl<StorageBackend: Storage> Xapi<StorageBackend> {
             completions: VecDeque::new(),
             signals: VecDeque::new(),
             changes: DeviceChanges::default(),
+            voice_ports: 0,
+            microphone_changes: DeviceChanges::default(),
+            headphone_changes: DeviceChanges::default(),
             launch_request: None,
             pending_search: None,
             searches: Default::default(),
