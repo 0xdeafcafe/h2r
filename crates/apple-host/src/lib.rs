@@ -92,6 +92,8 @@ fn guest(layout: Layout, store: Arc<settings::Store>) -> app::worker::GuestFn {
             gfx_view: None,
             render_thread: boot::d3d_glue::render_thread_requested(),
             audio_sink: Some(audio_sink()),
+            // Voice chat's devices are macOS-only for now (live-voice.md).
+            voice_io: None,
             pad_speaker: None,
             debug_menu: None,
             perf_overlay: None,

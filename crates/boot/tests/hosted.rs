@@ -76,6 +76,7 @@ fn the_host_paces_feeds_and_stops_the_run() {
         gfx: None,
         gfx_view: None,
         render_thread: false,
+        voice_io: None,
         audio_sink: Some(Box::new({
             let (opened, written) = (Arc::clone(&opened), Arc::clone(&written));
             move || -> Box<dyn audio::AudioSink> {

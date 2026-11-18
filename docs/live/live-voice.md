@@ -654,14 +654,32 @@ Each is its own slice, with tests:
      runtime Runner, with stand-ins for the DPC and the callbacks.
    - **Not done yet.** Running the real engine end to end needs the game,
      so it waits for slice 4 and a user run.
-4. **Capture and playback on macOS**, through the pause-settings device
-   trait and settings; push-to-talk and mic mute set the talker
-   (`MediaObjects::set_talker`). This slice also:
-   - registers `voice::hle` in boot;
-   - sets the voice port mask from host mic presence;
-   - checks that the host's DirectSound runs the per-port voice effects
-     and fills their output rings (3.3, item 7), since remote voice
-     reaches the headphone only through them.
+4. **Capture and playback on macOS** (built, untested in the game):
+   - **Boot.** `boot::voice_glue` registers `voice::hle` and pumps between
+     slices. The port mask is 0 until a microphone is chosen on the Voice
+     screen (`voice.input_device` not System default). Then every port
+     with a pad has a communicator.
+   - **Talker.** In open-mic mode the talker is the first such port.
+     `voice.mic_muted` silences it. Push-to-talk is not read from the pad
+     yet, so that mode is silent.
+   - **Devices.** The chosen devices open through the host's opener
+     (`Host::voice_io`). `h2 play` uses `voice::host::HostVoiceIo`, which
+     runs cpal on its own thread. Output plays on its own stream only when
+     a voice output device is chosen; "Same as Game" plays nothing extra.
+   - **DirectSound.** It does not run the per-port voice effects; the
+     effects image is dry. The descriptor now gives effects 0xb..=0xe a
+     zeroed output ring. Without one, the headphone feed divides by zero
+     as soon as a headphone object exists. The headphone therefore plays
+     silence.
+   - **Where remote voice is heard.** Probably through the engine's
+     DirectSound voice streams, on mixbin index 0 (dsound.md, "Dry effects
+     image"). This has not been checked in a run.
+   - **Still to do:**
+     - a real voice effect that converts the voice streams into the rings,
+       so headphone output and the volume settings apply;
+     - push-to-talk from the pad;
+     - the input and output volume settings;
+     - "Same as Game" through the DirectSound side sink.
 5. **Voice messages**: the voice-mail mode on the same objects, blob storage
    with the size and header check, inbox delivery (this depends on the
    inbox HLE delivering messages at all).

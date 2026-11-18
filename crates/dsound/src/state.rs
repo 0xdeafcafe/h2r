@@ -127,6 +127,23 @@ const EFFECT_STATE_MAX: u32 = 0x1000;
 const EFFECT_STATE_DSP_BASE_FIELD: u32 = 0x14;
 const EFFECT_STATE_DSP_BASE: u32 = 0x1400;
 
+/// The XHV engine's per-port voice effects: 4 from index 0xb (the engine's
+/// params, `0x55780`: start 0xb, 4 local talkers). On an Xbox each one
+/// writes the port's voice mix into an output ring that the headphone feed
+/// (`0x334d1f`, through `0x332c9c`) reads: the ring's base at map +0x18,
+/// its size in bytes at map +0x1c, and the write offset at state +0x34
+/// (docs/live/live-voice.md, 3.3 item 7). The feed divides by the size,
+/// so a zero size would be a divide fault the moment a headphone exists.
+/// The dry model gives each a zeroed ring and never writes it: the feed
+/// reads silence.
+const XHV_VOICE_EFFECT_FIRST: u32 = 0xb;
+const XHV_VOICE_EFFECT_COUNT: u32 = 4;
+const EFFECT_MAP_OUTPUT_BASE: u32 = 0x18;
+const EFFECT_MAP_OUTPUT_SIZE: u32 = 0x1c;
+/// Four of the feed's 0x500-byte reads (80 ms of 16 kHz 32-bit samples);
+/// the feed needs at least 0x500.
+const XHV_VOICE_RING_SIZE: u32 = 0x1400;
+
 /// `XAudioSetEffectData` descriptor types (the switch at 0x37bab1).
 const EFFECT_TYPE_4: u32 = 4;
 const EFFECT_TYPE_10: u32 = 10;
@@ -154,6 +171,9 @@ struct EffectsImage {
     /// memory; effect `i` is at `state + i * EFFECT_STATE_MAX` and is what its
     /// map's `lpvStateSegment` points at.
     state: u32,
+    /// The XHV voice effects' output rings, [`XHV_VOICE_RING_SIZE`] each,
+    /// or 0 when the image has fewer effects than they need.
+    rings: u32,
 }
 
 impl EffectsImage {
@@ -857,6 +877,12 @@ impl DirectSound {
                 at(img.state_of(i), EFFECT_STATE_DSP_BASE_FIELD)?,
                 EFFECT_STATE_DSP_BASE,
             )?;
+            let voice = i.wrapping_sub(XHV_VOICE_EFFECT_FIRST);
+            if img.rings != 0 && voice < XHV_VOICE_EFFECT_COUNT {
+                let ring = at(img.rings, voice * XHV_VOICE_RING_SIZE)?;
+                h.write_u32(at(map, EFFECT_MAP_OUTPUT_BASE)?, ring)?;
+                h.write_u32(at(map, EFFECT_MAP_OUTPUT_SIZE)?, XHV_VOICE_RING_SIZE)?;
+            }
         }
         Ok(())
     }
@@ -910,8 +936,27 @@ impl DirectSound {
                     h.free(desc);
                     return Ok(E_OUTOFMEMORY);
                 };
-                let img = EffectsImage { desc, count, state };
+                let rings = if count >= XHV_VOICE_EFFECT_FIRST + XHV_VOICE_EFFECT_COUNT {
+                    let Some(rings) = h.alloc(XHV_VOICE_EFFECT_COUNT * XHV_VOICE_RING_SIZE, 16)
+                    else {
+                        h.free(state);
+                        h.free(desc);
+                        return Ok(E_OUTOFMEMORY);
+                    };
+                    rings
+                } else {
+                    0
+                };
+                let img = EffectsImage {
+                    desc,
+                    count,
+                    state,
+                    rings,
+                };
                 if let Err(e) = self.build_effects_image(h, &img) {
+                    if rings != 0 {
+                        h.free(rings);
+                    }
                     h.free(state);
                     h.free(desc);
                     return Err(e.into());

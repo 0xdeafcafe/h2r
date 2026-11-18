@@ -1924,6 +1924,40 @@ fn effects_image_descriptor_walks_like_the_xhv_engine_and_the_library_do() {
     assert_eq!(rig.h.read_u32(desc + 8 + 0xb * 32 + 8).unwrap(), seg);
 }
 
+#[test]
+fn xhv_voice_effects_have_an_output_ring_the_headphone_feed_can_read() {
+    let mut rig = Rig::new();
+    let desc = rig.download_dry_image();
+    let mut rings = Vec::new();
+    for index in 0..15u32 {
+        let map = desc + 8 + index * 32;
+        let (base, size) = (
+            rig.h.read_u32(map + 0x18).unwrap(),
+            rig.h.read_u32(map + 0x1c).unwrap(),
+        );
+        if (0xb..=0xe).contains(&index) {
+            // 0x334d1f divides by the size and reads 0x500 bytes a tick.
+            assert!(size >= 0x500 && size.is_multiple_of(4), "effect {index}");
+            assert!(base != 0, "effect {index}");
+            assert!(
+                rig.h
+                    .read_vec(base, size)
+                    .unwrap()
+                    .iter()
+                    .all(|&b| b == 0),
+                "effect {index}: a dry ring is silence"
+            );
+            let state = rig.h.read_u32(map + 8).unwrap();
+            assert_eq!(rig.h.read_u32(state + 0x34).unwrap(), 0, "write offset");
+            rings.push((base, size));
+        } else {
+            assert_eq!((base, size), (0, 0), "effect {index} has no ring");
+        }
+    }
+    rings.sort_unstable();
+    assert!(rings.windows(2).all(|w| w[0].0 + w[0].1 <= w[1].0));
+}
+
 // ---- Voice effects -------------------------------------------------------
 //
 // Descriptors are built the way Halo's conversions build them (docs/audio/dsound.md,

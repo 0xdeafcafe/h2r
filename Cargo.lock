@@ -649,6 +649,7 @@ dependencies = [
  "toml",
  "variants",
  "vfs",
+ "voice",
  "x87",
  "xapi",
  "xbe",
@@ -946,6 +947,7 @@ dependencies = [
  "tungstenite 0.26.2",
  "ureq",
  "vfs",
+ "voice",
  "wma",
  "xbe",
  "xiso",
@@ -6720,6 +6722,7 @@ dependencies = [
 name = "voice"
 version = "0.1.0"
 dependencies = [
+ "cpal",
  "runtime",
 ]
 

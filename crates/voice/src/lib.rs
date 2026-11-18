@@ -10,6 +10,8 @@
 //! - [`io`]: the host side, [`VoiceIo`](io::VoiceIo) with 20 ms frames at
 //!   48 kHz, and [`FakeVoiceIo`](io::FakeVoiceIo) for tests.
 //! - [`resample`]: 48 kHz to and from the packet rate.
+//! - [`convert`] and, with feature `device`, `host::HostVoiceIo`: the
+//!   macOS microphone and output through cpal.
 //! - [`xmo`]: the media objects: creation with the original's checks and
 //!   errors, Process queueing, and the 20 ms tick that completes packets.
 //!
@@ -22,7 +24,10 @@
 //! deliver.
 #![forbid(unsafe_code)]
 
+pub mod convert;
 pub mod hle;
+#[cfg(feature = "device")]
+pub mod host;
 pub mod io;
 pub mod resample;
 pub mod xmo;
