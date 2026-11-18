@@ -129,9 +129,15 @@ impl Scale {
 
     pub fn description(self) -> &'static str {
         match self {
-            Scale::Damage => "Damage every player deals, as a share of the game's. Not on System Link.",
-            Scale::Shield => "How much every player's shield holds, as a share of the game's. Not on System Link.",
-            Scale::Health => "How much every player's body holds, as a share of the game's. Not on System Link.",
+            Scale::Damage => {
+                "Damage every player deals, as a share of the game's. Not on System Link."
+            }
+            Scale::Shield => {
+                "How much every player's shield holds, as a share of the game's. Not on System Link."
+            }
+            Scale::Health => {
+                "How much every player's body holds, as a share of the game's. Not on System Link."
+            }
         }
     }
 
@@ -199,10 +205,7 @@ pub fn grenades_label_id(on: bool) -> u32 {
 
 /// The grenades row's label.
 pub fn grenades_label(on: bool) -> String {
-    format!(
-        "Unlimited Grenades: < {} >",
-        if on { "On" } else { "Off" }
-    )
+    format!("Unlimited Grenades: < {} >", if on { "On" } else { "Off" })
 }
 
 /// The label id of gravity step `i`.
@@ -451,13 +454,7 @@ impl Page {
     /// Steps gravity up (`up`) or down a step; `wrap` goes round at the
     /// ends (A), else it stops there (left, right). What to log.
     pub fn step_gravity(&self, up: bool, wrap: bool) -> String {
-        self.step_percent(
-            "gravity",
-            |e| e.gravity,
-            |e, v| e.gravity = v,
-            up,
-            wrap,
-        )
+        self.step_percent("gravity", |e| e.gravity, |e, v| e.gravity = v, up, wrap)
     }
 
     /// Steps a scale as gravity steps. What to log.
@@ -561,10 +558,7 @@ impl Rows for Page {
                 LABEL_SLOT,
                 gravity_label_id(nearest_step(self.ext().gravity)),
             )],
-            GRENADES_ROW => vec![(
-                LABEL_SLOT,
-                grenades_label_id(self.ext().unlimited_grenades),
-            )],
+            GRENADES_ROW => vec![(LABEL_SLOT, grenades_label_id(self.ext().unlimited_grenades))],
             TEAMS_ROW => vec![(LABEL_SLOT, teams_label_id(teams_step(self.teams())))],
             r => match Scale::of_row(r) {
                 Some(sc) => vec![(LABEL_SLOT, sc.label_id(nearest_step(sc.get(&self.ext()))))],
@@ -878,7 +872,11 @@ mod tests {
         assert!(p.sideways(GRENADES_ROW, true).unwrap().ends_with("off"));
         p.sideways(GRAVITY_ROW, true);
         assert_eq!(p.pending(), Some([0; ext::LEN]), "a retail record again");
-        assert!(p.describe(2).unwrap().contains("Unlimited Grenades: < Off >"));
+        assert!(
+            p.describe(2)
+                .unwrap()
+                .contains("Unlimited Grenades: < Off >")
+        );
     }
 
     /// The team count row edits the record's `+0xb4`, not the block, and
@@ -931,11 +929,22 @@ mod tests {
             assert_eq!(p.texts(sc.row()), [(LABEL_SLOT, sc.label_id(4))]);
             assert_eq!(p.description(sc.row()), Some(sc.description_id()));
         }
-        assert!(p.sideways(Scale::Damage.row(), true).unwrap().contains("damage 100% -> 125%"));
-        assert!(p.sideways(Scale::Health.row(), false).unwrap().contains("health 100% -> 75%"));
+        assert!(
+            p.sideways(Scale::Damage.row(), true)
+                .unwrap()
+                .contains("damage 100% -> 125%")
+        );
+        assert!(
+            p.sideways(Scale::Health.row(), false)
+                .unwrap()
+                .contains("health 100% -> 75%")
+        );
         assert!(matches!(p.press(Scale::Shield.row()), Chosen::Stepped(_)));
         let e = Ext::in_effect(&p.pending().unwrap());
-        assert_eq!((e.damage, e.shield, e.health, e.gravity), (125, 125, 75, 100));
+        assert_eq!(
+            (e.damage, e.shield, e.health, e.gravity),
+            (125, 125, 75, 100)
+        );
         assert_eq!(
             p.texts(Scale::Damage.row()),
             [(LABEL_SLOT, Scale::Damage.label_id(5))]
@@ -945,10 +954,18 @@ mod tests {
             p.sideways(Scale::Health.row(), false);
         }
         assert_eq!(p.ext().health, 10);
-        assert!(p.sideways(Scale::Health.row(), false).unwrap().contains("stays 10%"));
+        assert!(
+            p.sideways(Scale::Health.row(), false)
+                .unwrap()
+                .contains("stays 10%")
+        );
         assert_eq!(Scale::Shield.label(4), "Shields: < Normal >");
         assert_eq!(Scale::Damage.label(7), "Damage: < 200% >");
-        assert!(p.describe(ROWS).unwrap().contains("[5] \"Health: < 10% >\""));
+        assert!(
+            p.describe(ROWS)
+                .unwrap()
+                .contains("[5] \"Health: < 10% >\"")
+        );
     }
 
     #[test]

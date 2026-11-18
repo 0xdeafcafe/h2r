@@ -1955,8 +1955,11 @@ fn presence_says_what_a_build_can_do_and_the_host_names_older_players() {
     });
     // An unknown xuid (a bot) is not named; the older guest is.
     assert_eq!(
-        host.hle
-            .players_lacking(VARIANT_EXT, &[c.xuid, b.xuid, Xuid(0x000b_0000_0000_0001)], wait),
+        host.hle.players_lacking(
+            VARIANT_EXT,
+            &[c.xuid, b.xuid, Xuid(0x000b_0000_0000_0001)],
+            wait
+        ),
         Lacking::Known(vec!["Oldie".into()])
     );
     assert_eq!(

@@ -925,7 +925,10 @@ mod tests {
             let back = GameVariant::from_bytes(&v.to_bytes()).unwrap();
             assert_eq!(back.get(TEAM_COUNT), Some(t));
         }
-        assert_eq!(GameVariant::blank(GameType::Slayer).get(TEAM_COUNT), Some(0));
+        assert_eq!(
+            GameVariant::blank(GameType::Slayer).get(TEAM_COUNT),
+            Some(0)
+        );
     }
 
     #[test]

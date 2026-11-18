@@ -700,7 +700,10 @@ mod tests {
         let guest = session(3, false);
         assert_eq!(decide(e, Some((&guest, 2)), true).vitality(), Some(e));
         assert_eq!(decide(e, Some((&guest, 2)), false).vitality(), None);
-        assert_eq!(decide(e, Some((&session(3, true), SYSTEM_LINK)), false).vitality(), None);
+        assert_eq!(
+            decide(e, Some((&session(3, true), SYSTEM_LINK)), false).vitality(),
+            None
+        );
 
         let mut g = engine::testing::FakeGuest::new();
         const REC: u32 = 0x0070_0000;

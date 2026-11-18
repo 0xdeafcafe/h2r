@@ -582,7 +582,11 @@ pub fn valid_capabilities(c: &[String]) -> bool {
 /// before a game with variant options (docs/game/game-options.md section
 /// 3); `xuids` may come from the session's roster or the game's own
 /// player list.
-pub fn lacking<'a>(capability: &str, xuids: &[Xuid], presence: &'a [Presence]) -> Vec<&'a Presence> {
+pub fn lacking<'a>(
+    capability: &str,
+    xuids: &[Xuid],
+    presence: &'a [Presence],
+) -> Vec<&'a Presence> {
     xuids
         .iter()
         .filter_map(|x| presence.iter().find(|p| p.xuid == *x))
@@ -1096,7 +1100,14 @@ mod wire_tests {
         for ok in ["a65fa01", "a65fa010", "0123456789ab"] {
             assert!(valid_build(ok), "{ok}");
         }
-        for bad in ["", "a65fa0", "0123456789abc", "A65FA01", "a65fa0g", "unknown"] {
+        for bad in [
+            "",
+            "a65fa0",
+            "0123456789abc",
+            "A65FA01",
+            "a65fa0g",
+            "unknown",
+        ] {
             assert!(!valid_build(bad), "{bad}");
         }
         for ok in [capability::VARIANT_EXT, "a/0", "x-2/10"] {
