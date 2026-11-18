@@ -29,6 +29,7 @@ const parts = {
   signin: () => import("./signin/SignIn"),
   deckStyle: () => import("./deck/StylePage"),
   usage: () => import("./deck/UsagePage"),
+  eventLog: () => import("./dash/EventLog"),
 };
 const Game = lazy(parts.game);
 const Games = lazy(parts.games);
@@ -47,6 +48,7 @@ const Admin = lazy(parts.admin);
 const SignIn = lazy(parts.signin);
 const DeckStyle = lazy(parts.deckStyle);
 const Usage = lazy(parts.usage);
+const EventLog = lazy(parts.eventLog);
 const Viewer3DPage = lazy(() => import("./viewer/Popout"));
 
 const idle = (f: () => void) =>
@@ -68,10 +70,11 @@ const OldPlayer = () => <Navigate href={`/stats/players/${useParams().tag}`} />;
 render(
   () => (
     <Router root={Veil}>
-      <Route path="/dash/teams" component={() => <Navigate href="/dash/clans" />} />
-      <Route path="/dash/teams/:tag" component={() => <Navigate href={`/dash/clans/${useParams().tag}`} />} />
+      <Route path="/dash/clans" component={() => <Navigate href="/dash/teams" />} />
+      <Route path="/dash/clans/:tag" component={() => <Navigate href={`/dash/teams/${useParams().tag}`} />} />
       <Route path="/dash/admin/style" component={DeckStyle} />
       <Route path="/dash/admin/usage" component={Usage} />
+      <Route path="/dash/admin/events" component={EventLog} />
       <Route path="/dash/admin" component={() => <Navigate href="/dash/admin/usage" />} />
       <Route path={["/", "/dash/:section", "/dash/:section/:tag"]} component={Dashboard} />
       <Route path="/stats" component={StatsLayout}>

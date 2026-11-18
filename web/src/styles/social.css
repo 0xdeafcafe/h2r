@@ -65,6 +65,8 @@
 .s-soc-role--leader { color: #ffd76a; font-weight: bold; }
 .s-soc-role--officer { color: #a9cdf7; }
 .s-soc-combined { display: grid; grid-template-columns: 1fr 1fr; gap: 0 18px; padding: 9px 10px; }
+.s-soc-medals { grid-column: 1 / -1; }
+.s-soc-medals .s-preview-medals { flex-wrap: wrap; }
 .s-soc-combined .s-soc-foot { grid-column: 1 / -1; margin-top: 6px; font-size: 10px; color: var(--s-ink-dim); }
 .s-soc-win { color: #b6e08c !important; }
 .s-soc-live { color: #ffd76a; font-weight: bold; }

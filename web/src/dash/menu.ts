@@ -4,7 +4,7 @@
 // items and the account (recovery code, authenticator, devices, sign out).
 // Profile and the server live under settings.
 
-export type SectionId = "live" | "games" | "sessions" | "friends" | "clans" | "players" | "history" | "settings" | "signup" | "server" | "signin" | "recover" | "account";
+export type SectionId = "live" | "games" | "sessions" | "friends" | "teams" | "players" | "history" | "settings" | "signup" | "server" | "signin" | "recover" | "account";
 
 export function menuFor(signedIn: boolean): SectionId[] {
   return signedIn
