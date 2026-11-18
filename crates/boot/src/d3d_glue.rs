@@ -569,6 +569,12 @@ impl d3d::backend::Backend for Headless {
         let r = self.0.warp_surface(src, dst, h);
         self.forget(r)
     }
+    fn surface_extent(&self, surface: u32) -> Option<(u32, u32)> {
+        self.0.surface_extent(surface)
+    }
+    fn gpu_fence(&mut self) -> Option<Box<dyn Fn() -> bool + Send>> {
+        self.0.gpu_fence()
+    }
     fn present_with_gamma(&mut self, surface: u32, flags: u32, gamma: Option<&[u8; 768]>) -> Result<(), String> {
         let r = self.0.present_with_gamma(surface, flags, gamma);
         self.forget(r)

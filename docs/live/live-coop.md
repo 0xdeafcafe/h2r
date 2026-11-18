@@ -1771,21 +1771,48 @@ without a press. The three parts of 12.5:
 
 | Game | Path |
 |---|---|
-| every game | First boot screen held 4 s: START. Each later boot screen: DOWN, A (the profile picker's Default, as docs/runtime/BOOT.md). Main menu (`0x09`): DOWN, A (Xbox Live, which signs in). The guests come back to Xbox Live a second time with A only, since their cursor is still on it |
+| every game | No press until the main menu, which the coop-test data reaches by itself about 19 s after the agent socket is up (presses START, A, B only if it hasn't a minute after the first chance). Main menu: DOWN, A (Xbox Live). That opens the players' screen `0x1e` in mode 3; A there opens the Live menu. If what opened says the cursor was on another row (`0xee` for Campaign, mode 1 for Split Screen, mode 2 for System Link), the driver presses B and moves to Xbox Live. The guests come back to Xbox Live a second time with A, corrected the same way |
 | host | Live menu (`0xba`): from the restored row to row 4, A. Wait for `coop-live: hosting`; `custom games: opening the browser` means it landed on row 3, so B and try again. Wait for every lobby guest's `coop-live: guest: joined`, then A on Start Game (the lobby's row 0, `0x250fb3` → `0x251050`). If `session start returned 1` or `simulation mode sync-server` doesn't follow, UP, A |
 | guest | Live menu: B back to the main menu, where the invitation reader runs (12.1). Once `coop-auto: accepting`: DOWN, UP (the reader runs on an event, perhaps a controller event). If the game hasn't joined 20 s after the acceptance (or 5 min with no acceptance), A for Xbox Live, row 3 (Custom Game Browser), A. Once the browser has probed a game (`live: join: qos lookup`) and 1.5 s have passed, A on the first game. Done at `coop-live: guest: joined` |
 | late guest | As a guest, but the browser fallback waits until 120 s after the host invited it, so it joins in progress |
 
-[guess] Not seen in a run:
-- the boot screens' ids;
-- whether the profile picker wants DOWN, A with this data;
-- whether the main menu opens with Campaign focused. If not, the
-  driver goes up 3 rows and down 1, then tries again;
-- whether a sign-in screen sits between the main menu and the Live menu.
-  If one does, the driver presses A, then B, on a screen it doesn't know;
-- the lobby's id.
+**What the first runs showed** (2026-11-18, 083611 and 092343, with
+`H2_UI_WATCH=1`):
 
-The `ui: screen` lines in coop.log answer all of these on the first run.
+- No boot presses are needed. Each game shows `0xb6` (window 1) for a
+  moment, then no screen, then says `coop-live: lobby mode 4294967295`:
+  that is the main menu.
+- The main menu reads as no screen. It is pushed as id 9 on window 5,
+  slot 4 by `0x1483c3`. Why it reads as none is open, so a none line now
+  says what each slot held (`ui: screen none (slot 4: window 1 active ...
+  list [mask/id ...]; slot 0: ...)`). The driver takes "no screen after
+  `lobby mode`" as the main menu.
+- The read now follows the dispatcher more closely: a window whose list
+  has no screen for player one passes the input on to player one's own
+  slot, not to the next window.
+- Campaign has focus when the main menu opens. Its rows (`0x230827`,
+  chosen row at `0x510a14`) are 0 Campaign, 1 Xbox Live, 2 Split Screen,
+  3 System Link and 4 Settings.
+- A on Campaign gives `0xee` (window 1), then `0xd1` (window 5), then the
+  level. The driver backs out of `0xee`.
+- Xbox Live (when signed in, `0x2308e0`) gives `0x1e` on window 5. That
+  is the players' screen (`0x2524cc`, vtable `0x45a490`), one class in
+  five modes (`+0x610`, now on the line): 1 Split Screen, 2 System Link,
+  3 Xbox Live, 4 an accepted invitation (from the invitation dialog's
+  first button `0x22f36f`). A or START (`0x25286d`, buttons 0 and 0xc)
+  goes on by mode: mode 3 opens the Live menu (`0x2310b7`) and mode 4
+  joins. B with one player goes back.
+- A guest waiting for the invitation presses A on any screen that comes
+  up after the acceptance (the invitation dialog) and on the players'
+  screen in mode 4, at most 4 times. It presses B on the players' screen
+  in any other mode.
+
+[guess] Still not seen in a run:
+- whether `0x1e`'s A opens the Live menu at once (static: mode 3 →
+  `0x2310b7`);
+- the lobby's id;
+- whether the Live menu reads as a screen (`0xba`) or as none, like the
+  main menu.
 
 Tests (`cargo test -p cli --bin h2 coop_drive`, `-p boot --lib ui_watch`):
 - A model of the menus runs three games without the invitation reader
@@ -1793,8 +1820,14 @@ Tests (`cargo test -p cli --bin h2 coop_drive`, `-p boot --lib ui_watch`):
   starts after both).
 - The same model runs with a working reader (no browser) and with a late
   guest (it joins after the start).
-- A boot screen that never moves ends in `stuck`.
+- A main menu whose cursor comes back on Campaign is corrected.
+- The players' screen in mode 2 is read as the System Link row.
+- No boot press comes in the first minute, then START, A, B, then
+  `stuck`.
 - A wrong Live menu row is backed out of.
+- The 092343 run (`coop_drive/run-092343.log`) is replayed: Bravo makes
+  no press before the main menu, then DOWN, A, and A on the players'
+  screen.
 - The 023244 run's own lines (`coop_drive/run-023244.log`) are replayed:
   the host waits in its lobby, and Bravo is nudged at its acceptance and
   goes for the browser 20 s after it.

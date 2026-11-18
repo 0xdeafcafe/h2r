@@ -1,4 +1,5 @@
 //! Signed-host discovery sessions, projected from the event log.
+use crate::ConnectInfo;
 use crate::{
     app::{ApiError, Live, conflict, forbidden, invalid, not_found, now, sign_error, unauthorized},
     model::{State, nonce_key},
@@ -6,7 +7,7 @@ use crate::{
 };
 use axum::{
     body::{Bytes, to_bytes},
-    extract::{ConnectInfo, Path, Query, Request, State as HttpState},
+    extract::{Path, Query, Request, State as HttpState},
     http::{HeaderMap, StatusCode},
     response::Response,
 };

@@ -102,6 +102,27 @@ impl Persp {
         (max_diff(&p.matrix(), m) <= REBUILD_TOLERANCE * size).then_some(p)
     }
 
+    /// Whether the projection is a centred one into normalised device
+    /// coordinates, as a game camera's is: no shear, the axis through the
+    /// middle of the screen (within 5% of it), and a field of view between
+    /// about 2 and 175 degrees. A perspective that maps to pixels (screen
+    /// space UI, off-centre by half the screen) or a degenerate one is not
+    /// a camera the replay should move.
+    pub fn centred(&self) -> bool {
+        let k = &self.projection;
+        let w = k[3][2];
+        if w == 0.0 || !w.is_finite() {
+            return false;
+        }
+        let (sx, sy) = ((k[0][0] / w).abs(), (k[1][1] / w).abs());
+        let focal = |f: f64| (0.04..=60.0).contains(&f);
+        focal(sx)
+            && focal(sy)
+            && (k[0][2] / w).abs() <= 0.05
+            && (k[1][2] / w).abs() <= 0.05
+            && k[0][1].abs() <= 0.05 * k[0][0].abs()
+    }
+
     /// `K * E`.
     pub fn matrix(&self) -> Mat4 {
         super::math::mul(&self.projection, &self.view.to_mat4())
@@ -326,5 +347,23 @@ mod tests {
             translation: [5.0, 6.0, 0.5],
         };
         assert!(Persp::split(&mul(&vp, &world.to_mat4())).is_some());
+    }
+
+    #[test]
+    fn game_cameras_are_centred_and_pixel_perspectives_are_not() {
+        let game = build::view_projection(1.2, [3.0, -2.0, 1.5], 0.3, 0.05);
+        assert!(Persp::split(&game).unwrap().centred());
+        // Screen-space UI: the axis half a screen off, focal length in pixels.
+        let ui: Mat4 = [
+            [400.0, 0.0, 320.0, 0.0],
+            [0.0, -400.0, 240.0, 0.0],
+            [0.0, 0.0, 1.0, -0.1],
+            [0.0, 0.0, 1.0, 0.0],
+        ];
+        assert!(!Persp::split(&ui).unwrap().centred());
+        // Off-centre by a fifth of the screen (a sub-view's lens shift).
+        let mut shifted = build::projection(1.2, 4.0 / 3.0, 0.1, 100.0);
+        shifted[0][2] = 0.2;
+        assert!(!Persp::split(&shifted).unwrap().centred());
     }
 }

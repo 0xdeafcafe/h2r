@@ -1,0 +1,63 @@
+# Damage effects. Names: docs/formats/tag-definitions.md (Weapons,
+# equipment, projectiles and damage).
+group jpt! 0xc8
+  0x0 unknown 0x4 seen=20 -- floats
+  0x4 unknown 0x4 seen=21 -- floats
+  0x8 unknown 0x4 seen=2 -- floats
+  0xc unknown 0x4 seen=3 -- small integers
+  0x10 unknown 0x4 seen=13
+  0x14 unknown 0x4 seen=19 -- small integers
+  0x18 unknown 0x4 seen=10 -- floats
+  0x1c f32 damage_lower_bound -- V: Halo 1's jpt! +0x1d0 on five retail pairs (assault rifle and SMG, pistol and magnum, shotguns, plasma rifles, sniper rifles): never above the upper bounds, equal to both on the sniper rifles
+  0x20 f32[2] damage_upper_bound -- V: Halo 1's jpt! +0x1d4 on the same pairs (from and to)
+  0x28 unknown 0x4 seen=7 -- floats
+  0x2c unknown 0x4 seen=6 -- floats
+  0x30 unknown 0x4 seen=11 -- floats
+  0x34 unknown 0xc seen=zero
+  0x40 unknown 0x4 seen=25 -- floats
+  0x44 unknown 0x4 seen=8 -- floats
+  0x48 unknown 0x4 seen=10 -- floats
+  0x4c unknown 0x4 seen=10 -- floats
+  0x50 string string_50
+  0x54 string string_54
+  0x58 unknown 0x4 seen=6 -- floats
+  0x5c unknown 0x4 seen=4 -- floats
+  0x60 unknown 0x4 seen=6 -- floats
+  0x64 unknown 0x4 seen=13 -- floats
+  0x68 unknown 0x4 seen=3 -- floats
+  0x6c block block_6c 0x4c align 4
+    0x0 unknown 0x4 seen=3 -- small integers
+    0x4 unknown 0x4 seen=8
+    0x8 unknown 0x4 seen=11 -- floats
+    0xc unknown 0x4 seen=4 -- small integers
+    0x10 unknown 0x4 seen=7 -- floats
+    0x14 unknown 0x4 seen=7 -- floats
+    0x18 unknown 0x4 seen=8 -- floats
+    0x1c unknown 0x4 seen=12 -- floats
+    0x20 unknown 0x4 seen=11 -- floats
+    0x24 unknown 0x4 seen=20 -- floats
+    0x28 data data_28 align 4
+    0x30 unknown 0x4 seen=20 -- floats
+    0x34 data data_34 align 4
+    0x3c unknown 0x8 seen=zero
+    0x44 data data_44 align 4
+  0x74 unknown 0x4 seen=9 -- floats
+  0x78 unknown 0x4 seen=5 -- small integers
+  0x7c unknown 0x4 seen=16 -- floats
+  0x80 unknown 0x4 seen=15 -- floats
+  0x84 unknown 0x4 seen=5 -- floats
+  0x88 unknown 0x4 seen=5 -- floats
+  0x8c unknown 0x4 seen=11 -- floats
+  0x90 unknown 0x4 seen=4 -- small integers
+  0x94 unknown 0x4 seen=10 -- floats
+  0x98 unknown 0x4 seen=6 -- floats
+  0x9c unknown 0x4 seen=3 -- small integers
+  0xa0 unknown 0x4 seen=2 -- floats
+  0xa4 unknown 0x4 seen=3 -- floats
+  0xa8 tagref ref_a8
+  0xb0 unknown 0x4 seen=6 -- floats
+  0xb4 unknown 0x4 seen=8 -- floats
+  0xb8 unknown 0x4 seen=8 -- floats
+  0xbc unknown 0x4 seen=6 -- floats
+  0xc0 unknown 0x4 seen=6 -- floats
+  0xc4 unknown 0x4 seen=4 -- floats

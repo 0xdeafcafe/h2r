@@ -474,6 +474,12 @@ impl<B: Backend> Backend for DiagBackend<B> {
     fn warp_surface(&mut self, src: Self::Surface, dst: Self::Surface, h: [[f32; 3]; 3]) -> Result<bool, String> {
         self.inner.warp_surface(src, dst, h)
     }
+    fn surface_extent(&self, surface: Self::Surface) -> Option<(u32, u32)> {
+        self.inner.surface_extent(surface)
+    }
+    fn gpu_fence(&mut self) -> Option<Box<dyn Fn() -> bool + Send>> {
+        self.inner.gpu_fence()
+    }
 
     fn depth_level_texture(&mut self, surface: Self::Surface) -> Result<Option<Self::Texture>, String> {
         let r = self.inner.depth_level_texture(surface)?;

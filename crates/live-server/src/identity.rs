@@ -72,6 +72,15 @@ impl ServerIdentity {
         Ok(ServerIdentity { id: meta.id, key })
     }
 
+    /// An identity from its parts, as a Worker keeps them: the id in its
+    /// configuration and the key (base64, as in `server.key`) a secret.
+    pub fn from_secret(id: &str, secret_b64: &str) -> Result<Self> {
+        valid_id(id)?;
+        let key = KeyPair::from_secret_b64(secret_b64.trim())
+            .map_err(|_| anyhow::anyhow!("the server key secret is not a server key"))?;
+        Ok(ServerIdentity { id: id.into(), key })
+    }
+
     pub fn author(&self) -> String {
         live_proto::Author::Server(self.id.clone()).to_string()
     }
