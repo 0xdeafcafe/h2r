@@ -502,6 +502,88 @@ fn unreachable_server_reports_cannot_access_service_through_the_logon_task() {
     assert_eq!(w.wait(h), CANNOT_ACCESS_SERVICE);
     assert_eq!(w.call("XOnlineGetLogonUsers", &[]), 0);
 }
+/// The mod repository's list (docs/game/maps.md §5, "Mod downloads"):
+/// read off the game thread with the signed-in account's token, newest
+/// first, each entry's author and base map named; before sign-in, said so.
+#[test]
+fn the_mod_list_reads_published_maps_newest_first() {
+    use content::{Manifest, MapId, Sha256, manifest::Layer};
+    use live_hle::mods::{ModPage, ModsError};
+    use live_proto::maps::{MAP_PUBLISHED, MapDocument, package_stream};
+    let s = Server::new();
+    let a = s.account("Modder");
+    let mut w = World::new(&s.embedded.url, &[&a]);
+    let ask = |w: &World| -> Result<Result<ModPage, ModsError>, ModsError> {
+        let (tx, rx) = mpsc::channel();
+        w.hle
+            .mod_list(10, None, Box::new(move |r| tx.send(r).unwrap()))
+            .map(|()| rx.recv_timeout(Duration::from_secs(10)).unwrap())
+    };
+    assert_eq!(ask(&w).unwrap_err(), ModsError::NotSignedIn);
+    w.logon();
+    assert!(ask(&w).unwrap().unwrap().items.is_empty(), "nothing published yet");
+
+    let author = live_proto::Author::Account {
+        xuid: a.xuid,
+        server: s.discovery.id.clone(),
+    }
+    .to_string();
+    let token = |m: &str| {
+        let now = time::OffsetDateTime::now_utc().unix_timestamp();
+        format!(
+            "Bearer {}",
+            sign::issue_token(&a.key, &author, &s.discovery.id, m, now)
+        )
+    };
+    let mut ids = Vec::new();
+    for (name, patch) in [
+        ("Lockout Snipers", b"PATCH one, invented".as_slice()),
+        ("Lockout Swords", b"PATCH two, invented".as_slice()),
+    ] {
+        let sha = Sha256::of(patch);
+        s.agent
+            .put(&s.url(&format!("/v1/content/{sha}")))
+            .set("authorization", &token(lxm::CONTENT_WRITE))
+            .send_bytes(patch)
+            .unwrap();
+        let mut m = Manifest::retail("lockout", Sha256([0x42; 32]));
+        m.package.name = name.into();
+        m.patches = vec![Layer {
+            file: "p.ips".into(),
+            sha256: sha,
+        }];
+        let id = MapId::of(&m);
+        let doc = MapDocument {
+            manifest: m,
+            image: None,
+        };
+        let jws = sign::EventBody::new(
+            &a.key,
+            &author,
+            &package_stream(&id),
+            MAP_PUBLISHED,
+            serde_json::to_value(&doc).unwrap(),
+            time::OffsetDateTime::now_utc(),
+        )
+        .sign(&a.key);
+        s.agent
+            .put(&s.url("/v1/maps"))
+            .set("authorization", &token(lxm::CONTENT_WRITE))
+            .send_string(&jws)
+            .unwrap();
+        ids.push(id);
+    }
+    let page = ask(&w).unwrap().unwrap();
+    let names: Vec<&str> = page.items.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(names, ["Lockout Swords", "Lockout Snipers"], "newest first");
+    assert_eq!(page.items[0].id, ids[1]);
+    for e in &page.items {
+        assert_eq!((e.author.as_str(), e.base.as_str()), ("Modder", "lockout"));
+        assert_eq!(e.size, 19);
+    }
+    assert!(page.position > 0);
+}
+
 #[test]
 fn logon_and_task_pumps_do_not_wait_for_a_stalled_http_server() {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();

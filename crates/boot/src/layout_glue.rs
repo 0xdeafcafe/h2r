@@ -433,8 +433,10 @@ pub fn string_address(id: u32) -> Option<u32> {
 /// none yet). A map load replaces the tag, and the next screen build
 /// extends the new one before a pane is set.
 static LIVE_TAG: AtomicU32 = AtomicU32::new(0);
-/// Live menu item widgets of ours: one per open screen, this many slots.
+/// Live menu item widgets of ours: one set per open screen, this many
+/// slots, each of up to [`LIVE_MAX_EXTRA`] items.
 const LIVE_ITEM_SLOTS: u32 = 8;
+const LIVE_MAX_EXTRA: u32 = 2;
 
 /// In place of a row-chosen call (`ret 8`): open the screen of `loader`
 /// for `mask` through `0x149f1e`, then return to the caller.
@@ -619,7 +621,7 @@ pub fn install(
             live = (
                 alloc,
                 alloc + custom_games::TAG_SPACE,
-                alloc + custom_games::TAG_SPACE + LIVE_ITEM_SLOTS * speaker_row::ITEM_SIZE,
+                alloc + custom_games::TAG_SPACE + LIVE_ITEM_SLOTS * LIVE_MAX_EXTRA * speaker_row::ITEM_SIZE,
             );
             alloc = live.2 + 0x100;
         }
@@ -932,8 +934,10 @@ pub fn install(
                         match custom_games::extend_tag(&mut *mem, cpu.eax, live.0) {
                             Some(true) => {
                                 LIVE_TAG.store(cpu.eax, Ordering::SeqCst);
-                                let panes = custom_games::extended_panes(custom_games::coop_row_enabled());
-                                eprintln!("custom games: xbox live menu tag has {panes} panes and room for 5 rows");
+                                let coop = custom_games::coop_row_enabled();
+                                let panes = custom_games::extended_panes(coop);
+                                let rows = custom_games::VANILLA_ITEMS + custom_games::extra_items(coop);
+                                eprintln!("custom games: xbox live menu tag has {panes} panes and room for {rows} rows");
                             }
                             Some(false) => eprintln!("custom games: the xbox live menu tag is not the retail one; left alone"),
                             None => eprintln!("custom games: could not extend the xbox live menu tag"),
@@ -1032,10 +1036,14 @@ pub fn install(
                         };
                         (0..extra_rows).map(|i| slot + i * speaker_row::ITEM_SIZE).collect()
                     } else if with_custom_games && vtable == custom_games::HANDLER_VTABLE {
+                        // One item widget per row of ours, so all six rows
+                        // show with no scroll bar.
+                        let n = custom_games::extra_items(custom_games::coop_row_enabled()).min(LIVE_MAX_EXTRA);
                         let mut g = live_slots.lock().unwrap_or_else(|e| e.into_inner());
                         let (table, next) = &mut *g;
-                        let size = LIVE_ITEM_SLOTS * speaker_row::ITEM_SIZE;
-                        vec![speaker_row::extra_slot(table, next, handler, live.1, size, 1)]
+                        let size = LIVE_ITEM_SLOTS * LIVE_MAX_EXTRA * speaker_row::ITEM_SIZE;
+                        let slot = speaker_row::extra_slot(table, next, handler, live.1, size, n);
+                        (0..n).map(|i| slot + i * speaker_row::ITEM_SIZE).collect()
                     } else {
                         let ours = crate::list_class::extra_items(handler, vtable);
                         if ours.is_empty() {
@@ -1162,11 +1170,20 @@ pub fn install(
             d.register_override(custom_games::ROW_TEXT, "custom-games:row-text", move |cpu, ctx, _| {
                 let rt = Arc::clone(ctx.runtime());
                 let mut mem = rt.memory();
-                let Some(id) = video_screen::text_row(&*mem, cpu.esp).and_then(custom_games::row_text_id) else {
+                let row = video_screen::text_row(&*mem, cpu.esp);
+                let Some(id) = row.and_then(custom_games::row_text_id) else {
                     drop(mem);
                     return Ok(o.invoke(cpu, ctx, custom_games::ROW_TEXT));
                 };
                 announce(&seen, "custom games: row text");
+                // The Mods row drawn: its "N new" wants a fresh list (the
+                // reader asks at most every few seconds; nothing waits).
+                if row.map(custom_games::row_kind) == Some(custom_games::Row::Download)
+                    && custom_games::mods_row_enabled()
+                    && let Some(repo) = crate::mods_screen::repo()
+                {
+                    repo.want_list();
+                }
                 let item = mem.u32(cpu.esp + 4)?;
                 row_texts(cpu, ctx, &mut mem, item, vec![(0, id)])
             });
@@ -1196,6 +1213,14 @@ pub fn install(
                     return ctx.runtime().memory().ret(cpu, 8);
                 };
                 if kind == custom_games::Row::Download {
+                    let mods = custom_games::mods_row_enabled()
+                        .then(crate::mods_screen::repo)
+                        .flatten()
+                        .zip(crate::list_class::loader_of(crate::mods_screen::SCREEN));
+                    if let Some((repo, loader)) = mods {
+                        repo.opened();
+                        return open_screen(cpu, ctx, mask, loader, "mods: opening the mods screen");
+                    }
                     eprintln!("custom games: showing the map pack dialog");
                     return open_dialog(cpu, ctx, mask, custom_games::MAPPACK_ERROR);
                 }

@@ -841,6 +841,55 @@ impl State {
             )
             .map_err(|code| format!("Live is busy ({code:#010x})"))
     }
+    /// A page of the mod repository ([`crate::Hle::mod_list`]).
+    pub fn mod_list(
+        &self,
+        limit: u32,
+        cursor: Option<String>,
+        done: crate::mods::ListDone,
+    ) -> std::result::Result<(), crate::mods::ModsError> {
+        use crate::mods::ModsError;
+        let service = self.service.as_ref().ok_or(ModsError::Offline)?;
+        let session = self.session().ok_or(ModsError::NotSignedIn)?;
+        service
+            .mods(
+                &session,
+                limit,
+                cursor,
+                Box::new(move |r| {
+                    done(match r {
+                        Ok(Reply::Mods(page)) => Ok(page),
+                        Ok(_) => Err(ModsError::Server("not a list of maps".into())),
+                        Err(code) => Err(crate::mods::server_error(code)),
+                    })
+                }),
+            )
+            .map_err(|_| ModsError::Busy)
+    }
+    /// Installs map `id` from the mod repository ([`crate::Hle::install_mod`]).
+    pub fn install_mod(
+        &self,
+        id: content::MapId,
+        progress: crate::mods::Progress,
+        done: crate::mods::InstallDone,
+    ) -> std::result::Result<(), crate::mods::ModsError> {
+        use crate::mods::ModsError;
+        let service = self.service.as_ref().ok_or(ModsError::Offline)?;
+        let session = self.session().ok_or(ModsError::NotSignedIn)?;
+        service
+            .content_api(
+                &session,
+                Box::new(move |r| match r {
+                    Ok(Reply::Content { api, gate: Some(gate) }) => {
+                        crate::mods::spawn_install(api, gate, id, progress, done)
+                    }
+                    Ok(Reply::Content { gate: None, .. }) => done(Err(ModsError::Offline)),
+                    Ok(_) => done(Err(ModsError::Server("no content API".into()))),
+                    Err(code) => done(Err(crate::mods::server_error(code))),
+                }),
+            )
+            .map_err(|_| ModsError::Busy)
+    }
     /// Asks the server for session `id` again (its answer lands in the
     /// worker's [`crate::client::Seen`]); the request, when one could be
     /// sent, and where the answer goes.

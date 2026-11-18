@@ -10,6 +10,7 @@ mod config;
 mod feedback;
 mod invites;
 pub mod maps;
+pub mod mods;
 mod messages;
 mod mutes;
 pub use client::{Retry, ServerOptions, ServerStatus};
@@ -439,6 +440,31 @@ impl Hle {
         done: Box<dyn FnOnce(Result<live_proto::bots::Roster, String>) + Send>,
     ) -> Result<(), String> {
         self.lock().roster_bots(request, done)
+    }
+    /// A page of the mod repository, newest first (`GET /v1/maps?sort=new`
+    /// with a `read` token, docs/game/maps.md §5 "Mod downloads"). Returns
+    /// at once; `done` is called on the Live worker with the page, or why
+    /// there is none. Never touches guest memory.
+    pub fn mod_list(
+        &self,
+        limit: u32,
+        cursor: Option<String>,
+        done: mods::ListDone,
+    ) -> Result<(), mods::ModsError> {
+        self.lock().mod_list(limit, cursor, done)
+    }
+    /// Downloads and installs published map `id` into `<data>/maps`
+    /// through the map gate (the join's checks: the disc's base, every
+    /// layer's SHA-256, `active.toml`), on a thread of its own. Returns at
+    /// once; `progress` is told the bytes written and the bytes in all,
+    /// `done` the package directory or why not.
+    pub fn install_mod(
+        &self,
+        id: content::MapId,
+        progress: mods::Progress,
+        done: mods::InstallDone,
+    ) -> Result<(), mods::ModsError> {
+        self.lock().install_mod(id, progress, done)
     }
     /// What the host of the session this console joined advertised as its
     /// skulls: [`Hle::joined`]'s answer, for the skulls.

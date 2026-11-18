@@ -210,6 +210,12 @@ impl MapGate {
         &self.maps_dir
     }
 
+    /// The package here that has map `id`, if any (the mod repository's
+    /// "Installed").
+    pub fn package_of(&self, id: &MapId) -> Option<PathBuf> {
+        self.local(id)
+    }
+
     /// The retail `MapId` of the disc's `map`.
     pub fn retail_id(&self, map: &str) -> Option<MapId> {
         self.bases
@@ -252,6 +258,14 @@ impl MapGate {
                 return Err(Refusal::Ranked(id));
             }
         }
+        self.check_id(f, id, retail)
+    }
+
+    /// What having map `id` needs, without downloading anything: the
+    /// server's word on it, the disc's base, and what is already here.
+    /// `retail`: `id` is the disc's own map (nothing to fetch when the
+    /// server does not know it).
+    fn check_id(&self, f: &dyn Fetch, id: MapId, retail: bool) -> Result<Need, Refusal> {
         let Some(answer) = json::<MapAnswer>(f, &format!("/maps/{id}"))? else {
             if retail {
                 return Ok(Need::Nothing);
@@ -303,15 +317,45 @@ impl MapGate {
     /// (`active.toml`). Returns the package directory (None: the disc's
     /// map).
     pub fn prepare(&self, f: &dyn Fetch, ad: &NewSession) -> Result<Option<PathBuf>, Refusal> {
-        let (answer, _) = match self.check(f, ad)? {
+        let need = self.check(f, ad)?;
+        self.fetch(f, need, ad.map_id, &mut |_, _| {})
+    }
+
+    /// Install published map `id` from the mod repository (docs/game/maps.md
+    /// §5, "Mod downloads"): the join's checks and download, with no
+    /// session. `progress` is told the bytes written so far and the bytes
+    /// to fetch in all, after each layer. Returns the package directory.
+    pub fn install(
+        &self,
+        f: &dyn Fetch,
+        id: MapId,
+        progress: &mut dyn FnMut(u64, u64),
+    ) -> Result<PathBuf, Refusal> {
+        let need = self.check_id(f, id, false)?;
+        self.fetch(f, need, Some(id), progress)?
+            .ok_or(Refusal::Unpublished(id))
+    }
+
+    /// Carry out what [`check`](Self::check) found: fetch, verify, write,
+    /// activate (for `id`'s map), tell [`on_installed`](Self::on_installed).
+    fn fetch(
+        &self,
+        f: &dyn Fetch,
+        need: Need,
+        map_id: Option<MapId>,
+        progress: &mut dyn FnMut(u64, u64),
+    ) -> Result<Option<PathBuf>, Refusal> {
+        let (answer, total) = match need {
             Need::Nothing => return Ok(None),
             Need::Local(dir) => {
-                self.activate(&dir, ad)?;
+                self.activate(&dir, map_id)?;
                 self.installed(&dir);
                 return Ok(Some(dir));
             }
             Need::Download { answer, bytes } => (answer, bytes),
         };
+        let mut done = 0u64;
+        progress(done, total);
         let m: &Manifest = &answer.map.manifest;
         let id = MapId::of(m);
         let dir = self.package_dir(&id);
@@ -349,6 +393,8 @@ impl MapGate {
             }
             let rel = relative(file).map_err(|e| Refusal::Download(e.to_string()))?;
             write_atomic(&dir.join(rel), &bytes).map_err(io)?;
+            done += bytes.len() as u64;
+            progress(done, total.max(done));
         }
         write_atomic(&dir.join(MANIFEST_FILE), m.to_toml().as_bytes()).map_err(io)?;
         if self.local(&id).is_none() {
@@ -357,7 +403,7 @@ impl MapGate {
                 dir.display()
             )));
         }
-        self.activate(&dir, ad)?;
+        self.activate(&dir, map_id)?;
         self.installed(&dir);
         Ok(Some(dir))
     }
@@ -365,11 +411,11 @@ impl MapGate {
     /// Names `dir` in `active.toml` for its map, so the vfs serves it
     /// rather than another package for the same map (docs/game/maps.md §7,
     /// "Choice rule").
-    fn activate(&self, dir: &Path, ad: &NewSession) -> Result<(), Refusal> {
+    fn activate(&self, dir: &Path, map_id: Option<MapId>) -> Result<(), Refusal> {
         let Some(pkg) = Library::open(&self.maps_dir)
             .packages()
             .iter()
-            .find(|p| Some(p.id) == ad.map_id)
+            .find(|p| Some(p.id) == map_id)
             .cloned()
         else {
             return Ok(());
@@ -577,6 +623,57 @@ mod tests {
         s.asked.lock().unwrap().clear();
         assert_eq!(g.check(&s, &ad("custom", Some(id))).unwrap(), Need::Local(lib.packages()[0].dir.clone()));
         assert!(!s.asked.lock().unwrap().iter().any(|p| p.starts_with("/content/")));
+        std::fs::remove_dir_all(&maps).unwrap();
+    }
+
+    #[test]
+    fn the_mod_repository_installs_a_map_by_id_with_progress() {
+        let maps = dir("install");
+        let patch = b"PATCH invented for the mod repository";
+        let m = modded(patch);
+        let id = MapId::of(&m);
+        let s = server_with(&m, patch);
+        let g = gate(&maps, true);
+        assert_eq!(g.package_of(&id), None);
+        let told: Arc<Mutex<Vec<PathBuf>>> = Arc::default();
+        let sink = Arc::clone(&told);
+        g.on_installed(Box::new(move |d| sink.lock().unwrap().push(d.to_owned())));
+        let mut seen = Vec::new();
+        let dir = g.install(&s, id, &mut |done, total| seen.push((done, total))).unwrap();
+        let n = patch.len() as u64;
+        assert_eq!(seen, vec![(0, n), (n, n)], "before and after the one layer");
+        assert_eq!(std::fs::read(dir.join("patches/snipers.ips")).unwrap(), patch);
+        assert_eq!(g.package_of(&id), Some(dir.clone()));
+        assert_eq!(*told.lock().unwrap(), std::slice::from_ref(&dir), "the boot is told");
+        let active = std::fs::read_to_string(maps.join("active.toml")).unwrap();
+        assert!(active.contains(&format!("lockout = \"live-{}\"", &id.to_string()[..16])), "{active}");
+        // Installed already: nothing is fetched again.
+        s.asked.lock().unwrap().clear();
+        let mut again = Vec::new();
+        assert_eq!(g.install(&s, id, &mut |d, t| again.push((d, t))).unwrap(), dir);
+        assert!(again.is_empty());
+        assert!(!s.asked.lock().unwrap().iter().any(|p| p.starts_with("/content/")));
+        std::fs::remove_dir_all(&maps).unwrap();
+    }
+
+    #[test]
+    fn the_mod_repository_says_which_disc_map_is_missing() {
+        let maps = dir("install-nobase");
+        let patch = b"PATCH invented";
+        let m = modded(patch);
+        let s = server_with(&m, patch);
+        let err = gate(&maps, false).install(&s, MapId::of(&m), &mut |_, _| {}).unwrap_err();
+        assert_eq!(
+            err,
+            Refusal::NoBase {
+                name: "Lockout Snipers".into(),
+                map: "lockout".into()
+            }
+        );
+        // Not on the server at all.
+        let gone = Server::default();
+        let err = gate(&maps, true).install(&gone, MapId::of(&m), &mut |_, _| {}).unwrap_err();
+        assert_eq!(err, Refusal::Unpublished(MapId::of(&m)));
         std::fs::remove_dir_all(&maps).unwrap();
     }
 
