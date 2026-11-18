@@ -92,16 +92,18 @@ pub enum Error {
         fields: String,
     },
     /// The converted map file is over the engine's size limit for its cache
-    /// type, with `music` bytes of the scripts' looping sounds' samples and
-    /// `ambience` bytes of the clusters' background sounds' in it.
+    /// type, with `music` bytes of the scripts' looping sounds' samples,
+    /// `dialogue` bytes of the bipeds' dialogue sounds' and `ambience`
+    /// bytes of the clusters' background sounds' in it.
     #[error(
-        "{level}: map file {need:#x} bytes, over the engine's {max:#x} ({music:#x} of music, {ambience:#x} of ambience)"
+        "{level}: map file {need:#x} bytes, over the engine's {max:#x} ({music:#x} of music, {dialogue:#x} of dialogue, {ambience:#x} of ambience)"
     )]
     FileSize {
         level: String,
         need: u64,
         max: u64,
         music: u64,
+        dialogue: u64,
         ambience: u64,
     },
 }
@@ -436,6 +438,8 @@ pub fn convert<R: Read + Seek>(h1: &H1Map, base: &mut Map<R>, opts: &Options) ->
     // further down the lean ladder ([`Lean`]). A map file over the
     // engine's size limit is converted again with that much less music
     // (and 256 KiB of margin), down to none; then with that much less of
+    // the bipeds' dialogue (`h1objects::convert::Options::dialogue_budget`),
+    // down to none; then with that much less of
     // the clusters' background sounds (an entry left out stays in the
     // palette, silent), down to none; then without the cutscenes'
     // animation graphs (their animation data is raw in the file), which
@@ -443,12 +447,13 @@ pub fn convert<R: Read + Seek>(h1: &H1Map, base: &mut Map<R>, opts: &Options) ->
     // fewer devices ([`Devices`]): no light fixtures, then none.
     let mut lean = Lean::Everything;
     let mut music = u64::MAX;
+    let mut dialogue = u64::MAX;
     let mut ambience = u64::MAX;
     let mut opts = Options { ..*opts };
     // Each retry and why, for the report.
     let mut retries = Vec::new();
     loop {
-        match convert_with(h1, base, &opts, lean, [music, ambience]) {
+        match convert_with(h1, base, &opts, lean, [music, dialogue, ambience]) {
             Err(Error::TagMemory { need, max, .. }) if lean.next().is_some() => {
                 lean = lean.next().expect("checked");
                 retries.push(format!("tag memory {need:#x} over {max:#x}: lean {lean:?}"));
@@ -474,12 +479,23 @@ pub fn convert<R: Read + Seek>(h1: &H1Map, base: &mut Map<R>, opts: &Options) ->
             Err(Error::FileSize {
                 need,
                 max,
+                dialogue: d,
+                ..
+            }) if d > 0 => {
+                dialogue = d.saturating_sub(need - max + 0x4_0000);
+                retries.push(format!(
+                    "file {need:#x} over {max:#x} without music, with {d:#x} of dialogue: dialogue to {dialogue:#x}"
+                ));
+            }
+            Err(Error::FileSize {
+                need,
+                max,
                 ambience: a,
                 ..
             }) if a > 0 => {
                 ambience = a.saturating_sub(need - max + 0x4_0000);
                 retries.push(format!(
-                    "file {need:#x} over {max:#x} without music, with {a:#x} of ambience: ambience to {ambience:#x}"
+                    "file {need:#x} over {max:#x} without music or dialogue, with {a:#x} of ambience: ambience to {ambience:#x}"
                 ));
             }
             Err(Error::FileSize { need, max, .. }) if opts.cutscene_graphs => {
@@ -509,7 +525,7 @@ fn convert_with<R: Read + Seek>(
     base: &mut Map<R>,
     opts: &Options,
     lean: Lean,
-    [music, ambience_budget]: [u64; 2],
+    [music, dialogue, ambience_budget]: [u64; 3],
 ) -> Result<Converted> {
     let level = h1.header().name.to_ascii_lowercase();
     let mut report = Report {
@@ -585,7 +601,7 @@ fn convert_with<R: Read + Seek>(
         objects_base.as_ref(),
         opts,
         lean,
-        music,
+        [music, dialogue],
         &mut report,
     )?;
 
@@ -687,6 +703,7 @@ fn convert_with<R: Read + Seek>(
                 .scripts
                 .as_ref()
                 .map_or(0, |s| s.looping_bytes),
+            dialogue: report.scenario.dialogue_bytes,
             ambience: report.ambience_bytes,
         });
     }

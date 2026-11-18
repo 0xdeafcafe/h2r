@@ -35,6 +35,7 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 use super::camera::Persp;
+use super::epilogue::Position;
 use super::math::{Mat4, Similarity, inverse, len3, max_abs, max_diff, mul, sub3};
 use crate::backend::ResolvedDraw;
 use crate::shader::{CONSTANTS, Constants, VertexProcessing};
@@ -137,6 +138,8 @@ pub struct Block {
 #[derive(Clone, Debug, PartialEq)]
 pub struct DrawModel {
     pub view: ViewKey,
+    /// What the draw's program computes its clip position from.
+    pub position: Position,
     /// Identity across frames (see the module docs).
     pub sig: u64,
     pub blocks: Vec<Block>,
@@ -151,6 +154,31 @@ pub struct ViewCamera {
     pub camera: Persp,
     /// The view-projection as uploaded (bits), which identifies its blocks.
     pub raw: [u32; 16],
+}
+
+impl DrawModel {
+    /// The block the draw's clip position is computed from, if it is one
+    /// of its perspective blocks.
+    pub fn position_block(&self) -> Option<&Block> {
+        let Position::Rows(reg) = self.position else {
+            return None;
+        };
+        self.blocks.iter().find(|b| {
+            b.reg == reg && b.layout == Layout::Rows && !matches!(b.kind, Kind::Node(_) | Kind::Eye)
+        })
+    }
+
+    /// Whether the camera places the draw's vertices: its position block is
+    /// the camera or the camera times an object transform. A draw whose
+    /// position is not known is taken to if any of its blocks is.
+    pub fn placed_by_camera(&self) -> bool {
+        let camera = |k: &Kind| matches!(k, Kind::Camera | Kind::World(_));
+        match self.position {
+            Position::Rows(_) => self.position_block().is_some_and(|b| camera(&b.kind)),
+            Position::Fixed => false,
+            Position::Unknown => self.blocks.iter().any(|b| camera(&b.kind)),
+        }
+    }
 }
 
 /// One frame's draws, classified.
@@ -172,8 +200,15 @@ impl FrameModel {
     }
 
     /// Classifies `draws` (the frame's draws into the presented surface, in
-    /// order).
-    pub fn build(draws: &[&ResolvedDraw]) -> FrameModel {
+    /// order). `positions[i]` is what draw `i`'s program computes its clip
+    /// position from ([`position`](super::epilogue::position)).
+    ///
+    /// A view's camera is the value most draws compute their position from:
+    /// a block a draw does not put its vertices through is never its camera,
+    /// however many draws share it (constants that only look like a
+    /// projection: a light's or a texture's matrix, packed parameters).
+    /// Draws whose position does not come from one block's rows do not vote.
+    pub fn build(draws: &[&ResolvedDraw], positions: &[Position]) -> FrameModel {
         // Perspective blocks per distinct constant block.
         let mut found: HashMap<*const [[f32; 4]; CONSTANTS], std::rc::Rc<Vec<Candidate>>> =
             HashMap::new();
@@ -190,16 +225,18 @@ impl FrameModel {
                     .clone()
             })
             .collect();
-        // Each view's camera: the most shared perspective value.
+        // Each view's camera: the perspective value most draws compute
+        // their position from.
         let mut counts: HashMap<(ViewKey, [u32; 16]), (usize, usize)> = HashMap::new();
         for (i, (d, cands)) in draws.iter().zip(&per_draw).enumerate() {
-            let view = ViewKey::of(d);
-            let mut seen: Vec<[u32; 16]> = Vec::new();
-            for c in cands.iter() {
-                if !seen.contains(&c.raw) {
-                    seen.push(c.raw);
-                    counts.entry((view, c.raw)).or_insert((0, i)).0 += 1;
-                }
+            let Some(&Position::Rows(reg)) = positions.get(i) else {
+                continue;
+            };
+            if let Some(c) = cands
+                .iter()
+                .find(|c| c.reg == reg && c.layout == Layout::Rows)
+            {
+                counts.entry((ViewKey::of(d), c.raw)).or_insert((0, i)).0 += 1;
             }
         }
         let mut best: HashMap<ViewKey, ([u32; 16], usize, usize)> = HashMap::new();
@@ -225,10 +262,12 @@ impl FrameModel {
         let models = draws
             .iter()
             .zip(&per_draw)
-            .map(|(d, cands)| {
+            .enumerate()
+            .map(|(i, (d, cands))| {
                 let view = ViewKey::of(d);
                 let cam = cameras.iter().find(|c| c.view == view);
-                classify(d, cands, cam, view)
+                let position = positions.get(i).copied().unwrap_or(Position::Unknown);
+                classify(d, cands, cam, view, position)
             })
             .collect();
         FrameModel {
@@ -329,6 +368,7 @@ fn classify(
     cands: &[Candidate],
     cam: Option<&ViewCamera>,
     view: ViewKey,
+    position: Position,
 ) -> DrawModel {
     let mut blocks = Vec::new();
     let mut uses_camera = false;
@@ -416,6 +456,7 @@ fn classify(
     });
     DrawModel {
         view,
+        position,
         sig: signature(d, view),
         blocks,
         anchor,

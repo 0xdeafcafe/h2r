@@ -25,7 +25,7 @@ function createLive() {
   const [wellKnown, setWellKnown] = createSignal<WellKnown | null>(null);
   const [serverError, setServerError] = createSignal<string | null>(null);
   const [verify, setVerify] = createStore<Record<number, VerifyResult>>({});
-  const [verifySummary, setVerifySummary] = createStore({ verified: 0, bad: 0, unsigned: 0, unknown: 0 });
+  const [verifySummary, setVerifySummary] = createStore({ verified: 0, bad: 0, unsigned: 0, redacted: 0, unknown: 0 });
   /** "snapshot" while loading REST snapshots, then "stream" (or "replay" when
    *  the server gave no positions and we replay the whole log). */
   const [loadMode, setLoadMode] = createSignal<"snapshot" | "stream" | "replay">("snapshot");
@@ -129,7 +129,7 @@ function createLive() {
     batch(() => {
       setState(reconcile(initialState()));
       setVerify(reconcile({}));
-      setVerifySummary({ verified: 0, bad: 0, unsigned: 0, unknown: 0 });
+      setVerifySummary({ verified: 0, bad: 0, unsigned: 0, redacted: 0, unknown: 0 });
     });
     const r = rest;
     setLoadMode("snapshot");

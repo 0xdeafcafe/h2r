@@ -63,6 +63,10 @@ pub const REFUSE_ENV: &str = "H2_PIPELINE_REFUSE";
 /// most frequent are printed every [`CONFLICT_REPORT_EVERY`] hand-backs
 /// with their virtual addresses ([`PipelineRender::report_conflicts`]).
 pub const CONFLICTS_ENV: &str = "H2_PIPELINE_CONFLICTS";
+/// `0`: the render's I/O pool calls stop it until the game thread makes
+/// them (serviced), as before they were deferred
+/// ([`PipelineRender::defer_io`]).
+pub const DEFER_IO_ENV: &str = "H2_PIPELINE_DEFER_IO";
 /// Hand-backs between two conflict reports.
 pub const CONFLICT_REPORT_EVERY: u32 = 300;
 /// Words in a conflict report.
@@ -181,6 +185,19 @@ pub struct Addrs {
     /// The async I/O queue head (0: none): requests queued and not yet
     /// done make the next frame serial (`io_busy`).
     pub io_queue: u32,
+    /// The async I/O pool's free list: (head word, link offset in a
+    /// request, requests). A frame pipelines only when every request is on
+    /// it (the worker idle, nothing queued or being read); otherwise
+    /// `io_busy`. `None`: [`io_queue`](Self::io_queue) alone decides.
+    pub io_free: Option<(u32, u32, u32)>,
+    /// Words holding the handles of the I/O pool's kernel objects (its two
+    /// mutexes and the worker's semaphore). The render's waits on and
+    /// releases of these are deferred ([`PipelineRender::defer_io`]): the
+    /// render carries on, and the game thread makes the calls at the join,
+    /// in order. A game-thread wait on one while a render is in flight
+    /// joins the render first (`io_joins`), so the pool sees the render's
+    /// requests before the tick's, as serially.
+    pub io_handles: &'static [u32],
     /// World frames that run serially after a frame that was not (a level
     /// load, a menu): the load burst of cache requests is over first.
     pub warmup: u32,
@@ -337,6 +354,14 @@ impl Addrs {
         // pointer `0x00407488`.
         render_owned: &[(0x0040_4fe0, 0x0040_7480), (0x0040_7488, 0x0040_748c)],
         io_queue: 0x004e_28ec,
+        // The 150 requests from `0x004e0368` (0x40 bytes each), the free
+        // list's head `0x004e28e8`, linked at +0x3c (`0x001208b0` pops it,
+        // the worker `0x00120c40` pushes a request back when it is done).
+        io_free: Some((0x004e_28e8, 0x3c, 150)),
+        // The pool mutex `0x004e0358` (`0x001208b0`), the queue mutex
+        // `0x004e035c` (`0x001209c0`) and the worker's semaphore
+        // `0x004e0360`.
+        io_handles: &[0x004e_0358, 0x004e_035c, 0x004e_0360],
         warmup: 150,
         after_fallback: 30,
         // `[0x004e7408]`: +0 the game's seed (object updates, `0x001032a0`,
@@ -451,6 +476,25 @@ pub struct Stats {
     pub mispredicts: u64,
     /// Guest accesses charged to the game thread at the joins.
     pub accesses: u64,
+    /// Frames in which a side waited for the other because of the async
+    /// I/O pool: a pool call the render stopped at (serviced, not
+    /// deferred) or a game-thread pool wait that joined the render.
+    pub io_stalls: u64,
+    /// The time those waits took: the render stopped at a pool call until
+    /// the game thread made it, the game thread waiting for the rest of
+    /// the render after it, and the game thread's pool waits joining.
+    pub io_stall: Duration,
+    /// Pool calls the render made without stopping ([`Addrs::io_handles`]).
+    pub io_deferred: u64,
+    /// Game-thread pool waits that joined the render in flight.
+    pub io_joins: u64,
+    /// Deferred calls whose real result, at the join, differed from the
+    /// one the render was given.
+    pub io_mismatches: u64,
+    /// Pool waits from another guest thread while a render was in flight
+    /// (not ordered; none expected, since a frame pipelines only with the
+    /// worker idle).
+    pub io_other_thread: u64,
 }
 
 impl Stats {
@@ -480,6 +524,12 @@ impl Stats {
             owned_conflicts: self.owned_conflicts - then.owned_conflicts,
             mispredicts: self.mispredicts - then.mispredicts,
             accesses: self.accesses - then.accesses,
+            io_stalls: self.io_stalls - then.io_stalls,
+            io_stall: self.io_stall - then.io_stall,
+            io_deferred: self.io_deferred - then.io_deferred,
+            io_joins: self.io_joins - then.io_joins,
+            io_mismatches: self.io_mismatches - then.io_mismatches,
+            io_other_thread: self.io_other_thread - then.io_other_thread,
         }
     }
 
@@ -509,7 +559,7 @@ impl Stats {
             .map(|(k, v)| format!("{k} {v}"))
             .collect();
         format!(
-            "pipeline: frames pipelined {} completed {} serial [{}] fallbacks {} [{}] serviced {} [{}] d3d_joins {} cache_joins {} d3d_other_thread {} join_wait {:.2}ms hand_back {:.2}ms snapshot {:.2}ms render {:.2}ms pages {:.1} conflicts {} (render-owned {}) mispredicts {}",
+            "pipeline: frames pipelined {} completed {} serial [{}] fallbacks {} [{}] serviced {} [{}] d3d_joins {} cache_joins {} d3d_other_thread {} join_wait {:.2}ms hand_back {:.2}ms snapshot {:.2}ms render {:.2}ms pages {:.1} conflicts {} (render-owned {}) mispredicts {} io_stalls {} ({:.2}ms) io_deferred {} io_joins {} io_mismatches {} io_other_thread {}",
             self.pipelined,
             self.completed,
             serial.join(", "),
@@ -528,6 +578,12 @@ impl Stats {
             self.conflicts,
             self.owned_conflicts,
             self.mispredicts,
+            self.io_stalls,
+            self.io_stall.as_secs_f64() * 1e3,
+            self.io_deferred,
+            self.io_joins,
+            self.io_mismatches,
+            self.io_other_thread,
         )
     }
 }
@@ -586,6 +642,45 @@ struct Inner {
     watch_lines: u32,
     /// The watched words' write trap is set on live memory.
     focused: bool,
+    /// The pool calls the render in flight deferred, in its order.
+    deferred: Vec<Deferred>,
+    /// When the render thread last stopped (a serviced call's wait starts
+    /// there).
+    stopped: Option<Instant>,
+    /// The frame in flight waited on the I/O pool ([`Stats::io_stalls`]).
+    io_stalled: bool,
+}
+
+/// A kernel call the render made on the I/O pool's objects and carried on
+/// from ([`Addrs::io_handles`]): the game thread makes it at the join.
+#[derive(Clone, Debug)]
+struct Deferred {
+    ordinal: u32,
+    args: Vec<u32>,
+    /// What the render was given.
+    eax: u32,
+    /// The out parameter's index and the value the render was given there.
+    out: Option<(usize, u32)>,
+}
+
+/// The pool calls the render may defer: (ordinal, argument words, the
+/// argument that must be null, the out parameter written).
+/// `NtWaitForSingleObjectEx(handle, mode, alertable, timeout)` with no
+/// timeout acquires the mutex; `NtReleaseMutant(handle, previous)` with no
+/// previous count; `NtReleaseSemaphore(handle, count, previous)`, the
+/// previous count (the pool's own `0x001209c0` passes a local it never
+/// reads) given as 0.
+const IO_CALLS: &[(u32, u32, Option<usize>, Option<usize>)] = &[
+    (234, 4, Some(3), None),
+    (221, 2, Some(1), None),
+    (222, 3, None, Some(2)),
+];
+
+fn io_call(token: u32) -> Option<(u32, u32, Option<usize>, Option<usize>)> {
+    IO_CALLS
+        .iter()
+        .copied()
+        .find(|&(ordinal, ..)| runtime::kernel::function_token(ordinal) == token)
 }
 
 /// Overrides the render thread may run besides the D3D layer's.
@@ -625,6 +720,8 @@ struct Shared {
     refuse: Vec<u32>,
     /// Tally and print the hand-backs' conflicts ([`CONFLICTS_ENV`]).
     report_conflicts: bool,
+    /// Defer the render's I/O pool calls ([`DEFER_IO_ENV`]).
+    defer_io: bool,
     /// [`Addrs::render_owned`] and the ranges
     /// [`PipelineRender::render_owned`] added.
     render_owned: Vec<Range>,
@@ -658,6 +755,7 @@ impl PipelineRender {
             .replay_seeds(switch(env(SEED_REPLAY_ENV).as_deref(), true))
             .refuse(&refuse)
             .report_conflicts(switch(env(CONFLICTS_ENV).as_deref(), false))
+            .defer_io(switch(env(DEFER_IO_ENV).as_deref(), true))
     }
 
     /// Explicitly on or off, with `addrs`. Prints no `pipeline:` lines
@@ -688,6 +786,7 @@ impl PipelineRender {
                 predict_frames: true,
                 refuse: Vec::new(),
                 report_conflicts: false,
+                defer_io: true,
                 render_owned,
                 inner: Mutex::new(Inner {
                     conflicts: ConflictTally::default(),
@@ -701,6 +800,9 @@ impl PipelineRender {
                     watched: Vec::new(),
                     watch_lines: 0,
                     focused: false,
+                    deferred: Vec::new(),
+                    stopped: None,
+                    io_stalled: false,
                 }),
             }),
         }
@@ -757,6 +859,14 @@ impl PipelineRender {
     /// reaching one falls back there and finishes on the game thread.
     pub fn refuse(mut self, addrs: &[u32]) -> Self {
         self.shared_mut().refuse = addrs.to_vec();
+        self
+    }
+
+    /// Whether the render's I/O pool calls are deferred to the join
+    /// ([`Addrs::io_handles`]; on by default, [`DEFER_IO_ENV`]). Off, each
+    /// stops the render until the game thread makes it (serviced).
+    pub fn defer_io(mut self, on: bool) -> Self {
+        self.shared_mut().defer_io = on;
         self
     }
 
@@ -979,6 +1089,58 @@ fn setup(me: &Arc<Shared>, ctx: &mut ExecCtx, addr: u32) -> Result<(), String> {
                 ctx.memory().ret(cpu, 0)
             },
         );
+        // The I/O pool's waits and releases: the render carries on as if
+        // each succeeded at once, and the game thread makes them at the
+        // join, in order (`replay`). Any other call of these is refused as
+        // before (a service).
+        if me.defer_io && !a.io_handles.is_empty() {
+            for &(ordinal, words, null, out) in IO_CALLS {
+                let token = runtime::kernel::function_token(ordinal);
+                let Some(refuse) = d.override_handler(token) else {
+                    continue;
+                };
+                let me = Arc::clone(me);
+                let handles = a.io_handles;
+                d.register_override(
+                    token,
+                    format!("pipeline: an I/O pool call deferred to the join ({ordinal})"),
+                    move |cpu, ctx, sel| {
+                        let mut m = ctx.memory();
+                        let args: Option<Vec<u32>> = (0..words)
+                            .map(|i| m.u32(cpu.esp.wrapping_add(4 + 4 * i)).ok())
+                            .collect();
+                        let pool = args.as_ref().is_some_and(|args| {
+                            args[0] != 0
+                                && handles.iter().any(|&h| m.u32(h).ok() == Some(args[0]))
+                                && null.is_none_or(|i| args[i] == 0)
+                        });
+                        let Some(args) = args.filter(|_| pool) else {
+                            drop(m);
+                            return Ok(refuse.invoke(cpu, ctx, sel));
+                        };
+                        let out = match out {
+                            Some(i) if args[i] != 0 => {
+                                m.set_u32(args[i], 0)?;
+                                Some((i, 0))
+                            }
+                            _ => None,
+                        };
+                        cpu.eax = 0;
+                        {
+                            let mut inner = me.lock();
+                            inner.stats.io_deferred += 1;
+                            inner.deferred.push(Deferred {
+                                ordinal,
+                                args,
+                                eax: 0,
+                                out,
+                            });
+                        }
+                        m.ret(cpu, 4 * words)
+                    },
+                );
+            }
+        }
     });
     // On the game thread: the sim's D3D calls join the render first; the
     // frame wait is skipped while a fallback finishes a render here.
@@ -990,6 +1152,60 @@ fn setup(me: &Arc<Shared>, ctx: &mut ExecCtx, addr: u32) -> Result<(), String> {
         .map(|c| rt.resolve_original(c.entry))
         .collect();
     rt.edit_dispatch(|d| {
+        // A pool wait on the game thread while a render is in flight joins
+        // it first: the render's deferred pool calls (and its requests)
+        // come before the tick's, as in the serial run, whatever either
+        // thread's timing.
+        let wait = runtime::kernel::function_token(IO_CALLS[0].0);
+        if me.defer_io
+            && !a.io_handles.is_empty()
+            && let Some(prev) = d.override_handler(wait)
+        {
+            let name = format!(
+                "{} (pipeline: an I/O pool wait joins first)",
+                d.override_name(wait).unwrap_or("NtWaitForSingleObjectEx")
+            );
+            let me = Arc::clone(me);
+            let prev = Arc::new(prev);
+            d.register_override(wait, name, move |cpu, ctx, sel| {
+                if !me.in_flight.load(Ordering::Acquire) {
+                    return Ok(prev.invoke(cpu, ctx, sel));
+                }
+                let pool = {
+                    let g = ctx.memory();
+                    let h = g.u32(cpu.esp.wrapping_add(4)).unwrap_or(0);
+                    h != 0
+                        && me
+                            .addrs
+                            .io_handles
+                            .iter()
+                            .any(|&w| g.u32(w).ok() == Some(h))
+                };
+                if !pool {
+                    return Ok(prev.invoke(cpu, ctx, sel));
+                }
+                if ctx.thread_id != me.game_thread.load(Ordering::Relaxed) {
+                    me.lock().stats.io_other_thread += 1;
+                    return Ok(prev.invoke(cpu, ctx, sel));
+                }
+                me.lock().io_stalled = true;
+                let t = Instant::now();
+                let (me2, prev) = (Arc::clone(&me), Arc::clone(&prev));
+                join_then(
+                    &me,
+                    cpu,
+                    ctx,
+                    Box::new(move |cpu, ctx| {
+                        {
+                            let mut inner = me2.lock();
+                            inner.stats.io_joins += 1;
+                            inner.stats.io_stall += t.elapsed();
+                        }
+                        Ok(prev.invoke(cpu, ctx, sel))
+                    }),
+                )
+            });
+        }
         for &entry in &me.d3d_entries {
             let Some(prev) = d.override_handler(entry) else {
                 continue;
@@ -1094,6 +1310,7 @@ fn setup(me: &Arc<Shared>, ctx: &mut ExecCtx, addr: u32) -> Result<(), String> {
         v
     };
     let (jobs, rx) = sync_channel::<Job>(1);
+    let me_t = Arc::clone(me);
     std::thread::Builder::new()
         .name("h2-pipeline-render".into())
         // Generated code nests host frames for guest direct calls; the game
@@ -1106,6 +1323,7 @@ fn setup(me: &Arc<Shared>, ctx: &mut ExecCtx, addr: u32) -> Result<(), String> {
                     Some(entry) => job.exec.call(&mut job.cpu, entry, &[]),
                     None => job.exec.resume(&mut job.cpu),
                 };
+                me_t.lock().stopped = Some(Instant::now());
                 let _ = job.reply.send(Done {
                     exec: job.exec,
                     result,
@@ -1174,6 +1392,10 @@ fn settle(
     live: Option<LiveSync>,
     k: Cont,
 ) -> Result<TransferAbi, GuestFault> {
+    let calls = std::mem::take(&mut me.lock().deferred);
+    if !calls.is_empty() {
+        return replay(me, cpu, ctx, exec, result, predicted, live, k, calls);
+    }
     let rt = Arc::clone(ctx.runtime());
     if let Err(ExecutorError::Refused(r)) = &result
         && r.ordinal.is_some()
@@ -1478,6 +1700,108 @@ fn copy_stack(from: &Guest, to: &mut Guest, esp: u32, top: u32) {
     }
 }
 
+/// The pool calls the render deferred ([`Addrs::io_handles`]), made here on
+/// the game thread in the render's order, then [`settle`] again. What the
+/// render wrote so far goes to live RAM first, as before a service: the
+/// worker a semaphore release wakes reads the request the render wrote.
+#[allow(clippy::too_many_arguments)]
+fn replay(
+    me: &Arc<Shared>,
+    cpu: &mut CpuAbi,
+    ctx: &mut ExecCtx,
+    mut exec: Box<SecondExecutor>,
+    result: Result<CallOutcome, ExecutorError>,
+    predicted: u64,
+    live: Option<LiveSync>,
+    k: Cont,
+    mut calls: Vec<Deferred>,
+) -> Result<TransferAbi, GuestFault> {
+    let rt = Arc::clone(ctx.runtime());
+    let mut live = live.unwrap_or_else(|| LiveSync::new(&me.addrs, &exec, &rt));
+    live.push(&exec, &rt);
+    let h = exec.flush(&rt, &mut live.flushed, &live.skip);
+    {
+        let mut inner = me.lock();
+        inner.stats.bytes += h.bytes as u64;
+        inner.stats.conflicts += h.conflicts as u64;
+    }
+    calls.reverse();
+    replay_next(me, cpu, ctx, exec, result, predicted, live, k, calls)
+}
+
+/// The next deferred call (the last of `calls`), or [`settle`] when none
+/// is left. The arguments go below the game thread's stack pointer, an out
+/// parameter to a scratch word there; a real result other than the one the
+/// render was given is counted ([`Stats::io_mismatches`]).
+#[allow(clippy::too_many_arguments)]
+fn replay_next(
+    me: &Arc<Shared>,
+    cpu: &mut CpuAbi,
+    ctx: &mut ExecCtx,
+    exec: Box<SecondExecutor>,
+    result: Result<CallOutcome, ExecutorError>,
+    predicted: u64,
+    mut live: LiveSync,
+    k: Cont,
+    mut calls: Vec<Deferred>,
+) -> Result<TransferAbi, GuestFault> {
+    let Some(call) = calls.pop() else {
+        // What the calls did to the live ranges (the worker took the
+        // request and put it back) is the view's now too, as after a
+        // service: the final sync must not push the render's older bytes
+        // over it.
+        let rt = Arc::clone(ctx.runtime());
+        live.pull(&exec, &rt);
+        return settle(me, cpu, ctx, exec, result, predicted, Some(live), k);
+    };
+    let rt = Arc::clone(ctx.runtime());
+    let base = cpu.esp.wrapping_sub(0x400) & !0xf;
+    let scratch = base + 0x40;
+    {
+        let mut m = rt.memory();
+        for (i, &arg) in call.args.iter().enumerate() {
+            let arg = match call.out {
+                Some((o, _)) if o == i => scratch,
+                _ => arg,
+            };
+            m.set_u32(base + 4 * i as u32, arg)?;
+        }
+        m.set_u32(scratch, 0)?;
+    }
+    let saved = *cpu;
+    let mut c = *cpu;
+    c.esp = base;
+    let me2 = Arc::clone(me);
+    let token = runtime::kernel::function_token(call.ordinal);
+    let t = {
+        let mut mem = rt.memory();
+        ctx.call_guest_named(
+            &mut c,
+            &mut mem,
+            token,
+            "pipeline: an I/O pool call the render deferred",
+            move |cpu, ctx| {
+                let done = *cpu;
+                *cpu = saved;
+                let out_differs = call
+                    .out
+                    .is_some_and(|(_, given)| ctx.memory().u32(scratch).ok() != Some(given));
+                if done.eax != call.eax || out_differs {
+                    me2.lock().stats.io_mismatches += 1;
+                }
+                replay_next(&me2, cpu, ctx, exec, result, predicted, live, k, calls)
+            },
+        )
+    };
+    match t {
+        Ok(t) if t.kind == abi::CALL => {
+            *cpu = c;
+            Ok(t)
+        }
+        other => other,
+    }
+}
+
 /// A serviced call: the render stopped at kernel call `at` (returning to
 /// `ret`). Make the call here, on the game thread's context (the kernel
 /// sees the thread the render runs for serially) with the render's stack
@@ -1497,6 +1821,14 @@ fn service(
     k: Cont,
 ) -> Result<TransferAbi, GuestFault> {
     let rt = Arc::clone(ctx.runtime());
+    if io_call(at.eip).is_some() {
+        // The render stopped at a pool call: it has waited since then.
+        let mut inner = me.lock();
+        inner.io_stalled = true;
+        if let Some(t) = inner.stopped {
+            inner.stats.io_stall += t.elapsed();
+        }
+    }
     let top = me.stack_top.load(Ordering::Relaxed);
     let mut live = live.unwrap_or_else(|| LiveSync::new(&me.addrs, &exec, &rt));
     copy_stack(&exec.runtime().memory(), &mut rt.memory(), at.esp, top);
@@ -1606,6 +1938,10 @@ fn carry_on(
     });
     let t = Instant::now();
     let finished = if sent { rx.recv().ok() } else { None };
+    if io_call(at.eip).is_some() {
+        // The game thread waited for the rest of the render.
+        me.lock().stats.io_stall += t.elapsed();
+    }
     let Some(Done {
         exec,
         result,
@@ -1722,6 +2058,9 @@ fn hand_back(
     flushed: &[u32],
 ) {
     let a = &me.addrs;
+    if std::mem::take(&mut inner.io_stalled) {
+        inner.stats.io_stalls += 1;
+    }
     if !me.watch.is_empty() {
         check_watch(
             me,
@@ -1996,7 +2335,31 @@ fn guard(me: &Shared, reason: Option<Serial>, g: &Guest) -> Option<Serial> {
     if a.io_queue != 0 && !matches!(g.u32(a.io_queue), Ok(0)) {
         return Some(Serial::IoBusy);
     }
+    // With the render's pool calls deferred, the worker must be idle at the
+    // launch (every request free): its own pool calls, made while the game
+    // thread waits, are not ordered against the render's.
+    if me.defer_io
+        && let Some((head, link, requests)) = a.io_free
+        && free_requests(g, head, link, requests) != Some(requests)
+    {
+        return Some(Serial::IoBusy);
+    }
     None
+}
+
+/// The requests on the I/O pool's free list (`None`: unreadable, or longer
+/// than the pool).
+fn free_requests(g: &Guest, head: u32, link: u32, requests: u32) -> Option<u32> {
+    let mut at = g.u32(head).ok()?;
+    let mut n = 0;
+    while at != 0 {
+        n += 1;
+        if n > requests {
+            return None;
+        }
+        at = g.u32(at.wrapping_add(link)).ok()?;
+    }
+    Some(n)
 }
 
 /// Why this frame must run serially, read from live memory.

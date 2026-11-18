@@ -583,6 +583,16 @@ software-renders structure BSPs through the same shared geometry decoder
 (`tags::geometry`, see structure-bsp.md). Its `shadowlab` binary compares shadow volumes with shadow maps
 (e3-lighting.md, "Phase 3: shadow prototype").
 
+All three open a map by its name on the disc (`/maps/<name>.map`), else a
+`.map` file by path, else a Halo 1 map `h2 import halo1` converted under the
+runtime data root (`$H2_DATA`, else `h2boot-data` in the temporary
+directory): `campaigns/halo1/<name>.map` for a campaign level,
+`maps/<name>/h1/<name>.map` (or `h2/`) for a multiplayer map, so `bsp a30`
+or `viewer h1_<map> <mode tag>` works once the import has run
+(`viewer::disc::converted`). A map from outside the disc reads its shared
+resources from the disc's `shared`, `single_player_shared` and `mainmenu`
+maps, as the game does.
+
 ## Not supported yet (future work)
 
 The register-combiner and vertex-microcode translators exist in

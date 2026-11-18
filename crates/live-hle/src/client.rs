@@ -136,6 +136,7 @@ pub(crate) enum MatchRequest {
     Search {
         limit: u32,
         attributes: BTreeMap<u32, live_proto::session::AttributeValue>,
+        optimatch: Option<live_proto::optimatch::Query>,
     },
     Find(String),
 }
@@ -645,12 +646,22 @@ impl Worker {
                     .collect(),
                 Err(e) => return Err(e),
             },
-            MatchRequest::Search { limit, attributes } => {
+            MatchRequest::Search {
+                limit,
+                attributes,
+                optimatch,
+            } => {
                 let mut query = url::form_urlencoded::Serializer::new(String::new());
                 query.append_pair(
                     "attributes",
                     &serde_json::to_string(&attributes).map_err(|_| Error::Protocol)?,
                 );
+                if let Some(q) = optimatch {
+                    query.append_pair(
+                        "optimatch",
+                        &serde_json::to_string(&q).map_err(|_| Error::Protocol)?,
+                    );
+                }
                 let filter = query.finish();
                 let page: live_proto::Page<session::Session> = self.team_json(
                     user,
@@ -837,6 +848,7 @@ impl Worker {
                     MatchRequest::Search {
                         limit: 1000,
                         attributes: BTreeMap::new(),
+                        optimatch: None,
                     },
                 )?;
                 Ok(Reply::Social(SocialSnapshot {

@@ -42,6 +42,35 @@ use crate::{BuildError, Builder, Feature, Manifest};
 
 pub const ID: &str = "render-loop";
 
+/// Each native path this feature can place, by its implementation's name.
+pub const PATHS: [&str; 8] = [
+    "render_views",
+    "layer_draw",
+    "layer_entries",
+    "render_game_view",
+    "render_scene_passes",
+    "layer_sort",
+    "render_states",
+    "transparent_sort",
+];
+
+static CALLS: [AtomicU64; PATHS.len()] = [const { AtomicU64::new(0) }; PATHS.len()];
+
+fn called(i: usize) {
+    CALLS[i].fetch_add(1, Ordering::Relaxed);
+}
+
+/// Calls into each native path since the process started (0 for a path
+/// that is off): which `impl.render.*` paths a frame took, for the agent's
+/// `render.stats` and `render.frame`.
+pub fn path_calls() -> Vec<(&'static str, u64)> {
+    PATHS
+        .iter()
+        .zip(&CALLS)
+        .map(|(&n, c)| (n, c.load(Ordering::Relaxed)))
+        .collect()
+}
+
 pub struct RenderLoop;
 
 impl Feature for RenderLoop {
@@ -53,18 +82,21 @@ impl Feature for RenderLoop {
         if b.switches().implementation("render.views", false) {
             b.raw()
                 .implement(&points::RENDER_VIEWS, "render_views", |cpu, ctx, _| {
+                    called(0);
                     run(cpu, ctx, Machine::start)
                 });
         }
         if b.switches().implementation("render.layer_draw", false) {
             b.raw()
                 .implement(&points::LAYER_DRAW, "layer_draw", |cpu, ctx, _| {
+                    called(1);
                     run(cpu, ctx, Draw::start)
                 });
         }
         if b.switches().implementation("render.layer_entries", false) {
             b.raw()
                 .implement(&points::LAYER_ENTRIES, "layer_entries", |cpu, ctx, _| {
+                    called(2);
                     run(cpu, ctx, Entries::start)
                 });
         }
@@ -72,19 +104,26 @@ impl Feature for RenderLoop {
             b.raw().implement(
                 &points::RENDER_GAME_VIEW,
                 "render_game_view",
-                |cpu, ctx, _| run(cpu, ctx, GameView::start),
+                |cpu, ctx, _| {
+                    called(3);
+                    run(cpu, ctx, GameView::start)
+                },
             );
         }
         if b.switches().implementation("render.scene_passes", false) {
             b.raw().implement(
                 &points::RENDER_SCENE_PASSES,
                 "render_scene_passes",
-                |cpu, ctx, _| run(cpu, ctx, ScenePasses::start),
+                |cpu, ctx, _| {
+                    called(4);
+                    run(cpu, ctx, ScenePasses::start)
+                },
             );
         }
         if b.switches().implementation("render.layer_sort", false) {
             b.raw()
                 .implement(&points::LAYER_SORT, "layer_sort", |cpu, ctx, _| {
+                    called(5);
                     run(cpu, ctx, Sort::start)
                 });
         }
@@ -99,6 +138,7 @@ impl Feature for RenderLoop {
                 &points::RENDER_STATES,
                 "render_states",
                 move |cpu, ctx, _| {
+                    called(6);
                     let fcw = cpu.x87.control;
                     run(cpu, ctx, |r, m| RenderStates::start(r, m, fcw, mode))
                 },
@@ -110,7 +150,10 @@ impl Feature for RenderLoop {
             b.raw().implement(
                 &points::TRANSPARENT_SORT,
                 "transparent_sort",
-                |cpu, ctx, _| run(cpu, ctx, IndexSort::start),
+                |cpu, ctx, _| {
+                    called(7);
+                    run(cpu, ctx, IndexSort::start)
+                },
             );
         }
         // A port's state lives in the continuation it is parked in, which

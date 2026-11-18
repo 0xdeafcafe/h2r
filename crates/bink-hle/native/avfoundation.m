@@ -18,7 +18,17 @@ typedef struct {
 @property(nonatomic, strong) AVAssetReaderTrackOutput *output;
 @property(nonatomic) uint32_t nextFrame;
 @property(nonatomic) H2MovieInfo info;
+// The sound track, read on its own reader so video rewinds leave it alone.
+@property(nonatomic, strong) AVAssetTrack *audioTrack;
+@property(nonatomic, strong) AVAssetReader *audioReader;
+@property(nonatomic, strong) AVAssetReaderTrackOutput *audioOutput;
+// Decoded bytes not yet handed out (sample buffers do not end on our reads).
+@property(nonatomic, strong) NSMutableData *audioPending;
+@property(nonatomic) NSUInteger audioPendingAt;
+@property(nonatomic) uint32_t audioRate;
+@property(nonatomic) BOOL audioEnded;
 - (BOOL)reset;
+- (BOOL)resetAudio;
 @end
 
 @implementation H2MovieReader
@@ -33,7 +43,30 @@ typedef struct {
     self.nextFrame = 0;
     return [self.reader startReading];
 }
-- (void)dealloc { [_reader cancelReading]; }
+// Interleaved signed 16-bit stereo at the track's own rate; Core Audio
+// converts from AAC and mixes other channel counts to two.
+- (BOOL)resetAudio {
+    [self.audioReader cancelReading];
+    self.audioPending = [NSMutableData data];
+    self.audioPendingAt = 0;
+    self.audioEnded = NO;
+    if (!self.audioTrack || !self.audioRate) return NO;
+    self.audioReader = [[AVAssetReader alloc] initWithAsset:self.asset error:nil];
+    NSDictionary *settings = @{
+        AVFormatIDKey: @(kAudioFormatLinearPCM),
+        AVSampleRateKey: @(self.audioRate),
+        AVNumberOfChannelsKey: @2,
+        AVLinearPCMBitDepthKey: @16,
+        AVLinearPCMIsFloatKey: @NO,
+        AVLinearPCMIsBigEndianKey: @NO,
+        AVLinearPCMIsNonInterleaved: @NO,
+    };
+    self.audioOutput = [[AVAssetReaderTrackOutput alloc] initWithTrack:self.audioTrack outputSettings:settings];
+    if (!self.audioReader || ![self.audioReader canAddOutput:self.audioOutput]) return NO;
+    [self.audioReader addOutput:self.audioOutput];
+    return [self.audioReader startReading];
+}
+- (void)dealloc { [_reader cancelReading]; [_audioReader cancelReading]; }
 @end
 
 void *h2_movie_open(const char *path, H2MovieInfo *info, char *error, size_t errorLen) {
@@ -91,6 +124,16 @@ void *h2_movie_open(const char *path, H2MovieInfo *info, char *error, size_t err
             (uint32_t)duration.timescale, (uint32_t)duration.value};
         movie.info = metadata;
         if (![movie reset]) FAIL(movie.reader.error.description.UTF8String ?: "cannot start BGRA reader");
+        // Sound is optional: a movie without a readable track plays silent.
+        movie.audioTrack = [[movie.asset tracksWithMediaType:AVMediaTypeAudio] firstObject];
+        if (movie.audioTrack) {
+            CMAudioFormatDescriptionRef desc =
+                (__bridge CMAudioFormatDescriptionRef)movie.audioTrack.formatDescriptions.firstObject;
+            const AudioStreamBasicDescription *asbd = desc ? CMAudioFormatDescriptionGetStreamBasicDescription(desc) : NULL;
+            if (asbd && isfinite(asbd->mSampleRate) && asbd->mSampleRate >= 8000 && asbd->mSampleRate <= 192000)
+                movie.audioRate = (uint32_t)asbd->mSampleRate;
+            if (![movie resetAudio]) movie.audioRate = 0;
+        }
         *info = metadata;
         return (__bridge_retained void *)movie;
     }
@@ -139,9 +182,57 @@ int h2_movie_decode(void *handle, uint32_t index, uint8_t *dest, size_t len) {
         return 0;
     }
 }
+// The sound track's rate (two channels), or 0 without one.
+uint32_t h2_movie_audio_rate(void *handle) {
+    H2MovieReader *movie = (__bridge H2MovieReader *)handle;
+    return movie.audioRate;
+}
+
+// Up to `frames` stereo frames in order; 0 at the end or on error.
+size_t h2_movie_audio_read(void *handle, int16_t *dest, size_t frames) {
+    @autoreleasepool {
+        H2MovieReader *movie = (__bridge H2MovieReader *)handle;
+        if (!movie.audioRate || !movie.audioPending) return 0;
+        const size_t frameBytes = 4;
+        size_t want = frames * frameBytes, have = 0;
+        uint8_t *out = (uint8_t *)dest;
+        while (have < want) {
+            NSUInteger left = movie.audioPending.length - movie.audioPendingAt;
+            if (left > 0) {
+                size_t n = MIN((size_t)left, want - have);
+                memcpy(out + have, (const uint8_t *)movie.audioPending.bytes + movie.audioPendingAt, n);
+                movie.audioPendingAt += n;
+                have += n;
+                continue;
+            }
+            if (movie.audioEnded) break;
+            CMSampleBufferRef sample = [movie.audioOutput copyNextSampleBuffer];
+            if (!sample) { movie.audioEnded = YES; break; }
+            CMBlockBufferRef block = CMSampleBufferGetDataBuffer(sample);
+            size_t len = block ? CMBlockBufferGetDataLength(block) : 0;
+            NSMutableData *data = [NSMutableData dataWithLength:len];
+            if (len && CMBlockBufferCopyDataBytes(block, 0, len, data.mutableBytes) != kCMBlockBufferNoErr) {
+                CFRelease(sample); movie.audioEnded = YES; break;
+            }
+            CFRelease(sample);
+            movie.audioPending = data;
+            movie.audioPendingAt = 0;
+        }
+        return have / frameBytes;
+    }
+}
+
+int h2_movie_audio_rewind(void *handle) {
+    @autoreleasepool {
+        H2MovieReader *movie = (__bridge H2MovieReader *)handle;
+        return movie.audioRate && [movie resetAudio];
+    }
+}
+
 void h2_movie_close(void *handle) {
     @autoreleasepool {
         H2MovieReader *movie = (__bridge_transfer H2MovieReader *)handle;
         [movie.reader cancelReading];
+        [movie.audioReader cancelReading];
     }
 }

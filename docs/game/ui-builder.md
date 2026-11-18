@@ -145,8 +145,8 @@ h2 ui sheet [--synthetic] [--out DIR]                    # every screen x state,
   readable too. `cargo test` draws the synthetic sheet; the disc test with
   `H2_UI_SHEET_DIR=<dir>` draws the real one.
 
-`Page` (the state machine) and the dialog kinds are not built yet. Today's
-screens come in as `ScreenSpec`s.
+The dialog kinds are not built yet. Today's screens come in as
+`ScreenSpec`s, from their `Page` (slice 4, below).
 
 ## The checks
 
@@ -249,6 +249,72 @@ sign-in that covers:
 
 The glue (`list_class` events, `TEXT_SET`, tints) keeps its runner tests
 (`engine::entry::testing::run`).
+
+**Built (slice 4)**: `ui_kit::page`.
+
+- **`Page`**: `step(&mut State, Event) -> Effect`, `spec(&State)` (the
+  `ScreenSpec` the preview turns into a `View`), `states()` and a
+  `summary(&State)` line for tables. Events are at least the pad's
+  `Input`s; pages that wait on the keyboard or a server take those too.
+  `Live` drives any page behind one type (`Driven<P>`), for the editor and
+  `h2 ui preview --press`. `screens::live(name)` is every native screen's
+  page, and `screens::states` and `sample` come from it, so the sheet
+  draws exactly the states the tables start from.
+- **`ListPage`**: every list screen (Game Options, the Halo 1 options and
+  multiplayer skulls, the three co-op screens, the kit's example) is its
+  real `ListClass` stepped offline. An event goes through the class's own
+  hook, then `list_class::route` (the same pure function the runtime's
+  `event_with` now uses: action buttons, then sideways steps), then the
+  Controls handler: up and down move the focus, A presses the row
+  (`Rows::press`), B and Back close. Effects: `Focus`, `Hook`, `Action`,
+  `Stepped(line)`, `Open(screen)`, `Retail(line)`, `Close`. The rows keep
+  their own state (an in-memory profile store, a lobby without Live), so
+  each table case builds a fresh page. Whether the game wraps the focus
+  at either end is not traced; the page stops it there, and the fidelity
+  loop will settle it.
+- **`AccountPage`**: the account screen (`AccountScreen`, already pure),
+  with typed text and server answers as events.
+- **`SigninPage`** (`signin_screen`): the prompt plus the code being
+  typed. A press goes through `CodeEntry::press` as on the screen; what the
+  HLE then does follows `live_hle::signin`'s own transitions, now pure
+  functions the HLE uses too: `typed` (keyboard text on a page), `refused`
+  (a code that isn't six digits) and `settled` (the page after a server
+  call ends). Typed text and server answers are events.
+
+The tables (`ui_kit/page/tests.rs`, `live_hle::signin` tests) cover every
+row of the list above, plus Game Options (Start Level's A runs the action,
+X and Start don't, left, right and A step a skull, a locked skull stays
+locked), the co-op screens (Start starts or readies, Invite a Friend opens
+the friends list), the account menu, and every screen taking every input
+in every state with its spec still passing the kit's checks.
+
+Behaviour the tables changed:
+
+- **An error clears on the next edit** (`CodeEntry::error`): the code page
+  hid nothing before, so "Wrong code" stayed up while a new code was typed.
+  It shows again with the next answer, the same error included.
+- **Back cancels sign-in.** Back closed the screen through the Controls
+  handler without telling the HLE, so the logon stayed pending. The hook
+  now takes Back as B.
+- **X checks the code**, as Start does: both are the class's action
+  buttons. The legend will say A only (slice 6).
+
+`h2 ui preview <screen> [--state S] --press up,right,a` steps a page,
+prints each effect and the summary, and draws where it ends as
+`<state>-pressed`.
+
+## In the editor
+
+**Built (editor slice)**: the editor's fourth tool, **UI Screens**
+(docs/editor/editor.md "UI Screens", editor-guide.md §7). It shows every
+native screen in every state and the disc's retail screens, drawn from the
+editor's disc (synthetic without one) with zoom; widget rectangles with
+the hovered widget's JSON; the checks' findings with their widgets
+outlined; the title-safe and reserved areas, each togglable; a pad that
+steps the `Page` live; and export of the PNG, the JSON and the sheet into
+a folder outside any Git checkout. The studio takes `boot` as a library
+for it: the pages step the screens' real classes, which can't leave
+`boot`.
 
 ## The fidelity loop
 

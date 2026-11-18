@@ -61,6 +61,12 @@ pub struct ObjectTags {
     /// Adds the tags to the set, in order, and returns their datums.
     #[allow(clippy::type_complexity)]
     pub install: Box<dyn Fn(&mut TagSet) -> std::result::Result<Vec<TagId>, String> + Send + Sync>,
+    /// Run once every tag the placements name is in (the objects and the
+    /// collections after them), with the datums `install` returned: adds
+    /// what the objects name but no placement does (their sounds) after
+    /// them, so it moves no datum a placement names.
+    #[allow(clippy::type_complexity)]
+    pub after: Box<dyn Fn(&mut TagSet, &[TagId]) -> std::result::Result<(), String> + Send + Sync>,
     /// One line per converted object (what it was built on, what it
     /// keeps of the template).
     pub notes: Vec<String>,
@@ -395,6 +401,7 @@ fn with_collections(
     let ObjectTags {
         count,
         install,
+        after,
         mut notes,
         hud_swaps,
     } = objects;
@@ -424,6 +431,7 @@ fn with_collections(
             }
             Ok(ids)
         }),
+        after,
         notes,
     }
 }
@@ -466,7 +474,7 @@ pub(super) fn install(objects: &ObjectTags, first: usize, set: &mut TagSet) -> R
             "the Halo 1 objects' datums moved from what the placements name",
         ));
     }
-    Ok(())
+    (objects.after)(set, &ids).map_err(Error::Objects)
 }
 
 #[cfg(test)]

@@ -70,9 +70,9 @@ pub struct Prompt {
 /// whether it was saved.
 type Outcome = Result<(LocalEntry, Option<RecoveryInfo>), SetupError>;
 
-/// Which call a job is.
+/// Which server call a job is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Call {
+pub enum Call {
     /// Recover with a code.
     Code,
     /// Make the gamertag the prompt names (offered after a code try).
@@ -134,33 +134,19 @@ impl Signin {
     /// back to the gamertag). False when no text is being asked for.
     pub fn typed(&mut self, text: Option<&str>) -> bool {
         self.poll();
-        let text = text.map(str::trim);
-        match (&self.prompt.phase, text) {
-            (Phase::Gamertag { .. }, None) => {}
-            (Phase::Gamertag { .. }, Some(tag)) => {
-                if live_proto::Gamertag::new(tag).is_err() {
-                    self.prompt.phase = Phase::Gamertag {
-                        error: Some(SetupError::BadGamertag),
-                    };
-                } else {
-                    self.prompt.gamertag = tag.to_string();
-                    self.invite = None;
-                    self.add();
-                }
-            }
-            (Phase::Invite { .. }, None) => {
-                self.prompt.phase = Phase::Gamertag { error: None };
-            }
-            (Phase::Invite { .. }, Some("")) => {
-                self.prompt.phase = Phase::Invite {
-                    error: Some(SetupError::NeedsInvite),
-                };
-            }
-            (Phase::Invite { .. }, Some(invite)) => {
-                self.invite = Some(invite.to_string());
+        match typed(&self.prompt.phase, text) {
+            None => return false,
+            Some(Typed::Keep) => {}
+            Some(Typed::Phase(p)) => self.prompt.phase = p,
+            Some(Typed::Gamertag(tag)) => {
+                self.prompt.gamertag = tag;
+                self.invite = None;
                 self.add();
             }
-            _ => return false,
+            Some(Typed::Invite(invite)) => {
+                self.invite = Some(invite);
+                self.add();
+            }
         }
         true
     }
@@ -214,10 +200,8 @@ impl Signin {
         if !matches!(self.prompt.phase, Phase::Code { .. }) {
             return false;
         }
-        if live_proto::recovery::parse_code(code).is_none() {
-            self.prompt.phase = Phase::Code {
-                error: Some(SetupError::WrongCode),
-            };
+        if let Some(refused) = refused(code) {
+            self.prompt.phase = refused;
             return true;
         }
         let (url, tag, code, files) = (
@@ -298,56 +282,106 @@ impl Signin {
         if self.prompt.phase == Phase::Cancelled {
             return;
         }
-        let tag = &self.prompt.gamertag;
-        self.prompt.phase = match (result, call) {
-            (Ok((entry, info)), _) => {
-                eprintln!(
-                    "live: {tag} verified on {}; signing in",
-                    self.prompt.server_url
-                );
-                self.verified = Some(entry);
-                if call == Call::Code {
-                    Phase::Done
-                } else {
-                    Phase::Created { info }
-                }
+        let (tag, url) = (&self.prompt.gamertag, &self.prompt.server_url);
+        let result = result.map(|(entry, info)| {
+            self.verified = Some(entry);
+            info
+        });
+        self.prompt.phase = settled(call, result, tag, url);
+    }
+}
+
+/// What text typed on the keyboard does ([`typed`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Typed {
+    /// Nothing: the gamertag keyboard backed out of.
+    Keep,
+    /// The prompt shows this page.
+    Phase(Phase),
+    /// Make this gamertag ([`Call::Add`], no invite).
+    Gamertag(String),
+    /// Make the gamertag typed before, with this invite.
+    Invite(String),
+}
+
+/// Text typed on the page `phase` (`None`: the keyboard backed out of),
+/// trimmed; `None` when that page asks for no text. Pure: [`Signin::typed`]
+/// and the boot's sign-in page both follow it.
+pub fn typed(phase: &Phase, text: Option<&str>) -> Option<Typed> {
+    Some(match (phase, text.map(str::trim)) {
+        (Phase::Gamertag { .. }, None) => Typed::Keep,
+        (Phase::Gamertag { .. }, Some(tag)) if live_proto::Gamertag::new(tag).is_err() => {
+            Typed::Phase(Phase::Gamertag {
+                error: Some(SetupError::BadGamertag),
+            })
+        }
+        (Phase::Gamertag { .. }, Some(tag)) => Typed::Gamertag(tag.to_string()),
+        (Phase::Invite { .. }, None) => Typed::Phase(Phase::Gamertag { error: None }),
+        (Phase::Invite { .. }, Some("")) => Typed::Phase(Phase::Invite {
+            error: Some(SetupError::NeedsInvite),
+        }),
+        (Phase::Invite { .. }, Some(invite)) => Typed::Invite(invite.to_string()),
+        _ => return None,
+    })
+}
+
+/// The page a typed code that is not six digits leaves (no request is
+/// made), or `None` for one worth checking.
+pub fn refused(code: &str) -> Option<Phase> {
+    live_proto::recovery::parse_code(code)
+        .is_none()
+        .then_some(Phase::Code {
+            error: Some(SetupError::WrongCode),
+        })
+}
+
+/// The page after server call `call` for `tag` on `url` ended with
+/// `result` (a new account's recovery secret, when it made one). Pure but
+/// for the log line: [`Signin`] and the boot's sign-in page both follow it.
+pub fn settled(
+    call: Call,
+    result: Result<Option<RecoveryInfo>, SetupError>,
+    tag: &str,
+    url: &str,
+) -> Phase {
+    match (result, call) {
+        (Ok(info), _) => {
+            eprintln!("live: {tag} verified on {url}; signing in");
+            if call == Call::Code {
+                Phase::Done
+            } else {
+                Phase::Created { info }
             }
-            (Err(SetupError::GamertagTaken), Call::Add { .. }) => {
-                eprintln!(
-                    "live: {tag} is on {} already; asking for its code",
-                    self.prompt.server_url
-                );
-                Phase::Code { error: None }
-            }
-            // The first refusal for want of an invite is the question, not
-            // an error.
-            (Err(SetupError::NeedsInvite), Call::Add { invite: false }) => {
-                Phase::Invite { error: None }
-            }
-            (Err(e @ (SetupError::NeedsInvite | SetupError::InviteInvalid)), Call::Add { .. }) => {
-                eprintln!("live: making {tag}: {e}");
-                Phase::Invite { error: Some(e) }
-            }
-            (Err(e), Call::Add { .. }) => {
-                eprintln!("live: making {tag}: {e}");
-                Phase::Gamertag { error: Some(e) }
-            }
-            (Err(SetupError::NoSuchGamertag), Call::Code) => {
-                eprintln!(
-                    "live: {tag} is not on {}; offering to make it",
-                    self.prompt.server_url
-                );
-                Phase::Create { error: None }
-            }
-            (Err(e), Call::Create) => {
-                eprintln!("live: making {tag}: {e}");
-                Phase::Create { error: Some(e) }
-            }
-            (Err(e), Call::Code) => {
-                eprintln!("live: the code for {tag}: {e}");
-                Phase::Code { error: Some(e) }
-            }
-        };
+        }
+        (Err(SetupError::GamertagTaken), Call::Add { .. }) => {
+            eprintln!("live: {tag} is on {url} already; asking for its code");
+            Phase::Code { error: None }
+        }
+        // The first refusal for want of an invite is the question, not
+        // an error.
+        (Err(SetupError::NeedsInvite), Call::Add { invite: false }) => {
+            Phase::Invite { error: None }
+        }
+        (Err(e @ (SetupError::NeedsInvite | SetupError::InviteInvalid)), Call::Add { .. }) => {
+            eprintln!("live: making {tag}: {e}");
+            Phase::Invite { error: Some(e) }
+        }
+        (Err(e), Call::Add { .. }) => {
+            eprintln!("live: making {tag}: {e}");
+            Phase::Gamertag { error: Some(e) }
+        }
+        (Err(SetupError::NoSuchGamertag), Call::Code) => {
+            eprintln!("live: {tag} is not on {url}; offering to make it");
+            Phase::Create { error: None }
+        }
+        (Err(e), Call::Create) => {
+            eprintln!("live: making {tag}: {e}");
+            Phase::Create { error: Some(e) }
+        }
+        (Err(e), Call::Code) => {
+            eprintln!("live: the code for {tag}: {e}");
+            Phase::Code { error: Some(e) }
+        }
     }
 }
 
@@ -392,4 +426,109 @@ pub(crate) fn files(accounts: Option<&std::path::Path>) -> Vec<PathBuf> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn code(error: Option<SetupError>) -> Phase {
+        Phase::Code { error }
+    }
+
+    /// Typed text on each page, as a table: the page, the text, what it
+    /// does.
+    #[test]
+    fn typed_text_on_each_page() {
+        let gamertag = Phase::Gamertag { error: None };
+        let invite = Phase::Invite { error: None };
+        let cases: [(&Phase, Option<&str>, Option<Typed>); 7] = [
+            (&gamertag, None, Some(Typed::Keep)),
+            (
+                &gamertag,
+                Some("  Chief "),
+                Some(Typed::Gamertag("Chief".into())),
+            ),
+            (
+                &gamertag,
+                Some("no/slashes"),
+                Some(Typed::Phase(Phase::Gamertag {
+                    error: Some(SetupError::BadGamertag),
+                })),
+            ),
+            (&invite, None, Some(Typed::Phase(gamertag.clone()))),
+            (
+                &invite,
+                Some(" "),
+                Some(Typed::Phase(Phase::Invite {
+                    error: Some(SetupError::NeedsInvite),
+                })),
+            ),
+            (&invite, Some("ABC"), Some(Typed::Invite("ABC".into()))),
+            (&Phase::Working, Some("x"), None),
+        ];
+        for (phase, text, want) in cases {
+            assert_eq!(typed(phase, text), want, "{phase:?} {text:?}");
+        }
+        assert_eq!(typed(&code(None), Some("123456")), None);
+    }
+
+    #[test]
+    fn a_code_not_six_digits_is_refused_without_a_request() {
+        assert_eq!(refused("12345"), Some(code(Some(SetupError::WrongCode))));
+        assert_eq!(refused("123456"), None);
+    }
+
+    /// Every way a server call ends, as a table.
+    #[test]
+    fn each_call_settles_to_its_page() {
+        use SetupError as E;
+        let add = Call::Add { invite: false };
+        let add_inv = Call::Add { invite: true };
+        let cases: [(Call, Result<Option<RecoveryInfo>, E>, Phase); 9] = [
+            (Call::Code, Ok(None), Phase::Done),
+            (Call::Create, Ok(None), Phase::Created { info: None }),
+            (add, Err(E::GamertagTaken), code(None)),
+            (add, Err(E::NeedsInvite), Phase::Invite { error: None }),
+            (
+                add_inv,
+                Err(E::NeedsInvite),
+                Phase::Invite {
+                    error: Some(E::NeedsInvite),
+                },
+            ),
+            (
+                add,
+                Err(E::Unreachable),
+                Phase::Gamertag {
+                    error: Some(E::Unreachable),
+                },
+            ),
+            (
+                Call::Code,
+                Err(E::NoSuchGamertag),
+                Phase::Create { error: None },
+            ),
+            (
+                Call::Create,
+                Err(E::Busy),
+                Phase::Create {
+                    error: Some(E::Busy),
+                },
+            ),
+            (
+                Call::Code,
+                Err(E::WrongCodeLeft { left: 2 }),
+                code(Some(E::WrongCodeLeft { left: 2 })),
+            ),
+        ];
+        for (call, result, want) in cases {
+            let r = format!("{result:?}");
+            assert_eq!(
+                settled(call, result, "Chief", "https://x"),
+                want,
+                "{call:?} {r}"
+            );
+        }
+    }
 }

@@ -133,6 +133,25 @@ pub enum Issue {
     },
 }
 
+impl Issue {
+    /// The widgets it names, for a tool to mark (the editor's UI Screens).
+    pub fn ids(&self) -> Vec<&str> {
+        match self {
+            Issue::Fit { id }
+            | Issue::Unsafe { id }
+            | Issue::Reserved { id, .. }
+            | Issue::Contrast { id, .. }
+            | Issue::FocusHidden { id }
+            | Issue::FocusNotBrighter { id } => vec![id],
+            Issue::TextOverlap { a, b } => vec![a, b],
+            Issue::OnOtherArt { text, art } => vec![text, art],
+            Issue::Covered { art, by, .. } => vec![art, by],
+            Issue::Misplaced { art, .. } | Issue::OffScreen { art, .. } => vec![art],
+            Issue::NoLegend => Vec::new(),
+        }
+    }
+}
+
 impl fmt::Display for Issue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

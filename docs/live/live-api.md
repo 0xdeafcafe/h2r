@@ -232,7 +232,7 @@ replays show the firing of the whole second; the same goes for `actions` and
 | `GET /v1/accounts/{gamertag}/keys` | account public keys with validity ranges |
 | `GET /v1/accounts` | accounts: `{xuid, gamertag, created_at, online}` |
 | `GET /v1/accounts/{gamertag}` | one account plus `recent_games` (without the co-op games the reader may not see: [Co-op games](#co-op-games)) |
-| `GET /v1/accounts/{gamertag}/friends` | friends with presence, pending requests in and out ([Friends](#friends), below) |
+| `GET /v1/accounts/{gamertag}/friends` | friends with presence; pending requests in and out for the player and admins only ([Friends](#friends), below) |
 | `GET /v1/presence` | who is online now: `{xuid, gamertag, state, game_id?, activity?, since}`; a player in a game or session the reader may not see shows no `game_id` and `activity: "In a game"` ([Co-op games](#co-op-games), "Presence") |
 | `GET /v1/coop/games?player=` | finished co-op campaign games, newest first ([Co-op games](#co-op-games), below) |
 | `GET /v1/games?state=live\|ended&map=&map_id=&skulls=` | game summaries: `{game_id, map, mode, kind, variant, playlist?, playlist_id?, difficulty?, online?, team_play, started_at, ended_at?, players, teams?, map_id?, skulls?}`; `map` keeps games on that base map, modded or not, `map_id` one exact map (`none`: games with no `map_id`), `skulls` (comma-separated indices, `4,6`) games that had every one of them on; without the co-op games the reader may not see ([Co-op games](#co-op-games)) |
@@ -240,7 +240,7 @@ replays show the firing of the whole second; the same goes for `actions` and
 | `GET /v1/games/{id}/frames?from_tick=&to_tick=&format=` | recorded frames, for replay: `format=json` (the default) a page of JSON frames; `format=packed` an `application/x-h2-frames` container of packed keyframes (docs/live/live-telemetry.md, "Packed frames"), the next cursor in `x-next` and the head position in `x-position` |
 | `GET /v1/maps/{map}/outline` | top-down map outline (see below), 404 until a console has uploaded it |
 | `GET /v1/snapshot` | what a page needs on load, in one read at one log position: `{position, accounts, presence, live, ended, details, tail}`. `accounts` is `/v1/accounts?limit=1000`, `presence` is `/v1/presence`, `live` and `ended` are `/v1/games?state=…&limit=100`, `details` is `/v1/games/{id}` for every live game and the 40 newest ended ones, and `tail` is the last 300 log events up to `position` without `GameFrame` (as on the stream). Each part has the reader's visibility applied, as at its own endpoint ([Co-op games](#co-op-games)) |
-| `GET /v1/events?from=&type=&stream=&limit=` | raw log, oldest first; without the events of co-op games and sessions the reader may not see ([Co-op games](#co-op-games), "The log"): a page can be short or empty with a `next` |
+| `GET /v1/events?from=&type=&stream=&limit=` | raw log, oldest first, at most 200 a page; without the events of co-op games and sessions the reader may not see ([Co-op games](#co-op-games), "The log"): a page can be short or empty with a `next`; without network addresses for anyone but the operator ([Network addresses](#network-addresses)); invitations, friend events and content reports only to whom they concern ([Private events](#private-events)) |
 | `GET /v1/titles/{title}/files/{name}` | raw file bytes, `ETag` = sha256 |
 | `GET /v1/server` | the server's public facts: `{id, software, url, invite_only, private, federation, counts: {accounts, online, live_games, sessions}, position}` ([live-admin.md](live-admin.md) §5) |
 | `GET /v1/stats/summary?window=today\|7d\|30d\|all` | server-wide totals, per-player rows, maps, weapons, playlists, skulls and hourly activity over a window ([Stats summary](#stats-summary), below) |
@@ -340,9 +340,13 @@ either direction or the two are already friends, an answer on any account
 but the request's recipient or to a request that is not pending, and a
 removal without a friendship or pending request between the two.
 
-**`GET /v1/accounts/{gamertag}/friends`** (public like the other reads)
-is everything a friends list needs in one document, so clients enumerate
-with one call:
+**`GET /v1/accounts/{gamertag}/friends`** is everything a friends list
+needs in one document, so clients enumerate with one call. The friendships
+are public like the other reads; the pending requests (`requests_in`,
+`requests_out`) are filled in only for the player themselves (a `read`
+bearer of that account), admin accounts and the operator. Anyone else,
+anonymous included, gets both lists empty, so the anonymous response the
+edge caches holds no requests.
 
 ```json
 { "friends": [
@@ -520,11 +524,58 @@ from a non-loopback IPv4, the observed address replaces any declared one
 ([live-custom-games.md](live-custom-games.md) §3–§4). Reading one session by
 ID ignores visibility. `SessionUpdated` may also set `visibility`.
 
+### Network addresses
+
+A session holds its host's network addresses: the declared
+`advertisement.addr` and `port`, the XNADDR in `advertisement.host_address`,
+and the `endpoint` the server observed (often the player's public IP). They
+are what a game joins by, so `GET /v1/sessions` and `GET /v1/sessions/{id}`
+give them to a signed-in reader (a `read` bearer: the game's matchmaking
+and join calls) and leave them out for an anonymous one.
+
+The log never shows them to anyone but the operator (a server-key token).
+Every other reader of `GET /v1/events`, `/v1/stream` and the snapshot's
+event tail, anonymous, signed in or an admin account, gets each event with
+every network address removed at any depth (`addr` and the `port` beside
+it, `endpoint`, `host_address`, `xnaddr`, `ip`, `observed`). The stored log
+is unchanged. A changed event carries `redacted: true` in its data and an
+empty `jws` (no `jws_index`): its signature covers the data as stored, so
+it would not verify against the redacted view; only the operator's read
+can be checked against signatures. Today only `SessionCreated` carries
+addresses. The web's signature check shows such an event as "redacted"
+(addresses hidden, signature checked by the server only), not as unsigned.
+
+### Private events
+
+Some events in the log show only to the accounts they concern, on every
+log read (`GET /v1/events`, `/v1/stream` replay and live, the snapshot's
+event tail). The stored log is unchanged.
+
+| Events | Who reads them |
+|---|---|
+| `GameInviteSent`, `GameInviteAnswered` | the invitation's sender and recipient |
+| `FriendRequested`, `FriendAccepted`, `FriendDeclined`, `FriendRemoved` | the two accounts and the current friends of either |
+| `ContentReported` | admins only |
+
+Admin accounts and the operator read all of them; anonymous readers none,
+so an anonymous read stays safe for the edge cache. Other readers get the
+log without them, the same way as hidden co-op events (a page can be short
+with a `next`). The game and the web read these through their own calls
+(`/v1/accounts/by-xuid/{xuid}/mailbox` for the owner,
+`/v1/accounts/{gamertag}/friends`, `/v1/admin/content` for admins), not
+the log. The friends read keeps friendships public and pending requests
+for the player ([Friends](#friends)).
+
 Lists accept `state` (default `open`), `hopper` (numeric ID), `map`, `host`
 (author or canonical gamertag), `flags` (`custom`, `hopper`, `ranked` or
 `coop`: `?flags=coop` lists co-op campaign sessions), `visibility`, and `attributes` (URL-encoded
 JSON with exact value comparisons). Filters combine. `limit` is 1..1000, default 100; `cursor`
-is the previous `next` string. Ordering is by session ID. CLI queries are
+is the previous `next` string. Ordering is by session ID. `optimatch`
+(URL-encoded JSON `{hopper, average, lowest?, highest?, party?}`) is the
+game's decoded OptiMatch search ([live-matchmaking.md](live-matchmaking.md)
+§7): it keeps sessions on that playlist whose level window and party room
+fit, orders them by closeness to `average`, and returns one page with a
+null `next`. CLI queries are
 `h2 live q sessions [--state open|deleted|expired] [--hopper ID] [--map NAME]
 [--host GAMERTAG]` and `h2 live q session ID`, with the usual JSON formats.
 
@@ -871,8 +922,11 @@ extract`; nothing of it is in this repo). Clients must work without it.
   ([live-admin.md](live-admin.md), "The catalog"), 404 likewise.
 - `GET /art/game/map/<stem>/map.glb` (`model/gltf-binary`),
   `.../views.json` (`application/json`) and `.../views/<id>.png`: a
-  multiplayer map's level geometry and pre-drawn views, named by the
-  manifest's `maps` ([live-art.md](live-art.md)), 404 likewise.
+  map's or campaign level's geometry and pre-drawn views, named by the
+  manifest's `maps` ([live-art.md](live-art.md)), 404 likewise. Converted
+  Halo 1 maps are there too, keyed by the name games report them by
+  (`h1_<map>`, or the level's), their entries marked `"game": "halo1"` with
+  a `"name"`.
 
 ```json
 { "version": 1,
@@ -883,7 +937,9 @@ extract`; nothing of it is in this repo). Clients must work without it.
   "palette": ["#ffffff", "..."],
   "skipped": { "<key or prefix>": "why it is missing" },
   "maps":    { "<stem>": { "geometry": "map/<stem>/map.glb",
-                           "views": "map/<stem>/views.json" } } }
+                           "views": "map/<stem>/views.json",
+                           "kind": "multiplayer", "bsps": 1,
+                           "game": "halo1", "name": "..." } } }
 ```
 
 `version` is the manifest format; it changes only when a client could no

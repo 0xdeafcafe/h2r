@@ -464,9 +464,26 @@ pub(crate) struct MapFile {
     host: Option<(PathBuf, u64)>,
     /// What the map list says about a map pack map.
     pub(crate) pack: Option<crate::live_mappack::PackMap>,
+    /// A converted Halo 1 map's name and picture (`crate::live_halo1`).
+    pub(crate) halo1: Option<crate::live_halo1::Halo1Map>,
 }
 
 impl MapFile {
+    pub(crate) fn cache_type(&self) -> Option<CacheType> {
+        self.cache_type
+    }
+
+    /// A package map the game staged as content from `<data>/maps`
+    /// (`boot::new_maps::MARKER` beside it), not one of the map pack's.
+    fn is_staged(&self) -> bool {
+        self.pack.is_some()
+            && self
+                .host
+                .as_ref()
+                .and_then(|(host, _)| host.parent())
+                .is_some_and(|dir| dir.join(boot::new_maps::MARKER).is_file())
+    }
+
     pub(crate) fn name(&self) -> &str {
         let file = self
             .entry
@@ -484,6 +501,9 @@ pub struct Disc {
     partition: u64,
     entries: Vec<xiso::Entry>,
     maps: Vec<MapFile>,
+    /// Converted Halo 1 maps ([`Disc::add_halo1`]): kept apart from `maps`,
+    /// so only the level geometry and previews read them.
+    halo1: Vec<MapFile>,
     /// What [`cache_key`] hashes, so added maps can join it.
     parts: Vec<(String, u32, u32, Vec<u8>)>,
     /// [`cache_key`] of the maps.
@@ -513,6 +533,7 @@ impl Disc {
                 cache_type: cache_type(&head),
                 host: None,
                 pack: None,
+                halo1: None,
             });
             parts.push((e.path.clone(), e.size, e.sector, head));
         }
@@ -521,6 +542,7 @@ impl Disc {
             partition,
             entries,
             maps,
+            halo1: Vec::new(),
             key: cache_key(&parts),
             parts,
         })
@@ -543,10 +565,12 @@ impl Disc {
                 cache_type: cache_type(&f.head),
                 host: Some((f.host.clone(), f.base)),
                 pack: Some(f.pack.clone()),
+                halo1: None,
             };
             if self
                 .maps
                 .iter()
+                .chain(&self.halo1)
                 .any(|m| m.name().eq_ignore_ascii_case(file.name()))
             {
                 continue;
@@ -562,6 +586,67 @@ impl Disc {
         }
         self.key = cache_key(&self.parts);
         n
+    }
+
+    /// Adds converted Halo 1 maps (`crate::live_halo1`), each opened with
+    /// this disc's shared maps like a map pack map. A stem the disc (or an
+    /// earlier source) already has is left out, so a Halo 1 map never takes
+    /// a Halo 2 map's name. The cache key then covers their headers, sizes
+    /// and the import's stamp. Returns how many were added.
+    pub(crate) fn add_halo1(&mut self, found: crate::live_halo1::Found) -> usize {
+        let mut n = 0;
+        for f in found.maps {
+            // The game's copy of a converted multiplayer map, staged as
+            // content beside the map pack's (`boot::new_maps`), is found by
+            // `live_mappack::installed` too: the Halo 1 map replaces it.
+            let staged: Vec<String> = self
+                .maps
+                .iter()
+                .filter(|m| m.name().eq_ignore_ascii_case(&f.stem) && m.is_staged())
+                .filter_map(|m| m.host.as_ref())
+                .map(|(host, _)| format!("{}#{}", host.display(), f.stem))
+                .collect();
+            if !staged.is_empty() {
+                self.maps
+                    .retain(|m| !(m.name().eq_ignore_ascii_case(&f.stem) && m.is_staged()));
+                self.parts.retain(|p| !staged.contains(&p.0));
+            }
+            let taken = |m: &MapFile| m.name().eq_ignore_ascii_case(&f.stem);
+            if self.maps.iter().any(taken) || self.halo1.iter().any(taken) {
+                continue;
+            }
+            self.parts.push((
+                format!("{}#{}", f.path.display(), f.stem),
+                f.size,
+                0,
+                f.head.clone(),
+            ));
+            self.halo1.push(MapFile {
+                entry: xiso::Entry {
+                    path: format!("/{}.map", f.stem),
+                    sector: 0,
+                    size: f.size,
+                    is_dir: false,
+                },
+                cache_type: cache_type(&f.head),
+                host: Some((f.path, 0)),
+                pack: None,
+                halo1: Some(f.info),
+            });
+            n += 1;
+        }
+        if n > 0 {
+            if let Some(stamp) = found.stamp {
+                self.parts.push(("halo1#stamp".into(), 0, 0, stamp));
+            }
+        }
+        self.key = cache_key(&self.parts);
+        n
+    }
+
+    /// The converted Halo 1 maps added ([`Disc::add_halo1`]).
+    pub(crate) fn halo1_maps(&self) -> impl Iterator<Item = &MapFile> {
+        self.halo1.iter()
     }
 
     /// The map pack maps added ([`Disc::add_maps`]).
@@ -975,6 +1060,24 @@ pub fn write_pieces(pieces: &[Piece], dir: &Path) -> Result<BTreeMap<String, Ent
     })
 }
 
+/// Copies a converted Halo 1 map's PNG picture into `dir` as `<key>.png`.
+fn halo1_preview(path: &Path, dir: &Path, key: &str) -> Result<Entry> {
+    let bytes = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let (width, height) =
+        crate::live_halo1::png_size(&bytes).with_context(|| format!("{} is no PNG", path.display()))?;
+    let file = format!("{key}.png");
+    let to = dir.join(&file);
+    if let Some(parent) = to.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&to, bytes).with_context(|| format!("writing {file}"))?;
+    Ok(Entry {
+        file,
+        width,
+        height,
+    })
+}
+
 /// What [`extract`] did.
 pub struct Report {
     pub manifest: Manifest,
@@ -1035,7 +1138,23 @@ pub fn extract(disc: &Disc, out: &Path) -> Result<Report> {
     let staging = out.with_extension("partial");
     let _ = fs::remove_dir_all(&staging);
     fs::create_dir_all(&staging).with_context(|| format!("creating {}", staging.display()))?;
-    let images = write_pieces(&pieces, &staging)?;
+    let mut images = write_pieces(&pieces, &staging)?;
+    // Converted Halo 1 maps' pictures, as the import wrote them.
+    for m in disc.halo1_maps() {
+        let key = format!("map/{}/preview", m.name());
+        let Some(path) = m.halo1.as_ref().and_then(|h| h.preview.as_ref()) else {
+            skipped.insert(key, "the import wrote no picture for it".into());
+            continue;
+        };
+        match halo1_preview(path, &staging, &key) {
+            Ok(entry) => {
+                images.insert(key, entry);
+            }
+            Err(e) => {
+                skipped.insert(key, format!("{e:#}"));
+            }
+        }
+    }
     // Level geometry and views of every multiplayer map (docs/live/live-art.md).
     let geometry = crate::live_geometry::extract(disc, &staging);
     skipped.extend(geometry.skipped);
@@ -1101,16 +1220,18 @@ pub fn extract(disc: &Disc, out: &Path) -> Result<Report> {
 }
 
 /// `h2 live assets extract [--disc PATH] [--out DIR] [--mappack ISO]
-/// [--installed DIR]`: the retail disc's art, and the map pack's maps from
-/// its disc and from where `h2 import-mappack` installed them under the
-/// runtime data root `installed`.
+/// [--installed DIR] [--halo1 ISO]`: the retail disc's art, the map pack's
+/// maps from its disc and from where `h2 import-mappack` installed them
+/// under the runtime data root `installed`, and the Halo 1 maps `h2 import
+/// halo1` converted there (`halo1` imports what is missing first).
 pub fn run(
-    disc: PathBuf,
+    disc_path: PathBuf,
     out: PathBuf,
     mappack: Option<PathBuf>,
     installed: Option<PathBuf>,
+    halo1: Option<PathBuf>,
 ) -> Result<()> {
-    let mut disc = Disc::scan(&disc)?;
+    let mut disc = Disc::scan(&disc_path)?;
     if let Some(iso) = mappack {
         let found = crate::live_mappack::from_iso(&iso)
             .with_context(|| format!("reading the map pack disc {}", iso.display()))?;
@@ -1118,12 +1239,36 @@ pub fn run(
     }
     if let Some(root) = installed {
         disc.add_maps(crate::live_mappack::installed(&root));
+        if let Some(iso) = halo1 {
+            // The same import `h2 play` runs: only what its stamp says is
+            // missing or stale is converted.
+            let mut say = |s: String| eprintln!("halo1: {s}");
+            let sum = crate::h1_import::import(
+                &crate::h1_import::Request {
+                    h1_iso: &iso,
+                    h2_disc: &disc_path,
+                    data: &root,
+                    force: false,
+                    dry_run: false,
+                },
+                &mut say,
+            )?;
+            eprintln!(
+                "halo1: {} converted, {} failed, {} already there",
+                sum.converted, sum.failed, sum.skipped
+            );
+        }
+        disc.add_halo1(crate::live_halo1::installed(&root));
     }
     let report = extract(&disc, &out)?;
     println!("game art in {}", out.display());
     let pack: Vec<&str> = disc.pack_maps().map(|m| m.name()).collect();
     if !pack.is_empty() {
         println!("  {:<10} {}", "map pack", pack.join(", "));
+    }
+    let halo1: Vec<&str> = disc.halo1_maps().map(|m| m.name()).collect();
+    if !halo1.is_empty() {
+        println!("  {:<10} {}", "halo 1", halo1.join(", "));
     }
     for (prefix, n) in &report.counts {
         println!("  {prefix:<10} {n}");
@@ -1327,6 +1472,97 @@ mod tests {
             }
             assert_ne!(cache_key(&m), key);
         }
+    }
+
+    /// An invented cache header: the cache type at `0x140`.
+    fn head(cache_type: u32) -> Vec<u8> {
+        let mut h = vec![0u8; 2048];
+        h[0x140..0x144].copy_from_slice(&cache_type.to_le_bytes());
+        h
+    }
+
+    fn halo1_found(stem: &str, cache_type: u32, stamp: &[u8]) -> crate::live_halo1::Found {
+        crate::live_halo1::Found {
+            maps: vec![crate::live_halo1::FoundMap {
+                stem: stem.into(),
+                path: PathBuf::from(format!("/nowhere/{stem}.map")),
+                size: 4096,
+                head: head(cache_type),
+                kind: crate::live_geometry::MapKind::Multiplayer,
+                info: crate::live_halo1::Halo1Map {
+                    name: "Invented".into(),
+                    preview: None,
+                },
+            }],
+            stamp: Some(stamp.to_vec()),
+        }
+    }
+
+    fn empty_disc() -> Disc {
+        Disc {
+            path: PathBuf::from("/nowhere.iso"),
+            partition: 0,
+            entries: Vec::new(),
+            maps: Vec::new(),
+            halo1: Vec::new(),
+            parts: Vec::new(),
+            key: cache_key(&[]),
+        }
+    }
+
+    #[test]
+    fn halo1_maps_join_the_disc_apart_and_key_it_with_the_stamp() {
+        let mut disc = empty_disc();
+        disc.maps.push(MapFile {
+            entry: xiso::Entry {
+                path: "/maps/teacup.map".into(),
+                sector: 0,
+                size: 1,
+                is_dir: false,
+            },
+            cache_type: Some(CacheType::Multiplayer),
+            host: None,
+            pack: None,
+            halo1: None,
+        });
+        let before = disc.key.clone();
+        assert_eq!(disc.add_halo1(halo1_found("teacup", 1, b"s1")), 0, "a Halo 2 stem is kept");
+        assert_eq!(disc.add_halo1(halo1_found("h1_alpha", 1, b"s1")), 1);
+        assert_eq!(disc.add_halo1(halo1_found("h1_alpha", 1, b"s1")), 0, "once");
+        let h1: Vec<_> = disc.halo1_maps().map(|m| m.name().to_string()).collect();
+        assert_eq!(h1, ["h1_alpha"]);
+        assert_eq!(disc.maps_of(CacheType::Multiplayer).count(), 1, "not among the disc's maps");
+        assert_eq!(disc.halo1_maps().next().unwrap().cache_type(), Some(CacheType::Multiplayer));
+        assert_ne!(disc.key, before);
+
+        let mut other = empty_disc();
+        other.add_halo1(halo1_found("h1_alpha", 1, b"s2"));
+        let mut same = empty_disc();
+        same.add_halo1(halo1_found("h1_alpha", 1, b"s1"));
+        assert_ne!(other.key, same.key, "another import stamp extracts again");
+    }
+
+    #[test]
+    fn a_staged_copy_of_a_halo1_map_gives_way_to_it() {
+        let dir = std::env::temp_dir().join(format!("h2-art-staged-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(boot::new_maps::MARKER), "map = \"h1_alpha\"\n").unwrap();
+        let mut disc = empty_disc();
+        disc.add_maps(vec![crate::live_mappack::FoundMap {
+            stem: "h1_alpha".into(),
+            host: dir.join("h1_alpha.map"),
+            base: 0,
+            size: 4096,
+            head: head(1),
+            pack: Default::default(),
+        }]);
+        assert_eq!(disc.pack_maps().count(), 1);
+        assert_eq!(disc.add_halo1(halo1_found("h1_alpha", 1, b"s")), 1);
+        assert_eq!(disc.pack_maps().count(), 0);
+        assert_eq!(disc.halo1_maps().count(), 1);
+        assert!(!disc.parts.iter().any(|p| p.0.starts_with(&dir.display().to_string())));
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

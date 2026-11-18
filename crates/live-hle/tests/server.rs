@@ -1482,7 +1482,9 @@ fn advertisements_carry_the_hosts_map_id() {
     host.logon();
     let id = live_proto::maps::MapId([0x6d; 32]);
     host.hle
-        .set_map_probe(Some(std::sync::Arc::new(move |_: &runtime::Guest| Some(id))));
+        .set_map_probe(Some(std::sync::Arc::new(move |_: &runtime::Guest| {
+            Some(id)
+        })));
     attr(&host, MATCH_ATTR, 1, 101);
     assert_eq!(
         host.call(
@@ -1570,7 +1572,7 @@ fn sessions_two_guests_publish_find_parse_update_and_delete() {
     let lo = host.u32(MATCH_ID);
     let hi = host.u32(MATCH_ID + 4);
     assert_eq!(host.hle.local_sessions()[0].id.to_vec(), id);
-    let rows: Page<live_proto::session::Session> = s.get("/v1/sessions");
+    let rows: Page<live_proto::session::Session> = s.get_as_operator("/v1/sessions");
     assert_eq!(rows.items.len(), 1);
     assert_eq!(rows.items[0].xnkid, sign::hex(&id));
     assert_eq!(rows.items[0].endpoint.port, 31000);
@@ -1755,7 +1757,7 @@ fn guests_read_the_skulls_their_host_advertises() {
     host.hle.set_skulls_probe(None);
     host.hle.set_session_skulls(Some(vec![4, 6]));
     s.until(|| {
-        s.get::<Page<live_proto::session::Session>>("/v1/sessions")
+        s.get_as_operator::<Page<live_proto::session::Session>>("/v1/sessions")
             .items[0]
             .advertisement
             .skulls
@@ -1771,7 +1773,7 @@ fn guests_read_the_skulls_their_host_advertises() {
     );
     host.hle.set_session_skulls(None);
     s.until(|| {
-        s.get::<Page<live_proto::session::Session>>("/v1/sessions")
+        s.get_as_operator::<Page<live_proto::session::Session>>("/v1/sessions")
             .items[0]
             .advertisement
             .skulls
@@ -1847,7 +1849,11 @@ fn a_coop_lobby_advertises_its_campaign_and_the_invited_guest_reads_it() {
     let local = &host.hle.local_sessions()[0];
     assert_eq!(local.campaign, Some(campaign.clone()));
     assert_eq!(local.visibility, Visibility::Friends);
-    assert_eq!(local.skulls, Some(vec![0, 4]), "the campaign skulls, not multiplayer ones");
+    assert_eq!(
+        local.skulls,
+        Some(vec![0, 4]),
+        "the campaign skulls, not multiplayer ones"
+    );
     let created = s
         .events()
         .into_iter()
@@ -1858,7 +1864,10 @@ fn a_coop_lobby_advertises_its_campaign_and_the_invited_guest_reads_it() {
         created.data["advertisement"]["campaign"],
         json!({"level": "03a_oldmombasa", "name": "Outskirts", "difficulty": 2})
     );
-    assert_eq!(created.data["advertisement"]["visibility"], json!("friends"));
+    assert_eq!(
+        created.data["advertisement"]["visibility"],
+        json!("friends")
+    );
     let local_id = local.id;
     let session = live_proto::sign::hex(&local_id);
     // A stranger's browser does not list it; the friend's does.
@@ -1877,7 +1886,10 @@ fn a_coop_lobby_advertises_its_campaign_and_the_invited_guest_reads_it() {
     assert_eq!(friends[0].gamertag, "Guest");
     assert_eq!(host.hle.friends(4), vec![], "no such controller");
     assert_eq!(host.hle.invite_to_lobby(0, b.xuid), Ok(session.clone()));
-    assert_eq!(host.hle.invite_to_lobby(1, b.xuid).unwrap_err(), INVALID_USER);
+    assert_eq!(
+        host.hle.invite_to_lobby(1, b.xuid).unwrap_err(),
+        INVALID_USER
+    );
     assert_eq!(guest.call("XOnlineFriendsStartup", &[0, OUT]), 0);
     let background = guest.u32(OUT);
     guest_until(&mut guest, |w| {
@@ -1904,13 +1916,27 @@ fn a_coop_lobby_advertises_its_campaign_and_the_invited_guest_reads_it() {
     // session's endpoint; the guest's next ping carries its last round
     // trip, which the host shows and advertises.
     let fresh = Duration::from_secs(6);
-    assert_eq!(host.hle.guest_ping(fresh), None, "no guest has reported yet");
+    assert_eq!(
+        host.hle.guest_ping(fresh),
+        None,
+        "no guest has reported yet"
+    );
     let to = std::net::SocketAddrV4::new(read.endpoint.addr, read.endpoint.port);
     let timeout = Duration::from_secs(2);
-    let first = guest.hle.ping_host(to, None, timeout).expect("the host echoes");
+    let first = guest
+        .hle
+        .ping_host(to, None, timeout)
+        .expect("the host echoes");
     assert!((1..=live_proto::session::PING_MAX_MS).contains(&first));
-    assert_eq!(host.hle.guest_ping(fresh), None, "the first ping reports nothing");
-    guest.hle.ping_host(to, Some(first), timeout).expect("the host echoes");
+    assert_eq!(
+        host.hle.guest_ping(fresh),
+        None,
+        "the first ping reports nothing"
+    );
+    guest
+        .hle
+        .ping_host(to, Some(first), timeout)
+        .expect("the host echoes");
     let reported = host.hle.guest_ping(fresh);
     assert_eq!(reported, Some(first));
     host.hle.set_coop_ping(reported);
@@ -1924,7 +1950,12 @@ fn a_coop_lobby_advertises_its_campaign_and_the_invited_guest_reads_it() {
     });
     // Nothing answers on a port with no responder.
     let nobody = std::net::SocketAddrV4::new(read.endpoint.addr, game_port());
-    assert_eq!(guest.hle.ping_host(nobody, None, Duration::from_millis(200)), None);
+    assert_eq!(
+        guest
+            .hle
+            .ping_host(nobody, None, Duration::from_millis(200)),
+        None
+    );
     // Presence says what the host is doing.
     s.until(|| {
         s.presence()
@@ -1941,7 +1972,11 @@ fn a_coop_lobby_advertises_its_campaign_and_the_invited_guest_reads_it() {
         })
     });
     assert_eq!(host.hle.local_sessions()[0].campaign, None);
-    assert_eq!(host.hle.local_sessions()[0].ping_ms, None, "a custom game has no co-op ping");
+    assert_eq!(
+        host.hle.local_sessions()[0].ping_ms,
+        None,
+        "a custom game has no co-op ping"
+    );
     assert_eq!(host.hle.activity(), None);
     assert!(guest.hle.joined(wait).campaign().is_none());
 }
@@ -1989,7 +2024,7 @@ fn browser_search_rows_follow_the_hosts_visibility_setting() {
     assert_eq!(host.wait(create), TASK_SUCCESS);
     assert_eq!(host.hle.local_sessions()[0].visibility, Visibility::Friends);
     // The advertisement says so on the server.
-    let doc: Value = s.get("/v1/sessions?state=open&visibility=friends");
+    let doc: Value = s.get_as_operator("/v1/sessions?state=open&visibility=friends");
     assert_eq!(
         doc["items"],
         json!([]),
@@ -2019,7 +2054,7 @@ fn browser_search_rows_follow_the_hosts_visibility_setting() {
     // Changing the setting updates the open lobby at once, with a signed event.
     host.hle.set_session_visibility(Visibility::Public);
     s.until(|| {
-        s.get::<Page<live_proto::session::Session>>("/v1/sessions")
+        s.get_as_operator::<Page<live_proto::session::Session>>("/v1/sessions")
             .items
             .len()
             == 1
@@ -2027,7 +2062,7 @@ fn browser_search_rows_follow_the_hosts_visibility_setting() {
     assert_eq!(match_search(&mut stranger, 1, 0, cap).2, 1);
     host.hle.set_session_visibility(Visibility::Invite);
     s.until(|| {
-        s.get::<Page<live_proto::session::Session>>("/v1/sessions")
+        s.get_as_operator::<Page<live_proto::session::Session>>("/v1/sessions")
             .items
             .is_empty()
     });
@@ -2116,7 +2151,7 @@ fn the_titles_privacy_probe_decides_a_new_advertisement() {
         .unwrap();
     assert_eq!(created.data["advertisement"]["visibility"], "invite");
     assert!(
-        s.get::<Page<live_proto::session::Session>>("/v1/sessions")
+        s.get_as_operator::<Page<live_proto::session::Session>>("/v1/sessions")
             .items
             .is_empty()
     );
@@ -2188,7 +2223,7 @@ fn sessions_typed_results_are_owned_bounded_and_signout_closes_advertisement() {
     assert_eq!(peer.bytes(BUFFER, 40), vec![0xcc; 40]);
     assert_eq!(host.call("XOnlineTaskClose", &[logon]), 0);
     s.until(|| {
-        s.get::<Page<live_proto::session::Session>>("/v1/sessions")
+        s.get_as_operator::<Page<live_proto::session::Session>>("/v1/sessions")
             .items
             .is_empty()
     });
@@ -2877,4 +2912,88 @@ fn coop_auto_invites_the_named_friend_and_the_guest_accepts_by_itself() {
         .filter(|e| e.kind == live_proto::mailbox::SENT)
         .count();
     assert_eq!(sent, 1);
+}
+/// The title's OptiMatch search over the real HTTP worker: a host advertises
+/// the fifteen attributes `0x000b4b80` writes (playlist 3, levels 9..13, room
+/// for 1 to 3), and a second guest searches with procedure 1's twelve
+/// positional parameters as `0x000b4a90` builds them. The window and the
+/// party size decide whether the session comes back. Values are synthetic.
+#[test]
+fn optimatch_searches_find_sessions_in_the_partys_level_window() {
+    let s = Server::new();
+    let a = s.account("Host");
+    let b = s.account("Searcher");
+    let mut host = World::new(&s.embedded.url, &[&a]);
+    let mut peer = World::raw_network(
+        &s.embedded.url,
+        json!([b.json()]),
+        Duration::from_millis(100),
+        32000,
+    );
+    host.logon();
+    peer.logon();
+    let room: u64 = 0b111;
+    let mut advert: Vec<(u32, u64)> =
+        vec![(1, 3), (2, 11), (3, 3), (5, 9), (6, 13), (7, 0), (8, room)];
+    advert.extend((0..7).map(|k| (9 + k, (room >> k) & 1)));
+    advert.push((16, 0));
+    for (i, (id, value)) in advert.iter().enumerate() {
+        attr(&host, MATCH_ATTR + i as u32 * 16, *id, *value);
+    }
+    assert_eq!(
+        host.call(
+            "XOnlineMatchSessionCreate",
+            &[1, 3, 0, 0, advert.len() as u32, MATCH_ATTR, 0, OUT]
+        ),
+        0
+    );
+    let create = host.u32(OUT);
+    assert_eq!(host.wait(create), TASK_SUCCESS);
+    let cap = peer.call("XOnlineMatchSearchResultsLen", &[50, 7, MATCH_SPEC]);
+    let search = |peer: &mut World, hopper: i64, window: Option<(i64, i64)>, party: u32| {
+        let put = |peer: &World, i: u32, v: Option<i64>| {
+            let at = MATCH_ATTR + i * 16;
+            match v {
+                Some(v) => attr(peer, at, 0, v as u64),
+                None => {
+                    attr(peer, at, 0x00f0_0000, 0);
+                }
+            }
+        };
+        put(peer, 0, Some(hopper));
+        put(peer, 1, Some(10));
+        put(peer, 2, window.map(|w| w.0));
+        put(peer, 3, window.map(|w| w.1));
+        for k in 1..=8 {
+            put(peer, 3 + k, (k == party.min(8)).then_some(1));
+        }
+        match_search(peer, 1, 12, cap).2
+    };
+    assert_eq!(search(&mut peer, 3, Some((8, 14)), 2), 1);
+    assert_eq!(
+        search(&mut peer, 3, Some((10, 14)), 2),
+        0,
+        "a level 9 player is below the window"
+    );
+    assert_eq!(
+        search(&mut peer, 3, Some((8, 12)), 2),
+        0,
+        "a level 13 player is above it"
+    );
+    assert_eq!(
+        search(&mut peer, 3, Some((8, 14)), 4),
+        0,
+        "no room for four"
+    );
+    assert_eq!(search(&mut peer, 4, None, 1), 0, "another playlist");
+    assert_eq!(
+        search(&mut peer, 3, None, 3),
+        1,
+        "no window once widening ends"
+    );
+    assert_eq!(
+        search(&mut peer, -1, None, 0),
+        0,
+        "the custom games browser"
+    );
 }

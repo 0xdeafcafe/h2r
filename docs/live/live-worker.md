@@ -46,6 +46,22 @@ it either ([Migrating the current data](#migrating-the-current-data)).
 What is given up: other Workers cannot query the log directly. Everything
 goes through the hub, as it does on a machine today.
 
+### Decision: analytics without Postgres
+
+Decided 2026-11-18. The hub's SQLite stays the source of truth, for the
+log and the read model. Heavy historical analytics go K2 → Pipelines → R2
+Iceberg tables, queried with R2 SQL. Nothing a user sees waits on that
+path.
+
+Why not Postgres (through Hyperdrive):
+- **No extra vendor or bill.** Everything stays on the Cloudflare account.
+- **No network hop in the request path.** The hub's SQLite answers
+  in-process; analytics run beside it, never in front of it.
+- **R2 storage prices for history.** Old events and frames cost R2's rate,
+  not a database's.
+
+Postgres stays supported for a native `h2 live serve`, as it is today.
+
 ## Settings
 
 Worker variables (`[vars]` in wrangler.toml) and secrets. The names are
@@ -60,6 +76,7 @@ Worker variables (`[vars]` in wrangler.toml) and secrets. The names are
 | `H2_LIVE_ADMINS` | variable | Admin gamertags, comma-separated. |
 | `H2_LIVE_INVITE_ONLY` | variable | `1`: account creation needs an invite. |
 | `H2_LIVE_PRIVATE` | variable | `1`: reads need a token too. |
+| `H2_LIVE_GAME_ART_URL` | variable | Published game art, `<public bucket URL>/art/<stamp>` (what `h2 live assets publish` prints). `/art/game/*` redirects there; unset, it is a JSON 404 and the web app uses its own art pack. |
 
 A missing id or key, or a bad value, fails the hub's start. The request then
 answers 500 with the reason; the hub never runs as some other server.
@@ -107,7 +124,7 @@ On wasm32 it uses getrandom's JavaScript backends (0.2 `js` and 0.3 `wasm_js`) a
 - **`dosql`** (slice 2; it replaced slice 1's `d1`): the hub's own storage as `Sql`.
 - **`r2`**: R2 as an `ObjectStore`. It covers get, range, head, put (overwrite, create-only, if-match), delete and list; multipart and copy are not done yet.
 - **`entry`**: the fetch handler and the `LiveHub` object, which starts `Live` on its first request and answers with the router.
-- **`wrangler.toml`**: a sketch with no ids in it.
+- **`wrangler.toml`**: the local defaults and the `staging`, `cutover` and `production` environments ([Deploy](#deploy)).
 
 ### Building and running on this machine
 
@@ -378,59 +395,360 @@ large share of the day's requests.
 6. **Cold start.**
    - Snapshot the read model at a log position in the hub's storage (or R2), and replay only the tail.
    - Needed if the replay is slow at today's log size; see [Slice 2 results](#slice-2-results) for the rate.
-7. **Migration tooling and a rehearsal.**
-   - Admin-only `GET /v1/admin/log` and `POST /v1/admin/log` on the hub: the whole log in pages, every event with its JWS, version and hash, private ones included. The POST runs `EventStore::import`, which checks positions and hash chains.
-   - `store copy` learns `https://HOST` as a source and a destination, signing with the server key.
-   - Blobs go to R2 through the existing `s3://` path.
-   - Rehearse against `wrangler dev`, and compare heads and hash chains with the source.
-8. **Staging, then cutover.**
-   - Deploy to a staging hostname (`live-staging.forbes.red`), playing against a copy.
-   - Then cut over, as below.
+7. **Migration tooling and a rehearsal (done).**
+   - The operator log endpoints, with writes held while a copy goes in ([Migrating the current data](#migrating-the-current-data)).
+   - `store copy` takes `https://HOST` as a source or a destination, signing with the server key.
+   - Blobs go to R2 through the `s3://` path.
+   - Rehearsed against `wrangler dev` with a read-only copy of the real log ([Rehearsal](#rehearsal-2026-11-18)).
+8. **Staging, then cutover.** [Deploy](#deploy), then the [Cutover runbook](#cutover-runbook).
 9. **Later.** The menu bar app gets a "worker" mode: deploy, tail and status in place of a local server.
+
+## Deploy
+
+`crates/live-worker/deploy.sh` builds and deploys; never run a bare
+`wrangler deploy`. Each environment in wrangler.toml is its own Worker, with
+its own Durable Objects (so its own log), bucket and key:
+
+| Environment | Worker | Id | Bucket | Reached at |
+|---|---|---|---|---|
+| `staging` | `h2-live-staging` | `live-staging.forbes.red` (fresh; nothing from production is valid there) | `h2-live-blobs-staging` | `https://h2-live-staging.<subdomain>.workers.dev` |
+| `cutover` | `h2-live` | `live.forbes.red` (the Mac's, from its discovery document) | `h2-live-blobs` | workers.dev only: no route |
+| `production` | `h2-live` | `live.forbes.red` | `h2-live-blobs` | the route `live.forbes.red/*`, and workers.dev |
+
+`cutover` and `production` are one Worker deployed two ways: `cutover`
+without the route (to copy the log into before the switch), `production`
+with it (the switch). Both need `--yes-production`.
+
+`deploy.sh` prints each step as it goes:
+
+1. **Toolchain.** Rust from rust-toolchain.toml with the wasm32 target and
+   `worker-build` 0.9.0, in a rustup of its own under
+   `~/.cache/h2-live-worker` (`$H2_WORKER_HOME`). `~/.rustup` and
+   `~/.cargo` are not touched. The first run installs it.
+2. **Web.** `bun install --frozen-lockfile` and `bun run build` into
+   `web/dist`, the Worker's static assets.
+3. **Wasm.** `worker-build --release` into `crates/live-worker/build`.
+4. **Sign-in.** `wrangler whoami`; if you are not signed in, it stops and
+   says to run `bunx wrangler@4 login`.
+5. **Bucket.** It creates the environment's R2 bucket if it is missing.
+6. **Key.** It asks for the key only if the Worker has no
+   `H2_LIVE_SERVER_KEY` secret:
+   - **staging:** it makes a fresh one;
+   - **cutover and production:** it reads `$H2_LIVE_KEY_FILE`, or asks for
+     the Mac's `server.key` without echoing it. It then checks that the
+     key's public half is the one `https://live.forbes.red/.well-known/h2live.json`
+     publishes.
+
+   The key goes to `wrangler secret put` on stdin, after the deploy (the
+   Worker has to exist to hold it). It is never printed.
+7. **Deploy.** `wrangler deploy --env <env>`.
+8. **Health.** `/healthz` and the discovery document's id.
+
+`--dry-run` builds and bundles without signing in or uploading.
+`--skip-build` deploys what `build/` and `web/dist` already hold.
+
+### Staging
+
+```
+crates/live-worker/deploy.sh staging
+# discovery's url: the workers.dev address the first deploy printed
+H2_LIVE_PUBLIC_URL=https://h2-live-staging.<subdomain>.workers.dev \
+  crates/live-worker/deploy.sh staging --skip-build
+```
+
+Staging is invite-only with `afr` as its admin, like production. Its log
+starts empty, until slice 7's copy fills it.
+
+### The site
+
+What the Mac's server serves, and where it comes from on the Worker:
+
+| Path | Mac | Worker |
+|---|---|---|
+| `/v1/*`, `/healthz`, `/.well-known/h2live.json` | the router | the router, in the hub (`run_worker_first`) |
+| `/assets/*` | `web/dist`, `public, max-age=31536000, immutable` | static assets, the same header from `web/public/_headers` |
+| `index.html`, any app route | `web/dist`, `no-cache` | static assets with SPA fallback, Cloudflare's default (`public, max-age=0, must-revalidate`) |
+| `/art/*` (the web's own art pack) | `web/dist` | static assets |
+| `/art/game/*` (art from the owner's disc) | served from `game-art/` (`--share-game-art`) | a redirect to the published copy (`H2_LIVE_GAME_ART_URL`), answered by the Worker without waking the hub, else a JSON 404 |
+
+The `/v1/` cache rules (`public, … s-maxage=5` with an `ETag` for
+anonymous reads, `private, no-store` for the rest) are the router's, so
+they hold on the Worker too.
+
+The disc's art can't be in the Worker, so the Worker redirects to a
+published copy. Publishing it once from the Mac:
+
+```
+export H2_LIVE_S3_PUBLIC_ENDPOINT=https://<account id>.r2.cloudflarestorage.com \
+       H2_LIVE_S3_PUBLIC_ACCESS_KEY_ID=… H2_LIVE_S3_PUBLIC_SECRET_ACCESS_KEY=…
+h2 live assets publish --to s3://h2-live-art --url https://<the bucket's public URL>
+# prints: H2_LIVE_GAME_ART_URL = "https://…/art/<stamp>"
+```
+
+Put that line in each environment's `vars` in wrangler.toml and deploy
+again. The bucket needs public access (its r2.dev address or a custom
+domain), and a CORS rule allowing `GET` from any origin. The web app
+fetches `manifest.json` with `fetch`, which follows the redirect
+cross-origin:
+
+```
+bunx wrangler@4 r2 bucket cors set h2-live-art --file crates/live-worker/art-cors.json
+```
+
+A new extraction is a new stamp: publish it again and change the variable.
 
 ## Migrating the current data
 
-The server's log is in Postgres today.
+The hub's storage can be reached only through the Worker, so the log goes
+in through the hub's operator endpoints (`crates/live-server/src/logio.rs`):
 
-The hub's storage can only be reached through the Worker, so the log goes
-in through the hub (slice 7's endpoints). No D1 is involved.
+| Route | Token | |
+|---|---|---|
+| `GET /v1/admin/log?after=N&limit=M` | operator, `log.read` | events after N as stored: position, version, hash and JWS (a batch's JWS once a page) |
+| `POST /v1/admin/log` | operator, `log.write` | imports a page. Each event must follow the head and continue its stream's version and hash chain (`EventStore::import`), or the page is refused whole with a 409 that says why. It answers once the read model has the page. |
+| `POST /v1/admin/log/release` | operator, `log.write` | ends the copy: the server writes again |
+| `GET /v1/admin/log/meta` | operator, `log.read` | the head, whether writes are held, the title-file blobs, the checkpoints |
+| `GET`/`PUT /v1/admin/log/blobs/{sha256}`, `PUT /v1/admin/log/checkpoints/{name}` | | title-file blobs and checkpoints |
 
-1. **Move the identity.** The import is signed with the server key, so the hub needs it first.
-   - `wrangler secret put H2_LIVE_SERVER_KEY` with the contents of `server.key`.
-   - `H2_LIVE_ID` is the id in `server.json`. It must not change: every account's author id contains it.
-2. **Copy the log.** `h2 live store copy --from postgres://… --to https://<worker host>` posts the log in pages. The hub imports each page and checks positions and hash chains. A copy that stops part-way continues from the hub's head.
-3. **Checkpoints.** Subscriber checkpoints travel with the log.
-4. **Copy blobs.** `h2 live store copy --from-blobs <data dir> --to-blobs s3://h2-live-blobs`, with the R2 S3 credentials ([live-hosting.md](live-hosting.md), "Free hosting"). The public art bucket stays as it is.
-5. **Check.**
-   - The Worker's `/healthz` position equals the source head.
-   - `/v1/accounts` and `/v1/games` match the old server's answers.
+An operator token is signed with the server's own key, so only whoever holds
+`server.key` can read the log whole or write into it.
 
-## Cutover, with the DNS name kept
+**Writes are held while a log is copied in** (`crates/live-server/src/hold.rs`).
+The first import holds every write of the server's own, and of its clients,
+until `--release`. Without it, the hub's sweep sees a copied sign-in or game
+gone quiet and appends `PresenceExpired` or `GameEnded` at its head. The
+rehearsal showed this: two such events after the first page, so the next
+page no longer followed. The hold is a checkpoint row, so it survives the
+hub being evicted. It is not part of the log a copy takes. While held,
+writes answer 503 "writes are held while the log is copied in".
 
-`live.forbes.red` stays a proxied DNS record. A Worker route on
-`live.forbes.red/*` runs before the record's origin (the tunnel), so adding
-the route moves traffic, and removing it moves it back. The DNS record does
-not change.
+`h2 live store copy` (`h2-live-server store copy`) takes a server as either
+end:
 
-1. **Rehearse.** Run a full rehearsal on the staging hostname (slice 8).
-2. **Stop writes on the Mac.** Stop the Mac's server. Clients retry; this is the downtime window, minutes at most.
-3. **Copy the tail.** Run the same `store copy` again: it continues from the hub's head.
-4. **Add the route** `live.forbes.red/*` → `h2-live` (with the static assets).
-5. **Smoke test.** Check `/healthz`, sign in, the stream and a co-op relay.
-6. **Leave the tunnel stopped.** It is the rollback path; it no longer serves anything.
+```
+h2 live store copy --from postgres://localhost/h2live \
+  --to https://h2-live.<subdomain>.workers.dev --operator "<data dir>" [--release]
+```
+
+- It goes in pages of 500 events, one request each. The hub checks positions, stream versions and hash chains.
+- **Resumable.** Run it again and it carries on from the hub's head, once it has checked that the hub's last event is the source's at that position. A different log is refused, not merged.
+- **Checked at the end.** It ends by comparing the destination's last event (JWS, hash, version) with the source's at that position, and prints both heads.
+- **`--operator DIR`** is the destination server's `server.key` and `server.json`. It defaults to `--data`. The copy first checks that the server's discovery document names that id and key.
+- **A `postgres://` source is opened read-only:** no schema, every transaction `default_transaction_read_only`.
+- **`--release`** releases the hub once the copy has caught up with the source. It refuses if the source has moved past it.
+- **Back out:** `--from https://… --to postgres://…`, for a rollback.
+- **Blobs** (content, cloud saves) go straight to R2 over its S3 API: `--from-blobs DIR --to-blobs s3://BUCKET`, with `H2_LIVE_S3_ENDPOINT`, `H2_LIVE_S3_ACCESS_KEY_ID` and `H2_LIVE_S3_SECRET_ACCESS_KEY`. A blob already there at the same size is skipped.
+
+### Rehearsal (2026-11-18)
+
+The source was a read-only copy of the real log: Postgres to a SQLite file
+in scratch, 6264 events (92 MB, the largest JWS 18 KB, well under a
+Durable Object row's 2 MB), copied in 22.5 s. The destination was the
+Worker under `wrangler dev`, with id `live.forbes.red` and a dev key.
+
+| Step | Result |
+|---|---|
+| Copy, killed after 1500 events | the hub at 1500, nothing of its own written (held) |
+| Run again | carried on at 1501: 4764 events in 4 s; verified at 6264 |
+| Public reads against live.forbes.red (also at 6264) | `/v1/accounts`, `/v1/games?state=ended`, `/v1/teams`, `/v1/maps`, `/v1/sessions`: identical. `/v1/stats/summary`: identical except the order of tied map variants. That order was not deterministic; the map id now breaks the tie (`stats.rs`). |
+| Back out to a fresh SQLite file | 6264 events in 16 s; every position and hash the same as the source |
+| `--release` | the hub writes again |
+| Blobs, the Mac's data dir to a directory | 10 files, 4.2 MB; a second run copied nothing |
+| Cold start on that log, hub restarted | 1.38 s to replay 6264 events (`server-timing: start;dur=1376`) |
+
+The first attempt, without the hold, failed exactly as described above.
+That is why the hold exists.
+
+### Staging rehearsal (the user's step)
+
+Staging has its own id, so the copied accounts can't sign in there; their
+author ids name live.forbes.red. The copy, the checks and the reads are
+what this rehearses. `deploy.sh staging` keeps staging's key as
+`~/.config/h2-live-worker/staging/server.key`, for `--operator`.
+
+```
+crates/live-worker/deploy.sh staging
+~/.cargo/bin/h2 live store copy --from postgres://localhost/h2live \
+  --to https://h2-live-staging.<subdomain>.workers.dev \
+  --operator ~/.config/h2-live-worker/staging --release
+curl -s https://h2-live-staging.<subdomain>.workers.dev/healthz
+```
+
+`--operator ~/.config/h2-live-worker/staging` is refused with "is server
+\"live-staging.forbes.red\"…" if staging's key was made before deploy.sh
+kept it. Fix that with `bunx wrangler@4 secret delete H2_LIVE_SERVER_KEY
+--env staging`, then `deploy.sh staging` again.
+
+To start staging over, delete it with `bunx wrangler@4 delete --env staging`,
+which removes its Durable Objects and so its log, and deploy again.
+
+## Cutover runbook
+
+Run these in order on the Mac, from the main checkout on master. `<sub>`
+is the account's workers.dev subdomain, and DATA is the Mac server's data
+directory.
+
+```
+DATA="$HOME/Library/Application Support/h2recomp/live/server"
+```
+
+**0. Install the h2 binary that knows the new commands.**
+```
+lockf -k $TMPDIR/cargo.lock cargo install --locked --force --path crates/cli --bin h2
+~/.cargo/bin/h2 live --help | grep -E "assets publish|store copy"
+bunx wrangler@4 login
+```
+
+**1. Publish the disc art to a public bucket.** This is once, and the Mac
+keeps serving meanwhile.
+1. Make the bucket, public with CORS:
+   ```
+   bunx wrangler@4 r2 bucket create h2-live-art
+   bunx wrangler@4 r2 bucket domain add h2-live-art --domain art.forbes.red --zone-id <forbes.red zone id>
+   bunx wrangler@4 r2 bucket cors set h2-live-art --file crates/live-worker/art-cors.json
+   ```
+   `bunx wrangler@4 r2 bucket dev-url enable h2-live-art` gives an r2.dev
+   address instead of a custom domain; it is rate limited, so it is for
+   trying it out.
+2. Make an R2 API token with Object Read & Write on `h2-live-art` and
+   `h2-live-blobs` (dashboard: R2, Manage API tokens).
+3. Upload, with the token's keys:
+   ```
+   export H2_LIVE_S3_ENDPOINT=https://<account id>.r2.cloudflarestorage.com
+   export H2_LIVE_S3_ACCESS_KEY_ID=… H2_LIVE_S3_SECRET_ACCESS_KEY=…
+   ~/.cargo/bin/h2 live assets publish --to s3://h2-live-art --url https://art.forbes.red --out "$DATA/game-art"
+   ```
+4. It prints `H2_LIVE_GAME_ART_URL = "https://art.forbes.red/art/<stamp>"`.
+   Put that line under `[env.cutover.vars]`, `[env.production.vars]` and
+   `[env.staging.vars]` in `crates/live-worker/wrangler.toml`.
+5. Check: `curl -sI https://art.forbes.red/art/<stamp>/manifest.json`
+   answers 200, with `access-control-allow-origin` when sent an `Origin`
+   header.
+
+**2. Deploy the Worker without the route.** It holds the real key, from
+the Mac's `server.key`, which deploy.sh checks against the public key at
+https://live.forbes.red/.well-known/h2live.json before putting it:
+```
+H2_LIVE_KEY_FILE="$DATA/server.key" crates/live-worker/deploy.sh cutover --yes-production
+curl -s https://h2-live.<sub>.workers.dev/healthz        # {"ok":true,"position":0}
+curl -s https://h2-live.<sub>.workers.dev/.well-known/h2live.json   # id live.forbes.red, the Mac's key
+```
+
+**3. Bulk copy, with the Mac still serving.** This holds the Worker's
+writes until step 6:
+```
+~/.cargo/bin/h2 live store copy --from postgres://localhost/h2live \
+  --to https://h2-live.<sub>.workers.dev --operator "$DATA"
+~/.cargo/bin/h2 live store copy --from-blobs "$DATA" --to-blobs s3://h2-live-blobs
+```
+Run either again if it stops; each carries on. On today's log this takes
+under a minute.
+
+**4. Stop the Mac's writes.** This starts the downtime: from here until
+step 7, live.forbes.red answers errors (the tunnel has no server behind it).
+The user does this, not an agent. In the menu bar app (H2 Live), choose
+**Stop server**. The tunnel can stay up until step 7. So a login doesn't
+start the server again, turn off **Run at login** for the server there too.
+Or, from a terminal:
+```
+launchctl bootout gui/$(id -u)/red.forbes.h2live.server
+launchctl disable gui/$(id -u)/red.forbes.h2live.server
+```
+Check it is stopped: `curl -s http://127.0.0.1:8074/healthz` fails to
+connect.
+
+**5. Copy the tail.** This is the same command plus `--release`. It copies
+what the Mac wrote since step 3, verifies, and lets the Worker write again:
+```
+~/.cargo/bin/h2 live store copy --from postgres://localhost/h2live \
+  --to https://h2-live.<sub>.workers.dev --operator "$DATA" --release
+~/.cargo/bin/h2 live store copy --from-blobs "$DATA" --to-blobs s3://h2-live-blobs
+```
+It must end with "verified: the logs agree up to N … the source is at N"
+and "released". If it says the source is past the head, the Mac is still
+writing: go back to step 4.
+
+**6. Switch: deploy with the route.**
+```
+crates/live-worker/deploy.sh production --yes-production --skip-build
+```
+The route `live.forbes.red/*` puts the Worker in front of the proxied
+record. The DNS record and the tunnel's configuration stay as they are.
+
+**7. Verify.**
+```
+curl -s https://live.forbes.red/healthz                 # the position from step 5, or just past it
+curl -sI https://live.forbes.red/ | grep -i cache-control   # public, max-age=0, must-revalidate (static assets)
+curl -s https://live.forbes.red/.well-known/h2live.json  # id live.forbes.red
+curl -sI https://live.forbes.red/art/game/manifest.json | grep -i location   # https://art.forbes.red/art/<stamp>/…
+```
+Then sign in from the game (`h2 play`) and from the web, and watch a game
+or a co-op session go through. Finally, in the dashboard under Workers &
+Pages, h2-live, Observability:
+- the requests from just now show in **Logs**;
+- a request shows in **Traces**.
+
+`bunx wrangler@4 tail --env production` shows them live.
+
+**8. Leave the Mac's server and tunnel stopped.** They are the rollback.
+Stop the tunnel from the menu bar app (**Stop tunnel**, and turn off
+**Run at login**) once the Worker has served for a day.
 
 ## Rollback
 
-1. **Remove the Worker route.** Traffic falls through to the tunnel again.
-2. **Bring the Worker's writes back to the Mac.** Before starting the Mac's server:
-   - `h2 live store copy --from https://<worker host> --to <the Mac's log>`, which reads the hub's admin log export and takes the events after the Mac's head.
+1. **Remove the route.** Dashboard: Workers & Pages, h2-live, Settings,
+   Domains & Routes; delete `live.forbes.red/*`. Traffic falls through to
+   the tunnel again (start it first if step 8 stopped it). Redeploying
+   `cutover` does not remove a route.
+2. **Copy the Worker's writes back to Postgres.** Do this before starting
+   the Mac's server:
+   ```
+   ~/.cargo/bin/h2 live store copy --from https://h2-live.<sub>.workers.dev \
+     --to postgres://localhost/h2live --operator "$DATA"
+   ~/.cargo/bin/h2 live store copy --from-blobs s3://h2-live-blobs --to-blobs "$DATA"
+   ```
+   This is a continuation of the Mac's own log, so it is accepted. A log
+   that forked is refused. Events the Worker writes after this copy (its
+   sweeps, with no clients left) are not carried back. They are server
+   housekeeping that the Mac's own sweep redoes.
+3. **Start the Mac's server:** menu bar app, **Start server** (and **Run
+   at login** back on). Or `launchctl enable` then `launchctl bootstrap
+   gui/$(id -u) ~/Library/LaunchAgents/red.forbes.h2live.server.plist`.
+4. Check `curl -s https://live.forbes.red/healthz` shows the position
+   from step 2.
 
-   The copy refuses a log that is not a continuation of its own, so a forked log cannot be merged by mistake.
-3. **Start the Mac's server and the tunnel.**
+Only one side may write at a time. The hold (step 3 to step 5) and
+stopping the Mac (step 4) keep it that way. Never run both against the
+same hostname.
 
-Two things keep this safe:
-- Only one side writes at a time. Never run the Mac's server and the Worker against the same hostname together.
-- R2 blobs written while on the Worker (uploads, cloud saves) copy back with `store copy --from-blobs s3://h2-live-blobs --to-blobs <data dir>`.
+## Observability
+
+Set in wrangler.toml, per environment (`[env.<env>.observability]`):
+
+| | staging | cutover | production |
+|---|---|---|---|
+| Workers Logs (`head_sampling_rate`) | 1 | 1 | 1 |
+| Invocation logs | on | on | on |
+| Traces (`observability.traces.head_sampling_rate`) | 1 | 1 | 0.1 |
+
+- **Logs** are what the Worker writes with `console.log`, plus one
+  invocation log a request.
+  - Workers Paid includes 20 million log events a month.
+  - Today's traffic (a few players, viewers polling) is far below that,
+    so production starts at 1. Lower it when the dashboard's monthly count
+    passes about half the quota.
+- **Traces** show each request's path through the Worker, the Durable
+  Object call (hub or relay) and R2.
+- **Live:** `bunx wrangler@4 tail --env production` (add
+  `--format pretty`, or `--search <text>`).
+
+Not done yet; this is the next slice after the cutover:
+- structured JSON log lines from the Rust side (level, route, author where
+  safe, game or session id, duration, log position; never tokens, keys,
+  codes or addresses);
+- our own spans or trace-id lines inside the hub;
+- OTLP export to an external backend, as a setting that is off unless set;
+- Analytics Engine counters wired into the admin server screen.
 
 ## What the Mac does afterwards
 

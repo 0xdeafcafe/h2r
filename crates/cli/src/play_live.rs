@@ -763,9 +763,10 @@ pub fn game_art(disc: &Path, dir: &Path) -> Option<live_server::art::GameArt> {
     let disc = match crate::live_art::Disc::scan(disc) {
         Ok(mut d) => {
             // Map pack maps `h2 import-mappack` installed get art too.
-            d.add_maps(crate::live_mappack::installed(
-                &content::store::default_data_root(),
-            ));
+            let data = content::store::default_data_root();
+            d.add_maps(crate::live_mappack::installed(&data));
+            // And the Halo 1 maps the import converted there.
+            d.add_halo1(crate::live_halo1::installed(&data));
             d
         }
         Err(e) => {

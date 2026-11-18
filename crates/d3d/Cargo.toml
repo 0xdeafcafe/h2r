@@ -14,6 +14,8 @@ runtime.workspace = true
 timeline = { path = "../timeline" }
 # NV2A program translation behind `nv2a::Nv2aShaders` (the ShaderProvider).
 shaders = { path = "../shaders" }
+# WGSL overrides, parameters and dumps, hot (src/nv2a_hot.rs, docs/graphics/hot-iteration.md).
+hot-render = { path = "../hot-render" }
 # Pipeline and program keys are persisted (d3d::pipeline_store).
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

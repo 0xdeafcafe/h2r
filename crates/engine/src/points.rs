@@ -262,7 +262,7 @@ points! { ALL;
     OPTIONS_QUEUE @ 0x0018_e790: [fn(options: eax) ret 0]; "docs/game/skulls.md";
     /// `render_frame_and_present`: renders the game views (or the fallback
     /// screen) and presents. Once a frame, from the main loop.
-    RENDER_FRAME @ 0x0022_3240: [opaque]; "docs/engine/engine-map.md";
+    RENDER_FRAME @ 0x0022_3240: [fn() ret 0]; "docs/engine/engine-map.md";
     /// `render_game_views`: builds the per-player view records and cameras,
     /// then calls `render_views`.
     RENDER_GAME_VIEWS @ 0x0022_34e0: [opaque]; "docs/engine/engine-map.md";
@@ -556,6 +556,20 @@ points! { ALL;
     /// aim-assist search `0x1a4900` (`0x1a49a1`) and the shot aim
     /// `0x1a4c00` (`0x1a4cbf`, from the barrel fire `0x104150`).
     AIM_ASSIST_PARAMS @ 0x001a_50a0: [fn(unit: ecx, out: esi, zoom: stack 0) -> al ret 4]; "docs/game/aim-assist.md";
+    /// The players screen's (`0x1e`) button event for a controller with no
+    /// profile: the screen pushed, the event record in ESI (`+4` the
+    /// controller, `+8` the button: 0 A, `0xc` Start). A or Start starts
+    /// the profile pick (`0x1905bf`). Called from the screen's handler
+    /// `0x252ad7`.
+    PLAYERS_SCREEN_UNJOINED @ 0x0025_2a67: [fn(screen: stack 0, event: esi) -> al ret 4]; "docs/game/bots.md";
+    /// Signs a profile into a local player slot: the slot index, the
+    /// 0x1e0-byte profile block it copies to the slot's `+0x18`, and the
+    /// profile file (-1 for none, so nothing is saved). Sets the slot's
+    /// `0x10` flag and builds the controls table (`0x190c34`).
+    PROFILE_SIGN_IN @ 0x0018_fb34: [fn(slot: stack 0, block: stack 1, file: stack 2) ret 12]; "docs/game/bots.md";
+    /// The sound frame service, once a frame after the render: among
+    /// other things, one listener per mapped local user (`0x125c93`).
+    SOUND_UPDATE @ 0x0012_5b40: [fn() ret 0]; "docs/engine/engine-map.md";
 }
 
 globals! { GLOBALS;
@@ -592,6 +606,9 @@ globals! { GLOBALS;
     SQUAD_SESSION @ 0x0052_7364; "docs/live/live-custom-games.md";
     /// The base address of the game-state block (`0x3fe000` bytes).
     GAME_STATE_BASE @ 0x004e_6080; "docs/runtime/checkpoints.md";
+    /// Pointer to the players globals: the local player count (`i16`) at
+    /// `+8`, the four local users' player datums at `+0xc` (-1 for none).
+    PLAYER_GLOBALS @ 0x004e_8c20; "docs/game/bots.md";
 }
 
 /// The point at `base`, if the table names one.

@@ -65,6 +65,7 @@ goals, the two-stage plan, the crate table and milestones.
 - [occlusion-culling.md](graphics/occlusion-culling.md): how a view's objects are chosen, the per-object skip point, and Hi-Z occlusion culling against the previous frame's depth (`impl.render.occlusion`)
 - [pipelined-render.md](graphics/pipelined-render.md): the render front-end one frame behind the simulation on its own thread: design, and the `render-census` that decides it
 - [layer-draw.md](graphics/layer-draw.md): the layer draw and its entry loop, read and ported, with the `render-timing` breakdown
+- [hot-iteration.md](graphics/hot-iteration.md): live tag edits (`edit.*`) and hot WGSL overrides, parameters and toggles for the host renderer (`render.*`), without a rebuild or restart
 - [high-resolution.md](graphics/high-resolution.md): 4K and other internal resolutions (`H2_RENDER_SCALE`, the Resolution row); phases 1 and 2 built
 - [e3-lighting.md](graphics/e3-lighting.md): design for E3 2003-style stencil shadows and per-pixel lighting; phases 1 and 3 built (`H2_LIGHTING`, the Lighting row: sharper one-tap shadow maps at the render scale)
 - [pstencil.md](graphics/pstencil.md): the Digsite E3 tag set's lights (study copies, never committed), corrections to earlier readings of them, and why shadows stay shadow maps rather than stencil volumes
@@ -76,7 +77,7 @@ goals, the two-stage plan, the crate table and milestones.
 - [dsound.md](audio/dsound.md): the guest-facing DirectSound shim (`crates/dsound`): call sites, buffers, streams, audio stats
 - [wma.md](audio/wma.md): ASF demuxing and native WMAv2 decoding (`crates/asf`, `crates/wma`)
 - [playstation-audio.md](audio/playstation-audio.md): DualSense/DS4 speaker routing, mute button and microphone design
-- [bink-hle.md](audio/bink-hle.md): the Bink player replacement (`crates/bink-hle`): skip mode, playback design
+- [bink-hle.md](audio/bink-hle.md): the Bink player replacement (`crates/bink-hle`): playback of installed movies with sound, skip mode
 - [movies.md](audio/movies.md): optional Bink movie conversion with your own ffmpeg (`h2 movies`)
 
 ## Performance (`perf/`)
@@ -141,6 +142,7 @@ goals, the two-stage plan, the crate table and milestones.
 - [maps.md](game/maps.md): new, edited, patched and shared maps: packages, patches, `MapId`; foundation built
 - [campaigns.md](game/campaigns.md): design for more than one campaign, starting with Halo 1's levels in the Halo 2 engine; the converter is built for multiplayer maps only
 - [health.md](game/health.md): Halo 1's health model on Halo 2's engine: no body regeneration, health packs, a health meter (`H2_HEALTH_MODEL`; the map-load switch for Halo 1 maps is not wired yet)
+- [bots.md](game/bots.md): design for multiplayer bots (Clankers): one brain feeding controller input, local slots then phantom peers, the Clankers Game Setup page, Clankermatch, and the bot roster interface with the server
 - [multiple-campaigns.md](game/multiple-campaigns.md): how 1.0's menus list campaign levels and keep progress, and the campaign picker and per-campaign progress built on them
 - [h1-multiplayer.md](game/h1-multiplayer.md): Halo 1's 13 disc multiplayer maps converted onto Halo 2 base maps (`h2 h1 convert`): collision, structure BSP, MOPP, placements, packages with variants; the Halo 1 sandbox and map list are not built
 - [map-pack.md](game/map-pack.md): the Multiplayer Map Pack disc, `h2 import-mappack` and how 1.0 lists its maps

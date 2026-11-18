@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, Weak};
 use gfx::texture::{DecodedTexture, TextureDesc};
 use gfx::{Clear, D3DFormat};
 
-use super::epilogue::Epilogue;
+use super::epilogue::{Epilogue, Position, position};
 use super::model::{FrameModel, Kind, Substituted, Tuning, match_draws, substitute};
 use super::pacing::{Rate, Schedule, alpha, blendable, defer};
 use super::reproject::{self, Screen};
@@ -76,6 +76,20 @@ pub struct InterpStats {
     /// Of those: draws that read something the replay could not keep (a
     /// render target it could not copy, a surface copied in).
     pub unsure_unpinned: u64,
+    /// Frames held because there was nothing to blend: the sum of the four
+    /// below.
+    pub unpaired: u64,
+    /// Of those: no previous frame close enough to blend from (the first
+    /// frame, or one after a gap: a load, a pause, a hitch).
+    pub unpaired_gap: u64,
+    /// Of those: no camera (no perspective block that two draws compute
+    /// their position from: a 2D menu, a loading screen).
+    pub unpaired_camera: u64,
+    /// Of those: the views are not the previous frame's (a split-screen
+    /// change); for E1, not one view with a world before the overlay.
+    pub unpaired_views: u64,
+    /// Of those: a pixel count was open at the present.
+    pub unpaired_counting: u64,
     /// In-between frames dropped (and guest frames shown as drawn) because
     /// the GPU had not finished the last made frame.
     pub dropped: u64,
@@ -109,6 +123,15 @@ impl InterpStats {
                     Unsure::Unpinned => self.unsure_unpinned += 1,
                 }
             }
+            Hold::Unpaired(u) => {
+                self.unpaired += 1;
+                match u {
+                    Unpaired::Gap => self.unpaired_gap += 1,
+                    Unpaired::Camera => self.unpaired_camera += 1,
+                    Unpaired::Views => self.unpaired_views += 1,
+                    Unpaired::Counting => self.unpaired_counting += 1,
+                }
+            }
             Hold::SizeMismatch(m) => {
                 self.size_mismatch += 1;
                 match m {
@@ -134,7 +157,7 @@ impl std::fmt::Display for InterpStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "frames {} blended {} held {} replays {} substituted draws {} snapped {} deferred {} size_mismatch {} (extent {} mapping {} screen {} overlay {}) unsure {} (camera {} unpinned {}) dropped {}",
+            "frames {} blended {} held {} replays {} substituted draws {} snapped {} deferred {} size_mismatch {} (extent {} mapping {} screen {} overlay {}) unsure {} (camera {} unpinned {}) unpaired {} (gap {} camera {} views {} counting {}) dropped {}",
             self.frames,
             self.blended_frames,
             self.held_frames,
@@ -150,6 +173,11 @@ impl std::fmt::Display for InterpStats {
             self.unsure,
             self.unsure_camera,
             self.unsure_unpinned,
+            self.unpaired,
+            self.unpaired_gap,
+            self.unpaired_camera,
+            self.unpaired_views,
+            self.unpaired_counting,
             self.dropped
         )?;
         if self.replay_frames > 0 {
@@ -255,6 +283,17 @@ enum Hold {
     /// It would not land where the guest's frame does
     /// ([`InterpStats::size_mismatch`]).
     SizeMismatch(Mismatch),
+    /// There is nothing to blend ([`InterpStats::unpaired`]).
+    Unpaired(Unpaired),
+}
+
+/// Why a frame is [`Hold::Unpaired`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Unpaired {
+    Gap,
+    Camera,
+    Views,
+    Counting,
 }
 
 /// Why a frame is [`Hold::Unsure`].
@@ -299,9 +338,13 @@ fn world_screen<B: Backend>(
             _ => None,
         })
         .collect();
-    let blocks = |k: usize| model.draws[k].blocks.iter().map(|b| b.kind);
+    // The screen mapping is the first draw's the camera places.
     let first = (0..draws.len())
-        .find(|&k| blocks(k).any(|b| matches!(b, Kind::Camera)))
+        .find(|&k| {
+            model.draws[k]
+                .position_block()
+                .is_some_and(|b| b.kind == Kind::Camera)
+        })
         .ok_or(Mismatch::Mapping)?;
     let e = epilogues[first].as_ref().ok_or(Mismatch::Mapping)?;
     let screen = Screen::of(draws[first].1, e);
@@ -317,18 +360,23 @@ fn world_screen<B: Backend>(
         }
     }
     for (k, &(i, d)) in draws.iter().enumerate() {
+        let m = &model.draws[k];
         if i >= world_end {
-            if blocks(k).any(|b| matches!(b, Kind::Camera | Kind::World(_))) {
+            if m.placed_by_camera() {
                 return Err(Mismatch::Overlay);
             }
             continue;
         }
-        let perspective = blocks(k).any(|b| matches!(b, Kind::Camera | Kind::World(_)))
-            || blocks(k).any(|b| matches!(b, Kind::Local(p) if p.centred()));
+        // Only the block the program puts its vertices through says where
+        // they go: the rest of its constants may hold anything.
+        let perspective = m.position_block().is_some_and(|b| match b.kind {
+            Kind::Camera | Kind::World(_) => true,
+            Kind::Local(p) => p.centred(),
+            Kind::Node(_) | Kind::Eye => false,
+        });
         if d.layout.pretransformed
             || matches!(d.shader.vertex, VertexProcessing::FixedFunction { .. })
             || !perspective
-            || blocks(k).any(|b| matches!(b, Kind::Local(p) if !p.centred()))
         {
             return Err(Mismatch::Screen);
         }
@@ -483,9 +531,10 @@ pub struct InterpBackend<B: Backend> {
     /// The frame being recorded read something the replay cannot keep: a
     /// render target it could not copy, or a surface copied in.
     unpinned: bool,
-    /// E1: each vertex program's viewport transform, as read from its
-    /// microcode ([`Epilogue::of`]; `None`: not one E1 can follow).
-    epilogues: HashMap<Microcode, Option<Epilogue>>,
+    /// Each vertex program, as read from its microcode once: its viewport
+    /// transform ([`Epilogue::of`]; `None`: not one E1 can follow) and the
+    /// block its clip position comes from ([`position`]).
+    programs: HashMap<Microcode, (Option<Epilogue>, Position)>,
     /// Whether the GPU has finished the last made frame.
     fence: Option<Box<dyn Fn() -> bool + Send>>,
 }
@@ -521,7 +570,7 @@ impl<B: Backend> InterpBackend<B> {
             live: Vec::new(),
             snaps: Vec::new(),
             unpinned: false,
-            epilogues: HashMap::new(),
+            programs: HashMap::new(),
             fence: None,
         }
     }
@@ -639,15 +688,15 @@ impl<B: Backend> InterpBackend<B> {
         self.live.push((Arc::downgrade(t), s));
     }
 
-    /// The viewport transform `d`'s vertex program applies, if E1 can
-    /// follow it (read once per program).
-    fn epilogue(&mut self, d: &ResolvedDraw) -> Option<Epilogue> {
+    /// `d`'s vertex program's viewport transform, if E1 can follow it, and
+    /// what its clip position comes from.
+    fn program(&mut self, d: &ResolvedDraw) -> (Option<Epilogue>, Position) {
         match &d.shader.vertex {
             VertexProcessing::Program { microcode, .. } => *self
-                .epilogues
+                .programs
                 .entry(microcode.clone())
-                .or_insert_with(|| Epilogue::of(microcode)),
-            VertexProcessing::FixedFunction { .. } => None,
+                .or_insert_with(|| (Epilogue::of(microcode), position(microcode))),
+            VertexProcessing::FixedFunction { .. } => (None, Position::Unknown),
         }
     }
 
@@ -898,29 +947,38 @@ impl<B: Backend> InterpBackend<B> {
         if !self.shown.contains(&surface) {
             self.shown.push(surface);
         }
-        let model = {
-            let draws: Vec<&ResolvedDraw> = ops
-                .iter()
-                .filter_map(|o| match o {
-                    Op::Draw { draw, .. } => Some(&**draw),
-                    _ => None,
-                })
-                .collect();
-            FrameModel::build(&draws)
-        };
+        let draws: Vec<&ResolvedDraw> = ops
+            .iter()
+            .filter_map(|o| match o {
+                Op::Draw { draw, .. } => Some(&**draw),
+                _ => None,
+            })
+            .collect();
+        let programs: Vec<(Option<Epilogue>, Position)> =
+            draws.iter().map(|d| self.program(d)).collect();
+        let positions: Vec<Position> = programs.iter().map(|p| p.1).collect();
+        let model = FrameModel::build(&draws, &positions);
+        drop(draws);
         // The pair to blend: only consecutive frames close together, with
         // the same views (a split-screen change, a load or a pause starts
         // over).
-        let keep = self.cur.take().filter(|c| {
-            blendable(c.at, at)
-                && !model.cameras.is_empty()
-                && c.model.cameras.len() == model.cameras.len()
-                && c.model
-                    .cameras
-                    .iter()
-                    .zip(&model.cameras)
-                    .all(|(a, b)| a.view == b.view)
-        });
+        let paired = match &self.cur {
+            Some(c) if !blendable(c.at, at) => Err(Unpaired::Gap),
+            None => Err(Unpaired::Gap),
+            Some(_) if model.cameras.is_empty() => Err(Unpaired::Camera),
+            Some(c)
+                if c.model.cameras.len() != model.cameras.len()
+                    || c.model
+                        .cameras
+                        .iter()
+                        .zip(&model.cameras)
+                        .any(|(a, b)| a.view != b.view) =>
+            {
+                Err(Unpaired::Views)
+            }
+            Some(_) => Ok(()),
+        };
+        let keep = self.cur.take().filter(|_| paired.is_ok());
         let matches = keep
             .as_ref()
             .map(|p| match_draws(&p.model, &model))
@@ -929,16 +987,17 @@ impl<B: Backend> InterpBackend<B> {
         // viewport transform, and the screen mapping the warp goes through.
         let overlay = reproject::overlay_start(&model);
         let reproject = self.mode != Mode::Replay;
-        let mut epilogues = Vec::new();
+        let epilogues: Vec<Option<Epilogue>> = if reproject {
+            programs.iter().map(|p| p.0).collect()
+        } else {
+            Vec::new()
+        };
         let mut world_end = ops.len();
         let mut k = 0;
         for (i, o) in ops.iter().enumerate() {
-            if let Op::Draw { draw, .. } = o {
+            if let Op::Draw { .. } = o {
                 if k == overlay && world_end == ops.len() {
                     world_end = i;
-                }
-                if reproject {
-                    epilogues.push(self.epilogue(draw));
                 }
                 k += 1;
             }
@@ -979,16 +1038,21 @@ impl<B: Backend> InterpBackend<B> {
         st.frames += 1;
         drop(st);
         let mode = self.mode;
-        let mut blend = self.prev.is_some()
-            && !self.counting
-            && self.cur.as_ref().is_some_and(|c| {
-                c.model.has_matrices()
-                    && match mode {
-                        Mode::Replay => true,
-                        // E1 is for a single gameplay view with a world.
-                        Mode::Reproject { .. } => c.model.cameras.len() == 1 && c.world_end > 0,
-                    }
-            });
+        let c = self.cur.as_ref().expect("set above");
+        let unpaired = match paired {
+            Err(u) => Some(u),
+            Ok(()) if self.counting => Some(Unpaired::Counting),
+            Ok(()) if !c.model.has_matrices() => Some(Unpaired::Camera),
+            // E1 is for a single gameplay view with a world.
+            Ok(()) if mode != Mode::Replay && (c.model.cameras.len() != 1 || c.world_end == 0) => {
+                Some(Unpaired::Views)
+            }
+            Ok(()) => None,
+        };
+        let mut blend = unpaired.is_none();
+        if let Some(u) = unpaired {
+            self.stats.lock().unwrap().held(Hold::Unpaired(u));
+        }
         if blend {
             let mut st = self.stats.lock().unwrap();
             match hold {

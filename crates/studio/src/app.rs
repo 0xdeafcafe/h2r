@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 
 pub(crate) mod convert;
 mod library;
+pub mod ui_screens;
+pub use ui_screens::{Pick, UiScreens};
 pub use convert::{Converter, Running, Written, base_for, explain, h1convert_convert};
 pub use h1convert::convert::Sandbox as ConvertSandbox;
 pub use library::{Compare, block_of, kind_of, markers as library_markers, tris as library_tris};
@@ -27,15 +29,24 @@ pub enum ToolKind {
     Scenario,
     Variants,
     Playlists,
+    /// Our native game screens, drawn and stepped offline
+    /// (docs/game/ui-builder.md).
+    UiScreens,
 }
 
 impl ToolKind {
-    pub const ALL: [ToolKind; 3] = [ToolKind::Scenario, ToolKind::Variants, ToolKind::Playlists];
+    pub const ALL: [ToolKind; 4] = [
+        ToolKind::Scenario,
+        ToolKind::Variants,
+        ToolKind::Playlists,
+        ToolKind::UiScreens,
+    ];
     pub fn title(self) -> &'static str {
         match self {
             ToolKind::Scenario => "Scenario",
             ToolKind::Variants => "Game variants",
             ToolKind::Playlists => "Playlists",
+            ToolKind::UiScreens => "UI Screens",
         }
     }
 }
@@ -106,6 +117,15 @@ pub enum Action {
     ImportVariantFile(PathBuf),
     /// The same, from pasted text.
     ImportVariantText(String),
+
+    // UI Screens.
+    /// Show a screen of ours in a state, or a retail screen.
+    UiPick(Pick),
+    /// A pad press on the screen shown.
+    UiPress(boot::ui_kit::input::Input),
+    /// Write the screen's PNG and JSON and the sheet into a folder (never
+    /// a Git checkout).
+    UiExport(PathBuf),
 
     // Playlists.
     /// Open a `multiplayer_hopper.dat` (either form).
@@ -237,6 +257,8 @@ pub struct App {
     converter: Converter,
     /// The sandbox "Convert to Halo 2" uses.
     pub convert_sandbox: ConvertSandbox,
+    /// The UI Screens tool.
+    pub ui_screens: UiScreens,
 }
 
 impl Default for App {
@@ -280,6 +302,7 @@ impl App {
             convert_error: None,
             converter: h1convert_convert,
             convert_sandbox: ConvertSandbox::Halo2,
+            ui_screens: UiScreens::default(),
         }
     }
 
@@ -317,6 +340,7 @@ impl App {
             ToolKind::Scenario => self.session.is_dirty(),
             ToolKind::Variants => self.variants.as_ref().is_some_and(|e| e.is_dirty()),
             ToolKind::Playlists => self.hoppers.is_dirty(),
+            ToolKind::UiScreens => false,
         }
     }
     /// The action waiting on the unsaved-changes prompt, if any.
@@ -337,6 +361,7 @@ impl App {
             ToolKind::Scenario => self.session.can_undo(),
             ToolKind::Variants => self.variants.as_ref().is_some_and(|e| e.can_undo()),
             ToolKind::Playlists => self.hoppers.can_undo(),
+            ToolKind::UiScreens => false,
         }
     }
     pub fn can_redo(&self) -> bool {
@@ -344,6 +369,7 @@ impl App {
             ToolKind::Scenario => self.session.can_redo(),
             ToolKind::Variants => self.variants.as_ref().is_some_and(|e| e.can_redo()),
             ToolKind::Playlists => self.hoppers.can_redo(),
+            ToolKind::UiScreens => false,
         }
     }
     pub fn should_quit(&self) -> bool {
@@ -373,6 +399,10 @@ impl App {
                     .and_then(|p| p.file_name())
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "untitled playlists".to_owned())
+            }),
+            ToolKind::UiScreens => self.ui_screens.pick.as_ref().map(|p| match p {
+                Pick::Native { screen, state } => format!("{screen} / {state}"),
+                Pick::Retail(tag) => tag.clone(),
             }),
         };
         match what {
@@ -443,11 +473,13 @@ impl App {
                 ToolKind::Scenario => self.error("save the map with Save as..."),
                 ToolKind::Variants => self.run(Action::SaveVariant),
                 ToolKind::Playlists => self.run(Action::SaveHopper),
+                ToolKind::UiScreens => {}
             },
             Answer::SaveAs(path) => match tool {
                 ToolKind::Scenario => self.run(Action::SaveMapAs(path)),
                 ToolKind::Playlists => self.run(Action::SaveHopperAs(path)),
                 ToolKind::Variants => self.run(Action::SaveVariant),
+                ToolKind::UiScreens => {}
             },
         }
         if self.tool_dirty(tool) {
@@ -472,6 +504,7 @@ impl App {
                 }
             }
             ToolKind::Playlists => self.hoppers.close(),
+            ToolKind::UiScreens => {}
         }
     }
 
@@ -545,6 +578,25 @@ impl App {
             Action::SetAllowGrowth(allow) => self.session.set_allow_growth(allow),
             Action::SetTool(tool) => self.set_tool(tool),
             Action::Quit => self.quit = true,
+            Action::UiPick(pick) => {
+                self.sync_ui_disc();
+                if let Err(e) = self.ui_screens.select(pick) {
+                    self.error(format!("{e:#}"));
+                }
+            }
+            Action::UiPress(input) => {
+                if let Some(line) = self.ui_screens.press(input) {
+                    self.info(line);
+                }
+            }
+            Action::UiExport(dir) => match self.ui_screens.export(&dir) {
+                Ok(files) => self.info(format!(
+                    "wrote {} files to {}",
+                    files.len(),
+                    dir.display()
+                )),
+                Err(e) => self.error(format!("{e:#}")),
+            },
             a @ (Action::OpenVariant(_)
             | Action::NewVariant(_)
             | Action::CopyBuiltin(_)
@@ -585,6 +637,7 @@ impl App {
                     self.hoppers.redo()
                 }
             }
+            ToolKind::UiScreens => false,
         };
         match (done, undo) {
             (false, true) => self.info("nothing to undo"),
@@ -602,7 +655,18 @@ impl App {
             ToolKind::Scenario => {}
             ToolKind::Variants => self.ensure_variants(),
             ToolKind::Playlists => self.refresh_playlist_sources(),
+            ToolKind::UiScreens => self.sync_ui_disc(),
         }
+    }
+
+    /// The UI Screens tool draws from the open source when it is a disc
+    /// image, else from the synthetic source.
+    pub fn sync_ui_disc(&mut self) {
+        let disc = match &self.source {
+            Some(MapSource::Disc(_)) => self.source.as_ref().map(|s| s.path().to_path_buf()),
+            _ => None,
+        };
+        self.ui_screens.set_disc(disc.as_deref());
     }
 
     /// Build the variant editor for the source when there is none, or the
@@ -799,6 +863,7 @@ impl App {
                 match self.tool {
                     ToolKind::Variants => self.ensure_variants(),
                     ToolKind::Playlists => self.refresh_playlist_sources(),
+                    ToolKind::UiScreens => self.sync_ui_disc(),
                     ToolKind::Scenario => {}
                 }
             }

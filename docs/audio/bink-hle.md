@@ -1,12 +1,24 @@
 # Bink HLE
 
-`crates/bink-hle` provides opt-in replacements for the Bink 1.x player that
-Halo 2 links statically (sections `BINK*`, `BINKDATA`). It has no Bink decoder;
-see [movies.md](movies.md) for the optional install-time MOV transcode.
-The boot runner registers it in skip mode (`RunOpts::bink`, off with
-`h2 run --no-bink`); the movie frame source below is not installed by any
-host yet.
-Campaign scenes rendered by the engine are separate from disc Bink files.
+`crates/bink-hle` replaces the Bink 1.x player that Halo 2 links statically
+(sections `BINK*`, `BINKDATA`). It has no Bink decoder; see
+[movies.md](movies.md) for the optional install-time MOV transcode.
+Every host (`h2 run`, `h2 serve`, `h2 play`, the apps) makes the same choice
+at startup (`crates/boot/src/movies_glue.rs`): **playback** when `h2 movies`
+has installed transcodes that are current for the disc, **skip** otherwise,
+and logs it as one line:
+
+```text
+movies: playback (3 transcoded: attract_60, credits_60, intro_60)
+movies: skip (none installed in ~/Library/Application Support/h2recomp/movies; `h2 movies <disc.iso>` installs them)
+movies: skip (stale: intro_60 was transcoded from another disc (re-run `h2 movies`))
+movies: skip (off: --no-movies)
+```
+
+`--movies DIR` points `h2 run`/`h2 play` at another install, `--no-movies`
+forces skip mode, and `--no-bink` (run only) leaves the original player in
+place. Campaign scenes rendered by the engine are separate from disc Bink
+files.
 
 All addresses are virtual addresses in the retail XBE (XDK 5849). The
 identification was done by hand from `h2 disasm` plus a throwaway
@@ -31,8 +43,8 @@ manifest entry; `BinkDoFrame` obtains a host BGRA frame;
 `BinkCopyToBuffer` copies the retained picture into the guest's locked
 texture. `BinkWait`, `BinkNextFrame`, and `BinkClose` preserve pacing,
 position, looping, and lifetime. The engine wrapper remains compiled code.
-The table below gives all ten candidate override addresses. A future host
-must opt into this mode after D3D and movie audio integration are ready.
+The table below gives all ten override addresses. This is what playback
+mode does (option (a) is not pursued).
 Missing or corrupt transcodes make the source decline the open; the
 existing HLE's NULL return uses the wrapper's failed-open handling.
 
@@ -138,7 +150,7 @@ skippable movie, and the next tick runs the stop path.
 `register(&mut dispatch, &hle)` picks a mode by whether a `MovieSource` is
 configured.
 
-**Skip (no source, the default).** One override, on `0x156090`. It reads and
+**Skip (no source).** One override, on `0x156090`. It reads and
 logs the path and flags, writes `ST_BINK = 0`, `ST_MOVIE_OPEN = 0`,
 `ST_FINISHED = 1`, and returns with `ret 8`. `IsPlaying` is then false and
 every caller carries on at once. It does not touch D3D, Bink or audio, so it
@@ -148,9 +160,9 @@ leaves it alone.
 **Playback (a source is present).** Ten overrides, one per row in the table
 above. The wrapper runs as compiled. `BinkOpen` asks the source for the
 movie's stream and returns a fake HBINK; if it declines (movie not
-transcoded, unreadable, nonsense dimensions, no free handle) it returns 0,
-which the wrapper already handles as a failed open, so a missing file is a
-skip in this mode too.
+transcoded or not current, unreadable, nonsense dimensions, no free handle)
+it returns 0, which the wrapper already handles as a failed open, so a
+missing file is a skip in this mode too.
 
 - HBINK structs live in a one-page arena (8 handles of `0x40` bytes). On the
   first open the crate scans `bink_hle::HLE_RESERVED`
@@ -163,71 +175,120 @@ skip in this mode too.
   the range; `BinkHle::arena()` reports the page. Other HLE crates should take
   their pages from the same range.
 - `BinkDoFrame` decodes frame `FrameNum - 1` into a host BGRA buffer.
-  `BinkNextFrame` advances `FrameNum` and moves the due time one frame
-  on; past the last frame it wraps to frame 1, as the original does
-  (`0x3e2fb9..0x3e2fc8` calling the goto at `0x3e0820`), which is what loops
-  rely on. Non-looping callers stop at `FrameNum == Frames` first. `BinkCopyToBuffer` copies the *decoded* buffer, since
-  the engine calls it after `NextFrame`. Surface 3 (32-bit) and 5 write
-  BGRA; 4 and 6 swap red and blue; other types write nothing and return 1.
-  Rows and columns are clipped to the destination's pitch and height.
-- `BinkWait` returns 1 until the next frame is due, from an injectable
-  `Clock` (so tests do not sleep). A burst after a long stall is avoided by
-  resyncing when more than a frame behind.
-- `BinkSetSoundSystem`, `BinkSetMixBins`, `BinkSetMixBinVolumes` and
-  `BinkSetMemory` are accepted and do nothing.
+  `BinkNextFrame` advances `FrameNum`; past the last frame it wraps to frame
+  1, as the original does (`0x3e2fb9..0x3e2fc8` calling the goto at
+  `0x3e0820`), which is what loops rely on (the sound restarts with it).
+  Non-looping callers stop at `FrameNum == Frames` first: the service
+  (`0x15601c`) compares after the decode and blit, so the last picture of a
+  movie is never blitted, as with the original player.
+- `BinkCopyToBuffer` copies the *decoded* buffer, since the engine calls it
+  after `NextFrame`. Surface 3 (32-bit) and 5 write BGRA; 4 and 6 swap red
+  and blue; other types write nothing and return 1. Rows and columns are
+  clipped to the destination's pitch and height.
+- **Sound.** If the stream has a sound track (`MovieStream::audio_info`) and
+  the host set an output (`BinkHle::set_audio_out`), `BinkOpen` opens a
+  voice and the player keeps 500 ms of PCM queued on it, in 10 ms packets,
+  topping it up on every Wait, DoFrame and NextFrame. `MixerAudio` makes the
+  voice a stream in the `audio` crate's `Mixer`, the one the DirectSound HLE
+  renders (`dsound_glue::Audio::mixer`), so movie sound goes out through the
+  game's own output and device, at the track's rate (resampled by the
+  mixer). `BinkClose` drops the voice, which removes it from the mixer.
+  `BinkSetSoundSystem`, `BinkSetMixBins`, `BinkSetMixBinVolumes` and
+  `BinkSetMemory` are accepted and do nothing (the game's mix-bin volumes
+  for the movie are ignored).
+- **Pacing.** `BinkWait` returns 1 until frame `FrameNum` is due:
+  `(FrameNum - 1) * 1000 * den / num` ms of movie time. Movie time is the
+  sound's play position (frames the mixer has consumed) while it plays.
+  When the sound ends, or stops moving for `AUDIO_STALL_MS` (250 ms, an
+  output that is not rendering), the wall clock (`SystemClock`, injectable
+  as `Clock`) carries on from the last sound position; a movie without sound
+  runs on the wall clock from `BinkOpen`. The wall clock matters for the
+  service's spin (`0x155fc2..0x155fd0` calls `BinkWait` until it returns 0):
+  that loop always ends. `BinkNextFrame` moves to the frame now due when the
+  clock has run more than a frame ahead (dropping frames to stay with the
+  sound, as Bink does), never past the last frame.
 
 `BinkHle::requests()` lists every movie asked for and whether it was played.
 
-## Future host integration (not installed by any host yet)
+### What the wrapper does around the API
 
-Constructing the source opens no guest dispatch entries:
+Read from the retail image (2026-11-18), addresses only:
 
-```rust
-use std::sync::Arc;
-let source = bink_hle::TranscodedSource::new(
-    movies_dir,
-    Arc::new(bink_hle::AvFoundationDecoder),
-);
-// source.open("intro_60") returns a MovieStream, without a BinkHle or runtime.
-```
+- `MovieStart` (`0x156090`) calls `GlobalMemoryStatus` (`0x331336`, which
+  calls `MmQueryStatistics`, kernel ordinal 181) and stores the free memory
+  in KiB at `0x47ff80`; it is informational. The kernel implements 181 from
+  its own page accounting (it used to stop there).
+- It allocates the read buffer through the game's own cache allocator
+  (`0x12d2f0`, 4 MiB, or 20 MiB with start flag bit 8), protects it
+  write-combined (`0x2d15da`, `MmSetAddressProtect` with `0x404`), calls
+  `BinkSetSoundSystem` only when the DirectSound object at
+  `[0x51ebe4] + 0x2ab0` is set, then `BinkOpen(path, 0x8002000 or 0)`.
+- The texture comes from `0x23e340(width, height, 10, ...)`: Halo 2 bitmap
+  format 10 (X8R8G8B8) with the linear flag in its `bitm` header (`0x10`),
+  so `CopyToBuffer`'s rows are plain linear BGRA at the lock's pitch.
+- `0x1568d0` calls `D3D_BlockOnResource` (`0x3fad50`, overridden by
+  crates/d3d), the native lock helper `0x3fdbc0` (texture address and
+  pitch), then `BinkCopyToBuffer(h, bits, pitch, height, 0, 0, 3 | 0x80000000)`.
+  `CopyToBuffer` writes through `Guest::write_bytes`, so the runtime's write
+  watch marks the texture's physical pages and the D3D write barrier
+  (`d3d_glue::install_write_barrier`) re-uploads them at the next D3D entry,
+  as for any guest store; nothing D3D-specific is needed in this crate.
 
-`MovieSource` resolves names, `MovieDecoder` opens a container, and
-`MovieStream` provides metadata and zero-based BGRA frames. The macOS
-`AvFoundationDecoder` uses `AVAssetReaderTrackOutput`, with system H.264/HEVC
-decoders and `kCVPixelFormatType_32BGRA`. It counts compressed samples to
-avoid duration-rounding errors, gets the rational timebase from track/sample
-metadata, reads sequentially, and recreates the reader for backward requests
-(including loops). It rejects unsupported dimensions and unknown timing.
-Only one picture is copied at a time, accounting for native row padding.
-Failed and out-of-range requests leave the destination buffer untouched.
-`try_open` exposes diagnostics; the trait's `open` returns `None` on failure.
-The Objective-C bridge uses ARC and per-call autorelease pools; its retained
-reader has one Rust owner and is released on drop. Other targets can inject
-their own `MovieDecoder`. `SyntheticDecoder` remains available without codecs.
-See Apple's [track output documentation](https://developer.apple.com/documentation/avfoundation/avassetreadertrackoutput)
-and [sample output contract](https://developer.apple.com/documentation/avfoundation/avassetreaderoutput/copynextsamplebuffer%28%29).
+## Host integration
 
-The registration API below is what `boot` calls today, in skip mode
-(`crates/boot/src/lib.rs`, `if opts.bink`). Passing a `TranscodedSource`
-(the commented line) is the playback integration no host does yet:
+`boot::movies_glue::install` does the whole thing; `RunOpts::movies` is the
+directory (`boot::movies_glue::default_dir()`, the app data directory, unless
+`--movies DIR` or `--no-movies`):
 
 ```rust
-use std::sync::Arc;
-let hle = bink_hle::BinkHle::new(None); // skip mode
-// or: BinkHle::new(Some(Arc::new(bink_hle::TranscodedSource::new(movies_dir, decoder))))
-runtime.edit_dispatch(|d| {
-    let (mode, installed) = bink_hle::register(d, &hle);
-    // keep `installed` to call bink_hle::unregister(d, installed) later
-});
+let selection = boot::movies_glue::choose(opts.movies.as_deref(), &opts.disc, why_off);
+// movies::status::availability over the disc's .bik files (ISO or directory)
+let hle = boot::movies_glue::hle(&selection, ds.as_ref().map(dsound_glue::Audio::mixer));
+// BinkHle::new(selection.source(AvFoundationDecoder)) + set_audio_out(MixerAudio)
+runtime.edit_dispatch(|d| bink_hle::register(d, &hle));
+eprintln!("movies: {selection}");
 ```
 
+- A movie is current when the manifest has an entry for its disc path whose
+  source size matches the disc file and whose output passes `movies::locate`
+  (regular file, recorded size, output hash or install stamp). Source
+  hashes are not recomputed at boot (that is `h2 movies`' and the
+  installer's job); the size is the cheap tell for another disc. Movies that
+  are not current are left out of the source (`TranscodedSource::only`), so
+  only they skip.
+- A lockstep run (`H2_LOCKSTEP`, `H2_INPUT_RECORD`, `H2_INPUT_REPLAY`) is
+  forced to skip (`movies: skip (off: lockstep)`): movie pacing can follow
+  the wall clock, which a schedule comparison must not see.
+- Platforms without a decoder (`bink_hle::platform_decoder()`: AVFoundation
+  on macOS only) skip with `no movie decoder on this platform`.
 - Register after the generated handlers; overrides replace the generated
   original at that entry address, and nothing else is changed.
 - Entry addresses must be function starts in the lifted output. The ten Bink API
   entries and `0x156090` were checked against the analyzer's function-start
-  list (written before `h2 analyze` panicked at `analyze/src/lib.rs:971`).
-- Skip mode needs no mapped memory beyond the image. Playback also needs the
-  D3D texture and lock path (`0x23e340`, `0x3fdbc0`) to work, and room for one extra page.
+  list.
+
+### Decoders
+
+`MovieSource` resolves names, `MovieDecoder` opens a container, and
+`MovieStream` provides metadata, zero-based BGRA frames and the optional
+sound track. The macOS `AvFoundationDecoder` uses
+`AVAssetReaderTrackOutput`, with system H.264/HEVC decoders and
+`kCVPixelFormatType_32BGRA`. It counts compressed samples to avoid
+duration-rounding errors, gets the rational timebase from track/sample
+metadata, reads sequentially, and recreates the reader for backward requests
+(including loops). It rejects unsupported dimensions and unknown timing.
+Only one picture is copied at a time, accounting for native row padding.
+Failed and out-of-range requests leave the destination buffer untouched.
+The sound track is read on a second reader (so video rewinds leave it
+alone) as interleaved 16-bit stereo at the track's own rate; Core Audio
+decodes the AAC. A movie whose track cannot be read plays silent.
+`try_open` exposes diagnostics; the trait's `open` returns `None` on failure.
+The Objective-C bridge uses ARC and per-call autorelease pools; its retained
+readers have one Rust owner and are released on drop. Other targets can
+inject their own `MovieDecoder`. `SyntheticDecoder` (optionally with a
+synthetic sound track as long as the video) needs no codecs.
+See Apple's [track output documentation](https://developer.apple.com/documentation/avfoundation/avassetreadertrackoutput)
+and [sample output contract](https://developer.apple.com/documentation/avfoundation/avassetreaderoutput/copynextsamplebuffer%28%29).
 
 ## Tests
 
@@ -235,15 +296,46 @@ runtime.edit_dispatch(|d| {
 and macOS AVFoundation tests using media generated at test time by ffmpeg.
 The latter are ignored when ffmpeg is absent at build time; they need access
 to macOS's media decoder service. No runtime overrides are registered in the
-AVFoundation tests. The existing guest-state tests cover skip state and stack cleanup, skip with
-unmapped state and a null path, fall-through to NULL when the source declines
-or the manifest is missing, a full open/decode/copy/next/close cycle including
-NextFrame-before-Copy ordering and pacing, loop wrap (`[0,1,2,0]`), clipping
-and red/blue swap, handle-table limits and reuse, setup calls popping their
-arguments, restoring a displaced override, arena never adopting existing
-memory, and independently written address pins. `tests/loader_arena.rs`
-builds a tiny XBE, loads it with the runtime's loader, and checks the arena
-stays out of the loader's stack with sentinels in place.
+AVFoundation tests.
+
+The guest-state tests (`tests/synthetic.rs`) cover skip state and stack
+cleanup, skip with unmapped state and a null path, fall-through to NULL when
+the source declines or the manifest is missing, a full
+open/decode/copy/next/close cycle including NextFrame-before-Copy ordering
+and pacing, loop wrap (`[0,1,2,0]`), clipping and red/blue swap,
+handle-table limits and reuse, setup calls popping their arguments,
+restoring a displaced override, arena never adopting existing memory, and
+independently written address pins. On top of those, with the synthetic
+decoder and a Rust model of the wrapper's calls (start blit, Wait, decode
+and blit, the service's `FrameNum == Frames` and skip button, close):
+
+- `mode_is_picked_from_what_is_installed`: off, none installed, current,
+  no decoder, stale, and partly stale (only the current movie opens);
+- `frames_reach_the_locked_texture_and_mark_its_pages_written`: rows land
+  at the lock's pitch in a contiguous-window texture, padding untouched, and
+  the runtime's write watch reports the page D3D re-uploads;
+- `the_wrapper_sees_the_end_of_the_movie_and_closes_cleanly`: every picture
+  once, in order, the end seen through `FrameNum == Frames`, the voice
+  removed from the mixer, and the next movie starting clean;
+- `a_skip_mid_movie_closes_cleanly`: the voice is gone and the mixer silent
+  at once, late calls on the old handle do nothing, and the handle is reused
+  from frame 1 and the start of the sound;
+- `sound_plays_at_the_movie_rate_through_the_mixer_and_paces_the_video`:
+  1 s of 48 kHz mixer output consumes 44100 (less one 10 ms packet) frames
+  of the 44.1 kHz track, the output is the track, the video clock follows
+  the sound with the wall clock frozen, NextFrame catches up, and a stalled
+  output hands over to the wall clock.
+
+`tests/avfoundation.rs` also reads a generated movie's AAC track
+(`generated_sound_track_reads_as_stereo_pcm_and_rewinds`): 44.1 kHz stereo,
+the right length, a tone, unaffected by video reads, and rewindable.
+`movies::status` has its own tests for none, current, partial and stale
+installs and extracted-disc listing, `boot::movies_glue` for off and none, and
+`kernel` for `MmQueryStatistics`.
+
+`tests/loader_arena.rs` builds a tiny XBE, loads it with the runtime's
+loader, and checks the arena stays out of the loader's stack with sentinels
+in place.
 
 `tests/xbe_pins.rs` is `#[ignore]`d. It checks the constants against the real
 retail image (ten Bink entries are called from the wrapper, `BIKi` inside
@@ -251,23 +343,23 @@ BinkOpen, the four `MovieStart` call sites, the `ST_*` state words in
 `IsPlaying` and the service function):
 `H2_XBE=/path/to/default.xbe cargo test -p bink-hle --test xbe_pins -- --ignored`.
 
-## What real playback still needs
+## Not yet proven in a running game
 
-1. Host installation wiring. Use `movies::install::install_iso` and configure
-   a `TranscodedSource` with `AvFoundationDecoder` only after installation.
-   No boot, CLI or runtime wiring is included here.
-2. Audio. The transcoded audio track is AAC in the MOV. The decoder should expose it
-   and the `audio` crate should play it, started at `BinkOpen` and stopped at
-   `BinkClose`, with the video clock slaved to it (today the video runs on the
-   wall clock). Volume and mixbin calls are ignored.
-3. The boot's D3D HLE must support the wrapper's texture: create a
-   `bitm`-style 640x480 32-bit texture (`0x23e340`), lock it
-   (`0x3fdbc0`) and draw the quad (`0x156960`). If the boot replaces D3D
-   wholesale, the better seam may be to override `0x1568d0` and `0x156960`
-   and hand frames straight to the gfx layer.
-4. Verification against a real boot: none of this has run in the full lifted
-   game yet. The skip path's effect on the menu is by reading the callers, not
-   by observation.
-5. Credits (`0x2ab8c0`) show `0x1564e0`'s remaining time on screen. In playback
-   mode it works from the HBINK; in skip mode the stub leaves it to the
-   widget's own handling of "no movie".
+Everything above is tested against synthetic guest state; none of it has
+run in the full lifted game. Until a live run:
+
+1. The texture path: `0x23e340` creating the X8R8G8B8 linear texture under
+   crates/d3d, the lock helper's pitch, and the quad draw (`0x156960`)
+   showing the re-uploaded texels.
+2. The wrapper's allocation (`0x12d2f0`, 4 or 20 MiB from the game's cache)
+   succeeding at the intro, main menu idle and credits.
+3. Sound level and latency: the movie voice plays at full volume with no
+   mix bins (the game's `BinkSetMixBinVolumes` is ignored) and the clock is
+   the mixer's consumption, which leads what is heard by the output's
+   queue (tens of ms).
+4. `H2_PIPELINE_RENDER=1`: the Bink overrides are not on the render
+   thread's allow list, and the stop path is reachable from the render
+   (`0x2c8a0`); [pipelined-render.md](../graphics/pipelined-render.md) says
+   to turn pipelining off while a movie plays. Pipelining is off by default.
+5. Credits (`0x2ab8c0`) show `0x1564e0`'s remaining time on screen; in
+   playback mode it works from the HBINK.

@@ -87,7 +87,7 @@ header built from the same file:
 | divss | 11.1 | 5.8 | 2.2 | 2.6x |
 
 ```sh
-RUSTC_WRAPPER= cargo test -p emit --test native_sse benchmark_sse_ops -- --ignored --nocapture
+cargo test -p emit --test native_sse benchmark_sse_ops -- --ignored --nocapture
 ```
 
 ## Evidence
@@ -130,11 +130,11 @@ native arithmetic, MXCSR stores, memory-fault exits and preserved state
 through lifted synthetic functions and the compiled generated C.
 
 ```sh
-RUSTC_WRAPPER= cargo test -p emit --test native_sse --test differential --test fast_copy --test perf
-H2SSE_TEST_ARCH=x86_64 RUSTC_WRAPPER= cargo test -p emit --test native_sse
-RUSTC_WRAPPER= cargo test -p emit --test native_sse live_synthetic_oracle_sweep -- --ignored --nocapture
-H2_SSE_NATIVE=0 RUSTC_WRAPPER= cargo test -p emit --test differential
-RUSTC_WRAPPER= cargo test -p boot the_stamp_records_the_effective_fast_path_defaults
+cargo test -p emit --test native_sse --test differential --test fast_copy --test perf
+H2SSE_TEST_ARCH=x86_64 cargo test -p emit --test native_sse
+cargo test -p emit --test native_sse live_synthetic_oracle_sweep -- --ignored --nocapture
+H2_SSE_NATIVE=0 cargo test -p emit --test differential
+cargo test -p boot the_stamp_records_the_effective_fast_path_defaults
 ```
 
 Use a private seeded target in scratch as required by the lane rules.

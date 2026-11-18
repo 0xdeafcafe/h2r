@@ -87,6 +87,9 @@ use crate::pipeline_store::{PipelineStore, StoredPipeline, program_id};
 use crate::shader::{PreparedShader, ShaderProvider, VertexProcessing};
 use crate::state::slot;
 
+#[path = "nv2a_hot.rs"]
+mod hot;
+
 /// Shader ids this provider registers start here (the built-in is 0).
 pub const SHADER_ID_BASE: u32 = 0x4E56_0000;
 
@@ -180,6 +183,8 @@ pub struct Nv2aShaders {
     render_scale: u32,
     /// [`ShaderProvider::set_hard_shadows`].
     hard_shadows: bool,
+    /// WGSL overrides and dumps (`nv2a_hot.rs`).
+    hot: hot::HotState,
 }
 
 /// Recording to the pipeline cache.
@@ -223,6 +228,7 @@ impl Nv2aShaders {
             warm: None,
             render_scale: 1,
             hard_shadows: false,
+            hot: hot::HotState::new(hot_render::global()),
         }
     }
 
@@ -1055,6 +1061,7 @@ impl ShaderProvider for Nv2aShaders {
             self.open_cache(ctx, renderer, path);
         }
         self.install_warm(ctx, renderer, None);
+        self.hot_maintain(ctx, renderer);
         let Some(p) = self.persist.as_mut() else { return };
         for (key, count) in new_pipelines {
             if key.shader == gfx::renderer::SHADER_XYZRHW_DIFFUSE {

@@ -311,9 +311,9 @@ checksums, MXCSR and 102,400,000 accesses in both copy modes. It compares the
 per-element path against batching, not memcpy's intrinsic throughput. Run:
 
 ```sh
-RUSTC_WRAPPER= cargo test -p emit --test fast_copy guest_microbenchmarks -- --ignored --nocapture
-RUSTC_WRAPPER= cargo test --release -p d3d --lib dirty_query_benchmark -- --ignored --nocapture
-RUSTC_WRAPPER= cargo bench -p d3d --bench pushbuf
+cargo test -p emit --test fast_copy guest_microbenchmarks -- --ignored --nocapture
+cargo test --release -p d3d --lib dirty_query_benchmark -- --ignored --nocapture
+cargo bench -p d3d --bench pushbuf
 ```
 
 These are synthetic costs, not a measured 7–10 ms improvement to the 67.5 ms
@@ -380,8 +380,8 @@ about 5 ns for every access the frame makes, so a run with frame stats'
 access count settles it.
 
 ```sh
-RUSTC_WRAPPER= H2_ACCESS_COUNT=1 cargo test -p emit --release --test perf generated_runtime_benchmark -- --ignored --nocapture
-RUSTC_WRAPPER= cargo test -p emit --release --test perf image_gate_holds -- --ignored --nocapture
+H2_ACCESS_COUNT=1 cargo test -p emit --release --test perf generated_runtime_benchmark -- --ignored --nocapture
+cargo test -p emit --release --test perf image_gate_holds -- --ignored --nocapture
 ```
 
 Not done here, in the order the code suggests: the runner's transfer path

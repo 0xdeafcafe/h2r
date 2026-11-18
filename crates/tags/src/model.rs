@@ -107,21 +107,74 @@ impl RenderModelGeometry {
         id: TagId,
         raw: &mut dyn RawSource,
     ) -> Result<Self> {
+        Self::read_in(map, id, raw, None)
+    }
+
+    /// [`RenderModelGeometry::read`], with the map's whole metadata when the
+    /// caller has it read already. A model whose blocks lie outside its own
+    /// payload (a converted Halo 1 map places identical blocks once, shared
+    /// by several tags) is decoded against the whole metadata from the
+    /// tag's address, as `collision::Bsp::read` does; without `meta` it is
+    /// read for that.
+    pub fn read_in<R: Read + Seek>(
+        map: &mut Map<R>,
+        id: TagId,
+        raw: &mut dyn RawSource,
+        meta: Option<&crate::object::Metadata>,
+    ) -> Result<Self> {
         let tag = map.tag(id)?.clone();
         if tag.group.0 != *b"mode" {
             return Err(Error::UnsupportedGroup(tag.group));
         }
         let location = tag.location.ok_or(map::Error::NoTagData)?;
         let bytes = map.read_tag_bytes(id)?;
+        match Self::decode(map, id, &bytes, location, 0, raw) {
+            Err(e) if outside_payload(&e) => {
+                let read;
+                let meta = match meta {
+                    Some(m) => m,
+                    None => {
+                        read = crate::object::Metadata::read(map)?;
+                        &read
+                    }
+                };
+                let root = location
+                    .address
+                    .checked_sub(meta.base)
+                    .map(|o| o as usize)
+                    .filter(|&o| o < meta.bytes.len())
+                    .ok_or(Error::Invalid("render model outside the metadata"))?;
+                let whole = map::TagLocation {
+                    address: meta.base,
+                    size: u32::try_from(meta.bytes.len())
+                        .map_err(|_| Error::Invalid("metadata too large"))?,
+                    space: location.space,
+                };
+                Self::decode(map, id, &meta.bytes, whole, root, raw)
+            }
+            other => other,
+        }
+    }
+
+    /// Decodes the `mode` tag whose root is at offset `root` of `bytes`
+    /// (loaded at `location.address`).
+    fn decode<R: Read + Seek>(
+        map: &mut Map<R>,
+        id: TagId,
+        bytes: &[u8],
+        location: map::TagLocation,
+        root: usize,
+        raw: &mut dyn RawSource,
+    ) -> Result<Self> {
         let p = Payload {
-            bytes: &bytes,
+            bytes,
             location,
             mode: DecodeMode::Strict,
             warnings: Default::default(),
         };
-        let view = TagView::new(&bytes, location.address);
+        let view = TagView::new(bytes, location.address);
         let mut v = Validation::default();
-        let header: ModeGeometryHeader = p.record(0, &mut v)?;
+        let header: ModeGeometryHeader = p.record(root, &mut v)?;
         let strings = map.strings();
         let name = header.name.resolve(strings)?.map(str::to_owned);
         v.string_ids += 1;
@@ -236,6 +289,21 @@ impl RenderModelGeometry {
         })
     }
 
+}
+
+/// A block the tag points at lies outside the bytes it was decoded from, or
+/// its shared blocks, charged once per use, add up to more than its own
+/// payload (the decode budget): both mean blocks placed once for several
+/// tags.
+fn outside_payload(e: &Error) -> bool {
+    match e {
+        Error::Bounds { .. } | Error::Invalid("tag blocks exceed the payload budget") => true,
+        Error::Section { source, .. } | Error::Field { source, .. } => outside_payload(source),
+        _ => false,
+    }
+}
+
+impl RenderModelGeometry {
     /// The default draw set: for each region, its first permutation's
     /// highest-detail section. Duplicates are removed.
     pub fn default_sections(&self) -> Vec<usize> {

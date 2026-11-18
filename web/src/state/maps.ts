@@ -5,7 +5,7 @@
 
 import { createSignal } from "solid-js";
 import { live } from "./live";
-import { mapTitle } from "./gameart";
+import { isHalo1Map, mapTitle } from "./gameart";
 import { PackageCache, geometryChoice, mapGroupLabel, packageImageUrl, packageTitle, type MapSummary, type PackageLookup } from "../lib/maps";
 
 const [version, setVersion] = createSignal(0);
@@ -45,7 +45,11 @@ export function gameMapTitle(g: GameMap): string {
 /** The label of a group of games keyed by `mapGroupKey`: the package's
  *  name, else "<Base title> (modded)". Reactive. */
 export function gameMapGroupLabel(g: GameMap): string {
-  return mapGroupLabel(g.map_id, packageLookup(g.map_id), mapTitle(g.map));
+  // A Halo 1 map is served as a package of the import's, not a mod of a
+  // Halo 2 map: its own name, unless the package was published.
+  const lookup = packageLookup(g.map_id);
+  if (isHalo1Map(g.map) && lookup?.state !== "ok") return mapTitle(g.map);
+  return mapGroupLabel(g.map_id, lookup, mapTitle(g.map));
 }
 
 /** The package's own image URL, when it has one. Reactive. */
@@ -57,5 +61,7 @@ export function packageImage(mapId: string | null | undefined): string | null {
  *  map's glb would be wrong: the 3D view says so instead. The art manifest
  *  carries no geometry hash for the base, so any `geometry` counts. Reactive. */
 export function geometryChanged(g: GameMap): boolean {
+  // A Halo 1 map's geometry is drawn from the converted map itself.
+  if (isHalo1Map(g.map)) return false;
   return geometryChoice(packageLookup(g.map_id)) === "changed";
 }

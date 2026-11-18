@@ -1369,9 +1369,23 @@ fn reproject_reads_the_screen_mapping_from_the_program_not_d3ds_registers() {
     assert!(!held && st.size_mismatch == 0 && st.warps > 0, "{st}");
 }
 
+/// A draw of `c` whose program passes its vertices through (`mov oPos,
+/// v0`): already in screen space.
+fn pass_through(c: Block, mesh: u32) -> ResolvedDraw {
+    let mut d = draw(c, mesh, false);
+    let mov = Inst::mac(MacOp::Mov, Some(O::v(0)), None, None)
+        .to_out(false, OutReg::Pos, 0xF)
+        .last();
+    d.shader.vertex = VertexProcessing::Program {
+        start: 0,
+        microcode: mov.words().to_vec().into(),
+    };
+    d
+}
+
 #[test]
 fn reproject_holds_a_world_it_cannot_overscan() {
-    let cases: [(&str, Draws<'_>); 5] = [
+    let cases: [(&str, Draws<'_>); 6] = [
         // A pre-transformed (screen-space) draw among the level's: its
         // pixels are not overscanned, so the warp would zoom it.
         ("pre-transformed", &|cam| {
@@ -1386,19 +1400,39 @@ fn reproject_holds_a_world_it_cannot_overscan() {
             v.insert(1, draw(hud_block(), 53, false));
             v
         }),
-        // A program whose screen mapping is not a viewport transform the
-        // replay can read (it writes its position as it reads it).
+        // A world draw whose screen mapping is not a viewport transform the
+        // replay can read (the camera's rows straight to `oPos`, no
+        // epilogue).
         ("unknown program", &|cam| {
             let mut v = level(cam);
             let mut d = draw(world_block(cam), 51, false);
-            let mov = Inst::mac(MacOp::Mov, Some(O::v(0)), None, None)
-                .to_out(false, OutReg::Pos, 0xF)
-                .last();
+            let mut rows: Vec<Inst> =
+                (0..4)
+                    .map(|i| {
+                        Inst::mac(MacOp::Dp4, Some(O::v(0)), Some(O::c(CAM as u8 + i)), None)
+                            .to_out(false, OutReg::Pos, 8 >> i)
+                    })
+                    .collect();
+            let last = rows.pop().unwrap().last();
+            rows.push(last);
             d.shader.vertex = VertexProcessing::Program {
                 start: 0,
-                microcode: mov.words().to_vec().into(),
+                microcode: rows
+                    .iter()
+                    .flat_map(|i| i.words())
+                    .collect::<Vec<_>>()
+                    .into(),
             };
             v.push(d);
+            v
+        }),
+        // A full-target quad in pixels among the level's draws (a
+        // pass-through program, `mov oPos, v0`, with the camera in its
+        // constants all the same): a screen-space pass over the world so
+        // far, which the overscan would not shrink.
+        ("pass-through", &|cam| {
+            let mut v = level(cam);
+            v.insert(1, pass_through(world_block(cam), 54));
             v
         }),
         // Fixed-function vertices.
@@ -1578,4 +1612,248 @@ fn the_held_counters_say_why() {
         "{line}"
     );
     assert!(line.contains("unsure 0 (camera 0 unpinned 0)"), "{line}");
+}
+
+/// Where every draw of a gameplay frame carries a block that splits as a
+/// perspective but places nothing (packed parameters, a light's or a
+/// texture's matrix): shared by more draws than the camera.
+const PACKED: usize = 129;
+
+fn packed_matrix() -> Mat4 {
+    [
+        [250.0, 0.0, 300.0, 0.0],
+        [0.0, -250.0, 200.0, 0.0],
+        [0.0, 0.0, 1.0, -0.1],
+        [0.0, 0.0, 1.0, 0.0],
+    ]
+}
+
+fn packed(mut c: Block) -> Block {
+    write(&mut c, PACKED, Layout::Rows, 4, &packed_matrix());
+    c
+}
+
+/// A light's cameras for the shadow pass: an orthographic one and an
+/// off-centre perspective.
+fn lights() -> [Mat4; 2] {
+    let ortho: Mat4 = [
+        [0.05, 0.0, 0.0, 0.0],
+        [0.0, 0.05, 0.0, 0.0],
+        [0.0, 0.0, 0.01, 0.5],
+        [0.0, 0.0, 0.0, 1.0],
+    ];
+    let mut off = build::view_projection(0.9, [3.0, 4.0, 10.0], 0.3, -0.8);
+    // Shift the image off centre (a light frustum fitted to the view).
+    let w = off[3];
+    for (j, w) in w.iter().enumerate() {
+        off[0][j] += 0.4 * w;
+        off[1][j] -= 0.3 * w;
+    }
+    [ortho, off]
+}
+
+/// A gameplay frame as the game draws it: a shadow pass into a depth
+/// target with the light's cameras, the level with the centred camera
+/// (one draw sampling the shadow map), the first-person weapon with its
+/// own projection, then the HUD: pass-through quads carrying the frame's
+/// constants (the camera among them) and orthographic text. Every draw
+/// carries the packed block.
+fn gameplay_frame(r: &mut Rig, s: &Scene, shadow: (u32, u32)) {
+    let (sc, sd) = shadow;
+    r.b.clear(sc, Some(sd), Clear::default()).unwrap();
+    for (k, light) in lights().iter().enumerate() {
+        let mut c = packed(block());
+        write(&mut c, CAM, Layout::Rows, 4, light);
+        let mut d = draw(c, 300 + k as u32, false);
+        d.target.width = 256;
+        d.target.height = 256;
+        d.viewport.width = 256;
+        d.viewport.height = 256;
+        r.b.draw(sc, Some(sd), &d, [None; 4]).unwrap();
+    }
+    let tex = r.b.depth_level_texture(sd).unwrap().unwrap();
+    let (color, depth) = (r.color, r.depth);
+    r.b.clear(color, Some(depth), Clear::default()).unwrap();
+    let world = packed(world_block(&s.cam));
+    for mesh in [1, 2, 3, 4] {
+        let t = (mesh == 2).then_some(&tex);
+        r.b.draw(
+            color,
+            Some(depth),
+            &draw(world, mesh, false),
+            [t, None, None, None],
+        )
+        .unwrap();
+    }
+    let mut c = packed(block());
+    write(&mut c, CAM, Layout::Rows, 4, &s.weapon.expect("a weapon"));
+    r.b.draw(color, Some(depth), &draw(c, 900, false), [None; 4])
+        .unwrap();
+    for mesh in [1000, 1001, 1002] {
+        r.b.draw(color, None, &pass_through(world, mesh), [None; 4])
+            .unwrap();
+    }
+    for mesh in [1003, 1004] {
+        r.b.draw(
+            color,
+            None,
+            &draw(packed(hud_block()), mesh, false),
+            [None; 4],
+        )
+        .unwrap();
+    }
+    r.b.present(color, 4).unwrap();
+}
+
+#[test]
+fn a_gameplay_frame_blends() {
+    // The packed block looks like a perspective and is in more draws than
+    // the camera, and is not centred: it must not be taken for the camera,
+    // nor make the world draws look like screen space.
+    let p = Persp::split(&packed_matrix()).expect("a perspective");
+    assert!(!p.centred());
+    for mode in modes() {
+        let mut r = rig_with(60, mode);
+        r.b.inner_mut().sample_depth = true;
+        let sc =
+            r.b.create_surface(D3DFormat::A8R8G8B8, 256, 256, false)
+                .unwrap();
+        let sd =
+            r.b.create_surface(D3DFormat::D24S8, 256, 256, true)
+                .unwrap();
+        let (a, b) = turning();
+        let before = r.calls();
+        for i in 1..=4u64 {
+            r.at(i * F);
+            gameplay_frame(&mut r, if i % 2 == 1 { &a } else { &b }, (sc, sd));
+            r.b.idle_at(i * F + F / 2);
+        }
+        let st = *r.b.stats().lock().unwrap();
+        assert_eq!(
+            (st.blended_frames, st.unsure, st.size_mismatch),
+            (3, 0, 0),
+            "{mode:?}: {st}"
+        );
+        if mode != Mode::Replay {
+            assert!(!warps_since(&r, before).is_empty(), "{mode:?}: {st}");
+        }
+    }
+}
+
+/// A 2D front-end frame: a pre-transformed background and orthographic
+/// text, nothing in perspective.
+fn flat_frame(r: &mut Rig) {
+    let (color, depth) = (r.color, r.depth);
+    r.b.clear(color, Some(depth), Clear::default()).unwrap();
+    r.b.draw(color, None, &draw(block(), 7, true), [None; 4])
+        .unwrap();
+    for mesh in [1000, 1001] {
+        r.b.draw(color, None, &draw(hud_block(), mesh, false), [None; 4])
+            .unwrap();
+    }
+    r.b.present(color, 4).unwrap();
+}
+
+/// Split screen: two views, two level draws each.
+fn split_frame(r: &mut Rig, cam: Mat4) {
+    let (color, depth) = (r.color, r.depth);
+    r.b.clear(color, Some(depth), Clear::default()).unwrap();
+    for (i, cam) in [cam, camera(5.0, 1.0)].into_iter().enumerate() {
+        for mesh in [1, 2] {
+            let mut d = draw(world_block(&cam), 10 * i as u32 + mesh, false);
+            d.viewport.y = 240 * i as u32;
+            d.viewport.height = 240;
+            r.b.draw(color, Some(depth), &d, [None; 4]).unwrap();
+        }
+    }
+    r.b.present(color, 4).unwrap();
+}
+
+#[test]
+fn every_held_frame_says_why() {
+    type Frames<'a> = &'a dyn Fn(&mut Rig, u64);
+    let (a, b) = turning();
+    let gameplay = |r: &mut Rig, i: u64| {
+        r.b.inner_mut().sample_depth = true;
+        let sc =
+            r.b.create_surface(D3DFormat::A8R8G8B8, 256, 256, false)
+                .unwrap();
+        let sd =
+            r.b.create_surface(D3DFormat::D24S8, 256, 256, true)
+                .unwrap();
+        gameplay_frame(r, if i % 2 == 1 { &a } else { &b }, (sc, sd));
+    };
+    // (what, modes, frames, the reason line every held frame lands in)
+    let e1 = [
+        Mode::Reproject { ahead: false },
+        Mode::Reproject { ahead: true },
+    ];
+    let cases: [(&str, &[Mode], Frames<'_>, &str); 5] = [
+        // Menus in perspective into pixels: the camera is not centred.
+        (
+            "menu",
+            &modes(),
+            &|r, _| menu_frame(r),
+            "unsure 3 (camera 3 unpinned 0)",
+        ),
+        // A 2D menu: nothing in perspective.
+        (
+            "flat menu",
+            &modes(),
+            &|r, _| flat_frame(r),
+            "unpaired 5 (gap 1 camera 4 views 0 counting 0)",
+        ),
+        // A loading screen: its pre-transformed background is drawn
+        // before the particles, under them.
+        (
+            "loading screen",
+            &e1,
+            &|r, i| loading_frame(r, 0.05 * i as f64),
+            "size_mismatch 3 (extent 0 mapping 0 screen 3 overlay 0)",
+        ),
+        // Split screen, for E1.
+        (
+            "split screen",
+            &e1,
+            &|r, i| split_frame(r, camera(0.0, 0.05 * i as f64)),
+            "unpaired 5 (gap 1 camera 0 views 4 counting 0)",
+        ),
+        // Gameplay after a pause: the frame after the gap has nothing to
+        // blend from.
+        (
+            "gap",
+            &modes(),
+            &|r, i| gameplay(r, i),
+            "unpaired 3 (gap 2 camera 0 views 1 counting 0)",
+        ),
+    ];
+    for (what, modes, frames, why) in cases {
+        for &mode in modes {
+            let mut r = rig_with(60, mode);
+            for i in 1..=4u64 {
+                // The third frame comes after a pause.
+                let t = if what == "gap" && i >= 3 {
+                    (i + 10) * F
+                } else {
+                    i * F
+                };
+                r.at(t);
+                frames(&mut r, i);
+                r.b.idle_at(t + F / 2);
+            }
+            let st = *r.b.stats().lock().unwrap();
+            let line = st.to_string();
+            assert!(line.contains(why), "{what} {mode:?}: {line}");
+            assert_eq!(
+                st.held_frames,
+                st.unpaired + st.unsure + st.size_mismatch + st.dropped,
+                "{what} {mode:?}: every held frame is counted: {line}"
+            );
+            assert_eq!(
+                st.frames,
+                st.blended_frames + st.held_frames,
+                "{what} {mode:?}: {line}"
+            );
+        }
+    }
 }
