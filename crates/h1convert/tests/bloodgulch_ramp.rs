@@ -459,3 +459,238 @@ fn blue_base_scenery() {
         }
     }
 }
+
+/// What Havok's child shape for a structure key (`0x001edd00`: the
+/// surface's ring from its first edge, vertices inline) takes as its
+/// normal: `0x001edf50` crosses the first three vertices,
+/// `(v1 - v0) x (v2 - v0)`. Per surface: the angle between that and the
+/// surface's outward plane normal, in degrees (`None` when the three are
+/// collinear).
+fn shape_normal_angles(b: &impl Surfaces) -> Vec<Option<f32>> {
+    (0..b.surface_count())
+        .map(|i| {
+            let r = b.ring(i);
+            if r.len() < 3 {
+                return None;
+            }
+            let (u, v) = (sub(r[1], r[0]), sub(r[2], r[0]));
+            let c = [
+                u[1] * v[2] - u[2] * v[1],
+                u[2] * v[0] - u[0] * v[2],
+                u[0] * v[1] - u[1] * v[0],
+            ];
+            let len = (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt();
+            let scale = (u[0] * u[0] + u[1] * u[1] + u[2] * u[2]).sqrt()
+                * (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+            if len <= 1e-6 * scale || len == 0.0 {
+                return None;
+            }
+            let n = facing(b, i);
+            let d = (c[0] * n[0] + c[1] * n[1] + c[2] * n[2]) / len;
+            Some(d.clamp(-1.0, 1.0).acos().to_degrees())
+        })
+        .collect()
+}
+
+fn histogram(a: &[Option<f32>]) -> String {
+    let none = a.iter().filter(|x| x.is_none()).count();
+    let bins = [1.0f32, 5.0, 30.0, 90.0, 150.0, 175.0, 179.0, 180.1];
+    let mut lo = 0.0;
+    let mut out = format!("{} surfaces, {none} collinear;", a.len());
+    for hi in bins {
+        let n = a.iter().flatten().filter(|&&x| x >= lo && x < hi).count();
+        out += &format!(" [{lo},{hi}) {n}");
+        lo = hi;
+    }
+    out
+}
+
+/// Havok's normal of each surface shape against the plane: converted Blood
+/// Gulch against the retail Halo 2 controls in `$H2_MAPS` (default
+/// coagulation and lockout).
+#[test]
+#[ignore = "reads both discs ($H1_ISO, $H2_DISC)"]
+fn surface_shape_normals() {
+    let h1 = bloodgulch();
+    let r = h1.structure_bsps().unwrap();
+    let s = h1.structure_bsp(&r[0]).unwrap();
+    let bsp = s.collision_bsps().unwrap().remove(0);
+    let conv = round_trip(&bsp);
+    let a = shape_normal_angles(&conv);
+    println!("bloodgulch converted: {}", histogram(&a));
+    println!(
+        "bloodgulch Halo 1: {}",
+        histogram(&shape_normal_angles(&bsp))
+    );
+    // The base's surfaces (x 34..47, y -86..-72) that Havok would see wrong.
+    for (i, x) in a.iter().enumerate() {
+        let ring = conv.ring(i);
+        let c: [f32; 3] =
+            std::array::from_fn(|k| ring.iter().map(|p| p[k]).sum::<f32>() / ring.len() as f32);
+        if c[0] > 34.0 && c[0] < 47.0 && c[1] > -86.0 && c[1] < -72.0 && !x.is_some_and(|d| d < 5.0)
+        {
+            println!(
+                "  base surface {i}: angle {x:?} n {:?} ring {ring:?}",
+                &facing(&conv, i)[..3]
+            );
+        }
+    }
+    assert!(
+        a.iter().all(|x| x.is_some_and(|d| d < 1.0)),
+        "a surface shape's normal is off its plane"
+    );
+    let maps = std::env::var("H2_MAPS").unwrap_or_else(|_| "coagulation,lockout".into());
+    for (name, b) in h2_bsps(&maps) {
+        println!("retail {name}: {}", histogram(&shape_normal_angles(&b)));
+    }
+}
+
+fn h2_bsps(only: &str) -> Vec<(String, tags::collision::Bsp)> {
+    use map::{FourCC, Map};
+    let path = disc("H2_DISC", "halo2.iso");
+    let mut iso = xiso::Xiso::open(BufReader::new(File::open(&path).unwrap())).unwrap();
+    let mut out = Vec::new();
+    for e in iso.entries().unwrap() {
+        let Some(stem) = e
+            .path
+            .rsplit(['/', '\\'])
+            .next()
+            .and_then(|f| f.strip_suffix(".map"))
+        else {
+            continue;
+        };
+        if !only.split(',').any(|x| x == stem) {
+            continue;
+        }
+        let base = iso.partition_offset() + u64::from(e.sector) * xiso::SECTOR;
+        let mut m = Map::from_region(
+            BufReader::new(File::open(&path).unwrap()),
+            base,
+            e.size.into(),
+        )
+        .unwrap();
+        let bsps: Vec<_> = m
+            .tags()
+            .iter()
+            .filter(|t| t.group == FourCC(*b"sbsp") && t.location.is_some())
+            .map(|t| (t.id, t.location.unwrap().address))
+            .collect();
+        for (id, address) in bsps {
+            let b = m.read_tag_bytes(id).unwrap();
+            let u = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+            if u(0x14) != 1 {
+                continue;
+            }
+            let at = (u(0x18) - address) as usize;
+            if let Ok(c) = tags::collision::Bsp::decode_structure(&b, address, at) {
+                out.push((stem.to_owned(), c));
+            }
+        }
+    }
+    out
+}
+
+/// Every surface a vertical line meets, top down: (z, surface, outward
+/// normal z), by restarting the vector test 1 mm past each hit.
+fn column(b: &impl Surfaces, x: f32, y: f32) -> Vec<(f32, usize, f32)> {
+    let mut out = Vec::new();
+    let mut top = 10.0f32;
+    while top > -3.0 && out.len() < 16 {
+        let t = q::vector(b, [x, y, top], [x, y, -3.0]);
+        let Outcome::Hit(h) = t.outcome else { break };
+        let z = top + (-3.0 - top) * h.t;
+        out.push((z, h.surface, facing(b, h.surface)[2]));
+        top = z - 1e-3;
+    }
+    out
+}
+
+/// Cross sections through the +x ramp of the blue base: along x at the
+/// ramp's y, and along y at its middle.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO)"]
+fn blue_base_ramp_sections() {
+    let h1 = bloodgulch();
+    let r = h1.structure_bsps().unwrap();
+    let s = h1.structure_bsp(&r[0]).unwrap();
+    let bsp = s.collision_bsps().unwrap().remove(0);
+    for y in [-80.6f32, -80.1, -79.6, -79.1, -78.6] {
+        println!("y {y}");
+        for i in 0..=30 {
+            let x = 41.0 + 0.2 * i as f32;
+            let c: Vec<String> = column(&bsp, x, y)
+                .iter()
+                .map(|(z, s, n)| format!("{z:.2}({s},{n:.2})"))
+                .collect();
+            println!("  x {x:.1}: {}", c.join(" "));
+        }
+    }
+    // The outside ramp (y -79.1, x 45.2 up to 42.8, z 0.18 to 1.63) is one
+    // surface whose slope is under both games' steepest walkable ground:
+    // Halo 1's cyborg 45 degrees (cosine 0.7071 at bipd +0x4d0), Halo 2's
+    // Chief 50 degrees (cosine 0.6428 at bipd +0x2b8, which the converted
+    // cyborg holds as its role's word).
+    let ramp: Vec<_> = (0..=10)
+        .map(|i| {
+            column(&bsp, 43.0 + 0.2 * i as f32, -79.1)
+                .last()
+                .copied()
+                .unwrap()
+        })
+        .collect();
+    assert!(ramp.iter().all(|r| r.1 == ramp[0].1), "{ramp:?}");
+    let slope = ramp[0].2.acos().to_degrees();
+    println!("ramp surface {}: slope {slope:.1} degrees", ramp[0].1);
+    assert!(ramp[0].2 > 0.7071 && ramp[0].2 > 0.6428, "{slope}");
+}
+
+/// The character-physics words side by side: Halo 1's cyborg (`bipd`
+/// `+0x400..+0x4d0`) and the Halo 2 Chief (`bipd +0x264..+0x314`), as
+/// floats (and hex), to place Halo 1's ground words against Halo 2's.
+#[test]
+#[ignore = "reads both discs ($H1_ISO, $H2_DISC)"]
+fn character_physics_words() {
+    use map::{FourCC, Map};
+    let h1 = bloodgulch();
+    let t = h1
+        .tags()
+        .iter()
+        .filter(|t| {
+            [u32::from_be_bytes(*b"bipd"), u32::from_le_bytes(*b"bipd")].contains(&t.group.0)
+        })
+        .filter(|t| {
+            t.name == "characters\\cyborg_mp\\cyborg_mp" || t.name == "characters\\cyborg\\cyborg"
+        })
+        .max_by_key(|t| t.data.as_ref().map_or(0, |d| d.len()))
+        .unwrap()
+        .clone();
+    let b = h1.tag_data(&t).unwrap();
+    println!("Halo 1 {} ({:?})", t.name, t.group);
+    for o in (0x2f0..0x4f0).step_by(4) {
+        let w = u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+        println!("  h1 +{o:#x}: {:>12.6} {w:#010x}", f32::from_bits(w));
+    }
+    let path = disc("H2_DISC", "halo2.iso");
+    let mut iso = xiso::Xiso::open(BufReader::new(File::open(&path).unwrap())).unwrap();
+    let e = iso
+        .entries()
+        .unwrap()
+        .into_iter()
+        .find(|e| e.path.ends_with("coagulation.map"))
+        .unwrap();
+    let mut m = Map::from_reader(Cursor::new(iso.read(&e).unwrap())).unwrap();
+    let id = m
+        .tags()
+        .iter()
+        .find(|t| {
+            t.group == FourCC(*b"bipd")
+                && t.name.as_deref() == Some("objects\\characters\\masterchief\\masterchief")
+        })
+        .unwrap()
+        .id;
+    let b = m.read_tag_bytes(id).unwrap();
+    for o in (0x1c8..0x314).step_by(4) {
+        let w = u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+        println!("  h2 +{o:#x}: {:>12.6} {w:#010x}", f32::from_bits(w));
+    }
+}
