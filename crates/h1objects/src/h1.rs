@@ -469,6 +469,43 @@ pub struct Seat {
     pub marker: String,
     /// `0x84` the camera marker (`camera`, `camera rider`), empty for none.
     pub camera_marker: String,
+    /// `0xd0` the camera tracks (`0x1c` each, a `trak` reference at `+0`),
+    /// in order: on the warthog's driver the loose track, then the tight
+    /// one; none on the scorpion's riders. V: Blood Gulch's vehicles.
+    pub camera_tracks: Vec<TagId>,
+}
+
+/// A seat's camera tracks block (`0xd0`) and its element size.
+pub const SEAT_CAMERA_TRACKS: usize = 0xd0;
+pub const SEAT_CAMERA_TRACK_SIZE: usize = 0x1c;
+
+/// `trak`: a camera track. The root is `0x30` bytes: flags at `+0`, the
+/// control points at `+4` (`0x3c` each: position `+0`, orientation
+/// quaternion `+0xc` as i, j, k, w). V: Blood Gulch's five tracks hold
+/// nine points each, the orientations a pitch from -90 to +90 degrees.
+pub const TRAK_SIZE: usize = 0x30;
+pub const TRAK_POINT_SIZE: usize = 0x3c;
+
+/// A camera track ([`TRAK_SIZE`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CameraTrack {
+    pub flags: u32,
+    /// Each control point's position and orientation (i, j, k, w).
+    pub points: Vec<([f32; 3], [f32; 4])>,
+}
+
+impl CameraTrack {
+    pub fn read(map: &H1Map, tag: &Tag) -> Result<Self> {
+        let b = tag_bytes(map, tag, b"trak", TRAK_SIZE)?;
+        let points = elements(map, b, 4, TRAK_POINT_SIZE)?
+            .into_iter()
+            .map(|e| (vec3(e, 0), std::array::from_fn(|i| f32_at(e, 0xc + 4 * i))))
+            .collect();
+        Ok(Self {
+            flags: u32_at(b, 0),
+            points,
+        })
+    }
 }
 
 /// `bipd` or `vehi`: the object header, the seats and every reference in
@@ -522,13 +559,20 @@ impl Unit {
         }
         let seats = elements(map, b, UNIT_SEATS, SEAT_SIZE)?
             .into_iter()
-            .map(|e| Seat {
-                flags: u32_at(e, 0),
-                label: name32(e, 4),
-                marker: name32(e, 0x24),
-                camera_marker: name32(e, 0x84),
+            .map(|e| {
+                let camera_tracks = elements(map, e, SEAT_CAMERA_TRACKS, SEAT_CAMERA_TRACK_SIZE)?
+                    .into_iter()
+                    .filter_map(|t| reference(map, t, 0))
+                    .collect();
+                Ok(Seat {
+                    flags: u32_at(e, 0),
+                    label: name32(e, 4),
+                    marker: name32(e, 0x24),
+                    camera_marker: name32(e, 0x84),
+                    camera_tracks,
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
         let biped_words = if g == b"bipd" {
             crate::rebuild::BIPED_WORDS
                 .iter()
@@ -792,6 +836,11 @@ pub struct Physics {
     pub moments: [f32; 3],
     /// `0x68` powered mass points (`0x80`): counted only.
     pub powered_mass_points: u32,
+    /// Each powered mass point's flags (`+0x20`): bit 0
+    /// ([`POWERED_GROUND_FRICTION`]) on the warthog's and scorpion's
+    /// (wheels and treads), bit 6 on the ghost's (antigravity). V: Blood
+    /// Gulch's three vehicles.
+    pub powered_flags: Vec<u32>,
     /// `0x74`.
     pub mass_points: Vec<MassPoint>,
 }
@@ -806,6 +855,10 @@ impl Physics {
             gravity_scale: f32_at(b, 0x1c),
             moments: vec3(b, 0x50),
             powered_mass_points: Block::read(b, 0x68).map_or(0, |b| b.count),
+            powered_flags: elements(map, b, 0x68, 0x80)?
+                .into_iter()
+                .map(|p| u32_at(p, 0x20))
+                .collect(),
             mass_points: elements(map, b, 0x74, 0x80)?
                 .into_iter()
                 .map(|m| MassPoint {
@@ -821,6 +874,10 @@ impl Physics {
         })
     }
 }
+
+/// A powered mass point's ground friction flag ([`Physics::powered_flags`]):
+/// the point is a wheel or a tread that grips the ground.
+pub const POWERED_GROUND_FRICTION: u32 = 1;
 
 /// Any object tag this crate reads.
 #[derive(Clone, Debug, PartialEq)]

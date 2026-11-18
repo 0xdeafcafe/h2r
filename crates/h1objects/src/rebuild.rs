@@ -624,8 +624,40 @@ pub struct SeatNames {
     pub enter_marker: String,
     /// `string_60`, the camera marker, empty for none.
     pub camera_marker: String,
+    /// `block_74`, the seat's camera track: Halo 1's first ([`camera_track`],
+    /// set by the converter), `None` for none. Without one the engine falls
+    /// back to the globals' default unit track, whose points reach 3.9
+    /// above the camera marker and 3.7 behind it: on a vehicle the camera
+    /// sits far above the hull.
+    pub camera_track: Option<TagId>,
     /// Halo 1's seat flags ([`seat_flags`]).
     pub flags: u32,
+}
+
+/// `vehi` seat `+0x74`, the camera tracks (`tagref trak` each). V: one on
+/// the retail warthog's and scorpion's driver seats
+/// (`tests/vehicle_camera_disc.rs`); the warthog driver's camera marker
+/// (`+0x60`) is empty, so its track's points are from the origin.
+pub const SEAT_CAMERA_TRACKS: &str = "block_74";
+
+/// A Halo 2 camera track (`trak`) with Halo 1's control points: the
+/// same layout, position and orientation quaternion per point (V:
+/// Halo 2's `globals\default_unit_camera_track` holds Halo 1's default
+/// unit track's points value for value; `tests/vehicle_camera_disc.rs`).
+pub fn camera_track(t: &h1::CameraTrack) -> Result<Block> {
+    let d = def(b"trak")?;
+    let mut r = defs::default_record(d);
+    set(&mut r, "flags", Val::Int(t.flags.into()))?;
+    let pd = d.child("control_points").expect("trak control points");
+    let mut out = Vec::new();
+    for (position, orientation) in &t.points {
+        let mut x = defs::default_record(pd);
+        set(&mut x, "position", Val::floats(position))?;
+        set(&mut x, "orientation", Val::floats(orientation))?;
+        out.push(x);
+    }
+    set(&mut r, "control_points", Val::Block(out))?;
+    built(d, &r)
 }
 
 /// Halo 2's names for a Halo 1 seat on a model with `markers` (Halo 1's
@@ -655,6 +687,7 @@ pub fn seat_names(seat: &h1::Seat, markers: &[String]) -> SeatNames {
             String::new()
         },
         camera_marker: found(&seat.camera_marker),
+        camera_track: None,
         flags: seat.flags,
     }
 }
@@ -675,10 +708,20 @@ pub struct VehicleRole {
     pub seats: [Vec<(String, u32)>; 3],
     /// The high half of `vehicle_flags` most members hold.
     pub flags_high: u32,
+    /// [`VEHI_CONTROL`], the half after the vehicle type, most members
+    /// hold.
+    pub control: u16,
     /// The words of each friction (wheel and tread) point, `+0x2f0`: the
-    /// majority over every point of every member; `None` when fewer than
-    /// half the members have any (fliers, hover vehicles, turrets).
+    /// majority over every point of every member that does not steer
+    /// ([`FRICTION_STEERS`]; over every point when none do); `None` when
+    /// fewer than half the members have any (fliers, hover vehicles,
+    /// turrets).
     pub friction: Option<Vec<(String, u32)>>,
+    /// The same over the members' steering points (flag
+    /// [`FRICTION_STEERS`]); `None` when no member steers by its points
+    /// (V: the warthog's two front wheels steer; the role's other points
+    /// take [`Self::friction`]).
+    pub friction_steered: Option<Vec<(String, u32)>>,
     /// The same for the hover points, `+0x2e8`.
     pub hover: Option<Vec<(String, u32)>>,
     /// The engine gears, `+0x268`: the element count most members with
@@ -688,6 +731,14 @@ pub struct VehicleRole {
     /// half the members have gears.
     pub gears: Vec<Vec<(String, u32)>>,
 }
+
+/// `vehi +0x1f2`, the 16 bits after `vehicle_type`: how the driver's
+/// stick drives the vehicle. V: 2 on the retail scorpion, 0 on the
+/// warthog. Proved in a game run (2026-11-19, converted Blood Gulch): the
+/// converted scorpion, written with 0 through converter version 74 (the
+/// role took 4-byte spans only), crept at 0.05 world units a second with
+/// the stick held forward; set to 2 it drove at 2.5.
+pub const VEHI_CONTROL: &str = "unknown_1f2";
 
 /// `vehi +0x2f0`, the friction points (wheels and treads: V, the
 /// warthog's four hold `left_front_tire` .. `right_back_tire`, the
@@ -709,12 +760,25 @@ pub const FRICTION_REGION: &str = "string_44";
 pub const HOVER_MARKER: &str = "string_0";
 pub const HOVER_REGION: &str = "string_34";
 
+/// A friction point's flags (`+4`) and the bit its steering wheels hold.
+/// V: on the retail warthog the two front points hold `0x26` and the two
+/// back ones `0x32`: the front pair alone has bit 2, the back pair alone
+/// bit 4 (a hand-brake wheel's). Taken as one majority over all four, as
+/// through converter version 74, every converted wheel held the back
+/// pair's word and none steered.
+pub const FRICTION_FLAGS: &str = "unknown_4";
+pub const FRICTION_STEERS: u32 = 1 << 2;
+
 /// A Halo 1 powered mass point as a Halo 2 point: the marker the converted
 /// model gains for it and the region it belongs to (empty for none).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Point {
     pub marker: String,
     pub region: String,
+    /// Whether the point steers: it lies ahead of the powered points'
+    /// middle (the warthog's front tires). It takes the role's steering
+    /// words ([`VehicleRole::friction_steered`]) where the role has them.
+    pub steered: bool,
 }
 
 /// Per element of the block at `at` (element `e`) of every member: the
@@ -726,19 +790,35 @@ fn all_elements(
     at: usize,
     e: &StructDef,
 ) -> Result<Option<Vec<(String, u32)>>> {
+    all_elements_where(base, members, at, e, |_| true)
+}
+
+/// [`all_elements`] over the elements `keep` accepts; `None` too when it
+/// accepts none.
+fn all_elements_where(
+    base: &crate::base::Base,
+    members: &[(String, Vec<u8>)],
+    at: usize,
+    e: &StructDef,
+    keep: impl Fn(&[u8]) -> bool,
+) -> Result<Option<Vec<(String, u32)>>> {
     let mut spans = Vec::new();
     word_spans(e, "", 0, &mut spans);
     let mut t = Tally::new();
     let mut having = 0;
+    let mut kept = 0;
     for (_, bytes) in members {
         let mut i = 0;
         while let Some(x) = base.element(bytes, at, e.size as usize, i)? {
-            tally_words(&x, &spans, &mut t);
+            if keep(&x) {
+                tally_words(&x, &spans, &mut t);
+                kept += 1;
+            }
             i += 1;
         }
         having += usize::from(i > 0);
     }
-    Ok((2 * having >= members.len() && having > 0).then(|| majority(&t)))
+    Ok((2 * having >= members.len() && having > 0 && kept > 0).then(|| majority(&t)))
 }
 
 /// Every 4-byte field of `e` that holds a plain word or a raw pointer, as
@@ -792,6 +872,17 @@ pub fn vehicle_role(base: &crate::base::Base, vehicle_type: u16) -> Result<Optio
             tally_words(&x, &sspans, &mut ridden);
         }
     }
+    let control_at = field_offset(d, VEHI_CONTROL)? as usize;
+    let mut controls = std::collections::BTreeMap::<u16, usize>::new();
+    for (_, bytes) in &members {
+        *controls
+            .entry(u16::from_le_bytes([bytes[control_at], bytes[control_at + 1]]))
+            .or_default() += 1;
+    }
+    let control = controls
+        .iter()
+        .max_by_key(|(w, c)| (**c, std::cmp::Reverse(**w)))
+        .map_or(0, |(w, _)| *w);
     let flags_high = flags
         .iter()
         .max_by_key(|(w, c)| (**c, std::cmp::Reverse(**w)))
@@ -804,6 +895,8 @@ pub fn vehicle_role(base: &crate::base::Base, vehicle_type: u16) -> Result<Optio
         ))
     };
     let (fat, fdef) = block(VEHI_FRICTION)?;
+    let fflags_at = field_offset(fdef, FRICTION_FLAGS)? as usize;
+    let steers = |x: &[u8]| crate::base::u32_at(x, fflags_at) & FRICTION_STEERS != 0;
     let (hat, hdef) = block(VEHI_HOVER)?;
     let (gat, gdef) = block(VEHI_GEARS)?;
     // Gears: the count most members with gears hold, each element's
@@ -844,7 +937,12 @@ pub fn vehicle_role(base: &crate::base::Base, vehicle_type: u16) -> Result<Optio
         words,
         seats: seats.map(|t| majority(if t.is_empty() { &ridden } else { &t })),
         flags_high,
-        friction: all_elements(base, &members, fat, fdef)?,
+        control,
+        friction: match all_elements_where(base, &members, fat, fdef, |x| !steers(x))? {
+            Some(w) => Some(w),
+            None => all_elements(base, &members, fat, fdef)?,
+        },
+        friction_steered: all_elements_where(base, &members, fat, fdef, steers)?,
         hover: all_elements(base, &members, hat, hdef)?,
         gears,
     }))
@@ -1048,6 +1146,8 @@ pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
     )?;
     set(&mut r, "vehicle_type", Val::Enum(v.vehicle_type.into()))?;
     let high = v.role.map_or(0, |x| x.flags_high);
+    let control = v.role.map_or(0, |x| x.control);
+    set(&mut r, VEHI_CONTROL, Val::Bytes(control.to_le_bytes().to_vec()))?;
     set(
         &mut r,
         "vehicle_flags",
@@ -1126,6 +1226,12 @@ pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
         set(&mut e, "string_8", Val::text(&s.marker))?;
         set(&mut e, "string_c", Val::text(&s.enter_marker))?;
         set(&mut e, "string_60", Val::text(&s.camera_marker))?;
+        if let Some(t) = s.camera_track {
+            let td = seat_def.child(SEAT_CAMERA_TRACKS).expect("seat camera tracks");
+            let mut x = defs::default_record(td);
+            set(&mut x, "ref_0", Val::tag(FourCC(*b"trak"), t))?;
+            set(&mut e, SEAT_CAMERA_TRACKS, Val::Block(vec![x]))?;
+        }
         out.push(e);
     }
     set(&mut r, VEHI_SEATS, Val::Block(out))?;
@@ -1141,6 +1247,10 @@ pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
             let mut out = Vec::new();
             for p in v.points {
                 let mut x = defs::default_record(e);
+                let words = match (block, p.steered, &role.friction_steered) {
+                    (VEHI_FRICTION, true, Some(w)) => w,
+                    _ => words,
+                };
                 role_words(&mut x, words)?;
                 set(&mut x, marker, Val::text(&p.marker))?;
                 set(&mut x, region, Val::text(&p.region))?;

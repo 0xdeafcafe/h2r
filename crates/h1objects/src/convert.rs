@@ -659,12 +659,16 @@ struct PoweredPoint {
     point: crate::rebuild::Point,
     node: i16,
     position: [f32; 3],
+    /// The point's object-space x (forward).
+    x: f32,
+    /// The marker's rotation (i, j, k, w).
+    rotation: [f32; 4],
 }
 
 /// Adds a marker per powered point to a Halo 1 model before conversion:
 /// named as the point, on its node, one instance per permutation of the
 /// first region (D: so whichever permutation the object shows carries
-/// it), no rotation.
+/// it), with the point's rotation.
 fn add_point_markers(model: &mut h1models::h1::Model, points: &[PoweredPoint]) {
     let perms = model.regions.first().map_or(1, |r| r.permutations.len().max(1));
     for p in points {
@@ -679,7 +683,7 @@ fn add_point_markers(model: &mut h1models::h1::Model, points: &[PoweredPoint]) {
                     permutation: k as i8,
                     node: p.node as i8,
                     translation: p.position,
-                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    rotation: p.rotation,
                 })
                 .collect(),
         });
@@ -2005,11 +2009,27 @@ impl<'a> Converter<'a> {
             }
             None => (Vec::new(), None),
         };
-        let seats: Vec<_> = u
+        let mut seats: Vec<_> = u
             .seats
             .iter()
             .map(|s| crate::rebuild::seat_names(s, &markers))
             .collect();
+        // Each seat's camera track: Halo 1's first (the loose one where
+        // it has two), converted. A seat with none keeps none, and the
+        // engine falls back to the globals' default unit track.
+        let mut tracks = 0;
+        for (names, seat) in seats.iter_mut().zip(&u.seats) {
+            let Some(&t) = seat.camera_tracks.first() else { continue };
+            match self.camera_track(self.h1_tag(t)?) {
+                Ok(id) => {
+                    names.camera_track = Some(id);
+                    tracks += 1;
+                }
+                Err(e) => rep
+                    .no_home
+                    .push(format!("seat {}: camera track not converted ({e})", seat.label)),
+            }
+        }
         let points: Vec<crate::rebuild::Point> = match u.object.model {
             Some(m) => {
                 let (model, _) =
@@ -2069,11 +2089,12 @@ impl<'a> Converter<'a> {
         })?;
         let root = self.unit_foot(*b"vehi", root, u, &mut rep)?;
         rep.no_home.push(format!(
-            "vehi: Halo 1's type, flags (low half), camera, {} seats (label as the rider's mode, markers), {} weapons and {} powered mass points as friction or hover points; the type's role words and gears; {} attachments (looping sounds and effects) and the creation effect from Halo 1; HUD, damage and camera tracks null; {} Halo 1 references",
+            "vehi: Halo 1's type, flags (low half), camera, {} seats (label as the rider's mode, markers), {} weapons and {} powered mass points as friction or hover points; the type's role words and gears; {} attachments (looping sounds and effects) and the creation effect from Halo 1; {} seat camera tracks Halo 1's; HUD and damage null; {} Halo 1 references",
             u.seats.len(),
             weapons.len(),
             points.len(),
             attachments.len(),
+            tracks,
             u.references.iter().filter(|r| r.tag.is_some()).count()
         ));
         self.tree.reports.push(rep);
@@ -2085,6 +2106,26 @@ impl<'a> Converter<'a> {
                 raw: Vec::new(),
             },
         ))
+    }
+
+    /// A Halo 1 camera track as a Halo 2 `trak` with the same control
+    /// points ([`crate::rebuild::camera_track`]), converted once.
+    fn camera_track(&mut self, tag: &Tag) -> Result<TagId> {
+        if let Some(id) = self.done.get(&tag.id.0) {
+            return Ok(*id);
+        }
+        let t = h1::CameraTrack::read(self.h1, tag)?;
+        let root = crate::rebuild::camera_track(&t)?;
+        let id = self.tree.push(
+            &tag.name,
+            Converted {
+                group: FourCC(*b"trak"),
+                root,
+                raw: Vec::new(),
+            },
+        );
+        self.done.insert(tag.id.0, id);
+        Ok(id)
     }
 
     /// The vehicle type's role over the base's vehicles
@@ -2133,10 +2174,32 @@ impl<'a> Converter<'a> {
         );
         let mut out: Vec<PoweredPoint> = Vec::new();
         for m in phys.mass_points.iter().filter(|m| m.powered_mass_point >= 0) {
-            let node = if (m.model_node as usize) < model.nodes.len() && m.model_node >= 0 {
+            let grips = phys
+                .powered_flags
+                .get(m.powered_mass_point as usize)
+                .is_some_and(|f| f & h1::POWERED_GROUND_FRICTION != 0);
+            // A wheel or tread rides the root node, not its own: the
+            // wheel's node turns and rises with the spin and suspension
+            // animations, and a contact point that moves with it pushes
+            // the vehicle about (V: the retail warthog's and scorpion's
+            // friction markers are on node 0).
+            let node = if grips {
+                0
+            } else if (m.model_node as usize) < model.nodes.len() && m.model_node >= 0 {
                 m.model_node
             } else {
                 0
+            };
+            // A wheel's marker faces out along its axle, as the retail
+            // warthog's do (left (0, 0, 0.707, 0.707), right (0, 0,
+            // -0.707, 0.707): forward turned to +y and -y); a point on
+            // the middle line, or one that does not grip, keeps no
+            // rotation.
+            let h = std::f32::consts::FRAC_1_SQRT_2;
+            let rotation = match (grips, m.position[1]) {
+                (true, y) if y > 1e-2 => [0.0, 0.0, h, h],
+                (true, y) if y < -1e-2 => [0.0, 0.0, -h, h],
+                _ => [0.0, 0.0, 0.0, 1.0],
             };
             let (r, t) = world
                 .get(node as usize)
@@ -2159,10 +2222,24 @@ impl<'a> Converter<'a> {
                 continue;
             }
             out.push(PoweredPoint {
-                point: crate::rebuild::Point { marker, region },
+                point: crate::rebuild::Point {
+                    marker,
+                    region,
+                    steered: false,
+                },
                 node,
                 position: local,
+                x: m.position[0],
+                rotation,
             });
+        }
+        // A point ahead of the points' middle steers (the warthog's front
+        // tires, Halo 1's object space has x forward).
+        if !out.is_empty() {
+            let middle = out.iter().map(|p| p.x).sum::<f32>() / out.len() as f32;
+            for p in &mut out {
+                p.point.steered = p.x > middle + 1e-3;
+            }
         }
         Ok(out)
     }

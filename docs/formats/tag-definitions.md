@@ -565,18 +565,38 @@ Halo ring were already built this way.
   counts as the Halo 2 warthog's four friction points and ghost's three
   hover points. Each becomes a marker of the converted model
   (`Converter::powered_points`, added before the `mode` is converted):
-  named as the mass point (`tire_front_left`), on its model node, at the
-  mass point's position in that node's space. V: Halo 1's mass point
-  positions are in object space (each warthog tire point lies within its
-  radius of its tire node's default position). The marker has one
-  instance per permutation of the model's first region, unrotated (D).
+  named as the mass point (`tire_front_left`), at the mass point's
+  position in its node's space. V: Halo 1's mass point positions are in
+  object space (each warthog tire point lies within its radius of its
+  tire node's default position). A point that grips the ground (Halo 1
+  powered mass point flag bit 0: the warthog's tires, the scorpion's
+  treads; the ghost's antigravity points hold bit 6) rides the root node
+  (0) and faces out along its axle, +y on the left, -y on the right; any
+  other point rides its own node, unrotated. V: the retail warthog's four
+  tire markers are on node 0, 0.23 below it (the wheel centres, 0.19
+  above the origin, where Halo 1's tire points are), facing out; the
+  scorpion's tread markers are on node 0 too. Through converter version
+  74 the tire markers rode the tire nodes, which the spin and suspension
+  animations move, and faced forward. The marker has one instance per
+  permutation of the model's first region (D).
   The Halo 2 point names that marker (`+0`) and the collision region of
   the collision node named as the model node (friction `+0x44`, hover
   `+0x34`: the warthog's `tire`; the ghost's collision has one region,
   `__unnamed`). Its other words are the type's role (below): friction
   points when the role's vehicles have them, else hover points, else
   none (fliers, dropships, turrets). The friction material (`+0x3c`)
-  stays null.
+  stays null. Friction points split by steering (flags `+4` bit 2, V: the
+  retail warthog's front pair holds `0x26`, its back pair `0x32`): a
+  point ahead of the powered points' middle takes the majority over the
+  role's steering points, the rest the majority over the others. Through
+  version 74 every point took one majority over all four, the back
+  pair's word, so no converted wheel steered.
+- **Control** (`+0x1f2`, the 16 bits after `vehicle_type`,
+  `rebuild::VEHI_CONTROL`): the role's majority. V: 2 on the retail
+  scorpion, 0 on the warthog. Proved in a game run (converted Blood
+  Gulch, 2026-11-19): written 0 (the role took 4-byte spans only), the
+  converted scorpion crept at 0.05 units a second with the stick held
+  forward; set to 2 live it drove at 2.5.
 - **Engine gears** (`+0x268`, `0x44` each, raw curve pointers at `+0x14`,
   `+0x1c`, `+0x28`, `+0x2c`). Halo 1 has no counterpart: its `vehi` holds
   no curve or raw data, only scalar speeds, and those disagree with
@@ -599,8 +619,19 @@ Halo ring were already built this way.
   where they convert (no Halo 1 vehicle weapon converts yet, each listed
   in the report). Since version 50 the attachments are Halo 1's looping
   sounds and effects and the creation effect Halo 1's (Effects from
-  definitions, below). HUD (`unhi`), damage and camera tracks stay null
-  or empty: no converted Halo 1 tag exists.
+  definitions, below). HUD (`unhi`) and damage stay null: no converted
+  Halo 1 tag exists.
+- **Camera tracks** (seat `+0x74`, `rebuild::SEAT_CAMERA_TRACKS`): each
+  seat's first Halo 1 camera track (seat `+0xd0`, `0x1c` each; the
+  warthog driver's loose one), converted to a `trak` with the same
+  control points (`rebuild::camera_track`; `tags/src/defs/trak.txt`).
+  The two games share the layout: Halo 2's
+  `globals\default_unit_camera_track` holds Halo 1's default unit
+  track's nine points value for value (`tests/vehicle_camera_disc.rs`).
+  Through version 74 no seat named a track, so the engine used that
+  default, whose top point is 3.9 above the camera marker where the
+  warthog's own is 3.5 (Halo 1) or 2.05 (the retail warthog's). A seat
+  Halo 1 gives no track (the scorpion's passengers) still names none.
 
 Named on the way:
 

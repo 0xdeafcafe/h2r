@@ -743,7 +743,7 @@ arrays get a hint from their name and note: colours (`colour`/`color`,
 floats). Names come only from our definitions (their evidence is the
 XBE's readers and the disc), never from community tools or plugins.
 
-Definitions name fields in 52 of the registry's 78 groups. On the disc
+Definitions name fields in 53 of the registry's 78 groups. On the disc
 (`tests/tag_defs.rs`, opt-in) every tag of those groups decodes, and the
 share of their bytes that is named runs from 1.6% (`vrtx`, mostly
 compiled shader data) to 100% (`wgtz`): over 85% for `coll`, `lsnd`,
