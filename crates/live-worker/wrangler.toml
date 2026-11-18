@@ -1,30 +1,32 @@
 # The Live server as a Cloudflare Worker (docs/live/live-worker.md). Not
-# deployed yet: no account, database or bucket ids here. Build with
+# deployed yet: no account or bucket ids here. Build with
 # `worker-build --release` (cargo install worker-build), which runs
-# wasm-bindgen and writes build/worker/shim.mjs.
+# wasm-bindgen, wasm-opt and esbuild into build/. smoke/run.sh runs it
+# under local `wrangler dev` with a config of its own.
 name = "h2-live"
-main = "build/worker/shim.mjs"
+main = "build/index.js"
 compatibility_date = "2026-11-01"
 
 [build]
 command = "worker-build --release"
 
+# Settings (crates/live-worker/src/settings.rs).
 [vars]
 # The server id: the host in every author id. It must be the id the
 # machine's server already has, or every account's author id changes.
-LIVE_SERVER_ID = "live.example.net"
-# LIVE_SERVER_KEY is a secret: `wrangler secret put LIVE_SERVER_KEY`, the
-# contents of <data>/server.key.
-
-[[d1_databases]]
-binding = "DB"
-database_name = "h2-live"
-database_id = "<from wrangler d1 create h2-live>"
+H2_LIVE_ID = "live.example.net"
+H2_LIVE_PUBLIC_URL = "https://live.example.net"
+# H2_LIVE_ADMINS = "Gamertag, Other"
+# H2_LIVE_INVITE_ONLY = "1"
+# H2_LIVE_PRIVATE = "1"
+# H2_LIVE_SERVER_KEY is a secret: `wrangler secret put H2_LIVE_SERVER_KEY`,
+# the contents of <data>/server.key.
 
 [[r2_buckets]]
 binding = "BLOBS"
 bucket_name = "h2-live-blobs"
 
+# The hub keeps the event log in its own SQLite storage.
 [durable_objects]
 bindings = [{ name = "LIVE_HUB", class_name = "LiveHub" }]
 
