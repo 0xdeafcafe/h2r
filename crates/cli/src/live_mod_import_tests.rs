@@ -334,3 +334,184 @@ fn an_imported_mod_publishes_only_its_delta() {
     assert_eq!(listed[0].category.as_deref(), Some("maps"));
     drop(server);
 }
+
+/// One synthetic XDVDFS directory table: entries chained down the
+/// right-hand side, as `mappack_cmd`'s tests build them.
+fn iso_table(items: &[(&str, u32, u32, bool)]) -> Vec<u8> {
+    let mut recs: Vec<Vec<u8>> = Vec::new();
+    for &(name, sector, size, dir) in items {
+        let mut v = vec![0u8; 4];
+        v.extend(sector.to_le_bytes());
+        v.extend(size.to_le_bytes());
+        v.push(if dir { 0x10 } else { 0 });
+        v.push(name.len() as u8);
+        v.extend(name.as_bytes());
+        while !v.len().is_multiple_of(4) {
+            v.push(0xFF);
+        }
+        recs.push(v);
+    }
+    let mut out = Vec::new();
+    let mut offs = Vec::new();
+    for r in &recs {
+        offs.push(out.len());
+        out.extend(r);
+    }
+    for i in 0..recs.len().saturating_sub(1) {
+        let right = (offs[i + 1] / 4) as u16;
+        out[offs[i] + 2..offs[i] + 4].copy_from_slice(&right.to_le_bytes());
+    }
+    out.resize(2048, 0xFF);
+    out
+}
+
+/// A map pack shaped disc image: `/demos/dlc/00000001/` holding the given
+/// maps (name, bytes), each 32 sectors apart from sector 40. No real bytes.
+fn map_pack_iso(maps: &[(&str, &[u8])]) -> Vec<u8> {
+    const S: usize = 2048;
+    let s = S as u32;
+    let mut img = vec![0u8; (40 + 32 * maps.len()) * S];
+    let vd = 32 * S;
+    img[vd..vd + 20].copy_from_slice(b"MICROSOFT*XBOX*MEDIA");
+    img[vd + 20..vd + 24].copy_from_slice(&33u32.to_le_bytes());
+    img[vd + 24..vd + 28].copy_from_slice(&s.to_le_bytes());
+    let files: Vec<(&str, u32, u32, bool)> = maps
+        .iter()
+        .enumerate()
+        .map(|(i, (name, bytes))| (*name, 40 + 32 * i as u32, bytes.len() as u32, false))
+        .collect();
+    let dirs = [
+        (33, iso_table(&[("demos", 34, s, true)])),
+        (34, iso_table(&[("dlc", 35, s, true)])),
+        (35, iso_table(&[("00000001", 36, s, true)])),
+        (36, iso_table(&files)),
+    ];
+    for (sector, t) in dirs {
+        img[sector * S..(sector + 1) * S].copy_from_slice(&t);
+    }
+    for (i, (_, bytes)) in maps.iter().enumerate() {
+        assert!(bytes.len() <= 32 * S);
+        let at = (40 + 32 * i) * S;
+        img[at..at + bytes.len()].copy_from_slice(bytes);
+    }
+    img
+}
+
+/// The fixture plus a map pack disc with containment and warlock.
+struct PackFixture {
+    f: Fixture,
+    iso: PathBuf,
+    containment: Vec<u8>,
+    warlock: Vec<u8>,
+}
+
+impl PackFixture {
+    fn new(tag: &str) -> Self {
+        let f = Fixture::new(tag);
+        let containment = synthetic_map(3, 64 * 1024);
+        let warlock = synthetic_map(4, 48 * 1024);
+        let iso = f.root.join("mappack.iso");
+        let img = map_pack_iso(&[("containment.map", &containment), ("Warlock.map", &warlock)]);
+        std::fs::write(&iso, img).unwrap();
+        Self {
+            f,
+            iso,
+            containment,
+            warlock,
+        }
+    }
+
+    fn opts(&self, input: PathBuf, base: &str) -> ImportOptions {
+        ImportOptions {
+            mappack: Some(self.iso.clone()),
+            base: Some(base.into()),
+            ..self.f.opts(input)
+        }
+    }
+}
+
+#[test]
+fn a_map_pack_mod_becomes_a_delta_over_the_map_pack_map() {
+    let p = PackFixture::new("pack");
+    let modded = grown_mod(&p.containment);
+    let input = p.f.mod_dir(
+        "ai",
+        "ai_war.map",
+        &modded,
+        Some("name = \"AI War\"\nbase_map = \"Containment\"\n"),
+    );
+    let out = import(&ImportOptions {
+        mappack: Some(p.iso.clone()),
+        ..p.f.opts(input)
+    })
+    .unwrap();
+    let m = &out.manifest;
+    assert_eq!(out.base_from, BaseFrom::MapPack);
+    // Named as the game names it, checked by the map pack map's hash.
+    assert_eq!(m.base.map, "containment");
+    assert_eq!(m.base.sha256, Some(Sha256::of(&p.containment)));
+    assert!(!m.base.derived);
+    assert_eq!(m.patches.len(), 1);
+    let layer = std::fs::read(out.dir.join(&m.patches[0].file)).unwrap();
+    assert!(!live_proto::maps::is_whole_map(&layer));
+    assert!(layer.len() < modded.len() / 4);
+    assert_eq!(apply(&p.containment, &layer).unwrap(), modded);
+    let text = std::fs::read_to_string(out.dir.join(MANIFEST_FILE)).unwrap();
+    assert_eq!(&Manifest::from_toml(&text).unwrap(), m);
+    assert!(
+        std::fs::read_dir(&out.dir)
+            .unwrap()
+            .flatten()
+            .all(|e| std::fs::read(e.path()).unwrap() != modded),
+        "the modded map itself is not in the package"
+    );
+
+    // A patch made against a map pack map is checked against it and kept;
+    // the map name's case on the disc does not matter.
+    let mut same = p.warlock.clone();
+    same[0x2000..0x2100].fill(9);
+    let ppf = content::patch::diff(&p.warlock, &same, "w").bytes;
+    let input = p.f.mod_dir("w", "w.ppf", &ppf, None);
+    let out = import(&p.opts(input, "warlock")).unwrap();
+    assert_eq!(out.base_from, BaseFrom::MapPack);
+    assert_eq!(out.manifest.base.sha256, Some(Sha256::of(&p.warlock)));
+    assert_eq!(std::fs::read(out.dir.join("mod.ppf")).unwrap(), ppf);
+
+    // A Halo 2 disc map is still read from the disc with the map pack given.
+    let input = p.f.mod_dir("l", "l.map", &grown_mod(&p.f.lockout), None);
+    let out = import(&p.opts(input, "lockout")).unwrap();
+    assert_eq!(out.base_from, BaseFrom::Disc);
+    assert_eq!(out.manifest.base.sha256, Some(Sha256::of(&p.f.lockout)));
+}
+
+#[test]
+fn no_retail_map_of_either_disc_is_shared() {
+    let p = PackFixture::new("pack-refuse");
+    let err = |o: ImportOptions| format!("{:#}", import(&o).unwrap_err());
+
+    // A map pack map passed off as a mod of another: of one on its disc,
+    // and of one on the Halo 2 disc.
+    let twin = p.f.mod_dir("t1", "warlock.map", &p.warlock, None);
+    let e = err(p.opts(twin.clone(), "containment"));
+    assert!(e.contains("map pack's warlock.map"), "{e}");
+    let e = err(p.opts(twin, "midship"));
+    assert!(e.contains("retail maps are never shared"), "{e}");
+    // A Halo 2 disc map passed off as a mod of a map pack map.
+    let twin = p.f.mod_dir("t2", "midship.map", &p.f.midship, None);
+    let e = err(p.opts(twin, "warlock"));
+    assert!(e.contains("disc's own midship.map"), "{e}");
+    // The map pack map unchanged.
+    let same = p.f.mod_dir("t3", "c.map", &p.containment, None);
+    assert!(err(p.opts(same, "containment")).contains("nothing to share"));
+
+    // A map pack map with no map pack disc says where to look; a map on
+    // neither disc says so.
+    let modded = p.f.mod_dir("m", "m.map", &grown_mod(&p.containment), None);
+    let e = err(ImportOptions {
+        base: Some("containment".into()),
+        ..p.f.opts(modded.clone())
+    });
+    assert!(e.contains("--mappack"), "{e}");
+    let e = err(p.opts(modded, "turf"));
+    assert!(e.contains("has no turf.map either"), "{e}");
+}
