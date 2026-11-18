@@ -139,6 +139,7 @@ pub(crate) struct State {
     services: BTreeSet<u32>,
     service: Option<Service>,
     menu: crate::ui::Menu,
+    feedback: crate::feedback::Feedback,
     invites: crate::invites::Invites,
     files: crate::storage_api::Files,
     stats: crate::stats::Stats,
@@ -183,6 +184,7 @@ impl State {
             services: BTreeSet::new(),
             service,
             menu: crate::ui::Menu::default(),
+            feedback: Default::default(),
             invites: Default::default(),
             files: crate::storage_api::Files::default(),
             stats: crate::stats::Stats::default(),
@@ -285,6 +287,7 @@ impl State {
         self.state_flags = [1; 4];
         self.game_id = None;
         self.menu.clear();
+        self.feedback.clear();
         self.invites.clear();
         self.files.clear();
         self.stats.clear_tasks();
@@ -983,6 +986,26 @@ impl State {
                 },
             );
         }
+        if op == Feedback {
+            if self.online_refs == 0 {
+                return Ok(NOT_INITIALIZED);
+            }
+            if !self.connected() {
+                return Ok(NO_SESSION);
+            }
+            let session = self.session();
+            return self.feedback.invoke(
+                a,
+                m,
+                crate::feedback::Context {
+                    storage: &mut self.storage,
+                    service: self.service.as_ref(),
+                    session: session.as_ref(),
+                    users: &self.user_ids,
+                    game_id: self.game_id.as_deref(),
+                },
+            );
+        }
         if let Ui(op) = op {
             if self.online_refs != 0
                 && matches!(
@@ -1286,6 +1309,9 @@ impl State {
                 if let Some(status) = self.menu.poll(a[0]) {
                     return Ok(status);
                 }
+                if let Some(status) = self.feedback.poll(a[0]) {
+                    return Ok(status);
+                }
                 let Some(task) = self.tasks.get(&a[0]).cloned() else {
                     return Ok(INVALID_ARGUMENT);
                 };
@@ -1443,6 +1469,9 @@ impl State {
                     return Ok(OK);
                 }
                 if self.menu.close(a[0]) {
+                    return Ok(OK);
+                }
+                if self.feedback.close(a[0]) {
                     return Ok(OK);
                 }
                 if !self.tasks.contains_key(&a[0]) {

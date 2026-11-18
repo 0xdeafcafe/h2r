@@ -311,7 +311,14 @@ target/release/h2 run disc/halo2.iso --out $OUT --data $T/data --fresh-data
   run whose analyzer has no cached analysis yet (a run with
   `H2_BOOT_CACHE=off`, or a dylib built elsewhere) analyzes the image for
   the fallback (15-20 s alone); later runs read the unread-target cache
-  and analyze in the background, so compare second runs.
+  and analyze in the background, so compare second runs. When only the
+  unread-target file is missing (the analyzer or `fallback.rs` changed),
+  the newest one the same image left under other sources stands in and
+  the run starts at once: the analysis checks it in the background,
+  saves this build's file and registers any target it adds
+  (`fallback: unread jump-table targets checked: the same`). Only a cache
+  with no unread-target file for the image at all waits for the analysis
+  before the first frame.
 - Numbers are only meaningful on a quiet machine: with heavy builds
   running alongside (load average 170-430) the same run fell to a
   fraction of its quiet-machine rate, and the analysis went from 15 s to

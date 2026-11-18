@@ -732,7 +732,7 @@ appears at the next launch.
 
 **String ids.** The `ui` model's family (`ui model`, 191 ids) was nearly
 full before this screen; the model now also takes ids from a second
-family, `ui model more` (`0x26fff000`, 256 ids, `ui_kit::ids`), through
+family, `ui model more` (`0x27fff000`, 256 ids, `ui_kit::ids`), through
 `ui::Model::with_ids`.
 
 ## Field of view (built)

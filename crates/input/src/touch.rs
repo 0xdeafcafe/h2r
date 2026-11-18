@@ -452,6 +452,7 @@ impl TouchPad {
             right_trigger: if auto { 1.0 } else { pull(bits::RIGHT_TRIGGER) },
             analog_buttons: None,
             prefiltered: true,
+            touchpad: None,
         }
     }
 

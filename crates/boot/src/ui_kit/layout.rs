@@ -15,7 +15,13 @@
 //! - **off screen** (art): no art's opaque pixels fall past the screen
 //!   edge.
 //! - **safe area**: texts and row art stay inside the title-safe area.
-//! - **reserved**: nothing overlaps an area the screen beneath keeps.
+//! - **reserved**: nothing overlaps an area the screen beneath keeps;
+//!   for a modal, only past its panel (a dialog covers the logo as
+//!   retail's do).
+//! - **panel** (modals): every text and cell stays inside the panel.
+//! - **placement** (modals): the body at 72, a code page's body above the
+//!   main menu's logo, the cells at retail's height, a one-line status
+//!   under a one-line body ([`crate::ui_kit::dialog::placement`]).
 //! - **contrast**: every text against what is drawn under it.
 //! - **legend**: a screen that takes more than up, down, A and B says
 //!   which buttons do what.
@@ -52,6 +58,10 @@ pub struct Rules {
     pub max_covered: usize,
     /// The screen takes inputs past up, down, A and B.
     pub needs_legend: bool,
+    /// A modal's panel ([`crate::ui_kit::dialog::DialogGeometry::area`]):
+    /// its content stays inside, and what it covers of a reserved area is
+    /// not held against it.
+    pub panel: Option<Rect>,
 }
 
 pub const SAFE: Rect = Rect {
@@ -69,6 +79,7 @@ impl Default for Rules {
             min_contrast: 2.5,
             max_covered: 24,
             needs_legend: false,
+            panel: None,
         }
     }
 }
@@ -82,6 +93,10 @@ impl Rules {
                 .inputs
                 .iter()
                 .any(|i| !matches!(i, Input::Up | Input::Down | Input::A | Input::B)),
+            panel: s
+                .dialog
+                .as_ref()
+                .map(|_| crate::ui_kit::dialog::DialogGeometry::fallback().area()),
             ..Rules::default()
         }
     }
@@ -120,6 +135,13 @@ pub enum Issue {
         id: String,
         area: String,
     },
+    OutsidePanel {
+        id: String,
+    },
+    Placement {
+        id: String,
+        rule: &'static str,
+    },
     Contrast {
         id: String,
         ratio: f32,
@@ -140,6 +162,8 @@ impl Issue {
             Issue::Fit { id }
             | Issue::Unsafe { id }
             | Issue::Reserved { id, .. }
+            | Issue::OutsidePanel { id }
+            | Issue::Placement { id, .. }
             | Issue::Contrast { id, .. }
             | Issue::FocusHidden { id }
             | Issue::FocusNotBrighter { id } => vec![id],
@@ -172,6 +196,8 @@ impl fmt::Display for Issue {
             }
             Issue::Unsafe { id } => write!(f, "{id}: outside the title-safe area"),
             Issue::Reserved { id, area } => write!(f, "{id}: over {area}"),
+            Issue::OutsidePanel { id } => write!(f, "{id}: outside the modal's panel"),
+            Issue::Placement { id, rule } => write!(f, "{id}: {rule}"),
             Issue::Contrast { id, ratio } => {
                 write!(f, "{id}: contrast {ratio:.2} against what is under it")
             }
@@ -263,10 +289,14 @@ pub fn ink(w: &Widget, m: &dyn Metrics) -> Option<Rect> {
     out
 }
 
-/// The row a widget belongs to (`row.3.label` is row 3's).
+/// The row or entry cell a widget belongs to (`row.3.label` is row 3's,
+/// `cell.2.text` cell 2's).
 fn row_of(id: &str) -> Option<&str> {
-    let rest = id.strip_prefix("row.")?;
-    Some(rest.split('.').next().unwrap_or(rest))
+    let n = ["row.", "cell."].iter().find_map(|p| {
+        id.strip_prefix(p)
+            .map(|rest| p.len() + rest.find('.').unwrap_or(rest.len()))
+    })?;
+    Some(&id[..n])
 }
 
 /// WCAG relative luminance of an sRGB colour.
@@ -404,8 +434,7 @@ pub fn check(v: &View, src: &dyn Source, rules: &Rules) -> Report {
     }
 
     // Art against art and the screen edge: the images' own pixels.
-    let masks: Vec<(&Widget, Option<Mask>)> =
-        arts.iter().map(|w| (*w, opaque(w, src))).collect();
+    let masks: Vec<(&Widget, Option<Mask>)> = arts.iter().map(|w| (*w, opaque(w, src))).collect();
     if masks.iter().any(|(_, m)| m.is_none()) {
         rep.skipped.push("covered");
         rep.skipped.push("off screen");
@@ -469,9 +498,24 @@ pub fn check(v: &View, src: &dyn Source, rules: &Rules) -> Report {
             rep.issues.push(Issue::Unsafe { id: w.id.clone() });
         }
     }
+    if let Some(p) = rules.panel {
+        for w in shown.iter().filter(|w| w.layer != Layer::Panel) {
+            let r = ink(w, src).unwrap_or(w.rect());
+            if !inside(r, p) {
+                rep.issues.push(Issue::OutsidePanel { id: w.id.clone() });
+            }
+        }
+        for (id, rule) in crate::ui_kit::dialog::placement(v, src) {
+            rep.issues.push(Issue::Placement { id, rule });
+        }
+    }
     for (name, area_r) in &rules.reserved {
         for w in &shown {
             let r = ink(w, src).unwrap_or(w.rect());
+            // A modal covers what is beneath its panel, retail's way.
+            if w.layer == Layer::Panel || rules.panel.is_some_and(|p| inside(r, p)) {
+                continue;
+            }
             if area(intersect(r, *area_r)) > 0 {
                 rep.issues.push(Issue::Reserved {
                     id: w.id.clone(),

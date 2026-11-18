@@ -190,6 +190,18 @@ fn the_tick_comes_from_the_game_time() {
 }
 
 #[test]
+fn there_is_no_game_tick_in_the_menus() {
+    assert_eq!(game_tick(&FakeGuest::new()), None, "unmapped");
+    let mut g = three();
+    g.put_u32(points::GAME_TIME.base, 0);
+    assert_eq!(game_tick(&g), None, "no game-time record");
+    g.map(0x0068_0000, 0x10)
+        .put_u32(points::GAME_TIME.base, 0x0068_0000)
+        .put_u32(0x0068_0000 + GAME_TIME_TICK, 7);
+    assert_eq!(game_tick(&g), Some(7));
+}
+
+#[test]
 fn outside_a_multiplayer_game_the_bot_sees_nothing() {
     let mut g = three();
     g.put_u32(GAME + OPTIONS, 1); // campaign

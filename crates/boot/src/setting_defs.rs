@@ -766,6 +766,15 @@ pub static ALL: &[&Def] = &[
     &crate::voice_settings::INCOMING_MUTED,
     &crate::voice_settings::INPUT_VOLUME,
     &crate::voice_settings::OUTPUT_VOLUME,
+    // The Clankers page of a custom game's Game Setup (crate::clankers,
+    // docs/game/bots.md section 7).
+    &crate::clankers::ENABLED,
+    &crate::clankers::COUNT,
+    &crate::clankers::DIFFICULTY,
+    &crate::clankers::TEAM,
+    &crate::clankers::AGGRESSION,
+    &crate::clankers::AIM_STYLE,
+    &crate::clankers::TAUNTS,
 ];
 
 /// Every setting of this run: [`ALL`], with the voice device settings

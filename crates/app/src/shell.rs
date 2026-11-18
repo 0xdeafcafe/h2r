@@ -18,6 +18,7 @@ use crate::fps::DisplaySchedule;
 use crate::frame::{self, Compositor, FrameSource, FrameStats};
 use crate::keymap::{self, Shortcut};
 use crate::lifecycle::Lifecycle;
+use crate::menu_overlay::MenuRenderer;
 use crate::overlay::OverlayRenderer;
 use crate::pacing::{PaceStats, Pacer, WindowedRate};
 use crate::scale;
@@ -43,6 +44,7 @@ struct Gpu {
     compositor: Compositor,
     overlay: OverlayRenderer,
     watermark: WatermarkRenderer,
+    menu: MenuRenderer,
     /// The adapter's backend, lower case (`metal`), for the watermark.
     backend: String,
     source: FrameSource,
@@ -260,6 +262,7 @@ impl Shell {
             compositor: Compositor::new(&ctx.device),
             overlay: OverlayRenderer::new(&ctx.device),
             watermark: WatermarkRenderer::new(&ctx.device),
+            menu: MenuRenderer::new(&ctx.device),
             backend: format!("{:?}", info.backend).to_lowercase(),
             ctx,
             surface,
@@ -338,6 +341,24 @@ impl Shell {
                     viewport,
                 );
             }
+        }
+        // The debug menu over everything but the banner.
+        if let Some(lines) = self
+            .config
+            .debug_menu
+            .as_ref()
+            .and_then(debug_menu::Shared::lines)
+        {
+            g.menu.draw(
+                &g.ctx.device,
+                &g.ctx.queue,
+                &mut enc,
+                &lines,
+                &view,
+                g.surface.config.format,
+                g.surface.size(),
+                viewport,
+            );
         }
         if let Some(banner) = &self.config.banner {
             self.banner_drawn = banner.generation();
@@ -606,6 +627,28 @@ impl ApplicationHandler<UserEvent> for Shell {
                     }
                     return;
                 }
+                if let Some(menu) = self.config.debug_menu.clone() {
+                    match keymap::menu_key(code, menu.is_open()) {
+                        keymap::MenuKey::Take(k) => {
+                            if down && let Some(k) = k {
+                                menu.key(k);
+                                if let Some(g) = &self.gpu {
+                                    g.window.request_redraw();
+                                }
+                            }
+                            // A release still reaches the pad, so a key held
+                            // when the menu opened is not stuck down.
+                            if !down
+                                && let (Some(kb), Some(name)) =
+                                    (&self.keyboard, keymap::key_name(code))
+                            {
+                                kb.key_up(name);
+                            }
+                            return;
+                        }
+                        keymap::MenuKey::Pass => {}
+                    }
+                }
                 if let Some(banner) = self.config.banner.clone()
                     && matches!(code, KeyCode::F5 | KeyCode::F6)
                 {
@@ -690,6 +733,13 @@ impl ApplicationHandler<UserEvent> for Shell {
             }
         }
         self.update_status();
+        // The debug menu redraws as it changes and as answers come in,
+        // also while the guest presents slowly (a load).
+        if let (Some(menu), Some(g)) = (&self.config.debug_menu, &self.gpu)
+            && menu.needs_redraw()
+        {
+            g.window.request_redraw();
+        }
         // A banner change shows without waiting for the guest's next present.
         if let (Some(banner), Some(g)) = (&self.config.banner, &self.gpu)
             && banner.generation() != self.banner_drawn

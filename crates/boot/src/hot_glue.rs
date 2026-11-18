@@ -14,11 +14,23 @@ use crate::telemetry::MapFile;
 /// Finds a map's file by its short name.
 pub type MapLocator = Box<dyn Fn(&str) -> Option<MapFile> + Send + Sync>;
 
-/// Adds the hot methods to `agent` and starts watching the override
-/// directory.
-pub fn install(agent: &agent::Agent, rt: &Arc<runtime::Runtime>, maps: Option<MapLocator>) {
+/// Adds the hot methods to `agent` and, with `watch`, loads and watches
+/// the override directory. Without (the debug menu's local agent, no
+/// `H2_AGENT`) the directory is only named: nothing loads until
+/// `render.reload` (the menu's Reload row) asks.
+pub fn install(
+    agent: &agent::Agent,
+    rt: &Arc<runtime::Runtime>,
+    maps: Option<MapLocator>,
+    watch: bool,
+) {
     let hub = hot_render::global();
     agent::hot::add_render_methods(agent, hub);
+    if !watch {
+        hub.set_dir(Some(agent_proto::hot::default_override_dir()));
+        install_edits(agent, rt, maps);
+        return;
+    }
     let r = agent::hot::watch_overrides(hub, agent_proto::hot::default_override_dir());
     eprintln!(
         "render overrides: {} ({} loaded{}; docs/graphics/hot-iteration.md)",
@@ -33,6 +45,11 @@ pub fn install(agent: &agent::Agent, rt: &Arc<runtime::Runtime>, maps: Option<Ma
             )
         }
     );
+    install_edits(agent, rt, maps);
+}
+
+/// `edit.*` over the runtime's memory.
+fn install_edits(agent: &agent::Agent, rt: &Arc<runtime::Runtime>, maps: Option<MapLocator>) {
     let mut editor = hot_tags::Editor::new();
     if let Some(locate) = maps {
         editor = editor.with_names(Box::new(move |g| names(g, &locate)));

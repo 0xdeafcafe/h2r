@@ -270,6 +270,13 @@ fn living_unit(m: &dyn GuestMemory, p: &players::Player) -> R<Option<([f32; 3], 
     Ok(Some((body.position(m)?, m.vec3(body.addr + UNIT_AIM)?)))
 }
 
+/// The game's tick count (30 a second) while a game is loaded: `None` in
+/// the menus, where the game-time record is not allocated.
+pub fn game_tick(m: &dyn GuestMemory) -> Option<u32> {
+    let time = m.u32(points::GAME_TIME.base).ok().filter(|&t| t != 0)?;
+    m.u32(time + GAME_TIME_TICK).ok()
+}
+
 /// What the bot on `port` sees: in a multiplayer game, itself and every
 /// other player with a living unit. Outside one, nothing.
 pub fn perceive(m: &dyn GuestMemory, port: u32) -> R<Perception> {
@@ -279,10 +286,7 @@ pub fn perceive(m: &dyn GuestMemory, port: u32) -> R<Perception> {
         return Ok(out);
     }
     out.teams = m.u32(globals + OPTIONS + VARIANT_FLAGS)? & 1 != 0;
-    let time = m.u32(points::GAME_TIME.base).unwrap_or(0);
-    if time != 0 {
-        out.tick = m.u32(time + GAME_TIME_TICK).unwrap_or(0);
-    }
+    out.tick = game_tick(m).unwrap_or(0);
     let Some(array) = players::array(m)? else {
         return Ok(out);
     };

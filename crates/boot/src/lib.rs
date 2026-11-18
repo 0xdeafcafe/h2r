@@ -21,11 +21,13 @@ pub mod coop_players;
 pub mod coop_probe;
 pub mod campaign_cards;
 pub mod campaign_menu;
+pub mod cheats;
 pub mod campaigns;
 pub mod custom_games;
 pub mod d3d_diag;
 pub mod d3d_glue;
 pub mod dsound_glue;
+pub mod effect_census;
 pub mod fallback;
 pub mod fov_row;
 pub mod game_glue;
@@ -50,8 +52,10 @@ pub mod keyboard_glue;
 pub mod live_glue;
 pub mod live_notice;
 pub mod agent_glue;
+pub mod debug_menu_glue;
 pub mod lockstep_glue;
 pub mod map_bases;
+pub mod map_copy;
 pub mod map_override;
 pub mod map_slots;
 pub mod movies_glue;
@@ -77,6 +81,7 @@ pub mod ui;
 pub mod ui_kit;
 pub mod ui_watch;
 pub mod bot_glue;
+pub mod clankers;
 pub mod video_screen;
 pub mod voice_settings;
 pub mod pause_menu;
@@ -578,6 +583,22 @@ fn describe(ev: Option<&Event>, thread: u32) -> String {
     }
 }
 
+/// Why `H2_PERF_FROM`, `H2_TIMELINE` or `H2_PROFILE` will do nothing in
+/// this run, if they won't: the session needs an h2 built with
+/// `--features perf`, and opens only at `H2_PERF_FROM` (a present number
+/// or `level`), so `H2_TIMELINE`/`H2_PROFILE` alone write nothing.
+pub fn perf_env_note(perf_build: bool, perf_from: bool, session_vars: bool) -> Option<&'static str> {
+    match (perf_build, perf_from, session_vars) {
+        (false, true, _) | (false, _, true) => Some(
+            "perf: H2_PERF_FROM, H2_TIMELINE and H2_PROFILE need an h2 built with --features perf; no session, nothing written",
+        ),
+        (true, false, true) => Some(
+            "perf: H2_TIMELINE/H2_PROFILE open their session at H2_PERF_FROM (a present or `level`), which is unset; nothing written",
+        ),
+        _ => None,
+    }
+}
+
 /// What a run ended with, for callers and docs.
 pub struct RunReport {
     pub outcome: String,
@@ -637,6 +658,12 @@ pub struct Host {
     /// kernel (for its logical clock). Returning false ends the run
     /// (outcome `HostStop`).
     pub between_slices: Option<BetweenSlices>,
+    /// Our debug menu (docs/runtime/debug-menu.md): its calls go to the
+    /// agent (`H2_AGENT`'s, else a local one with no socket), and it gets
+    /// the menu's host methods (`settings.*`, `perf.overlay`, `cheat.*`).
+    pub debug_menu: Option<debug_menu::Shared>,
+    /// The perf overlay's on/off switch, for `perf.overlay`.
+    pub perf_overlay: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// Called once with the kernel's VFS when it is attached, before the
     /// game runs: `h2 play` watches U: through it for cloud saves
     /// (`vfs::Vfs::set_change_observer`, docs/live/live-cloud-saves.md).
@@ -797,6 +824,9 @@ pub fn run_hosted_with_live(
         }
         features.add(&map_slots::MapSlots { vfs }).map_err(|e| anyhow::anyhow!("map slots: {e}"))?;
     }
+    // Maps copy to their cache slots several steps a loading frame, not one
+    // (docs/runtime/cache-slots.md, "Copy speed on the loading screen").
+    features.add(&map_copy::MapCopy).map_err(|e| anyhow::anyhow!("map copy: {e}"))?;
     // Frame species and weapon names come from the loaded map's tag names,
     // which stay on disc: let telemetry find the map file through the VFS.
     // Which map exactly (docs/game/maps.md §5): a package's MapId, None for the
@@ -955,6 +985,10 @@ pub fn run_hosted_with_live(
     if opts.xapi {
         bot_glue::add_from_env();
         bot_glue::install(&mut features, &opts.data_root).context("installing the bots")?;
+        // The Clankers page and its Game Setup row (stage 7).
+        if let Some(store) = host.settings.as_ref() {
+            clankers::install(&mut features, store).context("installing the Clankers page")?;
+        }
     }
     // The iOS touch controls' game side (docs/runtime/ios.md): direct
     // look into player one's facing, and the layout from player one's
@@ -1060,8 +1094,11 @@ pub fn run_hosted_with_live(
             }
         }
         Some(path) => Some(agent_glue::AgentGlue::install(&mut features, path, xa.as_deref(), input_replay)?),
+        // The debug menu talks to an agent: a local one, with no socket.
+        None if host.debug_menu.is_some() => Some(agent_glue::AgentGlue::local()),
         None => None,
     };
+    let watch_overrides = agent_glue::socket_from_env().is_some();
     // edit.* and render.* on the agent (hot_glue.rs, docs/graphics/hot-iteration.md).
     if let Some(a) = &agent {
         let maps = k.vfs().map(|vfs| -> hot_glue::MapLocator {
@@ -1071,7 +1108,13 @@ pub fn run_hosted_with_live(
                 Some(telemetry::MapFile { path: file.path, offset: file.offset, len: file.len })
             })
         });
-        hot_glue::install(&a.agent, &loaded.runtime, maps);
+        hot_glue::install(&a.agent, &loaded.runtime, maps, watch_overrides);
+    }
+    // The debug menu's host methods and connection (debug_menu_glue.rs).
+    if let Some(a) = &agent {
+        debug_menu_glue::install(host.debug_menu.as_ref(), &a.agent, host.settings.clone(), host.perf_overlay.clone());
+        // Our cheats (cheats.rs): refused in co-op and lockstep runs.
+        cheats::install(&mut features, &a.agent, &loaded.runtime, lockstep_on)?;
     }
     // The Rust datum, tag and locale functions, when H2_FEATURES has
     // impl.engine=on (off by default).
@@ -1236,20 +1279,32 @@ pub fn run_hosted_with_live(
     // H2_FRAME_STATS=1: frame times split by phase (docs/perf/frame-budget.md).
     // `h2 play --frame-stats` may have started them already.
     let frame_stats = timeline::phase::enabled() || timeline::phase::start_from_env();
+    let gpu = !headless || std::env::var_os("H2_BOOT_GFX").is_some();
+    if let Some(note) = d3d_glue::frame_stats_gpu_note(frame_stats && d3d_calls.is_some(), gpu) {
+        eprintln!("{note}");
+    }
+    // H2_EFFECT_CENSUS=1: a line per new timed light (EXPLOSION for a
+    // grenade-sized one) and an exit summary (effect_census.rs).
+    let mut effect_census = effect_census::requested_by(std::env::var(effect_census::ENV).ok().as_deref()).then(|| {
+        eprintln!("effects: census on ({}): a line per new timed light, a summary at exit", effect_census::ENV);
+        (effect_census::Census::new(), u64::MAX)
+    });
     // H2_PERF_FROM=N (cli built with `--features perf`): open
     // `perf::Session::from_env()` (H2_PROFILE, H2_TIMELINE) at present N;
     // H2_PERF_FROM=level at the first present after the level loaded
     // (`level_boot::loaded_at`). It is finished below, before the module is
     // dropped.
+    if let Some(note) = perf_env_note(
+        cfg!(feature = "perf"),
+        perf_from.is_some(),
+        ["H2_TIMELINE", "H2_PROFILE"].iter().any(|k| std::env::var_os(k).is_some_and(|v| !v.is_empty())),
+    ) {
+        eprintln!("{note}");
+    }
     #[cfg(feature = "perf")]
     let mut perf_from = perf_from;
     #[cfg(not(feature = "perf"))]
-    {
-        if perf_from.is_some() {
-            eprintln!("perf: H2_PERF_FROM needs an h2 built with --features perf; no session");
-        }
-        let _ = &level_name;
-    }
+    let _ = &level_name;
     #[cfg(feature = "perf")]
     let mut perf_session: Option<perf::Session> = None;
     // The sampler's main target (agent glue sets it too).
@@ -1315,6 +1370,16 @@ pub fn run_hosted_with_live(
                 .is_err()
         {
             input_errors += 1;
+        }
+        if let Some((census, last)) = &mut effect_census {
+            let present = d3d_diag::presents();
+            if present != *last {
+                *last = present;
+                let mem = loaded.runtime.memory();
+                for line in census.at_present(&*mem, present) {
+                    eprintln!("{line}");
+                }
+            }
         }
         if let Some(h) = &harness {
             h.after_slice(&loaded.runtime, d3d_diag::presents());
@@ -1441,6 +1506,9 @@ pub fn run_hosted_with_live(
     if let Some(i) = &d3d_calls {
         eprintln!("{}", d3d_glue::describe(i));
     }
+    if let Some((census, _)) = &effect_census {
+        eprintln!("{}", census.summary());
+    }
     if let Some(s) = fallback::STATS.lock().unwrap().as_ref() {
         let first: Vec<String> = s.first.iter().map(|f| format!("{:#x}", f.0)).collect();
         eprintln!(
@@ -1527,6 +1595,16 @@ mod string_ids;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn perf_env_note_names_what_writes_nothing() {
+        assert!(perf_env_note(false, false, true).unwrap().contains("--features perf"));
+        assert!(perf_env_note(false, true, false).unwrap().contains("--features perf"));
+        assert!(perf_env_note(true, false, true).unwrap().contains("H2_PERF_FROM"));
+        assert_eq!(perf_env_note(true, true, true), None);
+        assert_eq!(perf_env_note(false, false, false), None);
+        assert_eq!(perf_env_note(true, false, false), None);
+    }
 
     /// A minimal XBE: `.text` at 0x11000 holding `code` (int3-filled to
     /// 0x100 bytes), and `.rdata` at 0x12000 holding a kernel thunk table

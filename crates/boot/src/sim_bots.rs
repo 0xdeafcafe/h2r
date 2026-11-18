@@ -191,6 +191,7 @@ mod tests {
     fn frame<'a>(g: &'a engine::testing::FakeGuest, n: u64, joining: bool) -> Frame<'a> {
         Frame {
             frame: n,
+            tick: None,
             port: 1,
             guest: g,
             joining,

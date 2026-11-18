@@ -587,6 +587,13 @@ points! { ALL;
     /// The sound frame service, once a frame after the render: among
     /// other things, one listener per mapped local user (`0x125c93`).
     SOUND_UPDATE @ 0x0012_5b40: [fn() ret 0]; "docs/engine/engine-map.md";
+    /// The map cache copy machine: one state step per call (submit a
+    /// 1 MiB read or write job, take its result, checksum, publish), AL
+    /// returned and ignored by its callers. They step it only while the
+    /// job-done byte `0x55bd0c` is set: the loading-screen loop `0x163890`
+    /// (once a frame, at `0x1639bd`), the main loop `0x12b450` and the
+    /// flush loop `0x213fa0` (back to back, nothing drawn).
+    CACHE_COPY_STEP @ 0x0021_41f0: [fn() -> al ret 0]; "docs/runtime/cache-slots.md";
 }
 
 globals! { GLOBALS;

@@ -965,18 +965,123 @@ list for the user to play (§11).
 5. **Objectives.** CTF, Oddball, then King of the Hill, Assault and
    Territories: roles, carrier logic and defence spots from the netgame
    flags. Tests: role assignment and goal choice per gametype state.
-6. **Phantom peers.**
+6. **Phantom peers.** Planned; to build after stages 4 and 5.
    - Trace the membership and session-join path (§5.1, steps 2 and 3).
    - In-memory phantom machines, peers and players; action conversion and
      storage; network drop and keep-alive.
+   - **`bots::phantom::add` and `remove`** keep the signatures they have
+     now (§10.1); `sim.*` already calls them (`boot::sim_bots`, the xuid
+     given as hex). `add` returns once the phantom is on the books. The
+     phantom's machine, peer and player are made at the next tick on the
+     game thread, so `add` never waits on the game. A phantom asked for
+     outside a host's session fails then, not at `add`; `list` reports
+     that, as below.
+   - **From a phantom to its player.** `bots::phantom::list() ->
+     Vec<PhantomInfo>` gives each phantom's handle, identity, team, and
+     its game player once the membership update has made it (`player:
+     Option<u32>`, the player datum's index, as `sim.view`'s `player.<i>`
+     uses), or why it has none (`state: Pending | Joined | Failed(reason)`).
+     `bots::phantom::player(handle) -> Option<u32>` is the short form, for
+     `sim`'s `phantom_player`. The index is found by the phantom's machine
+     id in the player records, not guessed from the order of joining.
+   - **Identities from the local embedded Live server.** Bots are accounts
+     (§9.1), so a phantom's xuid has to be one the server issued:
+     - `live_server` gets `POST /games/bots` (§9.1) on the embedded server
+       first (`h2 play --live-local`). It makes `count` bot accounts for the
+       session (made-up gamertags from a word list, xuids in a range of
+       their own, `bot: true` on the account), and answers with the roster.
+       It refuses unless the asking host has a session.
+     - Bot accounts are flagged on the server, so a game record's `bot:
+       true` is accepted only for an xuid the server issued as a bot.
+     - The host asks for the roster when the Clankers page wants more bots
+       than free ports (or always, with Live on). Each roster entry becomes
+       a `bots::phantom::Identity` (xuid, gamertag, emblem, colours) and a
+       brain at the entry's skill.
+     - `sim` can ask the same endpoint for identities and pass them to
+       `sim.player.add {kind: phantom, identity}`. The bots crate never
+       talks to the server; the host glue does.
+     - System Link and offline games make their own identities, with xuids
+       in a local-only range that the server never accepts.
    - Tests: the action conversion and store as pure functions over
      synthetic memory, as the co-op work did; the machine-id and peer
-     bookkeeping.
-7. **Clankers page (Game Setup).**
-   - The ui_kit page and its settings (§7); bots joining the lobby.
-   - Tests: the kit's Page table tests and previews; settings round-trip.
-   - It can move ahead of stage 6 if the user wants it sooner, limited to
-     3 bots.
+     bookkeeping; the phantom-to-player lookup over synthetic player
+     records; the server endpoint (issued xuids, refusing without a
+     session, `bot: true` only for issued xuids); the roster to identities.
+7. **Clankers page (Game Setup).** Built: `boot::clankers`.
+   - **Settings** `clankers.*`, kept in the profile store
+     (`setting_defs::ALL`):
+     - `enabled`: Off or On; default Off;
+     - `count`: 1 to 15;
+     - `difficulty`: Easy, Normal, Heroic, Legendary or Mixed. Mixed is
+       Normal, Heroic and Easy on ports 1, 2 and 3;
+     - `team`: Auto-balance, Red or Blue;
+     - `aggression`: Calm, Normal or Wild;
+     - `aim_style`: Steady or Twitchy;
+     - `taunts`: Off or On; default On.
+
+     Teams, Aggression, Aim style and Taunts are saved but not used yet:
+     they wait for the lobby teams (stage 6), the utility layer and aim
+     styles (stages 4 and 5), and the emotes (stage 4).
+   - **The page** is a kit screen, `clankers`: seven `ChoiceRow`s, laid
+     out as the Halo 1 Options page is (the level select's list, the
+     description pane, the legend in the footer). Its texts are the
+     `clankers` id family. In the preview it is `h2 ui preview clankers`.
+   - **The row.** A custom game's Game Setup dialog (any list with Change
+     Map) gets a "Clankers" row with action 11, after the Halo 1 Options
+     row's 10. It uses the same three points, and each hook is ordered
+     after the Halo 1 row's. A press opens the page on the dialog's own
+     stack. The row's text is the page's title slot.
+   - **The bots.** While `enabled` is on, a driver keeps `min(count, free
+     ports)` brains in the process-wide local bots, on ports 1 to 3 that no
+     other bot asked for (an `H2_BOTS` or `sim` bot keeps its port). They
+     join on the players screen like `H2_BOTS` bots. A change on the page
+     applies at once:
+     - a new difficulty reaches the bots already there at their next
+       frame;
+     - a higher count adds bots;
+     - a lower count, or Off, takes the last added off. Taking a bot off
+       unplugs its pad, which in a game may bring up the game's
+       "controller disconnected" prompt, so change the count in the lobby.
+
+     The setting persists, so with `enabled` left on, the bots are added
+     at the next boot too, and join any players screen, campaign
+     included.
+   - Up to 3 bots play until stage 6. A count over the free ports adds
+     what fits and says so in the log.
+   - Tests:
+     - the settings in `setting_defs::ALL`, and off by default;
+     - Mixed by port;
+     - the driver: ports no one else asked for, the last added off first,
+       only its own taken off, a difficulty change reaching the bots
+       already there, and following the store's changes;
+     - the page: a row per setting, steps saved in the store, wrapping;
+     - the row: only a custom game's list, once, beside the Halo 1 row;
+       on the plan after the Halo 1 row's hooks;
+     - the kit's own checks over the page (`ui_kit::screens`: every
+       screen, every input, every state; ids; layout).
+   - **Game run (the user):**
+     1. Run `h2 play` (no `H2_BOTS`). Choose Split Screen (or System Link),
+        then a custom game's Game Setup. Below Change Map and the others,
+        a "Clankers" row shows (after Halo 1 Options on a Halo 1 map).
+     2. Press A on it: the Clankers page opens over the dialog, with
+        seven rows and a description of the focused row. B goes back to
+        Game Setup.
+     3. Set Clankers to On and Count to 2 (the log says `clankers:
+        Clanker 1 on (Normal)`). Bots join only on the players screen, so
+        back out of the lobby to it: "Clanker 1" and "Clanker 2" join by
+        themselves; go on to the lobby again. Note whether the lobby
+        itself shows them without backing out (a run decides whether the
+        lobby needs a join path of its own).
+     4. Start Slayer: the two bots play as in stages 1 to 3, at the
+        difficulty chosen.
+     5. Quit to the lobby, open the page, set Difficulty to Legendary,
+        and play again: the bots play harder.
+     6. Set Count to 1: one bot leaves (its slot stays on the players
+        screen until the game exits). Set Clankers to Off: none play.
+     7. Quit and start `h2 play` again: the page shows what you left it
+        at; `h2 settings` lists the `clankers.*` values.
+     8. Send the `clankers:` and `ui:` log lines if the row is missing,
+        draws no text, or opens the page under the lobby.
 8. **Clankermatch.**
    - The Live menu row, the playlist filter, the fake search and the lobby
      fill.
@@ -1007,9 +1112,12 @@ small surface. Everything in it is controller input.
 - `trait PadSource: Send { fn pad(&mut self, f: &Frame) -> HostPadState }`
   - It is called once a frame on the game thread, before `RENDER_FRAME`,
     only for placed bots.
-  - `Frame` carries the frame count, the port, the guest memory and
+  - `Frame` carries the frame count, the game's tick (`tick`, 30 a
+    second, `None` in the menus), the port, the guest memory and
     `joining`: the players screen is on top and the bot's slot has no
-    profile, so A signs it in.
+    profile, so A signs it in. Frames are rendered frames; a slow frame
+    runs several ticks and a fast one none, so time by `tick` to match the
+    simulation.
   - A source must not call `add` or `remove` from inside `pad`.
   - Closures `FnMut(&Frame) -> HostPadState` are sources.
   - Three sources come with the crate:
@@ -1025,6 +1133,23 @@ small surface. Everything in it is controller input.
 - `bots::local::Local` is the same API on an instance. The free functions
   use the process-wide one (`local::global()`), which the boot glue drives
   and whose backend boot adds to the input manager. Tests make their own.
+
+Known limits, for the agent API's `sim.*` docs (agent-api.md):
+
+1. The embedded `live_server` does not yet issue bot identities or check
+   `bot: true` against them. That comes with stage 6 (§9.1, §10 stage 6);
+   until then agent-api.md should say "will".
+2. Script `ticks` count bot frames, not game ticks. A source that wants
+   game time inside a game can use `f.tick` (for example
+   `f.tick.map(u64::from).unwrap_or(f.frame)`).
+3. `Recorded` plays one pad per successful read, once a frame. The game can
+   call XInputGetState more than once a frame, so playback can drift from
+   the recording's timing.
+4. A local bot signs in by pressing A only while the players screen is on
+   top. One added in a lobby or mid-game does not join until that screen
+   shows.
+5. `remove` on a local bot in a game unplugs its pad, which may bring up
+   the controller-disconnected prompt.
 
 ## 11. What needs a game run
 

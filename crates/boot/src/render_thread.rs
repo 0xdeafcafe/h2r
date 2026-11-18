@@ -49,6 +49,11 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "RENDER_FRAME",
         "after render_frame_and_present, on the game thread",
     ),
+    (
+        "map-copy",
+        "CACHE_COPY_STEP",
+        "the loading screen's cache copy on the game thread; steps it with guest calls",
+    ),
     // Game-thread points: the simulation, the UI and the level start.
     ("h1-health", "OBJECT_DAMAGE_UPDATE", AFTER),
     ("h1-health", "BODY_RESTORE", AFTER),
@@ -109,6 +114,7 @@ mod tests {
             vfs: Arc::new(std::sync::Mutex::new(vfs::Vfs::new())),
         })
         .unwrap();
+        r.add(&crate::map_copy::MapCopy).unwrap();
         crate::skulls::install(&mut r, store.clone()).unwrap();
         crate::skulls_mp::install(&mut r, store.clone(), None, None).unwrap();
         crate::skulls_custom::install(&mut r, store.clone(), None, None).unwrap();

@@ -24,6 +24,7 @@ const parts = {
   campaign: () => import("./stats/CampaignRecord"),
   events: () => import("./stats/Events"),
   clans: () => import("./stats/Clans"),
+  ranks: () => import("./stats/Ranks"),
   admin: () => import("./admin/Admin"),
   signin: () => import("./signin/SignIn"),
 };
@@ -36,6 +37,8 @@ const HistoryPage = lazy(() => parts.player().then((m) => ({ default: m.HistoryP
 const CareerPage = lazy(() => parts.player().then((m) => ({ default: m.CareerPage })));
 const CampaignRecordPage = lazy(parts.campaign);
 const Events = lazy(parts.events);
+const Ranks = lazy(parts.ranks);
+const PlayerRanksPage = lazy(() => parts.ranks().then((m) => ({ default: m.PlayerRanksPage })));
 const Clans = lazy(parts.clans);
 const ClanPage = lazy(() => parts.clans().then((m) => ({ default: m.ClanPage })));
 const Admin = lazy(parts.admin);
@@ -73,6 +76,8 @@ render(
         <Route path="/players/:tag/history" component={HistoryPage} />
         <Route path="/players/:tag/career" component={CareerPage} />
         <Route path="/players/:tag/campaign" component={CampaignRecordPage} />
+        <Route path="/players/:tag/ranks" component={PlayerRanksPage} />
+        <Route path={["/ranks", "/ranks/:playlist"]} component={Ranks} />
         <Route path="/clans" component={Clans} />
         <Route path="/clans/:id" component={ClanPage} />
         <Route path="/teams" component={() => <Navigate href="/stats/clans" />} />

@@ -19,6 +19,9 @@ input = { path = "../input", default-features = false }
 # Hot iteration: live tag edits and render overrides (src/hot.rs).
 hot-render = { path = "../hot-render" }
 hot-tags = { path = "../hot-tags" }
+# The debug menu is an in-process client (src/menu.rs), and lists settings.
+debug-menu = { path = "../debug-menu" }
+settings = { path = "../settings" }
 
 [dev-dependencies]
 live-proto.workspace = true
