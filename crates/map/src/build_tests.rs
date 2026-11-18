@@ -280,6 +280,21 @@ fn tiny_map_reads_back_through_the_reader() {
 }
 
 #[test]
+fn the_group_table_is_written_sorted_for_the_engines_binary_search() {
+    // `tiny` declares matg scnr sbsp ltmp thng base: a parent after its
+    // child, as a build that declares ancestors on the way does. The
+    // engine's `tag_group_find` bisects on the stored word, so unsorted
+    // records hide groups (a fresh a10 lost `bitm` to `obje` and `unit`).
+    let (bytes, _) = tiny().set.build().unwrap();
+    let map = read(bytes);
+    let words: Vec<u32> = map.groups().iter().map(|g| g.class.as_u32()).collect();
+    assert!(words.is_sorted(), "{:?}", map.groups());
+    assert_eq!(words.len(), 6);
+    let thng = map.groups().iter().find(|g| g.class == cc(b"thng")).unwrap();
+    assert_eq!(thng.parent, Some(cc(b"base")));
+}
+
+#[test]
 fn building_is_deterministic() {
     let a = tiny().set.build().unwrap().0;
     let b = tiny().set.build().unwrap().0;

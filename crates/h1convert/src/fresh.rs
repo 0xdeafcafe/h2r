@@ -67,6 +67,18 @@ pub struct FreshReport {
     pub low_detail: u32,
     /// The base's tags nothing reaches, dropped ([`prune`]).
     pub pruned: Pruned,
+    /// Pinned `sbsp`/`ltmp` tags left out ([`unpin_all`]).
+    pub bsps_left: usize,
+    /// Size-0 tags at an address no tag owns, kept with their group's root
+    /// bytes from there (or no data when those are not in the metadata).
+    pub no_data: usize,
+    /// Tags the schema cannot move, left without data, and why
+    /// ([`check_refused`]).
+    pub refused: Vec<(TagId, String)>,
+    /// The map from scratch ([`crate::scratch`]), or why not (the pruned
+    /// set is written instead).
+    pub scratch: Option<crate::scratch::ScratchReport>,
+    pub scratch_failed: Option<String>,
 }
 
 /// A fresh map.
@@ -78,13 +90,16 @@ pub struct Fresh {
     pub bytes: Vec<u8>,
     /// What was done.
     pub report: FreshReport,
+    /// The precision swaps' collections, as this map's datums (for
+    /// [`Prepared::manifest_with`]).
+    pub precision: Vec<(TagId, TagId)>,
 }
 
 impl Prepared {
     /// The converted map with nothing pinned (see the module docs).
     pub fn build_fresh<R: Read + Seek>(&self, base: &mut Map<R>, mopp: &[u8]) -> Result<Fresh> {
         let (pinned, bytes, section) = self.assemble(base, mopp)?;
-        let mut src = Map::from_reader(Cursor::new(bytes))?;
+        let mut src = Map::from_reader(Cursor::new(&bytes[..]))?;
         let mut fresh = unpinned_copy(&pinned);
         // The pinned map keeps the base's file prefix, so the base's own
         // BSP regions and low-detail region are still there, unnamed:
@@ -97,18 +112,82 @@ impl Prepared {
                 bounds.push(u32::try_from(l.space.file_offset).unwrap_or(u32::MAX));
             }
         }
-        let mut report = unpin_all(&pinned, &mut src, &mut fresh, section, &bounds)?;
+        let mut report = unpin_all(&pinned, &mut src, &mut fresh, &[section], &bounds, false)?;
         // The precision swaps' collections are named by no placement: kept
         // for `boot::precision` to swap in at game start.
         let keep: Vec<TagId> = self.applied.precision.iter().map(|p| p.1).collect();
         report.pruned = prune(&mut fresh, base.index_slots() as usize, &keep);
+        check_refused(&mut fresh, &report)?;
+        drop(src);
+        // Then from scratch: the base's tags by path, only what is reached,
+        // on a dense index. The pruned set is the fallback.
+        let mut precision = self.applied.precision.clone();
+        match from_scratch(base, &pinned, &bytes, &fresh, &keep) {
+            Ok((set, r)) => {
+                // The swaps' datums, in the new index (the manifest's).
+                let key = |s: &TagSet, d: TagId| {
+                    let slot = s.slots.get(d.index())?;
+                    let t = slot.tag.as_ref().filter(|t| t.id == d)?;
+                    Some((t.group, slot.name.clone()))
+                };
+                let by_key: std::collections::HashMap<_, TagId> = set
+                    .slots
+                    .iter()
+                    .filter_map(|s| s.tag.as_ref().map(|t| ((t.group, s.name.clone()), t.id)))
+                    .collect();
+                let new = |d: TagId| key(&fresh, d).and_then(|k| by_key.get(&k).copied());
+                precision = self
+                    .applied
+                    .precision
+                    .iter()
+                    .map(|&(a, b)| Some((new(a)?, new(b)?)))
+                    .collect::<Option<Vec<_>>>()
+                    .ok_or_else(|| Error::Fresh("a precision swap's tag left out".into()))?;
+                fresh = set;
+                report.scratch = Some(r);
+            }
+            Err(e) => report.scratch_failed = Some(e.to_string()),
+        }
         let (bytes, _) = fresh.build()?;
         Ok(Fresh {
             name: map_name(&self.h1_name),
             bytes,
             report,
+            precision,
         })
     }
+}
+
+/// The map from scratch ([`crate::scratch`]): `base`'s tags (the retail
+/// map) and the conversion's (`pinned`, built as `bytes`) read by path,
+/// with `fresh`'s scenario and BSP.
+fn from_scratch<R: Read + Seek>(
+    base: &mut Map<R>,
+    pinned: &TagSet,
+    bytes: &[u8],
+    fresh: &TagSet,
+    extra: &[TagId],
+) -> Result<(TagSet, crate::scratch::ScratchReport)> {
+    use crate::scratch::{LevelSource, build, changed, file_bytes, low_detail};
+    use tags::repo::{MapSource, SharedFiles};
+    let repo = |e: tags::repo::Error| Error::Fresh(format!("from scratch: {e}"));
+    let schema = Schema::builtin();
+    let from_level = changed(base, pinned);
+    let low = low_detail(base)?;
+    let file = file_bytes(base)?;
+    let mut shared_base = SharedFiles::default();
+    shared_base.unread_ok = true;
+    let mut shared_level = SharedFiles::default();
+    shared_level.unread_ok = true;
+    let base_map = Map::from_reader(Cursor::new(&file[..]))?;
+    let level_map = Map::from_reader(Cursor::new(bytes))?;
+    let mut src = LevelSource {
+        base: MapSource::new(schema, base_map, &mut shared_base).map_err(repo)?,
+        level: MapSource::new(schema, level_map, &mut shared_level).map_err(repo)?,
+        from_level,
+    };
+    let from_level = src.from_level.clone();
+    build(&mut src, fresh, &MULTIPLAYER, extra, &from_level, low)
 }
 
 /// A set with `pinned`'s index, strings, raw resources and BSP sections,
@@ -132,20 +211,44 @@ pub fn unpinned_copy(pinned: &TagSet) -> TagSet {
 }
 
 /// Replace every pinned payload of `fresh` (a copy of `pinned`, whose
-/// built map is `src`) with a built one. `section` is the converted
-/// structure's BSP section, which the scenario's first descriptor names.
+/// built map is `src`) with a built one. `sections[k]` is the BSP section
+/// the scenario's descriptor `k` names, when the scenario is pinned and so
+/// rebuilt here; a scenario the conversion already built (a campaign
+/// level's) is kept as it is. A pinned `sbsp` or `ltmp` (a base BSP no
+/// descriptor names any more: its data is in the base's BSP space, which
+/// the schema does not move) is left out, its slot emptied. A slot already
+/// empty in `fresh` (pruned first) is not unpinned.
 /// `bounds` are more file offsets no copied resource runs past (regions of
-/// `src`'s file that no tag names).
+/// `src`'s file that no tag names). With `built_too` (a campaign level),
+/// the tags the conversion built (BSPs, scenario and gestalt aside) are
+/// read back from `src` and rebuilt the same way (its converted objects
+/// keep words naming arrays they share with their templates, which only
+/// `src`'s layout makes good), and the base's unowned metadata is read
+/// too (see the body).
 pub fn unpin_all<R: Read + Seek>(
     pinned: &TagSet,
     src: &mut Map<R>,
     fresh: &mut TagSet,
-    section: usize,
+    sections: &[usize],
     bounds: &[u32],
+    built_too: bool,
 ) -> Result<FreshReport> {
     let schema = Schema::builtin();
     let mut u = Unpinner::new(schema, src).map_err(tags_error)?;
     u.add_starts(bounds.iter().copied());
+    // A campaign intermediate (`built_too`): arrays of base tags live in
+    // metadata no tag owns (05a's scenario range and the gaps between
+    // tags), the base tags point only into the base's own metadata, and a
+    // few retail words are data ([`DATA_WORDS`]).
+    if built_too {
+        if let Some(p) = &pinned.pinned {
+            u.add_regions(src, p.unowned.iter().cloned());
+            u.limit_space(p.metadata_base, p.metadata_base + p.metadata_size);
+        }
+        u.data_words(&DATA_WORDS);
+        let gaps = gaps(src)?;
+        u.add_regions(src, gaps);
+    }
     let mut report = FreshReport::default();
     // The low-detail bitmap region, which bitmaps index into, as a raw
     // resource of its own.
@@ -170,10 +273,33 @@ pub fn unpin_all<R: Read + Seek>(
             gestalt = Some((t.id, g));
             continue;
         }
+        if built_too
+            && matches!(t.payload, TagPayload::Built(_))
+            && t.id != pinned.scenario
+            && ![*b"sbsp", *b"ltmp", *b"ugh!"].contains(&t.group.0)
+        {
+            ordinary.push(t.id);
+            continue;
+        }
         let TagPayload::Pinned { address, bytes } = &t.payload else {
             continue;
         };
         if t.id == pinned.scenario {
+            continue;
+        }
+        // Emptied by the caller already (pruned before unpinning).
+        if fresh
+            .slots
+            .get(t.id.index())
+            .is_none_or(|s| s.tag.is_none())
+        {
+            continue;
+        }
+        if t.group == FourCC(*b"sbsp") || t.group == FourCC(*b"ltmp") {
+            if let Some(s) = fresh.slots.get_mut(t.id.index()) {
+                s.tag = None;
+            }
+            report.bsps_left += 1;
             continue;
         }
         if t.group == ugh {
@@ -187,30 +313,65 @@ pub fn unpin_all<R: Read + Seek>(
         }
         ordinary.push(t.id);
     }
-    report.unpinned = match u.unpin(src, &ordinary, fresh).map_err(tags_error)? {
-        Ok(n) => n,
-        Err(refused) => {
-            let list: Vec<String> = refused
-                .iter()
-                .take(12)
-                .map(|r| {
-                    format!(
-                        "{} {} ({:?} at {:x?} +{:#x})",
-                        r.group, r.name, r.detail.refusal, r.detail.path, r.detail.offset
-                    )
-                })
-                .collect();
-            return Err(Error::Fresh(format!(
-                "{} tags the schema cannot move: {}",
-                refused.len(),
-                list.join("; ")
-            )));
+    // A tag the schema cannot move is left without data: the unreachable
+    // ones are pruned next, and [`check_refused`] fails the map when one
+    // is still reached. A size-0 tag at an address no tag owns (`NoData`)
+    // had no data to begin with.
+    loop {
+        match u
+            .unpin(src, &ordinary, fresh)
+            .map_err(|e| Error::Fresh(format!("unpinning: {e}")))?
+        {
+            Ok(n) => {
+                report.unpinned = n;
+                break;
+            }
+            Err(refused) => {
+                for r in refused {
+                    // A size-0 tag at an address no tag owns reads its
+                    // group's root there (05a's `colo ui\\dialog`): those
+                    // bytes, as they were.
+                    let root = src
+                        .tag(r.id)
+                        .ok()
+                        .and_then(|t| {
+                            Some((t.location?.address, schema.groups.get(&t.group)?.size))
+                        })
+                        .and_then(|(a, n)| u.relocator().memory().slice(a, n).map(<[u8]>::to_vec));
+                    if let Some(t) = fresh.tag_mut(r.id) {
+                        t.payload = match root {
+                            Some(b) if r.detail.refusal == tags::schema::Refusal::NoData => {
+                                TagPayload::Built(map::build::Block::new(b))
+                            }
+                            _ => TagPayload::Empty,
+                        };
+                    }
+                    ordinary.retain(|&id| id != r.id);
+                    if r.detail.refusal == tags::schema::Refusal::NoData {
+                        report.no_data += 1;
+                    } else {
+                        report.refused.push((
+                            r.id,
+                            format!(
+                                "{} {} ({:?} at {:x?} +{:#x}: {:#x})",
+                                r.group,
+                                r.name,
+                                r.detail.refusal,
+                                r.detail.path,
+                                r.detail.offset,
+                                r.detail.value
+                            ),
+                        ));
+                    }
+                }
+            }
         }
-    };
+    }
     // Tags the conversion built on a template (the Halo 1 sandbox's
     // objects) keep the template's blocks by address: the pinned map's,
-    // which a fresh map does not have.
-    for slot in &pinned.slots {
+    // which a fresh map does not have. (`built_too` re-reads them from
+    // `src` whole instead.)
+    for slot in pinned.slots.iter().filter(|_| !built_too) {
         let Some(t) = &slot.tag else { continue };
         if t.group == ugh || t.id == pinned.scenario {
             continue;
@@ -239,11 +400,134 @@ pub fn unpin_all<R: Read + Seek>(
         report.sound_chunks = sound_gestalt(&mut u, src, fresh, id, g)?;
         report.unpinned += 1;
     }
-    scenario(&mut u, src, fresh, pinned.scenario, section, &mut report)?;
-    report.unpinned += 1;
+    if matches!(
+        pinned.tag(pinned.scenario).map(|t| &t.payload),
+        Some(TagPayload::Pinned { .. })
+    ) {
+        scenario(&mut u, src, fresh, pinned.scenario, sections, &mut report)?;
+        report.unpinned += 1;
+    }
     report.raw = u.raw;
     report.external = u.external;
     Ok(report)
+}
+
+/// Words outside every schema field that look like metadata addresses but
+/// are data: 05a's `prt3 effects\generic\solids\debris_shirt` holds
+/// `0x804f0400` as a 4-byte element of `+0x8c`/`+0x2c` (an array of 4-byte
+/// values, no room for a block or reference; `plasma_in_beams` holds
+/// `0x80810400` there), and the `spas`
+/// `shaders\shader_passes\texture_mapping\texaccum_disabled` holds
+/// `0x80800000` at `+0xb0` of a `+0x1c` element (a flag pattern; the
+/// address is no array start in 05a).
+pub const DATA_WORDS: [u32; 3] = [0x804f_0400, 0x8081_0400, 0x8080_0000];
+
+/// The metadata between `src`'s tags, as (address, bytes).
+fn gaps<R: Read + Seek>(src: &mut Map<R>) -> Result<Vec<(u32, Vec<u8>)>> {
+    let Some(space) = src.metadata_space() else {
+        return Ok(Vec::new());
+    };
+    let mut spans: Vec<(u32, u32)> = src
+        .tags()
+        .iter()
+        .filter_map(|t| t.location)
+        .filter(|l| l.space == space && l.size > 0)
+        .map(|l| (l.address, l.address + l.size))
+        .collect();
+    spans.sort_unstable();
+    let mut out = Vec::new();
+    let mut at = space.virtual_base;
+    let end = space.virtual_base + space.size;
+    for (lo, hi) in spans.into_iter().chain([(end, end)]) {
+        if lo > at {
+            let off = src.file_offset(at, lo - at)?;
+            out.push((at, src.read_file_range(off, u64::from(lo - at))?));
+        }
+        at = at.max(hi);
+    }
+    Ok(out)
+}
+
+/// Empties every raw resource of `set` no kept tag names (those of the
+/// tags [`prune`] dropped, and the converted tags' first copies that
+/// `built_too` replaced), so they take no room in the file. Returns
+/// (resources, bytes) emptied.
+pub fn drop_unused_raw(set: &mut TagSet) -> (usize, u64) {
+    fn walk(b: &map::build::Block, used: &mut Vec<bool>) {
+        for f in &b.fixups {
+            match &f.kind {
+                FixupKind::Raw(map::build::RawRef::Local(r)) => {
+                    if let Some(u) = used.get_mut(r.0) {
+                        *u = true;
+                    }
+                }
+                FixupKind::Block { child, .. }
+                | FixupKind::Data(child)
+                | FixupKind::Pointer(child) => walk(child, used),
+                _ => {}
+            }
+        }
+    }
+    let mut used = vec![false; set.raw.len()];
+    for t in set.slots.iter().filter_map(|s| s.tag.as_ref()) {
+        if let TagPayload::Built(b) = &t.payload {
+            walk(b, &mut used);
+        }
+    }
+    if let Some(r) = set.low_detail {
+        used[r.0] = true;
+    }
+    let mut out = (0, 0);
+    for (blob, used) in set.raw.iter_mut().zip(used) {
+        if !used && !blob.bytes.is_empty() {
+            out.0 += 1;
+            out.1 += blob.bytes.len() as u64;
+            blob.bytes = Vec::new();
+        }
+    }
+    out
+}
+
+/// Drops the tags [`unpin_all`] could not move from `set`, and fails when
+/// another tag still names one (a tag kept only as a root, such as a
+/// shader pass under `shaders\\`, is just dropped).
+pub fn check_refused(set: &mut TagSet, report: &FreshReport) -> Result<()> {
+    let mut gone = Vec::new();
+    for (id, why) in &report.refused {
+        if let Some(s) = set.slots.get_mut(id.index())
+            && s.tag.as_ref().is_some_and(|t| t.id == *id)
+        {
+            s.tag = None;
+            gone.push((id.0, why.as_str()));
+        }
+    }
+    if gone.is_empty() {
+        return Ok(());
+    }
+    let mut named_by = Vec::new();
+    let mut words = Vec::new();
+    for (i, s) in set.slots.iter().enumerate() {
+        let Some(t) = &s.tag else { continue };
+        words.clear();
+        named(&t.payload, &mut words);
+        for (d, why) in &gone {
+            if words.contains(d) {
+                named_by.push(format!(
+                    "{why}, named by {} {} (slot {i})",
+                    t.group,
+                    s.name.as_deref().unwrap_or("?")
+                ));
+            }
+        }
+    }
+    if named_by.is_empty() {
+        return Ok(());
+    }
+    Err(Error::Fresh(format!(
+        "{} references to tags the schema cannot move: {}",
+        named_by.len(),
+        named_by[..named_by.len().min(12)].join("; ")
+    )))
 }
 
 fn word(b: &[u8], at: u32) -> u32 {
@@ -276,15 +560,19 @@ fn sound_gestalt<R: Read + Seek>(
     }));
     u.add_starts(g.nested[blocks::EXTRA_INFOS].iter().map(extra));
     let mut copied = 0;
-    for e in &mut g.nested[blocks::EXTRA_INFOS] {
+    // Local lip-sync data: copied as a raw resource of its own, its
+    // pointer a raw fixup on the element (added once the tree is built).
+    let mut lip_sync = Vec::new();
+    for (k, e) in g.nested[blocks::EXTRA_INFOS].iter_mut().enumerate() {
         let p = extra(e);
         if p != u32::MAX && p != 0 && p >> 30 == 0 {
-            // A raw resource of its own, at the file offset the builder
-            // gives it: no fixup in this model, so the pointer is written
-            // after layout (see `extra_info_raw`).
-            return Err(Error::Invalid(
-                "the sound gestalt has local lip-sync data, which a fresh map cannot place yet",
-            ));
+            let len = u.extent(p);
+            let raw = u
+                .copy_raw(src, fresh, p, len)
+                .map_err(|e| Error::Fresh(format!("lip-sync data at {p:#x}: {e}")))?;
+            e.bytes[EXTRA_RAW..EXTRA_RAW + 4].fill(0);
+            lip_sync.push((k, raw));
+            copied += 1;
         }
     }
     for c in &mut g.chunks {
@@ -293,14 +581,30 @@ fn sound_gestalt<R: Read + Seek>(
             && p >> 30 == 0
         {
             let len = c.size & 0x7fff_ffff;
-            c.pointer = ChunkPointer::Local(u.copy_raw(src, fresh, p, len).map_err(tags_error)?);
+            c.pointer = ChunkPointer::Local(u.copy_raw(src, fresh, p, len).map_err(|e| {
+                Error::Fresh(format!("sound chunk at {p:#x}, {len:#x} bytes: {e}"))
+            })?);
             copied += 1;
+        }
+    }
+    let mut block = g.to_block();
+    if !lip_sync.is_empty() {
+        let at = (blocks::EXTRA_INFOS * 8) as u32;
+        let infos = child_mut(&mut block, at)
+            .ok_or(Error::Invalid("the gestalt's extra infos did not build"))?
+            .1;
+        let stride = h1sounds::gestalt::STRIDES[blocks::EXTRA_INFOS];
+        for (k, raw) in lip_sync {
+            infos.raw(
+                (k * stride + EXTRA_RAW) as u32,
+                map::build::RawRef::Local(raw),
+            );
         }
     }
     fresh
         .tag_mut(id)
         .ok_or(Error::Invalid("no ugh! slot"))?
-        .payload = TagPayload::Built(g.to_block());
+        .payload = TagPayload::Built(block);
     Ok(copied)
 }
 
@@ -310,7 +614,7 @@ fn scenario<R: Read + Seek>(
     src: &mut Map<R>,
     fresh: &mut TagSet,
     id: TagId,
-    section: usize,
+    sections: &[usize],
     report: &mut FreshReport,
 ) -> Result<()> {
     let schema = Schema::builtin();
@@ -340,17 +644,20 @@ fn scenario<R: Read + Seek>(
             Ok(None) => {}
             Ok(Some((count, mut child))) => {
                 if o == BSPS {
-                    if count != 1 {
-                        return Err(Error::Invalid(
-                            "a multiplayer scenario should have one BSP descriptor",
-                        ));
+                    if count as usize != sections.len() {
+                        return Err(Error::Fresh(format!(
+                            "the scenario has {count} BSP descriptors for {} BSP sections",
+                            sections.len()
+                        )));
                     }
-                    for (at, field) in [
-                        (0, BspField::FileOffset),
-                        (4, BspField::Size),
-                        (8, BspField::Address),
-                    ] {
-                        child.fixup(at, FixupKind::Bsp { section, field });
+                    for (k, &section) in sections.iter().enumerate() {
+                        for (at, field) in [
+                            (0, BspField::FileOffset),
+                            (4, BspField::Size),
+                            (8, BspField::Address),
+                        ] {
+                            child.fixup(k as u32 * BSP + at, FixupKind::Bsp { section, field });
+                        }
                     }
                     debug_assert_eq!(layout.size, BSP);
                 }
@@ -446,6 +753,25 @@ pub const KEEP_GROUPS: [&[u8; 4]; 11] = [
 /// `spas` the fresh tree holds no word of).
 pub const KEEP_PREFIXES: [&str; 2] = ["shaders\\", "rasterizer\\"];
 
+/// What [`prune_with`] keeps besides what the scenario and the globals
+/// reach, and which scenario palettes it empties of base entries.
+#[derive(Debug, Clone, Copy)]
+pub struct Keep<'a> {
+    /// Scenario palettes whose base entries are nulled first.
+    pub palettes: &'a [(u32, usize)],
+    /// Groups kept whole, and what they reach.
+    pub groups: &'a [&'a [u8; 4]],
+    /// Tags kept by name prefix, and what they reach.
+    pub prefixes: &'a [&'a str],
+}
+
+/// A multiplayer map's: [`BASE_PALETTES`], [`KEEP_GROUPS`], [`KEEP_PREFIXES`].
+pub const MULTIPLAYER: Keep<'static> = Keep {
+    palettes: &BASE_PALETTES,
+    groups: &KEEP_GROUPS,
+    prefixes: &KEEP_PREFIXES,
+};
+
 fn child_mut(b: &mut map::build::Block, at: u32) -> Option<(u32, &mut map::build::Block)> {
     b.fixups.iter_mut().find_map(|f| match &mut f.kind {
         FixupKind::Block { count, child } if f.offset == at && *count > 0 => Some((*count, child)),
@@ -490,9 +816,9 @@ fn named(payload: &TagPayload, out: &mut Vec<u32>) {
     }
 }
 
-/// The slots reachable from the scenario, the globals, [`KEEP_GROUPS`]
-/// and `keep`.
-fn reachable(set: &TagSet, keep: &[TagId]) -> Vec<bool> {
+/// The slots reachable from the scenario, the globals, `keep`'s roots and
+/// the tags `extra`.
+pub fn reachable(set: &TagSet, keep: &Keep, extra: &[TagId]) -> Vec<bool> {
     let n = set.slots.len();
     let mut seen = vec![false; n];
     let mut todo = Vec::new();
@@ -500,11 +826,11 @@ fn reachable(set: &TagSet, keep: &[TagId]) -> Vec<bool> {
         let Some(t) = &s.tag else { continue };
         if t.id == set.scenario
             || t.id == set.globals
-            || keep.contains(&t.id)
-            || KEEP_GROUPS.iter().any(|g| t.group == FourCC(**g))
+            || keep.groups.iter().any(|g| t.group == FourCC(**g))
+            || extra.contains(&t.id)
             || s.name
                 .as_deref()
-                .is_some_and(|n| KEEP_PREFIXES.iter().any(|p| n.starts_with(p)))
+                .is_some_and(|n| keep.prefixes.iter().any(|p| n.starts_with(p)))
         {
             seen[i] = true;
             todo.push(i);
@@ -534,14 +860,20 @@ fn reachable(set: &TagSet, keep: &[TagId]) -> Vec<bool> {
 /// 2. the scenario's tag list ([`SCENARIO_RESOURCES`]) keeps a base tag
 ///    only when something else reaches it;
 /// 3. every base slot then unreachable ([`reachable`]) is emptied, its
-///    datum named by nothing. The tags in `keep`, and what they reach,
+///    datum named by nothing. The tags in `extra`, and what they reach,
 ///    stay.
-pub fn prune(set: &mut TagSet, first: usize, keep: &[TagId]) -> Pruned {
+pub fn prune(set: &mut TagSet, first: usize, extra: &[TagId]) -> Pruned {
+    prune_with(set, first, &MULTIPLAYER, extra)
+}
+
+/// [`prune`] with other roots and palettes (a campaign level's:
+/// `h1campaign::KEEP`).
+pub fn prune_with(set: &mut TagSet, first: usize, keep: &Keep, extra: &[TagId]) -> Pruned {
     let mut out = Pruned::default();
     let scenario = set.scenario;
     let is_base = |w: u32| ((w & 0xffff) as usize) < first && w != u32::MAX;
     if let Some(TagPayload::Built(root)) = set.tag_mut(scenario).map(|t| &mut t.payload) {
-        for (at, size) in BASE_PALETTES {
+        for &(at, size) in keep.palettes {
             if let Some((count, palette)) = child_mut(root, at) {
                 for k in 0..count as usize {
                     let e = k * size;
@@ -565,8 +897,8 @@ pub fn prune(set: &mut TagSet, first: usize, keep: &[TagId]) -> Pruned {
         _ => None,
     };
     if let Some(list) = list {
-        let seen = reachable(set, keep);
-        let keep: Vec<u8> = list
+        let seen = reachable(set, keep, extra);
+        let kept: Vec<u8> = list
             .as_chunks::<4>()
             .0
             .iter()
@@ -586,13 +918,13 @@ pub fn prune(set: &mut TagSet, first: usize, keep: &[TagId]) -> Pruned {
                 if f.offset == SCENARIO_RESOURCES
                     && let FixupKind::Block { count, child } = &mut f.kind
                 {
-                    *count = (keep.len() / 4) as u32;
-                    child.bytes = keep.clone();
+                    *count = (kept.len() / 4) as u32;
+                    child.bytes = kept.clone();
                 }
             }
         }
     }
-    let seen = reachable(set, keep);
+    let seen = reachable(set, keep, extra);
     for (i, s) in set.slots.iter_mut().enumerate().take(first) {
         if seen[i] {
             continue;

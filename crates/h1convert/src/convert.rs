@@ -553,6 +553,13 @@ impl Prepared {
 
     /// The package manifest for `map_bytes`.
     pub fn manifest(&self, map_bytes: &[u8]) -> Manifest {
+        self.manifest_with(map_bytes, &self.applied.precision)
+    }
+
+    /// The package manifest for `map_bytes`, whose precision swaps'
+    /// collections are `precision` (a fresh map's own datums,
+    /// `crate::fresh::Fresh::precision`).
+    pub fn manifest_with(&self, map_bytes: &[u8], precision: &[(TagId, TagId)]) -> Manifest {
         let name = map_name(&self.h1_name);
         let variant = Variant {
             file: variant_file(&self.h1_name, self.sandbox),
@@ -563,9 +570,7 @@ impl Prepared {
                 sandbox: self.sandbox.name().into(),
                 source_sha256: self.source_sha256,
             },
-            precision: self
-                .applied
-                .precision
+            precision: precision
                 .iter()
                 .map(|&(from, to)| content::Swap {
                     from: from.0,

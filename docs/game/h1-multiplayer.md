@@ -588,6 +588,8 @@ don't move). Roots kept whatever references them (`fresh::KEEP_GROUPS`):
 (`KEEP_PREFIXES`: a `stem` names `spas` passes by a word the tree doesn't
 hold as a reference). No group the engine walks on its own is confirmed
 in the XBE yet; the list is the conservative guess a game run tests.
+Campaign levels use the same machinery with their own scenario
+(`fresh::prune_with`, `fresh::Keep`; docs/game/campaigns.md §9).
 Blood Gulch on Coagulation drops 253 tags (85 `bitm`, 50 `shad`, 15
 `snd!`, 14 `mode`, 13 `hlmt`, 12 `scen`, 11 `lsnd`, ...), 25 palette
 entries and 21 tag list entries; all 21471 references in the kept tags
@@ -596,6 +598,29 @@ pruned like the others (converter version 17): its elements are `0x28`
 bytes, a reference at `+0`, which the XBE settles
 (`docs/formats/tag-schema.md`, "Engine strides"). The dropped tags' raw
 data stays in the file, unused.
+
+**Then built from scratch (`h1convert::scratch`, converter version 28).**
+The pruned set is a step, not the output: `fresh::from_scratch` reads
+every tag by `(group, path)` through `tags::repo` (`scratch::LevelSource`:
+the conversion's tags from the pinned map it wrote, the rest from the
+retail base as it is on the disc), from the roots `matg`, the keep list
+and every tag the built scenario and structure name, and lays them out on
+a dense index of their own (`to_tag_set`); the scenario and structure are
+the fresh build's, their datums renamed (`scratch::Transfer`). Equal
+blocks are shared across tags, as retail does, except bitmaps and the
+sound gestalt, which the readers that take one tag's bytes
+(`tags::DecodedTag`, `SoundGestalt::decode`) need whole
+(`scratch::SELF_CONTAINED`). If it fails, the pruned set is written
+(`FreshReport::scratch_failed`). Blood Gulch on Coagulation: 4,385 tags
+(4,333 retail, 49 converted, 3 scenario and structure), 4,385 index
+slots, 0 dangling, 25.2 MB (pinned 48.6 MB); every tag but the sounds
+identical to the pinned map's by name, address- and index-free, the
+scenario's 20 blocks and root, every bitmap and the 9 languages' strings
+the same; 21,570 references resolve (`tests/fresh.rs`). The sound gestalt
+is cut to the 1,270 kept sounds (`h1convert::compact`; campaigns.md §9):
+5,293 chunks to 5,054, 223 raw resources (8.1 MB) dropped, each sound
+naming the same entries, import names and chunk bytes as in the pinned
+map.
 
 **The map's card is Halo 1's** (`h1convert::ui`). Halo 1's `ui.map` holds
 the map select's pictures (`ui\shell\bitmaps\mp_map_grafix`, 14 images,

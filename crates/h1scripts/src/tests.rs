@@ -1226,3 +1226,71 @@ fn ai_status_comparisons_compare_combat_status_once() {
 }
 
 mod cutscenes;
+
+/// `(script startup main (begin (unit_open tube_placed) (unit_open
+/// tube_gone) (unit_kill tube_gone)))`: `tube_gone` names no placement, so
+/// its `unit_open` is stubbed (Halo 2's evaluator does not check for
+/// `none`); `unit_kill` is not in `NONE_UNSAFE` and keeps its call.
+#[test]
+fn none_unsafe_calls_naming_an_unplaced_unit_are_stubbed() {
+    const UNIT: u16 = 14;
+    let mut types = h1_types();
+    types.push("unit".into());
+    let c = Catalog::new(
+        vec![
+            f("begin", PASS, 0x2000, &[]),
+            f("unit_open", VOID, ORDINARY, &[UNIT]),
+            f("unit_kill", VOID, ORDINARY, &[UNIT]),
+            f("print", VOID, ORDINARY, &[STRING]),
+        ],
+        types,
+        ["startup", "dormant", "continuous", "static", "stub"]
+            .map(String::from)
+            .to_vec(),
+    )
+    .unwrap();
+    let mut h2 = h2_target();
+    h2.types.push("unit".into());
+    for (name, index) in [("unit_open", 194), ("unit_kill", 196)] {
+        h2.builtins.insert(
+            name.into(),
+            H2Builtin {
+                index,
+                return_type: VOID,
+                parameters: vec![UNIT],
+                special: false,
+            },
+        );
+    }
+    let mut b = Builder::default();
+    let call = |b: &mut Builder, k: u16, name: &str, unit: &str| {
+        let u = b.atom(UNIT, UNIT, unit, 0);
+        b.call(k, VOID, name, &[u])
+    };
+    let placed = call(&mut b, 1, "unit_open", "tube_placed");
+    let gone = call(&mut b, 1, "unit_open", "tube_gone");
+    let kill = call(&mut b, 2, "unit_kill", "tube_gone");
+    let main = b.call(0, VOID, "begin", &[placed, gone, kill]);
+    let t = read(&scenario(&b, &[("main", 0, VOID, main)], &[])).unwrap();
+    let table = Table::build(&c, &h2);
+    let out = crate::compile::compile_with(
+        &t,
+        &c,
+        &table,
+        &h2,
+        Missing::Stub,
+        crate::compile::Cutscenes::Play,
+        &|ty, token| ty == "unit" && token == "tube_placed",
+        &[],
+    )
+    .unwrap();
+    assert!(out.missing.is_empty(), "{:?}", out.missing);
+    assert_eq!(out.unindexed.len(), 1);
+    assert_eq!(out.unindexed[0].name, "unit_open (unit tube_gone)");
+    let s = hs::Scenario::decode(&out.scenario_bytes(BASE), BASE).unwrap();
+    assert_eq!(s.reachable(s.roots()).unwrap().len(), out.nodes.len());
+    let body = main_body(&s);
+    assert!(!body[0].atom() && body[0].opcode() == 194);
+    assert!(body[1].atom() && body[1].opcode() == VOID);
+    assert!(!body[2].atom() && body[2].opcode() == 196);
+}

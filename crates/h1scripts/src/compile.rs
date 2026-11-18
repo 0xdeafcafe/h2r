@@ -158,6 +158,34 @@ pub const INDEXED: &[&str] = &[
     "device_group",
 ];
 
+/// Halo 2 builtins that hand their object to the engine without a `none`
+/// check. `unit_open` (194, evaluator `0x002a32a0`) and `unit_close`
+/// (195, `0x002a32e0`) send the unit message 0x17 or 0x18 through
+/// `0x000e6900`, whose handlers (`0x000e9370`, `0x000e9500`) walk the
+/// object and its children by index (`0x000e92e0`): `none` takes header
+/// 0xffff, whose object pointer is null, and the read of its `+0x33e` at
+/// `0x00113eae` faults. a10's `fast_setup` opens `cryotube_1` as its
+/// cinematic ends, and the cryotube has no template, so the name has no
+/// placement. A call whose direct argument is an object name that will not
+/// resolve to a placement ([`compile_with`]'s `resolves`, with a type from
+/// [`OBJECT_NAME_TYPES`]) is stubbed and listed in
+/// [`Compiled::unindexed`], as for [`INDEXED`].
+pub const NONE_UNSAFE: &[&str] = &["unit_open", "unit_close"];
+
+/// Halo 2 value types whose atoms are object names (an index into the
+/// scenario's object names).
+pub const OBJECT_NAME_TYPES: &[&str] = &[
+    "object_name",
+    "unit_name",
+    "vehicle_name",
+    "weapon_name",
+    "device_name",
+    "scenery_name",
+    "object",
+    "unit",
+    "vehicle",
+];
+
 /// A value the converter must supply: write it into node `slot`'s data word.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hook {
@@ -204,7 +232,8 @@ pub struct Compiled {
     /// Engine globals Halo 2 lacks (compiled as literals).
     pub missing_globals: Vec<Unresolved>,
     /// Calls stubbed like a missing builtin because an [`INDEXED`]
-    /// argument would not resolve: the builtin, then the type and token.
+    /// argument, or a [`NONE_UNSAFE`] builtin's object name, would not
+    /// resolve: the builtin, then the type and token.
     pub unindexed: Vec<Unresolved>,
 }
 
@@ -231,7 +260,8 @@ pub fn compile(
 
 /// [`compile`], with Halo 1's cutscenes and tutorials played or skipped,
 /// and `resolves(type, token)` saying whether a hook of an [`INDEXED`]
-/// type will get a value: a call with a direct argument that will not is
+/// type (or an object name passed to a [`NONE_UNSAFE`] builtin) will get a
+/// value other than `none`: a call with a direct argument that will not is
 /// compiled as its type's zero, like a missing builtin under
 /// [`Missing::Stub`].
 #[allow(clippy::too_many_arguments)]
@@ -575,9 +605,15 @@ impl Compiler<'_> {
         Ok(())
     }
 
-    /// The first of `args` that is an atom of an [`INDEXED`] type which
-    /// will not resolve: its Halo 2 type name and token.
-    fn unindexed_argument(&self, args: &[Datum]) -> Result<Option<(String, String)>> {
+    /// The first of `args` that is an atom of an [`INDEXED`] type (or, for
+    /// a [`NONE_UNSAFE`] builtin, an object name) which will not resolve:
+    /// its Halo 2 type name and token.
+    fn unindexed_argument(
+        &self,
+        h2_name: &str,
+        args: &[Datum],
+    ) -> Result<Option<(String, String)>> {
+        let none_unsafe = NONE_UNSAFE.contains(&h2_name);
         for &a in args {
             let n = self.t.node(a)?;
             if !n.atom() || n.global() {
@@ -590,7 +626,9 @@ impl Compiler<'_> {
             else {
                 continue;
             };
-            if !INDEXED.contains(&ty.as_str()) {
+            if !INDEXED.contains(&ty.as_str())
+                && !(none_unsafe && OBJECT_NAME_TYPES.contains(&ty.as_str()))
+            {
                 continue;
             }
             let token = self.t.string(n.string_offset())?;
@@ -831,7 +869,7 @@ impl Compiler<'_> {
                 }
             };
         };
-        if let Some((ty, token)) = self.unindexed_argument(&args)? {
+        if let Some((ty, token)) = self.unindexed_argument(&h2_name, &args)? {
             self.out.unindexed.push(Unresolved {
                 definition: self.definition.clone(),
                 name: format!("{h2_name} ({ty} {token})"),

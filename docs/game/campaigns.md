@@ -191,10 +191,138 @@ the level and `vfs::CampaignMapsBackend` serves it as `maps\<level>.map`;
 the map's header name is the level's and its scenario path
 `scenarios\solo\<level>\<level>`, the path its start record names.
 
-**Pinned, not fresh (the user's stopgap).** A fresh map needs every tag
-moved or built, and `tags::schema::Relocator` can't move `sbsp` yet; a
-pinned base is reachable now. New tags are **added** to the pinned set
-(index growth, tail kept: the entry table moves to the metadata end).
+**Fresh by default; `--pinned` keeps the old way.** A level is first
+built on the pinned base as before (the intermediate), then written
+fresh (`h1campaign::convert`, `fresh`; `Options::pinned` and `h2 h1
+convert --pinned` skip it):
+
+1. **Its own scenario.** `scenario::fresh_root` starts from an empty
+   `0x3e0` root; nothing of 05a's scenario is copied. Every root field
+   05a fills that the conversion does not write, and what a fresh level
+   writes instead (survey `survey_base_scenario_fields`,
+   `survey_base_scenario_elements` in `tests/fresh.rs`, V on 05a, 03a and
+   Coagulation):
+
+   | Field | 05a | Fresh |
+   |---|---|---|
+   | `+0x00`, `+0x1f8`, `+0x208`, `+0x320` null references (`sbsp`, `unic`, `hmt `, `sfx+`) | group, -1 | the same (`FRESH_NULL_REFS`) |
+   | `+0xe8`/`+0xf0` light volumes and palette (28, 2) | its own | empty |
+   | `+0xf8` player starting profiles (2) | Halo 2's weapons | Halo 1's (`h1campaign::profiles`; the pinned build writes them too) |
+   | `+0x100` starting locations | template element | Halo 1's, on a zeroed element (05a's bytes past the position and facing are zero) |
+   | `+0x108` trigger volumes | 121, parked | Halo 1's only (no parked base volumes; hooks index from 0) |
+   | `+0x138`/`+0x140` decals and palette | its own | empty |
+   | `+0x150` AI styles (7) | its own | empty (every converted order has style -1) |
+   | `+0x170` mission scenes (15) | its own | empty |
+   | `+0x200`, `+0x358`, `+0x3b8` chapter title, subtitles, objectives | 05a's | null |
+   | `+0x210` BSP descriptors | template elements | zeroed elements, region and `sbsp`/`ltmp` written |
+   | `+0x218` resources (1), `+0x230` kill triggers (4), `+0x248` AI triggers (50) | its own | empty |
+   | `+0x250`..`+0x260` background sound, sound environment, weather palettes | its own | empty (the cluster data names none) |
+   | `+0x298` object salts | 05a's counts | zero (Coagulation's are mostly zero) |
+   | `+0x318` spawn data (1) | all zero | empty |
+   | `+0x348`, `+0x350` fog and flocks; `+0x378`, `+0x380` decorators | its own | empty |
+   | `+0x398` level data, `+0x3b0` mission dialogue | 05a's | empty |
+   | `+0x3d8` simulation table (446) | its object, projectile and damage tags | every kept tag of those groups, in index order (`write_simulation_table`) |
+
+   The base's BSP slots take Halo 1's BSP names.
+2. **Built from scratch** (`h1campaign::scratch`, on `tags::repo`). The
+   map is assembled from an empty set by tag path, not from 05a:
+   `LevelSource` is one `TagSource` over two maps, the intermediate for
+   every tag the conversion built or changed (built, aliased, or pinned
+   with bytes unlike 05a's) and retail 05a for the rest. The roots are
+   `matg`, the keep list below and every datum the written scenario and
+   BSPs name; `tags::repo::closure` follows references from there and
+   `to_tag_set` lays the tags out with a dense index (no slot of 05a's,
+   no empty slots). The scenario, BSPs and lightmaps are the conversion's
+   own blocks: their datum words are renamed to the new index, their raw
+   blobs copied and their BSP sections made anew (`Transfer`), then the
+   simulation table is written for the new index. A tag the extractor
+   cannot take whole fails the build. Equal blocks are shared across
+   tags, as retail shares arrays across tags in 25 to 28 groups per map
+   (05a: 377,044 bytes of `effe` arrays and 245,966 of `shad` lie in
+   other tags), except `bitm` (shares only within itself) and `ugh!` (not
+   at all), which our readers take alone and retail never shares
+   (`scratch::SELF_CONTAINED`, V on 05a, Coagulation, 03a and 07a). The core
+   is `h1convert::scratch` (multiplayer uses it too) and takes any
+   `TagSource`, so tags written from typed definitions plug in as a
+   source. The sound gestalt is then cut to the kept sounds (below).
+   Three 05a words outside every
+   schema field read as pointers and are data (`fresh::DATA_WORDS`, given
+   to the base's `MapSource::data_words`).
+3. **Fallback: pruned.** If the build from scratch fails, the level is
+   built the slice-before way (a `dropped` line says why): every tag of
+   the intermediate laid out anew (`h1convert::fresh::unpin_all` with
+   `built_too`), the unreachable base tags dropped (`fresh::prune_with`,
+   `KEEP`), on 05a's index. No level takes it today.
+
+**Measured** (`tests/fresh.rs`, `every_level_converts_fresh`, 2026-11-17,
+converter version 28, the gestalt cut; pinned is the old way, lean ladder
+and all; pruned is version 23's fresh build):
+
+| Level | Tag memory pinned | pruned | from scratch | File pinned | pruned | from scratch | Tags | References resolving |
+|---|---|---|---|---|---|---|---|---|
+| a10 | `0xb44000` | `0x89b000` | `0x810000` | 287,119,360 | 257,813,504 | 110,644,736 | 7,027 | 30,437/30,437 |
+| a30 | `0xb3c000` | `0x8e5000` | `0x85c000` | 232,101,376 | 176,360,448 | 57,287,168 | 6,905 | 29,658/29,658 |
+| a50 | `0xbeb000` | `0x8cf000` | `0x83e000` | 241,578,496 | 190,463,488 | 65,308,672 | 7,072 | 30,306/30,306 |
+| b30 | `0xb29000` | `0x85e000` | `0x7db000` | 230,040,064 | 171,379,200 | 53,124,608 | 7,035 | 29,721/29,721 |
+| b40 | `0xc22000` | `0x923000` | `0x891000` | 265,091,072 | 229,058,048 | 94,251,520 | 7,309 | 32,135/32,135 |
+| c10 | `0xc01000` | `0x8a1000` | `0x7f1000` | 260,217,344 | 210,515,968 | 82,070,016 | 6,678 | 30,538/30,538 |
+| c20 | `0xb3c000` | `0x83f000` | `0x745000` | 257,913,344 | 208,459,264 | 78,148,096 | 4,205 | 22,866/22,866 |
+| c40 | `0xbe1000` | `0x8b7000` | `0x7d9000` | 272,847,360 | 231,427,072 | 93,013,504 | 6,086 | 29,241/29,241 |
+| d20 | `0xbab000` | `0x8ed000` | `0x81a000` | 247,974,912 | 200,224,768 | 72,000,512 | 5,842 | 27,541/27,541 |
+| d40 | `0xbec000` | `0x8ee000` | `0x815000` | 293,278,720 | 259,985,920 | 113,948,672 | 6,020 | 29,179/29,179 |
+
+The bound is `0xc24000`: every level has 3.6 to 4.9 MB to spare, and the
+lean ladder fires nowhere (b40 keeps its level data, seat table and object
+textures; the ladder stays as a safety net). The file bound is
+`0x11800000` (293,601,280 bytes). On every level the map is built from
+scratch with one index slot per tag, and: no tag from
+`scenarios\solo\05a_deltaapproach\` or `scenarios\multi\`, every script
+atom naming an object definition, sound, effect, damage effect or
+animation graph resolves to a tag of that group with data, and the
+scripts' reference block reads back (`hs::Scenario::read`). The reference
+sweep counts only problems the pinned map of the same level does not have
+(none on any level). If the fresh map would pass the file bound the
+pinned one is written instead (`Report::fresh` false, a `dropped` line).
+
+**Player starting profiles** (`h1campaign::profiles`). Halo 1's block
+`scnr +0x348` (`0x68` each; S, the editing kits' layout, checked on all
+ten levels by `h1_starting_profiles_read`: every weapon is a `weap` or
+none, a30's first is the assault rifle 60/120 and the pistol 12/64) is
+written as Halo 2's `+0xf8` (`0x44` each, V on 05a and 03a): the name,
+the health and shield modifiers, each weapon as its converted tag (the
+same `h1objects` converter as the weapon palette, a donor's retail
+weapon when only a donor has the template) with its rounds loaded and
+total, and the fragmentation and plasma grenade counts.
+`every_level_converts_fresh` checks every level's profiles: one per Halo
+1 profile, each weapon Halo 1 names a `weap` of the map with data.
+
+**Keep list** (`KEEP`, the multiplayer one, `fresh::MULTIPLAYER`):
+`matg`, `scnr`, `ugh!`, `unic`, `mulg`, `stem`, `spas`, `vrtx`, `pmov`,
+`sncl`, `snmx` and every tag under `shaders\` or `rasterizer\`. The HUD,
+interface globals, AI globals and dialogue, the player's character and
+the sound classes are all reached from `matg` (and the converted
+scenario), so they need no entry: the fresh a30 keeps every `matg`
+reference. No scenario palette is nulled (the conversion already wrote
+them all).
+
+From scratch takes less tag memory than pruned (a30 `0x85c000` against
+`0x8e5000`): the dense index, the cut gestalt, and equal blocks placed
+once. Scoping the sharing to each tag had cost about 1 MB a level, the
+arrays retail itself shares across `effe`, `shad`, `styl` and `prt3`
+tags.
+
+**The sound gestalt cut to the kept sounds** (`h1convert::compact`, run by
+the builder from scratch). 05a's `ugh!` holds every 05a sound's entries;
+a new gestalt is built from nothing, each kept `snd!` in index order
+taking its entries across (`h1sounds::merge::merge_sound`) with its
+promotion carried whole (its rules index the sound's own pitch ranges:
+`compact::PROMOTION_EVIDENCE`, V on 05a, Coagulation and 03a), and the raw
+no chunk names any more is emptied. a30: 3,270 sounds kept, 18,053 chunks
+to 14,344, 3,830 raw resources (108.9 MB, 05a's own dialogue and music)
+dropped; on every level each kept sound names the same entries, import
+names and chunk bytes as in the pinned map (`compact::map_entries`,
+`every_level_converts_fresh`). A gestalt the cut cannot read stays whole
+(`ScratchReport::gestalt_whole`).
 
 **Base per level: `05a_deltaapproach` for all ten** (`h1campaign::base_for`).
 Why (surveys `base_memory_and_vehicles`, `survey_bases`):
@@ -312,13 +440,28 @@ What a cutscene needed (survey `cutscene_survey`, h1campaign
   version 4 (Halo 2's decoder table at `0x0046fd5c` has four versions);
   unit control versions 0, 3 and 4. `recording_play`, `_and_delete`,
   `_and_hover`, `recording_kill` and `recording_time` are 138 to 142.
-  **Held (converter version 27):** played as they are, Halo 1's streams
-  fault Halo 2's player (a30's intro, headless, 18 s in: a call to pc 4
-  through a null decoder entry from `0x001fb61e`). Until the streams are
-  converted to Halo 2's encoding, the five builtins stay missing
-  (`h1scripts::identified::HELD`) and compile as stubs: the plays
-  `false`, the kill nothing, `recording_time` 0 (every wait on it reads
-  0 as done). The block is still written, unused.
+  **Streams rewritten (converter version 28).** Copied as they are,
+  Halo 1's streams faulted Halo 2's player (a30 and a50 headless: calls
+  to pc 4 and pc 1 from `0x0029f13d`, under `0x001fb61e`), and version
+  27 held the five builtins as stubs. Both games' version-4 players are
+  the same loop: a header byte whose low two bits give the delay (none,
+  one tick, a byte, a short) and whose upper six bits are the event type,
+  dispatched through a handler table with no bound (Halo 2 `0x004710f0`,
+  24 types; Halo 1 `0x00232538`, 23). The payloads differ in one place:
+  control flags (type 4) are two bytes in Halo 1 and four in Halo 2, so
+  Halo 2 lost its place in 189 of the 349 streams, most of them then
+  reading a payload byte as a type past the table (the word after it is
+  `0x00000001`). The
+  initial unit control state differs too (Halo 2's fields are wider).
+  `h1campaign::recordings` rewrites each stream: the state field by
+  field, flag events widened, animation-state events (Halo 2's state is
+  a mode string ID a byte cannot carry) folded into the initial mode,
+  and only Halo 1's movement and stance flags (bits 0 to 9) kept: Halo 2
+  moved the weapon actions to its high half, so recorded units move and
+  look but do not fire. The disc test `every_converted_recording_walks_in_halo_2`
+  walks every rewritten stream through Halo 2's table, and
+  `decoder_tables_match_the_executables` checks the tables against both
+  `default.xbe` files.
 - **Camera.** `camera_set`, `camera_control`, `camera_time` map directly;
   `camera_set_relative` (451), `camera_set_first_person` (456) and
   `camera_set_dead` (457, an object in Halo 2) by position. No level
@@ -531,6 +674,14 @@ The bound is `0xc24000`; the base alone is `0xaed000`.
   reached atom of these types against its converted block on all ten
   levels. Names resolve without case (b30 and d40 named 3 and 9 flags
   and a device group in another case and lost them).
+- **Units opened or closed.** `unit_open` and `unit_close` do not check
+  their unit for `none` (`0x00113eae` reads `+0x33e` through object
+  header 0xffff's null pointer), so a call naming an object name with no
+  placement is stubbed (h1-scripts.md, Units the engine does not check for
+  none). a10 faulted there as its opening cinematic ended:
+  `fast_setup`'s `(unit_open cryotube_1)`, the cryotube having no
+  template. `a10_opens_and_closes_only_placed_units` checks every reached
+  call on a10, pinned and fresh.
 - **b40's level data.** b40 is at the tag memory bound. A level over
   it is converted again leaner (`h1campaign::convert`, `Lean`), dropping
   in turn: the empty squads kept for their names (`EmptySquads`), the
@@ -635,8 +786,8 @@ map. `--copy-source` also copies the disc's campaign maps unchanged to
 | each of a10 .. d40 | `<data>/campaigns/halo1/<level>.map`, `campaign.toml` (`content::campaign_list::HALO1`) | the campaign picker and lists (`boot::campaigns`), `vfs::CampaignMapsBackend` as `maps\<level>.map`, `--level` (`level_boot::resolve_in`) |
 | each Halo 1 multiplayer map on the disc (`h1convert::convert::MAPS`), Halo 2 then Halo 1 sandbox | `<data>/maps/h1_<map>/{h2,h1}/h1_<map>.map`, `manifest.toml` | `boot::new_maps`, the `multiplayer.halo1_sandbox` setting picks the variant |
 
-Campaign levels go on their pinned base (§9); multiplayer maps on their
-default base, pinned (`h2 h1 convert` without `--fresh`).
+Campaign levels are written fresh from their base (§9); multiplayer maps
+fresh from their default base (`--pinned` for either keeps the base).
 
 ### The stamp, and when it converts again
 

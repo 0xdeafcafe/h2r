@@ -238,6 +238,13 @@ impl<'s, R: Read + Seek> MapSource<'s, R> {
         })
     }
 
+    /// Words outside every field that are data on this map, not pointers
+    /// ([`Memory::data_words`]): a caller that has checked them keeps the
+    /// tags holding them from being taken with losses.
+    pub fn data_words(&mut self, words: &[u32]) {
+        self.rel.memory_mut().data_words(words);
+    }
+
     /// Raw resources read since the last call (with [`MapSource::keep_raw`]).
     pub fn take_raw(&mut self) -> Vec<([u8; 32], Vec<u8>)> {
         std::mem::take(&mut self.kept)

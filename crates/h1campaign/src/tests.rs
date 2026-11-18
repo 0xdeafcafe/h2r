@@ -90,6 +90,7 @@ fn hooks_take_retail_encodings() {
     let groups = ["enc".to_string()];
     let t = Targets {
         names: &names,
+        placed: &[true, true],
         volumes: &volumes,
         parked: 10,
         squads: &squads,

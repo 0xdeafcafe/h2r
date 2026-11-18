@@ -583,15 +583,20 @@ fn cutscenes_convert_and_read_back() {
         {
             *stubbed.entry(m.name.as_str()).or_default() += 1;
         }
-        // Held recordings (h1scripts::identified::HELD): no call reaches
-        // Halo 2's recording builtins (138 to 142).
-        let held = played
+        // The recordings play: calls reach Halo 2's recording builtins
+        // (138 to 142) wherever Halo 1's scripts make them.
+        let recording_calls = played
             .nodes
             .iter()
             .filter(|n| !n.atom() && !n.script_call() && (138..=142).contains(&n.opcode()))
             .count();
-        if held > 0 {
-            failed.push(format!("{level}: {held} calls of a held recording builtin"));
+        println!("  calls of the recording builtins: {recording_calls}");
+        if let Some(m) = played
+            .missing
+            .iter()
+            .find(|m| m.name.starts_with("recording_"))
+        {
+            failed.push(format!("{level}: {} still missing", m.name));
         }
         println!("== {level}: {} cinematic scripts", cinematic.len());
         println!("  stubbed in cinematics: {stubbed:?}");
@@ -717,6 +722,12 @@ fn cutscenes_convert_and_read_back() {
             let o = (a - space.virtual_base) as usize;
             meta[o..o + len].to_vec()
         };
+        let original = recs;
+        let mut recs = original.clone();
+        let rewritten = h1campaign::recordings::for_halo2(&mut recs);
+        if !rewritten.stilled.is_empty() {
+            failed.push(format!("{level}: held still {:?}", rewritten.stilled));
+        }
         for (i, rec) in recs.iter().enumerate().take(n) {
             let e = mem(at + (i * 0x34) as u32, 0x34);
             let size = u32::from_le_bytes(e[0x2c..0x30].try_into().unwrap()) as usize;
@@ -725,6 +736,12 @@ fn cutscenes_convert_and_read_back() {
                 failed.push(format!("{level}: recording {i} differs"));
             } else if size > 0 && mem(p, size) != rec.stream {
                 failed.push(format!("{level}: recording {i}'s stream differs"));
+            } else if let Err(e) = h1campaign::recordings::walk(
+                h1campaign::recordings::Game::Halo2,
+                rec.control_version(),
+                &mem(p, size),
+            ) {
+                failed.push(format!("{level}: recording {i} as Halo 2 reads it: {e}"));
             }
             if !(1..=4).contains(&rec.version()) {
                 failed.push(format!("{level}: recording {i} version {}", rec.version()));

@@ -20,12 +20,14 @@
 pub mod ambience;
 pub mod apply;
 pub mod collision;
+pub mod compact;
 pub mod convert;
 pub mod fresh;
 pub mod globals;
 pub mod placements;
 pub mod query;
 pub mod sandbox;
+pub mod scratch;
 pub mod shaders;
 pub mod sky;
 pub mod slots;

@@ -12,6 +12,7 @@
 //! | `+0x08` skies | 8 | Halo 1's skies, converted (`h1sky`) |
 //! | `+0x48` object names | `0x24` | Halo 1's names; each placement index mapped to the converted placement, or -1 |
 //! | `+0x50`..`+0x330` object placements and palettes | per type (`tags::object::OBJECT_TYPES`) | emptied; weapons, equipment, vehicles, scenery and bipeds from Halo 1's |
+//! | `+0xf8` player starting profiles | `0x44` | Halo 1's, weapons the converted tags ([`crate::profiles`]) |
 //! | `+0x100` player starting locations | `0x34` | Halo 1's, each on the base's first element |
 //! | `+0x108` trigger volumes | `0x44` | the base's, parked out of the level (`h1convert::convert::park_trigger_volumes`), then Halo 1's |
 //! | `+0x130` BSP switch trigger volumes | `0xe` | Halo 1's (`h1::BSP_SWITCHES`), on its volumes and BSPs |
@@ -335,6 +336,10 @@ pub struct ScenarioReport {
     pub names: usize,
     /// Base trigger volumes parked.
     pub parked_volumes: usize,
+    /// Simulation table entries (fresh levels).
+    pub simulation: usize,
+    /// Halo 1 player starting profiles written.
+    pub profiles: usize,
     /// AI: squads, zones, characters (and substitutions made).
     pub ai: Option<AiReport>,
     /// Scripts: scripts, globals, nodes, hooks resolved and left.
@@ -390,6 +395,8 @@ pub struct ScriptReport {
     /// streams' bytes.
     pub recordings: usize,
     pub recording_bytes: usize,
+    /// The streams' rewrite for Halo 2's player.
+    pub recordings_rewritten: crate::recordings::Report,
 }
 
 impl std::fmt::Display for ScenarioReport {
@@ -480,6 +487,9 @@ impl std::fmt::Display for ScenarioReport {
                 "    placed at startup ({INITIAL_SCRIPT}): {:?}",
                 s.initial
             )?;
+            for r in &s.recordings_rewritten.stilled {
+                writeln!(f, "    recording held still: {r}")?;
+            }
         }
         Ok(())
     }
@@ -581,6 +591,7 @@ pub fn replaced_fields() -> Vec<u32> {
         SKIES,
         OBJECT_NAMES,
         STARTING_LOCATIONS,
+        crate::profiles::H2.0,
         TRIGGER_VOLUMES,
         BSP_SWITCHES,
         BSPS,
@@ -609,6 +620,47 @@ pub fn replaced_fields() -> Vec<u32> {
     v
 }
 
+/// Null tag references a fresh scenario root holds, as retail writes
+/// them: the group, then datum -1. **V** on 05a, 03a and Coagulation.
+pub const FRESH_NULL_REFS: [(u32, [u8; 4]); 4] = [
+    (0x000, *b"sbsp"),
+    (0x1f8, *b"unic"),
+    (0x208, *b"hmt "),
+    (0x320, *b"sfx+"),
+];
+
+/// The scenario root a fresh level starts from: every field empty, the
+/// null references of [`FRESH_NULL_REFS`], and every other root tag
+/// reference null. What the base's root held and a fresh level does not
+/// take (docs/game/campaigns.md, "Fresh levels"): its light volumes and
+/// their palette (`+0xe8`, `+0xf0`), decals and their palette (`+0x138`, `+0x140`), AI styles (`+0x150`;
+/// every converted order has style -1), mission scenes (`+0x170`), its
+/// chapter title, subtitles and objectives references (`+0x200`, `+0x358`,
+/// `+0x3b8`), resources (`+0x218`), kill triggers (`+0x230`, indices of
+/// its own trigger volumes), AI triggers (`+0x248`), background sound,
+/// sound environment and weather palettes (`+0x250`..`+0x260`; the
+/// cluster data names none), object salts (`+0x298`, zero on Coagulation),
+/// spawn data (`+0x318`, all zero on 05a), fog and flock blocks (`+0x348`,
+/// `+0x350`), decorator blocks (`+0x378`, `+0x380`), level data
+/// (`+0x398`) and mission dialogue (`+0x3b0`). The simulation table
+/// (`+0x3d8`) is written once the map's tags are known
+/// ([`write_simulation_table`]).
+pub fn fresh_root() -> Block {
+    let mut root = Block::zeroed(ROOT);
+    let schema = tags::schema::Schema::builtin();
+    for (&at, f) in &schema.groups[&FourCC(*b"scnr")].fields {
+        if matches!(f, tags::schema::Field::TagRef) {
+            root.put_u32(at as usize, u32::MAX)
+                .put_u32(at as usize + 4, u32::MAX);
+        }
+    }
+    for (at, g) in FRESH_NULL_REFS {
+        root.put_u32(at as usize, u32::from_be_bytes(g))
+            .put_u32(at as usize + 4, u32::MAX);
+    }
+    root
+}
+
 /// Writes the scenario layers into `set` (built from the base), leaving
 /// out what `lean` says ([`crate::Lean`]; object textures are left out in
 /// `lib.rs`). Unless `lean` leaves out the music, `music` caps the looping
@@ -627,7 +679,11 @@ pub fn write(
     music: u64,
     report: &mut Report,
 ) -> Result<()> {
+    // A fresh level's scenario is written from nothing ([`fresh_root`]);
+    // a pinned one is the base's with the replaced fields emptied.
+    let fresh = !opts.pinned;
     let mut root = match &base.tree {
+        _ if fresh => fresh_root(),
         Some(t) => t.clone(),
         None => Block::new(base.bytes[..ROOT].to_vec()),
     };
@@ -642,7 +698,11 @@ pub fn write(
         .ok_or_else(|| invalid("the base has no BSP descriptor"))?;
     let mut desc = Vec::new();
     for (k, slot) in bsps.iter().enumerate() {
-        let mut b = Block::new(templates.get(k).unwrap_or(first).to_vec());
+        let mut b = if fresh {
+            Block::zeroed(BSP)
+        } else {
+            Block::new(templates.get(k).unwrap_or(first).to_vec())
+        };
         for (at, field) in [
             (0, BspField::FileOffset),
             (4, BspField::Size),
@@ -738,6 +798,7 @@ pub fn write(
     let template = base
         .elements(STARTING_LOCATIONS, STARTING_LOCATION)?
         .first()
+        .filter(|_| !fresh)
         .map(|e| e.to_vec())
         .unwrap_or_else(|| vec![0; STARTING_LOCATION]);
     let starts: Vec<Block> = mp
@@ -784,6 +845,7 @@ pub fn write(
         })
         .collect();
     rep.names = names.len();
+    let names_placed: Vec<bool> = names.iter().map(|b| i16_at(&b.bytes, 0x22) >= 0).collect();
     put_block(&mut root, OBJECT_NAMES, OBJECT_NAME, names);
 
     // The base's trigger volumes are its own level's: parked, and free of
@@ -791,6 +853,7 @@ pub fn write(
     let mut volumes: Vec<Block> = base
         .elements(TRIGGER_VOLUMES, TRIGGER_VOLUME)?
         .iter()
+        .filter(|_| !fresh)
         .map(|e| {
             let mut b = Block::new(e.to_vec());
             for (k, v) in h1convert::convert::PARKED.iter().enumerate() {
@@ -981,6 +1044,7 @@ pub fn write(
                 &mut root,
                 &Targets {
                     names: &names,
+                    placed: &names_placed,
                     volumes: &volume_names,
                     parked,
                     squads: &squads,
@@ -1014,7 +1078,10 @@ pub fn write(
         .pinned
         .as_mut()
         .ok_or_else(|| invalid("the set is not from a retail map"))?;
-    if base.tree.is_none() {
+    // A fresh level keeps them all in the intermediate pinned map, so the
+    // base tags whose arrays live there unpin from it whole (zero bytes
+    // included); none of it reaches the fresh map.
+    if base.tree.is_none() || fresh {
         pinned.unowned.push((base.address, base.bytes.clone()));
     } else {
         for &(lo, hi) in &base.keep {
@@ -1107,6 +1174,26 @@ fn place_objects(
         }
         palettes.push(pal);
     }
+    // Starting profiles' weapons, through the same converter.
+    let profiles = crate::profiles::read(h1)?;
+    let mut profile_weapons = HashMap::new();
+    for w in profiles
+        .iter()
+        .flat_map(|p| p.weapons.iter().filter_map(|w| w.0))
+    {
+        let tag = h1.tag(w)?;
+        let got = match conv.object(tag) {
+            Ok(id) => Some(Pal::Converted(id)),
+            Err(h1objects::Error::NoTemplate(_)) => retail_stand_in(set, tag).map(Pal::Retail),
+            Err(e) => {
+                dropped.push(format!("starting profile weapon {}: {e}", tag.name));
+                None
+            }
+        };
+        if let Some(p) = got {
+            profile_weapons.insert(w, p);
+        }
+    }
     let mut player = None;
     rep.player_biped = match h1.find(h1map::Group::new(b"bipd"), PLAYER_BIPED) {
         Some(t) => match conv.object(t) {
@@ -1137,6 +1224,12 @@ fn place_objects(
         h1convert::globals::set_player_unit(set, real(p), h1convert::globals::Players::Campaign)
             .map_err(|e| invalid(format!("player unit: {e}")))?;
     }
+
+    let profile_blocks =
+        crate::profiles::elements(&profiles, |w| profile_weapons.get(&w).map(palette_id));
+    rep.profiles = profile_blocks.len();
+    let (at, stride) = crate::profiles::H2;
+    put_block(root, at, stride, profile_blocks);
 
     let mut placed = HashMap::new();
     let mut unique = 0u32;
@@ -1235,6 +1328,9 @@ pub const INITIAL_SCRIPT: &str = "h1_initial_encounters";
 pub struct Targets<'a> {
     /// Object names, in the scenario's order.
     pub names: &'a [String],
+    /// Whether each of `names` points at a converted placement (a name
+    /// whose palette entry did not convert points at -1).
+    pub placed: &'a [bool],
     /// Halo 1 trigger volume names, written after `parked` base volumes.
     pub volumes: &'a [&'a str],
     pub parked: usize,
@@ -1356,6 +1452,15 @@ fn install_scripts(
         Default::default()
     };
     let resolves = |ty: &str, token: &str| {
+        // An object name handed to a builtin that does not check for none
+        // (`h1scripts::compile::NONE_UNSAFE`) must name a placement.
+        if h1scripts::compile::OBJECT_NAME_TYPES.contains(&ty) {
+            return targets
+                .names
+                .iter()
+                .position(|n| n.eq_ignore_ascii_case(token))
+                .is_some_and(|i| targets.placed.get(i).copied().unwrap_or(false));
+        }
         level
             .resolve(&h1scripts::compile::Hook {
                 slot: 0,
@@ -1393,10 +1498,12 @@ fn install_scripts(
         Some(true) => crate::cutscenes::install_graphs(h1, set, &c)?,
         _ => Default::default(),
     };
-    let recordings = match cutscene_data {
+    let mut recordings = match cutscene_data {
         Some(_) => crate::cutscenes::read_recordings(h1)?,
         None => Vec::new(),
     };
+    // Halo 1's event streams in Halo 2's encoding (crate::recordings).
+    let rewritten = crate::recordings::for_halo2(&mut recordings);
     put_block(
         root,
         crate::cutscenes::H2_RECORDINGS,
@@ -1516,6 +1623,7 @@ fn install_scripts(
         graphs,
         recordings: recordings.len(),
         recording_bytes: recordings.iter().map(|r| r.stream.len()).sum(),
+        recordings_rewritten: rewritten,
     })
 }
 
@@ -1654,6 +1762,38 @@ fn install_named_sounds(
         }
     }
     Ok((HashMap::new(), all))
+}
+
+/// The scenario's simulation table (`+0x3d8`, a datum each): the object,
+/// projectile and damage tags the game may name over the network. Retail
+/// lists only these groups (**V**: 05a's 446 entries, 03a's 454,
+/// Coagulation's 350).
+pub const SIMULATION_TABLE: u32 = 0x3d8;
+pub const SIMULATION_GROUPS: [&[u8; 4]; 13] = [
+    b"bipd", b"bloc", b"crea", b"ctrl", b"eqip", b"garb", b"jpt!", b"mach", b"proj", b"scen",
+    b"ssce", b"vehi", b"weap",
+];
+
+/// Writes the simulation table of a fresh level from the tags `set` holds,
+/// in index order. Returns the entries.
+pub fn write_simulation_table(set: &mut TagSet) -> usize {
+    let list: Vec<Block> = set
+        .slots
+        .iter()
+        .filter_map(|s| s.tag.as_ref())
+        .filter(|t| SIMULATION_GROUPS.iter().any(|g| t.group == FourCC(**g)))
+        .map(|t| {
+            let mut b = Block::zeroed(4);
+            b.put_u32(0, t.id.0);
+            b
+        })
+        .collect();
+    let n = list.len();
+    let id = set.scenario;
+    if let Some(TagPayload::Built(root)) = set.tag_mut(id).map(|t| &mut t.payload) {
+        put_block(root, SIMULATION_TABLE, 4, list);
+    }
+    n
 }
 
 /// Bounds the clusters' background sounds' samples to `budget` bytes: the

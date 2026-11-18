@@ -14,7 +14,14 @@ fn stems(v: &[&str]) -> Vec<String> {
 #[test]
 fn jobs_are_campaign_levels_in_play_order_then_known_multiplayer_maps_in_both_sandboxes() {
     let j = jobs(&stems(&[
-        "ui", "bloodgulch", "D40", "a10", "beavercreek", "bitmaps", "a30", "notamap",
+        "ui",
+        "bloodgulch",
+        "D40",
+        "a10",
+        "beavercreek",
+        "bitmaps",
+        "a30",
+        "notamap",
     ]));
     let keys: Vec<String> = j.iter().map(Job::key).collect();
     assert_eq!(
@@ -80,7 +87,10 @@ fn the_stamp_reads_back() {
     );
     assert_eq!(back.done["a30"], Ok(()));
     assert_eq!(Stamp::parse(""), None);
-    assert_eq!(Stamp::parse("converter=x\nsha256=a\nsize=1\nmtime=1\n"), None);
+    assert_eq!(
+        Stamp::parse("converter=x\nsha256=a\nsize=1\nmtime=1\n"),
+        None
+    );
     assert_eq!(Stamp::parse("what=1\n"), None);
 }
 
@@ -94,7 +104,10 @@ fn an_unchanged_disc_is_not_hashed_and_its_outcomes_carry_on() {
 #[test]
 fn a_touched_disc_is_hashed_and_kept_when_the_hash_is_the_same() {
     let old = stamp();
-    let s = fresh_stamp(Some(&old), old.size, old.mtime + 1, || Ok(old.sha256.clone())).unwrap();
+    let s = fresh_stamp(Some(&old), old.size, old.mtime + 1, || {
+        Ok(old.sha256.clone())
+    })
+    .unwrap();
     assert_eq!((s.done.len(), s.mtime), (2, old.mtime + 1));
     // Another disc: start again.
     let s = fresh_stamp(Some(&old), old.size, old.mtime + 1, || Ok("cd".repeat(32))).unwrap();
@@ -122,7 +135,10 @@ fn pending_is_what_is_not_done_or_whose_map_is_gone() {
     // a30 is stamped done but its map isn't there: to do again. The
     // failed bloodgulch/h1 isn't retried.
     let keys = |v: Vec<Job>| v.iter().map(Job::key).collect::<Vec<_>>();
-    assert_eq!(keys(pending(&all, &s, &data)), ["a10", "a30", "bloodgulch/h2"]);
+    assert_eq!(
+        keys(pending(&all, &s, &data)),
+        ["a10", "a30", "bloodgulch/h2"]
+    );
     let a30 = Job::Campaign("a30").output(&data);
     std::fs::create_dir_all(a30.parent().unwrap()).unwrap();
     std::fs::write(&a30, b"x").unwrap();
@@ -180,7 +196,10 @@ fn a_failing_or_panicking_map_is_recorded_and_the_rest_go_on() {
     );
     assert_eq!(s.done["d40"], Ok(()));
     assert_eq!(lines.len(), 5, "{lines:?}");
-    assert!(lines[0].starts_with("[1/5] campaign a10: done"), "{lines:?}");
+    assert!(
+        lines[0].starts_with("[1/5] campaign a10: done"),
+        "{lines:?}"
+    );
     assert!(
         lines[1].starts_with("[2/5] campaign a30: failed: no room"),
         "{lines:?}"
@@ -223,7 +242,11 @@ fn discovers_a_halo1_disc_by_its_xbe_under_another_name() {
     let d = scratch("discover-xbe");
     let game = d.join("halo2.iso");
     std::fs::write(&game, b"game").unwrap();
-    std::fs::write(d.join("combat evolved.iso"), h1map::testing::campaign_disc()).unwrap();
+    std::fs::write(
+        d.join("combat evolved.iso"),
+        h1map::testing::campaign_disc(),
+    )
+    .unwrap();
     assert_eq!(discover(&game), Some(d.join("combat evolved.iso")));
     let _ = std::fs::remove_dir_all(&d);
 }
@@ -274,7 +297,12 @@ fn real_import_is_found_by_the_game() {
         let st: Vec<String> = disc.maps.iter().map(|e| map_stem(e).to_owned()).collect();
         let todo: Vec<Job> = jobs(&st)
             .into_iter()
-            .filter(|j| only.contains(&j.key()) || only.iter().any(|o| *o == j.key().split('/').next().unwrap()))
+            .filter(|j| {
+                only.contains(&j.key())
+                    || only
+                        .iter()
+                        .any(|o| *o == j.key().split('/').next().unwrap())
+            })
             .collect();
         let mut conv = DiscConverter {
             h1_path: h1.clone(),
@@ -305,14 +333,7 @@ fn real_import_is_found_by_the_game() {
         })
         .unwrap();
         // Again: nothing to do.
-        let again = import(
-            &Request {
-                force: false,
-                ..r
-            },
-            &mut |l| eprintln!("{l}"),
-        )
-        .unwrap();
+        let again = import(&Request { force: false, ..r }, &mut |l| eprintln!("{l}")).unwrap();
         assert_eq!((again.converted, again.failed), (0, 0));
         assert_eq!(again.skipped, sum.converted + sum.failed);
         sum
@@ -336,18 +357,34 @@ fn real_import_is_found_by_the_game() {
         assert!(r.skipped.is_empty(), "{:?}", r.skipped);
         let listed: Vec<&str> = r.installed.iter().map(|(n, ..)| n.as_str()).collect();
         for m in &mp {
-            assert!(listed.contains(&m.as_str()), "{m} not in the map list: {listed:?}");
+            assert!(
+                listed.contains(&m.as_str()),
+                "{m} not in the map list: {listed:?}"
+            );
         }
         // Each card is Halo 1's own: its name, description and picture.
         for m in &mp {
             let dir = content::store::maps_dir(&data).join(m);
             let text = std::fs::read_to_string(dir.join(content::manifest::MANIFEST_FILE)).unwrap();
             let man = content::Manifest::from_toml(&text).unwrap();
-            assert_eq!(man.package.image.as_deref(), Some(h1_cmd::PREVIEW_FILE), "{m}");
-            assert!(man.package.description.as_ref().is_some_and(|d| !d.is_empty()), "{m}");
+            assert_eq!(
+                man.package.image.as_deref(),
+                Some(h1_cmd::PREVIEW_FILE),
+                "{m}"
+            );
+            assert!(
+                man.package
+                    .description
+                    .as_ref()
+                    .is_some_and(|d| !d.is_empty()),
+                "{m}"
+            );
             let png = std::fs::read(dir.join(h1_cmd::PREVIEW_FILE)).unwrap();
             assert_eq!(content::manifest::image_signature(&png), Some("png"), "{m}");
-            eprintln!("  {m}: {:?}, {:?}", man.package.name, man.package.description);
+            eprintln!(
+                "  {m}: {:?}, {:?}",
+                man.package.name, man.package.description
+            );
             if m == "h1_bloodgulch" {
                 assert_eq!(man.package.name, "Blood Gulch");
             }
@@ -378,7 +415,11 @@ fn real_import_is_found_by_the_game() {
             let path = format!("maps\\{base}.map");
             let file = Job::Campaign(&l.map).output(&data);
             let meta = fs.stat(&path).unwrap();
-            assert_eq!(meta.end_of_file, std::fs::metadata(&file).unwrap().len(), "{path}");
+            assert_eq!(
+                meta.end_of_file,
+                std::fs::metadata(&file).unwrap().len(),
+                "{path}"
+            );
             let mut head = [0u8; 0x800];
             fs.read_at(&path, 0, &mut head).unwrap();
             let want = std::fs::read(&file).unwrap();
@@ -386,8 +427,13 @@ fn real_import_is_found_by_the_game() {
             let m = map::Map::from_reader(Cursor::new(want)).unwrap();
             assert_eq!(m.header().scenario_path, l.scenario, "{path}");
             // `--level` finds it too.
-            let r = boot::level_boot::resolve_in(&h2, Some(&data), &l.map, boot::level_boot::Difficulty::Normal)
-                .unwrap();
+            let r = boot::level_boot::resolve_in(
+                &h2,
+                Some(&data),
+                &l.map,
+                boot::level_boot::Difficulty::Normal,
+            )
+            .unwrap();
             assert_eq!((r.campaign, r.map), (b.campaign_id, l.map_id));
         }
     }

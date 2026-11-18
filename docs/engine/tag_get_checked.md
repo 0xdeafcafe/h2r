@@ -79,6 +79,12 @@ differ by 2³¹ or more. ASCII FourCCs never do; the Rust code still uses the
 same arithmetic and probe sequence, so unsorted or odd tables give the same
 answer as the original.
 
+A map whose group records are out of order loses groups to this search.
+`map::build` therefore writes the table sorted by the stored word, whatever
+order the set declared its groups in. Before that, a fresh Halo 1 a10 listed
+`obje` and `unit` ahead of `bipd` (ancestors declared first). The iterator
+`0x122c70` then got 0 for `bitm` and faulted at campaign start.
+
 ## Differential evidence
 
 Lifted original vs. Rust adapter on the IR interpreter (see this directory's

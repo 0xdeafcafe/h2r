@@ -17,6 +17,10 @@
 //! - [`manifest`]: the level's place in the Halo 1 campaign
 //!   (`content::campaign_list`).
 //!
+//! Then, unless [`Options::pinned`], the level is written fresh: its own
+//! scenario ([`scenario::fresh_root`]), every tag laid out anew and the
+//! base's tags nothing reaches dropped ([`KEEP`], `h1convert::fresh`).
+//!
 //! No game data is in this crate or its tests. The `#[ignore]` tests read
 //! the owner's discs at run time.
 #![forbid(unsafe_code)]
@@ -24,7 +28,10 @@
 pub mod cutscenes;
 pub mod donor;
 pub mod manifest;
+pub mod profiles;
+pub mod recordings;
 pub mod scenario;
+pub mod scratch;
 pub mod structure;
 
 use std::io::{Read, Seek};
@@ -167,6 +174,10 @@ pub struct Options<'a> {
     /// The animation graphs alone (their animation data is raw in the map
     /// file, which the campaign cache bounds).
     pub cutscene_graphs: bool,
+    /// Keep the base's file and metadata (`--pinned`). By default the
+    /// level is written fresh: built from scratch ([`scratch`]), or the
+    /// base pruned when that fails ([`KEEP`], `h1convert::fresh`).
+    pub pinned: bool,
 }
 
 impl Default for Options<'_> {
@@ -180,6 +191,7 @@ impl Default for Options<'_> {
             cutscenes: None,
             cutscene_data: true,
             cutscene_graphs: true,
+            pinned: false,
         }
     }
 }
@@ -214,6 +226,14 @@ pub struct Report {
     pub scenario: scenario::ScenarioReport,
     /// Everything left out, one line each, with the reason.
     pub dropped: Vec<String>,
+    /// Whether the map was written fresh (nothing of the base pinned).
+    pub fresh: bool,
+    /// What the from-scratch build did, when it was one.
+    pub scratch: Option<scratch::ScratchReport>,
+    /// Raw resources no kept tag names, emptied: (count, bytes).
+    pub raw_dropped: (usize, u64),
+    /// The base's tags a fresh map dropped ([`KEEP`]).
+    pub pruned: h1convert::fresh::Pruned,
     /// How lean the conversion had to be to fit (`convert`).
     pub lean: Lean,
     /// The map file's size, bytes.
@@ -281,9 +301,10 @@ impl std::fmt::Display for Report {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(
             f,
-            "{} on {}: {} tags ({} added), metadata {:#x}, tag memory {:#x} of {:#x}, file {:#x} (ambience {:#x}), lean {:?}",
+            "{} on {} ({}): {} tags ({} added), metadata {:#x}, tag memory {:#x} of {:#x}, file {:#x} (ambience {:#x}), lean {:?}",
             self.level,
             self.base,
+            if self.fresh { "fresh" } else { "pinned" },
             self.tags_after,
             self.tags_after.saturating_sub(self.tags_before),
             self.metadata,
@@ -293,6 +314,42 @@ impl std::fmt::Display for Report {
             self.ambience_bytes,
             self.lean
         )?;
+        if let Some(s) = &self.scratch {
+            writeln!(
+                f,
+                "  from scratch: {} tags ({} retail, {} converted, {} scenario and BSPs; {} datum words rewritten), {} dangling",
+                s.tags,
+                s.from_base,
+                s.from_level,
+                s.built_here,
+                s.words,
+                s.dangling.len()
+            )?;
+            match (&s.gestalt, &s.gestalt_whole) {
+                (Some(g), _) => writeln!(
+                    f,
+                    "  gestalt cut to {} sounds: {} -> {} bytes, {} -> {} chunks; {} raw resources ({} bytes) dropped",
+                    g.sounds,
+                    g.bytes.0,
+                    g.bytes.1,
+                    g.chunks.0,
+                    g.chunks.1,
+                    g.raw_dropped.0,
+                    g.raw_dropped.1
+                )?,
+                (None, Some(why)) => writeln!(f, "  gestalt kept whole: {why}")?,
+                _ => {}
+            }
+        } else if self.fresh {
+            writeln!(
+                f,
+                "  pruned {} base tags {:?}; {} raw resources ({} bytes) no kept tag names",
+                self.pruned.tags(),
+                self.pruned.groups,
+                self.raw_dropped.0,
+                self.raw_dropped.1,
+            )?;
+        }
         let grew: u32 = self.appended.iter().map(|a| a.1).sum();
         let top: Vec<String> = self
             .appended
@@ -451,6 +508,12 @@ fn convert_with<R: Read + Seek>(
             ),
         };
         let section = b.write(&mut set, sbsp, ltmp, &sounds)?;
+        if !opts.pinned {
+            // A fresh level's BSPs are Halo 1's, named so in every slot.
+            for id in [sbsp, ltmp] {
+                set.slots[id.index()].name = Some(b.name.clone());
+            }
+        }
         slots.push(scenario::BspSlot {
             section,
             sbsp,
@@ -483,7 +546,40 @@ fn convert_with<R: Read + Seek>(
     set.check_file_size = false;
     // The rebuilt scenario and sound gestalt first, into their old ranges.
     set.largest_built_first = true;
-    let (bytes, layout) = set.build()?;
+    let (mut bytes, mut layout) = set.build()?;
+    if !opts.pinned {
+        let sections: Vec<usize> = slots.iter().map(|s| s.section).collect();
+        // From scratch ([`scratch`]); the base pruned ([`fresh`]) when
+        // that fails.
+        let file = scratch::file_bytes(base)?;
+        let out = match scratch::build(&file, &set, &bytes) {
+            Ok((out, r)) => {
+                report.fresh = true;
+                report.scratch = Some(r);
+                out
+            }
+            Err(e) => {
+                report
+                    .dropped
+                    .push(format!("from scratch: {e}; pruned instead"));
+                fresh(base, &set, bytes.clone(), &sections, &mut report)?
+            }
+        };
+        let built = out.build()?;
+        // Over the engine's file size (d40: the gestalt still holds the
+        // pruned sounds' chunks, and copied raw runs to the next known
+        // resource), the pinned map stands.
+        if built.0.len() as u64 > map::writer::cache_size_limit(set.cache_type)? {
+            report.fresh = false;
+            report.dropped.push(format!(
+                "fresh build: {:#x} bytes, over the engine's file size; written pinned",
+                built.0.len()
+            ));
+        } else {
+            (bytes, layout) = built;
+            set = out;
+        }
+    }
     let max = map::writer::max_metadata_size(set.cache_type)?;
     report.memory = layout.memory_size;
     report.groups = memory_by_group(&set);
@@ -551,6 +647,54 @@ fn convert_with<R: Read + Seek>(
         pathfinding,
         scenario_path,
     })
+}
+
+/// The roots a fresh campaign level keeps besides what its scenario and
+/// globals reach (`h1convert::fresh::prune_with`). No scenario palette is
+/// emptied: the conversion already replaced every one it places from.
+pub const KEEP: h1convert::fresh::Keep<'static> = h1convert::fresh::Keep {
+    palettes: &[],
+    groups: &h1convert::fresh::KEEP_GROUPS,
+    prefixes: &h1convert::fresh::KEEP_PREFIXES,
+};
+
+/// `set` (the pinned conversion, built as `bytes`) with nothing pinned:
+/// every base tag moved into a built tree, its raw copied, and the base's
+/// tags nothing reaches dropped (`h1convert::fresh`).
+fn fresh<R: Read + Seek>(
+    base: &mut Map<R>,
+    set: &TagSet,
+    bytes: Vec<u8>,
+    sections: &[usize],
+    report: &mut Report,
+) -> Result<TagSet> {
+    use h1convert::fresh;
+    // The pinned map keeps the base's file prefix: its BSP regions and
+    // low-detail region are still there, unnamed, and bound the raw
+    // resources copied from before them.
+    let h = base.header();
+    let mut bounds = vec![h.low_detail_offset];
+    let meta = base.metadata_space();
+    for t in base.tags() {
+        if let Some(l) = t.location.filter(|l| Some(l.space) != meta) {
+            bounds.push(u32::try_from(l.space.file_offset).unwrap_or(u32::MAX));
+        }
+    }
+    let mut src = Map::from_reader(std::io::Cursor::new(bytes))?;
+    let mut out = fresh::unpinned_copy(set);
+    let first = base.index_slots() as usize;
+    let unpinned = fresh::unpin_all(set, &mut src, &mut out, sections, &bounds, true)?;
+    // The scenario is the converter's (no base palette or tag list): what
+    // it, the globals and [`KEEP`] reach stays; the simulation table then
+    // lists what stayed.
+    report.pruned = fresh::prune_with(&mut out, first, &KEEP, &[]);
+    fresh::check_refused(&mut out, &unpinned)?;
+    report.raw_dropped = fresh::drop_unused_raw(&mut out);
+    report.scenario.simulation = scenario::write_simulation_table(&mut out);
+    report.fresh = true;
+    out.check_tag_memory = false;
+    out.check_file_size = false;
+    Ok(out)
 }
 
 /// Bytes per tag group, largest first: (group, built, pinned).

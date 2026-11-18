@@ -310,6 +310,9 @@ pub struct Memory {
     spaces: Vec<(u32, u32)>,
     /// BSP regions: (file offset, size, load address).
     pub(crate) bsps: Vec<(u32, u32, u32)>,
+    /// Values known to be data where they stand outside every field, not
+    /// pointers ([`Memory::data_words`]).
+    data: Vec<u32>,
 }
 
 impl Memory {
@@ -349,6 +352,7 @@ impl Memory {
             regions,
             spaces,
             bsps,
+            data: Vec::new(),
         })
     }
 
@@ -359,6 +363,7 @@ impl Memory {
             regions,
             spaces,
             bsps: Vec::new(),
+            data: Vec::new(),
         }
     }
 
@@ -367,6 +372,23 @@ impl Memory {
     pub fn with_bsps(mut self, bsps: Vec<(u32, u32, u32)>) -> Self {
         self.bsps = bsps;
         self
+    }
+
+    /// Adds regions no tag owns (a pinned map's unowned metadata, which
+    /// other tags' arrays may live in). A region overlapping one already
+    /// held is skipped.
+    pub fn add_regions(&mut self, more: impl IntoIterator<Item = (u32, Vec<u8>)>) {
+        for (at, bytes) in more {
+            let end = at.saturating_add(bytes.len() as u32);
+            let overlaps = self
+                .regions
+                .iter()
+                .any(|(a, b)| at < a.saturating_add(b.len() as u32) && *a < end);
+            if !bytes.is_empty() && !overlaps {
+                self.regions.push((at, bytes));
+            }
+        }
+        self.regions.sort_by_key(|r| r.0);
     }
 
     /// The region (address, bytes) holding `address`.
@@ -408,8 +430,26 @@ impl Memory {
         b.get(at..at.checked_add(n as usize)?)
     }
 
+    /// Narrows the address space that starts at `base` to end at `end`:
+    /// words past it are not pointers (a map grown past the metadata its
+    /// tags were written in, where a flag word may fall inside the larger
+    /// space).
+    pub fn limit_space(&mut self, base: u32, end: u32) {
+        for s in &mut self.spaces {
+            if s.0 == base {
+                s.1 = s.1.min(end);
+            }
+        }
+    }
+
+    /// Words that are data, not pointers, where no field describes them
+    /// (a caller that has checked them on a given map).
+    pub fn data_words(&mut self, words: &[u32]) {
+        self.data.extend_from_slice(words);
+    }
+
     fn hit(&self, v: u32) -> bool {
-        self.spaces.iter().any(|&(lo, hi)| (lo..hi).contains(&v))
+        !self.data.contains(&v) && self.spaces.iter().any(|&(lo, hi)| (lo..hi).contains(&v))
     }
 }
 
