@@ -1857,3 +1857,197 @@ fn every_held_frame_says_why() {
         }
     }
 }
+
+/// A full-target quad in pixels (`mov oPos, v0`, four vertices with their
+/// window positions in a float4 at register 0), as a screen-space pass in
+/// the world draws it.
+fn screen_quad(c: Block) -> ResolvedDraw {
+    use gfx::vertex::{StreamLayout, VertexAttribute, VertexDataType, VertexRegister};
+    let mut d = pass_through(c, 4);
+    d.primitive = PrimitiveType::TriangleFan;
+    let corners: [[f32; 4]; 4] = [
+        [0.0, 0.0, 0.0, 1.0],
+        [640.0, 0.0, 0.0, 1.0],
+        [640.0, 480.0, 0.0, 1.0],
+        [0.0, 480.0, 0.0, 1.0],
+    ];
+    d.layout.streams = vec![StreamLayout {
+        stream: 0,
+        attributes: vec![VertexAttribute {
+            register: VertexRegister(0),
+            data_type: VertexDataType::Float4,
+            offset: 0,
+        }],
+        stride: 16,
+    }];
+    d.streams = vec![StreamBytes {
+        data: corners
+            .iter()
+            .flatten()
+            .flat_map(|v| v.to_le_bytes())
+            .collect::<Vec<u8>>()
+            .into(),
+        stride: 16,
+    }];
+    d
+}
+
+fn vertex_program_id(d: &ResolvedDraw) -> String {
+    match &d.shader.vertex {
+        VertexProcessing::Program { microcode, .. } => {
+            format!("{:016x}", d3d::pipeline_store::program_id(microcode))
+        }
+        VertexProcessing::FixedFunction { .. } => panic!("no program"),
+    }
+}
+
+#[test]
+fn the_hold_log_names_every_draw_that_held_a_frame() {
+    // A gameplay-like frame with work on another target first (so draw
+    // and pass numbers are the guest frame's, as `render.frame` counts
+    // them), then the level with a full-target screen-space pass and an
+    // orthographic quad among its draws, the weapon and the HUD.
+    let mut r = rig_with(60, Mode::Reproject { ahead: false });
+    let shadow =
+        r.b.create_surface(D3DFormat::A8R8G8B8, 128, 128, false)
+            .unwrap();
+    let (a, b) = turning();
+    for (i, s) in [&a, &b].into_iter().enumerate() {
+        let (color, depth) = (r.color, r.depth);
+        r.at((i as u64 + 1) * F);
+        // Pass 0: draw 0.
+        r.b.clear(shadow, None, Clear::default()).unwrap();
+        r.b.draw(
+            shadow,
+            None,
+            &draw(world_block(&s.cam), 7, false),
+            [None; 4],
+        )
+        .unwrap();
+        // Pass 1: draws 1 to 6 (the quad is 2, the orthographic draw 4,
+        // the weapon 6).
+        r.b.clear(color, Some(depth), Clear::default()).unwrap();
+        let mut v = level(&s.cam);
+        v.insert(1, screen_quad(world_block(&s.cam)));
+        v.insert(3, draw(hud_block(), 53, false));
+        for d in v {
+            r.b.draw(color, Some(depth), &d, [None; 4]).unwrap();
+        }
+        let mut c = block();
+        write(&mut c, CAM, Layout::Rows, 4, &weapon());
+        r.b.draw(color, Some(depth), &draw(c, 900, false), [None; 4])
+            .unwrap();
+        // Pass 2 (no depth): the HUD, draw 7.
+        r.b.draw(color, None, &draw(hud_block(), 1000, true), [None; 4])
+            .unwrap();
+        r.b.present(color, 4).unwrap();
+    }
+    let st = *r.b.stats().lock().unwrap();
+    assert_eq!((st.mismatch_screen, st.blended_frames), (1, 0), "{st}");
+    let log = r.b.holds().lock().unwrap().clone();
+    // Both frames are held by the guard; the first is also unpaired (the
+    // rig's empty first frame has no camera), so it is not in the counter.
+    assert_eq!(log.frames, 2);
+    let last = log.last.as_ref().unwrap();
+    assert_eq!((last.reason, last.why), ("screen", "pass_through"));
+    assert_eq!(last.frame, 3, "the rig's own present is frame 1");
+    assert_eq!(
+        (last.draw, last.pass, last.recorded),
+        (Some(2), Some(1), Some(1))
+    );
+    assert_eq!((last.recorded_draws, last.world_draws), (7, 5));
+    assert_eq!(last.overlay_draw, Some(6), "the weapon");
+    assert_eq!(
+        (last.position.as_str(), last.block.as_str()),
+        ("pass-through", "none")
+    );
+    assert_eq!(last.primitive, "TriangleFan");
+    assert_eq!(
+        last.window,
+        Some([0.0, 0.0, 640.0, 480.0]),
+        "a full-target pass"
+    );
+    assert_eq!(last.target, [640, 480]);
+    let id = vertex_program_id(&screen_quad(block()));
+    assert_eq!(last.vertex_program.as_ref(), Some(&id));
+    assert!(
+        log.programs[&id].contains("mov oPos, v0"),
+        "disassembled: {:?}",
+        log.programs
+    );
+    // Every kind, not only the first: the quad and the orthographic draw,
+    // each in both frames.
+    let kinds: Vec<(&str, &str, u64, u64, u64)> = log
+        .kinds
+        .iter()
+        .map(|k| (k.reason, k.why, k.frames_first, k.frames, k.draws))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            ("screen", "pass_through", 2, 2, 2),
+            ("screen", "not_perspective", 0, 2, 2),
+        ]
+    );
+    let ortho = &log.kinds[1].example;
+    assert_eq!(
+        (ortho.position.as_str(), ortho.block.as_str()),
+        ("rows c[96]", "none")
+    );
+    assert_eq!(
+        ortho.rows.unwrap()[3],
+        [0.0, 0.0, 0.0, 1.0],
+        "the orthographic rows as uploaded"
+    );
+    assert_eq!(ortho.draw, Some(4));
+    assert_eq!(
+        ortho.vertex_program,
+        Some(vertex_program_id(&draw(block(), 1, false)))
+    );
+}
+
+#[test]
+fn the_hold_log_says_off_centre_and_after_the_overlay() {
+    // A perspective into pixels before the level's draws.
+    let mut r = rig_with(60, Mode::Reproject { ahead: false });
+    let (a, _) = turning();
+    r.at(F);
+    frame_with(&mut r, &a, &|cam| {
+        let mut v = level(cam);
+        v.insert(0, draw(pixel_perspective(), 60, false));
+        v
+    });
+    let last = r.b.holds().lock().unwrap().last.clone().unwrap();
+    assert_eq!(
+        (last.reason, last.why, last.block.as_str()),
+        ("screen", "off_centre", "local off-centre")
+    );
+    assert!(last.projection.is_some(), "the split projection is shown");
+    // A level draw after the weapon.
+    let mut r = rig_with(60, Mode::Reproject { ahead: false });
+    let (color, depth) = (r.color, r.depth);
+    r.at(F);
+    let world = world_block(&a.cam);
+    r.b.clear(color, Some(depth), Clear::default()).unwrap();
+    for mesh in [1, 2] {
+        r.b.draw(color, Some(depth), &draw(world, mesh, false), [None; 4])
+            .unwrap();
+    }
+    let mut c = block();
+    write(&mut c, CAM, Layout::Rows, 4, &weapon());
+    r.b.draw(color, Some(depth), &draw(c, 900, false), [None; 4])
+        .unwrap();
+    r.b.draw(color, Some(depth), &draw(world, 3, false), [None; 4])
+        .unwrap();
+    r.b.present(color, 4).unwrap();
+    let log = r.b.holds().lock().unwrap().clone();
+    let last = log.last.unwrap();
+    assert_eq!((last.reason, last.why), ("overlay", "camera_after_overlay"));
+    assert_eq!(
+        (last.draw, last.world_draws, last.overlay_draw),
+        (Some(3), 2, Some(2))
+    );
+    // A frame with no camera (the rig's first) is not logged: it is held
+    // as unpaired, with nothing to warp.
+    assert_eq!(log.frames, 1);
+}

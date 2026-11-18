@@ -834,7 +834,13 @@ adds them; types in `crates/agent-proto/src/render.rs`, logic in
   ```
 
   `impl.render.interpolate` gives D instead. `H2_BOOT_GFX_BETWEEN=N`
-  also writes the first N in-between frames as PNGs to that directory.
+  also writes the first N in-between frames as PNGs to that directory,
+  with the guest frame before and after each. `interp.holds` lists the
+  draws E1's screen guard held frames for, kind by kind, each with its
+  guest draw and pass number (as `render.frame` numbers them), vertex
+  program, transform and where it lands
+  ([high-framerate.md](../game/high-framerate.md) "Held frames, draw by
+  draw").
   Without `H2_BOOT_GFX`, with `H2_RENDER_THREAD=0` or under
   `H2_PIPELINE_RENDER`, `interp` stays `null`.
 
