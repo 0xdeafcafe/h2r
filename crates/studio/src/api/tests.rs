@@ -46,8 +46,16 @@ fn app(t: &Temp) -> App {
         file_names: (0..CONTENT_TYPES).map(|i| format!("t{i}")).collect(),
         labels: (0..CONTENT_TYPES).map(|i| format!("L{i}")).collect(),
     };
+    // The fallback schema (no disc) has no built-in variants: give it one.
+    let mut schema = ::variants::Schema::fallback();
+    schema.builtins.push(::variants::schema::Builtin {
+        name: "Slayer".into(),
+        game_type: ::variants::GameType::Slayer,
+        description: 0,
+        pairs: Vec::new(),
+    });
     app.set_variant_editor(::variants::VariantEditor::new(
-        ::variants::Schema::fallback(),
+        schema,
         Some(SaveStore::new(t.path("saves"), Some(names))),
     ));
     app.dispatch(Action::OpenSource(map));
