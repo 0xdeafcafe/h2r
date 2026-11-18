@@ -74,6 +74,7 @@ code { font-family: var(--font-mono); }
 /* Map canvas */
 .map-canvas { position: relative; width: 100%; height: 100%; }
 .map-canvas canvas { display: block; }
+.map-cutscene { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); padding: 6px 14px; font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: #e8eef2; background: rgba(8, 12, 16, .78); border: 1px solid rgba(154, 198, 230, .45); border-radius: 2px; pointer-events: none; }
 
 /* Replay controls */
 .replay-bar { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 8px; background: linear-gradient(180deg, #3c3c3c 0, #262626 48%, #171717 52%, #1f1f1f 100%); border-top: 1px solid #5a5a5a; }
@@ -92,6 +93,7 @@ code { font-family: var(--font-mono); }
 .scrub__mark { position: absolute; top: 0; height: 16px; transform: translateX(-1px); pointer-events: auto; }
 .scrub__mark--cut { width: 2px; background: repeating-linear-gradient(180deg, #e8b04a 0 3px, transparent 3px 5px); }
 .scrub__mark--zone { width: 1px; height: 6px; background: #5f8fa8; }
+.scrub__mark--cinematic { height: 6px; min-width: 2px; transform: none; background: rgba(154, 198, 230, .35); }
 .replay-bar .step { width: 22px; height: 19px; padding: 0; font-size: 9px; line-height: 16px; color: #ddd; cursor: pointer; border: 1px solid #6a6a6a; border-radius: 2px; background: linear-gradient(180deg, #444, #1d1d1d); }
 .replay-bar .step:hover { border-color: #56aacd; background: #17668a; }
 /* The stats site's scrubber is flat too: a thin dark track, a small plain

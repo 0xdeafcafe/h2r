@@ -5,6 +5,7 @@ import { A } from "@solidjs/router";
 import type { AccountState } from "../state/reducer";
 import { countResults, summaryLine, verifyMarkText, type VerifyResult } from "../state/verify";
 import { live } from "../state/live";
+import { STATS_ROOT } from "../routes";
 
 export type PresenceKind = "playing" | "online" | "away" | "offline";
 
@@ -30,7 +31,7 @@ export function PresenceBadge(props: { account: AccountState | undefined }) {
     <span class={`presence presence--${kind()}`}>
       <span class="presence__dot" />
       <Show when={kind() === "playing" && props.account?.presence?.game_id} fallback={PRESENCE_LABEL[kind()]}>
-        {(gid) => <A href={`/stats/games/${gid()}`}>{PRESENCE_LABEL.playing}</A>}
+        {(gid) => <A href={`${STATS_ROOT}/games/${gid()}`}>{PRESENCE_LABEL.playing}</A>}
       </Show>
       <Show when={kind() !== "offline" && props.account?.presence?.activity}>{(a) => <span class="presence__activity"> ({a()})</span>}</Show>
     </span>

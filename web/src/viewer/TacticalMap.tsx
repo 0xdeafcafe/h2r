@@ -17,6 +17,7 @@ import { outlineFor } from "../state/outlines";
 import type { GameState } from "../state/reducer";
 import ViewerWindow from "./ViewerWindow";
 import type { CameraRequest } from "./sync";
+import { STATS_ROOT } from "../routes";
 
 function LayerPicker(props: { count: number; value: number | null; onChange: (v: number | null) => void }) {
   return (
@@ -111,7 +112,7 @@ export default function TacticalMap(props: {
       <Show when={open() && !geometryChanged(props.game)}>
         <ViewerWindow
           title={`3D view · ${gameMapTitle(props.game)}`}
-          popout={`/stats/games/${encodeURIComponent(props.game.game_id)}/3d`}
+          popout={`${STATS_ROOT}/games/${encodeURIComponent(props.game.game_id)}/3d`}
           onClose={() => setOpen(false)}
           frame={props.frame}
           roster={props.roster}

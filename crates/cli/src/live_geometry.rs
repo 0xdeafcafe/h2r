@@ -41,6 +41,10 @@ use crate::live_render::{self, Camera, ShadowMap, VIEWS};
 pub const GEOMETRY_VERSION: u32 = 1;
 /// `asset.generator` and `asset.extras.generator` of every `map.glb`.
 pub const GENERATOR: &str = "h2 live art";
+/// WebP quality of the pre-drawn views (libwebp's 0 to 100): flat-shaded
+/// renders, indistinguishable from the lossless picture at this quality and
+/// a tenth of its size.
+pub const VIEW_WEBP_QUALITY: f32 = 85.0;
 
 const SHAD: FourCC = FourCC(*b"shad");
 const MACH: FourCC = FourCC(*b"mach");
@@ -902,15 +906,19 @@ impl<'a> Pictures<'a> {
         self.encoded.values().map(|e| e.bytes.len()).sum()
     }
 
-    /// A picture's file, relative to the glb: `tex/<bitmap>.jpg` (eight
-    /// hex digits; `<bitmap>m.png` for a cut-out picture).
+    /// A picture's file, relative to the glb: `tex/<bitmap>.webp` (eight
+    /// hex digits; `<bitmap>m.webp` for a cut-out picture).
     pub fn file(key: (u32, crate::live_looks::Cutout), e: &crate::live_looks::Encoded) -> String {
         let cut = if key.1 == crate::live_looks::Cutout::Mask {
             "m"
         } else {
             ""
         };
-        let ext = if e.mime == "image/jpeg" { "jpg" } else { "png" };
+        let ext = match e.mime {
+            "image/webp" => "webp",
+            "image/jpeg" => "jpg",
+            _ => "png",
+        };
         format!("{TEXTURE_DIR}/{:08x}{cut}.{ext}", key.0)
     }
 }
@@ -2688,7 +2696,7 @@ pub fn cameras(mesh: &LevelMesh, level_frame: &Bounds) -> Vec<(ViewEntry, Camera
                 width: spec.width,
                 height: spec.height,
                 world_to_pixel: cam.world_to_pixel(),
-                file: format!("views/{}.png", spec.id),
+                file: format!("views/{}.webp", spec.id),
                 up: spec.azimuth.is_none().then(|| "north".to_string()),
                 depth_sorted: spec.azimuth.is_some().then_some(true),
                 cutaway: spec.azimuth.is_none().then_some(true),
@@ -2807,11 +2815,14 @@ pub(crate) fn extract_maps(disc: &Disc, maps: &[(&MapFile, MapKind)], out: &Path
                         entry.cutaway == Some(true),
                     );
                     let path = out.join("map").join(&level.stem).join(&entry.file);
-                    let mut png = Vec::new();
-                    let written =
-                        assets::png::write_rgba_fast(&mut png, entry.width, entry.height, &rgba)
-                            .map_err(anyhow::Error::from)
-                            .and_then(|_| Ok(fs::write(&path, png)?));
+                    let written = live_server::art_pack::webp(
+                        &rgba,
+                        entry.width,
+                        entry.height,
+                        VIEW_WEBP_QUALITY,
+                    )
+                    .map_err(|e| anyhow::anyhow!(e))
+                    .and_then(|webp| Ok(fs::write(&path, webp)?));
                     if let Err(e) = written {
                         failed.lock().unwrap().insert(
                             format!("map/{}/views/{}", level.stem, entry.id),

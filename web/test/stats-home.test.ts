@@ -10,6 +10,8 @@ import {
 } from "../src/lib/statsHome";
 import { DASHBOARD_EXIT, HOME_CRUMB, STATS_HOME, statsNav } from "../src/stats/modes";
 import { StatsFold, archive } from "../mock/stats";
+import { STATS_NAME } from "../src/brand";
+import { STATS_ROOT } from "../src/routes";
 
 const P = (xuid: string, o: Partial<PlayerRow> = {}): PlayerRow => ({
   xuid, name: xuid.toUpperCase(), games: 0, multiplayer: 0, campaign: 0, wins: 0, kills: 0, deaths: 0, betrayals: 0,
@@ -19,22 +21,22 @@ const P = (xuid: string, o: Partial<PlayerRow> = {}): PlayerRow => ({
 describe("nav and crumbs", () => {
   test("the home tab comes first and the dashboard is not a tab", () => {
     const nav = statsNav(null, false);
-    expect(nav[0]).toEqual({ label: "h2 live Online", href: STATS_HOME, end: true });
+    expect(nav[0]).toEqual({ label: STATS_NAME, href: STATS_HOME, end: true });
     expect(nav.some((n) => n.href === "/" || /dashboard/i.test(n.label))).toBe(false);
-    expect(nav.map((n) => n.label)).toEqual(["h2 live Online", "My Stats", "Games", "Players", "Clans", "Event Log", "Server"]);
+    expect(nav.map((n) => n.label)).toEqual([STATS_NAME, "My Stats", "Games", "Players", "Clans", "Mods", "Event Log", "Server"]);
   });
 
   test("my stats follows the signed-in account, and admins get their tab", () => {
     const nav = statsNav({ gamertag: "Sneaky Pete" }, true);
-    expect(nav.find((n) => n.label === "My Stats")!.href).toBe("/stats/players/Sneaky%20Pete");
+    expect(nav.find((n) => n.label === "My Stats")!.href).toBe("/games/halo2/players/Sneaky%20Pete");
     expect(statsNav(null, false).find((n) => n.label === "My Stats")!.href).toBe("/dash/signup");
-    expect(nav.find((n) => n.label === "Halo Admin")!.href).toBe("/stats/admin");
+    expect(nav.find((n) => n.label === "Halo Admin")!.href).toBe("/games/halo2/admin");
   });
 
   test("the way out goes to the dashboard and says so", () => {
     expect(DASHBOARD_EXIT.href).toBe("/");
     expect(DASHBOARD_EXIT.label).toContain("Dashboard");
-    expect(HOME_CRUMB).toEqual(["Home", "/stats"]);
+    expect(HOME_CRUMB).toEqual(["Home", "/games/halo2"]);
   });
 
   test("every stats page's crumbs start at the stats home", () => {
@@ -45,17 +47,19 @@ describe("nav and crumbs", () => {
         const src = readFileSync(`${import.meta.dir}/../${d}/${f}`, "utf8");
         for (const m of src.matchAll(/<Crumbs trail=\{\[\[([^\]]*)\]/g)) {
           seen++;
-          expect([`"Home", "/stats"`, `"Home"`]).toContain(m[1]!);
+          expect([`"Home", STATS_ROOT`, `"Home"`]).toContain(m[1]!);
         }
       }
     }
     expect(seen).toBeGreaterThan(8);
   });
 
-  test("the routes put the home at /stats and the games spotlight at /stats/games", () => {
+  test("the routes put the home at /games/halo2 and the games spotlight at /games/halo2/games", () => {
     const src = readFileSync(`${import.meta.dir}/../src/index.tsx`, "utf8");
     expect(src).toContain(`<Route path="/" component={Home} />`);
     expect(src).toContain(`<Route path="/games" component={Games} />`);
+    expect(src).toContain(`<Route path={STATS_ROOT} component={StatsLayout}>`);
+    expect(STATS_ROOT).toBe("/games/halo2");
   });
 });
 

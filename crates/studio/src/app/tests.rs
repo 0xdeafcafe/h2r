@@ -807,24 +807,51 @@ fn stub_converted(sandbox: ConvertSandbox) -> h1convert::convert::Converted {
     }
 }
 
-fn stub_ok(
-    _: &[u8],
-    _: Vec<u8>,
-    s: ConvertSandbox,
-) -> Result<h1convert::convert::Converted, h1convert::Error> {
-    Ok(stub_converted(s))
+fn built(converted: h1convert::convert::Converted) -> Built {
+    Built {
+        converted,
+        card: None,
+        notes: Vec::new(),
+    }
 }
 
-fn stub_too_big(
-    _: &[u8],
-    _: Vec<u8>,
-    _: ConvertSandbox,
-) -> Result<h1convert::convert::Converted, h1convert::Error> {
+fn stub_ok(input: &ConvertInput) -> Result<Built, h1convert::Error> {
+    Ok(built(stub_converted(input.sandbox)))
+}
+
+fn stub_too_big(_: &ConvertInput) -> Result<Built, h1convert::Error> {
     Err(h1convert::Error::TooManySurfaces(70_000))
 }
 
-/// A Halo 2 folder with `coagulation` (the base) and a Halo 1 disc, with
-/// Blood Gulch on show.
+/// Checks what the editor hands the converter: the Halo 1 map by name
+/// and file, and the open Halo 2 source's map, read without asking, for
+/// its retail tags. Gives a card, so the package gets its picture.
+fn stub_checks_input(input: &ConvertInput) -> Result<Built, h1convert::Error> {
+    if input.h1_map != "bloodgulch" {
+        return Err(h1convert::Error::Invalid("not the Halo 1 map on show"));
+    }
+    if input.retail != fixture::fixture() {
+        return Err(h1convert::Error::Invalid(
+            "not the open Halo 2 source's map",
+        ));
+    }
+    if h1map::H1Map::from_reader(&input.h1_file[..]).is_err() {
+        return Err(h1convert::Error::Invalid("not a Halo 1 map file"));
+    }
+    let mut b = built(stub_converted(input.sandbox));
+    b.card = Some(h1convert::ui::Card {
+        name: "Blood Gulch".into(),
+        description: "Box canyon".into(),
+        rgba: vec![200; 2 * 2 * 4],
+        width: 2,
+        height: 2,
+    });
+    b.notes.push("a note".into());
+    Ok(b)
+}
+
+/// A Halo 2 folder with `coagulation` and a Halo 1 disc, with Blood Gulch
+/// on show.
 fn convert_ready(t: &Temp) -> App {
     let mut app = app_with(t);
     let h2 = t.0.join("h2maps");
@@ -835,7 +862,6 @@ fn convert_ready(t: &Temp) -> App {
     std::fs::write(&iso, h1map::testing::campaign_disc()).unwrap();
     app.dispatch(Action::OpenSource(iso));
     app.dispatch(Action::SelectHalo1Map("bloodgulch".into()));
-    assert_eq!(base_for("bloodgulch"), "coagulation");
     app
 }
 
@@ -905,17 +931,92 @@ fn the_real_converter_refuses_an_invented_map_plainly() {
 }
 
 #[test]
-fn converting_needs_the_base_map_from_a_halo2_disc() {
+fn converting_needs_a_halo2_source_and_never_names_a_base_map() {
     let t = Temp::new("convertbase");
     let mut app = app_with(&t);
     let iso = t.0.join("halo1.iso");
     std::fs::write(&iso, h1map::testing::campaign_disc()).unwrap();
     app.dispatch(Action::OpenSource(iso));
     app.dispatch(Action::SelectHalo1Map("bloodgulch".into()));
+    let refusal = app.convert_refusal().expect("no Halo 2 source is open");
     app.set_converter(stub_ok);
     app.dispatch(Action::ConvertHalo1(ConvertSandbox::Halo2));
     assert!(app.converting().is_none());
-    assert!(app.convert_error().unwrap().contains("coagulation"));
+    let e = app.convert_error().unwrap();
+    assert_eq!(e, refusal);
+    assert!(e.contains("Halo 2 disc"), "{e}");
+    for word in ["coagulation", "beavercreek", "onto", "base"] {
+        assert!(!e.to_ascii_lowercase().contains(word), "{e}");
+    }
+}
+
+#[test]
+fn any_multiplayer_map_on_the_halo2_source_gives_the_retail_tags() {
+    // h1convert's pick first, then every other map its table picks, once.
+    let picks = |m: &str| h1convert::convert::known(m).map(|(_, b)| b);
+    for m in ["bloodgulch", "wizard"] {
+        let s = retail_sources(m);
+        assert_eq!(s.first().copied(), picks(m));
+        let mut d = s.clone();
+        d.sort();
+        d.dedup();
+        assert_eq!(d.len(), s.len(), "{s:?}");
+        assert!(
+            h1convert::convert::MAPS
+                .iter()
+                .all(|(_, _, b)| s.contains(b))
+        );
+    }
+    // A level the table doesn't know still gets every pick to try.
+    let mut unknown = retail_sources("notamap");
+    let mut known_map = retail_sources("bloodgulch");
+    unknown.sort();
+    known_map.sort();
+    assert_eq!(unknown, known_map);
+    // A source holding only Beaver Creek serves Blood Gulch too.
+    let t = Temp::new("convertretail");
+    let mut app = app_with(&t);
+    let h2 = t.0.join("h2maps");
+    std::fs::create_dir_all(&h2).unwrap();
+    std::fs::write(h2.join("beavercreek.map"), fixture::fixture()).unwrap();
+    app.dispatch(Action::OpenSource(h2));
+    let iso = t.0.join("halo1.iso");
+    std::fs::write(&iso, h1map::testing::campaign_disc()).unwrap();
+    app.dispatch(Action::OpenSource(iso));
+    app.dispatch(Action::SelectHalo1Map("bloodgulch".into()));
+    assert_eq!(app.convert_refusal(), None);
+    app.set_converter(stub_checks_input);
+    app.dispatch(Action::ConvertHalo1(ConvertSandbox::Halo2));
+    app.wait_convert();
+    assert_eq!(app.convert_error(), None);
+    assert_eq!(app.opened_package(), Some("h1_bloodgulch#H2"));
+}
+
+#[test]
+fn a_new_map_gets_the_halo1_card_and_the_converters_notes_are_logged() {
+    let t = Temp::new("convertcard");
+    let mut app = convert_ready(&t);
+    app.set_converter(stub_checks_input);
+    app.dispatch(Action::ConvertHalo1(ConvertSandbox::Halo2));
+    app.wait_convert();
+    assert_eq!(app.convert_error(), None);
+    let dir = t.0.join("data/maps/h1_bloodgulch");
+    let png = std::fs::read(dir.join(convert::PREVIEW_FILE)).unwrap();
+    assert!(png.starts_with(b"\x89PNG"));
+    let m =
+        content::Manifest::from_toml(&std::fs::read_to_string(dir.join("manifest.toml")).unwrap())
+            .unwrap();
+    assert_eq!(m.package.name, "Blood Gulch");
+    assert_eq!(m.package.description.as_deref(), Some("Box canyon"));
+    assert_eq!(m.package.image.as_deref(), Some("preview.png"));
+    let log: Vec<&str> = app.log().iter().map(|l| l.status.text()).collect();
+    assert!(log.iter().any(|l| l.ends_with("a note")), "{log:?}");
+    assert!(
+        log.iter()
+            .any(|l| l.starts_with("built h1_bloodgulch from bloodgulch")),
+        "{log:?}"
+    );
+    assert!(!log.iter().any(|l| l.contains("onto")), "{log:?}");
 }
 
 /// Blood Gulch and Battle Creek from the owner's Halo 1 disc, converted

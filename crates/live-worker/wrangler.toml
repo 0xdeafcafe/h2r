@@ -49,11 +49,19 @@ new_sqlite_classes = ["CoopRelay"]
 # The web app (web/dist, `bun run build` in web/), served by Cloudflare
 # ahead of the Worker: any path that is not a file is index.html (the app
 # routes in the browser). The API, discovery, the health check and the
-# game art go to the Worker first. Cache rules: web/public/_headers.
+# game art go to the Worker first; so do the app's pages, which the Worker
+# answers with index.html (read through ASSETS) carrying the page's link
+# preview (live_server::page_meta; keep this list to its `is_page`).
+# Cache rules: web/public/_headers.
 [assets]
 directory = "../../web/dist"
+binding = "ASSETS"
 not_found_handling = "single-page-application"
-run_worker_first = ["/v1/*", "/.well-known/*", "/healthz", "/art/game", "/art/game/*"]
+run_worker_first = [
+    "/v1/*", "/.well-known/*", "/healthz", "/art/game", "/art/game/*",
+    "/", "/dash", "/dash/*", "/stats", "/stats/*", "/players", "/players/*",
+    "/games", "/games/*", "/events", "/events/*", "/signin", "/signin/*",
+]
 
 # ---- staging: a server of its own, never confused with production ----
 # A fresh id (no account, game or token from production is valid here) and

@@ -179,6 +179,8 @@ pub struct Live {
     pub(crate) invites: Arc<crate::invites::Invites>,
     /// Recovery secrets and the wrong-code lockout.
     pub(crate) recovery: Arc<crate::recovery::Recovery>,
+    /// The account keys as sign-ins: their devices and when last used.
+    pub(crate) signins: Arc<crate::signins::Registry>,
     /// Custom maps and their content (docs/game/maps.md §5).
     pub(crate) catalog: Arc<crate::content::Catalog>,
     /// Server-wide stats for the stats home (`GET /v1/stats/summary`).
@@ -315,13 +317,6 @@ fn validate(state: &State, body: &EventBody) -> Result<(), ApiError> {
     struct KeyRevoked {
         kid: String,
     }
-    #[derive(Deserialize)]
-    struct PresenceData {
-        xuid: Xuid,
-        state: Option<String>,
-        game_id: Option<String>,
-        activity: Option<String>,
-    }
     if live_proto::mailbox::is_kind(&body.kind) {
         return crate::mailbox::validate(state, body);
     }
@@ -357,7 +352,7 @@ fn validate(state: &State, body: &EventBody) -> Result<(), ApiError> {
         | types::PRESENCE_CHANGED
         | types::SIGNED_OUT
         | types::PRESENCE_EXPIRED => {
-            let d: PresenceData = parse_data(&body.data)?;
+            let d: live_proto::PresenceData = parse_data(&body.data)?;
             if Some(d.xuid) != xuid {
                 return Err(invalid("presence xuid is not the stream's"));
             }
@@ -378,6 +373,20 @@ fn validate(state: &State, body: &EventBody) -> Result<(), ApiError> {
                 {
                     return Err(invalid(
                         "presence activity is empty, too long or has control characters",
+                    ));
+                }
+                if d.build
+                    .as_deref()
+                    .is_some_and(|b| !live_proto::valid_build(b))
+                {
+                    return Err(invalid(
+                        "presence build must be 7 to 12 lowercase hex digits",
+                    ));
+                }
+                if !live_proto::valid_capabilities(&d.capabilities) {
+                    return Err(invalid(
+                        "presence capabilities are at most 16 of name/version, \
+                         lowercase, at most 32 characters each",
                     ));
                 }
             }
@@ -488,6 +497,8 @@ impl Live {
             crate::guard::Backoff::new(free, base, max),
         ));
         dispatcher.subscribe(recovery.clone());
+        let signins = Arc::new(crate::signins::Registry::new(&identity));
+        dispatcher.subscribe(signins.clone());
         let catalog = Arc::new(crate::content::Catalog::default());
         dispatcher.subscribe(catalog.clone());
         let reports = Arc::new(crate::reports::Reports::default());
@@ -529,6 +540,7 @@ impl Live {
             relays: Default::default(),
             invites,
             recovery,
+            signins,
             catalog,
             stats,
             usage,
@@ -550,6 +562,7 @@ impl Live {
             dispatcher,
         };
         applied.wait_for(|p| *p >= head).await?;
+        live.model.renew_deadlines(now());
         let live = Arc::new(live);
         if timers == Timers::Driven {
             return Ok(live);
@@ -707,6 +720,9 @@ impl Live {
         {
             return Err(unauthorized("token already used"));
         }
+        if let Author::Account { .. } = &author {
+            self.signins.seen(kid, now);
+        }
         Ok(author)
     }
 
@@ -780,6 +796,16 @@ impl Live {
     /// version 0: the uniqueness check), `AccountCreated` and `KeyAdded`
     /// (carrying the request as proof of possession), atomically.
     pub async fn create_account(&self, jws: &str) -> Result<CreatedAccount, ApiError> {
+        self.create_account_on(jws, None).await
+    }
+
+    /// [`Live::create_account`] from `device` (the request's User-Agent),
+    /// kept sealed in the `KeyAdded` (crate::signins).
+    pub async fn create_account_on(
+        &self,
+        jws: &str,
+        device: Option<crate::signins::Device>,
+    ) -> Result<CreatedAccount, ApiError> {
         if !self.creates.allow("accounts.create") {
             return Err(ApiError::new(
                 ErrorCode::RateLimited,
@@ -820,7 +846,9 @@ impl Live {
         {
             return Err(forbidden("invite already used"));
         }
-        let result = self.create(&tag, &key, jws, invite.as_deref()).await;
+        let result = self
+            .create(&tag, &key, jws, invite.as_deref(), device.as_ref())
+            .await;
         if result.is_err()
             && let Some(jti) = &invite
         {
@@ -835,9 +863,14 @@ impl Live {
         key: &PublicKey,
         proof: &str,
         invite: Option<&str>,
+        device: Option<&crate::signins::Device>,
     ) -> Result<CreatedAccount, ApiError> {
         let tag_stream = streams::gamertag(tag);
         let secret = live_proto::recovery::TotpSecret::generate();
+        let mut key_added = json!({"kid": key.kid(), "jwk": key.jwk(), "proof": proof});
+        if let Some(d) = device {
+            key_added["device"] = self.signins.seal(d).into();
+        }
         // A random XUID can collide; the account stream's version check
         // catches it.
         for _ in 0..3 {
@@ -855,11 +888,7 @@ impl Live {
                     json!({"xuid": xuid}),
                 ),
                 self.server_event(account.clone(), types::ACCOUNT_CREATED, created),
-                self.server_event(
-                    account.clone(),
-                    types::KEY_ADDED,
-                    json!({"kid": key.kid(), "jwk": key.jwk(), "proof": proof}),
-                ),
+                self.server_event(account.clone(), types::KEY_ADDED, key_added.clone()),
             ];
             match self
                 .store
@@ -1159,7 +1188,10 @@ impl Live {
     }
 
     /// Who is online, with each player's game id and activity as `viewer`
-    /// may see them ([`crate::sessions::presence_for`]).
+    /// may see them ([`crate::sessions::presence_for`]). Build and
+    /// capabilities show to every reader: they name the console's software,
+    /// not where its player is, and a host reads its guests' before a game
+    /// whether or not they are friends (docs/game/game-options.md section 3).
     pub fn presence(&self, viewer: crate::sessions::Viewer) -> Page<Presence> {
         let position = self.position();
         let s = self.model.read();
@@ -1176,6 +1208,8 @@ impl Live {
                     game_id,
                     activity,
                     since: p.since.clone(),
+                    build: p.build.clone(),
+                    capabilities: p.capabilities.clone(),
                 })
             })
             .collect();
@@ -1226,6 +1260,8 @@ impl Live {
                             game_id,
                             activity,
                             since: p.since.clone(),
+                            build: p.build.clone(),
+                            capabilities: p.capabilities.clone(),
                         }
                     }),
                 })

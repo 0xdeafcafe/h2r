@@ -1,0 +1,52 @@
+{
+  "name": "Live Dashboard",
+  "short_name": "Live Dashboard",
+  "description": "The dashboard and h2 Uplink: who is online, live games, service records and clans for h2recomp.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "theme_color": "#0c4406",
+  "background_color": "#010a01",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "h2 Uplink",
+      "short_name": "h2 Uplink",
+      "url": "/games/halo2"
+    },
+    {
+      "name": "Games",
+      "url": "/games/halo2/games"
+    },
+    {
+      "name": "Players",
+      "url": "/games/halo2/players"
+    }
+  ]
+}

@@ -40,7 +40,7 @@ pub enum SetupError {
     InviteInvalid,
     #[error("No account has that gamertag.")]
     NoSuchGamertag,
-    #[error("That account has no recovery set up.")]
+    #[error("That account has no sign-in code set up.")]
     NoRecovery,
     #[error("Wrong code. Wait for the next one and try again.")]
     WrongCode,

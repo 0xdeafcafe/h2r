@@ -1,4 +1,4 @@
-// The 3D view in a browser window of its own (`/stats/games/:id/3d`): the
+// The 3D view in a browser window of its own (`/games/halo2/games/:id/3d`): the
 // same viewer filling the window, with the replay's transport under it. A
 // replay here keeps in step with the game page it was opened from (and the
 // other way round) through the session's channel.
@@ -16,6 +16,7 @@ import Transport, { replayKey } from "./Transport";
 import type { ViewMode } from "./scene";
 import "../styles/stats.css";
 import "./viewer.css";
+import { STATS_ROOT } from "../routes";
 
 const Viewer3D = lazy(() => import("./Viewer3D"));
 
@@ -46,7 +47,7 @@ function Frame(props: { game: GameState; live: boolean; children: (geo: { glb: (
       <header class="v3-bar v3-bar--page">
         <h3>3D view · {gameMapTitle(props.game)}</h3>
         <span class="v3-bar-state">{props.live ? "Live" : "Recorded replay"}</span>
-        <span class="v3-bar-buttons"><A href={`/stats/games/${props.game.game_id}`} target="_blank" rel="noopener">Game details</A></span>
+        <span class="v3-bar-buttons"><A href={`${STATS_ROOT}/games/${props.game.game_id}`} target="_blank" rel="noopener">Game details</A></span>
       </header>
       <div class="v3-body">
         <Show when={!geometryChanged(props.game)} fallback={<p class="v3-note v3-note--mid">This custom map's {GEOMETRY_CHANGED_NOTE}.</p>}>

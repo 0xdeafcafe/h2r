@@ -313,6 +313,9 @@ pub mod players {
         }
     }
 
+    /// The player's machine id (6 bytes): the console's Ethernet address,
+    /// or a phantom peer's made-up one (docs/game/bots.md §5.1).
+    pub const MACHINE: u32 = 0x14;
     /// The name's offset and capacity: UTF-16, 32 code units with the NUL.
     pub const NAME: u32 = 0x44;
     pub const NAME_UNITS: usize = 32;
@@ -335,6 +338,14 @@ pub mod players {
                 *unit = u;
             }
             Ok(NAME_UNITS)
+        }
+        /// The player's machine id ([`MACHINE`]).
+        pub fn machine(&self, m: &dyn GuestMemory) -> R<[u8; 6]> {
+            let mut id = [0; 6];
+            for (i, b) in (0u32..).zip(id.iter_mut()) {
+                *b = m.u8(self.addr.wrapping_add(MACHINE + i))?;
+            }
+            Ok(id)
         }
         /// Listed in a roster: live and not leaving.
         pub fn listed(&self, m: &dyn GuestMemory) -> R<bool> {

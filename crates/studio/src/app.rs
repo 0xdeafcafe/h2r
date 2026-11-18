@@ -8,12 +8,19 @@ use std::path::{Path, PathBuf};
 
 pub(crate) mod convert;
 pub mod hud;
+mod editing;
 mod library;
+pub mod tag_api;
+pub mod tag_doc;
 pub mod ui_screens;
-pub use convert::{Converter, Running, Written, base_for, explain, h1convert_convert};
+pub use convert::{
+    Built, Converter, Input as ConvertInput, Running, Written, explain, from_scratch,
+    retail_sources,
+};
 pub use h1convert::convert::Sandbox as ConvertSandbox;
 pub use library::{Compare, block_of, kind_of, markers as library_markers, tris as library_tris};
 pub use hud::HudTool;
+pub use tag_doc::{BlockOp, TagAction, TagDoc, TagWrite};
 pub use ui_screens::{Pick, UiScreens};
 
 use editor_core::{MapSource, Status, variant_sources};
@@ -37,11 +44,14 @@ pub enum ToolKind {
     /// A map's HUDs, drawn as the game places them and edited
     /// (docs/editor/hud-editor.md).
     Hud,
+    /// Every field of every tag of the open map (docs/editor/editor.md).
+    Tags,
 }
 
 impl ToolKind {
-    pub const ALL: [ToolKind; 5] = [
+    pub const ALL: [ToolKind; 6] = [
         ToolKind::Scenario,
+        ToolKind::Tags,
         ToolKind::Variants,
         ToolKind::Playlists,
         ToolKind::UiScreens,
@@ -54,6 +64,7 @@ impl ToolKind {
             ToolKind::Playlists => "Playlists",
             ToolKind::UiScreens => "UI Screens",
             ToolKind::Hud => "HUD",
+            ToolKind::Tags => "Tags",
         }
     }
 }
@@ -88,9 +99,17 @@ pub enum Action {
     Undo,
     Redo,
     Select(Option<(BlockKind, usize)>),
-    /// Delete the selected placement.
+    /// Add a placement to the selection, or take it out (Ctrl/Cmd+click).
+    ToggleSelect((BlockKind, usize)),
+    /// Select these placements, the first as the primary (Shift+click in
+    /// the outliner).
+    SelectMany(Vec<(BlockKind, usize)>),
+    /// Add a new placement where the cursor met the level: a copy of an
+    /// entry, or the block's first palette item.
+    PlaceAt(BlockKind, Option<usize>, [f32; 3]),
+    /// Delete the selected placements.
     Delete,
-    /// Duplicate the selected placement.
+    /// Duplicate the selected placements.
     Duplicate,
     /// Add a new placement to a block at the camera focus.
     Add(BlockKind),
@@ -155,6 +174,9 @@ pub enum Action {
     HudState(Box<hud_edit::HudState>),
     /// Write the map with the HUD edits as a new `.map`.
     HudSaveAs(PathBuf),
+    // Tags.
+    /// A tag editor command: select a tag, write a field, change a block.
+    Tag(TagAction),
 
     // Playlists.
     /// Open a `multiplayer_hopper.dat` (either form).
@@ -291,6 +313,8 @@ pub struct App {
     pub ui_screens: UiScreens,
     /// The HUD tool.
     pub hud: HudTool,
+    /// The tag editor's document over the open map.
+    pub tags: TagDoc,
 }
 
 impl Default for App {
@@ -332,10 +356,11 @@ impl App {
             overlay_rev: 0,
             convert: None,
             convert_error: None,
-            converter: h1convert_convert,
+            converter: from_scratch,
             convert_sandbox: ConvertSandbox::Halo2,
             ui_screens: UiScreens::default(),
             hud: HudTool::default(),
+            tags: TagDoc::default(),
         }
     }
 
@@ -373,8 +398,10 @@ impl App {
             ToolKind::Scenario => self.session.is_dirty(),
             ToolKind::Variants => self.variants.as_ref().is_some_and(|e| e.is_dirty()),
             ToolKind::Playlists => self.hoppers.is_dirty(),
-            ToolKind::UiScreens => false,
             ToolKind::Hud => self.hud.is_dirty(),
+            // The tag editor's edits are the map's: the scenario session
+            // saves them and its dirty mark counts them.
+            ToolKind::UiScreens | ToolKind::Tags => false,
         }
     }
     /// The action waiting on the unsaved-changes prompt, if any.
@@ -397,6 +424,7 @@ impl App {
             ToolKind::Playlists => self.hoppers.can_undo(),
             ToolKind::UiScreens => false,
             ToolKind::Hud => self.hud.session.as_ref().is_some_and(|s| s.can_undo()),
+            ToolKind::Tags => self.tags.can_undo(),
         }
     }
     pub fn can_redo(&self) -> bool {
@@ -406,6 +434,7 @@ impl App {
             ToolKind::Playlists => self.hoppers.can_redo(),
             ToolKind::UiScreens => false,
             ToolKind::Hud => self.hud.session.as_ref().is_some_and(|s| s.can_redo()),
+            ToolKind::Tags => self.tags.can_redo(),
         }
     }
     pub fn should_quit(&self) -> bool {
@@ -444,12 +473,12 @@ impl App {
                 let hud = s.hud().map(|h| h.name.clone()).unwrap_or_default();
                 format!("{} / {hud}", s.name)
             }),
+            ToolKind::Tags => self.loaded.clone(),
         };
+        let dirty =
+            self.tool_dirty(self.tool) || (self.tool == ToolKind::Tags && self.session.is_dirty());
         match what {
-            Some(name) => format!(
-                "{name}{} - h2-editor",
-                if self.tool_dirty(self.tool) { " *" } else { "" }
-            ),
+            Some(name) => format!("{name}{} - h2-editor", if dirty { " *" } else { "" }),
             None => "h2-editor".to_owned(),
         }
     }
@@ -513,15 +542,15 @@ impl App {
                 ToolKind::Scenario => self.error("save the map with Save as..."),
                 ToolKind::Variants => self.run(Action::SaveVariant),
                 ToolKind::Playlists => self.run(Action::SaveHopper),
-                ToolKind::UiScreens => {}
                 ToolKind::Hud => self.error("save the HUD edits with Save as..."),
+                ToolKind::UiScreens | ToolKind::Tags => {}
             },
             Answer::SaveAs(path) => match tool {
                 ToolKind::Scenario => self.run(Action::SaveMapAs(path)),
                 ToolKind::Playlists => self.run(Action::SaveHopperAs(path)),
                 ToolKind::Variants => self.run(Action::SaveVariant),
-                ToolKind::UiScreens => {}
                 ToolKind::Hud => self.run(Action::HudSaveAs(path)),
+                ToolKind::UiScreens | ToolKind::Tags => {}
             },
         }
         if self.tool_dirty(tool) {
@@ -546,8 +575,8 @@ impl App {
                 }
             }
             ToolKind::Playlists => self.hoppers.close(),
-            ToolKind::UiScreens => {}
             ToolKind::Hud => self.hud = HudTool::default(),
+            ToolKind::UiScreens | ToolKind::Tags => {}
         }
     }
 
@@ -590,6 +619,11 @@ impl App {
             Action::Undo => self.undo_redo(true),
             Action::Redo => self.undo_redo(false),
             Action::Select(sel) => self.session.select(sel),
+            Action::ToggleSelect(e) => self.session.toggle_select(e),
+            Action::SelectMany(all) => self.session.select_many(all),
+            Action::PlaceAt(kind, like, at) => self.place_at(kind, like, at),
+            Action::Delete if self.session.selection().len() > 1 => self.delete_selection(),
+            Action::Duplicate if self.session.selection().len() > 1 => self.duplicate_selection(),
             Action::Delete => match self.session.selected() {
                 Some((kind, i)) => self.run(Action::DeleteEntry(kind, i)),
                 None => self.error("select a placement to delete"),
@@ -617,7 +651,7 @@ impl App {
                 }
             }
             Action::FrameAll => self.session.frame_all(),
-            Action::FocusSelected => self.session.focus_selected(),
+            Action::FocusSelected => self.frame_selection(),
             Action::SetAllowGrowth(allow) => self.session.set_allow_growth(allow),
             Action::SetTool(tool) => self.set_tool(tool),
             Action::Quit => self.quit = true,
@@ -660,6 +694,7 @@ impl App {
                 self.hud.redraw();
             }
             Action::HudSaveAs(path) => self.hud_save_as(&path),
+            Action::Tag(a) => self.run_tag(a),
             a @ (Action::OpenVariant(_)
             | Action::NewVariant(_)
             | Action::CopyBuiltin(_)
@@ -703,11 +738,25 @@ impl App {
             }
             ToolKind::UiScreens => false,
             ToolKind::Hud => self.hud_undo_redo(undo),
+            ToolKind::Tags => {
+                self.sync_tags();
+                let r = if undo {
+                    self.tags.undo()
+                } else {
+                    self.tags.redo()
+                };
+                self.push_tag_patches();
+                if let Some(label) = &r {
+                    let msg = format!("{} {label}", if undo { "undid" } else { "redid" });
+                    self.info(msg);
+                }
+                r.is_some()
+            }
         };
         match (done, undo) {
             (false, true) => self.info("nothing to undo"),
             (false, false) => self.info("nothing to redo"),
-            (true, _) if self.tool != ToolKind::Scenario && self.tool != ToolKind::Hud => {
+            (true, _) if !matches!(self.tool, ToolKind::Scenario | ToolKind::Tags | ToolKind::Hud) => {
                 self.info(if undo { "undone" } else { "redone" })
             }
             _ => {}
@@ -722,6 +771,70 @@ impl App {
             ToolKind::Playlists => self.refresh_playlist_sources(),
             ToolKind::UiScreens => self.sync_ui_disc(),
             ToolKind::Hud => {}
+            ToolKind::Tags => self.sync_tags(),
+        }
+    }
+
+    /// Load the tag editor's document from the open map when the session
+    /// opened another one since (its edits went with that map).
+    pub fn sync_tags(&mut self) {
+        let rev = Some(self.session.world_rev());
+        if self.tags.for_rev == rev && self.tags.is_open() == self.session.is_open() {
+            return;
+        }
+        self.tags.close();
+        self.tags.for_rev = rev;
+        let Some(source) = self.session.source().cloned() else {
+            return;
+        };
+        if !self.session.is_open() {
+            return;
+        }
+        let r = source
+            .open()
+            .map_err(|e| e.to_string())
+            .and_then(|mut m| self.tags.load(&mut m).map_err(|e| e.to_string()));
+        if let Err(e) = r {
+            self.tags.error = Some(e.clone());
+            self.error(format!("tags: {e}"));
+        }
+    }
+
+    /// Hand the tag editor's changed runs to the session, which saves them.
+    fn push_tag_patches(&mut self) {
+        if !self.tags.is_open() {
+            return;
+        }
+        let r = self.session.set_tag_patches(self.tags.patches());
+        self.ok_or_log(r);
+    }
+
+    fn run_tag(&mut self, action: TagAction) {
+        self.sync_tags();
+        let r = match action {
+            TagAction::Select(id) => {
+                if self.tags.tag(id).is_some() {
+                    self.tags.selected = Some(id);
+                    Ok(())
+                } else {
+                    Err(format!("no tag {:#010x} in this map", id.0))
+                }
+            }
+            TagAction::Write(w) => self.tags.write(w),
+            TagAction::Block {
+                tag,
+                pair,
+                layout,
+                op,
+            } => self.tags.block_op(tag, pair, &layout, &op),
+            TagAction::Seal => {
+                self.tags.seal();
+                Ok(())
+            }
+        };
+        match r {
+            Ok(()) => self.push_tag_patches(),
+            Err(e) => self.error(e),
         }
     }
 
@@ -932,6 +1045,7 @@ impl App {
                     ToolKind::Playlists => self.refresh_playlist_sources(),
                     ToolKind::UiScreens => self.sync_ui_disc(),
                     ToolKind::Scenario | ToolKind::Hud => {}
+                    ToolKind::Tags => self.sync_tags(),
                 }
             }
             Err(e) => self.error(format!("{}: {e:#}", path.display())),
@@ -986,5 +1100,7 @@ impl App {
     }
 }
 
+#[cfg(test)]
+pub(crate) mod tag_tests;
 #[cfg(test)]
 mod tests;

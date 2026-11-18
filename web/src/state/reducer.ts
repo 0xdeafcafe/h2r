@@ -321,6 +321,13 @@ export function applyEvent(s: LiveState, ev: WireEvent): boolean {
       if (g && typeof d?.tick === "number" && d.tick > g.last_tick) g.last_tick = d.tick;
       break;
     }
+    case "FrameChunk": {
+      // A stored chunk of recorded frames (api/chunk.ts): its last tick.
+      const g = gameFor(s, ev);
+      const d = ev.data as { to_tick?: number };
+      if (g && typeof d?.to_tick === "number" && d.to_tick > g.last_tick) g.last_tick = d.to_tick;
+      break;
+    }
     case "GameEnded": {
       const g = gameFor(s, ev);
       if (!g) break;

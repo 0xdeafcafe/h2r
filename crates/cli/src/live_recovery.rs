@@ -33,7 +33,7 @@ pub(crate) fn print_recovery(info: &RecoveryInfo) {
         .chunks(4)
         .map(|c| String::from_utf8_lossy(c).into_owned())
         .collect();
-    println!("recovery: on a new device, enter the gamertag and a current code");
+    println!("sign-in code: on a new device, enter the gamertag and a current code");
     println!(
         "  code now:          {} (h2 live account code shows it again)",
         info.code
@@ -151,14 +151,14 @@ pub(crate) fn account_recovery(mut args: Args) -> Result<()> {
     let account = pick_account(&client, &accounts_path()?, as_tag.as_deref())?;
     let info = match recovery_info(&client, &account, reset) {
         Err(e) if !reset && status_of(&e) == Some(404) => {
-            println!("{} has no recovery yet: setting it up", account.gamertag);
+            println!("{} has no sign-in code yet: setting one up", account.gamertag);
             recovery_info(&client, &account, true)?
         }
         r => r?,
     };
     if reset {
         println!(
-            "new recovery secret for {}; the old one no longer works",
+            "new sign-in code secret for {}; the old one no longer works",
             account.gamertag
         );
     }
@@ -168,7 +168,7 @@ pub(crate) fn account_recovery(mut args: Args) -> Result<()> {
 
 fn not_set_up(e: anyhow::Error) -> anyhow::Error {
     if status_of(&e) == Some(404) {
-        e.context("this account has no recovery yet: run `h2 live account recovery`")
+        e.context("this account has no sign-in code yet: run `h2 live account recovery`")
     } else {
         e
     }
@@ -186,7 +186,7 @@ pub(crate) fn account_recover(mut args: Args) -> Result<()> {
     let code = match code {
         Some(c) => c,
         None => prompt(&format!(
-            "current recovery code for {tag} (a signed-in device or your authenticator shows it)"
+            "current sign-in code for {tag} (a signed-in device or your authenticator shows it)"
         ))?,
     };
     let path = accounts_path()?;

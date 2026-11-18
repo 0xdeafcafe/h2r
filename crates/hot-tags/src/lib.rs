@@ -271,7 +271,7 @@ impl Editor {
         let loc = match Defs::builtin().group(e.group) {
             Some(root) => path::resolve(g, root, e.address, path).map_err(Error::invalid)?,
             // No definition: only raw fields of the root.
-            None => path::raw(e.address, path).map_err(|m| {
+            None => path::raw(g, e.address, path).map_err(|m| {
                 Error::invalid(format!(
                     "{} has no definition: use a raw field, +<offset>:<type> (e.g. +0x10:f32[3]); {m}",
                     group_text(e.group)

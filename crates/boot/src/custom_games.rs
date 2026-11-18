@@ -1,8 +1,10 @@
 //! Custom games over Live (docs/live/live-custom-games.md): a "Custom Game
 //! Browser" row on the Xbox Live menu that opens the retail System Link
-//! browser in its dormant Live mode, a Content Download row that explains how
-//! to install the Multiplayer Map Pack, and the party privacy the title
-//! already has, carried to the server as the session's visibility.
+//! browser in its dormant Live mode, a Content Download row that opens the
+//! mod repository's Mods screen (`crate::mods_screen`; without it, a dialog
+//! that explains how to install the Multiplayer Map Pack), and the party
+//! privacy the title already has, carried to the server as the session's
+//! visibility.
 //!
 //! **The browser.** The System Link game browser (screen `0x0d`, 0x940
 //! bytes, constructor `0x253221`) has two loaders that differ only in the
@@ -123,6 +125,10 @@ pub const COOP_TEXT: &str = "Co-op Campaign";
 pub const COOP_HELP_ID: u32 = ID_BASE + 0x37;
 pub const COOP_HELP: &str =
     "Play the campaign with a friend over Xbox Live, one player per console.";
+/// Content Download's help once it opens the Mods screen
+/// (`crate::mods_screen`), in place of retail's on its pane.
+pub const MODS_HELP_ID: u32 = ID_BASE + 0x38;
+pub const MODS_HELP: &str = "Download maps other players made and shared on your Live server.";
 
 /// The screen, its list handler's vtable and its retail item widgets.
 pub const SCREEN_ID: i16 = 0xba;
@@ -181,6 +187,24 @@ pub fn set_coop_row(on: bool) {
     COOP_ROW_ON.store(on, std::sync::atomic::Ordering::SeqCst);
 }
 
+/// Whether Content Download opens the Mods screen (`crate::mods_screen`,
+/// installed with Live and a map gate; `H2_NO_MODS_ROW=1` takes it out).
+pub fn mods_row_enabled() -> bool {
+    MODS_ROW_ON.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+static MODS_ROW_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_mods_row(on: bool) {
+    MODS_ROW_ON.store(on, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// The item widgets of ours the Live menu's list needs so that every row
+/// shows with no scrolling: one per row of ours (the handler embeds four).
+pub fn extra_items(coop: bool) -> u32 {
+    ours(coop)
+}
+
 /// Our rows on the Live menu: the browser's, and co-op's when on.
 fn ours(coop: bool) -> u32 {
     1 + u32::from(coop)
@@ -209,7 +233,8 @@ pub enum Row {
     Browser,
     /// Ours: opens the co-op screen (`crate::coop_live`).
     Coop,
-    /// Content Download, moved down one: opens the Map Pack dialog.
+    /// Content Download, moved down: opens the Mods screen
+    /// (`crate::mods_screen`), else the Map Pack dialog.
     Download,
 }
 
@@ -227,12 +252,23 @@ pub fn row_kind_with(row: i16, coop: bool) -> Row {
 }
 
 /// The label of a row the retail row text cannot draw: ours, and Content
-/// Download at its new place.
+/// Download at its new place ("Mods" or "Mods (N new)" when it opens the
+/// Mods screen).
 pub fn row_text_id(row: i16) -> Option<u32> {
-    match row_kind(row) {
+    let mods = mods_row_enabled()
+        .then(crate::mods_screen::repo)
+        .flatten()
+        .map(|r| r.menu_label());
+    row_text_id_with(row, coop_row_enabled(), mods)
+}
+
+/// [`row_text_id`] with the co-op row on or off and the Mods label's id,
+/// if Content Download opens the Mods screen.
+pub fn row_text_id_with(row: i16, coop: bool, mods: Option<u32>) -> Option<u32> {
+    match row_kind_with(row, coop) {
         Row::Browser => Some(TEXT_ID),
         Row::Coop => Some(COOP_TEXT_ID),
-        Row::Download => Some(DOWNLOAD_TEXT_ID),
+        Row::Download => Some(mods.unwrap_or(DOWNLOAD_TEXT_ID)),
         Row::Retail => None,
     }
 }
@@ -314,6 +350,7 @@ pub fn strings() -> Vec<(u32, &'static str)> {
         (HELP_ID, HELP),
         (COOP_TEXT_ID, COOP_TEXT),
         (COOP_HELP_ID, COOP_HELP),
+        (MODS_HELP_ID, MODS_HELP),
         (MAPPACK_TITLE_ID, MAPPACK_TITLE),
         (MAPPACK_MESSAGE_ID, MAPPACK_MESSAGE),
     ]
@@ -374,6 +411,20 @@ const ITEM_BOTTOM: i16 = -15;
 const COLUMN: i16 = 105;
 pub const LIFT: i16 = 21;
 pub const DROP: i16 = ITEM_HEIGHT - LIFT;
+/// The most the list moves up: the first item 21 units under the header,
+/// the gap the retail tag leaves under the last.
+pub const MAX_LIFT: i16 = 36;
+
+/// How far the list moves up and the blocks under it move down to make
+/// room for `extra` more items: `extra` item heights in all, at most
+/// [`MAX_LIFT`] of it up. One more item: 21 up and 22 down. Two (the
+/// co-op row): 36 up and 50 down, so the hint texts and the Y callout end
+/// 65 units lower than retail's.
+pub fn shift(extra: u32) -> (i16, i16) {
+    let room = ITEM_HEIGHT.saturating_mul(extra.min(8) as i16);
+    let lift = (room / 2).min(MAX_LIFT);
+    (lift, room - lift)
+}
 /// Bytes [`extend_tag`] may use for its copies.
 pub const TAG_SPACE: u32 = 0x1000;
 
@@ -442,10 +493,23 @@ pub fn extend_tag<M: Gm>(m: &mut M, wgit: u32, base: u32) -> Option<bool> {
 }
 
 /// [`extend_tag`] within `space` bytes, with or without the co-op row's
-/// pane. The list keeps room for five items either way: with the co-op
-/// row the sixth row (Content Download) scrolls into view.
+/// pane. The list makes room for every row ([`shift`]), so none scrolls.
+/// With the Mods screen on, Content Download's pane says so.
 fn extend_tag_in<M: Gm>(m: &mut M, wgit: u32, base: u32, space: u32, coop: bool) -> Option<bool> {
+    extend_tag_with(m, wgit, base, space, coop, mods_row_enabled())
+}
+
+fn extend_tag_with<M: Gm>(
+    m: &mut M,
+    wgit: u32,
+    base: u32,
+    space: u32,
+    coop: bool,
+    mods: bool,
+) -> Option<bool> {
     let panes = extended_panes(coop);
+    let extra = ours(coop);
+    let (lift, drop) = shift(extra);
     if m.u16(wgit.wrapping_add(4))? as i16 != SCREEN_ID || m.u32(wgit + 0x20)? != VANILLA_PANES {
         return Some(false);
     }
@@ -491,8 +555,8 @@ fn extend_tag_in<M: Gm>(m: &mut M, wgit: u32, base: u32, space: u32, coop: bool)
             &mut next,
             end,
             |_, e| {
-                put_i16(e, 0xa, get_i16(e, 0xa).saturating_add(LIFT));
-                let rows = (VANILLA_ROWS + 1) as i16;
+                put_i16(e, 0xa, get_i16(e, 0xa).saturating_add(lift));
+                let rows = (VANILLA_ROWS + extra) as i16;
                 if get_i16(e, 6) < rows {
                     put_i16(e, 6, rows);
                 }
@@ -508,11 +572,14 @@ fn extend_tag_in<M: Gm>(m: &mut M, wgit: u32, base: u32, space: u32, coop: bool)
             |i, e| {
                 // Rectangle: top, left, bottom, right.
                 if below(get_i16(e, 0x1e), get_i16(e, 0x1c)) {
-                    put_i16(e, 0x1c, get_i16(e, 0x1c).saturating_sub(DROP));
-                    put_i16(e, 0x20, get_i16(e, 0x20).saturating_sub(DROP));
+                    put_i16(e, 0x1c, get_i16(e, 0x1c).saturating_sub(drop));
+                    put_i16(e, 0x20, get_i16(e, 0x20).saturating_sub(drop));
                 }
                 if ours && help == Some(i) {
                     e[0x24..0x28].copy_from_slice(&help_id.to_le_bytes());
+                }
+                if mods && p == RETAIL_DOWNLOAD_ROW as u32 && help == Some(i) {
+                    e[0x24..0x28].copy_from_slice(&MODS_HELP_ID.to_le_bytes());
                 }
             },
         )?;
@@ -526,7 +593,7 @@ fn extend_tag_in<M: Gm>(m: &mut M, wgit: u32, base: u32, space: u32, coop: bool)
             |_, e| {
                 // Top-left point: x, y.
                 if below(get_i16(e, 0xc), get_i16(e, 0xe)) {
-                    put_i16(e, 0xe, get_i16(e, 0xe).saturating_sub(DROP));
+                    put_i16(e, 0xe, get_i16(e, 0xe).saturating_sub(drop));
                 }
             },
         )?;
@@ -905,15 +972,63 @@ mod tests {
         let text = |m: &Fake, p: u32, i: u32| m.u32(pane(p) + 0x20).unwrap() + i * TEXT_SIZE;
         assert_eq!(m.u32(text(&m, 4, 2) + 0x24), Some(HELP_ID));
         assert_eq!(m.u32(text(&m, 5, 2) + 0x24), Some(COOP_HELP_ID));
+        let (lift, drop) = shift(2);
         for p in 4..6 {
             // Both of ours are the Custom Game pane, moved like the rest.
             assert_eq!(m.u32(text(&m, p, 0) + 0x24), Some(0x0800_0001));
-            assert_eq!(i16_at(&m, text(&m, p, 0) + 0x1c), -60 - DROP);
+            assert_eq!(i16_at(&m, text(&m, p, 0) + 0x1c), -60 - drop);
             assert_eq!(m.u32(pane(p) + 0xc), Some(0), "no list on our pane");
         }
-        // The list keeps room for five items: the sixth row scrolls.
+        // Room for all six rows: none scrolls.
         let list = m.u32(pane(0) + 0x10).unwrap();
-        assert_eq!(i16_at(&m, list + 0xa), ANCHOR.1 + LIFT);
+        assert_eq!(i16_at(&m, list + 0xa), ANCHOR.1 + lift);
+    }
+
+    #[test]
+    fn six_rows_fit_with_the_retail_gaps_and_no_scroll() {
+        assert_eq!(shift(1), (LIFT, DROP), "five rows: as before");
+        assert_eq!(shift(2), (36, 50));
+        assert_eq!(extra_items(false), 1);
+        assert_eq!(extra_items(true), 2, "a child item per row: no scroll");
+        assert_eq!(VANILLA_ITEMS + extra_items(true), 6);
+        let mut m = Fake::default();
+        let wgit = live_tag(&mut m, 4);
+        assert_eq!(extend_tag_in(&mut m, wgit, BASE, TAG_SPACE, true), Some(true));
+        let list = m.u32(BASE + 0x10).unwrap();
+        assert_eq!(i16_at(&m, list + 6), 6, "the list shows six");
+        let anchor_y = i16_at(&m, list + 0xa);
+        // Item i spans origin + 28 down to origin - 15, one item height apart.
+        let bottom = |y: i16, i: i16| y - i * ITEM_HEIGHT + ITEM_BOTTOM;
+        let retail_gap = -60 - bottom(ANCHOR.1, 3);
+        let hint = m.u32(BASE + 0x20).unwrap();
+        assert_eq!(i16_at(&m, hint + 0x1c) - bottom(anchor_y, 5), retail_gap);
+        // The first item is as far under the header as the hint is under
+        // the last row in the retail tag (the header ends 57 above the
+        // retail first item's top).
+        assert_eq!(57 - MAX_LIFT, 21);
+        assert_eq!(anchor_y, ANCHOR.1 + MAX_LIFT);
+    }
+
+    #[test]
+    fn content_download_says_mods_and_its_pane_says_why() {
+        let label = 0x20ff_d100;
+        assert_eq!(row_text_id_with(DOWNLOAD_ROW, true, Some(label)), Some(label));
+        assert_eq!(row_text_id_with(COOP_ROW, false, Some(label)), Some(label));
+        assert_eq!(row_text_id_with(DOWNLOAD_ROW, true, None), Some(DOWNLOAD_TEXT_ID));
+        assert_eq!(row_text_id_with(ROW, true, Some(label)), Some(TEXT_ID));
+        assert_eq!(row_text_id_with(1, true, Some(label)), None, "retail rows");
+        let text = |m: &Fake, p: u32, i: u32| m.u32(BASE + p * PANE_SIZE + 0x20).unwrap() + i * TEXT_SIZE;
+        for (mods, want) in [(true, MODS_HELP_ID), (false, 0x0a00_0103)] {
+            let mut m = Fake::default();
+            let wgit = live_tag(&mut m, 7);
+            assert_eq!(extend_tag_with(&mut m, wgit, BASE, TAG_SPACE, true, mods), Some(true));
+            assert_eq!(m.u32(text(&m, 3, 2) + 0x24), Some(want), "mods {mods}");
+            for p in 0..3 {
+                assert_eq!(m.u32(text(&m, p, 2) + 0x24), Some(0x0a00_0100 + p));
+            }
+            assert_eq!(m.u32(text(&m, 3, 0) + 0x24), Some(0x0800_0001), "only the help");
+        }
+        assert!(MODS_HELP.len() <= HELP.len() + 8);
     }
 
     #[test]

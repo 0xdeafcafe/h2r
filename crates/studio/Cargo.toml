@@ -38,12 +38,21 @@ h1convert = { path = "../h1convert" }
 # The Halo 1 sandbox's objects.
 h1objects = { path = "../h1objects" }
 h1map = { path = "../h1map" }
+# The converted map card's PNG.
+assets.workspace = true
 map.workspace = true
+# The tag editor's field registry (schema structure + definition names).
+tags.workspace = true
 # The UI Screens tool: our game screens' pages, preview and checks
 # (boot::ui_kit; docs/game/ui-builder.md).
 boot.workspace = true
 serde_json.workspace = true
 
+# Play and pair (src/play.rs): the agent API's wire types and client.
+agent-proto = { path = "../agent-proto" }
+
 [dev-dependencies]
 # The HUD tool's tests draw the invented HUD map.
 hud-edit = { path = "../hud-edit", features = ["fixture"] }
+# The agent's real server behind an invented game (src/play/tests.rs).
+agent = { path = "../agent" }

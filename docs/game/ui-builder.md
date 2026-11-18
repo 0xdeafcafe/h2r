@@ -58,7 +58,7 @@ Page   ── state + input ──▶ step() ──▶ (new state, Effect)    pu
 | Kind | Built from | Header | Use |
 |---|---|---|---|
 | `List` | the Controls tag (today's `KitScreen`) | header layout 0 | settings-style lists over the game shell |
-| `Dialog` | our tag recipe: dialog backing art, a body text, a skin 0 list of buttons | layout 3 (small: title 244 wide, panel 278) or 2 (large: title 498 wide, panel 536) | questions, progress, errors |
+| `Dialog` | a retail dialog's tag (`DialogBase`): its backing art and header layout, our rows in its list, a body text or none ("The Dialog kind") | the base's: layout 1 (Quick Options) or 2 (large: title 498 wide, panel 536) | settings pages over the lobby (Clankers, Halo 1 options), questions, errors |
 | `CodeEntry` | `Dialog` large, plus N cells: the Live passcode dialog's box art (screen 21's `password` blocks) with a digit text over each, the cursor cell tinted bright | layout 2 | the sign-in code |
 | keyboard handoff | any kind; `Effect::Keyboard(field)` opens the game's keyboard (`signin_keyboard`), the typed text comes back as an `Input::Typed` | — | gamertag, invite |
 
@@ -433,6 +433,74 @@ What this run settles: whether our screen can go on the dialogs' stack,
 what is drawn beneath it, and input and closing there. The tag (layout 2
 header, panel, cells) and the text questions in "What stays unverifiable
 offline" need the next run, once serving the tag is built.
+
+## The Dialog kind
+
+Built 2026-11-18: `KitScreen::dialog(base, opener)` (and
+`ListClass::dialog(base)` under it) makes a kit screen a dialog of its
+rows, the way the game's own settings dialogs are. Target look (the
+user): the lobby's **Quick Options** (Game Setup, then Quick Options).
+
+**Bases** (`ui_kit::dialog::DialogBase`), each a retail dialog tag:
+
+| Base | Screen | Header | List | Panel | In the game maps |
+|---|---|---|---|---|---|
+| `QuickOptions` | 222, `quick_options` | layout 1 | skin 2 (label and value), 11 rows at (-254, 87) | `fs_dialog`, full screen | no, `mainmenu` only |
+| `Large` | 240, `error_dialog_large` | layout 2 | skin 0 (one text), 2 rows at (-235, 30) | `dialog1`/`dialog2` and corners | yes |
+
+Quick Options' help line (`QUICK_HELP`, above the list) is where a
+settings dialog's description goes; its game type picture (bitmap 1) is
+the retail dialog's content and is left out (`content_bitmaps`). A
+row's value goes in the skin's value column on Quick Options and after
+the label on the large dialog (`DialogBase::style`). The disc test holds
+`DialogGeometry::fallback_for` to the disc for both.
+
+**Preview.** `DialogSpec` carries `base` and `rows` (and a `body`, empty
+for a rows-only dialog). `dialog_view` draws the base's panel and header
+and the rows through `view_of` at the base's list, over the opener.
+`kit.dialog` (Quick Options) and `kit.dialog.large` are the samples in
+the sheet.
+
+**In game** (`ui_kit::dialog_tag`, `list_class`):
+
+- Loading: before the constructor, `prepare` looks the base up with
+  `SCREEN_TAG_BY_ID` and writes `write_base_tag`'s copy into the class's
+  page: the base's root (header layout and string), one pane with its
+  flags, its backing bitmaps (up to 16, less `content_bitmaps`), its
+  list moved to our skin, anchor and row count, and no other blocks.
+  The screen-tag hook serves that copy (`served`) and doesn't ask for the
+  Controls tag. A base not in the interface logs `no dialog screen N in
+  this interface; not drawn as a dialog`, and the screen has no tag.
+- Opening: `list_class::open` and `push` open a dialog class with
+  `open_over`: the request with window kind 1 (`DIALOG_WINDOW`) handed to
+  the loader, as `0x19b527` does. The opener stays drawn under it.
+- Closing: retail's close by window and slot (`0x14800c`) has no case for
+  window 1, so the generic back handler can't close it. B and Back on a
+  window-1 screen send it the close message (`0x22e957`, kind 2) unless
+  it is closing already (state bit 1), and so does `KitScreen`'s close.
+
+**The blank pause screens.** The Controls tag (screen 39) is only in
+`mainmenu`, so a Controls-built screen opened in a game had no tag. The
+game-ui-fixes lane builds those on the in-game Controller Settings
+(screen 200) instead. A `Large` dialog would work there too, since screen
+240 is in `shared` and `single_player_shared`; `QuickOptions` would not.
+
+### The Dialog kind's game run
+
+With a dialog screen on `QuickOptions` opened from the lobby (Clankers
+or Halo 1 options, once switched):
+
+1. stderr: `<name>: a dialog on screen 222's tag (copy at ...)`. If it
+   says `no dialog screen 222 in this interface`, the lobby's interface
+   doesn't have Quick Options loaded; try `Large`.
+2. On screen: `fs_dialog` over the lobby, the header at the top left,
+   the rows as Quick Options' (label left, value right) from (-254, 87),
+   no game type picture. Compare with `kit.dialog` in the sheet.
+3. The d-pad moves and changes rows; the lobby beneath doesn't move.
+4. B closes the dialog (stderr shows no close by slot), and the lobby
+   takes input again at once. Open it again: it opens the same way.
+5. The title is ours (slot 18 sets it on the header after the pane is
+   built, as on every class); note it if it reads "Quick Options".
 
 ## Behaviour
 

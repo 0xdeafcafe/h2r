@@ -16,7 +16,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
 const USAGE: &str = "usage: h2-editor [--disc <iso> | --map <file.map> | --folder <maps dir>] \
-[--halo1 <iso|maps dir>] [--data <dir>] [--package <dir>[#H1|#H2]] [--halo1-map <map> [--convert h2|h1]] [--overlay on|off] [--tool scenario|variants|playlists|ui-screens|hud] [--ui-screen <screen>/<state> [--ui-press up,a,...]] \
+[--halo1 <iso|maps dir>] [--data <dir>] [--package <dir>[#H1|#H2]] [--halo1-map <map> [--convert h2|h1]] [--overlay on|off] [--tool scenario|tags|variants|playlists|ui-screens|hud] [--tag <group>:<path>] [--ui-screen <screen>/<state> [--ui-press up,a,...]] \
 [--hud-map <map>|--hud-package <key>] [--hud <nhdt name>] [--hud-widget <name>] [--pick <map>] [--select <block>:<index>] [--hopper <file.dat>|default] \
 [--variant <built-in index>] [--copy-variant <name>] [--playlist <1..16>] [--preset <n>] \
 [--focus] [--camera <yaw>,<pitch>,<distance>] [--dialog unsaved|package] \
@@ -48,6 +48,8 @@ struct Args {
     hud_package: Option<String>,
     hud: Option<String>,
     hud_widget: Option<String>,
+    /// The Tags tool's tag, `group:path`.
+    tag: Option<String>,
     hopper: Option<String>,
     variant: Option<usize>,
     playlist: Option<usize>,
@@ -91,6 +93,7 @@ fn args() -> Result<Args> {
         hud_package: None,
         hud: None,
         hud_widget: None,
+        tag: None,
         hopper: None,
         variant: None,
         playlist: None,
@@ -143,6 +146,7 @@ fn args() -> Result<Args> {
             "--hud-package" => a.hud_package = Some(value()?),
             "--hud" => a.hud = Some(value()?),
             "--hud-widget" => a.hud_widget = Some(value()?),
+            "--tag" => a.tag = Some(value()?),
             "--tool" => {
                 a.tool = Some(match value()?.as_str() {
                     "scenario" => ToolKind::Scenario,
@@ -150,6 +154,7 @@ fn args() -> Result<Args> {
                     "playlists" => ToolKind::Playlists,
                     "ui-screens" => ToolKind::UiScreens,
                     "hud" => ToolKind::Hud,
+                    "tags" => ToolKind::Tags,
                     t => bail!("unknown tool {t}\n{USAGE}"),
                 })
             }
@@ -350,6 +355,11 @@ fn main() -> Result<()> {
                 .map(|w| w.key)
                 .ok_or_else(|| anyhow!("--hud-widget: no widget {name:?}"))?;
             app.dispatch(Action::HudSelect(Some(key)));
+    if let Some(t) = &args.tag {
+        app.dispatch(Action::SetTool(ToolKind::Tags));
+        match studio::app::tag_api::find_tag(&app.tags, t) {
+            Some(id) => app.dispatch(Action::Tag(studio::app::TagAction::Select(id))),
+            None => bail!("--tag: no tag {t:?} in the open map"),
         }
     }
     if let Some(i) = args.variant {

@@ -39,7 +39,21 @@ export interface SampledPlayer {
    *  drawn like a player: its id and side. Its `index` is made from the id
    *  and is negative, so it never meets a player's. */
   actor?: { id: string; team: string | null };
+  /** Velocity, game units a second, when the frame says (version 3 senders). */
+  vel?: Aim;
+  /** The animation the game plays on it, at the sampled tick (version 4). */
+  anim?: SampledAnim;
+  /** Its seat in `vehicle` (the vehicle's own seat index), when the frame says. */
+  seat?: number;
+  /** The ticks it fired on, from the frames' `fire` masks, up to the
+   *  sampled tick and no further back than the frame behind it (oldest
+   *  first): each shot at its own tick. With masks, `shots` is left out. */
+  fireTicks?: number[];
 }
+
+/** A unit's animation as the game plays it: its name in the unit's graph
+ *  (`combat:rifle:any:move_front`) and the frame, fractional. */
+export interface SampledAnim { name: string; frame: number }
 
 /** A vehicle with someone in it, at one moment. */
 export interface SampledVehicle {
@@ -75,7 +89,7 @@ export interface SampledHit {
 export function sampleHits(frames: readonly Frame[], tick: number): { tick: number; hits: SampledHit[] } | null {
   const i = findFrame(frames, tick);
   const f = i < 0 ? undefined : frames[i];
-  if (!f?.hits?.length) return null;
+  if (!f?.hits?.length || f.cinematic) return null;
   let c = hitCache.get(f);
   if (!c) {
     c = [];
@@ -164,6 +178,80 @@ export function cleanShots(v: unknown): number {
   return Math.min(MAX_SHOTS_PER_FRAME, Math.floor(v));
 }
 
+/** Faster than this (game units a second) is a bad read, not a velocity. */
+export const MAX_VELOCITY = 80;
+
+/** A velocity: three finite numbers no faster than [`MAX_VELOCITY`], else null. */
+export function cleanVel(v: unknown): Aim | null {
+  if (!Array.isArray(v) || v.length !== 3 || !v.every((c) => typeof c === "number" && Number.isFinite(c))) return null;
+  const [x, y, z] = v as number[];
+  return Math.hypot(x!, y!, z!) <= MAX_VELOCITY ? [x!, y!, z!] : null;
+}
+
+const ANIM_NAME = /^[a-z0-9_]+(:[a-z0-9_]+){0,7}$/;
+
+/** An animation as the contract has it: a graph name of lower-case words
+ *  joined by colons (at most 96 characters) and a frame from 0, else null. */
+export function cleanAnim(v: unknown): SampledAnim | null {
+  if (!v || typeof v !== "object") return null;
+  const { name, frame } = v as { name?: unknown; frame?: unknown };
+  if (typeof name !== "string" || name.length > 96 || !ANIM_NAME.test(name)) return null;
+  if (typeof frame !== "number" || !Number.isFinite(frame) || frame < 0 || frame >= 32768) return null;
+  return { name, frame };
+}
+
+/** A seat index: a whole number from 0 to 31, else null. */
+export function cleanSeat(v: unknown): number | null {
+  return typeof v === "number" && Number.isInteger(v) && v >= 0 && v < 32 ? v : null;
+}
+
+/** The ticks a `fire` mask names, at a frame's `tick`: bit k is a shot at
+ *  `tick - k`. Oldest first; only those after `after` and up to `upTo`. */
+export function fireTicks(mask: unknown, tick: number, after: number, upTo: number): number[] {
+  if (typeof mask !== "number" || !Number.isInteger(mask) || mask <= 0) return [];
+  const out: number[] = [];
+  for (let k = 31; k >= 0; k--) {
+    if (!((mask >>> k) & 1)) continue;
+    const t = tick - k;
+    if (t > after && t <= upTo) out.push(t);
+  }
+  return out;
+}
+
+/** Cubic Hermite between `a` (velocity `va`) at t = 0 and `b` (velocity
+ *  `vb`) at t = 1, the velocities in units per whole span. */
+export function hermite(a: number, va: number, b: number, vb: number, t: number): number {
+  const t2 = t * t, t3 = t2 * t;
+  return (2 * t3 - 3 * t2 + 1) * a + (t3 - 2 * t2 + t) * va + (-2 * t3 + 3 * t2) * b + (t3 - t2) * vb;
+}
+
+/** Longest gap (ticks) that is curved by the samples' velocities; a
+ *  longer one is a straight line (what the velocities say that far apart
+ *  is too old to bend the path by). */
+export const HERMITE_MAX_TICKS = 2 * TICKS_PER_SECOND;
+
+/** The animation between two samples at `tick`. One animation on both
+ *  sides moving at about the game's pace moves its frame between theirs;
+ *  otherwise (a change, or a loop that wrapped between them) the nearer sample's
+ *  animation is taken and its frame carried on at the game's rate (one
+ *  frame a tick), forward from the earlier or back from the later, so it
+ *  stays where the game had it. */
+export function blendAnim(a: SampledAnim | null, b: SampledAnim | null, tickA: number, tickB: number, tick: number): SampledAnim | null {
+  if (!a && !b) return null;
+  const span = tickB - tickA;
+  const t = span > 0 ? Math.min(1, Math.max(0, (tick - tickA) / span)) : 0;
+  if (a && b && a.name === b.name && span > 0) {
+    // Held on one frame (a body lying still, a pose).
+    if (b.frame === a.frame) return { name: a.name, frame: a.frame };
+    // Moved forward at about the game's pace (half to twice a frame a
+    // tick): straight between. Anything else wrapped round a loop.
+    const d = b.frame - a.frame;
+    if (d >= span * 0.5 && d <= span * 2) return { name: a.name, frame: lerp(a.frame, b.frame, t) };
+  }
+  if (a && (!b || t < 0.5)) return { name: a.name, frame: a.frame + Math.max(0, tick - tickA) };
+  return { name: b!.name, frame: Math.max(0, b!.frame - Math.max(0, tickB - tick)) };
+}
+
 /** Level aim along a yaw (0 = +x, counter-clockwise). */
 export function yawAim(yaw: number): Aim {
   return [Math.cos(yaw), Math.sin(yaw), 0];
@@ -208,7 +296,8 @@ export function fromFramePlayer(p: FramePlayer, tick?: number, shotsFrom: FrameP
   if (species) out.species = species;
   if (weapon) out.weapon = weapon;
   if (aim) out.aim = aim;
-  const shots = tick === undefined || !shotsFrom ? 0 : cleanShots(shotsFrom.shots);
+  // A frame with a fire mask has its shots placed on their ticks (blendPlayers).
+  const shots = tick === undefined || !shotsFrom || shotsFrom.fire != null ? 0 : cleanShots(shotsFrom.shots);
   if (shots && shotsFrom!.alive) { out.shots = shots; out.shotTick = tick; }
   const stance = cleanStance(p.stance), speed = cleanSpeed(p.speed), grenade = cleanId(p.grenade);
   if (stance) out.stance = stance;
@@ -216,6 +305,10 @@ export function fromFramePlayer(p: FramePlayer, tick?: number, shotsFrom: FrameP
   if (grenade) out.grenade = grenade;
   const actions = tick === undefined || !shotsFrom ? [] : cleanActions(shotsFrom.actions);
   if (actions.length) { out.actions = actions; out.actionTick = tick; }
+  const vel = cleanVel(p.vel), anim = cleanAnim(p.anim), seat = out.vehicle ? cleanSeat(p.seat) : null;
+  if (vel) out.vel = vel;
+  if (anim) out.anim = anim;
+  if (seat !== null) out.seat = seat;
   return out;
 }
 
@@ -227,7 +320,13 @@ export function interpolateFrames(a: Frame, b: Frame | undefined, tick: number):
 
 function blendPlayers(from: readonly FramePlayer[], to: readonly FramePlayer[] | undefined, tickA: number, tickB: number, tick: number): SampledPlayer[] {
   const a = { tick: tickA, players: from };
-  if (!to) return a.players.map((p) => fromFramePlayer(p, a.tick));
+  // Shots the earlier frame's mask names, up to now (the newest frame of a live stream).
+  const fired = (s: SampledPlayer, p: FramePlayer, at: number, after: number) => {
+    if (p.fire == null || !p.alive) return;
+    const ticks = fireTicks(p.fire, at, after, tick);
+    if (ticks.length) s.fireTicks = ticks;
+  };
+  if (!to) return a.players.map((p) => { const s = fromFramePlayer(p, a.tick); fired(s, p, a.tick, a.tick - 32); return s; });
   const b = { tick: tickB, players: to };
   const t = Math.min(1, Math.max(0, (tick - a.tick) / (b.tick - a.tick)));
   const next = new Map<number, FramePlayer>();
@@ -236,7 +335,7 @@ function blendPlayers(from: readonly FramePlayer[], to: readonly FramePlayer[] |
   for (const pa of a.players) {
     const pb = next.get(pa.index);
     next.delete(pa.index);
-    if (!pb) { out.push(fromFramePlayer(pa, a.tick)); continue; }
+    if (!pb) { const s = fromFramePlayer(pa, a.tick); fired(s, pa, a.tick, a.tick - 32); out.push(s); continue; }
     const dx = pb.pos[0] - pa.pos[0], dy = pb.pos[1] - pa.pos[1], dz = pb.pos[2] - pa.pos[2];
     const far = dx * dx + dy * dy + dz * dz > SNAP_DISTANCE * SNAP_DISTANCE;
     if (!pa.alive || !pb.alive || far) {
@@ -244,16 +343,33 @@ function blendPlayers(from: readonly FramePlayer[], to: readonly FramePlayer[] |
       out.push(fromFramePlayer(t < 0.5 ? pa : pb, a.tick, pa));
       continue;
     }
-    // Everything but the place comes from the nearer frame; shots from `a`.
+    // Everything but the place comes from the nearer frame; shots from `a`,
+    // or with masks each on its tick: the later frame's as the clock passes them.
     const s = fromFramePlayer(t < 0.5 ? pa : pb, a.tick, pa);
-    s.x = lerp(pa.pos[0], pb.pos[0], t);
-    s.y = lerp(pa.pos[1], pb.pos[1], t);
-    s.z = lerp(pa.pos[2], pb.pos[2], t);
+    if (pb.fire != null) fired(s, pb, b.tick, a.tick);
+    else fired(s, pa, a.tick, a.tick - 32);
+    const va = cleanVel(pa.vel), vb = cleanVel(pb.vel);
+    if (va && vb && b.tick - a.tick <= HERMITE_MAX_TICKS) {
+      // Both samples say how they were moving: the path that leaves `a`
+      // and arrives at `b` at those velocities (game units a second, so
+      // scaled to the span), and the velocity along it.
+      const span = (b.tick - a.tick) / TICKS_PER_SECOND;
+      s.x = hermite(pa.pos[0], va[0] * span, pb.pos[0], vb[0] * span, t);
+      s.y = hermite(pa.pos[1], va[1] * span, pb.pos[1], vb[1] * span, t);
+      s.z = hermite(pa.pos[2], va[2] * span, pb.pos[2], vb[2] * span, t);
+      s.vel = [lerp(va[0], vb[0], t), lerp(va[1], vb[1], t), lerp(va[2], vb[2], t)];
+    } else {
+      s.x = lerp(pa.pos[0], pb.pos[0], t);
+      s.y = lerp(pa.pos[1], pb.pos[1], t);
+      s.z = lerp(pa.pos[2], pb.pos[2], t);
+    }
     s.yaw = lerpAngle(pa.yaw, pb.yaw, t);
+    const anim = blendAnim(cleanAnim(pa.anim), cleanAnim(pb.anim), a.tick, b.tick, tick);
+    if (anim) s.anim = anim; else delete s.anim;
     const aa = cleanAim(pa.aim), ab = cleanAim(pb.aim);
     if (aa && ab) s.aim = nlerpAim(aa, ab, t);
-    const va = cleanSpeed(pa.speed), vb = cleanSpeed(pb.speed);
-    if (va !== null && vb !== null) s.speed = lerp(va, vb, t);
+    const sa = cleanSpeed(pa.speed), sb = cleanSpeed(pb.speed);
+    if (sa !== null && sb !== null) s.speed = lerp(sa, sb, t);
     out.push(s);
   }
   if (t >= 0.5) for (const pb of next.values()) out.push(fromFramePlayer(pb));
@@ -282,12 +398,28 @@ export function findFrame(frames: readonly Frame[], tick: number): number {
   return ans;
 }
 
+/** Whether the frame at or before `tick` is a cutscene's (`cinematic`):
+ *  the game sent no one in it, and nothing from the frames either side is
+ *  drawn into it. */
+export function cinematicAt(frames: readonly Frame[], tick: number): boolean {
+  const i = findFrame(frames, tick);
+  return i >= 0 && frames[i]!.cinematic === true;
+}
+
+/** The frame after `i` unless it is a cutscene's: units are not eased
+ *  towards a cutscene, nor do the ones after it show up early. */
+function nextOf(frames: readonly Frame[], i: number): Frame | undefined {
+  const b = frames[i + 1];
+  return b?.cinematic ? undefined : b;
+}
+
 /** Samples a sorted frame list at a (fractional) tick. */
 export function sampleFrames(frames: readonly Frame[], tick: number): SampledPlayer[] {
   if (frames.length === 0) return [];
   const i = findFrame(frames, tick);
-  if (i < 0) return frames[0]!.players.map((p) => fromFramePlayer(p));
-  return interpolateFrames(frames[i]!, frames[i + 1], tick);
+  if (i < 0) return frames[0]!.cinematic ? [] : frames[0]!.players.map((p) => fromFramePlayer(p));
+  if (frames[i]!.cinematic) return [];
+  return interpolateFrames(frames[i]!, nextOf(frames, i), tick);
 }
 
 // ---- actors and vehicles ----
@@ -310,6 +442,7 @@ function actorsOf(f: Frame): { players: FramePlayer[]; info: Map<number, { id: s
     players.push({
       index, alive: true, pos: a.pos, yaw: a.yaw, vehicle: cleanId(a.vehicle), species: a.species, aim: a.aim, weapon: a.weapon, shots: a.shots,
       stance: a.stance, speed: a.speed, actions: a.actions, grenade: a.grenade,
+      vel: a.vel, anim: a.anim, seat: a.seat,
     });
   }
   return { players, info };
@@ -327,8 +460,8 @@ function actorsCached(f: Frame) {
  *  once that frame is the nearer. */
 export function sampleActors(frames: readonly Frame[], tick: number): SampledPlayer[] {
   const i = findFrame(frames, tick);
-  if (i < 0) return [];
-  const fa = frames[i]!, fb = frames[i + 1];
+  if (i < 0 || frames[i]!.cinematic) return [];
+  const fa = frames[i]!, fb = nextOf(frames, i);
   if (!fa.actors?.length && !fb?.actors?.length) return [];
   const a = actorsCached(fa), b = fb && fb.tick > fa.tick ? actorsCached(fb) : undefined;
   const late = !!fb && !!b && (tick - fa.tick) / (fb.tick - fa.tick) >= 0.5;
@@ -387,8 +520,8 @@ function vehiclesCached(f: Frame) {
  *  appears then. A big jump snaps. */
 export function sampleVehicles(frames: readonly Frame[], tick: number): SampledVehicle[] {
   const i = findFrame(frames, tick);
-  if (i < 0) return [];
-  const fa = frames[i]!, fb = frames[i + 1];
+  if (i < 0 || frames[i]!.cinematic) return [];
+  const fa = frames[i]!, fb = nextOf(frames, i);
   const from = vehiclesCached(fa).list;
   if (!fb || fb.tick <= fa.tick) return seatTurrets(from);
   const t = Math.min(1, Math.max(0, (tick - fa.tick) / (fb.tick - fa.tick)));
@@ -623,6 +756,11 @@ export class FrameBuffer {
 
   sampleBsp(now: number): number | null {
     return sampleBsp(this.frames, this.renderTick(now));
+  }
+
+  /** A cutscene is playing at the render tick. */
+  cinematic(now: number): boolean {
+    return cinematicAt(this.frames, this.renderTick(now));
   }
 
   /** Every machine: the ones moving now where the render tick has them, the rest where they were last sent. */

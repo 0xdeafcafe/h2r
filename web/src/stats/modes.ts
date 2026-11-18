@@ -2,6 +2,8 @@
 // path or `?tab=` asks for campaign. Pure, so routing is testable.
 
 import type { GameMode } from "../state/reducer";
+import { STATS_NAME } from "../brand";
+import { STATS_ROOT, statsPath } from "../routes";
 
 export type SpotlightTab = "live" | "recent" | "team" | "ffa" | "campaign";
 const SPOTLIGHT: SpotlightTab[] = ["live", "recent", "team", "ffa", "campaign"];
@@ -24,16 +26,16 @@ export const historyMode = (t: HistoryTab): GameMode => (t === "campaign" ? "cam
 
 /** A player's service record for one half of the stats. */
 export function recordHref(gamertag: string, mode: GameMode): string {
-  const base = `/stats/players/${encodeURIComponent(gamertag)}`;
+  const base = `${STATS_ROOT}/players/${encodeURIComponent(gamertag)}`;
   return mode === "campaign" ? `${base}/campaign` : base;
 }
 
 /** A clan's page. Clans are the protocol's teams (Xbox Live Teams); the
- *  site says clan, and /stats/teams/:id redirects here. */
-export const clanHref = (id: string) => `/stats/clans/${encodeURIComponent(id)}`;
+ *  site says clan, and /games/halo2/teams/:id redirects here. */
+export const clanHref = (id: string) => `${STATS_ROOT}/clans/${encodeURIComponent(id)}`;
 
-/** The stats site's home: "h2 live Online" in the nav, "Home" in the crumbs. */
-export const STATS_HOME = "/stats";
+/** The stats site's home: its name (STATS_NAME) in the nav, "Home" in the crumbs. */
+export const STATS_HOME = STATS_ROOT;
 export const HOME_CRUMB: [string, string] = ["Home", STATS_HOME];
 
 /** The way back to the dashboard: kept out of the nav tabs, in the header's corner. */
@@ -44,13 +46,14 @@ export interface NavItem { label: string; href: string; end?: boolean }
 /** The nav strip's tabs, home first. The dashboard is not one of them. */
 export function statsNav(me: { gamertag: string } | null, admin: boolean): NavItem[] {
   return [
-    { label: "h2 live Online", href: STATS_HOME, end: true },
-    { label: "My Stats", href: me ? `/stats/players/${encodeURIComponent(me.gamertag)}` : "/dash/signup" },
-    { label: "Games", href: "/stats/games" },
-    { label: "Players", href: "/stats/players", end: true },
-    { label: "Clans", href: "/stats/clans" },
-    { label: "Event Log", href: "/stats/events" },
-    ...(admin ? [{ label: "Halo Admin", href: "/stats/admin", end: true }] : []),
+    { label: STATS_NAME, href: STATS_HOME, end: true },
+    { label: "My Stats", href: me ? `${STATS_ROOT}/players/${encodeURIComponent(me.gamertag)}` : "/dash/signup" },
+    { label: "Games", href: statsPath("/games") },
+    { label: "Players", href: statsPath("/players"), end: true },
+    { label: "Clans", href: statsPath("/clans") },
+    { label: "Mods", href: statsPath("/mods") },
+    { label: "Event Log", href: statsPath("/events") },
+    ...(admin ? [{ label: "Halo Admin", href: statsPath("/admin"), end: true }] : []),
     { label: "Server", href: "/dash/server" },
   ];
 }

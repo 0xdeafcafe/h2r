@@ -44,6 +44,19 @@ describe("game length", () => {
     expect(gameSeconds(s.games.g2!, 0)).toBe(10);
   });
 
+  test("a lost game that never sent a frame played no time, whatever the server waited", () => {
+    // Production's ae6a8035: GameStarted, no frame, GameEnded lost 5 minutes on.
+    const s = initialState();
+    applyEvents(s, [
+      ev("GameStarted", "game-g4", { game_id: "g4", map: "a10", mode: "campaign", team_play: false, tick: 0, players: [{ index: 0, name: "afr", team: 1 }] }, "2026-11-18T17:53:40.331Z"),
+      ev("GameEnded", "game-g4", { tick: 0, reason: "lost", players: [], winner: null }, "2026-11-18T17:58:41.000Z"),
+    ]);
+    const g = s.games.g4!;
+    expect(g.status).toBe("ended");
+    expect(elapsedSeconds(g, 0)).toBeCloseTo(300.669, 3);
+    expect(gameSeconds(g, 0)).toBe(0);
+  });
+
   test("without ticks, or while live, it is the wall clock", () => {
     const s = initialState();
     applyEvent(s, ev("GameStarted", "game-g3", { game_id: "g3", map: "m", mode: "multiplayer", team_play: false, players: [] }, "2026-11-15T20:00:00.000Z"));

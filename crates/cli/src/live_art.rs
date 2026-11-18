@@ -30,7 +30,7 @@ use tags::{DecodedTag, TagData};
 
 /// Bumped when the output for a given disc would change (part of the cache
 /// key).
-pub const EXTRACTOR_VERSION: u32 = 20;
+pub const EXTRACTOR_VERSION: u32 = 22;
 /// The manifest's format, bumped only for changes a client cannot read
 /// (clients check it; added fields do not count).
 pub const MANIFEST_VERSION: u32 = 1;
@@ -1254,6 +1254,18 @@ pub fn extract(disc: &Disc, out: &Path) -> Result<Report> {
         staging.join("manifest.json"),
         format!("{}\n", serde_json::to_string_pretty(&manifest)?),
     )?;
+    // Packed for the web, as both homes send it (docs/live/live-art.md,
+    // "Packing"): meshopt geometry, Brotli and gzip copies.
+    let packed = live_server::art_pack::pack(&staging).context("packing the art")?;
+    eprintln!(
+        "packed: {} glbs {} -> {} KiB (meshopt), {} files {} -> {} KiB (Brotli)",
+        packed.glbs,
+        packed.glb_before / 1024,
+        packed.glb_after / 1024,
+        packed.precompressed,
+        packed.plain / 1024,
+        packed.brotli / 1024
+    );
     if out.exists() {
         fs::remove_dir_all(out).with_context(|| format!("replacing {}", out.display()))?;
     }

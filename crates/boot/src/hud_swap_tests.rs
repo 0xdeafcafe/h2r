@@ -175,3 +175,19 @@ fn a_map_without_a_halo1_sensor_gets_halo2s_back() {
     assert!(s.activate(&mut m, None, HudStyle::Halo1).unwrap());
     assert_eq!(read_sensor(&m).unwrap(), [[41, -42], [31, -31], [31, -31]]);
 }
+
+#[test]
+fn the_swap_plans_after_the_live_options() {
+    let mut r = feature::Registry::new(feature::Switches::defaults());
+    r.add(&crate::variant_ext::Transport { hle: None }).unwrap();
+    r.add(&HudSwap {
+        table: Arc::default(),
+        sensor: Arc::new(std::sync::Mutex::new(Sensor { retail: None })),
+        halo2_levels: Arc::default(),
+    })
+    .unwrap();
+    let text = r.build(&feature::Base).unwrap().text();
+    let line = text.lines().find(|l| l.contains("GAME_ACTIVATE")).unwrap();
+    let ext = line.find(crate::variant_ext::FEATURE).unwrap();
+    assert!(ext < line.find(FEATURE).unwrap(), "{line}");
+}

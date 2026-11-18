@@ -1,0 +1,23 @@
+[package]
+name = "clif"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+# The Cranelift fast tier (docs/lifter/cranelift-tier.md). Every cranelift
+# crate stays pinned to the one version below.
+[dependencies]
+ir.workspace = true
+emit.workspace = true
+cranelift-codegen = { version = "=0.137.2", default-features = false, features = ["std", "host-arch", "unwind"] }
+cranelift-frontend = "=0.137.2"
+cranelift-module = "=0.137.2"
+cranelift-object = "=0.137.2"
+cranelift-native = "=0.137.2"
+
+[dev-dependencies]
+lift.workspace = true
+analyze.workspace = true
+xbe.workspace = true
+libc = "0.2"
+iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info", "code_asm"] }

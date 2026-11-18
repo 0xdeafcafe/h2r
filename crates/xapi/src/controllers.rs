@@ -13,6 +13,7 @@ pub trait Events {
 
 pub(crate) struct OpenInput {
     device_handle: Handle,
+    port: PortIndex,
     last_state: State,
 }
 
@@ -257,6 +258,7 @@ impl<StorageBackend: Storage> Xapi<StorageBackend> {
             token,
             OpenInput {
                 device_handle,
+                port,
                 last_state,
             },
         );
@@ -273,6 +275,17 @@ impl<StorageBackend: Storage> Xapi<StorageBackend> {
             tap.closed(handle);
         }
         Ok(())
+    }
+
+    /// The state the game last read from `port`'s open gamepad (or the
+    /// bookkeeping read after a poll or sync), for host features that follow
+    /// the pad without a guest call: voice chat's push-to-talk. `None` when
+    /// the game has no handle open on the port.
+    pub fn last_input_state(&self, port: usize) -> Option<State> {
+        self.handles
+            .values()
+            .find(|opened| opened.port.get() == port)
+            .map(|opened| opened.last_state)
     }
 
     fn input_handle(&self, handle: u32) -> Result<Handle> {

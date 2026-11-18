@@ -486,7 +486,7 @@ fn assets_publish(mut args: Args) -> Result<()> {
         || Ok(game_art_dir(&data_dir(None)?)),
         Ok::<_, anyhow::Error>,
     )?;
-    let (report, base) = tokio::runtime::Builder::new_multi_thread()
+    let (report, base, coverage) = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("starting tokio")?
@@ -495,6 +495,8 @@ fn assets_publish(mut args: Args) -> Result<()> {
         "game art {} published ({} of {} files uploaded now)",
         report.stamp, report.uploaded, report.files
     );
+    let kinds: Vec<String> = coverage.kinds.iter().map(|(k, n)| format!("{k} {n}")).collect();
+    println!("  {}", kinds.join(", "));
     println!("H2_LIVE_GAME_ART_URL = \"{base}\"");
     Ok(())
 }
