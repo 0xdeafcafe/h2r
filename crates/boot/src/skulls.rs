@@ -605,6 +605,38 @@ impl Tracker {
     pub fn reset(&self, now: Set) {
         *self.lock() = now;
     }
+    /// The last look as a machine snapshot keeps it
+    /// (docs/runtime/snapshots.md): a byte per skull. Without it a load
+    /// would compare the loaded array with this run's last look and record
+    /// the difference as pickups.
+    pub fn save_state(&self) -> Vec<u8> {
+        let mut w = snapshot::codec::Writer::new();
+        for on in *self.lock() {
+            w.bool(on);
+        }
+        w.into_bytes()
+    }
+    /// Puts [`Self::save_state`]'s bytes back; nothing changes unless all
+    /// of them decode.
+    pub fn load_state(&self, bytes: &[u8]) -> Result<(), String> {
+        let e = |e: snapshot::Error| e.to_string();
+        let r = &mut snapshot::codec::Reader::new(bytes, "skulls");
+        let mut last = [false; COUNT];
+        for on in &mut last {
+            *on = r.bool().map_err(e)?;
+        }
+        r.finish().map_err(e)?;
+        self.reset(last);
+        Ok(())
+    }
+}
+
+/// Why `skulls` can't be snapshotted now: a pickup call is between its
+/// before and after hooks, so the skull it is for and its byte before are
+/// host state.
+pub fn pickup_live(pending: &Mutex<Vec<Pending>>) -> Option<String> {
+    let n = pending.lock().unwrap_or_else(|e| e.into_inner()).len();
+    (n != 0).then(|| format!("{n} skull pickup call(s) between their hooks"))
 }
 
 /// What a pickup or a campaign start is for: every signed-in named profile,
@@ -806,7 +838,7 @@ pub fn coop_start(mode: Option<u32>, host: &[u8]) -> Option<(Set, String)> {
 }
 
 /// A pickup call in progress: skull ESI and its byte before.
-type Pending = (u32, Option<bool>);
+pub type Pending = (u32, Option<bool>);
 
 /// The feature id in the plan and `H2_FEATURES`.
 pub const FEATURE: &str = "skulls";
@@ -828,13 +860,23 @@ pub struct Skulls {
 
 impl feature::Feature for Skulls {
     fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new(FEATURE, "Campaign skulls kept per profile").doc("docs/game/skulls.md")
+        feature::Manifest::new(FEATURE, "Campaign skulls kept per profile")
+            .doc("docs/game/skulls.md")
     }
     fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
         use feature::points::{OPTIONS_QUEUE as QUEUE, SKULL_STOCK};
         // The pickup in progress: (index, byte before). A stack, in case
         // the function is ever re-entered.
         let pending: Arc<Mutex<Vec<Pending>>> = Arc::default();
+        // The store is the player's profiles, which a load does not rewind;
+        // the tracker's last look is the run's, and a load puts it back.
+        let (live, tracker) = (Arc::clone(&pending), Arc::clone(&self.tracker));
+        let load = Arc::clone(&self.tracker);
+        b.snapshot(feature::SnapshotPolicy::section_forbid_while(
+            move || pickup_live(&live),
+            move || tracker.save_state(),
+            move |bytes, _| load.load_state(bytes),
+        ));
         {
             let pending = Arc::clone(&pending);
             b.raw().before(&SKULL_STOCK, "note the skull", move |c| {
@@ -1612,6 +1654,42 @@ mod tests {
         );
         let mut r = feature::Registry::new(feature::Switches::defaults());
         assert!(!install(&mut r, None).unwrap(), "no store");
+    }
+
+    #[test]
+    fn a_snapshot_carries_the_trackers_last_look() {
+        let a = Tracker::default();
+        let mut on = [false; COUNT];
+        on[3] = true;
+        on[COUNT - 1] = true;
+        a.reset(on);
+        let bytes = a.save_state();
+        assert_eq!(bytes.len(), COUNT);
+        let b = Tracker::default();
+        b.load_state(&bytes).unwrap();
+        assert!(!b.changed(&on), "the loaded run's last look");
+        assert_eq!(b.save_state(), bytes);
+        // Not a pickup after the load: the skulls were on at the save.
+        assert_eq!(b.sweep(on), Vec::<usize>::new());
+        assert!(b.load_state(&bytes[1..]).is_err(), "short");
+        let mut long = bytes.clone();
+        long.push(0);
+        assert!(b.load_state(&long).is_err(), "trailing");
+        assert!(b.load_state(&[2; COUNT]).is_err(), "not a bool");
+        assert!(!b.changed(&on), "a bad load changes nothing");
+    }
+
+    #[test]
+    fn snapshots_wait_while_a_pickup_is_between_its_hooks() {
+        let pending = Mutex::new(Vec::new());
+        assert_eq!(pickup_live(&pending), None);
+        pending.lock().unwrap().push((3, Some(false)));
+        assert_eq!(
+            pickup_live(&pending).as_deref(),
+            Some("1 skull pickup call(s) between their hooks")
+        );
+        pending.lock().unwrap().clear();
+        assert_eq!(pickup_live(&pending), None);
     }
 
     /// Gold and silver as MCC scores them (docs/game/skulls.md "Gold and

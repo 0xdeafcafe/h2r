@@ -129,6 +129,35 @@ impl Sensor {
         write_sensor(m, &want)?;
         Ok(true)
     }
+
+    /// Halo 2's own table, as a machine snapshot keeps it
+    /// (docs/runtime/snapshots.md): after a Halo 1 map the guest's table
+    /// holds Halo 1's centre, so a load must not read it again as retail.
+    pub fn save_state(&self) -> Vec<u8> {
+        let w = &mut snapshot::codec::Writer::new();
+        w.bool(self.retail.is_some());
+        for [x, y] in self.retail.unwrap_or_default() {
+            w.u32(x as u16 as u32).u32(y as u16 as u32);
+        }
+        std::mem::take(w).into_bytes()
+    }
+
+    /// Puts [`Self::save_state`]'s bytes back; nothing changes unless all
+    /// of them decode.
+    pub fn load_state(&mut self, bytes: &[u8]) -> Result<(), String> {
+        let r = &mut snapshot::codec::Reader::new(bytes, FEATURE);
+        let e = |e: snapshot::Error| e.to_string();
+        let some = r.bool().map_err(e)?;
+        let mut t: SensorTable = [[0; 2]; SENSOR_MODES];
+        for entry in &mut t {
+            for v in entry.iter_mut() {
+                *v = r.u32().map_err(e)? as u16 as i16;
+            }
+        }
+        r.finish().map_err(e)?;
+        self.retail = some.then_some(t);
+        Ok(())
+    }
 }
 
 /// Points each swap's owner at the HUD of `style`. Returns how many
@@ -195,7 +224,11 @@ pub fn read_table(packages: &Path) -> Table {
             if !v.hud.is_empty() {
                 out.insert(
                     m.base.map.to_ascii_lowercase(),
-                    MapHud { sandboxed: true, swaps: v.hud.clone(), sensor: v.hud_sensor },
+                    MapHud {
+                        sandboxed: true,
+                        swaps: v.hud.clone(),
+                        sensor: v.hud_sensor,
+                    },
                 );
             }
         }
@@ -227,7 +260,11 @@ pub fn read_campaign_table(data_root: &Path) -> Table {
             {
                 out.insert(
                     level.to_owned(),
-                    MapHud { sandboxed: false, swaps: h.hud, sensor: h.sensor },
+                    MapHud {
+                        sandboxed: false,
+                        swaps: h.hud,
+                        sensor: h.sensor,
+                    },
                 );
             }
         }
@@ -267,6 +304,10 @@ pub fn campaign_halo2_levels(data_root: &Path) -> HashSet<String> {
     out
 }
 
+fn locked(s: &std::sync::Mutex<Sensor>) -> std::sync::MutexGuard<'_, Sensor> {
+    s.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 impl feature::Feature for HudSwap {
     fn manifest(&self) -> feature::Manifest {
         feature::Manifest::new(FEATURE, "Halo 1's or Halo 2's HUD on converted Halo 1 maps")
@@ -291,7 +332,9 @@ impl feature::Feature for HudSwap {
                     .get(&key)
                     .filter(|h| !h.sandboxed || crate::health::halo1_sandbox())
                     // The Halo 2-assets map of a campaign level is served.
-                    .filter(|_| crate::h1_variants::campaign_assets_halo1() || !halo2_levels.contains(&key));
+                    .filter(|_| {
+                        crate::h1_variants::campaign_assets_halo1() || !halo2_levels.contains(&key)
+                    });
                 // From the map and the choice directly, not `hud::style()`,
                 // so the order against the style's game-start observer does
                 // not matter.
@@ -310,7 +353,10 @@ impl feature::Feature for HudSwap {
                 let centre = hud.and_then(|h| h.sensor);
                 let mut sensor = sensor.lock().unwrap_or_else(|e| e.into_inner());
                 match sensor.activate(&mut *mem, centre, style) {
-                    Ok(true) => eprintln!("hud: {name}: motion sensor centred for {}'s HUD", style.name()),
+                    Ok(true) => eprintln!(
+                        "hud: {name}: motion sensor centred for {}'s HUD",
+                        style.name()
+                    ),
                     Ok(false) => {}
                     Err(e) => eprintln!("hud: {name}: motion sensor table unwritable ({e:?})"),
                 }
@@ -320,6 +366,13 @@ impl feature::Feature for HudSwap {
             .after_feature(crate::precision::FEATURE)
             .after_feature(crate::aim_assist::FEATURE)
             .after_feature(crate::variant_ext::FEATURE);
+        // The table and the Halo 2 levels are read at install; the sensor
+        // remembers Halo 2's table, which the guest's no longer shows.
+        let (save, load) = (Arc::clone(&self.sensor), Arc::clone(&self.sensor));
+        b.snapshot(feature::SnapshotPolicy::section(
+            move || locked(&save).save_state(),
+            move |bytes, _| locked(&load).load_state(bytes),
+        ));
         Ok(())
     }
 }

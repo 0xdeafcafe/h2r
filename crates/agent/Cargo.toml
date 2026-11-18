@@ -22,6 +22,8 @@ hot-tags = { path = "../hot-tags" }
 # The debug menu is an in-process client (src/menu.rs), and lists settings.
 debug-menu = { path = "../debug-menu" }
 settings = { path = "../settings" }
+# The agent's own section of a machine snapshot (Agent::save_state).
+snapshot = { path = "../snapshot" }
 
 [dev-dependencies]
 live-proto.workspace = true

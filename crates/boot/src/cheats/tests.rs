@@ -730,3 +730,22 @@ fn the_noclip_shield_and_god_share_the_flag() {
     }
     assert_eq!(flags(&g) & CANNOT_TAKE_DAMAGE, 0);
 }
+
+#[test]
+fn snapshots_wait_while_a_cheat_is_on_or_left_to_undo() {
+    let c = Mutex::new(Cheats::default());
+    assert_eq!(snapshot_live(&c), None);
+    lock(&c).god = true;
+    assert_eq!(
+        snapshot_live(&c).as_deref(),
+        Some("a cheat is on or has something to undo")
+    );
+    // Off, but the unit we flagged is still ours to clear.
+    let mut g = standing();
+    set(&mut lock(&c), "god", json!(true));
+    lock(&c).tick(&mut g, &OK).unwrap();
+    set(&mut lock(&c), "god", json!(false));
+    assert!(snapshot_live(&c).is_some());
+    lock(&c).tick(&mut g, &OK).unwrap();
+    assert_eq!(snapshot_live(&c), None);
+}

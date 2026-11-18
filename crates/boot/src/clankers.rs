@@ -1030,7 +1030,7 @@ impl feature::Feature for SetupRow {
         };
         let request_at = b.guest_alloc(0x1000, Permissions::RW)?;
         let building: Arc<Mutex<Vec<u32>>> = Arc::default();
-        let b2 = Arc::clone(&building);
+        let (b2, live) = (Arc::clone(&building), Arc::clone(&building));
         b.raw()
             .before(&CTOR, "note the Game Setup list", move |c| {
                 b2.lock().unwrap_or_else(|e| e.into_inner()).push(c.cpu.esi);
@@ -1070,6 +1070,11 @@ impl feature::Feature for SetupRow {
                 move |c| row_chosen(c, request_at),
             )
             .after_feature(h1row::ROW_FEATURE);
+        // The page's state is its kit screen's (`ui-kit-texts.*`), the
+        // bots' the settings store's.
+        b.snapshot(feature::SnapshotPolicy::forbid_while(move || {
+            h1row::building_live(&live)
+        }));
         Ok(())
     }
 }

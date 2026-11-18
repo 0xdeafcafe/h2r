@@ -983,9 +983,14 @@ and never changed. It is always served through the server, never by a
 redirect (the game's client follows none, and a takedown must be
 immediate); a server-signed `ContentStored`
 event (`content-<sha256>` stream; `{sha256, size, uploader}`) records it.
-A body starting with a map's `daeh` header is a whole map, capped at
-100 MiB; anything else at 32 MiB (413 over either; `h2 live serve
---content-layer-mib N --content-map-mib N`). Each account stores at most
+A body starting with a map's `daeh` header is a whole map; anything else
+is a layer (a patch, pack or image). Both are capped at 95 MiB by
+default (413 over either; `h2 live serve --content-layer-mib N
+--content-map-mib N`): the largest whole MiB under the 100 MB request
+body Cloudflare passes to a Worker (`live_server::content::EDGE_BODY_BYTES`;
+the edge refuses larger bodies with its own 413 before the Worker runs),
+so the native server and the Worker take the same uploads. A layer can
+be large: Night Ops' delta over Containment is 68 MiB. Each account stores at most
 1 GiB (`--content-quota-mib N`), counting what it uploaded first and not
 deleted (413 over it). Uploads and publishes are rate limited per account
 (a burst of 20, then one every two seconds; 429). A hash on the operator's

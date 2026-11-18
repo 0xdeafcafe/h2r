@@ -270,6 +270,21 @@ fn lock(s: &Mutex<State>) -> std::sync::MutexGuard<'_, State> {
     s.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Why `coop-players` can't be snapshotted now
+/// (docs/runtime/snapshots.md): armed ([`Arm::snapshot_live`]), or a
+/// spawn of ours is running. Disarmed, the gather and cinematic flags are
+/// read only while armed, and a load starts them fresh as a new session
+/// would; the spawn and gather calls themselves are continuations the
+/// machine check sees.
+pub fn players_live(arm: &Arm, st: &Mutex<State>) -> Option<String> {
+    if let Some(why) = arm.snapshot_live() {
+        return Some(why);
+    }
+    lock(st)
+        .spawning
+        .map(|p| format!("player {}'s spawn is running", index_of(p)))
+}
+
 fn say(s: &str) {
     eprintln!("coop-players: {s}");
 }
@@ -566,6 +581,10 @@ impl feature::Feature for CoopPlayers {
                 },
             );
         }
+        let (arm, st) = (Arc::clone(&self.arm), Arc::clone(&self.state));
+        b.snapshot(feature::SnapshotPolicy::forbid_while(move || {
+            players_live(&arm, &st)
+        }));
         Ok(())
     }
 }

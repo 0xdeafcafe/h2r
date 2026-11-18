@@ -242,6 +242,9 @@ impl feature::Feature for CoopLatency {
                 })
                 .optional();
         }
+        // docs/runtime/snapshots.md: an observer; its windows, wall-clock
+        // times and traffic counters only make the log line.
+        b.snapshot(feature::SnapshotPolicy::Stateless);
         Ok(())
     }
 }

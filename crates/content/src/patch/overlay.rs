@@ -81,25 +81,31 @@ fn lay(runs: &[Run], offset: u64, buf: &mut [u8]) {
     }
 }
 
+/// The longest file an offset patch may make: 4 GiB, as for a BPS target.
+/// A PPF3 offset is 64-bit, so a damaged or hostile record could otherwise
+/// ask for an exabyte of zeros.
+pub const MAX_LEN: u64 = 1 << 32;
+
 /// One offset patch: byte runs in offset order (records later in the patch
 /// win where they overlap), and what it does to the file's length.
+///
+/// A run past the end of the file grows it, with zeros where nothing is
+/// written, as IPS tools and PPF applicators (ApplyPPF seeks and writes,
+/// which extends the file) do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OffsetPatch {
     format: &'static str,
     runs: Vec<Run>,
-    /// Whether the patch may write past the end of the base.
-    grows: bool,
     /// The file's length after the patch (IPS truncation).
     truncate: Option<u64>,
 }
 
 impl OffsetPatch {
-    /// An empty patch in `format`, which may or may not grow a file.
-    pub fn new(format: &'static str, grows: bool) -> Self {
+    /// An empty patch in `format`.
+    pub fn new(format: &'static str) -> Self {
         Self {
             format,
             runs: Vec::new(),
-            grows,
             truncate: None,
         }
     }
@@ -116,9 +122,6 @@ impl OffsetPatch {
     }
     pub fn truncate_to(&self) -> Option<u64> {
         self.truncate
-    }
-    pub fn grows(&self) -> bool {
-        self.grows
     }
     /// The runs: sorted, non-overlapping, not touching.
     pub fn runs(&self) -> &[Run] {
@@ -165,17 +168,17 @@ impl Overlay {
         self.runs.is_empty() && self.len == self.base_visible
     }
 
-    /// Apply `patch` on top. A run past the current end is refused unless
-    /// the patch's format may grow a file.
+    /// Apply `patch` on top. A run past the current end grows the file
+    /// (zeros where nothing is written); one past [`MAX_LEN`] is refused,
+    /// and nothing is applied.
     pub fn apply(&mut self, patch: &OffsetPatch) -> Result<(), PatchError> {
-        if !patch.grows
-            && let Some(r) = patch.runs.iter().find(|r| r.end() > self.len)
+        if let Some(r) = patch.runs.last()
+            && r.end() > MAX_LEN
         {
-            return Err(PatchError::OutOfRange {
+            return Err(PatchError::TooLong {
                 format: patch.format,
                 start: r.offset,
                 end: r.end(),
-                len: self.len,
             });
         }
         for r in &patch.runs {
@@ -268,7 +271,7 @@ mod tests {
 
     #[test]
     fn runs_stay_sorted_disjoint_and_later_writes_win() {
-        let mut p = OffsetPatch::new("t", false);
+        let mut p = OffsetPatch::new("t");
         p.write(10, b"abc");
         p.write(0, b"xy");
         p.write(12, b"ZZZ");
@@ -310,7 +313,7 @@ mod tests {
             let mut model = Vec::new();
             for _ in 0..rng.below(4) + 1 {
                 let grows = rng.below(2) == 0;
-                let mut p = OffsetPatch::new("t", grows);
+                let mut p = OffsetPatch::new("t");
                 let mut writes = Vec::new();
                 let limit = if grows { ov.len() + 200 } else { ov.len() };
                 for _ in 0..rng.below(12) {
@@ -358,20 +361,33 @@ mod tests {
     }
 
     #[test]
-    fn a_fixed_size_format_cannot_write_past_the_end() {
+    fn a_write_past_the_end_grows_the_file_up_to_the_cap() {
         let mut ov = Overlay::new(8);
-        let mut p = OffsetPatch::new("PPF", false);
+        let mut p = OffsetPatch::new("PPF");
         p.write(6, b"abc");
-        let e = ov.apply(&p).unwrap_err();
-        assert!(e.to_string().contains("0x6..0x9"), "{e}");
-        assert!(e.to_string().contains("cannot grow"), "{e}");
-        assert!(ov.is_identity(), "nothing applied");
-        let mut p = OffsetPatch::new("IPS", true);
-        p.write(10, b"z");
+        p.write(12, b"z");
         ov.apply(&p).unwrap();
+        assert_eq!(ov.len(), 13);
         assert_eq!(
             ov.materialise(vec![1; 8]),
-            [1, 1, 1, 1, 1, 1, 1, 1, 0, 0, b'z']
+            [1, 1, 1, 1, 1, 1, b'a', b'b', b'c', 0, 0, 0, b'z']
         );
+        let mut src: &[u8] = &[1; 8];
+        let mut buf = [0xee; 6];
+        assert_eq!(ov.read_at(&mut src, 7, &mut buf).unwrap(), 6);
+        assert_eq!(buf, [b'b', b'c', 0, 0, 0, b'z']);
+        // Past 4 GiB is refused, and nothing of the patch is applied.
+        let mut ov = Overlay::new(8);
+        let mut p = OffsetPatch::new("PPF");
+        p.write(0, b"x");
+        p.write(MAX_LEN - 1, b"yz");
+        let e = ov.apply(&p).unwrap_err();
+        assert!(e.to_string().contains("0xffffffff..0x100000001"), "{e}");
+        assert!(e.to_string().contains("4 GiB"), "{e}");
+        assert!(ov.is_identity(), "nothing applied");
+        let mut p = OffsetPatch::new("PPF");
+        p.write(MAX_LEN - 1, b"y");
+        ov.apply(&p).unwrap();
+        assert_eq!(ov.len(), MAX_LEN);
     }
 }

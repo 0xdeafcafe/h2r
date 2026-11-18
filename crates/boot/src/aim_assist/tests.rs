@@ -396,3 +396,42 @@ fn retail_tags_hold_plausible_aim_assist_values() {
     }
     assert!(weapons > 0);
 }
+
+#[test]
+fn a_snapshot_carries_the_fields_held() {
+    let retail = world();
+    let mut m = world();
+    let mut a = Remembered::default();
+    a.apply(&mut m, Level::Strong);
+    let bytes = a.save_state();
+
+    // A fresh run loads the snapshot over guest memory already scaled.
+    let mut b = Remembered::default();
+    b.load_state(&bytes).unwrap();
+    assert_eq!(b.len(), a.len());
+    assert_eq!(b.save_state(), bytes, "the same state again");
+    // Without the held retail values Strong would compound; with them
+    // nothing moves, and Default still restores retail.
+    assert_eq!(b.apply(&mut m, Level::Strong).writes, 0);
+    expect(&m, Level::Strong);
+    b.apply(&mut m, Level::Default);
+    assert_eq!(m, retail);
+
+    // Damaged bytes change nothing.
+    let mut c = Remembered::default();
+    c.apply(&mut world(), Level::VeryStrong);
+    let held = c.save_state();
+    assert!(c.load_state(&bytes[..bytes.len() - 1]).is_err());
+    assert_eq!(c.save_state(), held);
+}
+
+#[test]
+fn a_snapshot_waits_for_the_touch_players_window() {
+    let pp = player::PerPlayer::default();
+    let mut m = world();
+    assert_eq!(snapshot_live(&pp), None);
+    pp.enter(&mut m, Level::Strong);
+    assert!(snapshot_live(&pp).is_some());
+    pp.leave(&mut m);
+    assert_eq!(snapshot_live(&pp), None);
+}

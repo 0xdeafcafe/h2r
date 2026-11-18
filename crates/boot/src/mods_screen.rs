@@ -166,6 +166,15 @@ impl Slots {
         let base = self.base.load(Ordering::SeqCst);
         (base != 0 && TEXTS.owns(id)).then(|| base + (id - TEXTS.base) * SLOT_LEN)
     }
+    /// Every slot written again at the next [`Self::write`]: after a
+    /// snapshot load the page holds the saved run's texts, which the
+    /// cache can't tell from its own.
+    pub fn rewrite_all(&self) {
+        let mut slots = self.slots.lock().unwrap_or_else(|e| e.into_inner());
+        for (_, dirty) in slots.iter_mut() {
+            *dirty = true;
+        }
+    }
     /// Writes every changed slot.
     pub fn write(&self, m: &mut dyn GuestMemory) -> Result<(), MemFault> {
         let base = self.base.load(Ordering::SeqCst);
@@ -564,6 +573,45 @@ impl Repo {
     pub fn string(&self, id: u32) -> Option<u32> {
         self.texts.address(id)
     }
+
+    /// Why a machine snapshot must wait: a download is under way, writing
+    /// a map on the host that a load would not take back.
+    pub fn snapshot_live(&self) -> Option<String> {
+        let g = self.lock();
+        let n = g
+            .installs
+            .values()
+            .filter(|i| matches!(i, Install::Downloading { .. }))
+            .count();
+        (n != 0).then(|| format!("{n} mod downloads are under way"))
+    }
+
+    /// What a machine snapshot keeps (docs/runtime/snapshots.md): the mod
+    /// whose page is open. The list and what is installed are the
+    /// server's and the disk's, read again; the texts are written again.
+    pub fn save_state(&self) -> Vec<u8> {
+        let selected = self.lock().selected;
+        let mut w = snapshot::codec::Writer::new();
+        w.bool(selected.is_some())
+            .raw(&selected.map_or([0; 32], |id| id.0));
+        w.into_bytes()
+    }
+
+    /// Puts [`Self::save_state`]'s bytes back, with the page's title when
+    /// the mod is in this run's list, and every text written again.
+    pub fn load_state(&self, bytes: &[u8]) -> Result<(), String> {
+        let e = |e: snapshot::Error| e.to_string();
+        let r = &mut snapshot::codec::Reader::new(bytes, "mods");
+        let some = r.bool().map_err(e)?;
+        let id = MapId(r.array::<32>().map_err(e)?);
+        r.finish().map_err(e)?;
+        self.lock().selected = some.then_some(id);
+        if let Some(entry) = self.selected() {
+            self.texts.set(DETAIL_TITLE, &cut(&entry.name, 40));
+        }
+        self.texts.rewrite_all();
+        Ok(())
+    }
 }
 
 /// The Live menu row's text for `new` new mods.
@@ -766,6 +814,16 @@ impl feature::Feature for ModTexts {
             let mut g = o.guest();
             let _ = repo.texts.write(&mut *g);
         });
+        let (live, save, load) = (
+            Arc::clone(&self.0),
+            Arc::clone(&self.0),
+            Arc::clone(&self.0),
+        );
+        b.snapshot(feature::SnapshotPolicy::section_forbid_while(
+            move || live.snapshot_live(),
+            move || save.save_state(),
+            move |bytes, _| load.load_state(bytes),
+        ));
         Ok(())
     }
 }

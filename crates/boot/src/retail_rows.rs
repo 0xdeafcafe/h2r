@@ -119,6 +119,11 @@ impl feature::Feature for Extension {
             .before(self.text, "our rows' text", move |c| row_text(c, &t));
         b.raw()
             .before(self.chosen, "our rows' press", move |c| row_chosen(c, &e));
+        // Texts and presses go through the model, whose strings are fixed
+        // at build and whose values are the settings store's, kept outside
+        // the snapshot; their async answers are continuations the machine
+        // check sees. `drawn` only quiets a log line.
+        b.snapshot(feature::SnapshotPolicy::Stateless);
         Ok(())
     }
 }
