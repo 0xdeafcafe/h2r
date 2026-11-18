@@ -1037,6 +1037,9 @@ pub fn run_hosted_with_live(
     // Stage 7a: the Rust render_views, when H2_FEATURES has
     // impl.render.views=on (off by default; docs/graphics/render-loop.md).
     features.add(&feature::render_loop::RenderLoop).map_err(|e| anyhow::anyhow!("render loop: {e}"))?;
+    // Occlusion culling of objects (H2_FEATURES=impl.render.occlusion=on,
+    // off by default; docs/graphics/occlusion-culling.md).
+    features.add(&feature::occlusion::OcclusionCull).map_err(|e| anyhow::anyhow!("occlusion: {e}"))?;
     // H2_COOP_PROBE=1: the retail synchronous campaign path over System Link
     // (docs/live/live-coop.md section 9). Added last, so it can see every
     // override placed outside the plan and refuse instead of failing it.
