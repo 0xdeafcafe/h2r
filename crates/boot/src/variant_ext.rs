@@ -45,6 +45,8 @@ use live_hle::HostVariantExt;
 use live_proto::session::VariantExt;
 use variants::ext::{self, Ext};
 
+use engine::memory::{GuestMemory, MemFault};
+
 use crate::coop_probe::{self, Session};
 use crate::layout_glue::Gm;
 
@@ -169,6 +171,20 @@ impl Decision {
     /// machine or the host. A guest doesn't: the host's counts replicate.
     pub fn unlimited_grenades(&self) -> bool {
         matches!(self, Decision::Apply { ext, who } if ext.unlimited_grenades && *who != GUEST)
+    }
+
+    /// The options when this machine scales damage (damage dealt, shield
+    /// strength or health not 100%): host, guest with its host's block, or
+    /// alone. A guest scales too: it simulates the hits it predicts.
+    pub fn vitality(&self) -> Option<Ext> {
+        match self {
+            Decision::Apply { ext, .. }
+                if ext.damage != 100 || ext.shield != 100 || ext.health != 100 =>
+            {
+                Some(*ext)
+            }
+            _ => None,
+        }
     }
 
     /// The line the log prints when the decision changes.
@@ -321,6 +337,122 @@ pub fn wait_for_host(
             }
             h => return h,
         }
+    }
+}
+
+// ---- damage dealt, shield strength, health (slice 5) ----
+
+/// The amount left to apply in the record a damage instance (`0xd7b80`)
+/// passes its shield step (`0xd9110`) and body step (`0xd8cb0`).
+pub const DAMAGE_AMOUNT: u32 = 0x1c;
+
+/// The shield step's amount factor: damage dealt over shield strength
+/// (the shield step divides the amount by the shield's vitality, so a
+/// stronger shield takes a smaller share).
+pub fn shield_factor(e: &Ext) -> f32 {
+    f32::from(e.damage) / f32::from(e.shield)
+}
+
+/// The body step's amount factor: damage dealt over health. What the
+/// shield left goes back to the game's units first ([`shield_factor`]'s
+/// inverse, after the shield step), so the body sees damage over health
+/// whether or not the shield took part.
+pub fn body_factor(e: &Ext) -> f32 {
+    f32::from(e.damage) / f32::from(e.health)
+}
+
+/// Multiplies the amount in `record` by `f`; the amount now.
+pub fn scale_amount(m: &mut dyn GuestMemory, record: u32, f: f32) -> Result<f32, MemFault> {
+    let at = record.wrapping_add(DAMAGE_AMOUNT);
+    let v = m.f32(at)? * f;
+    m.set_f32(at, v)?;
+    Ok(v)
+}
+
+/// Whether `object` (a datum) is a player's unit: the scales are the
+/// players' (vehicles, AI and scenery keep the game's rules).
+pub fn is_player_unit(m: &dyn GuestMemory, object: u32) -> bool {
+    crate::skulls_custom::player_units(m, false)
+        .is_ok_and(|units| units.iter().any(|u| u.unit == object))
+}
+
+/// The shield step's record and the factor applied before it, put back
+/// after it so the body step starts from the game's units.
+static SHIELD_SCALED: Mutex<Option<(u32, f32)>> = Mutex::new(None);
+
+/// The feature id (`features.variant-vitality` switches it).
+pub const VITALITY_FEATURE: &str = "variant-vitality";
+
+/// Damage dealt, shield strength and health for players, on each damage
+/// instance's shield and body steps (docs/game/game-options.md, "Damage,
+/// shield and health").
+pub struct Vitality;
+
+impl feature::Feature for Vitality {
+    fn manifest(&self) -> Manifest {
+        Manifest::new(
+            VITALITY_FEATURE,
+            "Game variant damage, shield and health scales",
+        )
+        .doc("docs/game/game-options.md")
+    }
+    fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        use feature::points::{BODY_DAMAGE, SHIELD_DAMAGE};
+        b.raw()
+            .before(&SHIELD_DAMAGE, "scale a player's shield damage", |c| {
+                *SHIELD_SCALED.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                let (Some(object), Some(record)) = (c.arg_u32("object"), c.arg_u32("record"))
+                else {
+                    return Ok(Flow::Continue);
+                };
+                let rt = Arc::clone(c.ctx.runtime());
+                let mut mem = rt.memory();
+                let Some(e) = in_game(&*mem).vitality() else {
+                    return Ok(Flow::Continue);
+                };
+                let m: &mut dyn GuestMemory = &mut *mem;
+                if is_player_unit(m, object) {
+                    let f = shield_factor(&e);
+                    if scale_amount(m, record, f).is_ok() {
+                        *SHIELD_SCALED.lock().unwrap_or_else(|e| e.into_inner()) =
+                            Some((record, f));
+                    }
+                }
+                Ok(Flow::Continue)
+            });
+        b.raw()
+            .after(&SHIELD_DAMAGE, "put what the shield left back", |c| {
+                let Some((record, f)) = SHIELD_SCALED
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+                else {
+                    return Ok(());
+                };
+                let rt = Arc::clone(c.ctx.runtime());
+                let mut mem = rt.memory();
+                let m: &mut dyn GuestMemory = &mut *mem;
+                let _ = scale_amount(m, record, 1.0 / f);
+                Ok(())
+            });
+        b.raw()
+            .before(&BODY_DAMAGE, "scale a player's body damage", |c| {
+                let (Some(object), Some(record)) = (c.arg_u32("object"), c.arg_u32("record"))
+                else {
+                    return Ok(Flow::Continue);
+                };
+                let rt = Arc::clone(c.ctx.runtime());
+                let mut mem = rt.memory();
+                let Some(e) = in_game(&*mem).vitality() else {
+                    return Ok(Flow::Continue);
+                };
+                let m: &mut dyn GuestMemory = &mut *mem;
+                if is_player_unit(m, object) {
+                    let _ = scale_amount(m, record, body_factor(&e));
+                }
+                Ok(Flow::Continue)
+            });
+        Ok(())
     }
 }
 
@@ -544,6 +676,48 @@ mod tests {
         assert!(!decide(e, Some((&session(3, true), SYSTEM_LINK)), false).unlimited_grenades());
         assert!(!decide(half(), None, false).unlimited_grenades());
         assert!(decide(e, None, false).line().contains("Unlimited grenades"));
+    }
+
+    /// The scales as factors on a damage instance's amount, and the
+    /// amount scaled in place on synthetic memory: a player at 200%
+    /// health and 50% shields takes a hit as the game would at half the
+    /// health and double the shield damage; the shield's leftover goes
+    /// back to the game's units before the body step.
+    #[test]
+    fn damage_shield_and_health_scale_the_amount() {
+        let e = Ext {
+            damage: 150,
+            shield: 50,
+            health: 200,
+            ..Ext::default()
+        };
+        assert_eq!(shield_factor(&e), 3.0);
+        assert_eq!(body_factor(&e), 0.75);
+        assert_eq!(shield_factor(&Ext::default()), 1.0);
+        assert_eq!(body_factor(&Ext::default()), 1.0);
+        assert_eq!(decide(e, None, false).vitality(), Some(e));
+        assert_eq!(decide(half(), None, false).vitality(), None, "gravity only");
+        let guest = session(3, false);
+        assert_eq!(decide(e, Some((&guest, 2)), true).vitality(), Some(e));
+        assert_eq!(decide(e, Some((&guest, 2)), false).vitality(), None);
+        assert_eq!(
+            decide(e, Some((&session(3, true), SYSTEM_LINK)), false).vitality(),
+            None
+        );
+
+        let mut g = engine::testing::FakeGuest::new();
+        const REC: u32 = 0x0070_0000;
+        g.map(REC, 0x1000);
+        g.put_f32(REC + DAMAGE_AMOUNT, 10.0);
+        let m: &mut dyn GuestMemory = &mut g;
+        // Before the shield step, then back after it (the shield took 4).
+        assert_eq!(scale_amount(m, REC, shield_factor(&e)).unwrap(), 30.0);
+        m.set_f32(REC + DAMAGE_AMOUNT, 26.0).unwrap();
+        let left = scale_amount(m, REC, 1.0 / shield_factor(&e)).unwrap();
+        assert!((left - 26.0 / 3.0).abs() < 1e-5);
+        // The body takes damage over health of it.
+        let body = scale_amount(m, REC, body_factor(&e)).unwrap();
+        assert!((body - 26.0 / 3.0 * 0.75).abs() < 1e-5);
     }
 
     #[test]

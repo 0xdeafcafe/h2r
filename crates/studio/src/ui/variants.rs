@@ -210,8 +210,8 @@ pub fn settings(ui: &Ui, app: &App, st: &mut VariantsUi, fonts: &Fonts, actions:
 
 /// Our options the record has no field for, in its extension block
 /// (docs/game/game-options.md section 3). Only the ones the game applies
-/// are shown (gravity, unlimited grenades); the rest arrive with their
-/// slices. Team count (setting 93) is a record field with no retail row,
+/// are shown (gravity, damage, shield and health, unlimited grenades);
+/// the rest arrive with their slices. Team count (setting 93) is a record field with no retail row,
 /// shown here too. Returns the action for what the user changed.
 fn more_options(ui: &Ui, v: &GameVariant) -> Option<Action> {
     if !ui.collapsing_header("More options (h2recomp)##variant-ext", TreeNodeFlags::NONE) {
@@ -255,6 +255,42 @@ fn more_options(ui: &Ui, v: &GameVariant) -> Option<Action> {
     let (lo, hi) = (*ext::GRAVITY.start(), *ext::GRAVITY.end());
     if ui.slider_i32("##ext-gravity", &mut g, i32::from(lo), i32::from(hi)) {
         next.gravity = g.clamp(lo.into(), hi.into()) as u16;
+    }
+    let (lo, hi) = (*ext::PERCENT.start(), *ext::PERCENT.end());
+    for (label, id, tip, value) in [
+        (
+            "Damage (%)",
+            "##ext-damage",
+            "Damage every player deals, as a percent of the game's.",
+            &mut next.damage,
+        ),
+        (
+            "Shields (%)",
+            "##ext-shield",
+            "How much every player's shield holds, as a percent of the game's.",
+            &mut next.shield,
+        ),
+        (
+            "Health (%)",
+            "##ext-health",
+            "How much every player's body holds, as a percent of the game's.",
+            &mut next.health,
+        ),
+    ] {
+        ui.table_next_row();
+        ui.table_next_column();
+        ui.align_text_to_frame_padding();
+        ui.text(label);
+        ui.set_item_tooltip(format!(
+            "{tip} Players only (vehicles keep theirs). Applied by the host and \
+             its guests on Live (not on System Link)."
+        ));
+        ui.table_next_column();
+        ui.set_next_item_width(-1.0);
+        let mut x = i32::from(*value);
+        if ui.slider_i32(id, &mut x, i32::from(lo), i32::from(hi)) {
+            *value = x.clamp(lo.into(), hi.into()) as u16;
+        }
     }
     ui.table_next_row();
     ui.table_next_column();

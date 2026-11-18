@@ -375,8 +375,13 @@ fn validate(state: &State, body: &EventBody) -> Result<(), ApiError> {
                         "presence activity is empty, too long or has control characters",
                     ));
                 }
-                if d.build.as_deref().is_some_and(|b| !live_proto::valid_build(b)) {
-                    return Err(invalid("presence build must be 7 to 12 lowercase hex digits"));
+                if d.build
+                    .as_deref()
+                    .is_some_and(|b| !live_proto::valid_build(b))
+                {
+                    return Err(invalid(
+                        "presence build must be 7 to 12 lowercase hex digits",
+                    ));
                 }
                 if !live_proto::valid_capabilities(&d.capabilities) {
                     return Err(invalid(

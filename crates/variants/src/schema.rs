@@ -46,6 +46,79 @@ const SILY_HELP: usize = 0x18;
 const SILY_OPTIONS: usize = 0x1c;
 const OPTION_SIZE: usize = 0xc;
 
+// ---- mulg: the multiplayer globals' weapon list (0x19eda0) ----
+
+/// The `mulg` group.
+pub const MULTIPLAYER_GLOBALS: FourCC = FourCC(*b"mulg");
+/// `+8`: the universal block; element 0 holds the weapon list.
+const MULG_UNIVERSAL: usize = 0x8;
+/// Universal `+0x68`: the weapon list, 8-byte tag references (datum at
+/// `+4`).
+const UNIVERSAL_WEAPONS: usize = 0x68;
+const WEAPON_ENTRY: usize = 8;
+const MAX_WEAPONS: u32 = 64;
+
+/// The starting and secondary weapon settings.
+pub const WEAPON_SETTINGS: [SettingId; 2] = [SettingId(89), SettingId(94)];
+
+/// The weapon values the game plays but its editor never offers, and the
+/// weapon list entry each one spawns (`0x19eda0`'s jump table at
+/// `0x19eee8`; `h1convert::globals::STARTING_WEAPON_ENTRY` has them all).
+/// They are real references in the list; Studio names them from the
+/// disc's tag (docs/game/game-options.md, "Any weapon").
+pub const UNOFFERED_WEAPONS: [(i32, usize); 3] = [(15, 11), (16, 15), (20, 17)];
+
+/// `(value, weapon tag datum)` of each [`UNOFFERED_WEAPONS`] value whose
+/// list entry the `mulg` tag bytes have, reading tag memory through
+/// `read`. Empty when the list is missing or short.
+pub fn weapon_slots(
+    mulg: &[u8],
+    read: &mut dyn FnMut(u32, u32) -> Option<Vec<u8>>,
+) -> Vec<(i32, u32)> {
+    let (Some(n), Some(addr)) = (le32(mulg, MULG_UNIVERSAL), le32(mulg, MULG_UNIVERSAL + 4)) else {
+        return Vec::new();
+    };
+    if n == 0 {
+        return Vec::new();
+    }
+    let Some(universal) = read(addr, (UNIVERSAL_WEAPONS + 8) as u32) else {
+        return Vec::new();
+    };
+    let Ok(list) = block(
+        &universal,
+        UNIVERSAL_WEAPONS,
+        WEAPON_ENTRY,
+        MAX_WEAPONS,
+        read,
+    ) else {
+        return Vec::new();
+    };
+    UNOFFERED_WEAPONS
+        .iter()
+        .filter_map(|&(value, entry)| {
+            let datum = le32(&list, entry * WEAPON_ENTRY + 4)?;
+            (datum != u32::MAX).then_some((value, datum))
+        })
+        .collect()
+}
+
+/// A weapon tag's path as a label: its last part, words capitalised
+/// (`objects\weapons\rifle\smg\smg` is "Smg").
+pub fn weapon_label(path: &str) -> String {
+    let last = path.rsplit(['\\', '/']).next().unwrap_or(path);
+    last.split(['_', ' '])
+        .filter(|w| !w.is_empty())
+        .map(|w| {
+            let mut c = w.chars();
+            match c.next() {
+                Some(f) => f.to_uppercase().chain(c).collect::<String>(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 const MAX_PAGES: u32 = 64;
 const MAX_REFS: u32 = 128;
 const MAX_OPTIONS: u32 = 256;
@@ -248,14 +321,67 @@ impl Schema {
         let goof = tag_bytes(map, &tag)?;
         let l = Localization::read(map)?;
         let mut src = MapSource {
-            map,
+            map: &mut *map,
             l: &l,
             unics: BTreeMap::new(),
             language,
         };
         let mut s = Self::from_goof(&goof, &mut src)?;
         s.source = format!("{} ({language:?})", tag.name.as_deref().unwrap_or("goof"));
+        let mulg = map
+            .tags()
+            .iter()
+            .find(|t| t.group == MULTIPLAYER_GLOBALS)
+            .cloned();
+        if let Some(mulg) = mulg.and_then(|t| tag_bytes(map, &t).ok()) {
+            let slots = weapon_slots(&mulg, &mut |a, n| {
+                let at = map.file_offset(a, n).ok()?;
+                map.read_file_range(at, n.into()).ok()
+            });
+            let named: Vec<(i32, String)> = slots
+                .into_iter()
+                .filter_map(|(value, datum)| {
+                    let name = map.tag(TagId(datum)).ok()?.name.clone()?;
+                    Some((value, weapon_label(&name)))
+                })
+                .collect();
+            s.add_weapon_slots(&named);
+        }
         Ok(s)
+    }
+
+    /// Adds the weapon slots the editor leaves out ([`UNOFFERED_WEAPONS`])
+    /// to the starting and secondary weapon settings, as ours, each where
+    /// its value sorts. A setting without choices, or with that value
+    /// already, is left alone.
+    pub fn add_weapon_slots(&mut self, named: &[(i32, String)]) {
+        for id in WEAPON_SETTINGS {
+            let Some(def) = self.settings.get_mut(&id) else {
+                continue;
+            };
+            if def.choices.is_empty() {
+                continue;
+            }
+            for (value, label) in named {
+                if def.choices.iter().any(|c| c.value == *value) {
+                    continue;
+                }
+                let at = def
+                    .choices
+                    .iter()
+                    .position(|c| c.value > *value)
+                    .unwrap_or(def.choices.len());
+                def.choices.insert(
+                    at,
+                    Choice {
+                        value: *value,
+                        label: label.clone(),
+                        default: false,
+                        ours: true,
+                    },
+                );
+            }
+        }
     }
 
     /// The schema from a `goof` tag's bytes.
@@ -572,5 +698,99 @@ impl<R: Read + Seek> Source for MapSource<'_, R> {
             .text_in(u, StringId(id), self.language)
             .ok()
             .flatten()
+    }
+}
+
+#[cfg(test)]
+mod weapon_tests {
+    use super::*;
+
+    fn put(b: &mut [u8], at: usize, v: u32) {
+        b[at..at + 4].copy_from_slice(&v.to_le_bytes());
+    }
+
+    /// A `mulg` whose universal element sits at 0x1000 and whose weapon
+    /// list (18 entries) sits at 0x2000; entry `i` names datum `0xe000 + i`.
+    fn globals() -> (Vec<u8>, BTreeMap<u32, Vec<u8>>) {
+        let mut mulg = vec![0u8; 0x10];
+        put(&mut mulg, MULG_UNIVERSAL, 1);
+        put(&mut mulg, MULG_UNIVERSAL + 4, 0x1000);
+        let mut universal = vec![0u8; 0x70];
+        put(&mut universal, UNIVERSAL_WEAPONS, 18);
+        put(&mut universal, UNIVERSAL_WEAPONS + 4, 0x2000);
+        let mut list = vec![0u8; 18 * WEAPON_ENTRY];
+        for i in 0..18 {
+            list[i * 8..i * 8 + 4].copy_from_slice(b"paew");
+            put(&mut list, i * 8 + 4, 0xe000 + i as u32);
+        }
+        let mut mem = BTreeMap::new();
+        mem.insert(0x1000, universal);
+        mem.insert(0x2000, list);
+        (mulg, mem)
+    }
+
+    fn reader(mem: &BTreeMap<u32, Vec<u8>>) -> impl FnMut(u32, u32) -> Option<Vec<u8>> + '_ {
+        |a, n| {
+            let b = mem.get(&a)?;
+            b.get(..n as usize).map(<[u8]>::to_vec)
+        }
+    }
+
+    #[test]
+    fn the_unoffered_weapons_are_read_from_the_globals_list() {
+        let (mulg, mem) = globals();
+        let slots = weapon_slots(&mulg, &mut reader(&mem));
+        assert_eq!(slots, vec![(15, 0xe00b), (16, 0xe00f), (20, 0xe011)]);
+    }
+
+    #[test]
+    fn a_short_or_missing_list_gives_nothing() {
+        let (mut mulg, mut mem) = globals();
+        mem.get_mut(&0x2000).unwrap().truncate(8);
+        assert!(weapon_slots(&mulg, &mut reader(&mem)).is_empty());
+        put(&mut mulg, MULG_UNIVERSAL, 0);
+        assert!(weapon_slots(&mulg, &mut reader(&mem)).is_empty());
+        assert!(weapon_slots(&[], &mut reader(&mem)).is_empty());
+    }
+
+    #[test]
+    fn weapon_labels_come_from_the_tag_path() {
+        assert_eq!(weapon_label("objects\\weapons\\rifle\\smg\\smg"), "Smg");
+        assert_eq!(
+            weapon_label("objects\\weapons\\support_high\\flak_cannon\\flak_cannon"),
+            "Flak Cannon"
+        );
+        assert_eq!(weapon_label("plain"), "Plain");
+    }
+
+    #[test]
+    fn the_weapon_slots_join_both_weapon_settings_in_order_once() {
+        let choice = |value: i32, label: &str| Choice {
+            value,
+            label: label.into(),
+            default: false,
+            ours: false,
+        };
+        let mut s = Schema::fallback();
+        for id in WEAPON_SETTINGS {
+            s.settings.get_mut(&id).unwrap().choices = vec![
+                choice(0, "Map Default"),
+                choice(14, "Beam Rifle"),
+                choice(17, "Sword"),
+            ];
+        }
+        let named = vec![(15, "Fifteen".to_string()), (20, "Twenty".to_string())];
+        s.add_weapon_slots(&named);
+        s.add_weapon_slots(&named);
+        for id in WEAPON_SETTINGS {
+            let c = &s.settings[&id].choices;
+            let values: Vec<i32> = c.iter().map(|c| c.value).collect();
+            assert_eq!(values, vec![0, 14, 15, 17, 20]);
+            assert!(c[2].ours && c[4].ours && !c[1].ours);
+            assert_eq!(s.value_label(id, 20), Some("Twenty"));
+        }
+        let mut bare = Schema::fallback();
+        bare.add_weapon_slots(&named);
+        assert!(bare.settings[&WEAPON_SETTINGS[0]].choices.is_empty());
     }
 }

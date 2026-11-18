@@ -84,17 +84,100 @@ const TEAMS_LABELS: u32 = GRENADES_LABELS + 3;
 pub const TEAMS_DESCRIPTION: &str = "How many teams a team game makes, at most the map's. \
      Every build plays it.";
 
+/// The damage, shield and health scales: their rows, after the team count.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scale {
+    Damage,
+    Shield,
+    Health,
+}
+
+impl Scale {
+    pub const ALL: [Scale; 3] = [Scale::Damage, Scale::Shield, Scale::Health];
+
+    pub fn row(self) -> i16 {
+        TEAMS_ROW + 1 + self as i16
+    }
+
+    pub fn of_row(row: i16) -> Option<Scale> {
+        Scale::ALL.into_iter().find(|s| s.row() == row)
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Scale::Damage => "Damage",
+            Scale::Shield => "Shields",
+            Scale::Health => "Health",
+        }
+    }
+
+    pub fn get(self, e: &Ext) -> u16 {
+        match self {
+            Scale::Damage => e.damage,
+            Scale::Shield => e.shield,
+            Scale::Health => e.health,
+        }
+    }
+
+    pub fn set(self, e: &mut Ext, v: u16) {
+        match self {
+            Scale::Damage => e.damage = v,
+            Scale::Shield => e.shield = v,
+            Scale::Health => e.health = v,
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Scale::Damage => {
+                "Damage every player deals, as a share of the game's. Not on System Link."
+            }
+            Scale::Shield => {
+                "How much every player's shield holds, as a share of the game's. Not on System Link."
+            }
+            Scale::Health => {
+                "How much every player's body holds, as a share of the game's. Not on System Link."
+            }
+        }
+    }
+
+    fn ids_at(self) -> u32 {
+        SCALE_IDS + self as u32 * (1 + GRAVITY_STEPS.len() as u32)
+    }
+
+    pub fn description_id(self) -> u32 {
+        IDS.id(self.ids_at())
+    }
+
+    /// The label id of step `i`.
+    pub fn label_id(self, i: usize) -> u32 {
+        IDS.id(self.ids_at() + 1 + i as u32)
+    }
+
+    /// Step `i`'s label: "Damage: < 150% >"; the game's own says Normal.
+    pub fn label(self, i: usize) -> String {
+        match GRAVITY_STEPS[i] {
+            100 => format!("{}: < Normal >", self.name()),
+            v => format!("{}: < {v}% >", self.name()),
+        }
+    }
+}
+
 /// The page's rows.
 pub const GRAVITY_ROW: i16 = 0;
 pub const GRENADES_ROW: i16 = 1;
 pub const TEAMS_ROW: i16 = 2;
-pub const ROWS: usize = 3;
+pub const ROWS: usize = 6;
 
 /// The team count in the edited record (`+0xb4`, an i32).
 pub const EDITED_TEAMS: u32 = EDITED_VARIANT + 0xb4;
 const TEAM_COUNTS: [i32; 8] = variants::record::TEAM_COUNTS;
 
-const _: () = assert!(TEAMS_LABELS + TEAM_COUNTS.len() as u32 <= IDS.len);
+/// The scales' ids: per scale a description, then a label per step (the
+/// gravity steps, which are [`ext::PERCENT`]'s too).
+const SCALE_IDS: u32 = TEAMS_LABELS + TEAM_COUNTS.len() as u32;
+
+const _: () = assert!(SCALE_IDS + 3 * (1 + GRAVITY_STEPS.len() as u32) <= IDS.len);
 
 /// The step of team count `t`: its place in [`TEAM_COUNTS`], or 2 teams
 /// for a value we don't offer (1).
@@ -122,10 +205,7 @@ pub fn grenades_label_id(on: bool) -> u32 {
 
 /// The grenades row's label.
 pub fn grenades_label(on: bool) -> String {
-    format!(
-        "Unlimited Grenades: < {} >",
-        if on { "On" } else { "Off" }
-    )
+    format!("Unlimited Grenades: < {} >", if on { "On" } else { "Off" })
 }
 
 /// The label id of gravity step `i`.
@@ -166,6 +246,12 @@ pub fn strings() -> Vec<(u32, String)> {
     v.push((TEAMS_DESCRIPTION_ID, TEAMS_DESCRIPTION.to_string()));
     for i in 0..TEAM_COUNTS.len() {
         v.push((teams_label_id(i), teams_label(i)));
+    }
+    for sc in Scale::ALL {
+        v.push((sc.description_id(), sc.description().to_string()));
+        for i in 0..GRAVITY_STEPS.len() {
+            v.push((sc.label_id(i), sc.label(i)));
+        }
     }
     v
 }
@@ -368,9 +454,26 @@ impl Page {
     /// Steps gravity up (`up`) or down a step; `wrap` goes round at the
     /// ends (A), else it stops there (left, right). What to log.
     pub fn step_gravity(&self, up: bool, wrap: bool) -> String {
+        self.step_percent("gravity", |e| e.gravity, |e, v| e.gravity = v, up, wrap)
+    }
+
+    /// Steps a scale as gravity steps. What to log.
+    pub fn step_scale(&self, sc: Scale, up: bool, wrap: bool) -> String {
+        let what = sc.name().to_ascii_lowercase();
+        self.step_percent(&what, |e| sc.get(e), |e, v| sc.set(e, v), up, wrap)
+    }
+
+    fn step_percent(
+        &self,
+        what: &str,
+        get: impl Fn(&Ext) -> u16,
+        set: impl Fn(&mut Ext, u16),
+        up: bool,
+        wrap: bool,
+    ) -> String {
         let mut b = self.block.lock().unwrap_or_else(|e| e.into_inner());
         let mut e = Ext::in_effect(&b);
-        let i = nearest_step(e.gravity);
+        let i = nearest_step(get(&e));
         let n = GRAVITY_STEPS.len();
         let j = match (up, wrap) {
             (true, true) => (i + 1) % n,
@@ -378,14 +481,14 @@ impl Page {
             (true, false) => (i + 1).min(n - 1),
             (false, false) => i.saturating_sub(1),
         };
-        let was = e.gravity;
-        e.gravity = GRAVITY_STEPS[j];
-        if e.gravity == was {
-            return format!("variant options: gravity stays {was}%");
+        let was = get(&e);
+        set(&mut e, GRAVITY_STEPS[j]);
+        if GRAVITY_STEPS[j] == was {
+            return format!("variant options: {what} stays {was}%");
         }
         *b = e.encode();
         self.dirty.store(true, Ordering::SeqCst);
-        format!("variant options: gravity {was}% -> {}%", e.gravity)
+        format!("variant options: {what} {was}% -> {}%", GRAVITY_STEPS[j])
     }
 
     /// The record's team count, as shown.
@@ -455,12 +558,12 @@ impl Rows for Page {
                 LABEL_SLOT,
                 gravity_label_id(nearest_step(self.ext().gravity)),
             )],
-            GRENADES_ROW => vec![(
-                LABEL_SLOT,
-                grenades_label_id(self.ext().unlimited_grenades),
-            )],
+            GRENADES_ROW => vec![(LABEL_SLOT, grenades_label_id(self.ext().unlimited_grenades))],
             TEAMS_ROW => vec![(LABEL_SLOT, teams_label_id(teams_step(self.teams())))],
-            _ => Vec::new(),
+            r => match Scale::of_row(r) {
+                Some(sc) => vec![(LABEL_SLOT, sc.label_id(nearest_step(sc.get(&self.ext()))))],
+                None => Vec::new(),
+            },
         }
     }
     fn press(&self, row: i16) -> Chosen {
@@ -468,7 +571,10 @@ impl Rows for Page {
             GRAVITY_ROW => Chosen::Stepped(self.step_gravity(true, true)),
             GRENADES_ROW => Chosen::Stepped(self.toggle_grenades()),
             TEAMS_ROW => Chosen::Stepped(self.step_teams(true, true)),
-            _ => Chosen::Nothing,
+            r => match Scale::of_row(r) {
+                Some(sc) => Chosen::Stepped(self.step_scale(sc, true, true)),
+                None => Chosen::Nothing,
+            },
         }
     }
     fn sideways(&self, row: i16, right: bool) -> Option<String> {
@@ -476,7 +582,7 @@ impl Rows for Page {
             GRAVITY_ROW => Some(self.step_gravity(right, false)),
             GRENADES_ROW => Some(self.toggle_grenades()),
             TEAMS_ROW => Some(self.step_teams(right, false)),
-            _ => None,
+            r => Scale::of_row(r).map(|sc| self.step_scale(sc, right, false)),
         }
     }
     fn description(&self, row: i16) -> Option<u32> {
@@ -484,7 +590,7 @@ impl Rows for Page {
             GRAVITY_ROW => Some(GRAVITY_DESCRIPTION_ID),
             GRENADES_ROW => Some(GRENADES_DESCRIPTION_ID),
             TEAMS_ROW => Some(TEAMS_DESCRIPTION_ID),
-            _ => None,
+            r => Scale::of_row(r).map(Scale::description_id),
         }
     }
     /// An edit goes to the record before the row is drawn again.
@@ -514,12 +620,20 @@ impl Rows for Page {
     }
     fn describe(&self, _count: usize) -> Option<String> {
         let e = self.ext();
-        Some(format!(
+        let mut d = format!(
             "\"{TITLE}\"; rows: [0] \"{}\", [1] \"{}\", [2] \"{}\"",
             gravity_label(nearest_step(e.gravity)),
             grenades_label(e.unlimited_grenades),
             teams_label(teams_step(self.teams()))
-        ))
+        );
+        for sc in Scale::ALL {
+            d.push_str(&format!(
+                ", [{}] \"{}\"",
+                sc.row(),
+                sc.label(nearest_step(sc.get(&e)))
+            ));
+        }
+        Some(d)
     }
 }
 
@@ -582,6 +696,23 @@ impl crate::ui_kit::spec::Describe for Page {
                 .describe(TEAMS_DESCRIPTION)
                 .ids(&[teams_label_id(i), TEAMS_DESCRIPTION_ID]),
         );
+        let steps: Vec<String> = GRAVITY_STEPS
+            .iter()
+            .map(|&g| match g {
+                100 => "Normal".into(),
+                g => format!("{g}%"),
+            })
+            .collect();
+        let steps: Vec<&str> = steps.iter().map(String::as_str).collect();
+        for sc in Scale::ALL {
+            let i = nearest_step(sc.get(&self.ext()));
+            s.rows.push(
+                RowSpec::value(sc.name(), &steps, i)
+                    .press(Press::Step)
+                    .describe(sc.description())
+                    .ids(&[sc.label_id(i), sc.description_id()]),
+            );
+        }
         s
     }
 }
@@ -713,7 +844,7 @@ mod tests {
         assert_eq!(p.texts(0), [(LABEL_SLOT, gravity_label_id(2))]);
         p.sideways(0, true);
         assert_eq!(p.ext().gravity, 75);
-        assert_eq!(p.press(3), Chosen::Nothing);
+        assert_eq!(p.press(ROWS as i16), Chosen::Nothing);
     }
 
     /// The grenades row toggles the flag, beside gravity, and off again
@@ -741,7 +872,11 @@ mod tests {
         assert!(p.sideways(GRENADES_ROW, true).unwrap().ends_with("off"));
         p.sideways(GRAVITY_ROW, true);
         assert_eq!(p.pending(), Some([0; ext::LEN]), "a retail record again");
-        assert!(p.describe(2).unwrap().contains("Unlimited Grenades: < Off >"));
+        assert!(
+            p.describe(2)
+                .unwrap()
+                .contains("Unlimited Grenades: < Off >")
+        );
     }
 
     /// The team count row edits the record's `+0xb4`, not the block, and
@@ -751,7 +886,7 @@ mod tests {
         assert_eq!(EDITED_TEAMS, 0x0054_e554);
         let p = Page::new();
         p.read_teams(0);
-        assert_eq!(p.count(), 3);
+        assert_eq!(p.count(), ROWS);
         assert_eq!(p.texts(TEAMS_ROW), [(LABEL_SLOT, teams_label_id(0))]);
         assert_eq!(p.description(TEAMS_ROW), Some(TEAMS_DESCRIPTION_ID));
         assert!(p.sideways(TEAMS_ROW, false).unwrap().contains("stays 0"));
@@ -781,6 +916,58 @@ mod tests {
         assert_eq!(teams_label(3), "Team Count: < 4 >");
     }
 
+    /// The damage, shield and health rows step their percents in the
+    /// block, each on its own.
+    #[test]
+    fn the_scale_rows_step_their_percents() {
+        let p = Page::new();
+        p.read([0; ext::LEN]);
+        assert_eq!(Scale::of_row(3), Some(Scale::Damage));
+        assert_eq!(Scale::of_row(5), Some(Scale::Health));
+        assert_eq!(Scale::of_row(6), None);
+        for sc in Scale::ALL {
+            assert_eq!(p.texts(sc.row()), [(LABEL_SLOT, sc.label_id(4))]);
+            assert_eq!(p.description(sc.row()), Some(sc.description_id()));
+        }
+        assert!(
+            p.sideways(Scale::Damage.row(), true)
+                .unwrap()
+                .contains("damage 100% -> 125%")
+        );
+        assert!(
+            p.sideways(Scale::Health.row(), false)
+                .unwrap()
+                .contains("health 100% -> 75%")
+        );
+        assert!(matches!(p.press(Scale::Shield.row()), Chosen::Stepped(_)));
+        let e = Ext::in_effect(&p.pending().unwrap());
+        assert_eq!(
+            (e.damage, e.shield, e.health, e.gravity),
+            (125, 125, 75, 100)
+        );
+        assert_eq!(
+            p.texts(Scale::Damage.row()),
+            [(LABEL_SLOT, Scale::Damage.label_id(5))]
+        );
+        // Left at the bottom stops at 10%.
+        for _ in 0..12 {
+            p.sideways(Scale::Health.row(), false);
+        }
+        assert_eq!(p.ext().health, 10);
+        assert!(
+            p.sideways(Scale::Health.row(), false)
+                .unwrap()
+                .contains("stays 10%")
+        );
+        assert_eq!(Scale::Shield.label(4), "Shields: < Normal >");
+        assert_eq!(Scale::Damage.label(7), "Damage: < 200% >");
+        assert!(
+            p.describe(ROWS)
+                .unwrap()
+                .contains("[5] \"Health: < 10% >\"")
+        );
+    }
+
     #[test]
     fn strings_are_ours_and_distinct() {
         let v = strings();
@@ -795,6 +982,12 @@ mod tests {
         assert!(GRAVITY_DESCRIPTION.encode_utf16().count() <= 120);
         assert!(GRENADES_DESCRIPTION.encode_utf16().count() <= 120);
         assert!(TEAMS_DESCRIPTION.encode_utf16().count() <= 120);
+        for sc in Scale::ALL {
+            assert!(sc.description().encode_utf16().count() <= 120, "{sc:?}");
+        }
+        for g in GRAVITY_STEPS {
+            assert!(ext::PERCENT.contains(&g));
+        }
         assert_eq!(grenades_label(true), "Unlimited Grenades: < On >");
         for g in GRAVITY_STEPS {
             assert!(ext::GRAVITY.contains(&g));
