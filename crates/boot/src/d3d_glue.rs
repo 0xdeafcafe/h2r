@@ -565,6 +565,10 @@ impl d3d::backend::Backend for Headless {
         let r = self.0.request_depth_grid(surface, request, sink);
         self.forget(r)
     }
+    fn warp_surface(&mut self, src: u32, dst: u32, h: [[f32; 3]; 3]) -> Result<bool, String> {
+        let r = self.0.warp_surface(src, dst, h);
+        self.forget(r)
+    }
     fn present_with_gamma(&mut self, surface: u32, flags: u32, gamma: Option<&[u8; 768]>) -> Result<(), String> {
         let r = self.0.present_with_gamma(surface, flags, gamma);
         self.forget(r)

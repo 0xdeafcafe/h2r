@@ -471,6 +471,9 @@ impl<B: Backend> Backend for DiagBackend<B> {
     ) -> Result<bool, String> {
         self.inner.request_depth_grid(surface, request, sink)
     }
+    fn warp_surface(&mut self, src: Self::Surface, dst: Self::Surface, h: [[f32; 3]; 3]) -> Result<bool, String> {
+        self.inner.warp_surface(src, dst, h)
+    }
 
     fn depth_level_texture(&mut self, surface: Self::Surface) -> Result<Option<Self::Texture>, String> {
         let r = self.inner.depth_level_texture(surface)?;
