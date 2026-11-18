@@ -382,6 +382,47 @@ pub const BIPED_AIRBORNE_TICKS: u32 = 0x399;
 /// at the object's origin minus `counter × tick length ×
 /// HITBOX_OFFSET_RATE` in z (`0x000e0d70`, used at `0x001d405b`).
 pub const BIPED_HITBOX_OFFSET: u32 = 0x3aa;
+/// The ground support the biped physics update (`0x000dd990`) keeps from
+/// the character's contacts. Each update clears bit 4 (`0x10`) of the byte
+/// at `+0x349` (`0x000ddb91`) and sets it again when it copies a support
+/// contact (`0x000ddeda`); the five words at `+0x354..+0x364` name what
+/// supports the biped (a structure surface: `+0x35c` the key's low 16
+/// bits, `+0x354` its 13-bit field, `+0x360` -1, `0x000ddcd0..0x000ddce5`;
+/// -1 throughout when nothing does, `0x000ddbb4..0x000ddbcc`). The support
+/// contact's point (contact `+0x1c`) goes to `+0x380` and `+0x368`, its
+/// normal (contact `+0x28`) to `+0x374` (`0x000dde99..0x000ddef5`).
+pub const BIPED_SUPPORT_FLAGS: u32 = 0x349;
+pub const BIPED_SUPPORT_COPIED: u8 = 0x10;
+pub const BIPED_SUPPORT_WORDS: u32 = 0x354;
+pub const BIPED_SUPPORT_POINT: u32 = 0x368;
+pub const BIPED_SUPPORT_NORMAL: u32 = 0x374;
+pub const BIPED_SUPPORT_CONTACT_POINT: u32 = 0x380;
+/// The ground mode's state: `0x001e5a60` hands the physics-mode block
+/// (`BIPED_PHYSICS_MODE`) `+0x10` to the ground test `0x001f19c0`, which
+/// first takes the length of its first three floats (`0x001f19ff..0x001f1a35`).
+pub const BIPED_GROUND_STATE: u32 = 0x3ec;
+/// The character contacts the ground test walks, on the physics component
+/// (`PHYSICS_COMPONENTS_PTR`, indexed by `BODY_PHYSICS` as in
+/// `0x001e68a0`'s `+0x40`): pointer `+0x88`, count `+0x8c`, `0x48` each
+/// (`0x001f1aa0`, `0x001f1aca`, `0x001f1be5`). In an element: `+0x04` the
+/// shape key the support is named by (`0x000ddc5e`, type `key >> 29`),
+/// `+0x14` a second id the test compares with -1 (`0x001f1b75`) and with
+/// the biped's `+0x408` (`0x001f2395`), `+0x1c` the point (`0x000dde99`,
+/// `0x001f2e8a`), `+0x28` the normal (`0x001f1ae0..0x001f1afc`), `+0x38` a
+/// float whose magnitude must reach 1e-4 for the first pass to take the
+/// contact (`0x001f1bb8`), `+0x44` flags (bit 1 and bit 2 read at
+/// `0x001f1b33` and `0x001f1b4c`).
+pub const COMPONENT_CHARACTER_CONTACTS: u32 = 0x88;
+pub const COMPONENT_CHARACTER_CONTACT_COUNT: u32 = 0x8c;
+pub const CHARACTER_CONTACT_SIZE: u32 = 0x48;
+pub const CHARACTER_CONTACT_KEY: u32 = 0x04;
+pub const CHARACTER_CONTACT_OTHER: u32 = 0x14;
+pub const CHARACTER_CONTACT_POINT: u32 = 0x1c;
+pub const CHARACTER_CONTACT_NORMAL: u32 = 0x28;
+pub const CHARACTER_CONTACT_VALUE: u32 = 0x38;
+pub const CHARACTER_CONTACT_FLAGS: u32 = 0x44;
+/// At most this many character contacts are read.
+pub const CHARACTER_CONTACTS_MAX: u32 = 32;
 /// The Havok body behind an object (confirmed, `0x001d08e0`): the
 /// object's physics component index at body `+0xb4` (-1 none) indexes the
 /// component array (`PHYSICS_COMPONENTS_PTR`, element `0xa0`); a component

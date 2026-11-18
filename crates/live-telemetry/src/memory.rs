@@ -2,9 +2,9 @@ use live_proto::game::{Player, TeamScore};
 use runtime::{Guest, GuestFault};
 
 use crate::event::{
-    ActorState, Animation, Appearance, GameInfo, HitRecord, MachineState, Motion, ObjectState,
-    PlacedObject, Placements, PlayerState, PlayerStats, Pose, Snapshot, VehicleState, Weapon,
-    World,
+    ActorState, Animation, Appearance, CharacterContact, GameInfo, HitRecord, MachineState, Motion,
+    ObjectState, PlacedObject, Placements, PlayerState, PlayerStats, Pose, Snapshot, Support,
+    VehicleState, Weapon, World,
 };
 use crate::layout;
 use engine::DatumHandle;
@@ -589,6 +589,7 @@ fn motion(guest: &Guest, kind: u8, body: u32, weapon: Option<u32>) -> Motion {
         .flatten()
         .map(|t| t as i8);
     let havok = havok_body(guest, body).ok().flatten();
+    let support = biped.then(|| support(guest, body).ok()).flatten();
     Motion {
         velocity,
         crouch,
@@ -603,7 +604,50 @@ fn motion(guest: &Guest, kind: u8, body: u32, weapon: Option<u32>) -> Motion {
         airborne_ticks,
         hitbox_offset,
         havok,
+        support,
     }
+}
+
+/// A biped's ground support (`layout::BIPED_SUPPORT_*`) and the character
+/// contacts on its physics component (`layout::CHARACTER_CONTACT_*`); the
+/// contacts are empty without a component or with a count past
+/// `layout::CHARACTER_CONTACTS_MAX`.
+fn support(guest: &Guest, body: u32) -> ReadResult<Support> {
+    let mut words = [0u32; 5];
+    for (i, w) in words.iter_mut().enumerate() {
+        *w = guest.u32(body + layout::BIPED_SUPPORT_WORDS + 4 * i as u32)?;
+    }
+    let mut contacts = Vec::new();
+    let index = guest.u32(body + layout::BODY_PHYSICS)?;
+    if index != u32::MAX {
+        let array = guest.u32(layout::PHYSICS_COMPONENTS_PTR)?;
+        let data = guest.u32(array + layout::DATUM_DATA)?;
+        let component = data.wrapping_add((index & 0xffff) * layout::PHYSICS_COMPONENT_SIZE);
+        let list = guest.u32(component + layout::COMPONENT_CHARACTER_CONTACTS)?;
+        let count = guest.u32(component + layout::COMPONENT_CHARACTER_CONTACT_COUNT)?;
+        if list != 0 && count <= layout::CHARACTER_CONTACTS_MAX {
+            for i in 0..count {
+                let c = list + i * layout::CHARACTER_CONTACT_SIZE;
+                contacts.push(CharacterContact {
+                    key: guest.u32(c + layout::CHARACTER_CONTACT_KEY)?,
+                    other: guest.u32(c + layout::CHARACTER_CONTACT_OTHER)?,
+                    point: vector(guest, c + layout::CHARACTER_CONTACT_POINT)?,
+                    normal: vector(guest, c + layout::CHARACTER_CONTACT_NORMAL)?,
+                    value: f64::from(guest.f32(c + layout::CHARACTER_CONTACT_VALUE)?),
+                    flags: guest.u32(c + layout::CHARACTER_CONTACT_FLAGS)?,
+                });
+            }
+        }
+    }
+    Ok(Support {
+        flags: guest.u8(body + layout::BIPED_SUPPORT_FLAGS)?,
+        words,
+        point: vector(guest, body + layout::BIPED_SUPPORT_POINT)?,
+        normal: vector(guest, body + layout::BIPED_SUPPORT_NORMAL)?,
+        contact_point: vector(guest, body + layout::BIPED_SUPPORT_CONTACT_POINT)?,
+        ground_state: vector(guest, body + layout::BIPED_GROUND_STATE)?,
+        contacts,
+    })
 }
 
 /// The first Havok rigid body's world position and linear velocity, as
@@ -2164,7 +2208,90 @@ mod tests {
         guest
             .set_f32(motion + layout::MOTION_VELOCITY + 8, 12.5)
             .unwrap();
+        // Ground support: a copied support contact on structure surface
+        // 0x0b11, and two character contacts on the component.
+        guest
+            .set_u8(
+                body + layout::BIPED_SUPPORT_FLAGS,
+                layout::BIPED_SUPPORT_COPIED,
+            )
+            .unwrap();
+        for (i, w) in [0x0002u32, u32::MAX, 0x0b11, u32::MAX, 0x2000_0b11]
+            .iter()
+            .enumerate()
+        {
+            guest
+                .set_u32(body + layout::BIPED_SUPPORT_WORDS + 4 * i as u32, *w)
+                .unwrap();
+        }
+        guest
+            .set_f32(body + layout::BIPED_SUPPORT_POINT + 8, 1.25)
+            .unwrap();
+        guest
+            .set_f32(body + layout::BIPED_SUPPORT_NORMAL + 8, 0.75)
+            .unwrap();
+        guest
+            .set_f32(body + layout::BIPED_SUPPORT_CONTACT_POINT, 43.5)
+            .unwrap();
+        guest
+            .set_f32(body + layout::BIPED_GROUND_STATE + 4, -2.0)
+            .unwrap();
+        let (list, component) = (0x17_8000, data + 3 * layout::PHYSICS_COMPONENT_SIZE);
+        guest
+            .set_u32(component + layout::COMPONENT_CHARACTER_CONTACTS, list)
+            .unwrap();
+        guest
+            .set_u32(component + layout::COMPONENT_CHARACTER_CONTACT_COUNT, 2)
+            .unwrap();
+        let second = list + layout::CHARACTER_CONTACT_SIZE;
+        guest
+            .set_u32(second + layout::CHARACTER_CONTACT_KEY, 0x2000_0b11)
+            .unwrap();
+        guest
+            .set_u32(second + layout::CHARACTER_CONTACT_OTHER, u32::MAX)
+            .unwrap();
+        guest
+            .set_f32(second + layout::CHARACTER_CONTACT_POINT + 4, -79.25)
+            .unwrap();
+        guest
+            .set_f32(second + layout::CHARACTER_CONTACT_NORMAL + 8, 0.5)
+            .unwrap();
+        guest
+            .set_f32(second + layout::CHARACTER_CONTACT_VALUE, 0.125)
+            .unwrap();
+        guest
+            .set_u32(second + layout::CHARACTER_CONTACT_FLAGS, 6)
+            .unwrap();
         let m = object(&guest, unit).unwrap().unwrap().motion;
+        let s = m.support.clone().expect("a biped's support");
+        assert_eq!(s.flags, layout::BIPED_SUPPORT_COPIED);
+        assert_eq!(s.words, [0x0002, u32::MAX, 0x0b11, u32::MAX, 0x2000_0b11]);
+        assert_eq!(s.point, [0.0, 0.0, 1.25]);
+        assert_eq!(s.normal, [0.0, 0.0, 0.75]);
+        assert_eq!(s.contact_point, [43.5, 0.0, 0.0]);
+        assert_eq!(s.ground_state, [0.0, -2.0, 0.0]);
+        assert_eq!(s.contacts.len(), 2);
+        assert_eq!(s.contacts[0], CharacterContact::default());
+        assert_eq!(
+            s.contacts[1],
+            CharacterContact {
+                key: 0x2000_0b11,
+                other: u32::MAX,
+                point: [0.0, -79.25, 0.0],
+                normal: [0.0, 0.0, 0.5],
+                value: 0.125,
+                flags: 6,
+            }
+        );
+        // A count past the cap reads no contacts rather than garbage.
+        guest
+            .set_u32(
+                component + layout::COMPONENT_CHARACTER_CONTACT_COUNT,
+                layout::CHARACTER_CONTACTS_MAX + 1,
+            )
+            .unwrap();
+        let capped = object(&guest, unit).unwrap().unwrap().motion;
+        assert!(capped.support.unwrap().contacts.is_empty());
         assert_eq!(m.havok, Some(([0.0, 0.0, -3.25], [0.0, 0.0, 12.5])));
         assert_eq!(m.unit_flags, Some(layout::UNIT_FLAG_CROUCH | 1));
         assert_eq!(m.biped_flags, Some(0x0201));

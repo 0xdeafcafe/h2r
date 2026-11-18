@@ -18,8 +18,8 @@ mod tags;
 
 pub use config::{TelemetryAccount, TelemetryConfig, TelemetrySinkConfig};
 pub use event::{
-    ActorState, Appearance, GameEvent, GameInfo, HitRecord, MachineState, Motion, ObjectState,
-    PlayerState, PlayerStats, Shots, Snapshot, VehicleState, Weapon, World,
+    ActorState, Appearance, CharacterContact, GameEvent, GameInfo, HitRecord, MachineState, Motion,
+    ObjectState, PlayerState, PlayerStats, Shots, Snapshot, Support, VehicleState, Weapon, World,
 };
 pub use hooks::{Telemetry, TelemetryFeature, install};
 pub use layout::LIKELY_FIELDS;
