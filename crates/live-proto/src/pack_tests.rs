@@ -414,10 +414,11 @@ fn golden_vectors_match_the_encoder() {
     odd_b.objects[0].p = None;
     odd_b.objects[0].f = None;
     odd_b.objects[0].u = None;
-    let cases: [(&str, Vec<Frame>, u64); 3] = [
+    let cases: [(&str, Vec<Frame>, u64); 4] = [
         ("multiplayer", samples::multiplayer(6), 4),
         ("campaign", samples::campaign(4), 3),
         ("odd", vec![odd_frame(), odd_b], 15),
+        ("cinematic", cinematic_stream(), 100),
     ];
     let update = std::env::var_os("H2_UPDATE_GOLDEN").is_some();
     for (name, frames, every) in cases {
@@ -451,6 +452,76 @@ fn golden_vectors_match_the_encoder() {
             "{name}.json is stale"
         );
     }
+}
+
+/// A game going into a cinematic and out again: a version 4 frame, two
+/// cinematic ones (version 5), a version 4 one.
+fn cinematic_stream() -> Vec<Frame> {
+    [
+        (100, 1, false),
+        (102, 1, true),
+        (104, 1, true),
+        (106, 2, false),
+    ]
+    .into_iter()
+    .map(|(tick, bsp, cinematic)| Frame {
+        game_id: "cinematic-golden".into(),
+        tick,
+        bsp: Some(bsp),
+        cinematic,
+        ..Frame::default()
+    })
+    .collect()
+}
+
+/// Only a cinematic frame is version 5: every other frame stays version 4,
+/// which a reader from before version 5 reads. A change of version is a
+/// keyframe each way, since a delta follows a frame of its own version.
+#[test]
+fn cinematic_frames_alone_are_version_five() {
+    let mut frames = samples::campaign(6);
+    for f in &mut frames[2..4] {
+        *f = Frame {
+            game_id: f.game_id.clone(),
+            tick: f.tick,
+            bsp: f.bsp,
+            cinematic: true,
+            ..Frame::default()
+        };
+    }
+    let mut e = Encoder::new(3, 100);
+    let mut d = Decoder::new();
+    let mut seen = Vec::new();
+    for f in &frames {
+        let (bytes, key) = e.encode(f).unwrap();
+        let back = d.decode(&bytes).unwrap().frame;
+        assert_eq!(back.cinematic, f.cinematic);
+        assert_eq!(back.tick, f.tick);
+        seen.push((u64::from(bytes[0] & 0xf), key));
+    }
+    assert_eq!(
+        seen,
+        [
+            (VERSION, true),
+            (VERSION, false),
+            (CINEMATIC_VERSION, true),
+            (CINEMATIC_VERSION, false),
+            (VERSION, true),
+            (VERSION, false),
+        ]
+    );
+    // A recorded cinematic frame decodes alone, and a JSON one says so.
+    let back = decode_keyframe(&encode_keyframe(&frames[2]).unwrap()).unwrap();
+    assert!(back.cinematic && back.players.is_empty());
+    let json = serde_json::to_value(&frames[2]).unwrap();
+    assert_eq!(json["cinematic"], true);
+    assert!(
+        serde_json::to_value(&frames[0])
+            .unwrap()
+            .get("cinematic")
+            .is_none()
+    );
+    assert_eq!(validate_frame(&frames[2]), Ok(()));
 }
 
 /// CPU per frame: what the game's sink worker spends serialising (JSON)

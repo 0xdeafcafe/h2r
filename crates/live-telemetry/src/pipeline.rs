@@ -92,6 +92,8 @@ pub(crate) struct Kill {
     pub victim: u32,
     pub betrayal: bool,
     pub object: Option<ObjectState>,
+    /// A HaloScript cinematic was playing: the kill is not counted.
+    pub cinematic: bool,
 }
 
 #[derive(Default)]
@@ -385,8 +387,9 @@ fn apply(session: &mut Session, work: Work) -> Option<Box<Snapshot>> {
                 victim,
                 betrayal,
                 object,
+                cinematic,
             } = *kill;
-            session.kill(tick, attacker, victim, betrayal, object);
+            session.kill(tick, attacker, victim, betrayal, object, cinematic);
         }
         Work::End(snapshot) => {
             session.end(&snapshot);
@@ -520,6 +523,7 @@ mod tests {
             victim: 0,
             betrayal: false,
             object: None,
+            cinematic: false,
         }))
     }
 

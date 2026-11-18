@@ -4,7 +4,7 @@
 
 import type { Frame, FrameObject, PlayerKilled, PlayerScore, ScoreChanged, WireEvent } from "../api/types";
 import { recordedFrame } from "../api/pack";
-import { sampleActors, sampleBsp, sampleFrames, sampleHits, sampleMachines, sampleObjects, sampleVehicles, withoutUnplaced, type SampledMachine, type SampledPlayer, type SampledVehicle, TICKS_PER_SECOND } from "./frames";
+import { cinematicAt, sampleActors, sampleBsp, sampleFrames, sampleHits, sampleMachines, sampleObjects, sampleVehicles, withoutUnplaced, type SampledMachine, type SampledPlayer, type SampledVehicle, TICKS_PER_SECOND } from "./frames";
 
 export interface ReplayKill {
   tick: number;
@@ -19,15 +19,24 @@ export interface ReplayKill {
 
 /** Something worth a mark on the scrubber: a kill (by a player of another),
  *  a death (anything else: a fall, a suicide, the AI in campaign), a cut
- *  (the recording's ticks ran backwards there: a revert) or the level
- *  changing zone (structure BSP). */
+ *  (the recording's ticks ran backwards there: a revert), the level
+ *  changing zone (structure BSP) or a cutscene. */
 export interface TimelineMark {
   tick: number;
-  kind: "kill" | "death" | "cut" | "zone";
+  kind: "kill" | "death" | "cut" | "zone" | "cinematic";
   /** For a kill or a death. */
   kill?: ReplayKill;
   /** For a zone change: the zone now loaded. */
   bsp?: number;
+  /** For a cutscene: where it ends. */
+  to?: number;
+}
+
+/** A cutscene in a recording: from its first `cinematic` frame to the first
+ *  frame after it that is not (or the end of the game). */
+export interface CinematicSpan {
+  from: number;
+  to: number;
 }
 
 /** How far before a kill the killcam starts, and how fast it plays. */
@@ -80,6 +89,10 @@ export class ReplayTimeline {
    *  revert or mission restart, recorded before the game's clock kept
    *  counting through them): the first tick of each later run. */
   readonly cuts: number[];
+
+  /** The cutscenes, in tick order: playing skips them, and a view at a
+   *  tick in one shows a cutscene rather than anyone in it. */
+  readonly cinematics: CinematicSpan[];
 
   /** `frames` as fetched (log order, oldest first) and the game's events.
    *  The events' own `GameFrame`s, when they cover the fetched frames, are
@@ -153,6 +166,41 @@ export class ReplayTimeline {
     this.scores.sort((a, b) => a.tick - b.tick);
     this.startTick = this.frames.length ? this.frames[0]!.tick : 0;
     this.endTick = Math.max(endTick, this.startTick);
+    this.cinematics = [];
+    let open: number | null = null;
+    for (const f of this.frames) {
+      if (f.cinematic === true) open ??= f.tick;
+      else if (open !== null) { this.cinematics.push({ from: open, to: f.tick }); open = null; }
+    }
+    if (open !== null) this.cinematics.push({ from: open, to: this.endTick });
+  }
+
+  /** The cutscene playing at `tick` (from <= tick < to), or null. A game
+   *  that ends in one is in it to the end. */
+  cinematicSpanAt(tick: number): CinematicSpan | null {
+    for (const c of this.cinematics) {
+      if (tick < c.from) return null;
+      if (tick < c.to || (c.to === this.endTick && tick <= c.to)) return c;
+    }
+    return null;
+  }
+
+  /** A cutscene is playing at `tick`: the views show a card, not players. */
+  cinematicAt(tick: number): boolean {
+    return cinematicAt(this.frames, this.clamp(tick));
+  }
+
+  /** Where a replay opens: the end, or when the game ended in a cutscene
+   *  (a mission's closing one), the last recorded frame before it. */
+  get openTick(): number {
+    const c = this.cinematicSpanAt(this.endTick);
+    if (!c) return this.endTick;
+    let at = this.startTick;
+    for (const f of this.frames) {
+      if (f.tick >= c.from) break;
+      if (!f.cinematic) at = f.tick;
+    }
+    return at;
   }
 
   private marksCache: TimelineMark[] | null = null;
@@ -166,6 +214,7 @@ export class ReplayTimeline {
       out.push({ tick: k.tick, kind: kill ? "kill" : "death", kill: k });
     }
     for (const t of this.cuts) out.push({ tick: t, kind: "cut" });
+    for (const c of this.cinematics) out.push({ tick: c.from, kind: "cinematic", to: c.to });
     let bsp: number | null = null;
     for (const f of this.frames) {
       const b = typeof f.bsp === "number" && Number.isInteger(f.bsp) && f.bsp >= 0 ? f.bsp : null;
@@ -390,7 +439,13 @@ export class ReplayClock {
 
   tickAt(now: number): number {
     if (!this.playing) return this.baseTick;
-    const t = this.baseTick + ((now - this.baseTime) / 1000) * TICKS_PER_SECOND * this.speed;
+    let t = this.baseTick + ((now - this.baseTime) / 1000) * TICKS_PER_SECOND * this.speed;
+    // Playing skips a cutscene: on to the first frame after it.
+    const c = this.timeline.cinematicSpanAt(t);
+    if (c && c.to > t) {
+      this.baseTick = t = c.to;
+      this.baseTime = now;
+    }
     if (t >= this.timeline.endTick) {
       this.playing = false;
       this.baseTick = this.timeline.endTick;

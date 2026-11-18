@@ -882,6 +882,17 @@ pub fn active_bsp(guest: &Guest) -> ReadResult<Option<u32>> {
     Ok(u32::try_from(bsp).ok())
 }
 
+/// Whether a HaloScript cinematic is playing (between `cinematic_start`
+/// and `cinematic_stop`): the cinematic block's in-progress byte, false
+/// with no block, as the game's own `0x0013cb40` reads it.
+pub fn cinematic(guest: &Guest) -> ReadResult<bool> {
+    let block = guest.u32(layout::CINEMATIC_GLOBALS_PTR)?;
+    if block == 0 {
+        return Ok(false);
+    }
+    Ok(guest.u8(block + layout::CINEMATIC_IN_PROGRESS)? != 0)
+}
+
 /// What the damage hook records: the report at `report` for `victim`, with
 /// the victim's position (its own `+0x64`) when it is a live object.
 pub fn hit(guest: &Guest, report: u32, victim: u32) -> ReadResult<HitRecord> {
@@ -932,6 +943,7 @@ pub fn snapshot_after(guest: &Guest, previous: &mut [PlayerState]) -> ReadResult
         bodies: Vec::new(),
         bsp: active_bsp(guest).ok().flatten(),
         hits: Vec::new(),
+        cinematic: cinematic(guest).unwrap_or(false),
     })
 }
 
@@ -960,6 +972,7 @@ pub fn snapshot_into(
     out.tick = game_tick(guest)?;
     out.has_stats = guest.u32(engine + layout::ENGINE_STATBORG)? != 0;
     out.bsp = active_bsp(guest).ok().flatten();
+    out.cinematic = cinematic(guest).unwrap_or(false);
     Ok(())
 }
 
@@ -986,6 +999,23 @@ pub(crate) mod fixture {
     pub const OBJECTS: u32 = 0x140000;
     pub const OBJECT_DATA: u32 = 0x141000;
     pub const BODY: u32 = 0x150000;
+    /// The cinematic block (only where a test points
+    /// [`super::layout::CINEMATIC_GLOBALS_PTR`] at it).
+    pub const CINEMATIC: u32 = 0x118000;
+
+    /// Points the game at a cinematic block and sets its in-progress byte
+    /// (`playing`) or clears it.
+    pub fn set_cinematic(guest: &mut Guest, playing: bool) {
+        guest
+            .set_u32(super::layout::CINEMATIC_GLOBALS_PTR, CINEMATIC)
+            .unwrap();
+        guest
+            .set_u8(
+                CINEMATIC + super::layout::CINEMATIC_IN_PROGRESS,
+                u8::from(playing),
+            )
+            .unwrap();
+    }
     /// Bodies of slots past [`LOW_BODIES`] (only in [`large_memory`]).
     pub const HIGH_BODY: u32 = 0x0100_0000;
     /// Object slots whose bodies fit below the 0x200000 end of [`memory`].
@@ -2028,6 +2058,29 @@ mod tests {
             .unwrap();
         let m = object(&guest, unit).unwrap().unwrap().motion;
         assert_eq!((m.crouch, m.physics_mode, m.grenade), (None, None, None));
+    }
+
+    #[test]
+    fn the_cinematic_byte_says_whether_a_cutscene_plays() {
+        let mut guest = fixture::memory();
+        fixture::put_player(&mut guest, 0, "A", 1, true, u32::MAX);
+        // No block yet (before the game state is set up): no cinematic.
+        assert!(!cinematic(&guest).unwrap());
+        assert!(!snapshot(&guest).unwrap().cinematic);
+        fixture::set_cinematic(&mut guest, true);
+        assert!(cinematic(&guest).unwrap());
+        assert!(snapshot(&guest).unwrap().cinematic);
+        let mut out = Snapshot::default();
+        snapshot_into(&guest, &mut out, &mut Vec::new()).unwrap();
+        assert!(out.cinematic);
+        // `+4` (also set by cinematic_start) is not the one read.
+        guest
+            .set_u8(fixture::CINEMATIC + layout::CINEMATIC_IN_PROGRESS, 0)
+            .unwrap();
+        guest.set_u8(fixture::CINEMATIC + 4, 1).unwrap();
+        assert!(!cinematic(&guest).unwrap());
+        snapshot_into(&guest, &mut out, &mut Vec::new()).unwrap();
+        assert!(!out.cinematic);
     }
 
     #[test]

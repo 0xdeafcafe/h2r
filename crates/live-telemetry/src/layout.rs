@@ -200,6 +200,21 @@ pub const LIKELY_FIELDS: &[(&str, u32)] = &[
     ("damage_report.reporting_type_names", 0),
 ];
 
+/// Pointer to a 0x24-byte game-state block that HaloScript's cinematics
+/// drive (confirmed, docs/live/live-gamestate.md, "Cinematics"). Allocated
+/// in the game state by `0x0013bf00` (size `0x24` at `0x0013bf27`, stored
+/// at `0x0013bf4e`), so a checkpoint saves and restores it with the rest.
+pub const CINEMATIC_GLOBALS_PTR: u32 = 0x0051_0c50;
+/// Its "a cinematic is playing" byte (confirmed): `cinematic_start`
+/// (`0x002a9740` → `0x0013bff0`) sets `+4` and `+5` to 1 (`0x0013c01b`,
+/// `0x0013c01e`); `cinematic_stop` (`0x002a9760` → `0x0013ca80`) clears
+/// both (`0x0013caa9`, `0x0013cac2`). `0x0013cb40` returns `+5` (0 with no
+/// block): the campaign pause menu is refused while it is set (docs/game/
+/// settings-menu.md), and the tick budget `0x00146660`, the camera's
+/// projection (`0x0002fc96`, the cinematic's aspect) and a dozen other
+/// systems test it. Of the two, `+5` is the one the game itself asks.
+pub const CINEMATIC_IN_PROGRESS: u32 = 0x5;
+
 /// Active structure-BSP index in the game globals (`i16`, confirmed:
 /// `0x0011c1b0` / `0x00137d40` index the scenario's BSP block with it).
 pub const GLOBALS_ACTIVE_BSP: u32 = 0x2;

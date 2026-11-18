@@ -75,7 +75,7 @@ export interface SampledHit {
 export function sampleHits(frames: readonly Frame[], tick: number): { tick: number; hits: SampledHit[] } | null {
   const i = findFrame(frames, tick);
   const f = i < 0 ? undefined : frames[i];
-  if (!f?.hits?.length) return null;
+  if (!f?.hits?.length || f.cinematic) return null;
   let c = hitCache.get(f);
   if (!c) {
     c = [];
@@ -282,12 +282,28 @@ export function findFrame(frames: readonly Frame[], tick: number): number {
   return ans;
 }
 
+/** Whether the frame at or before `tick` is a cutscene's (`cinematic`):
+ *  the game sent no one in it, and nothing from the frames either side is
+ *  drawn into it. */
+export function cinematicAt(frames: readonly Frame[], tick: number): boolean {
+  const i = findFrame(frames, tick);
+  return i >= 0 && frames[i]!.cinematic === true;
+}
+
+/** The frame after `i` unless it is a cutscene's: units are not eased
+ *  towards a cutscene, nor do the ones after it show up early. */
+function nextOf(frames: readonly Frame[], i: number): Frame | undefined {
+  const b = frames[i + 1];
+  return b?.cinematic ? undefined : b;
+}
+
 /** Samples a sorted frame list at a (fractional) tick. */
 export function sampleFrames(frames: readonly Frame[], tick: number): SampledPlayer[] {
   if (frames.length === 0) return [];
   const i = findFrame(frames, tick);
-  if (i < 0) return frames[0]!.players.map((p) => fromFramePlayer(p));
-  return interpolateFrames(frames[i]!, frames[i + 1], tick);
+  if (i < 0) return frames[0]!.cinematic ? [] : frames[0]!.players.map((p) => fromFramePlayer(p));
+  if (frames[i]!.cinematic) return [];
+  return interpolateFrames(frames[i]!, nextOf(frames, i), tick);
 }
 
 // ---- actors and vehicles ----
@@ -327,8 +343,8 @@ function actorsCached(f: Frame) {
  *  once that frame is the nearer. */
 export function sampleActors(frames: readonly Frame[], tick: number): SampledPlayer[] {
   const i = findFrame(frames, tick);
-  if (i < 0) return [];
-  const fa = frames[i]!, fb = frames[i + 1];
+  if (i < 0 || frames[i]!.cinematic) return [];
+  const fa = frames[i]!, fb = nextOf(frames, i);
   if (!fa.actors?.length && !fb?.actors?.length) return [];
   const a = actorsCached(fa), b = fb && fb.tick > fa.tick ? actorsCached(fb) : undefined;
   const late = !!fb && !!b && (tick - fa.tick) / (fb.tick - fa.tick) >= 0.5;
@@ -387,8 +403,8 @@ function vehiclesCached(f: Frame) {
  *  appears then. A big jump snaps. */
 export function sampleVehicles(frames: readonly Frame[], tick: number): SampledVehicle[] {
   const i = findFrame(frames, tick);
-  if (i < 0) return [];
-  const fa = frames[i]!, fb = frames[i + 1];
+  if (i < 0 || frames[i]!.cinematic) return [];
+  const fa = frames[i]!, fb = nextOf(frames, i);
   const from = vehiclesCached(fa).list;
   if (!fb || fb.tick <= fa.tick) return seatTurrets(from);
   const t = Math.min(1, Math.max(0, (tick - fa.tick) / (fb.tick - fa.tick)));
@@ -623,6 +639,11 @@ export class FrameBuffer {
 
   sampleBsp(now: number): number | null {
     return sampleBsp(this.frames, this.renderTick(now));
+  }
+
+  /** A cutscene is playing at the render tick. */
+  cinematic(now: number): boolean {
+    return cinematicAt(this.frames, this.renderTick(now));
   }
 
   /** Every machine: the ones moving now where the render tick has them, the rest where they were last sent. */

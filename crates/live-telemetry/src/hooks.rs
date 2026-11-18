@@ -277,8 +277,8 @@ impl Telemetry {
         std::mem::swap(&mut snapshot.shots, &mut *self.shots.lock().unwrap());
         std::mem::swap(&mut snapshot.hits, &mut *self.hits.lock().unwrap());
         // Actors, vehicles and machines only go out in frames (every second
-        // tick).
-        if snapshot.tick.is_multiple_of(2) {
+        // tick), and not in a cinematic's (they hold no entities).
+        if snapshot.tick.is_multiple_of(2) && !snapshot.cinematic {
             let mut world = World {
                 actors: std::mem::take(&mut snapshot.actors),
                 vehicles: std::mem::take(&mut snapshot.vehicles),
@@ -336,6 +336,8 @@ impl Telemetry {
             victim: victim_index,
             betrayal,
             object,
+            // The scripts' kills in a cutscene are not play.
+            cinematic: memory::cinematic(guest).unwrap_or(false),
         })))
     }
 }
@@ -631,11 +633,31 @@ mod tests {
         telemetry.protect(|| telemetry.start(&guest));
         telemetry.protect(|| telemetry.kill(&guest, 0x80010000, 0x80010001, false));
         telemetry.protect(|| telemetry.kill(&guest, 0x80010000, 0x80010000, false));
+        // In a cutscene the scripts' kills are not counted, and the tick's
+        // frame is a marked, empty one.
+        fixture::set_cinematic(&mut guest, true);
+        guest
+            .set_u32(fixture::TIME + layout::TIME_TICK, 10)
+            .unwrap();
+        telemetry.protect(|| telemetry.kill(&guest, 0x80010000, 0x80010001, false));
+        telemetry.protect(|| telemetry.sample(&guest));
+        assert!(!telemetry.disabled());
         drop(telemetry);
-        let events: Vec<serde_json::Value> = std::fs::read_to_string(&path)
+        let lines: Vec<serde_json::Value> = std::fs::read_to_string(&path)
             .unwrap()
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let frames: Vec<&serde_json::Value> = lines
+            .iter()
+            .filter(|event| event["type"] == "GameFrame")
+            .collect();
+        assert_eq!(frames.len(), 1, "{lines:?}");
+        assert_eq!(frames[0]["data"]["cinematic"], true);
+        assert_eq!(frames[0]["data"]["tick"], 10);
+        assert_eq!(frames[0]["data"]["players"], serde_json::json!([]));
+        let events: Vec<serde_json::Value> = lines
+            .into_iter()
             .filter(|event: &serde_json::Value| event["type"] == "PlayerKilled")
             .collect();
         assert_eq!(events.len(), 2);

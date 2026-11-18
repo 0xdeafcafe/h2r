@@ -99,11 +99,12 @@ export function createReplaySession(game: Accessor<GameState>, roster: Accessor<
       const t = new ReplayTimeline(frames, events?.length ? events : eventsFromState(game()));
       clock = new ReplayClock(t);
       setTimeline(t);
-      // Open on the final moment; play is the viewer's choice. Another
-      // window already showing this game answers the hello with where it is.
-      clock.seek(t.endTick, performance.now());
+      // Open on the final moment (before the closing cutscene, if the game
+      // ended in one); play is the viewer's choice. Another window already
+      // showing this game answers the hello with where it is.
+      clock.seek(t.openTick, performance.now());
       sought = performance.now();
-      setTick(t.endTick);
+      setTick(t.openTick);
       post({ kind: "hello", from: me });
     }, (e: Error) => { if (e.name !== "AbortError") setError(e.message); });
     onCleanup(() => { ac.abort(); channel?.close(); channel = null; });
@@ -135,6 +136,7 @@ export function createReplaySession(game: Accessor<GameState>, roster: Accessor<
       bsp: tl.sampleBsp(at),
       machines: tl.sampleMachines(at),
       objects: tl.sampleObjects(at),
+      cinematic: tl.cinematicAt(at),
       markers: tl.killsBetween(at - fade, at).filter((k) => k.at).map((k) => ({
         ...k.at!, alpha: 1 - (at - k.tick) / fade, colour: r.get(k.victim)?.colour ?? "#555",
       })),

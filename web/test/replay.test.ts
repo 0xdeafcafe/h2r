@@ -283,3 +283,83 @@ describe("killNear", () => {
     expect(new ReplayTimeline([frame(0, 0)], []).killNear(0)).toBeNull();
   });
 });
+
+describe("cutscenes (cinematic frames)", () => {
+  const cut = (tick: number): Frame => ({ game_id: "g", tick, players: [], bsp: 1, cinematic: true });
+
+  /** Play at 0..60, a cutscene at 90..150 (the scripts move the player from
+   *  x 6 to x 50 meanwhile), play again from 180. */
+  function withCutscene(end = 240) {
+    resetPos();
+    const frames = [frame(0, 0), frame(30, 3), frame(60, 6), cut(90), cut(120), cut(150), frame(180, 50), frame(210, 51)];
+    return new ReplayTimeline(frames, [ev("GameEnded", "game-g", { tick: end, reason: "finished" })]);
+  }
+
+  test("the timeline knows each cutscene and marks it on the scrubber", () => {
+    const t = withCutscene();
+    expect(t.cinematics).toEqual([{ from: 90, to: 180 }]);
+    expect(t.marks.filter((m) => m.kind === "cinematic")).toEqual([{ tick: 90, kind: "cinematic", to: 180 }]);
+    expect(t.cinematicSpanAt(89)).toBeNull();
+    expect(t.cinematicSpanAt(90)).toEqual({ from: 90, to: 180 });
+    expect(t.cinematicSpanAt(179)).toEqual({ from: 90, to: 180 });
+    expect(t.cinematicSpanAt(180)).toBeNull();
+    expect(t.cinematicAt(100)).toBe(true);
+    expect(t.cinematicAt(185)).toBe(false);
+    expect(t.openTick).toBe(t.endTick);
+  });
+
+  test("nothing stale or teleported is drawn into or out of one", () => {
+    const t = withCutscene();
+    for (let tick = 90; tick < 180; tick += 5) {
+      expect(t.sample(tick)).toEqual([]);
+      expect(t.sampleActors(tick)).toEqual([]);
+      expect(t.sampleVehicles(tick)).toEqual([]);
+    }
+    // Before it, players hold where they were rather than slide off
+    // towards the cutscene; after it, they are where the scripts left them.
+    expect(t.sample(80).find((p) => p.index === 0)!.x).toBe(6);
+    expect(t.sample(180).find((p) => p.index === 0)!.x).toBe(50);
+    expect(t.sample(195).find((p) => p.index === 0)!.x).toBeCloseTo(50.5);
+  });
+
+  test("playing skips it; seeking into one shows it", () => {
+    const t = withCutscene();
+    const c = new ReplayClock(t);
+    c.seek(60, 0);
+    c.play(0);
+    // One second in: tick 90, the cutscene's start, so on to its end.
+    expect(c.tickAt(1000)).toBe(180);
+    expect(c.playing).toBe(true);
+    expect(c.tickAt(2000)).toBeCloseTo(210);
+    c.pause(2000);
+    c.seek(120, 2000);
+    expect(c.tickAt(5000)).toBe(120);
+    expect(t.cinematicAt(c.tickAt(5000))).toBe(true);
+  });
+
+  test("a game that ends in one opens on the last play before it", () => {
+    resetPos();
+    const t = new ReplayTimeline([frame(0, 0), frame(30, 3), cut(60), cut(90)], [ev("GameEnded", "game-g", { tick: 100, reason: "finished" })]);
+    expect(t.cinematics).toEqual([{ from: 60, to: 100 }]);
+    expect(t.cinematicSpanAt(100)).toEqual({ from: 60, to: 100 });
+    expect(t.openTick).toBe(30);
+    const c = new ReplayClock(t);
+    c.seek(30, 0);
+    c.play(0);
+    expect(c.tickAt(1000)).toBe(100);
+    expect(c.playing).toBe(false);
+  });
+
+  test("the live buffer shows a cutscene and no one in it", () => {
+    const b = new FrameBuffer(48, 0);
+    b.push(frame(0, 1), 0);
+    b.push(frame(2, 1), 67);
+    b.push(cut(4), 133);
+    b.push(cut(6), 200);
+    expect(b.cinematic(200)).toBe(true);
+    expect(b.sample(200)).toEqual([]);
+    b.push(frame(8, 30), 267);
+    expect(b.cinematic(267)).toBe(false);
+    expect(b.sample(267).find((p) => p.index === 0)!.x).toBe(30);
+  });
+});

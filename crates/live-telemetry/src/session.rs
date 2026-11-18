@@ -77,6 +77,9 @@ struct Match {
     placements: Placements,
     /// Scratch for [`frame_objects`], kept to spare an allocation a frame.
     found: Vec<u32>,
+    /// The last sample was in a HaloScript cinematic: kills are not
+    /// counted until it ends.
+    cinematic: bool,
     /// Each player's unit while alive, and where it stood, by player index:
     /// a dead player is placed at their body (else where they fell).
     player_units: BTreeMap<u32, (u32, [f64; 3], f64)>,
@@ -372,6 +375,7 @@ impl Session {
             found: Vec::new(),
             player_units: BTreeMap::new(),
             player_bodies: std::collections::BTreeSet::new(),
+            cinematic: false,
         });
     }
 
@@ -502,6 +506,32 @@ impl Session {
             }
             let count = current.actor_shots.entry(*weapon).or_insert(0);
             *count = count.saturating_add(*n);
+        }
+
+        current.cinematic = snapshot.cinematic;
+        if snapshot.cinematic {
+            // A cutscene: the scripts move puppets about, teleport the
+            // players and kill whom they like. Nothing it does is play, so
+            // nothing is counted: no shots, no hits, and frames carry only
+            // the tick and the BSP, marked, for viewers to show a cutscene.
+            // The units' last frames are forgotten, so the first frame
+            // after it works out no speed or actions across the cut.
+            current.shots.clear();
+            current.actor_shots.clear();
+            current.hits.clear();
+            current.units.clear();
+            if snapshot.tick.is_multiple_of(2) {
+                current.sent_tick = current.sent_tick.max(clock);
+                self.output.push(Output::Frame(Frame {
+                    game_id: current.game_id.clone(),
+                    tick: clock,
+                    bsp: snapshot.bsp,
+                    cut: current.cut.take(),
+                    cinematic: true,
+                    ..Frame::default()
+                }));
+            }
+            return;
         }
 
         current.hits.extend(snapshot.hits.iter().cloned());
@@ -666,6 +696,7 @@ impl Session {
                 machines,
                 objects,
                 cut: current.cut.take(),
+                cinematic: false,
             }));
         }
     }
@@ -720,6 +751,8 @@ impl Session {
         self.current.as_ref().is_some_and(|m| m.campaign)
     }
 
+    /// A player was killed; `cinematic` when a cinematic was playing at
+    /// the time, which (like a kill after the end) is not counted.
     pub fn kill(
         &mut self,
         tick: u64,
@@ -727,6 +760,7 @@ impl Session {
         victim: u32,
         betrayal: bool,
         object: Option<ObjectState>,
+        cinematic: bool,
     ) {
         let kind = match attacker {
             None => "world",
@@ -737,7 +771,8 @@ impl Session {
         let Some(current) = &mut self.current else {
             return;
         };
-        if current.ended {
+        // Post-end kills, and the scripts' kills in a cutscene, do not count.
+        if current.ended || cinematic || current.cinematic {
             return;
         }
         let tick = current.clock(tick);
@@ -1375,6 +1410,7 @@ mod tests {
             bodies: Vec::new(),
             bsp: None,
             hits: Vec::new(),
+            cinematic: false,
         }
     }
 
@@ -1511,10 +1547,10 @@ mod tests {
             forward: [1.0, 0.0, 0.0],
             ..ObjectState::default()
         };
-        session.kill(9, Some(0), 1, false, Some(object.clone()));
-        session.kill(10, Some(0), 0, false, Some(object.clone()));
-        session.kill(11, Some(0), 1, true, Some(object.clone()));
-        session.kill(12, None, 1, false, Some(object));
+        session.kill(9, Some(0), 1, false, Some(object.clone()), false);
+        session.kill(10, Some(0), 0, false, Some(object.clone()), false);
+        session.kill(11, Some(0), 1, true, Some(object.clone()), false);
+        session.kill(12, None, 1, false, Some(object), false);
         let events = session.take_output();
         let expected = [
             ("kill", 9),
@@ -1539,7 +1575,7 @@ mod tests {
         session.start(&info(), vec![player(0, 0), player(1, 0)]);
         session.end(&snapshot(30, vec![player(0, 0), player(1, 0)]));
         session.take_output();
-        session.kill(31, Some(0), 1, false, None);
+        session.kill(31, Some(0), 1, false, None, false);
         assert!(session.take_output().is_empty());
     }
 
@@ -1787,6 +1823,110 @@ mod tests {
         }
     }
 
+    /// A cutscene sends marked frames with no one in them, on the game's
+    /// clock, and counts nothing the scripts do: no kills, hits or shots.
+    /// The first frame after it has the players back where the scripts left
+    /// them, with no speed or actions worked out across the cut.
+    #[test]
+    fn a_cinematic_sends_marked_empty_frames_and_counts_nothing() {
+        let mut session = Session::new("test", None);
+        let mut p = player(0, 0);
+        p.unit = 0x9001_0001;
+        let rifle = 0xe400_0001;
+        session.start(&campaign(), vec![p.clone()]);
+        session.take_output();
+        let at = |pos: [f64; 3]| ObjectState {
+            pos,
+            forward: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            weapon: Some(crate::event::Weapon {
+                datum: rifle,
+                definition: 0xe100_0002,
+            }),
+            ..ObjectState::default()
+        };
+        let state = |tick: u64, pos: [f64; 3], cinematic: bool| {
+            let mut s = snapshot(tick, vec![p.clone()]);
+            s.objects[0] = Some(at(pos));
+            s.actors = vec![actor(3, [9.0, 9.0, 0.0], 1)];
+            s.bsp = Some(1);
+            s.shots.insert(rifle, 2);
+            s.hits = vec![HitRecord {
+                code: 7,
+                effect: 0,
+                owner_player: 0,
+                owner_object: p.unit,
+                victim: 0x9000_0003,
+                pos: Some([9.0, 9.0, 0.0]),
+                body: 0.5,
+                shield: 0.0,
+                tick: Some(tick),
+            }];
+            s.cinematic = cinematic;
+            s
+        };
+        session.sample(&state(10, [0.0, 0.0, 0.0], false));
+        let before = frames(&mut session);
+        assert_eq!(before.len(), 1);
+        assert!(!before[0].cinematic);
+        assert_eq!(before[0].players.len(), 1);
+        assert_eq!(before[0].actors.len(), 1);
+        assert_eq!(before[0].hits.len(), 1);
+
+        // The cutscene: the scripts walk the player off and kill them.
+        for tick in 11..=14 {
+            session.sample(&state(tick, [tick as f64, 0.0, 0.0], true));
+        }
+        session.kill(14, None, 0, false, None, false);
+        session.kill(14, None, 0, false, None, true);
+        let output = session.take_output();
+        assert!(
+            output.iter().all(|o| matches!(o, Output::Frame(_))),
+            "no kills: {output:?}"
+        );
+        let during: Vec<Frame> = output
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::Frame(f) => Some(f),
+                Output::Event(_) => None,
+            })
+            .collect();
+        assert_eq!(
+            during.iter().map(|f| f.tick).collect::<Vec<_>>(),
+            [12, 14],
+            "frames keep the game's clock"
+        );
+        for f in &during {
+            assert!(f.cinematic);
+            assert_eq!(f.bsp, Some(1));
+            assert!(f.players.is_empty() && f.actors.is_empty() && f.vehicles.is_empty());
+            assert!(f.hits.is_empty() && f.machines.is_empty() && f.objects.is_empty());
+            assert_eq!(live_proto::game::validate_frame(f), Ok(()));
+        }
+
+        // After it: the player is back where the scripts left them, the
+        // shots and hits are this tick's only, and nothing moved "fast".
+        // 10 units in 0.2 s from the frame before the cutscene: a speed,
+        // were the cut not forgotten.
+        session.sample(&state(15, [10.0, 0.0, 0.0], false));
+        session.sample(&state(16, [10.0, 0.0, 0.0], false));
+        let after = frames(&mut session);
+        assert_eq!(after.len(), 1);
+        let f = &after[0];
+        assert!(!f.cinematic);
+        assert_eq!(f.tick, 16);
+        assert_eq!(f.players[0].pos, [10.0, 0.0, 0.0]);
+        assert_eq!(f.players[0].speed, None, "no speed across the cut");
+        assert_eq!(f.players[0].actions, None);
+        assert_eq!(f.players[0].shots, Some(4), "ticks 15 and 16 only");
+        assert_eq!(f.hits.len(), 2, "ticks 15 and 16 only");
+        assert_eq!(f.actors.len(), 1);
+
+        // A kill outside the cutscene counts again.
+        session.kill(17, None, 0, false, None, false);
+        assert_eq!(kinds(&mut session), ["PlayerKilled"]);
+    }
+
     #[test]
     fn campaign_reverts_continue_the_same_game() {
         let mut session = Session::new("test", None);
@@ -1849,7 +1989,7 @@ mod tests {
         }
         // The player dies and the game reverts to a checkpoint 20 seconds
         // back, then to the mission's start.
-        session.kill(661, None, 0, false, None);
+        session.kill(661, None, 0, false, None, false);
         let mut revert = campaign();
         revert.tick = 61;
         session.start(&revert, vec![p.clone()]);
@@ -1864,7 +2004,7 @@ mod tests {
             session.sample(&at(tick, -50.0));
             sent.extend(frames(&mut session));
         }
-        session.kill(31, None, 0, false, None);
+        session.kill(31, None, 0, false, None, false);
         session.end(&at(32, -50.0));
         events.extend(session.take_output());
 

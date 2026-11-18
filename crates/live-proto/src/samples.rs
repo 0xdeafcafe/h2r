@@ -247,6 +247,7 @@ pub fn multiplayer(frames: usize) -> Vec<Frame> {
                 machines: Vec::new(),
                 objects,
                 cut: None,
+                cinematic: false,
             }
         })
         .collect()
@@ -432,6 +433,7 @@ pub fn campaign(frames: usize) -> Vec<Frame> {
                 machines,
                 objects,
                 cut: None,
+                cinematic: false,
             }
         })
         .collect()

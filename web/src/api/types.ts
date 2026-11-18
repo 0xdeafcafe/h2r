@@ -168,6 +168,10 @@ export interface Frame {
   /** A revert or restart happened just before this frame: the run it
    *  starts, by the engine tick it came back to (version 3). */
   cut?: number | null;
+  /** A campaign cinematic is playing: the frame has no players, actors,
+   *  vehicles, hits, machines or objects to draw, only its tick and BSP
+   *  (packed version 5). */
+  cinematic?: boolean;
 }
 
 /** A scenario placement that moved (`p`, `f`, `u`) or is gone: map.glb's

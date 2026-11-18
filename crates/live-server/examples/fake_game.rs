@@ -353,6 +353,7 @@ fn main() {
                 .collect(),
             bsp: Some(0),
             cut: None,
+            cinematic: false,
             // A door opening and closing every eight seconds.
             machines: vec![live_proto::game::FrameMachine {
                 node: None,

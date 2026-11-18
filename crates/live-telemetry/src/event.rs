@@ -295,6 +295,9 @@ pub struct Snapshot {
     pub bsp: Option<u32>,
     /// Damage reports since the previous snapshot.
     pub hits: Vec<HitRecord>,
+    /// A HaloScript cinematic is playing (`memory::cinematic`): frames
+    /// carry no entities, and kills, hits and shots are not counted.
+    pub cinematic: bool,
 }
 
 impl Snapshot {
