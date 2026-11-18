@@ -131,9 +131,10 @@ pub struct BitmapLayer {
     pub value: f32,
 }
 
-/// A gradient element (root blocks `+0x48`, `+0x50`): a colour, a fraction
-/// and two more scalars (distances on retail: 0, 200, 700 seen). Their
-/// meaning has not been established.
+/// A fog element (root blocks `+0x48`, `+0x50`; `fog_a` and `fog_b` in
+/// `crates/tags/src/defs/sky_.txt`): a colour, the density and the start
+/// and opaque distances (0, 200, 700 seen on retail). E `0x00131030`
+/// blends element 0 of each into the view (docs/formats/h1-sky.md).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Gradient {
     /// The colour.

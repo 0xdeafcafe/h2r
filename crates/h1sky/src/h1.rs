@@ -30,6 +30,25 @@ pub const AMBIENT_FIRST_RGB: usize = 0;
 pub const AMBIENT_FIRST_FRACTION: usize = 3;
 /// Index of the second colour's red.
 pub const AMBIENT_SECOND_RGB: usize = 4;
+/// Indices of the two fog runs' first word (colour, two zero words,
+/// density, start, opaque distance: indices 4 to 11 and 12 to 19). V: the
+/// density is a fraction, the start the smaller and the opaque distance
+/// the larger distance on every sky, the shape of Halo 2's sky fog
+/// (`crates/tags/src/defs/sky_.txt`, `fog_a`).
+pub const FOG_RUNS: [usize; 2] = [4, 12];
+
+/// One fog run of the lighting scalars.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Fog {
+    /// The colour.
+    pub color: [f32; 3],
+    /// The density, 0 to 1.
+    pub max_density: f32,
+    /// Where it starts.
+    pub start_distance: f32,
+    /// Where it is opaque.
+    pub opaque_distance: f32,
+}
 
 /// Root field offsets.
 pub mod layout {
@@ -203,6 +222,21 @@ impl Sky {
     /// The colour at [AMBIENT_SECOND_RGB]: zero on some skies.
     pub fn ambient_second_rgb(&self) -> [f32; 3] {
         array::from_fn(|i| self.lighting_scalars[AMBIENT_SECOND_RGB + i])
+    }
+
+    /// The fog runs at [FOG_RUNS], in order; `None` for a run whose
+    /// density is 0.
+    pub fn fogs(&self) -> [Option<Fog>; 2] {
+        FOG_RUNS.map(|k| {
+            let s = &self.lighting_scalars;
+            let f = Fog {
+                color: [s[k], s[k + 1], s[k + 2]],
+                max_density: s[k + 5],
+                start_distance: s[k + 6],
+                opaque_distance: s[k + 7],
+            };
+            (f.max_density > 0.0).then_some(f)
+        })
     }
 
     /// Reads the `sky ` tag `tag` of `map`.

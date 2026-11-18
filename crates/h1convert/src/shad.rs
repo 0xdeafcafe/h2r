@@ -84,10 +84,18 @@ pub enum Fixed {
     DefaultCube,
     /// The ramp the opaque stems' fade passes draw.
     CornerFade,
+    /// The rasterizer's plain 2D texture (`water_pool`'s bitmap 2, which
+    /// its pass doesn't bind).
+    Default2d,
+    /// The water's facing-to-grazing ramp (`water_pool`'s stage 3; its
+    /// alpha weighs the reflection against the refracted scene).
+    Fresnel,
+    /// White with alpha 0 (`water_pool`'s bitmap 4, unbound).
+    ColorWhiteAlphaBlack,
 }
 
 impl Fixed {
-    pub const ALL: [Fixed; 7] = [
+    pub const ALL: [Fixed; 10] = [
         Fixed::DefaultVector,
         Fixed::DefaultDetail,
         Fixed::ColorWhite,
@@ -95,9 +103,15 @@ impl Fixed {
         Fixed::DefaultMultiplicative,
         Fixed::DefaultCube,
         Fixed::CornerFade,
+        Fixed::Default2d,
+        Fixed::Fresnel,
+        Fixed::ColorWhiteAlphaBlack,
     ];
 
-    /// The bitmap's tag path on every Halo 2 map (V: all 30 disc maps).
+    /// The bitmap's tag path: on every Halo 2 map (V: all 30 disc maps),
+    /// except the water's three, which are on the maps with a
+    /// `water_pool` (Delta Approach, Beaver Creek and Coagulation among
+    /// them; [`Library::has`] falls back where they're missing).
     pub fn path(self) -> &'static str {
         match self {
             Fixed::DefaultVector => "shaders\\default_bitmaps\\bitmaps\\default_vector",
@@ -109,6 +123,11 @@ impl Fixed {
             }
             Fixed::DefaultCube => "shaders\\default_bitmaps\\bitmaps\\default_additive_cube_map",
             Fixed::CornerFade => "rasterizer\\linear_corner_fade",
+            Fixed::Default2d => "rasterizer\\default_2d",
+            Fixed::Fresnel => "scenarios\\bitmaps\\water\\fresnel",
+            Fixed::ColorWhiteAlphaBlack => {
+                "shaders\\default_bitmaps\\bitmaps\\color_white_alpha_black"
+            }
         }
     }
 }
@@ -200,6 +219,26 @@ pub const CLOUDS_TREE: AnimTree = AnimTree {
     animated_layer: 15,
     implementation: [(2, 1), (2, 0), (2, 0), (0, 0), (0, 2)],
     bindings: &[[212, 5, 0, 0], [245, 5, 0, 0], [1, 0, 0, 0]],
+};
+
+/// `water_pool`'s animated tree. V (all 14 retail instances,
+/// `tests/shad_rebuild.rs`, `water_pool_instances_share_one_tree`): layer
+/// 15 of 25 animated, like the clouds; one vertex binding (target 178,
+/// parameter 1: `c[20]` whole, the ripple map's transform) and one bitmap
+/// binding (target 0, the ripple map's frame), both reading the ten
+/// components [`TextureScroll`] writes. Retail: component 0 the frame, an
+/// identity over 0..17 every 0.5 to 0.75 s (`water_mip` has 17 frames); 1
+/// and 2 the ripple's u and v scale (vector 0's x and y; periodic around
+/// them on two); 3 one; 4 and 5 its offsets (vector 0's z and w); 6 to 9
+/// zero. E `0x00017960` (vertex-constant animations): the binding word
+/// `0x01b2` is register 2 of bank 1 (`c[20]`), copy mode 13 (xyzw), and
+/// `0x0001b790` writes it as (u scale, v scale, u offset, v offset) when
+/// the transform's rotation is 0.
+pub const WATER_TREE: AnimTree = AnimTree {
+    layers: 25,
+    animated_layer: 15,
+    implementation: [(1, 1), (1, 0), (1, 0), (0, 0), (0, 1)],
+    bindings: &[[178, 1, 0, 0], [0, 0, 0, 0]],
 };
 
 /// A texture transform's scroll on one axis: the offset runs linearly
@@ -444,15 +483,17 @@ pub const ONE_ADD_ILLUM: Layout = Layout {
     animation: None,
 };
 
-/// Alpha blended: stage 0 a reflection cube (black: none), stage 1 a
-/// multiplier (neutral), stages 2 and 3 the picture (bitmap 2) and the
-/// additive default (bitmap 4); the picture's rows vectors 4 and 5.
+/// Alpha blended: stage 0 a reflection cube (black: none; a Halo 1 cube
+/// map when the shader's map is one), stage 1 a multiplier (neutral),
+/// stages 2 and 3 the picture (bitmap 2) and the additive default (bitmap
+/// 4); the picture's rows vectors 4 and 5. V: bitmap 0 is a cube on every
+/// retail instance, 1 to 4 2D (`every_rebuilt_bitmap_is_its_slots_retail_kind`).
 pub const ONE_ALPHA_ENV: Layout = Layout {
     stem: "shaders\\shader_templates\\transparent\\one_alpha_env",
     word_14: 5,
     ints: [0, 0],
     bitmaps: &[
-        Bm::Fixed(Fixed::DefaultCube),
+        Bm::Role(Role::Cube, Fixed::DefaultCube),
         Bm::Fixed(Fixed::DefaultMultiplicative),
         Bm::Role(Role::Base, Fixed::DefaultAdditive),
         Bm::Fixed(Fixed::ColorWhite),
@@ -548,8 +589,34 @@ pub const SKY_ADDITIVE: Layout = Layout {
     animation: None,
 };
 
+/// Water (`swat`): stage 0 the ripple map (bitmap 0) at `c[20]`'s
+/// transform (vector 0: its u and v scale), stages 1 and 2 the reflection
+/// (bitmap 1) and the scene behind the water, each offset by the ripple
+/// (bump environment), stage 3 the fresnel ramp, whose alpha weighs the
+/// reflection against the scene (`h2 shader` on Coagulation's
+/// `coag_water_pool`). Bitmaps 2 and 4 aren't bound by the pass; they
+/// hold retail's commonest. V (all 14 retail instances): integer inputs
+/// (1, 0) on 12, bitmap 1 a cube on 5 and 2D on 9, no colours, one
+/// vector.
+pub const WATER_POOL: Layout = Layout {
+    stem: "shaders\\shader_templates\\water\\water_pool",
+    word_14: 5,
+    ints: [1, 0],
+    bitmaps: &[
+        Bm::Role(Role::Bump, Fixed::DefaultVector),
+        Bm::Role(Role::Cube, Fixed::DefaultCube),
+        Bm::Fixed(Fixed::Default2d),
+        Bm::Fixed(Fixed::Fresnel),
+        Bm::Fixed(Fixed::ColorWhiteAlphaBlack),
+    ],
+    colors: &[],
+    vectors: &[Vector::Tile(Role::Bump)],
+    root: Root::None,
+    animation: Some(&WATER_TREE),
+};
+
 /// Every layout.
-pub const LAYOUTS: [&Layout; 10] = [
+pub const LAYOUTS: [&Layout; 11] = [
     &TEX_BUMP,
     &TEX_BUMP_ENV,
     &TEX_BUMP_DETAIL_BLEND_DETAIL,
@@ -560,6 +627,7 @@ pub const LAYOUTS: [&Layout; 10] = [
     &SKY_PICTURE,
     &SKY_CLOUDS,
     &SKY_ADDITIVE,
+    &WATER_POOL,
 ];
 
 /// A bitmap's `lod_offset` (postprocess bitmap `+8`) from its first
@@ -744,7 +812,7 @@ impl Library {
         let scroll = match (layout.animation, extras.scroll) {
             (Some(_), Some(offset)) if offset.iter().any(Option::is_some) => {
                 let r = layout.bitmaps.iter().find_map(|b| match b {
-                    Bm::Role(r, _) if *r != Role::Mask => Some(*r),
+                    Bm::Role(r, _) if *r != Role::Mask && *r != Role::Cube => Some(*r),
                     _ => None,
                 });
                 Some(TextureScroll {
@@ -1078,6 +1146,38 @@ impl H1Shader {
         self.fallback.as_deref().and_then(|f| f.choose(library))
     }
 
+    /// Puts each map where its texture kind goes, in this and every
+    /// fallback: a cube map in the layout's cube slot (a Halo 1 glass or
+    /// water whose one map is a reflection cube), and any map whose kind
+    /// its slot doesn't sample (a cube or volume in a 2D slot) dropped,
+    /// so the slot keeps its default. The stems sample each slot as one
+    /// kind; a cube where a 2D texture is sampled stops the draw.
+    pub fn fit_kinds(&mut self, h1: &h1map::H1Map) {
+        use h1map::bitmap::ImageKind;
+        let has_cube = self
+            .layout
+            .bitmaps
+            .iter()
+            .any(|b| matches!(b, Bm::Role(Role::Cube, _)));
+        let mut out: Vec<(Role, H1Bound)> = Vec::new();
+        for (role, m) in std::mem::take(&mut self.maps) {
+            let role = match (role, h1_texture_kind(h1, m.bitmap)) {
+                (Role::Cube, Some(ImageKind::Cube)) => Role::Cube,
+                (Role::Cube, _) => continue,
+                (r, Some(ImageKind::D2)) => r,
+                (Role::Base, Some(ImageKind::Cube)) if has_cube => Role::Cube,
+                _ => continue,
+            };
+            if !out.iter().any(|(r, _)| *r == role) {
+                out.push((role, m));
+            }
+        }
+        self.maps = out;
+        if let Some(f) = self.fallback.as_mut() {
+            f.fit_kinds(h1);
+        }
+    }
+
     /// This and its fallbacks, first choice first.
     pub fn chain(&self) -> Vec<&H1Shader> {
         let mut out = vec![self];
@@ -1108,7 +1208,8 @@ pub const SENV_MICRO: usize = 0xfc;
 pub const SPLA_MAP: usize = 0xd4;
 
 /// Reads the Halo 1 shader `tag` (any of [`H1_GROUPS`]). `None` for
-/// another group or one with no map this reads.
+/// another group or one with no map this reads. Each map goes where its
+/// texture kind is sampled ([`H1Shader::fit_kinds`]).
 ///
 /// - `senv` not alpha-tested, with a detail map:
 ///   [`TEX_BUMP_DETAIL_BLEND_DETAIL`] (`senv_blend`), falling back to the
@@ -1118,13 +1219,33 @@ pub const SPLA_MAP: usize = 0xd4;
 ///   ([`crate::textures::h1_maps_of`], [`crate::textures::h1_scales_of`]);
 ///   a bump map is kept only when it is palettized bump (format 17).
 /// - `soso`: [`TEX_BUMP`] with its base and detail maps.
-/// - `swat`, `sgla`: [`ONE_ALPHA_ENV`] with the base map.
+/// - `swat` with a ripple map: [`WATER_POOL`] (`swat_water`), falling
+///   back to [`ONE_ALPHA_ENV`] with the base map, as without one.
+/// - `sgla`: [`ONE_ALPHA_ENV`] with the base map.
 /// - `smet`: [`ILLUM`] with its map.
 /// - `spla`: [`ONE_ADD_ILLUM`] with its map.
 /// - `schi`, `scex`, `sotr`: their least tiled map
 ///   ([`crate::sky_shaders::recipe`]), [`ONE_ADD_ILLUM`] when the
 ///   framebuffer blend is additive, else [`ONE_ALPHA_ENV`].
 pub fn read_h1(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<H1Shader> {
+    let mut s = read_h1_maps(h1, tag)?;
+    s.fit_kinds(h1);
+    if s.maps.is_empty() { None } else { Some(s) }
+}
+
+/// The texture kind of the Halo 1 bitmap `id` (its first image); Halo 1's
+/// "white" placeholder is 2D.
+pub fn h1_texture_kind(h1: &h1map::H1Map, id: h1map::TagId) -> Option<h1map::bitmap::ImageKind> {
+    use h1map::bitmap::ImageKind;
+    let t = h1.tag(id).ok()?;
+    let b = h1map::bitmap::Bitmap::read(h1, t).ok()?;
+    Some(match b.images.first()?.kind {
+        ImageKind::White => ImageKind::D2,
+        k => k,
+    })
+}
+
+fn read_h1_maps(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<H1Shader> {
     let group = tag.group.to_string();
     let one = |layout: &'static Layout, id: Option<h1map::TagId>| {
         Some(H1Shader {
@@ -1220,7 +1341,21 @@ pub fn read_h1(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<H1Shader> {
             }
             Some(out)
         }
-        "swat" | "sgla" => one(&ONE_ALPHA_ENV, crate::textures::h1_maps_of(h1, tag)?.base),
+        "swat" => {
+            let plain = one(&ONE_ALPHA_ENV, crate::textures::h1_maps_of(h1, tag)?.base);
+            let Some((maps, extras)) = swat_water(h1.tag_data(tag).ok()?) else {
+                return plain;
+            };
+            Some(H1Shader {
+                name: tag.name.clone(),
+                group,
+                layout: &WATER_POOL,
+                maps,
+                extras,
+                fallback: plain.map(Box::new),
+            })
+        }
+        "sgla" => one(&ONE_ALPHA_ENV, crate::textures::h1_maps_of(h1, tag)?.base),
         "smet" => one(&ILLUM, crate::textures::h1_maps_of(h1, tag)?.base),
         "spla" => {
             let d = h1.tag_data(tag).ok()?;
@@ -1256,6 +1391,71 @@ pub fn read_h1(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<H1Shader> {
         }
         _ => None,
     }
+}
+
+/// `swat`'s reflection map (D: a cube on each of the eight distinct
+/// `swat` of the disc).
+pub const SWAT_REFLECTION: usize = 0x9c;
+/// `swat`'s ripple animation: f32 angle (radians), f32 velocity, f32
+/// scale, then the ripple map. D (the eight `swat`): angles 0 to 3π/2,
+/// velocities 0 to 0.05, scales 4 to 220; the map a single-image 2D
+/// bump (P8 bump, or X8R8G8B8 on `c10`'s two); the four ripples of the
+/// block at `+0x124` (stride 0x4c) each scroll it again at their own
+/// angle and velocity, which `water_pool`'s one ripple sample can't.
+pub const SWAT_RIPPLE_ANGLE: usize = 0xbc;
+/// See [`SWAT_RIPPLE_ANGLE`].
+pub const SWAT_RIPPLE_VELOCITY: usize = 0xc0;
+/// See [`SWAT_RIPPLE_ANGLE`].
+pub const SWAT_RIPPLE_SCALE: usize = 0xc4;
+/// See [`SWAT_RIPPLE_ANGLE`].
+pub const SWAT_RIPPLE_MAP: usize = 0xc8;
+
+/// A `swat`'s ([`SWAT_RIPPLE_ANGLE`]; `d`, its data) maps for
+/// [`WATER_POOL`]: the ripple map as the bump, tiled by the ripple scale
+/// over the surface's texture coordinates, and the reflection as the
+/// cube; the ripple scrolls at the ripple velocity along the ripple
+/// angle (u by its cosine, v by its sine), one ripple tile per
+/// `1 / speed` seconds. `None` without a ripple map.
+fn swat_water(d: &[u8]) -> Option<(Vec<(Role, H1Bound)>, Extras)> {
+    let bitmap = |o: usize| {
+        let r = h1map::TagRef::read(d, o)?;
+        (r.group == h1map::Group::new(b"bitm") && !r.id.is_none()).then_some(r.id)
+    };
+    let f32_at = |o: usize| Some(f32::from_le_bytes(d.get(o..o + 4)?.try_into().ok()?));
+    let scale = f32_at(SWAT_RIPPLE_SCALE)
+        .filter(|s| s.is_finite() && *s > 0.0)
+        .unwrap_or(1.0);
+    let mut maps = vec![(
+        Role::Bump,
+        H1Bound {
+            bitmap: bitmap(SWAT_RIPPLE_MAP)?,
+            scale: [scale; 2],
+        },
+    )];
+    if let Some(c) = bitmap(SWAT_REFLECTION) {
+        maps.push((
+            Role::Cube,
+            H1Bound {
+                bitmap: c,
+                scale: [1.0, 1.0],
+            },
+        ));
+    }
+    let angle = f32_at(SWAT_RIPPLE_ANGLE).unwrap_or(0.0);
+    let velocity = f32_at(SWAT_RIPPLE_VELOCITY).unwrap_or(0.0);
+    let slide = |speed: f32| {
+        (speed.is_finite() && speed.abs() > 1e-6).then(|| Slide {
+            period: 1.0 / speed.abs(),
+            from: 0.0,
+            to: speed.signum(),
+        })
+    };
+    let scroll = [slide(velocity * angle.cos()), slide(velocity * angle.sin())];
+    let extras = Extras {
+        colors: Vec::new(),
+        scroll: scroll.iter().any(Option::is_some).then_some(scroll),
+    };
+    Some((maps, extras))
 }
 
 /// The maps of an `senv` (`d`, its data) for
@@ -1395,6 +1595,76 @@ mod tests {
             })
             .collect();
         Library::new(&stems, &fixed)
+    }
+
+    #[test]
+    fn a_swat_draws_on_water_pool_its_ripple_scrolling_along_the_ripple_angle() {
+        let mut d = vec![0u8; 0x140];
+        let put_ref = |d: &mut [u8], at: usize, id: u32| {
+            d[at..at + 4].copy_from_slice(&h1map::Group::new(b"bitm").0.to_le_bytes());
+            d[at + 12..at + 16].copy_from_slice(&id.to_le_bytes());
+        };
+        let put = |d: &mut [u8], at: usize, v: f32| d[at..at + 4].copy_from_slice(&v.to_le_bytes());
+        put_ref(&mut d, SWAT_REFLECTION, 0xe400_0001);
+        put_ref(&mut d, SWAT_RIPPLE_MAP, 0xe400_0002);
+        // 3π/2 (as on four of the disc's): straight down v, backwards.
+        put(&mut d, SWAT_RIPPLE_ANGLE, 3.0 * std::f32::consts::FRAC_PI_2);
+        put(&mut d, SWAT_RIPPLE_VELOCITY, 0.05);
+        put(&mut d, SWAT_RIPPLE_SCALE, 4.0);
+        let (maps, extras) = swat_water(&d).unwrap();
+        let bound = |id: u32, s: f32| H1Bound {
+            bitmap: h1map::TagId(id),
+            scale: [s, s],
+        };
+        assert_eq!(
+            maps,
+            vec![(Role::Bump, bound(0xe400_0002, 4.0)), (Role::Cube, bound(0xe400_0001, 1.0))]
+        );
+        let [u, v] = extras.scroll.unwrap();
+        assert_eq!(u, None, "cos(3π/2) is no u motion");
+        let v = v.unwrap();
+        assert!((v.period - 20.0).abs() < 1e-3, "one tile per 1 / 0.05 s");
+        assert_eq!((v.from, v.to), (0.0, -1.0));
+
+        // On the stem: the ripple's tiling in vector 0, the tree animating
+        // c[20] and the ripple's frame from the scroll's ten components.
+        let lib = library();
+        let b = |id: u32, s: f32| Bound {
+            id: TagId(id),
+            scale: [s, s],
+            lod_offset: 1.0,
+        };
+        let on: HashMap<Role, Bound> =
+            [(Role::Bump, b(0xe300_0001, 4.0)), (Role::Cube, b(0xe300_0002, 1.0))].into_iter().collect();
+        let rec = lib.record_with(&WATER_POOL, &on, &extras).unwrap();
+        assert_eq!(
+            rec.at("postprocess[0].vectors[0].vector"),
+            Some(&Val::floats(&[4.0, 4.0, 0.0, 0.0]))
+        );
+        assert_eq!(
+            rec.at("postprocess[0].bitmaps[0].bitmap"),
+            Some(&Val::Datum(Target::Id(TagId(0xe300_0001))))
+        );
+        assert_eq!(
+            rec.at("postprocess[0].bitmaps[1].bitmap"),
+            Some(&Val::Datum(Target::Id(TagId(0xe300_0002))))
+        );
+        assert_eq!(
+            rec.at("postprocess[0].lods[0].layer_mask"),
+            Some(&Val::Int(1 << 15))
+        );
+        let n = |p: &str| match rec.at(p) {
+            Some(Val::Block(b)) => b.len(),
+            _ => usize::MAX,
+        };
+        assert_eq!(n("postprocess[0].animations"), 2);
+        assert_eq!(n("postprocess[0].property_refs"), 10);
+
+        // Still water has no tree; no ripple map, no water.
+        put(&mut d, SWAT_RIPPLE_VELOCITY, 0.0);
+        assert_eq!(swat_water(&d).unwrap().1.scroll, None);
+        d[SWAT_RIPPLE_MAP + 12..SWAT_RIPPLE_MAP + 16].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(swat_water(&d).is_none());
     }
 
     #[test]
