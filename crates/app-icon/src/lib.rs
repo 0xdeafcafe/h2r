@@ -2,15 +2,10 @@
 //!
 //! `h2 play` and `h2-editor` run as bare executables, so macOS has no
 //! `.icns` to show; [`set_dock_icon`] gives the running app the plated Mac
-//! icon instead. [`status_template`] is the menu bar glyph `h2 live
-//! menubar` draws its state onto.
+//! icon instead.
 
 /// The Mac icon, plate drawn in: art/app-icon's macos/AppIcon-512.png.
 pub const DOCK_PNG: &[u8] = include_bytes!("../assets/AppIcon-512.png");
-
-/// The menu bar template glyph at 2x (36 px for an 18 pt item): black
-/// with alpha, art/app-icon's menubar/StatusIconTemplate@2x.png.
-pub const STATUS_TEMPLATE_PNG: &[u8] = include_bytes!("../assets/StatusIconTemplate@2x.png");
 
 /// Straight RGBA8, row by row.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,11 +36,6 @@ pub fn decode(bytes: &[u8]) -> Result<Rgba, String> {
         height: info.height,
         pixels,
     })
-}
-
-/// The menu bar glyph, decoded.
-pub fn status_template() -> Rgba {
-    decode(STATUS_TEMPLATE_PNG).expect("the embedded status glyph decodes")
 }
 
 /// Sets the Dock (and app switcher) icon of this process to [`DOCK_PNG`].
@@ -88,18 +78,5 @@ mod tests {
         assert_eq!(i.pixels[i.pixels.len() - 1], 0, "bottom-right corner");
         let centre = ((256 * 512 + 256) * 4 + 3) as usize;
         assert_eq!(i.pixels[centre], 255, "an opaque plate");
-    }
-
-    #[test]
-    fn the_status_glyph_is_an_18pt_template_at_2x() {
-        let g = status_template();
-        assert_eq!((g.width, g.height), (36, 36));
-        assert_eq!(g.pixels.len(), 36 * 36 * 4);
-        assert!(
-            g.pixels.chunks(4).all(|p| p[..3] == [0, 0, 0]),
-            "template: black only"
-        );
-        let ink = g.pixels.chunks(4).filter(|p| p[3] > 127).count();
-        assert!((100..36 * 36 / 2).contains(&ink), "{ink} inked pixels");
     }
 }
