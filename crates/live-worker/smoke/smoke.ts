@@ -29,7 +29,12 @@
 //      Object's SQLite row holds, published and read back;
 //  11. with --busy N: a busy stream. N sockets follow the log while 60
 //      events are appended; how long each append takes, and how long until
-//      every socket has the event.
+//      every socket has the event;
+//  12. the co-op relay (its own Durable Object per session): two members of
+//      a co-op session open it and hear of each other, a stranger is
+//      refused; the round trip of a datagram, and datagrams a second at
+//      co-op's rate (30 a second each way, for longer than a ticket lasts,
+//      so it is renewed) and near the relay's limit.
 // It prints one JSON object and exits non-zero if a step fails.
 //
 // --seed N: then grows the log by 2N events (friend requests, declined),
@@ -465,6 +470,131 @@ if (busy > 0) {
     wall_ms: +(performance.now() - t11).toFixed(0),
   };
   for (const r of readers) r.ws.close();
+}
+
+// 12. The co-op relay.
+{
+  const t12 = performance.now();
+  const pause = () => Bun.sleep(110);
+  for (const u of [a!, b!]) {
+    await postEvent(api, aud, u, { stream: `presence-${u.xuid}`, type: "SignedIn", data: { xuid: u.xuid, state: "online" } });
+  }
+  const made = await timed(api + "/sessions", {
+    method: "POST",
+    headers: { authorization: `Bearer ${await issueToken(a!, aud, "sessions.write")}`, "content-type": "application/json" },
+    body: JSON.stringify({
+      addr: "127.0.0.1", port: 31000, host_address: Array(36).fill(0),
+      slots: { public_filled: 1, public_open: 1, private_filled: 0, private_open: 0 },
+      attributes: {}, flags: "coop",
+    }),
+  });
+  if (made.r.status !== 201) fail("relay-session", `${made.r.status} ${made.body}`);
+  const sessionId: string = JSON.parse(made.body).session_id;
+  await pause();
+  const invite = await postEvent(api, aud, a!, {
+    stream: `mailbox-${b!.xuid}`, type: "GameInviteSent", data: { from: a!.xuid, session_id: sessionId },
+  });
+  await pause();
+  await postEvent(api, aud, b!, {
+    stream: `mailbox-${b!.xuid}`, type: "GameInviteAnswered",
+    data: { by: b!.xuid, session_id: sessionId, invite_id: invite, answer: "accept" },
+  });
+
+  type Relay = { ws: WebSocket; text: any[]; got: number; closed: { code: number; reason: string } | null; onBinary?: (d: ArrayBuffer) => void };
+  const relay = async (who: typeof a) => {
+    const ws = new WebSocket(`${base.replace(/^http/, "ws")}/v1/sessions/${sessionId}/relay`);
+    ws.binaryType = "arraybuffer";
+    const r: Relay = { ws, text: [], got: 0, closed: null };
+    ws.onmessage = (m) => {
+      if (typeof m.data === "string") r.text.push(JSON.parse(m.data));
+      else {
+        r.got++;
+        r.onBinary?.(m.data as ArrayBuffer);
+      }
+    };
+    ws.onclose = (c) => (r.closed = { code: c.code, reason: c.reason });
+    await new Promise<void>((ok, no) => {
+      ws.onopen = () => ok();
+      ws.onerror = (e) => no(e);
+    });
+    ws.send(JSON.stringify({ kind: "auth", token: await issueToken(who!, aud, "sessions.relay") }));
+    return r;
+  };
+  const waitFor = async (what: () => boolean, ms: number, why: string) => {
+    const end = Date.now() + ms;
+    while (!what()) {
+      if (Date.now() > end) throw new Error(why);
+      await Bun.sleep(5);
+    }
+  };
+  let host: Relay, guest: Relay;
+  try {
+    host = await relay(a);
+    guest = await relay(b);
+    const present = (r: Relay) => r.text.some((m) => m.kind === "peer" && m.present);
+    await waitFor(() => present(host) && present(guest), 5000, `no peer notice: ${JSON.stringify([host.text, guest.text, host.closed, guest.closed])}`);
+  } catch (e) {
+    fail("relay-join", e);
+  }
+  const joinMs = +(performance.now() - t12).toFixed(1);
+  const stranger = await relay(await createAccount(api, base, aud, tag()));
+  try {
+    await waitFor(() => stranger.closed !== null, 5000, "the stranger was not closed");
+    if (stranger.closed!.code !== 4403) throw new Error(`closed with ${JSON.stringify(stranger.closed)}`);
+  } catch (e) {
+    fail("relay-stranger", e);
+  }
+
+  // Round trips: the guest sends each datagram straight back.
+  guest!.onBinary = (d) => guest!.ws.send(d);
+  const rtts: number[] = [];
+  try {
+    for (let i = 0; i < 300; i++) {
+      const before = host!.got;
+      const t = performance.now();
+      host!.ws.send(new Uint8Array(64));
+      await waitFor(() => host!.got > before, 2000, `round trip ${i} lost`);
+      rtts.push(performance.now() - t);
+    }
+  } catch (e) {
+    fail("relay-rtt", e);
+  }
+  guest!.onBinary = undefined;
+
+  // Datagrams both ways at `rate` a second each for `seconds`.
+  const flood = async (rate: number, seconds: number) => {
+    const [h0, g0] = [host!.got, guest!.got];
+    const each = Math.round(rate * seconds);
+    const t = performance.now();
+    for (let i = 0; i < each; i++) {
+      host!.ws.send(new Uint8Array(400));
+      guest!.ws.send(new Uint8Array(400));
+      const due = t + ((i + 1) * 1000) / rate;
+      const wait = due - performance.now();
+      if (wait > 1) await Bun.sleep(wait);
+    }
+    await Bun.sleep(500);
+    const received = host!.got - h0 + (guest!.got - g0);
+    if (host!.closed || guest!.closed) throw new Error(`closed: ${JSON.stringify([host!.closed, guest!.closed])}`);
+    return { each_way_per_s: rate, seconds, sent: 2 * each, received, per_s: +(received / ((performance.now() - t) / 1000)).toFixed(0) };
+  };
+  let coop, near;
+  try {
+    // Longer than a ticket lasts (15 s): it is renewed under way.
+    coop = await flood(30, 17);
+    near = await flood(200, 5);
+  } catch (e) {
+    fail("relay-flood", e);
+  }
+  const p = (xs: number[], q: number) => +[...xs].sort((x, y) => x - y)[Math.floor(q * (xs.length - 1))].toFixed(2);
+  out.relay = {
+    join_ms: joinMs,
+    rtt_ms: { p50: p(rtts, 0.5), p99: p(rtts, 0.99), max: p(rtts, 1) },
+    coop_rate: coop,
+    near_limit: near,
+  };
+  host!.ws.close();
+  guest!.ws.close();
 }
 
 if (seed > 0) {

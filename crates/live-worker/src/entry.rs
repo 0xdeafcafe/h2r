@@ -24,7 +24,7 @@ use worker::{
     WebSocket, WebSocketIncomingMessage, WebSocketPair, durable_object, event,
 };
 
-use crate::bindings::{BLOBS, HUB, HUB_NAME};
+use crate::bindings::{BLOBS, HUB, HUB_NAME, RELAY};
 use crate::dosql::DoSql;
 use crate::ingest::{Ingests, Message};
 use crate::r2::R2;
@@ -39,11 +39,19 @@ async fn fetch(
     env: Env,
     _ctx: Context,
 ) -> Result<http::Response<axum::body::Body>> {
-    let hub = env
-        .durable_object(HUB)?
-        .id_from_name(HUB_NAME)?
-        .get_stub()?;
-    let resp = hub.fetch_with_request(Request::try_from(req)?).await?;
+    // A co-op session's relay is its own object; everything else, the hub.
+    let path = req.uri().path().to_string();
+    let stub = match crate::relay::session_of(&path) {
+        Some(session) => env
+            .durable_object(RELAY)?
+            .id_from_name(session)?
+            .get_stub()?,
+        None => env
+            .durable_object(HUB)?
+            .id_from_name(HUB_NAME)?
+            .get_stub()?,
+    };
+    let resp = stub.fetch_with_request(Request::try_from(req)?).await?;
     let resp: worker::HttpResponse = resp.try_into()?;
     Ok(resp.map(axum::body::Body::new))
 }

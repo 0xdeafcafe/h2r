@@ -21,6 +21,9 @@ mod entry;
 mod ingest;
 #[cfg(target_arch = "wasm32")]
 mod r2;
+#[cfg(target_arch = "wasm32")]
+mod relay;
+pub mod relayroom;
 pub mod sockets;
 
 /// The Worker's bindings (wrangler.toml). Its variables and secrets are in
@@ -33,6 +36,10 @@ pub mod bindings {
     pub const HUB_CLASS: &str = "LiveHub";
     /// The one hub's name: one log, one owner.
     pub const HUB_NAME: &str = "live";
+    /// The Durable Object namespace of [`RELAY_CLASS`]: one object per
+    /// co-op session, named by the session id.
+    pub const RELAY: &str = "COOP_RELAY";
+    pub const RELAY_CLASS: &str = "CoopRelay";
 }
 
 /// The response header that reports a hub's cold start on the request

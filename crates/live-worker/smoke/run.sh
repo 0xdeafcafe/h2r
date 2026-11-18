@@ -48,11 +48,19 @@ binding = "BLOBS"
 bucket_name = "h2-live-dev"
 
 [durable_objects]
-bindings = [{ name = "LIVE_HUB", class_name = "LiveHub" }]
+bindings = [
+    { name = "LIVE_HUB", class_name = "LiveHub" },
+    # One per co-op session: its relay (src/relay.rs).
+    { name = "COOP_RELAY", class_name = "CoopRelay" },
+]
 
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["LiveHub"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["CoopRelay"]
 EOF
 
 start() {
