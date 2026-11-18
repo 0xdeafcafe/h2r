@@ -7,6 +7,9 @@ use xiso::Xiso;
 
 #[cfg(unix)]
 mod agent_cmd;
+#[cfg(unix)]
+mod agent_run;
+mod testmap_cmd;
 mod anim;
 mod bitmap;
 mod boot_cmd;
@@ -99,6 +102,8 @@ const USAGE: &str = "usage: h2 <command> [disc]
   maps [disc.iso]         map headers and tag counts on the disc
   tags <map> [group]      tags in a disc map or local .map; optional --disc <iso>
   map testbuild --out DIR builder load-test maps for H2_MAP_DIR (docs/formats/map-builder.md)
+  testmap <map> <script> --out <new.map>  a test map: a JSON edit script over the
+                          placements (docs/runtime/agent-api.md, phase 5)
   tag <map> <tag name>    decode one tag; optional group and --disc <iso>
   bitmap <map> <tag>      decode a bitmap tag to PNG (--image N --out DIR --mips)
   bitmap --all <map>      bulk decode check of every bitmap in a map
@@ -299,6 +304,9 @@ fn main() -> Result<()> {
         return agent_cmd::run(args.collect());
         #[cfg(not(unix))]
         bail!("h2 agent needs Unix sockets");
+    }
+    if cmd == "testmap" {
+        return testmap_cmd::run(args.collect());
     }
     if matches!(cmd.as_str(), "build" | "run" | "serve") {
         return boot_cmd::run(&cmd, args.collect());

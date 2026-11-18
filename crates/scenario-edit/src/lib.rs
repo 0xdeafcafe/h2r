@@ -7,6 +7,7 @@
 //! - [`History`]: edits as commands, with undo and redo.
 //! - [`save`]: write a new `.map` through `map::writer::MapEditor`: every
 //!   byte identical except the patched fields and the header checksum.
+//! - [`script`]: JSON edit scripts for headless test maps (`h2 testmap`).
 //! - [`package`]: save as a map package (docs/game/maps.md) and open one.
 //! - [`Session`]: the editor state and commands with no UI (open, select,
 //!   add, remove, drag, gizmo gestures, undo, save, packages), drawn by
@@ -32,6 +33,7 @@ pub mod package;
 pub mod render;
 pub mod save;
 pub mod scenario;
+pub mod script;
 pub mod scene;
 pub mod session;
 #[cfg(test)]

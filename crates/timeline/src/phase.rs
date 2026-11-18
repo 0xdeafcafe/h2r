@@ -817,6 +817,45 @@ pub fn window_summary() -> Option<Summary> {
     global().as_ref()?.window_summary()
 }
 
+/// Every frame published since collection started, summed: the agent
+/// takes two and subtracts (a level load's bytes read, uploads, shader
+/// compiles). `None` while stats are off.
+pub fn totals() -> Option<Totals> {
+    global().as_ref().map(|r| r.running)
+}
+
+/// Running sums of every frame ([`totals`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Totals {
+    pub frames: u64,
+    pub total_ns: u64,
+    pub phase_ns: [u64; PHASES],
+    pub counts: [u64; COUNTERS],
+}
+
+impl Totals {
+    pub fn add(&mut self, s: &FrameSample) {
+        self.frames += 1;
+        self.total_ns += s.total_ns;
+        for (a, b) in self.phase_ns.iter_mut().zip(s.phase_ns) {
+            *a += b;
+        }
+        for (a, b) in self.counts.iter_mut().zip(s.counts) {
+            *a += b;
+        }
+    }
+
+    /// What was added between `earlier` and these.
+    pub fn since(&self, earlier: &Totals) -> Totals {
+        Totals {
+            frames: self.frames.saturating_sub(earlier.frames),
+            total_ns: self.total_ns.saturating_sub(earlier.total_ns),
+            phase_ns: std::array::from_fn(|i| self.phase_ns[i].saturating_sub(earlier.phase_ns[i])),
+            counts: std::array::from_fn(|i| self.counts[i].saturating_sub(earlier.counts[i])),
+        }
+    }
+}
+
 /// The frames published since the last call (or since collection started),
 /// with each phase's sum and maximum; clears them. `None` while stats are
 /// off. The host perf line (`boot::host_perf`) reads it once an interval.
@@ -899,6 +938,8 @@ pub struct Recorder {
     interval: Interval,
     /// Every frame since [`capture_begin`], while a capture runs.
     capture: Option<Vec<FrameSample>>,
+    /// Every frame since collection started, summed ([`totals`]).
+    running: Totals,
 }
 
 /// The window never holds more frames than this.
@@ -919,6 +960,7 @@ impl Recorder {
             worst: Vec::new(),
             interval: Interval::default(),
             capture: None,
+            running: Totals::default(),
         }
     }
 
@@ -965,6 +1007,7 @@ impl Recorder {
         }
         self.window.push_back(s);
         self.interval.add(&s);
+        self.running.add(&s);
         if let Some(c) = self.capture.as_mut()
             && c.len() < CAPTURE_MAX
         {
@@ -1163,6 +1206,26 @@ impl Summary {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn running_totals_subtract() {
+        let mut a = Totals::default();
+        let mut s = FrameSample {
+            total_ns: 10,
+            ..Default::default()
+        };
+        s.counts[Counter::ReadBytes as usize] = 4096;
+        s.phase_ns[Phase::Wait as usize] = 3;
+        a.add(&s);
+        let before = a;
+        a.add(&s);
+        a.add(&s);
+        let d = a.since(&before);
+        assert_eq!((d.frames, d.total_ns), (2, 20));
+        assert_eq!(d.counts[Counter::ReadBytes as usize], 8192);
+        assert_eq!(d.phase_ns[Phase::Wait as usize], 6);
+        assert_eq!(before.since(&a), Totals::default(), "never below zero");
+    }
 
     fn frame(index: u64, end_ms: u64, total_ms: u64) -> FrameSample {
         FrameSample {

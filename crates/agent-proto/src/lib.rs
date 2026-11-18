@@ -13,10 +13,17 @@ use std::collections::BTreeMap;
 
 mod client;
 mod endpoint;
+mod load;
 mod pad;
+mod render;
 pub use client::{CallError, Client};
 pub use endpoint::Endpoint;
+pub use load::{LoadParams, LoadRecord, LoadSegment, Loads};
 pub use pad::{AtTick, Now, PAD_BUTTONS, PadParams, PadStep};
+pub use render::{
+    DrawRecord, FrameParams, FrameRecord, FrameReply, FrameTotals, OpRecord, PassRecord,
+    RenderStats, SnapRecord,
+};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -76,6 +83,9 @@ pub mod method {
     pub const PROFILE_COUNTERS: &str = "profile.counters";
     pub const PROFILE_CAPTURE: &str = "profile.capture";
     pub const FEATURES: &str = "features.list";
+    /// Level loads, BSP switches and stalls: how long, and what the frames
+    /// in them read, uploaded and compiled ([`crate::LoadParams`]).
+    pub const LOAD_TIMELINE: &str = "load.timeline";
 
     /// Every method, in the order `session.methods` lists them.
     pub const ALL: &[&str] = &[
@@ -94,6 +104,7 @@ pub mod method {
         PROFILE_COUNTERS,
         PROFILE_CAPTURE,
         FEATURES,
+        LOAD_TIMELINE,
     ];
 
     /// Methods that change the run; they need `session.claim` first.
@@ -124,9 +135,19 @@ pub mod method {
     pub const SAMPLE_STATUS: &str = "profile.sample.status";
     /// The newest host perf line (`boot::host_perf`).
     pub const HOST_PERF: &str = "host.perf";
+    /// The fallback interpreter's entry addresses, by instructions
+    /// interpreted (`{"top": 20}`): where generated code still stops.
+    pub const PROFILE_FALLBACKS: &str = "profile.fallbacks";
     /// The menu screen player one's input goes to (`H2_UI_WATCH=1`,
     /// `boot::ui_watch`): `{"screen", "window", "slot", "live_menu_row"}`.
     pub const UI_SCREEN: &str = "ui.screen";
+    /// Record the next whole frame's passes, draws and targets, or read
+    /// the last one recorded ([`crate::FrameParams`]).
+    pub const RENDER_FRAME: &str = "render.frame";
+    /// The render pipeline's counters: in-between frames and their hold
+    /// reasons, the pipelined render, native render paths
+    /// ([`crate::RenderStats`]).
+    pub const RENDER_STATS: &str = "render.stats";
 }
 
 /// Error codes. The negative ones are JSON-RPC's own.
@@ -772,6 +793,12 @@ pub struct Spike {
     pub counts: BTreeMap<String, u64>,
     /// Its biggest phases, biggest first (pacing left out).
     pub top: Vec<String>,
+    /// Why it was slow, as far as its counters and phases say:
+    /// `shader_compile`, `pipeline_compile`, `texture_uploads`, `file_io`,
+    /// `gpu_readback`, `gpu`, `render_thread`, `pushbuf_decode`,
+    /// `guest_cpu` (see docs/runtime/agent-api.md, phase 5).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub causes: Vec<String>,
 }
 
 /// What a capture's frames say.
@@ -793,6 +820,10 @@ pub struct CaptureStats {
     /// Frames over the budget; `spikes` lists the worst of them.
     pub over_budget: usize,
     pub spikes: Vec<Spike>,
+    /// Every frame over the budget (listed or not) counted by each of its
+    /// causes.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub causes: BTreeMap<String, usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
