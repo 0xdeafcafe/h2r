@@ -575,7 +575,8 @@ fn rules(ui: &Ui, _fonts: &Fonts) {
     ui.text_disabled("E engine code, V seen on the disc or in a frame, D assumed (unproven).");
 }
 
-/// The selected widget's fields, grouped, from the layout's field table.
+/// The selected widget's fields: the generic field panel over its element,
+/// and a row of the HUD tool's own for each field the panel cannot edit.
 fn properties(ui: &Ui, h: &mut HudTool, panel: &mut PanelState, key: WidgetKey, actions: &mut Vec<Action>) {
     let Some(s) = h.session.as_mut() else { return };
     let Some(hud_id) = s.current else { return };
