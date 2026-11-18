@@ -15,6 +15,7 @@ use live_server::app::Timers;
 use live_server::blobs::{BlobStore, Blobs};
 use live_server::store::EventStore;
 use live_server::stream::StreamFilter;
+use live_server::titleblobs::BlobsElsewhere;
 use tokio::sync::OnceCell;
 use tower_service::Service;
 use wasm_bindgen::JsValue;
@@ -87,6 +88,12 @@ impl LiveHub {
             .await
             .map_err(rust_error)?;
         let head = store.head().await.map_err(rust_error)?;
+        let private = BlobStore::from_store(
+            Arc::new(R2::new(self.env.bucket(BLOBS)?, BLOBS)),
+            "r2://blobs",
+        );
+        // Title files in R2: a Durable Object's row holds at most 2 MB.
+        let store = BlobsElsewhere::new(Arc::new(store), private.clone());
         let live = Live::start_with(
             Arc::new(store),
             settings.identity,
@@ -95,9 +102,8 @@ impl LiveHub {
         )
         .await
         .map_err(|e| rust_error(format!("{e:#}")))?;
-        let r2 = R2::new(self.env.bucket(BLOBS)?, BLOBS);
         live.set_blobs(Blobs {
-            private: BlobStore::from_store(Arc::new(r2), "r2://blobs"),
+            private,
             public: None,
         });
         Ok((live, js_sys::Date::now() - started, head))

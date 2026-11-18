@@ -196,7 +196,8 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
             post(crate::admin::grant_admin).delete(crate::admin::revoke_admin),
         )
         .layer(DefaultBodyLimit::max(MAX_TITLE_FILE));
-    // Uploads stream to disk under their own caps (ContentLimits).
+    // Uploads stream into the blob store under their own caps
+    // (ContentLimits, StorageLimits).
     let uploads = Router::new()
         .route(
             "/v1/content/{sha256}",

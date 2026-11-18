@@ -21,7 +21,12 @@
 //      attachment;
 //   9. game ingest: start a game, send a frame on /v1/ingest, and see it
 //      reach a JSON reader and, through the packed tick, a packed reader;
-//      a token for the wrong method is closed with 4401.
+//      a token for the wrong method is closed with 4401;
+//  10. R2: a 9 MiB content upload (more than one 8 MiB part, so a
+//      multipart upload streamed from the request body) and a cloud save,
+//      each read back; with --admin NAME (a configured admin's gamertag,
+//      free on this server), a 2 MiB title file, more than a Durable
+//      Object's SQLite row holds, published and read back.
 // It prints one JSON object and exits non-zero if a step fails.
 //
 // --seed N: then grows the log by 2N events (friend requests, declined),
@@ -35,6 +40,8 @@ const base = (args.find((a) => /^https?:/.test(a)) ?? "http://127.0.0.1:8787").r
 const seedAt = args.indexOf("--seed");
 const seed = seedAt >= 0 ? Number(args[seedAt + 1]) : 0;
 const coldOnly = args.includes("--cold-only");
+const adminAt = args.indexOf("--admin");
+const adminTag = adminAt >= 0 ? args[adminAt + 1] : "";
 const wakeAt = args.indexOf("--wake");
 const wakeWait = wakeAt >= 0 ? Number(args[wakeAt + 1]) : 0;
 const api = base + "/v1";
@@ -336,6 +343,81 @@ if (wakeWait > 0) {
   }
   out.ingest = { game: gameId, start_subscribe_and_frame_ms: +(performance.now() - t9).toFixed(1) };
   for (const s of [json, packed, game]) s.ws.close();
+}
+
+// 10. R2.
+{
+  const hex = async (b: Uint8Array) =>
+    [...new Uint8Array(await crypto.subtle.digest("SHA-256", b))].map((x) => x.toString(16).padStart(2, "0")).join("");
+  const random = (n: number) => {
+    const b = new Uint8Array(n);
+    for (let i = 0; i < n; i += 65536) crypto.getRandomValues(b.subarray(i, Math.min(n, i + 65536)));
+    return b;
+  };
+  const same = (x: Uint8Array, y: Uint8Array) => x.length === y.length && x.every((v, i) => v === y[i]);
+  const r2: Record<string, unknown> = {};
+
+  // Content: 9 MiB, streamed into a multipart upload.
+  const content = random(9 * 1024 * 1024);
+  const sha = await hex(content);
+  let t = performance.now();
+  const up = await timed(`${api}/content/${sha}`, {
+    method: "PUT",
+    headers: { authorization: `Bearer ${await issueToken(a!, aud, "content.write")}` },
+    body: content,
+  });
+  if (up.r.status !== 201) fail("r2-content-put", `${up.r.status} ${up.body}`);
+  r2.content_put_ms = +(performance.now() - t).toFixed(1);
+  t = performance.now();
+  const back = new Uint8Array(await (await fetch(`${api}/content/${sha}`)).arrayBuffer());
+  if (!same(back, content)) fail("r2-content-get", `${back.length} bytes back, not the ${content.length} sent`);
+  r2.content_get_ms = +(performance.now() - t).toFixed(1);
+  // A body that does not hash to its path is refused, and not stored.
+  const wrong = await fetch(`${api}/content/${"0".repeat(64)}`, {
+    method: "PUT",
+    headers: { authorization: `Bearer ${await issueToken(a!, aud, "content.write")}` },
+    body: random(1024),
+  });
+  if (wrong.status !== 400) fail("r2-content-mismatch", `${wrong.status} ${await wrong.text()}`);
+  if ((await fetch(`${api}/content/${"0".repeat(64)}`)).status !== 404) fail("r2-content-mismatch", "it was stored");
+
+  // A cloud save.
+  const save = random(300 * 1024);
+  const item = `${api}/accounts/${a!.xuid}/storage/save/smoke-slot`;
+  t = performance.now();
+  const put = await timed(item, {
+    method: "PUT",
+    headers: {
+      authorization: `Bearer ${await issueToken(a!, aud, "storage.write")}`,
+      "if-match": "0",
+      "x-h2-sha256": await hex(save),
+    },
+    body: save,
+  });
+  if (put.r.status !== 201) fail("r2-save-put", `${put.r.status} ${put.body}`);
+  const got = new Uint8Array(
+    await (await fetch(item, { headers: { authorization: `Bearer ${await issueToken(a!, aud, "storage.read")}` } })).arrayBuffer(),
+  );
+  if (!same(got, save)) fail("r2-save-get", `${got.length} bytes back`);
+  r2.save_round_trip_ms = +(performance.now() - t).toFixed(1);
+
+  // A title file, as an admin.
+  if (adminTag) {
+    const admin = await createAccount(api, base, aud, adminTag);
+    const file = random(2 * 1024 * 1024);
+    const url = `${api}/titles/4d530064/files/smoke.bin`;
+    t = performance.now();
+    const pub = await timed(url, {
+      method: "PUT",
+      headers: { authorization: `Bearer ${await issueToken(admin, aud, "titles.write")}` },
+      body: file,
+    });
+    if (pub.r.status !== 200) fail("r2-title-put", `${pub.r.status} ${pub.body}`);
+    const read = new Uint8Array(await (await fetch(url)).arrayBuffer());
+    if (!same(read, file)) fail("r2-title-get", `${read.length} bytes back`);
+    r2.title_file_round_trip_ms = +(performance.now() - t).toFixed(1);
+  }
+  out.r2 = r2;
 }
 
 if (seed > 0) {

@@ -28,6 +28,9 @@ if [ ! -f "$work/.dev.vars" ]; then
     printf 'H2_LIVE_SERVER_KEY=%s\n' "$key" > "$work/.dev.vars"
     chmod 600 "$work/.dev.vars"
 fi
+# A fresh admin gamertag each run: the state persists, and the smoke test
+# signs up as the admin to publish a title file.
+admin=SmokeA$(openssl rand -hex 3)
 cat > "$work/wrangler.toml" <<EOF
 name = "h2-live-dev"
 main = "$here/build/index.js"
@@ -36,7 +39,7 @@ compatibility_date = "2026-11-01"
 [vars]
 H2_LIVE_ID = "live.test"
 H2_LIVE_PUBLIC_URL = "http://127.0.0.1:$port"
-H2_LIVE_ADMINS = "SmokeAdmin"
+H2_LIVE_ADMINS = "$admin"
 
 [[r2_buckets]]
 binding = "BLOBS"
@@ -72,7 +75,7 @@ stop() {
 trap stop EXIT
 
 start first
-bun "$here/smoke/smoke.ts" "http://127.0.0.1:$port" --seed "$seed" --wake "${WAKE:-0}" | tee "$out/first.json"
+bun "$here/smoke/smoke.ts" "http://127.0.0.1:$port" --seed "$seed" --wake "${WAKE:-0}" --admin "$admin" | tee "$out/first.json"
 grep -q '"ok": true' "$out/first.json" || { echo "smoke test failed" >&2; exit 1; }
 stop
 start restart

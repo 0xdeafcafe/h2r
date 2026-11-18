@@ -564,15 +564,6 @@ impl Live {
         self.published_art.get()
     }
 
-    /// A new temporary file's path for an upload on its way into the blob
-    /// store: `<data>/tmp/<random>` (beside a directory store, so the
-    /// upload is renamed into place, not copied). The directory is not
-    /// made here.
-    pub(crate) fn upload_file(&self) -> Option<std::path::PathBuf> {
-        self.data_dir()
-            .map(|d| d.join("tmp").join(live_proto::sign::random_id()))
-    }
-
     pub fn data_dir(&self) -> Option<&std::path::Path> {
         self.data_dir.get().map(|p| p.as_path())
     }
