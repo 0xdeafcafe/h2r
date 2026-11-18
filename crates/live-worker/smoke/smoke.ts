@@ -26,7 +26,10 @@
 //      multipart upload streamed from the request body) and a cloud save,
 //      each read back; with --admin NAME (a configured admin's gamertag,
 //      free on this server), a 2 MiB title file, more than a Durable
-//      Object's SQLite row holds, published and read back.
+//      Object's SQLite row holds, published and read back;
+//  11. with --busy N: a busy stream. N sockets follow the log while 60
+//      events are appended; how long each append takes, and how long until
+//      every socket has the event.
 // It prints one JSON object and exits non-zero if a step fails.
 //
 // --seed N: then grows the log by 2N events (friend requests, declined),
@@ -42,6 +45,8 @@ const seed = seedAt >= 0 ? Number(args[seedAt + 1]) : 0;
 const coldOnly = args.includes("--cold-only");
 const adminAt = args.indexOf("--admin");
 const adminTag = adminAt >= 0 ? args[adminAt + 1] : "";
+const busyAt = args.indexOf("--busy");
+const busy = busyAt >= 0 ? Number(args[busyAt + 1]) : 0;
 const wakeAt = args.indexOf("--wake");
 const wakeWait = wakeAt >= 0 ? Number(args[wakeAt + 1]) : 0;
 const api = base + "/v1";
@@ -418,6 +423,48 @@ if (wakeWait > 0) {
     r2.title_file_round_trip_ms = +(performance.now() - t).toFixed(1);
   }
   out.r2 = r2;
+}
+
+// 11. A busy stream.
+if (busy > 0) {
+  const readers = Array.from({ length: busy }, () => subscribe(""));
+  try {
+    await Promise.all(readers.map((r) => r.opened));
+    await Promise.all(readers.map((r) => r.until((m) => m.kind === "caught_up", 15000)));
+  } catch (e) {
+    fail("busy-subscribe", e);
+  }
+  const appendMs: number[] = [];
+  const fanoutMs: number[] = [];
+  const t11 = performance.now();
+  for (let i = 0; i < 30; i++) {
+    for (const [who, type, stream] of [
+      [b!, "FriendDeclined", `account-${b!.xuid}`],
+      [a!, "FriendRequested", `account-${a!.xuid}`],
+    ] as const) {
+      const t = performance.now();
+      const position = await postEvent(api, aud, who, { stream, type, data: { from: a!.xuid, to: b!.xuid } });
+      appendMs.push(performance.now() - t);
+      try {
+        await Promise.all(readers.map((r) => r.until((m) => m.kind === "event" && m.event?.position === position)));
+      } catch (e) {
+        fail("busy-fanout", e);
+      }
+      fanoutMs.push(performance.now() - t);
+    }
+    // Under the server's write rate (10 a second per author and method).
+    await Bun.sleep(110);
+  }
+  const p = (xs: number[], q: number) => +[...xs].sort((x, y) => x - y)[Math.floor(q * (xs.length - 1))].toFixed(1);
+  out.busy = {
+    sockets: busy,
+    events: appendMs.length,
+    append_ms: { p50: p(appendMs, 0.5), p90: p(appendMs, 0.9), max: p(appendMs, 1) },
+    // From sending the append until every socket had the event.
+    all_sockets_ms: { p50: p(fanoutMs, 0.5), p90: p(fanoutMs, 0.9), max: p(fanoutMs, 1) },
+    wall_ms: +(performance.now() - t11).toFixed(0),
+  };
+  for (const r of readers) r.ws.close();
 }
 
 if (seed > 0) {

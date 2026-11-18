@@ -56,7 +56,7 @@ pub struct LiveHub {
     /// The object's `ctx` as JavaScript, for `storage.transactionSync`.
     ctx: JsValue,
     live: OnceCell<Arc<Live>>,
-    sockets: Rc<Sockets>,
+    sockets: Rc<Sockets<WebSocket>>,
     ingests: Ingests,
     /// The alarm as last set (ms since the epoch; `None` inside: no
     /// alarm), or `None` before this instance has set one.
@@ -123,7 +123,7 @@ impl LiveHub {
                 let (live, ms, head) = self.start().await?;
                 worker::console_log!("live: started in {ms} ms, the log at {head}");
                 cold = Some((ms, head));
-                self.sockets.adopt_all(&live, &self.state);
+                self.sockets.adopt_all(&live, self.state.get_websockets());
                 live_server::rt::spawn(pump(live.clone(), self.sockets.clone()));
                 Ok::<_, worker::Error>(live)
             })
@@ -211,9 +211,8 @@ impl LiveHub {
         let pair = WebSocketPair::new()?;
         match filter {
             Some(filter) => {
-                self.sockets
-                    .accept(&self.state, live, pair.server, filter)
-                    .await?
+                self.state.accept_web_socket(&pair.server);
+                self.sockets.accept(live, pair.server, filter).await
             }
             None => self.ingests.accept(&self.state, live, pair.server),
         }

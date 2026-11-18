@@ -21,8 +21,7 @@ mod entry;
 mod ingest;
 #[cfg(target_arch = "wasm32")]
 mod r2;
-#[cfg(target_arch = "wasm32")]
-mod sockets;
+pub mod sockets;
 
 /// The Worker's bindings (wrangler.toml). Its variables and secrets are in
 /// [`settings`].
