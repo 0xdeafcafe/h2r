@@ -88,6 +88,24 @@ pub fn style() -> HudStyle {
     HudStyle::from_code(ACTIVE.load(Ordering::SeqCst)).unwrap_or(HudStyle::Halo2)
 }
 
+/// The style in force, as a machine snapshot keeps it
+/// (docs/runtime/snapshots.md): one byte, 0 before any game. It is not
+/// picked again from the loaded map at a load, because the choice counts
+/// only from a game start and may have changed since the saved one.
+pub fn save_state() -> Vec<u8> {
+    vec![ACTIVE.load(Ordering::SeqCst)]
+}
+
+/// Puts [`save_state`]'s byte back.
+pub fn load_state(bytes: &[u8]) -> Result<(), String> {
+    match bytes {
+        [0] => ACTIVE.store(0, Ordering::SeqCst),
+        [c] if HudStyle::from_code(*c).is_some() => ACTIVE.store(*c, Ordering::SeqCst),
+        _ => return Err(format!("hud: {} bytes, not a style", bytes.len())),
+    }
+    Ok(())
+}
+
 /// The game-start observer that picks the style.
 pub struct Hud;
 
@@ -106,6 +124,10 @@ impl feature::Feature for Hud {
                 Err(e) => eprintln!("hud: the map's name could not be read ({e:?}); style unchanged"),
             }
         });
+        b.snapshot(feature::SnapshotPolicy::section(
+            save_state,
+            |bytes, _| load_state(bytes),
+        ));
         Ok(())
     }
 }
@@ -134,6 +156,29 @@ mod tests {
         assert_eq!(style(), HudStyle::Halo1, "the game in progress keeps it");
         assert_eq!(start("a30"), HudStyle::Halo2);
         assert_eq!(style(), HudStyle::Halo2);
+        set_choice(true);
+    }
+
+    #[test]
+    fn a_snapshot_keeps_the_style_in_force_not_the_choice() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        set_choice(true);
+        start("a30");
+        let bytes = save_state();
+        assert_eq!(bytes, vec![1]);
+        set_choice(false);
+        start("lockout");
+        load_state(&bytes).unwrap();
+        assert_eq!(
+            style(),
+            HudStyle::Halo1,
+            "the saved game's style, not the choice's"
+        );
+        assert!(load_state(&[3]).is_err());
+        assert!(load_state(&[]).is_err());
+        assert_eq!(style(), HudStyle::Halo1, "bad bytes change nothing");
+        load_state(&[0]).unwrap();
+        assert_eq!(save_state(), vec![0]);
         set_choice(true);
     }
 }

@@ -191,3 +191,23 @@ fn the_swap_plans_after_the_live_options() {
     let ext = line.find(crate::variant_ext::FEATURE).unwrap();
     assert!(ext < line.find(FEATURE).unwrap(), "{line}");
 }
+
+#[test]
+fn a_snapshot_keeps_halo2s_sensor_table() {
+    let mut m = world(H1_HUD, H1_HUD);
+    retail_sensor(&mut m);
+    let mut s = Sensor::default();
+    assert!(s.activate(&mut m, Some([45, -43]), HudStyle::Halo1).unwrap());
+    let bytes = s.save_state();
+    // A fresh boot loads the snapshot, whose guest table is Halo 1's.
+    let mut b = Sensor::default();
+    b.load_state(&bytes).unwrap();
+    assert_eq!(b.save_state(), bytes, "the same state again");
+    assert!(b.activate(&mut m, None, HudStyle::Halo2).unwrap());
+    assert_eq!(read_sensor(&m).unwrap(), [[41, -42], [31, -31], [31, -31]]);
+    // Nothing remembered round-trips as nothing.
+    let none = Sensor::default().save_state();
+    b.load_state(&none).unwrap();
+    assert_eq!(b.save_state(), none);
+    assert!(b.load_state(&bytes[..bytes.len() - 1]).is_err());
+}

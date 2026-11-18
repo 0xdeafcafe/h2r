@@ -132,6 +132,18 @@ fn set_from_host(b: Option<[u8; ext::LEN]>) {
     *FROM_HOST.lock().unwrap_or_else(|e| e.into_inner()) = b;
 }
 
+/// Why `variant-ext-live` can't be snapshotted now: this machine is a Live
+/// guest playing its host's options, which the guest's game reads from
+/// `FROM_HOST` each tick; a load has no host to hear them from again.
+/// Clear from the next game start (any activation) on.
+pub fn transport_live() -> Option<String> {
+    host_options_live(from_host())
+}
+
+fn host_options_live(from_host: Option<[u8; ext::LEN]>) -> Option<String> {
+    from_host.map(|_| "a Live host's variant options are in effect".into())
+}
+
 /// Which variant a record is, the same on the host and its guests: FNV-1a
 /// over the name (`+4`, 0x40 bytes) and the engine (`+0x44`), which the
 /// game's wire carries whole. Two variants alike in both share a key.
@@ -380,6 +392,16 @@ pub fn is_player_unit(m: &dyn GuestMemory, object: u32) -> bool {
 /// after it so the body step starts from the game's units.
 static SHIELD_SCALED: Mutex<Option<(u32, f32)>> = Mutex::new(None);
 
+/// Why `variant-vitality` can't be snapshotted now: a shield step's
+/// damage is scaled and its after hook has not put it back yet.
+pub fn vitality_live() -> Option<String> {
+    shield_live(*SHIELD_SCALED.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+fn shield_live(scaled: Option<(u32, f32)>) -> Option<String> {
+    scaled.map(|(record, _)| format!("shield damage record {record:#010x} is scaled"))
+}
+
 /// The feature id (`features.variant-vitality` switches it).
 pub const VITALITY_FEATURE: &str = "variant-vitality";
 
@@ -452,6 +474,9 @@ impl feature::Feature for Vitality {
                 }
                 Ok(Flow::Continue)
             });
+        // The scales are read from guest memory at each step; only the
+        // shield step's factor waits on the host between its hooks.
+        b.snapshot(feature::SnapshotPolicy::forbid_while(vitality_live));
         Ok(())
     }
 }
@@ -569,6 +594,9 @@ impl feature::Feature for Transport {
                 }
                 Ok(Flow::Continue)
             });
+        // The host's block goes to `live_hle`, whose state is the Live
+        // subsystem's; a guest keeps the host's block here.
+        b.snapshot(feature::SnapshotPolicy::forbid_while(transport_live));
         Ok(())
     }
 }
@@ -819,6 +847,16 @@ mod tests {
         set_from_host(Some(half().encode()));
         assert_eq!(in_game(&f).gravity(), 0.5);
         set_from_host(None);
+    }
+
+    #[test]
+    fn snapshots_wait_for_the_hosts_options_and_a_scaled_shield_step() {
+        // The pure halves: the statics are shared with other tests.
+        assert_eq!(host_options_live(None), None);
+        assert!(host_options_live(Some(half().encode())).is_some());
+        assert_eq!(shield_live(None), None);
+        let why = shield_live(Some((0x8000_1000, 0.5))).unwrap();
+        assert!(why.contains("0x80001000"), "{why}");
     }
 
     #[test]

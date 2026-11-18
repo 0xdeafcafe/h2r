@@ -660,6 +660,21 @@ impl Flow {
         let i = c.iter().position(|(h, _)| *h == handler)?;
         Some(c.remove(i).1)
     }
+    /// Why a machine snapshot must wait: Change Map or a category was
+    /// pressed and its Select Map is not built yet, or a Select Map of ours
+    /// is up (the screens are known by host-side handler). `drawing` is
+    /// written before every row's text, so it is never carried.
+    pub fn snapshot_live(&self) -> Option<String> {
+        if let Some(mode) = *lock(&self.next) {
+            return Some(format!("a Select Map of {mode:?} is to be built"));
+        }
+        let screens = lock(&self.screens).len();
+        if screens != 0 {
+            return Some(format!("{screens} Select Map screens of ours are up"));
+        }
+        let closing = lock(&self.closing).len();
+        (closing != 0).then(|| format!("{closing} map presses wait to close the categories"))
+    }
 }
 
 /// UTF-16 labels in our memory: one 0x40-byte slot each (the slots' own
@@ -919,6 +934,8 @@ impl feature::Feature for MapSelect {
                 })
             })
         });
+        let flow = Arc::clone(&self.flow);
+        b.snapshot(feature::SnapshotPolicy::forbid_while(move || flow.snapshot_live()));
         Ok(())
     }
 }

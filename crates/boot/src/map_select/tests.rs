@@ -500,3 +500,21 @@ fn a_maps_short_name_is_its_file_without_the_ending() {
     let m = map(0x1001, "Blood Gulch", 1, "maps\\H1_BloodGulch.map");
     assert_eq!(m.short_name(), "h1_bloodgulch");
 }
+
+#[test]
+fn snapshots_wait_while_a_select_map_of_ours_is_armed_or_up() {
+    let f = Flow::default();
+    assert_eq!(f.snapshot_live(), None);
+    f.change_map();
+    assert!(f.snapshot_live().unwrap().contains("to be built"));
+    assert_eq!(f.building(0x1614), Some(Mode::Categories));
+    assert!(f.snapshot_live().unwrap().contains("1 Select Map"));
+    f.pick(Category::Halo2);
+    assert_eq!(f.building(0x2614), Some(Mode::Maps(Category::Halo2)));
+    assert_eq!(f.picked(0x2614), Some(0x1000));
+    assert!(f.snapshot_live().is_some());
+    assert_eq!(f.freed(0x2000), Some(0x1000));
+    assert!(f.snapshot_live().unwrap().contains("1 Select Map"));
+    assert_eq!(f.freed(0x1000), None);
+    assert_eq!(f.snapshot_live(), None, "every screen of ours freed");
+}

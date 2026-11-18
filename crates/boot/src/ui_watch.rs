@@ -333,6 +333,9 @@ impl feature::Feature for UiWatch {
                 }
             })
             .optional();
+        // An observer: `LAST` and `SAID` are the host's log of guest
+        // memory, read again at the next tick.
+        b.snapshot(feature::SnapshotPolicy::Stateless);
         Ok(())
     }
 }
