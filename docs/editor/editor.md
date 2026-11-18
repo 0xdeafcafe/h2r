@@ -181,7 +181,10 @@ renderer as Halo 2's (`editor_core::halo1_art`, then
 - **Lightmaps.** `h1bitmaps::lightmap_pages` gives each lightmap's page
   (R5G6B5, no palette); a material with lightmap vertices draws with
   that page at its page-relative coordinates, as a Halo 2 lightmap is
-  (base map × lightmap × 2 in gamma space). The rest (sky, unlit
+  (base map × lightmap × 2 in gamma space), the page halved first
+  (`halo1_art::to_halo2_light`): a Halo 1 page is the base map's
+  multiplier itself, so the ×2 alone drew Halo 1's full light doubled
+  (`h1bitmaps::atlas::to_halo2_light`, the converter's pages). The rest (sky, unlit
   surfaces) keep the sun.
 - **Winding.** Halo 1's surfaces turn the other way from the
   renderer's front faces; each triangle is turned to face its vertex
