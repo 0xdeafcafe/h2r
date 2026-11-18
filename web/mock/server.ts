@@ -42,6 +42,7 @@ import { Admin } from "./admin";
 import { MockRecovery } from "./recovery";
 import { Content, customFor } from "./content";
 import { Reports } from "./reports";
+import { Bans } from "./bans";
 import { hasAllSkulls, parseSkullsParam } from "../src/lib/skulls";
 import { StatsFold, archive } from "./stats";
 
@@ -122,6 +123,8 @@ const recovery = new MockRecovery(world);
 const content = new Content(world, admin);
 // Player reports and the admin queue (mock/reports.ts).
 const reports = new Reports(world, admin);
+// Bans, ban notices and commendation counts (mock/bans.ts).
+const bans = new Bans(world, admin, reports);
 if (admin.everyoneAdmin) console.log("[mock] H2_MOCK_ADMIN: accounts signed up in the browser are admins");
 const staticDir = process.env.H2_MOCK_STATIC;
 const art = process.env.H2_MOCK_GAME_ART && process.env.H2_MOCK_GAME_ART !== "0" ? mockGameArt(new URL("../public/art", import.meta.url).pathname) : null;
@@ -222,6 +225,8 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
   if (adm) return json(adm.body, adm.status);
   const rep = await reports.handle(req, u);
   if (rep) return json(rep.body, rep.status);
+  const ban = await bans.handle(req, u);
+  if (ban) return json(ban.body, ban.status);
   const con = await content.handle(req, u, (bytes) => new Response(bytes as Uint8Array<ArrayBuffer>, { headers: { "content-type": "image/png", "cache-control": "max-age=3600", ...CORS } }));
   if (con) return con instanceof Response ? con : json(con.body, con.status);
 

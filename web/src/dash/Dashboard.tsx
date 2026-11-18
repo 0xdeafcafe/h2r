@@ -32,6 +32,8 @@ import "../styles/dash-recovery.css";
 import { defaultBase, fetchWellKnown, normalizeBase, recentServers } from "../api/server";
 import { AccountsPlate, ConnectPlate, ImportPlate, InvitesPlate, ServerPlate, createServerInfo, type InviteControls } from "./Server";
 import { ReportsQueue } from "./Reports";
+import { BanControl, BanNotice, BansList } from "./Bans";
+import { adminState } from "../admin/state";
 import type { BladeControls } from "./Blades";
 import { fetchServerFacts, serverPods } from "../admin/server";
 import "../styles/dash-server.css";
@@ -307,7 +309,7 @@ export default function Dashboard() {
       case "server": {
         const sub = serverSub();
         if (sub !== "connect") {
-          const view = sub === "invites" || sub === "accounts" || sub === "import" || sub === "reports" ? sub : "overview";
+          const view = sub === "invites" || sub === "accounts" || sub === "import" || sub === "reports" || sub === "bans" ? sub : "overview";
           return serverPods(view, serverInfo.admin()).map((p): Sat => ({
             label: p.label, glyph: p.glyph,
             act: p.run ? () => (p.run === "create" ? blades()?.create?.() : blades()?.copy?.()) : () => go(p.to!, p.back ? "back" : "deeper"),
@@ -715,6 +717,16 @@ export default function Dashboard() {
             </div>
           </Match>
 
+          <Match when={screen() === "server" && serverSub() === "bans"}>
+            <div class="dx-screen dx-pods dx-pods--form dx-pages dx-server dx-reports-screen">
+              <Sats sats={sats()} sel={sat()} onSel={setSat} />
+              <Plate small="your server" title="bans" main>
+                <BansList />
+              </Plate>
+              <Prompts onA={select} onB={back} />
+            </div>
+          </Match>
+
           <Match when={screen() === "server" && serverSub() === "import"}>
             <div class="dx-screen dx-pods dx-pods--form dx-pages dx-server dx-invites-screen dx-import-screen">
               <div class="dx-centre"><BigPod wire><Glyph name="download" /></BigPod></div>
@@ -870,6 +882,10 @@ function PlayerPlate(props: { account: AccountState; main?: boolean; mine?: bool
         <dt>rank</dt><dd>{rec().rank}</dd>
         <Show when={props.mine}><dt>key</dt><dd>kept in this browser</dd></Show>
       </dl>
+      <Show when={props.mine && props.main}><BanNotice /></Show>
+      <Show when={!props.mine && props.main && adminState.isMeAdmin() === true}>
+        <BanControl target={{ xuid: props.account.xuid, gamertag: props.account.gamertag }} />
+      </Show>
     </Plate>
   );
 }
