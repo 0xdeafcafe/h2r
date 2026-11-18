@@ -483,7 +483,10 @@ fn setup(me: &Arc<Shared>, ctx: &mut ExecCtx, addr: u32) -> Result<(), String> {
     let allow = Arc::clone(&me.allow);
     let a = me.addrs.clone();
     let mut exec = SecondExecutor::new(&rt, |at, name| {
-        allow(at, name) || render_hook(name) || at == addr || at == a.frame_wait
+        // Plan chains (render-loop's ports, render-timing's observers) are
+        // refused: they keep Rust continuations on the executor's context,
+        // which a fallback could not carry over to the game thread.
+        allow(at, name) || at == addr || at == a.frame_wait
     });
     exec.max_transfers = u64::MAX;
     for w in &me.shared_watches {
@@ -604,25 +607,6 @@ fn setup(me: &Arc<Shared>, ctx: &mut ExecCtx, addr: u32) -> Result<(), String> {
     Ok(())
 }
 
-/// Plan chains the render may run: those only render-loop and render-timing
-/// hook (the Rust render orchestrators keep their state in continuations
-/// and atomics; the timing observers in thread-local phases).
-fn render_hook(name: &str) -> bool {
-    let Some(rest) = name.strip_prefix("plan:") else {
-        return false;
-    };
-    let Some(features) = rest
-        .split_once('[')
-        .and_then(|(_, f)| f.split_once(']'))
-        .map(|(f, _)| f)
-    else {
-        return false;
-    };
-    features
-        .split(',')
-        .all(|f| matches!(f, "render-loop" | "render-timing"))
-}
-
 /// Joins the render in flight, if any, then runs `k`. A fallback runs the
 /// rest of the render on this thread first.
 fn join_then(
@@ -683,7 +667,23 @@ fn join_then(
                 Some(_) => format!("kernel:{}", r.name),
                 None => r.name.clone(),
             };
-            *inner.stats.fallbacks.entry(cause).or_default() += 1;
+            // A Rust continuation on the executor's context (a D3D push
+            // callback or a destroy the D3D layer is delivering) holds part
+            // of the render's state that the game thread's context cannot
+            // take over: the rest of the render cannot run there.
+            let live: Vec<&'static str> = exec
+                .context()
+                .live_continuations()
+                .iter()
+                .map(|c| c.origin)
+                .collect();
+            let unresumable = !live.is_empty();
+            let cause = if unresumable {
+                format!("unresumable:{cause}")
+            } else {
+                cause
+            };
+            *inner.stats.fallbacks.entry(cause.clone()).or_default() += 1;
             hand_back(
                 me,
                 &mut inner,
@@ -695,7 +695,14 @@ fn join_then(
             );
             ctx.charge_accesses(exec.last_accesses());
             inner.stats.accesses += exec.last_accesses();
-            Some(exec.refused_cpu().ok_or("refused with no CPU".to_string()))
+            if unresumable {
+                exec.context().clear_continuations();
+                Some(Err(format!(
+                    "{cause} inside {live:?} on the render thread (run without H2_PIPELINE_RENDER)"
+                )))
+            } else {
+                Some(exec.refused_cpu().ok_or("refused with no CPU".to_string()))
+            }
         }
         Err(e) => {
             *inner
@@ -712,6 +719,7 @@ fn join_then(
                 true,
                 &stack_pages,
             );
+            exec.context().clear_continuations();
             Some(Err(e.to_string()))
         }
     };
@@ -1076,16 +1084,6 @@ fn maybe_print(me: &Shared) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn render_hooks_are_the_render_loop_and_timing_chains_only() {
-        assert!(render_hook("plan:RENDER_VIEWS[render-loop]"));
-        assert!(render_hook(
-            "plan:RENDER_FRAME[render-loop,render-timing]:body"
-        ));
-        assert!(!render_hook("plan:RENDER_FRAME[map-slots,render-timing]"));
-        assert!(!render_hook("boot:d3d write barrier"));
-    }
 
     #[test]
     fn a_line_averages_per_pipelined_frame() {

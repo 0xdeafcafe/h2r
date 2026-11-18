@@ -21,6 +21,10 @@ const FRAME: u32 = 0x1_1000;
 const D3D_DRAW: u32 = 0x1_2000;
 const D3D_SIM: u32 = 0x1_2100;
 const FRAME_WAIT: u32 = 0x1_3000;
+/// A D3D entry that calls back into the guest (as a push-buffer callback
+/// does), through a Rust continuation; the callback calls the kernel.
+const D3D_CALLBACK: u32 = 0x1_2200;
+const CALLBACK: u32 = 0x1_4000;
 /// KeQuerySystemTime(PLARGE_INTEGER): stdcall, one argument.
 const KERNEL_ORDINAL: u32 = 128;
 
@@ -111,6 +115,9 @@ fn render(
             m.call(cpu, D3D_DRAW, FRAME + 0x10)
         }
         s if s == FRAME + 0x10 => {
+            if m.u32(FALLBACK)? == 2 {
+                return m.call(cpu, D3D_CALLBACK, FRAME + 0x20);
+            }
             if m.u32(FALLBACK)? != 0 {
                 cpu.esp -= 4;
                 m.set_u32(cpu.esp, KERNEL_OUT)?;
@@ -134,10 +141,34 @@ fn render(
     }
 }
 
+/// The guest callback D3D_CALLBACK calls: the kernel, then return.
+fn callback(
+    cpu: &mut CpuAbi,
+    ctx: &mut ExecCtx,
+    sel: u32,
+) -> Result<TransferAbi, runtime::GuestFault> {
+    let rt = Arc::clone(ctx.runtime());
+    let mut m = rt.memory();
+    if sel == CALLBACK {
+        cpu.esp -= 4;
+        m.set_u32(cpu.esp, KERNEL_OUT)?;
+        return m.call(cpu, kernel::function_token(KERNEL_ORDINAL), CALLBACK + 0x10);
+    }
+    m.ret(cpu, 0)
+}
+
 fn rig(on: bool) -> Rig {
     let log: Log = Arc::default();
     let mut d = Dispatch::default();
     d.register_generated_rust(FRAME, render).unwrap();
+    d.register_generated_rust(CALLBACK, callback).unwrap();
+    d.register_resume(CALLBACK + 0x10, CALLBACK, CALLBACK + 0x10)
+        .unwrap();
+    d.register_override(D3D_CALLBACK, "D3D callback", |cpu, ctx, _| {
+        let rt = Arc::clone(ctx.runtime());
+        let mut m = rt.memory();
+        ctx.call_guest(cpu, &mut m, CALLBACK, |cpu, ctx| ctx.memory().ret(cpu, 0))
+    });
     for at in [0x10, 0x20, 0x30] {
         d.register_resume(FRAME + at, FRAME, FRAME + at).unwrap();
     }
@@ -204,8 +235,8 @@ fn rig(on: bool) -> Rig {
     *main.lock().unwrap() = Some(Arc::clone(&rt));
     let feature = PipelineRender::with(on, ADDRS.clone())
         .with_d3d(
-            vec![D3D_DRAW, D3D_SIM],
-            |addr, _| addr == D3D_DRAW || addr == D3D_SIM,
+            vec![D3D_DRAW, D3D_SIM, D3D_CALLBACK],
+            |addr, _| [D3D_DRAW, D3D_SIM, D3D_CALLBACK].contains(&addr),
             &[],
         )
         .print(false);
@@ -226,6 +257,18 @@ fn rig(on: bool) -> Rig {
 }
 
 impl Rig {
+    /// Runs `at` to its end: the event it stopped with, and the CPU.
+    fn run_to_end(&mut self, at: u32) -> (Option<Event>, CpuAbi) {
+        let esp = STACK_TOP - 0x100;
+        self.rt.memory().set_u32(esp, HARNESS_EXIT).unwrap();
+        let mut cpu = CpuAbi {
+            esp,
+            ..Default::default()
+        };
+        let t = Runner::default().run(&mut cpu, &mut self.ctx, at);
+        (self.ctx.event(t.event_id).cloned(), cpu)
+    }
+
     fn run(&mut self, at: u32) {
         let esp = STACK_TOP - 0x100;
         self.rt.memory().set_u32(esp, HARNESS_EXIT).unwrap();
@@ -404,4 +447,35 @@ fn a_snapshot_waits_for_the_next_frame_to_join() {
     piped.round(3, false);
     assert!(piped.feature.in_flight(), "and pipelines again after");
     piped.finish();
+}
+
+#[test]
+fn a_refusal_under_a_rust_continuation_stops_with_its_name_serial_runs_it() {
+    // Serially the callback's kernel call just runs.
+    let mut serial = rig(false);
+    serial.round(1, false);
+    serial.rt.memory().set_u32(FALLBACK, 2).unwrap();
+    serial.run(FRAME);
+    assert_eq!(serial.rt.memory().u32(KERNEL_CALLS).unwrap(), 1);
+
+    let mut piped = rig(true);
+    piped.round(1, false);
+    piped.rt.memory().set_u32(INPUT, 2).unwrap();
+    piped.rt.memory().set_u32(FALLBACK, 2).unwrap();
+    piped.run(FRAME);
+    // The join finds the render stopped inside D3D_CALLBACK's continuation.
+    let (event, _) = piped.run_to_end(FRAME);
+    let Some(Event::Unsupported { detail, .. }) = event else {
+        panic!("{event:?}")
+    };
+    assert!(
+        detail.contains("unresumable:kernel:KeQuerySystemTime"),
+        "{detail}"
+    );
+    let s = piped.feature.stats();
+    assert_eq!(
+        s.fallbacks.get("unresumable:kernel:KeQuerySystemTime"),
+        Some(&1),
+        "{s:?}"
+    );
 }
