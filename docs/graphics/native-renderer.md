@@ -835,7 +835,14 @@ render's snapshot of the frame.
    in order with the models' shading and the base map's alpha
    (`fs_transparent`), each pass's blend and depth state, and the run's
    node matrices in buffers of its own, so runs and the opaque objects'
-   pass in one submit do not overwrite each other's.
+   pass in one submit do not overwrite each other's. In boot, the objects'
+   worker takes a definition's transparent materials with one layer-15
+   pass, no alpha test and a base map that decodes, and publishes the
+   definition's node count and each shader's materials; the transparents'
+   host accepts an object entry when its definition is published with
+   the copy's node count and the entry's shader, and a run's pass draws
+   its entries in order as segments: consecutive world entries through
+   the world's pass, consecutive objects through the models'.
 5. **The live A/B**, as stage 1's: the same frame with the switch on and
    off, `external_passes_dropped` steady, and the `0x0002c19a` site's ms.
 
