@@ -125,6 +125,11 @@ fn bloodgulch_sandboxes_side_by_side() {
         }
         println!("  retail: {:?}", get(0));
     }
+    // Both sandboxes take the structure, lightmap, sky and scenario
+    // ambience from the same conversion (`prepare` with the Halo 2
+    // sandbox, then the Halo 1 sandbox's objects): every ambience
+    // reference is the same in both.
+    assert_eq!(refs[1].1, refs[2].1, "the sandboxes' ambience differs");
 }
 
 fn memory(m: &mut Map<Cursor<Vec<u8>>>) -> tags::schema::Memory {
