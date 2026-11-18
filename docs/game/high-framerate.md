@@ -1077,6 +1077,46 @@ Times are render-thread wall time measured the same way as D's `replay
 mode` part, so the two runs' lines compare directly: D's per-frame cost
 against E1's world image per guest frame plus its warped frames.
 
+### Headless (an off-screen serve)
+
+The same switches work with no window, on the headless GPU backend
+`H2_BOOT_GFX=<dir>` makes (`h2 run`, `h2 serve`), so an agent can read
+E1's (or D's) counters and hold reasons through `h2 agent render` without
+anyone playing:
+
+```sh
+H2_OPT=2 H2_BOOT_GFX=$TMPDIR/h2-gfx H2_BOOT_GFX_EVERY=never \
+  H2_FPS=60 H2_FEATURES=impl.render.reproject \
+  h2 serve disc/halo2.iso --out <the image you built>
+h2 agent render          # "interp": frames, warps, the held split
+```
+
+- **What runs.** `boot::d3d_glue::install_headless` puts the GPU backend
+  (at 1x, or `ScaledBackend` under `H2_RENDER_SCALE`) behind
+  `InterpBackend` on the render thread, exactly as a window does; which
+  host has a GPU backend is `d3d_glue::interp_render_thread`. Without
+  `H2_BOOT_GFX` (the recorder draws nothing) and under
+  `H2_BOOT_GFX_LIGHTING_AB` there are no in-between frames. The refusals
+  stand: `H2_RENDER_THREAD=0` and `H2_PIPELINE_RENDER` turn them off.
+- **Pacing.** No display, so no vsync: the in-between frames are paced on
+  the wall clock at the frame rate, the same schedule a window uses (the
+  backend's own clock, `pacing::Schedule`), a display clock of their own.
+  At real-time speed a guest frame at 30 gets one in-between frame at 60;
+  a serve sped up past that shows fewer, since a frame arriving early
+  takes the slot. Each is made for real (the world image warped,
+  the overlay drawn, presented through `GfxBackend::on_present_replay`)
+  and every guest frame is classified, so `blended_frames`, `replays`,
+  `warps` and the hold reasons are the game's own. A guest frame more than
+  45 ms after the last (a slow GPU, a hitch) is `unpaired_gap`, as in a
+  window.
+- **Pictures.** `H2_BOOT_GFX_BETWEEN=N` writes the first N in-between
+  frames to the directory as `frame-NNNNN-between-KK.png` (the KK-th
+  after guest swap NNNNN), and from the first one on the guest frames
+  shown meanwhile as `frame-NNNNN.png` (as shown: a blended present is a
+  warped frame too), so a warped frame can be compared with its
+  neighbours. In-between frames go to their own hook, so the guest's swap
+  numbering (`H2_BOOT_GFX_EVERY`, `H2_BOOT_GFX_SHADOWS`) is unchanged.
+
 ### How it works
 
 - **The overlay.** Without a pass tag, the draws that go on top unwarped
@@ -1227,11 +1267,24 @@ with Halo 2's epilogue, `c[10]`/`c[11]`):
 - the held counters name the guard.
 
 `cargo test -p d3d --test interp_gpu` draws E1 through the XDK's own
-epilogue (`c-38`/`c-37`).
+epilogue (`c-38`/`c-37`), and on one plain `GfxBackend` as a headless run
+has it: the in-between frame goes to the replay hook (flags 0), never the
+present hook, and is the guest's picture within filtering with the camera
+still; a 100 ms gap is counted as `unpaired_gap` and makes nothing after
+it.
+
+`cargo test -p boot --test headless_interp` (GPU; skips without an
+adapter): with `H2_BOOT_GFX`, `impl.render.reproject` and `H2_FPS=60`,
+`install_headless` builds the interp and the agent's `render.stats`
+source reads it, every hold reason present, instead of `null`.
 
 `cargo test -p gfx --lib warp` validates the warp shader with naga.
 `cargo test -p boot --lib interpolation` checks the switches (off by
-default; reproject wins over interpolate, `_ahead` over plain).
+default; reproject wins over interpolate, `_ahead` over plain) and which
+host has a GPU backend for them (a window's render thread; headless,
+`H2_BOOT_GFX` and `H2_RENDER_THREAD`; the headless recorder none);
+`d3d_glue::tests::in_between_captures_stop_at_their_limit` the
+`H2_BOOT_GFX_BETWEEN` names and limit.
 
 ### Left
 

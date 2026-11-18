@@ -151,6 +151,9 @@ pub struct GfxBackend {
     shaders: Option<Box<dyn ShaderProvider>>,
     presented: Option<SurfaceId>,
     present_hook: Option<PresentHook>,
+    /// [`Self::on_present_replay`]'s hook; `None`: in-between frames go
+    /// through `present_hook`.
+    replay_hook: Option<PresentHook>,
     pending: Option<PendingPass>,
     stats: BatchStats,
     merge_passes: bool,
@@ -300,6 +303,7 @@ impl GfxBackend {
             shaders: Some(Box::new(Nv2aShaders::new())),
             presented: None,
             present_hook: None,
+            replay_hook: None,
             pending: None,
             stats: BatchStats::default(),
             merge_passes: true,
@@ -502,6 +506,22 @@ impl GfxBackend {
         + 'static,
     ) -> Self {
         self.present_hook = Some(Box::new(hook));
+        self
+    }
+
+    /// Called instead of the [`Self::on_present`] hook for host-only frames
+    /// shown between the guest's presents ([`Backend::present_replay`], the
+    /// interpolated replay's and the reprojection's in-between frames,
+    /// [`crate::interp`]), with flags 0. Without it they go through the
+    /// present hook, as a window wants; a hook that counts the guest's
+    /// swaps (the headless run's screenshots) sets this to keep them apart.
+    pub fn on_present_replay(
+        mut self,
+        hook: impl FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32, Option<&[u8; 768]>)
+        + Send
+        + 'static,
+    ) -> Self {
+        self.replay_hook = Some(Box::new(hook));
         self
     }
 
@@ -1972,7 +1992,7 @@ impl Backend for GfxBackend {
         // the hook; the frame count, shader upkeep, `presented` and the
         // swap wait belong to the guest's presents.
         self.flush()?;
-        if let Some(hook) = self.present_hook.as_mut() {
+        if let Some(hook) = self.replay_hook.as_mut().or(self.present_hook.as_mut()) {
             hook(&self.ctx, &self.store, surface, 0, gamma);
         }
         Ok(())

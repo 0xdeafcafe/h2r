@@ -1007,9 +1007,16 @@ pub fn run_hosted_with_live(
     let _ = d3d::RENDER_THREAD_START.set(|| perf::register_current_thread("render"));
     // In-between frames at the display rate (docs/game/high-framerate.md,
     // "Phase 2" and "E1"): `impl.render.interpolate` or
-    // `impl.render.reproject`, render thread only.
-    let interp = if opts.d3d && host.gfx.is_some() {
-        d3d_glue::interpolation(host.settings.as_ref(), host.render_thread)
+    // `impl.render.reproject`, render thread only; in a window, or on the
+    // headless GPU backend (`H2_BOOT_GFX`, paced on the wall clock).
+    let interp = if opts.d3d {
+        d3d_glue::interp_render_thread(
+            host.gfx.is_some(),
+            host.render_thread,
+            std::env::var_os("H2_BOOT_GFX").is_some(),
+            d3d_glue::render_thread_requested(),
+        )
+        .and_then(|render_thread| d3d_glue::interpolation(host.settings.as_ref(), render_thread))
     } else {
         None
     };
@@ -1042,7 +1049,7 @@ pub fn run_hosted_with_live(
             None if host.render_thread => d3d_glue::install_threaded(&loaded.runtime, b, None, interp)?,
             None => d3d_glue::install_with(&loaded.runtime, b)?,
         }),
-        (true, None) => Some(d3d_glue::install(&loaded.runtime)?),
+        (true, None) => Some(d3d_glue::install_headless(&loaded.runtime, interp)?),
     };
     // Vblanks on the 60 Hz logical clock (docs/graphics/d3d.md "Vertical blank"),
     // delivered as DPCs; the frame wait above is the clocked one.

@@ -340,3 +340,84 @@ fn made_frames_match_the_guests_at_render_scale() {
         }
     }
 }
+
+/// E1 on one plain `GfxBackend`, as a headless run (`H2_BOOT_GFX`) makes
+/// it: no window and no display clock, the in-between frames paced on the
+/// backend's own clock and handed to the replay hook
+/// (`GfxBackend::on_present_replay`), never to the present hook, so the
+/// guest's swap count is the guest's. The in-between frame is built (the
+/// world image warped, the camera still: the guest's picture within
+/// filtering) and a gap is counted under its reason.
+#[test]
+fn reprojection_without_a_display_hands_in_between_frames_to_the_replay_hook() {
+    let Some(ctx) = context() else {
+        return;
+    };
+    fn read(
+        ctx: &GfxContext,
+        store: &gfx::surface::SurfaceStore,
+        id: gfx::surface::SurfaceId,
+    ) -> Vec<u8> {
+        let (mut px, order) = store.read_color(ctx, id).unwrap();
+        if matches!(order, gfx::surface::HostPixelOrder::Bgra8) {
+            for p in px.chunks_mut(4) {
+                p.swap(0, 2);
+            }
+        }
+        px
+    }
+    let guest: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
+    let between: Arc<Mutex<Vec<(u32, Vec<u8>)>>> = Arc::default();
+    let (g, bt) = (Arc::clone(&guest), Arc::clone(&between));
+    let backend = GfxBackend::new(share(&ctx))
+        .on_present(move |ctx, store, id, _flags, _gamma| {
+            g.lock().unwrap().push(read(ctx, store, id))
+        })
+        .on_present_replay(move |ctx, store, id, flags, _gamma| {
+            bt.lock().unwrap().push((flags, read(ctx, store, id)))
+        });
+    let clock = Arc::new(AtomicU64::new(0));
+    let c = Arc::clone(&clock);
+    let mut b = InterpBackend::new(backend, || 60)
+        .with_clock(move || c.load(Ordering::Relaxed))
+        .with_mode(Mode::Reproject { ahead: false });
+    let color = b.create_surface(D3DFormat::A8R8G8B8, W, H, false).unwrap();
+    b.present(color, 0).unwrap();
+    for i in 1..=2 {
+        clock.store(i * F, Ordering::Relaxed);
+        frame(&mut b, color);
+    }
+    // The guest's first frame, shown as drawn.
+    let real = guest.lock().unwrap()[1].clone();
+    // Half a guest frame on: one in-between frame is due.
+    clock.store(2 * F + F / 2, Ordering::Relaxed);
+    b.idle_at(2 * F + F / 2);
+    let st = *b.stats().lock().unwrap();
+    assert_eq!((st.blended_frames, st.replays), (1, 1), "{st}");
+    assert_eq!(
+        st.warps, 2,
+        "the present's and the in-between frame's: {st}"
+    );
+    assert_eq!(st.size_mismatch + st.unsure, 0, "{st}");
+    {
+        let guest = guest.lock().unwrap();
+        let between = between.lock().unwrap();
+        assert_eq!(guest.len() as u64, st.frames, "only the guest's presents");
+        assert_eq!(between.len(), 1, "the in-between frame, to the replay hook");
+        assert_eq!(between[0].0, 0, "no swap flags");
+        let (share, worst) = agreement(&between[0].1, &real, 12);
+        eprintln!("headless E1 in between: {share:.4} of pixels within 12, worst {worst}");
+        assert!(share > 0.98, "{share}");
+    }
+    // A hitch (more than 45 ms): the next frame is held, counted as a gap,
+    // and nothing is made after it until a pair forms again.
+    let gaps = st.unpaired_gap;
+    clock.store(2 * F + 100_000_000, Ordering::Relaxed);
+    frame(&mut b, color);
+    assert_eq!(b.idle_at(2 * F + 110_000_000), None);
+    let st = *b.stats().lock().unwrap();
+    assert_eq!(st.unpaired_gap, gaps + 1, "{st}");
+    assert_eq!(st.replays, 1, "{st}");
+    assert_eq!(between.lock().unwrap().len(), 1);
+    assert_eq!(guest.lock().unwrap().len() as u64, st.frames);
+}

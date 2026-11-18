@@ -818,6 +818,25 @@ adds them; types in `crates/agent-proto/src/render.rs`, logic in
   `render_scene_passes`, `layer_sort`, `render_states`,
   `transparent_sort`); `counters` the frame-stats window's line. Each is
   `null` where that piece isn't running.
+- **Interp on a headless serve.** `interp` is there when in-between
+  frames run: in `h2 play`, or in an `h2 serve` that renders on the GPU
+  off-screen (`H2_BOOT_GFX`) with a switch on (its counters move while
+  the frame rate is above 30).
+  The in-between frames are paced on the wall clock at the frame rate
+  (no display) and made and classified for real, so the hold reasons are
+  the game's ([high-framerate.md](../game/high-framerate.md) "Headless").
+  The serve, for E1:
+
+  ```sh
+  H2_OPT=2 H2_BOOT_GFX=$TMPDIR/h2-gfx H2_BOOT_GFX_EVERY=never \
+    H2_FPS=60 H2_FEATURES=impl.render.reproject \
+    h2 serve disc/halo2.iso --out <the image you built>
+  ```
+
+  `impl.render.interpolate` gives D instead. `H2_BOOT_GFX_BETWEEN=N`
+  also writes the first N in-between frames as PNGs to that directory.
+  Without `H2_BOOT_GFX`, with `H2_RENDER_THREAD=0` or under
+  `H2_PIPELINE_RENDER`, `interp` stays `null`.
 
 ### Hitch causes and fallback hits
 
