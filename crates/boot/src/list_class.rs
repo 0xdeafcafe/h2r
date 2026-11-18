@@ -1062,6 +1062,41 @@ pub async fn open(cx: &Cx, chain: u32, screen: &str) -> Result<(), EntryError> {
     Ok(())
 }
 
+/// Opens our screen `screen` above `over` on `over`'s own window and slot,
+/// for the player of `chain`: the loader is handed a request built as the
+/// Game Setup dialog's own rows build theirs (window `+0x74`, slot `+0x78`;
+/// `crate::skulls_mp::open_request`). Says why when it cannot.
+pub async fn push(cx: &Cx, chain: u32, over: u32, screen: &str) -> Result<(), EntryError> {
+    let Some(loader) = loader_of(screen) else {
+        eprintln!("ui: {screen} is not a screen of ours (or its class is off); not opened");
+        return Ok(());
+    };
+    let Some(mask) = cx.read(|m| player_mask(m, chain))? else {
+        eprintln!("ui: no local player for the press; {screen} not opened");
+        return Ok(());
+    };
+    let (window, slot) = crate::ui_kit::lifecycle::window_slot(cx, over)?;
+    let request = crate::skulls_mp::open_request(mask as u16, window, slot, loader);
+    let at = PUSH_REQUEST.load(Ordering::SeqCst);
+    if at == 0 {
+        eprintln!("ui: no request memory yet; {screen} not opened");
+        return Ok(());
+    }
+    eprintln!("ui: opening {screen} on window {window}, slot {slot}");
+    cx.write(|m| m.write(at, &request))?;
+    cx.call(GuestCall::new(loader).args([at])).await?;
+    Ok(())
+}
+
+/// Guest memory for [`push`]'s request (0x20 bytes), set at install
+/// ([`set_push_request`]).
+static PUSH_REQUEST: AtomicU32 = AtomicU32::new(0);
+
+/// Where [`push`] builds its request: 0x20 bytes of guest memory of ours.
+pub fn set_push_request(at: u32) {
+    PUSH_REQUEST.store(at, Ordering::SeqCst);
+}
+
 /// Row text (list slot 20): thiscall on the list, the item and a word,
 /// `ret 8`. Each of the row's texts goes to the item's text widget of that
 /// index. With `shown` (a class with a description), the focused row's
@@ -1133,6 +1168,10 @@ pub async fn row_chosen(
     match rows.press(row) {
         Chosen::Stepped(msg) => eprintln!("{msg}"),
         Chosen::Open(id) => open(&cx, chain, id).await?,
+        Chosen::Push(id) => {
+            let screen = cx.entry().ecx.wrapping_sub(ui::LIST);
+            push(&cx, chain, screen, id).await?
+        }
         Chosen::Act => {
             if let Some(action) = action {
                 let screen = cx.entry().ecx.wrapping_sub(ui::LIST);
@@ -1421,6 +1460,9 @@ impl feature::Feature for ListClass {
         let rows = Arc::clone(&self.rows);
         let title = rows.title();
         let tables = b.guest_alloc(0x1000, Permissions::RW)?;
+        if PUSH_REQUEST.load(Ordering::SeqCst) == 0 {
+            set_push_request(b.guest_alloc(0x1000, Permissions::RW)?);
+        }
         let name = self.id;
         let shown = self.description.map(|_| Arc::new(Shown::default()));
         // The loader needs every address, so the entries are made first and
