@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use engine::points;
-use feature::pipeline_render::{Addrs, PipelineRender, RANDOM_A, RANDOM_C};
+use feature::pipeline_render::{Addrs, PipelineRender, RANDOM_A, RANDOM_C, SharedCache};
 use feature::{Registry, Remap, Switches};
 use runtime::exec::HARNESS_EXIT;
 use runtime::guest::Permissions;
@@ -82,7 +82,28 @@ const OUT: u32 = 0x2_5000;
 const SHARED_LINE: u32 = 0x2_6000;
 /// The D3D layer's own page (a push buffer).
 const PUSH: u32 = 0x2_7000;
-const DATA_LEN: u32 = 0x8000;
+/// A record cache both sides allocate in (as the object render-state cache
+/// `0x0003ddd0` is): `CACHE_GET(handle)` returns the object's record,
+/// taking the next free one (`CACHE_NEXT`) when the object's field
+/// (`body + 0xc`, -1: none) does not name a record it owns. A record is the
+/// owner at +4 and the object's lighting at +8. The render takes records
+/// for the objects it draws when `CACHE_MODE` is set, and draws their
+/// lighting; the sim calls `CACHE_GET` for other objects.
+const CACHE_GET: u32 = 0x1_5000;
+const CACHE_OBJECTS: u32 = 0x2_8000;
+const CACHE_PTR: u32 = 0x2_8004;
+const CACHE_NEXT: u32 = 0x2_8008;
+const CACHE_MODE: u32 = 0x2_800c;
+const CACHE_OBJECTS_HEADER: u32 = 0x2_8010;
+const CACHE_HEADER: u32 = 0x2_8060;
+const CACHE_OBJECT_DATA: u32 = 0x2_8100;
+const CACHE_BODIES: u32 = 0x2_8200;
+const CACHE_RECORDS: u32 = 0x2_8400;
+const CACHE_RECORD: u32 = 0x20;
+/// What the render drew with: the lighting of each object it drew.
+const CACHE_DRAWN: u32 = 0x2_8800;
+const CACHE_LEN: u32 = 16;
+const DATA_LEN: u32 = 0x9000;
 
 /// The game thread's stack: as large as Halo 2's (its main thread's).
 const GAME_STACK: u32 = 0x4_0000;
@@ -105,7 +126,48 @@ static ADDRS: Addrs = Addrs {
     warmup: 0,
     after_fallback: 0,
     random: Some((RNG_PTR, &[0, 4])),
+    shared_caches: &[SharedCache {
+        entry: CACHE_GET,
+        objects: CACHE_OBJECTS,
+        object_stride: 12,
+        body_at: 8,
+        field: 0xc,
+        cache: CACHE_PTR,
+        record_len: CACHE_RECORD,
+        owner: 4,
+    }],
 };
+
+/// The cache lookup: the record's lighting for object `h`, allocating as
+/// `CACHE_GET` does.
+fn cache_get(m: &mut Guest, h: u32) -> Result<(u32, u32), runtime::GuestFault> {
+    let body = CACHE_BODIES + 0x10 * (h & 0xffff);
+    let rec = m.u32(body + 0xc)?;
+    if rec != u32::MAX && m.u32(CACHE_RECORDS + CACHE_RECORD * rec + 4)? == h {
+        return Ok((rec, m.u32(CACHE_RECORDS + CACHE_RECORD * rec + 8)?));
+    }
+    let next = m.u32(CACHE_NEXT)?;
+    m.set_u32(CACHE_NEXT, (next + 1) % CACHE_LEN)?;
+    let at = CACHE_RECORDS + CACHE_RECORD * next;
+    m.set_u32(at + 4, h)?;
+    let light = 0x100 + h * 7;
+    m.set_u32(at + 8, light)?;
+    m.set_u32(body + 0xc, next)?;
+    Ok((next, light))
+}
+
+/// `CACHE_GET` as generated code: stdcall (handle), the record in eax.
+fn cache_entry(
+    cpu: &mut CpuAbi,
+    ctx: &mut ExecCtx,
+    _: u32,
+) -> Result<TransferAbi, runtime::GuestFault> {
+    let rt = Arc::clone(ctx.runtime());
+    let mut m = rt.memory();
+    let h = m.u32(cpu.esp + 4)?;
+    cpu.eax = cache_get(&mut m, h)?.0;
+    m.ret(cpu, 4)
+}
 
 /// What the D3D entries saw, in order: (entry, value read at INPUT, ran on
 /// the render thread's runtime).
@@ -166,6 +228,14 @@ fn render(
             for seed in [RNG, RNG + 4] {
                 let x = m.u32(seed)?.wrapping_mul(RANDOM_A).wrapping_add(RANDOM_C);
                 m.set_u32(seed, x)?;
+            }
+            if m.u32(CACHE_MODE)? != 0 {
+                // Draws two objects of its own (handles 0..8) with their
+                // cached lighting.
+                for h in [v % 8, (v + 3) % 8] {
+                    let (_, light) = cache_get(&mut m, h)?;
+                    m.set_u32(CACHE_DRAWN + 4 * (4 * (v % 32) + h % 4), light)?;
+                }
             }
             cpu.esp -= 4;
             m.set_u32(cpu.esp, INPUT)?;
@@ -314,6 +384,7 @@ fn rig_full(on: bool, serviced: &[&'static str], addrs: Addrs, watch: &[u32]) ->
     let mut d = Dispatch::default();
     d.register_generated_rust(FRAME, render).unwrap();
     d.register_generated_rust(CALLBACK, callback).unwrap();
+    d.register_generated_rust(CACHE_GET, cache_entry).unwrap();
     d.register_resume(CALLBACK + 0x10, CALLBACK, CALLBACK + 0x10)
         .unwrap();
     d.register_override(D3D_CALLBACK, "D3D callback", |cpu, ctx, _| {
@@ -422,6 +493,21 @@ fn rig_full(on: bool, serviced: &[&'static str], addrs: Addrs, watch: &[u32]) ->
     g.set_u32(RNG, 0x1234_5678).unwrap();
     g.set_u32(RNG + 4, 0x9abc_def0).unwrap();
     g.set_u8(GLOBALS_RECORD + 0x1120, 1).unwrap();
+    // The cache's two data arrays: every object without a record.
+    g.set_u32(CACHE_OBJECTS, CACHE_OBJECTS_HEADER).unwrap();
+    g.set_u32(CACHE_OBJECTS_HEADER + 0x44, CACHE_OBJECT_DATA)
+        .unwrap();
+    g.set_u32(CACHE_PTR, CACHE_HEADER).unwrap();
+    g.set_u32(CACHE_HEADER + 0x44, CACHE_RECORDS).unwrap();
+    for h in 0..16 {
+        g.set_u32(CACHE_OBJECT_DATA + 12 * h + 8, CACHE_BODIES + 0x10 * h)
+            .unwrap();
+        g.set_u32(CACHE_BODIES + 0x10 * h + 0xc, u32::MAX).unwrap();
+    }
+    for r in 0..CACHE_LEN {
+        g.set_u32(CACHE_RECORDS + CACHE_RECORD * r + 4, u32::MAX)
+            .unwrap();
+    }
     g.prepare_fast_pages();
     let rt = Runtime::new(g, d);
     *main.lock().unwrap() = Some(Arc::clone(&rt));
@@ -521,6 +607,29 @@ impl Rig {
         self.rt.memory().set_u32(GLOBALS, 0).unwrap();
         self.run(FRAME);
         assert!(!self.feature.in_flight());
+    }
+
+    /// The sim's call of `CACHE_GET(h)` (stdcall), as the effect updates
+    /// make: the record in eax.
+    fn cache_call(&mut self, h: u32) -> u32 {
+        let esp = STACK_TOP - 0x100;
+        {
+            let mut m = self.rt.memory();
+            m.set_u32(esp, HARNESS_EXIT).unwrap();
+            m.set_u32(esp + 4, h).unwrap();
+        }
+        let mut cpu = CpuAbi {
+            esp,
+            ..Default::default()
+        };
+        let t = Runner::default().run(&mut cpu, &mut self.ctx, CACHE_GET);
+        assert!(
+            matches!(self.ctx.event(t.event_id), Some(Event::HarnessExit)),
+            "{:?}",
+            self.ctx.event(t.event_id)
+        );
+        assert_eq!(cpu.esp, esp + 8);
+        cpu.eax
     }
 
     fn data(&self) -> Vec<u8> {
@@ -1180,4 +1289,52 @@ fn the_frame_counter_and_seed_steps_the_sim_sees_are_the_serial_runs() {
     let s = piped.feature.stats();
     assert_eq!(s.mispredicts, 0, "{s:?}");
     assert!(s.pipelined >= u64::from(n), "{s:?}");
+}
+
+/// A record cache the render and the sim both allocate in (the object
+/// render-state cache: the first-person weapon drawn dark): the sim's
+/// allocations, made while a render is in flight, join it first, so no two
+/// objects share a record, every object's record is its own, and the render
+/// draws each object with its own lighting, as serially. Lookups that find
+/// their record do not join.
+#[test]
+fn a_cache_both_sides_allocate_in_is_allocated_in_the_serial_order() {
+    let run = |on: bool| {
+        let mut r = rig(on);
+        r.rt.memory().set_u32(CACHE_MODE, 1).unwrap();
+        for k in 1..=24 {
+            // The sim's objects, 8..16: a new one every other round, then
+            // the same ones again (found, no allocation).
+            let h = 8 + (k / 2) % 8;
+            let rec = r.cache_call(h);
+            assert_eq!(
+                r.rt.memory()
+                    .u32(CACHE_RECORDS + CACHE_RECORD * rec + 4)
+                    .unwrap(),
+                h,
+                "round {k}: the sim's record is its object's"
+            );
+            r.round(k, false);
+        }
+        r.finish();
+        r
+    };
+    let (serial, piped) = (run(false), run(true));
+    compare(&serial.data(), &piped.data());
+    let m = piped.rt.memory();
+    for h in 0..16 {
+        let rec = m.u32(CACHE_BODIES + 0x10 * h + 0xc).unwrap();
+        if rec != u32::MAX {
+            let owner = m.u32(CACHE_RECORDS + CACHE_RECORD * rec + 4).unwrap();
+            assert_eq!(owner, h, "object {h}'s record is its own");
+        }
+    }
+    drop(m);
+    let s = piped.feature.stats();
+    assert!(s.cache_joins > 0, "{s:?}");
+    assert!(
+        s.cache_joins < 24,
+        "lookups that find their record do not join: {s:?}"
+    );
+    assert!(s.completed > 12, "{s:?}");
 }
