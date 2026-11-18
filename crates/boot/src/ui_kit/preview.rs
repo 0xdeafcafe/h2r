@@ -382,6 +382,20 @@ impl Disc {
     }
 
     /// The screen of `mainmenu.map` with screen id `id`.
+    /// Every screen tag's name in `mainmenu.map`, sorted: what
+    /// [`Disc::render_retail`] draws.
+    pub fn retail_screens(&self) -> Vec<String> {
+        let m = self.map.borrow();
+        let mut v: Vec<String> = m
+            .tags()
+            .iter()
+            .filter(|t| t.group == tui::SCREEN)
+            .filter_map(|t| t.name.clone())
+            .collect();
+        v.sort();
+        v
+    }
+
     pub fn screen(&self, id: i16) -> Option<tui::Screen> {
         if self.screens.borrow().is_none() {
             let mut all = HashMap::new();
