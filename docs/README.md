@@ -134,6 +134,8 @@ goals, the two-stage plan, the crate table and milestones.
 
 - [settings-menu.md](game/settings-menu.md) (**start here**): the in-game settings screens (Video, Controls), FOV, the settings schema, `h2 settings` and the `H2_*` flag map
 - [aim-assist.md](game/aim-assist.md): the Aim Assist setting (Auto, Default, Strong, Very Strong), the weapon and globals fields it scales at map load
+- [ui-builder.md](game/ui-builder.md): the UI builder for native screens: pages as pure state machines, one `View` drawn offline from the disc, layout checks, the fidelity loop against game captures
+- [ui-screens.md](game/ui-screens.md): the UI kit for list screens of ours: ids, input, previews, the checklist
 - [skulls.md](game/skulls.md): campaign skulls per profile, the skulls menu, and our own skulls
 - [community-gametypes.md](game/community-gametypes.md): community classics (Zombies, SWAT and more) as extra built-in game variants
 - [maps.md](game/maps.md): new, edited, patched and shared maps: packages, patches, `MapId`; foundation built
