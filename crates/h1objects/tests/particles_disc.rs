@@ -568,6 +568,10 @@ fn every_particle_converts() {
                 let (first, count) = p.sequence_range();
                 assert_eq!(r.at("first_sequence"), Some(&Val::Int(first.into())), "{name}");
                 assert_eq!(r.at("sequence_count"), Some(&Val::Int(count.into())), "{name}");
+                // The sprite path evaluates `frame` with no null check
+                // (0x00246cfc): it must hold a function.
+                let Some(Val::Data(frame)) = r.at("frame.function") else { panic!("{name}: frame") };
+                assert!(tags::effects::function::Function::parse(frame).is_ok(), "{name}: frame function");
                 let Some(Val::Block(params)) = r.at("parameters") else { panic!() };
                 let Some(Val::Block(pp)) = r.at("postprocess") else { panic!() };
                 let Some(Val::Block(bitmaps)) = pp[0].at("bitmaps") else { panic!() };

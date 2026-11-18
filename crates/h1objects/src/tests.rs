@@ -1898,3 +1898,45 @@ fn rebuilt_vehicle_holds_its_functions_and_primary_scales() {
     assert_eq!(r.at("unit.obje.functions[0].data_14"), Some(&Val::Data(vec![0; 0x14])));
     assert_eq!(r.at("unit.obje.attachments[0].string_10"), Some(&Val::text("c_out")));
 }
+
+#[test]
+fn a_converted_particles_frame_always_has_a_function() {
+    // The sprite draw path evaluates `frame` (prt3 +0x5c) and reads its
+    // function's header byte with no null check (0x00246cfc): an empty
+    // frame faults reading address 1. The base's static particles leave
+    // it empty because they draw the static quad instead.
+    use crate::particles::{first_sprite_frame, sprite_frame};
+    use tags::defs::{self, Defs, Val};
+    use tags::effects::function::{Function, FunctionType};
+    let d = Defs::builtin().group(FourCC(*b"prt3")).unwrap();
+    let mut r = defs::default_record(d);
+    r.set("frame.function", Val::Data(Vec::new())).unwrap();
+    sprite_frame(&mut r).unwrap();
+    let Some(Val::Data(b)) = r.at("frame.function") else { panic!("frame function") };
+    assert_eq!(b, &first_sprite_frame());
+    assert_eq!(b.len(), 0x1c);
+    let f = Function::parse(b).unwrap();
+    assert_eq!(f.kind, FunctionType::Constant);
+    assert!(!f.is_ranged() && !f.is_raw_output());
+    assert_eq!(f.range, [0.0, 0.0]);
+    // The first sprite whatever the inputs.
+    for x in [0.0, 0.5, 1.0] {
+        assert_eq!(f.evaluate(x, x), 0.0);
+    }
+    // It survives the write: the built tag holds the 0x1c bytes.
+    let built = defs::to_built(d, &r, &mut |_| None).unwrap();
+    let back = defs::from_built(d, &built).unwrap();
+    assert_eq!(back.at("frame.function"), Some(&Val::Data(first_sprite_frame())));
+
+    // Bytes that aren't a function are replaced too.
+    r.set("frame.function", Val::Data(vec![1, 0, 0])).unwrap();
+    sprite_frame(&mut r).unwrap();
+    assert_eq!(r.at("frame.function"), Some(&Val::Data(first_sprite_frame())));
+
+    // A function the base gave is kept.
+    let mut kept = Function::parse(&first_sprite_frame()).unwrap();
+    kept.range = [0.25, 0.75];
+    r.set("frame.function", Val::Data(kept.to_bytes())).unwrap();
+    sprite_frame(&mut r).unwrap();
+    assert_eq!(r.at("frame.function"), Some(&Val::Data(kept.to_bytes())));
+}
