@@ -4,13 +4,16 @@
 //! `eax = 41; ret`), through `Remap`. The guest holds a synthetic object
 //! list, object array and camera at the game's addresses. A skipped setup
 //! returns with AL 0, `ret 0x14` and the entry's "not drawn" flag; one
-//! that is not skipped reaches the original (EAX 41).
+//! that is not skipped reaches the original (EAX 41). `SCENE_TRANSPARENTS`
+//! stands at the fixture's `eax = 1; ret` (0x403005): its observer asks the
+//! capture function for a grid, and the test answers as the D3D device
+//! would, with a wall at view depth 5 over the whole view.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use engine::points;
+use engine::render_loop::occlusion::DepthMapping;
 use engine::render_loop::occlusion::guest::*;
-use engine::render_loop::occlusion::{Camera, DepthGrid, Frame, HiZ};
 use feature::{Registry, Remap, Switches};
 use runtime::exec::HARNESS_EXIT;
 use runtime::guest::Permissions;
@@ -18,6 +21,8 @@ use runtime::{CpuAbi, Dispatch, Event, ExecCtx, Guest, Runner, Runtime};
 
 const RECORDS: u32 = 0x40_4000;
 const SETUP: u32 = 0x40_2000;
+/// `SCENE_TRANSPARENTS` at the fixture's `eax = 1; ret`.
+const TRANSPARENTS: u32 = 0x40_3005;
 const STACK: u32 = 0x60_0e00;
 const ARRAY: u32 = 0x61_0000;
 const DATA: u32 = 0x61_1000;
@@ -88,23 +93,6 @@ fn runtime() -> Arc<Runtime> {
     Runtime::new(g, d)
 }
 
-fn wall(frame: u64) -> Frame {
-    let mut g = DepthGrid::far(64, 32);
-    g.depth.iter_mut().for_each(|d| *d = 5.0);
-    Frame {
-        hiz: HiZ::build(g),
-        camera: Camera::from_fov(
-            [0.0; 3],
-            [1.0, 0.0, 0.0],
-            [0.0, 0.0, 1.0],
-            std::f32::consts::FRAC_PI_2,
-            1.0,
-            0.05,
-        ),
-        frame,
-    }
-}
-
 /// Runs `at` as the game would call it and returns the CPU after.
 fn call(rt: &Arc<Runtime>, at: u32, cpu: CpuAbi) -> CpuAbi {
     let mut cpu = CpuAbi { esp: STACK, ..cpu };
@@ -144,6 +132,7 @@ fn the_feature_skips_occluded_objects_from_the_second_frame() {
         .build(&Remap::new(&[
             (&points::OBJECT_RENDER_RECORDS, RECORDS),
             (&points::OBJECT_RENDER_SETUP, SETUP),
+            (&points::SCENE_TRANSPARENTS, TRANSPARENTS),
         ]))
         .unwrap();
     let text = plan.text();
@@ -151,14 +140,19 @@ fn the_feature_skips_occluded_objects_from_the_second_frame() {
         text.contains("occlusion_begin") && text.contains("occlusion_skip"),
         "{text}"
     );
+    assert!(text.contains("occlusion_capture"), "{text}");
     plan.install(&rt).unwrap();
+    let asked: Arc<Mutex<Vec<(u64, u32, u32)>>> = Arc::default();
+    {
+        let asked = Arc::clone(&asked);
+        feature::occlusion::set_capture(Box::new(move |tag, w, h| {
+            asked.lock().unwrap().push((tag, w, h));
+        }));
+    }
 
     let mut skipped = Vec::new();
     for frame in 1..=3u32 {
         rt.memory().set_u32(FRAME, frame).unwrap();
-        if frame > 1 {
-            feature::occlusion::MAILBOX.publish(0, wall(frame as u64 - 1));
-        }
         call(
             &rt,
             RECORDS,
@@ -184,7 +178,20 @@ fn the_feature_skips_occluded_objects_from_the_second_frame() {
             }
         }
         skipped.push(this);
+        // The opaque layers are drawn: the transparents' observer asks for
+        // this frame's depth, and the device answers (here, at once).
+        call(&rt, TRANSPARENTS, CpuAbi::default());
+        let asks: Vec<_> = asked.lock().unwrap().drain(..).collect();
+        assert_eq!(asks.len(), 1, "one capture per main view and frame");
+        let (tag, w, h) = asks[0];
+        assert_eq!((w, h), feature::occlusion::GRID);
+        // A second transparents call in the frame asks for nothing.
+        call(&rt, TRANSPARENTS, CpuAbi::default());
+        assert!(asked.lock().unwrap().is_empty());
+        let raw = vec![5.0f32; (w * h) as usize];
+        feature::occlusion::deliver(tag, w, h, &raw, DepthMapping::Linear);
     }
+    assert_eq!(feature::occlusion::published(), 3);
     assert_eq!(skipped, vec![vec![], vec![], vec![1]]);
     let flags: Vec<u8> = (0..4)
         .map(|i| rt.memory().u8(FLAGS + 2 * i).unwrap())

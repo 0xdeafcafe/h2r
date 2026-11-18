@@ -311,6 +311,10 @@ points! { ALL;
     /// `(list index, byte, byte*, -1, arg)`, AL a retry flag, `ret 0x14`.
     /// The occlusion skip point.
     OBJECT_RENDER_SETUP @ 0x0013_3790: [fn(vis: esi, index: stack 0) -> al ret 20]; "docs/graphics/occlusion-culling.md";
+    /// The sorted transparents of a scene pass (`render_scene_passes`
+    /// calls it after the opaque layers and before the first-person
+    /// chain): the occlusion depth capture point.
+    SCENE_TRANSPARENTS @ 0x0001_e370: [opaque]; "docs/graphics/occlusion-culling.md";
     /// Shader draw begin: per draw.
     SHADER_DRAW_BEGIN @ 0x0001_bbf0: [opaque], Hot; "docs/formats/shader-instances.md";
     /// `submit_structure_or_model_geometry`: per draw.
