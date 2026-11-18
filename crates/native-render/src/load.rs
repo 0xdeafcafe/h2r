@@ -7,7 +7,8 @@ use std::io::{Read, Seek};
 
 use map::{Map, TagId};
 use tags::geometry::{RawSource, Section, TagView};
-use tags::structure::{Lightmap, LightmapRenderInfo, StructureRender};
+use tags::lighting::{VertexLighting, vertex_lighting};
+use tags::structure::{Lightmap, LightmapGroup, LightmapRenderInfo, StructureRender, load_bucket};
 
 use crate::world::{LightmapKey, Owner, PartInput, Placement, SectionInput, World, WorldBuilder};
 
@@ -84,7 +85,22 @@ pub fn section_input(s: &Section) -> Option<SectionInput> {
         uvs: v.texcoords,
         lightmap_uvs: v.lightmap_texcoords,
         normals: v.normals,
+        binormals: v.binormals,
+        tangents: v.tangents,
+        lighting: lighting_vectors(s),
     })
+}
+
+/// A section's signed lighting vectors (stream `30`,
+/// `tags::lighting::vertex_lighting`); empty without that stream.
+pub fn lighting_vectors(s: &Section) -> Vec<[f32; 3]> {
+    s.vertex_buffers
+        .iter()
+        .find_map(|vb| match vertex_lighting(s, vb) {
+            Ok(Some(VertexLighting::Vector(v))) => Some(v),
+            _ => None,
+        })
+        .unwrap_or_default()
 }
 
 fn key(info: Option<&LightmapRenderInfo>) -> Option<LightmapKey> {
@@ -141,9 +157,28 @@ pub fn load_world<R: Read + Seek>(
             }
         })
         .collect();
+    // An instance's lightmap coordinates are its own, in a bucket of the
+    // lightmap group, not the definition's (which every placement shares).
+    let buckets = group.as_ref().map(|g| bucket_streams(g, raw)).unwrap_or_default();
     for (ii, inst) in bsp.instances.iter().enumerate() {
         let Some(Some(def)) = usize::try_from(inst.definition).ok().and_then(|i| defs.get(i)) else {
             continue;
+        };
+        let n = def.positions.len();
+        let own = group.as_ref().and_then(|g| instance_run(g, &buckets, ii));
+        let with_own;
+        let def = match own {
+            Some((b, first)) => {
+                let lightmap_uvs = bucket_slice(&b.lightmap_uvs, first, n).map(<[_]>::to_vec);
+                let lighting = bucket_slice(&b.lighting, first, n).map(<[_]>::to_vec);
+                with_own = SectionInput {
+                    lightmap_uvs: lightmap_uvs.unwrap_or_else(|| def.lightmap_uvs.clone()),
+                    lighting: lighting.unwrap_or_else(|| def.lighting.clone()),
+                    ..def.clone()
+                };
+                &with_own
+            }
+            None => def,
         };
         if !inst.is_rigid() || inst.scale <= 0.0 {
             failed += 1;
@@ -166,6 +201,54 @@ pub fn load_world<R: Read + Seek>(
     })
 }
 
+/// One lightmap bucket's per-vertex streams.
+#[derive(Clone, Debug, Default)]
+pub struct BucketStreams {
+    /// Stream `1f`.
+    pub lightmap_uvs: Vec<[f32; 2]>,
+    /// Stream `30`.
+    pub lighting: Vec<[f32; 3]>,
+}
+
+/// Each of `group`'s buckets' streams, loaded once; empty for a bucket the
+/// engine does not patch (flag bit 0), or one that does not load.
+pub fn bucket_streams(group: &LightmapGroup, raw: &mut dyn RawSource) -> Vec<BucketStreams> {
+    group
+        .buckets
+        .iter()
+        .map(|b| {
+            if !b.is_patched() {
+                return BucketStreams::default();
+            }
+            match load_bucket(b, raw) {
+                Ok(Some(s)) => BucketStreams {
+                    lightmap_uvs: s.vertices(None).map(|v| v.lightmap_texcoords).unwrap_or_default(),
+                    lighting: lighting_vectors(&s),
+                },
+                _ => BucketStreams::default(),
+            }
+        })
+        .collect()
+}
+
+/// Instance `index`'s bucket and first vertex in it, as the structure draw
+/// binds them (`0x0004d367`..`0x0004d3a4`): its bucket reference (group
+/// `+0x54`, one per instance) and the reference's first offset (`None`
+/// is the disc's `0xffff`).
+pub fn instance_run<'a>(
+    group: &LightmapGroup, buckets: &'a [BucketStreams], index: usize,
+) -> Option<(&'a BucketStreams, Option<u16>)> {
+    let r = group.instance_bucket_refs.get(index)?;
+    Some((buckets.get(usize::from(r.bucket))?, *r.section_offsets.first()?))
+}
+
+/// `vertices` values of a bucket stream from `offset` (`None` is the
+/// disc's `0xffff`), or `None` when they do not fit.
+pub fn bucket_slice<T>(stream: &[T], offset: Option<u16>, vertices: usize) -> Option<&[T]> {
+    let first = usize::from(offset?);
+    stream.get(first..first.checked_add(vertices)?).filter(|s| !s.is_empty())
+}
+
 /// A P8 lightmap page's indices (one byte per texel) through a palette of
 /// `A8R8G8B8` words, to RGBA8. The palette is a lookup, applied before
 /// any filtering (docs/formats/lighting.md).
@@ -179,9 +262,86 @@ pub fn expand_page(indices: &[u8], palette: &[u32; 256]) -> Vec<u8> {
         .collect()
 }
 
+/// A shader's template name and its bitmaps in parameter order: `shad +4`
+/// the template's datum, `shad +0x20` the compiled postprocess (first
+/// element, `0x7c` bytes) whose `+4` block lists the bitmap parameters
+/// (`0xc` bytes, datum first; docs/formats/shader-instances.md).
+pub fn shader_bitmaps<R: Read + Seek>(map: &mut Map<R>, shader: TagId) -> Result<(String, Vec<TagId>), Error> {
+    let tag = map.tag(shader)?.clone();
+    if tag.group != map::FourCC(*b"shad") {
+        return Err("not a shader".into());
+    }
+    let address = tag.location.ok_or("shader has no payload")?.address;
+    let bytes = map.read_tag_bytes(shader)?;
+    let view = TagView::new(&bytes, address);
+    let word = |b: &[u8], o: usize| -> Option<u32> { Some(u32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?)) };
+    let template = word(&bytes, 4)
+        .and_then(|id| map.tag(TagId(id)).ok())
+        .and_then(|t| t.name.clone())
+        .unwrap_or_default();
+    let root = view.at(0, 0x54)?;
+    let post = view.block(root, 0x20, 0x7c)?;
+    let post = post.first().ok_or("no compiled postprocess")?;
+    let ids = view
+        .block(post, 4, 0xc)?
+        .iter()
+        .filter_map(|b| word(b, 0).map(TagId))
+        .filter(|id| *id != TagId::NULL)
+        .collect();
+    Ok((template, ids))
+}
+
+/// Whether a bitmap's tag name reads as a base (diffuse) map: not a
+/// default, detail, bump, reflection, change-colour, self-illumination,
+/// specular or mask map. A name rule, stage 1's stand-in until each
+/// template's own program draws its material (docs/graphics/native-renderer.md,
+/// "Match the look").
+pub fn is_base_map_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    let last = lower.rsplit('\\').next().unwrap_or(&lower);
+    let folders = ["default_bitmaps", "rasterizer", "detail_maps", "reflection_maps", "cube"];
+    let words = [
+        "_cc", "change_color", "change_colour", "color_change", "colour_change", "bump", "_bmp", "detail", "reflection",
+        "cube", "fade", "normal", "illum", "self", "specular", "mask",
+    ];
+    !(lower.split('\\').any(|c| folders.contains(&c)) || words.iter().any(|w| last.contains(w)))
+}
+
+/// A material's base map: the first bitmap of its shader whose name reads
+/// as one ([`is_base_map_name`]).
+pub fn base_map<R: Read + Seek>(map: &mut Map<R>, shader: TagId) -> Option<TagId> {
+    let (_, bitmaps) = shader_bitmaps(map, shader).ok()?;
+    bitmaps
+        .into_iter()
+        .find(|&b| map.tag(b).ok().and_then(|t| t.name.clone()).is_some_and(|n| is_base_map_name(&n)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_instance_takes_its_run_of_the_bucket() {
+        let uvs: Vec<[f32; 2]> = (0..6).map(|i| [i as f32, 0.0]).collect();
+        assert_eq!(bucket_slice(&uvs, Some(2), 3), Some(&uvs[2..5]));
+        assert_eq!(bucket_slice(&uvs, Some(4), 3), None, "past the bucket");
+        assert_eq!(bucket_slice(&uvs, None, 3), None, "0xffff: no lightmap vertices");
+        assert_eq!(bucket_slice::<[f32; 2]>(&[], Some(0), 0), None, "nothing to take");
+    }
+
+    #[test]
+    fn base_map_names() {
+        assert!(is_base_map_name("scenarios\\bitmaps\\oldmombasa\\walls\\concrete_wall"));
+        for other in [
+            "shaders\\default_bitmaps\\bitmaps\\gray_50_percent",
+            "scenarios\\bitmaps\\x\\concrete_wall_bump",
+            "scenarios\\bitmaps\\x\\detail_maps\\grit",
+            "scenarios\\bitmaps\\x\\light_illum",
+            "scenarios\\bitmaps\\x\\metal_cc",
+        ] {
+            assert!(!is_base_map_name(other), "{other}");
+        }
+    }
 
     #[test]
     fn a_page_expands_through_its_palette() {

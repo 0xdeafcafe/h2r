@@ -132,7 +132,12 @@ per layer draw, not one per item:
   item's mask, remember them, and ask `d3d` for the native pass. The
   list's OR word `+8` is left alone: the layer still walks its items and
   finds the world's masks clear;
-- **after** it: set the bits back.
+- **before the next layer draw** (5 and up follow 3 on the scene list,
+  in the same view): set the bits back, on each item that still holds
+  the mask the skip left. Not after the layer itself: something after the
+  body makes the chain call it through a Rust continuation, which the
+  pipelined render thread cannot run (docs/graphics/pipelined-render.md,
+  "Render-safe hooks").
 
 The layer draw then builds no entry for the world: no build call, no
 shader draw, no geometry submission, no push-buffer words. Objects,
@@ -217,7 +222,7 @@ is native only once its A/B is clean.
 
 ## Stage 1 as built
 
-The crate `native-render` (`crates/native-render`), no game wiring yet:
+The crate `native-render` (`crates/native-render`):
 
 - `world`: one vertex and index buffer for the whole BSP, one draw per
   opaque part in world space (instances placed at load), sorted into
@@ -244,36 +249,464 @@ The crate `native-render` (`crates/native-render`), no game wiring yet:
   behind the camera; the colour is base × page and the depth is
   `w_depth(10, far, D24)` within one step).
 
-### Next, in order
+### Wired into the game
 
-1. **`d3d` external pass.** `Device::request_external_pass(pass)`,
-   pending like `request_depth_grid` and issued at the next push-buffer
-   drain with the bound colour surface, depth surface and viewport;
-   `Backend::external_pass(colour, depth, viewport, pass) -> bool`
-   (default `false`: the device then leaves the world to the D3D path for
-   that frame by not clearing the bits, see 2). `GfxBackend` closes its
-   open pass, hands the encoder and the two surfaces' views to the pass;
-   `ThreadedBackend` posts it; the scaled backend gives the view surfaces
-   and a scaled viewport; the interpolating backend (E1) forwards it
-   and, until it can replay a pass with a warped camera, marks the frame
-   not replayable.
-2. **The feature `native-world`** (`impl.render.native_world`, off by
-   default, exact key): a `before` and an `after` on `0x00044550`. Before,
-   with layer 3 and a world loaded for the active BSP (`0x004e0348`): read
-   the camera, ask the device for the pass (the GPU world prepared with
-   that camera on the render thread), and only when the ask is accepted,
-   `skip::clear_structure`; after, `skip::restore`. Two hooked calls per
-   layer draw, about 30 a frame, nothing per draw.
-3. **Boot glue.** On a BSP change, load the world from the disc on a
-   worker (`load::load_world` over the map and its shared resource maps,
-   the base maps and lightmap pages decoded with `assets`), then build the
-   `GpuWorld` on the render thread. Until it is ready the hook does
-   nothing and the D3D path draws the world.
-4. **Templates.** The base map per material from the shader's template
-   and bitmaps; the 03a templates moved to their translated programs
-   (above), each behind the per-material fallback (a material left out of
-   the world keeps its D3D draws: the skip tests the item's shader datum
-   against the world's set).
+- **`d3d` external pass** (`crates/d3d`). `Device::request_external_pass`
+  holds a boxed `ExternalPass` and issues it at the next push-buffer drain
+  (the next D3D entry), with the bound colour target, the bound depth and
+  the current viewport, like `request_depth_grid`; `can_external_pass`
+  asks the backend first. `GfxBackend::external_pass` encodes the pending
+  pass, then hands the pass the open encoder, single-mip views of the two
+  surfaces, their formats, the viewport in texels and the device's depth
+  full scale (`+0x948`). `ThreadedBackend` posts it to the render thread;
+  `ScaledBackend` runs it into both copies (the 1x reference and the
+  scaled view: `encode` is called once per copy); `InterpBackend` (E1)
+  forwards it and holds the frame (`unpinned`), since a replay redraws
+  draws, not passes. `DiagBackend` and boot's headless backend forward it.
+  Counters: `external_passes`, `external_passes_dropped`. Test:
+  `crates/d3d/tests/external_pass.rs` (direct, render thread, E1, and a
+  backend that cannot).
+- **The feature `native-world`** (`crates/feature/src/native_world.rs`,
+  on by default, `H2_FEATURES=impl.render.native_world=off` turns it off,
+  exact key). `LAYER_DRAW` is an opaque point, so the hook is one
+  observer before it: it first sets back the bits the last layer 3
+  cleared (on items that still hold the mask it left), then, with layer 3
+  current, reads the camera and the active BSP (`0x004e0348`) and asks the
+  host; when the host accepts it clears layer 3's bit on the BSP items
+  whose shader the world draws. It sits inside `render-timing`'s
+  observers (`after_feature`). One observer call per layer draw, nothing
+  per draw.
+  It runs on the pipelined render thread (context-only, nothing after the
+  body), so pipelining stays available with the world on. What it
+  touches there: the guest memory its context sees (the render's view:
+  the item masks, the camera, the active BSP, the map name); the host's
+  load state (a mutex only `ask` takes, and only the render reaches it;
+  the loader is a host thread that opens the map through the VFS's
+  mutex and never touches guest memory); the D3D device's pending
+  external pass, which the render owns while it is in flight (the sim's
+  D3D calls join first) and which is issued at the render's next D3D
+  entry, in render order, with that entry's memory.
+  Tests: `crates/feature/tests/native_world.rs` (the plan with
+  `render-timing`, deep, and the layer-draw port all on; alone, the chain
+  runs on the render thread; on by default with pipelining placed; the
+  switch off places nothing; the skip and its restore at the next layer
+  draw on synthetic memory, and a rebuilt list left alone);
+  `crates/boot/src/render_thread.rs` (the default plan's `LAYER_DRAW`
+  is render-thread safe).
+- **Boot glue** (`crates/boot/src/native_world_glue.rs`). The host: on a
+  new (map name, active BSP address) a worker opens the loaded map
+  through the VFS with its shared maps, picks the scenario BSP whose tag
+  data sits at that address, builds the world, decodes each material's
+  base map and each lightmap page, and drops the draws of materials whose
+  base map does not decode (they stay on the D3D path). Each layer-3 view
+  then asks the device for a `WorldPass` with the view's camera; the first
+  pass uploads the world on the render thread. A line per load:
+  `native-world: <map> BSP at <addr>: N draws in B batches, M materials
+  native, in S s`; every 1,800 layer-3 views: `native-world: D of V
+  layer-3 views drawn natively, I world items skipped`.
+
+### The live A/B
+
+The same 03a frame with and without the switch, E1 off, frame stats on.
+What passes: the `native-world:` load line names `03a_oldmombasa`; the
+views line shows every layer-3 view drawn natively; the frame shows the
+world (no holes where the BSP was, objects and transparents in front of
+and behind it as before); `cpu` and the `0x0002bed0` site (layer 3) drop
+by most of the world's share of the 8.26 ms, and `encode` and `submit`
+drop with the D3D draws that are gone. The pixel diff is expected to be
+large on world surfaces until step 4 (base map times lightmap only, no
+detail maps or bump, no fog-free exposure match; base maps are mipmapped
+since step 4) and small elsewhere.
+A frame where the device's `external_passes_dropped` grows has a world
+hole: it means the pass was asked for and could not be drawn.
+
+### Next: matching the look
+
+The base map per material comes from a name rule today; step 4 moves the
+03a templates to their own translated programs (above, "Match the look"),
+each behind the per-material fallback, with mipmaps and the template's
+detail maps and scales. No hand-written per-template WGSL in between: it
+would be replaced by the translated programs.
+
+#### What a world pass reads (Code, `h2 disasm`, `h2 shader`, `vsh` disassembly)
+
+A world material's layer-3 pass, as `tags::material` resolves it: on 03a
+the opaque world templates are `tex_bump` and its variants (`_env`,
+`_detail_blend`, `_three_detail_blend`, `_two_detail`, ...). A `tex_bump`
+layer 3 is one pass (`lightmap_tex_detail`) with three implementations:
+per-pixel lightmap (stage 3 the lightmap), per-vertex, and dynamic. The
+engine picks the implementation per draw; the BSP's lightmapped sections
+take the per-pixel one (S, from the lightmap bind at `0x0004d40f`).
+
+The pass's vertex program comes from its `vrtx` tag's geometry
+classification. Classification 0 is world space (S: its program reads
+`v0` as a world position and applies no model transform). For the
+per-pixel `tex_detail` program it reads:
+
+| Input | Meaning | Our source |
+|---|---|---|
+| `v0` | world position | section positions |
+| `v1` | texture coordinate | section texcoords |
+| `v2`, `v3`, `v4` | the tangent frame (normal, binormal, tangent) | section tangent-frame stream |
+| `v5` | the lightmap bucket's signed lighting vector (stream `30`, [lighting.md](../formats/lighting.md)) | bucket stream, to decode |
+| `v6` | lightmap coordinate | bucket stream `1f` |
+
+and these constants (hardware numbering, D3D register + 96):
+
+| Constants | What | Set by | For the native pass |
+|---|---|---|---|
+| `c[0..3]` | view-projection rows (`dph` with `v0`) | per view, in one block upload | the device's values at the pass (below) |
+| `c[5].w`, `c[6]` | the scale that packs a unit vector into a colour (S: `0.5`, `n·s + s`); a world-space vector (dotted with the tangent frame into `oD0`) | per view | the device's values |
+| `c[10]`, `c[11]` | the viewport scale and offset (`oPos` fix-up) | per view | the device's values |
+| `c[12..17]` | six registers in one block | `0x00025c70` | the device's values |
+| `c[18..20]` | stage 0..2 texture-coordinate scale (xy) and offset (zw) | the instance (`0x00018e80`) | `tags::material`'s instance constants |
+| `c[50..52]` | model transform rows | `0x0004d830` from the render record's matrix, skipped for clusters (`[record+8] == -1`) | identity for clusters; the instance's matrix for instanced geometry |
+| `c[170..172]` | position and texcoord decompression (scale, offset) | `0x0001cdd0`; `0x0004d7c0` passes no compression for the BSP, so the default upload (`0x0001cf29`, scale 1, offset 0) | `(1, 1, 0, 0)`: BSP vertices are uncompressed |
+
+Where `v5` and `v6` come from depends on the render record
+(`0x004ba138 + 0x20·i`). `0x0002cbf0` packs its `+0xc` as bits 0..3 an
+argument, 4..8 an index into the `0x24`-byte table at `0x004c152c` (`0x1f` none), 9..17 the cluster index, 18..28 a placement
+index; record `+0` bit 12 says which (the structure draw's choice at
+`0x0004d18b`). The cluster records (`0x00133390`) pass `-1` for the
+placement, so bits 18..28 are `0x7ff`. The structure draw's layer-3 part
+(`0x0004d285`..`0x0004d420`) then does:
+
+- **A cluster** (bits 18..28 `0x7ff`, `[record+4] == -1`): no bucket. The
+  section's own streams carry `1f` and `30` (structure-bsp.md: `30` is
+  present exactly when the section's lighting flag bit 1 is set), and the
+  cluster render info (group `+0x2c`) at the cluster index picks the
+  lightmap page and palette.
+- **An instanced placement** (`[record+4] == -1`, bits 18..28 the
+  placement): `instance_bucket_refs[placement]` (group `+0x54`), its first
+  offset times 4 bytes written into the bucket's first descriptor when
+  bucket flag bit 0 is set (`0x0004d3a1`), then `0x0004dc60` binds the
+  bucket's streams; page and palette from `instance_render_info[placement]`
+  (group `+0x4c`). The definition's section is shared by every placement,
+  so its lightmap coordinates and lighting vectors are the placement's,
+  in the bucket.
+- **An object** (`[record+4] != -1`, bits 18..28 not `0x7ff`):
+  `cluster_bucket_refs[bits 18..28]` (group `+0x64`; despite the name, the
+  engine reaches it only for object records here), the offset at entry
+  bits 9..17. Not the world's concern.
+
+Stage 1 took every section's own `lightmap_texcoords`. That is right for
+clusters and wrong for placements: a definition has no `1f` of its own,
+so every instanced placement lost its lightmap (the builder leaves a
+section without coordinates unlit). Fixed: placements read their run of
+the bucket (`load::instance_run`, `load::bucket_slice`); the lighting
+vectors (`30`) the same way (S: the bucket's `30` stream is indexed like
+its `1f`).
+
+The per-view constants (`c[0..17]`) are the same for every draw of a
+view, and nothing in layer 3 writes them per draw (the per-draw uploads
+found are `c[18..]`, `c[21]`, `c[22]`, `c[24]`, `c[25]`, `c[31]`,
+`c[50..52]`, `c[170..172]`, `c[174]`). So the native pass reads them
+from the device's constant state when the pass is issued (after the
+drain, so the view's own upload is in): exact by construction, and no
+camera maths of ours to keep in step with the game's.
+
+The pixel side is the implementation's final pixel shader definition
+(variants built, instance colours patched), translated by `shaders::psh`.
+For `lightmap_tex_detail` it combines base (stage 0) and detail (stage 1,
+`x2`), the bump map (stage 2) dotted with the tangent-space lighting
+vector (`v1`) and view vector (`v0`), and the lightmap (stage 3). Its
+`c0` constants of the specular stages (4 and 5) are marked engine-driven
+(`h2 shader` prints "engine constants", mask `0x30`), traced (Code,
+`h2 disasm`, the 03a pass's bindings read off the disc):
+
+- The per-pixel implementation has one spas `+0x38` binding through
+  `0x00019ca0`: mode 3 (the alpha channel), no transform, engine scalar
+  21. Its input masks (spas `+0x104..+0x114`, the inputs `0x0001ae70`
+  evaluates before the draw, bit `n` input `n`) are scalar 21 and integer
+  5 (the fragment selector), nothing else.
+- Scalar 21 is `0x000337e0`, which returns `0x485a6c`; integers 4 and 5
+  are `0x485a64/0x485a68`. `0x0001bbf0` copies all three from the `shad`
+  (`+0x44`, `+0x3e`, `+0x40`) before each draw. So the "engine" constant
+  is the instance's own specular scalar, the same on every draw of the
+  shader, and `tags::material` already resolves it into the pixel shader
+  definition (`EngineInputs::for_shader`). The stage-5 `c0.rgb` is an
+  instance colour.
+- `ResolvedImplementation::per_draw_inputs` says when an implementation
+  reads anything else (another scalar, any vector, another integer, by
+  mask, binding or fragment selector); only those stay on the fallback.
+  Of the pass's other implementations the per-vertex one has the same
+  masks; the dynamic one reads engine vectors (lighting), but the world
+  pass uses the per-pixel one.
+
+#### Order of work
+
+1. `d3d`: the external pass gets the device's vertex constants at issue
+   (a read-only snapshot, nothing else changes for other backends).
+2. `native-render::load`: per material, the resolved layer-3 pass and
+   implementation 0: the classification-0 program, the final pixel shader
+   definition, stage textures (instance bitmaps with their image, the
+   lightmap), sampler states and instance constants. Materials without
+   one (no layer 3, more than one pass, an engine texture source other
+   than the lightmap, per-draw engine inputs) stay on the D3D path.
+3. World vertices gain the tangent frame and the bucket's lighting vector;
+   textures keep their mip chains (done: base maps upload their decoded
+   chain, `gpu::Image::from_levels`).
+4. `native-render::gpu`: one pipeline per (program, definition) through
+   `shaders::link`, the uniforms filled as the D3D path fills them, one
+   bind group per material. Built as `native-render::program` behind
+   `impl.render.native_world_programs` (off by default; exact key, and
+   only with the native world on):
+   - `program::compile` translates the pass (inputs `v0..v6` from the
+     world vertex: position, uv, normal, binormal, tangent, lighting
+     vector, lightmap uv) and fills the instance constants by their
+     written components, `c[172] = (1, 1, 0, 0)` and identity model rows
+     `c[50..52]` (the vertices are already placed). It refuses, and the
+     material keeps stage 1's look: per-draw engine inputs, a program
+     reading other inputs, a translation warning, a non-2D fetch, a
+     sampled stage with nothing bound, signed channels on the lightmap.
+     Signed channels of a stage bitmap are stored biased (`s + 128`) as
+     the D3D path stores them.
+   - Per frame the device's `c[0..18]` (the external pass's
+     `view_constants`), the guest and texel sizes (surface and the
+     render-scale shift) and the W-buffer's depth scale (`w_clip`,
+     `depth`, `depth_range`). A program batch draws over the whole
+     target: the game's viewport is in `c[10..11]`.
+   - Gaps (S): fog stays at the pixel shader's default (no fog colour
+     from the device yet), stage borders clamp to the edge, `D3DTSS`
+     LOD bias and anisotropy are not applied.
+   The load line says how many materials translate and why the rest do
+   not (`native-world: N materials translate; with stage 1: [...]`).
+5. The A/B per template, and `native-world` keeps a material native only
+   once its template's A/B is clean.
+
+## Stage 2: objects and skinning (design)
+
+Bipeds, vehicles, weapons, equipment, scenery, machines and crates: every
+object whose render model the game queues in the scene list. Geometry is
+resident per render-model tag, loaded once per map; each frame the CPU
+hands over only the drawn objects' node matrices, read from the game's own
+computed transforms in guest memory. Skinning runs in the vertex shader.
+
+### Research points (Code unless marked; `h2 disasm`)
+
+| Point | What |
+|---|---|
+| `0x004e0300` (`points::OBJECTS`) | The object datum array header `H`. Header of handle `h`: `[H+0x44] + 0xc·(h & 0xffff)`; salt `u16 +0` must equal `h >> 16`; body `[header+8]` ([live-gamestate.md](../live/live-gamestate.md)). The pool compacts, so a body address is read every frame, never kept. |
+| body `+0x00` | The object definition tag datum (`bipd`, `vehi`, `weap`, `scen`, ...). |
+| body `+0x30`, `+0x3c` | World bounding sphere: centre (3 floats), radius ([occlusion-culling.md](occlusion-culling.md)). |
+| body `+0x114` (u16), `+0x116` (i16) | **The node-matrix block**: its size in bytes and its offset from the body. `object_new` `0x000b7b40` reserves it at `0x000b800b..0x000b801e` with `0x000bc380(field 0x114, 0x34 · nodes, align 0)`, the node count from hlmt `+0x78` (at least one). `0x000bc380` writes a block reference as `+0` size and `+2` offset (`0x000bc427`, `0x000bc430`). The other blocks it places: `+0x10c` and `+0x110` (32 bytes per node, when animated), `+0x118` (10 bytes per region), `+0x11c` (8 per attachment), `+0x120`, `+0x124` (`0x18` per change colour), `+0x128`. |
+| node matrix (`0x34` bytes) | The game's `real_matrix4x3`: `+0` scale, `+4` forward, `+0x10` left, `+0x1c` up, `+0x28` position. A local point `p` goes to `scale · (p.x·forward + p.y·left + p.z·up) + position`: the bounding-sphere update `0x000bdf90..0x000be068` applies the root node exactly so, reading the block through `[body+0x116]`. The matrices are world space (the sphere it produces is the world sphere at `+0x30`). |
+| mode node `+0x28` (`0x34` bytes) | The node's inverse rest frame in the same layout (scale, then the inverse's three columns, then its position; `crates/h1models/src/tests.rs`, `node_inverse_frames_are_stored_as_columns`, and the retail check `retail_h2_mode_layouts`). A retail hlmt node is its mode node's first `0x5c` bytes (V, `crates/tags/src/defs/hlmt.txt`), so object node `i` is mode node `i`. |
+| skinning | Vertex world position `Σ wₖ · N[nₖ] · I[nₖ] · p`, with `N` the object's node matrix, `I` the mode node's inverse rest frame, `nₖ` the section's node map applied to the vertex's node index (S: that the game composes the same `N·I` for its node constants; "rest frame times inverse is the identity" is Test in h1models, the draw side is checked by the A/B). Sections without vertex nodes (classification 1) are bound to the first node of their node map, else node 0 (S). |
+| `0x0002cbf0` | Fills render record `0x004ba138 + 0x20·i` (at most `0x352` per frame, counter `0x004c0b78`): `+4` the object handle (`-1` for the BSP), `+8` a word from the caller's per-section state, `+0`, `+0xc` and `+0x1a..+0x1b` bit-packed. Its caller for objects is `0x00133f70`, which walks a per-object render state of about `0x1e4` bytes built under `0x00133ab0` (entries from `+0x48`, stride `0x18`, count `+0x166`; handle `[entry+0x44]`). Which bits are the section (LOD and permutation) is not read yet. |
+| `0x0002bed5` | The return address of the base layers' layer-3 call (`call 0x00044550` at `0x0002bed0` in `render_scene_passes`, view kinds 1 and 2). The object skip acts only there, so first-person or other-kind layer draws are never touched. |
+| `0x0004baf0`, `0x0004b5d0` | LOD choice by pixel size inside `0x00133790` ([occlusion-culling.md](occlusion-culling.md)). |
+| `0x0016d764` | Region permutation choice (Likely): the variant's region map, its regions at `+0x18`, then `0x0016dad0` ([objects.md](../formats/objects.md)). |
+| `0x00165f16` (`points::FIRST_PERSON_RENDER`) | One local player's first-person weapon and arms, after the transparents, with their own projection (camera `0x0023c110`, FOV `0x00187130`). |
+| `0x0003ddd0`, `[0x00509434]`, body `+0xcc` | The per-object render-state (lighting) cache: records of `0x100` bytes, lit per frame by `0x0003dfe0`, lighting at `+0x44..` and `+0xc0..` (layout not read; [pipelined-render.md](pipelined-render.md)). |
+
+### Skip point
+
+The same layer-draw observers as the world (`LAYER_DRAW`, an opaque
+point), under the same plan rules: **before** the layer draw, when the
+current layer is 3 and the caller is the base layers' call (`[esp] ==
+0x0002bed5`), walk the current list; an item is an object item when its
+build is `0x0004cbf0` and its render record's `+4` is a live object
+handle. It is skipped when the host draws that object's definition and
+the item's shader (`+8`) is one of the host's native materials: layer 3's
+bit cleared, the item remembered, the handle added to the view's drawn
+set (once). The bits go back **before the next layer draw** (5 and up
+follow 3 in the same view), on items that still hold the mask the skip
+left, as the world's do. The host gets one
+external pass per view carrying, per drawn handle, the definition and the
+node matrices copied out of the body (`0x34 · count` bytes) and the
+bounding sphere.
+
+Only layer 3 in the first cut, as in stage 1: the objects' layer 1, 5, 7,
+8 and 20 entries and their dynamic-light layers (10 to 13) keep drawing
+through D3D, so self-illumination, environment maps, specular, change
+colour and dynamic lights still come from the game's own passes on top of
+the native base. Those passes depth-test `LessEqual` against the depth the
+native pass wrote; skinned on the GPU in float, the native positions match
+the translated vertex programs to within an ulp or two, not bit for bit,
+so an equal-depth pass can lose pixels on curved surfaces (the A/B shows
+how much). The skipped layers are one mask
+(`native_render::objects::REPLACED_LAYERS`); adding layers later is a mask
+change plus the shading those layers did.
+
+What the native pass draws is exactly the set of objects whose layer-3
+items it skipped. The game's own visibility, object list, attachment
+recursion and "not drawn" decisions (`0x00133790`, occlusion) have already
+run, so a held weapon, a vehicle's driver or a culled crate need no logic
+of ours. A conservative sphere-frustum test runs anyway (cheap, and a
+guard against a stale sphere).
+
+### Transform source
+
+Node matrices are read once per view at the hook, from the body
+(`[body+0x116]`, `[body+0x114] / 0x34` nodes), after the game has finished
+the frame's animation and attachment updates (the records exist, so
+`0x00133ab0`'s node pass ran). They are uploaded raw (13 floats a node)
+into one storage buffer per pass, with one small instance record per
+object (node base, inverse base). The inverse rest frames are resident
+per model. No matrix product is done on the CPU. An object whose node
+count disagrees with its model's stays on the D3D path.
+
+### LODs
+
+The game picks a LOD per object by pixel size; the native path draws the
+highest LOD present in each permutation (`Permutation::best_section`).
+Distant objects then cost more triangles than the game would draw: GPU
+work, never a missing surface. Matching the game's LOD needs the record
+bits above (the section in the record), a later step; the record would
+then also pin the permutation.
+
+### Permutations and regions
+
+The variant is the object definition's default (`0x0016d180`'s rule,
+`tags::object::Context::resolve_model`); its regions map to the render
+model's regions by name, and each region's permutation to the render
+model's by name. A model is drawn natively only when every region the
+variant lists has **exactly one** permutation. Models with a random or
+state-driven choice (marine heads, damage states, a variant changed at run
+time through `+0xb1`) stay on the D3D path until the record's section is
+read. Regions the variant does not list draw their first permutation, as
+the viewer does (S: some may be hidden in game).
+
+### First person versus third person
+
+The first-person weapon and arms are drawn by the player chain after the
+transparents (`0x0002afa0`, `FIRST_PERSON_RENDER`) with their own
+projection, not by the base layers' layer-3 call, which the caller check
+pins. They stay on the D3D path in stage 2. Natively they need the
+first-person camera (`0x0023c110`) and their nodes (the first-person model
+references nodes past its own list; `tags::model` leaves those indices
+unchecked), and they draw after the transparents, so they come with or
+after stage 3. The local player's third-person body draws natively like
+any biped when the game queues it.
+
+### Shading
+
+Like the world's first cut: the material's base map (the same name rule,
+`load::base_map`) times a lighting term. The game's per-object lighting
+lives in the render-state cache (`0x0003ddd0`, body `+0xcc`, lighting at
+record `+0x44..`), whose layout is not read; until it is, the term is a
+fixed ambient plus one directional light (`ambient + diffuse · max(n·l,
+0)`), so objects read as lit solids, not as their final look. Reading the
+cache's lighting (ambient, the dominant light's direction and colour, the
+probe's spherical harmonics, [lighting.md](../formats/lighting.md)) is the
+first look step. Materials without a decodable base map keep their D3D
+draws (the skip leaves their items alone) and are not drawn natively.
+Transparent parts (kind 4) are not in layer 3 and are left out.
+
+### Pipelined render
+
+The observer reads the object array and bodies during the render. With
+`H2_PIPELINE_RENDER` the render runs one frame behind the simulation on
+its own thread, while the next tick moves the same bodies and may compact
+the pool. That is already safe: on the render thread the observer's
+memory is the render's copy-on-write snapshot of the frame
+(docs/runtime/second-executor.md; `Obs::guest` is the executor's own
+runtime), so the handles, bodies and node matrices it reads are frame
+`k`'s, the same frame the rest of the render draws, and the tick's writes
+to live RAM never reach it. The node matrices are copied out of that
+snapshot at the hook into the pass (`ObjectFrame`), and nothing reads
+guest memory after it, so the snapshot copy the design asked for is the
+pipeline's own snapshot plus that copy. The observer is the one hook
+(context-only, nothing after the body, the restore at the next layer
+draw), so the pipelined render runs it on its own thread like the
+world's. The host's writes are its map state (a mutex only the observer
+takes, with the model loader on host threads) and the device's pending
+external pass, issued at the render's next D3D entry, in render order.
+
+### Per frame on the CPU
+
+Per view: one walk of layer 3's list, one object lookup per drawn object,
+a copy of its nodes (a biped has about 50: 2.6 KB) and one sphere test.
+The render thread writes two storage buffers and issues one indexed draw
+per (object, opaque part), grouped by model and material. Nothing per
+vertex and no matrix work on the CPU.
+
+## Stage 2 as built
+
+Not compiled or run by the lane that wrote it (the coordinator builds and
+tests); evidence labels below are what the tests will show once run.
+
+- **`native-render`.** `model` (the game's node matrix, `Model::build`:
+  one vertex and index buffer per model in rest space, vertex node indices
+  through the section's node map, one draw per opaque part sorted by
+  material, the inverse rest frames; `Model::skin`, the shader's
+  arithmetic on the CPU), `model_load` (definition -> `hlmt` -> `mode`,
+  the section pick of "Permutations and regions", the inverse frames from
+  node `+0x28`), `objects` (the handle lookup, the node block at body
+  `+0x114`/`+0x116`, the sphere; `clear_objects`, `keep_only`, `restore`
+  on the base layers' layer 3), `instances` (per view: the node array,
+  one instance record per object, a draw per (object, part) sorted by
+  model and material, the sphere-frustum cull, the node-count guard),
+  `model_gpu` (`GpuModels`: models added one at a time, per view one
+  uniform and two storage writes, one pass with an indexed draw per
+  (object, part), `instance_index` the object) and `models.wgsl`
+  (skinning `Σ w · N · I · p`, base map times ambient plus one
+  directional term, the W depth). Tests: the unit tests in each module on
+  invented models and synthetic guest memory; `tests/models_gpu.rs` draws
+  an invented two-node model whose square hangs on a turned node, checks
+  colour (lit by the skinned normal), W depth, one object culled and one
+  with the wrong node count left out.
+- **The feature `native-objects`** (`crates/feature/src/native_objects.rs`,
+  `H2_FEATURES=impl.render.native_objects=on`, off by default, exact key).
+  One observer before `LAYER_DRAW`, inside `render-timing`'s and the
+  world's (`after_feature` on both), context-only. First it sets back the
+  bits the last base-layer layer 3 cleared (items still holding the mask
+  it left). Then, only for layer 3 called from `0x0002bed5`: asks the host
+  for its native set (definitions with their node counts, shaders),
+  clears the accepted items, asks the host to load any definition it has
+  not seen, copies the cleared objects' nodes and spheres, gives back the
+  bits of objects it could not read or whose node count disagrees, and
+  asks for the pass (all bits back if the device cannot). Tests:
+  `crates/feature/tests/native_objects.rs` (the plan with `render-timing`,
+  deep, the layer-draw port and the world; with the world alone the chain
+  runs on the render thread; the switch off; the observer on
+  `FlatMemory`, with the restore at the next layer draw and a rebuilt
+  list left alone). Boot plans it (`registration.rs`, in `ALL_ON` of the
+  registration tests); `render_thread`'s test checks the layer draw is
+  render-thread safe with the world and objects on (see "Pipelined
+  render").
+- **Boot glue** (`crates/boot/src/native_objects_glue.rs`). Per map, a
+  worker with the map, its shared maps and the object tag context open;
+  definitions arrive one at a time from the feature and are loaded once;
+  a model is queued for upload before its definition is published, so a
+  pass that sees it finds it. Materials whose base map does not decode
+  leave the model and keep their D3D draws. The render thread uploads the
+  queue at the next pass. Log lines: `native-objects: <map>: definition
+  <datum>: D draws, N nodes, in T ms (L models native, R left to D3D)`, or
+  `... left to the D3D path (<why>)`; every 1,800 views
+  `native-objects: D of V layer-3 views drawn natively, O objects, I
+  object items skipped`.
+
+### The live A/B
+
+Old Mombasa, E1 off, frame stats and `render-timing` on, the same spot
+with `impl.render.native_objects` off and on (with
+`impl.render.native_world` on in both, so the difference is the
+objects'). What passes:
+
+- the load lines name the map's models, most as native; the refused ones
+  give a reason (the run-time permutations: marines, some scenery);
+- the views line shows every base-layer layer-3 view drawn natively, and
+  objects and items per view in the tens;
+- the frame shows every object in place and posed: bipeds animate (a
+  T-pose or exploded limbs mean the `N · I` reading is wrong), held
+  weapons sit in hands, vehicles and their turrets turn; flat-lit bases
+  with the game's own self-illumination, specular and dynamic lights on
+  top (those layers still draw through D3D);
+- the first-person weapon and arms are unchanged (still D3D);
+- the `0x0002bed0` site (layer 3) and `cpu` drop by the objects' share of
+  layer 3's shader draws (below), `encode` and `submit` with them;
+  `external_passes_dropped` stays 0 (a growth there is an object hole).
+
+What this stage should remove: layer 3 is 8.26 ms on the census run,
+about two thirds of it per-draw guest work in `0x00016b90` and the rest
+D3D; objects are roughly a third to a half of layer 3's 1,882 D3D calls
+on a populated 03a view (S: the split between world and object draws is
+not measured; `render-census` can give it). So with the world already
+native, expect about 2 to 4 ms off `0x0002bed0` and `cpu`, plus their
+`encode`/`submit` share on the render thread. Layers 1, 5, 7, 8 and the
+dynamic-light passes keep their object draws in this cut.
 
 ## Open
 

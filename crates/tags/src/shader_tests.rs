@@ -399,6 +399,7 @@ fn resolves_static_implementation() {
     assert_eq!(fc0, 64 << 24);
     assert_eq!(i.c0_written, (1 << 1) | (1 << 8));
     assert!(i.pixel_constants_from_engine);
+    assert!(i.per_draw_inputs, "c[20] reads engine vector 7");
     // v3.xy from vector 0, c[18].xyzw from vector 1, c[20] from engine vector 7.
     let v3 = i.vertex_defaults.iter().find(|r| r.index == 3).unwrap();
     assert_eq!(v3.value, [1.0, 2.0, 0.0, 0.0]);
@@ -858,4 +859,37 @@ fn stage_copies_slot_size_before_refresh() {
     let i = &m.layers[0].passes[0].implementations[0];
     assert_eq!(i.textures[0].unwrap().size, None);
     assert_eq!(i.textures[2].unwrap().stage_size, Some((0, 0)));
+}
+
+#[test]
+fn only_inputs_outside_the_instance_make_a_pass_per_draw() {
+    let pass = |externals: Vec<[u8; 4]>, fragments: Vec<i16>| PassPostprocess {
+        implementations: Vec::new(),
+        textures: Vec::new(),
+        render_states: Vec::new(),
+        stage_states: Vec::new(),
+        fragments: fragments.into_iter().map(|selector| CombinerFragment { selector, base: 0 }).collect(),
+        variants: Vec::new(),
+        stages: Vec::new(),
+        externals: externals.into_iter().map(|bytes| ExternalBinding { bytes }).collect(),
+    };
+    // Masks: scalar 21 and integer 5, the instance's own. One pixel
+    // binding (range 0, count 1) and one fragment (range 0, count 1).
+    let mut v = vec![0u8; IMPLEMENTATION];
+    w32(&mut v, 0x10c, 1 << 21);
+    w32(&mut v, 0x114, 1 << 5);
+    w16(&mut v, 0x122, 1 << 9);
+    w16(&mut v, 0xf6, 1 << 9);
+    let imp = Implementation::decode(&v).unwrap();
+    // Mode 3 (alpha) from scalar 21; a fragment chosen by integer 5.
+    assert!(!per_draw_inputs(&pass(vec![[0, 1, 3, 21]], vec![5]), &imp));
+    // Mode 3 from scalar 3; mode 4 (a vector); mode 5 (a stage size) is static.
+    assert!(per_draw_inputs(&pass(vec![[0, 1, 3, 3]], vec![5]), &imp));
+    assert!(per_draw_inputs(&pass(vec![[0, 1, 4, 21]], vec![5]), &imp));
+    assert!(!per_draw_inputs(&pass(vec![[0, 1, 5, 3]], vec![-1]), &imp));
+    // A fragment chosen by integer 2.
+    assert!(per_draw_inputs(&pass(vec![[0, 1, 3, 21]], vec![2]), &imp));
+    // A vector in the masks.
+    w32(&mut v, 0x104, 1);
+    assert!(per_draw_inputs(&pass(vec![[0, 1, 3, 21]], vec![5]), &Implementation::decode(&v).unwrap()));
 }
