@@ -830,9 +830,30 @@ fn settle(
     }
     // The live ranges went to live RAM at each serviced call: their last
     // changes too, and none through the merge.
-    if let Some(live) = &live {
+    let mut live = live;
+    if let Some(live) = &mut live {
         live.push(&exec, &rt);
-        exec.unflush(&live.flushed, &live.skip);
+        // One last flush, against what the earlier ones gave live RAM: a
+        // byte the render changed and put back after a flush (a view depth
+        // pushed across a serviced call and popped after it) holds its
+        // snapshot value again, which the hand-back below (against the
+        // snapshot) would not see, leaving live RAM with the flushed,
+        // pushed value. Everything the render wrote since its first service
+        // goes to live RAM here; the hand-back is left the bytes the
+        // flushes skip (counters by delta, marks, host-owned bytes). The
+        // render stack stays out of both: a fallback copies it whole from
+        // the view, which must keep the render's bytes there.
+        let mut skip = live.skip.clone();
+        {
+            let mut inner = me.lock();
+            if let Some(s) = &inner.setup {
+                skip.extend(s.stack_pages.iter().map(|&p| (p, 0x1000)));
+            }
+            let h = exec.flush(&rt, &mut live.flushed, &skip);
+            inner.stats.bytes += h.bytes as u64;
+            inner.stats.conflicts += h.conflicts as u64;
+        }
+        exec.unflush(&live.flushed, &skip);
         for p in &live.pieces {
             exec.revert(p.physical, p.last.len() as u32);
         }

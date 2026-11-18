@@ -49,6 +49,13 @@ const KERNEL_CALLS: u32 = 0x2_4040;
 const DEEP: u32 = 0x2_4050;
 /// Set: the sim frees objects (below) and the render's tail reads one.
 const CHURN: u32 = 0x2_4054;
+/// A view stack depth (as `0x0046701c`): the render pushes a view at its
+/// entry and pops it after its kernel call, and stores the view's record at
+/// `VIEWS + 4 * depth`. Balanced in every frame; a depth left one deeper
+/// moves every later record one slot up (the game's 0x298-byte records run
+/// into the globals after them).
+const VIEW_DEPTH: u32 = 0x2_4058;
+const VIEWS: u32 = 0x2_4700;
 /// Object table: a body pointer per index (0: freed), and the bodies.
 const OBJECTS: u32 = 0x2_4100;
 /// The I/O queue head (a live range, as the game's pool is), the request
@@ -144,6 +151,10 @@ fn render(
             cpu.ebp = 0;
             m.set_u8(VBLANKS.0, 0xee)?;
             m.set_u8(CLEAR, 0)?;
+            // Push a view: its record at the new depth.
+            let depth = m.u32(VIEW_DEPTH)? + 1;
+            m.set_u32(VIEW_DEPTH, depth)?;
+            m.set_u32(VIEWS + 4 * (depth % 64), v)?;
             cpu.esp -= 4;
             m.set_u32(cpu.esp, INPUT)?;
             m.call(cpu, D3D_DRAW, FRAME + 0x10)
@@ -206,6 +217,10 @@ fn render(
             if mode == 6 {
                 m.set_u32(PROTECTED + 4 * cpu.esi, 0x600 + cpu.esi)?;
             }
+            // Pop the view pushed at the entry (after the kernel call, so a
+            // serviced call's flush sees it pushed).
+            let depth = m.u32(VIEW_DEPTH)?;
+            m.set_u32(VIEW_DEPTH, depth.wrapping_sub(1))?;
             // After the kernel (on the game thread in a fallback, still on
             // the render stack): a deep frame here too.
             probe(&m, cpu.esp)?;
@@ -1076,4 +1091,37 @@ fn mappings_the_game_makes_while_a_render_is_in_flight_survive_the_join() {
             assert!(!s.fallbacks.is_empty(), "{s:?}");
         }
     }
+}
+
+/// The render pushes a view before a serviced call and pops it after: the
+/// service's flush gives live RAM the pushed depth, and the pop puts the
+/// view's word back to its snapshot value, which a hand-back against the
+/// snapshot does not see. Live RAM must end at the popped depth, or every
+/// later frame's records land one slot deeper (Halo 2's view stack at
+/// `0x0046701c` ran its 0x298-byte records over `0x00485a80` this way).
+#[test]
+fn a_view_pushed_across_a_serviced_call_and_popped_after_ends_popped_in_live_ram() {
+    let n = 30;
+    let mut serial = rig(false);
+    let mut piped = rig_with(true, &["KeQuerySystemTime"]);
+    for k in 1..=n {
+        serial.round(k, true);
+        piped.round(k, true);
+        if k > 1 {
+            // The last frame joined: its depth is back to 0.
+            assert_eq!(piped.rt.memory().u32(VIEW_DEPTH).unwrap(), 0, "round {k}");
+        }
+    }
+    serial.finish();
+    piped.finish();
+    let s = piped.feature.stats();
+    assert_eq!(
+        s.serviced.get("kernel:KeQuerySystemTime"),
+        Some(&u64::from(n))
+    );
+    assert!(s.fallbacks.is_empty(), "{s:?}");
+    assert_eq!(piped.rt.memory().u32(VIEW_DEPTH).unwrap(), 0);
+    // Every frame's record went to the first slot.
+    assert_eq!(piped.rt.memory().u32(VIEWS + 8).unwrap(), 0);
+    compare(&serial.data(), &piped.data());
 }

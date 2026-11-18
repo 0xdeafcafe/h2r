@@ -966,6 +966,20 @@ jump table at `0x19b68` enters the case at `0x19581`). So the word was
 written in that frame before the read and the crash came before the next
 check: the focus trap names that write.
 
+**The view stack leak (fixed).** The trap named `pc 0x2bc19` on the game
+thread: the `rep movsd` that pushes a view, copying a 0x298-byte record to
+`0x004850d0 + 0x298 * depth` after `inc [0x0046701c]` (popped at
+`0x13c44`; pushed also at `0x2c736`, `0x2c83d`, `0x2cace`). At depth 3
+the record covers `0x00485a80` and the globals after it. The depth had
+leaked one: a pipelined render pushed a view, made a serviced call (whose
+flush gave live RAM the pushed depth), popped the view after it, and its
+hand-back, comparing the view with the snapshot, saw the depth at its
+snapshot value and left live RAM at the pushed one. Every byte a render
+changed and put back after a flush did the same. The join now flushes one
+last time against what the earlier flushes gave live RAM before the
+hand-back, so live RAM ends at the render's final bytes; the render stack
+is left out of that flush (a fallback copies it whole from the view).
+
 **Tests.** `crates/feature/tests/pipeline_render.rs`: a synthetic render
 front-end (a Rust function registered as generated code with resume
 points) and sim, run serially and pipelined over 120 rounds
