@@ -494,11 +494,11 @@ locked one changes nothing. There is no setting to waive it (the
 is never applied or advertised. Guests apply the host's advertised set
 whatever their own profiles hold.
 
-**Not stored with the variant.** The variant's record (the 0x130-byte
-game variant the editor edits at `0x54e4a4`) has no field we know to be
-free, and guests read a variant with retail code; a byte of ours there
-could be read as something else. The choice stays per host profile and
-travels with the Live session, as before.
+**Not stored with the variant.** The choice stays per host profile and
+travels with the Live session, as before. The variant's record (the
+0x130-byte game variant the editor edits at `0x54e4a0`, its name at
+`0x54e4a4`) now has room of ours, the extension block in its spare bytes
+(docs/game/game-options.md section 3), but the skulls have not moved there.
 
 | Address | What | Confidence |
 |---|---|---|
