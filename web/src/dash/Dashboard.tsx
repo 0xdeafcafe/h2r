@@ -53,15 +53,17 @@ import { motdHeader } from "../lib/motd";
 import "../styles/dash-pages.css";
 import SocialScreen from "./Social";
 import SessionsScreen from "./Sessions";
+import GamesScreen from "./Games";
 import "../styles/social.css";
 import { finishHref, readFinish } from "./concepts/finish";
 import "../styles/dash-finish.css";
 import { lockedHint, menuFor, type SectionId } from "./menu";
 
-type ScreenId = "menu" | "list" | "player" | "settings" | "signup" | "recovery" | "recover" | "server" | "social" | "sessions";
+type ScreenId = "menu" | "games" | "list" | "player" | "settings" | "signup" | "recovery" | "recover" | "server" | "social" | "sessions";
 
 const LABELS: Record<SectionId, () => string> = {
   live: () => "live now",
+  games: () => "games",
   sessions: () => "find a game",
   friends: () => "friends",
   clans: () => "clans",
@@ -143,6 +145,7 @@ export default function Dashboard() {
   const screen = createMemo((): ScreenId => {
     const s = section();
     if (!s) return "menu";
+    if (s === "games") return "games";
     if (s === "server") return "server";
     if (s === "friends" || s === "clans") return "social";
     if (s === "sessions") return "sessions";
@@ -283,7 +286,7 @@ export default function Dashboard() {
       case "settings":
         return [
           { label: identity.me() ? "profile" : "sign up", glyph: "key", act: () => go("/dash/signup", "deeper") },
-          { label: "stats site", glyph: "record", act: () => go("/stats", "deeper") },
+          { label: "games", glyph: "disc", act: () => go("/dash/games", "deeper") },
           { label: "event log", glyph: "history", act: () => go("/stats/events", "deeper") },
           { label: "server", glyph: "server", act: () => go("/dash/server", "deeper") },
         ];
@@ -332,10 +335,9 @@ export default function Dashboard() {
     }
   });
 
-  // The friends and clans screens (Social.tsx) and the session screens
-  // (Sessions.tsx) take their own input.
-  let socialAct: ((a: Action) => boolean) | null = null;
-  const ownInput = () => screen() === "social" || screen() === "sessions";
+  // These screens manage selection and focus inside their own panels.
+  let screenAct: ((a: Action) => boolean) | null = null;
+  const ownInput = () => screen() === "games" || screen() === "social" || screen() === "sessions";
 
   const [serverErr, setServerErr] = createSignal<string | null>(null);
   const [serverBusy, setServerBusy] = createSignal(false);
@@ -371,7 +373,7 @@ export default function Dashboard() {
 
   function select() {
     switch (screen()) {
-      case "social": case "sessions": socialAct?.("select"); break;
+      case "games": case "social": case "sessions": screenAct?.("select"); break;
       case "menu": {
         const id = items()[menu()]!;
         if (!lockedHint(id, !!identity.me())) go(`/dash/${id}`, "deeper");
@@ -395,7 +397,7 @@ export default function Dashboard() {
   /** One step of input, from the keyboard or a gamepad. Says whether it meant anything here. */
   function act(a: Action): boolean {
     if (leaving()) return false;
-    if (ownInput()) return socialAct?.(a) ?? false;
+    if (ownInput()) return screenAct?.(a) ?? false;
     const n = items().length;
     switch (screen()) {
       case "menu":
@@ -430,6 +432,8 @@ export default function Dashboard() {
 
   function onKey(e: KeyboardEvent) {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
+    // Let a tab-focused link or prompt perform its own activation.
+    if (e.key === "Enter" && (e.target as HTMLElement).closest?.("a[href], .dx-prompt")) return;
     const typing = (e.target as HTMLElement).closest?.("input, textarea, select");
     // A field in a column of rows (data-nav) still lets up and down move on.
     const rowField = typing && (e.target as HTMLElement).dataset?.nav && (e.key === "ArrowUp" || e.key === "ArrowDown");
@@ -457,7 +461,7 @@ export default function Dashboard() {
   const aim = createMemo((): TunnelAim => {
     switch (screen()) {
       case "menu": return { x: 0.36, y: 0.44, dim: 0 };
-      case "list": return { x: 0.66, y: 0.38, dim: 1 };
+      case "games": case "list": return { x: 0.66, y: 0.38, dim: 1 };
       default: return { x: 0.5, y: 0.36, dim: 1 };
     }
   });
@@ -541,7 +545,9 @@ export default function Dashboard() {
         <Show when={identity.me()} fallback={<Show when={section() !== "signin"}><a class="dx-chip dx-chip--link dx-chip--join" href="/dash/signin" onClick={(e) => { e.preventDefault(); go("/dash/signin", "deeper"); }}>sign in</a></Show>}>
           {(me) => <a class="dx-chip dx-chip--me" href="/dash/signup" onClick={(e) => { e.preventDefault(); if (screen() !== "player" || section() !== "signup") go("/dash/signup", section() === "signup" ? "back" : "deeper"); }}>{me().gamertag}</a>}
         </Show>
-        <a class="dx-chip dx-chip--link" href="/stats">stats site</a>
+        <Show when={section() !== "games"}>
+          <a class="dx-chip dx-chip--link" href={dashHref("/dash/games")}>games</a>
+        </Show>
       </header>
 
       <Show when={finish()}>
@@ -589,6 +595,10 @@ export default function Dashboard() {
               </nav>
               <Prompts onA={select} />
             </div>
+          </Match>
+
+          <Match when={screen() === "games"}>
+            <GamesScreen back={back} bind={(f) => { screenAct = f; }} />
           </Match>
 
           <Match when={screen() === "list"}>
@@ -686,11 +696,11 @@ export default function Dashboard() {
           </Match>
 
           <Match when={screen() === "social"}>
-            <SocialScreen section={section() as "friends" | "clans"} tag={params.tag ? safeDecode(params.tag) : undefined} go={go} back={back} bind={(f) => { socialAct = f; }} />
+            <SocialScreen section={section() as "friends" | "clans"} tag={params.tag ? safeDecode(params.tag) : undefined} go={go} back={back} bind={(f) => { screenAct = f; }} />
           </Match>
 
           <Match when={screen() === "sessions"}>
-            <SessionsScreen id={params.tag ? safeDecode(params.tag) : undefined} go={go} back={back} bind={(f) => { socialAct = f; }} />
+            <SessionsScreen id={params.tag ? safeDecode(params.tag) : undefined} go={go} back={back} bind={(f) => { screenAct = f; }} />
           </Match>
 
           <Match when={screen() === "server" && serverSub() === "connect"}>
@@ -763,7 +773,7 @@ function emptyText(s: SectionId | null): string {
   }
 }
 
-export function ListPanel(props: { title: string; rows: Row[]; sel: number; onSel: (i: number) => void; onAct: (i: number) => void; empty: string }) {
+export function ListPanel(props: { title: string; rows: Row[]; sel: number; onSel: (i: number) => void; onAct: (i: number) => void; empty: string; hint?: string }) {
   let box!: HTMLDivElement;
   const [first, setFirst] = createSignal(0);
   const [pitch, setPitch] = createSignal(0);
@@ -822,7 +832,7 @@ export function ListPanel(props: { title: string; rows: Row[]; sel: number; onSe
         </For>
       </div>
       <i class="dx-arrow dx-arrow--down" classList={{ on: first() + shown() < props.rows.length }} aria-hidden="true" />
-      <div class="dx-list-foot"><span>h2 live</span><span>↑ ↓ browse</span></div>
+      <div class="dx-list-foot"><span>h2 live</span><span>{props.hint ?? "↑ ↓ browse"}</span></div>
     </section>
   );
 }

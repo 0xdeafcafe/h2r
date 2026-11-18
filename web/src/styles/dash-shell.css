@@ -249,7 +249,7 @@
   .dx-prompt--x { left: calc(var(--u) * 150); top: calc(var(--u) * 700); z-index: 6; }
   .dx-bar-hint { font-size: calc(var(--u) * 10.5); }
   .dx-motd { left: calc(var(--u) * 24); top: calc(var(--u) * 326); width: calc(var(--u) * 352); font-size: calc(var(--u) * 13); -webkit-line-clamp: 1; line-clamp: 1; }
-  .dx-arc { --bx: calc(var(--u) * 48); --bw: calc(var(--u) * 272); --bh: calc(var(--u) * 36); --pitch: calc(var(--u) * min(68, 320 / var(--n))); }
+  .dx-arc { --bx: calc(var(--u) * 48); --bw: calc(var(--u) * 272); --bh: calc(var(--u) * min(36, 288 / var(--n))); --pitch: calc(var(--u) * min(68, 320 / var(--n))); }
   .dx-item { --dr: 12 !important; opacity: 1; pointer-events: auto; transform: translate(calc(var(--u) * 44 + var(--u) * 22 * cos((var(--i) - (var(--n) - 1) / 2) * 14deg) - var(--u) * 22), calc(var(--u) * 392 + var(--i) * var(--pitch))); }
   .dx-pod { left: calc(var(--u) * -40); top: calc(var(--u) * -40); width: calc(var(--u) * 80); height: calc(var(--u) * 80); }
   .dx-vine { left: calc(var(--u) * 14); top: calc(var(--u) * -34); transform: scale(.82); transform-origin: 0 100%; }

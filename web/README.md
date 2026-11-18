@@ -79,11 +79,13 @@ The choice and recent servers are kept in localStorage.
 **The dashboard** (`/`, `/dash/:section`, `/dash/players/:tag`, `src/dash/`) is the "live" side:
 a glowing orb, a wireframe tunnel and an arc of menu bars, each opening a
 bezelled list panel (`dash/menu.ts`). Signed out the menu leads with sign
-in, create and recover, then live now, game history, find a game, players
+in, create and recover, then live now, game history, games, find a game, players
 and settings (the ones that need an account show greyed with a hint).
-Signed in it is live now, find a game, friends, players, game history,
+Signed in it is live now, games, find a game, friends, players, game history,
 account (recovery code, authenticator, devices, sign out) and settings;
 profile and the server (`/dash/server`: service admin) sit under settings.
+Games (`/dash/games`) shows Halo 2’s recent games and the signed-in player’s
+service record. View stats opens the Halo 2 stats site.
 The Halo admin area (MOTD, playlists, custom content) is on the stats site
 at `/stats/admin` ([docs/live/live-admin.md](../docs/live/live-admin.md)).
 Keyboard: arrows move, Enter (or `a`) selects,

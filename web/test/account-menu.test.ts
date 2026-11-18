@@ -7,7 +7,7 @@ describe("the main menu", () => {
   test("signed out: the ways in first, then what works without an account, then the greyed ones", () => {
     const items = menuFor(false);
     expect(items.slice(0, 3)).toEqual(["signin", "signup", "recover"]);
-    expect(items.slice(3, 5)).toEqual(["live", "history"]);
+    expect(items.slice(3, 6)).toEqual(["live", "history", "games"]);
     const locked = items.filter((i) => lockedHint(i, false));
     expect(locked).toEqual(["sessions", "players", "settings"]);
     for (const i of locked) expect(lockedHint(i, false)).toStartWith("sign in");
@@ -17,7 +17,7 @@ describe("the main menu", () => {
 
   test("signed in: the usual items, the account, nothing greyed", () => {
     const items = menuFor(true);
-    expect(items).toEqual(["live", "sessions", "friends", "players", "history", "account", "settings"]);
+    expect(items).toEqual(["live", "games", "sessions", "friends", "players", "history", "account", "settings"]);
     expect(items.filter((i) => lockedHint(i, true))).toEqual([]);
     expect(items).not.toContain("signin");
   });

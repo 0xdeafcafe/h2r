@@ -267,9 +267,10 @@ export function Tubes() {
   );
 }
 
-export type GlyphName = "record" | "history" | "download" | "exit" | "compare" | "career" | "key" | "sign" | "store" | "server" | "globe" | "gear" | "empty";
+export type GlyphName = "disc" | "record" | "history" | "download" | "exit" | "compare" | "career" | "key" | "sign" | "store" | "server" | "globe" | "gear" | "empty";
 
 const GLYPHS: Record<GlyphName, string> = {
+  disc: "M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0ZM14 12a2 2 0 1 1-4 0 2 2 0 0 1 4 0ZM6 12a6 6 0 0 1 6-6",
   record: "M5 19V11M10 19V5M15 19V9M20 19V14M3 21H22",
   history: "M12 6V12L16 14M12 3A9 9 0 1 1 3.5 9M3 4V9H8",
   download: "M12 3V15M7 10.5L12 15.5L17 10.5M4 20H20",
