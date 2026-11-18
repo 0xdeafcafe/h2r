@@ -593,3 +593,65 @@ fn every_multiplayer_job_builds_in_both_sandboxes() {
     println!("{built} multiplayer jobs built");
     assert!(built > 0);
 }
+
+/// What the import shares between jobs (each Halo 1 map read and inflated
+/// once for the jobs that convert it, each Halo 2 base read once, the
+/// scripts' tables and donors built once) changes no byte: a level's two
+/// variants and a multiplayer map's two sandboxes, converted one after
+/// the other by one converter that shares, are the same as each converted
+/// by a converter of its own.
+///
+/// `H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso cargo test --release -p cli
+/// --bin h2 h1_import::tests::shared -- --ignored` (H1_LEVEL=a30 and
+/// H1_MAP=bloodgulch by default).
+#[test]
+#[ignore = "reads the discs named by H1_ISO and H2_DISC; converts a level and a map twice"]
+fn shared_reads_change_no_byte() {
+    let h1 = PathBuf::from(std::env::var("H1_ISO").expect("H1_ISO"));
+    let h2 = PathBuf::from(std::env::var("H2_DISC").expect("H2_DISC"));
+    let level = std::env::var("H1_LEVEL").unwrap_or_else(|_| "a30".into());
+    let mp = std::env::var("H1_MAP").unwrap_or_else(|_| "bloodgulch".into());
+    let converter = || {
+        let mut iso = Xiso::open(BufReader::new(File::open(&h1).unwrap())).unwrap();
+        let disc = Disc::open(&mut iso).unwrap();
+        DiscConverter::new(h1.clone(), iso, disc, h2.clone(), PathBuf::new())
+    };
+    let level: &str = &level;
+    let mp: &str = &mp;
+    let todo = [
+        Job::Campaign(level),
+        Job::CampaignHalo2(level),
+        Job::Multiplayer(mp, Sandbox::Halo2),
+        Job::Multiplayer(mp, Sandbox::Halo1),
+    ];
+    let bytes = |conv: &DiscConverter, job: &Job| -> Vec<u8> {
+        let out = match *job {
+            Job::Campaign(l) => conv.campaign(l, h1campaign::h2assets::Assets::Halo1),
+            Job::CampaignHalo2(l) => conv.campaign(l, h1campaign::h2assets::Assets::Halo2),
+            Job::Multiplayer(m, s) => {
+                let (_, f) = conv.multiplayer(m, s).unwrap();
+                conv.release(job);
+                return f.bytes;
+            }
+        };
+        conv.release(job);
+        out.unwrap().bytes
+    };
+    let shared = converter();
+    shared.expect(&todo);
+    let with: Vec<Vec<u8>> = todo.iter().map(|j| bytes(&shared, j)).collect();
+    // Everything was shared, and let go after its last job.
+    assert!(shared.h1_maps.lock().unwrap().is_empty());
+    assert_eq!(shared.bases.lock().unwrap().len(), 2);
+    for (job, with) in todo.iter().zip(&with) {
+        let alone = bytes(&converter(), job);
+        assert!(
+            alone == *with,
+            "{}: {} bytes alone, {} shared",
+            job.key(),
+            alone.len(),
+            with.len()
+        );
+        eprintln!("{}: {} bytes, the same", job.key(), with.len());
+    }
+}
