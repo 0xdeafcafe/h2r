@@ -35,6 +35,7 @@
 //! `#[ignore]` tests.
 #![forbid(unsafe_code)]
 
+pub mod arsenal;
 pub mod base;
 pub mod coll;
 pub mod convert;

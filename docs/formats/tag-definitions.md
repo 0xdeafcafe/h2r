@@ -1,6 +1,6 @@
 # Typed tag definitions (`tags::defs`)
 
-Status: **Built** (2026-11-18) for 14 groups, each proven against every
+Status: **Built** (2026-11-18) for 18 groups, each proven against every
 retail tag of the group on the disc. **Two converter paths use them**:
 Halo 1 vehicles that no Halo 2 template stands in for (a10's cryotube,
 chairs, fighterbomber and Halo ring), **on by default** since converter
@@ -626,6 +626,78 @@ byte-identical, its power and position groups Halo 1's and below the
 converted device group count, and its flags; all 496 Halo 1 names of
 devices name their placement (a fixture's names its machine).
 
+## Weapons, equipment, projectiles and damage (`h1objects::arsenal`)
+
+Since converter version 48 every Halo 1 `weap`, `eqip` and `proj`, and
+the `jpt!` its projectiles deal, is written from its definition with no
+retail template bytes; the template path for these groups is gone
+(`crates/h1objects/src/arsenal.rs`, `convert_arsenal.rs`). `proj.txt`
+and `jpt_.txt` are new; all 47 retail projectiles and 135 damage effects
+round-trip byte-identical (the proof above, now 18 groups). Building one
+starts from the definition default, then:
+
+- **Role words** (`arsenal::role`): the turret and biped rule over every
+  tag of the group the base map holds, at conversion time. Each 4-byte
+  unknown span where at least half hold one nonzero value takes it, and
+  the same over all elements of the magazines, barrels and firing effects
+  pooled.
+- **Halo 1's values**: the named fields below, and by offset the words
+  the template path already wrote (S, V2 in h1-objects.md):
+  `WEAPON_WORDS` (heat; aim assist, E), `BARREL_WORDS` (rate of fire,
+  magazine, rounds per shot, error, spread, first-person offset, heat per
+  round), `PROJECTILE_WORDS` (radii, arming time, timer, gravity, damage
+  ranges; speeds per tick times 30).
+- **References**: converted Halo 1 tags for the model chain, the
+  first-person model and animations (two elements, as retail's Chief and
+  Arbiter), the projectiles and every damage slot of a projectile
+  (impact, and detonation: Halo 1's attached detonation damage or the
+  first `jpt!` its detonation effect names). The slots Halo 1 has nothing
+  converted for take the **Halo 2 counterpart's reference** (the
+  `TEMPLATES` row; references only): the HUD (`nhdt`; Halo 1's `wphi` has
+  no converter), melee damage, effects and sounds (Halo 1's `effe` and
+  most `snd!` are not converted), the barrels' firing effects. A
+  projectile takes no `jpt!` from Halo 2.
+
+Named on the way (V: `weapon_rebuild_disc`
+`halo_1_and_halo_2_pairs_agree_on_the_named_fields`, Blood Gulch's
+arsenal against Coagulation's counterparts):
+
+| Field | Evidence |
+|---|---|
+| `weap` magazine `+0x6` `rounds_total_initial`, `+0x8` `rounds_total_maximum`, `+0xa` `rounds_loaded_maximum`, `+0x10` `reload_time`, `+0x14` `rounds_reloaded` | equal to Halo 1's magazine `+0x6`, `+0x8`, `+0xa`, `+0x14`, `+0x18` on 3, 3, 6, 5 and 6 of 8 pairs (no other offset matches) |
+| `weap` barrel `+0x36` `firing_noise` | equal to Halo 1's trigger `+0x2e` on 8 of 10 |
+| `weap +0x2a8` `first_person` (`model` `mode`, `animations` `jmad`), `+0x2b0` `hud` (`nhdt`) | the retail targets: `fp_<weapon>`, the Chief's and the Arbiter's first-person graphs, `ui\hud\<weapon>` |
+| `eqip +0x12c` `powerup_type`, `+0x12e` `grenade_type`, `+0x130` `powerup_time` | equal to Halo 1's `+0x308`, `+0x30a`, `+0x30c` on all four pairs (over shield, active camouflage, both grenades) |
+| `proj +0xc8` `collision_radius`, `+0xe0` `maximum_range` | equal to Halo 1's `+0x1a0` on 9 of 10, `+0x1c8` on 3 |
+| `proj +0x100` `detonation_damage`, `+0x118` `super_detonation_damage`, `+0x12c` `attached_super_detonation_damage`, `+0x148` `impact_damage` (`jpt!`) | the retail targets' names (`rocket_launcher_explosion`, `needler_shard_*`, every bullet's damage at `+0x148`) |
+| `jpt! +0x1c` `damage_lower_bound`, `+0x20` `damage_upper_bound` (from, to) | Halo 1's `+0x1d0`, `+0x1d4`: in both games lower <= from <= to on 6 of 8 pairs, all three equal on the sniper rifles |
+| `obje` change colour `+0x8` `block_8` (`0x28`) | filled on the needler shard projectile only |
+
+**Proof** (`every_weapon_equipment_and_projectile_rebuilds`): on the ten
+campaign levels (on `05a_deltaapproach`) and the 13 multiplayer maps on
+the disc (on their bases), every `weap`, `eqip` and `proj` converts:
+316 weapons, 274 equipment, 363 projectiles and 378 damage effects
+(counted per map). Each reads back through its definition and writes the
+same again, has no raw and no pinned block, and every reference is a tag
+of the tree or of the base of its group. Checked against Halo 1: object
+type, bounding radius, magazines (counts, reload time), one barrel per
+trigger with its firing noise and Halo 1's converted projectile,
+first-person model (and animations, 211 weapons; a graph that does not
+convert is left null and reported), powerup type, grenade type and time
+(20 over shields and 18 camouflages built: they had no template before),
+projectile radius, range, speed per second and Halo 1's damage, and every
+`jpt!`'s bounds. The test prints the Halo 2 reference slots by group.
+
+What only a game run can show, and the first suspects: firing,
+reloading and the HUD (the role words are the majority of the base's
+weapons, not the counterpart's; the barrel's unnamed words such as the
+firing mode and the magazine's other words come from there); grenades
+being thrown and bouncing (no material responses are written:
+`proj +0x19c` is empty; the globals' grenade block still names Halo 2's
+grenades); powerups (Halo 2's handling of over shield and camouflage
+types with Halo 1's times); the first-person arms, since Halo 1's
+first-person graph animates Halo 1's arm nodes.
+
 ## Which converted objects use the definitions
 
 | Groups | Path | Why |
@@ -635,16 +707,17 @@ devices name their placement (a fixture's names its machine).
 | `phmo` of a rebuilt vehicle or device, or a templated vehicle with none | definitions (Halo 1's collision as polyhedra; a stand-in sphere with no solid collision) | `vehicle_new` refuses a model with none; Havok sees a device only through one |
 | `scen` | template by default; definitions with `Options::rebuild` | the rebuilt scenery has not run in the game |
 | `bipd` of a role (Chief, humans, Covenant) | template by default; definitions with `Options::rebuild_bipeds` | the rebuilt biped has not run in the game; its references are null |
-| other `bipd`, `vehi` with a template, `weap`, `eqip`, `proj` | template | their gameplay fields (speeds, seats, cameras, physics, weapon tuning) are unknown spans; built from zero they would not play |
+| `weap`, `eqip`, `proj`, and the `jpt!` the projectiles deal | definitions (only path, since version 48) | role words over the base plus Halo 1's values; Halo 2 references only where Halo 1 has nothing converted |
+| other `bipd`, `vehi` with a template | template | their gameplay fields (speeds, seats, cameras, physics) are unknown spans; built from zero they would not play |
 
 ## Open
 
 - **Unknown spans** are largest in the unit layer (`bipd`, `vehi`), the
   `weap` tuning, `mode`'s nested blocks, and the `bitm` and `snd!` roots.
   Each needs the engine's reader found to be named.
-- **More groups:** `sky`, `effe`, `proj`, `jpt!` (the second tier asked
-  for), and the other object groups (`bloc`, `garb`, `proj`, `crea`,
-  `ssce`), which `struct obje` already covers.
+- **More groups:** `sky`, `effe` (the second tier asked for), and the
+  other object groups (`bloc`, `garb`, `crea`, `ssce`), which
+  `struct obje` already covers.
 - **Physics shapes from Halo 1**: built from the collision BSP's solid
   cells since version 43. Open: whether a device's bodies need retail's
   `block_30` node pairs, the shape header's material index table, and
@@ -652,6 +725,6 @@ devices name their placement (a fixture's names its machine).
 - **Rebuilt bipeds**: the HUD, weapons, character and sounds (null
   now), whether the character physics blocks need sizing to the Halo 1
   model, and what `BIPED_WORDS` mean.
-- **More converter paths**: the other objects (templated vehicles,
-  weapons, equipment, projectiles), shaders (`shad` with its postprocess mirrors kept consistent),
+- **More converter paths**: the other objects (templated vehicles),
+  shaders (`shad` with its postprocess mirrors kept consistent),
   and the sky, each on its definition with its own comparison.

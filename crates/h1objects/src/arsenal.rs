@@ -1,0 +1,500 @@
+//! Weapons, equipment, projectiles and damage effects written from their
+//! typed definitions ([`tags::defs`]: `weap`, `eqip`, `proj`, `jpt!`), with
+//! no retail template bytes. Every field starts at its definition default;
+//! then, in order:
+//!
+//! - the group's **role words** ([`Role`]): every 4-byte unknown span where
+//!   at least half of the base map's tags of the group hold one nonzero
+//!   value takes it (the turret and biped rule, `crate::rebuild`), and the
+//!   same over every element of the blocks the conversion writes, pooled.
+//!   Computed from the base at conversion time, so no retail value is kept
+//!   in the source;
+//! - Halo 1's values: the named fields, and the words the template path
+//!   wrote by offset ([`WEAPON_WORDS`], [`BARREL_WORDS`],
+//!   [`PROJECTILE_WORDS`]; offsets from `docs/formats/h1-objects.md`);
+//! - references: converted Halo 1 tags (model chain, first-person model
+//!   and animations, projectiles, damage effects), and, for slots Halo 1
+//!   has no converted tag for (HUD, effects, sounds, melee damage), the
+//!   Halo 2 counterpart's reference ([`Halo2Refs`]). Only references are
+//!   taken from the counterpart, never its bytes.
+//!
+//! Evidence and the field-by-field proof: `docs/formats/tag-definitions.md`
+//! (Weapons, equipment, projectiles and damage) and
+//! `tests/weapon_rebuild_disc.rs`.
+
+use map::build::Block;
+use map::{FourCC, TagId};
+use tags::defs::{self, Defs, Kind, Record, StructDef, Val};
+
+use crate::base::Base;
+use crate::h1;
+use crate::rebuild::{self, Predicted, Tally};
+use crate::{Error, Result};
+
+/// `obje +0` for each group (docs/formats/objects.md).
+pub const WEAPON_TYPE: u32 = 2;
+pub const EQUIPMENT_TYPE: u32 = 3;
+pub const PROJECTILE_TYPE: u32 = 5;
+
+/// The blocks whose elements take pooled role words, per group.
+pub const WEAPON_BLOCKS: &[&str] = &["magazines", "barrels", "barrels.block_e4"];
+
+/// `weap` root words written from Halo 1 by offset, as the template path
+/// did: (path, Halo 1 `weap` offset). The aim assist is E (`0x1a50a0`
+/// reads `+0x208..+0x218`); the heat words are S, V2
+/// (docs/formats/h1-objects.md).
+pub const WEAPON_WORDS: &[(&str, usize)] = &[
+    ("unknown_150", 0x34c), // heat recovery threshold
+    ("unknown_154", 0x350), // overheated threshold
+    ("unknown_158", 0x354), // heat detonation threshold
+    ("unknown_15c", 0x358), // heat detonation fraction
+    ("unknown_160", 0x35c), // heat loss per second
+    ("unknown_164", 0x360), // heat illumination
+    ("unknown_208", 0x3e4), // autoaim angle
+    ("unknown_20c", 0x3e8), // autoaim range
+    ("unknown_210", 0x3ec), // magnetism angle
+    ("unknown_214", 0x3f0), // magnetism range
+    ("unknown_218", 0x3f4), // deviation angle
+];
+
+/// Barrel words from the Halo 1 trigger by offset (S, V2; the template
+/// path's rows): (path, Halo 1 trigger offset). Two `i16`s share a word
+/// where the offsets say so.
+pub const BARREL_WORDS: &[(&str, usize)] = &[
+    ("unknown_4", 0x4),   // rounds per second, from
+    ("unknown_8", 0x8),   // rounds per second, to
+    ("unknown_c", 0xc),   // firing acceleration time
+    ("unknown_10", 0x10), // firing deceleration time
+    ("unknown_28", 0x20), // i16 magazine, i16 rounds per shot
+    ("unknown_2c", 0x24), // i16 minimum rounds loaded, i16 rounds between tracers
+    ("unknown_38", 0x38), // error acceleration time
+    ("unknown_3c", 0x3c), // error deceleration time
+    ("unknown_68", 0x6c), // i16 distribution function, i16 projectiles per shot
+    ("unknown_6c", 0x70), // distribution angle
+    ("unknown_70", 0x78), // minimum error
+    ("unknown_74", 0x7c), // error angle, from
+    ("unknown_78", 0x80), // error angle, to
+    ("unknown_7c", 0x84), // first-person offset
+    ("unknown_80", 0x88),
+    ("unknown_84", 0x8c),
+    ("unknown_a4", 0xb8), // heat per round
+];
+
+/// `proj` words from Halo 1 by offset (S, V2; the template path's rows):
+/// (path, Halo 1 `proj` offset, per tick to per second). Halo 1 keeps
+/// speeds per tick ([`crate::convert::TICKS_PER_SECOND`]).
+pub const PROJECTILE_WORDS: &[(&str, usize, bool)] = &[
+    ("unknown_c0", 0x180, false), // i16 detonation timer starts, i16 impact noise
+    ("unknown_c4", 0x19c, false), // AI perception radius
+    ("unknown_cc", 0x1a4, false), // arming time
+    ("unknown_d0", 0x1a8, false), // danger radius
+    ("unknown_d4", 0x1bc, false), // timer, from
+    ("unknown_d8", 0x1c0, false), // timer, to
+    ("unknown_dc", 0x1c4, true),  // minimum velocity
+    ("unknown_164", 0x1cc, false), // air gravity scale
+    ("unknown_168", 0x1d0, false), // air damage range, from
+    ("unknown_16c", 0x1d4, false), // air damage range, to
+    ("unknown_170", 0x1d8, false), // water gravity scale
+    ("unknown_174", 0x1dc, false), // water damage range, from
+    ("unknown_178", 0x1e0, false), // water damage range, to
+    ("unknown_17c", 0x1e4, true),  // initial velocity
+    ("unknown_180", 0x1e8, true),  // final velocity
+    ("unknown_184", 0x1ec, true),  // guided angular velocity
+];
+
+/// Halo 1's `jpt!` damage: lower bound `+0x1d0`, upper bound `+0x1d4`
+/// (from, to). V: tag-definitions.md, five retail pairs.
+pub const H1_DAMAGE_LOWER: usize = 0x1d0;
+pub const H1_DAMAGE_UPPER: usize = 0x1d4;
+
+fn def(group: &[u8; 4]) -> Result<&'static StructDef> {
+    Defs::builtin()
+        .group(FourCC(*group))
+        .ok_or_else(|| Error::Invalid(format!("no definition for {}", FourCC(*group))))
+}
+
+fn set(r: &mut Record, path: &str, v: Val) -> Result<()> {
+    r.set(path, v)
+        .map_err(|e| Error::Invalid(format!("{path}: {e}")))
+}
+
+fn built(d: &StructDef, r: &Record) -> Result<Block> {
+    defs::to_built(d, r, &mut |_| None).map_err(|e| Error::Invalid(e.to_string()))
+}
+
+fn word(r: &mut Record, path: &str, w: u32) -> Result<()> {
+    set(r, path, Val::Bytes(w.to_le_bytes().to_vec()))
+}
+
+fn words(r: &mut Record, ws: &[(String, u32)]) -> Result<()> {
+    for (p, w) in ws {
+        word(r, p, *w)?;
+    }
+    Ok(())
+}
+
+fn u32_at(b: &[u8], at: usize) -> u32 {
+    u32::from_le_bytes(b[at..at + 4].try_into().expect("4 bytes"))
+}
+
+/// The offset of the field `name` in `d`.
+fn offset(d: &StructDef, name: &str) -> Option<u32> {
+    d.fields.iter().find(|f| f.name == name).map(|f| f.offset)
+}
+
+/// A group's role words over the base map ([`role`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Role {
+    /// How many of the base's tags of the group it rests on.
+    pub members: usize,
+    /// Root words, as (path, word).
+    pub root: Vec<(String, u32)>,
+    /// Per block path, the pooled element words.
+    pub elements: Vec<(String, Vec<(String, u32)>)>,
+}
+
+impl Role {
+    /// The element words of the block at `path` (none when no member has
+    /// one).
+    pub fn element(&self, path: &str) -> &[(String, u32)] {
+        self.elements
+            .iter()
+            .find(|e| e.0 == path)
+            .map_or(&[], |e| &e.1[..])
+    }
+}
+
+/// Every element of the block at `path` (dotted: a block inside a block's
+/// elements) under `bytes`, an element of `d`.
+fn elements_at(base: &Base, d: &StructDef, bytes: &[u8], path: &str) -> Result<Vec<Vec<u8>>> {
+    let (head, rest) = path.split_once('.').unwrap_or((path, ""));
+    let (Some(at), Some(e)) = (offset(d, head), d.child(head)) else {
+        return Err(Error::Invalid(format!("{}: no block {head}", d.name)));
+    };
+    let mut out = Vec::new();
+    let mut i = 0;
+    while let Some(x) = base.element(bytes, at as usize, e.size as usize, i)? {
+        if rest.is_empty() {
+            out.push(x);
+        } else {
+            out.extend(elements_at(base, e, &x, rest)?);
+        }
+        i += 1;
+    }
+    Ok(out)
+}
+
+/// The base's tags of `group` and their roots.
+fn members(base: &Base, group: &[u8; 4]) -> Result<Vec<(TagId, String, Vec<u8>)>> {
+    let d = def(group)?;
+    base.tags
+        .iter()
+        .filter(|t| t.1 == FourCC(*group))
+        .map(|t| Ok((t.0, t.2.clone(), base.head(t.0, d.size.into())?)))
+        .collect()
+}
+
+/// [`Role`] over every tag of `group` the base holds, with `blocks`'
+/// elements pooled. `None` when the base has none.
+pub fn role(base: &Base, group: &[u8; 4], blocks: &[&str]) -> Result<Option<Role>> {
+    let d = def(group)?;
+    let all = members(base, group)?;
+    if all.is_empty() {
+        return Ok(None);
+    }
+    let mut spans = Vec::new();
+    rebuild::word_spans(d, "", 0, &mut spans);
+    let mut root = Tally::new();
+    for (_, _, bytes) in &all {
+        rebuild::tally_words(bytes, &spans, &mut root);
+    }
+    let mut elements = Vec::new();
+    for path in blocks {
+        let e = d
+            .child(path)
+            .ok_or_else(|| Error::Invalid(format!("{} {path}", d.name)))?;
+        let mut espans = Vec::new();
+        rebuild::word_spans(e, "", 0, &mut espans);
+        let mut t = Tally::new();
+        for (_, _, bytes) in &all {
+            for x in elements_at(base, d, bytes, path)? {
+                rebuild::tally_words(&x, &espans, &mut t);
+            }
+        }
+        elements.push(((*path).to_owned(), rebuild::majority(&t)));
+    }
+    Ok(Some(Role {
+        members: all.len(),
+        root: rebuild::majority(&root),
+        elements,
+    }))
+}
+
+/// References taken from a Halo 2 counterpart: (path in the record,
+/// group, tag). Only live references of the definition's own tagref
+/// fields, through embedded structs.
+pub type Halo2Refs = Vec<(String, FourCC, TagId)>;
+
+/// The counterpart's references in `bytes` (an element of `d`), but for
+/// the paths in `skip`.
+pub fn halo2_refs(base: &Base, d: &StructDef, bytes: &[u8], skip: &[&str]) -> Halo2Refs {
+    fn walk(base: &Base, d: &StructDef, bytes: &[u8], at: u32, prefix: &str, out: &mut Halo2Refs) {
+        for f in &d.fields {
+            let p = format!("{prefix}{}", f.name);
+            let o = (at + f.offset) as usize;
+            match &f.kind {
+                Kind::Struct(s) => walk(base, s, bytes, at + f.offset, &format!("{p}."), out),
+                Kind::TagRef { .. } if o + 8 <= bytes.len() => {
+                    let id = TagId(u32_at(bytes, o + 4));
+                    if let Some((g, _)) = base.name(id)
+                        && u32_at(bytes, o) == u32::from_be_bytes(g.0)
+                    {
+                        out.push((p, g, id));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(base, d, bytes, 0, "", &mut out);
+    out.retain(|r| !skip.contains(&r.0.as_str()));
+    out
+}
+
+fn refs(r: &mut Record, list: &Halo2Refs) -> Result<()> {
+    for (p, g, id) in list {
+        set(r, p, Val::tag(*g, *id))?;
+    }
+    Ok(())
+}
+
+fn header(r: &mut Record, path: &str, kind: u32, obj: &h1::Object, hlmt: Option<TagId>) -> Result<()> {
+    set(r, &format!("{path}.object_type"), Val::Enum(kind))?;
+    set(r, &format!("{path}.bounding_radius"), Val::Float(obj.bounding_radius))?;
+    set(r, &format!("{path}.bounding_offset"), Val::floats(&obj.bounding_offset))?;
+    set(
+        r,
+        &format!("{path}.model"),
+        Val::tag(FourCC(*b"hlmt"), hlmt.unwrap_or(TagId::NULL)),
+    )
+}
+
+/// What a rebuilt weapon references.
+#[derive(Clone, Debug, Default)]
+pub struct WeaponParts {
+    pub hlmt: Option<TagId>,
+    pub predicted: Vec<Predicted>,
+    /// Per Halo 1 trigger, its converted projectile.
+    pub projectiles: Vec<Option<TagId>>,
+    /// Halo 1's first-person model and animations, converted.
+    pub first_person: (Option<TagId>, Option<TagId>),
+    /// From the Halo 2 counterpart: root references (HUD, melee damage,
+    /// effects, sounds), per barrel its references, and per barrel its
+    /// firing effects' references.
+    pub halo2: Halo2Refs,
+    pub barrel_halo2: Vec<Halo2Refs>,
+    pub firing_effects: Vec<Vec<Halo2Refs>>,
+}
+
+/// The `weap` root from Halo 1's weapon `w` (the bytes of its tag: `b`).
+pub fn weapon(w: &h1::Weapon, b: &[u8], parts: &WeaponParts, role: &Role) -> Result<Block> {
+    let d = def(b"weap")?;
+    let mut r = defs::default_record(d);
+    words(&mut r, &role.root)?;
+    refs(&mut r, &parts.halo2)?;
+    header(&mut r, "item.obje", WEAPON_TYPE, &w.object, parts.hlmt)?;
+    rebuild::predicted_resources(b"weap", &mut r, "item.obje", &parts.predicted)?;
+    for (path, at) in WEAPON_WORDS {
+        word(&mut r, path, u32_at(b, *at))?;
+    }
+    // Magazines.
+    let md = d.child("magazines").expect("weap magazines");
+    let mut mags = Vec::new();
+    for m in &w.magazines {
+        let mut e = defs::default_record(md);
+        words(&mut e, role.element("magazines"))?;
+        set(&mut e, "unknown_4", Val::Bytes(m.rounds_recharged.to_le_bytes().to_vec()))?;
+        set(&mut e, "rounds_total_initial", Val::Int(m.rounds_total_initial.into()))?;
+        set(&mut e, "rounds_total_maximum", Val::Int(m.rounds_total_maximum.into()))?;
+        set(&mut e, "rounds_loaded_maximum", Val::Int(m.rounds_loaded_maximum.into()))?;
+        set(&mut e, "reload_time", Val::Float(m.reload_time))?;
+        set(&mut e, "rounds_reloaded", Val::Int(m.rounds_reloaded.into()))?;
+        mags.push(e);
+    }
+    set(&mut r, "magazines", Val::Block(mags))?;
+    // Barrels: one per Halo 1 trigger.
+    let bd = d.child("barrels").expect("weap barrels");
+    let fd = d.child("barrels.block_e4").expect("barrel firing effects");
+    let trig = h1_triggers(b)?;
+    let mut barrels = Vec::new();
+    for (i, t) in w.triggers.iter().enumerate() {
+        let mut e = defs::default_record(bd);
+        words(&mut e, role.element("barrels"))?;
+        if let Some(h) = parts.barrel_halo2.get(i).or(parts.barrel_halo2.last()) {
+            refs(&mut e, h)?;
+        }
+        for (path, at) in BARREL_WORDS {
+            word(&mut e, path, u32_at(&trig[i], *at))?;
+        }
+        set(&mut e, "firing_noise", Val::Int(t.firing_noise.into()))?;
+        set(
+            &mut e,
+            "projectile",
+            Val::tag(
+                FourCC(*b"proj"),
+                parts.projectiles.get(i).copied().flatten().unwrap_or(TagId::NULL),
+            ),
+        )?;
+        let mut effects = Vec::new();
+        if let Some(list) = parts.firing_effects.get(i).or(parts.firing_effects.last()) {
+            for h in list {
+                let mut x = defs::default_record(fd);
+                words(&mut x, role.element("barrels.block_e4"))?;
+                refs(&mut x, h)?;
+                effects.push(x);
+            }
+        }
+        set(&mut e, "block_e4", Val::Block(effects))?;
+        barrels.push(e);
+    }
+    set(&mut r, "barrels", Val::Block(barrels))?;
+    // First person: one element per player character, as retail (the
+    // Chief's, then the Arbiter's), both Halo 1's.
+    let (model, anim) = parts.first_person;
+    let pd = d.child("first_person").expect("weap first person");
+    let mut fp = Vec::new();
+    if model.is_some() || anim.is_some() {
+        for _ in 0..2 {
+            let mut e = defs::default_record(pd);
+            set(&mut e, "model", Val::tag(FourCC(*b"mode"), model.unwrap_or(TagId::NULL)))?;
+            set(
+                &mut e,
+                "animations",
+                Val::tag(FourCC(*b"jmad"), anim.unwrap_or(TagId::NULL)),
+            )?;
+            fp.push(e);
+        }
+    }
+    set(&mut r, "first_person", Val::Block(fp))?;
+    built(d, &r)
+}
+
+/// Halo 1's triggers' bytes, each `h1::TRIGGER_SIZE`, read by the caller
+/// into `b`'s tail: this takes them from [`h1::Weapon`]'s reader layout.
+fn h1_triggers(b: &[u8]) -> Result<Vec<Vec<u8>>> {
+    // The caller passes the concatenated trigger elements after the root
+    // ([`weapon_bytes`]).
+    let root = h1::WEAP_SIZE;
+    Ok(b[root..]
+        .chunks_exact(h1::TRIGGER_SIZE)
+        .map(<[u8]>::to_vec)
+        .collect())
+}
+
+/// Halo 1's `weap` root followed by its trigger elements, the form
+/// [`weapon`] reads its by-offset words from.
+pub fn weapon_bytes(map: &h1map::H1Map, tag: &h1map::Tag) -> Result<Vec<u8>> {
+    let b = h1::tag_bytes(map, tag, b"weap", h1::WEAP_SIZE)?;
+    let mut out = b[..h1::WEAP_SIZE].to_vec();
+    let blk = h1map::Block::read(b, 0x4fc).ok_or(Error::Truncated("weap triggers"))?;
+    out.extend_from_slice(map.block(blk, h1::TRIGGER_SIZE)?);
+    Ok(out)
+}
+
+/// What a rebuilt projectile references.
+#[derive(Clone, Debug, Default)]
+pub struct ProjectileParts {
+    pub hlmt: Option<TagId>,
+    /// Converted Halo 1 damage: impact and detonation.
+    pub impact_damage: Option<TagId>,
+    pub detonation_damage: Option<TagId>,
+    /// The Halo 2 counterpart's references (effects, sounds) for the
+    /// slots Halo 1 has nothing converted for.
+    pub halo2: Halo2Refs,
+}
+
+/// The `proj` root from Halo 1's projectile (its tag's bytes `b`).
+pub fn projectile(p: &h1::Projectile, b: &[u8], parts: &ProjectileParts, role: &Role) -> Result<Block> {
+    let d = def(b"proj")?;
+    let mut r = defs::default_record(d);
+    words(&mut r, &role.root)?;
+    refs(&mut r, &parts.halo2)?;
+    header(&mut r, "object", PROJECTILE_TYPE, &p.object, parts.hlmt)?;
+    for (path, at, per_tick) in PROJECTILE_WORDS {
+        let w = if *per_tick {
+            (f32::from_bits(u32_at(b, *at)) * crate::convert::TICKS_PER_SECOND).to_bits()
+        } else {
+            u32_at(b, *at)
+        };
+        word(&mut r, path, w)?;
+    }
+    // Halo 1's detonation noise (`+0x1f0`, i16) in the low half of `+0xe4`.
+    let hi = match r.at("unknown_e4") {
+        Some(Val::Bytes(x)) if x.len() == 4 => u32_at(x, 0) & 0xffff_0000,
+        _ => 0,
+    };
+    word(
+        &mut r,
+        "unknown_e4",
+        hi | u32::from(p.detonation_noise as u16),
+    )?;
+    set(&mut r, "collision_radius", Val::Float(p.collision_radius))?;
+    set(&mut r, "maximum_range", Val::Float(p.maximum_range))?;
+    let jpt = FourCC(*b"jpt!");
+    set(&mut r, "impact_damage", Val::tag(jpt, parts.impact_damage.unwrap_or(TagId::NULL)))?;
+    set(
+        &mut r,
+        "detonation_damage",
+        Val::tag(jpt, parts.detonation_damage.unwrap_or(TagId::NULL)),
+    )?;
+    built(d, &r)
+}
+
+/// What rebuilt equipment references.
+#[derive(Clone, Debug, Default)]
+pub struct EquipmentParts {
+    pub hlmt: Option<TagId>,
+    pub predicted: Vec<Predicted>,
+    pub halo2: Halo2Refs,
+}
+
+/// The `eqip` root from Halo 1's equipment. A health pack needs a positive
+/// amount (docs/game/health.md): a zero time becomes 1.
+pub fn equipment(e: &h1::Equipment, parts: &EquipmentParts, role: &Role) -> Result<Block> {
+    let d = def(b"eqip")?;
+    let mut r = defs::default_record(d);
+    words(&mut r, &role.root)?;
+    refs(&mut r, &parts.halo2)?;
+    header(&mut r, "item.obje", EQUIPMENT_TYPE, &e.object, parts.hlmt)?;
+    rebuild::predicted_resources(b"eqip", &mut r, "item.obje", &parts.predicted)?;
+    set(&mut r, "powerup_type", Val::Int(e.powerup_type.into()))?;
+    set(&mut r, "grenade_type", Val::Int(e.grenade_type.into()))?;
+    let time = if e.powerup_type == crate::convert::POWERUP_HEALTH && e.powerup_time <= 0.0 {
+        1.0
+    } else {
+        e.powerup_time
+    };
+    set(&mut r, "powerup_time", Val::Float(time))?;
+    built(d, &r)
+}
+
+/// The `jpt!` root from Halo 1's damage effect bytes `b`: the role's
+/// words and Halo 1's damage bounds.
+pub fn damage(b: &[u8], role: &Role) -> Result<Block> {
+    let d = def(b"jpt!")?;
+    let mut r = defs::default_record(d);
+    words(&mut r, &role.root)?;
+    let f = |at: usize| f32::from_bits(u32_at(b, at));
+    set(&mut r, "damage_lower_bound", Val::Float(f(H1_DAMAGE_LOWER)))?;
+    set(
+        &mut r,
+        "damage_upper_bound",
+        Val::floats(&[f(H1_DAMAGE_UPPER), f(H1_DAMAGE_UPPER + 4)]),
+    )?;
+    built(d, &r)
+}
+
+/// Halo 1's `jpt!` root size: where its first child block starts (V1,
+/// docs/formats/h1-objects.md); the damage bounds end at `+0x1dc`.
+pub const H1_JPT_MIN: usize = 0x1dc;
