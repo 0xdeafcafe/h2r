@@ -12,6 +12,12 @@
 //! * `+0x10:f32[3]` (last only): a raw field at that offset of the current
 //!   element, for groups or bytes the definitions don't name. Types:
 //!   `u8 u16 u32 i8 i16 i32 f32`, with `[n]` for several, or `bytes[n]`.
+//! * `+0x50/0x54[3]`: element 3 of a raw block, the (count, address) pair
+//!   at offset `0x50` of the current element, `0x54` bytes per element;
+//!   the index is checked against the stored count. Only raw segments may
+//!   follow (the element has no definition): `+0x50/0x54[3].+0x8:f32[3]`
+//!   is a scenario placement's position (the layout is the caller's, e.g.
+//!   `scenario_edit::layout`). Last, it is the element's bytes.
 //!
 //! The empty path is the tag's root element.
 
@@ -33,8 +39,20 @@ pub struct Located<'d> {
 /// A path segment.
 #[derive(Clone, Debug, PartialEq)]
 enum Segment {
-    Field { name: String, index: Option<u32> },
-    Raw { offset: u32, kind: Kind },
+    Field {
+        name: String,
+        index: Option<u32>,
+    },
+    Raw {
+        offset: u32,
+        kind: Kind,
+    },
+    /// Element `index` of the block at `offset`, `stride` bytes apart.
+    RawBlock {
+        offset: u32,
+        stride: u32,
+        index: u32,
+    },
 }
 
 fn parse_num(s: &str) -> Option<u32> {
@@ -109,6 +127,12 @@ fn parse(path: &str) -> Result<Vec<Segment>, String> {
     let parts: Vec<&str> = path.split('.').collect();
     let mut out = Vec::new();
     for (i, p) in parts.iter().enumerate() {
+        if let Some(raw) = p.strip_prefix('+')
+            && !raw.contains(':')
+        {
+            out.push(raw_block(p, raw)?);
+            continue;
+        }
         if let Some(raw) = p.strip_prefix('+') {
             if i + 1 != parts.len() {
                 return Err(format!("{p}: a raw field must be last"));
@@ -144,6 +168,90 @@ fn parse(path: &str) -> Result<Vec<Segment>, String> {
     Ok(out)
 }
 
+/// `+0x50/0x54[3]`: a raw block's element.
+fn raw_block(p: &str, raw: &str) -> Result<Segment, String> {
+    let bad = || {
+        format!(
+            "{p}: a raw field is +<offset>:<type> (+0x10:f32[3]), a raw block +<offset>/<stride>[<index>] (+0x50/0x54[3])"
+        )
+    };
+    let (off, rest) = raw.split_once('/').ok_or_else(bad)?;
+    let (stride, index) = rest.split_once('[').ok_or_else(bad)?;
+    let index = index.strip_suffix(']').ok_or_else(bad)?;
+    let offset = parse_num(off).ok_or_else(|| format!("{p}: bad offset"))?;
+    let stride = parse_num(stride)
+        .filter(|s| (1..=0x10000).contains(s))
+        .ok_or_else(|| format!("{p}: bad stride"))?;
+    let index = parse_num(index).ok_or_else(|| format!("{p}: bad index"))?;
+    Ok(Segment::RawBlock {
+        offset,
+        stride,
+        index,
+    })
+}
+
+/// Follows raw segments from an element at `base` (`what` names it).
+fn follow_raw(
+    g: &Guest,
+    base: u32,
+    what: &str,
+    segments: &[Segment],
+) -> Result<Located<'static>, String> {
+    let mut base = base;
+    let mut what = what.to_owned();
+    for (i, seg) in segments.iter().enumerate() {
+        let last = i + 1 == segments.len();
+        match seg {
+            Segment::Raw { offset, kind } => {
+                return Ok(Located {
+                    addr: base + offset,
+                    kind: kind.clone(),
+                    element: None,
+                    meaning: format!("raw field at {offset:#x} of {what}"),
+                });
+            }
+            Segment::RawBlock {
+                offset,
+                stride,
+                index,
+            } => {
+                let name = format!("+{offset:#x}");
+                let count = g
+                    .u32(base + offset)
+                    .map_err(|e| format!("{name}: guest fault at {:#x}", e.addr))?;
+                let at = g
+                    .u32(base + offset + 4)
+                    .map_err(|e| format!("{name}: guest fault at {:#x}", e.addr))?;
+                if count > BLOCK_MAX {
+                    return Err(format!("{name}: count {count} is not a block"));
+                }
+                if *index >= count {
+                    return Err(format!("{name}[{index}]: the block has {count} elements"));
+                }
+                base = at + index * stride;
+                what = format!("{name}[{index}]");
+                if last {
+                    return Ok(Located {
+                        addr: base,
+                        kind: Kind::Unknown {
+                            len: *stride,
+                            seen: String::new(),
+                        },
+                        element: None,
+                        meaning: format!("raw block element {what}"),
+                    });
+                }
+            }
+            Segment::Field { name, .. } => {
+                return Err(format!(
+                    "{name}: after a raw block only raw segments (+<offset>:<type>) name fields"
+                ));
+            }
+        }
+    }
+    Err("an empty raw path".into())
+}
+
 /// A field named `name` in `s` or, looking through embedded structs, in
 /// one of them: the field and its offset in `s`.
 fn find<'d>(s: &'d StructDef, name: &str) -> Option<(&'d tags::defs::FieldDef, u32)> {
@@ -177,17 +285,14 @@ fn component(kind: &Kind) -> Option<(Kind, u32, u32)> {
     }
 }
 
-/// A raw field (`+0x10:f32`) of a tag at `base` with no definition.
-pub fn raw(base: u32, path: &str) -> Result<Located<'static>, String> {
-    match parse(path)?.as_slice() {
-        [Segment::Raw { offset, kind }] => Ok(Located {
-            addr: base + offset,
-            kind: kind.clone(),
-            element: None,
-            meaning: format!("raw field at {offset:#x}"),
-        }),
-        _ => Err(format!("{path:?} is not one raw field")),
+/// A raw field (`+0x10:f32`) of a tag at `base` with no definition, or
+/// one in a raw block's element (`+0x50/0x54[3].+0x8:f32[3]`).
+pub fn raw(g: &Guest, base: u32, path: &str) -> Result<Located<'static>, String> {
+    let segments = parse(path)?;
+    if segments.is_empty() || segments.iter().any(|s| matches!(s, Segment::Field { .. })) {
+        return Err(format!("{path:?} is not a raw path"));
     }
+    follow_raw(g, base, "the root", &segments)
 }
 
 /// Most elements a block may claim before it is taken for garbage.
@@ -210,16 +315,11 @@ pub fn resolve<'d>(
         meaning: String::new(),
     };
     let n = segments.len();
-    for (i, seg) in segments.into_iter().enumerate() {
+    for (i, seg) in segments.iter().cloned().enumerate() {
         let last = i + 1 == n;
         match seg {
-            Segment::Raw { offset, kind } => {
-                return Ok(Located {
-                    addr: base + offset,
-                    kind,
-                    element: None,
-                    meaning: format!("raw field at {offset:#x} of {}", cur.name),
-                });
+            Segment::Raw { .. } | Segment::RawBlock { .. } => {
+                return follow_raw(g, base, &cur.name, &segments[i..]);
             }
             Segment::Field { name, index } => {
                 let (f, off) = find(cur, &name).ok_or_else(|| {
