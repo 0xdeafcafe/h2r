@@ -124,6 +124,7 @@ static ADDRS: Addrs = Addrs {
     host_owned: &[VBLANKS],
     // What the kernel call answers: the render reads it after the call.
     live_bytes: &[(KERNEL_OUT, KERNEL_OUT + 4), (QUEUE, QUEUE + 4)],
+    render_owned: &[],
     io_queue: QUEUE,
     warmup: 0,
     after_fallback: 0,
@@ -1469,4 +1470,35 @@ fn a_word_both_sides_wrote_keeps_the_sims_write_whole_and_is_reported() {
         assert!(report.iter().any(|l| l.contains(&va)), "{va}: {report:#?}");
     }
     assert!(piped.feature.stats().conflicts >= 8);
+}
+
+/// A render-owned word (the D3D device's push-buffer pointer, in the game):
+/// the render's word wins where the sim's side changed it too, since only
+/// the render may change it between its launch and its join. The sim's
+/// word wins everywhere else, and the report counts both.
+#[test]
+fn a_render_owned_word_the_sim_also_changed_keeps_the_renders_value() {
+    let owned = (OUT + 4, OUT + 8);
+    let mut r = rig_tuned(true, &[], ADDRS.clone(), &[], |f| {
+        f.report_conflicts(true).render_owned(&[owned])
+    });
+    for k in 1..=3 {
+        r.round(k, false);
+        // Render k is in flight and writes OUT + 4 * k (3 * k); so does
+        // the sim.
+        r.rt.memory().set_u32(OUT + 4 * k, 0xdead_0000 + k).unwrap();
+    }
+    r.finish();
+    let m = r.rt.memory();
+    assert_eq!(m.u32(OUT + 4).unwrap(), 3, "render-owned: the render's");
+    assert_eq!(m.u32(OUT + 8).unwrap(), 0xdead_0002, "elsewhere: the sim's");
+    drop(m);
+    let stats = r.feature.stats();
+    assert_eq!(stats.owned_conflicts, 1, "{stats:?}");
+    assert!(stats.conflicts >= 3, "{stats:?}");
+    let report = r.feature.conflict_report();
+    for k in 1..=3 {
+        let va = format!("va [{:#010x}]", OUT + 4 * k);
+        assert!(report.iter().any(|l| l.contains(&va)), "{va}: {report:#?}");
+    }
 }
