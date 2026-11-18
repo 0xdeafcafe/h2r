@@ -51,6 +51,54 @@ pub struct ModelOptions {
     pub shaders: Vec<TagId>,
 }
 
+/// The marker names Halo 2's engine looks up by string IDs written in its
+/// code, each through the marker lookup `0x000b8d30` (E, every use of the
+/// string ID in the XBE; `docs/halo1/models.md`, "Marker names"):
+/// `left_hand` is where a thrown grenade leaves the hand (`0x000e7730`);
+/// the others' call sites are listed there.
+pub const ENGINE_MARKERS: &[&str] = &[
+    "body",
+    "bumper",
+    "drop",
+    "drop_left",
+    "drop_right",
+    "flashlight",
+    "fp_body_cam",
+    "ground_point",
+    "head",
+    "hover_thrusters",
+    "left_hand",
+    "melee",
+    "primary_trigger",
+];
+
+/// A Halo 1 marker name in Halo 2's form: lower case, words joined by
+/// underscores (`left hand` is `left_hand`, `primary trigger` is
+/// `primary_trigger`).
+pub fn h2_marker_name(h1: &str) -> String {
+    h1.trim().to_ascii_lowercase().replace([' ', '-'], "_")
+}
+
+/// The extra marker groups a converted model carries: each name of
+/// [`ENGINE_MARKERS`] the model lacks but has a Halo 1 marker for (in
+/// Halo 2's form, [`h2_marker_name`]), with that marker's index in `names`.
+/// Halo 1's own names stay, so the names a converted tag writes (seats,
+/// attachments, effects, unit hands) still resolve; the engine's search
+/// (`0x001d8f00`) takes the first group whose name matches, so an extra
+/// group changes no existing lookup.
+pub fn marker_aliases(names: &[&str]) -> Vec<(&'static str, usize)> {
+    ENGINE_MARKERS
+        .iter()
+        .filter(|h2| !names.iter().any(|n| n == *h2))
+        .filter_map(|&h2| {
+            names
+                .iter()
+                .position(|n| h2_marker_name(n) == h2)
+                .map(|i| (h2, i))
+        })
+        .collect()
+}
+
 /// Packs a unit vector into Halo 2's 11:11:10 form (x in the low bits).
 pub fn pack_normal(v: [f32; 3]) -> u32 {
     let q =
@@ -154,11 +202,21 @@ pub fn convert_model(model: &Model, name: &str, opts: &ModelOptions) -> Result<C
 
     let nodes = node_blocks(model);
 
-    // Marker groups: one per Halo 1 marker name.
-    let groups = model
+    // Marker groups: one per Halo 1 marker name, then each Halo 2 name the
+    // engine looks up for one of them ([`marker_aliases`]).
+    let named = model
         .markers
         .iter()
-        .map(|m| {
+        .map(|m| (m.name.as_str(), m))
+        .chain(
+            marker_aliases(&model.markers.iter().map(|m| m.name.as_str()).collect::<Vec<_>>())
+                .into_iter()
+                .map(|(alias, i)| (alias, &model.markers[i])),
+        )
+        .collect::<Vec<_>>();
+    let groups = named
+        .into_iter()
+        .map(|(name, m)| {
             let markers = m
                 .instances
                 .iter()
@@ -173,7 +231,7 @@ pub fn convert_model(model: &Model, name: &str, opts: &ModelOptions) -> Result<C
                 })
                 .collect::<Vec<_>>();
             let mut b = Block::zeroed(MARKER_GROUP_LEN);
-            b.string_id(0, &m.name);
+            b.string_id(0, name);
             b.block(4, markers.len() as u32, array(markers, MARKER_LEN));
             b
         })
