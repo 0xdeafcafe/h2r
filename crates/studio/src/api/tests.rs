@@ -91,21 +91,36 @@ fn example(d: &MethodDef, t: &Temp, app: &mut App) -> Value {
         text = text.replace("$SCREEN", first);
     }
     if text.contains("$SETTING") {
-        // A setting of the open variant with two choices or more.
+        // A setting of the open variant and another value for it.
         app.ensure_variants();
         let e = app.variants.as_ref().unwrap();
         let v = e.current().unwrap();
-        let (id, now, other) = v
+        // The fallback schema (no disc) knows no choices: any value goes,
+        // so flip one between 0 and 1.
+        let known: Vec<_> = v
             .known_settings()
             .into_iter()
             .filter(|(id, _)| ::variants::schema::applies(*id, v.game_type()))
-            .find_map(|(id, now)| {
+            .collect();
+        let (id, other) = known
+            .iter()
+            .find_map(|&(id, now)| {
                 let d = e.schema().settings.get(&id)?;
                 let other = d.choices.iter().find(|c| c.value != now)?.value;
-                Some((id, now, other))
+                Some((id, other))
             })
-            .expect("a setting with another choice");
-        let _ = now;
+            .or_else(|| {
+                known
+                    .iter()
+                    .find(|(id, _)| {
+                        e.schema()
+                            .settings
+                            .get(id)
+                            .is_some_and(|d| d.choices.is_empty())
+                    })
+                    .map(|&(id, now)| (id, i32::from(now == 0)))
+            })
+            .expect("a setting the variant can change");
         text = text
             .replace("\"$SETTING\"", &id.0.to_string())
             .replace("\"$VALUE\"", &other.to_string());
