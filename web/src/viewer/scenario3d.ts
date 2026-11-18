@@ -167,6 +167,19 @@ export class ScenarioObjects {
   kinds(): string[] { return objectKinds([...this.placed.values()].map((p) => p.info.kind)); }
   has(): boolean { return this.placed.size > 0; }
 
+  /** Every placement where the level puts it, game coordinates, keyed
+   *  `<kind>:<index>`, with the item a multiplayer spawn holds. */
+  spots(): Map<string, { kind: string; item: string | null; at: V3 }> {
+    const out = new Map<string, { kind: string; item: string | null; at: V3 }>();
+    const v = new THREE.Vector3();
+    for (const [k, p] of this.placed) {
+      p.node.getWorldPosition(v);
+      // gl (x, y, z) is game (x, -z, y).
+      out.set(k, { kind: p.info.kind, item: p.info.item, at: [v.x, -v.z, v.y] });
+    }
+    return out;
+  }
+
   /** All objects on or off. */
   setShown(on: boolean) { this.on = on; this.refresh(); }
   /** One kind on or off. */

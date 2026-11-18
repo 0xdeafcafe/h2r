@@ -130,6 +130,13 @@ export function mapKey(map: string): string {
   return `map/${name}/preview`;
 }
 
+/** The stats banner a page's strip shows (`bun run banner` draws them
+ *  from the owner's maps; docs/live/live-art.md, "Stats banners"): the
+ *  home page's tall one, else the slim strip. */
+export function bannerKey(kind: "home" | "players"): string {
+  return kind === "home" ? "banner/home" : "banner/strip";
+}
+
 const GAMETYPES: Array<[RegExp, string]> = [
   [/\b(ctf|flags?|capture)\b/, "ctf"],
   [/\b(assault|bomb)\b/, "assault"],

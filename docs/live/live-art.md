@@ -688,6 +688,77 @@ teleporters, links and lifts. Do not commit anything they write.
   model. Additive sky layers (haze, glows) are left out by the viewer:
   without the shader's constants they wash the sky out.
 
+# Stats banners
+
+The stats site's banners are collages of in-game views of the owner's own
+maps: a tall one over the home page (`banner/home`, 902 × 180 CSS pixels)
+and a slim strip over the other stats pages (`banner/strip`, 902 × 96),
+both drawn at twice that. Like the rest of the art they are made on the
+owner's machine from their extraction and are never in the repository;
+only the rules for drawing them are.
+
+```sh
+cd web && bun install && bun run banner [--art DIR] [--chrome PATH] [--shots DIR]
+```
+
+`--art` is the extracted art (default `game-art/` in the server directory,
+or `$H2_LIVE_DATA/game-art`). The banners are written into it as
+`banner/home.jpg` and `banner/strip.jpg` and added to its `manifest.json`
+as `banner/home` and `banner/strip` (earlier `banner/*` keys are replaced,
+nothing else is touched), so the native server serves them and
+`h2 live assets publish` uploads them with the rest. An extraction starts
+the directory afresh: run it again after `h2 live assets extract`. It
+takes about ten seconds. `--shots DIR` also writes each shot alone.
+
+**How.** `web/banner/run.ts` starts Vite on the page `web/banner/index.html`
+with the art served at `/art/game/` as the server does, runs a headless
+Chrome (`--chrome`, else `$CHROME`, else the usual install) and drives it
+over the DevTools protocol. The page (`web/banner/page.ts`) loads each map
+in the 3D viewer's own scene (`viewer/scene.ts` with `bare` set: players
+without rings, aim rays or labels; teleporter markers off; ambient
+occlusion on), waits for its pictures and sky, puts the camera where the
+shot says (`aim`) and reads the frame back. Players in a shot are drawn
+with the server's models, each on the floor below them (`floorBelow`).
+
+**The plan** (`web/banner/plan.ts`) names no coordinates from the disc. A
+shot is either relative to the level's playable bounds (a point as
+fractions of them, an azimuth, an elevation and a distance as a share of
+their half-diagonal) or stands at one of the level's placed objects, as
+the viewer keys them (`netgame:66`: a multiplayer spawn), a few units
+behind and above it, looking at another or across the level, with an
+optional cast (species, weapon, team colour, where they stand relative to
+the camera and which way they face). A composition lists shots left to
+right: the width is split evenly, the seams lean (`slant`) and blend over
+`feather` of a panel's width, with weights that sum to one across a seam.
+Each shot is drawn at its panel's size, so it is framed for it. The whole
+is then graded so different maps read as one: a soft-light navy tint, a
+faint rule along each seam, dark sides (darker on the right, under the
+wordmark), a fade at the bottom into the page's navy (the home page's
+columns ride up over it) and fine scan lines. A composition with a shot
+that cannot be drawn (its map or spot missing) is not written, so the
+page keeps its fallback rather than show a gap.
+
+**Choosing shots.** `bun run banner --sheet DIR [--maps a,b] [--size WxH]`
+draws a contact sheet per map of candidate shots, labelled with their ids:
+from each of up to 16 of the level's multiplayer spawns (vehicles first,
+then spread out), looking across the level. `--shot-file FILE` draws a JSON
+list of shots instead, for trying casts and angles. `--verbose` passes the
+page's console through.
+
+**The site.** `Strip` (`web/src/stats/Layout.tsx`) shows the banner when
+the art has its key (`bannerKey`), whole and ungraded by CSS. Without it the
+strip is the art pack's picture over an original backdrop (slanted light
+seams like the collage's, a glow from the top right, scan lines), so a
+server without game art, or a browser it won't share the art with, still
+gets a finished header. The home strip is 180 px tall either way, so the
+page doesn't jump when the art arrives.
+
+**Limits.** Shots name spawn indexes and map stems of the retail disc; a
+different disc or map pack may need new ones (`check` catches only a
+malformed plan; a missing spot skips the composition). Skies are drawn as
+the viewer draws them (additive layers left out), so they read flatter
+than in the game; the grade's tint carries the top of the picture.
+
 # Player and weapon models
 
 The same extraction writes a posed model per player species and campaign

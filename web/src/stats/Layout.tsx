@@ -15,6 +15,8 @@ import { VerifyMark } from "../components/bits";
 import Wordmark from "./Wordmark";
 import { adminState } from "../admin/state";
 import { DASHBOARD_EXIT, STATS_HOME, statsNav } from "./modes";
+import { gameImage } from "../state/gameart";
+import { bannerKey } from "../lib/gameart";
 
 const playerHref = (tag: string) => `/stats/players/${encodeURIComponent(tag)}`;
 
@@ -119,12 +121,15 @@ export function Crumbs(props: { trail: Array<[string, string?]> }) {
   );
 }
 
-/** The decorative strip under the breadcrumbs. `kind` picks the artwork. */
+/** The banner under the breadcrumbs: shots of the server's own maps when
+ *  its game art has them (`banner/home`, `banner/strip`), else the art
+ *  pack's own picture. `kind` picks which; home's is the tall one. */
 export function Strip(props: { kind: "home" | "players"; children?: JSX.Element }) {
+  const shot = () => gameImage(bannerKey(props.kind));
   return (
-    <div class={`s-strip s-strip--${props.kind}`}>
-      <div class="s-strip-art" aria-hidden="true" />
-      <div class="s-strip-mark" aria-hidden="true"><Wordmark height={24} /><small>{{ home: "online", players: "players" }[props.kind]}</small></div>
+    <div class={`s-strip s-strip--${props.kind}`} classList={{ "s-strip--shot": !!shot() }}>
+      <div class="s-strip-art" aria-hidden="true" style={shot() ? { "background-image": `url("${shot()!.url}")` } : undefined} />
+      <div class="s-strip-mark" aria-hidden="true"><Wordmark height={props.kind === "home" ? 34 : 24} /><small>{{ home: "online", players: "players" }[props.kind]}</small></div>
       {props.children}
     </div>
   );

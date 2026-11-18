@@ -343,6 +343,10 @@ under a second. Keys and emblem colouring are in
   decoded is listed under `skipped`. The manifest's `source` is a SHA-256
   over the extractor version and every map file's path, size, sector and
   first 2 KiB; this is the cache key.
+- **Stats banners.** `bun run banner` in `web/` draws the stats site's
+  header collages from the extracted maps into the same directory and
+  manifest (`banner/home`, `banner/strip`); run it after each extraction.
+  See [live-art.md](live-art.md#stats-banners).
 - **Serving.** `h2 live serve` serves the art at `/art/game/` from
   `--game-art DIR`, or from `game-art/` in `--data` when it is there. By
   default it goes only to clients on the same machine, since it is your copy

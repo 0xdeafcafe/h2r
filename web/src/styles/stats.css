@@ -68,13 +68,28 @@
 .s-crumbs-right { color: #d0d0d0; white-space: nowrap; }
 .s-conn { color: var(--s-warn); }
 
-/* Banner strip: one dim picture across home and players, nothing over it
-   but the small wordmark. */
-.s-strip { position: relative; height: 96px; overflow: hidden; background: #050c16; border-bottom: 1px solid #000; }
+/* Banner strip: home's tall banner and the slimmer strip over the other
+   pages, with the wordmark over it. With the server's game art it is a
+   collage of its own maps (`banner/home`, `banner/strip`, drawn from the
+   owner's disc by `bun run banner`); without, the art pack's picture over
+   an original backdrop: slanted light seams like the collage's, a glow
+   from the top right, fine scan lines. */
+.s-strip { position: relative; height: 96px; overflow: hidden; border-bottom: 1px solid #000;
+  background:
+    radial-gradient(90% 120% at 78% -10%, rgba(92, 150, 214, .30), rgba(92, 150, 214, 0) 62%),
+    repeating-linear-gradient(100deg, rgba(150, 200, 255, 0) 0 179px, rgba(150, 200, 255, .07) 179px 181px, rgba(150, 200, 255, 0) 181px 361px),
+    linear-gradient(180deg, #0f2440 0%, #0a1a2f 55%, #050c16 100%); }
+.s-strip--home { height: 180px; }
 .s-strip-art { position: absolute; inset: 0; opacity: .6; background: url("/art/stats/header-ribbons.webp") right center / cover no-repeat; -webkit-mask-image: linear-gradient(90deg, rgba(0, 0, 0, 0) 10%, #000 60%); mask-image: linear-gradient(90deg, rgba(0, 0, 0, 0) 10%, #000 60%); }
-.s-strip-mark { position: absolute; right: 18px; top: 13px; display: grid; justify-items: end; gap: 3px; }
-.s-strip-mark small { font: 9px/11px var(--font-nav); letter-spacing: .3em; margin-right: -.3em; text-transform: uppercase; color: #9fb4cc; }
 .s-strip--players .s-strip-art { background-image: url("/art/stats/header-shell.webp"); }
+/* The collage is graded for the page already (dark edges, a fade into the
+   navy at the bottom): shown whole. */
+.s-strip--shot .s-strip-art { opacity: 1; background-position: center; background-size: cover; -webkit-mask-image: none; mask-image: none; }
+.s-strip::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: repeating-linear-gradient(180deg, rgba(0, 0, 0, .14) 0 1px, rgba(0, 0, 0, 0) 1px 3px); }
+.s-strip--shot::after { display: none; }
+.s-strip-mark { position: absolute; z-index: 1; right: 18px; top: 13px; display: grid; justify-items: end; gap: 3px; filter: drop-shadow(0 1px 3px rgba(0, 0, 0, .8)); }
+.s-strip--home .s-strip-mark { top: 18px; right: 22px; }
+.s-strip-mark small { font: 9px/11px var(--font-nav); letter-spacing: .3em; margin-right: -.3em; text-transform: uppercase; color: #9fb4cc; }
 
 /* Columns */
 .s-cols { display: grid; grid-template-columns: var(--s-left) minmax(0, 1fr); gap: 0 8px; align-items: start; }
@@ -497,7 +512,8 @@
   .s-search .s-btn, .s-finder .s-btn { height: 24px; }
   .s-crumbs { height: auto; flex-wrap: wrap; padding: 2px 8px; gap: 0 10px; }
   .s-strip { height: 56px; }
-  .s-strip-mark { top: 8px; }
+  .s-strip--home { height: 96px; }
+  .s-strip-mark, .s-strip--home .s-strip-mark { top: 8px; right: 12px; }
   .s-cols { grid-template-columns: minmax(0, 1fr); }
   .s-cols--over { margin-top: 0; }
   .s-search { border-left: 0; }
