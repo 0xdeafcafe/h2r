@@ -1,0 +1,35 @@
+# lsnd: looping sound. Names from crates/h1sounds/src/looping.rs (module doc: Halo 2 lsnd layout,
+# D from Coagulation's and Beaver Creek's eleven plus the schema; the converter writes these fields).
+group lsnd 0x2c align 4
+  0x0 u32 flags -- D looping.rs: bits 0..2 shared with Halo 1 (deafening to AIs, not a loop, stops music)
+  0x4 unknown 0x4 seen=20 -- floats
+  0x8 unknown 0x4 seen=zero
+  0xc f32 distance_c -- D looping.rs: retail 0.9..15, converter writes 1
+  0x10 f32 distance_10 -- D looping.rs: retail 5..60, converter writes Halo 1's maximum distance
+  0x14 unknown 0x4 seen=2 -- D looping.rs: continuous damage effect reference (cdmg group)
+  0x18 unknown 0x4 seen=const -- D looping.rs: its datum (none on retail)
+  0x1c block tracks 0x58 align 4 -- D looping.rs H2_TRACK
+    0x0 string name -- D looping.rs
+    0x4 u32 flags -- D looping.rs (fade in at start, fade out at stop, fade in alternate)
+    0x8 f32 gain -- D looping.rs: decibels
+    0xc f32 fade_in -- D looping.rs: seconds
+    0x10 f32 fade_out -- D looping.rs: seconds
+    0x14 tagref sound_in -- D looping.rs: snd! played at the start
+    0x1c tagref sound_loop -- D looping.rs
+    0x24 tagref sound_out -- D looping.rs
+    0x2c tagref sound_alternate_loop -- D looping.rs
+    0x34 tagref sound_alternate_out -- D looping.rs
+    0x3c u32 output_effect -- D looping.rs: retail 1 front and 2 rear speakers
+    0x40 tagref sound_alternate_transition_in -- D looping.rs
+    0x48 tagref sound_alternate_transition_out -- D looping.rs
+    0x50 f32 alternate_crossfade -- D looping.rs
+    0x54 f32 alternate_fade_out -- D looping.rs
+  0x24 block detail_sounds 0x34 align 4 -- D looping.rs H2_DETAIL
+    0x0 string name -- D looping.rs
+    0x4 tagref sound -- D looping.rs: snd!
+    0xc f32[2] random_period_bounds -- D looping.rs: seconds
+    0x14 f32 gain -- D looping.rs: decibels
+    0x18 u32 flags -- D looping.rs
+    0x1c f32[2] yaw_bounds -- D looping.rs
+    0x24 f32[2] pitch_bounds -- D looping.rs
+    0x2c f32[2] distance_bounds -- D looping.rs

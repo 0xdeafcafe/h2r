@@ -1,0 +1,14 @@
+# snd!: the 20-byte retail sound tag; its pitch ranges/permutations/chunks live in the map's ugh!.
+# Names from crates/tags/src/sound.rs (SoundHeader) and docs/formats/sound.md. Fields whose only
+# source is a public description (sound.md marks them S) stay unknown.
+group snd! 0x14 align 4
+  0x0 unknown 0x2 seen=many -- S only (sound.rs flags), uninterpreted
+  0x2 unknown 0x1 seen=many -- S only (sound.rs class), uninterpreted
+  0x3 u8 sample_rate -- V 0 = 22050, 1 = 44100, 2 = 32000; rates 1 and 2 consistent with every decoded duration (sound.md)
+  0x4 u8 encoding -- V 0 mono, 1 stereo, 2 codec (ASF/WMA data) (sound.md "Codec facts")
+  0x5 u8 compression -- V 1 Xbox ADPCM (whole 36/72-byte blocks), 4 WMA; E 0x0021e421..0x0021e454 builds the ADPCM format (sound.md)
+  0x6 unknown 0x2 seen=many -- S only (sound.rs playback_index)
+  0x8 u16 first_pitch_range -- V index into ugh! pitch ranges; chains sum exactly (sound.md)
+  0xa u8 pitch_range_count -- V
+  0xb unknown 0x5 seen=many
+  0x10 u32 max_play_time -- V milliseconds, floor of the longest permutation's duration (sound.md)
