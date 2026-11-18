@@ -225,7 +225,8 @@ program applies them itself (the epilogue above). Before writing
 wgpu clip space:
 
 ```text
-x, y  ← trunc(x·16)/16, trunc(y·16)/16      (rasterizer keeps 4 fractional bits, truncates)
+x, y  ← trunc(x·16)/16, trunc(y·16)/16      (rasterizer keeps 4 fractional bits, truncates;
+                                             not at a render scale: high-resolution.md)
 w     ← clamp_away(w)                       (as rcc: never 0 or inf)
 ndc   = (2x/W − 1,  1 − 2y/H,  z/Zmax)      (wgpu y is up; NV2A window y is down)
         z/Zmax held to 1 when z <= Zmax,    (the depth clip range is inclusive)

@@ -76,6 +76,8 @@ impl Headless {
         });
         let mut studio = Studio::new(fonts);
         studio.dialogs = false;
+        // Screenshots want the camera where it was put, not gliding there.
+        studio.viewport.camera.smooth = false;
         Ok(Self {
             device,
             queue,

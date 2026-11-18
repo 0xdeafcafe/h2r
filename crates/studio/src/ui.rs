@@ -7,6 +7,8 @@
 //! [`variants`] and [`playlists`]. Everything goes back to [`App`] as
 //! [`Action`]s.
 
+mod inspector;
+mod outliner;
 mod play;
 mod playlists;
 mod ui_screens;
@@ -14,12 +16,11 @@ mod variants;
 use std::path::PathBuf;
 
 use dear_imgui_rs::{
-    Condition, DockLayout, DockLayoutApply, DockSplit, Drag, Key, StyleColor, StyleVar, Ui,
+    Condition, DockLayout, DockLayoutApply, DockSplit, Key, StyleColor, StyleVar, Ui,
     WindowFlags, WindowKey,
 };
 use editor_core::Status;
-use scenario_edit::layout::{FieldDef, FieldType, Role};
-use scenario_edit::{BlockKind, Command, Scenario, TagRef, Value};
+use scenario_edit::BlockKind;
 
 use crate::app::{Action, Answer, App, ToolKind};
 use crate::theme::{self, Fonts, icon};
@@ -94,6 +95,7 @@ pub struct Studio {
     pub variants: variants::VariantsUi,
     playlists: playlists::PlaylistsUi,
     pub ui_screens: ui_screens::UiScreensUi,
+    inspector: inspector::InspectorState,
     /// Play and pair (the Game panel; `crate::play`).
     pub play: play::PlayUi,
 }
@@ -114,6 +116,7 @@ impl Studio {
             variants: variants::VariantsUi::default(),
             playlists: playlists::PlaylistsUi::default(),
             ui_screens: ui_screens::UiScreensUi::default(),
+            inspector: inspector::InspectorState::default(),
             play: play::PlayUi::default(),
         }
     }
@@ -189,12 +192,18 @@ impl Studio {
             actions.push(Action::Delete);
         }
         // Gizmo and camera keys, when the camera is not flying with them.
-        if !cmd && !self.viewport.looking() {
+        if !cmd && !self.viewport.looking() && !io.key_alt() {
             if ui.is_key_pressed(Key::W) {
                 self.viewport.op = GizmoOp::Translate;
             }
             if ui.is_key_pressed(Key::E) {
                 self.viewport.op = GizmoOp::Rotate;
+            }
+            if ui.is_key_pressed(Key::R) {
+                self.viewport.op = GizmoOp::Scale;
+            }
+            if ui.is_key_pressed(Key::X) {
+                self.viewport.local = !self.viewport.local;
             }
             if ui.is_key_pressed(Key::F) {
                 actions.push(Action::FocusSelected);
@@ -377,12 +386,28 @@ impl Studio {
             ) {
                 self.viewport.op = GizmoOp::Rotate;
             }
-            if ui.menu_item_enabled_selected_no_shortcut(
+            if ui.menu_item_enabled_selected_with_shortcut(
+                format!("{} Scale gizmo", icon::MAXIMIZE),
+                "R",
+                self.viewport.op == GizmoOp::Scale,
+                true,
+            ) {
+                self.viewport.op = GizmoOp::Scale;
+            }
+            if ui.menu_item_enabled_selected_with_shortcut(
                 "Gizmo in local axes",
+                "X",
                 self.viewport.local,
                 true,
             ) {
                 self.viewport.local = !self.viewport.local;
+            }
+            let snap = &mut self.viewport.snap;
+            if ui.menu_item_enabled_selected_no_shortcut("Snap to grid", snap.grid, true) {
+                snap.grid = !snap.grid;
+            }
+            if ui.menu_item_enabled_selected_no_shortcut("Snap angles", snap.angle, true) {
+                snap.angle = !snap.angle;
             }
             if ui.menu_item_enabled_selected_no_shortcut(
                 "Halo 1 overlay",
@@ -703,7 +728,12 @@ impl Studio {
                 .hint(format!("{} Filter placements", icon::SEARCH))
                 .build();
             let sel = app.session.selected();
+            let many = app.session.selection().len() > 1;
             let (remove, add) = match sel {
+                _ if many => (
+                    app.session.remove_selection_refusal(),
+                    app.session.duplicate_selection_refusal(),
+                ),
                 Some((kind, _)) => (
                     app.session.remove_refusal(kind),
                     app.session.add_refusal(kind),
@@ -727,53 +757,77 @@ impl Studio {
             if let Some(why) = remove {
                 ui.set_item_tooltip(why);
             }
+            if many {
+                ui.same_line();
+                ui.text_disabled(format!("{} selected", app.session.selection().len()));
+            }
             ui.separator();
-            let filter = app.filter.to_ascii_lowercase();
+            let filter = app.filter.trim().to_owned();
             let session = &app.session;
             let Some(scenario) = session.scenario() else {
                 return;
             };
+            let io = ui.io();
+            let (toggle, range) = (io.key_ctrl() || io.key_super(), io.key_shift());
+            let mut place = None;
             ui.child_window("##outliner-tree").build(ui, || {
                 for b in &scenario.blocks {
                     let kind = b.def.kind;
-                    let header = format!(
-                        "{}  {}  ({})",
-                        theme::block_icon(kind),
-                        b.def.label,
-                        b.len()
-                    );
-                    let node = ui
+                    let shown: Vec<usize> = (0..b.len())
+                        .filter(|&i| {
+                            outliner::matches(&filter, b.def.label, &scenario.label(kind, i), i)
+                        })
+                        .collect();
+                    if !filter.is_empty() && shown.is_empty() {
+                        continue;
+                    }
+                    let count = if filter.is_empty() {
+                        format!("{}", b.len())
+                    } else {
+                        format!("{} of {}", shown.len(), b.len())
+                    };
+                    let header = format!("{}  {}  ({count})", theme::block_icon(kind), b.def.label);
+                    let mut node = ui
                         .tree_node_config(format!("block-{kind:?}"))
                         .label(header)
-                        .span_avail_width(true)
-                        .push();
+                        .span_avail_width(true);
+                    if !filter.is_empty() {
+                        // A search opens every block with a match.
+                        node = node.opened(true, Condition::Always);
+                    }
+                    let node = node.push();
                     if let Some(_p) = ui.begin_popup_context_item() {
-                        entry_menu(ui, session, kind, None, actions);
+                        place = entry_menu(ui, session, kind, None, actions).or(place);
                     }
                     let Some(_node) = node else { continue };
-                    for i in 0..b.len() {
+                    for &i in &shown {
                         let label = scenario.label(kind, i);
-                        if !filter.is_empty() && !label.to_ascii_lowercase().contains(&filter) {
-                            continue;
-                        }
-                        let on = sel == Some((kind, i));
                         if ui
                             .selectable_config(format!("{label}##{kind:?}-{i}"))
-                            .selected(on)
+                            .selected(session.is_selected((kind, i)))
                             .allow_double_click(true)
                             .build()
                         {
-                            actions.push(Action::Select(Some((kind, i))));
+                            actions.push(
+                                match outliner::click((kind, i), toggle, range, sel, &shown) {
+                                    outliner::Click::One(e) => Action::Select(Some(e)),
+                                    outliner::Click::Toggle(e) => Action::ToggleSelect(e),
+                                    outliner::Click::Many(all) => Action::SelectMany(all),
+                                },
+                            );
                             if ui.is_mouse_double_clicked(dear_imgui_rs::MouseButton::Left) {
                                 actions.push(Action::FocusSelected);
                             }
                         }
                         if let Some(_p) = ui.begin_popup_context_item() {
-                            entry_menu(ui, session, kind, Some(i), actions);
+                            place = entry_menu(ui, session, kind, Some(i), actions).or(place);
                         }
                     }
                 }
             });
+            if place.is_some() {
+                self.viewport.placing = place;
+            }
         });
     }
 
@@ -803,6 +857,7 @@ impl Studio {
 
     fn inspector_window(&mut self, ui: &Ui, app: &mut App) {
         let mut actions = Vec::new();
+        let mut state = std::mem::take(&mut self.inspector);
         ui.window(&self.keys.inspector).build(|| {
             if let Some(view) = app.halo1_view() {
                 self.halo1_inspector(ui, app, view, &mut actions);
@@ -811,77 +866,9 @@ impl Studio {
             if let Some(c) = app.compare() {
                 compare_banner(ui, c);
             }
-            let Some((kind, index)) = app.session.selected() else {
-                ui.text_disabled("Select a placement in the outliner or the viewport.");
-                return;
-            };
-            let Some(scenario) = app.session.scenario() else {
-                return;
-            };
-            let block = scenario.block(kind);
-            let f = ui.push_font(self.fonts.bold);
-            ui.text(format!(
-                "{}  {}",
-                theme::block_icon(kind),
-                scenario.label(kind, index)
-            ));
-            f.pop();
-            ui.text_disabled(format!(
-                "{} #{index}   stride {:#x}",
-                block.def.label, block.def.stride
-            ));
-            let named = scenario.names_of(kind, index).len();
-            if named > 0 {
-                ui.text_colored(
-                    theme::WARN,
-                    format!("{} named by {named} scenario object name(s)", icon::ALERT),
-                );
-                ui.set_item_tooltip(
-                    "Scripts may create it by name; deleting it leaves the name naming nothing.",
-                );
-            }
-            ui.separator();
-            let label_w = 130.0;
-            let mut edits = Vec::new();
-            let mut done = false;
-            for f in block.def.fields {
-                let Ok(value) = scenario.get(kind, index, f.name) else {
-                    continue;
-                };
-                ui.align_text_to_frame_padding();
-                ui.text_disabled(f.name);
-                ui.set_item_tooltip(format!("{:#x}  {}", f.offset, f.evidence));
-                ui.same_line_with_pos(label_w);
-                ui.set_next_item_width(-1.0);
-                let d = ui.begin_disabled_with_cond(!f.editable);
-                if let Some(v) = value_editor(ui, scenario, kind, f, value) {
-                    edits.push((f.name, v));
-                }
-                done |= ui.is_item_deactivated_after_edit();
-                d.end();
-            }
-            if let Some(p) = &block.def.palette {
-                ui.separator();
-                ui.text_disabled(format!(
-                    "palette: {} entries, stride {:#x}",
-                    block.palette.len(),
-                    p.stride
-                ));
-            }
-            for (field, v) in edits {
-                // A drag or a typed edit of one field is one undo step.
-                let merge = hash_key(kind, index, field);
-                if let Err(e) = app
-                    .session
-                    .apply(Command::set(kind, index, field, v).merging(merge))
-                {
-                    app.error(e.to_string());
-                }
-            }
-            if done {
-                app.session.seal();
-            }
+            inspector::draw(ui, self.fonts.bold, app, &mut state);
         });
+        self.inspector = state;
         for a in actions {
             app.dispatch(a);
         }
@@ -966,6 +953,16 @@ impl Studio {
                         },
                         app.session.markers().len()
                     );
+                }
+                if app.tool == ToolKind::Scenario
+                    && (app.session.is_open() || app.session.reference().is_some())
+                {
+                    // The fly speed (right mouse + WASD; the wheel sets it).
+                    right.push_str(&format!(
+                        "   {} {:.1} u/s",
+                        icon::MOVE,
+                        self.viewport.camera.speed
+                    ));
                 }
                 let fps = format!("   {:.0} fps", ui.io().framerate());
                 let dirty = if app.is_dirty() { "unsaved   " } else { "" };
@@ -1172,9 +1169,19 @@ fn viewport_toolbar(ui: &Ui, app: &App, viewport: &mut ViewportView, actions: &m
         viewport.op = GizmoOp::Rotate;
     }
     ui.same_line();
-    if toggle("Local".to_owned(), viewport.local) {
+    if toggle(
+        format!("{} Scale (R)", icon::MAXIMIZE),
+        viewport.op == GizmoOp::Scale,
+    ) {
+        viewport.op = GizmoOp::Scale;
+    }
+    ui.same_line();
+    let axes = if viewport.local { "Local" } else { "World" };
+    if toggle(format!("{axes} (X)"), viewport.local) {
         viewport.local = !viewport.local;
     }
+    ui.same_line();
+    snap_controls(ui, &mut viewport.snap);
     ui.same_line();
     if ui.small_button(format!("{} Frame", icon::MAXIMIZE)) {
         actions.push(Action::FrameAll);
@@ -1192,20 +1199,75 @@ fn viewport_toolbar(ui: &Ui, app: &App, viewport: &mut ViewportView, actions: &m
             actions.push(Action::SetOverlay(!app.overlay_shown()));
         }
     }
-    if app.session.is_open() || app.session.reference().is_some() {
+    if let Some((kind, _)) = viewport.placing {
         ui.same_line();
-        ui.text_disabled("  RMB orbit + WASD/QE fly   MMB pan   wheel zoom   LMB pick");
+        ui.text_colored(
+            theme::ACCENT,
+            format!("  Click the level to place {kind:?} (Esc cancels)"),
+        );
+    } else if app.session.is_open() || app.session.reference().is_some() {
+        ui.same_line();
+        ui.text_disabled(
+            "  RMB look + WASD/QE fly (wheel: speed)   Alt+LMB orbit   MMB pan   wheel dolly",
+        );
+    }
+}
+
+/// The toolbar's snapping: grid and angle toggles, each with its step.
+fn snap_controls(ui: &Ui, snap: &mut crate::viewport::Snap) {
+    use crate::viewport::{ANGLE_STEPS, GRID_STEPS};
+    let toggle = |label: String, on: bool| {
+        let c = on.then(|| ui.push_style_color(StyleColor::Button, theme::ACCENT));
+        let clicked = ui.small_button(label);
+        if let Some(c) = c {
+            c.pop();
+        }
+        clicked
+    };
+    if toggle(format!("Grid {}", snap.grid_step), snap.grid) {
+        snap.grid = !snap.grid;
+    }
+    ui.set_item_tooltip("Snap moves and placing to the grid; right-click for the step");
+    if let Some(_p) = ui.begin_popup_context_item() {
+        for s in GRID_STEPS {
+            if ui
+                .selectable_config(format!("{s} units"))
+                .selected(s == snap.grid_step)
+                .build()
+            {
+                snap.grid_step = s;
+                snap.grid = true;
+            }
+        }
+    }
+    ui.same_line();
+    if toggle(format!("{}°", snap.angle_step), snap.angle) {
+        snap.angle = !snap.angle;
+    }
+    ui.set_item_tooltip("Snap turns to steps of this angle; right-click for the step");
+    if let Some(_p) = ui.begin_popup_context_item() {
+        for s in ANGLE_STEPS {
+            if ui
+                .selectable_config(format!("{s}°"))
+                .selected(s == snap.angle_step)
+                .build()
+            {
+                snap.angle_step = s;
+                snap.angle = true;
+            }
+        }
     }
 }
 
 /// The outliner's context menu for an entry (`index`) or a block header.
+/// Returns what to place with the mouse when that was picked.
 fn entry_menu(
     ui: &Ui,
     session: &scenario_edit::Session,
     kind: BlockKind,
     index: Option<usize>,
     actions: &mut Vec<Action>,
-) {
+) -> Option<(BlockKind, Option<usize>)> {
     let add = session.add_refusal(kind);
     let remove = session.remove_refusal(kind);
     let item = |label: String, refusal: Option<&'static str>| -> bool {
@@ -1227,6 +1289,8 @@ fn entry_menu(
     if item(format!("{} Add new at the camera focus", icon::PLUS), add) {
         actions.push(Action::Add(kind));
     }
+    let what = if index.is_some() { "a copy" } else { "new" };
+    item(format!("{} Place {what} with the mouse", icon::PLUS), add).then_some((kind, index))
 }
 
 fn tool_icon(tool: ToolKind) -> &'static str {
@@ -1235,114 +1299,6 @@ fn tool_icon(tool: ToolKind) -> &'static str {
         ToolKind::Variants => icon::SLIDERS,
         ToolKind::Playlists => icon::LAYERS,
         ToolKind::UiScreens => icon::EYE,
-    }
-}
-
-fn hash_key(kind: BlockKind, index: usize, field: &str) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    ("studio-inspector", kind, index, field).hash(&mut h);
-    h.finish()
-}
-
-fn drag_i64(label: &str) -> Drag<i64, &str> {
-    Drag::new(label)
-}
-fn drag_f32(label: &str) -> Drag<f32, &str> {
-    Drag::new(label)
-}
-
-/// A typed editor for one field; returns the new value when changed.
-/// Rotations and facings are shown in degrees.
-fn value_editor(
-    ui: &Ui,
-    scenario: &Scenario,
-    kind: BlockKind,
-    f: &FieldDef,
-    value: Value,
-) -> Option<Value> {
-    let id = format!("##{:?}-{}", kind, f.name);
-    let degrees = matches!(f.role, Role::Rotation | Role::Facing);
-    let (to_ui, from_ui) = if degrees {
-        (180.0 / std::f32::consts::PI, std::f32::consts::PI / 180.0)
-    } else {
-        (1.0, 1.0)
-    };
-    match value {
-        Value::Vec3(v) => {
-            let mut shown = v.map(|x| x * to_ui);
-            let speed = if degrees { 0.5 } else { 0.05 };
-            drag_f32(&id)
-                .speed(speed)
-                .build_array(ui, &mut shown)
-                .then(|| Value::Vec3(shown.map(|x| x * from_ui)))
-        }
-        Value::Float(x) => {
-            let mut shown = x * to_ui;
-            let speed = if degrees { 0.5 } else { 0.01 };
-            drag_f32(&id)
-                .speed(speed)
-                .build(ui, &mut shown)
-                .then_some(Value::Float(shown * from_ui))
-        }
-        Value::Int(mut x) => {
-            if f.role == Role::PaletteIndex {
-                let palette = &scenario.block(kind).palette;
-                let name = |i: i64| -> String {
-                    usize::try_from(i)
-                        .ok()
-                        .and_then(|i| palette.get(i))
-                        .and_then(|r| scenario.tag_name(r.id))
-                        .map(|n| format!("{i}: {n}"))
-                        .unwrap_or_else(|| if i < 0 { "none".into() } else { i.to_string() })
-                };
-                let before = x;
-                if let Some(_c) = ui.begin_combo(&id, name(x)) {
-                    for i in -1..palette.len() as i64 {
-                        if ui.selectable_config(name(i)).selected(i == x).build() {
-                            x = i;
-                        }
-                    }
-                }
-                return (x != before).then_some(Value::Int(x));
-            }
-            let (lo, hi) = match f.ty {
-                FieldType::U8 => (0i64, 0xff),
-                FieldType::I16 => (-0x8000, 0x7fff),
-                FieldType::U16 => (0, 0xffff),
-                _ => (0, 0xffff_ffff),
-            };
-            drag_i64(&id)
-                .range(lo, hi)
-                .speed(0.1)
-                .build(ui, &mut x)
-                .then_some(Value::Int(x))
-        }
-        Value::Tag(r) => {
-            let text = |r: TagRef| {
-                if r.is_none() {
-                    "none".to_owned()
-                } else {
-                    format!("{}: {}", r.group, scenario.tag_name(r.id).unwrap_or("?"))
-                }
-            };
-            let mut chosen = r;
-            if let Some(_c) = ui.begin_combo(&id, text(r)) {
-                let mut options: Vec<TagRef> = scenario
-                    .tags
-                    .iter()
-                    .filter(|(_, t)| scenario_edit::layout::ITEM_GROUPS.contains(&t.group.0))
-                    .map(|(&id, t)| TagRef { group: t.group, id })
-                    .collect();
-                options.sort_by_key(|o| text(*o));
-                for o in options {
-                    if ui.selectable_config(text(o)).selected(o == r).build() {
-                        chosen = o;
-                    }
-                }
-            }
-            (chosen != r).then_some(Value::Tag(chosen))
-        }
     }
 }
 
@@ -1455,9 +1411,9 @@ impl Studio {
     }
 }
 
-/// "Convert to Halo 2" for the Halo 1 map on show: the sandbox, the base
-/// map h1convert picks, the button, and the running conversion or why the
-/// last one wrote nothing.
+/// "Convert to Halo 2" for the Halo 1 map on show: the sandbox, the
+/// button (a whole new map, built from scratch), and the running
+/// conversion or why the last one wrote nothing.
 fn convert_controls(
     ui: &Ui,
     app: &App,
@@ -1465,7 +1421,6 @@ fn convert_controls(
     actions: &mut Vec<Action>,
 ) {
     use crate::app::ConvertSandbox;
-    let base = crate::app::base_for(&view.name);
     ui.separator_with_text("Convert to Halo 2");
     ui.text_disabled("Sandbox");
     for (s, label) in [
@@ -1479,29 +1434,29 @@ fn convert_controls(
             actions.push(Action::SetConvertSandbox(s));
         }
     }
-    let has_base = app.maps().iter().any(|m| m.eq_ignore_ascii_case(base));
-    ui.text_disabled(format!("Onto {base}, from your Halo 2 disc"));
+    let name = view.name.to_ascii_lowercase();
+    ui.text_disabled(format!("Builds a new map, h1_{name}"));
     let running = app.converting();
-    let d = ui.begin_disabled_with_cond(running.is_some() || !has_base);
+    let refusal = app.convert_refusal();
+    let d = ui.begin_disabled_with_cond(running.is_some() || refusal.is_some());
     if ui.button(format!("{} Convert to Halo 2", icon::PACKAGE)) {
         actions.push(Action::ConvertHalo1(app.convert_sandbox));
     }
     d.end();
-    if !has_base {
-        ui.set_item_tooltip(format!(
-            "Open your Halo 2 disc: the conversion starts from {base}."
-        ));
-    } else {
-        ui.set_item_tooltip(format!(
-            "Writes <data>/maps/h1_{}/ and opens the result.",
-            view.name.to_ascii_lowercase()
-        ));
+    match refusal {
+        Some(why) => {
+            ui.set_item_tooltip(why);
+            ui.text_wrapped(why);
+        }
+        None => ui.set_item_tooltip(format!(
+            "Writes <data>/maps/h1_{name}/ and opens the new map."
+        )),
     }
     if let Some(r) = running {
         ui.text_colored(
             theme::ACCENT,
             format!(
-                "Converting {} ({} sandbox)... {:.0} s",
+                "Building h1_{} ({} sandbox)... {:.0} s",
                 r.h1_map,
                 r.sandbox.name(),
                 r.started.elapsed().as_secs_f32()

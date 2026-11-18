@@ -415,7 +415,18 @@ pub struct Scene {
     pub models: Vec<Mesh>,
     /// Placed object tag → index into [`Self::models`].
     pub objects: HashMap<TagId, usize>,
+    /// The level's sky, drawn behind everything at infinity.
+    pub sky: Option<SceneSky>,
     pub stats: SceneStats,
+}
+
+/// The scenario's sky as the viewport draws it: its render model in
+/// model space, centred on the eye, turning with the camera only.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SceneSky {
+    /// The `sky ` tag's file name.
+    pub name: String,
+    pub mesh: Mesh,
 }
 
 impl Scene {
@@ -504,6 +515,40 @@ pub fn resource_files(source: &MapSource) -> ResourceFiles {
         files.set_bytes(ResourceFile::Local, b.clone());
     }
     files
+}
+
+const MODE: FourCC = FourCC(*b"mode");
+
+/// The scenario's skies block: `(count, address)` at `scnr+0x8`, 8-byte
+/// tag references with the ID at +4 (docs/live/live-art.md, "Sky").
+pub const SCENARIO_SKIES: usize = 0x8;
+
+/// The skies a scenario payload (`bytes` at `address`) names, in order.
+pub fn skies_in(bytes: &[u8], address: u32) -> Vec<TagId> {
+    let view = TagView::new(bytes, address);
+    let Ok(root) = view.at(0, SCENARIO_SKIES + 8) else {
+        return Vec::new();
+    };
+    view.block(root, SCENARIO_SKIES, 8)
+        .map(|refs| {
+            refs.into_iter()
+                .map(|b| TagId(u32::from_le_bytes([b[4], b[5], b[6], b[7]])))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The open map's scenario's skies ([`skies_in`]).
+pub fn scenario_skies<R: Read + Seek>(map: &mut Map<R>) -> Vec<TagId> {
+    let Some((id, address)) = map
+        .scenario()
+        .and_then(|s| Some((s.id, s.location.as_ref()?.address)))
+    else {
+        return Vec::new();
+    };
+    map.read_tag_bytes(id)
+        .map(|bytes| skies_in(&bytes, address))
+        .unwrap_or_default()
 }
 
 /// Builds a [`Scene`]: shaders read once, bitmaps decoded once.
@@ -604,6 +649,46 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
     }
 
     fn model(&mut self, mode: TagId) -> Option<usize> {
+        let mesh = self.model_mesh(mode)?;
+        self.scene.models.push(mesh);
+        Some(self.scene.models.len() - 1)
+    }
+
+    /// The first of the scenario's skies ([`scenario_skies`]) whose
+    /// `sky ` tag names a render model that builds, as [`Scene::sky`].
+    /// The model is read like an object's ([`Self::objects`]): each
+    /// region's first permutation at its best detail, textured by its
+    /// shaders' base maps.
+    pub fn sky(&mut self) {
+        for id in scenario_skies(self.map) {
+            if id == TagId::NULL {
+                continue;
+            }
+            let Ok(tags::lighting::Atmosphere::Sky(sky)) =
+                tags::lighting::Atmosphere::read(self.map, id)
+            else {
+                continue;
+            };
+            let mode = sky.model.id;
+            if mode == TagId::NULL || self.map.tag(mode).map(|t| t.group).ok() != Some(MODE) {
+                continue;
+            }
+            let Some(mesh) = self.model_mesh(mode) else {
+                continue;
+            };
+            let name = self
+                .map
+                .tag(id)
+                .ok()
+                .and_then(|t| t.name.clone())
+                .unwrap_or_default();
+            let name = name.rsplit(['\\', '/']).next().unwrap_or(&name).to_owned();
+            self.scene.sky = Some(SceneSky { name, mesh });
+            return;
+        }
+    }
+
+    fn model_mesh(&mut self, mode: TagId) -> Option<Mesh> {
         let geo = RenderModelGeometry::read(self.map, mode, self.raw).ok()?;
         let shaders: Vec<TagId> = geo.materials.iter().map(|m| m.shader.id).collect();
         let mut mesh = Mesh::default();
@@ -658,11 +743,7 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
                 mesh.push(texture, None, blend, &out);
             }
         }
-        if mesh.batches.is_empty() {
-            return None;
-        }
-        self.scene.models.push(mesh);
-        Some(self.scene.models.len() - 1)
+        (!mesh.batches.is_empty()).then_some(mesh)
     }
 
     /// A shader's base map and blend, read the first time it is asked for.

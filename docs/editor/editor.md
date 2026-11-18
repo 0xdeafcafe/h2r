@@ -66,33 +66,58 @@ boxes and numbers are drawn by the headless renderer's `--callout`.*
 - **Main menu**: File (open a disc or map, open a folder of maps, save the
   map as a new `.map`, save as or open a package, the variant and
   playlist tools' file commands, quit), Edit (undo, redo, duplicate,
-  delete, allow growing full blocks), View (frame the map, focus the
-  selection, gizmo mode and axes, reset layout).
+  delete, allow growing full blocks), View (frame the map, frame the
+  selection, gizmo mode (move, rotate, scale) and local or world axes,
+  grid and angle snapping, reset layout).
 - **Tools** (left, top): the tools (Scenario, Game variants, Playlists; a
   `*` marks one with unsaved edits), then **Maps**: the opened source and
   its maps. The outliner, centre and inspector windows show the active
   tool: below for the scenario tool, then [Game variants](#game-variants)
   and [Playlists](#playlists). Each tool's windows keep their dock slot
   (`WindowKey::label` retitles a window without changing its ID).
-- **Outliner** (left, bottom): the placement blocks as a tree, a filter,
-  Duplicate and Delete. Right-click an entry for Duplicate, Delete and
-  Add; right-click a block for Add. A button is disabled, with the reason
-  as its tooltip, when the editor refuses (scenario-editor.md §6).
-  Double-click an entry to focus the camera on it.
-- **Viewport** (centre): the map's art and a marker per placement, drawn
-  by `scenario_edit::render::Viewport` into an offscreen texture that
-  ImGui shows as an image. Left click picks; right-drag orbits, with WASD
-  and QE flying while it is held; middle-drag pans; the wheel zooms. The
+- **Outliner** (left, bottom, `ui/outliner.rs`): the placement blocks as
+  a tree, a filter (every word must match the block, the tag name or
+  `#<index>`; blocks with no match hide, the rest open, with "x of y"
+  counts), Duplicate and Delete. Click selects one entry, Cmd/Ctrl+click
+  adds or removes one, Shift+click takes the shown run from the selected
+  entry. Right-click an entry for Duplicate, Delete, Add and "Place a
+  copy with the mouse"; right-click a block for Add and "Place new with
+  the mouse" (the next click in the viewport puts it where the cursor
+  meets the level). A button is disabled, with the reason as its
+  tooltip, when the editor refuses (scenario-editor.md §6). Double-click
+  an entry to frame the camera on it.
+- **Viewport** (centre): the map's art, its sky and a marker per
+  placement, drawn by `scenario_edit::render::Viewport` into an offscreen
+  texture that ImGui shows as an image. Left click picks, Cmd/Ctrl+click
+  adds to or takes from the selection, double-click focuses (a
+  placement, or the point of the level under the cursor). The camera
+  (`camera.rs`, plain maths with unit tests): hold the right button to
+  look and fly with WASD, Q down and E up, the wheel setting the fly
+  speed (shown in the status bar) and Shift four times faster; Alt+left
+  drag orbits about the selection, else about the point of the level
+  under the cursor; middle drag pans; the wheel dollies; F frames the
+  selection to its size. Motion eases in and out by elapsed time, the
+  same at any frame rate, and the camera glides to a new focus. The
   selection has an ImGuizmo gizmo: W moves, E rotates (facing-only
-  placements turn about z); one drag is one undo step.
-- **Inspector** (right): the selection's typed fields. The palette index
-  is a combo of the palette's tag names, tag references a combo of the
-  map's item tags; positions, rotations (in degrees) and scale are drags;
-  flags and other integers are bounded drags. Read-only fields are
-  disabled; each field's tooltip gives its offset and evidence.
+  placements turn about z), R scales (objects with a scale field); X
+  switches local and world axes. Grid and angle snapping (toolbar
+  toggles, right-click one for its step) apply to the gizmo and to
+  placing with the mouse. Other selected placements ride along with the
+  primary's move and turn; one drag is one undo step.
+- **Inspector** (right, `ui/inspector.rs`): the selection's typed fields
+  under Transform, Object, Spawn and Settings. Position is x, y, z;
+  rotation yaw, pitch and roll in degrees; facing in degrees; the
+  palette index and tag references are searchable combos of tag names;
+  flags are a checkbox per bit and the netgame flag type a named combo;
+  other integers are bounded drags (team, respawn time). Read-only fields
+  are disabled; each field's tooltip gives its offset and evidence. With
+  several placements selected it shows the fields they all have; a field
+  whose values differ is marked `*`, and an edit (one component, one bit
+  or the whole value) applies to all of them as one undo step
+  (`Session::edit_selection`).
 - **Log** (bottom): every action's result, errors in red.
 - **Status bar**: the last message, unsaved state, a summary of what is
-  open, frame rate.
+  open, the camera's fly speed, frame rate.
 - **Unsaved changes**: anything that would drop a tool's unsaved edits
   asks first, naming the tool: another source or map (scenario), another,
   new or imported variant, or an entry's variant opened from a playlist
@@ -103,9 +128,11 @@ boxes and numbers are drawn by the headless renderer's `--callout`.*
 Shortcuts: Cmd/Ctrl+O open, Cmd/Ctrl+S save (the map as a new file, the
 variant, the playlist file), Cmd/Ctrl+Z undo and Shift+Cmd/Ctrl+Z or
 Cmd/Ctrl+Y redo (in the active tool), and in the scenario tool
-Cmd/Ctrl+D duplicate, Delete or Backspace delete, F focus, Home frame all, W/E gizmo
-mode, F5 Play and Shift+F5 stop the game, T (over the viewport, paired)
-teleport the player to the cursor; Cmd/Ctrl+Q quit. Dropping a disc image, map or folder on the window
+Cmd/Ctrl+D duplicate and Delete or Backspace delete (the whole
+selection), F frame the selection, Home frame all, W/E/R gizmo mode, X
+local or world axes, F5 Play and Shift+F5 stop the game, T (over the
+viewport, paired) teleport the player to the cursor; Cmd/Ctrl+Q quit.
+Dropping a disc image, map or folder on the window
 opens it.
 
 ## Scenario
@@ -196,22 +223,29 @@ renderer as Halo 2's (`editor_core::halo1_art`, then
   the 13: three glass shaders and a monitor glow name no base map) and
   some parts lit.
 
-Not drawn yet: the sky and scenery models, detail and bump maps, and
+Not drawn yet: the sky and scenery models (a Halo 1 map's sky is a
+`mod2` model behind its `sky ` tag; `editor_core::halo1` has no reader
+for either yet, so the gradient stands in), detail and bump maps, and
 `senv`'s blended types (the base map's alpha blends two detail maps,
 which shows as dark patches on Sidewinder's snow, for example).
 
 **Convert to Halo 2** (`app/convert.rs`). The inspector of a Halo 1 map
 offers the sandbox (Halo 2, or Halo 1, whose `Error::Halo1Sandbox` is
-shown as it comes) and names the base: `h1convert::convert::known`'s
-default for the map (`convert::MAPS`; Beaver Creek, or Lockout for the
-snowy ones), as `h2 h1 convert` without `--base`, read from the open
-Halo 2 source; without it the button is disabled with the reason. The
-button starts a thread that reads the base's bytes and runs
-`h1convert::convert::convert(&h1, sha256 of the stored file, &mut base,
-sandbox)`, then writes the result as `h2 h1 convert` does:
-`<data>/maps/h1_<map>/<sandbox>/h1_<map>.map` and the `Converted`
-manifest, keeping the other sandbox's `[[variant]]` from a manifest
-already there (no manifest text is made here). Each frame `poll_convert`
+shown as it comes) and a button that builds a new map, `h1_<map>`, from
+scratch (`convert::from_scratch`: `prepare_halo2` or `prepare_halo1`,
+`structure_mopp`, then `build_fresh`). The new map still takes Halo 2's
+shaders, objects and globals from a retail multiplayer map, read
+silently from the open Halo 2 source (`retail_sources`: `known`'s
+default for the map, else any multiplayer map the source has); the user
+never picks one, and without a Halo 2 source the button is disabled
+with the reason. A thread reads those bytes, builds the map, and writes
+it as `h2 h1 convert` does: `<data>/maps/h1_<map>/<sandbox>/h1_<map>.map`
+and the `Converted` manifest, keeping the other sandbox's `[[variant]]`
+from a manifest already there. When the Halo 1 source has its `ui` map,
+the map's card (its picture, name and description, `h1convert::ui`)
+goes in as `preview.png` and the package's name, description and image;
+the converter's notes (a structure that fell back) are logged. Each
+frame `poll_convert`
 picks up the result: the Maps list is re-read and the new variant opened
 (`OpenPackageEntry`, guarded as usual), or the error is logged and shown
 under the button in plain words (`explain`: `TooManySurfaces(n)` is
@@ -255,8 +289,18 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   their `1f` lightmap coordinates: base map × lightmap × 2 in gamma space,
   plus a faint fill light so no texel is pure black. Parts without a page,
   and object models, keep one sun and the sky, with dark base maps lifted.
-- **Sky.** Behind a map with art, a gradient from the zenith to a pale
-  horizon (not the scenario's sky model). Solid surfaces are
+- **Sky.** The scenario's sky (its skies block, `scnr +0x8`: the first
+  `sky ` whose render model builds, `scene::scenario_skies` and
+  `Scene::sky`) is drawn at infinity in its own pass before the level:
+  the view's translation is dropped (`Camera::sky_view_proj`, an
+  infinite far plane), so it turns with the camera and never comes
+  nearer, and the level's pass clears depth over it. Its parts are
+  textured as object models are; see-through parts blend over the
+  opaque ones. Behind it, or alone when there is none, a gradient from
+  the zenith to a pale horizon. `tests::skies_are_read_from_the_scenario_root`,
+  `tests::the_sky_turns_with_the_camera_and_never_comes_nearer` and
+  `tests::the_sky_model_is_drawn_behind_the_level_wherever_the_eye_is`
+  (GPU) hold it. Solid surfaces are
   one-sided, as in the game, so the camera sees into a level through the
   backs of the cliffs and walls around it.
 - **Blends.** Templates in a `transparent` or `water` folder, plain
@@ -301,8 +345,8 @@ compares the window's pixels with the viewport's own, and
 (ignored; needs the disc) checks that under 2 % of either map's
 viewport is black (a quarter of Coagulation's was).
 
-Not yet: the scenario's
-sky model; the bucket streams (types `2f` and `30`: per-vertex colour and
+Not yet: the sky's node transforms, its tag's rotation and scale, and
+skies after the first; the bucket streams (types `2f` and `30`: per-vertex colour and
 light direction, not interpreted); detail and bump maps, animated or
 self-illuminated shaders, model variants and permutations other than the
 first, and node transforms of skinned models (models are drawn in their
@@ -606,7 +650,9 @@ studio crate only draws them and turns input into actions.
   `halo1` (Halo 1 sources and what is shown of a map).
 - `crates/scenario-edit`: `Session` holds the scenario editor's state and
   every command (open, select, add, remove, plane drags, gizmo gestures,
-  undo, save, packages). `render` and `geometry` draw it offscreen with
+  undo, save, packages); `session/multi.rs` holds the multi-selection
+  and its edits (`edit_selection`, `remove_selection`,
+  `duplicate_selection`, `add_entry_at`, `surface_hit`). `render` and `geometry` draw it offscreen with
   wgpu (the camera gives separate view and projection matrices for
   ImGuizmo; `geometry::decompose` turns a gizmo matrix back into position
   and yaw/pitch/roll).
@@ -624,12 +670,17 @@ studio crate only draws them and turns input into actions.
     holds the packages, the Halo 1 source and the overlay. Tested without
     a window (`app/tests.rs`).
   - `ui.rs`: the ImGui shell and the scenario tool's windows; it only
-    turns input into `Action`s and draws `App`. `ui/variants.rs` and
+    turns input into `Action`s and draws `App`. `ui/inspector.rs` and
+    `ui/outliner.rs` hold the inspector's typed fields and the
+    outliner's filter and click rules; `ui/variants.rs` and
     `ui/playlists.rs` draw the other two tools.
-  - `app/convert.rs`: Convert to Halo 2 (the background conversion and
-    its plain-words errors).
+  - `app/convert.rs`: Convert to Halo 2 (the background build of a new
+    map and its plain-words errors). `app/editing.rs`: multi-selection
+    delete and duplicate, placing at the cursor, framing the selection.
+  - `camera.rs`: the camera controller's maths (fly, orbit, pan, dolly,
+    easing, framing), with unit tests and no UI.
   - `viewport.rs`: the viewport texture (`register_external_texture`),
-    camera input, picking and the gizmo.
+    camera input, picking, placing, snapping and the gizmo.
   - `play.rs` and `play/`: Play and pair (above): the `h2 play` command
     and socket discovery (`launch`), the agent link thread (`link`), the
     placement diff sent as `edit.set` (`sync`); `ui/play.rs` draws the
@@ -659,7 +710,7 @@ last. The flags that set the scene up:
 | `--convert h2\|h1` | with `--halo1-map`, run Convert to Halo 2 with that sandbox, wait for it and open the result (writes under `--data`) |
 | `--overlay on\|off` | switch the Halo 1 overlay |
 | `--select <block>:<index>` | select a placement (`vehicles:0`, `netgameequipment:3`) |
-| `--focus` | focus the camera on the selection |
+| `--focus` | frame the camera on the selection (F) |
 | `--camera <yaw>,<pitch>,<distance>` | orbit the camera (degrees, world units), after `--focus` |
 | `--tool scenario\|variants\|playlists\|ui-screens` | show that tool |
 | `--ui-screen <screen>/<state>` | show a screen of ours in the UI Screens tool |

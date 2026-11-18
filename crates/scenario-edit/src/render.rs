@@ -202,6 +202,13 @@ fn lit(v: V, albedo: vec3<f32>) -> vec3<f32> {
     let c = textureSample(tex, samp, v.uv);
     return vec4<f32>(c.rgb * (0.6 + 0.4 * v.tint.rgb), 0.3);
 }
+// The sky: its base maps as they are, unlit (the sky is its own light).
+@fragment fn fs_sky(v: V) -> @location(0) vec4<f32> {
+    return vec4<f32>(textureSample(tex, samp, v.uv).rgb, 1.0);
+}
+@fragment fn fs_sky_blend(v: V) -> @location(0) vec4<f32> {
+    return textureSample(tex, samp, v.uv);
+}
 "#;
 
 /// How much brighter than its stored value a lightmap texel lights. The
@@ -247,10 +254,7 @@ pub fn overlay_vertices(tris: &[Tri], color: [f32; 3]) -> Vec<Vertex> {
 }
 
 /// Marker vertices; the selected marker is drawn white and larger.
-pub fn marker_vertices(
-    markers: &[Marker],
-    selected: Option<(crate::BlockKind, usize)>,
-) -> Vec<Vertex> {
+pub fn marker_vertices(markers: &[Marker], selected: &[(crate::BlockKind, usize)]) -> Vec<Vertex> {
     glyph_vertices(markers, selected, |_| false)
 }
 
@@ -258,12 +262,12 @@ pub fn marker_vertices(
 /// for the selection whatever it is (white and larger).
 pub fn glyph_vertices(
     markers: &[Marker],
-    selected: Option<(crate::BlockKind, usize)>,
+    selected: &[(crate::BlockKind, usize)],
     modelled: impl Fn(&Marker) -> bool,
 ) -> Vec<Vertex> {
     let mut out = Vec::new();
     for m in markers {
-        let is_sel = selected == Some((m.block, m.index));
+        let is_sel = selected.contains(&(m.block, m.index));
         if !is_sel && modelled(m) {
             continue;
         }
@@ -299,13 +303,16 @@ pub fn glyph_vertices(
 pub fn placement_instances(
     scene: &Scene,
     markers: &[Marker],
-    selected: Option<(crate::BlockKind, usize)>,
+    selected: &[(crate::BlockKind, usize)],
 ) -> (Vec<Instance>, Vec<(usize, Range<u32>)>) {
     let mut placed: Vec<(usize, Instance)> = markers
         .iter()
         .filter_map(|m| {
             let model = scene.model_of(m)?;
-            Some((model, Instance::of(m, selected == Some((m.block, m.index)))))
+            Some((
+                model,
+                Instance::of(m, selected.contains(&(m.block, m.index))),
+            ))
         })
         .collect();
     placed.sort_by_key(|(model, _)| *model);
@@ -350,6 +357,7 @@ struct BatchParams {
 /// textures.
 struct GpuScene {
     world: Option<GpuMesh>,
+    sky: Option<GpuMesh>,
     models: Vec<Option<GpuMesh>>,
     instances: Option<wgpu::Buffer>,
     ranges: Vec<(usize, Range<u32>)>,
@@ -448,6 +456,12 @@ pub struct Viewport {
     /// [`Self::pipeline`] blended at [`OVERLAY_ALPHA`] over everything.
     ghost: wgpu::RenderPipeline,
     sky: wgpu::RenderPipeline,
+    /// The sky model: solid, then see-through batches.
+    sky_opaque: wgpu::RenderPipeline,
+    sky_blend: wgpu::RenderPipeline,
+    /// The sky's camera ([`Camera::sky_view_proj`]) and its bind group.
+    sky_uniforms: wgpu::Buffer,
+    sky_bind: wgpu::BindGroup,
     opaque: wgpu::RenderPipeline,
     mask: wgpu::RenderPipeline,
     translucent: wgpu::RenderPipeline,
@@ -706,6 +720,12 @@ impl Viewport {
             multiview_mask: None,
             cache: None,
         });
+        let sky_opaque = scene_pipeline("fs_sky", None, true);
+        let sky_blend = scene_pipeline(
+            "fs_sky_blend",
+            Some(wgpu::BlendState::ALPHA_BLENDING),
+            false,
+        );
         let opaque = scene_pipeline("fs_opaque", None, true);
         let mask = scene_pipeline("fs_mask", None, true);
         let translucent = scene_pipeline(
@@ -738,6 +758,20 @@ impl Viewport {
                 resource: uniforms.as_entire_binding(),
             }],
         });
+        let sky_uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("scenario viewport sky camera"),
+            size: std::mem::size_of::<Uniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let sky_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("scenario viewport sky camera"),
+            layout: &bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: sky_uniforms.as_entire_binding(),
+            }],
+        });
         let identity = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("scenario viewport identity"),
             contents: bytemuck::bytes_of(&Instance::IDENTITY),
@@ -747,6 +781,10 @@ impl Viewport {
             pipeline,
             ghost,
             sky,
+            sky_opaque,
+            sky_blend,
+            sky_uniforms,
+            sky_bind,
             opaque,
             mask,
             translucent,
@@ -869,6 +907,7 @@ impl Viewport {
         self.world = None;
         self.scene = Some(GpuScene {
             world: ctx.mesh(&scene.world),
+            sky: scene.sky.as_ref().and_then(|s| ctx.mesh(&s.mesh)),
             models: scene.models.iter().map(|m| ctx.mesh(m)).collect(),
             instances: None,
             ranges: Vec::new(),
@@ -881,7 +920,7 @@ impl Viewport {
         device: &wgpu::Device,
         scene: &Scene,
         markers: &[Marker],
-        selected: Option<(crate::BlockKind, usize)>,
+        selected: &[(crate::BlockKind, usize)],
     ) {
         self.markers = Self::upload(
             device,
@@ -974,38 +1013,92 @@ impl Viewport {
                 lens: [(camera.fov_y * 0.5).tan(), aspect, 0.0, 0.0],
             }),
         );
-        let mut enc = device.create_command_encoder(&Default::default());
-        {
-            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("scenario viewport"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &target.color_view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: CLEAR[0],
-                            g: CLEAR[1],
-                            b: CLEAR[2],
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &target.depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Discard,
-                    }),
-                    stencil_ops: None,
+        queue.write_buffer(
+            &self.sky_uniforms,
+            0,
+            bytemuck::bytes_of(&Uniforms {
+                view_proj: camera.sky_view_proj(aspect),
+                eye: [0.0, 0.0, 0.0, 1.0],
+                right: w(r),
+                up: w(cross(r, f)),
+                forward: w(f),
+                lens: [(camera.fov_y * 0.5).tan(), aspect, 0.0, 0.0],
+            }),
+        );
+        let background = wgpu::LoadOp::Clear(wgpu::Color {
+            r: CLEAR[0],
+            g: CLEAR[1],
+            b: CLEAR[2],
+            a: 1.0,
+        });
+        let color_attachment = |load| {
+            [Some(wgpu::RenderPassColorAttachment {
+                view: &target.color_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })]
+        };
+        let depth_attachment = || {
+            Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &target.depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Discard,
                 }),
+                stencil_ops: None,
+            })
+        };
+        let mut enc = device.create_command_encoder(&Default::default());
+        // The sky first, in a pass of its own: its depth is its own (the
+        // model at infinity) and is cleared again for the level.
+        let sky = self.scene.as_ref().and_then(|s| s.sky.as_ref());
+        if let Some(sky) = sky {
+            let color = color_attachment(background);
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("scenario viewport sky"),
+                color_attachments: &color,
+                depth_stencil_attachment: depth_attachment(),
                 timestamp_writes: None,
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
             pass.set_bind_group(0, &self.bind, &[]);
-            if self.scene.is_some() {
+            pass.set_pipeline(&self.sky);
+            pass.draw(0..3, 0..1);
+            pass.set_bind_group(0, &self.sky_bind, &[]);
+            pass.set_vertex_buffer(0, sky.vertices.slice(..));
+            pass.set_vertex_buffer(1, self.identity.slice(..));
+            pass.set_index_buffer(sky.indices.slice(..), wgpu::IndexFormat::Uint32);
+            // Batches come solid first, see-through last.
+            for (indices, bind, blend) in &sky.batches {
+                pass.set_pipeline(match blend {
+                    Blend::Translucent => &self.sky_blend,
+                    Blend::Opaque | Blend::Mask => &self.sky_opaque,
+                });
+                pass.set_bind_group(1, bind, &[]);
+                pass.draw_indexed(indices.clone(), 0, 0..1);
+            }
+        }
+        {
+            let color = color_attachment(if sky.is_some() {
+                wgpu::LoadOp::Load
+            } else {
+                background
+            });
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("scenario viewport"),
+                color_attachments: &color,
+                depth_stencil_attachment: depth_attachment(),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_bind_group(0, &self.bind, &[]);
+            if self.scene.is_some() && sky.is_none() {
                 pass.set_pipeline(&self.sky);
                 pass.draw(0..3, 0..1);
             }
@@ -1087,6 +1180,11 @@ impl Viewport {
     /// were its encoded one: a linear 0.05 (a dim wall, sRGB 63) shows as 13.
     pub fn ui_view(&self) -> Option<&wgpu::TextureView> {
         self.target.as_ref().map(|t| &t.ui_view)
+    }
+
+    /// Whether the scene uploaded has a sky model to draw.
+    pub fn has_sky(&self) -> bool {
+        self.scene.as_ref().is_some_and(|s| s.sky.is_some())
     }
 
     /// The current target size in pixels.
