@@ -324,6 +324,10 @@ pub mod lxm {
     pub const RECOVERY_READ: &str = "recovery.read";
     /// Setting up or resetting the account's recovery secret.
     pub const RECOVERY_WRITE: &str = "recovery.write";
+    /// Listing the account's own sign-ins (its current keys).
+    pub const SIGNINS_READ: &str = "signins.read";
+    /// Signing the account's other sign-ins out (revoking their keys).
+    pub const SIGNINS_WRITE: &str = "signins.write";
     /// Content uploads, package publishing and reports (docs/game/maps.md §5).
     pub const CONTENT_WRITE: &str = "content.write";
     /// Admin moderation of uploaded content and hopper pins.

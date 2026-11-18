@@ -436,8 +436,11 @@ except account creation. Signed bodies are sent raw as a compact JWS with
 | method and path | body | does |
 |---|---|---|
 | `POST /v1/accounts` | JWS signed by the new key over `{gamertag, jwk, invite?}` | create; 201 `{xuid, gamertag, id, recovery}` (`recovery`: the TOTP secret, `otpauth` URI and current code, live-security.md §1 Recovery), 409 if taken |
-| `POST /v1/accounts/{gamertag}/recover` | `{"request": <JWS h2live-recover by the new key over {gamertag, jwk, aud, iat, nonce}>, "code": "123456"}` | add the new key with a current recovery code; 201 `{xuid, gamertag, id}`; 403 wrong code, 429 locked out (live-security.md §1) |
-| `GET`/`POST /v1/accounts/by-xuid/{xuid}/recovery` | the account's own `recovery.read` / `recovery.write` token | the recovery secret and current code; `POST` makes a new one (set up or reset) |
+| `POST /v1/accounts/{gamertag}/recover` | `{"request": <JWS h2live-recover by the new key over {gamertag, jwk, aud, iat, nonce}>, "code": "123456"}` | sign in on a new device: add the new key with a current sign-in code; 201 `{xuid, gamertag, id}`; 403 wrong code, 429 locked out (live-security.md §1) |
+| `GET`/`POST /v1/accounts/by-xuid/{xuid}/recovery` | the account's own `recovery.read` / `recovery.write` token | the sign-in code's secret and current code; `POST` makes a new one (set up or reset) |
+| `GET /v1/accounts/by-xuid/{xuid}/signins` | the account's own `signins.read` token | where the account is signed in ([Sign-ins](#sign-ins)) |
+| `DELETE /v1/accounts/by-xuid/{xuid}/signins/{kid}` | the account's own `signins.write` token | sign one other device out ([Sign-ins](#sign-ins)) |
+| `POST /v1/accounts/by-xuid/{xuid}/signins/sign-out-others` | the account's own `signins.write` token | sign out every device but the caller ([Sign-ins](#sign-ins)) |
 | `PUT /v1/titles/{title}/files/{name}` | raw bytes, operator token | publish a title file (max 2 MiB) |
 | `POST /v1/events` | one compact JWS (an event on a stream the author may write) | append; 201 `{position}` |
 | `POST /v1/invites` | none with an operator token (`?days=&code=`); or a JWS `InviteCreated` event `{jti, exp}` by an admin account with its `invites.write` token, bare or as `{"event": <jws>, "code": "..."}` | create a single-use invite; 201 `{invite, custom, jti, exp, position}`: `invite` is the 25-character code or the custom one (live-admin.md §5, "Invite codes people type") |
@@ -446,6 +449,69 @@ except account creation. Signed bodies are sent raw as a compact JWS with
 | `POST /v1/games/{id}/events` | `[{type, data}]` | append game events in order |
 | `PUT /v1/maps/{map}/outline` | outline JSON | store a map outline |
 | `POST /v1/local/signin` | `{"once": token}`, no token | embedded server and loopback peers only: answers once with the browser account entry `h2 play --live-local` offered; otherwise 404 (live-admin.md §4) |
+
+## Sign-ins
+
+Where an account is signed in, and signing any other device out. The API
+and the log say "recovery" for what people are shown as the **sign-in
+code** (the rotating six-digit TOTP code, live-security.md §1); the field
+and path names stay.
+
+A sign-in is one of the account's current keys. Each device has its own:
+a browser makes one at sign-up or when it signs in with a code, a copy of
+the game (and `h2 live account create`, whose accounts file the game
+reads) the same. Every request token is signed by that key (security
+§3), so signing a device out is revoking its key.
+
+`GET /v1/accounts/by-xuid/{xuid}/signins` with the account's own
+`signins.read` token:
+
+```json
+{"items": [
+  {"kid": "Xc0…", "kind": "browser", "name": "Chrome on macOS", "via": "signup",
+   "created_at": "2026-11-01T18:30:00Z", "last_seen": "2026-11-18T12:00:00Z", "current": true},
+  {"kid": "p9Q…", "kind": "game", "name": "Halo 2", "via": "code",
+   "created_at": "2026-11-15T20:02:11Z", "last_seen": null, "current": false}
+], "position": 4211}
+```
+
+- `kind`: `browser`, `game` (the game or the CLI), `other`, or `unknown`
+  for a key from before devices were named that hasn't listed its own
+  sign-ins since (doing so names it, in memory, from that request).
+- `name`: from the User-Agent of the request that made the key
+  (`POST /v1/accounts` or `/recover`): browser and OS for a browser,
+  "Halo 2" for the game. The server keeps it in its `KeyAdded` as
+  `device`, sealed like the sign-in code secret (HKDF label
+  `h2live-device-seal-v1`), because the log is public.
+- `via`: `signup` (the key made the account), `code` (signed in with a
+  sign-in code) or `key` (added by another of the account's keys).
+- `last_seen`: the last request the key signed, since the server (or the
+  Worker's hub) started; kept in memory only, `null` until then.
+- `current`: the key that signed this request. It is listed first, then
+  the most recently used.
+
+`DELETE /v1/accounts/by-xuid/{xuid}/signins/{kid}` and
+`POST /v1/accounts/by-xuid/{xuid}/signins/sign-out-others`, with the
+account's own `signins.write` token, revoke the key or every key but the
+caller's. The server appends one `KeyRevoked {kid, by, via: "signout"}`
+per key on the account stream, signed by itself (`by` is the kid of the
+key that asked), all in one append, and answers once they are applied:
+200 `{"revoked": [kid, ...], "position": n}` (`revoked` is empty when
+there was nothing else to sign out). Revoking the caller's own key is 409
+(sign out on that device instead); a kid that is not a current key of
+the account is 404; another account's token is 403.
+
+A revoked key's next request is refused: every token check looks the key
+up in the read model (security §3), so `authenticate` answers 401 `token
+key is unknown or revoked` from the request after the append, in a
+native server and in the Worker alike, and after a restart (the
+revocation is in the log). An open WebSocket closes when its token
+expires (at most 60 s) because a fresh one is refused. The device signs
+in again with the gamertag and a sign-in code.
+
+Signing others out is open to a banned account (`signins.read` and
+`signins.write` are not barred), so someone locked out can still end a
+stolen sign-in. Writes share the per-author write rate limit.
 
 ## Friends
 
@@ -921,7 +987,7 @@ The two commendation kinds are counted in public:
 
 Admins ban accounts ([live-admin.md](live-admin.md) §9). While a ban is in
 force, every token the account presents for a scope other than `read`,
-`recovery.read`, `storage.read` and `log.read` is refused with 403
+`recovery.read`, `signins.read`, `signins.write`, `storage.read` and `log.read` is refused with 403
 `{"error": "banned", "message": "this account is banned until <until>: <reason>"}`
 (or "banned: <reason>" for a ban until lifted). Clients treat `banned`
 as final for the session; the Live HLE reports it to the game as

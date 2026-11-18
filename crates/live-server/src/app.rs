@@ -179,6 +179,8 @@ pub struct Live {
     pub(crate) invites: Arc<crate::invites::Invites>,
     /// Recovery secrets and the wrong-code lockout.
     pub(crate) recovery: Arc<crate::recovery::Recovery>,
+    /// The account keys as sign-ins: their devices and when last used.
+    pub(crate) signins: Arc<crate::signins::Registry>,
     /// Custom maps and their content (docs/game/maps.md §5).
     pub(crate) catalog: Arc<crate::content::Catalog>,
     /// Server-wide stats for the stats home (`GET /v1/stats/summary`).
@@ -488,6 +490,8 @@ impl Live {
             crate::guard::Backoff::new(free, base, max),
         ));
         dispatcher.subscribe(recovery.clone());
+        let signins = Arc::new(crate::signins::Registry::new(&identity));
+        dispatcher.subscribe(signins.clone());
         let catalog = Arc::new(crate::content::Catalog::default());
         dispatcher.subscribe(catalog.clone());
         let reports = Arc::new(crate::reports::Reports::default());
@@ -529,6 +533,7 @@ impl Live {
             relays: Default::default(),
             invites,
             recovery,
+            signins,
             catalog,
             stats,
             usage,
@@ -707,6 +712,9 @@ impl Live {
         {
             return Err(unauthorized("token already used"));
         }
+        if let Author::Account { .. } = &author {
+            self.signins.seen(kid, now);
+        }
         Ok(author)
     }
 
@@ -780,6 +788,16 @@ impl Live {
     /// version 0: the uniqueness check), `AccountCreated` and `KeyAdded`
     /// (carrying the request as proof of possession), atomically.
     pub async fn create_account(&self, jws: &str) -> Result<CreatedAccount, ApiError> {
+        self.create_account_on(jws, None).await
+    }
+
+    /// [`Live::create_account`] from `device` (the request's User-Agent),
+    /// kept sealed in the `KeyAdded` (crate::signins).
+    pub async fn create_account_on(
+        &self,
+        jws: &str,
+        device: Option<crate::signins::Device>,
+    ) -> Result<CreatedAccount, ApiError> {
         if !self.creates.allow("accounts.create") {
             return Err(ApiError::new(
                 ErrorCode::RateLimited,
@@ -820,7 +838,9 @@ impl Live {
         {
             return Err(forbidden("invite already used"));
         }
-        let result = self.create(&tag, &key, jws, invite.as_deref()).await;
+        let result = self
+            .create(&tag, &key, jws, invite.as_deref(), device.as_ref())
+            .await;
         if result.is_err()
             && let Some(jti) = &invite
         {
@@ -835,9 +855,14 @@ impl Live {
         key: &PublicKey,
         proof: &str,
         invite: Option<&str>,
+        device: Option<&crate::signins::Device>,
     ) -> Result<CreatedAccount, ApiError> {
         let tag_stream = streams::gamertag(tag);
         let secret = live_proto::recovery::TotpSecret::generate();
+        let mut key_added = json!({"kid": key.kid(), "jwk": key.jwk(), "proof": proof});
+        if let Some(d) = device {
+            key_added["device"] = self.signins.seal(d).into();
+        }
         // A random XUID can collide; the account stream's version check
         // catches it.
         for _ in 0..3 {
@@ -855,11 +880,7 @@ impl Live {
                     json!({"xuid": xuid}),
                 ),
                 self.server_event(account.clone(), types::ACCOUNT_CREATED, created),
-                self.server_event(
-                    account.clone(),
-                    types::KEY_ADDED,
-                    json!({"kid": key.kid(), "jwk": key.jwk(), "proof": proof}),
-                ),
+                self.server_event(account.clone(), types::KEY_ADDED, key_added.clone()),
             ];
             match self
                 .store

@@ -4,7 +4,7 @@
 //     turns to bring the selected one into focus;
 //   - list screens (live now, friends, players, game history): a tilted
 //     panel of rows, a preview pod and an info plate;
-//   - pod screens (settings, a player, sign up, recovery, server, invites):
+//   - pod screens (settings, a player, sign up, account, server, invites):
 //     one big pod, four small ones around it and an info plate.
 // Arrow keys (or the wheel) move, Enter (or a) selects, Escape /
 // Backspace (or b) goes back; the mouse and touch work too.
@@ -56,11 +56,12 @@ import { motdHeader } from "../lib/motd";
 import "../styles/dash-pages.css";
 import SocialScreen from "./Social";
 import SessionsScreen from "./Sessions";
+import SignInsScreen from "./SignIns";
 import GamesScreen from "./Games";
 import "../styles/social.css";
 import { lockedHint, menuFor, type SectionId } from "./menu";
 
-type ScreenId = "menu" | "games" | "list" | "player" | "settings" | "signup" | "recovery" | "recover" | "server" | "social" | "sessions";
+type ScreenId = "menu" | "games" | "list" | "player" | "settings" | "signup" | "recovery" | "recover" | "server" | "social" | "sessions" | "signins";
 
 const LABELS: Record<SectionId, () => string> = {
   live: () => "live now",
@@ -74,7 +75,7 @@ const LABELS: Record<SectionId, () => string> = {
   signup: () => (identity.me() ? "profile" : "create account"),
   server: () => "server",
   signin: () => "sign in",
-  recover: () => "recover account",
+  recover: () => "sign in with a code",
   account: () => "account",
 };
 const SECTION_IDS = Object.keys(LABELS) as SectionId[];
@@ -152,6 +153,8 @@ export default function Dashboard() {
     // an account over; /dash/account (and /dash/signup/recovery): the
     // signed-in account. Signed out, /dash/account is the sign-in list.
     if (s === "recover" || (s === "signup" && params.tag === "recover")) return "recover";
+    // /dash/account/signins: where the account is signed in.
+    if (s === "account" && params.tag === "signins" && identity.me()) return "signins";
     if ((s === "account" || (s === "signup" && params.tag === "recovery")) && identity.me()) return "recovery";
     if (s === "signin" || s === "account") return "list";
     if (s === "signup") return identity.me() ? "player" : "signup";
@@ -212,7 +215,7 @@ export default function Dashboard() {
         const me = identity.me();
         return [
           ...identity.accounts().map((a) => ({ key: a.xuid, label: a.gamertag, meta: me?.xuid === a.xuid ? "signed in" : "kept here" })),
-          { key: "#recover", label: "recover account", meta: "gamertag and code" },
+          { key: "#recover", label: "sign in with a code", meta: "gamertag and code" },
           { key: "#create", label: "create account", meta: "new gamertag" },
           { key: "#import", label: "import account", meta: "account file" },
         ];
@@ -289,15 +292,28 @@ export default function Dashboard() {
           { label: "server", glyph: "server", act: () => go("/dash/server", "deeper") },
         ];
       case "recovery": {
+        // The code stays hidden until asked for; copying doesn't show it.
+        // The setup's pods replace "signed in" with making a new code.
         const ready = recovery.phase() === "ready";
-        return [
+        const code: Sat[] = [
+          { label: recovery.revealed() ? "hide code" : "show code", glyph: "key", act: ready ? () => recovery.toggleReveal() : undefined },
           { label: "copy code", glyph: "sign", act: ready ? () => void recovery.copyCode() : undefined },
-          { label: recovery.showSetup() ? "hide setup" : "authenticator setup", glyph: "download", act: ready ? () => recovery.toggleSetup() : undefined },
-          {
-            label: recovery.confirming() ? "confirm reset" : ready ? "reset recovery" : "set up recovery", glyph: "gear",
-            act: recovery.phase() === "ready" || recovery.phase() === "none" ? () => recovery.setupOrReset() : undefined,
-          },
-          { label: "sign out", glyph: "exit", act: () => { identity.signOut(); go("/", "back"); } },
+        ];
+        if (recovery.phase() === "none") {
+          return [...code,
+            { label: "set up code", glyph: "gear", act: () => recovery.setupOrReset() },
+            { label: "signed in", glyph: "globe", act: () => go("/dash/account/signins", "deeper") },
+          ];
+        }
+        if (recovery.showSetup()) {
+          return [...code,
+            { label: "hide setup", glyph: "download", act: () => recovery.toggleSetup() },
+            { label: recovery.confirming() ? "confirm new code" : "new code", glyph: "gear", act: ready ? () => recovery.setupOrReset() : undefined },
+          ];
+        }
+        return [...code,
+          { label: "authenticator setup", glyph: "download", act: ready ? () => recovery.toggleSetup() : undefined },
+          { label: "signed in", glyph: "globe", act: () => go("/dash/account/signins", "deeper") },
         ];
       }
       case "recover":
@@ -335,7 +351,7 @@ export default function Dashboard() {
 
   // These screens manage selection and focus inside their own panels.
   let screenAct: ((a: Action) => boolean) | null = null;
-  const ownInput = () => screen() === "games" || screen() === "social" || screen() === "sessions";
+  const ownInput = () => screen() === "games" || screen() === "social" || screen() === "sessions" || screen() === "signins";
 
   const [serverErr, setServerErr] = createSignal<string | null>(null);
   const [serverBusy, setServerBusy] = createSignal(false);
@@ -371,7 +387,7 @@ export default function Dashboard() {
 
   function select() {
     switch (screen()) {
-      case "games": case "social": case "sessions": screenAct?.("select"); break;
+      case "games": case "social": case "sessions": case "signins": screenAct?.("select"); break;
       case "menu": {
         const id = items()[menu()]!;
         if (!lockedHint(id, !!identity.me())) go(`/dash/${id}`, "deeper");
@@ -679,12 +695,16 @@ export default function Dashboard() {
               <div class="dx-centre"><BigPod wire><Glyph name="key" /></BigPod></div>
               <Sats sats={sats()} sel={sat()} onSel={setSat} />
               <RecoverPlate onDone={() => go("/dash/signup", "deeper", true)} />
-              <Prompts onA={select} onB={back} aLabel="recover" />
+              <Prompts onA={select} onB={back} aLabel="sign in" />
             </div>
           </Match>
 
           <Match when={screen() === "social"}>
             <SocialScreen section={section() as "friends" | "clans"} tag={params.tag ? safeDecode(params.tag) : undefined} go={go} back={back} bind={(f) => { screenAct = f; }} />
+          </Match>
+
+          <Match when={screen() === "signins"}>
+            <SignInsScreen go={go} back={() => go("/dash/account", "back")} bind={(f) => { screenAct = f; }} />
           </Match>
 
           <Match when={screen() === "sessions"}>

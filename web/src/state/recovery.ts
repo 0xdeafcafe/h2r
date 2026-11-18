@@ -1,5 +1,6 @@
-// Account recovery: a TOTP secret the server keeps per account, so a new
-// device can take an account over with the gamertag and a 6-digit code.
+// The sign-in code (the API calls it recovery): a TOTP secret the server
+// keeps per account, so a new device (a browser, or the game) can sign in
+// with the gamertag and the 6-digit code.
 //
 //   - sign-up (POST /v1/accounts) answers the first `recovery` object;
 //   - GET  /v1/accounts/by-xuid/{xuid}/recovery (token lxm recovery.read)
@@ -61,6 +62,17 @@ export function formatCode(s: string): string {
 
 export function codeError(s: string): string | null {
   return /^\d{6}$/.test(normalizeCode(s)) ? null : "the code is 6 digits";
+}
+
+/** How the code reads while hidden. */
+export const MASKED_CODE = "••• •••";
+/** How long a shown code stays shown. */
+export const REVEAL_MS = 30_000;
+
+/** The code as the screen shows it: itself while revealed (until
+ *  `revealUntil`, a time in ms), masked otherwise. */
+export function shownCode(code: string, revealUntil: number, nowMs: number): string {
+  return nowMs < revealUntil ? code : MASKED_CODE;
 }
 
 /** A base32 secret in groups of four, for reading off a screen. */
@@ -144,11 +156,11 @@ export class RecoverError extends Error {
 /** What to tell someone whose recover call was refused. */
 export function recoverMessage(status: number, gamertag: string, serverMessage?: string): string {
   switch (status) {
-    case 403: return `That code didn't work. Check it, or ${gamertag} may not have recovery set up.`;
+    case 403: return `That code didn't work. Check it, or ${gamertag} may not have a sign-in code set up.`;
     case 429: return "Too many wrong codes. Wait a few minutes, then try again.";
     case 404: return `There's no ${gamertag} on this server.`;
     case 400: return `The server refused the request${serverMessage ? `: ${serverMessage}` : ""}.`;
-    default: return `Couldn't recover the account (HTTP ${status})${serverMessage ? `: ${serverMessage}` : ""}.`;
+    default: return `Couldn't sign in (HTTP ${status})${serverMessage ? `: ${serverMessage}` : ""}.`;
   }
 }
 
