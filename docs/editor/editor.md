@@ -104,7 +104,8 @@ Shortcuts: Cmd/Ctrl+O open, Cmd/Ctrl+S save (the map as a new file, the
 variant, the playlist file), Cmd/Ctrl+Z undo and Shift+Cmd/Ctrl+Z or
 Cmd/Ctrl+Y redo (in the active tool), and in the scenario tool
 Cmd/Ctrl+D duplicate, Delete or Backspace delete, F focus, Home frame all, W/E gizmo
-mode; Cmd/Ctrl+Q quit. Dropping a disc image, map or folder on the window
+mode, F5 Play and Shift+F5 stop the game, T (over the viewport, paired)
+teleport the player to the cursor; Cmd/Ctrl+Q quit. Dropping a disc image, map or folder on the window
 opens it.
 
 ## Scenario
@@ -307,6 +308,138 @@ self-illuminated shaders, model variants and permutations other than the
 first, and node transforms of skinned models (models are drawn in their
 bind pose).
 
+## Play and pair
+
+The **Game** panel (a tab beside the log, scenario tool) starts the game
+on the map being edited, or attaches to a game already running, through
+the game's agent socket ([agent-api.md](../runtime/agent-api.md)). The
+code is `studio::play` (`play.rs`, `play/{launch,link,sync}.rs`) and
+`ui/play.rs`; nothing of it runs the game in the editor's process.
+
+**Play** (F5; Shift+F5 stops the game Play started) runs, in its own
+window:
+
+```
+H2_AGENT=<cache>/h2recomp/editor-<pid>-<n>.sock H2_MAP_DIR=$TMPDIR/h2-editor-play-<pid>/maps \
+  h2 play <disc> --data <data root> --level <map> --title 'Halo 2 - <map> (h2-editor)'
+```
+
+- `h2` is the panel's path, else `$H2_BIN`, else `~/.cargo/bin/h2`, else
+  `h2` on the `PATH` (`launch::find_h2`). The editor never builds it.
+- The disc is the open disc image, else `H2_DISC` or the repository's
+  `disc/halo2.iso` (`editor_core::default_disc`).
+- The editor's bytes, edits included, are written as `<map>.map` to the
+  scratch directory (`scenario_edit::save::save_as`, which is not a save:
+  the map stays unsaved) and served with `H2_MAP_DIR`, which wins over
+  packages as a whole-file override ([maps.md](../game/maps.md) §8). No
+  package is written and `active.toml` is untouched. A new map (a
+  derived package, such as a converted Halo 1 map) plays from its
+  package: save it first.
+- `--level` boots the level with one default player
+  ([level-boot.md](../runtime/level-boot.md)).
+- **Spawn**: the level's own, the ground under the editor camera's focus,
+  or the selected placement. Once the game reports gameplay 30 ticks
+  into the map, the editor moves player one there with `sim.state.set
+  {player, pos}`.
+- The game's output goes to `play-<n>.log` in the scratch directory (the
+  panel shows the path); the editor waits up to 20 minutes for the
+  socket, since `h2 play` may build its image first.
+
+**Pair** attaches to a running `h2 serve` or `h2 play` started with
+`H2_AGENT`: a path typed (or `tcp://HOST:PORT`), or one of the sockets
+**Find** lists (`$H2_AGENT`, the default socket, and every socket in the
+agent's cache directory, where Play puts its own). An empty path pairs
+with the default socket. The game is then taken to hold the map as the
+editor shows it at that moment.
+
+While paired (`play::Play`, on a link thread that polls `session.status`
+and `world.query` four times a second):
+
+- **Status chip** in the status bar: the connection, the game's map, its
+  phase (playing, paused, loading, menu, cinematic) and tick.
+- **Live objects** drawn over the viewport: players (green, with names),
+  AI (red), vehicles (blue), machines and bodies, each with a facing
+  line. Turrets, whose positions are relative to their vehicle, are left
+  out.
+- **Edits sent live.** Every 200 ms the editor compares the placements
+  with what the game is taken to hold (`sync::Baseline`) and sends each
+  changed field of a placement with `edit.set` on the game's `scnr`,
+  through a raw block path (`+<block>/<stride>[i].+<field>:bytes[n]`,
+  the field's exact bytes; `hot-tags` gained raw blocks for this,
+  [hot-iteration.md](../graphics/hot-iteration.md)). Undo sends the old
+  bytes back. The game reads a placement when it makes the object, so an
+  edit shows when the object is made again: a respawn (multiplayer weapon
+  and vehicle spawns, player starting locations at the next spawn), a
+  checkpoint revert, or Play again. Objects already in the world don't
+  move. Adding or removing entries can't be sent (the game's block is
+  laid out where the map put it): the panel says the block needs Play
+  again. The panel always says why edits are not being sent: not paired,
+  another map in the game, the scenario not found, or the session.
+- **Go to player** puts the camera's focus on player one, looking the way
+  they face. **Teleport player here** moves them to the ground under the
+  camera's focus; **T** over the viewport moves them to the point under
+  the cursor (`sim.state.set`).
+- **Pause**, **Step** (1 to 600 ticks) and **Resume** (`session.claim`,
+  `pause` with the 10-minute limit, `step`, `resume`, then `release`, so
+  other clients may act again). In `h2 play` a pause also stops the
+  window's event loop (agent-api.md).
+- **Co-op.** In a synchronous session (co-op host or guest), as a
+  multiplayer client, or when the session can't be read, the editor
+  sends no edits, no teleport and no spawn (`SessionKind::writes`, the
+  rule `sim.state.set` already enforces in the game): a write on one
+  machine desyncs the others.
+
+Tests (`play::tests`, against the agent crate's server and executor with
+an invented game behind them, no game data): pairing and the polled
+objects, Go to player, a moved placement as one `edit.set` with its path
+and bytes, the warning when the game's copy differed, undo, an added
+entry as a reload, teleport and the spawn, no writes in co-op or with
+another map loaded, pause/step/resume and control given back, a lost game,
+nothing listening, and the play copy of the map (an edit in it, the map
+still unsaved). `play::sync::tests` and `play::launch::tests` cover the
+diff and the command line.
+
+Not yet:
+
+- **Moving live objects.** Placements reach the game's scenario, not the
+  objects already made from them. Moving one means writing the object's
+  own position and letting the engine re-cluster it, which needs the
+  object update path read first (hot-iteration.md, "What is left"). An
+  agent method for it (`world.object.set {id, pos}`) would let a moved
+  vehicle or weapon follow at once.
+- **Fields beyond placements.** Only the scenario's placement blocks are
+  compared. Other tags (`shad` and the rest `edit.*` names) are edited
+  with `h2 agent edit` today.
+- **Checking the game's copy.** Pairing trusts that the game runs the map
+  as the editor shows it; a field whose `old` differs is reported once.
+  Reading the game's placements back (`edit.get` per block) would show
+  the difference before the first edit.
+
+### Embedded play (not built)
+
+Showing the game's picture inside the viewport, rather than in its own
+window, could be done two ways:
+
+- **In process.** Link the runtime into the editor and run the game on a
+  thread, its renderer drawing into a wgpu texture the editor registers
+  with ImGui, as the viewport does. The editor and game would share one
+  device. That means the editor depends on the boot crate's whole game
+  host (image loading, audio, input, the dylib), takes on its process-wide
+  state (one game per process, its signal handlers and memory map), and a
+  game crash takes the editor down. Input would have to be routed from
+  ImGui to the game's XAPI pads. It is the lowest latency but the most
+  coupling; not cheap.
+- **Frames over the socket.** The game, run as now, encodes its presented
+  frame (downscaled, JPEG or raw RGBA in shared memory) when a client
+  asks, and the editor uploads it to a texture each time it arrives. The
+  agent has `render.frame` for pass and draw records, not pixels; a
+  `render.picture {width, every}` subscription streaming frames as events,
+  or a shared-memory ring for local clients, would be the new piece. It
+  keeps the processes apart and works with `h2 serve`, at the cost of a
+  copy per frame and a frame or two of latency; input stays in the game's
+  window (or goes over `input.pad`). This is the one to build if embedded
+  play is wanted.
+
 ## Game variants
 
 The variant editor of [variants.md](variants.md), in the same windows:
@@ -497,6 +630,10 @@ studio crate only draws them and turns input into actions.
     its plain-words errors).
   - `viewport.rs`: the viewport texture (`register_external_texture`),
     camera input, picking and the gizmo.
+  - `play.rs` and `play/`: Play and pair (above): the `h2 play` command
+    and socket discovery (`launch`), the agent link thread (`link`), the
+    placement diff sent as `edit.set` (`sync`); `ui/play.rs` draws the
+    Game panel, the live objects over the viewport and the status chip.
   - `theme.rs`: colours, spacing, fonts (Inter 15 pt with a Lucide icon
     subset merged in; Dear ImGui 1.92 rasterises at the framebuffer scale,
     so text is crisp on HiDPI).

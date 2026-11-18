@@ -7,6 +7,8 @@
 //! - [`ui`]: the shell (menus, dockspace, tools, outliner, inspector, log,
 //!   status bar, modals).
 //! - [`viewport`]: the 3D view with picking and the ImGuizmo gizmo.
+//! - [`play`]: Play and pair: the game started on the edited map, or a
+//!   running one attached, through its agent socket.
 //! - [`theme`]: the dark theme, bundled fonts and icons.
 //! - [`headless`]: renders real frames offscreen to PNG (screenshots),
 //!   with [`script`]ed input aimed at widgets that [`probe`] finds.
@@ -15,6 +17,7 @@
 
 pub mod app;
 pub mod headless;
+pub mod play;
 pub mod probe;
 pub mod script;
 pub mod theme;
