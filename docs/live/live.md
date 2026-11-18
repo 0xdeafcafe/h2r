@@ -370,7 +370,11 @@ under a second. Keys and emblem colouring are in
   `map/<stem>/preview`, the picture the game's Select Map screen shows; a
   game page's header shows it too for a finished game. A Halo 1 map reported
   by its bare name (`bloodgulch`) finds its `h1_` entry when the server
-  knows no map by that stem. With no art (a 404, or art served only to
+  knows no map by that stem. The catalog is fetched on its own, so names
+  hold when the manifest is missing. A disc variant whose name doesn't say
+  its game type gets it from the catalog ("Rockets (Slayer)"). Halo 1's
+  campaign levels are told apart by stem (`a10`..`d40`) even without art,
+  so their unpublished packages never read as "modded". With no art (a 404, or art served only to
   this machine and the page opened from another), names are the title-cased
   stems and a finished game's thumbnail is a card with that name. On the
   Worker the art and catalog come from the published copy

@@ -11,7 +11,7 @@ import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, type 
 import { A, useNavigate } from "@solidjs/router";
 import { live } from "../state/live";
 import { isCampaign, standings, teamStandings, type GameState } from "../state/reducer";
-import { campaignLabel, difficultyName, gameKind, gameTypeLabel, variantName } from "../state/gametype";
+import { campaignLabel, difficultyName, gameKind, gameTypeLabel, variantLabel, variantName } from "../state/gametype";
 import { OUTCOME_WORDS, campaignOutcome } from "../state/derive";
 import MapPicture, { mapPicture } from "../components/MapPicture";
 import MapCanvas, { type MapFrame } from "../components/MapCanvas";
@@ -175,7 +175,7 @@ export function hostName(g: GameState): string | null {
 /** A game's headline: the variant for multiplayer, the campaign label
  *  ("Campaign Co-op") for campaign. */
 export function gameTitle(g: GameState): string {
-  return isCampaign(g) ? campaignLabel(g) : g.variant ? variantName(g.variant) : titleCase(g.mode);
+  return isCampaign(g) ? campaignLabel(g) : g.variant ? variantLabel(g.variant) : titleCase(g.mode);
 }
 
 /** The game's type for a "Playlist:" line: "Matchmaking: <playlist>",

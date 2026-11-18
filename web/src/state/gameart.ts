@@ -5,7 +5,7 @@
 import { createEffect, createMemo, createRoot, createSignal } from "solid-js";
 import { compositeEmblem, countKeys, emblemCacheKey, emblemPalette, mapDisplayName, mapKey, normaliseMask, loadGameArt, resolveMapStem, type EmblemSpec, type GameArt, type GameArtRef, type MapNameSources } from "../lib/gameart";
 import { live } from "./live";
-import { loadCatalog } from "../admin/catalog";
+import { ENGINES, loadCatalog, type Catalog } from "../admin/catalog";
 import { isHalo1 } from "../map/views";
 
 const [art, setArt] = createSignal<GameArt | null>(null);
@@ -57,14 +57,69 @@ export function setMapTitles(names: Record<string, string>) {
 
 // A server without game art answers 404 and the browser logs each one, so a
 // miss is remembered for a minute rather than asked again on every reload.
+// The manifest and the catalog are remembered apart: either can be missing.
 const MISS_TTL_MS = 60_000;
-const missKey = (base: string) => "h2live.no-game-art." + base;
-function missed(base: string): boolean {
-  try { return Date.now() - Number(sessionStorage.getItem(missKey(base)) ?? 0) < MISS_TTL_MS; } catch { return false; }
+const missKey = (what: string, base: string) => `h2live.no-${what}.` + base;
+function missed(what: string, base: string): boolean {
+  try { return Date.now() - Number(sessionStorage.getItem(missKey(what, base)) ?? 0) < MISS_TTL_MS; } catch { return false; }
+}
+function miss(what: string, base: string) {
+  try { sessionStorage.setItem(missKey(what, base), String(Date.now())); } catch { /* private mode */ }
+}
+
+// Game types of the disc's built-in variants (catalog.json), by lower-case
+// variant name: "rockets" is Slayer.
+const [variantTypes, setVariantTypes] = createSignal<ReadonlyMap<string, string>>(new Map());
+
+/** The game type's name of a variant the disc ships ("Rockets": "Slayer"),
+ *  from the server's catalog; null for a variant it doesn't list (a
+ *  player's own) or without the catalog. Reactive. */
+export function variantType(variant: string | null | undefined): string | null {
+  return variant ? variantTypes().get(variant.trim().toLowerCase()) ?? null : null;
+}
+
+/** Takes the catalog's map names and variant types (null clears them). */
+export function applyCatalog(c: Pick<Catalog, "maps" | "campaign" | "variants"> | null) {
+  const names = new Map<string, string>();
+  const types = new Map<string, string>();
+  for (const e of [...(c?.maps ?? []), ...(c?.campaign ?? [])]) if (e.key && e.name) names.set(mapStem(e.key), e.name);
+  for (const v of c?.variants ?? []) {
+    const t = ENGINES[v.engine]?.name;
+    if (t) types.set(v.name.trim().toLowerCase(), t);
+  }
+  setMapNames(names);
+  setVariantTypes(types);
+}
+
+type Loaders = {
+  art: (base: string) => Promise<GameArt | null>;
+  catalog: (base: string) => Promise<Catalog | null>;
+  current: () => string;
+};
+
+/** Loads a server's art and its catalog, each on its own: a catalog is
+ *  used even when the manifest is missing or unreadable, so names don't
+ *  hang on the pictures. Answers for another server (the user switched)
+ *  are dropped. */
+export async function loadServerArt(base: string, load: Loaders): Promise<void> {
+  setArt(null);
+  applyCatalog(null);
+  await Promise.all([
+    missed("game-art", base) ? null : load.art(base).then((a) => {
+      if (load.current() !== base) return;
+      if (!a) miss("game-art", base);
+      setArt(a);
+    }),
+    missed("catalog", base) ? null : load.catalog(base).then((c) => {
+      if (load.current() !== base) return;
+      if (!c) miss("catalog", base);
+      applyCatalog(c);
+    }),
+  ]);
 }
 
 let started = false;
-/** Loads the manifest now and again whenever the server changes. */
+/** Loads the manifest and catalog now and again whenever the server changes. */
 export function startGameArt() {
   if (started) return;
   started = true;
@@ -73,22 +128,7 @@ export function startGameArt() {
     // the same base, which must not load the art again.
     const serverBase = createMemo(() => live.server().base);
     createEffect(() => {
-      const base = serverBase();
-      setArt(null);
-      setMapNames(new Map());
-      if (missed(base)) return;
-      void loadGameArt(base).then((a) => {
-        if (live.server().base !== base) return;
-        if (!a) { try { sessionStorage.setItem(missKey(base), String(Date.now())); } catch { /* private mode */ } }
-        setArt(a);
-        if (!a) return;
-        void loadCatalog(base).then((c) => {
-          if (live.server().base !== base || !c) return;
-          const m = new Map<string, string>();
-          for (const e of [...c.maps, ...c.campaign]) if (e.key && e.name) m.set(mapStem(e.key), e.name);
-          setMapNames(m);
-        });
-      });
+      void loadServerArt(serverBase(), { art: loadGameArt, catalog: loadCatalog, current: () => live.server().base });
     });
   });
 }

@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { gameArt, mapDisplayName, mapKey, parseManifest, resolveMapStem } from "../src/lib/gameart";
-import { artStem, gameImage, isHalo1Map, mapTitle, setGameArtForTest, setMapTitles } from "../src/state/gameart";
-import { gameMapTitle } from "../src/state/maps";
-import { variantName, gameTypeLine } from "../src/state/gametype";
+import { applyCatalog, artStem, gameImage, isHalo1Map, loadServerArt, mapTitle, setGameArtForTest, setMapTitles, variantType } from "../src/state/gameart";
+import { gameMapGroupLabel, gameMapTitle } from "../src/state/maps";
+import { variantLabel, variantName, gameTypeLine } from "../src/state/gametype";
 import { OUTCOME_WORDS } from "../src/state/derive";
 import { campaignLine, levelName, mapName, sessionRow, parseSession } from "../src/lib/sessions";
 import { count } from "../src/stats/fmt";
@@ -138,5 +138,62 @@ describe("wording", () => {
 
   test("a game whose console went quiet reads Unfinished, not Connection lost", () => {
     expect(OUTCOME_WORDS.lost).toBe("Unfinished");
+  });
+});
+
+describe("variants with their game type", () => {
+  const types: Record<string, string> = { rockets: "Slayer", "team slayer": "Slayer", "crazy king": "King of the Hill", "2 on 1": "Juggernaut", "ninjanaut": "Juggernaut", "1 flag ctf": "Capture the Flag" };
+  const typeOf = (v: string) => types[v.toLowerCase()] ?? null;
+
+  test("the type is added only when the name doesn't say it", () => {
+    expect(variantLabel("Rockets", typeOf)).toBe("Rockets (Slayer)");
+    expect(variantLabel("2 on 1", typeOf)).toBe("2 on 1 (Juggernaut)");
+    expect(variantLabel("Ninjanaut", typeOf)).toBe("Ninjanaut (Juggernaut)");
+    expect(variantLabel("Team Slayer", typeOf)).toBe("Team Slayer");
+    expect(variantLabel("Crazy King", typeOf)).toBe("Crazy King");
+    expect(variantLabel("1 Flag CTF", typeOf)).toBe("1 Flag CTF");
+    // A player's own variant the catalog doesn't list: its name alone.
+    expect(variantLabel("Pete's Mayhem", typeOf)).toBe("Pete's Mayhem");
+    expect(variantLabel(null, typeOf)).toBe("");
+  });
+
+  test("by default the types come from the server's catalog, and lines use them", () => {
+    applyCatalog({ maps: [], campaign: [], variants: [{ name: "Rockets", game_type: "slayer", engine: 2 }, { name: "Land Grab", game_type: "territories", engine: 8 }] });
+    expect(variantType("rockets")).toBe("Slayer");
+    expect(variantLabel("Land Grab")).toBe("Land Grab (Territories)");
+    const g = { mode: "multiplayer", kind: "custom", playlist: null, online: null, players: {}, difficulty: null };
+    expect(gameTypeLine({ ...g, variant: "Rockets" })).toBe("Rockets (Slayer) · Custom Game");
+    applyCatalog(null);
+    expect(variantLabel("Rockets")).toBe("Rockets");
+  });
+});
+
+describe("the catalog without the manifest", () => {
+  const catalog = { version: 1, maps: [{ id: 1, name: "Tall Tower", description: "", key: "tower" }], campaign: [], playlists: [], variants: [], skipped: {}, custom: [] };
+
+  test("names come from the catalog even when the manifest is missing", async () => {
+    noArt();
+    await loadServerArt("https://a.example", { art: async () => null, catalog: async () => catalog, current: () => "https://a.example" });
+    expect(gameImage(mapKey("tower"))).toBeNull();
+    expect(mapTitle("tower")).toBe("Tall Tower");
+    noArt();
+  });
+
+  test("an answer for a server the user has left is dropped", async () => {
+    noArt();
+    await loadServerArt("https://b.example", { art: async () => null, catalog: async () => catalog, current: () => "https://elsewhere.example" });
+    expect(mapTitle("tower")).toBe("Tower");
+  });
+});
+
+describe("Halo 1 levels without art", () => {
+  test("a Halo 1 level played from its unpublished package is not 'modded'", () => {
+    noArt();
+    expect(isHalo1Map("a10")).toBe(true);
+    expect(isHalo1Map("maps/D40.map")).toBe(true);
+    expect(isHalo1Map("01b_spacestation")).toBe(false);
+    expect(gameMapGroupLabel({ map: "a10", map_id: "ab".repeat(32) })).toBe("A10");
+    // A Halo 2 level's mod still reads as modded.
+    expect(gameMapGroupLabel({ map: "05a_deep_water", map_id: "ab".repeat(32) })).toBe("Deep Water (modded)");
   });
 });
