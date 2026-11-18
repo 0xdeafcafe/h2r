@@ -297,6 +297,7 @@ fn check_shader_copy(
     c: &h1convert::textures::ShaderCopy,
 ) {
     let n = &c.h1_shader;
+    check_copy_tiling(name, m, id, c);
     let (template, got) = scenario_edit::scene::shader_bitmaps(m, id)
         .unwrap_or_else(|e| panic!("{name}: shader copy {n}: {e}"));
     // A base shader the reader cannot follow (some base shaders read out of
@@ -330,6 +331,58 @@ fn check_shader_copy(
         replaced += 1;
     }
     assert!(replaced > 0, "{name}: {n} draws none of Halo 1's bitmaps");
+}
+
+/// Halo 1's tiling on a shader copy, as the draw sees it: resolved on the
+/// converted map, the pass that samples the base on stage 0 gets each
+/// scale the copy set in a vertex constant `c[18 + stage]`, and the base
+/// map, when swapped, is not tiled (`c[18]` x and y 1).
+fn check_copy_tiling(
+    name: &str,
+    m: &mut Map<Cursor<Vec<u8>>>,
+    id: map::TagId,
+    c: &h1convert::textures::ShaderCopy,
+) {
+    use tags::material::{ShaderLibrary, TextureSource};
+    let n = &c.h1_shader;
+    let mut lib = ShaderLibrary::read(m).unwrap();
+    let material = lib
+        .material(id, None)
+        .unwrap_or_else(|e| panic!("{name}: {n}: {e}"));
+    let Some(imp) = material
+        .layers
+        .iter()
+        .filter(|l| l.lod == 0)
+        .flat_map(|l| &l.passes)
+        .filter_map(|p| p.implementations.first())
+        .find(|i| {
+            matches!(
+                i.textures[0].map(|t| t.source),
+                Some(TextureSource::Bitmap { .. })
+            )
+        })
+    else {
+        panic!("{name}: {n} samples no bitmap on stage 0");
+    };
+    let xy = |r: u8| {
+        imp.vertex_constants
+            .iter()
+            .find(|c| c.index == r)
+            .map(|c| [c.value[0], c.value[1]])
+    };
+    for &(_, scale) in &c.scales {
+        assert!(
+            (0..4).any(|s| xy(18 + s) == Some(scale)),
+            "{name}: {n}: no stage tiles {scale:?}"
+        );
+    }
+    if c.swapped.iter().any(|(r, _)| *r == "base") && !c.scales.is_empty() {
+        assert_eq!(xy(18), Some([1.0, 1.0]), "{name}: {n}'s base tiling");
+    }
+    eprintln!(
+        "      tiling {n}: {:?}",
+        (0..4).map(|s| xy(18 + s)).collect::<Vec<_>>()
+    );
 }
 
 /// Halo 1's own textures: every bitmap the converter added decodes

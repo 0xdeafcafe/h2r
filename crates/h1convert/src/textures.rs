@@ -113,12 +113,87 @@ pub fn h1_maps_of(h1: &H1Map, tag: &h1map::Tag) -> Option<H1Maps> {
     })
 }
 
+/// How many times a Halo 1 shader tiles its detail and bump maps across
+/// its base map's texture coordinates (1 where it names none).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct H1Scales {
+    pub detail: f32,
+    pub bump: f32,
+}
+
+/// The tiling of the Halo 1 shader `tag`'s detail and bump maps. `senv`:
+/// each map reference's scale is the f32 before it, primary detail
+/// `+0xb4`, micro detail `+0xf8`, bump `+0x128 - 4`. V (every `senv` on
+/// the disc): 1 wherever the map is null; 1 to 800 where it is set (micro
+/// details mostly 16 to 60, bump maps 1 to 100). The detail's is the
+/// map's [`h1_maps_of`] takes. The base map has none: its coordinates are
+/// the surface's. Other groups (and a scale that isn't positive) are 1.
+pub fn h1_scales_of(h1: &H1Map, tag: &h1map::Tag) -> H1Scales {
+    let mut out = H1Scales {
+        detail: 1.0,
+        bump: 1.0,
+    };
+    if tag.group != Group::new(b"senv") {
+        return out;
+    }
+    let Ok(d) = h1.tag_data(tag) else {
+        return out;
+    };
+    let scale = |o: usize| {
+        d.get(o..o + 4)
+            .map(|b| f32::from_le_bytes(b.try_into().expect("4")))
+            .filter(|f| f.is_finite() && *f > 0.0)
+            .unwrap_or(1.0)
+    };
+    let set = |o: usize| TagRef::read(d, o).is_some_and(|r| !r.id.is_none());
+    out.detail = if set(0xb8) {
+        scale(0xb4)
+    } else if set(0xfc) {
+        scale(0xf8)
+    } else {
+        1.0
+    };
+    out.bump = if set(0x128) { scale(0x124) } else { 1.0 };
+    out
+}
+
 /// Which instance bitmaps (datums) a Halo 2 shader draws in each role.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct H2Roles {
     pub base: Option<TagId>,
     pub detail: Option<TagId>,
     pub bump: Option<TagId>,
+    /// The instance vector (postprocess `+0x14` index) whose x and y
+    /// scale each role's texture coordinates ([`stage_vector`]).
+    pub base_vector: Option<usize>,
+    pub detail_vector: Option<usize>,
+    pub bump_vector: Option<usize>,
+}
+
+/// The instance vector that scales texture stage `stage`'s coordinates in
+/// the implementation `bindings` of the template `tp`: the vector bound to
+/// vertex constant `c[18 + stage]` (bank 1, register `stage`) with its x
+/// and y. D: on the opaque templates the base's structure shaders use,
+/// `c[18 + s]` carries stage `s`'s tiling (Coagulation's `coag_ground`:
+/// its base 1×, grass and pebble detail 60×; `blood_cliffs`: base and bump
+/// 1×, sandstone detail 12×).
+pub fn stage_vector(
+    tp: &tags::shader::TemplatePostprocess,
+    bindings: tags::shader::ImplementationBindings,
+    stage: usize,
+) -> Option<usize> {
+    tp.bindings
+        .get(bindings.vertex_constants.indices())?
+        .iter()
+        .find(|b| {
+            let mode = usize::from((b.word >> 5) & 0x1f);
+            usize::from(b.word & 0xf) == stage
+                && (b.word >> 4) & 1 == 1
+                && tags::material::VECTOR_MODE_MASKS
+                    .get(mode)
+                    .is_some_and(|m| m & 0b11 == 0b11)
+        })
+        .map(|b| usize::from(b.source))
 }
 
 /// The roles of `shader`'s bitmaps, from its material on `map`.
@@ -133,6 +208,7 @@ pub fn h2_roles<R: Read + Seek>(
         Some(TextureSource::Bitmap { bitmap, .. }) if bitmap != TagId::NULL => Some(bitmap),
         _ => None,
     };
+    let mut found = None;
     'find: for layer in material.layers.iter().filter(|l| l.lod == 0) {
         for pass in &layer.passes {
             let Some(imp) = pass.implementations.first() else {
@@ -141,6 +217,7 @@ pub fn h2_roles<R: Read + Seek>(
             if let Some(b) = bitmap(imp.textures[0]) {
                 roles.base = Some(b);
                 roles.detail = bitmap(imp.textures[1]).filter(|&d| d != b);
+                found = Some((layer.lod, layer.layer, pass.index, imp.textures));
                 break 'find;
             }
         }
@@ -159,6 +236,28 @@ pub fn h2_roles<R: Read + Seek>(
         {
             roles.bump = Some(p.bitmap);
             break;
+        }
+    }
+    // Each role's tiling vector, from the pass the roles came from.
+    if let Some((lod, layer, pi, textures)) = found {
+        let template = shad.template.id;
+        let tp = lib.template(template).map_err(tags_err)?;
+        let tp = tp.compiled().map_err(tags_err)?;
+        let ib = tp
+            .layer_passes(lod, layer)
+            .and_then(|l| l.get(pi))
+            .and_then(|p| tp.implementations.get(usize::from(p.implementations.start)))
+            .copied();
+        let stage_of = |b: Option<TagId>| {
+            textures
+                .iter()
+                .position(|t| bitmap(*t).is_some_and(|x| Some(x) == b))
+        };
+        if let Some(ib) = ib {
+            let vector = |b| stage_of(b).and_then(|s| stage_vector(tp, ib, s));
+            roles.base_vector = vector(roles.base);
+            roles.detail_vector = vector(roles.detail);
+            roles.bump_vector = vector(roles.bump);
         }
     }
     // A role whose bitmap is a bump map is no picture.
@@ -192,6 +291,9 @@ pub struct ShaderCopy {
     swaps: Vec<(usize, usize)>,
     /// What was swapped, by role, as (role, Halo 1 bitmap name).
     pub swapped: Vec<(&'static str, String)>,
+    /// (instance vector, x and y scale): each swapped role's tiling, Halo
+    /// 1's ([`H1Scales`]; 1 for the base map).
+    pub scales: Vec<(usize, [f32; 2])>,
 }
 
 /// Halo 1 bitmaps converted, and the shader copies naming them: made by
@@ -224,6 +326,11 @@ pub fn plan<R: Read + Seek>(
         if done.insert((*i, name.clone()), ()).is_some() {
             continue;
         }
+        let scales = h1
+            .tags()
+            .iter()
+            .find(|t| &t.name == name && h1_maps_of(h1, t).is_some())
+            .map(|t| h1_scales_of(h1, t));
         let Some(maps) = h1_maps(h1, name) else {
             out.notes
                 .push(format!("{name}: not a shader whose maps this reads"));
@@ -268,6 +375,15 @@ pub fn plan<R: Read + Seek>(
             ("detail", r.detail, convert(maps.detail, false), maps.detail),
             ("bump", r.bump, convert(maps.bump, true), maps.bump),
         ];
+        let h1_scales = scales.unwrap_or(H1Scales {
+            detail: 1.0,
+            bump: 1.0,
+        });
+        let tiling = |role: &str| match role {
+            "base" => (r.base_vector, 1.0),
+            "detail" => (r.detail_vector, h1_scales.detail),
+            _ => (r.bump_vector, h1_scales.bump),
+        };
         let template_name = base
             .tag(shader)
             .ok()
@@ -295,6 +411,7 @@ pub fn plan<R: Read + Seek>(
         let word = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
         let mut swaps = Vec::new();
         let mut swapped = Vec::new();
+        let mut scales_out = Vec::new();
         for (role, h2, k, h1id) in pairs {
             let (Some(h2), Some(k)) = (h2, k) else {
                 continue;
@@ -312,6 +429,9 @@ pub fn plan<R: Read + Seek>(
                     .map(|t| t.name.clone())
                     .unwrap_or_default();
                 swapped.push((role, h1name));
+                if let (Some(v), f) = tiling(role) {
+                    scales_out.push((v, [f, f]));
+                }
             }
         }
         if swaps.is_empty() {
@@ -327,6 +447,7 @@ pub fn plan<R: Read + Seek>(
             tree,
             swaps,
             swapped,
+            scales: scales_out,
         });
     }
     Ok(out)
@@ -361,6 +482,7 @@ impl Retexture {
             for &(p, k) in &c.swaps {
                 params.bytes[p * 0xc..p * 0xc + 4].copy_from_slice(&ids[k].0.to_le_bytes());
             }
+            set_tiling(&mut root, &c.scales);
             let id = match set.find(SHAD, &c.h1_shader) {
                 Some(id) => id,
                 None => set.add_tag(SHAD, &c.h1_shader, TagPayload::Built(root))?,
@@ -494,6 +616,30 @@ impl ModelTemplate {
     }
 }
 
+/// Writes each (vector, scale) into the x and y of that instance vector
+/// (postprocess `+0x14`, 16 bytes each) of the `shad` tree `root`, its z
+/// and w kept.
+pub fn set_tiling(root: &mut Block, scales: &[(usize, [f32; 2])]) {
+    if scales.is_empty() {
+        return;
+    }
+    root.share = None;
+    let Some(pp) = block_child(root, 0x20) else {
+        return;
+    };
+    pp.share = None;
+    let Some(vectors) = block_child(pp, 0x14) else {
+        return;
+    };
+    vectors.share = None;
+    for &(v, [x, y]) in scales {
+        if let Some(dst) = vectors.bytes.get_mut(v * 0x10..v * 0x10 + 8) {
+            dst[..4].copy_from_slice(&x.to_le_bytes());
+            dst[4..].copy_from_slice(&y.to_le_bytes());
+        }
+    }
+}
+
 /// The bitmap parameter block of a `shad` tree (root `+0x20` postprocess,
 /// its first element's `+0x04` parameters), with the sharing key cleared
 /// on it and on the blocks above it.
@@ -516,4 +662,74 @@ pub(crate) fn block_child(b: &mut Block, at: u32) -> Option<&mut Block> {
 
 fn tags_err(e: tags::Error) -> Error {
     Error::Textures(e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tags::shader::{ImplementationBindings, IndexRange, ParameterBinding, TemplatePostprocess};
+
+    /// A vector binding: register `reg`, `bank`, component `mode`, from
+    /// instance vector `source`.
+    fn vector(reg: u16, bank: u16, mode: u16, source: u8) -> ParameterBinding {
+        ParameterBinding {
+            word: reg | bank << 4 | mode << 5,
+            b2: 0,
+            source,
+        }
+    }
+
+    #[test]
+    fn a_stage_is_tiled_by_the_vector_bound_to_its_constant_x_and_y() {
+        let tp = TemplatePostprocess {
+            lods: Vec::new(),
+            layers: Vec::new(),
+            passes: Vec::new(),
+            implementations: Vec::new(),
+            bindings: vec![
+                // Another implementation's.
+                vector(0, 1, 13, 9),
+                // c[18] from vector 3 (all of it), c[19] from vector 2;
+                // vector 5 fills c[20]'s z and w only (mode 10), vector 4
+                // its x and y (mode 11); vector 7 a vertex default.
+                vector(0, 1, 13, 3),
+                vector(1, 1, 13, 2),
+                vector(2, 1, 10, 5),
+                vector(2, 1, 11, 4),
+                vector(3, 0, 13, 7),
+            ],
+        };
+        let ib = ImplementationBindings {
+            vertex_constants: IndexRange { start: 1, count: 5 },
+            ..Default::default()
+        };
+        let got: Vec<_> = (0..4).map(|s| stage_vector(&tp, ib, s)).collect();
+        assert_eq!(got, [Some(3), Some(2), Some(4), None]);
+    }
+
+    #[test]
+    fn tiling_sets_x_and_y_and_keeps_z_and_w() {
+        let mut vectors = Block::zeroed(3 * 0x10);
+        for (k, f) in vectors.bytes.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            *f = (k as f32).to_le_bytes();
+        }
+        vectors.share = Some(7);
+        let mut pp = Block::zeroed(0x7c);
+        pp.block(0x14, 3, vectors);
+        let mut root = Block::zeroed(0x54);
+        root.block(0x20, 1, pp);
+        set_tiling(&mut root, &[(1, [16.0, 8.0])]);
+        let pp = block_child(&mut root, 0x20).unwrap();
+        let v = block_child(pp, 0x14).unwrap();
+        assert_eq!(v.share, None);
+        let f: Vec<f32> = v
+            .bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
+            .collect();
+        assert_eq!(&f[4..8], [16.0, 8.0, 6.0, 7.0]);
+        assert_eq!(&f[..4], [0.0, 1.0, 2.0, 3.0]);
+    }
 }

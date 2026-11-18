@@ -373,8 +373,17 @@ The base's old BSP region stays in the file, unused.
   `prepare`, `Retexture::install` in `assemble` after the tags whose
   datums are predicted (objects, collections). Shaders of other types
   (`soso`, `schi`, `sgla`, ...) keep the base's, and the CLI says so.
-  Left out: Halo 1's detail and bump tiling scales (the template's stay),
-  the detail blend function, and the shader's `+0x2c` block (it still
+  Tiling: the copy's instance vectors that scale a swapped role's
+  texture coordinates take Halo 1's tiling, the base map 1× (Halo 1's
+  base map has no scale; Coagulation's ground tiled it 60×), the detail
+  and bump maps the `senv` scale before each reference (primary detail
+  `+0xb4`, micro `+0xf8`, bump `+0x124`; V: 1 wherever the map is null).
+  A role's vector is the one the template binds to vertex constant
+  `c[18 + stage]` with its x and y (`textures::stage_vector`); the disc
+  test resolves every copy on the converted map and finds each scale in
+  that constant. A role left as the base's (its bump map, when Halo 1's
+  isn't `P8Bump`) keeps the base's tiling.
+  Left out: the detail blend function, and the shader's `+0x2c` block (it still
   names the chosen shader's bitmaps; the draw path reads the
   parameters). On blend-detail templates (`tex_bump_detail_blend_detail`,
   Coagulation's ground) stage 1 of the first pass is the second blended
@@ -902,7 +911,7 @@ weather, not Halo 1's. The structure side is also the render lane's
    scenery palette at `+0x58` is settled (`0x28`) and pruned.
 3. ~~**Lightmaps**~~ and ~~**Halo 1's own textures**~~ on structure
    `senv`/`swat` shaders: done (above), and object and scenery models
-   (item 6). Next: Halo 1's tiling scales.
+   (item 6), with Halo 1's tiling scales on the structure's.
    What the disc shows (`structure_bsp_root_blocks_on_the_disc`,
    all 12 multiplayer maps; element sizes are upper bounds from block
    spacing, not yet engine-backed): every map uses the root blocks at
