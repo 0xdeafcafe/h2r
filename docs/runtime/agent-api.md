@@ -1078,7 +1078,7 @@ own copy) needs a game run.
 
 ### The split with docs/game/bots.md
 
-What sim reuses, and what is stubbed until bed6c8dc's lane lands:
+What sim reuses from bed6c8dc's lane:
 
 - **Local players** are bots.md stage 1's local slots:
   `bots::local::add(port, PadSource)` and `remove`. **Phantoms** are
@@ -1090,10 +1090,19 @@ What sim reuses, and what is stubbed until bed6c8dc's lane lands:
   `input.pad` uses: sim fills it, the backend reads it each poll with
   `state_at_tick` (then `state_read`). So a sim script is just another
   pad source, as bots.md says the brain is.
-- **Stubbed:** the game installs `NotLanded`, which refuses every add,
-  naming the stage it needs. Tests use `FakeBots`. When `bots::local`
-  lands, its backend implements `Bots` and `boot::agent_glue::install_sim`
-  passes it instead (or `SimHandle::set_bots`).
+- **In the game** `boot::sim_bots::LocalBots` implements `Bots` over the
+  process-wide `bots::local::global()`, so a local sim player is a
+  Clanker like an `H2_BOTS` one: on the lowest port from 1 that no bot
+  asked for (or `port`), named "Clanker N", signed in on the players
+  screen by pressing A. A script source is read each rendered frame, so a
+  step's `ticks` count bot frames there, not game ticks (`ms` is wall
+  time). A recording is an input log's successful reads of its first
+  pad, one per frame. The brain plays at `H2_BOTS_SKILL`. The bots
+  feature has to be on (it is unless `H2_FEATURES` turns it off), or the
+  bot is placed but never asked for a pad. Phantoms go to
+  `bots::phantom::add`, which refuses until stage 6; the xuid is parsed
+  as hex. `sim.player.remove` only takes off bots sim added. Tests use
+  `FakeBots`; `NotLanded` refuses everything, for a game without bots.
 - A local bot with another source can still be steered: `sim.player.pad`
   sends its steps to `input.pad` on the bot's port, which merges over the
   bot's pad (bots.md 4.1). A phantom's pad comes only from its source.

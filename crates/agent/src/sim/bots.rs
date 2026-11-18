@@ -8,11 +8,10 @@
 //!   a remote player made on the host through the game's own membership);
 //! - `PadSource`: scripted, recorded or the brain.
 //!
-//! Neither is on master yet, so [`Bots`] stands in for them, shaped like
-//! them: [`NotLanded`] is what the game uses until they land (every add is
-//! refused, saying why), [`FakeBots`] is for tests. When `bots::local`
-//! lands, its backend implements [`Bots`] and boot passes it to
-//! [`super::install`].
+//! This crate doesn't depend on `bots`: [`Bots`] is shaped like those
+//! calls, and boot implements it over them (`boot::sim_bots`, phantoms
+//! still refused until stage 6). [`NotLanded`] refuses every add, for a
+//! game without bots; [`FakeBots`] is for tests.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -71,6 +70,12 @@ pub trait Bots: Send {
     ) -> Result<u32, String>;
     /// `remove` of either kind.
     fn remove(&mut self, bot: Bot) -> Result<(), String>;
+    /// The port the local bot that asked for `port` is on: the input
+    /// manager moves a bot off a port a real pad holds. `None` until it is
+    /// placed.
+    fn placed_port(&self, port: u32) -> Option<u32> {
+        Some(port)
+    }
     /// The players-array index of the player a phantom became, once it has
     /// one. Local bots are found by their port (the player's local user).
     fn phantom_player(&self, handle: u32) -> Option<u32> {
@@ -79,22 +84,21 @@ pub trait Bots: Send {
     }
 }
 
-/// The game's backend until bots.md's stage 1 (local) and stage 6
-/// (phantom) land: every add is refused, saying what's missing.
+/// No bots: every add is refused, naming the bots.md stage it needs.
 pub struct NotLanded;
 
 impl Bots for NotLanded {
     fn add_local(&mut self, _: Option<u32>, _: PadSource) -> Result<u32, String> {
         Err(
-            "local sim players need bots::local (docs/game/bots.md stage 1), which hasn't landed; \
-             input.pad steers a real pad's port meanwhile"
+            "local sim players need bots::local (docs/game/bots.md stage 1), not installed here; \
+             input.pad steers a real pad's port"
                 .into(),
         )
     }
 
     fn add_phantom(&mut self, _: &Identity, _: Option<i32>, _: PadSource) -> Result<u32, String> {
         Err(
-            "phantom sim players need bots::phantom (docs/game/bots.md stage 6), which hasn't landed"
+            "phantom sim players need bots::phantom (docs/game/bots.md stage 6), not installed here"
                 .into(),
         )
     }

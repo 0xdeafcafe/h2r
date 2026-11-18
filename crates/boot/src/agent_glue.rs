@@ -203,13 +203,15 @@ pub fn add_host_methods(agent: &agent::Agent) {
     );
 }
 
-/// `sim.*` (crates/agent's `sim`): no bots backend until bots.md's
-/// `bots::local` lands (then pass it here, or `SimHandle::set_bots`), and
-/// the session kind read as `coop_probe` reads it.
+/// `sim.*` (crates/agent's `sim`): its players are the process-wide local
+/// bots ([`crate::sim_bots`]), and the session kind is read as `coop_probe`
+/// reads it.
 pub fn install_sim(agent: &agent::Agent) -> agent::sim::SimHandle {
     agent::sim::install(
         agent,
-        Box::new(agent::sim::bots::NotLanded),
+        Box::new(crate::sim_bots::LocalBots::new(
+            bots::local::global().clone(),
+        )),
         Some(Box::new(session_view)),
     )
 }

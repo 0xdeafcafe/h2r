@@ -3,8 +3,9 @@
 //! flows from one running game.
 //!
 //! - `sim.player.add` / `remove` / `list` / `pad`: players made by the bots
-//!   ([`bots::Bots`], a stand-in for docs/game/bots.md's `bots::local` and
-//!   `bots::phantom` until they land), driven by a [`bots::PadSource`].
+//!   ([`bots::Bots`], the seam to docs/game/bots.md's `bots::local` and
+//!   `bots::phantom`, which boot implements), driven by a
+//!   [`bots::PadSource`].
 //! - `sim.state.set`: host writes to a player ([`state`]), at a tick
 //!   boundary, refused where they would desync a co-op session.
 //! - `sim.view`, `sim.expect`: the game as one JSON document, and
@@ -66,7 +67,7 @@ impl SimHandle {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Swaps the bots backend (when `bots::local` lands, or in tests).
+    /// Swaps the bots backend (in tests).
     pub fn set_bots(&self, bots: Box<dyn Bots>) {
         self.lock().bots = bots;
     }
@@ -162,12 +163,15 @@ impl Sim {
     /// backend says.
     fn game_player(&self, e: &Entry, objects: &[Object]) -> Option<u32> {
         match e.bot {
-            Bot::Local { port } => objects
-                .iter()
-                .filter(|o| o.kind == Kind::Player)
-                .find(|o| o.local_user.map(u32::from) == Some(port))
-                .and_then(|o| ObjectId::parse(&o.id))
-                .map(|id| id.key),
+            Bot::Local { port } => {
+                let port = self.bots.placed_port(port)?;
+                objects
+                    .iter()
+                    .filter(|o| o.kind == Kind::Player)
+                    .find(|o| o.local_user.map(u32::from) == Some(port))
+                    .and_then(|o| ObjectId::parse(&o.id))
+                    .map(|id| id.key)
+            }
             Bot::Phantom { handle } => self.bots.phantom_player(handle),
         }
     }
@@ -182,7 +186,7 @@ impl Sim {
             source: e.source,
             team: e.team,
             port: match e.bot {
-                Bot::Local { port } => Some(port),
+                Bot::Local { port } => Some(self.bots.placed_port(port).unwrap_or(port)),
                 Bot::Phantom { .. } => None,
             },
             identity: e.identity.clone(),
@@ -334,6 +338,12 @@ impl Sim {
             // Another source on a local port: input.pad merges over it
             // (docs/game/bots.md 4.1).
             (None, Bot::Local { port }) => {
+                let port = self.bots.placed_port(port).ok_or_else(|| {
+                    RpcError::new(
+                        code::UNAVAILABLE,
+                        "this bot has no port yet (the input manager places it)",
+                    )
+                })?;
                 let pad = json!({ "player": port, "steps": p.steps, "append": p.append });
                 let r = ctx
                     .host(agent_proto::method::INPUT_PAD, pad)
