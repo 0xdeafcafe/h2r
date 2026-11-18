@@ -191,6 +191,39 @@ fn check_structure_texturing(
         .map(|k| copy_of(k).map_or(&p.material_shaders[k].1, |c| &c.h1_shader))
         .collect();
     assert_eq!(shader_of.iter().collect::<Vec<_>>(), chosen, "{name}");
+    // Each part's kind is retail's for its material's template
+    // (`structure::part_kind`): transparent shaders' parts are kind 4.
+    let kind_of: Vec<u16> = (0..p.material_shaders.len())
+        .map(|k| {
+            let id = map::TagId(w(mats + 0x20 * k + 0xc));
+            let t = scenario_edit::scene::shader_bitmaps(m, id)
+                .map(|x| x.0)
+                .unwrap_or_default();
+            h1convert::structure::part_kind(&t)
+        })
+        .collect();
+    let mut kinds = [0usize; 6];
+    let mut raw = Mem(bytes.to_vec());
+    for c in &render.clusters {
+        let Some(s) = c.geometry.load(&mut raw, None).unwrap() else {
+            continue;
+        };
+        for part in &s.parts {
+            let want = kind_of[usize::from(part.material)];
+            assert_eq!(
+                part.kind,
+                want,
+                "{name}: material {} ({})",
+                part.material,
+                shader_of[usize::from(part.material)]
+            );
+            kinds[usize::from(part.kind).min(5)] += 1;
+        }
+    }
+    eprintln!(
+        "    part kinds 2/3/4: {}/{}/{}",
+        kinds[2], kinds[3], kinds[4]
+    );
     for (k, n) in shader_of.iter().enumerate() {
         let id = m
             .tags()

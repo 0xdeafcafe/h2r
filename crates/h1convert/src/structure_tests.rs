@@ -76,6 +76,7 @@ fn templates() -> Templates {
     Templates {
         collision_material,
         material_heads: vec![material_head, second],
+        part_kinds: vec![PART_KIND, PART_KIND_TRANSPARENT],
     }
 }
 
@@ -567,6 +568,27 @@ fn each_lightmap_page_gets_its_own_cluster_and_render_info() {
     assert!(g.cluster_render_info.iter().all(|r| r.bitmap_index == -1));
 }
 
+/// Retail's part kinds by template (`part_kind`'s census).
+#[test]
+fn part_kinds_follow_retail_by_template() {
+    let t = |leaf: &str| format!("shaders\\shader_templates\\{leaf}");
+    for (template, kind) in [
+        ("opaque\\tex_bump", PART_KIND),
+        ("opaque\\tex_bump_alpha_test_single_pass", PART_KIND),
+        ("opaque\\tex_bump_env_illum", PART_KIND),
+        ("opaque\\decal_simple", PART_KIND_DECAL),
+        ("opaque\\overlay", PART_KIND_DECAL),
+        ("transparent\\one_alpha_env", PART_KIND_TRANSPARENT),
+        ("transparent\\one_alpha_env_illum", PART_KIND_TRANSPARENT),
+        ("water\\water_pool", PART_KIND_TRANSPARENT),
+        ("water\\water_pool_static", PART_KIND_TRANSPARENT),
+        ("water\\water_edge_blend", PART_KIND),
+    ] {
+        assert_eq!(part_kind(&t(template)), kind, "{template}");
+    }
+    assert_eq!(part_kind(""), PART_KIND);
+}
+
 fn f32_at(b: &[u8], at: usize) -> f32 {
     f32::from_bits(word(b, at))
 }
@@ -582,13 +604,15 @@ fn render_fields_are_filled_the_way_retail_fills_them() {
     let c = &render.clusters[0];
     let w = |at: usize| u16::from_le_bytes([c.raw[at], c.raw[at + 1]]);
 
-    // Section info: 7 vertices, 3 triangles, 2 parts; all shadow-casting,
-    // opaque and rigid; lightmap coordinates compressed; one subpart per
-    // part; lit, with incident radiance.
+    // Section info: 7 vertices, 3 triangles, 2 parts. Material 1's part
+    // (one triangle, three vertices) is transparent, so 2 triangles and
+    // 1 part cast shadows and 4 vertices and 1 part are opaque; rigid;
+    // lightmap coordinates compressed; one subpart per part; lit, with
+    // incident radiance.
     let head: Vec<u16> = (0..0x28).step_by(2).map(w).collect();
     assert_eq!(
         head,
-        [7, 3, 2, 3, 2, 0, 7, 2, 0, 3, 0, 4, 0, 0, 0, 0, 0, 0, 2, 3]
+        [7, 3, 2, 2, 1, 0, 4, 1, 0, 2, 0, 4, 0, 0, 0, 0, 0, 0, 2, 3]
     );
     assert_eq!(&c.raw[0x6c..0x72], [0, 0xff, 0, 0xff, 0xff, 0xff]);
     assert_eq!(word(&c.raw, 0x94), 0x1234_5678, "the structure checksum");
@@ -612,11 +636,16 @@ fn render_fields_are_filled_the_way_retail_fills_them() {
     assert_eq!(&p[list + 8..list + 12], [0, 0, 0, 0]);
     assert_eq!(word(&p, list + 12), bitmap.0);
 
-    // Parts: opaque, flags 0xb, bounding sphere and box of their own
-    // vertices.
+    // Parts: their material's kind (material 1's base head is
+    // transparent in `templates`), flags 0xb, bounding sphere and box of
+    // their own vertices.
     let mut raw = Mem(b.bytes.clone());
     let s = c.geometry.load(&mut raw, Some(2)).unwrap().unwrap();
-    assert!(s.parts.iter().all(|p| p.kind == 2 && p.flags == 0xb));
+    assert!(s.parts.iter().all(|p| p.flags == 0xb));
+    for p in &s.parts {
+        let want = [PART_KIND, PART_KIND_TRANSPARENT][usize::from(p.material)];
+        assert_eq!(p.kind, want, "material {}", p.material);
+    }
     let floor = &s.parts[0].raw;
     let centre: Vec<f32> = (0..3).map(|k| f32_at(floor, 0x10 + 4 * k)).collect();
     assert_eq!(centre, [0.5, 0.5, 0.0]);
