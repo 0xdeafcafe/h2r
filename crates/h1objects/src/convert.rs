@@ -741,6 +741,8 @@ pub struct Converter<'a> {
     /// Per converted `wphi`, its entries with no widget
     /// ([`Self::weapon_hud`]).
     weapon_hud_skips: HashMap<u32, Vec<String>>,
+    /// HUD bitmaps with an element colour's alpha ([`Self::hud_bitmap`]).
+    hud_bitmaps: HashMap<(u32, u8), TagId>,
     /// Biped role words, per role ([`Self::biped_role`]).
     roles: HashMap<crate::rebuild::BipedRole, Option<crate::rebuild::RoleWords>>,
     /// Weapon, equipment, projectile and damage role words, per group
@@ -780,6 +782,7 @@ impl<'a> Converter<'a> {
             health_huds: HashMap::new(),
             unit_hud_widgets: HashMap::new(),
             weapon_hud_skips: HashMap::new(),
+            hud_bitmaps: HashMap::new(),
             roles: HashMap::new(),
             item_roles: HashMap::new(),
             vehicle_roles: HashMap::new(),
@@ -1776,6 +1779,40 @@ impl<'a> Converter<'a> {
         self.cached(tag, conv).ok()
     }
 
+    /// The Halo 1 bitmap `id` for a HUD element whose colour's alpha is
+    /// `alpha`: the bitmap itself at 255, else a copy with its alpha scaled
+    /// (`h1hud::scale_alpha`, or `h1hud::alpha_scaled_argb` for a format
+    /// without an alpha byte), `<name>_alpha_<alpha>`, built once.
+    fn hud_bitmap(&mut self, id: h1map::TagId, alpha: u8) -> Option<TagId> {
+        if alpha == 0xff {
+            return self.bitmap(id);
+        }
+        let key = (id.0, alpha);
+        if let Some(t) = self.hud_bitmaps.get(&key) {
+            return Some(*t);
+        }
+        let tag = self.h1.tag(id).ok()?.clone();
+        let bm = h1map::bitmap::Bitmap::read(self.h1, &tag).ok()?;
+        // Byte-alpha formats scale in place; the rest (DXT, 16-bit, no
+        // alpha) are decoded and rewritten as linear A8R8G8B8.
+        let mut scaled = bm.clone();
+        let mut pixels = Vec::with_capacity(bm.images.len());
+        for (i, img) in bm.images.iter().enumerate() {
+            let mut px = bm.pixels(self.h1, i).ok()?.to_vec();
+            if crate::h1hud::scale_alpha(img.format, &mut px, alpha).is_none() {
+                let (argb, out) = crate::h1hud::alpha_scaled_argb(img, &px, alpha).ok()?;
+                scaled.images[i] = argb;
+                px = out;
+            }
+            pixels.push(px);
+        }
+        let (conv, _) =
+            h1bitmaps::convert::convert_with(&scaled, |i| Ok(std::mem::take(&mut pixels[i]))).ok()?;
+        let out = self.tree.push(&format!("{}_alpha_{alpha:02x}", tag.name), conv);
+        self.hud_bitmaps.insert(key, out);
+        Some(out)
+    }
+
     fn cached(&mut self, t: &Tag, conv: Converted) -> Result<TagId> {
         if let Some(id) = self.done.get(&t.id.0) {
             return Ok(*id);
@@ -2531,8 +2568,12 @@ impl Converter<'_> {
         };
         let meter = find(b"shad", crate::h1hud::METER_SHADER)?;
         let plain = find(b"shad", crate::h1hud::STATIC_SHADER)?;
+        let text_shader = find(b"shad", crate::h1hud::TEXT_SHADER)?;
         let mut widgets = Vec::new();
         for e in &elements {
+            if !crate::h1hud::unscaled(e.scale) {
+                return Err(Error::Invalid(format!("{}: scaled {:?}", e.name, e.scale)));
+            }
             let bt = self.h1.tag(e.bitmap)?.clone();
             let bm = h1map::bitmap::Bitmap::read(self.h1, &bt)?;
             if crate::h1hud::sprite(&bm, e.sequence).is_none() {
@@ -2541,8 +2582,15 @@ impl Converter<'_> {
                     e.name, bt.name, e.sequence
                 )));
             }
+            // A static element's colour alpha goes into its sprite (the
+            // motion sensor's background is a faint disc in Halo 1); a
+            // meter's colour is elsewhere in its element and stays out.
+            let alpha = match e.role {
+                crate::h1hud::Role::Static => crate::h1hud::colour_alpha(e.colour),
+                crate::h1hud::Role::Meter(_) => 0xff,
+            };
             let bitmap = self
-                .bitmap(e.bitmap)
+                .hud_bitmap(e.bitmap, alpha)
                 .ok_or_else(|| Error::Invalid(format!("bitmap {} unconverted", bt.name)))?;
             let reg = crate::h1hud::registration(e.anchor);
             widgets.push(crate::h1hud::widget_for(e, bitmap, reg, meter, plain));
@@ -2550,12 +2598,49 @@ impl Converter<'_> {
         if widgets.is_empty() {
             return Err(Error::Invalid(format!("{}: no drawable element", tag.name)));
         }
+        // Halo 1's grenade HUDs (docs/game/hud.md "Grenades"): each type's
+        // grhi, shown while that type is selected, after the unit's.
+        let grenades = crate::h1hud::grenade_huds(self.h1)?;
+        let mut texts = Vec::new();
+        for (k, g) in grenades.iter().enumerate().take(crate::h1hud::GRENADE_STATES.len()) {
+            let Some(g) = g else { continue };
+            let gt = self.h1.tag(*g)?.clone();
+            let gb = crate::h1::tag_bytes(self.h1, &gt, b"grhi", crate::h1hud::grhi::SIZE)?.to_vec();
+            // Its count, a Halo 2 number text on the type's input.
+            if let Some(n) = crate::h1hud::grenade_number(&gb)? {
+                if !crate::h1hud::unscaled(n.scale) {
+                    return Err(Error::Invalid(format!("{} count: scaled {:?}", gt.name, n.scale)));
+                }
+                let w = crate::h1hud::digit_width(self.h1)?;
+                texts.push(crate::h1hud::grenade_count(&n, k, w, text_shader)?);
+            }
+            for e in crate::h1hud::grenade_elements(self.h1, &gb)? {
+                if !crate::h1hud::unscaled(e.scale) {
+                    return Err(Error::Invalid(format!("{}: scaled {:?}", gt.name, e.scale)));
+                }
+                let bt = self.h1.tag(e.bitmap)?.clone();
+                let bm = h1map::bitmap::Bitmap::read(self.h1, &bt)?;
+                if crate::h1hud::sprite(&bm, e.sequence).is_none() {
+                    return Err(Error::Invalid(format!(
+                        "{}: {} draws nothing in sequence {}",
+                        gt.name, bt.name, e.sequence
+                    )));
+                }
+                let bitmap = self
+                    .hud_bitmap(e.bitmap, crate::h1hud::colour_alpha(e.colour))
+                    .ok_or_else(|| Error::Invalid(format!("bitmap {} unconverted", bt.name)))?;
+                let reg = crate::h1hud::registration(e.anchor);
+                let mut w = crate::h1hud::widget_for(&e, bitmap, reg, meter, plain);
+                w.state = crate::h1hud::GRENADE_STATES[k];
+                widgets.push(w);
+            }
+        }
         let n = widgets.len();
         let id = self.tree.push(
             &format!("{}{}", tag.name, crate::h1hud::NHDT_SUFFIX),
             Converted {
                 group: FourCC(*b"nhdt"),
-                root: crate::h1hud::nhdt(&widgets),
+                root: crate::h1hud::nhdt(&widgets, &texts),
                 raw: Vec::new(),
             },
         );
@@ -2611,7 +2696,7 @@ impl Converter<'_> {
             &format!("{}{}", tag.name, h1hud::WEAPON_NHDT_SUFFIX),
             Converted {
                 group: FourCC(*b"nhdt"),
-                root: h1hud::nhdt(&widgets),
+                root: h1hud::nhdt(&widgets, &[]),
                 raw: Vec::new(),
             },
         );

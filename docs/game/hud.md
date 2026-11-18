@@ -150,15 +150,115 @@ up: reload, overheat, no ammunition, no grenades; V: `hud_reticle_warnings`),
 the zoom-level readout (type 1, its sprite chosen by the zoom level),
 aim overlays shown only unzoomed (bit 6), numbers and overlay elements.
 
+## Grenades
+
+Halo 1 draws the selected grenade type's `grhi` (E `0x000db3c0`..`0x000db5c1`:
+the type `[unit +0x2cc]`, its `grhi` from the globals' grenades block
+`matg +0x128`, `0x44` each, reference `+0x14`). `h1hud::grenade_huds`
+reads each type's, `h1hud::grenade_elements` its background `+0x24` and
+total background `+0x8c` (the element layout of the unit HUD), and
+`Converter::unit_hud` appends them to the unit's `nhdt` per type, with
+the state flags of Halo 2's own grenade background for that type
+(`h1hud::GRENADE_STATES`; V: `ui\hud\masterchief` widgets 0 and 1, word 0
+bit `0x04` frag and `0x08` plasma, the same bits as its `frag_count` and
+`plasma_count` text widgets), so only the selected type's shows. Halo 1's
+type order (frag, plasma) is Halo 2's, as the converted globals keep it.
+
+### The count
+
+Halo 1's count is the number element `grhi +0xf4`, drawn when byte
+`+0x138` is set (E `0x000db514`) by the number draw `0x000e1a60`: offset
+and scale as any element's, digits `+0x44`, flags `+0x45` (bit `0x04`
+one cell more), fraction digits `+0x46`, each digit `hud#` `+0x11` wide
+(9 on `ui\hud\counter`, the digits tag the globals' first interface
+element names at `+0xb0`). It draws right to left from a start the anchor
+moves: on a left anchor by `(cells - 2) * width`, on a right anchor not
+at all, centred by half of `(cells - 1) * width` (E the switch
+`0x000e1bd1`). On the disc every `grhi` count is one digit, top left, at
+(107, 3), so it ends at x 107.
+
+Halo 2 draws its counts as text widgets. The layout, from the retail
+`ui\hud\masterchief` `frag_count` and `plasma_count` and their draw
+(E `0x22aa16`, the string `0x22a871`, the value `0x22ace7`, the caller
+`0x13a63d`), `0x54` bytes in the `nhdt`'s `+0x10` block:
+
+| offset | field |
+|---|---|
+| `+0x00` | name (string ID) |
+| `+0x04` | four inputs (`0x13ad48`); their values are `hud_input1`..`hud_input4` |
+| `+0x08`..`+0x1b` | state flags, as a bitmap widget's (`0x13ac87`) |
+| `+0x1c` | anchor (`u16`) |
+| `+0x1e` | flags (`u16`): 1 draws the number `+0x28` names; 2 pads it to two digits, 4 to three; 8 draws the player's name; otherwise `+0x28` is a text |
+| `+0x20` | shader (tag reference; no shader, no draw) |
+| `+0x28` | string ID: `hud_input1` (retail) is the first input's value |
+| `+0x2c` | justification (`u16`): 0 starts at the point, 1 centred, 2 ends at it |
+| `+0x40`, `+0x44`, `+0x48` | offset (two `i16`) for fullscreen, half and quarter screen |
+
+Retail: inputs 20 (frag count, HUD state `+0x38`) and 21 (plasma, `+0x3a`),
+flags 1, `hud_input1`, `ui\hud\shaders\text_flash`, centred, top left at
+(65, -1) and (12, -1); the `_hidden` pair draws through `dim_text_flash`.
+
+The converter emits one text widget per type (`h1hud::grenade_count`):
+input `20 + type`, that type's grenade states, flags 1, `hud_input1`,
+`text_flash`, the grhi's anchor, justified to end (2) where Halo 1's last
+digit ends (`h1hud::number_end`). The text is Halo 2's font, not Halo 1's
+digit bitmaps; its top sits at Halo 1's y. Not carried: the low-count
+flash (`+0x148`) and the messaging part (`+0x14c`).
+
+## Scale
+
+Halo 1 multiplies an element's size and offset by its scale (`+4`; E
+`0x000e15f4`, `0x000e15ff`). A Halo 2 bitmap widget has no scale. Every
+element on the disc is unscaled (V: `hud_disc` `grenade_huds_read`: the
+unit and grenade elements of every map, the weapon entries of bloodgulch
+and a10, all 1.0), so Halo 1's sizes are kept as they are; a scaled one
+is refused (`h1hud::unscaled`).
+
+## Colours: alpha only; the motion sensor
+
+Halo 1 tints every element with its colour (ARGB `+0x34`; overlays
+`+0x24`), alpha included (E `0x000e1830`). On the disc the colours are
+few: `0x2896ff` and `0xaad5ff` blues at alphas `0xc8`..`0xff`, and the
+motion sensor's background `0x28061428` (alpha `0x28`: a faint dark disc)
+and foreground `0xa06986a0`. The widgets draw through
+`widget_gradient_flash`, whose colours come from its own constants (its
+`colors` block and six animated pixel-constant bindings), not from the
+widget; the texture's alpha is kept (`a = t0.a * c0.a`).
+
+So the converter carries the alpha: a static unit or grenade element
+whose colour's alpha is under 255 draws a copy of its bitmap with every
+texel's alpha scaled by it (`h1hud::scale_alpha`,
+`Converter::hud_bitmap`, `<bitmap>_alpha_<aa>`). Formats with an alpha
+byte (A8, A8Y8, A8R8G8B8) are scaled in place. The rest (block-compressed,
+16-bit, no alpha), among them the motion sensor's
+(`hud_weapon_backgrounds`, sequence 3), are decoded with Halo 2's own
+decoder (`h1bitmaps::decode_image`) and the copy written as linear
+A8R8G8B8, top level only, rows at Halo 2's 64-byte linear pitch
+(`h1hud::alpha_scaled_argb`). Retail Halo 2 HUD bitmaps are stored the
+same way (E: `grenade_bkd`'s images, linear A8R8G8B8). Before this the
+sensor background drew opaque in the shader's light blue (seen in a run
+on a10 and a30); now it should be a faint disc at `0x28/255`.
+Halo 1's colour RGB needs a `shad` per colour whose
+constant reaches the pixel shader's last-stage `c0`; which `colors` entry
+or animation binding feeds it is not yet established
+(`docs/formats/shader-instances.md`: E `0x0001717b`).
+
 ## Not converted yet
 
-- **Grenades** (`grhi`), **HUD globals** (`hudg`), **numbers** (`hud#`):
-  Halo 2 draws counts as text widgets in its HUD font (`ui\hud\masterchief`
-  `frag_count`), not from a numbers bitmap.
-- **Motion sensor blips**: Halo 2 draws them by its own code; whether they
-  follow the converted background's place is for a game run to show.
-- Halo 1's element colours and scale are not carried: Halo 2's HUD
-  shaders have their own colours.
+- **Weapon numbers** (`hud#`, the ammunition counts) and **HUD globals**
+  (`hudg`).
+- **Motion sensor sweep and blips**: Halo 1 draws them (E `0x000da1e0`)
+  around the point its `unhi` motion sensor placement `+0x35c` gives
+  through the element placement `0x000e07a0` (E `0x000dd658`..`0x000dd691`).
+  Halo 2's `nhdt` does not place them: the retail `ui\hud\masterchief`
+  sensor is only bitmap widgets 5 and 7 (`motion_sensor`, anchor 2,
+  offset (-1, -84), no special type). Its blips are drawn by `0x1a2823`
+  around a point from the code (E `0x00139614`..`0x00139685`: anchor 2
+  through `0x1396c7`, plus a table at `0x47ff40` by screen mode, two
+  `i16` each: (41, -42) fullscreen, (31, -31) half and quarter), the
+  centre of the 83 x 83 background. Carrying Halo 1's placement over
+  means moving that point while the Halo 1 HUD is shown (the HUD swap's
+  runtime side), not writing a field; not done yet.
 
 ## Tests
 
@@ -176,14 +276,18 @@ aim overlays shown only unzoomed (bit 6), numbers and overlay elements.
   `_h1_hud` `nhdt`, each widget a Halo 1 bitmap through the right shader,
   shield and health meters present; every Halo 1 weapon with a `wphi`
   names its `_h1_weapon_hud` (Halo 1 bitmaps, Halo 2 weapon inputs); the
-  HUD pairs (the biped's and the weapons') in the manifest.
+  HUD pairs (the biped's and the weapons') in the manifest; the motion
+  sensor background's copy, decoded back from the built map, has a mean
+  alpha inside its circle within 1 of `0x28/255` of Halo 1's; the
+  grenade counts are two number texts on inputs 20 and 21 reading
+  `hud_input1` through `text_flash`.
 - `H1_ISO=... cargo test -p h1objects --test hud_disc -- --ignored
   weapon_huds_read --nocapture`: prints every `wphi` chain of `$H1_MAPS`
   as read.
 
 ## What a game run should show
 
-On a converted Halo 1 map (converter version 53 or later) in the Halo 1
+On a converted Halo 1 map (converter version 54 or later) in the Halo 1
 sandbox, or a Halo 1 campaign level: Halo 1's shield and health bars top
 right, Halo 1's motion sensor frame bottom left, Halo 1's ammunition
 counter top left and its crosshair centred (the sniper's scope lines only
