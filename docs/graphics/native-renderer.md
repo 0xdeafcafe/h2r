@@ -349,31 +349,38 @@ and these constants (hardware numbering, D3D register + 96):
 | `c[50..52]` | model transform rows | `0x0004d830` from the render record's matrix, skipped for clusters (`[record+8] == -1`) | identity for clusters; the instance's matrix for instanced geometry |
 | `c[170..172]` | position and texcoord decompression (scale, offset) | `0x0001cdd0`; `0x0004d7c0` passes no compression for the BSP, so the default upload (`0x0001cf29`, scale 1, offset 0) | `(1, 1, 0, 0)`: BSP vertices are uncompressed |
 
-`v5` and `v6` come from the lightmap group's buckets, not from the
-cluster's own section. In layer 3 the structure draw (`0x0004d285`..
-`0x0004d420`) splits the item's argument (`item+0xc`, the render key)
-into bits 9..17 and bits 18..28:
+Where `v5` and `v6` come from depends on the render record
+(`0x004ba138 + 0x20·i`). `0x0002cbf0` packs its `+0xc` as bits 0..3 an
+argument, 4..8 an index into the `0x24`-byte table at `0x004c152c` (`0x1f` none), 9..17 the cluster index, 18..28 a placement
+index; record `+0` bit 12 says which (the structure draw's choice at
+`0x0004d18b`). The cluster records (`0x00133390`) pass `-1` for the
+placement, so bits 18..28 are `0x7ff`. The structure draw's layer-3 part
+(`0x0004d285`..`0x0004d420`) then does:
 
-- bits 18..28 `== 0x7ff`: no bucket. The cluster render info at bits
-  9..17 (group `+0x2c`) picks the lightmap page and palette.
-- a cluster (`[record+4] == -1`, record `+8` not an instance): the bucket
-  reference is `cluster_bucket_refs[bits 18..28]` (group `+0x64`); the
-  first vertex is its offsets block at entry bits 9..17, times 4 bytes,
-  written into the bucket's first descriptor when bucket flag bit 0 is set
-  (`0x0004d331`). `0x0004dc60` then binds the bucket's streams.
-- an instance: `instance_bucket_refs[bits 18..28]` (group `+0x54`), its
-  first offset; the page and palette from `instance_render_info[bits
-  18..28]` (group `+0x4c`).
+- **A cluster** (bits 18..28 `0x7ff`, `[record+4] == -1`): no bucket. The
+  section's own streams carry `1f` and `30` (structure-bsp.md: `30` is
+  present exactly when the section's lighting flag bit 1 is set), and the
+  cluster render info (group `+0x2c`) at the cluster index picks the
+  lightmap page and palette.
+- **An instanced placement** (`[record+4] == -1`, bits 18..28 the
+  placement): `instance_bucket_refs[placement]` (group `+0x54`), its first
+  offset times 4 bytes written into the bucket's first descriptor when
+  bucket flag bit 0 is set (`0x0004d3a1`), then `0x0004dc60` binds the
+  bucket's streams; page and palette from `instance_render_info[placement]`
+  (group `+0x4c`). The definition's section is shared by every placement,
+  so its lightmap coordinates and lighting vectors are the placement's,
+  in the bucket.
+- **An object** (`[record+4] != -1`, bits 18..28 not `0x7ff`):
+  `cluster_bucket_refs[bits 18..28]` (group `+0x64`; despite the name, the
+  engine reaches it only for object records here), the offset at entry
+  bits 9..17. Not the world's concern.
 
-So the native world needs, per section part, the render key the game
-queues it with (bits 18..28 come from the record built at `0x00133390` and
-queued by `0x00041040`; not traced yet), and the bucket's `1f` and `30`
-streams from that first vertex (`tags::structure::load_bucket`,
-`tags::lighting::vertex_lighting`). Stage 1 takes `lightmap_texcoords`
-from the cluster section itself; where a cluster section has no `1f`
-stream that is empty, and those clusters draw with lightmap coordinate
-zero. Check this in the stage-1 A/B (flat-lit clusters) before reading
-anything else into it.
+Stage 1 took every section's own `lightmap_texcoords`. That is right for
+clusters and wrong for placements: a definition has no `1f` of its own,
+so every instanced placement drew at lightmap coordinate zero (one flat
+colour). Fixed: placements read their run of the bucket
+(`load::instance_lightmap_uvs`). The lighting vectors follow the same
+rule.
 
 The per-view constants (`c[0..17]`) are the same for every draw of a
 view, and nothing in layer 3 writes them per draw (the per-draw uploads

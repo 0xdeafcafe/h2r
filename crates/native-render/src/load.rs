@@ -7,7 +7,7 @@ use std::io::{Read, Seek};
 
 use map::{Map, TagId};
 use tags::geometry::{RawSource, Section, TagView};
-use tags::structure::{Lightmap, LightmapRenderInfo, StructureRender};
+use tags::structure::{Lightmap, LightmapGroup, LightmapRenderInfo, StructureRender, load_bucket};
 
 use crate::world::{LightmapKey, Owner, PartInput, Placement, SectionInput, World, WorldBuilder};
 
@@ -141,9 +141,23 @@ pub fn load_world<R: Read + Seek>(
             }
         })
         .collect();
+    // An instance's lightmap coordinates are its own, in a bucket of the
+    // lightmap group, not the definition's (which every placement shares).
+    let buckets = group.as_ref().map(|g| bucket_lightmap_uvs(g, raw)).unwrap_or_default();
     for (ii, inst) in bsp.instances.iter().enumerate() {
         let Some(Some(def)) = usize::try_from(inst.definition).ok().and_then(|i| defs.get(i)) else {
             continue;
+        };
+        let own = group
+            .as_ref()
+            .and_then(|g| instance_lightmap_uvs(g, &buckets, ii, def.positions.len()));
+        let with_own;
+        let def = match own {
+            Some(uvs) => {
+                with_own = SectionInput { lightmap_uvs: uvs.to_vec(), ..def.clone() };
+                &with_own
+            }
+            None => def,
         };
         if !inst.is_rigid() || inst.scale <= 0.0 {
             failed += 1;
@@ -164,6 +178,43 @@ pub fn load_world<R: Read + Seek>(
         palettes: group.map(|g| g.palettes).unwrap_or_default(),
         failed_sections: failed,
     })
+}
+
+/// Each of `group`'s buckets' lightmap coordinates (stream `1f`), loaded
+/// once; empty for a bucket the engine does not patch (flag bit 0), one
+/// with no such stream, or one that does not load.
+pub fn bucket_lightmap_uvs(group: &LightmapGroup, raw: &mut dyn RawSource) -> Vec<Vec<[f32; 2]>> {
+    group
+        .buckets
+        .iter()
+        .map(|b| {
+            if !b.is_patched() {
+                return Vec::new();
+            }
+            match load_bucket(b, raw) {
+                Ok(Some(s)) => s.vertices(None).map(|v| v.lightmap_texcoords).unwrap_or_default(),
+                _ => Vec::new(),
+            }
+        })
+        .collect()
+}
+
+/// Instance `index`'s lightmap coordinates, as the structure draw binds
+/// them (`0x0004d367`..`0x0004d3a4`): its bucket reference (group `+0x54`,
+/// one per instance), that bucket's coordinates from the reference's first
+/// offset, `vertices` of them. `None` when it has none.
+pub fn instance_lightmap_uvs<'a>(
+    group: &LightmapGroup, buckets: &'a [Vec<[f32; 2]>], index: usize, vertices: usize,
+) -> Option<&'a [[f32; 2]]> {
+    let r = group.instance_bucket_refs.get(index)?;
+    bucket_slice(buckets.get(usize::from(r.bucket))?, *r.section_offsets.first()?, vertices)
+}
+
+/// `vertices` coordinates of a bucket's from `offset` (`None` is the
+/// disc's `0xffff`), or `None` when they do not fit.
+pub fn bucket_slice(uvs: &[[f32; 2]], offset: Option<u16>, vertices: usize) -> Option<&[[f32; 2]]> {
+    let first = usize::from(offset?);
+    uvs.get(first..first.checked_add(vertices)?).filter(|s| !s.is_empty())
 }
 
 /// A P8 lightmap page's indices (one byte per texel) through a palette of
@@ -236,6 +287,15 @@ pub fn base_map<R: Read + Seek>(map: &mut Map<R>, shader: TagId) -> Option<TagId
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_instance_takes_its_run_of_the_bucket() {
+        let uvs: Vec<[f32; 2]> = (0..6).map(|i| [i as f32, 0.0]).collect();
+        assert_eq!(bucket_slice(&uvs, Some(2), 3), Some(&uvs[2..5]));
+        assert_eq!(bucket_slice(&uvs, Some(4), 3), None, "past the bucket");
+        assert_eq!(bucket_slice(&uvs, None, 3), None, "0xffff: no lightmap vertices");
+        assert_eq!(bucket_slice(&[], Some(0), 0), None, "nothing to take");
+    }
 
     #[test]
     fn base_map_names() {
