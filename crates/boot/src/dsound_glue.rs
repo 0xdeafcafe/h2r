@@ -33,7 +33,10 @@ impl dsound::EventRef for Pin {
 
 impl dsound::Events for KernelEvents {
     fn signal(&mut self, handle: u32) -> Result<(), String> {
-        self.0.signal_event(handle).map(drop).map_err(|e| e.to_string())
+        self.0
+            .signal_event(handle)
+            .map(drop)
+            .map_err(|e| e.to_string())
     }
     fn reference(&mut self, handle: u32) -> Option<Result<Box<dyn dsound::EventRef>, String>> {
         Some(
@@ -81,7 +84,10 @@ pub const QUANTUM_TICKS: u64 = (dsound::output::QUANTUM * 10_000_000).div_ceil(R
 /// One audio quantum per period: the rate of the completion DPC, whose
 /// deadlines fall on the output's grid (`Rate::ticks(n)` rounds up, so
 /// quantum `n` is due at deadline `n`).
-pub const COMPLETION_RATE: kernel::periodic::Rate = kernel::periodic::Rate { num: RATE, den: dsound::output::QUANTUM };
+pub const COMPLETION_RATE: kernel::periodic::Rate = kernel::periodic::Rate {
+    num: RATE,
+    den: dsound::output::QUANTUM,
+};
 /// How much logical time [`wake_idle`] may add with no thread running in
 /// between before the run is a deadlock after all: a looping buffer plays
 /// for ever, and must not hide a real one.
@@ -97,7 +103,11 @@ impl Audio {
     /// Something in the mixer can still finish and signal: a playing buffer
     /// or a stream with queued packets.
     pub fn pending(&self) -> bool {
-        self.mixer.lock().unwrap_or_else(|e| e.into_inner()).active_voices() > 0
+        self.mixer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .active_voices()
+            > 0
     }
 }
 
@@ -123,11 +133,17 @@ pub fn ran_guest_thread(m: &kernel::Machine, before: u64) -> bool {
 /// quantum, render it (completing its packets and signalling their events)
 /// and return true so the runner tries again. Between slices, with no
 /// guest memory guard held.
-pub fn wake_idle(a: &Audio, k: &kernel::Kernel, rt: &runtime::Runtime, idle: &mut u64) -> Result<bool, String> {
+pub fn wake_idle(
+    a: &Audio,
+    k: &kernel::Kernel,
+    rt: &runtime::Runtime,
+    idle: &mut u64,
+) -> Result<bool, String> {
     if *idle >= IDLE_LIMIT_TICKS || !a.pending() {
         return Ok(false);
     }
-    k.advance_time(rt, QUANTUM_TICKS).map_err(|e| format!("advance_time: {e:?}"))?;
+    k.advance_time(rt, QUANTUM_TICKS)
+        .map_err(|e| format!("advance_time: {e:?}"))?;
     *idle += QUANTUM_TICKS;
     advance(a, k)?;
     Ok(true)
@@ -164,8 +180,17 @@ impl audio::sink::AudioSink for BoxedSink {
     }
 }
 
-pub fn install(rt: &Arc<runtime::Runtime>, k: &Arc<kernel::Kernel>, xbe: &[u8]) -> anyhow::Result<Audio> {
-    install_with_sink(rt, k, xbe, Box::new(|| Box::new(audio::NullSink::new(RATE as u32, RATE as usize / 4))))
+pub fn install(
+    rt: &Arc<runtime::Runtime>,
+    k: &Arc<kernel::Kernel>,
+    xbe: &[u8],
+) -> anyhow::Result<Audio> {
+    install_with_sink(
+        rt,
+        k,
+        xbe,
+        Box::new(|| Box::new(audio::NullSink::new(RATE as u32, RATE as usize / 4))),
+    )
 }
 
 /// [`install`] playing into the caller's sink (a host's audio device).
@@ -198,7 +223,11 @@ pub fn install_with_sinks(
 /// [`install_with_sink`] without the native WMA codec (it needs the retail
 /// image's tables): the game's own codec would run. For tests of the audio
 /// path that have no image.
-pub fn install_without_wma(rt: &Arc<runtime::Runtime>, k: &Arc<kernel::Kernel>, open: SinkOpener) -> anyhow::Result<Audio> {
+pub fn install_without_wma(
+    rt: &Arc<runtime::Runtime>,
+    k: &Arc<kernel::Kernel>,
+    open: SinkOpener,
+) -> anyhow::Result<Audio> {
     install_parts(rt, k, None, open, None)
 }
 
@@ -210,15 +239,21 @@ fn install_parts(
     pad: Option<PadSpeaker>,
 ) -> anyhow::Result<Audio> {
     let mixer = Arc::new(Mutex::new(audio::Mixer::new(RATE as u32)));
-    let hle = Hle::new(DirectSound::new(Arc::clone(&mixer), Layout::default()), Box::new(KernelEvents(Arc::clone(k))));
+    let hle = Hle::new(
+        DirectSound::new(Arc::clone(&mixer), Layout::default()),
+        Box::new(KernelEvents(Arc::clone(k))),
+    );
     let mut r = None;
     rt.edit_dispatch(|d| r = Some(dsound::register(d, &hle)));
-    r.unwrap().map_err(|e| anyhow::anyhow!("dsound::register: {e:?}"))?;
+    r.unwrap()
+        .map_err(|e| anyhow::anyhow!("dsound::register: {e:?}"))?;
     if let Some(xbe) = xbe {
-        let wma = dsound::xwma::WmaHle::from_xbe(xbe).map_err(|e| anyhow::anyhow!("dsound::xwma: {e:?}"))?;
+        let wma = dsound::xwma::WmaHle::from_xbe(xbe)
+            .map_err(|e| anyhow::anyhow!("dsound::xwma: {e:?}"))?;
         let mut r = None;
         rt.edit_dispatch(|d| r = Some(dsound::xwma::register(d, &wma)));
-        r.unwrap().map_err(|e| anyhow::anyhow!("dsound::xwma::register: {e:?}"))?;
+        r.unwrap()
+            .map_err(|e| anyhow::anyhow!("dsound::xwma::register: {e:?}"))?;
     }
     let (config, side, setting) = match pad {
         Some(p) => (Some(p.config), Some(p.side), Some(p.setting)),
@@ -249,7 +284,10 @@ fn install_parts(
     // DPC's deadlines also stop the idle advance at every quantum, so a
     // callback runs within two quanta of its packet (docs/audio/dsound.md, "The
     // completion DPC").
-    anyhow::ensure!(k.clock().counter() == origin, "logical time moved while the audio output started");
+    anyhow::ensure!(
+        k.clock().counter() == origin,
+        "logical time moved while the audio output started"
+    );
     let completion_dpc = k
         .add_periodic(kernel::periodic::Source {
             name: "dsound completions",
@@ -259,8 +297,16 @@ fn install_parts(
             handler: Box::new(hle.completion_dpc()),
         })
         .map_err(|e| anyhow::anyhow!("dsound completion DPC: {e:?}"))?;
-    let _pad_index = config.zip(setting).and_then(|(c, s)| crate::pad_speaker::install(k, &c, s));
-    Ok(Audio { hle, output, completion_dpc, mixer, _pad_index })
+    let _pad_index = config
+        .zip(setting)
+        .and_then(|(c, s)| crate::pad_speaker::install(k, &c, s));
+    Ok(Audio {
+        hle,
+        output,
+        completion_dpc,
+        mixer,
+        _pad_index,
+    })
 }
 
 /// The jitter buffer a device plays through: `dsound::Playout::default()`,
@@ -277,7 +323,10 @@ fn playout_from(latency_ms: Option<&str>) -> dsound::Playout {
             p.target_ms = ms;
             p.max_target_ms = p.max_target_ms.max(ms + 2 * p.step_ms);
         }
-        Some(_) => eprintln!("audio: H2_AUDIO_LATENCY_MS wants 10..=500; using {} ms", p.target_ms),
+        Some(_) => eprintln!(
+            "audio: H2_AUDIO_LATENCY_MS wants 10..=500; using {} ms",
+            p.target_ms
+        ),
     }
     p
 }
@@ -295,11 +344,13 @@ impl AudioReport {
 
     /// A reporter if `H2_AUDIO_STATS` is set (and not `0`).
     pub fn from_env() -> Option<Self> {
-        std::env::var("H2_AUDIO_STATS").is_ok_and(|v| v != "0" && !v.is_empty()).then(|| Self {
-            last_at: std::time::Instant::now(),
-            last: None,
-            max_callbacks: 0,
-        })
+        std::env::var("H2_AUDIO_STATS")
+            .is_ok_and(|v| v != "0" && !v.is_empty())
+            .then(|| Self {
+                last_at: std::time::Instant::now(),
+                last: None,
+                max_callbacks: 0,
+            })
     }
 
     /// Between slices: notes what only shows at a moment, and prints the
@@ -313,8 +364,15 @@ impl AudioReport {
         }
         self.last_at = now;
         let out = a.output.take_window();
-        let health = a.mixer.lock().unwrap_or_else(|e| e.into_inner()).stream_health();
-        eprintln!("{}", audio_line(secs, &out, health, self.last.as_ref(), self.max_callbacks));
+        let health = a
+            .mixer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .stream_health();
+        eprintln!(
+            "{}",
+            audio_line(secs, &out, health, self.last.as_ref(), self.max_callbacks)
+        );
         self.last = Some((out, health));
         self.max_callbacks = 0;
     }
@@ -366,7 +424,10 @@ fn audio_line(
 /// Bring audio time up to the kernel's logical time. Between slices, with
 /// no guest memory guard held.
 pub fn advance(a: &Audio, k: &kernel::Kernel) -> Result<(), String> {
-    a.output.advance_to(k.clock().counter()).map(drop).map_err(|e| format!("{e:?}"))
+    a.output
+        .advance_to(k.clock().counter())
+        .map(drop)
+        .map_err(|e| format!("{e:?}"))
 }
 
 pub fn describe(a: &Audio) -> String {
@@ -412,7 +473,11 @@ mod tests {
             starves: 1,
             trim_ppm: -1200,
         });
-        let health = audio::StreamHealth { starves: 2, starve_frames: 900, unrouted_frames: 0 };
+        let health = audio::StreamHealth {
+            starves: 2,
+            starve_frames: 900,
+            unrouted_frames: 0,
+        };
         let line = super::audio_line(5.0, &now, health, Some(&(then, Default::default())), 3);
         assert_eq!(
             line,
@@ -428,7 +493,11 @@ mod tests {
         let q = dsound::output::QUANTUM;
         for n in [1u64, 2, 3, 187, 188, 1_000_003] {
             let ticks = (n * 10_000_000 * r.den).div_ceil(r.num);
-            assert_eq!(ticks * super::RATE / 10_000_000 / q, n, "deadline {n} makes exactly quantum {n} due");
+            assert_eq!(
+                ticks * super::RATE / 10_000_000 / q,
+                n,
+                "deadline {n} makes exactly quantum {n} due"
+            );
         }
     }
 
@@ -437,7 +506,10 @@ mod tests {
         // dsound's due_frames: floor(ticks * rate / 1e7).
         let due = |t: u64| t * super::RATE / 10_000_000;
         for now in [0u64, 1, 53_333, 1_234_567, 99_999_999] {
-            assert!(due(now + super::QUANTUM_TICKS) >= due(now) + dsound::output::QUANTUM, "{now}");
+            assert!(
+                due(now + super::QUANTUM_TICKS) >= due(now) + dsound::output::QUANTUM,
+                "{now}"
+            );
         }
     }
 }

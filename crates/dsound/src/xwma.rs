@@ -134,10 +134,7 @@ impl WmaHle {
     /// pulling input keeps its state in a guest call continuation, which
     /// `kernel::Machine::quiescent` refuses; between calls an instance is
     /// plain data.
-    pub fn save_snapshot(
-        &self,
-        out: &mut snapshot::SnapshotWriter,
-    ) -> Result<(), snapshot::Error> {
+    pub fn save_snapshot(&self, out: &mut snapshot::SnapshotWriter) -> Result<(), snapshot::Error> {
         let WmaHle {
             // Keep: the loading process's tables.
             tables: _,
@@ -173,10 +170,7 @@ impl WmaHle {
 
     /// Replaces every instance and the handle counter with the `wma`
     /// section's. Decoded first: on an error nothing changes.
-    pub fn load_snapshot(
-        &self,
-        snapshot: &snapshot::Snapshot<'_>,
-    ) -> Result<(), snapshot::Error> {
+    pub fn load_snapshot(&self, snapshot: &snapshot::Snapshot<'_>) -> Result<(), snapshot::Error> {
         let bytes = snapshot.require(SECTION, SECTION_VERSION..=SECTION_VERSION)?;
         let mut r = snapshot::codec::Reader::new(&bytes, "wma");
         let next = r.u32()?;

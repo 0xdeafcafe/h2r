@@ -82,12 +82,22 @@ struct FakeEvents {
 
 impl Events for FakeEvents {
     fn signal(&mut self, guest_handle: u32) -> Result<(), String> {
-        self.kernel.lock().unwrap().signals.push(OBJECTS | guest_handle);
+        self.kernel
+            .lock()
+            .unwrap()
+            .signals
+            .push(OBJECTS | guest_handle);
         Ok(())
     }
     fn reference(&mut self, guest_handle: u32) -> Option<Result<Box<dyn EventRef>, String>> {
         let address = OBJECTS | guest_handle;
-        *self.kernel.lock().unwrap().counts.entry(address).or_default() += 1;
+        *self
+            .kernel
+            .lock()
+            .unwrap()
+            .counts
+            .entry(address)
+            .or_default() += 1;
         Some(Ok(Box::new(FakePin {
             kernel: Arc::clone(&self.kernel),
             address,

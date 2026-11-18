@@ -29,8 +29,8 @@ use snapshot::codec::{Reader, Writer};
 use snapshot::{Codec as SectionCodec, Snapshot, SnapshotWriter, Tag};
 
 use crate::dsound::{
-    BufferId, HISTORY_FRAMES, Listener, MixIn, Mode3d, Packet, PacketId, PacketStatus,
-    SoundBuffer, Source3d, Stream, StreamId, Vec3, VoiceOutput, VoiceParams,
+    BufferId, HISTORY_FRAMES, Listener, MixIn, Mode3d, Packet, PacketId, PacketStatus, SoundBuffer,
+    Source3d, Stream, StreamId, Vec3, VoiceOutput, VoiceParams,
 };
 use crate::format::{Codec, WaveFormat};
 use crate::fx::{
@@ -555,14 +555,16 @@ fn put_buffer(w: &mut Writer, b: &SoundBuffer) {
 fn get_buffer(r: &mut Reader<'_>) -> Result<SoundBuffer, Error> {
     let format = get_format(r)?;
     let data = r.blob()?.to_vec();
-    let mut b = SoundBuffer::from_data(format, data)
-        .map_err(|e| corrupt(format!("buffer data: {e}")))?;
+    let mut b =
+        SoundBuffer::from_data(format, data).map_err(|e| corrupt(format!("buffer data: {e}")))?;
     b.params = get_params(r)?;
     b.playing = r.bool()?;
     b.looping = r.bool()?;
     b.loop_region = get_opt(r, |r| Ok((get_usize(r)?, get_usize(r)?)))?;
     let frames = b.frames;
-    if b.loop_region.is_some_and(|(start, end)| start >= end || end > frames) {
+    if b.loop_region
+        .is_some_and(|(start, end)| start >= end || end > frames)
+    {
         return Err(corrupt("loop region outside its buffer"));
     }
     b.pos = get_f64(r)?;
@@ -948,7 +950,10 @@ impl Mixer {
         };
         let ids = saved.buffers.keys().map(|i| i.0);
         let ids = ids.chain(saved.streams.keys().map(|i| i.0));
-        if ids.chain(saved.mix_ins.keys().map(|i| i.0)).any(|i| i >= saved.next_id) {
+        if ids
+            .chain(saved.mix_ins.keys().map(|i| i.0))
+            .any(|i| i >= saved.next_id)
+        {
             return Err(corrupt("a voice id at or past the next id"));
         }
         Ok(saved)

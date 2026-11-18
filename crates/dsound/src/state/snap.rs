@@ -340,7 +340,12 @@ fn put_rings(w: &mut Writer, v: &VoiceRings) {
             w.u32(*v);
         }
         put_opt(w, conv, |w, (rate, c)| {
-            let Converter { from, to, pos, last } = c;
+            let Converter {
+                from,
+                to,
+                pos,
+                last,
+            } = c;
             w.u32(*rate).u64(*from).u64(*to).u64(*pos);
             put_f32(w, *last);
         });

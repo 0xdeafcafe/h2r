@@ -187,7 +187,8 @@ fn bits(v: &[f32]) -> Vec<u32> {
 fn carry_on(m: &mut Mixer, s: StreamId) -> (Vec<u32>, Vec<u32>, usize) {
     let mut out = render(m, 4);
     let st = m.stream_mut(s).unwrap();
-    st.submit(&pcm(500, 1, |i| (i as f32 * 0.02).sin())).unwrap();
+    st.submit(&pcm(500, 1, |i| (i as f32 * 0.02).sin()))
+        .unwrap();
     let completed = st.take_completed().len();
     out.extend(render(m, 12));
     (bits(&out), bits(&m.take_tap(TAPPED)), completed)

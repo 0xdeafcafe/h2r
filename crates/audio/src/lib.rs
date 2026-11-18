@@ -36,8 +36,8 @@ pub mod output;
 
 pub use dsound::{BufferId, MixIn, SoundBuffer, Stream, StreamId, VoiceOutput};
 pub use format::{Codec, WaveFormat};
-pub use reverb::{I3dl2Listener, Reverb};
 pub use mixer::{MixInId, Mixer, StreamHealth};
+pub use reverb::{I3dl2Listener, Reverb};
 pub use sink::{AudioSink, NullSink, Pump, SinkStats};
 
 /// Errors from the audio layer.

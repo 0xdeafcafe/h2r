@@ -206,7 +206,11 @@ impl SoundBuffer {
     /// must be a whole number of blocks (and for ADPCM, of 36-byte blocks
     /// per channel).
     pub fn new(format: WaveFormat, size_bytes: usize) -> Result<Self, AudioError> {
-        let fill = if format.codec() == Codec::Pcm8 { 0x80 } else { 0 };
+        let fill = if format.codec() == Codec::Pcm8 {
+            0x80
+        } else {
+            0
+        };
         Self::from_data(format, vec![fill; size_bytes])
     }
 
@@ -254,14 +258,26 @@ impl SoundBuffer {
             return Err(AudioError::OutOfRange { offset, len, size });
         }
         if !offset.is_multiple_of(align) || !len.is_multiple_of(align) {
-            return Err(AudioError::BadLength { len: offset | len, unit: align, what: "lock alignment" });
+            return Err(AudioError::BadLength {
+                len: offset | len,
+                unit: align,
+                what: "lock alignment",
+            });
         }
-        Ok(Lock { buf: self, offset, len })
+        Ok(Lock {
+            buf: self,
+            offset,
+            len,
+        })
     }
 
     /// `Lock` with `DSBLOCK_ENTIREBUFFER`.
     pub fn lock_all(&mut self) -> Lock<'_> {
-        Lock { offset: 0, len: self.data.len(), buf: self }
+        Lock {
+            offset: 0,
+            len: self.data.len(),
+            buf: self,
+        }
     }
 
     /// Re-decodes after the guest wrote bytes. Cannot fail: alignment was
@@ -275,7 +291,11 @@ impl SoundBuffer {
     /// `SetLoopRegion`, in frames. The region must be non-empty and lie inside
     /// the buffer; otherwise the previous region is kept and an error returned.
     pub fn set_loop_region(&mut self, start: usize, len: usize) -> Result<(), AudioError> {
-        let bad = AudioError::OutOfRange { offset: start, len, size: self.frames };
+        let bad = AudioError::OutOfRange {
+            offset: start,
+            len,
+            size: self.frames,
+        };
         let end = start.checked_add(len).ok_or(bad.clone())?;
         if len == 0 || end > self.frames {
             return Err(bad);
@@ -336,11 +356,19 @@ impl SoundBuffer {
         }
         let base_step = self.params.frequency as f64 / host_rate as f64;
         let ch = self.format.channels() as usize;
-        let (loop_start, loop_end) = if self.looping { self.region() } else { (0, self.frames) };
+        let (loop_start, loop_end) = if self.looping {
+            self.region()
+        } else {
+            (0, self.frames)
+        };
         let end = loop_end.max(1);
         let fetch = |i: usize, looping: bool| -> [f32; 2] {
             let i = if i >= end {
-                if looping { loop_start + (i - end) % (end - loop_start).max(1) } else { end - 1 }
+                if looping {
+                    loop_start + (i - end) % (end - loop_start).max(1)
+                } else {
+                    end - 1
+                }
             } else {
                 i
             };
@@ -363,7 +391,8 @@ impl SoundBuffer {
             self.pos += step;
             if self.pos >= end as f64 {
                 if self.looping {
-                    self.pos = loop_start as f64 + (self.pos - end as f64) % (end - loop_start).max(1) as f64;
+                    self.pos = loop_start as f64
+                        + (self.pos - end as f64) % (end - loop_start).max(1) as f64;
                 } else {
                     self.playing = false;
                     self.pos = 0.0;
@@ -394,7 +423,12 @@ pub struct MixIn {
 
 impl MixIn {
     pub fn new(input_bin: u32) -> Self {
-        Self { input_bin, params: VoiceParams::with_frequency(0), playing: false, fx_state: FxState::default() }
+        Self {
+            input_bin,
+            params: VoiceParams::with_frequency(0),
+            playing: false,
+            fx_state: FxState::default(),
+        }
     }
 
     voice_setters!();
@@ -441,7 +475,11 @@ impl Lock<'_> {
     /// Copies `bytes` across the regions. Fails if it is longer than the lock.
     pub fn write(&mut self, bytes: &[u8]) -> Result<(), AudioError> {
         if bytes.len() > self.len {
-            return Err(AudioError::OutOfRange { offset: 0, len: bytes.len(), size: self.len });
+            return Err(AudioError::OutOfRange {
+                offset: 0,
+                len: bytes.len(),
+                size: self.len,
+            });
         }
         let (a, b) = self.regions();
         let n = bytes.len().min(a.len());
@@ -581,7 +619,12 @@ impl Stream {
             let back = i.unsigned_abs() as usize;
             return match self.history.len().checked_sub(back) {
                 Some(k) => self.history[k],
-                None => self.history.front().copied().or_else(|| self.frame(0, 0)).unwrap_or([0.0; 2]),
+                None => self
+                    .history
+                    .front()
+                    .copied()
+                    .or_else(|| self.frame(0, 0))
+                    .unwrap_or([0.0; 2]),
             };
         }
         let mut i = i as usize;
@@ -606,7 +649,11 @@ impl Stream {
         let ch = self.format.channels() as usize;
         let n = p.frames.len() / ch;
         (i < n).then(|| {
-            if ch == 1 { [p.frames[i]; 2] } else { [p.frames[i * 2], p.frames[i * 2 + 1]] }
+            if ch == 1 {
+                [p.frames[i]; 2]
+            } else {
+                [p.frames[i * 2], p.frames[i * 2 + 1]]
+            }
         })
     }
 
@@ -640,15 +687,23 @@ impl Stream {
                 let a = self.frame(0, i).unwrap_or([0.0; 2]);
                 // Interpolate toward the next packet's first frame at a
                 // boundary so packet joins are seamless.
-                let b = self.frame(0, i + 1).or_else(|| self.frame(1, 0)).unwrap_or(a);
+                let b = self
+                    .frame(0, i + 1)
+                    .or_else(|| self.frame(1, 0))
+                    .unwrap_or(a);
                 (a, b, t)
             } else {
                 let p = self.pos + off;
                 let i = p.floor() as i64;
-                (self.frame_rel(i), self.frame_rel(i + 1), (p - i as f64) as f32)
+                (
+                    self.frame_rel(i),
+                    self.frame_rel(i + 1),
+                    (p - i as f64) as f32,
+                )
             };
             if m != 1.0 {
-                self.fx_state.phase_off = (off + (m - 1.0) * base_step).clamp(-MAX_PHASE_OFFSET, MAX_PHASE_OFFSET);
+                self.fx_state.phase_off =
+                    (off + (m - 1.0) * base_step).clamp(-MAX_PHASE_OFFSET, MAX_PHASE_OFFSET);
             }
             frame[0] += (a[0] + (b[0] - a[0]) * t) * gain.0;
             frame[1] += (a[1] + (b[1] - a[1]) * t) * gain.1;
@@ -803,7 +858,13 @@ pub struct Spatial {
 
 impl Spatial {
     /// No 3D processing.
-    pub const DRY: Self = Self { gain: 1.0, left: 1.0, right: 1.0, front: 1.0, pitch: 1.0 };
+    pub const DRY: Self = Self {
+        gain: 1.0,
+        left: 1.0,
+        right: 1.0,
+        front: 1.0,
+        pitch: 1.0,
+    };
 }
 
 /// The speed of sound Doppler uses, metres per second.
@@ -858,10 +919,18 @@ impl Listener {
     /// need be neither unit length nor exactly orthogonal; a degenerate pair
     /// falls back to the default orientation.
     fn axes(&self) -> (Vec3, Vec3, Vec3) {
-        let default = (Vec3::new(1.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0), Vec3::new(0.0, 0.0, 1.0));
-        let Some(front) = self.front.unit() else { return default };
+        let default = (
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+        );
+        let Some(front) = self.front.unit() else {
+            return default;
+        };
         // Left-handed: right = top x front (front +z, top +y gives +x).
-        let Some(right) = self.top.cross(front).unit() else { return default };
+        let Some(right) = self.top.cross(front).unit() else {
+            return default;
+        };
         (right, front.cross(right), front)
     }
 
@@ -905,7 +974,10 @@ impl Listener {
         let dist = rel.len();
         let (right_axis, _, front_axis) = self.axes();
         let (p, front) = match rel.unit() {
-            Some(dir) => (dir.dot(right_axis).clamp(-1.0, 1.0), (1.0 + dir.dot(front_axis)) * 0.5),
+            Some(dir) => (
+                dir.dot(right_axis).clamp(-1.0, 1.0),
+                (1.0 + dir.dot(front_axis)) * 0.5,
+            ),
             None => (0.0, 1.0),
         };
         // In f64 so a centred source comes out at exactly 1.
@@ -914,18 +986,38 @@ impl Listener {
         let right = (std::f64::consts::SQRT_2 * t.sin()).min(1.0) as f32;
 
         let min = src.min_distance.max(1e-6);
-        let d = if dist.is_finite() { dist.min(src.max_distance.max(min)) } else { min };
+        let d = if dist.is_finite() {
+            dist.min(src.max_distance.max(min))
+        } else {
+            min
+        };
         let rolloff = (self.rolloff_factor * src.rolloff_factor).max(0.0);
-        let distance_gain = if d <= min { 1.0 } else { min / (min + rolloff * (d - min)) };
+        let distance_gain = if d <= min {
+            1.0
+        } else {
+            min / (min + rolloff * (d - min))
+        };
 
         let pitch = self.doppler(src, rel);
-        let out = Spatial { gain: distance_gain * cone_gain(src, rel), left, right, front: front.clamp(0.0, 1.0), pitch };
+        let out = Spatial {
+            gain: distance_gain * cone_gain(src, rel),
+            left,
+            right,
+            front: front.clamp(0.0, 1.0),
+            pitch,
+        };
         // A NaN position, distance or cone from the guest must not reach the
         // mix: such a source is heard unprocessed.
-        if [out.gain, out.left, out.right, out.front].iter().all(|v| v.is_finite()) {
+        if [out.gain, out.left, out.right, out.front]
+            .iter()
+            .all(|v| v.is_finite())
+        {
             out
         } else {
-            Spatial { pitch, ..Spatial::DRY }
+            Spatial {
+                pitch,
+                ..Spatial::DRY
+            }
         }
     }
 }
@@ -941,15 +1033,28 @@ impl Listener {
         if k == 0.0 || src.mode != Mode3d::Normal {
             return 1.0;
         }
-        let Some(to_listener) = rel.scale(-1.0).unit() else { return 1.0 };
+        let Some(to_listener) = rel.scale(-1.0).unit() else {
+            return 1.0;
+        };
         let limit = 0.9 * SPEED_OF_SOUND / k;
         let metres = clean(self.distance_factor, 1.0e6);
         let along = |v: Vec3| {
             let d = v.dot(to_listener) * metres;
-            if d.is_nan() { 0.0 } else { d.clamp(-limit, limit) }
+            if d.is_nan() {
+                0.0
+            } else {
+                d.clamp(-limit, limit)
+            }
         };
-        let ratio = f64::from((SPEED_OF_SOUND - k * along(self.velocity)) / (SPEED_OF_SOUND - k * along(src.velocity)));
-        if ratio.is_finite() && ratio > 0.0 { ratio.clamp(0.125, 8.0) } else { 1.0 }
+        let ratio = f64::from(
+            (SPEED_OF_SOUND - k * along(self.velocity))
+                / (SPEED_OF_SOUND - k * along(src.velocity)),
+        );
+        if ratio.is_finite() && ratio > 0.0 {
+            ratio.clamp(0.125, 8.0)
+        } else {
+            1.0
+        }
     }
 }
 
@@ -961,7 +1066,8 @@ fn cone_gain(src: &Source3d, rel: Vec3) -> f32 {
     if inside >= CONE_ANGLE_NONE {
         return 1.0;
     }
-    let (Some(axis), Some(to_listener)) = (src.cone_orientation.unit(), rel.scale(-1.0).unit()) else {
+    let (Some(axis), Some(to_listener)) = (src.cone_orientation.unit(), rel.scale(-1.0).unit())
+    else {
         return 1.0;
     };
     let angle = axis.dot(to_listener).clamp(-1.0, 1.0).acos().to_degrees();
@@ -1050,7 +1156,8 @@ mod tests {
 
     #[test]
     fn plays_once_then_stops_and_rewinds() {
-        let mut b = SoundBuffer::from_data(WaveFormat::pcm16(1, 8000).unwrap(), mono16(&[8192; 4])).unwrap();
+        let mut b = SoundBuffer::from_data(WaveFormat::pcm16(1, 8000).unwrap(), mono16(&[8192; 4]))
+            .unwrap();
         b.play(false);
         assert!(b.is_playing());
         let out = render(&mut b, 8, 8000);
@@ -1062,13 +1169,20 @@ mod tests {
 
     #[test]
     fn looping_wraps_within_loop_region() {
-        let mut b =
-            SoundBuffer::from_data(WaveFormat::pcm16(1, 8000).unwrap(), mono16(&[0, 1000, 2000, 3000])).unwrap();
+        let mut b = SoundBuffer::from_data(
+            WaveFormat::pcm16(1, 8000).unwrap(),
+            mono16(&[0, 1000, 2000, 3000]),
+        )
+        .unwrap();
         b.set_loop_region(1, 2).unwrap();
         b.set_current_position(2);
         b.play(true);
         let out = render(&mut b, 6, 8000);
-        let l: Vec<f32> = out.iter().step_by(2).map(|v| (v * 32768.0).round()).collect();
+        let l: Vec<f32> = out
+            .iter()
+            .step_by(2)
+            .map(|v| (v * 32768.0).round())
+            .collect();
         // Starts at frame 1, plays 1,2 then loops 1,2,1,2.
         assert_eq!(l, vec![1000.0, 2000.0, 1000.0, 2000.0, 1000.0, 2000.0]);
         assert!(b.is_playing());
@@ -1076,11 +1190,19 @@ mod tests {
 
     #[test]
     fn frequency_scales_playback_speed() {
-        let mut b = SoundBuffer::from_data(WaveFormat::pcm16(1, 8000).unwrap(), mono16(&[0, 100, 200, 300, 400, 500, 600, 700])).unwrap();
+        let mut b = SoundBuffer::from_data(
+            WaveFormat::pcm16(1, 8000).unwrap(),
+            mono16(&[0, 100, 200, 300, 400, 500, 600, 700]),
+        )
+        .unwrap();
         b.set_frequency(16000); // 2x
         b.play(false);
         let out = render(&mut b, 3, 8000);
-        let l: Vec<f32> = out.iter().step_by(2).map(|v| (v * 32768.0).round()).collect();
+        let l: Vec<f32> = out
+            .iter()
+            .step_by(2)
+            .map(|v| (v * 32768.0).round())
+            .collect();
         assert_eq!(l, vec![0.0, 200.0, 400.0]);
     }
 
@@ -1111,7 +1233,9 @@ mod tests {
 
     #[test]
     fn empty_or_out_of_range_loop_regions_are_rejected() {
-        let mut b = SoundBuffer::from_data(WaveFormat::pcm16(1, 8000).unwrap(), mono16(&[0, 1, 2, 3])).unwrap();
+        let mut b =
+            SoundBuffer::from_data(WaveFormat::pcm16(1, 8000).unwrap(), mono16(&[0, 1, 2, 3]))
+                .unwrap();
         assert!(b.set_loop_region(4, 1).is_err());
         assert!(b.set_loop_region(1, usize::MAX).is_err());
         assert!(b.set_loop_region(2, 0).is_err());
@@ -1131,7 +1255,11 @@ mod tests {
         }
         let mut out = vec![0.0; 4];
         s.render(&mut out, 24000, (1.0, 1.0));
-        let l: Vec<f32> = out.iter().step_by(2).map(|v| (v * 32768.0).round()).collect();
+        let l: Vec<f32> = out
+            .iter()
+            .step_by(2)
+            .map(|v| (v * 32768.0).round())
+            .collect();
         assert_eq!(l, vec![1000.0, 3000.0]);
         assert_eq!(s.pending(), 0);
         assert_eq!(s.take_completed().len(), 4);
@@ -1155,23 +1283,42 @@ mod tests {
     #[test]
     fn listener_attenuates_and_pans() {
         let l = Listener::default();
-        let near = Source3d { position: Vec3::new(0.5, 0.0, 0.0), ..Default::default() };
+        let near = Source3d {
+            position: Vec3::new(0.5, 0.0, 0.0),
+            ..Default::default()
+        };
         assert_eq!(l.spatial(&near).gain, 1.0);
-        let far = Source3d { position: Vec3::new(5.0, 0.0, 0.0), ..Default::default() };
+        let far = Source3d {
+            position: Vec3::new(5.0, 0.0, 0.0),
+            ..Default::default()
+        };
         let s = l.spatial(&far);
         assert!((s.gain - 0.2).abs() < 1e-5); // 1 / (1 + 4)
         // Hard right: right ear full, left ear sqrt(2) cos(0.45 pi) ~ -16 dB.
         assert_eq!(s.right, 1.0);
         assert!((s.left - 0.2212).abs() < 1e-3, "{s:?}");
         assert!((s.front - 0.5).abs() < 1e-6);
-        let left = l.spatial(&Source3d { position: Vec3::new(-2.0, 0.0, 0.0), ..Default::default() });
+        let left = l.spatial(&Source3d {
+            position: Vec3::new(-2.0, 0.0, 0.0),
+            ..Default::default()
+        });
         assert_eq!(left.left, 1.0);
         assert!((left.right - 0.2212).abs() < 1e-3);
-        let ahead = l.spatial(&Source3d { position: Vec3::new(0.0, 0.0, 3.0), ..Default::default() });
+        let ahead = l.spatial(&Source3d {
+            position: Vec3::new(0.0, 0.0, 3.0),
+            ..Default::default()
+        });
         assert_eq!((ahead.left, ahead.right, ahead.front), (1.0, 1.0, 1.0));
-        let behind = l.spatial(&Source3d { position: Vec3::new(0.0, 0.0, -3.0), ..Default::default() });
+        let behind = l.spatial(&Source3d {
+            position: Vec3::new(0.0, 0.0, -3.0),
+            ..Default::default()
+        });
         assert_eq!((behind.left, behind.right, behind.front), (1.0, 1.0, 0.0));
-        let off = Source3d { mode: Mode3d::Disabled, position: Vec3::new(9.0, 0.0, 0.0), ..Default::default() };
+        let off = Source3d {
+            mode: Mode3d::Disabled,
+            position: Vec3::new(9.0, 0.0, 0.0),
+            ..Default::default()
+        };
         assert_eq!(l.spatial(&off), Spatial::DRY);
         let here = l.spatial(&Source3d::default());
         assert_eq!((here.gain, here.left, here.right), (1.0, 1.0, 1.0));
@@ -1186,28 +1333,42 @@ mod tests {
             top: Vec3::new(0.0, 3.0, 0.0),
             ..Default::default()
         };
-        let src = |x, z| Source3d { position: Vec3::new(x, 0.0, z), ..Default::default() };
+        let src = |x, z| Source3d {
+            position: Vec3::new(x, 0.0, z),
+            ..Default::default()
+        };
         let r = l.spatial(&src(10.0, -4.0));
         assert_eq!(r.right, 1.0);
         assert!(r.left < 0.3);
         let ahead = l.spatial(&src(14.0, 0.0));
         assert_eq!((ahead.left, ahead.right, ahead.front), (1.0, 1.0, 1.0));
         // A degenerate orientation falls back to the default axes.
-        let flat = Listener { front: Vec3::default(), ..Default::default() };
+        let flat = Listener {
+            front: Vec3::default(),
+            ..Default::default()
+        };
         assert_eq!(flat.spatial(&src(3.0, 0.0)).right, 1.0);
     }
 
     #[test]
     fn distance_model_respects_rolloff_and_max_distance() {
         let l = Listener::default();
-        let mut s = Source3d { position: Vec3::new(0.0, 0.0, 9.0), min_distance: 1.0, max_distance: 5.0, ..Default::default() };
+        let mut s = Source3d {
+            position: Vec3::new(0.0, 0.0, 9.0),
+            min_distance: 1.0,
+            max_distance: 5.0,
+            ..Default::default()
+        };
         // Clamped at max: 1 / (1 + 4).
         assert!((l.spatial(&s).gain - 0.2).abs() < 1e-6);
         s.rolloff_factor = 0.0; // Halo 2's setting: no attenuation.
         assert_eq!(l.spatial(&s).gain, 1.0);
         s.rolloff_factor = 2.0;
         assert!((l.spatial(&s).gain - 1.0 / 9.0).abs() < 1e-6);
-        let quiet = Listener { rolloff_factor: 0.5, ..Default::default() };
+        let quiet = Listener {
+            rolloff_factor: 0.5,
+            ..Default::default()
+        };
         assert!((quiet.spatial(&s).gain - 0.2).abs() < 1e-6);
     }
 
@@ -1238,7 +1399,11 @@ mod tests {
         assert_eq!(l.spatial(&s).gain, 1.0);
         let tan_67_5 = 2.414_213_6;
         s.cone_orientation = Vec3::new(tan_67_5, 0.0, -1.0); // 67.5: halfway
-        assert!((l.spatial(&s).gain - mb_to_gain(-1000)).abs() < 1e-4, "{:?}", l.spatial(&s));
+        assert!(
+            (l.spatial(&s).gain - mb_to_gain(-1000)).abs() < 1e-4,
+            "{:?}",
+            l.spatial(&s)
+        );
         // The default 360 degree cone, or no orientation, means no cone.
         s.cone_inside = CONE_ANGLE_NONE;
         s.cone_outside = CONE_ANGLE_NONE;
@@ -1263,11 +1428,19 @@ mod tests {
             cone_outside_volume_mb: -6000,
             ..Default::default()
         };
-        assert!((l.spatial(&s).gain - mb_to_gain(-6000)).abs() < 1e-6, "{:?}", l.spatial(&s));
+        assert!(
+            (l.spatial(&s).gain - mb_to_gain(-6000)).abs() < 1e-6,
+            "{:?}",
+            l.spatial(&s)
+        );
         // Sideways (90 degrees): 45/135 of the way from 45 to 180.
         s.cone_orientation = Vec3::new(1.0, 0.0, 0.0);
         let want = mb_to_gain((-6000.0f32 * 45.0 / 135.0).round() as i32);
-        assert!((l.spatial(&s).gain - want).abs() < 1e-4, "{:?}", l.spatial(&s));
+        assert!(
+            (l.spatial(&s).gain - want).abs() < 1e-4,
+            "{:?}",
+            l.spatial(&s)
+        );
         // Facing the listener: inside.
         s.cone_orientation = Vec3::new(0.0, 0.0, -1.0);
         assert_eq!(l.spatial(&s).gain, 1.0);
