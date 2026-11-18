@@ -423,3 +423,199 @@ fn level_objects_select_collision_with_bsp_physics() {
     );
     assert!(slots > 0);
 }
+
+/// Halo 1's collision as convex pieces (`h1objects::physics`), on every
+/// collision model of every campaign level (`$H1_LEVELS` to narrow):
+/// - a missing child is solid: just outside a surface (along its outward
+///   normal) Halo 1's tree finds open space, just inside it solid;
+/// - the solid cells are that solid space: at points through each BSP's
+///   box, Halo 1's tree says solid exactly when a cell holds the point;
+/// - every converted vehicle and device with solid cells gets a physics
+///   model built from them, which reads back through the `phmo`
+///   definition with every corner inside its piece's planes.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn halo1_solid_space_becomes_physics_pieces() {
+    use h1objects::physics::{Hull, solid_cells};
+    use tags::defs::{self, Defs, Val};
+    let levels =
+        std::env::var("H1_LEVELS").unwrap_or_else(|_| h1map::disc::CAMPAIGN_LEVELS.join(","));
+    let (_, mut base_map) = h2_maps(&["05a_deltaapproach"]).pop().unwrap();
+    let base = Base::read(&mut base_map).unwrap();
+    let phmo_def = Defs::builtin().group(FourCC(*b"phmo")).unwrap();
+    let inside = |h: &Hull, p: [f32; 3]| {
+        h.planes
+            .iter()
+            .all(|pl| pl[0] * p[0] + pl[1] * p[1] + pl[2] * p[2] + pl[3] <= 0.0)
+    };
+    let (mut out_open, mut out_solid, mut in_open, mut in_solid) = (0, 0, 0, 0);
+    let (mut agree, mut disagree, mut cells_total) = (0usize, 0usize, 0usize);
+    let mut built = BTreeMap::<String, usize>::new();
+    for level in levels.split(',') {
+        let h1 = h1_level(level);
+        let mut rng = Lcg(0x5eed);
+        for t in h1.tags().iter().filter(|t| t.group == Group::new(b"coll")) {
+            let c = Collision::read(&h1, t).unwrap();
+            for n in &c.nodes {
+                let Some(src) = n.bsps.first() else { continue };
+                let bsp = h1convert::collision::convert(src).unwrap();
+                let cells = solid_cells(&bsp);
+                cells_total += cells.len();
+                for (si, s) in bsp.surfaces.iter().enumerate() {
+                    let ring = bsp.surface_ring(si);
+                    if ring.len() < 3 {
+                        continue;
+                    }
+                    let mid: [f32; 3] = std::array::from_fn(|a| {
+                        ring.iter().map(|&v| bsp.vertices[v].point[a]).sum::<f32>()
+                            / ring.len() as f32
+                    });
+                    let pl = bsp.planes[usize::from(s.plane & 0x7fff)].0;
+                    let sign = if s.plane & 0x8000 != 0 { -1.0 } else { 1.0 };
+                    let at =
+                        |k: f32| -> [f32; 3] { std::array::from_fn(|a| mid[a] + sign * k * pl[a]) };
+                    match locate(src, at(0.01)) {
+                        Some(Child::Solid) => out_solid += 1,
+                        Some(Child::Leaf(_)) => out_open += 1,
+                        _ => {}
+                    }
+                    match locate(src, at(-0.01)) {
+                        Some(Child::Solid) => in_solid += 1,
+                        Some(Child::Leaf(_)) => in_open += 1,
+                        _ => {}
+                    }
+                }
+                let (mid, half) = h1objects::physics::aabb(
+                    &bsp.vertices.iter().map(|v| v.point).collect::<Vec<_>>(),
+                );
+                for _ in 0..64 {
+                    let p: [f32; 3] =
+                        std::array::from_fn(|a| mid[a] + half[a] * (rng.next() * 2.0 - 1.0));
+                    let solid = matches!(locate(src, p), Some(Child::Solid));
+                    if solid == cells.iter().any(|h| inside(h, p)) {
+                        agree += 1;
+                    } else {
+                        disagree += 1;
+                    }
+                }
+            }
+        }
+
+        for t in h1.tags() {
+            let g = t.group.0.to_be_bytes();
+            if !matches!(&g, b"vehi" | b"mach" | b"ctrl" | b"lifi") {
+                continue;
+            }
+            let mut conv = Converter::new(&h1, &base);
+            conv.object(t)
+                .unwrap_or_else(|e| panic!("{level} {}: {e}", t.name));
+            let how = conv
+                .tree
+                .reports
+                .last()
+                .unwrap()
+                .physics
+                .clone()
+                .unwrap_or_default();
+            let key = how.split(':').next().unwrap_or("").to_owned();
+            *built
+                .entry(format!("{} {key}", String::from_utf8_lossy(&g)))
+                .or_default() += 1;
+            let solid = h1::Object::read(&h1, h1.tag_data(t).unwrap())
+                .unwrap()
+                .collision
+                .map(|c| {
+                    let c = Collision::read(&h1, h1.tag(c).unwrap()).unwrap();
+                    c.nodes.iter().filter_map(|n| n.bsps.first()).any(|b| {
+                        !solid_cells(&h1convert::collision::convert(b).unwrap()).is_empty()
+                    })
+                })
+                .unwrap_or(false);
+            if &g == b"vehi" && !how.starts_with("borrowed") {
+                eprintln!("{level} {}: {how}", t.name);
+            }
+            if how.starts_with("borrowed") {
+                continue;
+            }
+            assert_eq!(how.starts_with("built"), solid, "{level} {}: {how}", t.name);
+            if !solid {
+                continue;
+            }
+            let (_, phmo) = conv
+                .tree
+                .tags
+                .iter()
+                .rev()
+                .find(|(_, x)| x.group == FourCC(*b"phmo"))
+                .unwrap();
+            let r = defs::from_built(phmo_def, &phmo.root).unwrap();
+            let again = defs::to_built(phmo_def, &r, &mut |_| None).unwrap();
+            assert_eq!(again.bytes, phmo.root.bytes, "{}", t.name);
+            let block = |p: &str| match r.at(p) {
+                Some(Val::Block(b)) => b.clone(),
+                _ => Vec::new(),
+            };
+            let fl = |e: &tags::defs::Record, f: &str| -> Vec<f32> {
+                match e.get(f) {
+                    Some(Val::List(v)) => v
+                        .iter()
+                        .map(|x| match x {
+                            Val::Float(f) => *f,
+                            _ => f32::NAN,
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                }
+            };
+            let int = |e: &tags::defs::Record, f: &str| match e.get(f) {
+                Some(Val::Int(i)) => *i as usize,
+                _ => usize::MAX,
+            };
+            let (fv, pe) = (block("four_vectors"), block("plane_equations"));
+            let (mut fv_at, mut pe_at) = (0, 0);
+            for p in block("polyhedra") {
+                let (count, cap) = (
+                    int(&p, "four_vector_count"),
+                    int(&p, "four_vector_capacity"),
+                );
+                let groups: Vec<[Vec<f32>; 3]> = if cap & 0x7fff_ffff <= 3 {
+                    (0..count)
+                        .map(|g| ["x", "y", "z"].map(|a| fl(&p, &format!("inline_{a}_{g}"))))
+                        .collect()
+                } else {
+                    fv_at += count;
+                    fv[fv_at - count..fv_at]
+                        .iter()
+                        .map(|e| ["x", "y", "z"].map(|a| fl(e, a)))
+                        .collect()
+                };
+                let planes = &pe[pe_at..pe_at + int(&p, "plane_count")];
+                pe_at += planes.len();
+                for g in &groups {
+                    for ((x, y), z) in g[0].iter().zip(&g[1]).zip(&g[2]) {
+                        for pl in planes {
+                            let n = fl(pl, "normal");
+                            let Some(Val::Float(w)) = pl.get("w") else {
+                                panic!()
+                            };
+                            let d = n[0] * x + n[1] * y + n[2] * z + w;
+                            assert!(d <= 1e-3, "{}: a corner {d} outside its piece", t.name);
+                        }
+                    }
+                }
+            }
+            assert_eq!((fv_at, pe_at), (fv.len(), pe.len()), "{}", t.name);
+        }
+    }
+    eprintln!(
+        "{cells_total} cells; outside surfaces open {out_open} solid {out_solid}; inside open {in_open} solid {in_solid}; points agree {agree} disagree {disagree}"
+    );
+    eprintln!("{built:#?}");
+    // Not every probe lands as the surface's side says: a part thinner
+    // than the probe's step, and open meshes, put some on the far side.
+    assert!(
+        out_open > 25 * out_solid && in_solid > 25 * in_open,
+        "a missing child is solid"
+    );
+    assert!(agree > 1000 * disagree, "the cells are the solid space");
+}

@@ -747,3 +747,246 @@ fn stand_in_physics_model_is_one_sphere_on_one_body() {
     };
     assert_eq!(materials.len(), 1, "the sphere's material 0");
 }
+
+/// An L of two boxes, `[0,2]x[0,1]x[0,1]` and `[0,1]x[1,2]x[0,1]`, as a
+/// Halo 2 form collision BSP: leaves outside, missing children inside.
+fn l_shape() -> tags::collision::Bsp {
+    use tags::collision::{Bsp, Child as C, Node3d as N, Plane, Vertex as V};
+    let planes = vec![
+        Plane([0.0, 0.0, 1.0, 0.0]),
+        Plane([0.0, 0.0, 1.0, 1.0]),
+        Plane([1.0, 0.0, 0.0, 0.0]),
+        Plane([0.0, 1.0, 0.0, 0.0]),
+        Plane([0.0, 1.0, 0.0, 1.0]),
+        Plane([1.0, 0.0, 0.0, 2.0]),
+        Plane([1.0, 0.0, 0.0, 1.0]),
+        Plane([0.0, 1.0, 0.0, 2.0]),
+    ];
+    let n = |plane, back, front| N { plane, back, front };
+    let nodes = vec![
+        n(0, C::Leaf(0), C::Node(1)),
+        n(1, C::Node(2), C::Leaf(0)),
+        n(2, C::Leaf(0), C::Node(3)),
+        n(3, C::Leaf(0), C::Node(4)),
+        n(4, C::Node(5), C::Node(6)),
+        n(5, C::None, C::Leaf(0)),
+        n(6, C::Node(7), C::Leaf(0)),
+        n(7, C::None, C::Leaf(0)),
+    ];
+    let vertices = [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 2.0, 1.0]]
+        .into_iter()
+        .map(|point| V { point, edge: 0 })
+        .collect();
+    Bsp {
+        nodes,
+        planes,
+        vertices,
+        ..Default::default()
+    }
+}
+
+fn inside(h: &crate::physics::Hull, p: [f32; 3]) -> bool {
+    h.planes
+        .iter()
+        .all(|pl| pl[0] * p[0] + pl[1] * p[1] + pl[2] * p[2] + pl[3] <= 1e-4)
+}
+
+#[test]
+fn solid_cells_are_the_bsp_s_solid_space() {
+    let cells = crate::physics::solid_cells(&l_shape());
+    assert_eq!(cells.len(), 2);
+    let near = |a: f32, b: f32| (a - b).abs() < 1e-4;
+    assert!(near(cells[0].volume, 2.0) && near(cells[1].volume, 1.0));
+    assert_eq!((cells[0].vertices.len(), cells[0].planes.len()), (8, 6));
+    assert!(near(cells[0].centroid[0], 1.0) && near(cells[1].centroid[1], 1.5));
+    // A 2x1x1 box of unit density: Ixx = m (1 + 1) / 12.
+    assert!(near(cells[0].inertia[0][0], 2.0 * 2.0 / 12.0));
+    assert!(near(cells[0].inertia[1][1], 2.0 * 5.0 / 12.0));
+    for h in &cells {
+        for v in &h.vertices {
+            assert!(inside(h, *v), "every corner inside its own planes");
+        }
+    }
+    let solid = |p: [f32; 3]| cells.iter().any(|h| inside(h, p));
+    assert!(solid([1.5, 0.5, 0.5]) && solid([0.5, 1.5, 0.5]));
+    assert!(!solid([1.5, 1.5, 0.5]), "the L's notch is open");
+    // The model of the two: mass, centre and parallel-axis inertia.
+    let (m, c, i) = crate::physics::mass_properties(&cells, 10.0);
+    assert!(near(m, 30.0));
+    assert!(near(c[0], (2.0 * 1.0 + 0.5) / 3.0) && near(c[2], 0.5));
+    assert!((i[0][1] - i[1][0]).abs() < 1e-4, "symmetric");
+    // One enclosing piece holds every corner and cuts the notch's corner.
+    let e = crate::physics::enclosing(&cells).unwrap();
+    for h in &cells {
+        for v in &h.vertices {
+            assert!(inside(&e, *v));
+        }
+    }
+    assert!(!inside(&e, [1.9, 1.9, 0.5]));
+}
+
+#[test]
+fn built_physics_model_round_trips_with_every_piece() {
+    use crate::physics::{Hull, Transform};
+    use crate::rebuild::{Body, PhysNode, physics_model};
+    use tags::defs::{self, Defs, Val};
+    let cells = crate::physics::solid_cells(&l_shape());
+    // A 26-sided piece: more corners than the inline twelve.
+    let mut planes = Vec::new();
+    for x in -1i32..=1 {
+        for y in -1i32..=1 {
+            for z in -1i32..=1 {
+                if (x, y, z) != (0, 0, 0) {
+                    let n = [f64::from(x), f64::from(y), f64::from(z)];
+                    let l = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+                    planes.push(([n[0] / l, n[1] / l, n[2] / l], -1.0));
+                }
+            }
+        }
+    }
+    let round = crate::physics::hull(&planes).unwrap();
+    assert!(round.vertices.len() > 12);
+    let moved = |h: &Hull, x: f32| {
+        h.transformed(&Transform {
+            t: [x, 0.0, 0.0],
+            ..Transform::IDENTITY
+        })
+    };
+    let five: Vec<Hull> = (0..5).map(|k| moved(&cells[1], 3.0 * k as f32)).collect();
+    let bodies = [
+        Body {
+            node: 1,
+            pieces: vec![cells[0].clone()],
+            mass: 100.0,
+        },
+        Body {
+            node: 2,
+            pieces: vec![round.clone(), cells[1].clone()],
+            mass: 50.0,
+        },
+        Body {
+            node: 0,
+            pieces: five,
+            mass: 10.0,
+        },
+    ];
+    let node = |name: &str, parent, next_sibling, first_child| PhysNode {
+        name: name.into(),
+        parent,
+        next_sibling,
+        first_child,
+    };
+    let nodes = [
+        node("root", -1, -1, 1),
+        node("a", 0, 2, -1),
+        node("b", 0, -1, -1),
+    ];
+    let root = physics_model(&bodies, &nodes).unwrap();
+    let def = Defs::builtin().group(map::FourCC(*b"phmo")).unwrap();
+    let got = defs::from_built(def, &root).unwrap();
+    let again = defs::to_built(def, &got, &mut |_| None).unwrap();
+    assert_eq!(again.bytes, root.bytes);
+    assert_eq!(again.fixups.len(), root.fixups.len());
+    let block = |path: &str| match got.at(path) {
+        Some(Val::Block(b)) => b.clone(),
+        other => panic!("{path}: {other:?}"),
+    };
+    let int = |r: &tags::defs::Record, f: &str| match r.get(f) {
+        Some(Val::Int(i)) => *i,
+        other => panic!("{f}: {other:?}"),
+    };
+    let rbs = block("rigid_bodies");
+    assert_eq!(rbs.len(), 3);
+    assert_eq!(
+        (int(&rbs[0], "shape_type"), int(&rbs[0], "shape_index")),
+        (4, 0)
+    );
+    assert_eq!(
+        (int(&rbs[1], "shape_type"), int(&rbs[1], "shape_index")),
+        (0xe, 0)
+    );
+    assert_eq!(
+        (int(&rbs[2], "shape_type"), int(&rbs[2], "shape_index")),
+        (0xe, 1)
+    );
+    assert_eq!(
+        rbs.iter().map(|b| int(b, "node")).collect::<Vec<_>>(),
+        [1, 2, 0]
+    );
+    assert_eq!(got.at("mass"), Some(&Val::Float(160.0)));
+    let polys = block("polyhedra");
+    assert_eq!(polys.len(), 1 + 2 + 5);
+    let lists = block("lists");
+    assert_eq!(
+        int(&lists[0], "child_capacity"),
+        0x8000_0004,
+        "two children inline"
+    );
+    assert_eq!(int(&lists[0], "inline_child_index_1"), 2);
+    assert_eq!(
+        int(&lists[1], "child_capacity"),
+        0x8000_0005,
+        "five from the block"
+    );
+    let children = block("list_children");
+    assert_eq!(
+        children
+            .iter()
+            .map(|c| int(c, "shape_index"))
+            .collect::<Vec<_>>(),
+        [3, 4, 5, 6, 7]
+    );
+    // The big piece takes its corners from the root block, the rest inline;
+    // every piece's planes come from the root block in order.
+    let groups = round.vertices.len().div_ceil(4);
+    assert_eq!(
+        int(&polys[1], "four_vector_capacity"),
+        0x8000_0000 | groups as i64
+    );
+    assert_eq!(block("four_vectors").len(), groups);
+    assert_eq!(int(&polys[0], "four_vector_capacity"), 0x8000_0003);
+    let all = [&cells[0], &round, &cells[1]];
+    let plane_total: usize =
+        all.iter().map(|h| h.planes.len()).sum::<usize>() + 5 * cells[1].planes.len();
+    assert_eq!(block("plane_equations").len(), plane_total);
+    // Corners read back lie inside the planes read back.
+    let floats = |r: &tags::defs::Record, f: &str| -> Vec<f32> {
+        match r.get(f) {
+            Some(Val::List(v)) => v
+                .iter()
+                .map(|x| match x {
+                    Val::Float(f) => *f,
+                    _ => panic!(),
+                })
+                .collect(),
+            other => panic!("{f}: {other:?}"),
+        }
+    };
+    let pe = block("plane_equations");
+    let x = floats(&polys[0], "inline_x_0");
+    let y = floats(&polys[0], "inline_y_0");
+    let z = floats(&polys[0], "inline_z_0");
+    for k in 0..4 {
+        for p in &pe[..6] {
+            let n = floats(p, "normal");
+            let Some(Val::Float(w)) = p.get("w") else {
+                panic!()
+            };
+            assert!(n[0] * x[k] + n[1] * y[k] + n[2] * z[k] + w <= 1e-4);
+        }
+    }
+    let regions = block("regions");
+    let Some(Val::Block(perms)) = regions[0].get("permutations") else {
+        panic!()
+    };
+    let Some(Val::Block(members)) = perms[0].get("block_4") else {
+        panic!()
+    };
+    assert_eq!(members.len(), 3, "every body in the one permutation");
+    let ns = block("nodes");
+    assert_eq!(ns.len(), 3);
+    assert_eq!(
+        ns[1].get("unknown_8"),
+        Some(&Val::Bytes(vec![2, 0, 0xff, 0xff]))
+    );
+}

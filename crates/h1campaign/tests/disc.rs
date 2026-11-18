@@ -1779,8 +1779,9 @@ fn a10_opens_and_closes_only_placed_units() {
 /// (`0x000b7b40`) then deletes the object and returns `none`, so the
 /// placement's name stays `none` (a10's rebuilt cryotube: `unit_open
 /// cryotube_1` faulted at `0x00113eae` with converter version 33). Every
-/// retail vehicle's model has one; since converter version 38 a vehicle
-/// whose model has none gets a stand-in (`h1objects::rebuild::sphere_physics`).
+/// retail vehicle's model has one; a vehicle whose model has none gets one
+/// built from its Halo 1 collision (`h1objects::rebuild::physics_model`),
+/// or a stand-in sphere with no solid collision (`sphere_physics`).
 #[test]
 #[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
 fn a10_scripted_vehicles_can_be_created() {

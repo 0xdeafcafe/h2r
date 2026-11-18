@@ -212,7 +212,9 @@ converted model's count: the physics model writes a matrix per rigid
 body's node into the object's `hlmt`-sized array (Nodes, below). That is
 why humans take the Chief, whose `phmo` stays inside a Halo 1 human's 20
 nodes, and not the marine (node 36); grunts, monitors, flood forms and
-small devices then have no physics model. Variants are emptied (count 0); regions are rebuilt from the
+small devices then have no physics model. A vehicle left with none gets one built
+from its Halo 1 collision (tag-definitions.md, Physics models from Halo
+1), since `vehicle_new` refuses a model without one. Variants are emptied (count 0); regions are rebuilt from the
 converted model's region and permutation names. `obje default_variant`
 is set to 0.
 

@@ -413,12 +413,26 @@ pub struct Tree {
 
 const LOCAL: u32 = 0xfffd_0000;
 
-/// The stand-in physics model of a rebuilt vehicle
+/// The stand-in physics model of a vehicle with no solid collision
 /// ([`crate::rebuild::sphere_physics`]): radius (world units), mass (kg),
 /// material. The sphere sits on the model origin (its centre one radius
 /// up), so a vehicle whose origin is on the floor stays put; a
 /// `hard_metal_thin_hum` global material (on the disc).
 pub const STAND_IN_SPHERE: (f32, f32, &str) = (0.05, 1000.0, "hard_metal_thin_hum");
+
+/// Mass per cubic world unit of a built physics model with no Halo 1
+/// mass: water's 1000 kg/m^3 over a world unit of 3.048 m.
+pub const DENSITY: f32 = 28_317.0;
+
+/// What a built physics model is for ([`Converter::object_physics`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PhysicsKind {
+    /// One body on the object, of Halo 1's `phys` mass; a stand-in
+    /// sphere when the collision gives nothing.
+    Vehicle,
+    /// One body per collision node, riding that node.
+    Device,
+}
 
 /// Stands for the `k`-th tag of a [`Tree`] until it is installed.
 pub fn local(k: usize) -> TagId {
@@ -1724,8 +1738,9 @@ impl<'a> Converter<'a> {
             b"mach"
         };
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
-        rep.physics = Some("none (rebuilt devices borrow no phmo)".into());
         let hlmt = self.model(&mut rep, &dev.object, None, &tag.name, true)?;
+        rep.physics = Some("none (no Halo 1 collision to build from)".into());
+        self.object_physics(&mut rep, hlmt, &dev.object, &tag.name, PhysicsKind::Device)?;
         let predicted = self.predicted(&dev.object)?;
         let root = crate::rebuild::device(&dev, hlmt, &predicted)?;
         rep.no_home.push(
@@ -1754,7 +1769,7 @@ impl<'a> Converter<'a> {
     fn vehicle_rebuilt(&mut self, tag: &Tag, u: &Unit) -> Result<TagId> {
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs (turret role)");
         let hlmt = self.model(&mut rep, &u.object, None, &tag.name, true)?;
-        self.vehicle_physics(&mut rep, hlmt, &tag.name)?;
+        self.object_physics(&mut rep, hlmt, &u.object, &tag.name, PhysicsKind::Vehicle)?;
         let predicted = self.predicted(&u.object)?;
         let root = crate::rebuild::vehicle(&u.object, hlmt, &u.seats, &predicted)?;
         rep.no_home.push(format!(
@@ -1762,8 +1777,6 @@ impl<'a> Converter<'a> {
             u.seats.len(),
             u.references.iter().filter(|r| r.tag.is_some()).count()
         ));
-        rep.no_home
-            .push("coll/phys as Havok shapes: not built; the phmo is a stand-in sphere".into());
         self.tree.reports.push(rep);
         Ok(self.tree.push(
             &tag.name,
@@ -1775,18 +1788,23 @@ impl<'a> Converter<'a> {
         ))
     }
 
-    /// Gives a vehicle's `hlmt` (a tree tag) the stand-in physics model
-    /// ([`crate::rebuild::sphere_physics`], [`STAND_IN_SPHERE`]) when it
-    /// has none: `vehicle_new` (`0x000eeb80`) refuses a vehicle whose model
-    /// has no physics model (`cmp [hlmt+0x24],-1` at `0x000eebcb`) and
-    /// `object_new` deletes it. A rebuilt vehicle never has one; a
-    /// templated one loses its template's when that reaches past the
-    /// converted nodes (fresh a10's `lifepod_atmosphere_entry`).
-    fn vehicle_physics(
+    /// Gives an object's `hlmt` (a tree tag) a physics model built from
+    /// Halo 1's collision when it has none ([`Self::built_physics`]).
+    /// Vehicles need one: `vehicle_new` (`0x000eeb80`) refuses a vehicle
+    /// whose model has none (`cmp [hlmt+0x24],-1` at `0x000eebcb`) and
+    /// `object_new` deletes it; a vehicle with no usable collision gets
+    /// the stand-in sphere ([`crate::rebuild::sphere_physics`],
+    /// [`STAND_IN_SPHERE`]). Devices need one to block: Havok, which moves
+    /// the player, sees a non-scenery object only through its physics
+    /// model, so without one a door is walked through (retail doors have a
+    /// rigid body per moving node).
+    fn object_physics(
         &mut self,
         rep: &mut ObjectReport,
         hlmt: Option<TagId>,
+        obj: &h1::Object,
         name: &str,
+        kind: PhysicsKind,
     ) -> Result<()> {
         let Some(h) = hlmt.filter(|h| h.0 & 0xffff_0000 == LOCAL) else {
             return Ok(());
@@ -1804,22 +1822,147 @@ impl<'a> Converter<'a> {
         if has {
             return Ok(());
         }
-        let (radius, mass, material) = STAND_IN_SPHERE;
+        let (phmo, how) = match self.built_physics(obj, kind)? {
+            Some((block, how)) => (block, how),
+            None if kind == PhysicsKind::Vehicle => {
+                let (radius, mass, material) = STAND_IN_SPHERE;
+                (
+                    crate::rebuild::sphere_physics(radius, [0.0, 0.0, radius], mass, material)?,
+                    format!(
+                        "stand-in: a {radius} wu sphere of {mass} kg on the origin (rebuild::sphere_physics); no Halo 1 collision to build from"
+                    ),
+                )
+            }
+            None => return Ok(()),
+        };
         let phmo = self.tree.push(
             name,
             Converted {
                 group: FourCC(*b"phmo"),
-                root: crate::rebuild::sphere_physics(radius, [0.0, 0.0, radius], mass, material)?,
+                root: phmo,
                 raw: Vec::new(),
             },
         );
         let root = &mut self.tree.tags[k].1.root;
         root.fixups.retain(|f| f.offset != at);
         root.tag_ref(at, phmo);
-        rep.physics = Some(format!(
-            "stand-in: a {radius} wu sphere of {mass} kg on the origin (rebuild::sphere_physics); the model had none"
-        ));
+        rep.physics = Some(how);
         Ok(())
+    }
+
+    /// A physics model from Halo 1's collision: each collision node's
+    /// first BSP cut into its solid convex cells ([`crate::physics`]).
+    /// A vehicle gets one rigid body on the object (node -1) holding every
+    /// node's cells placed by the model's default pose, of Halo 1's `phys`
+    /// mass; a device one body per collision node, on the model node of
+    /// that name, so each moves with its node as the door opens. A body
+    /// over [`crate::physics::MAX_PIECES`] cells keeps one enclosing piece
+    /// per node. `None` with no collision, no model or no solid cell.
+    fn built_physics(
+        &mut self,
+        obj: &h1::Object,
+        kind: PhysicsKind,
+    ) -> Result<Option<(Block, String)>> {
+        use crate::physics::{self, Transform};
+        let (Some(c), Some(m)) = (obj.collision, obj.model) else {
+            return Ok(None);
+        };
+        let coll = h1::Collision::read(self.h1, self.h1_tag(c)?)?;
+        let (model, _) =
+            h1models::model_from_map(self.h1, self.h1_tag(m)?, &ModelOptions::default())?;
+        let world = h1models::mode::world_transforms(
+            &model
+                .nodes
+                .iter()
+                .map(|n| (n.parent, n.rotation, n.translation))
+                .collect::<Vec<_>>(),
+        );
+        // (model node, cells) per collision node with any.
+        let mut parts: Vec<(i16, Vec<physics::Hull>)> = Vec::new();
+        for (i, n) in coll.nodes.iter().enumerate() {
+            let Some(src) = n.bsps.first() else { continue };
+            let cells = physics::solid_cells(&h1convert::collision::convert(src)?);
+            if cells.is_empty() {
+                continue;
+            }
+            let node = model
+                .nodes
+                .iter()
+                .position(|m| m.name == n.name)
+                .or((i < model.nodes.len()).then_some(i))
+                .unwrap_or(0);
+            parts.push((node as i16, cells));
+        }
+        if parts.is_empty() {
+            return Ok(None);
+        }
+        let mut enclosed = false;
+        let mut cap = |cells: Vec<physics::Hull>, total: usize| {
+            if total > physics::MAX_PIECES {
+                enclosed = true;
+                physics::enclosing(&cells).map_or(cells, |h| vec![h])
+            } else {
+                cells
+            }
+        };
+        let volume: f32 = parts.iter().flat_map(|p| &p.1).map(|h| h.volume).sum();
+        let bodies = match kind {
+            PhysicsKind::Vehicle => {
+                let total = parts.iter().map(|p| p.1.len()).sum();
+                let mut pieces = Vec::new();
+                for (node, cells) in parts {
+                    let (r, t) = world
+                        .get(node as usize)
+                        .copied()
+                        .unwrap_or((Transform::IDENTITY.r, Transform::IDENTITY.t));
+                    let m = Transform { r, t };
+                    pieces.extend(cap(cells, total).iter().map(|h| h.transformed(&m)));
+                }
+                let phys = match obj.physics {
+                    Some(p) => Some(h1::Physics::read(self.h1, self.h1_tag(p)?)?),
+                    None => None,
+                };
+                let mass = phys
+                    .map(|p| p.mass)
+                    .filter(|m| m.is_finite() && *m > 0.0)
+                    .unwrap_or(volume * DENSITY);
+                vec![crate::rebuild::Body {
+                    node: -1,
+                    pieces,
+                    mass,
+                }]
+            }
+            PhysicsKind::Device => parts
+                .into_iter()
+                .map(|(node, cells)| {
+                    let total = cells.len();
+                    let pieces = cap(cells, total);
+                    let mass = pieces.iter().map(|h| h.volume).sum::<f32>() * DENSITY;
+                    crate::rebuild::Body { node, pieces, mass }
+                })
+                .collect(),
+        };
+        let nodes: Vec<_> = model
+            .nodes
+            .iter()
+            .map(|n| crate::rebuild::PhysNode {
+                name: n.name.clone(),
+                parent: n.parent,
+                next_sibling: n.next_sibling,
+                first_child: n.first_child,
+            })
+            .collect();
+        let pieces: usize = bodies.iter().map(|b| b.pieces.len()).sum();
+        let how = format!(
+            "built from Halo 1's coll: {} rigid bodies, {pieces} convex pieces{}",
+            bodies.len(),
+            if enclosed {
+                " (over the piece cap: one enclosing piece per node)"
+            } else {
+                ""
+            }
+        );
+        Ok(Some((crate::rebuild::physics_model(&bodies, &nodes)?, how)))
     }
 
     /// The tree's tags of `group` that `b` references, in order, each once.
@@ -1904,7 +2047,7 @@ impl<'a> Converter<'a> {
                 FixupKind::TagRef(t) if f.offset == h2::MODEL as u32 && t != TagId::NULL => Some(t),
                 _ => None,
             });
-            self.vehicle_physics(&mut rep, hlmt, &tag.name)?;
+            self.object_physics(&mut rep, hlmt, &u.object, &tag.name, PhysicsKind::Vehicle)?;
         }
         self.stopgaps(&mut rep, &tpl_root, &[h2::MODEL]);
         self.tree.reports.push(rep);

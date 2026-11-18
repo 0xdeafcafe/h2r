@@ -450,9 +450,9 @@ pub fn device(dev: &h1::Device, hlmt: Option<TagId>, predicted: &[Predicted]) ->
 /// physics model) holding one sphere of `radius` at `centre`, of `mass`,
 /// with one material. `vehicle_new` (`0x000eeb80`) refuses a vehicle whose
 /// model has no physics model (`cmp [hlmt+0x24],-1` at `0x000eebcb`), so
-/// `object_new` deletes it and its name stays `none`; a rebuilt vehicle
-/// gets this one. It is a stand-in until Halo 1's collision and physics
-/// become a Halo 2 shape: a sphere this small barely touches anything.
+/// `object_new` deletes it and its name stays `none`; a vehicle with no
+/// solid Halo 1 collision to build one from ([`physics_model`]) gets this
+/// one. A sphere this small barely touches anything.
 ///
 /// The engine writes every shape's Havok header at load (`0x001ea9c0`:
 /// the sphere's at `+0x20`, the transform's at `+0x30` with the sphere as
@@ -531,5 +531,277 @@ pub fn sphere_physics(radius: f32, centre: [f32; 3], mass: f32, material: &str) 
     set(&mut region, "name", Val::text("default"))?;
     set(&mut region, "permutations", Val::Block(vec![perm]))?;
     set(&mut r, "regions", Val::Block(vec![region]))?;
+    built(d, &r)
+}
+
+/// One rigid body of a built physics model: the node it rides (`-1` the
+/// object itself), its convex pieces in that node's space, and its mass.
+#[derive(Clone, Debug)]
+pub struct Body {
+    pub node: i16,
+    pub pieces: Vec<crate::physics::Hull>,
+    pub mass: f32,
+}
+
+/// A physics model node: name and its parent, next sibling and first
+/// child (`-1` none), as the model's own nodes.
+#[derive(Clone, Debug)]
+pub struct PhysNode {
+    pub name: String,
+    pub parent: i16,
+    pub next_sibling: i16,
+    pub first_child: i16,
+}
+
+/// The global material every built piece names, with the index retail
+/// shapes of that material hold at header `+6` (V: the disc's
+/// `high_small_door`; the index's table is not established).
+pub const PIECE_MATERIAL: (&str, u16) = ("hard_metal_thick_cov", 76);
+
+/// A physics model of convex pieces, written from the `phmo` definition:
+/// one rigid body per [`Body`], its shape a polyhedron when it has one
+/// piece and a list of polyhedra otherwise; `nodes` (the model's own, so
+/// a body's node index means the same node in both) written when any body
+/// names one. Each body's mass spreads over its pieces by volume; its
+/// centre of mass and inertia are the pieces' (crate::physics).
+///
+/// The layout follows the disc's polyhedron physics models (V, the
+/// `high_small_door`, `ghost` and `pelican` physics models):
+/// - a polyhedron of up to 12 corners keeps them inline at `+0x60` as
+///   up to three groups of four transposed points (capacity `0x80000003`);
+///   a bigger one takes its groups from the root `four_vectors` block, in
+///   polyhedron order, with the group count in the capacity. A group's
+///   unused lanes repeat its last corner. Planes always come from the
+///   root `plane_equations` block, in order; `+0xfc` holds the plane count
+///   with bit 31 set.
+/// - shape header: `+8` 1.0, `+0xc` 0.9, `+0x10` 0.6, `+0x14` the piece's
+///   volume, `+0x18` its mass, `+0x1e` 0xff; `+0x26` 0x80.
+/// - a list of up to four children keeps them inline (capacity
+///   `0x80000004`, unused slots type 0 index 0xffff); a longer one takes
+///   them from the root `list_children` block, capacity `0x80000000 | n`.
+///   `+6` 0x80.
+/// - rigid body `+0x1a` 2, `+0x1e` 5, `+0x20` 1.0, `+0x28` 0.05.
+/// - node `+4` flags (0), `+6` parent, `+8` next sibling, `+0xa` first
+///   child, each `-1` none.
+///
+/// Every runtime word (shape vtables and pointers) stays zero: the engine
+/// writes them at load (`0x001ea9c0`).
+pub fn physics_model(bodies: &[Body], nodes: &[PhysNode]) -> Result<Block> {
+    let d = def(b"phmo")?;
+    let mut r = defs::default_record(d);
+    let f = |v: f32| Val::Bytes(v.to_le_bytes().to_vec());
+    let u16_hi = |v: u16| Val::Bytes([0, 0, v as u8, (v >> 8) as u8].to_vec());
+    let u32b = |v: u32| Val::Bytes(v.to_le_bytes().to_vec());
+    let child = |p: &str| {
+        d.child(p)
+            .ok_or_else(|| Error::Invalid(format!("phmo {p}")))
+    };
+    let (mat_name, mat_index) = PIECE_MATERIAL;
+    let total: f32 = bodies.iter().map(|b| b.mass).sum();
+    set(&mut r, "mass", Val::Float(total))?;
+    set(&mut r, "unknown_8", f(1.0))?;
+    set(&mut r, "unknown_c", f(1.0))?;
+
+    let mut m = defs::default_record(child("materials")?);
+    set(&mut m, "name", Val::text(mat_name))?;
+    set(&mut m, "string_4", Val::text(mat_name))?;
+    set(&mut r, "materials", Val::Block(vec![m]))?;
+
+    let poly_def = child("polyhedra")?;
+    let fv_def = child("four_vectors")?;
+    let plane_def = child("plane_equations")?;
+    let list_def = child("lists")?;
+    let lc_def = child("list_children")?;
+    let rb_def = child("rigid_bodies")?;
+    let (mut polys, mut fvs, mut planes, mut lists, mut lcs, mut rbs) =
+        (vec![], vec![], vec![], vec![], vec![], vec![]);
+    for body in bodies {
+        let volume: f32 = body.pieces.iter().map(|p| p.volume).sum();
+        if body.pieces.is_empty() || volume <= 0.0 {
+            return Err(Error::Invalid("a physics body with no volume".into()));
+        }
+        let density = body.mass / volume;
+        let first = polys.len();
+        for piece in &body.pieces {
+            let mut p = defs::default_record(poly_def);
+            set(&mut p, "header.name", Val::text("piece"))?;
+            set(&mut p, "header.material", Val::Int(0))?;
+            set(
+                &mut p,
+                "header.unknown_6",
+                Val::Bytes(mat_index.to_le_bytes().to_vec()),
+            )?;
+            set(&mut p, "header.unknown_8", f(1.0))?;
+            set(&mut p, "header.unknown_c", f(0.9))?;
+            set(&mut p, "header.unknown_10", f(0.6))?;
+            set(&mut p, "header.unknown_14", f(piece.volume))?;
+            set(&mut p, "header.unknown_18", f(piece.volume * density))?;
+            set(&mut p, "header.unknown_1c", Val::Bytes(vec![0, 0, 0xff, 0]))?;
+            set(&mut p, "reference_count", Val::Int(0x80))?;
+            let (centre, half) = piece.aabb();
+            set(&mut p, "aabb_half_extents", Val::floats(&half))?;
+            set(&mut p, "aabb_center", Val::floats(&centre))?;
+            let groups: Vec<[[f32; 4]; 3]> = piece
+                .vertices
+                .chunks(4)
+                .map(|g| {
+                    std::array::from_fn(|a| {
+                        std::array::from_fn(|k| g.get(k).unwrap_or(&g[g.len() - 1])[a])
+                    })
+                })
+                .collect();
+            set(&mut p, "four_vector_count", Val::Int(groups.len() as i64))?;
+            if groups.len() <= 3 {
+                set(&mut p, "four_vector_capacity", Val::Int(0x8000_0003))?;
+                for (g, xyz) in groups.iter().enumerate() {
+                    for (a, axis) in ["x", "y", "z"].iter().enumerate() {
+                        set(&mut p, &format!("inline_{axis}_{g}"), Val::floats(&xyz[a]))?;
+                    }
+                }
+            } else {
+                set(
+                    &mut p,
+                    "four_vector_capacity",
+                    Val::Int(0x8000_0000 | groups.len() as i64),
+                )?;
+                for xyz in &groups {
+                    let mut e = defs::default_record(fv_def);
+                    set(&mut e, "x", Val::floats(&xyz[0]))?;
+                    set(&mut e, "y", Val::floats(&xyz[1]))?;
+                    set(&mut e, "z", Val::floats(&xyz[2]))?;
+                    fvs.push(e);
+                }
+            }
+            set(
+                &mut p,
+                "vertex_count",
+                Val::Int(piece.vertices.len() as i64),
+            )?;
+            set(&mut p, "plane_count", Val::Int(piece.planes.len() as i64))?;
+            set(
+                &mut p,
+                "unknown_fc",
+                u32b(0x8000_0000 | piece.planes.len() as u32),
+            )?;
+            for pl in &piece.planes {
+                let mut e = defs::default_record(plane_def);
+                set(&mut e, "normal", Val::floats(&pl[..3]))?;
+                set(&mut e, "w", Val::Float(pl[3]))?;
+                planes.push(e);
+            }
+            polys.push(p);
+        }
+        let (shape_type, shape_index) = if body.pieces.len() == 1 {
+            (4, first)
+        } else {
+            let n = body.pieces.len();
+            let mut l = defs::default_record(list_def);
+            set(&mut l, "unknown_4", Val::Bytes(vec![0, 0, 0x80, 0]))?;
+            set(&mut l, "child_count", Val::Int(n as i64))?;
+            for k in 0..4 {
+                set(&mut l, &format!("inline_child_type_{k}"), Val::Int(0))?;
+                set(&mut l, &format!("inline_child_index_{k}"), Val::Int(0xffff))?;
+            }
+            if n <= 4 {
+                set(&mut l, "child_capacity", Val::Int(0x8000_0004))?;
+                for k in 0..n {
+                    set(&mut l, &format!("inline_child_type_{k}"), Val::Int(4))?;
+                    set(
+                        &mut l,
+                        &format!("inline_child_index_{k}"),
+                        Val::Int((first + k) as i64),
+                    )?;
+                }
+            } else {
+                set(&mut l, "child_capacity", Val::Int(0x8000_0000 | n as i64))?;
+                for k in 0..n {
+                    let mut c = defs::default_record(lc_def);
+                    set(&mut c, "shape_type", Val::Int(4))?;
+                    set(&mut c, "shape_index", Val::Int((first + k) as i64))?;
+                    lcs.push(c);
+                }
+            }
+            lists.push(l);
+            (0xe, lists.len() - 1)
+        };
+        let (mass, com, inertia) = crate::physics::mass_properties(&body.pieces, density);
+        let all: Vec<[f32; 3]> = body
+            .pieces
+            .iter()
+            .flat_map(|p| p.vertices.iter().copied())
+            .collect();
+        let (centre, _) = crate::physics::aabb(&all);
+        let radius = all
+            .iter()
+            .map(|v| {
+                ((v[0] - centre[0]).powi(2)
+                    + (v[1] - centre[1]).powi(2)
+                    + (v[2] - centre[2]).powi(2))
+                .sqrt()
+            })
+            .fold(0.0f32, f32::max);
+        let mut rb = defs::default_record(rb_def);
+        set(&mut rb, "node", Val::Int(body.node.into()))?;
+        set(&mut rb, "bounding_sphere_offset", Val::floats(&centre))?;
+        set(&mut rb, "bounding_sphere_radius", Val::Float(radius))?;
+        set(&mut rb, "unknown_18", u16_hi(2))?;
+        set(&mut rb, "unknown_1c", u16_hi(5))?;
+        set(&mut rb, "unknown_20", f(1.0))?;
+        set(&mut rb, "unknown_28", f(0.05))?;
+        set(&mut rb, "shape_type", Val::Int(shape_type))?;
+        set(&mut rb, "shape_index", Val::Int(shape_index as i64))?;
+        set(&mut rb, "mass", Val::Float(mass))?;
+        set(&mut rb, "center_of_mass", Val::floats(&com))?;
+        set(&mut rb, "inertia_tensor_x", Val::floats(&inertia[0]))?;
+        set(&mut rb, "inertia_tensor_y", Val::floats(&inertia[1]))?;
+        set(&mut rb, "inertia_tensor_z", Val::floats(&inertia[2]))?;
+        rbs.push(rb);
+    }
+    set(&mut r, "rigid_bodies", Val::Block(rbs))?;
+    set(&mut r, "polyhedra", Val::Block(polys))?;
+    set(&mut r, "four_vectors", Val::Block(fvs))?;
+    set(&mut r, "plane_equations", Val::Block(planes))?;
+    set(&mut r, "lists", Val::Block(lists))?;
+    set(&mut r, "list_children", Val::Block(lcs))?;
+
+    let body_def = child("regions.permutations.block_4")?;
+    let members = (0..bodies.len())
+        .map(|i| {
+            let mut b = defs::default_record(body_def);
+            set(
+                &mut b,
+                "unknown_0",
+                Val::Bytes((i as u16).to_le_bytes().to_vec()),
+            )?;
+            Ok(b)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut perm = defs::default_record(child("regions.permutations")?);
+    set(&mut perm, "name", Val::text("default"))?;
+    set(&mut perm, "block_4", Val::Block(members))?;
+    let mut region = defs::default_record(child("regions")?);
+    set(&mut region, "name", Val::text("default"))?;
+    set(&mut region, "permutations", Val::Block(vec![perm]))?;
+    set(&mut r, "regions", Val::Block(vec![region]))?;
+
+    if bodies.iter().any(|b| b.node >= 0) {
+        let node_def = child("nodes")?;
+        let w = |a: i16, b: i16| {
+            let mut v = a.to_le_bytes().to_vec();
+            v.extend(b.to_le_bytes());
+            Val::Bytes(v)
+        };
+        let ns = nodes
+            .iter()
+            .map(|n| {
+                let mut e = defs::default_record(node_def);
+                set(&mut e, "name", Val::text(&n.name))?;
+                set(&mut e, "unknown_4", w(0, n.parent))?;
+                set(&mut e, "unknown_8", w(n.next_sibling, n.first_child))?;
+                Ok(e)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        set(&mut r, "nodes", Val::Block(ns))?;
+    }
     built(d, &r)
 }

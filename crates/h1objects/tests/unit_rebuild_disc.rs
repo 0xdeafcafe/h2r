@@ -284,7 +284,7 @@ fn a10_vehicles_without_templates_are_rebuilt() {
             assert_eq!(mode.map(|m| m.group), Some(FourCC(*b"mode")), "{}", t.name);
             for (path, group, h1_has) in [
                 ("collision_model", b"coll", u.object.collision.is_some()),
-                // vehicle_new refuses a model with none: the stand-in.
+                // vehicle_new refuses a model with none: built from the coll, or the stand-in.
                 ("physics_model", b"phmo", true),
             ] {
                 let got = reference(&h, path).and_then(|x| local(&c.tree, x));

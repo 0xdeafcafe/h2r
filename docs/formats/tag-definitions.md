@@ -341,24 +341,19 @@ with no retail template read:
   that form and first, its bitmaps in that form.
 - **`hlmt` and `mode` materials**: as rebuilt scenery (above). Collision is
   Halo 1's converted `coll`; the animation graph Halo 1's converted
-  `antr`; the physics model a stand-in sphere (below).
-- **Physics model** (since converter version 38): `vehicle_new`
-  (`0x000eeb80`) returns false when the model's `hlmt +0x20` physics model
-  is null (`cmp [hlmt+0x24],-1` at `0x000eebcb`), and `object_new` then
-  deletes the vehicle, so through version 37 a rebuilt vehicle was placed
-  but never created and its name stayed `none`. Each rebuilt vehicle's
-  `hlmt` now names a `phmo` written from the `phmo` definition by
-  `rebuild::sphere_physics`: one rigid body (node -1) holding one sphere,
-  one material (`hard_metal_thin_hum`), one region with one permutation
-  naming body 0 (the `hlmt` regions all name physics region 0,
-  permutation 0). The sphere is 0.05 world units across the model origin
-  (centre one radius up) and 1000 kg, with a solid sphere's inertia. The
-  engine builds every shape's Havok header at load (`0x001ea9c0`), so
-  those words stay zero; the other words follow the disc's one-sphere
-  physics model (listed on the function). **A stand-in, not the proper
-  shape**: Halo 1's collision and physics are not yet a Halo 2 shape, so
-  nothing collides with the vehicle's body but that sphere (bullets still
-  hit the `coll`).
+  `antr`; the physics model built from Halo 1's collision (below).
+- **Physics model**: `vehicle_new` (`0x000eeb80`) returns false when the
+  model's `hlmt +0x20` physics model is null (`cmp [hlmt+0x24],-1` at
+  `0x000eebcb`), and `object_new` then deletes the vehicle, so through
+  version 37 a rebuilt vehicle was placed but never created. Version 38
+  gave each a stand-in sphere; since version 42 the `phmo` is Halo 1's
+  collision as Havok shapes (Physics models from Halo 1, below): one
+  rigid body on the object (node -1) holding every collision node's
+  solid cells, placed by the model's default pose, of Halo 1's `phys`
+  mass. A vehicle with no solid collision (a10's fighterbomber and Halo
+  ring have no `coll`) keeps the stand-in from `rebuild::sphere_physics`:
+  one body (node -1), one 0.05 world unit sphere of 1000 kg on the
+  origin, one material and one region.
 - **Vehicle type** (`vehi +0x1f0`, named below): turret, Halo 2's
   stationary vehicle. Turrets hold no wheels, treads, hover points or
   engine raw (`+0x268`, `+0x2e8`, `+0x2f0` empty on every one), and their
@@ -425,8 +420,8 @@ cargo test --release -p h1campaign --test disc a10_cryotubes -- --ignored --noca
 
 What to watch in the game: the player seated in the cryotube during
 a10's opening, and getting out when the scripts open it. The first
-suspects if that goes wrong: the stand-in physics model (a dynamic
-sphere: a vehicle whose origin is not on a floor may drop or drift); and
+suspects if that goes wrong: the physics model (a dynamic body: a
+vehicle whose shape is not on a floor may drop or drift); and
 the rider's pose, since retail seat labels
 (`warthog_d`) also read like the riders' animation mode names (D) and the
 player's graph has no `CT-driver` mode.
@@ -459,10 +454,71 @@ elevator node `+0x2ea`, or the control's type, trigger and value at
 zero rate, or 900 in an acceleration slot. A light fixture (`lifi`) is
 written as a machine of type platform (no behaviour of its own); its
 light is not carried. Sounds and effects stay null (Halo 1's are `effe`
-tags the converter does not build). Devices have no physics model, as
-Halo 1's do not, so Havok does not see them: a closed door shows and
-animates, and stops bullets through its `coll`, but may not block a
-player.
+tags the converter does not build). Havok, which moves the player, sees a
+device only through a physics model, and Halo 1's have none; through
+version 41 a closed door showed, animated and stopped bullets (its
+`coll`) but did not block the player. Since version 42 a device with
+solid collision gets a `phmo` built from it (below): one rigid body per
+collision node, on the model node of the same name, so each part moves
+with its node as the door opens, as the disc's doors have (V:
+`high_small_door`, a body on each of its three moving nodes). Counted
+per level, 86 of the ten levels' 156 device tags get one; the rest have
+no collision or none with solid space (most light fixtures).
+
+## Physics models from Halo 1 (`h1objects::physics`, `rebuild::physics_model`)
+
+A Halo 1 collision BSP's 3D tree ends in leaves (open space) and missing
+children, which are solid (`h1objects::query`). Every root-to-missing
+path is a set of half-spaces; clipped to the BSP's vertex box, their
+intersection is a convex cell, and the cells together are exactly the
+solid space. `physics::solid_cells` walks the tree and returns each
+non-empty cell: its corners (the intersections of three of its planes
+inside all of them), its face planes, volume, centroid and inertia.
+`collision_disc.rs` (`halo1_solid_space_becomes_physics_pieces`) checks
+this on every collision model of the ten levels (16,189 cells): just
+outside a surface Halo 1's own tree finds open space 51,729 times and
+solid 179, just inside solid 50,591 times and open 1,317 (parts thinner
+than the probe step, open meshes); at 142,528 points through the BSP
+boxes the tree and the cells agree on all but 117 (points on a face).
+
+`rebuild::physics_model` writes the `phmo` from the definition: each
+cell a polyhedron, a body with several a list of them, then the bodies,
+one material, one region and permutation naming every body, and the
+model's nodes (parent, next sibling, first child) when a body names one.
+The layout follows the disc's polyhedron physics models (V:
+`high_small_door`, `ghost`, `pelican`):
+
+- a polyhedron of up to 12 corners keeps them inline at `+0x60` in up to
+  three groups of four transposed points (capacity `0x80000003`); a
+  bigger one takes its groups from the root `four_vectors` block, in
+  polyhedron order (only those consume it), capacity `0x80000000 |
+  groups`. Planes come from the root `plane_equations` block, in order,
+  for every polyhedron; `+0xfc` is the plane count with bit 31 set.
+- a list of up to four children keeps them inline (capacity
+  `0x80000004`); a longer one takes them from `list_children`, capacity
+  `0x80000000 | n`. Retail rigid bodies name a list directly 125 times,
+  so no MOPP is written over it.
+- shape header `+8` 1.0, `+0xc` 0.9, `+0x10` 0.6, `+0x14` the piece's
+  volume, `+0x18` its mass; rigid body `+0x1a` 2, `+0x1e` 5 (retail
+  bodies hold 1 to 6 there, 5 on most doors and vehicles; meaning not
+  established), `+0x20` 1.0, `+0x28` 0.05; body mass, centre of mass and
+  inertia are the pieces' at the body's density.
+- the material is `hard_metal_thick_cov` with header `+6` 76, the pair
+  the disc's `high_small_door` holds (D: `+6` reads as an index into a
+  global material table that is not named here). Halo 1's collision
+  materials are not carried.
+- the shapes' Havok headers and pointers stay zero; the engine writes
+  them at load (`0x001ea9c0`).
+
+A device's mass is its cells' volume at 1000 kg per cubic metre
+(`convert::DENSITY`, per cubic world unit). A body of more than 64 cells
+(`physics::MAX_PIECES`; no built body on the ten levels reaches it, the
+most is b30's falling box with 62) keeps one enclosing piece
+per node instead: the intersection of the cells' own faces that hold
+every corner and of 26 axis, edge and corner planes moved out to the
+farthest corner. Not done: the `block_30` pairs retail doors hold
+(adjacent bodies' nodes, D), constraints, and Halo 1's `phys` mass
+points.
 
 Placement (`h1campaign::scenario`): Halo 1's machines (`+0x294`, `0x40`
 each), controls (`+0x2ac`, `0x40`) and light fixtures (`+0x2c4`, `0x58`)
@@ -496,7 +552,7 @@ devices name their placement (a fixture's names its machine).
 |---|---|---|
 | `vehi` with no template row | definitions (default) | nothing else to build on |
 | `mach`, `ctrl`, Halo 1's `lifi` (as `mach`) | definitions (only path) | no template path was ever kept |
-| `phmo` of a rebuilt vehicle | definitions (a stand-in sphere) | `vehicle_new` refuses a model with none |
+| `phmo` of a rebuilt vehicle or device, or a templated vehicle with none | definitions (Halo 1's collision as polyhedra; a stand-in sphere with no solid collision) | `vehicle_new` refuses a model with none; Havok sees a device only through one |
 | `scen` | template by default; definitions with `Options::rebuild` | the rebuilt scenery has not run in the game |
 | `bipd`, `vehi` with a template, `weap`, `eqip`, `proj` | template | their gameplay fields (speeds, seats, cameras, physics, weapon tuning) are unknown spans; built from zero they would not play |
 
@@ -508,9 +564,10 @@ devices name their placement (a fixture's names its machine).
 - **More groups:** `sky`, `effe`, `proj`, `jpt!` (the second tier asked
   for), and the other object groups (`bloc`, `garb`, `proj`, `crea`,
   `ssce`), which `struct obje` already covers.
-- **Physics shapes from Halo 1**: rebuilt vehicles carry a stand-in
-  sphere and devices no physics model; Halo 1's collision BSP or `phys`
-  mass points as Havok shapes would make them solid.
+- **Physics shapes from Halo 1**: built from the collision BSP's solid
+  cells since version 42. Open: whether a device's bodies need retail's
+  `block_30` node pairs, the shape header's material index table, and
+  the rigid body words at `+0x18`/`+0x1c`.
 - **More converter paths**: the other objects (templated vehicles,
   bipeds, weapons, equipment, projectiles), shaders (`shad` with its postprocess mirrors kept consistent),
   and the sky, each on its definition with its own comparison.
