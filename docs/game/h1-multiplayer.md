@@ -243,11 +243,17 @@ The base's old BSP region stays in the file, unused.
   direction, the same 11:11:10 packing; the normal where a vertex has
   none). One subpart per part.
 - **Every render field retail fills** (docs/formats/structure-bsp.md,
-  "Geometry header", "Section struct"). Parts: kind 2 (opaque) and flags
-  `0xb`, as on all 2,450 retail multiplayer parts; the bounding sphere
-  (`+0x10` centre of the box, `+0x2c` farthest vertex from it, at least
-  1 mm) and the box (`+0x30`). Cluster section info: shadow-casting,
-  opaque and rigid counts equal to the totals, compression flags 4 (the
+  "Geometry header", "Section struct"). Parts: flags `0xb`, as on all 2,450
+  retail multiplayer parts, and the kind retail gives the template of
+  the material's shader (`structure::part_kind`): 4 for every template
+  under `shader_templates\transparent\` and for `water_pool`, 3 for
+  `decal_simple` and `overlay`, 2 for every other (alpha-tested ones
+  included: 155 of 157 retail `tex_bump_alpha_test_single_pass` parts
+  are kind 2); the bounding sphere (`+0x10` centre of the box, `+0x2c`
+  farthest vertex from it, at least 1 mm) and the box (`+0x30`). Cluster
+  section info: shadow-casting triangles and parts are kind 2's, opaque
+  parts kind 2 and 3's, as on every retail cluster with a kind 3 or 4
+  part (961); rigid counts as the shadow-casting; compression flags 4 (the
   `i16` lightmap coordinates), the subpart count, lighting flags 3
   (lightmap coordinates and incident radiance; 0 for an unlit cluster).
   Cluster tail: `+0x6d` `0xff`, the structure checksum at `+0x94`, and

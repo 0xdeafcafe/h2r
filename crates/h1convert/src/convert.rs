@@ -431,7 +431,7 @@ pub fn prepare<R: Read + Seek>(
         .location
         .ok_or(Error::Invalid("base sbsp has no data"))?
         .address;
-    let templates = Templates::from_base(&base.read_tag_bytes(sbsp)?, sbsp_at)?;
+    let mut templates = Templates::from_base(&base.read_tag_bytes(sbsp)?, sbsp_at)?;
     let mut base_shaders = Vec::new();
     for i in 0..templates.material_heads.len() {
         let id = templates.shader(i);
@@ -443,6 +443,7 @@ pub fn prepare<R: Read + Seek>(
         let template = scenario_edit::scene::shader_bitmaps(base, id)
             .map(|(t, _)| t)
             .unwrap_or_default();
+        templates.part_kinds[i] = crate::structure::base_part_kind(base, id, &template);
         base_shaders.push(shaders::BaseShader { name, template });
     }
     let h1_shaders: Vec<(String, String)> = materials

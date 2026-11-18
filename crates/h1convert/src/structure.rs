@@ -38,9 +38,52 @@ pub const SECTION: usize = 0x44;
 pub const PART: usize = 0x48;
 /// Bytes of a raw block's frame: `blkh`, the data size, and `blkf`.
 pub const RAW_FRAME: usize = 12;
-/// Part kind written: opaque, the kind of every retail multiplayer
-/// structure part (0 and 5 are not drawn, E `0x000410fc`; 4 transparent).
+/// Part kind of an opaque part (0 and 5 are not drawn, E `0x000410fc`).
+/// [`part_kind`] gives each material's.
 pub const PART_KIND: u16 = 2;
+/// Part kind of a decal drawn over opaque geometry.
+pub const PART_KIND_DECAL: u16 = 3;
+/// Part kind of a transparent part.
+pub const PART_KIND_TRANSPARENT: u16 = 4;
+
+/// [`part_kind`] of the base shader `id`, whose template `template`
+/// names when it read ([`scenario_edit::scene::shader_bitmaps`]), else
+/// as the shader library reads it (a shader that reader doesn't follow).
+pub fn base_part_kind<R: std::io::Read + std::io::Seek>(
+    base: &mut map::Map<R>,
+    id: TagId,
+    template: &str,
+) -> u16 {
+    if !template.is_empty() {
+        return part_kind(template);
+    }
+    let read = tags::material::ShaderLibrary::read(base)
+        .ok()
+        .and_then(|lib| lib.shader(id).ok())
+        .and_then(|s| base.tag(s.template.id).ok()?.name.clone());
+    part_kind(read.as_deref().unwrap_or_default())
+}
+
+/// The part kind retail gives a structure part drawn with a shader of the
+/// template `template` (a `stem` path). V (every structure part of every
+/// retail Halo 2 map, by its material's template): every part under
+/// `shader_templates\transparent\` and every `water_pool` and
+/// `water_pool_static` part is kind 4; every `decal_simple` part and 85
+/// of 98 `overlay` parts are kind 3; the other opaque templates are kind
+/// 2 (kind 5, not drawn, on a few illuminated ones). Alpha-tested
+/// templates are opaque: 155 of 157 `tex_bump_alpha_test_single_pass`
+/// parts are kind 2.
+pub fn part_kind(template: &str) -> u16 {
+    let leaf = template.rsplit('\\').next().unwrap_or_default();
+    if template.contains("\\transparent\\") || leaf.starts_with("water_pool") {
+        PART_KIND_TRANSPARENT
+    } else if matches!(leaf, "decal_simple" | "overlay") {
+        PART_KIND_DECAL
+    } else {
+        PART_KIND
+    }
+}
+
 /// Part flag bit 3: a triangle list.
 pub const PART_TRIANGLE_LIST: u16 = 0x8;
 /// Part flags written: every retail multiplayer structure part has 0xb,
@@ -361,7 +404,8 @@ fn fourcc(s: &[u8; 4]) -> [u8; 4] {
 /// A section's raw block (`blkh`, size, section struct, resources,
 /// `blkf`) and its resource table (16-byte entries), as
 /// docs/formats/structure-bsp.md, "Raw block" and "Block resource".
-pub fn raw_block(s: &Section) -> (Vec<u8>, Vec<[u8; 16]>) {
+/// `kind` gives a part's kind from its material.
+pub fn raw_block(s: &Section, kind: impl Fn(u16) -> u16) -> (Vec<u8>, Vec<[u8; 16]>) {
     if s.indices.is_empty() {
         let mut block = fourcc(b"blkh").to_vec();
         block.extend(0u32.to_le_bytes());
@@ -373,7 +417,7 @@ pub fn raw_block(s: &Section) -> (Vec<u8>, Vec<[u8; 16]>) {
     let mut subparts = Vec::with_capacity(s.parts.len() * 8);
     for (i, p) in s.parts.iter().enumerate() {
         let mut e = [0u8; PART];
-        put16(&mut e, 0, PART_KIND);
+        put16(&mut e, 0, kind(p.material));
         put16(&mut e, 2, PART_FLAGS);
         put16(&mut e, 4, p.material);
         put16(&mut e, 6, p.first);
@@ -689,6 +733,9 @@ pub struct Templates {
     /// `+0x08`, its datum at `+0x0c`). A written material copies one; the
     /// rest is written here: its block at `+0x10` empty, `+0x1c` 0xff.
     pub material_heads: Vec<[u8; 16]>,
+    /// Each material head's part kind ([`part_kind`] of its shader's
+    /// template; [`PART_KIND`] until set).
+    pub part_kinds: Vec<u16>,
 }
 
 impl Templates {
@@ -736,8 +783,13 @@ impl Templates {
                     .0
                     .iter()
                     .map(|m| m[..16].try_into().expect("16"))
-                    .collect()
+                    .collect::<Vec<_>>()
             },
+            part_kinds: Vec::new(),
+        })
+        .map(|mut t| {
+            t.part_kinds = vec![PART_KIND; t.material_heads.len()];
+            t
         })
     }
 }
@@ -928,6 +980,21 @@ pub fn collision_block(bsp: &Bsp) -> Block {
 }
 
 impl Structure<'_> {
+    /// The part kind of structure material `material`: its base material
+    /// head's ([`Templates::part_kinds`]).
+    pub fn part_kind(&self, material: u16) -> u16 {
+        let from = self
+            .materials
+            .get(usize::from(material))
+            .copied()
+            .unwrap_or(0);
+        self.templates
+            .part_kinds
+            .get(from)
+            .copied()
+            .unwrap_or(PART_KIND)
+    }
+
     /// Clusters (and so sections), at least one.
     pub fn clusters(&self) -> usize {
         self.sections.len().max(1)
@@ -1083,22 +1150,54 @@ impl Structure<'_> {
             let s = self.sections.get(c).unwrap_or(&empty);
             let at = CLUSTER * c;
             let b = &mut cluster_elements.bytes[at..at + CLUSTER];
-            // Section info, as retail fills it: every triangle and part
-            // casts shadows and is opaque, rigid, worldspace (+0x14 0);
-            // one subpart per part.
+            // Section info, as retail fills it. Shadow-casting triangles
+            // and parts are the opaque (kind 2) ones, the opaque parts
+            // those of kind 2 and 3 (decals); transparent parts are
+            // neither. V (every retail cluster with a kind 3 or 4 part,
+            // 961): `+0x06` and `+0x12` are kind 2's triangles, `+0x08`
+            // kind 2's parts, `+0x0e` kind 2 and 3's parts. Rigid,
+            // worldspace (+0x14 0); one subpart per part.
             let (vertices, triangles, parts) = (
                 s.vertices.len() as u16,
                 (s.indices.len() / 3) as u16,
                 s.parts.len() as u16,
             );
+            let kinds: Vec<u16> = s.parts.iter().map(|p| self.part_kind(p.material)).collect();
+            let of = |want: &'static [u16]| {
+                s.parts
+                    .iter()
+                    .zip(&kinds)
+                    .filter(move |(_, k)| want.contains(k))
+            };
+            let shadow_triangles: usize = of(&[PART_KIND])
+                .map(|(p, _)| usize::from(p.count) / 3)
+                .sum();
+            let shadow_parts = of(&[PART_KIND]).count() as u16;
+            let opaque_parts = of(&[PART_KIND, PART_KIND_DECAL]).count() as u16;
+            // Opaque vertices (`+0x0c`, no engine use found): every vertex
+            // when every part is opaque, else those opaque parts index.
+            let opaque_vertices = if opaque_parts == parts {
+                vertices
+            } else {
+                let mut v: Vec<u16> = of(&[PART_KIND, PART_KIND_DECAL])
+                    .flat_map(|(p, _)| {
+                        s.indices[usize::from(p.first)..usize::from(p.first) + usize::from(p.count)]
+                            .iter()
+                            .copied()
+                    })
+                    .collect();
+                v.sort_unstable();
+                v.dedup();
+                v.len() as u16
+            };
             put16(b, 0, vertices);
             put16(b, 2, triangles);
             put16(b, 4, parts);
-            put16(b, 6, triangles); // shadow-casting triangles
-            put16(b, 8, parts); // shadow-casting parts
-            put16(b, 0xc, vertices); // opaque vertices
-            put16(b, 0xe, parts); // opaque parts
-            put16(b, 0x12, triangles); // shadow-casting rigid triangles
+            put16(b, 6, shadow_triangles as u16); // shadow-casting triangles
+            put16(b, 8, shadow_parts); // shadow-casting parts
+            put16(b, 0xc, opaque_vertices); // opaque vertices
+            put16(b, 0xe, opaque_parts); // opaque parts
+            put16(b, 0x12, shadow_triangles as u16); // shadow-casting rigid triangles
             if !s.indices.is_empty() {
                 put16(b, 0x16, COMPRESSION_FLAGS);
             }
@@ -1157,7 +1256,14 @@ impl Structure<'_> {
                 put16(&mut list.bytes, PREDICTED_RESOURCE * k + 2, index);
                 list.tag_id((PREDICTED_RESOURCE * k + 4) as u32, tag);
             }
-            let (block, table) = raw_block(s);
+            let (block, table) = raw_block(s, |m| {
+                let from = self.materials.get(usize::from(m)).copied().unwrap_or(0);
+                self.templates
+                    .part_kinds
+                    .get(from)
+                    .copied()
+                    .unwrap_or(PART_KIND)
+            });
             put32(b, 0x2c, block.len() as u32);
             put32(b, 0x30, SECTION as u32);
             put32(b, 0x34, (block.len() - RAW_FRAME - SECTION) as u32);

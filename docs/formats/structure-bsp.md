@@ -61,10 +61,10 @@ Clusters and definitions both start with the same `0x54` bytes:
 | `00` u16 | Total vertex count | V: equals every vertex stream's count |
 | `02` u16 | Total triangle count | V: index count is exactly 3 × this |
 | `04` u16 | Total part count | V: equals the loaded part count |
-| `06`, `08` u16 | Shadow-casting triangle and part counts | D: Halo 2's section info order; V: equal to the totals on retail multiplayer clusters checked |
+| `06`, `08` u16 | Shadow-casting triangle and part counts | D: Halo 2's section info order; V: the triangles and parts of kind 2 on all 961 retail clusters with a kind 3 or 4 part (so equal to the totals on an all-opaque cluster) |
 | `0c` u16 | `unknown_0c`, by Halo 2's order the opaque vertex count. No engine use found | V: ≤ total; every instance's lightmap bucket range fits when sized by this count, while 6 ranges overflow using the total |
-| `0e` u16 | Opaque part count | D, as `06` |
-| `12` u16 | Shadow-casting rigid triangle count | D, as `06` |
+| `0e` u16 | Opaque part count | D, as `06`; V: the parts of kind 2 and 3 on the same 961 clusters |
+| `12` u16 | Shadow-casting rigid triangle count | D, as `06`; V: equal to `06` on the same 961 clusters |
 | `16` u16 | Compression flags: bit 2, the lightmap texture coordinate is compressed (stream `1f`) | D; V: 4 on every drawn retail multiplayer cluster but two |
 | `24` u16 | Subpart count | V: equals the loaded subpart count |
 | `26` u16 | Lighting flags: bit 0 lightmap texture coordinates, bit 1 incident radiance (stream `30`) | D; V: 3 on every drawn retail multiplayer cluster but two |
@@ -328,6 +328,12 @@ bucket. Every cluster-reference offset lies inside its bucket.
   BSP. One of them is empty. The validator counts these
   (at most 2 allowed) and does not check their per-cluster tables.
 - Part kinds seen: 2, 3, 4, 5. Only "0 and 5 are not drawn" is engine-backed.
+  By the template of the part's material shader, on every retail
+  structure part: kind 4 on every `shader_templates\transparent\`,
+  `water_pool` and `water_pool_static` part; kind 3 on every
+  `decal_simple` part and 85 of 98 `overlay` parts (and a few others);
+  kind 5 on some illuminated opaque ones; kind 2 on the rest, the
+  alpha-tested templates included.
 
 ## Writing
 

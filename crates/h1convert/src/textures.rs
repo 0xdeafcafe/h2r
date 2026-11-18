@@ -369,6 +369,9 @@ impl Retexture {
             head[0x8..0xc].copy_from_slice(&SHAD.as_u32().to_le_bytes());
             head[0xc..0x10].copy_from_slice(&id.0.to_le_bytes());
             out.material_heads.push(head);
+            let kind = templates.part_kinds.get(c.material).copied();
+            out.part_kinds
+                .push(kind.unwrap_or(crate::structure::PART_KIND));
             heads.insert(
                 (c.material, c.h1_shader.as_str()),
                 out.material_heads.len() - 1,
