@@ -1,0 +1,71 @@
+/* The selected title's disc sits in the glass pod above its library blade. */
+.dx-games .dx-preview {
+  left: calc(var(--u) * 236); top: calc(var(--u) * 62);
+  width: calc(var(--u) * 250); height: calc(var(--u) * 250);
+}
+.dx-game-disc {
+  width: 77%; aspect-ratio: 1; border-radius: 50%;
+  transform: perspective(300px) rotateX(24deg) rotateZ(-24deg);
+  background:
+    radial-gradient(circle, transparent 9%, #789774 10%, #c1d0a5 12%, #455844 13%, #cbd7b2 16%, transparent 17%),
+    repeating-radial-gradient(circle, transparent 0 3px, #fff1 3.5px, transparent 4px),
+    conic-gradient(from 32deg, #4c6552, #c9dfaa 10%, #7a9d8b 17%, #b4c0a5 24%, #4e6254 42%, #d7e4bc 55%, #839f97 61%, #d8d6a9 66%, #546655 86%, #4c6552);
+  mask-image: radial-gradient(circle, transparent 8%, black 9%);
+  box-shadow: inset 0 0 0 2px #d8e9bd, inset 0 0 0 4px #72816c;
+}
+.dx-games .dx-panel {
+  left: calc(var(--u) * 150); top: calc(var(--u) * 335);
+  width: calc(var(--u) * 394); height: calc(var(--u) * 196);
+}
+.dx-games .dx-rows { height: calc(var(--u) * 60); padding-right: calc(var(--u) * 4); }
+.dx-games .dx-plate {
+  left: calc(var(--u) * 610); top: calc(var(--u) * 100); width: calc(var(--u) * 510);
+}
+.dx-games .dx-plate h2 { font-size: calc(var(--u) * 37); }
+.dx-games .dx-plate h3 {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 1em;
+  margin: calc(var(--u) * 14) 0 calc(var(--u) * 5); padding-top: calc(var(--u) * 9);
+  border-top: 1px solid #a0bf755e; color: #d6eaaa;
+  font: 600 calc(var(--u) * 15)/1.2 var(--f-cond); letter-spacing: .13em;
+}
+.dx-games .dx-plate h3 span, .dx-game-history time {
+  color: #c0d7a5; font-weight: 500; letter-spacing: .025em; text-transform: none;
+}
+.dx-game-history { list-style: none; padding: 0; margin: 0; }
+.dx-game-history li {
+  display: flex; align-items: center; justify-content: space-between; gap: 1em;
+  padding: calc(var(--u) * 5) 0; border-bottom: 1px solid #96bc6a33;
+}
+.dx-game-history li:last-child { border-bottom: 0; }
+.dx-game-history li div { min-width: 0; }
+.dx-game-history strong, .dx-game-history small {
+  display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dx-game-history strong { color: #e6f3ce; font-size: calc(var(--u) * 21); letter-spacing: .035em; }
+.dx-game-history small { color: #bbd39c; text-transform: none; letter-spacing: .025em; }
+.dx-game-history time { flex: none; font-size: calc(var(--u) * 15); }
+.dx-games .dx-game-record {
+  display: flex; gap: calc(var(--u) * 28); padding-top: calc(var(--u) * 3);
+}
+.dx-game-record div { display: flex; flex-direction: column-reverse; }
+.dx-game-record dt { font-size: calc(var(--u) * 13); }
+.dx-game-record dt::after { content: none; }
+.dx-games .dx-game-record dd { font-size: calc(var(--u) * 23); line-height: 1.1; }
+.dx-games .dx-game-stats {
+  height: calc(var(--u) * 38); margin-top: calc(var(--u) * 15); padding: 0 calc(var(--u) * 18);
+  border-color: #9fbe66; color: #ddeeae; font-weight: 600; gap: calc(var(--u) * 18);
+}
+.dx-games .dx-game-stats:is(:hover, :focus) { background: #d7ec83; color: #213814; outline: 1px solid #eaffad; }
+
+@media (max-aspect-ratio: 4/5) {
+  .dx-games .dx-panel { left: calc(var(--u) * 10); top: calc(var(--u) * 62); width: calc(var(--u) * 380); height: calc(var(--u) * 169); }
+  .dx-games .dx-panel-head { height: 0; }
+  .dx-games .dx-preview {
+    left: calc(var(--u) * 290); top: calc(var(--u) * 85); z-index: 1;
+    width: calc(var(--u) * 75); height: calc(var(--u) * 75); pointer-events: none;
+  }
+  .dx-games .dx-rows { margin-right: calc(var(--u) * 84); }
+  .dx-games .dx-plate { left: calc(var(--u) * 10); top: calc(var(--u) * 242); width: calc(var(--u) * 380); }
+  .dx-games .dx-plate h2 { font-size: calc(var(--u) * 29); }
+  .dx-games .dx-game-stats { min-height: 40px; }
+}

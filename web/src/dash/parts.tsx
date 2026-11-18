@@ -29,12 +29,12 @@ export function Orb(props: { turn?: number }) {
       <svg class="dx-orb-svg" viewBox="-170 -170 340 340">
         <defs>
           <radialGradient id="dxo-body" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="104" fx="16" fy="26">
-            <stop offset="0" stop-color="#fffc92" />
-            <stop offset=".24" stop-color="#f7f44c" />
-            <stop offset=".5" stop-color="#e1eb35" />
-            <stop offset=".7" stop-color="#b6df2a" />
-            <stop offset=".87" stop-color="#6fc81f" />
-            <stop offset="1" stop-color="#3a9c14" />
+            <stop offset="0" stop-color="#ffffbb" />
+            <stop offset=".24" stop-color="#e9fa71" />
+            <stop offset=".5" stop-color="#cde848" />
+            <stop offset=".7" stop-color="#8cc52f" />
+            <stop offset=".87" stop-color="#439429" />
+            <stop offset="1" stop-color="#194e22" />
           </radialGradient>
           <radialGradient id="dxo-back" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="128">
             <stop offset=".5" stop-color="#0c4a08" stop-opacity=".5" />
@@ -267,9 +267,10 @@ export function Tubes() {
   );
 }
 
-export type GlyphName = "record" | "history" | "download" | "exit" | "compare" | "career" | "key" | "sign" | "store" | "server" | "globe" | "gear" | "empty";
+export type GlyphName = "disc" | "record" | "history" | "download" | "exit" | "compare" | "career" | "key" | "sign" | "store" | "server" | "globe" | "gear" | "empty";
 
 const GLYPHS: Record<GlyphName, string> = {
+  disc: "M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0ZM14 12a2 2 0 1 1-4 0 2 2 0 0 1 4 0ZM6 12a6 6 0 0 1 6-6",
   record: "M5 19V11M10 19V5M15 19V9M20 19V14M3 21H22",
   history: "M12 6V12L16 14M12 3A9 9 0 1 1 3.5 9M3 4V9H8",
   download: "M12 3V15M7 10.5L12 15.5L17 10.5M4 20H20",

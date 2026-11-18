@@ -4,12 +4,12 @@
 // items and the account (recovery code, authenticator, devices, sign out).
 // Profile and the server live under settings.
 
-export type SectionId = "live" | "sessions" | "friends" | "clans" | "players" | "history" | "settings" | "signup" | "server" | "signin" | "recover" | "account";
+export type SectionId = "live" | "games" | "sessions" | "friends" | "clans" | "players" | "history" | "settings" | "signup" | "server" | "signin" | "recover" | "account";
 
 export function menuFor(signedIn: boolean): SectionId[] {
   return signedIn
-    ? ["live", "sessions", "friends", "players", "history", "account", "settings"]
-    : ["signin", "signup", "recover", "live", "history", "sessions", "players", "settings"];
+    ? ["live", "games", "sessions", "friends", "players", "history", "account", "settings"]
+    : ["signin", "signup", "recover", "live", "history", "games", "sessions", "players", "settings"];
 }
 
 /** Why a menu item is greyed: it needs an account. Null when it opens. */
