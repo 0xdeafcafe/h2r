@@ -254,6 +254,8 @@ can point at.
   and biped flag words. Polling
   `object player.0` on one `h2 agent -` connection and keeping one reply per
   stamped tick gives a per-tick movement trace.
+  `physics.havok_pos` and `havok_velocity` are the object's first Havok
+  body; [`havok.*`](#havok-the-physics-world) has every body and contact.
 - `world.raycast`, `world.visible {from: "camera" | player}`: what the player
   can see, for both "is this on screen" and closed-loop movement.
 - `world.overhead {bsp, size}` renders a top-down map image with numbered
@@ -1154,6 +1156,28 @@ is the local embedded server (`h2 play --live-local`,
 `live_server::start_embedded`), which issues bot identities and accepts
 `bot: true` only for xuids it issued. Server-side bot accounts are
 bed6c8dc's. Never point a sim run at live.forbes.red.
+
+## `havok`: the physics world
+
+Built 2026-11-18, tested over synthetic guest memory; not run against the
+game. Layout and evidence: [havok-runtime.md](../engine/havok-runtime.md).
+Game methods (`agent::havok::install`), answered at a tick boundary.
+
+| Method | Access | What |
+|---|---|---|
+| `havok.bodies` | read | `{near?, radius?, limit?}`: rigid bodies: `entity` (address, the key contacts use), `state` (`active`, `inactive`, `fixed`), `object` (agent id) and `datum`, `pos`, `velocity`, `angular_velocity`, `inv_mass`, `mass`, `friction`, `restitution`. `near` (an object id) keeps bodies within `radius` (default 5) of its body, nearest first, with `distance`; `limit` default 64 |
+| `havok.contacts` | read | `{object?}`: contact constraints, each `a`, `b` (`entity`, `object`, `datum`, `fixed` for the level and static bodies) and `points`: `pos`, `normal` (from `b` toward `a`, **S**), `distance` (negative is penetration), `impulse` (what the solver applied on its last step), `friction`, `restitution`. With `object`, only its contacts, with it as `a` |
+
+```sh
+h2 agent havok.contacts '{"object":"player.0"}'
+h2 agent havok.bodies '{"near":"player.0","radius":3}'
+```
+
+For a superbounce, poll `havok.contacts {object: player.0}` once a tick
+on one `h2 agent -` connection next to `object player.0`: the contact
+with `b.fixed` is the level, and `impulse` over the body's `mass` is the
+velocity it gave. Which triangle a point is on is not read yet
+([havok-runtime.md](../engine/havok-runtime.md), "Open").
 
 ## Open decisions
 

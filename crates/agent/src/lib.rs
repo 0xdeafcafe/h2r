@@ -20,6 +20,8 @@
 //!   `settings.*` and `perf.overlay` for it (docs/runtime/debug-menu.md).
 //! * [`Reader`] is what it reads: [`GuestReader`] over `live-telemetry`'s
 //!   readers in the game, a fake in tests.
+//! * [`havok`] answers `havok.bodies` and `havok.contacts`: the Havok
+//!   world's rigid bodies and contact points ([`Agent::add_game_method`]).
 //! * [`sim`] answers `sim.*`: simulated players (through the bots),
 //!   host writes to player state, and expectations over one view of the
 //!   game ([`Agent::add_game_method`]).
@@ -29,6 +31,7 @@
 
 mod capture;
 mod exec;
+pub mod havok;
 pub mod hot;
 mod loads;
 pub mod menu;
