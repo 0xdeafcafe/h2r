@@ -166,6 +166,8 @@ pub enum Error {
     Simd,
     /// An unmasked x87 exception or an operation the x87 crate stops on.
     X87(u32),
+    /// An integer division by zero (`#DE` in the original).
+    Divide,
 }
 
 impl From<MemFault> for Error {
@@ -227,48 +229,48 @@ impl LightGlobals {
 }
 
 /// SSE scalar operations as the Pentium III does them.
-struct Sse {
-    mxcsr: u32,
+pub(crate) struct Sse {
+    pub(crate) mxcsr: u32,
 }
 
 impl Sse {
-    fn lane(r: Result<u128, simd::Xm>) -> Result<u32, Error> {
+    pub(crate) fn lane(r: Result<u128, simd::Xm>) -> Result<u32, Error> {
         r.map(|v| v as u32).map_err(|_| Error::Simd)
     }
-    fn add(&mut self, a: u32, b: u32) -> Result<u32, Error> {
+    pub(crate) fn add(&mut self, a: u32, b: u32) -> Result<u32, Error> {
         Self::lane(simd::addss(&mut self.mxcsr, a as u128, b))
     }
-    fn sub(&mut self, a: u32, b: u32) -> Result<u32, Error> {
+    pub(crate) fn sub(&mut self, a: u32, b: u32) -> Result<u32, Error> {
         Self::lane(simd::subss(&mut self.mxcsr, a as u128, b))
     }
-    fn mul(&mut self, a: u32, b: u32) -> Result<u32, Error> {
+    pub(crate) fn mul(&mut self, a: u32, b: u32) -> Result<u32, Error> {
         Self::lane(simd::mulss(&mut self.mxcsr, a as u128, b))
     }
-    fn div(&mut self, a: u32, b: u32) -> Result<u32, Error> {
+    pub(crate) fn div(&mut self, a: u32, b: u32) -> Result<u32, Error> {
         Self::lane(simd::divss(&mut self.mxcsr, a as u128, b))
     }
-    fn int(&mut self, i: i32) -> Result<u32, Error> {
+    pub(crate) fn int(&mut self, i: i32) -> Result<u32, Error> {
         Self::lane(simd::cvtsi2ss(&mut self.mxcsr, 0, i as u32))
     }
-    fn comiss(&mut self, a: u32, b: u32) -> Result<u32, Error> {
+    pub(crate) fn comiss(&mut self, a: u32, b: u32) -> Result<u32, Error> {
         simd::comiss(&mut self.mxcsr, a, b).map_err(|_| Error::Simd)
     }
     /// `comiss a, b; ja`.
-    fn above(&mut self, a: u32, b: u32) -> Result<bool, Error> {
+    pub(crate) fn above(&mut self, a: u32, b: u32) -> Result<bool, Error> {
         Ok(self.comiss(a, b)? & 0x41 == 0)
     }
     /// `comiss a, b; jb`.
-    fn below(&mut self, a: u32, b: u32) -> Result<bool, Error> {
+    pub(crate) fn below(&mut self, a: u32, b: u32) -> Result<bool, Error> {
         Ok(self.comiss(a, b)? & 0x01 != 0)
     }
     /// `ucomiss a, b; lahf; test ah, 44h; jnp`: ordered and equal.
-    fn equal(&mut self, a: u32, b: u32) -> Result<bool, Error> {
+    pub(crate) fn equal(&mut self, a: u32, b: u32) -> Result<bool, Error> {
         let f = simd::ucomiss(&mut self.mxcsr, a, b).map_err(|_| Error::Simd)?;
         Ok(f & 0x44 == 0x40)
     }
     /// `lo` if `lo > v`, else `hi` if `v > hi`, else `v`: every clamp in
     /// both functions has this shape.
-    fn clamp(&mut self, v: u32, lo: u32, hi: u32) -> Result<u32, Error> {
+    pub(crate) fn clamp(&mut self, v: u32, lo: u32, hi: u32) -> Result<u32, Error> {
         Ok(if self.above(lo, v)? {
             lo
         } else if self.above(v, hi)? {
@@ -280,25 +282,25 @@ impl Sse {
 }
 
 /// The x87 stack for the special frame's block.
-struct X87(x87::abi::X87Abi);
+pub(crate) struct X87(pub(crate) x87::abi::X87Abi);
 
 impl X87 {
-    fn new(control: u16) -> Self {
+    pub(crate) fn new(control: u16) -> Self {
         let mut s = x87::abi::X87Abi::default();
         s.control = control;
         X87(s)
     }
-    fn ok(code: u32) -> Result<(), Error> {
+    pub(crate) fn ok(code: u32) -> Result<(), Error> {
         if code & x87::abi::status::MASK == x87::abi::status::OK {
             Ok(())
         } else {
             Err(Error::X87(code))
         }
     }
-    fn fld(&mut self, bits: u32) -> Result<(), Error> {
+    pub(crate) fn fld(&mut self, bits: u32) -> Result<(), Error> {
         Self::ok(x87::abi::ld_f32(&mut self.0, bits))
     }
-    fn arith_m(&mut self, op: u32, bits: u32) -> Result<(), Error> {
+    pub(crate) fn arith_m(&mut self, op: u32, bits: u32) -> Result<(), Error> {
         Self::ok(x87::abi::arith(
             &mut self.0,
             op,
@@ -307,7 +309,7 @@ impl X87 {
             bits as u64,
         ))
     }
-    fn arith_st(&mut self, op: u32, i: u32) -> Result<(), Error> {
+    pub(crate) fn arith_st(&mut self, op: u32, i: u32) -> Result<(), Error> {
         Self::ok(x87::abi::arith(
             &mut self.0,
             op,
@@ -316,26 +318,62 @@ impl X87 {
             i as u64,
         ))
     }
-    fn fmul_m(&mut self, bits: u32) -> Result<(), Error> {
+    pub(crate) fn fmul_m(&mut self, bits: u32) -> Result<(), Error> {
         self.arith_m(x87::abi::arith_op::MUL, bits)
     }
-    fn fadd_m(&mut self, bits: u32) -> Result<(), Error> {
+    pub(crate) fn fadd_m(&mut self, bits: u32) -> Result<(), Error> {
         self.arith_m(x87::abi::arith_op::ADD, bits)
     }
-    fn unary(&mut self, op: u32) -> Result<(), Error> {
+    pub(crate) fn unary(&mut self, op: u32) -> Result<(), Error> {
         Self::ok(x87::abi::unary(&mut self.0, op))
     }
-    fn fsin(&mut self) -> Result<(), Error> {
+    pub(crate) fn fsin(&mut self) -> Result<(), Error> {
         self.unary(x87::abi::unary_op::SIN)
     }
-    fn fcos(&mut self) -> Result<(), Error> {
+    pub(crate) fn fcos(&mut self) -> Result<(), Error> {
         self.unary(x87::abi::unary_op::COS)
     }
-    fn fxch(&mut self, i: u32) -> Result<(), Error> {
+    pub(crate) fn fxch(&mut self, i: u32) -> Result<(), Error> {
         Self::ok(x87::abi::xch(&mut self.0, i))
     }
+    /// `fst dword` (no pop).
+    pub(crate) fn fst_m32(&mut self) -> Result<u32, Error> {
+        let (code, store) = x87::abi::st_f32(&self.0, 0);
+        Self::ok(code)?;
+        x87::abi::store_commit(&mut self.0, store.status, false);
+        Ok(store.value)
+    }
+    /// `fild dword`.
+    pub(crate) fn fild(&mut self, v: i32) -> Result<(), Error> {
+        Self::ok(x87::abi::ld_int(&mut self.0, v as i64))
+    }
+    /// `fld st(i)`.
+    pub(crate) fn fld_st(&mut self, i: u32) -> Result<(), Error> {
+        Self::ok(x87::abi::ld_st(&mut self.0, i))
+    }
+    /// `fstp st(i)`.
+    pub(crate) fn fstp_st(&mut self, i: u32) -> Result<(), Error> {
+        Self::ok(x87::abi::st_st(&mut self.0, i, true))
+    }
+    /// `op st(dst), st(src)`, popping after with `pop` (`fmulp`, `faddp`).
+    pub(crate) fn arith_reg(&mut self, op: u32, dst: u32, src: u32, pop: bool) -> Result<(), Error> {
+        let op = if pop { op | x87::abi::ARITH_POP } else { op };
+        Self::ok(x87::abi::arith(
+            &mut self.0,
+            op,
+            dst,
+            x87::abi::src_kind::ST,
+            src as u64,
+        ))
+    }
+    /// `fcomip st, st(i)`: the EFLAGS bits (ZF `0x40`, PF `0x04`, CF `0x01`).
+    pub(crate) fn fcomip(&mut self, i: u32) -> Result<u32, Error> {
+        let r = x87::abi::cmp(&mut self.0, 0, x87::abi::src_kind::ST, i as u64, 1, true);
+        Self::ok(r)?;
+        Ok(r & 0x45)
+    }
     /// `fstp dword`.
-    fn fstp_m32(&mut self) -> Result<u32, Error> {
+    pub(crate) fn fstp_m32(&mut self) -> Result<u32, Error> {
         let (code, store) = x87::abi::st_f32(&self.0, 0);
         Self::ok(code)?;
         x87::abi::store_commit(&mut self.0, store.status, true);

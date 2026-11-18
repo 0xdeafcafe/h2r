@@ -1033,7 +1033,21 @@ skipped light never reaches.
      `0x00485a2c`) and clamped to `[0, 1]`. Words a path does not set
      keep their old values, so the port reads them.
    - `0x00048ee0` (about 400 instructions): the shadow projection, `0x28`
-     dwords at `0x004c9798`. Not ported yet: next.
+     dwords at `0x004c9798`. Done (Code): `engine::shadow_constants::
+     shadow_globals`, the same way. ECX the context, EBX the light's frame
+     block, stack the definition; `ret 4` through a tail jump to
+     `0x003f7330`, which uploads the 36-word block as vertex shader
+     constants (ECX `0x28`, register `0x24`). It also sets the shadow mode
+     byte `0x00485a47` (2 when scene flag bit 10 is clear, 1 for a light
+     with falloff word 4 above zero and definition word `+0x14` zero),
+     clears the four desired textures at `0x0051f3d8` and binds them
+     (`0x0001cf50`), and sizes the shadow map: 128 or 512 square by pass
+     flags 4 and 5, the extent from the context's field of view and the
+     falloff, each side rounded up to 64 (`0x00048e70`) and cut to the
+     square; the full map is target 9, sized through `0x0001ddd0`. The two
+     device calls are the caller's; `0x00048e70` and `0x0001ddd0` are
+     ported. Tests: `engine/tests/shadow_constants_differential.rs` (the
+     lifted original, all memory) and `engine/tests/shadow_constants.rs`.
    These globals are what the layer-12/13 templates' engine inputs read,
    so the port's output is that block, compared word for word with the
    game's in a test that runs on recorded inputs.
