@@ -556,11 +556,23 @@ fn the_glue_signs_bots_in_with_no_press_then_runs_the_frame() {
 
 #[test]
 fn with_no_players_screen_the_bots_sign_in_and_no_mask_is_touched() {
+    // The pregame lobby's join (bot_glue::Screen::Lobby): the game's
+    // profile sign-in for each bot, then the frame; the session's
+    // local-player pass (0x65770) adds them, so nothing else is called.
     let mut g = FakeGuest::new();
     slots(&mut g);
     g.put_u32(slot(0), SLOT_PROFILE);
     let run = sign_in_then_run(g, None);
     assert_eq!(run.result, Ok(Ret::new(0x77, 0)));
+    let targets: Vec<(u32, u32)> = run
+        .calls
+        .iter()
+        .map(|c| (c.target, c.args.first().copied().unwrap_or(0)))
+        .collect();
+    let sign_in = points::PROFILE_SIGN_IN.base;
+    assert_eq!(targets[..2], [(sign_in, 1), (sign_in, 3)]);
+    assert_eq!(targets.len(), 3, "then the frame, nothing else");
+    assert_eq!(targets[2].0, 0x0012_5b40);
     assert!(signed_in(&run.guest, 1).unwrap() && signed_in(&run.guest, 3).unwrap());
     assert_eq!(run.guest.u16(SCREEN + SCREEN_MASK).unwrap(), 0b1);
 }

@@ -537,6 +537,61 @@ Game-side checks, from the traces above:
 Offline and in System Link nothing changes (no human on Live: no host to
 stand beside, and no roster).
 
+**Joining in the pregame lobby (traced, the user's run 2026-11-18).**
+Live, Clankers On, Count 5, hosted from the Live menu: the game started
+on Ivory Tower with no bots. The players screen is never shown on that
+path (Clankers is set in Game Setup, over the lobby), and the join gate
+opened only on it, so every port logged `join gate port N: top none,
+dialog none, signed_in false (slot 0x1): waits`. `ui_watch` reads the
+lobby as no screen: it shares its window and slot with the screens over
+it.
+
+- **What retail does when a second controller joins a Live lobby.** The
+  lobby's input handler `0x250b1e` (ECX the screen) takes A or Start from
+  a controller with no profile (`0x250b53`: slot `+0` bit `0x10` clear)
+  to `0x250c80`. With room (`0x199fd6`: 16 less the session's players),
+  outside matchmaking (`0x19a902`) and in a pregame lobby (`0x19a279` 3,
+  which session types 1 and 2 both give), it opens the profile chooser
+  for that controller (`0x1905bf(port, …)`, screen constructors
+  `0x18f42d`/`0x18f474`); otherwise error dialog 2 (`0x250ccd`). The
+  chooser's commit signs the profile in (`0x18fb34`, which takes a local
+  user, `0x64610`) and, on Live, logs it on (`0x24b971`: `0x190074`,
+  `0x18fee9`). **Nothing calls the session from there.** The squad
+  session's per-frame local-player pass (`0x65770`) walks the four local
+  users (`0x4cd904`) and asks each one's status (`0x646b0`); its jump
+  table (`0x65898`) is:
+
+  | status | meaning (`0x646b0`) | action |
+  |---|---|---|
+  | 0 | no local user, or on a Live session (`0x6cd50` 1) a user with the offline id's flags `0xBAD00000` (`0x14b49f`, `0x646df`) | `0x65b80`: its session player, if any, out |
+  | 1 | the session is not in states 3 to 8 | none |
+  | 2 | no session player for it, none asked for (`+0x4cd9d0`) | `0x65a60`: ask to add it (`0x5a880`), with room (`+0x54` peers against `+0x4990`, `+0x1118`+1 players against `+0x4994`), rate-limited by `[0x4cecc4]` |
+  | 3 | asked for, not there yet | none |
+  | 4, 5 | a session player whose id or properties differ | `0x65c10`: update it |
+  | 6 | in step | none |
+
+  So the session adds any signed-in local user by itself; in System Link
+  at once, on Live once the user has its Live identity.
+- **Design: the gate opens in the pregame lobby too.** The gate reads the
+  lobby from the squad session, not the screens
+  (`bots::lobby::pregame`: `[0x4d8ba0]`, networking `[0x527330]`,
+  session type `[0x527334]` 1 or 2, session `+0x741c` 3 to 8), and only
+  out of a game (a running game keeps the session in those states).
+  `bot_glue::screen` names what is up: `players` (the players screen,
+  which wins, and gets its join mask), `lobby`, or the top screen's id
+  (`none` when none). In the lobby the bot is signed in with the same
+  `PROFILE_SIGN_IN` guest call and no mask write
+  (`guest::sign_in_then(…, None, …)`); whatever sits over the lobby (the
+  Clankers page, Game Setup) does not hold it back, since the sign-in
+  presses nothing. Within 30 frames `guest::go_live_as` (or `go_live`)
+  gives it its Live identity, and `0x65770` adds it on the next frame it
+  runs. No game function past the sign-in is called: none is called on
+  an Xbox either.
+- The gate line names the screen:
+  `bots: join gate port 1: screen lobby (top none), dialog none,
+  signed_in false (slot 0x1): signs in`, then `bots: signing Clanker 1
+  in on port 1 in the pregame lobby`.
+
 **The start check (traced).** Start Game (`0x251050`, from the lobby's
 handler `0x250b1e`: A or Start from a controller with a profile, A on row
 0 at `0x250fb3`) acts only when the start state `0x19a2ce` is 9, and says
@@ -1520,8 +1575,15 @@ list for the user to play (§11).
        action. A removed phantom's peer comes out. **Phantoms join only
        once the game runs**: when it ends they leave the session and wait
        for the next game, so the lobby never holds one. On a client, or a
-       local game, they fail ("not the host"); with no room, the one that
-       does not fit fails.
+       local game, or before this console is the game's host (the first
+       frames of a game), they wait and try again each frame, logged once
+       per phantom and reason (`bots: phantom Clanker 4 waits: this
+       console is not the game's host yet (the simulation is not the
+       distributed server (mode 4, …))`; `NotNow::NotHost` says which
+       check: no network session, the simulation mode, the session state
+       or its class). They used to fail for good (the user's run:
+       `phantom Clanker 4 failed: not the host`, logged in the menus
+       before the game). With no room, the one that does not fit fails.
      - `bots::phantom::add` works (the `NotBuilt` error is gone).
      - The Clankers page's count past the free ports adds phantoms:
        "Clanker 4" and up, host-made xuids (`live_proto::bots::local_xuid`),
@@ -1747,15 +1809,20 @@ list for the user to play (§11).
    - **No `H2_BOTS` needed.** Turning Clankers On is enough: the bots
      input backend, the bots feature and the driver are always installed
      (with the XAPI); `H2_BOTS` only adds bots of its own at boot.
-   - **The join gate.** A bot is signed in only while the players screen
-     takes player one's input, nothing sits on windows 0 to 4
-     (`ui_watch::dialog`: a dialog, or the profile chooser that `0x24b6ea`
-     and `0x1905bf` open for one controller), its own slot has no profile,
-     a human has a profile to copy and no game runs (`bot_glue::to_sign_in`).
-     The log says each port's gate when it changes (`bots: join gate port
-     1: top 0x1e, dialog none, signed_in false (slot 0x0): signs in`; the
-     slot's flags: `0x10` a profile, `0x20` signed in to Xbox Live) and
-     each sign-in (`bots: signing Clanker 1 in on port 1`).
+   - **The join gate.** A bot is signed in only while its own slot has
+     no profile, a human has a profile to copy, no game runs
+     (`bot_glue::to_sign_in`) and either the players screen takes player
+     one's input with nothing on windows 0 to 4 (`ui_watch::dialog`: a
+     dialog, or the profile chooser that `0x24b6ea` and `0x1905bf` open
+     for one controller), or a pregame lobby's session is up (§4.2,
+     "Joining in the pregame lobby"; dialogs over the lobby do not
+     matter there). The log says each port's gate when it changes,
+     naming the screen it thinks is up (`bots: join gate port 1: screen
+     players (top 0x1e), dialog none, signed_in false (slot 0x0): signs
+     in`; `screen lobby (top none)` in a lobby; the slot's flags: `0x10`
+     a profile, `0x20` signed in to Xbox Live) and each sign-in (`bots:
+     signing Clanker 1 in on port 1 on the players screen`, or `in the
+     pregame lobby`).
 
      Bots used to tap A through the gate and let the screen's handler sign
      them in. Every tap the game took elsewhere opened a profile chooser
@@ -1811,11 +1878,11 @@ list for the user to play (§11).
         seven rows and a description of the focused row. B goes back to
         Game Setup.
      3. Set Clankers to On and Count to 2 (the log says `clankers:
-        Clanker 1 on (Normal)`). Bots join only on the players screen, so
-        back out of the lobby to it: "Clanker 1" and "Clanker 2" join by
-        themselves; go on to the lobby again. Note whether the lobby
-        itself shows them without backing out (a run decides whether the
-        lobby needs a join path of its own).
+        Clanker 1 on (Normal)`). In Split Screen, bots join on the
+        players screen, so back out of the lobby to it: "Clanker 1" and
+        "Clanker 2" join by themselves; go on to the lobby again. In a
+        System Link or Live lobby they join where they are (§4.2,
+        "Joining in the pregame lobby").
      4. Start Slayer: the two bots play as in stages 1 to 3, at the
         difficulty chosen.
      5. Quit to the lobby, open the page, set Difficulty to Legendary,
@@ -1912,6 +1979,47 @@ list for the user to play (§11).
         with BOT too, before and after a roster comes.
      7. Not covered: a local bot added mid-game is marked as a bot only
         from the next game's start.
+   **Built: bots join in the pregame lobby; phantoms wait for hosting**
+   (§4.2, "Joining in the pregame lobby"). The user's run (Live,
+   Clankers On, Count 5, hosted from the Live menu): no local bot joined
+   (the gate opened only on the players screen, and the lobby reads as
+   no screen), and the phantom failed for good ("not the host").
+   - The gate opens in a pregame lobby, read from the squad session
+     (`bots::lobby::pregame`), out of a game; the bot is signed in with
+     no screen mask, and the session's own local-player pass adds it.
+     The gate line names the screen (`players`, `lobby`, an id, `none`).
+   - A phantom that finds this console not (yet) the game's host waits
+     and tries again, logged once per reason, instead of failing.
+   - Tests: `-p bots --lib lobby` (a pregame lobby: types 1 and 2, states
+     3 to 8; not with no session, another type, another state, networking
+     off, no lobby, or nothing mapped); `-p bots --lib guest` (the lobby
+     join: a sign-in per bot, then the frame, no mask); `-p bots --lib
+     phantom` (the waiting phantom: not failed, said once, said again for
+     another reason, joins once hosting is up; each `NotHost` reason);
+     `-p boot --lib bot_glue` (the screen: players first, then the lobby,
+     never during a game; the gate open in the lobby under a dialog; each
+     joining bot signed in in the lobby and none in a game; the players
+     screen's cases as before; the gate and sign-in lines).
+   - **Game run (the user):**
+     1. `h2 play --live-local` (or `--live`), signed in. Host a Custom
+        Game from the Live menu, open Game Setup, Clanker Options: On,
+        Count 5. Back in the lobby, within a second the log says, per
+        port 1 to 3, `bots: join gate port N: screen lobby (top none),
+        …: signs in`, then `bots: signing Clanker N in on port N in the
+        pregame lobby`, then `bots: … is on Xbox Live as its own bot
+        account` (or as a guest).
+     2. The lobby lists the three local bots by their bot accounts'
+        gamertags (or "Clanker N"), not "Halo0001" or "afr(1)".
+     3. Start the game. The phantoms (Count past 3) say `bots: phantom …
+        waits: this console is not the game's host yet (…)` at most once
+        per reason, then `bots: phantom … joins (peer N)`. No `failed:
+        not the host`.
+     4. In the game all five bots play. Send the `bots:` lines if a local
+        bot does not show in the lobby (the `screen` word says what the
+        gate saw) or a phantom keeps waiting (its reason says which check).
+     5. System Link (not on Live): the same, with no `on Xbox Live` line;
+        the bots show in the lobby at once. Split Screen: the bots still
+        join on the players screen (`screen players`).
 8. **Clankermatch.**
    - The Live menu row, the playlist filter, the fake search and the lobby
      fill.
@@ -1996,7 +2104,9 @@ Known limits, for the agent API's `sim.*` docs (agent-api.md):
 Each item is for the user to play, or for a coordinator run.
 
 1. A bot port signing in through the players screen with an injected guest
-   profile (§4.2), on Split Screen, System Link and a Live custom game.
+   profile (§4.2), on Split Screen, System Link and a Live custom game;
+   and in a System Link or Live pregame lobby with no players screen
+   (§4.2, "Joining in the pregame lobby").
 2. The view window: the human gets a full screen, and the HUD, sound and
    camera are right with 1 to 3 bots.
 3. Whether Live matchmaking accepts guests (§4.4), and how our Live names

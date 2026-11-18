@@ -94,6 +94,50 @@ fn no_session_or_a_session_out_of_the_lobby_is_state_0_and_a_wrong_type_1() {
 }
 
 #[test]
+fn a_live_or_system_link_custom_game_lobby_is_a_pregame_lobby() {
+    // Session types 1 and 2 (0x19a279 makes both 3, what 0x250b1e tests).
+    for ty in [1, 2] {
+        let mut g = lobby(&[4]);
+        g.put_u32(SESSION_TYPE, ty);
+        assert!(in_pregame(&g), "type {ty}");
+    }
+    // Every lobby state the start checks take (0x58d70: 3 to 8).
+    for state in 3..=8 {
+        let mut g = lobby(&[4]);
+        g.put_u32(S + STATE, state);
+        assert!(in_pregame(&g), "state {state}");
+    }
+}
+
+#[test]
+fn no_session_another_type_or_a_session_out_of_the_lobby_is_no_pregame_lobby() {
+    let mut g = lobby(&[4]);
+    g.put_u32(SESSION, 0);
+    assert!(!in_pregame(&g), "no session");
+    let mut g = lobby(&[4]);
+    g.put_u32(S + STATE, 2);
+    assert!(!in_pregame(&g), "a session still being made");
+    let mut g = lobby(&[4]);
+    g.put_u32(S + STATE, 9);
+    assert!(!in_pregame(&g), "a session past the lobby states");
+    for ty in [0, 3, 4, 5, 6] {
+        let mut g = lobby(&[4]);
+        g.put_u32(SESSION_TYPE, ty);
+        assert!(!in_pregame(&g), "type {ty}");
+    }
+    let mut g = lobby(&[4]);
+    g.put_u8(NETWORKING, 0);
+    assert!(!in_pregame(&g), "networking off");
+    let mut g = lobby(&[4]);
+    g.put_u8(LOBBY_ON, 0);
+    assert!(!in_pregame(&g), "no lobby");
+    assert!(
+        !in_pregame(&FakeGuest::new()),
+        "nothing mapped: a fault is no"
+    );
+}
+
+#[test]
 fn a_countdown_is_state_10() {
     let mut g = lobby(&[4]);
     g.put_u8(S + COUNTDOWN, 1).put_u32(S + COUNTDOWN + 4, 5);
