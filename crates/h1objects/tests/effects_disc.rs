@@ -595,6 +595,7 @@ fn halo2_dialogue_survey() {
     let mut names: BTreeMap<String, usize> = BTreeMap::new();
     let mut groups: BTreeMap<String, usize> = BTreeMap::new();
     let mut roots: BTreeMap<String, usize> = BTreeMap::new();
+    let mut pairs: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
     let ids: Vec<TagId> = base.tags.iter().filter(|t| t.1 == FourCC(*b"udlg")).map(|t| t.0).collect();
     for id in &ids {
         let r = base.record(d, *id).unwrap();
@@ -603,6 +604,15 @@ fn halo2_dialogue_survey() {
             *names.entry(text(e.at("vocalization"))).or_default() += 1;
             if let Some(Val::Datum(Target::Id(t))) = e.at("sound") {
                 let g = base.tags.iter().find(|x| x.0 == *t).map(|x| x.1.to_string());
+                if let Some(n) = base.tags.iter().find(|x| x.0 == *t).map(|x| x.2.clone()) {
+                    let tail = n.rsplit('\\').next().unwrap_or("").to_owned();
+                    let parent = n.rsplit('\\').nth(1).unwrap_or("").to_owned();
+                    *pairs
+                        .entry(text(e.at("vocalization")))
+                        .or_default()
+                        .entry(format!("{parent}\\{tail}"))
+                        .or_default() += 1;
+                }
                 *groups.entry(format!("{g:?} {:?}", e.at("unknown_8"))).or_default() += 1;
             }
         }
@@ -613,4 +623,14 @@ fn halo2_dialogue_survey() {
     let all: Vec<String> = names.keys().cloned().collect();
     println!("{}", all.join(" "));
     println!("{} distinct names", names.len());
+    // Sounds named otherwise than the vocalization they play for.
+    for (v, ns) in &pairs {
+        let other: Vec<_> = ns
+            .iter()
+            .filter(|(n, _)| n.rsplit('\\').next() != Some(v.as_str()))
+            .collect();
+        if !other.is_empty() {
+            println!("{v}: {other:?}");
+        }
+    }
 }
