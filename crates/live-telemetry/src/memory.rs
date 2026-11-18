@@ -2209,11 +2209,13 @@ mod tests {
             .set_f32(motion + layout::MOTION_VELOCITY + 8, 12.5)
             .unwrap();
         // Ground support: a copied support contact on structure surface
-        // 0x0b11, and two character contacts on the component.
+        // 0x0b11, and two character contacts on the component. The
+        // support byte is the high byte of the biped flags (0x0201 above),
+        // so setting its copied bit makes them 0x1201.
         guest
             .set_u8(
                 body + layout::BIPED_SUPPORT_FLAGS,
-                layout::BIPED_SUPPORT_COPIED,
+                0x02 | layout::BIPED_SUPPORT_COPIED,
             )
             .unwrap();
         for (i, w) in [0x0002u32, u32::MAX, 0x0b11, u32::MAX, 0x2000_0b11]
@@ -2264,7 +2266,7 @@ mod tests {
             .unwrap();
         let m = object(&guest, unit).unwrap().unwrap().motion;
         let s = m.support.clone().expect("a biped's support");
-        assert_eq!(s.flags, layout::BIPED_SUPPORT_COPIED);
+        assert_eq!(s.flags, 0x12);
         assert_eq!(s.words, [0x0002, u32::MAX, 0x0b11, u32::MAX, 0x2000_0b11]);
         assert_eq!(s.point, [0.0, 0.0, 1.25]);
         assert_eq!(s.normal, [0.0, 0.0, 0.75]);
@@ -2294,7 +2296,11 @@ mod tests {
         assert!(capped.support.unwrap().contacts.is_empty());
         assert_eq!(m.havok, Some(([0.0, 0.0, -3.25], [0.0, 0.0, 12.5])));
         assert_eq!(m.unit_flags, Some(layout::UNIT_FLAG_CROUCH | 1));
-        assert_eq!(m.biped_flags, Some(0x0201));
+        assert_eq!(
+            m.biped_flags,
+            Some(0x1201),
+            "the support byte is their high byte"
+        );
         assert_eq!(m.airborne_ticks, Some(9));
         assert_eq!(m.hitbox_offset, Some(-44));
         assert_eq!(m.crouch, Some(0.75));

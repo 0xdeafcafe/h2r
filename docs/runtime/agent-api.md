@@ -262,7 +262,8 @@ can point at.
   Bipeds also carry `physics.support` (**Code**, layout in
   `live-telemetry`'s `layout.rs`, `BIPED_SUPPORT_*` and
   `CHARACTER_CONTACT_*`): what the biped physics update (`0x000dd990`)
-  keeps of the ground. `flags` is biped `+0x349` (`copied`: bit 4, set
+  keeps of the ground. `flags` is biped `+0x349`, the high byte of the
+  biped flags word at `+0x348` (`copied`: its bit 4, biped flags bit 12, set
   when this tick's update copied a support contact, `0x000ddeda`);
   `words` are `+0x354..+0x364` (what supports the biped, all `ffffffff`
   for nothing); `point`, `normal` and `contact_point` are `+0x368`,

@@ -666,7 +666,8 @@ pub struct Physics {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Support {
-    /// Biped `+0x349`, 2 hex digits; bit 4 (`10`) is set when this tick's
+    /// Biped `+0x349` (the high byte of the biped flags at `+0x348`), 2 hex
+    /// digits; bit 4 (`10`, biped flags bit 12) is set when this tick's
     /// update copied a support contact.
     pub flags: String,
     /// Bit 4 of `flags`.

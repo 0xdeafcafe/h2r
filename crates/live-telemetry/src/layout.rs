@@ -384,7 +384,8 @@ pub const BIPED_AIRBORNE_TICKS: u32 = 0x399;
 pub const BIPED_HITBOX_OFFSET: u32 = 0x3aa;
 /// The ground support the biped physics update (`0x000dd990`) keeps from
 /// the character's contacts. Each update clears bit 4 (`0x10`) of the byte
-/// at `+0x349` (`0x000ddb91`) and sets it again when it copies a support
+/// at `+0x349`, the high byte of `BIPED_FLAGS` (so their bit 12),
+/// (`0x000ddb91`) and sets it again when it copies a support
 /// contact (`0x000ddeda`); the five words at `+0x354..+0x364` name what
 /// supports the biped (a structure surface: `+0x35c` the key's low 16
 /// bits, `+0x354` its 13-bit field, `+0x360` -1, `0x000ddcd0..0x000ddce5`;
