@@ -508,6 +508,17 @@ impl d3d::backend::Backend for Headless {
         let r = self.0.present(surface, flags);
         self.forget(r)
     }
+    // The interpolated replay's host-only calls (d3d::interp).
+    fn stamp_present(&mut self, at: std::time::Instant) {
+        self.0.stamp_present(at)
+    }
+    fn present_replay(&mut self, surface: u32, gamma: Option<&[u8; 768]>) -> Result<(), String> {
+        let r = self.0.present_replay(surface, gamma);
+        self.forget(r)
+    }
+    fn idle(&mut self) -> Option<std::time::Instant> {
+        self.0.idle()
+    }
     fn present_with_gamma(&mut self, surface: u32, flags: u32, gamma: Option<&[u8; 768]>) -> Result<(), String> {
         let r = self.0.present_with_gamma(surface, flags, gamma);
         self.forget(r)

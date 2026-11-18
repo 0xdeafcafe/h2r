@@ -669,6 +669,17 @@ impl<B: Backend> Backend for DiagBackend<B> {
     fn present(&mut self, surface: Self::Surface, flags: u32) -> Result<(), String> {
         self.present_with_gamma(surface, flags, None)
     }
+    // The interpolated replay's host-only calls (d3d::interp): passed
+    // through, not counted as guest presents.
+    fn stamp_present(&mut self, at: std::time::Instant) {
+        self.inner.stamp_present(at)
+    }
+    fn present_replay(&mut self, surface: Self::Surface, gamma: Option<&[u8; 768]>) -> Result<(), String> {
+        self.inner.present_replay(surface, gamma)
+    }
+    fn idle(&mut self) -> Option<std::time::Instant> {
+        self.inner.idle()
+    }
     fn present_with_gamma(&mut self, surface: Self::Surface, flags: u32, gamma: Option<&[u8; 768]>) -> Result<(), String> {
         self.line(format!("present {surface:?} flags={flags:#x}"));
         if let Some(s) = &mut self.sweep {
