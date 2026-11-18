@@ -689,8 +689,29 @@ retail Halo 2 ends the game when the host leaves.
 
 **Scoreboard and stats.** Bots are players, so the scoreboard, the carnage
 report and the post-game stats treat them like anyone else. Telemetry
-(`crates/live-telemetry`) records them as players. Their flag (§8) lets the
-web and the stats split them out.
+(`crates/live-telemetry`) records them as players, keyed by their game slot
+like anyone, with `bot: true` on their roster entries (`game::Player::bot`):
+a local-slot Clanker found by its controller port, a phantom by its machine
+id (`live_telemetry::Bots`, from `clankers::Driver::bots_in_force`). Only a
+phantom from a server roster in force has an `xuid` (§9); the rest have no
+account at all.
+
+The web shows a small BOT mark beside a bot's name (the live scoreboard,
+the carnage report, the map legend, the map and 3D viewer labels, the
+viewer's follow list) and never links a bot to a player page, even a
+rostered one with an xuid; a bot keeps the name the game sent.
+
+**Bots are game-only.** The game record keeps every bot with its kills,
+deaths and score, and every knockout between a bot and a human. Career
+stats do not: the conservative choice. A human's kill of a bot is not a
+career kill, and a death to a bot is not a career death (nor do they count
+toward sprees, weapons or medals); games, wins and time played still count.
+This holds in the server's stats summary (`live_server::stats`, both homes;
+the web mock's fold mirrors it) and in the web's derived service record
+(`derive.ts` `careerKills`, `serviceRecord`). Bots get no stats-summary row
+and are nobody's "played with". Ranks are unchanged: a matchmade game ranks
+accounts only, and a rostered persistent bot's own rank is sbmm-ranked's
+(§9.4).
 
 ## 7. Clankers in custom games (the Game Setup page)
 
@@ -882,7 +903,9 @@ These go in the normal game record (`games.rs`, the Live game recording),
 with these additions:
 
 - `kind: "clankermatch"`, `"custom"` or `"matchmade"` on the game;
-- `bot: true` on each bot's player entry, keyed by its `xuid`.
+- `bot: true` on each bot's player entry, keyed by its `xuid` when it has
+  one. A host's own Clanker (a local slot, or a phantom with a host-made
+  xuid) has `bot: true` and no `xuid` (§6).
 
 Per-player stats are the same as a human's. Persistent bots are ranked
 from these by the server's normal per-playlist rank update, which treats
@@ -894,7 +917,9 @@ is sbmm-ranked's call: the host is the only reporter for its bots.
 The roster is signed by the server like `MatchProposed`. A game record with
 `bot: true` entries is accepted only for xuids that the server marked as
 bots in that match's roster, or in the `/games/bots` answer. A console
-cannot claim a human as a bot, or a bot as a human.
+cannot claim a human as a bot, or a bot as a human. A `bot: true` entry
+with no `xuid` is accepted with or without a session: it names no account,
+so there is nothing to claim, and it counts toward no one's career (§6).
 
 ### 9.4 Interface with ranks (answers to live-matchmaking.md §8.4)
 
@@ -1366,7 +1391,8 @@ list for the user to play (§11).
        (`PlayerState::machine`, player `+0x14`) is a rostered phantom's
        goes out with its xuid and `bot: true`, on `GameStarted` and on a
        later `PlayerJoined`. Local-port Clankers, and phantoms with a
-       host-made xuid, go out with neither: a `0x000E` xuid is never sent.
+       host-made xuid, go out with `bot: true` and no xuid (§6): a
+       `0x000E` xuid is never sent.
      - Not yet: `teams` is always false in the request (the page does not
        know the gametype), and local-port Clankers are not rostered.
        Clankermatch's `MatchProposed` carries the same roster (stage 8,
@@ -1580,6 +1606,56 @@ list for the user to play (§11).
         at; `h2 settings` lists the `clankers.*` values.
      8. Send the `clankers:` and `ui:` log lines if the row is missing,
         draws no text, or opens the page under the lobby.
+   **Built: bots in telemetry and the web** (§6). The user's ask: bots on
+   the live game tracking, the scoreboard and the post-game record,
+   marked as bots, without accounts.
+   - **Why they were not bots before.** Telemetry already sent every
+     listed player (`memory::players_into` filters only on salt and the
+     leaving flag), so local-slot Clankers did go out, but as anonymous
+     guests: `session::identity` marked a player as a bot only for a
+     remote player on a rostered phantom's machine, and
+     `clankers::Driver::bots_in_force` returned `None` unless a server
+     roster was in force, so a Clanker on a local slot (or a host-made
+     phantom) had no `bot` flag. The proto and server also refused `bot:
+     true` without an xuid (`game::validate_new`, `bots::check_players`),
+     and the web had no idea of `bot` at all: a rostered bot with an xuid
+     was linked to a player page by its name, and every bot's knockouts
+     went into the human's career stats.
+   - **Now:** `PlayerState::controller` (player `+0x24`); `Bots` has
+     `session_id: Option`, every phantom's machine and the local bot
+     `ports`; `bots_in_force` answers whenever there are bots. `bot:
+     true` without an xuid is accepted on both homes; the stats are
+     game-only (§6); the web marks and unlinks bots.
+   - Tests: `-p live-telemetry --lib` (`memory`: a local bot slot read
+     with its port; `session`: local Clankers as bots with no account
+     through the start, scores, frames and the end; a bot on local user 0
+     never the account; a rostered xuid only with its session; the
+     rostered test updated); `-p boot --tests clankers` (bots in force
+     before and after a roster, and after a refusal); `-p live-proto
+     game` (an xuid-less bot with or without a session); `-p live-server
+     --test bots` (a host's own Clankers taken and game-only; a human
+     still refused as a bot); `-p live-worker --lib sqlstore` (the same
+     on the Worker's composition); `web`: `bun test test/bots.test.ts`
+     (the record, the labels, the career, the mock's fold, the BOT mark
+     and no player link on the scoreboard and carnage report).
+   - **Game run (the user), bots in telemetry:**
+     1. With Live (`h2 play --live-local`, signed in), host a custom game,
+        set Clankers On, Count 2, and start Slayer.
+     2. On the site's live game page: the scoreboard lists "Clanker 1"
+        and "Clanker 2" with a BOT mark, not as links; the map shows
+        their dots and labels ("Clanker 1 · BOT") moving; their kills and
+        deaths tick up.
+     3. Open the 3D viewer: their labels carry BOT, and the follow list
+        says "(BOT)".
+     4. Kill a bot and get killed by one. After the game, the carnage
+        report lists both bots with their kills and deaths, marked BOT,
+        unlinked. Your player page's service record does not count those
+        kills or deaths; the game's history row does.
+     5. The server log shows no refused game record.
+     6. With Count 5 (phantoms past the free ports): the phantoms show
+        with BOT too, before and after a roster comes.
+     7. Not covered: a local bot added mid-game is marked as a bot only
+        from the next game's start.
 8. **Clankermatch.**
    - The Live menu row, the playlist filter, the fake search and the lobby
      fill.

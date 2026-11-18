@@ -11,7 +11,13 @@ import { LIFT_COLOUR, TELEPORTER_COLOUR, linkEnds, type MapFeatures, type Telepo
 
 export interface Bounds { minX: number; minY: number; maxX: number; maxY: number }
 
-export interface RosterEntry { name: string; colour: string }
+/** `bot`: a Clanker bot, labelled with a BOT mark (docs/game/bots.md §6). */
+export interface RosterEntry { name: string; colour: string; bot?: boolean }
+
+/** A player's map label: the name, and a BOT mark for a bot. */
+export function rosterLabel(info: RosterEntry): string {
+  return info.bot ? `${info.name} · BOT` : info.name;
+}
 
 export interface Marker { x: number; y: number; z: number; alpha: number; colour: string }
 
@@ -425,7 +431,7 @@ export function draw(ctx: CanvasRenderingContext2D, w: number, h: number, s: Sce
       ctx.arc(x, y, picked ? r * 1.4 : r, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
-      if (!s.mini && info && picked) drawLabel(ctx, pal, x, y, r, info.name);
+      if (!s.mini && info && picked) drawLabel(ctx, pal, x, y, r, rosterLabel(info));
       continue;
     }
     if (!s.mini) {
@@ -452,7 +458,7 @@ export function draw(ctx: CanvasRenderingContext2D, w: number, h: number, s: Sce
     ctx.lineTo(x + Math.cos(a - 0.6) * r, y + Math.sin(a - 0.6) * r);
     ctx.closePath();
     ctx.fill();
-    if (!s.mini && info) drawLabel(ctx, pal, x, y, r, info.name);
+    if (!s.mini && info) drawLabel(ctx, pal, x, y, r, rosterLabel(info));
   }
   ctx.globalAlpha = 1;
 

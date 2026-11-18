@@ -249,7 +249,7 @@ export default function Viewer3D(props: Viewer3DProps) {
             onChange={(e) => { const v = e.currentTarget.value; if (v === "") pick("orbit"); else pick(mode() === "eyes" ? "eyes" : "follow", +v); }}
           >
             <option value="">Follow…</option>
-            <For each={people()}>{(p) => <option value={p.index}>{p.name}</option>}</For>
+            <For each={people()}>{(p) => <option value={p.index}>{p.bot ? `${p.name} (BOT)` : p.name}</option>}</For>
           </select>
           <button classList={{ on: mode() === "eyes" }} aria-pressed={mode() === "eyes"} onClick={toggleEyes} title="First person: through the followed player's eyes, where they aim. Key: v">Eyes</button>
           <button onClick={() => scene?.reset()} title="Back to the whole map">Reset</button>

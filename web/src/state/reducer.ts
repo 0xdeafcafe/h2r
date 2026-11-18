@@ -164,7 +164,8 @@ function addPlayer(s: LiveState, g: GameState, p: GamePlayer) {
   // game already learned.
   const wire = p as GamePlayer & { appearance?: unknown };
   const prev = g.players[p.index];
-  const tag = gamertagOf(s, p.xuid);
+  // A bot is never an account's player: it keeps the name the game sent.
+  const tag = p.bot ? null : gamertagOf(s, p.xuid);
   g.players[p.index] = {
     ...p,
     name: tag ?? p.name,
@@ -212,7 +213,7 @@ export function applyEvent(s: LiveState, ev: WireEvent): boolean {
       // Games that named this account before it was known (a replay, or an
       // account seen first through presence) now show its gamertag.
       for (const g of Object.values(s.games)) {
-        for (const p of Object.values(g.players)) if (p.xuid === d.xuid) displayName(p, d.gamertag);
+        for (const p of Object.values(g.players)) if (p.xuid === d.xuid && !p.bot) displayName(p, d.gamertag);
       }
       break;
     }
@@ -456,6 +457,8 @@ export interface Standing {
   game_name: string | null;
   team: number;
   xuid: Xuid | null;
+  /** A Clanker bot: no player page, a BOT mark beside the name. */
+  bot: boolean;
   left: boolean;
   /** The player's appearance, when known (for `<Emblem appearance=…>`). */
   appearance: Appearance | null;
@@ -471,6 +474,7 @@ export function standings(g: GameState): Standing[] {
       game_name: p.game_name ?? null,
       team: p.team,
       xuid: p.xuid ?? null,
+      bot: p.bot === true,
       left: p.left,
       appearance: p.appearance ?? null,
       score: g.scores[p.index] ?? emptyScore(p.index),

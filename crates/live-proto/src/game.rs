@@ -60,8 +60,10 @@ pub struct Player {
     /// (docs/live/live-telemetry.md, Player appearance).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub appearance: Option<Appearance>,
-    /// A bot (docs/game/bots.md §9.2): the server accepts it only for an
-    /// xuid in the session's roster.
+    /// A bot (docs/game/bots.md §6, §9.2). With an `xuid`, the server
+    /// accepts it only for an xuid in the session's roster. Without one it
+    /// is a host's own Clanker (a local slot, or a phantom it made): no
+    /// account, so no stats page, career stats or rank.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bot: Option<bool>,
 }
@@ -881,13 +883,10 @@ pub fn validate_new(game: &NewGame) -> Result<(), String> {
     if game.players.iter().any(|p| p.name.chars().count() > 32) {
         return Err("player names are at most 32 characters".into());
     }
-    if game.players.iter().any(Player::is_bot) {
-        if game.session_id.is_none() {
-            return Err("a game with bots names the session they were rostered for".into());
-        }
-        if game.players.iter().any(|p| p.is_bot() && p.xuid.is_none()) {
-            return Err("a bot has its rostered xuid".into());
-        }
+    // A bot with an xuid is a rostered one; a bot without one is the
+    // host's own and needs no session.
+    if game.players.iter().any(|p| p.is_bot() && p.xuid.is_some()) && game.session_id.is_none() {
+        return Err("a game with rostered bots names the session they were rostered for".into());
     }
     if let Some(kind) = &game.kind {
         if !GAME_KINDS.contains(&kind.as_str()) {
@@ -2097,7 +2096,11 @@ mod tests {
             playlist_id: None,
             ..mm.clone()
         };
-        assert_eq!(validate_new(&custom), Ok(()), "a custom game with bots names one too");
+        assert_eq!(
+            validate_new(&custom),
+            Ok(()),
+            "a custom game with bots names one too"
+        );
     }
 
     #[test]
@@ -2125,11 +2128,20 @@ mod tests {
             ..game.clone()
         };
         assert!(validate_new(&no_session).is_err());
-        let no_xuid = NewGame {
+        // A host's own Clanker: a bot with no account, with or without a
+        // session.
+        let own = NewGame {
             players: vec![Player { xuid: None, ..bot }],
             ..game
         };
-        assert!(validate_new(&no_xuid).is_err());
+        assert_eq!(validate_new(&own), Ok(()));
+        assert_eq!(
+            validate_new(&NewGame {
+                session_id: None,
+                ..own
+            }),
+            Ok(())
+        );
     }
 
     #[test]

@@ -171,29 +171,47 @@ pub struct Playlist {
     pub session_id: Option<String>,
 }
 
-/// The bots a host runs from a server roster (docs/game/bots.md §9.1,
-/// §9.2, stage 6c): its games name the roster's session, and each phantom
-/// bot's player carries its rostered xuid and `bot: true`.
+/// The Clankers a host runs (docs/game/bots.md §6, §9): every bot goes
+/// out with `bot: true`, keyed by its game slot like any player. A bot on
+/// a local slot is found by its controller port, a phantom by its machine
+/// id. Only a phantom from a server roster carries an xuid (its rostered
+/// one), and only while the roster is in force: the rest have no account,
+/// so the server and the web keep them off stats pages and ranks.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Bots {
-    /// The Live session the roster was given for (16 hex digits): a custom
-    /// game names it as `NewGame.session_id`, which the server finds the
-    /// roster by.
-    pub session_id: String,
-    /// Each phantom bot's machine id and its rostered xuid. Host-made
-    /// xuids (`live_proto::bots::is_local_xuid`) are never sent.
+    /// The Live session a server roster was given for (16 hex digits), while
+    /// one is in force: a custom game names it as `NewGame.session_id`,
+    /// which the server finds the roster by. `None`: no roster, and no bot
+    /// carries an xuid.
+    pub session_id: Option<String>,
+    /// Each phantom bot's machine id and its xuid. Host-made xuids
+    /// (`live_proto::bots::is_local_xuid`) are never sent; a rostered one
+    /// is sent only with `session_id`.
     pub machines: Vec<([u8; 6], live_proto::Xuid)>,
+    /// The controller ports (bit `p` for port `p`) Clankers play from on
+    /// local slots.
+    pub ports: u8,
 }
 
 impl Bots {
+    /// Whether `p` is one of the bots: a local player on a bot's port, or a
+    /// remote player on a phantom's machine.
+    fn plays(&self, p: &PlayerState) -> bool {
+        match p.local_user {
+            Some(_) => p
+                .controller
+                .is_some_and(|c| c < 8 && self.ports & 1 << c != 0),
+            None => self.machines.iter().any(|(m, _)| *m == p.machine),
+        }
+    }
+
     /// The rostered xuid of a remote player on `machine`, if one of the
-    /// roster's bots plays there.
+    /// roster's bots plays there and the roster is in force.
     fn xuid(&self, machine: [u8; 6]) -> Option<live_proto::Xuid> {
+        self.session_id.as_ref()?;
         self.machines
             .iter()
-            .find(|(m, x)| {
-                *m == machine && x.0 != 0 && !live_proto::bots::is_local_xuid(*x)
-            })
+            .find(|(m, x)| *m == machine && x.0 != 0 && !live_proto::bots::is_local_xuid(*x))
             .map(|(_, x)| *x)
     }
 }
@@ -357,7 +375,7 @@ impl Session {
                     self.bots
                         .as_ref()
                         .filter(|_| !campaign)
-                        .map(|b| b.session_id.clone())
+                        .and_then(|b| b.session_id.clone())
                 }),
             playlist_id: playlist.map(|p| p.id),
             difficulty,
@@ -862,27 +880,27 @@ impl Session {
     }
 }
 
-/// Who `p` is to the server: local player 0 is the signed-in account;
-/// a remote player on a rostered bot's machine is that bot (its xuid and
-/// `bot: true`); anyone else is as the game said.
+/// Who `p` is to the server: a bot is a bot (`bot: true`, with its
+/// rostered xuid when it has one), whichever slot it plays from; local
+/// player 0 is otherwise the signed-in account; anyone else is as the game
+/// said.
 fn identity(
     signed_in: Option<live_proto::Xuid>,
     bots: Option<&Bots>,
     p: &PlayerState,
 ) -> (Option<live_proto::Xuid>, Option<bool>) {
+    if let Some(b) = bots.filter(|b| b.plays(p)) {
+        let xuid = p.local_user.is_none().then(|| b.xuid(p.machine)).flatten();
+        return (xuid, Some(true));
+    }
     if let Some(x) = signed_in.filter(|_| p.local_user == Some(0)) {
         return (Some(x), p.player.bot);
-    }
-    if p.local_user.is_none()
-        && let Some(x) = bots.and_then(|b| b.xuid(p.machine))
-    {
-        return (Some(x), Some(true));
     }
     (p.player.xuid, p.player.bot)
 }
 
-/// Gives local player 0 the signed-in account's XUID, and each rostered
-/// phantom bot its own.
+/// Gives local player 0 the signed-in account's XUID, and marks each bot
+/// (a rostered phantom with its own xuid).
 fn link(signed_in: Option<live_proto::Xuid>, bots: Option<&Bots>, players: &mut [PlayerState]) {
     for p in players.iter_mut() {
         (p.player.xuid, p.player.bot) = identity(signed_in, bots, p);
@@ -904,6 +922,7 @@ fn same_roster(
                 player,
                 appearance,
                 local_user,
+                controller,
                 machine,
                 unit,
                 stats,
@@ -922,6 +941,7 @@ fn same_roster(
             c.datum == *datum
                 && c.appearance == *appearance
                 && c.local_user == *local_user
+                && c.controller == *controller
                 && c.unit == *unit
                 && c.stats == *stats
                 && c.player.index == *index
@@ -957,7 +977,9 @@ fn frame_vel(o: &ObjectState) -> Option<[f64; 3]> {
 /// The frame's `seat`: only while riding a vehicle, at most
 /// [`MAX_FRAME_SEAT`].
 fn frame_seat(o: &ObjectState) -> Option<u32> {
-    o.vehicle.and(o.seat).map(|s| u32::from(s).min(MAX_FRAME_SEAT))
+    o.vehicle
+        .and(o.seat)
+        .map(|s| u32::from(s).min(MAX_FRAME_SEAT))
 }
 
 /// The frame's `body` and `shield`, clamped to what a frame takes (body 0
@@ -1466,6 +1488,7 @@ mod tests {
             },
             appearance: Appearance::default(),
             local_user: (index == 0).then_some(0),
+            controller: (index == 0).then_some(0),
             machine: [0; 6],
             unit: u32::MAX,
             stats: PlayerStats {
@@ -2733,8 +2756,8 @@ mod tests {
     /// Phantom bots from a server roster (docs/game/bots.md stage 6c):
     /// found by machine id, each carries its rostered xuid and `bot:
     /// true`, on the game's start and when it joins later; the game names
-    /// the roster's session. Local players (a local-port Clanker too) and a
-    /// phantom with a host-made xuid get neither.
+    /// the roster's session. A local-port Clanker and a phantom with a
+    /// host-made xuid are bots too, with no xuid.
     #[test]
     fn rostered_phantoms_are_bots_with_their_xuids() {
         use live_proto::Xuid;
@@ -2750,15 +2773,13 @@ mod tests {
         );
         let mut session = Session::new("test", None).with_signed_in(Some(me));
         session.set_bots(Some(Bots {
-            session_id: "0123456789abcdef".into(),
-            machines: vec![
-                (a, bot_a),
-                (b, live_proto::bots::local_xuid(2)),
-                (c, bot_c),
-            ],
+            session_id: Some("0123456789abcdef".into()),
+            machines: vec![(a, bot_a), (b, live_proto::bots::local_xuid(2)), (c, bot_c)],
+            ports: 1 << 1,
         }));
         let mut port = player(1, 0);
         port.local_user = Some(1);
+        port.controller = Some(1);
         port.machine = [0x00, 0x50, 0xf2, 1, 2, 3];
         let mut human = player(0, 0);
         human.machine = port.machine;
@@ -2777,7 +2798,7 @@ mod tests {
         assert_eq!(players[0]["xuid"], me.to_string());
         assert!(players[0].get("bot").is_none());
         assert!(players[1].get("xuid").is_none(), "a local-port Clanker");
-        assert!(players[1].get("bot").is_none());
+        assert_eq!(players[1]["bot"], true);
         assert_eq!(players[2]["xuid"], bot_a.to_string());
         assert_eq!(players[2]["bot"], true);
 
@@ -2800,7 +2821,7 @@ mod tests {
             .collect();
         assert_eq!(joined.len(), 2, "{joined:?}");
         assert!(joined[0].get("xuid").is_none());
-        assert!(joined[0].get("bot").is_none());
+        assert_eq!(joined[0]["bot"], true, "a host-made phantom");
         assert_eq!(joined[1]["xuid"], bot_c.to_string());
         assert_eq!(joined[1]["bot"], true);
         for p in joined.iter().chain(players.as_array().unwrap()) {
@@ -2810,6 +2831,164 @@ mod tests {
         // Marking does not make the roster look changed.
         session.sample(&snapshot(4, later));
         assert!(!kinds(&mut session).contains(&"PlayerJoined".to_string()));
+    }
+
+    /// Clankers on local slots (docs/game/bots.md §4), without Live: each
+    /// is a player with its own name, keyed by its game slot, `bot: true`
+    /// and no xuid, from the start to the end: in the roster, the scores,
+    /// the frames' positions and the final standings. The human on port 0
+    /// keeps the signed-in account; no session is named.
+    #[test]
+    fn local_slot_clankers_are_bots_without_an_account() {
+        use live_proto::Xuid;
+        let me = Xuid::parse("0009a1b2c3d4e5f6").unwrap();
+        let mut session = Session::new("test", None).with_signed_in(Some(me));
+        session.set_bots(Some(Bots {
+            session_id: None,
+            machines: Vec::new(),
+            ports: 1 << 1 | 1 << 2,
+        }));
+        let human = player(0, 0);
+        let mut roster = vec![human];
+        for (slot, port) in [(1u32, 1u8), (2, 2)] {
+            let mut b = player(slot, 0);
+            b.player.name = format!("Clanker {port}");
+            b.local_user = Some(port);
+            b.controller = Some(port);
+            b.player.local = Some(true);
+            b.unit = 0xe000_0000 | slot;
+            roster.push(b);
+        }
+        session.start(&info(), roster.clone());
+        let outputs = session.take_output();
+        let Output::Event(started) = &outputs[0] else {
+            panic!()
+        };
+        let game = &started.data;
+        assert!(game.get("session_id").is_none(), "no roster, no session");
+        let players = game["players"].as_array().unwrap();
+        assert_eq!(players[0]["xuid"], me.to_string());
+        assert!(players[0].get("bot").is_none());
+        for (p, name) in players[1..].iter().zip(["Clanker 1", "Clanker 2"]) {
+            assert_eq!(p["name"], name);
+            assert_eq!(p["bot"], true);
+            assert!(p.get("xuid").is_none(), "a Clanker has no account");
+        }
+        // The server takes the start as it is.
+        let new: live_proto::game::NewGame = serde_json::from_value(game.clone()).unwrap();
+        assert_eq!(live_proto::game::validate_new(&new), Ok(()));
+
+        // Clanker 1 scores and moves: its score and position go out under
+        // its slot like anyone's.
+        let mut later = roster.clone();
+        later[1].stats.kills = 2;
+        later[1].stats.score = 2;
+        later[0].stats.deaths = 2;
+        let mut snap = snapshot(30, later.clone());
+        snap.objects[1] = Some(ObjectState {
+            pos: [4.0, 5.0, 6.0],
+            forward: [1.0, 0.0, 0.0],
+            ..ObjectState::default()
+        });
+        session.sample(&snap);
+        let out = session.take_output();
+        assert!(
+            !out.iter()
+                .any(|o| matches!(o, Output::Event(e) if e.kind == "PlayerJoined")),
+            "marking a bot does not make the roster look changed"
+        );
+        let score = out
+            .iter()
+            .find_map(|o| match o {
+                Output::Event(e) if e.kind == "ScoreChanged" => Some(e.data.clone()),
+                _ => None,
+            })
+            .expect("a score change");
+        let row = score["players"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["index"] == 1)
+            .unwrap()
+            .clone();
+        assert_eq!(row["kills"], 2);
+        let frame = out
+            .iter()
+            .find_map(|o| match o {
+                Output::Frame(f) => Some(f.clone()),
+                _ => None,
+            })
+            .expect("a frame");
+        let bot = frame
+            .players
+            .iter()
+            .find(|p| p.index == 1)
+            .expect("the bot in the frame");
+        assert_eq!(bot.pos, [4.0, 5.0, 6.0]);
+
+        session.end(&snapshot(60, later));
+        let ended = session
+            .take_output()
+            .into_iter()
+            .find_map(|o| match o {
+                Output::Event(e) if e.kind == "GameEnded" => Some(e.data),
+                _ => None,
+            })
+            .expect("the game ends");
+        let final_row = ended["players"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["index"] == 1)
+            .unwrap()
+            .clone();
+        assert_eq!(final_row["kills"], 2);
+    }
+
+    /// The signed-in account never goes to a bot, even one on local user 0.
+    #[test]
+    fn a_clanker_on_local_user_zero_is_not_the_account() {
+        use live_proto::Xuid;
+        let me = Xuid::parse("0009a1b2c3d4e5f6").unwrap();
+        let mut session = Session::new("test", None).with_signed_in(Some(me));
+        session.set_bots(Some(Bots {
+            ports: 1 << 3,
+            ..Bots::default()
+        }));
+        let mut b = player(0, 0);
+        b.controller = Some(3);
+        session.start(&info(), vec![b]);
+        let outputs = session.take_output();
+        let Output::Event(started) = &outputs[0] else {
+            panic!()
+        };
+        let p = &started.data["players"][0];
+        assert!(p.get("xuid").is_none());
+        assert_eq!(p["bot"], true);
+    }
+
+    /// A rostered phantom's xuid goes out only with its roster's session:
+    /// without one the server would refuse the record.
+    #[test]
+    fn a_phantom_out_of_its_roster_is_a_bot_without_an_xuid() {
+        let m = [0xc1, 0xa4, 0, 0, 0, 1];
+        let mut session = Session::new("test", None);
+        session.set_bots(Some(Bots {
+            session_id: None,
+            machines: vec![(m, live_proto::Xuid(live_proto::bots::SERVER_XUID_MARK | 1))],
+            ports: 0,
+        }));
+        let mut p = player(1, 0);
+        p.machine = m;
+        session.start(&info(), vec![player(0, 0), p]);
+        let outputs = session.take_output();
+        let Output::Event(started) = &outputs[0] else {
+            panic!()
+        };
+        assert!(started.data.get("session_id").is_none());
+        let bot = &started.data["players"][1];
+        assert_eq!(bot["bot"], true);
+        assert!(bot.get("xuid").is_none());
     }
 
     #[test]

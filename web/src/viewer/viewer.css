@@ -60,6 +60,7 @@ html.gv-locked, html.gv-locked body { overflow: hidden; }
 .v3-label i { width: 7px; height: 7px; border: 1px solid rgba(0, 0, 0, .8); border-radius: 50%; }
 .v3-label small { font-weight: 400; font-size: 10px; color: #b9c6d2; }
 .v3-label small:empty { display: none; }
+.v3-label .v3-bot { padding: 0 3px; font-size: 9px; line-height: 12px; letter-spacing: .04em; color: #dfe7f2; background: #33496a; }
 .v3-label--ai { font-weight: 400; font-size: 10px; line-height: 13px; padding: 0 4px 0 3px; background: rgba(0, 0, 0, .45); cursor: default; }
 .v3-hit { font: 700 12px/1 var(--font-ui, system-ui, sans-serif); white-space: nowrap; text-shadow: 0 0 2px #000, 0 1px 2px #000, 0 0 4px rgba(0, 0, 0, .8); pointer-events: none; user-select: none; }
 .v3-hit--kill { font-size: 16px; }

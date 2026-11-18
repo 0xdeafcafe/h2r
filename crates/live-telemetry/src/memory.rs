@@ -252,6 +252,13 @@ fn players_into(
             local_user: u8::try_from(local_user)
                 .ok()
                 .filter(|u| u32::from(*u) < layout::PLAYER_SLOT_COUNT),
+            controller: if local_user == -1 {
+                None
+            } else {
+                u8::try_from(guest.u32(elem + layout::PLAYER_CONTROLLER)? as i32)
+                    .ok()
+                    .filter(|c| *c < 4)
+            },
             machine: player.machine(guest).map_err(fault)?,
             unit: engine::handle::raw_or_none(player.unit(guest).map_err(fault)?),
             stats,
@@ -1563,6 +1570,48 @@ mod tests {
             .unwrap();
         assert_eq!(players(&guest).unwrap().len(), 1);
         assert!(object(&guest, 0x90020000).unwrap().is_none());
+    }
+
+    /// A Clanker signed into a local slot (docs/game/bots.md §4.2) reads
+    /// as any local player, with its own name and its controller port,
+    /// which is how telemetry knows it for a bot; a remote player has no
+    /// port.
+    #[test]
+    fn reads_a_local_bot_slot_with_its_controller_port() {
+        let mut guest = fixture::memory();
+        fixture::put_player(&mut guest, 0, "Halo0001", 0, true, u32::MAX);
+        fixture::put_player(&mut guest, 1, "Clanker 2", 1, true, u32::MAX);
+        fixture::put_player(&mut guest, 2, "Remote", 0, false, u32::MAX);
+        let bot = fixture::PLAYER_DATA + layout::PLAYER_SIZE;
+        guest.set_u16(bot + layout::PLAYER_LOCAL_USER, 1).unwrap();
+        guest.set_u32(bot + layout::PLAYER_CONTROLLER, 2).unwrap();
+        // A remote player's controller field is -1; any value reads as none.
+        guest
+            .set_u32(
+                fixture::PLAYER_DATA + 2 * layout::PLAYER_SIZE + layout::PLAYER_CONTROLLER,
+                2,
+            )
+            .unwrap();
+
+        let players = players(&guest).unwrap();
+        assert_eq!(
+            players
+                .iter()
+                .map(|p| (p.player.name.as_str(), p.local_user, p.controller))
+                .collect::<Vec<_>>(),
+            [
+                ("Halo0001", Some(0), Some(0)),
+                ("Clanker 2", Some(1), Some(2)),
+                ("Remote", None, None),
+            ]
+        );
+        assert_eq!(players[1].player.index, 1, "keyed by its game slot");
+        assert_eq!(players[1].player.local, Some(true));
+        // An unbound local controller (-1) reads as none.
+        guest
+            .set_u32(bot + layout::PLAYER_CONTROLLER, u32::MAX)
+            .unwrap();
+        assert_eq!(players_after(&guest, &mut []).unwrap()[1].controller, None);
     }
 
     #[test]

@@ -17,7 +17,8 @@ const MAX_GAME_MS = 12 * HOUR;
 export const WINDOWS: Record<string, number | null> = { today: 1, "7d": 7, "30d": 30, all: null };
 
 type Ev = Pick<WireEvent, "stream" | "type" | "at" | "data" | "position">;
-interface Slot { xuid: string | null; name: string; team: number }
+/** A bot's slot has no account (`xuid` null) and `bot` set: game-only, as in stats.rs. */
+interface Slot { xuid: string | null; name: string; team: number; bot?: boolean }
 interface Game {
   started: number; campaign: boolean; map: string; map_id: string | null; difficulty: string | null;
   slots: Map<number, Slot>; xuids: Set<string>; spree: Map<number, number>;
@@ -51,11 +52,14 @@ export class StatsFold {
       case "GameStarted": {
         const campaign = d.mode === "campaign";
         const kind = campaign ? "campaign" : d.kind === "matchmaking" ? "matchmaking" : "custom";
-        const players: Array<{ index: number; name: string; xuid?: string; team?: number }> = Array.isArray(d.players) ? d.players : [];
+        type Wire = { index: number; name: string; xuid?: string; team?: number; bot?: boolean };
+        // A bot has no account here, whatever xuid it carries.
+        const players: Wire[] = (Array.isArray(d.players) ? (d.players as Wire[]) : [])
+          .map((p) => (p.bot ? { ...p, xuid: undefined } : p));
         const g: Game = {
           started: at, campaign, map: String(d.map), map_id: typeof d.map_id === "string" ? d.map_id : null,
           difficulty: typeof d.difficulty === "string" ? d.difficulty.toLowerCase() : null,
-          slots: new Map(players.map((p) => [p.index, { xuid: p.xuid ?? null, name: p.name, team: p.team ?? 0 }])),
+          slots: new Map(players.map((p) => [p.index, { xuid: p.xuid ?? null, name: p.name, team: p.team ?? 0, bot: p.bot === true }])),
           xuids: new Set(players.flatMap((p) => (p.xuid ? [p.xuid] : []))), spree: new Map(),
         };
         this.games.set(id, g);
@@ -73,9 +77,9 @@ export class StatsFold {
         const g = this.games.get(id);
         const p = d.player;
         if (!g || !p) return;
-        g.slots.set(p.index, { xuid: p.xuid ?? null, name: p.name, team: p.team ?? 0 });
+        g.slots.set(p.index, { xuid: p.bot ? null : p.xuid ?? null, name: p.name, team: p.team ?? 0, bot: p.bot === true });
         g.spree.delete(p.index);
-        if (p.xuid && !g.xuids.has(p.xuid)) {
+        if (p.xuid && !p.bot && !g.xuids.has(p.xuid)) {
           g.xuids.add(p.xuid);
           this.facts.push({ k: "join", at, xuid: p.xuid, name: p.name, campaign: g.campaign });
         }
@@ -92,13 +96,15 @@ export class StatsFold {
         g.spree.set(d.victim, 0);
         const killerSlot = typeof d.killer === "number" && d.killer !== d.victim ? d.killer : null;
         const scoring = d.kind === "kill" && killerSlot !== null;
+        // A bot on either side: the totals only, nobody's row.
+        const bot = v?.bot === true || (typeof d.killer === "number" && g.slots.get(d.killer)?.bot === true);
         let spree = 0;
-        if (scoring) { spree = (g.spree.get(killerSlot!) ?? 0) + 1; g.spree.set(killerSlot!, spree); }
-        const ks = killerSlot !== null ? g.slots.get(killerSlot) : undefined;
+        if (scoring && !bot) { spree = (g.spree.get(killerSlot!) ?? 0) + 1; g.spree.set(killerSlot!, spree); }
+        const ks = killerSlot !== null && !bot ? g.slots.get(killerSlot) : undefined;
         this.facts.push({
           k: "kill", at,
           t: { deaths: 1, ...(scoring ? { kills: 1 } : d.kind === "betrayal" ? { betrayals: 1 } : d.kind === "suicide" ? { suicides: 1 } : {}) },
-          victim: v?.xuid ? [v.xuid, v.name] : null, killer: ks?.xuid ? [ks.xuid, ks.name] : null,
+          victim: v?.xuid && !bot ? [v.xuid, v.name] : null, killer: ks?.xuid ? [ks.xuid, ks.name] : null,
           scoring, betrayal: d.kind === "betrayal", spree, weapon: scoring && typeof d.weapon === "string" && d.weapon ? d.weapon : null,
           map: g.map, map_id: g.map_id,
         });

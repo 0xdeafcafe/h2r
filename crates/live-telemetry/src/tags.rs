@@ -38,9 +38,9 @@ pub type MapIdLocator = Box<dyn Fn(&str) -> Option<live_proto::maps::MapId> + Se
 /// memory held, so it must not wait.
 pub type PlaylistLocator = Box<dyn Fn() -> Option<crate::session::Playlist> + Send + Sync>;
 
-/// Names the server bot roster a starting multiplayer game runs with
-/// (docs/game/bots.md stage 6c): the boot answers it from the Clankers
-/// driver and the phantom books. It runs with guest memory held, so it
+/// Names the Clankers a starting multiplayer game runs with, and the server
+/// bot roster if one is in force (docs/game/bots.md §6, stage 6c): the boot
+/// answers it from the Clankers driver and the local and phantom books. It runs with guest memory held, so it
 /// must not wait.
 pub type BotsLocator = Box<dyn Fn() -> Option<crate::session::Bots> + Send + Sync>;
 

@@ -281,6 +281,7 @@ mod tests {
             },
             appearance: Default::default(),
             local_user: Some(0),
+            controller: Some(0),
             machine: [0; 6],
             unit,
             stats: live_telemetry::PlayerStats::ZERO,

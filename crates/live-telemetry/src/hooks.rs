@@ -90,9 +90,9 @@ impl Telemetry {
         *self.playlists.lock().unwrap() = Some(locator);
     }
 
-    /// Lets each multiplayer game name the server bot roster it runs with
-    /// (docs/game/bots.md stage 6c): asked at the start, so the game names
-    /// the roster's session and its phantom bots go out as bots.
+    /// Lets each multiplayer game know its Clankers (docs/game/bots.md §6,
+    /// stage 6c): asked at the start, so every bot goes out with `bot:
+    /// true` and a game with a server roster names the roster's session.
     pub fn set_bots_locator(&self, locator: BotsLocator) {
         *self.bots.lock().unwrap() = Some(locator);
     }
