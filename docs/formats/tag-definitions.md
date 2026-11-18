@@ -798,17 +798,12 @@ devices name their placement (a fixture's names its machine).
 
 ## Weapons, equipment, projectiles and damage (`h1objects::arsenal`)
 
-With `Options::rebuild_items` every Halo 1 `weap`, `eqip` and `proj`, and
-the `jpt!` its projectiles deal, is written from its definition with no
-retail template bytes (`crates/h1objects/src/arsenal.rs`,
-`convert_arsenal.rs`). **Off by default**: the template path stays what
-the game runs, because the campaign sweep (h1campaign
-`every_campaign_level_converts`, on a10 and b40) finds two things every
-retail tag has and the rebuild lacks: material responses on every
-rebuilt `proj` (`+0x19c` empty) and modes in the converted first-person
-graphs (`jmad +0x54` empty). With the option off the sweep is clean. `proj.txt`
-and `jpt_.txt` are new; all 47 retail projectiles and 135 damage effects
-round-trip byte-identical (the proof above, now 18 groups). Building one
+Every Halo 1 `weap`, `eqip` and `proj`, and the `jpt!` its projectiles
+deal, is written from its definition with no retail template bytes
+(`crates/h1objects/src/arsenal.rs`, `convert_arsenal.rs`). **The only
+path since converter version 50**: the template path for these groups
+was removed. `proj.txt` and `jpt_.txt` are new; all 47 retail projectiles
+and 135 damage effects round-trip byte-identical (the proof above, now 18 groups). Building one
 starts from the definition default, then:
 
 - **Role words** (`arsenal::role`): the turret and biped rule over every
@@ -822,6 +817,23 @@ starts from the definition default, then:
   magazine, rounds per shot, error, spread, first-person offset, heat per
   round), `PROJECTILE_WORDS` (radii, arming time, timer, gravity, damage
   ranges; speeds per tick times 30).
+- **Material responses** (`proj +0x19c`, `arsenal::responses`): Halo
+  1's 33 responses, one per Halo 1 material type, become the response
+  most of them share, for `default_material`, then one element per Halo
+  1 material whose response differs, for the Halo 2 global material of
+  the same substance (`arsenal::MATERIALS`; the first Halo 1 material
+  wins where two map to one name). The material index at `+0x10` is the
+  name's position in the base's globals (`matg +0x150`). The response
+  maps through `arsenal::response`; the effects are null (Halo 1's
+  effects are not converted).
+- **First-person graphs** (h1models): Halo 1's `first-person <action>`
+  animations go under the one mode, class and type `any`, as every
+  retail first-person graph has, with `jmad +0x54` the one pair
+  (`any`, `any`).
+- **Globals grenades** (`h1convert::globals::set_grenades`): each Halo 2
+  grenade type of `matg +0x100` takes Halo 1's maximum and its converted
+  equipment and projectile (Halo 1's `matg +0x128`), in the campaign
+  and multiplayer converters both.
 - **References**: converted Halo 1 tags for the model chain, the
   first-person model and animations (two elements, as retail's Chief and
   Arbiter), the projectiles and every damage slot of a projectile
@@ -847,6 +859,9 @@ arsenal against Coagulation's counterparts):
 | `proj +0x100` `detonation_damage`, `+0x118` `super_detonation_damage`, `+0x12c` `attached_super_detonation_damage`, `+0x148` `impact_damage` (`jpt!`) | the retail targets' names (`rocket_launcher_explosion`, `needler_shard_*`, every bullet's damage at `+0x148`) |
 | `jpt! +0x1c` `damage_lower_bound`, `+0x20` `damage_upper_bound` (from, to) | Halo 1's `+0x1d0`, `+0x1d4`: in both games lower <= from <= to on 6 of 8 pairs, all three equal on the sniper rifles |
 | `obje` change colour `+0x8` `block_8` (`0x28`) | filled on the needler shard projectile only |
+| `proj +0x19c` `material_responses` (`0x58`): `+0x2` `response`, `+0xc` `material_name`, `+0x10` `material`, `+0x14` `potential_response`, `+0x16` `potential_flags`, `+0x18` `chance`, `+0x1c` `angle_bounds`, `+0x24` `velocity_bounds`, `+0x34` `scale_effects_by`, `+0x38` `angular_noise`, `+0x3c` `velocity_noise`, `+0x48` `initial_friction`, `+0x4c` `maximum_distance`, `+0x50`, `+0x54` frictions | Halo 1's element (`0xa0`) in the same order without its padding; on two bases each of the 179 retail elements' `material` is its name's position in `matg +0x150` and its flags zero; Halo 1's most common response, mapped, is the retail default material's on all 8 Blood Gulch / Coagulation pairs (grenades bounce 4, needle attach 3, rocket and bullets impact 0), Halo 1's water overpenetration is retail's thin liquid 2, and the plasma grenade's attach chance (Halo 1 potential 4, flags 1, skip 0) is retail's (3, 1, chance 1) (`material_responses_pair_with_retail`) |
+| `jmad` first-person modes | every retail first-person graph on Coagulation (34) has the one mode `any` and `+0x54` (`any`, `any`) (`first_person_graphs_take_retail_modes`) |
+| `matg +0x100` grenades (`0x2c`: maximum `+0`, `eqip` `+0x1c`, `proj` `+0x24`); Halo 1's `matg +0x128` (`0x44`: `+0`, `+0x24`, `+0x34`) | element 0 the frag grenade, 1 the plasma grenade on three Halo 2 bases and all eleven Halo 1 maps, and each Halo 1 grenade's `eqip` grenade type its element (`grenade_blocks_pair_across_the_discs`) |
 
 **Proof** (`every_weapon_equipment_and_projectile_rebuilds`): on the ten
 campaign levels (on `05a_deltaapproach`) and the 13 multiplayer maps on

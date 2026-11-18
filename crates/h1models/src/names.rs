@@ -23,6 +23,11 @@ impl H2Name {
     /// The animation's own name, `mode:class:type:action` with `any`
     /// segments left out (`combat:rifle:move_front`).
     pub fn full(&self) -> String {
+        // First-person weapon animations: tree mode `any`, record name
+        // `first_person:<action>` (V3: every retail first-person graph).
+        if self.mode == FIRST_PERSON_MODE && self.class == "any" && self.kind == "any" {
+            return format!("first_person:{}", self.action);
+        }
         let mut parts = vec![self.mode.as_str()];
         if self.class != "any" || self.kind != "any" {
             parts.push(&self.class);
@@ -61,6 +66,18 @@ pub const MODES: &[(&str, &str)] = &[
     ("scorpionLF", "scorpion_p_lf"),
 ];
 
+/// Halo 1's first-person label (`first-person fire-1`, the first word of
+/// every animation of a weapon's first-person graph) and the tree mode it
+/// becomes: retail first-person graphs (`characters\\masterchief\\fp\\...`)
+/// hold one mode, `any`, with class `any` and type `any` (and `dual`
+/// classes Halo 1 has no animations for).
+pub const FIRST_PERSON: &str = "first-person";
+pub const FIRST_PERSON_MODE: &str = "any";
+
+/// First-person action labels whose retail name differs beyond `-` -> `_`:
+/// retail first-person melee is `melee_strike_1` (`_2`, `_3` variants).
+pub const FIRST_PERSON_ACTIONS: &[(&str, &str)] = &[("melee", "melee_strike_1")];
+
 /// Weapon class labels that exist under the same name in Halo 2; others are
 /// kept verbatim. All five are classes of the retail biped graphs
 /// (`warthog_g:fixed:idle` covers `fixed`).
@@ -97,6 +114,22 @@ pub fn map_name(h1: &str) -> H2Name {
     };
     let words: Vec<&str> = body.split_whitespace().collect();
     let mode_word = words.first().copied().unwrap_or("");
+    if mode_word == FIRST_PERSON && words.len() == 2 {
+        let a = words[1];
+        let action = FIRST_PERSON_ACTIONS
+            .iter()
+            .find(|(h1, _)| *h1 == a)
+            .map_or_else(|| action_name(a), |(_, h2)| (*h2).to_owned());
+        return H2Name {
+            mode: FIRST_PERSON_MODE.into(),
+            class: "any".into(),
+            kind: "any".into(),
+            action: match variant {
+                Some(v) => format!("{action}:var{v}"),
+                None => action,
+            },
+        };
+    }
     let mode = MODES
         .iter()
         .find(|(a, _)| *a == mode_word)
@@ -134,6 +167,27 @@ pub fn map_name(h1: &str) -> H2Name {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_person_names_take_mode_any() {
+        let n = map_name("first-person fire-1");
+        assert_eq!(
+            (
+                n.mode.as_str(),
+                n.class.as_str(),
+                n.kind.as_str(),
+                n.action.as_str()
+            ),
+            ("any", "any", "any", "fire_1")
+        );
+        assert_eq!(n.full(), "first_person:fire_1");
+        assert_eq!(map_name("first-person melee").action, "melee_strike_1");
+        assert_eq!(map_name("first-person reload-empty").action, "reload_empty");
+        assert_eq!(
+            map_name("first-person idle%1").full(),
+            "first_person:idle:var1"
+        );
+    }
 
     #[test]
     fn splits_and_renames() {

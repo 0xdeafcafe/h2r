@@ -9,8 +9,8 @@
 //!   same over every element of the blocks the conversion writes, pooled.
 //!   Computed from the base at conversion time, so no retail value is kept
 //!   in the source;
-//! - Halo 1's values: the named fields, and the words the template path
-//!   wrote by offset ([`WEAPON_WORDS`], [`BARREL_WORDS`],
+//! - Halo 1's values: the named fields, the material responses, and the
+//!   words the removed template path wrote by offset ([`WEAPON_WORDS`], [`BARREL_WORDS`],
 //!   [`PROJECTILE_WORDS`]; offsets from `docs/formats/h1-objects.md`);
 //! - references: converted Halo 1 tags (model chain, first-person model
 //!   and animations, projectiles, damage effects), and, for slots Halo 1
@@ -39,7 +39,7 @@ pub const PROJECTILE_TYPE: u32 = 5;
 /// The blocks whose elements take pooled role words, per group.
 pub const WEAPON_BLOCKS: &[&str] = &["magazines", "barrels", "barrels.block_e4"];
 
-/// `weap` root words written from Halo 1 by offset, as the template path
+/// `weap` root words written from Halo 1 by offset, as the removed template path
 /// did: (path, Halo 1 `weap` offset). The aim assist is E (`0x1a50a0`
 /// reads `+0x208..+0x218`); the heat words are S, V2
 /// (docs/formats/h1-objects.md).
@@ -80,7 +80,7 @@ pub const BARREL_WORDS: &[(&str, usize)] = &[
     ("unknown_a4", 0xb8), // heat per round
 ];
 
-/// `proj` words from Halo 1 by offset (S, V2; the template path's rows):
+/// `proj` words from Halo 1 by offset (S, V2; the removed template path's rows):
 /// (path, Halo 1 `proj` offset, per tick to per second). Halo 1 keeps
 /// speeds per tick ([`crate::convert::TICKS_PER_SECOND`]).
 pub const PROJECTILE_WORDS: &[(&str, usize, bool)] = &[
@@ -97,9 +97,9 @@ pub const PROJECTILE_WORDS: &[(&str, usize, bool)] = &[
     ("unknown_170", 0x1d8, false), // water gravity scale
     ("unknown_174", 0x1dc, false), // water damage range, from
     ("unknown_178", 0x1e0, false), // water damage range, to
-    ("unknown_17c", 0x1e4, true),  // initial velocity
-    ("unknown_180", 0x1e8, true),  // final velocity
-    ("unknown_184", 0x1ec, true),  // guided angular velocity
+    ("unknown_17c", 0x1e4, true), // initial velocity
+    ("unknown_180", 0x1e8, true), // final velocity
+    ("unknown_184", 0x1ec, true), // guided angular velocity
 ];
 
 /// Halo 1's `jpt!` damage: lower bound `+0x1d0`, upper bound `+0x1d4`
@@ -269,10 +269,24 @@ fn refs(r: &mut Record, list: &Halo2Refs) -> Result<()> {
     Ok(())
 }
 
-fn header(r: &mut Record, path: &str, kind: u32, obj: &h1::Object, hlmt: Option<TagId>) -> Result<()> {
+fn header(
+    r: &mut Record,
+    path: &str,
+    kind: u32,
+    obj: &h1::Object,
+    hlmt: Option<TagId>,
+) -> Result<()> {
     set(r, &format!("{path}.object_type"), Val::Enum(kind))?;
-    set(r, &format!("{path}.bounding_radius"), Val::Float(obj.bounding_radius))?;
-    set(r, &format!("{path}.bounding_offset"), Val::floats(&obj.bounding_offset))?;
+    set(
+        r,
+        &format!("{path}.bounding_radius"),
+        Val::Float(obj.bounding_radius),
+    )?;
+    set(
+        r,
+        &format!("{path}.bounding_offset"),
+        Val::floats(&obj.bounding_offset),
+    )?;
     set(
         r,
         &format!("{path}.model"),
@@ -314,12 +328,32 @@ pub fn weapon(w: &h1::Weapon, b: &[u8], parts: &WeaponParts, role: &Role) -> Res
     for m in &w.magazines {
         let mut e = defs::default_record(md);
         words(&mut e, role.element("magazines"))?;
-        set(&mut e, "unknown_4", Val::Bytes(m.rounds_recharged.to_le_bytes().to_vec()))?;
-        set(&mut e, "rounds_total_initial", Val::Int(m.rounds_total_initial.into()))?;
-        set(&mut e, "rounds_total_maximum", Val::Int(m.rounds_total_maximum.into()))?;
-        set(&mut e, "rounds_loaded_maximum", Val::Int(m.rounds_loaded_maximum.into()))?;
+        set(
+            &mut e,
+            "unknown_4",
+            Val::Bytes(m.rounds_recharged.to_le_bytes().to_vec()),
+        )?;
+        set(
+            &mut e,
+            "rounds_total_initial",
+            Val::Int(m.rounds_total_initial.into()),
+        )?;
+        set(
+            &mut e,
+            "rounds_total_maximum",
+            Val::Int(m.rounds_total_maximum.into()),
+        )?;
+        set(
+            &mut e,
+            "rounds_loaded_maximum",
+            Val::Int(m.rounds_loaded_maximum.into()),
+        )?;
         set(&mut e, "reload_time", Val::Float(m.reload_time))?;
-        set(&mut e, "rounds_reloaded", Val::Int(m.rounds_reloaded.into()))?;
+        set(
+            &mut e,
+            "rounds_reloaded",
+            Val::Int(m.rounds_reloaded.into()),
+        )?;
         mags.push(e);
     }
     set(&mut r, "magazines", Val::Block(mags))?;
@@ -343,7 +377,12 @@ pub fn weapon(w: &h1::Weapon, b: &[u8], parts: &WeaponParts, role: &Role) -> Res
             "projectile",
             Val::tag(
                 FourCC(*b"proj"),
-                parts.projectiles.get(i).copied().flatten().unwrap_or(TagId::NULL),
+                parts
+                    .projectiles
+                    .get(i)
+                    .copied()
+                    .flatten()
+                    .unwrap_or(TagId::NULL),
             ),
         )?;
         let mut effects = Vec::new();
@@ -367,7 +406,11 @@ pub fn weapon(w: &h1::Weapon, b: &[u8], parts: &WeaponParts, role: &Role) -> Res
     if model.is_some() || anim.is_some() {
         for _ in 0..2 {
             let mut e = defs::default_record(pd);
-            set(&mut e, "model", Val::tag(FourCC(*b"mode"), model.unwrap_or(TagId::NULL)))?;
+            set(
+                &mut e,
+                "model",
+                Val::tag(FourCC(*b"mode"), model.unwrap_or(TagId::NULL)),
+            )?;
             set(
                 &mut e,
                 "animations",
@@ -412,10 +455,17 @@ pub struct ProjectileParts {
     /// The Halo 2 counterpart's references (effects, sounds) for the
     /// slots Halo 1 has nothing converted for.
     pub halo2: Halo2Refs,
+    /// The material responses ([`responses`]).
+    pub responses: Vec<(&'static str, i16, Response)>,
 }
 
 /// The `proj` root from Halo 1's projectile (its tag's bytes `b`).
-pub fn projectile(p: &h1::Projectile, b: &[u8], parts: &ProjectileParts, role: &Role) -> Result<Block> {
+pub fn projectile(
+    p: &h1::Projectile,
+    b: &[u8],
+    parts: &ProjectileParts,
+    role: &Role,
+) -> Result<Block> {
     let d = def(b"proj")?;
     let mut r = defs::default_record(d);
     words(&mut r, &role.root)?;
@@ -439,16 +489,237 @@ pub fn projectile(p: &h1::Projectile, b: &[u8], parts: &ProjectileParts, role: &
         "unknown_e4",
         hi | u32::from(p.detonation_noise as u16),
     )?;
+    set(
+        &mut r,
+        "material_responses",
+        Val::Block(response_elements(d, &parts.responses)?),
+    )?;
     set(&mut r, "collision_radius", Val::Float(p.collision_radius))?;
     set(&mut r, "maximum_range", Val::Float(p.maximum_range))?;
     let jpt = FourCC(*b"jpt!");
-    set(&mut r, "impact_damage", Val::tag(jpt, parts.impact_damage.unwrap_or(TagId::NULL)))?;
+    set(
+        &mut r,
+        "impact_damage",
+        Val::tag(jpt, parts.impact_damage.unwrap_or(TagId::NULL)),
+    )?;
     set(
         &mut r,
         "detonation_damage",
         Val::tag(jpt, parts.detonation_damage.unwrap_or(TagId::NULL)),
     )?;
     built(d, &r)
+}
+
+/// Halo 1's projectile material responses: `proj +0x240`, elements of
+/// `0xa0`, one per Halo 1 material type in [`MATERIALS`] order.
+pub const H1_RESPONSES: usize = 0x240;
+pub const H1_RESPONSE_SIZE: usize = 0xa0;
+
+/// Halo 1's material types in the order of its responses, each with the
+/// Halo 2 global material its response is written for: the Halo 2
+/// material of the same substance and, where Halo 2 has one, the same
+/// character. Every name is one of the base's global materials (V:
+/// `weapon_rebuild_disc` on every base).
+pub const MATERIALS: [(&str, &str); 33] = [
+    ("dirt", "tough_terrain_dirt"),
+    ("sand", "tough_terrain_sand"),
+    ("stone", "hard_terrain_stone"),
+    ("snow", "soft_terrain_snow"),
+    ("wood", "tough_organic_wood"),
+    ("metal (hollow)", "hard_metal_thin"),
+    ("metal (thin)", "hard_metal_thin"),
+    ("metal (thick)", "hard_metal_thick"),
+    ("rubber", "tough_inorganic_rubber"),
+    ("glass", "brittle_glass"),
+    ("force field", "energy_shield_thick_for"),
+    ("grunt", "soft_organic_flesh_grunt"),
+    ("hunter armor", "hard_metal_thick_cov_hunter"),
+    ("hunter skin", "soft_organic_flesh_hunter"),
+    ("elite", "soft_organic_flesh_elite"),
+    ("jackal", "soft_organic_flesh_jackal"),
+    ("jackal energy shield", "energy_shield_thick_cov_jackal"),
+    ("engineer skin", "soft_organic_flesh"),
+    ("engineer force field", "energy_shield_thin"),
+    ("flood combat form", "tough_floodflesh_combatform"),
+    ("flood carrier form", "tough_floodflesh_carrierform"),
+    ("cyborg armor", "hard_metal_thin_hum_masterchief"),
+    ("cyborg energy shield", "energy_shield_thin_hum_masterchief"),
+    ("human armor", "tough_inorganic_armor_hum"),
+    ("human skin", "soft_organic_flesh_human"),
+    ("sentinel", "hard_metal_thin_for_sentinel"),
+    ("monitor", "hard_metal_thin_for_monitor"),
+    ("plastic", "tough_inorganic_plastic"),
+    ("water", "liquid_thin_water"),
+    ("leaves", "soft_organic_plant_leafy"),
+    ("elite energy shield", "energy_shield_thin_cov_elite"),
+    ("ice", "hard_terrain_ice"),
+    ("hunter shield", "hard_metal_solid_cov_hunter"),
+];
+
+/// The material every element not written for one material covers.
+pub const DEFAULT_MATERIAL: &str = "default_material";
+
+/// Halo 2's response for Halo 1's: disappear and detonate (0, 1) impact
+/// (0), reflect (2) bounce (4), overpenetrate (3) overpenetrate (2),
+/// attach (4) attach (3). V: on the retail pairs the mapped Halo 1
+/// response of most materials is the Halo 2 default material's (frag and
+/// plasma grenades 4, needle 3, rocket and bullets 0; Halo 1's water
+/// overpenetration is retail's 2 on the liquids; `weapon_rebuild_disc`).
+pub fn response(h1: u16) -> Option<u16> {
+    match h1 {
+        0 | 1 => Some(0),
+        2 => Some(4),
+        3 => Some(2),
+        4 => Some(3),
+        _ => None,
+    }
+}
+
+/// One material response's values, in Halo 2's terms.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Response {
+    pub response: u16,
+    pub potential_response: u16,
+    pub potential_flags: u16,
+    pub chance: f32,
+    pub angle_bounds: [f32; 2],
+    /// World units per second (Halo 1's per tick, times 30).
+    pub velocity_bounds: [f32; 2],
+    pub scale_effects_by: u16,
+    pub angular_noise: f32,
+    pub velocity_noise: f32,
+    pub initial_friction: f32,
+    pub maximum_distance: f32,
+    pub parallel_friction: f32,
+    pub perpendicular_friction: f32,
+}
+
+impl Response {
+    /// From one Halo 1 element (`0xa0`): flags `+0` (zero on the disc),
+    /// response `+2`, effect `+4`, potential response `+0x24` and its
+    /// flags `+0x26`, skip fraction `+0x28` (the chance is one less it),
+    /// angle bounds `+0x2c`,
+    /// velocity bounds `+0x34` (per tick), potential effect `+0x3c`, scale
+    /// effects by `+0x5c`, angular and velocity noise `+0x60`, `+0x64`,
+    /// detonation effect `+0x68`, initial friction `+0x90`, maximum
+    /// distance `+0x94`, parallel and perpendicular friction `+0x98`,
+    /// `+0x9c`. A response Halo 2 has no counterpart for is an error.
+    pub fn from_h1(e: &[u8]) -> Result<Self> {
+        let h = |o: usize| u16::from_le_bytes([e[o], e[o + 1]]);
+        let f = |o: usize| f32::from_bits(u32_at(e, o));
+        let tick = crate::convert::TICKS_PER_SECOND;
+        let map =
+            |v: u16| response(v).ok_or_else(|| Error::Invalid(format!("material response {v}")));
+        // A potential response is set when Halo 1's is not disappear (0)
+        // or has flags; Halo 2 holds the chance it happens, Halo 1 the
+        // fraction it is skipped. V: the plasma grenade's (attach, only
+        // against units, skip 0) is retail's (3, 1, chance 1). Unset, it
+        // is retail's unused one (0, 0, chance 0).
+        let potential = h(0x24) != 0 || h(0x26) != 0;
+        Ok(Self {
+            response: map(h(2))?,
+            potential_response: if potential { map(h(0x24))? } else { 0 },
+            potential_flags: if potential { h(0x26) } else { 0 },
+            chance: if potential { 1.0 - f(0x28) } else { 0.0 },
+            angle_bounds: [f(0x2c), f(0x30)],
+            velocity_bounds: [f(0x34) * tick, f(0x38) * tick],
+            scale_effects_by: h(0x5c),
+            angular_noise: f(0x60),
+            velocity_noise: f(0x64) * tick,
+            initial_friction: f(0x90),
+            maximum_distance: f(0x94),
+            parallel_friction: f(0x98),
+            perpendicular_friction: f(0x9c),
+        })
+    }
+}
+
+/// Halo 1's responses (`b` its `proj` bytes, `+0x240`) as Halo 2
+/// elements: the response most Halo 1 materials share (the first such
+/// on a tie) for [`DEFAULT_MATERIAL`], then one element per Halo 1
+/// material whose response differs, for its [`MATERIALS`] name (the
+/// first Halo 1 material wins where two share a name). Each as
+/// (material name, its index in `materials`, values).
+pub fn responses(
+    h1: &h1map::H1Map,
+    b: &[u8],
+    materials: &[String],
+) -> Result<Vec<(&'static str, i16, Response)>> {
+    let blk = h1map::Block::read(b, H1_RESPONSES)
+        .ok_or_else(|| Error::Invalid("proj material responses".into()))?;
+    let all: Vec<Response> = h1
+        .block(blk, H1_RESPONSE_SIZE)?
+        .chunks_exact(H1_RESPONSE_SIZE)
+        .map(Response::from_h1)
+        .collect::<Result<_>>()?;
+    responses_from(&all, materials)
+}
+
+/// [`responses`] from Halo 1's responses already read.
+pub fn responses_from(
+    all: &[Response],
+    materials: &[String],
+) -> Result<Vec<(&'static str, i16, Response)>> {
+    let index = |name: &str| -> Result<i16> {
+        materials
+            .iter()
+            .position(|m| m == name)
+            .map(|i| i as i16)
+            .ok_or_else(|| Error::Invalid(format!("the base has no global material {name}")))
+    };
+    let Some(common) = all
+        .iter()
+        .max_by_key(|r| {
+            let n = all.iter().filter(|x| x == r).count();
+            // The first on a tie: max_by_key keeps the last maximum.
+            (n, std::cmp::Reverse(all.iter().position(|x| x == *r)))
+        })
+        .copied()
+    else {
+        return Ok(Vec::new());
+    };
+    let mut out = vec![(DEFAULT_MATERIAL, index(DEFAULT_MATERIAL)?, common)];
+    for (r, (_, name)) in all.iter().zip(MATERIALS.iter()) {
+        if *r != common && !out.iter().any(|o| o.0 == *name) {
+            out.push((name, index(name)?, *r));
+        }
+    }
+    Ok(out)
+}
+
+/// [`responses`] as `proj +0x19c` elements; flags 0 and the effects
+/// null (Halo 1's effects are not converted).
+fn response_elements(d: &StructDef, list: &[(&'static str, i16, Response)]) -> Result<Vec<Record>> {
+    let ed = d
+        .child("material_responses")
+        .ok_or_else(|| Error::Invalid("proj material_responses".into()))?;
+    let mut out = Vec::new();
+    for (name, index, r) in list {
+        let mut e = defs::default_record(ed);
+        let int = |v: u16| Val::Int(i64::from(v));
+        let pair = |v: [f32; 2]| Val::floats(&v);
+        set(&mut e, "response", int(r.response))?;
+        set(&mut e, "material_name", Val::text(name))?;
+        set(&mut e, "material", Val::Int(i64::from(*index)))?;
+        set(&mut e, "potential_response", int(r.potential_response))?;
+        set(&mut e, "potential_flags", int(r.potential_flags))?;
+        set(&mut e, "chance", Val::Float(r.chance))?;
+        set(&mut e, "angle_bounds", pair(r.angle_bounds))?;
+        set(&mut e, "velocity_bounds", pair(r.velocity_bounds))?;
+        set(&mut e, "scale_effects_by", int(r.scale_effects_by))?;
+        set(&mut e, "angular_noise", Val::Float(r.angular_noise))?;
+        set(&mut e, "velocity_noise", Val::Float(r.velocity_noise))?;
+        set(&mut e, "initial_friction", Val::Float(r.initial_friction))?;
+        set(&mut e, "maximum_distance", Val::Float(r.maximum_distance))?;
+        set(&mut e, "parallel_friction", Val::Float(r.parallel_friction))?;
+        set(
+            &mut e,
+            "perpendicular_friction",
+            Val::Float(r.perpendicular_friction),
+        )?;
+        out.push(e);
+    }
+    Ok(out)
 }
 
 /// What rebuilt equipment references.

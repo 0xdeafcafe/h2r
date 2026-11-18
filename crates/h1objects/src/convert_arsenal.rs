@@ -58,7 +58,11 @@ impl Converter<'_> {
         Some((id, self.base.head(id, d.size.into()).ok()?))
     }
 
-    fn rebuilt_report(tag: &Tag, counterpart: Option<TagId>, base: &crate::base::Base) -> ObjectReport {
+    fn rebuilt_report(
+        tag: &Tag,
+        counterpart: Option<TagId>,
+        base: &crate::base::Base,
+    ) -> ObjectReport {
         let c = counterpart
             .and_then(|c| base.name(c))
             .map_or("none".to_owned(), |n| n.1.to_owned());
@@ -256,6 +260,7 @@ impl Converter<'_> {
             impact_damage,
             detonation_damage,
             halo2: Vec::new(),
+            responses: arsenal::responses(self.h1, b, &self.base.materials)?,
         };
         if let Some((_, root)) = &cp {
             // Damage is Halo 1's; every other reference (effects, sounds,
@@ -273,11 +278,13 @@ impl Converter<'_> {
         let root = arsenal::projectile(&p, b, &parts, &role)?;
         for (path, g, id) in &parts.halo2 {
             let n = self.base.name(*id).map_or("?", |n| n.1);
-            rep.no_home.push(format!("Halo 2 reference {path}: {g} {n}"));
+            rep.no_home
+                .push(format!("Halo 2 reference {path}: {g} {n}"));
         }
         rep.no_home.push(format!(
-            "{} Halo 1 material responses: not carried (Halo 1's effects are not converted); none written",
-            p.material_responses.len()
+            "{} Halo 1 material responses as {} (their effects null: Halo 1's effects are not converted)",
+            p.material_responses.len(),
+            parts.responses.len()
         ));
         self.tree.reports.push(rep);
         Ok(self.tree.push(
@@ -310,7 +317,8 @@ impl Converter<'_> {
         let root: Block = arsenal::equipment(&e, &parts, &role)?;
         for (path, g, id) in &parts.halo2 {
             let n = self.base.name(*id).map_or("?", |n| n.1);
-            rep.no_home.push(format!("Halo 2 reference {path}: {g} {n}"));
+            rep.no_home
+                .push(format!("Halo 2 reference {path}: {g} {n}"));
         }
         self.tree.reports.push(rep);
         Ok(self.tree.push(
