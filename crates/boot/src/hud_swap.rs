@@ -31,7 +31,7 @@
 //! Halo 1 widgets use one offset for all; every other activation puts
 //! back what the table held before the first write ([`Sensor`]).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
@@ -238,6 +238,33 @@ pub fn read_campaign_table(data_root: &Path) -> Table {
 struct HudSwap {
     table: Arc<RwLock<Table>>,
     sensor: Arc<std::sync::Mutex<Sensor>>,
+    /// Campaign levels with a Halo 2-assets map ([`campaign_halo2_levels`]):
+    /// their pairs are the Halo 1 map's datums, so they hold only while
+    /// the campaign's assets are Halo 1's.
+    halo2_levels: Arc<HashSet<String>>,
+}
+
+/// The campaign levels under `<data>/campaigns` that have a Halo 2-assets
+/// map (`<key>/h2/<level>.map`, `h1_variants::campaign_alternate`), by
+/// level name, lower case. When the game's campaign assets are Halo 2's
+/// that map is served, and the Halo 1 map's HUD pairs name other tags.
+pub fn campaign_halo2_levels(data_root: &Path) -> HashSet<String> {
+    let mut out = HashSet::new();
+    let Ok(dirs) = std::fs::read_dir(data_root.join("campaigns")) else {
+        return out;
+    };
+    for d in dirs.flatten() {
+        let Ok(files) = std::fs::read_dir(d.path().join("h2")) else {
+            continue;
+        };
+        for f in files.flatten() {
+            let name = f.file_name().to_string_lossy().to_ascii_lowercase();
+            if let Some(level) = name.strip_suffix(".map") {
+                out.insert(level.to_owned());
+            }
+        }
+    }
+    out
 }
 
 impl feature::Feature for HudSwap {
@@ -250,6 +277,7 @@ impl feature::Feature for HudSwap {
         use feature::points::GAME_ACTIVATE;
         let table = Arc::clone(&self.table);
         let sensor = Arc::clone(&self.sensor);
+        let halo2_levels = Arc::clone(&self.halo2_levels);
         b.raw()
             .before(&GAME_ACTIVATE, "HUD swap", move |c| {
                 let rt = Arc::clone(c.ctx.runtime());
@@ -258,9 +286,12 @@ impl feature::Feature for HudSwap {
                     return Ok(Flow::Continue);
                 };
                 let table = table.read().unwrap_or_else(|e| e.into_inner());
+                let key = name.trim().to_ascii_lowercase();
                 let hud = table
-                    .get(&name.trim().to_ascii_lowercase())
-                    .filter(|h| !h.sandboxed || crate::health::halo1_sandbox());
+                    .get(&key)
+                    .filter(|h| !h.sandboxed || crate::health::halo1_sandbox())
+                    // The Halo 2-assets map of a campaign level is served.
+                    .filter(|_| crate::h1_variants::campaign_assets_halo1() || !halo2_levels.contains(&key));
                 // From the map and the choice directly, not `hud::style()`,
                 // so the order against the style's game-start observer does
                 // not matter.
@@ -308,6 +339,7 @@ pub fn install(
         .add(&HudSwap {
             table: Arc::new(RwLock::new(table)),
             sensor: Arc::default(),
+            halo2_levels: Arc::new(campaign_halo2_levels(data_root)),
         })
         .map_err(|e| anyhow::anyhow!("hud: {e}"))
 }

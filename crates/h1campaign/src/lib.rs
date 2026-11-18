@@ -27,6 +27,7 @@
 
 pub mod cutscenes;
 pub mod donor;
+pub mod h2assets;
 pub mod manifest;
 pub mod profiles;
 pub mod recordings;
@@ -189,6 +190,9 @@ pub struct Options<'a> {
     /// level is still over a bound with everything else left out (pinned
     /// b40 and d40).
     pub devices: Devices,
+    /// Halo 1's characters, weapons and vehicles, or Halo 2's nearest
+    /// ([`h2assets`], docs/game/campaigns.md §5).
+    pub assets: h2assets::Assets,
 }
 
 /// Which of Halo 1's devices a conversion places.
@@ -228,6 +232,7 @@ impl Default for Options<'_> {
             pinned: false,
             devices: Devices::All,
             rebuild_bipeds: true,
+            assets: h2assets::Assets::Halo1,
         }
     }
 }
@@ -590,7 +595,13 @@ fn convert_with<R: Read + Seek>(
     }
     let pathfinding = bsps.iter().map(|b| b.pathfinding.clone()).collect();
     if let Some(d) = opts.donors.filter(|_| opts.objects || opts.ai) {
-        donor::bring(d, &mut set, &donor::wanted(h1)?, &mut report)?;
+        let mut wanted = donor::wanted(h1)?;
+        // The retail weapons, vehicles and player the Halo 2-assets
+        // variant places that the base lacks.
+        if opts.objects && opts.assets == h2assets::Assets::Halo2 {
+            wanted.extend(h2assets::wanted(h1, &set, d)?);
+        }
+        donor::bring(d, &mut set, &wanted, &mut report)?;
     }
     scenario::write(
         h1,
