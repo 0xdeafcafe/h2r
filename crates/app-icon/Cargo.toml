@@ -1,6 +1,6 @@
 [package]
 name = "app-icon"
-description = "The app icon for the unbundled Mac windows (h2 play, h2-editor) and the menu bar template glyph, from art/app-icon"
+description = "The app icon for the unbundled Mac windows (h2 play, h2-editor) from art/app-icon"
 edition.workspace = true
 version.workspace = true
 license.workspace = true

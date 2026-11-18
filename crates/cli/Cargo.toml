@@ -62,8 +62,6 @@ asf = { path = "../asf" }
 wma = { path = "../wma" }
 live-proto.workspace = true
 live-server.workspace = true
-# `h2 live menubar` (docs/live/live-hosting.md "Menu bar app").
-live-menubar = { path = "../live-menubar" }
 # Cloud saves while signed in to Live (docs/live/live-cloud-saves.md).
 cloud-saves.workspace = true
 serde.workspace = true
