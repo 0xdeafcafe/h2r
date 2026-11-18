@@ -408,7 +408,13 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
                 assert_eq!(bg, FourCC(*b"bitm"));
                 assert_eq!(sg, FourCC(*b"shad"));
                 // Halo 1's bitmap, or its copy with the element colour's
-                // alpha (h1hud::scale_alpha).
+                // alpha (h1hud::scale_alpha), or a meter's copy with its
+                // clear texels black (h1hud::clear_meter_colour).
+                let input = x[widget::INPUTS];
+                if input != 0 {
+                    assert!(bitmap.ends_with("_meter"), "{name}: meter {bitmap}");
+                }
+                let bitmap = bitmap.strip_suffix("_meter").unwrap_or(&bitmap).to_owned();
                 let (source, alpha) = match bitmap.rsplit_once("_alpha_") {
                     Some((s, a)) => (s.to_owned(), Some(a.to_owned())),
                     None => (bitmap.clone(), None),
@@ -494,8 +500,14 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
                 let (sg, _) = names[&TagId(w(x, widget::SHADER + 4))].clone();
                 assert_eq!(bg, FourCC(*b"bitm"));
                 assert_eq!(sg, FourCC(*b"shad"));
-                assert!(h1_bitmaps.contains(&bitmap), "{name}: {bitmap} is Halo 1's");
                 let input = x[widget::INPUTS];
+                // A meter draws its copy with clear texels black.
+                let bitmap = if input != 0 {
+                    bitmap.strip_suffix("_meter").unwrap_or_else(|| panic!("{name}: meter {bitmap}")).to_owned()
+                } else {
+                    bitmap
+                };
+                assert!(h1_bitmaps.contains(&bitmap), "{name}: {bitmap} is Halo 1's");
                 assert!([0, 0x31, 0x36, 0x38].contains(&input), "{name}: input {input}");
                 if x[widget::ANCHOR] == h1hud::Anchor::Centre as u8 {
                     centred += 1;

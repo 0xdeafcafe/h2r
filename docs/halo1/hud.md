@@ -200,10 +200,32 @@ flags 1, `hud_input1`, `ui\hud\shaders\text_flash`, centred, top left at
 
 The converter emits one text widget per type (`h1hud::grenade_count`):
 input `20 + type`, that type's grenade states, flags 1, `hud_input1`,
-`text_flash`, the grhi's anchor, justified to end (2) where Halo 1's last
-digit ends (`h1hud::number_end`). The text is Halo 2's font, not Halo 1's
-digit bitmaps; its top sits at Halo 1's y. Not carried: the low-count
-flash (`+0x148`) and the messaging part (`+0x14c`).
+`text_flash`, the grhi's anchor, font 0, justified to end (2) where
+Halo 1's last digit ends (`h1hud::number_point`). The text is Halo 2's
+font, not Halo 1's digit bitmaps. Not carried: the low-count flash
+(`+0x148`) and the messaging part (`+0x14c`).
+
+The text's font and where its digits fall:
+
+- `+0x30` (`+0x31`, `+0x32` for half and quarter screen) is a font byte:
+  0 is the engine's font 6, 1 its font 8 (E `0x22a85b`, called from the
+  string fetch at `0x22a9b1`). Font 6 is `conduit-13` (V: line 6 of
+  `maps\fonts\font_table.txt`); retail `frag_count` has 0.
+- The draw (E `0x22aa16`) puts the text's rectangle top at the widget's
+  point and the measured height under it (`0x22ac83`); a glyph's bitmap
+  top is the baseline less its y offset, the ascent on every glyph
+  (docs/formats/fonts.md), so it is the rectangle's top. `conduit-13`'s
+  digits have ink on rows 5 to 16 of their 21 (V; `h1hud::TEXT_DIGIT_INK`).
+- Halo 1's digit sprites (`hud_counter_numbers`) are 12 rows, drawn from
+  the number's point down on a top anchor.
+
+Up to v65 the text's top was Halo 1's y (3), so the digits' ink was rows
+8..20 under the indicator's top, which ends at row 17 (V: the `grhi`
+background's texels, x 82..119, y 1..17): the count stuck out of the
+bottom of the indicator, the bug seen at v60. Now the point's y is set
+so the ink is centred on Halo 1's digit sprite: y -2, ink rows 3..15,
+Halo 1's sprite rows 3..15 (`hud_layout_disc`
+`grenade_count_digits_sit_inside_the_indicator`).
 
 ## Scale
 
@@ -267,6 +289,47 @@ game activation while Halo 1's HUD is shown (the Halo 1 widgets use one
 offset in every screen mode), and at every other activation, any map,
 puts back what the table held before its first write (`hud_swap::Sensor`).
 
+## Layout: where each element lands (`hud_layout_disc`)
+
+Both games lay a sprite out the same way, so every converted widget
+stands where Halo 1 puts its element. Halo 1 (E, its XBE): `0x000e07a0`
+places the point, the offset negated across on a right anchor and down
+on a bottom one; `0x000e0330` lays the sprite `[0, w]` or `[-w, 0]` across
+and `[0, h]` or `[-h, 0]` down by the anchor, its size the sprite's
+bounds times its image's size (`h1hud::halo1_rect`). Halo 2 (E
+`0x22aff1`): the widget's registration (fractions of the sprite) lands on
+the anchor point plus the offset, the sprite's size the same product
+(`h1hud::halo2_rect`). Both draw in a 640 x 480 HUD frame (the recomp
+scales it as a whole, docs/graphics/high-resolution.md); the corners
+differ (Halo 2's are the safe area's), which moves a whole corner group
+together and nothing within it. The disc test checks the two rectangles
+equal for every element of every unit HUD on the disc, both grenade
+HUDs and every converted static and meter of Blood Gulch's weapons.
+
+### Shield over health (fixed in v66)
+
+The cyborg's shield meter sprite (122 x 31) and health meter (88 x 14)
+overlap as rectangles in Halo 1 too: the health meter sits in the shield
+sprite's lower rows. Halo 1 shows only texels with alpha, and no texel
+of the two shows in both (V, every unit HUD on the disc).
+
+Halo 2's legacy meter shader shows more. Its alpha is the texel's alpha
+plus, on the filled side, the texel's green (`h1hud::legacy_meter_alpha`;
+V: `ammo_meter`'s combiners, stage 0's `c0` fixed at `0x0000ff00`,
+stage 3's `c1` at `0xffffffff`, nothing the engine writes). Halo 1's meter
+sprites are A8Y8 with their luminance ramp carried under the clear parts
+too: the cyborg's shield meter has 1435 clear texels with a luminance,
+722 of them on the health meter's visible texels. With both meters
+full, 849 texels showed both (297 on `cyborg_mp`): the shield drawn over
+the health meter, the bug seen at v60.
+
+The converter now gives each meter its own copy, `<bitmap>_meter`, with
+every clear texel's colour made black (`h1hud::clear_meter_colour`;
+other formats decoded to linear A8R8G8B8 first). A visible texel is
+unchanged, and the copy shows exactly Halo 1's texels (checked for the
+unit meters of every map and Blood Gulch's weapon meters). Weapon meters
+get the same copy.
+
 ## Not converted yet
 
 - **Weapon numbers** (`hud#`, the ammunition counts) and **HUD globals**
@@ -302,17 +365,26 @@ puts back what the table held before its first write (`hud_swap::Sensor`).
   XBE's table.
 - `cargo test -p boot --lib hud`: also the sensor table both ways, and
   Halo 2's back on a map without a Halo 1 centre.
+- `H1_ISO=... H2_DISC=... cargo test -p h1objects --test hud_layout_disc
+  -- --ignored`: every element's rectangle as Halo 2 draws the widget
+  against Halo 1's; shield and health meters sharing no shown texel (and
+  the unconverted bitmaps sharing some on the cyborg's); the grenade
+  count's digits, in Halo 2's own font, inside the indicator and centred
+  on Halo 1's digits (and outside it at Halo 1's y).
 - `H1_ISO=... cargo test -p h1objects --test hud_disc -- --ignored
   weapon_huds_read --nocapture`: prints every `wphi` chain of `$H1_MAPS`
   as read.
 
 ## What a game run should show
 
-On a converted Halo 1 map (converter version 54 or later) in the Halo 1
+On a converted Halo 1 map (converter version 66 or later) in the Halo 1
 sandbox, or a Halo 1 campaign level: Halo 1's shield and health bars top
 right, Halo 1's motion sensor frame bottom left, Halo 1's ammunition
 counter top left and its crosshair centred (the sniper's scope lines only
-zoomed), Halo 2's grenades as before. The shield bar drains from the right as the shield
+zoomed), Halo 1's grenade indicator right of the ammunition counter with
+its count in Halo 2's font inside it, not below it. With the shield
+full, only the shield bar's own shape is lit: nothing of it over the
+health bar under it. The shield bar drains from the right as the shield
 falls, the health bar likewise and stays down (Halo 1's health model). The
 whole HUD hides in the pause menu, under Blind and in cinematics. Each
 element should sit where Halo 1 puts it (Placement above); one that does
