@@ -18,12 +18,13 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 
+use crate::coop_drive;
 use crate::coop_verdict::{self, Roles};
 use crate::live_accounts::{self, LocalAccount};
 use crate::live_cmd::{Client, FriendAction, LIVE_DIR_ENV, friend_run, status_of};
 
 const USAGE: &str = "usage:
-  h2 coop test [--disc ISO] [--players N] [--auto] [--late] [--root DIR] [--out DIR]
+  h2 coop test [--disc ISO] [--players N] [--auto] [--late] [--drive] [--root DIR] [--out DIR]
                [--ip ADDR] [--port N] [--server-port N] [--pad host|guest]
                [--extras] [--fresh] [--dry-run] [-- <more h2 play arguments>]
   h2 coop verdict <coop.log> [--auto]
@@ -59,6 +60,16 @@ invite from the host's lobby (Y, the friends list) and accept on the guest.
 its invitation (H2_COOP_AUTO_ACCEPT_DELAY), so it arrives while the host is
 in the level and joins in progress (docs/live/live-coop.md section 14); the
 checklist then says whether and at which tick it joined.
+
+--drive (with --auto): nobody presses anything. Each game prints the menu
+screen its first player is on (H2_UI_WATCH=1), and this process presses
+through the menus over each game's agent socket, one press at a time, each
+on a screen or a line it waited for: every game signs in to Xbox Live; the
+host picks Co-op Campaign and, once every lobby guest has joined, Start
+Game; each guest goes back to the main menu for the invitation and, if the
+game hasn't taken it 20 s after accepting, joins through the Custom Game
+Browser (the late guest no sooner than 120 s after its invitation). Every
+press is a `coop-drive:` line in coop.log (docs/live/live-coop.md 12.6).
 
 Every game's whole stderr goes to <root>/logs/<time>/<gamertag>.log, and
 their co-op lines (coop-live, coop-probe, coop-auto, skulls, session) to
@@ -98,6 +109,8 @@ pub struct Opts {
     pub auto: bool,
     /// The last guest accepts [`LATE_SECS`] after its invitation.
     pub late: bool,
+    /// Press through the menus ([`crate::coop_drive`]).
+    pub drive: bool,
     pub root: PathBuf,
     pub out: Option<PathBuf>,
     pub ip: Option<Ipv4Addr>,
@@ -135,6 +148,7 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
     let mut players = 2;
     let mut auto = false;
     let mut late = false;
+    let mut drive = false;
     let mut root = None;
     let mut out = None;
     let mut ip = None;
@@ -159,6 +173,7 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
             }
             "--auto" => auto = true,
             "--late" => late = true,
+            "--drive" => drive = true,
             "--root" => root = Some(PathBuf::from(value("--root")?)),
             "--out" => out = Some(PathBuf::from(value("--out")?)),
             "--ip" => {
@@ -197,6 +212,9 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
     if late && (!auto || players < 3) {
         bail!("--late needs --auto and --players 3 or more (the last guest joins late)");
     }
+    if drive && !auto {
+        bail!("--drive needs --auto (the invitations are what it waits on)");
+    }
     let last = u32::from(port) + u32::from(PORT_STEP) * (players as u32 - 1) + 6;
     if port == 0 || last > 65535 {
         bail!("--port {port}: the games need {port} to {last}");
@@ -210,6 +228,7 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
         players,
         auto,
         late,
+        drive,
         root,
         out,
         ip,
@@ -301,6 +320,9 @@ pub fn plan(opts: &Opts, server: &str, ip: Ipv4Addr, sockets: &Path) -> Vec<Game
                 ("H2_XNET_LOOPBACK_PEERS".into(), peers.join(",")),
                 (agent_proto::ENV.into(), agent.display().to_string()),
             ];
+            if opts.drive {
+                env.push(("H2_UI_WATCH".into(), "1".into()));
+            }
             if host && tags.len() > 2 {
                 // Past two players the host's co-op limit must let them in
                 // (coop.max_players); guests take the host's limit.
@@ -524,6 +546,7 @@ fn test(opts: Opts) -> Result<()> {
     eprintln!("coop test: logs in {}", logs.display());
     let merged = logs.join("coop.log");
     let mut sup = Supervisor::new(&merged, &logs, &roles)?;
+    let mut drive = opts.drive.then(|| Drive::new(&games, &roles));
     sup.spawn(&exe, &games[0])?;
     eprintln!(
         "coop test: {} opening first (it builds the game if --out has none)",
@@ -533,6 +556,9 @@ fn test(opts: Opts) -> Result<()> {
     let mut said = false;
     loop {
         let ready = sup.pump(Duration::from_millis(200))?;
+        if let Some(d) = &mut drive {
+            d.step(&mut sup, &games)?;
+        }
         // Before the stop check: games that end on Ctrl-C didn't crash.
         if interrupted.load(std::sync::atomic::Ordering::Relaxed) {
             sup.note_interrupt();
@@ -551,7 +577,13 @@ fn test(opts: Opts) -> Result<()> {
             for g in waiting.drain(..) {
                 sup.spawn(&exe, g)?;
             }
-            say_next_steps_at_the_menu(games[0].agent.clone(), next_steps(&roles, opts.auto));
+            if opts.drive {
+                eprintln!(
+                    "coop test: --drive: pressing through every window's menus; coop-drive lines say each press"
+                );
+            } else {
+                say_next_steps_at_the_menu(games[0].agent.clone(), next_steps(&roles, opts.auto));
+            }
         }
         if sup.all_exited() {
             break;
@@ -742,6 +774,96 @@ fn watch_interrupts() -> std::sync::Arc<std::sync::atomic::AtomicBool> {
     Default::default()
 }
 
+/// `--drive`: a [`coop_drive::Driver`] per game and its agent socket.
+struct Drive {
+    drivers: Vec<coop_drive::Driver>,
+    clients: Vec<Option<agent_proto::Client>>,
+    started: bool,
+}
+
+impl Drive {
+    fn new(games: &[Game], roles: &Roles) -> Self {
+        let drivers = games
+            .iter()
+            .map(|g| {
+                let role = if g.host {
+                    coop_drive::Role::Host {
+                        lobby: roles.guests.clone(),
+                    }
+                } else if roles.late.contains(&g.tag) {
+                    coop_drive::Role::Late
+                } else {
+                    coop_drive::Role::Guest
+                };
+                coop_drive::Driver::new(&g.tag, role)
+            })
+            .collect();
+        Drive {
+            drivers,
+            clients: games.iter().map(|_| None).collect(),
+            started: false,
+        }
+    }
+
+    /// Feeds the games' lines to every driver and sends the presses due.
+    fn step(&mut self, sup: &mut Supervisor, games: &[Game]) -> Result<()> {
+        if !self.started {
+            sup.keep_lines();
+            self.started = true;
+        }
+        for (i, at, line) in sup.take_lines() {
+            let Some(tag) = games.get(i).map(|g| g.tag.as_str()) else {
+                continue;
+            };
+            for d in &mut self.drivers {
+                d.line(at, tag, &line);
+            }
+        }
+        let now = sup.now_ms();
+        // Only games that are running (the guests open after the host).
+        let running = sup.games.len();
+        for (i, game) in games.iter().enumerate().take(running) {
+            if let Some(p) = self.drivers[i].poll(now) {
+                let line = self.drivers[i].press_line(&p);
+                sup.note(i, &line)?;
+                if let Err(e) = self.send(i, game, &p) {
+                    sup.note(
+                        i,
+                        &format!("coop-drive: {}: the press failed: {e:#}", game.tag),
+                    )?;
+                }
+            }
+            for said in self.drivers[i].take_said() {
+                sup.note(i, &said)?;
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn send(&mut self, i: usize, game: &Game, p: &coop_drive::Press) -> Result<()> {
+        if self.clients[i].is_none() {
+            let c = agent_proto::Client::connect(&game.agent)
+                .with_context(|| format!("connecting to {}", game.agent.display()))?;
+            c.set_timeout(Some(Duration::from_secs(3)))?;
+            self.clients[i] = Some(c);
+        }
+        let c = self.clients[i].as_mut().expect("connected above");
+        let r = c.call(agent_proto::method::INPUT_PAD, coop_drive::pad_params(p));
+        if let Err(e) = r {
+            // Connect again next time.
+            self.clients[i] = None;
+            bail!("input.pad: {e}");
+        }
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    fn send(&mut self, _: usize, _: &Game, _: &coop_drive::Press) -> Result<()> {
+        bail!("the agent API needs Unix sockets")
+    }
+}
+
 enum Event {
     Line(usize, String),
     Closed(usize),
@@ -762,6 +884,9 @@ pub struct Supervisor {
     crashed: Option<(usize, String)>,
     /// A stop was said: the rest is the closing.
     stopping: bool,
+    /// Every game line since [`Supervisor::take_lines`], with its game and
+    /// time in ms, when kept (`--drive`).
+    lines: Option<Vec<(usize, u64, String)>>,
 }
 
 /// The line the game prints when its guest thread stops (a crash or an
@@ -789,6 +914,7 @@ impl Supervisor {
             interrupted: false,
             crashed: None,
             stopping: false,
+            lines: None,
         })
     }
 
@@ -860,6 +986,9 @@ impl Supervisor {
                         writeln!(self.merged, "{merged}")?;
                         eprintln!("{merged}");
                     }
+                    if let Some(kept) = &mut self.lines {
+                        kept.push((i, (secs * 1000.0) as u64, line.clone()));
+                    }
                     if signed_in(tag, &line) && self.ready.insert(i, true).is_none() {
                         ready.push(i);
                     }
@@ -875,6 +1004,32 @@ impl Supervisor {
         }
         self.merged.flush()?;
         Ok(ready)
+    }
+
+    /// Keeps every game line for [`Supervisor::take_lines`].
+    pub fn keep_lines(&mut self) {
+        self.lines.get_or_insert_with(Vec::new);
+    }
+
+    /// The kept lines since the last call.
+    pub fn take_lines(&mut self) -> Vec<(usize, u64, String)> {
+        self.lines.as_mut().map(std::mem::take).unwrap_or_default()
+    }
+
+    /// Milliseconds since the start, as the merged log counts.
+    pub fn now_ms(&self) -> u64 {
+        self.start.elapsed().as_millis() as u64
+    }
+
+    /// Writes one of this process's lines (`coop-drive: ...`) into the
+    /// merged log and the terminal, under game `i`'s tag.
+    pub fn note(&mut self, i: usize, text: &str) -> Result<()> {
+        let secs = self.start.elapsed().as_secs_f64();
+        let tag = self.games.get(i).map_or("drive", |g| g.0.as_str());
+        let merged = coop_verdict::format_line(secs, tag, text);
+        writeln!(self.merged, "{merged}")?;
+        eprintln!("{merged}");
+        Ok(())
     }
 
     pub fn exited(&mut self, i: usize) -> bool {

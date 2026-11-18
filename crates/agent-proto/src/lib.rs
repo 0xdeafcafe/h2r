@@ -124,6 +124,9 @@ pub mod method {
     pub const SAMPLE_STATUS: &str = "profile.sample.status";
     /// The newest host perf line (`boot::host_perf`).
     pub const HOST_PERF: &str = "host.perf";
+    /// The menu screen player one's input goes to (`H2_UI_WATCH=1`,
+    /// `boot::ui_watch`): `{"screen", "window", "slot", "live_menu_row"}`.
+    pub const UI_SCREEN: &str = "ui.screen";
 }
 
 /// Error codes. The negative ones are JSON-RPC's own.

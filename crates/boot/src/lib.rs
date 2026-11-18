@@ -66,6 +66,7 @@ pub mod speaker_setting;
 pub mod steam_speaker;
 pub mod ui;
 pub mod ui_kit;
+pub mod ui_watch;
 pub mod video_screen;
 pub mod snapshot_probe;
 pub mod sse;
@@ -1042,6 +1043,9 @@ pub fn run_hosted_with_live(
     // Occlusion culling of objects (H2_FEATURES=impl.render.occlusion=on,
     // off by default; docs/graphics/occlusion-culling.md).
     features.add(&feature::occlusion::OcclusionCull).map_err(|e| anyhow::anyhow!("occlusion: {e}"))?;
+    // H2_UI_WATCH=1: the screen player one's input goes to, a line on each
+    // change and `ui.screen` (`h2 coop test --drive`; ui_watch.rs).
+    ui_watch::install(&mut features)?;
     // H2_COOP_PROBE=1: the retail synchronous campaign path over System Link
     // (docs/live/live-coop.md section 9). Added last, so it can see every
     // override placed outside the plan and refuse instead of failing it.
