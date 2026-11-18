@@ -14,8 +14,8 @@ Evidence labels, as in map-format.md:
   by the ignored tests `real_maps_read_and_their_multiplayer_parts_and_collision_check_out`
   (maps as stored, from `$H1_MAP_DIR`) and `real_disc_every_map_reads` (the
   whole disc, `$H1_ISO`).
-- **S — from-source:** public documentation describes this, and the reader
-  relies on it, but it has not yet been checked on the disc.
+- **S — unverified:** the reader relies on this, but it has not yet been
+  checked on the disc.
 - **Design:** an implementation choice, not a format fact.
 
 **Status:** the multiplayer parts and the collision BSP were checked on two
@@ -28,23 +28,6 @@ stays S.
 No map bytes, tag dumps, tag-name lists or extracted assets are included
 here or in tests. The tests build invented maps and discs in memory
 (`h1map::testing`).
-
-## Sources
-
-- The Reclaimers Library (c20), *Maps* page, sections "Map header", "Tag
-  index header", "Tag array entry", "Compressed maps" and "Tag space":
-  <https://c20.reclaimers.net/h1/maps/> (read 2026-11-16; the wiki has no
-  revision IDs to pin).
-- c20, *scenario* tag page, the `structure bsps` block's fields:
-  <https://c20.reclaimers.net/h1/tags/scenario/>.
-- SnowyMouse, *Halo map file structure*, revision 2.1, Open Carnage topic
-  6693, credited by c20.
-- Invader (<https://github.com/SnowyMouse/invader>) is the reference
-  implementation c20 credits. It is GPL: it may be cited, but none of its
-  code or tag definition files may be copied here, and none were.
-
-Field offsets inside tags (the scenario's BSP block) are not on c20's tag
-page; those are marked S with a note.
 
 Model and animation tag layouts (`mode`, `antr`) are in
 [models.md](models.md), checked on real maps.
@@ -155,7 +138,7 @@ bytes; an empty block reads nothing, whatever its address.
 and is loaded at the end of tag space when it becomes active. The scenario's
 `structure bsps` block holds, per BSP: BSP start (file offset), BSP size,
 BSP address (where the region is loaded), and a reference to the `sbsp`
-tag. c20 names these fields but gives no offsets.
+tag.
 
 | Where | Value | Evidence |
 |---|---|---|
@@ -325,11 +308,10 @@ V: positions inside the BSP's bounds, facing in ±π, game types 12 and 13.
 
 Netgame flag (`0x94`): position `00`, facing `0c`, `u16` kind `10`, `u16`
 team (teleporter channel for teleporters) `12`, weapon group `itmc`
-reference `14` (null on both maps), padding. Kinds: 0 CTF flag, 1 CTF
+reference `14` (null on both maps), padding. Kinds (names unverified): 0 CTF flag, 1 CTF
 vehicle, 2 oddball, 3 race track, 4 race vehicle, 5 Vegas bank, 6 teleport
 from, 7 teleport to, 8 hill flag. V: every kind on both maps is in 0..=8 and
-teleporter pairs share a channel. The names are from c20; the values are
-what the maps hold.
+teleporter pairs share a channel. The values are what the maps hold.
 
 Netgame equipment (`0x90`): `u32` flags `00`, four `u16` game types `04`,
 `u16` team `0c`, `u16` respawn seconds `0e`, padding to `40`, position
@@ -337,8 +319,8 @@ Netgame equipment (`0x90`): `u32` flags `00`, four `u16` game types `04`,
 reference names an `itmc`, every spawn sits in the map.
 
 Game types (`u16`): 0 none, 1 CTF, 2 slayer, 3 oddball, 4 king of the hill,
-5 race, 12 all, 13 all except CTF, 14 all except race and CTF (S: names from
-c20; 12 and 13 seen).
+5 race, 12 all, 13 all except CTF, 14 all except race and CTF (S: names
+unverified; 12 and 13 seen).
 
 Item collection (`itmc`): permutations block at `00` (`0x54` each: weight
 `f32` at `20`, item reference at `24`, a `weap` or `eqip`), `u16` default

@@ -1,0 +1,4 @@
+# bloc: object type 11 (obje.txt object_type). The object header and its own tail.
+group bloc 0xc0 align 4
+  0x0 struct object obje -- the object header (obje.txt)
+  0xbc unknown 0x4

@@ -527,7 +527,7 @@ pub enum VertexKind {
     /// 0x0a, stride 16: s16×3, 2 zero bytes, u8×4 nodes, u8×4 weights.
     FourNodes,
     /// 0x18, stride 8: f32×2 texture coordinate. D: in models it occurs
-    /// exactly when OpenH2's `compressed_tex_coords` flag is clear (0x19
+    /// exactly when the section's compressed-texcoord bit is clear (0x19
     /// when set); in structure sections only stride and count are checked.
     Texcoord,
     /// 0x19, stride 4: s16×2 texture coordinate in the compression bounds.

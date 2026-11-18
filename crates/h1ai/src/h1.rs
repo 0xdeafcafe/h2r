@@ -65,31 +65,10 @@ pub mod layout {
 pub struct ActorType(pub u16);
 
 impl ActorType {
-    /// The name, as c20 and Guerilla list the enum.
-    pub fn name(self) -> &'static str {
-        match self.0 {
-            0 => "elite",
-            1 => "jackal",
-            2 => "grunt",
-            3 => "hunter",
-            4 => "engineer",
-            5 => "assassin",
-            6 => "player",
-            7 => "marine",
-            8 => "crew",
-            9 => "combat form",
-            10 => "infection form",
-            11 => "carrier form",
-            12 => "monitor",
-            13 => "sentinel",
-            14 => "none",
-            15 => "mounted weapon",
-            16 => "brute",
-            17 => "prophet",
-            18 => "bugger",
-            19 => "juggernaut",
-            _ => "other",
-        }
+    /// A label for the type: its number. (Names for the types will come
+    /// back as disc evidence ties each to its actor tags.)
+    pub fn name(self) -> String {
+        format!("type {}", self.0)
     }
 }
 
@@ -278,43 +257,13 @@ pub struct Atom {
     pub object_name: i16,
 }
 
-/// The name of a command list atom type, as Guerilla lists the enum.
-pub fn atom_name(kind: u16) -> &'static str {
-    const NAMES: [&str; 28] = [
-        "pause",
-        "go to",
-        "go to and face",
-        "move in direction",
-        "look",
-        "animation mode",
-        "crouch",
-        "shoot",
-        "grenade",
-        "vehicle",
-        "running jump",
-        "targeted jump",
-        "script",
-        "animate",
-        "recording",
-        "action",
-        "vocalize",
-        "targeting",
-        "initiative",
-        "wait",
-        "loop",
-        "die",
-        "move immediate",
-        "look random",
-        "look player",
-        "look object",
-        "set radius",
-        "teleport",
-    ];
-    NAMES.get(usize::from(kind)).copied().unwrap_or("other")
+/// A label for a command list atom type: its number.
+pub fn atom_name(kind: u16) -> String {
+    format!("atom {kind}")
 }
 
-/// The point indices an atom reads: "go to" (1), "move immediate" (22) and
-/// "teleport" (27) the first, "go to and face" (2) both.
+/// The point indices an atom reads: atoms 1, 22 and 27 the first, atom 2
+/// both.
 pub fn atom_points(a: &Atom) -> Vec<i16> {
     match a.kind {
         1 | 22 | 27 => vec![a.points[0]],

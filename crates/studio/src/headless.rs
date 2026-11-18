@@ -595,6 +595,63 @@ mod tests {
         assert!(distinct.len() > 8);
     }
 
+    /// The HUD tool through its widgets: pick the invented map in the
+    /// outliner's map combo, the stray widget in the list, then drag it on the picture
+    /// by 20 HUD pixels. One undo step, its offset moved by the drag, and
+    /// the checks still find it. Skipped without a wgpu adapter.
+    #[test]
+    fn the_hud_tool_picks_and_drags_a_widget() {
+        use crate::app::ToolKind;
+        use crate::script::{Button, Step};
+        use hud_edit::{WidgetKey, WidgetKind};
+        let Some((_turn, mut h)) = headless() else {
+            return;
+        };
+        // A combo reports no label of its own: name it to the probe.
+        crate::probe::want(vec!["##hud-map-combo".to_owned()]);
+        let dir = std::env::temp_dir().join(format!("h2-editor-hud-shot-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let map = dir.join("hudtest.map");
+        std::fs::write(&map, hud_edit::fixture::build().0).unwrap();
+        let mut app = App::new();
+        app.set_data_root(dir.join("data"));
+        app.dispatch(Action::OpenSource(map));
+        app.dispatch(Action::SetTool(ToolKind::Hud));
+        h.frames(&mut app, 3).unwrap();
+        let click = |t: &str| Step::Click(t.into(), Button::Left);
+        h.step(&mut app, &click("##hud-map-combo")).unwrap();
+        h.step(&mut app, &click("##hud-map-hudtest")).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        assert!(app.hud.session.is_some(), "the map opened");
+        let stray = WidgetKey {
+            kind: WidgetKind::Bitmap,
+            index: 2,
+        };
+        h.step(&mut app, &click("##hud-w-Bitmap-2")).unwrap();
+        assert_eq!(app.hud.selected, Some(stray));
+        let (origin, zoom) = h.studio.hud.shown.expect("the picture is shown");
+        // The stray's middle (88..152, 396..412), then 20 HUD pixels right.
+        let at = |x: f32, y: f32| format!("{},{}", origin[0] + x * zoom, origin[1] + y * zoom);
+        for step in [
+            Step::Move(at(120.0, 404.0)),
+            Step::Down,
+            Step::Move(at(130.0, 404.0)),
+            Step::Move(at(140.0, 404.0)),
+            Step::Up,
+        ] {
+            h.step(&mut app, &step).unwrap();
+        }
+        assert_eq!(app.hud.selected, Some(stray));
+        assert_eq!(app.hud.offset(stray), Some((60, -48)));
+        assert_eq!(app.hud.session.as_ref().unwrap().history().count(), 1);
+        assert!(app.tool_dirty(ToolKind::Hud));
+        let (rgba, _) = h.capture(&mut app, 2).unwrap();
+        let distinct: std::collections::HashSet<[u8; 4]> =
+            rgba.as_chunks::<4>().0.iter().step_by(97).copied().collect();
+        assert!(distinct.len() > 8);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// The Tags tool through its widgets: open the weapon group in the
     /// tree, pick the weapon, tick a flag and pick an enum value in the
     /// field panel. The edits land in the document, as undo steps, and
@@ -650,6 +707,71 @@ mod tests {
             .copied()
             .collect();
         assert!(distinct.len() > 8);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The Maps list's Map Pack group through its widgets: with nothing
+    /// installed it says how to install it; with an (invented) install it
+    /// lists the map by its record's name with the picture beside it, and
+    /// a click opens it in the scenario tool. The window is tall enough
+    /// for the Tools pane to show the group unscrolled: Dear ImGui names a
+    /// clipped row to nobody, so the probe would not find it. Skipped
+    /// without a wgpu adapter.
+    #[test]
+    fn the_map_pack_group_lists_and_opens_a_pack_map() {
+        use crate::app::map_pack::content_root;
+        use crate::script::{Button, Step};
+        use crate::ui::map_pack::Shown;
+        let _turn = ONE_CONTEXT.lock().unwrap_or_else(|e| e.into_inner());
+        let mut h = match Headless::new([1280.0, 1600.0], 1.0) {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("skipping: {e}");
+                return;
+            }
+        };
+        let dir = std::env::temp_dir().join(format!("h2-editor-mp-ui-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut app = App::new();
+        app.set_data_root(dir.join("data"));
+        h.frames(&mut app, 3).unwrap();
+        assert_eq!(h.studio.map_pack.shown, Some(Shown::Hint));
+
+        let pack = content_root(&dir.join("data")).join("4d53006400000101");
+        std::fs::create_dir_all(&pack).unwrap();
+        std::fs::write(pack.join("ridge.map"), fixture::fixture()).unwrap();
+        let e = content::map_list::Entry {
+            scenario: "scenarios\\multi\\ridge\\ridge".into(),
+            map_id: 1001,
+            names: std::array::from_fn(|_| "Ridge".to_owned()),
+            descriptions: std::array::from_fn(|_| String::new()),
+            sort: 100,
+            flags: 0,
+            teams: [8; 16],
+            preview: [0x20u8, 0x80, 0xe0, 0xbf].repeat(content::map_list::PREVIEW_LEN / 4),
+        };
+        std::fs::write(pack.join("patch.lvl"), e.to_v2().unwrap()).unwrap();
+        app.refresh_packages();
+        h.frames(&mut app, 3).unwrap();
+        assert_eq!(
+            h.studio.map_pack.shown,
+            Some(Shown::Maps(vec![("Ridge".into(), true)]))
+        );
+        h.step(&mut app, &Step::Click("Ridge##pack-ridge".into(), Button::Left))
+            .unwrap();
+        h.frames(&mut app, 2).unwrap();
+        assert_eq!(app.opened_pack_map(), Some("ridge"));
+        assert!(app.session.is_open());
+        let (rgba, _) = h.capture(&mut app, 2).unwrap();
+        // The picture (R 0xe0, G 0x80, B 0x20 at the record's alpha 0xbf,
+        // so blended a quarter with the dark panel) fills the thumbnail.
+        let orange = rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|p| (150..215).contains(&p[0]) && (80..135).contains(&p[1]) && p[2] < 70)
+            .count();
+        assert!(orange >= 100, "the thumbnail is drawn: {orange} pixels");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

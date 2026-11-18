@@ -708,6 +708,107 @@ native, expect about 2 to 4 ms off `0x0002bed0` and `cpu`, plus their
 `encode`/`submit` share on the render thread. Layers 1, 5, 7, 8 and the
 dynamic-light passes keep their object draws in this cut.
 
+## Stage 3: transparents (design)
+
+The sorted transparents are not layers of the scene list: after the
+opaque layers, layer 15 and the late passes, `render_scene_passes` calls
+`SCENE_TRANSPARENTS` (`0x0001e370`, 2.58 ms on the census run), which
+sorts a list of its own and calls one handler per entry. So the skip is
+not on `LAYER_DRAW`; it is on the geometry entries' handler. Stage 1b
+(the world's layers 1, 5, 7, 8) is not a prerequisite: the transparents
+depth-test against what the opaque layers left (the world's native pass
+writes the game's W depth already), and their materials are the
+template's layer-15 passes, which do not read the other layers' targets.
+
+### The list (Code, `h2 disasm`)
+
+- `[0x004b6288]`: entries of `0x70` bytes, the live ones from index
+  `[0x004b6284]` to `[0x004b6280]` (at most `0x400`), allocated by
+  `0x0001e2d0` (and `0x0001e4e0`/`0x0001e5e0` for other kinds).
+- `0x0001e370` fills the `u16` index array `[0x004b628c]`, sorts it
+  with `TRANSPARENT_SORT` (`0x0013df80`, comparator `0x0001e700`: by
+  `+0` first, then through the plane at `+0x10` when `+0xc` is set; the
+  rest is not read),
+  then for each index in order calls `[entry+0x20]` with `entry+0x24`
+  (stdcall), skipping a null handler.
+- A geometry entry (`0x00041040`'s transparent branch, `0x00041381`):
+  `+0` a class from `0x00040e10`, `+4` the view depth, `+0xc` a byte
+  (plane present), `+0x20` the handler `0x00041020`, `+0x24` the shader
+  datum, `+0x28` the argument the opaque items carry at `+0xc` (render
+  record index `<< 8`, low byte the part), `+0x64` the position.
+- The handler `0x00041020` (`points::TRANSPARENT_GEOMETRY`, `ret 4`) runs
+  `0x00040f60`: the shader's template layer-15 pass range (`[template
+  layers + 0x1e]`, `count << 9 | first`), and per pass the opaque path's
+  build `0x0004cbf0` and, when it returns non-zero, the draw `0x0004d0b0`
+  (with layer `0xf`). So an entry is drawn exactly like an opaque item,
+  but with layer 15's passes, one entry at a time in sorted order.
+- The render record at `+0x28 >> 8` says what the geometry is: `+4` an
+  object handle, or `-1` for the BSP with `+0xc` bits 9..17 the cluster
+  and 18..28 the instanced-geometry placement (`0x7ff` for a cluster;
+  "What a world pass reads").
+
+Other handlers in the list (effects, particles, contrails, decals) are
+not read yet; they keep their D3D draws in this stage.
+
+### Skip point and order
+
+One `before` on `TRANSPARENT_GEOMETRY`, context-only: for an entry the
+host draws (`native_render::transparent::read_entry`, then
+`Host::accepts`), it answers `ret 4`, so the entry builds and draws
+nothing and no guest memory changes (no restore). The hook meets the
+entries in the game's sorted order, so no sort of ours is needed.
+
+Ordering against the D3D path's transparents uses the device's external
+pass as it already works: a pass asked for is issued at the device's
+next entry, after the draws queued before it. Consecutive native entries
+join one `transparent::Run`; the first asks the device for a pass that
+owns the run, and the pass seals the run when the device issues it
+(`ExternalPass::view_constants`, the issue moment, on the device's
+thread). A D3D entry's draw is a device entry, so the next native entry
+finds its run sealed and opens a new one. Each run therefore lands
+between the D3D draws it sorts between, and its entries draw in their
+sorted order inside the pass. An observer before `SCENE_TRANSPARENTS`
+forgets the open run, so a run never spans two views, or outlives a
+pass the device dropped.
+
+Both hooks are context-only with nothing after a body, so the pipelined
+render runs them on its own thread; the entries are read from the
+render's snapshot of the frame.
+
+### Order of work
+
+1. **The skip and the runs** (built: `feature::native_transparents`,
+   `native_render::transparent`, `impl.render.native_transparents`, off by
+   default). Without a host nothing is skipped.
+2. **The layer-15 look** (built: `look::transparent_passes`,
+   `pass_state`). Every pass of the template's layer 15 at the first
+   level of detail, in order, each with `look::implementation_look`'s
+   rules (the ones layer 3 uses) and the pipeline state from the
+   implementation's render states (`ResolvedImplementation::render_states`,
+   decoded by `gfx` as the D3D path decodes them: blend enable, factors,
+   op and constant, colour writes, depth test and write, cull, alpha
+   test). All or nothing per material. It stays on the D3D path when a
+   pass has more than one implementation (S: which one the engine binds
+   for a transparent entry is not traced), reads engine render states
+   (`engine_render_states`), turns on fog, stencil or a depth bias, or
+   leaves blend enable, its factors or depth write to whatever the
+   previous draw left (S: the states it does not set are taken at the
+   D3D defaults).
+3. **The world's transparent parts.** The draw table is built
+   (`world::TransparentDraw`, `World::transparent(owner, part)`): the
+   kind-4 parts in the world's vertex and index buffers, keyed by
+   (cluster or placement, the part's index in its section; the loader now
+   keeps every part in place, a part not drawn as an empty one), their
+   lightmap pages in the lightmap array. Left: the run's pass draws,
+   per entry in order, that part with each layer-15 pass's program and
+   blend, depth tested, writing depth only where the state says so. Boot's
+   host accepts an entry when its part and material are loaded.
+4. **Objects' transparent parts.** The node matrices are copied at the
+   hook into the run (as stage 2 does at layer 3), so the pass draws the
+   frame's poses.
+5. **The live A/B**, as stage 1's: the same frame with the switch on and
+   off, `external_passes_dropped` steady, and the `0x0002c19a` site's ms.
+
 ## Open
 
 - Seams: the drawn world is welded (no T-junctions, shared edges

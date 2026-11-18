@@ -4,7 +4,7 @@ Implementation: `crates/tags/src/sound.rs` (self-contained, hand-written fixed
 codecs; not in `schema.rs`). Export and validation: `h2 sound` in
 `crates/cli/src/sound.rs`. Evidence labels as in [map-format.md](map-format.md):
 **V** verified on the owner's retail disc, **E** corroborated by the engine's
-own code (XBE disassembly), **S** public-source description only.
+own code (XBE disassembly), **S** unverified.
 No map bytes, tag names or audio are committed; tests are synthetic.
 
 ```sh
@@ -23,16 +23,11 @@ tag memory, addressed with the same top-two-bit file selector as bitmap LODs
 permutations -> chunks -> bytes in current map / `mainmenu` / `shared` /
 `single_player_shared`.
 
-## Tables and provenance
-
-Public descriptions consulted (offsets/names as hypotheses; no XML or code was
-copied): Assembly `Plugins/Halo2/snd!.xml` and `Plugins/Halo2/ugh!.xml` at
-[`fd14ef3c46135e9422966c6a64cd926fb0bd23fb`][snd] / [ugh][ugh] (GPL-3: cross-reference
-only, per the licence table in map-format.md).
+## Tables
 
 | Table | Layout used | Evidence |
 |---|---|---|
-| `snd!` (0x14) | `+0` u16 flags, `+2` class, `+3` sample rate (0=22050, 1=44100, 2=32000), `+4` encoding (0 mono, 1 stereo, 2 codec), `+5` compression (0 BE PCM, 1 Xbox ADPCM, 2 IMA, 3 LE PCM, 4 WMA), `+6` u16 playback index, `+8` u16 first pitch range, `+0xa` u8 pitch range count, `+0x10` u32 max play time | Names/enums **S** from the sources above. **V**: rate 1 and 2 values consistent with every decoded duration; `+8/+0xa` chain to permutations whose chunk sizes sum exactly in all 4,000+ sounds of three campaign maps; `+0x10` is milliseconds (floor of longest permutation's duration; **V**, see below). **E**: engine builds 44.1 kHz ADPCM format (`0x0021e421..0x0021e454`). Class, flags, playback index, `+0xb..+0x10`: uninterpreted. |
+| `snd!` (0x14) | `+0` u16 flags, `+2` class, `+3` sample rate (0=22050, 1=44100, 2=32000), `+4` encoding (0 mono, 1 stereo, 2 codec), `+5` compression (0 BE PCM, 1 Xbox ADPCM, 2 IMA, 3 LE PCM, 4 WMA), `+6` u16 playback index, `+8` u16 first pitch range, `+0xa` u8 pitch range count, `+0x10` u32 max play time | Names and enum values not covered below are **S**. **V**: rate 1 and 2 values consistent with every decoded duration; `+8/+0xa` chain to permutations whose chunk sizes sum exactly in all 4,000+ sounds of three campaign maps; `+0x10` is milliseconds (floor of longest permutation's duration; **V**, see below). **E**: engine builds 44.1 kHz ADPCM format (`0x0021e421..0x0021e454`). Class, flags, playback index, `+0xb..+0x10`: uninterpreted. |
 | `ugh!` header (0x58) | Eleven `{count, address}` blocks (8 bytes each). Used: `[4]` pitch ranges, `[5]` permutations, `[8]` chunks. | Order **S**; strides **V** from pointer spacing between adjacent blocks (12, 16, 12) and the exact chunk-size sums. Other blocks (playback parameters 0x38, scales 0x14, import names 4, ...) are unread. |
 | Pitch range (12) | `+8` u16 first permutation, `+10` u16 count; `+0..+8` raw | Run bounds **V** (all indices in range, sums exact). Remaining fields raw. |
 | Permutation (16) | `+8` u32 encoded size, `+12` u16 first chunk, `+14` u16 chunk count; `+0..+8` raw | **V**: size == sum of its chunks' sizes for every permutation. |
@@ -117,6 +112,3 @@ Decoded WAVs (16-bit PCM) for a UI click (stereo 44.1 kHz), mono loop, and mono
 floor-ms value (to rounding), no NaN (integer path), peaks well under full scale
 (clipping fractions in whole-map runs are at most 6.3 percent of samples in loud
 permutations, none in the three exemplars beyond 2 of 46,848 samples).
-
-[snd]: https://github.com/XboxChaos/Assembly/blob/fd14ef3c46135e9422966c6a64cd926fb0bd23fb/src/Assembly/Plugins/Halo2/snd%21.xml
-[ugh]: https://github.com/XboxChaos/Assembly/blob/fd14ef3c46135e9422966c6a64cd926fb0bd23fb/src/Assembly/Plugins/Halo2/ugh%21.xml

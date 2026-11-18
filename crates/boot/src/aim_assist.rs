@@ -2,24 +2,23 @@
 //! (docs/game/aim-assist.md).
 //!
 //! **What Halo 2 reads.** Each weapon tag holds its aim-assist cone:
-//! autoaim angle and range, magnetism angle and range (`weap +0x208` to
+//! aim cone angle and range, pull angle and range (`weap +0x208` to
 //! `+0x214`, f32, radians and world units). `0x001a50a0` reads them for
 //! the held weapon through the tag entry table, dividing the angles by the
 //! zoom magnification and multiplying the ranges by it, and takes the
-//! larger of the deviation angle (`+0x218`) and the autoaim angle as how far
+//! larger of the bend angle (`+0x218`) and the aim cone angle as how far
 //! a shot may bend towards its target. The globals tag's player-control
-//! block (`matg +0xf0`, elements of `0x80`) holds magnetism friction (`+0`,
-//! how much the crosshair slows over a target) and adhesion (`+4`, how much
+//! block (`matg +0xf0`, elements of `0x80`) holds slowdown (`+0`,
+//! how much the crosshair slows over a target) and follow (`+4`, how much
 //! it follows one); the player-control update `0x00185be0` reads both at
 //! `0x0018622b` and caps each at 1.0. Offsets: the engine reads above;
-//! names: Assembly's `Plugins/Halo2/weap.xml` and `matg.xml` at
-//! eecb829971d3b58d7bd8285d9b4dfe86425dda6f.
+//! names: ours, after what those reads do.
 //!
 //! **What we change.** At each game activation (`0x18f000`, after the
 //! scenario's cache is loaded) every loaded `weap` tag's two angles and two
-//! ranges, and the globals' friction and adhesion, are set to retail times
+//! ranges, and the globals' slowdown and follow, are set to retail times
 //! the level's factors ([`Level::factors`]), in guest memory only. Angles
-//! are capped at [`MAX_ANGLE`], friction and adhesion at 1.0 (the engine's
+//! are capped at [`MAX_ANGLE`], slowdown and follow at 1.0 (the engine's
 //! own cap), and nothing is ever made weaker than retail.
 //!
 //! **Idempotent.** We remember, per field, the retail value and what we
@@ -58,30 +57,30 @@ pub const WEAP: u32 = u32::from_be_bytes(*b"weap");
 /// The globals group.
 pub const MATG: u32 = u32::from_be_bytes(*b"matg");
 
-/// `weap +0x208`: autoaim angle (radians), full strength inside it.
-pub const AUTOAIM_ANGLE: u32 = 0x208;
-/// `weap +0x20c`: autoaim range (world units).
-pub const AUTOAIM_RANGE: u32 = 0x20c;
-/// `weap +0x210`: magnetism angle (radians).
-pub const MAGNETISM_ANGLE: u32 = 0x210;
-/// `weap +0x214`: magnetism range (world units).
-pub const MAGNETISM_RANGE: u32 = 0x214;
+/// `weap +0x208`: aim cone angle (radians), full strength inside it.
+pub const CONE_ANGLE: u32 = 0x208;
+/// `weap +0x20c`: aim cone range (world units).
+pub const CONE_RANGE: u32 = 0x20c;
+/// `weap +0x210`: pull angle (radians).
+pub const PULL_ANGLE: u32 = 0x210;
+/// `weap +0x214`: pull range (world units).
+pub const PULL_RANGE: u32 = 0x214;
 /// The weapon's last aim-assist byte: shorter tags are not touched.
-const WEAP_MIN_SIZE: u32 = MAGNETISM_RANGE + 4;
+const WEAP_MIN_SIZE: u32 = PULL_RANGE + 4;
 
 /// `matg +0xf0`: the player-control block (count, address).
 pub const MATG_PLAYER_CONTROL: u32 = 0xf0;
 /// Its element size.
 pub const PLAYER_CONTROL_STRIDE: u32 = 0x80;
-/// Element `+0`: magnetism friction, `+4`: magnetism adhesion.
-pub const MAGNETISM_FRICTION: u32 = 0x0;
-pub const MAGNETISM_ADHESION: u32 = 0x4;
+/// Element `+0`: slowdown, `+4`: follow.
+pub const SLOWDOWN: u32 = 0x0;
+pub const FOLLOW: u32 = 0x4;
 /// More player-control elements than this is not a globals tag we know.
 const MAX_PLAYER_CONTROLS: u32 = 16;
 
 /// No angle is raised past this (radians, about 28.6 degrees).
 pub const MAX_ANGLE: f32 = 0.5;
-/// Friction and adhesion: the engine caps both at 1.0 (`0x00186252`).
+/// Slowdown and follow: the engine caps both at 1.0 (`0x00186252`).
 pub const MAX_STICK: f32 = 1.0;
 
 /// The options mode of a multiplayer game.
@@ -105,11 +104,11 @@ pub enum Level {
 /// Multipliers on the retail values.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Factors {
-    /// Autoaim and magnetism angles.
+    /// Cone and pull angles.
     pub angle: f32,
-    /// Autoaim and magnetism ranges.
+    /// Cone and pull ranges.
     pub range: f32,
-    /// Magnetism friction and adhesion.
+    /// Slowdown and follow.
     pub stick: f32,
 }
 
@@ -225,10 +224,10 @@ impl Remembered {
             if group == WEAP && size >= WEAP_MIN_SIZE {
                 out.weapons += 1;
                 for (off, factor, max) in [
-                    (AUTOAIM_ANGLE, f.angle, MAX_ANGLE),
-                    (AUTOAIM_RANGE, f.range, f32::MAX),
-                    (MAGNETISM_ANGLE, f.angle, MAX_ANGLE),
-                    (MAGNETISM_RANGE, f.range, f32::MAX),
+                    (CONE_ANGLE, f.angle, MAX_ANGLE),
+                    (CONE_RANGE, f.range, f32::MAX),
+                    (PULL_ANGLE, f.angle, MAX_ANGLE),
+                    (PULL_RANGE, f.range, f32::MAX),
                 ] {
                     out.writes += u32::from(field(m, addr + off, factor, max));
                 }
@@ -243,7 +242,7 @@ impl Remembered {
                 for k in 0..n {
                     out.player_controls += 1;
                     let el = at.wrapping_add(k * PLAYER_CONTROL_STRIDE);
-                    for off in [MAGNETISM_FRICTION, MAGNETISM_ADHESION] {
+                    for off in [SLOWDOWN, FOLLOW] {
                         out.writes += u32::from(field(m, el + off, f.stick, MAX_STICK));
                     }
                 }

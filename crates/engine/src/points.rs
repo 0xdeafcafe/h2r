@@ -324,6 +324,11 @@ points! { ALL;
     /// calls it after the opaque layers and before the first-person
     /// chain): the occlusion depth capture point.
     SCENE_TRANSPARENTS @ 0x0001_e370: [opaque]; "docs/graphics/occlusion-culling.md";
+    /// A sorted transparent geometry entry's handler: the transparents call
+    /// it through the entry's `+0x20` with the entry's `+0x24` (shader
+    /// datum, then the render record argument), stdcall, `ret 4`. Runs the
+    /// opaque path's build and draw over the template's layer-15 passes.
+    TRANSPARENT_GEOMETRY @ 0x0004_1020: [fn(data: stack 0) ret 4]; "docs/graphics/native-renderer.md";
     /// Shader draw begin: per draw.
     SHADER_DRAW_BEGIN @ 0x0001_bbf0: [opaque], Hot; "docs/formats/shader-instances.md";
     /// `submit_structure_or_model_geometry`: per draw.
@@ -484,10 +489,19 @@ points! { ALL;
     /// countdown states. Its status line picks the text (`0x250008`).
     LOBBY_START_STATE @ 0x0019_a2ce: [fn(progress: stack 0) -> eax ret 4]; "docs/live/live-coop.md";
     /// The start state's tail after a co-op check that passed: a countdown
-    /// running (`>= 0`, state 10), else everyone ready (`0x592f0`, AL: 9,
-    /// else 8).
+    /// running (`>= 0`, state 10), else `LOBBY_ALL_READY` (AL: 9, else 8).
     LOBBY_COUNTDOWN @ 0x0006_4a60: [fn() -> eax ret 0]; "docs/live/live-coop.md";
+    /// Despite the name, not a readiness count: AL 1 when this console
+    /// leads the party (session `+0x72d8` equals `+0x50`, in states 3 to
+    /// 8). Start state 8's text is "Waiting for ... to start the game"
+    /// (docs/game/bots.md §4.2, "The start check").
     LOBBY_ALL_READY @ 0x0005_92f0: [fn() -> al ret 0]; "docs/live/live-coop.md";
+    /// The pregame lobby's input handler (ECX the screen, the event on the
+    /// stack, AL handled, `ret 4`): event `+0` the kind (5 a button), `+4`
+    /// the controller, `+8` the button (0 A, `0xc` Start). A or Start from
+    /// a controller with a profile reaches Start Game (`0x250c30`,
+    /// `0x25106c`); from one without, the profile chooser (`0x250cc3`).
+    PREGAME_LOBBY_INPUT @ 0x0025_0b1e: [fn(screen: ecx, event: stack 0) -> al ret 4]; "docs/game/bots.md";
     /// The per-tick player update (from `game_tick`, `0x13801f`): every
     /// player; a first spawn pending (flags byte `+2` bit 3) goes to
     /// `PLAYER_SPAWN`; the co-op respawn (`0x14cdd0`) runs inside it.
@@ -589,11 +603,11 @@ points! { ALL;
     /// action): stdcall, the local user index first of five stack words,
     /// the player's local controller index (player `+0x24`) in EDX. Its
     /// only caller is `0x186ab0` (`0x186b16`), which `0x1870a0` runs for
-    /// each bound local user. Reads magnetism friction and adhesion at
+    /// each bound local user. Reads slowdown and follow at
     /// `0x18622b` and calls the aim-assist search `0x1a4900` at `0x1861a1`.
     PLAYER_CONTROL_UPDATE @ 0x0018_5be0: [fn(user: stack 0, controller: edx) ret 0x14]; "docs/game/aim-assist.md";
     /// The aim-assist parameters of a unit's held weapons, from the weapon
-    /// tags (autoaim and magnetism angles and ranges, zoom applied):
+    /// tags (aim cone and pull angles and ranges, zoom applied):
     /// unit in ECX, the 0x24-byte result at ESI (kept to the return), zoom
     /// level on the stack, AL whether there is one. Callers: the local
     /// aim-assist search `0x1a4900` (`0x1a49a1`) and the shot aim

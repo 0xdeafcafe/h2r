@@ -12,10 +12,8 @@ document or in the tests. The tests build invented tags in memory.
 
 Every interpreted field below was found by reading the retail XBE's UI code
 (SHA-256 `03215919…7935d`, see [engine-map.md](../engine/engine-map.md)) and then checked
-against the disc. No community tag definition (Assembly plugins, H2EK, OpenH2,
-Entity or others) was consulted for these layouts, so none is transcribed or
-cross-checked here. Field names describe what the engine does with a value,
-not what a tool calls it.
+against the disc. No outside tag definition was consulted for these layouts.
+Field names describe what the engine does with a value.
 
 Labels used in the tables:
 

@@ -26,7 +26,7 @@ pub const LIGHT_SIZE: usize = 0xe4;
 pub mod flags {
     /// Bit 3: the light casts no shadow. **E** (`0x00031e02` skips the shadow
     /// passes); **D** (a no-shadow study tag differs from its pair in this
-    /// bit alone); the MCC tools call it "no stencil shadow".
+    /// bit alone).
     pub const NO_SHADOW: u32 = 1 << 3;
 }
 

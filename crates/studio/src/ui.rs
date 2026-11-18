@@ -8,11 +8,13 @@
 //! [`Action`]s.
 
 mod inspector;
+pub mod map_pack;
 mod outliner;
 mod play;
 mod playlists;
 pub mod tags;
 mod ui_screens;
+mod hud;
 mod variants;
 use std::path::PathBuf;
 
@@ -96,11 +98,14 @@ pub struct Studio {
     pub variants: variants::VariantsUi,
     playlists: playlists::PlaylistsUi,
     pub ui_screens: ui_screens::UiScreensUi,
+    pub hud: hud::HudUi,
     inspector: inspector::InspectorState,
     /// Play and pair (the Game panel; `crate::play`).
     pub play: play::PlayUi,
     /// The Tags tool's UI state (its field panel's too).
     pub tags: tags::TagsUi,
+    /// The Maps list's Map Pack pictures.
+    pub map_pack: map_pack::MapPackUi,
 }
 
 impl Studio {
@@ -119,9 +124,11 @@ impl Studio {
             variants: variants::VariantsUi::default(),
             playlists: playlists::PlaylistsUi::default(),
             ui_screens: ui_screens::UiScreensUi::default(),
+            hud: hud::HudUi::default(),
             inspector: inspector::InspectorState::default(),
             play: play::PlayUi::default(),
             tags: tags::TagsUi::default(),
+            map_pack: map_pack::MapPackUi::default(),
         }
     }
 
@@ -133,7 +140,7 @@ impl Studio {
         self.shortcuts(ui, app, &mut actions);
         self.menu_bar(ui, app, &mut actions);
         self.dockspace(ui);
-        self.tools_window(ui, app, &mut actions);
+        self.tools_window(ui, app, gpu, &mut actions);
         match app.tool {
             ToolKind::Scenario => {
                 self.outliner_window(ui, app, &mut actions);
@@ -145,6 +152,7 @@ impl Studio {
             ToolKind::Variants => self.variant_windows(ui, app, &mut actions),
             ToolKind::Playlists => self.playlist_windows(ui, app, &mut actions),
             ToolKind::UiScreens => self.ui_screen_windows(ui, app, gpu, &mut actions),
+            ToolKind::Hud => self.hud_windows(ui, app, gpu, &mut actions),
             ToolKind::Tags => self.tag_windows(ui, app, &mut actions),
         }
         self.log_window(ui, app);
@@ -177,6 +185,11 @@ impl Studio {
                 ToolKind::Variants => actions.push(Action::SaveVariant),
                 ToolKind::Playlists if app.hoppers.is_open() => {
                     playlists::save(app, self.dialogs, actions)
+                }
+                ToolKind::Hud => {
+                    if let Some(p) = hud::save_dialog(self.dialogs, app) {
+                        actions.push(Action::HudSaveAs(p));
+                    }
                 }
                 ToolKind::Playlists | ToolKind::UiScreens => {}
             }
@@ -479,6 +492,18 @@ impl Studio {
     /// The File menu's items for the variant and playlist tools.
     fn tool_file_menu(&mut self, ui: &Ui, app: &App, actions: &mut Vec<Action>) {
         match app.tool {
+            ToolKind::Hud => {
+                let can = app.hud.session.as_ref().is_some_and(|s| !s.edited().is_empty());
+                if ui.menu_item_enabled_selected_with_shortcut(
+                    format!("{} Save map with HUD edits as...", icon::SAVE),
+                    "Cmd+S",
+                    false,
+                    can,
+                ) && let Some(p) = hud::save_dialog(self.dialogs, app)
+                {
+                    actions.push(Action::HudSaveAs(p));
+                }
+            }
             ToolKind::Scenario | ToolKind::UiScreens | ToolKind::Tags => {}
             ToolKind::Variants => {
                 let e = app.variants.as_ref();
@@ -588,6 +613,20 @@ impl Studio {
             .build(|| ui_screens::inspector(ui, app, st, fonts, dialogs, actions));
     }
 
+    /// The HUD tool in the outliner, centre and inspector windows.
+    fn hud_windows(&mut self, ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>, actions: &mut Vec<Action>) {
+        let fonts = &self.fonts;
+        let st = &mut self.hud;
+        ui.window(self.keys.outliner.label(format!("{} HUDs", icon::TREE)))
+            .build(|| hud::tree(ui, app, st, fonts, actions));
+        ui.window(self.keys.viewport.label(format!("{} HUD", icon::EYE)))
+            .flags(WindowFlags::HORIZONTAL_SCROLLBAR)
+            .build(|| hud::preview(ui, app, st, fonts, gpu, actions));
+        let dialogs = self.dialogs;
+        ui.window(&self.keys.inspector)
+            .build(|| hud::inspector(ui, app, st, fonts, dialogs, actions));
+    }
+
     /// The Tags tool: the tag tree, the fields, the raw bytes.
     fn tag_windows(&mut self, ui: &Ui, app: &mut App, actions: &mut Vec<Action>) {
         app.sync_tags();
@@ -611,7 +650,14 @@ impl Studio {
         f.pop();
     }
 
-    fn tools_window(&mut self, ui: &Ui, app: &mut App, actions: &mut Vec<Action>) {
+    fn tools_window(
+        &mut self,
+        ui: &Ui,
+        app: &mut App,
+        gpu: &mut Gpu<'_>,
+        actions: &mut Vec<Action>,
+    ) {
+        let mut pack = std::mem::take(&mut self.map_pack);
         ui.window(&self.keys.tools).build(|| {
             self.heading(ui, "Tools");
             for tool in ToolKind::ALL {
@@ -652,7 +698,7 @@ impl Studio {
             }
             let loaded = app
                 .loaded_map()
-                .filter(|_| app.opened_package().is_none())
+                .filter(|_| app.opened_package().is_none() && app.opened_pack_map().is_none())
                 .map(str::to_owned);
             for name in app.maps() {
                 let on = loaded.as_deref() == Some(name.as_str());
@@ -665,13 +711,21 @@ impl Studio {
                     actions.push(Action::SelectMap(name.clone()));
                 }
             }
+            let bold = self.fonts.bold;
+            let heading = |ui: &Ui, text: &str| {
+                let f = ui.push_font(bold);
+                ui.text(text);
+                f.pop();
+            };
+            map_pack::group(ui, app, &mut pack, gpu, heading, actions);
             self.library_lists(ui, app, actions);
         });
+        self.map_pack = pack;
     }
 
-    /// The Maps list's other groups: the Map Pack, user packages, then
-    /// Halo 1 (converted packages, and the maps of an open Halo 1 source,
-    /// read-only).
+    /// The Maps list's other groups after the Map Pack ([`map_pack`]): user
+    /// packages, then Halo 1 (converted packages, and the maps of an open
+    /// Halo 1 source, read-only).
     fn library_lists(&self, ui: &Ui, app: &App, actions: &mut Vec<Action>) {
         let opened = app.opened_package().map(str::to_owned);
         let entry = |e: &editor_core::packages::PackageEntry, actions: &mut Vec<Action>| {
@@ -687,7 +741,9 @@ impl Studio {
             }
             ui.set_item_tooltip(format!(
                 "{}\nin <data>/maps/{}{}",
-                if e.derived {
+                if !e.derived && let Some(m) = app.pack_map_named(&e.map) {
+                    format!("an edit of the Map Pack's {} ({})", m.name, e.map)
+                } else if e.derived {
                     format!("a new map, loaded as {}", e.map)
                 } else {
                     format!("an edit of {}", e.map)
@@ -699,28 +755,6 @@ impl Studio {
                 }
             ));
         };
-        if let Some(pack) = app.mappack() {
-            ui.spacing();
-            self.heading(ui, "Map Pack");
-            let kind = if pack.is_folder() {
-                icon::FOLDER
-            } else {
-                icon::DISC
-            };
-            ui.text_disabled(format!("{kind} {}", pack.path().display()));
-            let loaded = app.loaded_map().filter(|_| opened.is_none());
-            for name in app.mappack_maps() {
-                let on = loaded == Some(name.as_str());
-                if ui
-                    .selectable_config(format!("{}  {name}##pack-{name}", icon::MAP))
-                    .selected(on)
-                    .build()
-                    && !on
-                {
-                    actions.push(Action::SelectMap(name.clone()));
-                }
-            }
-        }
         let (h1, own): (Vec<_>, Vec<_>) = app.packages().iter().partition(|e| e.halo1.is_some());
         if !own.is_empty() {
             ui.spacing();
@@ -1051,6 +1085,7 @@ impl Studio {
                 ToolKind::Variants => "The open game variant".to_owned(),
                 ToolKind::Playlists => "The playlist file".to_owned(),
                 ToolKind::UiScreens => "The UI screen".to_owned(),
+                ToolKind::Hud => "The HUD map".to_owned(),
                 ToolKind::Tags => "The map's tags".to_owned(),
             };
             ui.text(format!("{} {who} has unsaved edits.", icon::ALERT));
@@ -1080,6 +1115,13 @@ impl Studio {
                         }
                     } else if ui.button(format!("{} Save as...", icon::SAVE))
                         && let Some(p) = playlists::save_dialog(self.dialogs, app)
+                    {
+                        answer = Some(Answer::SaveAs(p));
+                    }
+                }
+                ToolKind::Hud => {
+                    if ui.button(format!("{} Save as...", icon::SAVE))
+                        && let Some(p) = hud::save_dialog(self.dialogs, app)
                     {
                         answer = Some(Answer::SaveAs(p));
                     }
@@ -1345,6 +1387,7 @@ fn tool_icon(tool: ToolKind) -> &'static str {
         ToolKind::Variants => icon::SLIDERS,
         ToolKind::Playlists => icon::LAYERS,
         ToolKind::UiScreens => icon::EYE,
+        ToolKind::Hud => icon::CROSSHAIR,
         ToolKind::Tags => icon::BOX,
     }
 }

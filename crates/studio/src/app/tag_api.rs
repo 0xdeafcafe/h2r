@@ -306,11 +306,18 @@ pub fn set_field(doc: &TagDoc, tag: TagId, path: &str, v: &Value) -> Result<TagA
         }
         Kind::StringId => match v {
             Value::Null => u32::MAX.to_le_bytes().to_vec(),
-            Value::String(s) => doc
-                .string_id(s)
-                .ok_or_else(|| format!("{s:?} is not a string ID of this map"))?
-                .to_le_bytes()
-                .to_vec(),
+            Value::String(s) => match doc.string_id(s) {
+                Some(id) => id.to_le_bytes().to_vec(),
+                // A string the map lacks: added with the write.
+                None => {
+                    return Ok(TagAction::SetString {
+                        tag,
+                        address: a,
+                        text: s.clone(),
+                        label: f.name.clone(),
+                    });
+                }
+            },
             _ => return Err(format!("{}: a string or null", f.name)),
         },
         Kind::TagRef { groups } | Kind::Datum { groups } => {

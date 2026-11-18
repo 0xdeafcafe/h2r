@@ -169,8 +169,8 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
     // Halo 1's or Halo 2's HUD on converted Halo 1 maps (docs/halo1/hud.md):
     // the owners' HUD references at game activation, by `hud::style_for_map`.
     hud_swap::install(features, i.packages, i.data_root).context("installing the HUD swap")?;
-    // Stronger aim assist (docs/game/aim-assist.md): the weapons' autoaim and
-    // magnetism at each map load, from the Aim Assist setting (Auto: Strong
+    // Stronger aim assist (docs/game/aim-assist.md): the weapons' aim cone and
+    // pull at each map load, from the Aim Assist setting (Auto: Strong
     // while the touch controls show). Headless runs keep retail.
     aim_assist::install(features, i.settings.clone()).context("installing the aim assist")?;
     // Local bots (docs/game/bots.md, stage 1): pads on controller ports,
@@ -310,10 +310,10 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
         .map_err(|e| anyhow::anyhow!("occlusion: {e}"))?;
     // The static world on the native GPU renderer
     // (on by default, H2_FEATURES=impl.render.native_world=off turns it
-    // off; docs/graphics/native-renderer.md). While it is on, pipelining is
-    // off: its layer-draw observers are not render-thread safe. They run
-    // after render-timing's; the world's map file comes from the locator
-    // boot sets (native_world_glue::set_locator).
+    // off; docs/graphics/native-renderer.md). Its layer-draw observer is
+    // context-only, so the pipelined render runs it on its own thread. It
+    // runs after render-timing's; the world's map file comes from the
+    // locator boot sets (native_world_glue::set_locator).
     features
         .add(&feature::native_world::NativeWorld)
         .map_err(|e| anyhow::anyhow!("native world: {e}"))?;
@@ -325,6 +325,14 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     features
         .add(&feature::native_objects::NativeObjects)
         .map_err(|e| anyhow::anyhow!("native objects: {e}"))?;
+    // The sorted transparents' geometry on the native GPU renderer
+    // (H2_FEATURES=impl.render.native_transparents=on, off by default;
+    // docs/graphics/native-renderer.md, stage 3): a context-only skip on
+    // the geometry entries' handler, in the game's sort order. Without a
+    // host (none is installed yet) every entry keeps its D3D draw.
+    features
+        .add(&feature::native_transparents::NativeTransparents)
+        .map_err(|e| anyhow::anyhow!("native transparents: {e}"))?;
     // H2_UI_WATCH=1: the screen player one's input goes to, a line on each
     // change and `ui.screen` (`h2 coop test --drive`; ui_watch.rs).
     ui_watch::install(features)?;

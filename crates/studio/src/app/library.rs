@@ -143,6 +143,7 @@ impl App {
     /// Re-read the packages under the data root.
     pub fn refresh_packages(&mut self) {
         self.packages = packages::list(&self.session.maps_dir());
+        self.refresh_map_pack();
     }
 
     pub(super) fn set_overlay(&mut self, on: bool) {
@@ -180,6 +181,7 @@ impl App {
             pack.map_names().len()
         ));
         self.mappack = Some(pack);
+        self.refresh_map_pack();
         true
     }
 
