@@ -902,7 +902,10 @@ pub fn install(
                 let odd = Arc::clone(&odd);
                 let copied = Arc::clone(&copied);
                 call_then(cpu, ctx, sh, move |cpu, ctx| {
-                    if cpu.eax == 0 {
+                    // A dialog class of ours is served its copy even when
+                    // the lookup found nothing (in a game, where the
+                    // Controls tag isn't).
+                    if cpu.eax == 0 && !ours {
                         return Ok(());
                     }
                     let mut mem = ctx.runtime().memory();

@@ -394,6 +394,22 @@ impl Geometry {
         };
         match place {
             ListPlace::Controls => base,
+            // Moved on the Controls skin: its rows where they go, with the
+            // frame art the place keeps.
+            ListPlace::Moved {
+                anchor,
+                skin: 2,
+                bitmaps_left_of,
+                ..
+            } => Geometry {
+                anchor,
+                visible: place.shown(),
+                frame_art: controls_frame
+                    .into_iter()
+                    .filter(|a| a.at[0] < bitmaps_left_of)
+                    .collect(),
+                ..base
+            },
             ListPlace::Moved {
                 anchor,
                 bitmaps_left_of,

@@ -28,10 +28,12 @@ use runtime::guest::Permissions;
 
 use crate::list_class::{Action, ListClass, ListLayout, OnFree, Rows, TextBlock};
 use crate::ui::{Chosen, LABEL_SLOT, VALUE_SLOT};
+use crate::ui_kit::dialog::{DialogBase, DialogSpec};
 use crate::ui_kit::ids::{self, Family};
 use crate::ui_kit::input::{Glyph, Input, OpenerGuard, Prompt};
 use crate::ui_kit::lifecycle::{self, AfterClose};
 use crate::ui_kit::spec::{self, Describe, ListPlace, RowSpec, ScreenSpec, ValueStyle};
+use crate::ui_kit::view::Opener;
 
 /// Work to run once a closed screen is freed: async, may call the guest.
 pub type After =
@@ -235,6 +237,8 @@ pub struct KitScreen {
     after: AfterClose<After>,
     typing: Mutex<Option<usize>>,
     guard: OpenerGuard,
+    /// Shown as a dialog of rows on a retail dialog, over its opener.
+    dialog: Option<(DialogBase, Opener)>,
     /// [`KitTexts`]' feature id, made once.
     texts_id: OnceLock<&'static str>,
 }
@@ -262,6 +266,7 @@ impl KitScreen {
             after: AfterClose::default(),
             typing: Mutex::new(None),
             guard: OpenerGuard::default(),
+            dialog: None,
             texts_id: OnceLock::new(),
         }
     }
@@ -273,6 +278,19 @@ impl KitScreen {
     pub fn layout(mut self, layout: ListLayout, style: ValueStyle) -> Self {
         self.layout = Some(layout);
         self.style = style;
+        self
+    }
+    /// A dialog of rows (docs/game/ui-builder.md "The Dialog kind"): the
+    /// rows in `base`'s list, on its panel and header, opened over the
+    /// screen beneath on the dialogs' window and closed by B, as the
+    /// game's own dialogs are. `opener` is what the preview draws under
+    /// it. The list is the base's own unless [`KitScreen::layout`] moves
+    /// it; [`DialogBase::Large`] is the one the game maps have too. Values
+    /// go as the base's list skin has room for them
+    /// ([`DialogBase::style`]).
+    pub fn dialog(mut self, base: DialogBase, opener: Opener) -> Self {
+        self.dialog = Some((base, opener));
+        self.style = base.style();
         self
     }
     /// The focused row's description (and the legend) in `block`.
@@ -333,12 +351,12 @@ impl KitScreen {
             None => Ok(()),
             Some(Pending::Close) => {
                 eprintln!("{name}: closing");
-                lifecycle::close(cx, screen).await
+                crate::ui_kit::dialog_tag::close(cx, screen).await
             }
             Some(Pending::CloseThen(work)) => {
                 if self.after.then(screen, work) {
                     eprintln!("{name}: closing; the rest runs once {screen:#x} is freed");
-                    lifecycle::close(cx, screen).await
+                    crate::ui_kit::dialog_tag::close(cx, screen).await
                 } else {
                     eprintln!("{name}: already closing");
                     Ok(())
@@ -440,6 +458,12 @@ impl KitScreen {
         }
         if let Some(l) = self.layout {
             c = c.layout(l);
+        }
+        if let Some((base, _)) = self.dialog {
+            c =
+                c.dialog(base).layout(self.layout.unwrap_or_else(|| {
+                    crate::ui_kit::dialog_tag::base_layout(base, self.rows.len())
+                }));
         }
         if let Some(text) = self.spec().footer_text() {
             c = c.footer(self.texts.set(self.footer_slot(), &text));
@@ -549,6 +573,17 @@ impl Describe for KitScreen {
         ];
         s.scrolls = self.scrolls;
         s.footer = true;
+        if let Some((base, opener)) = self.dialog {
+            let list = self
+                .layout
+                .unwrap_or_else(|| crate::ui_kit::dialog_tag::base_layout(base, self.rows.len()));
+            s.list = ListPlace::from(Some(list));
+            s.dialog = Some(DialogSpec {
+                base,
+                rows: s.rows.clone(),
+                ..DialogSpec::new("", opener)
+            });
+        }
         s
     }
 }
@@ -644,6 +679,44 @@ mod tests {
         if let Err(e) = r.build(&feature::Base) {
             panic!("two kit screens conflict: {e:?}");
         }
+    }
+
+    /// A dialog screen's spec is a dialog of its rows in its base's list,
+    /// values as the base's skin has room for them; its class is a
+    /// dialog class on the same list.
+    #[test]
+    fn a_dialog_screen_is_its_rows_in_its_bases_list() {
+        for (base, skin, anchor, style) in [
+            (DialogBase::QuickOptions, 2, [-254, 87], ValueStyle::Column),
+            (DialogBase::Large, 0, [-235, 30], ValueStyle::Inline),
+        ] {
+            let k = Arc::new(crate::ui_kit::screens::dialog_example(
+                crate::ui_kit::choice::example::store(),
+                base,
+            ));
+            let s = k.spec();
+            let d = s.dialog.clone().expect("a dialog");
+            assert_eq!(d.base, base);
+            assert_eq!(d.rows, s.rows);
+            assert_eq!(d.rows.len(), 2);
+            assert!(d.body.is_empty(), "rows, no message");
+            assert_eq!(d.opener, Opener::MAIN_MENU);
+            assert_eq!(s.style, style, "{base:?}");
+            assert_eq!(
+                s.list,
+                ListPlace::Moved {
+                    skin,
+                    anchor,
+                    bitmaps_left_of: i16::MIN,
+                    visible: 2,
+                },
+                "{base:?}"
+            );
+            assert_eq!(k.class().dialog_base(), Some(base));
+        }
+        let plain = Arc::new(example().0);
+        assert_eq!(plain.spec().dialog, None);
+        assert_eq!(plain.class().dialog_base(), None);
     }
 
     #[test]

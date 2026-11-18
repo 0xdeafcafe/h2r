@@ -51,8 +51,11 @@ again, and so a screen can be seen and checked before anyone runs the game.
    (A opens the game's keyboard; the typed text comes back once the keyboard
    closes). `.layout(ListLayout, ValueStyle::Inline)` moves the list onto a
    one-text skin and puts values in the label (`Mythic: < On >`), as the skulls
-   page does. `.description(TextBlock)` adds the focused row's description. The
-   prompts go in the footer (below). `.scrolls()` says more rows than the list shows is
+   page does. `.description(TextBlock)` adds the focused row's description.
+   `.dialog(DialogBase::QuickOptions, opener)` makes the screen a dialog of its
+   rows over whatever opened it, on the lobby's Quick Options art (or
+   `DialogBase::Large`, the one the game maps have); see docs/game/ui-builder.md
+   "The Dialog kind". The prompts go in the footer (below). `.scrolls()` says more rows than the list shows is
    meant.
    **Choice rows.** A row of many choices over a setting is a
    `ui_kit::choice::ChoiceRow`, the sibling of the Halo 1 options'

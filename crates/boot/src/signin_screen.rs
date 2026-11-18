@@ -530,6 +530,7 @@ pub fn dialog_for(
         cells,
         status,
         opener,
+        ..DialogSpec::new("", opener)
     };
     let Some(p) = prompt else {
         return (
