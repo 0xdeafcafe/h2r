@@ -130,6 +130,32 @@ fn physics(m: &Motion) -> Physics {
             .map(|t| f64::from(t) / 30.0 * f64::from(layout::HITBOX_OFFSET_RATE)),
         havok_pos: m.havok.map(|(p, _)| p),
         havok_velocity: m.havok.map(|(_, v)| v),
+        support: m.support.as_ref().map(support),
+    }
+}
+
+/// A biped's ground support, raw words as hex.
+fn support(s: &live_telemetry::Support) -> agent_proto::Support {
+    agent_proto::Support {
+        flags: format!("{:02x}", s.flags),
+        copied: s.flags & layout::BIPED_SUPPORT_COPIED != 0,
+        words: s.words.iter().map(|&w| hex(w)).collect(),
+        point: s.point,
+        normal: s.normal,
+        contact_point: s.contact_point,
+        ground_state: s.ground_state,
+        contacts: s
+            .contacts
+            .iter()
+            .map(|c| agent_proto::CharacterContact {
+                key: hex(c.key),
+                other: hex(c.other),
+                point: c.point,
+                normal: c.normal,
+                value: c.value,
+                flags: hex(c.flags),
+            })
+            .collect(),
     }
 }
 
@@ -223,6 +249,22 @@ mod tests {
                 airborne_ticks: Some(4),
                 hitbox_offset: Some(-44),
                 havok: Some(([1.0, 2.0, 3.4], [0.5, 0.0, 0.0])),
+                support: Some(live_telemetry::Support {
+                    flags: 0x10,
+                    words: [2, u32::MAX, 0x0b11, u32::MAX, 0x2000_0b11],
+                    point: [43.5, -79.25, 1.2],
+                    normal: [0.5, 0.0, 0.85],
+                    contact_point: [43.5, -79.25, 1.2],
+                    ground_state: [0.0, 0.0, -1.0],
+                    contacts: vec![live_telemetry::CharacterContact {
+                        key: 0x2000_0b11,
+                        other: u32::MAX,
+                        point: [43.5, -79.25, 1.2],
+                        normal: [0.5, 0.0, 0.85],
+                        value: 0.0,
+                        flags: 6,
+                    }],
+                }),
                 ..Default::default()
             },
             ..Default::default()
@@ -260,6 +302,19 @@ mod tests {
         assert_eq!(p.havok_pos, Some([1.0, 2.0, 3.4]));
         assert_eq!(p.havok_velocity, Some([0.5, 0.0, 0.0]));
         assert!((p.hitbox_offset.unwrap() + 0.22).abs() < 1e-6);
+        let s = p.support.expect("a biped's support");
+        assert_eq!(s.flags, "10");
+        assert!(s.copied);
+        assert_eq!(
+            s.words,
+            ["00000002", "ffffffff", "00000b11", "ffffffff", "20000b11"]
+        );
+        assert_eq!(s.normal, [0.5, 0.0, 0.85]);
+        assert_eq!(s.ground_state, [0.0, 0.0, -1.0]);
+        assert_eq!(s.contacts.len(), 1);
+        assert_eq!(s.contacts[0].key, "20000b11");
+        assert_eq!(s.contacts[0].other, "ffffffff");
+        assert_eq!(s.contacts[0].flags, "00000006");
         assert_eq!(o.team, Some(2));
         assert_eq!(o.tag.as_deref(), Some("12340001"));
         assert_eq!(o.vehicle.as_deref(), Some("vehicle.e0000007"));

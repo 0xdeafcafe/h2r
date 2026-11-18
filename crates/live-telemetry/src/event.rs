@@ -154,6 +154,37 @@ pub struct Motion {
     /// The first Havok rigid body's world position and linear velocity
     /// (`layout::BODY_PHYSICS`), when the object has one.
     pub havok: Option<([f64; 3], [f64; 3])>,
+    /// Bipeds only: the ground support state (`layout::BIPED_SUPPORT_*`).
+    pub support: Option<Support>,
+}
+
+/// What the biped physics update keeps of the ground under a biped, and
+/// the character contacts its ground test walks (`layout::BIPED_SUPPORT_*`,
+/// `layout::CHARACTER_CONTACT_*`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Support {
+    /// The byte at `+0x349` (bit 4: a support contact was copied).
+    pub flags: u8,
+    /// `+0x354..+0x364`.
+    pub words: [u32; 5],
+    pub point: [f64; 3],
+    pub normal: [f64; 3],
+    pub contact_point: [f64; 3],
+    /// The ground mode's state vector (`+0x3ec`).
+    pub ground_state: [f64; 3],
+    /// The physics component's character contacts; empty without one.
+    pub contacts: Vec<CharacterContact>,
+}
+
+/// One character contact (`layout::CHARACTER_CONTACT_SIZE` bytes).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CharacterContact {
+    pub key: u32,
+    pub other: u32,
+    pub point: [f64; 3],
+    pub normal: [f64; 3],
+    pub value: f64,
+    pub flags: u32,
 }
 
 /// An animation manager's first channel, as the guest holds it.
