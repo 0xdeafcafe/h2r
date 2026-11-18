@@ -60,13 +60,15 @@ impl Halo1Objects for Objects<'_> {
                 )
             })
             .collect();
-        let tags = tree.tags;
+        let (tags, sounds, loops) = (tree.tags, tree.sounds, tree.loops);
         ObjectTags {
             count: tags.len(),
             install: Box::new(move |set| {
                 Tree {
                     tags: tags.clone(),
-                    reports: Vec::new(),
+                    sounds: sounds.clone(),
+                    loops: loops.clone(),
+                    ..Tree::default()
                 }
                 .install(set)
                 .map_err(|e| e.to_string())

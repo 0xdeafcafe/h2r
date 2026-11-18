@@ -834,3 +834,134 @@ impl H1Object {
         }
     }
 }
+
+/// Halo 1 `effe` root size (V: every effect's first child block starts
+/// here, on every map of the disc).
+pub const EFFE_SIZE: usize = 0x40;
+/// `effe +0x28` locations (`0x20`: a marker name), `+0x34` events.
+pub const EFFE_LOCATION: usize = 0x20;
+pub const EFFE_EVENT: usize = 0x44;
+/// An event's parts (`event +0x2c`) and particles (`event +0x38`).
+pub const EFFE_PART: usize = 0x68;
+pub const EFFE_PARTICLE: usize = 0xe8;
+
+/// One part of a Halo 1 effect event (`0x68`). V (every part on every
+/// map, `tests/effects_disc.rs`): the reference at `+0x18` resolves to a
+/// tag of its own group word (`snd!`, `deca`, `ligh`, `jpt!`, `pctl`,
+/// `garb`, `proj`), and the floats from `+0x40` on hold the same
+/// quantities in the same order as Halo 2's part from `+0x14` (velocity
+/// bounds, cone angle in radians, angular velocity bounds, radius
+/// modifier bounds, then the two scale words, `0x20` on the same parts in
+/// both).
+#[derive(Clone, Debug, PartialEq)]
+pub struct EffectPart {
+    /// `+0` (0 or 1 on the disc), as Halo 2's `create_in`.
+    pub create_in: u16,
+    /// `+2` (0 or 1): Halo 1 only; no Halo 2 home.
+    pub violence_mode: u16,
+    /// `+4` index into the effect's locations.
+    pub location: i16,
+    /// `+6` (bit 0 on 289 parts), as Halo 2's part flags.
+    pub flags: u16,
+    /// `+0x18` the reference's group word and tag.
+    pub group: Group,
+    pub reference: Option<TagId>,
+    pub velocity_bounds: [f32; 2],
+    pub velocity_cone_angle: f32,
+    pub angular_velocity_bounds: [f32; 2],
+    pub radius_modifier_bounds: [f32; 2],
+    pub a_scales: u32,
+    pub b_scales: u32,
+}
+
+/// One event of a Halo 1 effect (`0x44`): `+4` skip fraction, `+8`
+/// delay bounds, `+0x10` duration bounds (V: the order and ranges of
+/// Halo 2's event; `+0..4` and `+0x18..0x2c` zero everywhere).
+#[derive(Clone, Debug, PartialEq)]
+pub struct EffectEvent {
+    pub skip_fraction: f32,
+    pub delay_bounds: [f32; 2],
+    pub duration_bounds: [f32; 2],
+    pub parts: Vec<EffectPart>,
+    /// `+0x38` particles (`0xe8`, a `part` reference at `+0x54`): counted,
+    /// not converted (Halo 2's particles are `prt3` on shader templates).
+    pub particles: usize,
+}
+
+/// A Halo 1 effect: `+0` flags, `+4`/`+6` loop start and stop events
+/// (-1 none), the locations' marker names and the events.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Effect {
+    pub flags: u32,
+    pub loop_start_event: i16,
+    pub loop_stop_event: i16,
+    pub locations: Vec<String>,
+    pub events: Vec<EffectEvent>,
+}
+
+impl Effect {
+    pub fn read(map: &H1Map, tag: &Tag) -> Result<Self> {
+        let b = tag_bytes(map, tag, b"effe", EFFE_SIZE)?;
+        let locations = elements(map, b, 0x28, EFFE_LOCATION)?
+            .into_iter()
+            .map(|e| name32(e, 0))
+            .collect();
+        let mut events = Vec::new();
+        for e in elements(map, b, 0x34, EFFE_EVENT)? {
+            let parts = elements(map, e, 0x2c, EFFE_PART)?
+                .into_iter()
+                .map(|p| EffectPart {
+                    create_in: u16_at(p, 0),
+                    violence_mode: u16_at(p, 2),
+                    location: i16_at(p, 4),
+                    flags: u16_at(p, 6),
+                    group: Group(u32_at(p, 0x18)),
+                    reference: reference(map, p, 0x18),
+                    velocity_bounds: bounds(p, 0x40),
+                    velocity_cone_angle: f32_at(p, 0x48),
+                    angular_velocity_bounds: bounds(p, 0x4c),
+                    radius_modifier_bounds: bounds(p, 0x54),
+                    a_scales: u32_at(p, 0x60),
+                    b_scales: u32_at(p, 0x64),
+                })
+                .collect();
+            let particles = Block::read(e, 0x38).map_or(0, |k| k.count as usize);
+            events.push(EffectEvent {
+                skip_fraction: f32_at(e, 4),
+                delay_bounds: bounds(e, 8),
+                duration_bounds: bounds(e, 0x10),
+                parts,
+                particles,
+            });
+        }
+        Ok(Self {
+            flags: u32_at(b, 0),
+            loop_start_event: i16_at(b, 4),
+            loop_stop_event: i16_at(b, 6),
+            locations,
+            events,
+        })
+    }
+}
+
+/// One attachment of a Halo 1 object (`obje +0x140`, `0x48`): the
+/// attached tag at `+0` and the model marker it rides at `+0x10` (32
+/// characters).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Attachment {
+    pub group: Group,
+    pub tag: Option<TagId>,
+    pub marker: String,
+}
+
+/// Every attachment of the object in `b` (a tag's bytes from `obje +0`).
+pub fn attachments(map: &H1Map, b: &[u8]) -> Result<Vec<Attachment>> {
+    Ok(elements(map, b, 0x140, 0x48)?
+        .into_iter()
+        .map(|e| Attachment {
+            group: Group(u32_at(e, 0)),
+            tag: reference(map, e, 0),
+            marker: name32(e, 0x10),
+        })
+        .collect())
+}

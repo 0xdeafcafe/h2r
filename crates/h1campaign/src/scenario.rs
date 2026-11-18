@@ -339,6 +339,12 @@ pub struct ScenarioReport {
     /// Object tags added by `h1objects` (models, collisions, animations,
     /// projectiles included).
     pub object_tags: usize,
+    /// Sounds and looping sounds the objects' effects and attachments play
+    /// (`h1objects::convert::Tree::install_audio`), installed with the
+    /// gestalt, and their sample bytes.
+    pub object_sounds: usize,
+    pub object_loops: usize,
+    pub object_sound_bytes: u64,
     /// The player biped, converted and set as the campaign players' unit.
     pub player_biped: Option<String>,
     /// `None` when the scenario was rebuilt from the base's relocated tree
@@ -439,6 +445,11 @@ impl std::fmt::Display for ScenarioReport {
             f,
             "  object tags added: {}, player biped: {:?}, names: {}, base trigger volumes parked: {}",
             self.object_tags, self.player_biped, self.names, self.parked_volumes
+        )?;
+        writeln!(
+            f,
+            "  object sounds: {}, looping sounds: {} ({:#x} sample bytes)",
+            self.object_sounds, self.object_loops, self.object_sound_bytes
         )?;
         writeln!(
             f,
@@ -1305,8 +1316,16 @@ fn place_objects(
         },
         None => None,
     };
-    let tree = std::mem::take(&mut conv.tree);
+    let mut tree = std::mem::take(&mut conv.tree);
     rep.object_tags = tree.tags.len();
+    // The sounds the objects' effects and attachments play, with the
+    // gestalt, before the tags that name them.
+    rep.object_sounds = tree.sounds.len();
+    rep.object_loops = tree.loops.len();
+    let raw_before: u64 = set.raw.iter().map(|r| r.bytes.len() as u64).sum();
+    tree.install_audio(set, true);
+    rep.object_sound_bytes = set.raw.iter().map(|r| r.bytes.len() as u64).sum::<u64>() - raw_before;
+    dropped.extend(tree.audio_notes.drain(..).map(|n| format!("object sounds: {n}")));
     let ids = tree
         .install(set)
         .map_err(|e| invalid(format!("objects: {e}")))?;

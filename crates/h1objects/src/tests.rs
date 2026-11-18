@@ -151,6 +151,7 @@ fn tree_placeholders_become_datums() {
             ("invented\\c".into(), tag(b"weap", &[(8, local(1))])),
         ],
         reports: Vec::new(),
+        ..Tree::default()
     };
     let check = |set: TagSet, ids: &[TagId]| {
         let (bytes, _) = set.build().unwrap();
@@ -549,6 +550,8 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
         weapons: &[weapon],
         role: None,
         points: &[],
+        attachments: &[],
+        creation_effect: None,
     })
     .unwrap();
     let def = Defs::builtin().group(map::FourCC(*b"vehi")).unwrap();
@@ -709,6 +712,8 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
         weapons: &[],
         role: Some(&role),
         points: &points,
+        attachments: &[],
+        creation_effect: None,
     })
     .unwrap();
     let def = Defs::builtin().group(map::FourCC(*b"vehi")).unwrap();
@@ -1295,4 +1300,104 @@ fn rebuilt_biped_is_sized_to_halo_1_and_takes_its_counterparts_references() {
         assert!(close(f(&format!("{p}.unknown_78")), 0.2 * k));
         assert_eq!(f(&format!("{p}.unknown_3c")), 0.0, "the child pointer");
     }
+}
+
+#[test]
+fn rebuilt_effect_keeps_halo_1s_events_and_the_parts_that_convert() {
+    use crate::h1::{Effect, EffectEvent, EffectPart};
+    use crate::rebuild::{PartTarget, effect, part_type_group};
+    use tags::defs::{self, Defs, Str, Target, Val};
+    let part = |group: &[u8; 4], location| EffectPart {
+        create_in: 1,
+        violence_mode: 0,
+        location,
+        flags: 1,
+        group: h1map::Group::new(group),
+        reference: Some(h1map::TagId(0xe000_0001)),
+        velocity_bounds: [1.0, 2.0],
+        velocity_cone_angle: 0.5,
+        angular_velocity_bounds: [-1.0, 1.0],
+        radius_modifier_bounds: [0.5, 1.5],
+        a_scales: 0x20,
+        b_scales: 0,
+    };
+    let e = Effect {
+        flags: 0,
+        loop_start_event: -1,
+        loop_stop_event: -1,
+        locations: vec!["invented marker".into(), String::new()],
+        events: vec![EffectEvent {
+            skip_fraction: 0.25,
+            delay_bounds: [0.0, 0.5],
+            duration_bounds: [1.0 / 30.0, 1.0 / 30.0],
+            parts: vec![part(b"snd!", 0), part(b"deca", 1), part(b"proj", 1)],
+            particles: 3,
+        }],
+    };
+    let root = effect(&e, &mut |p| {
+        let g = p.group.0.to_be_bytes();
+        (&g != b"deca").then(|| PartTarget {
+            type_group: part_type_group(g),
+            group: g,
+            tag: crate::convert::local(7),
+        })
+    })
+    .unwrap();
+    let d = Defs::builtin().group(FourCC(*b"effe")).unwrap();
+    let r = defs::from_built(d, &root).unwrap();
+    let Some(Val::Block(locs)) = r.at("locations") else { panic!() };
+    assert_eq!(locs.len(), 2);
+    assert_eq!(
+        locs[0].at("marker"),
+        Some(&Val::String(Str::Text("invented marker".into())))
+    );
+    assert_eq!(locs[1].at("marker"), Some(&Val::String(Str::Null)));
+    let Some(Val::Block(events)) = r.at("events") else { panic!() };
+    assert_eq!(events[0].at("skip_fraction"), Some(&Val::Float(0.25)));
+    let Some(Val::Block(parts)) = events[0].at("parts") else { panic!() };
+    // The decal has no converter: two parts, the sound and the projectile.
+    assert_eq!(parts.len(), 2);
+    let word = |g: &[u8; 4]| Val::Int(u32::from_be_bytes(*g).into());
+    assert_eq!(parts[0].at("type_group"), Some(&word(b"snd!")));
+    assert_eq!(parts[1].at("type_group"), Some(&word(b"obje")));
+    assert_eq!(parts[1].at("location"), Some(&Val::Int(1)));
+    assert_eq!(parts[0].at("create_in"), Some(&Val::Int(1)));
+    assert_eq!(parts[0].at("a_scales"), Some(&Val::Int(0x20)));
+    assert_eq!(parts[0].at("velocity_bounds"), Some(&Val::floats(&[1.0, 2.0])));
+    assert!(matches!(
+        parts[0].at("reference"),
+        Some(Val::Ref { target: Target::Id(id), .. }) if *id == crate::convert::local(7)
+    ));
+    let Some(Val::Block(systems)) = events[0].at("particle_systems") else { panic!() };
+    assert!(systems.is_empty());
+}
+
+#[test]
+fn audio_placeholders_become_null_when_the_sounds_have_no_room() {
+    // A tree whose tag names a sound and a looping sound it holds none of:
+    // installing over donor slots adds no sound, so both become null.
+    let t = tag(b"effe", &[(0, crate::convert::sound(0)), (8, crate::convert::looping(0))]);
+    let mut set = TagSet::new(CacheType::Multiplayer, "h1test", "invented\\h1test");
+    set.add_group(FourCC(*b"effe"), None, None);
+    let donor = set
+        .add_tag(FourCC(*b"effe"), "invented\\donor", TagPayload::Built(Block::zeroed(4)))
+        .unwrap();
+    let tree = Tree {
+        tags: vec![("invented\\effect".into(), t)],
+        ..Tree::default()
+    };
+    tree.install_over(&mut set, &[donor]).unwrap();
+    let Some(TagPayload::Built(root)) = set.slots[donor.index()].tag.as_ref().map(|e| &e.payload)
+    else {
+        panic!()
+    };
+    let ids: Vec<TagId> = root
+        .fixups
+        .iter()
+        .filter_map(|f| match f.kind {
+            map::build::FixupKind::TagRef(t) => Some(t),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ids, vec![TagId::NULL, TagId::NULL]);
 }

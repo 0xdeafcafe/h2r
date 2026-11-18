@@ -12,6 +12,8 @@ h1models = { path = "../h1models" }
 h1convert = { path = "../h1convert" }
 # Halo 1's own bitmaps on the converted models' shaders.
 h1bitmaps = { path = "../h1bitmaps" }
+# Halo 1 sounds and looping sounds the converted effects and attachments play.
+h1sounds = { path = "../h1sounds" }
 map.workspace = true
 # The Halo 2 collision BSP form, and the object decoders the proof reads back through.
 tags.workspace = true

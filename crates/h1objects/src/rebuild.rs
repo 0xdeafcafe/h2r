@@ -615,6 +615,10 @@ pub struct VehicleSpec<'a> {
     /// Halo 1's powered mass points: friction points where the role has
     /// them, else hover points where it has those, else none.
     pub points: &'a [Point],
+    /// Halo 1's attachments that convert ([`object_effects`]).
+    pub attachments: &'a [AttachmentSpec],
+    /// Halo 1's creation effect, converted.
+    pub creation_effect: Option<TagId>,
 }
 
 /// A Halo 1 vehicle written from the `vehi` definition, no retail template
@@ -687,6 +691,13 @@ pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
         Val::Int(i64::from(high | (v.flags & 0xffff))),
     )?;
     predicted_resources(b"vehi", &mut r, "unit.obje", predicted)?;
+    object_effects(
+        b"vehi",
+        &mut r,
+        "unit.obje",
+        v.attachments,
+        v.creation_effect,
+    )?;
     let wdef = d.child("unit.weapons").expect("unit weapons");
     let weapons = v
         .weapons
@@ -1767,4 +1778,139 @@ pub fn biped(
         }
     }
     built(d, &r)
+}
+
+/// What a Halo 2 effect part creates: the group word the engine dispatches
+/// on (`effe` part `+8`: the reference's group, `obje` for any object;
+/// docs/formats/effects.md), the reference's group, and the converted tag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PartTarget {
+    pub type_group: [u8; 4],
+    pub group: [u8; 4],
+    pub tag: TagId,
+}
+
+/// The group word an effect part dispatches on for a tag of `group`:
+/// objects create through `obje` (V: on the disc every part whose
+/// reference is an object group holds `obje` at `+8`).
+pub fn part_type_group(group: [u8; 4]) -> [u8; 4] {
+    const OBJECTS: [&[u8; 4]; 13] = [
+        b"bipd", b"vehi", b"weap", b"eqip", b"garb", b"proj", b"scen", b"mach", b"ctrl", b"lifi",
+        b"ssce", b"bloc", b"crea",
+    ];
+    if OBJECTS.iter().any(|g| **g == group) {
+        *b"obje"
+    } else {
+        group
+    }
+}
+
+/// A Halo 1 effect written from the `effe` definition, no retail template
+/// read: the locations' marker names, and per event Halo 1's skip
+/// fraction, delay and duration and the parts `target` gives a converted
+/// tag for (`None` leaves the part out), each with Halo 1's creation
+/// medium, location, flags, velocity, cone, angular velocity, radius
+/// modifier and scale words (the two parts hold them in the same order,
+/// `h1::EffectPart`). Particles, the loop events and the flags are not
+/// carried (no Halo 2 meaning established); everything else is the
+/// definition's default.
+pub fn effect(
+    e: &h1::Effect,
+    target: &mut dyn FnMut(&h1::EffectPart) -> Option<PartTarget>,
+) -> Result<Block> {
+    let d = def(b"effe")?;
+    let mut r = defs::default_record(d);
+    let loc_def = d.child("locations").expect("effe locations");
+    let locations = e
+        .locations
+        .iter()
+        .map(|m| {
+            let mut x = defs::default_record(loc_def);
+            set(&mut x, "marker", Val::text(m))?;
+            Ok(x)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    set(&mut r, "locations", Val::Block(locations))?;
+    let ev_def = d.child("events").expect("effe events");
+    let part_def = d.child("events.parts").expect("effe parts");
+    let mut events = Vec::new();
+    for ev in &e.events {
+        let mut x = defs::default_record(ev_def);
+        set(&mut x, "skip_fraction", Val::Float(ev.skip_fraction))?;
+        set(&mut x, "delay_bounds", Val::floats(&ev.delay_bounds))?;
+        set(&mut x, "duration_bounds", Val::floats(&ev.duration_bounds))?;
+        let mut parts = Vec::new();
+        for p in &ev.parts {
+            let Some(t) = target(p) else { continue };
+            let mut y = defs::default_record(part_def);
+            set(&mut y, "create_in", Val::Int(p.create_in.into()))?;
+            set(&mut y, "location", Val::Int(p.location.into()))?;
+            set(&mut y, "flags", Val::Int(p.flags.into()))?;
+            set(
+                &mut y,
+                "type_group",
+                Val::Int(u32::from_be_bytes(t.type_group).into()),
+            )?;
+            set(&mut y, "reference", Val::tag(FourCC(t.group), t.tag))?;
+            set(&mut y, "velocity_bounds", Val::floats(&p.velocity_bounds))?;
+            set(
+                &mut y,
+                "velocity_cone_angle",
+                Val::Float(p.velocity_cone_angle),
+            )?;
+            set(
+                &mut y,
+                "angular_velocity_bounds",
+                Val::floats(&p.angular_velocity_bounds),
+            )?;
+            set(
+                &mut y,
+                "radius_modifier_bounds",
+                Val::floats(&p.radius_modifier_bounds),
+            )?;
+            set(&mut y, "a_scales", Val::Int(p.a_scales.into()))?;
+            set(&mut y, "b_scales", Val::Int(p.b_scales.into()))?;
+            parts.push(y);
+        }
+        set(&mut x, "parts", Val::Block(parts))?;
+        events.push(x);
+    }
+    set(&mut r, "events", Val::Block(events))?;
+    built(d, &r)
+}
+
+/// One attachment of a rebuilt object: the attached tag (`ligh`, `lsnd`,
+/// `effe` or `cont`; E `0x000bed2a` builds these) and its marker.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AttachmentSpec {
+    pub group: [u8; 4],
+    pub tag: TagId,
+    pub marker: String,
+}
+
+/// Sets `path.attachments` (the object header's, `obje +0x94`) and
+/// `path.creation_effect` on a rebuilt record.
+pub fn object_effects(
+    group: &[u8; 4],
+    r: &mut Record,
+    path: &str,
+    attachments: &[AttachmentSpec],
+    creation_effect: Option<TagId>,
+) -> Result<()> {
+    let e = def(group)?
+        .child(&format!("{path}.attachments"))
+        .expect("obje attachments");
+    let mut out = Vec::new();
+    for a in attachments {
+        let mut x = defs::default_record(e);
+        set(&mut x, "type", Val::tag(FourCC(a.group), a.tag))?;
+        set(&mut x, "marker", Val::text(&a.marker))?;
+        out.push(x);
+    }
+    set(r, &format!("{path}.attachments"), Val::Block(out))?;
+    set(
+        r,
+        &format!("{path}.creation_effect"),
+        Val::tag(FourCC(*b"effe"), creation_effect.unwrap_or(TagId::NULL)),
+    )
 }

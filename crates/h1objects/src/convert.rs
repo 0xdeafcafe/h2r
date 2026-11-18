@@ -362,9 +362,30 @@ pub struct ObjectReport {
 pub struct Tree {
     pub tags: Vec<(String, Converted)>,
     pub reports: Vec<ObjectReport>,
+    /// Halo 1 sounds the tags play (effect parts), converted, by path;
+    /// the tags name them by [`sound`] placeholders. They need the map's
+    /// sound gestalt, so [`Tree::install`] adds them first.
+    pub sounds: Vec<(String, h1sounds::ConvertedSound)>,
+    /// Halo 1 looping sounds the tags attach, read and converted; named
+    /// by [`looping`] placeholders.
+    pub loops: Vec<h1sounds::looping::Looping>,
+    /// What installing the sounds left out, and why.
+    pub audio_notes: Vec<String>,
 }
 
 const LOCAL: u32 = 0xfffd_0000;
+const SOUND: u32 = 0xfffc_0000;
+const LOOP: u32 = 0xfffb_0000;
+
+/// Stands for the `k`-th sound of a [`Tree`] until it is installed.
+pub fn sound(k: usize) -> TagId {
+    TagId(SOUND | k as u32)
+}
+
+/// Stands for the `k`-th looping sound of a [`Tree`] until it is installed.
+pub fn looping(k: usize) -> TagId {
+    TagId(LOOP | k as u32)
+}
 
 /// The stand-in physics model of a vehicle with no solid collision
 /// ([`crate::rebuild::sphere_physics`]): radius (world units), mass (kg),
@@ -396,18 +417,85 @@ pub fn local(k: usize) -> TagId {
 }
 
 fn rewrite(b: &mut Block, ids: &[TagId]) {
+    rewrite_audio(b, LOCAL, ids);
+}
+
+/// Rewrites every placeholder of `kind` (`LOCAL`, `SOUND`, `LOOP`) in `b`
+/// to its datum in `ids`; one past the end becomes null.
+fn rewrite_audio(b: &mut Block, kind: u32, ids: &[TagId]) {
     for f in &mut b.fixups {
         match &mut f.kind {
             FixupKind::Block { child, .. } | FixupKind::Data(child) | FixupKind::Pointer(child) => {
-                rewrite(child, ids)
+                rewrite_audio(child, kind, ids)
             }
-            FixupKind::TagId(t) | FixupKind::TagRef(t)
-                if t.0 & 0xffff_0000 == LOCAL && (t.0 as usize & 0xffff) < ids.len() =>
-            {
-                *t = ids[t.0 as usize & 0xffff]
+            FixupKind::TagId(t) | FixupKind::TagRef(t) if t.0 & 0xffff_0000 == kind => {
+                *t = ids
+                    .get(t.0 as usize & 0xffff)
+                    .copied()
+                    .unwrap_or(TagId::NULL)
             }
             _ => {}
         }
+    }
+}
+
+impl Tree {
+    /// Adds the tree's sounds and looping sounds to `set` (with its sound
+    /// gestalt) and points the tags' placeholders at them. A set that has
+    /// a tag of the path already keeps it. When the gestalt refuses them
+    /// (16-bit indices full) or `add` is false, none is added and every
+    /// placeholder becomes null ([`Tree::audio_notes`] says why).
+    /// Done once: the sounds are taken out of the tree.
+    pub fn install_audio(&mut self, set: &mut TagSet, add: bool) {
+        let got = if self.sounds.is_empty() && self.loops.is_empty() {
+            Ok((Vec::new(), Vec::new()))
+        } else if add {
+            // All or none: a refusal leaves `set` as it was.
+            let mut trial = set.clone();
+            self.add_audio(&mut trial).map(|ids| {
+                *set = trial;
+                ids
+            })
+        } else {
+            Err("the tags take over existing slots: no room for sounds".to_owned())
+        };
+        let (sounds, loops) = match got {
+            Ok(ids) => ids,
+            Err(e) => {
+                self.audio_notes.push(format!(
+                    "{} sounds and {} looping sounds left out: {e}",
+                    self.sounds.len(),
+                    self.loops.len()
+                ));
+                (Vec::new(), Vec::new())
+            }
+        };
+        for (_, t) in &mut self.tags {
+            rewrite_audio(&mut t.root, SOUND, &sounds);
+            rewrite_audio(&mut t.root, LOOP, &loops);
+        }
+        self.sounds.clear();
+        self.loops.clear();
+    }
+
+    fn add_audio(&self, set: &mut TagSet) -> std::result::Result<(Vec<TagId>, Vec<TagId>), String> {
+        let snd = FourCC(*b"snd!");
+        let new: Vec<(String, h1sounds::ConvertedSound)> = self
+            .sounds
+            .iter()
+            .filter(|(n, _)| set.find(snd, n).is_none())
+            .cloned()
+            .collect();
+        if !new.is_empty() {
+            h1sounds::install_sounds(set, new).map_err(|e| e.to_string())?;
+        }
+        let sounds = self
+            .sounds
+            .iter()
+            .map(|(n, _)| set.find(snd, n).ok_or(format!("{n}: not installed")))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let loops = h1sounds::looping::install_looping(set, &self.loops).map_err(|e| e.to_string())?;
+        Ok((sounds, loops))
     }
 }
 
@@ -435,7 +523,8 @@ impl Tree {
 
     /// Adds every tag to `set` (built from the base map the tree was made
     /// on), in order, and returns their datums.
-    pub fn install(self, set: &mut TagSet) -> Result<Vec<TagId>> {
+    pub fn install(mut self, set: &mut TagSet) -> Result<Vec<TagId>> {
+        self.install_audio(set, true);
         let first = set.slots.len();
         let ids: Vec<TagId> = (0..self.tags.len())
             .map(|k| {
@@ -466,7 +555,8 @@ impl Tree {
     /// to grow a pinned map's tag index. Anything else that referenced a
     /// donor now references the converted tag, so donors must be tags the
     /// converted map no longer uses.
-    pub fn install_over(self, set: &mut TagSet, donors: &[TagId]) -> Result<Vec<TagId>> {
+    pub fn install_over(mut self, set: &mut TagSet, donors: &[TagId]) -> Result<Vec<TagId>> {
+        self.install_audio(set, false);
         if donors.len() < self.tags.len() {
             return Err(Error::Invalid(format!(
                 "{} tags but {} donor slots",
@@ -644,6 +734,10 @@ pub struct Converter<'a> {
     roles: HashMap<crate::rebuild::BipedRole, Option<crate::rebuild::RoleWords>>,
     /// Vehicle role words, per vehicle type ([`Self::vehicle_role`]).
     vehicle_roles: HashMap<u16, Option<crate::rebuild::VehicleRole>>,
+    /// Converted sounds and looping sounds by Halo 1 tag, as indices
+    /// into [`Tree::sounds`] and [`Tree::loops`] (`None`: did not convert).
+    sound_index: HashMap<u32, Option<usize>>,
+    loop_index: HashMap<u32, Option<usize>>,
 }
 
 impl<'a> Converter<'a> {
@@ -660,7 +754,168 @@ impl<'a> Converter<'a> {
             health_huds: HashMap::new(),
             roles: HashMap::new(),
             vehicle_roles: HashMap::new(),
+            sound_index: HashMap::new(),
+            loop_index: HashMap::new(),
         }
+    }
+
+    /// A Halo 1 `snd!` converted with `h1sounds` into [`Tree::sounds`]
+    /// (once), as its placeholder ([`sound`]); `None` when it does not
+    /// convert (the reason in `rep`).
+    pub fn sound(&mut self, tag: &Tag, rep: &mut ObjectReport) -> Option<TagId> {
+        if let Some(k) = self.sound_index.get(&tag.id.0) {
+            return k.map(sound);
+        }
+        let got = h1sounds::Sound::read(self.h1, tag)
+            .and_then(|s| h1sounds::convert_sound(&s, self.h1.bytes()));
+        let k = match got {
+            Ok(c) => {
+                self.tree.sounds.push((tag.name.clone(), c));
+                Some(self.tree.sounds.len() - 1)
+            }
+            Err(e) => {
+                rep.no_home.push(format!("snd! {}: not converted ({e})", tag.name));
+                None
+            }
+        };
+        self.sound_index.insert(tag.id.0, k);
+        k.map(sound)
+    }
+
+    /// A Halo 1 `lsnd` read and converted with `h1sounds::looping` into
+    /// [`Tree::loops`] (once), as its placeholder ([`looping`]).
+    pub fn looping_sound(&mut self, tag: &Tag, rep: &mut ObjectReport) -> Option<TagId> {
+        if let Some(k) = self.loop_index.get(&tag.id.0) {
+            return k.map(looping);
+        }
+        let k = match h1sounds::looping::read_looping(self.h1, tag) {
+            Ok(l) => {
+                rep.no_home.extend(l.notes.iter().map(|n| format!("lsnd {}: {n}", tag.name)));
+                self.tree.loops.push(l);
+                Some(self.tree.loops.len() - 1)
+            }
+            Err(e) => {
+                rep.no_home.push(format!("lsnd {}: not converted ({e})", tag.name));
+                None
+            }
+        };
+        self.loop_index.insert(tag.id.0, k);
+        k.map(looping)
+    }
+
+    /// A Halo 1 effect from the `effe` definition
+    /// ([`crate::rebuild::effect`]), converted once. Its parts keep what
+    /// converts here: sounds (`h1sounds`) and projectiles; decals, lights,
+    /// damage, particle systems, debris and particles are left out and
+    /// listed in its report.
+    pub fn effect(&mut self, tag: &Tag) -> Result<TagId> {
+        if let Some(id) = self.done.get(&tag.id.0) {
+            return Ok(*id);
+        }
+        let e = h1::Effect::read(self.h1, tag)?;
+        let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
+        let mut left: std::collections::BTreeMap<String, usize> = Default::default();
+        let mut targets = Vec::new();
+        for p in e.events.iter().flat_map(|ev| &ev.parts) {
+            let g = p.group.0.to_be_bytes();
+            let got = match (p.reference, &g) {
+                (None, _) => None,
+                (Some(id), b"snd!") => {
+                    let t = self.h1_tag(id)?;
+                    self.sound(t, &mut rep)
+                }
+                (Some(id), b"proj") => {
+                    let t = self.h1_tag(id)?;
+                    match self.object(t) {
+                        Ok(x) => Some(x),
+                        Err(err) => {
+                            rep.no_home.push(format!("proj {}: not converted ({err})", t.name));
+                            None
+                        }
+                    }
+                }
+                _ => None,
+            };
+            if got.is_none() {
+                *left.entry(p.group.to_string()).or_default() += 1;
+            }
+            targets.push(got.map(|tag| crate::rebuild::PartTarget {
+                type_group: crate::rebuild::part_type_group(g),
+                group: g,
+                tag,
+            }));
+        }
+        let mut next = targets.into_iter();
+        let root = crate::rebuild::effect(&e, &mut |_| next.next().flatten())?;
+        for (g, n) in left {
+            rep.no_home.push(format!("{n} {g} parts left out (no converter here, or did not convert)"));
+        }
+        let particles: usize = e.events.iter().map(|ev| ev.particles).sum();
+        if particles > 0 {
+            rep.no_home.push(format!("{particles} particles left out (Halo 2's are prt3 on shader templates)"));
+        }
+        self.tree.reports.push(rep);
+        let id = self.tree.push(
+            &tag.name,
+            Converted {
+                group: FourCC(*b"effe"),
+                root,
+                raw: Vec::new(),
+            },
+        );
+        self.done.insert(tag.id.0, id);
+        Ok(id)
+    }
+
+    /// The object's attachments that convert here (looping sounds and
+    /// effects) and its creation effect; the rest are listed in `rep`.
+    pub fn object_effects(
+        &mut self,
+        object_bytes: &[u8],
+        obj: &h1::Object,
+        rep: &mut ObjectReport,
+    ) -> Result<(Vec<crate::rebuild::AttachmentSpec>, Option<TagId>)> {
+        let mut out = Vec::new();
+        for a in h1::attachments(self.h1, object_bytes)? {
+            let g = a.group.0.to_be_bytes();
+            let Some(id) = a.tag else { continue };
+            let t = self.h1_tag(id)?;
+            let got = match &g {
+                b"lsnd" => self.looping_sound(t, rep),
+                b"effe" => match self.effect(t) {
+                    Ok(x) => Some(x),
+                    Err(e) => {
+                        rep.no_home.push(format!("attachment effe {}: not converted ({e})", t.name));
+                        None
+                    }
+                },
+                _ => {
+                    rep.no_home.push(format!("attachment {} {}: no converter here", a.group, t.name));
+                    None
+                }
+            };
+            if let Some(tag) = got {
+                out.push(crate::rebuild::AttachmentSpec {
+                    group: g,
+                    tag,
+                    marker: a.marker,
+                });
+            }
+        }
+        let creation = match obj.creation_effect {
+            Some(id) => {
+                let t = self.h1_tag(id)?;
+                match self.effect(t) {
+                    Ok(x) => Some(x),
+                    Err(e) => {
+                        rep.no_home.push(format!("creation effect {}: not converted ({e})", t.name));
+                        None
+                    }
+                }
+            }
+            None => None,
+        };
+        Ok((out, creation))
     }
 
     fn template(&self, group: &[u8; 4], path: &str, h2_group: &[u8; 4]) -> Result<(TagId, String)> {
@@ -1809,7 +2064,10 @@ impl<'a> Converter<'a> {
                     .push(format!("unit weapon {}: not converted ({e})", t.name)),
             }
         }
+        let (attachments, creation_effect) = self.object_effects(b, &u.object, &mut rep)?;
         let root = crate::rebuild::vehicle(&crate::rebuild::VehicleSpec {
+            attachments: &attachments,
+            creation_effect,
             object: &u.object,
             hlmt,
             seats: &seats,
@@ -1822,10 +2080,11 @@ impl<'a> Converter<'a> {
             points: &points,
         })?;
         rep.no_home.push(format!(
-            "vehi: Halo 1's type, flags (low half), camera, {} seats (label as the rider's mode, markers), {} weapons and {} powered mass points as friction or hover points; the type's role words and gears; HUD, sounds, effects and camera tracks null; {} Halo 1 references",
+            "vehi: Halo 1's type, flags (low half), camera, {} seats (label as the rider's mode, markers), {} weapons and {} powered mass points as friction or hover points; the type's role words and gears; {} attachments (looping sounds and effects) and the creation effect from Halo 1; HUD, damage and camera tracks null; {} Halo 1 references",
             u.seats.len(),
             weapons.len(),
             points.len(),
+            attachments.len(),
             u.references.iter().filter(|r| r.tag.is_some()).count()
         ));
         self.tree.reports.push(rep);
