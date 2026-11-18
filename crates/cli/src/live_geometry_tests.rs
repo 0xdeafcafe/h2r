@@ -2739,3 +2739,48 @@ fn weather_kinds_and_amounts_come_from_names() {
     assert_eq!(weather_amount(&["snow_light"]), 0.5);
     assert_eq!(weather_amount(&["snow_falling"]), 1.0);
 }
+
+/// Every BSP material of the levels named in `$H2_LOOKS_MAPS` (comma
+/// separated stems, default `coagulation`): its shader, template, bitmaps
+/// and what the look picked (`-` when none), to stdout. For finding
+/// surfaces drawn untextured.
+#[test]
+#[ignore = "needs the disc"]
+fn looks_on_the_disc() {
+    let disc_path = std::env::var("H2_DISC").unwrap_or_else(|_| {
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../../disc/halo2.iso").into()
+    });
+    let want = std::env::var("H2_LOOKS_MAPS").unwrap_or_else(|_| "coagulation".into());
+    let disc = Disc::scan(Path::new(&disc_path)).unwrap();
+    for (m, _) in levels(&disc) {
+        if !want.split(',').any(|w| w == m.name()) {
+            continue;
+        }
+        let (mut map, mut files) = disc.open(m).unwrap();
+        let mut looks = crate::live_looks::Looks::default();
+        for bsp_id in scenario_bsps(&mut map).unwrap() {
+            if bsp_id == TagId::NULL {
+                continue;
+            }
+            for id in material_shader_ids(&mut map, bsp_id).unwrap() {
+                let name = |map: &mut MapReader, id: TagId| {
+                    map.tag(id)
+                        .ok()
+                        .and_then(|t| t.name.clone())
+                        .unwrap_or_default()
+                };
+                let shader = name(&mut map, id);
+                let (template, bitmaps) = crate::live_models::shader_bitmaps(&mut map, id)
+                    .unwrap_or_else(|e| (format!("error {e:#}"), vec![]));
+                let names: Vec<String> = bitmaps.iter().map(|&b| name(&mut map, b)).collect();
+                let look = looks.look_of(&mut map, &mut files, id);
+                let picked =
+                    look.map(|k| name(&mut map, TagId(looks.looks[k as usize].texture.bitmap)));
+                println!(
+                    "{} | {shader} | {template} | {names:?} -> {picked:?}",
+                    m.name()
+                );
+            }
+        }
+    }
+}

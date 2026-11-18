@@ -65,14 +65,6 @@ export function skyOf(assetExtras: unknown): SkyInfo | null {
   return out;
 }
 
-/** The exponential haze for a level without fog but with a glow, in a
- *  level `radius` across: the glow's density 0.2 gives about a quarter of
- *  its colour at the level's far side; thicker glows give more. */
-export function glowHaze(glow: SkyGlow, radius: number): number {
-  const d = Math.min(1, Math.max(0.05, glow.density));
-  return (1.3 * d) / Math.max(1, radius);
-}
-
 /** What is behind the sky model: the clear colour, else the fog's, else
  *  null (the viewer's own sky). sRGB 0..1. */
 export function skyColour(sky: SkyInfo | null): [number, number, number] | null {

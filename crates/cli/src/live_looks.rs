@@ -75,11 +75,14 @@ pub struct Looks {
 /// How a shader template draws its picture: cut out when its name says
 /// `alpha_test`, else solid. `None` for templates that are not solid
 /// surfaces (transparent, additive, overlays; those are glass, water or
-/// layers and keep their own look).
+/// layers and keep their own look). An overlay is a template named for it
+/// (`opaque\overlay`, `overlay_...`): `tex_bump_detail_overlay` is a solid
+/// surface whose detail map is overlaid (Coagulation's rocks).
 pub fn template_cutout(template: &str) -> Option<Cutout> {
     let lower = template.to_ascii_lowercase();
     let stem = lower.rsplit('\\').next().unwrap_or(&lower);
-    if lower.split('\\').any(|c| c == "transparent") || stem.contains("overlay") {
+    let overlay = stem.split('_').next() == Some("overlay");
+    if lower.split('\\').any(|c| c == "transparent") || overlay {
         return None;
     }
     Some(if stem.contains("alpha_test") {
@@ -321,6 +324,10 @@ mod tests {
         );
         assert_eq!(t(r"shaders\shader_templates\transparent\glass"), None);
         assert_eq!(t(r"shaders\shader_templates\opaque\overlay"), None);
+        assert_eq!(
+            t(r"shaders\shader_templates\opaque\tex_bump_detail_overlay"),
+            Some(Cutout::Opaque)
+        );
     }
 
     #[test]

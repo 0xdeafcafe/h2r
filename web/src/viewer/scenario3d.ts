@@ -24,6 +24,9 @@ type V3 = [number, number, number];
 /** What a placement node's extras say, read defensively. */
 export interface ObjectInfo { kind: string; index: number; tag: string; bsp: number | null; item: string | null }
 
+/** A placement where the level puts it (`ScenarioObjects.spots`). */
+export interface Spot { kind: string; item: string | null; tag: string; at: V3; forward: V3 | null; up: V3 | null }
+
 export function objectOf(extras: unknown): ObjectInfo | null {
   const e = (extras ?? {}) as Record<string, unknown>;
   if (typeof e.kind !== "string" || !/^[a-z]{1,16}$/.test(e.kind)) return null;
@@ -168,14 +171,17 @@ export class ScenarioObjects {
   has(): boolean { return this.placed.size > 0; }
 
   /** Every placement where the level puts it, game coordinates, keyed
-   *  `<kind>:<index>`, with the item a multiplayer spawn holds. */
-  spots(): Map<string, { kind: string; item: string | null; at: V3 }> {
-    const out = new Map<string, { kind: string; item: string | null; at: V3 }>();
+   *  `<kind>:<index>`: its kind, the item a multiplayer spawn holds, its
+   *  tag's stem, and its forward and up as the glb's extras give them. */
+  spots(): Map<string, Spot> {
+    const out = new Map<string, Spot>();
     const v = new THREE.Vector3();
+    const unit = (a: unknown): V3 | null => Array.isArray(a) && a.length === 3 && a.every((x) => typeof x === "number" && isFinite(x)) ? a as V3 : null;
     for (const [k, p] of this.placed) {
       p.node.getWorldPosition(v);
+      const e = p.node.userData as { forward?: unknown; up?: unknown };
       // gl (x, y, z) is game (x, -z, y).
-      out.set(k, { kind: p.info.kind, item: p.info.item, at: [v.x, -v.z, v.y] });
+      out.set(k, { kind: p.info.kind, item: p.info.item, tag: p.info.tag.split(/[\\/]/).pop() ?? "", at: [v.x, -v.z, v.y], forward: unit(e.forward), up: unit(e.up) });
     }
     return out;
   }

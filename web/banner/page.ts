@@ -8,8 +8,8 @@ import { ViewerScene } from "../src/viewer/scene";
 import type { MapFrame } from "../src/components/MapCanvas";
 import { parseManifest } from "../src/lib/gameart";
 import type { RosterEntry } from "../src/map/render";
-import type { SampledPlayer } from "../src/state/frames";
-import type { PlayerModels } from "../src/viewer/models";
+import type { SampledPlayer, SampledVehicle } from "../src/state/frames";
+import { vehicleFile, type PlayerModels } from "../src/viewer/models";
 import { camera, candidates, isSpotShot, layout, panelWeight, placeCast, type Composition, type Panel, type Shot } from "./plan";
 
 export interface BannerRequest {
@@ -31,13 +31,27 @@ export interface BannerResult {
 
 const EMPTY: MapFrame = { players: [], markers: [], seen: null };
 
+/** The level's vehicles as the frames would send them, parked where it
+ *  places them: drawn so, each is the server's model of it with its
+ *  turrets (the level's own copy is its hull alone). None when the server
+ *  lacks a model for any of them, so the level's own are drawn instead. */
+function parkedVehicles(spots: ReturnType<ViewerScene["spots"]>, table: PlayerModels | null | undefined): SampledVehicle[] {
+  const out: SampledVehicle[] = [];
+  for (const [id, s] of spots) {
+    if (s.kind !== "vehi" && s.item !== "vehi") continue;
+    if (!vehicleFile(table, s.tag) || !s.forward || !s.up) return [];
+    out.push({ id, kind: s.tag, x: s.at[0], y: s.at[1], z: s.at[2], forward: s.forward, up: s.up, occupied: true });
+  }
+  return out;
+}
+
 /** One map loaded into a viewer, drawn from shot after shot. */
 class Stage {
   // Shots so far: each shot's cast gets indexes of its own, so none is
   // taken for one from an earlier shot (its model, colour, a body left).
   private shots = 0;
 
-  private constructor(private scene: ViewerScene, private host: HTMLElement) {}
+  private constructor(private scene: ViewerScene, private host: HTMLElement, private vehicles: SampledVehicle[]) {}
 
   static async open(host: HTMLElement, glb: string, models: { root: string; table: PlayerModels | null | undefined }): Promise<Stage> {
     const scene = new ViewerScene(host, { reducedMotion: true, bare: true });
@@ -51,7 +65,7 @@ class Stage {
       await scene.texturesReady;
       await scene.skyReady();
       if (!scene.levelBounds()) throw new Error("the level has no bounds");
-      return new Stage(scene, host);
+      return new Stage(scene, host, parkedVehicles(scene.spots(), models.table));
     } catch (e) {
       scene.dispose();
       throw e;
@@ -78,15 +92,16 @@ class Stage {
       const z = scene.floorBelow(c.x, c.y, c.z + 3) ?? c.z;
       return { index: i, alive: true, x: c.x, y: c.y, z, yaw: c.yaw, vehicle: null, species: c.species, weapon: c.weapon ?? null, stance: c.crouch ? "crouch" : "stand", speed: 0 };
     });
-    const frame: MapFrame = { ...EMPTY, players };
+    const frame: MapFrame = { ...EMPTY, players, vehicles: this.vehicles };
     // Frames until whatever settles over frames has (the sky's fit, the
     // fog, the zone in play), and the cast's models have loaded.
     let now = 1000;
-    const frames = players.length ? 40 : 4;
+    const loading = players.length > 0 || this.vehicles.length > 0;
+    const frames = loading ? 40 : 4;
     for (let i = 0; i < frames; i++) {
       scene.invalidate();
       scene.update((now += 16), frame, roster, null, true);
-      await new Promise((r) => setTimeout(r, players.length ? 60 : 0));
+      await new Promise((r) => setTimeout(r, loading ? 60 : 0));
       await new Promise((r) => requestAnimationFrame(r));
     }
     scene.invalidate();
@@ -233,14 +248,15 @@ async function sheet(req: { root: string; maps: string[]; shots: Shot[]; width: 
       stage = await Stage.open(host, req.root + files.geometry, { root: req.root, table: manifest.models });
       const given = req.shots.filter((s) => s.map === map);
       const mine = given.length ? given : candidates(map, stage.spots());
-      const rows = Math.max(1, Math.ceil(mine.length / req.columns));
+      const rows = Math.max(1, Math.ceil(mine.length / Math.min(req.columns, Math.max(1, mine.length))));
       const c = document.createElement("canvas");
-      c.width = req.width * req.columns; c.height = req.height * rows;
+      const cols = Math.min(req.columns, Math.max(1, mine.length));
+      c.width = req.width * cols; c.height = req.height * rows;
       const g = c.getContext("2d")!;
       g.fillStyle = "#111"; g.fillRect(0, 0, c.width, c.height);
       g.font = "bold 18px sans-serif";
       for (const [i, s] of mine.entries()) {
-        const x = (i % req.columns) * req.width, y = Math.floor(i / req.columns) * req.height;
+        const x = (i % cols) * req.width, y = Math.floor(i / cols) * req.height;
         let label = s.id;
         try { g.drawImage(await stage.draw(s, req.width, req.height), x, y); } catch (e) { label += `: ${e instanceof Error ? e.message : e}`; }
         g.fillStyle = "rgba(0,0,0,.6)"; g.fillRect(x, y, req.width, 26);
