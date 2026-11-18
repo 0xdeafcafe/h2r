@@ -47,6 +47,9 @@ fn short_forms_name_their_methods_and_params() {
         (m::DOC_UNDO.into(), json!({"doc":"variant"}))
     );
     assert_eq!(c("undo"), (m::DOC_UNDO.into(), json!(null)));
+    assert_eq!(c("huds ascension"), (m::HUD_LIST.into(), json!({"map":"ascension"})));
+    assert_eq!(c("hud"), (m::HUD_READ.into(), json!(null)));
+    assert_eq!(c("render-hud /tmp/h.png"), (m::HUD_RENDER.into(), json!({"out":"/tmp/h.png"})));
     assert_eq!(
         c("tags vehi warthog"),
         (m::TAG_LIST.into(), json!({"group":"vehi","name":"warthog"}))

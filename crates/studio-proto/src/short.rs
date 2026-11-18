@@ -52,6 +52,9 @@ pub const FORMS: &[(&str, &str)] = &[
     ("widgets", "ui.widgets"),
     ("render-ui [out.png]", "ui.render"),
     ("snapshot [out.png]", "view.snapshot"),
+    ("huds [map]", "hud.list: open a map in the HUD tool, list its HUDs"),
+    ("hud [name]", "hud.read: a HUD's widgets and fields"),
+    ("render-hud [out.png]", "hud.render"),
 ];
 
 /// Splits a script line into words; a JSON value (`{…}` or `[…]`) is one
@@ -255,6 +258,27 @@ pub fn parse_call(words: &[String]) -> Result<(String, Value), String> {
                 None => Value::Null,
             },
         ),
+        "huds" => (
+            m::HUD_LIST,
+            match a {
+                Some(map) => json!({ "map": map }),
+                None => Value::Null,
+            },
+        ),
+        "hud" => (
+            m::HUD_READ,
+            match a {
+                Some(h) => json!({ "hud": h }),
+                None => Value::Null,
+            },
+        ),
+        "render-hud" => (
+            m::HUD_RENDER,
+            match a {
+                Some(p) => json!({ "out": p }),
+                None => Value::Null,
+            },
+        ),
         "snapshot" => (
             m::VIEW_SNAPSHOT,
             match a {
@@ -275,7 +299,7 @@ pub fn parse_call(words: &[String]) -> Result<(String, Value), String> {
         | "playlists" | "screens" | "widgets" => 1,
         "log" | "source" | "open" | "save" | "diff" | "undo" | "redo" | "tag" | "refs"
         | "objects" | "object" | "delete" | "duplicate" | "select" | "playlist" | "screen"
-        | "press" | "render-ui" | "snapshot" => 2,
+        | "press" | "render-ui" | "snapshot" | "huds" | "hud" | "render-hud" => 2,
         _ => words.len(),
     };
     max(used)?;
