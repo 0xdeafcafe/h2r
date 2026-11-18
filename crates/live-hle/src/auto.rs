@@ -29,7 +29,24 @@ pub(crate) struct Auto {
     invited: BTreeSet<(String, Xuid)>,
     /// Invitation ids already answered.
     accepted: BTreeSet<u64>,
+    /// The newest invitation accepted: (sent at, id). Older ones name a
+    /// session the host has left.
+    newest: Option<(i64, u64)>,
+    /// When each accepted invitation was accepted (unix seconds), until the
+    /// title reads it or the wait is said.
+    waiting: Vec<(u64, i64)>,
+    /// The invitation the title read last: when (unix seconds), and how
+    /// many times it was offered again.
+    taken: Option<(Invite, i64, u32)>,
 }
+
+/// Seconds an accepted invitation may wait unread before the log says so.
+pub(crate) const UNREAD_AFTER: i64 = 20;
+/// Seconds after the title reads an invitation for it to look the session
+/// up (FindFromID) before it is offered again.
+pub(crate) const LOOKUP_AFTER: i64 = 15;
+/// Times an invitation is offered again.
+pub(crate) const OFFERS: u32 = 3;
 
 impl Auto {
     pub fn from_env() -> Self {
@@ -100,8 +117,10 @@ impl Auto {
     }
 
     /// The invitation to accept at `now` (unix seconds): the newest from the
-    /// named host not yet answered and sent at least the delay ago. Marks it
-    /// answered.
+    /// named host, not yet answered, sent at least the delay ago, and newer
+    /// than the last one accepted (a host that re-advertises its lobby
+    /// invites again; the older invitations name a session it left). Marks
+    /// it answered.
     pub fn accept_now(&mut self, pending: &[Invite], now: i64) -> Option<Invite> {
         let from = self.accept_from.as_ref()?;
         let v = pending
@@ -109,15 +128,76 @@ impl Auto {
             .filter(|v| v.gamertag.eq_ignore_ascii_case(from) && v.answer.is_none())
             .filter(|v| now >= v.sent_at.saturating_add(self.accept_delay))
             .filter(|v| !self.accepted.contains(&v.id))
-            .max_by_key(|v| v.sent_at)?
+            .max_by_key(|v| (v.sent_at, v.id))?
             .clone();
+        if self.newest.is_some_and(|n| n >= (v.sent_at, v.id)) {
+            return None;
+        }
         self.accepted.insert(v.id);
+        self.newest = Some((v.sent_at, v.id));
+        self.waiting.retain(|(id, _)| *id != v.id);
+        self.waiting.push((v.id, now));
         Some(v)
     }
 
     /// Forgets an answer that could not be sent.
     pub fn accept_failed(&mut self, id: u64) {
         self.accepted.remove(&id);
+        if self.newest.is_some_and(|(_, n)| n == id) {
+            self.newest = None;
+        }
+        self.waiting.retain(|(v, _)| *v != id);
+    }
+
+    /// The title read `v` at `now`: the join starts.
+    pub fn taken(&mut self, v: &Invite, now: i64) {
+        self.waiting.retain(|(id, _)| *id != v.id);
+        let offers = match &self.taken {
+            Some((old, _, n)) if old.id == v.id => *n,
+            _ => 0,
+        };
+        self.taken = Some((v.clone(), now, offers));
+    }
+
+    /// The accepted invitations in `unread` that have waited at least
+    /// [`UNREAD_AFTER`] at `now`; each is said once.
+    pub fn unread_too_long(&mut self, unread: &[Invite], now: i64) -> Vec<Invite> {
+        let mut out = Vec::new();
+        self.waiting.retain(|(id, at)| {
+            let Some(v) = unread.iter().find(|v| v.id == *id) else {
+                return false; // read, superseded or expired
+            };
+            if now - at >= UNREAD_AFTER {
+                out.push(v.clone());
+                return false;
+            }
+            true
+        });
+        out
+    }
+
+    /// The session of the invitation the title read last, while it may be
+    /// offered again.
+    pub fn taken_session(&self) -> Option<&str> {
+        self.taken.as_ref().map(|(v, _, _)| v.session_id.as_str())
+    }
+
+    /// Whether to offer the read invitation again at `now`: the title read
+    /// it [`LOOKUP_AFTER`] ago or more and never looked its session up
+    /// (`looked_up`). Returns it and which offer this is, up to [`OFFERS`].
+    /// Once looked up, or out of offers, it is done with.
+    pub fn offer_again(&mut self, now: i64, looked_up: bool) -> Option<(Invite, u32)> {
+        let (v, at, n) = self.taken.as_ref()?;
+        if looked_up || *n >= OFFERS {
+            self.taken = None;
+            return None;
+        }
+        if now - at < LOOKUP_AFTER {
+            return None;
+        }
+        let out = (v.clone(), n + 1);
+        self.taken = Some((v.clone(), now, n + 1));
+        Some(out)
     }
 }
 
@@ -188,12 +268,66 @@ mod tests {
             answered,
         ];
         assert_eq!(a.accept_now(&pending, 100).map(|v| v.id), Some(2));
-        assert_eq!(a.accept_now(&pending, 100).map(|v| v.id), Some(1));
+        // The older one names a session the host left: never accepted.
         assert_eq!(a.accept_now(&pending, 100), None);
         a.accept_failed(2);
         assert_eq!(a.accept_now(&pending, 100).map(|v| v.id), Some(2));
+        // The host re-advertises and invites again: that one is accepted.
+        let mut again = pending.to_vec();
+        again.push(invite(4, "Alpha", 60));
+        assert_eq!(a.accept_now(&again, 100).map(|v| v.id), Some(4));
+        assert_eq!(a.accept_now(&again, 100), None);
         // No name, nothing accepted.
         assert_eq!(Auto::default().accept_now(&pending, 100), None);
+    }
+
+    #[test]
+    fn an_unread_acceptance_is_said_once_after_the_wait() {
+        let mut a = Auto::from_values(None, Some("Alpha"));
+        let pending = [invite(1, "Alpha", 10)];
+        let v = a.accept_now(&pending, 100).unwrap();
+        let unread = [v.clone()];
+        assert!(
+            a.unread_too_long(&unread, 100 + UNREAD_AFTER - 1)
+                .is_empty()
+        );
+        assert_eq!(a.unread_too_long(&unread, 100 + UNREAD_AFTER), unread);
+        assert!(a.unread_too_long(&unread, 1_000).is_empty(), "once");
+        // Read in time: nothing to say.
+        let mut b = Auto::from_values(None, Some("Alpha"));
+        let v = b.accept_now(&pending, 100).unwrap();
+        b.taken(&v, 105);
+        assert!(b.unread_too_long(&[], 1_000).is_empty());
+    }
+
+    #[test]
+    fn a_read_invitation_is_offered_again_until_the_title_looks_it_up() {
+        let mut a = Auto::from_values(None, Some("Alpha"));
+        let v = a.accept_now(&[invite(1, "Alpha", 10)], 100).unwrap();
+        a.taken(&v, 100);
+        assert_eq!(a.taken_session(), Some("8000000000000001"));
+        assert_eq!(a.offer_again(100 + LOOKUP_AFTER - 1, false), None);
+        assert_eq!(
+            a.offer_again(100 + LOOKUP_AFTER, false)
+                .map(|(v, n)| (v.id, n)),
+            Some((1, 1))
+        );
+        // Read again (the offer), then looked up: done.
+        a.taken(&v, 120);
+        assert_eq!(a.offer_again(200, true), None);
+        assert_eq!(a.taken_session(), None);
+        // Never looked up: OFFERS offers, then it stops.
+        let mut b = Auto::from_values(None, Some("Alpha"));
+        let v = b.accept_now(&[invite(1, "Alpha", 10)], 10).unwrap();
+        let mut now = 10;
+        b.taken(&v, now);
+        for n in 1..=OFFERS {
+            now += LOOKUP_AFTER;
+            assert_eq!(b.offer_again(now, false).map(|(_, n)| n), Some(n));
+            b.taken(&v, now);
+        }
+        assert_eq!(b.offer_again(now + LOOKUP_AFTER, false), None);
+        assert_eq!(b.taken_session(), None);
     }
 
     #[test]

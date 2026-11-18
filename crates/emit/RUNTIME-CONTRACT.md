@@ -79,6 +79,16 @@ memory or block on it, and may run under the gate. A new helper that takes
 the context must be preceded by `H2_GATE_DROP()`, or it deadlocks on its
 first memory guard.
 
+With `H2_ENTRY_GATE=1` (a `cflags` switch, off by default) a handler that
+has inline loads or stores takes the gate as it starts, after the entry's
+own calls (acquire, the budget), and again where a direct call returns
+inline, rather than at its first access through `h2_access_cold`. It is the
+same try (`h2_gate_try`): a busy or wanted gate leaves it not held, and the
+first access is cold as before. A hold begun at entry obeys every rule
+above: it is dropped before every call that takes the context, on every way
+out and by loop headers, so a Rust guard waits no longer than for a hold
+begun at a first access.
+
 The gate word has two bits: 1, held (by C or by a Rust guard), and 2, a
 Rust guard is waiting. C takes the gate only when the word is 0 and releases
 by clearing the held bit alone (`fetch_and(~1)`). A guard that finds it
@@ -298,6 +308,21 @@ own accesses. The module declares the scheme in `H2GenModule.features`
 so a module is never run by a runtime that would charge twice or not at all.
 A bridge forwards the four functions; the test bridge's legacy install fills
 them with the charged accessors, a no-op charge and an unlimited budget.
+
+`H2_VIEW_CHARGE=1` (a `cflags` switch, off by default; counting modules
+with `H2_FASTMEM`) makes no call to charge when the handler has a view: a
+charge adds the count to the view's own (`accesses`), raising SLICE on the
+preempt word when the sum reaches the view's `budget`, exactly as the
+inline RAM path's own count does without accounting; the budget is
+`budget - accesses` (all ones when `budget` is all ones or reached); and the
+exit spends the handler's count the same way and calls nothing. This relies
+on what the runtime already guarantees: every Rust helper settles the
+view's count before it charges or looks at the slice, acquire settles it,
+and the runtime settles it after every native handler it invokes
+(`ffi::call_native`), before the runner's safe point. Without a view each
+step is the call it replaces. The one visible difference is diagnostic: the
+profile's `fast_memory_accesses` then counts the handler's settled accesses
+too.
 
 ### 1.6 Optional profiling extension
 

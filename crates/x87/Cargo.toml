@@ -16,3 +16,5 @@ abi = []
 fast-trans = []
 
 [dependencies]
+# f64 transcendentals for H2_X87_FAST_TRANSCENDENTALS (trans_f64.rs; off by default).
+libm = "0.2"

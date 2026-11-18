@@ -106,6 +106,10 @@ impl Responder {
             .name("h2-xnet-qos".into())
             .spawn(move || {
                 let mut input = [0; 24];
+                // Each session a peer asked for that this console doesn't
+                // listen for, said once: the usual cause of the title's
+                // "network problems" join failure.
+                let mut unknown = std::collections::BTreeSet::new();
                 while !flag.load(Ordering::Acquire) {
                     let Ok((n, sender)) = socket.recv_from(&mut input) else {
                         continue;
@@ -128,6 +132,24 @@ impl Responder {
                         .get(&kid)
                         .cloned();
                     let Some(entry) = entry else {
+                        if unknown.insert(kid) {
+                            let ours: Vec<_> = listeners
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .keys()
+                                .map(|k| live_proto::sign::hex(k))
+                                .collect();
+                            eprintln!(
+                                "live: qos: {sender} asked about session {}, which this console \
+                                 isn't listening for (listening: {}); no answer",
+                                live_proto::sign::hex(&kid),
+                                if ours.is_empty() {
+                                    "none".to_owned()
+                                } else {
+                                    ours.join(", ")
+                                }
+                            );
+                        }
                         continue;
                     };
                     let data = if entry.enabled {
@@ -163,11 +185,30 @@ impl Drop for Responder {
         }
     }
 }
-pub(crate) fn query(address: SocketAddrV4, kid: [u8; 8], probes: u16) -> Info {
-    let attempt = || -> std::io::Result<Info> {
+/// Tries per QoS lookup target. A host under load (three games on one Mac
+/// run at a few frames a second) can miss one short window; a host that
+/// doesn't listen for the session never answers.
+pub(crate) const QUERY_TRIES: u32 = 3;
+const QUERY_WAIT: Duration = Duration::from_millis(100);
+/// Asks the responder at `address` (its QoS port, + 2) about session
+/// `kid`; the error is the last try's.
+pub(crate) fn query_why(address: SocketAddrV4, kid: [u8; 8], probes: u16) -> std::io::Result<Info> {
+    let mut last = std::io::Error::from(std::io::ErrorKind::TimedOut);
+    for _ in 0..QUERY_TRIES {
+        match query_once(address, kid, probes) {
+            Ok(info) => return Ok(info),
+            // Nothing listens there: another try can't help.
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => return Err(e),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
+}
+fn query_once(address: SocketAddrV4, kid: [u8; 8], probes: u16) -> std::io::Result<Info> {
+    {
         let socket = UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, 0))?;
         socket.connect((address.ip().to_owned(), address.port() + 2))?;
-        socket.set_read_timeout(Some(Duration::from_millis(50)))?;
+        socket.set_read_timeout(Some(QUERY_WAIT))?;
         let mut request = [0; 24];
         request[..8].copy_from_slice(QUERY);
         let nonce = NONCE.fetch_add(1, Ordering::Relaxed).to_le_bytes();
@@ -190,11 +231,7 @@ pub(crate) fn query(address: SocketAddrV4, kid: [u8; 8], probes: u16) -> Info {
             bandwidth: u32::from_le_bytes(response[17..21].try_into().unwrap()),
             data: response[23..len].to_vec(),
         })
-    };
-    attempt().unwrap_or(Info {
-        flags: 1,
-        ..Info::default()
-    })
+    }
 }
 
 #[cfg(test)]

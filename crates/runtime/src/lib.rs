@@ -6,6 +6,8 @@
 pub mod abi;
 pub mod atomic;
 mod continuation;
+#[allow(unsafe_code)]
+mod cow;
 pub mod cpu;
 #[allow(unsafe_code)]
 pub mod direct;
@@ -13,6 +15,7 @@ pub mod dispatch;
 mod entry_stats;
 pub mod events;
 pub mod exec;
+pub mod executor;
 #[allow(unsafe_code)]
 pub mod ffi;
 mod frames;
@@ -33,6 +36,7 @@ pub mod watch;
 
 pub use abi::{GuestFn, TransferAbi};
 pub use continuation::ContinuationInfo;
+pub use cow::CopyKind;
 pub use cpu::CpuAbi;
 pub use dispatch::Dispatch;
 pub use exec::{Event, ExecCtx, FaultReport, GuestFrame, Runner, Runtime};
@@ -41,5 +45,5 @@ pub use generated::{H2GenEntry, H2GenModule, H2GenResume, RegisteredModule};
 pub use guest::{Guest, GuestFault};
 pub use interrupt::{CallConvention, GuestInterrupt, Raise};
 pub use loader::{LoadedImage, load_xbe, load_xbe_with};
-pub use trap::{TrapHit, TrapLog};
+pub use trap::{HleCall, LineRec, TrapHit, TrapLog};
 pub use watch::{DirtyRange, WatchError, WatchId};

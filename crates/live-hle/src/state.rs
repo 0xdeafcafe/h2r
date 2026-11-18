@@ -157,6 +157,9 @@ pub(crate) struct State {
     activity: Option<String>,
     /// Co-op test automation (`H2_COOP_AUTO_*`, [`crate::auto`]).
     auto: crate::auto::Auto,
+    /// The guest's system time for the call in progress, when it is the
+    /// accepted-invitation read ([`State::set_guest_now`]).
+    guest_now: Option<u64>,
 }
 impl State {
     pub fn new(
@@ -192,6 +195,7 @@ impl State {
             game_id: None,
             activity: None,
             auto: crate::auto::Auto::from_env(),
+            guest_now: None,
         }
     }
     pub fn set_accounts(&mut self, accounts: Vec<Account>) {
@@ -603,6 +607,32 @@ impl State {
     pub fn set_auto(&mut self, auto: crate::auto::Auto) {
         self.auto = auto;
     }
+    /// The guest's KeQuerySystemTime for the next accepted-invitation read
+    /// (read before any lock: the kernel's clock comes first).
+    pub fn set_guest_now(&mut self, now: Option<u64>) {
+        self.guest_now = now;
+    }
+    /// The title's read of the accepted invitation, said in the log when
+    /// one was there.
+    fn accepted_invite(&mut self, m: &mut Guest, out: u32) -> std::result::Result<u32, Error> {
+        let result = self.invites.accepted(m, out, self.guest_now.take());
+        if let Some(v) = self.invites.take_read() {
+            if self.auto.is_on() {
+                self.auto
+                    .taken(&v, time::OffsetDateTime::now_utc().unix_timestamp());
+                eprintln!(
+                    "coop-auto: joining {}'s session {} (the game took the invitation)",
+                    v.gamertag, v.session_id
+                );
+            } else {
+                eprintln!(
+                    "live: join: the game took {}'s invitation to session {}",
+                    v.gamertag, v.session_id
+                );
+            }
+        }
+        result
+    }
     fn auto_step(&mut self) {
         if !self.auto.is_on() || self.online_refs == 0 || !self.connected() {
             return;
@@ -635,7 +665,33 @@ impl State {
                 }
             }
         }
-        let Some(own) = self.sessions.own_ids().first().copied() else {
+        let now = time::OffsetDateTime::now_utc().unix_timestamp();
+        for v in self.auto.unread_too_long(&self.invites.unread(), now) {
+            eprintln!(
+                "coop-auto: {}'s invitation to session {} is accepted but the game hasn't \
+                 taken it after {}s (its menu poll reads it; docs/live/live-coop.md 12.1)",
+                v.gamertag,
+                v.session_id,
+                crate::auto::UNREAD_AFTER
+            );
+        }
+        let looked_up = self
+            .auto
+            .taken_session()
+            .and_then(|id| u64::from_str_radix(id, 16).ok())
+            .is_some_and(|id| self.sessions.looked_up(&id.to_be_bytes()));
+        if let Some((v, n)) = self.auto.offer_again(now, looked_up)
+            && self.invites.offer_again(v.id)
+        {
+            eprintln!(
+                "coop-auto: the game took {}'s invitation to session {} but never looked the \
+                 session up; offering it again ({n} of {})",
+                v.gamertag,
+                v.session_id,
+                crate::auto::OFFERS
+            );
+        }
+        let Some(own) = self.sessions.current_id() else {
             return;
         };
         let id = live_proto::sign::hex(&own);
@@ -666,7 +722,7 @@ impl State {
         if controller >= 4 || self.user_ids[controller] == 0 {
             return Err(INVALID_USER);
         }
-        let Some(id) = self.sessions.own_ids().first().copied() else {
+        let Some(id) = self.sessions.current_id() else {
             return Err(MATCH_INVALID_SESSION);
         };
         let session_id = live_proto::sign::hex(&id);
@@ -1071,7 +1127,7 @@ impl State {
             return Ok(if op == LogonUsers { 0 } else { NOT_INITIALIZED });
         }
         match op {
-            AcceptedInvite => self.invites.accepted(m, a[0]),
+            AcceptedInvite => self.accepted_invite(m, a[0]),
             OnlineCleanup => {
                 self.online_refs -= 1;
                 if self.online_refs == 0 {

@@ -198,9 +198,8 @@ sim's. Per frame it pairs them:
 | `sim_d3d_hits` | D3D-layer hits in sim intervals: D3D calls the sim makes |
 
 Per page it keeps the first writer and reader of each relation (guest
-`pc`, or `d3d`/`host`) and, for the top `rs` pages made sticky (every
-access logged), the 64-byte lines the render wrote, the sim read, and
-their overlap (`dep_lines`). Regions: `stack` (256 KB below the render
+`pc`, or `d3d`/`host`) and, for the pages made sticky, the 64-byte lines
+the render wrote, the sim read, and their overlap (`dep_lines`). Regions: `stack` (256 KB below the render
 entry's `esp`), `push_buffer` and `d3d_scratch` (from the boot),
 `d3d_globals` (the D3D library's device and state block in the XBE,
 `0x00403000..0x00409000`), `datum:<name>` (datum arrays found in the
@@ -209,12 +208,57 @@ game-state block by their `d@t@` signature), `game_state` (the
 0x83145000` and its `0xf...` alias: tag cache, BSPs, carved buffers),
 `xbe_image` (globals), `contiguous`, `write_combined`, `other`.
 
+**Census v2 (2026-11-18).** The first run's three caveats ("Census
+results" below) are fixed:
+
+- *Sticky pages per region group.* At each report, the pages most often
+  in `rs_core` are made sticky in each group: `xbe` (`xbe_image`),
+  `game_state`, `datum` (every `datum:*`), `world_pool` and `other`
+  (contiguous, heap, the rest). The stack and our D3D layer's own memory
+  are never sticky. `H2_RENDER_CENSUS_LINES` is the budget per group
+  (default 64, `0` none, `all` every `rs_core` page). The trap keeps a
+  sticky page's line masks itself, per guest thread (`runtime::LineRec`),
+  instead of logging each access, so the budget costs slow accesses but no
+  log space. The `coverage group=…` lines give each group's `rs_core`
+  pages a frame and how many of them had line data; `rs_core_lined` in
+  the summary is the total.
+- *Order.* A sim read counts toward `sr_lines`/`dep_lines` only if the
+  same thread had not written that line earlier in the interval.
+  `sr_lines_any`/`dep_lines_any` keep the old, unordered meaning, for
+  comparison.
+- *Threads.* Every hit carries the running guest thread (from the frame
+  stats). The game thread is the one running the render entry. In both
+  scopes, other threads' hits leave the page sets and are counted per
+  thread (`other_thread scope=… thread=…`). Another thread reading a page
+  the render wrote, in the next interval, is `rs_other` (per page and
+  per frame), and its lines `dep_lines_other`. Without frame stats there
+  are no thread ids, and the census falls back to the phase rule.
+- *HLE calls.* The runner counts each Rust-handler call (kernel export
+  or override) by target and guest thread, with the calls that ended in
+  a STOP (blocked, yielded or preempted). The census splits them by scope
+  and names them (`kernel:<export>`, or the override's registered name):
+  `hle scope=render name=… calls/frame game=… other=… stops …`, the top
+  `H2_RENDER_CENSUS_TOP` per scope plus every wait (`Wait`, `Delay`,
+  `Yield`, `Sleep` in the name).
+- *Host writes by subsystem.* A host hit carries the Rust handler it ran
+  in. `host_writes scope=render by=<name>` counts render-scope pages a
+  frame by first host writer, and the TSV's `host_writer` column names
+  it per page. `<source>:no-handler` is host code outside any handler
+  (the boot loop between slices, say).
+
+The TSV keeps the first 20 columns (with `sr_lines` and `dep_lines` now
+ordered) and adds `rs_core`, `rs_other`, `host_writer`, `sr_lines_any`,
+`dep_lines_any`, `other_read_lines`, `dep_lines_other` and
+`sticky_frames`. The `lines …` report lines list every page with a
+dependency line of any kind.
+
 **Limits.** Raw RAM readers that bypass the accessors
 (`Guest::physical_ram`: the lockstep hash, snapshots) are not seen; none
 is guest code. Atomics
 (`runtime::atomic`) count as the host. A hit from another guest thread
-inside the render scope consumes that page's arming for the scope, so
-the render's own first access to it is missed (rare: count shown).
+consumes that page's arming for the scope, so the owner's own first
+access to it is missed at page level (rare: count shown). Sticky pages
+are exact per thread.
 Without frame stats every host hit is `host` and nothing is
 `other_thread`. The run is slower while the census is on (two passes
 over the mappings and a few thousand slow accesses a frame); its numbers
@@ -224,16 +268,19 @@ are page sets, not times.
 game end: `render-census: window …` and `run …` summary lines (per-frame
 averages), `region …` counts, the top `rs`, `ww` and `sr` pages
 (`H2_RENDER_CENSUS_TOP`, default 20) with region and first writer and
-reader, and `lines …` for the sticky pages (`H2_RENDER_CENSUS_LINES`,
-default 16). With `H2_RENDER_CENSUS_OUT=<path>` the full per-page table
+reader, and the v2 lines above. With `H2_RENDER_CENSUS_OUT=<path>` the full per-page table
 is rewritten there as TSV at each report.
 
 **Running it.** It needs a new `h2` binary only (no generated-code or
 image change):
 
 ```sh
-H2_FEATURES=render-census H2_FRAME_STATS=1 H2_RENDER_CENSUS_OUT=$TMPDIR/census.tsv h2 run …
+H2_FEATURES=render-census H2_FRAME_STATS=1 H2_RENDER_CENSUS_LINES=64 H2_RENDER_CENSUS_OUT=$TMPDIR/census.tsv h2 run …
 ```
+
+`H2_FRAME_STATS=1` is required for v2's thread split and handler names
+per thread. If the run is too slow with 64 sticky pages per group, lower
+the budget; the coverage lines show what is lost.
 
 Add `render-timing` to `H2_FEATURES` to get both in one run; the census
 then leaves the render scope to it.
@@ -415,6 +462,9 @@ until the HLE count exists.
 
 ### Verdict: hard; feasibility not yet decided
 
+This was the verdict before census v2. "Census v2 results (2026-11-18)"
+below replaces it and the build plan.
+
 By the criteria above:
 
 - Not **feasible** as defined. `rs_core` is 46.5 pages, not a handful.
@@ -520,6 +570,178 @@ after it is weeks of work.
    step 3. Drop the stack.
 5. **Measure.** COW fault count and cost against the 6-8 ms the sim
    costs; the time a frame saves; the join wait.
+
+## Census v2 results (2026-11-18)
+
+One run: Old Mombasa, headless, 3300 frames, census v2 with
+`H2_RENDER_CENSUS_LINES=64`. The log and TSV stay outside the repository.
+The writers and readers were identified the same way as in the first run,
+plus field offsets taken from the generated C at each logged pc.
+
+### Numbers
+
+Per frame, averaged over the run:
+
+- **Coverage.** Line data covers 81-93% of `rs_core` pages in each group
+  (`xbe`, `game_state`, `datum`, `world_pool`, `other`). Caveat 1 of the
+  first run no longer applies.
+- **Pages.** `rs_core` 44.1, and 39.5 of those have line data;
+  `sim_written` 147.9; `rs_other` 0.1.
+- **Ordered dependency lines.** `dep_lines` is 74.1 when a sim read counts
+  only if the sim had not written the line first. Counting every read, it
+  is 150.4, so half the first run's lines were the sim reading its own
+  writes (caveat 3).
+- **Other threads.** Thread 3 makes 2-4 hits a frame in each scope, and
+  hits with no thread id (host-side touches with no guest thread running)
+  make 8.4 in the render scope. `rs_other` is 0.1 a page a frame, so the
+  48.7 of the first run were preemption slices, not dependencies (caveat 2).
+- **`sim_d3d_hits`.** 502 over the whole run.
+
+### The new dependency sites
+
+The XBE lines were classified in the first run's table. They are the
+marks, the async I/O pool, the cache globals, the frame timing, the
+present counter and the game-time bracket. These are the sites the
+per-region sticky pages added, biggest first. Offsets are fields within
+the record the instruction addresses.
+
+| writer (render) → sim readers | lines, line-frames | what | class | remedy |
+|---|---|---|---|---|
+| `0x0003dfb1` (in `0x0003ddd0`) → `0x000bc50d` (`0x000bc470`, object update), `0x001a588b`, `0x001511f0` | 25 / 29 / 13 lines over about 3000 frames | **Object render-state handle.** `0x0003ddd0` stores a cached render-state handle at object `+0xcc` and stamps it with the render frame counter `0x004ba034`. The sim readers load `+0x68`, `+0x0c` and `+0xaa`, never `+0xcc`; object records are not 64-byte aligned, so these are other fields, often of a neighbouring object, in the same line. | (a), false sharing | Render-owned field. Merge `game_state` pages byte by byte; the render's `+0xcc` write never meets a sim write. |
+| `0x000c132e` (in `0x000c12d0`, from `0x000c15a0` ← `0x0002ba10` under `render_views`) → `0x000c3238` (`0x000c3220`), `0x000c0ca7` (`0x000c0c80`, light update from the tick through `0x000c1400`) | 12 / 7 lines, every frame | **Lights.** The render writes per-light render fields at `+0xf8..+0x108` of the 0x110-byte light record (`0x000c12d0` is the only function that touches them). The tick's light update reads `+0x02` and `+0x4c`. With a 0x110 stride, `+0x100` of one light shares a line with `+0x02`/`+0x4c` of the next. | (a), false sharing | Byte-level merge of `datum:lights`. The fields are render-only. |
+| `0x001747aa`, `0x00174837` (in `0x00174420`, from `0x00174220`/`0x00176cb0` ← the object and effect draw paths `0x0003fdf0`/`0x00040e90`) → `0x00179128` (`0x00179020` ← `0x001792b0` ← `0x00176e40`, the effect update in the tick), `0x0017531c` (`0x00175270`), `0x00248756` (`0x00248750`; both under `0x00174a30`) | 35 lines over 1820 frames, 14, and 64 over 1579 | **Particle systems.** The render pass updates particle systems as it draws them: `0x00174420` clears a flag bit at `+0x0d` and rewrites `+0x10`, `+0x30` and `+0x44` in `datum:particle_system`, `particle_emitter`, `particle_location` and `effect location`. The sim's effect and particle updates read and write the same fields (`+0x0c`, `+0x10`, `+0x30`, `+0x44`). This is real two-writer state, not false sharing. | (c), cosmetic | Make the four particle datums render-owned. The sim's particle-side updates (`0x00174a30` and `0x00179020`'s particle work) run on the render thread at the launch, against the sim's committed state, and effect creation and deletion reach them through a queue. Particles do not feed gameplay, so the order change is visible only as a one-frame shift in particle motion. Until that exists, a pipelined frame has to skip these datums in the merge and accept conflicts, which is not correct. |
+| `0x0012387a` (in `0x001237e0`, `animation_resource_get`) → `0x0012377e` (`0x001236f0`, `animation_resource_request`, from the animation code in the tick) | 25 lines over 2835 frames | **Animation cache.** The render's get updates the cache entry's use stamp (`+0x14` + 8 × index) in the cache records at `0x7ff60000`; the tick's request reads the header at `+0x64` in the same lines. When the data is not resident, the get loads it and waits (`0x001237a0`, a `SwitchToThread` loop). | (c) | Same as the texture and geometry caches (step 3.5 of the first plan): cache bookkeeping is written only on the game thread, the render's stamp updates and requests are queued and replayed at the join. |
+| host, `other` (3 lines); `0x002df76e` → host | small | **Per-thread kernel scratch.** The pages at the top of the thread stacks (`0xa1005000`, `0xa1048000`, `0xa1049000`) and `0xa1001000`, which the host's kernel code writes for the calling thread. | (a) | The render thread gets its own (the second `ExecCtx` already needs its own stack and TLS). |
+
+Smaller lines (each under 10 lines a frame): the cached object
+render-state records on the heap at `0x7fe4....` (`0x0016b840`,
+`0x0016bc00`), read by the geometry cache (`0x0012d1aa`, `0x0013d4a8`)
+when heap blocks are reused, are (a) with the same byte-level merge; the
+world_pool lines from the texture cache writers (`0x0012c889`,
+`0x0012e425`, `0x0012d65d`) are part of the cache ownership change (c).
+
+### Waits inside the render scope
+
+In the render scope, by kernel export:
+
+- **`NtYieldExecution`: 8.9 calls a frame, all on the game thread, 2677
+  of them (0.8 a frame) stopping the thread.** Two kinds of code yield:
+  - **The frame wait.** `0x0012b2e0` runs inside
+    `render_frame_and_present` and is overridden by the d3d crate's clocked
+    frame wait (`FrameWait::HALO2_CLOCKED`, `crates/d3d/src/vblank.rs`). It
+    calls `NtYieldExecution` through `call_guest` until the vblank counter
+    reaches its target, so the other threads run and the logical clock
+    moves to the next vblank. That is logical-clock pacing, not a spin on
+    the GPU or the push buffer, and it leaves the render thread anyway
+    (the design runs the frame wait on the game thread at the launch).
+  - **Guest `SwitchToThread` loops.** XAPI's `SwitchToThread`
+    (`0x002d2084`) calls the same export. The ones reachable from the
+    render front-end (`0x00223240`) are the async I/O pool when it is
+    full (`0x001208b0`), the texture cache (`0x0012c990`, `0x0012de70`),
+    the cache drain at the end of drawing (`0x0012d400`, which calls
+    `CDevice_KickOff` and yields while reads are pending, within a time
+    budget from `0x00223bb0`), the animation cache load (`0x001237a0`),
+    and a few more under `0x00120d80`, `0x001224c0`, `0x00140f00..0x00141350`,
+    `0x001a0af0` and `0x00218850`. Each waits for the async I/O worker to
+    finish a read.
+
+  The census counts calls by export, not by caller, so it cannot split
+  the 8.9 between the two. The stops say most yields return at once.
+- **No GPU spin.** `D3DDevice_IsBusy` is called 253 times a frame and never
+  stops: the host device answers at once, and no guest loop around it
+  yields. No D3D entry in the render scope stops the thread.
+- **`NtWaitForSingleObjectEx`: 1.9-4.4 calls a frame on the game thread,
+  0-1 stops in the run.** These are the async I/O pool mutex
+  (`0x001208b0` → `0x002d63fa`) followed by `NtReleaseMutant`. The mutex is
+  never contended in practice, but it is a kernel object the I/O worker
+  also takes. The other threads' waits in the render scope (9.1 a frame,
+  about 200 stops) are the I/O worker and audio threads on their own
+  semaphores during preemption slices.
+
+So the render waits on another thread in two places: the cache drain
+`0x0012d400` and the animation load `0x001237a0`, both waiting for the
+async I/O worker to finish a read the render asked for. This is the
+"render waits on other threads" case from "Reading the result", but it
+is narrow. In steady play the data is resident, and the drain has a time
+budget.
+
+### Verdict: hard, feasible with ports
+
+By the criteria in "Reading the result":
+
+- **Not feasible as it stands.** `rs_core` is 44 pages and 74 ordered
+  lines a frame, not a handful.
+- **Not infeasible either.** With 81-93% of pages measured, no line shows
+  the render writing gameplay state the tick reads. Every dependency is
+  one of:
+  - false sharing, which a byte-level merge removes: object `+0xcc`,
+    light render fields, the heap render states;
+  - render-private bookkeeping: the visit marks and the per-thread kernel
+    scratch;
+  - a value the game thread can produce at the launch: the present
+    counter, the render frame counter and the frame wait;
+  - one of three subsystems the render owns or shares by design: the
+    texture, geometry and animation caches with the async I/O queue
+    behind them, and the particle systems.
+- **Hard.** The subsystems are real ports. The caches need a request
+  queue and a single writer. That covers the drain and the animation load
+  that wait for the I/O worker: the render thread has to get the data
+  from the game thread or skip the draw that frame. The particle systems
+  need the sim's particle updates moved to the render thread. The
+  runtime prerequisites (step 2 of the first plan) are unchanged and are
+  the largest single item.
+
+The game-time bracket (`0x00146de0`/`0x00146b80`) from the first run is
+still not identified. It is the one open item that could still be real
+sim state.
+
+### Build plan, revised
+
+1. **Done:** census v2.
+2. **Optional census tweak, before any code:** attribute wait-class HLE
+   calls to the caller, using the guest return address, or the override
+   name for the frame wait. This splits the 8.9 yields a frame between the
+   frame wait and the cache waits. It also says how often the drain and
+   the animation load wait at all, which decides whether "skip the draw"
+   is acceptable. A second run would also name the game-time bracket's
+   readers.
+3. **Runtime prerequisites** (step 2 of the first plan, unchanged): a
+   second `ExecCtx` and `Guest` over a COW remap, per-thread caches, no
+   kernel on the render thread with an HLE allowlist (D3D entries and
+   captured time), the frame wait on the game thread, the logical clock
+   charged at the join, and snapshots joining first. The second executor
+   work (docs/runtime/second-executor.md) covers part of the first item.
+4. **Hand-back with a byte-level merge** (step 4 of the first plan, moved
+   earlier). Copy render-only pages, merge `ww` pages byte by byte, drop
+   the stack. This retires every false-sharing line (object `+0xcc`,
+   lights, heap render states) without any game-side change, so test it
+   first. Compare a pipelined run against a serial run with a tick-state
+   hash.
+5. **Cheap game-side remedies:** marks render-private, the present and
+   frame counters on the game thread at the launch, pipelining off during
+   Bink.
+6. **Cache ownership:** the texture, geometry and animation caches and the
+   async I/O pool get a single writer on the game thread. The render's
+   requests and use stamps are queued and replayed at the join. When the
+   render needs data that is not resident, it draws without it that frame
+   instead of waiting (drain `0x0012d400`, animation load `0x001237a0`).
+   This is the biggest port, and the first one with a visible cost: a
+   frame without its texture or animation pose for one frame after a
+   load.
+7. **Particle ownership:** the particle system, emitter, location and
+   effect-location datums become render-owned. The sim's particle updates
+   run on the render thread, and effect creation and deletion are queued
+   to it.
+8. **The game-time bracket**, once identified: move it to the game thread
+   at the launch, or stop if it is real sim state.
+9. **Measure** (step 5 of the first plan).
+
+Steps 4 and 5 make a pipelined run possible with caches and particles
+still serial: the render could run ahead on frames with no cache misses
+and no particle updates. That does not happen in real play, so the
+speedup only comes after steps 6 and 7. The native renderer (feature
+engine stages 7b-7d) remains the alternative if steps 6 and 7 cost more
+than they save.
 
 ## Related
 

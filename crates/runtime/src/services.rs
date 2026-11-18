@@ -128,6 +128,11 @@ impl Runtime {
     pub(crate) fn fast_memory(&self) -> *const crate::ffi::MemoryShared {
         self.memory.fast_shared()
     }
+    /// Reads the dispatch tables (override names, say) without a new
+    /// generation.
+    pub fn read_dispatch<R>(&self, f: impl FnOnce(&Dispatch) -> R) -> R {
+        f(&self.dispatch.read().unwrap_or_else(|e| e.into_inner()))
+    }
     pub fn edit_dispatch<R>(&self, f: impl FnOnce(&mut Dispatch) -> R) -> R {
         let mut d = self.dispatch.write().unwrap_or_else(|e| e.into_inner());
         let r = f(&mut d);
@@ -175,6 +180,17 @@ impl Runtime {
             abi::RETURN_TARGET => d.resolve_resume(t.target_pc).or_else(|| entry(t.target_pc)),
             _ => None,
         }
+    }
+    /// [`Dispatch::fork`] of this runtime's tables, under their read lock.
+    pub(crate) fn fork_dispatch(
+        &self,
+        keep: impl Fn(u32, &str) -> bool,
+        refuse: impl Fn(u32, &str) -> Handler,
+    ) -> Dispatch {
+        self.dispatch
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .fork(keep, refuse)
     }
     pub fn resolve_original(&self, pc: u32) -> Option<OriginalHandler> {
         self.dispatch

@@ -601,10 +601,21 @@ an exclusive split per stage ([frame-budget.md](../perf/frame-budget.md), "Rende
 front-end versus simulation"). It answers how much of the game thread's
 guest time 7a-7d can move at all.
 
-**7a status.** `render_views` is ported (`engine::render_loop`, placed by
-the `render-loop` feature under `impl.render.views`, off by default) and
-agrees with the lifted original call for call; the read of the other
-orchestrators and the next steps are in [render-loop.md](../graphics/render-loop.md).
+**7a status.** `render_views`, `render_game_view` and
+`render_scene_passes` are ported (`engine::render_loop`, placed by the
+`render-loop` feature under `impl.render.views`, `impl.render.game_view`
+and `impl.render.scene_passes`, off by default) and agree with the lifted
+originals call for call. The first bookkeeping port under them is the
+layer entries' sort (`impl.render.layer_sort`). Two more are built:
+
+- the transparents' sort (`impl.render.transparent_sort`);
+- the shader draw's render-state list (`impl.render.states`, and
+  `impl.render.states_skip`, which skips `SetRenderState_Simple` calls
+  for values D3D's shadow already holds).
+
+The reads, the measured
+cost of each scene-pass call site and the next targets are in
+[render-loop.md](../graphics/render-loop.md).
 
 ### The rest, briefly
 
