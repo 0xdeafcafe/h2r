@@ -226,6 +226,20 @@ fn a_small_campaign_goes_into_the_free_slots() {
 }
 
 #[test]
+fn a_level_with_a_card_shows_it() {
+    let mut g = globals(4, 3, true);
+    let b = built(&[SMALL]);
+    let cards = BTreeMap::from([("x1".to_owned(), 0xe123_0456)]);
+    extend_with_cards(&mut g, &b, &REGION, &cards).unwrap();
+    let ui = ui_levels(&g);
+    // l2 has no card: retail l2's picture, as without cards.
+    assert_eq!(ui[4].2, [BITM, 0xe000_0002]);
+    assert_eq!(ui[5].2, [CARD_GROUP, 0xe123_0456]);
+    assert_eq!(CARD_GROUP, BITM);
+    game_reads(&g, &b);
+}
+
+#[test]
 fn a_campaign_past_the_free_slots_is_copied_into_our_memory() {
     let mut g = globals(4, 2, true);
     let b = built(&[HALO1]);
@@ -311,6 +325,7 @@ fn the_start_takes_the_campaign_of_the_selected_level() {
         built: b,
         selection: Selection::default(),
         progress: Progress::memory(),
+        cards: Default::default(),
     };
     let mut g = G(FakeGuest::new());
     g.0.map(SELECTED_CAMPAIGN, 8);
@@ -642,6 +657,7 @@ fn a_halo1_import_is_picked_started_and_served() {
         built: built.clone(),
         selection: Selection::default(),
         progress: Progress::memory(),
+        cards: Default::default(),
     };
     let maps = host_maps(&data, &state);
     assert_eq!(maps.len(), 10);
@@ -686,6 +702,7 @@ fn every_lookup_caller_finds_a_halo1_level() {
         built: built.clone(),
         selection: Selection::default(),
         progress: Progress::memory(),
+        cards: Default::default(),
     };
     let mut g = globals(4, 3, true);
     extend(&mut g, &built, &REGION).unwrap();
