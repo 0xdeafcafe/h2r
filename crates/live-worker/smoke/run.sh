@@ -4,7 +4,10 @@
 # (smoke.ts). The cold start is measured twice: on an empty log, and after
 # a restart with the log `--seed` grew.
 #
-#   crates/live-worker/smoke/run.sh [SEED_PAIRS] [OUT_DIR]
+#   [WAKE=S] crates/live-worker/smoke/run.sh [SEED_PAIRS] [OUT_DIR]
+#
+# WAKE=S: also idle S seconds with a socket open, and check that the hub
+# hibernated and woke (smoke.ts, step 8).
 #
 # Needs build/ from `worker-build --release` in crates/live-worker. Keeps
 # its state (the hub's storage, a dev server key) under
@@ -69,7 +72,7 @@ stop() {
 trap stop EXIT
 
 start first
-bun "$here/smoke/smoke.ts" "http://127.0.0.1:$port" --seed "$seed" | tee "$out/first.json"
+bun "$here/smoke/smoke.ts" "http://127.0.0.1:$port" --seed "$seed" --wake "${WAKE:-0}" | tee "$out/first.json"
 grep -q '"ok": true' "$out/first.json" || { echo "smoke test failed" >&2; exit 1; }
 stop
 start restart

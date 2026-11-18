@@ -41,7 +41,6 @@ pub mod games;
 pub mod guard;
 pub mod http;
 pub mod identity;
-#[cfg(feature = "native")]
 pub mod ingest;
 pub mod invites;
 pub mod local_signin;

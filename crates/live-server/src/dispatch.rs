@@ -56,8 +56,16 @@ impl Dispatcher {
         self.feed.clone()
     }
 
-    /// Tails the log forever.
-    pub async fn run(self, mut wake: Box<dyn Wake>) {
+    /// Tails the log forever: woken by appends, and every [`POLL`] in
+    /// case a wake was missed (another writer).
+    pub async fn run(self, wake: Box<dyn Wake>) {
+        self.run_with(wake, Some(POLL)).await
+    }
+
+    /// Tails the log forever. With no `poll`, only appends wake it: for a
+    /// store with one writer whose wake sees every append (a Durable
+    /// Object's, where a pending timer would keep it from hibernating).
+    pub async fn run_with(self, mut wake: Box<dyn Wake>, poll: Option<Duration>) {
         let mut last = 0;
         loop {
             match self.store.read(&Query::after(last, BATCH)).await {
@@ -78,9 +86,14 @@ impl Dispatcher {
                 }
                 Err(e) => eprintln!("live: reading the log at {last} failed: {e}"),
             }
-            tokio::select! {
-                _ = wake.wait() => {}
-                _ = crate::rt::sleep(POLL) => {}
+            match poll {
+                Some(poll) => {
+                    tokio::select! {
+                        _ = wake.wait() => {}
+                        _ = crate::rt::sleep(poll) => {}
+                    }
+                }
+                None => wake.wait().await,
             }
         }
     }

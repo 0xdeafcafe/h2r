@@ -5,11 +5,13 @@
 //! a hibernatable WebSocket ([`crate::sockets`]); ingest and the relay
 //! come in later slices (docs/live/live-worker.md).
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use live_server::Live;
+use live_server::app::Timers;
 use live_server::blobs::{BlobStore, Blobs};
 use live_server::store::EventStore;
 use live_server::stream::StreamFilter;
@@ -23,6 +25,7 @@ use worker::{
 
 use crate::bindings::{BLOBS, HUB, HUB_NAME};
 use crate::dosql::DoSql;
+use crate::ingest::{Ingests, Message};
 use crate::r2::R2;
 use crate::settings::Settings;
 use crate::sockets::{Sockets, pump};
@@ -53,6 +56,12 @@ pub struct LiveHub {
     ctx: JsValue,
     live: OnceCell<Arc<Live>>,
     sockets: Rc<Sockets>,
+    ingests: Ingests,
+    /// The alarm as last set (ms since the epoch; `None` inside: no
+    /// alarm), or `None` before this instance has set one.
+    alarm_at: Cell<Option<Option<i64>>>,
+    /// Whether the packed tick is running.
+    ticking: Rc<Cell<bool>>,
 }
 
 fn rust_error(e: impl std::fmt::Display) -> worker::Error {
@@ -78,9 +87,14 @@ impl LiveHub {
             .await
             .map_err(rust_error)?;
         let head = store.head().await.map_err(rust_error)?;
-        let live = Live::start(Arc::new(store), settings.identity, settings.policy)
-            .await
-            .map_err(|e| rust_error(format!("{e:#}")))?;
+        let live = Live::start_with(
+            Arc::new(store),
+            settings.identity,
+            settings.policy,
+            Timers::Driven,
+        )
+        .await
+        .map_err(|e| rust_error(format!("{e:#}")))?;
         let r2 = R2::new(self.env.bucket(BLOBS)?, BLOBS);
         live.set_blobs(Blobs {
             private: BlobStore::from_store(Arc::new(r2), "r2://blobs"),
@@ -112,25 +126,91 @@ impl LiveHub {
         Ok((live, cold))
     }
 
-    /// `GET /v1/stream`: a WebSocket the object accepts for hibernation.
-    async fn stream(&self, live: Arc<Live>, req: &Request) -> Result<Response> {
-        let params: HashMap<String, String> = req.url()?.query_pairs().into_owned().collect();
-        let filter = match StreamFilter::from_params(&params) {
-            Ok(f) => f,
-            Err(e) => return Response::try_from(axum::response::IntoResponse::into_response(e)),
+    /// After anything that may have changed what is due: sets the alarm
+    /// for the next sweep or socket check (or removes it), and runs the
+    /// packed tick while a game is live. Nothing else in the hub runs on
+    /// a timer, so with no alarm due and no game live it can hibernate.
+    async fn schedule(&self, live: &Arc<Live>) -> Result<()> {
+        if live.packed_active() && !self.ticking.replace(true) {
+            let (live, ticking) = (live.clone(), self.ticking.clone());
+            live_server::rt::spawn(async move {
+                let mut tick = live_server::rt::interval(live_server::packed::TICK);
+                loop {
+                    tick.tick().await;
+                    if !live.packed_active() {
+                        ticking.set(false);
+                        return;
+                    }
+                    live.publish_packed();
+                }
+            });
+        }
+        let sweep = live.sweep_due().map(|s| s as f64 * 1000.0);
+        let due = [
+            sweep,
+            self.sockets.next_due_ms(),
+            self.ingests.next_due_ms(),
+        ]
+        .into_iter()
+        .flatten()
+        .min_by(f64::total_cmp)
+        .map(|ms| ms.ceil() as i64);
+        if self.alarm_at.get() == Some(due) {
+            return Ok(());
+        }
+        let storage = self.state.storage();
+        match due {
+            Some(at) => {
+                // Not sooner than 250 ms: a sweep that could not write must not
+                // spin the alarm.
+                let wait = (at - js_sys::Date::now() as i64).max(250);
+                storage.set_alarm(wait).await?;
+            }
+            None => storage.delete_alarm().await?,
+        }
+        self.alarm_at.set(Some(due));
+        Ok(())
+    }
+
+    fn closed(&self, ws: &WebSocket) {
+        match crate::ingest::attachment(ws) {
+            Some(a) => self.ingests.closed(a.ingest),
+            None => self.sockets.closed(ws),
+        }
+    }
+
+    /// `GET /v1/stream` and `GET /v1/ingest`: WebSockets the object
+    /// accepts for hibernation.
+    async fn socket(&self, live: Arc<Live>, req: &Request) -> Result<Response> {
+        let refuse = |m: &str| {
+            let e = live_server::ApiError::new(live_proto::ErrorCode::Invalid, m);
+            Response::try_from(axum::response::IntoResponse::into_response(e))
+        };
+        let stream = req.path() == "/v1/stream";
+        let filter = if stream {
+            let params: HashMap<String, String> = req.url()?.query_pairs().into_owned().collect();
+            match StreamFilter::from_params(&params) {
+                Ok(f) => Some(f),
+                Err(e) => {
+                    return Response::try_from(axum::response::IntoResponse::into_response(e));
+                }
+            }
+        } else {
+            None
         };
         let upgrade = req.headers().get("upgrade")?.unwrap_or_default();
         if !upgrade.eq_ignore_ascii_case("websocket") {
-            let e = live_server::ApiError::new(
-                live_proto::ErrorCode::Invalid,
-                "/v1/stream is a WebSocket",
-            );
-            return Response::try_from(axum::response::IntoResponse::into_response(e));
+            return refuse(&format!("{} is a WebSocket", req.path()));
         }
         let pair = WebSocketPair::new()?;
-        self.sockets
-            .accept(&self.state, live, pair.server, filter)
-            .await?;
+        match filter {
+            Some(filter) => {
+                self.sockets
+                    .accept(&self.state, live, pair.server, filter)
+                    .await?
+            }
+            None => self.ingests.accept(&self.state, live, pair.server),
+        }
         Response::from_websocket(pair.client)
     }
 }
@@ -147,16 +227,21 @@ impl DurableObject for LiveHub {
             ctx,
             live: OnceCell::new(),
             sockets: Rc::new(Sockets::default()),
+            ingests: Ingests::default(),
+            alarm_at: Cell::new(None),
+            ticking: Rc::new(Cell::new(false)),
         }
     }
 
     async fn fetch(&self, req: Request) -> Result<Response> {
         let (live, cold) = self.live().await?;
-        if req.path() == "/v1/stream" {
-            return self.stream(live, &req).await;
+        if req.path() == "/v1/stream" || req.path() == "/v1/ingest" {
+            let resp = self.socket(live.clone(), &req).await;
+            self.schedule(&live).await?;
+            return resp;
         }
         let req: HttpRequest = req.try_into()?;
-        let mut router = live_server::http::router(live);
+        let mut router = live_server::http::router(live.clone());
         let mut resp = match router.call(req).await {
             Ok(resp) => resp,
             Err(never) => match never {},
@@ -166,7 +251,21 @@ impl DurableObject for LiveHub {
         {
             resp.headers_mut().append(crate::COLD_START_HEADER, v);
         }
+        self.schedule(&live).await?;
         Response::try_from(resp)
+    }
+
+    /// The sweep and the sockets' timed checks, when [`LiveHub::schedule`]
+    /// said they were due.
+    async fn alarm(&self) -> Result<Response> {
+        let (live, _) = self.live().await?;
+        // Set again below if anything is still due.
+        self.alarm_at.set(Some(None));
+        live.sweep().await;
+        self.sockets.check();
+        self.ingests.check();
+        self.schedule(&live).await?;
+        Response::ok("")
     }
 
     async fn websocket_message(
@@ -175,10 +274,16 @@ impl DurableObject for LiveHub {
         message: WebSocketIncomingMessage,
     ) -> Result<()> {
         let (live, _) = self.live().await?;
-        if let WebSocketIncomingMessage::String(text) = message {
+        if let Some(a) = crate::ingest::attachment(&ws) {
+            let msg = match &message {
+                WebSocketIncomingMessage::String(t) => Message::Text(t),
+                WebSocketIncomingMessage::Binary(b) => Message::Binary(b),
+            };
+            self.ingests.message(&live, ws, a, msg).await;
+        } else if let WebSocketIncomingMessage::String(text) = message {
             self.sockets.message(&live, ws, &text).await;
         }
-        Ok(())
+        self.schedule(&live).await
     }
 
     async fn websocket_close(
@@ -188,12 +293,12 @@ impl DurableObject for LiveHub {
         _reason: String,
         _was_clean: bool,
     ) -> Result<()> {
-        self.sockets.closed(&ws);
+        self.closed(&ws);
         Ok(())
     }
 
     async fn websocket_error(&self, ws: WebSocket, _error: worker::Error) -> Result<()> {
-        self.sockets.closed(&ws);
+        self.closed(&ws);
         Ok(())
     }
 }

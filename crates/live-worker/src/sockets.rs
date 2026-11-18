@@ -4,6 +4,10 @@
 //! them, and the runtime hands in what readers send
 //! (`websocket_message`).
 //!
+//! Nothing here runs on a timer: token expiry and the auth deadline are
+//! checked from the hub's alarm ([`Sockets::check`], due at
+//! [`Sockets::next_due_ms`]).
+//!
 //! Each socket carries its session's lasting state as its attachment
 //! ([`Attachment`]). After the object wakes from hibernation (a new
 //! instance, sockets still open), the first message or feed event finds
@@ -13,7 +17,6 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
 
 use live_server::Live;
 use live_server::stream::{Out, Resume, StreamFilter, StreamSession};
@@ -46,7 +49,7 @@ pub struct Sockets {
 }
 
 /// Sends a session's messages. `false`: it closed the socket.
-fn send(ws: &WebSocket, out: Vec<Out>) -> bool {
+pub(crate) fn send(ws: &WebSocket, out: Vec<Out>) -> bool {
     for o in out {
         let sent = match o {
             Out::Text(t) => ws.send_with_str(&*t),
@@ -222,6 +225,31 @@ impl Sockets {
         });
     }
 
+    /// The timed checks, run from the hub's alarm: expired tokens, and
+    /// readers that owe an auth message past the deadline.
+    pub fn check(&self) {
+        let now = live_server::app::now();
+        self.each(|s| s.expired(now).into_iter().collect(), false);
+        self.close_silent();
+    }
+
+    /// When [`Sockets::check`] next has something to do (ms since the
+    /// epoch), for the hub's alarm.
+    pub fn next_due_ms(&self) -> Option<f64> {
+        self.entries
+            .borrow()
+            .values()
+            .filter_map(|e| {
+                let s = e.session.as_ref()?;
+                if s.awaits_auth() {
+                    Some(e.since + AUTH_TIMEOUT_MS)
+                } else {
+                    s.deadline().map(|d| d as f64 * 1000.0)
+                }
+            })
+            .min_by(f64::total_cmp)
+    }
+
     /// Every session's catch-up from the store, one at a time.
     async fn catch_up_all(&self) {
         let ids: Vec<u64> = self.entries.borrow().keys().copied().collect();
@@ -242,13 +270,14 @@ impl Sockets {
 }
 
 /// Fans the hub's feeds out to its sockets until the object goes away:
-/// events, JSON frames, packed ticks, and once a second, expired tokens.
+/// events, JSON frames and packed ticks. It sets no timer (the timed
+/// checks run from the hub's alarm), so it does not keep the object from
+/// hibernating.
 pub async fn pump(live: Arc<Live>, sockets: Rc<Sockets>) {
     use tokio::sync::broadcast::error::RecvError;
     let mut feed = live.feed();
     let mut frames = live.frames();
     let mut ticks = live.packed().subscribe_all();
-    let mut every = live_server::rt::interval(Duration::from_secs(1));
     loop {
         tokio::select! {
             event = feed.recv() => match event {
@@ -266,11 +295,6 @@ pub async fn pump(live: Arc<Live>, sockets: Rc<Sockets>) {
                 Err(RecvError::Lagged(_)) => sockets.each(|s| s.rejoin().into_iter().collect(), false),
                 Err(RecvError::Closed) => return,
             },
-            _ = every.tick() => {
-                let now = live_server::app::now();
-                sockets.each(|s| s.expired(now).into_iter().collect(), false);
-                sockets.close_silent();
-            }
         }
     }
 }

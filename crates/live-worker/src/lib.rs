@@ -18,6 +18,8 @@ mod dosql;
 #[cfg(target_arch = "wasm32")]
 mod entry;
 #[cfg(target_arch = "wasm32")]
+mod ingest;
+#[cfg(target_arch = "wasm32")]
 mod r2;
 #[cfg(target_arch = "wasm32")]
 mod sockets;

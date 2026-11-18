@@ -13,7 +13,15 @@
 //      while a /v1/stream socket subscribed before it receives it live;
 //   6. the stream: replay from a position, a token-authed socket, a bad
 //      token closed with 4401, and a plain GET refused;
-//   7. warm timings: /v1/snapshot ten times.
+//   7. warm timings: /v1/snapshot ten times;
+//   8. with --wake S: a hibernation wake. A socket is opened, then
+//      nothing is sent for S seconds. The next request must find a new
+//      hub (it reports a cold start), and the socket, still open, must get
+//      the next event, from the session the new hub rebuilt from its
+//      attachment;
+//   9. game ingest: start a game, send a frame on /v1/ingest, and see it
+//      reach a JSON reader and, through the packed tick, a packed reader;
+//      a token for the wrong method is closed with 4401.
 // It prints one JSON object and exits non-zero if a step fails.
 //
 // --seed N: then grows the log by 2N events (friend requests, declined),
@@ -23,10 +31,12 @@ import { postEvent } from "../../../web/src/state/sign";
 import { issueToken } from "../../../web/src/admin/token";
 
 const args = process.argv.slice(2);
-const base = (args.find((a) => !a.startsWith("--") && !/^\d+$/.test(a)) ?? "http://127.0.0.1:8787").replace(/\/$/, "");
+const base = (args.find((a) => /^https?:/.test(a)) ?? "http://127.0.0.1:8787").replace(/\/$/, "");
 const seedAt = args.indexOf("--seed");
 const seed = seedAt >= 0 ? Number(args[seedAt + 1]) : 0;
 const coldOnly = args.includes("--cold-only");
+const wakeAt = args.indexOf("--wake");
+const wakeWait = wakeAt >= 0 ? Number(args[wakeAt + 1]) : 0;
 const api = base + "/v1";
 const out: Record<string, unknown> = { base };
 const fail = (step: string, why: unknown): never => {
@@ -93,15 +103,22 @@ if (!seen) fail("sign-in", "the new account is not in the snapshot");
 out.sign_in = { ms: mine.ms, cache_control: mine.r.headers.get("cache-control") };
 
 // A /v1/stream socket: its messages as they come, and how it closed.
-type Msg = { kind: string; position?: number; event?: { position: number; type: string } };
-function subscribe(query: string) {
-  const ws = new WebSocket(`${base.replace(/^http/, "ws")}/v1/stream${query}`);
+type Msg = {
+  kind: string;
+  position?: number;
+  event?: { position: number; type: string };
+  frame?: { game_id: string; tick: number };
+};
+function subscribe(query: string, path = "/v1/stream") {
+  const ws = new WebSocket(`${base.replace(/^http/, "ws")}${path}${query}`);
   const got: Msg[] = [];
+  let binary = 0;
   const waiters: (() => void)[] = [];
   let closed: { code: number; reason: string } | null = null;
   const poke = () => waiters.splice(0).forEach((w) => w());
   ws.onmessage = (m) => {
     if (typeof m.data === "string") got.push(JSON.parse(m.data));
+    else binary++;
     poke();
   };
   ws.onclose = (c) => {
@@ -138,7 +155,20 @@ function subscribe(query: string) {
     }
     return closed;
   };
-  return { ws, got, opened, until, close };
+  // The first binary message (packed frames), within `ms`.
+  const untilBinary = async (ms = 5000) => {
+    const end = Date.now() + ms;
+    while (binary === 0) {
+      if (closed) throw new Error(`closed ${closed.code} ${closed.reason}`);
+      const left = end - Date.now();
+      if (left <= 0) throw new Error("no binary message in time");
+      await new Promise<void>((ok) => {
+        waiters.push(ok);
+        setTimeout(ok, left);
+      });
+    }
+  };
+  return { ws, got, opened, until, close, untilBinary };
 }
 
 // The live socket, let in and caught up before the append.
@@ -221,6 +251,92 @@ if (plain.status !== 400) fail("stream-plain-get", `${plain.status} ${await plai
 
 // 7. Warm.
 await warmTimes();
+
+// 8. A hibernation wake.
+if (wakeWait > 0) {
+  const sleeper = subscribe("");
+  try {
+    await sleeper.opened;
+    await sleeper.until((m) => m.kind === "caught_up");
+  } catch (e) {
+    fail("wake-subscribe", e);
+  }
+  await Bun.sleep(wakeWait * 1000);
+  const t8 = performance.now();
+  const after = await timed(base + "/healthz");
+  const timing = after.r.headers.get("server-timing");
+  if (!timing?.startsWith("start;")) fail("wake", `the hub did not restart in ${wakeWait} s (server-timing ${timing})`);
+  let woke: number | null = null;
+  try {
+    woke = await postEvent(api, aud, b!, {
+      stream: `account-${b!.xuid}`, type: "FriendDeclined", data: { from: a!.xuid, to: b!.xuid },
+    });
+    await sleeper.until((m) => m.kind === "event" && m.event?.position === woke);
+  } catch (e) {
+    fail("wake-receive", e);
+  }
+  out.wake = {
+    idle_s: wakeWait,
+    restart: timing,
+    // From the first request after the idle until the open socket had the event.
+    receive_ms: +(performance.now() - t8).toFixed(1),
+  };
+  sleeper.ws.close();
+  // Step 8 declined the request: ask again, as the seed loop expects.
+  await postEvent(api, aud, a!, { stream: `account-${a!.xuid}`, type: "FriendRequested", data: { from: a!.xuid, to: b!.xuid } });
+}
+
+// 9. Game ingest.
+{
+  const t9 = performance.now();
+  const writeToken = () => issueToken(a!, aud, "games.write");
+  const started = await timed(api + "/games", {
+    method: "POST",
+    headers: { authorization: `Bearer ${await writeToken()}`, "content-type": "application/json" },
+    body: JSON.stringify({
+      console: "Smoke", map: "lockout", mode: "multiplayer", variant: "Team Slayer",
+      team_play: true, score_limit: 50, tick: 0,
+      players: [
+        { index: 0, name: "Host", xuid: a!.xuid, team: 0, local: true },
+        { index: 1, name: "Guest", team: 1 },
+      ],
+    }),
+  });
+  if (started.r.status !== 201) fail("ingest-start-game", `${started.r.status} ${started.body}`);
+  const gameId: string = JSON.parse(started.body).game_id;
+  const json = subscribe(`?games=${gameId}&exclude=GameFrame`);
+  const packed = subscribe(`?games=${gameId}&frames=packed`);
+  const game = subscribe("", "/v1/ingest");
+  try {
+    await Promise.all([json.opened, packed.opened, game.opened]);
+    await json.until((m) => m.kind === "caught_up");
+    await packed.until((m) => m.kind === "caught_up");
+    game.ws.send(JSON.stringify({ kind: "auth", token: await writeToken() }));
+    const frame = (tick: number) => JSON.stringify({
+      kind: "frame",
+      frame: { game_id: gameId, tick, players: [{ index: 0, alive: true, pos: [1, 2, 0.5], yaw: 0.25 }] },
+    });
+    game.ws.send(frame(30));
+    await json.until((m) => m.kind === "frame" && m.frame?.tick === 30);
+    await packed.untilBinary();
+    // Every reply on the ingest socket is a refusal.
+    const refused = game.got.filter((m) => m.kind === "error");
+    if (refused.length) throw new Error(`refused: ${JSON.stringify(refused)}`);
+  } catch (e) {
+    fail("ingest", e);
+  }
+  const wrong = subscribe("", "/v1/ingest");
+  try {
+    await wrong.opened;
+    wrong.ws.send(JSON.stringify({ kind: "auth", token: await issueToken(a!, aud, "read") }));
+    const c = await wrong.close();
+    if (c?.code !== 4401) throw new Error(`closed with ${JSON.stringify(c)}`);
+  } catch (e) {
+    fail("ingest-wrong-method", e);
+  }
+  out.ingest = { game: gameId, start_subscribe_and_frame_ms: +(performance.now() - t9).toFixed(1) };
+  for (const s of [json, packed, game]) s.ws.close();
+}
 
 if (seed > 0) {
   const t = performance.now();
