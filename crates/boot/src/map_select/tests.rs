@@ -134,9 +134,10 @@ fn slots_and_packages_read_as_the_game_lists_them() {
     ));
     let dir = root.join(&offer);
     std::fs::create_dir_all(&dir).unwrap();
-    let manifest = content::Manifest::from_toml(
-        "[package]\nformat = 1\nname = \"Blood Gulch\"\n\n[base]\nmap = \"h1_bloodgulch\"\nderived = true\n",
-    )
+    let manifest = content::Manifest::from_toml(&format!(
+        "[package]\nformat = 1\nname = \"Blood Gulch\"\n\n[base]\nmap = \"h1_bloodgulch\"\nderived = true\n\n[[patch]]\nfile = \"h1_bloodgulch.map\"\nsha256 = \"{}\"\n",
+        "00".repeat(32)
+    ))
     .unwrap();
     let entry = content::map_list::Entry::for_manifest(
         &manifest,
@@ -287,4 +288,15 @@ fn named_states_replay_their_presses() {
         titles,
         ["Select Map", "Halo 2", "Map Pack", "Mods", "Halo: CE"]
     );
+}
+
+#[test]
+fn only_change_map_s_request_opens_the_categories() {
+    let ours = 0xa000_1000;
+    assert_eq!(request_loader(CHANGE_MAP_REQUEST_RET, CHANGE_MAP_LOADER, ours), Some(ours));
+    // The class off or not built: the retail list.
+    assert_eq!(request_loader(CHANGE_MAP_REQUEST_RET, CHANGE_MAP_LOADER, 0), None);
+    // Another request for the same loader, or Change Map's for another.
+    assert_eq!(request_loader(0x002b_16f3, CHANGE_MAP_LOADER, ours), None);
+    assert_eq!(request_loader(CHANGE_MAP_REQUEST_RET, 0x002b_130a, ours), None);
 }

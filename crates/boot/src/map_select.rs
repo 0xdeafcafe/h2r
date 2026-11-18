@@ -614,19 +614,25 @@ impl feature::Feature for MapSelect {
             let rt = Arc::clone(c.ctx.runtime());
             let mut mem = rt.memory();
             let word = |m: &dyn engine::memory::GuestMemory, n: u32| m.u32(c.cpu.esp + 4 * n).ok();
-            if word(&*mem, 0) != Some(CHANGE_MAP_REQUEST_RET)
-                || word(&*mem, 4) != Some(CHANGE_MAP_LOADER)
-            {
+            let (Some(ret), Some(was)) = (word(&*mem, 0), word(&*mem, 4)) else {
                 return Ok(feature::Flow::Continue);
-            }
-            let ours = loader();
-            if ours != 0 && mem.set_u32(c.cpu.esp + 16, ours).is_ok() {
+            };
+            if let Some(ours) = request_loader(ret, was, loader())
+                && mem.set_u32(c.cpu.esp + 16, ours).is_ok()
+            {
                 eprintln!("map select: opening the map categories in place of the map list");
             }
             Ok(feature::Flow::Continue)
         });
         Ok(())
     }
+}
+
+/// The loader a `0x149f49` request returning to `ret` for `loader` should
+/// open instead: the categories' (`ours`, 0 until their class is built)
+/// for Game Setup's Change Map, else none.
+pub fn request_loader(ret: u32, loader: u32, ours: u32) -> Option<u32> {
+    (ret == CHANGE_MAP_REQUEST_RET && loader == CHANGE_MAP_LOADER && ours != 0).then_some(ours)
 }
 
 /// Adds the hook when the boot [`prepare`]d a catalogue. Returns whether it
