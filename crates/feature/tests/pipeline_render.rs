@@ -78,6 +78,13 @@ const MARK: u32 = 0x2_0048;
 const LIGHT_MARK: u32 = 0x2_4068;
 const LIGHT_STAMP: u32 = 0x2_406c;
 const LIGHTS_DRAWN: u32 = 0x2_4070;
+/// A particle system's state, which both sides update in place: the render
+/// as it draws it (`0x00174420`), the tick's update (`SIM_TICK`) from what
+/// the last render left.
+const PARTICLE: u32 = 0x2_4074;
+/// The tick's particle update, reading and writing `PARTICLE` (as the
+/// tick's `0x00179020` reads what the render's draw pass wrote).
+const SIM_TICK: u32 = 0x1_7000;
 const STAMPS: (u32, u32) = (0x2_0050, 0x2_0060);
 const VBLANKS: (u32, u32) = (0x2_0060, 0x2_0068);
 /// What the sim writes and the render reads.
@@ -187,6 +194,7 @@ static ADDRS: Addrs = Addrs {
         record_len: CACHE_RECORD,
         owner: 4,
     }],
+    sim_joins: &[SIM_TICK],
 };
 
 /// The cache lookup: the record's lighting for object `h`, allocating as
@@ -280,6 +288,9 @@ fn render(
                 let drawn = m.u32(LIGHTS_DRAWN)? + 1;
                 m.set_u32(LIGHTS_DRAWN, drawn)?;
             }
+            // The particle draw steps the system in place.
+            let particle = m.u32(PARTICLE)?.wrapping_mul(3).wrapping_add(1);
+            m.set_u32(PARTICLE, particle)?;
             cpu.ebp = 0;
             m.set_u8(VBLANKS.0, 0xee)?;
             m.set_u8(CLEAR, 0)?;
@@ -450,6 +461,20 @@ fn probe(m: &Guest, esp: u32) -> Result<(), runtime::GuestFault> {
 }
 
 /// The guest callback D3D_CALLBACK calls: the kernel, then return.
+/// The tick's particle update (`SIM_TICK`): from the state the last render
+/// left, a step of its own.
+fn sim_tick(
+    cpu: &mut CpuAbi,
+    ctx: &mut ExecCtx,
+    _sel: u32,
+) -> Result<TransferAbi, runtime::GuestFault> {
+    let rt = Arc::clone(ctx.runtime());
+    let mut m = rt.memory();
+    let particle = m.u32(PARTICLE)?.wrapping_add(0x10);
+    m.set_u32(PARTICLE, particle)?;
+    m.ret(cpu, 0)
+}
+
 /// The sim's request through the pool (`SIM_IO`), asked for by `0x200 +
 /// INPUT`.
 fn sim_io(
@@ -654,6 +679,7 @@ fn rig_tuned(
         d.register_resume(FRAME + at, FRAME, FRAME + at).unwrap();
     }
     d.register_generated_rust(SIM_IO, sim_io).unwrap();
+    d.register_generated_rust(SIM_TICK, sim_tick).unwrap();
     for at in [0x10, 0x20, 0x30] {
         d.register_resume(SIM_IO + at, SIM_IO, SIM_IO + at).unwrap();
     }
@@ -1728,6 +1754,49 @@ fn a_word_both_sides_wrote_keeps_the_sims_write_whole_and_is_reported() {
         assert!(report.iter().any(|l| l.contains(&va)), "{va}: {report:#?}");
     }
     assert!(piped.feature.stats().conflicts >= 8);
+}
+
+/// The particle systems: the render steps them as it draws them, and the
+/// next tick's update steps them from what the render left. Pipelined, the
+/// render's step reaches live RAM only at the join, so a tick running
+/// before it reads the snapshot's state and the hand-back keeps the tick's
+/// word: the render's step is lost, whichever side's word wins. A tick
+/// entry in `Addrs::sim_joins` joins the render first and reads its step,
+/// as serially.
+#[test]
+fn a_tick_reading_the_renders_writes_joins_first_and_runs_as_serially() {
+    let run = |on: bool, addrs: Addrs| {
+        let mut r = rig_cfg(on, &[], addrs);
+        for k in 1..=12 {
+            r.run(SIM_TICK);
+            r.round(k, false);
+        }
+        r.finish();
+        r
+    };
+    let serial = run(false, ADDRS.clone());
+    let piped = run(true, ADDRS.clone());
+    compare(&serial.data(), &piped.data());
+    let s = piped.feature.stats();
+    assert_eq!(s.pipelined, 12);
+    // Every tick after the first finds a render in flight.
+    assert_eq!(s.sim_joins, 11);
+    assert_eq!(s.conflicts, 0);
+    // Without the entry the tick runs beside the render and loses its
+    // step: the hand-back cannot recover what a read missed.
+    let racing = run(
+        true,
+        Addrs {
+            sim_joins: &[],
+            ..ADDRS.clone()
+        },
+    );
+    assert_eq!(racing.feature.stats().sim_joins, 0);
+    assert_ne!(
+        racing.rt.memory().u32(PARTICLE).unwrap(),
+        serial.rt.memory().u32(PARTICLE).unwrap()
+    );
+    assert!(racing.feature.stats().conflicts >= 11);
 }
 
 /// The dynamic lights: their visit counter `0x004e0308` only the render
