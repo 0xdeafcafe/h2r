@@ -9,6 +9,7 @@ pub mod arbitration;
 pub mod audit;
 pub mod bans;
 pub mod bots;
+pub mod chunk;
 pub mod game;
 pub mod hopper;
 pub mod jcs;
