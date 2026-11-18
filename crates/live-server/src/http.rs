@@ -13,7 +13,7 @@ use axum::extract::{DefaultBodyLimit, Path, Query as Params, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{any, get, post};
+use axum::routing::{any, delete, get, post};
 use live_proto::{ClientMessage, ErrorBody, ErrorCode, Gamertag, Health, TitleId, Xuid, lxm};
 
 use crate::app::{ApiError, Live, MAX_TITLE_FILE, not_found};
@@ -262,6 +262,18 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         )
         .route("/v1/accounts/by-xuid/{xuid}/keys", get(keys_by_xuid))
         .route(
+            "/v1/accounts/by-xuid/{xuid}/signins",
+            get(crate::signins::get_signins),
+        )
+        .route(
+            "/v1/accounts/by-xuid/{xuid}/signins/sign-out-others",
+            post(crate::signins::post_sign_out_others),
+        )
+        .route(
+            "/v1/accounts/by-xuid/{xuid}/signins/{kid}",
+            delete(crate::signins::delete_signin),
+        )
+        .route(
             "/v1/accounts/by-xuid/{xuid}",
             get(crate::teams::account_identity),
         )
@@ -506,9 +518,11 @@ async fn list_accounts(
 
 async fn create_account(
     State(live): Shared,
+    headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> ApiResult<Response> {
-    let created = live.create_account(&jws_body(body)?).await?;
+    let device = crate::signins::device_of(&headers);
+    let created = live.create_account_on(&jws_body(body)?, device).await?;
     Ok(json(StatusCode::CREATED, &created))
 }
 

@@ -60,6 +60,7 @@ pub mod pg;
 pub mod public;
 pub mod ranks;
 pub mod recovery;
+pub mod signins;
 pub mod relay;
 pub mod reports;
 pub mod rt;
