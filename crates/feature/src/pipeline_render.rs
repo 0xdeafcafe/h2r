@@ -477,17 +477,35 @@ pub struct Stats {
     /// Guest accesses charged to the game thread at the joins.
     pub accesses: u64,
     /// Frames in which a side waited for the other because of the async
-    /// I/O pool: a pool call the render stopped at (serviced, not
-    /// deferred) or a game-thread pool wait that joined the render.
+    /// I/O pool: [`io_stalls_render`](Self::io_stalls_render) plus
+    /// [`io_stalls_join`](Self::io_stalls_join).
     pub io_stalls: u64,
-    /// The time those waits took: the render stopped at a pool call until
-    /// the game thread made it, the game thread waiting for the rest of
-    /// the render after it, and the game thread's pool waits joining.
+    /// The time those waits took.
     pub io_stall: Duration,
+    /// Frames whose render stopped at a pool call until the game thread
+    /// made it (serviced): deferral off, or the sim had used the pool
+    /// first that frame ([`io_refused`](Self::io_refused)).
+    pub io_stalls_render: u64,
+    /// Their time: the render stopped until the game thread made the
+    /// call, and the game thread waiting for the rest of the render.
+    pub io_stall_render: Duration,
+    /// Frames whose game thread waited on a pool handle after the render
+    /// had used the pool, and so joined it first.
+    pub io_stalls_join: u64,
+    /// Their time, the join's.
+    pub io_stall_join: Duration,
     /// Pool calls the render made without stopping ([`Addrs::io_handles`]).
     pub io_deferred: u64,
-    /// Game-thread pool waits that joined the render in flight.
+    /// Render pool calls not deferred because the sim had used the pool
+    /// first that frame: serviced instead (their order is the sim's, then
+    /// the render's).
+    pub io_refused: u64,
+    /// Game-thread pool waits that joined the render in flight (the render
+    /// had used the pool first that frame).
     pub io_joins: u64,
+    /// Game-thread pool waits with a render in flight that had not used
+    /// the pool: no join, the sim owns the pool for the rest of the frame.
+    pub io_sim_first: u64,
     /// Deferred calls whose real result, at the join, differed from the
     /// one the render was given.
     pub io_mismatches: u64,
@@ -526,8 +544,14 @@ impl Stats {
             accesses: self.accesses - then.accesses,
             io_stalls: self.io_stalls - then.io_stalls,
             io_stall: self.io_stall - then.io_stall,
+            io_stalls_render: self.io_stalls_render - then.io_stalls_render,
+            io_stall_render: self.io_stall_render - then.io_stall_render,
+            io_stalls_join: self.io_stalls_join - then.io_stalls_join,
+            io_stall_join: self.io_stall_join - then.io_stall_join,
             io_deferred: self.io_deferred - then.io_deferred,
+            io_refused: self.io_refused - then.io_refused,
             io_joins: self.io_joins - then.io_joins,
+            io_sim_first: self.io_sim_first - then.io_sim_first,
             io_mismatches: self.io_mismatches - then.io_mismatches,
             io_other_thread: self.io_other_thread - then.io_other_thread,
         }
@@ -559,7 +583,7 @@ impl Stats {
             .map(|(k, v)| format!("{k} {v}"))
             .collect();
         format!(
-            "pipeline: frames pipelined {} completed {} serial [{}] fallbacks {} [{}] serviced {} [{}] d3d_joins {} cache_joins {} d3d_other_thread {} join_wait {:.2}ms hand_back {:.2}ms snapshot {:.2}ms render {:.2}ms pages {:.1} conflicts {} (render-owned {}) mispredicts {} io_stalls {} ({:.2}ms) io_deferred {} io_joins {} io_mismatches {} io_other_thread {}",
+            "pipeline: frames pipelined {} completed {} serial [{}] fallbacks {} [{}] serviced {} [{}] d3d_joins {} cache_joins {} d3d_other_thread {} join_wait {:.2}ms hand_back {:.2}ms snapshot {:.2}ms render {:.2}ms pages {:.1} conflicts {} (render-owned {}) mispredicts {} io_stalls {} ({:.2}ms) [render {} ({:.2}ms), sim_join {} ({:.2}ms)] io_deferred {} io_refused {} io_joins {} io_sim_first {} io_mismatches {} io_other_thread {}",
             self.pipelined,
             self.completed,
             serial.join(", "),
@@ -580,8 +604,14 @@ impl Stats {
             self.mispredicts,
             self.io_stalls,
             self.io_stall.as_secs_f64() * 1e3,
+            self.io_stalls_render,
+            self.io_stall_render.as_secs_f64() * 1e3,
+            self.io_stalls_join,
+            self.io_stall_join.as_secs_f64() * 1e3,
             self.io_deferred,
+            self.io_refused,
             self.io_joins,
+            self.io_sim_first,
             self.io_mismatches,
             self.io_other_thread,
         )
@@ -647,8 +677,29 @@ struct Inner {
     /// When the render thread last stopped (a serviced call's wait starts
     /// there).
     stopped: Option<Instant>,
-    /// The frame in flight waited on the I/O pool ([`Stats::io_stalls`]).
-    io_stalled: bool,
+    /// The frame in flight's render stopped at a pool call
+    /// ([`Stats::io_stalls_render`]).
+    io_stalled_render: bool,
+    /// The frame in flight was joined by a sim pool wait
+    /// ([`Stats::io_stalls_join`]).
+    io_stalled_join: bool,
+    /// Which side used the I/O pool first in the frame in flight.
+    pool: PoolUse,
+}
+
+/// Which side used the async I/O pool first since the launch. The first
+/// one owns it for the rest of the frame: a render pool call after the
+/// sim's is serviced at the join (the sim's, then the render's), and a sim
+/// pool wait after the render's deferred calls joins the render (the
+/// render's, then the sim's). Either way each side's calls see the pool as
+/// the other left it; a frame where only one side uses the pool never
+/// waits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum PoolUse {
+    #[default]
+    Free,
+    Render,
+    Sim,
 }
 
 /// A kernel call the render made on the I/O pool's objects and carried on
@@ -802,7 +853,9 @@ impl PipelineRender {
                     focused: false,
                     deferred: Vec::new(),
                     stopped: None,
-                    io_stalled: false,
+                    io_stalled_render: false,
+                    io_stalled_join: false,
+                    pool: PoolUse::Free,
                 }),
             }),
         }
@@ -1118,6 +1171,18 @@ fn setup(me: &Arc<Shared>, ctx: &mut ExecCtx, addr: u32) -> Result<(), String> {
                             drop(m);
                             return Ok(refuse.invoke(cpu, ctx, sel));
                         };
+                        {
+                            let mut inner = me.lock();
+                            if inner.pool == PoolUse::Sim {
+                                // The sim used the pool first: this call is
+                                // made at the join against what it left.
+                                inner.stats.io_refused += 1;
+                                drop(inner);
+                                drop(m);
+                                return Ok(refuse.invoke(cpu, ctx, sel));
+                            }
+                            inner.pool = PoolUse::Render;
+                        }
                         let out = match out {
                             Some(i) if args[i] != 0 => {
                                 m.set_u32(args[i], 0)?;
@@ -1152,10 +1217,11 @@ fn setup(me: &Arc<Shared>, ctx: &mut ExecCtx, addr: u32) -> Result<(), String> {
         .map(|c| rt.resolve_original(c.entry))
         .collect();
     rt.edit_dispatch(|d| {
-        // A pool wait on the game thread while a render is in flight joins
-        // it first: the render's deferred pool calls (and its requests)
-        // come before the tick's, as in the serial run, whatever either
-        // thread's timing.
+        // A pool wait on the game thread while a render that has used the
+        // pool is in flight joins it first: the render's deferred pool
+        // calls (and its requests) come before the tick's. A render that
+        // has not used the pool is left running: the sim owns the pool for
+        // the rest of the frame (`PoolUse`).
         let wait = runtime::kernel::function_token(IO_CALLS[0].0);
         if me.defer_io
             && !a.io_handles.is_empty()
@@ -1184,11 +1250,26 @@ fn setup(me: &Arc<Shared>, ctx: &mut ExecCtx, addr: u32) -> Result<(), String> {
                 if !pool {
                     return Ok(prev.invoke(cpu, ctx, sel));
                 }
-                if ctx.thread_id != me.game_thread.load(Ordering::Relaxed) {
-                    me.lock().stats.io_other_thread += 1;
-                    return Ok(prev.invoke(cpu, ctx, sel));
+                let game = ctx.thread_id == me.game_thread.load(Ordering::Relaxed);
+                {
+                    let mut inner = me.lock();
+                    match inner.pool {
+                        PoolUse::Render if game => inner.io_stalled_join = true,
+                        PoolUse::Render => {
+                            inner.stats.io_other_thread += 1;
+                            drop(inner);
+                            return Ok(prev.invoke(cpu, ctx, sel));
+                        }
+                        PoolUse::Free | PoolUse::Sim => {
+                            if inner.pool == PoolUse::Free {
+                                inner.stats.io_sim_first += 1;
+                            }
+                            inner.pool = PoolUse::Sim;
+                            drop(inner);
+                            return Ok(prev.invoke(cpu, ctx, sel));
+                        }
+                    }
                 }
-                me.lock().io_stalled = true;
                 let t = Instant::now();
                 let (me2, prev) = (Arc::clone(&me), Arc::clone(&prev));
                 join_then(
@@ -1200,6 +1281,7 @@ fn setup(me: &Arc<Shared>, ctx: &mut ExecCtx, addr: u32) -> Result<(), String> {
                             let mut inner = me2.lock();
                             inner.stats.io_joins += 1;
                             inner.stats.io_stall += t.elapsed();
+                            inner.stats.io_stall_join += t.elapsed();
                         }
                         Ok(prev.invoke(cpu, ctx, sel))
                     }),
@@ -1824,9 +1906,10 @@ fn service(
     if io_call(at.eip).is_some() {
         // The render stopped at a pool call: it has waited since then.
         let mut inner = me.lock();
-        inner.io_stalled = true;
+        inner.io_stalled_render = true;
         if let Some(t) = inner.stopped {
             inner.stats.io_stall += t.elapsed();
+            inner.stats.io_stall_render += t.elapsed();
         }
     }
     let top = me.stack_top.load(Ordering::Relaxed);
@@ -1940,7 +2023,9 @@ fn carry_on(
     let finished = if sent { rx.recv().ok() } else { None };
     if io_call(at.eip).is_some() {
         // The game thread waited for the rest of the render.
-        me.lock().stats.io_stall += t.elapsed();
+        let mut inner = me.lock();
+        inner.stats.io_stall += t.elapsed();
+        inner.stats.io_stall_render += t.elapsed();
     }
     let Some(Done {
         exec,
@@ -2058,9 +2143,11 @@ fn hand_back(
     flushed: &[u32],
 ) {
     let a = &me.addrs;
-    if std::mem::take(&mut inner.io_stalled) {
-        inner.stats.io_stalls += 1;
-    }
+    let render = std::mem::take(&mut inner.io_stalled_render);
+    let join = std::mem::take(&mut inner.io_stalled_join);
+    inner.stats.io_stalls_render += u64::from(render);
+    inner.stats.io_stalls_join += u64::from(join);
+    inner.stats.io_stalls += u64::from(render || join);
     if !me.watch.is_empty() {
         check_watch(
             me,
@@ -2450,6 +2537,7 @@ fn launch(
     inner.stats.pipelined += 1;
     let jobs = inner.setup.as_ref().expect("set up").jobs.clone();
     inner.flight = Some(Flight { rx, predicted });
+    inner.pool = PoolUse::Free;
     me.in_flight.store(true, Ordering::Release);
     drop(inner);
     if jobs

@@ -33,7 +33,7 @@ mod source;
 
 pub use audio_out::{MixerAudio, MovieAudioOut, MovieVoice};
 pub use movies::status::{DiscMovie, disc_movies};
-pub use playback::{AUDIO_STALL_MS, BinkHle, DEFAULT_ARENA_HINT, HLE_RESERVED};
+pub use playback::{BinkHle, DEFAULT_ARENA_HINT, HLE_RESERVED};
 pub use select::{Selection, platform_decoder, select};
 pub use source::{
     AudioInfo, Clock, MovieDecoder, MovieSource, MovieStream, Mp4Source, StreamInfo,

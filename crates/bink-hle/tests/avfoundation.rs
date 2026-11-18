@@ -146,3 +146,43 @@ fn generated_sound_track_reads_as_stereo_pcm_and_rewinds() {
     assert_eq!(n, 441);
     assert_eq!(&buf[..], &all[..441 * 2]);
 }
+
+/// Host cost of the real decoder at the movies' size: sequential frames,
+/// and asking for the frame just decoded again (which used to restart the
+/// reader from frame 0).
+#[test]
+#[cfg_attr(not(has_ffmpeg), ignore = "requires user's ffmpeg on PATH")]
+fn real_decoder_cost_per_frame_at_640x480() {
+    let temp = Temp::new();
+    let bytes = support::media_for(
+        &temp.0.join("big.nut"),
+        "testsrc2=size=640x480:rate=30000/1001",
+        "3",
+    );
+    let options = InstallOptions::new(temp.0.join("data/movies"));
+    install(&mut disc(&[("big.bik", &bytes)]), &options).unwrap();
+    let source = TranscodedSource::new(&options.data_dir, Arc::new(AvFoundationDecoder));
+    let mut stream = source.open("big").unwrap();
+    let info = stream.info();
+    assert_eq!((info.width, info.height), (640, 480));
+    let mut frame = vec![0; 640 * 480 * 4];
+    let n = info.frames;
+    let t = std::time::Instant::now();
+    for i in 0..n {
+        assert!(stream.decode(i, &mut frame));
+    }
+    let seq = t.elapsed() / n;
+    let t = std::time::Instant::now();
+    for _ in 0..10 {
+        assert!(stream.decode(n - 1, &mut frame));
+    }
+    let again = t.elapsed() / 10;
+    eprintln!(
+        "AVFoundation 640x480: {seq:?}/frame sequential, {again:?} to repeat the last of {n}"
+    );
+    assert!(seq < std::time::Duration::from_millis(15), "{seq:?}");
+    assert!(
+        again < std::time::Duration::from_millis(15),
+        "repeat {again:?}"
+    );
+}

@@ -1289,37 +1289,60 @@ in the render's order (`replay`, `replay_next`), and pulls the live ranges
 back into the view. A real result other than the one the render was given
 is counted (`io_mismatches`).
 
-Two rules keep this deterministic and in serial order:
+Two rules keep each side's pool calls consistent with the other's:
 
-- A game-thread wait on a pool handle while a render is in flight joins the
-  render first (`io_joins`). The render's requests reach the pool before
-  the tick's, as in the serial run, where render k runs before tick k + 1,
-  whatever either thread's timing. Before this change the serviced path
-  queued the render's request after the tick's. The rig shows the worker
-  completing the sim's `0x205` before render 4's `0x104`, where the serial
-  run completes `0x104` first.
-- A frame pipelines only when every request is on the free list
+- **The first side to use the pool in a frame owns it until the join**
+  (`PoolUse`).
+  - If the render defers a pool call first, a later game-thread wait on a
+    pool handle joins the render (`io_joins`). The render's requests then
+    reach the pool before the tick's, as in the serial run, where render k
+    runs before tick k + 1.
+  - If the sim waits on a pool handle first, it goes on (`io_sim_first`),
+    and the render's pool calls that frame are not deferred
+    (`io_refused`). Each stops the render and is made at the join against
+    the pool the sim left (a service), so the sim's request comes first.
+  - A frame where only one side uses the pool never waits.
+  - The first version joined on every game-thread pool wait while a render
+    was in flight. In gameplay the game thread takes the pool mutex every
+    tick, so every frame joined (03a, presents 6900 to 7000: `io_joins 30`,
+    `io_deferred 0` per 30 frames, `join_wait` about the whole render) and
+    pipelining ran slower than stock (40.7 fps against 48.6).
+  - The order of two requests in one frame (render's and sim's) is the
+    serial one when the render's call comes first in time, and the sim's
+    first otherwise. Each side still sees the pool as the other left it.
+    The rig shows both. The serviced path always put the sim's first: the
+    worker completes the sim's `0x205` before render 4's `0x104`, where the
+    serial run completes `0x104` first.
+- **A frame pipelines only when every request is on the free list**
   (`Addrs::io_free`: the head `0x004e28e8`, linked at +0x3c, 150 requests
   from `0x004e0368`). Otherwise it runs serially (`io_busy`). The worker's
-  own pool calls happen while the game thread waits, and they are not
-  ordered against the render's, so the worker has to be idle at the
-  launch. It wakes only through a semaphore release, either the render's
-  (replayed at the join) or the sim's (after the join).
+  own pool calls happen while the game thread waits and are not ordered
+  against the render's, so the worker has to be idle at the launch. It
+  wakes only through a semaphore release: the render's (replayed at the
+  join) or the sim's.
 
 `H2_PIPELINE_DEFER_IO=0` restores the serviced path for an A/B. The
-`pipeline:` line now ends with
-`io_stalls N (T ms) io_deferred D io_joins J io_mismatches M io_other_thread O`.
+`pipeline:` line ends with:
+
+```
+io_stalls N (T ms) [render R (Tr ms), sim_join J (Tj ms)] io_deferred D io_refused F io_joins J io_sim_first S io_mismatches M io_other_thread O
+```
 
 - `io_stalls` counts frames in which one side waited for the other because
-  of the pool: a pool call the render stopped at, or a game-thread pool
-  wait that joined.
-- `T` is the total time of those waits in the print window: the render
-  stopped until the game thread made the call, the game thread waiting for
-  the rest of the render after it, and the joins.
+  of the pool, split by kind.
+  - `render`: the render stopped at a pool call until the game thread made
+    it, plus the game thread waiting for the rest of the render.
+  - `sim_join`: a game-thread pool wait joined a render that had used the
+    pool.
+- The times are totals over the print window.
 
 Rig tests:
 
-- `the_renders_pool_requests_overlap_the_sim_and_complete_in_the_serial_order`
+- `the_renders_pool_requests_overlap_the_sim_and_complete_in_the_serial_order`:
+  render first, joins.
+- `a_sim_using_the_pool_every_tick_with_no_render_io_never_stalls`
+- `a_render_pool_call_after_the_sims_is_made_at_the_join`: sim first, the
+  render held.
 - `a_render_queueing_io_every_frame_never_stalls`
 - `with_deferral_off_each_pool_call_stops_the_render_and_counts_a_stall`
 - `a_request_off_the_free_list_makes_the_frame_serial`

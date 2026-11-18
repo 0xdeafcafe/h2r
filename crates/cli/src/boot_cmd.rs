@@ -23,9 +23,9 @@ never stops the run). --no-mappack or H2_MAPPACK=0 skips it (docs/game/map-pack.
 `run` and `serve` convert a halo1.iso found next to the disc into --data when
 it is new or the converter changed (a warning never stops the run);
 --no-halo1 or H2_HALO1=0 skips it (docs/game/campaigns.md).
-The intro, attract and credits movies play when `h2 movies` has installed
-them for this disc (in --movies DIR, by default the app data directory);
-otherwise, or with --no-movies, the game skips them. The run logs which
+The intro, attract and credits movies are skipped: `run` and `serve` are
+headless, and a level boot (H2_LEVEL) has no intro. --movies DIR plays those
+`h2 movies` installed there for this disc. The run logs which
 (`movies: playback (...)` or `movies: skip (...)`; docs/audio/bink-hle.md).
 `run` builds first when the dylib is missing or was built from another
 image or generator (its .stamp). `build --check` builds nothing: it exits 0
@@ -50,7 +50,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     let mut stopgaps = true;
     let mut d3d = true;
     let mut bink = true;
-    let mut movies = boot::movies_glue::default_dir();
+    let mut movies = boot::movies_glue::Movies::Auto;
     let mut dsound = true;
     let mut xapi = true;
     let mut fresh = false;
@@ -70,8 +70,8 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             "--no-stopgaps" => stopgaps = false,
             "--no-d3d" => d3d = false,
             "--no-bink" => bink = false,
-            "--movies" => movies = Some(PathBuf::from(val()?)),
-            "--no-movies" => movies = None,
+            "--movies" => movies = boot::movies_glue::Movies::Dir(PathBuf::from(val()?)),
+            "--no-movies" => movies = boot::movies_glue::Movies::Off,
             "--no-dsound" => dsound = false,
             "--no-xapi" => xapi = false,
             "--no-mappack" => no_mappack = true,

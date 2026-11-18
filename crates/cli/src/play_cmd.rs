@@ -52,8 +52,9 @@ when the disc or the converter changed; a warning never stops the game.
 --no-halo1 or H2_HALO1=0 skips it (docs/game/campaigns.md).
 The intro, attract and credits movies play, with their sound, when `h2 movies`
 has installed them for this disc (in --movies DIR, by default the app data
-directory); otherwise, or with --no-movies, the game skips them, as `h2 run`
-does. The log says which (`movies: playback (...)` or `movies: skip (...)`).
+directory); otherwise, with --no-movies, or on a --level boot (unless --movies
+DIR is given), the game skips them. The log says which (`movies: playback
+(...)` or `movies: skip (...)`).
 --fps (or H2_FPS) sets how often the window presents: 30, the default, is the
 game's own rate and today's behaviour; 60, 120 and uncapped only redraw the
 newest game frame more often for now, with no smoothing (the game itself
@@ -514,7 +515,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let mut transfers = 50_000_000u64;
     let mut disc = None;
     let mut audio = true;
-    let mut movies = boot::movies_glue::default_dir();
+    let mut movies = boot::movies_glue::Movies::Auto;
     let mut no_mappack = false;
     let mut no_halo1 = false;
     let mut follow_status = None;
@@ -575,8 +576,8 @@ pub fn run(args: Vec<String>) -> Result<()> {
                 );
             }
             "--no-audio" => audio = false,
-            "--movies" => movies = Some(PathBuf::from(val()?)),
-            "--no-movies" => movies = None,
+            "--movies" => movies = boot::movies_glue::Movies::Dir(PathBuf::from(val()?)),
+            "--no-movies" => movies = boot::movies_glue::Movies::Off,
             "--no-mappack" => no_mappack = true,
             "--no-halo1" => no_halo1 = true,
             "--no-gamepads" => config.gamepads = false,
