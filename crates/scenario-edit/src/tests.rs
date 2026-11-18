@@ -1205,6 +1205,85 @@ fn new_entries_and_add_limits() {
     assert!(s.unadd(BlockKind::Weapons, &[0; 0x54]).is_err());
 }
 
+/// New string IDs save after the map's own, with the patches that use them.
+#[test]
+fn new_string_ids_save_with_the_patches_that_use_them() {
+    let src = fixture();
+    let n = open(src.clone()).strings().len();
+    let mut s = read(src.clone());
+    let id = (5u32 << 24) | n as u32;
+    let weap = META + 0x1100;
+    s.set_tag_strings(vec!["fresh".into()]);
+    s.set_tag_patches(vec![(weap + 4, id.to_le_bytes().to_vec())])
+        .unwrap();
+    assert_eq!(s.changes().strings, ["fresh"]);
+    let out = write(&src, &s);
+    let mut m = open(out.clone());
+    m.validate_checksum().unwrap();
+    assert_eq!(m.strings().len(), n + 1);
+    assert_eq!(m.strings()[n].as_deref(), Some("fresh"));
+    let at = META_FILE + 0x1100 + 4;
+    assert_eq!(out[at..at + 4], id.to_le_bytes());
+    // A string the map has, or a wrong index, is refused at save.
+    let have = open(src.clone()).strings().iter().flatten().next().cloned();
+    if let Some(have) = have {
+        s.set_tag_strings(vec![have]);
+        let mut o = Cursor::new(Vec::new());
+        assert!(save::write_patched(&mut open(src.clone()), &s, &mut o).is_err());
+    }
+}
+
+/// Another tag's grown block (the tag editor's) is appended like the
+/// scenario's, and only its pair changes in the source bytes.
+#[test]
+fn another_tags_grown_block_is_appended_and_repointed() {
+    let src = fixture_at_end();
+    let mut s = read(src.clone());
+    // A pair in the weapon tag's payload (slot 2, at metadata +0x1100).
+    let pair = META + 0x1100 + 0x10;
+    let bytes: Vec<u8> = (0..0x30).collect();
+    let g = crate::TagGrown {
+        root: pair,
+        count: 3,
+        bytes: bytes.clone(),
+    };
+    // Its pair may not also be patched, and the scenario's bytes are its own.
+    s.set_tag_patches(vec![(pair + 4, vec![1])]).unwrap();
+    assert!(s.set_tag_grown(vec![g.clone()]).is_err());
+    s.set_tag_patches(vec![(pair + 0x20, vec![9])]).unwrap();
+    let scnr = crate::TagGrown {
+        root: META + SCNR as u32 + 0x10,
+        ..g.clone()
+    };
+    assert!(matches!(
+        s.set_tag_grown(vec![scnr]),
+        Err(Error::Refused(_))
+    ));
+    s.set_tag_grown(vec![g]).unwrap();
+    assert_eq!(s.changes().tag_grown.len(), 1);
+    let out = write(&src, &s);
+    assert_eq!(out.len(), src.len() + 0x1000);
+    let word = |b: &[u8], o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+    let root = META_FILE + 0x1100 + 0x10;
+    let patched = META_FILE + 0x1100 + 0x30;
+    for (lo, hi) in diff(&src, &out[..src.len()]) {
+        let ok = [
+            (8, 12),
+            (0x18, 0x20),
+            (0x2d0, 0x2d4),
+            (root, root + 8),
+            (patched, patched + 1),
+        ]
+        .iter()
+        .any(|&(a, b)| lo >= a && hi <= b);
+        assert!(ok, "{lo:#x}..{hi:#x}");
+    }
+    assert_eq!(word(&out, root), 3);
+    assert_eq!(word(&out, root + 4), META + 0x2000);
+    assert_eq!(&out[src.len()..src.len() + 0x30], &bytes[..]);
+    open(out).validate_checksum().unwrap();
+}
+
 #[test]
 fn a_grown_block_is_appended_and_nothing_else_moves() {
     let src = fixture_at_end();

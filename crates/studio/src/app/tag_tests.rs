@@ -46,7 +46,15 @@ pub(crate) fn weap_id() -> TagId {
 /// The fixture with its weapon tag 0x40 bytes long: speed 2.5, flag
 /// `loud`, mode `auto`, and two parts (the kit with value 7; none with 9).
 pub(crate) fn map() -> Vec<u8> {
-    let mut b = fixture::fixture();
+    weapon(fixture::fixture())
+}
+
+/// [`map`] with the metadata ending the file, so a block can grow.
+pub(crate) fn map_at_end() -> Vec<u8> {
+    weapon(fixture::fixture_at_end())
+}
+
+fn weapon(mut b: Vec<u8>) -> Vec<u8> {
     // The weapon's index entry (slot 2): its size.
     let tags = fixture::INDEX + 32 + 4 * 12;
     put(&mut b, tags + 2 * 16 + 12, 0x40);
@@ -83,7 +91,10 @@ impl Drop for Temp {
 
 /// An app with the invented map open in the Tags tool.
 pub(crate) fn app(t: &Path) -> (App, PathBuf, Vec<u8>) {
-    let src = map();
+    app_on(t, map())
+}
+
+fn app_on(t: &Path, src: Vec<u8>) -> (App, PathBuf, Vec<u8>) {
     let path = t.join("example.map");
     std::fs::write(&path, &src).unwrap();
     let mut app = App::new();
@@ -251,6 +262,138 @@ fn blocks_change_within_the_elements_they_had() {
     }
     assert!(app.tags.patches().is_empty(), "{:x?}", app.tags.patches());
     assert!(!app.session.is_dirty());
+}
+
+/// A full block grows only while growth is allowed; it saves as a copy
+/// appended to the metadata with its pair pointed there, nothing else in
+/// the source changing.
+#[test]
+fn a_full_block_grows_when_allowed_and_saves_appended() {
+    let t = Temp::new("grow");
+    let (mut app, _, src) = app_on(&t.0, map_at_end());
+    let id = weap_id();
+    let block = |app: &mut App, op: BlockOp| {
+        let a = tag_api::block(&app.tags, id, "parts", op);
+        a.map(|a| tag(app, a))
+    };
+    assert_eq!(
+        block(&mut app, BlockOp::Add),
+        Err(tag_doc::GROWTH_REFUSAL.into())
+    );
+    app.dispatch(Action::SetAllowGrowth(true));
+    block(&mut app, BlockOp::Duplicate(1)).unwrap();
+    // Room for twice the elements: the next add fits where they went.
+    assert_eq!(app.tags.capacity(WEAP + 8), 4);
+    block(&mut app, BlockOp::Add).unwrap();
+    set(&mut app, "parts[3].value", json!(5));
+    let f = fields(&app);
+    let values: Vec<_> = f["parts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["value"].clone())
+        .collect();
+    assert_eq!(values, [json!(7), json!(9), json!(9), json!(5)]);
+    // The grown elements are no patch; the pair is written at save.
+    let ext = META + 0x2000;
+    assert!(app.tags.patches().iter().all(|(a, _)| *a < ext));
+    assert!(
+        app.tags
+            .patches()
+            .iter()
+            .all(|(a, b)| *a + b.len() as u32 <= WEAP + 8 || *a >= WEAP + 0x10),
+        "{:x?}",
+        app.tags.patches()
+    );
+    let grown = app.tags.grown();
+    assert_eq!((grown.len(), grown[0].count), (1, 4));
+    assert!(app.session.is_dirty());
+
+    let out = t.0.join("grown.map");
+    app.dispatch(Action::SaveMapAs(out.clone()));
+    let saved = std::fs::read(&out).unwrap();
+    assert_eq!(saved.len(), src.len() + 0x1000);
+    let pair = META_FILE + 0x1100 + 8;
+    for (lo, hi) in diff(&src, &saved[..src.len()]) {
+        let ok = [(8, 12), (0x18, 0x20), (0x2d0, 0x2d4), (pair, pair + 8)]
+            .iter()
+            .any(|&(a, b)| lo >= a && hi <= b);
+        assert!(ok, "{lo:#x}..{hi:#x}");
+    }
+    let word = |o: usize| u32::from_le_bytes(saved[o..o + 4].try_into().unwrap());
+    assert_eq!((word(pair), word(pair + 4)), (4, ext));
+    let parts = META_FILE + 0x1110;
+    let n = src.len();
+    assert_eq!(saved[n..n + 0x18], src[parts..parts + 0x18]);
+    assert_eq!(saved[n + 0x18..n + 0x24], src[parts + 0xc..parts + 0x18]);
+    assert_eq!(word(n + 0x24), u32::MAX);
+    assert_eq!(word(n + 0x2c), 5);
+    map::Map::from_reader(std::io::Cursor::new(saved))
+        .unwrap()
+        .validate_checksum()
+        .unwrap();
+
+    // Undone, nothing is left of it.
+    for _ in 0..3 {
+        app.dispatch(Action::Undo);
+    }
+    assert!(app.tags.grown().is_empty());
+    assert!(app.tags.patches().is_empty(), "{:x?}", app.tags.patches());
+    assert_eq!(fields(&app)["parts"].as_array().unwrap().len(), 2);
+}
+
+/// A string ID the map lacks is added after its own, saved with the map,
+/// and taken back by undo.
+#[test]
+fn a_string_the_map_lacks_is_added_and_saved() {
+    let t = Temp::new("string");
+    let (mut app, _, src) = app(&t.0);
+    let n = map::Map::from_reader(std::io::Cursor::new(src.clone()))
+        .unwrap()
+        .strings()
+        .len();
+    let set_string = |app: &mut App, address: u32, text: &str| {
+        tag(
+            app,
+            TagAction::SetString {
+                tag: weap_id(),
+                address,
+                text: text.into(),
+                label: "name".into(),
+            },
+        )
+    };
+    let id = (9 << 24) | n as u32;
+    set_string(&mut app, WEAP + 0x2c, "brand_new");
+    assert_eq!(app.tags.read(WEAP + 0x2c, 4).unwrap(), id.to_le_bytes());
+    assert_eq!(app.tags.string(id), Some("brand_new"));
+    assert_eq!(app.tags.string_id("brand_new"), Some(id));
+    // The same text again is the same string.
+    set_string(&mut app, WEAP + 0x30, "brand_new");
+    assert_eq!(app.tags.new_strings(), ["brand_new"]);
+    assert_eq!(app.tags.read(WEAP + 0x30, 4).unwrap(), id.to_le_bytes());
+    // Too long for its slot.
+    set_string(&mut app, WEAP + 0x34, &"x".repeat(0x80));
+    assert_eq!(app.tags.new_strings().len(), 1);
+
+    let out = t.0.join("strings.map");
+    app.dispatch(Action::SaveMapAs(out.clone()));
+    let saved = std::fs::read(&out).unwrap();
+    let mut m = map::Map::from_reader(std::io::Cursor::new(saved.clone())).unwrap();
+    m.validate_checksum().unwrap();
+    assert_eq!(m.strings().len(), n + 1);
+    assert_eq!(m.strings()[n].as_deref(), Some("brand_new"));
+    let at = META_FILE + 0x1100 + 0x2c;
+    assert_eq!(saved[at..at + 4], id.to_le_bytes());
+
+    app.dispatch(Action::Undo);
+    assert_eq!(app.tags.new_strings().len(), 1, "still used by the first");
+    app.dispatch(Action::Undo);
+    assert!(app.tags.new_strings().is_empty());
+    assert!(app.tags.patches().is_empty());
+    assert_eq!(app.tags.string(id), None);
+    app.dispatch(Action::Redo);
+    assert_eq!(app.tags.new_strings(), ["brand_new"]);
 }
 
 #[test]

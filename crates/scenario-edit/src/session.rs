@@ -642,6 +642,24 @@ impl Session {
         doc.scenario.set_tag_patches(patches)
     }
 
+    /// Replace the string IDs the tag editor adds (see
+    /// [`Scenario::set_tag_strings`]).
+    pub fn set_tag_strings(&mut self, strings: Vec<String>) -> Result<()> {
+        let doc = self.doc.as_mut().ok_or(Error::Save("no map is open"))?;
+        doc.scenario.set_tag_strings(strings);
+        Ok(())
+    }
+
+    /// Replace the tag editor's grown blocks (see
+    /// [`Scenario::set_tag_grown`]); refused while growth is off.
+    pub fn set_tag_grown(&mut self, grown: Vec<crate::TagGrown>) -> Result<()> {
+        if !grown.is_empty() && !self.allow_growth {
+            return Err(Error::Refused(GROWTH_REFUSAL));
+        }
+        let doc = self.doc.as_mut().ok_or(Error::Save("no map is open"))?;
+        doc.scenario.set_tag_grown(grown)
+    }
+
     /// Let adding grow a block past its source size. Off by default; see
     /// [`GROWTH_REFUSAL`].
     pub fn set_allow_growth(&mut self, allow: bool) {

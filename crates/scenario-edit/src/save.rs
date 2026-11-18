@@ -149,13 +149,29 @@ pub fn write_patched<R: Read + Seek>(
         return Err(Error::Save("the scenario was read from a different map"));
     }
     let changes = scenario.changes();
+    let first = map.strings().len();
     let mut editor = map.edit();
+    // New string IDs first: the patches already hold their values.
+    for (k, s) in changes.strings.iter().enumerate() {
+        let id = editor.add_string(s)?;
+        if id & 0x00ff_ffff != (first + k) as u32 {
+            return Err(Error::Save(
+                "a new string ID did not get the index it was given",
+            ));
+        }
+    }
     for (address, bytes) in &changes.patches {
         editor.patch_metadata(*address, bytes)?;
     }
     // A block that outgrew its source goes to the end of the metadata, and
     // its root pair points there; the old elements stay as dead data.
     for g in &changes.grown {
+        let at = editor.append_metadata(&g.bytes, 16)?;
+        let mut pair = g.count.to_le_bytes().to_vec();
+        pair.extend_from_slice(&at.to_le_bytes());
+        editor.patch_metadata(g.root, &pair)?;
+    }
+    for g in &changes.tag_grown {
         let at = editor.append_metadata(&g.bytes, 16)?;
         let mut pair = g.count.to_le_bytes().to_vec();
         pair.extend_from_slice(&at.to_le_bytes());

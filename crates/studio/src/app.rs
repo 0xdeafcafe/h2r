@@ -612,7 +612,10 @@ impl App {
             }
             Action::FrameAll => self.session.frame_all(),
             Action::FocusSelected => self.frame_selection(),
-            Action::SetAllowGrowth(allow) => self.session.set_allow_growth(allow),
+            Action::SetAllowGrowth(allow) => {
+                self.session.set_allow_growth(allow);
+                self.tags.allow_growth = allow;
+            }
             Action::SetTool(tool) => self.set_tool(tool),
             Action::Quit => self.quit = true,
             Action::UiPick(pick) => {
@@ -712,6 +715,7 @@ impl App {
     /// Load the tag editor's document from the open map when the session
     /// opened another one since (its edits went with that map).
     pub fn sync_tags(&mut self) {
+        self.tags.allow_growth = self.session.allow_growth();
         let rev = Some(self.session.world_rev());
         if self.tags.for_rev == rev && self.tags.is_open() == self.session.is_open() {
             return;
@@ -741,6 +745,12 @@ impl App {
         }
         let r = self.session.set_tag_patches(self.tags.patches());
         self.ok_or_log(r);
+        let r = self.session.set_tag_grown(self.tags.grown());
+        self.ok_or_log(r);
+        let r = self
+            .session
+            .set_tag_strings(self.tags.new_strings().to_vec());
+        self.ok_or_log(r);
     }
 
     fn run_tag(&mut self, action: TagAction) {
@@ -761,6 +771,12 @@ impl App {
                 layout,
                 op,
             } => self.tags.block_op(tag, pair, &layout, &op),
+            TagAction::SetString {
+                tag,
+                address,
+                text,
+                label,
+            } => self.tags.set_string(tag, address, &text, &label),
             TagAction::Seal => {
                 self.tags.seal();
                 Ok(())

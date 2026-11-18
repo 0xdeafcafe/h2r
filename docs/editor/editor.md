@@ -621,9 +621,7 @@ arrays get a hint from their name and note: colours (`colour`/`color`,
 3 floats), angles (`angle`, `field_of_view`, `_yaw`, `_pitch`, or
 "radians" in the note; shown in degrees), bounds (`bounds`, `_range`, 2
 floats). Names come only from our definitions (their evidence is the
-XBE's readers and the disc), never from community tools or plugins;
-`tags::object::layouts` carries some Assembly-sourced names (the weapon
-aim-assist fields), which the registry does not read.
+XBE's readers and the disc), never from community tools or plugins.
 
 Coverage of the built-in registry: 996 named fields and 13,121 unnamed
 (by offset or type only), over 78 groups; per byte, 5,450 named, 10,895
@@ -654,21 +652,44 @@ the refusal's text):
 | Tags in a structure BSP region (`sbsp`, `ltmp`) | Not shown yet: they have their own address space. |
 | Tags with no data in the map (shared-map tags) | Nothing to show. |
 | A group with no layout, a tag shorter than its layout | Read-only (hex only without a layout). |
-| String IDs | Any string the map's string table has; adding strings is not supported yet. |
+| String IDs | Any string the map's string table has, or new text: a string the map lacks is added after its own (below). |
 | Data references | Their bytes, in place (same length), up to 4 KiB shown and edited. |
 
-**Blocks** change only within the elements they had in the source:
-remove moves later elements down (the last slot keeps its bytes, dead
-until re-added), duplicate inserts a copy after the element, add appends
-a blank one (zero, null references). A block is full when it has as many
-elements as in the source and still points where it did; growing it would
-mean appending to the metadata and repointing it, which the tag editor
-does not do (and the engine's headroom for more tag memory is not
-established, the same reason scenario growth is off by default,
-[scenario-editor.md](scenario-editor.md) §6). An element with nonempty
-child blocks or data is not duplicated: the copy would share them.
-Elsewhere in the map, indices into a block are not updated when its
-elements move.
+**Blocks**: remove moves later elements down (the last slot keeps its
+bytes, dead until re-added), duplicate inserts a copy after the element,
+add appends a blank one (zero, null references). Within the elements it
+had in the source (and while it still points where it did) a block
+changes in place. Past that it is full, and grows only while **Edit >
+Allow growing full blocks** is on (the session's switch, shared with the
+Scenario tool; off by default because the engine's headroom for more tag
+memory is not established, [scenario-editor.md](scenario-editor.md) §6).
+A grown block's elements are copied, with the new one, to room past the
+end of the metadata (provisional addresses only the document uses, with
+room for twice the elements so the next adds fit there) and its pair
+points there; undo points it back. On save each grown block is appended
+to the metadata through `MapEditor::append_metadata` and its `(count,
+address)` pair patched to the real address
+(`scenario_edit::TagGrown`, `Changes::tag_grown`); the old elements
+stay as dead bytes, and the elements' own child blocks keep pointing
+where they did. A block inside grown elements does not grow until the
+map is saved and reopened. Growth needs the metadata to end the file (as
+on retail maps) and the engine's size limits to hold; the save refuses
+otherwise. An element with nonempty child blocks or data is not
+duplicated: the copy would share them. Elsewhere in the map, indices into
+a block are not updated when its elements move.
+
+**New string IDs**: typing text the map's string table lacks into a
+string ID field (or `set_field` with it) adds the string after the map's
+own, with the value its index and length encode (index in the low 24
+bits, byte length in the top 8), as one undo step with the write; undo
+takes the string back. Under 128 bytes (the fixed slot), no NUL. On save
+`MapEditor::add_string` rewrites the three string tables (the 0x80-byte
+fixed slots, the offset index, the blob) whole at the end of the file,
+the source's entries first and unchanged, and points the header's
+`+0x160..+0x174` at them; the old tables stay as dead bytes. Maps written
+so have not been loaded by the game yet. The string tables then follow
+the metadata, so a map saved with new strings cannot grow blocks until it
+is rebuilt.
 
 ### The windows and the panel
 
@@ -701,8 +722,12 @@ sit at their offsets; an invented group), `tests/tag_registry.rs`
 (opt-in, `H2_DISC`: every tag of every disc map walks through the
 registry with its blocks inside the metadata),
 `scenario_edit::tests::other_tags_patches_save_with_the_scenario_s`,
+`scenario_edit::tests::another_tags_grown_block_is_appended_and_repointed`,
+`scenario_edit::tests::new_string_ids_save_with_the_patches_that_use_them`,
+`map::tests::added_string_ids_follow_the_maps_own`,
 `app::tag_tests` (listing and refusals, a field edit saved byte-exactly
-then undone, drag merging, blocks within capacity; opt-in
+then undone, drag merging, blocks within capacity, a full block grown
+and saved appended, a new string ID added, saved and undone; opt-in
 `disc_a_retail_tag_field_saves_byte_exactly`), and
 `headless::tests::the_tags_tool_edits_a_field_through_its_widgets`,
 which clicks the tree and a flag through the test-engine hooks.
