@@ -439,8 +439,14 @@ fn load_core(core: &mut Core, bytes: &[u8]) -> Result<(), SnapshotError> {
     };
     check("KPCR", u32::get(r)? == core.kpcr)?;
     check("export bridge", u32::get(r)? == core.bridge)?;
-    check("data exports", <BTreeMap<u32, u32> as Persist>::get(r)? == core.data)?;
-    check("title ID", <Option<u32> as Persist>::get(r)? == core.title_id)?;
+    check(
+        "data exports",
+        <BTreeMap<u32, u32> as Persist>::get(r)? == core.data,
+    )?;
+    check(
+        "title ID",
+        <Option<u32> as Persist>::get(r)? == core.title_id,
+    )?;
     check("utility partition", u8::get(r)? == core.utility_partition)?;
     let memory = Persist::get(r)?;
     let handles = Persist::get(r)?;

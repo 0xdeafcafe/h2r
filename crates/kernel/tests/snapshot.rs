@@ -155,7 +155,13 @@ fn boot(epoch: u64) -> (Harness, Machine) {
         create_thread(cpu, ctx, CODE + 0x300, CODE + 0x28)
     });
     h.code(0x28, |cpu, ctx, _| {
-        call(cpu, ctx, 202, &[FILE, 0x81, ATTR, IOSB, 7, 0x60], CODE + 0x30)
+        call(
+            cpu,
+            ctx,
+            202,
+            &[FILE, 0x81, ATTR, IOSB, 7, 0x60],
+            CODE + 0x30,
+        )
     });
     h.code(0x30, |cpu, ctx, _| {
         let event = {
@@ -363,7 +369,9 @@ fn a_differently_booted_machine_refuses_the_kernel_sections() {
     )
     .unwrap();
     let snap = Snapshot::open(&bytes, &build()).unwrap();
-    let err = machine.load_snapshot(&snap, &Rebuilders::new()).unwrap_err();
+    let err = machine
+        .load_snapshot(&snap, &Rebuilders::new())
+        .unwrap_err();
     assert!(
         matches!(&err, SnapshotError::Mismatch(m) if m.contains("data exports")),
         "{err}"

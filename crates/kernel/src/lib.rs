@@ -38,12 +38,12 @@ use clock::Clock;
 pub use console::ConsoleConfig;
 pub use exports::EXPORTS;
 use handles::HandleTable;
+pub use quiesce::{Blocker, Quiescence};
 use runtime::{CpuAbi, ExecCtx, Guest, GuestFault, LoadedImage, Runtime, TransferAbi};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     sync::{Arc, Mutex, MutexGuard, Weak},
 };
-pub use quiesce::{Blocker, Quiescence};
 pub use threads::{Machine, RunOutcome, Thread};
 
 /// Host-memory budgets for state that accumulates over a long run. Guest code

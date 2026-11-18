@@ -6,8 +6,8 @@
 //! for writing, or a delete is pending, the host disk holds state the
 //! snapshot does not, so the save is refused.
 use crate::{
-    Access, CreateDisposition, Enumeration, Error, Handle, OpenFile, OpenOptions, ShareAccess,
-    Vfs, path, wildcard_matches,
+    Access, CreateDisposition, Enumeration, Error, Handle, OpenFile, OpenOptions, ShareAccess, Vfs,
+    path, wildcard_matches,
 };
 
 /// The VFS's file objects and handle numbering.

@@ -208,7 +208,10 @@ impl Continuations {
         }
         let mut seen = vec![false; layout.slots.len()];
         for &i in &layout.reusable {
-            let free = layout.slots.get(i as usize).is_some_and(|s| s.live.is_none());
+            let free = layout
+                .slots
+                .get(i as usize)
+                .is_some_and(|s| s.live.is_none());
             if !free || std::mem::replace(&mut seen[i as usize], true) {
                 return Err(LayoutError::Invalid(
                     "reusable slot is live, repeated or absent",
@@ -289,7 +292,9 @@ mod tests {
     fn a_layout_restores_the_same_future_tokens_and_rebuilds_live_slots() {
         let mut pool = Continuations::default();
         let a = pool.insert(callback(), "a", 0x1000, None).unwrap();
-        let b = pool.insert(callback(), "b", 0x2000, Some([9, 0, 0, 0])).unwrap();
+        let b = pool
+            .insert(callback(), "b", 0x2000, Some([9, 0, 0, 0]))
+            .unwrap();
         let c = pool.insert(callback(), "c", 0x3000, None).unwrap();
         assert!(pool.take(c).is_some());
         assert!(pool.take(a).is_some());
