@@ -125,9 +125,7 @@ pub fn category_of(path: &str) -> Category {
     let map = lower.rsplit('\\').next().unwrap_or("");
     match offer.map(|o| o as u32) {
         Some(low) if MAP_PACK_OFFERS.contains(&low) => Category::MapPack,
-        Some(low)
-            if content::map_list::is_new_map_offer(low) && map.starts_with(HALO1_PREFIX) =>
-        {
+        Some(low) if content::map_list::is_new_map_offer(low) && map.starts_with(HALO1_PREFIX) => {
             Category::Halo1
         }
         _ => Category::Mods,
@@ -172,7 +170,8 @@ impl Map {
     /// (`lockout`): [`Map::file`] without a `.map` ending.
     pub fn short_name(&self) -> String {
         let f = self.file();
-        f.strip_suffix(".map").map_or_else(|| f.clone(), str::to_owned)
+        f.strip_suffix(".map")
+            .map_or_else(|| f.clone(), str::to_owned)
     }
 }
 
@@ -201,8 +200,11 @@ impl Catalogue {
         let groups = Category::ALL
             .iter()
             .filter_map(|&c| {
-                let mut maps: Vec<Map> =
-                    by_id.iter().filter(|m| m.category() == c).cloned().collect();
+                let mut maps: Vec<Map> = by_id
+                    .iter()
+                    .filter(|m| m.category() == c)
+                    .cloned()
+                    .collect();
                 if c.game_order() {
                     maps.sort_by(|a, b| (a.sort, a.id).cmp(&(b.sort, b.id)));
                 } else {
@@ -336,7 +338,12 @@ pub fn map_of_package(dir: &Path) -> Option<Map> {
     let offer = dir.file_name()?.to_str()?;
     let bytes = std::fs::read(dir.join("patch.lvl")).ok()?;
     let e = content::map_list::Entry::from_v2(bytes.get(..content::patch_lvl::V2_LEN)?).ok()?;
-    let base = e.scenario.rsplit('\\').next().unwrap_or(&e.scenario).to_owned();
+    let base = e
+        .scenario
+        .rsplit('\\')
+        .next()
+        .unwrap_or(&e.scenario)
+        .to_owned();
     Some(Map {
         id: e.map_id,
         name: e.names[0].clone(),
@@ -355,7 +362,11 @@ pub fn read(slots: &[Vec<u8>], content_root: &Path) -> Catalogue {
 
 /// [`read`], with the disc maps packages replace listed under Mods
 /// ([`Catalogue::with_mods`]).
-pub fn read_with_mods(slots: &[Vec<u8>], content_root: &Path, mods: &[(String, String)]) -> Catalogue {
+pub fn read_with_mods(
+    slots: &[Vec<u8>],
+    content_root: &Path,
+    mods: &[(String, String)],
+) -> Catalogue {
     let mut maps: Vec<Map> = slots.iter().filter_map(|s| map_of_slot(s)).collect();
     let mut dirs: Vec<_> = std::fs::read_dir(content_root)
         .map(|d| d.flatten().map(|e| e.path()).collect())
@@ -398,7 +409,10 @@ impl Selection {
     }
     /// The map last pressed on the maps' screen, taken.
     pub fn take_pressed(&self) -> Option<u32> {
-        self.pressed.lock().unwrap_or_else(|e| e.into_inner()).take()
+        self.pressed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
     }
 }
 
@@ -497,7 +511,8 @@ impl Describe for MapRows {
         s.ids.push(IDS.id(CATEGORY_LABELS + c.index()));
         for m in self.0.maps() {
             let id = self.0.catalogue.label_id(m.id).unwrap_or(0);
-            s.rows.push(RowSpec::action(&m.name).press(Press::Act).ids(&[id]));
+            s.rows
+                .push(RowSpec::action(&m.name).press(Press::Act).ids(&[id]));
         }
         s
     }
@@ -631,7 +646,10 @@ impl Flow {
         Some(mode)
     }
     pub fn mode_of(&self, handler: u32) -> Option<Mode> {
-        lock(&self.screens).iter().find(|(h, _)| *h == handler).map(|(_, m)| *m)
+        lock(&self.screens)
+            .iter()
+            .find(|(h, _)| *h == handler)
+            .map(|(_, m)| *m)
     }
     /// A category was pressed: the Select Map pushed next lists its maps.
     pub fn pick(&self, c: Category) {
@@ -659,6 +677,21 @@ impl Flow {
         let mut c = lock(&self.closing);
         let i = c.iter().position(|(h, _)| *h == handler)?;
         Some(c.remove(i).1)
+    }
+    /// Why a machine snapshot must wait: Change Map or a category was
+    /// pressed and its Select Map is not built yet, or a Select Map of ours
+    /// is up (the screens are known by host-side handler). `drawing` is
+    /// written before every row's text, so it is never carried.
+    pub fn snapshot_live(&self) -> Option<String> {
+        if let Some(mode) = *lock(&self.next) {
+            return Some(format!("a Select Map of {mode:?} is to be built"));
+        }
+        let screens = lock(&self.screens).len();
+        if screens != 0 {
+            return Some(format!("{screens} Select Map screens of ours are up"));
+        }
+        let closing = lock(&self.closing).len();
+        (closing != 0).then(|| format!("{closing} map presses wait to close the categories"))
     }
 }
 
@@ -727,198 +760,233 @@ impl feature::Feature for MapSelect {
 
         // Change Map: arm the next Select Map for the categories.
         let flow = Arc::clone(&self.flow);
-        b.raw().observe_before(&SCREEN_REQUEST, "change map arms the categories", move |o| {
-            let mem = o.guest();
-            let word = |n: u32| mem.u32(o.cpu.esp + 4 * n).ok();
-            if word(0) == Some(CHANGE_MAP_REQUEST_RET) && word(4) == Some(CHANGE_MAP_LOADER) {
-                flow.change_map();
-            }
-        });
+        b.raw().observe_before(
+            &SCREEN_REQUEST,
+            "change map arms the categories",
+            move |o| {
+                let mem = o.guest();
+                let word = |n: u32| mem.u32(o.cpu.esp + 4 * n).ok();
+                if word(0) == Some(CHANGE_MAP_REQUEST_RET) && word(4) == Some(CHANGE_MAP_LOADER) {
+                    flow.change_map();
+                }
+            },
+        );
 
         // The list's array: ours for a Select Map of ours.
         let (flow, sel) = (Arc::clone(&self.flow), Arc::clone(&self.sel));
-        b.raw().before(&MP_LEVEL_ARRAY, "a Select Map of ours lists ours", move |c| {
-            let rt = Arc::clone(c.ctx.runtime());
-            {
-                let mem = rt.memory();
-                if mem.u32(c.cpu.esp).ok() != Some(LIST_ARRAY_RET)
-                    || mem.u32(LEVEL_ARRAY).unwrap_or(0) == 0
+        b.raw().before(
+            &MP_LEVEL_ARRAY,
+            "a Select Map of ours lists ours",
+            move |c| {
+                let rt = Arc::clone(c.ctx.runtime());
                 {
+                    let mem = rt.memory();
+                    if mem.u32(c.cpu.esp).ok() != Some(LIST_ARRAY_RET)
+                        || mem.u32(LEVEL_ARRAY).unwrap_or(0) == 0
+                    {
+                        return Ok(F::Continue);
+                    }
+                }
+                let Some(mode) = flow.building(c.cpu.esi) else {
                     return Ok(F::Continue);
+                };
+                let mut mem = rt.memory();
+                let retail = mem.u32(LEVEL_ARRAY).unwrap_or(0);
+                let flags = read_flags(&*mem, retail);
+                let flag = |id: u32| flags.iter().find(|(i, _)| *i == id).map_or(0, |(_, f)| *f);
+                let items = list_for(&sel.catalogue, mode, &flag);
+                let written = engine::memory::GuestMemory::write(
+                    &mut *mem,
+                    region + NAME_AT,
+                    b"map select list\0",
+                )
+                .and_then(|()| write_list(&mut *mem, region + ARRAY_AT, region + NAME_AT, &items));
+                drop(mem);
+                match written {
+                    Ok(()) => {
+                        eprintln!(
+                            "map select: Select Map lists {mode:?} ({} rows)",
+                            items.len()
+                        );
+                        c.cpu.eax = region + ARRAY_AT;
+                        c.ret(0).map(F::Return)
+                    }
+                    Err(e) => {
+                        eprintln!("map select: the list was not written ({e:?}); the retail list");
+                        Ok(F::Continue)
+                    }
                 }
-            }
-            let Some(mode) = flow.building(c.cpu.esi) else {
-                return Ok(F::Continue);
-            };
-            let mut mem = rt.memory();
-            let retail = mem.u32(LEVEL_ARRAY).unwrap_or(0);
-            let flags = read_flags(&*mem, retail);
-            let flag = |id: u32| flags.iter().find(|(i, _)| *i == id).map_or(0, |(_, f)| *f);
-            let items = list_for(&sel.catalogue, mode, &flag);
-            let written = engine::memory::GuestMemory::write(
-                &mut *mem,
-                region + NAME_AT,
-                b"map select list\0",
-            )
-            .and_then(|()| write_list(&mut *mem, region + ARRAY_AT, region + NAME_AT, &items));
-            drop(mem);
-            match written {
-                Ok(()) => {
-                    eprintln!("map select: Select Map lists {mode:?} ({} rows)", items.len());
-                    c.cpu.eax = region + ARRAY_AT;
-                    c.ret(0).map(F::Return)
-                }
-                Err(e) => {
-                    eprintln!("map select: the list was not written ({e:?}); the retail list");
-                    Ok(F::Continue)
-                }
-            }
-        });
+            },
+        );
 
         // Which list is drawing its rows.
         let flow = Arc::clone(&self.flow);
-        b.raw().observe_before(&MAP_LIST_ROW_TEXT, "note the list drawing", move |o| {
-            flow.drawing.store(o.cpu.ecx, std::sync::atomic::Ordering::SeqCst);
-        });
+        b.raw()
+            .observe_before(&MAP_LIST_ROW_TEXT, "note the list drawing", move |o| {
+                flow.drawing
+                    .store(o.cpu.ecx, std::sync::atomic::Ordering::SeqCst);
+            });
 
         // A row's name: the category's, or a replacing package's.
         let (flow, sel) = (Arc::clone(&self.flow), Arc::clone(&self.sel));
-        b.raw().before(&MP_LEVEL_NAME, "category and package names", move |c| {
-            let rt = Arc::clone(c.ctx.runtime());
-            let mut mem = rt.memory();
-            if mem.u32(c.cpu.esp).ok() != Some(ROW_NAME_RET) {
-                return Ok(F::Continue);
-            }
-            let handler = flow.drawing.load(std::sync::atomic::Ordering::SeqCst);
-            let Some(mode) = flow.mode_of(handler) else {
-                return Ok(F::Continue);
-            };
-            let Some(id) = mem.u32(c.cpu.esp + 4).and_then(|slot| mem.u32(slot)).ok() else {
-                return Ok(F::Continue);
-            };
-            let Some((n, text)) = row_label(&sel.catalogue, mode, id) else {
-                return Ok(F::Continue);
-            };
-            let at = region + LABELS_AT + n * LABEL_LEN;
-            if engine::memory::GuestMemory::write(&mut *mem, at, &utf16z(&text)).is_err() {
-                return Ok(F::Continue);
-            }
-            drop(mem);
-            c.cpu.eax = at;
-            c.ret(4).map(F::Return)
-        });
+        b.raw()
+            .before(&MP_LEVEL_NAME, "category and package names", move |c| {
+                let rt = Arc::clone(c.ctx.runtime());
+                let mut mem = rt.memory();
+                if mem.u32(c.cpu.esp).ok() != Some(ROW_NAME_RET) {
+                    return Ok(F::Continue);
+                }
+                let handler = flow.drawing.load(std::sync::atomic::Ordering::SeqCst);
+                let Some(mode) = flow.mode_of(handler) else {
+                    return Ok(F::Continue);
+                };
+                let Some(id) = mem.u32(c.cpu.esp + 4).and_then(|slot| mem.u32(slot)).ok() else {
+                    return Ok(F::Continue);
+                };
+                let Some((n, text)) = row_label(&sel.catalogue, mode, id) else {
+                    return Ok(F::Continue);
+                };
+                let at = region + LABELS_AT + n * LABEL_LEN;
+                if engine::memory::GuestMemory::write(&mut *mem, at, &utf16z(&text)).is_err() {
+                    return Ok(F::Continue);
+                }
+                drop(mem);
+                c.cpu.eax = at;
+                c.ret(4).map(F::Return)
+            });
 
         // A press: a category pushes its maps; a map goes on as retail and
         // the categories close once its screen is freed.
         let (flow, sel) = (Arc::clone(&self.flow), Arc::clone(&self.sel));
         let request_at = region + NAME_AT + 0x100;
-        b.raw().before(&MAP_LIST_ROW_CHOSEN, "categories open their maps", move |c| {
-            let handler = c.cpu.ecx;
-            let Some(mode) = flow.mode_of(handler) else {
-                return Ok(F::Continue);
-            };
-            let screen = handler.wrapping_sub(SCREEN_LIST);
-            let (id, chain, stack) = {
-                let mem = c.ctx.runtime().memory();
-                let chain = mem.u32(c.cpu.esp + 4).ok();
-                let row = mem.u32(c.cpu.esp + 8).and_then(|p| mem.u32(p)).ok();
-                let id = row.filter(|r| *r != u32::MAX).and_then(|r| {
-                    let data = mem.u32(mem.u32(handler + 0x70).ok()? + 0x44).ok()?;
-                    mem.u32(data + (r & 0xffff) * 8 + 4).ok()
-                });
-                let stack = (
-                    mem.u32(screen + lifecycle::SCREEN_WINDOW).ok(),
-                    mem.u32(screen + lifecycle::SCREEN_SLOT).ok(),
-                );
-                (id, chain, stack)
-            };
-            let (Some(id), (Some(window), Some(slot))) = (id, stack) else {
-                return Ok(F::Continue);
-            };
-            match mode {
-                Mode::Maps(_) => {
-                    // With Clankers on, the map's nav mesh is asked for now
-                    // (docs/game/bots.md §10 stage 2).
-                    let map = sel
-                        .catalogue
-                        .categories()
-                        .into_iter()
-                        .flat_map(|k| sel.catalogue.maps(k).iter())
-                        .find(|m| m.id == id)
-                        .map(Map::short_name);
-                    if let Some(map) = map {
-                        crate::clankers::map_picked(&map);
-                    }
-                    // The categories under this screen.
-                    match flow.picked(handler) {
-                        Some(_) => {
-                            eprintln!("map select: map {id:#x} pressed; the categories close after")
-                        }
-                        None => eprintln!("map select: map {id:#x} pressed; no categories under it"),
-                    }
-                    Ok(F::Continue)
-                }
-                Mode::Categories => {
-                    let Some(cat) = sel
-                        .catalogue
-                        .categories()
-                        .into_iter()
-                        .find(|&k| sel.catalogue.maps(k).first().is_some_and(|m| m.id == id))
-                    else {
-                        return c.ret(8).map(F::Return);
-                    };
-                    flow.pick(cat);
-                    let mask = {
-                        let mem = c.ctx.runtime().memory();
-                        chain.and_then(|ch| crate::list_class::player_mask(&*mem, ch).ok().flatten())
-                    };
-                    let Some(mask) = mask else {
-                        return c.ret(8).map(F::Return);
-                    };
-                    eprintln!(
-                        "map select: {} picked; its maps on window {window}, slot {slot}",
-                        cat.label()
+        b.raw().before(
+            &MAP_LIST_ROW_CHOSEN,
+            "categories open their maps",
+            move |c| {
+                let handler = c.cpu.ecx;
+                let Some(mode) = flow.mode_of(handler) else {
+                    return Ok(F::Continue);
+                };
+                let screen = handler.wrapping_sub(SCREEN_LIST);
+                let (id, chain, stack) = {
+                    let mem = c.ctx.runtime().memory();
+                    let chain = mem.u32(c.cpu.esp + 4).ok();
+                    let row = mem.u32(c.cpu.esp + 8).and_then(|p| mem.u32(p)).ok();
+                    let id = row.filter(|r| *r != u32::MAX).and_then(|r| {
+                        let data = mem.u32(mem.u32(handler + 0x70).ok()? + 0x44).ok()?;
+                        mem.u32(data + (r & 0xffff) * 8 + 4).ok()
+                    });
+                    let stack = (
+                        mem.u32(screen + lifecycle::SCREEN_WINDOW).ok(),
+                        mem.u32(screen + lifecycle::SCREEN_SLOT).ok(),
                     );
-                    let request =
-                        crate::skulls_mp::open_request(mask as u16, window, slot, CHANGE_MAP_LOADER);
-                    c.answer_async(move |cx| -> engine::entry::EntryFuture {
-                        Box::pin(async move {
-                            cx.write(|m| m.write(request_at, &request))?;
-                            cx.call(GuestCall::new(CHANGE_MAP_LOADER).args([request_at]))
-                                .await?;
-                            Ok(engine::entry::Ret::new(0, 8))
+                    (id, chain, stack)
+                };
+                let (Some(id), (Some(window), Some(slot))) = (id, stack) else {
+                    return Ok(F::Continue);
+                };
+                match mode {
+                    Mode::Maps(_) => {
+                        // With Clankers on, the map's nav mesh is asked for now
+                        // (docs/game/bots.md §10 stage 2).
+                        let map = sel
+                            .catalogue
+                            .categories()
+                            .into_iter()
+                            .flat_map(|k| sel.catalogue.maps(k).iter())
+                            .find(|m| m.id == id)
+                            .map(Map::short_name);
+                        if let Some(map) = map {
+                            crate::clankers::map_picked(&map);
+                        }
+                        // The categories under this screen.
+                        match flow.picked(handler) {
+                            Some(_) => {
+                                eprintln!(
+                                    "map select: map {id:#x} pressed; the categories close after"
+                                )
+                            }
+                            None => {
+                                eprintln!("map select: map {id:#x} pressed; no categories under it")
+                            }
+                        }
+                        Ok(F::Continue)
+                    }
+                    Mode::Categories => {
+                        let Some(cat) =
+                            sel.catalogue.categories().into_iter().find(|&k| {
+                                sel.catalogue.maps(k).first().is_some_and(|m| m.id == id)
+                            })
+                        else {
+                            return c.ret(8).map(F::Return);
+                        };
+                        flow.pick(cat);
+                        let mask = {
+                            let mem = c.ctx.runtime().memory();
+                            chain.and_then(|ch| {
+                                crate::list_class::player_mask(&*mem, ch).ok().flatten()
+                            })
+                        };
+                        let Some(mask) = mask else {
+                            return c.ret(8).map(F::Return);
+                        };
+                        eprintln!(
+                            "map select: {} picked; its maps on window {window}, slot {slot}",
+                            cat.label()
+                        );
+                        let request = crate::skulls_mp::open_request(
+                            mask as u16,
+                            window,
+                            slot,
+                            CHANGE_MAP_LOADER,
+                        );
+                        c.answer_async(move |cx| -> engine::entry::EntryFuture {
+                            Box::pin(async move {
+                                cx.write(|m| m.write(request_at, &request))?;
+                                cx.call(GuestCall::new(CHANGE_MAP_LOADER).args([request_at]))
+                                    .await?;
+                                Ok(engine::entry::Ret::new(0, 8))
+                            })
                         })
-                    })
+                    }
                 }
-            }
-        });
+            },
+        );
 
         // A maps screen freed after its press: close the categories.
         let flow = Arc::clone(&self.flow);
-        b.raw().before(&MAP_SCREEN_FREE, "the categories close after a map", move |c| {
-            let screen = c.cpu.ecx;
-            let Some(categories) = flow.freed(screen) else {
-                return Ok(F::Continue);
-            };
-            let flags = {
-                let mem = c.ctx.runtime().memory();
-                mem.u32(c.cpu.esp + 4).unwrap_or(0)
-            };
-            c.answer_async(move |cx| -> engine::entry::EntryFuture {
-                Box::pin(async move {
-                    // The destructor itself (this hook passes it now: the
-                    // screen is forgotten), then the close. Not by window
-                    // and slot: mid-free, the window's top word is 0 and
-                    // that close read 0x42 (lifecycle::close_screen).
-                    let r = cx
-                        .call(GuestCall::new(MAP_SCREEN_FREE_AT).ecx(screen).args([flags]))
-                        .await?;
-                    eprintln!("map select: the maps closed; closing the categories");
-                    lifecycle::close_screen(&cx, categories).await?;
-                    Ok(engine::entry::Ret::new(r.eax, 4))
+        b.raw().before(
+            &MAP_SCREEN_FREE,
+            "the categories close after a map",
+            move |c| {
+                let screen = c.cpu.ecx;
+                let Some(categories) = flow.freed(screen) else {
+                    return Ok(F::Continue);
+                };
+                let flags = {
+                    let mem = c.ctx.runtime().memory();
+                    mem.u32(c.cpu.esp + 4).unwrap_or(0)
+                };
+                c.answer_async(move |cx| -> engine::entry::EntryFuture {
+                    Box::pin(async move {
+                        // The destructor itself (this hook passes it now: the
+                        // screen is forgotten), then the close. Not by window
+                        // and slot: mid-free, the window's top word is 0 and
+                        // that close read 0x42 (lifecycle::close_screen).
+                        let r = cx
+                            .call(GuestCall::new(MAP_SCREEN_FREE_AT).ecx(screen).args([flags]))
+                            .await?;
+                        eprintln!("map select: the maps closed; closing the categories");
+                        lifecycle::close_screen(&cx, categories).await?;
+                        Ok(engine::entry::Ret::new(r.eax, 4))
+                    })
                 })
-            })
-        });
+            },
+        );
+        let flow = Arc::clone(&self.flow);
+        b.snapshot(feature::SnapshotPolicy::forbid_while(move || {
+            flow.snapshot_live()
+        }));
         Ok(())
     }
 }
@@ -1031,7 +1099,11 @@ pub fn sample() -> Catalogue {
         id,
         name: name.into(),
         sort,
-        path: format!("scenarios\\multi\\{}\\{}", name.to_lowercase(), name.to_lowercase()),
+        path: format!(
+            "scenarios\\multi\\{}\\{}",
+            name.to_lowercase(),
+            name.to_lowercase()
+        ),
         replaces: None,
     };
     let package = |id: u32, offer: u32, name: &str, map: &str, sort: i32| Map {

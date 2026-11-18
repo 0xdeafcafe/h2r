@@ -83,6 +83,11 @@ impl feature::Feature for AgentFeature {
                 .observe_after(point, label, move |_| a.set_cinematic(on))
                 .optional();
         }
+        let (save, load) = (self.0.clone(), self.0.clone());
+        b.snapshot(feature::SnapshotPolicy::section(
+            move || save.save_state(),
+            move |bytes, _| load.load_state(bytes),
+        ));
         Ok(())
     }
 }

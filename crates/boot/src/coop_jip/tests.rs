@@ -249,3 +249,30 @@ fn without_the_lift_or_the_lines_their_hooks_are_not_built() {
     );
     assert!(!text.contains("host sends the state"), "{text}");
 }
+
+/// docs/runtime/snapshots.md: join in progress blocks a snapshot while a
+/// co-op session has it armed, whatever stages are built.
+#[test]
+fn join_in_progress_blocks_snapshots_only_while_armed() {
+    let off = Stages {
+        lift: false,
+        log: false,
+    };
+    for stages in [ON, off] {
+        let arm = Arm::session();
+        let mut r = feature::Registry::new(feature::Switches::defaults());
+        r.add(&CoopJip::new(Arc::clone(&arm), stages)).unwrap();
+        let plan = r.build(&feature::Base).unwrap();
+        assert_eq!(plan.snapshot_blockers(), Vec::new());
+        arm.arm(None);
+        assert_eq!(
+            plan.snapshot_blockers(),
+            vec![(
+                FEATURE,
+                "a co-op session has armed the co-op hooks".to_string()
+            )]
+        );
+        arm.disarm();
+        assert_eq!(plan.snapshot_blockers(), Vec::new());
+    }
+}

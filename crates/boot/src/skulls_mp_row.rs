@@ -102,6 +102,36 @@ pub fn opening(
     })
 }
 
+/// Whose skulls the multiplayer screen shows, as a machine snapshot keeps
+/// it (docs/runtime/snapshots.md): the profile the last press opened it
+/// for. Its options are always none.
+pub fn save_state(screen: &SkullsScreen) -> Vec<u8> {
+    let w = &mut snapshot::codec::Writer::new();
+    match screen.profile() {
+        Some(p) => w.bool(true).str(&p),
+        None => w.bool(false),
+    };
+    std::mem::take(w).into_bytes()
+}
+
+/// Puts [`save_state`]'s bytes back; nothing changes unless all of them
+/// decode. A screen saved never opened is left as it is: a press opens it
+/// again before it shows.
+pub fn load_state(screen: &SkullsScreen, bytes: &[u8]) -> Result<(), String> {
+    let e = |e: snapshot::Error| e.to_string();
+    let r = &mut snapshot::codec::Reader::new(bytes, "skulls-mp-row");
+    let profile = if r.bool().map_err(e)? {
+        Some(r.str().map_err(e)?.to_owned())
+    } else {
+        None
+    };
+    r.finish().map_err(e)?;
+    if let Some(profile) = profile {
+        screen.open(profile);
+    }
+    Ok(())
+}
+
 /// The Skulls row on the variant editor's category list.
 pub struct VariantRow(pub Arc<SkullsScreen>);
 
@@ -204,6 +234,12 @@ impl feature::Feature for VariantRow {
             move |c| row_chosen(c, &screen, request_at),
         );
         ROW_ON.store(true, Ordering::SeqCst);
+        // `ROW_ON` is fixed by the build; the screen's profile is the press's.
+        let (save, load) = (Arc::clone(&self.0), Arc::clone(&self.0));
+        b.snapshot(feature::SnapshotPolicy::section(
+            move || save_state(&save),
+            move |bytes, _| load_state(&load, bytes),
+        ));
         Ok(())
     }
 }
@@ -278,5 +314,22 @@ mod tests {
         }
         assert!(row_on());
         assert!(list_class::loader_of(MP_SCREEN).is_some());
+    }
+
+    #[test]
+    fn a_snapshot_carries_whose_skulls_the_screen_shows() {
+        let (a, b) = (screen(), screen());
+        let never = save_state(&a);
+        a.open("Chief".into());
+        let bytes = save_state(&a);
+        load_state(&b, &bytes).unwrap();
+        assert_eq!(b.profile().as_deref(), Some("Chief"));
+        assert_eq!(save_state(&b), bytes, "the same state again");
+        load_state(&b, &never).unwrap();
+        assert_eq!(b.profile().as_deref(), Some("Chief"), "left as it was");
+        assert!(load_state(&b, &bytes[..bytes.len() - 1]).is_err());
+        let mut odd = bytes.clone();
+        odd.push(0);
+        assert!(load_state(&b, &odd).is_err(), "trailing bytes");
     }
 }

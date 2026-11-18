@@ -9,7 +9,8 @@ resume in `crates/xapi`. Phase 2 ([below](#phase-2-the-quiescence-probe)):
 `H2_SNAPSHOT_PROBE`. Phase 3 ([below](#phase-3-what-was-built)): the
 kernel's `Core`, the machine's threads and their continuation pools, the
 VFS's read-only open files, the raw disk, XAPI's pads and the input tap's
-cursor, and feature sections (`h1-health`, skulls, lockstep). Phase 4
+cursor, feature sections (`h1-health`, skulls, lockstep), and a policy
+for every feature ([third round](#third-round-every-feature)). Phase 4
 ([below](#phase-4-what-was-built)): the `d3d`, `audio`, `dsound`,
 `audioout` and `wma` sections. Nothing saves or loads a running game yet.
 Whatever is not marked built on this page is design.
@@ -252,13 +253,13 @@ Built in phase 4 (below); decisions per field are in the `snap` modules.
 | Switches | `feature::Switches` | Check | Part of the build key. |
 | Feature plan, hooks, arena | `feature::Registry`, `Plan`, `Installed` | Check | Deterministic from switches; arena bytes are guest RAM. |
 | Boot glue statics holding guest addresses | `layout_glue`, `campaign_menu`, `list_class`, `stopgaps::KSTACK_NEXT` | Check | Fixed by boot order. |
-| Boot glue statics set during play | `health::MAP_MODE`; `skulls_custom::CAMPAIGN`; `level_boot::LOADED_AT`; `skulls_mp`/`skulls_custom` shared state | Save | Each feature owns a section (`SnapshotPolicy::Section`). Built for `h1-health` (re-derived from the loaded map), `skulls-custom`, `skulls-mp`. |
-| Co-op | `coop_live::LOBBY`, `COOP_MODE_PENDING` | Quiesce | Refuse during co-op. |
+| Boot glue statics set during play | `health::MAP_MODE`; `skulls_custom::CAMPAIGN`; `level_boot::LOADED_AT`; `skulls_mp`/`skulls_custom` shared state | Save | Each feature owns a section (`SnapshotPolicy::Section`). Built for `h1-health` (re-derived from the loaded map), `skulls-custom`, `skulls-mp`, and the [third round](#third-round-every-feature)'s. |
+| Co-op | `coop_live::LOBBY`, `COOP_MODE_PENDING` | Quiesce | Refuse during co-op. Built: `coop-screens`, `coop-live`, `coop-players`, `coop-jip` forbid while armed or in a session. |
 | Live | `live-hle` sockets, client thread | Quiesce | Refuse while signed in. |
 | Bink | `BinkHle` slots, platform decoder | Quiesce | Refuse while a movie plays. |
 | Interpreter fallback caches | `boot/src/fallback.rs` | Rebuild | |
 | Lockstep recorder counters | `lockstep::Recorder::ticks`, `presents` | Save | So a trace can continue across a load. Built: the `lockstep` feature's section. |
-| Agent session, timeline, perf, telemetry | | Ignore | Observers. |
+| Agent session, timeline, perf, telemetry | | Ignore | Observers. The agent's view of the game (cutscene, map, map ticks) is its `agent` section. |
 
 ### What "the guest can rebuild" means here
 
@@ -547,8 +548,8 @@ the host subsystems. The features are now audited:
 | `h1-health` | forbid while live | while a damage update or body restore is between its hooks. The model follows the loaded map (`set_mode` at game start, from guest memory) and the meter is published every tick, so a load must call `set_mode` again from the loaded map (phase 3) |
 | `touch-glue` | forbid while live | while touch controls are shown: unapplied touch input is host state |
 
-Still unaudited: the features that were off in that run (skulls, co-op,
-aim assist, sign-in strings, kit screens, settings rows) and the host
+The features that were off in that run were audited in the
+[third round](#third-round-every-feature). Still unaudited then: the host
 subsystems (d3d, dsound, xapi, bink, live, lockstep), which are phase 4.
 Phase 4 found that the D3D frame wait and vblank delivery keep their Rust
 state in `ExecCtx::call_guest` continuations, which the machine check does
@@ -635,11 +636,63 @@ Left:
 - The boot calls none of the new sections yet: phase 5 adds
   `Xapi::save_snapshot`/`load_snapshot`, `Plan::save_sections` through
   `snapshot::features` and the kernel's sections to `state.save`.
-- Still unaudited features: `skulls` (campaign skulls per profile), the
-  skulls screens and rows, co-op, aim assist, sign-in strings, kit screens,
-  settings rows.
+- Every feature now has a policy ([third round](#third-round-every-feature)).
 - A load into a running game drops the old contexts' fast-memory views and
   direct-call blocks with them; untested outside synthetic machines.
+
+### Third round: every feature
+
+Branch `snapshot-features`. Every `feature::Feature` in the tree says
+what it is; none is `Unaudited`. A predicate's test sets each live
+condition and checks it is reported, and clear again; a section's test
+round-trips its bytes and checks that damaged bytes change nothing.
+
+| Feature | Policy | Why |
+|---|---|---|
+| `skulls` | section, forbid while live | live while a pickup call is between its `SKULL_STOCK` hooks. Saves the tracker's last look at the skull array (one bool each); without it a load reads the loaded array's differences as pickups. Profiles are the settings store's, which a load does not rewind |
+| `skulls-page` | section, forbid while live | live while the kept difficulty press runs. Saves the kept press, the page's phase (and closing page), the campaign Skulls screen's profile and whether Halo 1 options show. The page's open time is wall clock and not kept |
+| `skulls-mp-row` | section | the profile the multiplayer Skulls screen was opened for; `ROW_ON` is fixed at build |
+| `cheats` | forbid while live | while a cheat is on or has something left to undo (flagged units, a speed we set, the HUD flag, a flight) |
+| `coop-probe` / `coop-live` | forbid while live | while armed (`Arm::snapshot_live`: the probe forced on, or a co-op session armed the hooks), while a session start's peer count is shown changed, or a hash log is open |
+| `coop-players` | forbid while live | while armed, or one of our player spawns is running; gather and cinematic flags are read only while armed |
+| `coop-jip` | forbid while live | while armed: a join is an exchange with a peer no snapshot holds |
+| `coop-latency` | stateless | an observer: windows and counters feed only the log line |
+| `coop-screens` | forbid while live | while hosting or joined, the join screen is due, the hooks are armed, or the Co-op Campaign row's lobby-mode window is open |
+| `aim-assist` | section, forbid while live | live while the touch player's slowdown and follow window is open. Saves the retail values held per field; without them a load over scaled tags takes scaled values for retail and compounds them |
+| `signin-strings` | forbid while live | while a sign-in keyboard of ours is open; otherwise the page and every id's address are fixed at build |
+| `ui-kit-texts.*` (every kit screen) | section, forbid while live | live while a press waits for the action, our keyboard is open, or work waits for a screen's free. No bytes: a load marks every text slot dirty, so the next draw writes them over the saved run's page. Row values are the settings store's |
+| `mods-screens` | section, forbid while live | live while a mod download is under way (it writes to disk). Saves the open detail page's mod; a load rewrites every text. The list and installed set are the server's and the disk's |
+| `settings-rows`, `controls-rows` | stateless | model strings fixed at build, values the settings store's; async answers are continuations |
+| `h1-options-row`, `clankers-row` | forbid while live | while a Game Setup list's constructor is between its hooks (`h1_options_row::building_live`) |
+| `variant-more-options-row` | stateless | `ROW_ON` fixed at build; text and press are guest memory and continuations |
+| `hud` | section | the style in force, one byte; not re-picked from the map at a load, because the choice counts only from a game start |
+| `h1-hud` | section | Halo 2's own motion sensor table, which the guest's copy no longer shows after a Halo 1 map |
+| `loaded_map` | section | no bytes: a load publishes the loaded map's name again for the host panel |
+| `h1-precision` | stateless | the swap table is read at install; the swap is in guest memory |
+| `map-select` | forbid while live | while a Select Map is to be built, one of ours is up, or a map press waits to close the categories |
+| `variant-vitality` | forbid while live | while a shield step's damage is scaled and its after hook has not restored it |
+| `variant-ext-live` | forbid while live | while this machine is a Live guest playing its host's options (`FROM_HOST`), which a load has no host to resend |
+| `ui-watch` | stateless | an observer; what it last read is read again every tick |
+| `agent` | section | whether a cutscene runs, the map and its tick count: a loaded cutscene answers `cinematic`, and the first tick after a load is not a map change. Connections, pauses and recordings are the session's |
+| `live-telemetry` | stateless | reads the guest, never writes it; a rewound tick is a revert the session already handles |
+| `render-timing` | forbid while live | while a render stage is open between its observers |
+| `render-census` | forbid while live | once its access trap is armed (from the first render frame); nothing disarms it |
+
+Left from this round (**S**, not built):
+
+- List classes keep row state of their own that `list_class`'s policy
+  (constructor running) does not ask about: the More Options page's
+  unsaved edit, `SigninRows`' shown flips, the mods list and detail,
+  `map_select`'s picked category. A load while one of those screens is up
+  could show stale rows. `list_class` should ask its `Rows` for liveness.
+- `SkullsScreen` has no close, so a snapshot saved before a Skulls screen
+  was opened leaves a running process's profile in place at a load; a
+  press opens it again before it shows.
+- `live-telemetry` is stateless for the guest, but a load during a Live
+  match would upload a rewound match record; forbid while a match is in
+  progress if that matters.
+- Co-op's background threads can change the role at any moment; the
+  boot's `state.save` must check and save without letting them in between.
 
 ## Phase 4: what was built
 

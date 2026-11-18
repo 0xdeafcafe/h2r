@@ -331,6 +331,13 @@ this machine) answers such a throw by:
 - an overloaded object (`overloaded`) gets the 503 at once: calling again
   would only add to its load.
 
+A call is made again with a copy of the request (its body teed), and the
+runtime holds the copy's bytes in the isolate until the first call ends.
+A body over 8 MiB (`doretry::KEEP_BODY_BYTES`), or one without a
+`Content-Length`, is sent once without a copy, so a 95 MiB content upload
+never sits twice in a 128 MB isolate; a reset under it is the 503 above,
+and the client sends it again.
+
 Anything else thrown surfaces as before. The single-use token guard (`jti`)
 is in the hub's memory and is lost on a reset, so a repeat with the same
 token is accepted; that is why only requests that are idempotent or nonce-

@@ -6,6 +6,8 @@
 #
 #   [WAKE=S] crates/live-worker/smoke/run.sh [SEED_PAIRS] [OUT_DIR]
 #
+# BIG=1: also upload a blob of exactly the content cap (95 MiB) and one
+# byte more (smoke.ts, step 10).
 # BUSY=N: also follow the log with N sockets while 60 events are appended
 # (smoke.ts, step 11).
 # WAKE=S: also idle S seconds with a socket open, and check that the hub
@@ -85,7 +87,7 @@ stop() {
 trap stop EXIT
 
 start first
-bun "$here/smoke/smoke.ts" "http://127.0.0.1:$port" --seed "$seed" --wake "${WAKE:-0}" --admin "$admin" --busy "${BUSY:-0}" | tee "$out/first.json"
+bun "$here/smoke/smoke.ts" "http://127.0.0.1:$port" --seed "$seed" --wake "${WAKE:-0}" --admin "$admin" --busy "${BUSY:-0}" ${BIG:+--big} | tee "$out/first.json"
 grep -q '"ok": true' "$out/first.json" || { echo "smoke test failed" >&2; exit 1; }
 stop
 start restart

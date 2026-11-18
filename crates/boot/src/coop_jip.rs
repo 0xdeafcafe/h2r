@@ -329,6 +329,14 @@ impl feature::Feature for CoopJip {
 
     fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
         let stages = self.stages;
+        // docs/runtime/snapshots.md: armed, a join is a conversation with
+        // a peer no snapshot holds; disarmed, the track only shapes log
+        // lines and `ENABLED` is the settings' value read at boot. The
+        // lifted check's call is a continuation the machine check sees.
+        let arm = Arc::clone(&self.arm);
+        b.snapshot(feature::SnapshotPolicy::forbid_while(move || {
+            arm.snapshot_live()
+        }));
 
         if stages.lift {
             let arm = Arc::clone(&self.arm);
