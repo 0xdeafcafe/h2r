@@ -509,6 +509,20 @@ The layout follows the disc's polyhedron physics models (V:
   materials are not carried.
 - the shapes' Havok headers and pointers stay zero; the engine writes
   them at load (`0x001ea9c0`).
+- no block of a `phmo` is shared with another tag (since version 43,
+  `tags::repo::build::IN_PLACE`). The loader turns each rigid body's and
+  list child's `{type, index}` reference into a pointer in the block
+  itself, so a block two tags share is resolved twice and the second
+  pass reads a pointer as a reference: the resolver (`0x001eaf30`)
+  returns null for it. A fresh map shares equal blocks between tags by
+  content, and version 42's a10 faulted at `0x002fc139` (the list's
+  bounding box reading its first child), its cryotube vehicle and
+  machine having equal list children; three a10 doors shared rigid
+  bodies the same way. `physics_models_load_as_the_engine_reads_them`
+  (h1campaign `disc.rs`) checks every converted map's physics models
+  against the loader: no rewritten block shared, every reference in
+  range, the list-children, four-vector and plane runs filling their
+  blocks.
 
 A device's mass is its cells' volume at 1000 kg per cubic metre
 (`convert::DENSITY`, per cubic world unit). A body of more than 64 cells
