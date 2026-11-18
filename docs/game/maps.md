@@ -381,6 +381,12 @@ package image, else Lockout's picture). Start a game on it: it should
 load from `T:\$c\<offer ID>\coldsnap.map` and reach spawn. Then delete
 the package and start again: the map leaves the list.
 
+### The map select by category
+
+With more than one kind of map installed, Change Map opens the categories
+first (Halo 2, Map Pack, Mods, Halo: CE). A map's category is read from
+its list path: [map-select.md](map-select.md).
+
 ## 5. Sharing (Live)
 
 Agreed with the Live session:

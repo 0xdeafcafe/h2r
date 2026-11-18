@@ -56,6 +56,11 @@ again, and so a screen can be seen and checked before anyone runs the game.
    meant.
 3. **Open it** from an `Open(name)` row on another screen of ours, or with
    `list_class::open(cx, chain, name)` (`0x149f1e(player mask, loader)`).
+   `0x149f1e` always opens on window 5. A screen opened from inside a
+   lobby dialog (window 3) has to open on the pressing screen's own
+   window and slot instead, or it ends up under the lobby. For that, a
+   `Rows::press` returns `Chosen::Push(name)` (`list_class::push`), as the
+   map select's categories do ([map-select.md](map-select.md)).
 4. **Check it.** Add the screen to `ui_kit::screens::NAMES` and `sample`. The
    tests then check it without the disc, and against the disc when it's
    there (below).

@@ -1073,6 +1073,8 @@ the same name from the data root (`$H2_DATA`, else the default), or any
 - **Names (decided):** converted maps are `h1_<map>` (`h1_beavercreek`:
   Halo 2 has its own `beavercreek`), with Halo 1's display name in the
   list.
+- **In the map select (built):** a new map whose name starts `h1_` is
+  listed under **Halo: CE** ([map-select.md](map-select.md)).
 - **Identity (built):** one list ID per Halo 1 map, whichever
   variant (`Package::list_key`, above); the `MapId` (content hash)
   differs per variant; online, the host's variant is used.
