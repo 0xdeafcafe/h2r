@@ -2264,8 +2264,10 @@ is 5, the lobby: states 6, 7 and 8 refuse. Its other answers (2 invite
 only, 4 no room, through `0x0005af70` and `0x0005afc0`) do not depend
 on the state. The view machine's gates at `0x0006a0b7`
 (`*0x004ced48` ready peers, `*0x004ced54` a timer, `*0x004ced50`
-attempts) are in BSS, so [guess] zero unless network configuration
-fills them: no wait and one attempt.
+attempts) are in BSS but not zero: the network setup at
+`0x000679ea..0x00067a08` sets them to 8, 3 and 2000 (and `0x004ced40`
+to 10000). Found while tracing phantom peers (docs/game/bots.md §5.1);
+an earlier note here guessed they stayed zero.
 
 **14.9.4 What is wired** (`crates/boot/src/coop_jip.rs`, feature
 `coop-jip`, on the co-op over Live arm):
