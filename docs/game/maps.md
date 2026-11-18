@@ -582,13 +582,24 @@ fetches do not send yet.
 
 Many old mods are whole modded `.map` files: they hold the retail map's
 bytes and may not be shared. `h2 live maps import FILE [--base MAP]
-[--disc ISO] [--out DIR] [--name NAME] [--info mod.toml] [--category C]
-[--no-publish]` (`crates/cli/src/live_mod_import.rs`) makes a package that
-shares only the difference:
+[--disc ISO] [--mappack ISO] [--out DIR] [--name NAME] [--info mod.toml]
+[--category C] [--no-publish]` (`crates/cli/src/live_mod_import.rs`) makes
+a package that shares only the difference:
 
 1. The base map (`--base`, else `base_map` in the sidecar) is read from
    the user's own disc through `vfs::open_disc` (an image or a directory
-   of its files), and its SHA-256 is the package's `[base] sha256`.
+   of its files), and its SHA-256 is the package's `[base] sha256`. A map
+   the disc's `maps` lacks is looked up on the Multiplayer Map Pack disc
+   (`--mappack`, else `mappack.iso` beside the disc, found as `h2 play`
+   finds it: `mappack_cmd::discover`), read with the stats site
+   extractor's reader (`live_mappack::from_iso`: each
+   `/demos/dlc/<package>/<map>.map`, which the disc holds as plain files).
+   Its `[base]` is the same shape: `map` is the map file's stem as the
+   game names it (`containment`, `deltatap` for Sanctuary, `dune` for
+   Relic, `triplicate` for Terminal), `sha256` the map pack map's. The
+   names never collide with the Halo 2 disc's, and `h2 import-mappack`
+   installs the maps byte for byte, so the hash is also the installed
+   copy's.
 2. A whole map becomes one patch layer from that base,
    `content::patch::diff`: PPF3 when the length is unchanged (the resolver
    lays it over the disc's map as it streams), BPS otherwise. The patch is
@@ -596,9 +607,9 @@ shares only the difference:
    `.ips` or `.bps` mod is applied to the base to check it fits (a BPS's
    source CRC, a PPF's checks) and kept as it is.
 3. Refused: a mod that changes nothing, and a result that is byte for
-   byte one of the disc's maps (another retail map passed off as a mod,
-   whose bytes would fill the delta; only disc maps of the same size are
-   hashed).
+   byte one of the disc's maps or, when the map pack disc is there, one
+   of its maps (another retail map passed off as a mod, whose bytes would
+   fill the delta; only maps of the same size are hashed).
 4. The package directory (`--out`, else `<stem>.package` beside the file)
    gets `manifest.toml`, `mod.<ppf|bps|ips>`, the preview and a `mod.toml`
    with the repository's extras; then it is published as `h2 live maps
@@ -610,6 +621,21 @@ and unknown keys ignored: `name`, `author` (the credit), `description`,
 signature decides), `base_map`, `category`, `image` (a PNG or JPEG beside
 it, at most 512 KiB). `h2 live maps publish DIR` reads `category` and
 `source_url` from `DIR/mod.toml`; `--category` and `--source-url` win.
+
+Not yet in the game: a package on a Map Pack base imports and publishes,
+but players can't install or play it yet. `MapGate` checks a base with
+`Bases::disc_hash`, and `boot::map_bases::DiscBases` hashes only the
+Halo 2 ISO's `maps\<map>.map`, so `install` refuses it as `NoBase`
+("Needs ... from your disc" on the Mods screen). Even installed, nothing would serve
+it: `vfs::PackageBackend` wraps the DVD and serves only `maps\<name>.map`,
+while the game opens a Map Pack map from
+`T:\$c\<offer>\<map>.map` on the hard disk, a writable host backend the
+packages layer doesn't wrap. Making it work needs both:
+
+- a `Bases` that also hashes the installed Map Pack maps under
+  `<data>/disk/Partition1/TDATA/4D530064/$c` (or `mappack.iso`);
+- package serving for `TDATA\4D530064\$c\<offer>\<map>.map` with the
+  installed map as the base, limited to the Map Pack's own packages.
 
 Limits: a mod built on a different build of the base map than the user's
 disc still imports (the delta reproduces it exactly) but is larger, and
