@@ -2,7 +2,10 @@
 //! extension block in the active record's spare bytes
 //! (`G+0x13c + 0x10c`; [`variants::ext`], docs/game/game-options.md
 //! section 3). Slice 3 applies gravity, through the Low Gravity code in
-//! [`crate::skulls_custom`]; the other options arrive with their slices.
+//! [`crate::skulls_custom`]; slice 5 unlimited grenades, through the
+//! Unlimited Grenades skull's top-up on every player's unit
+//! ([`Decision::unlimited_grenades`]); the other options arrive with their
+//! slices.
 //!
 //! **Who applies it.** A machine alone, the host of a Live game, and a
 //! Live guest whose block came from its host. Never on System Link
@@ -139,6 +142,9 @@ pub fn key(record: &[u8]) -> u64 {
     h
 }
 
+/// [`Decision::Apply`]'s `who` on a Live guest applying its host's block.
+pub const GUEST: &str = "guest, the host's";
+
 /// What this machine does with the active variant's block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Decision {
@@ -157,6 +163,12 @@ impl Decision {
             Decision::Apply { ext, .. } => ext.gravity_scale(),
             _ => 1.0,
         }
+    }
+
+    /// Whether this machine tops up every player's grenades: a lone
+    /// machine or the host. A guest doesn't: the host's counts replicate.
+    pub fn unlimited_grenades(&self) -> bool {
+        matches!(self, Decision::Apply { ext, who } if ext.unlimited_grenades && *who != GUEST)
     }
 
     /// The line the log prints when the decision changes.
@@ -193,10 +205,7 @@ pub fn decide(e: Ext, session: Option<(&Session, u32)>, host_sent: bool) -> Deci
                     who: "host",
                 }
             } else if host_sent {
-                Decision::Apply {
-                    ext: e,
-                    who: "guest, the host's",
-                }
+                Decision::Apply { ext: e, who: GUEST }
             } else {
                 Decision::Off {
                     ext: e,
@@ -516,6 +525,25 @@ mod tests {
                 .line()
                 .contains("System Link")
         );
+    }
+
+    #[test]
+    fn grenades_are_topped_by_a_lone_machine_or_the_host_never_a_guest() {
+        let e = Ext {
+            unlimited_grenades: true,
+            ..Ext::default()
+        };
+        assert!(decide(e, None, false).unlimited_grenades());
+        assert!(decide(e, Some((&session(3, true), 2)), false).unlimited_grenades());
+        let guest = session(3, false);
+        assert!(matches!(
+            decide(e, Some((&guest, 2)), true),
+            Decision::Apply { who: GUEST, .. }
+        ));
+        assert!(!decide(e, Some((&guest, 2)), true).unlimited_grenades());
+        assert!(!decide(e, Some((&session(3, true), SYSTEM_LINK)), false).unlimited_grenades());
+        assert!(!decide(half(), None, false).unlimited_grenades());
+        assert!(decide(e, None, false).line().contains("Unlimited grenades"));
     }
 
     #[test]

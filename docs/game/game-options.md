@@ -252,7 +252,7 @@ offer is.
 | Damage multipliers beyond on/off | needs the extension | the record has two booleans (flag bits 12, 13), read through the trait query `0x24dda0` (trait 2 extra damage, 3 resistance) and per-engine overrides (`0x1926c0`); the scale they apply is in the damage code, not traced |
 | Shield and health multipliers | needs the extension | shields are a 0..2 choice (`+0x88`); a vitality scale needs the damage path above |
 | Player speed for everyone | needs the extension | only Juggernaut and ball carrier speed exist (i16 0..2); the movement scale is not traced |
-| Unlimited grenades | needs the extension | only a starting on/off bit; host refills each unit's counts each tick (unit offsets not traced) |
+| Unlimited grenades | needs the extension (built, slice 5) | only a starting on/off bit; the host keeps every player's unit at four or more of each type each tick (the unit's counts at `+0x23e`, as the Unlimited Grenades skull) |
 | Mixed vehicle sets | mostly offered; some storable | each slot (light, second light, heavy, flying, two turrets) is its own byte, so mixes exist today; values in range but not offered (75: 2; 76, 77: 4; 79: 2, 3; 81, 82: 2, 3; 83: 18) and setting 80 (no row, `+0xd0` 0..4) are not traced and are not offered until they are; a vehicle outside the sets needs the extension and a placement hook |
 | Team count | storable (setting 93, `+0xb4` 0..8) | the retail editor has no row for it; a row on our "More Options" page |
 | Team size | needs the extension | nothing in the record; the lobby would have to enforce it |
@@ -407,6 +407,14 @@ guests"):
   It shows only what the game applies (gravity in slice 3); a block the
   game would ignore shows a warning and an `Issue::Ext`. `issues()` also
   has our own rule (respawn 0 with cycling).
+- **Unlimited grenades** (slice 5, built): flag bit 1. After each tick a
+  lone machine or a Live host (`Decision::unlimited_grenades`; never a
+  guest, never System Link) tops up every player's unit, remote ones too,
+  to at least four of each grenade type (`skulls_custom::variant_grenades`,
+  the Unlimited Grenades skull's `top_grenades` on the unit's two counts at
+  `+0x23e`). The host's counts are the game's and replicate, so a guest
+  writes nothing. Row 1 of "More Options" ("Unlimited Grenades: < Off >",
+  left, right and A toggle) and a Studio checkbox.
 - **The stats site** today records only the engine name (`GameStarted`'s
   `variant`). Adding the variant's name and a summary of the extension
   ("Gravity 50%") to `GameStarted` is a later Live slice.
@@ -649,7 +657,8 @@ own slice (8 below):
    warning. Tests in live-proto, live-server (both homes) and live-hle: a
    mismatched key ignored, an older member warned about, System Link never
    applying.
-5. **The other extension options**, each traced when reached: damage,
+5. **The other extension options** (unlimited grenades built, "Built:
+   slice 5"), each traced when reached: damage,
    shield and health scales, movement speed, unlimited grenades, any
    weapon (slots 15, 16 and 20 named from the disc, other tags through
    `0x19eda0`), team size and the team count row.
@@ -723,6 +732,17 @@ After slice 4 (two machines on Live, both on this build):
 9. Low Gravity skull with gravity 50%: a quarter of normal, on both.
 10. The same variant over System Link: normal gravity on both, and each
     log says the options are off on System Link.
+
+After slice 5 (unlimited grenades):
+
+9a. Edit a Slayer copy: More Options has a second row, "Unlimited
+    Grenades: < Off >"; left, right or A turns it On. Save, reopen: On.
+    Studio shows the box ticked. A local game on it: throw all your
+    grenades; you have four of each again on the next tick. The log says
+    `variant options: Unlimited grenades (local game)`.
+9b. The same over Live (both on this build): host and guest both keep
+    four of each (the host tops up the guest's unit). On System Link:
+    normal grenades.
 
 After slices 6 to 8:
 
@@ -847,6 +867,17 @@ After slices 6 to 8:
   "Older builds"). Not built: lobby texts for that and for System Link
   (log lines only).
 
+## Built: slice 5 (so far)
+
+- Unlimited grenades: `variant_ext::Decision::unlimited_grenades`,
+  `skulls_custom::{player_units, top_grenades, variant_grenades}`, the
+  page's second row (`variant_page::GRENADES_ROW`, strings in the
+  "variant page" family), Studio's checkbox. `Ext::summary` already said
+  "Unlimited grenades".
+- Not yet: damage, shield, health and speed scales (the code is not
+  traced), weapons outside the editor's list, team size, the team count
+  row.
+
 ## Tests
 
 `cargo test -p variants`, `cargo test -p hopper-edit`,
@@ -876,6 +907,10 @@ tests:
   `the_row_and_the_page_are_on_the_plan`; `ui_kit::screens` checks the
   page (`variant-more-options`) with the other screens. Run
   `cargo test -p boot --tests` (the plan goldens are integration tests).
+
+Slice 5 so far: `boot` `variant_ext::grenades_are_topped_by_a_lone_machine_or_the_host_never_a_guest`,
+`skulls_custom::tests::a_variants_unlimited_grenades_reach_every_players_unit`,
+`variant_page::tests::the_grenades_row_toggles_the_flag`.
 
 Older builds: `live-proto`
 `presence_carries_a_build_and_capabilities_checked_and_optional`,

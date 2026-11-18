@@ -210,7 +210,8 @@ pub fn settings(ui: &Ui, app: &App, st: &mut VariantsUi, fonts: &Fonts, actions:
 
 /// Our options the record has no field for, in its extension block
 /// (docs/game/game-options.md section 3). Only the ones the game applies
-/// are shown; the rest arrive with their slices. Returns the new options
+/// are shown (gravity, unlimited grenades); the rest arrive with their
+/// slices. Returns the new options
 /// when the user changed one.
 fn more_options(ui: &Ui, v: &GameVariant) -> Option<Ext> {
     if !ui.collapsing_header("More options (h2recomp)##variant-ext", TreeNodeFlags::NONE) {
@@ -254,6 +255,19 @@ fn more_options(ui: &Ui, v: &GameVariant) -> Option<Ext> {
     let (lo, hi) = (*ext::GRAVITY.start(), *ext::GRAVITY.end());
     if ui.slider_i32("##ext-gravity", &mut g, i32::from(lo), i32::from(hi)) {
         next.gravity = g.clamp(lo.into(), hi.into()) as u16;
+    }
+    ui.table_next_row();
+    ui.table_next_column();
+    ui.align_text_to_frame_padding();
+    ui.text("Unlimited grenades");
+    ui.set_item_tooltip(
+        "Grenades never run out: everyone keeps at least four of each. \
+         The host tops them up (not on System Link).",
+    );
+    ui.table_next_column();
+    let mut on = now.unlimited_grenades;
+    if ui.checkbox("##ext-grenades", &mut on) {
+        next.unlimited_grenades = on;
     }
     (next != now).then_some(next)
 }
