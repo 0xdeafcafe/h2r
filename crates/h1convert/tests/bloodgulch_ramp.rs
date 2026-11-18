@@ -986,3 +986,64 @@ fn coplanar_seams() {
         census(&format!("retail {name}"), &b);
     }
 }
+
+/// Open or solid in the 3D tree for points on the blue ramp where the
+/// player loses support (live capture `bg-ramp-centre`: airborne at x 43.56
+/// as the pill's top-sphere centre, feet + 0.5, passes z 1.7035, the roof
+/// plane): the feet + 0.2 (bottom-sphere centre), + 0.5 (top-sphere
+/// centre) and + 0.7 (pill top) points, and the top sphere's six extreme
+/// points, from x 44.0 to 42.9, in Halo 1's tree and the converted one.
+/// Every one of them is in the open corridor above the ramp.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO)"]
+fn blue_ramp_pill_points_are_open() {
+    let h1 = bloodgulch();
+    let r = h1.structure_bsps().unwrap();
+    let s = h1.structure_bsp(&r[0]).unwrap();
+    let bsp = s.collision_bsps().unwrap().remove(0);
+    let conv = round_trip(&bsp);
+    let ramp = |x: f32| 0.134 + (45.275 - x) * 0.6046;
+    let mut solid = Vec::new();
+    for y in [-79.24f32, -79.125, -78.95] {
+        for i in 0..=22 {
+            let x = 44.0 - 0.05 * i as f32;
+            let feet = ramp(x) + 0.01;
+            let mut pts = vec![
+                ("bottom", [x, y, feet + 0.2]),
+                ("top centre", [x, y, feet + 0.5]),
+                ("pill top", [x, y, feet + 0.69]),
+            ];
+            for (k, d) in [
+                [0.19f32, 0.0, 0.0],
+                [-0.19, 0.0, 0.0],
+                [0.0, 0.19, 0.0],
+                [0.0, -0.19, 0.0],
+                [0.0, 0.0, 0.19],
+            ]
+            .iter()
+            .enumerate()
+            {
+                pts.push((
+                    ["top +x", "top -x", "top +y", "top -y", "top +z"][k],
+                    [x + d[0], y + d[1], feet + 0.5 + d[2]],
+                ));
+            }
+            for (what, p) in pts {
+                let a = q::locate(&bsp, p);
+                let b = q::locate(&conv, p);
+                let la = a.and_then(|l| bsp.leaf(l)).map(|l| l.0);
+                let lb = b.and_then(|l| conv.leaf(l)).map(|l| l.0);
+                if a.is_none() || b.is_none() {
+                    solid.push(format!(
+                        "{what} {p:?}: halo1 leaf {a:?} (flags {la:?}), converted leaf {b:?} (flags {lb:?})"
+                    ));
+                }
+            }
+        }
+    }
+    println!("{} pill points solid", solid.len());
+    for s in &solid {
+        println!("  {s}");
+    }
+    assert!(solid.is_empty());
+}
