@@ -321,6 +321,29 @@ pub fn preview_alpha(x: usize, y: usize) -> u8 {
     }
 }
 
+/// `preview` in a retail preview's frame: each pixel on the one-pixel
+/// frame ([`preview_alpha`] opaque) takes `retail`'s colour there. A
+/// retail preview's frame is in its pixels (a pale line the Select Map
+/// dialog shows as the picture's border); one made from an image or a
+/// [`generated_card`] has the image's own colours there, so it shows no
+/// border. Only the user's disc's pixels go in: nothing of the frame is
+/// kept here. Either of the wrong length: `preview` as it was.
+pub fn with_frame(preview: &mut [u8], retail: &[u8]) {
+    if preview.len() != PREVIEW_LEN || retail.len() != PREVIEW_LEN {
+        return;
+    }
+    for (i, (p, r)) in preview
+        .chunks_exact_mut(4)
+        .zip(retail.chunks_exact(4))
+        .enumerate()
+    {
+        if preview_alpha(i % PREVIEW_W, i / PREVIEW_W) == 0xff {
+            p[..3].copy_from_slice(&r[..3]);
+            p[3] = 0xff;
+        }
+    }
+}
+
 /// A PNG or JPEG decoded to 8-bit RGBA: `(width, height, pixels)`.
 pub fn decode_image(bytes: &[u8]) -> Result<(usize, usize, Vec<u8>), String> {
     match crate::manifest::image_signature(bytes) {
