@@ -154,7 +154,7 @@ impl Page for ListPage {
             }
             Input::A => match b.rows.press(row) {
                 Chosen::Stepped(line) => ListEffect::Stepped(line),
-                Chosen::Open(id) => ListEffect::Open(id),
+                Chosen::Open(id) | Chosen::Push(id) => ListEffect::Open(id),
                 Chosen::Act if b.action => ListEffect::Action,
                 Chosen::Retail { line, .. } => ListEffect::Retail(line),
                 Chosen::Act | Chosen::Nothing => ListEffect::None,
@@ -183,6 +183,129 @@ impl Page for ListPage {
 
     fn summary(&self, focus: &Focus) -> String {
         focus_line(&self.spec(focus))
+    }
+}
+
+// ---- list screens opened on one another ----
+
+/// List screens of ours that open one another ([`ListEffect::Open`] on a
+/// screen it has pushes it; B or Back pops it): what the player walks
+/// through, so a table can say that B on the second screen comes back to the
+/// first with its focus where it was.
+///
+/// The rows keep their own state (the screen opened second may read what a
+/// press on the first chose), so a state is the presses from the first
+/// screen opened, and [`Page::spec`] replays them on the rows before it
+/// asks the top screen: a named state then shows what the presses chose,
+/// whatever was stepped since. That holds for rows whose presses only
+/// choose (a press twice is a press once); rows that toggle a store are
+/// stepped through their own [`ListPage`].
+pub struct StackPage {
+    pages: Vec<(&'static str, ListPage)>,
+    named: Vec<(String, Vec<Input>)>,
+}
+
+/// A [`StackPage`]'s state: the presses so far and the screens they left
+/// open, the top last (none: the first screen closed).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Stack {
+    pub presses: Vec<Input>,
+    pub open: Vec<(&'static str, Focus)>,
+}
+
+impl StackPage {
+    /// `first` opens first; named state `open` (no presses) shows it.
+    pub fn new(first: &'static str, page: ListPage) -> Self {
+        StackPage {
+            pages: vec![(first, page)],
+            named: vec![("open".into(), Vec::new())],
+        }
+    }
+    /// A screen an [`ListEffect::Open`] can push.
+    pub fn screen(mut self, name: &'static str, page: ListPage) -> Self {
+        self.pages.push((name, page));
+        self
+    }
+    /// A named state: `presses` from the first screen.
+    pub fn state(mut self, name: &str, presses: &[Input]) -> Self {
+        self.named.push((name.into(), presses.to_vec()));
+        self
+    }
+    fn page(&self, name: &str) -> Option<&ListPage> {
+        self.pages.iter().find(|(n, _)| *n == name).map(|(_, p)| p)
+    }
+    fn fresh(&self) -> Stack {
+        Stack {
+            presses: Vec::new(),
+            open: vec![(self.pages[0].0, Focus::default())],
+        }
+    }
+    /// The state after `presses` from the first screen.
+    pub fn after(&self, presses: &[Input]) -> Stack {
+        let mut s = self.fresh();
+        for &i in presses {
+            self.step(&mut s, i);
+        }
+        s
+    }
+    /// The screen on top, by name; `None` once the first one closed.
+    pub fn top(state: &Stack) -> Option<&'static str> {
+        state.open.last().map(|(n, _)| *n)
+    }
+}
+
+impl Page for StackPage {
+    type State = Stack;
+    type Event = Input;
+    type Effect = ListEffect;
+
+    fn step(&self, s: &mut Stack, input: Input) -> ListEffect {
+        let Some((name, focus)) = s.open.last_mut() else {
+            return ListEffect::None;
+        };
+        let Some(page) = self.page(name) else {
+            return ListEffect::None;
+        };
+        s.presses.push(input);
+        let e = page.step(focus, input);
+        match &e {
+            ListEffect::Open(next) if self.page(next).is_some() => {
+                let next = self.pages.iter().find(|(n, _)| n == next).unwrap().0;
+                s.open.push((next, Focus::default()));
+            }
+            ListEffect::Close => {
+                s.open.pop();
+            }
+            _ => {}
+        }
+        e
+    }
+
+    fn spec(&self, s: &Stack) -> ScreenSpec {
+        // The rows' own state as the presses left it.
+        let replayed = self.after(&s.presses);
+        let (name, focus) = replayed
+            .open
+            .last()
+            .copied()
+            .unwrap_or((self.pages[0].0, Focus::default()));
+        self.page(name).expect("a pushed screen is ours").spec(&focus)
+    }
+
+    fn states(&self) -> Vec<(String, Stack)> {
+        self.named
+            .iter()
+            .map(|(n, presses)| (n.clone(), self.after(presses)))
+            .collect()
+    }
+
+    /// The screen on top and its focus line; `closed` once the first one
+    /// closed.
+    fn summary(&self, s: &Stack) -> String {
+        match Self::top(s) {
+            None => "closed".into(),
+            Some(name) => format!("{name} | {}", focus_line(&self.spec(s))),
+        }
     }
 }
 

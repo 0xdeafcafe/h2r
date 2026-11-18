@@ -57,6 +57,7 @@ pub mod lockstep_glue;
 pub mod map_bases;
 pub mod map_copy;
 pub mod map_override;
+pub mod map_select;
 pub mod map_slots;
 pub mod movies_glue;
 pub mod new_maps;
@@ -774,6 +775,9 @@ pub fn run_hosted_with_live(
     // under T:\$c, which the main menu reads for its map list
     // (docs/game/maps.md §4); before the VFS lists that folder.
     new_maps::install_at_boot(&opts.data_root, &opts.disc);
+    // The map select by category (docs/game/map-select.md), from the list
+    // the main menu will build: the disc's maps and those packages.
+    let _ = map_select::prepare_at_boot(&opts.data_root, &opts.disc);
     // The Halo 1 maps' sandbox and the campaign's assets start as the
     // settings say; the pregame screen changes them per game, and the VFS
     // and the health model follow (h1_variants, docs/game/h1-multiplayer.md).
@@ -897,6 +901,7 @@ pub fn run_hosted_with_live(
     let campaigns = campaigns.map(campaign_menu::prepare);
     layout_glue::install(&loaded.runtime, &mut features, model).context("installing the button layouts")?;
     campaign_menu::install(&loaded.runtime, &mut features, campaigns).context("installing the campaigns")?;
+    map_select::install(&mut features).context("installing the map select")?;
     // The Halo 1 / Halo 2 options (docs/game/h1-multiplayer.md "Halo 1
     // options"): the switches follow the settings, the HUD style is picked
     // at each game start, and a custom game's Game Setup gets the Halo 1

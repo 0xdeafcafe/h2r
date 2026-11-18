@@ -376,6 +376,15 @@ The glue (`list_class` events, `TEXT_SET`, tints) keeps its runner tests
   each table case builds a fresh page. Whether the game wraps the focus
   at either end is not traced; the page stops it there, and the fidelity
   loop will settle it.
+- **`StackPage`**: list screens that open one another, walked as the
+  player walks them: an `Open(screen)` it has pushes that screen, B or Back
+  pops it, and the summary names the screen on top (`closed` once the
+  first one closes). A state is the presses since the first screen, and
+  `spec` replays them on the rows first, so a named state (given as
+  presses, `.state(name, &[Down, A])`) shows what its presses chose. That
+  holds for rows whose presses only choose; rows that toggle a store are
+  stepped through their own `ListPage`. The map select's model is the first
+  ([map-select.md](map-select.md)).
 - **`AccountPage`**: the account screen (`AccountScreen`, already pure),
   with typed text and server answers as events.
 - **`SigninPage`** (`signin_screen`): the prompt plus the code being
