@@ -41,8 +41,12 @@ Fixed at both ends:
   that same unit was last seen.
 - **Viewer** (`web/src/state/replay.ts`, `GameClock`). Old recordings
   still rewind. The timeline reads frames and events in log order, and
-  starts each run just after the one before. A kill logged before its
-  run's first recorded frame starts that run itself. `ReplayTimeline.cuts`
+  starts each run just after the one before. Given the events' own
+  `GameFrame`s it places every event exactly, and a kill logged before its
+  run's first recorded frame starts that run itself. The replay now reads
+  frames only from `/frames` (step 2), so events are placed into the
+  frames' runs by their order and ticks (`GameClock.place`), which is
+  exact except for an event in the second before a run's first frame. `ReplayTimeline.cuts`
   lists where the runs begin. Players at exactly the origin facing +x (the
   old placeholder) are dropped from recorded and live frames.
 
@@ -269,10 +273,8 @@ resolution. The viewer downloads about a seventh of what it does now. A
 one-hour campaign session is about 13–20 MB in R2. That's small, but games
 pile up, so:
 
-- **Retention.** Keep chunks for every game for 30 days. After that, keep
-  them for games someone starred, shared or put in a film collection, and
-  keep a thinned version (1 Hz keyframes only, about 30 KB a minute) for
-  the rest. The stats don't need frames. The setting is the operator's.
+- **Retention: everything, at full detail** (decided 2026-11-18). There's
+  no thinning. The answer to games piling up is compression, below.
 - **R2 costs.** About 6 puts a minute a game (Class A), and reads that
   mostly hit the CDN cache. Storage at the sizes above is pennies a month
   at current traffic.
@@ -285,6 +287,72 @@ pile up, so:
   same event in the SQLite log. The live parity suite should get a case
   that records a game, reads it back as chunks in both homes and compares
   the bytes.
+
+### Compression (decided: the work goes here)
+
+Every game is kept at full detail, so a chunk has to be small at rest and
+quick to read back. The estimates above are a starting point. The first
+chunk build measures real sizes and decode times, and the targets below
+are what it has to meet:
+
+| target | value |
+|---|---|
+| stored size, 1-player campaign (30 actors near) | at most 120 KB a minute |
+| stored size, 16-player multiplayer | at most 100 KB a minute |
+| decoding one 10 s chunk in the browser (V8, one core) | at most 2 ms |
+| decoding one 10 s chunk natively | at most 0.5 ms |
+| seeking to any tick | one chunk index read (cached), one chunk fetch, decoding at most 10 s |
+| encoding a chunk on the Worker | at most 1 ms CPU |
+
+Benches prove them, in CI-sized form as tests that fail past the target:
+
+- A deterministic synthetic corpus in the repo. It has players walking,
+  strafing, jumping, driving and dying, actors in groups, vehicles, and
+  scenery knocked about, at 30 Hz, for a multiplayer and a campaign shape.
+  Nothing in it comes from the disc or a recorded game.
+- A Rust bench that encodes and decodes it, reports bytes a minute for
+  each stream and decode time for each chunk, and asserts the targets
+  (`--release`).
+- A Bun bench and test that decode the same chunks (the golden vectors)
+  in TypeScript and assert the browser target. The decoder is plain typed
+  arrays, with no WASM.
+- A local tool, not committed data, that runs the codec over recordings
+  read from the public API, to check the synthetic corpus is honest.
+
+How to get there, past zstd on the whole chunk, in the order to try:
+
+1. **Prediction, not plain deltas.** At 30 Hz a moving player's position
+   is close to `2·p[t−1] − p[t−2]`. Coding the error of that prediction
+   rather than the difference makes most samples zero or ±1 in quantised
+   units. The same goes for aim and vehicle orientation (predict the
+   angular velocity) and for speed.
+2. **Quantisation sized to the viewer.** Positions at 1/256 unit (about
+   1 cm, half today's precision, and invisible at any camera distance).
+   Aim and orientation at 10–11 bits an axis, not 12. Speed is dropped
+   where `vel` is sent. Each scale is a named constant, with the viewer's
+   error budget written beside it.
+3. **Columns, not records.** Inside a chunk each field is its own stream
+   (all players' x errors, then y, then aim, then flags, then events).
+   Each stream holds values of one kind, so its statistics are tight.
+4. **An entropy coder per stream.** rANS with a static frequency table
+   per stream per chunk (the table costs tens of bytes). Decoding it is a
+   table lookup per symbol, fast in TypeScript and Rust alike. Runs of
+   "unchanged" (players standing still, actors idle) become run lengths
+   before entropy coding.
+5. **A trained dictionary for keyframes.** Keyframes carry the slow state
+   (scenery out of place, machines, the roster, strings). A zstd
+   dictionary trained on synthetic keyframes for each mode (campaign,
+   multiplayer) shrinks the first keyframe of each chunk, and it ships in
+   the code. If keyframes stay a small share after steps 1–4, this step is
+   skipped.
+6. **Transport compression stays the CDN's.** Chunks are served with a
+   `Content-Encoding` only when that is smaller than the coded bytes.
+   It usually won't be, after rANS.
+
+The chunk keeps a small index at its head (each keyframe's byte offset and
+tick, and each stream's offset), so a reader seeks within a chunk without
+decoding what comes before the keyframe it needs. Keyframes stay every
+10 s, and the 10 s spacing is a constant to tune against the size target.
 
 ### Interpolation and extrapolation in the viewer
 
@@ -378,27 +446,32 @@ Each step is test-first and runs in both homes.
 2. **Viewer, now:** read frames once, show cuts and more marks on the
    timeline, frame stepping, first-person camera, killcam. This works on
    today's data.
-3. **Protocol:** `vel`, `seat`, `vitality`, `fire`, tick offsets for hits
-   and actions, and the `cut` header. Packed format version 3 (version 2
-   still reads). Golden vectors on both sides.
+3. **Protocol:** `vel`, `seat`, `vitality`, `fire`, `anim`, tick offsets
+   for hits and actions, and the `cut` header. Packed format version 3
+   (version 2 still reads). Golden vectors on both sides.
+   **Research, alongside (decided):** find each unit's animation state in
+   guest memory (the animation graph, its current state and frame) by
+   static reading and the existing memory fixtures, and record it in the
+   protocol as `anim`. The viewer stops inferring once senders have it.
 4. **Capture:** players every tick, actor rates by distance, projectiles
-   and grenades as entities, animation state once the reader is found
-   (research, as theater.md's action record is).
-5. **Server:** `FrameChunk` recording to the `BlobStore`, the chunk list
-   endpoint, retention, and the parity case. Then retire `GameFrame`
-   recording for new games.
+   and grenades as entities, and the animation state from step 3's reader.
+5. **Server:** `FrameChunk` recording to the `BlobStore`, read through the
+   API with the same visibility check as `/frames` (decided), the chunk
+   list endpoint, the compressed chunk codec and its benches, and the
+   parity case. Then retire `GameFrame` recording for new games, and
+   **remove the public JSON `/frames` read** (decided: the viewer is its
+   only user). The packed `/frames` read stays for older games.
 6. **Viewer:** the chunk reader, Hermite sampling, one-shots on their tick,
    and live extrapolation.
 
-## Open questions
+## Decisions (2026-11-18)
 
-- Retention: is 30 days of full detail, then 1 Hz, right? Should starred
-  games keep full detail for ever?
-- Should the public JSON `/frames` read stay, capped at 100 a page, or go
-  once the chunks exist? Its JSON is 10 times the packed size, and it's
-  the read that fails today.
-- Anyone may read a public game's chunks. Friends-only co-op games need
-  the same visibility check on chunk reads as on `/frames`, so chunks are
-  served through the API, not straight from a public bucket URL.
-- Animation state: is it worth finding the per-unit animation reader now,
-  or should the viewer go on inferring for a while?
+- **Retention:** keep every game at full detail. Put the effort into
+  compression ([Compression](#compression-decided-the-work-goes-here)),
+  with byte and decode-time targets proved by benches.
+- **JSON `/frames`:** removed once chunks exist. The packed read stays for
+  games recorded before them.
+- **Chunk visibility:** chunks are read through the API with the same
+  check as `/frames` (friends-only co-op games stay private), never from a
+  public bucket URL.
+- **Animation state:** find the reader now, as research beside step 3.
