@@ -428,9 +428,18 @@ the port's bit in the screen mask.
 The block is a copy of the human's block (slot 0 `+0x18`) with these
 changes:
 
-- the 16-byte name field at block `+0x48` (single-byte characters:
-  `0x190001` copies 16 and zeroes the 16th) set to the bot's name, which is
-  ASCII and has no glyph;
+- the profile name at block `+8` (UTF-16, 32 units; the profile file's
+  `+8`, "Halo0001" for the user's) set to the bot's name. The game rebuilds
+  the slot's display name `+0xc1c` from it (`0x190eb3`: slot `+0x20`, 32
+  units) at sign-in and whenever the slot's Live state or account changes
+  (`0x190074`, `0x18fee9`), so the name the driver writes to `+0xc1c` alone
+  did not last. In the user's Xbox Live lobby every bot showed as the
+  human's "Halo0001", and the session's unique-name pass (`0x7f660`, from
+  `0x65e37`) renamed the copies from the game's default names (`0x19fd00`,
+  string ids `0x02000320` "Shadow" and `0x0200032b` "Wilshire");
+- the 16-byte field at block `+0x48` (single-byte characters: `0x190001`
+  copies 16 and zeroes the 16th; the profile UI's commit fills it at
+  `0x24b9ce`, and a saved profile has it empty) also set to the bot's name;
 - the control fields set so the brain's sticks mean the same on every
   machine (block `+0xfc` = slot `+0x114`, the record `0x190c34` reads):
   - flags bits 0 and 2 cleared (look inversion and the other flag `0x190c34`
@@ -960,16 +969,19 @@ list for the user to play (§11).
      real pad holds it. `HostBackend::placed` reports where it went.
      `H2_BOTS=<n>` (1 to 3) adds `n` brains on ports 1 up at boot.
    - **Joining.** While the players screen `0x1e` is on top and a bot's slot
-     has no profile, the bot taps A (6 frames in every 60).
-     - The A reaches the screen's handler for a controller with no profile,
-       `0x252a67` (`PLAYERS_SCREEN_UNJOINED`; its caller `0x252ad7` sends a
-       controller with a profile to `0x25286d` instead).
-     - For a bot's port, a hook answers in the handler's place. It copies
-       the human's block with the bot's name and fixed controls, calls the
-       game's `0x18fb34(port, block, -1)`, writes the slot's display name,
-       and sets the port's bit in the screen mask.
-     - Once signed in, the bot never presses A again, so it cannot move the
-       human's menus on.
+     has no profile, the glue signs the bot in itself, before
+     `SOUND_UPDATE` (as the leaving bots are signed out), once a second at
+     most. The bot presses nothing (see stage 7, "The join gate").
+     - It copies the human's block with the bot's name and fixed controls,
+       calls the game's `0x18fb34(port, block, -1)`, writes the slot's
+       display name, and sets the port's bit in the players screen's mask
+       (the screen `ui_watch` read), then runs the frame.
+     - A bot's A that still reaches the screen's handler for a controller
+       with no profile, `0x252a67` (`PLAYERS_SCREEN_UNJOINED`; its caller
+       `0x252ad7` sends a controller with a profile to `0x25286d` instead),
+       as a sim script's can, is answered the same way.
+     - A bot never presses a menu button, so it cannot move the human's
+       menus on.
      - The bots stay signed in until the game exits.
      - `H2_BOTS` bots also join a split-screen campaign from its players
        screen; there their pads are idle (perception reads multiplayer
@@ -1487,18 +1499,27 @@ list for the user to play (§11).
    - **No `H2_BOTS` needed.** Turning Clankers On is enough: the bots
      input backend, the bots feature and the driver are always installed
      (with the XAPI); `H2_BOTS` only adds bots of its own at boot.
-   - **The join gate.** A bot taps A only while the players screen takes
-     player one's input, nothing sits on windows 0 to 4 (`ui_watch::dialog`:
-     a dialog, or the profile chooser that `0x24b6ea` and `0x1905bf` open
-     for one controller), and its own slot has no profile
-     (`bot_glue::join_gate`). In the user's run the hook never fired, the
-     players screen showed the human's player four times, and the human
-     was left on "which profile?": a bot tap that reaches a profile
-     chooser picks the first profile, the human's. The log now says each
-     port's gate when it changes (`bots: join gate port 1: top 0x1e,
-     dialog none, signed_in false: taps A`), each tap (`bots: Clanker 1
-     taps A on port 1`), and any bot button the players screen's unjoined
-     handler sees that is not a join.
+   - **The join gate.** A bot is signed in only while the players screen
+     takes player one's input, nothing sits on windows 0 to 4
+     (`ui_watch::dialog`: a dialog, or the profile chooser that `0x24b6ea`
+     and `0x1905bf` open for one controller), its own slot has no profile,
+     a human has a profile to copy and no game runs (`bot_glue::to_sign_in`).
+     The log says each port's gate when it changes (`bots: join gate port
+     1: top 0x1e, dialog none, signed_in false (slot 0x0): signs in`; the
+     slot's flags: `0x10` a profile, `0x20` signed in to Xbox Live) and
+     each sign-in (`bots: signing Clanker 1 in on port 1`).
+
+     Bots used to tap A through the gate and let the screen's handler sign
+     them in. Every tap the game took elsewhere opened a profile chooser
+     for the bot's controller, and a tap that reached a chooser picked the
+     first profile, the human's. In the user's runs the players screen
+     showed the human's player four times, and an Xbox Live lobby kept
+     popping up "pick a profile": the pregame lobby's handler (`0x250b1e`)
+     sends A or START from a controller with no profile to the chooser
+     (`0x250cc3`, Live sessions), and B or Back from a profile that is not
+     on Live to the profile UI (`0x2511b6`, `0x251242`, `0x24b779`). Now a
+     joining bot's pad is idle (`Frame::joining`), the brain's and a sim
+     script's alike.
    - **Their own look.** The bot's block is the human's with the bot's
      name, controls and look: the 16 bytes at block `+0x118` are the
      appearance (`0x18fd94` copies them, from slot `+0x130`, into the

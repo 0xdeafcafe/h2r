@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use engine::memory::GuestMemory;
 use input::HostBackend;
-use input::host::{HostButton, HostPad, HostPadId, HostPadState};
+use input::host::{HostPad, HostPadId, HostPadState};
 
 /// The most local bots: four ports, one human.
 pub const MAX_LOCAL: usize = 3;
@@ -55,7 +55,10 @@ pub struct Frame<'a> {
     /// The game's memory, to read what the bot sees.
     pub guest: &'a dyn GuestMemory,
     /// The players screen is on top and this bot's slot has no profile:
-    /// pressing A signs it in (docs/game/bots.md, section 4.2).
+    /// the glue is signing it in itself (docs/game/bots.md, section 4.2), so
+    /// a source should press nothing. A bot never presses a button to join:
+    /// any press from a controller with no profile opens the game's profile
+    /// chooser, which picks the human's profile.
     pub joining: bool,
 }
 
@@ -69,18 +72,6 @@ impl<F: FnMut(&Frame<'_>) -> HostPadState + Send> PadSource for F {
     fn pad(&mut self, f: &Frame<'_>) -> HostPadState {
         self(f)
     }
-}
-
-/// Frames between a joining bot's presses of A, and how long each is held.
-pub const JOIN_EVERY: u64 = 60;
-pub const JOIN_HOLD: u64 = 6;
-
-/// A joining bot's pad: A for [`JOIN_HOLD`] frames in every [`JOIN_EVERY`].
-pub fn join_pad(frame: u64) -> HostPadState {
-    let mut pad = HostPadState::default();
-    pad.buttons
-        .set(HostButton::South, frame % JOIN_EVERY < JOIN_HOLD);
-    pad
 }
 
 /// Timed pads: each step held for its frames, then the next; idle after

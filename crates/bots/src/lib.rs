@@ -36,9 +36,9 @@ pub fn from_env_value(v: Option<&str>) -> Result<usize, String> {
     }
 }
 
-/// The brain as a pad source: A on the players screen until signed in,
-/// then in a multiplayer game its [`mind::Mind`] with the loaded map's data
-/// ([`cache::current`]), idle anywhere else.
+/// The brain as a pad source: in a multiplayer game its [`mind::Mind`] with
+/// the loaded map's data ([`cache::current`]), idle anywhere else, and idle
+/// while the glue signs it in on the players screen.
 pub struct Brain {
     pub mind: mind::Mind,
     /// The last death heard from [`emote::kills`].
@@ -63,7 +63,7 @@ impl Default for Brain {
 impl local::PadSource for Brain {
     fn pad(&mut self, f: &local::Frame<'_>) -> HostPadState {
         if f.joining {
-            return local::join_pad(f.frame);
+            return HostPadState::default();
         }
         let who = match f.machine {
             Some(id) => guest::Who::Machine(id),
@@ -99,7 +99,7 @@ mod tests {
     }
 
     #[test]
-    fn the_brain_taps_a_while_joining_and_is_idle_outside_a_game() {
+    fn the_brain_presses_nothing_while_joining_or_outside_a_game() {
         let g = engine::testing::FakeGuest::new();
         let mut b = Brain::default();
         let f = |frame, joining| Frame {
@@ -110,7 +110,14 @@ mod tests {
             guest: &g,
             joining,
         };
-        assert!(b.pad(&f(0, true)).buttons.contains(HostButton::South));
+        // Signed in by the glue: an A here would open a profile chooser.
+        for frame in 0..120 {
+            assert!(
+                !b.pad(&f(frame, true)).buttons.contains(HostButton::South),
+                "frame {frame}"
+            );
+            assert_eq!(b.pad(&f(frame, true)), HostPadState::default());
+        }
         // Unmapped memory: no game, no pad.
         assert_eq!(b.pad(&f(0, false)), HostPadState::default());
     }

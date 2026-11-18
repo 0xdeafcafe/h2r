@@ -15,8 +15,10 @@
 //!   ([`bots::local::Recorded`]);
 //! - the brain is [`bots::Brain`] at `H2_BOTS_SKILL`.
 //!
-//! Until a bot is signed in on the players screen, every source presses A
-//! to join ([`bots::local::join_pad`]), as the brain does.
+//! While the glue signs a bot in on the players screen
+//! ([`bots::local::Frame::joining`]), every source presses nothing, as the
+//! brain does: a press from a controller with no profile opens the game's
+//! profile chooser.
 //!
 //! Phantoms go to `bots::phantom`: on the books at once, they join once a
 //! multiplayer game this console hosts runs (docs/game/bots.md §5.1).
@@ -53,7 +55,7 @@ struct ScriptPad(Remote);
 impl local::PadSource for ScriptPad {
     fn pad(&mut self, f: &Frame<'_>) -> HostPadState {
         if f.joining {
-            return local::join_pad(f.frame);
+            return HostPadState::default();
         }
         let g = self.0.state_at_tick(Instant::now(), Some(f.frame));
         self.0.state_read();
@@ -61,13 +63,14 @@ impl local::PadSource for ScriptPad {
     }
 }
 
-/// Signs in first, then plays `inner` from the first frame after.
+/// Idle while the glue signs it in, then plays `inner` from the first
+/// frame after.
 struct Joining<S>(S);
 
 impl<S: local::PadSource> local::PadSource for Joining<S> {
     fn pad(&mut self, f: &Frame<'_>) -> HostPadState {
         if f.joining {
-            local::join_pad(f.frame)
+            HostPadState::default()
         } else {
             self.0.pad(f)
         }
@@ -260,7 +263,7 @@ mod tests {
     }
 
     #[test]
-    fn a_script_joins_then_plays_its_steps() {
+    fn a_script_presses_nothing_while_joining_then_plays_its_steps() {
         let g = engine::testing::FakeGuest::new();
         let r = Remote::new();
         let mut pad = Gamepad::default();
@@ -271,11 +274,8 @@ mod tests {
         }]);
         let mut s = ScriptPad(r.clone());
         use local::PadSource as _;
-        assert!(
-            s.pad(&frame(&g, 0, true))
-                .buttons
-                .contains(HostButton::South)
-        );
+        // The glue signs it in; a press now would open a profile chooser.
+        assert_eq!(s.pad(&frame(&g, 0, true)), HostPadState::default());
         assert!(r.busy(), "joining leaves the steps queued");
         assert!(
             s.pad(&frame(&g, 1, false))
