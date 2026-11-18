@@ -746,6 +746,31 @@ pub fn back_surfaces(mem: &mut runtime::Guest, device: u32) {
 /// Shadow page for the d3d entries the write barrier wraps (4 bytes each).
 const BARRIER_SHADOW: u32 = 0xa0ff_4000;
 
+/// The write barrier's write-watch owner: it drains its subscription by id
+/// through whichever Guest the entry runs against, so a pipelined render
+/// thread takes it over at each snapshot (`pipeline-render`).
+pub const WATCH_OWNER: &str = "boot:d3d";
+
+/// `pipeline-render` (docs/graphics/pipelined-render.md, "The prototype")
+/// with this D3D layer: the game's D3D entries (the sim's calls there join
+/// the render first), and every D3D override the render thread may run
+/// (the entries, the barrier's and CreateDevice's shadows, the port I/O
+/// stubs). Off unless `H2_PIPELINE_RENDER=1`.
+pub fn pipeline_render(i: Option<&Installed>) -> feature::pipeline_render::PipelineRender {
+    let entries: Vec<u32> = match i {
+        Some(i) => i.barrier.clone(),
+        None => Vec::new(),
+    };
+    let allowed: std::collections::BTreeSet<u32> =
+        entries.iter().copied().chain(d3d::abi::PORT_IO.iter().map(|p| p.0)).collect();
+    let shadows = [BARRIER_SHADOW, D3D_SHADOW];
+    feature::pipeline_render::PipelineRender::new().with_d3d(
+        entries,
+        move |addr, _| allowed.contains(&addr) || shadows.iter().any(|&s| (s..s + 0x1000).contains(&addr)),
+        &[WATCH_OWNER],
+    )
+}
+
 /// The D3D write barrier (docs/graphics/d3d.md "Integration", step 3) on the
 /// runtime's write watch: one subscriber watches all of RAM in the folded
 /// view, and every d3d entry is wrapped so that
@@ -771,7 +796,7 @@ fn install_write_barrier<B: d3d::backend::Backend + Send + 'static>(
     let id = {
         let mut mem = rt.memory();
         mem.map_zeroed(BARRIER_SHADOW, 0x1000, runtime::guest::Permissions::RX)?;
-        let id = mem.subscribe_writes("boot:d3d");
+        let id = mem.subscribe_writes(WATCH_OWNER);
         mem.watch_writes(id, CONTIGUOUS_BASE, 0x0400_0000).map_err(|e| anyhow::anyhow!("{e}"))?;
         id
     };

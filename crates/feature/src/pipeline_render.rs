@@ -47,7 +47,7 @@ pub const ID: &str = "pipeline-render";
 /// `H2_PIPELINE_RENDER=1` turns it on.
 pub const ENV: &str = "H2_PIPELINE_RENDER";
 /// The render thread's guest stack.
-pub const STACK_LEN: u32 = 0x4_0000;
+pub const STACK_LEN: u32 = 0x2_0000;
 
 /// A byte range of guest memory `[start, end)` (virtual).
 pub type Range = (u32, u32);
