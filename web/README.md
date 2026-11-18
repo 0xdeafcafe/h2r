@@ -469,12 +469,14 @@ teleporters" button when the map has any.
 
 ## Names, icons and link previews
 
-**Names.** `src/brand.ts` holds the two product names: `SITE_NAME` ("h2
-live", the service and the dashboard) and `STATS_NAME` (the stats site,
-"h2 Uplink"), plus the two sides' theme colours. Renaming is a one-line
+**Names.** `src/brand.ts` holds the product names: `DASH_NAME` ("Live
+Dashboard", /dash: the page titles, the header, the installed app's name),
+`STATS_NAME` (the stats site, "h2 Uplink") and `SITE_NAME` ("h2 live", the
+service itself, which only the link-preview card's mark carries), plus the
+two sides' theme colours. Renaming is a one-line
 change there; routes never change with a name. `vite.config.ts` writes the
-names into `index.html` (`%H2_SITE_NAME%`, `%H2_STATS_NAME%`), and the
-server reads them back out of the built HTML for link previews. Names
+names into `index.html` (`%H2_DASH_NAME%`, `%H2_STATS_NAME%`), and the
+server reads them back out of the built HTML (`h2-dash-name`, `h2-stats-name`) for link previews. Names
 considered for the stats site, avoiding anyone's trademarks as a product
 name: **h2 Uplink** (chosen: a terminal you dial into for the record, in
 the network-era voice of the old stats sites), h2 Debrief, h2 Dispatch,

@@ -13,7 +13,7 @@
 //! clan).
 //!
 //! The product names come from the built HTML itself
-//! (`<meta name="application-name">` and `<meta name="h2-stats-name">`,
+//! (`<meta name="h2-dash-name">` and `<meta name="h2-stats-name">`,
 //! which web/vite.config.ts fills in from web/src/brand.ts), so they are
 //! set in one place.
 
@@ -41,8 +41,8 @@ pub const DASH_THEME: &str = "#0c4406";
 pub const STATS_THEME: &str = "#071a35";
 
 /// Names used when the HTML carries none.
-pub const DEFAULT_SITE_NAME: &str = "h2 live";
-pub const DEFAULT_STATS_NAME: &str = "h2 live stats";
+pub const DEFAULT_DASH_NAME: &str = "Live Dashboard";
+pub const DEFAULT_STATS_NAME: &str = "h2 Uplink";
 
 /// The longest description written (crawlers cut at about 200).
 const DESCRIPTION_MAX: usize = 200;
@@ -75,14 +75,14 @@ fn website() -> String {
 /// The two product names, as the built HTML gives them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Names {
-    pub site: String,
+    pub dash: String,
     pub stats: String,
 }
 
 impl Default for Names {
     fn default() -> Self {
         Names {
-            site: DEFAULT_SITE_NAME.into(),
+            dash: DEFAULT_DASH_NAME.into(),
             stats: DEFAULT_STATS_NAME.into(),
         }
     }
@@ -93,14 +93,14 @@ impl Names {
     pub fn from_html(html: &str) -> Names {
         let d = Names::default();
         Names {
-            site: meta_content(html, "application-name").unwrap_or(d.site),
+            dash: meta_content(html, "h2-dash-name").unwrap_or(d.dash),
             stats: meta_content(html, "h2-stats-name").unwrap_or(d.stats),
         }
     }
 
     fn of(&self, side: Side) -> &str {
         match side {
-            Side::Dash => &self.site,
+            Side::Dash => &self.dash,
             Side::Stats => &self.stats,
         }
     }
@@ -521,7 +521,7 @@ pub fn render(meta: &PageMeta, names: &Names, origin: &str, path: &str) -> Strin
         e(&image),
         e(&format!(
             "{}: a chrome 2 over the Earth at sunrise",
-            names.site
+            names.of(meta.side)
         )),
         e(&og_title),
         e(&description),
@@ -615,8 +615,8 @@ mod tests {
     use super::*;
 
     const INDEX: &str = "<!doctype html>\n<html>\n  <head>\n    <meta charset=\"UTF-8\" />\n    \
-        <!-- page-meta -->\n    <title>%H2_SITE_NAME%</title>\n    <!-- /page-meta -->\n    \
-        <meta name=\"application-name\" content=\"h2 live\" />\n    \
+        <!-- page-meta -->\n    <title>%H2_DASH_NAME%</title>\n    <!-- /page-meta -->\n    \
+        <meta name=\"h2-dash-name\" content=\"Live Dashboard\" />\n    \
         <meta name=\"h2-stats-name\" content=\"h2 Uplink\" />\n  </head>\n  <body></body>\n</html>\n";
 
     #[test]
@@ -624,12 +624,12 @@ mod tests {
         assert_eq!(
             Names::from_html(INDEX),
             Names {
-                site: "h2 live".into(),
+                dash: "Live Dashboard".into(),
                 stats: "h2 Uplink".into()
             }
         );
         // Unreplaced placeholders and missing tags fall back.
-        let raw = "<meta name=\"application-name\" content=\"%H2_SITE_NAME%\">";
+        let raw = "<meta name=\"h2-dash-name\" content=\"%H2_DASH_NAME%\">";
         assert_eq!(Names::from_html(raw), Names::default());
         assert_eq!(Names::from_html(""), Names::default());
     }
@@ -713,7 +713,7 @@ mod tests {
     #[test]
     fn tags_name_the_page_and_its_side_and_are_escaped() {
         let names = Names {
-            site: "h2 live".into(),
+            dash: "Live Dashboard".into(),
             stats: "h2 Uplink".into(),
         };
         let meta = PageMeta {
@@ -745,7 +745,7 @@ mod tests {
         assert!(t.contains("<meta name=\"twitter:card\" content=\"summary_large_image\" />"));
         // A side's home goes by the side's name.
         let home = render(&describe_static("/"), &names, "https://live.example", "/");
-        assert!(home.contains("<title>h2 live</title>"));
+        assert!(home.contains("<title>Live Dashboard</title>"));
         assert!(home.contains("content=\"#0c4406\""));
     }
 
@@ -756,7 +756,7 @@ mod tests {
             out.contains("<!-- page-meta -->\n    <title>T</title>\n    <!-- /page-meta -->"),
             "{out}"
         );
-        assert!(!out.contains("%H2_SITE_NAME%"));
+        assert!(!out.contains("%H2_DASH_NAME%"));
         assert!(out.contains("<meta name=\"h2-stats-name\""));
         assert_eq!(out.matches("<title>").count(), 1);
         // Injected again (a cached copy), still one block.
