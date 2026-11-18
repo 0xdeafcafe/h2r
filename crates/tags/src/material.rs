@@ -147,6 +147,8 @@ pub struct ResolvedImplementation {
     /// sizes. Without it the resolved implementation (variant, constants)
     /// is the same for every draw of the shader ([`per_draw_inputs`]).
     pub per_draw_inputs: bool,
+    /// Every engine input the implementation reads ([`input_reads`]).
+    pub input_reads: InputReads,
     /// Hardware vertex constants (`c[18 + i]`, `0x00018eab`).
     pub vertex_constants: Vec<Register>,
     /// Vertex attribute defaults `v[i]` (`SET_VERTEX_DATA4F_M`, `0x00018e3b`).
@@ -655,6 +657,7 @@ impl ShaderLibrary {
             c1_written: c1w,
             pixel_constants_from_engine: pixel_from_engine,
             per_draw_inputs: per_draw_inputs(spas, imp),
+            input_reads: input_reads(spas, imp),
             vertex_constants: regs(1),
             vertex_defaults: regs(0),
             animated,
@@ -670,6 +673,48 @@ pub const INSTANCE_SCALARS: u64 = 1 << 21;
 /// The engine integer inputs the instance supplies: 4 and 5, the `shad`'s
 /// `+0x3e`/`+0x40` (`0x0001bbf0`, returned by `0x00034060`).
 pub const INSTANCE_INTS: u32 = 1 << 4 | 1 << 5;
+
+/// The engine inputs an implementation reads, bit `n` input `n` of each
+/// kind: what a caller resolving it with its own [`EngineInputs`] must
+/// fill.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InputReads {
+    pub scalars: u64,
+    pub vectors: u64,
+    pub ints: u32,
+}
+
+/// What `imp` reads: its input masks (spas `+0x104..+0x114`, which
+/// `0x0001ae70` evaluates before the draw), the sources of its engine
+/// constant bindings (modes 0 to 3 a scalar, 4 a vector) and its fragment
+/// selectors (integers).
+pub fn input_reads(spas: &PassPostprocess, imp: &Implementation) -> InputReads {
+    let mut r = InputReads {
+        scalars: imp.scalar_inputs,
+        vectors: imp.vector_inputs,
+        ints: imp.int_inputs,
+    };
+    let mut source = |mode: usize, source: u8| match mode {
+        0..=3 => r.scalars |= 1u64 << (source & 63),
+        4 => r.vectors |= 1u64 << (source & 63),
+        _ => {}
+    };
+    let externals = |range: IndexRange| spas.externals.get(range.indices()).unwrap_or(&[]);
+    for e in externals(imp.external_pixel_constants) {
+        source(usize::from(e.bytes[2] & 7), e.bytes[3]);
+    }
+    for e in externals(imp.external_vertex_constants) {
+        source(usize::from((e.word() >> 5) & 0x1f), e.bytes[3]);
+    }
+    for f in spas.fragments.get(imp.fragments.indices()).unwrap_or(&[]) {
+        if let Ok(s) = u32::try_from(f.selector)
+            && s < 32
+        {
+            r.ints |= 1 << s;
+        }
+    }
+    r
+}
 
 /// Whether `imp` reads an engine input that can change per draw. Its input
 /// masks (spas `+0x104..+0x114`) are what `0x0001ae70` evaluates before the

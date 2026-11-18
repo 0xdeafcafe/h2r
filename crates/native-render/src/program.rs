@@ -86,20 +86,70 @@ pub fn compile_pass(
         // functions, lighting, time) are not evaluated here.
         return Err("per-draw engine inputs".into());
     }
-    let program = vsh::Program::parse(microcode).map_err(|e| format!("vertex program: {e:?}"))?;
-    let unsupplied = program.inputs_read() & !INPUT_MASK & !defaults_mask(&look.vertex_defaults);
+    let t = translate_pass(&PassParts {
+        microcode,
+        pixel_shader: &look.pixel_shader,
+        dims: look.textures.map(|s| (s != Stage::Empty).then_some(TextureDim::D2)),
+        // Only a stage's own bitmap is stored biased here.
+        biased: look.textures.map(|s| matches!(s, Stage::Bitmap { .. })),
+        stage_states: &look.stage_states,
+        vertex_constants: &look.vertex_constants,
+        vertex_defaults: &look.vertex_defaults,
+        alpha_test,
+    })?;
+    Ok(MaterialProgram {
+        wgsl: t.wgsl,
+        stages: look.textures,
+        samplers: t.samplers,
+        dims: t.dims,
+        signed: t.signed,
+        vertex: t.vertex,
+        pixel: t.pixel,
+    })
+}
+
+/// What [`translate_pass`] translates: one implementation's programs,
+/// what its stages hold and its instance constants.
+pub(crate) struct PassParts<'a> {
+    pub microcode: &'a [u8],
+    pub pixel_shader: &'a [u8; tags::shader::PSDEF_SIZE],
+    /// The texture each stage has bound (`None`: nothing).
+    pub dims: [Option<TextureDim>; 4],
+    /// Stages whose texture can be stored biased for signed channels.
+    pub biased: [bool; 4],
+    pub stage_states: &'a [StageStates],
+    pub vertex_constants: &'a [Register],
+    pub vertex_defaults: &'a [Register],
+    pub alpha_test: Option<(wgpu::CompareFunction, u8)>,
+}
+
+/// A translated pass.
+pub(crate) struct Translated {
+    pub wgsl: String,
+    pub samplers: [Option<StageStates>; 4],
+    pub dims: [Option<TextureDim>; 4],
+    pub signed: [[bool; 4]; 4],
+    pub vertex: VertexUniforms,
+    pub pixel: PixelUniforms,
+}
+
+/// The vertex program and pixel shader through `shaders`, and the uniforms
+/// with the instance's constants; or why the pass stays on the D3D path.
+pub(crate) fn translate_pass(p: &PassParts<'_>) -> Result<Translated, String> {
+    let program = vsh::Program::parse(p.microcode).map_err(|e| format!("vertex program: {e:?}"))?;
+    let unsupplied = program.inputs_read() & !INPUT_MASK & !defaults_mask(p.vertex_defaults);
     if unsupplied != 0 {
         return Err(format!("vertex program reads registers we do not supply ({unsupplied:#06x})"));
     }
     let vs = vsh::translate(&program, &VertexOptions { provided_inputs: INPUT_MASK, ..Default::default() })
         .map_err(|e| format!("vertex program: {e:?}"))?;
-    let def = PixelShaderDef::from_bytes(&look.pixel_shader).map_err(|e| format!("pixel shader: {e:?}"))?;
-    let samplers: [Option<StageStates>; 4] = std::array::from_fn(|n| look.stage_states.get(n).copied());
+    let def = PixelShaderDef::from_bytes(p.pixel_shader).map_err(|e| format!("pixel shader: {e:?}"))?;
+    let samplers: [Option<StageStates>; 4] = std::array::from_fn(|n| p.stage_states.get(n).copied());
     let mut options = PixelOptions {
-        texture_dims: look.textures.map(|s| (s != Stage::Empty).then_some(TextureDim::D2)),
+        texture_dims: p.dims,
         // The game's world is W-buffered (docs/graphics/native-renderer.md).
         w_buffer: true,
-        alpha_test: alpha_test.map(|(f, _)| alpha_func(f)),
+        alpha_test: p.alpha_test.map(|(f, _)| alpha_func(f)),
         ..Default::default()
     };
     let mut signed = [[false; 4]; 4];
@@ -107,9 +157,8 @@ pub fn compile_pass(
         let Some(s) = s else { continue };
         let sign = psh::bits::color_sign(s.color_sign);
         if sign != 0 {
-            if !matches!(look.textures[n], Stage::Bitmap { .. }) {
-                // Only a stage's own bitmap is stored biased here.
-                return Err(format!("stage {n} reads signed channels of the lightmap"));
+            if !p.biased[n] {
+                return Err(format!("stage {n} reads signed channels of a texture not stored biased"));
             }
             options.color_sign[n] = sign;
             signed[n] = signed_channels(s.color_sign);
@@ -121,11 +170,13 @@ pub fn compile_pass(
         return Err(format!("pixel shader: {}", ps.warnings.join("; ")));
     }
     for (n, d) in ps.textures.iter().enumerate() {
-        if d.is_some() && look.textures[n] == Stage::Empty {
-            return Err(format!("stage {n} is sampled with nothing bound"));
-        }
-        if d.is_some_and(|d| d != TextureDim::D2) {
-            return Err(format!("stage {n} is not a 2D fetch"));
+        match (d, p.dims[n]) {
+            (None, _) => {}
+            (Some(_), None) => return Err(format!("stage {n} is sampled with nothing bound")),
+            (Some(d), Some(bound)) if *d != bound => {
+                return Err(format!("stage {n} is fetched as {d:?}, bound {bound:?}"));
+            }
+            _ => {}
         }
     }
     let wgsl = shaders::link(&vs, &ps).map_err(|e| e.to_string())?;
@@ -135,19 +186,19 @@ pub fn compile_pass(
     // (clusters never upload them; a program that reads them gets these).
     vertex.constants[MODEL_ROWS..MODEL_ROWS + 3]
         .copy_from_slice(&[[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]]);
-    for r in &look.vertex_constants {
+    for r in p.vertex_constants {
         put(&mut vertex.constants, r);
     }
-    for r in &look.vertex_defaults {
+    for r in p.vertex_defaults {
         put(&mut vertex.defaults, r);
     }
     let (c0, c1) = def.embedded_constants();
     let mut pixel = PixelUniforms { c0, c1, ..Default::default() };
-    if let Some((_, reference)) = alpha_test {
+    if let Some((_, reference)) = p.alpha_test {
         // Compared with the alpha rounded to 1/255 (`xps.alpha_ref.x`).
         pixel.alpha_ref = [f32::from(reference), 0.0, 0.0, 0.0];
     }
-    Ok(MaterialProgram { wgsl, stages: look.textures, samplers, dims: ps.textures, signed, vertex, pixel })
+    Ok(Translated { wgsl, samplers, dims: ps.textures, signed, vertex, pixel })
 }
 
 fn alpha_func(f: wgpu::CompareFunction) -> psh::AlphaFunc {
