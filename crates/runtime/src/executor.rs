@@ -350,6 +350,87 @@ impl SecondExecutor {
             .collect()
     }
 
+    /// Merge what the view changed since the last flush (or the snapshot)
+    /// into `main`'s live RAM now, in the middle of a run, so another
+    /// guest thread there can read it: every page stored to since the last
+    /// [`written`](Self::written) or flush, against `flushed`'s copy of it
+    /// (the view's bytes at its last flush) or the snapshot's, except the
+    /// physical ranges `skip`. `flushed` then holds the view's bytes of
+    /// those pages. Before the final [`hand_back`](Self::hand_back), call
+    /// [`unflush`](Self::unflush) so that bytes already merged are not
+    /// merged again over what live RAM did since.
+    pub fn flush(
+        &mut self,
+        main: &Runtime,
+        flushed: &mut std::collections::BTreeMap<u32, Box<[u8]>>,
+        skip: &[(u32, u32)],
+    ) -> HandBack {
+        let pages: Vec<u32> = self.written().iter().map(|w| w.physical).collect();
+        let Some(base) = &self.base else {
+            return HandBack::default();
+        };
+        let view = self.runtime.memory();
+        let mut live = main.memory();
+        let mut out = HandBack::default();
+        for p in pages {
+            let p = p & !(PAGE_SIZE - 1);
+            let start = p as usize;
+            let reference: &[u8] = match flushed.get(&p) {
+                Some(r) => r,
+                None => match base.bytes().get(start..start + PAGE_SIZE as usize) {
+                    Some(b) => b,
+                    None => continue,
+                },
+            };
+            let h = live.merge_page(&view, reference, p, skip);
+            out.bytes += h.bytes;
+            out.conflicts += h.conflicts;
+            out.lines += h.lines;
+            if let Some(now) = view.physical_page(p) {
+                flushed.insert(p, now.into());
+            }
+        }
+        out
+    }
+
+    /// Before the final [`hand_back`](Self::hand_back) of a run that was
+    /// [`flush`](Self::flush)ed: every byte of a flushed page the view has
+    /// not changed since its flush goes back to the snapshot's value in the
+    /// view (outside `skip`), so the hand-back leaves live RAM's byte there.
+    pub fn unflush(
+        &mut self,
+        flushed: &std::collections::BTreeMap<u32, Box<[u8]>>,
+        skip: &[(u32, u32)],
+    ) {
+        let Some(base) = &self.base else {
+            return;
+        };
+        let mut view = self.runtime.memory();
+        for (&p, copy) in flushed {
+            let Some(now) = view.physical_page(p).map(<[u8]>::to_vec) else {
+                continue;
+            };
+            let page: Vec<(u32, u32)> = skip
+                .iter()
+                .map(|&(s, n)| (s, s + n))
+                .filter(|&(s, e)| s < p + PAGE_SIZE && e > p)
+                .collect();
+            let skipped = |at: u32| page.iter().any(|&(s, e)| (s..e).contains(&at));
+            let mut i = 0usize;
+            while i < now.len() {
+                if now[i] != copy[i] || skipped(p + i as u32) {
+                    i += 1;
+                    continue;
+                }
+                let run = i;
+                while i < now.len() && now[i] == copy[i] && !skipped(p + i as u32) {
+                    i += 1;
+                }
+                view.restore_from(base, p + run as u32, (i - run) as u32);
+            }
+        }
+    }
+
     /// Merge `written` (from [`written`](Self::written), filtered as the
     /// caller likes) into `main`'s live RAM ([`Guest::hand_back`]). Takes
     /// this executor's memory guard, then `main`'s.
