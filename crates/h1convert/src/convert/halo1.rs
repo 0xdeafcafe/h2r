@@ -396,6 +396,7 @@ fn with_collections(
         count,
         install,
         mut notes,
+        hud_swaps,
     } = objects;
     for c in &collections {
         notes.push(format!(
@@ -407,6 +408,8 @@ fn with_collections(
         ));
     }
     ObjectTags {
+        // The collections come after the objects: the pairs' indices hold.
+        hud_swaps,
         count: count + collections.len(),
         install: Box::new(move |set| {
             let mut ids = install(set)?;
