@@ -242,7 +242,10 @@ Items 1-5 and 7 are built in the prototype (pipelined-render.md, "The
 prototype"); the executor gained what they needed:
 `SecondExecutor::refused_cpu` (the CPU at a refused call, so the main
 context can make it and carry the run on through the resume points;
-tested on lifted code), `last_accesses`, `revert` (undo the view's change
+tested on lifted code), `resume` (carry a refused run on on the
+executor after someone else made the call: a return to the call's
+return address with the result in the CPU, the view and continuations
+as they were), `last_accesses`, `revert` (undo the view's change
 to a range before the hand-back), `share_watch` with
 `Guest::adopt_watch` (item 4), and `ExecCtx::charge_accesses` (item 5).
 Items 6 and 8 are open.
