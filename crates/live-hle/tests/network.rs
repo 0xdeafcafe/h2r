@@ -793,6 +793,41 @@ fn qos_for_a_session_the_host_left_is_uncontacted_and_the_current_one_answers() 
     assert_eq!(a.get(q + 8, 1), vec![0xb]);
     assert_eq!(a.get(a.u32(q + 16), 15), b"synthetic-lobby");
 }
+/// The 2026-11-18 run: the host listens on its squad's XNKID with no data
+/// (`XNetQosListen` flags 5, `0x00073243`), then on the session id the
+/// server gave its advertisement with the 172-byte lobby data. A guest
+/// probes the squad's id; it gets the lobby data, which the title's join
+/// decodes.
+#[test]
+fn a_probe_for_the_squads_id_gets_the_lobby_data_set_under_the_server_id() {
+    let (mut a, mut b) = pair();
+    b.key();
+    let squad = b.get(KID, 8);
+    let key = b.get(KEY, 16);
+    assert_eq!(b.call("XNetQosListen", &[KID, 0, 0, 0, 5]), 0);
+    // The server's id for the advertisement, registered and listened on.
+    let mut server = squad.clone();
+    server[1] ^= 0xff;
+    b.put(KID, &server);
+    assert_eq!(b.call("XNetRegisterKey", &[KID, KEY]), 0);
+    assert_eq!(b.call("XNetQosListen", &[KID, 0, 0, 0, 5]), 0);
+    b.put(DATA, &[0xab; 172]);
+    assert_eq!(b.call("XNetQosListen", &[KID, DATA, 172, 0, 5]), 0);
+    // The guest: the squad's key, its address, the probe.
+    a.put(KID, &squad);
+    a.put(KEY, &key);
+    assert_eq!(a.call("XNetRegisterKey", &[KID, KEY]), 0);
+    a.peer(&b);
+    a.word(SET, XNA);
+    a.word(SET + 4, KID);
+    a.word(SET + 8, KEY);
+    let args = [1, SET, SET + 4, SET + 8, 0, 0, 0, 2, 0, 0, 0, OUT];
+    assert_eq!(a.call("XNetQosLookup", &args), 0);
+    let q = a.u32(OUT);
+    assert_eq!(a.get(q + 8, 1), vec![0xb], "contacted, with data");
+    assert_eq!(a.get(q + 14, 2), vec![172, 0]);
+    assert_eq!(a.get(a.u32(q + 16), 172), vec![0xab; 172]);
+}
 #[test]
 fn qos_rejects_invalid_counts_flags_pointers_and_cleans_up_allocations() {
     let mut w = World::new();

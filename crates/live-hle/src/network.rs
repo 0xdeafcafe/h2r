@@ -174,6 +174,8 @@ struct State {
     peers: BTreeMap<u32, Peer>,
     qos: QosMemory,
     responder: Option<qos::Responder>,
+    /// Peers already said to share an IN_ADDR with another (base ports).
+    shared: std::collections::BTreeSet<SocketAddrV4>,
 }
 pub(crate) struct Network {
     pub config: NetworkConfig,
@@ -310,11 +312,28 @@ impl Network {
                 .filter(|p| *p > 0 && *p <= 65529)
             {
                 let mut s = lock(&self.state);
-                s.peers.entry(ip_word(*a.ip())).or_insert_with(|| Peer {
-                    xna: xnaddr(SocketAddrV4::new(*a.ip(), base)),
-                    kid: [0; 8],
-                    connected: false,
-                });
+                let from = SocketAddrV4::new(*a.ip(), base);
+                let known = s
+                    .peers
+                    .entry(ip_word(*a.ip()))
+                    .or_insert_with(|| Peer {
+                        xna: xnaddr(from),
+                        kid: [0; 8],
+                        connected: false,
+                    })
+                    .xna;
+                if let Ok(known) = endpoint(&known)
+                    && known != from
+                    && s.shared.insert(from)
+                {
+                    // Peers are told apart by IP alone: two games on one
+                    // Mac reach this one as one player.
+                    eprintln!(
+                        "live: xnet: {from} and {known} share the address {}; this console \
+                         answers both as {known}",
+                        a.ip()
+                    );
+                }
                 a.set_port(guest_port);
             }
         }
@@ -896,6 +915,9 @@ impl Network {
             entry.enabled = false;
         }
         if let Some(data) = data {
+            if !data.is_empty() {
+                entry.data_set = DATA_SET.fetch_add(1, Ordering::Relaxed);
+            }
             entry.data = data;
         }
         if a[4] & 8 != 0 {
@@ -1005,6 +1027,8 @@ impl Network {
         Ok(0)
     }
 }
+/// Orders listeners' data ([`qos::answer`]).
+static DATA_SET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 fn hex(kid: &[u8; 8]) -> String {
     live_proto::sign::hex(kid)
 }

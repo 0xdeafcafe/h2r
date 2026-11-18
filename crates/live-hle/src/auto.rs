@@ -34,7 +34,7 @@ pub(crate) struct Auto {
     newest: Option<(i64, u64)>,
     /// When each accepted invitation was accepted (unix seconds), until the
     /// title reads it or the wait is said.
-    waiting: Vec<(u64, i64)>,
+    waiting: Vec<(Invite, i64)>,
     /// The invitation the title read last: when (unix seconds), and how
     /// many times it was offered again.
     taken: Option<(Invite, i64, u32)>,
@@ -135,8 +135,8 @@ impl Auto {
         }
         self.accepted.insert(v.id);
         self.newest = Some((v.sent_at, v.id));
-        self.waiting.retain(|(id, _)| *id != v.id);
-        self.waiting.push((v.id, now));
+        self.waiting.retain(|(w, _)| w.id != v.id);
+        self.waiting.push((v.clone(), now));
         Some(v)
     }
 
@@ -146,12 +146,12 @@ impl Auto {
         if self.newest.is_some_and(|(_, n)| n == id) {
             self.newest = None;
         }
-        self.waiting.retain(|(v, _)| *v != id);
+        self.waiting.retain(|(v, _)| v.id != id);
     }
 
     /// The title read `v` at `now`: the join starts.
     pub fn taken(&mut self, v: &Invite, now: i64) {
-        self.waiting.retain(|(id, _)| *id != v.id);
+        self.waiting.retain(|(w, _)| w.id != v.id);
         let offers = match &self.taken {
             Some((old, _, n)) if old.id == v.id => *n,
             _ => 0,
@@ -159,19 +159,23 @@ impl Auto {
         self.taken = Some((v.clone(), now, offers));
     }
 
-    /// The accepted invitations in `unread` that have waited at least
-    /// [`UNREAD_AFTER`] at `now`; each is said once.
-    pub fn unread_too_long(&mut self, unread: &[Invite], now: i64) -> Vec<Invite> {
+    /// The accepted invitations not taken by the title [`UNREAD_AFTER`]
+    /// after they were accepted, at `now`; each said once, with whether
+    /// it is queued for the title (`unread`: the server confirmed it and
+    /// it hasn't expired) or never got there. A newer acceptance
+    /// supersedes an older one silently.
+    pub fn unread_too_long(&mut self, unread: &[Invite], now: i64) -> Vec<(Invite, bool)> {
+        let newest = self.newest;
         let mut out = Vec::new();
-        self.waiting.retain(|(id, at)| {
-            let Some(v) = unread.iter().find(|v| v.id == *id) else {
-                return false; // read, superseded or expired
-            };
-            if now - at >= UNREAD_AFTER {
-                out.push(v.clone());
+        self.waiting.retain(|(v, at)| {
+            if newest.is_some_and(|(_, id)| id != v.id) {
                 return false;
             }
-            true
+            if now - at < UNREAD_AFTER {
+                return true;
+            }
+            out.push((v.clone(), unread.iter().any(|u| u.id == v.id)));
+            false
         });
         out
     }
@@ -287,12 +291,17 @@ mod tests {
         let pending = [invite(1, "Alpha", 10)];
         let v = a.accept_now(&pending, 100).unwrap();
         let unread = [v.clone()];
-        assert!(
-            a.unread_too_long(&unread, 100 + UNREAD_AFTER - 1)
-                .is_empty()
+        // Not queued yet (the server's answer pending): still waited for.
+        assert!(a.unread_too_long(&[], 100 + UNREAD_AFTER - 1).is_empty());
+        assert_eq!(
+            a.unread_too_long(&unread, 100 + UNREAD_AFTER),
+            vec![(v.clone(), true)]
         );
-        assert_eq!(a.unread_too_long(&unread, 100 + UNREAD_AFTER), unread);
         assert!(a.unread_too_long(&unread, 1_000).is_empty(), "once");
+        // Never queued: said as such.
+        let mut c = Auto::from_values(None, Some("Alpha"));
+        let v = c.accept_now(&pending, 100).unwrap();
+        assert_eq!(c.unread_too_long(&[], 200), vec![(v, false)]);
         // Read in time: nothing to say.
         let mut b = Auto::from_values(None, Some("Alpha"));
         let v = b.accept_now(&pending, 100).unwrap();
