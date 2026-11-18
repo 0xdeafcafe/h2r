@@ -201,6 +201,11 @@ pub struct Prepared {
     /// among the added objects), written over the globals' when the map
     /// is built ([`crate::globals::set_grenades`]); empty keeps the base's.
     pub grenades: Vec<crate::globals::Grenade<TagId>>,
+    /// The Halo 1 sandbox's weapon list entries (entry, a Halo 1 weapon
+    /// among the added objects), written over the base `mulg`'s when the
+    /// map is built ([`crate::globals::set_weapon_list`]); empty keeps
+    /// the base's.
+    pub weapon_list: Vec<(usize, TagId)>,
     /// The base's scenario with the placements applied.
     scenario: Scenario,
     /// The base's structure BSP and lightmap slots, reused.
@@ -538,6 +543,7 @@ pub fn prepare<R: Read + Seek>(
         scenery: None,
         player_biped: None,
         grenades: Vec::new(),
+        weapon_list: Vec::new(),
         scenario,
         sbsp,
         ltmp,
@@ -745,6 +751,9 @@ impl Prepared {
         }
         if !self.grenades.is_empty() {
             crate::globals::set_grenades(&mut set, &self.grenades)?;
+        }
+        if !self.weapon_list.is_empty() {
+            crate::globals::set_weapon_list(&mut set, &self.weapon_list)?;
         }
 
         set.name = map_name(&self.h1_name);

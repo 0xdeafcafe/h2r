@@ -27,3 +27,5 @@ xiso.workspace = true
 # source hash and its netgame equipment read back.
 content.workspace = true
 scenario-edit = { path = "../scenario-edit", default-features = false }
+# The built-in game variants' starting weapons (tests/sandbox_disc.rs).
+variants = { path = "../variants" }

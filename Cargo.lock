@@ -2513,6 +2513,7 @@ dependencies = [
  "scenario-edit",
  "tags",
  "thiserror 2.0.21",
+ "variants",
  "xiso",
 ]
 
