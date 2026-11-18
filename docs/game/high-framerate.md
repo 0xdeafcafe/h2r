@@ -1111,11 +1111,73 @@ h2 agent render          # "interp": frames, warps, the held split
   window.
 - **Pictures.** `H2_BOOT_GFX_BETWEEN=N` writes the first N in-between
   frames to the directory as `frame-NNNNN-between-KK.png` (the KK-th
-  after guest swap NNNNN), and from the first one on the guest frames
-  shown meanwhile as `frame-NNNNN.png` (as shown: a blended present is a
-  warped frame too), so a warped frame can be compared with its
-  neighbours. In-between frames go to their own hook, so the guest's swap
+  after guest swap NNNNN), and each one's neighbours as `frame-NNNNN.png`:
+  the guest frame shown before it and the one shown after it (as shown: a
+  blended present is a warped frame too), so a warped frame can be
+  compared with both. At most N in-between and 2N guest frames are
+  written. The guest frame before is only known to be wanted once an
+  in-between frame follows it, so while captures are left each guest
+  frame is copied on the GPU (no read back) and the copy is read back only
+  then. In-between frames go to their own hook, so the guest's swap
   numbering (`H2_BOOT_GFX_EVERY`, `H2_BOOT_GFX_SHADOWS`) is unchanged.
+  (The first version wrote every guest frame from the first in-between
+  frame on until N in-between frames were written. A live run on
+  03a_oldmombasa made one, at swap 465, and then wrote 2,636 guest frames
+  (715 MB): the readbacks took encode and render-wait from about 5 ms to
+  200 to 370 ms and the rate from 38 to 3 fps, so every frame came more
+  than 45 ms after the last (`unpaired_gap`), no in-between frame was
+  made again and the limit was never reached. The replay hook does fire
+  for every in-between frame presented; there were simply no more.)
+- **Held frames, draw by draw.** `h2 agent render`'s `interp.holds` (see
+  "Held frames, draw by draw" below) names the draws that keep gameplay
+  at 30.
+
+### Held frames, draw by draw
+
+The `mismatch_*` counters say which guard held a frame; `interp.holds` in
+`render.stats` (`d3d::interp::holds::HoldLog`, kept by `InterpBackend`,
+registered by `boot::render_probe::set_interp_holds`) says which draws.
+For every frame the screen guard (`world_screen`) refuses, with a camera,
+every world draw or clear it refuses is listed, not only the first:
+
+- `last`: the last such frame's first offending draw in full.
+- `kinds`: each kind of offending draw (`reason`: `screen`, `mapping` or
+  `overlay`; `why`: the detail, below; the vertex program; the primitive),
+  with the held frames it was first in (`frames_first`), the held frames
+  it was in at all (`frames`), its draws over all of them, and an example.
+  At most 48 kinds; more are counted in `other_kinds`.
+- `programs`: the kinds' vertex programs, disassembled, by id (at most 24).
+
+Each draw says: its number in the guest frame and its pass, as
+`render.frame` numbers them (draws over every target since the present;
+a pass is a run of work on one colour and depth surface), so `h2 agent
+frame draws` shows the same draw; its number among the presented
+surface's draws, how many of those were world draws, and where the
+overlay started; the vertex program's id (`pipeline_store::program_id` of
+its microcode, the id `pipelines-v2.jsonl` records it under); entry,
+primitive, vertex count, texture formats and sizes, blend and depth write;
+where its clip position comes from (`rows c[N]`, `pass-through`,
+`unknown`) and what the block there is (`camera`, `world`, `local
+centred`, `local off-centre`, `none`), the block's four rows as uploaded
+and the projection split from them; and the bounding box in window pixels
+where its first 64 vertices land after its program (run through the
+shader interpreter), next to the target's size, so a full-target pass and
+a sprite tell apart.
+
+| `why` | reason | what the draw is |
+|---|---|---|
+| `pretransformed` | screen | `XYZRHW` vertices, already in pixels |
+| `fixed_function` | screen | fixed-function vertex processing |
+| `pass_through` | screen | a program that moves a vertex to `oPos` (`mov oPos, v0`) |
+| `position_unknown` | screen | a clip position not from one block's rows |
+| `not_perspective` | screen | the block there is no perspective (orthographic, or no matrix) |
+| `off_centre` | screen | a perspective of its own, not centred (into pixels, sheared) |
+| `no_camera_draw`, `no_epilogue`, `camera_not_covering`, `partial_clear`, `other_mapping`, `scissored` | mapping | where the world lands is not one mapping the warp can follow |
+| `camera_after_overlay` | overlay | a draw the camera places after the overlay starts |
+
+A frame's first offence is its hold reason, so the counters are unchanged.
+Frames with no camera (menus, loads) are not logged: they are held as
+`unpaired` with nothing to warp.
 
 ### How it works
 
@@ -1284,7 +1346,21 @@ default; reproject wins over interpolate, `_ahead` over plain) and which
 host has a GPU backend for them (a window's render thread; headless,
 `H2_BOOT_GFX` and `H2_RENDER_THREAD`; the headless recorder none);
 `d3d_glue::tests::in_between_captures_stop_at_their_limit` the
-`H2_BOOT_GFX_BETWEEN` names and limit.
+`H2_BOOT_GFX_BETWEEN` names and limit, and
+`in_between_captures_write_only_their_neighbours` that one in-between
+frame in 3,000 guest frames writes its two neighbours and no more (the
+live bug), and that N slots write at most N in-between and 2N guest
+frames.
+
+`cargo test -p d3d --test interp` `the_hold_log_names_every_draw_that_held_a_frame`
+and `the_hold_log_says_off_centre_and_after_the_overlay`: on a frame with
+a shadow pass first, a full-target pass-through quad and an orthographic
+quad among the level's draws, the log has both kinds (the quad first in
+both frames, the orthographic one in both), the quad's guest draw and
+pass numbers, its program id and disassembly, and a window covering the
+target; an off-centre perspective and a level draw after the weapon are
+named; a frame with no camera is not logged. `cargo test -p boot --test
+headless_interp` checks `interp.holds` is in `render.stats`.
 
 ### Left
 

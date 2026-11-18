@@ -78,6 +78,9 @@ fn the_headless_gpu_backend_runs_reprojection_and_reports_its_counters() {
     ] {
         assert_eq!(v[reason], 0, "{reason} in {v}");
     }
+    // E1's hold log beside the counters: which draws held frames.
+    assert_eq!(v["holds"]["frames"], 0, "{v}");
+    assert_eq!(v["holds"]["kinds"], serde_json::json!([]), "{v}");
     drop(installed);
     let _ = std::fs::remove_dir_all(&dir);
 }
