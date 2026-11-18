@@ -151,6 +151,7 @@ fn every_effect_rebuilds_from_its_definition() {
     }
     let effe = Group::new(b"effe");
     let (mut effects, mut parts_kept, mut attached) = (0usize, 0usize, 0usize);
+    let (mut lit, mut cones) = (0usize, 0usize);
     let mut left: BTreeMap<String, usize> = BTreeMap::new();
     for (base_name, levels) in sets {
         let mut base_map = h2_map(base_name);
@@ -170,6 +171,11 @@ fn every_effect_rebuilds_from_its_definition() {
                     let id = c.effect(t).unwrap_or_else(|e| panic!("{level} {}: {e}", t.name));
                     wanted.push((t, id));
                 }
+            }
+            let mut lights = Vec::new();
+            for t in m.tags().iter().filter(|t| t.group == Group::new(b"ligh")) {
+                let id = c.light(t).unwrap_or_else(|e| panic!("{level} {}: {e}", t.name));
+                lights.push((t, id));
             }
             let mut vehicles = Vec::new();
             for t in m.tags().iter().filter(|t| t.group == Group::new(b"vehi")) {
@@ -226,6 +232,24 @@ fn every_effect_rebuilds_from_its_definition() {
                 }
                 effects += 1;
             }
+            for (t, id) in &lights {
+                let name = format!("{level} {}", t.name);
+                let l = h1::Light::read(&m, t).unwrap();
+                let got = &tree.tags[id.0 as usize & 0xffff].1;
+                assert_eq!(got.group, FourCC(*b"ligh"), "{name}");
+                let r = read_back(got, &name);
+                let kind = if l.is_cone() { 2 } else { 0 };
+                assert_eq!(r.at("kind"), Some(&Val::Enum(kind)), "{name}");
+                let range = if l.is_cone() { "cutoff_distance" } else { "radius" };
+                assert_eq!(r.at(range), Some(&Val::Float(l.radius)), "{name}");
+                assert_eq!(
+                    r.at("diffuse_colour_upper"),
+                    Some(&Val::floats(&l.colour_upper[1..])),
+                    "{name}"
+                );
+                lit += 1;
+                cones += usize::from(l.is_cone());
+            }
             for (t, id) in &vehicles {
                 let name = format!("{level} {}", t.name);
                 let got = &tree.tags[id.0 as usize & 0xffff].1;
@@ -236,7 +260,7 @@ fn every_effect_rebuilds_from_its_definition() {
                 for a in att {
                     let (_, tag) = target(a, "type");
                     let g = resolve(tree, tag.expect("attachment")).expect("resolves");
-                    assert!([*b"lsnd", *b"effe"].contains(&g.0), "{name}: {g}");
+                    assert!([*b"lsnd", *b"effe", *b"ligh"].contains(&g.0), "{name}: {g}");
                     let marker = text(a, "marker");
                     assert!(
                         h1a.iter().any(|x| x.marker == marker && x.group.0.to_be_bytes() == g.0),
@@ -245,7 +269,10 @@ fn every_effect_rebuilds_from_its_definition() {
                 }
                 let kept = h1a
                     .iter()
-                    .filter(|x| x.tag.is_some() && [*b"lsnd", *b"effe"].contains(&x.group.0.to_be_bytes()))
+                    .filter(|x| {
+                        x.tag.is_some()
+                            && [*b"lsnd", *b"effe", *b"ligh"].contains(&x.group.0.to_be_bytes())
+                    })
                     .count();
                 if att.len() != kept {
                     println!("{name}: {} of {kept} looping sounds and effects attached", att.len());
@@ -274,7 +301,9 @@ fn every_effect_rebuilds_from_its_definition() {
             );
         }
     }
-    println!("{effects} effects, {parts_kept} parts kept, {attached} vehicle attachments");
+    println!(
+        "{effects} effects, {parts_kept} parts kept, {attached} vehicle attachments, {lit} lights ({cones} cones)"
+    );
     for (g, n) in &left {
         println!("{n:8} {g} parts left out");
     }
@@ -427,5 +456,61 @@ fn halo1_effect_layout_survey() {
     }
     for (k, (a, b)) in &ranges {
         println!("part word {k:#04x} as f32 {a} ..= {b}");
+    }
+}
+
+/// Survey: the Halo 1 root of `$H1_GROUP` (default `ligh`) over every
+/// map: lengths, every reference by offset, and per word how often it is
+/// nonzero with its range as a float.
+#[test]
+#[ignore]
+fn halo1_group_word_survey() {
+    let g = std::env::var("H1_GROUP").unwrap_or_else(|_| "ligh".into());
+    let group = Group::new(g.as_bytes().try_into().unwrap());
+    let mut lens: BTreeMap<usize, usize> = BTreeMap::new();
+    let mut words: BTreeMap<usize, (usize, f32, f32, BTreeMap<u32, usize>)> = BTreeMap::new();
+    let mut refs: BTreeMap<String, usize> = BTreeMap::new();
+    let mut n = 0;
+    for (_, m) in h1_maps() {
+        for t in m.tags().iter().filter(|t| t.group == group) {
+            let b = m.tag_data(t).unwrap();
+            n += 1;
+            *lens.entry(b.len()).or_default() += 1;
+            let len = b.len().min(0x200);
+            for at in (0..len.saturating_sub(16)).step_by(4) {
+                if let Some(r) = TagRef::read(b, at)
+                    && !r.id.is_none()
+                    && let Ok(x) = m.tag(r.id)
+                    && x.group == r.group
+                {
+                    *refs.entry(format!("{at:#05x} {}", r.group)).or_default() += 1;
+                }
+            }
+            for at in (0..len).step_by(4).filter(|a| a + 4 <= len) {
+                let w = u32_at(b, at);
+                let e = words.entry(at).or_insert((0, f32::MAX, f32::MIN, BTreeMap::new()));
+                if w != 0 {
+                    e.0 += 1;
+                    let f = f32::from_bits(w);
+                    if f.is_finite() {
+                        e.1 = e.1.min(f);
+                        e.2 = e.2.max(f);
+                    }
+                    if e.3.len() < 6 {
+                        *e.3.entry(w).or_default() += 1;
+                    }
+                }
+            }
+        }
+    }
+    println!("{n} {g} tags; lengths {lens:?}");
+    for (k, v) in &refs {
+        println!("ref {k}: {v}");
+    }
+    for (at, (nz, a, b, few)) in &words {
+        if *nz > 0 {
+            let few: Vec<String> = few.keys().map(|w| format!("{w:#x}")).collect();
+            println!("{at:#05x}: nonzero {nz}, float {a} ..= {b}, first words {few:?}");
+        }
     }
 }

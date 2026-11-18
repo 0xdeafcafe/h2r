@@ -965,3 +965,50 @@ pub fn attachments(map: &H1Map, b: &[u8]) -> Result<Vec<Attachment>> {
         })
         .collect())
 }
+
+/// Halo 1 `ligh` (`0x160`, no blocks). V (`effects_disc.rs`
+/// `halo1_group_word_survey`, 304 lights on six maps): `+4` a radius in
+/// world units (0.05 to 15) on every light; `+0x10`, `+0x14` two angles in
+/// radians (20 to 180 degrees; 180 on most, a full sphere); `+0x38` and
+/// `+0x48` two colours as alpha then red, green, blue (each 0 to 1);
+/// `+0xac` a `lens` reference; `+0xf4` a duration on 59 lights, values
+/// that are multiples of three ticks (3 to 180). Names D.
+pub const LIGH_SIZE: usize = 0x160;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Light {
+    pub flags: u32,
+    pub radius: f32,
+    /// `+0x10` where a cone starts to fade, `+0x14` where it ends
+    /// (radians, full angle; pi for a sphere).
+    pub falloff_angle: f32,
+    pub cutoff_angle: f32,
+    /// `+0x38` and `+0x48`: alpha, red, green, blue.
+    pub colour_lower: [f32; 4],
+    pub colour_upper: [f32; 4],
+    /// `+0xf4` ticks (0: not timed).
+    pub duration_ticks: f32,
+    pub lens_flare: Option<TagId>,
+}
+
+impl Light {
+    pub fn read(map: &H1Map, tag: &Tag) -> Result<Self> {
+        let b = tag_bytes(map, tag, b"ligh", LIGH_SIZE)?;
+        let argb = |at| std::array::from_fn(|i| f32_at(b, at + 4 * i));
+        Ok(Self {
+            flags: u32_at(b, 0),
+            radius: f32_at(b, 4),
+            falloff_angle: f32_at(b, 0x10),
+            cutoff_angle: f32_at(b, 0x14),
+            colour_lower: argb(0x38),
+            colour_upper: argb(0x48),
+            duration_ticks: f32_at(b, 0xf4),
+            lens_flare: reference(map, b, 0xac),
+        })
+    }
+
+    /// A cone rather than a sphere: a cutoff angle under a half turn.
+    pub fn is_cone(&self) -> bool {
+        self.cutoff_angle > 0.0 && self.cutoff_angle < std::f32::consts::PI - 1e-3
+    }
+}

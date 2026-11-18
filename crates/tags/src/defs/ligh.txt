@@ -1,0 +1,51 @@
+# ligh: light. Layout and evidence: docs/formats/effects.md ("ligh": V the
+# disc, E the light update and render path in docs/graphics/e3-lighting.md,
+# "The light record").
+group ligh 0xe4 align 4
+  0x0 u32 flags -- E docs/graphics/e3-lighting.md "Definition flags": bit 3 no shadow
+  0x4 enum16 kind values=sphere|orthogonal|frustum|pyramid -- V 0 sphere, 2 frustum (a projected cone); names of 1 and 3 D
+  0x6 unknown 0x2 seen=zero
+  0x8 unknown 0x4 seen=3 -- V 1.0 on most lights
+  0xc unknown 0x4 seen=3 -- V 1.0 on most lights
+  0x10 unknown 0x4 seen=4
+  0x14 unknown 0x4 seen=2
+  0x18 f32 radius -- V a sphere's radius, world units
+  0x1c f32 specular_radius -- V equal to the radius on most spheres; name D
+  0x20 f32 near_width -- V a cone's width at its apex
+  0x24 f32 height_stretch -- V a cone's height over width
+  0x28 f32 field_of_view -- V a cone's full angle, radians in the cache
+  0x2c f32 falloff_distance -- V where a cone starts to fade
+  0x30 f32 cutoff_distance -- V a cone's range
+  0x34 u32 interpolation -- E 0x000c0dc9: how the colours follow intensity
+  0x38 unknown 0x4 seen=4
+  0x3c unknown 0x4 seen=4
+  0x40 f32[3] specular_colour_lower -- E record +0xe0 interpolates +0x40/+0x4c by intensity
+  0x4c f32[3] specular_colour_upper -- E as above
+  0x58 f32[3] diffuse_colour_lower -- E record +0xd4 interpolates +0x58/+0x64 by intensity
+  0x64 f32[3] diffuse_colour_upper -- E as above
+  0x70 f32[2] brightness -- E record +0xec, a scalar from these bounds
+  0x78 tagref bitmap groups=bitm -- V class; the gel (D)
+  0x80 unknown 0x4 seen=2
+  0x84 unknown 0x4 seen=2
+  0x88 unknown 0x4 seen=10
+  0x8c unknown 0x4 seen=5
+  0x90 tagref lens_flare groups=lens -- V class
+  0x98 unknown 0x4 seen=6
+  0x9c tagref mgs2 groups=MGS2 -- V class; E the effect part switch creates this class (0x0017a8db)
+  0xa4 unknown 0x4 seen=3
+  0xa8 unknown 0x4 seen=3
+  0xac unknown 0x4 seen=4
+  0xb0 f32 duration -- E seconds; above zero makes the light timed (record flag 0x10)
+  0xb4 unknown 0x2 seen=zero
+  0xb6 u16 duration_falloff -- E the fade shape over the duration (0x000c0e53)
+  0xb8 unknown 0x4 seen=10
+  0xbc unknown 0x4 seen=5
+  0xc0 unknown 0x4 seen=2 -- E read by 0x000c0b00
+  0xc4 block functions_c4 0x8 align 4 -- V each element a data reference to function bytes
+    0x0 data function align 4
+  0xcc block functions_cc 0x8 align 4 -- V as above
+    0x0 data function align 4
+  0xd4 block functions_d4 0x10 align 8 -- V two function data references each
+    0x0 data function_0 align 8
+    0x8 data function_8 align 4
+  0xdc tagref shader groups=shad -- V class

@@ -1401,3 +1401,33 @@ fn audio_placeholders_become_null_when_the_sounds_have_no_room() {
         .collect();
     assert_eq!(ids, vec![TagId::NULL, TagId::NULL]);
 }
+
+#[test]
+fn rebuilt_light_is_halo_1s_sphere_or_cone_with_its_colours() {
+    use crate::h1::Light;
+    use tags::defs::{self, Defs, Val};
+    let mut l = Light {
+        flags: 0,
+        radius: 2.5,
+        falloff_angle: std::f32::consts::PI,
+        cutoff_angle: std::f32::consts::PI,
+        colour_lower: [1.0, 0.1, 0.2, 0.3],
+        colour_upper: [1.0, 0.4, 0.5, 0.6],
+        duration_ticks: 15.0,
+        lens_flare: None,
+    };
+    let d = Defs::builtin().group(FourCC(*b"ligh")).unwrap();
+    let r = defs::from_built(d, &crate::rebuild::light(&l, None).unwrap()).unwrap();
+    assert_eq!(r.at("kind"), Some(&Val::Enum(0)));
+    assert_eq!(r.at("radius"), Some(&Val::Float(2.5)));
+    assert_eq!(r.at("flags"), Some(&Val::Int(8)));
+    assert_eq!(r.at("duration"), Some(&Val::Float(0.5)));
+    assert_eq!(r.at("diffuse_colour_lower"), Some(&Val::floats(&[0.1, 0.2, 0.3])));
+    assert_eq!(r.at("specular_colour_upper"), Some(&Val::floats(&[0.4, 0.5, 0.6])));
+    l.cutoff_angle = 1.0;
+    let r = defs::from_built(d, &crate::rebuild::light(&l, None).unwrap()).unwrap();
+    assert_eq!(r.at("kind"), Some(&Val::Enum(2)));
+    assert_eq!(r.at("field_of_view"), Some(&Val::Float(1.0)));
+    assert_eq!(r.at("cutoff_distance"), Some(&Val::Float(2.5)));
+    assert_eq!(r.at("radius"), Some(&Val::Float(0.0)));
+}

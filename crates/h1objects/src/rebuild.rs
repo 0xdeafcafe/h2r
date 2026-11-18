@@ -1914,3 +1914,99 @@ pub fn object_effects(
         Val::tag(FourCC(*b"effe"), creation_effect.unwrap_or(TagId::NULL)),
     )
 }
+
+/// `ligh +0` bit 3: the light casts no shadow (E,
+/// docs/graphics/e3-lighting.md). Halo 1's dynamic lights cast none.
+pub const LIGHT_NO_SHADOW: u32 = 1 << 3;
+/// `ligh +4` kinds written: sphere and frustum (a projected cone).
+pub const LIGHT_SPHERE: u32 = 0;
+pub const LIGHT_FRUSTUM: u32 = 2;
+
+/// The base map's lights of one kind, as the turret rule takes them: the
+/// majority word of every 4-byte unknown span, and the majority
+/// brightness bounds. `None` when the base has no light of the kind.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LightRole {
+    pub words: RoleWords,
+    pub brightness: [f32; 2],
+}
+
+pub fn light_role(base: &crate::base::Base, kind: u32) -> Result<Option<LightRole>> {
+    let d = def(b"ligh")?;
+    let kind_at = field_offset(d, "kind")? as usize;
+    let bright_at = field_offset(d, "brightness")? as usize;
+    let mut members = Vec::new();
+    let mut bright = std::collections::BTreeMap::<(u32, u32), usize>::new();
+    for t in base.tags.iter().filter(|t| t.1 == FourCC(*b"ligh")) {
+        let bytes = base.head(t.0, d.size.into())?;
+        if u32::from(u16::from_le_bytes([bytes[kind_at], bytes[kind_at + 1]])) != kind
+        {
+            continue;
+        }
+        *bright
+            .entry((
+                crate::base::u32_at(&bytes, bright_at),
+                crate::base::u32_at(&bytes, bright_at + 4),
+            ))
+            .or_default() += 1;
+        members.push((t.2.clone(), bytes));
+    }
+    if members.is_empty() {
+        return Ok(None);
+    }
+    let (b, _) = bright
+        .iter()
+        .max_by_key(|(w, c)| (**c, std::cmp::Reverse(**w)))
+        .expect("some");
+    Ok(Some(LightRole {
+        words: role_over(base, d, &members)?,
+        brightness: [f32::from_bits(b.0), f32::from_bits(b.1)],
+    }))
+}
+
+/// A Halo 1 light written from the `ligh` definition, no retail template
+/// read: a sphere of Halo 1's radius, or a frustum (Halo 1's cutoff angle
+/// as the field of view, its radius as the range), Halo 1's two colours as
+/// the diffuse and specular colours at the two intensity bounds, no
+/// shadow, Halo 1's duration in seconds (ticks over 30), and the kind's
+/// role words and brightness ([`LightRole`]); everything else the
+/// definition's default.
+pub fn light(l: &h1::Light, role: Option<&LightRole>) -> Result<Block> {
+    let d = def(b"ligh")?;
+    let mut r = defs::default_record(d);
+    if let Some(role) = role {
+        role_words(&mut r, &role.words.root)?;
+        set(&mut r, "brightness", Val::floats(&role.brightness))?;
+    } else {
+        set(&mut r, "brightness", Val::floats(&[1.0, 1.0]))?;
+    }
+    set(&mut r, "flags", Val::Int(LIGHT_NO_SHADOW.into()))?;
+    if l.is_cone() {
+        set(&mut r, "kind", Val::Enum(LIGHT_FRUSTUM))?;
+        set(&mut r, "height_stretch", Val::Float(1.0))?;
+        set(&mut r, "field_of_view", Val::Float(l.cutoff_angle))?;
+        set(&mut r, "falloff_distance", Val::Float(l.radius))?;
+        set(&mut r, "cutoff_distance", Val::Float(l.radius))?;
+    } else {
+        set(&mut r, "kind", Val::Enum(LIGHT_SPHERE))?;
+        set(&mut r, "radius", Val::Float(l.radius))?;
+        set(&mut r, "specular_radius", Val::Float(l.radius))?;
+    }
+    let rgb = |c: &[f32; 4]| Val::floats(&[c[1], c[2], c[3]]);
+    for (name, c) in [
+        ("diffuse_colour_lower", &l.colour_lower),
+        ("diffuse_colour_upper", &l.colour_upper),
+        ("specular_colour_lower", &l.colour_lower),
+        ("specular_colour_upper", &l.colour_upper),
+    ] {
+        set(&mut r, name, rgb(c))?;
+    }
+    if l.duration_ticks > 0.0 {
+        set(
+            &mut r,
+            "duration",
+            Val::Float(l.duration_ticks / crate::convert::TICKS_PER_SECOND),
+        )?;
+    }
+    built(d, &r)
+}

@@ -738,6 +738,8 @@ pub struct Converter<'a> {
     /// into [`Tree::sounds`] and [`Tree::loops`] (`None`: did not convert).
     sound_index: HashMap<u32, Option<usize>>,
     loop_index: HashMap<u32, Option<usize>>,
+    /// Light role words per kind ([`crate::rebuild::light_role`]).
+    light_roles: HashMap<u32, Option<crate::rebuild::LightRole>>,
 }
 
 impl<'a> Converter<'a> {
@@ -756,7 +758,43 @@ impl<'a> Converter<'a> {
             vehicle_roles: HashMap::new(),
             sound_index: HashMap::new(),
             loop_index: HashMap::new(),
+            light_roles: HashMap::new(),
         }
+    }
+
+    /// A Halo 1 light from the `ligh` definition
+    /// ([`crate::rebuild::light`]), converted once.
+    pub fn light(&mut self, tag: &Tag) -> Result<TagId> {
+        if let Some(id) = self.done.get(&tag.id.0) {
+            return Ok(*id);
+        }
+        let l = h1::Light::read(self.h1, tag)?;
+        let kind = if l.is_cone() {
+            crate::rebuild::LIGHT_FRUSTUM
+        } else {
+            crate::rebuild::LIGHT_SPHERE
+        };
+        if !self.light_roles.contains_key(&kind) {
+            let role = crate::rebuild::light_role(self.base, kind)?;
+            self.light_roles.insert(kind, role);
+        }
+        let role = self.light_roles[&kind].as_ref();
+        let root = crate::rebuild::light(&l, role)?;
+        let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
+        if l.lens_flare.is_some() {
+            rep.no_home.push("lens flare: not converted".into());
+        }
+        self.tree.reports.push(rep);
+        let id = self.tree.push(
+            &tag.name,
+            Converted {
+                group: FourCC(*b"ligh"),
+                root,
+                raw: Vec::new(),
+            },
+        );
+        self.done.insert(tag.id.0, id);
+        Ok(id)
     }
 
     /// A Halo 1 `snd!` converted with `h1sounds` into [`Tree::sounds`]
@@ -824,6 +862,16 @@ impl<'a> Converter<'a> {
                     let t = self.h1_tag(id)?;
                     self.sound(t, &mut rep)
                 }
+                (Some(id), b"ligh") => {
+                    let t = self.h1_tag(id)?;
+                    match self.light(t) {
+                        Ok(x) => Some(x),
+                        Err(err) => {
+                            rep.no_home.push(format!("ligh {}: not converted ({err})", t.name));
+                            None
+                        }
+                    }
+                }
                 (Some(id), b"proj") => {
                     let t = self.h1_tag(id)?;
                     match self.object(t) {
@@ -882,6 +930,13 @@ impl<'a> Converter<'a> {
             let t = self.h1_tag(id)?;
             let got = match &g {
                 b"lsnd" => self.looping_sound(t, rep),
+                b"ligh" => match self.light(t) {
+                    Ok(x) => Some(x),
+                    Err(e) => {
+                        rep.no_home.push(format!("attachment ligh {}: not converted ({e})", t.name));
+                        None
+                    }
+                },
                 b"effe" => match self.effect(t) {
                     Ok(x) => Some(x),
                     Err(e) => {
