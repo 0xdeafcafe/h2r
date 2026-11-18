@@ -1067,9 +1067,11 @@ reads `soso` (base `+0xa4`, detail `+0xdc`), `senv`, `swat`, `smet`,
 campaign scenery goes through `h1objects` too, so it gets them as well.
 On Blood Gulch's sandbox 17 models are converted and 81 materials draw
 Halo 1 textures. A material with no Halo 1 base map to read names the
-base's model shader itself; Blood Gulch has none. The sky model's 5
-materials name the base sky's shader (`h1convert::sky::base_sky_shader`,
-both sandboxes; `tests/sandbox_disc.rs`).
+base's model shader itself; Blood Gulch has none. The sky model's
+materials name copies of the base's sky shaders drawing Halo 1's sky
+bitmaps at Halo 1's scale (`h1convert::sky_shaders`, h1-sky.md "The
+model's shaders"), or the base sky's own shader where one doesn't convert
+(`tests/sandbox_disc.rs`).
 
 A material never names no shader (NONE). The shader draw begin
 `0x1bbf0` does not skip a NONE shader: at `0x1bcb9` it only clears its

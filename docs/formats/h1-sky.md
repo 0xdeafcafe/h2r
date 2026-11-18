@@ -192,6 +192,52 @@ reaches about a million units; retail Halo 2 skies reach 2.8 million
 (Delta Approach's, 14,200 units at scale 200).
 `real_h1_disc_every_sky_stays_behind_its_level` checks every sky.
 
+### The model's shaders
+
+The converted model's material `k` is Halo 1's model shader `k`.
+`h1convert::sky_shaders` gives each a copy of one of the base's own sky
+shaders, named for the Halo 1 shader, with Halo 1's bitmaps in its bitmap
+parameters and Halo 1's map scale in its vectors. A material whose shader
+doesn't convert names the base sky's first shader, never NONE.
+
+Halo 1's sky shaders are `schi` (transparent chicago), `sotr` (transparent
+generic) and `swat` (water). Their fields, read on every sky of the disc:
+
+| Field | `schi` | `sotr` |
+|---|---|---|
+| framebuffer blend, u16 (0 alpha blend, 3 add) | `+0x2c` | `+0x2c` |
+| maps block (count, address) | `+0x54` | `+0x54` |
+| map element size | `0xdc` | `0x64` |
+| map's bitmap reference | `+0x6c` | `+0x1c` |
+| map's u and v scale, f32 | `+0x54`, `+0x58` | `+0x04`, `+0x08` |
+
+A `swat` sky shader is its base map (`+0x4c`) at scale 1.
+
+Which template each becomes, all three drawn by the base's sky
+(Coagulation's sky shaders):
+
+| Halo 1 shader | Halo 2 template | Bitmaps |
+|---|---|---|
+| additive (galaxy, x10's space, d20's canyons) | `one_add_illum_detail` | the least tiled map on stage 1, `color_white` on stage 2, tint white |
+| `schi`, two maps, a 1×1 mask then a tiled one (the cloud layers) | `two_alpha_clouds` | the mask on stage 1, the tile on stage 2 |
+| anything else | `sky_one_alpha_env` | the least tiled map on stage 3 |
+
+The least tiled map is the sky's picture: every multi-map sky shader on
+the disc has one map at 1×1 (the dusk, night and clear-day domes, the
+horizon land) and the rest tile detail over it (stars at 8 to 18×,
+detail ground at 12 to 30×), or a single map. Halo 1's `A8` cloud masks
+sample white with their alpha, so `two_alpha_clouds`' `rgb = t1 × t2`
+keeps the tile's colour.
+
+The vectors come in pairs, `[su, 0, 0, 0]` then `[0, sv, 0, 0]`, and pair
+`p` scales bitmap parameter `p`: Coagulation's cloud cover tiles
+parameter 0 eight times with pair 0, and its sun volume parameter 1 three
+times with pair 1. The copies set each swapped parameter's pair to Halo
+1's scale; `sky_one_alpha_env`'s three pairs all take the picture's (its
+other stages hold uniform default bitmaps). The masked star layers of the
+night and dusk domes, Halo 1's per-map colour functions and `schi`
+animation are not carried over.
+
 Fields with **no Halo 2 home** (kept readable on the Halo 1 side, listed
 here for the next pass):
 

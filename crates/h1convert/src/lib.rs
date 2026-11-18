@@ -32,6 +32,7 @@ pub mod sandbox;
 pub mod scratch;
 pub mod shaders;
 pub mod sky;
+pub mod sky_shaders;
 pub mod slots;
 pub mod structure;
 pub mod textures;

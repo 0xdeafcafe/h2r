@@ -94,13 +94,44 @@ fn bitmaps<R: std::io::Read + std::io::Seek>(
     out
 }
 
-/// Tags the skies add: each sky and its model.
-fn sky_tags(p: &h1convert::convert::Prepared) -> usize {
-    p.skies
+/// Tags the skies add: each sky and its model, and the shader copies and
+/// Halo 1 bitmaps (those the structure's textures don't already add) of
+/// `m` past `base_slots` named for the skies' Halo 1 shaders and bitmaps.
+fn sky_tags(
+    p: &h1convert::convert::Prepared,
+    m: &Map<Cursor<Vec<u8>>>,
+    base_slots: usize,
+) -> usize {
+    let skies: usize = p
+        .skies
         .skies
         .iter()
         .map(|s| 1 + usize::from(s.model.is_some()))
-        .sum()
+        .sum();
+    let shaders: Vec<&str> = p
+        .skies
+        .skies
+        .iter()
+        .flat_map(|s| s.shaders.iter().flatten().map(|h| h.name.as_str()))
+        .collect();
+    let bitmaps: Vec<&str> = p
+        .skies
+        .skies
+        .iter()
+        .flat_map(|s| s.bitmaps.iter().map(|b| b.1.as_str()))
+        .filter(|n| !p.textures.bitmaps.iter().any(|t| t.0 == *n))
+        .collect();
+    let added = m
+        .tags()
+        .iter()
+        .filter(|t| t.id.index() >= base_slots)
+        .filter(|t| {
+            let n = t.name.as_deref().unwrap_or_default();
+            (t.group == FourCC(*b"shad") && shaders.contains(&n))
+                || (t.group == FourCC(*b"bitm") && bitmaps.contains(&n))
+        })
+        .count();
+    skies + added
 }
 
 struct Mem(Vec<u8>);
@@ -312,12 +343,15 @@ fn check_h1_textures(
 }
 
 /// The level's own skies: every element of the scenario's skies block
-/// names a `sky ` the conversion added from Halo 1 (none of the base's).
-/// Returns the names.
+/// names a `sky ` the conversion added from Halo 1 (none of the base's),
+/// and every material of its model a copy of one of the base's sky
+/// shaders named for its Halo 1 shader, drawing a bitmap the conversion
+/// added. Returns the names.
 fn check_skies(
     name: &str,
     m: &mut Map<Cursor<Vec<u8>>>,
     p: &h1convert::convert::Prepared,
+    base_slots: usize,
 ) -> Vec<String> {
     let scnr = m
         .tags()
@@ -349,9 +383,61 @@ fn check_skies(
         assert_eq!(t.group, FourCC(*b"sky "), "{name}: sky {k}");
         let n = t.name.clone().unwrap_or_default();
         assert!(want.contains(&n.as_str()), "{name}: sky {k} is {n}");
+        let sky = p.skies.skies.iter().find(|s| s.name == n).unwrap();
+        check_sky_materials(name, m, map::TagId(w(e + 4)), sky, base_slots);
         names.push(n);
     }
     names
+}
+
+/// [`check_skies`]' materials check for the added sky `id`.
+fn check_sky_materials(
+    name: &str,
+    m: &mut Map<Cursor<Vec<u8>>>,
+    id: map::TagId,
+    sky: &h1convert::sky::Sky,
+    base_slots: usize,
+) {
+    use h1convert::sky::{MATERIAL_SHADER, MODE_MATERIAL, MODE_MATERIALS};
+    use h1convert::sky_shaders::{ADDITIVE_TEMPLATE, ALPHA_TEMPLATE, CLOUDS_TEMPLATE};
+    let word = |b: &[u8], o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+    let model = map::TagId(word(&m.read_tag_bytes(id).unwrap(), 4));
+    let Ok(t) = m.tag(model).cloned() else {
+        assert!(sky.model.is_none(), "{name}: {}'s model went in", sky.name);
+        return;
+    };
+    let b = m.read_tag_bytes(model).unwrap();
+    let at = t.location.unwrap().address;
+    let (count, start) = (
+        word(&b, MODE_MATERIALS) as usize,
+        word(&b, MODE_MATERIALS + 4),
+    );
+    assert_eq!(count, sky.shaders.len(), "{name}: {}", sky.name);
+    for k in 0..count {
+        let e = (start - at) as usize + k * MODE_MATERIAL;
+        let shader = map::TagId(word(&b, e + MATERIAL_SHADER + 4));
+        let h1 = sky.shaders[k]
+            .as_ref()
+            .unwrap_or_else(|| panic!("{name}: {} material {k} reads", sky.name));
+        let tag = m.tag(shader).unwrap().clone();
+        assert_eq!(
+            tag.name.as_deref(),
+            Some(h1.name.as_str()),
+            "{name}: material {k}"
+        );
+        let (template, bitmaps) = scenario_edit::scene::shader_bitmaps(m, shader).unwrap();
+        assert!(
+            [ALPHA_TEMPLATE, CLOUDS_TEMPLATE, ADDITIVE_TEMPLATE].contains(&template.as_str()),
+            "{name}: {} is a {template}",
+            h1.name
+        );
+        assert!(
+            bitmaps.iter().any(|b| b.index() >= base_slots),
+            "{name}: {} draws no Halo 1 bitmap",
+            h1.name
+        );
+        eprintln!("      {} -> {template}", h1.name);
+    }
 }
 
 /// The tags the level's ambience adds: each looping sound, each sound
@@ -721,12 +807,12 @@ fn every_multiplayer_map_converts_and_keeps_the_bases_bitmaps() {
                 + collections.len()
                 + p.textures.bitmaps.len()
                 + p.textures.copies.len()
-                + sky_tags(&p)
+                + sky_tags(&p, &m, base_slots)
                 + ambience_tags(&p),
             "{name}"
         );
         check_structure_texturing(name, &mut m, &mut base, &done.bytes, &p);
-        let skies = check_skies(name, &mut m, &p);
+        let skies = check_skies(name, &mut m, &p, base_slots);
         eprintln!("    skies: {skies:?}");
         failures.extend(check_images(name, &mut m));
         let (sounds, environments) = check_ambience(name, &mut m, &p);
