@@ -239,6 +239,27 @@ impl Sky {
         })
     }
 
+    /// The outdoor fog: fog A ([FOG_RUNS] `[0]`) when it is one, a density
+    /// above 0 reaching opacity past its start. Halo 1 draws it in the
+    /// clusters that see this sky; fog A's opaque distance of 0 (a10's and
+    /// d40's space skies, c20's interior atmosphere, the menu's `sky_ui`:
+    /// colour black, density 1, start and opaque 0) is no fog. V: the menu
+    /// level's every cluster names `sky_ui`, and x10's space BSP's names
+    /// `space_x10`, and neither draws black (docs/formats/h1-sky.md, "Fog").
+    pub fn outdoor_fog(&self) -> Option<Fog> {
+        self.fogs()[0].filter(|f| f.opaque_distance > f.start_distance)
+    }
+
+    /// The indoor fog: fog B ([FOG_RUNS] `[1]`) when it has a density.
+    /// Halo 1 draws it in clusters with no sky, never outdoors (V: most
+    /// multiplayer skies carry the same untuned purple fog B, density 0.9 to 1,
+    /// opaque at 120, and their levels are all sky clusters, Blood Gulch
+    /// wider than 120 units; c20's library, every cluster skyless, has no
+    /// other fog). It has no Halo 2 home yet (docs/formats/h1-sky.md).
+    pub fn indoor_fog(&self) -> Option<Fog> {
+        self.fogs()[1]
+    }
+
     /// Reads the `sky ` tag `tag` of `map`.
     pub fn from_map(map: &h1map::H1Map, tag: &h1map::Tag) -> Result<Self> {
         if tag.group != h1map::Group::new(b"sky ") {
