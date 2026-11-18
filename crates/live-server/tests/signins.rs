@@ -12,7 +12,7 @@ use common::*;
 use live_proto::recovery::{RecoverRequest, RecoveryInfo, TotpSecret, format_code};
 use live_proto::sign::{AccountRequest, KeyPair};
 use live_proto::{Xuid, lxm};
-use live_server::Policy;
+use live_server::{Policy, ServerIdentity};
 use live_server::store::{EventStore, MemoryStore};
 use serde_json::{Value, json};
 
@@ -170,9 +170,27 @@ async fn an_account_sees_where_it_is_signed_in_and_signs_one_out() {
     assert_eq!(sign_out(&h, &laptop, game.key.kid()).await.status, StatusCode::NOT_FOUND);
     assert_eq!(sign_out(&h, &laptop, "nope").await.status, StatusCode::NOT_FOUND);
 
-    // A restarted server reads the revocation back from the log.
+    // A restarted server (same data directory, so the same server key the
+    // device names are sealed under) reads the revocation and the names
+    // back from the log.
+    let identity = ServerIdentity::load(&h.dir).unwrap();
+    let operator = ServerIdentity::load(&h.dir).unwrap().key;
     drop(h);
-    let h = start(store, Policy::default()).await;
+    let live = live_server::Live::start_with(
+        store,
+        identity,
+        Policy::default(),
+        live_server::app::Timers::Spawned,
+    )
+    .await
+    .unwrap();
+    let h = Harness {
+        app: live_server::http::router(live.clone()),
+        live,
+        operator,
+        id: "live.test".into(),
+        dir: temp_dir(),
+    };
     assert_eq!(h.sign_in(&game).await.status, StatusCode::UNAUTHORIZED);
     assert_eq!(h.sign_in(&phone).await.status, StatusCode::CREATED);
     let after = items(&list(&h, &laptop).await);

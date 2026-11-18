@@ -211,7 +211,9 @@ impl Registry {
         }
     }
 
-    /// Names `kid` from its own request when its `KeyAdded` didn't.
+    /// Names `kid` from its own request when its `KeyAdded` didn't, or
+    /// named it under another server key (a log copied to a server with a
+    /// new `server.key`): a seal this key can't open names nothing.
     pub fn learn(&self, kid: &str, device: Option<Device>) {
         let Some(device) = device else { return };
         let named = self
@@ -219,7 +221,7 @@ impl Registry {
             .read()
             .unwrap()
             .get(kid)
-            .map(|e| e.device.is_some());
+            .map(|e| e.device.as_deref().and_then(|s| self.open(s)).is_some());
         if named == Some(false) {
             self.learnt.lock().unwrap().insert(kid.to_string(), device);
         }
