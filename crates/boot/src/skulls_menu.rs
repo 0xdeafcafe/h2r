@@ -109,7 +109,7 @@ pub const LOCKED: &str = "Locked";
 /// do nothing here (X going on to the level read as a mystery). Under the
 /// descriptions the legend ran 10 of the 21 past the description's five
 /// lines (`ui_kit` preview, 2026-11-17).
-pub const PROMPT: &str = "\u{e10a}\u{e10b} CHANGE  \u{e100} SELECT  \u{e101} BACK";
+pub const PROMPT: &str = "\u{e10a} \u{e10b} CHANGE  \u{e100} SELECT  \u{e101} BACK";
 /// The footer legend's id.
 pub const FOOTER_ID: u32 = SKULLS_ID_BASE + 0x13;
 
