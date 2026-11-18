@@ -19,6 +19,9 @@
 //!   for a modal, only past its panel (a dialog covers the logo as
 //!   retail's do).
 //! - **panel** (modals): every text and cell stays inside the panel.
+//! - **placement** (modals): the body at 72, a code page's body above the
+//!   main menu's logo, the cells at retail's height, a one-line status
+//!   under a one-line body ([`crate::ui_kit::dialog::placement`]).
 //! - **contrast**: every text against what is drawn under it.
 //! - **legend**: a screen that takes more than up, down, A and B says
 //!   which buttons do what.
@@ -135,6 +138,10 @@ pub enum Issue {
     OutsidePanel {
         id: String,
     },
+    Placement {
+        id: String,
+        rule: &'static str,
+    },
     Contrast {
         id: String,
         ratio: f32,
@@ -156,6 +163,7 @@ impl Issue {
             | Issue::Unsafe { id }
             | Issue::Reserved { id, .. }
             | Issue::OutsidePanel { id }
+            | Issue::Placement { id, .. }
             | Issue::Contrast { id, .. }
             | Issue::FocusHidden { id }
             | Issue::FocusNotBrighter { id } => vec![id],
@@ -189,6 +197,7 @@ impl fmt::Display for Issue {
             Issue::Unsafe { id } => write!(f, "{id}: outside the title-safe area"),
             Issue::Reserved { id, area } => write!(f, "{id}: over {area}"),
             Issue::OutsidePanel { id } => write!(f, "{id}: outside the modal's panel"),
+            Issue::Placement { id, rule } => write!(f, "{id}: {rule}"),
             Issue::Contrast { id, ratio } => {
                 write!(f, "{id}: contrast {ratio:.2} against what is under it")
             }
@@ -495,6 +504,9 @@ pub fn check(v: &View, src: &dyn Source, rules: &Rules) -> Report {
             if !inside(r, p) {
                 rep.issues.push(Issue::OutsidePanel { id: w.id.clone() });
             }
+        }
+        for (id, rule) in crate::ui_kit::dialog::placement(v, src) {
+            rep.issues.push(Issue::Placement { id, rule });
         }
     }
     for (name, area_r) in &rules.reserved {

@@ -470,7 +470,7 @@ pub fn refill(m: &mut dyn GuestMemory, weapon_body: u32, def: u32) -> Result<boo
 }
 
 /// The weapon definition (`weap` metadata) of a weapon object.
-fn weapon_definition(m: &dyn GuestMemory, weapon: u32) -> Result<Option<(u32, u32)>, MemFault> {
+pub fn weapon_definition(m: &dyn GuestMemory, weapon: u32) -> Result<Option<(u32, u32)>, MemFault> {
     let Some(h) = DatumHandle::from_raw(weapon) else {
         return Ok(None);
     };

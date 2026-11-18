@@ -19,6 +19,9 @@
 //!   over raw HID as pads of their own, the right trackpad aiming through
 //!   [`look`] (the mouse-look path), and the trackpad actuators as rumble
 //!   and a speaker (`docs/input/steam-controller.md`).
+//! * [`touchpad`]: swipes, clicks and two-finger taps on a PlayStation
+//!   touchpad, and [`device::PadGate`], which lets the debug menu see pads
+//!   first and hide them from the game (`docs/runtime/debug-menu.md`).
 //!
 //! See `docs/input/input.md`.
 
@@ -38,9 +41,10 @@ pub mod steam_pad;
 pub mod touch;
 pub mod touch_layout;
 pub mod touch_look;
+pub mod touchpad;
 pub mod trackpad;
 
 pub use backend::HostBackend;
-pub use device::{InputManager, PortIndex};
+pub use device::{GatedPad, InputManager, PadGate, PortIndex};
 pub use gamepad::{AnalogButton, Buttons, Gamepad, Rumble, State};
-pub use host::{HostPad, HostPadId, HostPadState};
+pub use host::{HostPad, HostPadId, HostPadState, Touchpad};

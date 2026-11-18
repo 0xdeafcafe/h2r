@@ -40,7 +40,7 @@ again, and so a screen can be seen and checked before anyone runs the game.
            Prompt::new(&[Glyph::B], "Back"),
        ]);
    let screen = Arc::new(screen);
-   registry.add(&KitTexts(Arc::clone(&screen)))?; // its texts, as a locale source
+   registry.add(&KitTexts(Arc::clone(&screen)))?; // its texts, as a locale source (feature ui-kit-texts.<name>)
    registry.add(&screen.class())?;                 // the list class
    ```
 

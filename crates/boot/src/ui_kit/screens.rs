@@ -268,7 +268,7 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
 }
 
 /// The screens `h2 ui preview` knows, by name.
-pub const NAMES: [&str; 11] = [
+pub const NAMES: [&str; 12] = [
     "skulls",
     "skulls.h1",
     "skulls.mp",
@@ -280,6 +280,7 @@ pub const NAMES: [&str; 11] = [
     "account",
     "kit.example",
     "kit.choices",
+    "clankers",
 ];
 
 /// Every named state of screen `name` for the preview sheet: a list's
@@ -412,6 +413,11 @@ pub fn list_page(name: &str) -> Option<ListPage> {
         }
         "kit.choices" => {
             let s = Arc::new(choices_example(crate::ui_kit::choice::example::store()));
+            list(ListPage::new(s.class(), described(&s)))
+        }
+        "clankers" => {
+            let store = Arc::new(settings::Store::defaults(&crate::clankers::DEFS));
+            let s = Arc::new(crate::clankers::page(store));
             list(ListPage::new(s.class(), described(&s)))
         }
         _ => None,

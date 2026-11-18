@@ -44,6 +44,7 @@ impl IntoResponse for ApiError {
             ErrorCode::Gone => StatusCode::GONE,
             ErrorCode::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             ErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+            ErrorCode::Banned => StatusCode::FORBIDDEN,
             ErrorCode::Unimplemented => StatusCode::NOT_IMPLEMENTED,
             ErrorCode::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
         };
@@ -176,6 +177,14 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         .route(
             "/v1/accounts/by-xuid/{xuid}/report",
             post(crate::reports::post_report),
+        )
+        .route("/v1/admin/bans", get(crate::bans::get_admin_bans))
+        .route("/v1/admin/bans/{xuid}", post(crate::bans::post_ban))
+        .route("/v1/admin/bans/{xuid}/lift", post(crate::bans::post_lift))
+        .route("/v1/accounts/by-xuid/{xuid}/ban", get(crate::bans::get_ban))
+        .route(
+            "/v1/accounts/{gamertag}/commendations",
+            get(crate::bans::get_commendations),
         )
         .route(
             "/v1/admin/maps/{map}/{action}",

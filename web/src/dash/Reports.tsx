@@ -2,7 +2,7 @@
 // server screens at /dash/server/reports: complaints players filed about
 // each other from the game, newest first, each with the reported player's
 // record, and Note or Dismiss on each. A note closes the report and stays
-// on the player's record. It is one self-contained component over
+// on the player's record; Ban (./Bans.tsx) bans the player for it. It is one self-contained component over
 // ../admin/reports.ts, laid out plainly inside a plate, so it can move to
 // another admin layout as it is. Admins only: the server refuses everyone
 // else, and the component says so without asking.
@@ -12,6 +12,7 @@ import { identity } from "../state/identity";
 import { live } from "../state/live";
 import { adminState } from "../admin/state";
 import { ago } from "../lib/format";
+import { BanForm } from "./Bans";
 import { KIND_LABELS, fetchReports, recordFor, reviewProblem, reviewReport, type PlayerReport, type ReportList, type ReportState, type ReviewAction } from "../admin/reports";
 
 const STATES: { id: ReportState; label: string }[] = [
@@ -114,6 +115,7 @@ export function ReportsQueue() {
                           <button type="submit" class="dx-forget" disabled={busy() || !note().trim()}>note</button>
                           <button type="button" class="dx-forget" disabled={busy()} onClick={() => void review(r, "dismiss")}>dismiss</button>
                         </form>
+                        <BanForm target={r.target} report={r.id} />
                       </Show>
                     </Show>
                   </li>

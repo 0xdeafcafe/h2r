@@ -228,6 +228,12 @@ impl Watermark {
         !self.visible.fetch_xor(true, Ordering::Relaxed)
     }
 
+    /// The on/off switch itself, shared with whoever else flips it (the
+    /// debug menu's `perf.overlay`).
+    pub fn switch(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.visible)
+    }
+
     /// Both panels, with `backend` (`metal`) as the renderer.
     pub fn panels(&self, stats: Option<&LiveStats>, backend: &str) -> Panels {
         let map = self.map.as_ref().and_then(|m| m());
@@ -267,9 +273,9 @@ pub fn scale_for(height: u32) -> u32 {
 }
 
 /// Glyph cell, in font pixels.
-const CELL: u32 = 8;
+pub(crate) const CELL: u32 = 8;
 /// Line pitch, in font pixels.
-const PITCH: u32 = 10;
+pub(crate) const PITCH: u32 = 10;
 /// Room for the shadow around the text, in font pixels.
 const PAD: u32 = 2;
 /// Distance from the image's left and bottom edges, in font pixels.
@@ -279,7 +285,7 @@ const TEXT_RGB: [f32; 3] = [236.0, 240.0, 244.0];
 const TEXT_ALPHA: f32 = 0.72;
 const SHADOW_ALPHA: f32 = 0.6;
 
-fn glyph(c: char) -> [u8; 8] {
+pub(crate) fn glyph(c: char) -> [u8; 8] {
     use font8x8::UnicodeFonts;
     font8x8::BASIC_FONTS
         .get(c)

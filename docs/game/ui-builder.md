@@ -292,18 +292,44 @@ dialog, which the preview, the sheet and the editor draw. All 11 states
 pass every check, synthetic and on the disc. X no longer submits: only A
 and Start do, matching the legend (`signin_screen::ACTION_BUTTONS`).
 
-**Open: is the screen beneath drawn at all?** Drawn over the main menu,
-the menu's Halo 2 logo shows straight through the panel, across the body
-and the cells, because the panel art is nearly transparent. Every retail
-dialog's header sits at y 93, the same height as that logo, so a retail
-dialog over a fully drawn main menu would be just as unreadable. That
-points to the engine, not the tags, deciding what is beneath a dialog. A
-window may draw only the top screen of its stack (window 5 is the main
-menu's, docs/game/skulls.md), or the engine may dim the screen in code.
-One screenshot settles it: a retail dialog in game over the main menu
-(`dialog_live_signin`, from Xbox Live with no account). If the engine
-draws only the top screen, `Beneath` becomes the game shell background
-alone. That is one variant, and the panel check doesn't change.
+**The screen beneath is drawn in full (the user, 2026-11-18).** A
+retail dialog over the main menu has the whole menu under it: its logo,
+its list and its scrolling track lines, with no dim layer. The preview
+draws exactly that, so the backdrop stays as it is.
+
+**Where retail puts dialog text, against the logo.** The main menu
+(`main_menu`, screen 6) draws its logo (`start_screen`) at
+`[45 -255 -19 257]`, with thin track lines at y 64 to 50, -19 to -30 and
+-180 to -191. Its list starts at anchor (-178, -65), so its first item's
+text is at y -37 to -65, and the rest of the list is below that. Inside
+the large panel, between the header (bottom 73) and the footer (top -83),
+no band is clear. The band from 73 down to 45 is the cleanest: only the
+thin track lines cross it. Retail doesn't avoid the logo either. The
+small dialogs' text starts at y 72 and error_dialog_large's at 74, both
+running down over the logo. dialog_live_password's cells sit at top 6,
+over the logo's lower half, and ours sit at the same height. So our
+cells are already where retail's are. The body is the one part that
+could do better.
+
+**The tweak, built.** The body starts at 72, as retail's text blocks
+do. A code page's body stays in the band from 72 down to 45, the strip
+above the logo. When the body is one line and two lines of its font fit
+in the band, the status line goes under it there (`dialog::status_place`).
+Otherwise it stays above the legend. The cells stay at retail's height.
+On the disc the band holds one line, not two: font 1 (`conduit-12`) is
+19 units a line in a 27-unit band. So the code page's body (one line)
+fills it, and Checking... and the errors stay above the legend, over the
+menu's first item. Making them fit would take a smaller font or text
+placed over the logo, and neither is retail's. The `placement` check
+(`Issue::Placement`, run for every modal) holds all of this:
+
+- the body at 72;
+- a code page's body above 45;
+- every cell at top 6;
+- a one-line status under a one-line body in the band, when it fits.
+
+Longer bodies (the gamertag page, the recovery page) still run over the
+logo, as retail's own dialogs do.
 
 **Not built yet: the runtime.** In game, the prompt is still the
 one-row list on the Controls layout. Serving the dialog needs the tag
@@ -436,9 +462,6 @@ A game run has to show:
   screen is up;
 - the backing's blend: whether `framing_center` and `dialog1`/`dialog2`
   draw as opaque as the preview shows;
-- what a dialog has beneath it: the screen under it on its window's
-  stack, drawn in full, dimmed by the engine, or not drawn (slice 6,
-  "Open: is the screen beneath drawn at all?");
 - transitions and animations (the preview draws everything at rest);
 - input timing: key repeat, the opener-press guard, and the keyboard's
   return;

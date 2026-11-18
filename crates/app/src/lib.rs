@@ -27,6 +27,7 @@ pub mod input_pump;
 pub mod keymap;
 pub mod lifecycle;
 pub mod mailbox;
+pub mod menu_overlay;
 pub mod overlay;
 pub mod pacing;
 pub mod tile;
@@ -120,6 +121,11 @@ pub struct AppConfig {
     /// (docs/runtime/app.md "Watermark"). F3 toggles it; F3 does not reach the
     /// guest while one is configured.
     pub watermark: Option<Watermark>,
+    /// Our debug menu (docs/runtime/debug-menu.md), drawn over the game
+    /// image while open. Backquote opens and closes it; while it is open
+    /// the arrows, Enter, Space, Escape and Backspace drive it and no key
+    /// press reaches the guest.
+    pub debug_menu: Option<debug_menu::Shared>,
 }
 
 impl Default for AppConfig {
@@ -150,6 +156,7 @@ impl Default for AppConfig {
             closer: None,
             banner: None,
             watermark: None,
+            debug_menu: None,
         }
     }
 }
