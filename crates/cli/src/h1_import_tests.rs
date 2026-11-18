@@ -12,7 +12,7 @@ fn stems(v: &[&str]) -> Vec<String> {
 }
 
 #[test]
-fn jobs_are_campaign_levels_in_play_order_then_known_multiplayer_maps_in_both_sandboxes() {
+fn jobs_are_levels_in_play_order_then_multiplayer_maps_in_both_sandboxes_then_halo2_assets_levels() {
     let j = jobs(&stems(&[
         "ui",
         "bloodgulch",
@@ -33,7 +33,10 @@ fn jobs_are_campaign_levels_in_play_order_then_known_multiplayer_maps_in_both_sa
             "beavercreek/h2",
             "beavercreek/h1",
             "bloodgulch/h2",
-            "bloodgulch/h1"
+            "bloodgulch/h1",
+            "a10/h2",
+            "a30/h2",
+            "d40/h2"
         ]
     );
     assert!(jobs(&stems(&["ui"])).is_empty());
@@ -46,6 +49,17 @@ fn each_job_writes_where_the_game_reads() {
         Job::Campaign("a30").output(d),
         Path::new("/data/campaigns/halo1/a30.map")
     );
+    // The Halo 2-assets variant goes where the campaign maps backend
+    // looks for it (boot::h1_variants::campaign_alternate).
+    assert_eq!(
+        Job::CampaignHalo2("a30").output(d),
+        Path::new("/data/campaigns/halo1/h2/a30.map")
+    );
+    assert_eq!(
+        Job::CampaignHalo2("a30").output(d),
+        boot::h1_variants::campaign_alternate(&Job::Campaign("a30").output(d)).unwrap()
+    );
+    assert_eq!(Job::CampaignHalo2("a30").key(), "a30/h2");
     assert_eq!(
         Job::Multiplayer("bloodgulch", Sandbox::Halo1).output(d),
         Path::new("/data/maps/h1_bloodgulch/h1/h1_bloodgulch.map")
@@ -137,14 +151,17 @@ fn pending_is_what_is_not_done_or_whose_map_is_gone() {
     let keys = |v: Vec<Job>| v.iter().map(Job::key).collect::<Vec<_>>();
     assert_eq!(
         keys(pending(&all, &s, &data)),
-        ["a10", "a30", "bloodgulch/h2"]
+        ["a10", "a30", "bloodgulch/h2", "a10/h2", "a30/h2"]
     );
     let a30 = Job::Campaign("a30").output(&data);
     std::fs::create_dir_all(a30.parent().unwrap()).unwrap();
     std::fs::write(&a30, b"x").unwrap();
-    assert_eq!(keys(pending(&all, &s, &data)), ["a10", "bloodgulch/h2"]);
+    assert_eq!(
+        keys(pending(&all, &s, &data)),
+        ["a10", "bloodgulch/h2", "a10/h2", "a30/h2"]
+    );
     s.done.clear();
-    assert_eq!(pending(&all, &s, &data).len(), 4);
+    assert_eq!(pending(&all, &s, &data).len(), 6);
     let _ = std::fs::remove_dir_all(&data);
 }
 
@@ -181,13 +198,13 @@ fn a_failing_or_panicking_map_is_recorded_and_the_rest_go_on() {
     assert_eq!(
         sum,
         Summary {
-            converted: 3,
+            converted: 6,
             failed: 2,
             skipped: 0
         }
     );
-    assert_eq!(conv.0.len(), 5, "every map was tried");
-    assert_eq!(saves, [1, 2, 3, 4, 5], "saved after each map");
+    assert_eq!(conv.0.len(), 8, "every map was tried");
+    assert_eq!(saves, [1, 2, 3, 4, 5, 6, 7, 8], "saved after each map");
     assert_eq!(s.done["a30"], Err("no room".into()));
     assert!(
         s.done["bloodgulch/h1"]
@@ -195,17 +212,22 @@ fn a_failing_or_panicking_map_is_recorded_and_the_rest_go_on() {
             .is_err_and(|e| e.contains("converter bug"))
     );
     assert_eq!(s.done["d40"], Ok(()));
-    assert_eq!(lines.len(), 5, "{lines:?}");
+    assert_eq!(s.done["a30/h2"], Ok(()));
+    assert_eq!(lines.len(), 8, "{lines:?}");
     assert!(
-        lines[0].starts_with("[1/5] campaign a10: done"),
+        lines[0].starts_with("[1/8] campaign a10: done"),
         "{lines:?}"
     );
     assert!(
-        lines[1].starts_with("[2/5] campaign a30: failed: no room"),
+        lines[1].starts_with("[2/8] campaign a30: failed: no room"),
         "{lines:?}"
     );
     assert!(
-        lines[4].starts_with("[5/5] multiplayer bloodgulch (Halo 1 sandbox): failed: panicked"),
+        lines[4].starts_with("[5/8] multiplayer bloodgulch (Halo 1 sandbox): failed: panicked"),
+        "{lines:?}"
+    );
+    assert!(
+        lines[6].starts_with("[7/8] campaign a30 (Halo 2 assets): done"),
         "{lines:?}"
     );
 }
@@ -435,6 +457,29 @@ fn real_import_is_found_by_the_game() {
             )
             .unwrap();
             assert_eq!((r.campaign, r.map), (b.campaign_id, l.map_id));
+        }
+        // With Halo 2's assets chosen, each level's `h2/` map is served
+        // in its place (docs/game/campaigns.md §5).
+        let choice = vfs::SandboxChoice::default();
+        choice.set_halo1(false);
+        let maps = boot::campaigns::host_maps(&data, &state);
+        let alternates = boot::h1_variants::campaign_alternates(&maps);
+        let mut fs = vfs::CampaignMapsBackend::new(vfs::open_disc(&h2).unwrap(), maps)
+            .with_assets(choice, alternates);
+        for l in &b.levels {
+            let file = Job::CampaignHalo2(&l.map).output(&data);
+            if !file.is_file() {
+                assert!(only.is_some(), "{}: no Halo 2-assets map", l.map);
+                continue;
+            }
+            let base = l.scenario.rsplit('\\').next().unwrap();
+            let path = format!("maps\\{base}.map");
+            let mut head = [0u8; 0x800];
+            fs.read_at(&path, 0, &mut head).unwrap();
+            let want = std::fs::read(&file).unwrap();
+            assert_eq!(&head[..], &want[..0x800], "{path} (Halo 2 assets)");
+            let m = map::Map::from_reader(Cursor::new(want)).unwrap();
+            assert_eq!(m.header().scenario_path, l.scenario, "{path} (Halo 2 assets)");
         }
     }
     if std::env::var_os("H1_IMPORT_DATA").is_none() {

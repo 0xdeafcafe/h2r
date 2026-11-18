@@ -107,6 +107,45 @@ impl BatchRows {
     }
 }
 
+/// A usage counter's change ([`crate::usage`]): `n` added to the counter
+/// for (`day`, `account`, `metric`). `day` is a UTC day, `YYYY-MM-DD`, or
+/// empty for a counter with no day (a running total such as cloud saves
+/// stored); `account` a xuid in hex, or empty for the server's own.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+pub struct UsageRow {
+    pub day: String,
+    pub account: String,
+    pub metric: String,
+    pub n: i64,
+}
+
+/// Adds `rows` to a map of counters and drops the days before `keep_from`
+/// (never the dayless ones): the in-memory stores' [`EventStore::add_usage`].
+pub(crate) fn add_usage_to(
+    map: &mut std::collections::BTreeMap<(String, String, String), i64>,
+    rows: &[UsageRow],
+    keep_from: &str,
+) {
+    for r in rows {
+        *map.entry((r.day.clone(), r.account.clone(), r.metric.clone()))
+            .or_default() += r.n;
+    }
+    map.retain(|(day, _, _), _| day.is_empty() || day.as_str() >= keep_from);
+}
+
+pub(crate) fn usage_rows(
+    map: &std::collections::BTreeMap<(String, String, String), i64>,
+) -> Vec<UsageRow> {
+    map.iter()
+        .map(|((day, account, metric), n)| UsageRow {
+            day: day.clone(),
+            account: account.clone(),
+            metric: metric.clone(),
+            n: *n,
+        })
+        .collect()
+}
+
 /// One event as stored. `version` counts from 0 within its stream.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RecordedEvent {
@@ -260,6 +299,21 @@ pub trait EventStore: Send + Sync + 'static {
 
     /// Every durable subscriber's checkpoint, for copying them.
     async fn checkpoints(&self) -> Result<Vec<(String, u64)>, StoreError>;
+
+    /// Adds each row's `n` to its usage counter (made at 0 if new), then
+    /// drops every counter for a day before `keep_from` (dayless ones
+    /// stay), in one go ([`crate::usage`]). A store that keeps no counters
+    /// takes them and forgets them: the server's own copy, in memory,
+    /// still counts until it restarts.
+    async fn add_usage(&self, rows: &[UsageRow], keep_from: &str) -> Result<(), StoreError> {
+        let _ = (rows, keep_from);
+        Ok(())
+    }
+
+    /// Every usage counter, read once when the server starts.
+    async fn usage(&self) -> Result<Vec<UsageRow>, StoreError> {
+        Ok(Vec::new())
+    }
 }
 
 /// What [`EventStore::import`] checks of each event, given each stream's
@@ -333,6 +387,7 @@ struct MemoryLog {
     streams: HashMap<String, (u64, String)>,
     blobs: HashMap<String, Vec<u8>>,
     checkpoints: HashMap<String, u64>,
+    usage: std::collections::BTreeMap<(String, String, String), i64>,
 }
 
 impl Default for MemoryStore {
@@ -500,6 +555,15 @@ impl EventStore for MemoryStore {
         all.sort();
         Ok(all)
     }
+
+    async fn add_usage(&self, rows: &[UsageRow], keep_from: &str) -> Result<(), StoreError> {
+        add_usage_to(&mut self.inner.lock().unwrap().usage, rows, keep_from);
+        Ok(())
+    }
+
+    async fn usage(&self) -> Result<Vec<UsageRow>, StoreError> {
+        Ok(usage_rows(&self.inner.lock().unwrap().usage))
+    }
 }
 
 /// The behaviour every store must have; run against every implementation
@@ -524,6 +588,71 @@ pub mod conformance {
             jws_index: None,
             body,
         }
+    }
+
+    /// Usage counters add up, keep their dayless totals and lose the days
+    /// before the cut. Rows are on this run's own account, on days no
+    /// server writes (1970), so a shared store's other rows don't matter.
+    pub async fn usage(store: &dyn EventStore, prefix: &str) {
+        let acct = format!("{prefix}-usage");
+        let row = |day: &str, metric: &str, n: i64| UsageRow {
+            day: day.into(),
+            account: acct.clone(),
+            metric: metric.into(),
+            n,
+        };
+        let mine = |rows: Vec<UsageRow>| {
+            let mut r: Vec<_> = rows.into_iter().filter(|r| r.account == acct).collect();
+            r.sort();
+            r
+        };
+        store
+            .add_usage(
+                &[
+                    row("1970-01-01", "up.frames", 10),
+                    row("1970-01-02", "up.frames", 5),
+                    row("", "stored.saves", 7),
+                ],
+                "1970-01-01",
+            )
+            .await
+            .unwrap();
+        store
+            .add_usage(
+                &[
+                    row("1970-01-02", "up.frames", 1),
+                    row("", "stored.saves", -2),
+                ],
+                "1970-01-01",
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            mine(store.usage().await.unwrap()),
+            [
+                row("", "stored.saves", 5),
+                row("1970-01-01", "up.frames", 10),
+                row("1970-01-02", "up.frames", 6)
+            ]
+        );
+        // The cut drops whole days, at once with the write; never the dayless.
+        store
+            .add_usage(&[row("1970-01-03", "events", 1)], "1970-01-02")
+            .await
+            .unwrap();
+        assert_eq!(
+            mine(store.usage().await.unwrap()),
+            [
+                row("", "stored.saves", 5),
+                row("1970-01-02", "up.frames", 6),
+                row("1970-01-03", "events", 1)
+            ]
+        );
+        store.add_usage(&[], "1970-01-04").await.unwrap();
+        assert_eq!(
+            mine(store.usage().await.unwrap()),
+            [row("", "stored.saves", 5)]
+        );
     }
 
     /// A batch JWS of `n` events on `stream`, and their bodies.
@@ -753,6 +882,8 @@ pub mod conformance {
         store.save_checkpoint(&cp, 41).await.unwrap();
         store.save_checkpoint(&cp, 42).await.unwrap();
         assert_eq!(store.load_checkpoint(&cp).await.unwrap(), Some(42));
+
+        usage(store, prefix).await;
 
         // Appends wake a waiting tailer.
         let mut wake = store.wake().await.unwrap();

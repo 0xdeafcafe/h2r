@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 
 use crate::blobs::{BlobStore, Meta};
-use crate::store::{EventStore, NewEvent, Query, RecordedEvent, StoreError, Wake};
+use crate::store::{EventStore, NewEvent, Query, RecordedEvent, StoreError, UsageRow, Wake};
 
 /// Where the blobs go in the blob store: `title/<sha256>`.
 pub const PREFIX: &str = "title/";
@@ -109,6 +109,14 @@ impl EventStore for BlobsElsewhere {
 
     async fn checkpoints(&self) -> Result<Vec<(String, u64)>, StoreError> {
         self.inner.checkpoints().await
+    }
+
+    async fn add_usage(&self, rows: &[UsageRow], keep_from: &str) -> Result<(), StoreError> {
+        self.inner.add_usage(rows, keep_from).await
+    }
+
+    async fn usage(&self) -> Result<Vec<UsageRow>, StoreError> {
+        self.inner.usage().await
     }
 }
 

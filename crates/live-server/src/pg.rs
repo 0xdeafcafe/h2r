@@ -17,7 +17,7 @@ use sqlx::postgres::{PgListener, PgPool, PgPoolOptions, PgRow};
 
 use crate::store::{
     BatchDecoder, BatchRows, EventStore, ImportCheck, NewEvent, Query, RecordedEvent, StoreError,
-    Wake,
+    UsageRow, Wake,
 };
 
 const SCHEMA: &str = include_str!("schema.sql");
@@ -401,6 +401,44 @@ impl EventStore for PostgresStore {
                 .fetch_all(&self.pool)
                 .await?;
         Ok(rows.into_iter().map(|(n, p)| (n, p as u64)).collect())
+    }
+
+    async fn add_usage(&self, rows: &[UsageRow], keep_from: &str) -> Result<(), StoreError> {
+        let mut tx = self.pool.begin().await?;
+        for r in rows {
+            sqlx::query(
+                "insert into usage (day, account, metric, n) values ($1, $2, $3, $4)
+                 on conflict (day, account, metric) do update set n = usage.n + excluded.n",
+            )
+            .bind(&r.day)
+            .bind(&r.account)
+            .bind(&r.metric)
+            .bind(r.n)
+            .execute(&mut *tx)
+            .await?;
+        }
+        sqlx::query("delete from usage where day <> '' and day < $1")
+            .bind(keep_from)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn usage(&self) -> Result<Vec<UsageRow>, StoreError> {
+        let rows: Vec<(String, String, String, i64)> =
+            sqlx::query_as("select day, account, metric, n from usage")
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(day, account, metric, n)| UsageRow {
+                day,
+                account,
+                metric,
+                n,
+            })
+            .collect())
     }
 
     async fn wake(&self) -> Result<Box<dyn Wake>, StoreError> {

@@ -44,6 +44,7 @@ impl IntoResponse for ApiError {
             ErrorCode::Gone => StatusCode::GONE,
             ErrorCode::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             ErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+            ErrorCode::Banned => StatusCode::FORBIDDEN,
             ErrorCode::Unimplemented => StatusCode::NOT_IMPLEMENTED,
             ErrorCode::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
         };
@@ -177,6 +178,14 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
             "/v1/accounts/by-xuid/{xuid}/report",
             post(crate::reports::post_report),
         )
+        .route("/v1/admin/bans", get(crate::bans::get_admin_bans))
+        .route("/v1/admin/bans/{xuid}", post(crate::bans::post_ban))
+        .route("/v1/admin/bans/{xuid}/lift", post(crate::bans::post_lift))
+        .route("/v1/accounts/by-xuid/{xuid}/ban", get(crate::bans::get_ban))
+        .route(
+            "/v1/accounts/{gamertag}/commendations",
+            get(crate::bans::get_commendations),
+        )
         .route(
             "/v1/admin/maps/{map}/{action}",
             post(crate::content::moderate_map),
@@ -286,6 +295,8 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
             get(crate::ranks::player_history),
         )
         .route("/v1/admin/status", get(crate::status::get_admin_status))
+        .route("/v1/admin/usage", get(crate::usage::get_overview))
+        .route("/v1/admin/usage/accounts", get(crate::usage::get_accounts))
         .route("/v1/events", get(list_events).post(post_event))
         .route(
             "/v1/sessions",
@@ -649,6 +660,12 @@ async fn put_file(
     let published = live
         .publish_file(bearer(&headers), title, &name, &bytes)
         .await?;
+    live.meter(
+        crate::usage::bearer_xuid(bearer(&headers)),
+        crate::usage::metric::UP_CONTENT,
+        bytes.len() as u64,
+    )
+    .await;
     Ok(json(StatusCode::OK, &published))
 }
 
@@ -1069,8 +1086,12 @@ async fn put_outline(
     body: Result<Bytes, BytesRejection>,
 ) -> ApiResult<Response> {
     let bytes = body_bytes(body)?;
-    Ok(json(
-        StatusCode::OK,
-        &live.put_outline(bearer(&headers), &map, &bytes).await?,
-    ))
+    let stored = live.put_outline(bearer(&headers), &map, &bytes).await?;
+    live.meter(
+        crate::usage::bearer_xuid(bearer(&headers)),
+        crate::usage::metric::UP_CONTENT,
+        bytes.len() as u64,
+    )
+    .await;
+    Ok(json(StatusCode::OK, &stored))
 }

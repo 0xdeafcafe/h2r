@@ -21,8 +21,17 @@
 //!
 //! **When.** Before [`GAME_ACTIVATE`](feature::points::GAME_ACTIVATE),
 //! after the map's tags are loaded and before any HUD draws.
+//!
+//! **The motion sensor.** Halo 2's `nhdt` does not place the sensor's
+//! blips: the game draws them (`0x1a2823`) around a point from its own
+//! table, [`SENSOR_CENTRES`] (E `0x00139614`..`0x00139685`: anchor 2,
+//! bottom left, plus the table's entry for the screen mode). Halo 1's HUD
+//! centres them elsewhere, so while it is shown the table holds Halo 1's
+//! centre (the converter's `hud_sensor`) for every screen mode, as the
+//! Halo 1 widgets use one offset for all; every other activation puts
+//! back what the table held before the first write ([`Sensor`]).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
@@ -47,10 +56,80 @@ const BIPD: u32 = u32::from_be_bytes(*b"bipd");
 const WEAP: u32 = u32::from_be_bytes(*b"weap");
 const NHDT: u32 = u32::from_be_bytes(*b"nhdt");
 
-/// Swaps by map name (the cache header's, lower case), and whether they
-/// hold only while converted multiplayer maps are in the Halo 1 sandbox
-/// (a package's Halo 1 variant; a campaign level's always do).
-pub type Table = HashMap<String, (bool, Vec<content::HudSwap>)>;
+/// Halo 2's motion sensor blip centres (`.data`), two `i16` (x, y from the
+/// bottom-left corner) per screen mode: fullscreen, half and quarter
+/// screen (V: (41, -42), (31, -31), (31, -31), the centre of the retail
+/// 83 x 83 `motion_sensor` background), then an unused fourth.
+pub const SENSOR_CENTRES: u32 = 0x0047_ff40;
+pub const SENSOR_MODES: usize = 3;
+
+/// The sensor table's entries for the three screen modes.
+pub type SensorTable = [[i16; 2]; SENSOR_MODES];
+
+/// One converted map's HUD swaps.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MapHud {
+    /// Whether they hold only while converted multiplayer maps are in the
+    /// Halo 1 sandbox (a package's Halo 1 variant; a campaign level's
+    /// always do).
+    pub sandboxed: bool,
+    pub swaps: Vec<content::HudSwap>,
+    /// Where Halo 1's HUD centres the motion sensor (`hud_sensor`).
+    pub sensor: Option<[i16; 2]>,
+}
+
+/// Swaps by map name (the cache header's, lower case).
+pub type Table = HashMap<String, MapHud>;
+
+/// Reads the sensor table.
+pub fn read_sensor(m: &dyn GuestMemory) -> Result<SensorTable, MemFault> {
+    let mut t = [[0; 2]; SENSOR_MODES];
+    for (i, e) in t.iter_mut().enumerate() {
+        let at = SENSOR_CENTRES + 4 * i as u32;
+        *e = [m.u16(at)? as i16, m.u16(at + 2)? as i16];
+    }
+    Ok(t)
+}
+
+fn write_sensor(m: &mut dyn GuestMemory, t: &SensorTable) -> Result<(), MemFault> {
+    for (i, [x, y]) in t.iter().enumerate() {
+        let at = SENSOR_CENTRES + 4 * i as u32;
+        m.set_u16(at, *x as u16)?;
+        m.set_u16(at + 2, *y as u16)?;
+    }
+    Ok(())
+}
+
+/// The motion sensor's side of the swap: Halo 2's own table, as read
+/// before the first write, and what each activation writes.
+#[derive(Debug, Default)]
+pub struct Sensor {
+    retail: Option<SensorTable>,
+}
+
+impl Sensor {
+    /// Writes Halo 1's `centre` for every screen mode when `style` is
+    /// Halo 1's and the map has one, else Halo 2's own table back.
+    /// Returns whether the table changed.
+    pub fn activate(
+        &mut self,
+        m: &mut dyn GuestMemory,
+        centre: Option<[i16; 2]>,
+        style: HudStyle,
+    ) -> Result<bool, MemFault> {
+        let now = read_sensor(&*m)?;
+        let retail = *self.retail.get_or_insert(now);
+        let want = match (style, centre) {
+            (HudStyle::Halo1, Some(c)) => [c; SENSOR_MODES],
+            _ => retail,
+        };
+        if want == now {
+            return Ok(false);
+        }
+        write_sensor(m, &want)?;
+        Ok(true)
+    }
+}
 
 /// Points each swap's owner at the HUD of `style`. Returns how many
 /// references changed. An owner that is not a loaded `bipd` or `weap`, or
@@ -114,7 +193,10 @@ pub fn read_table(packages: &Path) -> Table {
         };
         for v in m.variants.iter().filter(|v| v.origin.sandbox == "h1") {
             if !v.hud.is_empty() {
-                out.insert(m.base.map.to_ascii_lowercase(), (true, v.hud.clone()));
+                out.insert(
+                    m.base.map.to_ascii_lowercase(),
+                    MapHud { sandboxed: true, swaps: v.hud.clone(), sensor: v.hud_sensor },
+                );
             }
         }
     }
@@ -143,7 +225,10 @@ pub fn read_campaign_table(data_root: &Path) -> Table {
             if let Ok(h) = content::LevelHud::from_toml(&text)
                 && !h.hud.is_empty()
             {
-                out.insert(level.to_owned(), (false, h.hud));
+                out.insert(
+                    level.to_owned(),
+                    MapHud { sandboxed: false, swaps: h.hud, sensor: h.sensor },
+                );
             }
         }
     }
@@ -152,6 +237,34 @@ pub fn read_campaign_table(data_root: &Path) -> Table {
 
 struct HudSwap {
     table: Arc<RwLock<Table>>,
+    sensor: Arc<std::sync::Mutex<Sensor>>,
+    /// Campaign levels with a Halo 2-assets map ([`campaign_halo2_levels`]):
+    /// their pairs are the Halo 1 map's datums, so they hold only while
+    /// the campaign's assets are Halo 1's.
+    halo2_levels: Arc<HashSet<String>>,
+}
+
+/// The campaign levels under `<data>/campaigns` that have a Halo 2-assets
+/// map (`<key>/h2/<level>.map`, `h1_variants::campaign_alternate`), by
+/// level name, lower case. When the game's campaign assets are Halo 2's
+/// that map is served, and the Halo 1 map's HUD pairs name other tags.
+pub fn campaign_halo2_levels(data_root: &Path) -> HashSet<String> {
+    let mut out = HashSet::new();
+    let Ok(dirs) = std::fs::read_dir(data_root.join("campaigns")) else {
+        return out;
+    };
+    for d in dirs.flatten() {
+        let Ok(files) = std::fs::read_dir(d.path().join("h2")) else {
+            continue;
+        };
+        for f in files.flatten() {
+            let name = f.file_name().to_string_lossy().to_ascii_lowercase();
+            if let Some(level) = name.strip_suffix(".map") {
+                out.insert(level.to_owned());
+            }
+        }
+    }
+    out
 }
 
 impl feature::Feature for HudSwap {
@@ -163,6 +276,8 @@ impl feature::Feature for HudSwap {
         use feature::Flow;
         use feature::points::GAME_ACTIVATE;
         let table = Arc::clone(&self.table);
+        let sensor = Arc::clone(&self.sensor);
+        let halo2_levels = Arc::clone(&self.halo2_levels);
         b.raw()
             .before(&GAME_ACTIVATE, "HUD swap", move |c| {
                 let rt = Arc::clone(c.ctx.runtime());
@@ -171,22 +286,33 @@ impl feature::Feature for HudSwap {
                     return Ok(Flow::Continue);
                 };
                 let table = table.read().unwrap_or_else(|e| e.into_inner());
-                let Some((sandboxed, swaps)) = table.get(&name.trim().to_ascii_lowercase()) else {
-                    return Ok(Flow::Continue);
-                };
-                if *sandboxed && !crate::health::halo1_sandbox() {
-                    return Ok(Flow::Continue);
-                }
+                let key = name.trim().to_ascii_lowercase();
+                let hud = table
+                    .get(&key)
+                    .filter(|h| !h.sandboxed || crate::health::halo1_sandbox())
+                    // The Halo 2-assets map of a campaign level is served.
+                    .filter(|_| crate::h1_variants::campaign_assets_halo1() || !halo2_levels.contains(&key));
                 // From the map and the choice directly, not `hud::style()`,
                 // so the order against the style's game-start observer does
                 // not matter.
                 let style = crate::hud::style_for_map(&name, crate::hud::halo1_chosen());
-                match apply(&mut *mem, swaps, style) {
-                    Ok(n) if n > 0 => {
-                        eprintln!("hud: {name}: {n} HUD references now {}'s", style.name())
+                if let Some(h) = hud {
+                    match apply(&mut *mem, &h.swaps, style) {
+                        Ok(n) if n > 0 => {
+                            eprintln!("hud: {name}: {n} HUD references now {}'s", style.name())
+                        }
+                        Ok(_) => {}
+                        Err(e) => eprintln!("hud: {name}: owners unreadable ({e:?})"),
                     }
-                    Ok(_) => {}
-                    Err(e) => eprintln!("hud: {name}: owners unreadable ({e:?})"),
+                }
+                // Every activation, so a map after a Halo 1 one gets Halo
+                // 2's sensor back.
+                let centre = hud.and_then(|h| h.sensor);
+                let mut sensor = sensor.lock().unwrap_or_else(|e| e.into_inner());
+                match sensor.activate(&mut *mem, centre, style) {
+                    Ok(true) => eprintln!("hud: {name}: motion sensor centred for {}'s HUD", style.name()),
+                    Ok(false) => {}
+                    Err(e) => eprintln!("hud: {name}: motion sensor table unwritable ({e:?})"),
                 }
                 Ok(Flow::Continue)
             })
@@ -212,6 +338,8 @@ pub fn install(
     registry
         .add(&HudSwap {
             table: Arc::new(RwLock::new(table)),
+            sensor: Arc::default(),
+            halo2_levels: Arc::new(campaign_halo2_levels(data_root)),
         })
         .map_err(|e| anyhow::anyhow!("hud: {e}"))
 }

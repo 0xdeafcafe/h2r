@@ -1347,6 +1347,54 @@ Rig tests:
 - `with_deferral_off_each_pool_call_stops_the_render_and_counts_a_stall`
 - `a_request_off_the_free_list_makes_the_frame_serial`
 
+### Two writers: the tick joins first
+
+With the pool owner rule, 03a pipelined without stalls (`io_sim_first`
+every frame, `io_joins 0`), but 4 of 8 captured frames differed from the
+serial run, and conflicts went from 0 to about 16,000 per 30-40 frames.
+The differences were particle fire, the first-person arms' pose and the
+cutscene characters' faces. Frames 4000 and 7000 matched, so gameplay
+state did not diverge for good.
+
+The owner rule is sound for the pool. What it removed was a join: before
+it, the game thread's first pool wait each frame joined the render
+before the tick read anything the render writes (`join_wait` about the
+whole render), so each frame ran in effect serially. That is why `conflicts` was 0 and the frames matched.
+With the join gone, tick `k + 1` runs beside render `k` for the first time
+and reads state the render writes in place: the census v2 sites (particle
+systems the draw pass steps, `0x00174420`; the animation cache's use
+stamps, `0x001237e0`; the render's object and effect state). Serially the
+tick reads the render's words. Pipelined they reach live RAM only at the
+join, so the tick reads the snapshot's, and the hand-back keeps the tick's
+word. No hand-back rule can fix that: the render's step is already lost
+in the tick's read, whichever word wins. Real overlap of the tick and the
+render is unsound until those subsystems are ported (census v2, "Verdict").
+
+So `Addrs::sim_joins` names the sim code that reads what the render
+writes. A game-thread call of one while a render is in flight joins first
+(`sim_joins` on the `pipeline:` line). For Halo 2 it is `game_tick`
+(`0x00137fe0`), so frames match the serial run again. A port that makes a
+subsystem's state single-writer lets the entry move later in the tick.
+The rig test is
+`a_tick_reading_the_renders_writes_joins_first_and_runs_as_serially`. Its
+second run, without the entry, loses the render's step and counts the
+conflicts.
+
+`lead` on the line is the game thread's time from each launch to its
+join: the work the render overlapped.
+
+**What bounds the overlap.** Stock 03a costs about 6 ms of sim and about
+21 ms of render front-end plus D3D a frame ("What it would buy"). The p4
+run's render took 22-25 ms on the render thread and `join_wait` 17-19 ms,
+so the game thread had about 5 ms of its own work to overlap. The render
+side is the critical path, and pipelining saves at most the sim's share,
+less the snapshot (0.5 ms), the hand-back (1-1.6 ms) and the render's COW
+faults (about 190 pages a frame), which come to roughly as much as the
+overlap. At most that is about 20%, and only once the tick may run beside
+the render. With the tick joining first, the overlap is the frame's work
+outside the tick. The next real win has to come from a cheaper render
+(docs/perf/frame-budget.md), not from more pipelining.
+
 ## Related
 
 - docs/perf/frame-budget.md, "Render front-end versus simulation": the

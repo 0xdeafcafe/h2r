@@ -30,6 +30,10 @@
 //!   unplugged first, pending requests complete with
 //!   `ERROR_DEVICE_NOT_CONNECTED`. Requests are applied in order; the last
 //!   rumble value wins on the backend.
+//! * A [`PadGate`] ([`InputManager::set_gate`]) sees every pad's host state
+//!   after the backends report it and before the ports convert it, and may
+//!   change it: the debug menu reads its touchpad gestures there and hands
+//!   the game neutral pads while it is open (docs/runtime/debug-menu.md).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -41,7 +45,24 @@ use crate::gamepad::{
     Capabilities, ERROR_DEVICE_NOT_CONNECTED, ERROR_IO_PENDING, ERROR_SUCCESS, Gamepad,
     PollingParameters, Rumble, State,
 };
-use crate::host::{ConfigError, ConvertConfig, HostPadId};
+use crate::host::{ConfigError, ConvertConfig, HostPad, HostPadId};
+
+/// One pad as a [`PadGate`] sees it: which backend reported it, and its
+/// state, which the gate may change before the game sees it.
+#[derive(Clone, Debug)]
+pub struct GatedPad {
+    /// The backend's index (in [`InputManager::add_backend`] order) and the
+    /// pad's id within it: stable while the pad stays connected.
+    pub key: (usize, HostPadId),
+    pub pad: HostPad,
+}
+
+/// Sees every connected pad at each [`InputManager::sync`], before the
+/// ports do, in backend order. Whatever it leaves in `pads` is what the
+/// game gets; connection (and so the ports) is not its business.
+pub trait PadGate: Send {
+    fn filter(&mut self, pads: &mut [GatedPad]);
+}
 
 pub const PORT_COUNT: usize = 4;
 
@@ -150,6 +171,7 @@ pub struct InputManager {
     changes_ins: u32,
     changes_rem: u32,
     completions: Vec<Completion>,
+    gate: Option<Box<dyn PadGate>>,
 }
 
 impl InputManager {
@@ -163,6 +185,7 @@ impl InputManager {
             changes_ins: 0,
             changes_rem: 0,
             completions: Vec::new(),
+            gate: None,
         })
     }
 
@@ -181,6 +204,11 @@ impl InputManager {
 
     pub fn add_backend(&mut self, b: Box<dyn HostBackend>) {
         self.backends.push(b);
+    }
+
+    /// Puts `gate` between the backends and the ports (replacing any).
+    pub fn set_gate(&mut self, gate: Box<dyn PadGate>) {
+        self.gate = Some(gate);
     }
 
     /// Pull host state and update the ports: removals, insertions, auto-poll
@@ -203,6 +231,14 @@ impl InputManager {
                 order.push(key);
                 seen.insert(key, pad);
             }
+        }
+        if let Some(gate) = &mut self.gate {
+            let mut gated: Vec<GatedPad> = order
+                .iter()
+                .filter_map(|k| seen.remove(k).map(|pad| GatedPad { key: *k, pad }))
+                .collect();
+            gate.filter(&mut gated);
+            seen.extend(gated.into_iter().map(|g| (g.key, g.pad)));
         }
 
         // Removals.
@@ -455,6 +491,49 @@ mod tests {
 
     fn p(i: usize) -> PortIndex {
         PortIndex::new(i).unwrap()
+    }
+
+    /// Clears A on every pad and remembers what it saw.
+    struct Clear(Arc<Mutex<Vec<(usize, HostPadId)>>>);
+    impl PadGate for Clear {
+        fn filter(&mut self, pads: &mut [GatedPad]) {
+            for g in pads {
+                self.0.lock().unwrap().push(g.key);
+                g.pad.state.buttons.set(HostButton::South, false);
+            }
+        }
+    }
+
+    #[test]
+    fn a_gate_sees_each_pad_first_and_decides_what_the_ports_get() {
+        let (mut m, sh) = setup();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        sh.lock().unwrap().pads = vec![pad(10, true), pad(11, true)];
+        m.sync();
+        let h = m.open(p(0)).unwrap();
+        assert!(
+            m.get_state(h)
+                .unwrap()
+                .gamepad
+                .analog(crate::AnalogButton::A)
+                > 0
+        );
+        m.set_gate(Box::new(Clear(Arc::clone(&seen))));
+        m.sync();
+        assert_eq!(
+            m.get_state(h)
+                .unwrap()
+                .gamepad
+                .analog(crate::AnalogButton::A),
+            0
+        );
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![(0, HostPadId(10)), (0, HostPadId(11))]
+        );
+        // Ports and connection are untouched by the gate.
+        assert_eq!(m.connected_mask(), 0b11);
+        assert_eq!(m.open(p(0)).unwrap(), h, "the same device instance");
     }
 
     #[test]

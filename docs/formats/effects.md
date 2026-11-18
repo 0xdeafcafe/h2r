@@ -442,6 +442,25 @@ distributions. Both write nothing.
 | +0x40 | `reflections`, stride 0x30 (`flags` u16 +0, `index` u32 +4; rest raw) | V stride (size = 0x64 + n*0x30 + function data) |
 | +0x4c, +0x54, +0x5c | function blocks, stride 8 | V |
 
+Typed definition: `crates/tags/src/defs/lens.txt` (all 160 distinct
+records round-trip). **E**: four paths submit a flare through
+`0x0002dba0`: sky lights (`0x0003f1e9`), lights (`0x000c34ac`, the
+`ligh` datum at `+0x94`), object attachments (`0x00041b23`) and effect
+parts at render (`0x00179d23`; the part creation switch skips `lens`,
+`0x0017a8bd`). The submission reads `+0x18`/`+0x1c` (no flare past the
+far distance; equal values switch the test off), `+0x28` bits 2/3 and
+`+0x2a` bit 0, and `+0x16` (nonzero: a second record). Reflection
+fields are named from Halo 1 pairs ([tag-definitions.md](tag-definitions.md),
+"Lens flares, debris and light fixtures").
+
+### garb (garbage)
+
+The engine's object type 4 (no scenario placement block). The disc has
+one `garb` (30 instances), the item layer and `0xa8` zero bytes; no
+effect part names it. Retail effects throw objects through `obje`
+parts (`bloc` 1,156, `proj` 4) and debris meshes as `PRTM` particle
+models. Definition: `crates/tags/src/defs/garb.txt`.
+
 ### cont (contrail), root 0xf0
 
 | Offset | Field | Evidence |

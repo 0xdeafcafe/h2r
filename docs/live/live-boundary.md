@@ -238,7 +238,7 @@ The connection-result classifier at `0x0006cd50` produces the following **derive
 |---|---:|---|
 | `0x00000000` / `XONLINETASK_S_RUNNING` | 0 | Wait; no error dialog. |
 | `0x001510f0` / `XONLINE_S_LOGON_CONNECTION_ESTABLISHED` | 1 | Validate users/services and finish sign-in; no error dialog. |
-| `0x80151200` / account requires management | 2 | Dialog `0x27`; first action opens dashboard online menu through `0x00236937`. |
+| `0x80151200` / account requires management | 2 | Dialog `0x27`; first action opens dashboard online menu through `0x00236937`. The Live HLE returns this for a banned account ([live-admin.md](live-admin.md) §9). |
 | `0x80151002` / update required | 3 | Dialog `0x24`; first action `0x00236926` calls `XOnlineTitleUpdate(0)` at `0x00236928`. |
 | `0x80151001` / cannot access service | 4 | Dialog `0x23`; first action opens dashboard network configuration through `0x00236917`. |
 | `0x80151004` / connection lost | 5 | Dialog `0x38`; normally offers the same network-configuration action. Transport becoming unusable also yields game result 5. |

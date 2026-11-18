@@ -1,0 +1,46 @@
+# sky : sky (group word 736b7920). Engine rows from docs/formats/lighting.md (atmosphere
+# table), the rest from docs/formats/h1-sky.md and the disc (crates/h1sky/src/h2.rs:
+# all 91 retail identities on 28 maps decode).
+group 736b7920 0xac align 4
+  0x0 tagref model groups=mode -- render model; E 0x0003ea60 and 0x0003ede0 resolve the datum at +4
+  0x8 tagref unused_ref -- V null on every retail sky (h1-sky.md); group unknown
+  0x10 u32 word_10 -- V varies with the sky (0, 2, 6, 13, 18, 34, 35, 38); not interpreted
+  0x14 f32 model_scale default=1 -- E 0x0003ebd0 assigns it as the sky transform's scale
+  0x18 f32 camera_translation_scale default=1 -- E 0x0003ebd0 multiplies the camera position by it
+  0x1c block bitmap_layers 0xc align 4 -- V 70 of 91 retail skies have one element
+    0x0 tagref bitmap groups=bitm -- V a bitm reference
+    0x8 f32 scalar_8 -- V 1.0, 1.5 or 0.0
+  0x24 unknown 0x10 seen=zero
+  0x34 f32[3] fallback_color -- E 0x000d1a30: object lighting colour used without sky lights or after occlusion
+  0x40 unknown 0x4 seen=zero
+  0x44 f32 scalar_44 -- V set (5.0) by one retail sky
+  0x48 block gradients_48 0x18 align 4 -- V 68 of 91 retail skies have one element; meaning not established
+    0x0 f32[3] color -- V values in 0..1
+    0xc f32 fraction_c -- V values in 0..1
+    0x10 f32[2] scalars_10 -- V 0, 200, 700 seen
+  0x50 block gradients_50 0x18 align 4 -- V 13 of 91 retail skies have one element, the shape of gradients_48
+    0x0 f32[3] color
+    0xc f32 fraction_c
+    0x10 f32[2] scalars_10
+  0x58 block block_58 0x10 align 4
+    0x0 unknown 0x10 seen=many
+  0x60 block block_60 0x50 align 4
+    0x0 unknown 0x48 seen=many
+    0x48 tagref ref_48
+  0x68 unknown 0x10 seen=zero
+  0x78 block lights 0x34 align 4 -- sky lights; E 0x0003eec0 and 0x000d1a30 walk them
+    0x0 unknown 0xc seen=zero
+    0xc f32 yaw -- direction, radians; E 0x0003eec0
+    0x10 f32 pitch -- direction, radians; E 0x0003eec0
+    0x14 tagref lens_flare groups=lens -- E 0x0003eec0
+    0x1c unknown 0x10 seen=zero
+    0x2c block parameters 0x28 align 4 -- V one element per retail light
+      0x0 u32 flags -- V 15 on 49 of 71 lights, 12, 13 and 0 also seen
+      0x4 unknown 0x4 seen=zero
+      0x8 f32[3] color -- V
+      0x14 f32 power -- V
+      0x18 f32 falloff_distance -- V 50.0 and 80.0 seen
+      0x1c unknown 0x8 seen=zero
+      0x24 f32 cutoff_angle -- V radians, 0.035 to 0.35
+  0x80 f32 rotation -- E 0x0003ebd0 and 0x0003eec0 take its sine and cosine
+  0x84 unknown 0x28 seen=zero

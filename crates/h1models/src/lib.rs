@@ -59,6 +59,12 @@ fn tag_address(map: &h1map::H1Map, tag: &h1map::Tag, group: &'static [u8; 4]) ->
     Ok(tag.data_address)
 }
 
+/// The animation names of the Halo 1 graph `tag` (`antr`), without their
+/// data.
+pub fn graph_names(map: &h1map::H1Map, tag: &h1map::Tag) -> Result<Vec<String>> {
+    h1::animation_names(map, tag_address(map, tag, b"antr")?)
+}
+
 /// The last path component of a tag name: `characters\cyborg\cyborg` ->
 /// `cyborg`.
 pub fn short_name(path: &str) -> &str {
@@ -98,3 +104,5 @@ pub fn graph_from_map(
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod skin_tests;

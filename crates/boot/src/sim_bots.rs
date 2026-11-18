@@ -167,6 +167,10 @@ impl Bots for LocalBots {
             .map(u32::from)
     }
 
+    fn phantom_player(&self, handle: u32) -> Option<u32> {
+        bots::phantom::player(bots::phantom::PhantomHandle(handle))
+    }
+
     fn remove(&mut self, bot: Bot) -> Result<(), String> {
         match bot {
             Bot::Local { port } => {
@@ -191,7 +195,9 @@ mod tests {
     fn frame<'a>(g: &'a engine::testing::FakeGuest, n: u64, joining: bool) -> Frame<'a> {
         Frame {
             frame: n,
+            tick: None,
             port: 1,
+            machine: None,
             guest: g,
             joining,
         }

@@ -51,6 +51,7 @@ name = "agent"
 version = "0.1.0"
 dependencies = [
  "agent-proto",
+ "debug-menu",
  "engine",
  "feature",
  "hot-render",
@@ -62,6 +63,7 @@ dependencies = [
  "runtime",
  "serde",
  "serde_json",
+ "settings",
  "tags",
  "timeline",
  "xapi",
@@ -231,6 +233,7 @@ dependencies = [
  "app-icon",
  "audio",
  "cpal",
+ "debug-menu",
  "font8x8",
  "gfx",
  "input",
@@ -634,6 +637,7 @@ dependencies = [
  "bots",
  "content",
  "d3d",
+ "debug-menu",
  "dsound",
  "emit",
  "engine",
@@ -957,6 +961,7 @@ dependencies = [
  "cloud-saves",
  "content",
  "d3d",
+ "debug-menu",
  "dsound",
  "emit",
  "flate2",
@@ -1501,6 +1506,14 @@ dependencies = [
  "dear-imgui-build-support",
  "dear-imgui-sys",
  "mint",
+]
+
+[[package]]
+name = "debug-menu"
+version = "0.1.0"
+dependencies = [
+ "input",
+ "serde_json",
 ]
 
 [[package]]
@@ -2490,6 +2503,7 @@ dependencies = [
  "map",
  "mopp",
  "scenario-edit",
+ "shaders",
  "tags",
  "thiserror 2.0.21",
  "xbe",
@@ -2522,6 +2536,7 @@ dependencies = [
 name = "h1objects"
 version = "0.1.0"
 dependencies = [
+ "assets",
  "content",
  "h1bitmaps",
  "h1convert",
@@ -2533,6 +2548,7 @@ dependencies = [
  "scenario-edit",
  "tags",
  "thiserror 2.0.21",
+ "xbe",
  "xiso",
 ]
 
@@ -2556,6 +2572,7 @@ dependencies = [
  "h1map",
  "h1models",
  "map",
+ "tags",
  "thiserror 2.0.21",
  "xiso",
 ]

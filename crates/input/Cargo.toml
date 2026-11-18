@@ -36,7 +36,7 @@ dispatch2 = { version = "0.3", optional = true }
 objc2-foundation = { version = "0.3", optional = true, default-features = false, features = ["std", "NSArray", "NSString", "NSError", "NSSet", "NSObject", "NSEnumerator", "NSRunLoop", "NSDate", "NSObjCRuntime"] }
 objc2-game-controller = { version = "0.3", optional = true, default-features = false, features = [
     "std", "GCController", "GCControllerElement", "GCControllerButtonInput", "GCControllerAxisInput",
-    "GCControllerDirectionPad", "GCDevice", "GCDeviceHaptics", "GCExtendedGamepad", "GCMicroGamepad", "GCPhysicalInputProfile", "block2", "dispatch2",
+    "GCControllerDirectionPad", "GCDevice", "GCDeviceHaptics", "GCDualSenseGamepad", "GCDualShockGamepad", "GCExtendedGamepad", "GCMicroGamepad", "GCPhysicalInputProfile", "block2", "dispatch2",
 ] }
 objc2-core-haptics = { version = "0.3", optional = true, default-features = false, features = [
     "std", "block2", "CHHapticEngine", "CHHapticEvent", "CHHapticParameter", "CHHapticPattern", "CHHapticPatternPlayer",

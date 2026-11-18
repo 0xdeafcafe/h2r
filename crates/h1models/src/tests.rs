@@ -91,7 +91,7 @@ fn converted_models_have_one_section_group() {
     assert_eq!(&out.root.bytes[0x3c..0x42], [0; 6]);
 }
 
-fn build(tags: Vec<(Converted, &str)>) -> (Vec<u8>, Vec<TagId>) {
+pub(crate) fn build(tags: Vec<(Converted, &str)>) -> (Vec<u8>, Vec<TagId>) {
     let mut set = TagSet::new(CacheType::Multiplayer, "h1test", "invented\\h1test");
     let ids = tags
         .into_iter()
@@ -101,7 +101,7 @@ fn build(tags: Vec<(Converted, &str)>) -> (Vec<u8>, Vec<TagId>) {
     (bytes, ids)
 }
 
-struct Raw(Vec<u8>);
+pub(crate) struct Raw(pub(crate) Vec<u8>);
 impl tags::geometry::RawSource for Raw {
     fn read_raw(&mut self, p: RawPointer, size: u32) -> tags::Result<Vec<u8>> {
         assert_eq!(p.file, ResourceFile::Local);
@@ -719,7 +719,8 @@ fn reads_synthetic_graph() {
     assert_eq!(a.frames[4][2].translation, [1.0, 2.0, -1.0]);
     assert_eq!(a.frames[4][2].scale, 2.0);
     assert_eq!(a.frames[3][1].translation, [0.0, 1.0, 0.0]);
-    assert!((a.frames[0][2].rotation[1] - 0.3 / (0.9f32 * 0.9 + 0.09).sqrt()).abs() < 1e-4);
+    // Stored j = 0.3; read back in Halo 2's convention, the conjugate.
+    assert!((a.frames[0][2].rotation[1] + 0.3 / (0.9f32 * 0.9 + 0.09).sqrt()).abs() < 1e-4);
 }
 
 #[test]
@@ -745,13 +746,15 @@ fn compressed_animations_decode_like_their_uncompressed_form() {
     let src = &plain.animations[0];
     let n = src.frames[0].len();
     let f0 = &src.frames[0];
+    // The reader returns Halo 2's convention; the stored form is Halo 1's
+    // (the conjugate, h1::h2_rotation, its own inverse).
     let keys = |node: usize| -> Vec<(u16, [f32; 4])> {
         (1..src.frames.len())
-            .map(|f| (f as u16, src.frames[f][node].rotation))
+            .map(|f| (f as u16, h1::h2_rotation(src.frames[f][node].rotation)))
             .collect()
     };
     let blob = crate::compressed::encode(
-        &f0.iter().map(|t| t.rotation).collect::<Vec<_>>(),
+        &f0.iter().map(|t| h1::h2_rotation(t.rotation)).collect::<Vec<_>>(),
         &f0.iter().map(|t| t.translation).collect::<Vec<_>>(),
         &[keys(1)],
         &[(1..5)

@@ -127,6 +127,12 @@ impl IngestSession {
                 Err(e) => return vec![Out::Close(CLOSE_UNAUTHORIZED, e.message)],
             },
             Ok(ClientMessage::Frame { frame }) => {
+                live.meter(
+                    crate::usage::author_xuid(&author),
+                    crate::usage::metric::UP_FRAMES,
+                    text.len() as u64,
+                )
+                .await;
                 live.ingest_frame(&author, *frame).await.err().map(Err)
             }
             Ok(ClientMessage::Events { game_id, jws }) => Some(
@@ -155,6 +161,13 @@ impl IngestSession {
         let Some((author, _)) = &self.author else {
             return vec![Self::auth_timed_out()];
         };
+        self.live
+            .meter(
+                crate::usage::author_xuid(author),
+                crate::usage::metric::UP_FRAMES,
+                bytes.len() as u64,
+            )
+            .await;
         let mut out = Vec::new();
         for record in pack::records(bytes) {
             let decoded = record.and_then(|r| self.decoder.decode(r));

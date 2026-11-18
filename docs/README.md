@@ -157,12 +157,14 @@ goals, the two-stage plan, the crate table and milestones.
 - [live-security.md](live/live-security.md): identity, signing, tokens and federation (built except federation)
 - [live-cloud-saves.md](live/live-cloud-saves.md): cloud saves: profiles, variants, campaign saves and profile settings follow the account; the merge and conflict rules
 - [live-admin.md](live/live-admin.md): who may publish title files, and the web MOTD editor and playlist builder
+- [web-boundary.md](live/web-boundary.md): what goes on the dashboard and what on the stats site, and the dashboard's dense style for admin and ops screens
 - [live-hosting.md](live/live-hosting.md): hosting a server for friends (Cloudflare Tunnel, docker compose)
 - [live-boundary.md](live/live-boundary.md): static inventory of the retail XOnline/XNet entry points and the sign-in sequence
 - [live-motd.md](live/live-motd.md): how retail fetches and parses `message_of_the_day.dat` and `multiplayer_hopper.dat`
 - [live-matchmaking.md](live/live-matchmaking.md): matchmaking, sessions and invites: the retail call trace and what is built
 - [live-custom-games.md](live/live-custom-games.md): the custom games browser, its menu row, visibility and joining
 - [live-coop.md](live/live-coop.md): campaign co-op over Live: options, decisions, and what is built and probed (Co-op over Live built and confirmed in the game)
+- [live-voice.md](live/live-voice.md): voice chat, voice messages and the mute list: how the title does voice, and the host design (design only, not built)
 - [live-gamestate.md](live/live-gamestate.md): retail game-state addresses and layouts for the scoreboard and map
 - [live-telemetry.md](live/live-telemetry.md): `crates/live-telemetry`: hooks into the game, events and frames
 - [live-art.md](live/live-art.md): map geometry and pre-drawn views extracted from the disc for the stats site

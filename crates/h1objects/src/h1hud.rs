@@ -113,9 +113,33 @@ pub mod unhi {
     pub const HEALTH_METER: usize = 0x1e4;
     pub const MOTION_BACKGROUND: usize = 0x26c;
     pub const MOTION_FOREGROUND: usize = 0x2d4;
+    /// The motion sensor's placement: an offset (two `i16`) and scale (two
+    /// `f32`), as an element's, placed by `0x000e07a0` from the sensor's
+    /// stand-in anchor (bottom left, `0x000dd5ab`); the sweep and blips are
+    /// drawn around that point (E `0x000dd658`..`0x000dd691`, `0x000da1e0`
+    /// reads the point).
+    pub const MOTION_SENSOR: usize = 0x35c;
     /// The root's size (V: every `unhi` is at least this long, the
     /// cyborg's with its blocks after it).
     pub const SIZE: usize = 0x56c;
+}
+
+/// Where Halo 1 centres the motion sensor's sweep and blips (the
+/// placement [`unhi::MOTION_SENSOR`] from the bottom-left corner), as a
+/// Halo 2 offset from the same corner: what Halo 2's blip centre table
+/// (`0x47ff40`, anchor 2) holds, (41, -42) for its own sensor in
+/// fullscreen. A scaled placement is refused, as for the elements.
+pub fn sensor_centre(b: &[u8]) -> Result<[i16; 2]> {
+    let at = unhi::MOTION_SENSOR;
+    if b.len() < at + 12 {
+        return Err(Error::Truncated("unhi"));
+    }
+    let scale = [f32_at(b, at + 4), f32_at(b, at + 8)];
+    if !unscaled(scale) {
+        return Err(Error::Invalid(format!("motion sensor scaled {scale:?}")));
+    }
+    let (x, y) = to_halo2_offset(Anchor::BottomLeft, (i16_at(b, at), i16_at(b, at + 2)));
+    Ok([x, y])
 }
 
 /// What a Halo 1 element shows.
@@ -136,6 +160,8 @@ pub struct Element {
     pub scale: [f32; 2],
     pub bitmap: H1TagId,
     pub sequence: i16,
+    /// Halo 1's colour (`+0x34`, ARGB).
+    pub colour: u32,
 }
 
 fn i16_at(b: &[u8], at: usize) -> i16 {
@@ -167,29 +193,112 @@ pub fn unit_elements(map: &H1Map, b: &[u8]) -> Result<Vec<Element>> {
         ("h1_motion_background", unhi::MOTION_BACKGROUND, Role::Static, Anchor::BottomLeft),
         ("h1_motion_foreground", unhi::MOTION_FOREGROUND, Role::Static, Anchor::BottomLeft),
     ];
-    let mut out = Vec::new();
-    for (name, at, role, anchor) in rows {
-        let Some(bitmap) = crate::h1::reference(map, b, at + h1el::BITMAP) else {
-            continue;
-        };
-        let seq_at = match role {
-            Role::Static => h1el::SEQUENCE,
-            Role::Meter(_) => h1el::METER_SEQUENCE,
-        };
-        out.push(Element {
-            name,
-            role,
+    Ok(rows
+        .into_iter()
+        .filter_map(|(name, at, role, anchor)| element_at(map, b, at, name, role, anchor))
+        .collect())
+}
+
+/// The element at `at` of the HUD tag `b`, when it has a bitmap.
+fn element_at(
+    map: &H1Map,
+    b: &[u8],
+    at: usize,
+    name: &'static str,
+    role: Role,
+    anchor: Anchor,
+) -> Option<Element> {
+    let bitmap = crate::h1::reference(map, b, at + h1el::BITMAP)?;
+    let seq_at = match role {
+        Role::Static => h1el::SEQUENCE,
+        Role::Meter(_) => h1el::METER_SEQUENCE,
+    };
+    Some(Element {
+        name,
+        role,
+        anchor,
+        offset: to_halo2_offset(
             anchor,
-            offset: to_halo2_offset(
-                anchor,
-                (i16_at(b, at + h1el::OFFSET), i16_at(b, at + h1el::OFFSET + 2)),
-            ),
-            scale: [f32_at(b, at + h1el::SCALE), f32_at(b, at + h1el::SCALE + 4)],
-            bitmap,
-            sequence: i16_at(b, at + seq_at),
-        });
+            (i16_at(b, at + h1el::OFFSET), i16_at(b, at + h1el::OFFSET + 2)),
+        ),
+        scale: [f32_at(b, at + h1el::SCALE), f32_at(b, at + h1el::SCALE + 4)],
+        bitmap,
+        sequence: i16_at(b, at + seq_at),
+        colour: u32::from_le_bytes(b[at + h1el::COLOUR..at + h1el::COLOUR + 4].try_into().unwrap()),
+    })
+}
+
+/// Halo 1's grenade HUD (`grhi`), from its draw (E `0x000db3c0`..`0x000db5c1`,
+/// `esi` the `grhi` of the unit's selected grenade type, `[unit +0x2cc]`,
+/// from the globals' grenades block `+0x12c`, `0x44` each, its reference
+/// `+0x14`, datum `+0x20`).
+pub mod grhi {
+    /// The anchor (`u16`; the `grhi` is the header handed to the element
+    /// draw, `0x000db4ed`).
+    pub const ANCHOR: usize = 0x00;
+    /// The background (`0x000db4ef`, drawn when its bitmap's datum
+    /// `+0x54` is live).
+    pub const BACKGROUND: usize = 0x24;
+    /// The total-grenades background (`0x000db50f`, datum `+0xbc`).
+    pub const TOTAL_BACKGROUND: usize = 0x8c;
+    /// The count, a number element drawn by `0x000e1a60` when byte
+    /// `+0x138` is set (`0x000db514`).
+    pub const NUMBER: usize = 0xf4;
+    pub const NUMBER_SHOWN: usize = 0x138;
+    /// The count at or under which it flashes (`i16`, `0x000db494`).
+    pub const LOW: usize = 0x148;
+    /// The messaging part, drawn by `0x000e16b0` when the bitmap `+0x14c`
+    /// is live (`0x000db54e`).
+    pub const MESSAGING: usize = 0x14c;
+    pub const SIZE: usize = 0x15c;
+    /// In the Halo 1 globals (`matg`): the grenades block and an element's
+    /// HUD reference.
+    pub const GLOBALS_GRENADES: usize = 0x128;
+    pub const GLOBALS_GRENADE_SIZE: usize = 0x44;
+    pub const GLOBALS_GRENADE_HUD: usize = 0x14;
+}
+
+/// The drawable elements of the `grhi` `b`: background, then the total
+/// background, as Halo 1 draws them.
+pub fn grenade_elements(map: &H1Map, b: &[u8]) -> Result<Vec<Element>> {
+    if b.len() < grhi::SIZE {
+        return Err(Error::Truncated("grhi"));
     }
-    Ok(out)
+    let raw = u16::from_le_bytes([b[grhi::ANCHOR], b[grhi::ANCHOR + 1]]);
+    let anchor =
+        Anchor::from_halo1(raw).ok_or_else(|| Error::Invalid(format!("grhi anchor {raw}")))?;
+    Ok([
+        ("h1_grenade_background", grhi::BACKGROUND),
+        ("h1_grenade_total_background", grhi::TOTAL_BACKGROUND),
+    ]
+    .into_iter()
+    .filter_map(|(name, at)| element_at(map, b, at, name, Role::Static, anchor))
+    .collect())
+}
+
+/// The state flags of a grenade type's widgets, by Halo 2's grenade
+/// type index: those of Halo 2's own grenade backgrounds (V:
+/// `ui\hud\masterchief` widgets 0 and 1, `grenade_bkd` sequences 0 and 1,
+/// shown on `+0x08` word 0 bit `0x04` and `0x08`; its text widgets
+/// `frag_count` and `plasma_count` have the same bits), so each shows only
+/// while its type is the selected one, as Halo 1 draws only the selected
+/// type's `grhi` (E `0x000db3f5`: `[unit +0x2cc]`).
+pub const GRENADE_STATES: [[u8; 20]; 2] = [
+    [0x04, 0, 0, 0, 0, 0, 0, 0, 0x2a, 0x06, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0x08, 0, 0, 0, 0, 0, 0, 0, 0x26, 0x06, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+];
+
+/// Each Halo 1 grenade type's HUD (`grhi`), in the globals' order (the
+/// type index), `None` for a type with none.
+pub fn grenade_huds(map: &H1Map) -> Result<Vec<Option<H1TagId>>> {
+    let Some(t) = map.tags().iter().find(|t| t.group == h1map::Group::new(b"matg")) else {
+        return Ok(Vec::new());
+    };
+    let b = map.tag_data(t)?;
+    Ok(crate::h1::elements(map, b, grhi::GLOBALS_GRENADES, grhi::GLOBALS_GRENADE_SIZE)?
+        .into_iter()
+        .map(|e| crate::h1::reference(map, e, grhi::GLOBALS_GRENADE_HUD))
+        .collect())
 }
 
 /// Halo 1's offset as Halo 2's. Halo 1 measures it inward from the
@@ -340,6 +449,8 @@ pub struct WeaponEntry {
     pub scale: [f32; 2],
     pub bitmap: Option<H1TagId>,
     pub sequence: i16,
+    /// Halo 1's colour (ARGB): an element's `+0x34`, an overlay's `+0x24`.
+    pub colour: u32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -389,6 +500,7 @@ fn weapon_chain(
             i16_at(e, at + seq),
         )
     };
+    let u32_at = |e: &[u8], at: usize| u32::from_le_bytes(e[at..at + 4].try_into().unwrap());
     use wphi::entry;
     for e in crate::h1::elements(map, b, wphi::STATICS, wphi::STATIC_SIZE)? {
         let (offset, scale, bitmap, sequence) = el(e, entry::ELEMENT, h1el::SEQUENCE);
@@ -402,6 +514,7 @@ fn weapon_chain(
             scale,
             bitmap,
             sequence,
+            colour: u32_at(e, entry::ELEMENT + h1el::COLOUR),
         });
     }
     for e in crate::h1::elements(map, b, wphi::METERS, wphi::METER_SIZE)? {
@@ -424,6 +537,7 @@ fn weapon_chain(
             scale,
             bitmap,
             sequence,
+            colour: u32_at(e, entry::ELEMENT + h1el::COLOUR),
         });
     }
     use wphi::{crosshair, overlay};
@@ -443,6 +557,7 @@ fn weapon_chain(
                 scale: [f32_at(o, overlay::SCALE), f32_at(o, overlay::SCALE + 4)],
                 bitmap,
                 sequence: i16_at(o, overlay::SEQUENCE),
+                colour: u32_at(o, overlay::COLOUR),
             });
         }
     }
@@ -518,6 +633,8 @@ pub enum Skip {
     /// An aim overlay drawn only unzoomed: no Halo 2 state flags for it
     /// are established.
     UnzoomedOnly,
+    /// Scaled ([`unscaled`]).
+    Scaled([f32; 2]),
 }
 
 /// The widget for weapon HUD entry `e` (its bitmap converted as
@@ -537,6 +654,9 @@ pub fn weapon_widget(
     }
     if e.screen == SPLIT_SCREEN_ONLY {
         return Err(Skip::SplitScreen);
+    }
+    if !unscaled(e.scale) {
+        return Err(Skip::Scaled(e.scale));
     }
     let bitmap = bitmap.ok_or(Skip::NothingDrawn)?;
     let (name, inputs, shader, state) = match &e.kind {
@@ -569,6 +689,91 @@ pub fn weapon_widget(
         registration: registration(e.anchor),
         special: 0,
     })
+}
+
+/// Whether Halo 1 draws an element at its sprite's own size. Halo 1
+/// multiplies the sprite's size and the offset by the element's scale
+/// (`+4`, two `f32`; E `0x000e15f4`, `0x000e15ff`). A Halo 2
+/// bitmap widget has no scale: it draws the sprite at its size. Every
+/// element on the disc is unscaled (V: `hud_disc` `grenade_huds_read`, the
+/// unit and grenade elements of every map and the weapon entries of
+/// bloodgulch and a10, all 1.0), so Halo 1's size is kept; a scaled one
+/// is refused rather than drawn at the wrong size.
+pub fn unscaled(scale: [f32; 2]) -> bool {
+    scale == [1.0, 1.0]
+}
+
+/// The alpha of Halo 1's element colour (ARGB `+0x34`).
+pub fn colour_alpha(colour: u32) -> u8 {
+    (colour >> 24) as u8
+}
+
+/// Halo 1's pixels with every texel's alpha multiplied by `alpha` (of
+/// 255), as Halo 1's draw multiplies the sprite by its element's colour,
+/// alpha included (E `0x000e1830`: the colour `+0x34`). Halo 2's HUD shader
+/// keeps the texture's alpha (`widget_gradient_flash`: `a = t0.a * c0.a`)
+/// but takes no colour from the widget, so the colour's alpha goes into
+/// the sprite. Every texel's alpha scales alike, so the Xbox swizzle does
+/// not matter. `None` for a format whose alpha is not a byte of its own
+/// (block-compressed, 16-bit, no alpha).
+pub fn scale_alpha(format: h1map::bitmap::PixelFormat, px: &mut [u8], alpha: u8) -> Option<()> {
+    use h1map::bitmap::PixelFormat as F;
+    let (stride, at) = match format {
+        F::A8 => (1, 0),
+        // Y then A (h1bitmaps decode).
+        F::A8Y8 => (2, 1),
+        // B, G, R, A.
+        F::A8R8G8B8 => (4, 3),
+        _ => return None,
+    };
+    for t in px.chunks_exact_mut(stride) {
+        t[at] = ((u16::from(t[at]) * u16::from(alpha) + 127) / 255) as u8;
+    }
+    Some(())
+}
+
+/// A Halo 1 HUD image whose format has no alpha byte of its own (the
+/// motion sensor's sheets are DXT, `hud_weapon_backgrounds` and
+/// `hud_unit_backgrounds`), decoded with Halo 2's decoder and rewritten
+/// as a linear `A8R8G8B8` image with every texel's alpha multiplied by
+/// `alpha`, as [`scale_alpha`] does for byte-alpha formats. Only the top
+/// level is kept (a linear image has no mip levels; HUD sprites draw at
+/// their own size). Retail Halo 2 HUD bitmaps are linear `A8R8G8B8` too
+/// (E: `grenade_bkd`'s images, flags `linear | 0x290`). Rows are padded to
+/// Halo 2's linear pitch (64 bytes). 2D images only.
+pub fn alpha_scaled_argb(
+    img: &h1map::bitmap::Image,
+    pixels: &[u8],
+    alpha: u8,
+) -> h1bitmaps::Result<(h1map::bitmap::Image, Vec<u8>)> {
+    use h1map::bitmap::{self as b, ImageKind, PixelFormat};
+    if img.kind != ImageKind::D2 {
+        return Err(h1bitmaps::Error::Unsupported(format!("HUD image type {:?}", img.kind)));
+    }
+    let levels = h1bitmaps::decode_image(img, pixels)?;
+    let top = levels
+        .iter()
+        .find(|l| l.face == 0 && l.level == 0)
+        .ok_or_else(|| h1bitmaps::Error::Invalid("no top level".into()))?;
+    let mut argb = img.clone();
+    argb.format = PixelFormat::A8R8G8B8;
+    argb.flags = (img.flags & !(b::FLAG_COMPRESSED | b::FLAG_PALETTIZED | b::FLAG_SWIZZLED))
+        | b::FLAG_LINEAR;
+    argb.mip_count = 0;
+    argb.depth = 1;
+    let (w, h) = (top.width as usize, top.height as usize);
+    // The row pitch Halo 2's descriptor gives a linear image (64-byte rows).
+    let pitch = h1bitmaps::texture_desc(&argb)?.pitch as usize;
+    let mut out = vec![0u8; h1bitmaps::decode::layout_len(&argb)?.max(pitch * h)];
+    for y in 0..h {
+        for x in 0..w {
+            let s = &top.rgba[(y * w + x) * 4..][..4];
+            let a = ((u16::from(s[3]) * u16::from(alpha) + 127) / 255) as u8;
+            out[y * pitch + x * 4..][..4].copy_from_slice(&[s[2], s[1], s[0], a]);
+        }
+    }
+    argb.pixel_size = out.len() as u32;
+    Ok((argb, out))
 }
 
 /// A Halo 2 bitmap widget, every field of its `0x64` bytes.
@@ -688,10 +893,200 @@ pub fn widget_for(
     }
 }
 
-/// The `nhdt` root drawing `widgets` and nothing else: the root's
-/// reference null with its group word as on every retail `nhdt`, no text
-/// widgets, no effects.
-pub fn nhdt(widgets: &[Widget]) -> Block {
+/// Halo 2's text widget, `0x54` bytes in the `nhdt`'s `+0x10` block (V:
+/// the retail `ui\hud\masterchief` `frag_count` and `plasma_count`; E the
+/// draw `0x22aa16`, its string `0x22a871`, its caller `0x13a63d`, which
+/// tests the state at `+0x08` with `0x13ac87` and reads the inputs at
+/// `+0x04` with `0x13ad48`, as for a bitmap widget).
+pub mod text {
+    /// Name (string ID), for the debug text only.
+    pub const NAME: usize = 0x00;
+    /// Four input bytes; their values are the four `hud_input<n>` numbers
+    /// (`0x22a89d` copies them to `0x4e6980`).
+    pub const INPUTS: usize = 0x04;
+    /// State flags, as a bitmap widget's (`+0x08`..`+0x1b`).
+    pub const STATE: usize = 0x08;
+    /// Anchor (`u16`, `0x13a690`, `0x1396c7`).
+    pub const ANCHOR: usize = 0x1c;
+    /// Flags (`u16`, `0x22a8a4`): [`super::TEXT_NUMBER`] draws the number
+    /// [`STRING`] names; `2` pads it to two digits, `4` to three; `8` draws
+    /// the player's name. Otherwise `STRING` is a text to look up.
+    pub const FLAGS: usize = 0x1e;
+    /// The shader (tag reference; `0x22aa2f` skips the widget without one).
+    pub const SHADER: usize = 0x20;
+    /// String ID: with [`super::TEXT_NUMBER`] the value it names
+    /// (`0x22ace7`: `hud_input1`..`hud_input4` the inputs `+0x04`..`+0x07`).
+    pub const STRING: usize = 0x28;
+    /// Justification (`u16`, `0x22ac0b`): 0 the text starts at the point, 1
+    /// is centred on it, 2 ends at it.
+    pub const JUSTIFICATION: usize = 0x2c;
+    /// Offsets (two `i16`) for fullscreen, half and quarter screen
+    /// (`0x22ab46`, `0x22ab38`, `0x22ab2a`).
+    pub const OFFSETS: [usize; 3] = [0x40, 0x44, 0x48];
+    pub const SIZE: usize = 0x54;
+}
+
+/// The `nhdt`'s text widgets (count, address).
+pub const NHDT_TEXT_WIDGETS: usize = 0x10;
+/// [`text::FLAGS`]: the widget draws a number.
+pub const TEXT_NUMBER: u16 = 1;
+/// [`text::JUSTIFICATION`]: the text ends at the point.
+pub const JUSTIFY_RIGHT: u16 = 2;
+/// The value a number widget draws: its first input (`0x22ace7`).
+pub const TEXT_INPUT1: &str = "hud_input1";
+/// Halo 2's grenade counts' shader (V: `frag_count`, `plasma_count`).
+pub const TEXT_SHADER: &str = "ui\\hud\\shaders\\text_flash";
+/// `0x13ad48`: input 20 is the frag count (HUD state `+0x38`), 21 the
+/// plasma count (`+0x3a`); by Halo 2's grenade type index.
+pub const INPUT_GRENADES: u8 = 20;
+
+/// A Halo 2 text widget.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextWidget {
+    pub name: String,
+    pub inputs: [u8; 4],
+    pub state: [u8; 20],
+    pub anchor: Anchor,
+    pub flags: u16,
+    pub shader: TagId,
+    /// [`text::STRING`].
+    pub string: &'static str,
+    pub justification: u16,
+    pub offset: (i16, i16),
+}
+
+impl TextWidget {
+    /// The widget's bytes; the name, shader and string are fixups.
+    pub fn bytes(&self) -> Vec<u8> {
+        let mut w = vec![0u8; text::SIZE];
+        w[text::INPUTS..text::INPUTS + 4].copy_from_slice(&self.inputs);
+        w[text::STATE..text::STATE + 20].copy_from_slice(&self.state);
+        w[text::ANCHOR..text::ANCHOR + 2].copy_from_slice(&(self.anchor as u16).to_le_bytes());
+        w[text::FLAGS..text::FLAGS + 2].copy_from_slice(&self.flags.to_le_bytes());
+        w[text::JUSTIFICATION..text::JUSTIFICATION + 2]
+            .copy_from_slice(&self.justification.to_le_bytes());
+        for at in text::OFFSETS {
+            w[at..at + 2].copy_from_slice(&self.offset.0.to_le_bytes());
+            w[at + 2..at + 4].copy_from_slice(&self.offset.1.to_le_bytes());
+        }
+        w
+    }
+}
+
+/// Halo 1's grenade count, the number element `grhi +0xf4` (E the number
+/// draw `0x000e1a60`, `ebx` the element): offset `+0x00` and scale
+/// `+0x04` as any element's, the digits `+0x44` (byte), its flags
+/// `+0x45` (bit `0x04` one digit more) and fraction digits `+0x46`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Number {
+    pub anchor: Anchor,
+    /// Halo 1's offset, inward from the anchor's corner.
+    pub offset: (i16, i16),
+    pub scale: [f32; 2],
+    pub digits: u8,
+    pub flags: u8,
+    pub fraction_digits: u8,
+}
+
+/// The grenade count of the `grhi` `b`, `None` when Halo 1 does not draw
+/// it (byte `+0x138` clear, `0x000db514`).
+pub fn grenade_number(b: &[u8]) -> Result<Option<Number>> {
+    if b.len() < grhi::SIZE {
+        return Err(Error::Truncated("grhi"));
+    }
+    if b[grhi::NUMBER_SHOWN] == 0 {
+        return Ok(None);
+    }
+    let raw = u16::from_le_bytes([b[grhi::ANCHOR], b[grhi::ANCHOR + 1]]);
+    let anchor =
+        Anchor::from_halo1(raw).ok_or_else(|| Error::Invalid(format!("grhi anchor {raw}")))?;
+    let at = grhi::NUMBER;
+    Ok(Some(Number {
+        anchor,
+        offset: (i16_at(b, at), i16_at(b, at + 2)),
+        scale: [f32_at(b, at + 4), f32_at(b, at + 8)],
+        digits: b[at + 0x44],
+        flags: b[at + 0x45],
+        fraction_digits: b[at + 0x46],
+    }))
+}
+
+/// Halo 1's digit width, `hud#` byte `+0x11` (E `0x000e1d00`; V: 9 on
+/// `ui\hud\counter`), of the digits tag the globals (`matg`) name in
+/// their first interface element (the block `+0x140`, E `0x000e1a65`,
+/// `0x000e1a77`), reference `+0xb0` (datum `+0xbc`, E `0x000e1a81`).
+pub fn digit_width(map: &H1Map) -> Result<i16> {
+    let g = map
+        .tags()
+        .iter()
+        .find(|t| t.group == h1map::Group::new(b"matg"))
+        .ok_or_else(|| Error::Invalid("no matg".into()))?;
+    let gb = map.tag_data(g)?;
+    // Only the first element is read; its size is past `+0xc0`.
+    let first = crate::h1::elements(map, gb, 0x140, 0xc0)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error::Invalid("matg has no interface element".into()))?;
+    let n = crate::h1::reference(map, first, 0xb0)
+        .ok_or_else(|| Error::Invalid("matg names no hud digits".into()))?;
+    let t = map.tag(n)?;
+    if t.group != h1map::Group::new(b"hud#") {
+        return Err(Error::Invalid(format!("matg +0xb0 is a {}", t.group)));
+    }
+    let w = *map.tag_data(t)?.get(0x11).ok_or(Error::Truncated("hud#"))?;
+    Ok(i16::from(w as i8))
+}
+
+/// Where Halo 1's number ends, as a Halo 2 offset from the same anchor,
+/// for a text widget justified to end there ([`JUSTIFY_RIGHT`]). Halo 1
+/// draws the digits right to left, each a digit cell (`hud#` digit width
+/// `w`) further left (E `0x000e1d00`..`0x000e1d18`), from a start that the
+/// anchor moves (E the switch `0x000e1bd1` on the anchor, table
+/// `0x000e2088`): on a left anchor right by `(cells - 2) * w`
+/// (`0x000e1bd8`), where `cells` is the digits plus one with flag `0x04`;
+/// on a right anchor not at all (`0x000e1c52`); centred by half of
+/// `(cells - 1) * w` (`0x000e1c12`). A digit's sprite lies right of its
+/// point on a left anchor, left of it on a right one and centred on it on
+/// the centre (`0x000e0330`), so the number ends at the start plus `w`,
+/// at the start, or at the start plus `w / 2`. Fraction digits are not drawn by any `grhi`
+/// on the disc and are refused.
+pub fn number_end(n: &Number, w: i16) -> Result<(i16, i16)> {
+    if n.fraction_digits != 0 {
+        return Err(Error::Invalid("a number with fraction digits".into()));
+    }
+    let cells = i16::from(n.digits) + i16::from(n.flags & 0x04 != 0);
+    let x = match n.anchor {
+        Anchor::TopLeft | Anchor::BottomLeft => n.offset.0 + (cells - 2) * w + w,
+        Anchor::TopRight | Anchor::BottomRight => n.offset.0,
+        Anchor::Centre => n.offset.0 + (cells - 1) * w / 2 + w / 2,
+    };
+    Ok(to_halo2_offset(n.anchor, (x, n.offset.1)))
+}
+
+/// The text widget for grenade type `k`'s count: input `20 + k`, shown
+/// with that type's other widgets ([`GRENADE_STATES`]), ending where
+/// Halo 1's number ends ([`number_end`]).
+pub fn grenade_count(n: &Number, k: usize, w: i16, shader: TagId) -> Result<TextWidget> {
+    let state = *GRENADE_STATES
+        .get(k)
+        .ok_or_else(|| Error::Invalid(format!("grenade type {k}")))?;
+    Ok(TextWidget {
+        name: format!("h1_grenade_count_{k}"),
+        inputs: [INPUT_GRENADES + k as u8, 0, 0, 0],
+        state,
+        anchor: n.anchor,
+        flags: TEXT_NUMBER,
+        shader,
+        string: TEXT_INPUT1,
+        justification: JUSTIFY_RIGHT,
+        offset: number_end(n, w)?,
+    })
+}
+
+/// The `nhdt` root drawing `widgets` and `texts` and nothing else: the
+/// root's reference null with its group word as on every retail `nhdt`, no
+/// effects.
+pub fn nhdt(widgets: &[Widget], texts: &[TextWidget]) -> Block {
     let mut root = Block::new(vec![0; NHDT_ROOT]);
     root.bytes[0..4].copy_from_slice(&u32::from_be_bytes(*b"nhdt").to_le_bytes());
     root.bytes[4..8].fill(0xff);
@@ -704,6 +1099,17 @@ pub fn nhdt(widgets: &[Widget]) -> Block {
         block.tag_ref(at + widget::SHADER as u32, w.shader);
     }
     root.block(NHDT_BITMAP_WIDGETS as u32, widgets.len() as u32, block);
+    if !texts.is_empty() {
+        let mut block = Block::new(Vec::with_capacity(texts.len() * text::SIZE));
+        for t in texts {
+            let at = block.bytes.len() as u32;
+            block.bytes.extend(t.bytes());
+            block.string_id(at + text::NAME as u32, &t.name);
+            block.tag_ref(at + text::SHADER as u32, t.shader);
+            block.string_id(at + text::STRING as u32, t.string);
+        }
+        root.block(NHDT_TEXT_WIDGETS as u32, texts.len() as u32, block);
+    }
     root
 }
 
@@ -723,6 +1129,7 @@ mod tests {
             scale: [1.0, 1.0],
             bitmap: Some(H1TagId(1)),
             sequence: 6,
+            colour: 0,
         }
     }
 
@@ -775,6 +1182,110 @@ mod tests {
     }
 
     #[test]
+    fn the_colours_alpha_scales_the_sprites_alpha() {
+        use h1map::bitmap::PixelFormat as F;
+        let mut px = vec![0x10, 0xff, 0x20, 0x80];
+        scale_alpha(F::A8Y8, &mut px, 0x28).unwrap();
+        assert_eq!(px, [0x10, 0x28, 0x20, 0x14], "luminance kept, alpha times 0x28/255");
+        let mut px = vec![1, 2, 3, 0xff];
+        scale_alpha(F::A8R8G8B8, &mut px, 0xa0).unwrap();
+        assert_eq!(px, [1, 2, 3, 0xa0]);
+        assert!(scale_alpha(F::Dxt5, &mut [0; 16], 0x28).is_none());
+        assert_eq!(colour_alpha(0x2806_1428), 0x28);
+    }
+
+    #[test]
+    fn a_format_without_an_alpha_byte_is_rewritten_as_linear_argb() {
+        use h1map::bitmap::{self as b, Image, ImageKind, PixelFormat as F};
+        // 2x2 swizzled X8R8G8B8 (a 2x2 swizzle is row order), B,G,R,X.
+        let img = Image {
+            width: 2,
+            height: 2,
+            depth: 1,
+            kind: ImageKind::D2,
+            format: F::X8R8G8B8,
+            flags: b::FLAG_SWIZZLED | b::FLAG_POWER_OF_TWO,
+            registration: [1, 1],
+            mip_count: 1,
+            pixel_offset: 0,
+            pixel_size: 20,
+            raw: [0; b::IMAGE_LEN],
+        };
+        let px = [1, 2, 3, 0, 4, 5, 6, 0, 7, 8, 9, 0, 10, 11, 12, 0, 13, 14, 15, 0];
+        let (argb, out) = alpha_scaled_argb(&img, &px, 0x28).unwrap();
+        assert_eq!(argb.format, F::A8R8G8B8);
+        assert_eq!(argb.flags, b::FLAG_LINEAR | b::FLAG_POWER_OF_TWO);
+        assert_eq!((argb.mip_count, argb.registration), (0, [1, 1]));
+        // Rows padded to 64 bytes.
+        assert_eq!(&out[..8], &[1, 2, 3, 0x28, 4, 5, 6, 0x28]);
+        assert_eq!(&out[64..72], &[7, 8, 9, 0x28, 10, 11, 12, 0x28]);
+        let back = h1bitmaps::decode_image(&argb, &out).unwrap();
+        assert_eq!(&back[0].rgba[..8], &[3, 2, 1, 0x28, 6, 5, 4, 0x28]);
+        assert_eq!(&back[0].rgba[8..], &[9, 8, 7, 0x28, 12, 11, 10, 0x28]);
+    }
+
+    fn number(anchor: Anchor, digits: u8, flags: u8) -> Number {
+        Number { anchor, offset: (107, 3), scale: [1.0, 1.0], digits, flags, fraction_digits: 0 }
+    }
+
+    #[test]
+    fn halo1_numbers_end_where_their_last_digit_does() {
+        // The disc's grenade count: one digit, top left, (107, 3).
+        assert_eq!(number_end(&number(Anchor::TopLeft, 1, 1), 9).unwrap(), (107, 3));
+        assert_eq!(number_end(&number(Anchor::TopLeft, 3, 0), 9).unwrap(), (125, 3));
+        assert_eq!(number_end(&number(Anchor::TopLeft, 2, 4), 9).unwrap(), (125, 3));
+        assert_eq!(number_end(&number(Anchor::BottomRight, 3, 0), 9).unwrap(), (-107, -3));
+        assert_eq!(number_end(&number(Anchor::Centre, 3, 0), 10).unwrap(), (122, 3));
+        let mut n = number(Anchor::TopLeft, 1, 0);
+        n.fraction_digits = 1;
+        assert!(number_end(&n, 9).is_err());
+    }
+
+    #[test]
+    fn a_grenade_count_is_a_number_text_on_its_type_input() {
+        let t = grenade_count(&number(Anchor::TopLeft, 1, 1), 1, 9, TagId(7)).unwrap();
+        assert_eq!(t.inputs, [21, 0, 0, 0]);
+        assert_eq!(t.state, GRENADE_STATES[1]);
+        let b = t.bytes();
+        assert_eq!(b.len(), 0x54);
+        assert_eq!(&b[text::INPUTS..text::INPUTS + 4], &[21, 0, 0, 0]);
+        assert_eq!(&b[text::ANCHOR..text::ANCHOR + 4], &[Anchor::TopLeft as u8, 0, 1, 0]);
+        assert_eq!(&b[text::JUSTIFICATION..text::JUSTIFICATION + 2], &[2, 0]);
+        for at in text::OFFSETS {
+            assert_eq!(&b[at..at + 4], &[107, 0, 3, 0]);
+        }
+        assert!(grenade_count(&number(Anchor::TopLeft, 1, 1), 2, 9, TagId(7)).is_err());
+        let root = nhdt(&[], &[t]);
+        let child = root
+            .fixups
+            .iter()
+            .find_map(|f| match &f.kind {
+                FixupKind::Block { child, .. } if f.offset == NHDT_TEXT_WIDGETS as u32 => Some(child),
+                _ => None,
+            })
+            .expect("text block");
+        assert_eq!(child.bytes.len(), text::SIZE);
+        let kinds: Vec<_> = child.fixups.iter().map(|f| (f.offset, f.kind.clone())).collect();
+        assert!(kinds.contains(&(0x20, FixupKind::TagRef(TagId(7)))));
+        assert!(kinds.contains(&(0x28, FixupKind::StringId(TEXT_INPUT1.into()))));
+        assert!(kinds.contains(&(0x00, FixupKind::StringId("h1_grenade_count_1".into()))));
+    }
+
+    #[test]
+    fn the_motion_sensor_centre_is_halo1s_placement_up_from_the_bottom_left() {
+        let mut b = vec![0u8; unhi::SIZE];
+        let at = unhi::MOTION_SENSOR;
+        b[at..at + 2].copy_from_slice(&45i16.to_le_bytes());
+        b[at + 2..at + 4].copy_from_slice(&43i16.to_le_bytes());
+        b[at + 4..at + 8].copy_from_slice(&1.0f32.to_le_bytes());
+        b[at + 8..at + 12].copy_from_slice(&1.0f32.to_le_bytes());
+        assert_eq!(sensor_centre(&b).unwrap(), [45, -43]);
+        b[at + 4..at + 8].copy_from_slice(&2.0f32.to_le_bytes());
+        assert!(sensor_centre(&b).is_err());
+        assert!(sensor_centre(&b[..at]).is_err());
+    }
+
+    #[test]
     fn halo1_offsets_point_inward_from_the_corner() {
         assert_eq!(to_halo2_offset(Anchor::TopRight, (7, 3)), (-7, 3));
         assert_eq!(to_halo2_offset(Anchor::BottomLeft, (7, 3)), (7, -3));
@@ -808,6 +1319,7 @@ mod tests {
             scale: [1.0, 1.0],
             bitmap: H1TagId(0),
             sequence: 3,
+            colour: 0,
         }
     }
 
@@ -840,7 +1352,7 @@ mod tests {
             .iter()
             .map(|r| widget_for(&element(*r), TagId(1), [0.0; 2], TagId(2), TagId(3)))
             .collect();
-        let root = nhdt(&ws);
+        let root = nhdt(&ws, &[]);
         assert_eq!(root.bytes.len(), NHDT_ROOT);
         assert_eq!(&root.bytes[0..8], b"tdhn\xff\xff\xff\xff");
         // Bitmap widgets only: the text and effects blocks stay empty.

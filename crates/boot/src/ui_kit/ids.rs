@@ -75,6 +75,8 @@ pub const FAMILIES: &[Family] = &[
     Family::new("skull row labels", TABLE + 0x0300_0000, 0x100),
     Family::new("h1 options", TABLE + 0x0400_0000, 0x40),
     Family::new("signin", TABLE + 0x0500_0000, 0x100),
+    Family::new("clankers", TABLE + 0x0600_0000, 0x40),
+    Family::new("ui model more", TABLE + 0x0700_0000, 0x100),
 ];
 
 const fn same(a: &str, b: &str) -> bool {
@@ -174,6 +176,28 @@ mod tests {
         assert!(first_clash(&[picker, labels]).is_some());
         let again = Family::new("picker", 0x30ff_f000, 1);
         assert!(first_clash(&[picker, again]).is_some());
+    }
+
+    /// Every pair of registered families, compared as plain ranges
+    /// (independent of [`first_clash`]): no id of one is inside another.
+    /// The pause menu's `ui model more` and the bots' `clankers` were both
+    /// given `TABLE + 0x0600_0000` on separate branches.
+    #[test]
+    fn no_two_registered_families_share_an_id() {
+        for (i, a) in FAMILIES.iter().enumerate() {
+            for b in &FAMILIES[i + 1..] {
+                let (a_end, b_end) = (u64::from(a.base) + u64::from(a.len), u64::from(b.base) + u64::from(b.len));
+                assert!(
+                    a_end <= u64::from(b.base) || b_end <= u64::from(a.base),
+                    "{} ({:#x}+{:#x}) overlaps {} ({:#x}+{:#x})",
+                    a.name, a.base, a.len, b.name, b.base, b.len
+                );
+            }
+        }
+        let (more, clankers) = (family("ui model more"), family("clankers"));
+        assert_eq!(more.base, 0x27ff_f000);
+        assert!(!more.ids().any(|id| clankers.owns(id) || clankers.claims(id)));
+        assert!(more.ids().all(crate::layout_glue::is_ours));
     }
 
     #[test]

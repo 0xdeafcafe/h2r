@@ -329,6 +329,9 @@ pub struct ScenarioReport {
     /// Halo 1 palette entries placed as a retail object a donor brought:
     /// (Halo 1 tag name, retail datum).
     pub stand_ins: Vec<(String, TagId)>,
+    /// Halo 1 objects the Halo 2-assets variant placed retail Halo 2 tags
+    /// for (`crate::h2assets`): (Halo 1 tag name, retail datum).
+    pub swapped: Vec<(String, TagId)>,
     /// Skies converted (Halo 1 tag names).
     pub skies: Vec<String>,
     /// Player starting locations written.
@@ -353,6 +356,9 @@ pub struct ScenarioReport {
     /// HUD pairs `boot::hud` switches between (owner, Halo 1 HUD, Halo 2
     /// HUD; docs/game/hud.md), as this set's datums.
     pub hud_swaps: Vec<[TagId; 3]>,
+    /// Where the player's Halo 1 HUD centres the motion sensor's blips
+    /// (`h1objects::h1hud::sensor_centre`), for `boot::hud_swap`.
+    pub hud_sensor: Option<[i16; 2]>,
     /// `None` when the scenario was rebuilt from the base's relocated tree
     /// (the base scenario's old bytes freed); else why it was written over
     /// them.
@@ -442,6 +448,10 @@ impl std::fmt::Display for ScenarioReport {
         writeln!(f, "  skies: {:?}", self.skies)?;
         for (n, _) in &self.stand_ins {
             writeln!(f, "  placed as the retail object a donor brought: {n}")?;
+        }
+        if !self.swapped.is_empty() {
+            let names: Vec<&str> = self.swapped.iter().map(|s| s.0.as_str()).collect();
+            writeln!(f, "  Halo 2 assets placed for: {}", names.join(", "))?;
         }
         writeln!(f, "  player starts: {}", self.starts)?;
         for (k, placed, of, pal, pals) in &self.placements {
@@ -535,7 +545,7 @@ impl std::fmt::Display for ScenarioReport {
 
 /// Element bytes of a Halo 1 block, or nothing when the field is empty or
 /// outside the tag.
-fn h1_block(h1: &H1Map, (at, stride): (usize, usize)) -> Result<Vec<&[u8]>> {
+pub(crate) fn h1_block(h1: &H1Map, (at, stride): (usize, usize)) -> Result<Vec<&[u8]>> {
     let scnr = h1.tag_data(h1.scenario())?;
     Ok(h1.tag_space().block_at(scnr, at, stride)?)
 }
@@ -672,6 +682,12 @@ const KINDS: [Kind; 8] = [
         h2_type: 7,
         device: Device::Fixture,
     },
+];
+
+/// Object groups an `object_definition` script atom may name.
+const OBJECT_GROUPS: [&[u8; 4]; 12] = [
+    b"bipd", b"vehi", b"weap", b"eqip", b"garb", b"proj", b"scen", b"mach", b"ctrl", b"ssce",
+    b"bloc", b"crea",
 ];
 
 /// The Halo 1 player biped the objects layer converts.
@@ -906,6 +922,7 @@ pub fn write(
             put_block(&mut root, u32::from(at), 0, Vec::new());
         }
     }
+    let mut aliases = crate::h2assets::Aliases::default();
     let placed = match objects {
         Some(b) => {
             // Device groups are written with the scripts' level data;
@@ -922,6 +939,8 @@ pub fn write(
                 opts.devices,
                 opts.rebuild_bipeds,
                 dialogue,
+                opts.assets,
+                &mut aliases,
             )?
         }
         None => HashMap::new(),
@@ -1160,6 +1179,7 @@ pub fn write(
                 (!lean.leaves_out(crate::Lean::CutsceneData) && opts.cutscene_data)
                     .then_some(opts.cutscene_graphs),
                 crate::cutscenes::policy(opts, &h1.header().name.to_ascii_lowercase()),
+                &aliases,
             )?);
         }
         None => {
@@ -1245,7 +1265,20 @@ fn place_objects(
     devices: crate::Devices,
     rebuild_bipeds: bool,
     dialogue: u64,
+    assets: crate::h2assets::Assets,
+    aliases: &mut crate::h2assets::Aliases,
 ) -> Result<HashMap<(i16, i16), (i16, i16)>> {
+    let halo2 = assets == crate::h2assets::Assets::Halo2;
+    // The Halo 2-assets variant's retail tag for a Halo 1 object
+    // (`crate::h2assets`): `Ok(Some)` places it, `Ok(None)` converts
+    // Halo 1's own, `Err` leaves it out.
+    let swap = |set: &TagSet, tag: &h1map::Tag| -> std::result::Result<Option<TagId>, String> {
+        if !halo2 {
+            return Ok(None);
+        }
+        let got = crate::h2assets::stand_in(set, tag)?;
+        Ok(got)
+    };
     let mut conv = h1objects::convert::Converter::new(h1, base);
     conv.options.rebuild_bipeds = rebuild_bipeds;
     conv.options.dialogue_budget = dialogue;
@@ -1271,6 +1304,25 @@ fn place_objects(
                 None
             } else {
                 let tag = h1.tag(r.id)?;
+                // Weapons, equipment and vehicles swap; placed bipeds are
+                // the cutscenes' casts and stay Halo 1's.
+                let swappable = matches!(k.h1_type, 1..=3);
+                let swapped = match if swappable { swap(&*set, tag) } else { Ok(None) } {
+                    Ok(Some(id)) => {
+                        aliases.insert(FourCC(tag.group.0.to_be_bytes()), &tag.name, id);
+                        rep.swapped.push((tag.name.clone(), id));
+                        Some(Some(Pal::Retail(id)))
+                    }
+                    Ok(None) => None,
+                    Err(why) => {
+                        dropped.push(format!("{} palette {}: Halo 2 assets: {why}", k.label, tag.name));
+                        Some(None)
+                    }
+                };
+                if let Some(got) = swapped {
+                    pal.push(got);
+                    continue;
+                }
                 match conv.object(tag) {
                     Ok(id) => Some(Pal::Converted(id)),
                     // A template a donor brought (`crate::donor`): placed
@@ -1303,6 +1355,11 @@ fn place_objects(
         .flat_map(|p| p.weapons.iter().filter_map(|w| w.0))
     {
         let tag = h1.tag(w)?;
+        if let Ok(Some(id)) = swap(&*set, tag) {
+            aliases.insert(FourCC(*b"weap"), &tag.name, id);
+            profile_weapons.insert(w, Pal::Retail(id));
+            continue;
+        }
         let got = match conv.object(tag) {
             Ok(id) => Some(Pal::Converted(id)),
             Err(h1objects::Error::NoTemplate(_)) => retail_stand_in(set, tag).map(Pal::Retail),
@@ -1316,7 +1373,14 @@ fn place_objects(
         }
     }
     let mut player = None;
+    let mut retail_player = None;
     rep.player_biped = match h1.find(h1map::Group::new(b"bipd"), PLAYER_BIPED) {
+        Some(t) if matches!(swap(&*set, t), Ok(Some(_))) => {
+            let id = swap(&*set, t).ok().flatten().expect("checked");
+            aliases.insert(FourCC(*b"bipd"), &t.name, id);
+            retail_player = Some(id);
+            set.slots[id.index()].name.clone()
+        }
         Some(t) => match conv.object(t) {
             Ok(id) => {
                 player = Some(id);
@@ -1331,7 +1395,13 @@ fn place_objects(
     };
     // Halo 1's grenade types (the globals), through the same converter.
     let mut grenades = Vec::new();
-    for g in h1convert::globals::h1_grenades(h1).map_err(|e| invalid(format!("grenades: {e}")))? {
+    // With Halo 2's assets the base's grenade types stay.
+    let h1_grenades = if halo2 {
+        Vec::new()
+    } else {
+        h1convert::globals::h1_grenades(h1).map_err(|e| invalid(format!("grenades: {e}")))?
+    };
+    for g in h1_grenades {
         let mut one = |id: Option<h1map::TagId>, what: &str| -> Option<TagId> {
             let tag = h1.tag(id?).ok()?;
             match conv.object(tag) {
@@ -1360,6 +1430,7 @@ fn place_objects(
     tree.install_audio(set, true);
     rep.object_sound_bytes = set.raw.iter().map(|r| r.bytes.len() as u64).sum::<u64>() - raw_before;
     dropped.extend(tree.audio_notes.drain(..).map(|n| format!("object sounds: {n}")));
+    rep.hud_sensor = tree.hud_sensor;
     let ids = tree
         .install(set)
         .map_err(|e| invalid(format!("objects: {e}")))?;
@@ -1376,8 +1447,8 @@ fn place_objects(
     };
     // The campaign players (globals representation 0 and 1) are the Halo 1
     // cyborg; Halo 1 health follows from the map name at boot.
-    if let Some(p) = player {
-        h1convert::globals::set_player_unit(set, real(p), h1convert::globals::Players::Campaign)
+    if let Some(p) = player.map(real).or(retail_player) {
+        h1convert::globals::set_player_unit(set, p, h1convert::globals::Players::Campaign)
             .map_err(|e| invalid(format!("player unit: {e}")))?;
     }
 
@@ -1389,8 +1460,10 @@ fn place_objects(
             projectile: g.projectile.map(real),
         })
         .collect();
-    rep.grenades = h1convert::globals::set_grenades(set, &grenades)
-        .map_err(|e| invalid(format!("grenades: {e}")))?;
+    if !halo2 {
+        rep.grenades = h1convert::globals::set_grenades(set, &grenades)
+            .map_err(|e| invalid(format!("grenades: {e}")))?;
+    }
 
     let profile_blocks =
         crate::profiles::elements(&profiles, |w| profile_weapons.get(&w).map(palette_id));
@@ -1659,6 +1732,7 @@ fn install_scripts(
     music: u64,
     cutscene_data: Option<bool>,
     cutscenes: h1scripts::compile::Cutscenes,
+    aliases: &crate::h2assets::Aliases,
 ) -> Result<ScriptReport> {
     use h1scripts::compile::{Missing, compile_with};
     let t = h1scripts::Tables::read(h1).map_err(|e| invalid(format!("scripts: {e}")))?;
@@ -1778,11 +1852,23 @@ fn install_scripts(
             _ if hook_value(h, targets).is_some() => hook_value(h, targets),
             "unit_seat_mapping" => seats.values.get(&h.token).copied(),
             "cutscene_recording" => crate::cutscenes::recording_index(&recordings, &h.token),
+            // An object definition: the converted tag of that name, or the
+            // Halo 2 tag placed instead of it (`crate::h2assets`).
+            "object_definition" => {
+                let name = h.token.to_ascii_lowercase();
+                OBJECT_GROUPS
+                    .iter()
+                    .find_map(|g| tags_by_name.get(&(FourCC(**g), name.clone())))
+                    .copied()
+                    .or_else(|| aliases.by_name(&name).map(|a| a.1))
+                    .map(|id| id.0)
+            }
             ty => level.resolve(h).or_else(|| {
                 let g = h1scripts::level::tag_group(ty)?;
                 tags_by_name
                     .get(&(g, h.token.to_ascii_lowercase()))
                     .map(|id| id.0)
+                    .or_else(|| aliases.get(g, &h.token).map(|id| id.0))
             }),
         }
         .inspect(|_| {
@@ -1818,7 +1904,7 @@ fn install_scripts(
         put_block(root, at, 0, Vec::new());
     }
     c.install(root, |_, name| {
-        let r = by_name.get(name).copied();
+        let r = by_name.get(name).copied().or_else(|| aliases.by_name(name));
         resolved += usize::from(r.is_some());
         r
     })

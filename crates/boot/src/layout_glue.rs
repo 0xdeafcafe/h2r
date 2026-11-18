@@ -532,6 +532,16 @@ pub fn install(
     });
     let with_fov = has(video_screen::LIST, RowKind::Setting(FOV.key));
     let with_video = has(List::Settings, RowKind::Open(video_screen::SCREEN));
+    // The Voice screen, and our rows on the pause menus (crate::pause_menu).
+    let with_voice = model
+        .as_ref()
+        .is_some_and(|m| !m.rows(video_screen::VOICE_LIST).is_empty());
+    let with_pause = model
+        .as_ref()
+        .is_some_and(|m| !m.rows(List::Pause).is_empty());
+    // Whether each pause menu's row hooks are on the plan: its list grows
+    // only then, so the original never sees a row it does not know.
+    let pause_on = Arc::new((AtomicBool::new(false), AtomicBool::new(false)));
     let with_custom_games = custom_games::row_enabled();
     let with_skulls = model
         .as_ref()
@@ -546,6 +556,8 @@ pub fn install(
         && !with_speaker
         && !with_controls
         && !with_video
+        && !with_voice
+        && !with_pause
         && !with_custom_games
         && !with_skulls
         && !with_campaigns
@@ -673,6 +685,7 @@ pub fn install(
             let grew_layouts = AtomicBool::new(false);
             let grew_controls = AtomicBool::new(false);
             let model = Arc::clone(&model);
+            let pause_on = Arc::clone(&pause_on);
             d.register_override(LIST_DATA_NEW, "layouts:list", move |cpu, ctx, _| {
                 announce(&seen, "layouts: list constructor");
                 let (n, name) = {
@@ -685,6 +698,16 @@ pub fn install(
                     ctx.runtime().memory().set_u8(cpu.esi + video_screen::SETTINGS_THIRD_ITEM, 1)?;
                 }
                 let n = if with_custom_games { custom_games::list_count(name, n) } else { n };
+                // The pause menus get our rows when their hooks are on.
+                let n = match name {
+                    crate::pause_menu::PAUSE_LIST_NAME if pause_on.0.load(Ordering::SeqCst) => {
+                        crate::pause_menu::list_count(&model, name, n)
+                    }
+                    crate::pause_menu::MP_LIST_NAME if pause_on.1.load(Ordering::SeqCst) => {
+                        crate::pause_menu::list_count(&model, name, n)
+                    }
+                    _ => n,
+                };
                 // The variant editor's categories get the multiplayer
                 // Skulls row.
                 let n = if with_skulls && crate::skulls_mp_row::row_on() {
@@ -1268,6 +1291,42 @@ pub fn install(
         registry
             .add(&rows)
             .map_err(|e| anyhow::anyhow!("settings rows: {e}"))?;
+    }
+    // The Voice screen: our own list class, opened from the pause menus.
+    if with_voice {
+        let class = crate::list_class::ListClass::new(
+            "voice-screen",
+            video_screen::VOICE_SCREEN,
+            Arc::clone(&model),
+        );
+        match registry.add(&class) {
+            Ok(true) => {}
+            Ok(false) => eprintln!("voice screen: features.voice-screen is off"),
+            Err(e) => eprintln!("voice screen: {e}"),
+        }
+    }
+    // Video and Voice on the pause menus (crate::pause_menu): the
+    // campaign menu's rows by index, the multiplayer menu's by action.
+    if with_pause {
+        let rows = crate::retail_rows::Extension {
+            id: crate::pause_menu::FEATURE,
+            title: "Our rows on the campaign pause menu",
+            list: List::Pause,
+            text: &feature::points::PAUSE_ROW_TEXT,
+            chosen: &feature::points::PAUSE_ROW_CHOSEN,
+            label_only: true,
+            model: Arc::clone(&model),
+        };
+        match registry.add(&rows) {
+            Ok(on) => pause_on.0.store(on, Ordering::SeqCst),
+            Err(e) => eprintln!("pause menu: {e}"),
+        }
+        match registry.add(&crate::pause_menu::MpPauseRows {
+            model: Arc::clone(&model),
+        }) {
+            Ok(on) => pause_on.1.store(on, Ordering::SeqCst),
+            Err(e) => eprintln!("pause menu: {e}"),
+        }
     }
     // The Skulls page: our own list class, opened after the difficulty when
     // the pressing profile has a skull (a plan hook on the difficulty
