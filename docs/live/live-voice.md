@@ -277,9 +277,10 @@ Other ports implement the trait.
 
 Playback has two routes: the voice output device when `voice.output_device`
 names one (a headset), or mixed into the game's own output when it is "same as
-game". The second route uses the DirectSound output thread's side sink
-(`crates/dsound/src/output.rs`), so voice follows the game's volume and device
-without a second stream.
+game". The second route is a host stream in DirectSound's mixer
+(`boot::voice_glue::GameMix`), so voice plays wherever the mixer's output
+thread plays the game (`crates/dsound/src/output.rs`), follows the game's
+master volume, and opens no second device stream.
 
 Push-to-talk is a gate in the microphone XMO: with the button up it fills
 packets with silence, so the engine's own voice detection never fires and
@@ -673,8 +674,13 @@ Each is its own slice, with tests:
      talker's packets, the headphone mix before it is played.
    - **Devices.** The chosen devices open through the host's opener
      (`Host::voice_io`). `h2 play` uses `voice::host::HostVoiceIo`, which
-     runs cpal on its own thread. Output plays on its own stream only when
-     a voice output device is chosen; "Same as Game" plays nothing extra.
+     runs cpal on its own thread. Output plays on its own stream when a
+     voice output device is chosen. "Same as Game" (`voice.output_device`
+     at System default) plays the headphone mix in the game's mix instead:
+     `voice_glue::GameMix` is a 48 kHz mono stream in DirectSound's mixer,
+     one 20 ms packet per media-object tick, with 20 ms of silence in
+     front whenever it ran dry (to ride out the tick's jitter) and at most
+     100 ms queued.
    - **DirectSound.** It runs the per-port voice effects on the host
      (dsound.md, "Dry effects image"). Each port's voice streams get a
      mix bin of their own (`0x1b + port`), which the mixer captures
@@ -683,8 +689,8 @@ Each is its own slice, with tests:
      The headphone feed therefore reads the remote talkers of its port.
      Before this, every port's remote voice was on mixbin 0, the left
      speaker.
-   - **Still to do:**
-     - "Same as Game" through the DirectSound side sink.
+   - **Still to do:** a run in the game. Nothing above has been heard
+     yet; the tests read guest memory and the mixer.
 5. **Voice messages**: the voice-mail mode on the same objects, blob storage
    with the size and header check, inbox delivery (this depends on the
    inbox HLE delivering messages at all).

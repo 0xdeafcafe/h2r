@@ -17,6 +17,11 @@
 //! game last read it (`Xapi::last_input_state`); nobody talks while no pad
 //! holds it. `voice.mic_muted` silences it in either mode.
 //!
+//! **"Same as Game".** With `voice.output_device` at System default the
+//! headphone mix plays in the game's own mix ([`GameMix`]: a host stream
+//! in DirectSound's mixer), so it comes out of the game's output device.
+//! A chosen output device plays it on its own stream instead.
+//!
 //! **Volumes.** The input and output volumes (and the two mutes) reach the
 //! media objects as gains (`VoiceHandles::capture_gain`, `playback_gain`).
 
@@ -29,8 +34,9 @@ use input::gamepad::Buttons;
 use settings::{Kind, Store};
 use std::sync::{Arc, Mutex, MutexGuard};
 use voice::{
+    HOST_FRAME, HOST_RATE,
     hle::{self, Voice},
-    io::{NullVoiceIo, OpenIo},
+    io::{Capture, Frame, NullVoiceIo, OpenIo, Playback, VoiceIo},
 };
 
 /// What the settings and the pads ask for.
@@ -98,11 +104,87 @@ pub fn device_id(def: &settings::Def, key: i64) -> Option<String> {
     }
 }
 
+/// The headphone mix as a stream in the game's mixer ("Same as Game"):
+/// 48 kHz mono, one 20 ms packet per media-object tick, on no mix bins
+/// (straight to both speakers). A stream that ran dry gets 20 ms of
+/// silence in front of the next frame, so the tick's jitter against the
+/// mixer does not cut it up; at most [`GameMix::MAX_QUEUED`] frames wait,
+/// and frames past that are dropped. Removed from the mixer when dropped.
+pub struct GameMix {
+    mixer: Arc<Mutex<audio::Mixer>>,
+    stream: Option<audio::StreamId>,
+    bytes: Vec<u8>,
+}
+
+impl GameMix {
+    /// 100 ms.
+    pub const MAX_QUEUED: usize = 5;
+
+    pub fn new(mixer: &Arc<Mutex<audio::Mixer>>) -> Self {
+        let stream = audio::WaveFormat::pcm16(1, HOST_RATE)
+            .and_then(audio::Stream::new)
+            .map(|s| lock(mixer).add_stream(s))
+            .map_err(|e| eprintln!("voice: no stream in the game mix: {e}"))
+            .ok();
+        Self {
+            mixer: Arc::clone(mixer),
+            stream,
+            bytes: Vec::with_capacity(HOST_FRAME * 2),
+        }
+    }
+}
+
+impl Playback for GameMix {
+    fn write(&mut self, frame: &Frame) {
+        let Some(id) = self.stream else { return };
+        let mut mixer = lock(&self.mixer);
+        let Some(stream) = mixer.stream_mut(id) else {
+            return;
+        };
+        stream.take_completed();
+        if stream.pending() >= Self::MAX_QUEUED {
+            return;
+        }
+        if stream.pending() == 0 {
+            let _ = stream.submit(&[0; HOST_FRAME * 2]);
+        }
+        self.bytes.clear();
+        self.bytes
+            .extend(frame.iter().flat_map(|s| s.to_le_bytes()));
+        let _ = stream.submit(&self.bytes);
+    }
+}
+
+impl Drop for GameMix {
+    fn drop(&mut self) {
+        if let Some(id) = self.stream {
+            lock(&self.mixer).remove_stream(id);
+        }
+    }
+}
+
+/// The host microphone with the headphone mix going to the game's mix.
+struct SameAsGame {
+    io: Box<dyn VoiceIo>,
+    game: GameMix,
+}
+
+impl VoiceIo for SameAsGame {
+    fn capture(&mut self) -> &mut dyn Capture {
+        self.io.capture()
+    }
+    fn playback(&mut self) -> &mut dyn Playback {
+        &mut self.game
+    }
+}
+
 pub struct Link {
     voice: hle::Shared,
     xapi: crate::xapi_glue::Shared,
     handles: VoiceHandles,
     open: Option<OpenIo>,
+    /// DirectSound's mixer, for "Same as Game"; `None` without DirectSound.
+    game_mix: Option<Arc<Mutex<audio::Mixer>>>,
     /// The devices open now: (input key, output key).
     opened: Option<(i64, i64)>,
     last: Option<Plan>,
@@ -121,6 +203,7 @@ pub fn install(
     xapi: &crate::xapi_glue::Shared,
     settings: Option<&Arc<Store>>,
     open: Option<OpenIo>,
+    game_mix: Option<Arc<Mutex<audio::Mixer>>>,
 ) -> Option<Link> {
     let store = settings?;
     let voice: hle::Shared = Arc::new(Mutex::new(Voice::new(Box::new(NullVoiceIo))));
@@ -133,6 +216,7 @@ pub fn install(
         xapi: Arc::clone(xapi),
         handles: VoiceHandles::new(store),
         open,
+        game_mix,
         opened: None,
         last: None,
         gains: None,
@@ -162,10 +246,16 @@ impl Link {
             && let Some(open) = &self.open
         {
             let [input_def, output_def] = device_defs();
-            let io = open(
-                device_id(input_def, input).as_deref(),
-                device_id(output_def, output).as_deref(),
-            );
+            let output_id = device_id(output_def, output);
+            let mut io = open(device_id(input_def, input).as_deref(), output_id.as_deref());
+            if output_id.is_none()
+                && let Some(mixer) = &self.game_mix
+            {
+                io = Box::new(SameAsGame {
+                    io,
+                    game: GameMix::new(mixer),
+                });
+            }
             lock(&self.voice).io = io;
             self.opened = Some((input, output));
         } else if plan.ports == 0 && self.opened.is_some() {
@@ -292,6 +382,54 @@ mod tests {
                 talker: None
             }
         );
+    }
+
+    #[test]
+    fn same_as_game_plays_the_headphone_mix_in_the_game_mix() {
+        let mixer = Arc::new(Mutex::new(audio::Mixer::new(HOST_RATE)));
+        let mut game = GameMix::new(&mixer);
+        let mut out = vec![0.0f32; 2 * HOST_FRAME];
+        // Rendered dry, then one frame: 20 ms of silence goes first.
+        lock(&mixer).render(&mut out);
+        game.write(&[8192; HOST_FRAME]);
+        lock(&mixer).render(&mut out);
+        assert!(out.iter().all(|&v| v == 0.0), "the cushion");
+        lock(&mixer).render(&mut out);
+        assert!(
+            out.iter().all(|&v| v == 0.25),
+            "both speakers: {:?}",
+            &out[..4]
+        );
+        // A mixer that does not keep up holds at most 100 ms.
+        for _ in 0..20 {
+            game.write(&[8192; HOST_FRAME]);
+        }
+        let id = game.stream.unwrap();
+        assert_eq!(
+            lock(&mixer).stream_mut(id).unwrap().pending(),
+            GameMix::MAX_QUEUED
+        );
+        // Dropping it takes the stream out of the mix.
+        drop(game);
+        assert!(lock(&mixer).stream_mut(id).is_none());
+        assert_eq!(lock(&mixer).stream_count(), 0);
+    }
+
+    #[test]
+    fn same_as_game_keeps_the_microphone() {
+        let mixer = Arc::new(Mutex::new(audio::Mixer::new(HOST_RATE)));
+        let fake = voice::io::FakeVoiceIo::new();
+        fake.speak([7; HOST_FRAME]);
+        let mut io = SameAsGame {
+            io: Box::new(fake.clone()),
+            game: GameMix::new(&mixer),
+        };
+        let mut frame = [0; HOST_FRAME];
+        assert!(io.capture().read(&mut frame));
+        assert_eq!(frame[0], 7);
+        io.playback().write(&[1; HOST_FRAME]);
+        assert!(fake.take_played().is_empty(), "not on the voice device");
+        assert_eq!(lock(&mixer).stream_count(), 1);
     }
 
     #[test]
