@@ -6,6 +6,7 @@
 //! No runtime and no I/O, so the recomp can link it without tokio.
 
 pub mod audit;
+pub mod bots;
 pub mod game;
 pub mod hopper;
 pub mod jcs;

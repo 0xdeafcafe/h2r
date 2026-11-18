@@ -60,7 +60,11 @@ impl local::PadSource for Brain {
         if f.joining {
             return local::join_pad(f.frame);
         }
-        match guest::perceive(f.guest, u32::from(f.port)) {
+        let who = match f.machine {
+            Some(id) => guest::Who::Machine(id),
+            None => guest::Who::Port(u32::from(f.port)),
+        };
+        match guest::perceive_as(f.guest, who) {
             Ok(p) => self.mind.step(&p, cache::current().as_deref()),
             Err(_) => HostPadState::default(),
         }
@@ -94,6 +98,7 @@ mod tests {
             frame,
             tick: None,
             port: 1,
+            machine: None,
             guest: &g,
             joining,
         };
