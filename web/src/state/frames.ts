@@ -45,6 +45,10 @@ export interface SampledPlayer {
   anim?: SampledAnim;
   /** Its seat in `vehicle` (the vehicle's own seat index), when the frame says. */
   seat?: number;
+  /** The ticks it fired on, from the frames' `fire` masks, up to the
+   *  sampled tick and no further back than the frame behind it (oldest
+   *  first): each shot at its own tick. With masks, `shots` is left out. */
+  fireTicks?: number[];
 }
 
 /** A unit's animation as the game plays it: its name in the unit's graph
@@ -201,6 +205,19 @@ export function cleanSeat(v: unknown): number | null {
   return typeof v === "number" && Number.isInteger(v) && v >= 0 && v < 32 ? v : null;
 }
 
+/** The ticks a `fire` mask names, at a frame's `tick`: bit k is a shot at
+ *  `tick - k`. Oldest first; only those after `after` and up to `upTo`. */
+export function fireTicks(mask: unknown, tick: number, after: number, upTo: number): number[] {
+  if (typeof mask !== "number" || !Number.isInteger(mask) || mask <= 0) return [];
+  const out: number[] = [];
+  for (let k = 31; k >= 0; k--) {
+    if (!((mask >>> k) & 1)) continue;
+    const t = tick - k;
+    if (t > after && t <= upTo) out.push(t);
+  }
+  return out;
+}
+
 /** Cubic Hermite between `a` (velocity `va`) at t = 0 and `b` (velocity
  *  `vb`) at t = 1, the velocities in units per whole span. */
 export function hermite(a: number, va: number, b: number, vb: number, t: number): number {
@@ -279,7 +296,8 @@ export function fromFramePlayer(p: FramePlayer, tick?: number, shotsFrom: FrameP
   if (species) out.species = species;
   if (weapon) out.weapon = weapon;
   if (aim) out.aim = aim;
-  const shots = tick === undefined || !shotsFrom ? 0 : cleanShots(shotsFrom.shots);
+  // A frame with a fire mask has its shots placed on their ticks (blendPlayers).
+  const shots = tick === undefined || !shotsFrom || shotsFrom.fire != null ? 0 : cleanShots(shotsFrom.shots);
   if (shots && shotsFrom!.alive) { out.shots = shots; out.shotTick = tick; }
   const stance = cleanStance(p.stance), speed = cleanSpeed(p.speed), grenade = cleanId(p.grenade);
   if (stance) out.stance = stance;
@@ -302,7 +320,13 @@ export function interpolateFrames(a: Frame, b: Frame | undefined, tick: number):
 
 function blendPlayers(from: readonly FramePlayer[], to: readonly FramePlayer[] | undefined, tickA: number, tickB: number, tick: number): SampledPlayer[] {
   const a = { tick: tickA, players: from };
-  if (!to) return a.players.map((p) => fromFramePlayer(p, a.tick));
+  // Shots the earlier frame's mask names, up to now (the newest frame of a live stream).
+  const fired = (s: SampledPlayer, p: FramePlayer, at: number, after: number) => {
+    if (p.fire == null || !p.alive) return;
+    const ticks = fireTicks(p.fire, at, after, tick);
+    if (ticks.length) s.fireTicks = ticks;
+  };
+  if (!to) return a.players.map((p) => { const s = fromFramePlayer(p, a.tick); fired(s, p, a.tick, a.tick - 32); return s; });
   const b = { tick: tickB, players: to };
   const t = Math.min(1, Math.max(0, (tick - a.tick) / (b.tick - a.tick)));
   const next = new Map<number, FramePlayer>();
@@ -311,7 +335,7 @@ function blendPlayers(from: readonly FramePlayer[], to: readonly FramePlayer[] |
   for (const pa of a.players) {
     const pb = next.get(pa.index);
     next.delete(pa.index);
-    if (!pb) { out.push(fromFramePlayer(pa, a.tick)); continue; }
+    if (!pb) { const s = fromFramePlayer(pa, a.tick); fired(s, pa, a.tick, a.tick - 32); out.push(s); continue; }
     const dx = pb.pos[0] - pa.pos[0], dy = pb.pos[1] - pa.pos[1], dz = pb.pos[2] - pa.pos[2];
     const far = dx * dx + dy * dy + dz * dz > SNAP_DISTANCE * SNAP_DISTANCE;
     if (!pa.alive || !pb.alive || far) {
@@ -319,8 +343,11 @@ function blendPlayers(from: readonly FramePlayer[], to: readonly FramePlayer[] |
       out.push(fromFramePlayer(t < 0.5 ? pa : pb, a.tick, pa));
       continue;
     }
-    // Everything but the place comes from the nearer frame; shots from `a`.
+    // Everything but the place comes from the nearer frame; shots from `a`,
+    // or with masks each on its tick: the later frame's as the clock passes them.
     const s = fromFramePlayer(t < 0.5 ? pa : pb, a.tick, pa);
+    if (pb.fire != null) fired(s, pb, b.tick, a.tick);
+    else fired(s, pa, a.tick, a.tick - 32);
     const va = cleanVel(pa.vel), vb = cleanVel(pb.vel);
     if (va && vb && b.tick - a.tick <= HERMITE_MAX_TICKS) {
       // Both samples say how they were moving: the path that leaves `a`

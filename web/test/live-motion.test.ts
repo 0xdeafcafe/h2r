@@ -7,12 +7,13 @@ import { describe, expect, test } from "bun:test";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import type { Frame, FramePlayer } from "../src/api/types";
-import { HERMITE_MAX_TICKS, blendAnim, cleanAnim, cleanSeat, cleanVel, hermite, sampleActors, sampleFrames, type SampledPlayer } from "../src/state/frames";
+import { HERMITE_MAX_TICKS, blendAnim, cleanAnim, cleanSeat, cleanVel, fireTicks, hermite, sampleActors, sampleFrames, type SampledPlayer } from "../src/state/frames";
 import { clipFor, clipTime, gameAnim, sideways } from "../src/viewer/anim";
 import { GROUND_BUDGET, GROUND_DOWN, GROUND_UP, GroundCache, floorAt, footZ, onFoot, type Floor } from "../src/viewer/ground";
 import { parseModels, seatNodeFor, seatState } from "../src/viewer/models";
 import { ModelLibrary, prepareBiped } from "../src/viewer/players3d";
 import { smoothPlayers, type SmoothPlayer } from "../src/viewer/sync";
+import { ShotQueue } from "../src/map/shots";
 import { MOCK_BIPEDS, encodeModelGlb } from "../mock/models";
 
 const fp = (over: Partial<FramePlayer> = {}): FramePlayer => ({ index: 0, alive: true, pos: [0, 0, 0], yaw: 0, ...over });
@@ -333,3 +334,27 @@ describe("the game's animation on a model", () => {
 // Keep the sampled player shape in step with what the scene reads.
 const _shape: Pick<SampledPlayer, "vel" | "anim" | "seat"> = { vel: [0, 0, 0], anim: { name: "a", frame: 0 }, seat: 0 };
 void _shape;
+
+describe("each shot on its tick", () => {
+  test("a mask names ticks back from its frame's", () => {
+    expect(fireTicks(0b101, 30, 0, 100)).toEqual([28, 30]);
+    expect(fireTicks(0b101, 30, 28, 100)).toEqual([30]);
+    expect(fireTicks(0b101, 30, 0, 29)).toEqual([28]);
+    expect(fireTicks(0, 30, 0, 100)).toEqual([]);
+    expect(fireTicks(-1, 30, 0, 100)).toEqual([]);
+  });
+
+  test("the later frame's shots come out as the clock passes each one, once", () => {
+    // Fired on ticks 8 and 14; the frame at tick 15 says so (bits 7 and 1).
+    const fs = [frame(0, [fp({ shots: 0 })]), frame(15, [fp({ pos: [1, 0, 0], shots: 2, fire: (1 << 7) | (1 << 1) })]), frame(30, [fp({ pos: [2, 0, 0] })])];
+    const q = new ShotQueue();
+    const seen: number[] = [];
+    for (let t = 0; t <= 30; t++) {
+      const sampled = sampleFrames(fs, t);
+      if (q.observe(sampled, t * 33).length) seen.push(t);
+      // The old count is not drawn again once the frame with the mask is behind the clock.
+      expect(sampled[0]!.shots).toBeUndefined();
+    }
+    expect(seen).toEqual([8, 14]);
+  });
+});
