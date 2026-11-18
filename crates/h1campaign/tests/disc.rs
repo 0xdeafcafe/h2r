@@ -1638,11 +1638,13 @@ fn a10_cryotubes_are_placed_and_built_from_their_definition() {
 }
 
 /// Every reached `unit_open` and `unit_close` on a10 (pinned and fresh)
-/// names a unit with a converted placement. Halo 2's evaluators send the
-/// unit a message without a `none` check, and the handler reads object
-/// header 0xffff's null pointer (`0x00113eae`, `+0x33e`), so a name whose
-/// placement is -1 faults. a10's `fast_setup` opens `cryotube_1` as the
-/// opening cinematic ends, and the cryotube has no template
+/// names a unit with a converted placement, and runs only when the unit
+/// exists: `(if (> (list_count x) 0) (unit_open x))` with the same unit.
+/// Halo 2's evaluators send the unit a message without a `none` check,
+/// and the handler reads object header 0xffff's null pointer
+/// (`0x00113eae`, `+0x33e`). a10's `fast_setup` opens `cryotube_1` as the
+/// opening cinematic ends; a placed name is still `none` when its object
+/// was not created (`a10_scripted_vehicles_can_be_created`)
 /// (`h1scripts::compile::NONE_UNSAFE`).
 #[test]
 #[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
@@ -1650,10 +1652,12 @@ fn a10_opens_and_closes_only_placed_units() {
     let s = scripting();
     let donors = donors();
     let h1 = h1_level("a10");
+    let index = |n: &str| s.target.builtins[n].index;
     let ids: Vec<(u16, &str)> = ["unit_open", "unit_close"]
         .into_iter()
-        .map(|n| (s.target.builtins[n].index, n))
+        .map(|n| (index(n), n))
         .collect();
+    let (iff, gt, count_of) = (index("if"), index(">"), index("list_count"));
     let mut bad = Vec::new();
     for pinned in [true, false] {
         let mut base = h2_map(h1campaign::base_for("a10"));
@@ -1681,8 +1685,26 @@ fn a10_opens_and_closes_only_placed_units() {
                 .to_owned();
             (text, i16::from_le_bytes([e[0x22], e[0x23]]))
         };
+        // A call's function and arguments.
+        let call = |d: hs::Datum| -> Option<(u16, Vec<hs::Datum>)> {
+            match sc.expression(d).ok()? {
+                hs::Expression::Call {
+                    function, children, ..
+                } => Some((function, children.collect::<Result<_, _>>().ok()?)),
+                _ => None,
+            }
+        };
+        let reached = sc.reachable(sc.roots()).unwrap();
+        let mut parent = std::collections::HashMap::new();
+        for &d in &reached {
+            if let Some((_, args)) = call(d) {
+                for a in args {
+                    parent.insert(a, d);
+                }
+            }
+        }
         let mut calls = 0;
-        for d in sc.reachable(sc.roots()).unwrap() {
+        for &d in &reached {
             let n = sc.node(d).unwrap();
             if n.atom() || n.script_call() {
                 continue;
@@ -1690,15 +1712,42 @@ fn a10_opens_and_closes_only_placed_units() {
             let Some(&(_, builtin)) = ids.iter().find(|i| i.0 == n.opcode()) else {
                 continue;
             };
-            let hs::Expression::Call { mut children, .. } = sc.expression(d).unwrap() else {
-                continue;
-            };
+            let Some((_, args)) = call(d) else { continue };
             calls += 1;
-            let arg = sc.node(children.next().unwrap().unwrap()).unwrap();
+            let arg = *sc.node(args[0]).unwrap();
+            let token = sc.string(arg.string_offset()).unwrap_or("?").to_owned();
+            // The guard: `(if (> (list_count x) 0) <this call>)`, x the
+            // same unit.
+            let guarded = parent
+                .get(&d)
+                .and_then(|&p| call(p))
+                .is_some_and(|(f, br)| {
+                    f == iff
+                        && br.len() == 2
+                        && br[1] == d
+                        && call(br[0]).is_some_and(|(f, cmp)| {
+                            f == gt
+                                && cmp.len() == 2
+                                && sc.node(cmp[1]).is_ok_and(|z| z.atom() && z.data() == 0)
+                                && call(cmp[0]).is_some_and(|(f, l)| {
+                                    f == count_of
+                                        && l.len() == 1
+                                        && sc.node(l[0]).is_ok_and(|x| {
+                                            x.data() == arg.data()
+                                                && sc.string(x.string_offset()).ok()
+                                                    == Some(token.as_str())
+                                        })
+                                })
+                        })
+                });
+            if !guarded {
+                bad.push(format!(
+                    "pinned {pinned}: ({builtin} {token}) is not guarded"
+                ));
+            }
             if !arg.atom() || arg.global() {
                 continue;
             }
-            let token = sc.string(arg.string_offset()).unwrap_or("?").to_owned();
             let index = arg.data() & 0xffff;
             if arg.data() == u32::MAX || index >= count {
                 bad.push(format!(
@@ -1718,6 +1767,67 @@ fn a10_opens_and_closes_only_placed_units() {
         if let Some(r) = &done.report.scenario.scripts {
             println!("a10 pinned {pinned}: stubbed {:?}", r.unindexed);
         }
+    }
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// Every vehicle a10's scenario places (its vehicle palette) can be
+/// created: Halo 2's `vehicle_new` (`0x000eeb80`, the `vehi` type's new
+/// function) returns false when the definition's model (`hlmt`, the
+/// object's `+0x38`) has no physics model (`phmo`, the `hlmt` reference at
+/// `+0x20`; `cmp [edx+24h],-1` at `0x000eebcb`), and `object_new`
+/// (`0x000b7b40`) then deletes the object and returns `none`, so the
+/// placement's name stays `none` (a10's rebuilt cryotube: `unit_open
+/// cryotube_1` faulted at `0x00113eae` with converter version 33). Every
+/// retail vehicle's model has one. Red until the rebuilt vehicles
+/// (`h1objects::rebuild`) get a physics model.
+#[test]
+#[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
+fn a10_scripted_vehicles_can_be_created() {
+    let s = scripting();
+    let donors = donors();
+    let h1 = h1_level("a10");
+    let mut bad = Vec::new();
+    for pinned in [true, false] {
+        let mut base = h2_map(h1campaign::base_for("a10"));
+        let opts = Options {
+            objects: true,
+            ai: true,
+            scripts: Some(&s),
+            sounds: 1000,
+            donors: Some(&donors),
+            pinned,
+            ..Default::default()
+        };
+        let done = h1campaign::convert(&h1, &mut base, &opts).unwrap();
+        let mut m = Map::from_reader(Cursor::new(done.bytes)).unwrap();
+        let mem = map_memory(&mut m);
+        let scnr = m.scenario().unwrap().clone();
+        let bytes = m.read_tag_bytes(scnr.id).unwrap();
+        let word = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+        // The vehicle palette: `scnr +0x78`, 0x28 per entry, the tag
+        // reference first.
+        let (count, address) = (word(&bytes, 0x78), word(&bytes, 0x7c));
+        for i in 0..count {
+            let e = mem.slice(address + i * 0x28, 0x28).unwrap();
+            let id = TagId(word(e, 4));
+            let Ok(vehi) = m.tag(id).cloned() else {
+                continue;
+            };
+            let v = m.read_tag_bytes(id).unwrap();
+            let hlmt = TagId(word(&v, 0x38));
+            let phmo = m
+                .read_tag_bytes(hlmt)
+                .ok()
+                .map_or(u32::MAX, |h| word(&h, 0x24));
+            if phmo == u32::MAX {
+                bad.push(format!(
+                    "pinned {pinned}: palette {i} {:?}: its model has no physics model",
+                    vehi.name
+                ));
+            }
+        }
+        println!("a10 pinned {pinned}: {count} vehicle palette entries");
     }
     assert!(bad.is_empty(), "{bad:#?}");
 }

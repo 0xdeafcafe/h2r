@@ -682,10 +682,24 @@ The bound is `0xc24000`; the base alone is `0xaed000`.
   `fast_setup`'s `(unit_open cryotube_1)`, the cryotube then having no
   template. Since converter version 33 the cryotube is built from its
   definition and placed (tag-definitions.md, Vehicles with no template),
-  and a10 stubs no `unit_open`/`unit_close`.
+  and a10 stubs no `unit_open`/`unit_close`. It still faulted (converter
+  version 33, A pressed in the opening cinematic): the placement is never
+  created. `vehicle_new` (`0x000eeb80`, the `vehi` type's new function)
+  returns false when the definition's model (`hlmt`, object `+0x38`) has
+  no physics model (`hlmt +0x20` `phmo`; `cmp [edx+24h],-1` at
+  `0x000eebcb`), `object_new` (`0x000b7b40`) deletes the half-made object
+  and returns `none`, and the name stays `none`. Every retail vehicle's
+  model has one; the vehicles built from their definition (cryotube,
+  chairs, fighterbomber, Halo ring) and fresh a10's
+  `lifepod_atmosphere_entry` have none. Since converter version 35 every
+  `unit_open`/`unit_close` runs inside `(if (> (list_count x) 0) ..)`,
+  a no-op on `none` as in Halo 1 (h1-scripts.md).
   `a10_opens_and_closes_only_placed_units` checks every reached call on
-  a10, pinned and fresh; `a10_cryotubes_are_placed_and_built_from_their_definition`
-  checks the cryotubes' placements and tag.
+  a10, pinned and fresh, is placed and guarded;
+  `a10_cryotubes_are_placed_and_built_from_their_definition` checks the
+  cryotubes' placements and tag; `a10_scripted_vehicles_can_be_created`
+  (red until the rebuilt vehicles get a physics model) checks every
+  vehicle palette entry's model has one.
 - **b40's level data.** b40 is at the tag memory bound. A level over
   it is converted again leaner (`h1campaign::convert`, `Lean`), dropping
   in turn: the empty squads kept for their names (`EmptySquads`), the

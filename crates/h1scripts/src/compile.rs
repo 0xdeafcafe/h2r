@@ -171,6 +171,19 @@ pub const INDEXED: &[&str] = &[
 /// resolve to a placement ([`compile_with`]'s `resolves`, with a type from
 /// [`OBJECT_NAME_TYPES`]) is stubbed and listed in
 /// [`Compiled::unindexed`], as for [`INDEXED`].
+///
+/// Every other call is guarded, as Halo 1 makes these a no-op on `none`:
+/// `(if (> (list_count x) 0) (unit_open x))`. A placed name is still `none`
+/// when the object was never created or is gone (a10's rebuilt cryotube:
+/// `vehicle_new` refuses a model with no physics model). The argument
+/// casts to an object list through `0x0020a130` (a name) or `0x0020a170`
+/// (an object), which give `none` for `none`, and `list_count`
+/// (`0x002a1060`) counts a `none` list as 0. Not a bare `(if (list_count
+/// x) ..)`: the retail short-to-boolean cast (`0x0020a020`) is `sete`,
+/// true for 0. Of the 79 Halo 2 builtins with a unit or vehicle
+/// parameter, only these two reach an object without a `none` check
+/// (their evaluators and first callees read; `recording_time`, the other
+/// candidate, only searches the recordings by handle).
 pub const NONE_UNSAFE: &[&str] = &["unit_open", "unit_close"];
 
 /// Halo 2 value types whose atoms are object names (an index into the
@@ -236,6 +249,9 @@ pub struct Compiled {
     /// argument, or a [`NONE_UNSAFE`] builtin's object name, would not
     /// resolve: the builtin, then the type and token.
     pub unindexed: Vec<Unresolved>,
+    /// [`NONE_UNSAFE`] calls compiled inside a guard that skips them when
+    /// their unit is `none`.
+    pub guarded: Vec<Unresolved>,
 }
 
 /// Compiles every global and script of `t`.
@@ -927,7 +943,49 @@ impl Compiler<'_> {
                 out.len()
             )));
         }
-        Ok(self.call(b.index, CALL, expected, h2_name.as_bytes(), &out))
+        let call = self.call(b.index, CALL, expected, h2_name.as_bytes(), &out);
+        if NONE_UNSAFE.contains(&h2_name.as_str())
+            && let &[arg] = &args[..]
+            && let Some(guard) = self.none_guard(arg)?
+        {
+            let iff = self
+                .h2
+                .builtins
+                .get("if")
+                .ok_or_else(|| invalid("Halo 2 `if` unknown"))?
+                .clone();
+            self.out.guarded.push(Unresolved {
+                definition: self.definition.clone(),
+                name: h2_name.clone(),
+            });
+            return Ok(self.call(iff.index, CALL, expected, b"if", &[guard, call]));
+        }
+        Ok(call)
+    }
+
+    /// `(> (list_count x) 0)`: true when Halo 1 argument `arg` is an
+    /// object ([`NONE_UNSAFE`]). `None` when Halo 2's builtins for it are
+    /// not known.
+    fn none_guard(&mut self, arg: Datum) -> Result<Option<Datum>> {
+        let (Some(count), Some(gt)) = (
+            self.h2.builtins.get("list_count").cloned(),
+            self.h2.builtins.get(">").cloned(),
+        ) else {
+            return Ok(None);
+        };
+        let Some(&list) = count.parameters.first() else {
+            return Ok(None);
+        };
+        let x = self.expr(arg, list)?;
+        let n = self.call(count.index, CALL, h2t::SHORT, b"list_count", &[x]);
+        let zero = self.number(h2t::SHORT, 0);
+        Ok(Some(self.call(
+            gt.index,
+            CALL,
+            h2t::BOOLEAN,
+            b">",
+            &[n, zero],
+        )))
     }
 
     fn atom(&mut self, n: &Node, expected: u16) -> Result<Datum> {

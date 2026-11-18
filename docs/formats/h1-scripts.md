@@ -315,7 +315,20 @@ retail compiler writes them; literals keep their source type.
   ended. Since converter version 33 the cryotube is built from the `vehi`
   definition and placed ([tag-definitions.md](tag-definitions.md),
   Vehicles with no template), so a10 stubs none of these; the stub stays
-  as the safety net for any other unplaced name.
+  as the safety net for any other unplaced name. Every other call is
+  guarded, since a placed name is still `none` when its object was never
+  created or is gone, and Halo 1 makes these calls a no-op on `none`:
+  `(if (> (list_count x) 0) (unit_open x))` (`Compiled::guarded`). The
+  unit casts to an object list (`0x0020a130` for a name, `0x0020a170` for
+  an object; both give `none` for `none`) and `list_count` (`0x002a1060`)
+  counts a `none` list as 0. A bare `(if (list_count x) ..)` would not do:
+  the retail short-to-boolean cast (`0x0020a020`) is `sete`, true for 0.
+  Of the 79 builtins with a unit or vehicle parameter only these two reach
+  an object with no `none` check (each evaluator and its first callees
+  read). With converter version 33 a10 still faulted there: the rebuilt
+  cryotube is placed but never created, because `vehicle_new`
+  (`0x000eeb80`) refuses a model with no physics model (campaigns.md,
+  Units opened or closed).
 - **Cutscenes**: `compile_with(.., Cutscenes::Skip, ..)` compiles every call
   of the level's `cinematic_skip_start` script as `false` (Halo 1's path
   after a skip) and wakes a10's `fast_setup` where it wakes
