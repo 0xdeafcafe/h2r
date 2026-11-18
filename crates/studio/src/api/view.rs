@@ -119,17 +119,18 @@ pub fn snapshot(gpu: &Gpu, app: &mut App, p: &P) -> Reply {
             .map_err(|e| err(code::FAILED, format!("{}: {e}", dir.display())))?;
     }
     let session = &app.session;
+    let selection = session.selection();
     let mut vp = Viewport::new(&gpu.device);
     match session.scene() {
         Some(scene) => {
             vp.set_scene(&gpu.device, &gpu.queue, scene);
-            vp.set_placements(&gpu.device, scene, session.markers(), session.selected());
+            vp.set_placements(&gpu.device, scene, session.markers(), &selection);
         }
         None => {
             vp.set_world(&gpu.device, session.world().0);
             vp.set_markers(
                 &gpu.device,
-                &render::marker_vertices(session.markers(), session.selected()),
+                &render::marker_vertices(session.markers(), &selection),
             );
         }
     }
