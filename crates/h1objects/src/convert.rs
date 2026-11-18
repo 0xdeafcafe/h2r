@@ -1835,6 +1835,13 @@ impl<'a> Converter<'a> {
     /// it isn't one, no map of it reads or converts, or `library` lacks
     /// every stem it could draw with; the tex_bump copy then follows.
     ///
+    /// A `soso` with a reflection cube map takes this path too, onto
+    /// `tex_bump_env` with Halo 1's cube map and tints
+    /// (`h1convert::shad::read_h1`, `soso_reflection`): Halo 1's weapons
+    /// take their metal from that reflection over dark base maps, and
+    /// drew near black without it (the sniper rifle in first person,
+    /// converter version 76).
+    ///
     /// Before converter version 73 these took the opaque tex_bump copy
     /// of whatever bitmap sat at a fixed offset, or, with none there, the
     /// base's stand-in model shader: a10's cryo tube glass (`sotr`
@@ -1846,11 +1853,16 @@ impl<'a> Converter<'a> {
         tag: &Tag,
     ) -> Option<TagId> {
         let group = tag.group.to_string();
-        if matches!(group.as_str(), "senv" | "soso") {
+        if group == "senv" {
             return None;
         }
         let s = h1convert::shad::read_h1(self.h1, tag)?;
         let chosen = s.choose(library)?.clone();
+        // A `soso` is rebuilt only for its reflection (converter version
+        // 76): without one, the tex_bump copy draws it as before.
+        if group == "soso" && chosen.layout.stem != h1convert::shad::TEX_BUMP_ENV.stem {
+            return None;
+        }
         let mut maps = HashMap::new();
         for (role, m) in &chosen.maps {
             let Some(id) = self.bitmap(m.bitmap) else { continue };

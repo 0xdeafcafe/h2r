@@ -152,7 +152,7 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
         h1convert::sky_shaders::CLOUDS_TEMPLATE,
         h1convert::sky_shaders::ADDITIVE_TEMPLATE,
     ];
-    let (mut drawn, mut null, mut stood_in, mut sky) = (0, 0, 0, 0);
+    let (mut drawn, mut null, mut stood_in, mut sky, mut reflective) = (0, 0, 0, 0, 0);
     for (id, name) in &modes {
         let b = out.read_tag_bytes(*id).unwrap();
         let at = out.tag(*id).unwrap().location.unwrap().address;
@@ -183,7 +183,16 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
                 sky += 1;
                 continue;
             }
-            assert_eq!(template, h1convert::textures::MODEL_TEMPLATE, "{name}");
+            // The tex_bump copy, or a Halo 1 shader rebuilt on its own
+            // stem (a reflective `soso` on tex_bump_env, glass blended).
+            assert!(
+                template == h1convert::textures::MODEL_TEMPLATE
+                    || h1convert::shad::LAYOUTS.iter().any(|l| l.stem == template),
+                "{name}: {template}"
+            );
+            if template == h1convert::shad::TEX_BUMP_ENV.stem {
+                reflective += 1;
+            }
             assert!(
                 bitmaps.iter().any(|b| (b.0 & 0xffff) as usize >= first),
                 "{name} material {k} draws no Halo 1 bitmap"
@@ -192,7 +201,7 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
         }
     }
     eprintln!(
-        "models: {} converted, {drawn} materials with Halo 1 textures, {stood_in} the base's model shader, {sky} sky shaders, {null} null",
+        "models: {} converted, {drawn} materials with Halo 1 textures ({reflective} on tex_bump_env), {stood_in} the base's model shader, {sky} sky shaders, {null} null",
         modes.len()
     );
     // No material is null: the shader draw does not skip a NONE shader.

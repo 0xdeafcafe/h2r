@@ -434,7 +434,43 @@ fn every_weapon_equipment_and_projectile_rebuilds() {
                         );
                         assert_eq!(int(m, "rounds_reloaded"), i64::from(h.rounds_reloaded));
                         assert_eq!(float(m, "reload_time"), h.reload_time);
+                        // The reserve cap (+0xc): without it no reserve.
+                        let Some(Val::Bytes(c)) = m.at(arsenal::MAGAZINE_RESERVE_MAXIMUM) else {
+                            panic!("{name}: magazine +0xc")
+                        };
+                        assert_eq!(
+                            u16_at(c, 0),
+                            arsenal::reserve_maximum(h.rounds_total_maximum, h.rounds_loaded_maximum),
+                            "{name}: reserve maximum"
+                        );
                     }
+                    // Every weapon with a barrel has a trigger naming
+                    // barrels it has: without one nothing fires.
+                    let Some(Val::Block(triggers)) = r.at(arsenal::TRIGGERS) else {
+                        panic!("{name}: triggers")
+                    };
+                    assert_eq!(
+                        triggers.is_empty(),
+                        w.triggers.is_empty(),
+                        "{name}: a trigger per weapon with barrels"
+                    );
+                    for t in triggers {
+                        let word = |k: usize| match t.at(&format!("unknown_{:x}", 4 * k)) {
+                            Some(Val::Bytes(b)) => u32_at(b, 0),
+                            _ => 0,
+                        };
+                        let primary = word(2) as i16;
+                        let secondary = (word(2) >> 16) as i16;
+                        assert!(
+                            (0..w.triggers.len() as i16).contains(&primary),
+                            "{name}: primary barrel {primary}"
+                        );
+                        assert!(
+                            secondary == -1 || (0..w.triggers.len() as i16).contains(&secondary),
+                            "{name}: secondary barrel {secondary}"
+                        );
+                    }
+                    *counts.entry("weap triggers".into()).or_default() += triggers.len();
                     let Some(Val::Block(barrels)) = r.at("barrels") else {
                         panic!()
                     };
@@ -903,6 +939,20 @@ fn first_person_graphs_take_retail_modes() {
         };
         let (modes, pairs, actions) = graph_modes(&local(&c.tree, a).unwrap().root);
         assert_eq!(modes, ["any"], "{}", t.name);
+        // Every slot Halo 1 plays an animation from has its action, under
+        // the slot's own name (the assault rifle's reload-empty slot
+        // holds its reload-full).
+        let src = h1::Weapon::read(&h1, t).unwrap().first_person_animations.unwrap();
+        let g = h1models::h1::Graph::read(&h1, h1.tag(src).unwrap().data_address).unwrap();
+        assert!(!g.first_person_slots.is_empty(), "{}: slot table", t.name);
+        for (k, s) in g.first_person_slots.iter().enumerate() {
+            if *s < 0 {
+                continue;
+            }
+            let word = h1models::h1::FIRST_PERSON_SLOTS[k];
+            let action = h1models::names::map_name(&format!("first-person {word}")).action;
+            assert!(actions.contains(&action), "{}: slot {k} {word} -> {action}", t.name);
+        }
         assert_eq!(
             pairs,
             [("any".to_string(), "any".to_string())],
