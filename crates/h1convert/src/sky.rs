@@ -170,7 +170,7 @@ impl Sky {
                                     .iter()
                                     .map(|m| ids.get(&m.bitmap).map(|&id| (id, m.scale, m.lod_offset)))
                                     .collect();
-                                match recipe(s).and_then(|r| templates.copy(r, &maps)) {
+                                match recipe(s).and_then(|r| templates.copy(r, &maps, r.scroll(s))) {
                                     Some(tree) => Some(
                                         set.add_tag(SHAD, &s.name, TagPayload::Built(tree))
                                             .map_err(|e| err(&e))?,

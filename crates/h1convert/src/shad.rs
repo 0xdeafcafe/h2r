@@ -168,6 +168,101 @@ pub struct Layout {
     pub colors: &'static [u32],
     pub vectors: &'static [Vector],
     pub root: Root,
+    /// The instance animation tree an animated instance of the stem has,
+    /// if this converts any animation onto it.
+    pub animation: Option<&'static AnimTree>,
+}
+
+/// An animated stem's instance tree (postprocess `+0x1c` to `+0x54`,
+/// docs/formats/shader-instances.md): one LOD whose mask names the
+/// animated layer, every layer's pass range, one implementation's five
+/// animation ranges, and the bindings, all reading property range 0.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AnimTree {
+    /// The template's layer count (the LOD's layer range).
+    pub layers: u16,
+    /// The one layer with a pass (and animation).
+    pub animated_layer: u16,
+    /// Bitmap, render-state, stage-state, pixel- and vertex-constant
+    /// ranges (start, count) into [`Self::bindings`].
+    pub implementation: [(u16, u16); 5],
+    /// (target, param 1, param 2, property range).
+    pub bindings: &'static [[u8; 4]],
+}
+
+/// `two_alpha_clouds`' animated tree. V (all 14 animated retail
+/// instances): layer 15 of 25 animated; the tile's texture rows `c[22]`
+/// and `c[23]` (vertex targets 212 and 245, parameter 5, a texture
+/// transform) and bitmap target 1, each from the ten transform
+/// components ([`TextureScroll`]).
+pub const CLOUDS_TREE: AnimTree = AnimTree {
+    layers: 25,
+    animated_layer: 15,
+    implementation: [(2, 1), (2, 0), (2, 0), (0, 0), (0, 2)],
+    bindings: &[[212, 5, 0, 0], [245, 5, 0, 0], [1, 0, 0, 0]],
+};
+
+/// A texture transform's scroll on one axis: the offset runs linearly
+/// from `from` to `to` every `period` seconds of game time.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Slide {
+    pub period: f32,
+    pub from: f32,
+    pub to: f32,
+}
+
+/// An animated texture transform: the ten components a [`CLOUDS_TREE`]
+/// binding reads. V (every animated retail instance of the five
+/// transparent stems: components 1 and 2 hold the map's u and v scale,
+/// equal to its rows' (`sky_shq_trenchcloud`: 1 and 2); 4 and 5 are
+/// the time-driven ones on the scrolling clouds and waterfalls; 0 and 3
+/// are 1, 6 to 9 are 0, on all of them): scale and u/v offsets.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextureScroll {
+    pub scale: [f32; 2],
+    pub offset: [Option<Slide>; 2],
+}
+
+impl TextureScroll {
+    /// The ten properties, component `k` from property `k`: each
+    /// `(period, function blob)`; a constant `c` is a constant function
+    /// (type 1) whose range starts at `c`, a slide a linear transition
+    /// (type 2, shape 0, from 0 to 1) mapped onto `[from, to]`, as the
+    /// retail clouds have them.
+    pub fn properties(&self) -> Vec<(f32, Vec<u8>)> {
+        use tags::effects::function::{Function, FunctionType};
+        let f = |kind, range: [f32; 2], payload: &[f32]| {
+            Function {
+                kind,
+                flags: 0,
+                sub_types: [0, 0],
+                range,
+                unknown_0c: [0; 8],
+                payload: payload.iter().flat_map(|v| v.to_le_bytes()).collect(),
+            }
+            .to_bytes()
+        };
+        let constant = |c: f32| (1.0, f(FunctionType::Constant, [c, 1.0], &[1.0, 1.0]));
+        let offset = |s: Option<Slide>| match s {
+            Some(s) => (
+                s.period,
+                f(FunctionType::Transition, [s.from, s.to], &[0.0, 1.0, 0.0, 1.0]),
+            ),
+            None => constant(0.0),
+        };
+        vec![
+            constant(1.0),
+            constant(self.scale[0]),
+            constant(self.scale[1]),
+            constant(1.0),
+            offset(self.offset[0]),
+            offset(self.offset[1]),
+            constant(0.0),
+            constant(0.0),
+            constant(0.0),
+            constant(0.0),
+        ]
+    }
 }
 
 const WHITE: u32 = 0x00ff_ffff;
@@ -211,6 +306,7 @@ pub const TEX_BUMP: Layout = Layout {
     colors: &[0, 0],
     vectors: &OPAQUE_VECTORS,
     root: Root::BaseMap,
+    animation: None,
 };
 
 /// Opaque bumped surfaces with Halo 1's detail blend: stage 0 the base
@@ -252,6 +348,7 @@ pub const TEX_BUMP_DETAIL_BLEND_DETAIL: Layout = Layout {
         Vector::Const([1.0, 1.0, 0.0, 0.0]),
     ],
     root: Root::BaseMap,
+    animation: None,
 };
 
 /// Opaque bumped surfaces with a reflection: stage 0 the base (bitmap 2,
@@ -287,6 +384,7 @@ pub const TEX_BUMP_ENV: Layout = Layout {
         Vector::ColorOf(6),
     ],
     root: Root::BaseMap,
+    animation: None,
 };
 
 /// [`TEX_BUMP`]'s layout with the base map's alpha cutting the surface
@@ -305,6 +403,7 @@ pub const TEX_BUMP_ALPHA_TEST: Layout = Layout {
     colors: &[0, 0],
     vectors: &OPAQUE_VECTORS,
     root: Root::BaseMap,
+    animation: None,
 };
 
 /// Self-illuminated: one pass drawing bitmap 0 (`c[18]` vector 0).
@@ -322,6 +421,7 @@ pub const ILLUM: Layout = Layout {
         Vector::Const([0.0; 4]),
     ],
     root: Root::SelfIllum,
+    animation: None,
 };
 
 /// Additive: stage 1 bitmap 0, its rows vectors 0 and 1, white tints.
@@ -340,6 +440,7 @@ pub const ONE_ADD_ILLUM: Layout = Layout {
         Vector::Const(A1),
     ],
     root: Root::SelfIllum,
+    animation: None,
 };
 
 /// Alpha blended: stage 0 a reflection cube (black: none), stage 1 a
@@ -370,6 +471,7 @@ pub const ONE_ALPHA_ENV: Layout = Layout {
         Vector::Const(V1),
     ],
     root: Root::None,
+    animation: None,
 };
 
 /// The sky picture (`crate::sky_shaders`): stage 3 bitmap 2, every row
@@ -394,6 +496,7 @@ pub const SKY_PICTURE: Layout = Layout {
         Vector::VRow(Role::Base),
     ],
     root: Root::None,
+    animation: None,
 };
 
 /// A cloud layer: stage 2 the tile (bitmap 0, rows 0 and 1), stage 1 the
@@ -415,6 +518,7 @@ pub const SKY_CLOUDS: Layout = Layout {
         Vector::VRow(Role::Mask),
     ],
     root: Root::None,
+    animation: Some(&CLOUDS_TREE),
 };
 
 /// An additive sky layer: stage 1 the picture (bitmap 0) times stage 2
@@ -440,6 +544,7 @@ pub const SKY_ADDITIVE: Layout = Layout {
         Vector::Const([0.0; 4]),
     ],
     root: Root::None,
+    animation: None,
 };
 
 /// Every layout.
@@ -484,6 +589,9 @@ pub struct Bound {
 pub struct Extras {
     /// (colour index, ARGB) replacing the layout's colour.
     pub colors: Vec<(usize, u32)>,
+    /// The scrolling of the layout's animated map
+    /// ([`Layout::animation`]); `None`: not animated.
+    pub scroll: Option<[Option<Slide>; 2]>,
 }
 
 impl Extras {
@@ -632,7 +740,24 @@ impl Library {
                 .iter()
                 .position(|b| matches!(b, Bm::Role(Role::Base, _))),
         };
-        build_record(layout, stem, &bitmaps, &colors, &vectors, picture)
+        let scroll = match (layout.animation, extras.scroll) {
+            (Some(_), Some(offset)) if offset.iter().any(Option::is_some) => {
+                let r = layout.bitmaps.iter().find_map(|b| match b {
+                    Bm::Role(r, _) if *r != Role::Mask => Some(*r),
+                    _ => None,
+                });
+                Some(TextureScroll {
+                    scale: r.map_or([1.0, 1.0], |r| scale(&r)),
+                    offset,
+                })
+            }
+            _ => None,
+        };
+        let mut rec = build_record(layout, stem, &bitmaps, &colors, &vectors, picture)?;
+        if let (Some(tree), Some(scroll)) = (layout.animation, scroll) {
+            animate(&mut rec, tree, &scroll)?;
+        }
+        Ok(rec)
     }
 
     /// The `shad` tree for `layout` drawing `maps`.
@@ -651,6 +776,109 @@ impl Library {
         defs::to_built(shad_def(), &rec, &mut |_| None)
             .map_err(|e| Error::Textures(format!("shad: {e}")))
     }
+}
+
+/// A u16 range: start in the low 9 bits, count in the high 7.
+fn range16(start: u16, count: u16) -> Val {
+    Val::Int(i64::from(start | (count << 9)))
+}
+
+/// Writes `tree` with `scroll`'s properties into the record's
+/// postprocess.
+fn animate(rec: &mut Record, tree: &AnimTree, scroll: &TextureScroll) -> Result<()> {
+    let def = shad_def();
+    let ppdef = child(def, "postprocess")?;
+    let Some(Val::Block(pps)) = rec.at("postprocess").cloned() else {
+        return Err(Error::Invalid("shad record lacks its postprocess"));
+    };
+    let mut pp = pps.into_iter().next().ok_or(Error::Invalid("no postprocess"))?;
+    let mk = |path: &str, fields: &[(&str, Val)]| -> Result<Record> {
+        let mut r = defs::default_record(child(ppdef, path)?);
+        for (k, v) in fields {
+            set(&mut r, k, v.clone())?;
+        }
+        Ok(r)
+    };
+    let lod = mk(
+        "lods",
+        &[
+            ("layer_mask", Val::Int(1i64 << tree.animated_layer)),
+            ("layers", range16(0, tree.layers)),
+        ],
+    )?;
+    set(&mut pp, "lods", Val::Block(vec![lod]))?;
+    let layers = (0..tree.layers)
+        .map(|k| {
+            let v = match k.cmp(&tree.animated_layer) {
+                std::cmp::Ordering::Less => range16(0, 0),
+                std::cmp::Ordering::Equal => range16(0, 1),
+                std::cmp::Ordering::Greater => range16(1, 0),
+            };
+            mk("layers", &[("passes", v)])
+        })
+        .collect::<Result<Vec<_>>>()?;
+    set(&mut pp, "layers", Val::Block(layers))?;
+    set(
+        &mut pp,
+        "passes",
+        Val::Block(vec![mk("passes", &[("implementations", range16(0, 1))])?]),
+    )?;
+    let names = [
+        "bitmap_animations",
+        "render_state_animations",
+        "stage_state_animations",
+        "pixel_constant_animations",
+        "vertex_constant_animations",
+    ];
+    let fields: Vec<(&str, Val)> = names
+        .iter()
+        .zip(tree.implementation)
+        .map(|(n, (a, b))| (*n, range16(a, b)))
+        .collect();
+    set(&mut pp, "implementations", Val::Block(vec![mk("implementations", &fields)?]))?;
+    let props = scroll.properties();
+    let precs = props
+        .iter()
+        .map(|(period, blob)| {
+            mk(
+                "properties",
+                &[("input_b", Val::Float(*period)), ("function", Val::Data(blob.clone()))],
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let n = props.len() as u16;
+    set(&mut pp, "properties", Val::Block(precs))?;
+    let refs = (0..n)
+        .map(|k| {
+            mk(
+                "property_refs",
+                &[("property", Val::Int(i64::from(k))), ("component", Val::Int(i64::from(k)))],
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    set(&mut pp, "property_refs", Val::Block(refs))?;
+    set(
+        &mut pp,
+        "property_ranges",
+        Val::Block(vec![mk("property_ranges", &[("property_refs", range16(0, n))])?]),
+    )?;
+    let binds = tree
+        .bindings
+        .iter()
+        .map(|b| {
+            mk(
+                "animations",
+                &[
+                    ("target", Val::Int(i64::from(b[0]))),
+                    ("param_1", Val::Int(i64::from(b[1]))),
+                    ("param_2", Val::Int(i64::from(b[2]))),
+                    ("property_range", Val::Int(i64::from(b[3]))),
+                ],
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    set(&mut pp, "animations", Val::Block(binds))?;
+    set(rec, "postprocess", Val::Block(vec![pp]))
 }
 
 /// The `shad` definition.
@@ -1123,6 +1351,7 @@ fn senv_reflection(h1: &h1map::H1Map, d: &[u8]) -> Option<(H1Bound, Extras)> {
                 (3, byte(perp) << 24),
                 (4, byte(par) << 24),
             ],
+            scroll: None,
         },
     ))
 }

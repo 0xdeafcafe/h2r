@@ -378,7 +378,7 @@ fn every_halo1_shader_and_sky_shader_rebuilds() {
                         layout.stem.rsplit('\\').next().unwrap().into(),
                     ))
                     .or_default() += 1;
-                let Some(tree) = sky.copy(recipe, &maps) else {
+                let Some(tree) = sky.copy(recipe, &maps, recipe.scroll(&s)) else {
                     failures.push(format!("{name}: sky shader {} doesn't build", s.name));
                     continue;
                 };
@@ -652,5 +652,79 @@ fn env_reflection_is_halo1s_rule() {
         checked += 1;
     }
     eprintln!("{checked} retail instances");
+    assert!(checked > 0);
+}
+
+/// Every animated retail `two_alpha_clouds` instance on the disc has
+/// [`shad::CLOUDS_TREE`]'s tree, and its ten transform components mean
+/// what [`shad::TextureScroll`] writes: 1 and 2 the tile's u and v scale
+/// (its rows' values), 0 and 3 one, 6 to 9 zero, the time-driven ones
+/// among 4 and 5 (the offsets). Evaluated with the engine's evaluator
+/// port (`tags::effects::function`) at time 0.
+#[test]
+#[ignore = "reads the Halo 2 disc ($H2_DISC)"]
+fn cloud_scroll_matches_retail_animated_instances() {
+    let disc = std::env::var("H2_DISC").expect("set H2_DISC");
+    let tree = &shad::CLOUDS_TREE;
+    let mut seen = HashSet::new();
+    let mut checked = 0;
+    for (name, base, size) in h2_maps(&disc) {
+        let mut map = open(&disc, base, size);
+        let Ok(lib) = ShaderLibrary::read(&mut map) else { continue };
+        let ids: Vec<(TagId, String)> = map
+            .tags()
+            .iter()
+            .filter(|t| t.group == SHAD && t.location.is_some())
+            .map(|t| (t.id, t.name.clone().unwrap_or_default()))
+            .collect();
+        for (id, sname) in ids {
+            let Ok(sh) = lib.shader(id) else { continue };
+            let stem = map.tag(sh.template.id).ok().and_then(|t| t.name.clone()).unwrap_or_default();
+            if stem != shad::SKY_CLOUDS.stem || !seen.insert(sname.clone()) {
+                continue;
+            }
+            let p = sh.compiled().unwrap();
+            if p.properties.is_empty() {
+                continue;
+            }
+            let at = format!("{name}: {sname}");
+            assert_eq!(p.lods.len(), 1, "{at}");
+            assert_eq!(p.lods[0].layer_mask, 1 << tree.animated_layer, "{at}");
+            assert_eq!((p.lods[0].layers.start, u16::from(p.lods[0].layers.count)), (0, tree.layers), "{at}");
+            for (k, l) in p.layers.iter().enumerate() {
+                let want = match (k as u16).cmp(&tree.animated_layer) {
+                    std::cmp::Ordering::Less => (0, 0),
+                    std::cmp::Ordering::Equal => (0, 1),
+                    std::cmp::Ordering::Greater => (1, 0),
+                };
+                assert_eq!((l.start, u16::from(l.count)), want, "{at}: layer {k}");
+            }
+            let a = &p.implementations[0];
+            let got = [a.bitmaps, a.render_states, a.stage_states, a.pixel_constants, a.vertex_constants]
+                .map(|r| (r.start, u16::from(r.count)));
+            assert_eq!(got, tree.implementation, "{at}");
+            let binds: Vec<[u8; 4]> = p.animations.iter().map(|b| [b.target, b.b1, b.b2, b.properties]).collect();
+            assert_eq!(binds, tree.bindings, "{at}");
+            assert_eq!(p.property_refs.len(), 10, "{at}");
+            // Component -> value at time 0, and whether time drives it.
+            let mut comp = [(f32::NAN, false); 10];
+            for r in &p.property_refs {
+                let prop = &p.properties[r.property as usize];
+                let f = tags::effects::function::Function::parse(&prop.function).unwrap();
+                let v = f.evaluate(0.0, 0.0).clamp(0.0, 1.0);
+                let v = if f.is_raw_output() { v } else { (f.range[1] - f.range[0]) * v + f.range[0] };
+                let timed = f.kind != tags::effects::function::FunctionType::Constant;
+                comp[r.component as usize] = (v, timed);
+            }
+            assert_eq!(comp[1].0, p.vectors[0][0], "{at}: u scale");
+            assert_eq!(comp[2].0, p.vectors[1][1], "{at}: v scale");
+            assert!(comp[0] == (1.0, false) && comp[3] == (1.0, false), "{at}: {comp:?}");
+            assert!(comp[6..].iter().all(|c| *c == (0.0, false)), "{at}: {comp:?}");
+            assert!(comp[4].1 || comp[5].1, "{at}: an offset scrolls");
+            assert!(!comp[1].1 && !comp[2].1, "{at}");
+            checked += 1;
+        }
+    }
+    eprintln!("{checked} animated cloud layers");
     assert!(checked > 0);
 }

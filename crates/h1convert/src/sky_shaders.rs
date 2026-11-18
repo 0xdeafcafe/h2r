@@ -57,11 +57,20 @@
 //! The shader is new, named for the Halo 1 shader; no Halo 2 shader's
 //! bytes are copied.
 //!
+//! **Scrolling.** A map's 2D animation is three runs of (u16 source, u16
+//! function, f32 period, f32 phase, f32 scale), u, v and rotation, at
+//! `+0xa4` (`schi`) or `+0x2c` (`sotr`); D (every sky and transparent
+//! shader on the disc): the function is mostly 6, a slide (a sawtooth),
+//! periods from 1 to 250 s, negative on some (reversed), scale ±1 or 2.
+//! A cloud layer's tile scrolls as Halo 1's slides it (source 0, game
+//! time, function 6), through `two_alpha_clouds`' texture transform
+//! ([`shad::CLOUDS_TREE`]): the offset runs from 0 to the scale over the
+//! period, from the scale to 0 when the period is negative.
+//!
 //! Lost: the masked star layers of the night and dusk domes (the picture
-//! alone draws), the per-map colour functions, and animation: Halo 1's
-//! `schi` map animation, and the scrolling every retail
-//! `two_alpha_clouds` instance carries (14 of 14), so cloud layers stand
-//! still.
+//! alone draws), the per-map colour functions, the phase, rotation, the
+//! other animation functions (cosine, noise, spark: a handful), and
+//! scrolling on the picture and additive layers.
 
 use std::collections::HashMap;
 use std::io::{Read, Seek};
@@ -80,6 +89,11 @@ pub const MAPS: usize = 0x54;
 /// (element size, bitmap reference, u scale) of `schi` and `sotr` maps.
 pub const SCHI_MAP: (usize, usize, usize) = (0xdc, 0x6c, 0x54);
 pub const SOTR_MAP: (usize, usize, usize) = (0x64, 0x1c, 0x04);
+/// A map's u animation run (`schi`, `sotr`); v follows `0x10` later.
+pub const SCHI_ANIMATION: usize = 0xa4;
+pub const SOTR_ANIMATION: usize = 0x2c;
+/// Halo 1's slide (sawtooth) animation function.
+pub const SLIDE: u16 = 6;
 
 pub const ALPHA_TEMPLATE: &str = shad::SKY_PICTURE.stem;
 pub const CLOUDS_TEMPLATE: &str = shad::SKY_CLOUDS.stem;
@@ -95,6 +109,28 @@ pub struct SkyMap {
     pub scale: [f32; 2],
     /// Its LOD offset ([`shad::lod_offset`]).
     pub lod_offset: f32,
+    /// Its u and v scrolling (module docs).
+    pub scroll: [Option<shad::Slide>; 2],
+}
+
+/// The slide of a map element's animation run at `at`: source 0 (game
+/// time), function [`SLIDE`], a period and scale not 0.
+fn slide(e: &[u8], at: usize) -> Option<shad::Slide> {
+    let u16_at = |o: usize| Some(u16::from_le_bytes(e.get(o..o + 2)?.try_into().ok()?));
+    let f32_at = |o: usize| Some(f32::from_le_bytes(e.get(o..o + 4)?.try_into().ok()?));
+    if u16_at(at)? != 0 || u16_at(at + 2)? != SLIDE {
+        return None;
+    }
+    let (period, scale) = (f32_at(at + 4)?, f32_at(at + 12)?);
+    if !period.is_finite() || !scale.is_finite() || period == 0.0 || scale == 0.0 {
+        return None;
+    }
+    let (from, to) = if period > 0.0 { (0.0, scale) } else { (scale, 0.0) };
+    Some(shad::Slide {
+        period: period.abs(),
+        from,
+        to,
+    })
 }
 
 /// A Halo 1 sky shader, as the conversion needs it.
@@ -135,10 +171,12 @@ pub fn read_h1(h1: &H1Map, id: h1map::TagId) -> Option<H1SkyShader> {
                 .chunks_exact(size)
                 .filter_map(|e| {
                     let r = TagRef::read(e, bitmap)?;
+                    let anim = if chicago { SCHI_ANIMATION } else { SOTR_ANIMATION };
                     (r.group == Group::new(b"bitm") && !r.id.is_none()).then_some(SkyMap {
                         bitmap: r.id,
                         scale: [f32_at(e, scale)?, f32_at(e, scale + 4)?],
                         lod_offset: shad::h1_lod_offset(h1, r.id),
+                        scroll: [slide(e, anim), slide(e, anim + 0x10)],
                     })
                 })
                 .collect();
@@ -152,6 +190,7 @@ pub fn read_h1(h1: &H1Map, id: h1map::TagId) -> Option<H1SkyShader> {
                     bitmap: base,
                     scale: [1.0, 1.0],
                     lod_offset: shad::h1_lod_offset(h1, base),
+                    scroll: [None, None],
                 }],
             )
         }
@@ -177,6 +216,16 @@ pub enum Recipe {
     Clouds { mask: usize, tile: usize },
     /// [`ADDITIVE_TEMPLATE`], the picture on stage 1.
     Additive(usize),
+}
+
+impl Recipe {
+    /// The scrolling the recipe draws: a cloud layer's tile's.
+    pub fn scroll(self, s: &H1SkyShader) -> [Option<shad::Slide>; 2] {
+        match self {
+            Recipe::Clouds { tile, .. } => s.maps.get(tile).map_or([None, None], |m| m.scroll),
+            _ => [None, None],
+        }
+    }
 }
 
 /// The recipe for `s` (module docs). `None` with no maps.
@@ -232,8 +281,14 @@ impl SkyTemplates {
     /// The rebuilt shader for `recipe`, each map of the shader given as
     /// its installed bitmap's datum, scale and LOD offset (`maps`, indexed
     /// as [`H1SkyShader::maps`]). `None` when no layout fits or a map is
-    /// missing.
-    pub fn copy(&self, recipe: Recipe, maps: &[Option<(TagId, [f32; 2], f32)>]) -> Option<Block> {
+    /// missing. `scroll` is the scrolling map's (a cloud layer's tile),
+    /// drawn when the layout animates.
+    pub fn copy(
+        &self,
+        recipe: Recipe,
+        maps: &[Option<(TagId, [f32; 2], f32)>],
+        scroll: [Option<shad::Slide>; 2],
+    ) -> Option<Block> {
         let layout = self.layout(recipe)?;
         let bound = |k: usize| {
             maps.get(k)
@@ -259,7 +314,11 @@ impl SkyTemplates {
                 }
             }
         }
-        self.library.build(layout, &m).ok()
+        let extras = shad::Extras {
+            scroll: Some(scroll),
+            ..shad::Extras::default()
+        };
+        self.library.build_with(layout, &m, &extras).ok()
     }
 }
 
@@ -279,6 +338,7 @@ mod tests {
                     bitmap: h1map::TagId(0xe000_0000 + k as u32),
                     scale,
                     lod_offset: 0.0,
+                    scroll: [None, None],
                 })
                 .collect(),
         }
@@ -372,6 +432,7 @@ mod tests {
             .copy(
                 Recipe::Picture(1),
                 &[None, Some((TagId(0x77), [12.0, 6.0], 2.0))],
+                [None, None],
             )
             .unwrap();
         let r = read(&tree);
@@ -387,7 +448,7 @@ mod tests {
             );
         }
         // A missing map: no shader.
-        assert!(t.copy(Recipe::Picture(0), &[None]).is_none());
+        assert!(t.copy(Recipe::Picture(0), &[None], [None, None]).is_none());
         // Without the sky stem, the shared transparent one.
         let shared = library(&[&shad::ONE_ALPHA_ENV]);
         assert_eq!(shared.layout(Recipe::Picture(0)), Some(&shad::ONE_ALPHA_ENV));
@@ -403,9 +464,48 @@ mod tests {
                     Some((TagId(0x10), [1.0, 1.0], 1.0)),
                     Some((TagId(0x11), [6.0, 6.0], 1.0)),
                 ],
+                [
+                    Some(shad::Slide {
+                        period: 120.0,
+                        from: 0.0,
+                        to: 1.0,
+                    }),
+                    None,
+                ],
             )
             .unwrap();
         let r = read(&tree);
+        // The tile scrolls in u: ten transform components on the clouds
+        // tree, u offset a 120 s ramp from 0 to 1, v offset still.
+        let n = |p: &str| match r.at(p) {
+            Some(tags::defs::Val::Block(v)) => v.len(),
+            _ => 0,
+        };
+        assert_eq!(n("postprocess[0].properties"), 10);
+        assert_eq!(n("postprocess[0].animations"), 3);
+        assert_eq!(n("postprocess[0].layers"), 25);
+        let prop = |k: usize| {
+            let Some(tags::defs::Val::Data(b)) = r.at(&format!("postprocess[0].properties[{k}].function")) else {
+                panic!("property {k}")
+            };
+            let Some(tags::defs::Val::Float(period)) = r.at(&format!("postprocess[0].properties[{k}].input_b")) else {
+                panic!("period {k}")
+            };
+            (*period, tags::effects::function::Function::parse(b).unwrap())
+        };
+        let value = |k: usize, t: f32| {
+            let (period, f) = prop(k);
+            let x = (t / period).rem_euclid(1.0);
+            let v = f.evaluate(x, 0.0).clamp(0.0, 1.0);
+            (f.range[1] - f.range[0]) * v + f.range[0]
+        };
+        assert!((value(4, 30.0) - 0.25).abs() < 1e-3, "u offset a quarter in");
+        assert!((value(4, 90.0) - 0.75).abs() < 1e-3);
+        assert_eq!(value(5, 30.0), 0.0, "v still");
+        assert_eq!(value(1, 0.0), 6.0, "u scale");
+        assert_eq!(value(2, 0.0), 6.0, "v scale");
+        assert_eq!(value(0, 0.0), 1.0);
+        assert_eq!(value(9, 0.0), 0.0);
         assert_eq!(bitmap(&r, 0), id(0x11), "tile on parameter 0");
         assert_eq!(bitmap(&r, 1), id(0x10), "mask on parameter 1");
         let v = |k: usize| floats(&r, &format!("postprocess[0].vectors[{k}].vector"));
@@ -419,7 +519,7 @@ mod tests {
     fn an_additive_layer_draws_the_picture_over_white_untinted() {
         let t = library(&[&shad::SKY_ADDITIVE]);
         let tree = t
-            .copy(Recipe::Additive(0), &[Some((TagId(0x20), [1.0, 1.0], 1.0))])
+            .copy(Recipe::Additive(0), &[Some((TagId(0x20), [1.0, 1.0], 1.0))], [None, None])
             .unwrap();
         let r = read(&tree);
         assert_eq!(bitmap(&r, 0), id(0x20));
