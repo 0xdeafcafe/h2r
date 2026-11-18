@@ -158,6 +158,14 @@ the `scen`, its `hlmt` and its `mode`'s material list are written field by
 field from typed definitions. See [tag-definitions.md](tag-definitions.md)
 for the field-by-field comparison with the template path below.
 
+**Vehicles have no template since converter version 48**: every Halo 1
+vehicle is built from the `vehi` definition, with its friction and hover
+points from Halo 1's powered mass points and its gears from its type's
+role ([tag-definitions.md](tag-definitions.md), "Every vehicle from
+definitions"). The vehicle rows described below (warthog, ghost,
+scorpion, banshee, pelican, dropship, wraith, gun turret, lifepods) and
+the lifepods' quiet stand-in are history, kept for the record.
+
 Each object is built on the **retail Halo 2 tag that plays the same role**
 in the base map (`convert::TEMPLATES`): assault rifle on the SMG, pistol
 on the magnum, plasma rifle, needler, grenades on Halo 2's grenades,
@@ -177,8 +185,8 @@ stays the template's. Template child blocks that are not rebuilt keep
 their retail addresses (aliasing, as retail does 13,099 times), so the
 tags must go into a `TagSet` made from that base map.
 
-Lifepods keep none of the pelican's looping sounds
-(`convert::QUIET_STAND_INS`). The pelican's attachments (`obje +0x94`,
+Through version 47, lifepods kept none of the pelican's looping sounds
+(`convert::QUIET_STAND_INS`, removed with the vehicle template path). The pelican's attachments (`obje +0x94`,
 `0x18` each) loop six sounds, engine, hover and banking on each side,
 scaled by its `engine_audio`, `hover_audio` and `banking_audio`
 functions; on a lifepod they hummed the pelican's engine at every

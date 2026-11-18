@@ -1401,8 +1401,9 @@ fn every_campaign_sound_plays_what_it_was_made_from() {
                 a.unmatched.len()
             ));
         }
-        // Lifepods stand on the pelican and keep none of its looping
-        // sounds (`h1objects::convert::QUIET_STAND_INS`).
+        // Halo 1's vehicles are built from the `vehi` definition and loop
+        // no retail sound (the lifepods once hummed the pelican's engine
+        // from its template's attachments).
         let mut m = Map::from_reader(Cursor::new(done.bytes.clone())).unwrap();
         let mem = map_memory(&mut m);
         let word = |a: u32| u32::from_le_bytes(mem.slice(a, 4).unwrap().try_into().unwrap());
@@ -1413,7 +1414,7 @@ fn every_campaign_sound_plays_what_it_was_made_from() {
         let mut pods = 0;
         for t in m.tags().iter().filter(|t| t.group == FourCC(*b"vehi")) {
             let name = t.name.clone().unwrap_or_default();
-            if !h1objects::convert::quiet_stand_in(&name) {
+            if name.starts_with("objects\\") {
                 continue;
             }
             pods += 1;
@@ -1427,7 +1428,7 @@ fn every_campaign_sound_plays_what_it_was_made_from() {
                 failed.push(format!("{level}: {name} loops {loops} sounds"));
             }
         }
-        println!("  {pods} lifepods");
+        println!("  {pods} Halo 1 vehicles");
     }
     assert!(failed.is_empty(), "{failed:#?}");
 }

@@ -1,5 +1,5 @@
 //! Every Halo 1 vehicle built from the `vehi` definition
-//! (`h1objects::rebuild::vehicle`, `Options::rebuild_vehicles`) against the
+//! (`h1objects::rebuild::vehicle`, the only vehicle path) against the
 //! discs. Reads `$H1_ISO` and `$H2_DISC`; nothing is written.
 //!
 //! ```sh
@@ -13,12 +13,16 @@
 //!   field of view agrees on every pair.
 //! - `every_vehicle_rebuilds_from_its_definition`: every `vehi` of the ten
 //!   campaign levels (on 05a_deltaapproach) and the multiplayer maps (on
-//!   their bases, coagulation and beavercreek) converts with `rebuild_vehicles`; the `vehi`, its `hlmt`
+//!   their bases, coagulation and beavercreek) converts; the `vehi`, its `hlmt`
 //!   and `phmo` read back through the definitions, write the same again,
 //!   pin nothing and hold no template bytes; the known fields are Halo 1's
 //!   (type, flags, camera, bounds, seats, weapons) and the rest the type's
-//!   role; where a template row exists the model chain is the template
-//!   path's.
+//!   role.
+//! - `powered_mass_points_become_friction_and_hover_points`: the
+//!   warthog's four tires become friction points and the ghost's three
+//!   powered points hover points, each naming a marker of the converted
+//!   model (on a node in range) and a region of Halo 1's collision; Halo
+//!   1's mass point positions are in object space; the warthog has gears.
 
 use std::collections::{BTreeMap, HashSet};
 use std::fs::File;
@@ -27,7 +31,9 @@ use std::io::{BufReader, Cursor};
 use h1map::H1Map;
 use h1objects::base::Base;
 use h1objects::convert::{Converter, Tree, template_candidates};
-use h1objects::rebuild::{H1_VEHICLE_FLAGS, H1_VEHICLE_TYPE, VEHI_PHYSICS, VEHI_SEATS};
+use h1objects::rebuild::{
+    H1_VEHICLE_FLAGS, H1_VEHICLE_TYPE, VEHI_FRICTION, VEHI_GEARS, VEHI_HOVER, VEHI_PHYSICS, VEHI_SEATS,
+};
 use h1objects::{Converted, h1};
 use map::{FourCC, Map, TagId};
 use tags::defs::{self, Defs, Record, Str, StructDef, Target, Val};
@@ -266,8 +272,7 @@ fn every_vehicle_rebuilds_from_its_definition() {
                 let b = h1.tag_data(t).unwrap();
                 let u = h1::Unit::read(&h1, t).unwrap();
                 let mut c = Converter::new(&h1, &base);
-                c.options.rebuild_vehicles = true;
-                let id = c.object(t).unwrap_or_else(|e| panic!("{name}: {e}"));
+                                let id = c.object(t).unwrap_or_else(|e| panic!("{name}: {e}"));
                 let got = local(&c.tree, id).expect("vehi in the tree");
                 assert_eq!(got.group, FourCC(*b"vehi"));
                 let r = read_back(got, &name);
@@ -301,8 +306,8 @@ fn every_vehicle_rebuilds_from_its_definition() {
                         "{name}: seat {k} label"
                     );
                     assert_eq!(
-                        text(&r, &format!("{p}.string_8")),
-                        h1objects::coll::sid_name(&s.marker),
+                        text(&r, &format!("{p}.string_8")).to_ascii_lowercase(),
+                        s.marker.to_ascii_lowercase(),
                         "{name}: seat {k} marker"
                     );
                 }
@@ -385,5 +390,105 @@ fn every_vehicle_rebuilds_from_its_definition() {
     if only.is_none() {
         // 23 distinct campaign vehicles, 3 on each multiplayer base.
         assert!(count >= 29, "every vehicle of the discs: {count}");
+    }
+}
+
+/// Halo 1 vehicles whose powered mass points become Halo 2 points: level,
+/// name, the point block, and how many Halo 2's counterpart holds there.
+const POINTED: &[(&str, &str, &str, usize)] = &[
+    ("b30", "vehicles\\warthog\\warthog", VEHI_FRICTION, 4),
+    ("b30", "vehicles\\ghost\\ghost", VEHI_HOVER, 3),
+];
+
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn powered_mass_points_become_friction_and_hover_points() {
+    let mut base_map = h2_map("05a_deltaapproach");
+    let base = Base::read(&mut base_map).unwrap();
+    let h1 = h1_level("b30").unwrap();
+    let d = def(b"vehi");
+    for (_, name, block, want) in POINTED {
+        let t = h1
+            .tags()
+            .iter()
+            .find(|t| t.name == *name && t.group.0.to_be_bytes() == *b"vehi")
+            .unwrap();
+        let u = h1::Unit::read(&h1, t).unwrap();
+        let phys = h1::Physics::read(&h1, h1.tag(u.object.physics.unwrap()).unwrap()).unwrap();
+        let model = h1models::model_from_map(&h1, h1.tag(u.object.model.unwrap()).unwrap(), &Default::default())
+            .unwrap()
+            .0;
+        // Halo 1's mass point positions are in the object's space: each
+        // powered point lies within its radius (plus a tenth of a unit)
+        // of its node's default position.
+        let world = h1models::mode::world_transforms(
+            &model
+                .nodes
+                .iter()
+                .map(|n| (n.parent, n.rotation, n.translation))
+                .collect::<Vec<_>>(),
+        );
+        let powered: Vec<_> = phys.mass_points.iter().filter(|m| m.powered_mass_point >= 0).collect();
+        assert_eq!(powered.len(), *want, "{name}: Halo 1 powered points");
+        if *block == VEHI_FRICTION {
+            for m in &powered {
+                let t = world[m.model_node as usize].1;
+                let dist = (0..3).map(|a| (m.position[a] - t[a]).powi(2)).sum::<f32>().sqrt();
+                assert!(dist <= m.radius + 0.1, "{name}: {} {dist} from its node", m.name);
+            }
+        }
+
+        let mut c = Converter::new(&h1, &base);
+                let id = c.object(t).unwrap();
+        let r = read_back(local(&c.tree, id).unwrap(), name);
+        let Some(Val::Block(points)) = r.at(block) else { panic!() };
+        assert_eq!(points.len(), *want, "{name}: {block}");
+        let other = if *block == VEHI_FRICTION { VEHI_HOVER } else { VEHI_FRICTION };
+        assert!(matches!(r.at(other), Some(Val::Block(b)) if b.is_empty()), "{name}");
+        // Each point's marker is a marker of the converted model, on a
+        // node in range; each region a region of Halo 1's collision.
+        let h = defs::from_built(
+            def(b"hlmt"),
+            &reference(&r, "unit.obje.model").and_then(|x| local(&c.tree, x)).unwrap().root,
+        )
+        .unwrap();
+        let mode = reference(&h, "render_model").and_then(|x| local(&c.tree, x)).unwrap();
+        let m = defs::from_built(def(b"mode"), &mode.root).unwrap();
+        let Some(Val::Block(groups)) = m.at("marker_groups") else { panic!() };
+        let coll = h1::Collision::read(&h1, h1.tag(u.object.collision.unwrap()).unwrap()).unwrap();
+        let regions: Vec<String> = coll.regions.iter().map(|r| h1objects::coll::sid_name(&r.name)).collect();
+        let (mk, rg) = if *block == VEHI_FRICTION {
+            ("string_0", "string_44")
+        } else {
+            ("string_0", "string_34")
+        };
+        for (k, p) in points.iter().enumerate() {
+            let marker = match p.get(mk) {
+                Some(Val::String(Str::Text(x))) => x.clone(),
+                x => panic!("{name}: point {k} marker {x:?}"),
+            };
+            let g = groups
+                .iter()
+                .find(|g| g.get("name") == Some(&Val::String(Str::Text(marker.clone()))))
+                .unwrap_or_else(|| panic!("{name}: no marker {marker}"));
+            let Some(Val::Block(ms)) = g.get("markers") else { panic!() };
+            assert!(!ms.is_empty(), "{name}: {marker} has instances");
+            for x in ms {
+                let Some(Val::Int(n)) = x.get("node") else { panic!() };
+                assert!((*n as usize) < model.nodes.len(), "{name}: {marker} node");
+            }
+            let region = match p.get(rg) {
+                Some(Val::String(Str::Text(x))) => x.clone(),
+                x => panic!("{name}: point {k} region {x:?}"),
+            };
+            assert!(regions.contains(&region), "{name}: {marker} region {region} of {regions:?}");
+            println!("{name}: {block}[{k}] marker {marker}, region {region}, {} instances", ms.len());
+        }
+        let Some(Val::Block(gears)) = r.at(VEHI_GEARS) else { panic!() };
+        println!("{name}: {} gears", gears.len());
+        if *block == VEHI_FRICTION {
+            assert!(!gears.is_empty(), "{name}: a jeep has gears");
+        }
+        let _ = d;
     }
 }

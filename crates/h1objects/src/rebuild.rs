@@ -311,31 +311,40 @@ pub struct SeatNames {
     /// `W-driver` is `warthog_d`, an unlisted label its lower-case,
     /// `-` to `_` form.
     pub label: String,
-    /// `string_8`, the rider's marker, as the converted model names it.
+    /// `string_8`, the rider's marker, as the converted model names it
+    /// (Halo 1's name).
     pub marker: String,
     /// `string_c`, the entry marker: `<marker> enter` when the model has
-    /// one (V: Halo 2's seats hold `driver_enter` where the model has a
-    /// `driver enter`-style marker; Halo 1's models carry `driver enter`,
-    /// `gunner enter`, `passenger enter`), else empty.
+    /// one (V: Halo 2's seats hold `driver_enter` beside `driver`; Halo
+    /// 1's models carry `driver enter`, `gunner enter`, `passenger
+    /// enter`), else empty.
     pub enter_marker: String,
     /// `string_60`, the camera marker, empty for none.
     pub camera_marker: String,
 }
 
 /// Halo 2's names for a Halo 1 seat on a model with `markers` (Halo 1's
-/// marker names). Marker names take the converted model's string ID form
-/// ([`sid_name`]).
+/// marker names, which the converted model keeps as they are).
 pub fn seat_names(seat: &h1::Seat, markers: &[String]) -> SeatNames {
+    // The converted model keeps Halo 1's marker names as they are
+    // (`h1models::mode`), so a seat names them the same way.
+    let found = |n: &str| {
+        markers
+            .iter()
+            .find(|m| m.eq_ignore_ascii_case(n))
+            .cloned()
+            .unwrap_or_else(|| n.to_owned())
+    };
     let enter = format!("{} enter", seat.marker);
     SeatNames {
         label: h1models::names::map_name(&seat.label).mode,
-        marker: sid_name(&seat.marker),
+        marker: found(&seat.marker),
         enter_marker: if markers.iter().any(|m| m.eq_ignore_ascii_case(&enter)) {
-            sid_name(&enter)
+            found(&enter)
         } else {
             String::new()
         },
-        camera_marker: sid_name(&seat.camera_marker),
+        camera_marker: found(&seat.camera_marker),
     }
 }
 
@@ -352,6 +361,82 @@ pub struct VehicleRole {
     pub seat: Vec<(String, u32)>,
     /// The high half of `vehicle_flags` most members hold.
     pub flags_high: u32,
+    /// The words of each friction (wheel and tread) point, `+0x2f0`: the
+    /// majority over every point of every member; `None` when fewer than
+    /// half the members have any (fliers, hover vehicles, turrets).
+    pub friction: Option<Vec<(String, u32)>>,
+    /// The same for the hover points, `+0x2e8`.
+    pub hover: Option<Vec<(String, u32)>>,
+    /// The engine gears, `+0x268`: the element count most members with
+    /// gears hold and each element's majority words, every 4-byte field
+    /// (raw curve pointers included, kept as the words they are: the
+    /// curves live in the shared map the base uses). Empty when fewer than
+    /// half the members have gears.
+    pub gears: Vec<Vec<(String, u32)>>,
+}
+
+/// `vehi +0x2f0`, the friction points (wheels and treads: V, the
+/// warthog's four hold `left_front_tire` .. `right_back_tire`, the
+/// scorpion's twelve its suspension and tread markers).
+pub const VEHI_FRICTION: &str = "block_2f0";
+/// `vehi +0x2e8`, the hover points (V: the ghost's three hold
+/// `back_antigrav`, `left_front_antigrav`, `right_front_antigrav`; the
+/// wraith's six, the spectre's four).
+pub const VEHI_HOVER: &str = "block_2e8";
+/// `vehi +0x268`, the engine gears (V: four on the warthog, two on the
+/// scorpion; none on hover vehicles, fliers or turrets).
+pub const VEHI_GEARS: &str = "block_268";
+/// A point's marker (`+0`, both point blocks) and the region whose
+/// destruction removes it (friction `+0x44`, hover `+0x34`). V: the
+/// warthog's `left_front_tire` with region `lf_wheel`, the ghost's
+/// `left_front_antigrav` with `l_wing`; the scorpion's regions are null.
+pub const FRICTION_MARKER: &str = "string_0";
+pub const FRICTION_REGION: &str = "string_44";
+pub const HOVER_MARKER: &str = "string_0";
+pub const HOVER_REGION: &str = "string_34";
+
+/// A Halo 1 powered mass point as a Halo 2 point: the marker the converted
+/// model gains for it and the region it belongs to (empty for none).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Point {
+    pub marker: String,
+    pub region: String,
+}
+
+/// Per element of the block at `at` (element `e`) of every member: the
+/// majority words over all elements together, `None` when fewer than half
+/// the members have any element.
+fn all_elements(
+    base: &crate::base::Base,
+    members: &[(String, Vec<u8>)],
+    at: usize,
+    e: &StructDef,
+) -> Result<Option<Vec<(String, u32)>>> {
+    let mut spans = Vec::new();
+    word_spans(e, "", 0, &mut spans);
+    let mut t = Tally::new();
+    let mut having = 0;
+    for (_, bytes) in members {
+        let mut i = 0;
+        while let Some(x) = base.element(bytes, at, e.size as usize, i)? {
+            tally_words(&x, &spans, &mut t);
+            i += 1;
+        }
+        having += usize::from(i > 0);
+    }
+    Ok((2 * having >= members.len() && having > 0).then(|| majority(&t)))
+}
+
+/// Every 4-byte field of `e` that holds a plain word or a raw pointer, as
+/// (path, offset).
+fn gear_spans(e: &StructDef) -> Vec<(String, u32)> {
+    e.fields
+        .iter()
+        .filter(|f| {
+            matches!(f.kind, defs::Kind::Raw) || matches!(f.kind, defs::Kind::Unknown { len: 4, .. })
+        })
+        .map(|f| (f.name.clone(), f.offset))
+        .collect()
 }
 
 /// [`VehicleRole`] over the base map's vehicles whose `vehicle_type` is
@@ -391,10 +476,57 @@ pub fn vehicle_role(base: &crate::base::Base, vehicle_type: u16) -> Result<Optio
         .iter()
         .max_by_key(|(w, c)| (**c, std::cmp::Reverse(**w)))
         .map_or(0, |(w, _)| *w);
+    let block = |name: &str| -> Result<(usize, &StructDef)> {
+        Ok((
+            field_offset(d, name)? as usize,
+            d.child(name)
+                .ok_or_else(|| Error::Invalid(format!("vehi {name}")))?,
+        ))
+    };
+    let (fat, fdef) = block(VEHI_FRICTION)?;
+    let (hat, hdef) = block(VEHI_HOVER)?;
+    let (gat, gdef) = block(VEHI_GEARS)?;
+    // Gears: the count most members with gears hold, each element's
+    // majority over the members of that count.
+    let gspans = gear_spans(gdef);
+    let mut counts = std::collections::BTreeMap::<usize, usize>::new();
+    let mut per: Vec<Vec<Vec<u8>>> = Vec::new();
+    for (_, bytes) in &members {
+        let mut es = Vec::new();
+        while let Some(x) = base.element(bytes, gat, gdef.size as usize, es.len())? {
+            es.push(x);
+        }
+        if !es.is_empty() {
+            *counts.entry(es.len()).or_default() += 1;
+        }
+        per.push(es);
+    }
+    let having: usize = counts.values().sum();
+    let mut gears = Vec::new();
+    if having > 0 && 2 * having >= members.len() {
+        let n = *counts.iter().max_by_key(|(n, c)| (**c, **n)).expect("some").0;
+        for k in 0..n {
+            let mut t = Tally::new();
+            for es in per.iter().filter(|es| es.len() == n) {
+                tally_words(&es[k], &gspans, &mut t);
+            }
+            // Every gear field, zero included: a curve pointer or scale
+            // left out would read as none.
+            let mut words = Vec::new();
+            for (path, vals) in &t {
+                let (w, _) = vals.iter().max_by_key(|(_, c)| **c).expect("some");
+                words.push((path.clone(), *w));
+            }
+            gears.push(words);
+        }
+    }
     Ok(Some(VehicleRole {
         words,
         seat: majority(&seats),
         flags_high,
+        friction: all_elements(base, &members, fat, fdef)?,
+        hover: all_elements(base, &members, hat, hdef)?,
+        gears,
     }))
 }
 
@@ -480,6 +612,9 @@ pub struct VehicleSpec<'a> {
     /// The type's role over the base's vehicles; `None` takes the turret
     /// tables ([`TURRET_ROLE`]), as for a type the base has none of.
     pub role: Option<&'a VehicleRole>,
+    /// Halo 1's powered mass points: friction points where the role has
+    /// them, else hover points where it has those, else none.
+    pub points: &'a [Point],
 }
 
 /// A Halo 1 vehicle written from the `vehi` definition, no retail template
@@ -590,6 +725,47 @@ pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
         out.push(e);
     }
     set(&mut r, VEHI_SEATS, Val::Block(out))?;
+    if let Some(role) = v.role {
+        let kinds = [
+            (VEHI_FRICTION, &role.friction, FRICTION_MARKER, FRICTION_REGION),
+            (VEHI_HOVER, &role.hover, HOVER_MARKER, HOVER_REGION),
+        ];
+        if let Some((block, Some(words), marker, region)) =
+            kinds.into_iter().find(|k| k.1.is_some())
+        {
+            let e = d.child(block).expect("vehi points");
+            let mut out = Vec::new();
+            for p in v.points {
+                let mut x = defs::default_record(e);
+                role_words(&mut x, words)?;
+                set(&mut x, marker, Val::text(&p.marker))?;
+                set(&mut x, region, Val::text(&p.region))?;
+                out.push(x);
+            }
+            set(&mut r, block, Val::Block(out))?;
+        }
+        if !role.gears.is_empty() {
+            let e = d.child(VEHI_GEARS).expect("vehi gears");
+            let mut out = Vec::new();
+            for words in &role.gears {
+                let mut x = defs::default_record(e);
+                for (path, w) in words {
+                    let raw = e
+                        .fields
+                        .iter()
+                        .any(|f| f.name == *path && matches!(f.kind, defs::Kind::Raw));
+                    let val = if raw {
+                        Val::Raw(defs::RawVal::Word(*w))
+                    } else {
+                        Val::Bytes(w.to_le_bytes().to_vec())
+                    };
+                    set(&mut x, path, val)?;
+                }
+                out.push(x);
+            }
+            set(&mut r, VEHI_GEARS, Val::Block(out))?;
+        }
+    }
     built(d, &r)
 }
 

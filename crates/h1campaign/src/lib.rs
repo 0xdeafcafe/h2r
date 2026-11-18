@@ -182,11 +182,6 @@ pub struct Options<'a> {
     /// (`h1objects::convert::Options::rebuild_bipeds`) instead of on
     /// Halo 2 templates. Off by default until it has run in the game.
     pub rebuild_bipeds: bool,
-    /// Build every vehicle from the `vehi` definition
-    /// (`h1objects::convert::Options::rebuild_vehicles`) instead of on
-    /// Halo 2 templates. Off by default: the rebuilt vehicles have no
-    /// wheels, hover points or engine gears yet (tag-definitions.md).
-    pub rebuild_vehicles: bool,
     /// Which of Halo 1's devices are placed. `convert` places fewer when a
     /// level is still over a bound with everything else left out (pinned
     /// b40 and d40).
@@ -230,7 +225,6 @@ impl Default for Options<'_> {
             pinned: false,
             devices: Devices::All,
             rebuild_bipeds: false,
-            rebuild_vehicles: false,
         }
     }
 }

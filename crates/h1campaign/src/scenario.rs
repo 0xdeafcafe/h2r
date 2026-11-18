@@ -900,7 +900,6 @@ pub fn write(
                 groups,
                 opts.devices,
                 opts.rebuild_bipeds,
-                opts.rebuild_vehicles,
             )?
         }
         None => HashMap::new(),
@@ -1223,11 +1222,9 @@ fn place_objects(
     device_groups: bool,
     devices: crate::Devices,
     rebuild_bipeds: bool,
-    rebuild_vehicles: bool,
 ) -> Result<HashMap<(i16, i16), (i16, i16)>> {
     let mut conv = h1objects::convert::Converter::new(h1, base);
     conv.options.rebuild_bipeds = rebuild_bipeds;
-    conv.options.rebuild_vehicles = rebuild_vehicles;
     let mut palettes = Vec::new();
     for k in &KINDS {
         let mut pal = Vec::new();

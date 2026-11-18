@@ -343,8 +343,8 @@ fn a10_vehicles_without_templates_are_rebuilt() {
                     h1models::names::map_name(&s.label).mode
                 );
                 assert_eq!(
-                    text(&r, &format!("{p}.string_8")),
-                    h1objects::coll::sid_name(&s.marker)
+                    text(&r, &format!("{p}.string_8")).to_ascii_lowercase(),
+                    s.marker.to_ascii_lowercase()
                 );
                 assert!(!s.label.is_empty(), "{}: seat {k} has a label", t.name);
             }

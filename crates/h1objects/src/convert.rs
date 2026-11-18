@@ -159,29 +159,6 @@ pub const TEMPLATES: &[(&[u8; 4], &[&str], &str)] = &[
         &["health"],
         "objects\\weapons\\grenade\\frag_grenade\\frag_grenade",
     ),
-    (b"vehi", &["warthog"], "objects\\vehicles\\warthog\\warthog"),
-    (b"vehi", &["ghost"], "objects\\vehicles\\ghost\\ghost"),
-    (
-        b"vehi",
-        &["scorpion"],
-        "objects\\vehicles\\scorpion\\scorpion",
-    ),
-    (b"vehi", &["banshee"], "objects\\vehicles\\banshee\\banshee"),
-    // Campaign craft: Halo 2's counterpart where a base carries one
-    // (05a_deltaapproach has the pelican, phantom, wraith and Covenant
-    // turret).
-    (b"vehi", &["pelican"], "objects\\vehicles\\pelican\\pelican"),
-    (
-        b"vehi",
-        &["dropship"],
-        "objects\\vehicles\\phantom\\phantom",
-    ),
-    (b"vehi", &["wraith"], "objects\\vehicles\\wraith\\wraith"),
-    (
-        b"vehi",
-        &["gun turret"],
-        "objects\\vehicles\\c_turret_ap\\c_turret_ap",
-    ),
     // Scenery: a static rock of Delta Halo's with collision and no physics
     // model, so a converted model never inherits physics built for other
     // nodes.
@@ -190,31 +167,7 @@ pub const TEMPLATES: &[(&[u8; 4], &[&str], &str)] = &[
         &[],
         "scenarios\\objects\\solo\\deltatemple\\statue_shard_large\\statue_shard_large",
     ),
-    // Halo 1's lifepod (the escape pod) is a small flying craft, not Halo
-    // 2's insertion pod (the ODST drop pod, a different vehicle). By role:
-    // the scripts fly it with recordings (`recording_play`, a30's intro),
-    // load units into it (`unit_enter_vehicle`), open and close it, attach
-    // and animate it, and never give it to the player (`lifepod_use` in
-    // h1campaign's survey). The pelican is the base's flying unit with
-    // passenger seats; the model and animations stay Halo 1's.
-    (b"vehi", &["lifepod"], "objects\\vehicles\\pelican\\pelican"),
 ];
-
-/// Halo 1 craft built on another vehicle's template ([`TEMPLATES`]) that
-/// keep none of its looping sounds. The lifepod stands on the pelican,
-/// whose attachments (`obje +0x94`) loop six engine, hover and banking
-/// sounds at every placement: every lifepod a10 places hummed the
-/// pelican's engine for the whole level. Halo 1's own looping sounds are not converted, so the
-/// craft is quiet; the template's other attachments (lights, contrails)
-/// stay.
-pub const QUIET_STAND_INS: &[&str] = &["lifepod"];
-
-/// Whether the Halo 1 vehicle at `path` drops its template's looping
-/// sounds ([`QUIET_STAND_INS`]).
-pub fn quiet_stand_in(path: &str) -> bool {
-    let path = path.to_ascii_lowercase();
-    QUIET_STAND_INS.iter().any(|w| path.contains(w))
-}
 
 /// Every template row that matches a Halo 1 tag of `group` at `path`, in
 /// table order: the converter takes the first the base map holds.
@@ -574,6 +527,39 @@ fn finish(b: &mut Block, raw: &[RawId], id: TagId) {
     }
 }
 
+/// A powered mass point: its Halo 2 point, model node and position in
+/// that node's space.
+struct PoweredPoint {
+    point: crate::rebuild::Point,
+    node: i16,
+    position: [f32; 3],
+}
+
+/// Adds a marker per powered point to a Halo 1 model before conversion:
+/// named as the point, on its node, one instance per permutation of the
+/// first region (D: so whichever permutation the object shows carries
+/// it), no rotation.
+fn add_point_markers(model: &mut h1models::h1::Model, points: &[PoweredPoint]) {
+    let perms = model.regions.first().map_or(1, |r| r.permutations.len().max(1));
+    for p in points {
+        if model.markers.iter().any(|m| m.name == p.point.marker) {
+            continue;
+        }
+        model.markers.push(h1models::h1::Marker {
+            name: p.point.marker.clone(),
+            instances: (0..perms)
+                .map(|k| h1models::h1::MarkerInstance {
+                    region: 0,
+                    permutation: k as i8,
+                    node: p.node as i8,
+                    translation: p.position,
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                })
+                .collect(),
+        });
+    }
+}
+
 fn put_f32(b: &mut [u8], at: usize, v: f32) {
     b[at..at + 4].copy_from_slice(&v.to_le_bytes());
 }
@@ -625,10 +611,6 @@ pub struct Options {
     /// definition ([`crate::rebuild::biped`]) instead of on a template.
     /// Off by default until a rebuilt biped has run in the game.
     pub rebuild_bipeds: bool,
-    /// Build every Halo 1 vehicle from the `vehi` definition
-    /// ([`crate::rebuild::vehicle`]), not only those no template row
-    /// names.
-    pub rebuild_vehicles: bool,
 }
 
 /// Builds a [`Tree`] from Halo 1 objects on one base map.
@@ -772,8 +754,14 @@ impl<'a> Converter<'a> {
             // model is needed again.
             Some(_) => h1models::model_from_map(self.h1, mode_tag, &ModelOptions::default())?,
             None => {
-                let (h1_model, _) =
+                let (mut h1_model, _) =
                     h1models::model_from_map(self.h1, mode_tag, &ModelOptions::default())?;
+                // A vehicle's powered mass points become markers, which
+                // its friction or hover points name (crate::rebuild::Point).
+                if h1::OBJECT_TYPES.get(obj.object_type as usize) == Some(&b"vehi") {
+                    let points = self.powered_points(obj, &h1_model)?;
+                    add_point_markers(&mut h1_model, &points);
+                }
                 let shaders = self.model_shaders(rep, &h1_model);
                 // One material per Halo 1 shader, as convert_model writes.
                 let mut padded = shaders.clone();
@@ -1144,45 +1132,6 @@ impl<'a> Converter<'a> {
                 rep.stopgaps.push((at, g.to_string(), n));
             }
         }
-    }
-
-    /// Gives `root` its own copy of the template's attachments without the
-    /// looping sounds ([`QUIET_STAND_INS`]); every other element is the
-    /// template's as stored.
-    fn drop_looping_attachments(
-        &self,
-        rep: &mut ObjectReport,
-        root: &mut Block,
-        tpl_root: &[u8],
-    ) -> Result<()> {
-        let lsnd = u32::from_be_bytes(*b"lsnd");
-        let n = crate::base::u32_at(tpl_root, h2::ATTACHMENTS) as usize;
-        let mut kept = Vec::with_capacity(n);
-        for i in 0..n {
-            let e = self
-                .base
-                .element(tpl_root, h2::ATTACHMENTS, h2::ATTACHMENT, i)?
-                .expect("below the count");
-            if crate::base::u32_at(&e, 0) == lsnd {
-                if let Some(id) = self.base.reference(&e, 0) {
-                    let name = self.base.name(id).map_or("?", |(_, n)| n);
-                    rep.no_home
-                        .push(format!("template looping sound dropped: {name}"));
-                }
-            } else {
-                kept.push(e);
-            }
-        }
-        if kept.len() == n {
-            return Ok(());
-        }
-        if kept.is_empty() {
-            root.bytes[h2::ATTACHMENTS..h2::ATTACHMENTS + 8].fill(0);
-        } else {
-            let k = kept.len() as u32;
-            root.block(h2::ATTACHMENTS as u32, k, Block::new(kept.concat()));
-        }
-        Ok(())
     }
 
     fn report(tag: &Tag, template: &str) -> ObjectReport {
@@ -1777,9 +1726,8 @@ impl<'a> Converter<'a> {
     }
 
     /// A Halo 1 vehicle from the `vehi` definition
-    /// ([`crate::rebuild::vehicle`]), no template: every vehicle with
-    /// [`Options::rebuild_vehicles`], and those no template row names
-    /// (a10's cryotube, chairs, fighterbomber and Halo ring) always.
+    /// ([`crate::rebuild::vehicle`]), no template: every vehicle (the
+    /// template path was removed in converter version 48).
     fn vehicle_rebuilt(&mut self, tag: &Tag, u: &Unit) -> Result<TagId> {
         let b = self.h1.tag_data(tag)?;
         let word = |at: usize| {
@@ -1820,6 +1768,17 @@ impl<'a> Converter<'a> {
             .iter()
             .map(|s| crate::rebuild::seat_names(s, &markers))
             .collect();
+        let points: Vec<crate::rebuild::Point> = match u.object.model {
+            Some(m) => {
+                let (model, _) =
+                    h1models::model_from_map(self.h1, self.h1_tag(m)?, &ModelOptions::default())?;
+                self.powered_points(&u.object, &model)?
+                    .into_iter()
+                    .map(|p| p.point)
+                    .collect()
+            }
+            None => Vec::new(),
+        };
         // The unit's weapons: Halo 1's, converted where they convert.
         let mut weapons = Vec::new();
         for r in &u.references {
@@ -1846,11 +1805,13 @@ impl<'a> Converter<'a> {
             flags,
             weapons: &weapons,
             role: role.as_ref(),
+            points: &points,
         })?;
         rep.no_home.push(format!(
-            "vehi: Halo 1's type, flags (low half), camera, {} seats (label as the rider's mode, markers) and {} weapons; the type's role words; no wheels, hover points or engine gears (Halo 2 names them by markers the Halo 1 model lacks); HUD, sounds, effects and camera tracks null; {} Halo 1 references",
+            "vehi: Halo 1's type, flags (low half), camera, {} seats (label as the rider's mode, markers), {} weapons and {} powered mass points as friction or hover points; the type's role words and gears; HUD, sounds, effects and camera tracks null; {} Halo 1 references",
             u.seats.len(),
             weapons.len(),
+            points.len(),
             u.references.iter().filter(|r| r.tag.is_some()).count()
         ));
         self.tree.reports.push(rep);
@@ -1878,6 +1839,70 @@ impl<'a> Converter<'a> {
         let w = crate::rebuild::vehicle_role(self.base, vehicle_type)?;
         self.vehicle_roles.insert(vehicle_type, w.clone());
         Ok(w)
+    }
+
+    /// Halo 1's powered mass points (`phys` mass points with a powered
+    /// mass point: the warthog's four tires, the ghost's hull and wings),
+    /// each as a marker on its model node and a Halo 2 point. V: Halo 1's
+    /// mass point positions are in the object's space (each warthog tire
+    /// point lies within its radius of its tire node's default
+    /// position, `tests/vehicle_rebuild_disc.rs`), so the marker holds the
+    /// position in its node's space. The region is the collision region
+    /// of the collision node named as the model node, else none.
+    fn powered_points(
+        &self,
+        obj: &h1::Object,
+        model: &h1models::h1::Model,
+    ) -> Result<Vec<PoweredPoint>> {
+        let Some(p) = obj.physics else {
+            return Ok(Vec::new());
+        };
+        let phys = h1::Physics::read(self.h1, self.h1_tag(p)?)?;
+        let coll = match obj.collision {
+            Some(c) => Some(h1::Collision::read(self.h1, self.h1_tag(c)?)?),
+            None => None,
+        };
+        let world = h1models::mode::world_transforms(
+            &model
+                .nodes
+                .iter()
+                .map(|n| (n.parent, n.rotation, n.translation))
+                .collect::<Vec<_>>(),
+        );
+        let mut out: Vec<PoweredPoint> = Vec::new();
+        for m in phys.mass_points.iter().filter(|m| m.powered_mass_point >= 0) {
+            let node = if (m.model_node as usize) < model.nodes.len() && m.model_node >= 0 {
+                m.model_node
+            } else {
+                0
+            };
+            let (r, t) = world
+                .get(node as usize)
+                .copied()
+                .unwrap_or(([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], [0.0; 3]));
+            let d: [f32; 3] = std::array::from_fn(|a| m.position[a] - t[a]);
+            // The inverse of a rotation is its transpose.
+            let local = std::array::from_fn(|a| (0..3).map(|k| r[k][a] * d[k]).sum());
+            let node_name = model.nodes.get(node as usize).map(|n| n.name.as_str());
+            let region = coll
+                .as_ref()
+                .and_then(|c| {
+                    let n = c.nodes.iter().find(|n| Some(n.name.as_str()) == node_name)?;
+                    c.regions.get(usize::try_from(n.region).ok()?)
+                })
+                .map(|r| crate::coll::sid_name(&r.name))
+                .unwrap_or_default();
+            let marker = crate::coll::sid_name(&m.name);
+            if out.iter().any(|p| p.point.marker == marker) {
+                continue;
+            }
+            out.push(PoweredPoint {
+                point: crate::rebuild::Point { marker, region },
+                node,
+                position: local,
+            });
+        }
+        Ok(out)
     }
 
     /// The role's words over the base's bipeds ([`crate::rebuild::biped_role`]),
@@ -2156,11 +2181,9 @@ impl<'a> Converter<'a> {
     fn unit(&mut self, tag: &Tag) -> Result<TagId> {
         let u = Unit::read(self.h1, tag)?;
         let g: [u8; 4] = tag.group.0.to_be_bytes();
-        // No template row at all (not merely one the base lacks, which a
-        // donor may bring): built from the definition instead of dropped.
-        if &g == b"vehi"
-            && (self.options.rebuild_vehicles || template_candidates(&g, &tag.name).is_empty())
-        {
+        // Every vehicle is built from the `vehi` definition: there is no
+        // vehicle template path.
+        if &g == b"vehi" {
             return self.vehicle_rebuilt(tag, &u);
         }
         if &g == b"bipd"
@@ -2180,9 +2203,6 @@ impl<'a> Converter<'a> {
             tag.group,
             u.references.iter().filter(|r| r.tag.is_some()).count()
         ));
-        if &g == b"vehi" && quiet_stand_in(&tag.name) {
-            self.drop_looping_attachments(&mut rep, &mut root, &tpl_root)?;
-        }
         if &g == b"bipd" && health_hud::is_player_biped(&tag.name) {
             match self.health_hud(&mut root, &tpl_root) {
                 Ok(n) => rep.no_home.push(format!(
@@ -2190,13 +2210,6 @@ impl<'a> Converter<'a> {
                 )),
                 Err(e) => rep.no_home.push(format!("HUD: no health meter: {e}")),
             }
-        }
-        if &g == b"vehi" {
-            let hlmt = root.fixups.iter().find_map(|f| match f.kind {
-                FixupKind::TagRef(t) if f.offset == h2::MODEL as u32 && t != TagId::NULL => Some(t),
-                _ => None,
-            });
-            self.object_physics(&mut rep, hlmt, &u.object, &tag.name, PhysicsKind::Vehicle)?;
         }
         self.stopgaps(&mut rep, &tpl_root, &[h2::MODEL]);
         self.tree.reports.push(rep);

@@ -8,7 +8,7 @@ use map::{CacheType, FourCC, Map, TagId};
 
 use crate::Converted;
 use crate::coll::{convert_collision, sid_name};
-use crate::convert::{Tree, local, quiet_stand_in, template_for};
+use crate::convert::{Tree, local, template_for};
 use crate::h1::{CollNode, CollRegion, Collision, Sphere};
 
 fn one_bsp() -> CollisionBsp {
@@ -49,29 +49,11 @@ fn templates_pick_the_role_and_the_more_specific_name_first() {
     assert!(t(b"eqip", "powerups\\health pack").ends_with("\\over_shield"));
     assert!(t(b"eqip", "weapons\\frag grenade\\frag grenade").contains("grenade\\frag_grenade"));
     assert!(t(b"proj", "weapons\\plasma grenade\\plasma grenade").contains("plasma_grenade"));
-    assert!(t(b"vehi", "vehicles\\ghost\\ghost_mp").ends_with("\\ghost"));
+    // Vehicles have no template: every one is built from its definition.
+    assert_eq!(t(b"vehi", "vehicles\\ghost\\ghost_mp"), "-");
     assert!(t(b"bipd", "characters\\anything").contains("masterchief"));
     assert_eq!(t(b"proj", "weapons\\assault rifle\\bullet"), "-");
     assert_eq!(sid_name(" Front Left-Tire "), "front_left_tire");
-}
-
-#[test]
-fn lifepods_alone_drop_their_template_s_looping_sounds() {
-    for p in [
-        "vehicles\\lifepod\\lifepod",
-        "vehicles\\lifepod_docked\\lifepod_docked",
-        "scenery\\vehicles\\lifepod_atmosphere_entry\\lifepod_atmosphere_entry",
-    ] {
-        assert!(quiet_stand_in(p), "{p}");
-        assert!(template_for(b"vehi", p).unwrap().ends_with("\\pelican"));
-    }
-    for p in [
-        "vehicles\\pelican\\pelican_astral",
-        "vehicles\\warthog\\warthog",
-        "vehicles\\ghost\\ghost_mp",
-    ] {
-        assert!(!quiet_stand_in(p), "{p}");
-    }
 }
 
 #[test]
@@ -566,6 +548,7 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
         flags: 0xdead_00c0,
         weapons: &[weapon],
         role: None,
+        points: &[],
     })
     .unwrap();
     let def = Defs::builtin().group(map::FourCC(*b"vehi")).unwrap();
@@ -604,7 +587,8 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
     // The label is the rider's mode as the converted graphs name it.
     s.set("label", Val::text("c_turret_ap_d")).unwrap();
     s.set("string_8", Val::text("driver")).unwrap();
-    s.set("string_c", Val::text("driver_enter")).unwrap();
+    // Marker names as the converted model keeps them (Halo 1's).
+    s.set("string_c", Val::text("driver enter")).unwrap();
     s.set("string_60", Val::text("camera")).unwrap();
     want.set(VEHI_SEATS, Val::Block(vec![s])).unwrap();
     let pr = def.child("unit.obje.predicted_resources").unwrap();
@@ -690,7 +674,23 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
         },
         seat: vec![("unknown_20".into(), 0x3f00_0000)],
         flags_high: 0x0012_0000,
+        friction: Some(vec![("unknown_8".into(), 0x4160_0000)]),
+        hover: None,
+        gears: vec![vec![
+            ("unknown_0".into(), 0x4795_6a00),
+            ("raw_14".into(), 0x4000_1234),
+        ]],
     };
+    let points = [
+        crate::rebuild::Point {
+            marker: "tire_front_left".into(),
+            region: "left_front_tire".into(),
+        },
+        crate::rebuild::Point {
+            marker: "tire_back_left".into(),
+            region: String::new(),
+        },
+    ];
     let seat = crate::h1::Seat {
         flags: 0,
         label: "W-driver".into(),
@@ -708,6 +708,7 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
         flags: 0x0000_0cd1,
         weapons: &[],
         role: Some(&role),
+        points: &points,
     })
     .unwrap();
     let def = Defs::builtin().group(map::FourCC(*b"vehi")).unwrap();
@@ -725,6 +726,25 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
         got.at("block_1c8[0].label"),
         Some(&Val::text("warthog_d"))
     );
+    // Halo 1's powered points as friction points with the role's words;
+    // the role's gear, its curve pointer kept as a word.
+    assert_eq!(
+        got.at("block_2f0[0].string_0"),
+        Some(&Val::text("tire_front_left"))
+    );
+    assert_eq!(
+        got.at("block_2f0[0].string_44"),
+        Some(&Val::text("left_front_tire"))
+    );
+    assert_eq!(got.at("block_2f0[1].unknown_8").cloned(), word(0x4160_0000));
+    assert!(matches!(got.at("block_2e8"), Some(Val::Block(b)) if b.is_empty()));
+    assert_eq!(got.at("block_268[0].unknown_0").cloned(), word(0x4795_6a00));
+    assert_eq!(
+        got.at("block_268[0].raw_14"),
+        Some(&Val::Raw(defs::RawVal::Word(0x4000_1234)))
+    );
+    let again = defs::to_built(def, &got, &mut |_| None).unwrap();
+    assert_eq!(defs::from_built(def, &again).unwrap(), got);
     // Turret words stay off a vehicle with its own role.
     assert_eq!(got.at("unknown_23c").cloned(), word(0));
 }
