@@ -285,6 +285,49 @@ pub(crate) fn borrow_slots(
     }
 }
 
+/// A first-person graph's slot table ([`crate::h1::FIRST_PERSON_SLOTS`]) as
+/// actions of mode, class and type `any`: each slot that names an
+/// animation becomes the action its slot word maps to (`reload-empty` ->
+/// `reload_empty`, `melee` -> `melee_strike_1`), naming that animation,
+/// unless an animation labelled so already took the action. Halo 1 plays
+/// first-person animations by slot; Halo 2 looks the action up by name
+/// (`reload_empty`, `fire_1`, ...), so without this a slot filled by an
+/// animation labelled for another (the assault rifle's `reload-empty` slot
+/// holds its `reload-full`) has no action, and its animation never plays.
+pub(crate) fn first_person_slots(
+    g: &Graph,
+    tree: &mut BTreeMap<String, BTreeMap<String, BTreeMap<String, Vec<(String, usize)>>>>,
+) {
+    // Only a weapon's first-person graph (every animation `first-person
+    // ...`) is read this way.
+    let first_person = |a: &crate::h1::Animation| {
+        a.name.split(' ').next() == Some(crate::names::FIRST_PERSON)
+    };
+    if g.animations.is_empty() || !g.animations.iter().all(first_person) {
+        return;
+    }
+    for (k, &slot) in g.first_person_slots.iter().enumerate() {
+        let (Some(word), Ok(index)) = (crate::h1::FIRST_PERSON_SLOTS.get(k), usize::try_from(slot))
+        else {
+            continue;
+        };
+        if index >= g.animations.len() {
+            continue;
+        }
+        let name = map_name(&format!("{} {word}", crate::names::FIRST_PERSON));
+        let actions = tree
+            .entry(name.mode)
+            .or_default()
+            .entry(name.class)
+            .or_default()
+            .entry(name.kind)
+            .or_default();
+        if !actions.iter().any(|(a, _)| *a == name.action) {
+            actions.push((name.action, index));
+        }
+    }
+}
+
 /// Converts a Halo 1 animation graph. A graph without its own node block
 /// takes `skeleton` (its model's nodes, [`AnimNode::from_model`]).
 pub fn convert_graph(g: &Graph, skeleton: Option<&[AnimNode]>) -> Result<(Converted, GraphReport)> {
@@ -381,6 +424,7 @@ pub fn convert_graph(g: &Graph, skeleton: Option<&[AnimNode]>) -> Result<(Conver
         records.push(r);
     }
     borrow_slots(g, &names, &mut tree);
+    first_person_slots(g, &mut tree);
     while resource.len() % 0x200 != 0 {
         resource.push(0);
     }

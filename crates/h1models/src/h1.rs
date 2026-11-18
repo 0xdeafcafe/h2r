@@ -493,6 +493,12 @@ pub const ANTR_HEADER: usize = 0x80;
 const ANTR_UNITS: usize = 0x0c;
 const ANTR_WEAPONS: usize = 0x18;
 const ANTR_VEHICLES: usize = 0x24;
+/// The first-person weapons block (`0x1c` each): 16 bytes, then a block of
+/// `i16` animation indices at `+0x10`, one per first-person slot
+/// ([`FIRST_PERSON_SLOTS`]).
+const ANTR_FIRST_PERSON: usize = 0x48;
+const FIRST_PERSON_LEN: usize = 0x1c;
+const FIRST_PERSON_SLOT_LIST: usize = 0x10;
 const ANTR_NODES: usize = 0x68;
 const ANTR_ANIMATIONS: usize = 0x74;
 const ANTR_NODE_LEN: usize = 0x40;
@@ -533,7 +539,55 @@ pub struct Graph {
     /// class's animation: every class's throw-grenade slot names
     /// `stand rifle throw-grenade` on the cyborg.
     pub units: Vec<UnitSlots>,
+    /// A first-person graph's slot table (the first element of `+0x48`):
+    /// per slot of [`FIRST_PERSON_SLOTS`], the animation it plays, -1 for
+    /// none. Empty on other graphs.
+    pub first_person_slots: Vec<i16>,
 }
+
+/// What each first-person slot is, in Halo 1's own words (the name half
+/// after `first-person`), by position. Halo 1's engine plays a weapon's
+/// first-person animations through this table, not by name, and a slot
+/// may name an animation labelled for another (V, every first-person graph
+/// on Blood Gulch: the assault rifle's `reload-empty` slot plays its
+/// `reload-full`, the shotgun's `reload-full` its `reload-empty`, its
+/// `light-on` its `light-off`; its `firing` fills no slot).
+///
+/// Each position's word is the label of the animation it holds on a graph
+/// of the disc where the two agree (V, Blood Gulch's 11 first-person
+/// graphs), except `light-on` (6) and `misfire-2` (19), which no Blood
+/// Gulch graph labels: S, from their neighbours `light-off` (5) and
+/// `misfire-1` (18).
+pub const FIRST_PERSON_SLOTS: &[&str] = &[
+    "idle",
+    "posing",
+    "fire-1",
+    "moving",
+    "overlays",
+    "light-off",
+    "light-on",
+    "reload-empty",
+    "reload-full",
+    "overheated",
+    "ready",
+    "put-away",
+    "overcharged",
+    "melee",
+    "fire-2",
+    "overcharged-jitter",
+    "throw-grenade",
+    "ammunition",
+    "misfire-1",
+    "misfire-2",
+    "throw-overheated",
+    "overheating",
+    "overheating-again",
+    "enter",
+    "exit-empty",
+    "exit-full",
+    "o-h-exit",
+    "o-h-s-enter",
+];
 
 /// One unit (mode) of a graph's lookup tables ([`Graph::units`]).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -663,6 +717,13 @@ impl Graph {
             weapon_count: u32_at(h, ANTR_WEAPONS),
             vehicle_count: u32_at(h, ANTR_VEHICLES),
             units: read_units(m, h)?,
+            first_person_slots: match block(m, h, ANTR_FIRST_PERSON, FIRST_PERSON_LEN)?.first() {
+                Some(e) => block(m, e, FIRST_PERSON_SLOT_LIST, 2)?
+                    .into_iter()
+                    .map(|s| i16_at(s, 0))
+                    .collect(),
+                None => Vec::new(),
+            },
         })
     }
 }

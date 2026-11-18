@@ -1940,3 +1940,57 @@ fn a_converted_particles_frame_always_has_a_function() {
     sprite_frame(&mut r).unwrap();
     assert_eq!(r.at("frame.function"), Some(&Val::Data(kept.to_bytes())));
 }
+
+/// An invented Halo 1 trigger: flags at `+0`, charging time at `+0x48`.
+fn h1_trigger(flags: u32, charging: f32) -> Vec<u8> {
+    let mut t = vec![0u8; crate::h1::TRIGGER_SIZE];
+    t[0..4].copy_from_slice(&flags.to_le_bytes());
+    let at = crate::arsenal::H1_TRIGGER_CHARGING_TIME;
+    t[at..at + 4].copy_from_slice(&charging.to_le_bytes());
+    t
+}
+
+#[test]
+fn every_halo1_trigger_gets_a_halo2_trigger_naming_its_barrel() {
+    use crate::arsenal::{TriggerWords, h2_triggers};
+    assert!(h2_triggers(&[]).is_empty());
+    // An automatic rifle: one trigger, input 0, behaviour 0, barrel 0.
+    let auto = h2_triggers(&[h1_trigger(0, 0.0)]);
+    assert_eq!(auto, [TriggerWords::new(0, 0, 0, -1)]);
+    assert_eq!(auto[0].0[1..4], [0, 0xffff_0000, 1]);
+    // Once per press (flag 0x8): behaviour 1, `+0xc` 0.
+    let semi = h2_triggers(&[h1_trigger(0x408, 0.0)]);
+    assert_eq!(
+        (semi[0].behaviour(), semi[0].primary(), semi[0].secondary(), semi[0].0[3]),
+        (1, 0, -1, 0)
+    );
+    // Two triggers, neither charging: two Halo 2 triggers on inputs 0 and
+    // 1, each firing its own barrel (a cannon and its machine gun).
+    let two = h2_triggers(&[h1_trigger(0x28, 0.0), h1_trigger(0x20, 0.0)]);
+    assert_eq!(
+        two,
+        [TriggerWords::new(0, 1, 0, -1), TriggerWords::new(1, 0, 1, -1)]
+    );
+    assert_eq!(two[1].input(), 1);
+    // A charging first trigger with a second: one trigger, barrel 1 the
+    // charged shot, behaviour and `+0xc` 2, the charge time carried.
+    let charge = h2_triggers(&[h1_trigger(0, 0.6), h1_trigger(4, 0.0)]);
+    assert_eq!(charge.len(), 1);
+    let c = charge[0];
+    assert_eq!(
+        (c.input(), c.behaviour(), c.primary(), c.secondary(), c.0[3]),
+        (0, 2, 0, 1, 2)
+    );
+    assert_eq!(c.charging_time(), 0.6);
+    // A lone charging trigger has nothing to charge into.
+    assert_eq!(h2_triggers(&[h1_trigger(0, 0.6)])[0].behaviour(), 0);
+}
+
+#[test]
+fn the_reserve_maximum_is_the_total_less_the_loaded() {
+    use crate::arsenal::reserve_maximum;
+    assert_eq!(reserve_maximum(600, 60), 540);
+    assert_eq!(reserve_maximum(24, 4), 20);
+    assert_eq!(reserve_maximum(0, 0), 0);
+    assert_eq!(reserve_maximum(4, 8), 0);
+}
