@@ -372,6 +372,39 @@ decoding what comes before the keyframe it needs. Keyframes stay every
   keyframe and snaps. Scrubbing decodes keyframes only, until the user
   lets go.
 
+## Animation state (found, static reading)
+
+Every object has an animation manager inside its own data, and the frames
+read its first channel. Addresses are guest virtual addresses in the
+retail XBE, read with `h2 disasm`; no game was run. The reader is
+`memory::animation`, and its fixture test is `unit_motion_fields`.
+
+| what | where | evidence |
+|---|---|---|
+| manager | `object + i16 [object +0x12a]`, -1 none | `object_new` (`0x000b7b40`) builds it there (`0x000b80e0` into the constructor `0x001cafc0`) and gives it the model's graph (`0x001cb0d0`). The custom animation start (`0x001101e0`, reached from `custom_animation_relative` `0x002a3600` through `0x0011b520`) checks the offset against -1 and works on `object + offset`. 113 instructions read it sign-extended. |
+| channels | manager `+0x00`, `+0x20`, `+0x40`, `0x20` bytes each | The constructor sets up three alike. The animation start (`0x001ccae0` into `0x001cb410`) passes the manager's own address to the channel set (`0x001c6470`), so the first channel is the one playing; the other two blend out the animations before it. |
+| graph | manager `+0x68`, `jmad` datum | `0x001ccae0` and `0x001cb410` refuse a manager whose `+0x68` is -1 and hand it to the channel. |
+| channel graph | channel `+0x00`, `jmad` datum | Written by `0x001c6470`; `0x001c6c80` and `0x001ccb40` refuse -1 and index the tag instances (`[0x004e3b44]`, stride `0x10`, data at `+8`) with it. |
+| animation | channel `+0x04`: `i16` graph (-1 the channel's own, else a position in its inheritance list), `i16` index (-1 none) | `0x001c6470` refuses a reference whose high half is -1. `0x001daea0` resolves it (docs/engine/engine-map.md, "Animation graphs"). |
+| frame | channel `+0x1c`, `f32` | The frame setter `0x001c6560` clamps it to 0..frame count - 1, stores it, and advances it by the tick length times the rate at `+0x18` (1 by default). |
+
+Animations are named on the host from the loaded map's file, as tag names
+are: `TagNames` keeps each `jmad`'s animation names (string IDs through
+the map's string table) and its inheritance list. The guest is read for
+the datum, reference and frame only, at no cost beyond four reads per
+unit. Frames carry the result as `anim: {name, frame}`, for example
+`{"name": "combat:rifle:any:move_front", "frame": 12.5}` (packed version
+4: the name as an interned string, the frame in 1/16). The viewer's clips
+come from the same names (docs/live/live-art.md), so it can play the
+game's own animation at the game's own frame instead of guessing from
+stance and speed.
+
+Not yet established: what channels 2 and 3 hold during a blend, and how
+the unit-level overlay block at `object + i16 [object +0x33e]` (aim and
+look overlays, read by `0x0010e530`) is laid out. The first channel alone
+gives the base pose. Validate on one game: a standing player should read
+an `idle` animation whose frame loops, and a running one a `move_*` one.
+
 ## The theater
 
 theater.md records a game's **inputs** (pad reads, network receives,
@@ -458,8 +491,11 @@ Each step is test-first and runs in both homes.
    placed again against the delivering frame's tick. The telemetry session
    sends `cut` on the first frame after a revert; the other fields wait for
    capture (step 4). Filled, they cost about 25% on the sample frames
-   before any of the compression work. `anim` is not in version 3: it
-   waits for the research below, and goes in as a later appended field.
+   before any of the compression work.
+   **Done, research:** the animation state is found ([Animation
+   state](#animation-state-found-static-reading)). It goes out as `anim` in
+   packed version 4, because version 3 frames may already be recorded.
+   Hits now carry the tick the damage hook saw them on (`ago`).
    **Research, alongside (decided):** find each unit's animation state in
    guest memory (the animation graph, its current state and frame) by
    static reading and the existing memory fixtures, and record it in the

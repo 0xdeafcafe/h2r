@@ -3235,6 +3235,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "tags",
  "time",
  "tungstenite 0.26.2",
  "ureq",

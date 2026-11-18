@@ -701,6 +701,10 @@ async fn campaign_frames_carry_vehicles_and_actors() {
             shield: Some(0.5),
             seat: None,
             actions_ago: Some(vec![1]),
+            anim: Some(live_proto::game::FrameAnim {
+                name: "combat:pistol:any:idle".into(),
+                frame: 4.5,
+            }),
         }],
         hits: vec![live_proto::game::FrameHit {
             from: Some("90070007".into()),

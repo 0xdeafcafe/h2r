@@ -1,6 +1,7 @@
 use super::*;
 use crate::game::{
-    Frame, FrameHit, FrameObject, FramePlayer, ObjectKind, normalize_frame, validate_frame,
+    Frame, FrameAnim, FrameHit, FrameObject, FramePlayer, ObjectKind, normalize_frame,
+    validate_frame,
 };
 use crate::samples;
 
@@ -186,6 +187,10 @@ fn odd_frame() -> Frame {
                 shield: Some(4.0),
                 seat: Some(63),
                 actions_ago: Some(vec![900, 31, 30, 7, 2, 1, 0, 0]),
+                anim: Some(FrameAnim {
+                    name: "s_kill:front:gut-2".into(),
+                    frame: 32767.0,
+                }),
             },
         ],
         hits: vec![
@@ -385,11 +390,13 @@ fn frame_sizes_stay_under_budget() {
     }
     // Budgets: the live stream at most a tenth of JSON, keyframes at most a
     // quarter. Version 3's velocity, shield and fire ticks cost about a
-    // fifth more (226 to 282 B multiplayer live, 651 to 788 B campaign).
-    assert!(mp.live < 320.0, "multiplayer live {}", mp.live);
-    assert!(mp.keyframe < 760.0, "multiplayer keyframe {}", mp.keyframe);
-    assert!(cp.live < 850.0, "campaign live {}", cp.live);
-    assert!(cp.keyframe < 2500.0, "campaign keyframe {}", cp.keyframe);
+    // fifth more (226 to 282 B multiplayer live, 651 to 788 B campaign);
+    // version 4's animation on every unit another sixth (324 B, 931 B; the
+    // frame is sent whole each frame until the chunk codec predicts it).
+    assert!(mp.live < 360.0, "multiplayer live {}", mp.live);
+    assert!(mp.keyframe < 960.0, "multiplayer keyframe {}", mp.keyframe);
+    assert!(cp.live < 1000.0, "campaign live {}", cp.live);
+    assert!(cp.keyframe < 2700.0, "campaign keyframe {}", cp.keyframe);
     assert!(mp.live * 10.0 < mp.json && cp.live * 10.0 < cp.json);
 }
 
@@ -671,4 +678,54 @@ fn version_three_values_are_checked() {
     f.players[1].actions_ago = Some(vec![0; 8].into_iter().chain([901]).skip(1).collect());
     assert!(validate_frame(&f).is_err());
     assert_eq!(validate_frame(&base()), Ok(()));
+}
+
+/// Version 3 frames (before units' `anim`) still decode: `v3-multiplayer`
+/// is the stream version 3's encoder wrote.
+#[test]
+fn version_three_frames_still_decode() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/test/fixtures/pack");
+    let bin = std::fs::read(dir.join("v3-multiplayer.bin")).unwrap();
+    let want: Vec<Frame> =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("v3-multiplayer.json")).unwrap())
+            .unwrap();
+    let recs: Vec<&[u8]> = records(&bin).collect::<Result<_>>().unwrap();
+    assert_eq!(recs[0][0] & 0xf, 3, "a version 3 stream");
+    let mut d = Decoder::new();
+    let got: Vec<Frame> = recs.iter().map(|r| d.decode(r).unwrap().frame).collect();
+    assert_eq!(got, want);
+    assert!(
+        got.iter()
+            .flat_map(|f| &f.players)
+            .all(|p| p.anim.is_none() && p.vel.is_some())
+    );
+}
+
+#[test]
+fn an_animation_round_trips_and_needs_a_good_name() {
+    let back = decode_keyframe(&encode_keyframe(&odd_frame()).unwrap()).unwrap();
+    let anim = back.players[1].anim.as_ref().unwrap();
+    assert_eq!(
+        (anim.name.as_str(), anim.frame),
+        ("s_kill:front:gut-2", 32767.0)
+    );
+    // Frames are kept to a sixteenth.
+    let mut f = odd_frame();
+    f.players[1].anim.as_mut().unwrap().frame = 12.53;
+    let back = decode_keyframe(&encode_keyframe(&f).unwrap()).unwrap();
+    assert_eq!(back.players[1].anim.as_ref().unwrap().frame, 12.5);
+    for (name, frame) in [
+        ("Combat:Idle", 1.0),
+        ("", 1.0),
+        ("a b", 1.0),
+        ("idle", -1.0),
+        ("idle", 40000.0),
+    ] {
+        let mut f = odd_frame();
+        f.players[1].anim = Some(FrameAnim {
+            name: name.into(),
+            frame,
+        });
+        assert!(validate_frame(&f).is_err(), "{name} {frame}");
+    }
 }

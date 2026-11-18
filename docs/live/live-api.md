@@ -162,6 +162,16 @@ vitality 0..1 and `shield` the shield 0..4 (over 1 is an overshield);
 ticks before the frame's tick each of `actions` happened, one each, at most
 900, and only beside `actions`.
 
+From senders that read it (packed format version 4), they may carry the
+animation they play:
+
+```json
+"anim": { "name": "combat:rifle:any:move_front", "frame": 12.5 }
+```
+
+`name` is the animation's name in the unit's graph, `[a-z0-9_:-]{1,64}`;
+`frame` the frame in it, 0 to 32767, kept to a sixteenth.
+
 A frame may also carry `hits`, `bsp` and `machines`:
 
 ```json

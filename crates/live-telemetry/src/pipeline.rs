@@ -422,6 +422,7 @@ mod tests {
             pos: None,
             body: 0.0,
             shield: 0.0,
+            tick: None,
         }
     }
 

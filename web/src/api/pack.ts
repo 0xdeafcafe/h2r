@@ -8,10 +8,11 @@
 
 import type { Frame, FrameActor, FrameHit, FrameMachine, FrameObject, FramePlayer, FrameVehicle } from "./types";
 
-/** The version written now. Version 3 adds units' velocity, fire ticks,
- *  vitality, seat and action ticks, hits' ticks and the frame's cut;
- *  versions 1 (vehicles without a parent and aim) and 2 still read. */
-export const PACK_VERSION = 3;
+/** The version written now. Version 4 adds units' animation; version 3
+ *  added units' velocity, fire ticks, vitality, seat and action ticks, hits'
+ *  ticks and the frame's cut; versions 1 (vehicles without a parent and
+ *  aim), 2 and 3 still read. */
+export const PACK_VERSION = 4;
 const POS_SCALE = 512;
 const ANGLE_BITS = 12;
 const DIR_BITS = 12;
@@ -21,6 +22,7 @@ const AMOUNT_SCALE = 256;
 const VEL_SCALE = 64;
 const BODY_MAX = 2 ** 6 - 1;
 const SHIELD_SCALE = 32;
+const ANIM_SCALE = 16;
 const DEVICE_BITS = 10;
 const DEVICE_MAX = 2 ** DEVICE_BITS - 1;
 const MAX_STRING = 255;
@@ -128,13 +130,17 @@ const key = (kind: K, arg?: number): Field => ({ kind, arg, key: true });
 
 /** Version 3's unit fields, after version 2's 13: vel, fire, body, shield, seat, actions_ago. */
 const UNIT_V3: Field[] = [o(K.Vel), o(K.Uint, 1), o(K.Bits, 6), o(K.Uint, 3), o(K.Uint, 0), o(K.Agos)];
+/** Version 4's: the animation's name and frame. */
+const UNIT_V4: Field[] = [o(K.Str), o(K.Uint, 4)];
 const PLAYER_V2: Field[] = [key(K.Uint, 2), f(K.Bool), f(K.Pos), f(K.Angle), o(K.Id), o(K.Str), o(K.Dir), o(K.Str), o(K.Uint, 1), o(K.Bits, 3), o(K.Uint, 6), o(K.Actions), o(K.Bits, 1)];
-const PLAYER = [...PLAYER_V2, ...UNIT_V3];
+const PLAYER_V3 = [...PLAYER_V2, ...UNIT_V3];
+const PLAYER = [...PLAYER_V3, ...UNIT_V4];
 /** Version 2 adds a vehicle's parent (a turret's vehicle) and aim. */
 const VEHICLE: Field[] = [key(K.Id), f(K.Str), f(K.Pos), f(K.Dir), f(K.Dir), f(K.Bool), o(K.Id), o(K.Dir)];
 const VEHICLE_V1 = VEHICLE.slice(0, 6);
 const ACTOR_V2: Field[] = [key(K.Id), f(K.Str), f(K.Pos), f(K.Angle), o(K.Dir), o(K.Str), o(K.Uint, 1), o(K.Str), o(K.Id), o(K.Bits, 3), o(K.Uint, 6), o(K.Actions), o(K.Bits, 1)];
-const ACTOR = [...ACTOR_V2, ...UNIT_V3];
+const ACTOR_V3 = [...ACTOR_V2, ...UNIT_V3];
+const ACTOR = [...ACTOR_V3, ...UNIT_V4];
 const HIT_V2: Field[] = [o(K.Id), o(K.Id), o(K.Str), f(K.Pos), o(K.Uint, 6), o(K.Str)];
 /** Version 3 adds the hit's ticks ago. */
 const HIT = [...HIT_V2, o(K.Uint, 1)];
@@ -143,6 +149,7 @@ const OBJECT: Field[] = [key(K.Bits, 4), key(K.Uint, 6), f(K.Bool), o(K.Pos), o(
 
 /** The delta-coded lists in wire order; hits go between actors and machines, always whole. */
 const LISTS: [Field[], number][] = [[PLAYER, 16], [VEHICLE, 64], [ACTOR, 128], [MACHINE, 128], [OBJECT, 2048]];
+const LISTS_V3: [Field[], number][] = [[PLAYER_V3, 16], [VEHICLE, 64], [ACTOR_V3, 128], [MACHINE, 128], [OBJECT, 2048]];
 const LISTS_V2: [Field[], number][] = [[PLAYER_V2, 16], [VEHICLE, 64], [ACTOR_V2, 128], [MACHINE, 128], [OBJECT, 2048]];
 const LISTS_V1: [Field[], number][] = [[PLAYER_V2, 16], [VEHICLE_V1, 64], [ACTOR_V2, 128], [MACHINE, 128], [OBJECT, 2048]];
 /** What a version this decoder reads has: its lists, its hits, and whether the header carries a cut. */
@@ -150,6 +157,7 @@ interface Schema { lists: [Field[], number][]; hit: Field[]; cut: boolean }
 const SCHEMAS: Record<number, Schema> = {
   1: { lists: LISTS_V1, hit: HIT_V2, cut: false },
   2: { lists: LISTS_V2, hit: HIT_V2, cut: false },
+  3: { lists: LISTS_V3, hit: HIT, cut: true },
   [PACK_VERSION]: { lists: LISTS, hit: HIT, cut: true },
 };
 
@@ -308,7 +316,7 @@ function actionsOf(v: Val): string[] {
   return (v as number[]).map((a) => enumOf(ACTIONS, a));
 }
 
-/** Version 3's unit fields (13 on); older versions have none. */
+/** Version 3's and 4's unit fields (13 on); older versions have none. */
 function unitV3(u: FramePlayer | FrameActor, e: Entity): void {
   if (e[13] != null) u.vel = (e[13] as { vel: readonly number[] }).vel.map((c) => c / VEL_SCALE) as [number, number, number];
   if (e[14] != null) u.fire = e[14] as number;
@@ -316,6 +324,9 @@ function unitV3(u: FramePlayer | FrameActor, e: Entity): void {
   if (e[16] != null) u.shield = (e[16] as number) / SHIELD_SCALE;
   if (e[17] != null) u.seat = e[17] as number;
   if (e[18] != null) u.actions_ago = (e[18] as number[]).slice();
+  // Version 4: both or neither.
+  if ((e[19] == null) !== (e[20] == null)) throw new PackError("anim needs its name and frame");
+  if (e[19] != null) u.anim = { name: e[19] as string, frame: (e[20] as number) / ANIM_SCALE };
 }
 
 function playerOf(e: Entity): FramePlayer {

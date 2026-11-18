@@ -756,6 +756,7 @@ mod tests {
             pos: Some([0.0, 0.0, 0.0]),
             body: 0.2,
             shield: 0.0,
+            tick: None,
         });
         telemetry.protect(|| telemetry.sample(&guest));
         assert!(!telemetry.disabled());

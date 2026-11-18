@@ -2,8 +2,9 @@ use live_proto::game::{Player, TeamScore};
 use runtime::{Guest, GuestFault};
 
 use crate::event::{
-    ActorState, Appearance, GameInfo, HitRecord, MachineState, Motion, ObjectState, PlacedObject,
-    Placements, PlayerState, PlayerStats, Pose, Snapshot, VehicleState, Weapon, World,
+    ActorState, Animation, Appearance, GameInfo, HitRecord, MachineState, Motion, ObjectState,
+    PlacedObject, Placements, PlayerState, PlayerStats, Pose, Snapshot, VehicleState, Weapon,
+    World,
 };
 use crate::layout;
 use engine::DatumHandle;
@@ -530,7 +531,34 @@ fn motion(guest: &Guest, kind: u8, body: u32, weapon: Option<u32>) -> Motion {
         grenades,
         weapons,
         magazine,
+        animation: animation(guest, body).ok().flatten(),
     }
+}
+
+/// The animation the object whose data is at `body` plays: its animation
+/// manager's first channel. `None` without a manager, a graph or an
+/// animation, or when the frame reads as nonsense.
+pub fn animation(guest: &Guest, body: u32) -> ReadResult<Option<Animation>> {
+    let offset = guest.u16(body + layout::OBJECT_ANIMATION_MANAGER)? as i16;
+    if !layout::MANAGER_OFFSETS.contains(&offset) {
+        return Ok(None);
+    }
+    let channel = body + offset as u32 + layout::MANAGER_CHANNEL;
+    let graph = guest.u32(channel + layout::CHANNEL_GRAPH)?;
+    let inherited = guest.u16(channel + layout::CHANNEL_ANIMATION)? as i16;
+    let index = guest.u16(channel + layout::CHANNEL_ANIMATION + 2)? as i16;
+    let frame = guest.f32(channel + layout::CHANNEL_FRAME)?;
+    Ok((graph != u32::MAX
+        && index >= 0
+        && inherited >= -1
+        && frame.is_finite()
+        && (0.0..32768.0).contains(&frame))
+    .then_some(Animation {
+        graph,
+        inherited,
+        index,
+        frame,
+    }))
 }
 
 /// Every live AI-controlled biped: object type biped, an actor datum at
@@ -869,6 +897,7 @@ pub fn hit(guest: &Guest, report: u32, victim: u32) -> ReadResult<HitRecord> {
         pos,
         body: guest.f32(report + layout::REPORT_BODY)?,
         shield: guest.f32(report + layout::REPORT_SHIELD)?,
+        tick: game_tick(guest).ok(),
     })
 }
 
@@ -1937,6 +1966,52 @@ mod tests {
         assert_eq!(m.grenade, Some(1));
         assert_eq!(m.grenades, Some(3));
         assert_eq!(m.magazine, Some((96, 32)));
+        assert_eq!(m.animation, None, "no manager");
+        // The manager at +0x300, playing animation 5 of the graph's
+        // second parent at frame 12.5.
+        guest
+            .set_u16(body + layout::OBJECT_ANIMATION_MANAGER, 0x300)
+            .unwrap();
+        let channel = body + 0x300 + layout::MANAGER_CHANNEL;
+        guest
+            .set_u32(channel + layout::CHANNEL_GRAPH, 0xe123_0456)
+            .unwrap();
+        guest
+            .set_u16(channel + layout::CHANNEL_ANIMATION, 1)
+            .unwrap();
+        guest
+            .set_u16(channel + layout::CHANNEL_ANIMATION + 2, 5)
+            .unwrap();
+        guest
+            .set_f32(channel + layout::CHANNEL_FRAME, 12.5)
+            .unwrap();
+        let m = object(&guest, unit).unwrap().unwrap().motion;
+        assert_eq!(
+            m.animation,
+            Some(Animation {
+                graph: 0xe123_0456,
+                inherited: 1,
+                index: 5,
+                frame: 12.5
+            })
+        );
+        // No animation, a nonsense frame, no manager: nothing.
+        guest
+            .set_u16(channel + layout::CHANNEL_ANIMATION + 2, 0xffff)
+            .unwrap();
+        assert_eq!(animation(&guest, body).unwrap(), None);
+        guest
+            .set_u16(channel + layout::CHANNEL_ANIMATION + 2, 5)
+            .unwrap();
+        guest
+            .set_f32(channel + layout::CHANNEL_FRAME, f32::NAN)
+            .unwrap();
+        assert_eq!(animation(&guest, body).unwrap(), None);
+        guest.set_f32(channel + layout::CHANNEL_FRAME, 1.0).unwrap();
+        guest
+            .set_u16(body + layout::OBJECT_ANIMATION_MANAGER, 0xffff)
+            .unwrap();
+        assert_eq!(animation(&guest, body).unwrap(), None);
         assert_eq!(
             m.weapons,
             Some([fixture::object_datum(2), u32::MAX, u32::MAX, u32::MAX])

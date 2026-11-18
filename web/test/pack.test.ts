@@ -10,7 +10,7 @@ const load = (name: string) => ({
 });
 
 describe("packed frames", () => {
-  for (const name of ["multiplayer", "campaign", "odd", "v1-multiplayer", "v2-multiplayer"]) {
+  for (const name of ["multiplayer", "campaign", "odd", "v1-multiplayer", "v2-multiplayer", "v3-multiplayer"]) {
     test(`decodes the Rust encoder's ${name} stream exactly`, () => {
       const { bin, json } = load(name);
       const d = new FrameDecoder();
@@ -38,6 +38,10 @@ describe("packed frames", () => {
     expect(p.vel).toEqual([-999, 0.015625, 12.5]);
     expect(p.seat).toBe(63);
     expect(p.actions_ago).toEqual([900, 31, 30, 7, 2, 1, 0, 0]);
+    expect(p.anim).toEqual({ name: "s_kill:front:gut-2", frame: 32767 });
+    const d3 = new FrameDecoder();
+    const v3 = records(load("v3-multiplayer").bin).map((r) => d3.decode(r).frame);
+    expect(v3.every((f) => f.players.every((x) => x.anim === undefined && x.vel !== undefined))).toBe(true);
     const d2 = new FrameDecoder();
     const v2 = records(load("v2-multiplayer").bin).map((r) => d2.decode(r).frame);
     expect(v2.every((f) => f.cut === undefined && f.players.every((x) => x.vel === undefined && x.fire === undefined))).toBe(true);
