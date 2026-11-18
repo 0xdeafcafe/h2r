@@ -108,9 +108,17 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
             })
             .sum::<usize>();
     let slots = out.index_slots() as usize;
+    // The objects' sounds go in last (ObjectTags::after), so the objects
+    // and collections keep the datums the placements name.
+    let sounds = out
+        .tags()
+        .iter()
+        .filter(|t| (t.id.0 & 0xffff) as usize >= first + added)
+        .filter(|t| t.group == FourCC(*b"snd!") || t.group == FourCC(*b"lsnd"))
+        .count();
     assert!(
-        (first + added..=first + added + textures).contains(&slots),
-        "{slots} slots"
+        (first + added..=first + added + textures + sounds).contains(&slots),
+        "{slots} slots, not {first} + {added} + up to {textures} + {sounds}"
     );
     // Halo 1's textures on the converted models: each material names a
     // copy of the base's model shader whose bitmaps include one this
