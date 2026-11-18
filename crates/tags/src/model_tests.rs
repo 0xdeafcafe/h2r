@@ -586,3 +586,26 @@ fn node_map_entries_are_checked() {
     let g = read(m, new_raw).unwrap();
     assert_eq!(g.sections[0].node_map, [0]);
 }
+
+#[test]
+fn blocks_outside_the_tags_payload_are_read_from_the_whole_metadata() {
+    // The same model, its payload declared to end before its sections,
+    // nodes and materials: as a converted map that places identical blocks
+    // once leaves them in another tag's payload.
+    let (mut m, raw) = fixture();
+    let whole = read(m.clone(), raw.clone()).unwrap();
+    put(&mut m, 0x102c + 12, 0x140);
+    let mut map = Map::from_reader(std::io::Cursor::new(m)).unwrap();
+    let id = TagId(0xa0000000);
+    let bytes = map.read_tag_bytes(id).unwrap();
+    assert_eq!(bytes.len(), 0x140);
+    let g = RenderModelGeometry::read(&mut map, id, &mut Mem(raw.clone())).unwrap();
+    assert_eq!(g.sections.len(), whole.sections.len());
+    assert_eq!(g.regions.len(), 1);
+    assert_eq!(g.default_sections(), whole.default_sections());
+    assert_eq!(g.sections[0].vertices.positions, whole.sections[0].vertices.positions);
+    // The same with the metadata already read.
+    let meta = crate::object::Metadata::read(&mut map).unwrap();
+    let h = RenderModelGeometry::read_in(&mut map, id, &mut Mem(raw), Some(&meta)).unwrap();
+    assert_eq!(h.materials.len(), whole.materials.len());
+}

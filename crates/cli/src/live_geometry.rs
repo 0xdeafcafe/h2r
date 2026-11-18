@@ -1827,7 +1827,7 @@ pub(crate) fn object_model(
         .and_then(|r| r.tag_ref("render_model"))
         .filter(|r| r.id != TagId::NULL)
         .ok_or_else(|| anyhow::Error::new(NothingDrawn("no render model".into())))?;
-    let model = tags::model::RenderModelGeometry::read(map, mode.id, &mut Raw(files))
+    let model = tags::model::RenderModelGeometry::read_in(map, mode.id, &mut Raw(files), Some(&ctx.meta))
         .with_context(|| format!("{name}: render model"))?;
     let surfaces: Vec<Surface> = model
         .materials
