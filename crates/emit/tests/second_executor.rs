@@ -21,6 +21,9 @@ const SUM: u32 = 0x0040_0000;
 const BUMP: u32 = 0x0040_0100;
 /// Calls the kernel import whose token is at IMPORT.
 const KCALL: u32 = 0x0040_0200;
+/// Stores before and after a kernel call, the second through a register
+/// kept across it: a refused run carried on by the main context.
+const KRESUME: u32 = 0x0040_0300;
 const SRC: u32 = 0x0010_0000;
 const WORDS: u32 = 4096;
 const PASSES: u32 = 32;
@@ -69,6 +72,16 @@ fn functions() -> Vec<ir::IrFunction> {
             a.mov(eax, dword_ptr(IMPORT))?;
             a.push(0x1234)?;
             a.call(eax)?;
+            a.ret()
+        }),
+        common::function(KRESUME, |a| {
+            a.mov(edi, DST)?;
+            a.mov(dword_ptr(edi + 0x100), 7)?;
+            a.mov(eax, dword_ptr(IMPORT))?;
+            a.push(0x1234)?;
+            a.call(eax)?;
+            a.mov(dword_ptr(edi + 0x104), eax)?;
+            a.add(dword_ptr(edi + 0x108), ebx)?;
             a.ret()
         }),
     ]
@@ -280,4 +293,50 @@ fn a_kernel_call_from_generated_code_is_refused() {
     // 5-byte mov, 5-byte push and 2-byte call.
     assert_eq!(r.return_pc, Some(KCALL + 12));
     assert!(e.to_string().contains("KeQuerySystemTime"), "{e}");
+}
+
+#[test]
+fn a_refused_run_carries_on_on_the_main_context_from_the_refused_call() {
+    const NAME: &str = "a_refused_run_carries_on_on_the_main_context_from_the_refused_call";
+    let Some((_lib, _host, mut dispatch)) = module(NAME) else {
+        common::skip(NAME, "needs h2abi.h (H2ABI_HEADER)");
+        return;
+    };
+    // The main side's kernel: KeQuerySystemTime answers 0x55 in EAX here.
+    dispatch.register_override(kernel::function_token(128), "KeQuerySystemTime", |cpu, ctx, _| {
+        assert_eq!(ctx.memory().u32(cpu.esp + 4)?, 0x1234, "the argument the run pushed");
+        cpu.eax = 0x55;
+        ctx.memory().ret(cpu, 4)
+    });
+    let main = main_runtime(dispatch);
+    let mut exec = SecondExecutor::new(&main, |_, _| false);
+    for round in 0..20u32 {
+        exec.snapshot(&main);
+        let mut cpu = CpuAbi {
+            esp: EXEC_STACK,
+            ebx: round + 1,
+            ..CpuAbi::default()
+        };
+        let e = std::thread::scope(|s| s.spawn(|| exec.call(&mut cpu, KRESUME, &[])).join().unwrap()).unwrap_err();
+        assert!(matches!(e, ExecutorError::Refused(_)), "{e:?}");
+        let at = exec.refused_cpu().expect("the CPU at the call");
+        assert_eq!(main.memory().u32(DST + 0x100).unwrap(), if round == 0 { 0 } else { 7 });
+        // Everything the run wrote, its stack included, goes live; then the
+        // main context makes the call and runs the rest.
+        let written = exec.written();
+        exec.hand_back(&main, &written);
+        let mut ctx = ExecCtx::new(main.clone(), 1);
+        let mut cpu = at;
+        let t = Runner::default().run(&mut cpu, &mut ctx, at.eip);
+        assert_eq!((t.kind, cpu.eip), (abi::STOP, HARNESS_EXIT), "round {round}: {t:?} {:?}", ctx.events());
+        assert_eq!(cpu.esp, EXEC_STACK, "round {round}: the run returned to its own exit");
+        let m = main.memory();
+        assert_eq!(m.u32(DST + 0x100).unwrap(), 7);
+        assert_eq!(m.u32(DST + 0x104).unwrap(), 0x55, "round {round}: the main side's answer");
+        assert_eq!(
+            m.u32(DST + 0x108).unwrap(),
+            (1..=round + 1).sum::<u32>(),
+            "round {round}: EBX kept across the call, the sum accumulated live"
+        );
+    }
 }

@@ -979,6 +979,7 @@ pub fn run_hosted_with_live(
     // H2_LOCKSTEP / H2_INPUT_RECORD / H2_INPUT_REPLAY (lockstep_glue.rs).
     let lockstep_config = lockstep_glue::Config::from_env();
     let input_replay = lockstep_config.replay.is_some();
+    let lockstep_on = lockstep_config.enabled();
     let mut harness = if lockstep_config.enabled() {
         let h = lockstep_glue::Lockstep::install(&mut features, lockstep_config, lockstep::TickHook::HALO2, xa.as_deref())?;
         if let Some(n) = &h.tick_note {
@@ -1017,6 +1018,14 @@ pub fn run_hosted_with_live(
         .with_region(d3d_glue::PUSH_BASE, d3d_glue::PUSH_BASE + d3d_glue::PUSH_LEN, "push_buffer")
         .with_region(d3d_glue::SCRATCH_BASE, d3d_glue::SCRATCH_BASE + 0x1000, "d3d_scratch");
     features.add(&census).map_err(|e| anyhow::anyhow!("render census: {e}"))?;
+    // H2_PIPELINE_RENDER=1: the render front-end one frame behind the
+    // sim, on its own host thread (docs/graphics/pipelined-render.md, "The
+    // prototype"). Pipelined and serial runs are not lockstep-compatible.
+    let mut pipeline = d3d_glue::pipeline_render(d3d_calls.as_ref());
+    if lockstep_on {
+        pipeline = pipeline.disabled("lockstep (H2_LOCKSTEP/H2_INPUT_RECORD/H2_INPUT_REPLAY) compares serial runs");
+    }
+    features.add(&pipeline).map_err(|e| anyhow::anyhow!("pipeline render: {e}"))?;
     // Stage 7a: the Rust render_views, when H2_FEATURES has
     // impl.render.views=on (off by default; docs/graphics/render-loop.md).
     features.add(&feature::render_loop::RenderLoop).map_err(|e| anyhow::anyhow!("render loop: {e}"))?;

@@ -80,11 +80,23 @@ pub struct SecondExecutor {
     ctx: ExecCtx,
     watch: WatchId,
     base: Option<FrozenRam>,
-    refused: Arc<Mutex<Option<Refusal>>>,
+    refused: Arc<Mutex<Option<(Refusal, CpuAbi)>>>,
+    /// Write-watch owners whose subscriptions on the main Guest the view
+    /// takes over at each snapshot ([`share_watch`](Self::share_watch)).
+    shared_watches: Vec<&'static str>,
+    /// The CPU at the refused call of the last run, if it was refused.
+    refused_cpu: Option<CpuAbi>,
+    last_accesses: u64,
     pub max_transfers: u64,
 }
 
-fn refusal(refused: &Arc<Mutex<Option<Refusal>>>, target: u32, name: &str) -> Handler {
+/// Ids at and above this one are the executor's own write-watch
+/// subscriptions; below it, ones adopted from the main Guest.
+const OWN_WATCH_IDS: u32 = 0x4000_0000;
+
+type RefusedSlot = Arc<Mutex<Option<(Refusal, CpuAbi)>>>;
+
+fn refusal(refused: &RefusedSlot, target: u32, name: &str) -> Handler {
     let refused = refused.clone();
     let name = name.to_string();
     let import = target
@@ -95,12 +107,21 @@ fn refusal(refused: &Arc<Mutex<Option<Refusal>>>, target: u32, name: &str) -> Ha
     Handler::Rust(Arc::new(
         move |cpu: &mut CpuAbi, ctx: &mut ExecCtx, _selector| {
             let return_pc = ctx.memory().u32(cpu.esp).ok();
-            *refused.lock().unwrap_or_else(|e| e.into_inner()) = Some(Refusal {
-                target,
-                name: import.map_or_else(|| name.clone(), |i| i.name.to_string()),
-                ordinal: import.map(|i| i.ordinal),
-                return_pc,
-            });
+            // The CPU as the call left it (return address pushed, `eip` the
+            // target): a caller can carry the run on from here elsewhere.
+            let at = CpuAbi {
+                eip: target,
+                ..*cpu
+            };
+            *refused.lock().unwrap_or_else(|e| e.into_inner()) = Some((
+                Refusal {
+                    target,
+                    name: import.map_or_else(|| name.clone(), |i| i.name.to_string()),
+                    ordinal: import.map(|i| i.ordinal),
+                    return_pc,
+                },
+                at,
+            ));
             // A kernel call keeps its usual record (arguments and all), as a
             // fault rather than a stop: nothing will service it.
             let event = match import {
@@ -136,6 +157,7 @@ impl SecondExecutor {
             }
         }
         let mut guest = Guest::new();
+        guest.watch.number_from(OWN_WATCH_IDS);
         let watch = guest.subscribe_writes("second executor");
         guest
             .watch_writes(watch, CONTIGUOUS_BASE, RAM_SIZE as u32)
@@ -150,8 +172,53 @@ impl SecondExecutor {
             watch,
             base: None,
             refused,
+            shared_watches: Vec::new(),
+            refused_cpu: None,
+            last_accesses: 0,
             max_transfers: Runner::default().max_transfers,
         }
+    }
+
+    /// At every [`snapshot`](Self::snapshot), take over the main Guest's
+    /// write-watch subscriptions named `owner` ([`Guest::adopt_watch`]): an
+    /// allowed override that drains its subscription by id (the D3D write
+    /// barrier) then sees, on the view, the main side's writes it had not
+    /// drained and the view's own.
+    pub fn share_watch(&mut self, owner: &'static str) {
+        if !self.shared_watches.contains(&owner) {
+            self.shared_watches.push(owner);
+        }
+    }
+
+    /// The CPU at the refused call, after a run that ended in
+    /// [`ExecutorError::Refused`]: `eip` the target, `esp` at the pushed
+    /// return address, every other register as the caller had it. With the
+    /// view's writes handed back (the stack included), a context on the main
+    /// runtime can make the call itself and carry the run on from there.
+    pub fn refused_cpu(&self) -> Option<CpuAbi> {
+        self.refused_cpu
+    }
+
+    /// Guest memory accesses the last [`call`](Self::call) made, whether it
+    /// returned or not.
+    pub fn last_accesses(&self) -> u64 {
+        self.last_accesses
+    }
+
+    /// The snapshot's bytes: what the view started from.
+    pub fn base(&self) -> Option<&FrozenRam> {
+        self.base.as_ref()
+    }
+
+    /// Undo the view's changes to physical `[physical, physical + len)`
+    /// (back to the snapshot's bytes), so [`written`](Self::written) and
+    /// [`hand_back`](Self::hand_back) leave them out. Takes this executor's
+    /// memory guard.
+    pub fn revert(&mut self, physical: u32, len: u32) {
+        let Some(base) = &self.base else {
+            return;
+        };
+        self.runtime.memory().restore_from(base, physical, len);
     }
 
     /// The executor's own runtime (its view's memory, its dispatch).
@@ -177,9 +244,12 @@ impl SecondExecutor {
         self.runtime
             .set_guest_clock(time.map(|t| Arc::new(move || Some(t)) as crate::tsc::GuestClock));
         let mut view = self.runtime.memory();
-        let live = main.memory();
+        let mut live = main.memory();
         self.runtime.restore_tsc_last(main.tsc_last());
         let kind = view.cow_refresh(&live);
+        for owner in &self.shared_watches {
+            view.adopt_watch(&mut live, owner);
+        }
         self.base = Some(live.freeze_ram().0);
         kind
     }
@@ -206,24 +276,27 @@ impl SecondExecutor {
             }
         }
         *self.refused.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        self.refused_cpu = None;
         self.ctx.take_slice_spent();
         let t = Runner {
             max_transfers: self.max_transfers,
         }
         .run(cpu, &mut self.ctx, entry);
         let accesses = self.ctx.take_slice_spent();
+        self.last_accesses = accesses;
         if t.kind == abi::STOP && cpu.eip == crate::exec::HARNESS_EXIT {
             return Ok(CallOutcome { accesses });
         }
         if t.kind == abi::STOP && t.event_id == 0 && self.ctx.take_preempted().is_some() {
             return Err(ExecutorError::Cancelled);
         }
-        if let Some(r) = self
+        if let Some((r, at)) = self
             .refused
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .take()
         {
+            self.refused_cpu = Some(at);
             return Err(ExecutorError::Refused(r));
         }
         Err(ExecutorError::Fault {
@@ -406,6 +479,83 @@ mod tests {
             assert_eq!((r.ordinal, r.name.as_str()), (Some(ordinal), name));
             assert!(e.to_string().contains(name), "{e}");
         }
+    }
+
+    #[test]
+    fn a_refusal_keeps_the_cpu_at_the_call_and_revert_undoes_a_change() {
+        let main = main_runtime();
+        let mut exec = SecondExecutor::new(&main, |addr, _| addr == CODE);
+        exec.snapshot(&main);
+        let mut cpu = CpuAbi {
+            esp: STACK,
+            ebx: 0x1234,
+            ..CpuAbi::default()
+        };
+        exec.call(&mut cpu, CODE, &[3]).unwrap();
+        assert!(exec.refused_cpu().is_none());
+        let mut cpu = CpuAbi {
+            esp: STACK,
+            ebx: 0x1234,
+            ..CpuAbi::default()
+        };
+        let e = exec
+            .call(&mut cpu, kernel::function_token(128), &[0x99])
+            .unwrap_err();
+        assert!(matches!(e, ExecutorError::Refused(_)));
+        let at = exec.refused_cpu().expect("the CPU at the refused call");
+        assert_eq!(
+            (at.eip, at.esp, at.ebx),
+            (kernel::function_token(128), STACK - 8, 0x1234)
+        );
+        assert_eq!(
+            exec.runtime().memory().u32(at.esp).unwrap(),
+            crate::exec::HARNESS_EXIT,
+            "the return address is on the view's stack"
+        );
+        // The first call wrote DATA+4 (= 0 + 3); revert puts the snapshot's
+        // bytes back, so nothing of that page is handed back.
+        let physical = main.memory().fold_address(DATA).unwrap() & !CONTIGUOUS_BASE;
+        exec.revert(physical + 4, 4);
+        assert_eq!(exec.runtime().memory().u32(DATA + 4).unwrap(), 0);
+        let written = exec.written();
+        assert!(
+            written
+                .iter()
+                .all(|p| p.physical != physical || p.lines == 0),
+            "{written:x?}"
+        );
+    }
+
+    #[test]
+    fn a_shared_watch_moves_the_main_sides_dirty_pages_to_the_view() {
+        let main = main_runtime();
+        let id = {
+            let mut g = main.memory();
+            let id = g.subscribe_writes("d3d");
+            g.watch_writes(id, CONTIGUOUS_BASE, RAM_SIZE as u32)
+                .unwrap();
+            id
+        };
+        let mut exec = SecondExecutor::new(&main, |addr, _| addr == CODE);
+        exec.share_watch("d3d");
+        main.memory().set_u32(DATA, 1).unwrap();
+        exec.snapshot(&main);
+        assert!(
+            main.memory().take_dirty(id).unwrap().is_empty(),
+            "moved to the view"
+        );
+        let mut view = exec.runtime().memory();
+        let moved = view.take_dirty(id).expect("the same id on the view");
+        assert_eq!(moved.len(), 1, "{moved:x?}");
+        view.set_u32(DATA + 8, 2).unwrap();
+        assert_eq!(
+            view.take_dirty(id).unwrap().len(),
+            1,
+            "the view's own write"
+        );
+        drop(view);
+        // The executor's own subscription is unaffected.
+        assert!(!exec.written().is_empty());
     }
 
     #[test]
