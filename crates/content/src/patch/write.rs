@@ -177,11 +177,16 @@ fn block_hash(b: &[u8]) -> u64 {
         })
 }
 
-/// The first position of each `BLOCK`-aligned block, by hash (one slot per
-/// hash; a collision keeps the first).
+/// The position of each `BLOCK`-aligned block, by hash (one slot per hash).
+/// On a collision the source's index keeps the first block and the written
+/// target's keeps the latest: a block repeated in new bytes most likely
+/// repeats something recent, and keeping the first let one early collision
+/// hide a whole run (a zero block's slot taken before the zeros began).
 struct Index {
     mask: usize,
     slots: Vec<u32>,
+    /// Whether a later block takes a slot already held.
+    latest: bool,
     /// Blocks before this are in.
     upto: usize,
 }
@@ -193,6 +198,14 @@ impl Index {
             mask: size - 1,
             slots: vec![u32::MAX; size],
             upto: 0,
+            latest: false,
+        }
+    }
+    /// As `with_room`, keeping the latest block on a collision.
+    fn latest_with_room(len: usize) -> Self {
+        Self {
+            latest: true,
+            ..Self::with_room(len)
         }
     }
     /// Every block of `source`.
@@ -206,7 +219,7 @@ impl Index {
         while self.upto + BLOCK <= end {
             let p = self.upto;
             let slot = block_hash(&bytes[p..p + BLOCK]) as usize & self.mask;
-            if self.slots[slot] == u32::MAX {
+            if self.latest || self.slots[slot] == u32::MAX {
                 self.slots[slot] = p as u32;
             }
             self.upto += BLOCK;
@@ -284,7 +297,7 @@ pub fn bps(source: &[u8], target: &[u8]) -> Vec<u8> {
             },
         );
         if copy.1 < MIN_COPY && again.1 < MIN_COPY && at + BLOCK <= target.len() {
-            let index = written.get_or_insert_with(|| Index::with_room(target.len()));
+            let index = written.get_or_insert_with(|| Index::latest_with_room(target.len()));
             index.add_upto(target, at);
             if let Some(p) = index.find(&target[at..at + BLOCK]) {
                 let n = common(&target[p..], &target[at..]);
