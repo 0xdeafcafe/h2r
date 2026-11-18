@@ -75,6 +75,7 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     ),
     ("skulls-custom", "GAME_TICK", AFTER),
     ("touch-glue", "GAME_TICK", AFTER),
+    ("cheats", "GAME_TICK", AFTER),
     ("layouts-value", "CONTROLS_ROW_TEXT", AFTER),
     ("controls-text", "CONTROLS_ROW_TEXT", AFTER),
     // Local bots: the game thread's frame, sound and players screen. Around
@@ -115,6 +116,11 @@ mod tests {
         })
         .unwrap();
         r.add(&crate::map_copy::MapCopy).unwrap();
+        r.add(&crate::cheats::CheatsFeature(
+            Arc::new(std::sync::Mutex::new(crate::cheats::Cheats::default())),
+            false,
+        ))
+        .unwrap();
         crate::skulls::install(&mut r, store.clone()).unwrap();
         crate::skulls_mp::install(&mut r, store.clone(), None, None).unwrap();
         crate::skulls_custom::install(&mut r, store.clone(), None, None).unwrap();

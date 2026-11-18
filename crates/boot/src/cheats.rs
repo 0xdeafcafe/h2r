@@ -379,21 +379,27 @@ impl feature::Feature for CheatsFeature {
         use feature::points::GAME_TICK;
         let c = Arc::clone(&self.0);
         let lockstep = self.1;
-        b.raw().after(&GAME_TICK, "our cheats", move |cx| {
-            let mut c = lock(&c);
-            if !c.any() && c.flagged.is_empty() && !c.sped {
-                return Ok(());
-            }
-            let rt = Arc::clone(cx.ctx.runtime());
-            let mut mem = rt.memory();
-            let m: &mut dyn GuestMemory = &mut *mem;
-            let refused = refusal(sim_mode(m), lockstep);
-            match c.tick(m, refused) {
-                Ok(said) => said.iter().for_each(|l| eprintln!("{l}")),
-                Err(e) => eprintln!("cheats: {e:?}"),
-            }
-            Ok(())
-        });
+        b.raw()
+            .after(&GAME_TICK, "our cheats", move |cx| {
+                let mut c = lock(&c);
+                if !c.any() && c.flagged.is_empty() && !c.sped {
+                    return Ok(());
+                }
+                let rt = Arc::clone(cx.ctx.runtime());
+                let mut mem = rt.memory();
+                let m: &mut dyn GuestMemory = &mut *mem;
+                let refused = refusal(sim_mode(m), lockstep);
+                match c.tick(m, refused) {
+                    Ok(said) => said.iter().for_each(|l| eprintln!("{l}")),
+                    Err(e) => eprintln!("cheats: {e:?}"),
+                }
+                Ok(())
+            })
+            // touch-glue and skulls-custom also hook after the tick. Cheats run
+            // outside them (last), so a cheat's writes (health, ammo, speed)
+            // are what the next tick starts from, whatever they set.
+            .after_feature(crate::touch_glue::FEATURE)
+            .after_feature(crate::skulls_custom::FEATURE);
         Ok(())
     }
 }
