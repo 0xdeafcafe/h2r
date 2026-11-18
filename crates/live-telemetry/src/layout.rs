@@ -379,6 +379,21 @@ pub const BIPED_AIRBORNE_TICKS: u32 = 0x399;
 /// at the object's origin minus `counter × tick length ×
 /// HITBOX_OFFSET_RATE` in z (`0x000e0d70`, used at `0x001d405b`).
 pub const BIPED_HITBOX_OFFSET: u32 = 0x3aa;
+/// The Havok body behind an object (confirmed, `0x001d08e0`): the
+/// object's physics component index at body `+0xb4` (-1 none) indexes the
+/// component array (`PHYSICS_COMPONENTS_PTR`, element `0xa0`); a component
+/// keeps its rigid bodies at `+0x70` (entry `0x60`, the rigid body pointer
+/// at `+0x40`); a rigid body's motion is at `+0x3c`, its linear velocity at
+/// motion `+0x40` (`0x000dc67d`) and its world transform at motion `+0x80`
+/// with the position at `+0xb0`.
+pub const BODY_PHYSICS: u32 = 0xb4;
+pub const PHYSICS_COMPONENTS_PTR: u32 = 0x0051_e9b8;
+pub const PHYSICS_COMPONENT_SIZE: u32 = 0xa0;
+pub const COMPONENT_BODIES: u32 = 0x70;
+pub const COMPONENT_BODY_RIGID: u32 = 0x40;
+pub const RIGID_MOTION: u32 = 0x3c;
+pub const MOTION_VELOCITY: u32 = 0x40;
+pub const MOTION_POSITION: u32 = 0xb0;
 /// Units per second the hitbox offset decays by (`0x004407b8`).
 pub const HITBOX_OFFSET_RATE: f32 = 0.15;
 pub const BIPED_MODE_GROUND: u8 = 1;

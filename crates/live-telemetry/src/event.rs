@@ -147,6 +147,9 @@ pub struct Motion {
     pub animation: Option<Animation>,
     /// Bipeds only: hitbox offset counter (`layout::BIPED_HITBOX_OFFSET`).
     pub hitbox_offset: Option<i8>,
+    /// The first Havok rigid body's world position and linear velocity
+    /// (`layout::BODY_PHYSICS`), when the object has one.
+    pub havok: Option<([f64; 3], [f64; 3])>,
 }
 
 /// An animation manager's first channel, as the guest holds it.
@@ -343,10 +346,8 @@ impl Shots {
 
 impl<'a> IntoIterator for &'a Shots {
     type Item = (&'a u32, &'a u32);
-    type IntoIter = std::iter::Map<
-        std::slice::Iter<'a, (u32, u32)>,
-        fn(&'a (u32, u32)) -> (&'a u32, &'a u32),
-    >;
+    type IntoIter =
+        std::iter::Map<std::slice::Iter<'a, (u32, u32)>, fn(&'a (u32, u32)) -> (&'a u32, &'a u32)>;
 
     fn into_iter(self) -> Self::IntoIter {
         let pair: fn(&'a (u32, u32)) -> (&'a u32, &'a u32) = |(w, n)| (w, n);
