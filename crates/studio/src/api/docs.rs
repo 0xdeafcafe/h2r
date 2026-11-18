@@ -341,7 +341,7 @@ fn need_open(app: &App, t: ToolKind) -> Result<(), RpcError> {
 fn save(app: &mut App, t: ToolKind) -> Reply {
     need_open(app, t)?;
     match t {
-        ToolKind::Scenario => match app.saved_path().map(Path::to_path_buf) {
+        ToolKind::Scenario | ToolKind::Tags => match app.saved_path().map(Path::to_path_buf) {
             Some(path) => save_as(app, t, path),
             None => Err(err(
                 code::REFUSED,
@@ -368,7 +368,7 @@ fn save(app: &mut App, t: ToolKind) -> Reply {
 fn save_as(app: &mut App, t: ToolKind, path: PathBuf) -> Reply {
     need_open(app, t)?;
     let action = match t {
-        ToolKind::Scenario => {
+        ToolKind::Scenario | ToolKind::Tags => {
             outside_git(&path)?;
             if let Some(src) = app.session.source()
                 && same_file(&src.path, &path)
@@ -409,7 +409,7 @@ fn diff(app: &mut App, t: ToolKind) -> Reply {
     need_open(app, t)?;
     let dirty = app.tool_dirty(t);
     match t {
-        ToolKind::Scenario => {
+        ToolKind::Scenario | ToolKind::Tags => {
             let s = super::scenario::open(app)?;
             let changes = s.changes();
             let patches: Vec<Value> = changes
