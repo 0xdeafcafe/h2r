@@ -30,10 +30,11 @@ full resolution so their text reads. Section 11 says how they are made.
 5. [Game variants](#5-game-variants)
 6. [Playlists (hoppers)](#6-playlists-hoppers)
 7. [UI Screens](#7-ui-screens)
-8. [Undo and redo](#8-undo-and-redo)
-9. [Where files go](#9-where-files-go)
-10. [Troubleshooting](#10-troubleshooting)
-11. [Regenerating the screenshots](#11-regenerating-the-screenshots)
+8. [Tags: every field of a tag](#8-tags-every-field-of-a-tag)
+9. [Undo and redo](#9-undo-and-redo)
+10. [Where files go](#10-where-files-go)
+11. [Troubleshooting](#11-troubleshooting)
+12. [Regenerating the screenshots](#12-regenerating-the-screenshots)
 
 ## 1. What you need
 
@@ -827,7 +828,60 @@ screen in each of its states, try its buttons, and check its layout.
 To open the editor straight on a screen: `h2-editor --ui-screen
 signin-code/code-wrong --ui-press up,right`.
 
-## 8. Undo and redo
+## 8. Tags: every field of a tag
+
+**Tags** shows every tag of the open map and lets you change any field of
+it: a weapon's numbers, a projectile's flags, the tag a vehicle's weapon
+points at. Open a map in **Maps** first (a disc map, one of your
+packages, or a converted Halo 1 map), then pick **Tags** in **Tools**.
+
+- **The tag tree** (left) lists the map's tags by group (`weap`, `proj`,
+  `vehi`, ...). Type in the search box to find a tag by its group or by
+  part of its name. A `*` marks a tag you have edited; `(read-only)` one
+  you can look at but not change.
+- **The fields** (centre) are the selected tag's fields, top to bottom.
+  Fields we have a name for show it in white; the rest show grey, named
+  by where they are (`+0x14`), with their value shown the way it looks
+  most likely (a decimal number, a whole number or hex). Right-click a
+  grey field to see it another way. Hover a field for its type, where it
+  is and what we know about it.
+- **The bytes** (right) show the raw bytes of the part of the tag under
+  the mouse, the hovered field lit in blue and bytes you changed in
+  orange.
+
+How to change things:
+
+- **Numbers**: drag left or right, or double-click and type. Angles show
+  in degrees.
+- **Choices** (a list of named values): pick from the list.
+- **Flags**: tick or untick. A bit with no name shows only when it is
+  set.
+- **Colours**: click the swatch.
+- **Names (string IDs)**: type a name and press Enter. It has to be a
+  name the map already has somewhere; new names are not supported yet.
+- **References to other tags**: open the list, type to narrow it, pick
+  one (or `none`). Only tags of the right kind are listed. The button
+  next to it jumps to that tag.
+- **Lists inside a tag (blocks)**: open the list, pick an element number,
+  then edit its fields. **Add**, **Duplicate** and **Remove** change the
+  list, but a list can never get longer than it was on the disc (remove
+  something first). Hover a greyed-out button for the reason. Other
+  things in the map that point at a list entry by its number are not
+  updated when entries move.
+- **Data** (raw bytes inside a tag): edit the hex; the length must stay
+  the same.
+
+Some things are shown but cannot be changed, with the reason shown:
+counts and addresses (use Add/Remove instead), the scenario tag (use the
+Scenario tool for what is placed on the map), and tags of the level's
+structure (not shown yet).
+
+Every change is an undo step (one drag is one step). Save as with the
+Scenario tool: **File > Save map as...** or **Save as package...** writes
+your tag edits and your placement edits together. The Scenario tool's
+`*` shows when the map has unsaved edits of either kind.
+
+## 9. Undo and redo
 
 Each tool has its own history; **Edit > Undo** and **Edit > Redo** (and
 Cmd+Z, Cmd+Shift+Z) act on the tool you're in.
@@ -848,7 +902,7 @@ Cmd+Z, Cmd+Shift+Z) act on the tool you're in.
 
 *The log records each undo (`undid set position`).*
 
-## 9. Where files go
+## 10. Where files go
 
 `<data>` is the data folder: `--data`, or by default the one `h2 play`
 uses, `$TMPDIR/h2boot-data`.
@@ -864,7 +918,7 @@ uses, `$TMPDIR/h2boot-data`.
 
 Your disc image is only ever read.
 
-## 10. Troubleshooting
+## 11. Troubleshooting
 
 **"Unsaved changes" window.** Anything that would throw away a tool's
 unsaved changes asks first: opening another disc or map (Scenario),
@@ -955,7 +1009,7 @@ section 3).
 renderer. Check that your GPU driver supports Metal (macOS), Vulkan or
 DirectX 12.
 
-## 11. Regenerating the screenshots
+## 12. Regenerating the screenshots
 
 The pictures in this guide are rendered by the editor itself, offscreen,
 from your own disc image (no window opens and the game does not run):

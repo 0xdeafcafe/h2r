@@ -12,11 +12,13 @@ the workspace's wgpu 30, `dear-imgui-winit` for the window,
 `dear-imguizmo` for the 3D gizmo, `rfd` for the system's file dialogs. No
 web views, no scripting. It runs unbundled, so it sets its own Dock icon
 (`app_icon::set_dock_icon`, [art/app-icon](../../art/app-icon/README.md)).
-It hosts four tools:
+It hosts five tools:
 
 - **Scenario**: the scenario editor (`crates/scenario-edit`,
   [scenario-editor.md](scenario-editor.md)): placements on a map, in a 3D
   viewport, saved as a map package or a whole `.map`.
+- **Tags**: every field of every tag of the open map, labelled and
+  edited in place, saved with the map (below).
 - **Game variants**: the game variant editor (`crates/variants`,
   [variants.md](variants.md)).
 - **Playlists**: `multiplayer_hopper.dat`, the 16 matchmaking playlists
@@ -68,7 +70,8 @@ boxes and numbers are drawn by the headless renderer's `--callout`.*
   playlist tools' file commands, quit), Edit (undo, redo, duplicate,
   delete, allow growing full blocks), View (frame the map, focus the
   selection, gizmo mode and axes, reset layout).
-- **Tools** (left, top): the tools (Scenario, Game variants, Playlists; a
+- **Tools** (left, top): the tools (Scenario, Tags, Game variants,
+  Playlists, UI Screens; a
   `*` marks one with unsaved edits), then **Maps**: the opened source and
   its maps. The outliner, centre and inspector windows show the active
   tool: below for the scenario tool, then [Game variants](#game-variants)
@@ -412,6 +415,121 @@ To put a saved file on a Live server, run `h2 live hopper import <file>`
 on the server's machine (docs/live/live-admin.md); the editor does not
 publish by itself.
 
+## Tags
+
+Every field of any tag of the open map (a disc map, a package, a
+converted Halo 1 map), labelled, with a widget per type. Edits save with
+the map: **Save map as...** and **Save as package...** write them through
+the same lossless `MapEditor` path as the scenario's.
+
+### The field registry
+
+`tags::registry` (`crates/tags/src/registry.rs`) gives every group's root
+and block elements as fields tiling every byte, merged from:
+
+- the **schema** (`tags::schema`, `schema/layouts.txt`, inferred from
+  retail data): every group's structure (element sizes, blocks, data
+  references, tag references, datums, string IDs, raw pointers), no names;
+- the **definitions** (`tags::defs`, `defs/*.txt`): typed, named fields
+  for the groups the converters use (28 groups), with their evidence.
+
+A definition's field is used where its size matches the schema's
+element; its name counts as a name unless it is only its type and offset
+(`string_1c`). A schema field no definition covers keeps the schema's
+type, labelled by type and offset (`tagref +0x3c`). Every byte nothing
+describes becomes an unnamed span labelled by its offset (`+0x14`), in
+words where the alignment allows; the panel shows it as its value
+suggests (a float, an integer, hex) and its context menu switches. Float
+arrays get a hint from their name and note: colours (`colour`/`color`,
+3 floats), angles (`angle`, `field_of_view`, `_yaw`, `_pitch`, or
+"radians" in the note; shown in degrees), bounds (`bounds`, `_range`, 2
+floats). Names come only from our definitions (their evidence is the
+XBE's readers and the disc), never from community tools or plugins;
+`tags::object::layouts` carries some Assembly-sourced names (the weapon
+aim-assist fields), which the registry does not read.
+
+Coverage of the built-in registry: 996 named fields and 13,121 unnamed
+(by offset or type only), over 78 groups; per byte, 5,450 named, 10,895
+typed (references, blocks, string IDs whose role is not known), 502
+padding and 45,625 unknown. The names grow as definitions do: a name
+added to `defs/*.txt` shows in the editor with no other change.
+
+### The document
+
+`app/tag_doc.rs` (`TagDoc`) holds the open map's tags and its ordinary
+metadata, read once when the tool is first shown for a map
+(`App::sync_tags`, keyed by the session's map revision), with the edits
+as a byte overlay. Every edit is an undo step (a drag is one step: writes
+merge by key until `TagAction::Seal`); each change hands every changed
+run to the session (`Session::set_tag_patches`), which keeps them on the
+scenario (`Scenario::set_tag_patches`) so `changes()` includes them: the
+map's dirty mark, map files and packages all count them. Undo and redo in
+the Tags tool step the tag edits only.
+
+What can be written, and what not (the reason shows in the panel and as
+the refusal's text):
+
+| What | Why |
+| --- | --- |
+| Fields of any tag in the ordinary metadata whose group has a layout | Editable: fixed-length patches in place. |
+| Counts, addresses, raw pointers and sizes, BSP descriptors | Shown only: changing them by hand corrupts the map. Blocks change through add / remove / duplicate. |
+| The scenario tag | Read-only: its bytes belong to the Scenario tool (its placement edits would overlap). Shown as in the source. |
+| Tags in a structure BSP region (`sbsp`, `ltmp`) | Not shown yet: they have their own address space. |
+| Tags with no data in the map (shared-map tags) | Nothing to show. |
+| A group with no layout, a tag shorter than its layout | Read-only (hex only without a layout). |
+| String IDs | Any string the map's string table has; adding strings is not supported yet. |
+| Data references | Their bytes, in place (same length), up to 4 KiB shown and edited. |
+
+**Blocks** change only within the elements they had in the source:
+remove moves later elements down (the last slot keeps its bytes, dead
+until re-added), duplicate inserts a copy after the element, add appends
+a blank one (zero, null references). A block is full when it has as many
+elements as in the source and still points where it did; growing it would
+mean appending to the metadata and repointing it, which the tag editor
+does not do (and the engine's headroom for more tag memory is not
+established, the same reason scenario growth is off by default,
+[scenario-editor.md](scenario-editor.md) §6). An element with nonempty
+child blocks or data is not duplicated: the copy would share them.
+Elsewhere in the map, indices into a block are not updated when its
+elements move.
+
+### The windows and the panel
+
+`ui/tags.rs` draws the tool: the **tag tree** (groups, then tags, with a
+search on group or name; `*` marks an edited tag), the **fields** of the
+selected tag, and the **bytes** of the element under the mouse with the
+hovered field lit and edited bytes marked.
+
+`fields.rs` is the field panel, reusable by any tool:
+`fields::panel(ui, &app.tags, tag, path, &mut PanelState, &mut actions)`
+draws the element at `path` (per step, a block field's offset and the
+element index; empty is the root) and pushes `Action::Tag` commands.
+Numbers drag; enums are combos; flags are checkboxes (unnamed bits that
+are set show as `bit N`); colours pick; angles show degrees; bounds drag
+as a pair; string IDs are text; tag references and datums pick from the
+map's tags of the allowed groups (and their child groups) with a button
+to show the tag; blocks are tree nodes with an element picker and Add,
+Duplicate and Remove (disabled with the reason as tooltip); data is hex.
+
+`app/tag_api.rs` is the same editor as plain functions, for scripts and
+the agent API: `read_tag(doc, tag)` (the fields as JSON by name),
+`resolve(doc, tag, "parts[1].speed")`, `set_field(doc, tag, path, json)`
+and `block(doc, tag, path, BlockOp)` build the `TagAction` to dispatch,
+`find_tag(doc, "weap:objects\\...")`.
+
+Tests: `tags::registry::tests` (every schema group's fields tile every
+byte of every element at every depth with the schema's fields at their
+offsets; the definitions merge with no conflict; named definition fields
+sit at their offsets; an invented group), `tests/tag_registry.rs`
+(opt-in, `H2_DISC`: every tag of every disc map walks through the
+registry with its blocks inside the metadata),
+`scenario_edit::tests::other_tags_patches_save_with_the_scenario_s`,
+`app::tag_tests` (listing and refusals, a field edit saved byte-exactly
+then undone, drag merging, blocks within capacity; opt-in
+`disc_a_retail_tag_field_saves_byte_exactly`), and
+`headless::tests::the_tags_tool_edits_a_field_through_its_widgets`,
+which clicks the tree and a flag through the test-engine hooks.
+
 ## UI Screens
 
 The UI builder's preview, checks and pages (docs/game/ui-builder.md) in
@@ -491,8 +609,12 @@ studio crate only draws them and turns input into actions.
     holds the packages, the Halo 1 source and the overlay. Tested without
     a window (`app/tests.rs`).
   - `ui.rs`: the ImGui shell and the scenario tool's windows; it only
-    turns input into `Action`s and draws `App`. `ui/variants.rs` and
-    `ui/playlists.rs` draw the other two tools.
+    turns input into `Action`s and draws `App`. `ui/variants.rs`,
+    `ui/playlists.rs`, `ui/ui_screens.rs` and `ui/tags.rs` draw the
+    other tools.
+  - `app/tag_doc.rs`, `app/tag_api.rs`, `fields.rs`: the Tags tool's
+    document, its plain-function API and the reusable field panel
+    ([Tags](#tags)).
   - `app/convert.rs`: Convert to Halo 2 (the background conversion and
     its plain-words errors).
   - `viewport.rs`: the viewport texture (`register_external_texture`),
@@ -516,6 +638,7 @@ last. The flags that set the scene up:
 | Flag | Effect |
 | --- | --- |
 | `--pick <map>` | open this map in the scenario tool |
+| `--tool tags --tag <group>:<path>` | show a tag of the open map in the Tags tool |
 | `--halo1 <iso\|dir>` | open a Halo 1 source (else `$H1_ISO`, `$H1_MAP_DIR`, `disc/halo1.iso`) |
 | `--halo1-map <map>` | show a map of it, read-only |
 | `--package <dir>[#H1\|#H2]` | open a package from the Maps list (a converted map's variant by its sandbox) |
@@ -571,7 +694,7 @@ h2-editor --disc disc/halo2.iso --pick ascension --select netgameequipment:0 \
 the script, cropped to the menu.*
 
 `scripts/editor-screenshots.sh` renders the user guide's pictures this way
-from your disc, into `docs/images/editor/` (editor-guide.md §11).
+from your disc, into `docs/images/editor/` (editor-guide.md §12).
 `headless::tests::renders_the_studio_offscreen` does the same over the
 scenario crate's invented test map, and skips when the machine has no
 wgpu adapter.
