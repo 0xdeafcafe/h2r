@@ -356,6 +356,15 @@ pub fn prepare_halo1<R: Read + Seek>(
             projectile: one(g.projectile, *b"proj"),
         });
     }
+    let weapon_list = plan_weapon_list(h1, base, objects, first, &mut applied.unresolved)?;
+    let starting = plan_starting_equipment(
+        h1,
+        base,
+        &s,
+        objects,
+        &mut collections,
+        &mut applied.unresolved,
+    )?;
     let objects_out = objects.take();
     // The collections follow the objects.
     let after = first + objects_out.count;
@@ -379,6 +388,25 @@ pub fn prepare_halo1<R: Read + Seek>(
             applied.vehicles += 1;
         }
     }
+    // The starting equipment names the Halo 1 collections made for it.
+    let k = BlockKind::StartingEquipment;
+    let mut entries: Vec<Vec<u8>> = (0..s.block(k).len())
+        .map(|i| s.block(k).entry(i).expect("in range").to_vec())
+        .collect();
+    for (i, at, c) in &starting {
+        let id = added_datum(after + c);
+        entries[*i][*at..*at + 4].copy_from_slice(&FourCC(*b"itmc").as_u32().to_le_bytes());
+        entries[*i][*at + 4..*at + 8].copy_from_slice(&id.0.to_le_bytes());
+    }
+    if !starting.is_empty() {
+        while !s.block(k).is_empty() {
+            let last = s.block(k).len() - 1;
+            s.remove(k, last)?;
+        }
+        for e in entries {
+            s.add(k, e)?;
+        }
+    }
     let tags_out = with_collections(objects_out, first, collections);
     p.applied = applied;
     p.dropped = plan
@@ -393,7 +421,211 @@ pub fn prepare_halo1<R: Read + Seek>(
     p.player_biped = player_biped;
     p.scenery = Some(scenery);
     p.grenades = grenades;
+    p.weapon_list = weapon_list;
     Ok(p)
+}
+
+/// The starting equipment's collection references (`scnr +0x128`,
+/// `0x9c` each, five `itmc` references from `+0x3c`, 8 apart). E: with the
+/// variant's starting weapon at 0 (the map's default, which most built-in
+/// variants hold), `0x0019ef40` rolls them (`0x0019efef`, `0x0019f1a0`)
+/// for the player's weapons.
+pub const STARTING_EQUIPMENT_COLLECTIONS: [usize; 5] = [0x3c, 0x44, 0x4c, 0x54, 0x5c];
+
+/// The Halo 1 sandbox's starting equipment: each `itmc` the base's
+/// starting equipment names gets a Halo 1 collection, its weapons each the
+/// Halo 1 weapon [`crate::sandbox::halo1_weapon_for`] picks at the same
+/// weight (converted like the objects), appended to `collections`.
+/// Returns (entry, reference offset, collection index) to point at it.
+/// Entries that are not weapons are reported and left out; a collection
+/// with no Halo 1 weapon is reported and left as the base's.
+fn plan_starting_equipment<R: Read + Seek>(
+    h1: &H1Map,
+    base: &mut Map<R>,
+    s: &Scenario,
+    objects: &mut dyn Halo1Objects,
+    collections: &mut Vec<Halo1Collection>,
+    unresolved: &mut Vec<String>,
+) -> Result<Vec<(usize, usize, usize)>> {
+    let k = BlockKind::StartingEquipment;
+    let names: Vec<(TagId, FourCC, String, Option<u32>)> = base
+        .tags()
+        .iter()
+        .map(|t| {
+            (
+                t.id,
+                t.group,
+                t.name.clone().unwrap_or_default(),
+                t.location.map(|l| l.address),
+            )
+        })
+        .collect();
+    let mut made: Vec<(TagId, Option<usize>)> = Vec::new();
+    let mut out = Vec::new();
+    let word = |b: &[u8], at: usize| {
+        b.get(at..at + 4)
+            .map(|w| u32::from_le_bytes(w.try_into().unwrap()))
+            .ok_or(Error::Invalid("a collection is too short"))
+    };
+    for i in 0..s.block(k).len() {
+        let e = s.block(k).entry(i).expect("in range").to_vec();
+        for at in STARTING_EQUIPMENT_COLLECTIONS {
+            let id = TagId(word(&e, at + 4)?);
+            if id.0 == u32::MAX || word(&e, at)? != FourCC(*b"itmc").as_u32() {
+                continue;
+            }
+            let c = match made.iter().find(|m| m.0 == id) {
+                Some(m) => m.1,
+                None => {
+                    let c = starting_collection(h1, base, &names, id, objects, collections, unresolved, &word)?;
+                    made.push((id, c));
+                    c
+                }
+            };
+            if let Some(c) = c {
+                out.push((i, at, c));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// One starting equipment collection rebuilt with Halo 1 weapons
+/// ([`plan_starting_equipment`]); its index in `collections`.
+#[allow(clippy::too_many_arguments)]
+fn starting_collection<R: Read + Seek>(
+    h1: &H1Map,
+    base: &mut Map<R>,
+    names: &[(TagId, FourCC, String, Option<u32>)],
+    id: TagId,
+    objects: &mut dyn Halo1Objects,
+    collections: &mut Vec<Halo1Collection>,
+    unresolved: &mut Vec<String>,
+    word: &dyn Fn(&[u8], usize) -> Result<u32>,
+) -> Result<Option<usize>> {
+    let Some((_, _, name, Some(address))) = names.iter().find(|t| t.0 == id) else {
+        return Ok(None);
+    };
+    let bytes = base.read_tag_bytes(id)?;
+    let n = word(&bytes, 0)? as usize;
+    let first = word(&bytes, 4)?
+        .checked_sub(*address)
+        .ok_or(Error::Invalid("a collection's entries lie outside it"))? as usize;
+    let mut entries = Vec::new();
+    for j in 0..n {
+        let at = first + j * super::COLLECTION_ENTRY;
+        let weight = f32::from_bits(word(&bytes, at)?);
+        let item = TagId(word(&bytes, at + 8)?);
+        let Some((_, g, item_name, _)) = names.iter().find(|t| t.0 == item) else {
+            continue;
+        };
+        if *g != FourCC(*b"weap") {
+            unresolved.push(format!("starting equipment {name}: {item_name} is not a weapon"));
+            continue;
+        }
+        match halo1_weapon(h1, item_name) {
+            Some(w) => match objects.object(*b"weap", &w) {
+                Ok(k) => entries.push((k, weight)),
+                Err(why) => unresolved.push(format!("starting equipment {name}: {w}: {why}")),
+            },
+            None => unresolved.push(format!(
+                "starting equipment {name}: {item_name} has no Halo 1 weapon on the map"
+            )),
+        }
+    }
+    if entries.is_empty() {
+        unresolved.push(format!("starting equipment {name}: no Halo 1 weapon; left as the base's"));
+        return Ok(None);
+    }
+    collections.push(Halo1Collection {
+        group: *b"itmc",
+        name: format!("{name} (Halo 1)"),
+        entries,
+        respawn: 0,
+    });
+    Ok(Some(collections.len() - 1))
+}
+
+/// The Halo 1 weapon the map has for the Halo 2 weapon `h2_name`
+/// ([`crate::sandbox::halo1_weapon_for`], first choice on the map).
+fn halo1_weapon(h1: &H1Map, h2_name: &str) -> Option<String> {
+    let last = |p: &str| p.rsplit(['\\', '/']).next().unwrap_or("").to_ascii_lowercase();
+    let choices = crate::sandbox::halo1_weapon_for(h2_name)?;
+    choices.iter().find_map(|c| {
+        h1.tags()
+            .iter()
+            .filter(|t| t.group == h1map::Group::new(b"weap"))
+            .find(|t| last(&t.name) == *c)
+            .map(|t| t.name.clone())
+    })
+}
+
+/// The Halo 1 sandbox's weapon list: each entry of the base's `mulg`
+/// weapon list that names a Halo 2 weapon gets the Halo 1 weapon
+/// [`crate::sandbox::halo1_weapon_for`] picks, the first of its choices
+/// the map has, converted like the objects (datums from slot `first`).
+/// Entries naming none stay none; an entry no Halo 1 weapon fits is
+/// reported and left. The game variant's starting weapon is a list entry
+/// (`crate::globals::STARTING_WEAPON_ENTRY`), and the Halo 1 cyborg can
+/// hold only Halo 1 weapons.
+fn plan_weapon_list<R: Read + Seek>(
+    h1: &H1Map,
+    base: &mut Map<R>,
+    objects: &mut dyn Halo1Objects,
+    first: usize,
+    unresolved: &mut Vec<String>,
+) -> Result<Vec<(usize, TagId)>> {
+    let find = |base: &Map<R>, group: &[u8; 4]| {
+        base.tags()
+            .iter()
+            .find(|t| t.group == FourCC(*group))
+            .map(|t| t.id)
+    };
+    let Some(matg) = find(base, b"matg") else {
+        return Ok(Vec::new());
+    };
+    let g = base.read_tag_bytes(matg)?;
+    let at = crate::globals::MULTIPLAYER_GLOBALS + 4;
+    let mulg = TagId(u32::from_le_bytes(
+        g.get(at..at + 4)
+            .ok_or(Error::Invalid("the globals are too short"))?
+            .try_into()
+            .unwrap(),
+    ));
+    let Some(address) = base
+        .tags()
+        .iter()
+        .find(|t| t.id == mulg)
+        .and_then(|t| t.location)
+        .map(|l| l.address)
+    else {
+        return Ok(Vec::new());
+    };
+    let bytes = base.read_tag_bytes(mulg)?;
+    let list = crate::globals::weapon_list(&bytes, address)?;
+    let names: Vec<(TagId, String)> = base
+        .tags()
+        .iter()
+        .map(|t| (t.id, t.name.clone().unwrap_or_default()))
+        .collect();
+    let mut out = Vec::new();
+    for (i, id) in list.iter().enumerate() {
+        let Some(id) = id else { continue };
+        let name = names
+            .iter()
+            .find(|(t, _)| t == id)
+            .map(|(_, n)| n.as_str())
+            .unwrap_or("?");
+        let Some(h1_name) = halo1_weapon(h1, name) else {
+            unresolved.push(format!("weapon list {i}: {name} has no Halo 1 weapon on the map"));
+            continue;
+        };
+        match objects.object(*b"weap", &h1_name) {
+            Ok(k) => out.push((i, added_datum(first + k))),
+            Err(w) => unresolved.push(format!("weapon list {i}: {h1_name}: {w}")),
+        }
+    }
+    Ok(out)
 }
 
 /// `objects` followed by `collections`, whose entries name the objects

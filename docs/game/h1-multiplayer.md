@@ -1230,6 +1230,63 @@ the table) as a `shad` and dereferences its compiled postprocess
 materials. That is the likely cause of the null read on Blood Gulch's
 first frame (pc `0x16bde`, ebp `0x485b48`, the state cache).
 
+### Starting weapons (**Built**, converter version 56)
+
+A game variant's starting weapons are bytes (primary `+0xd6`, secondary
+`+0xd7` of the variant; `variants` settings 89 and 94). `0x0019eda0`
+turns one into a weapon: it jumps on the byte minus 1 through the table
+at `0x0019eee8` to a read of one entry of the multiplayer globals' weapon
+list (globals `+0x168` names the `mulg`; its `+8` block's first element,
+`+0x68`, 8-byte tag references). Byte 1 gives none, 2 a random byte in
+3..=18, and bytes 3..=20 each one entry (E; the table is
+`h1convert::globals::STARTING_WEAPON_ENTRY`):
+
+| Byte | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Entry | 3 | 0 | 1 | 6 | 7 | 5 | 2 | 4 | 12 | 9 | 10 | 13 | 11 | 15 | 14 | 8 | 16 | 17 |
+
+The list is Halo 2's (Coagulation: magnum, SMG, shotgun, battle rifle,
+sniper rifle, rocket launcher, plasma pistol, plasma rifle, brute plasma
+rifle, needler, carbine, none, brute shot, beam rifle, energy sword,
+rocket launcher, sentinel beam, none). The Halo 1 cyborg's graph has no
+Halo 2 weapon type, so the default variants' SMG was refused
+(docs/formats/h1-objects.md, "Weapon class and type") and players spawned
+unarmed. In the Halo 1 sandbox every entry naming a weapon now names a
+Halo 1 one (`sandbox::HALO1_WEAPON_LIST`, `convert::halo1`), the first of
+its choices the map has:
+
+| Halo 2 weapon | Halo 1 weapon | Why |
+|---|---|---|
+| magnum | pistol | the sandbox table reversed |
+| SMG | assault rifle | reversed |
+| battle rifle | assault rifle | the precision row reversed |
+| shotgun, sniper rifle, rocket launcher, plasma pistol, plasma rifle, needler | the same | reversed |
+| carbine | pistol | **D**: Halo 1's mid-range precision weapon |
+| beam rifle | sniper rifle | **D**: long-range precision |
+| brute shot | rocket launcher | **D**: explosive launcher |
+| brute plasma rifle | plasma rifle | **D**: automatic Covenant plasma |
+| energy sword | plasma rifle | **D**: Halo 1 has no melee weapon; nearest close-range Covenant one |
+| sentinel beam | plasma rifle | **D**: continuous Covenant beam |
+
+**Byte 0, the map's default** (64 of the 78 starting weapon bytes of
+mainmenu's built-in variants, Slayer among them): `0x0019ef40` reads the
+scenario's starting equipment (`scnr +0x128`, `0x9c` each; entries whose
+game type `0x0015a090` accepts) and rolls its five `itmc` references
+(`+0x3c`, 8 apart; `0x0019efef` -> `0x0019f1a0`) for the default (E). The
+base's (Coagulation's one entry: the SMG collection) named Halo 2 weapons
+too. In the Halo 1 sandbox each collection it names is rebuilt from the
+same table, weight for weight, as a new `itmc` after the objects
+(`convert::halo1::plan_starting_equipment`): players start with the
+assault rifle on every map.
+
+A weapon the map lacks falls to the next choice (the needler to the
+plasma pistol, the plasma rifle, then the assault rifle, which every Halo 1
+multiplayer map has). V: `tests/sandbox_disc.rs`
+(`every_starting_weapon_is_held_by_the_halo1_player_graph`): on every
+map, every byte the table maps, each built-in variant's primary and
+secondary, and every weapon of the starting equipment's collections, is a
+weapon the converted player biped's graph holds in mode `combat`.
+
 ### Design notes
 
 

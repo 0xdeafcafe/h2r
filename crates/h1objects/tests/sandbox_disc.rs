@@ -1224,3 +1224,135 @@ fn halo2s_motion_sensor_table() {
     let words: Vec<i16> = t.chunks(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect();
     assert_eq!(words, [41, -42, 31, -31, 31, -31, 0, 0]);
 }
+
+/// In the Halo 1 sandbox every starting weapon a game variant can give is
+/// a weapon the converted player biped's graph holds (mode `combat`): each
+/// starting weapon byte names a `mulg` weapon list entry
+/// (`h1convert::globals::STARTING_WEAPON_ENTRY`, E `0x0019eda0`), and the
+/// Halo 2 weapons there (the SMG of the default variants) were refused by
+/// the cyborg, so players spawned unarmed. Checked for every byte the
+/// table maps and for each built-in variant's primary and secondary
+/// (`variants` settings 89 and 94, from mainmenu), and for byte 0, the
+/// map's default (64 of the 78 built-in starting weapon bytes): the
+/// starting equipment's collections.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn every_starting_weapon_is_held_by_the_halo1_player_graph() {
+    use h1convert::globals::{STARTING_WEAPON_ENTRY, weapon_list};
+    let mut menu = h2_map("mainmenu");
+    let schema =
+        variants::schema::Schema::from_map(&mut menu, tags::localization::Language::English)
+            .unwrap();
+    let mut bytes = BTreeSet::new();
+    for b in &schema.builtins {
+        let v = schema.build(b).unwrap();
+        for id in [89, 94] {
+            let w = v.get(variants::record::SettingId(id)).unwrap();
+            println!("{} ({:?}): setting {id} = {w}", b.name, b.game_type);
+            bytes.insert(w as u8);
+        }
+    }
+    assert!(!bytes.is_empty());
+    let mut bad = Vec::new();
+    let mut checked = 0;
+    every_fresh_map(|name, sandbox, _, fresh| {
+        if sandbox != Sandbox::Halo1 {
+            return;
+        }
+        let mut out = Map::from_reader(Cursor::new(fresh.bytes.clone())).unwrap();
+        let mem = memory(&mut out);
+        let strings = out.strings().to_vec();
+        let s = |v: u32| -> String {
+            if v == 0 {
+                return String::new();
+            }
+            strings
+                .get((v & 0xff_ffff) as usize)
+                .cloned()
+                .flatten()
+                .unwrap_or_default()
+        };
+        let tags = out.tags().to_vec();
+        let at = |id: u32| {
+            tags.iter()
+                .find(|t| t.id.0 == id && id != u32::MAX)
+                .and_then(|t| t.location.map(|l| l.address))
+        };
+        let player = tags
+            .iter()
+            .filter(|t| t.group == FourCC(*b"bipd"))
+            .find(|t| !t.name.as_deref().unwrap_or("").starts_with("objects\\"))
+            .expect("a converted biped");
+        let h = at(rw(&mem, player.location.unwrap().address + 0x38)).unwrap();
+        let tree = jmad_tree(&mem, &s, at(rw(&mem, h + 0x14)).unwrap());
+        let matg = tags.iter().find(|t| t.group == FourCC(*b"matg")).unwrap();
+        let mulg = rw(&mem, matg.location.unwrap().address + 0x16c);
+        let mulg_tag = tags.iter().find(|t| t.id.0 == mulg).unwrap().clone();
+        let list = weapon_list(
+            &out.read_tag_bytes(mulg_tag.id).unwrap(),
+            mulg_tag.location.unwrap().address,
+        )
+        .unwrap();
+        // Byte 0 (the map's default, most built-in variants): the
+        // starting equipment's collections are rolled
+        // (`h1convert::convert::halo1::STARTING_EQUIPMENT_COLLECTIONS`).
+        let scen = Scenario::read(&mut out).unwrap();
+        let se = scen.block(BlockKind::StartingEquipment);
+        let mut rolled = 0;
+        for i in 0..se.len() {
+            let e = se.entry(i).unwrap();
+            for off in h1convert::convert::halo1::STARTING_EQUIPMENT_COLLECTIONS {
+                let id = u32::from_le_bytes(e[off + 4..off + 8].try_into().unwrap());
+                let Some(c) = at(id) else { continue };
+                let (n, first) = (rw(&mem, c), rw(&mem, c + 4));
+                for j in 0..n {
+                    let w = rw(&mem, first + j * 0x10 + 8);
+                    let wt = tags.iter().find(|t| t.id.0 == w).unwrap();
+                    let a = wt.location.unwrap().address;
+                    let (class, kind) = (s(rw(&mem, a + 0x288)), s(rw(&mem, a + 0x28c)));
+                    println!(
+                        "{name}: starting equipment {i} +{off:#x}: {} {class:?} {kind:?}",
+                        wt.name.as_deref().unwrap_or("?")
+                    );
+                    rolled += 1;
+                    if wt.group != FourCC(*b"weap")
+                        || !tree.contains(&("combat".into(), class.clone(), kind.clone()))
+                    {
+                        bad.push(format!(
+                            "{name}: starting equipment {i}: {} {} ({class:?}, {kind:?}) not in the player's combat",
+                            wt.group,
+                            wt.name.as_deref().unwrap_or("?")
+                        ));
+                    }
+                }
+            }
+        }
+        if rolled == 0 {
+            bad.push(format!("{name}: no starting equipment weapon"));
+        }
+        for (byte, entry) in STARTING_WEAPON_ENTRY {
+            let builtin = bytes.contains(&byte);
+            let Some(Some(w)) = list.get(entry) else {
+                println!("{name}: byte {byte} -> entry {entry}: none");
+                continue;
+            };
+            let wt = tags.iter().find(|t| t.id == *w).unwrap();
+            let a = wt.location.unwrap().address;
+            let (class, kind) = (s(rw(&mem, a + 0x288)), s(rw(&mem, a + 0x28c)));
+            println!(
+                "{name}: byte {byte}{} -> entry {entry}: {} {class:?} {kind:?}",
+                if builtin { " (built-in)" } else { "" },
+                wt.name.as_deref().unwrap_or("?")
+            );
+            checked += 1;
+            if !tree.contains(&("combat".into(), class.clone(), kind.clone())) {
+                bad.push(format!(
+                    "{name}: byte {byte} -> {} ({class:?}, {kind:?}) not in the player's combat",
+                    wt.name.as_deref().unwrap_or("?")
+                ));
+            }
+        }
+    });
+    assert!(checked > 0);
+    assert!(bad.is_empty(), "{bad:#?}");
+}

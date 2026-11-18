@@ -43,6 +43,51 @@ pub fn h2_equivalent_precision(h1_tag_path: &str) -> Option<H2Item> {
         .or_else(|| h2_equivalent(h1_tag_path))
 }
 
+/// The Halo 1 sandbox's weapon list (`mulg`, [`crate::globals`]): per
+/// Halo 2 weapon (the last part of its tag path) the Halo 1 weapons (the
+/// last part of theirs) its entry names instead, first the one on the map.
+/// A game variant starts players with a list entry
+/// ([`crate::globals::STARTING_WEAPON_ENTRY`]), and the Halo 1 cyborg holds
+/// only Halo 1 weapons (its graph has no Halo 2 weapon type), so every
+/// entry names a Halo 1 weapon. Rows with a counterpart in [`TABLE`] or
+/// [`PRECISION`] are that row reversed; the others (D, the coordinator's
+/// rule: the nearest Halo 1 weapon by role) are marked. Each list ends in
+/// the assault rifle, which every Halo 1 multiplayer map has.
+pub const HALO1_WEAPON_LIST: &[(&str, &[&str])] = &[
+    ("magnum", &["pistol", "assault rifle"]),
+    ("smg", &["assault rifle"]),
+    // PRECISION reversed: the assault rifle is the battle rifle there.
+    ("battle_rifle", &["assault rifle"]),
+    ("shotgun", &["shotgun", "assault rifle"]),
+    ("sniper_rifle", &["sniper rifle", "assault rifle"]),
+    ("rocket_launcher", &["rocket launcher", "assault rifle"]),
+    ("plasma_pistol", &["plasma pistol", "plasma rifle", "pistol", "assault rifle"]),
+    ("plasma_rifle", &["plasma rifle", "assault rifle"]),
+    ("needler", &["needler", "plasma pistol", "plasma rifle", "assault rifle"]),
+    // D: a Covenant mid-range precision rifle; Halo 1's is the pistol.
+    ("covenant_carbine", &["pistol", "assault rifle"]),
+    // D: a long-range precision rifle.
+    ("beam_rifle", &["sniper rifle", "pistol", "assault rifle"]),
+    // D: an explosive launcher.
+    ("brute_shot", &["rocket launcher", "assault rifle"]),
+    // D: an automatic Covenant plasma weapon.
+    ("brute_plasma_rifle", &["plasma rifle", "assault rifle"]),
+    // D: no melee weapon in Halo 1; the nearest close-range Covenant one.
+    ("energy_blade", &["plasma rifle", "shotgun", "assault rifle"]),
+    // D: a continuous Covenant beam.
+    ("sentinel_aggressor_beam", &["plasma rifle", "assault rifle"]),
+];
+
+/// The Halo 1 weapons the Halo 2 weapon `h2_tag_path`'s list entry may
+/// name, in order of preference ([`HALO1_WEAPON_LIST`]).
+pub fn halo1_weapon_for(h2_tag_path: &str) -> Option<&'static [&'static str]> {
+    let last = h2_tag_path.rsplit(['\\', '/']).next()?.to_ascii_lowercase();
+    HALO1_WEAPON_LIST
+        .iter()
+        .find(|(h2, _)| *h2 == last)
+        .map(|(_, h1)| *h1)
+}
+
 /// One row of the table: words in the Halo 1 name, and the Halo 2 item.
 /// More specific rows come first ("plasma pistol" before "pistol").
 pub const TABLE: &[(&str, H2Item)] = &[
