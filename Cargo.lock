@@ -396,6 +396,7 @@ name = "audio"
 version = "0.1.0"
 dependencies = [
  "cpal",
+ "snapshot",
  "thiserror 2.0.21",
 ]
 

@@ -492,7 +492,7 @@ impl VoiceFx {
 
 /// Second-order section coefficients, normalised so `a0 = 1`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct Coeffs {
+pub(crate) struct Coeffs {
     b0: f64,
     b1: f64,
     b2: f64,
@@ -552,9 +552,9 @@ impl Coeffs {
 
 /// Transposed direct form II state, one pair per channel.
 #[derive(Clone, Copy, Debug, Default)]
-struct BiquadState {
-    z1: [f64; 2],
-    z2: [f64; 2],
+pub(crate) struct BiquadState {
+    pub(crate) z1: [f64; 2],
+    pub(crate) z2: [f64; 2],
 }
 
 impl BiquadState {
@@ -593,15 +593,15 @@ pub struct FxState {
     /// Frames produced since the voice (re)started.
     pub(crate) clock: u64,
     /// Clock value at which the envelope started.
-    env_start: u64,
+    pub(crate) env_start: u64,
     /// Playback-rate multiplier from 3D Doppler, set by the mixer before a
     /// render.
     pub(crate) doppler: f64,
-    bq: [BiquadState; 2],
-    coeffs: [Option<Coeffs>; 2],
+    pub(crate) bq: [BiquadState; 2],
+    pub(crate) coeffs: [Option<Coeffs>; 2],
     /// Inputs the cached `coeffs` were built from.
-    cached: Option<(FilterSpec, i32, u32)>,
-    shelf_z: [f64; 2],
+    pub(crate) cached: Option<(FilterSpec, i32, u32)>,
+    pub(crate) shelf_z: [f64; 2],
     /// Stream 3D/LFO pitch effects move the *read* position by this many
     /// frames, bounded by [`MAX_PHASE_OFFSET`], instead of changing the
     /// consumption rate (see `pitch_mult`).

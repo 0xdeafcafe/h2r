@@ -35,34 +35,34 @@ pub struct MixInId(pub(crate) u32);
 /// Mixes voices to interleaved stereo `f32` at a fixed host rate.
 #[derive(Debug)]
 pub struct Mixer {
-    sample_rate: u32,
-    master_mb: i32,
-    listener: Listener,
-    buffers: BTreeMap<BufferId, SoundBuffer>,
-    streams: BTreeMap<StreamId, Stream>,
-    mix_ins: BTreeMap<MixInId, MixIn>,
-    next_id: u32,
+    pub(crate) sample_rate: u32,
+    pub(crate) master_mb: i32,
+    pub(crate) listener: Listener,
+    pub(crate) buffers: BTreeMap<BufferId, SoundBuffer>,
+    pub(crate) streams: BTreeMap<StreamId, Stream>,
+    pub(crate) mix_ins: BTreeMap<MixInId, MixIn>,
+    pub(crate) next_id: u32,
     /// One voice rendered at unity gain, reused across renders.
-    scratch: Vec<f32>,
+    pub(crate) scratch: Vec<f32>,
     /// The environment behind the I3DL2 send bin, once the game sets one.
-    reverb: Option<Reverb>,
+    pub(crate) reverb: Option<Reverb>,
     /// The reverb's mono input and a voice's I3DL2 direct path, reused across
     /// renders (see [`Mixer::reserve_block`]).
-    reverb_in: Vec<f32>,
-    direct: Vec<f32>,
+    pub(crate) reverb_in: Vec<f32>,
+    pub(crate) direct: Vec<f32>,
     /// Frames rendered since creation: the clock [`StreamHealth`] uses.
-    clock: u64,
-    health: StreamHealth,
+    pub(crate) clock: u64,
+    pub(crate) health: StreamHealth,
     /// Bins whose sends are captured rather than mixed ([`Mixer::set_taps`]).
-    taps: Vec<Tap>,
+    pub(crate) taps: Vec<Tap>,
 }
 
 /// A captured bin: the mono sum of every send to it, one sample per frame
 /// rendered, waiting for [`Mixer::take_tap`].
 #[derive(Debug)]
-struct Tap {
-    bin: u32,
-    samples: Vec<f32>,
+pub(crate) struct Tap {
+    pub(crate) bin: u32,
+    pub(crate) samples: Vec<f32>,
 }
 
 /// How streams fared, for diagnostics ([`Mixer::stream_health`]).

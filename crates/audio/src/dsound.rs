@@ -187,18 +187,18 @@ macro_rules! voice_setters {
 /// (the `Unlock` point).
 #[derive(Debug)]
 pub struct SoundBuffer {
-    format: WaveFormat,
-    data: Vec<u8>,
-    decoded: Vec<f32>,
-    frames: usize,
-    params: VoiceParams,
-    playing: bool,
-    looping: bool,
+    pub(crate) format: WaveFormat,
+    pub(crate) data: Vec<u8>,
+    pub(crate) decoded: Vec<f32>,
+    pub(crate) frames: usize,
+    pub(crate) params: VoiceParams,
+    pub(crate) playing: bool,
+    pub(crate) looping: bool,
     /// Loop region in frames, half-open. Defaults to the whole buffer.
-    loop_region: Option<(usize, usize)>,
+    pub(crate) loop_region: Option<(usize, usize)>,
     /// Play cursor in frames.
-    pos: f64,
-    fx_state: FxState,
+    pub(crate) pos: f64,
+    pub(crate) fx_state: FxState,
 }
 
 impl SoundBuffer {
@@ -386,10 +386,10 @@ impl SoundBuffer {
 /// playing; input sent to a stopped mix-in is dropped.
 #[derive(Debug)]
 pub struct MixIn {
-    input_bin: u32,
-    params: VoiceParams,
-    playing: bool,
-    fx_state: FxState,
+    pub(crate) input_bin: u32,
+    pub(crate) params: VoiceParams,
+    pub(crate) playing: bool,
+    pub(crate) fx_state: FxState,
 }
 
 impl MixIn {
@@ -471,9 +471,9 @@ pub enum PacketStatus {
 pub struct PacketId(pub u64);
 
 #[derive(Debug)]
-struct Packet {
-    id: PacketId,
-    frames: Vec<f32>,
+pub(crate) struct Packet {
+    pub(crate) id: PacketId,
+    pub(crate) frames: Vec<f32>,
 }
 
 /// An `IDirectSoundStream` / XMO-style packet stream.
@@ -483,19 +483,19 @@ struct Packet {
 /// silence and does not advance anything.
 #[derive(Debug)]
 pub struct Stream {
-    format: WaveFormat,
-    params: VoiceParams,
-    queue: VecDeque<Packet>,
+    pub(crate) format: WaveFormat,
+    pub(crate) params: VoiceParams,
+    pub(crate) queue: VecDeque<Packet>,
     /// The last [`HISTORY_FRAMES`] frames of packets already completed, for
     /// read offsets that reach back past the front packet. Sized once, so
     /// rendering never allocates for it.
-    history: VecDeque<[f32; 2]>,
+    pub(crate) history: VecDeque<[f32; 2]>,
     /// Fractional frame position within the front packet.
-    pos: f64,
-    paused: bool,
-    next_id: u64,
-    completed: Vec<(PacketId, PacketStatus)>,
-    fx_state: FxState,
+    pub(crate) pos: f64,
+    pub(crate) paused: bool,
+    pub(crate) next_id: u64,
+    pub(crate) completed: Vec<(PacketId, PacketStatus)>,
+    pub(crate) fx_state: FxState,
     /// The mixer frame at which it ran out of packets while playing, until
     /// it plays again (the mixer's starvation count).
     pub(crate) dry_at: Option<u64>,

@@ -99,9 +99,9 @@ impl I3dl2Listener {
 }
 
 #[derive(Clone, Debug)]
-struct Delay {
-    buf: Vec<f32>,
-    pos: usize,
+pub(crate) struct Delay {
+    pub(crate) buf: Vec<f32>,
+    pub(crate) pos: usize,
 }
 
 impl Delay {
@@ -128,9 +128,9 @@ impl Delay {
 
 /// A Schroeder allpass: `y = -g x + d; d' = x + g y`.
 #[derive(Clone, Debug)]
-struct Allpass {
-    line: Delay,
-    g: f32,
+pub(crate) struct Allpass {
+    pub(crate) line: Delay,
+    pub(crate) g: f32,
 }
 
 impl Allpass {
@@ -167,25 +167,25 @@ fn pole_for(db: f64, ref_hz: f64, rate: f64) -> f32 {
 /// The reverberator.
 #[derive(Clone, Debug)]
 pub struct Reverb {
-    rate: u32,
-    params: I3dl2Listener,
-    er_line: Delay,
-    er_taps: [usize; 7],
-    pre: Delay,
-    pre_len: usize,
-    allpass: [Allpass; 2],
-    fdn: [Delay; 4],
+    pub(crate) rate: u32,
+    pub(crate) params: I3dl2Listener,
+    pub(crate) er_line: Delay,
+    pub(crate) er_taps: [usize; 7],
+    pub(crate) pre: Delay,
+    pub(crate) pre_len: usize,
+    pub(crate) allpass: [Allpass; 2],
+    pub(crate) fdn: [Delay; 4],
     /// Per-line loop gain at low frequencies and damping pole.
-    line_gain: [f32; 4],
-    line_pole: [f32; 4],
-    line_z: [f32; 4],
-    room_pole: f32,
-    room_z: [f32; 2],
-    er_level: f32,
-    late_level: f32,
+    pub(crate) line_gain: [f32; 4],
+    pub(crate) line_pole: [f32; 4],
+    pub(crate) line_z: [f32; 4],
+    pub(crate) room_pole: f32,
+    pub(crate) room_z: [f32; 2],
+    pub(crate) er_level: f32,
+    pub(crate) late_level: f32,
     /// Inputs the delay lines were sized for, so a level change in place
     /// keeps the tail.
-    sized_for: (u32, i32, i32, i32),
+    pub(crate) sized_for: (u32, i32, i32, i32),
 }
 
 impl Reverb {
