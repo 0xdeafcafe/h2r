@@ -1,14 +1,16 @@
 # Machine snapshots (design)
 
-Status: phases 1 and 2 built, phase 3 partly. Phase 1
+Status: phases 1, 2 and 3 built. Phase 1
 ([below](#phase-1-what-was-built)): the file format, the guest RAM page
 codec, the store, the guest layout and RAM restore, and the time-stamp
 counter, in `crates/snapshot` and `crates/runtime`, with the input tap's
 resume in `crates/xapi`. Phase 2 ([below](#phase-2-the-quiescence-probe)):
 `Machine::quiescent`, per-feature snapshot policies and the opt-in
 `H2_SNAPSHOT_PROBE`. Phase 3 ([below](#phase-3-what-was-built)): the
-kernel's `Core`, the machine's threads and their continuation pools, and
-the VFS's read-only open files. Nothing saves or loads a running game yet.
+kernel's `Core`, the machine's threads and their continuation pools, the
+VFS's read-only open files, the raw disk, XAPI's pads and the input tap's
+cursor, and feature sections (`h1-health`, skulls, lockstep). Nothing
+saves or loads a running game yet.
 Whatever is not marked built on this page is design.
 
 This is phase 5 of the [agent API](agent-api.md): `state.save {name}` and
@@ -165,7 +167,7 @@ otherwise), **Ignore** (diagnostics). Sources are **Code** unless marked.
 | Timers and DPC queue | `Core::timers`, `dpcs` | Save | Records keyed by guest address. |
 | Periodic sources | `Core::periodic: Periodic`, `periodic.rs` | Save + Check | Schedule fields (`origin`, `next`, `owed`, `missed`, `queued`) are data; `handler` is a Rust closure registered at boot, matched by id and name. |
 | Files | `Core::files`, `file_handles`, `files.rs` | Save | Each kernel file handle maps to a `vfs::Handle`; re-opened through VFS on load (below). Built. |
-| Raw disk device | `rawdisk::RawDisk`, a VFS backend holding up to 2 MiB of written sectors (the cache database) in host memory | Save (not built) | Made fresh by `set_shared_vfs` at boot, so a load sees the boot's sectors, not the saved run's. |
+| Raw disk device | `rawdisk::RawDisk`, a VFS backend holding up to 2 MiB of written sectors (the cache database) in host memory | Save | Shared with `Core::raw_disk` (`RawSectors`) since the VFS owns the backend. Built. |
 | Kernel memory allocator | `Core::memory: memory::Memory`, `memory.rs` | Save | Allocator bookkeeping over guest pages. |
 | Config, console, launch page, TLS template, KPCR, bridge | `Core::console`, `launch_page`, `tls`, `kpcr`, `bridge`, `data` | Check | Set by the boot. |
 | Deferred signals | `Kernel::deferred` | Quiesce | Drained every slice. |
@@ -185,12 +187,13 @@ otherwise), **Ignore** (diagnostics). Sources are **Code** unless marked.
 
 | State | Where | Decision | Why |
 |---|---|---|---|
-| Open pad handles, `next_handle`, last state | `Xapi::handles`, `xapi/src/lib.rs` | Save | The guest holds the tokens; replay counts handle mismatches (`tap.rs`), so numbering must continue. Rebind each to a port. |
-| Device change words | `Xapi::changes` | Save | 12 bytes; mirrored in guest RAM too. |
-| Rumble, completions, signals, launch request | `Xapi::pending_feedback`, `completions`, `signals`, `launch_request` | Quiesce | |
-| Save-game searches | `Xapi::searches` | Save or Quiesce | Rare; refuse first. |
-| Input tap cursor | `Replayer::next`, `Recorder` log length, `xapi/src/tap.rs` | Save | The cursor is `ReplayStats::replayed` (or the recorder's log length); `Replayer::resume` and `Recorder::resume` continue from it. Built. |
-| Live pads, keyboard and mouse, touch | `input::InputManager`, `backend/*`, touch statics | Rebuild | Host devices. Release held keys on load. Packet numbers per port: Save (S), if the game compares them. |
+| Open pad handles, `next_handle`, last state | `Xapi::handles`, `xapi/src/lib.rs` | Save | The guest holds the tokens; replay counts handle mismatches (`tap.rs`), so numbering must continue. Rebound to the device now on the port. Built. |
+| Device change words | `Xapi::changes`, voice types' | Save | 12 bytes each; mirrored in guest RAM too. Built. |
+| Rumble, completions, signals, launch request | `Xapi::pending_feedback`, `completions`, `signals`, `launch_request` | Quiesce | Built (`Xapi::snapshot_blockers`). |
+| Save-game searches | `Xapi::searches` | Quiesce | Refused while open. Built. |
+| Input tap cursor | `InputTap::cursor`/`seek`, `xapi/src/tap.rs` | Save | In the `xapi` section; a load seeks the installed recorder or replayer. Built. |
+| Live pads, keyboard and mouse, touch | `input::InputManager`, `backend/*`, touch statics | Rebuild | Host devices. Held keys are not carried: the next sync publishes the host's state. |
+| Per-port published state and polling | `InputManager` ports | Save | Packet numbers continue from the saved run's (`port_snapshot`, `restore_port`). Built. |
 | Scripted pad cursor | `ScriptedInput` `Playback` | Save | Refuses to rewind today (`ScriptError::Rewind`). |
 
 ### d3d and gfx
@@ -239,12 +242,12 @@ next to it.
 | Switches | `feature::Switches` | Check | Part of the build key. |
 | Feature plan, hooks, arena | `feature::Registry`, `Plan`, `Installed` | Check | Deterministic from switches; arena bytes are guest RAM. |
 | Boot glue statics holding guest addresses | `layout_glue`, `campaign_menu`, `list_class`, `stopgaps::KSTACK_NEXT` | Check | Fixed by boot order. |
-| Boot glue statics set during play | `health::MAP_MODE`, `METER`; `skulls_custom::CAMPAIGN`; `level_boot::LOADED_AT`; `skulls_mp`/`skulls_custom` shared state | Save | Each feature owns a section. |
+| Boot glue statics set during play | `health::MAP_MODE`; `skulls_custom::CAMPAIGN`; `level_boot::LOADED_AT`; `skulls_mp`/`skulls_custom` shared state | Save | Each feature owns a section (`SnapshotPolicy::Section`). Built for `h1-health` (re-derived from the loaded map), `skulls-custom`, `skulls-mp`. |
 | Co-op | `coop_live::LOBBY`, `COOP_MODE_PENDING` | Quiesce | Refuse during co-op. |
 | Live | `live-hle` sockets, client thread | Quiesce | Refuse while signed in. |
 | Bink | `BinkHle` slots, platform decoder | Quiesce | Refuse while a movie plays. |
 | Interpreter fallback caches | `boot/src/fallback.rs` | Rebuild | |
-| Lockstep recorder counters | `lockstep::Recorder::ticks`, `presents` | Save | So a trace can continue across a load. |
+| Lockstep recorder counters | `lockstep::Recorder::ticks`, `presents` | Save | So a trace can continue across a load. Built: the `lockstep` feature's section. |
 | Agent session, timeline, perf, telemetry | | Ignore | Observers. |
 
 ### What "the guest can rebuild" means here
@@ -273,7 +276,8 @@ boundary that passes the quiescence check:
 6. Devices: D3D bindings and GPU-model state, surfaces; dsound objects,
    mixer, WMA sessions, re-pinned events.
 7. XAPI handles, input tap cursor (resume replay, or continue recording),
-   lockstep counters, feature sections.
+   lockstep counters, feature sections (built; the boot does not call them
+   yet).
 8. **Determinism check**: `lockstep::hash_guest` over the loaded machine
    must equal the hash stored at save time (per-MiB chunks, so a mismatch
    names the MiB), and `hash_sim` likewise. Then, optionally, run N ticks
@@ -354,9 +358,9 @@ None needs a game run until the last step of phase 5.
    which blockers were live. Tests: synthetic machines with a thread
    blocked in a guest callback, a queued interrupt, a DPC. The user's one
    run with the probe on in a fight answers the biggest unknown.
-3. **Kernel and machine.** Partly built (below): sections for `Core` and
-   the machine's threads; VFS re-open. Left: xapi handles; tap cursor
-   wiring; feature statics; the raw disk. Tests: the
+3. **Kernel and machine.** Built (below): sections for `Core` and the
+   machine's threads; VFS re-open; the raw disk; XAPI and the tap cursor;
+   feature sections. Tests: the
    kernel crate's existing synthetic threads (`kernel/tests`): run a
    synthetic multi-threaded guest for N slices, snapshot, run M more and
    hash; load into a freshly booted machine, run M and compare hashes
@@ -583,15 +587,44 @@ machine's. Per-context event logs are not saved (diagnostics; a quiescent
 resume transfer carries no event). Writable files are refused rather than
 recorded.
 
-Left for phase 3:
+Second round (branch `snapshot-phase3b`):
 
-- xapi: open pad handles and `next_handle`, device-change words, rebound
-  to ports through `InputManager::open` with their polling parameters; the
-  input crate's per-port packet numbers. Wire the tap cursor
-  (`Replayer::resume`) into the same section.
-- Feature sections for the statics set during play (`h1-health` must call
-  `set_mode` again from the loaded map; skulls; lockstep counters).
-- The raw disk's written sectors (inventory above).
+- Raw disk: `RawDisk` keeps its sectors behind `rawdisk::RawSectors`, which
+  `Core::raw_disk` shares from `set_shared_vfs`; `kcore` (version 2) saves
+  them and a load replaces the booted disk's (`kernel/tests/snapshot.rs`).
+- `xapi::snapshot`: the `xapi` section. Pad handles (token, port, last
+  state), `next_handle`, the gamepad and communicator change words, each
+  port's published state and polling parameters
+  (`InputManager::port_snapshot`/`restore_port`). A load rebinds each
+  handle with `InputManager::reopen`: on an empty port it reads as
+  unplugged and stays stale after an insertion, and the change words
+  report the difference from the saved ports at the next
+  `XGetDeviceChanges`. Refused while rumble, a launch request or a save
+  search is in flight. Tests in `xapi/tests/snapshot.rs`.
+- Tap cursor: `InputTap::cursor` and `seek` (recorder: read count,
+  truncate; replayer: next read; the agent's tap forwards to the chained
+  one). The `xapi` section saves the installed tap's cursor; a load seeks
+  the installed tap and returns the cursor for a caller that installs one
+  later.
+- Feature sections: `SnapshotPolicy::Section` (and
+  `section_forbid_while`): a feature's bytes and a load function given the
+  runtime. `Plan::save_sections`/`load_sections` collect them; a load
+  refuses a file whose section features differ before loading any.
+  `snapshot::features` stores them as one `features` section. Built for
+  `h1-health` (no bytes; the load calls `set_mode` from the loaded map's
+  name), `skulls-custom` (campaign set, said/found bits, ticks, the
+  level's skull, gravity, falls; waits while its guest calls are queued),
+  `skulls-mp` (active set, said flags, profiles; waits while a Famine call
+  is between its hooks) and `lockstep` (tick and present counters).
+
+Left:
+
+- The boot calls none of the new sections yet: phase 5 adds
+  `Xapi::save_snapshot`/`load_snapshot`, `Plan::save_sections` through
+  `snapshot::features` and the kernel's sections to `state.save`.
+- Still unaudited features: `skulls` (campaign skulls per profile), the
+  skulls screens and rows, co-op, aim assist, sign-in strings, kit screens,
+  settings rows.
 - A load into a running game drops the old contexts' fast-memory views and
   direct-call blocks with them; untested outside synthetic machines.
 
