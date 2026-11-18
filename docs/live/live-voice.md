@@ -410,6 +410,51 @@ confirmed in the disassembly, **I** means inferred):
      by 0x54f90. 0x536b0 refuses voice when it is 3. (I: 3 means voice is
      off or banned for that player.)
 
+7. **More from a second, independent read of the same code** (it agrees
+   with items 1 to 6 wherever they overlap):
+   - **Remote voice reaches the headphone through DirectSound (C).** The
+     decoder plays each remote talker into a DirectSound stream:
+     DirectSoundCreateStream at 0x335ed3, PCM mono 8000 Hz, two 320-byte
+     packets, completion 0x335d82 or 0x335d99. Its mixbins are the
+     per-port voice effect, DSP effect 0xb + port (0x333330). The
+     headphone feed 0x334d1f does not read the decoder. It reads that
+     effect's output ring through 0x332c9c (map +0x18 base, +0x1c size,
+     state +0x34 write position), keeps the high 16 bits of each 32-bit
+     sample, and fills the 640-byte packet. If less than 0x500 bytes are
+     ready, it moves the read position to write − 0x280. So remote voice
+     reaches a headphone object only if the host's DirectSound runs those
+     effects and their output rings. That is a slice 4 dependency on
+     crates/dsound; the slice 3 objects do not depend on it.
+   - **The XMO vtable is at 0x417544 (C).** Slots: AddRef 0x41058f,
+     Release 0x4112dc, GetInfo 0x4105ab, GetStatus 0x410603, Process
+     0x410e77, Discontinuity 0x4105fe (S_OK) and Flush 0x4105f6
+     (E_NOTIMPL). The engine calls only Release and Process.
+   - **Process queues a 24-byte copy of the packet (C).** Process
+     (0x410e77) marks the packet pending (completed size 0, status
+     0x8000000a, at 0x37f38a). 0x37f3a8 later writes the completed size
+     and the status through the packet's pointers, when they are set, and
+     calls callback(context, packet +0x10, status). With no callback, it
+     sets the event at +0x10 instead.
+   - **Encode and decode limits (C).** At most 2 encodes and 15 decodes a
+     tick (0x33355f, 0x3335e0). Up to 5 frames are buffered per talker.
+     DoWork 0x334fd2 hands each frame to the title as (port, 10, frame).
+   - **The voice-mail codec is a second, larger codec (C).** Its encoder
+     is set up at 0x3370ca and encodes at 0x339a62. It averages 16 kHz
+     down to 8 kHz first (0x336f26). Its parser 0x33739f checks every
+     header field: tag 0xa, 1 channel, 16 bits, cbSize 0x2e, and data
+     size = RIFF size − 0x54. The server's header check (3.5) should
+     match 0x33739f, not just the game's looser 0x53db0. Recording length
+     is rounded down to 20 ms (0x335017).
+   - **Codec names (I).** Tag 0x000a is WAVE_FORMAT_WMAVOICE9 in mmreg.h,
+     so the voice-mail codec may be WMA Voice. That would make item 1's
+     Voxware guess apply to the chat codec only, if at all.
+   - **Who writes 0x4c99a8 (C, I).** 0x54fc0 is called from 0x18fbfc,
+     with the value from profile +0x14c, and from the settings screen at
+     0x2c600b. So 3 is most likely the profile's voice-off option (I).
+   - **Still untraced.** How 0x765c0 fills its 0x200-byte budget; what
+     the talker byte below 2 means; the jitter delay (0x3367bd, arguments
+     10 and 0x20); the final block align from 0x337ece.
+
 What this means for slice 3: no codec work. The host implements the
 factory 0x411143 as two media objects per port with a vtable whose
 Process takes 640-byte 16 kHz packets and calls the stored callback with
@@ -618,9 +663,8 @@ Decided by the user on 2026-11-18:
 
 Still open, each with this design's recommendation marked **proposed**:
 
-1. What port value 4 means in the engine calls, and which of the game's
-   states writes 3 to 0x4c99a8 (the gates themselves are traced in 3.3,
-   item 6). **Proposed:** leave both as the game sets them.
+1. What port value 4 means in the engine calls. The gates are traced
+   (3.3, items 6 and 7). **Proposed:** leave both as the game sets them.
 2. Which UI reads the friend-row voice bit, and what tag 0x581 holds on game
    invites. **Proposed:** leave until slice 5; presence already forwards
    the flag.
