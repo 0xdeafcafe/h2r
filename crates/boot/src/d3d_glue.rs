@@ -964,6 +964,7 @@ pub fn install_with_report<B: d3d::backend::Backend + Send + 'static>(
     let device = d3d::runtime_glue::shared(cfg, backend);
     install_occlusion_capture(&device);
     crate::native_world_glue::install(&device);
+    crate::native_objects_glue::install(&device);
     let mut out = None;
     rt.edit_dispatch(|d| {
         out = Some(d3d::register(d, Arc::clone(&device)));

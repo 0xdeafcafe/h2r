@@ -63,6 +63,7 @@ pub mod map_select;
 pub mod map_slots;
 pub mod mods_screen;
 pub mod movies_glue;
+pub mod native_objects_glue;
 pub mod native_world_glue;
 pub mod new_maps;
 pub mod pad_speaker;

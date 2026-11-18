@@ -441,6 +441,88 @@ The render thread writes two storage buffers and issues one indexed draw
 per (object, opaque part), grouped by model and material. Nothing per
 vertex and no matrix work on the CPU.
 
+## Stage 2 as built
+
+Not compiled or run by the lane that wrote it (the coordinator builds and
+tests); evidence labels below are what the tests will show once run.
+
+- **`native-render`.** `model` (the game's node matrix, `Model::build`:
+  one vertex and index buffer per model in rest space, vertex node indices
+  through the section's node map, one draw per opaque part sorted by
+  material, the inverse rest frames; `Model::skin`, the shader's
+  arithmetic on the CPU), `model_load` (definition -> `hlmt` -> `mode`,
+  the section pick of "Permutations and regions", the inverse frames from
+  node `+0x28`), `objects` (the handle lookup, the node block at body
+  `+0x114`/`+0x116`, the sphere; `clear_objects`, `keep_only`, `restore`
+  on the base layers' layer 3), `instances` (per view: the node array,
+  one instance record per object, a draw per (object, part) sorted by
+  model and material, the sphere-frustum cull, the node-count guard),
+  `model_gpu` (`GpuModels`: models added one at a time, per view one
+  uniform and two storage writes, one pass with an indexed draw per
+  (object, part), `instance_index` the object) and `models.wgsl`
+  (skinning `Σ w · N · I · p`, base map times ambient plus one
+  directional term, the W depth). Tests: the unit tests in each module on
+  invented models and synthetic guest memory; `tests/models_gpu.rs` draws
+  an invented two-node model whose square hangs on a turned node, checks
+  colour (lit by the skinned normal), W depth, one object culled and one
+  with the wrong node count left out.
+- **The feature `native-objects`** (`crates/feature/src/native_objects.rs`,
+  `H2_FEATURES=impl.render.native_objects=on`, off by default, exact key).
+  Two observers on `LAYER_DRAW`, inside `render-timing`'s and the world's
+  (`after_feature` on both). Before: only for layer 3 called from
+  `0x0002bed5`; asks the host for its native set (definitions with their
+  node counts, shaders), clears the accepted items, asks the host to load
+  any definition it has not seen, reads the cleared objects' nodes and
+  spheres, gives back the bits of objects it could not read or whose node
+  count disagrees, and asks for the pass (all bits back if the device
+  cannot). After: the rest back. Tests: `crates/feature/tests/native_objects.rs`
+  (the plan with `render-timing`, deep, the layer-draw port and the world;
+  the switch off; the observers on `FlatMemory`). Boot plans it
+  (`registration.rs`, in `ALL_ON` of the registration tests) and lists it
+  in `render_thread::REFUSED` (not pipelined-safe; see "Pipelined
+  render").
+- **Boot glue** (`crates/boot/src/native_objects_glue.rs`). Per map, a
+  worker with the map, its shared maps and the object tag context open;
+  definitions arrive one at a time from the feature and are loaded once;
+  a model is queued for upload before its definition is published, so a
+  pass that sees it finds it. Materials whose base map does not decode
+  leave the model and keep their D3D draws. The render thread uploads the
+  queue at the next pass. Log lines: `native-objects: <map>: definition
+  <datum>: D draws, N nodes, in T ms (L models native, R left to D3D)`, or
+  `... left to the D3D path (<why>)`; every 1,800 views
+  `native-objects: D of V layer-3 views drawn natively, O objects, I
+  object items skipped`.
+
+### The live A/B
+
+Old Mombasa, E1 off, frame stats and `render-timing` on, the same spot
+with `impl.render.native_objects` off and on (with
+`impl.render.native_world` on in both, so the difference is the
+objects'). What passes:
+
+- the load lines name the map's models, most as native; the refused ones
+  give a reason (the run-time permutations: marines, some scenery);
+- the views line shows every base-layer layer-3 view drawn natively, and
+  objects and items per view in the tens;
+- the frame shows every object in place and posed: bipeds animate (a
+  T-pose or exploded limbs mean the `N · I` reading is wrong), held
+  weapons sit in hands, vehicles and their turrets turn; flat-lit bases
+  with the game's own self-illumination, specular and dynamic lights on
+  top (those layers still draw through D3D);
+- the first-person weapon and arms are unchanged (still D3D);
+- the `0x0002bed0` site (layer 3) and `cpu` drop by the objects' share of
+  layer 3's shader draws (below), `encode` and `submit` with them;
+  `external_passes_dropped` stays 0 (a growth there is an object hole).
+
+What this stage should remove: layer 3 is 8.26 ms on the census run,
+about two thirds of it per-draw guest work in `0x00016b90` and the rest
+D3D; objects are roughly a third to a half of layer 3's 1,882 D3D calls
+on a populated 03a view (S: the split between world and object draws is
+not measured; `render-census` can give it). So with the world already
+native, expect about 2 to 4 ms off `0x0002bed0` and `cpu`, plus their
+`encode`/`submit` share on the render thread. Layers 1, 5, 7, 8 and the
+dynamic-light passes keep their object draws in this cut.
+
 ## Open
 
 - Seams: the drawn world is welded (no T-junctions, shared edges

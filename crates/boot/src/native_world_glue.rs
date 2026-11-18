@@ -37,7 +37,7 @@ pub fn set_locator(locate: MapLocator) {
     *LOCATOR.lock().unwrap_or_else(|e| e.into_inner()) = Some(locate);
 }
 
-fn locate(name: &str) -> Option<MapFile> {
+pub(crate) fn locate(name: &str) -> Option<MapFile> {
     LOCATOR.lock().unwrap_or_else(|e| e.into_inner()).as_ref()?(name)
 }
 
@@ -181,7 +181,7 @@ impl d3d::ExternalPass for WorldPass {
 }
 
 /// Raw resource reads over the map and its shared maps.
-struct Raw(assets::ResourceFiles);
+pub(crate) struct Raw(pub(crate) assets::ResourceFiles);
 
 impl tags::geometry::RawSource for Raw {
     fn read_raw(&mut self, pointer: map::RawPointer, size: u32) -> tags::Result<Vec<u8>> {
@@ -191,7 +191,7 @@ impl tags::geometry::RawSource for Raw {
     }
 }
 
-fn region(f: &MapFile) -> assets::Region {
+pub(crate) fn region(f: &MapFile) -> assets::Region {
     assets::Region {
         path: f.path.clone(),
         base: f.offset,
@@ -305,7 +305,7 @@ fn keep_materials(mut world: World, native: &HashMap<u16, Image>) -> World {
 }
 
 /// The first image of a bitmap, its largest level, as RGBA.
-fn decode_first<R: std::io::Read + std::io::Seek>(map: &mut Map<R>, files: &mut assets::ResourceFiles, id: TagId) -> Option<Image> {
+pub(crate) fn decode_first<R: std::io::Read + std::io::Seek>(map: &mut Map<R>, files: &mut assets::ResourceFiles, id: TagId) -> Option<Image> {
     let tags::TagData::Bitmap(b) = tags::DecodedTag::read(map, id).ok()?.data else {
         return None;
     };
