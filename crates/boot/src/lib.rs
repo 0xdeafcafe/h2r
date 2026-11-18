@@ -1203,7 +1203,12 @@ pub fn run_hosted_with_live(
     let mut rebuilders = kernel::snapshot::Rebuilders::new();
     rebuilders.add(trace::KERNEL_CALL_RETURN, trace::rebuilder(&tr));
     let shelf = agent.as_ref().and_then(|a| {
-        let key = snapshot_glue::build_key(build_stamp(xbe_bytes), &switch_spec, &plan, &snap_host.names());
+        // The running tier's own stamp: a fast-tier snapshot is not a clang one's.
+        let stamp = match tier {
+            tier::Tier::Clang => build_stamp(xbe_bytes),
+            tier::Tier::Fast => tier::fast_stamp(xbe_bytes),
+        };
+        let key = snapshot_glue::build_key(stamp, &switch_spec, &plan, &snap_host.names());
         let shelf = snapshot_glue::Shelf::from_env(key)?;
         a.agent.set_snapshots(Box::new(shelf.clone()));
         Some(shelf)

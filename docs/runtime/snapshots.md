@@ -822,7 +822,8 @@ the game.
   policies are asked again after the save: one that went live meanwhile
   (a co-op thread) throws the file away. A load that fails part way says
   which parts were already loaded.
-- The build key is `boot::build_stamp`, `Switches::spec` (canonical
+- The build key is the running tier's stamp (`boot::build_stamp`, or
+  `tier::fast_stamp`), `Switches::spec` (canonical
   switch text), the installed feature IDs and the host parts present, so
   a run with other switches, features or subsystems has its own store
   directory. Snapshots are written to the store under `$H2_SNAPSHOTS` or
