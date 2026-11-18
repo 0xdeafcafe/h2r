@@ -13,7 +13,7 @@
 //! scale `1.0` (the Halo 1 sky box stays centred on the camera). Lens
 //! flares stay null: converting `lens` tags is not this crate's job.
 
-use map::build::{Block, FixupKind, TagSet};
+use map::build::TagSet;
 use map::{CacheType, FourCC, TagId};
 
 use crate::Result;
@@ -24,101 +24,58 @@ use crate::h1;
 /// unknown meaning and are not copied.
 pub const LIGHT_FLAGS: u32 = 15;
 
-/// Builds the Halo 2 `sky ` tree for `sky`. `model` is the datum of the
-/// converted render model ([`h1models::model_from_map`] output, installed
-/// into the same set), or `None` for skies with no model; `model_scale`
-/// goes to `+0x14` ([`model_scale`]).
+/// The Halo 2 `sky ` definition (`crates/tags/src/defs/sky_.txt`).
+pub fn sky_def() -> &'static tags::defs::StructDef {
+    tags::defs::Defs::builtin()
+        .group(FourCC(*b"sky "))
+        .expect("sky is defined")
+}
+
+/// Builds the Halo 2 `sky ` tree for `sky` from its typed definition
+/// ([`sky_def`]): every field not set here is the definition's default
+/// (zero, null, empty). `model` is the datum of the converted render
+/// model ([`h1models::model_from_map`] output, installed into the same
+/// set), or `None` for skies with no model; `model_scale` goes to
+/// `model_scale` ([`model_scale`]).
 pub fn convert_sky(sky: &h1::Sky, model: Option<TagId>, model_scale: f32) -> h1models::Converted {
-    let mut root = Block::zeroed(crate::h2::ROOT_LEN);
-    root.fixup(
-        crate::h2::layout::MODEL as u32,
-        FixupKind::TagRef(model.unwrap_or(TagId::NULL)),
+    use tags::defs::{self, Val};
+    let def = sky_def();
+    let mut r = defs::default_record(def);
+    let set = |r: &mut defs::Record, p: &str, v: Val| r.set(p, v).expect("sky definition field");
+    set(
+        &mut r,
+        "model",
+        Val::tag(FourCC(*b"mode"), model.unwrap_or(TagId::NULL)),
     );
-    root.fixup(
-        crate::h2::layout::UNUSED_REF as u32,
-        FixupKind::TagRef(TagId::NULL),
-    );
-    root.put_u32(crate::h2::layout::WORD_10, 0);
-    root.put_f32(crate::h2::layout::MODEL_SCALE, model_scale);
-    root.put_f32(crate::h2::layout::CAMERA_TRANSLATION_SCALE, 1.0);
-    let empty = || Block::zeroed(0);
-    root.fixup(
-        crate::h2::layout::BITMAP_LAYERS as u32,
-        FixupKind::Block {
-            count: 0,
-            child: empty(),
-        },
-    );
-    for (i, v) in sky.ambient_first_rgb().into_iter().enumerate() {
-        root.put_f32(crate::h2::layout::FALLBACK_RGB + 4 * i, v);
-    }
-    root.fixup(
-        crate::h2::layout::GRADIENT_A as u32,
-        FixupKind::Block {
-            count: 0,
-            child: empty(),
-        },
-    );
-    root.fixup(
-        crate::h2::layout::GRADIENT_B as u32,
-        FixupKind::Block {
-            count: 0,
-            child: empty(),
-        },
-    );
-    let lights: Vec<Block> = sky.lights.iter().map(light_block).collect();
-    let count = lights.len() as u32;
-    root.fixup(
-        crate::h2::layout::LIGHTS as u32,
-        FixupKind::Block {
-            count,
-            child: array(lights, crate::h2::LIGHT_LEN),
-        },
-    );
-    root.put_f32(crate::h2::layout::ROTATION, 0.0);
+    set(&mut r, "model_scale", Val::Float(model_scale));
+    set(&mut r, "camera_translation_scale", Val::Float(1.0));
+    set(&mut r, "fallback_color", Val::floats(&sky.ambient_first_rgb()));
+    let ldef = def.child("lights").expect("lights");
+    let pdef = ldef.child("parameters").expect("parameters");
+    let lights = sky
+        .lights
+        .iter()
+        .map(|l| {
+            let mut e = defs::default_record(ldef);
+            set(&mut e, "yaw", Val::Float(l.direction[0]));
+            set(&mut e, "pitch", Val::Float(l.direction[1]));
+            let mut p = defs::default_record(pdef);
+            set(&mut p, "flags", Val::Int(i64::from(LIGHT_FLAGS)));
+            set(&mut p, "color", Val::floats(&l.color));
+            set(&mut p, "power", Val::Float(l.power));
+            set(&mut p, "falloff_distance", Val::Float(l.falloff_distance));
+            set(&mut p, "cutoff_angle", Val::Float(l.cutoff_angle));
+            set(&mut e, "parameters", Val::Block(vec![p]));
+            e
+        })
+        .collect();
+    set(&mut r, "lights", Val::Block(lights));
+    let root = defs::to_built(def, &r, &mut |_| None).expect("a sky record builds");
     h1models::Converted {
         group: FourCC(*b"sky "),
         root,
         raw: Vec::new(),
     }
-}
-
-/// One Halo 2 light record (`0x34` bytes) with its parameter child.
-fn light_block(light: &h1::SkyLight) -> Block {
-    let mut b = Block::zeroed(crate::h2::LIGHT_LEN);
-    b.put_f32(crate::h2::light::YAW, light.direction[0]);
-    b.put_f32(crate::h2::light::PITCH, light.direction[1]);
-    b.fixup(
-        crate::h2::light::LENS_FLARE as u32,
-        FixupKind::TagRef(TagId::NULL),
-    );
-    let mut p = Block::zeroed(crate::h2::PARAMS_LEN);
-    p.put_u32(crate::h2::params::FLAGS, LIGHT_FLAGS);
-    for i in 0..3 {
-        p.put_f32(crate::h2::params::COLOR + 4 * i, light.color[i]);
-    }
-    p.put_f32(crate::h2::params::POWER, light.power);
-    p.put_f32(crate::h2::params::FALLOFF, light.falloff_distance);
-    p.put_f32(crate::h2::params::CUTOFF, light.cutoff_angle);
-    b.fixup(
-        crate::h2::light::PARAMS as u32,
-        FixupKind::Block { count: 1, child: p },
-    );
-    b
-}
-
-/// Concatenates fixed-size element blocks, as `h1models` does for its
-/// arrays.
-fn array(elements: Vec<Block>, stride: usize) -> Block {
-    let mut out = Block::zeroed(elements.len() * stride);
-    for (i, e) in elements.into_iter().enumerate() {
-        out.bytes[i * stride..(i + 1) * stride].copy_from_slice(&e.bytes);
-        for mut f in e.fixups {
-            f.offset += (i * stride) as u32;
-            out.fixups.push(f);
-        }
-    }
-    out
 }
 
 /// A Halo 1 sky read for conversion: the tag, its converted render model
