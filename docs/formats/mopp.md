@@ -223,8 +223,7 @@ separating-axis test).
 (Sphere: the engine-exact sphere VM with the sphere around each box.
 Box misses are the box model's, `query_aabb`. The engine's box query,
 `query_box`, also misses 0 on both. Ours is version 72's compiler, with
-exclusive tops: 10,148,336 bytes, measured on the same code before
-this commit. While the low child's tracked region was widened by a cell,
+exclusive tops: 10,148,336 bytes. While the low child's tracked region was widened by a cell,
 it was 11,047,968 bytes.)
 Ours keys every structure surface exactly once and leaves no byte
 unreached. Per BSP with more than 100 surfaces, ours returns 1.01 to 1.28
