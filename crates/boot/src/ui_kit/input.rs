@@ -78,6 +78,23 @@ impl Input {
             Input::Back => (BUTTON_EVENT, BACK_BUTTON),
         }
     }
+    /// The input named `name` (`up`, `a`, `start`, `back`; any case), as
+    /// `h2 ui preview --press` takes them.
+    pub fn named(name: &str) -> Option<Input> {
+        Some(match name.to_ascii_lowercase().as_str() {
+            "up" => Input::Up,
+            "down" => Input::Down,
+            "left" => Input::Left,
+            "right" => Input::Right,
+            "a" => Input::A,
+            "b" => Input::B,
+            "x" => Input::X,
+            "y" => Input::Y,
+            "start" => Input::Start,
+            "back" => Input::Back,
+            _ => return None,
+        })
+    }
     /// Raised again every 250 ms while held (directions only).
     pub fn repeats(self) -> bool {
         matches!(self, Input::Up | Input::Down | Input::Left | Input::Right)

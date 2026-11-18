@@ -12,10 +12,12 @@
 //!   class.
 //! - [`screens`]: our existing screens described, with samples.
 //! - [`preview`]: a screen drawn offline from the disc's tags and fonts.
+//! - [`page`]: a screen's behaviour as a pure state machine, table-tested.
 
 pub mod ids;
 pub mod input;
 pub mod layout;
+pub mod page;
 pub mod lifecycle;
 pub mod preview;
 pub mod screen;
