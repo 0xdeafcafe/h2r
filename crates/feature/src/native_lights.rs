@@ -24,14 +24,15 @@
 //!   replaced by a new one, so each run lands between the D3D lights it
 //!   sits between;
 //! - an observer before the dynamic lights: forgets the open run, so a run
-//!   never spans two views (or a pass the device dropped).
+//!   never spans two views (or a pass the device dropped), and records the
+//!   device's bound target ([`Host::target`]). The tail's last call sets
+//!   the view's target back, which a skipped light does not repeat, so a
+//!   light is skipped only while the bound target is still that one.
 //!
 //! The light is read, and the tail's words written, in the memory the
 //! hook's context sees, which on the render thread is the render's
 //! snapshot of the frame; an attached light's frame was refreshed just
-//! before the call. The target the tail sets back (`0x00014bc0` with the
-//! view's target) is not set again: a skipped light never left it (S: every
-//! way into the call leaves the view's target bound; the A/B checks).
+//! before the call.
 //!
 //! With `render-timing` on nothing is placed: its timed light passes need
 //! the body's end, which a skipped light never reaches.
@@ -70,6 +71,9 @@ pub trait Host: Send + Sync {
     /// (`d3d::Device::light_passes_tail`, with `clip` the game's clip-range
     /// words). `false`: not done, the light goes to the D3D path.
     fn tail(&self, mem: &mut dyn GuestMemory, clip: [u32; 2]) -> bool;
+    /// The device's bound target now (`d3d::Device::bound_target`); `None`
+    /// when it cannot say (nothing is skipped then).
+    fn target(&self) -> Option<[u32; 8]>;
 }
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
@@ -78,6 +82,10 @@ static OPEN: Mutex<Option<Arc<Run>>> = Mutex::new(None);
 static LIGHTS: AtomicU64 = AtomicU64::new(0);
 static SKIPPED: AtomicU64 = AtomicU64::new(0);
 static RUNS: AtomicU64 = AtomicU64::new(0);
+/// The bound target before this view's lights.
+static VIEW_TARGET: Mutex<Option<[u32; 8]>> = Mutex::new(None);
+/// Lights left to D3D because the bound target was not the view's.
+static TARGET_MOVED: AtomicU64 = AtomicU64::new(0);
 
 /// Installs the host (boot). Without one nothing is skipped.
 pub fn set_host(host: Arc<dyn Host>) {
@@ -101,9 +109,17 @@ impl GuestRead for Ro<'_> {
     }
 }
 
-/// The observer before the dynamic lights: no run carries over.
+/// Lights left to D3D because the bound target had moved from the view's.
+pub fn target_refusals() -> u64 {
+    TARGET_MOVED.load(Ordering::Relaxed)
+}
+
+/// The observer before the dynamic lights: no run carries over, and the
+/// bound target now is the view's.
 pub fn new_view() {
     OPEN.lock().unwrap_or_else(|e| e.into_inner()).take();
+    let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    *VIEW_TARGET.lock().unwrap_or_else(|e| e.into_inner()) = host.and_then(|h| h.target());
 }
 
 /// The light `handle` as the passes would draw it, with the caller's
@@ -147,6 +163,12 @@ pub fn on_light(mem: &mut dyn GuestMemory, esp: u32) -> bool {
         return false;
     };
     if !host.accepts(mem, &light) {
+        return false;
+    }
+    // The tail sets the view's target back; skipped, it must still be bound.
+    let view = *VIEW_TARGET.lock().unwrap_or_else(|e| e.into_inner());
+    if view.is_none() || host.target() != view {
+        TARGET_MOVED.fetch_add(1, Ordering::Relaxed);
         return false;
     }
     let (Ok(near), Ok(far)) = (mem.u32(TAIL_CLIP[0]), mem.u32(TAIL_CLIP[1])) else {

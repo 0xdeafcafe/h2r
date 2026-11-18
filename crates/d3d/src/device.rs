@@ -2876,6 +2876,26 @@ impl<B: Backend> Device<B> {
         self.viewport
     }
 
+    /// The bound target as words: the colour and depth surfaces (guest
+    /// header addresses, 0 for none) and the viewport (`x, y, width,
+    /// height`, then `min_z` and `max_z` as bits). Equal words, the same
+    /// target: what a caller compares when it skips work that would have
+    /// set the target back (Halo's light passes,
+    /// docs/graphics/native-renderer.md, stage 4).
+    pub fn bound_target(&self) -> [u32; 8] {
+        let v = self.viewport;
+        [
+            self.render_target,
+            self.depth_stencil,
+            v.x,
+            v.y,
+            v.width,
+            v.height,
+            v.min_z.to_bits(),
+            v.max_z.to_bits(),
+        ]
+    }
+
     /// `D3DDevice_SetScissors` (`0x3f8760`, stdcall `Count, Exclusive,
     /// pRects`). Recorded for the draws' clip area
     /// ([`ResolvedDraw::clip`], [`ResolvedDraw::clip_rects`]). As compiled,

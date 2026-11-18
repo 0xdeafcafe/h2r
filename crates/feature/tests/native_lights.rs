@@ -8,7 +8,9 @@
 //! the device cannot draw the pass or do the passes' tail. A skipped light
 //! leaves the guest words the tail zeroes at zero, after the host's device
 //! side of the tail with the game's clip words (the device side itself:
-//! d3d's `light_tail` test); a light left to D3D leaves them alone.
+//! d3d's `light_tail` test); a light left to D3D leaves them alone. A light
+//! is skipped only while the device's bound target is the one recorded
+//! before the view's lights.
 
 use std::sync::{Arc, Mutex};
 
@@ -67,6 +69,8 @@ struct Stub {
     refuse: Mutex<bool>,
     tails: Mutex<Vec<[u32; 2]>>,
     refuse_tail: Mutex<bool>,
+    /// The bound target moved off the view's (say, to a shadow target).
+    moved: Mutex<bool>,
 }
 
 impl Host for Stub {
@@ -87,6 +91,10 @@ impl Host for Stub {
         }
         self.tails.lock().unwrap().push(clip);
         true
+    }
+    fn target(&self) -> Option<[u32; 8]> {
+        let rt = if *self.moved.lock().unwrap() { 0x0080_1000 } else { 0x0080_0000 };
+        Some([rt, 0x0080_2000, 0, 0, 640, 480, 0, 1f32.to_bits()])
     }
 }
 
@@ -245,6 +253,23 @@ fn native_lights_join_runs_between_the_d3d_lights() {
     assert_eq!(stub.runs.lock().unwrap().len(), 4);
     *stub.refuse_tail.lock().unwrap() = false;
 
+    // The bound target is not the view's any more: the light keeps its
+    // passes (their tail sets the target back), with no tail of ours.
+    native_lights::new_view();
+    *stub.moved.lock().unwrap() = true;
+    dirty(&mut m);
+    let tails = stub.tails.lock().unwrap().len();
+    let esp = call(&mut m, a, false);
+    assert!(!native_lights::on_light(&mut m, esp));
+    assert!(untouched(&m));
+    assert_eq!(stub.tails.lock().unwrap().len(), tails);
+    assert_eq!(native_lights::target_refusals(), 1);
+    // Back on the view's target: skipped again.
+    *stub.moved.lock().unwrap() = false;
+    let esp = call(&mut m, a, false);
+    assert!(native_lights::on_light(&mut m, esp));
+    assert_eq!(stub.runs.lock().unwrap().len(), 5);
+
     let (lights, skipped, runs) = native_lights::counts();
-    assert_eq!((lights, skipped, runs), (11, 5, 4));
+    assert_eq!((lights, skipped, runs), (13, 6, 5));
 }

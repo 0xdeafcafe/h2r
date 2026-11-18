@@ -926,12 +926,15 @@ whatever the state it found (after layer 7, stencil may still be on):
   snapshot on the render thread), as the world's mask restores are.
 
 The tail's last call, the view's target back (`0x00014bc0` with
-`[0x004858b8]`), is not repeated: a skipped light never moved the target,
-and every way into the call leaves the view's target bound (the layer
+`[0x004858b8]`), is not repeated: a skipped light never moved the target.
+Every way into the call should leave the view's target bound (the layer
 begins draw every layer but 10 into `[0x004858b8]`, and layer 10's users,
-this tail and the object shadows', set it back). S until the A/B; a
-guard that compares the device's bound target with the one at
-`RENDER_DYNAMIC_LIGHTS` is the fallback if it is not. The gather before
+this tail and the object shadows', set it back), and a guard makes it
+so: the observer before `RENDER_DYNAMIC_LIGHTS` records the device's
+bound target (`Host::target`, `d3d::Device::bound_target`: colour and
+depth surfaces and viewport), and a light whose call finds another bound
+keeps its D3D passes (`native_lights::target_refusals` counts them; a
+steady count in the A/B says the reasoning was wrong). The gather before
 the call still runs (its CPU, 1.88 ms on the census run, is the next
 target, below).
 
