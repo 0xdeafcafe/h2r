@@ -14,6 +14,7 @@ use tags::shader::StageStates;
 
 use crate::gpu::{Image, texture};
 use crate::look::{PassLook, Stage};
+use crate::pass_state::PassState;
 use crate::world::{LightmapKey, World, WorldVertex};
 
 /// The per-view vertex constants the device gives the pass
@@ -69,6 +70,17 @@ pub struct MaterialProgram {
 /// world-space classification, [`crate::look::world_program`]), or says
 /// why it stays on the D3D path.
 pub fn compile(look: &PassLook, microcode: &[u8]) -> Result<MaterialProgram, String> {
+    compile_pass(look, microcode, None)
+}
+
+/// [`compile`] with an alpha test (a transparent pass's
+/// [`crate::pass_state::PassState::alpha_test`]): the fragment is killed
+/// unless its alpha (in 1/255) passes `func` against `reference`.
+pub fn compile_pass(
+    look: &PassLook,
+    microcode: &[u8],
+    alpha_test: Option<(wgpu::CompareFunction, u8)>,
+) -> Result<MaterialProgram, String> {
     if look.per_draw_inputs {
         // Resolved with the instance's inputs only; per-draw ones (object
         // functions, lighting, time) are not evaluated here.
@@ -87,6 +99,7 @@ pub fn compile(look: &PassLook, microcode: &[u8]) -> Result<MaterialProgram, Str
         texture_dims: look.textures.map(|s| (s != Stage::Empty).then_some(TextureDim::D2)),
         // The game's world is W-buffered (docs/graphics/native-renderer.md).
         w_buffer: true,
+        alpha_test: alpha_test.map(|(f, _)| alpha_func(f)),
         ..Default::default()
     };
     let mut signed = [[false; 4]; 4];
@@ -129,8 +142,26 @@ pub fn compile(look: &PassLook, microcode: &[u8]) -> Result<MaterialProgram, Str
         put(&mut vertex.defaults, r);
     }
     let (c0, c1) = def.embedded_constants();
-    let pixel = PixelUniforms { c0, c1, ..Default::default() };
+    let mut pixel = PixelUniforms { c0, c1, ..Default::default() };
+    if let Some((_, reference)) = alpha_test {
+        // Compared with the alpha rounded to 1/255 (`xps.alpha_ref.x`).
+        pixel.alpha_ref = [f32::from(reference), 0.0, 0.0, 0.0];
+    }
     Ok(MaterialProgram { wgsl, stages: look.textures, samplers, dims: ps.textures, signed, vertex, pixel })
+}
+
+fn alpha_func(f: wgpu::CompareFunction) -> psh::AlphaFunc {
+    use wgpu::CompareFunction as C;
+    match f {
+        C::Never => psh::AlphaFunc::Never,
+        C::Less => psh::AlphaFunc::Less,
+        C::Equal => psh::AlphaFunc::Equal,
+        C::LessEqual => psh::AlphaFunc::LessEqual,
+        C::Greater => psh::AlphaFunc::Greater,
+        C::NotEqual => psh::AlphaFunc::NotEqual,
+        C::GreaterEqual => psh::AlphaFunc::GreaterEqual,
+        C::Always => psh::AlphaFunc::Always,
+    }
 }
 
 /// The channels (R, G, B, A) a `D3DTSS_COLORSIGN` value reads as signed
@@ -239,18 +270,19 @@ pub fn sampler_descriptor(s: Option<&StageStates>) -> wgpu::SamplerDescriptor<'s
     }
 }
 
-/// One material's GPU side.
-struct Gpu {
-    program: MaterialProgram,
+/// One compiled program's GPU side: its module, uniforms, samplers, stage
+/// textures and pipelines (by target formats).
+pub(crate) struct Gpu {
+    pub(crate) program: MaterialProgram,
     module: wgpu::ShaderModule,
     layout: wgpu::PipelineLayout,
     textures_layout: wgpu::BindGroupLayout,
     vertex_buffer: wgpu::Buffer,
     pixel_buffer: wgpu::Buffer,
-    uniforms: wgpu::BindGroup,
+    pub(crate) uniforms: wgpu::BindGroup,
     samplers: [wgpu::Sampler; 4],
     stage_views: [Option<wgpu::TextureView>; 4],
-    pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat), wgpu::RenderPipeline>,
+    pub(crate) pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat), wgpu::RenderPipeline>,
 }
 
 /// The materials drawn with their own programs, and each batch's texture
@@ -275,6 +307,198 @@ fn uniform_entry(binding: u32, visibility: wgpu::ShaderStages) -> wgpu::BindGrou
     }
 }
 
+impl Gpu {
+    /// Uploads `program`; `None` when a stage's bitmap does not decode.
+    pub(crate) fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        program: MaterialProgram,
+        stage_image: &mut dyn FnMut(Stage) -> Option<Image>,
+    ) -> Option<Self> {
+        let mut stage_views: [Option<wgpu::TextureView>; 4] = Default::default();
+        for (n, s) in program.stages.iter().enumerate() {
+            if let Stage::Bitmap { .. } = s
+                && program.dims[n].is_some()
+            {
+                let mut image = stage_image(*s)?;
+                bias_signed(&mut image, program.signed[n]);
+                stage_views[n] = Some(texture(device, queue, &image, "native world stage"));
+            }
+        }
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("native world program"),
+            source: wgpu::ShaderSource::Wgsl(program.wgsl.clone().into()),
+        });
+        let uniforms_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("native world program uniforms"),
+            entries: &[
+                uniform_entry(0, wgpu::ShaderStages::VERTEX_FRAGMENT),
+                uniform_entry(1, wgpu::ShaderStages::VERTEX_FRAGMENT),
+            ],
+        });
+        let mut entries = Vec::new();
+        for (n, d) in program.dims.iter().enumerate() {
+            if d.is_none() {
+                continue;
+            }
+            entries.push(wgpu::BindGroupLayoutEntry {
+                binding: 2 * n as u32,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            });
+            entries.push(wgpu::BindGroupLayoutEntry {
+                binding: 2 * n as u32 + 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            });
+        }
+        let textures_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("native world program textures"),
+            entries: &entries,
+        });
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("native world program"),
+            bind_group_layouts: &[Some(&uniforms_layout), Some(&textures_layout)],
+            immediate_size: 0,
+        });
+        let buffer = |label, size: usize| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: size as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        };
+        let vertex_buffer = buffer("native world program vertex", VertexUniforms::SIZE);
+        let pixel_buffer = buffer("native world program pixel", PixelUniforms::SIZE);
+        let uniforms = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("native world program uniforms"),
+            layout: &uniforms_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: vertex_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: pixel_buffer.as_entire_binding() },
+            ],
+        });
+        let samplers = std::array::from_fn(|n| device.create_sampler(&sampler_descriptor(program.samplers[n].as_ref())));
+        Some(Gpu {
+            program,
+            module,
+            layout,
+            textures_layout,
+            vertex_buffer,
+            pixel_buffer,
+            uniforms,
+            samplers,
+            stage_views,
+            pipelines: HashMap::new(),
+        })
+    }
+
+    /// The texture group with `page` bound where the program samples the
+    /// lightmap; `None` when a sampled stage has nothing to bind.
+    pub(crate) fn textures(&self, device: &wgpu::Device, page: Option<&wgpu::TextureView>) -> Option<wgpu::BindGroup> {
+        let mut views = Vec::new();
+        for (n, d) in self.program.dims.iter().enumerate() {
+            if d.is_none() {
+                continue;
+            }
+            let view = match self.program.stages[n] {
+                Stage::Lightmap => page?.clone(),
+                _ => self.stage_views[n].clone()?,
+            };
+            views.push((n, view));
+        }
+        let mut entries = Vec::new();
+        for (n, view) in &views {
+            entries.push(wgpu::BindGroupEntry {
+                binding: 2 * *n as u32,
+                resource: wgpu::BindingResource::TextureView(view),
+            });
+            entries.push(wgpu::BindGroupEntry {
+                binding: 2 * *n as u32 + 1,
+                resource: wgpu::BindingResource::Sampler(&self.samplers[*n]),
+            });
+        }
+        Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("native world program textures"),
+            layout: &self.textures_layout,
+            entries: &entries,
+        }))
+    }
+
+    /// The frame's uniforms.
+    pub(crate) fn prepare(&self, queue: &wgpu::Queue, view: &ViewInputs) {
+        queue.write_buffer(&self.vertex_buffer, 0, &frame_vertex(&self.program.vertex, view).to_bytes());
+        queue.write_buffer(&self.pixel_buffer, 0, &frame_pixel(&self.program.pixel, view).to_bytes());
+    }
+
+    /// Makes the pipeline for these target formats: the world's opaque
+    /// state without `state`, a transparent pass's with it.
+    pub(crate) fn pipeline(
+        &mut self,
+        device: &wgpu::Device,
+        color: wgpu::TextureFormat,
+        depth: wgpu::TextureFormat,
+        state: Option<&PassState>,
+    ) {
+        let attributes: Vec<wgpu::VertexAttribute> = INPUTS
+            .iter()
+            .map(|&(location, offset, format)| wgpu::VertexAttribute { format, offset, shader_location: location })
+            .collect();
+        let (module, layout) = (&self.module, &self.layout);
+        let primitive = state.map_or(
+            wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            |s| s.primitive,
+        );
+        let (depth_write, depth_compare) =
+            state.map_or((true, wgpu::CompareFunction::LessEqual), |s| (s.depth_write, s.depth_compare));
+        let (blend, write_mask) = state.map_or((None, wgpu::ColorWrites::ALL), |s| (s.blend, s.color_writes));
+        self.pipelines.entry((color, depth)).or_insert_with(|| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("native world program"),
+                layout: Some(layout),
+                vertex: wgpu::VertexState {
+                    module,
+                    entry_point: Some("vs_main"),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<WorldVertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &attributes,
+                    })],
+                },
+                primitive,
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: depth,
+                    depth_write_enabled: Some(depth_write),
+                    depth_compare: Some(depth_compare),
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module,
+                    entry_point: Some("fs_main"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState { format: color, blend, write_mask })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        });
+    }
+}
+
 impl ProgramSet {
     /// Uploads `programs` (by material) for `world`. `stage_image` decodes
     /// a stage's bitmap image; `lightmap` gives a batch's page. A material
@@ -288,93 +512,10 @@ impl ProgramSet {
         lightmap: &mut dyn FnMut(LightmapKey) -> Option<Image>,
     ) -> Self {
         let mut materials = HashMap::new();
-        'material: for (material, program) in programs {
-            let mut stage_views: [Option<wgpu::TextureView>; 4] = Default::default();
-            for (n, s) in program.stages.iter().enumerate() {
-                if let Stage::Bitmap { .. } = s
-                    && program.dims[n].is_some()
-                {
-                    let Some(mut image) = stage_image(*s) else { continue 'material };
-                    bias_signed(&mut image, program.signed[n]);
-                    stage_views[n] = Some(texture(device, queue, &image, "native world stage"));
-                }
+        for (material, program) in programs {
+            if let Some(g) = Gpu::new(device, queue, program, stage_image) {
+                materials.insert(material, g);
             }
-            let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("native world program"),
-                source: wgpu::ShaderSource::Wgsl(program.wgsl.clone().into()),
-            });
-            let uniforms_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("native world program uniforms"),
-                entries: &[
-                    uniform_entry(0, wgpu::ShaderStages::VERTEX_FRAGMENT),
-                    uniform_entry(1, wgpu::ShaderStages::VERTEX_FRAGMENT),
-                ],
-            });
-            let mut entries = Vec::new();
-            for (n, d) in program.dims.iter().enumerate() {
-                if d.is_none() {
-                    continue;
-                }
-                entries.push(wgpu::BindGroupLayoutEntry {
-                    binding: 2 * n as u32,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                });
-                entries.push(wgpu::BindGroupLayoutEntry {
-                    binding: 2 * n as u32 + 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                });
-            }
-            let textures_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("native world program textures"),
-                entries: &entries,
-            });
-            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("native world program"),
-                bind_group_layouts: &[Some(&uniforms_layout), Some(&textures_layout)],
-                immediate_size: 0,
-            });
-            let buffer = |label, size: usize| {
-                device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some(label),
-                    size: size as u64,
-                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                })
-            };
-            let vertex_buffer = buffer("native world program vertex", VertexUniforms::SIZE);
-            let pixel_buffer = buffer("native world program pixel", PixelUniforms::SIZE);
-            let uniforms = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("native world program uniforms"),
-                layout: &uniforms_layout,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: vertex_buffer.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: pixel_buffer.as_entire_binding() },
-                ],
-            });
-            let samplers = std::array::from_fn(|n| device.create_sampler(&sampler_descriptor(program.samplers[n].as_ref())));
-            materials.insert(
-                material,
-                Gpu {
-                    program,
-                    module,
-                    layout,
-                    textures_layout,
-                    vertex_buffer,
-                    pixel_buffer,
-                    uniforms,
-                    samplers,
-                    stage_views,
-                    pipelines: HashMap::new(),
-                },
-            );
         }
         let mut pages: HashMap<LightmapKey, Option<wgpu::TextureView>> = HashMap::new();
         let batch_groups = world
@@ -389,33 +530,7 @@ impl ProgramSet {
                         .clone(),
                     None => None,
                 };
-                let mut views = Vec::new();
-                for (n, d) in g.program.dims.iter().enumerate() {
-                    if d.is_none() {
-                        continue;
-                    }
-                    let view = match g.program.stages[n] {
-                        Stage::Lightmap => page.clone()?,
-                        _ => g.stage_views[n].clone()?,
-                    };
-                    views.push((n, view));
-                }
-                let mut entries = Vec::new();
-                for (n, view) in &views {
-                    entries.push(wgpu::BindGroupEntry {
-                        binding: 2 * *n as u32,
-                        resource: wgpu::BindingResource::TextureView(view),
-                    });
-                    entries.push(wgpu::BindGroupEntry {
-                        binding: 2 * *n as u32 + 1,
-                        resource: wgpu::BindingResource::Sampler(&g.samplers[*n]),
-                    });
-                }
-                Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("native world program textures"),
-                    layout: &g.textures_layout,
-                    entries: &entries,
-                }))
+                g.textures(device, page.as_ref())
             })
             .collect();
         Self { materials, batch_groups }
@@ -433,60 +548,14 @@ impl ProgramSet {
     /// The frame's uniforms for every material.
     pub fn prepare(&self, queue: &wgpu::Queue, view: &ViewInputs) {
         for g in self.materials.values() {
-            queue.write_buffer(&g.vertex_buffer, 0, &frame_vertex(&g.program.vertex, view).to_bytes());
-            queue.write_buffer(&g.pixel_buffer, 0, &frame_pixel(&g.program.pixel, view).to_bytes());
+            g.prepare(queue, view);
         }
     }
 
     /// Makes the pipelines for these target formats (before the pass).
     pub fn pipelines(&mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat) {
-        let attributes: Vec<wgpu::VertexAttribute> = INPUTS
-            .iter()
-            .map(|&(location, offset, format)| wgpu::VertexAttribute { format, offset, shader_location: location })
-            .collect();
         for g in self.materials.values_mut() {
-            let (module, layout) = (&g.module, &g.layout);
-            g.pipelines.entry((color, depth)).or_insert_with(|| {
-                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: Some("native world program"),
-                    layout: Some(layout),
-                    vertex: wgpu::VertexState {
-                        module,
-                        entry_point: Some("vs_main"),
-                        compilation_options: Default::default(),
-                        buffers: &[Some(wgpu::VertexBufferLayout {
-                            array_stride: std::mem::size_of::<WorldVertex>() as u64,
-                            step_mode: wgpu::VertexStepMode::Vertex,
-                            attributes: &attributes,
-                        })],
-                    },
-                    primitive: wgpu::PrimitiveState {
-                        topology: wgpu::PrimitiveTopology::TriangleList,
-                        cull_mode: None,
-                        ..Default::default()
-                    },
-                    depth_stencil: Some(wgpu::DepthStencilState {
-                        format: depth,
-                        depth_write_enabled: Some(true),
-                        depth_compare: Some(wgpu::CompareFunction::LessEqual),
-                        stencil: wgpu::StencilState::default(),
-                        bias: wgpu::DepthBiasState::default(),
-                    }),
-                    multisample: wgpu::MultisampleState::default(),
-                    fragment: Some(wgpu::FragmentState {
-                        module,
-                        entry_point: Some("fs_main"),
-                        compilation_options: Default::default(),
-                        targets: &[Some(wgpu::ColorTargetState {
-                            format: color,
-                            blend: None,
-                            write_mask: wgpu::ColorWrites::ALL,
-                        })],
-                    }),
-                    multiview_mask: None,
-                    cache: None,
-                })
-            });
+            g.pipeline(device, color, depth, None);
         }
     }
 
@@ -587,6 +656,17 @@ mod tests {
         assert_eq!(p.vertex.constants[MODEL_ROWS + 1], [0.0, 1.0, 0.0, 0.0]);
         assert_eq!(p.dims, [None; 4], "samples nothing");
         assert_eq!(p.signed, [[false; 4]; 4]);
+    }
+
+    #[test]
+    fn a_transparent_pass_carries_its_alpha_test() {
+        let p = compile_pass(&plain_look(), &plain_program(), Some((wgpu::CompareFunction::Greater, 0x40))).unwrap();
+        shaders::validate(&p.wgsl).expect("valid WGSL");
+        assert!(p.wgsl.contains("xps.alpha_ref.x"), "the test is in the fragment shader");
+        assert_eq!(p.pixel.alpha_ref[0], 64.0);
+        let plain = compile(&plain_look(), &plain_program()).unwrap();
+        assert_eq!(plain.pixel.alpha_ref[0], 0.0);
+        assert!(!plain.wgsl.contains("xps.alpha_ref.x"));
     }
 
     #[test]

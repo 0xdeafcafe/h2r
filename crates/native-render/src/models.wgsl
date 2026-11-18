@@ -129,3 +129,16 @@ fn fs_main(v: V) -> Out {
     }
     return Out(vec4<f32>(base.rgb * lit, 1.0), w_depth(v.position));
 }
+
+// A transparent part (stage 3): the same shading, with the base map's
+// alpha for the pass's blend.
+@fragment
+fn fs_transparent(v: V) -> Out {
+    let base = textureSample(base_map, linear, v.uv);
+    let len = length(v.normal);
+    var lit = frame.ambient.rgb;
+    if (len > 1e-6) {
+        lit = lit + frame.light.w * max(dot(v.normal / len, frame.light.xyz), 0.0);
+    }
+    return Out(vec4<f32>(base.rgb * lit, base.a), w_depth(v.position));
+}

@@ -24,17 +24,27 @@
 //! - an observer before the transparents: forgets the open run, so a run
 //!   never spans two views (or a pass the device dropped).
 //!
+//! Objects' entries (with `impl.render.native_objects` on as well): the
+//! hook copies the object's node matrices and sphere out of guest memory
+//! into the run (`native_render::objects::read_object`), as stage 2 does
+//! at layer 3, so the pass draws the frame's pose. An object's entry
+//! stands for all its parts with that shader (S: which section and part an
+//! object entry names is not read), so a later entry of the same object
+//! and shader in the same view is skipped without drawing again.
+//!
 //! Nothing here writes guest memory: there is no restore. The entries are
 //! read from the memory the hook's context sees, which on the render
 //! thread is the render's snapshot of the frame.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use engine::memory::GuestMemory;
 use engine::points;
 use native_render::camera::{GuestRead, RENDER_CAMERA, RenderCamera};
-use native_render::transparent::{self, Entry, Run};
+use native_render::objects::{self, ObjectFrame};
+use native_render::transparent::{self, Entry, Run, Source};
 
 use crate::{BuildError, Builder, Feature, Flow, Manifest};
 
@@ -42,11 +52,18 @@ pub const ID: &str = "native-transparents";
 /// The switch, looked up exactly.
 pub const SWITCH: &str = "impl.render.native_transparents";
 
+/// Whether the native transparents are on (off by default).
+pub fn on(switches: &crate::Switches) -> bool {
+    switches.feature(SWITCH, false)
+}
+
 /// What draws the transparents: boot's glue over the GPU and the device.
 pub trait Host: Send + Sync {
     /// Whether the host draws `entry` natively now (its geometry and its
     /// layer-15 material are loaded and supported).
-    fn accepts(&self, mem: &dyn GuestMemory, entry: &Entry) -> bool;
+    /// `object`: an object entry's copy of the object (definition, node
+    /// matrices, sphere).
+    fn accepts(&self, mem: &dyn GuestMemory, entry: &Entry, object: Option<&ObjectFrame>) -> bool;
     /// Asks the device for an external pass over `run` with `camera`; the
     /// pass seals the run when the device issues it. `false`: nothing
     /// asked (the entry goes to the D3D path).
@@ -59,6 +76,16 @@ static OPEN: Mutex<Option<Arc<Run>>> = Mutex::new(None);
 static ENTRIES: AtomicU64 = AtomicU64::new(0);
 static SKIPPED: AtomicU64 = AtomicU64::new(0);
 static RUNS: AtomicU64 = AtomicU64::new(0);
+/// Objects' entries are considered (the native objects on too).
+static OBJECTS_ON: AtomicBool = AtomicBool::new(false);
+/// (object handle, shader index) drawn natively in this view.
+static OBJECTS_DRAWN: Mutex<Option<HashSet<(u32, u16)>>> = Mutex::new(None);
+
+/// Whether objects' entries are considered (the build sets it: both this
+/// switch and `impl.render.native_objects` on).
+pub fn set_objects(on: bool) {
+    OBJECTS_ON.store(on, Ordering::Relaxed);
+}
 
 /// Installs the host (boot). Without one nothing is skipped.
 pub fn set_host(host: Arc<dyn Host>) {
@@ -85,6 +112,7 @@ impl GuestRead for Ro<'_> {
 /// The observer before the transparents: no run carries over.
 pub fn new_view() {
     OPEN.lock().unwrap_or_else(|e| e.into_inner()).take();
+    OBJECTS_DRAWN.lock().unwrap_or_else(|e| e.into_inner()).take();
 }
 
 /// The handler's `before`, on any guest memory: `data` its argument (the
@@ -99,27 +127,66 @@ pub fn on_entry(mem: &dyn GuestMemory, data: u32) -> bool {
     let Some(entry) = transparent::read_entry(&m, data) else {
         return false;
     };
-    if !host.accepts(mem, &entry) {
+    let object = match entry.source {
+        Source::Object(handle) => {
+            if !OBJECTS_ON.load(Ordering::Relaxed) {
+                return false;
+            }
+            let key = (handle, entry.shader as u16);
+            if OBJECTS_DRAWN
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .is_some_and(|d| d.contains(&key))
+            {
+                // Its parts with this shader are in an earlier run.
+                SKIPPED.fetch_add(1, Ordering::Relaxed);
+                return true;
+            }
+            let Some(frame) = objects::read_object(&m, handle) else {
+                return false;
+            };
+            Some(frame)
+        }
+        Source::Cluster(_) | Source::Placement(_) => None,
+    };
+    if !host.accepts(mem, &entry, object.as_ref()) {
         return false;
     }
+    let drawn = object.as_ref().map(|o| (o.handle, entry.shader as u16));
+    if !join(&*host, &m, entry, object) {
+        return false;
+    }
+    if let Some(key) = drawn {
+        OBJECTS_DRAWN
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_or_insert_with(HashSet::new)
+            .insert(key);
+    }
+    SKIPPED.fetch_add(1, Ordering::Relaxed);
+    true
+}
+
+/// Adds the entry to the open run, or opens one; `false` when no pass
+/// could be asked for.
+fn join(host: &dyn Host, m: &Ro<'_>, entry: Entry, object: Option<ObjectFrame>) -> bool {
     let mut open = OPEN.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(run) = open.as_ref()
-        && run.push(entry)
+        && !run.is_sealed()
     {
-        SKIPPED.fetch_add(1, Ordering::Relaxed);
-        return true;
+        return run.push(entry, object);
     }
-    let Some(camera) = RenderCamera::read(&m, RENDER_CAMERA) else {
+    let Some(camera) = RenderCamera::read(m, RENDER_CAMERA) else {
         return false;
     };
     let run = Arc::new(Run::new());
-    run.push(entry);
+    run.push(entry, object);
     if !host.open(&camera, Arc::clone(&run)) {
         *open = None;
         return false;
     }
     *open = Some(run);
-    SKIPPED.fetch_add(1, Ordering::Relaxed);
     let runs = RUNS.fetch_add(1, Ordering::Relaxed) + 1;
     if runs % 1800 == 1 {
         let (e, s, r) = counts();
@@ -137,8 +204,13 @@ impl Feature for NativeTransparents {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        if !b.switches().feature(SWITCH, false) {
+        if !on(b.switches()) {
             return Ok(());
+        }
+        // Only ever turned on here (a plan built without the objects, as the
+        // tests build several, leaves an earlier one's choice alone).
+        if b.switches().feature(crate::native_objects::SWITCH, false) {
+            set_objects(true);
         }
         b.raw()
             .observe_before(&points::SCENE_TRANSPARENTS, "native_transparents_view", |_| new_view())

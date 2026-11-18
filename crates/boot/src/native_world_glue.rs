@@ -34,7 +34,8 @@ use native_render::gpu::{DepthRule, GpuWorld, Image, PassViewport};
 use native_render::load::{self, LoadedWorld};
 use native_render::look::{self, Stage};
 use native_render::program::{self, MaterialProgram, ProgramSet, ViewInputs};
-use native_render::world::{LightmapKey, World};
+use native_render::transparent_gpu::{TransparentProgram, TransparentSet};
+use native_render::world::{LightmapKey, Owner, World};
 
 use crate::telemetry::{MapFile, MapLocator};
 
@@ -57,6 +58,9 @@ pub struct CpuWorld {
     /// Materials with their own programs, and their stages' images.
     pub programs: HashMap<u16, MaterialProgram>,
     pub stage_images: StageImages,
+    /// Transparent materials (`impl.render.native_transparents`): each
+    /// one's layer-15 passes, compiled.
+    pub transparents: HashMap<u16, Vec<TransparentProgram>>,
 }
 
 /// One loaded world: CPU data until the first pass uploads it.
@@ -64,9 +68,15 @@ pub struct Ready {
     cpu: Mutex<Option<CpuWorld>>,
     gpu: Mutex<Option<GpuWorld>>,
     shaders: Arc<ShaderSet>,
+    /// The transparent parts the native pass draws, with their shader's
+    /// tag index (`native_transparents_glue`).
+    pub(crate) transparent_parts: Arc<HashMap<(Owner, u8), u16>>,
 }
 
-enum Load {
+/// The current (map, BSP) and its world.
+pub(crate) type State = Arc<Mutex<(Option<(String, u32)>, Load)>>;
+
+pub(crate) enum Load {
     Idle,
     Loading,
     Ready(Arc<Ready>),
@@ -76,7 +86,7 @@ enum Load {
 /// The host: the device and the current world.
 pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
     device: d3d::abi::SharedDevice<B>,
-    state: Arc<Mutex<(Option<(String, u32)>, Load)>>,
+    state: State,
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
@@ -140,12 +150,54 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     }
 }
 
-/// Installs the host on the device (with the occlusion capture).
+/// Installs the host on the device (with the occlusion capture), and the
+/// transparents' host over the same world.
 pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
+    let state: State = Arc::new(Mutex::new((None, Load::Idle)));
     feature::native_world::set_host(Arc::new(Glue {
         device: Arc::clone(device),
-        state: Arc::new(Mutex::new((None, Load::Idle))),
+        state: Arc::clone(&state),
     }));
+    crate::native_transparents_glue::install(device, state);
+}
+
+/// The world's GPU side, uploaded from its CPU side by the first pass that
+/// needs it (on the render thread). `None` inside when it was taken and
+/// is gone.
+pub(crate) fn upload<'a>(ready: &'a Ready, t: &d3d::ExternalTarget<'_>) -> std::sync::MutexGuard<'a, Option<GpuWorld>> {
+    let (device, queue) = (t.device, t.queue);
+    let mut gpu = ready.gpu.lock().unwrap_or_else(|e| e.into_inner());
+    if gpu.is_some() {
+        return gpu;
+    }
+    let Some(cpu) = ready.cpu.lock().unwrap_or_else(|e| e.into_inner()).take() else {
+        return gpu;
+    };
+    let CpuWorld {
+        world,
+        mut base_maps,
+        lightmaps,
+        programs,
+        stage_images,
+        transparents,
+    } = cpu;
+    let mut g = GpuWorld::new(device, queue, world, &mut |m| base_maps.remove(&m), &mut |k| lightmaps.get(&k).cloned());
+    let mut stage = |s: Stage| match s {
+        Stage::Bitmap { bitmap, image } => stage_images.get(&(bitmap, image)).cloned(),
+        Stage::Empty | Stage::Lightmap => None,
+    };
+    if !programs.is_empty() {
+        let set = ProgramSet::new(device, queue, g.world(), programs, &mut stage, &mut |k| lightmaps.get(&k).cloned());
+        eprintln!("native-world: {} materials draw with their own programs", set.len());
+        g.set_programs(set);
+    }
+    if !transparents.is_empty() {
+        let set = TransparentSet::new(device, queue, g.world(), transparents, &mut stage, &mut |k| lightmaps.get(&k).cloned());
+        eprintln!("native-transparents: {} transparent materials uploaded", set.len());
+        g.set_transparents(set);
+    }
+    *gpu = Some(g);
+    gpu
 }
 
 /// One view's world pass.
@@ -162,42 +214,7 @@ impl d3d::ExternalPass for WorldPass {
     }
 
     fn encode(&mut self, t: d3d::ExternalTarget<'_>) {
-        let mut gpu = self.ready.gpu.lock().unwrap_or_else(|e| e.into_inner());
-        if gpu.is_none() {
-            let Some(cpu) = self.ready.cpu.lock().unwrap_or_else(|e| e.into_inner()).take() else {
-                return;
-            };
-            let CpuWorld {
-                world,
-                mut base_maps,
-                lightmaps,
-                programs,
-                mut stage_images,
-            } = cpu;
-            let mut g = GpuWorld::new(
-                t.device,
-                t.queue,
-                world,
-                &mut |m| base_maps.remove(&m),
-                &mut |k| lightmaps.get(&k).cloned(),
-            );
-            if !programs.is_empty() {
-                let set = ProgramSet::new(
-                    t.device,
-                    t.queue,
-                    g.world(),
-                    programs,
-                    &mut |s| match s {
-                        Stage::Bitmap { bitmap, image } => stage_images.remove(&(bitmap, image)),
-                        Stage::Empty | Stage::Lightmap => None,
-                    },
-                    &mut |k| lightmaps.get(&k).cloned(),
-                );
-                eprintln!("native-world: {} materials draw with their own programs", set.len());
-                g.set_programs(set);
-            }
-            *gpu = Some(g);
-        }
+        let mut gpu = upload(&self.ready, &t);
         let Some(gpu) = gpu.as_mut() else { return };
         if let Some(constants) = self.view
             && gpu.program_count() > 0
@@ -325,8 +342,16 @@ fn load_ready(name: &str, bsp: u32) -> Result<Ready, load::Error> {
     // Material programs: each native material's own layer-3 pass where it
     // translates, with its stages' images.
     let programs_on = feature::Switches::from_env().is_ok_and(|s| feature::native_world::programs_on(&s));
-    let (programs, stage_images) = if programs_on {
+    let (programs, mut stage_images) = if programs_on {
         material_programs(&mut map, &mut files, &shaders, &base_maps)
+    } else {
+        Default::default()
+    };
+    // Transparent materials: each one's layer-15 passes where they all
+    // translate, and the parts the native pass can draw.
+    let transparents_on = feature::Switches::from_env().is_ok_and(|s| feature::native_transparents::on(&s));
+    let (transparents, transparent_parts) = if transparents_on {
+        crate::native_transparents_glue::load(&mut map, &mut files, &shaders, &world, &lightmaps, &mut stage_images)
     } else {
         Default::default()
     };
@@ -339,9 +364,11 @@ fn load_ready(name: &str, bsp: u32) -> Result<Ready, load::Error> {
             lightmaps,
             programs,
             stage_images,
+            transparents,
         })),
         gpu: Mutex::new(None),
         shaders: Arc::new(native),
+        transparent_parts: Arc::new(transparent_parts),
     })
 }
 
@@ -424,7 +451,7 @@ pub(crate) fn decode_first<R: std::io::Read + std::io::Seek>(map: &mut Map<R>, f
 }
 
 /// Image `index` of a bitmap as RGBA, with its mip chain.
-fn decode_image<R: std::io::Read + std::io::Seek>(
+pub(crate) fn decode_image<R: std::io::Read + std::io::Seek>(
     map: &mut Map<R>,
     files: &mut assets::ResourceFiles,
     id: TagId,
