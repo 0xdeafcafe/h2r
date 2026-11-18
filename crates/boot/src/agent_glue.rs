@@ -58,6 +58,7 @@ impl AgentGlue {
         }
         let agent = agent::Agent::new();
         add_host_methods(&agent);
+        install_sim(&agent);
         // On the game thread: the sampler's main target.
         crate::sampling::set_game_thread();
         let server = agent::Server::listen_on(&endpoint, agent.clone())
@@ -200,6 +201,49 @@ pub fn add_host_methods(agent: &agent::Agent) {
     );
 }
 
+/// `sim.*` (crates/agent's `sim`): no bots backend until bots.md's
+/// `bots::local` lands, and the session kind read as `coop_probe` reads it.
+pub fn install_sim(agent: &agent::Agent) {
+    agent::sim::install(
+        agent,
+        Box::new(agent::sim::bots::NotLanded),
+        Some(Box::new(session_view)),
+    );
+}
+
+/// [`crate::layout_glue::Gm`] over the agent's guest memory.
+struct Mem<'a>(&'a dyn engine::GuestMemory);
+
+impl crate::layout_glue::Gm for Mem<'_> {
+    fn rd(&self, addr: u32, out: &mut [u8]) -> bool {
+        self.0.read(addr, out).is_ok()
+    }
+    fn wr(&mut self, _: u32, _: &[u8]) -> bool {
+        false
+    }
+}
+
+/// The session kind from the simulation mode, and the squad session
+/// (`coop_probe::read_sim`, `read_session`).
+pub fn session_view(m: &dyn engine::GuestMemory) -> agent_proto::sim::SessionView {
+    use crate::coop_probe::{protocol_name, read_session, read_sim};
+    let m = Mem(m);
+    let sim = read_sim(&m);
+    let s = read_session(&m);
+    agent_proto::sim::SessionView {
+        kind: sim.map_or(agent_proto::sim::SessionKind::Unknown, |s| {
+            agent_proto::sim::SessionKind::from_sim_mode(s.mode)
+        }),
+        sim_mode: sim.map(|s| s.mode),
+        host: s.map(|s| s.is_host()),
+        peers: s.map(|s| s.peers),
+        players: s.map(|s| s.players),
+        protocol: s.map(|s| protocol_name(s.protocol).into()),
+        campaign: s.map(|s| s.is_campaign()),
+        ..Default::default()
+    }
+}
+
 impl Drop for AgentGlue {
     fn drop(&mut self) {
         self.agent.shutdown();
@@ -211,6 +255,28 @@ impl Drop for AgentGlue {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn the_sim_session_kind_comes_from_the_simulation_mode() {
+        use agent_proto::sim::SessionKind;
+        let mut g = engine::testing::FakeGuest::new();
+        assert_eq!(session_view(&g).kind, SessionKind::Unknown);
+        let globals = 0x9000_0000;
+        g.map(engine::points::SIM_GLOBALS.base, 4);
+        g.put_u32(engine::points::SIM_GLOBALS.base, globals);
+        g.map(globals, 0x40);
+        for (mode, kind) in [
+            (3, SessionKind::CoopHost),
+            (2, SessionKind::CoopGuest),
+            (5, SessionKind::MpHost),
+            (1, SessionKind::Local),
+        ] {
+            g.put_u32(globals + 8, mode);
+            let v = session_view(&g);
+            assert_eq!((v.kind, v.sim_mode), (kind, Some(mode)));
+            assert_eq!(v.host, None, "no squad session");
+        }
+    }
 
     #[test]
     fn the_glue_answers_pad_and_profiler_methods() {

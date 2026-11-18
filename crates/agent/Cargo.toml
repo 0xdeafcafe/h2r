@@ -11,7 +11,7 @@ serde.workspace = true
 serde_json.workspace = true
 runtime.workspace = true
 feature = { path = "../feature" }
-engine = { path = "../engine" }
+engine = { path = "../engine", features = ["runtime-glue"] }
 live-telemetry = { path = "../live-telemetry" }
 timeline = { path = "../timeline" }
 xapi = { path = "../xapi" }

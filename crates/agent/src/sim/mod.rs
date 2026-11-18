@@ -1,0 +1,513 @@
+//! `sim.*` (docs/runtime/agent-api.md, "sim"): simulated players and
+//! direct game state, so an agent can test co-op, multiplayer and Live
+//! flows from one running game.
+//!
+//! - `sim.player.add` / `remove` / `list` / `pad`: players made by the bots
+//!   ([`bots::Bots`], a stand-in for docs/game/bots.md's `bots::local` and
+//!   `bots::phantom` until they land), driven by a [`bots::PadSource`].
+//! - `sim.state.set`: host writes to a player ([`state`]), at a tick
+//!   boundary, refused where they would desync a co-op session.
+//! - `sim.view`, `sim.expect`: the game as one JSON document, and
+//!   `h2 agent run`'s expectations judged against it at one tick.
+//! - `sim.session`: the session kind, from the host's [`SessionProbe`].
+//!
+//! They are game methods ([`crate::Agent::add_game_method`]): answered on
+//! the game's thread at a tick boundary while the game ticks, with guest
+//! memory at hand.
+
+pub mod bots;
+pub mod state;
+
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, MutexGuard};
+
+use agent_proto::expect;
+use agent_proto::sim::{
+    self as wire, AddParams, DriveParams, ExpectParams, PlayerKind, RemoveParams, SessionKind,
+    SessionView, SetParams, SimPlayer, SourceKind, ViewParams, method,
+};
+use agent_proto::{Boundary, Kind, Object, ObjectId, RpcError, code};
+use engine::GuestMemory;
+use input::backend::remote::Remote;
+use serde_json::{Map, Value, json};
+
+use crate::exec::GameCtx;
+use crate::{Access, Agent};
+use bots::{Bot, Bots, PadSource};
+
+/// Reads the session kind from guest memory: the host's (boot reads the
+/// simulation mode and the squad session as `coop_probe` does).
+pub type SessionProbe = Box<dyn FnMut(&dyn GuestMemory) -> SessionView + Send>;
+
+/// One simulated player.
+struct Entry {
+    bot: Bot,
+    source: SourceKind,
+    team: Option<i32>,
+    identity: Option<agent_proto::sim::Identity>,
+    /// The script queue, for a `script` source.
+    script: Option<Remote>,
+}
+
+/// The simulated players and the backends.
+pub struct Sim {
+    bots: Box<dyn Bots>,
+    probe: Option<SessionProbe>,
+    players: BTreeMap<u32, Entry>,
+    next: u32,
+}
+
+/// A handle on the installed `sim.*` state.
+#[derive(Clone)]
+pub struct SimHandle(Arc<Mutex<Sim>>);
+
+impl SimHandle {
+    fn lock(&self) -> MutexGuard<'_, Sim> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Swaps the bots backend (when `bots::local` lands, or in tests).
+    pub fn set_bots(&self, bots: Box<dyn Bots>) {
+        self.lock().bots = bots;
+    }
+
+    /// Sets the session probe.
+    pub fn set_probe(&self, probe: SessionProbe) {
+        self.lock().probe = Some(probe);
+    }
+}
+
+/// Registers the `sim.*` methods on `agent`.
+pub fn install(agent: &Agent, bots: Box<dyn Bots>, probe: Option<SessionProbe>) -> SimHandle {
+    let h = SimHandle(Arc::new(Mutex::new(Sim {
+        bots,
+        probe,
+        players: BTreeMap::new(),
+        next: 1,
+    })));
+    let add = |name: &str, access: Access, f: fn(&mut Sim, Value, &mut GameCtx<'_>) -> R| {
+        let h = h.clone();
+        agent.add_game_method(name, access, move |v, ctx| f(&mut h.lock(), v, ctx));
+    };
+    add(method::PLAYER_ADD, Access::Act, Sim::player_add);
+    add(method::PLAYER_REMOVE, Access::Act, Sim::player_remove);
+    add(method::PLAYER_LIST, Access::Read, Sim::player_list);
+    add(method::PLAYER_PAD, Access::Act, Sim::player_pad);
+    add(method::STATE_SET, Access::Act, Sim::state_set);
+    add(method::VIEW, Access::Read, Sim::view_method);
+    add(method::EXPECT, Access::Read, Sim::expect);
+    add(method::SESSION, Access::Read, Sim::session_method);
+    h
+}
+
+type R = Result<Value, RpcError>;
+
+fn params<T: serde::de::DeserializeOwned>(v: Value) -> Result<T, RpcError> {
+    let v = if v.is_null() { json!({}) } else { v };
+    serde_json::from_value(v).map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))
+}
+
+fn invalid(msg: impl Into<String>) -> RpcError {
+    RpcError::new(code::INVALID_PARAMS, msg)
+}
+
+/// The `<n>` of `sim.<n>`.
+fn sim_number(id: &str) -> Option<u32> {
+    id.strip_prefix("sim.")?.parse().ok()
+}
+
+/// Reads guest memory through the reader.
+fn with_guest<T>(
+    ctx: &mut GameCtx<'_>,
+    f: impl FnOnce(&mut dyn GuestMemory) -> Result<T, RpcError>,
+) -> Result<T, RpcError> {
+    let mut f = Some(f);
+    let mut out = None;
+    let ran = ctx.reader.with_guest(&mut |m| {
+        if let Some(f) = f.take() {
+            out = Some(f(m));
+        }
+    });
+    match out {
+        Some(r) if ran => r,
+        _ => Err(RpcError::new(
+            code::UNAVAILABLE,
+            "no guest memory here (the game isn't running)",
+        )),
+    }
+}
+
+impl Sim {
+    fn session(&mut self, ctx: &mut GameCtx<'_>) -> SessionView {
+        let Some(probe) = self.probe.as_mut() else {
+            return SessionView {
+                kind: SessionKind::Unknown,
+                ..Default::default()
+            }
+            .settle();
+        };
+        let mut v = None;
+        ctx.reader.with_guest(&mut |m| v = Some(probe(m)));
+        v.unwrap_or_default().settle()
+    }
+
+    fn entry(&self, id: &str) -> Result<(u32, &Entry), RpcError> {
+        sim_number(id)
+            .and_then(|n| self.players.get(&n).map(|e| (n, e)))
+            .ok_or_else(|| RpcError::new(code::GONE, format!("no simulated player {id}")))
+    }
+
+    /// The players-array index a simulated player became, if it has one:
+    /// a local bot is the player on its port, a phantom the one the
+    /// backend says.
+    fn game_player(&self, e: &Entry, objects: &[Object]) -> Option<u32> {
+        match e.bot {
+            Bot::Local { port } => objects
+                .iter()
+                .filter(|o| o.kind == Kind::Player)
+                .find(|o| o.local_user.map(u32::from) == Some(port))
+                .and_then(|o| ObjectId::parse(&o.id))
+                .map(|id| id.key),
+            Bot::Phantom { handle } => self.bots.phantom_player(handle),
+        }
+    }
+
+    fn describe(&self, n: u32, e: &Entry, objects: &[Object]) -> SimPlayer {
+        SimPlayer {
+            id: format!("sim.{n}"),
+            kind: match e.bot {
+                Bot::Local { .. } => PlayerKind::Local,
+                Bot::Phantom { .. } => PlayerKind::Phantom,
+            },
+            source: e.source,
+            team: e.team,
+            port: match e.bot {
+                Bot::Local { port } => Some(port),
+                Bot::Phantom { .. } => None,
+            },
+            identity: e.identity.clone(),
+            player: self
+                .game_player(e, objects)
+                .map(|i| format!("player.{i}")),
+        }
+    }
+
+    fn player_add(&mut self, v: Value, ctx: &mut GameCtx<'_>) -> R {
+        let p: AddParams = params(v)?;
+        let (source, script) = match p.source {
+            SourceKind::Script => {
+                let steps = crate::tap::pad_steps(&p.steps).map_err(invalid)?;
+                let r = Remote::new();
+                r.replace(steps);
+                (PadSource::Script(r.clone()), Some(r))
+            }
+            SourceKind::Recording => {
+                let name = p
+                    .recording
+                    .clone()
+                    .ok_or_else(|| invalid("a recording source needs \"recording\": <log name>"))?;
+                if !agent_proto::valid_log_name(&name) {
+                    return Err(invalid(format!("{name}: not a log name")));
+                }
+                let path = agent_proto::cache_dir()
+                    .join("inputs")
+                    .join(format!("{name}.input"));
+                (PadSource::Recording { name, path }, None)
+            }
+            SourceKind::Brain => (PadSource::Brain, None),
+        };
+        if p.source != SourceKind::Script && !p.steps.is_empty() {
+            return Err(invalid("steps go with a script source"));
+        }
+        if p.source != SourceKind::Recording && p.recording.is_some() {
+            return Err(invalid("recording goes with a recording source"));
+        }
+        let bot = match p.kind {
+            PlayerKind::Local => {
+                if p.identity.is_some() {
+                    return Err(invalid(
+                        "a local player signs in on its port; identity is for phantoms",
+                    ));
+                }
+                let port = self
+                    .bots
+                    .add_local(p.port, source)
+                    .map_err(|e| RpcError::new(code::UNAVAILABLE, e))?;
+                Bot::Local { port }
+            }
+            PlayerKind::Phantom => {
+                if p.port.is_some() {
+                    return Err(invalid("a phantom has no controller port"));
+                }
+                let id = p.identity.as_ref().ok_or_else(|| {
+                    invalid(
+                        "a phantom needs \"identity\": {xuid, gamertag}, issued by the local \
+                         embedded Live server (sim never makes accounts)",
+                    )
+                })?;
+                if id.xuid.trim().is_empty() || id.gamertag.trim().is_empty() {
+                    return Err(invalid("identity: xuid and gamertag"));
+                }
+                let handle = self
+                    .bots
+                    .add_phantom(id, p.team, source)
+                    .map_err(|e| RpcError::new(code::UNAVAILABLE, e))?;
+                Bot::Phantom { handle }
+            }
+        };
+        let n = self.next;
+        self.next += 1;
+        self.players.insert(
+            n,
+            Entry {
+                bot,
+                source: p.source,
+                team: p.team,
+                identity: p.identity,
+                script,
+            },
+        );
+        let objects = ctx.reader.objects().unwrap_or_default();
+        let e = &self.players[&n];
+        let mut out = serde_json::to_value(self.describe(n, e, &objects)).expect("serialises");
+        // A local bot's team is the lobby's or a host write's, once it plays.
+        if matches!(bot, Bot::Local { .. }) && p.team.is_some() {
+            out["team_pending"] = json!(
+                "set it with sim.state.set {team} once the player is in a multiplayer game"
+            );
+        }
+        Ok(out)
+    }
+
+    fn player_remove(&mut self, v: Value, _: &mut GameCtx<'_>) -> R {
+        let p: RemoveParams = params(v)?;
+        let ids: Vec<u32> = match (&p.id, p.all) {
+            (Some(_), true) | (None, false) => {
+                return Err(invalid("give id, or all: true"));
+            }
+            (None, true) => self.players.keys().copied().collect(),
+            (Some(id), false) => vec![self.entry(id)?.0],
+        };
+        let mut removed = Vec::new();
+        let mut failed = Vec::new();
+        for n in ids {
+            let bot = self.players[&n].bot;
+            match self.bots.remove(bot) {
+                Ok(()) => {
+                    self.players.remove(&n);
+                    removed.push(format!("sim.{n}"));
+                }
+                Err(e) => failed.push(json!({ "id": format!("sim.{n}"), "error": e })),
+            }
+        }
+        if !failed.is_empty() && removed.is_empty() {
+            let mut e = RpcError::new(code::UNAVAILABLE, "the bots backend refused");
+            e.data = Some(json!(failed));
+            return Err(e);
+        }
+        Ok(json!({ "removed": removed, "failed": failed }))
+    }
+
+    fn players_json(&self, objects: &[Object]) -> Vec<SimPlayer> {
+        self.players
+            .iter()
+            .map(|(n, e)| self.describe(*n, e, objects))
+            .collect()
+    }
+
+    fn player_list(&mut self, _: Value, ctx: &mut GameCtx<'_>) -> R {
+        let objects = ctx.reader.objects().unwrap_or_default();
+        Ok(json!({ "players": self.players_json(&objects) }))
+    }
+
+    fn player_pad(&mut self, v: Value, ctx: &mut GameCtx<'_>) -> R {
+        let p: DriveParams = params(v)?;
+        let (_, e) = self.entry(&p.id)?;
+        let steps = crate::tap::pad_steps(&p.steps).map_err(invalid)?;
+        match (&e.script, e.bot) {
+            (Some(r), _) => {
+                let n = steps.len();
+                if p.append {
+                    r.append(steps);
+                } else {
+                    r.replace(steps);
+                }
+                Ok(json!({ "id": p.id, "queued": n, "via": "script" }))
+            }
+            // Another source on a local port: input.pad merges over it
+            // (docs/game/bots.md 4.1).
+            (None, Bot::Local { port }) => {
+                let pad = json!({ "player": port, "steps": p.steps, "append": p.append });
+                let r = ctx
+                    .host(agent_proto::method::INPUT_PAD, pad)
+                    .unwrap_or_else(|| {
+                        Err(RpcError::new(
+                            code::UNAVAILABLE,
+                            "no input tap (the game has no XAPI input)",
+                        ))
+                    })?;
+                Ok(json!({ "id": p.id, "queued": r["queued"], "via": "input.pad", "port": port }))
+            }
+            (None, Bot::Phantom { .. }) => Err(RpcError::new(
+                code::INVALID_REQUEST,
+                "this phantom's pad comes from its brain or recording; add it with a script \
+                 source to drive it",
+            )),
+        }
+    }
+
+    /// `player.<n>` or a simulated player's `sim.<n>` as a players-array
+    /// index.
+    fn target(&self, who: &str, ctx: &mut GameCtx<'_>) -> Result<u32, RpcError> {
+        if let Some(id) = ObjectId::parse(who) {
+            if id.kind == Kind::Player {
+                return Ok(id.key);
+            }
+            return Err(invalid(format!("{who}: a player.<n> or sim.<n>")));
+        }
+        let (_, e) = self.entry(who)?;
+        let objects = ctx
+            .reader
+            .objects()
+            .map_err(|e| RpcError::new(code::UNAVAILABLE, e))?;
+        self.game_player(e, &objects).ok_or_else(|| {
+            RpcError::new(
+                code::GONE,
+                format!("{who} isn't a player in the game yet"),
+            )
+        })
+    }
+
+    fn state_set(&mut self, v: Value, ctx: &mut GameCtx<'_>) -> R {
+        let p: SetParams = params(v)?;
+        state::validate(&p)?;
+        let session = self.session(ctx);
+        if let Err(why) = session.kind.writes() {
+            let mut e = RpcError::new(code::INVALID_REQUEST, why);
+            e.data = Some(json!({ "session": session }));
+            return Err(e);
+        }
+        if ctx.at.boundary != Boundary::Tick {
+            return Err(RpcError::new(
+                code::UNAVAILABLE,
+                "host writes happen at a tick boundary, and the game isn't ticking",
+            ));
+        }
+        let index = self.target(&p.player, ctx)?;
+        let wrote = with_guest(ctx, |m| state::apply(m, index, &p))?;
+        Ok(json!({ "player": format!("player.{index}"), "wrote": wrote, "session": session }))
+    }
+
+    fn session_method(&mut self, _: Value, ctx: &mut GameCtx<'_>) -> R {
+        Ok(serde_json::to_value(self.session(ctx)).expect("serialises"))
+    }
+
+    fn view_method(&mut self, v: Value, ctx: &mut GameCtx<'_>) -> R {
+        let p: ViewParams = params(v)?;
+        let roots = p
+            .roots
+            .unwrap_or_else(|| wire::DEFAULT_ROOTS.iter().map(|r| (*r).into()).collect());
+        wire::check_roots(&roots)?;
+        self.view(&roots, ctx)
+    }
+
+    fn expect(&mut self, v: Value, ctx: &mut GameCtx<'_>) -> R {
+        let p: ExpectParams = params(v)?;
+        if p.checks.is_empty() {
+            return Err(invalid("checks: at least one"));
+        }
+        let roots = wire::roots(&p.checks);
+        wire::check_roots(&roots)?;
+        let view = self.view(&roots, ctx)?;
+        let mut v = expect::verdict(&view, &p.checks);
+        v["at"] = view["at"].clone();
+        Ok(v)
+    }
+
+    /// The document `sim.view` answers, with only `roots` read.
+    fn view(&mut self, roots: &[String], ctx: &mut GameCtx<'_>) -> R {
+        let has = |r: &str| roots.iter().any(|x| x == r);
+        let mut out = Map::new();
+        out.insert("at".into(), serde_json::to_value(&ctx.at).expect("serialises"));
+        if has("session") {
+            let s = self.session(ctx);
+            out.insert("session".into(), serde_json::to_value(s).expect("serialises"));
+        }
+        for (root, m) in [
+            ("ui", agent_proto::method::UI_SCREEN),
+            ("input", agent_proto::method::INPUT_STATE),
+        ] {
+            if has(root) {
+                let v = match ctx.host(m, Value::Null) {
+                    Some(Ok(mut v)) => {
+                        if let Some(o) = v.as_object_mut() {
+                            o.remove("at");
+                        }
+                        v
+                    }
+                    _ => Value::Null,
+                };
+                out.insert(root.into(), v);
+            }
+        }
+        let world = ["player", "object", "count", "sim"].iter().any(|r| has(r));
+        let objects = if world {
+            ctx.reader
+                .objects()
+                .map_err(|e| RpcError::new(code::UNAVAILABLE, e))?
+        } else {
+            Vec::new()
+        };
+        if has("player") {
+            let mut players = Map::new();
+            for o in objects.iter().filter(|o| o.kind == Kind::Player) {
+                let Some(id) = ObjectId::parse(&o.id) else {
+                    continue;
+                };
+                let mut v = serde_json::to_value(o).expect("serialises");
+                let vit = with_guest(ctx, |m| state::vitals(m, id.key)).unwrap_or_default();
+                if let Some(obj) = v.as_object_mut() {
+                    obj.extend(vit);
+                }
+                players.insert(id.key.to_string(), v);
+            }
+            out.insert("player".into(), Value::Object(players));
+        }
+        if has("object") {
+            let all: Map<String, Value> = objects
+                .iter()
+                .map(|o| (o.id.clone(), serde_json::to_value(o).expect("serialises")))
+                .collect();
+            out.insert("object".into(), Value::Object(all));
+        }
+        if has("count") {
+            let mut c = Map::new();
+            for k in Kind::ALL {
+                let n = objects.iter().filter(|o| o.kind == k).count();
+                c.insert(k.as_str().into(), json!(n));
+            }
+            let mut teams: BTreeMap<String, usize> = BTreeMap::new();
+            for o in objects.iter().filter(|o| o.kind == Kind::Player) {
+                if let Some(t) = o.team {
+                    *teams.entry(t.to_string()).or_default() += 1;
+                }
+            }
+            c.insert("team".into(), json!(teams));
+            c.insert("total".into(), json!(objects.len()));
+            out.insert("count".into(), Value::Object(c));
+        }
+        if has("sim") {
+            let mut s = Map::new();
+            s.insert("count".into(), json!(self.players.len()));
+            for (n, e) in &self.players {
+                let d = self.describe(*n, e, &objects);
+                s.insert(n.to_string(), serde_json::to_value(d).expect("serialises"));
+            }
+            out.insert("sim".into(), Value::Object(s));
+        }
+        Ok(Value::Object(out))
+    }
+}
+
+#[cfg(test)]
+mod tests;
