@@ -148,9 +148,9 @@ package...** and **Open package...** save and open map packages in
 
 ### Packages and Halo 1 in the Maps list
 
-Below the source's maps, **Maps** lists what is under `<data>/maps`
-(`editor_core::packages::list`, re-read when the data root changes and
-after a save), then Halo 1:
+Below the source's maps, **Maps** lists the installed Map Pack (next
+section), what is under `<data>/maps` (`editor_core::packages::list`,
+re-read when the data root changes and after a save), then Halo 1:
 
 - **Packages**: edits of disc maps and new maps, by `[package] name`.
   An edit opens its disc map, then the package over it
@@ -266,6 +266,79 @@ and placement glyphs in orange at 35 % over the converted map, through
 everything (`render::Viewport::set_overlay`), to check a conversion by
 eye. The inspector says where the map came from, and why there is no
 overlay when there is none.
+
+### The Map Pack
+
+The **Map Pack** group (`app::map_pack`, drawn by `ui::map_pack`) lists
+the Multiplayer Map Pack as installed under the data root by `h2
+import-mappack` or `h2 play`'s automatic install
+([map-pack.md](../game/map-pack.md) §4, §5): one content package a map at
+`<data>/disk/Partition1/TDATA/4D530064/$c/<offer ID>/` (`T:\$c` to the
+game, `vfs::Config::title_data_dir` + `vfs::CONTENT_DIR`), each holding
+`<map>.map` and a version 2 `patch.lvl`. The list is read with the game's
+own Select Map code, `boot::map_select`: `map_of_package` reads each
+record, `category_of` keeps the offers in the Map Pack's range
+(`0x0101..=0x03ff`; new maps' packages, whose offers have the top bit
+set, stay out), and `Catalogue` orders them by the records' sort order
+then id. Names, descriptions and pictures are the records' (the
+`A8R8G8B8` preview turned to RGBA). A record whose map file is missing is
+left out and logged once. Re-read with the packages (data root change,
+save, `refresh_packages`). With nothing installed the group shows one
+line on how to install it.
+
+`Action::OpenMapPack(<map>)` (the record's map name, or the offer
+directory) opens a pack map. It goes through the same open-document path
+as a new map's package: the file is read whole and opened with
+`Session::open_derived` (no disc base, no package yet). The shared caches
+come from where the game takes them, the Halo 2 disc: the open source's
+`shared.map` (a disc region or a folder's file), else the default disc's
+(`H2_DISC`, `disc/halo2.iso`; `App::shared_anchor`, which derived
+packages use too). The pack ships no shared map of its own. Without a
+disc the map opens and the log says the shared parts are missing (the
+status counts unloaded sections). Since every tool reads the session's
+document, the Tags tool, the viewport and later tools see the pack map
+as they see a disc map. The UI Screens tool draws the disc's screens and
+has nothing per map.
+
+Every tag a map uses has its metadata in that map
+([map-builder.md](../formats/map-builder.md)); shared maps are reached
+only through raw pointers, whose top two bits pick the map. The Tags
+tool counts the selected tag's raw pointers by map through its layout
+(`app::shared_refs::raw_homes`) and shows a line such as `raw data lives
+in a shared map: shared.map (3)` when any is outside this map.
+
+Saving never writes the installed files:
+
+- **Save as package** writes a new map's package (`[base] derived =
+  true`, `<map>-edit`): the whole pack map as the first layer and the edit
+  as the second, as for converted maps. `boot::new_maps` installs such a
+  package as a content package of its own (a new-map offer), so the game
+  lists it under Mods by the package's name. Reopened from **Packages**,
+  its tooltip names the pack map it edits.
+- **Save map as** writes the patched `.map` (`save::save_as`) anywhere
+  but the installed content: `App::save_refusal` refuses a path inside
+  `T:\$c` on the host or any pack map file (whatever the data root).
+  `H2_MAP_DIR` only replaces `maps\<name>.map` on the disc, so it cannot
+  serve a pack map; the runtime has no override for content maps yet.
+
+Tests (`app::map_pack_tests`, synthetic install of the fixture map under
+invented names and records): the listing and its order, pictures,
+missing files, the empty group; opening in the scenario and Tags tools,
+the unsaved-edits guard; Save map as byte-exact unedited and differing
+only in the edited field and checksum otherwise (and equal to the same
+edit on the map opened loose), refusals inside `$c`; a package that
+reopens with the edit and resolves to the pack map plus the edit. Headless
+(`headless::tests::the_map_pack_group_lists_and_opens_a_pack_map`): the
+hint, then the row with its picture on screen, clicked open. With the
+owner's install:
+
+```sh
+H2_MAPPACK_DATA=<data root> cargo test -p studio --release installed_map_pack -- --ignored
+```
+
+lists the nine maps, opens the first and last with every section loaded
+from the disc's shared maps, finds tags with raw data in `shared.map`,
+and saves one edit.
 
 ### What the viewport shows, and what it does not yet
 

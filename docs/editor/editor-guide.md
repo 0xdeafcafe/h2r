@@ -101,8 +101,8 @@ The window is made of panels that dock together:
   anything: each tool keeps its state while hidden. Under the tools,
   **Maps** has **Open...** (a disc image or `.map`) and **Folder...** (a
   folder of maps), the path of what is open, and its maps. Below them,
-  **Packages** lists the map packages you have saved, and **Halo 1** the
-  Halo 1 maps (section 4). Clicking any of them opens it in the Scenario
+  **Map Pack** lists the Multiplayer Map Pack's maps, **Packages** the map
+  packages you have saved, and **Halo 1** the Halo 1 maps (section 4). Clicking any of them opens it in the Scenario
   tool.
 - **Outliner** (bottom left), **Viewport** (middle) and **Inspector**
   (right) show the tool you are in. In Game variants the outliner becomes
@@ -467,6 +467,37 @@ that package. (The disc that has the package's map must be open.)
 ![The bottom of the Maps list: the disc's last maps, then Packages with ascension edit, then Halo 1 with the Halo 1 disc's path, marked read only, and its maps from a10 to wizard, each with an eye](../images/editor/maps-groups.png)
 
 *Below the disc's maps: **Packages**, then **Halo 1** with the maps of an open Halo 1 disc.*
+
+### Map Pack maps
+
+The Multiplayer Map Pack's nine maps have a group of their own, **Map
+Pack**, under the disc's maps. They are listed as the game's **Select
+Map** lists them: the same names, in the same order, each with its
+picture beside it. Hover a map to see its whole picture and description.
+
+The editor reads the maps the game installed, in your data folder
+(`<data>/disk/Partition1/TDATA/4D530064/$c/`). If the group says *Not
+installed*, put the Map Pack disc image next to your Halo 2 disc as
+`mappack.iso` and start the game once (`h2 play` installs it), or run
+`h2 import-mappack <iso> --data <data>`
+([map-pack.md](../game/map-pack.md)). Then reopen the editor.
+
+Click a map to open it. It opens in the Scenario tool like a disc map,
+and the Tags tool and the viewport show it too. Its textures, models and
+sounds partly live in the disc's `shared.map`, so keep your Halo 2 disc
+open (or set `H2_DISC`): the log says where the shared maps came from,
+and the Tags tool says when a tag's data is in a shared map.
+
+Saving never changes the installed Map Pack files:
+
+- **File > Save as package...** saves a package in `<data>/maps`, as for a
+  disc map. It holds the whole map plus your edit, and the game installs
+  it as a map of its own: it shows under **Mods** in the game's Select Map,
+  by the package's name, beside the original.
+- **File > Save map as...** writes a whole `.map` wherever you choose,
+  except into the game's installed content, which the editor refuses.
+  `H2_MAP_DIR` can't serve it: that only replaces disc maps. Use a package
+  to play it.
 
 ### Halo 1 maps
 
@@ -968,7 +999,8 @@ uses, `$TMPDIR/h2boot-data`.
 | What | Where | How the game finds it |
 |---|---|---|
 | Map packages (yours, and converted Halo 1 maps) | `<data>/maps/<directory>/` | Automatically, the next time it loads that map ([maps.md](../game/maps.md) §7). `<data>/maps/active.toml` records which package is active for each map. |
-| Edited `.map` files | Wherever you save them | With `H2_MAP_DIR=<that folder> h2 play`; the file must have the disc's map name. |
+| Edited `.map` files | Wherever you save them (never inside the game's installed content) | With `H2_MAP_DIR=<that folder> h2 play`; the file must have the disc's map name. Map Pack maps play from a package instead. |
+| The Map Pack (read only) | `<data>/disk/Partition1/TDATA/4D530064/$c/<offer ID>/` | Installed by `h2 play` or `h2 import-mappack`. |
 | Saved game variants | `<data>/disk/Partition1/UDATA/4D530064/` (the game's saved data) | Listed in the game with its own saved variants. |
 | Exported variants | Wherever you save the `.h2variant` | Not directly: import it in the editor and save it. |
 | Playlists | Wherever you save the `.dat` | Through your Live server (`h2 live hopper import`). |
