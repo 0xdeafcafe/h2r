@@ -127,6 +127,18 @@ pub enum Action {
     },
     /// End a run of merged edits: the next edit is a new undo step.
     SealEdit,
+    /// The viewport gizmo's drag: put the selected placement at
+    /// `position`, turned to `ypr` (the rest of a multi-selection rides
+    /// along). Every one until [`Action::EndGesture`] is one undo step.
+    GestureSet {
+        position: [f32; 3],
+        ypr: [f32; 3],
+    },
+    /// The scale gizmo's drag: the selection's scale, as
+    /// [`Action::GestureSet`].
+    GestureScale(f32),
+    /// The gizmo was let go: the drag's undo step ends.
+    EndGesture,
     /// Move a placement (and turn it, given yaw, pitch and roll) as one
     /// undo step.
     MovePlacement {
@@ -721,6 +733,17 @@ impl App {
                 }
             }
             Action::SealEdit => self.session.seal(),
+            Action::GestureSet { position, ypr } => {
+                if let Err(e) = self.session.gesture_set(position, ypr) {
+                    self.error(e.to_string());
+                }
+            }
+            Action::GestureScale(scale) => {
+                if let Err(e) = self.session.gesture_scale(scale) {
+                    self.error(e.to_string());
+                }
+            }
+            Action::EndGesture => self.session.end_gesture(),
             Action::MovePlacement {
                 block,
                 index,

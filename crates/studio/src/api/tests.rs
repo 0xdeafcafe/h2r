@@ -1046,3 +1046,78 @@ fn the_hud_window_and_the_api_make_identical_documents() {
         agent.hud.session.as_ref().unwrap().history().count()
     );
 }
+
+/// The viewport gizmo's drag (its actions, as `viewport.rs` dispatches
+/// them) and `scenario.move` make the same map, one undo step each; the
+/// playlist text fields' edits (`PlaylistEdit`, as `ui/playlists.rs`
+/// applies them) and `playlist.set` the same playlists.
+#[test]
+fn the_gizmo_and_the_text_fields_go_through_the_api_commands() {
+    let t = Temp::new("gizmo");
+    let mut ui = app(&t);
+    ui.dispatch(Action::Select(Some((BlockKind::NetgameFlags, 0))));
+    let ypr = ui.session.selected_transform().unwrap().ypr();
+    for position in [[2.0, 2.0, 2.0], [3.0, 4.0, 5.0], [4.0, 5.0, 6.0]] {
+        ui.dispatch(Action::GestureSet { position, ypr });
+    }
+    assert!(ui.session.in_gesture());
+    ui.dispatch(Action::EndGesture);
+    assert!(!ui.session.in_gesture());
+    let t2 = Temp::new("gizmo-api");
+    let mut agent = app(&t2);
+    let mut api = Api::new();
+    call(
+        &mut api,
+        &mut agent,
+        m::SCENARIO_MOVE,
+        json!({"block": "netgame_flags", "index": 0, "position": [4, 5, 6]}),
+    );
+    assert_eq!(flag_position(&ui), [4.0, 5.0, 6.0]);
+    assert_eq!(
+        ui.session.scenario().unwrap().changes(),
+        agent.session.scenario().unwrap().changes()
+    );
+    // The whole drag is one undo step.
+    ui.dispatch(Action::Undo);
+    call(&mut api, &mut agent, m::DOC_UNDO, json!({"doc": "map"}));
+    assert_eq!(flag_position(&ui), flag_position(&agent));
+    assert!(!ui.session.is_dirty());
+
+    // The title field: each keystroke's text as a PlaylistEdit, merged
+    // under the field's key, then sealed.
+    let hop = |t: &Temp| t.path("multiplayer_hopper.dat");
+    ui.dispatch(Action::OpenHopper(hop(&t)));
+    for text in ["T", "Te", "Team"] {
+        let e = PlaylistEdit::Title {
+            playlist: 2,
+            text: text.into(),
+        };
+        ui.hoppers.edit_with(|hs, _| (e.apply(hs).unwrap(), Some(7)));
+    }
+    ui.hoppers.seal();
+    let long = "x".repeat(200);
+    ui.hoppers.edit(|hs| {
+        PlaylistEdit::Description {
+            playlist: 2,
+            text: long.clone(),
+        }
+        .apply(hs)
+        .unwrap()
+    });
+    call(
+        &mut api,
+        &mut agent,
+        m::DOC_OPEN,
+        json!({"playlists": hop(&t2).display().to_string()}),
+    );
+    call(
+        &mut api,
+        &mut agent,
+        m::PLAYLIST_SET,
+        json!({"playlist": 2, "title": "Team", "description": long}),
+    );
+    assert_eq!(ui.hoppers.hoppers(), agent.hoppers.hoppers());
+    // Clipped to the format's room by the edit, not the widget.
+    let d = &ui.hoppers.hoppers().unwrap()[2].description;
+    assert!(d.len() < 200, "{}", d.len());
+}
