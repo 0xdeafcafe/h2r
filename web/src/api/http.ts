@@ -183,6 +183,10 @@ export function api(t: ServerTarget, reader: Reader = async () => null) {
     session: (id: string, s?: AbortSignal) => getJson<{ session: unknown; position?: number }>(u("/sessions/" + encodeURIComponent(id)), s),
     /** A player's level and experience per ranked playlist (docs/live/live-api.md "Ranks"); the raw body. */
     ranks: async (player: string, s?: AbortSignal) => getJson<unknown>(u("/accounts/" + encodeURIComponent(player) + "/ranks"), s, await who()),
+    /** How many players commended `player` (a gamertag or XUID), by kind
+     *  (docs/live/live-api.md "Bans"); the raw body. Older servers answer 404. */
+    commendations: async (player: string, s?: AbortSignal) =>
+      getJson<unknown>(u("/accounts/" + encodeURIComponent(player) + "/commendations"), s, await who()),
     /** One playlist's standing and its history, newest first; the raw body. */
     rankHistory: async (player: string, playlist: string, s?: AbortSignal) =>
       getJson<unknown>(u("/accounts/" + encodeURIComponent(player) + "/ranks/" + encodeURIComponent(playlist)), s, await who()),

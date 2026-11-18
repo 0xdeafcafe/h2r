@@ -31,6 +31,7 @@ import Wordmark from "./Wordmark";
 import PlayerSocial from "./PlayerSocial";
 import CoopGames from "./CoopGames";
 import { hms, longDate, num, ratio, usDate, usDateTime } from "./fmt";
+import { parseCommendations, type Commendations } from "../admin/bans";
 
 function useAccount() {
   const params = useParams<{ tag: string }>();
@@ -196,6 +197,7 @@ export function ServiceRecordPage() {
                   <div><dt>Best Spree</dt><dd>{rec().bestSpree}</dd></div>
                   <div><dt>Rank</dt><dd><Derived>{rec().rank}</Derived></dd></div>
                   <div><dt>Total EXP</dt><dd><Derived note="One point per completed game, two more per win; derived in your browser.">{num(rec().exp)}</Derived></dd></div>
+                  <CommendationFacts xuid={a().xuid} />
                 </dl>
                 <dl class="s-facts">
                   <h4>Combat Report</h4>
@@ -229,6 +231,26 @@ export function ServiceRecordPage() {
         );
       }}
     </PlayerFrame>
+  );
+}
+
+/** How many players commended them from the game's player-details screen
+ *  (GET /v1/accounts/{who}/commendations); nothing on a server without it. */
+function CommendationFacts(props: { xuid: string }) {
+  const [c, setC] = createSignal<Commendations | null>(null);
+  createEffect(on(() => props.xuid, (xuid) => {
+    setC(null);
+    live.api().commendations(xuid).then((b) => { if (props.xuid === xuid) setC(parseCommendations(b)); }, () => {});
+  }));
+  return (
+    <Show when={c()}>
+      {(c) => (
+        <>
+          <div><dt>Good Attitude</dt><dd>{num(c().good_attitude)}</dd></div>
+          <div><dt>Good Session</dt><dd>{num(c().good_session)}</dd></div>
+        </>
+      )}
+    </Show>
   );
 }
 

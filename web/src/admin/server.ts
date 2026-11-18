@@ -268,8 +268,8 @@ export async function revokeInvite(api: string, aud: string, me: LocalAccount, j
 export interface ServerPod { label: string; glyph: "key" | "sign" | "record" | "server" | "history" | "career" | "download" | "globe" | "gear"; to?: string; back?: boolean; run?: "create" | "copy" }
 
 /** The server screens: the overview, and under it invites, accounts,
- *  importing an account and player reports (/dash/server/<view>). */
-export type ServerView = "overview" | "invites" | "accounts" | "import" | "reports";
+ *  importing an account, player reports and bans (/dash/server/<view>). */
+export type ServerView = "overview" | "invites" | "accounts" | "import" | "reports" | "bans";
 
 /** Where the dashboard's "halo admin" goes: the stats site's admin area,
  *  which keeps only the game's own things (the message of the day,
@@ -314,7 +314,14 @@ export function serverPods(view: ServerView, admin: boolean | null): ServerPod[]
     case "reports":
       return [
         { label: "accounts", glyph: "career", to: "/dash/server/accounts", back: true },
-        { label: "invites", glyph: "key", to: "/dash/server/invites" },
+        { label: "bans", glyph: "sign", to: "/dash/server/bans" },
+        { label: "players", glyph: "record", to: "/dash/players" },
+        { label: "your server", glyph: "globe", to: "/dash/server", back: true },
+      ];
+    case "bans":
+      return [
+        { label: "accounts", glyph: "career", to: "/dash/server/accounts", back: true },
+        { label: "reports", glyph: "history", to: "/dash/server/reports", back: true },
         { label: "players", glyph: "record", to: "/dash/players" },
         { label: "your server", glyph: "globe", to: "/dash/server", back: true },
       ];

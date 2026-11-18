@@ -189,6 +189,10 @@ pub struct Live {
     pub(crate) report_rate: RateLimiter,
     /// Holds a report's duplicate check and its append together.
     pub(crate) report_writes: tokio::sync::Mutex<()>,
+    /// Account bans (docs/live/live-admin.md "Bans").
+    pub(crate) bans: Arc<crate::bans::Bans>,
+    /// Holds a ban's checks and its append together.
+    pub(crate) ban_writes: tokio::sync::Mutex<()>,
     /// Each account's own cloud saves (docs/live/live-cloud-saves.md).
     pub(crate) cloud: crate::cloud_saves::CloudSaves,
     /// Unix seconds the service started.
@@ -244,9 +248,11 @@ fn may_write(author: &Author, stream: &str, kind: &str) -> bool {
     if stream.starts_with("session-")
         || stream.starts_with("reports-")
         || stream.starts_with("rank-")
+        || stream.starts_with("bans-")
         || kind == live_proto::rank::CHANGED
         || live_proto::maps::KINDS.contains(&kind)
         || live_proto::reports::KINDS.contains(&kind)
+        || live_proto::bans::KINDS.contains(&kind)
     {
         return false;
     }
@@ -472,6 +478,8 @@ impl Live {
         dispatcher.subscribe(catalog.clone());
         let reports = Arc::new(crate::reports::Reports::default());
         dispatcher.subscribe(reports.clone());
+        let bans = Arc::new(crate::bans::Bans::default());
+        dispatcher.subscribe(bans.clone());
         let stats = Arc::new(crate::stats::Stats::with_model(model.clone()));
         dispatcher.subscribe(stats.clone());
         let mut applied = dispatcher.applied();
@@ -508,6 +516,8 @@ impl Live {
             reports,
             report_rate: RateLimiter::new(crate::reports::RATE.0, crate::reports::RATE.1),
             report_writes: Default::default(),
+            bans,
+            ban_writes: Default::default(),
             cloud: Default::default(),
             started_at: now(),
             data_dir: Default::default(),
@@ -653,6 +663,20 @@ impl Live {
         token
             .verify(&key, &self.identity.id, method, now)
             .map_err(|e| unauthorized(e.to_string()))?;
+        if let Author::Account { xuid, .. } = &author
+            && live_proto::bans::bars(method)
+        {
+            let refused = self
+                .bans
+                .read()
+                .in_force(*xuid, now)
+                .map(crate::bans::banned_error);
+            if let Some(e) = refused
+                && !self.admins.is_admin_xuid(*xuid, &self.model.read())
+            {
+                return Err(e);
+            }
+        }
         let expires = (c.exp + TOKEN_LEEWAY_S).max(now + JTI_MEMORY_S);
         if !self
             .jtis

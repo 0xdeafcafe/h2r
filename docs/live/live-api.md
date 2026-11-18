@@ -240,7 +240,7 @@ replays show the firing of the whole second; the same goes for `actions` and
 | `GET /v1/games/{id}/frames?from_tick=&to_tick=&format=` | recorded frames, for replay: `format=json` (the default) a page of JSON frames; `format=packed` an `application/x-h2-frames` container of packed keyframes (docs/live/live-telemetry.md, "Packed frames"), the next cursor in `x-next` and the head position in `x-position` |
 | `GET /v1/maps/{map}/outline` | top-down map outline (see below), 404 until a console has uploaded it |
 | `GET /v1/snapshot` | what a page needs on load, in one read at one log position: `{position, accounts, presence, live, ended, details, tail}`. `accounts` is `/v1/accounts?limit=1000`, `presence` is `/v1/presence`, `live` and `ended` are `/v1/games?state=…&limit=100`, `details` is `/v1/games/{id}` for every live game and the 40 newest ended ones, and `tail` is the last 300 log events up to `position` without `GameFrame` (as on the stream). Each part has the reader's visibility applied, as at its own endpoint ([Co-op games](#co-op-games)) |
-| `GET /v1/events?from=&type=&stream=&limit=` | raw log, oldest first, at most 200 a page; without the events of co-op games and sessions the reader may not see ([Co-op games](#co-op-games), "The log"): a page can be short or empty with a `next`; without network addresses for anyone but the operator ([Network addresses](#network-addresses)); invitations, friend events, content and player reports only to whom they concern ([Private events](#private-events)) |
+| `GET /v1/events?from=&type=&stream=&limit=` | raw log, oldest first, at most 200 a page; without the events of co-op games and sessions the reader may not see ([Co-op games](#co-op-games), "The log"): a page can be short or empty with a `next`; without network addresses for anyone but the operator ([Network addresses](#network-addresses)); invitations, friend events, content and player reports and bans only to whom they concern ([Private events](#private-events)) |
 | `GET /v1/titles/{title}/files/{name}` | raw file bytes, `ETag` = sha256 |
 | `GET /v1/server` | the server's public facts: `{id, software, url, invite_only, private, federation, counts: {accounts, online, live_games, sessions}, position}` ([live-admin.md](live-admin.md) §5) |
 | `GET /v1/stats/summary?window=today\|7d\|30d\|all` | server-wide totals, per-player rows, maps, weapons, playlists, skulls and hourly activity over a window ([Stats summary](#stats-summary), below) |
@@ -557,6 +557,7 @@ event tail). The stored log is unchanged.
 | `FriendRequested`, `FriendAccepted`, `FriendDeclined`, `FriendRemoved` | the two accounts and the current friends of either |
 | `ContentReported` | admins only |
 | `PlayerReported`, `ReportReviewed` | admins only ([Player reports](#player-reports)) |
+| `AccountBanned`, `AccountUnbanned` | the banned account ([Bans](#bans)) |
 
 Admin accounts and the operator read all of them; anonymous readers none,
 so an anonymous read stays safe for the edge cache. Other readers get the
@@ -775,6 +776,29 @@ reason?, game_id?}`) on `reports-<target xuid>`, readable by admins only
 `/v1/admin/reports` ([live-admin.md](live-admin.md) §8). No one else learns
 of a report: not the reported player, and not the reporter what became of
 it.
+
+The two commendation kinds are counted in public:
+
+| endpoint | authentication | result |
+|---|---|---|
+| `GET /v1/accounts/{gamertag or xuid}/commendations` | as any read | `{xuid, good_attitude, good_session}`: how many players commended the account, by kind |
+
+## Bans
+
+Admins ban accounts ([live-admin.md](live-admin.md) §9). While a ban is in
+force, every token the account presents for a scope other than `read`,
+`recovery.read`, `storage.read` and `log.read` is refused with 403
+`{"error": "banned", "message": "this account is banned until <until>: <reason>"}`
+(or "banned: <reason>" for a ban until lifted). Clients treat `banned`
+as final for the session; the Live HLE reports it to the game as
+`0x80151200`. The player reads their own ban:
+
+| endpoint | authentication | result |
+|---|---|---|
+| `GET /v1/accounts/by-xuid/{xuid}/ban` | `read` token of the account itself or an admin | `{banned: false}` or `{banned: true, ban: {id, reason, until?, at}}` |
+
+The ban events, `AccountBanned` and `AccountUnbanned` on
+`bans-<xuid>`, are server-signed; nobody posts them by hand.
 
 ## Cloud saves
 

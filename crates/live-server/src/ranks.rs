@@ -247,7 +247,7 @@ impl Live {
 
 type Shared = HttpState<Arc<Live>>;
 
-fn xuid_of(s: &State, who: &str) -> Option<Xuid> {
+pub(crate) fn xuid_of(s: &State, who: &str) -> Option<Xuid> {
     Xuid::parse(who)
         .ok()
         .filter(|x| s.accounts.contains_key(x))

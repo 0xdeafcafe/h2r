@@ -627,8 +627,8 @@ needs text; either is at most 500 characters. Reviewing a commendation is
 
 Each report is a server-signed `PlayerReported` event and each review a
 `ReportReviewed` event, both on the reported player's `reports-<xuid>`
-stream, so the queue replays from the log. Nothing here bans or mutes
-anyone; bans are not built.
+stream, so the queue replays from the log. Reviewing a report bans no
+one; banning is its own action (§9), which can name the report it answers.
 
 Player reports are the service's, not the game's, so they are on the
 dashboard's server screens (§5), not the Halo Admin: **player reports** on
@@ -637,3 +637,51 @@ complaints with each player's record, a note field, and Note and Dismiss;
 closed and everything list the rest. The queue is one component
 (`web/src/dash/Reports.tsx`) over `web/src/admin/reports.ts`, laid out
 plainly for now.
+
+## 9. Bans
+
+An admin bans an account for a while or until lifted, often in answer to a
+report (§8), with the same `reports.moderate` tokens:
+
+| endpoint | does |
+|---|---|
+| `POST /v1/admin/bans/{xuid}` `{reason, until?, report?}` | 201 `{ok, position}`: bans the account; a newer ban replaces the one in force |
+| `POST /v1/admin/bans/{xuid}/lift` `{note?}` | lifts the ban in force; 409 when there is none |
+| `GET /v1/admin/bans?state=active\|all` | `{items, position}`: the bans in force (the default) or every ban, newest first |
+
+`reason` is what the player is told, required, at most 500 characters.
+`until` is an RFC 3339 time in the future; without it the ban lasts until
+lifted. `report` is the log position of a report against the same player.
+Admins can't be banned (403). An item is `{id, target, reason, until?,
+report?, by?, at, state, lifted?}`: `state` is `active`, `expired`,
+`lifted` or `replaced`, `by` the admin's gamertag (absent for the
+operator), and `lifted` `{note?, by?, at}`.
+
+While a ban is in force the server refuses every token the account
+presents for a write scope with `banned` (403), saying until when and why:
+signing in (`SignedIn`), the presence heartbeat, sessions, games, the co-op
+relay, reports, cloud-save writes and the rest all go through the same
+check. Reads stay open (`read`, `recovery.read`, `storage.read`,
+`log.read`), so the player can read their notice and their saves. An end
+date is checked whenever a token is used, so a ban ends by itself with
+nothing written.
+
+In the game, the Live HLE turns a `banned` answer into `0x80151200`
+(account requires management): at sign-in the game shows its account
+dialog (`0x27`, [live-boundary.md](live-boundary.md) §7), and a ban during
+a session reaches the connection task on the next heartbeat with the same
+code.
+
+Each ban is a server-signed `AccountBanned` event (`{target, reason,
+until?, report?, by?}`) and each lift an `AccountUnbanned` event
+(`{target, ban, note?, by?}`), on the account's `bans-<xuid>` stream, so
+the bans replay from the log. Admins, the operator and the banned player
+read them ([live-api.md](live-api.md) "Private events").
+
+On the dashboard, **bans** on the accounts screen opens
+`/dash/server/bans` (`web/src/dash/Bans.tsx`): the bans in force with a
+note field and Lift on each, and every ban under "every ban". Each open
+report in the queue has a Ban button that bans its player for the report,
+for a day, a week, 30 days or until lifted, with the reason; an admin
+viewing a player's dashboard screen sees their ban with Lift, or Ban. A
+banned player sees the notice on their own screen.
