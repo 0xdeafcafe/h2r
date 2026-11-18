@@ -16,7 +16,7 @@
 //! normalised device coordinates it is `diag(s, s, 1)` either way.
 
 use super::camera::Persp;
-use super::epilogue::Epilogue;
+use super::epilogue::{Epilogue, Position};
 use super::math::{Mat4, Quat};
 use super::model::{FrameModel, Kind, Tuning};
 use crate::backend::ResolvedDraw;
@@ -211,12 +211,7 @@ pub fn overscan(
 /// HUD), whichever comes first. Without a pass tag this is the rule; draws
 /// after it replay unwarped.
 pub fn overlay_start(model: &FrameModel) -> usize {
-    let uses_camera = |i: usize| {
-        model.draws[i]
-            .blocks
-            .iter()
-            .any(|b| matches!(b.kind, Kind::Camera | Kind::World(_)))
-    };
+    let uses_camera = |i: usize| model.draws[i].placed_by_camera();
     let first_world = (0..model.draws.len()).find(|&i| uses_camera(i));
     let Some(first) = first_world else {
         return model.draws.len();
@@ -226,11 +221,15 @@ pub fn overlay_start(model: &FrameModel) -> usize {
         .find(|&i| uses_camera(i))
         .unwrap_or(first);
     let own = (first..model.draws.len()).find(|&i| {
+        let d = &model.draws[i];
         !uses_camera(i)
-            && model.draws[i]
-                .blocks
-                .iter()
-                .any(|b| matches!(b.kind, Kind::Local(_)))
+            && match d.position {
+                Position::Rows(_) => d
+                    .position_block()
+                    .is_some_and(|b| matches!(b.kind, Kind::Local(_))),
+                Position::Fixed => false,
+                Position::Unknown => d.blocks.iter().any(|b| matches!(b.kind, Kind::Local(_))),
+            }
     });
     own.unwrap_or(last + 1).min(last + 1)
 }

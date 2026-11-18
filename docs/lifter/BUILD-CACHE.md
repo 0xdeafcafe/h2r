@@ -306,5 +306,4 @@ turning the wrapper off. Use one wrapper per machine: running a second one
 (sccache next to kache) keeps a second full store.
 
 Give each worktree its own `CARGO_TARGET_DIR`; generated C object sharing
-does not require sharing Cargo target directories. `h2 disk clean` removes
-idle targets and stale artifacts (see `docs/dev/disk.md`).
+does not require sharing Cargo target directories.

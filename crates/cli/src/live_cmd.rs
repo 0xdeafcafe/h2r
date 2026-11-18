@@ -1628,11 +1628,29 @@ mod tests {
             Some("Bravo"),
         )
         .unwrap();
-        let f: Friends = client.get("/accounts/Alpha/friends", &[]).unwrap();
+        // Pending requests show only to the player (and admins): each reads
+        // their own with a token; an anonymous reader sees none.
+        let friends_of = |who: &CreatedAccount, key: &KeyPair| -> Friends {
+            let token = live_proto::sign::issue_token(
+                key,
+                &who.id,
+                &client.discovery.id,
+                lxm::READ,
+                now(),
+            );
+            let path = format!("/accounts/{}/friends", who.gamertag.as_str());
+            let req = client
+                .authorized(client.agent.get(&client.url(&path)), token)
+                .unwrap();
+            serde_json::from_str(&call(req, None).unwrap()).unwrap()
+        };
+        let f = friends_of(&alpha, &alpha_key);
         assert_eq!(f.requests_out[0].gamertag.as_str(), "Bravo");
         assert!(f.friends.is_empty());
-        let f: Friends = client.get("/accounts/Bravo/friends", &[]).unwrap();
+        let f = friends_of(&bravo, &bravo_key);
         assert_eq!(f.requests_in[0].gamertag.as_str(), "Alpha");
+        let f: Friends = client.get("/accounts/Alpha/friends", &[]).unwrap();
+        assert!(f.requests_out.is_empty() && f.requests_in.is_empty());
 
         // A duplicate is the server's conflict, surfaced as its status.
         let err = friend_run(

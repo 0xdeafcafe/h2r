@@ -343,11 +343,12 @@ where
     B::Texture: Sync,
 {
     match interp {
-        Some(Interpolation { rate, mode }) => install_with_report(
-            rt,
-            d3d::ThreadedBackend::new(d3d::InterpBackend::new(backend, rate).with_mode(mode))?,
-            extra,
-        ),
+        Some(Interpolation { rate, mode }) => {
+            let interp = d3d::InterpBackend::new(backend, rate).with_mode(mode);
+            // The agent's render.stats reads its counters.
+            crate::render_probe::set_interp(interp.stats());
+            install_with_report(rt, d3d::ThreadedBackend::new(interp)?, extra)
+        }
         None => install_with_report(rt, d3d::ThreadedBackend::new(backend)?, extra),
     }
 }
@@ -392,7 +393,7 @@ fn read_rgba(
     Ok((px, d.width, d.height))
 }
 
-fn write_png(path: &std::path::Path, px: &[u8], w: u32, h: u32) -> anyhow::Result<()> {
+pub(crate) fn write_png(path: &std::path::Path, px: &[u8], w: u32, h: u32) -> anyhow::Result<()> {
     let f = std::io::BufWriter::new(std::fs::File::create(path)?);
     let mut enc = png::Encoder::new(f, w, h);
     enc.set_color(png::ColorType::Rgba);

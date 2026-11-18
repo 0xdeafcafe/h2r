@@ -43,6 +43,66 @@ pub struct Stats {
     pub x87: u64,
     pub x87_mnemonics: std::collections::BTreeMap<String, u64>,
     pub first: Vec<(u32, String)>,
+    /// Each address the interpreter was entered at (the STOP's), at most
+    /// [`MAX_SITES`] of them: for the agent's `profile.fallbacks`.
+    pub by_site: std::collections::BTreeMap<u32, Site>,
+}
+
+/// One fallback entry address: how often, how much it interpreted, and
+/// the function it is in (the nearest analysed function start at or
+/// below it).
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Site {
+    pub function: Option<u32>,
+    pub hits: u64,
+    pub interpreted: u64,
+    pub x87: u64,
+}
+
+/// [`Stats::by_site`] keeps at most this many addresses (later ones are
+/// counted in the totals only).
+pub const MAX_SITES: usize = 4096;
+
+impl Stats {
+    fn add_site(&mut self, at: u32, function: Option<u32>, steps: u64, x87: u64) {
+        let full = self.by_site.len() >= MAX_SITES;
+        let site = match self.by_site.get_mut(&at) {
+            Some(s) => s,
+            None if full => return,
+            None => self.by_site.entry(at).or_insert(Site { function, ..Site::default() }),
+        };
+        site.hits += 1;
+        site.interpreted += steps;
+        site.x87 += x87;
+    }
+
+    /// The `top` sites by instructions interpreted, then hits, as JSON.
+    pub fn sites_json(&self, top: usize) -> serde_json::Value {
+        let mut sites: Vec<(&u32, &Site)> = self.by_site.iter().collect();
+        sites.sort_by(|a, b| (b.1.interpreted, b.1.hits, a.0).cmp(&(a.1.interpreted, a.1.hits, b.0)));
+        let list: Vec<serde_json::Value> = sites
+            .iter()
+            .take(top)
+            .map(|(at, s)| {
+                serde_json::json!({
+                    "at": format!("{at:#x}"),
+                    "function": s.function.map(|f| format!("{f:#x}")),
+                    "hits": s.hits,
+                    "interpreted": s.interpreted,
+                    "x87": s.x87,
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "fallbacks": self.fallbacks,
+            "interpreted": self.interpreted,
+            "x87": self.x87,
+            "x87_mnemonics": self.x87_mnemonics,
+            "sites": self.by_site.len(),
+            "sites_full": self.by_site.len() >= MAX_SITES,
+            "top": list,
+        })
+    }
 }
 
 pub static STATS: Mutex<Option<Stats>> = Mutex::new(None);
@@ -345,6 +405,10 @@ fn run(cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> TransferAbi {
             }
         }
     };
+    let function = {
+        let i = st.functions.partition_point(|&e| e <= cpu.eip);
+        i.checked_sub(1).map(|i| st.functions[i])
+    };
     drop(st);
     // Hand the interpreted reads back (the memory lock is released, so the
     // clock may be read): the next generated rdtsc must not repeat or go
@@ -356,6 +420,7 @@ fn run(cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> TransferAbi {
         s.fallbacks += 1;
         s.interpreted += steps;
         s.x87 += x87n;
+        s.add_site(cpu.eip, function, steps, x87n);
         for (k, v) in mn {
             *s.x87_mnemonics.entry(k).or_default() += v;
         }
@@ -605,6 +670,31 @@ pub fn interpret(cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> TransferAbi {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `profile.fallbacks`: sites by instructions interpreted, with their
+    /// function; past the cap only the totals move.
+    #[test]
+    fn fallback_sites_rank_by_interpreted() {
+        let mut s = Stats::default();
+        s.add_site(0x2000, Some(0x1f00), 10, 0);
+        s.add_site(0x3000, None, 400, 7);
+        s.add_site(0x2000, Some(0x1f00), 10, 0);
+        let v = s.sites_json(1);
+        assert_eq!(v["sites"], 2);
+        assert_eq!(v["top"].as_array().unwrap().len(), 1);
+        assert_eq!(v["top"][0]["at"], "0x3000");
+        assert_eq!(v["top"][0]["function"], serde_json::Value::Null);
+        let v = s.sites_json(5);
+        assert_eq!(v["top"][1]["hits"], 2);
+        assert_eq!(v["top"][1]["function"], "0x1f00");
+        for i in 0..MAX_SITES as u32 {
+            s.add_site(0x10_0000 + i, None, 1, 0);
+        }
+        assert_eq!(s.by_site.len(), MAX_SITES);
+        s.add_site(0x2000, Some(0x1f00), 10, 0);
+        assert_eq!(s.by_site[&0x2000].hits, 3, "kept sites still count");
+        assert!(s.sites_json(1)["sites_full"].as_bool().unwrap());
+    }
 
     unsafe extern "C" fn one(_: *mut CpuAbi, _: *mut ExecCtxOpaque, _: u32) -> TransferAbi {
         TransferAbi::ret(0)

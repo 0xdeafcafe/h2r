@@ -817,30 +817,48 @@ pub(crate) async fn list(
     if let Some(attrs) = &attrs {
         session::validate_attributes(attrs).map_err(invalid)?;
     }
+    // The title's OptiMatch search (procedure 1, decoded by the HLE): filter
+    // on playlist, level window and party room, closest mean level first.
+    let optimatch: Option<live_proto::optimatch::Query> = q
+        .get("optimatch")
+        .map(|s| serde_json::from_str(s))
+        .transpose()
+        .map_err(|_| invalid("invalid optimatch query"))?;
     let state = live.model.read();
-    let mut items: Vec<_> = state
-        .sessions
-        .values()
-        .filter(|s| {
-            s.session_id.as_str() > after
-                && q.get("state").map_or(s.state == "open", |v| *v == s.state)
-                && hopper.is_none_or(|id| s.advertisement.hopper_id == Some(id))
-                && q.get("map")
-                    .is_none_or(|v| s.advertisement.map.as_ref() == Some(v))
-                && q.get("host")
-                    .is_none_or(|v| *v == s.host || *v == s.host_gamertag)
-                && attrs.as_ref().is_none_or(|a| {
-                    a.iter()
-                        .all(|(k, v)| s.advertisement.attributes.get(k) == Some(v))
-                })
-                && q.get("flags").is_none_or(|v| *v == s.advertisement.flags)
-                && q.get("visibility")
-                    .is_none_or(|v| v == s.advertisement.visibility.as_str())
-                && s.listed_for(viewer, |a, b| state.is_friends(a, b))
-        })
-        .take(limit + 1)
-        .cloned()
-        .collect();
+    let listed = state.sessions.values().filter(|s| {
+        s.session_id.as_str() > after
+            && q.get("state").map_or(s.state == "open", |v| *v == s.state)
+            && hopper.is_none_or(|id| s.advertisement.hopper_id == Some(id))
+            && q.get("map")
+                .is_none_or(|v| s.advertisement.map.as_ref() == Some(v))
+            && q.get("host")
+                .is_none_or(|v| *v == s.host || *v == s.host_gamertag)
+            && attrs.as_ref().is_none_or(|a| {
+                a.iter()
+                    .all(|(k, v)| s.advertisement.attributes.get(k) == Some(v))
+            })
+            && q.get("flags").is_none_or(|v| *v == s.advertisement.flags)
+            && q.get("visibility")
+                .is_none_or(|v| v == s.advertisement.visibility.as_str())
+            && s.listed_for(viewer, |a, b| state.is_friends(a, b))
+    });
+    if let Some(query) = optimatch {
+        // Ordered by match quality, so one page: no cursor.
+        let items: Vec<_> =
+            live_proto::optimatch::select(&query, listed, |s| &s.advertisement.attributes, limit)
+                .into_iter()
+                .cloned()
+                .collect();
+        return Ok(crate::http::json(
+            StatusCode::OK,
+            &Page {
+                items,
+                next: None,
+                position: live.position(),
+            },
+        ));
+    }
+    let mut items: Vec<_> = listed.take(limit + 1).cloned().collect();
     let next = if items.len() > limit {
         items.truncate(limit);
         items.last().map(|s| s.session_id.clone())

@@ -104,6 +104,62 @@ fn top(s: &FrameSample) -> Vec<String> {
         .collect()
 }
 
+/// Each counter's median over the frames: what a frame usually counts.
+fn medians(frames: &[FrameSample]) -> [u64; COUNTERS] {
+    std::array::from_fn(|c| {
+        let mut v: Vec<u64> = frames.iter().map(|f| f.counts[c]).collect();
+        v.sort_unstable();
+        percentile(&v, 50.0)
+    })
+}
+
+/// Why a frame over budget was slow, from its counters (against what a
+/// frame of the window usually counts, `typical`) and its phases:
+///
+/// - `shader_compile`, `pipeline_compile`: any shader translated or render
+///   pipeline built on the critical path;
+/// - `texture_uploads`, `file_io`, `gpu_readback`: more uploads, file
+///   bytes or blocking readbacks than twice the usual (and at least one);
+/// - `gpu`, `render_thread`, `pushbuf_decode`: that phase is at least 40%
+///   of the frame's busy time;
+/// - `guest_cpu`: none of those, and the guest's own time (`cpu` plus
+///   `render`) is the biggest phase.
+pub fn causes(s: &FrameSample, typical: &[u64; COUNTERS]) -> Vec<String> {
+    let mut out = Vec::new();
+    let count = |c: Counter| s.counts[c as usize];
+    let above = |c: Counter| count(c) > 0 && count(c) > 2 * typical[c as usize];
+    if count(Counter::Shaders) > 0 {
+        out.push("shader_compile");
+    }
+    if count(Counter::Pipelines) > 0 {
+        out.push("pipeline_compile");
+    }
+    if above(Counter::Uploads) {
+        out.push("texture_uploads");
+    }
+    if above(Counter::ReadBytes) {
+        out.push("file_io");
+    }
+    if above(Counter::Readbacks) {
+        out.push("gpu_readback");
+    }
+    let busy = s.busy_ns().max(1);
+    let share = |p: Phase| s.phase_ns[p as usize] as f64 / busy as f64;
+    for (p, name) in [
+        (Phase::Wait, "gpu"),
+        (Phase::RenderWait, "render_thread"),
+        (Phase::Decode, "pushbuf_decode"),
+    ] {
+        if share(p) >= 0.4 {
+            out.push(name);
+        }
+    }
+    if out.is_empty() && top(s).first().is_some_and(|t| t == "cpu" || t == "render") {
+        out.push("guest_cpu");
+    }
+    out.into_iter().map(str::to_owned).collect()
+}
+
 /// Everything the reply says about the frames, before the stamp and files.
 pub fn summarise(
     frames: &[FrameSample],
@@ -137,6 +193,13 @@ pub fn summarise(
     let budget_ns = (budget_ms * 1e6) as u64;
     let mut over: Vec<&FrameSample> = frames.iter().filter(|f| f.total_ns > budget_ns).collect();
     let over_budget = over.len();
+    let typical = medians(frames);
+    let mut by_cause: BTreeMap<String, usize> = BTreeMap::new();
+    for f in &over {
+        for c in causes(f, &typical) {
+            *by_cause.entry(c).or_default() += 1;
+        }
+    }
     over.sort_by(|a, b| b.total_ns.cmp(&a.total_ns).then(a.index.cmp(&b.index)));
     let spikes = over
         .into_iter()
@@ -160,6 +223,7 @@ pub fn summarise(
                     .map(|c| (c.label().to_owned(), f.counts[c as usize]))
                     .collect(),
                 top: top(f),
+                causes: causes(f, &typical),
             }
         })
         .collect();
@@ -174,6 +238,7 @@ pub fn summarise(
         budget_ms,
         over_budget,
         spikes,
+        causes: by_cause,
     }
 }
 
@@ -283,6 +348,42 @@ mod tests {
         assert_eq!((s.spikes.len(), s.over_budget), (1, 2));
         let s = summarise(&frames, &marks(), 100.0, 10);
         assert!(s.spikes.is_empty());
+    }
+
+    #[test]
+    fn spikes_say_why() {
+        // Steady frames upload 2 textures and read no file bytes.
+        let mut frames: Vec<FrameSample> = (0..20)
+            .map(|i| {
+                let mut f = frame(i, i * 16, 12, 4, 100);
+                f.counts[Counter::Uploads as usize] = 2;
+                f
+            })
+            .collect();
+        let typical = medians(&frames);
+        // A shader compile with a burst of uploads.
+        let mut a = frame(20, 400, 50, 5, 100);
+        a.counts[Counter::Shaders as usize] = 3;
+        a.counts[Counter::Uploads as usize] = 9;
+        assert_eq!(causes(&a, &typical), ["shader_compile", "texture_uploads"]);
+        // Waiting on the GPU, uploads as usual.
+        let mut b = frame(21, 500, 10, 40, 100);
+        b.counts[Counter::Uploads as usize] = 3;
+        assert_eq!(causes(&b, &typical), ["gpu"]);
+        // A level streaming in.
+        let mut c = frame(22, 600, 40, 2, 100);
+        c.counts[Counter::ReadBytes as usize] = 1 << 20;
+        assert_eq!(causes(&c, &typical), ["file_io"]);
+        // Nothing counted: the guest's own time.
+        let d = frame(23, 700, 60, 2, 100);
+        assert_eq!(causes(&d, &typical), ["guest_cpu"]);
+        frames.extend([a, b, c, d]);
+        let s = summarise(&frames, &[], 33.3, 2);
+        assert_eq!(s.spikes.len(), 2);
+        assert_eq!(s.over_budget, 4);
+        assert_eq!(s.causes["shader_compile"], 1);
+        assert_eq!(s.causes["guest_cpu"], 1, "counted for unlisted spikes too");
+        assert_eq!(s.causes.values().sum::<usize>(), 5);
     }
 
     #[test]

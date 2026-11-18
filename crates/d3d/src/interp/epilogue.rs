@@ -65,6 +65,126 @@ impl Epilogue {
     }
 }
 
+/// What a vertex program computes its clip position from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Position {
+    /// The four rows `c[b..b + 4]`: `oPos.x` to `oPos.w` each a `dp4` or
+    /// `dph` with `c[b + i]` (unswizzled, not relative) as one operand. That
+    /// block is the matrix the draw's vertices go through to the screen:
+    /// the only one that can be its camera.
+    Rows(u8),
+    /// No constant: the vertices as given (a pass-through, `mov oPos,
+    /// v0`), already in screen or clip space. Nothing the camera does
+    /// moves them.
+    Fixed,
+    /// Some other way (columns, a product of blocks, a program that cannot
+    /// be read).
+    Unknown,
+}
+
+/// What `microcode`'s clip position is computed from: `oPos` as each
+/// component stands when it is first read back (`r12`: the epilogue
+/// follows) or at the end, followed through temporaries and moves.
+pub fn position(microcode: &[u32]) -> Position {
+    let Ok(p) = Program::from_words(ProgramKind::Normal, microcode) else {
+        return Position::Unknown;
+    };
+    // For each temporary (12 is `oPos`) and component: the constant row
+    // it is the dot product with, if it is one, and whether any constant
+    // reaches it.
+    let mut rows: [[Option<u8>; 4]; 13] = [[None; 4]; 13];
+    let mut constant: [[bool; 4]; 13] = [[false; 4]; 13];
+    // `oPos` components read back: the clip position's, as they stand;
+    // later writes are the epilogue's.
+    let mut read = [false; 4];
+    for inst in &p.instructions {
+        let reaches = |s: &Source, constant: &[[bool; 4]; 13]| match s.reg {
+            SrcReg::Const { .. } => true,
+            SrcReg::Temp(t) => {
+                (t as usize) >= 13
+                    || s.swizzle
+                        .iter()
+                        .any(|&c| constant[t as usize][c as usize & 3])
+            }
+            _ => false,
+        };
+        let (ra, rb, rc) = inst.mac_reads();
+        let mac_const = (ra && reaches(&inst.a, &constant))
+            || (rb && reaches(&inst.b, &constant))
+            || (rc && reaches(&inst.c, &constant));
+        let ilu_const = reaches(&inst.c, &constant);
+        for s in inst.sources() {
+            if s.reg == SrcReg::Temp(12) {
+                for &c in &s.swizzle {
+                    read[c as usize & 3] = true;
+                }
+            }
+        }
+        let moved = |s: &Source, rows: &[[Option<u8>; 4]; 13]| -> [Option<u8>; 4] {
+            match s.reg {
+                SrcReg::Temp(t) if (t as usize) < 13 && !s.neg => {
+                    s.swizzle.map(|c| rows[t as usize][c as usize & 3])
+                }
+                _ => [None; 4],
+            }
+        };
+        let m: [Option<u8>; 4] = match inst.mac {
+            MacOp::Dp4 | MacOp::Dph => [&inst.a, &inst.b]
+                .into_iter()
+                .find_map(|s| match s.reg {
+                    SrcReg::Const {
+                        index,
+                        relative: false,
+                    } if s.swizzle == [0, 1, 2, 3] && !s.neg => Some(index),
+                    _ => None,
+                })
+                .map_or([None; 4], |r| [Some(r); 4]),
+            MacOp::Mov => moved(&inst.a, &rows),
+            _ => [None; 4],
+        };
+        let l = if inst.ilu == IluOp::Mov {
+            moved(&inst.c, &rows)
+        } else {
+            [None; 4]
+        };
+        let mut write = |reg: usize, mask: shaders::vsh::Mask, v: [Option<u8>; 4], k: bool| {
+            for (j, x) in v.into_iter().enumerate() {
+                if mask.has(j) && !(reg == 12 && read[j]) {
+                    rows[reg][j] = x;
+                    constant[reg][j] = k;
+                }
+            }
+        };
+        if inst.mac_writes_temp() && (inst.mac_temp as usize) < 13 {
+            write(inst.mac_temp as usize, inst.mac_mask, m, mac_const);
+        }
+        if inst.ilu_writes_temp() && (inst.ilu_temp as usize) < 13 {
+            write(inst.ilu_temp as usize, inst.ilu_mask, l, ilu_const);
+        }
+        if let Some(o) = inst.out
+            && o.dest == OutDest::Output(OutReg::Pos)
+        {
+            let (v, k) = if o.unit == Unit::Mac {
+                (m, mac_const)
+            } else {
+                (l, ilu_const)
+            };
+            write(12, o.mask, v, k);
+        }
+    }
+    if constant[12] == [false; 4] {
+        return Position::Fixed;
+    }
+    match rows[12][0] {
+        Some(b)
+            if b as usize + 4 <= CONSTANTS && (0..4).all(|j| rows[12][j] == Some(b + j as u8)) =>
+        {
+            Position::Rows(b)
+        }
+        _ => Position::Unknown,
+    }
+}
+
 /// A component's value, as far as the analysis follows it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Sym {
@@ -529,6 +649,87 @@ mod tests {
         assert!(Epilogue::of(&words(&p)).is_some());
         // Not microcode at all.
         assert_eq!(Epilogue::of(&[1, 2, 3]), None);
+    }
+
+    #[test]
+    fn the_position_is_read_from_the_rows_it_comes_from() {
+        // Straight to `oPos`, the epilogue after.
+        let mut p = clip();
+        p.extend(standard(10, 11));
+        assert_eq!(position(&words(&p)), Position::Rows(0));
+        // Through a temporary, as some of Halo 2's programs do: `xyz` into
+        // `r10`, `w` into `r10` and `oPos` at once, then `mov oPos.xyz,
+        // r10`.
+        let mut p: Vec<Inst> = (0..3)
+            .map(|i| {
+                Inst::mac(MacOp::Dp4, Some(O::v(0)), Some(O::c(20 + i)), None).to_temp(10, 8 >> i)
+            })
+            .collect();
+        p.push(
+            Inst::mac(MacOp::Dph, Some(O::v(0)), Some(O::c(23)), None)
+                .to_temp(10, W)
+                .to_out(false, OutReg::Pos, W),
+        );
+        p.push(Inst::mac(MacOp::Mov, Some(O::r(10)), None, None).to_out(
+            false,
+            OutReg::Pos,
+            X | Y | Z,
+        ));
+        p.extend(standard(10, 11));
+        assert_eq!(position(&words(&p)), Position::Rows(20));
+        // Vertices passed through: no constant reaches them, with or
+        // without an epilogue after.
+        let pass = Inst::mac(MacOp::Mov, Some(O::v(0)), None, None).to_out(false, OutReg::Pos, 0xF);
+        assert_eq!(
+            position(&words(std::slice::from_ref(&pass))),
+            Position::Fixed
+        );
+        let mut p = vec![pass];
+        p.extend(standard(10, 11));
+        assert_eq!(position(&words(&p)), Position::Fixed);
+        // Anything else is not known.
+        let scaled = Inst::mac(MacOp::Mul, Some(O::v(0)), Some(O::c(16)), None).to_out(
+            false,
+            OutReg::Pos,
+            0xF,
+        );
+        assert_eq!(position(&words(&[scaled])), Position::Unknown);
+        let mut two = clip();
+        two[2] = Inst::mac(MacOp::Dp4, Some(O::v(0)), Some(O::c(30)), None).to_out(
+            false,
+            OutReg::Pos,
+            Z,
+        );
+        assert_eq!(
+            position(&words(&two)),
+            Position::Unknown,
+            "rows of two blocks"
+        );
+        let mut swapped = clip();
+        swapped.swap(0, 1);
+        for (i, inst) in swapped.iter_mut().enumerate() {
+            *inst = Inst::mac(MacOp::Dp4, Some(O::v(0)), Some(O::c([1, 0, 2, 3][i])), None).to_out(
+                false,
+                OutReg::Pos,
+                8 >> i,
+            );
+        }
+        assert_eq!(
+            position(&words(&swapped)),
+            Position::Unknown,
+            "rows out of order"
+        );
+        let mut negated: Vec<Inst> = (0..4)
+            .map(|i| Inst::mac(MacOp::Dp4, Some(O::v(0)), Some(O::c(i)), None).to_temp(10, 8 >> i))
+            .collect();
+        negated.push(
+            Inst::mac(MacOp::Mov, Some(O::r(10).negated()), None, None).to_out(
+                false,
+                OutReg::Pos,
+                0xF,
+            ),
+        );
+        assert_eq!(position(&words(&negated)), Position::Unknown, "negated");
     }
 
     #[test]

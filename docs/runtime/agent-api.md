@@ -4,6 +4,9 @@ Status: phase 1 built ([below](#phase-1-what-was-built)): the socket,
 `session.*`, `world.count`/`query`/`object`, `profile.counters`,
 `features.list`, `h2 serve` and `h2 agent`. Raw and recorded input and
 `profile.capture` built too ([below](#phase-3-and-4-what-was-built)).
+Phase 5 ([plan and what was built](#phase-5-testing-in-the-lightest-way-plan)):
+`render.frame`, `render.stats`, spike causes, `profile.fallbacks`,
+`load.timeline`, `h2 testmap` and `h2 agent run`.
 Everything else on this page is design; its Rust and JSON blocks are
 sketches, not code that compiles. The front end is the `h2 agent` CLI
 only: the MCP server is dropped (decided 2026-11-17).
@@ -721,6 +724,215 @@ here was run against the game: input reaching the guest is proven at the
 `xapi` tap with synthetic pads, captures with synthetic frames and a fake
 sampler.
 
+## Phase 5: testing in the lightest way (plan)
+
+What an agent can already do per area, what's missing, and the lightest
+way to provide it. The rule stays: agents never build an image or run the
+game; they use the user-started shared `h2 serve` through `h2 agent`, and
+tests. Everything below is a method on that serve, a CLI verb, or a
+host-only tool. (**S** for the plan; the built parts say so.)
+
+Domains `edit.*` (live tag writes in the running game) and the hot-reload
+half of `render.*` (render passes and shaders reloaded in place) belong to
+a separate effort; this phase leaves their names free and builds neither.
+
+| Area | Have | Missing | Lightest way |
+|---|---|---|---|
+| Profiling | `profile.capture`: per-frame phases (`cpu`, `render`, `decode`, `encode`, `submit`, `gpu-wait`, `render-wait`, `d3d`), counters, spikes; the sampler | why a spike happened; where the fallback interpreter runs; per-subsystem guest time; A/B of two feature sets on one recording | spike `causes` from the frame's own counters (built); `profile.fallbacks` (built); engine-phase spans as feature-registry hooks (phase 4 plan); A/B as two `h2 lab` runs of the same input log, run by the user or coordinator |
+| Render pipeline | frame counters (`draws`, `passes`, pass splits); `H2_BOOT_CAPTURE`, `H2_BOOT_DRAWLOG` at launch only | a frame's passes, draws and targets on request; interp and pipelined-render counters and hold reasons; which native paths a frame took; one pass's image | `render.frame` and `render.stats` (built) |
+| Features | `features.list` (the plan text) | state as data; setting a switch live | `features.list` grows `{name, on, sim, live}` per switch; a `features.set` for the `Host`/`View` switches whose hooks read a flag each call, and for the rest the reason a restart is needed (the switch places or removes hooks at build) |
+| Loading | `present N: last 100 at X fps` lines; `read_bytes` per frame | a load's timeline; stalls; loading a named level or BSP | `load.timeline` (built: stall and settle with bytes, uploads, compiles, phase times); seeks and cache hits need kernel I/O counters (later); `load.level` needs a runtime level switch (the game's own map change, through `hs.eval` once it exists) |
+| Editing, test maps | `scenario-edit` (placements, undo, save), `h2-editor`, `h2 map testbuild` | a scripted, headless way to make a small test map | `h2 testmap`: a JSON edit script (clear blocks, keep, add, set, remove) over `scenario-edit`, saved to a new `.map` (built, on disk only) |
+| Lightest testing | unit tests over synthetic data; `h2 agent -` scripts | assertions; one call that runs a scenario and returns a verdict | `h2 agent run script.txt`: the `-` script with `expect` lines (JSON-pointer comparisons on the last answer) and one JSON verdict with each call's timing (built) |
+
+What to reach for first, cheapest first:
+
+1. **A unit test** over synthetic data (as every crate here does). Seconds,
+   no game.
+2. **The shared serve**, read-only: `status`, `count`, `counters`,
+   `render`, `loads`, `fallbacks`, `frame`. No claim, nothing changes.
+3. **A scripted scenario on the shared serve** (`h2 agent run`): claim,
+   pause, step, press, capture, `expect`, release. Deterministic up to the
+   starting state; replays an input log for longer runs.
+4. **A test map** made by `h2 testmap` and loaded by the user or
+   coordinator (`H2_MAP_DIR`), for a repro that needs one thing in an
+   empty room.
+
+What would make each cheaper (not built): a test map whose BSP is one room
+loads in seconds instead of a campaign level's tens; `state.*` snapshots
+make replays start anywhere; `load.level` makes the shared serve switch
+level without a restart.
+
+## Phase 5: what was built
+
+### Render frame and pipeline counters
+
+```sh
+h2 agent frame                     # the next whole frame: passes, totals, paths
+h2 agent frame draws               # ... and every draw
+h2 agent frame snap 0,3            # ... and passes 0 and 3 read back as PNGs
+h2 agent render                    # interp, pipelined render, native paths
+```
+
+Methods `render.frame` and `render.stats` (host methods: boot's agent glue
+adds them; types in `crates/agent-proto/src/render.rs`, logic in
+`crates/agent/src/render.rs`). How it behaves (**Code**, tested in
+`crates/agent`, `crates/boot`'s `d3d_diag` and `render_probe`, and
+`crates/feature/tests/render_loop.rs`; not run against the game):
+
+- **Recording.** `render.frame {"arm": true, "draws", "max_draws",
+  "snap"}` arms the recorder; the next present starts the frame and the
+  one after ends it, then it disarms. `render.frame {}` reads the state
+  and the last frame (`frame.seq` is the arming's number). `h2 agent
+  frame` does both and waits up to 10 s; a paused or loading game
+  presents nothing. Unarmed, the cost is one relaxed load per draw, clear
+  and present in the draw wrapper (`boot::d3d_diag`), which sits in front
+  of the backend (the render thread and in-between frames are behind it,
+  so the frame is the guest's, as the D3D layer handed it over).
+- **The frame.** `totals` (passes, draws by outcome, vertices, clears,
+  copies, reads, distinct targets); `passes`: runs of work on one colour
+  surface and depth (a return to an earlier target is a new pass), each
+  with its target (`640x480 X8R8G8B8`), clears, draws, vertices, outcomes,
+  primitives, D3D entries, texture formats, and counts of pixel-program,
+  blended and depth-writing draws; `ops`: copies and readbacks with the
+  draw count before them; `paths`: calls into each native render path
+  during the frame. Surfaces are the backend's handles as text. With
+  `draws`, each draw (at most `max_draws`, 2000 by default; `truncated`
+  says when there were more).
+- **Snapshots.** `snap` (at most 4 pass numbers): when such a pass ends
+  (the next pass starts, or the present), its colour target is read back
+  as BGRA and written as a PNG under the cache directory's `frames/`
+  (`frame-<seq>-pass-<n>.png`); `snaps` gives each file or error. A pass
+  with no draw has no known size and says so. This is a GPU round trip,
+  only when asked.
+- **Counters.** `render.stats`: `interp` is `d3d::interp::InterpStats`
+  with every field (frames blended and held, replays, warps, and the hold
+  reasons `unsure_*`, `mismatch_*`, `dropped`), read from its `Debug`
+  text so fields added there appear with no change here; `pipeline` is the
+  pipelined render's totals (`pipelined`, `completed`, `serial` reasons,
+  `fallbacks` by call, joins, times in ms); `paths` is calls into each
+  native render path since the start (`feature::render_loop::path_calls`:
+  `render_views`, `layer_draw`, `layer_entries`, `render_game_view`,
+  `render_scene_passes`, `layer_sort`, `render_states`,
+  `transparent_sort`); `counters` the frame-stats window's line. Each is
+  `null` where that piece isn't running.
+
+### Hitch causes and fallback hits
+
+```sh
+h2 agent capture 900               # spikes now say why, and "causes" counts them
+h2 agent fallbacks 20              # where the fallback interpreter runs
+```
+
+- **Causes.** Each spike in `profile.capture` has `causes`, and the reply
+  has `causes` counting every frame over budget (listed or not) by
+  cause (`crates/agent/src/capture.rs`, `causes`):
+  `shader_compile` and `pipeline_compile` (any on the critical path),
+  `texture_uploads`, `file_io` and `gpu_readback` (more than twice the
+  window's median, and at least one), `gpu`, `render_thread` and
+  `pushbuf_decode` (that phase is at least 40% of the frame's busy time),
+  else `guest_cpu` when the guest's own time is the biggest phase. These
+  are what the counters show, not a proof: a frame can be slow for a
+  reason nothing counts.
+- **Fallbacks.** `profile.fallbacks {"top": N}` (host method; 20 by
+  default, 1 to 500): the fallback interpreter's totals and its entry
+  addresses ranked by instructions interpreted, each with hits, x87
+  instructions and the function it is in (the nearest analysed start at
+  or below it). Kept per address in `boot::fallback::Stats::by_site`, at
+  most 4096 addresses (`sites_full` says when later ones count in the
+  totals only).
+
+### Load timeline
+
+```sh
+h2 agent loads                     # the last 8 loads, BSP switches and stalls
+h2 agent wait '{"phase":"gameplay","map_ticks":30}' && h2 agent loads 1
+```
+
+`load.timeline {"last": N}` (core method; 8 by default, 1 to 32 kept;
+`crates/agent/src/loads.rs`). How it behaves (**Code**, tested in
+`crates/agent` and `crates/timeline`; not run against the game):
+
+- **What a load is.** Read at each tick: the map changed (`map`), the BSP
+  changed (`bsp`), or no tick came for 500 ms (`stall`, the same point
+  the `loading` phase starts). The run's first tick ends a `boot` load
+  timed from when the agent started. Each load has a `stall` segment
+  (the last tick before to the first after) and a `settle` segment (the
+  next 30 ticks); a load cut short by the next one says `settled: false`.
+- **What each segment counted.** The difference of the frame-stats
+  running totals (`timeline::phase::totals`, new) across it: frames, ms
+  per phase (`cpu`, `gpu-wait`, `render-wait`, …) and each counter that
+  moved (`read_bytes`, `uploads`, `shaders`, `pipelines`, `readbacks`,
+  …). Frames are counted by present, so a load screen that presents
+  shows its frames; one that doesn't shows the stall's time only. With
+  frame stats off, `no_frame_stats` says the counts are missing.
+- **Now.** While no tick has come for 500 ms, `current` is the stall so
+  far, with what it has counted.
+- Seeks and cache hits aren't counted (the kernel's file I/O counts bytes
+  only), and per-frame I/O stalls are the `read_bytes` and `file_io`
+  spike cause above.
+
+### Test maps on disk
+
+```sh
+h2 testmap ~/maps/zanzibar.map one-weapon.json --out $TMPDIR/tm/zanzibar.map
+```
+
+`h2 testmap <source.map> <script.json | -> --out <new.map> [--force]`
+(`crates/cli/src/testmap_cmd.rs`) runs a JSON edit script
+(`scenario_edit::script`, `crates/scenario-edit/src/script.rs`) over the
+source's placement blocks through the editor's own `Session`, so every
+edit is checked as the editor checks it, and saves a new map (the source
+is never written). It prints what each operation did and the entries
+left per block. Operations: `clear` (blocks, or `"all"`; a block the
+editor won't empty is reported and left), `keep` (these entries of a
+block, renumbered from 0), `add` (a copy of `like`, or a zeroed entry
+with the palette's first item, then `set`), `set` (fields by the
+editor's names: `position` `[x, y, z]`, `rotation`, `facing`, `team`,
+palette `type`, …), `remove`. `allow_growth` lets a block grow past its
+source size, as the editor's switch. Blocks: `scenery`, `vehicles`,
+`equipment`, `weapons`, `machines`, `sound_scenery`, `crates`,
+`starting_locations`, `netgame_flags`, `netgame_equipment`,
+`starting_equipment`. Tested on the editor's invented fixture map
+(`crates/scenario-edit`); no game data.
+
+The user or coordinator loads the result (`H2_MAP_DIR`); agents don't.
+Not covered: AI (squads and their spawn points aren't in the editor's
+blocks yet), and tag references other than through a palette index.
+Live edits in a running game are the separate `edit.*` effort.
+
+### Scripted scenarios with a verdict
+
+```sh
+cat > grenade.txt <<'X'
+wait {"phase":"gameplay","map_ticks":30}
+expect /at/phase == "gameplay"
+claim
+press rt 100
+capture 90
+expect /over_budget <= 2
+expect /causes missing
+release
+X
+h2 agent run grenade.txt          # one JSON verdict; exit 1 unless it passed
+```
+
+`h2 agent run <script|->` (`crates/cli/src/agent_run.rs`): the `h2 agent
+-` script on one connection, plus `expect <pointer> <op> [JSON]` on the
+last answer (a JSON pointer; ops `==`, `!=`, `<`, `<=`, `>`, `>=` on
+numbers, `contains` for a substring, an array element or an object key,
+`exists`, `missing`) and `keep` (put the last answer in the verdict).
+The verdict is `{"pass", "failed", "ms", "calls": [{line, call, ms, ok,
+error}], "expects": [{line, expect, want, pass, got}], "kept",
+"stopped"}`. A failed expect is recorded and the script goes on; a failed
+call stops it. Answers aren't printed except kept ones, so a long
+scenario costs a few lines of context. Tested with a fake caller; not run
+against the game.
+
+Not built in phase 5 so far: per-subsystem guest time (engine-phase
+spans), A/B of feature sets, features set live, kernel I/O seeks and
+cache hits, `load.level`.
+
 ## Open decisions
 
 - **Who runs the game the API talks to.** Decided (2026-11-17): one
@@ -739,6 +951,7 @@ sampler.
 - [perf.md](../perf/perf.md), [frame-budget.md](../perf/frame-budget.md)
 - [level-boot.md](level-boot.md), [checkpoints.md](checkpoints.md)
 - [lab.md](lab.md): `h2 lab`, runs on a second Mac over SSH with replays and frame stats
+- [hot-iteration.md](../graphics/hot-iteration.md): `edit.*` (live tag edits) and `render.*` (hot WGSL overrides, parameters, toggles)
 - [hs_vm.md](../engine/hs_vm.md)
 - [docs/live](../live/): the Live service, the other reader of
   `live-telemetry`
