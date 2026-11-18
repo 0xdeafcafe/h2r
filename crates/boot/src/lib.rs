@@ -36,6 +36,7 @@ pub mod health;
 pub mod h1_options;
 pub mod h1_options_row;
 pub mod hud;
+pub mod loaded_map;
 pub mod hud_swap;
 pub mod h1_variants;
 pub mod precision;

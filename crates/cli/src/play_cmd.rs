@@ -984,8 +984,8 @@ fn debug_menu_on(env: Option<&str>) -> bool {
     env.is_none_or(|v| v.trim() != "0")
 }
 
-/// `h2 play`'s watermark: how the renderer runs, and the level map the
-/// game opened last.
+/// `h2 play`'s watermark: how the renderer runs, and the map the game has
+/// loaded (the file-open record until the first game starts).
 fn play_watermark(render_thread: bool) -> app::Watermark {
     app::Watermark::new()
         .with_note(if render_thread {
