@@ -235,7 +235,47 @@ Names for 5 and 6 are positional only.
 | `+0x50`, `+0x60`, `+0x70` | inertia tensor, three rows of xyz (w unused) | D; V: symmetric on every body |
 
 The element is kept verbatim in `RigidBody::raw`; `+0x18..+0x38` (four words,
-a 1.0 and a 0.05-like value) are not interpreted.
+a 1.0 and a 0.05-like value) are not interpreted by the reader. What the
+engine does with the first words when it adds a body to the Havok world:
+
+| Offset | Meaning | Evidence |
+|---|---|---|
+| `+0x18 u16` bit 1 | the body goes on collision layer 2 instead of its default layer | E: `0x001d5bf0` passes the bit to `0x001d70d0`, which takes 2 over the default from `0x001d69d0` |
+| `+0x18 u16` bit 0 | read at `0x001d5d81` (set, or the object is a vehicle, sets a local flag); effect not established | E (read only) |
+| `+0x1a u16` | motion: 0..5 become Havok motions 2..7 (7 fixed, 6 keyframed) | E: jump table `0x001d5bd4` in `0x001d5940` |
+| `+0x1e u16` | not established (1 on every retail biped body) | V |
+
+How a body's motion and layer are chosen (E, `0x001d5940` and callers):
+
+- An object whose header byte `+2` bit 0 is clear, other than a machine,
+  gets every body fixed (motion 7).
+- Object creation (`0x001cf19c`) asks for keyframed bodies: a body that is
+  not fixed becomes keyframed (6) unless its node (`+0xc8` block, `+4` bit 0)
+  is flagged. The other callers (`0x001d56c0`, `0x001d5747`, `0x001d6c2d`)
+  do not ask, and the motion stays as `+0x1a` says; which of them is the
+  ragdoll is not established.
+- The default layer (`0x001d69d0`): fixed bodies 1 (12 on a vehicle);
+  otherwise by object type through the tables at `0x001d6ab0` and
+  `0x001d6ac4`. A biped's is 9, or 11 when its `bipd` byte `+0x10a` has
+  bit 2.
+- `0x001c302d` enables every layer pair, then disables a fixed list
+  (through `0x002df990`). Layer 2 collides only with layers 0, 1 and 2.
+  Layer 1 collides with everything but 7, 8 and 14; layer 9 with 0, 1, 3,
+  5 to 9, 12 and 14.
+
+V (`h1objects/tests/biped_physics_disc.rs`, `retail_rigid_body_words_by_kind`):
+every body of the Chief's and the Covenant's ragdolls (`masterchief`,
+`elite`, `brute`, `hunter`, `jackal`, `bugger`; 59 bodies) holds flags 3,
+motion 2 and `+0x1e` 1. The grunt's hold flags 1, the marines' 0. Vehicles,
+devices and scenery mostly hold flags 0.
+
+So a living Chief's bodies sit on layer 2 whether fixed or keyframed, and
+meet only layers 0 to 2. Converted Halo 1 bipeds held flags 0 until
+converter 58, which put their bodies on layer 1 (fixed) or 9 (keyframed),
+where they meet most other layers. They now take the Chief's 3
+(`rebuild::BIPED_BODY`). Which layer the structure and the player's own
+movement queries use is not established, so whether this caused the
+standing bounce needs a run.
 
 ### Structural validation (`PhysicsModel::validate`)
 
