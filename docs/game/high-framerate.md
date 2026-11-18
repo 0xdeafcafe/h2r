@@ -1179,6 +1179,76 @@ A frame's first offence is its hold reason, so the counters are unchanged.
 Frames with no camera (menus, loads) are not logged: they are held as
 `unpaired` with nothing to warp.
 
+### Screen-space draws in the world
+
+What held gameplay, from the hold log on a live serve (03a_oldmombasa,
+headless, `H2_FPS=60 impl.render.reproject`, master b0e5f8fc): 5,161
+frames held by the screen guard, 4,353 of them counted as
+`mismatch_screen` (the rest also unpaired), every one by a pass-through
+world draw (`mov oPos, v0`: its vertices are window pixels). Three kinds:
+
+| kind | program | in held frames | what it is |
+|---|---|---|---|
+| full-target layer | `55c33fa0a8b277de` (moves `v0`-`v6` to `oPos`, `oT0`-`oT3`, `oD0`, `oD1`) | first offender in 5,041 of 5,161; 1 a frame | one blended TriangleFan over the whole 640x480 target among the world draws (draw 691 of pass 8 in a full frame, before the particles), four textures: a 640x480 target drawn that frame and three noise sheets (or a 64x64 one and two 8x8) |
+| sprites | `a325e7d25a154e2d` (moves `v0` to `oPos`, `v3` to `oT0`, `v9` to `oD0`) | in 1,200 frames, first in 120; about 144 a frame (172,498 draws) | blended 6x6-pixel TriangleFans with one 8x8 Dxt3 texture, among the opaque world draws (pass 2), with the depth surface bound: by all appearances points of the world the game projected to the screen with the frame's camera |
+| orthographic quads | `9159724c0888b680`, `81feff991dfe6871` (`rows c[177]`: an orthographic 640x480 transform, then Halo 2's epilogue) | 2 frames (4 and 8 draws) | an untextured full-target fan and a 640x60 strip at the top: a fill and letterbox bars, in short frames (29 draws) |
+
+The decisions (`interp::screen_space`, used by `world_screen` and the
+world image):
+
+- **Sprites: warped with the world.** The game put each on the screen by
+  projecting a world point with frame N's camera, so in the world image its
+  positions are scaled by the overscan about the screen's centre exactly
+  as the world's are (each program's viewport scale times `s` scales about
+  the same centre), its depth and texture coordinates kept. After the warp
+  at frame N's rotation it is where the guest drew it (to float rounding);
+  in between it turns with the point it marks. (Drawn unwarped on top it
+  would be wrong twice: it would slide against the world, and it is drawn
+  among the opaque world draws with their depth, so moving it after them
+  changes what covers what. If some were screen-fixed instead, warping moves
+  them by at most half a frame's turn, a few pixels.) It ends up 1/1.1 of its size in the image and 1.1 times
+  that after the warp: its own size, as everything else.
+- **The full-target layer: warped with the world, kept over the whole
+  image.** It is blended over the world drawn so far and the particles are
+  drawn over it, so it can be neither moved on top (blend order) nor left
+  out. Its first texture is a 640x480 target drawn that frame and looked
+  up per pixel, so it belongs with the world: inside the guest's view the world image must show
+  at each pixel what the guest showed at the pixel it maps to. Shrinking it
+  with the overscan would do that but leave the band the overscan adds (the
+  only pixels a turn reveals) without the layer, a strip at the leading
+  edge on every turn. So it keeps covering the whole image and every other
+  input is moved to its value at the guest's pixel the image shows there
+  (`q = c + (p - c) / s`): the same texels inside, its own coordinates
+  carried on in the band (clamped or wrapped as its samplers say, like the
+  warp's own edge pixels). That is exact only when the program's outputs
+  are its inputs moved (no constant, no arithmetic) and the inputs are
+  affine over the quad's pixels with one `w`; both are checked
+  (`Fit::Extend`), otherwise it is shrunk (`Fit::Shrink`).
+- **Orthographic quads: held.** A fill and letterbox bars are fixed to the
+  screen, not to the world, and they sit among the world draws: warped they
+  would turn, moved on top they would change the blend order. They were in
+  2 frames of 5,161 (cinematic edges), so those frames stay at 30.
+- **Still held, as before:** a pass-through draw whose program also reads
+  its position elsewhere (a texture looked up from it would read another
+  texel once moved), whose position is not a float attribute at register 0
+  (nothing to rewrite), or that is scissored; pre-transformed and
+  fixed-function draws; unknown positions; off-centre perspectives.
+
+`InterpStats` counts the moved draws per world image: `screen_shrunk` and
+`screen_extended` (the exit line's `screen-space draws S shrunk E
+extended`). On the serve above a frame with the layer and about 144
+sprites would count 144 and 1.
+
+To verify live (rebuild `h2`, no image rebuild), the same serve: `h2
+agent render` should show `mismatch_screen` near 0 in gameplay (only the
+orthographic frames and anything new), `blended_frames` and `captures`
+rising with gameplay frames (minus `unpaired_gap`, high on a loaded
+machine), `replays` and `warps` rising, `screen_shrunk` about 144 times
+`screen_extended`, and `interp.holds.kinds` without the two pass-through
+programs. `H2_BOOT_GFX_BETWEEN=12` then writes in-between frames to look
+at: the layer should have no edge band, and the sprites should stay on
+what they mark.
+
 ### How it works
 
 - **The overlay.** Without a pass tag, the draws that go on top unwarped
@@ -1362,6 +1432,23 @@ target; an off-centre perspective and a level draw after the weapon are
 named; a frame with no camera is not logged. `cargo test -p boot --test
 headless_interp` checks `interp.holds` is in `render.stats`.
 
+`cargo test -p d3d --test interp`
+`screen_space_sprites_and_layers_in_the_world_turn_with_it`: a level with a
+sprite, a full-target layer that only moves its inputs and one with a
+texture matrix blends; the guest's own draws are untouched, the world
+image's sprite and matrix layer are shrunk about the centre with their
+texture coordinates and depth kept, and the layer keeps its positions with
+texture coordinates those of the guest's pixel shown there (−0.05 at the
+corner); the counters say 2 shrunk, 1 extended.
+`screen_space_world_draws_e1_cannot_move_still_hold`: a scissored sprite, a
+layer that looks a texture up from its own position and an orthographic
+quad hold. `screen_space_draws_turn_with_the_world_through_the_interpreter`:
+a sprite placed on a world point's window position, moved, lands where the
+level's program puts that point with the overscan. `cargo test -p d3d --lib
+interp::screen_space`: which programs move only their position (pure or
+not; a position also read, swizzled, negated or through a constant is not)
+and the affine fit.
+
 ### Left
 
 1. Run it in game next to D (commands above) and compare: smoothness of
@@ -1373,8 +1460,10 @@ headless_interp` checks `interp.holds` is in `render.stats`.
    pass boundary with a wider projection set by the guest, instead of a
    second world draw (that halves its cost), and 120 Hz (a warp per
    display frame is cheap).
-4. After the guards above, a live run's held split says what still keeps
-   gameplay at 30: `size_mismatch (... mapping M screen S overlay O)`
+4. Done for Halo 2 (see "Screen-space draws in the world"): its
+   pass-through sprites and full-target layer are moved with the world.
+   Before that, after the guards above, a live run's held split said what
+   still kept gameplay at 30: `size_mismatch (... mapping M screen S overlay O)`
    names the guard. The one gameplay capture we have (a converted Halo 1
    level, 307 draws into the shown surface) is now classified right (the
    camera at `c[0]`, centred, in 300 draws; the HUD's `Rows(177)` and
