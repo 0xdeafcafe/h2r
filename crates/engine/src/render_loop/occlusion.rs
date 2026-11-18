@@ -72,6 +72,28 @@ pub enum DepthMapping {
 }
 
 impl DepthMapping {
+    /// The game's W-buffer as the D3D device sets it up: `inv_w_far` the
+    /// device's `+0x944` (1 / the projection's w far), `z_scale` its
+    /// `+0x948` (the depth format's full scale). `0x3f6840` scales the
+    /// viewport matrix's w by their product, so the stored depth is
+    /// `floor(view_depth · inv_w_far · z_scale) / z_scale`
+    /// ([`DepthMapping::w_buffer_store`]).
+    pub fn w_buffer(inv_w_far: f32, z_scale: f32) -> Self {
+        DepthMapping::WBuffer {
+            zmax: z_scale,
+            scale: inv_w_far * z_scale,
+        }
+    }
+
+    /// The raw depth the W-buffer holds for a surface at `view_depth`, as
+    /// the fragment stage stores it (`floor` of the scaled w, clamped to
+    /// the full scale, over the full scale, as an `f32` in the host's depth
+    /// texture): what the GPU grid reads back.
+    pub fn w_buffer_store(view_depth: f32, inv_w_far: f32, z_scale: f32) -> f32 {
+        let w = (view_depth as f64 * inv_w_far as f64 * z_scale as f64).clamp(0.0, z_scale as f64);
+        (w.floor() / z_scale as f64) as f32
+    }
+
     pub fn view_depth(self, d: f32) -> f32 {
         if d.is_nan() {
             return f32::INFINITY;
@@ -174,14 +196,53 @@ impl DepthGrid {
 
     /// Makes cells whose farthest depth is nearer than `min` far: they are
     /// wholly covered by something at the camera (the first-person weapon,
-    /// the player's own body), which must not occlude the world.
-    pub fn ignore_nearer(&mut self, min: f32) {
+    /// the player's own body), which must not occlude the world. Answers
+    /// how many cells it dropped.
+    pub fn ignore_nearer(&mut self, min: f32) -> u32 {
+        let mut n = 0;
         for d in &mut self.depth {
             if *d < min {
                 *d = f32::INFINITY;
+                n += 1;
             }
         }
+        n
     }
+
+    /// What the grid holds, for the diagnostic line: far cells and the
+    /// nearest and farthest finite depths.
+    pub fn summary(&self) -> GridSummary {
+        let mut s = GridSummary {
+            cells: self.depth.len() as u32,
+            far: 0,
+            dropped: 0,
+            nearest: f32::INFINITY,
+            farthest: f32::NEG_INFINITY,
+        };
+        for &d in &self.depth {
+            if d.is_finite() {
+                s.nearest = s.nearest.min(d);
+                s.farthest = s.farthest.max(d);
+            } else {
+                s.far += 1;
+            }
+        }
+        s
+    }
+}
+
+/// A delivered grid at a glance ([`DepthGrid::summary`]): cells, how many
+/// were far (cleared) as read back, how many [`DepthGrid::ignore_nearer`]
+/// then dropped, and the nearest and farthest finite view depths before
+/// the drop. All cells far, or every finite depth under the drop's floor,
+/// means nothing can be occluded.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GridSummary {
+    pub cells: u32,
+    pub far: u32,
+    pub dropped: u32,
+    pub nearest: f32,
+    pub farthest: f32,
 }
 
 fn cell_of(p: u32, src: u32, cells: u32) -> u32 {
@@ -346,6 +407,11 @@ impl Camera {
             && len(cross(self.forward, self.up)) > 1e-6
     }
 
+    /// A point's view depth: its distance along the forward axis.
+    pub fn view_depth(&self, p: Vec3) -> f32 {
+        dot(sub(p, self.position), normalize(self.forward))
+    }
+
     /// Projects a sphere onto a `width x height` grid over the view.
     ///
     /// Conservative: the rectangle bounds the projection of the sphere's
@@ -467,6 +533,82 @@ struct Entry {
     seen: u64,
 }
 
+/// One tested object as the test saw it, for the `occlusion probe:` line:
+/// its sphere's centre view depth and the nearest depth of its inflated
+/// bounds (against the depth's camera), the grid rectangle it covers, the
+/// farthest depth the pyramid read over it and the answer.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Probe {
+    pub key: u32,
+    pub depth: f32,
+    pub radius: f32,
+    pub footprint: Footprint,
+    pub grid: (u32, u32),
+    pub max: f32,
+    pub occluded: bool,
+    pub streak: u8,
+    /// Frames between the depth and the test (1 or 2).
+    pub age: u64,
+}
+
+impl Probe {
+    /// How close the object came to being occluded: `near - max` (larger
+    /// is closer; a far rectangle is `-inf`).
+    fn margin(&self) -> f32 {
+        let m = self.footprint.near - self.max;
+        if m.is_nan() { f32::NEG_INFINITY } else { m }
+    }
+
+    /// The more telling of two probes: the one nearer to being occluded,
+    /// then the farther object, then the newer.
+    fn better(&self, other: &Probe) -> bool {
+        let (a, b) = (self.margin(), other.margin());
+        a > b || (a == b && self.depth >= other.depth)
+    }
+}
+
+/// The once-a-second diagnostic: one object's test against the grid, and
+/// what the newest grid held. Cheap (formatting once a second).
+pub fn probe_line(probe: Option<&Probe>, grid: Option<(&GridSummary, DepthMapping)>) -> String {
+    let mut s = String::from("occlusion probe:");
+    match probe {
+        Some(p) => {
+            let f = &p.footprint;
+            s += &format!(
+                " object {:#010x} depth {:.2} radius {:.2} near {:.2} rect x {}..{} y {}..{} of {}x{} grid max {:.2} -> {} streak {} age {}",
+                p.key,
+                p.depth,
+                p.radius,
+                f.near,
+                f.x0,
+                f.x1,
+                f.y0,
+                f.y1,
+                p.grid.0,
+                p.grid.1,
+                p.max,
+                if p.occluded { "occluded" } else { "visible" },
+                p.streak,
+                p.age,
+            );
+        }
+        None => s += " no object with a footprint",
+    }
+    match grid {
+        Some((g, map)) => {
+            s += &format!(
+                "; grid {} cells far {} near-dropped {} depth {:.2}..{:.2}",
+                g.cells, g.far, g.dropped, g.nearest, g.farthest
+            );
+            if let DepthMapping::WBuffer { zmax, scale } = map {
+                s += &format!(" w far {:.2} z scale {zmax}", zmax / scale);
+            }
+        }
+        None => s += "; no grid",
+    }
+    s
+}
+
 /// Running counts, for the `occlusion:` line.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
@@ -475,6 +617,9 @@ pub struct Counts {
     pub unknown: u64,
     pub exempt: u64,
     pub resets: u64,
+    /// Unknown because no usable depth frame was there (none delivered,
+    /// older than two frames, or from before a cut).
+    pub no_depth: u64,
 }
 
 /// Per view: decides, object by object, whether to skip it this frame.
@@ -496,6 +641,8 @@ pub struct Tracker {
     /// The current camera's displacement from the depth's: added to radii.
     parallax: f32,
     pub counts: Counts,
+    /// The most telling test since [`Tracker::take_probe`].
+    probe: Option<Probe>,
 }
 
 impl Tracker {
@@ -508,6 +655,7 @@ impl Tracker {
             last_camera: None,
             parallax: 0.0,
             counts: Counts::default(),
+            probe: None,
         }
     }
 
@@ -557,7 +705,7 @@ impl Tracker {
             self.counts.exempt += 1;
             return false;
         }
-        let verdict = self.verdict(b);
+        let (verdict, seen) = self.verdict(b);
         let e = self.entries.entry(b.key).or_default();
         if e.seen == self.frame && e.streak > 0 {
             // Tested twice in one frame (several layers or lists): the
@@ -568,33 +716,61 @@ impl Tracker {
             e.streak = 0;
         }
         e.seen = self.frame;
+        let streak = e.streak;
         if verdict == Verdict::Unknown {
             self.counts.unknown += 1;
+            if self.depth.is_none() {
+                self.counts.no_depth += 1;
+            }
         }
-        let skip = verdict == Verdict::Occluded && e.streak >= self.rules.frames;
+        let skip = verdict == Verdict::Occluded && streak >= self.rules.frames;
         if skip {
             self.counts.culled += 1;
+        }
+        if let Some(mut p) = seen {
+            p.streak = streak;
+            if self.probe.as_ref().is_none_or(|q| p.better(q)) {
+                self.probe = Some(p);
+            }
         }
         skip
     }
 
-    fn verdict(&self, b: &Bounds) -> Verdict {
+    /// The most telling test since the last call (the one nearest to being
+    /// occluded), for the diagnostic line.
+    pub fn take_probe(&mut self) -> Option<Probe> {
+        self.probe.take()
+    }
+
+    fn verdict(&self, b: &Bounds) -> (Verdict, Option<Probe>) {
         let Some(d) = &self.depth else {
-            return Verdict::Unknown;
+            return (Verdict::Unknown, None);
         };
         if b.radius.is_nan() || b.radius < 0.0 || b.radius >= self.rules.max_radius {
-            return Verdict::Unknown;
+            return (Verdict::Unknown, None);
         }
         let radius = b.radius * self.rules.inflate + self.rules.margin + self.parallax;
-        match d
-            .camera
-            .project(b.center, radius, d.hiz.width(), d.hiz.height())
-        {
-            Some(f) => match d.hiz.test(&f, self.rules.bias) {
-                Verdict::Occluded => Verdict::Occluded,
-                _ => Verdict::Visible,
-            },
-            None => Verdict::Unknown,
+        let (w, h) = (d.hiz.width(), d.hiz.height());
+        match d.camera.project(b.center, radius, w, h) {
+            Some(f) => {
+                let verdict = match d.hiz.test(&f, self.rules.bias) {
+                    Verdict::Occluded => Verdict::Occluded,
+                    _ => Verdict::Visible,
+                };
+                let probe = Probe {
+                    key: b.key,
+                    depth: d.camera.view_depth(b.center),
+                    radius,
+                    footprint: f,
+                    grid: (w, h),
+                    max: d.hiz.max_depth(f.x0, f.y0, f.x1, f.y1),
+                    occluded: verdict == Verdict::Occluded,
+                    streak: 0,
+                    age: self.frame.saturating_sub(d.frame),
+                };
+                (verdict, Some(probe))
+            }
+            None => (Verdict::Unknown, None),
         }
     }
 }
@@ -635,8 +811,9 @@ impl Meter {
             100.0 * culled as f64 / tested as f64
         };
         let line = format!(
-            "occlusion: tested {tested} culled {culled} ({pct:.1}%) unknown {} exempt {} resets {} cull {:.3} ms/frame over {} frames",
+            "occlusion: tested {tested} culled {culled} ({pct:.1}%) unknown {} (no depth {}) exempt {} resets {} cull {:.3} ms/frame over {} frames",
             counts.unknown - self.last.unknown,
+            counts.no_depth - self.last.no_depth,
             counts.exempt - self.last.exempt,
             counts.resets - self.last.resets,
             self.ns as f64 / 1e6 / self.frames.max(1) as f64,
@@ -1020,6 +1197,146 @@ mod tests {
         assert!(!moving.decide(&b));
     }
 
+    /// The W parameters of the synthetic projection the end-to-end tests
+    /// use: w far 500, D24S8's full scale.
+    const INV_W_FAR: f32 = 1.0 / 500.0;
+    const D24: f32 = 16_777_215.0;
+
+    /// A 640x480 W-buffer as the GPU holds it after the opaque layers: a
+    /// wall at `wall` over pixel columns `x0..x1`, the rest cleared (1.0).
+    fn w_wall(x0: u32, x1: u32, wall: f32) -> Vec<f32> {
+        let raw = DepthMapping::w_buffer_store(wall, INV_W_FAR, D24);
+        let mut v = vec![1.0f32; 640 * 480];
+        for y in 0..480 {
+            for x in x0..x1 {
+                v[(y * 640 + x) as usize] = raw;
+            }
+        }
+        v
+    }
+
+    /// A 640x480 camera at the origin down +x, z up, 70 degrees vertical.
+    fn cam43() -> Camera {
+        Camera::from_fov(
+            [0.0; 3],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            70f32.to_radians(),
+            640.0 / 480.0,
+            0.06,
+        )
+    }
+
+    /// What the feature does with a delivered grid: map it, drop cells at
+    /// the camera, build the pyramid.
+    fn w_frame(raw_buffer: &[f32], frame: u64) -> Arc<Frame> {
+        let map = DepthMapping::w_buffer(INV_W_FAR, D24);
+        let mut grid = DepthGrid::reduce(raw_buffer, 640, 480, 64, 32, map);
+        grid.ignore_nearer(0.5);
+        Arc::new(Frame {
+            hiz: HiZ::build(grid),
+            camera: cam43(),
+            frame,
+        })
+    }
+
+    #[test]
+    fn w_buffer_store_and_mapping_round_trip_to_the_bucket_far_end() {
+        let map = DepthMapping::w_buffer(INV_W_FAR, D24);
+        for w in [0.06f32, 0.5, 1.0, 7.3, 20.0, 60.0, 250.0, 499.0] {
+            let v = map.view_depth(DepthMapping::w_buffer_store(w, INV_W_FAR, D24));
+            // Never nearer than the surface, never more than a bucket (and
+            // the f32 rounding of the stored value) past it.
+            assert!(v >= w - w * 1e-6 && v - w < 1e-3 + w * 1e-6, "{w} -> {v}");
+        }
+        assert_eq!(
+            map.view_depth(DepthMapping::w_buffer_store(600.0, INV_W_FAR, D24)),
+            f32::INFINITY
+        );
+        assert_eq!(map.view_depth(1.0), f32::INFINITY, "cleared");
+    }
+
+    /// Raw W-buffer values in, cull decision out: a wall at 20 units over
+    /// the left three quarters of a 640x480 view, an object at 60 behind
+    /// it, one at 60 in the open quarter, one at 10 in front of the wall.
+    /// The hidden one is skipped from the second frame with depth, the
+    /// others never; the probe reports the hidden one with the wall's
+    /// depth over its rectangle.
+    #[test]
+    fn a_w_buffered_wall_at_20_hides_an_object_at_60() {
+        let buf = w_wall(0, 480, 20.0);
+        let mut t = Tracker::new(Rules::default());
+        let mk = |key, center| Bounds {
+            key,
+            center,
+            radius: 1.0,
+            exempt: false,
+        };
+        // Left is +y: the wall covers NDC x in [-1, 0.5].
+        let tx = cam43().tan_half_x;
+        let hidden = mk(1, [60.0, 60.0 * tx * 0.4, 0.0]);
+        let open = mk(2, [60.0, -60.0 * tx * 0.8, 0.0]);
+        let front = mk(3, [10.0, 10.0 * tx * 0.4, 0.0]);
+        let mut skips = Vec::new();
+        for frame in 1..=4u64 {
+            let depth = (frame > 1).then(|| w_frame(&buf, frame - 1));
+            t.begin(frame, cam43(), depth);
+            skips.push([t.decide(&hidden), t.decide(&open), t.decide(&front)]);
+        }
+        assert_eq!(
+            skips,
+            vec![
+                [false, false, false],
+                [false, false, false],
+                [true, false, false],
+                [true, false, false],
+            ]
+        );
+        let p = t.take_probe().expect("a probe");
+        assert_eq!(p.key, 1);
+        assert!(p.occluded && p.streak >= 2, "{p:?}");
+        assert!((p.depth - 60.0).abs() < 1e-3, "{p:?}");
+        assert!((20.0..20.01).contains(&p.max), "{p:?}");
+        assert_eq!(p.age, 1, "the previous frame's depth");
+        assert!(t.take_probe().is_none(), "taken");
+        let map = DepthMapping::w_buffer(INV_W_FAR, D24);
+        let mut g = DepthGrid::reduce(&buf, 640, 480, 64, 32, map);
+        let mut sum = g.summary();
+        sum.dropped = g.ignore_nearer(0.5);
+        assert_eq!((sum.cells, sum.far, sum.dropped), (2048, 512, 0));
+        let line = probe_line(Some(&p), Some((&sum, map)));
+        assert!(
+            line.starts_with("occlusion probe: object 0x00000001 depth 60.00"),
+            "{line}"
+        );
+        assert!(line.contains("-> occluded streak"), "{line}");
+        assert!(
+            line.contains(
+                "; grid 2048 cells far 512 near-dropped 0 depth 20.00..20.00 w far 500.00"
+            ),
+            "{line}"
+        );
+    }
+
+    /// The same wall read with a W scale ten times too large (w far taken
+    /// as 50 when the draws used 500): a wall at 2 maps to 0.2, under the
+    /// 0.5-unit floor, the drop makes the whole grid far and nothing can
+    /// be occluded. The probe line shows it.
+    #[test]
+    fn a_w_scale_off_by_the_far_plane_hides_nothing_and_the_probe_says_why() {
+        let buf = w_wall(0, 640, 2.0);
+        let wrong = DepthMapping::w_buffer(INV_W_FAR * 10.0, D24);
+        let mut g = DepthGrid::reduce(&buf, 640, 480, 64, 32, wrong);
+        let mut sum = g.summary();
+        sum.dropped = g.ignore_nearer(0.5);
+        assert_eq!(sum.dropped, 2048);
+        let line = probe_line(None, Some((&sum, wrong)));
+        assert!(
+            line.contains("near-dropped 2048 depth 0.20..0.20 w far 50.00"),
+            "{line}"
+        );
+    }
+
     #[test]
     fn meter_reports_once_a_second_over_the_window() {
         let mut m = Meter::default();
@@ -1034,7 +1351,7 @@ mod tests {
         let line = m.tick(1_000_000_005, c).unwrap();
         assert_eq!(
             line,
-            "occlusion: tested 200 culled 50 (25.0%) unknown 0 exempt 0 resets 0 cull 1.500 ms/frame over 2 frames"
+            "occlusion: tested 200 culled 50 (25.0%) unknown 0 (no depth 0) exempt 0 resets 0 cull 1.500 ms/frame over 2 frames"
         );
         c.tested = 300;
         let line = m.tick(2_000_000_005, c).unwrap();
