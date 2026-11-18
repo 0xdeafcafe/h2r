@@ -264,6 +264,13 @@ fn random_game_id() -> String {
     sign::hex(&b)
 }
 
+/// Ended games whose detail `GET /v1/snapshot` includes.
+pub const SNAPSHOT_DETAILS: usize = 40;
+/// How many log positions back `GET /v1/snapshot`'s events reach.
+pub const SNAPSHOT_TAIL: u64 = 300;
+/// The most accounts `GET /v1/snapshot` lists.
+const SNAPSHOT_LIST: usize = 1000;
+
 /// Which map `GET /v1/games` keeps (docs/live/live-api.md).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GameFilter {
@@ -556,6 +563,58 @@ impl Live {
     /// [`Live::games`] narrowed to one map: by name (`?map=`, every game on
     /// it, modded or not) and by `MapId` (`?map_id=`: one exact map, or
     /// `none` for games that name no `MapId`, the retail ones).
+    /// `GET /v1/snapshot`: what the web app reads on load, in one round
+    /// trip instead of a list each and a detail a game. The accounts, the
+    /// presence `viewer` may see, the live and last ended games (a hundred
+    /// each), the detail of every live game and the [`SNAPSHOT_DETAILS`]
+    /// newest ended ones, and the log's last events before `position`
+    /// (the 1 Hz `GameFrame`s left out, as the stream leaves them). Each
+    /// part is as its own endpoint would answer; `position` is the oldest
+    /// of theirs, where the reader's stream starts.
+    pub async fn snapshot(
+        &self,
+        viewer: crate::sessions::Viewer,
+    ) -> Result<serde_json::Value, ApiError> {
+        let accounts = self.accounts(0, SNAPSHOT_LIST);
+        let presence = self.presence(viewer);
+        let any = GameFilter::default();
+        let live = self.games_where(Some("live"), &any, viewer, None, SNAPSHOT_LIST.min(100));
+        let ended = self.games_where(Some("ended"), &any, viewer, None, SNAPSHOT_LIST.min(100));
+        let details: Vec<GameDetail> = live
+            .items
+            .iter()
+            .chain(ended.items.iter().take(SNAPSHOT_DETAILS))
+            .filter_map(|g| self.game(&g.game_id).ok())
+            .collect();
+        let position = [
+            accounts.position,
+            presence.position,
+            live.position,
+            ended.position,
+        ]
+        .into_iter()
+        .chain(details.iter().map(|d| d.position))
+        .min()
+        .expect("not empty");
+        let query = crate::store::Query {
+            after: position.saturating_sub(SNAPSHOT_TAIL),
+            limit: SNAPSHOT_TAIL as usize,
+            exclude: vec![game::GAME_FRAME.to_string()],
+            ..crate::store::Query::after(0, 0)
+        };
+        let mut tail = self.events_for(&query, viewer).await?.items;
+        tail.retain(|e| e.position <= position);
+        Ok(serde_json::json!({
+            "position": position,
+            "accounts": accounts,
+            "presence": presence,
+            "live": live,
+            "ended": ended,
+            "details": details,
+            "tail": tail,
+        }))
+    }
+
     pub fn games_where(
         &self,
         state: Option<&str>,

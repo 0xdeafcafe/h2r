@@ -21,6 +21,7 @@ pub mod admin;
 pub mod app;
 pub mod art;
 pub mod blobs;
+pub mod caching;
 pub mod check;
 pub mod cloud_saves;
 pub mod content;
