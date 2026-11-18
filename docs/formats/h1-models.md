@@ -31,6 +31,9 @@ run time and print only counts and error figures.
 - **V4:** checked on every map of the owner's Halo 1 disc (24 maps, 628
   graphs, 186 compressed animations) by the ignored test
   `h1_disc_compressed_animations_decode` (2026-11-17).
+- **V5:** checked on every biped and first-person model of the disc's a10
+  and Blood Gulch by the ignored tests in `crates/h1models/src/skin_tests.rs`
+  (2026-11-18), which print only counts and error figures.
 - **X:** read from the Halo 1 Xbox XBE's own code (disassembled from
   `default.xbe` on the disc; addresses are virtual addresses in that XBE).
 - **S:** field order and meaning recalled from general Halo modding
@@ -69,9 +72,29 @@ empty and every marker is here. V1.
 
 **Node** (`0x9c`): `char[32]` name, i16 next sibling (`20`), first child
 (`22`), parent (`24`), f32x3 default translation (`28`), f32x4 default
-rotation `i, j, k, w` (`34`), f32 distance from parent (`44`). From `48` on,
-cache-computed values (they look like a transform) that are not read. V1:
-links in range, unit rotations.
+rotation `i, j, k, w` (`34`), f32 distance from parent (`44`). From `48`,
+cache-computed values: 8 zero words, then at `68` the inverse of the
+node's model-space rest frame (f32 scale 1, three f32x3 vectors that are
+the inverse's **columns**, f32x3 position). The reader does not use them;
+the skin test checks against them. V1: links in range, unit rotations;
+V5: the inverse at `68`.
+
+**Rotations are the conjugate of Halo 2's.** Every Halo 1 rotation (node
+defaults, marker instances, animation frames) is the conjugate of the
+quaternion Halo 2's rule (`mode::quat_matrix`, the rule the retail
+`mode` inverse frames fix, V2) means. V5: composing the disc's bipeds'
+nodes by Halo 2's rule puts their vertices about 3x farther from their own
+node than the conjugate does (cyborg 0.267 against 0.084 units, grunt
+0.275 against 0.090, elite 0.388 against 0.076), and only the conjugate
+reproduces Halo 1's cached inverse frames at node `68` (to 7e-7 on every
+biped). `h1::h2_rotation` converts; **the reader returns every rotation
+already in Halo 2's convention**, so every consumer (the `mode` and
+`jmad` writers, `hlmt` nodes, h1objects' physics and marker placement)
+composes with Halo 2's rule. Before converter version 54 the rotations
+were copied unconverted: the rest pose still matched (the inverse frames
+were computed with the same wrong rule), but every animated pose put each
+body part in the wrong place, up to 1.2 units off on the cyborg (the
+"exploded" bipeds and first-person arms).
 
 **Region** (`0x4c`): `char[32]` name, block of permutations at `40`.
 **Permutation** (`0x58`): `char[32]` name, u32 flags (`20`), i16 x5
@@ -454,6 +477,31 @@ Node names, hierarchy, default transforms, region and permutation names,
 LOD sections, marker names and instances (exact), and per-triangle indices
 all match.
 
+**Skinned round trip** (V5, `h1_disc_bipeds_skin`, converter version
+54). Each model and its graph are converted, built into a map and decoded
+through `crates/tags`; every vertex is skinned the Halo 2 way (decoded
+position, node indices through the section node map, weights, the
+decoded jmad frame composed by Halo 2's rule, times the inverse frame the
+`mode` stores at node `+0x2c`) and compared with the Halo 1 vertex skinned
+the Halo 1 way (its frame composed by Halo 1's rule, times Halo 1's own
+cached inverse). Bind pose, and the middle frame of about seven base
+animations per graph:
+
+| Model | Vertices | Our inverse frames vs Halo 1's | Bind pose | Posed, version 53 | Posed, version 54 |
+|---|---|---|---|---|---|
+| cyborg | 6,025 | 4.2e-7 (was 1.2) | 5.9e-6 | 0.64 to 1.16 | 1.4e-4 to 2.8e-4 |
+| marine (armored) | 13,666 | 4.8e-7 (was 1.7) | 7.0e-6 | 0.53 to 0.85 | 7.3e-5 to 1.8e-4 |
+| crewman | 1,578 | 4.8e-7 | 6.9e-6 | 0.53 to 0.85 | 7.4e-5 to 1.8e-4 |
+| elite | 10,818 | 7.2e-7 (was 1.9) | 7.1e-6 | 0.54 to 1.00 | 1.4e-4 to 3.5e-4 |
+| grunt | 8,065 | 3.5e-7 (was 1.9) | 6.8e-6 | 0.41 to 1.15 | 9.0e-5 to 2.8e-4 |
+| captain, pilot, Cortana | 1,036 to 1,747 | under 7e-7 | under 7e-6 | 0.15 to 0.78 | under 2e-4 |
+| cyborg first-person arms | 1,440 | 8.9e-8 | 2.9e-6 | (no graph of its own) | |
+
+Errors are the largest vertex distance in world units (a biped is about
+0.7 tall); the vertices travel up to 0.93 in those frames. What is left
+is the i16 quantisation of positions and rotations. Every bind-pose vertex
+stays within the model's Halo 1 bounding radius.
+
 Animations, every frame of every animation, each channel the conversion
 carries:
 
@@ -472,9 +520,8 @@ The rotation error is the i16 re-quantisation of normalised quaternions.
 - Part kinds 2 and 4 for opaque and transparent, the part fields from
   `0e`, and the section record's `24`..`2c`.
 - Marker group order: retail may expect it sorted by name.
-- Quaternion conventions: Halo 1 and Halo 2 are assumed to agree for node
-  rotations, marker rotations and animation channels. Wrong handedness
-  would show as twisted limbs.
+- Marker rotations take the same conjugation as nodes and animations
+  (V5 proves it only for nodes and frames).
 - Overlay semantics: Halo 1 overlays are copied verbatim (frame 0 is not
   subtracted). The engine may expect a different reference.
 - Every name in the table above.
