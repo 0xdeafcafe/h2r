@@ -34,7 +34,7 @@ use crate::store::{
     Wake,
 };
 
-const SCHEMA: &str = include_str!("sqlite_schema.sql");
+use crate::sql::{self, SCHEMA, json_list};
 
 /// The file a `sqlite:` URL names: `sqlite://<path>` or `sqlite:<path>`,
 /// any `?options` dropped. The path is taken as written (spaces and all),
@@ -81,11 +81,6 @@ fn decode(row: &SqliteRow, batches: &mut BatchDecoder) -> Result<RecordedEvent, 
         jws_index: e.jws_index,
         body: e.body,
     })
-}
-
-/// A list as a JSON array, for `json_each`.
-fn json_list(items: &[String]) -> String {
-    serde_json::to_string(items).expect("strings serialize")
 }
 
 impl SqliteStore {
@@ -173,13 +168,11 @@ impl SqliteStore {
             return Ok((jws, None));
         };
         if first {
-            sqlx::query(
-                "insert into batches (sha256, jws) values (?1, ?2) on conflict (sha256) do nothing",
-            )
-            .bind(&key)
-            .bind(&**jws)
-            .execute(&mut *tx)
-            .await?;
+            sqlx::query(sql::INSERT_BATCH)
+                .bind(&key)
+                .bind(&**jws)
+                .execute(&mut *tx)
+                .await?;
         }
         Ok(("", Some(key)))
     }
@@ -189,12 +182,10 @@ impl SqliteStore {
         tx: &mut sqlx::SqliteConnection,
         stream: &str,
     ) -> Result<(u64, Option<String>), StoreError> {
-        let row = sqlx::query(
-            "select version, hash from events where stream_id = ?1 order by version desc limit 1",
-        )
-        .bind(stream)
-        .fetch_optional(&mut *tx)
-        .await?;
+        let row = sqlx::query(sql::STREAM_HEAD)
+            .bind(stream)
+            .fetch_optional(&mut *tx)
+            .await?;
         Ok(row.map_or((0, None), |r| {
             (r.get::<i64, _>("version") as u64 + 1, Some(r.get("hash")))
         }))
@@ -277,26 +268,23 @@ impl EventStore for SqliteStore {
                     for e in events {
                         let head = heads.get_mut(&e.body.stream).expect("read above");
                         let (version, hash) = (head.0, chain_hash(head.1.as_deref(), &e.jws));
-                        let (jws, batch) = Self::put_jws(tx, &mut rows, &e.jws, e.jws_index).await?;
+                        let (jws, batch) =
+                            Self::put_jws(tx, &mut rows, &e.jws, e.jws_index).await?;
                         let b = &e.body;
-                        let position: i64 = sqlx::query_scalar(
-                            "insert into events (stream_id, version, type, data, at, author, kid, jws, jws_index, hash, batch)
-                             values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
-                             returning position",
-                        )
-                        .bind(&b.stream)
-                        .bind(to_i64(version))
-                        .bind(&b.kind)
-                        .bind(b.data.to_string())
-                        .bind(&b.at)
-                        .bind(&b.author)
-                        .bind(&b.kid)
-                        .bind(jws)
-                        .bind(e.jws_index.map(|i| i as i64))
-                        .bind(&hash)
-                        .bind(batch)
-                        .fetch_one(&mut *tx)
-                        .await?;
+                        let position: i64 = sqlx::query_scalar(sql::INSERT_EVENT)
+                            .bind(&b.stream)
+                            .bind(to_i64(version))
+                            .bind(&b.kind)
+                            .bind(b.data.to_string())
+                            .bind(&b.at)
+                            .bind(&b.author)
+                            .bind(&b.kid)
+                            .bind(jws)
+                            .bind(e.jws_index.map(|i| i as i64))
+                            .bind(&hash)
+                            .bind(batch)
+                            .fetch_one(&mut *tx)
+                            .await?;
                         *head = (version + 1, Some(hash.clone()));
                         out.push(RecordedEvent {
                             position: position as u64,
@@ -318,71 +306,53 @@ impl EventStore for SqliteStore {
     }
 
     async fn read(&self, q: &Query) -> Result<Vec<RecordedEvent>, StoreError> {
-        let rows = sqlx::query(
-            "select e.position, e.version, e.hash, coalesce(b.jws, e.jws) as jws, e.jws_index
-             from events e left join batches b on b.sha256 = e.batch
-             where e.position > ?1
-               and (?2 is null or e.stream_id = ?2)
-               and (json_array_length(?3) = 0 or e.type in (select value from json_each(?3)))
-               and e.type not in (select value from json_each(?5))
-             order by e.position limit ?4",
-        )
-        .bind(to_i64(q.after))
-        .bind(&q.stream)
-        .bind(json_list(&q.types))
-        .bind(to_i64(q.limit as u64))
-        .bind(json_list(&q.exclude))
-        .fetch_all(&self.pool)
-        .await?;
+        let rows = sqlx::query(sql::READ)
+            .bind(to_i64(q.after))
+            .bind(&q.stream)
+            .bind(json_list(&q.types))
+            .bind(to_i64(q.limit as u64))
+            .bind(json_list(&q.exclude))
+            .fetch_all(&self.pool)
+            .await?;
         let mut batches = BatchDecoder::default();
         rows.iter().map(|row| decode(row, &mut batches)).collect()
     }
 
     async fn head(&self) -> Result<u64, StoreError> {
-        let p: i64 = sqlx::query_scalar("select coalesce(max(position), 0) from events")
-            .fetch_one(&self.pool)
-            .await?;
+        let p: i64 = sqlx::query_scalar(sql::HEAD).fetch_one(&self.pool).await?;
         Ok(p as u64)
     }
 
     async fn put_blob(&self, sha256: &str, bytes: &[u8]) -> Result<(), StoreError> {
-        sqlx::query(
-            "insert into blobs (sha256, bytes) values (?1, ?2) on conflict (sha256) do nothing",
-        )
-        .bind(sha256)
-        .bind(bytes)
-        .execute(&self.pool)
-        .await?;
+        sqlx::query(sql::PUT_BLOB)
+            .bind(sha256)
+            .bind(bytes)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
     async fn blob(&self, sha256: &str) -> Result<Option<Vec<u8>>, StoreError> {
-        Ok(
-            sqlx::query_scalar("select bytes from blobs where sha256 = ?1")
-                .bind(sha256)
-                .fetch_optional(&self.pool)
-                .await?,
-        )
+        Ok(sqlx::query_scalar(sql::BLOB)
+            .bind(sha256)
+            .fetch_optional(&self.pool)
+            .await?)
     }
 
     async fn load_checkpoint(&self, name: &str) -> Result<Option<u64>, StoreError> {
-        let p: Option<i64> =
-            sqlx::query_scalar("select position from subscriptions where name = ?1")
-                .bind(name)
-                .fetch_optional(&self.pool)
-                .await?;
+        let p: Option<i64> = sqlx::query_scalar(sql::LOAD_CHECKPOINT)
+            .bind(name)
+            .fetch_optional(&self.pool)
+            .await?;
         Ok(p.map(|p| p as u64))
     }
 
     async fn save_checkpoint(&self, name: &str, position: u64) -> Result<(), StoreError> {
-        sqlx::query(
-            "insert into subscriptions (name, position) values (?1, ?2)
-             on conflict (name) do update set position = excluded.position",
-        )
-        .bind(name)
-        .bind(to_i64(position))
-        .execute(&self.pool)
-        .await?;
+        sqlx::query(sql::SAVE_CHECKPOINT)
+            .bind(name)
+            .bind(to_i64(position))
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -397,9 +367,7 @@ impl EventStore for SqliteStore {
         let events = events.to_vec();
         self.write(move |tx| {
             Box::pin(async move {
-                let head: i64 = sqlx::query_scalar("select coalesce(max(position), 0) from events")
-                    .fetch_one(&mut *tx)
-                    .await?;
+                let head: i64 = sqlx::query_scalar(sql::HEAD).fetch_one(&mut *tx).await?;
                 let mut check = ImportCheck::new(head as u64);
                 let mut rows = BatchRows::default();
                 for e in &events {
@@ -410,24 +378,21 @@ impl EventStore for SqliteStore {
                     check.check(e)?;
                     let (jws, batch) = Self::put_jws(tx, &mut rows, &e.jws, e.jws_index).await?;
                     let b = &e.body;
-                    sqlx::query(
-                        "insert into events (position, stream_id, version, type, data, at, author, kid, jws, jws_index, hash, batch)
-                         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-                    )
-                    .bind(to_i64(e.position))
-                    .bind(&b.stream)
-                    .bind(to_i64(e.version))
-                    .bind(&b.kind)
-                    .bind(b.data.to_string())
-                    .bind(&b.at)
-                    .bind(&b.author)
-                    .bind(&b.kid)
-                    .bind(jws)
-                    .bind(e.jws_index.map(|i| i as i64))
-                    .bind(&e.hash)
-                    .bind(batch)
-                    .execute(&mut *tx)
-                    .await?;
+                    sqlx::query(sql::IMPORT_EVENT)
+                        .bind(to_i64(e.position))
+                        .bind(&b.stream)
+                        .bind(to_i64(e.version))
+                        .bind(&b.kind)
+                        .bind(b.data.to_string())
+                        .bind(&b.at)
+                        .bind(&b.author)
+                        .bind(&b.kid)
+                        .bind(jws)
+                        .bind(e.jws_index.map(|i| i as i64))
+                        .bind(&e.hash)
+                        .bind(batch)
+                        .execute(&mut *tx)
+                        .await?;
                 }
                 Ok(())
             })
@@ -438,18 +403,15 @@ impl EventStore for SqliteStore {
     }
 
     async fn blob_names(&self) -> Result<Vec<String>, StoreError> {
-        Ok(
-            sqlx::query_scalar("select sha256 from blobs order by sha256")
-                .fetch_all(&self.pool)
-                .await?,
-        )
+        Ok(sqlx::query_scalar(sql::BLOB_NAMES)
+            .fetch_all(&self.pool)
+            .await?)
     }
 
     async fn checkpoints(&self) -> Result<Vec<(String, u64)>, StoreError> {
-        let rows: Vec<(String, i64)> =
-            sqlx::query_as("select name, position from subscriptions order by name")
-                .fetch_all(&self.pool)
-                .await?;
+        let rows: Vec<(String, i64)> = sqlx::query_as(sql::CHECKPOINTS)
+            .fetch_all(&self.pool)
+            .await?;
         Ok(rows.into_iter().map(|(n, p)| (n, p as u64)).collect())
     }
 }

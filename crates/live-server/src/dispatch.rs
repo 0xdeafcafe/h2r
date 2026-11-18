@@ -80,7 +80,7 @@ impl Dispatcher {
             }
             tokio::select! {
                 _ = wake.wait() => {}
-                _ = tokio::time::sleep(POLL) => {}
+                _ = crate::rt::sleep(POLL) => {}
             }
         }
     }

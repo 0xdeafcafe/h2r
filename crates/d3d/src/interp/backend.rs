@@ -2,7 +2,7 @@
 //! surface and replays the newest one with interpolated matrices into
 //! surfaces of its own, at the display rate, on the render thread.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use gfx::texture::{DecodedTexture, TextureDesc};
 use gfx::{Clear, D3DFormat};
@@ -48,6 +48,18 @@ pub struct InterpStats {
     pub warps: u64,
     pub warp_ns: u64,
     pub warp_max_ns: u64,
+    /// Frames held because a made frame would not have matched the
+    /// guest's: its surface's host size differs, or (E1) the world draws do
+    /// not all map onto the whole target the same way.
+    pub size_mismatch: u64,
+    /// Frames held because the classification was not sure of a gameplay
+    /// view: a camera that is not a centred perspective (menus, screen
+    /// space), or draws that read a render target the replay could not
+    /// keep a copy of.
+    pub unsure: u64,
+    /// In-between frames dropped (and guest frames shown as drawn) because
+    /// the GPU had not finished the last made frame.
+    pub dropped: u64,
 }
 
 impl InterpStats {
@@ -82,14 +94,17 @@ impl std::fmt::Display for InterpStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "frames {} blended {} held {} replays {} substituted draws {} snapped {} deferred {}",
+            "frames {} blended {} held {} replays {} substituted draws {} snapped {} deferred {} size_mismatch {} unsure {} dropped {}",
             self.frames,
             self.blended_frames,
             self.held_frames,
             self.replays,
             self.substituted_draws,
             self.snapped,
-            self.deferred
+            self.deferred,
+            self.size_mismatch,
+            self.unsure,
+            self.dropped
         )?;
         if self.replay_frames > 0 {
             write!(
@@ -180,6 +195,18 @@ struct Frame<B: Backend> {
     screen: Option<Screen>,
     /// E1: this frame's world image has been drawn.
     captured: bool,
+    /// Why the frame may not be made again, if it may not.
+    hold: Option<Hold>,
+}
+
+/// Why a frame is shown only as the guest drew it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Hold {
+    /// Not sure it is a gameplay view ([`InterpStats::unsure`]).
+    Unsure,
+    /// It would not land where the guest's frame does
+    /// ([`InterpStats::size_mismatch`]).
+    SizeMismatch,
 }
 
 /// Runs `ops` on `inner`, each surface through `to`, draw `k` (counting
@@ -310,6 +337,18 @@ pub struct InterpBackend<B: Backend> {
     next_id: u64,
     failed: bool,
     stats: Arc<Mutex<InterpStats>>,
+    /// Textures that are views of render targets (their contents change
+    /// when the target is drawn again), with the surface and whether it is
+    /// a depth surface.
+    live: Vec<(Weak<B::Texture>, B::Surface, bool)>,
+    /// Copies of render targets taken for recorded draws that sampled them,
+    /// valid until the surface is written.
+    snaps: Vec<(B::Surface, Arc<B::Texture>)>,
+    /// The frame being recorded read something the replay cannot keep: a
+    /// render target it could not copy, or a surface copied in.
+    unpinned: bool,
+    /// Whether the GPU has finished the last made frame.
+    fence: Option<Box<dyn Fn() -> bool + Send>>,
 }
 
 impl<B: Backend> InterpBackend<B> {
@@ -339,6 +378,10 @@ impl<B: Backend> InterpBackend<B> {
             next_id: 1,
             failed: false,
             stats: Arc::default(),
+            live: Vec::new(),
+            snaps: Vec::new(),
+            unpinned: false,
+            fence: None,
         }
     }
 
@@ -400,7 +443,79 @@ impl<B: Backend> InterpBackend<B> {
         self.prev = None;
         self.cur = None;
         self.ops.clear();
+        self.unpinned = false;
         self.last = None;
+    }
+
+    /// `s` was written: copies taken of it are stale.
+    fn wrote(&mut self, s: B::Surface) {
+        if !self.snaps.is_empty() {
+            self.snaps.retain(|(x, _)| *x != s);
+        }
+    }
+
+    /// The texture a recorded draw keeps for `t`: `t` itself, or, when `t`
+    /// is a view of a render target, a copy of the target as the draw
+    /// sampled it (a replay later must not see what the guest drew into it
+    /// since: a smaller pass, the next frame). Marks the frame unpinned
+    /// when no copy can be made.
+    fn pin(&mut self, t: &Arc<B::Texture>) -> Arc<B::Texture> {
+        let Some(&(_, surface, depth)) = self
+            .live
+            .iter()
+            .find(|(w, _, _)| std::ptr::eq(w.as_ptr(), Arc::as_ptr(t)))
+        else {
+            return Arc::clone(t);
+        };
+        if depth {
+            self.unpinned = true;
+            return Arc::clone(t);
+        }
+        if let Some((_, c)) = self.snaps.iter().find(|(s, _)| *s == surface) {
+            return Arc::clone(c);
+        }
+        match self.inner.snapshot_surface(surface, false) {
+            Ok(Some(c)) => {
+                let c = Arc::new(c);
+                self.snaps.push((surface, Arc::clone(&c)));
+                c
+            }
+            _ => {
+                self.unpinned = true;
+                Arc::clone(t)
+            }
+        }
+    }
+
+    /// The textures a recorded draw keeps ([`Self::pin`]).
+    fn pinned(&mut self, textures: [Option<&Arc<B::Texture>>; 4]) -> [Option<Arc<B::Texture>>; 4] {
+        let mut out: [Option<Arc<B::Texture>>; 4] = Default::default();
+        for (o, t) in out.iter_mut().zip(textures) {
+            *o = t.map(|t| self.pin(t));
+        }
+        out
+    }
+
+    /// Notes a texture that views render target `s`.
+    fn note_live(&mut self, t: &Arc<B::Texture>, s: B::Surface, depth: bool) {
+        self.live.retain(|(w, _, _)| w.strong_count() > 0);
+        self.live.push((Arc::downgrade(t), s, depth));
+    }
+
+    /// Whether the GPU is still on the last made frame.
+    fn behind(&self) -> bool {
+        self.fence.as_ref().is_some_and(|done| !done())
+    }
+
+    /// Whether made frame `made` shows at the size the guest's `real` does.
+    fn same_extent(&self, made: B::Surface, real: B::Surface) -> bool {
+        match (
+            self.inner.surface_extent(made),
+            self.inner.surface_extent(real),
+        ) {
+            (Some(a), Some(b)) => a == b,
+            _ => true,
+        }
     }
 
     fn private_of(&mut self, s: B::Surface) -> Result<B::Surface, String> {
@@ -625,6 +740,10 @@ impl<B: Backend> InterpBackend<B> {
             .into_iter()
             .filter(|o| o.targets(surface))
             .collect();
+        // A surface copied in is read when the frame is made again, by then
+        // with whatever the guest drew into it since.
+        let unpinned =
+            std::mem::take(&mut self.unpinned) || ops.iter().any(|o| matches!(o, Op::Copy { .. }));
         if !self.shown.contains(&surface) {
             self.shown.push(surface);
         }
@@ -676,6 +795,32 @@ impl<B: Backend> InterpBackend<B> {
                 k += 1;
             }
         }
+        let hold = if unpinned || !model.cameras.iter().all(|c| c.camera.centred()) {
+            Some(Hold::Unsure)
+        } else if self.mode != Mode::Replay
+            && let Some(sc) = screen
+        {
+            // E1 zooms and turns the world image about the screen's
+            // centre: every world draw must map onto the whole target the
+            // way the screen does.
+            let mut k = 0;
+            let mut same = sc.covers_target();
+            for o in &ops[..world_end] {
+                if let Op::Draw { draw, .. } = o {
+                    let moves = model.draws[k]
+                        .blocks
+                        .iter()
+                        .any(|b| matches!(b.kind, Kind::Camera | Kind::World(_) | Kind::Local(_)));
+                    if moves && !sc.same(&Screen::of(draw)) {
+                        same = false;
+                    }
+                    k += 1;
+                }
+            }
+            (!same).then_some(Hold::SizeMismatch)
+        } else {
+            None
+        };
         let id = self.next_id;
         self.next_id += 1;
         self.prev = keep;
@@ -689,12 +834,13 @@ impl<B: Backend> InterpBackend<B> {
             world_end,
             screen,
             captured: false,
+            hold,
         });
         let mut st = self.stats.lock().unwrap();
         st.frames += 1;
         drop(st);
         let mode = self.mode;
-        let blend = self.prev.is_some()
+        let mut blend = self.prev.is_some()
             && !self.counting
             && self.cur.as_ref().is_some_and(|c| {
                 c.model.has_matrices()
@@ -707,8 +853,21 @@ impl<B: Backend> InterpBackend<B> {
                     }
             });
         if blend {
+            let mut st = self.stats.lock().unwrap();
+            match hold {
+                Some(Hold::Unsure) => st.unsure += 1,
+                Some(Hold::SizeMismatch) => st.size_mismatch += 1,
+                None if self.behind() => st.dropped += 1,
+                None => {}
+            }
+            blend = hold.is_none() && !self.behind();
+        }
+        if blend {
             let a = alpha(now, self.prev.as_ref().unwrap().at, at);
             match self.make(a) {
+                Ok((p, _, _)) if !self.same_extent(p, surface) => {
+                    self.stats.lock().unwrap().size_mismatch += 1;
+                }
                 Ok((p, s, t)) => {
                     // The present is the guest's own (its frame boundary
                     // and any wait): not the replay's cost.
@@ -720,7 +879,9 @@ impl<B: Backend> InterpBackend<B> {
                     drop(st);
                     self.last = Some((id, a));
                     self.schedule.shown_at(now, period);
-                    return self.inner.present_with_gamma(p, flags, gamma);
+                    self.inner.present_with_gamma(p, flags, gamma)?;
+                    self.fence = self.inner.gpu_fence();
+                    return Ok(());
                 }
                 Err(e) => self.fail(e),
             }
@@ -743,7 +904,7 @@ impl<B: Backend> InterpBackend<B> {
     pub fn idle_at(&mut self, now: u64) -> Option<u64> {
         let period = self.rate().period_ns()?;
         let (prev_at, cur_id, cur_at) = match (&self.prev, &self.cur) {
-            (Some(p), Some(c)) => (p.at, c.id, c.at),
+            (Some(p), Some(c)) if c.hold.is_none() => (p.at, c.id, c.at),
             _ => return None,
         };
         if self.last.is_some_and(|(id, a)| id == cur_id && a >= 1.0) {
@@ -760,8 +921,19 @@ impl<B: Backend> InterpBackend<B> {
             return Some(wait);
         }
         self.schedule.due(now, period);
+        if self.behind() {
+            // The GPU is still on the last made frame: skip this slot.
+            self.stats.lock().unwrap().dropped += 1;
+            return self.schedule.deadline();
+        }
         let a = alpha(now, prev_at, cur_at);
+        let real = self.cur.as_ref().map(|c| c.surface);
         match self.make(a) {
+            Ok((p, _, _)) if real.is_some_and(|r| !self.same_extent(p, r)) => {
+                self.stats.lock().unwrap().size_mismatch += 1;
+                self.last = Some((cur_id, 1.0));
+                None
+            }
             Ok((p, s, t)) => {
                 let gamma = self.gamma.take();
                 let r = self.inner.present_replay(p, gamma.as_deref());
@@ -771,6 +943,7 @@ impl<B: Backend> InterpBackend<B> {
                     self.fail(e);
                     return None;
                 }
+                self.fence = self.inner.gpu_fence();
                 let mut st = self.stats.lock().unwrap();
                 st.replays += 1;
                 st.substituted_draws += s.draws as u64;
@@ -849,6 +1022,8 @@ where
         });
         self.shown.retain(|s| *s != surface);
         self.surfaces.retain(|(s, _)| *s != surface);
+        self.wrote(surface);
+        self.live.retain(|(_, s, _)| *s != surface);
         if let Some(i) = self.private.iter().position(|(r, _)| *r == surface) {
             let (_, p) = self.private.remove(i);
             self.inner.destroy_surface(p)?;
@@ -874,6 +1049,10 @@ where
         depth: Option<Self::Surface>,
         clear: Clear,
     ) -> Result<(), String> {
+        self.wrote(color);
+        if let Some(d) = depth {
+            self.wrote(d);
+        }
         if self.recording(color) {
             self.ops.push(Op::Clear {
                 color,
@@ -893,12 +1072,17 @@ where
     ) -> Result<DrawOutcome, String> {
         let tex: [Option<&B::Texture>; 4] = std::array::from_fn(|i| textures[i].map(|t| &**t));
         let r = self.inner.draw(color, depth, draw, tex)?;
+        self.wrote(color);
+        if let Some(d) = depth {
+            self.wrote(d);
+        }
         if r == DrawOutcome::Drawn && self.recording(color) {
+            let textures = self.pinned(textures);
             self.ops.push(Op::Draw {
                 color,
                 depth,
                 draw: Box::new(draw.clone()),
-                textures: std::array::from_fn(|i| textures[i].cloned()),
+                textures,
             });
         }
         Ok(r)
@@ -911,6 +1095,10 @@ where
         draw: ResolvedDraw,
         textures: [Option<&Self::Texture>; 4],
     ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
+        self.wrote(color);
+        if let Some(d) = depth {
+            self.wrote(d);
+        }
         if !self.recording(color) {
             let tex: [Option<&B::Texture>; 4] = std::array::from_fn(|i| textures[i].map(|t| &**t));
             return self.inner.draw_owned(color, depth, draw, tex);
@@ -918,11 +1106,12 @@ where
         let tex: [Option<&B::Texture>; 4] = std::array::from_fn(|i| textures[i].map(|t| &**t));
         let r = self.inner.draw(color, depth, &draw, tex);
         if r == Ok(DrawOutcome::Drawn) {
+            let textures = self.pinned(textures);
             self.ops.push(Op::Draw {
                 color,
                 depth,
                 draw: Box::new(draw),
-                textures: std::array::from_fn(|i| textures[i].cloned()),
+                textures,
             });
         }
         (r, Vec::new())
@@ -979,6 +1168,10 @@ where
         clear: &RectClear,
     ) -> Result<DrawOutcome, String> {
         let r = self.inner.clear_rects(color, depth, clear)?;
+        self.wrote(color);
+        if let Some(d) = depth {
+            self.wrote(d);
+        }
         if r == DrawOutcome::Drawn && self.recording(color) {
             self.ops.push(Op::ClearRects {
                 color,
@@ -1015,6 +1208,7 @@ where
 
     fn copy_surface(&mut self, src: Self::Surface, dst: Self::Surface) -> Result<bool, String> {
         let r = self.inner.copy_surface(src, dst)?;
+        self.wrote(dst);
         if r && self.recording(dst) {
             self.ops.push(Op::Copy { src, dst });
         }
@@ -1027,6 +1221,7 @@ where
         desc: &TextureDesc,
         bytes: &[u8],
     ) -> Result<bool, String> {
+        self.wrote(surface);
         self.inner.write_surface(surface, desc, bytes)
     }
 
@@ -1088,7 +1283,11 @@ where
     }
 
     fn surface_texture(&mut self, surface: Self::Surface) -> Result<Option<Self::Texture>, String> {
-        Ok(self.inner.surface_texture(surface)?.map(Arc::new))
+        let t = self.inner.surface_texture(surface)?.map(Arc::new);
+        if let Some(t) = &t {
+            self.note_live(t, surface, false);
+        }
+        Ok(t)
     }
 
     fn can_sample_depth_surfaces(&self) -> bool {
@@ -1110,7 +1309,11 @@ where
         &mut self,
         surface: Self::Surface,
     ) -> Result<Option<Self::Texture>, String> {
-        Ok(self.inner.depth_level_texture(surface)?.map(Arc::new))
+        let t = self.inner.depth_level_texture(surface)?.map(Arc::new);
+        if let Some(t) = &t {
+            self.note_live(t, surface, true);
+        }
+        Ok(t)
     }
 
     fn judge(&self) -> Option<Box<dyn DrawJudge>> {
@@ -1175,6 +1378,7 @@ where
         layout: GuestLayoutKind,
         offset: u32,
     ) -> Result<(), String> {
+        self.wrote(surface);
         self.inner
             .mirror_load(surface, format, width, height, layout, offset)
     }

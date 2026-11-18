@@ -208,7 +208,9 @@ impl Index {
 /// If either is 4 GiB or more (BPS readers here cap the target there, and
 /// the index stores `u32` positions).
 pub fn bps(source: &[u8], target: &[u8]) -> Vec<u8> {
-    assert!(source.len() < 1 << 32 && target.len() < 1 << 32);
+    // As u64: on a 32-bit target (wasm32, the Live Worker) `1 << 32` does
+    // not fit a usize, and no slice can reach it anyway.
+    assert!((source.len() as u64) < 1 << 32 && (target.len() as u64) < 1 << 32);
     let mut out = b"BPS1".to_vec();
     varint(&mut out, source.len() as u64);
     varint(&mut out, target.len() as u64);
