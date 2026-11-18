@@ -1045,6 +1045,16 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
     }
 }
 
+/// One external pass drawn into both copies of the targets.
+#[derive(Clone)]
+struct SharedPass(std::sync::Arc<std::sync::Mutex<Box<dyn crate::backend::ExternalPass>>>);
+
+impl crate::backend::ExternalPass for SharedPass {
+    fn encode(&mut self, target: crate::backend::ExternalTarget<'_>) {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).encode(target);
+    }
+}
+
 type Surf<R, V> = ScaledSurface<<R as Backend>::Surface, <V as Backend>::Surface>;
 type Tex<R, V> = ScaledTexture<<R as Backend>::Texture, <V as Backend>::Texture>;
 
@@ -1621,6 +1631,31 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
             Some(v) => self.view.request_depth_grid(v, request, sink),
             None => self.reference.request_depth_grid(surface.reference, request, sink),
         }
+    }
+
+    fn supports_external_pass(&self) -> bool {
+        self.reference.supports_external_pass()
+    }
+
+    fn external_pass(
+        &mut self,
+        color: Self::Surface,
+        depth: Self::Surface,
+        request: crate::backend::ExternalPassRequest,
+        pass: Box<dyn crate::backend::ExternalPass>,
+    ) -> Result<bool, String> {
+        // Both copies get the pass: the reference (what the guest reads
+        // back and what repairs come from) and the view (what is shown).
+        let shared = SharedPass(std::sync::Arc::new(std::sync::Mutex::new(pass)));
+        let drawn = self
+            .reference
+            .external_pass(color.reference, depth.reference, request, Box::new(shared.clone()))?;
+        if let (Some(c), Some(d)) = (color.view, depth.view)
+            && !self.view.external_pass(c, d, request, Box::new(shared))?
+        {
+            self.view_failed("external pass", "the view backend refused it".to_string());
+        }
+        Ok(drawn)
     }
 
     fn depth_level_texture(

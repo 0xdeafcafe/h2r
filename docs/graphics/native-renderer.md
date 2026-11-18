@@ -217,7 +217,7 @@ is native only once its A/B is clean.
 
 ## Stage 1 as built
 
-The crate `native-render` (`crates/native-render`), no game wiring yet:
+The crate `native-render` (`crates/native-render`):
 
 - `world`: one vertex and index buffer for the whole BSP, one draw per
   opaque part in world space (instances placed at load), sorted into
@@ -244,36 +244,205 @@ The crate `native-render` (`crates/native-render`), no game wiring yet:
   behind the camera; the colour is base × page and the depth is
   `w_depth(10, far, D24)` within one step).
 
-### Next, in order
+### Wired into the game
 
-1. **`d3d` external pass.** `Device::request_external_pass(pass)`,
-   pending like `request_depth_grid` and issued at the next push-buffer
-   drain with the bound colour surface, depth surface and viewport;
-   `Backend::external_pass(colour, depth, viewport, pass) -> bool`
-   (default `false`: the device then leaves the world to the D3D path for
-   that frame by not clearing the bits, see 2). `GfxBackend` closes its
-   open pass, hands the encoder and the two surfaces' views to the pass;
-   `ThreadedBackend` posts it; the scaled backend gives the view surfaces
-   and a scaled viewport; the interpolating backend (E1) forwards it
-   and, until it can replay a pass with a warped camera, marks the frame
-   not replayable.
-2. **The feature `native-world`** (`impl.render.native_world`, off by
-   default, exact key): a `before` and an `after` on `0x00044550`. Before,
-   with layer 3 and a world loaded for the active BSP (`0x004e0348`): read
-   the camera, ask the device for the pass (the GPU world prepared with
-   that camera on the render thread), and only when the ask is accepted,
-   `skip::clear_structure`; after, `skip::restore`. Two hooked calls per
-   layer draw, about 30 a frame, nothing per draw.
-3. **Boot glue.** On a BSP change, load the world from the disc on a
-   worker (`load::load_world` over the map and its shared resource maps,
-   the base maps and lightmap pages decoded with `assets`), then build the
-   `GpuWorld` on the render thread. Until it is ready the hook does
-   nothing and the D3D path draws the world.
-4. **Templates.** The base map per material from the shader's template
-   and bitmaps; the 03a templates moved to their translated programs
-   (above), each behind the per-material fallback (a material left out of
-   the world keeps its D3D draws: the skip tests the item's shader datum
-   against the world's set).
+- **`d3d` external pass** (`crates/d3d`). `Device::request_external_pass`
+  holds a boxed `ExternalPass` and issues it at the next push-buffer drain
+  (the next D3D entry), with the bound colour target, the bound depth and
+  the current viewport, like `request_depth_grid`; `can_external_pass`
+  asks the backend first. `GfxBackend::external_pass` encodes the pending
+  pass, then hands the pass the open encoder, single-mip views of the two
+  surfaces, their formats, the viewport in texels and the device's depth
+  full scale (`+0x948`). `ThreadedBackend` posts it to the render thread;
+  `ScaledBackend` runs it into both copies (the 1x reference and the
+  scaled view: `encode` is called once per copy); `InterpBackend` (E1)
+  forwards it and holds the frame (`unpinned`), since a replay redraws
+  draws, not passes. `DiagBackend` and boot's headless backend forward it.
+  Counters: `external_passes`, `external_passes_dropped`. Test:
+  `crates/d3d/tests/external_pass.rs` (direct, render thread, E1, and a
+  backend that cannot).
+- **The feature `native-world`** (`crates/feature/src/native_world.rs`,
+  on by default, `H2_FEATURES=impl.render.native_world=off` turns it off,
+  exact key). While it is on, pipelining is off (`pipeline_render` prints
+  `pipeline: off: native-world's layer-draw hooks run on the game
+  thread`): the observers are not render-thread safe (an after
+  continuation, guest masks, the device's pass), so on the render thread
+  every pipelined frame would fall back at its first layer draw. Making
+  them render-thread safe (no after part, an audit of the host's writes)
+  is a later step.
+  `LAYER_DRAW` is an opaque point, so both hooks are observers: before,
+  with layer 3 current, it reads the camera and the active BSP
+  (`0x004e0348`) and asks the host; when the host accepts it clears layer
+  3's bit on the BSP items whose shader the world draws; after, it sets
+  them back. Both sit inside `render-timing`'s observers
+  (`after_feature`). Two observer calls per layer draw, nothing per draw.
+  Tests: `crates/feature/tests/native_world.rs` (the plan with
+  `render-timing`, deep, and the layer-draw port all on; on by default
+  with pipelining off; the switch off places nothing and keeps
+  pipelining; the skip and restore on synthetic memory).
+- **Boot glue** (`crates/boot/src/native_world_glue.rs`). The host: on a
+  new (map name, active BSP address) a worker opens the loaded map
+  through the VFS with its shared maps, picks the scenario BSP whose tag
+  data sits at that address, builds the world, decodes each material's
+  base map and each lightmap page, and drops the draws of materials whose
+  base map does not decode (they stay on the D3D path). Each layer-3 view
+  then asks the device for a `WorldPass` with the view's camera; the first
+  pass uploads the world on the render thread. A line per load:
+  `native-world: <map> BSP at <addr>: N draws in B batches, M materials
+  native, in S s`; every 1,800 layer-3 views: `native-world: D of V
+  layer-3 views drawn natively, I world items skipped`.
+
+### The live A/B
+
+The same 03a frame with and without the switch, E1 off, frame stats on.
+What passes: the `native-world:` load line names `03a_oldmombasa`; the
+views line shows every layer-3 view drawn natively; the frame shows the
+world (no holes where the BSP was, objects and transparents in front of
+and behind it as before); `cpu` and the `0x0002bed0` site (layer 3) drop
+by most of the world's share of the 8.26 ms, and `encode` and `submit`
+drop with the D3D draws that are gone. The pixel diff is expected to be
+large on world surfaces until step 4 (base map times lightmap only, no
+detail maps or bump, no fog-free exposure match; base maps are mipmapped
+since step 4) and small elsewhere.
+A frame where the device's `external_passes_dropped` grows has a world
+hole: it means the pass was asked for and could not be drawn.
+
+### Next: matching the look
+
+The base map per material comes from a name rule today; step 4 moves the
+03a templates to their own translated programs (above, "Match the look"),
+each behind the per-material fallback, with mipmaps and the template's
+detail maps and scales. No hand-written per-template WGSL in between: it
+would be replaced by the translated programs.
+
+#### What a world pass reads (Code, `h2 disasm`, `h2 shader`, `vsh` disassembly)
+
+A world material's layer-3 pass, as `tags::material` resolves it: on 03a
+the opaque world templates are `tex_bump` and its variants (`_env`,
+`_detail_blend`, `_three_detail_blend`, `_two_detail`, ...). A `tex_bump`
+layer 3 is one pass (`lightmap_tex_detail`) with three implementations:
+per-pixel lightmap (stage 3 the lightmap), per-vertex, and dynamic. The
+engine picks the implementation per draw; the BSP's lightmapped sections
+take the per-pixel one (S, from the lightmap bind at `0x0004d40f`).
+
+The pass's vertex program comes from its `vrtx` tag's geometry
+classification. Classification 0 is world space (S: its program reads
+`v0` as a world position and applies no model transform). For the
+per-pixel `tex_detail` program it reads:
+
+| Input | Meaning | Our source |
+|---|---|---|
+| `v0` | world position | section positions |
+| `v1` | texture coordinate | section texcoords |
+| `v2`, `v3`, `v4` | the tangent frame (normal, binormal, tangent) | section tangent-frame stream |
+| `v5` | the lightmap bucket's signed lighting vector (stream `30`, [lighting.md](../formats/lighting.md)) | bucket stream, to decode |
+| `v6` | lightmap coordinate | bucket stream `1f` |
+
+and these constants (hardware numbering, D3D register + 96):
+
+| Constants | What | Set by | For the native pass |
+|---|---|---|---|
+| `c[0..3]` | view-projection rows (`dph` with `v0`) | per view, in one block upload | the device's values at the pass (below) |
+| `c[5].w`, `c[6]` | the scale that packs a unit vector into a colour (S: `0.5`, `n·s + s`); a world-space vector (dotted with the tangent frame into `oD0`) | per view | the device's values |
+| `c[10]`, `c[11]` | the viewport scale and offset (`oPos` fix-up) | per view | the device's values |
+| `c[12..17]` | six registers in one block | `0x00025c70` | the device's values |
+| `c[18..20]` | stage 0..2 texture-coordinate scale (xy) and offset (zw) | the instance (`0x00018e80`) | `tags::material`'s instance constants |
+| `c[50..52]` | model transform rows | `0x0004d830` from the render record's matrix, skipped for clusters (`[record+8] == -1`) | identity for clusters; the instance's matrix for instanced geometry |
+| `c[170..172]` | position and texcoord decompression (scale, offset) | `0x0001cdd0`; `0x0004d7c0` passes no compression for the BSP, so the default upload (`0x0001cf29`, scale 1, offset 0) | `(1, 1, 0, 0)`: BSP vertices are uncompressed |
+
+Where `v5` and `v6` come from depends on the render record
+(`0x004ba138 + 0x20·i`). `0x0002cbf0` packs its `+0xc` as bits 0..3 an
+argument, 4..8 an index into the `0x24`-byte table at `0x004c152c` (`0x1f` none), 9..17 the cluster index, 18..28 a placement
+index; record `+0` bit 12 says which (the structure draw's choice at
+`0x0004d18b`). The cluster records (`0x00133390`) pass `-1` for the
+placement, so bits 18..28 are `0x7ff`. The structure draw's layer-3 part
+(`0x0004d285`..`0x0004d420`) then does:
+
+- **A cluster** (bits 18..28 `0x7ff`, `[record+4] == -1`): no bucket. The
+  section's own streams carry `1f` and `30` (structure-bsp.md: `30` is
+  present exactly when the section's lighting flag bit 1 is set), and the
+  cluster render info (group `+0x2c`) at the cluster index picks the
+  lightmap page and palette.
+- **An instanced placement** (`[record+4] == -1`, bits 18..28 the
+  placement): `instance_bucket_refs[placement]` (group `+0x54`), its first
+  offset times 4 bytes written into the bucket's first descriptor when
+  bucket flag bit 0 is set (`0x0004d3a1`), then `0x0004dc60` binds the
+  bucket's streams; page and palette from `instance_render_info[placement]`
+  (group `+0x4c`). The definition's section is shared by every placement,
+  so its lightmap coordinates and lighting vectors are the placement's,
+  in the bucket.
+- **An object** (`[record+4] != -1`, bits 18..28 not `0x7ff`):
+  `cluster_bucket_refs[bits 18..28]` (group `+0x64`; despite the name, the
+  engine reaches it only for object records here), the offset at entry
+  bits 9..17. Not the world's concern.
+
+Stage 1 took every section's own `lightmap_texcoords`. That is right for
+clusters and wrong for placements: a definition has no `1f` of its own,
+so every instanced placement lost its lightmap (the builder leaves a
+section without coordinates unlit). Fixed: placements read their run of
+the bucket (`load::instance_run`, `load::bucket_slice`); the lighting
+vectors (`30`) the same way (S: the bucket's `30` stream is indexed like
+its `1f`).
+
+The per-view constants (`c[0..17]`) are the same for every draw of a
+view, and nothing in layer 3 writes them per draw (the per-draw uploads
+found are `c[18..]`, `c[21]`, `c[22]`, `c[24]`, `c[25]`, `c[31]`,
+`c[50..52]`, `c[170..172]`, `c[174]`). So the native pass reads them
+from the device's constant state when the pass is issued (after the
+drain, so the view's own upload is in): exact by construction, and no
+camera maths of ours to keep in step with the game's.
+
+The pixel side is the implementation's final pixel shader definition
+(variants built, instance colours patched), translated by `shaders::psh`.
+For `lightmap_tex_detail` it combines base (stage 0) and detail (stage 1,
+`x2`), the bump map (stage 2) dotted with the tangent-space lighting
+vector (`v1`) and view vector (`v0`), and the lightmap (stage 3). Two of
+its combiner constants are engine-driven (`c0` of stages 4 and 5: the
+specular amount and the lightmap's tint): spas `+0x38` bindings through
+`0x00019ca0`, whose inputs are not named yet. Until they are, the pass
+can take them from the D3D path's last value for the same program (the
+device's pixel constants), or keep such materials on the fallback.
+
+#### Order of work
+
+1. `d3d`: the external pass gets the device's vertex constants at issue
+   (a read-only snapshot, nothing else changes for other backends).
+2. `native-render::load`: per material, the resolved layer-3 pass and
+   implementation 0: the classification-0 program, the final pixel shader
+   definition, stage textures (instance bitmaps with their image, the
+   lightmap), sampler states and instance constants. Materials without
+   one (no layer 3, more than one pass, an engine texture source other
+   than the lightmap, unnamed engine pixel constants) stay on the D3D path.
+3. World vertices gain the tangent frame and the bucket's lighting vector;
+   textures keep their mip chains (done: base maps upload their decoded
+   chain, `gpu::Image::from_levels`).
+4. `native-render::gpu`: one pipeline per (program, definition) through
+   `shaders::link`, the uniforms filled as the D3D path fills them, one
+   bind group per material. Built as `native-render::program` behind
+   `impl.render.native_world_programs` (off by default; exact key, and
+   only with the native world on):
+   - `program::compile` translates the pass (inputs `v0..v6` from the
+     world vertex: position, uv, normal, binormal, tangent, lighting
+     vector, lightmap uv) and fills the instance constants by their
+     written components, `c[172] = (1, 1, 0, 0)` and identity model rows
+     `c[50..52]` (the vertices are already placed). It refuses, and the
+     material keeps stage 1's look: engine pixel constants, a program
+     reading other inputs, a translation warning, a non-2D fetch, a
+     sampled stage with nothing bound, signed channels on the lightmap.
+     Signed channels of a stage bitmap are stored biased (`s + 128`) as
+     the D3D path stores them.
+   - Per frame the device's `c[0..18]` (the external pass's
+     `view_constants`), the guest and texel sizes (surface and the
+     render-scale shift) and the W-buffer's depth scale (`w_clip`,
+     `depth`, `depth_range`). A program batch draws over the whole
+     target: the game's viewport is in `c[10..11]`.
+   - Gaps (S): fog stays at the pixel shader's default (no fog colour
+     from the device yet), stage borders clamp to the edge, `D3DTSS`
+     LOD bias and anisotropy are not applied.
+   The load line says how many materials translate and why the rest do
+   not (`native-world: N materials translate; with stage 1: [...]`).
+5. The A/B per template, and `native-world` keeps a material native only
+   once its template's A/B is clean.
 
 ## Open
 

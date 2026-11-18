@@ -9,7 +9,13 @@
 
 pub mod camera;
 pub mod cull;
+#[cfg(feature = "gpu")]
 pub mod gpu;
+#[cfg(feature = "gpu")]
 pub mod load;
+#[cfg(feature = "gpu")]
+pub mod look;
+#[cfg(feature = "gpu")]
+pub mod program;
 pub mod skip;
 pub mod world;

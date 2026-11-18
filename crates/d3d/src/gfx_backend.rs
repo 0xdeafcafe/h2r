@@ -1553,6 +1553,59 @@ impl Backend for GfxBackend {
         Ok(true)
     }
 
+    fn supports_external_pass(&self) -> bool {
+        true
+    }
+
+    fn external_pass(
+        &mut self,
+        color: SurfaceId,
+        depth: SurfaceId,
+        request: crate::backend::ExternalPassRequest,
+        mut pass: Box<dyn crate::backend::ExternalPass>,
+    ) -> Result<bool, String> {
+        let attachment = |s: &gfx::surface::Surface| {
+            let single = s.desc().samples <= 1;
+            let drawable = s.texture().usage().contains(wgpu::TextureUsages::RENDER_ATTACHMENT);
+            (single && drawable).then(|| {
+                (
+                    s.texture().create_view(&wgpu::TextureViewDescriptor {
+                        base_mip_level: 0,
+                        mip_level_count: Some(1),
+                        ..Default::default()
+                    }),
+                    s.wgpu_format(),
+                    (s.texture().width(), s.texture().height()),
+                )
+            })
+        };
+        let c = self.store.get(color).map_err(|e| e.to_string())?;
+        let Some((cv, cf, size)) = attachment(c) else { return Ok(false) };
+        let d = self.store.get(depth).map_err(|e| e.to_string())?;
+        let Some((dv, df, dsize)) = attachment(d) else { return Ok(false) };
+        if !df.is_depth_stencil_format() || dsize.0 < size.0 || dsize.1 < size.1 {
+            return Ok(false);
+        }
+        let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
+        // After the draws recorded so far, in the same submission.
+        let (mut enc, passes) = self.take_open()?;
+        pass.encode(crate::backend::ExternalTarget {
+            device: &self.ctx.device,
+            queue: &self.ctx.queue,
+            encoder: &mut enc,
+            color: &cv,
+            color_format: cf,
+            depth: &dv,
+            depth_format: df,
+            viewport: crate::backend::external_viewport(&request, size),
+            z_scale: request.z_scale,
+            guest_size: request.surface_size,
+            size,
+        });
+        self.open = Some((enc, passes + 1));
+        Ok(true)
+    }
+
     fn defers_depth_aliases(&self) -> bool {
         // Depth24Plus cannot be read at all (nor by `read_depth`).
         self.gpu_depth_aliases && self.ctx.caps.depth32_stencil8

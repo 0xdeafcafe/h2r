@@ -658,6 +658,7 @@ dependencies = [
  "lockstep",
  "map",
  "movies",
+ "native-render",
  "perf",
  "png",
  "runtime",
@@ -1940,6 +1941,7 @@ name = "feature"
 version = "0.1.0"
 dependencies = [
  "engine",
+ "native-render",
  "runtime",
  "runtime-test-probe",
  "timeline",
@@ -3808,6 +3810,7 @@ dependencies = [
  "gfx",
  "map",
  "pollster",
+ "shaders",
  "tags",
  "wgpu",
 ]
