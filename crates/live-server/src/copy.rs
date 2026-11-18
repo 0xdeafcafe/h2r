@@ -168,8 +168,22 @@ pub const USAGE: &str =
   --to-blobs LOC          server's data directory) or s3://BUCKET[/PREFIX]
                           (endpoint and keys from $H2_LIVE_S3_ENDPOINT,
                           $H2_LIVE_S3_ACCESS_KEY_ID, $H2_LIVE_S3_SECRET_ACCESS_KEY)
+  --from URL, --to URL    a server, https://HOST (http:// to loopback): its
+                          log through the operator endpoints (/v1/admin/log),
+                          in pages, checked by the server (positions, stream
+                          versions, hash chains); into the Worker's hub, or
+                          back out of it
+  --operator DIR          that server's identity (server.key, server.json),
+                          which signs the requests; default --data
+  --release               with --to https://: once the copy has caught up with
+                          the source, let that server write again (the first
+                          import holds its own writes, so nothing of its own
+                          lands between two copies)
   --data DIR              where sqlite paths without a directory go, and
                           --from-blobs's default
+
+A postgres:// source is opened read-only. Every copy ends by checking the
+destination's last event is the source's at that position.
 
 Idempotent and resumable: run it again to carry on. Stop the server first.";
 
@@ -197,6 +211,56 @@ pub async fn open_db(url: &str) -> Result<Arc<dyn EventStore>> {
     bail!("{url:?}: a database is sqlite://PATH or postgres://HOST/NAME")
 }
 
+/// Opens one end of a copy: a database ([`open_db`]; a Postgres source
+/// read-only), or a server over HTTPS ([`crate::httpstore`]) as the
+/// operator whose identity is in `operator` (`server.key`, `server.json`).
+pub async fn open_end(
+    url: &str,
+    operator: Option<&Path>,
+    source: bool,
+) -> Result<Arc<dyn EventStore>> {
+    if url.starts_with("https://") || url.starts_with("http://") {
+        let dir = operator.with_context(|| {
+            format!(
+                "{url} is a server: name the directory with its server.key and \
+                 server.json with --operator DIR"
+            )
+        })?;
+        let identity = crate::identity::ServerIdentity::load(dir)
+            .with_context(|| format!("loading the operator identity in {}", dir.display()))?;
+        let store = crate::httpstore::HttpStore::connect(url, identity).await?;
+        return Ok(Arc::new(store));
+    }
+    if source && (url.starts_with("postgres://") || url.starts_with("postgresql://")) {
+        let pg = crate::pg::PostgresStore::connect_read_only(url)
+            .await
+            .map_err(|e| crate::db_error(url, &e))?;
+        return Ok(Arc::new(pg));
+    }
+    open_db(url).await
+}
+
+/// After a copy: whether the destination's last event is the source's
+/// event at that position (the same JWS, the same hash), so the two logs
+/// agree up to the destination's head.
+pub async fn verify(from: &dyn EventStore, to: &dyn EventStore) -> Result<(u64, u64)> {
+    let (head, source_head) = (to.head().await?, from.head().await?);
+    if head == 0 {
+        return Ok((0, source_head));
+    }
+    let mine = to.read(&Query::after(head - 1, 1)).await?;
+    let theirs = from.read(&Query::after(head - 1, 1)).await?;
+    match (mine.first(), theirs.first()) {
+        (Some(m), Some(t)) if m.position == head && t.position == head => {
+            if m.hash != t.hash || m.jws != t.jws || m.version != t.version {
+                bail!("the destination's event at {head} differs from the source's");
+            }
+            Ok((head, source_head))
+        }
+        _ => bail!("the source has no event at the destination's head {head}"),
+    }
+}
+
 /// `store copy`'s arguments (after `store copy`).
 pub async fn run(args: Vec<String>, env: &dyn Fn(&str) -> Option<String>) -> Result<()> {
     let mut args = crate::standalone::Args(args);
@@ -208,6 +272,8 @@ pub async fn run(args: Vec<String>, env: &dyn Fn(&str) -> Option<String>) -> Res
     let from_blobs = args.take("--from-blobs")?;
     let to_blobs = args.take("--to-blobs")?;
     let data: Option<PathBuf> = args.take("--data")?.map(PathBuf::from);
+    let operator: Option<PathBuf> = args.take("--operator")?.map(PathBuf::from).or(data.clone());
+    let release = args.flag("--release");
     if let Some(extra) = args.0.first() {
         bail!("unexpected {extra}\n\n{USAGE}");
     }
@@ -232,8 +298,8 @@ pub async fn run(args: Vec<String>, env: &dyn Fn(&str) -> Option<String>) -> Res
         if from == to {
             bail!("--from and --to are the same database");
         }
-        let source = open_db(&from).await?;
-        let dest = open_db(&to).await?;
+        let source = open_end(&from, operator.as_deref(), true).await?;
+        let dest = open_end(&to, operator.as_deref(), false).await?;
         println!(
             "store copy: log {} ({}) -> {} ({})",
             crate::redact(&from),
@@ -257,6 +323,33 @@ pub async fn run(args: Vec<String>, env: &dyn Fn(&str) -> Option<String>) -> Res
             report.checkpoints,
             dest.head().await?
         );
+        let (head, source_head) = verify(&*source, &*dest).await?;
+        println!(
+            "store copy: verified: the logs agree up to {head} (the last event's JWS and hash match); the source is at {source_head}"
+        );
+        if to.starts_with("https://") || to.starts_with("http://") {
+            let dir = operator.as_deref().expect("checked when opened");
+            let server = crate::httpstore::HttpStore::connect(
+                &to,
+                crate::identity::ServerIdentity::load(dir)?,
+            )
+            .await?;
+            if release {
+                if head != source_head {
+                    bail!(
+                        "not releasing: the source is at {source_head}, past {head}; stop its writes and copy again"
+                    );
+                }
+                server.release().await?;
+                println!("store copy: released: {to} writes again");
+            } else if server.held().await? {
+                println!(
+                    "store copy: {to} holds its own writes until the last copy, run with --release"
+                );
+            }
+        }
+    } else if release {
+        bail!("--release goes with --to https://…");
     }
     if let Some((from, to)) = blobs {
         let source = BlobStore::open(&Location::parse(&from)?, env, false)?;

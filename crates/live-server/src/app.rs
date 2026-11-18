@@ -73,6 +73,9 @@ pub fn not_found(m: impl Into<String>) -> ApiError {
 /// Store failures are logged here and reported without detail.
 impl From<StoreError> for ApiError {
     fn from(e: StoreError) -> Self {
+        if matches!(e, StoreError::Held) {
+            return ApiError::new(ErrorCode::Unavailable, e.to_string());
+        }
         eprintln!("live: store: {e}");
         ApiError::new(ErrorCode::Unavailable, "the event store is unavailable")
     }
@@ -149,6 +152,8 @@ impl Default for Policy {
 
 pub struct Live {
     pub(crate) store: Arc<dyn EventStore>,
+    /// `store`, which holds writes while a log is copied in.
+    pub(crate) held: Arc<crate::hold::HeldStore>,
     pub(crate) model: Arc<Model>,
     pub(crate) admins: Arc<crate::admin::Admins>,
     pub(crate) identity: ServerIdentity,
@@ -432,6 +437,8 @@ impl Live {
         policy: Policy,
         timers: Timers,
     ) -> anyhow::Result<Arc<Self>> {
+        let held = Arc::new(crate::hold::HeldStore::open(store).await?);
+        let store: Arc<dyn EventStore> = held.clone();
         let model = Arc::new(Model::default());
         let admins = Arc::new(crate::admin::Admins::new(policy.admins.clone()));
         let mut dispatcher = Dispatcher::new(store.clone());
@@ -459,6 +466,7 @@ impl Live {
         let dispatcher = crate::rt::spawn(dispatcher.run_with(wake, poll));
         let live = Live {
             store,
+            held,
             model,
             admins,
             identity,
@@ -942,7 +950,7 @@ impl Live {
     pub fn authorize_operator(&self, bearer: Option<&str>, method: &str) -> Result<(), ApiError> {
         let author = self.authenticate(bearer, method)?;
         if !matches!(author, Author::Server(_)) {
-            return Err(forbidden("only the server operator creates invites"));
+            return Err(forbidden("only the server operator may do this"));
         }
         Ok(())
     }

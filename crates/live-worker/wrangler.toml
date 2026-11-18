@@ -81,6 +81,17 @@ bindings = [
     { name = "COOP_RELAY", class_name = "CoopRelay" },
 ]
 
+# Workers Logs and traces (docs/live/live-worker.md, "Observability").
+[env.staging.observability]
+enabled = true
+head_sampling_rate = 1
+[env.staging.observability.logs]
+enabled = true
+invocation_logs = true
+[env.staging.observability.traces]
+enabled = true
+head_sampling_rate = 1
+
 # ---- production: live.forbes.red ----
 # The id is the one the machine's server has (its discovery document,
 # https://live.forbes.red/.well-known/h2live.json), so every account's
@@ -109,6 +120,17 @@ bindings = [
     { name = "COOP_RELAY", class_name = "CoopRelay" },
 ]
 
+# Workers Logs and traces (docs/live/live-worker.md, "Observability").
+[env.cutover.observability]
+enabled = true
+head_sampling_rate = 1
+[env.cutover.observability.logs]
+enabled = true
+invocation_logs = true
+[env.cutover.observability.traces]
+enabled = true
+head_sampling_rate = 1
+
 [env.production]
 name = "h2-live"
 workers_dev = true
@@ -132,3 +154,14 @@ bindings = [
     { name = "LIVE_HUB", class_name = "LiveHub" },
     { name = "COOP_RELAY", class_name = "CoopRelay" },
 ]
+
+# Workers Logs and traces (docs/live/live-worker.md, "Observability").
+[env.production.observability]
+enabled = true
+head_sampling_rate = 1
+[env.production.observability.logs]
+enabled = true
+invocation_logs = true
+[env.production.observability.traces]
+enabled = true
+head_sampling_rate = 0.1

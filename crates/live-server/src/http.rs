@@ -285,6 +285,7 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         )
         .merge(files)
         .merge(uploads)
+        .merge(crate::logio::routes())
         .merge(sockets())
         .method_not_allowed_fallback(|| async {
             ApiError::new(ErrorCode::Invalid, "method not allowed here")
