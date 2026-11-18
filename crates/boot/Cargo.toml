@@ -12,6 +12,8 @@ xiso.workspace = true
 analyze.workspace = true
 lift.workspace = true
 emit.workspace = true
+# The Cranelift fast tier (tier.rs, docs/lifter/cranelift-tier.md).
+clif.workspace = true
 ir.workspace = true
 runtime.workspace = true
 kernel.workspace = true

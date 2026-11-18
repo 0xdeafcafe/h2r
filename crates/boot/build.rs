@@ -9,6 +9,8 @@
 //!   module (xbe, analyze, ir, lift, the IR passes, emit and its C, x87, the
 //!   runtime ABI header and the boot's bridge C), for the dylib's build stamp
 //!   (lib.rs).
+//! - `FAST_TIER_SOURCE_HASH`: the same plus crates/clif and Cargo.lock, for
+//!   the Cranelift fast tier's stamp (tier.rs).
 
 use std::path::{Path, PathBuf};
 
@@ -73,4 +75,12 @@ fn main() {
         &[],
     );
     println!("cargo:rustc-env=GENERATOR_SOURCE_HASH={generator:016x}");
+    // The fast tier's module (tier.rs): the generator's sources plus
+    // crates/clif and Cargo.lock (the Cranelift version).
+    let fast = hash(
+        &["../xbe/src", "../analyze/src", "../ir/src", "../lift/src", "../opt/src", "../emit/src", "../emit/c", "../x87/src", "../runtime/include", "c", "../clif/src", "../clif/c"],
+        &["rs", "c", "h"],
+        &["../../Cargo.lock"],
+    );
+    println!("cargo:rustc-env=FAST_TIER_SOURCE_HASH={fast:016x}");
 }
