@@ -83,8 +83,8 @@ pub enum Action {
     ///
     /// [`PackageEntry::key`]: editor_core::packages::PackageEntry::key
     OpenPackageEntry(String),
-    /// Open an installed Map Pack map (by its map name, `warlock`, or its
-    /// offer directory): [`map_pack::PackMap`].
+    /// Open a Map Pack map (by its map name, `warlock`, or an installed
+    /// package's offer directory): [`map_pack::PackMap`].
     OpenMapPack(String),
     /// Show a map of the open Halo 1 source, read-only.
     SelectHalo1Map(String),
@@ -189,9 +189,7 @@ impl Action {
             Action::Quit => ToolKind::ALL.into_iter().find(|t| app.tool_dirty(*t)),
             Action::OpenSource(_) => dirty(ToolKind::Scenario),
             Action::SelectMap(name)
-                if app.loaded.as_deref() != Some(name.as_str())
-                    || app.opened_package.is_some()
-                    || app.opened_pack.is_some() =>
+                if app.loaded.as_deref() != Some(name.as_str()) || app.opened_package.is_some() =>
             {
                 dirty(ToolKind::Scenario)
             }
@@ -199,10 +197,7 @@ impl Action {
                 dirty(ToolKind::Scenario)
             }
             Action::OpenMapPack(key)
-                if app
-                    .opened_pack
-                    .as_deref()
-                    .is_none_or(|o| !o.eq_ignore_ascii_case(key)) =>
+                if app.pack_entry(key).is_some_and(|m| app.opened_pack_map() != Some(m.map.as_str())) =>
             {
                 dirty(ToolKind::Scenario)
             }
@@ -283,10 +278,9 @@ pub struct App {
     /// The open Map Pack, beside the Halo 2 source (its maps resolve their
     /// shared caches from that source).
     mappack: Option<MapPack>,
-    /// The installed Map Pack, the map of it open, and the problems with
-    /// it already logged.
+    /// The Map Pack group (the open disc's maps, else the installed
+    /// ones), and the problems with the install already logged.
     pack: Vec<map_pack::PackMap>,
-    opened_pack: Option<String>,
     pack_notes: Vec<String>,
     /// The open Halo 1 source and its maps.
     h1: Option<editor_core::halo1::H1Source>,
@@ -345,7 +339,6 @@ impl App {
             opened_package: None,
             mappack: None,
             pack: Vec::new(),
-            opened_pack: None,
             pack_notes: Vec::new(),
             h1: None,
             h1_maps: Vec::new(),
@@ -390,9 +383,11 @@ impl App {
     pub fn mappack_maps(&self) -> Vec<String> {
         self.mappack.as_ref().map(MapPack::map_names).unwrap_or_default()
     }
-    /// Whether `name` is a Map Pack map (and not one of the source's own).
+    /// Whether `name` is a Map Pack map, from the open map pack disc or
+    /// the installed copy (and not one of the source's own).
     pub fn is_mappack_map(&self, name: &str) -> bool {
-        self.mappack.as_ref().is_some_and(|p| p.has(name))
+        (self.mappack.as_ref().is_some_and(|p| p.has(name))
+            || self.pack.iter().any(|m| m.map.eq_ignore_ascii_case(name)))
             && !self.maps.iter().any(|m| m.eq_ignore_ascii_case(name))
     }
     /// The map open in the scenario tool.
@@ -590,8 +585,7 @@ impl App {
             // Re-picking the open map keeps it (and its edits).
             Action::SelectMap(name)
                 if self.loaded.as_deref() == Some(name.as_str())
-                    && self.opened_package.is_none()
-                    && self.opened_pack.is_none() => {}
+                    && self.opened_package.is_none() => {}
             Action::SelectMap(name) => self.select_map(&name),
             Action::SaveMapAs(path) => {
                 if let Some(why) = self.save_refusal(&path) {
@@ -610,16 +604,10 @@ impl App {
                     self.refresh_packages();
                     if self.packages.iter().any(|e| e.key() == form.dir) {
                         self.opened_package = Some(form.dir.clone());
-                        self.opened_pack = None;
                     }
                 }
             }
             Action::OpenPackageEntry(key) => self.open_package_entry(&key),
-            Action::OpenMapPack(key)
-                if self
-                    .opened_pack
-                    .as_deref()
-                    .is_some_and(|o| o.eq_ignore_ascii_case(&key)) => {}
             Action::OpenMapPack(key) => self.open_pack_map(&key),
             Action::SelectHalo1Map(name) => self.select_halo1_map(&name),
             Action::SetOverlay(on) => self.set_overlay(on),
@@ -1056,9 +1044,8 @@ impl App {
                     "{name} needs the Halo 2 disc's shared maps for its textures and geometry: open the disc too"
                 ));
             }
-            self.mappack.as_ref().map(|pack| {
-                pack.location(name)
-                    .map(|(path, region)| EditSource::region(path, region).with_shared(shared))
+            self.pack_location(name).map(|located| {
+                located.map(|(path, region)| EditSource::region(path, region).with_shared(shared))
             })
         } else {
             self.source.as_ref().map(|source| {

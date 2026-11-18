@@ -181,6 +181,7 @@ impl App {
             pack.map_names().len()
         ));
         self.mappack = Some(pack);
+        self.refresh_map_pack();
         true
     }
 
@@ -197,7 +198,6 @@ impl App {
     /// Leave whatever the scenario tool showed that is not a disc map.
     pub(super) fn forget_library_state(&mut self) {
         self.opened_package = None;
-        self.opened_pack = None;
         self.h1_view = None;
         self.h1_loaded = None;
         self.convert_error = None;
@@ -282,10 +282,12 @@ impl App {
                 return;
             }
         };
-        // The shared caches come from the open disc (or folder), else the
-        // default disc, when there is one.
+        // The shared caches come from the open disc, when there is one.
         let anchor = self
-            .shared_anchor()
+            .source
+            .as_ref()
+            .and_then(|s| s.location("shared").ok())
+            .map(|(path, region)| EditSource::region(path, region))
             .unwrap_or_else(|| EditSource::file(maps.join(&entry.dir).join("package.map")));
         let source = EditSource {
             bytes: Some(Arc::from(bytes)),

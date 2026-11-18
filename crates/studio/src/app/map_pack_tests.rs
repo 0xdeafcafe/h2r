@@ -1,7 +1,8 @@
 //! The Map Pack group on a synthetic install (invented maps and records,
 //! no game data): the listing, opening through the scenario session,
-//! saving as a file and as a package, and the installed files left alone.
-//! The last test reads the owner's installed Map Pack (ignored).
+//! saving as a file and as a package, the installed files left alone, and
+//! the map pack disc's maps named from the install. The last test reads
+//! the owner's installed Map Pack (ignored).
 use std::path::{Path, PathBuf};
 
 use content::map_list::{Entry, PREVIEW_LEN};
@@ -182,8 +183,11 @@ fn a_pack_map_opens_in_the_scenario_tool_and_the_tags_tool() {
     assert_eq!(app.opened_pack_map(), Some("spire"));
     assert_eq!(app.opened_package(), None);
     assert!(app.session.is_open());
-    assert!(app.session.is_derived(), "no disc base: it opens from its bytes");
+    assert!(!app.session.is_derived(), "the pack map is its own base");
     assert_eq!(app.tool, ToolKind::Scenario);
+    // No Halo 2 source open: no shared caches, and the log says so.
+    assert_eq!(app.session.source().unwrap().shared, None);
+    assert!(app.log().iter().any(|l| l.status.text().contains("needs the Halo 2 disc")));
     // The offer directory names it too.
     app.dispatch(Action::OpenMapPack("4d53006400000101".into()));
     assert_eq!(app.opened_pack_map(), Some("ridge"));
@@ -270,7 +274,7 @@ fn save_as_round_trips_byte_exact_but_for_the_edit_and_never_touches_the_pack() 
 }
 
 #[test]
-fn a_pack_map_saves_as_a_new_map_package_that_reopens_with_the_edit() {
+fn a_pack_map_saves_as_a_package_over_it_that_reopens_with_the_edit() {
     let t = Temp::new("package");
     let paths = three(&t);
     let original = std::fs::read(&paths[1]).unwrap();
@@ -283,13 +287,13 @@ fn a_pack_map_saves_as_a_new_map_package_that_reopens_with_the_edit() {
     assert!(!app.is_dirty(), "{:?}", app.status());
     assert_eq!(app.opened_package(), Some("basin-edit"));
     assert_eq!(app.opened_pack_map(), None);
-    // A new map's package: the whole pack map, then the edit. The game
-    // installs it as a map of its own (boot::new_maps); the pack's file
-    // stays as it was.
+    // A package over the pack map: its base is the installed file, by
+    // hash, and it holds only the edit. The pack's file stays as it was.
     let pkgs = scenario_edit::package::packages_for(&app.session.maps_dir(), "basin");
     let p = pkgs.iter().find(|p| p.dir_name() == "basin-edit").unwrap();
-    assert!(p.manifest.base.derived);
-    assert_eq!(p.manifest.patches.len(), 2);
+    assert!(!p.manifest.base.derived);
+    assert_eq!(p.manifest.base.sha256, Some(content::Sha256::of(&original)));
+    assert_eq!(p.manifest.patches.len(), 1);
     assert_eq!(std::fs::read(&paths[1]).unwrap(), original);
     // The resolved package is the pack map with only the edit changed.
     let entry = app
@@ -299,7 +303,7 @@ fn a_pack_map_saves_as_a_new_map_package_that_reopens_with_the_edit() {
         .unwrap()
         .clone();
     let resolved =
-        editor_core::packages::read_map(&app.session.maps_dir(), &entry, None).unwrap();
+        editor_core::packages::read_map(&app.session.maps_dir(), &entry, Some(&original)).unwrap();
     let changed: Vec<usize> = diff(&original, &resolved)
         .into_iter()
         .filter(|i| !CHECKSUM.contains(i))
@@ -309,8 +313,51 @@ fn a_pack_map_saves_as_a_new_map_package_that_reopens_with_the_edit() {
     app.dispatch(Action::OpenMapPack("basin".into()));
     assert!((flag_x(&app) - 9.0).abs() > 1e-6);
     app.dispatch(Action::OpenPackageEntry("basin-edit".into()));
+    assert_eq!(app.opened_package(), Some("basin-edit"));
+    assert_eq!(app.loaded_map(), Some("basin"));
     assert!((flag_x(&app) - 9.0).abs() < 1e-6);
     assert_eq!(app.pack_map_named("basin").unwrap().name, "Basin");
+}
+
+/// The map pack disc's tree (`/demos/dlc/<package>/`, as an extracted
+/// disc) holding `maps`, each the fixture map.
+fn pack_disc(t: &Temp, maps: &[&str]) -> PathBuf {
+    let root = t.0.join("pack-disc");
+    let dlc = root.join("demos").join("dlc").join("00000001");
+    std::fs::create_dir_all(&dlc).unwrap();
+    std::fs::write(dlc.join("ContentMeta.xbx"), b"meta").unwrap();
+    for m in maps {
+        std::fs::write(dlc.join(format!("{m}.map")), fixture::fixture()).unwrap();
+    }
+    root
+}
+
+#[test]
+fn the_map_pack_discs_maps_take_the_installed_records_names_and_order() {
+    let t = Temp::new("disc");
+    three(&t);
+    // "lone" is on the disc but not installed: listed by its file name,
+    // after the named ones.
+    let disc = pack_disc(&t, &["ridge", "lone", "basin"]);
+    let mut app = app_with(&t);
+    app.dispatch(Action::OpenSource(disc.clone()));
+    assert_eq!(app.mappack().unwrap().path(), disc.as_path());
+    let rows: Vec<_> = app
+        .map_pack()
+        .iter()
+        .map(|m| (m.name.as_str(), m.path.is_some(), m.picture.is_some()))
+        .collect();
+    assert_eq!(
+        rows,
+        [("Basin", false, true), ("Ridge", false, true), ("lone", false, false)]
+    );
+    // It opens from the disc, not the install.
+    app.dispatch(Action::OpenMapPack("ridge".into()));
+    assert_eq!(app.opened_pack_map(), Some("ridge"));
+    let src = app.session.source().unwrap();
+    assert!(src.path.starts_with(&disc), "{}", src.path.display());
+    app.dispatch(Action::OpenMapPack("lone".into()));
+    assert_eq!(app.opened_pack_map(), Some("lone"));
 }
 
 #[test]

@@ -116,6 +116,16 @@ pub fn group(
 ) {
     ui.spacing();
     heading(ui, "Map Pack");
+    match app.mappack() {
+        Some(disc) => {
+            let kind = if disc.is_folder() { icon::FOLDER } else { icon::DISC };
+            ui.text_disabled(format!("{kind} {}", disc.path().display()));
+        }
+        None if !app.map_pack().is_empty() => {
+            ui.text_disabled(format!("{} installed, in <data>", icon::DRIVE));
+        }
+        None => {}
+    }
     if app.map_pack().is_empty() {
         ui.text_disabled(format!("{} {HINT}", icon::INFO));
         st.shown = Some(Shown::Hint);
@@ -153,9 +163,14 @@ pub fn group(
                     ui.text_disabled(&m.description);
                 }
                 ui.text_disabled(format!(
-                    "{}.map, the Map Pack's, in T:\\$c\\{}\nopens with the disc's shared maps; \
-                     edits save as a new package",
-                    m.map, m.offer
+                    "{}.map, {}\nopens with the Halo 2 disc's shared maps; edits save as a \
+                     package over it",
+                    m.map,
+                    if m.path.is_some() {
+                        format!("installed in T:\\$c\\{}", m.offer)
+                    } else {
+                        "from the map pack disc".to_owned()
+                    }
                 ));
             });
         }
