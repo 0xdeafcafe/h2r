@@ -21,8 +21,27 @@
 //! On the Xbox Live menu (`custom_games::SCREEN_ID`) the line adds the row
 //! the menu restores its cursor to (`0x510a18`, read when 0 to 3).
 //!
-//! Not confirmed by a game run: the ids of the boot screens (the intro,
-//! the profile picker) and the lobby, which the lines will show.
+//! A channel whose list has no screen for the controller passes the input
+//! to the controller's own slot, not to the next window; with no screen at
+//! all the line says why (`ui: screen none (slot 4: window 1 active ...
+//! list [mask/id ...]; slot 0: ...)`), so a run shows what was there.
+//!
+//! **The screens seen in runs** (20261118-092343, traced statically):
+//!
+//! | id | window | what |
+//! |---|---|---|
+//! | none | | the main menu (pushed as id 9 on window 5, slot 4 by `0x1483c3`, loader `0x22f11e`), read as no screen; why is open: the none line now says |
+//! | `0xb6` | 1 | a moment on the way to the main menu (constructor at `0x1a2e32`) |
+//! | `0xee` | 1 | A on Campaign (constructor at `0x2acb02`) |
+//! | `0xd1` | 5 | the campaign's next screen, then the level loads (`0x2b14b2`) |
+//! | `0x1e` | 5 | the players' screen (`0x2524cc`) in a mode (`+0x610`, now on the line): 1 Split Screen (`0x25240c`, main menu row 2), 2 System Link (`0x252433`, row 3), 3 Xbox Live (`0x25245a`, row 1, when signed in: `0x2308e0`), 4 an accepted invitation (`0x252481`, from the invitation dialog's first button `0x22f36f`), 0 from `0x2524a8` |
+//! | `0xba` | | the Xbox Live menu |
+//!
+//! On the players' screen, A or START (event buttons 0 and 0xc,
+//! `0x25286d`) goes on by mode: 3 opens the Live menu (`0x2310b7`), 2 the
+//! System Link browser, 4 joins; B or Back with one player goes back.
+//! The main menu's rows (`0x230827`, the chosen row kept at `0x510a14`):
+//! 0 Campaign, 1 Xbox Live, 2 Split Screen, 3 System Link, 4 Settings.
 
 use std::sync::Mutex;
 use std::time::Instant;
@@ -55,8 +74,13 @@ const MASK: u32 = 8;
 const ID: u32 = 0x70;
 /// Where the Xbox Live menu keeps the row it restores.
 const LIVE_MENU_ROW: u32 = 0x0051_0a18;
-/// The main menu's screen id (docs/live/live-coop.md 12.1).
+/// The main menu's screen id (docs/live/live-coop.md 12.1). [guess] Runs
+/// read it as no screen (run 20261118-092343); see the module docs.
 pub const MAIN_MENU: u32 = 9;
+/// The players' screen (constructor `0x2524cc`, vtable `0x45a490`) and
+/// its mode word.
+pub const JOIN_SCREEN: u32 = 0x1e;
+const JOIN_MODE: u32 = 0x610;
 /// No real list is longer; a cycle in a torn read stops here.
 const MAX_LIST: usize = 32;
 
@@ -68,6 +92,9 @@ pub struct Top {
     pub id: u32,
     /// The Xbox Live menu's restored row, on that menu.
     pub live_row: Option<u32>,
+    /// The players' screen's mode ([`JOIN_SCREEN`], `+0x610`): what A on
+    /// it goes on to.
+    pub mode: Option<u32>,
 }
 
 impl Top {
@@ -79,6 +106,9 @@ impl Top {
         if let Some(r) = self.live_row {
             s.push_str(&format!(", live menu row {r}"));
         }
+        if let Some(m) = self.mode {
+            s.push_str(&format!(", mode {m}"));
+        }
         s
     }
 
@@ -88,6 +118,7 @@ impl Top {
             "window": self.window,
             "slot": self.slot,
             "live_menu_row": self.live_row,
+            "mode": self.mode,
         })
     }
 }
@@ -115,47 +146,102 @@ fn id_of<M: Gm + ?Sized>(m: &M, screen: u32) -> Option<u32> {
     m.u32(screen + ID).filter(|id| *id < 0x400)
 }
 
-/// The screen in `ch` that takes `controller`'s input: the first in its
-/// list whose mask holds it, else the active screen.
-fn screen_in<M: Gm + ?Sized>(m: &M, ch: u32, controller: u32) -> Option<u32> {
+/// The first screen in `ch`'s list whose mask holds `controller`
+/// (`0x23515d`); `seen` gets each screen's mask and raw id on the way.
+fn screen_in<M: Gm + ?Sized>(
+    m: &M,
+    ch: u32,
+    controller: u32,
+    seen: &mut Vec<String>,
+) -> Option<u32> {
     let mut at = m.u32(ch + LIST).unwrap_or(0);
     for _ in 0..MAX_LIST {
         if at == 0 {
-            break;
+            return None;
         }
-        let mask = m.u16(at + MASK)? as i16 as i32;
-        if mask & (1 << controller) != 0 {
+        let mask = m.u16(at + MASK)?;
+        let id = m.u32(at + ID)?;
+        seen.push(format!("{mask:#x}/{id:#x}"));
+        if (mask as i16 as i32) & (1 << controller) != 0 {
             return Some(at);
         }
         at = m.u32(at + NEXT)?;
     }
-    m.u32(ch + ACTIVE).filter(|s| *s != 0)
+    None
 }
 
-/// The screen controller 0's input goes to, as the dispatcher picks it.
-pub fn top<M: Gm + ?Sized>(m: &M) -> Option<Top> {
+/// What one read found: the screen, or why none (each slot the
+/// dispatcher tried: its first occupied window, the channel's active and
+/// pending screens, and its list as mask/id).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Read {
+    pub top: Option<Top>,
+    pub why_none: String,
+}
+
+impl Read {
+    pub fn line(&self) -> String {
+        match &self.top {
+            Some(t) => t.line(),
+            None => format!("ui: screen none ({})", self.why_none),
+        }
+    }
+}
+
+/// The screen controller 0's input goes to, as the dispatcher `0x147dbe`
+/// picks it: for the shared slot 4, then the controller's own (taken as
+/// slot 0), the first window holding a screen (0 to 5; windows 0, 2 and 4
+/// only for slot 4), and in it the first screen whose mask holds the
+/// controller. A window whose list has none for it passes the input on to
+/// the next slot, not the next window.
+pub fn read<M: Gm + ?Sized>(m: &M) -> Read {
+    let mut why = Vec::new();
     for slot in [SHARED, 0] {
-        for window in 0..6 {
-            let Some(ch) = channel(window, slot) else {
-                continue;
-            };
-            if !occupied(m, ch) {
-                continue;
-            }
-            let screen = screen_in(m, ch, 0)?;
-            let id = id_of(m, screen)?;
+        let Some((window, ch)) = (0..6)
+            .filter_map(|w| channel(w, slot).map(|c| (w, c)))
+            .find(|(_, c)| occupied(m, *c))
+        else {
+            why.push(format!("slot {slot}: no window"));
+            continue;
+        };
+        let mut seen = Vec::new();
+        let found = screen_in(m, ch, 0, &mut seen);
+        if let Some(screen) = found
+            && let Some(id) = id_of(m, screen)
+        {
             let live_row = (id == crate::custom_games::SCREEN_ID as u32)
                 .then(|| m.u32(LIVE_MENU_ROW))
                 .flatten();
-            return Some(Top {
-                window,
-                slot,
-                id,
-                live_row,
-            });
+            let mode = (id == JOIN_SCREEN)
+                .then(|| m.u32(screen + JOIN_MODE))
+                .flatten();
+            return Read {
+                top: Some(Top {
+                    window,
+                    slot,
+                    id,
+                    live_row,
+                    mode,
+                }),
+                why_none: String::new(),
+            };
         }
+        why.push(format!(
+            "slot {slot}: window {window} active {:#x} pending {:#x} list [{}]",
+            m.u32(ch + ACTIVE).unwrap_or(0),
+            m.u32(ch + PENDING).unwrap_or(0),
+            seen.join(" ")
+        ));
     }
-    None
+    Read {
+        top: None,
+        why_none: why.join("; "),
+    }
+}
+
+/// The screen alone ([`read`]).
+pub fn top<M: Gm + ?Sized>(m: &M) -> Option<Top> {
+    read(m).top
 }
 
 /// The newest read, for `ui.screen`, and when it was made.
@@ -167,16 +253,18 @@ pub fn last() -> Option<(std::time::Duration, Option<Top>)> {
     l.map(|(at, top)| (at.elapsed(), top))
 }
 
-fn note(top: Option<Top>) -> Option<String> {
-    let mut l = LAST.lock().unwrap_or_else(|e| e.into_inner());
-    let before = l.and_then(|(_, t)| t);
-    let first = l.is_none();
-    *l = Some((Instant::now(), top));
-    match top {
-        Some(t) if first || before != Some(t) => Some(t.line()),
-        None if !first && before.is_some() => Some("ui: screen none".into()),
-        _ => None,
+/// The line said last, so a line is said only on a change.
+static SAID: Mutex<String> = Mutex::new(String::new());
+
+fn note(r: Read) -> Option<String> {
+    *LAST.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), r.top));
+    let line = r.line();
+    let mut said = SAID.lock().unwrap_or_else(|e| e.into_inner());
+    if *said == line {
+        return None;
     }
+    *said = line.clone();
+    Some(line)
 }
 
 /// `H2_UI_WATCH`: on with 1, on, true or yes.
@@ -202,7 +290,7 @@ impl feature::Feature for UiWatch {
         b.raw()
             .observe_after(&points::GAME_TICK, "ui: watch the screen", |o| {
                 let g = o.guest();
-                if let Some(line) = note(top(&*g)) {
+                if let Some(line) = note(read(&*g)) {
                     eprintln!("{line}");
                 }
             })
@@ -334,24 +422,67 @@ mod tests {
     }
 
     #[test]
+    fn a_window_without_player_one_passes_to_its_own_slot_not_the_next_window() {
+        let mut f = Fake::default();
+        // The main menu on window 5, under a window 1 screen for player
+        // two only: the dispatcher never reaches window 5 for slot 4.
+        screen(&mut f, WINDOW_5 + 4 * STRIDE_5, 0x8000_0000, MAIN_MENU, 0xf);
+        screen(&mut f, WINDOW_1 + 4 * STRIDE_13, 0x8000_1000, 0xb6, 0x2);
+        let r = read(&f);
+        assert_eq!(r.top, None);
+        assert_eq!(
+            r.line(),
+            "ui: screen none (slot 4: window 1 active 0x80001000 pending 0x0 list [0x2/0xb6]; \
+             slot 0: no window)"
+        );
+        // A screen in player one's own slot takes it.
+        screen(&mut f, WINDOW_5, 0x8000_2000, 0x1e, 0x1);
+        assert_eq!(top(&f).map(|t| (t.slot, t.id)), Some((0, 0x1e)));
+    }
+
+    #[test]
+    fn the_players_screen_says_its_mode() {
+        let mut f = Fake::default();
+        screen(
+            &mut f,
+            WINDOW_5 + 4 * STRIDE_5,
+            0x8000_0000,
+            JOIN_SCREEN,
+            0xffff,
+        );
+        f.set_u32(0x8000_0000 + JOIN_MODE, 3);
+        let t = top(&f).unwrap();
+        assert_eq!(t.mode, Some(3));
+        assert_eq!(t.line(), "ui: screen 0x1e (window 5, slot 4), mode 3");
+    }
+
+    #[test]
     fn lines_only_on_change() {
-        // One test owns LAST.
+        // One test owns LAST and SAID.
         let a = Top {
             window: 5,
             slot: 4,
             id: 9,
             live_row: None,
+            mode: None,
         };
         let b = Top {
             id: 0xba,
             live_row: Some(0),
             ..a
         };
-        assert!(note(Some(a)).is_some());
-        assert_eq!(note(Some(a)), None);
-        assert_eq!(note(Some(b)).as_deref(), Some(b.line().as_str()));
-        assert_eq!(note(None).as_deref(), Some("ui: screen none"));
-        assert_eq!(note(None), None);
+        let r = |top: Option<Top>| Read {
+            top,
+            why_none: "slot 4: no window; slot 0: no window".into(),
+        };
+        assert!(note(r(Some(a))).is_some());
+        assert_eq!(note(r(Some(a))), None);
+        assert_eq!(note(r(Some(b))).as_deref(), Some(b.line().as_str()));
+        assert_eq!(
+            note(r(None)).as_deref(),
+            Some("ui: screen none (slot 4: no window; slot 0: no window)")
+        );
+        assert_eq!(note(r(None)), None);
         assert!(last().unwrap().1.is_none());
         assert!(wanted(Some("1")) && wanted(Some("on")) && !wanted(None) && !wanted(Some("0")));
     }
