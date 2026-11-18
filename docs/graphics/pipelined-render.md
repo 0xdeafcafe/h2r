@@ -980,6 +980,39 @@ last time against what the earlier flushes gave live RAM before the
 hand-back, so live RAM ends at the render's final bytes; the render stack
 is left out of that flush (a fallback copies it whole from the view).
 
+**Render-safe hooks of other features.** The HUD's text reaches the string
+lookup `0x001a0180` on the render thread, where `community:strings` (and
+`community:descriptions` at `0x0019fd00`) were refused: after a cinematic
+every pipelined frame fell back there. Both act only on the context they
+run on (registers, stack, the caller's buffer, the original), so they are
+allowed by address and name (`community_variants::RENDER_THREAD_SAFE`,
+`d3d_glue::pipeline_allow`).
+
+**What the sim reads (determinism against serial).**
+
+- The frame counter `0x004ba034` is read by the sim (the particles at
+  `0x0017469d`, `0x00117eda`, `0x002486a3`). It was handed back at the join,
+  after the next tick had read it one short. The launch now credits the
+  render's views (the last completed frame's count, as for the present
+  counter) and the join corrects by the difference (a mispredict counts).
+- The random seeds at `[0x004e7408]` (+0 the game's, +4 the effects'): both
+  the render (`0x00027be0`, object updates it reaches) and the sim (the
+  particles, effects) step them (`x * 0x19660d + 0x3c6ef35f`). The byte
+  merge put the render's value over live RAM, dropping the steps the sim
+  took meanwhile, so it drew them again. The join now counts the render's
+  steps from the snapshot value and applies as many to live RAM's seed
+  (`Addrs::random`); flushes leave the seeds out. The total steps match the
+  serial run; the sim drawing before the render's draws instead of after is
+  inherent to running them side by side.
+- Inherent: the logical clock moves by executed work, and the render's
+  accesses are charged to the game thread at the join, one frame later
+  than serially; I/O requests the render queues are taken by the worker at
+  the serviced call, so completions land at other points in the sim's
+  ticks (streaming and LOD then differ). The vblank count to a given
+  present matched across serial and pipelined runs (10533 to present 7000).
+- Visit marks are render-private by design (the sim never sees the
+  render's counters).
+
 **Tests.** `crates/feature/tests/pipeline_render.rs`: a synthetic render
 front-end (a Rust function registered as generated code with resume
 points) and sim, run serially and pipelined over 120 rounds

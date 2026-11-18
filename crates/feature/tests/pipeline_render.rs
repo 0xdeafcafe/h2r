@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use engine::points;
-use feature::pipeline_render::{Addrs, PipelineRender};
+use feature::pipeline_render::{Addrs, PipelineRender, RANDOM_A, RANDOM_C};
 use feature::{Registry, Remap, Switches};
 use runtime::exec::HARNESS_EXIT;
 use runtime::guest::Permissions;
@@ -56,6 +56,12 @@ const CHURN: u32 = 0x2_4054;
 /// into the globals after them).
 const VIEW_DEPTH: u32 = 0x2_4058;
 const VIEWS: u32 = 0x2_4700;
+/// A pointer to two random seeds (as `[0x004e7408]`): the sim and the
+/// render step both, and the sim records each value it draws and the
+/// frame counter it reads.
+const RNG_PTR: u32 = 0x2_405c;
+const RNG: u32 = 0x2_4800;
+const SIM_SAW: u32 = 0x2_4900;
 /// Object table: a body pointer per index (0: freed), and the bodies.
 const OBJECTS: u32 = 0x2_4100;
 /// The I/O queue head (a live range, as the game's pool is), the request
@@ -98,6 +104,7 @@ static ADDRS: Addrs = Addrs {
     io_queue: QUEUE,
     warmup: 0,
     after_fallback: 0,
+    random: Some((RNG_PTR, &[0, 4])),
 };
 
 /// What the D3D entries saw, in order: (entry, value read at INPUT, ran on
@@ -155,6 +162,11 @@ fn render(
             let depth = m.u32(VIEW_DEPTH)? + 1;
             m.set_u32(VIEW_DEPTH, depth)?;
             m.set_u32(VIEWS + 4 * (depth % 64), v)?;
+            // The render draws from both seeds (effects, object updates).
+            for seed in [RNG, RNG + 4] {
+                let x = m.u32(seed)?.wrapping_mul(RANDOM_A).wrapping_add(RANDOM_C);
+                m.set_u32(seed, x)?;
+            }
             cpu.esp -= 4;
             m.set_u32(cpu.esp, INPUT)?;
             m.call(cpu, D3D_DRAW, FRAME + 0x10)
@@ -406,6 +418,9 @@ fn rig_full(on: bool, serviced: &[&'static str], addrs: Addrs, watch: &[u32]) ->
     }
     // The world path: globals point at a record with +0x1120 set.
     g.set_u32(GLOBALS, GLOBALS_RECORD).unwrap();
+    g.set_u32(RNG_PTR, RNG).unwrap();
+    g.set_u32(RNG, 0x1234_5678).unwrap();
+    g.set_u32(RNG + 4, 0x9abc_def0).unwrap();
     g.set_u8(GLOBALS_RECORD + 0x1120, 1).unwrap();
     g.prepare_fast_pages();
     let rt = Runtime::new(g, d);
@@ -477,6 +492,16 @@ impl Rig {
             m.set_u8(STAMPS.0 + 8 + (k % 8), mark as u8).unwrap();
             m.set_u8(CLEAR, 1).unwrap();
             m.set_u8(VBLANKS.0 + 1, k as u8).unwrap();
+            // The sim reads the frame counter (as the particles do) and
+            // draws from the effects seed.
+            let frames = m.u32(FRAMES).unwrap();
+            m.set_u32(SIM_SAW + 4 * (k % 32), frames).unwrap();
+            let x = m
+                .u32(RNG + 4)
+                .unwrap()
+                .wrapping_mul(RANDOM_A)
+                .wrapping_add(RANDOM_C);
+            m.set_u32(RNG + 4, x).unwrap();
             if m.u32(CHURN).unwrap() != 0 {
                 // This tick spawns object k and frees the last one.
                 let (now, last) = (k % 16, (k + 15) % 16);
@@ -1124,4 +1149,35 @@ fn a_view_pushed_across_a_serviced_call_and_popped_after_ends_popped_in_live_ram
     // Every frame's record went to the first slot.
     assert_eq!(piped.rt.memory().u32(VIEWS + 8).unwrap(), 0);
     compare(&serial.data(), &piped.data());
+}
+
+/// What the sim reads that the render writes, round by round, against the
+/// serial run (completed frames, fallbacks, serviced calls): the frame
+/// counter it reads is the serial run's (the launch credits the render's
+/// views), and the random seeds both step have taken as many steps in
+/// total (the render's steps are applied on top of the sim's, so no draw
+/// is replayed). The sim's draws themselves come one render earlier in the
+/// sequence than serially: that part is inherent.
+#[test]
+fn the_frame_counter_and_seed_steps_the_sim_sees_are_the_serial_runs() {
+    let n = rounds();
+    let mut serial = rig(false);
+    let mut piped = rig_with(true, &["KeQuerySystemTime"]);
+    let steps = |r: &Rig| {
+        let m = r.rt.memory();
+        (m.u32(RNG).unwrap(), m.u32(RNG + 4).unwrap())
+    };
+    for k in 1..=n {
+        let fallback = k % 5 == 2;
+        serial.round(k, fallback);
+        piped.round(k, fallback);
+        let saw = |r: &Rig| r.rt.memory().u32(SIM_SAW + 4 * (k % 32)).unwrap();
+        assert_eq!(saw(&piped), saw(&serial), "round {k}: the frame counter");
+    }
+    serial.finish();
+    piped.finish();
+    assert_eq!(steps(&piped), steps(&serial));
+    let s = piped.feature.stats();
+    assert_eq!(s.mispredicts, 0, "{s:?}");
+    assert!(s.pipelined >= u64::from(n), "{s:?}");
 }
