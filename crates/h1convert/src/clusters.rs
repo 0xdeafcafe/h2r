@@ -468,6 +468,19 @@ pub fn spread_skies(mut own: Vec<i8>, portals: &[Portal], clusters: usize) -> Ve
     own.into_iter().map(|s| s.max(0)).collect()
 }
 
+/// Each Halo 1 cluster that names no sky (`+0x00`, i16 `-1`): Halo 1 fogs
+/// it with the scenario's first sky's indoor fog, B (E `0x000531b0`: the
+/// camera's leaf's cluster's `+0x00` goes to `0x000581a0`, which takes
+/// skies[0]'s fog B for `-1` and the named sky's fog A otherwise). One per
+/// cluster; a structure with no clusters has one, with a sky.
+pub fn skyless(bsp: &StructureBsp) -> Result<Vec<bool>> {
+    let clusters = bsp.space.block_at(bsp.root, H1_CLUSTERS, H1_CLUSTER)?;
+    if clusters.is_empty() {
+        return Ok(vec![false]);
+    }
+    Ok(clusters.iter().map(|c| i16_at(c, 0) == -1).collect())
+}
+
 /// Each converted cluster's sound zone and each collision leaf's cluster:
 /// Halo 1's own. A cluster's background sound `+0x04` and sound
 /// environment `+0x06` (i16 into the BSP's palettes; V: every Halo 1

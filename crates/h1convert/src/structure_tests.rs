@@ -116,6 +116,7 @@ fn build_with(sections: &[Section], lit: bool, sounds: bool) -> Built {
         lit,
         sounds,
         &crate::clusters::Visibility::default(),
+        &[],
     )
 }
 
@@ -125,6 +126,7 @@ fn build_full(
     lit: bool,
     sounds: bool,
     visibility: &crate::clusters::Visibility,
+    atmosphere: &[u8],
 ) -> Built {
     let mut set = TagSet::new(CacheType::Multiplayer, "t", "invented\\t");
     for g in [b"matg", b"scnr", b"sbsp", b"ltmp"] {
@@ -206,6 +208,7 @@ fn build_full(
         lightmap_bitmap,
         sound: &sound,
         visibility,
+        atmosphere,
     };
     let section = s.write(&mut set, sbsp, ltmp).unwrap();
     let mut descriptor = Block::zeroed(0x44);
@@ -879,7 +882,7 @@ fn portals_and_each_cluster_s_list_are_written_where_the_flood_reads_them() {
         clusters: vec![vec![0], vec![0]],
         skies: vec![1, 0],
     };
-    let b = build_full(&sections, false, false, &visibility);
+    let b = build_full(&sections, false, false, &visibility, &[]);
     let map = Map::from_reader(Cursor::new(b.bytes.clone())).unwrap();
     let at = map.tag(b.sbsp).unwrap().location.unwrap().address;
     let mut m = map;
@@ -1047,4 +1050,21 @@ fn a_surface_listed_by_two_clusters_is_drawn_by_both() {
     let meshes = crate::clusters::split_by_cluster("s", None, v, &tris, &[vec![0], vec![0, 2], vec![]]);
     let got: Vec<(u16, Vec<[u32; 3]>)> = meshes.into_iter().map(|m| (m.cluster, m.triangles)).collect();
     assert_eq!(got, vec![(0, vec![[0, 1, 2], [0, 2, 1]]), (2, vec![[0, 2, 1]])]);
+}
+
+#[test]
+fn a_cluster_names_its_atmosphere_where_halo_2_reads_it() {
+    let sections = crate::clusters::pack_clusters(&meshes(), &[0, 1], 2).unwrap();
+    // Cluster 0 has a sky; cluster 1 takes atmosphere 0 (E 0x0012efb0).
+    let b = build_full(&sections, false, false, &Default::default(), &[0xff, 0]);
+    let mut map = Map::from_reader(Cursor::new(b.bytes.clone())).unwrap();
+    let at = map.tag(b.sbsp).unwrap().location.unwrap().address;
+    let sbsp = map.read_tag_bytes(b.sbsp).unwrap();
+    let clusters = word(&sbsp, 0xa0).wrapping_sub(at) as usize;
+    let atmosphere: Vec<u8> = (0..2).map(|c| sbsp[clusters + CLUSTER * c + 0x6f]).collect();
+    assert_eq!(atmosphere, [0xff, 0]);
+    // +0x6c stays the scenario's first sky.
+    for c in 0..2 {
+        assert_eq!(sbsp[clusters + CLUSTER * c + 0x6c], 0);
+    }
 }

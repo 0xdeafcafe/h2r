@@ -10,6 +10,7 @@
 //! | Field | Stride | Written |
 //! |---|---|---|
 //! | `+0x08` skies | 8 | Halo 1's skies, converted (`h1sky`) |
+//! | `+0x340` atmosphere | `0xf4` | Halo 1's indoor fog, the first sky's fog B, when it has one ([`indoor_fog`]; `h1sky::atmosphere`); the skyless clusters name it |
 //! | `+0x48` object names | `0x24` | Halo 1's names; each placement index mapped to the converted placement, or -1 |
 //! | `+0x50`..`+0x330` object placements and palettes | per type (`tags::object::OBJECT_TYPES`) | emptied; weapons, equipment, vehicles, scenery and bipeds from Halo 1's |
 //! | `+0xf8` player starting profiles | `0x44` | Halo 1's, weapons the converted tags ([`crate::profiles`]) |
@@ -588,6 +589,22 @@ fn put_block(root: &mut Block, at: u32, stride: usize, elements: Vec<Block>) {
     }
 }
 
+/// The scenario's atmosphere block (`h1sky::atmosphere`): one element,
+/// Halo 1's indoor fog, or none.
+pub const ATMOSPHERE: u32 = h1sky::atmosphere::SCENARIO_FIELD;
+/// The name of that element.
+pub const INDOOR_ATMOSPHERE: &str = "h1_indoor";
+
+/// Halo 1's indoor fog: the fog B of the scenario's first sky, which Halo
+/// 1 draws in every cluster naming no sky (E `0x000581a0`;
+/// `h1sky::h1::Sky::indoor_fog`). `None` when the level has no sky, the
+/// sky doesn't read, or its fog B has no density.
+pub fn indoor_fog(h1: &H1Map) -> Option<h1sky::h1::Fog> {
+    let first = h1.multiplayer().ok()?.skies.into_iter().next()?;
+    let tag = h1.tag(first.id).ok()?;
+    h1sky::h1::Sky::from_map(h1, tag).ok()?.indoor_fog()
+}
+
 /// Halo 2's device placement fields after the object fields (`+0x34`):
 /// the same as Halo 1's at `+0x28` ([`h1::DEVICE_POWER_GROUP`]), 12 bytes
 /// on. **V**: every machine placement on 01b, 03a, 05a and 08a and every
@@ -698,6 +715,7 @@ pub fn replaced_fields() -> Vec<u32> {
     use h1ai::h2::layout as ai;
     let mut v = vec![
         SKIES,
+        ATMOSPHERE,
         OBJECT_NAMES,
         STARTING_LOCATIONS,
         crate::profiles::H2.0,
@@ -890,6 +908,18 @@ pub fn write(
     if !skies.is_empty() {
         put_block(&mut root, SKIES, 8, skies);
     }
+
+    // Halo 1's indoor fog as atmosphere element 0, which the skyless
+    // clusters name (`structure::Prepared::atmosphere`).
+    let atmosphere = indoor_fog(h1)
+        .map(|f| {
+            let mut e = Block::new(h1sky::atmosphere::element(&f));
+            e.string_id(h1sky::atmosphere::layout::NAME as u32, INDOOR_ATMOSPHERE);
+            e
+        })
+        .into_iter()
+        .collect();
+    put_block(&mut root, ATMOSPHERE, h1sky::atmosphere::LEN, atmosphere);
 
     // Player starting locations, on the base's first element.
     let template = base

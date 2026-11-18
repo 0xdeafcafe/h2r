@@ -416,3 +416,32 @@ fn only_the_outdoor_fog_converts() {
     assert_eq!(out.gradients_a[0].tail, [3.0, 100.0]);
     assert!(out.gradients_b.is_empty());
 }
+
+/// c20's library fog: blue, density 0.1, 10 to 30 units. It goes into an
+/// atmosphere element's first fog, where Halo 2 reads the sky's `fog_a`
+/// (E `0x0012efb0`), with nothing else set.
+#[test]
+fn the_indoor_fog_is_an_atmosphere_element_s_first_fog() {
+    use crate::atmosphere::{self, layout};
+    let mut sky = read_invented();
+    sky.lighting_scalars[12..20]
+        .copy_from_slice(&[0.06, 0.07, 0.53, 0.0, 0.0, 0.1, 10.0, 30.0]);
+    let fog = sky.indoor_fog().expect("fog B has a density");
+    let e = atmosphere::element(&fog);
+    assert_eq!(e.len(), atmosphere::LEN);
+    assert_eq!(atmosphere::fog(&e), Some(fog));
+    let f = |at: usize| f32::from_le_bytes(e[at..at + 4].try_into().unwrap());
+    assert_eq!([f(4), f(8), f(0xc)], [0.06, 0.07, 0.53]);
+    assert_eq!([f(0x18), f(0x1c), f(0x20)], [0.1, 10.0, 30.0]);
+    assert_eq!(f(layout::FADE_DISTANCE), 0.0, "the engine's default fade");
+    // No second fog, no patchy fog: only the null `fpch` reference.
+    let set: Vec<usize> = (0..atmosphere::LEN)
+        .filter(|&k| e[k] != 0 && !(4..0x24).contains(&k))
+        .collect();
+    assert_eq!(set, (0xd0..0xd8).collect::<Vec<_>>());
+    assert_eq!(&e[0xd0..0xd4], b"hcpf", "the group, as retail stores it");
+    assert_eq!(&e[0xd4..0xd8], [0xff; 4]);
+    // No density, no indoor fog.
+    sky.lighting_scalars[17] = 0.0;
+    assert_eq!(sky.indoor_fog(), None);
+}

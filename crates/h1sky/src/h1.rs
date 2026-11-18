@@ -251,11 +251,11 @@ impl Sky {
     }
 
     /// The indoor fog: fog B ([FOG_RUNS] `[1]`) when it has a density.
-    /// Halo 1 draws it in clusters with no sky, never outdoors (V: most
-    /// multiplayer skies carry the same untuned purple fog B, density 0.9 to 1,
-    /// opaque at 120, and their levels are all sky clusters, Blood Gulch
-    /// wider than 120 units; c20's library, every cluster skyless, has no
-    /// other fog). It has no Halo 2 home yet (docs/formats/h1-sky.md).
+    /// Halo 1 draws the scenario's first sky's in every cluster naming no
+    /// sky, and never outdoors (E `0x000581a0`: sky `-1` takes skies[0]'s
+    /// run at `+0x78`, a sky index that sky's run at `+0x58`). Every fog B
+    /// on the disc with a density reaches opacity past its start (V). Its
+    /// Halo 2 home is the scenario's atmosphere block ([`crate::atmosphere`]).
     pub fn indoor_fog(&self) -> Option<Fog> {
         self.fogs()[1]
     }

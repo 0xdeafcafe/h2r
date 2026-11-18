@@ -93,11 +93,48 @@ The converter writes fog A as `fog_a` when its density is above zero and
 its opaque distance past its start (`Sky::outdoor_fog`), and writes no
 `fog_b`. Halo 2 blends `fog_b` from the same skies as `fog_a`
 (`0x00131030`), so it would lay Halo 1's indoor fog over the outdoors,
-as it did on Blood Gulch at version 60. Halo 1's indoor fog has no Halo 2
-home yet. Halo 2's per-cluster choice is cluster `+0x6f`: an index into
-the scenario's `0xf4`-byte block at `+0x340`, read by `0x0012efb0` in
-place of the sky's fog (**E**, layout not mapped). Converted clusters
-leave it `0xff`.
+as it did on Blood Gulch at version 60.
+
+#### Indoor fog
+
+**Halo 1 (E).** `0x000531b0` takes the camera's leaf (`sbsp +0xe4`,
+cluster at `+0x08`) and its cluster's `+0x00` sky, and `0x000581a0`
+picks the fog from it: a sky index takes that scenario sky's fog A (the
+run at `sky +0x58`); `-1` takes the **first** scenario sky's fog B (`sky
++0x78`), whichever sky the level's other clusters name. So a level has
+one indoor fog, sky 0's B. Every fog B on the disc with a density reaches
+opacity past its start (V).
+
+**Halo 2 (E).** `0x0012efb0` reads cluster `+0x6f`: not `0xff`, it takes
+element `[+0x6f]` of the scenario's atmosphere block (`scnr +0x340`,
+`0xf4` bytes each) in place of the cluster's sky fog. The element's
+fields feed the accumulators the sky's fog elements do
+(`h1sky::atmosphere` has the offsets and addresses):
+
+| Element | Meaning | Sky counterpart |
+|---|---|---|
+| `+0x00` | name (string id) | |
+| `+0x04` RGB | first fog colour | `fog_a` `+0x00` |
+| `+0x10` | fade distance: the weight is 1 − distance / this, clamped to 10; 0 or less, the engine default | sky `+0x44` |
+| `+0x18`, `+0x1c`, `+0x20` | density, start, opaque distance | `fog_a` `+0x0c`..`+0x14` |
+| `+0x24` RGB, `+0x34`..`+0x3c` | second fog | `fog_b` |
+| `+0x44`..`+0x58` | a third group, accumulated apart | |
+| `+0x88`..`+0xd4` | patchy fog (`fpch` at `+0xd0`), when `+0xa4` > 0 | sky `+0x60`, `+0x64` |
+| `+0xe0`..`+0xec` | when `+0xe0` > 0 | sky `+0x68`..`+0x74` |
+| `+0xf0` (u16) | copied out for the camera's cluster | |
+
+V (every Halo 2 map): 10 maps fill the block, 34 elements; on 9 of them
+clusters index it, always inside it. 03a's first element is a brown fog,
+density 0.6, 5 to 200 units (`real_h2_disc_atmosphere_fog_reads_where_the_converter_writes`).
+
+**Conversion.** A campaign level whose first sky has a fog B gets one
+atmosphere element, `h1_indoor`: fog B as its first fog, fade distance 0
+(as 21 of the 34 retail elements), nothing else but the null `fpch`
+reference. Every cluster naming no Halo 1 sky has `+0x6f` 0; the rest
+keep `0xff` and their sky's fog. Multiplayer levels keep the base's
+scenario, which has no atmosphere block, so their clusters name none
+(the multiplayer skies' fog B is the untuned purple, and Blood Gulch has
+no skyless cluster).
 
 ### Halo 2's sky fog (`+0x48`, `+0x50`, `+0x58`)
 
@@ -214,7 +251,7 @@ what is synthesised, and what has no Halo 2 home:
 | — | model scale `+14` | **Design:** the least scale, at least 1, that puts every surface of the model as far from the camera as the level is wide (below) |
 | — | camera translation scale `+18` | **Design:** `1.0`; the Halo 1 sky box stays centred on the camera |
 | fog A (scalars `4–11`) | `+48` `fog_a` | colour, density, start and opaque distance copied, one element, when the density is above zero and the opaque distance past the start |
-| fog B (scalars `12–19`) | — | not written: Halo 1's indoor fog (above) |
+| fog B (scalars `12–19`) | scenario `+0x340` atmosphere element 0 | the first sky's only, when its density is above zero: colour, density, start and opaque distance as the element's first fog; every skyless cluster's `+0x6f` names it ("Indoor fog", above) |
 | — | `+10` word, bitmap layers, `+58`, `+44`, rotation | **Design:** `0`, empty blocks, `0`, `0.0` — retail zeroes |
 
 ### The model scale
@@ -297,7 +334,7 @@ here for the next pass):
 - the animation graph (`antr`): Halo 2's `+08` slot is null on every
   retail sky, so its group is unknown and nothing is written there;
 - the fog reference (`fog `): null on every retail Halo 1 sky anyway;
-- fog B, the indoor fog ("Fog A is the outdoor fog", above);
+- fog B of every sky but the first (Halo 1 never draws it, "Indoor fog", above);
 - the shader-function elements;
 - the first ambient colour's fraction (scalar `3`);
 - each light's `0x006e7500` constant and flags;

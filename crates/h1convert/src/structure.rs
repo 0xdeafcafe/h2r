@@ -826,6 +826,10 @@ pub struct Structure<'a> {
     /// The portals and each cluster's portal list
     /// ([`crate::clusters::portals`]); the default has none.
     pub visibility: &'a crate::clusters::Visibility,
+    /// Per cluster, the scenario atmosphere element it takes its fog from
+    /// (`+0x6f`, `h1sky::atmosphere`); a cluster past the end has none
+    /// (`0xff`), and takes its sky's.
+    pub atmosphere: &'a [u8],
 }
 
 /// Ambient sound in a converted structure. The engine plays the
@@ -1223,7 +1227,9 @@ impl Structure<'_> {
             // The sky the camera sees from this cluster (E 0x0014b38d):
             // Halo 1's ([`crate::clusters::cluster_skies`]), sky 0 without.
             b[0x6e] = self.visibility.skies.get(c).copied().unwrap_or(0) as u8;
-            b[0x6f] = 0xff;
+            // +0x6f: the atmosphere in place of the sky's fog (E
+            // 0x0012efb0), Halo 1's indoor fog on its skyless clusters.
+            b[0x6f] = self.atmosphere.get(c).copied().unwrap_or(0xff);
             b[0x70] = 0xff;
             b[0x71] = 0xff;
             for o in [0x72, 0x74, 0x76, 0x7c] {
