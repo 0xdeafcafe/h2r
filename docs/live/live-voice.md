@@ -1,15 +1,22 @@
 # Live voice: chat, voice messages and the mute list
 
-Status: design only. Nothing in this document is built yet. It is written for
-review before any voice code lands. Player reports (slice 1) are built and are
-described in [live-api.md](live-api.md) and [live-admin.md](live-admin.md).
+Status: design, with the user's decisions of 2026-11-18 folded in (section
+6). No voice code is built yet. Player reports and bans (slices 1 and 1b)
+are built and are described in [live-api.md](live-api.md) and
+[live-admin.md](live-admin.md).
+
+The decisions in short: keep the original voice codec and engine, emulating
+only the communicator underneath it, so the game's own packets carry the
+real audio; one microphone and one set of speakers per machine; voice
+messages kept until deleted; no account-level voice switch.
 
 This covers four things:
 
 1. how the title does voice today, traced from the recompiled code;
 2. what the game has to see for its own voice UI to work;
-3. the host design: capture and playback, codec, transport, voice messages
-   on the server, the mute list, privacy;
+3. the host design: the communicator under the title's own engine and
+   codec, capture and playback, voice messages on the server, the mute
+   list, privacy;
 4. how this plugs into the pause-settings lane's `voice.*` settings and device
    trait, which this lane consumes rather than duplicates.
 
@@ -100,8 +107,9 @@ peers using the forward mask (0x55b40).
 
 The game never looks inside the 10 bytes. They are the engine's codec frames:
 one frame per DPC tick, so about 4 kbps if a frame is 20 ms. That is the
-original voice codec's budget; it is far too small for Opus at any useful
-quality, which shapes the transport design below.
+original voice codec's budget, and this design keeps it: the frames are the
+real audio (section 3.3). The frame length, and so the bitrate, is still to
+be confirmed by trace (section 3.3, "What to trace").
 
 Remote talkers are registered under synthetic XUIDs built from the 32-bit
 session player id, not from account XUIDs.
@@ -187,8 +195,9 @@ icon.
 
 ## 2. What the game must see
 
-For the game's own UI to work (talking icons, muted icons, the voice option
-being offered, the voice icon on friends), with no change to game code:
+For the game's own voice to work (talking icons, muted icons, the voice
+option being offered, the voice icon on friends, and the audio itself), with
+no change to game code:
 
 1. **A communicator on each port that has voice.** Answer XPeekDevices,
    XGetDevices and XGetDeviceChanges for the microphone and headphone types
@@ -196,44 +205,51 @@ being offered, the voice icon on friends), with no change to game code:
    presence and `voice.mic_muted` (see 4). Insertions and removals arrive
    through the same device-change path as gamepads, so the engine calls
    CommunicatorStatusUpdate itself.
-2. **An engine that behaves like XHV.** Either the real engine runs on top of
-   an HLE media object at 0x411143, or the XHV wrappers are replaced. This
-   design replaces the wrappers (section 3.1): the host owns the audio, and
-   the game gets the callbacks it expects.
-3. **Talking state.** The local talking flag set when the local player's voice
-   activity detector fires; IsRemoteTalking true while a remote peer's audio is
-   playing.
+2. **The communicator's media objects.** The title's own XHV engine and its
+   codec run recompiled. Underneath them the host implements the media
+   object factory at 0x411143 (XVoiceCreateMediaObjectEx): a microphone
+   object that fills capture packets from the host mic, and a headphone
+   object that plays the decoded packets (section 3.1).
+3. **Talking state.** Falls out of the real engine: it sets the local
+   talking flag from its own voice detection on the captured PCM, and
+   IsRemoteTalking from the frames it decodes.
 4. **The mute list.** Add, Remove and Get backed by the server, byte exact
    (section 3.6). The game then builds its matrix and the muted icons by
    itself.
 5. **Presence flag 0x8.** Falls out of 0x536b0 once 1 is in place. Our presence
    HLE already forwards the flags the game sets.
-6. **Account voice permission.** Bit 16 of the XUID flags stays clear unless
-   the account has voice turned off (an account setting; see 3.7).
+6. **Account voice permission.** Bit 16 of the XUID flags stays clear for
+   every account. There is no account-level voice switch (section 6, decision
+   4); `voice.mic_muted` and `voice.incoming_muted` are the player's controls.
 
 ## 3. Host design
 
-### 3.1 Replace XHV, keep its shape
+### 3.1 Keep the engine, emulate the communicator
 
-The host replaces the XHV wrappers listed in 1.1 with HLE entries, the same way
-the XOnline entries are intercepted. The game keeps its voice object, its
-packet code and its mute matrix; only the engine underneath changes.
+The title's XHV engine (section 1.1) and the XDK voice codec it calls run as
+recompiled game code, unchanged. The host replaces only what sits under them
+on a real Xbox: the communicator, a USB headset that XPP exposes as two
+media objects (XMOs). [playstation-audio.md](../audio/playstation-audio.md)
+covers the same ground from the audio side; the completion routines at
+0x37f38a and 0x37f3a8 are reached from XPP code at 0x410ddc to 0x410ef4.
 
-| Wrapper | Host behaviour |
+| Piece | Host behaviour |
 |---|---|
-| Create, Release | create or drop the host voice engine; hand the game a fake engine pointer |
-| SetCallbackInterface | remember the game's ITitleXHV object at 0x476fc8 |
-| Register / UnregisterLocalTalker | open or close capture for that port |
-| Register / UnregisterRemoteTalker | add or drop a playback stream keyed by the synthetic talker id |
-| SetProcessingMode | chat or voice mail for a port |
-| SetVoiceMask | ignored at first (voice masks are a voice-changer effect) |
-| SubmitIncomingVoicePacket | treat the 10 bytes as a token (3.3), not audio |
-| IsRemoteTalking | true while that talker's playback has audio |
-| DoWork | drain host events and call the game's callbacks on the game thread |
-| voice mail record / stop / play | record to, or play from, a RIFF/WAVE buffer (3.5) |
+| Device presence (XPeekDevices, XGetDevices, XGetDeviceChanges) | report a communicator per port that has voice (2.1) |
+| XVoiceCreateMediaObjectEx (0x411143), microphone | an XMO whose Process fills each capture packet with host PCM at the format the engine asks for |
+| XVoiceCreateMediaObjectEx (0x411143), headphone | an XMO whose Process takes the engine's PCM packets and plays them (3.2) |
+| Packet completion | signal the packet's event and status the way XPP does, on the engine's 20 ms DPC cadence (the kernel already runs that DPC) |
 
-Callbacks into the game run only from DoWork, which the game calls once a
-frame on its own thread. The host's audio threads never touch guest memory.
+The game keeps its voice object, its packet code and its mute matrix, and
+the engine keeps its encoder, decoder, voice detection and voice-mail mode.
+Nothing in the XHV wrappers is intercepted. The host's audio threads hand
+PCM to and from ring buffers; only the XMO entries, called on guest threads,
+touch guest memory.
+
+Whether the codec really is in the title (as playstation-audio.md says) or
+is a media object the host must also provide is the first thing to trace
+(3.3). If it is not in the title, the host implements it bit-exact as a
+codec XMO under the same factory, and the rest of this design stands.
 
 ### 3.2 Capture and playback
 
@@ -255,6 +271,10 @@ trait VoiceIo {
 }
 ```
 
+The XMOs resample between the device's 48 kHz and the rate the engine's
+packets use (traced in 3.3; 8 or 16 kHz 16-bit mono per public XDK
+descriptions).
+
 macOS first, on cpal over CoreAudio like `crates/audio/src/output.rs`. A fake
 `VoiceIo` (scripted frames in, recorded frames out) is what the tests use.
 Other ports implement the trait.
@@ -265,100 +285,97 @@ game". The second route uses the DirectSound output thread's side sink
 (`crates/dsound/src/output.rs`), so voice follows the game's volume and device
 without a second stream.
 
-Voice activity detection is a simple energy gate with hang time. It drives the
-local talking flag and decides whether a frame is sent at all. In push-to-talk
-mode the gate is the button.
+Push-to-talk is a gate in the microphone XMO: with the button up it fills
+packets with silence, so the engine's own voice detection never fires and
+nothing is encoded. Open mic leaves the engine's detection to decide.
 
 The audio path reads each `voice.*` setting through its `Setting<T>` handle:
 one atomic load per 20 ms frame, no locks, no store lookups.
 
-One capture device serves the whole machine. Split-screen players share it; the
-host attributes speech to the port whose controller has push-to-talk held, or,
-in open-mic mode, to the first signed-in player with voice. That is a
-limitation worth stating, not solving now.
+**One microphone and one set of speakers per machine** (section 6, decision
+2). Split-screen players share them: the microphone XMO feeds the port whose
+controller has push-to-talk held, or, in open-mic mode, the first signed-in
+player with voice; the other ports' microphones get silence. Every port's
+headphone object plays into the one output. Separate devices per player is
+not planned.
 
 ### 3.3 Codec and the 10-byte frames
 
-Opus, 48 kHz mono, 20 ms frames, VBR around 24 kbps, with in-band FEC on.
-The Opus packets do not fit in the game's 10-byte voice frames, so they do not
-travel inside the game's packets. Two channels run side by side:
+The original codec, at its original bitrate (about 4 kbps), unchanged. The
+10-byte frames the game puts in its own session packets (1.3) are the real
+encoded audio, and a receiving machine's engine decodes them. There is no
+Opus, no side channel and no token scheme: the game's routing, forward
+masks, team voice and the bidirectional mute rule decide who hears whom, as
+on the original service, because only the packets the game sends carry
+audio.
 
-- **The game's packets keep carrying 10-byte frames**, so all the game's
-  routing, forward masks and mute checks run unchanged. When the host engine
-  has a 20 ms Opus packet ready for a local talker, it raises
-  LocalChatDataReady with a 10-byte token: a version byte, the sending
-  machine's voice stream id (4 bytes), a sequence number (4 bytes) and a
-  flags byte. The game sends the token to the peers it chooses; anyone it
-  does not route to (mutes, team chat) never gets a token.
-- **The Opus packets travel on a host side channel** (3.4) keyed by stream id
-  and sequence number. A receiving host plays a packet only after the game has
-  submitted the matching token through SubmitIncomingVoicePacket. A packet
-  with no token within 200 ms is dropped.
+**What to trace before the communicator slice (2) and the voice-message
+slice (5):**
 
-So the game still decides who hears whom, including the bidirectional mute
-rule and team-only voice, and the host decides only how the audio sounds.
-Each side-channel packet is also checked against the host's own mute list
-before playback, as a second gate.
-
-A jitter buffer of 60 ms (3 frames, adaptive up to 200 ms) sits in front of
-each remote talker's decoder. Opus packet loss concealment covers gaps.
+1. **Where the codec lives.** Whether the encoder and decoder are recompiled
+   title code reached from the XHV engine, or a media object created
+   through 0x411143 that the host must provide. Name the entry points
+   either way.
+2. **The frame layout.** The 10-byte frame: which bytes are codec payload,
+   whether any are a header (a sequence, a talker or a silence marker), and
+   how silence or a dropped frame is represented. Confirm against the
+   reader at 0x55e10 and SubmitIncomingVoicePacket (0x332df4, size 10).
+3. **The bitrate.** The frame duration (one frame per 20 ms DPC tick, or
+   longer), so the bitrate exactly; the PCM format the engine asks the
+   microphone XMO for (rate, bits, packet size); and how many frames a
+   session packet carries each tick (the 0x200-byte budget at 0x765c0 and
+   the 15-entry walk at 0x564c0).
+4. **The voice-message WAVE header.** The RIFF/WAVE `fmt ` chunk the
+   voice-mail mode writes into the buffer at 0x504948 and that 0x53db0
+   checks: format tag, channels, sample rate, block align, bits per sample,
+   any extra bytes, and the `data` chunk; also how the format at 0x484290
+   relates, and what message property 0x3c2's codec value 1 names.
+5. How the engine reports a frame lost or late, so the headphone XMO keeps
+   time when the network does not.
 
 ### 3.4 Transport
 
-Primary: direct UDP between the machines, on the same path the session
-already uses. The XNet layer has each peer's address once the session is up
-(see live-coop.md 10.2); the voice side channel binds its own socket on the
-next port and learns peers from the same session membership.
-
-Fallback: the session relay. Today `/v1/sessions/{id}/relay` is co-op only
-and two members (crates/live-server/src/relay.rs). Voice needs:
-
-- relay open to any session member, not only `coop` sessions;
-- more than two members, up to the session's player count, with a per-message
-  destination (one member, or all);
-- a voice channel byte on each relayed message, so voice and co-op traffic do
-  not share a rate bucket;
-- `Policy::relay_rate` sized for voice: 50 packets a second per talker at up
-  to 80 bytes each, inside the existing MAX_RELAY_MESSAGE.
-
-The relay stays opaque: the server never decodes voice. It runs in both
-homes: native `h2 live serve` and the Worker (Durable Object WebSocket), with
-the same tests as the co-op relay.
-
-Selection follows `coop.transport`'s rule: try direct, fall back to the relay
-when no direct packet arrives within 2 s. A new `voice.transport` setting is
-not needed; the voice channel uses whatever the session uses.
+Voice rides inside the game's own session packets, so it travels wherever
+those packets travel: direct UDP between the machines, or the session relay
+when that is how the session is connected. The direct path and the relay
+need no extra channel, port or message type for voice. At about 4 kbps a
+talker inside the game's existing 0x200-byte budget, voice adds nothing the
+relay's rate limits need to change for.
 
 Nothing is stored. Live chat is never recorded on the server.
 
 ### 3.5 Voice messages
 
-Recording: the voice-mail record thunk records from the capture device at the
-rate in the WAVE header the game expects, writes RIFF/WAVE into the game's
-buffer at 0x504948, and stops at 15 s or 0x499a bytes, whichever comes first.
-The buffer is small: 0x499a bytes for 15 s is about 1.2 KB a second, so the
-host writes the retail voice-mail format (the format the game's header check
-accepts; see open question 2). Playback: decode that format to PCM and play it
-through the voice output route.
+Recording and playback are the engine's own voice-mail mode
+(SetProcessingMode 3, the record, stop and play thunks at 0x332e81,
+0x332e8a and 0x332e93): it encodes with the same codec and writes the
+RIFF/WAVE buffer at 0x504948 itself, and decodes it to the headphone XMO
+on playback. The host provides only the microphone and headphone objects,
+as for chat. The game's own limits stay: 15 s and fewer than 0x499a bytes
+(0x8ef60), checked by the game before sending.
 
 Sending: MessageSend and the friend request, team recruit and game invite
 paths already hand the HLE the attachment. The HLE uploads the bytes as is
 with the message. The server stores the voice blob in the **private** blob
 store (crates/live-server/src/blobs.rs; the data dir natively, private R2 in
 the Worker) under `voice/{message_id}`, never in a public bucket. The message
-event carries the blob key, size and duration, not the bytes.
+event carries the blob key, size and duration, not the bytes. The server
+checks the size is under 0x499a bytes and the buffer starts with the traced
+RIFF/WAVE header (3.3); it does not decode the audio.
 
 Receiving: once the inbox HLE (MessageEnumerate, Details, Download) delivers
 messages, Details reports the voice property, and Download streams the blob
 through the existing task. Blobs are fetched with the recipient's token; the
 server checks the caller is the message's recipient or sender.
 
-Limits, as content rules: 0x499a bytes a message (the game's own limit), the
-existing message rate limit, and a per-account cap on stored voice (100
-messages). A voice message is deleted with its message, or after 30 days.
+**Retention** (section 6, decision 3): a voice message is kept until it is
+deleted, with its message, by its recipient (or its sender, before it is
+read). There is no expiry and no per-account cap beyond the existing
+message rate limit; each message is at most 0x499a bytes, so storage stays
+small.
 
-Converting to Opus for storage is not worth it: the blobs are already tiny,
-and the game wants its own format back.
+Converting the audio for storage is not worth it: the blobs are already
+tiny, and the game wants its own format back.
 
 ### 3.6 The mute list HLE
 
@@ -401,16 +418,18 @@ the friends and messages checks.
 Who hears whom:
 
 - Voice goes only to players in the same session.
-- The game's routing decides who gets tokens (3.3): team voice, proximity and
-  the mute matrix are all its rules, unchanged.
-- Mutes are bidirectional, per the game.
-- The host double-checks its own mute list before playing a side-channel
-  packet.
-- Accounts can turn voice off ("voice allowed" account setting). The server
-  then sets bit 16 in the XUID flags it issues, and the game's own checks keep
-  that player out of chat and voice messages, both ways.
-- `voice.incoming_muted` silences everyone locally; `voice.mic_muted` stops
-  capture before encoding, so nothing leaves the machine.
+- The game's routing decides which machines get voice frames (3.3): team
+  voice, proximity and the mute matrix are all its rules, unchanged.
+- Mutes are bidirectional, per the game, and the game's matrix is built
+  from the server-backed mute list (3.6), so a mute holds on every machine
+  in the session.
+- There is no account-level voice switch (section 6, decision 4); bit 16 of
+  the XUID flags stays clear. A player who wants no voice uses the settings
+  below, and admins have bans (live-admin.md §9).
+- `voice.incoming_muted` silences everyone locally (the headphone XMO plays
+  nothing); `voice.mic_muted` stops capture in the microphone XMO and
+  removes the communicator (2.1), so nothing is encoded and nothing leaves
+  the machine.
 
 What is stored: no chat audio, ever. Voice messages are stored privately and
 readable only by sender and recipient.
@@ -419,14 +438,15 @@ Admins and reports:
 
 - Reports already carry `game_id`. A voice-message report adds the message id:
   `ReportRequest.message` (optional). The report pins the blob: it is kept
-  until the report is reviewed, even past 30 days or after the recipient
-  deletes it.
+  until the report is reviewed, even after the recipient deletes the
+  message.
 - In the dashboard report queue, an admin with `reports.moderate` can play the
   reported voice message. Only reported messages are reachable; there is no
   admin browse of voice messages.
 - Every admin playback writes a server-signed `VoiceMessageAccessed { report,
   message, by }` event, visible in the report's history.
-- After review, the pin is released and normal deletion applies.
+- After review, the pin is released, and a message already deleted is
+  removed then.
 
 Live chat cannot be reported with evidence, because nothing is recorded. A
 chat report is the existing "Screaming" or "Harassment" feedback, as today.
@@ -440,14 +460,15 @@ these host settings in `crates/settings` Defs:
 |---|---|
 | `voice.input_device` | capture open (3.2) |
 | `voice.output_device` | playback route: headset device or "same as game" |
-| `voice.mode` (open mic, or push-to-talk and its button) | VAD gate, each frame |
-| `voice.mic_muted` | capture gate, each frame; also the communicator answer (2.1) |
-| `voice.incoming_muted` | playback gate, each frame |
-| `voice.input_volume` | capture gain, each frame |
-| `voice.output_volume` | playback gain, each frame |
+| `voice.mode` (open mic, or push-to-talk and its button) | microphone XMO gate, each frame (3.2) |
+| `voice.mic_muted` | microphone XMO gate, each frame; also the communicator answer (2.1) |
+| `voice.incoming_muted` | headphone XMO gate, each frame |
+| `voice.input_volume` | capture gain before the engine, each frame |
+| `voice.output_volume` | playback gain after the engine, each frame |
 | per-player mute list, if it lands there | not used; the Live mute list (3.6) is the one list |
 
-It also adds a host device-enumeration trait (`voice::Devices` or similar,
+Only one input and one output device are chosen per machine (3.2). It
+also adds a host device-enumeration trait (`voice::Devices` or similar,
 CoreAudio through cpal on macOS, plus a fake). This design builds `VoiceIo`
 (3.2) beside that trait: `Devices` lists and names devices, `VoiceIo` opens
 them, and both take the same `DeviceId`. If the two end up in the same
@@ -473,34 +494,59 @@ the branch before voice code is written.
 
 Each is its own slice, with tests:
 
-1. Mute list: server events, endpoints in both homes, HLE Add, Remove and
-   Get, website list. Useful on its own: the game's muted icons work.
-2. Communicator presence and the XHV replacement with a fake `VoiceIo`: the
-   game offers voice, shows talking icons from a scripted source, and the
-   presence voice flag goes out. No real audio yet.
-3. Capture and playback on macOS, the Opus side channel over direct UDP.
-4. Relay extension for voice in both homes.
-5. Voice messages: record and play, blob storage, inbox delivery (this
-   depends on the inbox HLE delivering messages at all).
-6. Voice-message reports and admin playback.
+1. **Mute list**: server events, endpoints in both homes, HLE Add, Remove
+   and Get, website list. Useful on its own: the game's muted icons work,
+   and it needs nothing from the codec.
+2. **Trace the codec** (3.3, "What to trace") and write it up here: where it
+   lives, the frame layout, the bitrate, the PCM format and the voice-mail
+   WAVE header. No code.
+3. **Communicator presence and the media objects with a fake `VoiceIo`**:
+   the game offers voice, the real engine encodes scripted PCM into frames
+   that go out in its packets, a second machine's engine decodes them to
+   the fake output, and the presence voice flag goes out. Tested with two
+   HLE instances and no real audio.
+4. **Capture and playback on macOS**, through the pause-settings device
+   trait and settings; push-to-talk and mic mute in the microphone XMO.
+5. **Voice messages**: the voice-mail mode on the same objects, blob storage
+   with the size and header check, inbox delivery (this depends on the
+   inbox HLE delivering messages at all).
+6. **Voice-message reports and admin playback.**
 
-## 6. Open questions
+If the trace (2) finds the codec is not in the title, slice 3 grows a
+bit-exact codec object before anything else in it.
 
-1. Whether to replace the XHV wrappers (this design) or implement the media
-   object at 0x411143 and run the real engine. Replacing is less code and
-   gives Opus; running the real engine would keep the 10-byte codec in the
-   game's packets and need no side channel, but at about 4 kbps and with a
-   codec we would have to reimplement exactly.
-2. The voice-mail WAVE format the game writes and checks. The header check at
-   0x53db0 and the format at 0x484290 decide what the host must produce; this
-   needs one more trace before slice 5.
-3. What 0x4c99b8 (the global gate) and 0x4c99a8 (value 3 blocks voice) are set
-   by, and what port value 4 means in the engine calls.
-4. The game's voice message type and send cadence on the wire, needed to size
-   the token budget and jitter buffer.
-5. Which UI reads the friend-row voice bit, and what tag 0x581 holds on game
-   invites.
-6. Whether split-screen players on one machine should be able to talk on
-   separate devices. This design says no for now.
-7. Retention: 30 days for voice messages and 100 per account are guesses for
-   the user to confirm.
+## 6. Decisions and open questions
+
+Decided by the user on 2026-11-18:
+
+1. **Codec: keep the original.** Emulate the communicator under the title's
+   own voice engine and its ~4 kbps codec, so the voice frames in the
+   game's packets are the real audio (3.1, 3.3). No Opus and no side
+   channel, so the direct path and the relay need no extra channel (3.4).
+   This replaces the earlier design that swapped the XHV wrappers for an
+   Opus engine with 10-byte tokens.
+2. **Devices: one microphone and one set of speakers for everyone on the
+   machine**, for now (3.2).
+3. **Retention: voice messages are kept until deleted.** No expiry and no
+   per-account cap; the game's own size check stays (fewer than 0x499a
+   bytes, 15 s) (3.5).
+4. **No account-level voice switch.** Bit 16 of the XUID flags stays clear
+   (2.6, 3.7).
+
+Still open, each with this design's recommendation marked **proposed**:
+
+1. The codec trace (3.3, "What to trace"): where the codec lives, the frame
+   layout, the bitrate and PCM format, and the voice-mail WAVE header.
+   **Proposed:** do it as its own slice (5, step 2) before any media-object
+   code, and record the results in this document.
+2. What 0x4c99b8 (the global gate) and 0x4c99a8 (value 3 blocks voice) are
+   set by, and what port value 4 means in the engine calls. **Proposed:**
+   trace alongside the codec; until then leave both as the game sets them.
+3. Which UI reads the friend-row voice bit, and what tag 0x581 holds on game
+   invites. **Proposed:** leave until slice 5; presence already forwards
+   the flag.
+4. A website mute list under the account's privacy settings (3.6).
+   **Proposed:** build it with the mute-list slice.
+5. If pause-settings adds a per-player mute row: **proposed** that it writes
+   through to the Live mute list when signed in rather than keeping its own
+   (4).
