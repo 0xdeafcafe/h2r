@@ -1395,6 +1395,48 @@ the render. With the tick joining first, the overlap is the frame's work
 outside the tick. The next real win has to come from a cheaper render
 (docs/perf/frame-budget.md), not from more pipelining.
 
+### Where it stands (2026-11-18)
+
+Measured live with the tick joining first (03a, headless GPU backend,
+`H2_OPT=2` with PGO, gameplay around present 38,000; totals over 38,107
+pipelined frames from `render.stats`):
+
+- `sim_joins` equals the frames, conflicts 0 in every steady-state
+  report: frames are serial-equivalent again.
+- Per frame: `lead` 1.3 ms, `join_wait` 21-28 ms against a render of
+  23-28 ms, hand-back 1.3 ms, snapshot about 0.5 ms, about 188 COW pages.
+- 33-34 fps (cpu 23-29 ms a frame), no better than stock.
+
+So the measured overlap is about 1.3 ms a frame, and the hand-back alone
+costs as much. Pipelining stays **off by default** (`H2_PIPELINE_RENDER`
+unset). It is a research switch, not a speed-up.
+
+What would move the join later, so the tick runs beside the render:
+
+1. **Particle systems on the render side.** The sim's particle updates
+   (`0x00174a30`, the particle work of `0x00179020` under the effect
+   update `0x00176e40`) run on the render thread at the launch against
+   the sim's committed state. Effect creation and deletion reach them
+   through a queue, and the four particle datums become render-owned.
+   Particle motion shifts by one frame; nothing in gameplay reads it.
+2. **Animation cache bookkeeping queued.** `animation_resource_get`
+   (`0x001237e0`) on the render thread logs its use-stamp updates and
+   loads, and the game thread applies them at the join, so the tick's
+   `animation_resource_request` (`0x001236f0`) is the cache's only
+   writer while a render is in flight. This is the same shape as the I/O
+   deferral.
+3. Then re-check the conflict report for the remaining render-written
+   object and effect state, and move the `sim_joins` entry from
+   `game_tick` to the first tick update that still reads any of it (or
+   drop it).
+
+Estimated win if all of that lands and the whole tick overlaps: the
+sim's share, about 6 ms of a 28-30 ms frame. Less the hand-back,
+snapshot and COW cost (about 2-3 ms), that is about 3-4 ms a frame, or
+10-15%. Items 1 and 2 are each a port of the size of the I/O deferral or
+larger. A cheaper render front-end pays off on every frame, with or
+without pipelining, so it comes first.
+
 ## Related
 
 - docs/perf/frame-budget.md, "Render front-end versus simulation": the

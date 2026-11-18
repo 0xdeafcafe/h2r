@@ -1,7 +1,7 @@
 # Community game variants
 
 Halo 2 ships with 39 built-in game variants (Slayer, Rockets, Ninjanaut,
-Crazy King and so on). This adds twelve classics the community set up by
+Crazy King and so on). This adds thirteen classics the community set up by
 hand in custom games, as extra built-ins. In the variant list they carry a
 "two players" icon where the retail ones carry a padlock. Like the retail
 built-ins they cannot be edited in place: choosing Edit asks for a name and
@@ -106,7 +106,8 @@ the `button-icons` branch shows how to add one at an unused code point
 Halo 2's editor has no gravity, player speed or infinite ammo for everyone
 (only Juggernaut movement, ball speed and the carrier toggles change speed;
 see the source list). Every classic below is built from settings the editor
-offers. Rules a variant cannot enforce (who may use which weapon, switching
+offers, except Bumper Cars' unarmed start, one of our added choices
+([game-options.md](game-options.md)). Rules a variant cannot enforce (who may use which weapon, switching
 teams on death) were honour rules then and are in the description now.
 
 Settings not listed stay at the game type's default.
@@ -123,8 +124,9 @@ Settings not listed stay at the game type's default.
 | Tower of Power | Slayer | team play; no shields; 3 s respawn; no light vehicle; machine gun turret; shotgun, no secondary; shotguns on the map; no grenades; no pickups; 100 points |
 | Wheeeeee! | Oddball | team play; no shields; extra damage; fast and tough with the ball; rocket launcher; rockets on the map, respawning twice as often; 30 seconds |
 | Cops and Robbers | Slayer | team play; 3 lives; no shields; no pickups; shotgun and plasma pistol; nothing on the map |
-| Bounce Practice | Slayer | no score or time limit; 3 s respawn; no suicide penalty; overshields; damage resistance; nothing on the map; no grenades |
+| Bounce Practice | Slayer | no score or time limit; 3 s respawn; no suicide penalty; overshields; damage resistance; a magnum and no secondary weapon; nothing on the map; no grenades |
 | Glitch Hunt | Slayer | no score or time limit; 3 s respawn; no suicide penalty; overshields; damage resistance; energy sword and rocket launcher; no friendly fire |
+| Bumper Cars | Slayer | no starting weapon (one of our added choices) and no secondary; no grenades at start or on the map; nothing on the map; no pickups; Warthog and Ghost, no other vehicles or turrets; 25 points |
 
 Why these, and the sources:
 
@@ -167,13 +169,20 @@ Why these, and the sources:
   are hard to kill and respawn fast, and nothing on the map gets in the way.
   Vehicles stay at the map default because the Burial Mounds bounce needs a
   Warthog. Bounces depend on the 30 Hz tick, which this project keeps exact
-  ([high-framerate.md](high-framerate.md)).
+  ([high-framerate.md](high-framerate.md)). Everyone has a magnum and
+  nothing else (the user's choice): enough to shoot a friend off a ledge,
+  not enough to get in the way.
 - **Glitch Hunt.** Exploring for out-of-map spots used sword flying, rocket
   and grenade jumps; a Neoseeker thread mentions a "glitches" variant with
   overshields, swords and rockets. Our settings follow that.
+- **Bumper Cars.** Vehicles with no guns, splatter only. A long-standing
+  custom game; no source gives a Halo 2 recipe, so the settings are ours.
+  Halo 2's editor has no unarmed start; our added choice "None" for the
+  starting weapon gives one (game-options.md). Without our choices
+  (`H2_NO_VARIANT_OPTIONS=1`) the variant is left out, as any variant with
+  a value the game doesn't offer is.
 
-Considered and left out: Michael Jackson (the name), Bumper Cars (there is
-no "no weapon" start), Fiesta and Dodgeball (retail names), Duck Hunt and
+Considered and left out: Michael Jackson (the name), Fiesta and Dodgeball (retail names), Duck Hunt and
 Gun Game (no sourced Halo 2 setup, and Gun Game needs weapon progression
 the editor cannot express), Grifball (Halo 3).
 
@@ -211,7 +220,7 @@ All three hooks are wrappers at function entries
 3. **Description numbers.** The variant list turns the entry's description
    number into the string id of its decimal text with `0x19fd00`, from
    `0x2ca1fd`, and the list's `unic` holds the text under those ids
-   (retail uses 0 to 38). Ours are 80 to 91. The wrapper on `0x19fd00`
+   (retail uses 0 to 38). Ours are 80 to 92. The wrapper on `0x19fd00`
    returns our description id (the number is in ECX) only for a number of ours and only when the
    return address is `0x2ca1fd`; every other caller (numbers shown as
    text) gets the original.
@@ -233,10 +242,10 @@ being left out, and a failed read leaving the tag alone.
 
 - **Not seen in the game yet.** The work is proven by the unit tests and the
   disassembly above; no game run was made. To check by hand: Settings, Game
-  Variants should list the twelve after the retail ones, each ending in the
+  Variants should list the thirteen after the retail ones, each ending in the
   two-players icon, with its description; Edit on one should ask for a name
   and save a copy; a custom game on one should play with its settings. The
-  boot log says "community variants: 12 added to the built-in list", or names
+  boot log says "community variants: 13 added to the built-in list", or names
   any variant left out.
 - **Copy and lock are the game's.** No hook decides them: an entry in the
   `goof` block becomes a built-in through `0x217080`, as the retail ones do.

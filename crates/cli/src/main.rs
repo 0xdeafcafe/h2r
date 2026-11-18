@@ -200,8 +200,6 @@ const USAGE: &str = "usage: h2 <command> [disc]
   live account list [--server URL]
   live motd set <line>... [--header TEXT] | --file PATH
   live invite create [--days N]
-  live menubar [--install | --uninstall | --adopt-existing SERVER TUNNEL]
-                          the optional menu bar app for a server run here
   live assets extract [--disc PATH] [--out DIR]
                           decode the stats site's art from your disc
   live q <what> [--json|--jsonl]

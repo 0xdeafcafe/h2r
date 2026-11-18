@@ -37,7 +37,16 @@ struct Match {
     game_id: String,
     map: String,
     campaign: bool,
+    /// The engine's tick at the last sample.
     tick: u64,
+    /// Added to the engine's tick for every tick the match sends. A
+    /// campaign checkpoint revert or mission restart winds the engine's
+    /// clock back within the same game; the game's ticks keep counting
+    /// (docs/live/live-telemetry.md, "Campaign"). Even, so frames
+    /// stay on even ticks.
+    tick_offset: u64,
+    /// The latest tick the match has sent (offset applied).
+    sent_tick: u64,
     tick_rate: u64,
     team_play: bool,
     players: Vec<PlayerState>,
@@ -71,6 +80,13 @@ struct Match {
     /// Every unit a player has had whose body is still in the world: those
     /// bodies are the players', not AI ones (the viewer leaves its own).
     player_bodies: std::collections::BTreeSet<u32>,
+}
+
+impl Match {
+    /// The game's tick for the engine's `tick`.
+    fn clock(&self, tick: u64) -> u64 {
+        tick.saturating_add(self.tick_offset)
+    }
 }
 
 pub struct Session {
@@ -205,6 +221,10 @@ impl Session {
             && info.mode == "campaign"
             && current.map == info.map
         {
+            if info.tick + current.tick_offset <= current.sent_tick {
+                let offset = current.sent_tick + 2 - info.tick;
+                current.tick_offset = offset + offset % 2;
+            }
             current.tick = info.tick;
             current.last_score_tick = info.tick;
             current.shots.clear();
@@ -278,6 +298,8 @@ impl Session {
             map: info.map.clone(),
             campaign: info.mode == "campaign",
             tick: info.tick,
+            tick_offset: 0,
+            sent_tick: info.tick,
             tick_rate: u64::from(info.tick_rate.max(1)),
             team_play: info.team_play,
             last_emitted_scores: players
@@ -330,7 +352,7 @@ impl Session {
             game_id,
             live_proto::game::GAME_ENDED,
             GameEnded {
-                tick: current.tick,
+                tick: current.clock(current.tick),
                 reason: "quit".into(),
                 winner: None,
                 players: current
@@ -360,6 +382,7 @@ impl Session {
             return;
         }
         current.tick = snapshot.tick;
+        let clock = current.clock(snapshot.tick);
         // Most ticks the roster is as it was: nothing joined or left, and
         // nothing to copy.
         if !same_roster(signed_in, &current.players, &snapshot.players) {
@@ -387,7 +410,7 @@ impl Session {
                 current.game_id.clone(),
                 live_proto::game::SCORE_CHANGED,
                 ScoreChanged {
-                    tick: snapshot.tick,
+                    tick: clock,
                     players: scores.clone(),
                     teams: (!snapshot.teams.is_empty()).then(|| snapshot.teams.clone()),
                 },
@@ -395,6 +418,7 @@ impl Session {
             current.last_emitted_scores = scores;
             current.last_emitted_teams = snapshot.teams.clone();
             current.last_score_tick = snapshot.tick;
+            current.sent_tick = current.sent_tick.max(clock);
         }
 
         let mut shots = BTreeMap::new();
@@ -480,7 +504,7 @@ impl Session {
                 .players
                 .iter()
                 .zip(&snapshot.objects)
-                .map(|(player, object)| {
+                .filter_map(|(player, object)| {
                     let alive = player.unit != u32::MAX;
                     // The dead lie at their body while it lasts, else where they fell.
                     let fallen = (!alive)
@@ -496,6 +520,20 @@ impl Session {
                                 })
                         });
                     let index = player.player.index;
+                    // Where they are: their unit, else (dead) their body or
+                    // where they fell, else (a unit that cannot be read this
+                    // tick) where that unit was last seen. Nowhere known: left
+                    // out, never sent at the origin.
+                    let (pos, yaw) = object
+                        .as_ref()
+                        .map(|o| (o.pos, yaw(o.forward)))
+                        .or(fallen)
+                        .or_else(|| {
+                            player_units
+                                .get(&index)
+                                .filter(|(unit, _, _)| alive && *unit == player.unit)
+                                .map(|(_, pos, yaw)| (*pos, *yaw))
+                        })?;
                     let shots = current.shots.get_mut(&index).map(|p| {
                         let n = p.count.min(MAX_FRAME_SHOTS);
                         p.count = 0;
@@ -509,19 +547,11 @@ impl Session {
                         },
                         None => motion::Observed::default(),
                     };
-                    FramePlayer {
+                    Some(FramePlayer {
                         index,
                         alive,
-                        pos: object
-                            .as_ref()
-                            .map(|o| o.pos)
-                            .or(fallen.map(|f| f.0))
-                            .unwrap_or([0.0; 3]),
-                        yaw: object
-                            .as_ref()
-                            .map(|o| yaw(o.forward))
-                            .or(fallen.map(|f| f.1))
-                            .unwrap_or(0.0),
+                        pos,
+                        yaw,
                         vehicle: object.as_ref().and_then(|o| o.vehicle).map(hex),
                         species: object
                             .as_ref()
@@ -539,7 +569,7 @@ impl Session {
                         speed: observed.speed,
                         actions: observed.actions,
                         grenade: observed.grenade,
-                    }
+                    })
                 })
                 .collect();
             let actor_shots = std::mem::take(&mut current.actor_shots);
@@ -561,9 +591,10 @@ impl Session {
             );
             let machines = frame_machines(snapshot, &mut current.machines_sent, tags);
             let objects = frame_objects(&current.placements, &snapshot.placed, &mut current.found);
+            current.sent_tick = current.sent_tick.max(clock);
             self.output.push(Output::Frame(Frame {
                 game_id,
-                tick: snapshot.tick,
+                tick: clock,
                 players,
                 vehicles,
                 actors: actors
@@ -643,10 +674,14 @@ impl Session {
             Some(_) if betrayal => "betrayal",
             Some(_) => "kill",
         };
-        let Some(current) = &self.current else { return };
+        let Some(current) = &mut self.current else {
+            return;
+        };
         if current.ended {
             return;
         }
+        let tick = current.clock(tick);
+        current.sent_tick = current.sent_tick.max(tick);
         Self::event_to(
             &mut self.output,
             current.game_id.clone(),
@@ -677,7 +712,7 @@ impl Session {
             current.game_id.clone(),
             live_proto::game::GAME_ENDED,
             GameEnded {
-                tick: snapshot.tick,
+                tick: current.clock(snapshot.tick),
                 reason: "finished".into(),
                 winner,
                 players: snapshot.scores(),
@@ -1512,16 +1547,8 @@ mod tests {
         let frame = &frames(&mut session)[0];
         assert_eq!(frame.players[0].species.as_deref(), Some("elite"));
         assert_eq!(frame.players[0].weapon.as_deref(), Some("battle_rifle"));
-        // A dead player (no unit, no object) has none of them, only the
-        // stance.
-        assert_eq!(
-            frame.players[1],
-            FramePlayer {
-                index: 1,
-                stance: Some("dead".into()),
-                ..FramePlayer::default()
-            }
-        );
+        // A dead player who has never stood anywhere is nowhere to draw.
+        assert_eq!(frame.players.len(), 1);
         assert_eq!(
             serde_json::to_value(&frame.players[0]).unwrap()["species"],
             "elite"
@@ -1619,7 +1646,10 @@ mod tests {
         assert!(kinds(&mut session).is_empty(), "no new game");
         assert_eq!(session.game_id(), Some(id.as_str()));
         session.sample(&snapshot(402, vec![player(0, 0)]));
-        assert_eq!(frames(&mut session)[0].tick, 402);
+        assert!(
+            frames(&mut session)[0].tick > 600,
+            "the game's clock keeps counting"
+        );
 
         // The next mission is a new game; so is a multiplayer map.
         let mut next = campaign();
@@ -1632,6 +1662,128 @@ mod tests {
         // Multiplayer re-activations stay separate games, as before.
         session.start(&info(), vec![player(0, 0)]);
         assert_eq!(kinds(&mut session), ["GameEnded", "GameStarted"]);
+    }
+
+    /// Regression: a checkpoint revert or mission restart winds the
+    /// engine's clock back, and the frames after it used to carry the
+    /// rewound ticks. A replay orders frames by tick, so the two runs
+    /// interleaved and the player flicked between them.
+    #[test]
+    fn a_campaign_revert_does_not_wind_the_games_ticks_back() {
+        let mut session = Session::new("test", None);
+        let mut p = player(0, 0);
+        p.unit = 0x9001_0001;
+        session.start(&campaign(), vec![p.clone()]);
+        session.take_output();
+        let at = |tick: u64, x: f64| {
+            let mut s = snapshot(tick, vec![p.clone()]);
+            s.has_stats = false;
+            s.objects[0] = Some(ObjectState {
+                pos: [x, 0.0, 0.0],
+                forward: [1.0, 0.0, 0.0],
+                ..ObjectState::default()
+            });
+            s
+        };
+        let mut sent = Vec::new();
+        for tick in (600..=660).step_by(2) {
+            session.sample(&at(tick, 100.0));
+            sent.extend(frames(&mut session));
+        }
+        // The player dies and the game reverts to a checkpoint 20 seconds
+        // back, then to the mission's start.
+        session.kill(661, None, 0, false, None);
+        let mut revert = campaign();
+        revert.tick = 61;
+        session.start(&revert, vec![p.clone()]);
+        let mut events = session.take_output();
+        for tick in (62..=120).step_by(2) {
+            session.sample(&at(tick, 5.0));
+            sent.extend(frames(&mut session));
+        }
+        revert.tick = 3;
+        session.start(&revert, vec![p.clone()]);
+        for tick in (4..=30).step_by(2) {
+            session.sample(&at(tick, -50.0));
+            sent.extend(frames(&mut session));
+        }
+        session.kill(31, None, 0, false, None);
+        session.end(&at(32, -50.0));
+        events.extend(session.take_output());
+
+        let ticks: Vec<u64> = sent.iter().map(|f| f.tick).collect();
+        assert!(
+            ticks.windows(2).all(|w| w[0] < w[1]),
+            "frame ticks only go up: {ticks:?}"
+        );
+        assert!(
+            ticks.iter().all(|t| t % 2 == 0),
+            "frames stay on even ticks"
+        );
+        // Sorted by tick, each run stays whole: no flicking between them.
+        let mut by_tick = sent.clone();
+        by_tick.sort_by_key(|f| f.tick);
+        let xs: Vec<f64> = by_tick.iter().map(|f| f.players[0].pos[0]).collect();
+        let runs = xs.windows(2).filter(|w| w[0] != w[1]).count();
+        assert_eq!(runs, 2, "three runs, two cuts: {xs:?}");
+        // Events are on the same clock as the frames.
+        let tick_of = |kind: &str, n: usize| {
+            events
+                .iter()
+                .filter_map(|o| match o {
+                    Output::Event(e) if e.kind == kind => e.data["tick"].as_u64(),
+                    _ => None,
+                })
+                .nth(n)
+                .unwrap()
+        };
+        assert_eq!(tick_of("PlayerKilled", 0), 661);
+        let last = *ticks.last().unwrap();
+        assert!(tick_of("PlayerKilled", 1) > last);
+        assert_eq!(tick_of("GameEnded", 0), tick_of("PlayerKilled", 1) + 1);
+        assert_eq!(tick_of("PlayerKilled", 1) - last, 1);
+    }
+
+    /// A player whose unit cannot be read (a stale datum while the game
+    /// swaps the BSP, a cutscene) was sent at (0, 0, 0); a dead player who
+    /// never stood anywhere too.
+    #[test]
+    fn a_player_with_no_known_place_is_left_out_not_sent_at_the_origin() {
+        let mut session = Session::new("test", None);
+        let mut p = player(0, 0);
+        p.unit = 0x9001_0001;
+        let mut q = player(1, 0);
+        q.unit = u32::MAX;
+        session.start(&campaign(), vec![p.clone(), q.clone()]);
+        session.take_output();
+        let mut state = snapshot(2, vec![p.clone(), q.clone()]);
+        state.objects[0] = Some(ObjectState {
+            pos: [7.0, 8.0, 9.0],
+            forward: [0.0, 1.0, 0.0],
+            ..ObjectState::default()
+        });
+        session.sample(&state);
+        let frame = frames(&mut session).remove(0);
+        assert_eq!(frame.players.len(), 1, "player 1 has never stood anywhere");
+        assert_eq!(frame.players[0].pos, [7.0, 8.0, 9.0]);
+
+        // The unit is still the player's, but unreadable this frame: it
+        // stays where it was last seen.
+        let mut state = snapshot(4, vec![p.clone(), q.clone()]);
+        state.objects[0] = None;
+        session.sample(&state);
+        let frame = frames(&mut session).remove(0);
+        assert_eq!(frame.players.len(), 1);
+        assert_eq!(frame.players[0].pos, [7.0, 8.0, 9.0]);
+        assert!((frame.players[0].yaw - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+        assert!(frame.players[0].alive);
+
+        // A new unit (a respawn) that cannot be read yet is nowhere known.
+        p.unit = 0x9002_0002;
+        let state = snapshot(6, vec![p.clone(), q.clone()]);
+        session.sample(&state);
+        let frame = frames(&mut session).remove(0);
+        assert!(frame.players.is_empty(), "{:?}", frame.players);
     }
 
     fn started(session: &mut Session) -> live_proto::game::NewGame {

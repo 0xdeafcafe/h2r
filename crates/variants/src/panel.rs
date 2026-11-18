@@ -414,6 +414,7 @@ mod tests {
             value,
             label: label.into(),
             default: value == 0,
+            ours: false,
         };
         settings.insert(
             SettingId(91),

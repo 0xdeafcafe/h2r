@@ -112,12 +112,13 @@ fn describe(problems: &[Problem]) -> String {
 
 /// Links `v` to entry `r`: its record (`GameVariant::to_bytes`) becomes the
 /// slot's last 0x130 bytes. Refuses a record the game's clean-up would
-/// change. The editable fields that lie inside the variant (the raw
-/// string, flags and second dword) are re-read from the new bytes, so
-/// writing them back leaves the variant exactly as picked; the map id and
+/// change, or one it keeps but cannot play (`variants::record::ours`).
+/// The editable fields that lie inside the variant (the raw string, flags
+/// and second dword) are re-read from the new bytes, so writing them back
+/// leaves the variant exactly as picked; the map id and
 /// weight stay.
 pub fn set_variant(r: &mut EditRecord, v: &GameVariant) -> Result<(), Rejected> {
-    let problems = vrecord::check(v);
+    let problems = vrecord::refused(v);
     if !problems.is_empty() {
         return Err(Rejected(problems));
     }
@@ -256,7 +257,7 @@ pub fn hopper_errors(h: &EditHopper) -> Vec<String> {
         if r.picked.is_some() {
             match picked_after_fields(r) {
                 Some(v) => {
-                    let problems = vrecord::check(&v);
+                    let problems = vrecord::refused(&v);
                     if !problems.is_empty() {
                         errs.push(format!(
                             "entry {n}: the game would reject its game variant ({})",

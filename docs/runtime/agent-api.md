@@ -444,7 +444,7 @@ fix later.
 `session.live` reads `live-hle`'s state: sign-in, the account list, co-op
 sessions, with sign-in calls coming from the in-game sign-in work. The
 `live-server` HTTP API stays the way to read the server side; the API
-doesn't wrap it. The menu bar app is out of scope.
+doesn't wrap it.
 
 ## Pitfalls from the Live work
 

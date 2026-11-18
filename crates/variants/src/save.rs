@@ -489,9 +489,10 @@ impl SaveStore {
 }
 
 /// The game cleans a record up before it writes it (`0x212ec0`); refuse
-/// what the clean-up would change, since the game's load then fails.
+/// what the clean-up would change, since the game's load then fails, and
+/// what the game keeps but cannot play ([`record::ours`]).
 fn check_saveable(v: &GameVariant) -> Result<(), SaveError> {
-    let p = record::check(v);
+    let p = record::refused(v);
     if p.is_empty() {
         Ok(())
     } else {

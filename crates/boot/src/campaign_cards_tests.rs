@@ -3,9 +3,37 @@ use map::CacheType;
 use map::build::{Block, RawRef, TagPayload};
 use vfs::Rewrite;
 
+/// An invented 8x6 picture in a frame shaped like retail's: a one-pixel
+/// opaque border, the bottom-right corner cut on the diagonal (clear past
+/// it), the inside at alpha 191. Each inside pixel's colour is its own, so
+/// a card that kept any of it would show.
+fn framed_template() -> Vec<u8> {
+    let (w, h) = (8i32, 6i32);
+    let mut px = Vec::new();
+    for y in 0..h {
+        for x in 0..w {
+            // Distance past the cut: x + y against the corner's.
+            let past = x + y - (w - 1 + h - 1 - 2);
+            let p = if past > 0 {
+                [0, 0, 0, 0]
+            } else if past == 0 || x == 0 || y == 0 || x == w - 1 || y == h - 1 {
+                [154, 171, 189, 255]
+            } else {
+                [x as u8, y as u8, 0x5a, 191]
+            };
+            px.extend_from_slice(&p);
+        }
+    }
+    px
+}
+
 /// A map shaped like mainmenu where it matters: [`TEMPLATE`] (8x6 linear
-/// `ARGB8888`) and one more picture.
+/// `ARGB8888`, [`framed_template`]'s pixels) and one more picture.
 fn mainmenu() -> Vec<u8> {
+    mainmenu_with(&framed_template())
+}
+
+fn mainmenu_with(template: &[u8]) -> Vec<u8> {
     let mut set = TagSet::new(CacheType::MainMenu, "mainmenu", "ui\\mainmenu");
     for g in [b"matg", b"scnr", b"bitm"] {
         set.add_group(FourCC(*g), None, None);
@@ -28,7 +56,13 @@ fn mainmenu() -> Vec<u8> {
         (TEMPLATE, 0x11),
         ("ui\\code_global_bitmaps\\campaign1", 0x22),
     ] {
-        let raw = set.add_raw(vec![fill; 256], 0x200);
+        let pixels = if name == TEMPLATE {
+            rgba_bitmap::argb8888_linear(8, 6, template).unwrap()
+        } else {
+            vec![fill; 384]
+        };
+        let size = pixels.len() as u32;
+        let raw = set.add_raw(pixels, 0x200);
         let mut image = Block::zeroed(rgba_bitmap::IMAGE_LEN);
         image
             .put_u32(0, FourCC(*b"bitm").as_u32())
@@ -36,7 +70,7 @@ fn mainmenu() -> Vec<u8> {
             .put_u16(6, 6)
             .put_u16(0xc, rgba_bitmap::FORMAT_ARGB8888)
             .put_u16(0xe, 0x290)
-            .put_u32(0x34, 256)
+            .put_u32(0x34, size)
             .raw(0x1c, RawRef::Local(raw));
         image.bytes[8] = 1;
         let mut header = Block::zeroed(rgba_bitmap::HEADER_LEN);
@@ -87,7 +121,9 @@ fn cards_go_into_mainmenu_as_new_bitmaps_and_retail_s_stay() {
         .iter()
         .map(|t| (t.id, before.read_tag_bytes(t.id).unwrap()))
         .collect();
-    let (bytes, table) = add_cards(&original, &[card("a10", 3, 2), card("b30", 5, 5)]).unwrap();
+    let added = add_cards(&original, &[card("a10", 3, 2), card("b30", 5, 5)]).unwrap();
+    assert!(added.framed);
+    let (bytes, table) = (added.map, added.table);
     let mut m = Map::from_reader(Cursor::new(bytes)).unwrap();
     m.validate_checksum().unwrap();
     assert_eq!(m.tags().len(), retail.len() + 2);
@@ -104,9 +140,43 @@ fn cards_go_into_mainmenu_as_new_bitmaps_and_retail_s_stay() {
         let ptr = u32::from_le_bytes(template.image[0x1c..0x20].try_into().unwrap());
         let size = u32::from_le_bytes(template.image[0x34..0x38].try_into().unwrap());
         let px = m.read_file_range(u64::from(ptr), u64::from(size)).unwrap();
-        let rgba = cover(want.width, want.height, &want.rgba, 8, 6);
+        let rgba = framed(&cover(want.width, want.height, &want.rgba, 8, 6), &framed_template());
         assert_eq!(px, rgba_bitmap::argb8888_linear(8, 6, &rgba).unwrap());
     }
+}
+
+/// Retail's frame is in the picture's pixels: a card takes the template's
+/// border and cut corner exactly, and its own colours inside at the
+/// template's alpha. None of the template's inside colours survive.
+#[test]
+fn a_card_takes_the_template_s_frame_pixel_by_pixel() {
+    let t = framed_template();
+    assert!(has_frame(&t));
+    let px: Vec<u8> = (0..48u8).flat_map(|i| [200, i, 100, 255]).collect();
+    let out = framed(&px, &t);
+    assert_eq!(out.len(), t.len());
+    for (i, (o, t)) in out.chunks(4).zip(t.chunks(4)).enumerate() {
+        match t[3] {
+            255 => assert_eq!(o, t, "border pixel {i}"),
+            0 => assert_eq!(o, [0; 4], "corner pixel {i}"),
+            a => assert_eq!(o, [200, i as u8, 100, a], "inside pixel {i}"),
+        }
+    }
+    // The corner: the last pixel is clear, the diagonal is border.
+    assert_eq!(out[out.len() - 4..], [0; 4]);
+    assert_eq!(out[(5 * 8 + 5) * 4 + 3], 255);
+    assert_eq!(out[(5 * 8 + 6) * 4 + 3], 0);
+    // A plain (opaque) or empty template is no frame: the card goes in as
+    // it is, never covered by the template's own picture.
+    assert!(!has_frame(&[9u8, 9, 9, 255].repeat(48)));
+    assert!(!has_frame(&[0u8; 48 * 4]));
+    let plain = mainmenu_with(&[9u8, 9, 9, 255].repeat(48));
+    let added = add_cards(&plain, &[card("a10", 8, 6)]).unwrap();
+    assert!(!added.framed);
+    let mut m = Map::from_reader(Cursor::new(added.map)).unwrap();
+    let id = TagId(added.table["a10"]);
+    let tpl = Template::read(&mut m, id).unwrap();
+    assert_eq!(tpl.rgba(&mut m).unwrap(), card("a10", 8, 6).rgba);
 }
 
 #[test]
@@ -170,7 +240,9 @@ fn the_disc_s_mainmenu_takes_ten_cards() {
     .map(|m| card(m, 139, 113))
     .collect();
     let started = std::time::Instant::now();
-    let (bytes, table) = add_cards(&original, &cards).unwrap();
+    let added = add_cards(&original, &cards).unwrap();
+    assert!(added.framed, "campaign0 carries the frame");
+    let (bytes, table) = (added.map, added.table);
     println!(
         "mainmenu {} -> {} bytes, {} ms",
         original.len(),
@@ -208,6 +280,23 @@ fn the_disc_s_mainmenu_takes_ten_cards() {
         .unwrap()
         .id;
     let retail = Template::read(&mut before, template_id).unwrap();
+    // Retail's frame (V): every used picture has the same alpha, a border
+    // of 834 opaque pixels, 136 clear past the cut corner, the rest 191.
+    let frame = retail.rgba(&mut before).unwrap();
+    let alpha = |px: &[u8]| -> Vec<u8> { px.chunks(4).map(|p| p[3]).collect() };
+    let count = |a: u8| frame.chunks(4).filter(|p| p[3] == a).count();
+    assert_eq!((count(255), count(0), count(191)), (834, 136, 220 * 207 - 970));
+    assert_eq!(frame[frame.len() - 4..], [0; 4], "the corner is cut");
+    for i in 1..15 {
+        let id = before
+            .tags()
+            .iter()
+            .find(|t| t.name.as_deref() == Some(&*format!("ui\\code_global_bitmaps\\campaign{i}")))
+            .unwrap()
+            .id;
+        let t = Template::read(&mut before, id).unwrap();
+        assert_eq!(alpha(&t.rgba(&mut before).unwrap()), alpha(&frame), "campaign{i}");
+    }
     for c in &cards {
         let id = TagId(table[&c.map]);
         let t = Template::read(&mut m, id).unwrap();
@@ -217,7 +306,7 @@ fn the_disc_s_mainmenu_takes_ten_cards() {
         let size = u32::from_le_bytes(t.image[0x34..0x38].try_into().unwrap());
         assert_eq!(size, 0x2d480);
         let px = m.read_file_range(u64::from(ptr), u64::from(size)).unwrap();
-        let rgba = cover(139, 113, &c.rgba, 220, 207);
+        let rgba = framed(&cover(139, 113, &c.rgba, 220, 207), &frame);
         assert_eq!(
             px,
             rgba_bitmap::argb8888_linear(220, 207, &rgba).unwrap(),

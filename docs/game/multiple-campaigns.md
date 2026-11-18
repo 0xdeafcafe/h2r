@@ -211,6 +211,45 @@ free slots, so they are not reused.
   - The datums go into `State::cards`.
 - `campaigns::extend_with_cards` gives a level with a card that picture,
   ahead of its `picture` level's.
+
+**The frame is in the pixels (V, 2026-11-18).** Halo 2's level pictures
+show a pale border with the bottom-right corner cut off. The screen draws
+none of it: the level select's picture widget is one plain bitmap block
+(`[177 39 -30 259]`, `h2 ui mainmenu load_level`), and every used picture
+(`campaign0` to `campaign14`) carries the frame itself. All fifteen have
+the same alpha, pixel for pixel: 834 opaque border pixels (a one-pixel
+rim and the diagonal of the cut, `(154, 171, 189)`, `campaign14` a little
+lighter), 136 clear pixels past the cut, and the picture at alpha 191, so
+it is drawn a quarter see-through. The free slots' five are fully clear.
+So a card goes in the same frame: `campaign_cards::framed` takes
+`campaign0`'s own pixels from the disc's mainmenu at rewrite time
+(`Template::rgba`) and, pixel by pixel, keeps the template's where it is
+opaque (the border), clears where it is clear (the corner), and puts the
+card's colour at the template's alpha elsewhere. Nothing of the frame is
+in the repository. A template with no frame (`has_frame`: no opaque
+pixels, or no more part see-through than opaque ones) leaves the cards
+plain, and the log says so.
+
+**Descriptions.** Each Halo 1 level has a one-line description in
+`HALO1`, written for this project (not the game's text), which goes to
+the record's `+0x250` in all nine languages, where the level select reads
+Halo 2's own. An import made before they existed keeps its
+`campaign.toml` (the import never rewrites one it finds), so
+`campaigns::installed` fills a manifest's missing descriptions from the
+built-in one (`CampaignManifest::fill_from`); a description the user
+wrote is kept.
+
+**Only the first level listed.** This is retail's unlock rule, working
+per campaign, not a bug. The level select's constructor (`0x2c4ea0`) adds
+the levels in id order up to and including the first one above the
+progress it is given. For one of our campaigns `PROGRESS_MAX` answers our
+own progress (`progress.toml`), which counts a level only when it is
+**won** (`PROGRESS_RAISE`, from the game-won path). With nothing won it
+answers `-1`, and the list is the first level alone, as Halo 2's is on a
+new profile. On the user's machine (2026-11-18) `progress.toml` has
+`finished = [-1, -1, -1, -1]` and `last = 4097` for Halo 1: The Pillar of
+Autumn was started, not finished. Finishing it lists Halo next, and so
+on.
 - Retail tags keep their bytes and addresses. On the user's disc the map
   stays under the rewrite's 64 MiB limit (the boot disc test). If the
   rewrite fails, mainmenu is served as it is and levels keep the pictures
@@ -242,6 +281,38 @@ the retail level select (`0x2b130a`). This needed one new press result in
 `ui::Chosen`, `Retail { calls, loader }`, made by
 `list_class::open_retail`. The labels are our strings (`ID_BASE +
 0x0200_0000`), served with the layouts'.
+
+### The picker's detail pane (`campaign_info`, 2026-11-18)
+
+The picker is laid out as the level select is (its list, bracket, picture
+box and description text: `skulls_menu::LIST_LAYOUT`, `FRAME`,
+`DESCRIPTION_TEXT`, as Game Options is). For the focused campaign:
+
+- **the picture**: its first level's, from the level select's records in
+  the loaded map (`campaigns::first_pictures`; Halo 1's is a10's framed
+  card). The widget is a copy of the level select's own picture block
+  (`campaign_menu::PICTURE`); a bitmap widget reads its block's `bitm`
+  reference (`[widget + 0x70] + 0x1c`) at every draw (`0x2b05bb`,
+  `0x2b0b26`, E), so on a focus change `list_class::set_picture` writes
+  the row's datum there (`Rows::picture`);
+- **the text** (`campaign_info::Info::text`): an original line about the
+  campaign, the release year and studio as plain facts (Halo 2: 2004,
+  Bungie; Halo 1: 2001, Bungie), the level count, the progress of the
+  signed-in profiles (levels the level select lists of the total, and
+  the hardest difficulty the last level was won on), and for Halo 1 the
+  Assets and HUD options. Halo 2's progress lives in the profile and isn't
+  shown.
+
+The texts are our strings (family `campaign picker info`), installed as
+placeholders of `INFO_ROOM` bytes and rewritten in place while the picker
+is up (`Rows::live_text`), so progress and options are current. The
+profiles and pictures are read as the picker opens (the `SCREEN_REQUEST`
+hook already there: no new hook, no order changed).
+
+The kit describes it (`Describe for PickerRows`, screen `campaigns` in
+`ui_kit::screens`), so `h2 ui preview campaigns` and the sheet draw it;
+the preview's picture box shows the level select's own placeholder bitmap,
+since the cards exist only in the rewritten mainmenu.
 
 ### Progress (`campaigns::Progress`)
 

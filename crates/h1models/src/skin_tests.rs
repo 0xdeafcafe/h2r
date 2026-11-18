@@ -253,7 +253,8 @@ fn retail_h2_biped_skinning() {
         );
         let _ = arms_at;
         // Every retail first-person graph lists the arms model's nodes
-        // first, in the arms model's order, then the weapon's.
+        // first, in the arms model's order, then the weapon's. That is the
+        // tool's order: the engine binds by name (h1_disc_first_person_skin).
         assert!(arms.is_empty() || prefix, "{name}");
     }
     for (g, name, id) in &tags_list {
@@ -561,4 +562,138 @@ fn h1_disc_bipeds_skin() {
         }
     }
     assert!(failures.is_empty(), "{failures:?}");
+}
+
+/// Halo 1's globals name the first-person arms at `matg +0x17c` (a block
+/// of one element), element `+0x0` (16-byte reference, datum at `+0xc`):
+/// `characters\cyborg\fp\fp` on a10 and Blood Gulch
+/// (`h1convert::globals::h1_first_person_hands` reads it).
+#[test]
+#[ignore = "needs $H1_ISO"]
+fn h1_disc_globals_name_the_first_person_arms() {
+    for stem in ["a10", "bloodgulch"] {
+        let Some(map) = h1_disc_map(stem) else {
+            return;
+        };
+        let matg = map.tags().iter().find(|t| t.group == h1map::Group::new(b"matg")).unwrap();
+        let root = map.tag_data(matg).unwrap();
+        assert_eq!(h1::u32_at(root, 0x17c), 1, "{stem}");
+        let e = map.read(h1::u32_at(root, 0x180), 16).unwrap();
+        assert_eq!(&h1::u32_at(e, 0).to_be_bytes(), b"mode");
+        let arms = map.tag(h1map::TagId(h1::u32_at(e, 0xc))).unwrap();
+        println!("{stem}: first-person arms {}", arms.name);
+        assert_eq!(arms.name, "characters\\cyborg\\fp\\fp");
+    }
+}
+
+/// First person, posed: Halo 1's arms and a weapon's first-person model,
+/// both converted, animated by the weapon's converted first-person graph.
+/// Each model node is bound to the graph node of the same name, as the
+/// engine does (E `0x001dd4c0`: per `mode` node, the `jmad` node whose
+/// string-ID name is equal, -1 for none; `0x001676d7` uses the table for
+/// the arms and the weapon model alike). The graph frame is composed along
+/// the graph's own tree, the Halo 2 way from the decoded `jmad`, and the
+/// Halo 1 way from Halo 1's frame; each model's vertices are skinned with
+/// its stored (Halo 2) or cached (Halo 1) inverse frames.
+///
+/// `H1_ISO=disc/halo1.iso cargo test -p h1models --release -- --ignored h1_disc_first_person_skin --nocapture`
+#[test]
+#[ignore = "needs $H1_ISO"]
+fn h1_disc_first_person_skin() {
+    use crate::tests::{Raw, build};
+    let Some(map) = h1_disc_map("bloodgulch") else {
+        return;
+    };
+    let find = |g: &[u8; 4], n: &str| map.find(h1map::Group::new(g), n).unwrap_or_else(|| panic!("{n}"));
+    let arms = find(b"mode", "characters\\cyborg\\fp\\fp");
+    let mut worst = 0f32;
+    for weapon in ["assault rifle", "pistol", "plasma rifle", "needler", "rocket launcher"] {
+        let path = format!("weapons\\{weapon}\\fp\\fp");
+        let (gun_tag, graph_tag) = (find(b"mode", &path), find(b"antr", &path));
+        let (arms_src, arms_conv) = crate::model_from_map(&map, arms, &Default::default()).unwrap();
+        let (gun_src, gun_conv) = crate::model_from_map(&map, gun_tag, &Default::default()).unwrap();
+        let (hg, _, graph_conv) = crate::graph_from_map(&map, graph_tag, None).unwrap();
+        let (bytes, ids) = build(vec![(arms_conv, "fp\\arms"), (gun_conv, "fp\\gun"), (graph_conv, "fp\\graph")]);
+        let mut m2 = map::Map::from_reader(std::io::Cursor::new(bytes.clone())).unwrap();
+        let g2 = tags::anim::AnimationGraph::read(&mut m2, ids[2]).unwrap();
+        let strings = m2.strings().to_vec();
+        let graph_names: Vec<String> = g2
+            .nodes
+            .iter()
+            .map(|n| n.name.resolve(&strings).ok().flatten().unwrap_or("").to_owned())
+            .collect();
+        let graph_parents: Vec<i16> = g2.nodes.iter().map(|n| n.parent).collect();
+        let resource = g2.read_resource(0, &mut Raw(bytes.clone())).unwrap();
+        // Per model: (H1 model, decoded model, stored inverse, H1 cached
+        // inverse, model node -> graph node).
+        let mut models = Vec::new();
+        for (src, id, tag) in [(&arms_src, ids[0], arms), (&gun_src, ids[1], gun_tag)] {
+            let dm = tags::model::RenderModelGeometry::read(&mut m2, id, &mut Raw(bytes.clone())).unwrap();
+            let table: Vec<usize> = dm
+                .nodes
+                .iter()
+                .map(|n| {
+                    let name = n.name.as_deref().unwrap_or("");
+                    graph_names.iter().position(|g| g == name).unwrap_or_else(|| panic!("{path}: {name} not in the graph"))
+                })
+                .collect();
+            let t = m2.read_tag_bytes(id).unwrap();
+            let base = m2.tag(id).unwrap().location.unwrap().address;
+            let at = (h1::u32_at(&t, 0x4c) - base) as usize;
+            let inverse: Vec<Mat> = (0..dm.nodes.len())
+                .map(|i| {
+                    let e = &t[at + i * 0x60..];
+                    let r = std::array::from_fn(|row| std::array::from_fn(|c| h1::f32_at(e, 0x2c + 12 * row + 4 * c)));
+                    (r, h1::f32s(e, 0x50))
+                })
+                .collect();
+            let cached = h1_cached_inverse(&map, tag.data_address, src.nodes.len());
+            models.push((src, dm, inverse, cached, table));
+        }
+        let picks: Vec<usize> = (0..hg.animations.len())
+            .filter(|&i| hg.animations[i].kind == h1::AnimType::Base)
+            .collect();
+        let mut line = Vec::new();
+        for &ai in picks.iter().step_by((picks.len() / 5).max(1)) {
+            let a = &hg.animations[ai];
+            let f = usize::from(a.frame_count) / 2;
+            let w1 = h1_world(&graph_parents, &a.frames[f].iter().map(|t| (t.rotation, t.translation)).collect::<Vec<_>>());
+            let pose = g2.clip_from_shared(ai, &resource).unwrap().sample_frame(f).unwrap();
+            assert!(pose.nodes.iter().all(|t| t.has_rotation && t.has_translation), "{}", a.name);
+            let w2 = world_transforms(
+                &graph_parents
+                    .iter()
+                    .zip(&pose.nodes)
+                    .map(|(&p, t)| (p, t.rotation, t.translation))
+                    .collect::<Vec<_>>(),
+            );
+            let mut err = 0f32;
+            for (src, dm, inverse, cached, table) in &models {
+                let s1: Vec<Mat> = table.iter().zip(cached.iter()).map(|(&g, i)| mul(&w1[g], i)).collect();
+                let s2: Vec<Mat> = table.iter().zip(inverse.iter()).map(|(&g, i)| mul(&w2[g], i)).collect();
+                for (s, geo) in dm.sections.iter().zip(&src.geometries) {
+                    let vs = geo.parts.iter().flat_map(|p| &p.vertices);
+                    for (i, v) in vs.enumerate() {
+                        let ix = s.vertices.node_indices[i];
+                        let w = s.vertices.node_weights[i];
+                        let nodes: Vec<(usize, f32)> = (0..4)
+                            .filter(|&k| w[k] > 0.0)
+                            .map(|k| {
+                                let l = usize::from(ix[k]);
+                                (s.node_map.get(l).map_or(l, |&g| usize::from(g)), w[k])
+                            })
+                            .collect();
+                        let a1 = skin(&s1, v.position, &h1_nodes(v));
+                        let b = skin(&s2, s.vertices.positions[i], &nodes);
+                        err = err.max(dist(a1, b));
+                    }
+                }
+            }
+            worst = worst.max(err);
+            line.push(format!("{} {err:.1e}", a.name));
+        }
+        println!("{path}: arms {} + weapon {} nodes in a {}-node graph; {}", arms_src.nodes.len(), gun_src.nodes.len(), graph_names.len(), line.join(", "));
+    }
+    println!("worst {worst:.2e}");
+    assert!(worst < 2e-3, "{worst}");
 }

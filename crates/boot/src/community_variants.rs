@@ -53,20 +53,20 @@ const DESCRIPTIONS_HOOK: &str = "community:descriptions";
 /// `NUMBER_STRING_ID` call we answer for.
 const LIST_DESCRIPTION_RETURN: u32 = 0x002c_a1fd;
 /// The tag instance table: 16-byte entries, address at `+8`.
-const TAG_INSTANCES: u32 = 0x004e_3b44;
+pub(crate) const TAG_INSTANCES: u32 = 0x004e_3b44;
 
 // ---- goof layout (read from 0x149f88 and 0x2369b3) ----
 
 /// `+0x18`: setting pages; each `+8` count, `+0xc` address of `sily` refs.
-const GOOF_PAGES: u32 = 0x18;
-const PAGE_SIZE: u32 = 0x18;
+pub(crate) const GOOF_PAGES: u32 = 0x18;
+pub(crate) const PAGE_SIZE: u32 = 0x18;
 /// `+0x28`: built-in variants.
 const GOOF_BUILTINS: u32 = 0x28;
 const ENTRY_SIZE: u32 = 0x14;
 /// `sily`: `+0` setting, `+0x1c` count, `+0x20` options of `0xc` bytes,
 /// value at `+4`.
-const SILY_OPTIONS: u32 = 0x1c;
-const OPTION_SIZE: u32 = 0xc;
+pub(crate) const SILY_OPTIONS: u32 = 0x1c;
+pub(crate) const OPTION_SIZE: u32 = 0xc;
 
 /// Our guest page: settings pairs, then the merged entry block.
 const DATA_BASE: u32 = 0xa0fd_0000;
@@ -174,7 +174,9 @@ pub enum Setting {
     TeamPlay(bool),
     FriendlyFire(bool),
     MaxPlayers(u32),
-    StartingWeapon(Weapon),
+    /// `None` is no starting weapon: a value the game plays but its editor
+    /// offers only with `crate::variant_options` (docs/game/game-options.md).
+    StartingWeapon(Option<Weapon>),
     /// `None` is no secondary weapon.
     SecondaryWeapon(Option<Weapon>),
     StartingGrenades(bool),
@@ -232,7 +234,7 @@ impl Setting {
             Setting::GrenadesOnMap(v) => (86, b(v)),
             Setting::WeaponsRespawnFast => (87, 3),
             Setting::StartingGrenades(v) => (88, b(v)),
-            Setting::StartingWeapon(w) => (89, w as i32),
+            Setting::StartingWeapon(w) => (89, w.map_or(1, |w| w as i32)),
             Setting::MaxPlayers(v) => (90, v as i32),
             Setting::TeamPlay(v) => (91, b(v)),
             Setting::SecondaryWeapon(w) => (94, w.map_or(1, |w| w as i32)),
@@ -287,7 +289,7 @@ pub const VARIANTS: &[Variant] = &[
         ty: GameType::Slayer,
         settings: &[
             TeamPlay(true),
-            StartingWeapon(Weapon::Shotgun),
+            StartingWeapon(Some(Weapon::Shotgun)),
             SecondaryWeapon(Some(Weapon::EnergySword)),
             StartingGrenades(false),
             GrenadesOnMap(false),
@@ -307,7 +309,7 @@ pub const VARIANTS: &[Variant] = &[
         name: "Hide and Seek",
         ty: GameType::Juggernaut,
         settings: &[
-            StartingWeapon(Weapon::EnergySword),
+            StartingWeapon(Some(Weapon::EnergySword)),
             SecondaryWeapon(None),
             StartingGrenades(false),
             WeaponsOnMap(WeaponSet::None),
@@ -330,7 +332,7 @@ pub const VARIANTS: &[Variant] = &[
             SecondLightVehicle(LightVehicle::None),
             NoHeavyVehicle,
             Banshee(false),
-            StartingWeapon(Weapon::Shotgun),
+            StartingWeapon(Some(Weapon::Shotgun)),
             SecondaryWeapon(None),
             StartingGrenades(false),
             WeaponsOnMap(WeaponSet::None),
@@ -345,7 +347,7 @@ pub const VARIANTS: &[Variant] = &[
             TeamPlay(true),
             Shields(Shields::None),
             MotionSensor(false),
-            StartingWeapon(Weapon::BattleRifle),
+            StartingWeapon(Some(Weapon::BattleRifle)),
             SecondaryWeapon(Some(Weapon::Magnum)),
             WeaponsOnMap(WeaponSet::None),
             GrenadesOnMap(false),
@@ -361,7 +363,7 @@ pub const VARIANTS: &[Variant] = &[
         ty: GameType::Slayer,
         settings: &[
             MaxPlayers(2),
-            StartingWeapon(Weapon::Magnum),
+            StartingWeapon(Some(Weapon::Magnum)),
             SecondaryWeapon(Some(Weapon::Random)),
             WeaponsOnMap(WeaponSet::None),
             ScoreToWin(15),
@@ -373,7 +375,7 @@ pub const VARIANTS: &[Variant] = &[
         ty: GameType::Juggernaut,
         settings: &[
             Shields(Shields::None),
-            StartingWeapon(Weapon::Shotgun),
+            StartingWeapon(Some(Weapon::Shotgun)),
             SecondaryWeapon(Some(Weapon::Magnum)),
             WeaponsOnMap(WeaponSet::None),
             JuggernautDamageResistance(true),
@@ -389,7 +391,7 @@ pub const VARIANTS: &[Variant] = &[
             Shields(Shields::None),
             RespawnSeconds(3),
             SuicidePenaltySeconds(0),
-            StartingWeapon(Weapon::RocketLauncher),
+            StartingWeapon(Some(Weapon::RocketLauncher)),
             SecondaryWeapon(None),
             WeaponsOnMap(WeaponSet::Rockets),
             ScoreToWin(180),
@@ -406,7 +408,7 @@ pub const VARIANTS: &[Variant] = &[
             RespawnSeconds(3),
             LightVehicle(LightVehicle::None),
             PrimaryTurret(Turret::MachineGun),
-            StartingWeapon(Weapon::Shotgun),
+            StartingWeapon(Some(Weapon::Shotgun)),
             SecondaryWeapon(None),
             WeaponsOnMap(WeaponSet::Shotguns),
             StartingGrenades(false),
@@ -426,7 +428,7 @@ pub const VARIANTS: &[Variant] = &[
             ExtraDamage(true),
             BallSpeed(Speed::Fast),
             BallToughness(true),
-            StartingWeapon(Weapon::RocketLauncher),
+            StartingWeapon(Some(Weapon::RocketLauncher)),
             WeaponsOnMap(WeaponSet::Rockets),
             WeaponsRespawnFast,
             ScoreToWin(30),
@@ -442,7 +444,7 @@ pub const VARIANTS: &[Variant] = &[
             Shields(Shields::None),
             OvershieldPickups(false),
             CamoPickups(false),
-            StartingWeapon(Weapon::Shotgun),
+            StartingWeapon(Some(Weapon::Shotgun)),
             SecondaryWeapon(Some(Weapon::PlasmaPistol)),
             WeaponsOnMap(WeaponSet::None),
         ],
@@ -458,10 +460,12 @@ pub const VARIANTS: &[Variant] = &[
             SuicidePenaltySeconds(0),
             Shields(Shields::Overshields),
             DamageResistance(true),
+            StartingWeapon(Some(Weapon::Magnum)),
+            SecondaryWeapon(None),
             WeaponsOnMap(WeaponSet::None),
             GrenadesOnMap(false),
         ],
-        description: "Practice super bounces and crouch jumps: no score, no time limit, tough players, quick respawns and nothing to pick up.",
+        description: "Practice super bounces and crouch jumps with a magnum: no score, no time limit, tough players, quick respawns and nothing to pick up.",
     },
     Variant {
         name: "Glitch Hunt",
@@ -473,11 +477,32 @@ pub const VARIANTS: &[Variant] = &[
             SuicidePenaltySeconds(0),
             Shields(Shields::Overshields),
             DamageResistance(true),
-            StartingWeapon(Weapon::EnergySword),
+            StartingWeapon(Some(Weapon::EnergySword)),
             SecondaryWeapon(Some(Weapon::RocketLauncher)),
             FriendlyFire(false),
         ],
         description: "Explore the maps and find their secrets: sword flying, rocket and grenade jumps, tough players, no score and no clock.",
+    },
+    Variant {
+        name: "Bumper Cars",
+        ty: GameType::Slayer,
+        settings: &[
+            StartingWeapon(None),
+            SecondaryWeapon(None),
+            StartingGrenades(false),
+            WeaponsOnMap(WeaponSet::None),
+            GrenadesOnMap(false),
+            OvershieldPickups(false),
+            CamoPickups(false),
+            LightVehicle(LightVehicle::Warthog),
+            SecondLightVehicle(LightVehicle::Ghost),
+            NoHeavyVehicle,
+            Banshee(false),
+            PrimaryTurret(Turret::None),
+            SecondaryTurret(Turret::None),
+            ScoreToWin(25),
+        ],
+        description: "No weapons at all, only Warthogs and Ghosts. Splatter everyone else. Try Coagulation or Burial Mounds.",
     },
 ];
 
@@ -669,7 +694,7 @@ pub fn extend_builtins<M: Mem>(
 /// thread's view there).
 fn register_strings(d: &mut runtime::Dispatch, o: Arc<runtime::exec::OriginalHandler>) {
     d.register_override(LOCALIZED_STRING, STRINGS_HOOK, move |cpu, ctx, _| {
-        if let Some(t) = text(cpu.edi) {
+        if let Some(t) = text(cpu.edi).or_else(|| crate::variant_options::text(cpu.edi)) {
             let mut mem = ctx.runtime().memory();
             let buf = mem.u32(cpu.esp + 4)?;
             mem.write_bytes(buf, &utf16_buffer(&t), 1)?;
@@ -690,11 +715,22 @@ fn original(rt: &runtime::Runtime, addr: u32) -> Option<Arc<runtime::exec::Origi
 
 /// Install the three hooks. A missing original skips its hook and says so.
 pub fn install(rt: &runtime::Runtime) -> anyhow::Result<()> {
-    if std::env::var_os("H2_NO_COMMUNITY_VARIANTS").is_some() {
+    let community = std::env::var_os("H2_NO_COMMUNITY_VARIANTS").is_none();
+    let options = crate::variant_options::enabled();
+    if !community && !options {
         return Ok(());
     }
-    rt.memory()
-        .map_zeroed(DATA_BASE, DATA_SIZE, Permissions::RW)?;
+    if community {
+        rt.memory()
+            .map_zeroed(DATA_BASE, DATA_SIZE, Permissions::RW)?;
+    }
+    if options {
+        rt.memory().map_zeroed(
+            crate::variant_options::BASE,
+            crate::variant_options::SIZE,
+            Permissions::RW,
+        )?;
+    }
     // Resolve the originals first: `resolve_original` takes the dispatch
     // read lock, which `edit_dispatch` holds for writing.
     let (load, strings, numbers) = (
@@ -706,6 +742,30 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<()> {
         if let Some(o) = load {
             d.register_override(BUILTINS_LOAD, "community:builtins", move |cpu, ctx, _| {
                 {
+                    let mut mem = ctx.runtime().memory();
+                    let goof = mem.u32(cpu.esp + 4)?;
+                    let tags = mem.u32(TAG_INSTANCES)?;
+                    // Our choices first: the community variants below are
+                    // checked against the lists as the editor will show them.
+                    if options {
+                        use crate::variant_options as vo;
+                        match vo::extend(&mut *mem, goof, tags, vo::BASE, vo::SIZE) {
+                            Some(d) if d.lists > 0 || d.no_room > 0 => eprintln!(
+                                "variant options: {} choices added to {} option lists{}",
+                                d.choices,
+                                d.lists,
+                                if d.no_room > 0 {
+                                    format!("; {} lists left as retail (no room)", d.no_room)
+                                } else {
+                                    String::new()
+                                }
+                            ),
+                            Some(_) => {}
+                            None => eprintln!("variant options: could not read the setting pages"),
+                        }
+                    }
+                }
+                if community {
                     let mut mem = ctx.runtime().memory();
                     let goof = mem.u32(cpu.esp + 4)?;
                     let tags = mem.u32(TAG_INSTANCES)?;
@@ -727,7 +787,7 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<()> {
         if let Some(o) = strings {
             register_strings(d, o);
         }
-        if let Some(o) = numbers {
+        if let Some(o) = numbers.filter(|_| community) {
             d.register_override(NUMBER_STRING_ID, DESCRIPTIONS_HOOK, move |cpu, ctx, _| {
                 if cpu.ecx >= DESCRIPTION_BASE {
                     let mem = ctx.runtime().memory();
@@ -902,7 +962,7 @@ mod tests {
     #[test]
     fn settings_encode_as_the_editor_stores_them() {
         assert_eq!(
-            StartingWeapon(Weapon::Shotgun).encode(GameType::Slayer),
+            StartingWeapon(Some(Weapon::Shotgun)).encode(GameType::Slayer),
             (89, 9)
         );
         assert_eq!(SecondaryWeapon(None).encode(GameType::Slayer), (94, 1));
@@ -932,7 +992,7 @@ mod tests {
 
     #[test]
     fn variants_are_well_formed() {
-        assert!((8..=12).contains(&VARIANTS.len()));
+        assert!((8..=13).contains(&VARIANTS.len()));
         let mut names = std::collections::HashSet::new();
         for v in VARIANTS {
             // The keyboard allows 16 characters; the copy starts from this.
@@ -1067,7 +1127,7 @@ mod tests {
         let m = world(3, &offer);
         let which = usable(&offered(&m, GOOF, TAGS).unwrap());
         for (i, v) in VARIANTS.iter().enumerate() {
-            let shotgun = v.settings.contains(&StartingWeapon(Weapon::Shotgun));
+            let shotgun = v.settings.contains(&StartingWeapon(Some(Weapon::Shotgun)));
             assert_eq!(which.contains(&i), !shotgun, "{}", v.name);
         }
         // With nothing offered nothing is added and the tag is unchanged.
@@ -1080,6 +1140,48 @@ mod tests {
         );
         assert_eq!(m.u32(GOOF + GOOF_BUILTINS + 4), Some(OLD));
         assert_eq!(m.u32(GOOF + GOOF_BUILTINS), Some(3));
+    }
+
+    /// Bumper Cars starts unarmed, which only our choices offer
+    /// (`variant_options`): without them it is left out, with them it is
+    /// kept. Bounce Practice's magnum is a retail choice either way.
+    #[test]
+    fn bumper_cars_needs_our_none_and_bounce_practice_has_a_magnum() {
+        let bumper = VARIANTS
+            .iter()
+            .position(|v| v.name == "Bumper Cars")
+            .unwrap();
+        let bounce = VARIANTS
+            .iter()
+            .position(|v| v.name == "Bounce Practice")
+            .unwrap();
+        assert!(VARIANTS[bumper].pairs().contains(&(89, 1)));
+        assert!(VARIANTS[bumper].pairs().contains(&(94, 1)));
+        assert!(
+            VARIANTS[bounce]
+                .pairs()
+                .contains(&(89, Weapon::Magnum as i32))
+        );
+        assert!(VARIANTS[bounce].pairs().contains(&(94, 1)));
+
+        // Retail's lists: every pair our variants use except primary None.
+        let mut retail = all_offered();
+        for (s, v) in &mut retail {
+            if *s == 89 {
+                v.retain(|x| *x != 1);
+            }
+        }
+        let offer: Vec<(u32, &[i32])> = retail.iter().map(|(s, v)| (*s, v.as_slice())).collect();
+        let mut m = world(3, &offer);
+        let which = usable(&offered(&m, GOOF, TAGS).unwrap());
+        assert!(!which.contains(&bumper) && which.contains(&bounce));
+
+        // With our choices merged into the same lists, it is kept.
+        use crate::variant_options as vo;
+        let done = vo::extend(&mut m, GOOF, TAGS, vo::BASE, vo::SIZE).unwrap();
+        assert!(done.lists >= 1);
+        let which = usable(&offered(&m, GOOF, TAGS).unwrap());
+        assert_eq!(which, (0..VARIANTS.len()).collect::<Vec<_>>());
     }
 
     #[test]

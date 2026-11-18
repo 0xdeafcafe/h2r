@@ -19,6 +19,10 @@
 //!   checked: its template is the layout's stem, every datum in it is the
 //!   stem, a default bitmap of the base, or a Halo 1 map's (so nothing of
 //!   a Halo 2 shader instance is in it), and its tiling is Halo 1's.
+//! - **Texture kinds** (`every_rebuilt_bitmap_is_its_slots_retail_kind`):
+//!   each slot of each layout's stem is one kind (2D, cube, volume) on
+//!   every retail instance; the base's default bitmaps and every Halo 1
+//!   map a rebuilt shader binds are that kind.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
@@ -31,7 +35,7 @@ use map::{FourCC, Map, TagId};
 use tags::defs::{self, Target, Val};
 use tags::material::ShaderLibrary;
 use tags::shader::SHAD;
-use tags::{DecodedTag, TagData};
+use tags::{DecodedTag, TagData, TextureKind};
 
 fn h2_maps(disc: &str) -> Vec<(String, u64, u64)> {
     let mut iso = xiso::Xiso::open(BufReader::new(File::open(disc).unwrap())).unwrap();
@@ -727,4 +731,240 @@ fn cloud_scroll_matches_retail_animated_instances() {
     }
     eprintln!("{checked} animated cloud layers");
     assert!(checked > 0);
+}
+
+/// A texture's kind as the slot needs it: Halo 1's "white" placeholder
+/// is a 2D texture.
+fn h1_kind(h1: &H1Map, id: h1map::TagId) -> Option<TextureKind> {
+    let t = h1.tag(id).ok()?;
+    let b = h1map::bitmap::Bitmap::read(h1, t).ok()?;
+    Some(match b.images.first()?.kind {
+        h1map::bitmap::ImageKind::D2 | h1map::bitmap::ImageKind::White => TextureKind::D2,
+        h1map::bitmap::ImageKind::D3 => TextureKind::D3,
+        h1map::bitmap::ImageKind::Cube => TextureKind::Cube,
+        h1map::bitmap::ImageKind::Other(v) => TextureKind::Unknown(v),
+    })
+}
+
+fn h2_kind<R: std::io::Read + std::io::Seek>(map: &mut Map<R>, id: TagId) -> Option<TextureKind> {
+    match DecodedTag::read(map, id).ok()?.data {
+        TagData::Bitmap(b) => Some(b.images.first()?.kind),
+        _ => None,
+    }
+}
+
+/// Every texture a rebuilt shader binds is a kind (2D, cube, volume)
+/// its stem samples at that slot: a kind retail instances of the stem
+/// bind there (Halo 2 disc; one kind per slot, except `water_pool`'s
+/// reflection, a cube on 5 and 2D on 9), for the base's default bitmaps
+/// the layout names and every Halo 1 map each Halo 1 shader (and each
+/// fallback) puts in a slot. A cube in a slot the stem samples as 2D
+/// stops the draw (`bumpenvmap needs a D2 texture, bound Cube`).
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn every_rebuilt_bitmap_is_its_slots_retail_kind() {
+    let h1_iso = std::env::var("H1_ISO").expect("set H1_ISO");
+    let disc = std::env::var("H2_DISC").expect("set H2_DISC");
+    // Stem -> slot -> kinds seen on retail instances.
+    let mut retail: HashMap<&str, BTreeMap<usize, Vec<TextureKind>>> = HashMap::new();
+    let mut seen = HashSet::new();
+    let mut coag = None;
+    for (name, base, size) in h2_maps(&disc) {
+        if name == "coagulation" {
+            coag = Some((base, size));
+        }
+        let mut map = open(&disc, base, size);
+        let Ok(lib) = ShaderLibrary::read(&mut map) else { continue };
+        let ids: Vec<(TagId, String)> = map
+            .tags()
+            .iter()
+            .filter(|t| t.group == SHAD && t.location.is_some())
+            .map(|t| (t.id, t.name.clone().unwrap_or_default()))
+            .collect();
+        for (id, sname) in ids {
+            let Ok(sh) = lib.shader(id) else { continue };
+            let stem = map.tag(sh.template.id).ok().and_then(|t| t.name.clone()).unwrap_or_default();
+            let Some(layout) = shad::LAYOUTS.iter().find(|l| l.stem == stem) else { continue };
+            if !seen.insert(sname) {
+                continue;
+            }
+            let Ok(p) = sh.compiled() else { continue };
+            let bitmaps: Vec<TagId> = p.bitmaps.iter().map(|b| b.bitmap).collect();
+            for (k, b) in bitmaps.into_iter().enumerate() {
+                if b == TagId::NULL || b.0 == u32::MAX {
+                    continue;
+                }
+                if let Some(kind) = h2_kind(&mut map, b) {
+                    let v = retail.entry(layout.stem).or_default().entry(k).or_default();
+                    if !v.contains(&kind) {
+                        v.push(kind);
+                    }
+                }
+            }
+        }
+    }
+    let mut failures = Vec::new();
+    let slot_kinds = |stem: &str, k: usize| -> Option<Vec<TextureKind>> {
+        retail.get(stem)?.get(&k).cloned()
+    };
+    for l in shad::LAYOUTS {
+        let Some(slots) = retail.get(l.stem) else {
+            failures.push(format!("{}: no retail instance", l.stem));
+            continue;
+        };
+        for (k, kinds) in slots {
+            let mixed = l.stem == shad::WATER_POOL.stem && *k == 1;
+            if kinds.len() != 1 && !mixed {
+                failures.push(format!("{} slot {k}: retail kinds {kinds:?}", l.stem));
+            }
+        }
+        eprintln!(
+            "{}: {:?}",
+            l.stem.rsplit('\\').next().unwrap(),
+            (0..l.bitmaps.len()).map(|k| slot_kinds(l.stem, k)).collect::<Vec<_>>()
+        );
+    }
+    // The base's default bitmaps.
+    let (b, s) = coag.expect("coagulation");
+    let mut base = open(&disc, b, s);
+    let find = |base: &Map<_>, path: &str| {
+        base.tags()
+            .iter()
+            .find(|t| t.group == FourCC(*b"bitm") && t.name.as_deref() == Some(path))
+            .map(|t| t.id)
+    };
+    for l in shad::LAYOUTS {
+        for (k, bm) in l.bitmaps.iter().enumerate() {
+            let f = match bm {
+                Bm::Role(_, f) | Bm::Fixed(f) => *f,
+                Bm::Null => continue,
+            };
+            let id = find(&base, f.path()).unwrap_or_else(|| panic!("coagulation lacks {}", f.path()));
+            let got = h2_kind(&mut base, id);
+            if let Some(want) = slot_kinds(l.stem, k)
+                && !got.is_some_and(|g| want.contains(&g))
+            {
+                failures.push(format!("{} slot {k}: default {} is {got:?}, retail {want:?}", l.stem, f.path()));
+            }
+        }
+    }
+    // Every Halo 1 shader's maps, in every link of its chain.
+    let mut iso = xiso::Xiso::open(BufReader::new(File::open(&h1_iso).unwrap())).unwrap();
+    let h1disc = h1map::disc::Disc::open(&mut iso).unwrap();
+    let names: Vec<&str> = CAMPAIGN
+        .iter()
+        .copied()
+        .chain(h1convert::convert::MAPS.iter().map(|m| m.0))
+        .collect();
+    let mut checked = 0;
+    for name in names {
+        let Some(e) = h1disc.map(name).cloned() else { continue };
+        let h1 = H1Map::from_reader(Cursor::new(iso.read(&e).unwrap())).unwrap();
+        for tag in h1.tags() {
+            if !shad::H1_GROUPS.contains(&tag.group.to_string().as_str()) {
+                continue;
+            }
+            let Some(s) = shad::read_h1(&h1, tag) else { continue };
+            for c in s.chain() {
+                for (role, m) in &c.maps {
+                    let Some(k) = c
+                        .layout
+                        .bitmaps
+                        .iter()
+                        .position(|b| matches!(b, Bm::Role(r, _) if r == role))
+                    else {
+                        failures.push(format!("{name}: {}: {role:?} has no slot", tag.name));
+                        continue;
+                    };
+                    let (Some(want), got) = (slot_kinds(c.layout.stem, k), h1_kind(&h1, m.bitmap)) else {
+                        continue;
+                    };
+                    checked += 1;
+                    if !got.is_some_and(|g| want.contains(&g)) {
+                        let bname = h1.tag(m.bitmap).map(|t| t.name.clone()).unwrap_or_default();
+                        failures.push(format!(
+                            "{name}: {} on {}: {role:?} slot {k} wants {want:?}, {bname} is {got:?}",
+                            tag.name,
+                            c.layout.stem.rsplit('\\').next().unwrap()
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("{checked} Halo 1 maps checked, {} failures", failures.len());
+    for f in failures.iter().take(60) {
+        eprintln!("  {f}");
+    }
+    assert!(checked > 0);
+    assert!(failures.is_empty(), "{} failures", failures.len());
+}
+
+/// Every retail `water_pool` instance has [`shad::WATER_TREE`] and the
+/// component values its doc gives: the frame (time-driven identity over
+/// 0..17), vector 0's x and y in components 1 and 2 (when constant), one
+/// in 3, vector 0's z and w in 4 and 5, zeros after; bitmaps 0, 3 and 4
+/// 2D. Evaluated at time 0 with `tags::effects::function`.
+#[test]
+#[ignore = "reads the Halo 2 disc ($H2_DISC)"]
+fn water_pool_instances_share_one_tree() {
+    use tags::effects::function::{Function, FunctionType};
+    let disc = std::env::var("H2_DISC").expect("set H2_DISC");
+    let tree = &shad::WATER_TREE;
+    let mut seen = HashSet::new();
+    let mut checked = 0;
+    let mut reflections: BTreeMap<String, usize> = BTreeMap::new();
+    for (name, base, size) in h2_maps(&disc) {
+        let mut map = open(&disc, base, size);
+        let Ok(lib) = ShaderLibrary::read(&mut map) else { continue };
+        let ids: Vec<(TagId, String)> = map
+            .tags()
+            .iter()
+            .filter(|t| t.group == SHAD && t.location.is_some())
+            .map(|t| (t.id, t.name.clone().unwrap_or_default()))
+            .collect();
+        for (id, sname) in ids {
+            let Ok(sh) = lib.shader(id) else { continue };
+            let stem = map.tag(sh.template.id).ok().and_then(|t| t.name.clone()).unwrap_or_default();
+            if !stem.ends_with("\\water_pool") || !seen.insert(sname.clone()) {
+                continue;
+            }
+            let p = sh.compiled().unwrap().clone();
+            let at = format!("{name}: {sname}");
+            assert_eq!(p.lods.len(), 1, "{at}");
+            assert_eq!(p.lods[0].layer_mask, 1 << tree.animated_layer, "{at}");
+            assert_eq!(p.layers.len(), usize::from(tree.layers), "{at}");
+            let a = &p.implementations[0];
+            let got = [a.bitmaps, a.render_states, a.stage_states, a.pixel_constants, a.vertex_constants]
+                .map(|r| (r.start, u16::from(r.count)));
+            assert_eq!(got, tree.implementation, "{at}");
+            let binds: Vec<[u8; 4]> = p.animations.iter().map(|b| [b.target, b.b1, b.b2, b.properties]).collect();
+            assert_eq!(binds, tree.bindings, "{at}");
+            assert_eq!(p.property_refs.len(), 10, "{at}");
+            let mut comp = [(f32::NAN, FunctionType::Constant, [0.0f32; 2]); 10];
+            for r in &p.property_refs {
+                let prop = &p.properties[r.property as usize];
+                let f = Function::parse(&prop.function).unwrap();
+                let v = f.evaluate(0.0, 0.0).clamp(0.0, 1.0);
+                let v = if f.is_raw_output() { v } else { (f.range[1] - f.range[0]) * v + f.range[0] };
+                comp[r.component as usize] = (v, f.kind, f.range);
+            }
+            let v0 = p.vectors[0];
+            assert!(comp[0].1 == FunctionType::Identity && comp[0].2 == [0.0, 17.0], "{at}: frame {:?}", comp[0]);
+            for (c, want) in [(1, v0[0]), (2, v0[1]), (3, 1.0), (4, v0[2]), (5, v0[3])] {
+                if comp[c].1 == FunctionType::Constant {
+                    assert_eq!(comp[c].0, want, "{at}: component {c}");
+                }
+            }
+            assert!(comp[6..].iter().all(|c| c.0 == 0.0 && c.1 == FunctionType::Constant), "{at}");
+            for k in [0, 3, 4] {
+                assert_eq!(h2_kind(&mut map, p.bitmaps[k].bitmap), Some(TextureKind::D2), "{at}: bitmap {k}");
+            }
+            let r = format!("{:?}", h2_kind(&mut map, p.bitmaps[1].bitmap));
+            *reflections.entry(r).or_default() += 1;
+            checked += 1;
+        }
+    }
+    eprintln!("{checked} retail water_pool instances; reflection kinds {reflections:?}");
+    assert_eq!(checked, 14);
 }

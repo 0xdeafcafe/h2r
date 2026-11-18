@@ -145,7 +145,6 @@ Every crate below is on master. "Done" means it does what its row says;
 | `apple-host` | The tvOS and iOS apps' Rust half: a static library the UIKit hosts in `platform/tvos` and `platform/ios` call to boot the game ([tvos.md](runtime/tvos.md), [ios.md](runtime/ios.md)) | in progress |
 | `uwp-host` | The Xbox (Dev Mode) UWP app, `h2uwp.exe`, and its packaging helpers (`platform/xbox`, [xbox.md](runtime/xbox.md)) | in progress: boots on a Series X (DX12, audio); out of memory in App mode |
 | `cloud-saves` | Cloud saves on the Live service: merge an account's saves at sign-in, push changes as the game writes them ([live-cloud-saves.md](live/live-cloud-saves.md)) | in progress |
-| `live-menubar` | The optional menu bar app for a Live server run by launchd (`h2 live menubar`; [live-hosting.md](live/live-hosting.md)) | done |
 | `h1map`   | Halo 1 Xbox cache (v5) reader ([h1-map-format.md](formats/h1-map-format.md)) | done |
 | `h1bitmaps` | Halo 1 bitmaps decoded to RGBA8 and converted to Halo 2 `bitm` tags ([h1-bitmaps.md](formats/h1-bitmaps.md)) | done |
 | `h1models` | Halo 1 render models and animation graphs as Halo 2 tags ([h1-models.md](formats/h1-models.md)) | in progress |

@@ -18,7 +18,8 @@
 //! Until a bot is signed in on the players screen, every source presses A
 //! to join ([`bots::local::join_pad`]), as the brain does.
 //!
-//! Phantoms go to `bots::phantom`, which refuses until stage 6.
+//! Phantoms go to `bots::phantom`: on the books at once, they join once a
+//! multiplayer game this console hosts runs (docs/game/bots.md §5.1).
 
 use std::collections::BTreeMap;
 use std::time::Instant;
@@ -230,17 +231,20 @@ mod tests {
             b.remove(Bot::Local { port: 1 }).is_err(),
             "sim removes only its own"
         );
-        let e = b
+        // A phantom goes on the process-wide books, pending until a hosted
+        // game runs (docs/game/bots.md §5.1).
+        let h = b
             .add_phantom(
                 &Identity {
-                    xuid: "0009000000000001".into(),
+                    xuid: "000e0000c0ffee01".into(),
                     gamertag: "Clanker".into(),
                 },
                 Some(1),
                 PadSource::Brain,
             )
-            .unwrap_err();
-        assert!(e.contains("stage 6"), "{e}");
+            .unwrap();
+        assert_eq!(b.phantom_player(h), None, "no player outside a game");
+        b.remove(Bot::Phantom { handle: h }).unwrap();
         assert!(
             b.add_phantom(
                 &Identity {
