@@ -149,8 +149,9 @@ map (`<data>/campaigns/halo1/<map>.map`) as `maps\<map>.map`.
 
 ## 5. The asset setting
 
-Settings, Campaign: **Halo 1 assets** (default) or **Halo 2 assets**. The
-import writes both variants of each level. With Halo 2 assets, Halo 1's
+Chosen per game on the campaign's game options screen: **Halo 1 assets**
+(default) or **Halo 2 assets**, kept as `campaign.halo1_assets`. The
+import is to write both variants of each level. With Halo 2 assets, Halo 1's
 characters, weapons and vehicles are swapped for their nearest Halo 2
 equivalents (assault rifle to SMG or battle rifle, and so on; the table
 gets fixed in step 4). The setting picks which file the VFS serves when
@@ -158,6 +159,21 @@ the level loads. Halo 1's cutscenes are animated on Halo 1's skeletons, so
 with Halo 2 assets they need retargeting; until that exists, cutscenes
 keep Halo 1's characters in both variants. They play on eight of the ten
 levels (§9, Cutscenes).
+
+**Serving the choice (Built, tests only).** `boot::h1_variants::set_campaign_assets`
+flips the `vfs::SandboxChoice` the campaign maps backend serves by
+(`vfs::CampaignMapsBackend::with_assets`). A level's Halo 2-assets map
+goes beside its Halo 1 map, in an `h2` folder as the multiplayer packages
+have: `<data>/campaigns/halo1/h2/<level>.map`
+(`h1_variants::campaign_alternate`). **The importer does not write it
+yet**, so with Halo 2 assets chosen each level is served from its Halo 1
+map, and the first open says so once on stderr: `campaigns: a30: no Halo 2
+assets level (<path>); serving its Halo 1 map`. The choice applies at the
+level's next open: an open map keeps its file, and `map_changed` lets
+`boot::map_slots` drop a cached copy of the other file (slots 4 and 5).
+Each file has its own `MapId`. Tests: `vfs`
+`campaign_maps::tests::the_assets_choice_picks_the_level_at_its_next_open`,
+`without_a_halo2_assets_level_the_halo1_one_is_served`.
 
 ## 6. Health (the exception)
 
@@ -815,7 +831,7 @@ map. `--copy-source` also copies the disc's campaign maps unchanged to
 
 | Job | Output | Read by |
 |---|---|---|
-| each of a10 .. d40 | `<data>/campaigns/halo1/<level>.map`, `campaign.toml` (`content::campaign_list::HALO1`) | the campaign picker and lists (`boot::campaigns`), `vfs::CampaignMapsBackend` as `maps\<level>.map`, `--level` (`level_boot::resolve_in`) |
+| each of a10 .. d40 | `<data>/campaigns/halo1/<level>.map`, `campaign.toml` (`content::campaign_list::HALO1`); not yet its Halo 2-assets map, `<data>/campaigns/halo1/h2/<level>.map` (§5) | the campaign picker and lists (`boot::campaigns`), `vfs::CampaignMapsBackend` as `maps\<level>.map`, `--level` (`level_boot::resolve_in`) |
 | each Halo 1 multiplayer map on the disc (`h1convert::convert::MAPS`), Halo 2 then Halo 1 sandbox | `<data>/maps/h1_<map>/{h2,h1}/h1_<map>.map`, `manifest.toml` | `boot::new_maps`, the `multiplayer.halo1_sandbox` setting picks the variant |
 
 Campaign levels are written fresh from their base (§9); multiplayer maps

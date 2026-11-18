@@ -8,16 +8,25 @@
 //! A name the disc has is never shadowed: the disc (and the packages over
 //! it) win. Metadata is the disc's `maps\mainmenu.map`'s, resized, so times
 //! and attributes look like the disc's. Files are opened on first use and
-//! kept for the session; nothing is written.
+//! kept while they are the ones to serve; nothing is written.
+//!
+//! **Assets.** A map may have a second file, its level with Halo 2's
+//! assets (docs/game/campaigns.md §5), served instead while the
+//! [`SandboxChoice`] given to [`CampaignMapsBackend::with_assets`] says
+//! Halo 2. Without that file the Halo 1 one is served, with one line on
+//! stderr. The choice applies at a map's next open: an open file keeps
+//! what it was opened with, and [`Backend::map_changed`] says when the map
+//! would now come from the other file, so the game's cached copy is
+//! dropped (docs/runtime/cache-slots.md).
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::File,
     io::{Read, Seek, SeekFrom},
     path::PathBuf,
 };
 
 use crate::map_override::{is_map_path, override_id, resize};
-use crate::{Backend, DirectoryEntry, Error, HostFile, Metadata, Result, VolumeInfo};
+use crate::{Backend, DirectoryEntry, Error, HostFile, Metadata, Result, SandboxChoice, VolumeInfo};
 
 /// The disc map whose metadata ours borrow.
 const TEMPLATE: &str = "maps\\mainmenu.map";
@@ -26,6 +35,8 @@ struct Open {
     file: File,
     len: u64,
     id: Option<content::MapId>,
+    /// The host file this is.
+    host: PathBuf,
 }
 
 pub struct CampaignMapsBackend<B> {
@@ -33,6 +44,16 @@ pub struct CampaignMapsBackend<B> {
     /// By lower-case map name: its host file.
     maps: BTreeMap<String, PathBuf>,
     open: BTreeMap<String, Option<Open>>,
+    /// By lower-case map name: its Halo 2-assets file, served while
+    /// `assets` says Halo 2 and the file is there.
+    alternates: BTreeMap<String, PathBuf>,
+    assets: SandboxChoice,
+    /// Handles open per lower-case map name.
+    handles: BTreeMap<String, usize>,
+    /// The host file each map was last opened from.
+    last_opened: BTreeMap<String, PathBuf>,
+    /// Maps whose missing Halo 2-assets file was already reported.
+    warned: BTreeSet<String>,
 }
 
 impl<B: Backend> CampaignMapsBackend<B> {
@@ -45,6 +66,46 @@ impl<B: Backend> CampaignMapsBackend<B> {
                 .map(|(n, p)| (n.to_ascii_lowercase(), p))
                 .collect(),
             open: BTreeMap::new(),
+            alternates: BTreeMap::new(),
+            assets: SandboxChoice::default(),
+            handles: BTreeMap::new(),
+            last_opened: BTreeMap::new(),
+            warned: BTreeSet::new(),
+        }
+    }
+
+    /// Serve `alternates` (map name, host file of its Halo 2-assets level)
+    /// in place of the maps' own files while `assets` says Halo 2.
+    pub fn with_assets(
+        mut self,
+        assets: SandboxChoice,
+        alternates: impl IntoIterator<Item = (String, PathBuf)>,
+    ) -> Self {
+        self.assets = assets;
+        self.alternates = alternates
+            .into_iter()
+            .map(|(n, p)| (n.to_ascii_lowercase(), p))
+            .collect();
+        self
+    }
+
+    /// The host file `stem` should be served from at its next open.
+    fn wanted(&mut self, stem: &str) -> Option<PathBuf> {
+        let own = self.maps.get(stem)?.clone();
+        if self.assets.halo1() {
+            return Some(own);
+        }
+        match self.alternates.get(stem) {
+            Some(alt) if alt.is_file() => Some(alt.clone()),
+            alt => {
+                if self.warned.insert(stem.to_owned()) {
+                    let at = alt.map_or_else(|| "none".to_owned(), |p| p.display().to_string());
+                    eprintln!(
+                        "campaigns: {stem}: no Halo 2 assets level ({at}); serving its Halo 1 map"
+                    );
+                }
+                Some(own)
+            }
         }
     }
 
@@ -57,8 +118,18 @@ impl<B: Backend> CampaignMapsBackend<B> {
     fn ours(&mut self, path: &str) -> Option<(String, &mut Open)> {
         let name = is_map_path(path)?;
         let stem = name[..name.len() - 4].to_ascii_lowercase();
-        let host = self.maps.get(&stem)?.clone();
+        self.maps.get(&stem)?;
+        // An open map keeps its file; otherwise a changed choice reopens.
+        if self.handles.get(&stem).copied().unwrap_or(0) == 0
+            && let Some(Some(o)) = self.open.get(&stem)
+        {
+            let had = o.host.clone();
+            if self.wanted(&stem)? != had {
+                self.open.remove(&stem);
+            }
+        }
         if !self.open.contains_key(&stem) {
+            let host = self.wanted(&stem)?;
             let chosen = if self.inner.stat(path).is_ok() {
                 None
             } else {
@@ -68,6 +139,7 @@ impl<B: Backend> CampaignMapsBackend<B> {
                         file,
                         len,
                         id: None,
+                        host,
                     })
                 })
             };
@@ -86,16 +158,41 @@ impl<B: Backend> CampaignMapsBackend<B> {
 
 impl<B: Backend> Backend for CampaignMapsBackend<B> {
     fn opened(&mut self, path: &str) {
+        if let Some((stem, o)) = self.ours(path) {
+            let host = o.host.clone();
+            *self.handles.entry(stem.clone()).or_insert(0) += 1;
+            self.last_opened.insert(stem, host);
+        }
         self.inner.opened(path)
     }
     fn closed(&mut self, path: &str) {
+        if let Some(stem) = is_map_path(path).map(|n| n[..n.len() - 4].to_ascii_lowercase())
+            && let Some(n) = self.handles.get_mut(&stem)
+        {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                self.handles.remove(&stem);
+            }
+        }
         self.inner.closed(path)
     }
     fn rescan(&mut self) {
         self.inner.rescan()
     }
     fn map_changed(&mut self, path: &str) -> bool {
-        self.ours(path).is_none() && self.inner.map_changed(path)
+        let Some(stem) = is_map_path(path).map(|n| n[..n.len() - 4].to_ascii_lowercase()) else {
+            return self.inner.map_changed(path);
+        };
+        if !self.maps.contains_key(&stem) || self.inner.stat(path).is_ok() {
+            return self.inner.map_changed(path);
+        }
+        if self.handles.contains_key(&stem) {
+            return false;
+        }
+        let Some(was) = self.last_opened.get(&stem).cloned() else {
+            return false;
+        };
+        self.wanted(&stem).is_some_and(|want| want != was)
     }
     fn read_only(&self) -> bool {
         true
@@ -151,7 +248,7 @@ impl<B: Backend> Backend for CampaignMapsBackend<B> {
             if let Some(id) = o.id {
                 return Some(id);
             }
-            let file = self.maps.get(&stem)?.clone();
+            let file = o.host.clone();
             (stem, file)
         };
         let id = override_id(&host.0, &host.1).ok()?;
@@ -161,12 +258,12 @@ impl<B: Backend> Backend for CampaignMapsBackend<B> {
         Some(id)
     }
     fn host_file(&mut self, path: &str) -> Option<HostFile> {
-        let Some((stem, o)) = self.ours(path) else {
+        let Some((_, o)) = self.ours(path) else {
             return self.inner.host_file(path);
         };
         let len = o.len;
         Some(HostFile {
-            path: self.maps.get(&stem)?.clone(),
+            path: o.host.clone(),
             offset: 0,
             len,
         })
@@ -302,6 +399,71 @@ mod tests {
         // Anything else is the inner backend's.
         assert!(b.stat("maps\\a30.map").is_err());
         assert!(b.stat("maps\\sub\\a10.map").is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    fn read(b: &mut CampaignMapsBackend<Fake>, path: &str) -> Vec<u8> {
+        let len = b.stat(path).unwrap().end_of_file as usize;
+        let mut buf = vec![0u8; len];
+        assert_eq!(b.read_at(path, 0, &mut buf).unwrap(), len);
+        buf
+    }
+
+    /// The assets choice picks the file at the next open; an open map keeps
+    /// its file, and the change is reported once it is closed.
+    #[test]
+    fn the_assets_choice_picks_the_level_at_its_next_open() {
+        let d = dir("assets");
+        std::fs::create_dir_all(d.join("h2")).unwrap();
+        std::fs::write(d.join("a30.map"), b"halo one assets").unwrap();
+        std::fs::write(d.join("h2").join("a30.map"), b"halo two").unwrap();
+        let choice = SandboxChoice::default();
+        let mut b = CampaignMapsBackend::new(
+            Fake::with(&[("maps\\mainmenu.map", b"menu")]),
+            [("a30".to_string(), d.join("a30.map"))],
+        )
+        .with_assets(choice.clone(), [("a30".to_string(), d.join("h2").join("a30.map"))]);
+        let p = "maps\\a30.map";
+        assert_eq!(read(&mut b, p), b"halo one assets");
+        let h1_id = b.map_id(p);
+        b.opened(p);
+        choice.set_halo1(false);
+        assert_eq!(read(&mut b, p), b"halo one assets", "open: keeps its file");
+        assert!(!b.map_changed(p), "not while open");
+        b.closed(p);
+        assert!(b.map_changed(p), "opened as Halo 1, Halo 2 now");
+        assert_eq!(read(&mut b, p), b"halo two");
+        assert_eq!(b.host_file(p).unwrap().path, d.join("h2").join("a30.map"));
+        assert_ne!(b.map_id(p), h1_id, "each file its own id");
+        b.opened(p);
+        b.closed(p);
+        assert!(!b.map_changed(p), "opened as it is served");
+        choice.set_halo1(true);
+        assert!(b.map_changed(p));
+        assert_eq!(read(&mut b, p), b"halo one assets");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Halo 2 assets asked for a level that has no such file: its Halo 1
+    /// map, and nothing to drop.
+    #[test]
+    fn without_a_halo2_assets_level_the_halo1_one_is_served() {
+        let d = dir("fallback");
+        std::fs::write(d.join("a10.map"), b"pillar").unwrap();
+        let choice = SandboxChoice::default();
+        choice.set_halo1(false);
+        let mut b = CampaignMapsBackend::new(
+            Fake::with(&[("maps\\mainmenu.map", b"menu")]),
+            [("a10".to_string(), d.join("a10.map"))],
+        )
+        .with_assets(choice.clone(), [("a10".to_string(), d.join("h2").join("a10.map"))]);
+        let p = "maps\\a10.map";
+        b.opened(p);
+        b.closed(p);
+        assert_eq!(read(&mut b, p), b"pillar");
+        assert!(!b.map_changed(p));
+        choice.set_halo1(true);
+        assert!(!b.map_changed(p), "the same file either way");
         let _ = std::fs::remove_dir_all(&d);
     }
 

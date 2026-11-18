@@ -472,10 +472,9 @@ mod tests {
                 RowKind::Setting(LIGHTING.key),
                 RowKind::Setting(PAD_MUTE.key),
                 RowKind::Setting(crate::setting_defs::AIM_ASSIST.key),
-                RowKind::Setting(crate::setting_defs::HALO1_SANDBOX.key)
             ]
         );
-        assert_eq!(m.count(List::Screen("video"), 6), 7, "ours, whatever retail says");
+        assert_eq!(m.count(List::Screen("video"), 5), 6, "ours, whatever retail says");
         assert_eq!(m.count(List::Controls, 6), 8);
         assert_eq!(m.count(List::Controls, 4), 4, "not the list we extend");
         assert_eq!(m.row(List::Controls, 5), None);
