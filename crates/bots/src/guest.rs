@@ -380,11 +380,13 @@ pub fn free_guest_number(m: &dyn GuestMemory, host: u32) -> R<Option<u32>> {
     Ok((1..=GUEST_MASK).find(|n| used & 1 << n == 0))
 }
 
-/// What [`go_live`] did for one bot.
+/// What [`go_live`] or [`go_live_as`] did for one bot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GoLive {
     /// Signed in as guest `number` of the human on port `host`.
     Guest { host: u32, number: u32 },
+    /// Signed in as its own bot account, beside the human on port `host`.
+    Account { host: u32 },
     /// No human is on Xbox Live: nothing to be a guest of.
     NoHost,
     /// The bot's slot has no profile yet.
@@ -436,6 +438,119 @@ pub fn go_live(m: &mut dyn GuestMemory, port: u32, bots: u32, name: &str) -> R<G
     m.set_u32(slot(port), flags | SLOT_LIVE)?;
     set_slot_name(m, port, name)?;
     Ok(GoLive::Guest { host, number })
+}
+
+/// Record offset of the gamertag (16 bytes, NUL-terminated).
+pub const ACCOUNT_GAMERTAG: usize = 0xc;
+pub const ACCOUNT_GAMERTAG_LEN: usize = 16;
+
+/// A bot account the server leased to this console (docs/game/bots.md
+/// §9.5): a roster bot's xuid (the server's `0x000B` range) and gamertag.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BotAccount {
+    pub xuid: u64,
+    pub gamertag: String,
+}
+
+/// `account`'s record, made from the host's: the bot's xuid, user flags
+/// with no guest number (an account's own player), and its gamertag (at
+/// most 15 bytes and a NUL). The rest (the logon result) is the host's, so
+/// the game reads it as signed in as the host is.
+pub fn bot_account_record(host: &[u8; ACCOUNT_LEN], account: &BotAccount) -> [u8; ACCOUNT_LEN] {
+    let mut a = *host;
+    a[..8].copy_from_slice(&account.xuid.to_le_bytes());
+    let f = ACCOUNT_FLAGS;
+    let flags = u32::from_le_bytes(a[f..f + 4].try_into().unwrap()) & !GUEST_MASK;
+    a[f..f + 4].copy_from_slice(&flags.to_le_bytes());
+    let tag = &mut a[ACCOUNT_GAMERTAG..ACCOUNT_GAMERTAG + ACCOUNT_GAMERTAG_LEN];
+    tag.fill(0);
+    let bytes = account.gamertag.as_bytes();
+    let n = bytes.len().min(ACCOUNT_GAMERTAG_LEN - 1);
+    tag[..n].copy_from_slice(&bytes[..n]);
+    a
+}
+
+/// The slot's local-user entry (in use), or `None`.
+fn local_user_entry(m: &dyn GuestMemory, port: u32) -> R<Option<u32>> {
+    let user = m.i32(slot(port) + SLOT_LOCAL_USER)?;
+    if !(0..LOCAL_USER_COUNT as i32).contains(&user) {
+        return Ok(None);
+    }
+    let entry = LOCAL_USERS + user as u32 * LOCAL_USER_STRIDE;
+    Ok((m.u8(entry)? != 0).then_some(entry))
+}
+
+/// Signs the bot on `port` (its profile signed in) in to Xbox Live as its
+/// own bot `account`, beside the human on Live ([`live_host`]): the same
+/// writes as [`go_live`] (the Live flag, the record at `+0x470`, its player
+/// id at [`SLOT_ID`] and in the slot's local user), with
+/// [`bot_account_record`] in place of a guest's. A slot on Live as a guest
+/// or as another account is moved to this one; one on Live as this
+/// account already is left alone. The slot's name becomes the gamertag.
+///
+/// The guest numbers stay free for real guests: the duplicate-account
+/// check (`0x1900ff`) and the guest numbering compare user ids, and a bot
+/// account's is its own. No logon is made: the Live HLE takes the xuid in
+/// a user change only because the server leased it to this console.
+pub fn go_live_as(
+    m: &mut dyn GuestMemory,
+    port: u32,
+    bots: u32,
+    account: &BotAccount,
+) -> R<GoLive> {
+    let flags = slot_flags(m, port)?;
+    if flags & SLOT_PROFILE == 0 {
+        return Ok(GoLive::NoProfile);
+    }
+    if flags & SLOT_LIVE != 0 && account_xuid(&self::account(m, port)?) == account.xuid {
+        return Ok(GoLive::Already);
+    }
+    let Some(host) = live_host(m, bots)? else {
+        return Ok(GoLive::NoHost);
+    };
+    let Some(entry) = local_user_entry(m, port)? else {
+        return Ok(GoLive::NoLocalUser);
+    };
+    let a = bot_account_record(&self::account(m, host)?, account);
+    m.write(slot(port) + SLOT_ACCOUNT, &a)?;
+    m.write(slot(port) + SLOT_ID, &a[..ID_LEN])?;
+    m.write(entry + LOCAL_USER_ID, &a[..ID_LEN])?;
+    m.set_u32(slot(port), flags | SLOT_LIVE)?;
+    set_slot_name(m, port, &account.gamertag)?;
+    Ok(GoLive::Account { host })
+}
+
+/// The bot on `port` leaves Xbox Live (no human is on it any more): the
+/// Live flag cleared, the record zeroed, and `offline_id` (the player id
+/// its profile sign-in gave it, kept by the glue before it went on Live)
+/// back at [`SLOT_ID`] and in its local user; its name back to `name`.
+/// The game's own sign-out of a failed host logon (`0x190186`) only finds
+/// slots with the host's user id, so a bot account is left for this.
+pub fn leave_live(
+    m: &mut dyn GuestMemory,
+    port: u32,
+    offline_id: &[u8; ID_LEN],
+    name: &str,
+) -> R<bool> {
+    let flags = slot_flags(m, port)?;
+    if flags & SLOT_LIVE == 0 {
+        return Ok(false);
+    }
+    m.write(slot(port) + SLOT_ACCOUNT, &[0u8; ACCOUNT_LEN])?;
+    m.write(slot(port) + SLOT_ID, offline_id)?;
+    if let Some(entry) = local_user_entry(m, port)? {
+        m.write(entry + LOCAL_USER_ID, offline_id)?;
+    }
+    m.set_u32(slot(port), flags & !SLOT_LIVE)?;
+    set_slot_name(m, port, name)?;
+    Ok(true)
+}
+
+/// The slot's player id (offline: the one its profile sign-in made).
+pub fn slot_id(m: &dyn GuestMemory, port: u32) -> R<[u8; ID_LEN]> {
+    let mut id = [0u8; ID_LEN];
+    m.read(slot(port) + SLOT_ID, &mut id)?;
+    Ok(id)
 }
 
 /// One port's slot as the start log says it: its flags and, on Xbox Live,

@@ -454,6 +454,11 @@ pub struct AccountSummary {
     /// startup or granted. Only this server's admins, not a federation view.
     #[serde(default)]
     pub admin: bool,
+    /// A bot account (docs/game/bots.md §9.5): issued by the server for
+    /// Clankers, never signed in with a key, never recovered or claimed.
+    /// Absent for a human.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bot: bool,
 }
 
 /// `GET /v1/accounts/{gamertag}`.
