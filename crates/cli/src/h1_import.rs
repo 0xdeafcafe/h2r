@@ -393,6 +393,7 @@ pub fn run_jobs(
     save: &mut dyn FnMut(&Stamp) -> Result<()>,
     say: &mut dyn FnMut(String),
 ) -> (Summary, Vec<JobTime>) {
+    h1map::phase::set_cpu_clock(thread_cpu);
     let mut sum = Summary::default();
     let mut times = Vec::new();
     let next = AtomicUsize::new(0);
@@ -454,43 +455,86 @@ pub fn run_jobs(
 /// The timing report's file, in `<data>/campaigns/halo1/`.
 pub const TIMING_FILE: &str = "import-timing.txt";
 
+/// The calling thread's CPU time, for [`h1map::phase`].
+fn thread_cpu() -> Duration {
+    let mut t = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `t` is a valid timespec to write.
+    if unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut t) } != 0 {
+        return Duration::ZERO;
+    }
+    Duration::new(t.tv_sec as u64, t.tv_nsec as u32)
+}
+
+/// The process's CPU time and peak memory so far, for the report.
+fn usage_text() -> String {
+    // SAFETY: `ru` is a valid rusage to write.
+    let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
+    if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut ru) } != 0 {
+        return String::new();
+    }
+    let t = |v: libc::timeval| v.tv_sec as f64 + v.tv_usec as f64 / 1e6;
+    // Bytes on macOS, KiB elsewhere.
+    let rss = if cfg!(target_os = "macos") {
+        ru.ru_maxrss as f64
+    } else {
+        ru.ru_maxrss as f64 * 1024.0
+    };
+    format!(
+        "\nprocess: {:.1} s user, {:.1} s system, peak resident {:.2} GB, {} page reclaims\n",
+        t(ru.ru_utime),
+        t(ru.ru_stime),
+        rss / 1e9,
+        ru.ru_minflt
+    )
+}
+
 /// The timing report: the run's wall time and workers, each phase's time
-/// over every job (most first), then each job's.
+/// over every job (most CPU first), then each job's. Wall time stretches
+/// on a loaded machine; a phase's CPU time (its thread's) does not.
 pub fn timing_text(wall: Duration, workers: usize, times: &[JobTime]) -> String {
     let secs = |d: &Duration| d.as_secs_f64();
-    let mut all: Vec<(&'static str, Duration)> = Vec::new();
-    for (name, d) in times.iter().flat_map(|t| t.phases.iter()) {
-        match all.iter_mut().find(|(n, _)| n == name) {
-            Some((_, t)) => *t += *d,
-            None => all.push((name, *d)),
+    let mut all: h1map::phase::Phases = Vec::new();
+    for &(name, w, c) in times.iter().flat_map(|t| t.phases.iter()) {
+        match all.iter_mut().find(|p| p.0 == name) {
+            Some(p) => {
+                p.1 += w;
+                p.2 += c;
+            }
+            None => all.push((name, w, c)),
         }
     }
-    all.sort_by(|a, b| b.1.cmp(&a.1));
+    all.sort_by(|a, b| b.2.cmp(&a.2).then(b.1.cmp(&a.1)));
     let jobs: Duration = times.iter().map(|t| t.total).sum();
+    let cpu: Duration = all.iter().map(|p| p.2).sum();
     let mut s = format!(
         "# h2 import halo1: where the time went (converter version {CONVERTER_VERSION})\n\
-         wall {:.1} s, {workers} workers, {} jobs, {:.1} s of job time\n",
+         wall {:.1} s, {workers} workers, {} jobs, {:.1} s of job time, {:.1} s of it on a CPU\n",
         secs(&wall),
         times.len(),
-        secs(&jobs)
+        secs(&jobs),
+        secs(&cpu),
     );
     s += "\nphases over every job (each phase's own time):\n";
-    for (n, d) in &all {
-        let pct = if jobs.is_zero() {
+    s += &format!("  {:<24} {:>8} {:>8} {:>6}\n", "", "wall", "cpu", "cpu%");
+    for (n, w, c) in &all {
+        let pct = if cpu.is_zero() {
             0.0
         } else {
-            100.0 * secs(d) / secs(&jobs)
+            100.0 * secs(c) / secs(&cpu)
         };
-        s += &format!("  {n:<24} {:>8.2} s {pct:>5.1}%\n", secs(d));
+        s += &format!("  {n:<24} {:>8.2} {:>8.2} {pct:>5.1}%\n", secs(w), secs(c));
     }
-    s += "\njobs:\n";
+    s += "\njobs (wall; each phase's CPU time):\n";
     for t in times {
         let mut phases = t.phases.clone();
-        phases.sort_by(|a, b| b.1.cmp(&a.1));
+        phases.sort_by(|a, b| b.2.cmp(&a.2));
         let ph: Vec<String> = phases
             .iter()
-            .filter(|(_, d)| d.as_millis() >= 50)
-            .map(|(n, d)| format!("{n} {:.2}", secs(d)))
+            .filter(|p| p.2.as_millis() >= 50)
+            .map(|(n, _, c)| format!("{n} {:.2}", secs(c)))
             .collect();
         s += &format!(
             "  {:<24} {:>7.2} s  {}\n",
@@ -912,7 +956,7 @@ pub fn import(r: &Request, say: &mut dyn FnMut(String)) -> Result<Summary> {
         &mut |s| s.write(&data),
         say,
     );
-    let report = timing_text(wall.elapsed(), workers, &times);
+    let report = timing_text(wall.elapsed(), workers, &times) + &usage_text();
     let path = campaign_dir(r.data).join(TIMING_FILE);
     match std::fs::write(&path, report) {
         Ok(()) => say(format!(
