@@ -296,8 +296,10 @@ Behaviour the tables changed:
 - **Back cancels sign-in.** Back closed the screen through the Controls
   handler without telling the HLE, so the logon stayed pending. The hook
   now takes Back as B.
-- **X checks the code**, as Start does: both are the class's action
-  buttons. The legend will say A only (slice 6).
+- **X no longer checks the code.** X and Start were both the class's
+  action buttons, so a stray X sent a half-typed code. Now only A and
+  Start submit, matching the legend (`signin_screen::ACTION_BUTTONS`,
+  Start alone), and X does nothing.
 
 `h2 ui preview <screen> [--state S] --press up,right,a` steps a page,
 prints each effect and the summary, and draws where it ends as

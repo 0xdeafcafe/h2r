@@ -574,8 +574,8 @@ pub struct SigninState {
 /// screen, and what the HLE does with the effect, typed text and the
 /// server's answers follow [`live_hle::signin`]'s own transitions
 /// ([`live_hle::signin::typed`], [`live_hle::signin::refused`],
-/// [`live_hle::signin::settled`]). A, X and Start all reach the row's
-/// action (X and Start are the class's action buttons); B and Back cancel.
+/// [`live_hle::signin::settled`]). A and Start reach the row's action
+/// ([`ACTION_BUTTONS`]); X does nothing; B and Back cancel.
 pub struct SigninPage;
 
 impl SigninPage {
@@ -595,7 +595,8 @@ impl crate::ui_kit::page::Page for SigninPage {
         match event {
             SigninEvent::Press(input) => {
                 let press = match input {
-                    Input::X | Input::Start => Some(Press::A),
+                    // Start submits as A does; X is nothing here.
+                    Input::Start => Some(Press::A),
                     i => Press::from_event(i.event().0, i.event().1),
                 };
                 let Some(press) = press else {
@@ -760,6 +761,11 @@ pub fn string_at(base: u32, id: u32) -> Option<u32> {
         .map(|i| base + BUFFER * (1 + i as u32))
 }
 
+/// The class's action buttons besides A: only Start, as the legend says.
+/// The class default takes X too, and a stray X would send a half-typed
+/// code.
+pub const ACTION_BUTTONS: [u32; 1] = [list_class::START_BUTTON];
+
 /// The class: one row, the description, our buttons, A as its action.
 pub fn class(rows: Arc<SigninRows>, block: TextBlock) -> ListClass {
     let for_buttons = Arc::clone(&rows);
@@ -790,10 +796,11 @@ pub fn class(rows: Arc<SigninRows>, block: TextBlock) -> ListClass {
     ListClass::with_rows(FEATURE, SCREEN, rows as Arc<dyn Rows>)
         .description(block)
         .action(action)
+        .action_buttons(&ACTION_BUTTONS)
         .buttons(buttons)
 }
 
-/// A on the row (or Start): the press, then closing the screen when it is
+/// A on the row (or Start, never X): the press, then closing the screen when it is
 /// done with.
 async fn act(cx: &Cx, rows: &SigninRows, screen: u32) -> Result<(), EntryError> {
     let effect = rows.press(Press::A);
@@ -1101,6 +1108,18 @@ mod tests {
             Some(base + BUFFER * (KEYBOARD_TITLES + 1))
         );
         assert_eq!(rows.string(base, keyboard::INVITE_TITLE_ID), None);
+    }
+
+    /// On the class, Start runs the action as A does; X is not an action
+    /// button, so a stray X can't send a half-typed code.
+    #[test]
+    fn only_a_and_start_submit_on_the_class() {
+        use list_class::{BUTTON_EVENT, Route, START_BUTTON, X_BUTTON, route};
+        let c = class(Arc::new(SigninRows::new(test_hle())), TEXT_BLOCK);
+        let b = c.behaviour();
+        let at = |button| route(BUTTON_EVENT, button, b.action, b.action_buttons, b.sideways);
+        assert!(matches!(at(START_BUTTON), Route::Action));
+        assert!(matches!(at(X_BUTTON), Route::Controls));
     }
 
     #[test]

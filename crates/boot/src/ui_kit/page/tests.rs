@@ -108,18 +108,19 @@ fn signin_digits_cursor_and_submit() {
                 [Effect::Submit("290000".into())],
                 "Checking... | 2 9 [0] - 0 0 0 | -",
             ),
-            // X and Start are the row's action, as A.
+            // Start submits as A does, as the legend says.
             case(
                 "code",
                 press(&[Start]),
                 [Effect::Submit("000000".into())],
                 "Checking... | [0] 0 0 - 0 0 0 | -",
             ),
+            // X never submits: a stray X must not send a half-typed code.
             case(
-                "code",
+                "code-typed",
                 press(&[X]),
-                [Effect::Submit("000000".into())],
-                "Checking... | [0] 0 0 - 0 0 0 | -",
+                [Effect::None],
+                "Sign in as Chief | 2 9 [0] - 0 0 0 | -",
             ),
             case(
                 "code",

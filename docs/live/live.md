@@ -1319,7 +1319,8 @@ Cancel fails the logon with `INVALID_USER` (the user's HRESULT too).
 d-pad types the code (up and down change the digit, left and right move;
 direction events, kinds 1 to 4, from the d-pad or the left stick, as
 `skulls-arrows` read the controller update), A on the row or Start checks
-it (X too: both are the class's action buttons), B or Back backs out and
+it (not X: the class's action buttons are Start alone, so a stray X can't
+send a half-typed code), B or Back backs out and
 closes (Back used to close the screen without cancelling, which left the
 logon pending). An error shows until the code is edited and comes back
 with the next answer. The page's behaviour is proven offline as a table
