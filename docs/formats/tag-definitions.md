@@ -1305,6 +1305,56 @@ grenades); powerups (Halo 2's handling of over shield and camouflage
 types with Halo 1's times); the first-person arms, since Halo 1's
 first-person graph animates Halo 1's arm nodes.
 
+## Particles and contrails (`prt3`, `cont`)
+
+`crates/tags/src/defs/prt3.txt`: all 2,021 distinct retail `prt3` (4,988
+instances) round-trip byte-identical. The root's fields are named from
+the engine's reader, the particle draw callback `0x00224550`
+([effects.md](effects.md), "prt3 root"): the five properties are colour,
+alpha, size, rotation and sprite frame; the flags, the sequence range,
+the collision and death effects, the input mask, the quad and the UV
+window. The nested particle systems are `effe`'s record (and use its
+`struct property`, so the file follows `effe.txt`); the compiled shader
+at `+0x8c` is `shad`'s postprocess layout but for two strides (V, the
+schema: lod elements `0x8` and pass elements `0x4` where `shad`'s are
+`0x6` and `0x2`). Two words the schema reads as raw in `prt3` are `raw`
+here: an emitter's `+0x68` (the input pair of its seventh property) and an
+implementation's `+0x4` (its stage-state and pixel-constant ranges).
+
+**The compiled particle shader.** A particle's `postprocess` is what
+the tag compiler makes of its `stem` and parameters; with no animated
+parameter it follows one rule from the stem (V: 533 retail particles on
+05a, Coagulation and Beaver Creek, the six with animated parameters
+aside; `h1objects` `tests/particles_disc.rs`
+`retail_particle_shaders_compile_from_their_stems`):
+
+- one `bitmaps`, `colors` and `vectors` element per instance source the
+  stem's bindings name, through each implementation's ranges;
+- `lods`, `layers` and `passes` hold the stem's own layer, pass and
+  implementation ranges (the lod's animated-layer mask zero), one empty
+  `implementations` element per stem implementation;
+- a bitmap's `lod_offset` is `log2(max(width, height))` of its first
+  image times `ln(2)^2` (5 to 8 times `ln(2)^2` on 32 to 256 pixel
+  bitmaps);
+- `parameter_bitmaps` five entries (`0` then `-1`), `parameter_colors` two
+  zero colours and `parameter_scalars` six zeros.
+
+The colour and vector values are the parameters' compiled defaults; 502
+of the 533 hold their stem's most common set. A lod's `+0x6` and a pass's
+`+0x2` vary on retail and nothing reads them.
+`h1objects::particles::particle_postprocess` writes this.
+
+`crates/tags/src/defs/cont.txt`: all 34 distinct retail `cont`
+round-trip (a `0xf0` root, the bitmap at `+0x30` and `+0x88`, `0x40`
+points each with a `pphy` at `+0x10`). The spans are named by where they
+sit in Halo 1's `cont` (`0x144`, points `0x68`), which Halo 2's compacts
+(V, the same contrails of both games side by side): root `+0x4..+0x30`
+is Halo 1's `+0x4..+0x30`, `+0x38` Halo 1's `+0x40`, `+0x3c..+0x60` zero
+on every retail tag, `+0x60..+0x88` Halo 1's `+0xa8..+0xd0`, `+0x90..+0xe8`
+Halo 1's `+0xe0..+0x138`; a point's `+0x0..+0x10` and `+0x18..+0x40` are
+Halo 1's `+0x0..+0x10` and `+0x40..+0x68`. The fields' meanings are not
+read from the engine yet.
+
 ## Which converted objects use the definitions
 
 | Groups | Path | Why |
