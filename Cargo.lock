@@ -53,12 +53,16 @@ dependencies = [
  "agent-proto",
  "engine",
  "feature",
+ "hot-render",
+ "hot-tags",
  "input",
  "live-proto",
  "live-telemetry",
+ "map",
  "runtime",
  "serde",
  "serde_json",
+ "tags",
  "timeline",
  "xapi",
 ]
@@ -635,6 +639,8 @@ dependencies = [
  "feature",
  "font",
  "gfx",
+ "hot-render",
+ "hot-tags",
  "iced-x86",
  "input",
  "ir",
@@ -1370,6 +1376,7 @@ dependencies = [
  "anyhow",
  "app",
  "gfx",
+ "hot-render",
  "iced-x86",
  "ir",
  "kernel",
@@ -2719,6 +2726,28 @@ dependencies = [
  "map",
  "thiserror 2.0.21",
  "variants",
+]
+
+[[package]]
+name = "hot-render"
+version = "0.1.0"
+dependencies = [
+ "naga",
+ "serde",
+ "serde_json",
+ "shaders",
+]
+
+[[package]]
+name = "hot-tags"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "map",
+ "runtime",
+ "serde",
+ "serde_json",
+ "tags",
 ]
 
 [[package]]

@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 
 mod client;
 mod endpoint;
+pub mod hot;
 mod load;
 mod pad;
 mod render;

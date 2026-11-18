@@ -69,6 +69,7 @@ or a short form:
                          function, hits and instructions
   render                 render.stats: in-between frames and why they held,
                          the pipelined render, native render path calls
+{HOT}
 
 Input calls need no claim while nobody holds control; once a connection
 does, only it may send them. Queued steps outlive the connection and play out.
@@ -79,6 +80,11 @@ else the cache directory's h2recomp/agent.sock, where `h2 serve` listens
 by default. Results print as
 JSON, one per line in scripts; an error prints to stderr and exits 1 (a
 script stops at its first error).";
+
+/// [`USAGE`] with the hot-iteration forms (`agent_hot_cmd`) in place.
+fn usage() -> String {
+    USAGE.replace("{HOT}", crate::agent_hot_cmd::USAGE)
+}
 
 pub fn run(args: Vec<String>) -> Result<()> {
     let mut socket = None;
@@ -110,12 +116,12 @@ pub fn run(args: Vec<String>) -> Result<()> {
                         .context("--timeout needs a positive number of seconds")?,
                 );
             }
-            "-h" | "--help" => bail!("{USAGE}"),
+            "-h" | "--help" => bail!("{}", usage()),
             _ => rest.push(a),
         }
     }
     let Some(first) = rest.first().cloned() else {
-        bail!("{USAGE}")
+        bail!("{}", usage())
     };
     let path = socket.unwrap_or_else(agent_proto::default_socket);
     let mut c = Client::connect(&path).with_context(|| {
@@ -157,6 +163,7 @@ fn looks_like_host(w: &str) -> bool {
             && !w.starts_with("session.")
             && !w.starts_with("features.")
             && !w.starts_with("load.")
+            && !w.starts_with("edit.")
             && !w.starts_with("render.")
     }
 }
@@ -360,6 +367,9 @@ fn number(s: Option<&String>, what: &str) -> Result<u64> {
 
 /// A call's method and params from its words.
 fn parse_call(words: &[String]) -> Result<(String, Value)> {
+    if let Some(hot) = crate::agent_hot_cmd::parse(words) {
+        return hot;
+    }
     let name = words[0].as_str();
     let arg = words.get(1);
     let extra = |n: usize| -> Result<()> {
@@ -521,7 +531,7 @@ fn parse_call(words: &[String]) -> Result<(String, Value)> {
             extra(2)?;
             return Ok((m.into(), json_arg(arg)?));
         }
-        other => bail!("{other}: not a method or short form\n\n{USAGE}"),
+        other => bail!("{other}: not a method or short form\n\n{}", usage()),
     };
     extra(2)?;
     Ok((m.into(), p))

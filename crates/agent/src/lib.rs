@@ -24,6 +24,7 @@
 
 mod capture;
 mod exec;
+pub mod hot;
 mod loads;
 mod reader;
 pub mod render;

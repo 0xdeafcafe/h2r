@@ -16,6 +16,12 @@ live-telemetry = { path = "../live-telemetry" }
 timeline = { path = "../timeline" }
 xapi = { path = "../xapi" }
 input = { path = "../input", default-features = false }
+# Hot iteration: live tag edits and render overrides (src/hot.rs).
+hot-render = { path = "../hot-render" }
+hot-tags = { path = "../hot-tags" }
 
 [dev-dependencies]
 live-proto.workspace = true
+# Synthetic tags laid out by their definitions (src/hot/tests.rs).
+tags.workspace = true
+map.workspace = true

@@ -951,6 +951,7 @@ cache hits, `load.level`.
 - [perf.md](../perf/perf.md), [frame-budget.md](../perf/frame-budget.md)
 - [level-boot.md](level-boot.md), [checkpoints.md](checkpoints.md)
 - [lab.md](lab.md): `h2 lab`, runs on a second Mac over SSH with replays and frame stats
+- [hot-iteration.md](../graphics/hot-iteration.md): `edit.*` (live tag edits) and `render.*` (hot WGSL overrides, parameters, toggles)
 - [hs_vm.md](../engine/hs_vm.md)
 - [docs/live](../live/): the Live service, the other reader of
   `live-telemetry`
