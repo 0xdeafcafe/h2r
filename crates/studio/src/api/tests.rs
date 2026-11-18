@@ -125,21 +125,13 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             json!({"doc": "map", "path": t.path("out/first.map").display().to_string()}),
         ),
         m::SCENARIO_ADD | m::SCENARIO_DUPLICATE | m::TAG_BLOCK_ADD | m::TAG_BLOCK_DUPLICATE => {
-            // Every block of the invented map is full: make room first.
+            // Every block of the invented map is full (the editor does
+            // not grow blocks): make room in the starting locations, which
+            // each example adds to.
             c(
                 m::SCENARIO_DELETE,
                 json!({"block": "starting_locations", "index": 1}),
             );
-            if name != m::SCENARIO_ADD {
-                c(
-                    m::SCENARIO_DELETE,
-                    json!({"block": "netgame_flags", "index": 0}),
-                );
-                c(m::DOC_UNDO, json!({"doc": "map"}));
-                // Undone: the flag is back and its block full again; the
-                // first delete keeps the starting locations' room.
-                c(m::SCENARIO_DELETE, json!({"block": "weapons", "index": 1}));
-            }
         }
         m::DOC_CLOSE | m::PLAYLIST_LIST | m::PLAYLIST_GET | m::PLAYLIST_SET | m::PLAYLIST_ENTRY => {
             c(
@@ -646,7 +638,8 @@ fn tags_list_read_and_follow_references() {
     let e = api
         .call(&mut app, m::TAG_SET, json!({"tag": "weap", "path": "+0x4", "value": 1}))
         .unwrap_err();
-    assert_eq!(e.code, code::INVALID_PARAMS, "{}", e.message);
+    assert_eq!(e.code, code::REFUSED, "{}", e.message);
+    assert!(e.message.contains("shorter than"), "{}", e.message);
     // The scenario's placements still edit as scenario.set.
     call(&mut api, &mut app, m::TAG_SET, json!({"tag": "scnr", "path": "netgame_flags[0].position", "value": [7, 7, 7]}));
     assert_eq!(flag_position(&app), [7.0, 7.0, 7.0]);

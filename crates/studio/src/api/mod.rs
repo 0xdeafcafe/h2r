@@ -227,7 +227,7 @@ pub const METHODS: &[MethodDef] = &[
         "Add an element to a tag block. The scenario's placement blocks work now (refused where they can't grow safely); other tags take the studio-tags registry",
         r#"{"tag":"string","path":"string (a block)","like?":"integer"}"#,
         r#"{"index":"integer"}"#,
-        r#"{"tag":"scnr","path":"netgame_flags","like":0}"#,
+        r#"{"tag":"scnr","path":"starting_locations","like":0}"#,
     ),
     def(
         m::TAG_BLOCK_REMOVE,
@@ -241,7 +241,7 @@ pub const METHODS: &[MethodDef] = &[
         "Duplicate an element of a tag block",
         r#"{"tag":"string","path":"string (a block)","index":"integer"}"#,
         r#"{"index":"integer"}"#,
-        r#"{"tag":"scnr","path":"netgame_flags","index":0}"#,
+        r#"{"tag":"scnr","path":"starting_locations","index":0}"#,
     ),
     def(
         m::SCENARIO_BLOCKS,
@@ -297,7 +297,7 @@ pub const METHODS: &[MethodDef] = &[
         "Duplicate a placement",
         r#"{"block":"string","index":"integer"}"#,
         r#"{"index":"integer"}"#,
-        r#"{"block":"netgame_flags","index":0}"#,
+        r#"{"block":"starting_locations","index":0}"#,
     ),
     def(
         m::SCENARIO_SELECT,
