@@ -104,3 +104,5 @@ pub fn graph_from_map(
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod skin_tests;

@@ -30,7 +30,7 @@ pub(crate) fn u32_at(b: &[u8], o: usize) -> u32 {
 pub(crate) fn f32_at(b: &[u8], o: usize) -> f32 {
     f32::from_bits(u32_at(b, o))
 }
-fn f32s<const N: usize>(b: &[u8], o: usize) -> [f32; N] {
+pub(crate) fn f32s<const N: usize>(b: &[u8], o: usize) -> [f32; N] {
     std::array::from_fn(|i| f32_at(b, o + 4 * i))
 }
 /// A fixed `char[32]` name.
@@ -84,6 +84,20 @@ pub fn quat_i16(b: &[u8], o: usize) -> [f32; 4] {
     let q: [f32; 4] = std::array::from_fn(|i| f32::from(i16_at(b, o + 2 * i)));
     normalize(q)
 }
+/// A Halo 1 rotation in Halo 2's convention: its conjugate.
+///
+/// Halo 1 stores node, marker and animation rotations as the conjugate of
+/// the quaternion Halo 2 (and [`crate::mode::quat_matrix`]) means. On the
+/// disc's bipeds, composing the nodes by Halo 2's rule puts vertices 3x
+/// farther from their own node than the conjugate does (cyborg 0.27 against
+/// 0.084 units), and only the conjugate reproduces the inverse rest frames
+/// Halo 1's cache stores with each node (to 5e-7;
+/// `skin_tests::h1_disc_bipeds_skin`). Everything this module returns is
+/// already converted, so callers compose with Halo 2's rule.
+pub fn h2_rotation(q: [f32; 4]) -> [f32; 4] {
+    [-q[0], -q[1], -q[2], q[3]]
+}
+
 pub(crate) fn normalize(q: [f32; 4]) -> [f32; 4] {
     let l = q.iter().map(|x| x * x).sum::<f32>().sqrt();
     if l > 0.0 && l.is_finite() {
@@ -233,7 +247,7 @@ impl Model {
                             permutation: i[1] as i8,
                             node: i[2] as i8,
                             translation: f32s(i, 4),
-                            rotation: normalize(f32s(i, 0x10)),
+                            rotation: h2_rotation(normalize(f32s(i, 0x10))),
                         })
                         .collect(),
                 })
@@ -247,7 +261,7 @@ impl Model {
                 first_child: i16_at(e, 0x22),
                 parent: i16_at(e, 0x24),
                 translation: f32s(e, 0x28),
-                rotation: normalize(f32s(e, 0x34)),
+                rotation: h2_rotation(normalize(f32s(e, 0x34))),
                 distance_from_parent: f32_at(e, 0x44),
             })
             .collect::<Vec<_>>();
@@ -638,6 +652,13 @@ fn data_ref<'a, M: Memory + ?Sized>(m: &'a M, e: &[u8], at: usize) -> Result<&'a
     m.read(u32_at(e, at + 0xc), size)
 }
 
+/// Every rotation of `frames` in Halo 2's convention ([`h2_rotation`]).
+fn to_h2_rotations(frames: &mut [Vec<Transform>]) {
+    for t in frames.iter_mut().flatten() {
+        t.rotation = h2_rotation(t.rotation);
+    }
+}
+
 fn read_animation<M: Memory + ?Sized>(m: &M, e: &[u8], graph_nodes: usize) -> Result<Animation> {
     need(e, ANIMATION_LEN, "animation")?;
     let name = name32(e, 0);
@@ -674,8 +695,9 @@ fn read_animation<M: Memory + ?Sized>(m: &M, e: &[u8], graph_nodes: usize) -> Re
         let blob = data
             .get(at..)
             .ok_or_else(|| Error::Invalid(format!("{name}: compressed data offset {at:#x}")))?;
-        let (frames, stats) = crate::compressed::decode(blob, frame_count, n, animated)
+        let (mut frames, stats) = crate::compressed::decode(blob, frame_count, n, animated)
             .map_err(|err| Error::Invalid(format!("{name}: {err}")))?;
+        to_h2_rotations(&mut frames);
         return Ok(Animation {
             name,
             kind,
@@ -747,6 +769,7 @@ fn read_animation<M: Memory + ?Sized>(m: &M, e: &[u8], graph_nodes: usize) -> Re
         }
         frames.push(pose);
     }
+    to_h2_rotations(&mut frames);
     Ok(Animation {
         name,
         kind,
