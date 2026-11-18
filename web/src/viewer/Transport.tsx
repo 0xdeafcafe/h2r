@@ -1,7 +1,7 @@
 // Play / pause, the scrubber and the speed for a replay session: the same
 // controls wherever the replay is shown, all driving the one clock. The
 // scrubber carries the timeline's marks (kills, deaths, revert cuts, zone
-// changes); a kill or death mark plays its killcam. `replayKey` gives the
+// changes, cutscenes); a kill or death mark plays its killcam. `replayKey` gives the
 // pages hosting a replay the same keys.
 
 import { For, Show } from "solid-js";
@@ -15,6 +15,7 @@ const MARK_TITLES: Record<TimelineMark["kind"], string> = {
   death: "Death: click to watch it",
   cut: "The game went back to a checkpoint or restarted here",
   zone: "The level changed zone here",
+  cinematic: "A cutscene: playing skips it",
 };
 
 /** The keys a replay answers, wherever it is shown: Space plays, `,` and
@@ -44,6 +45,7 @@ export function replayKey(s: ReplaySession, e: KeyboardEvent): boolean {
 export default function Transport(props: { session: ReplaySession; killColour?: (killer: number | null) => string | undefined }) {
   const s = props.session;
   const at = (tl: ReplayTimeline, tick: number) => `${((tick - tl.startTick) / Math.max(1, tl.durationTicks)) * 100}%`;
+  const span = (tl: ReplayTimeline, m: TimelineMark) => `${(((m.to ?? m.tick) - m.tick) / Math.max(1, tl.durationTicks)) * 100}%`;
   return (
     <Show when={s.timeline()}>
       {(tl) => (
@@ -68,7 +70,7 @@ export default function Transport(props: { session: ReplaySession; killColour?: 
                 {(m) => (
                   <Show
                     when={m.kill}
-                    fallback={<span class={`scrub__mark scrub__mark--${m.kind}`} style={{ left: at(tl(), m.tick) }} title={MARK_TITLES[m.kind]} aria-hidden="true" />}
+                    fallback={<span class={`scrub__mark scrub__mark--${m.kind}`} style={{ left: at(tl(), m.tick), width: m.kind === "cinematic" ? span(tl(), m) : undefined }} title={MARK_TITLES[m.kind]} aria-hidden="true" />}
                   >
                     {(k) => (
                       <button

@@ -26,7 +26,7 @@ async fn built_assets_are_immutable_and_the_app_revalidates() {
     let r = get("/assets/index-Bl7_M9u5.js").await;
     assert_eq!(r.status(), StatusCode::OK);
     assert_eq!(r.headers()["cache-control"], IMMUTABLE);
-    for page in ["/", "/stats/games", "/dash/players"] {
+    for page in ["/", "/games/halo2/games", "/dash/players"] {
         let r = get(page).await;
         assert_eq!(r.status(), StatusCode::OK, "{page}");
         assert_eq!(r.headers()["cache-control"], REVALIDATE, "{page}");

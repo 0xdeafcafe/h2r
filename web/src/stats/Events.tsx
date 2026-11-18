@@ -7,13 +7,15 @@ import { VerifyMark } from "../components/bits";
 import { Crumbs, Panel, Title } from "./Layout";
 import { Pills } from "./Side";
 import { num } from "./fmt";
+import { STATS_NAME } from "../brand";
 import { gameTypeLine } from "../state/gametype";
+import { STATS_ROOT, statsPath } from "../routes";
 
 const CATEGORY: Record<string, string> = {
   AccountCreated: "account", GamertagReserved: "account", TitleFilePublished: "file",
   SignedIn: "presence", PresenceChanged: "presence", SignedOut: "presence", PresenceExpired: "presence",
   GameStarted: "game", PlayerJoined: "game", PlayerLeft: "game", PlayerKilled: "kill", ScoreChanged: "score",
-  GameFrame: "frame", GameEnded: "game",
+  GameFrame: "frame", FrameChunk: "frame", GameEnded: "game",
 };
 
 export default function Events() {
@@ -62,13 +64,13 @@ export default function Events() {
   const v = () => live.verifySummary;
   return (
     <>
-      <Crumbs trail={[["Home", "/stats"], ["Event Log"]]} />
+      <Crumbs trail={[["Home", STATS_ROOT], ["Event Log"]]} />
       <div class="s-cols">
         <aside class="s-left">
           <Title>Event Log</Title>
           <Pills label="Event log" items={[
-            { label: "h2 live Online", href: "/stats" },
-            { label: "Players & Leaderboards", href: "/stats/players" },
+            { label: STATS_NAME, href: STATS_ROOT },
+            { label: "Players & Leaderboards", href: statsPath("/players") },
             { label: "Server Details", href: "/dash/server" },
           ]} />
           <Panel title="Signature Check" sub="verified in this browser">
@@ -159,6 +161,7 @@ function summary(e: WireEvent): string {
       const f = recordedFrame(d);
       return f ? `tick ${f.tick}, ${f.players.length} players` : `tick ${d.tick}`;
     }
+    case "FrameChunk": return `ticks ${d.from_tick}–${d.to_tick}, ${d.frames} frames, ${Math.round(Number(d.bytes) / 1024)} KiB`;
     case "GameEnded": {
       const w = d.winner as { team?: number; player?: number } | null | undefined;
       const who = w ? (w.team !== undefined ? `team ${w.team} won` : `slot ${w.player} won`) : "no winner";

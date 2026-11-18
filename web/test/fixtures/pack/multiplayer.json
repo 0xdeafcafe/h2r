@@ -30,7 +30,11 @@
         ],
         "fire": 1,
         "body": 1.0,
-        "shield": 0.5
+        "shield": 0.5,
+        "anim": {
+          "name": "combat:carbine:any:move_front",
+          "frame": 0.0
+        }
       },
       {
         "index": 1,
@@ -57,7 +61,11 @@
           -0.4375
         ],
         "body": 1.0,
-        "shield": 0.90625
+        "shield": 0.90625,
+        "anim": {
+          "name": "combat:shotgun:any:move_front",
+          "frame": 0.0
+        }
       },
       {
         "index": 2,
@@ -84,7 +92,11 @@
           0.015625
         ],
         "body": 1.0,
-        "shield": 0.96875
+        "shield": 0.96875,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 0.0
+        }
       },
       {
         "index": 3,
@@ -113,7 +125,11 @@
         ],
         "fire": 1,
         "body": 1.0,
-        "shield": 0.5625
+        "shield": 0.5625,
+        "anim": {
+          "name": "combat:energy:any:move_front",
+          "frame": 0.0
+        }
       },
       {
         "index": 4,
@@ -140,7 +156,11 @@
           0.109375
         ],
         "body": 1.0,
-        "shield": 0.125
+        "shield": 0.125,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 0.0
+        }
       },
       {
         "index": 5,
@@ -167,7 +187,11 @@
           0.171875
         ],
         "body": 1.0,
-        "shield": 0.03125
+        "shield": 0.03125,
+        "anim": {
+          "name": "combat:magnum:any:move_front",
+          "frame": 0.0
+        }
       },
       {
         "index": 6,
@@ -196,7 +220,11 @@
         ],
         "fire": 1,
         "body": 1.0,
-        "shield": 0.375
+        "shield": 0.375,
+        "anim": {
+          "name": "combat:plasma:any:move_front",
+          "frame": 0.0
+        }
       },
       {
         "index": 7,
@@ -226,7 +254,11 @@
           -0.203125
         ],
         "body": 1.0,
-        "shield": 0.84375
+        "shield": 0.84375,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 0.0
+        }
       },
       {
         "index": 8,
@@ -253,7 +285,11 @@
           0.171875
         ],
         "body": 1.0,
-        "shield": 1.0
+        "shield": 1.0,
+        "anim": {
+          "name": "combat:shotgun:any:move_front",
+          "frame": 0.0
+        }
       },
       {
         "index": 9,
@@ -282,7 +318,11 @@
         ],
         "fire": 1,
         "body": 1.0,
-        "shield": 0.71875
+        "shield": 0.71875,
+        "anim": {
+          "name": "combat:plasma:any:move_front",
+          "frame": 0.0
+        }
       },
       {
         "index": 10,
@@ -309,7 +349,11 @@
           0.296875
         ],
         "body": 1.0,
-        "shield": 0.21875
+        "shield": 0.21875,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 0.0
+        }
       },
       {
         "index": 11,
@@ -336,7 +380,11 @@
           0.09375
         ],
         "body": 1.0,
-        "shield": 0.0
+        "shield": 0.0,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 0.0
+        }
       },
       {
         "index": 12,
@@ -365,7 +413,11 @@
         ],
         "fire": 1,
         "body": 1.0,
-        "shield": 0.21875
+        "shield": 0.21875,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 0.0
+        }
       },
       {
         "index": 13,
@@ -392,7 +444,11 @@
           -0.0625
         ],
         "body": 1.0,
-        "shield": 0.71875
+        "shield": 0.71875,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 0.0
+        }
       },
       {
         "index": 14,
@@ -419,7 +475,11 @@
           -0.25
         ],
         "body": 1.0,
-        "shield": 1.0
+        "shield": 1.0,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 0.0
+        }
       },
       {
         "index": 15,
@@ -448,7 +508,11 @@
         ],
         "fire": 1,
         "body": 1.0,
-        "shield": 0.8125
+        "shield": 0.8125,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 0.0
+        }
       }
     ],
     "vehicles": [
@@ -649,7 +713,11 @@
         ],
         "fire": 2,
         "body": 1.0,
-        "shield": 0.53125
+        "shield": 0.53125,
+        "anim": {
+          "name": "combat:carbine:any:move_front",
+          "frame": 2.0
+        }
       },
       {
         "index": 1,
@@ -676,7 +744,11 @@
           -0.4375
         ],
         "body": 1.0,
-        "shield": 0.9375
+        "shield": 0.9375,
+        "anim": {
+          "name": "combat:shotgun:any:move_front",
+          "frame": 2.0
+        }
       },
       {
         "index": 2,
@@ -703,7 +775,11 @@
           0.03125
         ],
         "body": 1.0,
-        "shield": 0.9375
+        "shield": 0.9375,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 2.0
+        }
       },
       {
         "index": 3,
@@ -732,7 +808,11 @@
         ],
         "fire": 2,
         "body": 1.0,
-        "shield": 0.5625
+        "shield": 0.5625,
+        "anim": {
+          "name": "combat:energy:any:move_front",
+          "frame": 2.0
+        }
       },
       {
         "index": 4,
@@ -759,7 +839,11 @@
           0.09375
         ],
         "body": 1.0,
-        "shield": 0.09375
+        "shield": 0.09375,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 2.0
+        }
       },
       {
         "index": 5,
@@ -786,7 +870,11 @@
           0.171875
         ],
         "body": 1.0,
-        "shield": 0.03125
+        "shield": 0.03125,
+        "anim": {
+          "name": "combat:magnum:any:move_front",
+          "frame": 2.0
+        }
       },
       {
         "index": 6,
@@ -815,7 +903,11 @@
         ],
         "fire": 2,
         "body": 1.0,
-        "shield": 0.375
+        "shield": 0.375,
+        "anim": {
+          "name": "combat:plasma:any:move_front",
+          "frame": 2.0
+        }
       },
       {
         "index": 7,
@@ -842,7 +934,11 @@
           -0.203125
         ],
         "body": 1.0,
-        "shield": 0.84375
+        "shield": 0.84375,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 2.0
+        }
       },
       {
         "index": 8,
@@ -869,7 +965,11 @@
           0.171875
         ],
         "body": 1.0,
-        "shield": 1.0
+        "shield": 1.0,
+        "anim": {
+          "name": "combat:shotgun:any:move_front",
+          "frame": 2.0
+        }
       },
       {
         "index": 9,
@@ -898,7 +998,11 @@
         ],
         "fire": 2,
         "body": 1.0,
-        "shield": 0.6875
+        "shield": 0.6875,
+        "anim": {
+          "name": "combat:plasma:any:move_front",
+          "frame": 2.0
+        }
       },
       {
         "index": 10,
@@ -925,7 +1029,11 @@
           0.296875
         ],
         "body": 1.0,
-        "shield": 0.21875
+        "shield": 0.21875,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 2.0
+        }
       },
       {
         "index": 11,
@@ -952,7 +1060,11 @@
           0.09375
         ],
         "body": 1.0,
-        "shield": 0.0
+        "shield": 0.0,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 2.0
+        }
       },
       {
         "index": 12,
@@ -981,7 +1093,11 @@
         ],
         "fire": 2,
         "body": 1.0,
-        "shield": 0.25
+        "shield": 0.25,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 2.0
+        }
       },
       {
         "index": 13,
@@ -1008,7 +1124,11 @@
           -0.0625
         ],
         "body": 1.0,
-        "shield": 0.71875
+        "shield": 0.71875,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 2.0
+        }
       },
       {
         "index": 14,
@@ -1035,7 +1155,11 @@
           -0.21875
         ],
         "body": 1.0,
-        "shield": 1.0
+        "shield": 1.0,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 2.0
+        }
       },
       {
         "index": 15,
@@ -1064,7 +1188,11 @@
         ],
         "fire": 2,
         "body": 1.0,
-        "shield": 0.8125
+        "shield": 0.8125,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 2.0
+        }
       }
     ],
     "vehicles": [
@@ -1250,7 +1378,11 @@
         ],
         "fire": 3,
         "body": 1.0,
-        "shield": 0.53125
+        "shield": 0.53125,
+        "anim": {
+          "name": "combat:carbine:any:move_front",
+          "frame": 4.0
+        }
       },
       {
         "index": 1,
@@ -1277,7 +1409,11 @@
           -0.421875
         ],
         "body": 1.0,
-        "shield": 0.9375
+        "shield": 0.9375,
+        "anim": {
+          "name": "combat:shotgun:any:move_front",
+          "frame": 4.0
+        }
       },
       {
         "index": 2,
@@ -1304,7 +1440,11 @@
           0.0625
         ],
         "body": 1.0,
-        "shield": 0.9375
+        "shield": 0.9375,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 4.0
+        }
       },
       {
         "index": 3,
@@ -1333,7 +1473,11 @@
         ],
         "fire": 3,
         "body": 1.0,
-        "shield": 0.53125
+        "shield": 0.53125,
+        "anim": {
+          "name": "combat:energy:any:move_front",
+          "frame": 4.0
+        }
       },
       {
         "index": 4,
@@ -1360,7 +1504,11 @@
           0.09375
         ],
         "body": 1.0,
-        "shield": 0.09375
+        "shield": 0.09375,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 4.0
+        }
       },
       {
         "index": 5,
@@ -1387,7 +1535,11 @@
           0.15625
         ],
         "body": 1.0,
-        "shield": 0.03125
+        "shield": 0.03125,
+        "anim": {
+          "name": "combat:magnum:any:move_front",
+          "frame": 4.0
+        }
       },
       {
         "index": 6,
@@ -1416,7 +1568,11 @@
         ],
         "fire": 3,
         "body": 1.0,
-        "shield": 0.40625
+        "shield": 0.40625,
+        "anim": {
+          "name": "combat:plasma:any:move_front",
+          "frame": 4.0
+        }
       },
       {
         "index": 7,
@@ -1443,7 +1599,11 @@
           -0.21875
         ],
         "body": 1.0,
-        "shield": 0.875
+        "shield": 0.875,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 4.0
+        }
       },
       {
         "index": 8,
@@ -1470,7 +1630,11 @@
           0.171875
         ],
         "body": 1.0,
-        "shield": 1.0
+        "shield": 1.0,
+        "anim": {
+          "name": "combat:shotgun:any:move_front",
+          "frame": 4.0
+        }
       },
       {
         "index": 9,
@@ -1499,7 +1663,11 @@
         ],
         "fire": 3,
         "body": 1.0,
-        "shield": 0.65625
+        "shield": 0.65625,
+        "anim": {
+          "name": "combat:plasma:any:move_front",
+          "frame": 4.0
+        }
       },
       {
         "index": 10,
@@ -1526,7 +1694,11 @@
           0.296875
         ],
         "body": 1.0,
-        "shield": 0.1875
+        "shield": 0.1875,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 4.0
+        }
       },
       {
         "index": 11,
@@ -1553,7 +1725,11 @@
           0.09375
         ],
         "body": 1.0,
-        "shield": 0.0
+        "shield": 0.0,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 4.0
+        }
       },
       {
         "index": 12,
@@ -1585,7 +1761,11 @@
         ],
         "fire": 3,
         "body": 1.0,
-        "shield": 0.28125
+        "shield": 0.28125,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 4.0
+        }
       },
       {
         "index": 13,
@@ -1612,7 +1792,11 @@
           -0.046875
         ],
         "body": 1.0,
-        "shield": 0.75
+        "shield": 0.75,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 4.0
+        }
       },
       {
         "index": 14,
@@ -1639,7 +1823,11 @@
           -0.171875
         ],
         "body": 1.0,
-        "shield": 1.0
+        "shield": 1.0,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 4.0
+        }
       },
       {
         "index": 15,
@@ -1668,7 +1856,11 @@
         ],
         "fire": 3,
         "body": 1.0,
-        "shield": 0.78125
+        "shield": 0.78125,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 4.0
+        }
       }
     ],
     "vehicles": [
@@ -1882,7 +2074,11 @@
         ],
         "fire": 1,
         "body": 1.0,
-        "shield": 0.5625
+        "shield": 0.5625,
+        "anim": {
+          "name": "combat:carbine:any:move_front",
+          "frame": 6.0
+        }
       },
       {
         "index": 1,
@@ -1909,7 +2105,11 @@
           -0.390625
         ],
         "body": 1.0,
-        "shield": 0.96875
+        "shield": 0.96875,
+        "anim": {
+          "name": "combat:shotgun:any:move_front",
+          "frame": 6.0
+        }
       },
       {
         "index": 2,
@@ -1936,7 +2136,11 @@
           0.078125
         ],
         "body": 1.0,
-        "shield": 0.90625
+        "shield": 0.90625,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 6.0
+        }
       },
       {
         "index": 3,
@@ -1965,7 +2169,11 @@
         ],
         "fire": 1,
         "body": 1.0,
-        "shield": 0.5
+        "shield": 0.5,
+        "anim": {
+          "name": "combat:energy:any:move_front",
+          "frame": 6.0
+        }
       },
       {
         "index": 4,
@@ -1992,7 +2200,11 @@
           0.078125
         ],
         "body": 1.0,
-        "shield": 0.09375
+        "shield": 0.09375,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 6.0
+        }
       },
       {
         "index": 5,
@@ -2019,7 +2231,11 @@
           0.15625
         ],
         "body": 1.0,
-        "shield": 0.03125
+        "shield": 0.03125,
+        "anim": {
+          "name": "combat:magnum:any:move_front",
+          "frame": 6.0
+        }
       },
       {
         "index": 6,
@@ -2048,7 +2264,11 @@
         ],
         "fire": 1,
         "body": 1.0,
-        "shield": 0.4375
+        "shield": 0.4375,
+        "anim": {
+          "name": "combat:plasma:any:move_front",
+          "frame": 6.0
+        }
       },
       {
         "index": 7,
@@ -2078,7 +2298,11 @@
           -0.21875
         ],
         "body": 1.0,
-        "shield": 0.875
+        "shield": 0.875,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 6.0
+        }
       },
       {
         "index": 8,
@@ -2105,7 +2329,11 @@
           0.171875
         ],
         "body": 1.0,
-        "shield": 0.96875
+        "shield": 0.96875,
+        "anim": {
+          "name": "combat:shotgun:any:move_front",
+          "frame": 6.0
+        }
       },
       {
         "index": 9,
@@ -2134,7 +2362,11 @@
         ],
         "fire": 1,
         "body": 1.0,
-        "shield": 0.625
+        "shield": 0.625,
+        "anim": {
+          "name": "combat:plasma:any:move_front",
+          "frame": 6.0
+        }
       },
       {
         "index": 10,
@@ -2161,7 +2393,11 @@
           0.296875
         ],
         "body": 1.0,
-        "shield": 0.1875
+        "shield": 0.1875,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 6.0
+        }
       },
       {
         "index": 11,
@@ -2188,7 +2424,11 @@
           0.09375
         ],
         "body": 1.0,
-        "shield": 0.0
+        "shield": 0.0,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 6.0
+        }
       },
       {
         "index": 12,
@@ -2217,7 +2457,11 @@
         ],
         "fire": 1,
         "body": 1.0,
-        "shield": 0.28125
+        "shield": 0.28125,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 6.0
+        }
       },
       {
         "index": 13,
@@ -2244,7 +2488,11 @@
           -0.046875
         ],
         "body": 1.0,
-        "shield": 0.78125
+        "shield": 0.78125,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 6.0
+        }
       },
       {
         "index": 14,
@@ -2271,7 +2519,11 @@
           -0.140625
         ],
         "body": 1.0,
-        "shield": 1.0
+        "shield": 1.0,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 6.0
+        }
       },
       {
         "index": 15,
@@ -2300,7 +2552,11 @@
         ],
         "fire": 1,
         "body": 1.0,
-        "shield": 0.78125
+        "shield": 0.78125,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 6.0
+        }
       }
     ],
     "vehicles": [
@@ -2527,7 +2783,11 @@
         ],
         "fire": 2,
         "body": 1.0,
-        "shield": 0.59375
+        "shield": 0.59375,
+        "anim": {
+          "name": "combat:carbine:any:move_front",
+          "frame": 8.0
+        }
       },
       {
         "index": 1,
@@ -2554,7 +2814,11 @@
           -0.359375
         ],
         "body": 1.0,
-        "shield": 0.96875
+        "shield": 0.96875,
+        "anim": {
+          "name": "combat:shotgun:any:move_front",
+          "frame": 8.0
+        }
       },
       {
         "index": 2,
@@ -2581,7 +2845,11 @@
           0.09375
         ],
         "body": 1.0,
-        "shield": 0.90625
+        "shield": 0.90625,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 8.0
+        }
       },
       {
         "index": 3,
@@ -2610,7 +2878,11 @@
         ],
         "fire": 2,
         "body": 1.0,
-        "shield": 0.46875
+        "shield": 0.46875,
+        "anim": {
+          "name": "combat:energy:any:move_front",
+          "frame": 8.0
+        }
       },
       {
         "index": 4,
@@ -2637,7 +2909,11 @@
           0.078125
         ],
         "body": 1.0,
-        "shield": 0.0625
+        "shield": 0.0625,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 8.0
+        }
       },
       {
         "index": 5,
@@ -2664,7 +2940,11 @@
           0.140625
         ],
         "body": 1.0,
-        "shield": 0.0625
+        "shield": 0.0625,
+        "anim": {
+          "name": "combat:magnum:any:move_front",
+          "frame": 8.0
+        }
       },
       {
         "index": 6,
@@ -2693,7 +2973,11 @@
         ],
         "fire": 2,
         "body": 1.0,
-        "shield": 0.4375
+        "shield": 0.4375,
+        "anim": {
+          "name": "combat:plasma:any:move_front",
+          "frame": 8.0
+        }
       },
       {
         "index": 7,
@@ -2720,7 +3004,11 @@
           -0.21875
         ],
         "body": 1.0,
-        "shield": 0.90625
+        "shield": 0.90625,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 8.0
+        }
       },
       {
         "index": 8,
@@ -2747,7 +3035,11 @@
           0.171875
         ],
         "body": 1.0,
-        "shield": 0.96875
+        "shield": 0.96875,
+        "anim": {
+          "name": "combat:shotgun:any:move_front",
+          "frame": 8.0
+        }
       },
       {
         "index": 9,
@@ -2776,7 +3068,11 @@
         ],
         "fire": 2,
         "body": 1.0,
-        "shield": 0.625
+        "shield": 0.625,
+        "anim": {
+          "name": "combat:plasma:any:move_front",
+          "frame": 8.0
+        }
       },
       {
         "index": 10,
@@ -2803,7 +3099,11 @@
           0.28125
         ],
         "body": 1.0,
-        "shield": 0.15625
+        "shield": 0.15625,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 8.0
+        }
       },
       {
         "index": 11,
@@ -2830,7 +3130,11 @@
           0.09375
         ],
         "body": 1.0,
-        "shield": 0.0
+        "shield": 0.0,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 8.0
+        }
       },
       {
         "index": 12,
@@ -2859,7 +3163,11 @@
         ],
         "fire": 2,
         "body": 1.0,
-        "shield": 0.3125
+        "shield": 0.3125,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 8.0
+        }
       },
       {
         "index": 13,
@@ -2886,7 +3194,11 @@
           -0.046875
         ],
         "body": 1.0,
-        "shield": 0.78125
+        "shield": 0.78125,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 8.0
+        }
       },
       {
         "index": 14,
@@ -2916,7 +3228,11 @@
           -0.09375
         ],
         "body": 1.0,
-        "shield": 1.0
+        "shield": 1.0,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 8.0
+        }
       },
       {
         "index": 15,
@@ -2945,7 +3261,11 @@
         ],
         "fire": 2,
         "body": 1.0,
-        "shield": 0.75
+        "shield": 0.75,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 8.0
+        }
       }
     ],
     "vehicles": [
@@ -3159,7 +3479,11 @@
         ],
         "fire": 3,
         "body": 1.0,
-        "shield": 0.625
+        "shield": 0.625,
+        "anim": {
+          "name": "combat:carbine:any:move_front",
+          "frame": 10.0
+        }
       },
       {
         "index": 1,
@@ -3186,7 +3510,11 @@
           -0.3125
         ],
         "body": 1.0,
-        "shield": 0.96875
+        "shield": 0.96875,
+        "anim": {
+          "name": "combat:shotgun:any:move_front",
+          "frame": 10.0
+        }
       },
       {
         "index": 2,
@@ -3213,7 +3541,11 @@
           0.109375
         ],
         "body": 1.0,
-        "shield": 0.90625
+        "shield": 0.90625,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 10.0
+        }
       },
       {
         "index": 3,
@@ -3245,7 +3577,11 @@
         ],
         "fire": 3,
         "body": 1.0,
-        "shield": 0.46875
+        "shield": 0.46875,
+        "anim": {
+          "name": "combat:energy:any:move_front",
+          "frame": 10.0
+        }
       },
       {
         "index": 4,
@@ -3272,7 +3608,11 @@
           0.0625
         ],
         "body": 1.0,
-        "shield": 0.0625
+        "shield": 0.0625,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 10.0
+        }
       },
       {
         "index": 5,
@@ -3299,7 +3639,11 @@
           0.140625
         ],
         "body": 1.0,
-        "shield": 0.0625
+        "shield": 0.0625,
+        "anim": {
+          "name": "combat:magnum:any:move_front",
+          "frame": 10.0
+        }
       },
       {
         "index": 6,
@@ -3328,7 +3672,11 @@
         ],
         "fire": 3,
         "body": 1.0,
-        "shield": 0.46875
+        "shield": 0.46875,
+        "anim": {
+          "name": "combat:plasma:any:move_front",
+          "frame": 10.0
+        }
       },
       {
         "index": 7,
@@ -3355,7 +3703,11 @@
           -0.21875
         ],
         "body": 1.0,
-        "shield": 0.90625
+        "shield": 0.90625,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 10.0
+        }
       },
       {
         "index": 8,
@@ -3382,7 +3734,11 @@
           0.171875
         ],
         "body": 1.0,
-        "shield": 0.96875
+        "shield": 0.96875,
+        "anim": {
+          "name": "combat:shotgun:any:move_front",
+          "frame": 10.0
+        }
       },
       {
         "index": 9,
@@ -3411,7 +3767,11 @@
         ],
         "fire": 3,
         "body": 1.0,
-        "shield": 0.59375
+        "shield": 0.59375,
+        "anim": {
+          "name": "combat:plasma:any:move_front",
+          "frame": 10.0
+        }
       },
       {
         "index": 10,
@@ -3438,7 +3798,11 @@
           0.28125
         ],
         "body": 1.0,
-        "shield": 0.125
+        "shield": 0.125,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 10.0
+        }
       },
       {
         "index": 11,
@@ -3465,7 +3829,11 @@
           0.078125
         ],
         "body": 1.0,
-        "shield": 0.0
+        "shield": 0.0,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 10.0
+        }
       },
       {
         "index": 12,
@@ -3494,7 +3862,11 @@
         ],
         "fire": 3,
         "body": 1.0,
-        "shield": 0.34375
+        "shield": 0.34375,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 10.0
+        }
       },
       {
         "index": 13,
@@ -3521,7 +3893,11 @@
           -0.046875
         ],
         "body": 1.0,
-        "shield": 0.8125
+        "shield": 0.8125,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 10.0
+        }
       },
       {
         "index": 14,
@@ -3548,7 +3924,11 @@
           -0.03125
         ],
         "body": 1.0,
-        "shield": 1.0
+        "shield": 1.0,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 10.0
+        }
       },
       {
         "index": 15,
@@ -3580,7 +3960,11 @@
         ],
         "fire": 3,
         "body": 1.0,
-        "shield": 0.71875
+        "shield": 0.71875,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 10.0
+        }
       }
     ],
     "vehicles": [

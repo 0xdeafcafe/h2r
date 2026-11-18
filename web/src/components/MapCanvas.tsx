@@ -1,4 +1,4 @@
-import { createEffect, onCleanup, onMount } from "solid-js";
+import { Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
 import type { FrameObject, MapOutline } from "../api/types";
 import type { SampledHit, SampledMachine, SampledPlayer, SampledVehicle } from "../state/frames";
 import type { MapFeatures } from "../map/features";
@@ -24,6 +24,8 @@ export interface MapFrame {
   machines?: SampledMachine[];
   /** Scenario objects moved or gone (`Frame.objects`), when the frames have them. */
   objects?: FrameObject[] | null;
+  /** A cutscene is playing: there is no one to draw, and the views say so. */
+  cinematic?: boolean;
 }
 
 export default function MapCanvas(props: {
@@ -54,6 +56,8 @@ export default function MapCanvas(props: {
   let hover: number | null = null;
   const shots = new ShotQueue();
   const feed = new EventFeed();
+  // A cutscene: the frames hold no one, and the map says why.
+  const [cutscene, setCutscene] = createSignal(false);
   const still = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   // Re-fit from scratch when the map outline changes.
@@ -94,6 +98,7 @@ export default function MapCanvas(props: {
       if (props.still && now - drawnAt < 500 && view.ready) return;
       drawnAt = now;
       const f = props.frame(now);
+      if (!!f.cinematic !== cutscene()) setCutscene(!!f.cinematic);
       // In flat style, hovering a dot is how a name shows: find the nearest
       // player to the pointer in canvas pixels.
       if (flat) {
@@ -146,6 +151,9 @@ export default function MapCanvas(props: {
   return (
     <div ref={wrap} class={`map-canvas ${props.mini ? "map-canvas--mini" : ""} ${props.class ?? ""}`}>
       <canvas ref={canvas} role="img" aria-label={props.label ?? "Live map"} />
+      <Show when={cutscene() && !props.mini}>
+        <div class="map-cutscene" role="status">Cutscene</div>
+      </Show>
     </div>
   );
 }

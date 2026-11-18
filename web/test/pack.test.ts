@@ -10,7 +10,7 @@ const load = (name: string) => ({
 });
 
 describe("packed frames", () => {
-  for (const name of ["multiplayer", "campaign", "odd", "v1-multiplayer", "v2-multiplayer"]) {
+  for (const name of ["multiplayer", "campaign", "odd", "cinematic", "v1-multiplayer", "v2-multiplayer", "v3-multiplayer"]) {
     test(`decodes the Rust encoder's ${name} stream exactly`, () => {
       const { bin, json } = load(name);
       const d = new FrameDecoder();
@@ -38,6 +38,10 @@ describe("packed frames", () => {
     expect(p.vel).toEqual([-999, 0.015625, 12.5]);
     expect(p.seat).toBe(63);
     expect(p.actions_ago).toEqual([900, 31, 30, 7, 2, 1, 0, 0]);
+    expect(p.anim).toEqual({ name: "s_kill:front:gut-2", frame: 32767 });
+    const d3 = new FrameDecoder();
+    const v3 = records(load("v3-multiplayer").bin).map((r) => d3.decode(r).frame);
+    expect(v3.every((f) => f.players.every((x) => x.anim === undefined && x.vel !== undefined))).toBe(true);
     const d2 = new FrameDecoder();
     const v2 = records(load("v2-multiplayer").bin).map((r) => d2.decode(r).frame);
     expect(v2.every((f) => f.cut === undefined && f.players.every((x) => x.vel === undefined && x.fire === undefined))).toBe(true);
@@ -45,6 +49,17 @@ describe("packed frames", () => {
     const mixed = new FrameDecoder();
     mixed.decode(records(load("multiplayer").bin)[0]!);
     expect(() => mixed.decode(records(load("v2-multiplayer").bin)[1]!)).toThrow(PackError);
+  });
+
+  test("cinematic frames are version 5 keyframes in and out; the rest stay version 4", () => {
+    const recs = records(load("cinematic").bin);
+    // Version in the low four bits, the keyframe bit next.
+    expect(recs.map((r) => r[0]! & 0xf)).toEqual([4, 5, 5, 4]);
+    expect(recs.map((r) => (r[0]! >> 4) & 1)).toEqual([1, 1, 0, 1]);
+    const d = new FrameDecoder();
+    const frames = recs.map((r) => d.decode(r).frame);
+    expect(frames.map((f) => f.cinematic === true)).toEqual([false, true, true, false]);
+    expect(frames.every((f) => f.players.length === 0 && f.actors === undefined)).toBe(true);
   });
 
   test("a dropped delta waits for the next keyframe", () => {

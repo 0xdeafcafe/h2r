@@ -12,6 +12,7 @@
     "test": "bun test",
     "bench:telemetry": "bun run bench/telemetry.bench.ts",
     "banner": "bun run banner/run.ts",
+    "brand": "bun run brand/run.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

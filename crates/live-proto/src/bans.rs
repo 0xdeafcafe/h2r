@@ -30,11 +30,14 @@ pub fn stream(target: Xuid) -> String {
 /// The longest reason or note kept, in characters.
 pub const MAX_TEXT: usize = 500;
 
-/// Token scopes a banned account may still use: reading, its recovery
-/// secret, its cloud saves and its own logs.
-pub const STILL_ALLOWED: [&str; 4] = [
+/// Token scopes a banned account may still use: reading, its sign-in
+/// code secret, its sign-ins (seeing them and signing others out), its
+/// cloud saves and its own logs.
+pub const STILL_ALLOWED: [&str; 6] = [
     crate::lxm::READ,
     crate::lxm::RECOVERY_READ,
+    crate::lxm::SIGNINS_READ,
+    crate::lxm::SIGNINS_WRITE,
     crate::lxm::STORAGE_READ,
     crate::lxm::LOG_READ,
 ];
@@ -144,6 +147,8 @@ mod tests {
         for m in [
             lxm::READ,
             lxm::RECOVERY_READ,
+            lxm::SIGNINS_READ,
+            lxm::SIGNINS_WRITE,
             lxm::STORAGE_READ,
             lxm::LOG_READ,
         ] {

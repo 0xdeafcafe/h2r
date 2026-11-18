@@ -74,7 +74,26 @@ export function gameArt(root: string, manifest: GameArtManifest): GameArt {
   return { root, manifest, get, has: (key) => get(key) !== null };
 }
 
-type Fetch = (url: string) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
+type Fetch = (url: string) => Promise<{ ok: boolean; status: number; url?: string; json(): Promise<unknown> }>;
+
+/** Where the art's files are: the directory the manifest was finally
+ *  fetched from. A server that published its art (the Worker, or a server
+ *  with a public bucket) redirects `manifest.json` to the published copy
+ *  (`<bucket>/art/<stamp>/manifest.json`), so every other file is fetched
+ *  from there directly instead of through a redirect each; the published
+ *  files are immutable and CORS-readable (docs/live/live-worker.md).
+ *  Otherwise, or when the final address is unknown, `root`. */
+export function artBase(root: string, finalUrl: string | undefined): string {
+  if (!finalUrl) return root;
+  try {
+    const u = new URL(finalUrl);
+    if ((u.protocol !== "https:" && u.protocol !== "http:") || !u.pathname.endsWith("/manifest.json")) return root;
+    u.search = ""; u.hash = "";
+    return u.href.slice(0, u.href.length - "manifest.json".length);
+  } catch {
+    return root;
+  }
+}
 
 /** Loads a server's game art. Null when it has none (404), won't give it to
  *  this client, can't be reached, or sends something unreadable: all of
@@ -87,7 +106,7 @@ export async function loadGameArt(serverBase: string, fetcher: Fetch = (u) => fe
     const res = await fetcher(root + "manifest.json");
     if (!res.ok) return null;
     const manifest = parseManifest(await res.json());
-    return manifest ? gameArt(root, manifest) : null;
+    return manifest ? gameArt(artBase(root, res.url), manifest) : null;
   } catch {
     return null;
   }

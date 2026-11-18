@@ -284,3 +284,22 @@ fn writes_are_only_what_the_user_asked() {
     enter(&s, "features");
     assert!(fake.writes().is_empty(), "{:?}", fake.writes());
 }
+
+#[test]
+fn a_touchpad_click_alone_opens_it_without_selecting() {
+    let mut r = Rig::new();
+    let st = r.sync(&[], click());
+    assert!(r.s.is_open(), "the click alone opens the menu");
+    assert_eq!(st.buttons, Default::default());
+    // Held: no select, no close.
+    r.sync(&[], click());
+    r.sync(&[HostButton::Start], click());
+    assert!(r.s.is_open(), "Options with the opening click does not close it");
+    assert_eq!(r.s.lock().menu.current().map(|x| x.id.clone()), None);
+    // Let go, then a new click selects the row under the cursor.
+    r.idle();
+    r.sync(&[], click());
+    r.idle();
+    assert!(r.s.is_open());
+    assert!(r.s.lock().menu.current().is_some(), "a later click selects");
+}

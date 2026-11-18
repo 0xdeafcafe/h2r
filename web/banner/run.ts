@@ -19,6 +19,7 @@ import { join, normalize, resolve, sep, extname } from "node:path";
 import { COMPOSITIONS, SHOTS, check, type Shot } from "./plan";
 import { applyBanners, type Manifest } from "./manifest";
 import type { BannerRequest, BannerResult } from "./page";
+import { Cdp, defaultChrome, launchChrome } from "./chrome";
 
 const WEB = resolve(import.meta.dir, "..");
 
@@ -32,18 +33,6 @@ function defaultArt(): string {
     ? join(homedir(), "Library/Application Support/h2recomp/live/server")
     : join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local/share"), "h2recomp/live/server"));
   return join(data, "game-art");
-}
-
-function defaultChrome(): string {
-  if (process.env.CHROME) return process.env.CHROME;
-  const found = [
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    "/Applications/Chromium.app/Contents/MacOS/Chromium",
-    "/usr/bin/google-chrome",
-    "/usr/bin/chromium",
-  ].find((p) => existsSync(p));
-  if (!found) throw new Error("no Chrome found: pass --chrome PATH or set $CHROME");
-  return found;
 }
 
 const TYPES: Record<string, string> = { ".json": "application/json", ".png": "image/png", ".jpg": "image/jpeg", ".glb": "model/gltf-binary" };
@@ -62,56 +51,6 @@ function serveArt(dir: string): Plugin {
       });
     },
   };
-}
-
-/** A minimal DevTools protocol client over one WebSocket. */
-class Cdp {
-  private id = 0;
-  private waiting = new Map<number, { ok: (v: any) => void; fail: (e: Error) => void }>();
-  private constructor(private ws: WebSocket) {
-    ws.onmessage = (e) => {
-      const m = JSON.parse(String(e.data));
-      // The page's console, for --verbose.
-      if (m.method === "Runtime.consoleAPICalled" && process.argv.includes("--verbose")) console.error("page:", ...m.params.args.map((a: any) => a.value ?? a.description));
-      const w = m.id !== undefined ? this.waiting.get(m.id) : undefined;
-      if (!w) return;
-      this.waiting.delete(m.id);
-      if (m.error) w.fail(new Error(m.error.message)); else w.ok(m.result);
-    };
-  }
-  static open(url: string): Promise<Cdp> {
-    return new Promise((ok, fail) => {
-      const ws = new WebSocket(url);
-      ws.onopen = () => ok(new Cdp(ws));
-      ws.onerror = () => fail(new Error(`could not reach ${url}`));
-    });
-  }
-  send(method: string, params: object = {}, sessionId?: string): Promise<any> {
-    const id = ++this.id;
-    this.ws.send(JSON.stringify({ id, method, params, sessionId }));
-    return new Promise((ok, fail) => this.waiting.set(id, { ok, fail }));
-  }
-  close() { this.ws.close(); }
-}
-
-async function launchChrome(path: string, profile: string): Promise<{ proc: ReturnType<typeof Bun.spawn>; ws: string }> {
-  const proc = Bun.spawn([path,
-    "--headless=new", "--remote-debugging-port=0", `--user-data-dir=${profile}`,
-    "--no-first-run", "--no-default-browser-check", "--ignore-gpu-blocklist", "--enable-webgl",
-    "--hide-scrollbars", "--mute-audio", "--window-size=1920,1080", "about:blank"],
-  { stdout: "ignore", stderr: "pipe" });
-  const reader = proc.stderr.getReader();
-  let text = "";
-  const deadline = Date.now() + 20_000;
-  while (Date.now() < deadline) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    text += new TextDecoder().decode(value);
-    const m = /DevTools listening on (ws:\/\/\S+)/.exec(text);
-    if (m) { reader.releaseLock(); return { proc, ws: m[1]! }; }
-  }
-  proc.kill();
-  throw new Error(`Chrome did not start:\n${text}`);
 }
 
 function dataUrlBytes(url: string): Buffer {

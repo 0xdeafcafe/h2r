@@ -1005,6 +1005,197 @@ fn clips_are_planned_from_actions_and_animation_names() {
 }
 
 #[test]
+fn directional_and_crouched_movement_follow_each_class_s_states() {
+    let st =
+        |m: &str, c: &str, t: &str, a: &str| -> Stance { [m.into(), c.into(), t.into(), a.into()] };
+    let stances = vec![
+        st("combat", "rifle", "any", "move_front"),
+        st("combat", "rifle", "any", "move_left"),
+        st("combat", "rifle", "any", "move_right"),
+        st("combat", "rifle", "any", "move_back"),
+        st("combat", "rifle", "any", "walk_left"),
+        st("crouch", "rifle", "any", "idle"),
+        st("crouch", "rifle", "any", "move_front"),
+        st("crouch", "rifle", "any", "move_back"),
+        // Only type `any` counts, as for `run`.
+        st("combat", "pistol", "hp", "move_left"),
+        st("crouch", "pistol", "any", "move_left"),
+        st("combat", "dual", "any", "move_left"),
+    ];
+    let plan = plan_clips(&stances, &[]);
+    let got: Vec<(&str, ClipFrom)> = plan.iter().map(|(n, f)| (n.as_str(), *f)).collect();
+    assert_eq!(
+        got,
+        [
+            ("rifle:run", ClipFrom::Action(0)),
+            ("rifle:crouch", ClipFrom::Action(5)),
+            // After the class's other states, in this order; missing
+            // actions (walk_back, walk_right, crouch left and right) are
+            // left out.
+            ("rifle:run_back", ClipFrom::Action(3)),
+            ("rifle:run_left", ClipFrom::Action(1)),
+            ("rifle:run_right", ClipFrom::Action(2)),
+            ("rifle:walk_left", ClipFrom::Action(4)),
+            ("rifle:crouch_run", ClipFrom::Action(6)),
+            ("rifle:crouch_back", ClipFrom::Action(7)),
+            ("pistol:crouch_left", ClipFrom::Action(9)),
+        ]
+    );
+    for (name, _) in &plan {
+        let moving = !matches!(name.as_str(), "rifle:run" | "rifle:crouch");
+        assert_eq!(is_move_clip(name), moving, "{name}");
+    }
+    assert_eq!(clip_state("rifle:run_left"), "run_left");
+}
+
+#[test]
+fn every_seat_mode_gets_one_pose_from_its_idle() {
+    for seat in [
+        "warthog_d",
+        "warthog_g",
+        "spectre_p",
+        "scorpion_p_lf",
+        "c_turret_ap_d",
+        "pelican_p_l01",
+        "guntower_d",
+    ] {
+        assert!(is_seat_mode(seat), "{seat}");
+    }
+    for not in ["combat", "crouch", "flaming", "any", "d_warthog", "warthog"] {
+        assert!(!is_seat_mode(not), "{not}");
+    }
+    let st =
+        |m: &str, c: &str, t: &str, a: &str| -> Stance { [m.into(), c.into(), t.into(), a.into()] };
+    let stances = vec![
+        st("combat", "rifle", "any", "idle"),
+        st("warthog_d", "any", "any", "enter"),
+        st("warthog_d", "any", "any", "idle"),
+        // A passenger holds a weapon: the rifle idle beats `any`'s and the
+        // pistol's, type `any` beats another type.
+        st("warthog_p", "pistol", "any", "idle"),
+        st("warthog_p", "rifle", "br", "idle"),
+        st("warthog_p", "any", "any", "idle"),
+        st("warthog_p", "rifle", "any", "idle"),
+        // No rifle or `any`: the first class it has.
+        st("ghost_d", "unarmed", "any", "idle"),
+        st("ghost_d", "pistol", "any", "idle"),
+        // No idle: no pose.
+        st("banshee_d", "any", "any", "enter"),
+        // Not a seat.
+        st("flaming", "any", "any", "idle"),
+    ];
+    let plan = plan_clips(&stances, &[]);
+    let got: Vec<(&str, ClipFrom)> = plan.iter().map(|(n, f)| (n.as_str(), *f)).collect();
+    assert_eq!(
+        got,
+        [
+            // After the shared states, before the classes, in graph order.
+            ("any:seat_warthog_d", ClipFrom::Action(2)),
+            ("any:seat_warthog_p", ClipFrom::Action(6)),
+            ("any:seat_ghost_d", ClipFrom::Action(7)),
+            ("rifle:idle", ClipFrom::Action(0)),
+        ]
+    );
+    assert!(is_seat_clip("any:seat_warthog_d"));
+    assert!(!is_seat_clip("rifle:idle"));
+    assert!(!is_seat_clip("any:die"));
+    // Seat poses are shared: dropping classes for size never takes them.
+    assert_eq!(clip_class("any:seat_warthog_d"), SHARED_CLASS);
+}
+
+#[test]
+fn seat_poses_hold_one_frame() {
+    assert_eq!(sampled_frames("any:seat_warthog_d", 40), 1);
+    assert_eq!(sampled_frames("any:seat_warthog_d", 0), 0);
+    assert_eq!(sampled_frames("rifle:run", 22), 22);
+    assert_eq!(sampled_frames("any:die", 50), 50);
+    // In the glb: one key at time 0 on every channel.
+    let src = biped_source();
+    let (names, pose) = pose_of(&[("arm", Some(yaw(30.0)))]);
+    let seat = ClipPoses {
+        name: "any:seat_warthog_d".into(),
+        fps: ANIMATION_FPS,
+        graph_names: vec!["arm".into()],
+        poses: vec![arm_frame(60.0)],
+        overlay: false,
+    };
+    let model = biped(&src, &names, &pose, &[seat]).unwrap();
+    let g = gltf::Gltf::from_slice(&write_glb(&model)).expect("valid glTF");
+    let anims: Vec<_> = g.animations().collect();
+    assert_eq!(anims.len(), 1);
+    assert_eq!(anims[0].name(), Some("any:seat_warthog_d"));
+    let mut channels = 0;
+    for c in anims[0].channels() {
+        let input = c.sampler().input();
+        assert_eq!(input.count(), 1);
+        assert_eq!(input.max().unwrap()[0].as_f64().unwrap(), 0.0);
+        assert_eq!(c.sampler().output().count(), 1);
+        channels += 1;
+    }
+    assert_eq!(channels, 2 * 3, "rotation and translation per joint");
+}
+
+#[test]
+fn too_big_glbs_lose_movement_clips_before_whole_classes() {
+    let mut names: Vec<String> = vec!["any:die".into(), "any:seat_warthog_d".into()];
+    for class in ["rifle", "pistol", "sword", "unarmed", "ball"] {
+        for state in ["idle", "run", "run_left", "crouch_run"] {
+            names.push(format!("{class}:{state}"));
+        }
+    }
+    let mut order = Vec::new();
+    loop {
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let Some(drop) = next_size_drop(&refs) else {
+            break;
+        };
+        let before = names.len();
+        names.retain(|n| !drop.takes(n));
+        assert!(names.len() < before, "{drop} drops something");
+        order.push(drop.to_string());
+    }
+    assert_eq!(
+        order,
+        [
+            // Every class's movement but the rifle's, last class first.
+            "ball moves",
+            "unarmed moves",
+            "sword moves",
+            "pistol moves",
+            // Then whole classes, last first: the rifle's movement goes
+            // with the rifle.
+            "ball",
+            "unarmed",
+            "sword",
+            "pistol",
+            "rifle",
+            // Then the shared clips.
+            "any",
+        ]
+    );
+    let moves = SizeDrop::Moves("pistol".into());
+    assert!(moves.takes("pistol:run_left") && moves.takes("pistol:crouch_run"));
+    assert!(!moves.takes("pistol:run") && !moves.takes("rifle:run_left"));
+    assert_eq!(next_size_drop(&[]), None);
+}
+
+#[test]
+fn bipeds_say_how_far_they_were_lifted() {
+    let mut src = biped_source();
+    src.pieces = vec![quad_piece(0, -0.05)];
+    let (names, pose) = pose_of(&[]);
+    let model = biped(&src, &names, &pose, &[]).unwrap();
+    let (lo, _) = model.bounds().unwrap();
+    assert!(lo[2].abs() < 1e-6, "feet at z = 0");
+    let lift = model.extras["lift"].as_f64().unwrap();
+    assert!((lift - 0.05).abs() < 1e-6, "{lift}");
+    // A model already on the floor is lifted by nothing.
+    src.pieces = vec![quad_piece(0, 0.0)];
+    let model = biped(&src, &names, &pose, &[]).unwrap();
+    assert!(model.extras["lift"].as_f64().unwrap().abs() < 1e-6);
+}
+
+#[test]
 fn weapons_name_their_class_and_v1_readers_still_find_their_nodes() {
     let src = biped_source();
     let mut w = weapon(&src).unwrap();
@@ -1063,6 +1254,80 @@ fn species_are_biped_directory_names() {
     assert_eq!(chosen["grunt"], "c\\grunt\\grunt");
     assert_eq!(chosen["jackal"], "c\\jackal\\jackal_major");
     assert_eq!(chosen["drone"], "c\\drone\\a");
+}
+
+#[test]
+fn vehicle_seats_are_listed_in_the_tag_s_order_with_their_nodes() {
+    let mut src = biped_source();
+    src.markers.push(Marker {
+        name: "driver".into(),
+        node: 1,
+        translation: [0.0, 0.25, 0.0],
+        rotation: [0.0, 0.0, 0.0, 1.0],
+    });
+    src.markers.push(Marker {
+        name: "gunner".into(),
+        node: 0,
+        translation: [0.0, -0.5, 0.5],
+        rotation: [0.0, 0.0, 0.0, 1.0],
+    });
+    let mut v = vehicle(&src, &[], &Pose { nodes: vec![] }).unwrap();
+    let pair = |l: &str, m: &str| (l.to_string(), m.to_string());
+    // The tag's order, not the nodes': a seat whose marker is no seat node
+    // (or one the model lacks) has none.
+    let tag = [
+        pair("warthog_g", "gunner"),
+        pair("warthog_d", "driver"),
+        pair("warthog_p", "passenger"),
+        pair("warthog_x", "driver_enter"),
+    ];
+    v.seats = seat_entries(&tag, &v.nodes);
+    let seat = |l: &str, n: Option<&str>| Seat {
+        label: l.into(),
+        node: n.map(str::to_owned),
+    };
+    assert_eq!(
+        v.seats,
+        [
+            seat("warthog_g", Some("seat_gunner")),
+            seat("warthog_d", Some("seat_driver")),
+            seat("warthog_p", None),
+            seat("warthog_x", None),
+        ]
+    );
+    // In the manifest: a `seats` table beside `vehicles`, by stem; the
+    // vehicle's own entry is unchanged, and a vehicle without seats is
+    // left out.
+    let bare = vehicle(&src, &[], &Pose { nodes: vec![] }).unwrap();
+    let dir = std::env::temp_dir().join(format!("h2-models-seats-{}", std::process::id()));
+    let written = write_models(
+        vec![
+            (Kind::Vehicle, "warthog".into(), Ok(v)),
+            (Kind::Vehicle, "mongoose".into(), Ok(bare)),
+        ],
+        &dir,
+    );
+    let _ = fs::remove_dir_all(&dir);
+    let entry = serde_json::to_value(written.entry.unwrap()).unwrap();
+    assert_eq!(
+        entry["vehicles"]["warthog"],
+        json!({"glb": "models/vehicle/warthog.glb"})
+    );
+    assert_eq!(
+        entry["seats"],
+        json!({"warthog": [
+            {"label": "warthog_g", "node": "seat_gunner"},
+            {"label": "warthog_d", "node": "seat_driver"},
+            {"label": "warthog_p", "node": null},
+            {"label": "warthog_x", "node": null}
+        ]})
+    );
+    // No vehicle with seats: no `seats` at all.
+    let bare = vehicle(&src, &[], &Pose { nodes: vec![] }).unwrap();
+    let written = write_models(vec![(Kind::Vehicle, "mongoose".into(), Ok(bare))], &dir);
+    let _ = fs::remove_dir_all(&dir);
+    let entry = serde_json::to_value(written.entry.unwrap()).unwrap();
+    assert!(entry.get("seats").is_none());
 }
 
 #[test]
@@ -1783,6 +2048,42 @@ fn models_from_the_disc() {
             .any(|c| c == "sword:melee"),
         "elite sword"
     );
+    // Strafing, backwards and crouched movement, and the seat poses
+    // (extractor 22); every vehicle's seats in the tag's order.
+    let spartan = &entry.bipeds["spartan"].clips;
+    for clip in [
+        "rifle:run_left",
+        "rifle:run_back",
+        "rifle:crouch_run",
+        "any:seat_warthog_d",
+    ] {
+        assert!(spartan.iter().any(|c| c == clip), "spartan {clip}");
+    }
+    println!(
+        "seat poses: {}",
+        spartan
+            .iter()
+            .filter(|c| is_seat_clip(c))
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    for (stem, seats) in &entry.seats {
+        let list: Vec<String> = seats
+            .iter()
+            .map(|s| format!("{} at {}", s.label, s.node.as_deref().unwrap_or("-")))
+            .collect();
+        println!("{stem} seats: {}", list.join(", "));
+    }
+    let hog_seats = &entry.seats["warthog"];
+    assert!(
+        hog_seats.iter().any(|s| s.label == "warthog_d"),
+        "warthog seats {hog_seats:?}"
+    );
+    for (species, b) in &entry.bipeds {
+        let lift = extras(&b.glb)["lift"].as_f64().unwrap();
+        println!("{species} lift {lift:.4}");
+    }
     // Shots by weapon, from the projectile tags.
     let shot = |w: &str| {
         entry.weapons[w]

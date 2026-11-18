@@ -638,6 +638,16 @@ pub fn check(v: &GameVariant) -> Vec<Problem> {
     c.out
 }
 
+/// Team count (setting 93, `+0xb4`): how many teams the game makes. The
+/// team set builder (`0x157790`) reads it from the active record
+/// (`G+0x1f0`), takes 0 as 8, caps it at the teams the map allows
+/// (`[[0x4e9ae8]+4]`, a mask) and fills the lowest unused teams up to it.
+/// The retail editor has no row for it (docs/game/game-options.md).
+pub const TEAM_COUNT: SettingId = SettingId(93);
+/// The team counts our editors offer: 0 (the map's own, up to 8), then 2
+/// to 8. One team is storable but not offered.
+pub const TEAM_COUNTS: [i32; 8] = [0, 2, 3, 4, 5, 6, 7, 8];
+
 /// Respawn time (setting 17).
 pub const RESPAWN: SettingId = SettingId(17);
 /// Respawn time modifier (setting 25): 0 inheritance, 1 cycling, 2 none.
@@ -902,6 +912,23 @@ mod tests {
                 assert!(!check(&v).is_empty(), "{id}={bad} should be refused");
             }
         }
+    }
+
+    #[test]
+    fn every_offered_team_count_is_kept() {
+        for t in TEAM_COUNTS {
+            let mut v = GameVariant::blank(GameType::Slayer);
+            v.set(TEAM_COUNT, t).unwrap();
+            assert_eq!(v.to_bytes()[0xb4..0xb8], t.to_le_bytes());
+            assert!(check(&v).is_empty(), "{t}");
+            assert!(refused(&v).is_empty(), "{t}");
+            let back = GameVariant::from_bytes(&v.to_bytes()).unwrap();
+            assert_eq!(back.get(TEAM_COUNT), Some(t));
+        }
+        assert_eq!(
+            GameVariant::blank(GameType::Slayer).get(TEAM_COUNT),
+            Some(0)
+        );
     }
 
     #[test]

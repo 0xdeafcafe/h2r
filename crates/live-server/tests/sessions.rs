@@ -39,6 +39,7 @@ fn new() -> NewSession {
         skulls: None,
         campaign: None,
         ping_ms: None,
+        variant_ext: None,
     }
 }
 async fn create(h: &Harness, u: &User, data: &NewSession) -> Resp {
@@ -513,6 +514,58 @@ async fn optimatch_searches_filter_by_playlist_window_and_room() {
     );
     assert_eq!(
         h.get("/v1/sessions?optimatch=not-json").await.status,
+        StatusCode::BAD_REQUEST
+    );
+}
+/// A host's variant options for its next game (docs/game/game-options.md
+/// section 3) are kept on its session and listed; an update replaces them,
+/// and a malformed block is refused at create and at update. The Worker
+/// runs these routes too.
+#[tokio::test]
+async fn sessions_carry_the_hosts_variant_options() {
+    use live_proto::session::{VARIANT_EXT_LEN, VariantExt};
+    let h = harness().await;
+    let a = h.create("Host").await;
+    let mut block = [0u8; VARIANT_EXT_LEN];
+    block[..3].copy_from_slice(b"hx\x01");
+    let first = VariantExt::new(&block, 1);
+    let mut n = new();
+    n.variant_ext = Some(VariantExt {
+        block: "zz".into(),
+        key: "1".into(),
+    });
+    assert_eq!(create(&h, &a, &n).await.status, StatusCode::BAD_REQUEST);
+    n.variant_ext = Some(first.clone());
+    let r = create(&h, &a, &n).await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    let id = r.json()["session_id"].as_str().unwrap().to_owned();
+    let listed = h.get("/v1/sessions?hopper=7").await.json();
+    assert_eq!(
+        listed["items"][0]["advertisement"]["variant_ext"],
+        serde_json::to_value(&first).unwrap()
+    );
+    let second = VariantExt::new(&[0; VARIANT_EXT_LEN], 2);
+    let up = serde_json::to_value(Update {
+        variant_ext: Some(second.clone()),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(
+        batch(&h, &a, &id, &[body(&a, &id, session::UPDATED, up)])
+            .await
+            .status,
+        StatusCode::CREATED
+    );
+    let listed = h.get("/v1/sessions?hopper=7").await.json();
+    assert_eq!(
+        listed["items"][0]["advertisement"]["variant_ext"],
+        serde_json::to_value(&second).unwrap()
+    );
+    let bad = json!({"variant_ext": {"block": "00", "key": "0000000000000003"}});
+    assert_eq!(
+        batch(&h, &a, &id, &[body(&a, &id, session::UPDATED, bad)])
+            .await
+            .status,
         StatusCode::BAD_REQUEST
     );
 }

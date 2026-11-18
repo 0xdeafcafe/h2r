@@ -239,6 +239,15 @@ points! { ALL;
     /// A damage report is applied to its victim: the report in EDI, the
     /// victim object datum on the stack. Called once per damage instance.
     DAMAGE_REPORT @ 0x000d_9640: [fn(report: edi, victim: stack 0) ret 4], Optional; "docs/live/live-gamestate.md";
+    /// A damage instance's shield step (`0xd7b80` calls it once, at
+    /// `0xd80de`): stdcall `(object datum, ?, damage data, record)`. It
+    /// takes the shield's share of the amount at `record+0x1c` (divided by
+    /// the object's shield vitality) and leaves what is left there.
+    SHIELD_DAMAGE @ 0x000d_9110: [fn(object: stack 0, record: stack 3) ret 16], Optional; "docs/game/game-options.md";
+    /// A damage instance's body step (`0xd7b80` calls it once, at
+    /// `0xd8184`): the record in EDI, stdcall `(object datum, ?, damage
+    /// data)`. Reads the amount at `record+0x1c` through `0xd9020`.
+    BODY_DAMAGE @ 0x000d_8cb0: [fn(record: edi, object: stack 0) ret 12], Optional; "docs/game/game-options.md";
     /// An object's damage update: stdcall `(object datum)`, AL whether
     /// anything changed. Called once per object per tick by
     /// `object_update` (`0xbc470`, its only caller): stun timers, shield
@@ -601,6 +610,12 @@ points! { ALL;
     /// profile file (-1 for none, so nothing is saved). Sets the slot's
     /// `0x10` flag and builds the controls table (`0x190c34`).
     PROFILE_SIGN_IN @ 0x0018_fb34: [fn(slot: stack 0, block: stack 1, file: stack 2) ret 12]; "docs/game/bots.md";
+    /// Signs the profile out of local player slot EAX: closes its saved
+    /// file when it has one (`+0x1f8` not -1, `0x2172a0`), zeroes the
+    /// 0x1e0-byte block at `+0x18`, clears the slot's `0x10` flag and sets
+    /// `+0x1f8` to -1. Does nothing when the flag is clear. Callers
+    /// `0x190d76`, `0x24b7c8`.
+    PROFILE_SIGN_OUT @ 0x0018_fc08: [fn(slot: eax) ret 0]; "docs/game/bots.md";
     /// The sound frame service, once a frame after the render: among
     /// other things, one listener per mapped local user (`0x125c93`).
     SOUND_UPDATE @ 0x0012_5b40: [fn() ret 0]; "docs/engine/engine-map.md";

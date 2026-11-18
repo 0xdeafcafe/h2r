@@ -55,6 +55,11 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "the loading screen's cache copy on the game thread; steps it with guest calls",
     ),
     // Game-thread points: the simulation, the UI and the level start.
+    (
+        "variant-vitality",
+        "*",
+        "a damage instance in the simulation, on the game thread; scales the body and shield parts",
+    ),
     ("h1-health", "OBJECT_DAMAGE_UPDATE", AFTER),
     ("h1-health", "BODY_RESTORE", AFTER),
     ("h1-health", "GAME_ACTIVATE", AFTER),
@@ -78,6 +83,33 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     ("cheats", "GAME_TICK", AFTER),
     ("layouts-value", "CONTROLS_ROW_TEXT", AFTER),
     ("controls-text", "CONTROLS_ROW_TEXT", AFTER),
+    // Features the test's registry gained when it began calling boot's own
+    // registration: all on game-thread points (the simulation's events, the
+    // match start, the variant editor and the Game Setup lists), which the
+    // render never meets.
+    ("hud", "GAME_ACTIVATE", AFTER),
+    ("variant-ext-live", "GAME_ACTIVATE", AFTER),
+    (
+        "live-telemetry",
+        "*",
+        "records simulation events (damage, shots, kills, the tick, the match start and end) on the \
+         game thread; the samples and the match record run after the body",
+    ),
+    (
+        "variant-more-options-row",
+        "*",
+        "the variant editor's row, a UI event on the game thread",
+    ),
+    (
+        "h1-options-row",
+        "*",
+        "the Game Setup list's row, a UI event on the game thread",
+    ),
+    (
+        "clankers-row",
+        "*",
+        "the Game Setup list's row, a UI event on the game thread",
+    ),
     // Local bots: the game thread's frame, sound and players screen. Around
     // RENDER_FRAME, the pipeline's snapshot is taken with the bot views
     // hidden; the render thread never meets these points.
@@ -97,55 +129,8 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::REFUSED;
-
-    /// Every switch that adds hooks, on.
-    const ALL_ON: &str = "impl.engine=on,impl.render=on,render-timing,render-loop,occlusion";
-
-    /// Every feature boot adds that a test can make, with `switches`.
-    fn registry(switches: &str) -> feature::Registry {
-        let rt = runtime::Runtime::new(runtime::Guest::new(), runtime::Dispatch::default());
-        let store = Some(Arc::new(settings::Store::defaults(
-            crate::setting_defs::ALL,
-        )));
-        let mut r = feature::Registry::new(feature::Switches::parse(switches).unwrap());
-        crate::level_boot::install(&rt, &mut r, None, true).unwrap();
-        r.add(&crate::controls_text::ControlsText).unwrap();
-        r.add(&crate::layout_glue::StringsFeature).unwrap();
-        r.add(&crate::layout_glue::LayoutValueText).unwrap();
-        crate::touch_glue::install(&mut r).unwrap();
-        r.add(&crate::map_slots::MapSlots {
-            vfs: Arc::new(std::sync::Mutex::new(vfs::Vfs::new())),
-        })
-        .unwrap();
-        r.add(&crate::map_copy::MapCopy).unwrap();
-        r.add(&crate::cheats::CheatsFeature(
-            Arc::new(std::sync::Mutex::new(crate::cheats::Cheats::default())),
-            false,
-        ))
-        .unwrap();
-        crate::skulls::install(&mut r, store.clone()).unwrap();
-        crate::skulls_mp::install(&mut r, store.clone(), None, None).unwrap();
-        crate::skulls_custom::install(&mut r, store.clone(), None, None).unwrap();
-        crate::health::install(&mut r).unwrap();
-        crate::precision::install(&mut r, std::path::Path::new("")).unwrap();
-        crate::hud_swap::install(&mut r, std::path::Path::new(""), std::path::Path::new("")).unwrap();
-        crate::aim_assist::install(&mut r, store).unwrap();
-        crate::bot_glue::install(&mut r, std::path::Path::new("")).unwrap();
-        r.add(&feature::leaves::EngineLeaves).unwrap();
-        r.add(&feature::render_timing::RenderTiming::new()).unwrap();
-        r.add(&feature::render_census::RenderCensus::new()).unwrap();
-        r.add(&feature::pipeline_render::PipelineRender::with(
-            true,
-            feature::pipeline_render::Addrs::HALO2,
-        ))
-        .unwrap();
-        r.add(&feature::render_loop::RenderLoop).unwrap();
-        r.add(&feature::occlusion::OcclusionCull).unwrap();
-        r
-    }
+    use crate::registration::tests::{ALL_ON, Case, registry};
 
     fn refused(feature: &str, point: &str) -> Option<usize> {
         REFUSED
@@ -165,7 +150,7 @@ mod tests {
         let mut used = vec![false; REFUSED.len()];
         let mut safe = Vec::new();
         for switches in [ALL_ON.to_owned(), format!("{ALL_ON},render-census")] {
-            let plan = registry(&switches).build(&feature::Base).unwrap();
+            let plan = registry(&Case::full(&switches)).build(&feature::Base).unwrap();
             for c in plan.chains.values() {
                 match c.render_thread() {
                     Ok(()) => safe.push(c.point.name),

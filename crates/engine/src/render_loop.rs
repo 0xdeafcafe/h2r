@@ -26,8 +26,6 @@ use crate::memory::{GuestMemory, MemFault};
 pub mod layer;
 pub mod occlusion;
 pub mod scene;
-pub mod sort;
-pub mod sort_indexed;
 pub mod states;
 
 /// The registers a port sets and reads.

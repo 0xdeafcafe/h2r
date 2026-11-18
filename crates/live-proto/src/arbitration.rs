@@ -14,10 +14,12 @@ pub const REGISTERED: &str = "ArbitrationRegistered";
 pub const EXTENDED: &str = "ArbitrationExtended";
 /// `ArbitrationReported`: an account reported a round. Data: [`Reported`].
 pub const REPORTED: &str = "ArbitrationReported";
+/// `ArbitrationUsed`: the server ranked a game by the round (moving
+/// someone or not); the round ranks no other game. Data: [`Used`].
+pub const USED: &str = "ArbitrationUsed";
 
-/// Every event type of this module; only the server's own endpoints write
-/// them.
-pub const KINDS: [&str; 3] = [REGISTERED, EXTENDED, REPORTED];
+/// Every event type of this module; only the server writes them.
+pub const KINDS: [&str; 4] = [REGISTERED, EXTENDED, REPORTED, USED];
 
 /// The most stat procedures in one report (the XDK's limit).
 pub const MAX_PROCEDURES: usize = 1000;
@@ -85,6 +87,14 @@ pub struct Reported {
     pub xuid: Xuid,
     pub flags: u32,
     pub procedures: Vec<u16>,
+}
+
+/// [`USED`]'s data.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Used {
+    pub session_id: String,
+    pub round_id: String,
+    pub game_id: String,
 }
 
 #[cfg(test)]

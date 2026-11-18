@@ -29,6 +29,13 @@ export interface GamePlayer {
   appearance?: import("../lib/gameart").Appearance | null;
 }
 
+/** The animation a unit plays: its name in the unit's graph
+ *  (`combat:rifle:any:idle`) and the frame, fractional between ticks. */
+export interface FrameAnim {
+  name: string;
+  frame: number;
+}
+
 export interface FramePlayer {
   index: number;
   alive: boolean;
@@ -63,6 +70,8 @@ export interface FramePlayer {
   seat?: number | null;
   /** Ticks before this frame's tick of each of `actions`, when known. */
   actions_ago?: number[] | null;
+  /** The animation it plays (version 4). */
+  anim?: FrameAnim | null;
 }
 
 /** A vehicle anywhere in the world. A player's or actor's `vehicle` is its `id`. */
@@ -139,6 +148,8 @@ export interface FrameActor {
   seat?: number | null;
   /** Ticks before this frame's tick of each of `actions`, when known. */
   actions_ago?: number[] | null;
+  /** The animation it plays (version 4). */
+  anim?: FrameAnim | null;
 }
 
 export interface Frame {
@@ -157,6 +168,10 @@ export interface Frame {
   /** A revert or restart happened just before this frame: the run it
    *  starts, by the engine tick it came back to (version 3). */
   cut?: number | null;
+  /** A campaign cinematic is playing: the frame has no players, actors,
+   *  vehicles, hits, machines or objects to draw, only its tick and BSP
+   *  (packed version 5). */
+  cinematic?: boolean;
 }
 
 /** A scenario placement that moved (`p`, `f`, `u`) or is gone: map.glb's

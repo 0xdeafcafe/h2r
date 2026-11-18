@@ -603,6 +603,48 @@ pub struct Object {
     /// Distance from the `near` point, when the query had one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub distance: Option<f64>,
+    /// Units only: crouch and character-physics state, for tracing
+    /// movement bugs tick by tick.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub physics: Option<Physics>,
+}
+
+/// A unit's crouch and character-physics state as the engine holds it.
+/// Raw flag words are kept whole so a trace can read bits not named here.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Physics {
+    /// Crouch amount, 0 standing to 1 crouched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crouch: Option<f64>,
+    /// The crouch request (unit flags bit 23): set while crouch is held,
+    /// and kept set after release until there is room to stand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crouch_request: Option<bool>,
+    /// Biped physics mode: 1 ground, 2 flying, 3 dead, 4 posture,
+    /// 5 climbing, 6 melee (names likely).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<u8>,
+    /// Bipeds: biped flags bit 0 (likely airborne).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub airborne: Option<bool>,
+    /// Bipeds: ticks `airborne` has been set (capped at 127).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub airborne_ticks: Option<i8>,
+    /// Raw unit flags, 8 hex digits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit_flags: Option<String>,
+    /// Bipeds: raw biped flags, 4 hex digits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub biped_flags: Option<String>,
+    /// Bipeds: the hitbox offset counter, ticks (a melee lunge sets it;
+    /// it steps toward 0 each tick).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hitbox_offset_ticks: Option<i8>,
+    /// Bipeds: how far the Havok body sits from the origin in z because
+    /// of that counter, world units (the body is at origin z minus this).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hitbox_offset: Option<f64>,
 }
 
 /// Field names a query's `fields` may keep (`id` and `kind` are always
@@ -623,6 +665,7 @@ pub const OBJECT_FIELDS: &[&str] = &[
     "placement",
     "position",
     "distance",
+    "physics",
 ];
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

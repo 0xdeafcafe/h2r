@@ -20,17 +20,22 @@ use std::collections::HashMap;
 use std::f64::consts::{PI, TAU};
 
 use crate::game::{
-    ACTIONS, Frame, FrameActor, FrameHit, FrameMachine, FrameObject, FramePlayer, FrameVehicle,
-    GRENADES, MAX_FRAME_ACTIONS, MAX_FRAME_ACTORS, MAX_FRAME_HITS, MAX_FRAME_MACHINES,
-    MAX_FRAME_OBJECTS, MAX_FRAME_VEHICLES, MAX_PLAYERS, ObjectKind, STANCES,
+    ACTIONS, Frame, FrameActor, FrameAnim, FrameHit, FrameMachine, FrameObject, FramePlayer,
+    FrameVehicle, GRENADES, MAX_ANIM_FRAME, MAX_FRAME_ACTIONS, MAX_FRAME_ACTORS, MAX_FRAME_HITS,
+    MAX_FRAME_MACHINES, MAX_FRAME_OBJECTS, MAX_FRAME_VEHICLES, MAX_PLAYERS, ObjectKind, STANCES,
 };
 
 /// The packed format's version, the first four bits of every frame. Version
-/// 3 adds a player's and actor's velocity, fire ticks, vitality, seat and
+/// 5 adds the frame's cinematic bit after the cut, and is written only for a
+/// cinematic frame ([`CINEMATIC_VERSION`]): every other frame is still
+/// version 4, so a version 4 reader keeps reading them. Version 4 added a
+/// player's and actor's animation; version 3 added a player's and actor's velocity, fire ticks, vitality, seat and
 /// action ticks, a hit's tick and a frame's cut; version 2 added a
 /// vehicle's parent and aim. Versions 1 and 2 (recorded frames, an older
-/// game's) still decode.
-pub const VERSION: u64 = 3;
+/// game's) still decode, as do version 3's.
+pub const VERSION: u64 = 4;
+/// The version of a frame with `cinematic` set: version 4 and the bit.
+pub const CINEMATIC_VERSION: u64 = 5;
 /// Positions are whole multiples of 1/512 world unit (about 6 mm).
 pub const POS_SCALE: f64 = 512.0;
 /// Yaw: a full turn in 4096 steps.
@@ -47,6 +52,8 @@ pub const VEL_SCALE: f64 = 64.0;
 pub const BODY_BITS: u32 = 6;
 /// Shield vitality in 1/32 of a shield.
 pub const SHIELD_SCALE: f64 = 32.0;
+/// Animation frames in 1/16 of a frame.
+pub const ANIM_SCALE: f64 = 16.0;
 /// Machine device positions (0..1) in 10 bits.
 pub const DEVICE_BITS: u32 = 10;
 /// Most strings a stream's table holds before the encoder starts over with
@@ -422,10 +429,14 @@ const PLAYER: &[Field] = &[
     o(Kind::Uint(3)),         // shield
     o(Kind::Uint(0)),         // seat
     o(Kind::Agos),            // actions_ago
+    o(Kind::Str),             // anim name (version 4)
+    o(Kind::Uint(4)),         // anim frame
 ];
-/// Fields a version 2 player or actor has: the version 3 ones are last.
+/// Fields a version 2 or 3 player or actor has: the later ones are last.
 const V2_UNIT_FIELDS: usize = 13;
+const V3_UNIT_FIELDS: usize = 19;
 const PLAYER_V2: &[Field] = PLAYER.split_at(V2_UNIT_FIELDS).0;
+const PLAYER_V3: &[Field] = PLAYER.split_at(V3_UNIT_FIELDS).0;
 const VEHICLE: &[Field] = &[
     k(Kind::Id),
     f(Kind::Str), // kind
@@ -458,8 +469,11 @@ const ACTOR: &[Field] = &[
     o(Kind::Uint(3)),         // shield
     o(Kind::Uint(0)),         // seat
     o(Kind::Agos),            // actions_ago
+    o(Kind::Str),             // anim name (version 4)
+    o(Kind::Uint(4)),         // anim frame
 ];
 const ACTOR_V2: &[Field] = ACTOR.split_at(V2_UNIT_FIELDS).0;
+const ACTOR_V3: &[Field] = ACTOR.split_at(V3_UNIT_FIELDS).0;
 const HIT: &[Field] = &[
     o(Kind::Id),  // from
     o(Kind::Id),  // to
@@ -496,6 +510,14 @@ const LISTS: [(&[Field], usize); 5] = [
     (MACHINE, MAX_FRAME_MACHINES),
     (OBJECT, MAX_FRAME_OBJECTS),
 ];
+/// Version 3's lists.
+const LISTS_V3: [(&[Field], usize); 5] = [
+    (PLAYER_V3, MAX_PLAYERS),
+    (VEHICLE, MAX_FRAME_VEHICLES),
+    (ACTOR_V3, MAX_FRAME_ACTORS),
+    (MACHINE, MAX_FRAME_MACHINES),
+    (OBJECT, MAX_FRAME_OBJECTS),
+];
 /// Version 2's lists.
 const LISTS_V2: [(&[Field], usize); 5] = [
     (PLAYER_V2, MAX_PLAYERS),
@@ -519,6 +541,8 @@ struct Schema {
     hit: &'static [Field],
     /// The header carries a cut (version 3).
     cut: bool,
+    /// The header carries the cinematic bit (version 5).
+    cinematic: bool,
 }
 
 fn schema_of(version: u64) -> Option<Schema> {
@@ -527,16 +551,31 @@ fn schema_of(version: u64) -> Option<Schema> {
             lists: &LISTS_V1,
             hit: HIT_V2,
             cut: false,
+            cinematic: false,
         }),
         2 => Some(Schema {
             lists: &LISTS_V2,
             hit: HIT_V2,
             cut: false,
+            cinematic: false,
+        }),
+        3 => Some(Schema {
+            lists: &LISTS_V3,
+            hit: HIT,
+            cut: true,
+            cinematic: false,
         }),
         VERSION => Some(Schema {
             lists: &LISTS,
             hit: HIT,
             cut: true,
+            cinematic: false,
+        }),
+        CINEMATIC_VERSION => Some(Schema {
+            lists: &LISTS,
+            hit: HIT,
+            cut: true,
+            cinematic: true,
         }),
         _ => None,
     }
@@ -575,6 +614,28 @@ fn actions_val(actions: &Option<Vec<String>>) -> Result<Val> {
                 .map(Val::List)
         }
     }
+}
+
+fn anim_frame(frame: f64) -> Result<Val> {
+    if !(0.0..=MAX_ANIM_FRAME).contains(&frame) {
+        return Err(PackError::Value("anim frame out of range"));
+    }
+    qfixed(frame, ANIM_SCALE, "anim frame").map(Val::Int)
+}
+
+/// A unit's `anim` from its name and frame fields (versions 1 to 3 have
+/// neither).
+fn as_anim(e: &Entity, at: usize) -> Result<Option<FrameAnim>> {
+    let name = e.get(at).map(as_opt_str).transpose()?.flatten();
+    let frame = e.get(at + 1).map(as_opt_int).transpose()?.flatten();
+    Ok(match (name, frame) {
+        (Some(name), Some(q)) => Some(FrameAnim {
+            name,
+            frame: q as f64 / ANIM_SCALE,
+        }),
+        (None, None) => None,
+        _ => return Err(PackError::Bad("anim needs its name and frame")),
+    })
 }
 
 /// A unit's `actions_ago`: only beside actions, one each.
@@ -638,6 +699,8 @@ fn player_vals(p: &FramePlayer) -> Result<Entity> {
         })?,
         opt(p.seat, |n| Ok(Val::Int(u64::from(n))))?,
         agos_val(&p.actions, &p.actions_ago)?,
+        opt(p.anim.as_ref(), |a| string(&a.name))?,
+        opt(p.anim.as_ref(), |a| anim_frame(a.frame))?,
     ])
 }
 
@@ -686,6 +749,8 @@ fn actor_vals(a: &FrameActor) -> Result<Entity> {
         })?,
         opt(a.seat, |n| Ok(Val::Int(u64::from(n))))?,
         agos_val(&a.actions, &a.actions_ago)?,
+        opt(a.anim.as_ref(), |a| string(&a.name))?,
+        opt(a.anim.as_ref(), |a| anim_frame(a.frame))?,
     ])
 }
 
@@ -895,6 +960,7 @@ fn player_of(e: &Entity) -> Result<FramePlayer> {
             .flatten()
             .map(|n| n as u32),
         actions_ago: e.get(18).map(as_agos).transpose()?.flatten(),
+        anim: as_anim(e, 19)?,
     })
 }
 
@@ -954,6 +1020,7 @@ fn actor_of(e: &Entity) -> Result<FrameActor> {
             .flatten()
             .map(|n| n as u32),
         actions_ago: e.get(18).map(as_agos).transpose()?.flatten(),
+        anim: as_anim(e, 19)?,
     })
 }
 
@@ -1047,6 +1114,7 @@ fn frame_of(
     tick: u64,
     bsp: Option<u64>,
     cut: Option<u64>,
+    cinematic: bool,
     lists: &[Vec<Entity>; 5],
     hits: &[Entity],
 ) -> Result<Frame> {
@@ -1071,6 +1139,7 @@ fn frame_of(
         machines: map(&lists[3], machine_of)?,
         objects: map(&lists[4], object_of)?,
         cut,
+        cinematic,
     })
 }
 
@@ -1083,6 +1152,7 @@ pub fn quantize(frame: &Frame) -> Result<Frame> {
         frame.tick,
         frame.bsp.map(u64::from),
         frame.cut,
+        frame.cinematic,
         &lists.lists,
         &lists.hits,
     )
@@ -1512,6 +1582,13 @@ impl Encoder {
             return Err(PackError::Value("game id too long"));
         }
         let mut new_strings: Vec<&str> = Vec::new();
+        // A cinematic frame is version 5, any other version 4; a delta is
+        // against a frame of its own version, so a change is a keyframe.
+        let version = if frame.cinematic {
+            CINEMATIC_VERSION
+        } else {
+            VERSION
+        };
         let key = match &self.state {
             None => true,
             Some((s, t)) => {
@@ -1522,6 +1599,7 @@ impl Encoder {
                     }
                 }
                 self.since_key >= self.keyframe_every
+                    || s.version != version
                     || s.game_id != frame.game_id
                     || frame.tick < s.tick
                     || s.strings.len() + new_strings.len() > MAX_STRINGS
@@ -1546,7 +1624,7 @@ impl Encoder {
         };
         let seq = self.next_seq;
         let mut w = BitWriter::new();
-        w.bits(VERSION, 4);
+        w.bits(version, 4);
         w.bit(key);
         w.eg(self.sid, 0);
         w.eg(seq, 8);
@@ -1572,6 +1650,9 @@ impl Encoder {
         if let Some(c) = frame.cut {
             w.eg(c, 16);
         }
+        if version == CINEMATIC_VERSION {
+            w.bit(true);
+        }
         w.eg(new_strings.len() as u64, 1);
         for s in &new_strings {
             write_str_literal(&mut w, s);
@@ -1591,7 +1672,7 @@ impl Encoder {
             }
         }
         state.seq = seq;
-        state.version = VERSION;
+        state.version = version;
         state.game_id = frame.game_id.clone();
         state.tick = frame.tick;
         state.bsp = bsp;
@@ -1677,6 +1758,7 @@ impl Decoder {
         } else {
             None
         };
+        let cinematic = schema.cinematic && r.bit()?;
         let fresh = r.eg(1)?;
         if fresh > MAX_NEW_STRINGS || state.strings.len() as u64 + fresh > MAX_STRINGS as u64 {
             return Err(PackError::Bad("too many strings"));
@@ -1700,6 +1782,7 @@ impl Decoder {
             state.tick,
             state.bsp,
             cut,
+            cinematic,
             &state.lists,
             &hits,
         )?;

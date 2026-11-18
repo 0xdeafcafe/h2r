@@ -1,14 +1,31 @@
-use std::collections::HashMap;
+//! The Live sink (docs/live/live-telemetry.md, "Server ingest" and
+//! "Reconnect"): games are created with `POST /v1/games`, frames and signed
+//! event batches go over the `/v1/ingest` WebSocket.
+//!
+//! The socket can drop at any time (a Worker deploy closes every socket to
+//! its Durable Objects). A drop is never fatal: the sink reconnects with
+//! backoff, the new connection starts a new packed stream with a keyframe,
+//! and frames made while down are dropped. Game events are not: they wait in
+//! a bounded outbox, in order, and each batch leaves it only once the server
+//! has answered for it. A batch is kept signed, so a resend after an
+//! unanswered send carries the same nonces and the server refuses the copy
+//! ("nonce already used"), which the sink counts as delivered.
+//!
+//! Only the account being refused stops the sink: a ban, or the server
+//! closing the socket at auth [`MAX_AUTH_REFUSALS`] times in a row.
+
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::ErrorKind;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use live_proto::game::{Frame, GameCreated, NewGame};
+use live_proto::game::{self, Frame, GameCreated, NewGame};
 use live_proto::pack;
-use live_proto::sign::{EventBody, KeyPair, issue_token, sign_batch};
-use live_proto::{ClientMessage, Discovery, IngestReply, lxm};
+use live_proto::sign::{EventBody, KeyPair, MAX_EVENT_SKEW_S, issue_token, sign_batch};
+use live_proto::{ClientMessage, Discovery, ErrorBody, ErrorCode, IngestReply, lxm};
 use time::OffsetDateTime;
+use tungstenite::protocol::frame::coding::CloseCode;
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, WebSocket};
 
@@ -21,17 +38,102 @@ const MAX_BATCH_EVENTS: usize = 4;
 /// A packed keyframe every this many frames (ten seconds at 15 a second);
 /// the frames between are deltas (docs/live/live-telemetry.md, Packed frames).
 pub(crate) const FRAME_KEYFRAME_EVERY: u64 = 150;
+/// Game starts and events waiting for the server, at most. Past it the
+/// oldest event of a [`DROPPABLE`] kind goes; starts, ends, joins and
+/// leaves are never dropped.
+pub(crate) const MAX_OUTBOX: usize = 4096;
+/// Event kinds the outbox may drop when full: a later `ScoreChanged` and
+/// the `GameEnded` scoreboard carry the scores again.
+const DROPPABLE: [&str; 2] = [game::PLAYER_KILLED, game::SCORE_CHANGED];
+/// A batch signed longer ago than this is signed again before it is sent
+/// (the server refuses an `at` more than five minutes off). New nonces: if
+/// the old copy did land unanswered, the server keeps both.
+const RESIGN_AFTER_S: i64 = MAX_EVENT_SKEW_S - 60;
+/// The server's close code for a refused or expired token.
+const CLOSE_UNAUTHORIZED: u16 = 4401;
+/// Auth refusals in a row (no batch accepted between) before the sink
+/// gives up on the account.
+pub(crate) const MAX_AUTH_REFUSALS: u32 = 3;
+/// The server's reply to a batch it already has.
+const NONCE_USED: &str = "nonce already used";
+/// The server's reply to a write to a game that has ended.
+const GAME_OVER: &str = "the game has ended";
 
 type Socket = WebSocket<MaybeTlsStream<TcpStream>>;
 
+/// The sink's clocks; tests shorten them.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Timing {
+    /// The first reconnect waits this long, each failure after twice the
+    /// last, up to `backoff_max`; each wait is jittered by up to a fifth.
+    pub backoff_min: Duration,
+    pub backoff_max: Duration,
+    /// How long a sent batch waits for its answer before the connection
+    /// counts as lost (and the batch is sent again on the next).
+    pub ack_timeout: Duration,
+    /// After a refusal, how long to wait for an `appended` that would show
+    /// the refusal was an earlier frame's (refusals carry no id).
+    pub settle: Duration,
+    /// A connection up this long before it drops resets the backoff.
+    pub steady: Duration,
+}
+
+impl Default for Timing {
+    fn default() -> Self {
+        Timing {
+            backoff_min: Duration::from_millis(250),
+            backoff_max: Duration::from_secs(30),
+            ack_timeout: Duration::from_secs(10),
+            settle: Duration::from_millis(500),
+            steady: Duration::from_secs(30),
+        }
+    }
+}
+
 struct Connection {
     socket: Socket,
-    discovery: Discovery,
-    author: String,
     last_auth: Instant,
+    opened: Instant,
     /// The connection's packed frame stream: a new connection starts a new
     /// stream with a keyframe.
     frames: pack::Encoder,
+}
+
+/// What waits in the outbox, in the order it happened.
+enum Item {
+    /// A game to create; its events wait behind it.
+    Start {
+        local: String,
+        game: Box<NewGame>,
+    },
+    Event(GameEvent),
+    /// Events signed into one batch, sent or about to be. Kept as sent, so
+    /// a resend repeats the nonces.
+    Batch(Batch),
+}
+
+struct Batch {
+    server_id: String,
+    events: Vec<GameEvent>,
+    text: String,
+    signed_at: i64,
+}
+
+/// Why a delivery stopped.
+#[derive(Debug)]
+enum Failure {
+    /// The connection or the server is down or busy: back off, retry.
+    Transport(String),
+    /// The server refused the token (close 4401 or HTTP 401).
+    Auth(String),
+    /// The account may not write at all (banned).
+    Fatal(String),
+}
+
+/// The server's answer to a batch.
+enum Answer {
+    Appended,
+    Refused(ErrorCode, String),
 }
 
 pub struct ServerSink {
@@ -39,8 +141,24 @@ pub struct ServerSink {
     account: TelemetryAccount,
     key: KeyPair,
     connection: Option<Connection>,
+    /// The last discovery; its id names the server in tokens and authors.
+    discovery: Option<Discovery>,
+    /// Local game ids to the server's.
     games: HashMap<String, String>,
-    pending: Vec<GameEvent>,
+    /// Local games the server would not create: their events are dropped.
+    refused: HashSet<String>,
+    outbox: VecDeque<Item>,
+    timing: Timing,
+    /// The next reconnect's wait.
+    delay: Duration,
+    /// No connection attempt before this.
+    retry_at: Option<Instant>,
+    /// Logged that the server is unreachable, not yet that it is back.
+    down: bool,
+    auth_refusals: u32,
+    fatal: Option<String>,
+    dropped_events: u64,
+    dropped_frames: u64,
 }
 
 impl ServerSink {
@@ -54,14 +172,37 @@ impl ServerSink {
         account.xuid = live_proto::Xuid::parse(&account.xuid)
             .map_err(|e| format!("telemetry account XUID: {e}"))?
             .to_string();
+        let timing = Timing::default();
         Ok(Self {
             base_url,
             account,
             key,
             connection: None,
+            discovery: None,
             games: HashMap::new(),
-            pending: Vec::new(),
+            refused: HashSet::new(),
+            outbox: VecDeque::new(),
+            timing,
+            delay: timing.backoff_min,
+            retry_at: None,
+            down: false,
+            auth_refusals: 0,
+            fatal: None,
+            dropped_events: 0,
+            dropped_frames: 0,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_timing(mut self, timing: Timing) -> Self {
+        self.timing = timing;
+        self.delay = timing.backoff_min;
+        self
+    }
+
+    /// Starts and events not yet answered for.
+    pub fn waiting_events(&self) -> usize {
+        self.outbox.len()
     }
 
     fn agent() -> ureq::Agent {
@@ -85,7 +226,12 @@ impl ServerSink {
             .map_err(|e| format!("telemetry discovery JSON: {e}"))
     }
 
-    fn token(&self, server_id: &str) -> String {
+    fn discovery(&self) -> &Discovery {
+        self.discovery.as_ref().expect("connected")
+    }
+
+    fn token(&self) -> String {
+        let server_id = &self.discovery().id;
         let author = format!("acct:{}@{server_id}", self.account.xuid);
         issue_token(
             &self.key,
@@ -96,11 +242,20 @@ impl ServerSink {
         )
     }
 
-    fn connect(&mut self) -> Result<(), String> {
+    /// Whether a reconnect must wait.
+    fn backing_off(&self) -> bool {
+        self.retry_at.is_some_and(|at| Instant::now() < at)
+    }
+
+    /// Opens the ingest socket (discovery first, each time: a redeployed
+    /// server may name a new API) and sends the auth message with a fresh
+    /// token. A new connection is a new packed stream: its first frame is
+    /// a keyframe, which is what the server's new decoder needs.
+    fn connect(&mut self) -> Result<(), Failure> {
         if self.connection.is_some() {
             return Ok(());
         }
-        let discovery = self.discover()?;
+        let discovery = self.discover().map_err(Failure::Transport)?;
         let api = resolve_api(&self.base_url, &discovery.api);
         let ingest = format!("{}/ingest", api.trim_end_matches('/'));
         let socket_url = ingest
@@ -111,31 +266,34 @@ impl ServerSink {
                     .strip_prefix("https://")
                     .map(|rest| format!("wss://{rest}"))
             })
-            .ok_or_else(|| "telemetry API URL must be HTTP(S)".to_owned())?;
+            .ok_or_else(|| Failure::Fatal("telemetry API URL must be HTTP(S)".to_owned()))?;
         if !live_proto::bearer_allowed(&socket_url) {
-            return Err("telemetry ingest credentials require WSS or loopback WS".into());
+            return Err(Failure::Fatal(
+                "telemetry ingest credentials require WSS or loopback WS".into(),
+            ));
         }
-        let (mut socket, _) = connect_bounded(&socket_url)?;
-        set_timeouts(socket.get_mut())?;
-        let author = format!("acct:{}@{}", self.account.xuid, discovery.id);
-        let connection = Connection {
+        let (mut socket, _) = connect_bounded(&socket_url).map_err(Failure::Transport)?;
+        set_timeouts(socket.get_mut()).map_err(Failure::Transport)?;
+        self.discovery = Some(discovery);
+        let now = Instant::now();
+        self.connection = Some(Connection {
             socket,
-            discovery,
-            author,
-            last_auth: Instant::now(),
+            last_auth: now,
+            opened: now,
             frames: pack::Encoder::new(0, FRAME_KEYFRAME_EVERY),
-        };
-        self.connection = Some(connection);
+        });
         self.authenticate()
     }
 
-    fn authenticate(&mut self) -> Result<(), String> {
-        let token = self.token(&self.connection.as_ref().unwrap().discovery.id);
+    fn authenticate(&mut self) -> Result<(), Failure> {
+        let token = self.token();
         self.connection.as_mut().unwrap().last_auth = Instant::now();
-        self.send(ClientMessage::Auth { token })
+        let text = serde_json::to_string(&ClientMessage::Auth { token }).expect("serializes");
+        self.write(Message::Text(text.into()))
     }
 
-    fn send(&mut self, message: ClientMessage) -> Result<(), String> {
+    /// A fresh token before the last one runs out.
+    fn refresh_auth(&mut self) -> Result<(), Failure> {
         if self
             .connection
             .as_ref()
@@ -143,147 +301,495 @@ impl ServerSink {
         {
             self.authenticate()?;
         }
-        let text = serde_json::to_string(&message).map_err(|e| e.to_string())?;
-        self.send_message(Message::Text(text.into()))
+        Ok(())
     }
 
-    /// Sends a text or binary message of at most [`MAX_INGEST_MESSAGE`]
-    /// bytes and drains replies already waiting.
-    fn send_message(&mut self, message: Message) -> Result<(), String> {
-        if message.len() > MAX_INGEST_MESSAGE {
-            return Err(format!(
-                "telemetry ingest message is {} bytes (limit {MAX_INGEST_MESSAGE})",
-                message.len()
-            ));
-        }
-        let connection = self.connection.as_mut().unwrap();
+    fn write(&mut self, message: Message) -> Result<(), Failure> {
+        let connection = self.connection.as_mut().expect("connected");
         connection
             .socket
             .send(message)
-            .map_err(|e| format!("telemetry ingest send: {e}"))?;
-        // Replies are optional for frames. Drain what is already available,
-        // but never wait for an acknowledgement on the guest's behalf.
-        for _ in 0..4 {
+            .map_err(|e| Failure::Transport(format!("telemetry ingest send: {e}")))
+    }
+
+    /// One reply, if one is waiting (the socket's read timeout is short).
+    fn read_reply(&mut self) -> Result<Option<IngestReply>, Failure> {
+        let connection = self.connection.as_mut().expect("connected");
+        loop {
             match connection.socket.read() {
                 Ok(Message::Text(text)) => {
-                    let reply: IngestReply = serde_json::from_str(&text)
-                        .map_err(|e| format!("telemetry ingest reply: {e}"))?;
-                    if let IngestReply::Error { message, .. } = reply {
-                        return Err(format!("telemetry ingest refused: {message}"));
-                    }
+                    return serde_json::from_str(&text)
+                        .map(Some)
+                        .map_err(|e| Failure::Transport(format!("telemetry ingest reply: {e}")));
                 }
                 Ok(Message::Ping(bytes)) => connection
                     .socket
                     .send(Message::Pong(bytes))
-                    .map_err(|e| format!("telemetry ingest pong: {e}"))?,
+                    .map_err(|e| Failure::Transport(format!("telemetry ingest pong: {e}")))?,
+                Ok(Message::Close(frame)) => {
+                    let (code, reason) = frame
+                        .map(|f| (u16::from(f.code), f.reason.as_str().to_owned()))
+                        .unwrap_or((u16::from(CloseCode::Status), String::new()));
+                    return Err(closed(code, reason));
+                }
                 Ok(_) => {}
-                Err(tungstenite::Error::Io(e)) if e.kind() == ErrorKind::WouldBlock => break,
-                Err(tungstenite::Error::Io(e)) if e.kind() == ErrorKind::TimedOut => break,
-                Err(e) => return Err(format!("telemetry ingest receive: {e}")),
+                Err(tungstenite::Error::Io(e))
+                    if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+                {
+                    return Ok(None);
+                }
+                Err(e) => return Err(Failure::Transport(format!("telemetry ingest receive: {e}"))),
+            }
+        }
+    }
+
+    /// Replies already waiting, none of them a batch's: frame refusals.
+    fn drain(&mut self) -> Result<(), Failure> {
+        for _ in 0..8 {
+            match self.read_reply()? {
+                Some(IngestReply::Error { message, .. }) => self.frame_refused(&message),
+                Some(IngestReply::Appended { .. }) => {}
+                None => break,
             }
         }
         Ok(())
     }
 
-    fn create_game(&mut self, local_id: &str, game: &NewGame) -> Result<(), String> {
+    /// A refused frame that did not decode (the server lost its decoder,
+    /// as after a hibernation wake): the next frame is a keyframe.
+    fn frame_refused(&mut self, message: &str) {
+        if message.starts_with("frame:")
+            && let Some(connection) = &mut self.connection
+        {
+            connection.frames = pack::Encoder::new(0, FRAME_KEYFRAME_EVERY);
+        }
+    }
+
+    /// Sends a signed batch and waits for its answer. Replies come in the
+    /// order the server took the messages; frames are answered only when
+    /// refused, a batch always. So an `appended` is this batch's, and a
+    /// refusal is this batch's once [`Timing::settle`] passes with nothing
+    /// after it.
+    fn send_batch(&mut self, text: &str) -> Result<Answer, Failure> {
+        if text.len() > MAX_INGEST_MESSAGE {
+            return Ok(Answer::Refused(
+                ErrorCode::TooLarge,
+                format!(
+                    "telemetry ingest message is {} bytes (limit {MAX_INGEST_MESSAGE})",
+                    text.len()
+                ),
+            ));
+        }
+        self.drain()?;
+        self.refresh_auth()?;
+        self.write(Message::Text(text.to_owned().into()))?;
+        let deadline = Instant::now() + self.timing.ack_timeout;
+        let mut refused = None;
+        let mut settle = deadline;
+        loop {
+            match self.read_reply()? {
+                Some(IngestReply::Appended { .. }) => return Ok(Answer::Appended),
+                Some(IngestReply::Error { error, message }) => {
+                    self.frame_refused(&message);
+                    refused = Some((error, message));
+                    settle = (Instant::now() + self.timing.settle).min(deadline);
+                }
+                None => {
+                    let now = Instant::now();
+                    if now >= settle
+                        && let Some((error, message)) = refused.take()
+                    {
+                        return Ok(Answer::Refused(error, message));
+                    }
+                    if now >= deadline {
+                        return Err(Failure::Transport(
+                            "telemetry ingest: no answer to an events batch".into(),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Queues an item, dropping the oldest droppable event past
+    /// [`MAX_OUTBOX`] (or this one, if it is droppable and nothing older is).
+    fn enqueue(&mut self, item: Item) {
+        let droppable =
+            |item: &Item| matches!(item, Item::Event(e) if DROPPABLE.contains(&e.kind.as_str()));
+        if self.outbox.len() >= MAX_OUTBOX {
+            match self.outbox.iter().position(droppable) {
+                Some(i) => {
+                    self.outbox.remove(i);
+                    self.dropped_events += 1;
+                }
+                None if droppable(&item) => {
+                    self.dropped_events += 1;
+                    return;
+                }
+                // Only starts, ends, joins and leaves: kept, past the bound.
+                None => {}
+            }
+        }
+        self.outbox.push_back(item);
+    }
+
+    /// Sends what the outbox holds, oldest first, until it is empty or the
+    /// server is out of reach. `Err` only when the account is refused.
+    fn deliver(&mut self) -> Result<(), String> {
+        if let Some(error) = &self.fatal {
+            return Err(error.clone());
+        }
+        while !self.outbox.is_empty() {
+            if self.connection.is_none() && self.backing_off() {
+                return Ok(());
+            }
+            let step = match self.outbox.front() {
+                Some(Item::Start { .. }) => Self::deliver_start,
+                Some(Item::Event(_)) => Self::seal,
+                Some(Item::Batch(_)) => Self::deliver_batch,
+                None => break,
+            };
+            let step = step(self);
+            if let Err(failure) = step {
+                return self.failed(failure);
+            }
+        }
+        Ok(())
+    }
+
+    /// `POST /v1/games` for the start at the front. If the answer is lost
+    /// after the server made the game, the retry makes a second one; the
+    /// first gets no writes and the server ends it as `lost` once idle.
+    fn deliver_start(&mut self) -> Result<(), Failure> {
         self.connect()?;
-        let api = resolve_api(
-            &self.base_url,
-            &self.connection.as_ref().unwrap().discovery.api,
-        );
+        let Some(Item::Start { local, game }) = self.outbox.front() else {
+            unreachable!()
+        };
+        let api = resolve_api(&self.base_url, &self.discovery().api);
         let url = format!("{}/games", api.trim_end_matches('/'));
-        let token = self.token(&self.connection.as_ref().unwrap().discovery.id);
-        let created = Self::agent()
+        let token = self.token();
+        let result = Self::agent()
             .post(&url)
             .set("Authorization", &format!("Bearer {token}"))
             .set("Content-Type", "application/json")
-            .send_json(game)
-            .map_err(|e| format!("create telemetry game: {e}"))?
-            .into_json::<GameCreated>()
-            .map_err(|e| format!("create telemetry game JSON: {e}"))?;
-        self.games.insert(local_id.to_owned(), created.game_id);
+            .send_json(game);
+        let local = local.clone();
+        match result {
+            Ok(response) => {
+                let created = response
+                    .into_json::<GameCreated>()
+                    .map_err(|e| Failure::Transport(format!("create telemetry game JSON: {e}")))?;
+                self.games.insert(local, created.game_id);
+                self.outbox.pop_front();
+                self.reached();
+                Ok(())
+            }
+            Err(ureq::Error::Status(status, response)) => {
+                let body = response.into_json::<ErrorBody>().ok();
+                let message = body
+                    .as_ref()
+                    .map_or_else(|| format!("HTTP {status}"), |b| b.message.clone());
+                match (status, body.map(|b| b.error)) {
+                    (_, Some(ErrorCode::Banned)) => Err(Failure::Fatal(format!(
+                        "telemetry account refused: {message}"
+                    ))),
+                    (401, _) => Err(Failure::Auth(message)),
+                    (429, _) | (500.., _) => Err(Failure::Transport(format!(
+                        "create telemetry game: {message}"
+                    ))),
+                    _ => {
+                        eprintln!("live telemetry: the server refused a game: {message}");
+                        self.outbox.pop_front();
+                        self.refused.insert(local);
+                        Ok(())
+                    }
+                }
+            }
+            Err(e) => Err(Failure::Transport(format!("create telemetry game: {e}"))),
+        }
+    }
+
+    /// Signs the events at the front (up to [`MAX_BATCH_EVENTS`] of one
+    /// game; a `GameEnded` alone, so no other event's refusal takes it
+    /// down) into a batch in their place.
+    fn seal(&mut self) -> Result<(), Failure> {
+        let Some(Item::Event(first)) = self.outbox.front() else {
+            unreachable!()
+        };
+        let local = first.game_id.clone();
+        let Some(server_id) = self.games.get(&local).cloned() else {
+            // A game the server refused, or one never started: nowhere to
+            // write.
+            if !self.refused.contains(&local) {
+                eprintln!("live telemetry: {} for unstarted game {local}", first.kind);
+            }
+            self.outbox.pop_front();
+            self.dropped_events += 1;
+            return Ok(());
+        };
+        self.connect()?;
+        let mut events: Vec<GameEvent> = Vec::new();
+        while events.len() < MAX_BATCH_EVENTS {
+            let Some(Item::Event(next)) = self.outbox.front() else {
+                break;
+            };
+            let ends = next.kind == game::GAME_ENDED;
+            if next.game_id != local || (ends && !events.is_empty()) {
+                break;
+            }
+            let Some(Item::Event(next)) = self.outbox.pop_front() else {
+                unreachable!()
+            };
+            events.push(next);
+            if ends {
+                break;
+            }
+        }
+        let batch = self.sign(server_id, events)?;
+        self.outbox.push_front(Item::Batch(batch));
         Ok(())
     }
 
-    fn flush_events(&mut self) -> Result<(), String> {
-        if self.pending.is_empty() {
-            return Ok(());
-        }
+    fn sign(&self, server_id: String, events: Vec<GameEvent>) -> Result<Batch, Failure> {
+        let now = OffsetDateTime::now_utc();
+        let author = format!("acct:{}@{}", self.account.xuid, self.discovery().id);
+        let message = signed_events_message(&self.key, &author, &server_id, &events, now)
+            .map_err(Failure::Fatal)?;
+        Ok(Batch {
+            server_id,
+            events,
+            text: serde_json::to_string(&message).expect("serializes"),
+            signed_at: now.unix_timestamp(),
+        })
+    }
+
+    /// Sends the batch at the front and settles it by the server's answer.
+    fn deliver_batch(&mut self) -> Result<(), Failure> {
         self.connect()?;
-        let pending = std::mem::take(&mut self.pending);
-        let mut remaining = pending.as_slice();
-        while !remaining.is_empty() {
-            let count = remaining.len().min(MAX_BATCH_EVENTS);
-            let batch = &remaining[..count];
-            let result = (|| {
-                let game_id = batch[0].game_id.clone();
-                let server_id = self
-                    .games
-                    .get(&game_id)
-                    .cloned()
-                    .ok_or_else(|| format!("no server game for {game_id}"))?;
-                let author = self.connection.as_ref().unwrap().author.clone();
-                let message = signed_events_message(
-                    &self.key,
-                    &author,
-                    &server_id,
-                    batch,
-                    OffsetDateTime::now_utc(),
-                )?;
-                self.send(message)
-            })();
-            if let Err(error) = result {
-                self.pending = remaining.to_vec();
-                return Err(error);
+        let now = OffsetDateTime::now_utc().unix_timestamp();
+        let Some(Item::Batch(batch)) = self.outbox.front_mut() else {
+            unreachable!()
+        };
+        if now - batch.signed_at > RESIGN_AFTER_S {
+            let events = std::mem::take(&mut batch.events);
+            let server_id = batch.server_id.clone();
+            let fresh = self.sign(server_id, events)?;
+            self.outbox[0] = Item::Batch(fresh);
+        }
+        let Some(Item::Batch(batch)) = self.outbox.front() else {
+            unreachable!()
+        };
+        let text = batch.text.clone();
+        let answer = self.send_batch(&text)?;
+        let Some(Item::Batch(batch)) = self.outbox.pop_front() else {
+            unreachable!()
+        };
+        match answer {
+            Answer::Appended => self.reached(),
+            // Sent before, unanswered, and taken: this copy is the repeat.
+            Answer::Refused(ErrorCode::Conflict, message) if message == NONCE_USED => {
+                self.reached()
             }
-            remaining = &remaining[count..];
+            // The game is over: this batch's GameEnded landed unanswered
+            // before, or the server ended it as lost while we were away.
+            Answer::Refused(ErrorCode::Conflict, message) if message == GAME_OVER => {
+                self.dropped_events += batch.events.len() as u64;
+                self.reached()
+            }
+            Answer::Refused(error, message) => {
+                let failure = match error {
+                    ErrorCode::RateLimited | ErrorCode::Unavailable => Some(Failure::Transport(
+                        format!("telemetry ingest busy: {message}"),
+                    )),
+                    ErrorCode::Banned => Some(Failure::Fatal(format!(
+                        "telemetry account refused: {message}"
+                    ))),
+                    ErrorCode::Unauthorized => Some(Failure::Auth(message.clone())),
+                    _ => None,
+                };
+                if let Some(failure) = failure {
+                    self.outbox.push_front(Item::Batch(batch));
+                    return Err(failure);
+                }
+                // Refused for good (the game has ended or is unknown, an
+                // event the server will not take): it can never land.
+                let kinds: Vec<&str> = batch.events.iter().map(|e| e.kind.as_str()).collect();
+                eprintln!(
+                    "live telemetry: the server refused {} for {}: {message}",
+                    kinds.join(", "),
+                    batch.server_id
+                );
+                self.dropped_events += batch.events.len() as u64;
+            }
         }
         Ok(())
     }
+
+    /// The server took something: the backoff and auth count start over.
+    fn reached(&mut self) {
+        self.delay = self.timing.backoff_min;
+        self.retry_at = None;
+        self.auth_refusals = 0;
+        if self.down {
+            self.down = false;
+            eprintln!(
+                "live telemetry: ingest back; {} waiting, {} events and {} frames dropped so far",
+                self.outbox.len(),
+                self.dropped_events,
+                self.dropped_frames
+            );
+        }
+    }
+
+    /// A delivery stopped: drop the connection and back off, or give up on
+    /// a refused account. `Err` only for the latter.
+    fn failed(&mut self, failure: Failure) -> Result<(), String> {
+        let error = match failure {
+            Failure::Fatal(error) => {
+                self.disconnect();
+                self.fatal = Some(error.clone());
+                return Err(error);
+            }
+            Failure::Auth(reason) => {
+                self.auth_refusals += 1;
+                if self.auth_refusals >= MAX_AUTH_REFUSALS {
+                    let error = format!(
+                        "telemetry ingest refused the account {} times: {reason}",
+                        self.auth_refusals
+                    );
+                    self.disconnect();
+                    self.fatal = Some(error.clone());
+                    return Err(error);
+                }
+                format!("telemetry ingest refused the token: {reason}")
+            }
+            Failure::Transport(error) => error,
+        };
+        let steady = self
+            .connection
+            .as_ref()
+            .is_some_and(|c| c.opened.elapsed() >= self.timing.steady);
+        self.disconnect();
+        if steady {
+            self.delay = self.timing.backoff_min;
+        }
+        let wait = jitter(self.delay);
+        if !self.down {
+            self.down = true;
+            eprintln!("live telemetry: {error}; reconnecting");
+        }
+        self.retry_at = Some(Instant::now() + wait);
+        self.delay = (self.delay * 2).min(self.timing.backoff_max);
+        Ok(())
+    }
+
+    fn disconnect(&mut self) {
+        if let Some(mut connection) = self.connection.take() {
+            let _ = connection.socket.close(None);
+            let _ = connection.socket.flush();
+        }
+    }
+
+    fn send_frame(&mut self, mut frame: Frame, server_id: String) -> Result<(), Failure> {
+        self.connect()?;
+        frame.game_id = server_id;
+        self.refresh_auth()?;
+        let message = frame_message(&mut self.connection.as_mut().unwrap().frames, frame)
+            .map_err(Failure::Transport)?;
+        if message.len() > MAX_INGEST_MESSAGE {
+            self.dropped_frames += 1;
+            return Ok(());
+        }
+        self.write(message)?;
+        // Replies are optional for frames. Drain what is already there,
+        // but never wait on the guest's behalf.
+        self.drain()
+    }
+}
+
+/// A close from the server: 4401 is the token refused (or expired), a
+/// reason naming a ban is the account refused; anything else is a drop.
+fn closed(code: u16, reason: String) -> Failure {
+    if reason.to_ascii_lowercase().contains("banned") {
+        Failure::Fatal(format!("telemetry account refused: {reason}"))
+    } else if code == CLOSE_UNAUTHORIZED {
+        Failure::Auth(reason)
+    } else {
+        Failure::Transport(format!("telemetry ingest closed ({code}): {reason}"))
+    }
+}
+
+/// `delay` give or take a fifth, so many games do not reconnect at once.
+fn jitter(delay: Duration) -> Duration {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    // 0.8 to 1.2.
+    let factor = 0.8 + f64::from(nanos % 1000) / 1000.0 * 0.4;
+    delay.mul_f64(factor)
 }
 
 impl Sink for ServerSink {
     fn event(&mut self, event: GameEvent) -> Result<(), String> {
-        if event.kind == live_proto::game::GAME_STARTED {
-            self.flush_events()?;
-            let started: live_proto::game::GameStarted = serde_json::from_value(event.data.clone())
+        if let Some(error) = &self.fatal {
+            return Err(error.clone());
+        }
+        if event.kind == game::GAME_STARTED {
+            let started: game::GameStarted = serde_json::from_value(event.data.clone())
                 .map_err(|e| format!("GameStarted data: {e}"))?;
-            self.create_game(&event.game_id, &started.game)
+            self.enqueue(Item::Start {
+                local: event.game_id,
+                game: Box::new(started.game),
+            });
+            // Now, so the frames that follow have a server game to go to.
+            self.deliver()
         } else {
-            self.pending.push(event);
+            self.enqueue(Item::Event(event));
             Ok(())
         }
     }
 
-    fn frame(&mut self, mut frame: Frame) -> Result<(), String> {
-        self.connect()?;
-        let server_id = self
-            .games
-            .get(&frame.game_id)
-            .cloned()
-            .ok_or_else(|| format!("no server game for {}", frame.game_id))?;
-        frame.game_id = server_id;
-        if self
-            .connection
-            .as_ref()
-            .is_some_and(|c| c.last_auth.elapsed() >= Duration::from_secs(45))
-        {
-            self.authenticate()?;
+    /// A frame goes now or not at all: while the server is out of reach,
+    /// or its game is not created yet, it is dropped.
+    fn frame(&mut self, frame: Frame) -> Result<(), String> {
+        if let Some(error) = &self.fatal {
+            return Err(error.clone());
         }
-        let message = frame_message(&mut self.connection.as_mut().unwrap().frames, frame)?;
-        self.send_message(message)
+        let Some(server_id) = self.games.get(&frame.game_id).cloned() else {
+            self.dropped_frames += 1;
+            return Ok(());
+        };
+        if self.connection.is_none() && self.backing_off() {
+            self.dropped_frames += 1;
+            return Ok(());
+        }
+        match self.send_frame(frame, server_id) {
+            Ok(()) => Ok(()),
+            Err(failure) => {
+                self.dropped_frames += 1;
+                self.failed(failure)
+            }
+        }
     }
 
     fn flush(&mut self) -> Result<(), String> {
-        self.flush_events()
+        self.deliver()
     }
 }
 
 impl Drop for ServerSink {
     fn drop(&mut self) {
-        if let Some(connection) = &mut self.connection {
-            let _ = connection.socket.close(None);
+        // One last go on a live connection; no reconnect on the way out.
+        if self.connection.is_some() && self.fatal.is_none() {
+            let _ = self.deliver();
         }
+        if !self.outbox.is_empty() {
+            eprintln!(
+                "live telemetry: {} game starts and events not delivered",
+                self.outbox.len()
+            );
+        }
+        self.disconnect();
     }
 }
 
@@ -465,6 +971,10 @@ pub(crate) fn signed_events_message(
         jws: sign_batch(key, &bodies),
     })
 }
+
+#[cfg(test)]
+#[path = "server_tests.rs"]
+mod reconnect;
 
 #[cfg(test)]
 mod tests {

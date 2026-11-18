@@ -50,12 +50,13 @@ Event types so far (payload fields):
 | `account-<xuid>` | `FriendRequested`, `FriendAccepted`, `FriendDeclined`, `FriendRemoved` | `from`/`to`, or `by`/`friend` ([Friends](#friends), below) |
 | `gamertag-<lower>` | `GamertagReserved` | `xuid` |
 | `title-<id>-file-<name>` | `TitleFilePublished` | `title_id`, `name`, `sha256`, `size` |
-| `presence-<xuid>` | `SignedIn`, `PresenceChanged`, `SignedOut`, `PresenceExpired` | `xuid`, `state`, `game_id?`, `activity?` (below) |
+| `presence-<xuid>` | `SignedIn`, `PresenceChanged`, `SignedOut`, `PresenceExpired` | `xuid`, `state`, `game_id?`, `activity?`, `build?`, `capabilities?` (below) |
 | `game-<id>` | `GameStarted` | `game_id`, `console`, `map`, `mode` (`campaign`/`multiplayer`), `variant?`, `team_play`, `score_limit?`, `time_limit_s?`, `players`, `kind?`, `playlist?`, `playlist_id?`, `difficulty?`, `online?` (below) |
 | `game-<id>` | `PlayerJoined`, `PlayerLeft` | `player` (below) / `index` |
 | `game-<id>` | `PlayerKilled` | `tick`, `victim`, `killer?`, `weapon?`, `kind` (`kill`/`suicide`/`betrayal`/`world`) |
 | `game-<id>` | `ScoreChanged` | `tick`, `players: [{index, score, kills, deaths, assists}]`, `teams?: [{team, score}]` |
-| `game-<id>` | `GameFrame` | a frame (below), recorded at 1 Hz for replays |
+| `game-<id>` | `FrameChunk` | a stored chunk of the game's recorded frames ([Frame chunks](#frame-chunks)) |
+| `game-<id>` | `GameFrame` | a frame (below), recorded at 1 Hz for replays by servers before frame chunks |
 | `game-<id>` | `GameEnded` | `tick`, `reason` (`finished`/`quit`/`lost`), `winner?`, final `players` |
 
 A player: `{ "index": 0, "name": "Sneaky Pete", "xuid": "...?", "team": 1,
@@ -162,6 +163,16 @@ vitality 0..1 and `shield` the shield 0..4 (over 1 is an overshield);
 ticks before the frame's tick each of `actions` happened, one each, at most
 900, and only beside `actions`.
 
+From senders that read it (packed format version 4), they may carry the
+animation they play:
+
+```json
+"anim": { "name": "combat:rifle:any:move_front", "frame": 12.5 }
+```
+
+`name` is the animation's name in the unit's graph, `[a-z0-9_:-]{1,64}`;
+`frame` the frame in it, 0 to 32767, kept to a sixteenth.
+
 A frame may also carry `hits`, `bsp` and `machines`:
 
 ```json
@@ -216,6 +227,13 @@ A frame may carry `cut`: a campaign checkpoint revert or restart happened
 just before it, and the engine's clock came back to that tick (the game's
 ticks keep counting; see below). Only the first frame of the new run has it.
 
+A frame may carry `cinematic: true`: a campaign cutscene is playing. The
+game sends such frames on its clock as ever, with the tick and `bsp` (and a
+`cut` when one is due) but no players, actors, vehicles, hits, machines or
+objects, and sends no kills meanwhile (docs/live/live-telemetry.md,
+"Cinematics"). A viewer shows a cutscene and draws nothing from the frames
+either side of it into it. Absent means false.
+
 Shots, actions and hits of frames that are dropped (the 15 Hz throttle, a
 full sink queue) go to the next delivered frame (`fire`, `actions_ago` and
 hits' `ago` placed again against that frame's tick, those older than they
@@ -245,12 +263,56 @@ game it is; all five fields are optional and old senders leave them out:
 Game summaries and `GET /v1/games/{id}` always carry `kind` (inferred for old
 games) and the others when the start had them.
 
-`GameFrame` events hold a frame at 1 Hz. Live frames go out on the stream at
-up to 15 Hz and are not stored. A live frame's `shots` count since the
-previous live frame; a recorded frame's since the previous recorded frame
-(the sum over the frames it stands for, capped at 64 per player or actor), so
-replays show the firing of the whole second; the same goes for `actions` and
-`hits`.
+Live frames go out on the stream at up to 15 Hz, and every frame sent is
+recorded in the game's [frame chunks](#frame-chunks). A frame's `shots`
+count since the previous frame sent (the sum over the frames the throttle
+dropped, capped at 64 per player or actor); the same goes for `actions` and
+`hits`. Games recorded before frame chunks have `GameFrame` events instead,
+a frame at 1 Hz whose `shots`, `actions` and `hits` cover its whole second.
+
+### Frame chunks
+
+The server records a game's frames in chunks of ten seconds of game time
+(`crates/live-proto/src/chunk.rs`): every frame sent in an aligned window
+of 300 ticks, packed as one stream (a keyframe, then deltas; [packed
+frames](live-telemetry.md#packed-frames)) and compressed with raw deflate.
+A chunk is stored when a frame lands in the next window, and when the game
+ends (its `GameEnded`, or the idle sweep ending it as `lost`); there is no
+timer. A server that stops mid-window loses at most that window.
+
+Each chunk is an immutable blob in the private blob store,
+`frames/<game id>/<first tick>` (R2 on the Worker, the data directory
+natively; the event store's blobs on a server with neither), and a
+server-signed `FrameChunk` event in the game's stream is its index entry:
+
+```json
+{ "from_tick": 9000, "to_tick": 9298, "frames": 150, "bytes": 38211,
+  "sha256": "…", "codec": "deflate", "raw_bytes": 41022, "versions": [4],
+  "players": [0, 1, 2], "cuts": [9120], "hits": 37, "shots": 210 }
+```
+
+`versions` are the packed frame versions inside (a reader that knows none
+skips the chunk), `players` every player index a frame lists, `cuts` the
+ticks of frames that carry a `cut`, `hits` and `shots` totals. The
+signature covers `sha256`, so a chunk is verifiable. Kills, scores and the
+rest stay ordinary events: stats never read frames.
+
+A chunk's bytes:
+
+| field | bytes |
+|---|---|
+| magic | `H2CK` |
+| format | `u8`, 1 |
+| codec | `u8`: 0 stored, 1 raw deflate (RFC 1951) |
+| raw length, frames, first tick, last tick | LEB128 each |
+| body | the codec's bytes of a container of packed frame records |
+
+A chunk carries packed records as they are, so a new packed frame version
+changes nothing here. A chunk inflates to at most 16 MiB. `GET
+/v1/games/{id}/chunks` lists a game's chunks and `GET
+/v1/games/{id}/chunks/{first tick}` returns one, with the same visibility
+check as the game. A seek reads the index once and fetches the one chunk
+whose window holds the tick.
 
 ## Read endpoints
 
@@ -262,11 +324,13 @@ replays show the firing of the whole second; the same goes for `actions` and
 | `GET /v1/accounts` | accounts: `{xuid, gamertag, created_at, online}` |
 | `GET /v1/accounts/{gamertag}` | one account plus `recent_games` (without the co-op games the reader may not see: [Co-op games](#co-op-games)) |
 | `GET /v1/accounts/{gamertag}/friends` | friends with presence; pending requests in and out for the player and admins only ([Friends](#friends), below) |
-| `GET /v1/presence` | who is online now: `{xuid, gamertag, state, game_id?, activity?, since}`; a player in a game or session the reader may not see shows no `game_id` and `activity: "In a game"` ([Co-op games](#co-op-games), "Presence") |
+| `GET /v1/presence` | who is online now: `{xuid, gamertag, state, game_id?, activity?, since, build?, capabilities?}`; a player in a game or session the reader may not see shows no `game_id` and `activity: "In a game"` ([Co-op games](#co-op-games), "Presence") |
 | `GET /v1/coop/games?player=` | finished co-op campaign games, newest first ([Co-op games](#co-op-games), below) |
 | `GET /v1/games?state=live\|ended&map=&map_id=&skulls=` | game summaries: `{game_id, map, mode, kind, variant, playlist?, playlist_id?, difficulty?, online?, team_play, started_at, ended_at?, players, teams?, map_id?, skulls?}`; `map` keeps games on that base map, modded or not, `map_id` one exact map (`none`: games with no `map_id`), `skulls` (comma-separated indices, `4,6`) games that had every one of them on; without the co-op games the reader may not see ([Co-op games](#co-op-games)) |
 | `GET /v1/games/{id}` | summary plus scoreboard and the last 50 kills; 404, as for no game, for a co-op game the reader may not see ([Co-op games](#co-op-games)) |
-| `GET /v1/games/{id}/frames?from_tick=&to_tick=&format=` | recorded frames, for replay: `format=json` (the default) a page of JSON frames; `format=packed` an `application/x-h2-frames` container of packed keyframes (docs/live/live-telemetry.md, "Packed frames"), the next cursor in `x-next` and the head position in `x-position` |
+| `GET /v1/games/{id}/chunks` | the game's [frame chunk](#frame-chunks) index: `{game_id, chunk_ticks, ended, items}`, `items` the `FrameChunk` data oldest first; empty for a game recorded before chunks |
+| `GET /v1/games/{id}/chunks/{tick}` | one chunk by its first tick, `application/x-h2-chunk`; checked against its index entry's hash. Anonymous reads are `public, max-age=31536000, immutable` (it is never rewritten) |
+| `GET /v1/games/{id}/frames?from_tick=&to_tick=` | a game recorded before frame chunks: its `GameFrame`s as an `application/x-h2-frames` container of packed keyframes (docs/live/live-telemetry.md, "Packed frames"), the next cursor in `x-next` and the head position in `x-position`. The JSON read (`format=json`) is gone: `400` |
 | `GET /v1/maps/{map}/outline` | top-down map outline (see below), 404 until a console has uploaded it |
 | `GET /v1/snapshot` | what a page needs on load, in one read at one log position: `{position, accounts, presence, live, ended, details, tail}`. `accounts` is `/v1/accounts?limit=1000`, `presence` is `/v1/presence`, `live` and `ended` are `/v1/games?state=…&limit=100`, `details` is `/v1/games/{id}` for every live game and the 40 newest ended ones, and `tail` is the last 300 log events up to `position` without `GameFrame` (as on the stream). Each part has the reader's visibility applied, as at its own endpoint ([Co-op games](#co-op-games)) |
 | `GET /v1/events?from=&type=&stream=&limit=` | raw log, oldest first, at most 200 a page; without the events of co-op games and sessions the reader may not see ([Co-op games](#co-op-games), "The log"): a page can be short or empty with a `next`; without network addresses for anyone but the operator ([Network addresses](#network-addresses)); invitations, friend events, content and player reports and bans only to whom they concern ([Private events](#private-events)) |
@@ -426,8 +490,11 @@ except account creation. Signed bodies are sent raw as a compact JWS with
 | method and path | body | does |
 |---|---|---|
 | `POST /v1/accounts` | JWS signed by the new key over `{gamertag, jwk, invite?}` | create; 201 `{xuid, gamertag, id, recovery}` (`recovery`: the TOTP secret, `otpauth` URI and current code, live-security.md §1 Recovery), 409 if taken |
-| `POST /v1/accounts/{gamertag}/recover` | `{"request": <JWS h2live-recover by the new key over {gamertag, jwk, aud, iat, nonce}>, "code": "123456"}` | add the new key with a current recovery code; 201 `{xuid, gamertag, id}`; 403 wrong code, 429 locked out (live-security.md §1) |
-| `GET`/`POST /v1/accounts/by-xuid/{xuid}/recovery` | the account's own `recovery.read` / `recovery.write` token | the recovery secret and current code; `POST` makes a new one (set up or reset) |
+| `POST /v1/accounts/{gamertag}/recover` | `{"request": <JWS h2live-recover by the new key over {gamertag, jwk, aud, iat, nonce}>, "code": "123456"}` | sign in on a new device: add the new key with a current sign-in code; 201 `{xuid, gamertag, id}`; 403 wrong code, 429 locked out (live-security.md §1) |
+| `GET`/`POST /v1/accounts/by-xuid/{xuid}/recovery` | the account's own `recovery.read` / `recovery.write` token | the sign-in code's secret and current code; `POST` makes a new one (set up or reset) |
+| `GET /v1/accounts/by-xuid/{xuid}/signins` | the account's own `signins.read` token | where the account is signed in ([Sign-ins](#sign-ins)) |
+| `DELETE /v1/accounts/by-xuid/{xuid}/signins/{kid}` | the account's own `signins.write` token | sign one other device out ([Sign-ins](#sign-ins)) |
+| `POST /v1/accounts/by-xuid/{xuid}/signins/sign-out-others` | the account's own `signins.write` token | sign out every device but the caller ([Sign-ins](#sign-ins)) |
 | `PUT /v1/titles/{title}/files/{name}` | raw bytes, operator token | publish a title file (max 2 MiB) |
 | `POST /v1/events` | one compact JWS (an event on a stream the author may write) | append; 201 `{position}` |
 | `POST /v1/invites` | none with an operator token (`?days=&code=`); or a JWS `InviteCreated` event `{jti, exp}` by an admin account with its `invites.write` token, bare or as `{"event": <jws>, "code": "..."}` | create a single-use invite; 201 `{invite, custom, jti, exp, position}`: `invite` is the 25-character code or the custom one (live-admin.md §5, "Invite codes people type") |
@@ -436,6 +503,69 @@ except account creation. Signed bodies are sent raw as a compact JWS with
 | `POST /v1/games/{id}/events` | `[{type, data}]` | append game events in order |
 | `PUT /v1/maps/{map}/outline` | outline JSON | store a map outline |
 | `POST /v1/local/signin` | `{"once": token}`, no token | embedded server and loopback peers only: answers once with the browser account entry `h2 play --live-local` offered; otherwise 404 (live-admin.md §4) |
+
+## Sign-ins
+
+Where an account is signed in, and signing any other device out. The API
+and the log say "recovery" for what people are shown as the **sign-in
+code** (the rotating six-digit TOTP code, live-security.md §1); the field
+and path names stay.
+
+A sign-in is one of the account's current keys. Each device has its own:
+a browser makes one at sign-up or when it signs in with a code, a copy of
+the game (and `h2 live account create`, whose accounts file the game
+reads) the same. Every request token is signed by that key (security
+§3), so signing a device out is revoking its key.
+
+`GET /v1/accounts/by-xuid/{xuid}/signins` with the account's own
+`signins.read` token:
+
+```json
+{"items": [
+  {"kid": "Xc0…", "kind": "browser", "name": "Chrome on macOS", "via": "signup",
+   "created_at": "2026-11-01T18:30:00Z", "last_seen": "2026-11-18T12:00:00Z", "current": true},
+  {"kid": "p9Q…", "kind": "game", "name": "Halo 2", "via": "code",
+   "created_at": "2026-11-15T20:02:11Z", "last_seen": null, "current": false}
+], "position": 4211}
+```
+
+- `kind`: `browser`, `game` (the game or the CLI), `other`, or `unknown`
+  for a key from before devices were named that hasn't listed its own
+  sign-ins since (doing so names it, in memory, from that request).
+- `name`: from the User-Agent of the request that made the key
+  (`POST /v1/accounts` or `/recover`): browser and OS for a browser,
+  "Halo 2" for the game. The server keeps it in its `KeyAdded` as
+  `device`, sealed like the sign-in code secret (HKDF label
+  `h2live-device-seal-v1`), because the log is public.
+- `via`: `signup` (the key made the account), `code` (signed in with a
+  sign-in code) or `key` (added by another of the account's keys).
+- `last_seen`: the last request the key signed, since the server (or the
+  Worker's hub) started; kept in memory only, `null` until then.
+- `current`: the key that signed this request. It is listed first, then
+  the most recently used.
+
+`DELETE /v1/accounts/by-xuid/{xuid}/signins/{kid}` and
+`POST /v1/accounts/by-xuid/{xuid}/signins/sign-out-others`, with the
+account's own `signins.write` token, revoke the key or every key but the
+caller's. The server appends one `KeyRevoked {kid, by, via: "signout"}`
+per key on the account stream, signed by itself (`by` is the kid of the
+key that asked), all in one append, and answers once they are applied:
+200 `{"revoked": [kid, ...], "position": n}` (`revoked` is empty when
+there was nothing else to sign out). Revoking the caller's own key is 409
+(sign out on that device instead); a kid that is not a current key of
+the account is 404; another account's token is 403.
+
+A revoked key's next request is refused: every token check looks the key
+up in the read model (security §3), so `authenticate` answers 401 `token
+key is unknown or revoked` from the request after the append, in a
+native server and in the Worker alike, and after a restart (the
+revocation is in the log). An open WebSocket closes when its token
+expires (at most 60 s) because a fresh one is refused. The device signs
+in again with the gamertag and a sign-in code.
+
+Signing others out is open to a banned account (`signins.read` and
+`signins.write` are not barred), so someone locked out can still end a
+stolen sign-in. Writes share the per-author write rate limit.
 
 ## Friends
 
@@ -489,6 +619,15 @@ characters (`live_proto::valid_activity`); a bad one refuses the event with
 400. It rides `SignedIn` and `PresenceChanged`, is served in `GET
 /v1/presence` and in a friend's `presence`, and is absent when unset. A
 presence event without it clears the previous one.
+
+`build` and `capabilities` say what software the player's console runs:
+its git short hash (7 to 12 lowercase hex digits, `live_proto::valid_build`)
+and up to 16 `name/version` strings of at most 32 characters
+(`live_proto::valid_capabilities`; `variant-ext/1` applies a host's variant
+options, docs/game/game-options.md section 3). A bad one refuses the event
+with 400. They ride `SignedIn` and `PresenceChanged`, are served in `GET
+/v1/presence` and in a friend's `presence` to every reader (they name
+software, not where the player is), and are absent when unset.
 
 The game side's friends enumeration makes exactly this call with the
 signed-in account's gamertag and reads `friends` (gamertag, xuid,
@@ -594,7 +733,10 @@ Create takes `addr` (IPv4 or null), `port`, `host_address` (36 XNADDR bytes),
 omitted on the wire; `friends`; `invite`) and `map_id` (64 hex digits,
 exactly which map: see "Custom maps" below; omitted when none) and `skulls`
 (the host's multiplayer skulls, ascending indices, only 4 and 6; omitted
-when none; docs/game/skulls.md "In multiplayer"). The ID's datatype bits must agree. Limits are 16 total slots,
+when none; docs/game/skulls.md "In multiplayer") and `variant_ext`
+(`{block, key}`: the game variant's extension block for the host's next
+game, 72 lowercase hex digits, and the variant's key, 16; omitted when the
+host sends none; docs/game/game-options.md section 3). The ID's datatype bits must agree. Limits are 16 total slots,
 64 attributes, 400 UTF-16 units per string, 800 bytes per blob, 256 bytes per
 metadata string and 32 open advertisements per host. Unknown input fields are
 rejected; addresses must be unicast IPv4 and ports 1..65529.
@@ -612,9 +754,10 @@ fields.
 Only the authenticated host may append events, signed with its registered key:
 
 - `SessionUpdated`: optional slots, attributes (full replacement), name, map,
-  visibility, `map_id` or `skulls` (absent keeps the current one; `skulls: []`
-  turns them all off). A server from before `skulls` refuses an update that
-  has it, so the HLE sends it only when the host's set changed.
+  visibility, `map_id`, `skulls` or `variant_ext` (absent keeps the current
+  one; `skulls: []` turns them all off; a `variant_ext` replaces the last).
+  A server from before `skulls` refuses an update that has it, so the HLE
+  sends it only when the host's set changed; the same for `variant_ext`.
 - `PlayerJoined`: `{xuid, slot?}`; the account must exist and not be in the
   roster, which is bounded to 16. Slot is an optional display string.
 - `PlayerLeft`: `{xuid}`; the account must be in the roster.
@@ -751,7 +894,7 @@ server; without one, only public games show. The same rule holds for a
 Live co-op campaign game's telemetry (`kind: "campaign"`, `online: true`):
 when it starts, the server links it to the open `coop` session its host
 (or, failing that, a player) is in and records that session's host and
-visibility, and `GET /v1/games`, `GET /v1/games/{id}`, its `/frames` and
+visibility, and `GET /v1/games`, `GET /v1/games/{id}`, its `/frames`, `/chunks` and
 an account's `recent_games` leave it out for readers who may not see it
 (those who were in it are its players). A campaign game with no such
 session stays public. While the game runs it follows its session: when the
@@ -813,8 +956,8 @@ stored: players use their own disc for the base.
 | `GET /v1/content/{sha256}` | public, or `read` on a private server | the bytes (`ETag` the hash, cached immutably); 404; 410 if taken down |
 | `POST /v1/content/{sha256}/report` | account token, `lxm: content.write`; `{reason}` | 201 `{ok, position}` |
 | `PUT /v1/maps` | account token, `lxm: content.write`; a signed `MapPublished` event (compact JWS) | 201 `{map, missing, position}`; 200 when the author republishes it |
-| `GET /v1/maps?base=&author=&limit=&cursor=` | read rule | `{items: [summary], next, position}`, newest first |
-| `GET /v1/maps/{map_id}` | read rule | `{map: summary + manifest, missing, position}`; 404; 410 if taken down |
+| `GET /v1/maps?sort=&base=&author=&category=&q=&limit=&cursor=` | read rule | `{items: [summary], next, position}`, newest first or most downloaded first (see "The mod repository") |
+| `GET /v1/maps/{map_id}` | read rule; a `read` token counts a download | `{map: summary + manifest, missing, position}`; 404; 410 if taken down |
 | `GET /v1/maps/{map_id}/image` | read rule | the preview (PNG or JPEG, its content type); 404 if none |
 | `POST /v1/maps/{map_id}/report` | account token, `lxm: content.write`; `{reason}` | 201 `{ok, position}` |
 | `GET /v1/hoppers/pins` | read rule | `{pins: [{hopper_id, map_ids}], position}` |
@@ -839,10 +982,14 @@ server with no data directory stores nothing (503).
 
 A package is published as an event the author signs with their own key,
 like the account's other events: stream `package-<map_id>`, type
-`MapPublished`, data `{manifest, image?}`. `manifest` is the package
+`MapPublished`, data `{manifest, image?, category?, source_url?}`. `manifest` is the package
 manifest as JSON (the TOML's tables and keys, with `[[patch]]` and
 `[[pack]]` as the arrays `patch` and `pack`); `image` is the SHA-256 of the
 preview, uploaded like a layer, given exactly when the manifest names one.
+`category` (one of `gameplay`, `weapons`, `vehicles`, `visuals`, `maps`,
+`other`) and `source_url` (an `http` or `https` URL of at most 300
+characters, where the mod came from) are the repository's display data,
+outside the `MapId` like the manifest's name (400 when malformed).
 The server checks the manifest as the runtime does ([maps.md](../game/maps.md) §7,
 "Manifest checks"), computes `MapId::of` and requires the stream to be that
 id's; refuses a manifest with no layers (only a retail base: 403) or naming a
@@ -854,14 +1001,82 @@ and nonce checks apply.
 
 A summary is `{map_id, name, description?, author: {xuid, gamertag}, base:
 {map, sha256?, derived}, layers: [{sha256, size, kind: "patch"|"pack"}],
-size, image?, geometry?, published_at}`: `size` is the layers' bytes (what a
-player without them downloads), `image` the preview's hash, `geometry` the
+size, image?, geometry?, published_at, position, downloads, credit?,
+category?, source_url?}`: `size` is the layers' bytes (what a player
+without them downloads), `image` the preview's hash, `geometry` the
 manifest's `[result] geometry` (set when the mod changed the map's
-geometry). `missing` lists layers the server no longer holds (deleted by an
-admin). Lists leave out taken-down packages.
+geometry), `position` the `MapPublished` event's log position, `downloads`
+how many accounts fetched the manifest, `credit` the manifest's `[package]
+author` (who made the mod; `author` is who published it). `missing` lists
+layers the server no longer holds (deleted by an admin). Lists leave out
+taken-down packages. Servers before the repository send no `position` or
+`downloads`; read them as 0.
 
-The client side (`h2 live maps publish DIR`, `h2 live maps list`, and the
-join-time download) is in [maps.md](../game/maps.md) §5, "As built".
+### The mod repository
+
+The web's Mods pages (the stats site's "Mods" tab) and the game's Xbox
+Live menu browse the same list. The exact request, for clients:
+
+```
+GET /v1/maps?sort=new&limit=20
+GET /v1/maps?sort=new&limit=20&cursor=<the previous page's next>
+```
+
+```json
+{
+  "items": [
+    {
+      "map_id": "<64 hex>", "name": "Lockout Snipers",
+      "description": "...", "author": {"xuid": "0009...", "gamertag": "Modder"},
+      "credit": "who made it", "category": "weapons",
+      "source_url": "https://...",
+      "base": {"map": "lockout", "sha256": "<64 hex>", "derived": false},
+      "layers": [{"sha256": "<64 hex>", "size": 412345, "kind": "patch"}],
+      "size": 412345, "image": "<64 hex>",
+      "published_at": "2026-11-18T10:00:00Z",
+      "position": 4211, "downloads": 17
+    }
+  ],
+  "next": "4211",
+  "position": 4300
+}
+```
+
+- The id is `map_id` and the cursor is `next`, as everywhere in this API.
+  `next` is null on the last page (one shorter than `limit`); a page as
+  long as `limit` gives one, which may lead to an empty page.
+- `sort`: `new` (the default: newest first, by `position`) or `popular`
+  (most `downloads` first, ties newest first). Anything else is 400.
+- Filters, all optional, empty ones ignored: `base` (the base map's name,
+  any case), `author` (the publisher's gamertag; one no account has
+  matches nothing), `category` (400 when not one of the six), `q` (a
+  case-insensitive substring of the name, description, credit, base map
+  name or publisher's gamertag).
+- `limit` 1 to 1000 (default 100). `cursor` is opaque: for `new` it is the
+  last item's position (`"4211"`), for `popular` its downloads and
+  position (`"17:4211"`); one of the other sort's form is 400.
+- **New since last time** needs no per-account state: a client keeps the
+  highest `position` it has seen and counts the items above it as new.
+  `position` is the package's own, so a republish by its author (same
+  `MapId`) does not move it; a package an admin deleted and its author
+  published again is new again.
+- **Downloads.** `GET /v1/maps/{map_id}` with `Authorization: Bearer
+  <token>` (an account's `read` token; tokens are single use, so a fresh
+  one per request) counts that account once per package: the first time,
+  the server appends a server-signed `MapDownloaded` event (stream
+  `package-<map_id>`, data `{map_id, by}`) and answers with the new count.
+  Without a token, or with one that does not check out on a public server,
+  the read is answered and counts nothing (the web never sends one there).
+  A private server needs the token anyway. `MapDownloaded` events, like
+  reports, show in the log to admins only. The count is kept by the log's
+  projection, replayed at startup, so both homes (native and the Worker)
+  count the same way, with no background task.
+- The picture is `GET /v1/maps/{map_id}/image` when `image` is set, else
+  the base map's art.
+
+The client side (`h2 live maps publish DIR`, `h2 live maps import FILE`,
+`h2 live maps list`, and the join-time download) is in
+[maps.md](../game/maps.md) §5, "As built" and "Importing a mod".
 
 ## Player reports
 
@@ -907,7 +1122,7 @@ The two commendation kinds are counted in public:
 
 Admins ban accounts ([live-admin.md](live-admin.md) §9). While a ban is in
 force, every token the account presents for a scope other than `read`,
-`recovery.read`, `storage.read` and `log.read` is refused with 403
+`recovery.read`, `signins.read`, `signins.write`, `storage.read` and `log.read` is refused with 403
 `{"error": "banned", "message": "this account is banned until <until>: <reason>"}`
 (or "banned: <reason>" for a ban until lifted). Clients treat `banned`
 as final for the session; the Live HLE reports it to the game as
@@ -1088,13 +1303,13 @@ JSON text messages.
 `{ "kind": "frame", "frame": {...} }` and
 `{ "kind": "events", "game_id": "...", "events": [{type, data}] }`. Frames
 may also come as binary messages: containers of packed frame records, one
-stream per socket. The server fans frames out to readers, records one per
-second per game as a `GameFrame`, and appends events.
+stream per socket. The server fans frames out to readers, records them in
+[frame chunks](#frame-chunks), and appends events.
 
-A `GameFrame` recorded now holds `{tick, source, packed}`: `packed` is the
-frame as one packed keyframe, base64url without padding, so the event's
-signature covers the packed bytes. Older recordings hold the JSON frame
-plus `source`; both read the same through `/frames`.
+A `GameFrame` recorded before frame chunks holds `{tick, source, packed}`:
+`packed` is the frame as one packed keyframe, base64url without padding, so
+the event's signature covers the packed bytes. The oldest hold the JSON
+frame plus `source`; both read the same through `/frames`.
 
 ## Map outline
 
@@ -1211,10 +1426,17 @@ Settled after the first client was built against this page.
    `{ "player": index }` otherwise, or null for a draw or quit.
 7. **`GameEnded.players`** is the final scoreboard: `[{index, score, kills,
    deaths, assists}]`.
-8. **Frames** are `GET /v1/games/{id}/frames?from_tick=&to_tick=&cursor=`
-   returning a list (item 3) of frames, at most 600 per page, oldest first.
-   `GameFrame.data` is the frame plus `source` (the ingesting author id).
+8. **Frames** are [frame chunks](#frame-chunks) (`GET
+   /v1/games/{id}/chunks`). Games recorded before them are read with `GET
+   /v1/games/{id}/frames?from_tick=&to_tick=&cursor=`, packed, at most 600
+   per page, oldest first.
 9. **`PlayerKilled`** carries `pos`, the victim's position.
+10. **Who writes a game** (2026-11-18). The server trusts the host's
+    record. Only the host ends the game (`GameEnded`; 403 from anyone
+    else, who leaves with `PlayerLeft`). A `PlayerJoined` from anyone but
+    the host must be the author's own account, not a bot (403). An xuid
+    can be in a game once at a time: a `NewGame` naming one twice, or a
+    `PlayerJoined` for an xuid already in, is a 400.
 10. **`GameStarted`** carries `tick`, the game tick it started at.
 11. **Keys.** `GET /v1/accounts/{gamertag}/keys` and
     `GET /v1/accounts/by-xuid/{xuid}/keys` both return
@@ -1251,6 +1473,9 @@ above where they differ.
   `GameEnded` carries the last tick seen, but its `at` (the game's
   `ended_at`) is when the server gave up, so a game's length is
   `(GameEnded.tick - GameStarted.tick) / 30`, not `ended_at - started_at`.
+  A `lost` game that never got past its start tick (the console went quiet
+  before its first frame) has length 0: its wall clock is only the
+  server's wait, and stats count none of it as time played.
 - **`recent_games`** on an account is the latest 10.
 - **Account creation** payload is `{gamertag, jwk, invite?, aud, iat}`;
   `aud` is the server id from the well-known document and `iat` must be
@@ -1271,15 +1496,22 @@ may write those streams. A standing is
 |---|---|
 | `GET /v1/accounts/{who}/ranks` | `{xuid, ranks: {playlist: standing}, position}`; `who` is a gamertag or XUID; 404 if unknown |
 | `GET /v1/accounts/{who}/ranks/{playlist}` | `{xuid, playlist, standing, history, position}`: `history` is the last 100 changes, newest first, `{game_id, at, position, before, after}` |
-| `GET /v1/ranks/{playlist}?limit=` | `{playlist, items, position}`: `{xuid, gamertag, ...standing}`, by level then experience; `limit` 1..1000, default 100 |
-| `GET /v1/rank-stats?leaderboards=&xuids=` | `{items, position}`: the game's stats read. `leaderboards` are playlist ids (a descriptor's `+0x08`), `xuids` players, both comma-separated, at most 32 and 64 (400 beyond). One `{xuid, leaderboard, playlist, standing}` per player per leaderboard that is a ranked playlist in the served hopper file; a player with no games there is level 1; other leaderboards have no rows |
+| `GET /v1/ranks/{playlist}?limit=` | `{playlist, items, position}`: `{xuid, gamertag, ...standing}`, with `bot: true` on a bot's row, by level then experience; `limit` 1..1000, default 100 |
+| `GET /v1/rank-stats?leaderboards=&xuids=&session=` | `{items, position}`: the game's stats read. `leaderboards` are playlist ids (a descriptor's `+0x08`), `xuids` players, both comma-separated, at most 32 and 64 (400 beyond). One `{xuid, leaderboard, playlist, standing}` per player per leaderboard that is a ranked playlist in the served hopper file; a player with no games there is level 1; other leaderboards have no rows. Optional `session` (16 lowercase hex digits, else 400): a made-up bot of that session's latest roster, on the roster's playlist, answers its roster level |
 
 `playlist` is the hopper descriptor index, as sessions and games name it.
 A leaderboard is the playlist id the hopper file gives that descriptor,
 which is what the game's `XOnlineStatRead` names.
 A game is ranked only for the players who registered its arbitration
 round ([Arbitration](#arbitration)); each `RankChanged` names that round
-as `round`, `{session}-{round}`, and a round ranks one game.
+as `round`, `{session}-{round}`, and a round ranks one game. Only the
+session host's own record is ranked (`GameStarted.host` is the session's
+`host_xuid`), by the latest round it registered before the game started.
+A bot
+rostered in the game's session (`POST /v1/games/bots`) needs no
+registration: a persistent bot is ranked, its `RankChanged` marked
+`bot: true`; a made-up bot is an opponent at its roster level and gets
+none. A bot's rank pages answer by its xuid or gamertag, with `bot: true`.
 
 ## Arbitration
 
@@ -1290,8 +1522,11 @@ each account signed in on the console
 lowercase hex digits. The server writes `ArbitrationRegistered`,
 `ArbitrationExtended` or `ArbitrationReported`, server-signed, on
 `round-<session>-<round>`, with `{session_id, round_id, xuid}` and the
-call's fields; `xuid` is the token's account. Nobody writes these through
-`/v1/events`.
+call's fields; `xuid` is the token's account. The session must be one the
+server knows (404 otherwise). When a game is ranked by a round, the
+server also writes `ArbitrationUsed` `{session_id, round_id, game_id}`
+there, whether or not anyone's standing moved; the round ranks no other
+game. Nobody writes these through `/v1/events`.
 
 | endpoint | body | result |
 |---|---|---|

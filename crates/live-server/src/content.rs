@@ -37,9 +37,9 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use live_proto::maps::{
     self, Action, BaseInfo, CONTENT_MODERATED, CONTENT_REPORTED, CONTENT_STORED,
-    CONTENT_UPLOADS_SET, ContentStored, HOPPER_PINS_SET, HopperPin, LayerInfo, MAP_PUBLISHED,
-    MapAnswer, MapDetail, MapDocument, MapId, MapSummary, Moderated, Reported, Sha256, Standing,
-    Target, UploadsSet, Who,
+    CONTENT_UPLOADS_SET, ContentStored, Downloaded, HOPPER_PINS_SET, HopperPin, LayerInfo,
+    MAP_DOWNLOADED, MAP_PUBLISHED, MapAnswer, MapDetail, MapDocument, MapId, MapSummary,
+    Moderated, Reported, Sha256, Standing, Target, UploadsSet, Who,
 };
 use live_proto::sign::{MAX_EVENT_SKEW_S, SignedEvent, parse_time};
 use live_proto::{Author, ErrorCode, Gamertag, Page, Xuid, lxm, streams};
@@ -124,6 +124,147 @@ fn unavailable(m: impl Into<String>) -> ApiError {
     ApiError::new(ErrorCode::Unavailable, m)
 }
 
+/// `GET /v1/maps`'s order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MapSort {
+    /// Newest first: by the `MapPublished` event's log position.
+    #[default]
+    New,
+    /// Most downloaded first, ties newest first.
+    Popular,
+}
+
+impl MapSort {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "new" => Some(Self::New),
+            "popular" => Some(Self::Popular),
+            _ => None,
+        }
+    }
+}
+
+/// Where a page of `GET /v1/maps` ends: the last item's position (`new`),
+/// or its downloads and position (`popular`, written `<downloads>:<position>`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MapCursor {
+    New(u64),
+    Popular(u64, u64),
+}
+
+impl MapCursor {
+    pub fn of(sort: MapSort, downloads: u64, position: u64) -> Self {
+        match sort {
+            MapSort::New => Self::New(position),
+            MapSort::Popular => Self::Popular(downloads, position),
+        }
+    }
+
+    /// The cursor `s` for `sort`; None when it is not that sort's form.
+    pub fn parse(sort: MapSort, s: &str) -> Option<Self> {
+        match sort {
+            MapSort::New => s.parse().ok().map(Self::New),
+            MapSort::Popular => {
+                let (d, p) = s.split_once(':')?;
+                Some(Self::Popular(d.parse().ok()?, p.parse().ok()?))
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for MapCursor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::New(p) => write!(f, "{p}"),
+            Self::Popular(d, p) => write!(f, "{d}:{p}"),
+        }
+    }
+}
+
+/// `GET /v1/maps`'s query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MapQuery {
+    pub sort: MapSort,
+    /// The base map's name, any case.
+    pub base: Option<String>,
+    /// The publisher's gamertag; one no account has matches nothing.
+    pub author: Option<String>,
+    /// One of `live_proto::maps::CATEGORIES`.
+    pub category: Option<String>,
+    /// A case-insensitive substring of the name, description, credit, base
+    /// map or publisher's gamertag.
+    pub q: Option<String>,
+    pub cursor: Option<MapCursor>,
+    pub limit: usize,
+}
+
+impl Default for MapQuery {
+    fn default() -> Self {
+        Self {
+            sort: MapSort::New,
+            base: None,
+            author: None,
+            category: None,
+            q: None,
+            cursor: None,
+            limit: 100,
+        }
+    }
+}
+
+impl MapQuery {
+    /// Reads the query string's parameters; empty ones count as absent.
+    pub fn parse(q: &HashMap<String, String>) -> ApiResult<Self> {
+        let get = |k: &str| {
+            q.get(k)
+                .map(|v| v.trim())
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+        };
+        let sort = match get("sort") {
+            Some(s) => MapSort::parse(&s).ok_or_else(|| invalid("sort is new or popular"))?,
+            None => MapSort::New,
+        };
+        let limit = get("limit")
+            .map(|v| v.parse::<usize>())
+            .transpose()
+            .map_err(|_| invalid("invalid limit"))?
+            .unwrap_or(100)
+            .clamp(1, 1000);
+        let cursor = get("cursor")
+            .map(|c| MapCursor::parse(sort, &c).ok_or_else(|| invalid("bad cursor")))
+            .transpose()?;
+        let category = get("category");
+        if let Some(c) = &category
+            && !maps::CATEGORIES.contains(&c.as_str())
+        {
+            return Err(invalid(format!(
+                "category is one of {}",
+                maps::CATEGORIES.join(", ")
+            )));
+        }
+        Ok(Self {
+            sort,
+            base: get("base"),
+            author: get("author"),
+            category,
+            q: get("q"),
+            cursor,
+            limit,
+        })
+    }
+
+    /// Whether an item with `downloads` at `position` comes after the
+    /// cursor in this query's order (true without one).
+    fn after(&self, downloads: u64, position: u64) -> bool {
+        match self.cursor {
+            None => true,
+            Some(MapCursor::New(p)) => position < p,
+            Some(MapCursor::Popular(d, p)) => (downloads, position) < (d, p),
+        }
+    }
+}
+
 /// A stored blob.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Blob {
@@ -161,6 +302,8 @@ pub struct CatalogState {
     pub reports: Vec<Report>,
     pub uploads_off: BTreeSet<Xuid>,
     pub pins: BTreeMap<u32, Vec<MapId>>,
+    /// The accounts that fetched each package's manifest (`MapDownloaded`).
+    pub downloads: HashMap<MapId, HashSet<Xuid>>,
 }
 
 impl CatalogState {
@@ -194,6 +337,16 @@ impl CatalogState {
             })
             .map(|(_, b)| b.size)
             .sum()
+    }
+
+    /// How many accounts fetched `id`'s manifest.
+    pub fn downloads_of(&self, id: &MapId) -> u64 {
+        self.downloads.get(id).map_or(0, |d| d.len() as u64)
+    }
+
+    /// Whether `xuid` has fetched `id`'s manifest before.
+    pub fn downloaded(&self, id: &MapId, xuid: Xuid) -> bool {
+        self.downloads.get(id).is_some_and(|d| d.contains(&xuid))
     }
 
     pub fn reports_of(&self, target: Target, id: &str) -> usize {
@@ -299,6 +452,11 @@ impl CatalogState {
                     } else {
                         self.uploads_off.insert(d.xuid);
                     }
+                }
+            }
+            MAP_DOWNLOADED => {
+                if let Ok(d) = serde_json::from_value::<Downloaded>(b.data.clone()) {
+                    self.downloads.entry(d.map_id).or_default().insert(d.by);
                 }
             }
             HOPPER_PINS_SET => {
@@ -669,6 +827,11 @@ impl Live {
             image: p.doc.image,
             geometry: m.result.as_ref().and_then(|r| r.geometry),
             published_at: p.published_at.clone(),
+            position: p.position,
+            downloads: s.downloads_of(id),
+            credit: m.package.author.clone(),
+            category: p.doc.category.clone(),
+            source_url: p.doc.source_url.clone(),
         }
     }
 
@@ -703,6 +866,7 @@ impl Live {
             .map_err(|e| invalid(format!("manifest: {e}")))?;
         let m = &doc.manifest;
         m.validate().map_err(|e| invalid(e.to_string()))?;
+        doc.validate_extras().map_err(invalid)?;
         if m.package.image.is_some() != doc.image.is_some() {
             return Err(invalid(
                 "image: give the image's SHA-256 exactly when the manifest names one",
@@ -850,41 +1014,88 @@ impl Live {
         Ok((kind, bytes))
     }
 
-    /// `GET /v1/maps`: published maps, newest first; the cursor is a
-    /// position to list before.
-    pub fn maps(
-        &self,
-        base: Option<&str>,
-        author: Option<&str>,
-        before: Option<u64>,
-        limit: usize,
-    ) -> Page<MapSummary> {
+    /// `GET /v1/maps/{map_id}` by a signed-in console: counts `xuid` as a
+    /// download of `id` the first time (a server-signed `MapDownloaded`).
+    /// A failure to record is logged, never the reader's error.
+    pub async fn count_download(&self, id: &MapId, xuid: Xuid) {
+        {
+            let s = self.catalog.read();
+            if !s.maps.contains_key(id) || s.downloaded(id, xuid) {
+                return;
+            }
+        }
+        let data = Downloaded {
+            map_id: *id,
+            by: xuid,
+        };
+        let event = self.server_event(
+            maps::package_stream(id),
+            MAP_DOWNLOADED,
+            serde_json::to_value(&data).expect("serializes"),
+        );
+        match self.store.append(vec![event], &[]).await {
+            Ok(recorded) => {
+                let _ = self.wait_applied(recorded[0].position).await;
+            }
+            Err(e) => eprintln!("live: map {id}: download not counted: {e}"),
+        }
+    }
+
+    /// `GET /v1/maps`: published maps by `query` (docs/live/live-api.md
+    /// "Custom maps"), newest first or most downloaded first.
+    pub fn maps(&self, query: &MapQuery) -> Page<MapSummary> {
         let position = self.position();
         let s = self.catalog.read();
-        let author = author.and_then(|a| {
+        let author = query.author.as_deref().map(|a| {
             Gamertag::new(a)
                 .ok()
-                .map(|t| self.model.read().account_by_tag(&t).map(|a| a.xuid))
+                .and_then(|t| self.model.read().account_by_tag(&t).map(|a| a.xuid))
         });
-        let mut all: Vec<(&MapId, &Package)> = s
+        let needle = query.q.as_deref().map(str::to_lowercase);
+        let mut all: Vec<(&MapId, &Package, u64)> = s
             .maps
             .iter()
             .filter(|(id, p)| {
+                let m = &p.doc.manifest;
                 s.refusal(id).is_none()
-                    && before.is_none_or(|b| p.position < b)
-                    && base.is_none_or(|m| p.doc.manifest.base.map.eq_ignore_ascii_case(m))
+                    && query
+                        .base
+                        .as_deref()
+                        .is_none_or(|b| m.base.map.eq_ignore_ascii_case(b))
                     && author.is_none_or(|a| a == Some(p.author))
+                    && query
+                        .category
+                        .as_deref()
+                        .is_none_or(|c| p.doc.category.as_deref() == Some(c))
+                    && needle.as_deref().is_none_or(|n| {
+                        let has = |t: &str| t.to_lowercase().contains(n);
+                        has(m.package.name.as_str())
+                            || m.package.description.as_deref().is_some_and(has)
+                            || m.package.author.as_deref().is_some_and(has)
+                            || has(m.base.map.as_str())
+                            || has(self.who(p.author).gamertag.as_str())
+                    })
             })
+            .map(|(id, p)| (id, p, s.downloads_of(id)))
+            .filter(|(_, p, d)| query.after(*d, p.position))
             .collect();
-        all.sort_by_key(|(_, p)| std::cmp::Reverse(p.position));
-        all.truncate(limit);
-        let next = (all.len() == limit)
-            .then(|| all.last().map(|(_, p)| p.position.to_string()))
+        match query.sort {
+            MapSort::New => all.sort_by_key(|(_, p, _)| std::cmp::Reverse(p.position)),
+            MapSort::Popular => {
+                all.sort_by_key(|(_, p, d)| std::cmp::Reverse((*d, p.position)));
+            }
+        }
+        all.truncate(query.limit);
+        let next = (all.len() == query.limit)
+            .then(|| {
+                all.last()
+                    .map(|(_, p, d)| MapCursor::of(query.sort, *d, p.position).to_string())
+            })
             .flatten();
         Page {
             items: all
                 .iter()
-                .map(|(id, p)| self.map_summary(&s, id, p))
+                .map(|(id, p, _)| self.map_summary(&s, id, p))
                 .collect(),
             next,
             position,
@@ -1258,8 +1469,21 @@ pub(crate) async fn get_map(
     headers: HeaderMap,
     UrlPath(id): UrlPath<String>,
 ) -> ApiResult<Response> {
-    live.authorize_read(bearer(&headers))?;
-    Ok(crate::http::json(StatusCode::OK, &live.map(&id)?))
+    // A signed-in reader (the console's download) counts once per account.
+    // Tokens are single use, so it is checked once: one that does not
+    // check out is no download, and on a public server no error either
+    // (the manifest is public); a private server refuses the read.
+    let reader = bearer(&headers).and_then(|b| live.authenticate(Some(b), lxm::READ).ok());
+    if reader.is_none() {
+        live.authorize_read(None)?;
+    }
+    let mut answer = live.map(&id)?;
+    if let Some(Author::Account { xuid, .. }) = reader {
+        let id = answer.map.summary.map_id;
+        live.count_download(&id, xuid).await;
+        answer.map.summary.downloads = live.catalog.read().downloads_of(&id);
+    }
+    Ok(crate::http::json(StatusCode::OK, &answer))
 }
 
 pub(crate) async fn get_map_image(
@@ -1278,26 +1502,7 @@ pub(crate) async fn list_maps(
     Query(q): Query<HashMap<String, String>>,
 ) -> ApiResult<Response> {
     live.authorize_read(bearer(&headers))?;
-    let limit = q
-        .get("limit")
-        .filter(|v| !v.is_empty())
-        .map(|v| v.parse::<usize>())
-        .transpose()
-        .map_err(|_| invalid("invalid limit"))?
-        .unwrap_or(100)
-        .clamp(1, 1000);
-    let before = q
-        .get("cursor")
-        .filter(|v| !v.is_empty())
-        .map(|v| v.parse::<u64>())
-        .transpose()
-        .map_err(|_| invalid("bad cursor"))?;
-    let page = live.maps(
-        q.get("base").map(String::as_str),
-        q.get("author").map(String::as_str),
-        before,
-        limit,
-    );
+    let page = live.maps(&MapQuery::parse(&q)?);
     Ok(crate::http::json(StatusCode::OK, &page))
 }
 

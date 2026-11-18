@@ -246,6 +246,14 @@ can point at.
   first call. It answers "how much is alive" before anything is listed.
 - `world.object {id}` gives everything about one object, including its tag
   path and the effects attached to it.
+  Units also carry `physics` (**Code**): crouch amount, the crouch request
+  (unit flags bit 23, which stays set after release until there is room to
+  stand), physics mode, the biped airborne bit (`+0x348` bit 0, likely) and
+  its tick count (`+0x399`), the hitbox offset a melee lunge leaves
+  (`+0x3aa`, ticks and units; docs/game/superbounce.md), and the raw unit
+  and biped flag words. Polling
+  `object player.0` on one `h2 agent -` connection and keeping one reply per
+  stamped tick gives a per-tick movement trace.
 - `world.raycast`, `world.visible {from: "camera" | player}`: what the player
   can see, for both "is this on screen" and closed-loop movement.
 - `world.overhead {bsp, size}` renders a top-down map image with numbered
@@ -815,8 +823,7 @@ adds them; types in `crates/agent-proto/src/render.rs`, logic in
   `fallbacks` by call, joins, times in ms); `paths` is calls into each
   native render path since the start (`feature::render_loop::path_calls`:
   `render_views`, `layer_draw`, `layer_entries`, `render_game_view`,
-  `render_scene_passes`, `layer_sort`, `render_states`,
-  `transparent_sort`); `counters` the frame-stats window's line. Each is
+  `render_scene_passes`, `render_states`); `counters` the frame-stats window's line. Each is
   `null` where that piece isn't running.
 - **Interp on a headless serve.** `interp` is there when in-between
   frames run: in `h2 play`, or in an `h2 serve` that renders on the GPU

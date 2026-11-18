@@ -6,7 +6,9 @@ license.workspace = true
 
 [dependencies]
 thiserror.workspace = true
-# The body of a Halo 1 Xbox map is one zlib stream.
+# The body of a Halo 1 Xbox map is one zlib stream, inflated in one pass
+# (zlib-rs); flate2 compresses the tests' invented maps.
+zlib-rs = "0.6"
 flate2 = "1"
 xiso.workspace = true
 xbe.workspace = true

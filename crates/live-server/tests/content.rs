@@ -102,10 +102,7 @@ async fn publish(h: &Harness, u: &User, doc: &MapDocument) -> Resp {
 }
 
 fn doc(m: Manifest) -> MapDocument {
-    MapDocument {
-        manifest: m,
-        image: None,
-    }
+    MapDocument::new(m, None)
 }
 
 fn moderator(h: &Harness) -> (&'static str, String) {
@@ -149,6 +146,7 @@ fn session(flags: &str, hopper: Option<u32>, map_id: Option<MapId>) -> NewSessio
         skulls: None,
         campaign: None,
         ping_ms: None,
+        variant_ext: None,
     }
 }
 
@@ -380,10 +378,7 @@ async fn packages_are_signed_checked_and_listed() {
         geometry: Some(Sha256([0x22; 32])),
     });
     let id = MapId::of(&m);
-    let d = MapDocument {
-        manifest: m.clone(),
-        image: Some(sha(PNG)),
-    };
+    let d = MapDocument::new(m.clone(), Some(sha(PNG)));
 
     // Layers first.
     let r = publish(&h, &u, &d).await;
@@ -400,17 +395,11 @@ async fn packages_are_signed_checked_and_listed() {
     // An image must be a PNG or JPEG.
     let gif = b"GIF89a invented".as_slice();
     upload(&h, &u, gif).await;
-    let bad = MapDocument {
-        manifest: m.clone(),
-        image: Some(sha(gif)),
-    };
+    let bad = MapDocument::new(m.clone(), Some(sha(gif)));
     assert_eq!(publish(&h, &u, &bad).await.status, StatusCode::BAD_REQUEST);
     upload(&h, &u, PNG).await;
     // The manifest names an image exactly when the document gives one.
-    let none = MapDocument {
-        manifest: m.clone(),
-        image: None,
-    };
+    let none = MapDocument::new(m.clone(), None);
     assert_eq!(publish(&h, &u, &none).await.status, StatusCode::BAD_REQUEST);
     // Signed by someone else, or on the wrong stream: refused.
     let other = h.create("Other").await;

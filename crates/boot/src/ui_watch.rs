@@ -239,6 +239,40 @@ pub fn read<M: Gm + ?Sized>(m: &M) -> Read {
     }
 }
 
+/// A screen on windows 0 to 4 (see [`dialog`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Dialog {
+    pub window: u32,
+    pub slot: u32,
+    /// The channel's active screen's id, when it has a plausible one.
+    pub id: Option<u32>,
+}
+
+/// The first screen on windows 0 to 4, any slot (4, the shared one, and
+/// the controllers' 0 to 3), as `0x14917c(window)` asks one window over
+/// every slot: whatever sits over the window-5 menus. The players screen
+/// ignores every button while window 1 has one (`0x252ad7` asks
+/// `0x14917c(1)`), and the profile chooser it opens for a controller
+/// (`0x24b6ea` and `0x1905bf`, a screen request with words 3 and 4 and that
+/// controller's mask) is one of these. `None` when the menus are bare.
+pub fn dialog<M: Gm + ?Sized>(m: &M) -> Option<Dialog> {
+    for window in 0..5 {
+        for slot in 0..=SHARED {
+            let Some(ch) = channel(window, slot) else {
+                continue;
+            };
+            if occupied(m, ch) {
+                let id = m
+                    .u32(ch + ACTIVE)
+                    .filter(|&s| s != 0)
+                    .and_then(|s| id_of(m, s));
+                return Some(Dialog { window, slot, id });
+            }
+        }
+    }
+    None
+}
+
 /// The screen alone ([`read`]).
 pub fn top<M: Gm + ?Sized>(m: &M) -> Option<Top> {
     read(m).top
@@ -367,6 +401,42 @@ mod tests {
         // The modal window 0 before both.
         screen(&mut f, WINDOW_0, 0x8000_2000, 0x2a, 0xf);
         assert_eq!(top(&f).unwrap().window, 0);
+    }
+
+    #[test]
+    fn a_dialog_is_any_screen_below_window_5_in_any_slot() {
+        let mut f = Fake::default();
+        screen(&mut f, WINDOW_5 + 4 * STRIDE_5, 0x8000_0000, JOIN_SCREEN, 0x1);
+        assert_eq!(dialog(&f), None, "the players screen alone");
+        // A profile chooser for controller 1: the shared slot's first
+        // window is now 3, which has nothing for player one, so player
+        // one's input goes nowhere; a bot must not press A either.
+        screen(&mut f, WINDOW_3 + 4 * STRIDE_13, 0x8000_1000, 0x17, 0x2);
+        assert_eq!(top(&f), None);
+        assert_eq!(
+            dialog(&f),
+            Some(Dialog {
+                window: 3,
+                slot: 4,
+                id: Some(0x17)
+            })
+        );
+        // One in a controller's own slot counts too, the lower window first.
+        let mut f = Fake::default();
+        screen(&mut f, WINDOW_1 + 2 * STRIDE_13, 0x8000_2000, 0x40, 0x4);
+        f.set_u32(WINDOW_3 + 4 * STRIDE_13 + PENDING, 0x8000_3000);
+        assert_eq!(dialog(&f).map(|d| (d.window, d.slot)), Some((1, 2)));
+        // A pending screen alone is one, with no id yet.
+        let mut f = Fake::default();
+        f.set_u32(WINDOW_0 + PENDING, 0x8000_3000);
+        assert_eq!(
+            dialog(&f),
+            Some(Dialog {
+                window: 0,
+                slot: 4,
+                id: None
+            })
+        );
     }
 
     #[test]

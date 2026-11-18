@@ -682,6 +682,98 @@ mod tests {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
+    /// Signing a device out on the Worker's own composition: the revoked
+    /// key's next request gets 401, and so it does after the hub restarts
+    /// and rebuilds from its log (docs/live/live-api.md "Sign-ins").
+    #[tokio::test]
+    async fn a_signed_out_key_is_refused_on_the_worker() {
+        use axum::{body::Body, http::Request};
+        use http_body_util::BodyExt;
+        use live_proto::recovery::{RecoverRequest, TotpSecret, format_code};
+        use live_proto::sign::{AccountRequest, KeyPair, issue_token};
+        use live_proto::{Xuid, lxm};
+        use live_server::{Live, Policy, ServerIdentity, app::Timers};
+        use tower::ServiceExt;
+
+        let path = temp_db("signins");
+        let dir = path.parent().unwrap().to_path_buf();
+        let boot = || async {
+            let store = SqlStore::open(Sqlite(pool(&path).await)).await.unwrap();
+            let identity = ServerIdentity::open(&dir, Some("live.test")).unwrap();
+            Live::start_with(Arc::new(store), identity, Policy::default(), Timers::Driven)
+                .await
+                .unwrap()
+        };
+        let call = |live: Arc<Live>, method: &'static str, uri: String, auth: Option<String>, ua: &'static str, body: String| async move {
+            let mut req = Request::builder().method(method).uri(uri).header("user-agent", ua);
+            if let Some(a) = auth {
+                req = req.header("authorization", format!("Bearer {a}"));
+            }
+            let r = live_server::http::router(live)
+                .oneshot(req.body(Body::from(body)).unwrap())
+                .await
+                .unwrap();
+            let status = r.status().as_u16();
+            let body = r.into_body().collect().await.unwrap().to_bytes();
+            (status, serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null))
+        };
+        let now = || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64
+        };
+        let browser = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Firefox/140.0";
+
+        let live = boot().await;
+        let laptop = KeyPair::generate();
+        let (status, created) = call(
+            live.clone(),
+            "POST",
+            "/v1/accounts".into(),
+            None,
+            browser,
+            AccountRequest::sign(&laptop, "Drifter", None, "live.test", now()),
+        )
+        .await;
+        assert_eq!(status, 201, "{created}");
+        let xuid = Xuid::parse(created["xuid"].as_str().unwrap()).unwrap();
+        let iss = created["id"].as_str().unwrap().to_string();
+        let secret = TotpSecret::from_base32(created["recovery"]["secret"].as_str().unwrap()).unwrap();
+        let game = KeyPair::generate();
+        let recover = serde_json::json!({
+            "request": RecoverRequest::sign(&game, "Drifter", "live.test", now()),
+            "code": format_code(secret.code_at(now())),
+        });
+        let (status, body) = call(live.clone(), "POST", "/v1/accounts/Drifter/recover".into(), None, "ureq/2.12.1", recover.to_string()).await;
+        assert_eq!(status, 201, "{body}");
+
+        let token = |key: &KeyPair, m: &str| issue_token(key, &iss, "live.test", m, now());
+        let signins = format!("/v1/accounts/by-xuid/{xuid}/signins");
+        let (status, body) = call(live.clone(), "GET", signins.clone(), Some(token(&game, lxm::SIGNINS_READ)), "ureq/2.12.1", String::new()).await;
+        assert_eq!(status, 200, "{body}");
+        let kinds: Vec<&str> = body["items"].as_array().unwrap().iter().map(|i| i["kind"].as_str().unwrap()).collect();
+        assert_eq!(kinds, ["game", "browser"], "{body}");
+
+        let (status, body) = call(live.clone(), "DELETE", format!("{signins}/{}", game.kid()), Some(token(&laptop, lxm::SIGNINS_WRITE)), browser, String::new()).await;
+        assert_eq!(status, 200, "{body}");
+        let (status, _) = call(live.clone(), "GET", signins.clone(), Some(token(&game, lxm::SIGNINS_READ)), "ureq/2.12.1", String::new()).await;
+        assert_eq!(status, 401);
+        let (status, _) = call(live.clone(), "GET", signins.clone(), Some(token(&laptop, lxm::SIGNINS_READ)), browser, String::new()).await;
+        assert_eq!(status, 200);
+
+        // The hub wakes again, its read model rebuilt from its own log.
+        drop(live);
+        let live = boot().await;
+        let (status, _) = call(live.clone(), "GET", signins.clone(), Some(token(&game, lxm::SIGNINS_READ)), "ureq/2.12.1", String::new()).await;
+        assert_eq!(status, 401);
+        let (status, body) = call(live.clone(), "GET", signins, Some(token(&laptop, lxm::SIGNINS_READ)), browser, String::new()).await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["items"].as_array().unwrap().len(), 1);
+        assert_eq!(body["items"][0]["name"], "Firefox on Windows");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn the_schema_splits_into_its_statements() {
         let s = script_statements(sql::SCHEMA);

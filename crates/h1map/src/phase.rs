@@ -11,14 +11,31 @@
 use std::cell::RefCell;
 use std::time::{Duration, Instant};
 
-/// Each phase's own time, in the order first seen.
-pub type Phases = Vec<(&'static str, Duration)>;
+/// Each phase's own time, in the order first seen: its name, its wall
+/// time, and the CPU time its thread spent in it (which a loaded machine
+/// does not stretch).
+pub type Phases = Vec<(&'static str, Duration, Duration)>;
 
 struct Open {
     name: &'static str,
     start: Instant,
-    /// The time of the phases timed inside this one.
-    inner: Duration,
+    cpu: Duration,
+    /// The wall and CPU time of the phases timed inside this one.
+    inner: (Duration, Duration),
+}
+
+/// What tells this thread's CPU time: set once by the program
+/// ([`set_cpu_clock`]; this crate has no `unsafe` to ask the system
+/// itself). Unset, every CPU time is zero.
+static CPU_CLOCK: std::sync::OnceLock<fn() -> Duration> = std::sync::OnceLock::new();
+
+/// Sets what tells the calling thread's CPU time (`CLOCK_THREAD_CPUTIME_ID`).
+pub fn set_cpu_clock(clock: fn() -> Duration) {
+    let _ = CPU_CLOCK.set(clock);
+}
+
+fn thread_cpu() -> Duration {
+    CPU_CLOCK.get().map_or(Duration::ZERO, |f| f())
 }
 
 #[derive(Default)]
@@ -68,7 +85,8 @@ pub fn start(name: &'static str) -> Phase {
         rec.open.push(Open {
             name,
             start: Instant::now(),
-            inner: Duration::ZERO,
+            cpu: thread_cpu(),
+            inner: (Duration::ZERO, Duration::ZERO),
         });
         true
     });
@@ -89,19 +107,27 @@ impl Drop for Phase {
             let mut r = r.borrow_mut();
             let Some(rec) = r.as_mut() else { return };
             let Some(o) = rec.open.pop() else { return };
-            let all = o.start.elapsed();
+            let all = (o.start.elapsed(), thread_cpu().saturating_sub(o.cpu));
             if let Some(parent) = rec.open.last_mut() {
-                parent.inner += all;
+                parent.inner.0 += all.0;
+                parent.inner.1 += all.1;
             }
-            add(&mut rec.done, o.name, all.saturating_sub(o.inner));
+            let own = (
+                all.0.saturating_sub(o.inner.0),
+                all.1.saturating_sub(o.inner.1),
+            );
+            add(&mut rec.done, o.name, own);
         });
     }
 }
 
-fn add(phases: &mut Phases, name: &'static str, d: Duration) {
-    match phases.iter_mut().find(|(n, _)| *n == name) {
-        Some((_, t)) => *t += d,
-        None => phases.push((name, d)),
+fn add(phases: &mut Phases, name: &'static str, (wall, cpu): (Duration, Duration)) {
+    match phases.iter_mut().find(|p| p.0 == name) {
+        Some(p) => {
+            p.1 += wall;
+            p.2 += cpu;
+        }
+        None => phases.push((name, wall, cpu)),
     }
 }
 
@@ -161,6 +187,8 @@ mod tests {
         assert!(get("a") >= Duration::from_millis(20) && get("a") < Duration::from_millis(30 + 20));
         let sum: Duration = phases.iter().map(|p| p.1).sum();
         assert!(sum <= whole);
+        // With no clock set, no CPU time.
+        assert!(phases.iter().all(|p| p.2.is_zero()), "{phases:?}");
     }
 
     #[test]

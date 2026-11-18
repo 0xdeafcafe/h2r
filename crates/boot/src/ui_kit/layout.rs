@@ -99,7 +99,7 @@ impl Rules {
             panel: s
                 .dialog
                 .as_ref()
-                .map(|_| crate::ui_kit::dialog::DialogGeometry::fallback().area()),
+                .map(|d| crate::ui_kit::dialog::DialogGeometry::fallback_for(d.base).area()),
             ..Rules::default()
         }
     }

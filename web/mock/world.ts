@@ -132,6 +132,8 @@ export class World {
   now = Date.now();
   live = false;
   tamperEvery = 0;
+  /** No new games start (H2_MOCK_QUIET): the stats home's "nothing live" panel. */
+  quiet = false;
   /** Which map package (map_id) a game plays, if any (mock/content.ts); unset: none. */
   customMap?: (gameId: string, map: string) => string | undefined;
   private nextGameAt = 0;
@@ -478,6 +480,12 @@ export class World {
     this.targetGames = 1 + Math.floor(rand() * 3);
   }
 
+  /** Ends every game in progress and starts no more: a quiet server. */
+  hush() {
+    this.quiet = true;
+    for (const g of this.liveGames()) this.endGame(g, "finished");
+  }
+
   liveGames(): SimGame[] {
     return [...this.games.values()].filter((g) => !g.ended_at);
   }
@@ -489,7 +497,7 @@ export class World {
       this.presenceChurn();
       this.nextPresenceAt = this.now + 4000 + rand() * 9000;
     }
-    if (this.liveGames().length < this.targetGames && this.now >= this.nextGameAt) {
+    if (!this.quiet && this.liveGames().length < this.targetGames && this.now >= this.nextGameAt) {
       this.startGame();
       this.nextGameAt = this.now + 3000 + rand() * 5000;
     }
