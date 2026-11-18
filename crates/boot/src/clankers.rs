@@ -243,6 +243,8 @@ fn skill_index(s: Skill) -> u8 {
 struct Clanker {
     brain: bots::Brain,
     skill: Arc<AtomicU8>,
+    /// The page's Taunts (shared by every Clanker of the driver).
+    taunts: Arc<AtomicBool>,
 }
 
 impl local::PadSource for Clanker {
@@ -251,15 +253,22 @@ impl local::PadSource for Clanker {
         if self.brain.mind.skill != want {
             self.brain.mind.skill = want;
         }
+        self.brain.mind.emote.taunt = if self.taunts.load(Ordering::Relaxed) {
+            bots::emote::DEFAULT_TAUNT
+        } else {
+            0.0
+        };
         self.brain.pad(f)
     }
 }
 
-/// What the page asks for: how many bots (0 when off) at which difficulty.
+/// What the page asks for: how many bots (0 when off) at which
+/// difficulty, and whether they taunt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Want {
     pub count: usize,
     pub difficulty: i64,
+    pub taunts: bool,
 }
 
 impl Want {
@@ -273,9 +282,11 @@ impl Want {
             Some(Value::Int(d)) => d,
             _ => 1,
         };
+        let taunts = !matches!(store.get(TAUNTS.key), Some(Value::Bool(false)));
         Want {
             count: if on { count } else { 0 },
             difficulty,
+            taunts,
         }
     }
 }
@@ -295,6 +306,7 @@ pub struct Driver {
     local: Local,
     phantoms: Option<Phantoms>,
     own: Mutex<Vec<(Seat, Arc<AtomicU8>)>>,
+    taunts: Arc<AtomicBool>,
 }
 
 impl Driver {
@@ -304,6 +316,7 @@ impl Driver {
             local,
             phantoms: None,
             own: Mutex::new(Vec::new()),
+            taunts: Arc::new(AtomicBool::new(true)),
         }
     }
 
@@ -319,6 +332,7 @@ impl Driver {
     pub fn apply(&self, want: Want) -> Vec<String> {
         let mut own = self.own.lock().unwrap_or_else(|e| e.into_inner());
         let mut log = Vec::new();
+        self.taunts.store(want.taunts, Ordering::Relaxed);
         // Fewer: the last added go first.
         while own.len() > want.count {
             let (seat, _) = own.pop().expect("more than wanted");
@@ -356,6 +370,7 @@ impl Driver {
             let src = Clanker {
                 brain: bots::Brain::new(k, 0xc1a4 ^ u64::from(n)),
                 skill: Arc::clone(&s),
+                taunts: Arc::clone(&self.taunts),
             };
             let added = match (free, &self.phantoms) {
                 (Some(port), _) => self
@@ -449,7 +464,7 @@ pub fn drive(store: &Arc<Store>, driver: Driver) -> Arc<Driver> {
             }
         }
     };
-    for key in [ENABLED.key, COUNT.key, DIFFICULTY.key] {
+    for key in [ENABLED.key, COUNT.key, DIFFICULTY.key, TAUNTS.key] {
         store.on_change(key, run.clone());
     }
     for line in d.apply(Want::read(store)) {

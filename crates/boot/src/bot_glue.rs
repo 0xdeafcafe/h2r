@@ -179,6 +179,28 @@ impl feature::Feature for Bots {
                 Ok(())
             });
 
+        // Deaths, for the emotes (bots::emote): the kill function's
+        // attacker and victim player datums and betrayal flag, read as
+        // live telemetry reads them.
+        let (local, phantoms) = (self.local.clone(), self.phantoms.clone());
+        b.raw()
+            .observe_before(&points::PLAYER_KILLED, "bots hear a death", move |o| {
+                if local.is_empty() && phantoms.is_empty() {
+                    return;
+                }
+                let esp = o.cpu.esp;
+                let guest = o.guest();
+                let arg = |n: u32| guest.u32(esp.wrapping_add(4 * n));
+                let (Ok(attacker), Ok(victim), Ok(betrayal)) = (arg(1), arg(2), arg(3)) else {
+                    return;
+                };
+                if let Ok(Some(k)) =
+                    bots::emote::kill_from_guest(&*guest, attacker, victim, betrayal != 0)
+                {
+                    bots::emote::kills().push(k);
+                }
+            });
+
         // The listeners: the humans' ears only.
         let (local, sound) = (self.local.clone(), Arc::clone(&self.sound));
         b.raw()

@@ -113,6 +113,8 @@ pub const MELEE_RANGE: f32 = 0.9;
 pub const FIRE_RANGE: f32 = 25.0;
 pub const GRENADE_RANGE: (f32, f32) = (3.0, 12.0);
 pub const GRENADE_COOLDOWN: u32 = 240;
+/// Crouch: clicking the left stick, Halo 2's default layout.
+pub const CROUCH: HostButton = HostButton::LeftStick;
 
 /// What the mind is doing.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -148,6 +150,8 @@ pub struct Mind {
     grenade_until: u32,
     follower: Option<Follower>,
     goal: Option<Vec3>,
+    /// The teabag layer (§3.5).
+    pub emote: crate::emote::Emoter,
 }
 
 fn sub(a: Vec3, b: Vec3) -> Vec3 {
@@ -194,6 +198,7 @@ impl Mind {
             grenade_until: 0,
             follower: None,
             goal: None,
+            emote: crate::emote::Emoter::new(crate::emote::DEFAULT_TAUNT, seed ^ 0x7ea_ba6),
         }
     }
 
@@ -424,6 +429,15 @@ impl Mind {
             let m = (fwd * fwd + right * right).sqrt();
             let k = if m > 1.0 { 1.0 / m } else { 1.0 };
             pad.left_stick = (right * k, fwd * k);
+        }
+        // An emote over a dumb death: stand, crouch in rhythm, nothing
+        // else. No objective is live until stage 5.
+        if let Some(crouch) = self
+            .emote
+            .step(me.position, !seen.is_empty(), false, p.tick)
+        {
+            pad = HostPadState::default();
+            pad.buttons.set(CROUCH, crouch);
         }
         pad
     }

@@ -25,7 +25,8 @@ fn the_settings_are_kept_with_every_other_setting() {
         Want::read(&s),
         Want {
             count: 0,
-            difficulty: 1
+            difficulty: 1,
+            taunts: true
         },
         "off by default"
     );
@@ -34,7 +35,8 @@ fn the_settings_are_kept_with_every_other_setting() {
         Want::read(&s),
         Want {
             count: 2,
-            difficulty: 3
+            difficulty: 3,
+            taunts: true
         }
     );
 }
@@ -60,6 +62,7 @@ fn the_driver_keeps_that_many_bots_on_the_ports_no_one_else_asked_for() {
     let log = d.apply(Want {
         count: 5,
         difficulty: 2,
+        taunts: true,
     });
     assert_eq!(d.ports(), vec![2, 3]);
     assert!(log.last().unwrap().contains("no free port"), "{log:?}");
@@ -68,11 +71,13 @@ fn the_driver_keeps_that_many_bots_on_the_ports_no_one_else_asked_for() {
     d.apply(Want {
         count: 1,
         difficulty: 2,
+        taunts: true,
     });
     assert_eq!(d.ports(), vec![2], "the last added goes first");
     d.apply(Want {
         count: 0,
         difficulty: 2,
+        taunts: true,
     });
     assert_eq!(d.ports(), Vec::<u8>::new());
     let left: Vec<BotHandle> = local.list().iter().map(|b| b.handle).collect();
@@ -87,6 +92,7 @@ fn past_the_free_ports_the_driver_adds_phantoms() {
     let log = d.apply(Want {
         count: 5,
         difficulty: MIXED,
+        taunts: true,
     });
     assert_eq!(d.ports(), vec![1, 2, 3]);
     let l = ph.list();
@@ -104,6 +110,7 @@ fn past_the_free_ports_the_driver_adds_phantoms() {
     d.apply(Want {
         count: 3,
         difficulty: MIXED,
+        taunts: true,
     });
     assert!(
         ph.list().is_empty(),
@@ -118,6 +125,7 @@ fn a_difficulty_change_reaches_the_bots_already_there() {
     d.apply(Want {
         count: 2,
         difficulty: 0,
+        taunts: true,
     });
     let skills = |d: &Driver| -> Vec<u8> {
         d.own
@@ -131,9 +139,22 @@ fn a_difficulty_change_reaches_the_bots_already_there() {
     d.apply(Want {
         count: 2,
         difficulty: MIXED,
+        taunts: true,
     });
     assert_eq!(skills(&d), vec![1, 2], "Normal on port 1, Heroic on 2");
     assert_eq!(d.ports(), vec![1, 2], "the same bots");
+}
+
+#[test]
+fn taunts_off_reaches_the_bots_already_there() {
+    let s = store();
+    let local = Local::default();
+    let d = drive(&s, Driver::new(local.clone()));
+    on(&s, 1, 1);
+    assert!(d.taunts.load(Ordering::Relaxed), "on by default");
+    s.set(TAUNTS.key, Value::Bool(false)).unwrap();
+    assert!(!d.taunts.load(Ordering::Relaxed));
+    assert_eq!(d.ports(), vec![1], "the same bot");
 }
 
 #[test]

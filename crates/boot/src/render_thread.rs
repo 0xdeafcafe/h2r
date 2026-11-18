@@ -85,6 +85,11 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     ("bots", "SOUND_UPDATE", AFTER),
     (
         "bots",
+        "PLAYER_KILLED",
+        "a death in the simulation, on the game thread; logs it for the bots' emotes",
+    ),
+    (
+        "bots",
         "PLAYERS_SCREEN_UNJOINED",
         "a players screen event on the game thread; signs a bot in with guest calls",
     ),
