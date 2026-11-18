@@ -193,8 +193,8 @@ counted, and data-reference contents counted as data.
 | Group | Tags | Named | Typed only | Pad | Unknown | Data | Exact node tree |
 |---|---|---|---|---|---|---|---|
 | `scen` | 505 | 42.9 % | 13.1 % | 0 | 43.7 % | 0.3 % | 505 |
-| `bipd` | 242 | 13.5 % | 16.5 % | 0 | 68.3 % | 1.6 % | 125 |
-| `vehi` | 71 | 6.8 % | 23.2 % | 0 | 67.0 % | 3.0 % | 26 |
+| `bipd` | 242 | 14.2 % | 16.1 % | 0 | 68.1 % | 1.6 % | 125 |
+| `vehi` | 71 | 8.1 % | 22.7 % | 0 | 66.2 % | 3.0 % | 26 |
 | `weap` | 122 | 10.7 % | 31.0 % | 0 | 57.6 % | 0.7 % | 122 |
 | `eqip` | 14 | 29.5 % | 27.3 % | 0 | 43.2 % | 0 | 14 |
 | `hlmt` | 927 | 54.9 % | 14.9 % | 14.0 % | 16.3 % | 0 | 927 |
@@ -427,6 +427,113 @@ vehicle whose shape is not on a floor may drop or drift); and
 the rider's pose, since retail seat labels
 (`warthog_d`) also read like the riders' animation mode names (D) and the
 player's graph has no `CT-driver` mode.
+
+## Every vehicle from definitions (`h1objects::rebuild::vehicle`)
+
+Since converter version 49 every Halo 1 vehicle is written by
+`rebuild::vehicle` from the `vehi` definition. There is no vehicle
+template path any more: the `vehi` rows of `convert::TEMPLATES`, the
+lifepods' quiet stand-in (`QUIET_STAND_INS`) and the template branch of
+`Converter::unit` are gone. a10's cryotube, chairs, fighterbomber and
+Halo ring were already built this way.
+
+- **From Halo 1**: the object header (type, bounds, model chain,
+  predicted resources), the physics model from Halo 1's collision (as
+  above; a stand-in sphere with none), the camera field of view, the
+  **vehicle type** (Halo 1 `vehi +0x2f4`, `u16`), the **flags'** low half
+  (Halo 1 `+0x2f0`), the seats, the unit's weapons and the powered mass
+  points.
+- **Seats**: one per Halo 1 seat (`rebuild::seat_names`). The label is
+  the rider's animation mode, Halo 1's label as the converted biped
+  graphs name it (`h1models::names::map_name`: `W-driver` is
+  `warthog_d`, `GT-gunner` `guntower_d`, an unlisted label lower case
+  with `-` as `_`), so the rider finds its seat animations. The marker
+  (`+8`), entry marker (`+0xc`, `<marker> enter` when the model has
+  one) and camera marker (`+0x60`) are the model's marker names as the
+  converted `mode` keeps them (Halo 1's, spaces included). The scripts
+  keep Halo 1's text: `h1scripts::seats` matches a label equal to the
+  text's mode.
+- **Friction and hover points** (`+0x2f0`, `+0x2e8`). Halo 1's
+  counterparts are the `phys` mass points with a powered mass point:
+  the warthog's four tires and the ghost's hull and two wings, the same
+  counts as the Halo 2 warthog's four friction points and ghost's three
+  hover points. Each becomes a marker of the converted model
+  (`Converter::powered_points`, added before the `mode` is converted):
+  named as the mass point (`tire_front_left`), on its model node, at the
+  mass point's position in that node's space. V: Halo 1's mass point
+  positions are in object space (each warthog tire point lies within its
+  radius of its tire node's default position). The marker has one
+  instance per permutation of the model's first region, unrotated (D).
+  The Halo 2 point names that marker (`+0`) and the collision region of
+  the collision node named as the model node (friction `+0x44`, hover
+  `+0x34`: the warthog's `tire`; the ghost's collision has one region,
+  `__unnamed`). Its other words are the type's role (below): friction
+  points when the role's vehicles have them, else hover points, else
+  none (fliers, dropships, turrets). The friction material (`+0x3c`)
+  stays null.
+- **Engine gears** (`+0x268`, `0x44` each, raw curve pointers at `+0x14`,
+  `+0x1c`, `+0x28`, `+0x2c`). Halo 1 has no counterpart: its `vehi` holds
+  no curve or raw data, only scalar speeds, and those disagree with
+  Halo 2's (below). So the gears are the type's role: the count most of
+  the role's vehicles with gears hold, each field the majority word,
+  raw pointers kept as words (the curves live in the shared map the
+  base map uses, so the converted map built on that base reads the same
+  ones). On 05a the jeep takes the warthog's four, the tank the
+  scorpion's two; hover vehicles, fliers and turrets have none.
+- **The type's role** (`rebuild::vehicle_role`): the turret rule over the
+  base map's vehicles of the same `vehicle_type`, at conversion time:
+  each 4-byte unknown span of the root, every seat, every friction and
+  hover point, the plain-word blocks (the physics element `+0x2f8`, `unit
+  +0x1a8`, `+0x1b8`), the gears and the flags' high half. On 05a: jeep
+  the warthog, tank the scorpion, hover the ghost and wraith, flier the
+  banshee, dropship the pelican and phantom. The turret type keeps the
+  disc-wide turret tables, as does a type the base has none of.
+- **References**: the unit's weapons are Halo 1's converted weapons
+  where they convert (no Halo 1 vehicle weapon converts yet, each listed
+  in the report). HUD (`unhi`), sounds, effects, camera tracks and
+  attachments stay null or empty: no converted Halo 1 tag exists. The
+  lifepods are quiet as before, now with no attachment at all.
+
+Named on the way:
+
+| Field | Evidence |
+|---|---|
+| `vehi +0x1ec` `vehicle_flags` (`u32`) | E: objects.md (vehicle code tests bits here, `0x000efb8c`). V: the low half equals Halo 1's `vehi +0x2f0` on five of eight pairs (warthog, scorpion, wraith, banshee, Covenant gun turret); the ghost differs in bit 8, the pelican and dropship in bits Halo 2's fliers add |
+| `unit +0x1c0` `weapons` (`weapon`, `tagref weap`) | V: every element of every vehicle on 05a and Coagulation that has one names a `weap` (the turrets' guns, the warthog's horn, the ghost's, banshee's and phantom's guns) |
+| Halo 1 `vehi +0x2f4` vehicle type | V: equal to Halo 2's `vehicle_type` on all eight pairs; the games share the enumeration |
+
+Halo 1's speeds do not carry: on the same pairs no Halo 1 word agrees
+with a Halo 2 driving word on more than one pair (the warthog's Halo 1
+`+0x2fc`, `+0x300`, `+0x304` times 30, 900 and 900 are Halo 2's `+0x1f8`,
+`+0x1fc`, `+0x200` exactly; every other vehicle was retuned for Havok).
+
+Proof (`crates/h1objects/tests/vehicle_rebuild_disc.rs`, lib tests
+`rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role` and
+`rebuilt_vehicle_takes_its_types_role_and_halo_1s_type`):
+
+- `vehicle_type_and_flags_match_halo_2s_counterparts`: type 8 of 8
+  pairs, flags low half 5 of 8, camera 8 of 8.
+- `every_vehicle_rebuilds_from_its_definition`: all 29 distinct vehicles
+  (23 on the ten campaign levels on 05a, 3 on each multiplayer base,
+  Coagulation and Beaver Creek) rebuild; the `vehi`, `hlmt` and `phmo`
+  read back, write the same again, pin nothing and hold no template
+  bytes; type, flags, camera, bounds, seat labels and markers are Halo
+  1's, the role words the type's. (Before the template path was removed
+  the same test found the model chain equal to the template path's on
+  all 23 vehicles with a template row.)
+- `powered_mass_points_become_friction_and_hover_points`: the warthog
+  has 4 friction points and gears, the ghost 3 hover points; each names
+  a marker of the converted `mode` (instances on nodes in range) and a
+  region of Halo 1's collision.
+
+What only a game run shows: driving (the friction points on Halo 1's
+tire markers with the warthog's gears, the scorpion's eight tread points
+where Halo 2's has twelve), hovering (the ghost's and wraith's points),
+flying for the fliers and dropships, whether a vehicle stands on its
+Halo 1 collision hull, boarding (the seat labels as modes, the entry
+markers) and the riders' poses. First suspects if driving fails: the
+marker instances' region and permutation bytes, the null friction
+material, and the gears' curves read through another vehicle's raw.
 
 ## Bipeds from definitions (`h1objects::Options::rebuild_bipeds`)
 
@@ -693,13 +800,13 @@ devices name their placement (a fixture's names its machine).
 
 | Groups | Path | Why |
 |---|---|---|
-| `vehi` with no template row | definitions (default) | nothing else to build on |
+| `vehi` | definitions (only path, since version 49) | the vehicle template path was removed |
 | `mach`, `ctrl`, Halo 1's `lifi` (as `mach`) | definitions (only path) | no template path was ever kept |
 | `phmo` of a rebuilt vehicle or device, or a templated vehicle with none | definitions (Halo 1's collision as polyhedra; a stand-in sphere with no solid collision) | `vehicle_new` refuses a model with none; Havok sees a device only through one |
 | `scen` | template by default; definitions with `Options::rebuild` | the rebuilt scenery has not run in the game |
 | `bipd` | definitions (default since version 48); template with `Options::rebuild_bipeds` off | references from the Halo 2 counterpart, size and physics from Halo 1 |
 | `phmo` of a rebuilt biped | definitions (Halo 1's collision as polyhedra, a body per node) | the template path borrowed the template's ragdoll on other nodes |
-| `vehi` with a template, `weap`, `eqip`, `proj` | template | their gameplay fields (speeds, seats, cameras, physics, weapon tuning) are unknown spans; built from zero they would not play |
+| `weap`, `eqip`, `proj` | template | their gameplay fields (weapon tuning) are unknown spans; built from zero they would not play |
 
 ## Open
 

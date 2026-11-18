@@ -2500,6 +2500,7 @@ name = "h1scripts"
 version = "0.1.0"
 dependencies = [
  "h1map",
+ "h1models",
  "hs",
  "map",
  "thiserror 2.0.21",
