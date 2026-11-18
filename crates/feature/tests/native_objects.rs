@@ -29,7 +29,8 @@ fn the_plan_orders_it_inside_render_timing_and_the_world() {
         Err(c) => panic!("refused: {c:?}"),
     };
     let text = plan.text();
-    assert!(text.contains("native_objects_skip") && text.contains("native_objects_restore"), "{text}");
+    assert!(text.contains("native_objects_skip"), "{text}");
+    assert!(!text.contains("native_objects_restore"), "nothing after the body: {text}");
 }
 
 #[test]
@@ -141,7 +142,7 @@ fn objects_skip_layer_3_hand_over_their_nodes_and_get_their_bits_back() {
     let (mut m, a, _b) = guest();
     native_objects::before_layer(&mut m, SCENE_LAYER3_RETURN);
     assert_eq!(masks(&m), all);
-    native_objects::after_layer(&mut m);
+    native_objects::restore_pending(&mut m);
 
     let stub = Arc::new(Stub::default());
     {
@@ -172,7 +173,7 @@ fn objects_skip_layer_3_hand_over_their_nodes_and_get_their_bits_back() {
         assert_eq!((objects[0].handle, objects[0].definition, objects[0].nodes.len()), (a, DEF_A, 2));
         assert_eq!(objects[0].nodes[1].position, [1.0, 0.0, 0.0]);
     }
-    native_objects::after_layer(&mut m);
+    native_objects::restore_pending(&mut m);
     assert_eq!(masks(&m), all);
 
     // B's model loaded with another node count than the object has: B
@@ -181,21 +182,55 @@ fn objects_skip_layer_3_hand_over_their_nodes_and_get_their_bits_back() {
     native_objects::before_layer(&mut m, SCENE_LAYER3_RETURN);
     assert_eq!(masks(&m), vec![0b0010, 0b1010, 0b1010, 0b1010]);
     assert_eq!(stub.drawn.lock().unwrap()[1].1.len(), 1);
-    native_objects::after_layer(&mut m);
+    native_objects::restore_pending(&mut m);
     assert_eq!(masks(&m), all);
 
     // The device cannot draw: every bit back at once.
     *stub.refuse.lock().unwrap() = true;
     native_objects::before_layer(&mut m, SCENE_LAYER3_RETURN);
     assert_eq!(masks(&m), all);
-    native_objects::after_layer(&mut m);
+    native_objects::restore_pending(&mut m);
     assert_eq!(masks(&m), all);
 
     // Another layer: nothing.
     *stub.refuse.lock().unwrap() = false;
     m.set_u32(CURRENT_LAYER, 1).unwrap();
     native_objects::before_layer(&mut m, SCENE_LAYER3_RETURN);
-    native_objects::after_layer(&mut m);
+    native_objects::restore_pending(&mut m);
     assert_eq!(masks(&m), all);
     assert_eq!(stub.drawn.lock().unwrap().len(), 2);
+
+    // The next layer draw, whoever calls it, sets the bits back first.
+    m.set_u32(CURRENT_LAYER, 3).unwrap();
+    native_objects::before_layer(&mut m, SCENE_LAYER3_RETURN);
+    assert_eq!(masks(&m), vec![0b0010, 0b1010, 0b1010, 0b1010]);
+    m.set_u32(CURRENT_LAYER, 5).unwrap();
+    native_objects::before_layer(&mut m, 0x0002_afa5);
+    assert_eq!(masks(&m), all);
+
+    // A list built again before it (another mask on the cleared item):
+    // left alone.
+    m.set_u32(CURRENT_LAYER, 3).unwrap();
+    native_objects::before_layer(&mut m, SCENE_LAYER3_RETURN);
+    m.set_u32(ITEMS + 0x10, 0b0100).unwrap();
+    native_objects::restore_pending(&mut m);
+    assert_eq!(masks(&m)[0], 0b0100);
+}
+
+/// Alone at the layer draw, and with the world, the chain runs on the
+/// pipelined render thread: context-only observers before, nothing after.
+#[test]
+fn its_layer_draw_chain_runs_on_the_render_thread() {
+    let mut r = Registry::new(Switches::parse("impl.render.native_objects=on").unwrap());
+    assert!(r.add(&feature::native_world::NativeWorld).unwrap());
+    assert!(r.add(&NativeObjects).unwrap());
+    let plan = r.build(&Base).unwrap();
+    let chain = plan
+        .chains
+        .values()
+        .find(|c| c.point.name == "LAYER_DRAW")
+        .expect("placed at the layer draw");
+    assert_eq!(chain.observe_before.len(), 2, "the world's and the objects'");
+    assert!(!chain.needs_shadow());
+    assert!(chain.render_thread().is_ok());
 }

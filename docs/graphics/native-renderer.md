@@ -510,7 +510,9 @@ build is `0x0004cbf0` and its render record's `+4` is a live object
 handle. It is skipped when the host draws that object's definition and
 the item's shader (`+8`) is one of the host's native materials: layer 3's
 bit cleared, the item remembered, the handle added to the view's drawn
-set (once). **After** the layer draw the bits go back. The host gets one
+set (once). The bits go back **before the next layer draw** (5 and up
+follow 3 in the same view), on items that still hold the mask the skip
+left, as the world's do. The host gets one
 external pass per view carrying, per drawn handle, the definition and the
 node matrices copied out of the body (`0x34 · count` bytes) and the
 bounding sphere.
@@ -594,13 +596,23 @@ Transparent parts (kind 4) are not in layer 3 and are left out.
 
 ### Pipelined render
 
-The observers read the object array and bodies during the render. With
+The observer reads the object array and bodies during the render. With
 `H2_PIPELINE_RENDER` the render runs one frame behind the simulation on
 its own thread, while the next tick moves the same bodies and may compact
-the pool. The feature is listed in boot's `render_thread::REFUSED`: its
-hooks keep the pipelined render on its game-thread fallback, as the
-world's do. Making it safe means copying the node matrices into the
-pipeline's frame snapshot, which is the pipeline's job, not this stage's.
+the pool. That is already safe: on the render thread the observer's
+memory is the render's copy-on-write snapshot of the frame
+(docs/runtime/second-executor.md; `Obs::guest` is the executor's own
+runtime), so the handles, bodies and node matrices it reads are frame
+`k`'s, the same frame the rest of the render draws, and the tick's writes
+to live RAM never reach it. The node matrices are copied out of that
+snapshot at the hook into the pass (`ObjectFrame`), and nothing reads
+guest memory after it, so the snapshot copy the design asked for is the
+pipeline's own snapshot plus that copy. The observer is the one hook
+(context-only, nothing after the body, the restore at the next layer
+draw), so the pipelined render runs it on its own thread like the
+world's. The host's writes are its map state (a mutex only the observer
+takes, with the model loader on host threads) and the device's pending
+external pass, issued at the render's next D3D entry, in render order.
 
 ### Per frame on the CPU
 
@@ -637,18 +649,22 @@ tests); evidence labels below are what the tests will show once run.
   with the wrong node count left out.
 - **The feature `native-objects`** (`crates/feature/src/native_objects.rs`,
   `H2_FEATURES=impl.render.native_objects=on`, off by default, exact key).
-  Two observers on `LAYER_DRAW`, inside `render-timing`'s and the world's
-  (`after_feature` on both). Before: only for layer 3 called from
-  `0x0002bed5`; asks the host for its native set (definitions with their
-  node counts, shaders), clears the accepted items, asks the host to load
-  any definition it has not seen, reads the cleared objects' nodes and
-  spheres, gives back the bits of objects it could not read or whose node
-  count disagrees, and asks for the pass (all bits back if the device
-  cannot). After: the rest back. Tests: `crates/feature/tests/native_objects.rs`
-  (the plan with `render-timing`, deep, the layer-draw port and the world;
-  the switch off; the observers on `FlatMemory`). Boot plans it
-  (`registration.rs`, in `ALL_ON` of the registration tests) and lists it
-  in `render_thread::REFUSED` (not pipelined-safe; see "Pipelined
+  One observer before `LAYER_DRAW`, inside `render-timing`'s and the
+  world's (`after_feature` on both), context-only. First it sets back the
+  bits the last base-layer layer 3 cleared (items still holding the mask
+  it left). Then, only for layer 3 called from `0x0002bed5`: asks the host
+  for its native set (definitions with their node counts, shaders),
+  clears the accepted items, asks the host to load any definition it has
+  not seen, copies the cleared objects' nodes and spheres, gives back the
+  bits of objects it could not read or whose node count disagrees, and
+  asks for the pass (all bits back if the device cannot). Tests:
+  `crates/feature/tests/native_objects.rs` (the plan with `render-timing`,
+  deep, the layer-draw port and the world; with the world alone the chain
+  runs on the render thread; the switch off; the observer on
+  `FlatMemory`, with the restore at the next layer draw and a rebuilt
+  list left alone). Boot plans it (`registration.rs`, in `ALL_ON` of the
+  registration tests); `render_thread`'s test checks the layer draw is
+  render-thread safe with the world and objects on (see "Pipelined
   render").
 - **Boot glue** (`crates/boot/src/native_objects_glue.rs`). Per map, a
   worker with the map, its shared maps and the object tag context open;

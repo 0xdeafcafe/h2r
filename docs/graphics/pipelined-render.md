@@ -1026,6 +1026,10 @@ Marked now:
   layer draw (not after the layer, which would need a continuation), and
   its host's pass request goes to the D3D device in render order. It
   used to turn pipelining off.
+- `native-objects`' observer before `LAYER_DRAW`, the same shape. It
+  copies the drawn objects' node matrices out of the memory its context
+  sees, which on the render thread is the frame's snapshot, so the pass
+  draws the poses of the frame the render draws.
 
 Everything else is in `boot::render_thread::REFUSED`, with its reason:
 

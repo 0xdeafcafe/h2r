@@ -33,12 +33,6 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "off by default; the Rust ports park in Rust continuations around their guest calls",
     ),
     (
-        "native-objects",
-        "*",
-        "off by default; its layer-draw observers read object bodies and node matrices the next \
-         tick moves while a pipelined render runs, and clear and restore item masks around the layer",
-    ),
-    (
         "render-census",
         "*",
         "off by default, and pipelining is off with it (it watches the render on the game thread)",
@@ -150,13 +144,16 @@ mod tests {
     /// it), either runs on the pipelined render thread or is listed in
     /// [`REFUSED`] with its reason, and every listed entry is still used.
     /// The ones the render path meets in a default run (the locale lookups,
-    /// Blind, the native world's layer draw) are context-only.
+    /// Blind, the native world's and objects' layer draw) are context-only.
     #[test]
     fn every_feature_hook_runs_on_the_render_thread_or_says_why_not() {
         let mut unlisted = Vec::new();
         let mut used = vec![false; REFUSED.len()];
         let mut safe = Vec::new();
-        for switches in [String::new(), ALL_ON.to_owned(), format!("{ALL_ON},render-census")] {
+        // The native world (on by default) and objects at the layer draw,
+        // with nothing else there, are render-thread safe together.
+        let native = "impl.render.native_objects=on".to_owned();
+        for switches in [String::new(), native, ALL_ON.to_owned(), format!("{ALL_ON},render-census")] {
             let plan = registry(&Case::full(&switches)).build(&feature::Base).unwrap();
             for c in plan.chains.values() {
                 match c.render_thread() {

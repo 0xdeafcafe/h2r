@@ -5,23 +5,33 @@
 //! key: `impl.render=on` does not, since this one changes what draws the
 //! objects).
 //!
-//! Two observers on the layer draw `LAYER_DRAW` (`0x00044550`), an opaque
-//! point, so nothing here replaces guest code:
+//! One observer before the layer draw `LAYER_DRAW` (`0x00044550`), an
+//! opaque point, so nothing here replaces guest code:
 //!
-//! - before, when the current layer is 3 and the call is the base layers'
+//! - first it sets back the bits it cleared at the last base-layer layer 3
+//!   (the layers after 3, 5 and up, come next in the same view), each only
+//!   if the item still holds the mask it left ([`restore_pending`]);
+//! - then, when the current layer is 3 and the call is the base layers'
 //!   (`[esp] == 0x0002bed5`): ask the [`Host`] which object definitions and
 //!   shaders it draws, clear layer 3's bit on those objects' items
-//!   ([`native_render::objects::clear_objects`]), read each cleared
-//!   object's node matrices and sphere, and hand them with the view's
-//!   camera to the host for one external pass. Objects that cannot be read
-//!   or whose node count disagrees with their model get their bits back at
-//!   once (the D3D path draws them); when the host cannot draw, all do.
-//! - after: set the bits back, so guest memory after the layer is as it
-//!   was.
+//!   ([`native_render::objects::clear_objects`]), copy each cleared
+//!   object's node matrices and sphere out of guest memory, and hand the
+//!   copies with the view's camera to the host for one external pass.
+//!   Objects that cannot be read or whose node count disagrees with their
+//!   model get their bits back at once (the D3D path draws them); when the
+//!   host cannot draw, all do.
 //!
-//! Both sit inside `render-timing`'s observers and the world's
-//! (`after_feature`), so the layer stage times them and the world's skip
-//! and restore wrap them.
+//! Nothing runs after the body, and the observer is context-only, so the
+//! pipelined render runs it on its own thread
+//! (docs/graphics/pipelined-render.md, "Render-safe hooks"). There the
+//! memory it reads is the render's snapshot of the frame: the node
+//! matrices are copied out of the same frame the rest of the render draws,
+//! whatever the next tick does to the bodies or the pool meanwhile, and
+//! the pass carries the copies (nothing reads guest memory after the
+//! hook). The host's pass request goes to the D3D device in render order.
+//!
+//! It sits inside `render-timing`'s observers and the world's
+//! (`after_feature`).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -29,7 +39,7 @@ use std::sync::{Arc, Mutex};
 
 use engine::memory::GuestMemory;
 use engine::points;
-use native_render::camera::{GuestRead, RENDER_CAMERA, RenderCamera};
+use native_render::camera::{GuestRead, GuestWrite, RENDER_CAMERA, RenderCamera};
 use native_render::objects::{self, ClearedObjects, ObjectFrame, SCENE_LAYER3_RETURN};
 use native_render::skip::{CURRENT_LAYER, LIGHTMAP_LAYER};
 
@@ -75,7 +85,10 @@ pub trait Host: Send + Sync {
 }
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
-static CLEARED: Mutex<Option<ClearedObjects>> = Mutex::new(None);
+/// Bits cleared at the last base-layer layer 3, with each item's mask as
+/// it was left, until the next layer draw sets them back (one render runs
+/// at a time, so that is the same render's).
+static CLEARED: Mutex<Option<(ClearedObjects, Vec<u32>)>> = Mutex::new(None);
 static VIEWS: AtomicU64 = AtomicU64::new(0);
 static DRAWN: AtomicU64 = AtomicU64::new(0);
 static OBJECTS: AtomicU64 = AtomicU64::new(0);
@@ -100,6 +113,7 @@ pub fn counts() -> (u64, u64, u64, u64) {
 /// The observer before the layer draw; `ret` is the layer draw's return
 /// address (`[esp]` at entry).
 pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
+    restore_pending(mem);
     let mut m = Mem(mem);
     if ret != SCENE_LAYER3_RETURN || m.read_u32(CURRENT_LAYER) != Some(LIGHTMAP_LAYER) {
         return;
@@ -154,15 +168,24 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         let (v, d, o, i) = counts();
         eprintln!("native-objects: {d} of {v} layer-3 views drawn natively, {o} objects, {i} object items skipped");
     }
-    *CLEARED.lock().unwrap_or_else(|e| e.into_inner()) = Some(cleared);
+    let left = cleared.items.iter().map(|&item| m.read_u32(item + 0x10).unwrap_or(0)).collect();
+    *CLEARED.lock().unwrap_or_else(|e| e.into_inner()) = Some((cleared, left));
 }
 
-/// The observer after the layer draw: the bits back.
-pub fn after_layer(mem: &mut dyn GuestMemory) {
-    let Some(c) = CLEARED.lock().unwrap_or_else(|e| e.into_inner()).take() else {
+/// Sets back the bits the last base-layer layer 3 cleared, on the items
+/// that still hold the mask it left: a list built again since is left
+/// alone.
+pub fn restore_pending(mem: &mut dyn GuestMemory) {
+    let Some((c, left)) = CLEARED.lock().unwrap_or_else(|e| e.into_inner()).take() else {
         return;
     };
-    objects::restore(&mut Mem(mem), &c);
+    let mut m = Mem(mem);
+    let bit = 1u32 << c.layer;
+    for (&item, &left) in c.items.iter().zip(&left) {
+        if m.read_u32(item + 0x10) == Some(left) {
+            let _ = m.write_u32(item + 0x10, left | bit);
+        }
+    }
 }
 
 pub struct NativeObjects;
@@ -184,14 +207,8 @@ impl Feature for NativeObjects {
                 before_layer(&mut *g, ret);
             })
             .after_feature(crate::render_timing::ID)
-            .after_feature(crate::native_world::ID);
-        b.raw()
-            .observe_after(&points::LAYER_DRAW, "native_objects_restore", |o| {
-                let mut g = o.guest();
-                after_layer(&mut *g);
-            })
-            .after_feature(crate::render_timing::ID)
-            .after_feature(crate::native_world::ID);
+            .after_feature(crate::native_world::ID)
+            .context_only();
         b.snapshot(crate::SnapshotPolicy::Stateless);
         Ok(())
     }
