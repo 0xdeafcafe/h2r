@@ -860,3 +860,129 @@ fn hits_in_rings(name: &str, b: &impl Surfaces, outside: &mut Vec<String>) {
     }
     println!("{name}: {n} hits over the base, {out} outside their surface's ring");
 }
+
+/// Twice the area of a planar polygon, projected along its normal.
+fn ring_area(ring: &[[f32; 3]], n: [f32; 4]) -> f32 {
+    let mut a = [0f32; 3];
+    for k in 0..ring.len() {
+        let (p, q) = (ring[k], ring[(k + 1) % ring.len()]);
+        a[0] += p[1] * q[2] - p[2] * q[1];
+        a[1] += p[2] * q[0] - p[0] * q[2];
+        a[2] += p[0] * q[1] - p[1] * q[0];
+    }
+    (a[0] * n[0] + a[1] * n[1] + a[2] * n[2]).abs()
+}
+
+/// Twice the area of the convex hull of `pts` on the plane with normal `n`.
+fn hull_area(pts: &[[f32; 3]], n: [f32; 4]) -> f32 {
+    let drop = (0..3)
+        .max_by(|&a, &b| n[a].abs().total_cmp(&n[b].abs()))
+        .unwrap();
+    let (u, v) = match drop {
+        0 => (1, 2),
+        1 => (2, 0),
+        _ => (0, 1),
+    };
+    let mut p: Vec<(f64, f64)> = pts
+        .iter()
+        .map(|q| (f64::from(q[u]), f64::from(q[v])))
+        .collect();
+    p.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    p.dedup();
+    if p.len() < 3 {
+        return 0.0;
+    }
+    let cross = |o: (f64, f64), a: (f64, f64), b: (f64, f64)| {
+        (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0)
+    };
+    let mut h: Vec<(f64, f64)> = Vec::new();
+    for pass in 0..2 {
+        let start = h.len();
+        let it: Vec<_> = if pass == 0 {
+            p.clone()
+        } else {
+            p.iter().rev().copied().collect()
+        };
+        for q in it {
+            while h.len() >= start + 2 && cross(h[h.len() - 2], h[h.len() - 1], q) <= 0.0 {
+                h.pop();
+            }
+            h.push(q);
+        }
+        h.pop();
+    }
+    let mut a = 0.0;
+    for k in 0..h.len() {
+        let (p, q) = (h[k], h[(k + 1) % h.len()]);
+        a += p.0 * q.1 - q.0 * p.1;
+    }
+    // Back to the plane's own area: divide by the dropped axis's share.
+    (a.abs() / f64::from(n[drop].abs())) as f32
+}
+
+/// Coplanar seams: edges between two surfaces on the same plane. Welding
+/// them is only possible where the two polygons' union is convex (the
+/// engine's surfaces are convex rings). Counts wall seams (normal z under
+/// 0.3) whose shared edge slopes (neither level nor plumb), like the blue
+/// ramp corridor's 3081/4404 and 3085/4405, in converted Blood Gulch and
+/// in the retail Halo 2 controls (`$H2_MAPS`, default coagulation and
+/// lockout), to see whether Bungie's tool leaves such seams.
+#[test]
+#[ignore = "reads both discs ($H1_ISO, $H2_DISC)"]
+fn coplanar_seams() {
+    fn census(name: &str, b: &tags::collision::Bsp) {
+        let (mut seams, mut weldable, mut wall_sloped, mut wall_sloped_weldable) = (0, 0, 0, 0);
+        for e in &b.edges {
+            let (l, r) = (usize::from(e.left_surface), usize::from(e.right_surface));
+            if l == r || l >= b.surfaces.len() || r >= b.surfaces.len() {
+                continue;
+            }
+            let (nl, nr) = (facing(b, l), facing(b, r));
+            let dot = nl[0] * nr[0] + nl[1] * nr[1] + nl[2] * nr[2];
+            if dot < 0.99999 || (nl[3] - nr[3]).abs() > 1e-3 {
+                continue;
+            }
+            seams += 1;
+            let (rl, rr) = (b.ring(l), b.ring(r));
+            let all: Vec<_> = rl.iter().chain(&rr).copied().collect();
+            let sum = ring_area(&rl, nl) + ring_area(&rr, nl);
+            let convex = (hull_area(&all, nl) - sum).abs() <= 1e-4 * sum.max(1e-3);
+            weldable += usize::from(convex);
+            let (p, q) = (
+                b.vertices[usize::from(e.start_vertex)].point,
+                b.vertices[usize::from(e.end_vertex)].point,
+            );
+            let d = sub(q, p);
+            let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+            let rise = if len > 0.0 { d[2].abs() / len } else { 0.0 };
+            if nl[2].abs() < 0.3 && rise > 0.1 && rise < 0.99 {
+                wall_sloped += 1;
+                wall_sloped_weldable += usize::from(convex);
+            }
+        }
+        println!(
+            "{name}: {} surfaces, {seams} coplanar seams ({weldable} weldable into one convex ring); \
+             sloped seams on walls {wall_sloped} ({wall_sloped_weldable} weldable)",
+            b.surfaces.len()
+        );
+    }
+    let h1 = bloodgulch();
+    let r = h1.structure_bsps().unwrap();
+    let s = h1.structure_bsp(&r[0]).unwrap();
+    let conv = round_trip(&s.collision_bsps().unwrap().remove(0));
+    census("bloodgulch converted", &conv);
+    for (a, b) in [(3081usize, 4404usize), (3085, 4405)] {
+        let n = facing(&conv, a);
+        let all: Vec<_> = conv.ring(a).into_iter().chain(conv.ring(b)).collect();
+        let sum = ring_area(&conv.ring(a), n) + ring_area(&conv.ring(b), n);
+        println!(
+            "  corridor wall {a}+{b}: areas sum {sum:.4}, hull {:.4} (convex union: {})",
+            hull_area(&all, n),
+            (hull_area(&all, n) - sum).abs() <= 1e-4 * sum
+        );
+    }
+    let maps = std::env::var("H2_MAPS").unwrap_or_else(|_| "coagulation,lockout".into());
+    for (name, b) in h2_bsps(&maps) {
+        census(&format!("retail {name}"), &b);
+    }
+}
