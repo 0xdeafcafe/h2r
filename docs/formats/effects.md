@@ -207,6 +207,29 @@ particle lifespan (**E**: the engine takes `1 / max(value, minimum)`), and the
 properties at `+0x7c` and `+0x8c` (`properties[7]`, `[8]`) are the shape and
 velocity inputs (**E**, same function). The remaining slots are unnamed. Then
 five f32 (`+0x9c..+0xb0`, `unknown_9c`) and two u32 (`+0xb0`, `+0xb4`).
+Further **E** (the emitter update `0x00247470`, the particle creator
+`0x00247950`, the initialiser `0x00249170`):
+
+- `+0x08` property: the spawn rate. `0x00247100` evaluates it times 30
+  (`[0x45dcfc]`); `0x00247470` adds that times its first argument to an
+  accumulator (`+0xc` of the emitter instance) and creates a particle per
+  whole unit (`0x0024773b..0x0024779e`). The argument comes from the
+  particle system's update (`0x00248970`, from `0x00175270`), and its
+  time units were not traced, so the rate's units (per tick or per
+  second) are open. When the system's `+0xc` bit 9 is set the burst is
+  spread evenly over the step (`0x002476d0`).
+- `+0x18` lifespan: `1 / max(value, 0.01)` (`[0x45dc7c]`).
+- `+0x28` initial speed: it scales the unit direction the shape gives
+  (`0x00249a35`).
+- `+0x38` initial rotation in degrees: times `1/360` (`[0x45e28c]`) into
+  the particle's rotation in turns (`+0x34`).
+- `+0x8c` in shape 0 is a cone angle in degrees: times `pi/180`
+  (`[0x45dc54]`) against a random azimuth times `2 pi`.
+
+Which property supplies each Halo 1 effect particle field (count,
+velocity bounds, angular velocity, radius, tint) follows from these, but
+an effect that spawns converted particles waits on the rate's units.
+
 `prt3` tags embed the same particle-system and emitter records (`prt3` block at
 `+0x84`), decoded with the same types.
 
