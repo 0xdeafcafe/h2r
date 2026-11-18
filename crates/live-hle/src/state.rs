@@ -143,6 +143,7 @@ pub(crate) struct State {
     invites: crate::invites::Invites,
     files: crate::storage_api::Files,
     stats: crate::stats::Stats,
+    pub(crate) arbitration: crate::arbitration::Arbiter,
     outbox: crate::outbox::Outbox,
     sessions: crate::sessions::Sessions,
     teams: crate::teams::Teams,
@@ -189,6 +190,7 @@ impl State {
             invites: Default::default(),
             files: crate::storage_api::Files::default(),
             stats: crate::stats::Stats::default(),
+            arbitration: crate::arbitration::Arbiter::default(),
             outbox: crate::outbox::Outbox::default(),
             sessions: crate::sessions::Sessions::default(),
             teams: crate::teams::Teams::default(),
@@ -293,6 +295,7 @@ impl State {
         self.invites.clear();
         self.files.clear();
         self.stats.clear_tasks();
+        self.arbitration.clear_tasks();
         self.outbox.clear_session();
         self.sessions.clear();
         self.teams.clear_tasks();
@@ -765,6 +768,22 @@ impl State {
             .find(|k| !own.contains(k))
             .map(|k| live_proto::sign::hex(k))
     }
+    /// The playlist of the game about to start: the one this console's
+    /// own advertisement names, else the joined session's as last read.
+    /// No request is made.
+    pub fn playlist(&self, keys: &[[u8; 8]]) -> Option<u32> {
+        if let Some(p) = self.sessions.current_playlist() {
+            return Some(p);
+        }
+        let id = self.joined_session(keys)?;
+        let seen = self
+            .service
+            .as_ref()?
+            .seen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        live_proto::optimatch::playlist(&seen.get(&id)?.advertisement.attributes)
+    }
     /// Asks the server for session `id` again (its answer lands in the
     /// worker's [`crate::client::Seen`]); the request, when one could be
     /// sent, and where the answer goes.
@@ -952,6 +971,15 @@ impl State {
             }
             return Ok(result);
         }
+        if let Arbitration(op) = op {
+            if self.online_refs == 0 {
+                return Ok(NOT_INITIALIZED);
+            }
+            if op != crate::arbitration::Op::CreateRoundId && !self.connected() {
+                return Ok(NO_SESSION);
+            }
+            return self.arbitration.invoke(op, a, m, &mut self.storage);
+        }
         if let Stats(op) = op {
             if self.online_refs == 0 {
                 return Ok(NOT_INITIALIZED);
@@ -959,7 +987,17 @@ impl State {
             if matches!(op, crate::stats::Op::Read | crate::stats::Op::Write) && !self.connected() {
                 return Ok(NO_SESSION);
             }
-            return self.stats.invoke(op, a, m, &mut self.storage);
+            let session = self.session();
+            return self.stats.invoke(
+                op,
+                a,
+                m,
+                crate::stats::Context {
+                    storage: &mut self.storage,
+                    service: self.service.as_ref(),
+                    session: session.as_ref(),
+                },
+            );
         }
         if let Storage(op) = op {
             if self.online_refs == 0 {
@@ -1326,6 +1364,9 @@ impl State {
                 if let Some(status) = self.stats.poll(a[0]) {
                     return Ok(status);
                 }
+                if let Some(status) = self.arbitration.poll(a[0]) {
+                    return Ok(status);
+                }
                 if let Some(status) = self.files.poll(a[0], m)? {
                     return Ok(status);
                 }
@@ -1489,6 +1530,9 @@ impl State {
                     return Ok(OK);
                 }
                 if self.stats.close(a[0]) {
+                    return Ok(OK);
+                }
+                if self.arbitration.close(a[0]) {
                     return Ok(OK);
                 }
                 if self.files.close(a[0]) {

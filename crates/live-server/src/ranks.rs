@@ -19,8 +19,8 @@ use axum::{
 use live_proto::{
     Xuid,
     game::Winner,
-    hopper::{HALO_2_HOPPER_FILE, HopperFile},
-    rank::{self, Changed, Entrant, Standing},
+    hopper::{HALO_2_HOPPER_FILE, HOPPERS, HopperFile},
+    rank::{self, Changed, Entrant, LeaderboardRow, Standing},
 };
 use serde::Serialize;
 use serde_json::json;
@@ -165,17 +165,50 @@ impl Live {
         let Ok(index) = playlist.parse::<usize>() else {
             return false;
         };
-        let Ok((_, bytes)) = self
-            .file(live_proto::HALO_2_TITLE_ID, HALO_2_HOPPER_FILE)
+        self.hoppers()
             .await
-        else {
-            return false;
-        };
-        HopperFile::parse_legacy(&bytes)
-            .ok()
             .and_then(|f| f.descriptor(index).ok())
             .and_then(|d| d.kind())
             .is_some_and(|k| k.ranked())
+    }
+
+    /// The served hopper's title for a game record's `playlist_id` (a
+    /// descriptor index), as `NewGame.playlist` takes it: at most 32
+    /// characters, none of them control characters. `None` when the id
+    /// names no hopper or the hopper has no title.
+    pub(crate) async fn playlist_name(&self, playlist_id: Option<&str>) -> Option<String> {
+        let index = playlist_id?
+            .parse::<usize>()
+            .ok()
+            .filter(|i| *i < HOPPERS)?;
+        let title = self.hoppers().await?.text(index).ok()?.title;
+        let name: String = title.chars().filter(|c| !c.is_control()).take(32).collect();
+        let name = name.trim().to_owned();
+        (!name.is_empty()).then_some(name)
+    }
+
+    async fn hoppers(&self) -> Option<HopperFile> {
+        let (_, bytes) = self
+            .file(live_proto::HALO_2_TITLE_ID, HALO_2_HOPPER_FILE)
+            .await
+            .ok()?;
+        HopperFile::parse_legacy(&bytes).ok()
+    }
+
+    /// Ranked playlists by leaderboard: each ranked descriptor's playlist
+    /// id (what the game's stats read names) to its index.
+    async fn ranked_leaderboards(&self) -> BTreeMap<u32, String> {
+        let Some(f) = self.hoppers().await else {
+            return BTreeMap::new();
+        };
+        (0..HOPPERS)
+            .filter_map(|i| {
+                let d = f.descriptor(i).ok()?;
+                d.kind()
+                    .is_some_and(|k| k.ranked())
+                    .then(|| (d.playlist_id, i.to_string()))
+            })
+            .collect()
     }
 
     /// Ranks a finished ranked matchmaking game once: one `RankChanged` per
@@ -359,5 +392,65 @@ pub(crate) async fn leaderboard(
     Ok(crate::http::json(
         StatusCode::OK,
         &json!({"playlist": playlist, "items": rows, "position": live.position()}),
+    ))
+}
+
+/// Most players and leaderboards in one stats read (the game reads at most
+/// four players on sixteen hoppers, plus its recent-players board).
+const MAX_STATS_XUIDS: usize = 64;
+const MAX_STATS_BOARDS: usize = 32;
+
+fn list<T: std::str::FromStr>(q: &BTreeMap<String, String>, key: &str) -> Result<Vec<T>, ApiError> {
+    q.get(key)
+        .map(String::as_str)
+        .unwrap_or("")
+        .split(',')
+        .filter(|v| !v.is_empty())
+        .map(|v| v.parse().map_err(|_| invalid(format!("invalid {key}"))))
+        .collect()
+}
+
+/// `GET /v1/rank-stats?leaderboards=&xuids=`: the game's stats read
+/// (docs/live/live-matchmaking.md §8.1). Each leaderboard is a playlist id;
+/// one row per player for every leaderboard that is a ranked playlist in
+/// the served hopper file, a player with no games at level 1. Other
+/// leaderboards (the recent-players board, unranked playlists) have no
+/// rows.
+pub(crate) async fn stats(
+    HttpState(live): Shared,
+    headers: HeaderMap,
+    Query(q): Query<BTreeMap<String, String>>,
+) -> Result<Response, ApiError> {
+    live.authorize_read(crate::http::bearer(&headers))?;
+    let mut boards: Vec<u32> = list(&q, "leaderboards")?;
+    let mut xuids: Vec<Xuid> = list::<String>(&q, "xuids")?
+        .iter()
+        .map(|x| Xuid::parse(x).map_err(|_| invalid("invalid xuids")))
+        .collect::<Result<_, _>>()?;
+    boards.sort_unstable();
+    boards.dedup();
+    xuids.sort_unstable();
+    xuids.dedup();
+    if boards.len() > MAX_STATS_BOARDS || xuids.len() > MAX_STATS_XUIDS {
+        return Err(invalid("too many leaderboards or xuids"));
+    }
+    let ranked = live.ranked_leaderboards().await;
+    let s = live.model.read();
+    let r = &s.ranks;
+    let items: Vec<LeaderboardRow> = boards
+        .iter()
+        .filter_map(|b| Some((*b, ranked.get(b)?)))
+        .flat_map(|(b, playlist)| {
+            xuids.iter().map(move |x| LeaderboardRow {
+                xuid: *x,
+                leaderboard: b,
+                playlist: playlist.clone(),
+                standing: r.standing(*x, playlist),
+            })
+        })
+        .collect();
+    Ok(crate::http::json(
+        StatusCode::OK,
+        &json!({"items": items, "position": live.position()}),
     ))
 }

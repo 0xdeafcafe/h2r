@@ -684,6 +684,9 @@ fn unimplemented_entries_stop_by_name_without_reading_stack_or_running_library()
         "XOnlineFeedbackSend",
         "XOnlineStatRead",
         "XOnlineStatReadGetResult",
+        "XOnlineArbitrationCreateRoundID",
+        "XOnlineArbitrationRegister",
+        "XOnlineArbitrationReport",
         "XOnlineQuerySearch",
         "XOnlineQuerySearchGetResults",
         "XOnlinePresenceClear",
@@ -2938,4 +2941,82 @@ fn teams_duplicate_names_limits_and_cleanup_preserve_local_store() {
     w.startup();
     assert_eq!(w.call("XOnlineTaskContinue", &[task]), INVALID_ARGUMENT);
     assert_eq!(h.local_teams().of(live_proto::Xuid(ID)).len(), 8);
+}
+#[test]
+fn arbitration_makes_round_ids_and_keeps_registrations_and_reports() {
+    use live_hle::{Arbitration, ArbitrationRound};
+    const ROUND: u32 = DATA + 0x7000;
+    const PROCEDURES: u32 = DATA + 0x8000;
+    let h = hle(config());
+    let mut w = World::with(h.clone());
+    w.logon();
+    w.put(OUTPUT, &[0; 8]);
+    assert_eq!(w.call("XOnlineArbitrationCreateRoundID", &[OUTPUT]), OK);
+    let round_id = u64::from_le_bytes(w.bytes(OUTPUT, 8).try_into().unwrap());
+    assert_ne!(round_id, 0);
+
+    let session_id = 0x1122_3344_5566_7788u64;
+    w.put(ROUND, &session_id.to_le_bytes());
+    w.put(ROUND + 8, &round_id.to_le_bytes());
+    assert_eq!(
+        w.call("XOnlineArbitrationRegister", &[ROUND, 300, 0xc, 0, OUTPUT]),
+        OK
+    );
+    let registered = w.u32(OUTPUT);
+    assert_eq!(w.call("XOnlineTaskContinue", &[registered]), TASK_SUCCESS);
+    assert_eq!(w.call("XOnlineTaskClose", &[registered]), OK);
+
+    for (i, id) in [0x8001u16, 0x8003, 0x8007].into_iter().enumerate() {
+        let p = PROCEDURES + i as u32 * 0x88;
+        w.put(p, &[0xee; 0x88]);
+        w.put(p, &id.to_le_bytes());
+    }
+    // An event handle, and more than the XDK's 1000 procedures, are refused.
+    assert_eq!(
+        w.call(
+            "XOnlineArbitrationReport",
+            &[ROUND, 3, PROCEDURES, 0, 3, 1, OUTPUT]
+        ),
+        INVALID_ARGUMENT
+    );
+    assert_eq!(
+        w.call(
+            "XOnlineArbitrationReport",
+            &[ROUND, 1001, PROCEDURES, 0, 3, 0, OUTPUT]
+        ),
+        INVALID_ARGUMENT
+    );
+    assert_eq!(
+        w.call(
+            "XOnlineArbitrationReport",
+            &[ROUND, 3, PROCEDURES, 0, 3, 0, OUTPUT]
+        ),
+        OK
+    );
+    let reported = w.u32(OUTPUT);
+    // The kept copy owns its values: the guest's records can change.
+    w.put(PROCEDURES, &[0; 3 * 0x88]);
+    assert_eq!(w.call("XOnlineTaskContinue", &[reported]), TASK_SUCCESS);
+    assert_eq!(w.call("XOnlineTaskClose", &[reported]), OK);
+    assert_eq!(w.call("XOnlineTaskContinue", &[reported]), INVALID_ARGUMENT);
+
+    let round = ArbitrationRound {
+        session_id,
+        round_id,
+    };
+    assert_eq!(
+        h.arbitration(),
+        vec![
+            Arbitration::Registered {
+                round,
+                duration: 300,
+                flags: 0xc,
+            },
+            Arbitration::Reported {
+                round,
+                flags: 3,
+                procedures: vec![0x8001, 0x8003, 0x8007],
+            },
+        ]
+    );
 }

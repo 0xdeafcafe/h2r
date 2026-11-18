@@ -13,9 +13,9 @@ use crate::layout;
 use crate::memory;
 use crate::pipeline::{Kill, Names, Pipeline, Start, Work};
 use crate::server::ServerSink;
-use crate::session::Session;
+use crate::session::{Playlist, Session};
 use crate::sink::{JsonlSink, Sink};
-use crate::tags::{MapIdLocator, MapLocator};
+use crate::tags::{MapIdLocator, MapLocator, PlaylistLocator};
 
 /// Weapons with uncollected shots are few (only those fired since the last
 /// completed tick); past this many the counts are dropped, not grown.
@@ -43,6 +43,8 @@ pub struct Telemetry {
     maps: Mutex<Option<MapLocator>>,
     /// Names the loaded map's `MapId`; set by the boot with its VFS.
     map_ids: Mutex<Option<MapIdLocator>>,
+    /// Names the starting game's playlist; set by the boot with Live.
+    playlists: Mutex<Option<PlaylistLocator>>,
 }
 
 impl Telemetry {
@@ -56,6 +58,7 @@ impl Telemetry {
             scan: Mutex::default(),
             maps: Mutex::new(None),
             map_ids: Mutex::new(None),
+            playlists: Mutex::new(None),
         }
     }
 
@@ -71,11 +74,18 @@ impl Telemetry {
         *self.map_ids.lock().unwrap() = Some(locator);
     }
 
-    /// The matchmaking playlist (name, id) the next multiplayer game comes
-    /// from, or `None` for custom games. Nothing sets it yet: live-hle has
-    /// no matchmaking (sessions are all advertised `custom`).
-    pub fn set_playlist(&self, playlist: Option<(String, String)>) {
+    /// The matchmaking playlist the next multiplayer game comes from, or
+    /// `None` for custom games. A playlist locator, once set, answers at
+    /// each multiplayer start instead.
+    pub fn set_playlist(&self, playlist: Option<Playlist>) {
         self.configure(move |s| s.set_playlist(playlist));
+    }
+
+    /// Lets each multiplayer game say which playlist it came from
+    /// (`NewGame.playlist_id`, docs/live/live-matchmaking.md §8): asked at
+    /// the start, so a ranked game is recorded as one.
+    pub fn set_playlist_locator(&self, locator: PlaylistLocator) {
+        *self.playlists.lock().unwrap() = Some(locator);
     }
 
     /// The skulls the next multiplayer games run with (the host's set as
@@ -199,6 +209,17 @@ impl Telemetry {
         } else {
             Default::default()
         };
+        if info.mode == "multiplayer" {
+            let playlist = self
+                .playlists
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|locate| locate());
+            if let Some(playlist) = playlist {
+                self.configure(move |s| s.set_playlist(playlist));
+            }
+        }
         let tick = info.tick;
         self.pipeline.push(Work::Start(Box::new(Start {
             info,
@@ -506,6 +527,55 @@ mod tests {
             .find(|l| l.contains("GameStarted"))
             .expect("a GameStarted");
         assert!(started.contains(&id.to_string()), "{started}");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn the_playlist_locator_makes_a_multiplayer_start_a_matchmaking_game() {
+        let path = std::env::temp_dir().join(format!(
+            "h2-telemetry-playlist-{}.jsonl",
+            live_proto::sign::random_id()
+        ));
+        let telemetry = Telemetry::new(
+            Session::new("test", None),
+            JsonlSink::create(&path).unwrap(),
+        );
+        let asked = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let count = asked.clone();
+        telemetry.set_playlist_locator(Box::new(move || {
+            count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Some(Playlist {
+                name: None,
+                id: "1".into(),
+            })
+        }));
+        let mut guest = fixture::memory();
+        guest
+            .set_u32(fixture::GLOBALS + layout::OPTIONS + layout::OPTIONS_TYPE, 2)
+            .unwrap();
+        guest
+            .set_u16(
+                fixture::GLOBALS + layout::OPTIONS + layout::OPTIONS_TICK_RATE,
+                30,
+            )
+            .unwrap();
+        guest
+            .write_bytes(layout::CACHE_MAP_NAME, b"lockout\0", 1)
+            .unwrap();
+        fixture::put_player(&mut guest, 0, "A", 0, true, u32::MAX);
+        telemetry.protect(|| telemetry.start(&guest));
+        drop(telemetry);
+        assert_eq!(asked.load(std::sync::atomic::Ordering::Relaxed), 1);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let started: serde_json::Value = text
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .find(|v| v["type"] == "GameStarted")
+            .expect("a GameStarted");
+        let game = &started["data"];
+        assert_eq!(game["kind"], "matchmaking", "{started}");
+        assert_eq!(game["playlist_id"], "1");
+        assert!(game.get("playlist").is_none_or(|p| p.is_null()));
         let _ = std::fs::remove_file(path);
     }
 

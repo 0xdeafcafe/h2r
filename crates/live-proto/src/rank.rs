@@ -150,10 +150,7 @@ fn loss_scale(level: u8) -> f64 {
 pub fn apply(game: &[(Entrant, Standing)]) -> Vec<Standing> {
     let worst = game.iter().map(|(e, _)| e.place).max().unwrap_or(0) + 1;
     let place = |e: &Entrant| if e.quit { worst } else { e.place };
-    let mut sides: Vec<_> = game
-        .iter()
-        .map(|(e, _)| e.team.map_or(Err(e.xuid.0), Ok))
-        .collect();
+    let mut sides: Vec<_> = game.iter().map(|(e, _)| e.team.ok_or(e.xuid.0)).collect();
     sides.sort();
     sides.dedup();
     game.iter()
@@ -194,9 +191,59 @@ pub fn apply(game: &[(Entrant, Standing)]) -> Vec<Standing> {
         .collect()
 }
 
+/// The stats the game reads per playlist leaderboard (ids 1..=6,
+/// docs/live/live-matchmaking.md §8.1).
+pub const LIVE_STATS: std::ops::RangeInclusive<u16> = 1..=6;
+/// Stat 1: experience.
+pub const STAT_EXPERIENCE: u16 = 1;
+/// Stat 2: the level, stored from 0.
+pub const STAT_LEVEL: u16 = 2;
+/// Stat 3: the highest level reached, stored from 0.
+pub const STAT_HIGHEST: u16 = 3;
+
+/// The value of stat `id` on a playlist's leaderboard for a standing, as
+/// the game reads it: levels from 0, the counters it keeps in 4..=6 (not
+/// decoded) as 0. `None` for ids the game never reads.
+pub fn live_stat(s: &Standing, id: u16) -> Option<u32> {
+    match id {
+        STAT_EXPERIENCE => Some(s.experience.min(MAX_EXPERIENCE)),
+        STAT_LEVEL => Some(u32::from(s.level.clamp(MIN_LEVEL, MAX_LEVEL) - 1)),
+        STAT_HIGHEST => Some(u32::from(s.highest.clamp(MIN_LEVEL, MAX_LEVEL) - 1)),
+        4..=6 => Some(0),
+        _ => None,
+    }
+}
+
+/// One row of `GET /v1/rank-stats`: a player's standing on the playlist
+/// whose leaderboard (the descriptor's playlist id) the game asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeaderboardRow {
+    pub xuid: Xuid,
+    pub leaderboard: u32,
+    /// The playlist (hopper descriptor index).
+    pub playlist: String,
+    pub standing: Standing,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn live_stats_store_levels_from_zero() {
+        let s = Standing {
+            level: 12,
+            experience: 3_450,
+            highest: 14,
+            games: 9,
+            wins: 5,
+        };
+        assert_eq!(live_stat(&s, STAT_EXPERIENCE), Some(3_450));
+        assert_eq!(live_stat(&s, STAT_LEVEL), Some(11));
+        assert_eq!(live_stat(&s, STAT_HIGHEST), Some(13));
+        assert_eq!(live_stat(&s, 5), Some(0));
+        assert_eq!(live_stat(&s, 7), None);
+        assert_eq!(live_stat(&Standing::default(), STAT_LEVEL), Some(0));
+    }
     fn e(x: u64, team: Option<i32>, place: u32) -> Entrant {
         Entrant {
             xuid: Xuid(x),

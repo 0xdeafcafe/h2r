@@ -164,3 +164,112 @@ async fn players_cannot_write_their_own_rank() {
         assert_eq!(h.post_event(&host, jws).await.status, StatusCode::FORBIDDEN);
     }
 }
+
+#[tokio::test]
+async fn the_games_stats_read_gets_every_player_on_every_ranked_leaderboard() {
+    let h = harness().await;
+    let host = h.create("Host").await;
+    let guest = h.create("Guest").await;
+    play(
+        &h,
+        &host,
+        duel(&host, &guest, "1", "matchmaking"),
+        "finished",
+    )
+    .await;
+    // Leaderboards are playlist ids: 1 Rumble Pit (descriptor 0) and
+    // 2 Team Slayer (descriptor 1) are ranked, 99 is no playlist. A player
+    // never seen is level 1.
+    let nobody = "0009000000000099";
+    let r = h
+        .get(&format!(
+            "/v1/rank-stats?leaderboards=99,2,1,2&xuids={},{},{nobody}",
+            guest.xuid, host.xuid
+        ))
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let items = r.json()["items"].as_array().unwrap().clone();
+    let rows: Vec<(u64, String, String, u64)> = items
+        .iter()
+        .map(|i| {
+            (
+                i["leaderboard"].as_u64().unwrap(),
+                i["playlist"].as_str().unwrap().to_owned(),
+                i["xuid"].as_str().unwrap().to_owned(),
+                i["standing"]["level"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    let mut want = Vec::new();
+    let mut xuids = [host.xuid.to_string(), guest.xuid.to_string(), nobody.into()];
+    xuids.sort();
+    for (board, playlist) in [(1, "0"), (2, "1")] {
+        for x in &xuids {
+            let level = if board == 2 && *x == host.xuid.to_string() {
+                2
+            } else {
+                1
+            };
+            want.push((board, playlist.to_owned(), x.clone(), level));
+        }
+    }
+    assert_eq!(rows, want);
+    let host_row = items
+        .iter()
+        .find(|i| i["leaderboard"] == 2 && i["xuid"] == host.xuid.to_string())
+        .unwrap();
+    assert_eq!(host_row["standing"]["experience"], 100);
+
+    assert_eq!(
+        h.get("/v1/rank-stats?leaderboards=1&xuids=").await.json()["items"],
+        json!([])
+    );
+    for bad in [
+        "/v1/rank-stats?leaderboards=x&xuids=0009000000000001",
+        "/v1/rank-stats?leaderboards=1&xuids=nope",
+    ] {
+        assert_eq!(h.get(bad).await.status, StatusCode::BAD_REQUEST, "{bad}");
+    }
+    let many: Vec<String> = (1..=65)
+        .map(|i| format!("{:016x}", 0x0009_0000_0000_0000u64 + i))
+        .collect();
+    assert_eq!(
+        h.get(&format!(
+            "/v1/rank-stats?leaderboards=1&xuids={}",
+            many.join(",")
+        ))
+        .await
+        .status,
+        StatusCode::BAD_REQUEST
+    );
+}
+
+#[tokio::test]
+async fn a_matchmaking_game_without_a_playlist_name_gets_the_hoppers_title() {
+    let h = harness().await;
+    let host = h.create("Host").await;
+    let guest = h.create("Guest").await;
+    let mut game = duel(&host, &guest, "1", "matchmaking");
+    game.as_object_mut().unwrap().remove("playlist");
+    let id = h.start_game(&host, game).await;
+    let g = h.get(&format!("/v1/games/{id}")).await.json();
+    assert_eq!(
+        (&g["playlist"], &g["playlist_id"]),
+        (&json!("Team Slayer"), &json!("1"))
+    );
+    // A name the console sent stays; an id naming no hopper gets none.
+    let named = h
+        .start_game(&host, duel(&host, &guest, "1", "matchmaking"))
+        .await;
+    assert_eq!(
+        h.get(&format!("/v1/games/{named}")).await.json()["playlist"],
+        "Synthetic"
+    );
+    let mut unknown = duel(&host, &guest, "40", "matchmaking");
+    unknown.as_object_mut().unwrap().remove("playlist");
+    let unknown = h.start_game(&host, unknown).await;
+    assert_eq!(
+        h.get(&format!("/v1/games/{unknown}")).await.json()["playlist"],
+        Value::Null
+    );
+}

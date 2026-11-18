@@ -294,6 +294,7 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         .route("/v1/server", get(crate::status::get_server))
         .route("/v1/stats/summary", get(crate::stats::get_summary))
         .route("/v1/ranks/{playlist}", get(crate::ranks::leaderboard))
+        .route("/v1/rank-stats", get(crate::ranks::stats))
         .route(
             "/v1/accounts/{gamertag}/ranks",
             get(crate::ranks::player_ranks),

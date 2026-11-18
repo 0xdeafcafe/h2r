@@ -27,5 +27,6 @@ pub use memory::{
     team_scores, world, yaw,
 };
 pub use pipeline::Pipeline;
+pub use session::Playlist;
 pub use sink::{JsonlSink, Sink};
-pub use tags::{MapFile, MapIdLocator, MapLocator, TagNames};
+pub use tags::{MapFile, MapIdLocator, MapLocator, PlaylistLocator, TagNames};

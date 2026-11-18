@@ -155,6 +155,15 @@ impl Query {
     }
 }
 
+/// The playlist a session was advertised for: its hopper index, `None`
+/// for a custom game (-1) or anything outside the hopper file.
+pub fn playlist(attrs: &BTreeMap<u32, AttributeValue>) -> Option<u32> {
+    let v = attrs.get(&attr::HOPPER).and_then(int)?;
+    (0..crate::hopper::HOPPERS as i64)
+        .contains(&v)
+        .then_some(v as u32)
+}
+
 /// Whether a session has room for a party of `n` (8 meaning 8 or more).
 pub fn room_for(attrs: &BTreeMap<u32, AttributeValue>, n: u32) -> bool {
     if n == 0 {
@@ -270,6 +279,18 @@ mod tests {
         };
         assert!(big.matches(&session(&[(1, 3), (8, 0xff)])));
         assert!(!big.matches(&session(&[(1, 3), (8, 0x7f)])));
+    }
+
+    #[test]
+    fn a_sessions_playlist_is_its_hopper_index() {
+        assert_eq!(playlist(&session(&[(attr::HOPPER, 3)])), Some(3));
+        assert_eq!(playlist(&session(&[(attr::HOPPER, -1)])), None);
+        // The game's 32-bit -1, as a guest's attribute arrives.
+        let mut custom = BTreeMap::new();
+        custom.insert(attr::HOPPER, AttributeValue::Integer(0xffff_ffff));
+        assert_eq!(playlist(&custom), None);
+        assert_eq!(playlist(&session(&[(attr::HOPPER, 16)])), None);
+        assert_eq!(playlist(&BTreeMap::new()), None);
     }
 
     #[test]

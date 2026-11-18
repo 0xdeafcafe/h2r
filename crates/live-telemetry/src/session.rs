@@ -80,8 +80,8 @@ pub struct Session {
     /// player's roster entries carry its XUID.
     signed_in: Option<live_proto::Xuid>,
     current: Option<Match>,
-    /// Set while the console is in a matchmaking game: (name, id).
-    playlist: Option<(String, String)>,
+    /// Set while the console is in a matchmaking game.
+    playlist: Option<Playlist>,
     /// The `MapId` of the map the next game starts on, when a package
     /// serves it (None: the disc's own map).
     map_id: Option<live_proto::maps::MapId>,
@@ -92,6 +92,17 @@ pub struct Session {
     /// array holds only the engine's fifteen.
     campaign_custom_skulls: Option<Vec<u8>>,
     output: Vec<Output>,
+}
+
+/// A matchmaking game's playlist, as its record names it
+/// (`NewGame.playlist`, `playlist_id`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Playlist {
+    /// The hopper's title, when the console knows it (the server fills it
+    /// in from its hopper file otherwise).
+    pub name: Option<String>,
+    /// The hopper descriptor index.
+    pub id: String,
 }
 
 impl Session {
@@ -121,9 +132,9 @@ impl Session {
         link(self.signed_in, players);
     }
 
-    /// The matchmaking playlist (name, id) multiplayer games start from;
-    /// `None` makes them custom games.
-    pub fn set_playlist(&mut self, playlist: Option<(String, String)>) {
+    /// The matchmaking playlist multiplayer games start from; `None` makes
+    /// them custom games.
+    pub fn set_playlist(&mut self, playlist: Option<Playlist>) {
         self.playlist = playlist;
     }
 
@@ -230,8 +241,8 @@ impl Session {
             tick: Some(info.tick),
             players: players.iter().map(|p| p.wire_player()).collect(),
             kind: Some(kind.into()),
-            playlist: playlist.as_ref().map(|p| p.0.clone()),
-            playlist_id: playlist.map(|p| p.1),
+            playlist: playlist.as_ref().and_then(|p| p.name.clone()),
+            playlist_id: playlist.map(|p| p.id),
             difficulty,
             // Live co-op does not exist yet.
             online: None,
@@ -1707,7 +1718,10 @@ mod tests {
         assert_eq!(game.kind.as_deref(), Some("custom"));
         assert_eq!((game.playlist, game.difficulty), (None, None));
 
-        session.set_playlist(Some(("Team Slayer".into(), "3".into())));
+        session.set_playlist(Some(Playlist {
+            name: Some("Team Slayer".into()),
+            id: "3".into(),
+        }));
         session.start(&info(), vec![player(0, 0)]);
         let game = started(&mut session);
         assert_eq!(game.kind.as_deref(), Some("matchmaking"));
