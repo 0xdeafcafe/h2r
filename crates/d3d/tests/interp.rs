@@ -8,10 +8,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use d3d::backend::{Recorded, StreamBytes, TargetInfo, Viewport};
-use d3d::interp::InterpBackend;
 use d3d::interp::camera::{Persp, build};
 use d3d::interp::math::{Mat4, Similarity, max_abs, max_diff, mul};
 use d3d::interp::model::{Layout, read4, write};
+use d3d::interp::reproject::overscan_scale;
+use d3d::interp::{InterpBackend, Mode};
 use d3d::shader::{CONSTANTS, ShaderInputs, VertexProcessing};
 use d3d::state::StateWords;
 use d3d::{Backend, RecordingBackend, ResolvedDraw};
@@ -192,11 +193,16 @@ struct Rig {
 }
 
 fn rig(fps: u32) -> Rig {
+    rig_with(fps, Mode::Replay)
+}
+
+fn rig_with(fps: u32, mode: Mode) -> Rig {
     let clock = Arc::new(AtomicU64::new(0));
     let rate = Arc::new(AtomicU32::new(fps));
     let (c, r) = (Arc::clone(&clock), Arc::clone(&rate));
     let mut b = InterpBackend::new(RecordingBackend::new(), move || r.load(Ordering::Relaxed))
-        .with_clock(move || c.load(Ordering::Relaxed));
+        .with_clock(move || c.load(Ordering::Relaxed))
+        .with_mode(mode);
     let color = b
         .create_surface(D3DFormat::A8R8G8B8, 640, 480, false)
         .unwrap();
@@ -605,4 +611,314 @@ fn the_render_thread_runs_in_between_frames_when_idle() {
         })
         .unwrap();
     assert!(presents > 0);
+}
+
+/// A first-person weapon: its own projection, a pose in camera space.
+fn weapon() -> Mat4 {
+    let fp = build::projection(1.0, 16.0 / 9.0, 0.01, 10.0);
+    mul(
+        &fp,
+        &Similarity {
+            rotation: build::axis([0.0, 1.0, 0.0], 0.0),
+            scale: 1.0,
+            translation: [0.1, -0.1, -0.3],
+        }
+        .to_mat4(),
+    )
+}
+
+/// The calls since `from` as a compact trace: `draw <target> mesh <n>`,
+/// `warp <src> <dst>`, `clear <target>`, `present <surface> <flags>`.
+fn trace(r: &Rig, from: usize) -> Vec<String> {
+    r.b.inner().calls[from..]
+        .iter()
+        .filter_map(|c| match c {
+            Recorded::Draw { color, draw, .. } => {
+                Some(format!("draw {color} mesh {}", draw.vertex_count))
+            }
+            Recorded::Warp { src, dst, .. } => Some(format!("warp {src} {dst}")),
+            Recorded::Clear { color, .. } => Some(format!("clear {color}")),
+            Recorded::Present { surface, flags } => Some(format!("present {surface} {flags}")),
+            _ => None,
+        })
+        .collect()
+}
+
+fn warps_since(r: &Rig, from: usize) -> Vec<[[f32; 3]; 3]> {
+    r.b.inner().calls[from..]
+        .iter()
+        .filter_map(|c| match c {
+            Recorded::Warp { h, .. } => Some(*h),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The warp of a world image drawn with overscan and shown from the same
+/// rotation: a zoom about the centre by the overscan scale.
+fn zoom() -> [[f32; 3]; 3] {
+    let s = overscan_scale() as f32;
+    [
+        [s, 0.0, 0.5 * (1.0 - s)],
+        [0.0, s, 0.5 * (1.0 - s)],
+        [0.0, 0.0, 1.0],
+    ]
+}
+
+fn near(a: &[[f32; 3]; 3], b: &[[f32; 3]; 3]) -> bool {
+    a.iter()
+        .flatten()
+        .zip(b.iter().flatten())
+        .all(|(x, y)| (x - y).abs() < 1e-4)
+}
+
+/// Two frames turning in place (rotation only), each with a weapon and the
+/// HUD.
+fn turning() -> (Scene, Scene) {
+    let mut a = scene(camera(0.0, 0.0));
+    a.weapon = Some(weapon());
+    let mut b = scene(camera(0.0, 0.2));
+    b.weapon = Some(weapon());
+    (a, b)
+}
+
+#[test]
+fn reproject_draws_the_world_once_and_warps_it_with_the_overlay_on_top() {
+    let mut r = rig_with(60, Mode::Reproject { ahead: false });
+    let (a, b) = turning();
+    r.frame(F, &a);
+    let before = r.calls();
+    r.frame(2 * F, &b);
+    let t = trace(&r, before);
+    let g = r.color;
+    // The guest's own calls first, as it made them.
+    assert_eq!(
+        t[..6],
+        [
+            format!("clear {g}"),
+            format!("draw {g} mesh 1"),
+            format!("draw {g} mesh 2"),
+            format!("draw {g} mesh 3"),
+            format!("draw {g} mesh 900"),
+            format!("draw {g} mesh 1000"),
+        ],
+        "{t:#?}"
+    );
+    // Then the world image (the clear and the level, no weapon or HUD)
+    // into a surface of its own, the warp to the shown surface, a depth
+    // clear, the overlay and the present.
+    let w = t[6].trim_start_matches("clear ").to_string();
+    let shown = r.presents_since(before)[0].0;
+    assert_ne!(w, g.to_string());
+    assert_ne!(shown, g);
+    assert_ne!(w, shown.to_string());
+    assert_eq!(
+        t[6..],
+        [
+            format!("clear {w}"),
+            format!("draw {w} mesh 1"),
+            format!("draw {w} mesh 2"),
+            format!("draw {w} mesh 3"),
+            format!("warp {w} {shown}"),
+            format!("clear {shown}"),
+            format!("draw {shown} mesh 900"),
+            format!("draw {shown} mesh 1000"),
+            format!("present {shown} 4"),
+        ],
+        "{t:#?}"
+    );
+    // The world image is drawn with overscan: the camera's clip x and y
+    // scaled, z and w as they were.
+    let s = overscan_scale();
+    let d = r.draws_since(before);
+    let world: Vec<_> = d.iter().filter(|(c, _)| c.to_string() == w).collect();
+    let m = mat(&world[0].1, CAM, Layout::Rows);
+    for j in 0..4 {
+        assert!((m[0][j] - b.cam[0][j] * s).abs() < 1e-5);
+        assert!((m[1][j] - b.cam[1][j] * s).abs() < 1e-5);
+        assert!((m[2][j] - b.cam[2][j]).abs() < 1e-5);
+        assert!((m[3][j] - b.cam[3][j]).abs() < 1e-5);
+    }
+    // The overlay draws as the guest drew it.
+    let overlay: Vec<_> = d.iter().filter(|(c, _)| *c == shown).collect();
+    assert_eq!(*overlay[0].1.shader.constants, {
+        let mut c = block();
+        write(&mut c, CAM, Layout::Rows, 4, &weapon());
+        c
+    });
+    assert_eq!(*overlay[1].1.shader.constants, hud_block());
+    // The depth clear leaves the colour alone.
+    let cleared = r.b.inner().calls[before..].iter().find_map(|c| match c {
+        Recorded::Clear { color, clear } if *color == shown => Some(*clear),
+        _ => None,
+    });
+    assert_eq!(
+        cleared,
+        Some(Clear {
+            color: None,
+            depth: Some(1.0),
+            stencil: Some(0)
+        })
+    );
+    // At the present (alpha 0, blended) the warp turns back to frame a's
+    // rotation: not the plain zoom.
+    let h0 = warps_since(&r, before)[0];
+    assert!(!near(&h0, &zoom()), "{h0:?}");
+
+    // Half way: a warp and the overlay, no world draws.
+    let before = r.calls();
+    r.at(2 * F + F / 2);
+    r.b.idle_at(2 * F + F / 2);
+    assert_eq!(
+        trace(&r, before),
+        [
+            format!("warp {w} {shown}"),
+            format!("clear {shown}"),
+            format!("draw {shown} mesh 900"),
+            format!("draw {shown} mesh 1000"),
+            format!("present {shown} 0"),
+        ]
+    );
+    let h_half = warps_since(&r, before)[0];
+    assert!(!near(&h_half, &h0) && !near(&h_half, &zoom()));
+
+    // Late, alpha 1: frame b's own rotation, the plain zoom.
+    let before = r.calls();
+    r.b.idle_at(3 * F + F / 4);
+    assert!(near(&warps_since(&r, before)[0], &zoom()));
+    assert_eq!(r.b.idle_at(3 * F + F / 2), None, "held at 1");
+
+    let st = *r.b.stats().lock().unwrap();
+    assert_eq!(
+        (st.captures, st.warps, st.replay_frames, st.replays),
+        (1, 3, 0, 2)
+    );
+    let line = st.to_string();
+    assert!(line.contains("reproject mode: 1 world images"), "{line}");
+    assert!(!line.contains("replay mode"), "{line}");
+}
+
+/// How far from the unturned sample the warp `h` samples for a point off
+/// the centre (the test camera's turn rolls the image about it).
+fn shift(h: &[[f32; 3]; 3]) -> [f32; 2] {
+    let at = |h: &[[f32; 3]; 3], r: usize| {
+        let q = |r: usize| h[r][0] * 0.9 + h[r][1] * 0.5 + h[r][2];
+        q(r) / q(2)
+    };
+    let z = zoom();
+    [at(h, 0) - at(&z, 0), at(h, 1) - at(&z, 1)]
+}
+
+#[test]
+fn reproject_ahead_runs_the_turn_on_past_the_newest_frame() {
+    let (a, b) = turning();
+    let mut r = rig_with(60, Mode::Reproject { ahead: true });
+    r.frame(F, &a);
+    let before = r.calls();
+    r.frame(2 * F, &b);
+    // At the present the newest rotation: the plain zoom.
+    assert!(near(&warps_since(&r, before)[0], &zoom()));
+    // Half a frame on, past it.
+    let before = r.calls();
+    r.b.idle_at(2 * F + F / 2);
+    let ahead = warps_since(&r, before)[0];
+    assert!(!near(&ahead, &zoom()));
+    // Blending samples the other way at its present (back towards frame
+    // a, a whole frame behind; ahead is half a frame on), so the shifts
+    // point opposite ways, the ahead one about half as long.
+    let mut blended = rig_with(60, Mode::Reproject { ahead: false });
+    blended.frame(F, &a);
+    let from = blended.calls();
+    blended.frame(2 * F, &b);
+    let behind = warps_since(&blended, from)[0];
+    let (x, y) = (shift(&ahead), shift(&behind));
+    let dot = x[0] * y[0] + x[1] * y[1];
+    let len = |v: [f32; 2]| (v[0] * v[0] + v[1] * v[1]).sqrt();
+    assert!(dot < 0.0, "ahead {x:?} behind {y:?}");
+    assert!(
+        (len(x) / len(y) - 0.5).abs() < 0.05,
+        "ahead {x:?} behind {y:?}"
+    );
+}
+
+#[test]
+fn reproject_holds_split_screen_and_the_replay_mode_reports_its_own_cost() {
+    // Two views: reprojection is for one gameplay view, so frames are
+    // shown as drawn.
+    let mut r = rig_with(60, Mode::Reproject { ahead: false });
+    let two = |cam: Mat4, r: &mut Rig| {
+        let (color, depth) = (r.color, r.depth);
+        r.b.clear(color, Some(depth), Clear::default()).unwrap();
+        for (i, cam) in [cam, camera(5.0, 1.0)].into_iter().enumerate() {
+            let mut d = draw(world_block(&cam), 1 + i as u32, false);
+            d.viewport.y = 240 * i as u32;
+            d.viewport.height = 240;
+            r.b.draw(color, Some(depth), &d, [None; 4]).unwrap();
+        }
+        r.b.present(color, 4).unwrap();
+    };
+    r.at(F);
+    two(camera(0.0, 0.0), &mut r);
+    let before = r.calls();
+    r.at(2 * F);
+    two(camera(0.0, 0.2), &mut r);
+    assert_eq!(r.presents_since(before), vec![(r.color, 4)]);
+    assert_eq!(r.b.idle_at(2 * F + F / 2), None);
+    let st = *r.b.stats().lock().unwrap();
+    assert_eq!((st.captures, st.warps), (0, 0));
+
+    // Design D's readout carries its frame count and cost.
+    let mut r = rig(60);
+    let (a, b) = turning();
+    r.frame(F, &a);
+    r.frame(2 * F, &b);
+    r.b.idle_at(2 * F + F / 2);
+    let st = *r.b.stats().lock().unwrap();
+    assert_eq!((st.replay_frames, st.captures, st.warps), (2, 0, 0));
+    assert!(st.replay_max_ns > 0 && st.replay_ns >= st.replay_max_ns);
+    let line = st.to_string();
+    assert!(line.contains("replay mode: 2 frames"), "{line}");
+    assert!(!line.contains("reproject"), "{line}");
+}
+
+#[test]
+fn reproject_leaves_the_guests_calls_alone() {
+    let scenes: Vec<Scene> = (0..6)
+        .map(|i| {
+            let mut s = scene(camera(0.0, i as f64 * 0.1));
+            s.weapon = Some(weapon());
+            s
+        })
+        .collect();
+    let mut plain = RecordingBackend::new();
+    let color = plain
+        .create_surface(D3DFormat::A8R8G8B8, 640, 480, false)
+        .unwrap();
+    let depth = plain
+        .create_surface(D3DFormat::D24S8, 640, 480, true)
+        .unwrap();
+    plain.present(color, 4).unwrap();
+    for s in &scenes {
+        frame(&mut plain, color, depth, s);
+    }
+    for ahead in [false, true] {
+        let mut r = rig_with(60, Mode::Reproject { ahead });
+        for (i, s) in scenes.iter().enumerate() {
+            r.frame((i as u64 + 1) * F, s);
+            r.b.idle_at((i as u64 + 1) * F + F / 2);
+        }
+        let guest = [r.color, r.depth];
+        assert_eq!(
+            guest_calls(&r.b.inner().calls, &guest),
+            guest_calls(&plain.calls, &guest),
+            "ahead {ahead}"
+        );
+        assert!(
+            r.b.inner()
+                .calls
+                .iter()
+                .all(|c| !matches!(c, Recorded::ReadSurface { .. } | Recorded::ReadDepth { .. }))
+        );
+        assert_eq!(r.b.stats().lock().unwrap().captures, 5);
+    }
 }

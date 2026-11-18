@@ -1709,6 +1709,21 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         Ok(())
     }
 
+    fn warp_surface(
+        &mut self,
+        src: Self::Surface,
+        dst: Self::Surface,
+        h: [[f32; 3]; 3],
+    ) -> Result<bool, String> {
+        // Host-only: the view shows it when it has both surfaces; the
+        // reference's copy is what shows otherwise.
+        let warped = self.reference.warp_surface(src.reference, dst.reference, h)?;
+        match (self.live(src.view), self.live(dst.view)) {
+            (Some(s), Some(d)) if !self.frame_failed => self.view.warp_surface(s, d, h),
+            _ => Ok(warped),
+        }
+    }
+
     fn present_replay(
         &mut self,
         surface: Self::Surface,

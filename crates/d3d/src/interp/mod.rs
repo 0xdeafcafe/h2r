@@ -10,6 +10,8 @@
 //!   display schedule.
 //! - [`backend`]: [`InterpBackend`], the [`crate::Backend`] wrapper that
 //!   records, replays and presents, on the render thread.
+//! - [`reproject`]: E1, the rotation-only reprojection: the world image
+//!   with overscan, the warp's homography, the display rotation.
 //! - [`camera`] and [`math`]: perspective matrices split and rebuilt.
 
 pub mod backend;
@@ -17,6 +19,7 @@ pub mod camera;
 pub mod math;
 pub mod model;
 pub mod pacing;
+pub mod reproject;
 
-pub use backend::{InterpBackend, InterpStats};
+pub use backend::{InterpBackend, InterpStats, Mode};
 pub use pacing::Rate;
