@@ -224,6 +224,8 @@ mod tests {
             group: *b"ligh",
             tag: light,
             marker: "glow".into(),
+            primary_scale: String::new(),
+            h1_primary: 0,
         }];
         let d = def(b"garb").unwrap();
         let r = defs::from_built(d, &garbage(&object(), Some(hlmt), &[], &[], &a).unwrap()).unwrap();
@@ -263,6 +265,8 @@ mod tests {
             group: *b"ligh",
             tag: light,
             marker: "light".into(),
+            primary_scale: String::new(),
+            h1_primary: 0,
         }];
         let r = defs::from_built(def(b"mach").unwrap(), &with_attachments(b"mach", &mach, &a).unwrap()).unwrap();
         match r.at("devi.obje.attachments") {

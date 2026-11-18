@@ -1090,3 +1090,40 @@ fn check_images(name: &str, m: &mut Map<Cursor<Vec<u8>>>) -> Vec<String> {
     }
     bad
 }
+
+/// The Halo 2 sandbox raises each retail vehicle at a Halo 1 spot by how
+/// far its model reaches below its origin: Halo 1 holds the origin on the
+/// floor, and the retail ghost's hull reaches 0.15 under it.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn halo2_sandbox_lifts_retail_vehicles_off_the_floor() {
+    use h1convert::placements::{lift_vehicles, plan_map, retail_vehicle_depth};
+    use h1convert::sandbox::H2Item;
+    let mut h2 = H2Disc::open(&std::env::var("H2_DISC").expect("set H2_DISC"));
+    let mut iso = xiso::Xiso::open(BufReader::new(File::open(std::env::var("H1_ISO").expect("set H1_ISO")).unwrap())).unwrap();
+    let disc = h1map::disc::Disc::open(&mut iso).unwrap();
+    let e = disc.map("bloodgulch").unwrap().clone();
+    let h1 = H1Map::from_reader(Cursor::new(iso.read(&e).unwrap())).unwrap();
+    let mut base = Map::from_reader(Cursor::new(h2.read(known("bloodgulch").unwrap().1))).unwrap();
+    let ctx = tags::object::Context::read(&mut base).unwrap();
+    let depth = |r: &str| retail_vehicle_depth(&ctx, r);
+    println!("depths: ghost {:?}, warthog {:?}, banshee {:?}", depth("ghost"), depth("warthog"), depth("banshee"));
+    // The retail ghost's hull, 0.15 under its origin; the warthog's tyres 2 cm.
+    assert!((depth("ghost").unwrap() - 0.1515).abs() < 1e-3);
+    assert!((depth("warthog").unwrap() - 0.018).abs() < 1e-3);
+    let before = plan_map(&h1).unwrap();
+    let mut after = before.clone();
+    lift_vehicles(&mut after, depth);
+    let mut ghosts = 0;
+    for (b, a) in before.items.iter().zip(&after.items) {
+        let lift = a.position[2] - b.position[2];
+        match b.item {
+            H2Item::Vehicle(r) => {
+                assert!((lift - depth(r).unwrap().max(0.0)).abs() < 1e-5, "{r}: {lift}");
+                ghosts += usize::from(r == "ghost");
+            }
+            _ => assert_eq!(lift, 0.0),
+        }
+    }
+    assert!(ghosts >= 2, "{ghosts}");
+}
