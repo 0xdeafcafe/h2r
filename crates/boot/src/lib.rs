@@ -98,6 +98,7 @@ pub mod video_screen;
 pub mod voice_glue;
 pub mod voice_settings;
 pub mod pause_menu;
+pub mod snapshot_glue;
 pub mod snapshot_probe;
 pub mod sse;
 pub mod sweep_diag;
@@ -1109,6 +1110,8 @@ pub fn run_hosted_with_live(
     if let Some(a) = &agent {
         debug_menu_glue::install(host.debug_menu.as_ref(), &a.agent, host.settings.clone(), host.perf_overlay.clone());
     }
+    // Part of a machine snapshot's build key (snapshot_glue.rs).
+    let switch_spec = features.switches().spec();
     let plan = features.build(&feature::Base).map_err(|conflicts| {
         let c: Vec<String> = conflicts.iter().map(ToString::to_string).collect();
         anyhow::anyhow!("feature plan refused: {}", c.join("; "))
@@ -1143,21 +1146,23 @@ pub fn run_hosted_with_live(
         eprintln!("lockstep: hashing presents only: {why}");
         h.set_tick_note(why.to_owned());
     }
-    if opts.bink {
+    let bink = if opts.bink {
         // A lockstep run compares schedules and movie pacing follows the
         // wall clock, so it skips them; so, by default, do level boots and
         // headless runs.
         let why_off = movies_glue::why_off(&opts.movies, lockstep_on, level_name.as_deref(), headless);
-        movies_glue::install(
+        let (_, hle) = movies_glue::install(
             &loaded.runtime,
             &opts.movies,
             &opts.disc,
             why_off.as_deref(),
             ds.as_ref().map(dsound_glue::Audio::mixer),
         );
+        Some(hle)
     } else {
         eprintln!("movies: off (--no-bink: the original player runs)");
-    }
+        None
+    };
     let tr = trace::install_bounded(&loaded.runtime, opts.trace.as_deref(), host.trace_limit.unwrap_or(usize::MAX))?;
     let mut m = kernel::Machine::new(
         Arc::clone(&loaded.runtime),
@@ -1185,17 +1190,24 @@ pub fn run_hosted_with_live(
     let mut audio_idle = 0u64;
     // H2_AUDIO_STATS=1: a line of audio health every few seconds.
     let mut audio_report = ds.as_ref().and_then(|_| dsound_glue::AudioReport::from_env());
-    if let Some(p) = &mut snapshot_probe {
-        let installed: [(&'static str, bool); 6] = [
-            ("d3d", d3d_calls.is_some()),
-            ("dsound", ds.is_some()),
-            ("xapi", xa.is_some()),
-            ("bink", opts.bink),
-            ("live", _live.is_some()),
-            ("lockstep", harness.is_some()),
-        ];
-        p.set_host(installed.iter().filter(|(_, on)| *on).map(|(n, _)| *n).collect());
-    }
+    // Machine snapshots (snapshot_glue.rs, docs/runtime/snapshots.md):
+    // what holds state outside guest RAM, for `state.*` and the probe.
+    let snap_host = snapshot_glue::Host {
+        rt: &loaded.runtime,
+        d3d: d3d_calls.as_ref().map(|i| &*i.snapshot),
+        audio: ds.as_ref(),
+        xapi: xa.as_ref(),
+        bink: bink.as_deref(),
+        live: _live.as_deref(),
+    };
+    let mut rebuilders = kernel::snapshot::Rebuilders::new();
+    rebuilders.add(trace::KERNEL_CALL_RETURN, trace::rebuilder(&tr));
+    let shelf = agent.as_ref().and_then(|a| {
+        let key = snapshot_glue::build_key(build_stamp(xbe_bytes), &switch_spec, &plan, &snap_host.names());
+        let shelf = snapshot_glue::Shelf::from_env(key)?;
+        a.agent.set_snapshots(Box::new(shelf.clone()));
+        Some(shelf)
+    });
     // H2_BOOT_STOP_AT_PRESENT=N: end the run once N presents are out.
     let stop_at: Option<u64> = std::env::var("H2_BOOT_STOP_AT_PRESENT").ok().and_then(|v| v.parse().ok());
     // H2_HOST_PERF=1 (the Xbox app's default): a line every 100 frames or
@@ -1316,8 +1328,16 @@ pub fn run_hosted_with_live(
         if let Some(a) = &agent {
             a.after_slice(&loaded.runtime, d3d_diag::presents());
         }
+        // A `state.save` or `state.load` is due: run it here, between
+        // slices (the agent's tick observer ended the slice for it).
+        if let (Some(a), Some(shelf)) = (&agent, &shelf)
+            && a.agent.snapshot_pending()
+        {
+            let mut machine = snap_host.machine(&mut m, &plan, &rebuilders, shelf, d3d_diag::presents());
+            a.agent.run_snapshots(&mut machine);
+        }
         if let Some(p) = &mut snapshot_probe {
-            p.after_slice(&m, &plan);
+            p.after_slice(&m, &plan, || snap_host.blockers());
         }
         if let Some(a) = &ds
             && let Err(e) = dsound_glue::advance(a, &k)

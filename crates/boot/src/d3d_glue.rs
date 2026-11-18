@@ -23,6 +23,45 @@ pub struct Installed {
     /// The vblank callback on the 60 Hz logical clock, for
     /// `Kernel::add_periodic` (taken once).
     pub vblank: Option<kernel::periodic::Handler>,
+    /// The device, for machine snapshots (`crate::snapshot_glue`).
+    pub snapshot: Arc<dyn DeviceSnapshot>,
+}
+
+/// The device as a machine snapshot sees it, whatever backend it was made
+/// with (docs/runtime/snapshots.md, phase 4: `Device::snapshot_blockers`,
+/// `save_snapshot`, `load_snapshot`).
+pub trait DeviceSnapshot: Send + Sync {
+    /// What keeps the device from being saved now.
+    fn blockers(&self) -> Vec<String>;
+    /// The `d3d` section. Writes guest memory (render targets written
+    /// back), so it runs before guest RAM is saved.
+    fn save(
+        &self,
+        rt: &runtime::Runtime,
+        out: &mut snapshot::SnapshotWriter,
+    ) -> Result<(), String>;
+    /// After guest RAM is loaded.
+    fn load(&self, snapshot: &snapshot::Snapshot<'_>) -> Result<(), String>;
+}
+
+impl<B: d3d::backend::Backend + Send + 'static> DeviceSnapshot for Mutex<d3d::Device<B>> {
+    fn blockers(&self) -> Vec<String> {
+        self.lock().unwrap_or_else(|e| e.into_inner()).snapshot_blockers()
+    }
+    fn save(
+        &self,
+        rt: &runtime::Runtime,
+        out: &mut snapshot::SnapshotWriter,
+    ) -> Result<(), String> {
+        let mut device = self.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guest = rt.memory();
+        let mut mem = d3d::runtime_glue::GuestAdapter::new(&mut guest);
+        device.save_snapshot(&mut mem, out).map_err(|e| e.to_string())
+    }
+    fn load(&self, snapshot: &snapshot::Snapshot<'_>) -> Result<(), String> {
+        let mut device = self.lock().unwrap_or_else(|e| e.into_inner());
+        device.load_snapshot(snapshot).map_err(|e| e.to_string())
+    }
 }
 
 
@@ -986,9 +1025,11 @@ pub fn install_with_report<B: d3d::backend::Backend + Send + 'static>(
     let entries: Vec<u32> = r.implemented.iter().chain(&r.stopping).map(|e| e.0).collect();
     install_write_barrier(rt, &device, &entries)?;
     let vblank: Option<kernel::periodic::Handler> = Some(Box::new(d3d::vblank::clocked_vblanks(Arc::clone(&device))));
+    let snapshot: Arc<dyn DeviceSnapshot> = device.clone();
     let dev = device;
     Ok(Installed {
         vblank,
+        snapshot,
         report: Box::new(move || {
             let mut d = dev.lock().unwrap();
             // Device events by kind and reason, most frequent first.
