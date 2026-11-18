@@ -152,9 +152,16 @@ picking a weapon up) is not traced: the game-run checklist covers it.
 ### Any weapon as the starting or secondary weapon
 
 - **Storable:** values 15, 16 and 20 are slots of the same globals list the
-  editor doesn't offer. They are real references on the disc (random picks
-  15 and 16). Our editor names them by reading the slot's tag at run time,
-  as the schema does; nothing is listed here.
+  editor doesn't offer (list entries 11, 15 and 17 by the jump table).
+  They are real references on the disc (random picks 15 and 16). Our
+  editor names them by reading the slot's tag at run time, as the schema
+  does; nothing is listed here. Built in Studio
+  (`variants::schema::{weapon_slots, weapon_label, add_weapon_slots}`):
+  the main menu map's `mulg` tag, universal element 0, list `+0x68`; the
+  label is the tag path's last part (a path ending
+  `\beam_rifle\beam_rifle` reads "Beam Rifle"). The game's own editor doesn't offer
+  them yet: its lists take our labels from fixed strings
+  (`boot::variant_options`), and these need the disc's names.
 - **Needs the extension:** a weapon that isn't in that list (one of the
   other weapon tags the map has). The byte can't hold it past 0x14. An
   extension field names it, and a hook at `0x19eda0` returns that tag for
@@ -242,7 +249,7 @@ offer is.
 | Fast respawn | storable (1 s, 2 s) | offered by us (decided: no hooks, retail's 1 s floor stays); respawn 0 with cycling refused |
 | Gravity | needs the extension | scale `[0x51e9c4]` at game start, as Low Gravity |
 | Bounce Practice magnum, Bumper Cars | offered; Bumper Cars needs our "None" | built-ins (slice 2) |
-| Any weapon, from the globals list | storable (15, 16, 20) | name them from the disc; offer them |
+| Any weapon, from the globals list | storable (15, 16, 20) | name them from the disc; offer them (Studio built) |
 | Any weapon, outside that list | needs the extension | extension names the tag; hook `0x19eda0`; record keeps a fallback |
 | Score above 250 | storable to 0x7fff | offer more steps |
 | Time above 1 h | storable to 0x7fff s (9 h 6 min) | offer more steps |
@@ -781,6 +788,10 @@ After slice 5 (unlimited grenades):
     at most three teams; note what the lobby's team switch offers (not
     traced). Studio shows "Team count" 3. Over Live, note whether the
     guests see three teams too.
+9e. Studio, with the disc: a Slayer's starting and secondary weapon lists
+    show three more weapons after the retail ones they sort between (15,
+    16, 20), named from their tag paths. Pick each, save, play: you spawn
+    with it. Note the names, so the game's editor can offer them later.
 
 After slices 6 to 8:
 
@@ -918,8 +929,25 @@ After slices 6 to 8:
   body_factor, scale_amount, is_player_unit}`, `Decision::vitality`,
   `engine::points::{SHIELD_DAMAGE, BODY_DAMAGE}`, page rows 3 to 5
   (`variant_page::Scale`), Studio sliders.
-- Not yet: movement speed (not traced), weapons outside the editor's
-  list, team size.
+- Weapon slots 15, 16 and 20 in Studio: `variants::schema::{weapon_slots,
+  weapon_label, add_weapon_slots, UNOFFERED_WEAPONS}`, called from
+  `Schema::from_map`. Not in the game's editor yet (section 2, "Any
+  weapon").
+- Not yet:
+  - movement speed: not traced. The Juggernaut's speed (`G+0x234`,
+    record `+0xf8`, setting 96) has no reader a linear search finds; the
+    likely route is the unit's movement code, not the variant.
+  - damage through the engine's trait query (`0x24dda0`, slot `+0x114`
+    of the engine vtables at `0x453cb0` and `0x45c650`) was not used: no
+    direct call site, so the scales hook the damage steps instead
+    (`0xd9110`, `0xd8cb0`).
+  - weapons outside the globals list: the extension's `+0x11a`/`+0x11c`
+    ids need our table of tag paths, checked against each map's tags,
+    and a hook on `0x19eda0` (stdcall: default tag, value byte, other
+    weapon's tag; `ret 0xc`). Primary or secondary is told by the return
+    address (`0x19f056`/`0x19f063` primary, `0x19f042`/`0x19f07b`
+    secondary; `0x19ee18` is its own random retry).
+  - team size: lobby enforcement not traced.
 
 ## Tests
 
@@ -957,7 +985,10 @@ Slice 5 so far: `boot` `variant_ext::grenades_are_topped_by_a_lone_machine_or_th
 `variant_page::tests::the_team_count_row_edits_the_records_field`,
 `variants` `record::tests::every_offered_team_count_is_kept`,
 `variant_ext::damage_shield_and_health_scale_the_amount`,
-`variant_page::tests::the_scale_rows_step_their_percents`.
+`variant_page::tests::the_scale_rows_step_their_percents`,
+`variants` `schema::weapon_tests::{the_unoffered_weapons_are_read_from_the_globals_list,
+a_short_or_missing_list_gives_nothing, weapon_labels_come_from_the_tag_path,
+the_weapon_slots_join_both_weapon_settings_in_order_once}`.
 
 Older builds: `live-proto`
 `presence_carries_a_build_and_capabilities_checked_and_optional`,
