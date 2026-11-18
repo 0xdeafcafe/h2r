@@ -791,3 +791,34 @@ fn packed_normals_unpack_as_signed_11_11_10() {
     assert_eq!(bsp::unpack_normal(pack(0, 0, 511)), [0.0, 0.0, 1.0]);
     assert_eq!(bsp::unpack_normal(pack(0, 0, -511)), [0.0, 0.0, -1.0]);
 }
+
+/// The one-pass inflate gives the file the compressor was given, at any
+/// compression level (stored blocks too), whatever follows the stream, and
+/// refuses a stream whose checksum is wrong.
+#[test]
+fn inflates_to_the_file_at_every_level() {
+    use flate2::Compression;
+    use flate2::write::ZlibEncoder;
+    use std::io::Write;
+    let b = build(&Opts::default());
+    for level in [0, 1, 6, 9] {
+        let mut z = ZlibEncoder::new(Vec::new(), Compression::new(level));
+        z.write_all(&b.file[HEADER_LEN..]).unwrap();
+        let mut file = b.file[..HEADER_LEN].to_vec();
+        file.extend(z.finish().unwrap());
+        let m = H1Map::from_bytes(&file).unwrap();
+        assert!(m.bytes() == b.file.as_slice(), "level {level}");
+        file.extend([0xa5; 300]);
+        let m = H1Map::from_reader(Cursor::new(&file)).unwrap();
+        assert!(m.bytes() == b.file.as_slice(), "level {level}, bytes after");
+    }
+    // The stream's Adler-32 (its last four bytes) wrong.
+    let mut z = compress(&b.file);
+    let n = z.len();
+    z[n - 1] ^= 1;
+    assert!(H1Map::from_bytes(&z).is_err());
+    // Cut short.
+    let z = compress(&b.file);
+    assert!(H1Map::from_bytes(&z[..z.len() / 2]).is_err());
+    assert!(H1Map::from_bytes(&z[..HEADER_LEN - 1]).is_err());
+}

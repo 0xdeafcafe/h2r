@@ -1,47 +1,108 @@
-//! "Convert to Halo 2": a read-only Halo 1 map converted by `h1convert`
-//! onto its Halo 2 base map, off the UI thread, and written as the Halo 1
-//! import's package (`<data>/maps/h1_<map>/`, one `[[variant]]` per
-//! sandbox; docs/halo1/multiplayer.md, "Converting a map").
+//! "Convert to Halo 2": a read-only Halo 1 map built into a whole new Halo 2
+//! map by `h1convert`'s from-scratch path (`fresh::from_scratch`,
+//! docs/halo1/multiplayer.md, "Then built from scratch"), off the UI
+//! thread, and written as the Halo 1 import's package
+//! (`<data>/maps/h1_<map>/`, one `[[variant]]` per sandbox).
+//!
+//! The scratch build still reads the retail tags a level needs (globals,
+//! shaders, the sandbox's weapons and vehicles) by path from a Halo 2 map:
+//! that map is read from the open Halo 2 source without asking, and is
+//! never shown as something the conversion goes "onto".
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
 use content::Manifest;
 use content::manifest::MANIFEST_FILE;
-use h1convert::convert::{Converted, Sandbox, known};
+use h1convert::convert::{Converted, MAPS, Sandbox, known};
+use h1convert::ui::Card;
 
 use super::{Action, App};
 
-/// The conversion itself: the Halo 1 map's file (as stored), the Halo 2
-/// base map's bytes, the sandbox. [`h1convert_convert`] unless a test
-/// injects another.
-pub type Converter = fn(&[u8], Vec<u8>, Sandbox) -> Result<Converted, h1convert::Error>;
-
-/// `h1convert::convert::convert` over bytes; the Halo 1 sandbox's objects
-/// converted by `h1objects` (`convert::halo1::convert_halo1`).
-pub fn h1convert_convert(
-    h1_file: &[u8],
-    base: Vec<u8>,
-    sandbox: Sandbox,
-) -> Result<Converted, h1convert::Error> {
-    let h1 = h1map::H1Map::from_reader(h1_file)?;
-    let mut base = map::Map::from_reader(Cursor::new(base))?;
-    let sha = content::Sha256::of(h1_file);
-    match sandbox {
-        Sandbox::Halo2 => h1convert::convert::convert(&h1, sha, &mut base, sandbox),
-        Sandbox::Halo1 => {
-            let templates = h1objects::base::Base::read(&mut base)
-                .map_err(|e| h1convert::Error::Objects(e.to_string()))?;
-            let mut objects = h1objects::sandbox::Objects::new(&h1, &templates);
-            h1convert::convert::halo1::convert_halo1(&h1, sha, &mut base, &mut objects)
-        }
-    }
+/// What a conversion reads.
+#[derive(Clone, Debug)]
+pub struct Input {
+    /// The Halo 1 map's name (`bloodgulch`).
+    pub h1_map: String,
+    /// The Halo 1 map's file, as stored.
+    pub h1_file: Vec<u8>,
+    /// A retail Halo 2 map's bytes: where the scratch build reads the
+    /// retail tags it names by path.
+    pub retail: Vec<u8>,
+    pub sandbox: Sandbox,
+    /// Halo 1's `ui.map`, for the map's own card (picture, name,
+    /// description), when the Halo 1 source has one.
+    pub ui: Option<Vec<u8>>,
 }
 
-/// The Halo 2 map a Halo 1 map is converted onto: h1convert's choice
-/// (`convert::MAPS`), else Beaver Creek, as `h2 h1 convert` does.
-pub fn base_for(h1_map: &str) -> &'static str {
-    known(h1_map).map_or("beavercreek", |(_, base)| base)
+/// A finished conversion: the new map and its package manifest, the
+/// card, and notes for the log.
+#[derive(Clone, Debug)]
+pub struct Built {
+    pub converted: Converted,
+    pub card: Option<Card>,
+    pub notes: Vec<String>,
+}
+
+/// The conversion itself. [`from_scratch`] unless a test injects another.
+pub type Converter = fn(&Input) -> Result<Built, h1convert::Error>;
+
+/// The from-scratch conversion, as `h2 h1 convert` makes it by default:
+/// prepared with the sandbox's objects (both sandboxes place Halo 1's
+/// scenery), the MOPP built, then every tag laid out anew
+/// (`Prepared::build_fresh`, which builds from scratch).
+pub fn from_scratch(input: &Input) -> Result<Built, h1convert::Error> {
+    use h1convert::convert::halo1::{prepare_halo1, prepare_halo2};
+    let h1 = h1map::H1Map::from_reader(&input.h1_file[..])?;
+    let mut retail = map::Map::from_reader(Cursor::new(input.retail.clone()))?;
+    let sha = content::Sha256::of(&input.h1_file);
+    let templates = h1objects::base::Base::read(&mut retail)
+        .map_err(|e| h1convert::Error::Objects(e.to_string()))?;
+    let mut objects = h1objects::sandbox::Objects::new(&h1, &templates);
+    let prepared = match input.sandbox {
+        Sandbox::Halo2 => prepare_halo2(&h1, sha, &mut retail, &mut objects)?,
+        Sandbox::Halo1 => prepare_halo1(&h1, sha, &mut retail, &mut objects)?,
+    };
+    let mopp = h1convert::convert::structure_mopp(&prepared.collision)?;
+    let fresh = prepared.build_fresh(&mut retail, &mopp)?;
+    let mut notes = Vec::new();
+    if let Some(why) = &fresh.report.scratch_failed {
+        notes.push(format!(
+            "not every tag could be laid out from scratch ({why}); the pruned map was written"
+        ));
+    }
+    let converted = Converted {
+        manifest: prepared.manifest_fresh(&fresh),
+        name: fresh.name,
+        bytes: fresh.bytes,
+    };
+    let card = input.ui.as_deref().and_then(|ui| {
+        let ui = h1map::H1Map::from_reader(ui).ok()?;
+        let name = input.h1_map.to_ascii_lowercase();
+        h1convert::ui::mp_card(&ui, &name).ok().flatten()
+    });
+    Ok(Built {
+        converted,
+        card,
+        notes,
+    })
+}
+
+/// The Halo 2 maps the scratch build may read retail tags from, best
+/// first: h1convert's pick for the map (`convert::MAPS`), then every other
+/// map that table picks for any level. Only the first one the open source
+/// has is read.
+pub fn retail_sources(h1_map: &str) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    if let Some((_, m)) = known(h1_map) {
+        out.push(m);
+    }
+    for (_, _, m) in MAPS {
+        if !out.contains(&m) {
+            out.push(m);
+        }
+    }
+    out
 }
 
 /// What a finished conversion wrote.
@@ -81,11 +142,15 @@ pub fn thousands(n: usize) -> String {
     out
 }
 
+/// The card's picture in the package (as `h2 h1 convert` names it).
+pub const PREVIEW_FILE: &str = "preview.png";
+
 /// Write a conversion into `maps` (`<data>/maps`) the way `h2 h1 convert`
-/// does: the variant's map at `h1_<map>/<sandbox>/h1_<map>.map`, and the
-/// package manifest, keeping the other sandbox's variant when there is
-/// one.
-pub fn write(maps: &Path, done: &Converted) -> std::io::Result<Written> {
+/// does: the variant's map at `h1_<map>/<sandbox>/h1_<map>.map`, the card's
+/// picture, and the package manifest, keeping the other sandbox's variant
+/// when there is one.
+pub fn write(maps: &Path, built: &Built) -> std::io::Result<Written> {
+    let done = &built.converted;
     let dir = maps.join(&done.name);
     let manifest_path = dir.join(MANIFEST_FILE);
     let mut manifest = done.manifest.clone();
@@ -117,6 +182,14 @@ pub fn write(maps: &Path, done: &Converted) -> std::io::Result<Written> {
         std::fs::create_dir_all(parent)?;
     }
     content::store::write_atomic(&map_file, &done.bytes)?;
+    if let Some(c) = &built.card {
+        let mut png = Vec::new();
+        assets::png::write_rgba(&mut png, c.width, c.height, &c.rgba)?;
+        content::store::write_atomic(&dir.join(PREVIEW_FILE), &png)?;
+        manifest.package.name = c.name.clone();
+        manifest.package.description = Some(c.description.clone());
+        manifest.package.image = Some(PREVIEW_FILE.to_owned());
+    }
     content::store::write_atomic(&manifest_path, manifest.to_toml().as_bytes())?;
     let sandbox = editor_core::packages::Sandbox::parse(&variant.origin.sandbox);
     Ok(Written {
@@ -135,7 +208,7 @@ pub struct Running {
     pub h1_map: String,
     pub sandbox: Sandbox,
     pub started: std::time::Instant,
-    rx: mpsc::Receiver<Result<Written, String>>,
+    rx: mpsc::Receiver<Result<(Written, Vec<String>), String>>,
 }
 
 impl App {
@@ -152,6 +225,26 @@ impl App {
         self.converter = converter;
     }
 
+    /// Why "Convert to Halo 2" can't start for the Halo 1 map on show, if
+    /// it can't: the scratch build needs a Halo 2 source open.
+    pub fn convert_refusal(&self) -> Option<&'static str> {
+        let h1_map = self.h1_loaded.as_deref()?;
+        self.retail_location(h1_map).is_none().then_some(
+            "Open your Halo 2 disc too: a new map takes its shaders and objects from it.",
+        )
+    }
+
+    /// Where the retail tags come from: the first of [`retail_sources`]
+    /// the open Halo 2 source has.
+    fn retail_location(&self, h1_map: &str) -> Option<(PathBuf, Option<(u64, u64)>)> {
+        let source = self.source.as_ref()?;
+        let names = source.map_names();
+        retail_sources(h1_map)
+            .into_iter()
+            .find(|m| names.iter().any(|n| n.eq_ignore_ascii_case(m)))
+            .and_then(|m| source.location(m).ok())
+    }
+
     /// Start converting the Halo 1 map on show.
     pub(super) fn start_convert(&mut self, sandbox: Sandbox) {
         if self.convert.is_some() {
@@ -162,17 +255,12 @@ impl App {
             self.error("show a Halo 1 map first");
             return;
         };
-        let base = base_for(&h1_map);
-        let Some(location) = self
-            .source
-            .as_ref()
-            .filter(|s| s.map_names().iter().any(|m| m.eq_ignore_ascii_case(base)))
-            .and_then(|s| s.location(base).ok())
-        else {
-            let msg =
-                format!("converting {h1_map} needs {base} from your Halo 2 disc: open it first");
-            self.convert_error = Some(msg.clone());
-            self.error(msg);
+        let Some(location) = self.retail_location(&h1_map) else {
+            let msg = self
+                .convert_refusal()
+                .unwrap_or("open your Halo 2 disc first");
+            self.convert_error = Some(msg.to_owned());
+            self.error(format!("{h1_map}: {msg}"));
             return;
         };
         let h1_file = match src.read_raw(&h1_map) {
@@ -182,22 +270,37 @@ impl App {
                 return;
             }
         };
+        let map_name = h1_map.clone();
+        let ui = src
+            .map_names()
+            .iter()
+            .any(|m| m.eq_ignore_ascii_case("ui"))
+            .then(|| src.read_raw("ui").ok())
+            .flatten();
         let maps = self.session.maps_dir();
         let converter = self.converter;
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
-            let base = scenario_edit::MapSource::region(location.0, location.1)
+            let retail = scenario_edit::MapSource::region(location.0, location.1)
                 .read_base()
-                .map_err(|e| format!("reading the base map: {e}"));
-            let r = base.and_then(|base| {
-                let done = converter(&h1_file, base, sandbox).map_err(|e| explain(&e))?;
-                write(&maps, &done).map_err(|e| format!("writing the package: {e}"))
+                .map_err(|e| format!("reading your Halo 2 disc: {e}"));
+            let r = retail.and_then(|retail| {
+                let input = Input {
+                    h1_map: map_name,
+                    h1_file,
+                    retail,
+                    sandbox,
+                    ui,
+                };
+                let built = converter(&input).map_err(|e| explain(&e))?;
+                let w = write(&maps, &built).map_err(|e| format!("writing the package: {e}"))?;
+                Ok((w, built.notes))
             });
             let _ = tx.send(r);
         });
         self.convert_error = None;
         self.info(format!(
-            "converting {h1_map} onto {base} ({} sandbox)...",
+            "building a new map from {h1_map} ({} sandbox)...",
             sandbox.name()
         ));
         self.convert = Some(Running {
@@ -232,15 +335,19 @@ impl App {
         }
     }
 
-    fn finish_convert(&mut self, result: Result<Written, String>) {
+    fn finish_convert(&mut self, result: Result<(Written, Vec<String>), String>) {
         let Some(r) = self.convert.take() else {
             return;
         };
         let secs = r.started.elapsed().as_secs_f32();
         match result {
-            Ok(w) => {
+            Ok((w, notes)) => {
+                for n in notes {
+                    self.info(format!("{}: {n}", r.h1_map));
+                }
                 self.info(format!(
-                    "converted {} in {secs:.1} s: {}",
+                    "built {} from {} in {secs:.1} s: {}",
+                    w.dir,
                     r.h1_map,
                     w.map_file.display()
                 ));

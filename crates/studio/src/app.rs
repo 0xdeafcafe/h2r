@@ -7,11 +7,15 @@
 use std::path::{Path, PathBuf};
 
 pub(crate) mod convert;
+mod editing;
 mod library;
 pub mod tag_api;
 pub mod tag_doc;
 pub mod ui_screens;
-pub use convert::{Converter, Running, Written, base_for, explain, h1convert_convert};
+pub use convert::{
+    Built, Converter, Input as ConvertInput, Running, Written, explain, from_scratch,
+    retail_sources,
+};
 pub use h1convert::convert::Sandbox as ConvertSandbox;
 pub use library::{Compare, block_of, kind_of, markers as library_markers, tris as library_tris};
 pub use tag_doc::{BlockOp, TagAction, TagDoc, TagWrite};
@@ -88,9 +92,17 @@ pub enum Action {
     Undo,
     Redo,
     Select(Option<(BlockKind, usize)>),
-    /// Delete the selected placement.
+    /// Add a placement to the selection, or take it out (Ctrl/Cmd+click).
+    ToggleSelect((BlockKind, usize)),
+    /// Select these placements, the first as the primary (Shift+click in
+    /// the outliner).
+    SelectMany(Vec<(BlockKind, usize)>),
+    /// Add a new placement where the cursor met the level: a copy of an
+    /// entry, or the block's first palette item.
+    PlaceAt(BlockKind, Option<usize>, [f32; 3]),
+    /// Delete the selected placements.
     Delete,
-    /// Duplicate the selected placement.
+    /// Duplicate the selected placements.
     Duplicate,
     /// Add a new placement to a block at the camera focus.
     Add(BlockKind),
@@ -315,7 +327,7 @@ impl App {
             overlay_rev: 0,
             convert: None,
             convert_error: None,
-            converter: h1convert_convert,
+            converter: from_scratch,
             convert_sandbox: ConvertSandbox::Halo2,
             ui_screens: UiScreens::default(),
             tags: TagDoc::default(),
@@ -567,6 +579,11 @@ impl App {
             Action::Undo => self.undo_redo(true),
             Action::Redo => self.undo_redo(false),
             Action::Select(sel) => self.session.select(sel),
+            Action::ToggleSelect(e) => self.session.toggle_select(e),
+            Action::SelectMany(all) => self.session.select_many(all),
+            Action::PlaceAt(kind, like, at) => self.place_at(kind, like, at),
+            Action::Delete if self.session.selection().len() > 1 => self.delete_selection(),
+            Action::Duplicate if self.session.selection().len() > 1 => self.duplicate_selection(),
             Action::Delete => match self.session.selected() {
                 Some((kind, i)) => self.run(Action::DeleteEntry(kind, i)),
                 None => self.error("select a placement to delete"),
@@ -594,7 +611,7 @@ impl App {
                 }
             }
             Action::FrameAll => self.session.frame_all(),
-            Action::FocusSelected => self.session.focus_selected(),
+            Action::FocusSelected => self.frame_selection(),
             Action::SetAllowGrowth(allow) => self.session.set_allow_growth(allow),
             Action::SetTool(tool) => self.set_tool(tool),
             Action::Quit => self.quit = true,

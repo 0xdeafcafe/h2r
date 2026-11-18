@@ -65,7 +65,12 @@ Fields are named by the editor crates' definitions (`tags::defs`, the
 same ones the Sapien-style `.map` patching uses), so a path like
 `postprocess[0].colors[1].color` resolves through blocks by their stored
 count and address. Groups without a definition take raw fields
-(`+0x10:f32[3]`).
+(`+0x10:f32[3]`), and raw blocks, `+<offset>/<stride>[<index>]`: element
+`index` of the (count, address) pair at that offset, `stride` bytes per
+element, checked against the stored count, followed by raw fields only.
+`scnr` has no definition, so the editor reaches a placement this way, with
+`scenario_edit::layout`'s offsets: `+0x50/0x54[3].+0x8:f32[3]` names a
+block at `+0x50` with `0x54`-byte elements (numbers invented here).
 
 **Invalidation by the write barrier.** Tag writes go through
 `Guest::write_bytes`, which is the runtime's write barrier: boot's D3D

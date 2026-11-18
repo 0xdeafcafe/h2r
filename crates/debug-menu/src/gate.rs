@@ -1,9 +1,10 @@
 //! The menu at the input layer: an [`input::PadGate`] that sees every
 //! pad before the game does.
 //!
-//! * **Opening.** Touchpad click and Options (GameController's menu
-//!   button, which this crate's mapping makes Start) held together, on a
-//!   DualSense or DualShock 4, open or close the menu. Pressed "together"
+//! * **Opening.** A touchpad click on a DualSense or DualShock 4 opens the
+//!   menu (the game has no use for the click). Touchpad click and Options
+//!   (GameController's menu button, which this crate's mapping makes
+//!   Start) held together open or close it. Pressed "together"
 //!   is loose: on a pad with a touchpad, Start alone is held back for
 //!   [`CHORD`] in case the click follows; if it doesn't, the game gets it
 //!   then (a press shorter than that still reaches it, one sync late).
@@ -55,6 +56,11 @@ struct Track {
     /// Triggers hidden until released (left, right).
     latched_triggers: (bool, bool),
     chord: bool,
+    /// The touchpad click last sync.
+    click: bool,
+    /// This press of the click opened the menu: it neither selects nor,
+    /// with Options, closes it again until it is let go.
+    opened_by_press: bool,
     start: StartHold,
 }
 
@@ -88,10 +94,19 @@ impl Gate {
             let click = s.touchpad.is_some_and(|t| t.click);
             let chord = click && raw.contains(HostButton::Start);
             let gestures = t.gestures.update(s.touchpad.as_ref());
-            if chord && !t.chord {
+            let click_edge = click && !t.click;
+            if chord && !t.chord && !t.opened_by_press {
+                let was_open = m.is_open();
                 m.toggle(now);
+                t.opened_by_press = !was_open;
                 t.start = StartHold::Idle;
-            } else if m.is_open() {
+            } else if click_edge && !m.is_open() {
+                // The click alone opens it too: the game has no use for the
+                // touchpad click, so nothing is taken from it.
+                m.toggle(now);
+                t.opened_by_press = true;
+                t.start = StartHold::Idle;
+            } else if m.is_open() && !t.opened_by_press {
                 let mut navs: Vec<Nav> = gestures
                     .iter()
                     .filter(|g| !(chord && **g == Gesture::Click))
@@ -121,6 +136,10 @@ impl Gate {
                 }
             }
             t.chord = chord;
+            t.click = click;
+            if !click {
+                t.opened_by_press = false;
+            }
         }
         // Pass 2: what the game gets.
         let open = m.is_open();
