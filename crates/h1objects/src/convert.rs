@@ -30,6 +30,8 @@ use crate::{Error, Result};
 
 #[path = "convert_arsenal.rs"]
 mod arsenal_conv;
+#[path = "convert_flares.rs"]
+pub mod flares_conv;
 
 /// Retail Halo 2 template per Halo 1 object: Halo 1 group, words that must
 /// all be in the Halo 1 tag path, Halo 2 tag. First match wins.
@@ -1008,10 +1010,10 @@ impl<'a> Converter<'a> {
             self.light_roles.insert(kind, role);
         }
         let role = self.light_roles[&kind].as_ref();
-        let root = crate::rebuild::light(&l, role)?;
+        let mut root = crate::rebuild::light(&l, role)?;
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
-        if l.lens_flare.is_some() {
-            rep.no_home.push("lens flare: not converted".into());
+        if let Some(lens) = self.flare_for_light(l.lens_flare, &mut rep) {
+            root = flares_conv::light_with_flare(&root, lens)?;
         }
         self.tree.reports.push(rep);
         let id = self.tree.push(
@@ -1111,6 +1113,7 @@ impl<'a> Converter<'a> {
                         }
                     }
                 }
+                (Some(id), b"garb") => self.effect_garbage(id, &mut rep),
                 (Some(id), b"proj") => {
                     let t = self.h1_tag(id)?;
                     match self.object(t) {
@@ -1761,13 +1764,21 @@ impl<'a> Converter<'a> {
         rep.physics = Some("none (no Halo 1 collision to build from)".into());
         self.object_physics(&mut rep, hlmt, &dev.object, &tag.name, PhysicsKind::Device)?;
         let predicted = self.predicted(&dev.object)?;
-        let root = crate::rebuild::device(&dev, hlmt, &predicted)?;
+        let mut root = crate::rebuild::device(&dev, hlmt, &predicted)?;
         rep.no_home.push(
             "devi sounds and effects (Halo 1 effe references): null; the device is silent".into(),
         );
         if lifi {
+            // A light fixture's light is its attachments (Halo 1's ligh at
+            // its markers): carried on the machine, which the engine's
+            // attachment builder lights (E 0x000bed2a).
+            let b = self.h1.tag_data(tag)?;
+            let (attachments, _) = self.object_effects(b, &dev.object, &mut rep)?;
+            if !attachments.is_empty() {
+                root = flares_conv::with_attachments(b"mach", &root, &attachments)?;
+            }
             rep.no_home.push(
-                "lifi: built as a mach (platform); its light (the placement's colour and intensity) is not carried".into(),
+                "lifi: built as a mach (platform) with its attachments; the placement's colour and intensity are not carried".into(),
             );
         }
         self.tree.reports.push(rep);

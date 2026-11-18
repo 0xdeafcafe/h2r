@@ -1077,6 +1077,105 @@ steps play: the engine picks an element by the surface's global
 material, and the converted BSPs' surfaces may name materials other than
 these 32 (h1convert does not use this table), which then find nothing.
 
+### Lens flares, debris and light fixtures (`lens`, `garb`, `lifi`)
+
+**Lens flares.** `crates/tags/src/defs/lens.txt` is the Halo 2 `lens`
+of [effects.md](effects.md); all 160 distinct retail lens flares (and the one `garb`) round-trip
+byte-identical. Four engine paths submit a flare through
+`0x0002dba0` (**E**, the calls found by a scan of the XBE): sky lights
+(`0x0003f1e9`, `sky` light `+0x14`), lights (`0x000c34ac`, reading the
+`ligh` datum at `+0x94`), object attachments (`0x00041b23`) and effect
+parts in the effect render (`0x00179d23`, the part's datum at `+0x10`;
+the part *creation* switch skips `lens` at `0x0017a8bd`). The
+submission reads `+0x18`/`+0x1c` (no flare past the far distance; equal
+values switch the test off), the flag bits at `+0x28` (2 or 3 drop it,
+by the caller's kind) and `+0x2a`, and `+0x16` (a second record).
+
+Halo 1's `lens` (`h1convert::lens::H1Lens`; V, all 641 lens tags of
+the Halo 1 disc, `flares_disc.rs` `halo1_layout_survey`) is a `0xf0`
+root with its reflections at `+0xc4` (`0x80` each). Its first `0x30`
+bytes are Halo 2's in the same order (V by range: the two angles with
+their cosines, a radius of 0.001 to 50, a `u16` of 0 to 2 at `+0x14`,
+the two fade distances, 1 to 15 and 4 to 250, the bitmap at `+0x20`),
+and Halo 1's two scales at `+0xa0`/`+0xa4` hold Halo 2's range at
+`+0x34`/`+0x38` (0.1 to 8, 1 on most). A reflection pairs by value
+sets (V, `halo1_layout_survey` with `H1_STRIDES=c4:80` against
+`halo2_lens_survey`): Halo 1's `+0` flags (2, 4, `0xc`), `+4` bitmap
+index (1 to 6), `+0x1c` position (the very same words, 0.15 to 0.61),
+`+0x20` rotation offset (20), `+0x28` radius bounds, `+0x34`
+brightness bounds and `+0x44` tint (red, green, blue after an alpha of
+1) are Halo 2's `+0`, `+4`, `+8`, `+0xc`, `+0x10`, `+0x18` and `+0x24`.
+`h1convert::lens::rebuild` writes those (the cosines recomputed) and
+the bitmap converted by `h1bitmaps`. Not carried: Halo 1's flags (D:
+its one set bit has no known Halo 2 meaning, and Halo 2's bits 2 and 3
+hide the flare), the reflections' scaling sources (`+0x30`, `+0x3c`),
+colour bounds (`+0x50`, `+0x60`) and animation (`+0x70`), and the
+rotation function (`+0x80`, `+0x84`); the function blocks stay empty,
+as on most retail flares (115 of 161 have none at `+0x4c`).
+
+Halo 1 names lens flares from lights (`ligh +0xac`, 656), sky lights
+(20), and two shader groups (`senv +0x30`, 17; `sotr +0x38`, 21), and
+nothing else (V, `halo1_reference_survey`). Converted since version
+55 (skies) and 56 (lights): a light's flare (`Converter::light` sets `ligh +0x90`),
+a sky light's (`h1convert::sky::Sky::flares`, written to `sky` light
+`+0x14` by `h1sky::convert::convert_sky_with_flares`). A shader's flare
+has no Halo 2 home: no Halo 2 shader names a lens on the disc (V,
+`halo2_reference_survey`: lens references come from `ligh`, `sky `,
+`effe` parts and object tags only), and Halo 1 draws them only where
+its lightmapper placed them in the structure, which the structure
+converter does not read; they are left out.
+
+**Debris.** Halo 1's effects throw `garb` objects (131 parts on the
+disc; nothing else names a `garb`). Halo 2 keeps the group: the engine
+type table has `garb` at index 4 with no scenario placement block (E
+`0x00468630`), and an effect part of type `obje` creates any object
+class its reference names (E `0x0017ab39`). Retail Halo 2 effects throw
+`bloc` crates through `obje` parts (1,156 parts) and `proj` (4), and its
+debris meshes are particle models (`PRTM`, 243 tags); its one `garb`
+(the SMG's dropped magazine, 30 instances) is no effect's part (V,
+`halo2_reference_survey`). `bloc` needs a Havok physics model and
+`PRTM` the particle system lane's `prt3`, so Halo 1's garbage stays
+garbage (D). `crates/tags/src/defs/garb.txt` is the item layer and
+`0xa8` bytes zero on the disc's only `garb`, which round-trips.
+`flares_conv::garbage` writes the object header (type 4, bounds, model,
+predicted resources), the base's garbage role words and the attachments
+from the definition; `Converter::effect` names it through an `obje`
+part (version 56).
+
+**Light fixtures.** Halo 1's 23 `lifi` tags each carry their light as
+`ligh` attachments (25 attachments; V `halo1_reference_survey`), and
+nine levels place 886 fixtures. Halo 2's scenario has its own light
+placements (`scnr +0xe8`, `0x6c` each, palette `+0xf0`; V over 430
+placements on 26 scenarios: the palette index and name first, the
+position at `+8` and the facing at `+0x14` as other placements, then a
+second point at `+0x4c`, two scales at `+0x58`/`+0x5c`, a cone angle at
+`+0x60` and two distances at `+0x64`/`+0x68`, as the `ligh` cone's
+fields). Halo 1 has no such placements: its fixture's light rides on
+the fixture. So the converted fixture (a `mach`, as before) carries
+Halo 1's lights as attachments at Halo 1's markers (version
+56; E `0x000bed2a` builds `ligh` attachments), each with its
+lens flare. The placement's own colour, intensity and cone angles
+(Halo 1's light fixture placement) are not carried (D: what Halo 1
+uses them for was not established).
+
+Proof: `flares_disc.rs` `every_flare_debris_and_fixture_converts`
+(ten campaign levels on 05a, the multiplayer maps on Coagulation and
+Beaver Creek): 636 lens flares with 1,052 reflections (position and
+radius bounds checked against Halo 1's bytes), 652 lights naming a
+converted flare (every light whose Halo 1 light names one), 46 garbage
+objects, 131 effect parts naming a converted `garb` through `obje`, 23
+light fixtures carrying their 25 lights, 19 sky lights with a flare;
+every tag reads back through its definition and pins nothing. Unit tests:
+`h1convert::lens` (angles, distances, reflections, no bitmap),
+`flares_conv` (garbage, a light's flare, a fixture's lights),
+`h1sky` `converted_lights_name_the_flares_given`.
+
+What only a run shows: the flares' look (no function blocks, Halo 2's
+`+0x20` reflection word and root `+0x2c`/`+0x30` at zero: whether a
+flare draws at all, and how bright), whether
+garbage falls and settles as Halo 1's does (item physics), and the
+fixtures' lights against Halo 1's.
+
 ## Weapons, equipment, projectiles and damage (`h1objects::arsenal`)
 
 Every Halo 1 `weap`, `eqip` and `proj`, and the `jpt!` its projectiles
@@ -1183,6 +1282,7 @@ first-person graph animates Halo 1's arm nodes.
 | `weap`, `eqip`, `proj`, and the `jpt!` the projectiles deal | definitions (only path since version 51) | Halo 1's values on the role's words; references from the Halo 2 counterpart where Halo 1 has nothing converted; not run in the game |
 | `effe` (vehicles' attachments and creation effects, since version 50) | definitions (only path) | no template path; sound parts, and lights and decals since 51 |
 | `ligh`, `deca` (effect parts, attachments; since version 51) | definitions (only path) | no template path |
+| `lens` (lights', sky lights'), `garb` (effect parts) | definitions (only path) | no template path |
 
 ## Open
 
@@ -1191,8 +1291,9 @@ first-person graph animates Halo 1's arm nodes.
   Each needs the engine's reader found to be named.
 - **More groups:** `sky` (the second tier asked for; `effe`, `ligh`,
   `deca`, `udlg`, `proj` and `jpt!` done; open: damage parts in effects,
-  particle systems and Halo 1's particles as `prt3`, contrails, lens
-  flares), and the other object groups (`bloc`, `garb`, `crea`, `ssce`),
+  particle systems and Halo 1's particles as `prt3`, contrails; `lens`
+  and `garb` done, their open fields in "Lens flares, debris and light
+  fixtures"), and the other object groups (`bloc`, `crea`, `ssce`),
   which `struct obje` already covers.
 - **Physics shapes from Halo 1**: built from the collision BSP's solid
   cells since version 43. Open: whether a device's bodies need retail's
