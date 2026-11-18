@@ -657,6 +657,15 @@ impl DiscConverter {
     /// A Halo 2 map from the Halo 2 disc, opened on the bytes the jobs
     /// share (a conversion reads its base, never writes it).
     fn h2_base(&self, name: &str) -> Result<map::Map<Cursor<Shared>>> {
+        let bytes = self.h2_base_file(name)?;
+        h1map::phase::time("open halo 2 base", || {
+            map::Map::from_reader(Cursor::new(Shared(bytes)))
+                .with_context(|| format!("reading {name}.map"))
+        })
+    }
+
+    /// A Halo 2 base map's file, read once.
+    fn h2_base_file(&self, name: &str) -> Result<Arc<Vec<u8>>> {
         let cell = self
             .bases
             .lock()
@@ -674,10 +683,7 @@ impl DiscConverter {
             })
             .as_ref()
             .map_err(|e| anyhow!("{e}"))?;
-        h1map::phase::time("open halo 2 base", || {
-            map::Map::from_reader(Cursor::new(Shared(bytes.clone())))
-                .with_context(|| format!("reading {name}.map"))
-        })
+        Ok(bytes.clone())
     }
 
     /// A multiplayer job's map, converted and built as the import writes
@@ -765,7 +771,9 @@ impl DiscConverter {
             })
             .as_ref()
             .map_err(|e| anyhow!("{e}"))?;
-        let mut base = self.h2_base(h1campaign::base_for(level))?;
+        let base_name = h1campaign::base_for(level);
+        let base_file = self.h2_base_file(base_name)?;
+        let mut base = self.h2_base(base_name)?;
         let shared = self
             .h1_maps
             .lock()
@@ -775,6 +783,7 @@ impl DiscConverter {
         let opts = h1campaign::Options {
             assets,
             shared: shared.as_deref(),
+            base_file: Some(&base_file),
             ..h1_cmd::campaign_options(scripting, Some(donors))
         };
         let done = h1map::phase::time("convert", || h1campaign::convert(h1, &mut base, &opts))?;

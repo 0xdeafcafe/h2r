@@ -197,6 +197,9 @@ pub struct Options<'a> {
     /// What conversions of this level onto this base share (its two
     /// asset variants): each BSP prepared once. `None` prepares its own.
     pub shared: Option<&'a Shared>,
+    /// The base's whole file, when the caller holds it: read in place
+    /// rather than copied out of the base map.
+    pub base_file: Option<&'a [u8]>,
 }
 
 /// What a level's conversions onto one base share ([`Options::shared`]):
@@ -302,6 +305,7 @@ impl Default for Options<'_> {
             rebuild_bipeds: true,
             assets: h2assets::Assets::Halo1,
             shared: None,
+            base_file: None,
         }
     }
 }
@@ -714,11 +718,21 @@ fn convert_with<R: Read + Seek>(
         let sections: Vec<usize> = slots.iter().map(|s| s.section).collect();
         // From scratch ([`scratch`]); the base pruned ([`fresh`]) when
         // that fails.
-        let file = scratch::file_bytes(base)?;
+        let copied;
+        let file = match opts.base_file {
+            Some(f) => {
+                debug_assert_eq!(f.len() as u64, base.storage_length());
+                f
+            }
+            None => {
+                copied = scratch::file_bytes(base)?;
+                &copied[..]
+            }
+        };
         // Each Halo 2 HUD is named by nothing but the HUD pairs: kept for
         // `boot::hud` (docs/halo1/hud.md).
         let keep: Vec<TagId> = report.scenario.hud_swaps.iter().map(|h| h[2]).collect();
-        let out = match scratch::build(&file, &set, &bytes, &keep) {
+        let out = match scratch::build(file, &set, &bytes, &keep) {
             Ok((out, r)) => {
                 report.fresh = true;
                 report.scratch = Some(r);

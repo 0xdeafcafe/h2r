@@ -61,225 +61,266 @@ pub fn transplant<R: Read + Seek>(
     root: TagId,
     dst: &mut TagSet,
 ) -> crate::Result<Result<Transplanted, Vec<Refused>>> {
-    let rel = Relocator::new(schema, src)?;
-    let tags: HashMap<TagId, map::Tag> = src.tags().iter().map(|t| (t.id, t.clone())).collect();
-    let groups: HashMap<FourCC, map::TagGroup> =
-        src.groups().iter().map(|g| (g.class, *g)).collect();
-    let metadata = src.metadata_space();
-    let mut out = Transplanted::default();
+    Source::new(schema, src)?.transplant(src, root, dst)
+}
 
-    let starts = raw_starts(
-        schema,
-        &rel,
-        src.tags(),
-        metadata,
-        src.header().index_offset,
-    );
+/// A source map read once for any number of [`transplant`]s from it: its
+/// relocator, tags, groups, strings and raw starts.
+pub struct Source<'s> {
+    rel: Relocator<'s>,
+    tags: HashMap<TagId, map::Tag>,
+    groups: HashMap<FourCC, map::TagGroup>,
+    metadata: Option<map::AddressSpace>,
+    strings: Vec<Option<String>>,
+    starts: Vec<u32>,
+}
 
-    // Close over references; reuse what the destination has. Nothing is
-    // added until the whole tree checks.
-    enum Plan {
-        Copy(TagId),
-        Alias(TagId, TagId),
-    }
-    let mut plan = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    let mut reused = Vec::new();
-    let mut refused = Vec::new();
-    let mut todo = vec![root];
-    while let Some(id) = todo.pop() {
-        if !seen.insert(id) {
-            continue;
-        }
-        let t = tags
-            .get(&id)
-            .ok_or(Error::Invalid("reference to a missing tag"))?;
-        let name = t.name.clone().unwrap_or_default();
-        if let Some(have) = dst.find(t.group, &name) {
-            reused.push((id, have));
-            continue;
-        }
-        let Some(l) = t.location.filter(|l| Some(l.space) == metadata) else {
-            out.dropped.push(id);
-            continue;
-        };
-        let refuse = |detail| Refused {
-            id,
-            group: t.group,
-            name: name.clone(),
-            detail,
-        };
-        let plain = |refusal| Detail {
-            refusal,
-            path: Vec::new(),
-            offset: 0,
-            value: l.address,
-        };
-        if l.size == 0 {
-            // An alias of the start of another tag (the only kind the
-            // depth-first layout can keep).
-            match rel.owner(l.address) {
-                Some(owner) if rel.memory().region(l.address).map(|r| r.0) == Some(l.address) => {
-                    plan.push(Plan::Alias(id, owner));
-                    todo.push(owner);
-                }
-                _ => refused.push(refuse(plain(Refusal::Overlap))),
-            }
-            continue;
-        }
-        let Some(groot) = schema.groups.get(&t.group) else {
-            refused.push(refuse(plain(Refusal::NoSchema)));
-            continue;
-        };
-        if let Err(d) = rel.check(id) {
-            refused.push(refuse(d));
-            continue;
-        }
-        visit(groot, l.address, rel.memory(), &mut |s, e, _| {
-            for (&o, f) in &s.fields {
-                let d = match f {
-                    Field::TagRef => super::u32_at(e, o as usize + 4),
-                    Field::TagId => super::u32_at(e, o as usize),
-                    _ => continue,
-                };
-                if d != u32::MAX && tags.contains_key(&TagId(d)) {
-                    todo.push(TagId(d));
-                }
-            }
-        });
-        plan.push(Plan::Copy(id));
-    }
-    if !refused.is_empty() {
-        return Ok(Err(refused));
-    }
-    out.ids.extend(reused);
-    let mut order = Vec::new();
-    let mut aliases = Vec::new();
-    for p in &plan {
-        let id = match *p {
-            Plan::Copy(id) | Plan::Alias(id, _) => id,
-        };
-        let t = &tags[&id];
-        if let Some(g) = groups.get(&t.group) {
-            for c in [g.grandparent, g.parent].into_iter().flatten() {
-                if let Some(a) = groups.get(&c) {
-                    dst.add_group(a.class, a.parent, a.grandparent);
-                }
-            }
-            dst.add_group(g.class, g.parent, g.grandparent);
-        }
-        let new = dst.add_tag(
-            t.group,
-            t.name.as_deref().unwrap_or_default(),
-            TagPayload::Empty,
-        )?;
-        out.ids.insert(id, new);
-        match *p {
-            Plan::Copy(id) => order.push((id, new, &schema.groups[&t.group])),
-            Plan::Alias(_, owner) => aliases.push((new, owner)),
-        }
+impl<'s> Source<'s> {
+    /// Read `src` once.
+    pub fn new<R: Read + Seek>(schema: &'s Schema, src: &mut Map<R>) -> crate::Result<Self> {
+        let rel = Relocator::new(schema, src)?;
+        let metadata = src.metadata_space();
+        let starts = raw_starts(
+            schema,
+            &rel,
+            src.tags(),
+            metadata,
+            src.header().index_offset,
+        );
+        Ok(Source {
+            tags: src.tags().iter().map(|t| (t.id, t.clone())).collect(),
+            groups: src.groups().iter().map(|g| (g.class, *g)).collect(),
+            metadata,
+            strings: src.strings().to_vec(),
+            starts,
+            rel,
+        })
     }
 
-    // Build and rewrite.
-    struct Ids<'a> {
-        ids: &'a HashMap<TagId, TagId>,
-        strings: &'a [Option<String>],
-        dst: &'a mut TagSet,
-        src: &'a mut dyn FnMut(u32, u32) -> crate::Result<Vec<u8>>,
-        starts: &'a [u32],
-        raws: HashMap<u32, RawId>,
-        copied: (usize, u64),
-        external: usize,
-        error: Option<Error>,
-    }
-    impl Remapper for Ids<'_> {
-        fn datum(&mut self, d: u32) -> Option<u32> {
-            self.ids.get(&TagId(d)).map(|t| t.0)
+    /// [`transplant`] of `root` from `src`, the map this was read from.
+    pub fn transplant<R: Read + Seek>(
+        &self,
+        src: &mut Map<R>,
+        root: TagId,
+        dst: &mut TagSet,
+    ) -> crate::Result<Result<Transplanted, Vec<Refused>>> {
+        let Source {
+            rel,
+            tags,
+            groups,
+            metadata,
+            strings,
+            starts,
+        } = self;
+        let (schema, metadata) = (rel.schema, *metadata);
+        let mut out = Transplanted::default();
+
+        // Close over references; reuse what the destination has. Nothing is
+        // added until the whole tree checks.
+        enum Plan {
+            Copy(TagId),
+            Alias(TagId, TagId),
         }
-        fn string(&mut self, v: u32) -> u32 {
-            let s = self
-                .strings
-                .get((v & 0x00ff_ffff) as usize)
-                .cloned()
-                .flatten();
-            match s.map(|s| self.dst.intern(&s)) {
-                Some(Ok(n)) => n,
-                _ => {
-                    self.error
-                        .get_or_insert(Error::Invalid("unknown string ID"));
-                    0
+        let mut plan = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut reused = Vec::new();
+        let mut refused = Vec::new();
+        let mut todo = vec![root];
+        while let Some(id) = todo.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let t = tags
+                .get(&id)
+                .ok_or(Error::Invalid("reference to a missing tag"))?;
+            let name = t.name.clone().unwrap_or_default();
+            if let Some(have) = dst.find(t.group, &name) {
+                reused.push((id, have));
+                continue;
+            }
+            let Some(l) = t.location.filter(|l| Some(l.space) == metadata) else {
+                out.dropped.push(id);
+                continue;
+            };
+            let refuse = |detail| Refused {
+                id,
+                group: t.group,
+                name: name.clone(),
+                detail,
+            };
+            let plain = |refusal| Detail {
+                refusal,
+                path: Vec::new(),
+                offset: 0,
+                value: l.address,
+            };
+            if l.size == 0 {
+                // An alias of the start of another tag (the only kind the
+                // depth-first layout can keep).
+                match rel.owner(l.address) {
+                    Some(owner)
+                        if rel.memory().region(l.address).map(|r| r.0) == Some(l.address) =>
+                    {
+                        plan.push(Plan::Alias(id, owner));
+                        todo.push(owner);
+                    }
+                    _ => refused.push(refuse(plain(Refusal::Overlap))),
+                }
+                continue;
+            }
+            let Some(groot) = schema.groups.get(&t.group) else {
+                refused.push(refuse(plain(Refusal::NoSchema)));
+                continue;
+            };
+            if let Err(d) = rel.check(id) {
+                refused.push(refuse(d));
+                continue;
+            }
+            visit(groot, l.address, rel.memory(), &mut |s, e, _| {
+                for (&o, f) in &s.fields {
+                    let d = match f {
+                        Field::TagRef => super::u32_at(e, o as usize + 4),
+                        Field::TagId => super::u32_at(e, o as usize),
+                        _ => continue,
+                    };
+                    if d != u32::MAX && tags.contains_key(&TagId(d)) {
+                        todo.push(TagId(d));
+                    }
+                }
+            });
+            plan.push(Plan::Copy(id));
+        }
+        if !refused.is_empty() {
+            return Ok(Err(refused));
+        }
+        out.ids.extend(reused);
+        let mut order = Vec::new();
+        let mut aliases = Vec::new();
+        for p in &plan {
+            let id = match *p {
+                Plan::Copy(id) | Plan::Alias(id, _) => id,
+            };
+            let t = &tags[&id];
+            if let Some(g) = groups.get(&t.group) {
+                for c in [g.grandparent, g.parent].into_iter().flatten() {
+                    if let Some(a) = groups.get(&c) {
+                        dst.add_group(a.class, a.parent, a.grandparent);
+                    }
+                }
+                dst.add_group(g.class, g.parent, g.grandparent);
+            }
+            let new = dst.add_tag(
+                t.group,
+                t.name.as_deref().unwrap_or_default(),
+                TagPayload::Empty,
+            )?;
+            out.ids.insert(id, new);
+            match *p {
+                Plan::Copy(id) => order.push((id, new, &schema.groups[&t.group])),
+                Plan::Alias(_, owner) => aliases.push((new, owner)),
+            }
+        }
+
+        // Build and rewrite.
+        struct Ids<'a> {
+            ids: &'a HashMap<TagId, TagId>,
+            strings: &'a [Option<String>],
+            dst: &'a mut TagSet,
+            src: &'a mut dyn FnMut(u32, u32) -> crate::Result<Vec<u8>>,
+            starts: &'a [u32],
+            raws: HashMap<u32, RawId>,
+            copied: (usize, u64),
+            external: usize,
+            error: Option<Error>,
+        }
+        impl Remapper for Ids<'_> {
+            fn datum(&mut self, d: u32) -> Option<u32> {
+                self.ids.get(&TagId(d)).map(|t| t.0)
+            }
+            fn string(&mut self, v: u32) -> u32 {
+                let s = self
+                    .strings
+                    .get((v & 0x00ff_ffff) as usize)
+                    .cloned()
+                    .flatten();
+                match s.map(|s| self.dst.intern(&s)) {
+                    Some(Ok(n)) => n,
+                    _ => {
+                        self.error
+                            .get_or_insert(Error::Invalid("unknown string ID"));
+                        0
+                    }
+                }
+            }
+            fn raw(&mut self, v: u32, size: Option<u32>, siblings: &[u32]) -> RawRef {
+                let (sel, offset) = (v >> 30, v & 0x3fff_ffff);
+                if sel != 0 {
+                    self.external += 1;
+                    let file = match sel {
+                        1 => map::ResourceFile::MainMenu,
+                        2 => map::ResourceFile::Shared,
+                        _ => map::ResourceFile::SinglePlayerShared,
+                    };
+                    return RawRef::External { file, offset };
+                }
+                if let Some(&id) = self.raws.get(&v) {
+                    return RawRef::Local(id);
+                }
+                let len = raw_len(self.starts, offset, size, siblings);
+                match (self.src)(offset, len) {
+                    Ok(bytes) => {
+                        self.copied.0 += 1;
+                        self.copied.1 += u64::from(len);
+                        let align = 1 << offset.trailing_zeros().min(12);
+                        let id = self.dst.add_raw(bytes, align);
+                        self.raws.insert(v, id);
+                        RawRef::Local(id)
+                    }
+                    Err(e) => {
+                        self.error.get_or_insert(e);
+                        RawRef::Null
+                    }
                 }
             }
         }
-        fn raw(&mut self, v: u32, size: Option<u32>, siblings: &[u32]) -> RawRef {
-            let (sel, offset) = (v >> 30, v & 0x3fff_ffff);
-            if sel != 0 {
-                self.external += 1;
-                let file = match sel {
-                    1 => map::ResourceFile::MainMenu,
-                    2 => map::ResourceFile::Shared,
-                    _ => map::ResourceFile::SinglePlayerShared,
-                };
-                return RawRef::External { file, offset };
-            }
-            if let Some(&id) = self.raws.get(&v) {
-                return RawRef::Local(id);
-            }
-            let len = raw_len(self.starts, offset, size, siblings);
-            match (self.src)(offset, len) {
-                Ok(bytes) => {
-                    self.copied.0 += 1;
-                    self.copied.1 += u64::from(len);
-                    let align = 1 << offset.trailing_zeros().min(12);
-                    let id = self.dst.add_raw(bytes, align);
-                    self.raws.insert(v, id);
-                    RawRef::Local(id)
-                }
-                Err(e) => {
-                    self.error.get_or_insert(e);
-                    RawRef::Null
-                }
-            }
+        let mut read = |offset: u32, len: u32| -> crate::Result<Vec<u8>> {
+            Ok(src.read_file_range(offset.into(), len.into())?)
+        };
+        let mut ids = Ids {
+            ids: &out.ids,
+            strings,
+            dst,
+            src: &mut read,
+            starts,
+            raws: HashMap::new(),
+            copied: (0, 0),
+            external: 0,
+            error: None,
+        };
+        let mut built = Vec::new();
+        for &(id, new, groot) in &order {
+            let mut block = rel
+                .to_built(id)
+                .map_err(|_| Error::Invalid("tag in the tree is not relocatable"))?;
+            remap(groot, &mut block, 1, &mut ids);
+            built.push((id, new, block));
         }
+        if let Some(e) = ids.error {
+            return Err(e);
+        }
+        let (copied, external) = (ids.copied, ids.external);
+        for (id, new, block) in built {
+            dst.tag_mut(new).expect("added").payload = TagPayload::Built(block);
+            out.added.push(id);
+        }
+        for (new, owner) in aliases {
+            let tag = *out.ids.get(&owner).expect("closed");
+            dst.tag_mut(new).expect("added").payload = TagPayload::Alias { tag, offset: 0 };
+        }
+        out.raw = copied;
+        out.external = external;
+        Ok(Ok(out))
     }
-    let strings = src.strings().to_vec();
-    let mut read = |offset: u32, len: u32| -> crate::Result<Vec<u8>> {
-        Ok(src.read_file_range(offset.into(), len.into())?)
-    };
-    let mut ids = Ids {
-        ids: &out.ids,
-        strings: &strings,
-        dst,
-        src: &mut read,
-        starts: &starts,
-        raws: HashMap::new(),
-        copied: (0, 0),
-        external: 0,
-        error: None,
-    };
-    let mut built = Vec::new();
-    for &(id, new, groot) in &order {
-        let mut block = rel
-            .to_built(id)
-            .map_err(|_| Error::Invalid("tag in the tree is not relocatable"))?;
-        remap(groot, &mut block, 1, &mut ids);
-        built.push((id, new, block));
-    }
-    if let Some(e) = ids.error {
-        return Err(e);
-    }
-    let (copied, external) = (ids.copied, ids.external);
-    for (id, new, block) in built {
-        dst.tag_mut(new).expect("added").payload = TagPayload::Built(block);
-        out.added.push(id);
-    }
-    for (new, owner) in aliases {
-        let tag = *out.ids.get(&owner).expect("closed");
-        dst.tag_mut(new).expect("added").payload = TagPayload::Alias { tag, offset: 0 };
-    }
-    out.raw = copied;
-    out.external = external;
-    Ok(Ok(out))
 }
 
 /// Every local raw pointer of the source map's movable tags, its BSP

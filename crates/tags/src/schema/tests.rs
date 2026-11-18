@@ -467,3 +467,65 @@ fn a_built_copy_of_a_tag_s_root_keeps_its_blocks_once_rehomed() {
     }
     assert_eq!(x, y, "the copy reads back as the template");
 }
+
+/// A stray pointer is the first word outside every field (any byte of a
+/// field covers its word, raw fields only with `raw_ok`) whose value points
+/// into the tag or a space: fields at odd offsets, overlapping, or wider
+/// than a word included.
+#[test]
+fn stray_words_are_the_ones_no_field_touches() {
+    let mem = Memory {
+        spaces: vec![(0x1000, 0x2000)],
+        ..Memory::default()
+    };
+    let own = (0x500, 0x600);
+    // Every word points somewhere: the answer is the first uncovered one.
+    let elem: Vec<u8> = (0..16u32)
+        .flat_map(|i| (if i % 2 == 0 { 0x1000 + i } else { 0x500 + i }).to_le_bytes())
+        .collect();
+    let reference = |s: &Struct, raw_ok: bool| {
+        let mut covered = vec![false; elem.len()];
+        for (&o, f) in &s.fields {
+            if raw_ok || !matches!(f, Field::Raw) {
+                covered[o as usize..(o + f.width()) as usize].fill(true);
+            }
+        }
+        (0..elem.len() - 3)
+            .step_by(4)
+            .find(|&k| !covered[k..k + 4].iter().any(|c| *c))
+            .map(|k| (k as u32, u32_at(&elem, k)))
+    };
+    let tag_refs: Vec<(u32, Field)> = (0..7).map(|i| (i * 8, Field::TagRef)).collect();
+    let layouts: [&[(u32, Field)]; 6] = [
+        &[],
+        &[(0, Field::Word)],
+        &[(2, Field::Word), (8, Field::TagRef)],
+        &[
+            (0, Field::TagRef),
+            (4, Field::Word),
+            (6, Field::Raw),
+            (16, Field::Word),
+        ],
+        &[
+            (1, Field::StringId),
+            (3, Field::Word),
+            (20, Field::Raw),
+            (24, Field::TagRef),
+        ],
+        &tag_refs,
+    ];
+    for fields in layouts {
+        let s = Struct {
+            size: elem.len() as u32,
+            align: 4,
+            fields: fields.iter().cloned().collect(),
+        };
+        for raw_ok in [false, true] {
+            assert_eq!(
+                stray_with(&s, &elem, own, &mem, raw_ok),
+                reference(&s, raw_ok),
+                "{fields:?} raw_ok {raw_ok}"
+            );
+        }
+    }
+}
