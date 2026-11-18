@@ -59,6 +59,13 @@ async fn fetch(
             crate::site::GameArt::NotFound(why) => live_server::app::not_found(why).into_response(),
         });
     }
+    // The app's pages: its HTML with the page's link preview.
+    if live_server::page_meta::is_page(&path)
+        && matches!(*req.method(), http::Method::GET | http::Method::HEAD)
+        && env.assets(crate::bindings::ASSETS).is_ok()
+    {
+        return app_page(&req, &env).await;
+    }
     // A co-op session's relay is its own object; everything else, the hub.
     let stub = match crate::relay::session_of(&path) {
         Some(session) => env
@@ -73,6 +80,66 @@ async fn fetch(
     let resp = stub.fetch_with_request(Request::try_from(req)?).await?;
     let resp: worker::HttpResponse = resp.try_into()?;
     Ok(resp.map(axum::body::Body::new))
+}
+
+/// A page of the web app: the built `index.html` from the assets, with
+/// the page's link preview in it ([`live_server::page_meta`]). Only a
+/// page that names a player, game or clan asks the hub; if that fails the
+/// page still gets its section's preview.
+async fn app_page(req: &HttpRequest, env: &Env) -> Result<http::Response<axum::body::Body>> {
+    use live_server::page_meta;
+    let path = req.uri().path();
+    let origin = page_meta::origin(
+        env.var(crate::settings::PUBLIC_URL)
+            .ok()
+            .map(|v| v.to_string())
+            .as_deref(),
+        req.uri().authority().map(|a| a.as_str()).or_else(|| {
+            req.headers()
+                .get(http::header::HOST)
+                .and_then(|h| h.to_str().ok())
+        }),
+        req.uri().scheme_str(),
+    );
+    // The assets answer by path; the request's own origin makes the URL.
+    let here = format!(
+        "{}://{}/",
+        req.uri().scheme_str().unwrap_or("https"),
+        req.uri().authority().map_or("localhost", |a| a.as_str())
+    );
+    let assets = env.assets(crate::bindings::ASSETS)?;
+    let mut index = Response::try_from(assets.fetch(here, None).await?)?;
+    if index.status_code() != 200 {
+        let resp: worker::HttpResponse = index.try_into()?;
+        return Ok(resp.map(axum::body::Body::new));
+    }
+    let html = index.text().await?;
+    let mut meta = page_meta::describe_static(path);
+    if let Some(url) = crate::site::page_meta_url(path) {
+        let hub = env
+            .durable_object(HUB)?
+            .id_from_name(HUB_NAME)?
+            .get_stub()?;
+        if let Ok(mut r) = hub.fetch_with_str(&url).await
+            && r.status_code() == 200
+            && let Ok(m) = r.json::<page_meta::PageMeta>().await
+        {
+            meta = m;
+        }
+    }
+    let body = if *req.method() == http::Method::HEAD {
+        String::new()
+    } else {
+        page_meta::page_html(&html, &meta, &origin, path)
+    };
+    http::Response::builder()
+        .header(http::header::CONTENT_TYPE, "text/html; charset=utf-8")
+        .header(
+            http::header::CACHE_CONTROL,
+            live_server::caching::REVALIDATE,
+        )
+        .body(axum::body::Body::from(body))
+        .map_err(rust_error)
 }
 
 #[durable_object]

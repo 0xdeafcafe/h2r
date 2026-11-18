@@ -10,6 +10,7 @@ import {
 } from "../src/lib/statsHome";
 import { DASHBOARD_EXIT, HOME_CRUMB, STATS_HOME, statsNav } from "../src/stats/modes";
 import { StatsFold, archive } from "../mock/stats";
+import { STATS_NAME } from "../src/brand";
 
 const P = (xuid: string, o: Partial<PlayerRow> = {}): PlayerRow => ({
   xuid, name: xuid.toUpperCase(), games: 0, multiplayer: 0, campaign: 0, wins: 0, kills: 0, deaths: 0, betrayals: 0,
@@ -19,9 +20,9 @@ const P = (xuid: string, o: Partial<PlayerRow> = {}): PlayerRow => ({
 describe("nav and crumbs", () => {
   test("the home tab comes first and the dashboard is not a tab", () => {
     const nav = statsNav(null, false);
-    expect(nav[0]).toEqual({ label: "h2 live Online", href: STATS_HOME, end: true });
+    expect(nav[0]).toEqual({ label: STATS_NAME, href: STATS_HOME, end: true });
     expect(nav.some((n) => n.href === "/" || /dashboard/i.test(n.label))).toBe(false);
-    expect(nav.map((n) => n.label)).toEqual(["h2 live Online", "My Stats", "Games", "Players", "Clans", "Event Log", "Server"]);
+    expect(nav.map((n) => n.label)).toEqual([STATS_NAME, "My Stats", "Games", "Players", "Clans", "Event Log", "Server"]);
   });
 
   test("my stats follows the signed-in account, and admins get their tab", () => {

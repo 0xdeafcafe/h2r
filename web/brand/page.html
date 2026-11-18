@@ -1,0 +1,100 @@
+<!doctype html>
+<!-- `bun run brand`'s drawing page (run.ts serves it). icon() draws one
+     square icon from a source into a PNG data URL; with ?card it is the
+     link-preview card, which run.ts photographs at 1200 x 630. -->
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  @font-face { font-family: "Orbitron"; src: url("/src/orbitron") format("truetype"); font-weight: 400 900; }
+  @font-face { font-family: "Barlow Condensed"; src: url("/src/barlow") format("truetype"); font-weight: 600; }
+  html, body { margin: 0; background: transparent; }
+  .card { position: relative; width: 1200px; height: 630px; overflow: hidden; background: #000; font-family: "Orbitron", sans-serif; }
+  /* The top shelf, cropped to the 2 and the Earth's limb. */
+  .card .scene { position: absolute; left: -110px; top: -40px; width: 1820px; height: 682px; background: url("/src/shelf") 0 0 / 100% 100% no-repeat; }
+  .card .shade { position: absolute; inset: 0; background:
+      linear-gradient(90deg, rgba(0,0,0,0) 0%, rgba(0,0,0,0) 46%, rgba(1,6,14,.72) 64%, rgba(1,6,14,.9) 100%),
+      linear-gradient(0deg, rgba(1,6,14,.85) 0%, rgba(1,6,14,0) 34%); }
+  .card .words { position: absolute; right: 70px; top: 0; bottom: 0; width: 470px; display: flex; flex-direction: column; justify-content: center; align-items: flex-start; color: #e6ffc0; }
+  .card .mark { font-weight: 800; font-size: 104px; letter-spacing: 2px; line-height: 1; color: #f2fbff;
+      text-shadow: 0 0 22px rgba(126,255,48,.35), 0 2px 0 rgba(0,0,0,.6); }
+  .card .mark b { color: #b9f66e; font-weight: 800; }
+  .card .rule { margin: 26px 0 22px; height: 4px; width: 330px; background: linear-gradient(90deg, #7fe230 0 62%, #2f7fd0 62% 100%); box-shadow: 0 0 14px rgba(126,255,48,.5); }
+  .card .line { font-family: "Barlow Condensed", sans-serif; font-weight: 600; font-size: 38px; line-height: 1.12; color: #dfe9f2; letter-spacing: .3px; }
+  .card .sides { margin-top: 26px; display: flex; gap: 14px; font-size: 19px; font-weight: 600; letter-spacing: 1.5px; text-transform: uppercase; }
+  .card .sides span { padding: 9px 16px 8px; border-radius: 4px; }
+  .card .sides .dash { background: linear-gradient(#1f7a0e, #0c4406); color: #e6ffc0; box-shadow: inset 0 0 0 1px #7fe230; }
+  .card .sides .stats { background: linear-gradient(#23426f, #0e1f3d); color: #fff; box-shadow: inset 0 0 0 1px #4d76ad; }
+</style>
+</head>
+<body>
+<div class="card" id="card" hidden>
+  <div class="scene"></div>
+  <div class="shade"></div>
+  <div class="words">
+    <div class="mark" id="site"></div>
+    <div class="rule"></div>
+    <div class="line">Online play for h2recomp: live games, service records, clans and matchmaking.</div>
+    <div class="sides"><span class="dash">Dashboard</span><span class="stats" id="stats"></span></div>
+  </div>
+</div>
+<script>
+const params = new URLSearchParams(location.search);
+if (params.has("card")) {
+  document.getElementById("card").hidden = false;
+  // "h2 live": the first word lit green, as the dashboard's brand is.
+  const [first, ...rest] = params.get("site").split(" ");
+  const site = document.getElementById("site");
+  site.append(document.createTextNode(first + " "));
+  const b = document.createElement("b"); b.textContent = rest.join(" "); site.append(b);
+  document.getElementById("stats").textContent = params.get("stats");
+  const img = new Image();
+  img.src = "/src/shelf";
+  window.cardReady = Promise.all([img.decode(), document.fonts.ready, document.fonts.load('800 104px "Orbitron"'), document.fonts.load('600 38px "Barlow Condensed"')]).then(() => true);
+}
+
+const load = (src) => new Promise((ok, fail) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => fail(new Error("could not load " + src)); i.src = src; });
+
+// Halves until within 2x of the target, then one last step: a box-ish
+// filter at every step, so small sizes keep their detail without moire.
+function downscale(img, w, h) {
+  let c = document.createElement("canvas");
+  let cw = img.naturalWidth || img.width, ch = img.naturalHeight || img.height;
+  c.width = cw; c.height = ch;
+  c.getContext("2d").drawImage(img, 0, 0);
+  while (cw / 2 >= w && ch / 2 >= h) {
+    const n = document.createElement("canvas");
+    n.width = Math.round(cw / 2); n.height = Math.round(ch / 2);
+    const x = n.getContext("2d"); x.imageSmoothingQuality = "high";
+    x.drawImage(c, 0, 0, n.width, n.height);
+    c = n; cw = n.width; ch = n.height;
+  }
+  const out = document.createElement("canvas"); out.width = w; out.height = h;
+  const x = out.getContext("2d"); x.imageSmoothingQuality = "high";
+  x.drawImage(c, 0, 0, w, h);
+  return out;
+}
+
+// One square icon. An SVG source is drawn at the size itself (it is made
+// for it); a picture is scaled down. `scale` < 1 centres it on its own
+// edge colours, blurred out to the corners (a maskable icon's bleed).
+window.icon = async ({ src, size, svg, scale = 1 }) => {
+  const img = await load(src);
+  const out = document.createElement("canvas"); out.width = size; out.height = size;
+  const x = out.getContext("2d");
+  const inner = Math.round(size * scale), off = Math.round((size - inner) / 2);
+  const pic = svg ? img : downscale(img, inner, inner);
+  if (scale < 1) {
+    x.filter = `blur(${Math.round(size * 0.04)}px)`;
+    x.drawImage(pic, -size * 0.1, -size * 0.1, size * 1.2, size * 1.2);
+    x.filter = "none";
+    x.fillStyle = "rgba(1, 6, 14, 0.35)";
+    x.fillRect(0, 0, size, size);
+  }
+  x.drawImage(pic, off, off, inner, inner);
+  return out.toDataURL("image/png");
+};
+window.brandReady = true;
+</script>
+</body>
+</html>

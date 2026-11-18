@@ -41,6 +41,9 @@ pub mod bindings {
     /// co-op session, named by the session id.
     pub const RELAY: &str = "COOP_RELAY";
     pub const RELAY_CLASS: &str = "CoopRelay";
+    /// The web app's static assets (`[assets]` in wrangler.toml): the
+    /// Worker reads `index.html` from it for the app's pages.
+    pub const ASSETS: &str = "ASSETS";
 }
 
 /// The response header that reports a hub's cold start on the request

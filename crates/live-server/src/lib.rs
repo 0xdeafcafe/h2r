@@ -54,6 +54,7 @@ pub mod logio;
 mod mailbox;
 pub mod model;
 pub mod mutes;
+pub mod page_meta;
 pub mod packed;
 #[cfg(feature = "native")]
 pub mod pg;
