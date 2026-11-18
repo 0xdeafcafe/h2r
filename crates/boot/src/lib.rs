@@ -1251,6 +1251,10 @@ pub fn run_hosted_with_live(
     // H2_FRAME_STATS=1: frame times split by phase (docs/perf/frame-budget.md).
     // `h2 play --frame-stats` may have started them already.
     let frame_stats = timeline::phase::enabled() || timeline::phase::start_from_env();
+    let gpu = !headless || std::env::var_os("H2_BOOT_GFX").is_some();
+    if let Some(note) = d3d_glue::frame_stats_gpu_note(frame_stats && d3d_calls.is_some(), gpu) {
+        eprintln!("{note}");
+    }
     // H2_EFFECT_CENSUS=1: a line per new timed light (EXPLOSION for a
     // grenade-sized one) and an exit summary (effect_census.rs).
     let mut effect_census = effect_census::requested_by(std::env::var(effect_census::ENV).ok().as_deref()).then(|| {
