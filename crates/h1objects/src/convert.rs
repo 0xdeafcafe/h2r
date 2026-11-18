@@ -447,6 +447,17 @@ impl Tree {
     /// placeholder becomes null ([`Tree::audio_notes`] says why).
     /// Done once: the sounds are taken out of the tree.
     pub fn install_audio(&mut self, set: &mut TagSet, add: bool) {
+        let (sounds, loops) = self.audio_ids(set, add);
+        for (_, t) in &mut self.tags {
+            rewrite_audio(&mut t.root, SOUND, &sounds);
+            rewrite_audio(&mut t.root, LOOP, &loops);
+        }
+    }
+
+    /// Adds the sounds and looping sounds to `set` (all or none) and
+    /// returns their datums, in [`Tree::sounds`] and [`Tree::loops`]
+    /// order; empty when none was added. Takes them out of the tree.
+    fn audio_ids(&mut self, set: &mut TagSet, add: bool) -> (Vec<TagId>, Vec<TagId>) {
         let got = if self.sounds.is_empty() && self.loops.is_empty() {
             Ok((Vec::new(), Vec::new()))
         } else if add {
@@ -470,12 +481,9 @@ impl Tree {
                 (Vec::new(), Vec::new())
             }
         };
-        for (_, t) in &mut self.tags {
-            rewrite_audio(&mut t.root, SOUND, &sounds);
-            rewrite_audio(&mut t.root, LOOP, &loops);
-        }
         self.sounds.clear();
         self.loops.clear();
+        (sounds, loops)
     }
 
     fn add_audio(&self, set: &mut TagSet) -> std::result::Result<(Vec<TagId>, Vec<TagId>), String> {
@@ -522,9 +530,13 @@ impl Tree {
     }
 
     /// Adds every tag to `set` (built from the base map the tree was made
-    /// on), in order, and returns their datums.
+    /// on), in order, in the slots after the set's last, and returns their
+    /// datums; then the sounds ([`Tree::install_audio`]) after them, so
+    /// the tags' datums are known before installing (the Halo 1 sandbox's
+    /// placements name them).
     pub fn install(mut self, set: &mut TagSet) -> Result<Vec<TagId>> {
-        self.install_audio(set, true);
+        let mut sounds = std::mem::take(&mut self.sounds);
+        let mut loops = std::mem::take(&mut self.loops);
         let first = set.slots.len();
         let ids: Vec<TagId> = (0..self.tags.len())
             .map(|k| {
@@ -532,7 +544,7 @@ impl Tree {
                 TagId(u32::from(set.salt_base.wrapping_add(slot as u16)) << 16 | slot as u32)
             })
             .collect();
-        for (k, (name, mut tag)) in self.tags.into_iter().enumerate() {
+        for (k, (name, mut tag)) in std::mem::take(&mut self.tags).into_iter().enumerate() {
             rewrite(&mut tag.root, &ids);
             let got = tag.install(set, &name)?;
             if got != ids[k] {
@@ -540,6 +552,17 @@ impl Tree {
                     "{name}: installed as {got:?}, expected {:?}",
                     ids[k]
                 )));
+            }
+        }
+        std::mem::swap(&mut self.sounds, &mut sounds);
+        std::mem::swap(&mut self.loops, &mut loops);
+        let (sounds, loops) = self.audio_ids(set, true);
+        for id in &ids {
+            if let Some(TagPayload::Built(root)) =
+                set.slots[id.index()].tag.as_mut().map(|e| &mut e.payload)
+            {
+                rewrite_audio(root, SOUND, &sounds);
+                rewrite_audio(root, LOOP, &loops);
             }
         }
         Ok(ids)
