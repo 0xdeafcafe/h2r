@@ -18,6 +18,9 @@ pub mod edit;
 pub mod rebuild;
 /// A new `bitm` from RGBA pixels, shaped like an existing one.
 pub mod rgba_bitmap;
+/// Typed tag definitions: every field named or an explicit unknown span;
+/// see `docs/formats/tag-definitions.md`.
+pub mod defs;
 /// Tag layout schemas inferred from retail maps; relocation of any tag.
 pub mod schema;
 /// The loose tag repository: one position-independent file per tag, extracted

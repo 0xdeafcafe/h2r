@@ -1,0 +1,64 @@
+# bitm: bitmap. Root scalars stay unknown: the only layout source for them is a community
+# plugin (crates/tags/schema.rs:120 provenance), with no engine or disc check.
+group bitm 0x4c align 4
+  0x0 unknown 0x4 seen=19
+  0x4 unknown 0x4 seen=17
+  0x8 unknown 0x4 seen=7 -- floats
+  0xc unknown 0x4 seen=5 -- floats
+  0x10 unknown 0x4 seen=many -- floats
+  0x14 unknown 0x4 seen=14
+  0x18 unknown 0x4 seen=many
+  0x1c unknown 0x4 seen=many
+  0x20 pad 0xc
+  0x2c unknown 0x4 seen=2 -- floats
+  0x30 unknown 0x4 seen=2 -- floats
+  0x34 unknown 0x4 seen=10
+  0x38 unknown 0x4 seen=5
+  0x3c block sequences_3c 0x3c align 4 -- V count/stride spans bounded and aligned (rebuild.rs:60); element meaning unverified (docs/formats/map-format.md:375)
+    0x0 unknown 0x4 seen=2
+    0x4 unknown 0x4 seen=2
+    0x8 unknown 0x4 seen=60 -- small integers
+    0xc unknown 0x14 seen=zero
+    0x20 unknown 0x4 seen=many
+    0x24 unknown 0x10 seen=zero
+    0x34 block sprites_34 0x20 align 4 -- V spans bounded (rebuild.rs:77); coordinates never rendered (map-format.md:376)
+      0x0 unknown 0x4 seen=8 -- small integers
+      0x4 unknown 0x4 seen=zero
+      0x8 unknown 0x4 seen=many -- floats
+      0xc unknown 0x4 seen=many -- floats
+      0x10 unknown 0x4 seen=47 -- floats
+      0x14 unknown 0x4 seen=many -- floats
+      0x18 unknown 0x4 seen=many -- floats
+      0x1c unknown 0x4 seen=many -- floats
+  0x44 block images 0x74 align 4 -- V every image decodes through assets::bitmap (docs/formats/bitmaps.md; crates/assets/src/bitmap.rs:5)
+    0x0 u32 signature default=1651078253 -- V the group bytes bitm in every retail image; h1bitmaps writes it (h1bitmaps/src/convert.rs:152)
+    0x4 u16 width -- V layout check: LOD size equals the computed layout rounded to 128 bytes for every image (assets/src/bitmap.rs:7)
+    0x6 u16 height -- V as width
+    0x8 u8 depth default=1 -- V volume slice count, 0 or 1 otherwise (assets/src/bitmap.rs:23)
+    0x9 unknown 0x1 seen=zero -- runtime byte, written zero by h1bitmaps (convert.rs:11)
+    0xa enum16 kind values=texture_2d|texture_3d|cube -- V 0 = 2D, 1 = 3D, 2 = cube; cube faces decode coherent (assets/src/bitmap.rs:23, docs/formats/bitmaps.md)
+    0xc u16 format -- V Halo pixel-format id, mapped to D3DFormat by assets FORMAT_TABLE with per-format evidence (assets/src/bitmap.rs:13)
+    0xe flags16 flags bits=_|_|_|swizzled|linear -- V bit 3 swizzled, bit 4 linear, exactly one for uncompressed formats (assets/src/bitmap.rs:16); other bits unproven
+    0x10 unknown 0x4 seen=many
+    0x14 u16 mip_count -- V levels below the base (assets/src/bitmap.rs:20)
+    0x16 unknown 0x2 seen=many -- runtime bytes, written zero by h1bitmaps (convert.rs:11)
+    0x18 unknown 0x4 seen=many
+    0x1c raw lod_0 -- V complete mip chain from mip 0, padded to 128 bytes (assets/src/bitmap.rs:25)
+    0x20 raw lod_1 -- V chain from mip 1; none (-1) for small textures
+    0x24 raw lod_2 -- V chain from mip 2; none (-1) for small textures
+    0x28 i32 cache_handle_0 default=-1 -- E 0x0012c9fb..0x0012ca28: texture-cache slot of LOD 0, -1 = not resident; V -1 in every retail image (h1bitmaps/src/convert.rs:40)
+    0x2c i32 cache_handle_1 default=-1 -- as cache_handle_0, LOD 1
+    0x30 i32 cache_handle_2 default=-1 -- as cache_handle_0, LOD 2
+    0x34 u32 lod_0_size -- V size of lod_0 (h1bitmaps/src/convert.rs:38 writes it; rebuild.rs:118 reads lod_sizes[0])
+    0x38 rawsize lod_1_size of=0x20 -- V size of lod_1 (rebuild.rs:118)
+    0x3c rawsize lod_2_size of=0x24 -- V size of lod_2
+    0x40 pad 0xc
+    0x4c datum own_tag groups=bitm -- V every retail image holds its own tag's datum (h1bitmaps/src/convert.rs:10, :124)
+    0x50 pad 0x8
+    0x58 unknown 0x4 seen=10
+    0x5c pad 0x4
+    0x60 unknown 0x4 seen=many
+    0x64 unknown 0x4 seen=4 -- small integers
+    0x68 unknown 0x4 seen=14
+    0x6c unknown 0x4 seen=6
+    0x70 pad 0x4

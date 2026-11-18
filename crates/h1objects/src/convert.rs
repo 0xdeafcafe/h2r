@@ -575,10 +575,21 @@ impl Writer<'_> {
     }
 }
 
+/// How the [`Converter`] builds tags.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Options {
+    /// Build scenery from typed definitions ([`crate::rebuild`]): the
+    /// `scen`, its `hlmt` and its `mode`'s material list written field by
+    /// field with no retail template bytes. Off by default until the
+    /// rebuilt scenery has run in the game.
+    pub rebuild: bool,
+}
+
 /// Builds a [`Tree`] from Halo 1 objects on one base map.
 pub struct Converter<'a> {
     pub h1: &'a H1Map,
     pub base: &'a Base,
+    pub options: Options,
     pub tree: Tree,
     /// Every converted `coll` and what it holds, in build order.
     pub coll_reports: Vec<(String, crate::coll::CollisionReport)>,
@@ -592,6 +603,7 @@ impl<'a> Converter<'a> {
         Self {
             h1,
             base,
+            options: Options::default(),
             tree: Tree::default(),
             coll_reports: Vec::new(),
             done: HashMap::new(),
@@ -695,6 +707,8 @@ impl<'a> Converter<'a> {
         let Some(mode_id) = obj.model else {
             return Ok(None);
         };
+        let scenery = h1::OBJECT_TYPES.get(obj.object_type as usize) == Some(&b"scen");
+        let rebuild = self.options.rebuild && scenery;
         let mode_tag = self.h1_tag(mode_id)?;
         let (h1_model, mode) = match self.done.get(&mode_tag.id.0) {
             // Converted already (shared by two objects): only the Halo 1
@@ -704,12 +718,18 @@ impl<'a> Converter<'a> {
                 let (h1_model, _) =
                     h1models::model_from_map(self.h1, mode_tag, &ModelOptions::default())?;
                 let shaders = self.model_shaders(rep, &h1_model);
+                // One material per Halo 1 shader, as convert_model writes.
+                let mut padded = shaders.clone();
+                padded.resize(h1_model.shaders.len(), TagId::NULL);
                 let opts = ModelOptions { shaders };
-                let mode = h1models::mode::convert_model(
+                let mut mode = h1models::mode::convert_model(
                     &h1_model,
                     h1models::short_name(&mode_tag.name),
                     &opts,
                 )?;
+                if rebuild {
+                    crate::rebuild::mode_materials(&mut mode.root, &padded)?;
+                }
                 (h1_model, mode)
             }
         };
@@ -749,7 +769,6 @@ impl<'a> Converter<'a> {
         // the coll's BSP physics slots (crate::coll). Retail writes slots
         // only for scenery: its weapons, equipment, devices and bipeds
         // without a phmo have none.
-        let scenery = h1::OBJECT_TYPES.get(obj.object_type as usize) == Some(&b"scen");
         let coll = match obj.collision {
             Some(c) => {
                 let t = self.h1_tag(c)?;
@@ -771,6 +790,9 @@ impl<'a> Converter<'a> {
             None => None,
         };
 
+        if rebuild {
+            return self.rebuilt_model(rep, obj, &h1_model, mode, coll, jmad, has_phmo, name);
+        }
         hlmt.tag_ref(h2::HLMT_RENDER as u32, mode);
         hlmt.tag_ref(h2::HLMT_COLLISION as u32, coll.map_or(TagId::NULL, |c| c.0));
         hlmt.tag_ref(h2::HLMT_ANIMATION as u32, jmad.unwrap_or(TagId::NULL));
@@ -852,6 +874,95 @@ impl<'a> Converter<'a> {
                 raw: Vec::new(),
             },
         )))
+    }
+
+    /// The `hlmt` from its typed definition ([`crate::rebuild::model`]):
+    /// the same model chain, nodes and region map the template path
+    /// writes, every other field at its default.
+    #[allow(clippy::too_many_arguments)]
+    fn rebuilt_model(
+        &mut self,
+        rep: &mut ObjectReport,
+        obj: &h1::Object,
+        h1_model: &h1models::h1::Model,
+        mode: TagId,
+        coll: Option<(TagId, (u32, bool))>,
+        jmad: Option<TagId>,
+        has_phmo: bool,
+        name: &str,
+    ) -> Result<Option<TagId>> {
+        debug_assert!(!has_phmo, "the rebuilt path borrows no physics model");
+        let (count, nodes) = h1models::mode::hlmt_nodes(h1_model);
+        let render: Vec<(String, Vec<String>)> = h1_model
+            .regions
+            .iter()
+            .map(|r| {
+                (
+                    r.name.clone(),
+                    r.permutations.iter().map(|p| p.name.clone()).collect(),
+                )
+            })
+            .collect();
+        let coll_names = coll.map_or(&[][..], |c| &self.coll_names[&c.1][..]);
+        let map = region_map(&render, coll_names);
+        let regions = h1_model
+            .regions
+            .iter()
+            .enumerate()
+            .map(|(i, r)| crate::rebuild::Region {
+                name: r.name.clone(),
+                collision: map[i].0,
+                physics: 0,
+                permutations: r
+                    .permutations
+                    .iter()
+                    .enumerate()
+                    .map(|(j, p)| (p.name.clone(), map[i].1[j], 0))
+                    .collect(),
+            })
+            .collect();
+        let root = crate::rebuild::model(&crate::rebuild::Model {
+            render: mode,
+            collision: coll.map(|c| c.0),
+            animation: jmad,
+            physics: None,
+            nodes: (count, nodes),
+            regions,
+        })?;
+        if obj.animation.is_none() {
+            rep.no_home
+                .push("no Halo 1 animation graph on the object; hlmt animation left null".into());
+        }
+        Ok(Some(self.tree.push(
+            name,
+            Converted {
+                group: FourCC(*b"hlmt"),
+                root,
+                raw: Vec::new(),
+            },
+        )))
+    }
+
+    /// Scenery from typed definitions: no template.
+    fn scenery_rebuilt(&mut self, tag: &Tag) -> Result<TagId> {
+        let object = h1::Object::read(self.h1, self.h1.tag_data(tag)?)?;
+        let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
+        rep.physics = Some("none (rebuilt scenery borrows no phmo)".into());
+        let hlmt = self.model(&mut rep, &object, None, &tag.name)?;
+        let root = crate::rebuild::scenery(&object, hlmt)?;
+        rep.no_home.push(
+            "scen beyond the object header's bounds and model: definition defaults (no template)"
+                .into(),
+        );
+        self.tree.reports.push(rep);
+        Ok(self.tree.push(
+            &tag.name,
+            Converted {
+                group: FourCC(*b"scen"),
+                root,
+                raw: Vec::new(),
+            },
+        ))
     }
 
     /// The converted `coll` for Halo 1's `t`, with or without BSP physics
@@ -1549,6 +1660,9 @@ impl<'a> Converter<'a> {
     }
 
     fn scenery(&mut self, tag: &Tag) -> Result<TagId> {
+        if self.options.rebuild {
+            return self.scenery_rebuilt(tag);
+        }
         let object = h1::Object::read(self.h1, self.h1.tag_data(tag)?)?;
         let (tpl, tpl_name) = self.template(b"scen", &tag.name, b"scen")?;
         let tpl_root = self.base.root(tpl)?;

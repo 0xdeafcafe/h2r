@@ -1,0 +1,80 @@
+# coll: collision model. Names from crates/tags/src/collision.rs (Collision::decode_at,
+# decode_bsp_blocks) and docs/formats/collision.md; engine addresses as cited there.
+group coll 0x34 align 4
+  0x0 pad 0x14 -- V five words zero on every retail tag (collision.rs Collision::reserved)
+  0x14 block materials 0x4 align 4 -- D+V surface.material indexes this; every index in range (collision.md coll root)
+    0x0 string name -- material name string ID (collision.rs Collision::materials)
+  0x1c block regions 0xc align 4 -- E 0x002122b0 (collision.md coll root)
+    0x0 string name
+    0x4 block permutations 0x14 align 4 -- E 0x002122b0
+      0x0 string name
+      0x4 block bsps 0x44 align 4 -- E: engine passes element +4 to the BSP code (collision.md "BSP element")
+        0x0 unknown 0x4 seen=46 -- small integers; V a node index in range on every retail object, not proven against the engine (collision.md "Not established")
+        0x4 block nodes_3d 0x8 align 8 -- E 0x001de6d0, 0x0014a280 (collision.md BSP element table)
+          0x0 u16 plane -- E 0x001de6d0: plane index of the split
+          0x2 u16 back_child_low -- E bits 0..15 of the 24-bit back child read as i32 at +1 >> 8; bit 23 = leaf, 0xffffff = none (collision.rs Node3d)
+          0x4 word back_child_high_front_child -- E byte +4 = bits 16..23 of the back child; bytes +5..+7 = 24-bit front child (i32 at +4 >> 8), chosen when n.p - d >= 0
+        0xc block planes 0x10 align 16 -- E, V all unit length within 1e-3
+          0x0 f32[3] normal -- E n.p - d = 0 (collision.rs Plane)
+          0xc f32 distance -- E plane d
+        0x14 block leaves 0x4 align 16 -- E 0x001ddea0
+          0x0 u8 flags -- E 0x001ddea0: bit 0 changes the inside/outside classification (collision.rs Leaf)
+          0x1 u8 reference_2d_count -- E 0x001ddea0: number of 2D references
+          0x2 u16 first_reference_2d -- E 0x001ddea0: first 2D reference, 0xffff when empty
+        0x1c block references_2d 0x4 align 4 -- E 0x001ddea0, 0x001dea00
+          0x0 word plane_and_node_2d -- E low u16 plane (bit 15 flips it); high u16 2D node, or surface when bit 15 set (collision.rs Bsp2dRef)
+        0x24 block nodes_2d 0x10 align 16 -- E 0x001de220
+          0x0 f32[3] plane_2d -- E a*x + b*y - d (collision.rs Node2d)
+          0xc word back_front_children -- E low u16 back child (+0xc), high u16 front child (+0xe); bit 15 = surface index
+        0x2c block surfaces 0x8 align 8 -- E 0x001de2c0, 0x001de6d0
+          0x0 u16 plane -- E plane index, bit 15 flips it
+          0x2 u16 first_edge -- E 0x001de2c0: start of the surface's edge ring
+          0x4 u8 flags -- E bit 3 tested against the breakable-surface mask (collision.rs Surface)
+          0x5 u8 breakable_surface -- E 0xff = none
+          0x6 u16 material -- D+V index into the root materials block, in range on every retail surface
+        0x34 block edges 0xc align 8 -- E 0x001de2c0: ring walk (collision.md ring rule)
+          0x0 u16 start_vertex -- E taken when right_surface != surface
+          0x2 u16 end_vertex -- E taken when right_surface == surface
+          0x4 u16 forward_edge -- E next edge when right_surface != surface
+          0x6 u16 reverse_edge -- E next edge when right_surface == surface
+          0x8 u16 left_surface -- E 0xffff = none
+          0xa u16 right_surface -- E 0xffff = none
+        0x3c block vertices 0x10 align 16 -- E position; D edge
+          0x0 f32[3] point -- E vertex position (collision.rs Vertex)
+          0xc u32 first_edge -- D always a valid edge index (collision.md BSP element table)
+      0xc block bsp_physics 0x70 align 16 -- E 0x002122b0 -> 0x00246c60: one Havok slot per BSP, paired with BSP i (collision.md "BSP physics")
+        0x0 unknown 0x4 seen=const -- E the engine writes the BSP shape vtable 0x00456194 here at load (0x00246c60)
+        0x4 unknown 0x2 seen=zero
+        0x6 u16 bsp_shape_reference_count -- E 0x00246c60: 0x81 in the tag, engine writes 0x80 (as the phmo shapes' +0x26, collision.md)
+        0x8 unknown 0x4 seen=zero
+        0xc u32 runtime_bsp -- E 0x00246c60 writes the BSP (element +4) here at load; tag value is tool-time
+        0x10 f32[3] bounding_box_center -- E getAabb 0x001ef040 reads +0x10; V the box of the BSP's vertices
+        0x1c pad 0x4
+        0x20 f32[3] bounding_box_half_extents -- E getAabb 0x001ef040 reads +0x20; V
+        0x2c pad 0x4
+        0x30 datum owner -- D tool-time tag datum, the same for every slot of a tag (collision.rs BspPhysics::owner)
+        0x34 unknown 0xc seen=zero
+        0x40 unknown 0x4 seen=const -- E wrapper vtable 0x00455540 written at load
+        0x44 unknown 0x2 seen=zero
+        0x46 u16 wrapper_reference_count -- E 0x00246c60: 0x80 in the tag
+        0x48 unknown 0x4 seen=zero
+        0x4c u32 runtime_wrapped_shape -- E 0x00246c60: wrapper points at +0x50 (collision.md)
+        0x50 unknown 0x4 seen=const -- E MOPP shape vtable 0x00455f58 written at load
+        0x54 unknown 0x2 seen=zero
+        0x56 u16 mopp_shape_reference_count -- E 0x00246c60: 0x81 in the tag
+        0x58 unknown 0x4 seen=zero
+        0x5c u32 runtime_child_shape -- E 0x00246c60: MOPP shape's child = the slot's BSP shape
+        0x60 u32 runtime_mopp_code -- E 0x00246c60: copied from +0x68
+        0x64 data mopp_code align 16 -- E +0x68 read at load; V every retail slot parses as a MOPP code object keyed by surface index (docs/formats/mopp.md)
+        0x6c unknown 0x4 seen=zero
+  0x24 block pathfinding_spheres 0x14 align 16 -- D node in range, radius finite on all tags (collision.md coll root)
+    0x0 i16 node -- D index into the root nodes, in range on every retail tag
+    0x2 u16 flags -- D (collision.rs PathfindingSphere::flags; bits not established)
+    0x4 f32[3] center -- D
+    0x10 f32 radius -- D finite and non-negative on all 2,842 tags
+  0x2c block nodes 0xc align 4 -- D a tree: indices in range (collision.md coll root)
+    0x0 string name
+    0x4 i16 region -- D (collision.rs CollNode)
+    0x6 i16 parent_node -- D
+    0x8 i16 next_sibling_node -- D
+    0xa i16 first_child_node -- D
