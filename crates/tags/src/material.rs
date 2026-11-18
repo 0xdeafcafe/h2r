@@ -141,6 +141,12 @@ pub struct ResolvedImplementation {
     pub c0_written: u16,
     pub c1_written: u16,
     pub pixel_constants_from_engine: bool,
+    /// Reads an engine input that can change from draw to draw: anything
+    /// but the instance's own integers 4 and 5 and scalar 21 (which
+    /// `0x0001bbf0` copies from the `shad` before each draw) and the stage
+    /// sizes. Without it the resolved implementation (variant, constants)
+    /// is the same for every draw of the shader ([`per_draw_inputs`]).
+    pub per_draw_inputs: bool,
     /// Hardware vertex constants (`c[18 + i]`, `0x00018eab`).
     pub vertex_constants: Vec<Register>,
     /// Vertex attribute defaults `v[i]` (`SET_VERTEX_DATA4F_M`, `0x00018e3b`).
@@ -648,6 +654,7 @@ impl ShaderLibrary {
             c0_written: c0w,
             c1_written: c1w,
             pixel_constants_from_engine: pixel_from_engine,
+            per_draw_inputs: per_draw_inputs(spas, imp),
             vertex_constants: regs(1),
             vertex_defaults: regs(0),
             animated,
@@ -655,6 +662,41 @@ impl ShaderLibrary {
             engine_stage_states: spas.externals[imp.animated_stage_states.indices()].to_vec(),
         })
     }
+}
+
+/// The engine scalar inputs the instance supplies: 21, the `shad`'s `+0x44`
+/// (`0x0001bbf0` copies it to `0x485a6c`, which `0x000337e0` returns).
+pub const INSTANCE_SCALARS: u64 = 1 << 21;
+/// The engine integer inputs the instance supplies: 4 and 5, the `shad`'s
+/// `+0x3e`/`+0x40` (`0x0001bbf0`, returned by `0x00034060`).
+pub const INSTANCE_INTS: u32 = 1 << 4 | 1 << 5;
+
+/// Whether `imp` reads an engine input that can change per draw. Its input
+/// masks (spas `+0x104..+0x114`) are what `0x0001ae70` evaluates before the
+/// draw, bit `n` input `n`; its engine bindings and fragment selectors are
+/// checked too, so a binding outside the masks still counts.
+pub fn per_draw_inputs(spas: &PassPostprocess, imp: &Implementation) -> bool {
+    // Modes 0..3 read a scalar, 4 a vector, 5.. the stage sizes (static).
+    let reads = |mode: usize, source: u8| match mode {
+        0..=3 => INSTANCE_SCALARS & (1u64 << (source & 63)) == 0,
+        4 => true,
+        _ => false,
+    };
+    let masks = imp.scalar_inputs & !INSTANCE_SCALARS != 0 || imp.vector_inputs != 0 || imp.int_inputs & !INSTANCE_INTS != 0;
+    let externals = |r: IndexRange| spas.externals.get(r.indices()).unwrap_or(&[]);
+    let pixel = externals(imp.external_pixel_constants)
+        .iter()
+        .any(|e| reads(usize::from(e.bytes[2] & 7), e.bytes[3]));
+    let vertex = externals(imp.external_vertex_constants)
+        .iter()
+        .any(|e| reads(usize::from((e.word() >> 5) & 0x1f), e.bytes[3]));
+    let selectors = spas
+        .fragments
+        .get(imp.fragments.indices())
+        .unwrap_or(&[])
+        .iter()
+        .any(|f| f.selector != -1 && !u32::try_from(f.selector).is_ok_and(|s| s < 32 && INSTANCE_INTS & (1 << s) != 0));
+    masks || pixel || vertex || selectors
 }
 
 /// Component masks of the 21 vector-binding modes (`0x00017154` byte map

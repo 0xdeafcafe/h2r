@@ -48,9 +48,12 @@ pub struct PassLook {
     pub vertex_constants: Vec<Register>,
     /// Vertex attribute defaults.
     pub vertex_defaults: Vec<Register>,
-    /// Some combiner constants are engine-driven (spas `+0x38` through
-    /// `0x00019ca0`); their inputs are not named yet.
-    pub engine_pixel_constants: bool,
+    /// The implementation reads an engine input that can change per draw
+    /// (`ResolvedImplementation::per_draw_inputs`). Engine-driven combiner
+    /// constants that read only the instance's scalar 21 (the 03a
+    /// `lightmap_tex_detail` pass's: `c0.a` of its specular stage, the
+    /// `shad`'s `+0x44`) are already in `pixel_shader`.
+    pub per_draw_inputs: bool,
 }
 
 /// Why a material's layer 3 stays on the D3D path.
@@ -122,7 +125,7 @@ pub fn layer3_look(material: &Material) -> Result<PassLook, Refusal> {
         pixel_shader: imp.pixel_shader,
         vertex_constants: imp.vertex_constants.clone(),
         vertex_defaults: imp.vertex_defaults.clone(),
-        engine_pixel_constants: imp.pixel_constants_from_engine,
+        per_draw_inputs: imp.per_draw_inputs,
     })
 }
 
@@ -182,6 +185,7 @@ mod tests {
             c0_written: 0,
             c1_written: 0,
             pixel_constants_from_engine: false,
+            per_draw_inputs: false,
             vertex_constants: vec![Register { index: 19, value: [10.0, 10.0, 0.0, 0.0], written: 0xf, origin: Origin::Instance }],
             vertex_defaults: Vec::new(),
             animated: Vec::new(),
