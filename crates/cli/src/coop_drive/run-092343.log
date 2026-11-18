@@ -1,0 +1,19 @@
+# host Alpha
+# guest Bravo
+[+0.034] Alpha | live: playing as Alpha (0009d7e882ecd47d) on http://127.0.0.1:8075
+[+0.240] Bravo | live: playing as Bravo (0009f6de65cac40f) on http://127.0.0.1:8075
+[+0.786] Alpha | coop-live: 15 campaign levels (15 named)
+[+0.917] Bravo | coop-live: 15 campaign levels (15 named)
+[+16.830] Alpha | ui: screen 0xb6 (window 1, slot 4)
+[+17.121] Alpha | ui: screen none
+[+17.500] Alpha | coop-live: lobby mode 4294967295
+[+18.716] Bravo | ui: screen 0xb6 (window 1, slot 4)
+[+19.027] Bravo | ui: screen none
+[+19.456] Bravo | coop-live: lobby mode 4294967295
+[+30.618] Alpha | ui: screen 0xee (window 1, slot 4)
+[+30.669] Alpha | ui: screen none
+[+33.239] Alpha | skulls page: Alpha has no skulls collected; starting as retail
+[+33.278] Alpha | ui: screen 0xd1 (window 5, slot 4)
+[+49.263] Alpha | skulls: campaign start for Alpha: none on
+[+49.327] Alpha | ui: screen none
+[+73.754] Bravo | ui: screen 0x1e (window 5, slot 4)
