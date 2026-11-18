@@ -7,6 +7,7 @@
 //! [`variants`] and [`playlists`]. Everything goes back to [`App`] as
 //! [`Action`]s.
 
+mod play;
 mod playlists;
 mod ui_screens;
 mod variants;
@@ -31,6 +32,7 @@ struct Keys {
     viewport: WindowKey,
     inspector: WindowKey,
     log: WindowKey,
+    game: WindowKey,
 }
 
 impl Keys {
@@ -42,6 +44,7 @@ impl Keys {
             viewport: key("viewport", format!("{} Viewport", icon::EYE)),
             inspector: key("inspector", format!("{} Inspector", icon::SLIDERS)),
             log: key("log", format!("{} Log", icon::LOG)),
+            game: key("game", format!("{} Game", icon::ZAP)),
         }
     }
 
@@ -64,7 +67,7 @@ impl Keys {
                 DockLayout::split(
                     DockSplit::Down,
                     0.22,
-                    DockLayout::tabs([&self.log]),
+                    DockLayout::tabs([&self.log, &self.game]),
                     DockLayout::tabs([&self.viewport]),
                 ),
             ),
@@ -91,6 +94,8 @@ pub struct Studio {
     pub variants: variants::VariantsUi,
     playlists: playlists::PlaylistsUi,
     pub ui_screens: ui_screens::UiScreensUi,
+    /// Play and pair (the Game panel; `crate::play`).
+    pub play: play::PlayUi,
 }
 
 impl Studio {
@@ -109,12 +114,14 @@ impl Studio {
             variants: variants::VariantsUi::default(),
             playlists: playlists::PlaylistsUi::default(),
             ui_screens: ui_screens::UiScreensUi::default(),
+            play: play::PlayUi::default(),
         }
     }
 
     /// Build one frame of UI and run the actions it produced.
     pub fn frame(&mut self, ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>) {
         app.poll_convert();
+        self.play.update(app);
         let mut actions = Vec::new();
         self.shortcuts(ui, app, &mut actions);
         self.menu_bar(ui, app, &mut actions);
@@ -125,6 +132,8 @@ impl Studio {
                 self.outliner_window(ui, app, &mut actions);
                 self.viewport_window(ui, app, gpu, &mut actions);
                 self.inspector_window(ui, app);
+                self.play.shortcuts(ui, app);
+                self.play.window(ui, app, &self.keys.game);
             }
             ToolKind::Variants => self.variant_windows(ui, app, &mut actions),
             ToolKind::Playlists => self.playlist_windows(ui, app, &mut actions),
@@ -777,12 +786,14 @@ impl Studio {
     ) {
         let padding = ui.push_style_var(StyleVar::WindowPadding([0.0, 0.0]));
         let viewport = &mut self.viewport;
+        let play = &mut self.play;
         ui.window(&self.keys.viewport)
             .flags(WindowFlags::NO_SCROLLBAR | WindowFlags::NO_SCROLL_WITH_MOUSE)
             .build(|| {
                 viewport_toolbar(ui, app, viewport, actions);
                 if app.session.is_open() || app.session.reference().is_some() {
                     viewport.draw(ui, app, gpu, actions);
+                    play.overlay(ui, app, viewport.shown().map(|(r, _)| r));
                 } else {
                     ui.text_disabled("  Pick a map to see it here.");
                 }
@@ -925,6 +936,10 @@ impl Studio {
                     }
                     Some(Status::Info(m)) => ui.text(format!("{} {m}", icon::CHECK)),
                     None => ui.text_disabled("Ready"),
+                }
+                if app.tool == ToolKind::Scenario {
+                    ui.same_line_with_spacing(0.0, 24.0);
+                    play::status_chip(ui, &self.play.chip());
                 }
                 let mut right = String::new();
                 if app.tool == ToolKind::Playlists {
