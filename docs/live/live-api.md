@@ -558,6 +558,7 @@ event tail). The stored log is unchanged.
 | `ContentReported` | admins only |
 | `PlayerReported`, `ReportReviewed` | admins only ([Player reports](#player-reports)) |
 | `AccountBanned`, `AccountUnbanned` | the banned account ([Bans](#bans)) |
+| `PlayerMuted`, `PlayerUnmuted` | the muting account ([Mute list](#mute-list)) |
 
 Admin accounts and the operator read all of them; anonymous readers none,
 so an anonymous read stays safe for the edge cache. Other readers get the
@@ -799,6 +800,27 @@ as final for the session; the Live HLE reports it to the game as
 
 The ban events, `AccountBanned` and `AccountUnbanned` on
 `bans-<xuid>`, are server-signed; nobody posts them by hand.
+
+## Mute list
+
+The players an account has muted (docs/live/live-voice.md §3.6), kept by
+the server so the list follows the player. The game's voice mute matrix is
+built from it, and a mute holds both ways: neither player hears the other.
+
+| endpoint | authentication | result |
+|---|---|---|
+| `GET /v1/accounts/by-xuid/{xuid}/mutes` | `read` token of the account itself or an admin | `{items: [{xuid, gamertag}], position}`, oldest first |
+| `PUT /v1/accounts/by-xuid/{xuid}/mutes/{target}` | the account's own token, `lxm: mutes.write` | 201 `{ok, position, changed: true}`; 200 `{ok, changed: false}` when already muted |
+| `DELETE /v1/accounts/by-xuid/{xuid}/mutes/{target}` | as `PUT` | 200 `{ok, position, changed: true}`, or `{ok, changed: false}` when not muted |
+
+- A player can't mute themselves (400); an unknown target is 404; another
+  account's list, or the operator, is 403.
+- A list holds at most 250 players, the size of the game's
+  `XOnlineMutelistGet` buffer; one more is 409.
+- Each change is a server-signed `PlayerMuted` or `PlayerUnmuted` event
+  (`{by, target}`) on `mutes-<by>`, readable by the muting account, admins
+  and the operator ([Private events](#private-events)). Nobody posts them by
+  hand.
 
 ## Cloud saves
 

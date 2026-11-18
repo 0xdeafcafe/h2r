@@ -379,30 +379,30 @@ tiny, and the game wants its own format back.
 
 ### 3.6 The mute list HLE
 
-Server: a per-account mute list as private events on the account's stream,
-`PlayerMuted { by, target }` and `PlayerUnmuted { by, target }`, written by
-the server from authenticated requests, readable only by the owner (and
-admins, for moderation context). Capped at 250 entries, the game's own Get
-size. Endpoints:
+Built (slice 1). Server: a per-account mute list as private events,
+`PlayerMuted { by, target }` and `PlayerUnmuted { by, target }` on
+`mutes-<by>`, written by the server from authenticated requests, readable
+only by the owner, admins and the operator. Capped at 250 entries, the
+game's own Get size. Endpoints ([live-api.md](live-api.md) "Mute list"):
 
-- `GET  /v1/accounts/me/mutes` (scope `mutes.read`)
-- `PUT  /v1/accounts/me/mutes/{xuid}` (scope `mutes.write`)
-- `DELETE /v1/accounts/me/mutes/{xuid}`
+- `GET /v1/accounts/by-xuid/{xuid}/mutes` (a `read` token)
+- `PUT /v1/accounts/by-xuid/{xuid}/mutes/{target}` (scope `mutes.write`)
+- `DELETE /v1/accounts/by-xuid/{xuid}/mutes/{target}`
 
-The server stores the plain 8-byte XUID. The HLE keeps the 12 bytes the game
-passed (flags included) next to it, so Get hands back exactly what Add was
-given. For mutes the game did not add this session (a list loaded at sign-in,
-or a mute made on the website), the HLE fills the flag word from the
-friends/presence record for that XUID, or zero.
+The server stores the plain 8-byte XUID. The HLE keeps the flags the game
+passed with each Add, so Get hands back exactly the 12 bytes Add was given.
+For mutes this machine did not add (a list loaded at sign-in, or a mute made
+on another machine), the flags are zero, which is what every h2 live
+account's XUID carries.
 
-HLE:
+HLE ([live.md](live.md) "Client HLE: mute list"):
 
-- Get (startup, `(0, &task)`, and the full form): a task that fetches the
-  list once per sign-in and then fills the buffer and count from the cached
-  copy.
-- Add and Remove: update the cache at once and queue the server write. They
+- Startup (`(0, &task)`) loads each signed-in player's list once per
+  sign-in; Get fills the buffer and count from the cached copy, or when it
+  arrives.
+- Add and Remove: update the cache at once and send the server write. They
   return S_OK straight away, as the game does not wait on a task. A failed
-  write is retried on the next sign-in.
+  write is sent again before the next load.
 - When the cache changes, the game rebuilds its matrix the next time it calls
   Get; the wrappers at 0x58c10/0x58c60 already do that.
 
@@ -495,8 +495,8 @@ the branch before voice code is written.
 Each is its own slice, with tests:
 
 1. **Mute list**: server events, endpoints in both homes, HLE Add, Remove
-   and Get, website list. Useful on its own: the game's muted icons work,
-   and it needs nothing from the codec.
+   and Get (built), then the website list. Useful on its own: the game's
+   muted icons work, and it needs nothing from the codec.
 2. **Trace the codec** (3.3, "What to trace") and write it up here: where it
    lives, the frame layout, the bitrate, the PCM format and the voice-mail
    WAVE header. No code.

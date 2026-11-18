@@ -630,6 +630,8 @@ fn unimplemented_entries_stop_by_name_without_reading_stack_or_running_library()
         "XOnlinePresenceSubmit",
         "XOnlineMutelistStartup",
         "XOnlineMutelistGet",
+        "XOnlineMutelistAdd",
+        "XOnlineMutelistRemove",
         "XNetRandom",
         "XNetCreateKey",
         "XNetRegisterKey",

@@ -183,6 +183,14 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         .route("/v1/admin/bans/{xuid}/lift", post(crate::bans::post_lift))
         .route("/v1/accounts/by-xuid/{xuid}/ban", get(crate::bans::get_ban))
         .route(
+            "/v1/accounts/by-xuid/{xuid}/mutes",
+            get(crate::mutes::get_mutes),
+        )
+        .route(
+            "/v1/accounts/by-xuid/{xuid}/mutes/{target}",
+            axum::routing::put(crate::mutes::put_mute).delete(crate::mutes::delete_mute),
+        )
+        .route(
             "/v1/accounts/{gamertag}/commendations",
             get(crate::bans::get_commendations),
         )

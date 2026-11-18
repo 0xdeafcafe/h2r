@@ -193,6 +193,10 @@ pub struct Live {
     pub(crate) bans: Arc<crate::bans::Bans>,
     /// Holds a ban's checks and its append together.
     pub(crate) ban_writes: tokio::sync::Mutex<()>,
+    /// Mute lists (docs/live/live-voice.md §3.6).
+    pub(crate) mutes: Arc<crate::mutes::Mutes>,
+    /// Holds a mute's checks and its append together.
+    pub(crate) mute_writes: tokio::sync::Mutex<()>,
     /// Each account's own cloud saves (docs/live/live-cloud-saves.md).
     pub(crate) cloud: crate::cloud_saves::CloudSaves,
     /// Unix seconds the service started.
@@ -249,10 +253,12 @@ fn may_write(author: &Author, stream: &str, kind: &str) -> bool {
         || stream.starts_with("reports-")
         || stream.starts_with("rank-")
         || stream.starts_with("bans-")
+        || stream.starts_with("mutes-")
         || kind == live_proto::rank::CHANGED
         || live_proto::maps::KINDS.contains(&kind)
         || live_proto::reports::KINDS.contains(&kind)
         || live_proto::bans::KINDS.contains(&kind)
+        || live_proto::mutes::KINDS.contains(&kind)
     {
         return false;
     }
@@ -480,6 +486,8 @@ impl Live {
         dispatcher.subscribe(reports.clone());
         let bans = Arc::new(crate::bans::Bans::default());
         dispatcher.subscribe(bans.clone());
+        let mutes = Arc::new(crate::mutes::Mutes::default());
+        dispatcher.subscribe(mutes.clone());
         let stats = Arc::new(crate::stats::Stats::with_model(model.clone()));
         dispatcher.subscribe(stats.clone());
         let mut applied = dispatcher.applied();
@@ -518,6 +526,8 @@ impl Live {
             report_writes: Default::default(),
             bans,
             ban_writes: Default::default(),
+            mutes,
+            mute_writes: Default::default(),
             cloud: Default::default(),
             started_at: now(),
             data_dir: Default::default(),

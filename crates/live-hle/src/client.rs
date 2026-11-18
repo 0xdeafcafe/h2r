@@ -65,6 +65,8 @@ pub(crate) enum Reply {
     Matches(Vec<live_proto::session::Session>),
     Social(SocialSnapshot),
     InviteAccepted(live_proto::mailbox::Invite),
+    /// A mute list, oldest first.
+    Mutes(Vec<u64>),
 }
 #[derive(Clone)]
 pub(crate) struct Pending(Arc<Mutex<Option<Result<Reply, u32>>>>);
@@ -168,6 +170,8 @@ enum Work {
     Match(MatchRequest),
     Social { user: u64, request: SocialRequest },
     Report { user: u64, request: ReportRequest },
+    MuteList { user: u64 },
+    Mute { user: u64, target: u64, mute: bool },
     Wake,
 }
 struct Command {
@@ -302,6 +306,14 @@ impl Service {
             },
         };
         self.submit(s, Work::Report { user, request })
+    }
+    /// `user`'s mute list (docs/live/live-voice.md §3.6).
+    pub fn mute_list(&self, s: &Session, user: u64) -> Result<Pending, u32> {
+        self.submit(s, Work::MuteList { user })
+    }
+    /// Mutes (or unmutes) `target` for `user`.
+    pub fn mute(&self, s: &Session, user: u64, target: u64, mute: bool) -> Result<Pending, u32> {
+        self.submit(s, Work::Mute { user, target, mute })
     }
     pub fn cancel(&self, s: &Session) {
         s.cancel();
@@ -1179,6 +1191,50 @@ impl Worker {
                     Error::Status(400 | 422) => INVALID_ARGUMENT,
                     _ => e.result(),
                 })
+            }
+            Work::MuteList { user } => {
+                let active = self
+                    .active
+                    .as_ref()
+                    .filter(|a| a.session.id == c.session.id)
+                    .ok_or(NO_SESSION)?;
+                let user = active.users.get(user).ok_or(NO_USER)?;
+                let list: live_proto::mutes::MuteList = self
+                    .json(
+                        self.request(
+                            "GET",
+                            &format!("/accounts/by-xuid/{}/mutes", Xuid(user.xuid)),
+                            user,
+                            lxm::READ,
+                        ),
+                        None,
+                    )
+                    .map_err(Error::result)?;
+                Ok(Reply::Mutes(list.items.iter().map(|e| e.xuid.0).collect()))
+            }
+            Work::Mute { user, target, mute } => {
+                let active = self
+                    .active
+                    .as_ref()
+                    .filter(|a| a.session.id == c.session.id)
+                    .ok_or(NO_SESSION)?;
+                let user = active.users.get(user).ok_or(NO_USER)?;
+                self.response(
+                    self.request(
+                        if *mute { "PUT" } else { "DELETE" },
+                        &format!(
+                            "/accounts/by-xuid/{}/mutes/{}",
+                            Xuid(user.xuid),
+                            Xuid(*target)
+                        ),
+                        user,
+                        lxm::MUTES_WRITE,
+                    ),
+                    Some(""),
+                    64 * 1024,
+                )
+                .map(|_| Reply::Done)
+                .map_err(Error::result)
             }
             Work::Teams { user, request } => {
                 let active = self
