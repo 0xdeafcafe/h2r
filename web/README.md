@@ -39,6 +39,9 @@ like a server with no game art. The mock's own map geometry (below) is served
 either way; `H2_MOCK_MAP_GEOMETRY=0` turns that off too, and then `/art/game`
 answers 404. `H2_MOCK_SESSIONS=<n>` sets how many open sessions the mock keeps
 for the dashboard's "find a game" (default 5; 0 shows its empty state).
+`H2_MOCK_QUIET=1` ends the games in progress after the history is seeded and
+starts no more, so the stats home's Live Now panel shows the last game on a
+loop (with `H2_MOCK_HISTORY_MIN=0` too, no games at all: the map montage).
 `H2_MOCK_ACTORS=1` puts the mock campaign's AI and vehicles
 (`mock/campaign.ts`: about thirty actors, two vehicles in use and three
 parked empty, and a `bsp` zone that changes every 25 s, added by a frame

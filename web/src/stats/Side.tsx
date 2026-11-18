@@ -22,7 +22,8 @@ import { outlineFor } from "../state/outlines";
 import { geometryFor } from "../map/geometry";
 import ViewMap from "../map/ViewMap";
 import { topView } from "../map/views";
-import { Panel } from "./Layout";
+import { Panel, playerHref } from "./Layout";
+import Emblem from "../components/Emblem";
 import { randomStart, stepIndex } from "../lib/motd";
 
 export interface PillDef { label: JSX.Element; href: string; end?: boolean }
@@ -191,6 +192,27 @@ export function fireteam(g: GameState): string {
   return Object.values(g.players).map((p) => p.name).join(", ") || "–";
 }
 
+/** A player's link by account: their gamertag now, else the name they played under. */
+export function Who(props: { xuid: string; name: string; size?: number }) {
+  const tag = () => live.state.accounts[props.xuid]?.gamertag ?? props.name;
+  return (
+    <span class="s-who">
+      <Emblem seed={props.xuid} size={props.size ?? 16} />
+      <Show when={live.state.accounts[props.xuid]} fallback={<span>{tag()}</span>}><A href={playerHref(tag())}>{tag()}</A></Show>
+    </span>
+  );
+}
+
+/** How a game finished, in a few words: "Red Team won", "Mochi placed 1st",
+ *  "No winner", a campaign game's outcome, or "In progress". */
+export function resultWords(g: GameState): string {
+  const w = g.winner;
+  if (g.status !== "ended") return "In progress";
+  if (isCampaign(g)) return OUTCOME_WORDS[campaignOutcome(g)];
+  if (!w) return g.end_reason === "quit" ? "Ended early" : g.end_reason === "lost" ? "Unfinished" : "No winner";
+  return "team" in w ? `${teamName(w.team)} Team won` : `${g.players[w.player]?.name ?? "Someone"} placed 1st`;
+}
+
 /** Who is ahead (or won), in a few words. */
 export function leader(g: GameState): string {
   if (g.team_play) {
@@ -258,21 +280,25 @@ export function DidYouKnow(props: { messages: string[]; everyMs?: number }) {
   return (
     <Show when={n() > 0}>
       <section
-        class="s-box s-recent s-dyk"
+        class="s-dyk"
+        aria-roledescription="carousel"
+        aria-label="Did You Know?"
         onMouseEnter={() => setHeld(true)}
         onMouseLeave={() => setHeld(false)}
         onFocusIn={() => setHeld(true)}
         onFocusOut={() => setHeld(false)}
       >
-        <header class="s-box-head s-recent-head">
-          <button class="s-arrow" onClick={() => step(-1)} disabled={n() < 2} aria-label="Previous tip">◄</button>
+        <header class="s-dyk-head">
           <h3>Did You Know?</h3>
-          <button class="s-arrow" onClick={() => step(1)} disabled={n() < 2} aria-label="Next tip">►</button>
+          <Show when={n() > 1}>
+            <span class="s-dyk-nav">
+              <button class="s-dyk-arrow" onClick={() => step(-1)} aria-label="Previous tip">◄</button>
+              <span class="s-dyk-page">{i() + 1} of {n()}</span>
+              <button class="s-dyk-arrow" onClick={() => step(1)} aria-label="Next tip">►</button>
+            </span>
+          </Show>
         </header>
-        <div class="s-box-body">
-          <Show when={props.messages[i()]} keyed>{(m) => <p class="s-dyk-text">{m}</p>}</Show>
-          <div class="s-recent-well">{n() > 1 ? `${i() + 1} of ${n()}` : ""}</div>
-        </div>
+        <Show when={props.messages[i()]} keyed>{(m) => <p class="s-dyk-text">{m}</p>}</Show>
       </section>
     </Show>
   );
