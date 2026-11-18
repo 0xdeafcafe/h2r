@@ -505,7 +505,7 @@ mod tests {
         assert!(wakes(&Work::Tick(tick(4, &[], &[])), true));
         // Kills, starts, ends and settings always wake it.
         assert!(wakes(&kill(5), false));
-        assert!(wakes(&Work::Configure(Box::new(|_| {})), false));
+        assert!(wakes(&Work::Configure(Box::new(started)), false));
     }
 
     /// Blocks in its first frame until released; records everything.

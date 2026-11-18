@@ -254,7 +254,17 @@ impl Telemetry {
 
     /// The tick's observation, queued for the worker; false when the game
     /// tick has not changed since the last one.
+    ///
+    /// Runs on the game thread every tick (docs/live/live-telemetry.md,
+    /// "Threads"): guest reads into a recycled snapshot and a queue push,
+    /// no allocation and no system call once steady (`bench.rs`'s
+    /// `the_game_threads_tick_does_not_allocate`).
     pub(crate) fn observe_tick(&self, guest: &runtime::Guest) -> Result<bool, String> {
+        // An unchanged tick reads nothing else.
+        let tick = memory::game_tick(guest).map_err(|e| format!("read tick snapshot: {e:?}"))?;
+        if *self.last_tick.lock().unwrap() == Some(tick) {
+            return Ok(false);
+        }
         let mut scan = self.scan.lock().unwrap();
         let (buffers, roster) = &mut *scan;
         // A snapshot the worker is done with: its lists are empty but keep
