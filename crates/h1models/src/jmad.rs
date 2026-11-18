@@ -358,6 +358,14 @@ pub fn convert_graph(g: &Graph, skeleton: Option<&[AnimNode]>) -> Result<(Conver
                     AnimType::Replacement => 2,
                 },
             )
+            // The blend screen (aim screen) index, -1 for none: the
+            // engine takes `blend_screens[+0x12]` (`+0x24`, `0x1c` each)
+            // unless it is -1 (E `0x001daf9c`, from the unit aim update
+            // `0x00112a51`, which reads the screen's `+0xc`). A converted
+            // graph has no blend screens, so 0 named a screen past the end
+            // of an empty block: the read faulted at address `0xc` as soon
+            // as a graph found its animations (converter version 64).
+            .put_u8(0x12, 0xff)
             .put_u8(0x13, nodes as u8)
             .put_i16(0x14, anim.frame_count as i16)
             .put_u16(0x16, IN_RESOURCE)

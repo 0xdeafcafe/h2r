@@ -91,7 +91,7 @@ range for its graph or inheritance list.
 | `+0x08`, `+0x0c` | two checksums | raw |
 | `+0x10` | type: 0 base, 1 overlay, 2 replacement | E (0 and 1 are distinguished), 2 S; counts on disc 55,150 / 17,627 / 5,079 |
 | `+0x11` | frame-info (movement) type, 0 to 3 | E (passed to the movement decoder), meanings S |
-| `+0x12` | unexplained byte | raw |
+| `+0x12` | i8 blend screen index into `+0x24`, -1 none: `0x001daf30` returns `&blend_screens[i] + 4` unless it is -1, and the unit aim update `0x00112a51` reads that screen's `+0xc` | E |
 | `+0x13` | node count | E |
 | `+0x14` | frame count (i16); valid frames are `0..frame_count` | E |
 | `+0x16` | flags; `0x10`: data lives in a cache resource | E |

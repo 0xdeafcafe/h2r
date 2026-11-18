@@ -873,6 +873,32 @@ fn a_class_that_borrows_a_slot_finds_it_by_name() {
     assert_eq!(actions("rifle"), [("throw_grenade".to_owned(), 0)]);
 }
 
+/// No converted animation names a blend screen: the graph has none, and
+/// the engine indexes `blend_screens` (`+0x24`) by an animation's `+0x12`
+/// unless it is -1 (E `0x001daf30`). Written 0, the player's aim update
+/// (`0x00112a51`) read the empty block's element 0 and faulted at `0xc`
+/// on every converted map once the sorted trees let a graph find its
+/// animations.
+#[test]
+fn a_converted_animation_names_no_blend_screen() {
+    let (img, at) = synthetic_graph();
+    let g = h1::Graph::read(&img, at).unwrap();
+    let (out, _) = jmad::convert_graph(&g, None).unwrap();
+    let (bytes, ids) = build(vec![(out, "invented\\graph")]);
+    let mut map = Map::from_reader(Cursor::new(bytes)).unwrap();
+    let base = map.tag(ids[0]).unwrap().location.unwrap().address;
+    let b = map.read_tag_bytes(ids[0]).unwrap();
+    let w = |a: u32| u32::from_le_bytes(b[(a - base) as usize..][..4].try_into().unwrap());
+    // The graph holds no blend screens.
+    assert_eq!(w(base + 0x24), 0);
+    let (count, at) = (w(base + 0x2c), w(base + 0x30));
+    assert!(count > 0);
+    for i in 0..count {
+        let e = (at + i * 0x6c - base) as usize;
+        assert_eq!(b[e + 0x12] as i8, -1, "animation {i}");
+    }
+}
+
 /// The synthetic graph's base animation, re-encoded as compressed data with
 /// a key on every frame, reads back as the uncompressed original (within
 /// the 12-bit rotation quantisation) and converts.
