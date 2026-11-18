@@ -19,7 +19,7 @@ use dear_imgui_rs::{
 };
 use editor_core::Status;
 use scenario_edit::layout::{FieldDef, FieldType, Role};
-use scenario_edit::{BlockKind, Command, Scenario, TagRef, Value};
+use scenario_edit::{BlockKind, Scenario, TagRef, Value};
 
 use crate::app::{Action, Answer, App, ToolKind};
 use crate::theme::{self, Fonts, icon};
@@ -868,18 +868,19 @@ impl Studio {
                     p.stride
                 ));
             }
-            for (field, v) in edits {
+            // Through the command layer, as the agent API's scenario.set.
+            for (field, value) in edits {
                 // A drag or a typed edit of one field is one undo step.
-                let merge = hash_key(kind, index, field);
-                if let Err(e) = app
-                    .session
-                    .apply(Command::set(kind, index, field, v).merging(merge))
-                {
-                    app.error(e.to_string());
-                }
+                actions.push(Action::SetField {
+                    block: kind,
+                    index,
+                    field: field.to_owned(),
+                    value,
+                    merge: Some(hash_key(kind, index, field)),
+                });
             }
             if done {
-                app.session.seal();
+                actions.push(Action::SealEdit);
             }
         });
         for a in actions {
@@ -1473,7 +1474,10 @@ fn convert_controls(
             ConvertSandbox::Halo2,
             "Halo 2 (nearest weapons and vehicles)",
         ),
-        (ConvertSandbox::Halo1, "Halo 1 (its own weapons and vehicles)"),
+        (
+            ConvertSandbox::Halo1,
+            "Halo 1 (its own weapons and vehicles)",
+        ),
     ] {
         if ui.radio_button_bool(label, app.convert_sandbox == s) && app.convert_sandbox != s {
             actions.push(Action::SetConvertSandbox(s));

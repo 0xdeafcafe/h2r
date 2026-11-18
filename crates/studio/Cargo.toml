@@ -43,6 +43,10 @@ boot.workspace = true
 serde_json.workspace = true
 # Play and pair (src/play.rs): the agent API's wire types and client.
 agent-proto = { path = "../agent-proto" }
+# The agent API (src/api): method names, short forms and the client.
+studio-proto = { path = "../studio-proto" }
+# tag.read and tag.refs: the layout schema.
+tags.workspace = true
 
 [dev-dependencies]
 # The agent's real server behind an invented game (src/play/tests.rs).

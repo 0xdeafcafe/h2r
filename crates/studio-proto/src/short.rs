@@ -10,9 +10,15 @@ use crate::method as m;
 /// The short forms, for the usage text: (form, what it calls).
 pub const FORMS: &[(&str, &str)] = &[
     ("status", "session.status"),
-    ("methods", "session.methods: every method, its params and result"),
+    (
+        "methods",
+        "session.methods: every method, its params and result",
+    ),
     ("log [N]", "session.log: the editor's last N log lines"),
-    ("source <path>", "source.open: a disc image, a .map or a maps folder"),
+    (
+        "source <path>",
+        "source.open: a disc image, a .map or a maps folder",
+    ),
     ("maps", "source.maps"),
     ("docs", "doc.list: what is open, dirty, undoable"),
     ("open <map>", "doc.open {\"map\": ...}"),
@@ -39,7 +45,10 @@ pub const FORMS: &[(&str, &str)] = &[
     ("playlist <0..15>", "playlist.get"),
     ("screens", "ui.screens"),
     ("screen <screen>[/<state>]", "ui.pick"),
-    ("press <input>", "ui.press (a b x y up down left right start back ...)"),
+    (
+        "press <input>",
+        "ui.press (a b x y up down left right start back ...)",
+    ),
     ("widgets", "ui.widgets"),
     ("render-ui [out.png]", "ui.render"),
     ("snapshot [out.png]", "view.snapshot"),
@@ -124,7 +133,10 @@ pub fn parse_call(words: &[String]) -> Result<(String, Value), String> {
         ),
         "maps" => (m::SOURCE_MAPS, Value::Null),
         "docs" => (m::DOC_LIST, Value::Null),
-        "open" => (m::DOC_OPEN, json!({ "map": a.ok_or("open needs a map name")? })),
+        "open" => (
+            m::DOC_OPEN,
+            json!({ "map": a.ok_or("open needs a map name")? }),
+        ),
         "save" => (m::DOC_SAVE, doc(a)),
         "save-as" => {
             let mut p = json!({ "path": a.ok_or("save-as needs a path")? });
@@ -148,8 +160,14 @@ pub fn parse_call(words: &[String]) -> Result<(String, Value), String> {
             max(3)?;
             (m::TAG_LIST, p)
         }
-        "tag" => (m::TAG_READ, json!({ "tag": a.ok_or("tag needs an id or name")? })),
-        "refs" => (m::TAG_REFS, json!({ "tag": a.ok_or("refs needs an id or name")? })),
+        "tag" => (
+            m::TAG_READ,
+            json!({ "tag": a.ok_or("tag needs an id or name")? }),
+        ),
+        "refs" => (
+            m::TAG_REFS,
+            json!({ "tag": a.ok_or("refs needs an id or name")? }),
+        ),
         "blocks" => (m::SCENARIO_BLOCKS, Value::Null),
         "objects" => (
             m::SCENARIO_LIST,
@@ -225,7 +243,10 @@ pub fn parse_call(words: &[String]) -> Result<(String, Value), String> {
             }
             (m::UI_PICK, p)
         }
-        "press" => (m::UI_PRESS, json!({ "input": a.ok_or("press needs an input")? })),
+        "press" => (
+            m::UI_PRESS,
+            json!({ "input": a.ok_or("press needs an input")? }),
+        ),
         "widgets" => (m::UI_WIDGETS, Value::Null),
         "render-ui" => (
             m::UI_RENDER,
@@ -250,8 +271,8 @@ pub fn parse_call(words: &[String]) -> Result<(String, Value), String> {
     };
     // Bare forms take nothing more than they use.
     let used = match name {
-        "status" | "methods" | "maps" | "docs" | "blocks" | "variants" | "variant" | "playlists"
-        | "screens" | "widgets" => 1,
+        "status" | "methods" | "maps" | "docs" | "blocks" | "variants" | "variant"
+        | "playlists" | "screens" | "widgets" => 1,
         "log" | "source" | "open" | "save" | "diff" | "undo" | "redo" | "tag" | "refs"
         | "objects" | "object" | "delete" | "duplicate" | "select" | "playlist" | "screen"
         | "press" | "render-ui" | "snapshot" => 2,

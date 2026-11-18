@@ -37,9 +37,15 @@ fn short_forms_name_their_methods_and_params() {
     );
     assert_eq!(
         c("save-as /tmp/x.map map"),
-        (m::DOC_SAVE_AS.into(), json!({"path":"/tmp/x.map","doc":"map"}))
+        (
+            m::DOC_SAVE_AS.into(),
+            json!({"path":"/tmp/x.map","doc":"map"})
+        )
     );
-    assert_eq!(c("undo variant"), (m::DOC_UNDO.into(), json!({"doc":"variant"})));
+    assert_eq!(
+        c("undo variant"),
+        (m::DOC_UNDO.into(), json!({"doc":"variant"}))
+    );
     assert_eq!(c("undo"), (m::DOC_UNDO.into(), json!(null)));
     assert_eq!(
         c("tags vehi warthog"),
@@ -47,17 +53,29 @@ fn short_forms_name_their_methods_and_params() {
     );
     assert_eq!(
         c("screen settings/main"),
-        (m::UI_PICK.into(), json!({"screen":"settings","state":"main"}))
+        (
+            m::UI_PICK.into(),
+            json!({"screen":"settings","state":"main"})
+        )
     );
-    assert_eq!(c("setting 12 3"), (m::VARIANT_SET.into(), json!({"setting":12,"value":3})));
-    assert_eq!(c("playlist 4"), (m::PLAYLIST_GET.into(), json!({"playlist":4})));
+    assert_eq!(
+        c("setting 12 3"),
+        (m::VARIANT_SET.into(), json!({"setting":12,"value":3}))
+    );
+    assert_eq!(
+        c("playlist 4"),
+        (m::PLAYLIST_GET.into(), json!({"playlist":4}))
+    );
 }
 
 #[test]
 fn a_method_by_name_takes_json_params() {
     assert_eq!(
         c(r#"scenario.get {"block": "vehicles", "index": 0}"#),
-        (m::SCENARIO_GET.into(), json!({"block":"vehicles","index":0}))
+        (
+            m::SCENARIO_GET.into(),
+            json!({"block":"vehicles","index":0})
+        )
     );
     assert_eq!(c("doc.list"), (m::DOC_LIST.into(), json!(null)));
 }

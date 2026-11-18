@@ -939,6 +939,7 @@ dependencies = [
  "settings",
  "sha2 0.10.9",
  "shaders",
+ "studio-proto",
  "symbols",
  "tags",
  "time",
@@ -5937,9 +5938,20 @@ dependencies = [
  "rfd",
  "scenario-edit",
  "serde_json",
+ "studio-proto",
+ "tags",
  "variants",
  "wgpu",
  "winit",
+]
+
+[[package]]
+name = "studio-proto"
+version = "0.1.0"
+dependencies = [
+ "agent-proto",
+ "anyhow",
+ "serde_json",
 ]
 
 [[package]]

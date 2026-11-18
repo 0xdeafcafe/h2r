@@ -12,9 +12,13 @@
 //! - [`theme`]: the dark theme, bundled fonts and icons.
 //! - [`headless`]: renders real frames offscreen to PNG (screenshots),
 //!   with [`script`]ed input aimed at widgets that [`probe`] finds.
+//! - [`api`]: the agent API: every edit as a JSON method on a local
+//!   socket, answered by the window or by `h2-editor --serve`
+//!   (docs/editor/agent-api.md).
 //!
 //! Nothing here contains game data: maps come from the user's own disc.
 
+pub mod api;
 pub mod app;
 pub mod headless;
 pub mod play;

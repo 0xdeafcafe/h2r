@@ -79,7 +79,10 @@ pub fn run(prog: &str, args: Vec<String>) -> Result<()> {
 /// listens on TCP).
 pub fn connect(path: &Path) -> Result<Client> {
     if path.to_str().is_some_and(|s| s.starts_with("tcp:")) {
-        bail!("the studio listens on a local Unix socket only, not {}", path.display());
+        bail!(
+            "the studio listens on a local Unix socket only, not {}",
+            path.display()
+        );
     }
     Client::connect_to(&agent_proto::Endpoint::Unix(path.to_path_buf())).with_context(|| {
         format!(

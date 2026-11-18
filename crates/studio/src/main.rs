@@ -15,12 +15,16 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
-const USAGE: &str = "usage: h2-editor [--disc <iso> | --map <file.map> | --folder <maps dir>] \
+const USAGE: &str = "usage: h2-editor call <call> [args] | h2-editor --serve [--socket PATH] [...]
+       h2-editor [--socket PATH | --no-listen] [--disc <iso> | --map <file.map> | --folder <maps dir>] \
 [--halo1 <iso|maps dir>] [--data <dir>] [--package <dir>[#H1|#H2]] [--halo1-map <map> [--convert h2|h1]] [--overlay on|off] [--tool scenario|variants|playlists|ui-screens] [--ui-screen <screen>/<state> [--ui-press up,a,...]] [--pick <map>] [--select <block>:<index>] [--hopper <file.dat>|default] \
 [--variant <built-in index>] [--copy-variant <name>] [--playlist <1..16>] [--preset <n>] \
 [--focus] [--camera <yaw>,<pitch>,<distance>] [--dialog unsaved|package] \
 [--no-disc] [--nudge <x>,<y>,<z>] [--page <variant settings page>] [--screenshot <out.png> [--size <w>x<h>] [--scale <s>] [--do <steps>] \
 [--crop <target>]... [--pad <points>] [--crop-height <points>] [--callout <target>=<badge>]...]
+--serve: the agent API with no window (docs/editor/agent-api.md); the window listens too, \
+on --socket, else $H2_STUDIO, else the cache directory's studio.sock (--no-listen: not at all). \
+`h2-editor call` (or `h2 studio`) is the client.
 --do steps (separated by ;): hover|click|rclick|dclick|move <target>, down, up, \
 type <text>, key <name>[*n], wait <frames>, sleep <ms>, wheel <dy>. A target: x,y | win:<name> | \
 [<window>>]<label>[#n], each optionally @dx,dy from its top left (see studio::script).";
@@ -63,6 +67,12 @@ struct Args {
     pad: f32,
     crop_height: Option<f32>,
     callouts: Vec<(String, String)>,
+    /// The agent API with no window.
+    serve: bool,
+    /// Where the agent API listens.
+    socket: Option<PathBuf>,
+    /// The window does not listen.
+    no_listen: bool,
 }
 
 fn args() -> Result<Args> {
@@ -98,6 +108,9 @@ fn args() -> Result<Args> {
         pad: 8.0,
         crop_height: None,
         callouts: Vec::new(),
+        serve: false,
+        socket: None,
+        no_listen: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -183,6 +196,9 @@ fn args() -> Result<Args> {
                     .ok_or_else(|| anyhow!("--callout wants <target>=<badge>"))?;
                 a.callouts.push((target.to_owned(), badge.to_owned()));
             }
+            "--serve" => a.serve = true,
+            "--socket" => a.socket = Some(value()?.into()),
+            "--no-listen" => a.no_listen = true,
             "--scale" => a.scale = value()?.parse()?,
             "--size" => {
                 let v = value()?;
@@ -244,6 +260,10 @@ fn ini_path() -> PathBuf {
 }
 
 fn main() -> Result<()> {
+    // The agent API's client: `h2-editor call <call> [args]`.
+    if std::env::args().nth(1).as_deref() == Some("call") {
+        return studio_proto::cli::run("h2-editor call", std::env::args().skip(2).collect());
+    }
     let args = args()?;
     let mut app = App::new();
     if let Some(d) = &args.data {
@@ -368,16 +388,64 @@ fn main() -> Result<()> {
         println!("wrote {}", out.display());
         return Ok(());
     }
+    let socket = args
+        .socket
+        .clone()
+        .unwrap_or_else(studio_proto::default_socket);
+    if args.serve {
+        return serve(app, &socket);
+    }
+    // The window listens too, so an agent drives what the user sees.
+    let listening = if args.no_listen {
+        None
+    } else {
+        match studio::api::server::listen(&socket) {
+            Ok(l) => {
+                app.info(format!("agent API on {}", socket.display()));
+                Some(l)
+            }
+            Err(e) => {
+                app.info(format!("agent API off: {e}"));
+                None
+            }
+        }
+    };
+    let mut api = studio::api::Api::new();
+    api.window = true;
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
-    let mut runner = Runner { app, win: None };
+    let mut runner = Runner {
+        app,
+        win: None,
+        api,
+        listening,
+    };
     event_loop.run_app(&mut runner)?;
+    Ok(())
+}
+
+/// `h2-editor --serve`: the agent API with no window, until killed.
+fn serve(mut app: App, socket: &std::path::Path) -> Result<()> {
+    let (_listener, rx) = studio::api::server::listen(socket)
+        .map_err(|e| anyhow!("listening on {}: {e}", socket.display()))?;
+    eprintln!("h2-editor: agent API on {} (no window)", socket.display());
+    let mut api = studio::api::Api::new();
+    for inc in rx.iter() {
+        let r = api.handle(&mut app, inc.request.clone());
+        inc.answer(r);
+    }
     Ok(())
 }
 
 struct Runner {
     app: App,
     win: Option<Win>,
+    api: studio::api::Api,
+    /// The agent API's socket and its queue (none when it could not bind).
+    listening: Option<(
+        studio::api::server::Listener,
+        std::sync::mpsc::Receiver<studio::api::server::Incoming>,
+    )>,
 }
 
 struct Win {
@@ -598,6 +666,10 @@ impl ApplicationHandler for Runner {
     }
 
     fn about_to_wait(&mut self, _: &ActiveEventLoop) {
+        // Agent calls run between frames, on the app the window draws.
+        if let Some((_, rx)) = &self.listening {
+            self.api.pump(&mut self.app, rx);
+        }
         if let Some(w) = &self.win {
             w.window.request_redraw();
         }
