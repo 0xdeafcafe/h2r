@@ -697,3 +697,90 @@ both generated-code changes; the x87 transcendentals (`fyl2x` 536, `fcos`
 228, `f2xm1` 208, `fsin` 182: the correctly rounded `Wf<2>` series, which
 `H2_X87_NATIVE` does not cover, so f64 would change results); and the D3D
 write barrier's `take_dirty` and guard (about 700).
+
+## Handler entry and exit: gate at entry, inline charge, dirty bits (2026-11-18)
+
+Three generated-code switches and one x87 switch, all off by default. The
+C ones are in `cflags_for`'s list, so they are in the object cache key and
+the boot stamp: set them identically for `h2 build` and `h2 run`.
+
+- **`H2_ENTRY_GATE=1`.** A handler with inline loads or stores takes the
+  RAM gate as it starts (after acquire and the budget), and again when a
+  direct call returns inline, instead of its first access calling
+  `h2_access_cold`. A busy gate leaves it not held, and that access is cold
+  as before. `cold_accesses_by_cause` (40 direct calls, 3 runner entries):
+  entry 3 → 0, lent-entry 39 → 0, after-dcall 39 → 0.
+- **`H2_VIEW_CHARGE=1`** (counting modules with a view). The handler's
+  charges, its loops' budget and its exit spend the count in the RAM view
+  inline (`h2_view_spend`, `h2_view_left`) instead of calling
+  `h2abi_v1_charge`, `h2abi_v1_budget` and `h2abi_v1_exit`; the runtime
+  settles the view after every native handler (`call_native`) and before
+  every helper, as it already did. Only acquire is left at entry. The
+  profile's `fast_memory_accesses` then includes those counts.
+- **`H2_DIRTY_INLINE=1`** (existing, now proven and measured). A store to a
+  page other than the hold's last-marked one tests the dirty bit at the
+  site and calls `h2_mark_dirty` only for an unmarked page. It was correct
+  as written: `stores_mark_exactly_their_pages_with_and_without_dirty_inline`
+  stores round four pages (an alias, three bitmap words), drains, and runs
+  again, with and without the switch and accounting; a deliberately wrong
+  "already marked" test fails it.
+- **`H2_X87_FAST_TRANSCENDENTALS=1`** (boot, run time only, no rebuild of the
+  image). FSIN, FCOS, FSINCOS, FYL2X and F2XM1 in native f64 (`libm`)
+  instead of the correctly rounded series; see the sweep below.
+
+Proof: `held_gate_matches_the_helper_path_at_every_stop_and_fault` runs with
+each switch, both, and everything with `H2_DIRECT_GATE`/`H2_DIRECT_COUNT`
+(same end state, accesses and stops as the helper path, at seven slice
+lengths, with and without accounting); `exits.rs`
+`a_view_charging_handler_settles_without_a_call`; `direct.rs` with
+`H2_VIEW_CHARGE=1` (A acquires once, nothing else is called). The emit,
+runtime and oracle suites pass with the three C switches off and on.
+
+Benchmarks (`crates/emit/tests/perf.rs`, release, accounting on, the v3
+bridge with one exit call as in the image; switch sets run round-robin,
+min of 9 trials, best round, load average 30-80):
+
+| benchmark | off | `ENTRY_GATE` | `VIEW_CHARGE` | both |
+|---|---:|---:|---:|---:|
+| `entry_access_benchmark` runner (ns/call) | 81.7 | 72.3 | 80.0 | 75.9 |
+| `entry_access_benchmark` direct (ns/call) | 34.9 | 32.9 | 34.9 | 34.2 |
+| `runner_transfer_benchmark` 16 targets (ns/transfer) | 36.8 | | | 33.9 |
+| `runner_transfer_benchmark` 4,096 targets | 43.6 | | | 44.4 |
+
+| `dirty_store_benchmark` (ns per two stores) | off | `DIRTY_INLINE` |
+|---|---:|---:|
+| watch active | 4.37 | 3.59 |
+| no watch | 3.21 | 3.22 |
+
+The entry gate saves about 9 ns a runner entry (11%) and 2 ns a direct
+call. The inline charge alone is worth about 2 ns a runner entry and
+nothing measurable on a direct call; combined with the entry gate it was
+consistently 2-4 ns *slower* than the entry gate alone here, which the
+profile in the game should settle before it is turned on. The dirty test
+saves 0.4 ns a store to a marked page while a watch is active (all of
+`h2_mark_dirty`'s 484 samples are such stores) and costs nothing without
+one.
+
+```sh
+cargo test -p emit --release --test perf entry_access_benchmark -- --ignored --nocapture
+cargo test -p emit --release --test perf dirty_store_benchmark -- --ignored --nocapture
+cargo test -p x87 --release --test f64_trans -- --nocapture
+```
+
+f64 transcendentals against the series (`tests/f64_trans.rs`, 20,000
+synthetic operands each, low 11 significand bits random, difference in
+units of the 64-bit result's last place; 2^11 = 2048 is one f64 ulp):
+
+| function | operands | median | p99 | max |
+|---|---|---:|---:|---:|
+| fsin | \|x\| < 8 | 1,352 | 121,071 | 2^24.8 |
+| fcos | \|x\| < 8 | 1,619 | 153,357 | 2^24.9 |
+| fsin | \|x\| < 10^6 | 1.8e8 | 1.6e10 | 2^39.5 |
+| fcos | \|x\| < 10^6 | 1.8e8 | 1.6e10 | 2^41.3 |
+| fyl2x | x in 2^±20 | 683 | 4,084 | 2^20.5 |
+| f2xm1 | \|x\| < 1 | 835 | 3,315 | 4,859 |
+
+No exception flag other than PE and C1 differs. Most results are within one
+f64 ulp, as expected; the tails are the operand's own rounding to 53 bits,
+amplified near zeros of sin and cos (and of log2 at x near 1), and for large
+angles the operand error alone is up to |x| * 2^-53 of angle. Not turned on.
