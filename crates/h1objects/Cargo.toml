@@ -33,3 +33,5 @@ assets.workspace = true
 xbe.workspace = true
 # The built-in game variants' starting weapons (tests/sandbox_disc.rs).
 variants = { path = "../variants" }
+# Halo 2's HUD text font measured against Halo 1's digits (tests/hud_layout_disc.rs).
+font = { path = "../font" }

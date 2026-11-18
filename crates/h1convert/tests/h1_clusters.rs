@@ -154,7 +154,7 @@ fn portals_join_every_cluster_in_their_planes() {
                 bsp.name,
                 v.portals.len(),
                 cut_off.len(),
-                owner.iter().filter(|o| o.is_none()).count()
+                owner.iter().filter(|o| o.is_empty()).count()
             );
             bsps += 1;
         }

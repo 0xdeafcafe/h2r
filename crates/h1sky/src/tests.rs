@@ -179,14 +179,14 @@ fn converted_sky_round_trips_through_a_built_map() {
     assert_eq!(out.word_44, 0.0);
     assert_eq!(out.rotation, 0.0);
     assert!(out.bitmap_layers.is_empty());
-    // Halo 1's fog runs, in order, as the two fog blocks.
-    for (got, want) in [&out.gradients_a, &out.gradients_b].into_iter().zip(sky.fogs()) {
-        let f = want.expect("both runs have a density");
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].color, f.color);
-        assert_eq!(got[0].fraction, f.max_density);
-        assert_eq!(got[0].tail, [f.start_distance, f.opaque_distance]);
-    }
+    // Halo 1's outdoor fog as fog_a; its indoor fog has no block.
+    let f = sky.outdoor_fog().expect("fog A is a fog");
+    assert_eq!(out.gradients_a.len(), 1);
+    assert_eq!(out.gradients_a[0].color, f.color);
+    assert_eq!(out.gradients_a[0].fraction, f.max_density);
+    assert_eq!(out.gradients_a[0].tail, [f.start_distance, f.opaque_distance]);
+    assert!(sky.indoor_fog().is_some());
+    assert!(out.gradients_b.is_empty(), "the indoor fog is not fog_b");
     assert_eq!(out.lights.len(), sky.lights.len());
     for (a, b) in out.lights.iter().zip(&sky.lights) {
         assert_eq!(a.yaw, b.direction[0]);
@@ -378,4 +378,70 @@ fn converted_lights_name_the_flares_given() {
     };
     assert_eq!(flare_of(0), map::TagId::NULL);
     assert_eq!(flare_of(1), flare);
+}
+
+/// a10's and the menu's skies: fog A black, density 1, start and opaque
+/// distance 0. Halo 2 would raise the opaque distance to 0.0001 and fog
+/// everything black (E 0x001301c0); Halo 1 draws no fog for it.
+#[test]
+fn a_fog_opaque_at_its_start_is_no_fog() {
+    let mut sky = read_invented();
+    let a = h1::FOG_RUNS[0];
+    sky.lighting_scalars[a..a + 8].copy_from_slice(&[0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+    assert!(sky.fogs()[0].is_some(), "the run has a density");
+    assert_eq!(sky.outdoor_fog(), None);
+    let (bytes, id, _) =
+        convert::build_sky_map(&sky, None, "levels\\test\\tiny\\tiny sky", 1.0).expect("builds");
+    let mut map = Map::from_reader(Cursor::new(bytes)).expect("map reads");
+    let out = h2::Sky::read_from_map(&mut map, id).expect("decodes");
+    assert!(out.gradients_a.is_empty());
+    assert!(out.gradients_b.is_empty());
+}
+
+/// Blood Gulch's sky: a warm outdoor haze and Halo 1's untuned purple
+/// indoor fog (density 1, opaque at 120). Only the haze converts.
+#[test]
+fn only_the_outdoor_fog_converts() {
+    let mut sky = read_invented();
+    sky.lighting_scalars[4..20].copy_from_slice(&[
+        1.0, 0.9, 0.77, 0.0, 0.0, 0.4, 3.0, 100.0, 0.196, 0.172, 0.329, 0.0, 0.0, 1.0, 1.0, 120.0,
+    ]);
+    let (bytes, id, _) =
+        convert::build_sky_map(&sky, None, "levels\\test\\tiny\\tiny sky", 1.0).expect("builds");
+    let mut map = Map::from_reader(Cursor::new(bytes)).expect("map reads");
+    let out = h2::Sky::read_from_map(&mut map, id).expect("decodes");
+    assert_eq!(out.gradients_a.len(), 1);
+    assert_eq!(out.gradients_a[0].color, [1.0, 0.9, 0.77]);
+    assert_eq!(out.gradients_a[0].fraction, 0.4);
+    assert_eq!(out.gradients_a[0].tail, [3.0, 100.0]);
+    assert!(out.gradients_b.is_empty());
+}
+
+/// c20's library fog: blue, density 0.1, 10 to 30 units. It goes into an
+/// atmosphere element's first fog, where Halo 2 reads the sky's `fog_a`
+/// (E `0x0012efb0`), with nothing else set.
+#[test]
+fn the_indoor_fog_is_an_atmosphere_element_s_first_fog() {
+    use crate::atmosphere::{self, layout};
+    let mut sky = read_invented();
+    sky.lighting_scalars[12..20]
+        .copy_from_slice(&[0.06, 0.07, 0.53, 0.0, 0.0, 0.1, 10.0, 30.0]);
+    let fog = sky.indoor_fog().expect("fog B has a density");
+    let e = atmosphere::element(&fog);
+    assert_eq!(e.len(), atmosphere::LEN);
+    assert_eq!(atmosphere::fog(&e), Some(fog));
+    let f = |at: usize| f32::from_le_bytes(e[at..at + 4].try_into().unwrap());
+    assert_eq!([f(4), f(8), f(0xc)], [0.06, 0.07, 0.53]);
+    assert_eq!([f(0x18), f(0x1c), f(0x20)], [0.1, 10.0, 30.0]);
+    assert_eq!(f(layout::FADE_DISTANCE), 0.0, "the engine's default fade");
+    // No second fog, no patchy fog: only the null `fpch` reference.
+    let set: Vec<usize> = (0..atmosphere::LEN)
+        .filter(|&k| e[k] != 0 && !(4..0x24).contains(&k))
+        .collect();
+    assert_eq!(set, (0xd0..0xd8).collect::<Vec<_>>());
+    assert_eq!(&e[0xd0..0xd4], b"hcpf", "the group, as retail stores it");
+    assert_eq!(&e[0xd4..0xd8], [0xff; 4]);
+    // No density, no indoor fog.
+    sky.lighting_scalars[17] = 0.0;
+    assert_eq!(sky.indoor_fog(), None);
 }

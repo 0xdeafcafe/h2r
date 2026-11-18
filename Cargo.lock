@@ -2497,6 +2497,7 @@ version = "0.1.0"
 dependencies = [
  "assets",
  "content",
+ "font",
  "h1bitmaps",
  "h1convert",
  "h1map",

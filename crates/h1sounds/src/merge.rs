@@ -291,7 +291,23 @@ pub fn transplant<R: std::io::Read + std::io::Seek>(
     dst: &mut TagSet,
     gestalt: &mut SoundGestalt,
 ) -> Result<std::result::Result<Moved, Vec<tags::schema::transplant::Refused>>> {
-    let tree = match tags::schema::transplant::transplant(schema, src, root, dst)
+    let read = tags::schema::transplant::Source::new(schema, src)
+        .map_err(|e| Error::Invalid(format!("transplant: {e}")))?;
+    transplant_from(&read, src, src_gestalt, root, dst, gestalt)
+}
+
+/// [`transplant`] from a source map already read
+/// ([`tags::schema::transplant::Source`], of `src`), for many roots.
+pub fn transplant_from<R: std::io::Read + std::io::Seek>(
+    read: &tags::schema::transplant::Source<'_>,
+    src: &mut map::Map<R>,
+    src_gestalt: &SoundGestalt,
+    root: map::TagId,
+    dst: &mut TagSet,
+    gestalt: &mut SoundGestalt,
+) -> Result<std::result::Result<Moved, Vec<tags::schema::transplant::Refused>>> {
+    let tree = match read
+        .transplant(src, root, dst)
         .map_err(|e| Error::Invalid(format!("transplant: {e}")))?
     {
         Ok(t) => t,

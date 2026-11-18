@@ -105,6 +105,15 @@ fn action_name(s: &str) -> String {
         .unwrap_or_else(|| s.replace('-', "_").to_ascii_lowercase())
 }
 
+/// A Halo 1 unit label's Halo 2 mode.
+pub fn mode_name(unit: &str) -> String {
+    MODES
+        .iter()
+        .find(|(a, _)| *a == unit)
+        .map(|(_, b)| (*b).to_owned())
+        .unwrap_or_else(|| unit.replace('-', "_").to_ascii_lowercase())
+}
+
 /// Splits and renames a Halo 1 animation name. A `%n` suffix (a random
 /// variant) becomes `:var<n>` on the action.
 pub fn map_name(h1: &str) -> H2Name {
@@ -130,11 +139,7 @@ pub fn map_name(h1: &str) -> H2Name {
             },
         };
     }
-    let mode = MODES
-        .iter()
-        .find(|(a, _)| *a == mode_word)
-        .map(|(_, b)| (*b).to_owned())
-        .unwrap_or_else(|| mode_word.replace('-', "_").to_ascii_lowercase());
+    let mode = mode_name(mode_word);
     let rest = &words[words.len().min(1)..];
     let (class, kind, action) = match rest {
         [] => ("any".to_owned(), "any".to_owned(), "idle".to_owned()),

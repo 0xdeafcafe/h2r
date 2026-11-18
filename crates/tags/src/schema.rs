@@ -519,8 +519,6 @@ pub fn walk(root: &Struct, address: u32, mem: &Memory) -> Result<Walk, Detail> {
                 if let Field::Block(child) = f {
                     let c = u32_at(elem, o as usize);
                     let a = u32_at(elem, o as usize + 4);
-                    let mut sub = path.clone();
-                    sub.push(o);
                     // Empty (the builder writes address zero), or a count
                     // with a null address, kept as bytes.
                     if c == 0 || a == 0 {
@@ -529,6 +527,9 @@ pub fn walk(root: &Struct, address: u32, mem: &Memory) -> Result<Walk, Detail> {
                     if own {
                         out.pointers.push((at - address + (e as u32) + o, c, a));
                     }
+                    let mut sub = Vec::with_capacity(path.len() + 1);
+                    sub.extend_from_slice(&path);
+                    sub.push(o);
                     todo.push((child, a, c, sub));
                 }
             }
@@ -580,14 +581,15 @@ pub(crate) fn stray_with(
     mem: &Memory,
     raw_ok: bool,
 ) -> Option<(u32, u32)> {
-    let mut covered = vec![false; elem.len()];
-    for (&o, f) in s
+    // Fields in offset order; a word is covered when a field starting
+    // before its end reaches past its start.
+    let mut fields = s
         .fields
         .iter()
         .filter(|(_, f)| raw_ok || !matches!(f, Field::Raw))
-    {
-        covered[o as usize..(o + f.width()) as usize].fill(true);
-    }
+        .map(|(&o, f)| (o as usize, (o + f.width()) as usize))
+        .peekable();
+    let mut reach = 0;
     for (&o, _) in s.fields.iter().filter(|(_, f)| matches!(f, Field::Bsp)) {
         let w = |k: u32| u32_at(elem, (o + k) as usize);
         let t = (w(0), w(4), w(8));
@@ -596,9 +598,11 @@ pub(crate) fn stray_with(
         }
     }
     (0..elem.len().saturating_sub(3)).step_by(4).find_map(|k| {
+        while let Some((_, end)) = fields.next_if(|f| f.0 < k + 4) {
+            reach = reach.max(end);
+        }
         let v = u32_at(elem, k);
-        (!covered[k..k + 4].iter().any(|c| *c) && ((own.0..own.1).contains(&v) || mem.hit(v)))
-            .then_some((k as u32, v))
+        (reach <= k && ((own.0..own.1).contains(&v) || mem.hit(v))).then_some((k as u32, v))
     })
 }
 

@@ -237,6 +237,54 @@ pub fn animation_names(g: &Graph) -> Vec<(H2Name, bool)> {
     out
 }
 
+/// Halo 1 finds a unit's animation through slot tables: per unit, weapon
+/// class and type, a list of animation indices. A slot may name another
+/// class's animation; the cyborg's pistol, missile and unarmed classes all
+/// throw grenades with `stand rifle throw-grenade`. Halo 2 finds animations
+/// by name, so each borrowed slot becomes an action of the borrowing class
+/// (or type) naming the same animation, unless that path already has the
+/// action.
+pub(crate) fn borrow_slots(
+    g: &Graph,
+    names: &[(H2Name, bool)],
+    tree: &mut BTreeMap<String, BTreeMap<String, BTreeMap<String, Vec<(String, usize)>>>>,
+) {
+    let any = |s: &str| if s.is_empty() { "any".to_owned() } else { s.to_owned() };
+    for unit in &g.units {
+        let mode = crate::names::mode_name(&unit.label);
+        for class in &unit.classes {
+            // A class the names don't keep never reaches Halo 2's tree.
+            if !crate::names::CLASSES.contains(&class.label.as_str()) {
+                continue;
+            }
+            let lists = std::iter::once(("any".to_owned(), &class.slots))
+                .chain(class.types.iter().map(|(t, s)| (any(t), s)));
+            for (kind, slots) in lists {
+                for &slot in slots {
+                    let Some((name, _)) = usize::try_from(slot).ok().and_then(|i| names.get(i))
+                    else {
+                        continue;
+                    };
+                    let here = (&name.mode, &name.class, &name.kind) == (&mode, &class.label, &kind);
+                    if here || name.mode == crate::names::FIRST_PERSON_MODE {
+                        continue;
+                    }
+                    let actions = tree
+                        .entry(mode.clone())
+                        .or_default()
+                        .entry(class.label.clone())
+                        .or_default()
+                        .entry(kind.clone())
+                        .or_default();
+                    if !actions.iter().any(|(a, _)| *a == name.action) {
+                        actions.push((name.action.clone(), slot as usize));
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Converts a Halo 1 animation graph. A graph without its own node block
 /// takes `skeleton` (its model's nodes, [`AnimNode::from_model`]).
 pub fn convert_graph(g: &Graph, skeleton: Option<&[AnimNode]>) -> Result<(Converted, GraphReport)> {
@@ -310,6 +358,14 @@ pub fn convert_graph(g: &Graph, skeleton: Option<&[AnimNode]>) -> Result<(Conver
                     AnimType::Replacement => 2,
                 },
             )
+            // The blend screen (aim screen) index, -1 for none: the
+            // engine takes `blend_screens[+0x12]` (`+0x24`, `0x1c` each)
+            // unless it is -1 (E `0x001daf9c`, from the unit aim update
+            // `0x00112a51`, which reads the screen's `+0xc`). A converted
+            // graph has no blend screens, so 0 named a screen past the end
+            // of an empty block: the read faulted at address `0xc` as soon
+            // as a graph found its animations (converter version 64).
+            .put_u8(0x12, 0xff)
             .put_u8(0x13, nodes as u8)
             .put_i16(0x14, anim.frame_count as i16)
             .put_u16(0x16, IN_RESOURCE)
@@ -324,6 +380,7 @@ pub fn convert_graph(g: &Graph, skeleton: Option<&[AnimNode]>) -> Result<(Conver
             .put_u32(0x48, animated_size as u32);
         records.push(r);
     }
+    borrow_slots(g, &names, &mut tree);
     while resource.len() % 0x200 != 0 {
         resource.push(0);
     }
@@ -343,6 +400,12 @@ pub fn convert_graph(g: &Graph, skeleton: Option<&[AnimNode]>) -> Result<(Conver
         })
         .collect::<Vec<_>>();
 
+    // Each level of the tree in ascending string-ID order, as retail: the
+    // engine finds a mode, class, type and action by binary search
+    // (`0x001dd560`, from the graph lookup `0x001db170`), so a level in
+    // name order hides names (no `rifle` class: the cyborg refused the
+    // assault rifle). String IDs are known only when the map is built.
+    let sorted_array = |e: Vec<Block>, stride: usize| array(e, stride).sorted_by_string_id(stride as u32);
     let modes_any: Vec<String> = tree.keys().cloned().collect();
     let modes = tree
         .into_iter()
@@ -365,19 +428,19 @@ pub fn convert_graph(g: &Graph, skeleton: Option<&[AnimNode]>) -> Result<(Conver
                                 .collect::<Vec<_>>();
                             let mut b = Block::zeroed(TYPE_LEN);
                             b.string_id(0, &kind);
-                            b.block(4, actions.len() as u32, array(actions, ACTION_LEN));
+                            b.block(4, actions.len() as u32, sorted_array(actions, ACTION_LEN));
                             b
                         })
                         .collect::<Vec<_>>();
                     let mut b = Block::zeroed(CLASS_LEN);
                     b.string_id(0, &class);
-                    b.block(4, types.len() as u32, array(types, TYPE_LEN));
+                    b.block(4, types.len() as u32, sorted_array(types, TYPE_LEN));
                     b
                 })
                 .collect::<Vec<_>>();
             let mut b = Block::zeroed(MODE_LEN);
             b.string_id(0, &mode);
-            b.block(4, classes.len() as u32, array(classes, CLASS_LEN));
+            b.block(4, classes.len() as u32, sorted_array(classes, CLASS_LEN));
             b
         })
         .collect::<Vec<_>>();
@@ -398,7 +461,7 @@ pub fn convert_graph(g: &Graph, skeleton: Option<&[AnimNode]>) -> Result<(Conver
     // tests/weapon_rebuild_disc.rs in h1objects). Other graphs leave it
     // empty, as before (its meaning in unit graphs is not established).
     let first_person = !modes_any.is_empty() && modes_any.iter().all(|m| m == crate::names::FIRST_PERSON_MODE);
-    h.block(0x34, modes.len() as u32, array(modes, MODE_LEN));
+    h.block(0x34, modes.len() as u32, sorted_array(modes, MODE_LEN));
     if first_person {
         let mut p = Block::zeroed(8);
         p.string_id(0, crate::names::FIRST_PERSON_MODE)

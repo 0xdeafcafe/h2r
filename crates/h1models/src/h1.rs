@@ -496,6 +496,17 @@ const ANTR_VEHICLES: usize = 0x24;
 const ANTR_NODES: usize = 0x68;
 const ANTR_ANIMATIONS: usize = 0x74;
 const ANTR_NODE_LEN: usize = 0x40;
+/// A unit (mode) element: label at +0, weapon classes at `UNIT_WEAPONS`.
+const UNIT_LEN: usize = 0x64;
+const UNIT_WEAPONS: usize = 0x58;
+/// A weapon class element: label at +0, animation slots (`i16` animation
+/// indices) at `CLASS_SLOTS`, weapon types at `CLASS_TYPES`.
+const CLASS_LEN: usize = 0xbc;
+const CLASS_SLOTS: usize = 0x98;
+const CLASS_TYPES: usize = 0xb0;
+/// A weapon type element: label at +0, animation slots at `TYPE_SLOTS`.
+const TYPE_LEN: usize = 0x3c;
+const TYPE_SLOTS: usize = 0x30;
 const ANIMATION_LEN: usize = 0xb4;
 
 /// Animation type (`+0x20`).
@@ -517,6 +528,26 @@ pub struct Graph {
     pub unit_count: u32,
     pub weapon_count: u32,
     pub vehicle_count: u32,
+    /// Halo 1's lookup tables: per unit, per weapon class (and type), the
+    /// animation index of each slot (-1 for none). A slot may name another
+    /// class's animation: every class's throw-grenade slot names
+    /// `stand rifle throw-grenade` on the cyborg.
+    pub units: Vec<UnitSlots>,
+}
+
+/// One unit (mode) of a graph's lookup tables ([`Graph::units`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct UnitSlots {
+    pub label: String,
+    pub classes: Vec<ClassSlots>,
+}
+
+/// One weapon class of a unit: its slots, and each weapon type's.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ClassSlots {
+    pub label: String,
+    pub slots: Vec<i16>,
+    pub types: Vec<(String, Vec<i16>)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -631,8 +662,38 @@ impl Graph {
             unit_count: u32_at(h, ANTR_UNITS),
             weapon_count: u32_at(h, ANTR_WEAPONS),
             vehicle_count: u32_at(h, ANTR_VEHICLES),
+            units: read_units(m, h)?,
         })
     }
+}
+
+fn read_units<M: Memory + ?Sized>(m: &M, h: &[u8]) -> Result<Vec<UnitSlots>> {
+    let slots = |e: &[u8], at: usize| -> Result<Vec<i16>> {
+        Ok(block(m, e, at, 2)?.into_iter().map(|s| i16_at(s, 0)).collect())
+    };
+    block(m, h, ANTR_UNITS, UNIT_LEN)?
+        .into_iter()
+        .map(|u| {
+            let classes = block(m, u, UNIT_WEAPONS, CLASS_LEN)?
+                .into_iter()
+                .map(|c| {
+                    let types = block(m, c, CLASS_TYPES, TYPE_LEN)?
+                        .into_iter()
+                        .map(|t| Ok((name32(t, 0), slots(t, TYPE_SLOTS)?)))
+                        .collect::<Result<Vec<_>>>()?;
+                    Ok(ClassSlots {
+                        label: name32(c, 0),
+                        slots: slots(c, CLASS_SLOTS)?,
+                        types,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok(UnitSlots {
+                label: name32(u, 0),
+                classes,
+            })
+        })
+        .collect()
 }
 
 /// The animation names of the graph at `address`, without their data.

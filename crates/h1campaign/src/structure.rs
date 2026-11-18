@@ -54,6 +54,9 @@ pub struct Prepared {
     /// Halo 1's portals and each cluster's list of them
     /// (`h1convert::clusters::portals`).
     pub visibility: h1convert::clusters::Visibility,
+    /// Per cluster, whether it names no sky: Halo 1 fogs those with the
+    /// level's indoor fog (`h1convert::clusters::skyless`).
+    pub skyless: Vec<bool>,
 }
 
 /// Counts for one BSP.
@@ -263,6 +266,7 @@ fn prepare<R: Read + Seek>(
         }
     });
 
+    let skyless = h1convert::clusters::skyless(&src)?;
     let lightmap = h1convert::clusters::lightmap_bitmap(h1, &src, &laid.pages)?
         .map(|(name, _, bitmap)| (name, bitmap));
     let mopp = h1convert::convert::structure_mopp(&collision)?;
@@ -287,6 +291,7 @@ fn prepare<R: Read + Seek>(
         sound_clusters,
         visibility: laid.visibility,
         sound_leaves,
+        skyless,
     })
 }
 
@@ -310,15 +315,28 @@ impl Prepared {
             .collect()
     }
 
+    /// Each cluster's atmosphere (`+0x6f`): `indoor` on the skyless ones,
+    /// none (`0xff`) on the rest.
+    pub fn atmosphere(&self, indoor: Option<u8>) -> Vec<u8> {
+        self.skyless
+            .iter()
+            .map(|&s| indoor.filter(|_| s).unwrap_or(0xff))
+            .collect()
+    }
+
     /// Writes the BSP and lightmap into the base's `sbsp`/`ltmp` slots,
     /// the lightmap bitmap as a new tag, and the pathfinding into the BSP.
-    /// Returns the BSP section's index.
+    /// `indoor` is the scenario's atmosphere element holding the level's
+    /// indoor fog, which every skyless cluster names (`None`: there is
+    /// none, and every cluster takes its sky's fog). Returns the BSP
+    /// section's index.
     pub fn write(
         &self,
         set: &mut TagSet,
         sbsp: TagId,
         ltmp: TagId,
         sounds: &h1convert::ambience::Installed,
+        indoor: Option<u8>,
     ) -> Result<usize> {
         let lightmap_bitmap = match &self.lightmap {
             Some((name, bm)) => bm
@@ -348,6 +366,7 @@ impl Prepared {
             lightmap_bitmap,
             sound: &sound,
             visibility: &self.visibility,
+            atmosphere: &self.atmosphere(indoor),
         };
         let section = s.write(set, sbsp, ltmp)?;
         let element = pathfind::build::element(&self.pathfinding)
