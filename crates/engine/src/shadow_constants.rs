@@ -18,7 +18,9 @@
 //! - `0x0001cf50`: binds the desired textures (all none now) on the
 //!   device, through D3D.
 //! - `0x003f7330`, reached by a tail jump: the block uploaded as constants
-//!   (EDX [`global::BLOCK`], ECX `0x28`, stack `0x24`, `ret 4`).
+//!   (EDX [`global::BLOCK`], ECX `0x28` the first register, stack `0x24`
+//!   dwords, `ret 4`: vertex constants `c[40]`..`c[48]` in hardware
+//!   numbering).
 //!
 //! Its callees `0x00048e70` (a float to an integer, rounding positive
 //! fractions up) and `0x0001ddd0` (a render target's size words) are
@@ -42,13 +44,15 @@ pub const CEILING: u32 = 0x0004_8e70;
 pub const TARGET_SIZE: u32 = 0x0001_ddd0;
 /// `0x0001cf50`: binds the desired textures; no arguments.
 pub const BIND_TEXTURES: u32 = 0x0001_cf50;
-/// `0x003f7330`: vertex shader constants (EDX the source, ECX `0x28`,
-/// stack the register), `ret 4`.
+/// `0x003f7330`: vertex shader constants (EDX the source, ECX the first
+/// register in hardware numbering, stack the count of dwords), `ret 4`.
+/// It writes the push-buffer methods `0x1ea4` (constant load slot, ECX)
+/// and `0x0b80` (the dwords).
 pub const SET_CONSTANTS: u32 = 0x003f_7330;
 pub const SET_CONSTANTS_CLEANUP: u32 = 4;
 /// What `0x00048ee0` passes it.
-pub const CONSTANTS_COUNT: u32 = 0x28;
-pub const CONSTANTS_REGISTER: u32 = 0x24;
+pub const CONSTANTS_REGISTER: u32 = 0x28;
+pub const CONSTANTS_DWORDS: u32 = 0x24;
 
 pub mod global {
     /// u32: the scene flags; bit 10 clear forces mode 2.

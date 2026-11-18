@@ -457,7 +457,11 @@ vector (`v1`) and view vector (`v0`), and the lightmap (stage 3). Its
      written components, `c[172] = (1, 1, 0, 0)` and identity model rows
      `c[50..52]` (the vertices are already placed). It refuses, and the
      material keeps stage 1's look: per-draw engine inputs, a program
-     reading other inputs, a translation warning, a non-2D fetch, a
+     reading other inputs (but those the pass sets itself with
+     `SET_VERTEX_DATA4F_M`, `0x00018e3b`: the resolved
+     `vertex_defaults`, read from `xvs.defaults[n]`; 03a's transparents
+     read `v10` and `v11`, two colours, mask `0x0c00`), a translation
+     warning, a non-2D fetch, a
      sampled stage with nothing bound, signed channels on the lightmap.
      Signed channels of a stage bitmap are stored biased (`s + 128`) as
      the D3D path stores them.
@@ -878,7 +882,7 @@ definition flags).
   datum, &position, shadow byte, weight)`, `ret 0x10`. It sets the light's
   constants (`0x0004a1e0`, which takes 1024.0) and the flags
   `[0x004ba014]` and `[0x004ba018]`, then: with the shadow bit, the shadow
-  projection (`0x00048ee0`, `0x28` dwords at `0x004c9798`) and layer 10
+  projection (`0x00048ee0`, `0x24` dwords at `0x004c9798`) and layer 10
   (shadow generate into target 9, cleared to depth 1.0); layer 11 (shadow
   apply, `ShadowFunc GREATER`) when shadowed, bit 1 or definition bit 5;
   `0x00030ed0` when shadowed, the byte at `[0x00510c50]+5` set and
@@ -1032,12 +1036,13 @@ skipped light never reaches.
      colours times the scale, halved over 1 or quartered over 2 (mode at
      `0x00485a2c`) and clamped to `[0, 1]`. Words a path does not set
      keep their old values, so the port reads them.
-   - `0x00048ee0` (about 400 instructions): the shadow projection, `0x28`
+   - `0x00048ee0` (about 400 instructions): the shadow projection, `0x24`
      dwords at `0x004c9798`. Done (Code): `engine::shadow_constants::
      shadow_globals`, the same way. ECX the context, EBX the light's frame
      block, stack the definition; `ret 4` through a tail jump to
      `0x003f7330`, which uploads the 36-word block as vertex shader
-     constants (ECX `0x28`, register `0x24`). It also sets the shadow mode
+     constants (ECX `0x28` the first register, stack `0x24` the dwords:
+     `c[40]`..`c[48]`). It also sets the shadow mode
      byte `0x00485a47` (2 when scene flag bit 10 is clear, 1 for a light
      with falloff word 4 above zero and definition word `+0x14` zero),
      clears the four desired textures at `0x0051f3d8` and binds them
@@ -1075,20 +1080,72 @@ skipped light never reaches.
      bitmap at `+0x7c` (the gel), through `0x000144f0`. Id 13 is render
      target 9 (the shadow map, sized by `0x00048ee0`) and id 8 target 10
      (the object shadows'), through `0x00014f60`.
-   - **Implementations.** A world material's layer 12 has one pass with
-     several implementations (on 03a's `tile_metal_dark`, the
-     `light_response` pass: 0 `lightaccum_frustum_tex` with stage 3 id 1,
-     1 `lightaccum_sphere_diffuse_tex` with stage 3 id 9 sampled as a
-     volume, 2 `lightaccum_frustum_no_specular_tex`, 3 with id 10, 4 with
-     a detail bitmap); layer 13 likewise. The engine picks one per draw:
-     the index is a stack argument of the bind `0x00016b90` (implementation
-     stride `0x132` at `0x00016c26`), reached through `0x0001bd47` from
-     `0x0001bbf0`, whose callers are the layer handlers (`0x0004b3b1`,
-     `0x0004c94f`, `0x0004da8e`, `0x0004e4b8`, ...). Next: where those
-     handlers compute the index for layers 12 and 13 (S: from the context
-     word `[0x004858c8]`, the frame block's projection type and the shadow
-     mode), then the lightaccum programs' engine constants against
-     `light_globals`' block.
+   - **Implementations** (Code; `engine::light_passes`). A world
+     material's layer 12 has one pass with several implementations; on
+     03a's `tile_metal_dark` (the `light_response` pass) they are 0
+     `lightaccum_frustum_tex`, 1 `lightaccum_sphere_diffuse_tex` (stage 3
+     id 9, sampled as a volume), 2 `lightaccum_frustum_no_specular_tex`,
+     3 `lightaccum_frustum_no_specular_gel_tex` (stage 3 id 10) and 4
+     `lightaccum_frustum_tex_first_person_change_color`; its layer 13 has
+     one, `stencil_light_specular_tangentspace_sphere`. The engine picks
+     one per entry:
+     - `render_light_passes` draws layers 11, 14, 12 and 13 on the light's
+       list, each only when the list's OR mask (`[0x004c1a68]`) has the
+       layer's bit, and 13 only with flag bits 0 and 1. Before them it
+       sets the flags (`0x000311c8`..`0x0003128e`, ported as
+       `pass_flags`): bit 0 when the context's first word is 0; bit 1
+       when a colour B component is above the image's constant at
+       `0x0045dc7c` (`ja`), after colour B is zeroed when neither the
+       pointer `[0x00510c50]` with its byte `+5` nor the definition's word
+       `+4` keeps it; with the shadow byte (the caller's, kept only under
+       scene flag bit 10) and bit 0 clear, bits 2 and 5, and bit 3 when
+       falloff word 4 is above zero and definition word `+0x14` is not 2;
+       bit 4 always cleared. The byte `[0x004ba018]` becomes 1.
+     - The layer draw's handler table for structure and model geometry
+       (`0x00041640`) gives layers 12 and 13 the draw `0x0004ebd0` for one
+       item type (S: its slots read as layers 11 to 22), and the world's items use build `0x0004cbf0` and draw
+       `0x0004d0b0`: the build stores the implementation in the entry's
+       byte `+4` (-1: no entry) and the draw hands it to `0x0001bbf0` as
+       its fourth argument, whose `0x00016b90` binds implementation `n`
+       (stride `0x132`) of pass `a3` of layer `a2` in variant `a1` (the
+       item's byte `+0x15`).
+     - The build's own cases are layers 3, 16, 18 and 19; 12 and 13 take
+       `0x00015d70`'s answer: -1 when the template has no pass in the
+       layer (the count in the layer word's bits 9 and up), else
+       `0x00030da0` for 12 (`diffuse`: 1 with flag bit 0; 4 with the
+       definition's first byte bit 5; 0 with flag bit 1 and the shader's
+       integer input 4 (`shad +0x3e`) non-zero; 2 with flag bit 2; else
+       3) and `0x00030e00` for 13 (`specular`: 0 with flag bits 0 and 1
+       and the integer input, else no entry). So a frustum light without a
+       shadow draws the gel implementation 3, a shadowed one 2 (its gel is
+       folded into layer 11's marks, S), a context-zero light the sphere
+       implementation 1 and, with a bright colour B, the specular layer.
+     - Tests: `engine/tests/light_passes_differential.rs` (the flag code
+       run from `0x000311c8` to either successor of `0x00031293`, all
+       memory; both choosers' answers and stack) and
+       `engine/tests/light_passes.rs`.
+   - **Engine constants.** The light's vertex constants are uploaded by
+     `0x0003a550` (the last call of `0x0004a1e0`), not by the pass: the
+     frame block and the five words after it, 36 dwords from `0x0048597c`
+     to `c[31]`..`c[39]` (`0x003f7330` takes ECX the first register in
+     hardware numbering and the dword count on the stack: it writes the
+     push-buffer methods `0x1ea4` and `0x0b80`). The shadow block goes to
+     `c[40]`..`c[48]` the same way. A skipped light uploads nothing, so the
+     host fills those registers from `LightGlobals::frame_constants`. The
+     same function then, for a definition with a `shad` at `+0xdc`/`+0xe0`,
+     draws that shader into render target 13 (`0x00016610` with layer 13,
+     `[0x00485a77]` set meanwhile): the light's animated gel, which
+     texture id 10 then samples. The engine inputs the light passes can
+     bind (`0x0001b2c0`): vector 5 (`0x00033a0b`) and 6 (`0x00033a25`)
+     are the frame's words 24..26 and 28..30, colours A and B scaled and
+     clamped (`LightGlobals::colour_a_input`, `colour_b_input`); integers
+     0 and 1 are the colour scale mode `[0x00485a2c]`, 2 and 3 the
+     definition's words `+0x8a` and `+0x80`; scalar 16 reads falloff word
+     0 (`0x000336fb`). Which of them each lightaccum implementation binds
+     is in its `spas` external constants (`ResolvedImplementation`, mode 4
+     a vector); resolving a light pass with `EngineInputs` filled from the
+     light's block is the next step.
+
 4. **Objects**, through the models as stage 3's objects.
 5. **Shadows**: layer 10 into our depth texture, the term in the light's
    pass.

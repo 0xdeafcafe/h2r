@@ -15,6 +15,8 @@
 //! - [`light_constants`]: `0x0004a1e0`'s per-light globals block, computed
 //!   bit for bit without writing guest memory.
 //! - [`shadow_constants`]: `0x00048ee0`'s shadow block, the same way.
+//! - [`light_passes`]: the per-light pass flags and which implementation a
+//!   lit material's layer-12 and layer-13 passes draw.
 //! - [`points`]: the one table of named guest functions and globals.
 //! - [`view`]: typed views (`record!`, datum arrays, tags, players,
 //!   objects).
@@ -31,6 +33,7 @@ pub mod datum;
 pub mod entry;
 pub mod handle;
 pub mod light_constants;
+pub mod light_passes;
 pub mod locale;
 pub mod memory;
 pub mod points;

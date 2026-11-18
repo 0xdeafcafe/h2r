@@ -250,6 +250,8 @@ fn spawn_worker(name: String, models: Arc<Models>, state: Arc<Mutex<Option<MapSt
                         set.definitions.insert(def as u16, nodes);
                         set.shaders.extend(shaders);
                         s.set = Arc::new(set);
+                        // No lock held across the print.
+                        drop(st);
                         loaded += 1;
                         eprintln!(
                             "native-objects: {name}: definition {def:#010x}: {draws} draws, {see_through} transparent, {nodes} nodes, in {:.0} ms ({loaded} models native, {refused} left to D3D)",

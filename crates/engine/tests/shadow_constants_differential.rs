@@ -31,7 +31,7 @@ use common::{IMAGE_SHA256, sha256, xbe_path};
 use engine::light_constants::Fpu;
 use engine::memory::{GuestMemory, MemFault};
 use engine::shadow_constants::{
-    self as sc, BIND_TEXTURES, CONSTANTS_COUNT, CONSTANTS_REGISTER, Call, SET_CONSTANTS,
+    self as sc, BIND_TEXTURES, CONSTANTS_DWORDS, CONSTANTS_REGISTER, Call, SET_CONSTANTS,
     SET_CONSTANTS_CLEANUP, SHADOW_SETUP, global,
 };
 use ir::IrInsn;
@@ -266,8 +266,8 @@ impl Lifted<'_> {
                     uploads += 1;
                     cleanup = SET_CONSTANTS_CLEANUP;
                     if cpu.gpr[2] != global::BLOCK
-                        || cpu.gpr[1] != CONSTANTS_COUNT
-                        || word(mem, esp + 4) != CONSTANTS_REGISTER
+                        || cpu.gpr[1] != CONSTANTS_REGISTER
+                        || word(mem, esp + 4) != CONSTANTS_DWORDS
                     {
                         return Err(format!(
                             "upload with edx {:#x} ecx {:#x} register {:#x}",
