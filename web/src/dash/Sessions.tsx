@@ -74,7 +74,7 @@ function Facts(props: { session: Session }) {
   return (
     <dl>
       <Show when={isCoop(s()) && s().campaign}>
-        {(c) => <><dt>campaign</dt><dd>{levelName(c())}</dd><dt>difficulty</dt><dd>{difficultyName(c().difficulty)}</dd><dt>players</dt><dd>{coopPlayers(s(), (x) => live.state.accounts[x]?.gamertag).join(", ")}</dd></>}
+        {(c) => <><dt>campaign</dt><dd>{levelName(c(), mapTitle)}</dd><dt>difficulty</dt><dd>{difficultyName(c().difficulty)}</dd><dt>players</dt><dd>{coopPlayers(s(), (x) => live.state.accounts[x]?.gamertag).join(", ")}</dd></>}
       </Show>
       <Show when={isCoop(s()) && pingText(s())}>
         {(p) => <><dt>ping</dt><dd>{p()}</dd></>}

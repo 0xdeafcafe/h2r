@@ -56,7 +56,7 @@ export function parseCoopGames(items: unknown): CoopGame[] {
 }
 
 /** "Outskirts": the level's name for display. */
-export const coopLevel = (g: Pick<CoopGame, "campaign">): string => levelName(g.campaign);
+export const coopLevel = (g: Pick<CoopGame, "campaign">, title?: (stem: string) => string): string => levelName(g.campaign, title);
 
 /** "heroic". */
 export const coopDifficulty = (g: Pick<CoopGame, "campaign">): string => difficultyName(g.campaign.difficulty);

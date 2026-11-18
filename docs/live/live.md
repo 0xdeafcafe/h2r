@@ -363,6 +363,19 @@ under a second. Keys and emblem colouring are in
 - **`h2 live assets check [--out DIR]`** exits 0 when the directory holds art
   from this `h2`'s extractor and 1 when it is missing or older, so a script
   knows when to extract again (`deploy/live/setup.sh` does).
+- **Map names and pictures on the site.** Wherever a map is named, the
+  site reads the disc's name from `catalog.json` (Halo 2's multiplayer maps
+  and campaign levels), then the manifest's `maps.<stem>.name` (converted
+  Halo 1 maps), then the stem title-cased. A thumbnail is the map's
+  `map/<stem>/preview`, the picture the game's Select Map screen shows; a
+  game page's header shows it too for a finished game. A Halo 1 map reported
+  by its bare name (`bloodgulch`) finds its `h1_` entry when the server
+  knows no map by that stem. With no art (a 404, or art served only to
+  this machine and the page opened from another), names are the title-cased
+  stems and a finished game's thumbnail is a card with that name. On the
+  Worker the art and catalog come from the published copy
+  ([live-worker.md](live-worker.md#the-site)); nothing of them is in the
+  repository or the Worker's bundle.
 
 #### For agents: `h2 live q`
 
