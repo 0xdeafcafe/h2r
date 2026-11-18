@@ -175,4 +175,4 @@ goals, the two-stage plan, the crate table and milestones.
 
 ## Development machine (`dev/`)
 
-- [disk.md](dev/disk.md): `h2 disk clean` removes merged idle worktrees, idle Cargo targets and stale artifacts; an hourly LaunchAgent runs it when disk is low
+- [disk.md](dev/disk.md): `h2 disk clean` removes merged idle worktrees, idle Cargo targets and stale artifacts; a LaunchAgent runs it every 15 minutes when disk is low

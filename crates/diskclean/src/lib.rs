@@ -4,8 +4,8 @@
 //! It removes three kinds of thing (docs/dev/disk.md):
 //! - linked git worktrees on a branch that is merged into the base branch,
 //!   with no changes, idle for a day, and not in use;
-//! - Cargo target directories no build has touched for two days, when no
-//!   process has them open or names them;
+//! - Cargo target directories no build has touched for two days (half an
+//!   hour when the disk is low), when no process has them open or names them;
 //! - inside the other targets, `deps` artifacts and `incremental` sessions no
 //!   build has written for two days (Cargo rebuilds a missing artifact).
 //!
@@ -24,6 +24,9 @@ use std::time::{Duration, SystemTime};
 use anyhow::{Context, Result, bail};
 
 pub const DAY: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// How long a target must be untouched under disk pressure.
+pub const PRESSURE_TARGET_IDLE: Duration = Duration::from_secs(30 * 60);
 
 /// What to clean and how cautiously.
 #[derive(Clone, Debug)]
@@ -55,6 +58,12 @@ impl Options {
             artifact_age: 2 * DAY,
             now: SystemTime::now(),
         }
+    }
+
+    /// Low on disk: a target no build has touched for half an hour goes too.
+    /// Whoever comes back to it rebuilds it; one in use is still kept.
+    pub fn under_pressure(&mut self) {
+        self.target_idle = self.target_idle.min(PRESSURE_TARGET_IDLE);
     }
 }
 

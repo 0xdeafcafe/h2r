@@ -8,13 +8,16 @@ use anyhow::{Context, Result, bail};
 use diskclean::{Action, Options, apply, free_bytes, gib, plan};
 
 const USAGE: &str = "usage: h2 disk clean [--yes] [--repo DIR] [--base BRANCH] [--scan DIR]...
-                     [--if-below GB] [--kache PATH] [--empty-kache-below GB]
+                     [--if-below GB] [--low-below GB] [--kache PATH]
+                     [--empty-kache-below GB]
 
   --yes                 do it; without it, print what would go
   --repo DIR            a checkout of the repository (default: this directory)
   --base BRANCH         worktrees must be merged into it (default master)
   --scan DIR            also look for Cargo targets here, three levels deep
   --if-below GB         do nothing while more than GB are free
+  --low-below GB        under GB free, targets idle for half an hour go too
+                        (default 20)
   --kache PATH          kache binary; with --empty-kache-below, empty its store
   --empty-kache-below GB  when still under GB free after cleaning (default 20)";
 
@@ -25,7 +28,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         _ => bail!("{USAGE}"),
     }
     let mut o = Options::new(std::env::current_dir()?);
-    let (mut yes, mut if_below, mut kache, mut kache_below) = (false, None, None, 20.0);
+    let (mut yes, mut if_below, mut kache, mut kache_below, mut low_below) = (false, None, None, 20.0, 20.0);
     while let Some(a) = it.next() {
         let mut val = || it.next().with_context(|| format!("{a} needs a value\n{USAGE}"));
         match a.as_str() {
@@ -36,6 +39,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
             "--if-below" => if_below = Some(val()?.parse::<f64>()?),
             "--kache" => kache = Some(PathBuf::from(val()?)),
             "--empty-kache-below" => kache_below = val()?.parse::<f64>()?,
+            "--low-below" => low_below = val()?.parse::<f64>()?,
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return Ok(());
@@ -52,6 +56,10 @@ pub fn run(args: Vec<String>) -> Result<()> {
         return Ok(());
     }
     println!("{free:.1} GB free");
+    if free < low_below {
+        o.under_pressure();
+        println!("under {low_below} GB: targets idle for half an hour go too");
+    }
 
     let p = plan(&o)?;
     for (path, why) in &p.kept {
