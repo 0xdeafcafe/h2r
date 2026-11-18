@@ -303,3 +303,157 @@ fn every_contrail_converts() {
     println!("{conts} contrails converted, {attached} contrail attachments on rebuilt projectiles and vehicles");
     assert!(conts > 0 && attached > 0);
 }
+
+/// Survey: every retail `prt3` on `H2_BASE` by its shader template: the
+/// stem's compiled counts (lods, layers, passes, implementations,
+/// bindings and their sources), the particle's parameter names, and its
+/// postprocess block counts and bitmap datums against its parameters.
+#[test]
+#[ignore]
+fn particle_shader_survey() {
+    let mut m = h2_map(&std::env::var("H2_BASE").unwrap_or_else(|_| "05a_deltaapproach".into()));
+    let meta = tags::shader::Metadata::read(&mut m).unwrap();
+    let strings: Vec<String> = m.strings().iter().map(|s| s.clone().unwrap_or_default()).collect();
+    let name_of = |w: u32| strings.get((w & 0xffff) as usize).cloned().unwrap_or_else(|| format!("{w:#x}"));
+    let tags: Vec<_> = m.tags().iter().map(|t| (t.id, t.group, t.name.clone().unwrap_or_default(), t.location.map(|l| l.address))).collect();
+    let by_id = |id: u32| tags.iter().find(|t| t.0.0 == id).map(|t| t.2.clone()).unwrap_or_else(|| format!("{id:#x}"));
+    let blk = |b: &[u8], o: usize, size: usize| -> Vec<Vec<u8>> {
+        let (n, a) = (u32_at(b, o) as usize, u32_at(b, o + 4));
+        (0..n).map(|k| meta.bytes(a + (k * size) as u32, size).unwrap().to_vec()).collect()
+    };
+    let mut sigs: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (_, g, name, addr) in &tags {
+        if *g != map::FourCC(*b"prt3") { continue }
+        let Some(addr) = addr else { continue };
+        let r = meta.bytes(*addr, 0xbc).unwrap().to_vec();
+        let stem = u32_at(&r, 0x10);
+        let params: Vec<String> = blk(&r, 0x14, 0x28).iter().map(|p| {
+            let bm = u32_at(p, 0xc);
+            format!("{}{}={} {}", name_of(u32_at(p, 0)), if u32_at(p, 4) != 0 { "*" } else { "" }, if bm == u32::MAX { "-".into() } else { by_id(bm).rsplit('\\').next().unwrap().to_string() }, words(p, 0x10, 0x20))
+        }).collect();
+        let pp = blk(&r, 0x8c, 0x7c);
+        let p = &pp[0];
+        let counts: Vec<usize> = (0..15).map(|k| u32_at(p, 4 + k * 8) as usize).collect();
+        let bitmaps: Vec<String> = blk(p, 0x4, 0xc).iter().map(|b| {
+            let d = u32_at(b, 0);
+            let dims = tags.iter().find(|t| t.0.0 == d).and_then(|t| t.3).map(|a| {
+                let root = meta.bytes(a, 0x4c).unwrap().to_vec();
+                blk(&root, 0x44, 0x74).iter().map(|i| format!("{}x{}", u16::from_le_bytes([i[4], i[5]]), u16::from_le_bytes([i[6], i[7]]))).collect::<Vec<_>>().join(",")
+            }).unwrap_or_default();
+            let n = f32::from_bits(u32_at(b, 8)) / (std::f32::consts::LN_2 * std::f32::consts::LN_2);
+            format!("{}:{}:{}:n={n:.3}:{dims}", if d == u32::MAX { "-".into() } else { by_id(d).rsplit('\\').next().unwrap().to_string() }, u32_at(b, 4) as i32, f32::from_bits(u32_at(b, 8)))
+        }).collect();
+        let colors: Vec<String> = blk(p, 0xc, 4).iter().map(|c| format!("{:#x}", u32_at(c, 0))).collect();
+        let vectors: Vec<String> = blk(p, 0x14, 0x10).iter().map(|v| words(v, 0, 0x10)).collect();
+        let lods: Vec<String> = blk(p, 0x1c, 8).iter().map(|v| words(v, 0, 8)).collect();
+        let pbm: Vec<String> = blk(p, 0x5c, 4).iter().map(|v| format!("{}/{}", i16::from_le_bytes([v[0], v[1]]), i16::from_le_bytes([v[2], v[3]]))).collect();
+        let u16s = |o: usize, size: usize| -> String {
+            blk(p, o, size).iter().map(|v| v.chunks(2).map(|c| format!("{:x}", u16::from_le_bytes([c[0], c[1]]))).collect::<Vec<_>>().join(".")).collect::<Vec<_>>().join(" ")
+        };
+        let detail = format!(
+            "layers [{}] passes [{}] impls [{}] pcol [{}] pscal [{}]",
+            u16s(0x24, 2), u16s(0x2c, 4), u16s(0x34, 0xa),
+            blk(p, 0x64, 0xc).iter().map(|v| words(v, 0, 0xc)).collect::<Vec<_>>().join(" | "),
+            blk(p, 0x6c, 4).iter().map(|v| words(v, 0, 4)).collect::<Vec<_>>().join(" ")
+        );
+        let st = by_id(stem);
+        let key = format!("stem {st}");
+        sigs.entry(key).or_default().push(format!(
+            "  {name}\n    flags {:#x} vs {} params [{}]\n    counts {counts:?}\n    bitmaps [{}] colors [{}] vectors [{}] lods [{}] pbm [{}]\n    {detail}",
+            u32_at(&r, 0), u16::from_le_bytes([r[4], r[5]]), params.join("; "), bitmaps.join(" "), colors.join(" "), vectors.join(" | "), lods.join(" | "), pbm.join(" ")
+        ));
+    }
+    for (stem, list) in &sigs {
+        println!("{stem}: {} particles", list.len());
+        let st_addr = tags.iter().find(|t| format!("stem {}", t.2) == *stem).and_then(|t| t.3);
+        if let Some(a) = st_addr {
+            let t = tags::shader::ShaderTemplate::decode(&meta, a).unwrap();
+            let c = t.compiled().unwrap();
+            println!("  template: lods {:?}\n  layers {:?}\n  passes {:?}\n  impls {:?}\n  bindings {:?}", c.lods, c.layers, c.passes.iter().map(|p| (by_id(p.pass.id.0), p.implementations)).collect::<Vec<_>>(), c.implementations, c.bindings);
+        }
+        for l in list.iter().take(std::env::var("N").ok().and_then(|n| n.parse().ok()).unwrap_or(4)) {
+            println!("{l}");
+        }
+    }
+}
+
+/// The compiled particle shader rule (`h1objects::particles`, "particle
+/// shader") against every retail `prt3` with no animated parameter on the
+/// bases (`H2_MAPS`, default the three the converter builds on): rebuilt
+/// from its stem, its bitmap and the stem's role, the postprocess equals
+/// retail's but for the two words nothing reads; the colour and vector
+/// values are compared where the particle's only parameter is its bitmap.
+#[test]
+#[ignore = "reads the Halo 2 disc ($H2_DISC)"]
+fn retail_particle_shaders_compile_from_their_stems() {
+    use h1objects::base::Base;
+    use h1objects::particles::{particle_postprocess, particle_shaders};
+    use tags::defs::{Defs, Record, Target, Val};
+    let maps = std::env::var("H2_MAPS")
+        .unwrap_or_else(|_| "05a_deltaapproach,coagulation,beavercreek".into());
+    let d = Defs::builtin().group(map::FourCC(*b"prt3")).unwrap();
+    let bitm = Defs::builtin().group(map::FourCC(*b"bitm")).unwrap();
+    let blk = |r: &Record, p: &str| -> Vec<Record> {
+        match r.at(p) {
+            Some(Val::Block(b)) => b.clone(),
+            _ => Vec::new(),
+        }
+    };
+    let (mut same, mut animated, mut values_checked) = (0usize, 0usize, 0usize);
+    for name in maps.split(',') {
+        let mut m = h2_map(name);
+        let base = Base::read(&mut m).unwrap();
+        let shaders = particle_shaders(&base).unwrap();
+        for t in base.tags.iter().filter(|t| t.1 == map::FourCC(*b"prt3")) {
+            let r = base.record(d, t.0).unwrap();
+            let mut pp = blk(&r, "postprocess").remove(0);
+            if !blk(&pp, "animations").is_empty() || !blk(&pp, "properties").is_empty() {
+                animated += 1;
+                continue;
+            }
+            let Some(Val::Ref { target: Target::Id(stem), .. }) = r.at("shader_template") else {
+                panic!("{}: stem", t.2)
+            };
+            let s = shaders.iter().find(|s| s.stem == *stem).unwrap();
+            let bitmap = blk(&pp, "bitmaps").first().and_then(|b| match b.at("bitmap") {
+                Some(Val::Datum(Target::Id(id))) => {
+                    let br = base.record(bitm, *id).unwrap();
+                    let i = &blk(&br, "images")[0];
+                    let wh = |f: &str| match i.at(f) {
+                        Some(Val::Int(v)) => *v as u16,
+                        x => panic!("{f}: {x:?}"),
+                    };
+                    Some((*id, wh("width"), wh("height")))
+                }
+                _ => None,
+            });
+            let mut got = particle_postprocess(s, bitmap).unwrap();
+            // The two words nothing reads.
+            for (list, field) in [("lods", "unknown_6"), ("passes", "unknown_2")] {
+                let mut e = blk(&pp, list);
+                for x in &mut e {
+                    x.set(field, Val::Bytes(vec![0, 0])).unwrap();
+                }
+                pp.set(list, Val::Block(e)).unwrap();
+            }
+            if blk(&r, "parameters").len() == 1 {
+                values_checked += 1;
+            } else {
+                for f in ["colors", "vectors"] {
+                    got.set(f, pp.at(f).unwrap().clone()).unwrap();
+                }
+            }
+            if got != pp {
+                for (k, ((n, a), (_, b))) in got.fields.iter().zip(&pp.fields).enumerate() {
+                    if a != b {
+                        println!("{name} {}: field {k} {n}:\n  built  {a:?}\n  retail {b:?}", t.2);
+                    }
+                }
+                panic!("{name} {}: postprocess differs", t.2);
+            }
+            same += 1;
+        }
+    }
+    println!("{same} retail particles compile from their stems ({values_checked} with their values), {animated} with animated parameters not compared");
+    assert!(same > 0);
+}

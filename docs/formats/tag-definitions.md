@@ -1186,6 +1186,29 @@ schema: lod elements `0x8` and pass elements `0x4` where `shad`'s are
 here: an emitter's `+0x68` (the input pair of its seventh property) and an
 implementation's `+0x4` (its stage-state and pixel-constant ranges).
 
+**The compiled particle shader.** A particle's `postprocess` is what
+the tag compiler makes of its `stem` and parameters; with no animated
+parameter it follows one rule from the stem (V: 533 retail particles on
+05a, Coagulation and Beaver Creek, the six with animated parameters
+aside; `h1objects` `tests/particles_disc.rs`
+`retail_particle_shaders_compile_from_their_stems`):
+
+- one `bitmaps`, `colors` and `vectors` element per instance source the
+  stem's bindings name, through each implementation's ranges;
+- `lods`, `layers` and `passes` hold the stem's own layer, pass and
+  implementation ranges (the lod's animated-layer mask zero), one empty
+  `implementations` element per stem implementation;
+- a bitmap's `lod_offset` is `log2(max(width, height))` of its first
+  image times `ln(2)^2` (5 to 8 times `ln(2)^2` on 32 to 256 pixel
+  bitmaps);
+- `parameter_bitmaps` five entries (`0` then `-1`), `parameter_colors` two
+  zero colours and `parameter_scalars` six zeros.
+
+The colour and vector values are the parameters' compiled defaults; 502
+of the 533 hold their stem's most common set. A lod's `+0x6` and a pass's
+`+0x2` vary on retail and nothing reads them.
+`h1objects::particles::particle_postprocess` writes this.
+
 `crates/tags/src/defs/cont.txt`: all 34 distinct retail `cont`
 round-trip (a `0xf0` root, the bitmap at `+0x30` and `+0x88`, `0x40`
 points each with a `pphy` at `+0x10`). The spans are named by where they
