@@ -198,7 +198,7 @@ export async function fetchServerFacts(api: string, fetchFn: typeof fetch = fetc
   return parseServerFacts(await r.json());
 }
 
-async function adminGet(api: string, path: string, aud: string, me: LocalAccount, fetchFn: typeof fetch): Promise<unknown> {
+export async function adminGet(api: string, path: string, aud: string, me: LocalAccount, fetchFn: typeof fetch): Promise<unknown> {
   const token = await issueToken(me, aud, ADMIN_READ);
   const r = await fetchFn(`${api}${path}`, { headers: { accept: "application/json", authorization: `Bearer ${token}` } });
   if (!r.ok) return fail(r);
@@ -267,9 +267,9 @@ export async function revokeInvite(api: string, aud: string, me: LocalAccount, j
  *  action on the invites screen. */
 export interface ServerPod { label: string; glyph: "key" | "sign" | "record" | "server" | "history" | "career" | "download" | "globe" | "gear"; to?: string; back?: boolean; run?: "create" | "copy" }
 
-/** The server screens: the overview, and under it invites, accounts and
- *  importing an account (/dash/server/<view>). */
-export type ServerView = "overview" | "invites" | "accounts" | "import";
+/** The server screens: the overview, and under it invites, accounts,
+ *  importing an account, player reports and bans (/dash/server/<view>). */
+export type ServerView = "overview" | "invites" | "accounts" | "import" | "reports" | "bans";
 
 /** Where the dashboard's "halo admin" goes: the stats site's admin area,
  *  which keeps only the game's own things (the message of the day,
@@ -277,6 +277,9 @@ export type ServerView = "overview" | "invites" | "accounts" | "import";
  *  accounts and admins, importing an account, the server) is on the
  *  dashboard. */
 export const HALO_ADMIN = "/stats/admin";
+
+/** The Live admin's usage screen (docs/live/web-boundary.md §5), in the dense style. */
+export const LIVE_ADMIN_USAGE = "/dash/admin/usage";
 
 /** The pods of each server screen. Admin tools only for an admin
  *  (`isMeAdmin() === true`); everyone else, and anyone while that is still
@@ -311,11 +314,25 @@ export function serverPods(view: ServerView, admin: boolean | null): ServerPod[]
         { label: "accounts", glyph: "career", to: "/dash/server/accounts" },
         { label: "your server", glyph: "globe", to: "/dash/server", back: true },
       ];
+    case "reports":
+      return [
+        { label: "accounts", glyph: "career", to: "/dash/server/accounts", back: true },
+        { label: "bans", glyph: "sign", to: "/dash/server/bans" },
+        { label: "players", glyph: "record", to: "/dash/players" },
+        { label: "your server", glyph: "globe", to: "/dash/server", back: true },
+      ];
+    case "bans":
+      return [
+        { label: "accounts", glyph: "career", to: "/dash/server/accounts", back: true },
+        { label: "reports", glyph: "history", to: "/dash/server/reports", back: true },
+        { label: "players", glyph: "record", to: "/dash/players" },
+        { label: "your server", glyph: "globe", to: "/dash/server", back: true },
+      ];
     case "accounts":
       return [
         { label: "invites", glyph: "key", to: "/dash/server/invites" },
         { label: "import account", glyph: "download", to: "/dash/server/import" },
-        { label: "halo admin", glyph: "gear", to: HALO_ADMIN },
+        { label: "usage", glyph: "history", to: LIVE_ADMIN_USAGE },
         { label: "your server", glyph: "globe", to: "/dash/server", back: true },
       ];
     case "import":

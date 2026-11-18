@@ -24,8 +24,11 @@ const parts = {
   campaign: () => import("./stats/CampaignRecord"),
   events: () => import("./stats/Events"),
   clans: () => import("./stats/Clans"),
+  ranks: () => import("./stats/Ranks"),
   admin: () => import("./admin/Admin"),
   signin: () => import("./signin/SignIn"),
+  deckStyle: () => import("./deck/StylePage"),
+  usage: () => import("./deck/UsagePage"),
 };
 const Game = lazy(parts.game);
 const Games = lazy(parts.games);
@@ -36,10 +39,14 @@ const HistoryPage = lazy(() => parts.player().then((m) => ({ default: m.HistoryP
 const CareerPage = lazy(() => parts.player().then((m) => ({ default: m.CareerPage })));
 const CampaignRecordPage = lazy(parts.campaign);
 const Events = lazy(parts.events);
+const Ranks = lazy(parts.ranks);
+const PlayerRanksPage = lazy(() => parts.ranks().then((m) => ({ default: m.PlayerRanksPage })));
 const Clans = lazy(parts.clans);
 const ClanPage = lazy(() => parts.clans().then((m) => ({ default: m.ClanPage })));
 const Admin = lazy(parts.admin);
 const SignIn = lazy(parts.signin);
+const DeckStyle = lazy(parts.deckStyle);
+const Usage = lazy(parts.usage);
 const Viewer3DPage = lazy(() => import("./viewer/Popout"));
 
 const idle = (f: () => void) =>
@@ -63,6 +70,9 @@ render(
     <Router root={Veil}>
       <Route path="/dash/teams" component={() => <Navigate href="/dash/clans" />} />
       <Route path="/dash/teams/:tag" component={() => <Navigate href={`/dash/clans/${useParams().tag}`} />} />
+      <Route path="/dash/admin/style" component={DeckStyle} />
+      <Route path="/dash/admin/usage" component={Usage} />
+      <Route path="/dash/admin" component={() => <Navigate href="/dash/admin/usage" />} />
       <Route path={["/", "/dash/:section", "/dash/:section/:tag"]} component={Dashboard} />
       <Route path="/stats" component={StatsLayout}>
         <Route path="/" component={Home} />
@@ -73,6 +83,8 @@ render(
         <Route path="/players/:tag/history" component={HistoryPage} />
         <Route path="/players/:tag/career" component={CareerPage} />
         <Route path="/players/:tag/campaign" component={CampaignRecordPage} />
+        <Route path="/players/:tag/ranks" component={PlayerRanksPage} />
+        <Route path={["/ranks", "/ranks/:playlist"]} component={Ranks} />
         <Route path="/clans" component={Clans} />
         <Route path="/clans/:id" component={ClanPage} />
         <Route path="/teams" component={() => <Navigate href="/stats/clans" />} />

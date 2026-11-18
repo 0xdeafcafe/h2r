@@ -36,7 +36,7 @@ pub const PRIVATE: &str = "private, no-store";
 /// The `/v1/` reads an anonymous reader may get from a shared cache: the
 /// first path segment.
 pub const PUBLIC_READS: &[&str] = &[
-    "snapshot", "games", "accounts", "presence", "stats", "events", "teams", "maps",
+    "snapshot", "games", "accounts", "presence", "stats", "events", "teams", "maps", "ranks",
 ];
 
 /// The largest public read buffered for its `ETag`; a bigger one goes out

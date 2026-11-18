@@ -73,6 +73,9 @@ pub fn not_found(m: impl Into<String>) -> ApiError {
 /// Store failures are logged here and reported without detail.
 impl From<StoreError> for ApiError {
     fn from(e: StoreError) -> Self {
+        if matches!(e, StoreError::Held) {
+            return ApiError::new(ErrorCode::Unavailable, e.to_string());
+        }
         eprintln!("live: store: {e}");
         ApiError::new(ErrorCode::Unavailable, "the event store is unavailable")
     }
@@ -149,6 +152,8 @@ impl Default for Policy {
 
 pub struct Live {
     pub(crate) store: Arc<dyn EventStore>,
+    /// `store`, which holds writes while a log is copied in.
+    pub(crate) held: Arc<crate::hold::HeldStore>,
     pub(crate) model: Arc<Model>,
     pub(crate) admins: Arc<crate::admin::Admins>,
     pub(crate) identity: ServerIdentity,
@@ -165,6 +170,8 @@ pub struct Live {
     creates: RateLimiter,
     team_writes: tokio::sync::Mutex<()>,
     pub(crate) session_writes: tokio::sync::Mutex<()>,
+    /// Serializes ranking, so a game is ranked once.
+    pub(crate) rank_writes: tokio::sync::Mutex<()>,
     pub(crate) local_signin: crate::local_signin::Offers,
     pub(crate) relays: crate::relay::Relays,
     pub(crate) invites: Arc<crate::invites::Invites>,
@@ -174,8 +181,23 @@ pub struct Live {
     pub(crate) catalog: Arc<crate::content::Catalog>,
     /// Server-wide stats for the stats home (`GET /v1/stats/summary`).
     pub(crate) stats: Arc<crate::stats::Stats>,
+    pub(crate) usage: Arc<crate::usage::Usage>,
     pub(crate) uploads: RateLimiter,
     pub(crate) content_writes: tokio::sync::Mutex<()>,
+    /// Player reports and their reviews (docs/live/live-admin.md).
+    pub(crate) reports: Arc<crate::reports::Reports>,
+    /// Reports per reporting account ([`crate::reports::RATE`]).
+    pub(crate) report_rate: RateLimiter,
+    /// Holds a report's duplicate check and its append together.
+    pub(crate) report_writes: tokio::sync::Mutex<()>,
+    /// Account bans (docs/live/live-admin.md "Bans").
+    pub(crate) bans: Arc<crate::bans::Bans>,
+    /// Holds a ban's checks and its append together.
+    pub(crate) ban_writes: tokio::sync::Mutex<()>,
+    /// Mute lists (docs/live/live-voice.md §3.6).
+    pub(crate) mutes: Arc<crate::mutes::Mutes>,
+    /// Holds a mute's checks and its append together.
+    pub(crate) mute_writes: tokio::sync::Mutex<()>,
     /// Each account's own cloud saves (docs/live/live-cloud-saves.md).
     pub(crate) cloud: crate::cloud_saves::CloudSaves,
     /// Unix seconds the service started.
@@ -228,7 +250,17 @@ fn may_write(author: &Author, stream: &str, kind: &str) -> bool {
             && stream.starts_with("mailbox-")
             && live_proto::mailbox::is_kind(kind);
     }
-    if stream.starts_with("session-") || live_proto::maps::KINDS.contains(&kind) {
+    if stream.starts_with("session-")
+        || stream.starts_with("reports-")
+        || stream.starts_with("rank-")
+        || stream.starts_with("bans-")
+        || stream.starts_with("mutes-")
+        || kind == live_proto::rank::CHANGED
+        || live_proto::maps::KINDS.contains(&kind)
+        || live_proto::reports::KINDS.contains(&kind)
+        || live_proto::bans::KINDS.contains(&kind)
+        || live_proto::mutes::KINDS.contains(&kind)
+    {
         return false;
     }
     if live_proto::team::Action::is_kind(kind) {
@@ -432,6 +464,8 @@ impl Live {
         policy: Policy,
         timers: Timers,
     ) -> anyhow::Result<Arc<Self>> {
+        let held = Arc::new(crate::hold::HeldStore::open(store).await?);
+        let store: Arc<dyn EventStore> = held.clone();
         let model = Arc::new(Model::default());
         let admins = Arc::new(crate::admin::Admins::new(policy.admins.clone()));
         let mut dispatcher = Dispatcher::new(store.clone());
@@ -449,8 +483,17 @@ impl Live {
         dispatcher.subscribe(recovery.clone());
         let catalog = Arc::new(crate::content::Catalog::default());
         dispatcher.subscribe(catalog.clone());
+        let reports = Arc::new(crate::reports::Reports::default());
+        dispatcher.subscribe(reports.clone());
+        let bans = Arc::new(crate::bans::Bans::default());
+        dispatcher.subscribe(bans.clone());
+        let mutes = Arc::new(crate::mutes::Mutes::default());
+        dispatcher.subscribe(mutes.clone());
         let stats = Arc::new(crate::stats::Stats::with_model(model.clone()));
         dispatcher.subscribe(stats.clone());
+        let usage = Arc::new(crate::usage::Usage::default());
+        usage.load(&store.usage().await?);
+        dispatcher.subscribe(usage.clone());
         let mut applied = dispatcher.applied();
         let feed = dispatcher.feed();
         let wake = store.wake().await?;
@@ -459,6 +502,7 @@ impl Live {
         let dispatcher = crate::rt::spawn(dispatcher.run_with(wake, poll));
         let live = Live {
             store,
+            held,
             model,
             admins,
             identity,
@@ -472,14 +516,23 @@ impl Live {
             creates: RateLimiter::new(policy.create_rate.0, policy.create_rate.1),
             team_writes: Default::default(),
             session_writes: Default::default(),
+            rank_writes: Default::default(),
             local_signin: Default::default(),
             relays: Default::default(),
             invites,
             recovery,
             catalog,
             stats,
+            usage,
             uploads: RateLimiter::new(policy.content.upload_rate.0, policy.content.upload_rate.1),
             content_writes: Default::default(),
+            reports,
+            report_rate: RateLimiter::new(crate::reports::RATE.0, crate::reports::RATE.1),
+            report_writes: Default::default(),
+            bans,
+            ban_writes: Default::default(),
+            mutes,
+            mute_writes: Default::default(),
             cloud: Default::default(),
             started_at: now(),
             data_dir: Default::default(),
@@ -625,6 +678,20 @@ impl Live {
         token
             .verify(&key, &self.identity.id, method, now)
             .map_err(|e| unauthorized(e.to_string()))?;
+        if let Author::Account { xuid, .. } = &author
+            && live_proto::bans::bars(method)
+        {
+            let refused = self
+                .bans
+                .read()
+                .in_force(*xuid, now)
+                .map(crate::bans::banned_error);
+            if let Some(e) = refused
+                && !self.admins.is_admin_xuid(*xuid, &self.model.read())
+            {
+                return Err(e);
+            }
+        }
         let expires = (c.exp + TOKEN_LEEWAY_S).max(now + JTI_MEMORY_S);
         if !self
             .jtis
@@ -942,7 +1009,7 @@ impl Live {
     pub fn authorize_operator(&self, bearer: Option<&str>, method: &str) -> Result<(), ApiError> {
         let author = self.authenticate(bearer, method)?;
         if !matches!(author, Author::Server(_)) {
-            return Err(forbidden("only the server operator creates invites"));
+            return Err(forbidden("only the server operator may do this"));
         }
         Ok(())
     }

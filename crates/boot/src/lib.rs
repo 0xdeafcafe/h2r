@@ -21,11 +21,13 @@ pub mod coop_players;
 pub mod coop_probe;
 pub mod campaign_cards;
 pub mod campaign_menu;
+pub mod cheats;
 pub mod campaigns;
 pub mod custom_games;
 pub mod d3d_diag;
 pub mod d3d_glue;
 pub mod dsound_glue;
+pub mod effect_census;
 pub mod fallback;
 pub mod fov_row;
 pub mod game_glue;
@@ -36,8 +38,10 @@ pub mod hud;
 pub mod hud_swap;
 pub mod h1_variants;
 pub mod precision;
+pub mod render_probe;
 pub mod render_thread;
 pub mod host_perf;
+pub mod hot_glue;
 pub mod sampling;
 pub mod icons;
 pub mod layout_glue;
@@ -48,8 +52,10 @@ pub mod keyboard_glue;
 pub mod live_glue;
 pub mod live_notice;
 pub mod agent_glue;
+pub mod debug_menu_glue;
 pub mod lockstep_glue;
 pub mod map_bases;
+pub mod map_copy;
 pub mod map_override;
 pub mod map_slots;
 pub mod movies_glue;
@@ -58,6 +64,7 @@ pub mod pad_speaker;
 pub use live_telemetry as telemetry;
 pub mod sha;
 pub mod shim;
+pub mod sim_bots;
 pub mod speaker_row;
 pub mod setting_defs;
 pub mod skulls;
@@ -73,7 +80,11 @@ pub mod steam_speaker;
 pub mod ui;
 pub mod ui_kit;
 pub mod ui_watch;
+pub mod bot_glue;
+pub mod clankers;
 pub mod video_screen;
+pub mod voice_settings;
+pub mod pause_menu;
 pub mod snapshot_probe;
 pub mod sse;
 pub mod sweep_diag;
@@ -542,10 +553,10 @@ pub struct RunOpts {
     pub bink: bool,
     /// Register crates/dsound's overrides (headless mixer).
     pub dsound: bool,
-    /// Where `h2 movies` installed the transcoded movies
-    /// (`movies_glue::default_dir()` by default). The ones current for the
-    /// disc play; `None` skips every movie (`--no-movies`).
-    pub movies: Option<PathBuf>,
+    /// Which movies may play: those `h2 movies` installed and current for
+    /// the disc (`movies_glue::Movies`; level boots and headless runs skip
+    /// by default, `--no-movies` always).
+    pub movies: movies_glue::Movies,
 }
 
 fn describe(ev: Option<&Event>, thread: u32) -> String {
@@ -569,6 +580,22 @@ fn describe(ev: Option<&Event>, thread: u32) -> String {
         },
         Some(e) => format!("{e:x?}"),
         None => "no event".into(),
+    }
+}
+
+/// Why `H2_PERF_FROM`, `H2_TIMELINE` or `H2_PROFILE` will do nothing in
+/// this run, if they won't: the session needs an h2 built with
+/// `--features perf`, and opens only at `H2_PERF_FROM` (a present number
+/// or `level`), so `H2_TIMELINE`/`H2_PROFILE` alone write nothing.
+pub fn perf_env_note(perf_build: bool, perf_from: bool, session_vars: bool) -> Option<&'static str> {
+    match (perf_build, perf_from, session_vars) {
+        (false, true, _) | (false, _, true) => Some(
+            "perf: H2_PERF_FROM, H2_TIMELINE and H2_PROFILE need an h2 built with --features perf; no session, nothing written",
+        ),
+        (true, false, true) => Some(
+            "perf: H2_TIMELINE/H2_PROFILE open their session at H2_PERF_FROM (a present or `level`), which is unset; nothing written",
+        ),
+        _ => None,
     }
 }
 
@@ -631,6 +658,12 @@ pub struct Host {
     /// kernel (for its logical clock). Returning false ends the run
     /// (outcome `HostStop`).
     pub between_slices: Option<BetweenSlices>,
+    /// Our debug menu (docs/runtime/debug-menu.md): its calls go to the
+    /// agent (`H2_AGENT`'s, else a local one with no socket), and it gets
+    /// the menu's host methods (`settings.*`, `perf.overlay`, `cheat.*`).
+    pub debug_menu: Option<debug_menu::Shared>,
+    /// The perf overlay's on/off switch, for `perf.overlay`.
+    pub perf_overlay: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// Called once with the kernel's VFS when it is attached, before the
     /// game runs: `h2 play` watches U: through it for cloud saves
     /// (`vfs::Vfs::set_change_observer`, docs/live/live-cloud-saves.md).
@@ -791,6 +824,9 @@ pub fn run_hosted_with_live(
         }
         features.add(&map_slots::MapSlots { vfs }).map_err(|e| anyhow::anyhow!("map slots: {e}"))?;
     }
+    // Maps copy to their cache slots several steps a loading frame, not one
+    // (docs/runtime/cache-slots.md, "Copy speed on the loading screen").
+    features.add(&map_copy::MapCopy).map_err(|e| anyhow::anyhow!("map copy: {e}"))?;
     // Frame species and weapon names come from the loaded map's tag names,
     // which stay on disc: let telemetry find the map file through the VFS.
     // Which map exactly (docs/game/maps.md §5): a package's MapId, None for the
@@ -799,6 +835,14 @@ pub fn run_hosted_with_live(
         t.set_map_id_locator(Box::new(move |map| {
             let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
             map_override::map_id(&mut v, map)
+        }));
+    }
+    // A matchmaking game's record names its playlist (docs/live/
+    // live-matchmaking.md §8); the server fills in the hopper's title.
+    if let (Some(t), Some(hle)) = (&_telemetry, &_live) {
+        let hle = Arc::clone(hle);
+        t.set_playlist_locator(Box::new(move || {
+            hle.playlist().map(|id| telemetry::Playlist { name: None, id: id.to_string() })
         }));
     }
     if let (Some(hle), Some(vfs)) = (&_live, k.vfs()) {
@@ -943,6 +987,17 @@ pub fn run_hosted_with_live(
     // magnetism at each map load, from the Aim Assist setting (Auto: Strong
     // while the touch controls show). Headless runs keep retail.
     aim_assist::install(&mut features, host.settings.clone()).context("installing the aim assist")?;
+    // Local bots (docs/game/bots.md, stage 1): pads on controller ports,
+    // signed in on the players screen, their views and listeners hidden.
+    // `H2_BOTS` adds brains at boot; idle with none.
+    if opts.xapi {
+        bot_glue::add_from_env();
+        bot_glue::install(&mut features, &opts.data_root).context("installing the bots")?;
+        // The Clankers page and its Game Setup row (stage 7).
+        if let Some(store) = host.settings.as_ref() {
+            clankers::install(&mut features, store).context("installing the Clankers page")?;
+        }
+    }
     // The iOS touch controls' game side (docs/runtime/ios.md): direct
     // look into player one's facing, and the layout from player one's
     // seat and weapon. Idle while no touch controls show.
@@ -958,6 +1013,8 @@ pub fn run_hosted_with_live(
     } else {
         None
     };
+    // No window: a headless run, which skips the movies by default.
+    let headless = host.gfx.is_none();
     let mut d3d_calls = match (opts.d3d, host.gfx.take()) {
         (false, _) => None,
         (true, Some(b)) => Some(match host.gfx_view.take() {
@@ -1002,6 +1059,10 @@ pub fn run_hosted_with_live(
         (true, Some(open)) => Some(dsound_glue::install_with_sinks(&loaded.runtime, &k, xbe_bytes, open, pad)?),
         (true, None) => Some(dsound_glue::install(&loaded.runtime, &k, xbe_bytes)?),
     };
+    if let Some(input) = host.input.as_mut() {
+        // Local bots' pads (docs/game/bots.md): after the host's own.
+        input.add_backend(Box::new(bots::local::global().backend()));
+    }
     let (xa, pad) = match (opts.xapi, host.input.take()) {
         (false, _) => (None, None),
         (true, Some(input)) => (Some(xapi_glue::register_with(&loaded.runtime, &k, input)?), host.keyboard.take()),
@@ -1041,8 +1102,28 @@ pub fn run_hosted_with_live(
             }
         }
         Some(path) => Some(agent_glue::AgentGlue::install(&mut features, path, xa.as_deref(), input_replay)?),
+        // The debug menu talks to an agent: a local one, with no socket.
+        None if host.debug_menu.is_some() => Some(agent_glue::AgentGlue::local()),
         None => None,
     };
+    let watch_overrides = agent_glue::socket_from_env().is_some();
+    // edit.* and render.* on the agent (hot_glue.rs, docs/graphics/hot-iteration.md).
+    if let Some(a) = &agent {
+        let maps = k.vfs().map(|vfs| -> hot_glue::MapLocator {
+            Box::new(move |map| {
+                let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
+                let file = v.host_file(&format!("\\Device\\CdRom0\\maps\\{map}.map"))?;
+                Some(telemetry::MapFile { path: file.path, offset: file.offset, len: file.len })
+            })
+        });
+        hot_glue::install(&a.agent, &loaded.runtime, maps, watch_overrides);
+    }
+    // The debug menu's host methods and connection (debug_menu_glue.rs).
+    if let Some(a) = &agent {
+        debug_menu_glue::install(host.debug_menu.as_ref(), &a.agent, host.settings.clone(), host.perf_overlay.clone());
+        // Our cheats (cheats.rs): refused in co-op and lockstep runs.
+        cheats::install(&mut features, &a.agent, &loaded.runtime, lockstep_on)?;
+    }
     // The Rust datum, tag and locale functions, when H2_FEATURES has
     // impl.engine=on (off by default).
     features.add(&feature::leaves::EngineLeaves).map_err(|e| anyhow::anyhow!("engine leaves: {e}"))?;
@@ -1063,6 +1144,7 @@ pub fn run_hosted_with_live(
     if lockstep_on {
         pipeline = pipeline.disabled("lockstep (H2_LOCKSTEP/H2_INPUT_RECORD/H2_INPUT_REPLAY) compares serial runs");
     }
+    render_probe::set_pipeline(pipeline.clone());
     features.add(&pipeline).map_err(|e| anyhow::anyhow!("pipeline render: {e}"))?;
     // Stage 7a: the Rust render_views, when H2_FEATURES has
     // impl.render.views=on (off by default; docs/graphics/render-loop.md).
@@ -1144,14 +1226,15 @@ pub fn run_hosted_with_live(
         h.set_tick_note(why.to_owned());
     }
     if opts.bink {
-        // A lockstep run compares schedules; movie pacing follows the wall
-        // clock when the sound stalls, so it skips them.
-        let why_off = lockstep_on.then_some("lockstep");
+        // A lockstep run compares schedules and movie pacing follows the
+        // wall clock, so it skips them; so, by default, do level boots and
+        // headless runs.
+        let why_off = movies_glue::why_off(&opts.movies, lockstep_on, level_name.as_deref(), headless);
         movies_glue::install(
             &loaded.runtime,
-            opts.movies.as_deref(),
+            &opts.movies,
             &opts.disc,
-            why_off,
+            why_off.as_deref(),
             ds.as_ref().map(dsound_glue::Audio::mixer),
         );
     } else {
@@ -1204,20 +1287,32 @@ pub fn run_hosted_with_live(
     // H2_FRAME_STATS=1: frame times split by phase (docs/perf/frame-budget.md).
     // `h2 play --frame-stats` may have started them already.
     let frame_stats = timeline::phase::enabled() || timeline::phase::start_from_env();
+    let gpu = !headless || std::env::var_os("H2_BOOT_GFX").is_some();
+    if let Some(note) = d3d_glue::frame_stats_gpu_note(frame_stats && d3d_calls.is_some(), gpu) {
+        eprintln!("{note}");
+    }
+    // H2_EFFECT_CENSUS=1: a line per new timed light (EXPLOSION for a
+    // grenade-sized one) and an exit summary (effect_census.rs).
+    let mut effect_census = effect_census::requested_by(std::env::var(effect_census::ENV).ok().as_deref()).then(|| {
+        eprintln!("effects: census on ({}): a line per new timed light, a summary at exit", effect_census::ENV);
+        (effect_census::Census::new(), u64::MAX)
+    });
     // H2_PERF_FROM=N (cli built with `--features perf`): open
     // `perf::Session::from_env()` (H2_PROFILE, H2_TIMELINE) at present N;
     // H2_PERF_FROM=level at the first present after the level loaded
     // (`level_boot::loaded_at`). It is finished below, before the module is
     // dropped.
+    if let Some(note) = perf_env_note(
+        cfg!(feature = "perf"),
+        perf_from.is_some(),
+        ["H2_TIMELINE", "H2_PROFILE"].iter().any(|k| std::env::var_os(k).is_some_and(|v| !v.is_empty())),
+    ) {
+        eprintln!("{note}");
+    }
     #[cfg(feature = "perf")]
     let mut perf_from = perf_from;
     #[cfg(not(feature = "perf"))]
-    {
-        if perf_from.is_some() {
-            eprintln!("perf: H2_PERF_FROM needs an h2 built with --features perf; no session");
-        }
-        let _ = &level_name;
-    }
+    let _ = &level_name;
     #[cfg(feature = "perf")]
     let mut perf_session: Option<perf::Session> = None;
     // The sampler's main target (agent glue sets it too).
@@ -1283,6 +1378,16 @@ pub fn run_hosted_with_live(
                 .is_err()
         {
             input_errors += 1;
+        }
+        if let Some((census, last)) = &mut effect_census {
+            let present = d3d_diag::presents();
+            if present != *last {
+                *last = present;
+                let mem = loaded.runtime.memory();
+                for line in census.at_present(&*mem, present) {
+                    eprintln!("{line}");
+                }
+            }
         }
         if let Some(h) = &harness {
             h.after_slice(&loaded.runtime, d3d_diag::presents());
@@ -1409,6 +1514,9 @@ pub fn run_hosted_with_live(
     if let Some(i) = &d3d_calls {
         eprintln!("{}", d3d_glue::describe(i));
     }
+    if let Some((census, _)) = &effect_census {
+        eprintln!("{}", census.summary());
+    }
     if let Some(s) = fallback::STATS.lock().unwrap().as_ref() {
         let first: Vec<String> = s.first.iter().map(|f| format!("{:#x}", f.0)).collect();
         eprintln!(
@@ -1495,6 +1603,16 @@ mod string_ids;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn perf_env_note_names_what_writes_nothing() {
+        assert!(perf_env_note(false, false, true).unwrap().contains("--features perf"));
+        assert!(perf_env_note(false, true, false).unwrap().contains("--features perf"));
+        assert!(perf_env_note(true, false, true).unwrap().contains("H2_PERF_FROM"));
+        assert_eq!(perf_env_note(true, true, true), None);
+        assert_eq!(perf_env_note(false, false, false), None);
+        assert_eq!(perf_env_note(true, false, false), None);
+    }
 
     /// A minimal XBE: `.text` at 0x11000 holding `code` (int3-filled to
     /// 0x100 bytes), and `.rdata` at 0x12000 holding a kernel thunk table

@@ -6,14 +6,20 @@
 //! No runtime and no I/O, so the recomp can link it without tokio.
 
 pub mod audit;
+pub mod bans;
+pub mod bots;
 pub mod game;
 pub mod hopper;
 pub mod jcs;
 pub mod mailbox;
 pub mod maps;
 pub mod motd;
+pub mod mutes;
+pub mod optimatch;
 pub mod pack;
+pub mod rank;
 pub mod recovery;
+pub mod reports;
 #[doc(hidden)]
 pub mod samples;
 pub mod session;
@@ -321,12 +327,24 @@ pub mod lxm {
     pub const CONTENT_WRITE: &str = "content.write";
     /// Admin moderation of uploaded content and hopper pins.
     pub const CONTENT_MODERATE: &str = "content.moderate";
+    /// Reporting another player (docs/live/live-api.md "Player reports").
+    pub const REPORTS_WRITE: &str = "reports.write";
+    /// Admins reading and reviewing player reports.
+    pub const REPORTS_MODERATE: &str = "reports.moderate";
+    /// Changing one's own mute list (docs/live/live-voice.md §3.6).
+    pub const MUTES_WRITE: &str = "mutes.write";
     /// Reading one's own cloud saves (docs/live/live-cloud-saves.md).
     pub const STORAGE_READ: &str = "storage.read";
     /// Writing and deleting one's own cloud saves.
     pub const STORAGE_WRITE: &str = "storage.write";
     /// Every read on a `--private` server, the stream included.
     pub const READ: &str = "read";
+    /// The operator reading the log as stored, to copy it
+    /// (`GET /v1/admin/log`, `h2 live store copy --from https://`).
+    pub const LOG_READ: &str = "log.read";
+    /// The operator importing a log copied from another server
+    /// (`POST /v1/admin/log`, `h2 live store copy --to https://`).
+    pub const LOG_WRITE: &str = "log.write";
 }
 
 /// Whether a client may send a bearer token to `base_url`: always over
@@ -645,6 +663,9 @@ pub enum ErrorCode {
     TooLarge,
     /// 429.
     RateLimited,
+    /// 403: the account is banned (docs/live/live-admin.md "Bans"); the
+    /// message says until when.
+    Banned,
     /// 501: in the contract, not built yet.
     Unimplemented,
     /// 503 (and 500).

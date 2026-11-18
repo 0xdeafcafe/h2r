@@ -7,16 +7,21 @@ use xiso::Xiso;
 
 #[cfg(unix)]
 mod agent_cmd;
+#[cfg(unix)]
+mod agent_hot_cmd;
+#[cfg(unix)]
+mod agent_run;
+mod agent_sim;
+mod testmap_cmd;
 mod anim;
 mod bitmap;
 mod boot_cmd;
+mod bots_nav;
 mod collision;
 mod coop_probe_cmd;
 mod coop_drive;
 mod coop_test_cmd;
 mod coop_verdict;
-#[cfg(unix)]
-mod disk_cmd;
 mod effects;
 mod emit_cache;
 mod emit_output;
@@ -84,9 +89,6 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           stats, profiles (`h2 lab --help`, docs/runtime/lab.md)
   play --follow <disc>    play, rebuilding each new commit of master in the
                           background; F5 restarts into it (docs/runtime/app.md)
-  disk clean [--yes]      remove merged idle worktrees, idle Cargo targets and
-                          stale build artifacts; a dry run without --yes
-                          (docs/dev/disk.md)
   settings list|get|set   our settings (field of view, frame rate, ...) in
                           <data>/settings.toml (docs/game/settings-menu.md)
   lockstep <a> <b>        compare two H2_LOCKSTEP traces; exit 1 if they differ
@@ -104,11 +106,15 @@ const USAGE: &str = "usage: h2 <command> [disc]
   maps [disc.iso]         map headers and tag counts on the disc
   tags <map> [group]      tags in a disc map or local .map; optional --disc <iso>
   map testbuild --out DIR builder load-test maps for H2_MAP_DIR (docs/formats/map-builder.md)
+  testmap <map> <script> --out <new.map>  a test map: a JSON edit script over the
+                          placements (docs/runtime/agent-api.md, phase 5)
   tag <map> <tag name>    decode one tag; optional group and --disc <iso>
   bitmap <map> <tag>      decode a bitmap tag to PNG (--image N --out DIR --mips)
   bitmap --all <map>      bulk decode check of every bitmap in a map
   collision <map> <tag>   summarise a coll/phmo tag; --obj FILE exports geometry
   collision --all <map|all>  validate every coll/phmo tag (all = every disc map)
+  bots nav <map|all>      build the bots' nav mesh and walls into <data>/bots
+                          (docs/game/bots.md)
   lighting <map>          lighting/atmosphere summary; --bsp N; --page N --out DIR
   lighting --all          validate every disc map (optional <map> for one map)
   sound <map> <tag>       export a snd! tag to WAV; --all <map> validates every sound
@@ -272,6 +278,9 @@ fn main() -> Result<()> {
     if cmd == "collision" {
         return collision::run(args.collect());
     }
+    if cmd == "bots" {
+        return bots_nav::run(args.collect());
+    }
     if cmd == "anim" {
         return anim::run(args.collect());
     }
@@ -299,17 +308,14 @@ fn main() -> Result<()> {
         #[cfg(not(unix))]
         bail!("h2 lab needs Unix sockets");
     }
-    if cmd == "disk" {
-        #[cfg(unix)]
-        return disk_cmd::run(args.collect());
-        #[cfg(not(unix))]
-        bail!("h2 disk clean needs Unix");
-    }
     if cmd == "agent" {
         #[cfg(unix)]
         return agent_cmd::run(args.collect());
         #[cfg(not(unix))]
         bail!("h2 agent needs Unix sockets");
+    }
+    if cmd == "testmap" {
+        return testmap_cmd::run(args.collect());
     }
     if matches!(cmd.as_str(), "build" | "run" | "serve") {
         return boot_cmd::run(&cmd, args.collect());

@@ -262,7 +262,7 @@ points! { ALL;
     OPTIONS_QUEUE @ 0x0018_e790: [fn(options: eax) ret 0]; "docs/game/skulls.md";
     /// `render_frame_and_present`: renders the game views (or the fallback
     /// screen) and presents. Once a frame, from the main loop.
-    RENDER_FRAME @ 0x0022_3240: [opaque]; "docs/engine/engine-map.md";
+    RENDER_FRAME @ 0x0022_3240: [fn() ret 0]; "docs/engine/engine-map.md";
     /// `render_game_views`: builds the per-player view records and cameras,
     /// then calls `render_views`.
     RENDER_GAME_VIEWS @ 0x0022_34e0: [opaque]; "docs/engine/engine-map.md";
@@ -337,6 +337,23 @@ points! { ALL;
     /// The top-level Settings list's row chosen (thiscall on the list, the
     /// player chain and a pointer to the row).
     SETTINGS_ROW_CHOSEN @ 0x002b_1da9: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/game/settings-menu.md";
+    /// The campaign pause menu's row text (screen 18, `dialog_pause`):
+    /// switches on the item's row, 0 to 4; any other row gets the null id.
+    PAUSE_ROW_TEXT @ 0x0023_1f6c: [fn(list: ecx, item: stack 0, word: stack 1) ret 8]; "docs/game/settings-menu.md";
+    /// The campaign pause menu's row chosen: rows 0 to 3 have their own
+    /// press, and every other row runs row 4's.
+    PAUSE_ROW_CHOSEN @ 0x0023_1fe3: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/game/settings-menu.md";
+    /// The multiplayer pause menu's list handler constructor (screen 195,
+    /// `mp_menu`): ESI the handler, one stack argument. Makes the rows'
+    /// datum array (room for six) and adds a datum per row it shows, the
+    /// row's action word at datum `+2`.
+    MP_MENU_LIST_CTOR @ 0x0023_2708: [fn(list: esi, a: stack 0) ret 4]; "docs/game/settings-menu.md";
+    /// The multiplayer pause menu's row text: looks the row's action up in
+    /// a table of six.
+    MP_MENU_ROW_TEXT @ 0x0023_284e: [fn(list: ecx, item: stack 0, word: stack 1) ret 8]; "docs/game/settings-menu.md";
+    /// The multiplayer pause menu's row chosen: actions 0 to 4 have their
+    /// own press, and every other action runs action 5's.
+    MP_MENU_ROW_CHOSEN @ 0x0023_28b5: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/game/settings-menu.md";
     /// The Controls list's row text: the label and value of rows 0 to 5.
     CONTROLS_ROW_TEXT @ 0x002c_8548: [fn(list: ecx, item: stack 0, word: stack 1) ret 8]; "docs/game/settings-menu.md";
     /// The Controls list's row chosen (rows past 4 open the vibration
@@ -556,6 +573,27 @@ points! { ALL;
     /// aim-assist search `0x1a4900` (`0x1a49a1`) and the shot aim
     /// `0x1a4c00` (`0x1a4cbf`, from the barrel fire `0x104150`).
     AIM_ASSIST_PARAMS @ 0x001a_50a0: [fn(unit: ecx, out: esi, zoom: stack 0) -> al ret 4]; "docs/game/aim-assist.md";
+    /// The players screen's (`0x1e`) button event for a controller with no
+    /// profile: the screen pushed, the event record in ESI (`+4` the
+    /// controller, `+8` the button: 0 A, `0xc` Start). A or Start starts
+    /// the profile pick (`0x1905bf`). Called from the screen's handler
+    /// `0x252ad7`.
+    PLAYERS_SCREEN_UNJOINED @ 0x0025_2a67: [fn(screen: stack 0, event: esi) -> al ret 4]; "docs/game/bots.md";
+    /// Signs a profile into a local player slot: the slot index, the
+    /// 0x1e0-byte profile block it copies to the slot's `+0x18`, and the
+    /// profile file (-1 for none, so nothing is saved). Sets the slot's
+    /// `0x10` flag and builds the controls table (`0x190c34`).
+    PROFILE_SIGN_IN @ 0x0018_fb34: [fn(slot: stack 0, block: stack 1, file: stack 2) ret 12]; "docs/game/bots.md";
+    /// The sound frame service, once a frame after the render: among
+    /// other things, one listener per mapped local user (`0x125c93`).
+    SOUND_UPDATE @ 0x0012_5b40: [fn() ret 0]; "docs/engine/engine-map.md";
+    /// The map cache copy machine: one state step per call (submit a
+    /// 1 MiB read or write job, take its result, checksum, publish), AL
+    /// returned and ignored by its callers. They step it only while the
+    /// job-done byte `0x55bd0c` is set: the loading-screen loop `0x163890`
+    /// (once a frame, at `0x1639bd`), the main loop `0x12b450` and the
+    /// flush loop `0x213fa0` (back to back, nothing drawn).
+    CACHE_COPY_STEP @ 0x0021_41f0: [fn() -> al ret 0]; "docs/runtime/cache-slots.md";
 }
 
 globals! { GLOBALS;
@@ -592,6 +630,9 @@ globals! { GLOBALS;
     SQUAD_SESSION @ 0x0052_7364; "docs/live/live-custom-games.md";
     /// The base address of the game-state block (`0x3fe000` bytes).
     GAME_STATE_BASE @ 0x004e_6080; "docs/runtime/checkpoints.md";
+    /// Pointer to the players globals: the local player count (`i16`) at
+    /// `+8`, the four local users' player datums at `+0xc` (-1 for none).
+    PLAYER_GLOBALS @ 0x004e_8c20; "docs/game/bots.md";
 }
 
 /// The point at `base`, if the table names one.

@@ -52,8 +52,9 @@ when the disc or the converter changed; a warning never stops the game.
 --no-halo1 or H2_HALO1=0 skips it (docs/game/campaigns.md).
 The intro, attract and credits movies play, with their sound, when `h2 movies`
 has installed them for this disc (in --movies DIR, by default the app data
-directory); otherwise, or with --no-movies, the game skips them, as `h2 run`
-does. The log says which (`movies: playback (...)` or `movies: skip (...)`).
+directory); otherwise, with --no-movies, or on a --level boot (unless --movies
+DIR is given), the game skips them. The log says which (`movies: playback
+(...)` or `movies: skip (...)`).
 --fps (or H2_FPS) sets how often the window presents: 30, the default, is the
 game's own rate and today's behaviour; 60, 120 and uncapped only redraw the
 newest game frame more often for now, with no smoothing (the game itself
@@ -107,7 +108,9 @@ several games sit side by side (`h2 coop test` does both).
 
 Keys: Escape START, Space or Enter A, V or Backspace B, E X, Q Y, Tab BACK,
 arrows d-pad, WASD left stick, mouse look (click to capture). Cmd+Q quits,
-Cmd+F fullscreen, Cmd+P pause, F3 the watermark. With --follow, F5 restarts into a ready update
+Cmd+F fullscreen, Cmd+P pause, F3 the watermark, ` (backquote) the debug menu
+(touchpad click + Options on a DualSense or DualShock 4; H2_DEBUG_MENU=0 turns it off;
+docs/runtime/debug-menu.md). With --follow, F5 restarts into a ready update
 and F6 hides the banner. --bindings reads a TOML table (docs/input/input.md).
 --icons (or H2_ICONS) picks the button pictures in prompts: auto, the default,
 follows the device last used (docs/input/button-icons.md).";
@@ -387,6 +390,8 @@ fn hosted(
         render_thread: render_thread(std::env::var("H2_RENDER_THREAD").ok().as_deref()),
         audio_sink: Some(audio_sink(audio)),
         pad_speaker,
+        debug_menu: None,
+        perf_overlay: None,
         settings: Some(store),
         trace_limit: Some(TRACE_LIMIT),
         // `run` sets it from --level or H2_LEVEL, resolved before the window.
@@ -507,6 +512,10 @@ pub fn run(args: Vec<String>) -> Result<()> {
     if args.iter().any(|a| a == "--follow") {
         return crate::follow::run(args);
     }
+    // The host's microphones and outputs, for the Voice screen's device
+    // rows and `--set voice.input_device=...`: listed once, before any
+    // setting is read.
+    boot::voice_settings::use_host_devices(&audio::voice::HostDevices);
     let tmp = std::env::temp_dir();
     let mut out = tmp.join("h2boot");
     let mut data = content::store::default_data_root();
@@ -514,7 +523,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let mut transfers = 50_000_000u64;
     let mut disc = None;
     let mut audio = true;
-    let mut movies = boot::movies_glue::default_dir();
+    let mut movies = boot::movies_glue::Movies::Auto;
     let mut no_mappack = false;
     let mut no_halo1 = false;
     let mut follow_status = None;
@@ -575,8 +584,8 @@ pub fn run(args: Vec<String>) -> Result<()> {
                 );
             }
             "--no-audio" => audio = false,
-            "--movies" => movies = Some(PathBuf::from(val()?)),
-            "--no-movies" => movies = None,
+            "--movies" => movies = boot::movies_glue::Movies::Dir(PathBuf::from(val()?)),
+            "--no-movies" => movies = boot::movies_glue::Movies::Off,
             "--no-mappack" => no_mappack = true,
             "--no-halo1" => no_halo1 = true,
             "--no-gamepads" => config.gamepads = false,
@@ -756,6 +765,12 @@ pub fn run(args: Vec<String>) -> Result<()> {
         timeline::phase::start(timeline::phase::Config::live(WATERMARK_WINDOW_NS))
             .context("starting frame stats")?;
     }
+    // Our debug menu (docs/runtime/debug-menu.md): touchpad click + Options,
+    // or the backquote key. On unless H2_DEBUG_MENU=0.
+    let debug_menu = debug_menu_on(std::env::var("H2_DEBUG_MENU").ok().as_deref())
+        .then(debug_menu::Shared::default);
+    config.debug_menu = debug_menu.clone();
+    let perf_overlay = config.watermark.as_ref().map(app::Watermark::switch);
     let report = app::run(config, move |host| {
         let mut host = hosted(
             host,
@@ -769,6 +784,13 @@ pub fn run(args: Vec<String>) -> Result<()> {
         );
         host.level = level;
         host.on_vfs = on_vfs;
+        // The menu sees every pad first, and hides them from the game while
+        // it is open.
+        if let (Some(menu), Some(input)) = (&debug_menu, host.input.as_mut()) {
+            input.set_gate(Box::new(menu.gate()));
+        }
+        host.debug_menu = debug_menu;
+        host.perf_overlay = perf_overlay;
         let r = boot::run_hosted_with_live(&xbe, &lib, &opts, host, &live_config);
         // As `h2 run` does: the kernel's storage may outlive the run (or never
         // drop), so store its pending write metadata at a normal exit, whether
@@ -954,6 +976,11 @@ const WATERMARK_WINDOW_NS: u64 = 2_000_000_000;
 /// The watermark is on unless `--no-watermark` or `H2_WATERMARK=0`.
 fn watermark_on(no_flag: bool, env: Option<&str>) -> bool {
     !no_flag && env != Some("0")
+}
+
+/// The debug menu is on unless `H2_DEBUG_MENU=0`.
+fn debug_menu_on(env: Option<&str>) -> bool {
+    env.is_none_or(|v| v.trim() != "0")
 }
 
 /// `h2 play`'s watermark: how the renderer runs, and the level map the
@@ -1142,6 +1169,13 @@ mod tests {
             ]);
             assert!(e.contains("unknown difficulty"), "{e}");
         }
+    }
+
+    #[test]
+    fn the_debug_menu_is_on_unless_turned_off() {
+        assert!(debug_menu_on(None));
+        assert!(debug_menu_on(Some("1")));
+        assert!(!debug_menu_on(Some("0")));
     }
 
     #[test]

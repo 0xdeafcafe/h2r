@@ -51,14 +51,20 @@ name = "agent"
 version = "0.1.0"
 dependencies = [
  "agent-proto",
+ "debug-menu",
  "engine",
  "feature",
+ "hot-render",
+ "hot-tags",
  "input",
  "live-proto",
  "live-telemetry",
+ "map",
  "runtime",
  "serde",
  "serde_json",
+ "settings",
+ "tags",
  "timeline",
  "xapi",
 ]
@@ -227,6 +233,7 @@ dependencies = [
  "app-icon",
  "audio",
  "cpal",
+ "debug-menu",
  "font8x8",
  "gfx",
  "input",
@@ -627,14 +634,18 @@ dependencies = [
  "assets",
  "audio",
  "bink-hle",
+ "bots",
  "content",
  "d3d",
+ "debug-menu",
  "dsound",
  "emit",
  "engine",
  "feature",
  "font",
  "gfx",
+ "hot-render",
+ "hot-tags",
  "iced-x86",
  "input",
  "ir",
@@ -664,6 +675,16 @@ dependencies = [
  "xapi",
  "xbe",
  "xiso",
+]
+
+[[package]]
+name = "bots"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "input",
+ "pathfind",
+ "tags",
 ]
 
 [[package]]
@@ -936,10 +957,11 @@ dependencies = [
  "assets",
  "audio",
  "boot",
+ "bots",
  "cloud-saves",
  "content",
  "d3d",
- "diskclean",
+ "debug-menu",
  "dsound",
  "emit",
  "flate2",
@@ -968,6 +990,7 @@ dependencies = [
  "movies",
  "perf",
  "png",
+ "scenario-edit",
  "serde",
  "serde_json",
  "settings",
@@ -1370,6 +1393,7 @@ dependencies = [
  "anyhow",
  "app",
  "gfx",
+ "hot-render",
  "iced-x86",
  "ir",
  "kernel",
@@ -1485,6 +1509,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "debug-menu"
+version = "0.1.0"
+dependencies = [
+ "input",
+ "serde_json",
+]
+
+[[package]]
 name = "der"
 version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1544,14 +1576,6 @@ dependencies = [
  "option-ext",
  "redox_users",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "diskclean"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "libc",
 ]
 
 [[package]]
@@ -2479,6 +2503,7 @@ dependencies = [
  "map",
  "mopp",
  "scenario-edit",
+ "shaders",
  "tags",
  "thiserror 2.0.21",
  "xbe",
@@ -2511,6 +2536,7 @@ dependencies = [
 name = "h1objects"
 version = "0.1.0"
 dependencies = [
+ "assets",
  "content",
  "h1bitmaps",
  "h1convert",
@@ -2522,6 +2548,7 @@ dependencies = [
  "scenario-edit",
  "tags",
  "thiserror 2.0.21",
+ "xbe",
  "xiso",
 ]
 
@@ -2545,6 +2572,7 @@ dependencies = [
  "h1map",
  "h1models",
  "map",
+ "tags",
  "thiserror 2.0.21",
  "xiso",
 ]
@@ -2727,6 +2755,28 @@ dependencies = [
  "map",
  "thiserror 2.0.21",
  "variants",
+]
+
+[[package]]
+name = "hot-render"
+version = "0.1.0"
+dependencies = [
+ "naga",
+ "serde",
+ "serde_json",
+ "shaders",
+]
+
+[[package]]
+name = "hot-tags"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "map",
+ "runtime",
+ "serde",
+ "serde_json",
+ "tags",
 ]
 
 [[package]]
@@ -3564,6 +3614,7 @@ dependencies = [
  "chrono",
  "futures-util",
  "http",
+ "http-body-util",
  "js-sys",
  "live-proto",
  "live-server",
@@ -3573,6 +3624,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "tokio",
+ "tower",
  "tower-service",
  "wasm-bindgen",
  "worker",
@@ -5625,6 +5677,8 @@ dependencies = [
  "content",
  "map",
  "pollster",
+ "serde",
+ "serde_json",
  "tags",
  "thiserror 2.0.21",
  "wgpu",

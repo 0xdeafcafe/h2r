@@ -6,8 +6,9 @@
 //! frame wait, and a sim between frames. Each test runs the same frames
 //! with the feature off (serial) and on (pipelined) and compares.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use engine::points;
 use feature::pipeline_render::{Addrs, PipelineRender, RANDOM_A, RANDOM_C, SharedCache};
@@ -55,6 +56,11 @@ const RELEASE_MUTANT_ORDINAL: u32 = 221;
 const RELEASE_SEMAPHORE_ORDINAL: u32 = 222;
 /// Render mode 7: the render queues a request through the pool.
 const MODE_IO: u32 = 7;
+/// Mode 8: mode 7, the render held before its pool wait while
+/// [`HOLD_RENDER_IO`] is set (so the sim can use the pool first).
+const MODE_IO_HELD: u32 = 8;
+/// Only the test that uses mode 8 sets it.
+static HOLD_RENDER_IO: AtomicBool = AtomicBool::new(false);
 /// KeQuerySystemTime(PLARGE_INTEGER): stdcall, one argument.
 const KERNEL_ORDINAL: u32 = 128;
 
@@ -72,6 +78,13 @@ const MARK: u32 = 0x2_0048;
 const LIGHT_MARK: u32 = 0x2_4068;
 const LIGHT_STAMP: u32 = 0x2_406c;
 const LIGHTS_DRAWN: u32 = 0x2_4070;
+/// A particle system's state, which both sides update in place: the render
+/// as it draws it (`0x00174420`), the tick's update (`SIM_TICK`) from what
+/// the last render left.
+const PARTICLE: u32 = 0x2_4074;
+/// The tick's particle update, reading and writing `PARTICLE` (as the
+/// tick's `0x00179020` reads what the render's draw pass wrote).
+const SIM_TICK: u32 = 0x1_7000;
 const STAMPS: (u32, u32) = (0x2_0050, 0x2_0060);
 const VBLANKS: (u32, u32) = (0x2_0060, 0x2_0068);
 /// What the sim writes and the render reads.
@@ -181,6 +194,7 @@ static ADDRS: Addrs = Addrs {
         record_len: CACHE_RECORD,
         owner: 4,
     }],
+    sim_joins: &[SIM_TICK],
 };
 
 /// The cache lookup: the record's lighting for object `h`, allocating as
@@ -274,6 +288,9 @@ fn render(
                 let drawn = m.u32(LIGHTS_DRAWN)? + 1;
                 m.set_u32(LIGHTS_DRAWN, drawn)?;
             }
+            // The particle draw steps the system in place.
+            let particle = m.u32(PARTICLE)?.wrapping_mul(3).wrapping_add(1);
+            m.set_u32(PARTICLE, particle)?;
             cpu.ebp = 0;
             m.set_u8(VBLANKS.0, 0xee)?;
             m.set_u8(CLEAR, 0)?;
@@ -298,7 +315,15 @@ fn render(
             m.set_u32(cpu.esp, INPUT)?;
             m.call(cpu, D3D_DRAW, FRAME + 0x10)
         }
-        s if s == FRAME + 0x10 && m.u32(FALLBACK)? == MODE_IO => {
+        s if s == FRAME + 0x10 && [MODE_IO, MODE_IO_HELD].contains(&m.u32(FALLBACK)?) => {
+            if m.u32(FALLBACK)? == MODE_IO_HELD {
+                let t = Instant::now();
+                while HOLD_RENDER_IO.load(Ordering::Acquire)
+                    && t.elapsed() < Duration::from_secs(10)
+                {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
             // The request this frame asks for, as the render's cache
             // requests do.
             pool_wait(&mut m, cpu)?;
@@ -436,6 +461,20 @@ fn probe(m: &Guest, esp: u32) -> Result<(), runtime::GuestFault> {
 }
 
 /// The guest callback D3D_CALLBACK calls: the kernel, then return.
+/// The tick's particle update (`SIM_TICK`): from the state the last render
+/// left, a step of its own.
+fn sim_tick(
+    cpu: &mut CpuAbi,
+    ctx: &mut ExecCtx,
+    _sel: u32,
+) -> Result<TransferAbi, runtime::GuestFault> {
+    let rt = Arc::clone(ctx.runtime());
+    let mut m = rt.memory();
+    let particle = m.u32(PARTICLE)?.wrapping_add(0x10);
+    m.set_u32(PARTICLE, particle)?;
+    m.ret(cpu, 0)
+}
+
 /// The sim's request through the pool (`SIM_IO`), asked for by `0x200 +
 /// INPUT`.
 fn sim_io(
@@ -640,6 +679,7 @@ fn rig_tuned(
         d.register_resume(FRAME + at, FRAME, FRAME + at).unwrap();
     }
     d.register_generated_rust(SIM_IO, sim_io).unwrap();
+    d.register_generated_rust(SIM_TICK, sim_tick).unwrap();
     for at in [0x10, 0x20, 0x30] {
         d.register_resume(SIM_IO + at, SIM_IO, SIM_IO + at).unwrap();
     }
@@ -1716,6 +1756,49 @@ fn a_word_both_sides_wrote_keeps_the_sims_write_whole_and_is_reported() {
     assert!(piped.feature.stats().conflicts >= 8);
 }
 
+/// The particle systems: the render steps them as it draws them, and the
+/// next tick's update steps them from what the render left. Pipelined, the
+/// render's step reaches live RAM only at the join, so a tick running
+/// before it reads the snapshot's state and the hand-back keeps the tick's
+/// word: the render's step is lost, whichever side's word wins. A tick
+/// entry in `Addrs::sim_joins` joins the render first and reads its step,
+/// as serially.
+#[test]
+fn a_tick_reading_the_renders_writes_joins_first_and_runs_as_serially() {
+    let run = |on: bool, addrs: Addrs| {
+        let mut r = rig_cfg(on, &[], addrs);
+        for k in 1..=12 {
+            r.run(SIM_TICK);
+            r.round(k, false);
+        }
+        r.finish();
+        r
+    };
+    let serial = run(false, ADDRS.clone());
+    let piped = run(true, ADDRS.clone());
+    compare(&serial.data(), &piped.data());
+    let s = piped.feature.stats();
+    assert_eq!(s.pipelined, 12);
+    // Every tick after the first finds a render in flight.
+    assert_eq!(s.sim_joins, 11);
+    assert_eq!(s.conflicts, 0);
+    // Without the entry the tick runs beside the render and loses its
+    // step: the hand-back cannot recover what a read missed.
+    let racing = run(
+        true,
+        Addrs {
+            sim_joins: &[],
+            ..ADDRS.clone()
+        },
+    );
+    assert_eq!(racing.feature.stats().sim_joins, 0);
+    assert_ne!(
+        racing.rt.memory().u32(PARTICLE).unwrap(),
+        serial.rt.memory().u32(PARTICLE).unwrap()
+    );
+    assert!(racing.feature.stats().conflicts >= 11);
+}
+
 /// The dynamic lights: their visit counter `0x004e0308` only the render
 /// counts, their stamps in the light records, handed back. The join adds
 /// the render's count to live RAM's, so the next render counts past the
@@ -1798,12 +1881,25 @@ fn completions(r: &Rig) -> Vec<u32> {
     (0..n).map(|i| m.u32(COMPLETED + 4 * i).unwrap()).collect()
 }
 
+/// Waits (at most 10 s) until the render in flight has deferred `calls`
+/// pool calls in all, so a sim pool wait after this finds the render owning
+/// the pool.
+fn wait_deferred(r: &Rig, calls: u64) {
+    let t = Instant::now();
+    while r.feature.stats().io_deferred < calls && t.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(r.feature.stats().io_deferred, calls);
+}
+
 /// The render's I/O pool calls (wait on the pool mutex, queue, release it,
-/// release the worker's semaphore) no longer stop it: it carries on on its
+/// release the worker's semaphore) do not stop it: it carries on on its
 /// own thread, and the game thread makes the calls at the join, in order.
-/// A sim request while a render is in flight joins it first, so the worker
-/// completes the render's request before the tick's, as in the serial run:
-/// the same requests, completed in the same order, and the same memory.
+/// A sim request after a render's deferred calls joins it first, so the
+/// worker completes the render's request before the tick's, as in the
+/// serial run: the same requests, completed in the same order, and the
+/// same memory. (Each sim request here waits until the render in flight
+/// has deferred its calls, so the render uses the pool first.)
 #[test]
 fn the_renders_pool_requests_overlap_the_sim_and_complete_in_the_serial_order() {
     let n = 24;
@@ -1812,7 +1908,21 @@ fn the_renders_pool_requests_overlap_the_sim_and_complete_in_the_serial_order() 
     let mut serial = rig(false);
     let mut piped = rig(true);
     io_rounds(&mut serial, n, render_io, sim_io);
-    io_rounds(&mut piped, n, render_io, sim_io);
+    for k in 1..=n {
+        {
+            let mut m = piped.rt.memory();
+            m.set_u32(INPUT, k).unwrap();
+            let mode = if render_io(k) { MODE_IO } else { 0 };
+            m.set_u32(FALLBACK, mode).unwrap();
+            m.set_u8(CLEAR, 1).unwrap();
+        }
+        if sim_io(k) {
+            let renders = (1..k).filter(|&j| render_io(j)).count() as u64;
+            wait_deferred(&piped, 3 * renders);
+            piped.run(SIM_IO);
+        }
+        piped.run(FRAME);
+    }
     serial.finish();
     piped.finish();
     compare(&serial.data(), &piped.data());
@@ -1832,11 +1942,90 @@ fn the_renders_pool_requests_overlap_the_sim_and_complete_in_the_serial_order() 
     let render_requests = (1..=n).filter(|&k| render_io(k)).count() as u64;
     assert_eq!(s.io_deferred, 3 * render_requests, "{s:?}");
     assert_eq!(s.io_mismatches, 0, "{s:?}");
-    // Only the sim's requests waited, each for the render in flight.
-    let sim_requests = (1..=n).filter(|&k| sim_io(k)).count() as u64;
-    assert_eq!(s.io_joins, sim_requests, "{s:?}");
-    assert_eq!(s.io_stalls, sim_requests, "{s:?}");
+    // The sim's requests in rounds 5 and 15 found the render in flight
+    // holding the pool (renders 4 and 14 queued requests) and joined it;
+    // those in rounds 10 and 20 found a render that had not used the pool
+    // and went on.
+    assert_eq!(s.io_joins, 2, "{s:?}");
+    assert_eq!(s.io_stalls_join, 2, "{s:?}");
+    assert_eq!(s.io_sim_first, 2, "{s:?}");
+    assert_eq!(s.io_stalls, 2, "{s:?}");
+    assert_eq!(s.io_stalls_render, 0, "{s:?}");
     assert_eq!(s.io_other_thread, 0, "{s:?}");
+}
+
+/// The game's streaming takes the pool mutex every tick in gameplay, while
+/// the render (with no I/O) is in flight: the sim's waits go on without
+/// joining it, and no frame stalls on I/O.
+#[test]
+fn a_sim_using_the_pool_every_tick_with_no_render_io_never_stalls() {
+    let n = 16;
+    let mut serial = rig(false);
+    let mut piped = rig(true);
+    io_rounds(&mut serial, n, |_| false, |_| true);
+    io_rounds(&mut piped, n, |_| false, |_| true);
+    serial.finish();
+    piped.finish();
+    compare(&serial.data(), &piped.data());
+    assert_eq!(completions(&piped), completions(&serial));
+    let s = piped.feature.stats();
+    assert_eq!(s.completed, n as u64, "{s:?}");
+    assert_eq!(s.io_joins, 0, "{s:?}");
+    assert_eq!(s.io_stalls, 0, "{s:?}");
+    assert_eq!(s.io_stall, Duration::ZERO, "{s:?}");
+    // Every round after the first had a render in flight.
+    assert_eq!(s.io_sim_first, n as u64 - 1, "{s:?}");
+}
+
+/// The sim uses the pool first (the render held before its pool wait), so
+/// the render's pool calls are not deferred: each stops it and is made at
+/// the join against the pool the sim left (the sim's request, then the
+/// render's), a render-side stall. Nothing is lost or taken twice.
+#[test]
+fn a_render_pool_call_after_the_sims_is_made_at_the_join() {
+    let mut piped = rig_with(
+        true,
+        &[
+            "NtWaitForSingleObjectEx",
+            "NtReleaseMutant",
+            "NtReleaseSemaphore",
+        ],
+    );
+    HOLD_RENDER_IO.store(true, Ordering::Release);
+    {
+        let mut m = piped.rt.memory();
+        m.set_u32(INPUT, 1).unwrap();
+        m.set_u32(FALLBACK, MODE_IO_HELD).unwrap();
+    }
+    piped.run(FRAME);
+    {
+        let mut m = piped.rt.memory();
+        m.set_u32(INPUT, 2).unwrap();
+        m.set_u32(FALLBACK, 0).unwrap();
+    }
+    piped.run(SIM_IO);
+    HOLD_RENDER_IO.store(false, Ordering::Release);
+    piped.run(FRAME);
+    piped.finish();
+    assert_eq!(completions(&piped), vec![0x202, 0x101]);
+    let s = piped.feature.stats();
+    assert_eq!(s.io_sim_first, 1, "{s:?}");
+    assert_eq!(s.io_refused, 3, "{s:?}");
+    assert_eq!(s.io_deferred, 0, "{s:?}");
+    assert_eq!(s.io_joins, 0, "{s:?}");
+    assert_eq!(s.io_stalls_render, 1, "{s:?}");
+    assert_eq!(s.serviced.get("kernel:NtWaitForSingleObjectEx"), Some(&1));
+    assert!(s.fallbacks.is_empty(), "{s:?}");
+    // Every request back on the free list, none queued.
+    let m = piped.rt.memory();
+    assert_eq!(m.u32(POOL_QUEUED).unwrap(), 0);
+    let mut free = 0;
+    let mut at = m.u32(POOL_FREE).unwrap();
+    while at != 0 {
+        free += 1;
+        at = m.u32(at + 0xc).unwrap();
+    }
+    assert_eq!(free, 4);
 }
 
 /// The render's requests alone: no frame stalls on I/O, and the pool sees
@@ -1896,7 +2085,14 @@ fn with_deferral_off_each_pool_call_stops_the_render_and_counts_a_stall() {
     assert!(s.io_stall > Duration::ZERO, "{s:?}");
     let line = s.line();
     assert!(line.contains(&format!("io_stalls {frames} (")), "{line}");
-    assert!(line.contains("io_deferred 0 io_joins 0"), "{line}");
+    assert!(
+        line.contains(&format!("[render {frames} (")) && line.contains("sim_join 0 ("),
+        "{line}"
+    );
+    assert!(
+        line.contains("io_deferred 0 io_refused 0 io_joins 0"),
+        "{line}"
+    );
 }
 
 /// A request off the free list (being read, or queued) at the launch makes

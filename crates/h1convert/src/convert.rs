@@ -190,6 +190,9 @@ pub struct Prepared {
     pub objects: Option<halo1::ObjectTags>,
     /// The index slot the first of them takes.
     objects_first: usize,
+    /// Halo 1's scenery ([`halo1::plan_scenery`]), written into the
+    /// scenario by the fresh build; `None` places none.
+    pub scenery: Option<halo1::Scenery>,
     /// The Halo 1 sandbox's player biped (one of the added objects), made
     /// the multiplayer player unit when the map is built
     /// ([`crate::globals::set_player_unit`]); `None` keeps the base's.
@@ -532,6 +535,7 @@ pub fn prepare<R: Read + Seek>(
         lightmap,
         objects: None,
         objects_first: 0,
+        scenery: None,
         player_biped: None,
         grenades: Vec::new(),
         scenario,
@@ -619,12 +623,13 @@ impl Prepared {
                     halo2: halo2.0,
                 })
                 .collect(),
+            hud_sensor: self.objects.as_ref().and_then(|o| o.hud_sensor),
         };
         // Parsed from text so the manifest's own checks run on it.
         let text = format!(
             "[package]\nformat = 1\nname = {display:?}\n\n[base]\nmap = {name:?}\nderived = true\n\n\
              [list]\nbase = {base:?}\n\n[[variant]]\nfile = {file:?}\nsha256 = \"{sha}\"\n\
-             origin = {{ game = \"halo1\", map = {map:?}, sandbox = \"{sandbox}\", source_sha256 = \"{src}\" }}\n{precision}{hud}",
+             origin = {{ game = \"halo1\", map = {map:?}, sandbox = \"{sandbox}\", source_sha256 = \"{src}\" }}\n{precision}{hud}{sensor}",
             display = self.display_name,
             base = known(&self.h1_name).map_or("beavercreek", |(_, b)| b),
             file = variant.file,
@@ -657,6 +662,9 @@ impl Prepared {
                     .collect();
                 format!("hud = [{}]\n", swaps.join(", "))
             },
+            sensor = variant
+                .hud_sensor
+                .map_or(String::new(), |[x, y]| format!("hud_sensor = [{x}, {y}]\n")),
         );
         let m = Manifest::from_toml(&text).expect("a well-formed manifest");
         debug_assert_eq!(m.variants, [variant]);
@@ -729,6 +737,10 @@ impl Prepared {
         scenario_edit::save::write_patched(base, &self.scenario, &mut patched)?;
         let mut patched = Map::from_reader(Cursor::new(patched.into_inner()))?;
         let mut set = TagSet::from_map(&mut patched)?;
+        // The vehicle collections the placements build first (their
+        // datums were picked from the first added slot), then the
+        // converted objects.
+        self.add_collections(base, &mut set)?;
         if let Some(objects) = &self.objects {
             halo1::install(objects, self.objects_first, &mut set)?;
         }
@@ -738,8 +750,6 @@ impl Prepared {
         if !self.grenades.is_empty() {
             crate::globals::set_grenades(&mut set, &self.grenades)?;
         }
-
-        self.add_collections(base, &mut set)?;
 
         set.name = map_name(&self.h1_name);
         set.scenario_path = scenario_path(&self.h1_name);

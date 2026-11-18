@@ -605,11 +605,12 @@ mod tests {
         )
         .unwrap();
         let table = String::from_utf8(output).unwrap();
+        // An anonymous query sees the advertisements but not their network
+        // addresses: those go only to signed-in readers.
+        assert!(table.contains("Host"), "{table}");
         assert!(
-            table.contains("Host")
-                && table.contains("127.0.0.1")
-                && table.contains("31000")
-                && table.contains("32000")
+            !table.contains("127.0.0.1") && !table.contains("31000"),
+            "{table}"
         );
         let mut output = Vec::new();
         emit(

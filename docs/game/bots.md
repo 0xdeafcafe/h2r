@@ -119,6 +119,9 @@ Each tick, `0x1870a0` does this:
 - `0x6a3b0` has two more callers, `0x6a81c` and `0x978bb`. These are likely
   where remote players' actions arrive from the network. They are not read
   yet.
+- `0x847d0`'s modes are the simulation slot's: 1 and 2 are client-side; 4
+  (a remote player on the distributed server) quantizes and stores the
+  record (§5.1).
 
 Simulation globals live at `[0x4cf77c]`; the mode is at `+8`. The modes are
 none, local, sync-client, sync-server, dist-client and dist-server. In
@@ -490,38 +493,96 @@ dropped.
 
 ## 5. Way in 2: phantom peers
 
-### 5.1 What has to be made up
+### 5.1 What has to be made up (traced)
 
-A phantom is a remote machine with one user. What the host needs for it:
+A phantom is a remote machine with one user, made in memory on the host by
+driving the game's own membership code. Nothing goes on the wire: no fake
+XNet peer and no fake join messages.
 
-1. **A machine.** A free bit in `[0x4e8c20]+0x2c` and a 6-byte machine id
-   in `+0x30` (our own bytes, e.g. a `C1A4` prefix plus the bot index).
-2. **A session peer.** A slot in the session's peer array
-   (S `+0x58`, 16 × `0x10c`, count at `+0x54`), marked connected and
-   established, with its player in the player count (`+0x1118`).
-3. **A player.** Created by the game's own membership update (`0x14c090`
-   from the `0x14bb..` path), given the peer's player configuration: name,
-   team, colours, emblem.
-4. **Actions.** Each tick, after `0x1870a0`, the bot's pad goes through
-   `0x185be0` into a `0x5c` record, stored with `0x6a3b0`/`0x847d0` under
-   the phantom's machine id (§2.2).
-5. **Silence.** Nothing is sent to a phantom (our `network.rs` drops sends
-   to its address), and the timeout and ack checks never drop it: it always
-   looks fully up to date.
+**The game builds machines and players from the session membership**, not
+from the update record. In a distributed game the record (with its
+`+0xDD0` player-set change) is never sent: its encoder `0x87d00` is only
+the synchronous-update message. Every console builds its own record from its
+own copy of the session, and clients learn of a phantom through the session
+membership the host replicates. So a phantom is a session peer and a session
+player, and the game does the rest.
 
-**Design:** make phantoms in memory, on the host, by driving the game's own
-membership functions. Do not emulate the wire: no fake XNet peer and no
-fake join messages. The wire format of the session join, channels, acks and
-distributed updates is big and not traced. A phantom only has to fool the
-host, because only the host simulates authoritatively. The clients learn
-about the phantom's player and its updates from the host's normal
-distributed updates, exactly as they learn about any other player. A wire
-emulation would only be needed for a phantom that lives on a client, and we
-never do that.
+**Session S** (`*SQUAD_SESSION`; the membership block is `S+0x4c`,
+`0x5a680`):
 
-The open part is step 2/3: which session fields mark a peer as joined, and
-whether the membership update can add a peer without a join handshake.
-That is the next tracing slice (§10).
+| Offset | Field |
+|---|---|
+| `+0x4c` | membership update number |
+| `+0x54` | peer count |
+| `+0x58` | peers, 16 × `0x10c` (filled by `0x5fbd0`) |
+| `+0x1118` | player count; `+0x111c` player mask |
+| `+0x1120` | players, 16 × `0x13c` (added by `0x600f0`) |
+| `+0x4980` | must be 4 for the player diff |
+| `+0x4990` | most peers |
+| `+0x72d8` | the local peer (skipped for views) |
+| `+0x72dc` | peer channels, 16 × `0x14` (`0x5f900`) |
+| `+0x741c` | state: 5 lobby, 6 to 8 in game |
+| `+0x7618` | membership change counter |
+
+- **Peer**: `+0x00` XNADDR (`0x24` bytes), whose 6-byte MAC at `+0xa` **is
+  the machine id**; `+0x28` the `0xc8`-byte properties (name strings at
+  `+0x28` and `+0x48`); `+0xf8` its player count; `+0xfc + 4*user` the
+  user's session player, -1 when empty.
+- **Channel entry** (`+0x72dc + 0x14*peer`): `+0` valid, `+1` connected,
+  `+4` the observer channel. Every send, timeout and drop loop on the host
+  gates on `+1`. A peer with `+1` = 0 and channel -1 is never sent to,
+  never dropped and gets no simulation view: that is a phantom's silence.
+- **Session player**: `+0x00` 12-byte id, `+0x0c` peer, `+0x10` user on
+  the peer, `+0x14` controller (-1 until set; the diff skips -1),
+  `+0x18` requested configuration (`0x90`), `+0xa8` effective
+  configuration (`0x90`; team at configuration `+0x7c`).
+
+**From the session to players**, each frame (`0x68140` → `0x83220` →
+`0x83f00`): the machine set is rebuilt **densely from the peers** (mask
+`(1 << peers) - 1`, ids from each peer's `+0xa`), so a machine written
+straight into `[0x4e8c20]+0x2c` would be overwritten; a peer is required.
+The record build (`0x69260` → `0x68350`, `0x83610`) diffs the session
+players against the simulation's copy and makes a kind-3 event for a new
+one. Its apply (`0x85140`) refuses a machine id not in the machine set, a
+user or controller outside 0..3, and a duplicate, then creates the player
+(`0x14bc00` → `0x14c090`) and its simulation slot (`0x694c0`; mode 4,
+remote, on the distributed server).
+
+**Actions**: `0x6a3b0(sim, &machine_id, user)` (stdcall, `ret 0xc`) finds
+the phantom's simulation slot; `0x847d0(slot, &action)` (`ret 8`) quantizes
+and stores a `0x5c` action record in it, stamped with the tick. On the
+server, `0x84990` reuses a stored action for up to 2 s (`[0x4ced44]`), so
+a missed tick is harmless. The record (written at `0x187012..0x187083`,
+validated by `0x14d0a0`): `+0` flags, `+4` yaw and `+8` pitch (finite),
+`+0xc`/`+0x10` throttle (-1 to 1), `+0x14` trigger (0 to 1), `+0x20` and
+`+0x21` weapon indices (-1 or 0 to 3, different), `+0x22` grenade (-1, 0,
+1). Not yet named: which flag bits are crouch and jump.
+
+**Recipe on the host** (game thread, before `0x68140`; only when the
+simulation mode is 5, the state 5 to 8, and peers < 16 and < `+0x4990`):
+
+1. **Peer.** An XNADDR with the phantom's machine id at `+0xa`, then
+   `0x5fbd0(S, S+0x54, &xnaddr, 0, -1, NULL)` (stdcall, `ret 0x18`): it
+   writes the peer, its user slots -1, and the channel entry unconnected.
+   Write the peer's name; `[S+0x4c]++` and `S+0x7618++`.
+2. **Player.** `0x60000(peer, 0, &id12)` with EBX = S (stdcall, `ret 0xc`)
+   gives a slot. Write the slot's controller (0..3, not -1), the requested
+   configuration, and in a game also the effective one (`0x65cb0`, which
+   computes it, returns early in states 6 to 8); bump both counters again.
+3. The game does the rest over the next frames: machine, player, slot.
+4. **Each tick**, after `0x1870a0`: `0x6a3b0` with the machine id, user 0;
+   if a slot comes back, `0x847d0` with the action.
+5. **Removal**: `0x60200`/`0x601e0` remove the player, `0x5fe20` the peer
+   (not yet read for a peer with no channel).
+
+**Open, for a run**: a real client opens a channel to every peer's XNADDR
+(`0x5cb80` → `0x76aa0`) and, in the lobby, drops a peer whose channel dies
+(`0x5a090` → `0x5fda0`; that loop does not run in states 6 to 8). Either
+our network layer answers for phantom addresses on clients, or phantoms
+join only once the game runs. Also open: what the lobby's ready check
+(`0x5f970`) reads from a peer's properties, what `0x62e30` and the veto
+object at `[S+0x78a8]` refuse, and whether `+0x72d8` is the host or the
+local peer.
 
 ### 5.2 Why phantoms are needed
 
@@ -785,34 +846,66 @@ cannot claim a human as a bot, or a bot as a human.
 Each stage ends in tests that can be run without the game, plus a short
 list for the user to play (§11).
 
-1. **Minimal bot (local slot).**
-   - The bots backend puts 1 to 3 bot pads on the ports after the human's
-     (§4.1).
-   - On the players screen, the driver signs each bot in with `0x18fb34`
-     and sets its bit in the screen mask (§4.2). It signs them out with
-     `0x18fc08`.
-   - The render and listener windows hide the bots' views (§4.3).
-   - The brain is trivial:
-     - turn toward the nearest living enemy and walk at it;
-     - hold the trigger while that enemy is within 15 degrees of the aim
+1. **Minimal bot (local slot).** Built: `crates/bots` (the brain, the pads,
+   the guest memory work) and `boot::bot_glue` (the hooks).
+   - Bots live in `bots::local` (the library surface below). Its input
+     backend is added after the host's own pads. Each bot pad asks for its
+     port (`HostBackend::preferred_port`), and gets the lowest free one if a
+     real pad holds it. `HostBackend::placed` reports where it went.
+     `H2_BOTS=<n>` (1 to 3) adds `n` brains on ports 1 up at boot.
+   - **Joining.** While the players screen `0x1e` is on top and a bot's slot
+     has no profile, the bot taps A (6 frames in every 60).
+     - The A reaches the screen's handler for a controller with no profile,
+       `0x252a67` (`PLAYERS_SCREEN_UNJOINED`; its caller `0x252ad7` sends a
+       controller with a profile to `0x25286d` instead).
+     - For a bot's port, a hook answers in the handler's place. It copies
+       the human's block with the bot's name and fixed controls, calls the
+       game's `0x18fb34(port, block, -1)`, writes the slot's display name,
+       and sets the port's bit in the screen mask.
+     - Once signed in, the bot never presses A again, so it cannot move the
+       human's menus on.
+     - The bots stay signed in until the game exits.
+     - `H2_BOTS` bots also join a split-screen campaign from its players
+       screen; there their pads are idle (perception reads multiplayer
+       only), so leave `H2_BOTS` unset for campaign.
+   - **Views and listeners.** The bots' local users are taken out of the
+     local player map (§4.3) around two game-thread points:
+     - `RENDER_FRAME`: with the pipelined render, its snapshot is taken
+       inside this point, so it has them hidden too;
+     - `SOUND_UPDATE` (`0x125b40`).
+     
+     Both are listed in `boot::render_thread::REFUSED`, as game-thread
+     points. Both take no arguments and return with a plain `ret` (the
+     main loop calls them back to back, `0x12b659` and `0x12b65e`), so the
+     points now carry that signature, `fn() ret 0`, which a `before` hook
+     needs.
+   - **The brain** (`bots::brain`), once a frame, before `RENDER_FRAME`:
+     - it turns toward the nearest living enemy (everyone in free-for-all,
+       the other teams in a team game) and walks at it once it is within
+       60 degrees;
+     - it holds the trigger while that enemy is within 15 degrees of the aim
        and 10 world units (about 30 m);
-     - there is no line of sight yet, so it walks into walls.
-   - Switched on by `H2_BOTS=<n>` (1 to 3) for this stage; the Clankers
-     page replaces that in stage 7.
-   - Tests over synthetic guest memory:
-     - the view window: count and map in, the bot users hidden, the same
-       values restored after, the human's order kept;
-     - the sign-in block: the human's block copied, the name and control
-       fields set, everything else untouched;
-     - the slot and screen-mask writes;
-     - the backend: the pads come after the real ones and carry the
-       brain's state;
-     - the brain: stick and trigger output from synthetic positions and
-       facings.
+     - outside a multiplayer game, and on any screen but the players screen,
+       its pad is idle.
+
+     Stages 2 and 3 replaced it as the `H2_BOTS` brain with `bots::mind`;
+     `bots::brain` stays as the perception types and the simplest source.
+   - Tests (`cargo test -p bots`, synthetic guest memory):
+     - the backend: the port order and the pad the game reads;
+     - the bot users and the hide/restore window: humans kept in order;
+       nothing hidden without bots or without a human;
+     - perception: me, the living others, teams, nothing outside
+       multiplayer;
+     - the bot block: name, controls, and the rest the human's;
+     - the join check;
+     - the async sign-in against a fake game sign-in;
+     - the brain's turning, walking and firing, and `H2_BOTS` parsing.
+     
+     In boot: the render-thread plan test covers the new hooks.
    - **Game run (the user):**
      1. `H2_BOTS=1 h2 play`, then Split Screen. On the players screen a
-        second player appears, named "Clanker 1", without anyone pressing
-        anything.
+        second player, "Clanker 1", joins by itself within a second or two
+        (the log says `bots: signing Clanker 1 in on port 1`).
      2. Start a Slayer game on a small map (Lockout or Ivory Tower). The
         screen is not split: you see one full-screen view and your own HUD.
      3. You hear only what is near you, not what is near the bot.
@@ -822,24 +915,109 @@ list for the user to play (§11).
         the carnage report.
      6. Repeat with `H2_BOTS=3`: three bots, one view, all on the
         scoreboard.
-     7. Back at the main menu, Split Screen shows one player again (the
-        bots are signed out).
-     8. Send the log lines starting `bots:`.
-2. **Navigation.**
-   - The nav mesh tool runs on BSP collision, with a cache.
-   - Path following and stuck recovery.
-   - Tests: synthetic collision (rooms, ramps, a gap to jump, a drop, a
-     teleporter pair); A\* and the funnel; a steering simulation with a
-     simple biped model.
-3. **Combat.**
-   - Perception with line of sight, the utility layer, and the aim model
-     with skill levels.
-   - Weapon choice and grenades.
-   - Tests:
-     - the aim model's error and reaction statistics per skill, against a
-       fixed seed;
-     - grenade arcs over synthetic collision;
-     - utility choices in scripted situations.
+     7. Back on the players screen, the bots are still joined; pressing A
+        yourself goes on as usual.
+     8. If step 1 fails (no second player, or a profile chooser appears),
+        send the log lines starting `bots:` and `ui:`.
+2. **Navigation.** Built: `bots::nav`, `bots::los`, `bots::cache`,
+   `h2 bots nav`, and the map loading in `boot::bot_glue`.
+   - **The mesh** (`nav::NavMesh`) comes from `crates/pathfind`'s generator
+     over each structure BSP's collision: its sectors are the walkable
+     polygons, its links the edges walked across. Then:
+     - polygon edges that do not meet another polygon look for a floor
+       beyond them: a floor up to 0.12 higher is walked onto (a seam or a
+       step), up to 1.6 lower is a **drop**, up to 0.35 higher is a
+       **jump**, and a floor up to 0.8 across a gap is a **jump**;
+     - a drop goes one way only; a jump links both ways only if each way
+       qualifies.
+
+     Not yet: teleporters, lifts and crouch-jumps (later, with objectives);
+     headroom (a ceiling over a floor is walked under as if it were not
+     there).
+   - **Paths**: A\* over the polygons, then the funnel (simple stupid
+     funnel) over the edges' portals, with a drop or jump as a forced
+     corner. `nav::Follower` steers along the waypoints: it moves on 0.3
+     from each, jumps at a jump, and when no progress is made for 30 frames
+     (1 s), jumps once, then asks for a new path.
+   - **Walls** (`los::Walls`): every collision surface as triangles on a
+     2 m grid, for line of sight (stage 3).
+   - **The file.** `h2 bots nav <map|all> [--disc ISO] [--data DIR]` writes
+     `<data>/bots/<map>.<bsp>.bots` (mesh and walls; magic `H2BT`). The
+     data comes from the disc, so it stays on this machine and out of git.
+     When the loaded map's name (`0x547898`) changes, the glue loads
+     `<map>.0.bots` on a thread of its own. Until then, or with no file,
+     the bots walk straight at their goal and see through walls, as in
+     stage 1, and the log says to run `h2 bots nav <map>`.
+   - Tests (`cargo test -p bots`): synthetic collision through the real
+     generator (two floors sharing an edge, an L-shaped corridor, a ledge
+     dropped off but not climbed, a low ledge jumped onto, a narrow gap
+     jumped and a wide one not); locating the floor under a biped; the
+     funnel turning at the inner corner; the follower walking the
+     waypoints, jumping at a jump, and jumping once then re-planning when
+     stuck; the file round trip, refusing damaged files.
+   - **Game run (the user):** see stage 3, which uses the same run.
+3. **Combat.** Built: `bots::mind` (`Mind`, the `H2_BOTS` brain).
+   - **Seeing.** An enemy is seen when it is inside 65 degrees of the
+     aim, or within 3 units anywhere, and the walls leave a clear line from
+     the bot's eye to its chest or head. Teammates in a team game are never
+     targets.
+   - **Deciding**, every frame: fight the target it has while it is still
+     seen, else the nearest seen; with no one seen, chase the last place it
+     saw someone (forgotten after 10 s); else roam to a random polygon it
+     can reach. The full utility layer (§3.3: weapons, health, objectives,
+     flee) waits for stages 4 and 5.
+   - **Aim** (`mind::Skill`, from `H2_BOTS_SKILL`: easy, normal, heroic,
+     legendary; default normal). The right stick turns by the aim error
+     times a gain, plus a slowly wandering error; the bot leads a moving
+     target by part of the lead a 90 unit/s shot needs.
+
+     | | Easy | Normal | Heroic | Legendary |
+     |---|---|---|---|---|
+     | reaction (ticks; 30 a second) | 14 | 10 | 7 | 5 |
+     | error spread (radians) | 0.10 | 0.06 | 0.035 | 0.02 |
+     | lead | 0.3 | 0.6 | 0.85 | 1.0 |
+     | stick gain | 1.6 | 2.5 | 3.5 | 4.5 |
+     | fires within | 10° | 7° | 5° | 4° |
+     | trigger | 12 on, 18 off | 24 on, 8 off | held | held |
+     | grenades a minute | 0.5 | 1 | 2 | 3 |
+
+     Until its reaction time has passed the bot stands still and does not
+     turn. It fires within 25 units, melees (B) within 0.9, and throws a
+     grenade (left trigger) at a target 3 to 12 units away, at most once
+     every 8 s. While fighting it strafes, kept on the nav mesh.
+   - Not yet: weapon choice by range, grenade arcs against collision, and
+     radar or sound awareness.
+   - Tests (`cargo test -p bots`): the skills get better in order; a wall
+     hides an enemy, and so does the bot's back; the reaction time before
+     turning and firing; firing on target and not off it; Easy's bursts;
+     more lead at a higher skill, with a fixed seed; chasing the last
+     known position, then forgetting it; roaming to a reachable polygon; a
+     teammate never a target; a dead bot lets go of every input; grenades
+     rare and spaced.
+   - **Game run (the user), stages 2 and 3:**
+     1. Once: `h2 bots nav all` (or `h2 bots nav lockout`). It prints each
+        map's polygons, links and wall triangles, and writes
+        `bots/<map>.0.bots` under the data root.
+     2. `H2_BOTS=1 h2 play`, Split Screen, Slayer on Lockout. The log says
+        `bots: lockout: N polygons, ...` when the map loads (not "no nav
+        mesh").
+     3. Hide behind a wall: the bot does not turn to you or shoot through
+        the wall. It walks around the wall to where it last saw you.
+     4. Stand still out of its sight: within a few seconds it roams the
+        map along floors and ramps, drops off ledges, and does not stay
+        stuck on a wall for more than a second or two (it jumps, then picks
+        a new path).
+     5. Step into its view: it pauses briefly (its reaction), then turns,
+        strafes and fires. Get close: it melees. At mid range it sometimes
+        throws a grenade.
+     6. Repeat with `H2_BOTS_SKILL=easy` and `H2_BOTS_SKILL=legendary`:
+        Easy is slow to react, sprays in bursts and misses a lot; Legendary
+        turns fast and hits most shots.
+     7. Run Ivory Tower and Midship too (jumps and drops). Note any spot a
+        bot gets stuck in for good, with the map and roughly where.
+     8. Send the `bots:` log lines, and anything that looks wrong: the eye
+        and chest heights (0.6 and 0.4 over the unit's origin) and the
+        stick's direction are guesses a run settles.
 4. **Emotes.**
    - The dumb-death detector and the emote layer (§3.5), with the Taunts
      setting.
@@ -848,18 +1026,152 @@ list for the user to play (§11).
 5. **Objectives.** CTF, Oddball, then King of the Hill, Assault and
    Territories: roles, carrier logic and defence spots from the netgame
    flags. Tests: role assignment and goal choice per gametype state.
-6. **Phantom peers.**
-   - Trace the membership and session-join path (§5.1, steps 2 and 3).
+6. **Phantom peers.** In progress.
+   - **Built (6a):**
+     - The membership path is traced (§5.1: the session layout, the
+       recipe, and what is open).
+     - `bots::phantom::Phantoms`: the books. `add` checks the identity (a
+       gamertag and a non-zero xuid), refuses a second phantom with the same
+       xuid and more than 15, and puts the phantom on `Pending`. Each
+       phantom's machine id is `C1 A4` and its handle, big-endian; `C1` has
+       the multicast bit set, so no adapter's address is ever one.
+       Handles are never reused. `refresh` finds each phantom's player by
+       machine id in the player records (`Joined`, with the index), and
+       sends it back to `Pending` when the player goes; `Failed` keeps its
+       reason.
+     - `Frame::machine` and `guest::perceive_as(Who::Machine(id))`: the
+       brain finds a phantom's own player by machine id.
+     - `sim`'s `phantom_player` reads `bots::phantom::player`.
+     - `live_proto::bots`: the roster (§9.1) and its request, checked by
+       §9.1's rules, and `local_xuid` for host-made identities (high bits
+       `0x000E`; server accounts carry `0x0009`).
+     - The free `bots::phantom::add` still answers `NotBuilt`: the game
+       side (6b) makes the machines.
+   - **Next (6b):** the recipe (§5.1) on the game thread; the pad to the
+     action record; removal; the System Link client question.
+   - **Then (6c):** the server's bot identities, below, with sbmm-ranked's
+     persistent bots.
    - In-memory phantom machines, peers and players; action conversion and
      storage; network drop and keep-alive.
+   - **`bots::phantom::add` and `remove`** keep the signatures they have
+     now (§10.1); `sim.*` already calls them (`boot::sim_bots`, the xuid
+     given as hex). `add` returns once the phantom is on the books. The
+     phantom's machine, peer and player are made at the next tick on the
+     game thread, so `add` never waits on the game. A phantom asked for
+     outside a host's session fails then, not at `add`; `list` reports
+     that, as below.
+   - **From a phantom to its player.** `bots::phantom::list() ->
+     Vec<PhantomInfo>` gives each phantom's handle, identity, team, and
+     its game player once the membership update has made it (`player:
+     Option<u32>`, the player datum's index, as `sim.view`'s `player.<i>`
+     uses), or why it has none (`state: Pending | Joined | Failed(reason)`).
+     `bots::phantom::player(handle) -> Option<u32>` is the short form, for
+     `sim`'s `phantom_player`. The index is found by the phantom's machine
+     id in the player records, not guessed from the order of joining.
+   - **Identities from the local embedded Live server.** Bots are accounts
+     (§9.1), so a phantom's xuid has to be one the server issued:
+     - `live_server` gets `POST /games/bots` (§9.1) on the embedded server
+       first (`h2 play --live-local`). It makes `count` bot accounts for the
+       session (made-up gamertags from a word list, xuids in a range of
+       their own, `bot: true` on the account), and answers with the roster.
+       It refuses unless the asking host has a session.
+     - Bot accounts are flagged on the server, so a game record's `bot:
+       true` is accepted only for an xuid the server issued as a bot.
+     - The host asks for the roster when the Clankers page wants more bots
+       than free ports (or always, with Live on). Each roster entry becomes
+       a `bots::phantom::Identity` (xuid, gamertag, emblem, colours) and a
+       brain at the entry's skill.
+     - `sim` can ask the same endpoint for identities and pass them to
+       `sim.player.add {kind: phantom, identity}`. The bots crate never
+       talks to the server; the host glue does.
+     - System Link and offline games make their own identities, with xuids
+       in a local-only range that the server never accepts.
    - Tests: the action conversion and store as pure functions over
      synthetic memory, as the co-op work did; the machine-id and peer
-     bookkeeping.
-7. **Clankers page (Game Setup).**
-   - The ui_kit page and its settings (§7); bots joining the lobby.
-   - Tests: the kit's Page table tests and previews; settings round-trip.
-   - It can move ahead of stage 6 if the user wants it sooner, limited to
-     3 bots.
+     bookkeeping; the phantom-to-player lookup over synthetic player
+     records; the server endpoint (issued xuids, refusing without a
+     session, `bot: true` only for issued xuids); the roster to identities.
+     Built so far (`cargo test -p bots phantom`, `-p live-proto bots`):
+     the books (pending on add, refusals, handles not reused), machine ids
+     round trip and never a real adapter's, the player lookup by machine
+     id and not by order, a leaving player back to pending, failed kept;
+     a phantom perceiving itself by machine id; the documented roster
+     parsing and §9.1's checks; local xuids never an account's.
+7. **Clankers page (Game Setup).** Built: `boot::clankers`.
+   - **Settings** `clankers.*`, kept in the profile store
+     (`setting_defs::ALL`):
+     - `enabled`: Off or On; default Off;
+     - `count`: 1 to 15;
+     - `difficulty`: Easy, Normal, Heroic, Legendary or Mixed. Mixed is
+       Normal, Heroic and Easy on ports 1, 2 and 3;
+     - `team`: Auto-balance, Red or Blue;
+     - `aggression`: Calm, Normal or Wild;
+     - `aim_style`: Steady or Twitchy;
+     - `taunts`: Off or On; default On.
+
+     Teams, Aggression, Aim style and Taunts are saved but not used yet:
+     they wait for the lobby teams (stage 6), the utility layer and aim
+     styles (stages 4 and 5), and the emotes (stage 4).
+   - **The page** is a kit screen, `clankers`: seven `ChoiceRow`s, laid
+     out as the Halo 1 Options page is (the level select's list, the
+     description pane, the legend in the footer). Its texts are the
+     `clankers` id family. In the preview it is `h2 ui preview clankers`.
+   - **The row.** A custom game's Game Setup dialog (any list with Change
+     Map) gets a "Clankers" row with action 11, after the Halo 1 Options
+     row's 10. It uses the same three points, and each hook is ordered
+     after the Halo 1 row's. A press opens the page on the dialog's own
+     stack. The row's text is the page's title slot.
+   - **The bots.** While `enabled` is on, a driver keeps `min(count, free
+     ports)` brains in the process-wide local bots, on ports 1 to 3 that no
+     other bot asked for (an `H2_BOTS` or `sim` bot keeps its port). They
+     join on the players screen like `H2_BOTS` bots. A change on the page
+     applies at once:
+     - a new difficulty reaches the bots already there at their next
+       frame;
+     - a higher count adds bots;
+     - a lower count, or Off, takes the last added off. Taking a bot off
+       unplugs its pad, which in a game may bring up the game's
+       "controller disconnected" prompt, so change the count in the lobby.
+
+     The setting persists, so with `enabled` left on, the bots are added
+     at the next boot too, and join any players screen, campaign
+     included.
+   - Up to 3 bots play until stage 6. A count over the free ports adds
+     what fits and says so in the log.
+   - Tests:
+     - the settings in `setting_defs::ALL`, and off by default;
+     - Mixed by port;
+     - the driver: ports no one else asked for, the last added off first,
+       only its own taken off, a difficulty change reaching the bots
+       already there, and following the store's changes;
+     - the page: a row per setting, steps saved in the store, wrapping;
+     - the row: only a custom game's list, once, beside the Halo 1 row;
+       on the plan after the Halo 1 row's hooks;
+     - the kit's own checks over the page (`ui_kit::screens`: every
+       screen, every input, every state; ids; layout).
+   - **Game run (the user):**
+     1. Run `h2 play` (no `H2_BOTS`). Choose Split Screen (or System Link),
+        then a custom game's Game Setup. Below Change Map and the others,
+        a "Clankers" row shows (after Halo 1 Options on a Halo 1 map).
+     2. Press A on it: the Clankers page opens over the dialog, with
+        seven rows and a description of the focused row. B goes back to
+        Game Setup.
+     3. Set Clankers to On and Count to 2 (the log says `clankers:
+        Clanker 1 on (Normal)`). Bots join only on the players screen, so
+        back out of the lobby to it: "Clanker 1" and "Clanker 2" join by
+        themselves; go on to the lobby again. Note whether the lobby
+        itself shows them without backing out (a run decides whether the
+        lobby needs a join path of its own).
+     4. Start Slayer: the two bots play as in stages 1 to 3, at the
+        difficulty chosen.
+     5. Quit to the lobby, open the page, set Difficulty to Legendary,
+        and play again: the bots play harder.
+     6. Set Count to 1: one bot leaves (its slot stays on the players
+        screen until the game exits). Set Clankers to Off: none play.
+     7. Quit and start `h2 play` again: the page shows what you left it
+        at; `h2 settings` lists the `clankers.*` values.
+     8. Send the `clankers:` and `ui:` log lines if the row is missing,
+        draws no text, or opens the page under the lobby.
 8. **Clankermatch.**
    - The Live menu row, the playlist filter, the fake search and the lobby
      fill.
@@ -871,6 +1183,71 @@ list for the user to play (§11).
    - The server side is sbmm-ranked's.
 9. **Vehicles** (later). Mounting, driving along the nav mesh's vehicle
    graph, and gunner roles.
+
+## 10.1 Library surface (for the agent API)
+
+`crates/bots` gives other code, such as the agent API's `sim.*` calls, a
+small surface. Everything in it is controller input.
+
+- `bots::local::add(port, Box<dyn PadSource>) -> Result<BotHandle, Error>`
+  puts a bot on controller port `port` (0 to 3), named "Clanker <port>".
+  - Errors: `NoSuchPort`, `PortTaken` (another bot asked for it), and
+    `Full` (3 bots already).
+  - If a real pad holds the port, the bot goes to the lowest free one.
+- `bots::local::remove(handle)` unplugs the bot's pad at the next input
+  sync. Its slot stays signed in until the game exits.
+- `bots::local::list() -> Vec<BotInfo>` gives each bot's handle, name, the
+  port it asked for, and the port it got (`None` until the input manager
+  has placed it).
+- `trait PadSource: Send { fn pad(&mut self, f: &Frame) -> HostPadState }`
+  - It is called once a frame on the game thread, before `RENDER_FRAME`,
+    only for placed bots.
+  - `Frame` carries the frame count, the game's tick (`tick`, 30 a
+    second, `None` in the menus), the port, the guest memory and
+    `joining`: the players screen is on top and the bot's slot has no
+    profile, so A signs it in. Frames are rendered frames; a slow frame
+    runs several ticks and a fast one none, so time by `tick` to match the
+    simulation.
+  - A source must not call `add` or `remove` from inside `pad`.
+  - Closures `FnMut(&Frame) -> HostPadState` are sources.
+  - Three sources come with the crate:
+    - `Scripted`: timed steps, optionally looping;
+    - `Recorded`: one pad per frame, played once;
+    - `bots::Brain`: the brain. It presses A while `joining`, uses its
+      `mind::Mind` (with the loaded map's nav mesh and walls) in a
+      multiplayer game, and is idle elsewhere.
+- `bots::phantom::add(Identity, team: Option<u8>, Box<dyn PadSource>)`
+  has its final signature but returns `Err(NotBuilt)` until stage 6b
+  makes machines. `Identity` is the roster's xuid, gamertag, emblem and
+  colours (§9.1).
+- `bots::phantom::remove(handle)`, `list() -> Vec<PhantomInfo>` (handle,
+  identity, team, machine id, `player: Option<u32>`, `state: Pending |
+  Joined | Failed(reason)`) and `player(handle) -> Option<u32>` work on the
+  process-wide `Phantoms` (`phantom::global()`). Errors: `NotBuilt`,
+  `Full` (15), `Duplicate(xuid)`, `BadIdentity`, `NoSuchPhantom`.
+- `Frame::machine` is a phantom's machine id (`None` for a local bot; a
+  phantom's `port` is 4). A source finds its own player with
+  `guest::perceive_as(Who::Machine(id))`.
+- `bots::local::Local` is the same API on an instance. The free functions
+  use the process-wide one (`local::global()`), which the boot glue drives
+  and whose backend boot adds to the input manager. Tests make their own.
+
+Known limits, for the agent API's `sim.*` docs (agent-api.md):
+
+1. The embedded `live_server` does not yet issue bot identities or check
+   `bot: true` against them. That comes with stage 6 (§9.1, §10 stage 6);
+   until then agent-api.md should say "will".
+2. Script `ticks` count bot frames, not game ticks. A source that wants
+   game time inside a game can use `f.tick` (for example
+   `f.tick.map(u64::from).unwrap_or(f.frame)`).
+3. `Recorded` plays one pad per successful read, once a frame. The game can
+   call XInputGetState more than once a frame, so playback can drift from
+   the recording's timing.
+4. A local bot signs in by pressing A only while the players screen is on
+   top. One added in a lobby or mid-game does not join until that screen
+   shows.
+5. `remove` on a local bot in a game unplugs its pad, which may bring up
+   the controller-disconnected prompt.
 
 ## 11. What needs a game run
 
@@ -906,13 +1283,14 @@ local-user map.
 
 Still open:
 
-- The membership update `0x14bba8`/`0x14bc17`/`0x14bf84` → `0x14c090`, and
-  the session fields that mark a peer joined (for phantoms).
+- For phantoms (§5.1, "Open"): the lobby's ready check `0x5f970`, the
+  join room check `0x62e30` and the veto object, `0x5fe20` on a peer with
+  no channel, and `0x14c090`'s body.
 - How the players screen's mask becomes the game's local users when the
   game starts. A run answers it for stage 1 (stage 1 run, step 1); a trace
   is needed only if that fails.
 - The network receivers of remote actions, `0x6a81c` and `0x978bb`.
-- The `0x5c` action record's layout, for the converter's tests (the crouch
-  bit and the weapon index first).
+- The `0x5c` action record's flag bits (crouch and jump) and `+0x24`
+  (zoom?); the layout is in §5.1.
 - Which font slots draw player names in the lobby, scoreboard and carnage
   report.

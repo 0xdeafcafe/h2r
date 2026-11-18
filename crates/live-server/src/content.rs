@@ -552,6 +552,8 @@ impl Live {
         let mut out = Some(out);
         let result = async {
             let (actual, size, whole) = got?;
+            self.meter(Some(xuid), crate::usage::metric::UP_CONTENT, size)
+                .await;
             if actual != h {
                 return Err(invalid(format!(
                     "the body's SHA-256 is {actual}, not the path's"

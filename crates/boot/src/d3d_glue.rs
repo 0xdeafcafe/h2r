@@ -236,6 +236,19 @@ pub fn render_thread_requested() -> bool {
     render_thread_from(std::env::var("H2_RENDER_THREAD").ok().as_deref())
 }
 
+/// What frame stats say when the run has no GPU backend: `h2 run` without
+/// `H2_BOOT_GFX` (or a window) draws into [`Headless`], which renders
+/// nothing, so the counters the GPU backend keeps (draws, submits,
+/// pipelines, shaders, uploads, passes, queue writes, the `pass_*`
+/// columns) stay 0 in every CSV row. The guest's own draw calls are in the
+/// exit `d3d:` stats line either way. `None` when frame stats are off or a
+/// GPU backend draws.
+pub fn frame_stats_gpu_note(frame_stats: bool, gpu: bool) -> Option<&'static str> {
+    (frame_stats && !gpu).then_some(
+        "frame stats: no GPU backend in this run (headless: no H2_BOOT_GFX), so draws, submits, pipelines, shaders, uploads, passes, queue_writes and pass_* stay 0; H2_BOOT_GFX=<dir> H2_BOOT_GFX_EVERY=never renders on the GPU without screenshots",
+    )
+}
+
 /// What [`interpolation`] turns on: the frame-rate setting's reader and how
 /// in-between frames are made.
 pub struct Interpolation {
@@ -343,11 +356,12 @@ where
     B::Texture: Sync,
 {
     match interp {
-        Some(Interpolation { rate, mode }) => install_with_report(
-            rt,
-            d3d::ThreadedBackend::new(d3d::InterpBackend::new(backend, rate).with_mode(mode))?,
-            extra,
-        ),
+        Some(Interpolation { rate, mode }) => {
+            let interp = d3d::InterpBackend::new(backend, rate).with_mode(mode);
+            // The agent's render.stats reads its counters.
+            crate::render_probe::set_interp(interp.stats());
+            install_with_report(rt, d3d::ThreadedBackend::new(interp)?, extra)
+        }
         None => install_with_report(rt, d3d::ThreadedBackend::new(backend)?, extra),
     }
 }
@@ -392,7 +406,7 @@ fn read_rgba(
     Ok((px, d.width, d.height))
 }
 
-fn write_png(path: &std::path::Path, px: &[u8], w: u32, h: u32) -> anyhow::Result<()> {
+pub(crate) fn write_png(path: &std::path::Path, px: &[u8], w: u32, h: u32) -> anyhow::Result<()> {
     let f = std::io::BufWriter::new(std::fs::File::create(path)?);
     let mut enc = png::Encoder::new(f, w, h);
     enc.set_color(png::ColorType::Rgba);
@@ -1017,6 +1031,18 @@ pub fn w_buffer_mapping(s: d3d::DepthScale) -> engine::render_loop::occlusion::D
 mod tests {
     use super::*;
     use d3d::backend::Backend;
+
+    /// A headless run's frame stats name the counters it can't fill and
+    /// the switch that fills them; a GPU run, or no frame stats, says
+    /// nothing.
+    #[test]
+    fn frame_stats_without_a_gpu_say_the_gpu_counters_stay_zero() {
+        let note = frame_stats_gpu_note(true, false).unwrap();
+        assert!(note.contains("draws") && note.contains("passes") && note.contains("stay 0"), "{note}");
+        assert!(note.contains("H2_BOOT_GFX=<dir> H2_BOOT_GFX_EVERY=never"), "{note}");
+        assert_eq!(frame_stats_gpu_note(true, true), None);
+        assert_eq!(frame_stats_gpu_note(false, false), None);
+    }
 
     /// The A/B compares the E3 view's image with the retail view's of the
     /// same frame only, counts what it compared, and hands back the

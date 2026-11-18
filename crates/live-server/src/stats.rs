@@ -541,7 +541,11 @@ impl Inner {
                 kills: m.kills,
             })
             .collect();
-        maps.sort_by(|a, b| (b.games, b.kills, &a.map).cmp(&(a.games, a.kills, &b.map)));
+        // The map id breaks ties between variants of one map, so every
+        // server (and every restart) orders them the same.
+        maps.sort_by(|a, b| {
+            (b.games, b.kills, &a.map, &a.map_id).cmp(&(a.games, a.kills, &b.map, &b.map_id))
+        });
         Summary {
             from: from.map(format_unix),
             to: format_unix(now),

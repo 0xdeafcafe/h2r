@@ -56,6 +56,16 @@ bumper to White (`docs/input/input.md`). The three layouts, as `Layout` in
 
 Everything else (triggers, sticks, Y, Start, Back) stays as Default.
 
+### The debug menu chord (host, not a layout)
+
+On a DualSense or DualShock 4, the touchpad click and Options together open
+our debug menu ([docs/runtime/debug-menu.md](../runtime/debug-menu.md)). No
+layout uses the touchpad, which never reaches the game. Options alone is
+still Start (pause): on these pads it reaches the game 80 ms late, while the
+host waits to see whether the click follows. While the menu is open the game
+sees a neutral pad, whatever its layout. Buttons still held when it closes
+stay hidden until they are released.
+
 ## Why not remap on the host
 
 A host remap of the physical pad into the guest pad was the first plan. It

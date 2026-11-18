@@ -65,6 +65,9 @@ pub(crate) enum Reply {
     Matches(Vec<live_proto::session::Session>),
     Social(SocialSnapshot),
     InviteAccepted(live_proto::mailbox::Invite),
+    /// A mute list, oldest first.
+    Mutes(Vec<u64>),
+    Ranks(Vec<live_proto::rank::LeaderboardRow>),
 }
 #[derive(Clone)]
 pub(crate) struct Pending(Arc<Mutex<Option<Result<Reply, u32>>>>);
@@ -136,6 +139,7 @@ pub(crate) enum MatchRequest {
     Search {
         limit: u32,
         attributes: BTreeMap<u32, live_proto::session::AttributeValue>,
+        optimatch: Option<live_proto::optimatch::Query>,
     },
     Find(String),
 }
@@ -146,6 +150,12 @@ pub(crate) enum SocialRequest {
     Answer(live_proto::mailbox::Answered),
     Join { from: Xuid, session_id: String },
 }
+/// A player report ([`crate::feedback`]).
+#[derive(Clone)]
+pub(crate) struct ReportRequest {
+    pub target: Xuid,
+    pub body: live_proto::reports::ReportRequest,
+}
 #[derive(Clone, PartialEq)]
 pub(crate) struct SocialSnapshot {
     pub friends: live_proto::Friends,
@@ -155,11 +165,24 @@ pub(crate) struct SocialSnapshot {
 enum Work {
     Logon(Vec<Account>),
     Change(Vec<Account>),
-    Presence { user: u64, value: Presence },
+    Presence {
+        user: u64,
+        value: Presence,
+    },
     File(&'static str, u32),
-    Teams { user: u64, request: TeamRequest },
+    Teams {
+        user: u64,
+        request: TeamRequest,
+    },
     Match(MatchRequest),
     Social { user: u64, request: SocialRequest },
+    Report { user: u64, request: ReportRequest },
+    MuteList { user: u64 },
+    Mute { user: u64, target: u64, mute: bool },
+    Ranks {
+        leaderboards: Vec<u32>,
+        xuids: Vec<u64>,
+    },
     Wake,
 }
 struct Command {
@@ -218,13 +241,13 @@ impl Service {
                                 if matches!(command.work, Work::Presence { .. })
                                     && matches!(
                                         error,
-                                        CANNOT_ACCESS_SERVICE | INVALID_USER | SERVERS_BUSY
+                                        CANNOT_ACCESS_SERVICE
+                                            | INVALID_USER
+                                            | SERVERS_BUSY
+                                            | ACCOUNT_REQUIRES_MANAGEMENT
                                     )
                                 {
-                                    command
-                                        .session
-                                        .status
-                                        .store(CONNECTION_LOST, Ordering::Release);
+                                    command.session.status.store(lost(error), Ordering::Release);
                                 }
                             }
                             command.result.finish(result);
@@ -275,6 +298,50 @@ impl Service {
     pub fn social(&self, s: &Session, user: u64, request: SocialRequest) -> Result<Pending, u32> {
         self.submit(s, Work::Social { user, request })
     }
+    /// Reports `target` for `user` (docs/live/live-api.md "Player reports").
+    pub fn report(
+        &self,
+        s: &Session,
+        user: u64,
+        target: Xuid,
+        kind: live_proto::reports::Kind,
+        reason: String,
+        game_id: Option<String>,
+    ) -> Result<Pending, u32> {
+        let request = ReportRequest {
+            target,
+            body: live_proto::reports::ReportRequest {
+                kind,
+                reason,
+                game_id,
+            },
+        };
+        self.submit(s, Work::Report { user, request })
+    }
+    /// `user`'s mute list (docs/live/live-voice.md §3.6).
+    pub fn mute_list(&self, s: &Session, user: u64) -> Result<Pending, u32> {
+        self.submit(s, Work::MuteList { user })
+    }
+    /// Mutes (or unmutes) `target` for `user`.
+    pub fn mute(&self, s: &Session, user: u64, target: u64, mute: bool) -> Result<Pending, u32> {
+        self.submit(s, Work::Mute { user, target, mute })
+    }
+    /// The standings the game's stats read asks for: every player on every
+    /// leaderboard (docs/live/live-matchmaking.md §8.1).
+    pub fn ranks(
+        &self,
+        s: &Session,
+        leaderboards: Vec<u32>,
+        xuids: Vec<u64>,
+    ) -> Result<Pending, u32> {
+        self.submit(
+            s,
+            Work::Ranks {
+                leaderboards,
+                xuids,
+            },
+        )
+    }
     pub fn cancel(&self, s: &Session) {
         s.cancel();
         let _ = self.submit(s, Work::Wake);
@@ -318,11 +385,15 @@ enum Error {
     Protocol,
     TooLarge,
     Team(live_proto::team::TeamError),
+    /// The server refused the account: it is banned
+    /// (docs/live/live-admin.md "Bans").
+    Banned,
 }
 impl Error {
     fn result(self) -> u32 {
         match self {
             Self::Team(error) => error.hresult(),
+            Self::Banned => ACCOUNT_REQUIRES_MANAGEMENT,
             Self::Status(401 | 403 | 404) => INVALID_USER,
             Self::Status(429 | 503) => SERVERS_BUSY,
             Self::TooLarge => BUFFER_TOO_SMALL,
@@ -332,6 +403,16 @@ impl Error {
 }
 fn now() -> i64 {
     time::OffsetDateTime::now_utc().unix_timestamp()
+}
+/// What the persistent connection task reports when a request made while
+/// signed in fails: a ban as the account-management result the game
+/// shows its account dialog for, anything else as a lost connection.
+fn lost(error: u32) -> u32 {
+    if error == ACCOUNT_REQUIRES_MANAGEMENT {
+        error
+    } else {
+        CONNECTION_LOST
+    }
 }
 impl Worker {
     fn response(
@@ -348,8 +429,11 @@ impl Worker {
             ureq::Error::Status(code, response) => {
                 let mut data = Vec::new();
                 let _ = response.into_reader().take(4096).read_to_end(&mut data);
-                let team = serde_json::from_slice::<serde_json::Value>(&data)
-                    .ok()
+                let body = serde_json::from_slice::<serde_json::Value>(&data).ok();
+                if body.as_ref().is_some_and(|v| v["error"] == "banned") {
+                    return Error::Banned;
+                }
+                let team = body
                     .and_then(|v| v.get("team_error").cloned())
                     .and_then(|v| serde_json::from_value(v).ok());
                 team.map(Error::Team).unwrap_or(Error::Status(code))
@@ -645,12 +729,22 @@ impl Worker {
                     .collect(),
                 Err(e) => return Err(e),
             },
-            MatchRequest::Search { limit, attributes } => {
+            MatchRequest::Search {
+                limit,
+                attributes,
+                optimatch,
+            } => {
                 let mut query = url::form_urlencoded::Serializer::new(String::new());
                 query.append_pair(
                     "attributes",
                     &serde_json::to_string(&attributes).map_err(|_| Error::Protocol)?,
                 );
+                if let Some(q) = optimatch {
+                    query.append_pair(
+                        "optimatch",
+                        &serde_json::to_string(&q).map_err(|_| Error::Protocol)?,
+                    );
+                }
                 let filter = query.finish();
                 let page: live_proto::Page<session::Session> = self.team_json(
                     user,
@@ -837,6 +931,7 @@ impl Worker {
                     MatchRequest::Search {
                         limit: 1000,
                         attributes: BTreeMap::new(),
+                        optimatch: None,
                     },
                 )?;
                 Ok(Reply::Social(SocialSnapshot {
@@ -1098,6 +1193,76 @@ impl Worker {
                     _ => e.result(),
                 })
             }
+            Work::Report { user, request } => {
+                let active = self
+                    .active
+                    .as_ref()
+                    .filter(|a| a.session.id == c.session.id)
+                    .ok_or(NO_SESSION)?;
+                let user = active.users.get(user).ok_or(NO_USER)?;
+                let body = serde_json::to_string(&request.body).map_err(|_| INVALID_ARGUMENT)?;
+                self.response(
+                    self.request(
+                        "POST",
+                        &format!("/accounts/by-xuid/{}/report", request.target),
+                        user,
+                        lxm::REPORTS_WRITE,
+                    )
+                    .set("content-type", "application/json"),
+                    Some(&body),
+                    64 * 1024,
+                )
+                .map(|_| Reply::Done)
+                .map_err(|e| match e {
+                    Error::Status(404) => INVALID_USER,
+                    Error::Status(400 | 422) => INVALID_ARGUMENT,
+                    _ => e.result(),
+                })
+            }
+            Work::MuteList { user } => {
+                let active = self
+                    .active
+                    .as_ref()
+                    .filter(|a| a.session.id == c.session.id)
+                    .ok_or(NO_SESSION)?;
+                let user = active.users.get(user).ok_or(NO_USER)?;
+                let list: live_proto::mutes::MuteList = self
+                    .json(
+                        self.request(
+                            "GET",
+                            &format!("/accounts/by-xuid/{}/mutes", Xuid(user.xuid)),
+                            user,
+                            lxm::READ,
+                        ),
+                        None,
+                    )
+                    .map_err(Error::result)?;
+                Ok(Reply::Mutes(list.items.iter().map(|e| e.xuid.0).collect()))
+            }
+            Work::Mute { user, target, mute } => {
+                let active = self
+                    .active
+                    .as_ref()
+                    .filter(|a| a.session.id == c.session.id)
+                    .ok_or(NO_SESSION)?;
+                let user = active.users.get(user).ok_or(NO_USER)?;
+                self.response(
+                    self.request(
+                        if *mute { "PUT" } else { "DELETE" },
+                        &format!(
+                            "/accounts/by-xuid/{}/mutes/{}",
+                            Xuid(user.xuid),
+                            Xuid(*target)
+                        ),
+                        user,
+                        lxm::MUTES_WRITE,
+                    ),
+                    Some(""),
+                    64 * 1024,
+                )
+                .map(|_| Reply::Done)
+                .map_err(Error::result)
+            }
             Work::Teams { user, request } => {
                 let active = self
                     .active
@@ -1107,6 +1272,31 @@ impl Worker {
                 let user = active.users.get(user).ok_or(NO_USER)?;
                 self.teams_request(user, request.clone())
                     .map(Reply::Teams)
+                    .map_err(Error::result)
+            }
+            Work::Ranks {
+                leaderboards,
+                xuids,
+            } => {
+                let active = self
+                    .active
+                    .as_ref()
+                    .filter(|a| a.session.id == c.session.id)
+                    .ok_or(NO_SESSION)?;
+                let user = active.users.values().next().ok_or(NO_USER)?;
+                let boards: Vec<String> = leaderboards.iter().map(u32::to_string).collect();
+                let xuids: Vec<String> = xuids.iter().map(|x| Xuid(*x).to_string()).collect();
+                let path = format!(
+                    "/rank-stats?leaderboards={}&xuids={}",
+                    boards.join(","),
+                    xuids.join(","),
+                );
+                #[derive(serde::Deserialize)]
+                struct Rows {
+                    items: Vec<live_proto::rank::LeaderboardRow>,
+                }
+                self.team_json::<Rows>(user, &path)
+                    .map(|r| Reply::Ranks(r.items))
                     .map_err(Error::result)
             }
             Work::Wake => Ok(Reply::Done),
@@ -1152,7 +1342,7 @@ impl Worker {
                     active
                         .session
                         .status
-                        .store(CONNECTION_LOST, Ordering::Release);
+                        .store(lost(e.result()), Ordering::Release);
                 }
             }
         }

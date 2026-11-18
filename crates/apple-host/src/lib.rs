@@ -93,6 +93,8 @@ fn guest(layout: Layout, store: Arc<settings::Store>) -> app::worker::GuestFn {
             render_thread: boot::d3d_glue::render_thread_requested(),
             audio_sink: Some(audio_sink()),
             pad_speaker: None,
+            debug_menu: None,
+            perf_overlay: None,
             settings: Some(store),
             trace_limit: Some(TRACE_LIMIT),
             level: None,
@@ -120,7 +122,7 @@ fn guest(layout: Layout, store: Arc<settings::Store>) -> app::worker::GuestFn {
             xapi: true,
             // What the app's installer put in the app data directory
             // (movies::install); skipped where there is no decoder.
-            movies: boot::movies_glue::default_dir(),
+            movies: boot::movies_glue::Movies::Auto,
         };
         let r = boot::run_hosted_with_live(&xbe, &layout.module, &opts, hosted, &live);
         vfs::flush_pending_metadata();

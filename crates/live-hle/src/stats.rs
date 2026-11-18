@@ -1,9 +1,13 @@
-//! Local acceptance of legacy XOnline stats. Captures own all nested values;
-//! guest pointers never survive the call. No stat request is sent to the server.
+//! Legacy XOnline stats. Writes are accepted locally and captured; captures
+//! own all nested values, and guest pointers never survive the call. Reads
+//! of a playlist's leaderboard ask the server for the players' ranks
+//! (docs/live/live-matchmaking.md §8); every other stat reads as absent.
 use crate::{
+    client::{Pending, Reply, Service, Session},
     state::{Error, Storage},
     status::*,
 };
+use live_proto::rank::{self, LeaderboardRow};
 use runtime::{Guest, guest::Access};
 use std::collections::{BTreeMap, VecDeque};
 
@@ -61,7 +65,18 @@ struct ReadSpec {
 }
 enum Task {
     Write,
-    Read(Vec<ReadQuery>),
+    Read(Read),
+}
+struct Read {
+    queries: Vec<ReadQuery>,
+    /// The server's answer, while it has not come.
+    pending: Option<Pending>,
+    rows: Vec<LeaderboardRow>,
+}
+pub(crate) struct Context<'a> {
+    pub storage: &'a mut Storage,
+    pub service: Option<&'a Service>,
+    pub session: Option<&'a Session>,
 }
 #[derive(Default)]
 pub(crate) struct Stats {
@@ -96,8 +111,24 @@ impl Stats {
     pub fn close(&mut self, h: u32) -> bool {
         self.tasks.remove(&h).is_some()
     }
-    pub fn poll(&self, h: u32) -> Option<u32> {
-        self.tasks.get(&h).map(|_| TASK_SUCCESS)
+    /// The task's status: 0 while the server has not answered a read. A
+    /// read the server fails completes with every stat absent, as before
+    /// reads reached it: the title reads absent as zero, level 1.
+    pub fn poll(&mut self, h: u32) -> Option<u32> {
+        if let Some(Task::Read(r)) = self.tasks.get_mut(&h)
+            && let Some(reply) = r.pending.as_ref().and_then(Pending::take)
+        {
+            r.pending = None;
+            if let Ok(Reply::Ranks(rows)) = reply {
+                r.rows = rows;
+            }
+        }
+        self.tasks.get(&h).map(|t| match t {
+            Task::Read(Read {
+                pending: Some(_), ..
+            }) => 0,
+            _ => TASK_SUCCESS,
+        })
     }
     fn task(&mut self, m: &mut Guest, storage: &mut Storage, out: u32, task: Task) -> Result<u32> {
         let Some(h) = storage.alloc(m, 8) else {
@@ -107,27 +138,16 @@ impl Stats {
         self.tasks.insert(h, task);
         Ok(0)
     }
-    pub fn invoke(
-        &mut self,
-        op: Op,
-        a: &[u32],
-        m: &mut Guest,
-        storage: &mut Storage,
-    ) -> Result<u32> {
-        let result = self.invoke_parsed(op, a, m, storage);
+    pub fn invoke(&mut self, op: Op, a: &[u32], m: &mut Guest, ctx: Context<'_>) -> Result<u32> {
+        let result = self.invoke_parsed(op, a, m, ctx);
         match result {
             Ok(hr) => Ok(hr),
             Err(ParseError::Status(hr)) => Ok(hr),
             Err(ParseError::Fault(f)) => Err(Error::Fault(f)),
         }
     }
-    fn invoke_parsed(
-        &mut self,
-        op: Op,
-        a: &[u32],
-        m: &mut Guest,
-        storage: &mut Storage,
-    ) -> Parsed<u32> {
+    fn invoke_parsed(&mut self, op: Op, a: &[u32], m: &mut Guest, ctx: Context<'_>) -> Parsed<u32> {
+        let storage = ctx.storage;
         match op {
             Op::Write | Op::Read => {
                 if a[2] != 0 {
@@ -164,12 +184,33 @@ impl Stats {
                     self.writes.push_back(write);
                     Ok(0)
                 } else {
-                    let specs = read_specs(m, a[1], a[0])?
+                    let queries: Vec<ReadQuery> = read_specs(m, a[1], a[0])?
                         .into_iter()
                         .map(|s| s.query)
                         .collect();
-                    self.task(m, storage, a[3], Task::Read(specs))
-                        .map_err(task_error)
+                    let pending = match ranks_request(&queries) {
+                        Some((boards, xuids)) => match (ctx.service, ctx.session) {
+                            (Some(service), Some(session)) => {
+                                match service.ranks(session, boards, xuids) {
+                                    Ok(p) => Some(p),
+                                    Err(hr) => return Ok(hr),
+                                }
+                            }
+                            _ => None,
+                        },
+                        None => None,
+                    };
+                    self.task(
+                        m,
+                        storage,
+                        a[3],
+                        Task::Read(Read {
+                            queries,
+                            pending,
+                            rows: Vec::new(),
+                        }),
+                    )
+                    .map_err(task_error)
                 }
             }
             Op::WriteResult => {
@@ -190,9 +231,13 @@ impl Stats {
                 Ok(0)
             }
             Op::ReadResult => {
-                let Some(Task::Read(request)) = self.tasks.get(&a[0]) else {
+                let Some(Task::Read(read)) = self.tasks.get(&a[0]) else {
                     return Ok(INVALID_ARGUMENT);
                 };
+                if read.pending.is_some() {
+                    return Ok(RESULTS_UNAVAILABLE);
+                }
+                let request = &read.queries;
                 if a[1] as usize > request.len() {
                     return Ok(INVALID_ARGUMENT);
                 }
@@ -213,17 +258,47 @@ impl Stats {
                         1,
                     )?;
                 }
-                // NONE is the XDK's absent-stat representation. The title treats
-                // it as zero. It needs no bytes from the optional extra buffer.
+                // A playlist leaderboard's stats are LONGs. NONE is the XDK's
+                // absent-stat representation, which the title treats as zero.
+                // Neither needs bytes from the optional extra buffer.
                 for out in output {
-                    for i in 0..out.query.ids.len() as u32 {
-                        m.write_bytes(out.stats_ptr + i * STAT_SIZE + 4, &[0; 12], 1)?;
+                    let row = read.rows.iter().find(|r| {
+                        r.xuid.0 == out.query.xuid && r.leaderboard == out.query.leaderboard
+                    });
+                    for (i, id) in out.query.ids.iter().enumerate() {
+                        let mut stat = [0u8; 12];
+                        if let Some(v) = row.and_then(|r| rank::live_stat(&r.standing, *id)) {
+                            stat[..4].copy_from_slice(&1u32.to_le_bytes());
+                            stat[4..8].copy_from_slice(&v.to_le_bytes());
+                        }
+                        m.write_bytes(out.stats_ptr + i as u32 * STAT_SIZE + 4, &stat, 1)?;
                     }
                 }
                 Ok(0)
             }
         }
     }
+}
+/// What to ask the server for a read: the leaderboards that could be a
+/// playlist's (its playlist id, 1..=100) and ask for a rank stat, and every
+/// player. `None` when no query could be one.
+fn ranks_request(queries: &[ReadQuery]) -> Option<(Vec<u32>, Vec<u64>)> {
+    let wanted = |q: &&ReadQuery| {
+        q.xuid != 0
+            && live_proto::hopper::layout::PLAYLIST_IDS.contains(&q.leaderboard)
+            && q.ids.iter().any(|id| rank::LIVE_STATS.contains(id))
+    };
+    let mut boards: Vec<u32> = queries
+        .iter()
+        .filter(wanted)
+        .map(|q| q.leaderboard)
+        .collect();
+    let mut xuids: Vec<u64> = queries.iter().filter(wanted).map(|q| q.xuid).collect();
+    boards.sort_unstable();
+    boards.dedup();
+    xuids.sort_unstable();
+    xuids.dedup();
+    (!boards.is_empty()).then_some((boards, xuids))
 }
 fn task_error(e: Error) -> ParseError {
     match e {

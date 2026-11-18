@@ -15,6 +15,9 @@ const USAGE: &str = "usage:
   h2 agent <call> [args] [--socket PATH|tcp://HOST:PORT] [--xbox [HOST]] [--timeout SECONDS]
   h2 agent - [--socket PATH]          calls from stdin, one per line, on one connection
   h2 agent watch [phase map bsp pause] print events until the game exits
+  h2 agent run <script|-> [--socket PATH]  a `-` script with `expect <pointer> <op>
+                                      [JSON]` and `keep` lines, answered as one
+                                      JSON verdict; exits 1 unless it passed
 
 A call is a method and JSON params (`session.wait '{\"until\":{\"phase\":\"gameplay\"}}'`)
 or a short form:
@@ -51,6 +54,23 @@ or a short form:
   sample-status          profile.sample.status
   hostperf               host.perf: the newest host perf line
   ui                     ui.screen: the menu screen player one's input goes to (H2_UI_WATCH=1)
+  frame [draws] [snap N[,M...]]  render.frame: record the next whole frame and
+                         print it: passes (target, clears, draws by outcome,
+                         primitive, entry, texture formats), copies and reads,
+                         native render paths; `draws` lists each draw; `snap`
+                         reads passes N... back as PNGs under the cache
+                         directory's frames/ (waits up to 10 s for the frame)
+  loads [N]              load.timeline: the last N (8) level loads, BSP
+                         switches and stalls: stall and settle times, and the
+                         bytes read, uploads and compiles in each; a stall
+                         going on now as `current`
+  fallbacks [N]          profile.fallbacks: the N (20) fallback interpreter
+                         entry addresses that interpreted most, with their
+                         function, hits and instructions
+  render                 render.stats: in-between frames and why they held,
+                         the pipelined render, native render path calls
+{HOT}
+{SIM}
 
 Input calls need no claim while nobody holds control; once a connection
 does, only it may send them. Queued steps outlive the connection and play out.
@@ -61,6 +81,13 @@ else the cache directory's h2recomp/agent.sock, where `h2 serve` listens
 by default. Results print as
 JSON, one per line in scripts; an error prints to stderr and exits 1 (a
 script stops at its first error).";
+
+/// [`USAGE`] with the hot-iteration forms (`agent_hot_cmd`) in place.
+fn usage() -> String {
+    USAGE
+        .replace("{HOT}", crate::agent_hot_cmd::USAGE)
+        .replace("{SIM}", crate::agent_sim::USAGE)
+}
 
 pub fn run(args: Vec<String>) -> Result<()> {
     let mut socket = None;
@@ -92,12 +119,12 @@ pub fn run(args: Vec<String>) -> Result<()> {
                         .context("--timeout needs a positive number of seconds")?,
                 );
             }
-            "-h" | "--help" => bail!("{USAGE}"),
+            "-h" | "--help" => bail!("{}", usage()),
             _ => rest.push(a),
         }
     }
     let Some(first) = rest.first().cloned() else {
-        bail!("{USAGE}")
+        bail!("{}", usage())
     };
     let path = socket.unwrap_or_else(agent_proto::default_socket);
     let mut c = Client::connect(&path).with_context(|| {
@@ -110,6 +137,18 @@ pub fn run(args: Vec<String>) -> Result<()> {
     match first.as_str() {
         "-" => script(&mut c),
         "watch" => watch(&mut c, &rest[1..]),
+        "run" => run_script(&mut c, &rest[1..], false),
+        "sim" if rest.get(1).is_some_and(|w| w == "run") => run_script(&mut c, &rest[2..], true),
+        "sim" => {
+            let v = sim(&mut c, &rest[1..])?;
+            println!("{}", serde_json::to_string_pretty(&v)?);
+            Ok(())
+        }
+        "frame" => {
+            let v = frame(&mut c, &rest)?;
+            println!("{}", serde_json::to_string_pretty(&v)?);
+            Ok(())
+        }
         _ => {
             let (m, p) = parse_call(&rest)?;
             let v = call(&mut c, &m, p)?;
@@ -132,6 +171,10 @@ fn looks_like_host(w: &str) -> bool {
             && !w.starts_with("world.")
             && !w.starts_with("session.")
             && !w.starts_with("features.")
+            && !w.starts_with("load.")
+            && !w.starts_with("edit.")
+            && !w.starts_with("render.")
+            && !w.starts_with("sim.")
     }
 }
 
@@ -177,11 +220,126 @@ fn script(c: &mut Client) -> Result<()> {
             std::thread::sleep(Duration::from_millis(ms));
             continue;
         }
-        let (m, p) = parse_call(&words)?;
-        let v = call(c, &m, p)?;
+        let v = if words[0] == "frame" {
+            frame(c, &words)?
+        } else if words[0] == "sim" {
+            sim(c, &words[1..])?
+        } else {
+            let (m, p) = parse_call(&words)?;
+            call(c, &m, p)?
+        };
         println!("{}", serde_json::to_string(&v)?);
     }
     Ok(())
+}
+
+/// The words of a script line (for `agent_run`).
+pub(crate) fn split_words(line: &str) -> Result<Vec<String>> {
+    split(line)
+}
+
+/// A `sim` verb (`agent_sim`); an error prints as `call`'s do.
+fn sim(c: &mut Client, words: &[String]) -> Result<Value> {
+    match crate::agent_sim::call(c, words) {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            eprintln!("{}", serde_json::to_string_pretty(&e)?);
+            std::process::exit(1);
+        }
+    }
+}
+
+/// `h2 agent run`: the script, then its verdict. `sim run` (`sim`) also
+/// removes the simulated players once a script has added any.
+fn run_script(c: &mut Client, args: &[String], sim: bool) -> Result<()> {
+    let [path] = args else {
+        bail!("run needs one script file (or - for stdin)")
+    };
+    let text = if path == "-" {
+        std::io::read_to_string(std::io::stdin())?
+    } else {
+        std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?
+    };
+    let lines = crate::agent_run::parse(&text, split)?;
+    let mut added = false;
+    let mut verdict = crate::agent_run::execute(
+        &lines,
+        |words| {
+            if words[0] == "frame" {
+                return frame(c, words).map_err(|e| format!("{e:#}"));
+            }
+            if words[0] == "sim" {
+                added |= words.get(1).is_some_and(|w| w == "add");
+                return crate::agent_sim::call(c, &words[1..])
+                    .map_err(|e| serde_json::to_string(&e).unwrap_or_default());
+            }
+            let (m, p) = parse_call(words).map_err(|e| format!("{e:#}"))?;
+            c.call(&m, p).map_err(|e| match e {
+                CallError::Rpc(e) => serde_json::to_string(&e).unwrap_or_default(),
+                e => format!("{m}: {e}"),
+            })
+        },
+        |ms| std::thread::sleep(Duration::from_millis(ms)),
+    );
+    if sim && added {
+        verdict["cleanup"] = crate::agent_sim::cleanup(c);
+    }
+    println!("{}", serde_json::to_string_pretty(&verdict)?);
+    if verdict["pass"] != true {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// How long `frame` waits for the frame it armed.
+const FRAME_WAIT: Duration = Duration::from_secs(10);
+
+/// `frame`'s arming params from its words.
+fn frame_params(words: &[String]) -> Result<Value> {
+    let mut p = json!({ "arm": true });
+    let mut it = words[1..].iter();
+    while let Some(w) = it.next() {
+        match w.as_str() {
+            "draws" => p["draws"] = json!(true),
+            "snap" => {
+                let list = it
+                    .next()
+                    .context("snap needs pass numbers, e.g. snap 0,3")?;
+                let passes: Vec<u64> = list
+                    .split(',')
+                    .map(|n| n.trim().parse::<u64>())
+                    .collect::<Result<_, _>>()
+                    .with_context(|| format!("snap: pass numbers, not {list}"))?;
+                p["snap"] = json!(passes);
+            }
+            other => bail!("frame: unexpected {other} (draws, snap N[,M...])"),
+        }
+    }
+    Ok(p)
+}
+
+/// `render.frame`: arms, then reads until the frame it armed is in.
+fn frame(c: &mut Client, words: &[String]) -> Result<Value> {
+    let armed = call(c, method::RENDER_FRAME, frame_params(words)?)?;
+    let seq = armed["seq"].clone();
+    let deadline = std::time::Instant::now() + FRAME_WAIT;
+    loop {
+        let r = call(c, method::RENDER_FRAME, Value::Null)?;
+        if !r["frame"].is_null()
+            && r["frame"]["seq"] == seq
+            && !r["armed"].as_bool().unwrap_or(false)
+        {
+            return Ok(r["frame"].clone());
+        }
+        if std::time::Instant::now() > deadline {
+            bail!(
+                "frame: no whole frame within {} s (armed at present {}; a paused or loading game presents nothing)",
+                FRAME_WAIT.as_secs(),
+                armed["armed_at_present"]
+            );
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 fn watch(c: &mut Client, kinds: &[String]) -> Result<()> {
@@ -242,6 +400,9 @@ fn number(s: Option<&String>, what: &str) -> Result<u64> {
 
 /// A call's method and params from its words.
 fn parse_call(words: &[String]) -> Result<(String, Value)> {
+    if let Some(hot) = crate::agent_hot_cmd::parse(words) {
+        return hot;
+    }
     let name = words[0].as_str();
     let arg = words.get(1);
     let extra = |n: usize| -> Result<()> {
@@ -264,6 +425,7 @@ fn parse_call(words: &[String]) -> Result<(String, Value)> {
         "sample-stop" => Some(method::SAMPLE_STOP),
         "sample-status" => Some(method::SAMPLE_STATUS),
         "hostperf" => Some(method::HOST_PERF),
+        "render" => Some(method::RENDER_STATS),
         "ui" => Some(method::UI_SCREEN),
         _ => None,
     };
@@ -280,6 +442,20 @@ fn parse_call(words: &[String]) -> Result<(String, Value)> {
             },
         ),
         "query" => (method::WORLD_QUERY, json_arg(arg)?),
+        "loads" => (
+            method::LOAD_TIMELINE,
+            match arg {
+                None => Value::Null,
+                Some(_) => json!({ "last": number(arg, "loads")? }),
+            },
+        ),
+        "fallbacks" => (
+            method::PROFILE_FALLBACKS,
+            match arg {
+                None => Value::Null,
+                Some(_) => json!({ "top": number(arg, "fallbacks")? }),
+            },
+        ),
         "object" => (
             method::WORLD_OBJECT,
             json!({ "id": arg.context("object needs an id, e.g. actor.e1230045")? }),
@@ -388,7 +564,7 @@ fn parse_call(words: &[String]) -> Result<(String, Value)> {
             extra(2)?;
             return Ok((m.into(), json_arg(arg)?));
         }
-        other => bail!("{other}: not a method or short form\n\n{USAGE}"),
+        other => bail!("{other}: not a method or short form\n\n{}", usage()),
     };
     extra(2)?;
     Ok((m.into(), p))
@@ -511,6 +687,21 @@ mod tests {
         );
         assert_eq!(c("hostperf"), ("host.perf".into(), Value::Null));
         assert_eq!(c("ui"), ("ui.screen".into(), Value::Null));
+        assert_eq!(c("render"), ("render.stats".into(), Value::Null));
+        assert_eq!(
+            c("fallbacks 5"),
+            ("profile.fallbacks".into(), json!({"top": 5}))
+        );
+        assert_eq!(c("fallbacks"), ("profile.fallbacks".into(), Value::Null));
+        assert_eq!(c("loads 3"), ("load.timeline".into(), json!({"last": 3})));
+        assert_eq!(frame_params(&words("frame")).unwrap(), json!({"arm": true}));
+        assert_eq!(
+            frame_params(&words("frame draws snap 0,3")).unwrap(),
+            json!({"arm": true, "draws": true, "snap": [0, 3]})
+        );
+        for bad in ["frame loud", "frame snap", "frame snap x"] {
+            assert!(frame_params(&words(bad)).is_err(), "{bad}");
+        }
     }
 
     #[test]
@@ -556,6 +747,7 @@ mod tests {
             "capture",
             "capture soon",
             "capture 30 loud",
+            "fallbacks many",
         ] {
             assert!(parse_call(&words(s)).is_err(), "{s}");
         }

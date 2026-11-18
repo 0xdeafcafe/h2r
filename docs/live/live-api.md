@@ -209,7 +209,7 @@ game it is; all five fields are optional and old senders leave them out:
 | field | values | rules |
 |---|---|---|
 | `kind` | `custom`, `matchmaking`, `campaign` | `campaign` exactly when `mode` is; absent means `campaign` for campaign mode, else `custom` |
-| `playlist`, `playlist_id` | hopper name (1-32 characters, no control characters), id `[A-Za-z0-9_-]{1,64}` | matchmaking only |
+| `playlist`, `playlist_id` | hopper name (1-32 characters, no control characters), id `[A-Za-z0-9_-]{1,64}` | matchmaking only; with no `playlist`, the server names it from the served hopper file when `playlist_id` is a descriptor index there |
 | `difficulty` | `easy`, `normal`, `heroic`, `legendary` | campaign only |
 | `online` | boolean | campaign only: co-op partners on other machines (Live co-op, not sent yet); split-screen co-op is more than one player without it |
 
@@ -240,11 +240,13 @@ replays show the firing of the whole second; the same goes for `actions` and
 | `GET /v1/games/{id}/frames?from_tick=&to_tick=&format=` | recorded frames, for replay: `format=json` (the default) a page of JSON frames; `format=packed` an `application/x-h2-frames` container of packed keyframes (docs/live/live-telemetry.md, "Packed frames"), the next cursor in `x-next` and the head position in `x-position` |
 | `GET /v1/maps/{map}/outline` | top-down map outline (see below), 404 until a console has uploaded it |
 | `GET /v1/snapshot` | what a page needs on load, in one read at one log position: `{position, accounts, presence, live, ended, details, tail}`. `accounts` is `/v1/accounts?limit=1000`, `presence` is `/v1/presence`, `live` and `ended` are `/v1/games?state=…&limit=100`, `details` is `/v1/games/{id}` for every live game and the 40 newest ended ones, and `tail` is the last 300 log events up to `position` without `GameFrame` (as on the stream). Each part has the reader's visibility applied, as at its own endpoint ([Co-op games](#co-op-games)) |
-| `GET /v1/events?from=&type=&stream=&limit=` | raw log, oldest first, at most 200 a page; without the events of co-op games and sessions the reader may not see ([Co-op games](#co-op-games), "The log"): a page can be short or empty with a `next`; without network addresses for anyone but the operator ([Network addresses](#network-addresses)); invitations, friend events and content reports only to whom they concern ([Private events](#private-events)) |
+| `GET /v1/events?from=&type=&stream=&limit=` | raw log, oldest first, at most 200 a page; without the events of co-op games and sessions the reader may not see ([Co-op games](#co-op-games), "The log"): a page can be short or empty with a `next`; without network addresses for anyone but the operator ([Network addresses](#network-addresses)); invitations, friend events, content and player reports and bans only to whom they concern ([Private events](#private-events)) |
 | `GET /v1/titles/{title}/files/{name}` | raw file bytes, `ETag` = sha256 |
 | `GET /v1/server` | the server's public facts: `{id, software, url, invite_only, private, federation, counts: {accounts, online, live_games, sessions}, position}` ([live-admin.md](live-admin.md) §5) |
 | `GET /v1/stats/summary?window=today\|7d\|30d\|all` | server-wide totals, per-player rows, maps, weapons, playlists, skulls and hourly activity over a window ([Stats summary](#stats-summary), below) |
 | `GET /v1/admin/status` | admins only (`admin.read` token): the facts plus uptime, tunnel, game art, admins, log, invites; the data directory only to this machine (live-admin.md §5) |
+| `GET /v1/admin/usage?days=` | admins only (`admin.read`): the server's usage per UTC day, events by type, stored bytes ([Usage](#usage), below) |
+| `GET /v1/admin/usage/accounts?days=&sort=&limit=` | admins only (`admin.read`): the accounts using the most ([Usage](#usage)) |
 | `GET /v1/invites` | admins only (`admin.read` token): the invites admins made, newest first, open ones with their code (live-admin.md §5) |
 
 ### Caching
@@ -296,6 +298,94 @@ capped at 12 hours a game. `players` lists accounts only (a player with an
 `activity` lists hours with any game starts or kills, within the window
 and at most 30 days back. There are no headshots or medals: the events do
 not carry them (the web app derives medals itself).
+
+## Usage
+
+The Live admin's usage screens (`/dash/admin/usage`,
+[web-boundary.md](web-boundary.md) §5) read two endpoints, both for
+admins only: an `admin.read` token from an admin account, or the
+operator's (401 without one, 403 for anyone else). The numbers live in
+`crates/live-server/src/usage.rs`; a read walks only the days it asks
+for, in memory, and never the log.
+
+**Where the counts come from.** Two books, merged when read:
+
+- *From the log*, folded as events are applied and replayed at startup
+  like the read model: `events` (every event, by its author; the
+  server's own under no account), `up.events` (the bytes of each event an
+  account signed, its JWS as received; a batch once), `messages.*`
+  (`friend_requests`: `FriendRequested`; `invites`: `GameInviteSent`, for
+  its sender), `games` (once per game, for the host and the players it
+  began with or who joined), `sessions_hosted` (`SessionCreated`),
+  `sign_ins` (`SignedIn`), `reports.sent` and `reports.received`
+  (`PlayerReported`, for its `by` and its `target`), `stored.events` and
+  `stored.content` (`ContentStored`, for its uploader). Other events the
+  server signs for itself (`GameFrame`, `RankChanged`, `ReportReviewed`,
+  `PresenceExpired`, ...) count as events by type and nothing more.
+- *Metered* at the request, for bytes that never reach the log, each the
+  accepted body's size as received: `up.frames` (live frames on
+  `/v1/ingest`, text and packed), `up.content` (content uploads, title
+  files, map outlines), `up.saves` (cloud save bodies), and
+  `stored.saves` (a running total: a write adds its size less what it
+  replaced, a delete takes its size off; saves written before counting
+  began are not in it). These are counters in the store (the `usage`
+  table; `usage.json` in a file store), added to in memory at once and
+  written at most once a minute by whichever write or sweep comes next.
+  Nothing runs on a timer, so a Durable Object still sleeps; a crash loses
+  at most that minute. `h2 live store copy` does not copy them yet: the
+  log's book rebuilds on the other side, the metered one starts again.
+
+Days are UTC, from an event's signed time (`at`) or the server's clock
+when metered, and are kept for 400 days; the write on a new day drops
+older ones. Stored totals have no day and are never dropped. An account
+is *active* on a day when anything above counts for it, other than what
+it stores or reports made about it. The co-op relay is not metered: in
+the Worker it is a Durable Object of its own, with no line to the hub's
+store. A later sink (Cloudflare Analytics Engine) could take the metered
+counts behind the same call, beside the in-process ones.
+
+### `GET /v1/admin/usage?days=30`
+
+`days` is 1 to 400 (default 30), the range ending today.
+
+```json
+{ "from": "2026-10-20", "to": "2026-11-18", "keep_days": 400,
+  "days": [ { "day": "2026-11-18",
+              "up": { "events": 1145, "frames": 133, "content": 0, "saves": 0 },
+              "events": 5, "messages": { "friend_requests": 1, "invites": 0 },
+              "games": 1, "sessions_hosted": 0, "sign_ins": 1, "reports": 0,
+              "active_accounts": 1 } ],
+  "totals": { "day": "", "up": { ... }, "events": 5, ...,
+              "active_accounts": 1 },
+  "accounts_active": 1,
+  "event_types": [ { "type": "GameStarted", "count": 1 } ],
+  "stored": { "events": 2290, "content": 0, "saves": 0 } }
+```
+
+`days` lists only days with something in them, oldest first (fill the
+rest with zeros). `totals` sums them (its `active_accounts` is a sum of
+days; `accounts_active` counts distinct accounts). `event_types` is
+largest first, counts only. `stored` is what is stored now, over every
+account.
+
+### `GET /v1/admin/usage/accounts?days=30&sort=uploaded&limit=50`
+
+Every account with anything in the range or anything stored, sorted
+largest first by `sort` (`uploaded`, `stored`, `events`, `messages`,
+`games`, `sessions_hosted`, `sign_ins`, `reports_sent`,
+`reports_received`, `active_days`; ties by xuid), at most `limit` (1 to
+500, default 50). `total` counts them all.
+
+```json
+{ "days": 30, "sort": "uploaded", "total": 1,
+  "items": [ { "xuid": "00097a94c4494c72", "gamertag": "Alpha",
+               "up": { "events": 1145, "frames": 133, "content": 0, "saves": 0 }, "uploaded": 1278,
+               "stored": { "events": 1145, "content": 0, "saves": 0 }, "stored_total": 1145,
+               "events": 2, "messages": { "friend_requests": 1, "invites": 0 }, "messages_total": 1,
+               "games": 1, "sessions_hosted": 0, "sign_ins": 1,
+               "reports_sent": 0, "reports_received": 0,
+               "active_days": 1, "last_active": "2026-11-18" } ] }
+```
 
 ## Write endpoints
 
@@ -556,13 +646,17 @@ event tail). The stored log is unchanged.
 | `GameInviteSent`, `GameInviteAnswered` | the invitation's sender and recipient |
 | `FriendRequested`, `FriendAccepted`, `FriendDeclined`, `FriendRemoved` | the two accounts and the current friends of either |
 | `ContentReported` | admins only |
+| `PlayerReported`, `ReportReviewed` | admins only ([Player reports](#player-reports)) |
+| `AccountBanned`, `AccountUnbanned` | the banned account ([Bans](#bans)) |
+| `PlayerMuted`, `PlayerUnmuted` | the muting account ([Mute list](#mute-list)) |
 
 Admin accounts and the operator read all of them; anonymous readers none,
 so an anonymous read stays safe for the edge cache. Other readers get the
 log without them, the same way as hidden co-op events (a page can be short
 with a `next`). The game and the web read these through their own calls
 (`/v1/accounts/by-xuid/{xuid}/mailbox` for the owner,
-`/v1/accounts/{gamertag}/friends`, `/v1/admin/content` for admins), not
+`/v1/accounts/{gamertag}/friends`, `/v1/admin/content` and
+`/v1/admin/reports` for admins), not
 the log. The friends read keeps friendships public and pending requests
 for the player ([Friends](#friends)).
 
@@ -570,7 +664,12 @@ Lists accept `state` (default `open`), `hopper` (numeric ID), `map`, `host`
 (author or canonical gamertag), `flags` (`custom`, `hopper`, `ranked` or
 `coop`: `?flags=coop` lists co-op campaign sessions), `visibility`, and `attributes` (URL-encoded
 JSON with exact value comparisons). Filters combine. `limit` is 1..1000, default 100; `cursor`
-is the previous `next` string. Ordering is by session ID. CLI queries are
+is the previous `next` string. Ordering is by session ID. `optimatch`
+(URL-encoded JSON `{hopper, average, lowest?, highest?, party?}`) is the
+game's decoded OptiMatch search ([live-matchmaking.md](live-matchmaking.md)
+§7): it keeps sessions on that playlist whose level window and party room
+fit, orders them by closeness to `average`, and returns one page with a
+null `next`. CLI queries are
 `h2 live q sessions [--state open|deleted|expired] [--hopper ID] [--map NAME]
 [--host GAMERTAG]` and `h2 live q session ID`, with the usual JSON formats.
 
@@ -734,6 +833,87 @@ admin). Lists leave out taken-down packages.
 
 The client side (`h2 live maps publish DIR`, `h2 live maps list`, and the
 join-time download) is in [maps.md](../game/maps.md) §5, "As built".
+
+## Player reports
+
+A player reports another, from the game's player-details screens (the Live
+HLE's `XOnlineFeedbackSend`, [live.md](live.md) "Client HLE: player
+feedback") or any client:
+
+| endpoint | authentication | result |
+|---|---|---|
+| `POST /v1/accounts/by-xuid/{xuid}/report` | account token, `lxm: reports.write`; `{kind, reason?, game_id?}` | 201 `{ok, position, duplicate: false}`; 200 `{ok, position, duplicate: true}` for a repeat |
+
+`kind` is one of `gamertag`, `gameplay`, `screaming`, `harassment`,
+`lewdness` (complaints), `good_attitude`, `good_session` (commendations),
+or `type_10`, `type_11`, `type_12` (complaints the game offers whose XDK
+names are not confirmed; see [live-boundary.md](live-boundary.md)).
+`reason` is the reporter's words, at most 500 characters (the game sends
+none); `game_id` the game they were in.
+
+- A player can't report themselves (400); an unknown XUID is 404; the
+  operator's token is 403 (reports come from accounts).
+- A repeat of a report still open (same reporter, player and kind) appends
+  nothing and answers 200 with the first report's position. Once an admin
+  has reviewed it, the same complaint can be filed again. Commendations are
+  never reviewed, so each counts once per pair of players.
+- Each account files at most ten reports at once, then one every six
+  minutes (429), on top of the usual per-method write limit. Repeats do not
+  count.
+
+The report is a server-signed `PlayerReported` event (`{target, by, kind,
+reason?, game_id?}`) on `reports-<target xuid>`, readable by admins only
+([Private events](#private-events)). Admins review reports through
+`/v1/admin/reports` ([live-admin.md](live-admin.md) §8). No one else learns
+of a report: not the reported player, and not the reporter what became of
+it.
+
+The two commendation kinds are counted in public:
+
+| endpoint | authentication | result |
+|---|---|---|
+| `GET /v1/accounts/{gamertag or xuid}/commendations` | as any read | `{xuid, good_attitude, good_session}`: how many players commended the account, by kind |
+
+## Bans
+
+Admins ban accounts ([live-admin.md](live-admin.md) §9). While a ban is in
+force, every token the account presents for a scope other than `read`,
+`recovery.read`, `storage.read` and `log.read` is refused with 403
+`{"error": "banned", "message": "this account is banned until <until>: <reason>"}`
+(or "banned: <reason>" for a ban until lifted). Clients treat `banned`
+as final for the session; the Live HLE reports it to the game as
+`0x80151200`. The player reads their own ban:
+
+| endpoint | authentication | result |
+|---|---|---|
+| `GET /v1/accounts/by-xuid/{xuid}/ban` | `read` token of the account itself or an admin | `{banned: false}` or `{banned: true, ban: {id, reason, until?, at}}` |
+
+The ban events, `AccountBanned` and `AccountUnbanned` on
+`bans-<xuid>`, are server-signed; nobody posts them by hand.
+
+## Mute list
+
+The players an account has muted (docs/live/live-voice.md §3.6), kept by
+the server so the list follows the player. The game's voice mute matrix is
+built from it, and a mute holds both ways: neither player hears the other.
+
+| endpoint | authentication | result |
+|---|---|---|
+| `GET /v1/accounts/by-xuid/{xuid}/mutes` | `read` token of the account itself or an admin | `{items: [{xuid, gamertag}], position}`, oldest first |
+| `PUT /v1/accounts/by-xuid/{xuid}/mutes/{target}` | the account's own token, `lxm: mutes.write` | 201 `{ok, position, changed: true}`; 200 `{ok, changed: false}` when already muted |
+| `DELETE /v1/accounts/by-xuid/{xuid}/mutes/{target}` | as `PUT` | 200 `{ok, position, changed: true}`, or `{ok, changed: false}` when not muted |
+
+- A player can't mute themselves (400); an unknown target is 404; another
+  account's list, or the operator, is 403.
+- A list holds at most 250 players, the size of the game's
+  `XOnlineMutelistGet` buffer; one more is 409.
+- Each change is a server-signed `PlayerMuted` or `PlayerUnmuted` event
+  (`{by, target}`) on `mutes-<by>`, readable by the muting account, admins
+  and the operator ([Private events](#private-events)). Nobody posts them by
+  hand.
+- The dashboard lists the signed-in player's mutes on their own screen
+  with Unmute, and offers Mute or Unmute on other players' screens. The
+  game reads the list at sign-in, so a change made there reaches it then.
 
 ## Cloud saves
 
@@ -1045,3 +1225,25 @@ above where they differ.
   `aud` is the server id from the well-known document and `iat` must be
   within 5 minutes of the server's clock. The fixed test vector is
   `account_request_vector` in `crates/live-proto/src/sign.rs`.
+
+## Ranks
+
+Per-playlist ranks ([live-matchmaking.md](live-matchmaking.md) §8): a
+level 1..50 and experience for each player in each ranked playlist. The
+server writes them, as server-signed `RankChanged` events on
+`rank-<xuid>`, when a finished ranked matchmaking game ends; nobody else
+may write those streams. A standing is
+`{level, experience, highest, games, wins}`. Reads are public, or need
+`read` on a private server.
+
+| endpoint | result |
+|---|---|
+| `GET /v1/accounts/{who}/ranks` | `{xuid, ranks: {playlist: standing}, position}`; `who` is a gamertag or XUID; 404 if unknown |
+| `GET /v1/accounts/{who}/ranks/{playlist}` | `{xuid, playlist, standing, history, position}`: `history` is the last 100 changes, newest first, `{game_id, at, position, before, after}` |
+| `GET /v1/ranks/{playlist}?limit=` | `{playlist, items, position}`: `{xuid, gamertag, ...standing}`, by level then experience; `limit` 1..1000, default 100 |
+| `GET /v1/rank-stats?leaderboards=&xuids=` | `{items, position}`: the game's stats read. `leaderboards` are playlist ids (a descriptor's `+0x08`), `xuids` players, both comma-separated, at most 32 and 64 (400 beyond). One `{xuid, leaderboard, playlist, standing}` per player per leaderboard that is a ranked playlist in the served hopper file; a player with no games there is level 1; other leaderboards have no rows |
+
+`playlist` is the hopper descriptor index, as sessions and games name it.
+A leaderboard is the playlist id the hopper file gives that descriptor,
+which is what the game's `XOnlineStatRead` names.
+

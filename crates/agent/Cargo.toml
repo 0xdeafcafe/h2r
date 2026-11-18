@@ -11,11 +11,20 @@ serde.workspace = true
 serde_json.workspace = true
 runtime.workspace = true
 feature = { path = "../feature" }
-engine = { path = "../engine" }
+engine = { path = "../engine", features = ["runtime-glue"] }
 live-telemetry = { path = "../live-telemetry" }
 timeline = { path = "../timeline" }
 xapi = { path = "../xapi" }
 input = { path = "../input", default-features = false }
+# Hot iteration: live tag edits and render overrides (src/hot.rs).
+hot-render = { path = "../hot-render" }
+hot-tags = { path = "../hot-tags" }
+# The debug menu is an in-process client (src/menu.rs), and lists settings.
+debug-menu = { path = "../debug-menu" }
+settings = { path = "../settings" }
 
 [dev-dependencies]
 live-proto.workspace = true
+# Synthetic tags laid out by their definitions (src/hot/tests.rs).
+tags.workspace = true
+map.workspace = true

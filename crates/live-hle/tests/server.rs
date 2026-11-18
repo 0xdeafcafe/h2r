@@ -148,6 +148,26 @@ impl Server {
         )
         .unwrap()
     }
+    /// The operator's view of the player-report queue (all of it).
+    fn reports(&self) -> Vec<Value> {
+        let token = sign::issue_token(
+            &self.operator,
+            &format!("server:{}", self.discovery.id),
+            &self.discovery.id,
+            lxm::REPORTS_MODERATE,
+            time::OffsetDateTime::now_utc().unix_timestamp(),
+        );
+        let v: Value = serde_json::from_reader(
+            self.agent
+                .get(&self.url("/v1/admin/reports?state=all"))
+                .set("authorization", &format!("Bearer {token}"))
+                .call()
+                .unwrap()
+                .into_reader(),
+        )
+        .unwrap();
+        v["items"].as_array().unwrap().clone()
+    }
     fn events(&self) -> Vec<WireEvent> {
         self.get_as_operator::<Page<WireEvent>>("/v1/events?from=0&limit=1000")
             .items
@@ -1482,7 +1502,9 @@ fn advertisements_carry_the_hosts_map_id() {
     host.logon();
     let id = live_proto::maps::MapId([0x6d; 32]);
     host.hle
-        .set_map_probe(Some(std::sync::Arc::new(move |_: &runtime::Guest| Some(id))));
+        .set_map_probe(Some(std::sync::Arc::new(move |_: &runtime::Guest| {
+            Some(id)
+        })));
     attr(&host, MATCH_ATTR, 1, 101);
     assert_eq!(
         host.call(
@@ -1847,7 +1869,11 @@ fn a_coop_lobby_advertises_its_campaign_and_the_invited_guest_reads_it() {
     let local = &host.hle.local_sessions()[0];
     assert_eq!(local.campaign, Some(campaign.clone()));
     assert_eq!(local.visibility, Visibility::Friends);
-    assert_eq!(local.skulls, Some(vec![0, 4]), "the campaign skulls, not multiplayer ones");
+    assert_eq!(
+        local.skulls,
+        Some(vec![0, 4]),
+        "the campaign skulls, not multiplayer ones"
+    );
     let created = s
         .events()
         .into_iter()
@@ -1858,7 +1884,10 @@ fn a_coop_lobby_advertises_its_campaign_and_the_invited_guest_reads_it() {
         created.data["advertisement"]["campaign"],
         json!({"level": "03a_oldmombasa", "name": "Outskirts", "difficulty": 2})
     );
-    assert_eq!(created.data["advertisement"]["visibility"], json!("friends"));
+    assert_eq!(
+        created.data["advertisement"]["visibility"],
+        json!("friends")
+    );
     let local_id = local.id;
     let session = live_proto::sign::hex(&local_id);
     // A stranger's browser does not list it; the friend's does.
@@ -1877,7 +1906,10 @@ fn a_coop_lobby_advertises_its_campaign_and_the_invited_guest_reads_it() {
     assert_eq!(friends[0].gamertag, "Guest");
     assert_eq!(host.hle.friends(4), vec![], "no such controller");
     assert_eq!(host.hle.invite_to_lobby(0, b.xuid), Ok(session.clone()));
-    assert_eq!(host.hle.invite_to_lobby(1, b.xuid).unwrap_err(), INVALID_USER);
+    assert_eq!(
+        host.hle.invite_to_lobby(1, b.xuid).unwrap_err(),
+        INVALID_USER
+    );
     assert_eq!(guest.call("XOnlineFriendsStartup", &[0, OUT]), 0);
     let background = guest.u32(OUT);
     guest_until(&mut guest, |w| {
@@ -1904,13 +1936,27 @@ fn a_coop_lobby_advertises_its_campaign_and_the_invited_guest_reads_it() {
     // session's endpoint; the guest's next ping carries its last round
     // trip, which the host shows and advertises.
     let fresh = Duration::from_secs(6);
-    assert_eq!(host.hle.guest_ping(fresh), None, "no guest has reported yet");
+    assert_eq!(
+        host.hle.guest_ping(fresh),
+        None,
+        "no guest has reported yet"
+    );
     let to = std::net::SocketAddrV4::new(read.endpoint.addr, read.endpoint.port);
     let timeout = Duration::from_secs(2);
-    let first = guest.hle.ping_host(to, None, timeout).expect("the host echoes");
+    let first = guest
+        .hle
+        .ping_host(to, None, timeout)
+        .expect("the host echoes");
     assert!((1..=live_proto::session::PING_MAX_MS).contains(&first));
-    assert_eq!(host.hle.guest_ping(fresh), None, "the first ping reports nothing");
-    guest.hle.ping_host(to, Some(first), timeout).expect("the host echoes");
+    assert_eq!(
+        host.hle.guest_ping(fresh),
+        None,
+        "the first ping reports nothing"
+    );
+    guest
+        .hle
+        .ping_host(to, Some(first), timeout)
+        .expect("the host echoes");
     let reported = host.hle.guest_ping(fresh);
     assert_eq!(reported, Some(first));
     host.hle.set_coop_ping(reported);
@@ -1924,7 +1970,12 @@ fn a_coop_lobby_advertises_its_campaign_and_the_invited_guest_reads_it() {
     });
     // Nothing answers on a port with no responder.
     let nobody = std::net::SocketAddrV4::new(read.endpoint.addr, game_port());
-    assert_eq!(guest.hle.ping_host(nobody, None, Duration::from_millis(200)), None);
+    assert_eq!(
+        guest
+            .hle
+            .ping_host(nobody, None, Duration::from_millis(200)),
+        None
+    );
     // Presence says what the host is doing.
     s.until(|| {
         s.presence()
@@ -1941,7 +1992,11 @@ fn a_coop_lobby_advertises_its_campaign_and_the_invited_guest_reads_it() {
         })
     });
     assert_eq!(host.hle.local_sessions()[0].campaign, None);
-    assert_eq!(host.hle.local_sessions()[0].ping_ms, None, "a custom game has no co-op ping");
+    assert_eq!(
+        host.hle.local_sessions()[0].ping_ms,
+        None,
+        "a custom game has no co-op ping"
+    );
     assert_eq!(host.hle.activity(), None);
     assert!(guest.hle.joined(wait).campaign().is_none());
 }
@@ -2877,4 +2932,371 @@ fn coop_auto_invites_the_named_friend_and_the_guest_accepts_by_itself() {
         .filter(|e| e.kind == live_proto::mailbox::SENT)
         .count();
     assert_eq!(sent, 1);
+}
+/// The title's OptiMatch search over the real HTTP worker: a host advertises
+/// the fifteen attributes `0x000b4b80` writes (playlist 3, levels 9..13, room
+/// for 1 to 3), and a second guest searches with procedure 1's twelve
+/// positional parameters as `0x000b4a90` builds them. The window and the
+/// party size decide whether the session comes back. Values are synthetic.
+#[test]
+fn optimatch_searches_find_sessions_in_the_partys_level_window() {
+    let s = Server::new();
+    let a = s.account("Host");
+    let b = s.account("Searcher");
+    let mut host = World::new(&s.embedded.url, &[&a]);
+    let mut peer = World::raw_network(
+        &s.embedded.url,
+        json!([b.json()]),
+        Duration::from_millis(100),
+        32000,
+    );
+    host.logon();
+    peer.logon();
+    let room: u64 = 0b111;
+    let mut advert: Vec<(u32, u64)> =
+        vec![(1, 3), (2, 11), (3, 3), (5, 9), (6, 13), (7, 0), (8, room)];
+    advert.extend((0..7).map(|k| (9 + k, (room >> k) & 1)));
+    advert.push((16, 0));
+    for (i, (id, value)) in advert.iter().enumerate() {
+        attr(&host, MATCH_ATTR + i as u32 * 16, *id, *value);
+    }
+    assert_eq!(
+        host.call(
+            "XOnlineMatchSessionCreate",
+            &[1, 3, 0, 0, advert.len() as u32, MATCH_ATTR, 0, OUT]
+        ),
+        0
+    );
+    let create = host.u32(OUT);
+    assert_eq!(host.wait(create), TASK_SUCCESS);
+    let cap = peer.call("XOnlineMatchSearchResultsLen", &[50, 7, MATCH_SPEC]);
+    let search = |peer: &mut World, hopper: i64, window: Option<(i64, i64)>, party: u32| {
+        let put = |peer: &World, i: u32, v: Option<i64>| {
+            let at = MATCH_ATTR + i * 16;
+            match v {
+                Some(v) => attr(peer, at, 0, v as u64),
+                None => {
+                    attr(peer, at, 0x00f0_0000, 0);
+                }
+            }
+        };
+        put(peer, 0, Some(hopper));
+        put(peer, 1, Some(10));
+        put(peer, 2, window.map(|w| w.0));
+        put(peer, 3, window.map(|w| w.1));
+        for k in 1..=8 {
+            put(peer, 3 + k, (k == party.min(8)).then_some(1));
+        }
+        match_search(peer, 1, 12, cap).2
+    };
+    assert_eq!(search(&mut peer, 3, Some((8, 14)), 2), 1);
+    assert_eq!(
+        search(&mut peer, 3, Some((10, 14)), 2),
+        0,
+        "a level 9 player is below the window"
+    );
+    assert_eq!(
+        search(&mut peer, 3, Some((8, 12)), 2),
+        0,
+        "a level 13 player is above it"
+    );
+    assert_eq!(
+        search(&mut peer, 3, Some((8, 14)), 4),
+        0,
+        "no room for four"
+    );
+    assert_eq!(search(&mut peer, 4, None, 1), 0, "another playlist");
+    assert_eq!(
+        search(&mut peer, 3, None, 3),
+        1,
+        "no window once widening ends"
+    );
+    assert_eq!(
+        search(&mut peer, -1, None, 0),
+        0,
+        "the custom games browser"
+    );
+}
+
+/// `XOnlineFeedbackSend` as the title's wrapper 0x0008d3d0 calls it:
+/// controller, the target's XUID by value, the feedback type, a params
+/// block, no event, the task output.
+fn feedback(w: &mut World, target: Xuid, kind: u32, params: u32) -> u32 {
+    w.call(
+        "XOnlineFeedbackSend",
+        &[
+            0,
+            target.0 as u32,
+            (target.0 >> 32) as u32,
+            0,
+            kind,
+            params,
+            0,
+            OUT,
+        ],
+    )
+}
+
+#[test]
+fn feedback_reaches_the_admins_as_player_reports() {
+    let server = Server::new();
+    let reporter = server.account("Reporter");
+    let target = server.account("Target");
+    let mut w = World::new(&server.embedded.url, &[&reporter]);
+    w.logon();
+    // A params block with no string, as Halo sends it.
+    w.word(DATA + 0x5000, 0);
+    let params = DATA + 0x5000;
+
+    // Harassment (3): a task that completes once the server has it.
+    assert_eq!(feedback(&mut w, target.xuid, 3, params), 0);
+    let task = w.u32(OUT);
+    assert_eq!(w.wait(task), TASK_SUCCESS);
+    assert_eq!(w.call("XOnlineTaskClose", &[task]), 0);
+    let reports = server.reports();
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0]["kind"], "harassment");
+    assert_eq!(reports[0]["target"]["gamertag"], "Target");
+    assert_eq!(reports[0]["by"]["gamertag"], "Reporter");
+
+    // A repeat completes at once without a request, as retail does.
+    assert_eq!(feedback(&mut w, target.xuid, 3, params), 0);
+    assert_eq!(w.call("XOnlineTaskContinue", &[w.u32(OUT)]), TASK_SUCCESS);
+    // A commendation (5), and type 12 twice: types from 8 up have no
+    // local memory, so the server folds the second into the first.
+    for kind in [5, 12, 12] {
+        assert_eq!(feedback(&mut w, target.xuid, kind, params), 0);
+        let task = w.u32(OUT);
+        assert_eq!(w.wait(task), TASK_SUCCESS, "type {kind}");
+    }
+    let kinds: Vec<_> = server
+        .reports()
+        .iter()
+        .map(|r| r["kind"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(kinds, ["type_12", "good_attitude", "harassment"]);
+
+    // A string in the params block is the report's reason.
+    let text: Vec<u8> = "Rude words"
+        .encode_utf16()
+        .chain([0])
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    w.put(DATA + 0x5100, &text);
+    w.word(DATA + 0x5010, DATA + 0x5100);
+    assert_eq!(feedback(&mut w, target.xuid, 4, DATA + 0x5010), 0);
+    assert_eq!(w.wait(w.u32(OUT)), TASK_SUCCESS);
+    assert_eq!(server.reports()[0]["reason"], "Rude words");
+
+    // An account the server doesn't know fails the task, and is not
+    // remembered as sent: the retry goes to the server again.
+    for _ in 0..2 {
+        assert_eq!(feedback(&mut w, Xuid(0x0009_ffff_ffff_ffff), 1, params), 0);
+        assert_eq!(w.wait(w.u32(OUT)), INVALID_USER);
+    }
+    // Types Halo never sends are refused at the call.
+    assert_eq!(feedback(&mut w, target.xuid, 7, params), INVALID_ARGUMENT);
+    assert_eq!(server.reports().len(), 4);
+    // Nobody but admins reads them in the log.
+    assert!(
+        server
+            .get::<Page<WireEvent>>("/v1/events?from=0&limit=1000")
+            .items
+            .iter()
+            .all(|e| e.kind != live_proto::reports::PLAYER_REPORTED)
+    );
+}
+#[test]
+fn stat_reads_of_a_ranked_playlist_answer_with_the_players_rank() {
+    // Leaderboard 1 is the default hopper file's Rumble Pit (ranked);
+    // 99 is no playlist, so it has no rows.
+    const SPECS: u32 = DATA + 0x10000;
+    const VALUES: u32 = DATA + 0x11000;
+    let server = Server::new();
+    let account = server.account("Ranked Player");
+    let mut w = World::new(&server.embedded.url, &[&account]);
+    w.logon();
+    let spec = |w: &World, i: u32, board: u32, ids: &[u16]| {
+        let p = SPECS + i * 24;
+        w.put(p, &[0; 24]);
+        w.put(p, &account.xuid.0.to_le_bytes());
+        w.word(p + 12, board);
+        w.word(p + 16, ids.len() as u32);
+        w.word(p + 20, VALUES + i * 0x100);
+        for (j, id) in ids.iter().enumerate() {
+            let s = VALUES + i * 0x100 + j as u32 * 16;
+            w.put(s, &[0xcc; 16]);
+            w.put(s, &id.to_le_bytes());
+        }
+    };
+    spec(&w, 0, 1, &[1, 2, 3, 6, 9]);
+    spec(&w, 1, 99, &[2]);
+    assert_eq!(w.call("XOnlineStatRead", &[2, SPECS, 0, OUT]), 0);
+    let task = w.u32(OUT);
+    assert_eq!(w.wait(task), TASK_SUCCESS);
+    assert_eq!(
+        w.call("XOnlineStatReadGetResult", &[task, 2, SPECS, 0, 0]),
+        0
+    );
+    let stat = |w: &World, i: u32, j: u32| {
+        let b = w.bytes(VALUES + i * 0x100 + j * 16 + 4, 8);
+        (
+            u32::from_le_bytes(b[..4].try_into().unwrap()),
+            u32::from_le_bytes(b[4..].try_into().unwrap()),
+        )
+    };
+    // A player with no ranked games: experience 0, level 1 and highest 1
+    // (stored from 0), all LONGs; stat 9 is not a rank stat.
+    for j in 0..4 {
+        assert_eq!(stat(&w, 0, j), (1, 0), "stat {j}");
+    }
+    assert_eq!(stat(&w, 0, 4), (0, 0));
+    assert_eq!(stat(&w, 1, 0), (0, 0));
+    assert_eq!(w.call("XOnlineTaskClose", &[task]), 0);
+}
+
+impl Server {
+    /// Bans `who` as the operator (docs/live/live-admin.md "Bans").
+    fn ban(&self, who: &Account) {
+        let token = sign::issue_token(
+            &self.operator,
+            &format!("server:{}", self.discovery.id),
+            &self.discovery.id,
+            lxm::REPORTS_MODERATE,
+            time::OffsetDateTime::now_utc().unix_timestamp(),
+        );
+        self.agent
+            .post(&self.url(&format!("/v1/admin/bans/{}", who.xuid)))
+            .set("authorization", &format!("Bearer {token}"))
+            .send_string(r#"{"reason":"testing"}"#)
+            .unwrap();
+    }
+}
+
+#[test]
+fn a_banned_account_signs_in_to_the_account_dialog() {
+    let server = Server::new();
+    let banned = server.account("Banned");
+    server.ban(&banned);
+    let mut w = World::new(&server.embedded.url, &[&banned]);
+    let h = w.begin(&[0]);
+    // 0x80151200: the game's result 2, dialog 0x27 (docs/live/live-boundary.md).
+    assert_eq!(w.wait(h), ACCOUNT_REQUIRES_MANAGEMENT);
+    assert_eq!(
+        w.call("XOnlineLogonTaskGetResults", &[h]),
+        ACCOUNT_REQUIRES_MANAGEMENT
+    );
+    assert!(!server.events().iter().any(|e| e.kind == types::SIGNED_IN));
+}
+
+#[test]
+fn a_ban_mid_session_reaches_the_persistent_connection_task() {
+    let server = Server::new();
+    let player = server.account("Player");
+    let mut w = World::new(&server.embedded.url, &[&player]);
+    let h = w.logon();
+    server.ban(&player);
+    let deadline = Instant::now() + Duration::from_secs(4);
+    loop {
+        let status = w.call("XOnlineTaskContinue", &[h]);
+        if status == ACCOUNT_REQUIRES_MANAGEMENT {
+            break;
+        }
+        assert_eq!(
+            status & 0x8000_0000,
+            0,
+            "{status:#x} until the next heartbeat"
+        );
+        assert!(Instant::now() < deadline, "the heartbeat never saw the ban");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        w.call("XOnlineLogonTaskGetResults", &[h]),
+        ACCOUNT_REQUIRES_MANAGEMENT
+    );
+    assert_eq!(
+        w.hle.server_status().last_error,
+        ACCOUNT_REQUIRES_MANAGEMENT
+    );
+}
+
+impl Server {
+    /// `who`'s mute list on the server, as the operator reads it.
+    fn mutes(&self, who: &Account) -> Vec<Xuid> {
+        let list: live_proto::mutes::MuteList =
+            self.get_as_operator(&format!("/v1/accounts/by-xuid/{}/mutes", who.xuid));
+        list.items.into_iter().map(|e| e.xuid).collect()
+    }
+}
+
+/// `XOnlineMutelistGet` for controller 0 as the title calls it (0x58b70):
+/// the 250-entry buffer and the count, then the task run to its end. The
+/// entries, as (XUID, flags).
+fn mute_get(w: &mut World) -> Vec<(u64, u32)> {
+    let (buffer, count) = (DATA + 0x8000, DATA + 0x7ff0);
+    w.word(count, u32::MAX);
+    assert_eq!(
+        w.call("XOnlineMutelistGet", &[0, 250, 0, OUT, buffer, count]),
+        0
+    );
+    let task = w.u32(OUT);
+    assert_eq!(w.wait(task), TASK_SUCCESS);
+    assert_eq!(w.call("XOnlineTaskClose", &[task]), 0);
+    (0..w.u32(count))
+        .map(|i| {
+            let e = w.bytes(buffer + i * 16, 16);
+            (
+                u64::from_le_bytes(e[..8].try_into().unwrap()),
+                u32::from_le_bytes(e[8..12].try_into().unwrap()),
+            )
+        })
+        .collect()
+}
+
+fn mute_change(w: &mut World, name: &str, who: Xuid, flags: u32) -> u32 {
+    w.call(name, &[0, who.0 as u32, (who.0 >> 32) as u32, flags])
+}
+
+#[test]
+fn the_mute_list_is_the_servers_and_get_returns_what_add_was_given() {
+    let server = Server::new();
+    let me = server.account("Muter");
+    let loud = server.account("Loud");
+    let rude = server.account("Rude");
+    let mut w = World::new(&server.embedded.url, &[&me]);
+    w.logon();
+
+    // Startup loads the list (empty); Get reads it.
+    assert_eq!(w.call("XOnlineMutelistStartup", &[0, OUT]), 0);
+    let task = w.u32(OUT);
+    assert_eq!(w.wait(task), TASK_SUCCESS);
+    assert_eq!(w.call("XOnlineTaskClose", &[task]), 0);
+    assert_eq!(mute_get(&mut w), []);
+
+    // Add answers at once and Get reflects it straight away, flags and all;
+    // the server has it soon after.
+    assert_eq!(
+        mute_change(&mut w, "XOnlineMutelistAdd", loud.xuid, 0x40),
+        0
+    );
+    assert_eq!(mute_get(&mut w), [(loud.xuid.0, 0x40)]);
+    server.until(|| server.mutes(&me) == [loud.xuid]);
+    assert_eq!(mute_change(&mut w, "XOnlineMutelistAdd", rude.xuid, 0), 0);
+    assert_eq!(
+        mute_change(&mut w, "XOnlineMutelistRemove", loud.xuid, 0x40),
+        0
+    );
+    assert_eq!(mute_get(&mut w), [(rude.xuid.0, 0)]);
+    server.until(|| server.mutes(&me) == [rude.xuid]);
+    // Muting yourself is refused at the call.
+    assert_eq!(
+        mute_change(&mut w, "XOnlineMutelistAdd", me.xuid, 0),
+        INVALID_ARGUMENT
+    );
+    drop(w);
+
+    // Another machine signs in with the same account and loads it.
+    let mut other = World::new(&server.embedded.url, &[&me]);
+    other.logon();
+    assert_eq!(mute_get(&mut other), [(rude.xuid.0, 0)]);
 }

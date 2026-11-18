@@ -49,6 +49,11 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "RENDER_FRAME",
         "after render_frame_and_present, on the game thread",
     ),
+    (
+        "map-copy",
+        "CACHE_COPY_STEP",
+        "the loading screen's cache copy on the game thread; steps it with guest calls",
+    ),
     // Game-thread points: the simulation, the UI and the level start.
     ("h1-health", "OBJECT_DAMAGE_UPDATE", AFTER),
     ("h1-health", "BODY_RESTORE", AFTER),
@@ -70,8 +75,19 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     ),
     ("skulls-custom", "GAME_TICK", AFTER),
     ("touch-glue", "GAME_TICK", AFTER),
+    ("cheats", "GAME_TICK", AFTER),
     ("layouts-value", "CONTROLS_ROW_TEXT", AFTER),
     ("controls-text", "CONTROLS_ROW_TEXT", AFTER),
+    // Local bots: the game thread's frame, sound and players screen. Around
+    // RENDER_FRAME, the pipeline's snapshot is taken with the bot views
+    // hidden; the render thread never meets these points.
+    ("bots", "RENDER_FRAME", AFTER),
+    ("bots", "SOUND_UPDATE", AFTER),
+    (
+        "bots",
+        "PLAYERS_SCREEN_UNJOINED",
+        "a players screen event on the game thread; signs a bot in with guest calls",
+    ),
 ];
 
 #[cfg(test)]
@@ -99,6 +115,12 @@ mod tests {
             vfs: Arc::new(std::sync::Mutex::new(vfs::Vfs::new())),
         })
         .unwrap();
+        r.add(&crate::map_copy::MapCopy).unwrap();
+        r.add(&crate::cheats::CheatsFeature(
+            Arc::new(std::sync::Mutex::new(crate::cheats::Cheats::default())),
+            false,
+        ))
+        .unwrap();
         crate::skulls::install(&mut r, store.clone()).unwrap();
         crate::skulls_mp::install(&mut r, store.clone(), None, None).unwrap();
         crate::skulls_custom::install(&mut r, store.clone(), None, None).unwrap();
@@ -106,6 +128,7 @@ mod tests {
         crate::precision::install(&mut r, std::path::Path::new("")).unwrap();
         crate::hud_swap::install(&mut r, std::path::Path::new(""), std::path::Path::new("")).unwrap();
         crate::aim_assist::install(&mut r, store).unwrap();
+        crate::bot_glue::install(&mut r, std::path::Path::new("")).unwrap();
         r.add(&feature::leaves::EngineLeaves).unwrap();
         r.add(&feature::render_timing::RenderTiming::new()).unwrap();
         r.add(&feature::render_census::RenderCensus::new()).unwrap();

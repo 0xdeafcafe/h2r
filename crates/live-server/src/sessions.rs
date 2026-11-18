@@ -455,7 +455,8 @@ fn mark_redacted(w: &mut live_proto::WireEvent) {
 
 /// Whether an event of a private kind shows to `viewer`, from its data:
 /// game invitations to their sender and recipient, friend events to the
-/// two accounts and the friends of either, content reports to admins only.
+/// two accounts and the friends of either, content and player reports to
+/// admins only, bans to the banned player, mutes to the muting player.
 /// Anonymous readers see none of them, so a public read stays safe to
 /// cache. Admins and the operator see everything.
 pub fn kind_shows_to(s: &State, e: &RecordedEvent, viewer: Viewer) -> bool {
@@ -466,7 +467,15 @@ pub fn kind_shows_to(s: &State, e: &RecordedEvent, viewer: Viewer) -> bool {
     let b = &e.body;
     let xuid = |k: &str| b.data[k].as_str().and_then(|v| Xuid::parse(v).ok());
     match b.kind.as_str() {
-        live_proto::maps::CONTENT_REPORTED => false,
+        live_proto::maps::CONTENT_REPORTED
+        | live_proto::reports::PLAYER_REPORTED
+        | live_proto::reports::REPORT_REVIEWED => false,
+        live_proto::bans::ACCOUNT_BANNED | live_proto::bans::ACCOUNT_UNBANNED => {
+            matches!(viewer, Viewer::Account(me) if xuid("target") == Some(me))
+        }
+        live_proto::mutes::PLAYER_MUTED | live_proto::mutes::PLAYER_UNMUTED => {
+            matches!(viewer, Viewer::Account(me) if xuid("by") == Some(me))
+        }
         mailbox::SENT | mailbox::ANSWERED => {
             let Viewer::Account(me) = viewer else {
                 return false;
@@ -817,30 +826,48 @@ pub(crate) async fn list(
     if let Some(attrs) = &attrs {
         session::validate_attributes(attrs).map_err(invalid)?;
     }
+    // The title's OptiMatch search (procedure 1, decoded by the HLE): filter
+    // on playlist, level window and party room, closest mean level first.
+    let optimatch: Option<live_proto::optimatch::Query> = q
+        .get("optimatch")
+        .map(|s| serde_json::from_str(s))
+        .transpose()
+        .map_err(|_| invalid("invalid optimatch query"))?;
     let state = live.model.read();
-    let mut items: Vec<_> = state
-        .sessions
-        .values()
-        .filter(|s| {
-            s.session_id.as_str() > after
-                && q.get("state").map_or(s.state == "open", |v| *v == s.state)
-                && hopper.is_none_or(|id| s.advertisement.hopper_id == Some(id))
-                && q.get("map")
-                    .is_none_or(|v| s.advertisement.map.as_ref() == Some(v))
-                && q.get("host")
-                    .is_none_or(|v| *v == s.host || *v == s.host_gamertag)
-                && attrs.as_ref().is_none_or(|a| {
-                    a.iter()
-                        .all(|(k, v)| s.advertisement.attributes.get(k) == Some(v))
-                })
-                && q.get("flags").is_none_or(|v| *v == s.advertisement.flags)
-                && q.get("visibility")
-                    .is_none_or(|v| v == s.advertisement.visibility.as_str())
-                && s.listed_for(viewer, |a, b| state.is_friends(a, b))
-        })
-        .take(limit + 1)
-        .cloned()
-        .collect();
+    let listed = state.sessions.values().filter(|s| {
+        s.session_id.as_str() > after
+            && q.get("state").map_or(s.state == "open", |v| *v == s.state)
+            && hopper.is_none_or(|id| s.advertisement.hopper_id == Some(id))
+            && q.get("map")
+                .is_none_or(|v| s.advertisement.map.as_ref() == Some(v))
+            && q.get("host")
+                .is_none_or(|v| *v == s.host || *v == s.host_gamertag)
+            && attrs.as_ref().is_none_or(|a| {
+                a.iter()
+                    .all(|(k, v)| s.advertisement.attributes.get(k) == Some(v))
+            })
+            && q.get("flags").is_none_or(|v| *v == s.advertisement.flags)
+            && q.get("visibility")
+                .is_none_or(|v| v == s.advertisement.visibility.as_str())
+            && s.listed_for(viewer, |a, b| state.is_friends(a, b))
+    });
+    if let Some(query) = optimatch {
+        // Ordered by match quality, so one page: no cursor.
+        let items: Vec<_> =
+            live_proto::optimatch::select(&query, listed, |s| &s.advertisement.attributes, limit)
+                .into_iter()
+                .cloned()
+                .collect();
+        return Ok(crate::http::json(
+            StatusCode::OK,
+            &Page {
+                items,
+                next: None,
+                position: live.position(),
+            },
+        ));
+    }
+    let mut items: Vec<_> = listed.take(limit + 1).cloned().collect();
     let next = if items.len() > limit {
         items.truncate(limit);
         items.last().map(|s| s.session_id.clone())

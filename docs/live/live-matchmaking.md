@@ -4,8 +4,12 @@ Status: phase 1 server sessions and HLE invitations are implemented. Tests use
 router memory stores and two synthetic guests against `start_embedded`, through
 HTTP delivery, acceptance, FindFromID, QoS and bidirectional UDP. The owner
 has Live working in the game (2026-11-17).
-Search also returns real sessions, with the anonymous procedure-1 filters still
-unmapped. The server matcher, ranked arbitration and NAT traversal remain design.
+Search returns real sessions, filtered by the decoded procedure-1
+parameters: playlist, the party's level window and room for the party,
+closest mean level first (§7). The game widens its own window and hosts
+when nothing is found, so OptiMatch needs no server matcher. Ranked games
+are ranked by the server from the games log (§8); checking arbitration
+reports against it, and NAT traversal, remain design.
 Current contracts are in [live-api.md](live-api.md#sessions) and
 [live.md](live.md#client-hle-game-invitations-and-joining). The sections below
 retain the static call trace and phased design; implemented details there defer
@@ -82,8 +86,8 @@ the exact interleaving of 3/4 with them is inferred and marked.
    `0x0008fad4`) to size the result buffer, then `XOnlineMatchSearch`
    (`0x003a072e`, confirmed; site `0x0008faea`): a procedure, a result
    limit, attributes (the query), buffer size, event/task. This is the
-   `xmatchclient.srf` search. *To confirm:* the procedure values the game
-   passes and the attribute ids it queries with (read `0x0008fa80`).
+   `xmatchclient.srf` search. Procedure 1 with twelve positional
+   parameters, decoded in §7.
 2. **Read and parse results.** `XOnlineMatchSearchGetResults`
    (`0x003a073d`, confirmed; site `0x0008fba7` in wrapper `0x0008fb30`)
    yields the result array; `XOnlineMatchSearchParse` (`0x003a0748`,
@@ -166,9 +170,11 @@ procedures, report data). Stats go out with `XOnlineStatWrite`
 leaderboard reads use `XOnlineStatRead` and the query service above. The
 compiled-in matchmaking attribute names at `0x0046ddc0` (`games-played`,
 `games-quit`, ...) are the per-player stats schema the hopper file
-overrides ([live-motd.md](live-motd.md) §1.2). All of these are stops
-today (stat reads answer `STAT_USER_NOT_FOUND`, query searches
-`QUERY_DATASET_NOT_FOUND`); none is needed for the first phases.
+overrides ([live-motd.md](live-motd.md) §1.2). Stat writes are
+accepted and kept locally; stat reads of a playlist's leaderboard get
+the player's rank from the server (§8.3), other stats read as absent;
+arbitration is accepted and kept locally (§8.3); query searches answer
+`QUERY_DATASET_NOT_FOUND`.
 
 ### 1.5 Known versus to confirm
 
@@ -185,8 +191,8 @@ To confirm in the retail code, with addresses:
 
 | question | read |
 |---|---|
-| Attribute list written at session create/update; how the host address and key id are published | `0x0008fcc0`, `0x0008fe20`, `0x0008fd90` |
-| Search procedure values and query attributes | `0x0008fa80` |
+| ~~Attribute list written at session create/update~~: decoded (§7.1); how the host address and key id are published | `0x0008fcc0`, `0x0008fe20`, `0x0008fd90` |
+| ~~Search procedure values and query attributes~~: decoded (§7.2) | `0x0008fa80` |
 | Search result layout; which attributes the game reads back | `0x0008fb30`, `0x0008fc5c`, `0x00090160`, `0x00090282` |
 | Whether match results carry a TSADDR, or only query results do | `0x000b3a70` and its callers |
 | Order of key create/register versus session create; when QoS listening starts | `0x0007a8a0`, `0x0007a920`, `0x000731d0`, the `0x0005fb57`/`0x0005fb7c` sites |
@@ -451,8 +457,9 @@ app.
 ## 5. Open questions
 
 - The complete retail invite UI/confirmation transition remains untested.
-  Session records, seven-column parsing and accepted-invite packing are checked;
-  procedure-1 positional filter meanings still need identification.
+  Session records, seven-column parsing and accepted-invite packing are checked.
+  Procedure 1's parameters are decoded (§7); the hosting branch after an
+  empty search (`0x0005a220(6)`) is read only as far as "likely".
 - ~~The hopper record-template contents (§2)~~: decoded (§6); the server
   authors its own file (§6.8).
 - Whether the 30 s presence ping is the right session heartbeat, or
@@ -629,3 +636,225 @@ so the game's title-storage download, `GET /v1/titles/{title}/hopper` and
 the builder's `PUT` (which then publishes the edited default) all work on
 a fresh server. Nothing is written to the log until someone publishes;
 `h2 live hopper import` still replaces it with the owner's own file.
+
+## 7. OptiMatch search: procedure 1, decoded
+
+Read statically from the 5849 XBE; nothing was run. The code that applies
+it is `crates/live-proto/src/optimatch.rs`; the HLE decodes the game's
+parameters (`crates/live-hle/src/sessions.rs`, `Op::Search`) and the
+server filters `GET /v1/sessions?optimatch=` with it.
+
+### 7.1 What a session advertises
+
+Every session the title creates or updates carries fifteen integer
+attributes, built by `0x000b4b80` from a seven-dword block that a virtual
+method of the session object fills (`0x000733f0` for playlist sessions,
+`0x00073860` for custom games):
+
+| id | playlist session (`0x000733f0`, from `0x00073530` and `0x0007e210`) | custom game (`0x00073860`) |
+|---|---|---|
+| 1 | descriptor index (`[state+0x49c8]`, §6.7) | -1 |
+| 2 | mean level of the session's players | -1 |
+| 3 | public slots open | public slots open |
+| 5 | lowest level, raised to the floor of the highest player (below) | -1 |
+| 6 | highest level | -1 |
+| 7 | time since the lobby formed (`0x00321aae() - [state+0x78b4]`) | 0 |
+| 8 | room mask: bit `n-1` set when a party of `n` fits | `(1 << open) - 1` |
+| 9..15 | bit 0..6 of id 8, as 0 or 1 | same |
+| 16 | 1 when any bit 7+ of id 8 is set | same |
+
+Levels here are the per-player values the lobby summary (`0x0007e210`)
+averages, maxes and mins over players whose flags `& 3` are clear. For a
+playlist session it computes the room mask itself from the hopper's
+party and team rules (`0x00091f00` per party size; the unranked
+fallback is all sizes up to the open count).
+
+The **floor** of a level `L` is `0x001931a0(hopper, L)`: walk down from
+`L` while the hopper's skill ceiling table (`+0x51c`, §6) still lets the
+lower level play with `L`; the floor is the lowest such level. So
+`ceiling[i] >= L` for every `i` from the floor up to `L - 1`.
+
+### 7.2 What a search sends
+
+`0x00090880` starts a search from the party state (`0x00070ea0`, the
+OptiMatch screen): the playlist, the party size `[+0x7b4]`, and the
+party's mean, highest and lowest level (`[+0x960]`, `[+0x958]`,
+`[+0x95c]`, summed at `0x00072540`). It precomputes, with `hi` the
+party's highest level and `lo` its lowest:
+
+- `floor = floor(hi)`; `low = max(lo, floor)`; `cap = ceiling[low]`;
+- `max_widen = max(low - floor, cap - hi)`; the widening step starts at 0.
+
+`0x00090b30` then builds procedure 1's twelve parameters through
+`0x000b4a90` and calls `XOnlineMatchSearch(1, 50, params, 12, ..)`:
+
+| # | value | compared with |
+|---|---|---|
+| 0 | playlist (descriptor index) | id 1, equal |
+| 1 | party mean level | id 2: results ordered by distance |
+| 2 | `max(low - step, floor)`, or null when the step is -1 | id 5 must be at least this |
+| 3 | `min(hi + step, cap)`, or null when the step is -1 | id 6 must be at most this |
+| 4..10 | 1 at position `3 + n` for a party of `n` (1..7), else null | id `8 + n` must be 1 |
+| 11 | 1 for a party of 8 or more, else null | id 16 must be 1 |
+
+The custom games browser (`0x000b3100`) uses the same call with
+playlist -1, mean 0 and every other parameter null, which finds custom
+games (id 1 is -1) and nothing from a playlist.
+
+The comparison column is our reading: the parameters pair one-to-one
+with the advertised ids, and the window is exactly the levels the
+hopper's ceiling table lets the party play with. Retail Live's stored
+procedure is not in the image; the ordering by mean level is our
+choice.
+
+### 7.3 Widening, and who hosts
+
+The game widens, not the server. `0x00090f70` runs after each search:
+while the step is below `max_widen` it adds one and searches again; at
+`max_widen` an unranked playlist (type 1 or 3, `[+0x14]` clear) sets
+the step to -1, which drops the window entirely, and a ranked one stays
+at the widest window. A search also repeats while it returned a full
+page (50). When the searches end, `0x00091400` picks a result and joins
+it (`0x00059e50`); with none, the party state moves on with
+`0x0005a220(6)`, which is where the console goes on to host its own
+session (likely; the hosting branch is the next thing to read). So
+"find or form" needs no server matcher for OptiMatch: the server
+filters and orders, and an empty answer makes the searching console the
+host that the next searcher finds.
+
+### 7.4 Server and HLE
+
+- `live_proto::optimatch::Query` is the decoded search: `hopper`,
+  `average`, `lowest`/`highest` (the window, absent when widened out),
+  `party`. `Query::from_params` reads the twelve parameters; any other
+  shape falls back to an unfiltered search, as before.
+- `GET /v1/sessions?optimatch=<json>` keeps the listed sessions that
+  match and returns up to `limit`, closest mean level first, as one page
+  (`next` is null). The other filters still apply.
+- A session the title did not advertise itself (no id 1, such as a co-op
+  lobby) only shows to the browser's -1.
+- The HLE logs each distinct search once per 30 s: `live: optimatch:
+  searching playlist P for a party of N, mean level M, levels A..B` (or
+  `any level`), so a run log shows the window widen.
+
+Tests: `optimatch` unit tests in live-proto (parameter round trip,
+window, room, browser, ordering), the router test
+`optimatch_searches_filter_by_playlist_window_and_room`, and the guest
+test `optimatch_searches_find_sessions_in_the_partys_level_window`
+(two synthetic guests through `start_embedded`).
+
+## 8. Ranks: what the game does, and what the server does
+
+### 8.1 In the retail game (static reading)
+
+Read statically from the 5849 XBE; nothing was run. Addresses are guest
+VAs.
+
+- **Where a rank lives.** Xbox Live stats: one leaderboard per playlist,
+  whose id is the descriptor's playlist id (`+0x08`, §6), with six stats,
+  ids 1..6. Stat 1 is experience (0..2^30-1), stat 2 the level (stored
+  0..49; the 1..50 shown is likely stored + 1), stat 3 the highest level
+  reached (likely), and stats 4..6 per-player game counters whose meaning
+  is not decoded.
+- **The cache.** `0x00074aa0`, the stats manager, keeps a per-user,
+  per-hopper rank cache at `0x00509454` (4 users x 16 hoppers). For every
+  valid hopper of type 1..5 not yet read, or stale for longer than the
+  network configuration's re-read age, it adds a `XONLINE_STAT_SPEC`
+  (leaderboard = playlist id, stats 1..6) to its one `XOnlineStatRead`
+  batch, beside the recent-players read on leaderboard `0x61`
+  (`0x00080940`). Results return through `0x00092330`; `0x00075790` maps a
+  leaderboard back to a hopper. `0x00073a10` reads a cached stat
+  (0 experience, 1 level).
+- **Into the lobby.** `0x00065530` copies the selected hopper's level and
+  experience (and the best level across ranked hoppers) into the local
+  player's properties block (`0x004cd918 + user * 0xd0`): hopper index
+  at `+0x84`, level at `+0x8a`, experience at `+0x8c`. The session's
+  player record carries those properties at `+0x18`, which is how
+  `0x00072540` reads them at record `+0x12c/+0x132/+0x134` (§7.2). The
+  network encoder `0x0007c5a0` sends the level in 7 bits and experience
+  in 30.
+- **After a ranked game the console works out the change itself.**
+  `0x00073ca0` (only for the hopper and round that were arbitrated)
+  builds per player: experience earned or lost against each opponent by
+  level difference, scaled by the player's level, averaged over
+  opponents and clamped (`0x00074800`, `0x00074720`, `0x000746b0`); the
+  level from experience through a threshold table with hysteresis (a
+  one-level drop only below the midpoint, `0x00074970`). The tuning
+  tables come from the downloaded `network_configuration.dat`
+  (`0x004ce040`, defaults from `0x00066330`), not the hopper file. It
+  updates its own cache, marks it stale (re-read soon after) and sends
+  the result with `XOnlineArbitrationReport` (`0x000925c0`): a flat stat
+  array per player on the playlist's leaderboard (and playlist id + 0x20,
+  + 0x40) and stat procedures `0x8001`, `0x8003` and `0x8007` (shapes
+  read, meanings not mapped). Experience and counters likely go as
+  increments, the level as an absolute value.
+- Not found yet: the lobby, post-game and service-record rank icon
+  readers.
+
+### 8.2 On this server
+
+The server is authoritative: it ranks from the games log, not from the
+console's arithmetic. The rules are in `crates/live-proto/src/rank.rs`:
+the game's mechanism (points per opponent by level difference, scaled
+by level, averaged, clamped to ±200; level from a threshold table with
+the same drop rule), with our own numbers rather than the game's
+tables. Every player starts each ranked playlist at level 1.
+
+- When a game batch ends a game (`GameEnded`) with `reason: "finished"`,
+  `kind: "matchmaking"` and a `playlist_id` (the hopper descriptor index)
+  whose hopper is ranked (type 2, 4 or 5) in the served hopper file, the
+  same request ranks it: one server-signed `RankChanged`
+  `{xuid, playlist, game_id, before, after}` on `rank-<xuid>` for each
+  player with an account whose standing moved. Players who left before
+  the end count as last. A game is ranked once. Nothing runs in the
+  background.
+- No one else may write `rank-*` streams or `RankChanged`.
+- The read model keeps every standing per playlist and the last 100
+  changes per player and playlist; a replay rebuilds them from the
+  events without re-running the rules.
+- Reads: `GET /v1/accounts/{who}/ranks`,
+  `GET /v1/accounts/{who}/ranks/{playlist}` and `GET /v1/ranks/{playlist}`
+  ([live-api.md](live-api.md#ranks)). The stats site shows them at
+  `/stats/ranks/{playlist}` and `/stats/players/{tag}/ranks`.
+
+### 8.3 The game's side: stat reads, playlist ids, arbitration
+
+**Stat reads.** `XOnlineStatRead` asks the server when a query names a
+leaderboard 1..100 (a possible playlist id) and any of stats 1..6:
+`GET /v1/rank-stats` ([live-api.md](live-api.md#ranks); the shared router, so
+the Worker answers it too) with every such leaderboard and player,
+through the Live worker, so the call never waits. The task reports 0
+until the answer comes; `XOnlineStatReadGetResult` answers
+`RESULTS_UNAVAILABLE` until then.
+Rank stats come back as LONGs from `rank::live_stat`: 1 experience, 2
+the level and 3 the highest level, both stored from 0 as the game does,
+and 4..6 (counters not decoded) as 0. Everything else, and every stat
+of a read the server failed, is NONE, which the game reads as zero:
+level 1, as before reads reached the server.
+
+**Playlist ids on games.** At each multiplayer start telemetry asks the
+boot's playlist locator, which asks `Hle::playlist`: the hopper index
+(session attribute 1) of this console's own advertisement, else of the
+session it joined, as last read. Neither waits nor takes guest memory.
+A game with one is `kind: "matchmaking"` with that `playlist_id`; the
+server names the playlist from its hopper file. The rules in §8.2 then
+rank it.
+
+**Arbitration.** Read from the retail call sites, not yet checked
+against a running ranked game:
+
+| entry | arguments | what we do |
+|---|---|---|
+| `CreateRoundID` `0x003adc4c` | out pointer | eight random bytes, nonzero |
+| `Register` `0x003ae32b` | pointer to 16 bytes (session id, round id), a duration-like word, flags (`0xc` or `0x1c`), event (0), task out | accepted; the task succeeds at once |
+| `Report` `0x003ae36a` | the same 16 bytes, count (≤ 1000), `0x88`-byte stat procedure records (u16 id `0x8001`/`0x8003`/`0x8007`, a pointer at `+0x18`), 0, flags (bits 0 and 1), event (0), task out | accepted; the procedure ids are kept, their data is not decoded; the task succeeds at once |
+| `ExtendRound` `0x003ae33a` | | still a stop |
+
+Registrations and reports are kept in the HLE (`Hle::arbitration`, the
+last 256), owned, with no guest pointers. Nothing goes to the server
+and nothing checks them yet: the server's ranking does not depend on
+them. Checking a report against the games log needs the round linked
+to a server game id, and `Hle::set_game_id` has no caller in the boot
+yet (the server assigns the id in the telemetry sink's thread). That
+link, decoding the procedure records and the server-side check are the
+next slice.

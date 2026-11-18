@@ -319,3 +319,40 @@ fn the_model_scale_puts_the_sky_past_the_level() {
     assert_eq!(convert::model_scale(Some(5613.0), 200.0), 1.0);
     assert_eq!(convert::model_scale(Some(0.0), 200.0), 1.0);
 }
+
+#[test]
+fn converted_lights_name_the_flares_given() {
+    let sky = read_invented();
+    let flare = map::TagId(0xe123_0042);
+    let c = convert::convert_sky_with_flares(&sky, None, 1.0, &[None, Some(flare)]);
+    let lights = c
+        .root
+        .fixups
+        .iter()
+        .find_map(|f| match &f.kind {
+            map::build::FixupKind::Block { child, .. }
+                if f.offset == h2::layout::LIGHTS as u32 =>
+            {
+                Some(child)
+            }
+            _ => None,
+        })
+        .expect("lights block");
+    let flare_of = |k: usize| {
+        lights
+            .fixups
+            .iter()
+            .find_map(|f| match f.kind {
+                map::build::FixupKind::TagRef(id)
+                    if f.offset == (k * h2::LIGHT_LEN + h2::light::LENS_FLARE) as u32 =>
+                {
+                    Some(id)
+                }
+                _ => None,
+            })
+            // A null reference built from the definition carries no fixup.
+            .unwrap_or(map::TagId::NULL)
+    };
+    assert_eq!(flare_of(0), map::TagId::NULL);
+    assert_eq!(flare_of(1), flare);
+}

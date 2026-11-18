@@ -17,7 +17,7 @@ use sqlx::postgres::{PgListener, PgPool, PgPoolOptions, PgRow};
 
 use crate::store::{
     BatchDecoder, BatchRows, EventStore, ImportCheck, NewEvent, Query, RecordedEvent, StoreError,
-    Wake,
+    UsageRow, Wake,
 };
 
 const SCHEMA: &str = include_str!("schema.sql");
@@ -51,6 +51,21 @@ impl PostgresStore {
 }
 
 impl PostgresStore {
+    /// Connects for reading only, the source of a copy: no schema is
+    /// created, and every transaction is read-only
+    /// (`default_transaction_read_only`), so nothing is written to the
+    /// database however it is used.
+    pub async fn connect_read_only(url: &str) -> Result<Self, sqlx::Error> {
+        let opts: sqlx::postgres::PgConnectOptions = url.parse()?;
+        let opts = opts.options([("default_transaction_read_only", "on")]);
+        let pool = PgPoolOptions::new()
+            .max_connections(2)
+            .acquire_timeout(std::time::Duration::from_secs(5))
+            .connect_with(opts)
+            .await?;
+        Ok(PostgresStore { pool })
+    }
+
     /// [`PostgresStore::connect`], creating the database first if the
     /// server is up but the database does not exist yet.
     pub async fn connect_creating(url: &str) -> Result<Self, sqlx::Error> {
@@ -386,6 +401,44 @@ impl EventStore for PostgresStore {
                 .fetch_all(&self.pool)
                 .await?;
         Ok(rows.into_iter().map(|(n, p)| (n, p as u64)).collect())
+    }
+
+    async fn add_usage(&self, rows: &[UsageRow], keep_from: &str) -> Result<(), StoreError> {
+        let mut tx = self.pool.begin().await?;
+        for r in rows {
+            sqlx::query(
+                "insert into usage (day, account, metric, n) values ($1, $2, $3, $4)
+                 on conflict (day, account, metric) do update set n = usage.n + excluded.n",
+            )
+            .bind(&r.day)
+            .bind(&r.account)
+            .bind(&r.metric)
+            .bind(r.n)
+            .execute(&mut *tx)
+            .await?;
+        }
+        sqlx::query("delete from usage where day <> '' and day < $1")
+            .bind(keep_from)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn usage(&self) -> Result<Vec<UsageRow>, StoreError> {
+        let rows: Vec<(String, String, String, i64)> =
+            sqlx::query_as("select day, account, metric, n from usage")
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(day, account, metric, n)| UsageRow {
+                day,
+                account,
+                metric,
+                n,
+            })
+            .collect())
     }
 
     async fn wake(&self) -> Result<Box<dyn Wake>, StoreError> {

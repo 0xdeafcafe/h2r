@@ -25,6 +25,7 @@
 pub mod admin;
 pub mod app;
 pub mod art;
+pub mod bans;
 pub mod blobs;
 pub mod caching;
 #[cfg(feature = "native")]
@@ -39,19 +40,26 @@ pub mod dispatch;
 pub mod filestore;
 pub mod games;
 pub mod guard;
+pub mod hold;
 pub mod http;
+#[cfg(feature = "native")]
+pub mod httpstore;
 pub mod identity;
 pub mod ingest;
 pub mod invites;
 pub mod local_signin;
+pub mod logio;
 mod mailbox;
 pub mod model;
+pub mod mutes;
 pub mod packed;
 #[cfg(feature = "native")]
 pub mod pg;
 pub mod public;
+pub mod ranks;
 pub mod recovery;
 pub mod relay;
+pub mod reports;
 pub mod rt;
 mod sessions;
 pub mod sql;
@@ -66,6 +74,7 @@ pub mod stream;
 mod teams;
 pub mod title_headers;
 pub mod titleblobs;
+pub mod usage;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;

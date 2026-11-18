@@ -7,9 +7,11 @@ pub mod account_setup;
 mod auto;
 mod client;
 mod config;
+mod feedback;
 mod invites;
 pub mod maps;
 mod messages;
+mod mutes;
 pub use client::{ServerOptions, ServerStatus};
 pub use messages::{ATTACHMENT_CAP, SUMMARY_SIZE};
 pub mod entries;
@@ -38,6 +40,8 @@ mod state;
 pub use state::coop_activity;
 mod stats;
 pub use stats::{Stat, StatSpec, StatValue, StatWrite};
+mod arbitration;
+pub use arbitration::{Arbitration, ArbitrationRound};
 mod storage_api;
 mod teams;
 pub mod traffic;
@@ -70,6 +74,9 @@ pub mod status {
     pub const CANNOT_ACCESS_SERVICE: u32 = 0x8015_1001;
     pub const SERVERS_BUSY: u32 = 0x8015_1003;
     pub const CONNECTION_LOST: u32 = 0x8015_1004;
+    /// The account needs attention on the dashboard: what a banned account
+    /// gets (docs/live/live-boundary.md, game result 2, dialog 0x27).
+    pub const ACCOUNT_REQUIRES_MANAGEMENT: u32 = 0x8015_1200;
     pub const BUFFER_TOO_SMALL: u32 = 0x8015_0001;
     pub const MATCH_INVALID_SESSION: u32 = 0x8015_5100;
     pub const MATCH_INVALID_DATA_TYPE: u32 = 0x8015_5102;
@@ -379,6 +386,16 @@ impl Hle {
             None => Joined::Unknown { session: id },
         }
     }
+    /// The playlist (hopper descriptor index, as game records name it) of
+    /// the game about to start, for its record (docs/live/live-matchmaking.md
+    /// §8): the playlist this console's advertisement names when it hosts,
+    /// else the joined session's as last read. `None` for a custom game or
+    /// when nothing says. Never waits and never takes guest memory, so the
+    /// game-start hook may call it.
+    pub fn playlist(&self) -> Option<u32> {
+        let keys = self.network.registered_keys();
+        self.lock().playlist(&keys)
+    }
     /// What the host of the session this console joined advertised as its
     /// skulls: [`Hle::joined`]'s answer, for the skulls.
     pub fn host_skulls(&self, wait: std::time::Duration) -> HostSkulls {
@@ -491,7 +508,10 @@ impl Hle {
     }
     /// The signed-in player on controller `controller`, 0 for none.
     pub fn user(&self, controller: usize) -> u64 {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).user(controller)
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .user(controller)
     }
     pub fn session_visibility(&self) -> Visibility {
         self.state
@@ -504,6 +524,11 @@ impl Hle {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .server_status()
+    }
+    /// The arbitration registrations and reports the game made, oldest
+    /// first (docs/live/live-matchmaking.md §8.3). Kept here only.
+    pub fn arbitration(&self) -> Vec<Arbitration> {
+        self.lock().arbitration.snapshot()
     }
     /// Accepted local stat writes, with no guest pointers or account keys.
     pub fn stat_writes(&self) -> Vec<StatWrite> {

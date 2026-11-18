@@ -148,6 +148,8 @@ pub(crate) struct Sessions {
     looked_up: BTreeSet<[u8; 8]>,
     /// The last find line said and when ([`say_once_per`]).
     said_find: Option<(String, std::time::Instant)>,
+    /// The last OptiMatch search line said and when.
+    said_search: Option<(String, std::time::Instant)>,
 }
 /// The host's multiplayer skulls as of now (None for none), read with guest
 /// memory held: it must take no lock that guest memory may come after.
@@ -350,6 +352,12 @@ impl Sessions {
     /// ids are random, so the smallest is no guide).
     pub fn current_id(&self) -> Option<[u8; 8]> {
         self.current.filter(|id| self.records.contains_key(id))
+    }
+    /// The playlist (hopper index) of the session this console advertised
+    /// last, while it still does; `None` for a custom game's.
+    pub fn current_playlist(&self) -> Option<u32> {
+        let id = self.current_id()?;
+        live_proto::optimatch::playlist(&self.records.get(&id)?.session.attributes)
     }
     fn advertised(&mut self, id: [u8; 8]) {
         self.current = Some(id);
@@ -676,9 +684,22 @@ impl Sessions {
                 if let (Some(service), Some(connection)) = (service, connection) {
                     // Procedure 1 is the retail stored procedure: anonymous
                     // parameters are positional, not attribute IDs. Its return
-                    // projection is the seven public title attributes. Until
-                    // their filter meanings are pinned, do not invent equality
-                    // tests for anonymous params. Named API filters round-trip.
+                    // projection is the seven public title attributes. The
+                    // twelve-parameter shape is OptiMatch or the custom games
+                    // browser (live_proto::optimatch); the server filters it.
+                    // Other procedures' named filters round-trip.
+                    let optimatch = (a[0] == live_proto::optimatch::PROCEDURE)
+                        .then(|| {
+                            let values: Vec<_> = params.iter().map(|v| v.value.clone()).collect();
+                            live_proto::optimatch::Query::from_params(&values)
+                        })
+                        .flatten();
+                    if let Some(q) = &optimatch {
+                        let line = optimatch_line(q);
+                        if say_once_per(&mut self.said_search, &line, FIND_REPEAT) {
+                            eprintln!("{line}");
+                        }
+                    }
                     let filters = if a[0] == 1 {
                         BTreeMap::new()
                     } else {
@@ -696,6 +717,7 @@ impl Sessions {
                         MatchRequest::Search {
                             limit: a[1],
                             attributes: filters,
+                            optimatch,
                         },
                         (
                             a[6],
@@ -1065,6 +1087,26 @@ pub fn coop_visibility(v: Visibility, coop: bool) -> Visibility {
     } else {
         v
     }
+}
+/// One line per distinct OptiMatch search, so a run log shows the window
+/// widen as the game re-searches.
+fn optimatch_line(q: &live_proto::optimatch::Query) -> String {
+    if q.hopper == -1 {
+        return "live: browser: searching for custom games".into();
+    }
+    let window = match (q.lowest, q.highest) {
+        (None, None) => "any level".to_string(),
+        (lo, hi) => format!(
+            "levels {}..{}",
+            lo.map_or("*".into(), |v| v.to_string()),
+            hi.map_or("*".into(), |v| v.to_string())
+        ),
+    };
+    let party = q.party.map_or("?".into(), |n| n.to_string());
+    format!(
+        "live: optimatch: searching playlist {} for a party of {party}, mean level {}, {window}",
+        q.hopper, q.average
+    )
 }
 fn wire_id(s: &str) -> Option<[u8; 8]> {
     if !live_proto::session::valid_id(s) {

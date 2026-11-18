@@ -104,6 +104,12 @@ pub struct Variant {
     /// (`boot::hud`; docs/game/hud.md). Not part of the `MapId`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hud: Vec<HudSwap>,
+    /// Where Halo 1's HUD centres the motion sensor's blips: an offset
+    /// from the bottom-left corner, as Halo 2's own table at `0x47ff40`
+    /// holds it (`boot::hud_swap` writes it there while Halo 1's HUD is
+    /// shown; docs/game/hud.md). Not part of the `MapId`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hud_sensor: Option<[i16; 2]>,
 }
 
 /// One `hud` swap: the `bipd` or `weap` datum `owner` names `nhdt` datum
@@ -134,6 +140,9 @@ pub struct Swap {
 pub struct LevelHud {
     #[serde(default)]
     pub hud: Vec<HudSwap>,
+    /// As [`Variant::hud_sensor`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sensor: Option<[i16; 2]>,
 }
 
 impl LevelHud {

@@ -15,7 +15,16 @@
 //! - **off screen** (art): no art's opaque pixels fall past the screen
 //!   edge.
 //! - **safe area**: texts and row art stay inside the title-safe area.
-//! - **reserved**: nothing overlaps an area the screen beneath keeps.
+//! - **reserved**: nothing overlaps an area the screen beneath keeps;
+//!   for a modal, only past its panel (a dialog covers the logo as
+//!   retail's do).
+//! - **panel** (modals): every text and cell stays inside the panel.
+//! - **placement** (modals): the body at 72, a code page's body above the
+//!   main menu's logo, the cells at retail's height, a one-line status
+//!   under a one-line body ([`crate::ui_kit::dialog::placement`]).
+//! - **over the opener** (modals; flagged in [`Report::notes`], never
+//!   failed): a dialog text whose ink meets a text of the screen that
+//!   opened it ([`Note::OverOpener`]).
 //! - **contrast**: every text against what is drawn under it.
 //! - **legend**: a screen that takes more than up, down, A and B says
 //!   which buttons do what.
@@ -29,7 +38,7 @@ use tags::ui::Rect;
 use crate::ui_kit::input::Input;
 use crate::ui_kit::preview::{Canvas, Source, overflows, render_view_where};
 use crate::ui_kit::spec::ScreenSpec;
-use crate::ui_kit::view::{Art, Justify, Kind, Layer, Metrics, View, Widget};
+use crate::ui_kit::view::{Art, Backing, Justify, Kind, Layer, Metrics, View, Widget};
 
 /// What a view is held to.
 #[derive(Clone, Debug, PartialEq)]
@@ -52,6 +61,10 @@ pub struct Rules {
     pub max_covered: usize,
     /// The screen takes inputs past up, down, A and B.
     pub needs_legend: bool,
+    /// A modal's panel ([`crate::ui_kit::dialog::DialogGeometry::area`]):
+    /// its content stays inside, and what it covers of a reserved area is
+    /// not held against it.
+    pub panel: Option<Rect>,
 }
 
 pub const SAFE: Rect = Rect {
@@ -69,6 +82,7 @@ impl Default for Rules {
             min_contrast: 2.5,
             max_covered: 24,
             needs_legend: false,
+            panel: None,
         }
     }
 }
@@ -82,6 +96,10 @@ impl Rules {
                 .inputs
                 .iter()
                 .any(|i| !matches!(i, Input::Up | Input::Down | Input::A | Input::B)),
+            panel: s
+                .dialog
+                .as_ref()
+                .map(|_| crate::ui_kit::dialog::DialogGeometry::fallback().area()),
             ..Rules::default()
         }
     }
@@ -120,6 +138,13 @@ pub enum Issue {
         id: String,
         area: String,
     },
+    OutsidePanel {
+        id: String,
+    },
+    Placement {
+        id: String,
+        rule: &'static str,
+    },
     Contrast {
         id: String,
         ratio: f32,
@@ -140,6 +165,8 @@ impl Issue {
             Issue::Fit { id }
             | Issue::Unsafe { id }
             | Issue::Reserved { id, .. }
+            | Issue::OutsidePanel { id }
+            | Issue::Placement { id, .. }
             | Issue::Contrast { id, .. }
             | Issue::FocusHidden { id }
             | Issue::FocusNotBrighter { id } => vec![id],
@@ -172,6 +199,8 @@ impl fmt::Display for Issue {
             }
             Issue::Unsafe { id } => write!(f, "{id}: outside the title-safe area"),
             Issue::Reserved { id, area } => write!(f, "{id}: over {area}"),
+            Issue::OutsidePanel { id } => write!(f, "{id}: outside the modal's panel"),
+            Issue::Placement { id, rule } => write!(f, "{id}: {rule}"),
             Issue::Contrast { id, ratio } => {
                 write!(f, "{id}: contrast {ratio:.2} against what is under it")
             }
@@ -194,6 +223,33 @@ impl fmt::Display for Issue {
 pub struct Report {
     pub issues: Vec<Issue>,
     pub skipped: Vec<&'static str>,
+    /// Flagged, not failed: see [`Note`].
+    pub notes: Vec<Note>,
+}
+
+/// What a check flags without failing the view.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Note {
+    /// A modal's text whose ink meets a text of the screen that opened
+    /// it. Flagged only: retail's own dialogs sit over the screen beneath
+    /// as it is, its texts included (the user's screenshot, 2026-11-18),
+    /// and the panel art is nearly transparent, so this says where the
+    /// two may read badly together rather than what is wrong.
+    OverOpener {
+        id: String,
+        opener: String,
+        text: String,
+    },
+}
+
+impl fmt::Display for Note {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Note::OverOpener { id, opener, text } => {
+                write!(f, "{id} is over the opener's {opener} ({text:?})")
+            }
+        }
+    }
 }
 
 /// `r`'s area, Y up.
@@ -263,10 +319,14 @@ pub fn ink(w: &Widget, m: &dyn Metrics) -> Option<Rect> {
     out
 }
 
-/// The row a widget belongs to (`row.3.label` is row 3's).
+/// The row or entry cell a widget belongs to (`row.3.label` is row 3's,
+/// `cell.2.text` cell 2's).
 fn row_of(id: &str) -> Option<&str> {
-    let rest = id.strip_prefix("row.")?;
-    Some(rest.split('.').next().unwrap_or(rest))
+    let n = ["row.", "cell."].iter().find_map(|p| {
+        id.strip_prefix(p)
+            .map(|rest| p.len() + rest.find('.').unwrap_or(rest.len()))
+    })?;
+    Some(&id[..n])
 }
 
 /// WCAG relative luminance of an sRGB colour.
@@ -322,6 +382,33 @@ fn opaque(w: &Widget, src: &dyn Source) -> Option<Mask> {
         }
     }
     Some((on, off))
+}
+
+/// The modal's texts (`texts`, with their ink) whose ink meets the ink of
+/// a text of `opener`, the screen beneath.
+fn over_opener(texts: &[(&Widget, Rect)], opener: Option<&View>, m: &dyn Metrics) -> Vec<Note> {
+    let Some(o) = opener else {
+        return Vec::new();
+    };
+    let theirs: Vec<(&Widget, Rect)> = o
+        .widgets
+        .iter()
+        .filter(|w| w.alpha > 0)
+        .filter_map(|w| ink(w, m).map(|r| (w, r)))
+        .collect();
+    let mut out = Vec::new();
+    for (w, r) in texts {
+        for (u, ur) in &theirs {
+            if area(intersect(*r, *ur)) > 0 {
+                out.push(Note::OverOpener {
+                    id: w.id.clone(),
+                    opener: u.id.clone(),
+                    text: u.text().unwrap_or_default().to_string(),
+                });
+            }
+        }
+    }
+    out
 }
 
 /// Runs every check on `v` drawn from `src`.
@@ -404,8 +491,7 @@ pub fn check(v: &View, src: &dyn Source, rules: &Rules) -> Report {
     }
 
     // Art against art and the screen edge: the images' own pixels.
-    let masks: Vec<(&Widget, Option<Mask>)> =
-        arts.iter().map(|w| (*w, opaque(w, src))).collect();
+    let masks: Vec<(&Widget, Option<Mask>)> = arts.iter().map(|w| (*w, opaque(w, src))).collect();
     if masks.iter().any(|(_, m)| m.is_none()) {
         rep.skipped.push("covered");
         rep.skipped.push("off screen");
@@ -469,9 +555,28 @@ pub fn check(v: &View, src: &dyn Source, rules: &Rules) -> Report {
             rep.issues.push(Issue::Unsafe { id: w.id.clone() });
         }
     }
+    if let Some(p) = rules.panel {
+        for w in shown.iter().filter(|w| w.layer != Layer::Panel) {
+            let r = ink(w, src).unwrap_or(w.rect());
+            if !inside(r, p) {
+                rep.issues.push(Issue::OutsidePanel { id: w.id.clone() });
+            }
+        }
+        for (id, rule) in crate::ui_kit::dialog::placement(v, src) {
+            rep.issues.push(Issue::Placement { id, rule });
+        }
+    }
+    if let Backing::Over(o) = v.backing {
+        rep.notes
+            .extend(over_opener(&texts, src.opener(&o).as_ref(), src));
+    }
     for (name, area_r) in &rules.reserved {
         for w in &shown {
             let r = ink(w, src).unwrap_or(w.rect());
+            // A modal covers what is beneath its panel, retail's way.
+            if w.layer == Layer::Panel || rules.panel.is_some_and(|p| inside(r, p)) {
+                continue;
+            }
             if area(intersect(r, *area_r)) > 0 {
                 rep.issues.push(Issue::Reserved {
                     id: w.id.clone(),
@@ -758,5 +863,62 @@ mod tests {
             art: "frame.1".into(),
             pixels: 200,
         }));
+    }
+
+    /// A dialog text over a text of its opener is flagged, never failed;
+    /// one clear of them is not.
+    #[test]
+    fn a_dialog_text_over_its_openers_text_is_a_note() {
+        use crate::ui_kit::view::{Justify, Opener};
+        let text = |id: &str, rect: [i16; 4]| Widget {
+            id: id.into(),
+            rect,
+            layer: Layer::Content,
+            alpha: 255,
+            kind: Kind::Text {
+                text: "Enter the code".into(),
+                font: 1,
+                justify: Justify::Left,
+                colour: [255, 255, 255],
+            },
+        };
+        let view = |w: Widget| View {
+            screen: "t".into(),
+            state: "s".into(),
+            backing: Backing::Over(Opener::MAIN_MENU),
+            widgets: vec![w],
+            focus: None,
+            list: None,
+        };
+        // The synthetic opener's rows sit from x -240, 30 apart from y 117;
+        // Xbox Live is row 1.
+        let over = check(
+            &view(text("body", [90, -243, 70, 255])),
+            &SyntheticSource,
+            &Rules::default(),
+        );
+        assert_eq!(
+            over.notes,
+            [Note::OverOpener {
+                id: "body".into(),
+                opener: "opener.row.1.label".into(),
+                text: "Xbox Live".into(),
+            }]
+        );
+        assert!(
+            !over.issues.iter().any(|i| i.to_string().contains("opener")),
+            "a note, not an issue"
+        );
+        let clear = check(
+            &view(text("body", [90, 0, 70, 255])),
+            &SyntheticSource,
+            &Rules::default(),
+        );
+        assert_eq!(clear.notes, []);
+        let none = View {
+            backing: Backing::None,
+            ..view(text("body", [90, -243, 70, 255]))
+        };
+        assert_eq!(check(&none, &SyntheticSource, &Rules::default()).notes, []);
     }
 }

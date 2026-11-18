@@ -181,6 +181,18 @@ export function api(t: ServerTarget, reader: Reader = async () => null) {
       page<unknown>(await getJson(u("/coop/games", q), s, bearer === undefined ? await who() : bearer)),
     /** One session by id, open or not. */
     session: (id: string, s?: AbortSignal) => getJson<{ session: unknown; position?: number }>(u("/sessions/" + encodeURIComponent(id)), s),
+    /** A player's level and experience per ranked playlist (docs/live/live-api.md "Ranks"); the raw body. */
+    ranks: async (player: string, s?: AbortSignal) => getJson<unknown>(u("/accounts/" + encodeURIComponent(player) + "/ranks"), s, await who()),
+    /** How many players commended `player` (a gamertag or XUID), by kind
+     *  (docs/live/live-api.md "Bans"); the raw body. Older servers answer 404. */
+    commendations: async (player: string, s?: AbortSignal) =>
+      getJson<unknown>(u("/accounts/" + encodeURIComponent(player) + "/commendations"), s, await who()),
+    /** One playlist's standing and its history, newest first; the raw body. */
+    rankHistory: async (player: string, playlist: string, s?: AbortSignal) =>
+      getJson<unknown>(u("/accounts/" + encodeURIComponent(player) + "/ranks/" + encodeURIComponent(playlist)), s, await who()),
+    /** A ranked playlist's leaderboard; the raw body. */
+    leaderboard: async (playlist: string, limit = 100, s?: AbortSignal) =>
+      getJson<unknown>(u("/ranks/" + encodeURIComponent(playlist), { limit }), s, await who()),
     /** Server-wide stats over a window (docs/live/live-api.md "Stats summary"); the raw body. */
     statsSummary: async (window: string, s?: AbortSignal) => getJson<unknown>(u("/stats/summary", { window }), s, await who()),
     /** What a page load needs, in one read (`GET /v1/snapshot`); a server

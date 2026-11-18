@@ -6,7 +6,7 @@ mod bench;
 mod config;
 mod event;
 mod hooks;
-mod layout;
+pub mod layout;
 mod memory;
 mod motion;
 mod pipeline;
@@ -27,5 +27,6 @@ pub use memory::{
     team_scores, world, yaw,
 };
 pub use pipeline::Pipeline;
+pub use session::Playlist;
 pub use sink::{JsonlSink, Sink};
-pub use tags::{MapFile, MapIdLocator, MapLocator, TagNames};
+pub use tags::{MapFile, MapIdLocator, MapLocator, PlaylistLocator, TagNames};

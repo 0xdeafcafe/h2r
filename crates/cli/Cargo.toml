@@ -22,6 +22,7 @@ xiso.workspace = true
 h1map = { path = "../h1map" }
 # Halo 1 multiplayer maps converted (`h2 h1 convert`).
 h1convert = { path = "../h1convert" }
+scenario-edit = { path = "../scenario-edit" }
 # Halo 1 campaign levels converted (`h2 h1 convert <iso> a30`).
 h1campaign = { path = "../h1campaign" }
 h1bitmaps = { path = "../h1bitmaps" }
@@ -39,12 +40,15 @@ ir.workspace = true
 anyhow.workspace = true
 sha2 = "0.10"
 boot.workspace = true
+# h2 bots nav (docs/game/bots.md).
+bots = { path = "../bots" }
 # `h2 agent` and `h2 serve` (docs/runtime/agent-api.md).
 agent-proto = { path = "../agent-proto" }
 # Our settings (play --set, h2 settings).
 settings = { path = "../settings" }
 timeline = { path = "../timeline" }
 app = { path = "../app" }
+debug-menu = { path = "../debug-menu" }
 lockstep = { path = "../lockstep" }
 d3d = { path = "../d3d" }
 kernel.workspace = true
@@ -85,8 +89,6 @@ gltf = { version = "1", default-features = false, features = ["names"] }
 png = "0.18"
 
 [target.'cfg(unix)'.dependencies]
-# `h2 disk clean` (docs/dev/disk.md).
-diskclean = { path = "../diskclean" }
 libc = "0.2"
 # Enable runtime-detected ARM SHA instructions for full-image cache
 # validation. sha2-asm has no MSVC build; Windows uses the portable code.

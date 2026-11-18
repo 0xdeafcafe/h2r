@@ -59,6 +59,70 @@ pub enum Backing {
     /// The game shell's background screen (screen 5), as under every
     /// settings screen.
     GameShell,
+    /// A modal's: the screen that opened it, as it was, with nothing
+    /// between it and the panel. A dialog is an overlay on whatever was
+    /// open (the user, 2026-11-18, from a retail screenshot): no retail
+    /// dialog tag has a dim layer or any widget outside its panel and
+    /// corners (docs/game/ui-builder.md "Screen kinds"). The preview draws
+    /// the [`Opener`] there.
+    Over(Opener),
+}
+
+/// The screen a modal was opened from, in the state it was in: what the
+/// preview draws under it, and whose texts the dialog's are checked
+/// against.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+pub struct Opener {
+    /// The name sheets and JSON use.
+    pub name: &'static str,
+    /// Its screen tag in `mainmenu.map`.
+    pub tag: &'static str,
+    /// The pane shown (the Xbox Live menu has one per row).
+    pub pane: usize,
+    /// Its list's rows, as the game's code fills them, and the focused one.
+    pub rows: &'static [&'static str],
+    pub focus: usize,
+}
+
+impl Opener {
+    /// The main menu (`main_menu`, screen 6) with the Xbox Live row
+    /// chosen: rows as `boot::ui_watch` reads them (`0x230827`).
+    pub const MAIN_MENU: Opener = Opener {
+        name: "main-menu",
+        tag: r"ui\screens\game_shell\main_menu_screen\main_menu",
+        pane: 0,
+        rows: &[
+            "Campaign",
+            "Xbox Live",
+            "Split Screen",
+            "System Link",
+            "Settings",
+        ],
+        focus: 1,
+    };
+    /// The Xbox Live menu (screen `0xba`) on Quickmatch, its rows as the
+    /// list hooks show them (docs/live/live-custom-games.md "Rows").
+    pub const XBOX_LIVE_MENU: Opener = Opener {
+        name: "xbox-live-menu",
+        tag: r"ui\screens\game_shell\xbox_live\xbox_live_main_menu\xbox_live_main_menu",
+        pane: 0,
+        rows: &[
+            "Quickmatch",
+            "OptiMatch",
+            "Custom Game",
+            "Custom Game Browser",
+            "Content Download",
+        ],
+        focus: 0,
+    };
+
+    /// "main-menu on Xbox Live".
+    pub fn state(&self) -> String {
+        match self.rows.get(self.focus) {
+            Some(r) => format!("{} on {r}", self.name),
+            None => self.name.into(),
+        }
+    }
 }
 
 /// The order widgets are drawn in, and which may overlap: art under the
@@ -66,6 +130,9 @@ pub enum Backing {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Layer {
+    /// A modal's panel and its corners: the backing its content sits on
+    /// by design, so it is held to neither a list nor its pixels.
+    Panel,
     /// Frame art of the screen.
     Frame,
     /// A row's or a cell's own art (its bar, its box).

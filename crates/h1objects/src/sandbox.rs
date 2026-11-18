@@ -72,6 +72,7 @@ impl Halo1Objects for Objects<'_> {
             .collect();
         ObjectTags {
             hud_swaps,
+            hud_sensor: tree.hud_sensor,
             count: tags.len(),
             // The tags first, at the datums the placements name; the
             // sounds they play once the collections are in after them.

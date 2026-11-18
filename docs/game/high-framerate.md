@@ -767,9 +767,17 @@ H2_FEATURES=impl.render.interpolate h2 play --fps 60 ...
 At exit (and every 5 s while running) it prints `d3d: interpolation:
 frames F blended B held H replays R substituted draws D snapped S deferred
 P size_mismatch Z (extent Ze mapping Zm screen Zs overlay Zo) unsure U
-(camera Uc unpinned Up) dropped X; replay mode: N frames, A ms avg, M ms
-max`. `Z`, `U` and `X` count frames shown as the guest drew them by the
-guards below ("Guards"), `Z` and `U` split by the guard that held them.
+(camera Uc unpinned Up) unpaired Q (gap Qg camera Qc views Qv counting Qn)
+dropped X; replay mode: N frames, A ms avg, M ms max`. `Z`, `U` and `X`
+count frames shown as the guest drew them by the guards below ("Guards"),
+`Z` and `U` split by the guard that held them. `Q` counts frames with
+nothing to blend: no previous frame close enough (`gap`: the first, or
+after a load, a pause or a hitch over 45 ms), no camera (`camera`: a 2D
+menu), views other than the previous frame's or, for E1, not one view with
+a world (`views`), or a pixel count open at the present (`counting`).
+Every held frame is in exactly one of `Z`, `U`, `Q` and `X`; a frame with
+nothing to blend is counted there even when a guard would also have held
+it.
 `N` counts every frame the replay made (blended presents and
 in-between frames) and the times are the render thread's wall time for
 each: its draws, plus `present_replay` for in-between frames (the
@@ -797,7 +805,21 @@ part instead (section 8).
     and rebuild within 1e-5 of their size. Orthographic HUD transforms
     don't split;
   - the view's camera: per view (viewport and target size), the
-    perspective value most draws share bit for bit, used by at least two;
+    perspective value most draws compute their clip position from, bit
+    for bit, used by at least two. Which block a draw computes it from is
+    read from its program (`interp::epilogue::position`): the four
+    constant rows `oPos.x` to `oPos.w` are each a `dp4`/`dph` with,
+    followed through temporaries and moves, as they stand before the
+    epilogue reads them back. A program that passes its vertices through
+    (`mov oPos, v0`) is `Fixed`: no constant places them. Anything else
+    (columns, products of blocks: 7 of the 353 programs in the corpus) is
+    `Unknown` and does not vote. The first version counted every
+    perspective-looking block in a draw's constants: in a real gameplay
+    frame every draw carries blocks of packed parameters that split as a
+    perspective far off centre, shared by all 307 draws, while the camera
+    was in 300. The packed block won (ties went by hash order), was not centred,
+    and every gameplay frame was held (`unsure`, `camera`): E1 blended
+    nothing;
   - objects drawn with the camera: perspective blocks that are the camera
     times a rotation, uniform scale and translation (the world part
     recovered with the camera's inverse, accepted when it rebuilds within
@@ -894,12 +916,21 @@ part instead (section 8).
       the two centres, the jump toward the top-left seen on loading
       screens and in scope zoom.
     - `screen`: a world draw in screen space (pre-transformed, fixed
-      function, or without a centred perspective: an orthographic quad, a
-      perspective into pixels) is not part of the turning world: it would
-      be zoomed, or shrunk by the overscan and turned.
-    - `overlay`: a draw that uses the camera after the overlay starts
-      (a level draw after the first-person weapon) would go on top of the
-      turned world unturned.
+      function, a pass-through program, or whose position block is not
+      the camera, an object drawn with it or a centred perspective: an
+      orthographic quad, a perspective into pixels) is not part of the
+      turning world: it would be zoomed, or shrunk by the overscan and
+      turned. Only the block the program computes its position from
+      counts: the rest of a draw's constants may hold anything (the first
+      version held a world draw for any off-centre perspective-looking
+      block in them, which is every gameplay draw), and a draw whose
+      position is `Unknown` holds.
+    - `overlay`: a draw the camera places after the overlay starts (a
+      level draw after the first-person weapon) would go on top of the
+      turned world unturned. The HUD's pass-through quads carry the
+      frame's constants, camera included, but nothing places them: they
+      are overlay. A draw whose position is `Unknown` counts as placed by
+      the camera if any of its blocks is the camera.
   - *A made frame must show at the guest's frame's host size*
     (`Backend::surface_extent`, the view's scaled copy through
     `ScaledBackend`), else it is not shown (`size_mismatch`, `extent`).
@@ -1138,7 +1169,10 @@ the same split on the synthetic scenes.
 
 ### Tests
 
-`cargo test -p d3d --lib interp` adds `reproject`'s own: the warp samples
+`cargo test -p d3d --lib interp` adds `epilogue::position`'s: the rows
+straight to `oPos` or through a temporary are read, a pass-through (with
+or without an epilogue) is `Fixed`, and a product, rows of two blocks, rows
+out of order or a negated move are `Unknown`; and `reproject`'s own: the warp samples
 the world image where it drew a point for a turned display camera; no turn
 gives the overscan zoom; display rotations blend, run ahead and snap on
 cuts; and `epilogue`'s: D3D's and Halo 2's epilogues and a divide-first
@@ -1170,10 +1204,23 @@ with Halo 2's epilogue, `c[10]`/`c[11]`):
   both E1 variants;
 - world draws whose program maps elsewhere than D3D's registers say
   (screen space, a quarter of the target) hold; a pre-transformed,
-  orthographic, fixed-function, unknown-program or scissored world draw
-  holds; a level draw after the weapon holds; a loading screen (a
+  orthographic, fixed-function, unknown-mapping, pass-through (a
+  full-target quad in pixels among the level's draws) or scissored world
+  draw holds; a level draw after the weapon holds; a loading screen (a
   pre-transformed background, particles with a centred camera, text) is
   shown as drawn;
+- a gameplay-like frame blends in D and both E1 variants: a shadow pass
+  into a depth target with an orthographic and an off-centre light
+  camera, the level with the centred camera (one draw sampling the shadow
+  map), the first-person weapon, then HUD pass-through quads carrying the
+  camera in their constants and orthographic text, every draw carrying a
+  packed block that splits as an off-centre perspective and is shared by
+  more draws than the camera (before the fix: `blended 0`, `unsure 3
+  (camera 3)`, the live symptom);
+- every held frame is counted under one reason: a menu in perspective into
+  pixels (`unsure`, `camera`), a 2D menu (`unpaired`, `camera`), a
+  loading screen (`size_mismatch`, `screen`), split screen in E1
+  (`unpaired`, `views`), gameplay after a pause (`unpaired`, `gap`);
 - run through the shader interpreter, a world-image draw looks a
   screen-space texture up at the same texel as the guest's draw while its
   position moves in by the overscan about the centre;
@@ -1199,7 +1246,17 @@ default; reproject wins over interpolate, `_ahead` over plain).
    display frame is cheap).
 4. After the guards above, a live run's held split says what still keeps
    gameplay at 30: `size_mismatch (... mapping M screen S overlay O)`
-   names the guard. Not yet seen: whether Halo 2's world has
+   names the guard. The one gameplay capture we have (a converted Halo 1
+   level, 307 draws into the shown surface) is now classified right (the
+   camera at `c[0]`, centred, in 300 draws; the HUD's `Rows(177)` and
+   pass-through draws all overlay) but would still be held, `screen`: draw
+   203 of 256 world draws is a full-target quad in pixels (a pass-through
+   program, point-sampled 1:1 from a 640x480 copy of the screen made that
+   frame, blended over the world). The overscan would not shrink it, and
+   the copy has nothing for the margin the warp reveals, so it holds by
+   the rule. Showing such frames needs either that pass on top of the
+   warped world (only if nothing after it in the world depends on it) or
+   the copy made from the overscanned world image; neither is proven. Not yet seen: whether Halo 2's world has
    pre-transformed draws before the overlay, level draws after the
    first-person weapon, or the five programs that read their window
    position back (each holds E1), and whether its loading screen is held

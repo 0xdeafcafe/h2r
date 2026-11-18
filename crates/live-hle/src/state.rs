@@ -34,7 +34,6 @@ enum EmptyKind {
     Friends,
     Offering,
     Presence,
-    Mute,
 }
 #[derive(Clone)]
 enum Task {
@@ -139,9 +138,12 @@ pub(crate) struct State {
     services: BTreeSet<u32>,
     service: Option<Service>,
     menu: crate::ui::Menu,
+    feedback: crate::feedback::Feedback,
+    mutes: crate::mutes::Mutes,
     invites: crate::invites::Invites,
     files: crate::storage_api::Files,
     stats: crate::stats::Stats,
+    pub(crate) arbitration: crate::arbitration::Arbiter,
     outbox: crate::outbox::Outbox,
     sessions: crate::sessions::Sessions,
     teams: crate::teams::Teams,
@@ -183,9 +185,12 @@ impl State {
             services: BTreeSet::new(),
             service,
             menu: crate::ui::Menu::default(),
+            feedback: Default::default(),
+            mutes: Default::default(),
             invites: Default::default(),
             files: crate::storage_api::Files::default(),
             stats: crate::stats::Stats::default(),
+            arbitration: crate::arbitration::Arbiter::default(),
             outbox: crate::outbox::Outbox::default(),
             sessions: crate::sessions::Sessions::default(),
             teams: crate::teams::Teams::default(),
@@ -285,9 +290,12 @@ impl State {
         self.state_flags = [1; 4];
         self.game_id = None;
         self.menu.clear();
+        self.feedback.clear();
+        self.mutes.clear();
         self.invites.clear();
         self.files.clear();
         self.stats.clear_tasks();
+        self.arbitration.clear_tasks();
         self.outbox.clear_session();
         self.sessions.clear();
         self.teams.clear_tasks();
@@ -760,6 +768,22 @@ impl State {
             .find(|k| !own.contains(k))
             .map(|k| live_proto::sign::hex(k))
     }
+    /// The playlist of the game about to start: the one this console's
+    /// own advertisement names, else the joined session's as last read.
+    /// No request is made.
+    pub fn playlist(&self, keys: &[[u8; 8]]) -> Option<u32> {
+        if let Some(p) = self.sessions.current_playlist() {
+            return Some(p);
+        }
+        let id = self.joined_session(keys)?;
+        let seen = self
+            .service
+            .as_ref()?
+            .seen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        live_proto::optimatch::playlist(&seen.get(&id)?.advertisement.attributes)
+    }
     /// Asks the server for session `id` again (its answer lands in the
     /// worker's [`crate::client::Seen`]); the request, when one could be
     /// sent, and where the answer goes.
@@ -947,6 +971,15 @@ impl State {
             }
             return Ok(result);
         }
+        if let Arbitration(op) = op {
+            if self.online_refs == 0 {
+                return Ok(NOT_INITIALIZED);
+            }
+            if op != crate::arbitration::Op::CreateRoundId && !self.connected() {
+                return Ok(NO_SESSION);
+            }
+            return self.arbitration.invoke(op, a, m, &mut self.storage);
+        }
         if let Stats(op) = op {
             if self.online_refs == 0 {
                 return Ok(NOT_INITIALIZED);
@@ -954,7 +987,17 @@ impl State {
             if matches!(op, crate::stats::Op::Read | crate::stats::Op::Write) && !self.connected() {
                 return Ok(NO_SESSION);
             }
-            return self.stats.invoke(op, a, m, &mut self.storage);
+            let session = self.session();
+            return self.stats.invoke(
+                op,
+                a,
+                m,
+                crate::stats::Context {
+                    storage: &mut self.storage,
+                    service: self.service.as_ref(),
+                    session: session.as_ref(),
+                },
+            );
         }
         if let Storage(op) = op {
             if self.online_refs == 0 {
@@ -980,6 +1023,47 @@ impl State {
                     storage: &mut self.storage,
                     service: self.service.as_ref(),
                     session: session.as_ref(),
+                },
+            );
+        }
+        if matches!(op, MuteStartup | MuteGet | MuteAdd | MuteRemove) {
+            if self.online_refs == 0 {
+                return Ok(NOT_INITIALIZED);
+            }
+            if !self.connected() {
+                return Ok(NO_SESSION);
+            }
+            let session = self.session();
+            let ctx = crate::mutes::Context {
+                storage: &mut self.storage,
+                service: self.service.as_ref(),
+                session: session.as_ref(),
+                users: &self.user_ids,
+            };
+            return match op {
+                MuteStartup => self.mutes.startup(a, m, ctx),
+                MuteGet => self.mutes.get(a, m, ctx),
+                MuteAdd => Ok(self.mutes.change(a, ctx, true)),
+                _ => Ok(self.mutes.change(a, ctx, false)),
+            };
+        }
+        if op == Feedback {
+            if self.online_refs == 0 {
+                return Ok(NOT_INITIALIZED);
+            }
+            if !self.connected() {
+                return Ok(NO_SESSION);
+            }
+            let session = self.session();
+            return self.feedback.invoke(
+                a,
+                m,
+                crate::feedback::Context {
+                    storage: &mut self.storage,
+                    service: self.service.as_ref(),
+                    session: session.as_ref(),
+                    users: &self.user_ids,
+                    game_id: self.game_id.as_deref(),
                 },
             );
         }
@@ -1280,10 +1364,19 @@ impl State {
                 if let Some(status) = self.stats.poll(a[0]) {
                     return Ok(status);
                 }
+                if let Some(status) = self.arbitration.poll(a[0]) {
+                    return Ok(status);
+                }
                 if let Some(status) = self.files.poll(a[0], m)? {
                     return Ok(status);
                 }
                 if let Some(status) = self.menu.poll(a[0]) {
+                    return Ok(status);
+                }
+                if let Some(status) = self.feedback.poll(a[0]) {
+                    return Ok(status);
+                }
+                if let Some(status) = self.mutes.poll(a[0], m)? {
                     return Ok(status);
                 }
                 let Some(task) = self.tasks.get(&a[0]).cloned() else {
@@ -1439,10 +1532,19 @@ impl State {
                 if self.stats.close(a[0]) {
                     return Ok(OK);
                 }
+                if self.arbitration.close(a[0]) {
+                    return Ok(OK);
+                }
                 if self.files.close(a[0]) {
                     return Ok(OK);
                 }
                 if self.menu.close(a[0]) {
+                    return Ok(OK);
+                }
+                if self.feedback.close(a[0]) {
+                    return Ok(OK);
+                }
+                if self.mutes.close(a[0]) {
                     return Ok(OK);
                 }
                 if !self.tasks.contains_key(&a[0]) {
@@ -1550,7 +1652,7 @@ impl State {
                     Err(e) => e,
                 })
             }
-            FriendsStartup | Offering | PresenceInit | MuteStartup | MuteGet => {
+            FriendsStartup | Offering | PresenceInit => {
                 if !self.connected() {
                     return Ok(NO_SESSION);
                 }
@@ -1562,15 +1664,6 @@ impl State {
                             return Ok(INVALID_ARGUMENT);
                         }
                         (a[1], a[2], EmptyKind::Presence)
-                    }
-                    MuteStartup => (a[0], a[1], EmptyKind::Mute),
-                    MuteGet => {
-                        if a[0] >= 4 || a[1] > 250 {
-                            return Ok(INVALID_ARGUMENT);
-                        }
-                        writable(m, a[5], 4)?;
-                        writable(m, a[4], a[1] as usize * 16)?;
-                        (a[2], a[3], EmptyKind::Mute)
                     }
                     _ => unreachable!(),
                 };
@@ -1609,9 +1702,6 @@ impl State {
                 )?;
                 if op == PresenceInit && result == 0 {
                     self.menu.presence_init(m.u32(output)?);
-                }
-                if op == MuteGet && result == OK {
-                    m.set_u32(a[5], 0)?;
                 }
                 Ok(result)
             }

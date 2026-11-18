@@ -18,6 +18,7 @@ input = { path = "../input", default-features = false }
 audio = { path = "../audio" }
 xapi = { path = "../xapi" }
 timeline = { path = "../timeline" }
+debug-menu = { path = "../debug-menu" }
 wgpu = "30"
 cpal = "0.18"
 pollster = "1"

@@ -28,9 +28,11 @@ use anyhow::{Context, Result, anyhow, bail};
 use map::TagId;
 use tags::ui::{self as tui, MapSource, Rect, UiTag};
 
-use crate::ui_kit::spec::{self, Finding, ListPlace, Room, ScreenSpec};
+use crate::ui_kit::dialog::{self, DialogGeometry, dialog_view};
+use crate::ui_kit::spec::{self, Finding, ListPlace, Room, RowSpec, ScreenSpec};
 use crate::ui_kit::view::{
-    Art, Backing, ItemArt, Justify, Kind, ListAt, Metrics, PaneArt, Synthetic, View, view_of,
+    Art, Backing, ItemArt, Justify, Kind, Layer, ListAt, Metrics, Opener, PaneArt, ROW_TEXT,
+    Synthetic, UNFOCUSED_ALPHA, View, Widget, view_of,
 };
 
 /// The Controls screen whose tag our screens are built from.
@@ -133,7 +135,12 @@ pub struct Disc {
     images: RefCell<HashMap<(TagId, i16), Option<Image>>>,
     /// Every screen of `mainmenu.map` by screen id, decoded on first use.
     screens: RefCell<Option<HashMap<i16, tui::Screen>>>,
+    /// The screens modals open over, made and drawn once.
+    openers: RefCell<HashMap<Opener, Option<Drawn>>>,
 }
+
+/// A view and its picture, shared.
+type Drawn = std::rc::Rc<(View, Canvas)>;
 
 impl Disc {
     pub fn open(iso: &Path) -> Result<Disc> {
@@ -225,6 +232,7 @@ impl Disc {
             files: RefCell::new(res),
             images: RefCell::new(HashMap::new()),
             screens: RefCell::new(None),
+            openers: RefCell::new(HashMap::new()),
         })
     }
 
@@ -381,6 +389,44 @@ impl Disc {
             .collect()
     }
 
+    /// The large dialog as the disc lays it out: `error_dialog_large`'s
+    /// header layout, panel and text block, and `dialog_live_password`'s
+    /// entry cell ([`DialogGeometry::fallback`] is this, read by `h2 ui`).
+    pub fn dialog_geometry(&self) -> Result<DialogGeometry> {
+        let large = self
+            .screen(dialog::LARGE_SCREEN_ID)
+            .context("no error_dialog_large (screen 240)")?;
+        let password = self
+            .screen(dialog::PASSWORD_SCREEN_ID)
+            .context("no dialog_live_password (screen 21)")?;
+        let layout = large.header_layout();
+        let hl = self.shared.header_layouts[layout];
+        let body = large
+            .panes
+            .first()
+            .and_then(|p| p.text_blocks.first())
+            .context("error_dialog_large has no text block")?;
+        let cell = self
+            .pane_art(&password, 0, |_| true)
+            .into_iter()
+            .find(|a| matches!(a.art, Art::Screen { index, .. } if index == dialog::PASSWORD_CELL))
+            .context("dialog_live_password has no password cell")?;
+        Ok(DialogGeometry {
+            header: hl.header,
+            header_font: self.shared.header_fonts[layout],
+            header_colour: [
+                self.shared.header_color[1],
+                self.shared.header_color[2],
+                self.shared.header_color[3],
+            ],
+            footer: hl.secondary,
+            panel: self.pane_art(&large, 0, |_| true),
+            body_font: body.font,
+            body_colour: body.text_color,
+            cell,
+        })
+    }
+
     /// The screen of `mainmenu.map` with screen id `id`.
     /// Every screen tag's name in `mainmenu.map`, sorted: what
     /// [`Disc::render_retail`] draws.
@@ -475,6 +521,162 @@ impl Disc {
                 c.image(&img, i32::from(b.top_left.x), i32::from(b.top_left.y), 255);
             }
         }
+    }
+
+    /// Screen `o` as it was when a modal opened over it, as a [`View`]:
+    /// the game shell under it, its pane's bitmaps (lowest render depth
+    /// first) and texts in its own strings, its header, and its list's
+    /// rows ([`Opener::rows`]) on its skin with [`Opener::focus`] lit, as
+    /// [`view_of`] draws a list. Blocks parked off screen are left out.
+    pub fn opener_view(&self, o: &Opener) -> Result<View> {
+        let (screen, strings) = {
+            let mut m = self.map.borrow_mut();
+            let id = m.tag(map::TagQuery::NameInGroup(o.tag, tui::SCREEN))?.id;
+            let mut src = MapSource::new(&mut m);
+            let UiTag::Screen(screen) = src.decode_tag(id)?.tag else {
+                bail!("{} is not a screen", o.tag);
+            };
+            drop(src);
+            let pane = screen
+                .panes
+                .get(o.pane)
+                .with_context(|| format!("{} has no pane {}", o.tag, o.pane))?;
+            let ids: Vec<u32> = pane
+                .text_blocks
+                .iter()
+                .map(|t| t.string.0)
+                .chain([screen.header.0])
+                .collect();
+            let mut strings = HashMap::new();
+            if let Some(u) = screen.strings.id {
+                let loc = tags::localization::Localization::read(&mut m)?;
+                let unic = loc.unic(&mut m, u)?;
+                for id in ids {
+                    if let Ok(Some(t)) = loc.text_in(
+                        &unic,
+                        tags::localization::StringId(id),
+                        tags::localization::Language::English,
+                    ) {
+                        strings.insert(id, t);
+                    }
+                }
+            }
+            (screen, strings)
+        };
+        let pane = &screen.panes[o.pane];
+        let on_screen = |top: i16, left: i16| top.abs() < 1000 && left.abs() < 1000;
+        let rgb = |v: [f32; 3]| v.map(|x| (x.clamp(0.0, 1.0) * 255.0) as u8);
+        let mut w = Vec::new();
+        let mut blocks: Vec<(usize, &tui::BitmapBlock)> = pane.bitmaps.iter().enumerate().collect();
+        blocks.sort_by_key(|(_, b)| b.render_depth_bias);
+        for (i, b) in blocks {
+            let (x, y) = (b.top_left.x, b.top_left.y);
+            let Some(img) = self.image(b.bitmap, b.image).filter(|_| on_screen(y, x)) else {
+                continue;
+            };
+            let size = [img.width as u16, img.height as u16];
+            w.push(Widget {
+                id: format!("opener.art.{i}"),
+                rect: [y, x, y - size[1] as i16, x + size[0] as i16],
+                layer: Layer::Frame,
+                alpha: 255,
+                kind: Kind::Art {
+                    art: Art::Screen {
+                        screen_id: screen.screen_id,
+                        pane: o.pane as u16,
+                        index: i as u16,
+                        image: b.image,
+                    },
+                    size,
+                },
+            });
+        }
+        let text = |id: String, r: Rect, font: i16, j: u8, text: String, colour| Widget {
+            id,
+            rect: [r.top, r.left, r.bottom, r.right],
+            layer: Layer::Content,
+            alpha: 255,
+            kind: Kind::Text {
+                text,
+                font,
+                justify: Justify::from_flag(j),
+                colour,
+            },
+        };
+        let layout = screen.header_layout();
+        if screen.flags & tui::Screen::NO_HEADER == 0
+            && let Some(h) = strings.get(&screen.header.0)
+        {
+            w.push(text(
+                "opener.title".into(),
+                self.shared.header_layouts[layout].header,
+                self.shared.header_fonts[layout],
+                0,
+                h.clone(),
+                rgb([
+                    self.shared.header_color[1],
+                    self.shared.header_color[2],
+                    self.shared.header_color[3],
+                ]),
+            ));
+        }
+        for (i, t) in pane.text_blocks.iter().enumerate() {
+            if let Some(s) = strings.get(&t.string.0).filter(|s| !s.is_empty())
+                && on_screen(t.rect.top, t.rect.left)
+            {
+                w.push(text(
+                    format!("opener.text.{i}"),
+                    t.rect,
+                    t.font,
+                    tui::justification(t.flags),
+                    s.clone(),
+                    rgb(t.text_color),
+                ));
+            }
+        }
+        if let Some(l) = pane.lists.first() {
+            let place = ListPlace::Moved {
+                skin: l.skin,
+                anchor: [l.anchor.x, l.anchor.y],
+                bitmaps_left_of: i16::MIN,
+                visible: o.rows.len() as i16,
+            };
+            let mut s = ScreenSpec::new(o.name, "");
+            s.list = place;
+            s.rows = o.rows.iter().map(|r| RowSpec::action(r)).collect();
+            s.focus = o.focus;
+            let rows = view_of(&s, &self.geometry(place)?, &self.fonts, "");
+            w.extend(
+                rows.widgets
+                    .into_iter()
+                    .filter(|r| r.id.starts_with("row."))
+                    .map(|r| Widget {
+                        id: format!("opener.{}", r.id),
+                        ..r
+                    }),
+            );
+        }
+        Ok(View {
+            screen: o.name.into(),
+            state: o.state(),
+            backing: Backing::GameShell,
+            widgets: w,
+            focus: None,
+            list: None,
+        })
+    }
+
+    /// [`Disc::opener_view`] and its picture, made once per opener.
+    fn opener_drawn(&self, o: &Opener) -> Option<Drawn> {
+        if let Some(d) = self.openers.borrow().get(o) {
+            return d.clone();
+        }
+        let d = self.opener_view(o).ok().map(|v| {
+            let c = render_view_where(&v, self, &|_| true, false);
+            std::rc::Rc::new((v, c))
+        });
+        self.openers.borrow_mut().insert(*o, d.clone());
+        d
     }
 
     /// A retail screen at rest, as its tag lays it out: pane `r.pane`'s
@@ -640,6 +842,15 @@ impl Disc {
     /// `s` as the builder sees it ([`view_of`]) on this disc's geometry
     /// and fonts.
     pub fn view(&self, s: &ScreenSpec, state: &str) -> Result<View> {
+        if let Some(d) = &s.dialog {
+            return Ok(dialog_view(
+                s,
+                d,
+                &self.dialog_geometry()?,
+                &self.fonts,
+                state,
+            ));
+        }
         Ok(view_of(s, &self.geometry(s.list)?, &self.fonts, state))
     }
 
@@ -700,6 +911,11 @@ pub trait Source: Metrics {
     /// The list of retail screen `screen_id`'s pane `pane`: `Some(None)`
     /// when it has none, `None` when the source doesn't know the screen.
     fn list_of(&self, screen_id: i16, pane: u16) -> Option<Option<ListAt>>;
+    /// The screen a modal opened over, as drawn under it; `None` when the
+    /// source can't make it.
+    fn opener(&self, _o: &Opener) -> Option<View> {
+        None
+    }
 }
 
 fn justify_flag(j: Justify) -> u8 {
@@ -722,10 +938,21 @@ impl Source for Disc {
             skin: l.skin,
         }))
     }
+    fn opener(&self, o: &Opener) -> Option<View> {
+        self.opener_drawn(o).map(|d| d.0.clone())
+    }
     fn backing(&self, c: &mut Canvas, b: Backing) {
-        if b == Backing::GameShell {
-            for p in &self.background.panes {
-                self.draw_blocks(c, p.bitmaps.iter());
+        match b {
+            Backing::None => {}
+            Backing::GameShell => {
+                for p in &self.background.panes {
+                    self.draw_blocks(c, p.bitmaps.iter());
+                }
+            }
+            Backing::Over(o) => {
+                if let Some(d) = self.opener_drawn(&o) {
+                    c.blit(&d.1, 0, 0);
+                }
             }
         }
     }
@@ -778,7 +1005,61 @@ impl Source for SyntheticSource {
             _ => None,
         }
     }
+    /// The opener's rows as a list on the left, its focused row lit.
+    fn opener(&self, o: &Opener) -> Option<View> {
+        let widgets = o
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(i, row)| {
+                let top = 120 - i as i16 * 30;
+                Widget {
+                    id: format!("opener.row.{i}.label"),
+                    rect: [top - 3, -240, top - 19, -50],
+                    layer: Layer::Content,
+                    alpha: if i == o.focus { 255 } else { UNFOCUSED_ALPHA },
+                    kind: Kind::Text {
+                        text: (*row).into(),
+                        font: 1,
+                        justify: Justify::Left,
+                        colour: ROW_TEXT,
+                    },
+                }
+            })
+            .collect();
+        Some(View {
+            screen: o.name.into(),
+            state: o.state(),
+            backing: Backing::GameShell,
+            widgets,
+            focus: None,
+            list: None,
+        })
+    }
     fn backing(&self, c: &mut Canvas, b: Backing) {
+        if let Backing::Over(o) = b {
+            // The game shell, and the opener's list as boxes on its left.
+            self.backing(c, Backing::GameShell);
+            for i in 0..o.rows.len() {
+                let top = 120 - i as i32 * 30;
+                let lit = if i == o.focus { 255 } else { 140 };
+                c.fill(Rect::from_xywh(-250, top, 200, 22), [40, 60, 96, lit]);
+            }
+            if let Some(v) = self.opener(&o) {
+                for w in &v.widgets {
+                    if let Kind::Text {
+                        text,
+                        font,
+                        justify,
+                        colour,
+                    } = &w.kind
+                    {
+                        self.text(c, *font, text, w.rect(), *justify, *colour, w.alpha);
+                    }
+                }
+            }
+            return;
+        }
         if b == Backing::GameShell {
             let band = [24, 44, 72, 255];
             c.fill(
@@ -1215,9 +1496,22 @@ impl From<'_> {
             From::Synthetic => Ok(Geometry::fallback(place)),
         }
     }
+    /// `s` in state `state` as a view: a dialog's
+    /// ([`crate::ui_kit::dialog::dialog_view`]) or a list's ([`view_of`]).
+    pub fn view(&self, s: &ScreenSpec, state: &str) -> Result<View> {
+        Ok(match (&s.dialog, self) {
+            (Some(d), From::Disc(disc)) => {
+                dialog_view(s, d, &disc.dialog_geometry()?, self.source(), state)
+            }
+            (Some(d), From::Synthetic) => {
+                dialog_view(s, d, &DialogGeometry::fallback(), self.source(), state)
+            }
+            (None, _) => view_of(s, &self.geometry(s.list)?, self.source(), state),
+        })
+    }
     /// `s` in state `state`: its view and its picture.
     pub fn draw(&self, s: &ScreenSpec, state: &str) -> Result<(View, Canvas)> {
-        let v = view_of(s, &self.geometry(s.list)?, self.source(), state);
+        let v = self.view(s, state)?;
         let c = render_view(&v, self.source());
         Ok((v, c))
     }

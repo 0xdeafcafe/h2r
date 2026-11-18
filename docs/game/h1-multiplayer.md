@@ -1181,6 +1181,27 @@ Halo 2 sandbox; Halo 1's campaign level names (`a10` to `d40`) are Halo
 1's. `H2_HEALTH_MODEL` still overrides. The HUD meter is the window's
 until a converted HUD has a body widget.
 
+**Halo 1's scenery, in both sandboxes (Built, converter version 53:
+`convert::halo1::plan_scenery`, `fresh::put_scenery`).** The trees,
+rocks and shrubs of a Halo 1 map were never placed: the conversion
+empties the base's placements and placed none of Halo 1's. Now each
+Halo 1 scenery palette entry (`scnr +0x21c`, `0x30`) is converted
+through `h1objects` (the `scen` from its definition) and every placement
+(`+0x210`, `0x48`) on an entry that converted is placed: Halo 2's
+palette entry, no name, Halo 1's "not placed automatically" bit, Halo
+1's position and rotation, and the unique ID, type and source bytes
+`h1campaign` writes. The palette (`scnr +0x58`, `0x28`) and placements
+(`+0x50`, `0x5c`) go into the **fresh** build's scenario, which is a
+built tree there and takes any size; the pinned build (`--fresh false`)
+can't grow the base's palette and places none. The Halo 2 sandbox now
+converts through `h1objects` too (`halo1::prepare_halo2`): its scenery
+tags are added after the vehicle collections, which are added first.
+`every_map_places_halo1_s_scenery_in_both_sandboxes`
+(`h1objects/tests/sandbox_disc.rs`) checks every palette entry names a
+`scen` with a render model and every placement keeps Halo 1's place:
+Blood Gulch 50 placements on 19 entries, Battle Creek 30 on 9, none left
+out.
+
 **Object and scenery textures (Built, `textures::ModelTemplate`).**
 Each Halo 1 model shader gets a Halo 2 `shad` copy: the base's first
 `objects\` shader on `shaders\shader_templates\opaque\tex_bump`

@@ -62,6 +62,15 @@ pub const LIST: List = List::Screen(SCREEN);
 /// name (`0xff`).
 pub const MODEL_IDS: Range<u32> = MODEL.base..MODEL.base + MODEL.len;
 const MODEL: crate::ui_kit::ids::Family = crate::ui_kit::ids::family("ui model");
+/// More of them, once [`MODEL_IDS`] are all used: the Voice screen's
+/// device names (`crate::voice_settings`) brought the model past 191 texts.
+pub const MORE_MODEL_IDS: Range<u32> = MORE.base..MORE.base + MORE.len;
+const MORE: crate::ui_kit::ids::Family = crate::ui_kit::ids::family("ui model more");
+
+/// Whether `id` is one of the model's string ids.
+pub fn is_model_id(id: u32) -> bool {
+    MODEL_IDS.contains(&id) || MORE_MODEL_IDS.contains(&id)
+}
 
 /// Which of our rows are on: `H2_NO_SPEAKER_ROW`, `H2_NO_STEAM_ROWS`,
 /// `H2_NO_TOUCH_ROWS`, `H2_NO_FOV_ROW` and `H2_NO_VIDEO_SCREEN` take theirs
@@ -78,6 +87,10 @@ pub struct Switches {
     pub touch_rows: bool,
     pub fov_row: bool,
     pub video_screen: bool,
+    /// The Voice screen (`crate::voice_settings`).
+    pub voice_screen: bool,
+    /// Video and Voice rows on the pause menus (`crate::pause_menu`).
+    pub pause_rows: bool,
 }
 
 impl Switches {
@@ -87,6 +100,8 @@ impl Switches {
         touch_rows: false,
         fov_row: true,
         video_screen: true,
+        voice_screen: true,
+        pause_rows: true,
     };
 
     pub fn from_env() -> Switches {
@@ -97,6 +112,8 @@ impl Switches {
             touch_rows: IOS && !off("H2_NO_TOUCH_ROWS"),
             fov_row: !off("H2_NO_FOV_ROW"),
             video_screen: !off("H2_NO_VIDEO_SCREEN"),
+            voice_screen: !off("H2_NO_VOICE_SCREEN"),
+            pause_rows: crate::pause_menu::rows_on(),
         }
     }
 }
@@ -152,8 +169,34 @@ pub fn model(store: Arc<Store>, on: Switches) -> Result<Model, String> {
             );
     }
     let settings = ui::extend(List::Settings, SETTINGS_ROWS).row(Row::open(SCREEN));
-    Model::new(store, vec![video], vec![controls, settings], MODEL_IDS)
+    // The Voice screen (crate::voice_settings), opened from the pause menus.
+    let mut voice = Screen::new(VOICE_SCREEN).title("Voice");
+    if on.voice_screen {
+        voice = voice.rows_from_settings(&store.defs());
+    }
+    let mut extensions = vec![controls, settings];
+    // Video and Voice on both pause menus (crate::pause_menu); a row whose
+    // screen has no rows is left out by the model.
+    if on.pause_rows {
+        let rows = |list, retail| {
+            ui::extend(list, retail)
+                .row(Row::open(SCREEN))
+                .row(Row::open(VOICE_SCREEN))
+        };
+        extensions.push(rows(List::Pause, crate::pause_menu::PAUSE_ROWS));
+        extensions.push(rows(List::MpPause, crate::pause_menu::MP_ACTIONS));
+    }
+    Model::with_ids(
+        store,
+        vec![video, voice],
+        extensions,
+        vec![MODEL_IDS, MORE_MODEL_IDS],
+    )
 }
+
+/// The Voice screen's id and list.
+pub const VOICE_SCREEN: &str = crate::voice_settings::SCREEN;
+pub const VOICE_LIST: List = List::Screen(VOICE_SCREEN);
 
 /// The item count when the game builds the array named `name` with
 /// `retail` rows: ours added for the Controls and Settings lists, else
@@ -327,6 +370,8 @@ mod tests {
                 steam_rows: false,
                 touch_rows: false,
                 fov_row: true,
+                voice_screen: true,
+                pause_rows: true,
             },
         )
         .unwrap();
@@ -641,7 +686,7 @@ mod tests {
         assert!(!all.iter().any(|(_, s)| s.contains("(restart)")), "{all:?}");
         assert!(!text("Halo 1 Maps"));
         let mut ids: Vec<u32> = all.iter().map(|(i, _)| *i).collect();
-        assert!(ids.iter().all(|i| is_ours(*i) && MODEL_IDS.contains(i)));
+        assert!(ids.iter().all(|i| is_ours(*i) && is_model_id(*i)));
         ids.extend(
             crate::layout_glue::served_strings(true, true)
                 .iter()

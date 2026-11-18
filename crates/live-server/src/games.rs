@@ -340,10 +340,13 @@ impl Live {
     pub async fn start_game(
         &self,
         bearer: Option<&str>,
-        new: NewGame,
+        mut new: NewGame,
     ) -> Result<GameCreated, ApiError> {
         let author = self.authenticate(bearer, lxm::GAMES_WRITE)?;
         self.rate_limit(&author, lxm::GAMES_WRITE)?;
+        if new.playlist.is_none() {
+            new.playlist = self.playlist_name(new.playlist_id.as_deref()).await;
+        }
         game::validate_new(&new).map_err(invalid)?;
         let game_id = random_game_id();
         let started = GameStarted {
@@ -450,7 +453,7 @@ impl Live {
         }
         // The batch's events share its JWS (one copy, not one an event).
         let jws: Arc<str> = jws.into();
-        let events = bodies
+        let events: Vec<NewEvent> = bodies
             .into_iter()
             .enumerate()
             .map(|(i, body)| NewEvent {
@@ -459,9 +462,14 @@ impl Live {
                 body,
             })
             .collect();
+        let ends = events_end(&events);
         let recorded = self.store.append(events, &[]).await?;
         let last = recorded.last().map_or(0, |e| e.position);
         self.wait_applied(last).await?;
+        if ends {
+            // A finished ranked game ranks its players (crate::ranks).
+            self.rank_game(game_id).await?;
+        }
         Ok(last)
     }
 
@@ -860,6 +868,7 @@ impl Live {
     /// restart (rebuilt from the events' `at`).
     pub async fn sweep(&self) {
         let now = now();
+        self.flush_usage().await;
         self.sweep_sessions(now).await;
         let policy = self.policy();
         let (expired, idle): (Vec<_>, Vec<_>) = {
@@ -919,6 +928,12 @@ impl Live {
             Err(e) => eprintln!("live: sweep: {e}"),
         }
     }
+}
+
+fn events_end(events: &[NewEvent]) -> bool {
+    events
+        .last()
+        .is_some_and(|e| e.body.kind == game::GAME_ENDED)
 }
 
 /// An ingest refusal as the socket reports it.

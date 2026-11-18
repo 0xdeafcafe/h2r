@@ -176,7 +176,12 @@ impl InputScript {
                 Err(e) => crate::log::note(&format!("input: {path}: {e}")),
             }
         }
-        Self::parse(&spec)
+        let script = Self::parse(&spec);
+        if !script.is_empty() {
+            let entries: Vec<&str> = script.0.iter().map(|e| e.text.as_str()).collect();
+            eprintln!("input: script of {} entries from H2_BOOT_INPUT/H2_BOOT_INPUT_FILE: {}", entries.len(), entries.join(", "));
+        }
+        script
     }
 
     pub fn is_empty(&self) -> bool {
@@ -216,9 +221,11 @@ impl InputScript {
             let st = e.state.load(Relaxed);
             if st == 0 && e.down.reached(slice, frame) {
                 e.state.store(1, Relaxed);
-                eprintln!("input: `{}` down at slice {slice}, present {frame}", e.text);
+                let keys: Vec<String> = e.controls.iter().filter_map(|h| Self::physical(pad, h)).map(|i| format!("{i:?}")).collect();
+                eprintln!("input: `{}` down at slice {slice}, present {frame} (keys {})", e.text, keys.join(" "));
             } else if st == 1 && e.up.reached(slice, frame) {
                 e.state.store(2, Relaxed);
+                eprintln!("input: `{}` up at slice {slice}, present {frame}", e.text);
             }
             if e.state.load(Relaxed) == 1 {
                 for i in e.controls.iter().filter_map(|h| Self::physical(pad, h)) {

@@ -14,6 +14,7 @@
 //! - [`mixer`]: software mixer rendering voices to a host buffer.
 //! - [`route`]: Xbox mix bins folded down to stereo.
 //! - [`sink`]: lock-free ring, `AudioSink`, headless `NullSink`, latency-targeting `Pump`.
+//! - [`voice`]: voice chat's host devices (the list; its cpal half is feature `device`).
 //! - [`output`]: the only device-touching code (feature `device`).
 
 pub mod adpcm;
@@ -26,6 +27,7 @@ pub mod resample;
 pub mod reverb;
 pub mod route;
 pub mod sink;
+pub mod voice;
 
 #[cfg(feature = "device")]
 pub mod output;

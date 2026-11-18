@@ -161,3 +161,52 @@ Known gaps:
   between, its slot stays current and is not dropped. The multiplayer
   lobby runs on the main menu (slot 2), so between games slot 3 is not
   current. That is expected, not checked.
+
+## Copy speed on the loading screen
+
+**The finding.** A level or menu load on a map that is not in its slot
+yet is paced by frames, not by the disc. The loading-screen loop
+`0x163890` (called from `GAME_ACTIVATE` at `0x18f14b` and from the menu
+paths) steps the copy machine (`CACHE_COPY_STEP`, `0x2141f0`) once per
+iteration and draws and presents a loading frame in between:
+
+```text
+0x163955: progress; if [0x55bd0c] { 0x2141f0() }   ; at 0x1639bd
+          SwitchToThread()                          ; 0x2d2084
+          draw the loading screen, present, frame wait
+          while the copy status is 0, 1 or 2
+```
+
+Each step submits one job of at most 1 MiB (a read, then a write; the
+sizes at `0x448ff0`) and clears the job-done byte `0x55bd0c`
+(`0x1a1286`); the worker sets it when the job is finished, and the loop
+steps only while it is set. On the console the DVD set the pace. Here a
+read is a synchronous host read, finished by the worker's next slice, so
+the copy runs at exactly 1 MiB every two loading frames.
+
+From a 03a_oldmombasa headless boot on fresh data (master 26f45a90,
+`H2_FRAME_STATS_CSV`): presents 1 to 1744 are all the loading screen
+(20 draws each), 824 of them read exactly 1 MiB, 838 MiB in all (main
+menu, shared, single-player shared, then the level), and the level is
+loaded at present 1744. The d3d report counts 15 vertical blanks over
+those 1,744 presents: the loop does not wait on the display, so guest
+time barely moves and the pacer never sleeps. The load costs 1,744 times
+whatever one loading frame costs the host: 3.2 to 5.7 s headless, far more
+in a window where each present is dearer.
+
+**The fix: the `map-copy` feature** (`crates/boot/src/map_copy.rs`, on by
+default, `H2_FEATURES=-map-copy` turns it off). When the copy machine is
+called from the loading-screen loop (return address `0x1639c2`), a
+`before` hook answers with an async body that runs the step the loop
+asked for, then up to 15 more, each once the job before it is done,
+yielding with `SwitchToThread` as the loop does (at most 8 yields a job;
+a job still running is left to the next frame). It stops when the machine
+is idle (`0x55bd04` is 0). The machine sees the same calls in the same
+order with the same job results, only with fewer frames drawn between
+them; the game's own flush loop `0x213fa0` steps it back to back with
+nothing drawn. The main loop's call (`0x12b571`) and the flush loop's are
+left alone.
+
+Tests (`map_copy::tests`, a synthetic copy machine and worker): the same
+bytes, checksum and step sequence in 3 frames instead of 42 for 21
+chunks; a slow worker; a job that outlasts its yields; idle; the plan.

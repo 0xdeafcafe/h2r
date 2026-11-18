@@ -1289,40 +1289,153 @@ in the render's order (`replay`, `replay_next`), and pulls the live ranges
 back into the view. A real result other than the one the render was given
 is counted (`io_mismatches`).
 
-Two rules keep this deterministic and in serial order:
+Two rules keep each side's pool calls consistent with the other's:
 
-- A game-thread wait on a pool handle while a render is in flight joins the
-  render first (`io_joins`). The render's requests reach the pool before
-  the tick's, as in the serial run, where render k runs before tick k + 1,
-  whatever either thread's timing. Before this change the serviced path
-  queued the render's request after the tick's. The rig shows the worker
-  completing the sim's `0x205` before render 4's `0x104`, where the serial
-  run completes `0x104` first.
-- A frame pipelines only when every request is on the free list
+- **The first side to use the pool in a frame owns it until the join**
+  (`PoolUse`).
+  - If the render defers a pool call first, a later game-thread wait on a
+    pool handle joins the render (`io_joins`). The render's requests then
+    reach the pool before the tick's, as in the serial run, where render k
+    runs before tick k + 1.
+  - If the sim waits on a pool handle first, it goes on (`io_sim_first`),
+    and the render's pool calls that frame are not deferred
+    (`io_refused`). Each stops the render and is made at the join against
+    the pool the sim left (a service), so the sim's request comes first.
+  - A frame where only one side uses the pool never waits.
+  - The first version joined on every game-thread pool wait while a render
+    was in flight. In gameplay the game thread takes the pool mutex every
+    tick, so every frame joined (03a, presents 6900 to 7000: `io_joins 30`,
+    `io_deferred 0` per 30 frames, `join_wait` about the whole render) and
+    pipelining ran slower than stock (40.7 fps against 48.6).
+  - The order of two requests in one frame (render's and sim's) is the
+    serial one when the render's call comes first in time, and the sim's
+    first otherwise. Each side still sees the pool as the other left it.
+    The rig shows both. The serviced path always put the sim's first: the
+    worker completes the sim's `0x205` before render 4's `0x104`, where the
+    serial run completes `0x104` first.
+- **A frame pipelines only when every request is on the free list**
   (`Addrs::io_free`: the head `0x004e28e8`, linked at +0x3c, 150 requests
   from `0x004e0368`). Otherwise it runs serially (`io_busy`). The worker's
-  own pool calls happen while the game thread waits, and they are not
-  ordered against the render's, so the worker has to be idle at the
-  launch. It wakes only through a semaphore release, either the render's
-  (replayed at the join) or the sim's (after the join).
+  own pool calls happen while the game thread waits and are not ordered
+  against the render's, so the worker has to be idle at the launch. It
+  wakes only through a semaphore release: the render's (replayed at the
+  join) or the sim's.
 
 `H2_PIPELINE_DEFER_IO=0` restores the serviced path for an A/B. The
-`pipeline:` line now ends with
-`io_stalls N (T ms) io_deferred D io_joins J io_mismatches M io_other_thread O`.
+`pipeline:` line ends with:
+
+```
+io_stalls N (T ms) [render R (Tr ms), sim_join J (Tj ms)] io_deferred D io_refused F io_joins J io_sim_first S io_mismatches M io_other_thread O
+```
 
 - `io_stalls` counts frames in which one side waited for the other because
-  of the pool: a pool call the render stopped at, or a game-thread pool
-  wait that joined.
-- `T` is the total time of those waits in the print window: the render
-  stopped until the game thread made the call, the game thread waiting for
-  the rest of the render after it, and the joins.
+  of the pool, split by kind.
+  - `render`: the render stopped at a pool call until the game thread made
+    it, plus the game thread waiting for the rest of the render.
+  - `sim_join`: a game-thread pool wait joined a render that had used the
+    pool.
+- The times are totals over the print window.
 
 Rig tests:
 
-- `the_renders_pool_requests_overlap_the_sim_and_complete_in_the_serial_order`
+- `the_renders_pool_requests_overlap_the_sim_and_complete_in_the_serial_order`:
+  render first, joins.
+- `a_sim_using_the_pool_every_tick_with_no_render_io_never_stalls`
+- `a_render_pool_call_after_the_sims_is_made_at_the_join`: sim first, the
+  render held.
 - `a_render_queueing_io_every_frame_never_stalls`
 - `with_deferral_off_each_pool_call_stops_the_render_and_counts_a_stall`
 - `a_request_off_the_free_list_makes_the_frame_serial`
+
+### Two writers: the tick joins first
+
+With the pool owner rule, 03a pipelined without stalls (`io_sim_first`
+every frame, `io_joins 0`), but 4 of 8 captured frames differed from the
+serial run, and conflicts went from 0 to about 16,000 per 30-40 frames.
+The differences were particle fire, the first-person arms' pose and the
+cutscene characters' faces. Frames 4000 and 7000 matched, so gameplay
+state did not diverge for good.
+
+The owner rule is sound for the pool. What it removed was a join: before
+it, the game thread's first pool wait each frame joined the render
+before the tick read anything the render writes (`join_wait` about the
+whole render), so each frame ran in effect serially. That is why `conflicts` was 0 and the frames matched.
+With the join gone, tick `k + 1` runs beside render `k` for the first time
+and reads state the render writes in place: the census v2 sites (particle
+systems the draw pass steps, `0x00174420`; the animation cache's use
+stamps, `0x001237e0`; the render's object and effect state). Serially the
+tick reads the render's words. Pipelined they reach live RAM only at the
+join, so the tick reads the snapshot's, and the hand-back keeps the tick's
+word. No hand-back rule can fix that: the render's step is already lost
+in the tick's read, whichever word wins. Real overlap of the tick and the
+render is unsound until those subsystems are ported (census v2, "Verdict").
+
+So `Addrs::sim_joins` names the sim code that reads what the render
+writes. A game-thread call of one while a render is in flight joins first
+(`sim_joins` on the `pipeline:` line). For Halo 2 it is `game_tick`
+(`0x00137fe0`), so frames match the serial run again. A port that makes a
+subsystem's state single-writer lets the entry move later in the tick.
+The rig test is
+`a_tick_reading_the_renders_writes_joins_first_and_runs_as_serially`. Its
+second run, without the entry, loses the render's step and counts the
+conflicts.
+
+`lead` on the line is the game thread's time from each launch to its
+join: the work the render overlapped.
+
+**What bounds the overlap.** Stock 03a costs about 6 ms of sim and about
+21 ms of render front-end plus D3D a frame ("What it would buy"). The p4
+run's render took 22-25 ms on the render thread and `join_wait` 17-19 ms,
+so the game thread had about 5 ms of its own work to overlap. The render
+side is the critical path, and pipelining saves at most the sim's share,
+less the snapshot (0.5 ms), the hand-back (1-1.6 ms) and the render's COW
+faults (about 190 pages a frame), which come to roughly as much as the
+overlap. At most that is about 20%, and only once the tick may run beside
+the render. With the tick joining first, the overlap is the frame's work
+outside the tick. The next real win has to come from a cheaper render
+(docs/perf/frame-budget.md), not from more pipelining.
+
+### Where it stands (2026-11-18)
+
+Measured live with the tick joining first (03a, headless GPU backend,
+`H2_OPT=2` with PGO, gameplay around present 38,000; totals over 38,107
+pipelined frames from `render.stats`):
+
+- `sim_joins` equals the frames, conflicts 0 in every steady-state
+  report: frames are serial-equivalent again.
+- Per frame: `lead` 1.3 ms, `join_wait` 21-28 ms against a render of
+  23-28 ms, hand-back 1.3 ms, snapshot about 0.5 ms, about 188 COW pages.
+- 33-34 fps (cpu 23-29 ms a frame), no better than stock.
+
+So the measured overlap is about 1.3 ms a frame, and the hand-back alone
+costs as much. Pipelining stays **off by default** (`H2_PIPELINE_RENDER`
+unset). It is a research switch, not a speed-up.
+
+What would move the join later, so the tick runs beside the render:
+
+1. **Particle systems on the render side.** The sim's particle updates
+   (`0x00174a30`, the particle work of `0x00179020` under the effect
+   update `0x00176e40`) run on the render thread at the launch against
+   the sim's committed state. Effect creation and deletion reach them
+   through a queue, and the four particle datums become render-owned.
+   Particle motion shifts by one frame; nothing in gameplay reads it.
+2. **Animation cache bookkeeping queued.** `animation_resource_get`
+   (`0x001237e0`) on the render thread logs its use-stamp updates and
+   loads, and the game thread applies them at the join, so the tick's
+   `animation_resource_request` (`0x001236f0`) is the cache's only
+   writer while a render is in flight. This is the same shape as the I/O
+   deferral.
+3. Then re-check the conflict report for the remaining render-written
+   object and effect state, and move the `sim_joins` entry from
+   `game_tick` to the first tick update that still reads any of it (or
+   drop it).
+
+Estimated win if all of that lands and the whole tick overlaps: the
+sim's share, about 6 ms of a 28-30 ms frame. Less the hand-back,
+snapshot and COW cost (about 2-3 ms), that is about 3-4 ms a frame, or
+10-15%. Items 1 and 2 are each a port of the size of the I/O deferral or
+larger. A cheaper render front-end pays off on every frame, with or
+without pipelining, so it comes first.
 
 ## Related
 

@@ -73,6 +73,9 @@ pub struct ObjectTags {
     /// HUD pairs `boot::hud_swap` switches between (docs/game/hud.md): the
     /// owner, its Halo 1 HUD and its Halo 2 HUD.
     pub hud_swaps: Vec<[HudTag; 3]>,
+    /// Where the player's Halo 1 HUD centres the motion sensor's blips
+    /// (`h1objects::h1hud::sensor_centre`), for `boot::hud_swap`.
+    pub hud_sensor: Option<[i16; 2]>,
 }
 
 /// A tag of a HUD pair: one [`ObjectTags::install`] adds (its index among
@@ -333,6 +336,7 @@ pub fn prepare_halo1<R: Read + Seek>(
             None
         }
     };
+    let scenery = plan_scenery(h1, objects, first, &mut applied.unresolved)?;
     // Halo 1's grenade types, converted like the objects.
     let mut grenades = Vec::new();
     for g in crate::globals::h1_grenades(h1)? {
@@ -387,6 +391,7 @@ pub fn prepare_halo1<R: Read + Seek>(
     p.objects = Some(tags_out);
     p.objects_first = first;
     p.player_biped = player_biped;
+    p.scenery = Some(scenery);
     p.grenades = grenades;
     Ok(p)
 }
@@ -404,6 +409,7 @@ fn with_collections(
         after,
         mut notes,
         hud_swaps,
+        hud_sensor,
     } = objects;
     for c in &collections {
         notes.push(format!(
@@ -417,6 +423,7 @@ fn with_collections(
     ObjectTags {
         // The collections come after the objects: the pairs' indices hold.
         hud_swaps,
+        hud_sensor,
         count: count + collections.len(),
         install: Box::new(move |set| {
             let mut ids = install(set)?;
@@ -434,6 +441,137 @@ fn with_collections(
         after,
         notes,
     }
+}
+
+/// `scnr +0x50`: scenery placements (`0x5c` each, E: the object type
+/// table `0x00468630`; `scenario_edit::layout`).
+pub const SCENERY_PLACEMENTS: u32 = 0x50;
+pub const SCENERY_PLACEMENT: usize = 0x5c;
+/// `scnr +0x58`: the scenery palette (`0x28` each, the `scen` reference
+/// first).
+pub const SCENERY_PALETTE: u32 = 0x58;
+pub const SCENERY_PALETTE_ENTRY: usize = 0x28;
+/// The high word of a converted placement's unique ID (`+0x28`), as
+/// `h1campaign` writes them.
+pub const UNIQUE_ID_HIGH: u32 = 0x4831;
+/// Halo 2's scenery object type (`+0x2e` of a placement).
+const SCENERY_TYPE: u8 = 6;
+
+/// Halo 1's scenery as Halo 2 scenario blocks: the palette (each a
+/// converted `scen`'s datum once added) and the placements. Written into
+/// the scenario of a fresh build ([`crate::fresh`]), which lays the
+/// scenario out anew; the pinned build can't grow its palette.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Scenery {
+    /// The palette: one converted `scen` per Halo 1 palette entry that
+    /// converted, in Halo 1's order.
+    pub palette: Vec<TagId>,
+    /// The placements, [`SCENERY_PLACEMENT`] bytes each.
+    pub placements: Vec<Vec<u8>>,
+    /// Halo 1 placements left out (their palette entry didn't convert).
+    pub dropped: usize,
+}
+
+impl Scenery {
+    /// The palette block (`+0x58`).
+    pub fn palette_block(&self) -> Block {
+        let mut b = Block::zeroed(SCENERY_PALETTE_ENTRY * self.palette.len());
+        for (k, id) in self.palette.iter().enumerate() {
+            b.tag_ref((k * SCENERY_PALETTE_ENTRY) as u32, *id);
+        }
+        b
+    }
+
+    /// The placements block (`+0x50`).
+    pub fn placements_block(&self) -> Block {
+        Block::new(self.placements.concat())
+    }
+}
+
+/// One Halo 2 scenery placement from Halo 1's (`0x48`: `i16` palette
+/// index `+0`, `u16` flags `+4`, position `+8`, rotation `+0x14`), on
+/// palette entry `palette`: no name, Halo 1's "not placed automatically"
+/// bit, unique ID `unique`, the fields `h1campaign` writes on every
+/// placement.
+pub fn scenery_placement(h1: &[u8], palette: u16, unique: u32) -> Vec<u8> {
+    let mut b = vec![0u8; SCENERY_PLACEMENT];
+    b[0..2].copy_from_slice(&palette.to_le_bytes());
+    b[2..4].copy_from_slice(&u16::MAX.to_le_bytes());
+    let flags = u32::from(u16::from_le_bytes([h1[4], h1[5]]) & 1);
+    b[4..8].copy_from_slice(&flags.to_le_bytes());
+    b[8..0x20].copy_from_slice(&h1[8..0x20]);
+    b[0x28..0x2c].copy_from_slice(&(UNIQUE_ID_HIGH << 16 | unique).to_le_bytes());
+    b[0x2c..0x2e].copy_from_slice(&u16::MAX.to_le_bytes());
+    b[0x2e] = SCENERY_TYPE;
+    b[0x2f] = 1;
+    b[0x32..0x34].copy_from_slice(&u16::MAX.to_le_bytes());
+    b
+}
+
+/// Converts Halo 1's scenery palette through `objects` (whose tags are
+/// added from slot `first`) and plans its placements. Entries that don't
+/// convert are listed in `unresolved`.
+pub fn plan_scenery(
+    h1: &H1Map,
+    objects: &mut dyn Halo1Objects,
+    first: usize,
+    unresolved: &mut Vec<String>,
+) -> Result<Scenery> {
+    use h1map::scenario::layout;
+    let scnr = h1.tag_data(h1.scenario())?;
+    let space = h1.tag_space();
+    let palette = space.block_at(scnr, layout::SCENERY_PALETTE.0, layout::SCENERY_PALETTE.1)?;
+    let mut out = Scenery::default();
+    // Halo 1 palette index -> Halo 2's.
+    let mut index = Vec::new();
+    for e in &palette {
+        let name = h1map::TagRef::read(e, 0)
+            .and_then(|r| h1.tag(r.id).ok())
+            .map(|t| t.name.clone());
+        let Some(name) = name else {
+            index.push(None);
+            continue;
+        };
+        match objects.object(*b"scen", &name) {
+            Ok(k) => {
+                index.push(Some(out.palette.len() as u16));
+                out.palette.push(added_datum(first + k));
+            }
+            Err(w) => {
+                unresolved.push(format!("scenery {name}: {w}"));
+                index.push(None);
+            }
+        }
+    }
+    for e in space.block_at(scnr, layout::SCENERY.0, layout::SCENERY.1)? {
+        let p = i16::from_le_bytes([e[0], e[1]]);
+        match usize::try_from(p).ok().and_then(|p| index.get(p).copied().flatten()) {
+            Some(k) => {
+                let unique = out.placements.len() as u32;
+                out.placements.push(scenery_placement(e, k, unique));
+            }
+            None => out.dropped += 1,
+        }
+    }
+    Ok(out)
+}
+
+/// [`prepare`] for the Halo 2 sandbox with Halo 1's scenery: its `scen`
+/// tags converted through `objects` and added after the vehicle
+/// collections the placements build.
+pub fn prepare_halo2<R: Read + Seek>(
+    h1: &H1Map,
+    source_sha256: content::Sha256,
+    base: &mut Map<R>,
+    objects: &mut dyn Halo1Objects,
+) -> Result<Prepared> {
+    let mut p = prepare(h1, source_sha256, base, Sandbox::Halo2)?;
+    let first = base.index_slots() as usize + p.applied.collections.len();
+    let scenery = plan_scenery(h1, objects, first, &mut p.applied.unresolved)?;
+    p.objects = Some(objects.take());
+    p.objects_first = first;
+    p.scenery = Some(scenery);
+    Ok(p)
 }
 
 /// The Halo 1 map's multiplayer player biped: the `bipd` named
@@ -519,6 +657,34 @@ mod tests {
             })
             .collect();
         assert_eq!(refs, [(4, added_datum(103)), (0x14, added_datum(107))]);
+    }
+
+    #[test]
+    fn a_scenery_placement_keeps_halo1_s_place_on_its_new_palette_entry() {
+        let mut h1 = vec![0u8; 0x48];
+        h1[0..2].copy_from_slice(&7i16.to_le_bytes());
+        h1[4..6].copy_from_slice(&0x0003u16.to_le_bytes());
+        for (k, v) in [1.0f32, -2.0, 3.5, 0.25, 0.0, -0.5].iter().enumerate() {
+            h1[8 + 4 * k..12 + 4 * k].copy_from_slice(&v.to_le_bytes());
+        }
+        let b = scenery_placement(&h1, 2, 9);
+        assert_eq!(b.len(), SCENERY_PLACEMENT);
+        let u16_at = |at: usize| u16::from_le_bytes([b[at], b[at + 1]]);
+        let u32_at = |at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+        assert_eq!(u16_at(0), 2, "the Halo 2 palette entry");
+        assert_eq!(u16_at(2), 0xffff, "no name");
+        assert_eq!(u32_at(4), 1, "only Halo 1's not-placed-automatically bit");
+        assert_eq!(b[8..0x20], h1[8..0x20], "position and rotation");
+        assert_eq!(u32_at(0x28), UNIQUE_ID_HIGH << 16 | 9);
+        assert_eq!((b[0x2e], b[0x2f]), (SCENERY_TYPE, 1));
+        let sc = Scenery {
+            palette: vec![added_datum(5), added_datum(6)],
+            placements: vec![b.clone(), b],
+            dropped: 0,
+        };
+        assert_eq!(sc.palette_block().bytes.len(), 2 * SCENERY_PALETTE_ENTRY);
+        assert_eq!(sc.palette_block().fixups.len(), 2);
+        assert_eq!(sc.placements_block().bytes.len(), 2 * SCENERY_PLACEMENT);
     }
 
     #[test]

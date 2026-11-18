@@ -561,8 +561,8 @@ fn arena_never_adopts_existing_memory_inside_the_range() {
 
 use audio::Mixer;
 use bink_hle::{
-    AUDIO_STALL_MS, AudioInfo, DiscMovie, MixerAudio, MovieAudioOut, MovieDecoder, MovieVoice,
-    Selection, TranscodedSource, select, synthetic_audio_frames, synthetic_sample,
+    AudioInfo, DiscMovie, MixerAudio, MovieAudioOut, MovieDecoder, MovieVoice, Selection,
+    TranscodedSource, select, synthetic_audio_frames, synthetic_sample,
 };
 use std::sync::Mutex;
 
@@ -974,7 +974,7 @@ fn a_skip_mid_movie_closes_cleanly() {
 }
 
 #[test]
-fn sound_plays_at_the_movie_rate_through_the_mixer_and_paces_the_video() {
+fn sound_plays_at_the_movie_rate_through_the_mixer() {
     let (sound, out) = Sound::new();
     let movie = synthetic(4, 2, 150, true); // ~5 s
     let (mut w, _, _, _) = world(|c| {
@@ -991,13 +991,14 @@ fn sound_plays_at_the_movie_rate_through_the_mixer_and_paces_the_video() {
         "{primed} frames queued"
     );
     // One second of output in the audio thread's 5 ms periods, with the
-    // game polling BinkWait every 10 ms. The wall clock stands still: only
-    // the sound moves the movie.
+    // game's decode (which feeds the sound) every 10 ms and the wall clock
+    // moving with it.
     let mut out = Vec::new();
     for i in 0..200 {
         out.extend(sound.render(5));
         if i % 2 == 1 {
-            w.call(BINK_WAIT, &[h]);
+            w.clock.0.fetch_add(10, Ordering::SeqCst);
+            w.call(BINK_DO_FRAME, &[h]);
         }
     }
     let played = sound.played.load(Ordering::SeqCst);
@@ -1006,11 +1007,13 @@ fn sound_plays_at_the_movie_rate_through_the_mixer_and_paces_the_video() {
         (RATE as u64 - 441..=RATE as u64).contains(&played),
         "{played} frames played in 1 s"
     );
-    // It is the movie's track, not silence (resampled to 48 kHz).
+    // It is the movie's track, not silence (resampled to 48 kHz), and it
+    // never ran dry.
     let peak = out.iter().fold(0f32, |m, s| m.max(s.abs()));
     assert!(peak > 0.1, "peak {peak}");
+    assert_eq!(sound.mixer.lock().unwrap().stream_health().starves, 0);
     assert_ne!(synthetic_sample(0, 1), synthetic_sample(0, 0));
-    // The movie clock is ~1000 ms: frame 30 (967 ms) is due, frame 32
+    // The video is at the same second: frame 30 (967 ms) is due, frame 32
     // (1034 ms) is not.
     let at = |w: &mut World, n: u32| {
         w.ctx.memory().set_u32(h + 0x0c, n).unwrap();
@@ -1018,20 +1021,10 @@ fn sound_plays_at_the_movie_rate_through_the_mixer_and_paces_the_video() {
     };
     assert_eq!(at(&mut w, 30), 0);
     assert_eq!(at(&mut w, 32), 1);
-    // NextFrame from frame 2 jumps to the frame the sound has reached:
-    // video drops frames to stay with the sound.
+    // NextFrame from frame 2 jumps to the frame now due (dropping frames).
     w.ctx.memory().set_u32(h + 0x0c, 2).unwrap();
     w.call(BINK_NEXT_FRAME, &[h]);
-    let f = w.u32(h + 0x0c);
-    assert!((30..=31).contains(&f), "jumped to {f}");
-
-    // If the output stops consuming, the wall clock carries on from the
-    // sound's position once AUDIO_STALL_MS has passed.
-    w.clock.0.fetch_add(AUDIO_STALL_MS, Ordering::SeqCst);
-    assert_eq!(at(&mut w, 40), 1, "still on the sound clock");
-    w.clock.0.fetch_add(400, Ordering::SeqCst);
-    assert_eq!(at(&mut w, 40), 0, "wall clock took over: ~1.65 s");
-    assert_eq!(at(&mut w, 52), 1);
+    assert_eq!(w.u32(h + 0x0c), 30);
 
     // The whole track is the video's length.
     let a = AudioInfo {
@@ -1039,4 +1032,106 @@ fn sound_plays_at_the_movie_rate_through_the_mixer_and_paces_the_video() {
         channels: 2,
     };
     assert_eq!(synthetic_audio_frames(&movie.info, &a), 220_721);
+}
+
+/// The wrapper's service spins on BinkWait until it returns 0
+/// (`0x155fc2..0x155fd0`). That spin must end on the wall clock even when
+/// the sound does not move: the mixer runs on logical time, which a spin
+/// charges only a few ns per call. (Slaving BinkWait to the sound made each
+/// frame cost millions of calls: the 0.3 fps of the first playback build.)
+#[test]
+fn a_spin_on_bink_wait_ends_on_the_wall_clock_with_the_sound_frozen() {
+    let (sound, out) = Sound::new();
+    let (mut w, _, _, _) = world(|c| {
+        let hle = BinkHle::with_clock(Some(Arc::new(Any(synthetic(4, 2, 300, true)))), c);
+        hle.set_audio_out(out);
+        hle
+    });
+    let dst = SCRATCH + 0x4000;
+    let mut wrap = Wrapper::start(&mut w, "d:\\bink\\intro_60.bik", dst, 16, 2).unwrap();
+    for frame in 0..5 {
+        // 1 ms of wall time per call, and the mixer never renders.
+        let mut calls = 0;
+        while w.call(BINK_WAIT, &[wrap.h]).0 != 0 {
+            w.clock.0.fetch_add(1, Ordering::SeqCst);
+            calls += 1;
+            assert!(calls < 40, "frame {frame}: still waiting after {calls} ms");
+        }
+        wrap.blit(&mut w);
+    }
+    assert_eq!(wrap.shown, [0, 1, 2, 3, 4, 5]);
+    assert_eq!(sound.played.load(Ordering::SeqCst), 0);
+}
+
+/// What one BinkWait costs through the runner (release numbers in the
+/// docs). The service spin calls it back to back.
+#[test]
+fn bink_wait_call_cost() {
+    let (mut w, _, _, _) =
+        world(|c| BinkHle::with_clock(Some(Arc::new(Any(synthetic(4, 2, 300, false)))), c));
+    w.put_str(SCRATCH, "intro_60.bik");
+    let (h, _) = w.call(BINK_OPEN, &[SCRATCH, 0]);
+    w.call(BINK_DO_FRAME, &[h]);
+    w.call(BINK_NEXT_FRAME, &[h]);
+    let n = 100_000u32;
+    let t = std::time::Instant::now();
+    for _ in 0..n {
+        assert_eq!(w.call(BINK_WAIT, &[h]).0, 1);
+    }
+    eprintln!("BinkWait: {:?}/call", t.elapsed() / n);
+}
+
+/// Per-frame host cost of the decode and blit (DoFrame, NextFrame,
+/// CopyToBuffer into a contiguous-window texture with the write watch on),
+/// at the movies' size and at 720p. Prints the numbers; the bound is loose
+/// enough for a debug build and still catches a per-byte path.
+#[test]
+fn decode_and_blit_cost_per_frame() {
+    for (w_, h_) in [(640u32, 480u32), (1280, 720)] {
+        const PHYS: u32 = 0x0300_0000;
+        const TEX: u32 = 0x8000_0000 | PHYS;
+        let pitch = w_ * 4;
+        let frames = 30;
+        let (mut w, _, _, _) = world(|c| {
+            BinkHle::with_clock(Some(Arc::new(Any(synthetic(w_, h_, frames, false)))), c)
+        });
+        let len = (pitch * h_).next_multiple_of(0x1000);
+        let id = {
+            let mut m = w.ctx.memory();
+            m.map(TEX, len, PHYS, Permissions::RW).unwrap();
+            let id = m.subscribe_writes("test d3d");
+            m.watch_writes(id, TEX, len).unwrap();
+            id
+        };
+        w.put_str(SCRATCH, "intro_60.bik");
+        let (h, _) = w.call(BINK_OPEN, &[SCRATCH, 0]);
+        let (mut decode, mut copy) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
+        for _ in 0..frames - 1 {
+            let t = std::time::Instant::now();
+            w.call(BINK_DO_FRAME, &[h]);
+            w.call(BINK_NEXT_FRAME, &[h]);
+            decode += t.elapsed();
+            let t = std::time::Instant::now();
+            let r = w.call(BINK_COPY_TO_BUFFER, &[h, TEX, pitch, h_, 0, 0, 0x8000_0003]);
+            copy += t.elapsed();
+            assert_eq!(r.0, 0);
+            assert_eq!(
+                w.ctx
+                    .memory()
+                    .take_dirty(id)
+                    .unwrap()
+                    .iter()
+                    .map(|r| r.len)
+                    .sum::<u32>(),
+                len
+            );
+        }
+        let n = frames - 1;
+        let (d, c) = (decode / n, copy / n);
+        eprintln!("{w_}x{h_}: synthetic decode+next {d:?}/frame, copy {c:?}/frame");
+        assert!(
+            c < std::time::Duration::from_millis(20),
+            "{w_}x{h_} copy {c:?}"
+        );
+    }
 }

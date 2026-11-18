@@ -686,8 +686,9 @@ The immediate follow-up tasks have these local behaviors:
 | XOnlinePresenceInit | Returns a task; with a server it waits for the controller's presence request. |
 | XOnlinePresenceAdd | Stores a bounded watch group of packed 12-byte XUIDs. |
 | XOnlinePresenceSubmit | Queues the controller's current presence; its pump waits for the server acknowledgement. |
-| XOnlineMutelistStartup | Returns an empty task that completes successfully. |
-| XOnlineMutelistGet | Writes count zero and returns a completing task; no mute entries are written. |
+| XOnlineMutelistStartup | Loads every signed-in player's mute list from the server; the task completes when they are in. See "Client HLE: mute list". |
+| XOnlineMutelistGet | Writes the controller's mute list and count, at once when it is loaded, else when it loads. |
+| XOnlineMutelistAdd, XOnlineMutelistRemove | Change the list at once and send the change to the server behind it. |
 
 Work-event handles other than NULL and unobserved QoS lookup flags stop with a
 named unverified-contract diagnostic. Guest pointer faults use the runtime's
@@ -958,12 +959,13 @@ through synthetic guest stacks; browsing every screen has not been run here.
 | `0x0006b59d`, `0x0008d1da`, title checks `0x0008c28e` / `0x0008d27a` | FriendsGetTitleName writes UTF-16 “Halo 2” for this title and an empty terminated name for uncached titles. SameTitle/SamePublisher return BOOL comparisons. |
 | `0x0006b565` | GetNatType returns the retail initial/unknown value 0. No NAT probing or claim of open NAT is made. |
 | `0x000abc70` through `0x000ac2f2` | Team and member enumerations return snapshots from the local store described below. Unknown teams fail with TEAM_NOT_FOUND (`0x8015210b`); a missing item in a successful snapshot returns E_FAIL, as retail does. |
-| `0x0008d3d0`, `0x000b388a` | FeedbackSend returns a failed task, SERVICE_TEMPORARILY_UNAVAILABLE (`0x80151102`). QuerySearch/GetResults returns QUERY_DATASET_NOT_FOUND (`0x80156109`). These optional views have no backend data yet. No feedback is claimed to be submitted. |
+| `0x0008d3d0` | FeedbackSend sends a player report to the server and completes its task when the server has it; see "Client HLE: player feedback" below. |
+| `0x000b388a` | QuerySearch/GetResults returns QUERY_DATASET_NOT_FOUND (`0x80156109`). This optional view has no backend data yet. |
 | `0x00092220` through `0x00092450`, manager `0x00074aa0` | StatWrite/GetResult accepts an owned local capture and completes successfully without attachments. StatRead/GetResult completes with missing (`NONE`) stats and zero values in the caller's arrays. See the local stats section below. |
 | `0x0022387b` | SaveLogonState writes the public 516-byte launch-state layout with users and service IDs; it contains no signing key. |
 | `0x0008e750`, manager `0x002c7410` | Message polling exposes pending game invitations. Title files use storage and never enter the player inbox. |
 
-These 10 entries still stop by API name because their backend behavior is not
+These 7 entries still stop by API name because their backend behavior is not
 implemented. Their menu/game fallbacks are a separate follow-up slice; the
 storage entries below no longer stop. Prefixes in the table are part of each
 listed API name.
@@ -973,14 +975,90 @@ listed API name.
 | `XOnline` | `TitleUpdate` |
 | `XOnlineFriends` | `Remove`, `AnswerRequest` |
 | `XOnlineMutelist` | `Add`, `Remove` |
-| `XOnlineArbitration` | `CreateRoundID`, `Register`, `ExtendRound`, `Report` |
+| `XOnlineArbitration` | `ExtendRound` |
 | `XNet` | `TsAddrToInAddr` |
 
 Server-backed sessions, invitation delivery, clans and cached friend presence are
-implemented in the Client HLE sections below. Feedback storage, friend mutations
-outside the existing capture path, ranked arbitration and NAT traversal remain
-unfinished. Synthetic tests prove invitation discovery through bidirectional
+implemented in the Client HLE sections below. Friend mutations
+outside the existing capture path, checking ranked arbitration against the
+games log ([live-matchmaking.md](live-matchmaking.md) §8.3) and NAT traversal
+remain unfinished. Synthetic tests prove invitation discovery through bidirectional
 host UDP traffic; actual menu transitions and a full retail match are unconfirmed.
+
+## Client HLE: player feedback
+
+`XOnlineFeedbackSend` (`0x003a0890`, `crates/live-hle/src/feedback.rs`)
+takes eight stack words: the controller, the target's XUID by value (three
+words), the XDK feedback type, an `XONLINE_FEEDBACK_PARAMS` pointer (its
+one field is a wide-string pointer; the library sends it as UTF-8 of at
+most 255 bytes), the work event and the task output.
+
+The title calls it from one wrapper, `0x0008d3d0`, reached from the
+player-details screens at `0x002b89be` and `0x002b8a65`. The wrapper maps
+the screen's reason index 0..9 through a table on its stack to the
+feedback types 5, 6, 0, 1, 2, 3, 4, 12, 11, 10, and passes a params block
+whose string is null, no event, and the task slot in its task list.
+Indexes 0 and 1 (types 5 and 6, the public XDK's `POS_ATTITUDE` and
+`POS_SESSION`) are sent at once; the rest, complaints, after a
+confirmation dialog. Types 0..4 are the XDK's `NEG_NICKNAME`,
+`NEG_GAMEPLAY`, `NEG_SCREAMING`, `NEG_HARASSMENT` and `NEG_LEWDNESS`. The
+names of 10, 11 and 12 are not confirmed from code, so the server keeps
+them by number (`type_10` and so on).
+
+The HLE posts each one as a player report ([live-api.md](live-api.md)
+"Player reports") with the game id the console is in, and the task
+completes with TASK_SUCCESS when the server answers, or with the mapped
+error: INVALID_USER for an unknown player, SERVERS_BUSY when rate limited,
+CANNOT_ACCESS_SERVICE otherwise. Like the retail library (`0x003b8cbb`), it
+remembers the last 20 players each controller gave feedback on, with a bit
+per type below 8, and completes a repeat at once without sending it.
+Unlike retail, a send that failed is forgotten, so a retry is sent. Types
+the title never sends (7, 8, 9, over 12) are refused with
+INVALID_ARGUMENT; with no server the call returns NO_SESSION and makes no
+task.
+
+## Client HLE: mute list
+
+The three mute-list calls (`crates/live-hle/src/mutes.rs`) keep each
+signed-in player's list in the HLE and back it with the server's
+([live-api.md](live-api.md) "Mute list"), so a mute follows the player to
+other machines and the website.
+
+- `XOnlineMutelistStartup(event, &task)` (`0x003a0841`, from `0x6c1a0`)
+  starts loading every signed-in player's list (`GET
+  /v1/accounts/by-xuid/{xuid}/mutes`). Its task completes with TASK_SUCCESS
+  when all are in, or with the mapped error of one that failed.
+- `XOnlineMutelistGet(controller, max, event, &task, buffer, &count)`
+  (`0x003a0832`, called with 250 from `0x58b70`) writes up to `max` entries
+  of 16 bytes (the XUID, its 4-byte flags, 4 bytes of zero) and the count.
+  A loaded list is written during the call and the task completes on its
+  first pump; a list still loading is written when it arrives.
+- `XOnlineMutelistAdd` and `Remove(controller, xuid lo, xuid hi, flags)`
+  (`0x003a084c`, `0x003a086e`) change the cached list during the call and
+  return S_OK, then send the change (`PUT` or `DELETE
+  /v1/accounts/by-xuid/{xuid}/mutes/{target}`, `mutes.write`). The game
+  waits on no task. A change the server did not take is sent again before
+  the player's next load, and a list loaded while changes were in flight
+  has them applied on top. Adding the 251st player, or the player
+  themselves, returns INVALID_ARGUMENT.
+
+The game's matrix builder (`0x541a0`) compares the 12 bytes byte for byte,
+so Get returns the flags Add was given for that XUID. A list loaded from the
+server has flags 0 for players this machine never muted, which is what
+every h2 live account's XUID carries. Signed in without a server, the lists
+start empty and stay on the machine until sign-out.
+
+## Client HLE: bans
+
+A banned account's writes are refused with `banned` ([live-admin.md](live-admin.md)
+§9). The HLE's HTTP worker reads that error body and maps it to
+`0x80151200`, account requires management, wherever it would map a
+status: a logon whose `SignedIn` is refused fails with it, both as the
+task's result and in every user's per-user HRESULT, which the game turns
+into result 2 and its account dialog `0x27`. A ban during a session shows
+on the next heartbeat (or presence update): the persistent logon task's
+status becomes `0x80151200` instead of CONNECTION_LOST, so
+`XOnlineTaskContinue` and `XOnlineLogonTaskGetResults` return it.
 
 ## Client HLE: title storage and profile fallback
 
@@ -1319,10 +1397,16 @@ Cancel fails the logon with `INVALID_USER` (the user's HRESULT too).
 d-pad types the code (up and down change the digit, left and right move;
 direction events, kinds 1 to 4, from the d-pad or the left stick, as
 `skulls-arrows` read the controller update), A on the row or Start checks
-it (X too: both are the class's action buttons), B or Back backs out and
+it (not X: the class's action buttons are Start alone, so a stray X can't
+send a half-typed code), B or Back backs out and
 closes (Back used to close the screen without cancelling, which left the
 logon pending). An error shows until the code is edited and comes back
-with the next answer. The page's behaviour is proven offline as a table
+with the next answer. The prompt becomes a modal dialog over the screen beneath, in the large
+dialog's panel with six code cells and a glyph legend
+(`signin_screen::dialog_for`, docs/game/ui-builder.md "The modal
+dialog"). That is in the preview, the sheet and the editor; in game it is
+still the list until the dialog's tag recipe is built. The page's
+behaviour is proven offline as a table
 (`signin_screen::SigninPage`, following `live_hle::signin`'s own
 `typed`, `refused` and `settled`; docs/game/ui-builder.md "Behaviour").
 The text is served from guest buffers under our
@@ -1443,7 +1527,7 @@ Not established without a run:
 
 1. Xbox Live on the main menu lists "New Account". Pick it. Stderr:
    `live: New Account: asking in game for a gamertag on <url>` and
-   `signin prompt: opening for controller 0`.
+   `signin prompt: opening for controller 0 (window kind 5)`.
 2. The prompt reads "New Xbox Live account". Press A: `signin prompt:
    opening the keyboard for the Gamertag (context 8, controller 0)`; the
    game's keyboard opens, titled "Your gamertag", and the system keyboard
@@ -1465,7 +1549,7 @@ made on that server's web dashboard and none on this machine):
    prompt.
 2. Xbox Live on the main menu lists the gamertag; pick it. Stderr:
    `live: <tag> needs a code to sign in on <url>; asking in game`, then
-   `signin prompt: opening for controller 0`.
+   `signin prompt: opening for controller 0 (window kind 5)`.
 3. The prompt is drawn over the signing-in step, titled "Xbox Live
    sign-in", the row reading "Sign in as <tag>", the description the code
    page. If the description is off-screen, move it with

@@ -1,0 +1,41 @@
+# lens: lens flare. Layout and evidence: docs/formats/effects.md ("lens"):
+# V the disc (every retail lens round-trips), E the flare submission
+# 0x0002dba0, called for sky lights (0x0003f1e9), lights (0x000c34ac reads
+# ligh +0x94), object attachments (0x00041b23) and effect parts
+# (0x00179d23). Halo 1's lens holds the same first 0x30 bytes in the same
+# order (docs/formats/tag-definitions.md, "Lens flares").
+group lens 0x64 align 4
+  0x0 f32 falloff_angle -- V radians; +0x8 holds its cosine on every retail lens; name D
+  0x4 f32 cutoff_angle -- V radians; +0xc holds its cosine; name D
+  0x8 f32 falloff_cosine -- V cos(+0x0)
+  0xc f32 cutoff_cosine -- V cos(+0x4)
+  0x10 f32 occlusion_radius -- V world units, as Halo 1's +0x10; name D
+  0x14 u16 kind_14 -- V 0, 1 or 2, as Halo 1's +0x14
+  0x16 u16 flag_16 -- E 0x0002dcf6: nonzero submits a second flare record (kind 4)
+  0x18 f32 near_fade_distance -- E 0x0002dc19: equal to +0x1c switches the distance test off; name D
+  0x1c f32 far_fade_distance -- E 0x0002dc6f: no flare past this distance from the camera
+  0x20 tagref bitmap groups=bitm -- V class
+  0x28 u16 flags -- E 0x0002dc0d/0x0002dc11: bit 3 or bit 2 drops the flare (by the caller's kind); 0x0002e33c tests bit 6
+  0x2a u16 flags_2a -- E 0x0002dbf8: bit 0 drops a flare of no brightness
+  0x2c unknown 0x4 seen=4
+  0x30 unknown 0x4 seen=9
+  0x34 f32 scale_34 -- V 0.2 to 4 (1 on most), as Halo 1's +0xa0
+  0x38 f32 scale_38 -- V 0.2 to 8 (1 on most), as Halo 1's +0xa4
+  0x3c unknown 0x4 seen=2
+  0x40 block reflections 0x30 align 4 -- V stride (sizes tile as 0x64 + n*0x30 + function data)
+    0x0 u16 flags -- V 2, 4, 0xc ..., the values of Halo 1's reflection +0
+    0x2 unknown 0x2 seen=2
+    0x4 u32 bitmap_index -- V 1 to 6, as Halo 1's reflection +4; name D
+    0x8 f32 position -- V the same values as Halo 1's reflection +0x1c (0.15 to 0.61); name D
+    0xc f32 rotation_offset -- V 20, a value of Halo 1's reflection +0x20; name D
+    0x10 f32[2] radius_bounds -- V the values of Halo 1's reflection +0x28 pair; name D
+    0x18 f32[2] brightness_bounds -- V 0.05 to 1, as Halo 1's reflection +0x34 pair; name D
+    0x20 unknown 0x4 seen=9
+    0x24 f32[3] tint_colour -- V red, green, blue in 0..1, as Halo 1's reflection +0x44 (after its alpha of 1); name D
+  0x48 unknown 0x4 seen=2
+  0x4c block functions_4c 0x8 align 4 -- V each element a data reference to function bytes
+    0x0 data function align 4
+  0x54 block functions_54 0x8 align 4 -- V as above
+    0x0 data function align 4
+  0x5c block functions_5c 0x8 align 4 -- V empty on every retail lens
+    0x0 data function align 4

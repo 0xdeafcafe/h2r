@@ -90,7 +90,7 @@ fn weapon_huds_read() {
                     None => false,
                 };
                 eprintln!(
-                    "  {} {:?} screen {} hidden {} anchor {:?} offset {:?} scale {:?} {} seq {} drawn {drawn}",
+                    "  {} {:?} screen {} hidden {} anchor {:?} offset {:?} scale {:?} colour {:08x} {} seq {} drawn {drawn}",
                     m.tag(x.wphi).unwrap().name,
                     x.kind,
                     x.screen,
@@ -98,10 +98,72 @@ fn weapon_huds_read() {
                     x.anchor,
                     x.offset,
                     x.scale,
+                    x.colour,
                     bt.map_or("-".into(), |t| t.name),
                     x.sequence
                 );
             }
         }
     }
+}
+
+/// Every map's grenade HUDs (`grhi`, from the globals' grenade types) read
+/// as `h1hud::grenade_elements`, each a sprite or image of a `bitm`; prints
+/// them, and the colours and scales of every unit and grenade element on
+/// the disc.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO)"]
+fn grenade_huds_read() {
+    let path = std::env::var("H1_ISO").expect("set H1_ISO");
+    let mut iso = xiso::Xiso::open(BufReader::new(File::open(path).unwrap())).unwrap();
+    let entries: Vec<_> = h1map::disc::maps(&iso.entries().unwrap());
+    let mut looks = std::collections::BTreeMap::<String, usize>::new();
+    let mut grenades = 0;
+    for e in entries {
+        let name = h1map::disc::map_stem(&e).to_owned();
+        let Ok(m) = H1Map::from_reader(Cursor::new(iso.read(&e).unwrap())) else {
+            continue;
+        };
+        let huds = h1hud::grenade_huds(&m).unwrap();
+        for (k, g) in huds.iter().enumerate() {
+            let Some(g) = g else { continue };
+            let t = m.tag(*g).unwrap();
+            assert_eq!(t.group, Group::new(b"grhi"), "{name}");
+            let b = m.tag_data(t).unwrap();
+            let els = h1hud::grenade_elements(&m, b).unwrap_or_else(|e| panic!("{name} {}: {e}", t.name));
+            // Its count: a number element Halo 2 draws as a number text
+            // ending where Halo 1's last digit does (h1hud::number_end).
+            if let Some(n) = h1hud::grenade_number(b).unwrap() {
+                let w = h1hud::digit_width(&m).unwrap_or_else(|e| panic!("{name}: {e}"));
+                assert_eq!(w, 9, "{name}: ui\\hud\\counter's digit width");
+                let end = h1hud::number_end(&n, w).unwrap_or_else(|e| panic!("{name} {}: {e}", t.name));
+                *looks.entry(format!("grhi count {:?} digits {} flags {:#x} ends {end:?}", n.anchor, n.digits, n.flags)).or_default() += 1;
+            }
+            for el in &els {
+                let bt = m.tag(el.bitmap).unwrap();
+                let bm = h1map::bitmap::Bitmap::read(&m, bt).unwrap();
+                assert!(h1hud::sprite(&bm, el.sequence).is_some(), "{name} {} {}", t.name, el.name);
+                if name == "bloodgulch" || name == "a10" {
+                    eprintln!(
+                        "{name} grenade {k} {} {}: {} seq {} anchor {:?} offset {:?} colour {:08x} scale {:?} (number shown {}, low {})",
+                        t.name, el.name, bt.name, el.sequence, el.anchor, el.offset, el.colour, el.scale,
+                        b[h1hud::grhi::NUMBER_SHOWN],
+                        i16::from_le_bytes([b[h1hud::grhi::LOW], b[h1hud::grhi::LOW + 1]])
+                    );
+                }
+                *looks.entry(format!("grhi {:08x} {:?}", el.colour, el.scale)).or_default() += 1;
+            }
+            grenades += 1;
+        }
+        for t in m.tags().iter().filter(|t| t.group == Group::new(b"unhi")) {
+            let b = m.tag_data(t).unwrap();
+            for el in h1hud::unit_elements(&m, b).unwrap() {
+                *looks.entry(format!("unhi {} {:08x} {:?}", el.name, el.colour, el.scale)).or_default() += 1;
+            }
+        }
+    }
+    for (k, n) in &looks {
+        eprintln!("{n:5} {k}");
+    }
+    assert!(grenades > 0);
 }

@@ -63,7 +63,7 @@ fn the_host_paces_feeds_and_stops_the_run() {
         d3d: true,
         bink: true,
         dsound: true,
-        movies: None,
+        movies: boot::movies_glue::Movies::Off,
     };
     let (input, keyboard) =
         input::InputManager::with_keyboard_pad(input::bindings::Bindings::default()).unwrap();
@@ -87,6 +87,8 @@ fn the_host_paces_feeds_and_stops_the_run() {
             }
         })),
         pad_speaker: None,
+        debug_menu: None,
+        perf_overlay: None,
         settings: None,
         input: Some(input),
         keyboard: Some(keyboard),
