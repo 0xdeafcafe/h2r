@@ -1191,8 +1191,8 @@ fn built_physics_model_round_trips_with_every_piece() {
     let ns = block("nodes");
     assert_eq!(ns.len(), 3);
     assert_eq!(
-        ns[1].get("unknown_8"),
-        Some(&Val::Bytes(vec![2, 0, 0xff, 0xff]))
+        ["flags", "parent", "next_sibling", "first_child"].map(|f| ns[1].get(f).cloned()),
+        [0, 0, 2, -1].map(|v| Some(Val::Int(v)))
     );
 }
 

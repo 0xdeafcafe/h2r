@@ -1592,18 +1592,15 @@ pub fn physics_model(bodies: &[Body], nodes: &[PhysNode], words: BodyWords) -> R
 
     if bodies.iter().any(|b| b.node >= 0) {
         let node_def = child("nodes")?;
-        let w = |a: i16, b: i16| {
-            let mut v = a.to_le_bytes().to_vec();
-            v.extend(b.to_le_bytes());
-            Val::Bytes(v)
-        };
         let ns = nodes
             .iter()
             .map(|n| {
                 let mut e = defs::default_record(node_def);
                 set(&mut e, "name", Val::text(&n.name))?;
-                set(&mut e, "unknown_4", w(0, n.parent))?;
-                set(&mut e, "unknown_8", w(n.next_sibling, n.first_child))?;
+                set(&mut e, "flags", Val::Int(0))?;
+                set(&mut e, "parent", Val::Int(n.parent.into()))?;
+                set(&mut e, "next_sibling", Val::Int(n.next_sibling.into()))?;
+                set(&mut e, "first_child", Val::Int(n.first_child.into()))?;
                 Ok(e)
             })
             .collect::<Result<Vec<_>>>()?;
