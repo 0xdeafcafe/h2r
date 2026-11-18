@@ -1,0 +1,136 @@
+//! `Device::request_external_pass` (docs/graphics/native-renderer.md): a
+//! host pass drawn into the bound colour target and depth with the
+//! current viewport, recorded after the next drain, on the device's
+//! thread, through the render thread, through the interpolating backend
+//! (which passes it on and holds the frame) and under the render scale
+//! (both copies). Dropped without a backend that can. Synthetic device;
+//! skipped without an adapter or without `DEPTH32FLOAT_STENCIL8`.
+
+mod common;
+
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use common::*;
+use d3d::{
+    Backend, Device, ExternalPass, ExternalTarget, GfxBackend, InterpBackend, RecordingBackend,
+    SparseMemory, SwapFinish, ThreadedBackend, UploadPolicy,
+};
+use gfx::GfxContext;
+
+#[derive(Clone, Debug, PartialEq)]
+struct Seen {
+    viewport: [f32; 4],
+    z_scale: f32,
+    color: wgpu::TextureFormat,
+    depth_is_depth: bool,
+}
+
+type Got = Arc<Mutex<Vec<Seen>>>;
+
+/// Records what it was given and clears the colour target red.
+struct Probe(Got);
+
+impl ExternalPass for Probe {
+    fn encode(&mut self, t: ExternalTarget<'_>) {
+        self.0.lock().unwrap().push(Seen {
+            viewport: t.viewport,
+            z_scale: t.z_scale,
+            color: t.color_format,
+            depth_is_depth: t.depth_format.is_depth_stencil_format(),
+        });
+        drop(t.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("probe"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: t.color,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::RED),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        }));
+    }
+}
+
+fn backend() -> Option<GfxBackend> {
+    let ctx = match GfxContext::headless() {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            eprintln!("skipping GPU test: {e}");
+            return None;
+        }
+    };
+    if !ctx.caps.depth32_stencil8 {
+        eprintln!("skipping GPU test: no DEPTH32FLOAT_STENCIL8");
+        return None;
+    }
+    let mut b = GfxBackend::new(ctx);
+    b.set_swap_finish(SwapFinish::Full);
+    Some(b)
+}
+
+fn wait<B: Backend>(d: &mut Device<B>, m: &mut SparseMemory, got: &Got) {
+    for _ in 0..200 {
+        if !got.lock().unwrap().is_empty() {
+            return;
+        }
+        d.swap(m, 0).unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("no pass after 200 presents");
+}
+
+fn run<B: Backend>(b: B) {
+    let (mut d, mut m) = create(b, UploadPolicy::Always);
+    set_states(&mut d, &mut m);
+    assert!(d.can_external_pass());
+    let got: Got = Arc::default();
+    d.request_external_pass(Box::new(Probe(Arc::clone(&got))));
+    assert!(got.lock().unwrap().is_empty(), "not before the drain");
+    assert_eq!(d.drain_until_callback(&mut m).unwrap(), None);
+    assert_eq!(d.stats().external_passes, 1);
+    wait(&mut d, &mut m, &got);
+    let seen = got.lock().unwrap()[0].clone();
+    assert_eq!(seen.viewport, [0.0, 0.0, 64.0, 64.0]);
+    assert_eq!(seen.z_scale, 16_777_215.0, "D24S8 full scale");
+    assert!(seen.depth_is_depth);
+    assert!(!seen.color.is_depth_stencil_format());
+    let events = d.take_events();
+    assert!(events.is_empty(), "{events:?}");
+}
+
+#[test]
+fn the_pass_draws_into_the_bound_targets_after_the_drain() {
+    let Some(b) = backend() else { return };
+    run(b);
+}
+
+#[test]
+fn the_pass_comes_through_the_render_thread() {
+    let Some(b) = backend() else { return };
+    run(ThreadedBackend::new(b).unwrap());
+}
+
+#[test]
+fn the_interpolating_backend_passes_it_on() {
+    let Some(b) = backend() else { return };
+    run(ThreadedBackend::new(InterpBackend::new(b, || 0)).unwrap());
+}
+
+#[test]
+fn a_backend_that_cannot_drops_it() {
+    let (mut d, mut m) = create(RecordingBackend::default(), UploadPolicy::Always);
+    set_states(&mut d, &mut m);
+    assert!(!d.can_external_pass());
+    let got: Got = Arc::default();
+    d.request_external_pass(Box::new(Probe(Arc::clone(&got))));
+    d.drain_until_callback(&mut m).unwrap();
+    assert_eq!((d.stats().external_passes, d.stats().external_passes_dropped), (0, 1));
+    assert!(got.lock().unwrap().is_empty());
+}

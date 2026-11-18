@@ -257,6 +257,54 @@ pub struct DepthGridResult {
 /// (the render thread under [`crate::ThreadedBackend`]); it must not block.
 pub type DepthGridSink = std::sync::Arc<dyn Fn(DepthGridResult) + Send + Sync>;
 
+/// A host render pass drawn into the guest's own colour target and depth,
+/// in order with the draws (docs/graphics/native-renderer.md): the native
+/// world. The device decides where (the bound targets and viewport); the
+/// backend gives the pass its encoder and the targets' views.
+pub trait ExternalPass: Send {
+    /// Records the pass, on the thread that owns the GPU. Called once per
+    /// copy of the targets: twice under the render scale (the 1x
+    /// reference and the scaled view), with the same frame each time.
+    fn encode(&mut self, target: ExternalTarget<'_>);
+}
+
+/// What an [`ExternalPass`] draws into.
+pub struct ExternalTarget<'a> {
+    pub device: &'a wgpu::Device,
+    pub queue: &'a wgpu::Queue,
+    pub encoder: &'a mut wgpu::CommandEncoder,
+    pub color: &'a wgpu::TextureView,
+    pub color_format: wgpu::TextureFormat,
+    pub depth: &'a wgpu::TextureView,
+    pub depth_format: wgpu::TextureFormat,
+    /// The viewport `(x, y, width, height)` in the targets' texels.
+    pub viewport: [f32; 4],
+    /// The depth format's full scale as the guest's W-buffer uses it
+    /// (device `+0x948`).
+    pub z_scale: f32,
+}
+
+/// Where and how an [`ExternalPass`] runs, in guest terms.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ExternalPassRequest {
+    /// The viewport `(x, y, width, height)` in guest pixels of targets
+    /// whose guest size is `surface_size`; a scaled backend scales it.
+    pub rect: (u32, u32, u32, u32),
+    pub surface_size: (u32, u32),
+    pub z_scale: f32,
+}
+
+/// The viewport of `request` in a `texels`-sized target: `[x, y, w, h]`.
+pub fn external_viewport(request: &ExternalPassRequest, texels: (u32, u32)) -> [f32; 4] {
+    let (gw, gh) = request.surface_size;
+    let (sx, sy) = (
+        texels.0 as f32 / gw.max(1) as f32,
+        texels.1 as f32 / gh.max(1) as f32,
+    );
+    let (x, y, w, h) = request.rect;
+    [x as f32 * sx, y as f32 * sy, w as f32 * sx, h as f32 * sy]
+}
+
 /// `D3DVIEWPORT8`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Viewport {
@@ -669,6 +717,24 @@ pub trait Backend: Send {
         sink: DepthGridSink,
     ) -> Result<bool, String> {
         let _ = (surface, request, sink);
+        Ok(false)
+    }
+    /// Whether [`external_pass`](Self::external_pass) can draw (asked
+    /// before the guest skips its own work for it). `false` by default.
+    fn supports_external_pass(&self) -> bool {
+        false
+    }
+    /// Runs `pass` into colour surface `color` and depth surface `depth`,
+    /// in order after the work recorded so far. `Ok(false)`: the backend
+    /// cannot (the default) and `pass` is dropped.
+    fn external_pass(
+        &mut self,
+        color: Self::Surface,
+        depth: Self::Surface,
+        request: ExternalPassRequest,
+        pass: Box<dyn ExternalPass>,
+    ) -> Result<bool, String> {
+        let _ = (color, depth, request, pass);
         Ok(false)
     }
     /// `GET_REPORT`: a ticket for the samples counted since the last
