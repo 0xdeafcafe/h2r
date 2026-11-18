@@ -64,6 +64,9 @@ pub struct Audio {
     /// every audio quantum ([`COMPLETION_RATE`]). Removing it brings back
     /// callbacks that wait for the game's next DirectSound call.
     pub completion_dpc: u32,
+    /// The native WMA codec, when the image's tables loaded (a machine
+    /// snapshot's `wma` section).
+    pub wma: Option<Arc<dsound::xwma::WmaHle>>,
     mixer: Arc<Mutex<audio::Mixer>>,
     /// The controller-speaker sound index, while one runs.
     _pad_index: Option<crate::pad_speaker::PadIndex>,
@@ -247,14 +250,18 @@ fn install_parts(
     rt.edit_dispatch(|d| r = Some(dsound::register(d, &hle)));
     r.unwrap()
         .map_err(|e| anyhow::anyhow!("dsound::register: {e:?}"))?;
-    if let Some(xbe) = xbe {
-        let wma = dsound::xwma::WmaHle::from_xbe(xbe)
-            .map_err(|e| anyhow::anyhow!("dsound::xwma: {e:?}"))?;
-        let mut r = None;
-        rt.edit_dispatch(|d| r = Some(dsound::xwma::register(d, &wma)));
-        r.unwrap()
-            .map_err(|e| anyhow::anyhow!("dsound::xwma::register: {e:?}"))?;
-    }
+    let wma = match xbe {
+        Some(xbe) => {
+            let wma = dsound::xwma::WmaHle::from_xbe(xbe)
+                .map_err(|e| anyhow::anyhow!("dsound::xwma: {e:?}"))?;
+            let mut r = None;
+            rt.edit_dispatch(|d| r = Some(dsound::xwma::register(d, &wma)));
+            r.unwrap()
+                .map_err(|e| anyhow::anyhow!("dsound::xwma::register: {e:?}"))?;
+            Some(wma)
+        }
+        None => None,
+    };
     let (config, side, setting) = match pad {
         Some(p) => (Some(p.config), Some(p.side), Some(p.setting)),
         None => (None, None, None),
@@ -304,6 +311,7 @@ fn install_parts(
         hle,
         output,
         completion_dpc,
+        wma,
         mixer,
         _pad_index,
     })

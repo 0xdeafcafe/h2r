@@ -521,7 +521,10 @@ fn the_mod_list_reads_published_maps_newest_first() {
     };
     assert_eq!(ask(&w).unwrap_err(), ModsError::NotSignedIn);
     w.logon();
-    assert!(ask(&w).unwrap().unwrap().items.is_empty(), "nothing published yet");
+    assert!(
+        ask(&w).unwrap().unwrap().items.is_empty(),
+        "nothing published yet"
+    );
 
     let author = live_proto::Author::Account {
         xuid: a.xuid,
@@ -1688,6 +1691,92 @@ fn the_host_asks_for_a_bot_roster_for_its_session() {
     );
     // Not this console's session: refused, and said so.
     assert!(ask("0123456789abcdef").is_err());
+}
+
+/// A Clanker signed in as a bot account the server leased to this console
+/// (docs/game/bots.md §9.5): a user change with the roster's bot xuid is
+/// taken without a key, beside the human, and asks the server nothing for
+/// it; a bot xuid no roster gave this console is refused.
+#[test]
+fn a_leased_bot_account_passes_a_user_change_and_an_unleased_one_does_not() {
+    use live_proto::bots;
+    let s = Server::new();
+    let a = s.account("Host");
+    let mut host = World::new(&s.embedded.url, &[&a]);
+    host.logon();
+    attr(&host, MATCH_ATTR, 1, 101);
+    assert_eq!(
+        host.call(
+            "XOnlineMatchSessionCreate",
+            &[1, 7, 0, 0, 1, MATCH_ATTR, 0, OUT]
+        ),
+        0
+    );
+    let create = host.u32(OUT);
+    assert_eq!(host.wait(create), TASK_SUCCESS);
+    let session = host.hle.hosted_session().unwrap();
+    let bot_user = |xuid: Xuid, tag: &str| {
+        let mut r = [0u8; 112];
+        r[..8].copy_from_slice(&xuid.0.to_le_bytes());
+        r[12..12 + tag.len()].copy_from_slice(tag.as_bytes());
+        r
+    };
+    let human = host.bytes(DATA, 112);
+
+    // Before any roster, a bot xuid is nobody's.
+    let stranger = Xuid(bots::SERVER_XUID_MARK | 0x1234);
+    host.put(USERS, &[0; 448]);
+    host.put(USERS, &human);
+    host.put(USERS + 112, &bot_user(stranger, "Rusty Lugnut"));
+    assert_eq!(
+        host.call("XOnlineChangeLogonUsers", &[USERS, 0, OUT]),
+        INVALID_USER
+    );
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    host.hle
+        .roster_bots(
+            bots::RosterRequest {
+                session_id: session,
+                playlist: None,
+                count: 1,
+                skill: None,
+                teams: false,
+            },
+            Box::new(move |r| tx.send(r).unwrap()),
+        )
+        .unwrap();
+    let roster = rx.recv_timeout(Duration::from_secs(10)).unwrap().unwrap();
+    let bot = &roster.bots[0];
+
+    host.put(USERS + 112, &bot_user(bot.xuid, bot.gamertag.as_str()));
+    assert_eq!(host.call("XOnlineChangeLogonUsers", &[USERS, 0, OUT]), 0);
+    let change = host.u32(OUT);
+    assert_eq!(host.wait(change), USER_CHANGE_COMMIT);
+    let users = host.call("XOnlineGetLogonUsers", &[]);
+    assert_eq!(host.bytes(users, 8), a.xuid.0.to_le_bytes());
+    assert_eq!(host.bytes(users + 112, 8), bot.xuid.0.to_le_bytes());
+    assert_eq!(
+        host.bytes(users + 112 + 8, 4),
+        vec![0; 4],
+        "its own player, not a guest"
+    );
+    assert_eq!(
+        &host.bytes(users + 112 + 12, bot.gamertag.as_str().len())[..],
+        bot.gamertag.as_str().as_bytes()
+    );
+    // The human stays on; the bot has no presence of its own.
+    assert_eq!(
+        s.presence().iter().map(|p| p.xuid).collect::<Vec<_>>(),
+        vec![a.xuid]
+    );
+
+    // Still refused: a bot xuid the roster did not name.
+    host.put(USERS + 112, &bot_user(stranger, "Rusty Lugnut"));
+    assert_eq!(
+        host.call("XOnlineChangeLogonUsers", &[USERS, 0, OUT]),
+        INVALID_USER
+    );
 }
 
 // The same nine match entry points the retail wrappers drive, over two separate
@@ -3713,20 +3802,14 @@ impl Flaky {
             down: Default::default(),
             seen: Default::default(),
         };
-        let (faults, down, seen) = (
-            flaky.faults.clone(),
-            flaky.down.clone(),
-            flaky.seen.clone(),
-        );
+        let (faults, down, seen) = (flaky.faults.clone(), flaky.down.clone(), flaky.seen.clone());
         let upstream = upstream.to_string();
         std::thread::spawn(move || {
             for socket in listener.incoming() {
                 let Ok(socket) = socket else { return };
                 let (faults, down, seen, upstream) =
                     (faults.clone(), down.clone(), seen.clone(), upstream.clone());
-                std::thread::spawn(move || {
-                    flaky_request(socket, &upstream, &faults, &down, &seen)
-                });
+                std::thread::spawn(move || flaky_request(socket, &upstream, &faults, &down, &seen));
             }
         });
         flaky
@@ -3735,8 +3818,7 @@ impl Flaky {
         self.faults.lock().unwrap().push((path.into(), fault));
     }
     fn set_down(&self, down: bool) {
-        self.down
-            .store(down, std::sync::atomic::Ordering::SeqCst);
+        self.down.store(down, std::sync::atomic::Ordering::SeqCst);
     }
     fn count(&self, method: &str, path: &str) -> usize {
         self.seen
@@ -3781,7 +3863,12 @@ fn flaky_request(
     };
     match fault {
         Some(Fault::Busy) => {
-            http_response(&mut socket, "503 Service Unavailable", "Retry-After: 0\r\n", b"");
+            http_response(
+                &mut socket,
+                "503 Service Unavailable",
+                "Retry-After: 0\r\n",
+                b"",
+            );
             return;
         }
         Some(Fault::Drop) => return,
@@ -3858,7 +3945,12 @@ fn an_outage_shorter_than_the_grace_keeps_the_player_signed_in() {
     let server = Server::new();
     let a = server.account("Deployed");
     let proxy = Flaky::new(&server.embedded.url);
-    let mut w = outage_world(&proxy, &a, Duration::from_millis(50), Duration::from_secs(2));
+    let mut w = outage_world(
+        &proxy,
+        &a,
+        Duration::from_millis(50),
+        Duration::from_secs(2),
+    );
     let h = w.logon();
     // The Worker is redeployed: every request fails for a second.
     let pinged = proxy.count("POST", "/v1/presence/ping");
@@ -3893,7 +3985,10 @@ fn an_outage_shorter_than_the_grace_keeps_the_player_signed_in() {
     // A real outage: once the grace has run out, the connection is lost.
     let deadline = Instant::now() + Duration::from_secs(6);
     while w.call("XOnlineTaskContinue", &[h]) != CONNECTION_LOST {
-        assert!(Instant::now() < deadline, "a real outage never lost the connection");
+        assert!(
+            Instant::now() < deadline,
+            "a real outage never lost the connection"
+        );
         std::thread::sleep(Duration::from_millis(5));
     }
     assert_eq!(w.call("XOnlineLogonTaskGetResults", &[h]), CONNECTION_LOST);
@@ -3904,7 +3999,12 @@ fn a_presence_change_whose_answer_is_lost_is_sent_once() {
     let server = Server::new();
     let a = server.account("LostAnswer");
     let proxy = Flaky::new(&server.embedded.url);
-    let mut w = outage_world(&proxy, &a, Duration::from_secs(3600), Duration::from_secs(90));
+    let mut w = outage_world(
+        &proxy,
+        &a,
+        Duration::from_secs(3600),
+        Duration::from_secs(90),
+    );
     let h = w.logon();
     let posted = proxy.count("POST", "/v1/events");
     // The first send lands but its answer is lost; the second meets a
@@ -3933,7 +4033,12 @@ fn reads_and_logon_ride_out_dropped_connections_and_a_deploy() {
     let proxy = Flaky::new(&server.embedded.url);
     proxy.fail("/.well-known/h2live.json", Fault::Busy);
     proxy.fail("/keys", Fault::Drop);
-    let mut w = outage_world(&proxy, &a, Duration::from_secs(3600), Duration::from_secs(90));
+    let mut w = outage_world(
+        &proxy,
+        &a,
+        Duration::from_secs(3600),
+        Duration::from_secs(90),
+    );
     w.logon();
     assert_eq!(proxy.count("GET", "/.well-known/h2live.json"), 2);
     proxy.fail("/files/message_of_the_day.dat", Fault::Drop);
@@ -3950,7 +4055,12 @@ fn retries_give_up_with_the_servers_answer() {
     let server = Server::new();
     let a = server.account("GiveUp");
     let proxy = Flaky::new(&server.embedded.url);
-    let mut w = outage_world(&proxy, &a, Duration::from_secs(3600), Duration::from_secs(90));
+    let mut w = outage_world(
+        &proxy,
+        &a,
+        Duration::from_secs(3600),
+        Duration::from_secs(90),
+    );
     let h = w.logon();
     proxy.set_down(true);
     let path = w.storage_path("9809", "message_of_the_day.dat");
@@ -3966,7 +4076,12 @@ fn a_player_the_server_forgot_during_an_outage_signs_back_in_as_it_was() {
     let server = Server::new();
     let a = server.account("Forgotten");
     let proxy = Flaky::new(&server.embedded.url);
-    let mut w = outage_world(&proxy, &a, Duration::from_millis(50), Duration::from_secs(90));
+    let mut w = outage_world(
+        &proxy,
+        &a,
+        Duration::from_millis(50),
+        Duration::from_secs(90),
+    );
     let h = w.logon();
     assert_eq!(w.hle.set_game_id(Some("still-playing")), Ok(()));
     server.until(|| kinds(&server, types::PRESENCE_CHANGED).len() == 1);
@@ -3985,7 +4100,12 @@ fn presence_set_during_an_outage_reaches_the_server_after_it() {
     let server = Server::new();
     let a = server.account("Patient");
     let proxy = Flaky::new(&server.embedded.url);
-    let mut w = outage_world(&proxy, &a, Duration::from_millis(50), Duration::from_secs(90));
+    let mut w = outage_world(
+        &proxy,
+        &a,
+        Duration::from_millis(50),
+        Duration::from_secs(90),
+    );
     let h = w.logon();
     let posted = proxy.count("POST", "/v1/events");
     proxy.set_down(true);

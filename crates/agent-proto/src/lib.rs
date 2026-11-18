@@ -20,6 +20,7 @@ mod load;
 mod pad;
 mod render;
 pub mod sim;
+pub mod state;
 pub mod trace;
 pub use client::{CallError, Client};
 pub use endpoint::Endpoint;
@@ -176,6 +177,10 @@ pub mod code {
     /// A `session.step` ended early: a resume, a new pause, or control
     /// released before its ticks ran.
     pub const INTERRUPTED: i64 = 6;
+    /// `state.save` or `state.load` never found a quiescent slice boundary
+    /// in the ticks it had; `data` is a [`crate::state::Busy`] naming what
+    /// stayed live.
+    pub const BUSY: i64 = 7;
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

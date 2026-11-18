@@ -576,10 +576,11 @@ impl<B: Backend> Device<B> {
     }
 
     /// Adds the `d3d` section. Call between slices, before guest RAM is
-    /// saved: this drains the push buffer, writes dirty render-to-texture
-    /// levels and the alias mirror back into guest memory, and reads every
-    /// visibility test's count, so the saving run and every load carry on
-    /// from the same guest bytes and answers. Nothing else changes.
+    /// saved: this drains a render thread (`Backend::drain`) and the push
+    /// buffer, writes dirty render-to-texture levels and the alias mirror
+    /// back into guest memory, and reads every visibility test's count, so
+    /// the saving run and every load carry on from the same guest bytes
+    /// and answers. Nothing else changes.
     pub fn save_snapshot(
         &mut self,
         mem: &mut dyn GuestMemory,
@@ -589,6 +590,9 @@ impl<B: Backend> Device<B> {
         if !busy.is_empty() {
             return Err(SnapshotError::Busy(busy));
         }
+        // A render thread runs what was queued before anything is read
+        // back (`ThreadedBackend::finish`).
+        self.backend.drain().map_err(D3dError::Backend)?;
         self.sync_push_buffer(mem)?;
         let busy = self.snapshot_blockers();
         if !busy.is_empty() {

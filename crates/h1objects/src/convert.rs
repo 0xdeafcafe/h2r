@@ -1785,8 +1785,9 @@ impl<'a> Converter<'a> {
         Ok(top)
     }
 
-    /// A `shad` per Halo 1 shader of `model`: a copy of the base's model
-    /// shader ([`Base::model_shader`]) drawing the Halo 1 shader's own
+    /// A `shad` per Halo 1 shader of `model`: a transparent one rebuilt on
+    /// its own stem ([`Self::transparent_model_shader`]), else a copy of
+    /// the base's model shader ([`Base::model_shader`]) drawing the Halo 1 shader's own
     /// base and detail maps, converted by `h1bitmaps` (each once). A
     /// shader with no base map this reads gets the base's model shader
     /// itself, never null: the shader draw begin `0x1bbf0` does not skip a
@@ -1805,6 +1806,9 @@ impl<'a> Converter<'a> {
                 let tag = self.h1.tag(s.tag).ok()?;
                 if let Some(id) = self.done.get(&tag.id.0) {
                     return Some(*id);
+                }
+                if let Some(id) = self.transparent_model_shader(&template.library, tag) {
+                    return Some(id);
                 }
                 let maps = h1convert::textures::h1_maps_of(self.h1, tag)?;
                 let base = self.bitmap(maps.base?)?;
@@ -1826,6 +1830,68 @@ impl<'a> Converter<'a> {
             out.push(id.unwrap_or(template.shader));
         }
         out
+    }
+
+    /// A Halo 1 model shader that isn't `senv` or `soso` (glass, chicago,
+    /// generic, meter, plasma, water) rebuilt as the structure's are
+    /// ([`h1convert::shad::read_h1`]): its own stem (alpha blended,
+    /// additive or self-illuminated) and maps, converted once. `None` when
+    /// it isn't one, no map of it reads or converts, or `library` lacks
+    /// every stem it could draw with; the tex_bump copy then follows.
+    ///
+    /// A `soso` with a reflection cube map takes this path too, onto
+    /// `tex_bump_env` with Halo 1's cube map and tints
+    /// (`h1convert::shad::read_h1`, `soso_reflection`): Halo 1's weapons
+    /// take their metal from that reflection over dark base maps, and
+    /// drew near black without it (the sniper rifle in first person,
+    /// converter version 76).
+    ///
+    /// Before converter version 73 these took the opaque tex_bump copy
+    /// of whatever bitmap sat at a fixed offset, or, with none there, the
+    /// base's stand-in model shader: a10's cryo tube glass (`sotr`
+    /// `levels\a10\shaders\cryo glass`) drew as a marine's head shader, an
+    /// opaque pane over the player's view from inside the tube.
+    fn transparent_model_shader(
+        &mut self,
+        library: &h1convert::shad::Library,
+        tag: &Tag,
+    ) -> Option<TagId> {
+        let group = tag.group.to_string();
+        if group == "senv" {
+            return None;
+        }
+        let s = h1convert::shad::read_h1(self.h1, tag)?;
+        let chosen = s.choose(library)?.clone();
+        // A `soso` is rebuilt only for its reflection (converter version
+        // 76): without one, the tex_bump copy draws it as before.
+        if group == "soso" && chosen.layout.stem != h1convert::shad::TEX_BUMP_ENV.stem {
+            return None;
+        }
+        let mut maps = HashMap::new();
+        for (role, m) in &chosen.maps {
+            let Some(id) = self.bitmap(m.bitmap) else { continue };
+            maps.insert(
+                *role,
+                h1convert::shad::Bound {
+                    id,
+                    scale: m.scale,
+                    lod_offset: h1convert::shad::h1_lod_offset(self.h1, m.bitmap),
+                },
+            );
+        }
+        if maps.is_empty() {
+            return None;
+        }
+        let tree = library.build_with(chosen.layout, &maps, &chosen.extras).ok()?;
+        self.cached(
+            tag,
+            Converted {
+                group: FourCC(*b"shad"),
+                root: tree,
+                raw: Vec::new(),
+            },
+        )
+        .ok()
     }
 
     /// The Halo 1 bitmap `id`, converted once.

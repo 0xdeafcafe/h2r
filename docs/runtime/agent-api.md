@@ -11,7 +11,9 @@ Phase 5 ([plan and what was built](#phase-5-testing-in-the-lightest-way-plan)):
 over a bots stand-in ([below](#sim-simulated-players-and-direct-state)).
 `trace.*` and `flight.*` (per-tick rows taken in the game, a flight
 recorder with input, `h2 agent flight show`) built
-([below](#tick-traces-and-the-flight-recorder)).
+([below](#tick-traces-and-the-flight-recorder)). `state.save`, `load`,
+`list`, `drop` and `fork` (machine snapshots) built, not yet run against
+the game ([`state`](#state-put-the-game-where-you-want-it)).
 Everything else on this page is design; its Rust and JSON blocks are
 sketches, not code that compiles. The front end is the `h2 agent` CLI
 only: the MCP server is dropped (decided 2026-11-17).
@@ -334,14 +336,28 @@ and by owner (which thing in the level made it do it).
 ### `state`: put the game where you want it
 
 **Snapshots** are the core: the whole machine at one tick boundary, named,
-saved and loaded in well under a second.
+saved and loaded in well under a second (**S**: not measured).
+
+Built (types in `crates/agent-proto/src/state.rs`, the executor's part in
+`crates/agent/src/exec/snap.rs`, the machine in
+`crates/boot/src/snapshot_glue.rs`; tested over fakes, not run against
+the game; [snapshots.md](snapshots.md#phase-5-what-was-built)):
 
 | Method | Does |
 |---|---|
-| `state.save {name}` | guest RAM, the runtime's host-side state (kernel handles, timers, audio voices, render state that the guest can't rebuild), switch values, input cursor |
-| `state.load {name}` | back to exactly that tick; `lockstep` hash checked against the saved one |
-| `state.list`, `state.drop` | |
-| `state.fork {name}` | load and give the copy a new name, for branching experiments |
+| `state.save {name, replace?, max_ticks?}` | guest RAM, the kernel and its threads, D3D, audio, XAPI with the input cursor, every feature's section, and a RAM hash, at the first quiescent slice boundary after a tick |
+| `state.load {name, max_ticks?}` | back to exactly that tick; the RAM hash (`lockstep::hash_guest`) checked against the saved one, naming the MiBs that differ |
+| `state.list`, `state.drop {name}` | this build's snapshots, answered at once |
+| `state.fork {from, name, replace?}` | load `from` and save it again as `name`, for branching experiments |
+
+A save or load waits for the next tick, then retries at each tick while
+something is live, for `max_ticks` (90) ticks, then fails with code 7
+(`BUSY`) and the blockers in `data.blockers`. One sent while the game is
+paused runs at the end of the held tick's slice; the game holds again at
+the next tick. Calls other than `state.list` need control when another
+connection holds it. CLI: `h2 agent state save NAME [replace]`,
+`state load NAME`, `state list`, `state drop NAME`,
+`state fork FROM NAME [replace]`.
 
 The user plays to the fight once, presses a key (or the agent does it via
 `session.wait` on a script global), and that moment becomes a fixture:

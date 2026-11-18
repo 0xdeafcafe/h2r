@@ -802,6 +802,112 @@ mod tests {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
+    /// Bot accounts on the Worker's composition, as on a machine
+    /// (live-server's `tests/bots.rs`, docs/game/bots.md §9.5): a roster
+    /// for the host's session issues bot accounts that read by gamertag
+    /// with `bot: true` and stay out of the accounts list.
+    #[tokio::test]
+    async fn rostered_bots_read_as_bot_accounts_on_the_worker() {
+        use axum::{body::Body, http::Request};
+        use http_body_util::BodyExt;
+        use live_proto::lxm;
+        use live_proto::sign::{AccountRequest, KeyPair, issue_token};
+        use live_server::{Live, Policy, ServerIdentity, app::Timers};
+        use tower::ServiceExt;
+
+        let path = temp_db("bot-accounts");
+        let store = SqlStore::open(Sqlite(pool(&path).await)).await.unwrap();
+        let identity = ServerIdentity::open(path.parent().unwrap(), Some("live.test")).unwrap();
+        let live = Live::start_with(Arc::new(store), identity, Policy::default(), Timers::Driven)
+            .await
+            .unwrap();
+        let call = |method: &'static str, uri: String, auth: Option<String>, body: String| {
+            let live = live.clone();
+            async move {
+                let mut req = Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header("content-type", "application/json");
+                if let Some(a) = auth {
+                    req = req.header("authorization", format!("Bearer {a}"));
+                }
+                let r = live_server::http::router(live)
+                    .oneshot(req.body(Body::from(body)).unwrap())
+                    .await
+                    .unwrap();
+                let status = r.status().as_u16();
+                let body = r.into_body().collect().await.unwrap().to_bytes();
+                (
+                    status,
+                    serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null),
+                )
+            }
+        };
+        let now = live_server::app::now;
+        let key = KeyPair::generate();
+        let (status, created) = call(
+            "POST",
+            "/v1/accounts".into(),
+            None,
+            AccountRequest::sign(&key, "Host", None, "live.test", now()),
+        )
+        .await;
+        assert_eq!(status, 201, "{created}");
+        let author = created["id"].as_str().unwrap().to_string();
+        let token = |m: &str| issue_token(&key, &author, "live.test", m, now());
+        let lobby = serde_json::to_value(live_proto::session::NewSession {
+            addr: Some("192.168.2.4".parse().unwrap()),
+            port: 3074,
+            host_address: vec![0; 36],
+            slots: live_proto::session::Slots {
+                public_filled: 1,
+                public_open: 7,
+                ..Default::default()
+            },
+            attributes: Default::default(),
+            flags: "custom".into(),
+            hopper_id: None,
+            map: Some("lockout".into()),
+            name: Some("Bots".into()),
+            language: None,
+            visibility: Default::default(),
+            map_id: None,
+            skulls: None,
+            campaign: None,
+            ping_ms: None,
+            variant_ext: None,
+        })
+        .unwrap();
+        let (status, session) = call(
+            "POST",
+            "/v1/sessions".into(),
+            Some(token(lxm::SESSIONS_WRITE)),
+            lobby.to_string(),
+        )
+        .await;
+        assert_eq!(status, 201, "{session}");
+        let session_id = session["session_id"].as_str().unwrap();
+        let (status, roster) = call(
+            "POST",
+            "/v1/games/bots".into(),
+            Some(token(lxm::GAMES_WRITE)),
+            serde_json::json!({"session_id": session_id, "count": 1}).to_string(),
+        )
+        .await;
+        assert_eq!(status, 201, "{roster}");
+        let bot = &roster["bots"][0];
+        let tag = bot["gamertag"].as_str().unwrap();
+        let (status, v) = call("GET", format!("/v1/accounts/{}", tag.replace(' ', "%20")), None, String::new()).await;
+        assert_eq!(status, 200, "{v}");
+        assert_eq!(v["bot"], true);
+        assert_eq!(v["xuid"], bot["xuid"]);
+        let (_, list) = call("GET", "/v1/accounts".into(), None, String::new()).await;
+        let items = list["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1, "{items:?}");
+        assert_eq!(items[0]["gamertag"], "Host");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
     /// Signing a device out on the Worker's own composition: the revoked
     /// key's next request gets 401, and so it does after the hub restarts
     /// and rebuilds from its log (docs/live/live-api.md "Sign-ins").

@@ -29,6 +29,9 @@ use serde_json::Value;
 
 use crate::reader::{GameStatus, Reader};
 
+mod snap;
+pub use snap::{SnapshotMachine, Snapshots};
+
 /// One connection.
 pub type ConnId = u64;
 
@@ -147,6 +150,10 @@ struct State {
     totals: Option<Box<dyn TotalsSource>>,
     /// `trace.*` and `flight.*`: rows taken at every tick.
     recorders: Recorders,
+    /// `state.*`'s store, once the host installs snapshots.
+    snapshots: Option<Box<dyn Snapshots>>,
+    /// Saves and loads waiting for a quiescent slice boundary.
+    snap_jobs: VecDeque<snap::Job>,
 }
 
 /// A `profile.capture` waiting for its window to pass.
@@ -389,6 +396,7 @@ impl Agent {
             eprintln!("agent: writing the input recording at exit: {}", e.message);
         }
         s.recorders.shutdown();
+        s.fail_snapshots();
         s.shutdown = true;
         s.paused = None;
         s.stepping = None;
@@ -457,11 +465,14 @@ impl Agent {
 
     /// After each game tick, on the game's thread. Answers everything
     /// queued, settles waits, and blocks here while paused, answering
-    /// requests as they arrive.
-    pub fn on_tick(&self, reader: &mut dyn Reader) {
+    /// requests as they arrive. True when a `state.*` save or load is due
+    /// at this slice's end: the caller ends the slice early
+    /// (`Runtime::request_preempt`). A paused game lets such a job go to
+    /// the slice end and holds again at the next tick.
+    pub fn on_tick(&self, reader: &mut dyn Reader) -> bool {
         let mut s = self.lock();
         if s.shutdown {
-            return;
+            return false;
         }
         s.ticks += 1;
         s.last_tick = Some(Instant::now());
@@ -482,8 +493,9 @@ impl Agent {
         s.serve(reader, Where::Tick);
         s.settle_waits();
         s.settle_capture();
+        let mut snap = s.arm_snapshots();
         while let Some(until) = s.paused {
-            if s.shutdown {
+            if s.shutdown || snap {
                 break;
             }
             if Instant::now() >= until {
@@ -500,6 +512,7 @@ impl Agent {
             s.serve(reader, Where::Tick);
             s.settle_waits();
             s.settle_capture();
+            snap = s.arm_snapshots();
         }
         if s.holding {
             s.holding = false;
@@ -507,6 +520,7 @@ impl Agent {
             s.last_tick = Some(Instant::now());
         }
         s.prune();
+        snap
     }
 
     /// Between scheduler slices, on the game's thread. Answers what doesn't
@@ -734,6 +748,7 @@ impl State {
             .map(|(c, _)| *c)
             .chain(self.waits.iter().map(|w| w.conn))
             .chain(self.capture.as_ref().map(|c| c.conn))
+            .chain(self.snap_jobs.iter().map(|j| j.conn()))
             .collect();
         let dead: BTreeSet<ConnId> = self
             .conns
@@ -744,6 +759,7 @@ impl State {
         if !dead.is_empty() {
             self.pending.retain(|(c, _)| !dead.contains(c));
             self.waits.retain(|w| !dead.contains(&w.conn));
+            self.snap_jobs.retain(|j| !dead.contains(&j.conn()));
         }
         self.conns
             .retain(|id, c| !c.dead && (!c.closing || busy.contains(id)));
@@ -861,6 +877,17 @@ impl State {
                 v
             }));
         }
+        if snap::is_method(m) {
+            let at = to_value(self.at());
+            return self.state_method(conn, req.id, m, p).map(|r| {
+                r.map(|mut v| {
+                    if let Value::Object(o) = &mut v {
+                        o.entry("at").or_insert(at);
+                    }
+                    v
+                })
+            });
+        }
         if trace::is_method(m) {
             let (at, dir) = (self.at(), self.dir());
             return Some(self.recorders.handle(m, p, at, &dir, &self.input));
@@ -901,6 +928,11 @@ impl State {
                     .map(|m| (*m).to_owned())
                     .chain(
                         agent_proto::trace::method::ALL
+                            .iter()
+                            .map(|m| (*m).to_owned()),
+                    )
+                    .chain(
+                        agent_proto::state::method::ALL
                             .iter()
                             .map(|m| (*m).to_owned()),
                     )

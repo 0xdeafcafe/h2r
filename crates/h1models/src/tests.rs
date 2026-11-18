@@ -884,6 +884,66 @@ fn a_class_that_borrows_a_slot_finds_it_by_name() {
     assert_eq!(actions("rifle"), [("throw_grenade".to_owned(), 0)]);
 }
 
+/// Halo 1 plays a weapon's first-person animations by slot (`antr +0x48`),
+/// and a slot may hold an animation labelled for another: the assault
+/// rifle's `reload-empty` slot holds its `reload-full`. The reader takes
+/// the table, and the converted tree names each slot's action
+/// (`reload_empty`) for the animation it holds, beside the labels' own;
+/// a label's own action is not replaced, and a slot past the animations
+/// is skipped.
+#[test]
+fn a_first_person_slot_names_its_action_for_the_animation_it_holds() {
+    let (mut img, at) = synthetic_graph();
+    // Slots: idle 0, posing -1, fire-1 -1, ..., reload-empty (7) 1,
+    // reload-full (8) 1, ..., ready (10) 0, put-away (11) 9.
+    let mut slots = vec![-1i16; 12];
+    slots[0] = 0;
+    slots[7] = 1;
+    slots[8] = 1;
+    slots[10] = 0;
+    slots[11] = 9;
+    let list: Vec<u8> = slots.iter().flat_map(|s| s.to_le_bytes()).collect();
+    let list = img.alloc(&list);
+    let mut element = vec![0u8; 0x1c];
+    block(&mut element, 0x10, slots.len(), list);
+    let element = img.alloc(&element);
+    let h = (at - BASE) as usize;
+    block(&mut img.0[h..h + h1::ANTR_HEADER], 0x48, 1, element);
+    let mut g = h1::Graph::read(&img, at).unwrap();
+    assert_eq!(g.first_person_slots, slots);
+    g.animations[0].name = "first-person idle".into();
+    g.animations[1].name = "first-person reload-full".into();
+    let (out, _) = jmad::convert_graph(&g, None).unwrap();
+    let (bytes, ids) = build(vec![(out, "invented\\graph")]);
+    let mut map = Map::from_reader(Cursor::new(bytes)).unwrap();
+    let base = map.tag(ids[0]).unwrap().location.unwrap().address;
+    let b = map.read_tag_bytes(ids[0]).unwrap();
+    let strings = map.strings().to_vec();
+    let w = |a: u32| u32::from_le_bytes(b[(a - base) as usize..][..4].try_into().unwrap());
+    let name = |sid: u32| strings[(sid & 0xff_ffff) as usize].clone().unwrap();
+    let level = |a: u32, stride: u32| -> Vec<(String, u32)> {
+        (0..w(a)).map(|i| (name(w(w(a + 4) + i * stride)), w(a + 4) + i * stride)).collect()
+    };
+    let modes = level(base + 0x34, 0x14);
+    assert_eq!(modes.iter().map(|m| m.0.as_str()).collect::<Vec<_>>(), ["any"]);
+    let classes = level(modes[0].1 + 4, 0x14);
+    let types = level(classes[0].1 + 4, 0x34);
+    let mut actions: Vec<(String, i16)> = level(types[0].1 + 4, 8)
+        .into_iter()
+        .map(|(n, a)| (n, (w(a + 4) >> 16) as i16))
+        .collect();
+    actions.sort();
+    assert_eq!(
+        actions,
+        [
+            ("idle".to_owned(), 0),
+            ("ready".to_owned(), 0),
+            ("reload_empty".to_owned(), 1),
+            ("reload_full".to_owned(), 1),
+        ]
+    );
+}
+
 /// No converted animation names a blend screen: the graph has none, and
 /// the engine indexes `blend_screens` (`+0x24`) by an animation's `+0x12`
 /// unless it is -1 (E `0x001daf30`). Written 0, the player's aim update

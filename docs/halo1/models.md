@@ -155,11 +155,24 @@ and warthog face away from their own normals. With this rule, 52 of 5,692
 | `24` | vehicles block | S |
 | `30` | devices block | S |
 | `3c` | unit damage block | S |
-| `48` | first-person weapons block | S |
+| `48` | first-person weapons block, `0x1c`: 16 bytes, then at `10` a block of i16 animation indices, one per first-person slot (`h1::FIRST_PERSON_SLOTS`) | V (all 11 first-person graphs on Blood Gulch: one element; each slot's animation carries the slot's label wherever the two agree) |
 | `54` | sound references block | S |
 | `60` | f32 limp body node radius; `64` u16 flags | S |
 | `68` | nodes, stride `0x40` | V1 |
 | `74` | animations, stride `0xb4` | V1 |
+
+**First-person slots (converter version 76).** Halo 1 plays a weapon's
+first-person animations through the `48` table, by slot, and a slot may
+hold an animation labelled for another: the assault rifle's
+`reload-empty` slot holds its `reload-full` (it has no `reload-empty`),
+the shotgun's and flamethrower's `reload-full` their `reload-empty`, the
+assault rifle's `light-on` its `light-off`. Halo 2 asks a first-person
+graph for actions by name, so the converted tree also names each filled
+slot's action for the animation it holds (`jmad::first_person_slots`),
+unless an animation of that label already has it. Before this the
+assault rifle had no `reload_empty` action. Slot words 6 (`light-on`) and
+19 (`misfire-2`) are S: no Blood Gulch graph fills them with an animation
+of that label.
 
 The units, weapons and vehicles blocks map fixed engine slots to animation
 indices. They are not read: names are mapped from the animations' own names

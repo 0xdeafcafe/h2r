@@ -534,3 +534,101 @@ async fn an_xuid_less_bot_does_not_loosen_the_roster_check() {
     g.as_object_mut().unwrap().remove("session_id");
     assert_eq!(try_start(&h, &a, g).await.status, StatusCode::BAD_REQUEST);
 }
+
+/// Bot accounts (§9.5): a rostered bot reads as an account with `bot:
+/// true` and its games, by its gamertag; it is not in the accounts list,
+/// has no keys, cannot sign in, cannot be recovered, and a local-slot
+/// Clanker of the roster is taken in a game record under its xuid like a
+/// phantom.
+#[tokio::test]
+async fn a_rostered_bot_is_an_account_that_never_signs_in() {
+    let h = harness().await;
+    let a = h.create("Host").await;
+    let session = host(&h, &a).await;
+    let r = roster(&h, &a, json!({"session_id": session, "count": 2})).await;
+    let (b0, b1) = (&r.bots[0], &r.bots[1]);
+
+    // A local-slot Clanker (`local: true`) and a phantom, both the roster's.
+    let game = custom(
+        &a,
+        &session,
+        json!([bot_entry(1, b0.xuid), {
+            "index": 2, "name": b1.gamertag, "xuid": b1.xuid, "team": 1, "bot": true
+        }]),
+    );
+    let id = h.start_game(&a, game).await;
+
+    let v = h.get(&format!("/v1/accounts/{}", b0.gamertag.to_string().replace(' ', "%20"))).await;
+    assert_eq!(
+        v.status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&v.body)
+    );
+    let v = v.json();
+    assert_eq!(v["xuid"], b0.xuid.to_string());
+    assert_eq!(v["gamertag"], b0.gamertag.as_str());
+    assert_eq!(v["bot"], true);
+    assert_eq!(v["online"], false);
+    assert!(!v["created_at"].as_str().unwrap().is_empty());
+    assert_eq!(v["recent_games"][0]["game_id"], id);
+    // A human reads as before, with no `bot`.
+    let human = h.get("/v1/accounts/Host").await.json();
+    assert!(human.get("bot").is_none(), "{human}");
+
+    // Not in the accounts list.
+    let list = h.get("/v1/accounts").await.json();
+    let tags: Vec<&str> = list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["gamertag"].as_str().unwrap())
+        .collect();
+    assert_eq!(tags, ["Host"]);
+
+    // No keys, no sign-in, no recovery.
+    let keys = h
+        .get(&format!("/v1/accounts/by-xuid/{}/keys", b0.xuid))
+        .await;
+    assert_eq!(keys.status, StatusCode::NOT_FOUND);
+    let pretender = User {
+        key: live_proto::sign::KeyPair::generate(),
+        xuid: b0.xuid,
+        author: Author::Account {
+            xuid: b0.xuid,
+            server: h.id.clone(),
+        }
+        .to_string(),
+    };
+    let r = h.sign_in(&pretender).await;
+    assert!(!r.status.is_success(), "a bot signed in: {}", r.status);
+    let online = h.get("/v1/presence").await.json();
+    assert!(
+        online["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["xuid"] != b0.xuid.to_string()),
+        "a bot is never online: {online}"
+    );
+    let device = live_proto::sign::KeyPair::generate();
+    let r = h
+        .call(
+            Method::POST,
+            &format!("/v1/accounts/{}/recover", b0.gamertag.to_string().replace(' ', "%20")),
+            &[],
+            json!({
+                "request": live_proto::recovery::RecoverRequest::sign(
+                    &device, b0.gamertag.as_str(), "live.test", now()
+                ),
+                "code": "000000",
+            })
+            .to_string(),
+        )
+        .await;
+    assert!(
+        r.status.is_client_error(),
+        "a bot is not recovered: {}",
+        r.status
+    );
+}

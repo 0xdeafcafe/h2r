@@ -1959,3 +1959,99 @@ fn rebuilt_vehicle_holds_its_functions_and_primary_scales() {
     assert_eq!(r.at("unit.obje.functions[0].data_14"), Some(&Val::Data(vec![0; 0x14])));
     assert_eq!(r.at("unit.obje.attachments[0].string_10"), Some(&Val::text("c_out")));
 }
+
+#[test]
+fn a_converted_particles_frame_always_has_a_function() {
+    // The sprite draw path evaluates `frame` (prt3 +0x5c) and reads its
+    // function's header byte with no null check (0x00246cfc): an empty
+    // frame faults reading address 1. The base's static particles leave
+    // it empty because they draw the static quad instead.
+    use crate::particles::{first_sprite_frame, sprite_frame};
+    use tags::defs::{self, Defs, Val};
+    use tags::effects::function::{Function, FunctionType};
+    let d = Defs::builtin().group(FourCC(*b"prt3")).unwrap();
+    let mut r = defs::default_record(d);
+    r.set("frame.function", Val::Data(Vec::new())).unwrap();
+    sprite_frame(&mut r).unwrap();
+    let Some(Val::Data(b)) = r.at("frame.function") else { panic!("frame function") };
+    assert_eq!(b, &first_sprite_frame());
+    assert_eq!(b.len(), 0x1c);
+    let f = Function::parse(b).unwrap();
+    assert_eq!(f.kind, FunctionType::Constant);
+    assert!(!f.is_ranged() && !f.is_raw_output());
+    assert_eq!(f.range, [0.0, 0.0]);
+    // The first sprite whatever the inputs.
+    for x in [0.0, 0.5, 1.0] {
+        assert_eq!(f.evaluate(x, x), 0.0);
+    }
+    // It survives the write: the built tag holds the 0x1c bytes.
+    let built = defs::to_built(d, &r, &mut |_| None).unwrap();
+    let back = defs::from_built(d, &built).unwrap();
+    assert_eq!(back.at("frame.function"), Some(&Val::Data(first_sprite_frame())));
+
+    // Bytes that aren't a function are replaced too.
+    r.set("frame.function", Val::Data(vec![1, 0, 0])).unwrap();
+    sprite_frame(&mut r).unwrap();
+    assert_eq!(r.at("frame.function"), Some(&Val::Data(first_sprite_frame())));
+
+    // A function the base gave is kept.
+    let mut kept = Function::parse(&first_sprite_frame()).unwrap();
+    kept.range = [0.25, 0.75];
+    r.set("frame.function", Val::Data(kept.to_bytes())).unwrap();
+    sprite_frame(&mut r).unwrap();
+    assert_eq!(r.at("frame.function"), Some(&Val::Data(kept.to_bytes())));
+}
+
+/// An invented Halo 1 trigger: flags at `+0`, charging time at `+0x48`.
+fn h1_trigger(flags: u32, charging: f32) -> Vec<u8> {
+    let mut t = vec![0u8; crate::h1::TRIGGER_SIZE];
+    t[0..4].copy_from_slice(&flags.to_le_bytes());
+    let at = crate::arsenal::H1_TRIGGER_CHARGING_TIME;
+    t[at..at + 4].copy_from_slice(&charging.to_le_bytes());
+    t
+}
+
+#[test]
+fn every_halo1_trigger_gets_a_halo2_trigger_naming_its_barrel() {
+    use crate::arsenal::{TriggerWords, h2_triggers};
+    assert!(h2_triggers(&[]).is_empty());
+    // An automatic rifle: one trigger, input 0, behaviour 0, barrel 0.
+    let auto = h2_triggers(&[h1_trigger(0, 0.0)]);
+    assert_eq!(auto, [TriggerWords::new(0, 0, 0, -1)]);
+    assert_eq!(auto[0].0[1..4], [0, 0xffff_0000, 1]);
+    // Once per press (flag 0x8): behaviour 1, `+0xc` 0.
+    let semi = h2_triggers(&[h1_trigger(0x408, 0.0)]);
+    assert_eq!(
+        (semi[0].behaviour(), semi[0].primary(), semi[0].secondary(), semi[0].0[3]),
+        (1, 0, -1, 0)
+    );
+    // Two triggers, neither charging: two Halo 2 triggers on inputs 0 and
+    // 1, each firing its own barrel (a cannon and its machine gun).
+    let two = h2_triggers(&[h1_trigger(0x28, 0.0), h1_trigger(0x20, 0.0)]);
+    assert_eq!(
+        two,
+        [TriggerWords::new(0, 1, 0, -1), TriggerWords::new(1, 0, 1, -1)]
+    );
+    assert_eq!(two[1].input(), 1);
+    // A charging first trigger with a second: one trigger, barrel 1 the
+    // charged shot, behaviour and `+0xc` 2, the charge time carried.
+    let charge = h2_triggers(&[h1_trigger(0, 0.6), h1_trigger(4, 0.0)]);
+    assert_eq!(charge.len(), 1);
+    let c = charge[0];
+    assert_eq!(
+        (c.input(), c.behaviour(), c.primary(), c.secondary(), c.0[3]),
+        (0, 2, 0, 1, 2)
+    );
+    assert_eq!(c.charging_time(), 0.6);
+    // A lone charging trigger has nothing to charge into.
+    assert_eq!(h2_triggers(&[h1_trigger(0, 0.6)])[0].behaviour(), 0);
+}
+
+#[test]
+fn the_reserve_maximum_is_the_total_less_the_loaded() {
+    use crate::arsenal::reserve_maximum;
+    assert_eq!(reserve_maximum(600, 60), 540);
+    assert_eq!(reserve_maximum(24, 4), 20);
+    assert_eq!(reserve_maximum(0, 0), 0);
+    assert_eq!(reserve_maximum(4, 8), 0);
+}
