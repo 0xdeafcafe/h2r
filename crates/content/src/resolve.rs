@@ -985,17 +985,27 @@ pub(crate) mod tests {
             .resolve("lockout", &mut &disc[..])
             .unwrap_err();
         assert!(matches!(e, ResolveError::Hash { .. }), "{e}");
-        // A PPF past the end is refused, and says why.
+        // A PPF record past the end grows the map, streamed like any other
+        // (a DotHalo PPF for a map that grew), checksum repaired.
         let t = Temp::new();
         let mut p = ppf::tests::build(1, &disc, &[], false, false, None);
         p.extend((disc.len() as u32 - 1).to_le_bytes());
         p.push(2);
         p.extend(b"zz");
         package(&t.0, "p", "lockout", Some(&disc), &[("a.ppf", &p)]);
-        let e = Library::open(&t.0)
+        let r = Library::open(&t.0)
             .resolve("lockout", &mut &disc[..])
-            .unwrap_err();
-        assert!(e.to_string().contains("cannot grow"), "{e}");
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(r.data, Data::Overlay { .. }),
+            "streamed, not copied"
+        );
+        assert_eq!(r.len(), disc.len() as u64 + 1);
+        let got = read(&r, &disc);
+        assert_eq!(&got[disc.len() - 1..], b"zz");
+        assert_eq!(&got[0x800..disc.len() - 1], &disc[0x800..disc.len() - 1]);
+        assert!(checksum_ok(&got));
         // Unknown formats.
         let t = Temp::new();
         package(

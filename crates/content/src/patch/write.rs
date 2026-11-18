@@ -67,9 +67,10 @@ const PPF3_RECORD: usize = 9;
 /// A PPF3 patch turning `base` into `edited`, which must be as long.
 ///
 /// # Panics
-/// If the lengths differ: PPF cannot grow or shrink a file.
+/// If the lengths differ: a PPF can grow a file but never shrink one, and
+/// [`diff`] writes BPS for any change of length (it can copy moved data).
 pub fn ppf3(base: &[u8], edited: &[u8], description: &str) -> Vec<u8> {
-    assert_eq!(base.len(), edited.len(), "PPF patches a fixed-size image");
+    assert_eq!(base.len(), edited.len(), "ppf3 writes same-length edits");
     let mut out = b"PPF30".to_vec();
     out.push(2);
     let mut desc = description.to_owned();

@@ -7,10 +7,11 @@
 //! target), so it is applied to the whole base in memory ([`Bps::apply`])
 //! and the result is materialised.
 //!
-//! Growth: IPS may write past the end of the base and may truncate it (the
-//! common Lunar IPS extension); new bytes the patch does not write are zero.
-//! PPF patches a fixed-size image, so a PPF record past the base's end is
-//! refused. BPS states its target size.
+//! Growth: an IPS or PPF record past the end of the base grows the file,
+//! with zeros where nothing is written, as the tools that apply them do
+//! (Lunar IPS; ApplyPPF seeks to the record's offset and writes, which
+//! extends the file), up to [`MAX_LEN`]. IPS may also truncate (the common
+//! Lunar IPS extension). BPS states its target size.
 //!
 //! [`write`] makes patches: PPF3 for a same-length edit, BPS otherwise.
 use std::io;
@@ -23,7 +24,7 @@ pub mod write;
 
 pub use bps::{Bps, crc32};
 pub use ips::parse_ips;
-pub use overlay::{OffsetPatch, Overlay, OverlayView, Run};
+pub use overlay::{MAX_LEN, OffsetPatch, Overlay, OverlayView, Run};
 pub use ppf::{BlockCheck, Ppf};
 pub use write::{Format, Written, diff};
 
@@ -36,14 +37,11 @@ pub enum PatchError {
     },
     #[error("{format}: {why}")]
     Malformed { format: &'static str, why: String },
-    #[error(
-        "{format}: writes bytes {start:#x}..{end:#x} but the map is {len:#x} bytes, and {format} cannot grow a file"
-    )]
-    OutOfRange {
+    #[error("{format}: writes bytes {start:#x}..{end:#x}, past the 4 GiB a map file can be")]
+    TooLong {
         format: &'static str,
         start: u64,
         end: u64,
-        len: u64,
     },
     #[error("{format}: {what} does not match the base")]
     BaseMismatch { format: &'static str, what: String },

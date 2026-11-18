@@ -142,7 +142,7 @@ the details are in §7):
 
 | Format | Era | Shape | Status |
 |---|---|---|---|
-| PPF 1/2/3 | 2004- | absolute-offset byte runs; PPF3 has 64-bit offsets and an optional undo block | **Built**: block check, PPF2 input size, PPF3 undo data checked against the base; FILE_ID.DIZ read |
+| PPF 1/2/3 | 2004- | absolute-offset byte runs; PPF3 has 64-bit offsets and an optional undo block | **Built**: block check, PPF2 input size, PPF3 undo data checked against the base; FILE_ID.DIZ read; records past the end grow the file, as ApplyPPF's seek-and-write does |
 | IPS / BPS | generic | offset runs / copy-from-source deltas with CRCs | **Built**: IPS with RLE, growth and the truncation extension; BPS with all four actions and its three CRC32s |
 | SPPF ("Super PPF") | 2006 | the map split into 4 blocks, so a size change only shifts to the end of its block; can add files to the map | no public spec |
 | Serenity | 2005-07 | 35 blocks plus one per tag; embeds author, description and image | no public spec |
@@ -842,9 +842,9 @@ package changes (§3):
   of the patched bytes, which is then written at +0x2d0 as a last run,
   when the result starts with the `daeh` header and is at least 0x800
   bytes. Reads lay the runs over the base as they stream; nothing is
-  copied. PPF records past the base's end are refused (PPF patches a
-  fixed-size image); IPS may grow the file (zeros where nothing is
-  written) and truncate it.
+  copied. A PPF or IPS record past the base's end grows the file (zeros
+  where nothing is written), as ApplyPPF and IPS tools do, up to 4 GiB
+  (`content::patch::MAX_LEN`); IPS may also truncate it.
 - **Materialised** (any BPS layer): the result is built in memory once,
   checksum repaired, and written atomically (a temporary file, then a
   rename) to `cache/<MapId>.map`. A later resolution of the same `MapId`
