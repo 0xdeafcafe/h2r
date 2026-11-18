@@ -307,7 +307,7 @@ with another layout).
 | `+0x2c` property | alpha | **E** `0x002245bb`; times the emitter alpha (`0x002245ca`), clamped |
 | `+0x3c` property | size | **E** `0x00224ca7`; times the emitter size (`0x00224caf`); vtable `+0x4c` (`0x00224350`) gives the bound `max(lo, hi)` used for the radius (`0x00248936`) |
 | `+0x4c` property | rotation, in turns | **E** `0x00224595`, times 2 pi (`0x002245a0`) |
-| `+0x5c` property | sprite frame, 0..1 over the sequence | **E** `0x002248b6`, times the sequence's sprite count, floored; the fraction blends to the next frame |
+| `+0x5c` property | sprite frame, 0..1 over the sequence | **E** `0x002248b6`, times the sequence's sprite count, floored; the fraction blends to the next frame. Evaluated only on the sprite path (`0x00224846`: a sprites bitmap, not flag `0x10000`); the wrapper `0x00246cd0` reads the function's byte 1 with no null check, so a sprite particle with empty function data faults reading address 1 (`0x00246cfc`) |
 | `+0x00` flags (u32 with `+0x02`) | `0x2`/`0x4` random U/V mirror; `0x8` frame range ends on the last sprite; `0x10` sequence per particle; `0x20` no frame blend; `0x80`/`0x100` colour also times the particle's own colour x2; `0x200` dies at rest; `0x2000` rotation +90 degrees; `0x10000` (`+0x02` bit 0) the static quad and UV instead of bitmap sprites | **E** `0x002246f0`, `0x00224907`, `0x002245d5`, `0x002242f0`, `0x00224c75`, `0x002246e0` |
 | `+0x04` u16 | vertex shader selector (+7 into the table at `0x0023ec09`) | **E** `0x00224405`; its meaning per value not established |
 | `+0x08`, `+0x0a` i16 | first sequence and sequence count (with flag `0x10`) | **E** `0x00224856..0x00224891` |
