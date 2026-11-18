@@ -89,15 +89,24 @@ pub fn start_from_env(render_thread: bool) -> bool {
     true
 }
 
+/// The frame stats host perf starts when nothing has: the environment's
+/// (`H2_FRAME_STATS`, `H2_FRAME_STATS_CSV`, `H2_FRAME_STATS_FROM`) when it
+/// asks for any, else quiet ones (no line a second, the exit report).
+/// Host perf starts before the boot reads those variables itself, so a
+/// default here used to drop the CSV and the report's first frame.
+pub fn frame_stats_config(env: Option<phase::Config>) -> phase::Config {
+    env.unwrap_or(phase::Config {
+        report_from: 0,
+        window_ns: phase::Config::DEFAULT_WINDOW_NS,
+        worst: 10,
+        ..Default::default()
+    })
+}
+
 /// [`start_from_env`] without the switch.
 pub fn start(render_thread: bool) {
     if !phase::enabled() {
-        let config = phase::Config {
-            report_from: 0,
-            window_ns: phase::Config::DEFAULT_WINDOW_NS,
-            worst: 10,
-            ..Default::default()
-        };
+        let config = frame_stats_config(phase::Config::from_env());
         if let Err(e) = phase::start(config) {
             eprintln!("host perf: frame stats: {e}");
         }
@@ -315,6 +324,23 @@ impl Reading {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_perf_keeps_the_frame_stats_csv_and_first_frame() {
+        let env = phase::Config {
+            log_every_ns: Some(1_000_000_000),
+            csv: Some("/tmp/frames.csv".into()),
+            report_from: 4200,
+            window_ns: phase::Config::DEFAULT_WINDOW_NS,
+            worst: 10,
+            quiet: false,
+        };
+        let c = frame_stats_config(Some(env));
+        assert_eq!(c.csv.as_deref(), Some(std::path::Path::new("/tmp/frames.csv")));
+        assert_eq!((c.report_from, c.log_every_ns), (4200, Some(1_000_000_000)));
+        let quiet = frame_stats_config(None);
+        assert_eq!((quiet.csv, quiet.report_from, quiet.log_every_ns), (None, 0, None));
+    }
 
     #[test]
     fn the_switch_is_set_and_not_zero() {

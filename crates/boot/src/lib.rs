@@ -26,6 +26,7 @@ pub mod custom_games;
 pub mod d3d_diag;
 pub mod d3d_glue;
 pub mod dsound_glue;
+pub mod effect_census;
 pub mod fallback;
 pub mod fov_row;
 pub mod game_glue;
@@ -573,6 +574,22 @@ fn describe(ev: Option<&Event>, thread: u32) -> String {
         },
         Some(e) => format!("{e:x?}"),
         None => "no event".into(),
+    }
+}
+
+/// Why `H2_PERF_FROM`, `H2_TIMELINE` or `H2_PROFILE` will do nothing in
+/// this run, if they won't: the session needs an h2 built with
+/// `--features perf`, and opens only at `H2_PERF_FROM` (a present number
+/// or `level`), so `H2_TIMELINE`/`H2_PROFILE` alone write nothing.
+pub fn perf_env_note(perf_build: bool, perf_from: bool, session_vars: bool) -> Option<&'static str> {
+    match (perf_build, perf_from, session_vars) {
+        (false, true, _) | (false, _, true) => Some(
+            "perf: H2_PERF_FROM, H2_TIMELINE and H2_PROFILE need an h2 built with --features perf; no session, nothing written",
+        ),
+        (true, false, true) => Some(
+            "perf: H2_TIMELINE/H2_PROFILE open their session at H2_PERF_FROM (a present or `level`), which is unset; nothing written",
+        ),
+        _ => None,
     }
 }
 
@@ -1234,20 +1251,28 @@ pub fn run_hosted_with_live(
     // H2_FRAME_STATS=1: frame times split by phase (docs/perf/frame-budget.md).
     // `h2 play --frame-stats` may have started them already.
     let frame_stats = timeline::phase::enabled() || timeline::phase::start_from_env();
+    // H2_EFFECT_CENSUS=1: a line per new timed light (EXPLOSION for a
+    // grenade-sized one) and an exit summary (effect_census.rs).
+    let mut effect_census = effect_census::requested_by(std::env::var(effect_census::ENV).ok().as_deref()).then(|| {
+        eprintln!("effects: census on ({}): a line per new timed light, a summary at exit", effect_census::ENV);
+        (effect_census::Census::new(), u64::MAX)
+    });
     // H2_PERF_FROM=N (cli built with `--features perf`): open
     // `perf::Session::from_env()` (H2_PROFILE, H2_TIMELINE) at present N;
     // H2_PERF_FROM=level at the first present after the level loaded
     // (`level_boot::loaded_at`). It is finished below, before the module is
     // dropped.
+    if let Some(note) = perf_env_note(
+        cfg!(feature = "perf"),
+        perf_from.is_some(),
+        ["H2_TIMELINE", "H2_PROFILE"].iter().any(|k| std::env::var_os(k).is_some_and(|v| !v.is_empty())),
+    ) {
+        eprintln!("{note}");
+    }
     #[cfg(feature = "perf")]
     let mut perf_from = perf_from;
     #[cfg(not(feature = "perf"))]
-    {
-        if perf_from.is_some() {
-            eprintln!("perf: H2_PERF_FROM needs an h2 built with --features perf; no session");
-        }
-        let _ = &level_name;
-    }
+    let _ = &level_name;
     #[cfg(feature = "perf")]
     let mut perf_session: Option<perf::Session> = None;
     // The sampler's main target (agent glue sets it too).
@@ -1313,6 +1338,16 @@ pub fn run_hosted_with_live(
                 .is_err()
         {
             input_errors += 1;
+        }
+        if let Some((census, last)) = &mut effect_census {
+            let present = d3d_diag::presents();
+            if present != *last {
+                *last = present;
+                let mem = loaded.runtime.memory();
+                for line in census.at_present(&*mem, present) {
+                    eprintln!("{line}");
+                }
+            }
         }
         if let Some(h) = &harness {
             h.after_slice(&loaded.runtime, d3d_diag::presents());
@@ -1439,6 +1474,9 @@ pub fn run_hosted_with_live(
     if let Some(i) = &d3d_calls {
         eprintln!("{}", d3d_glue::describe(i));
     }
+    if let Some((census, _)) = &effect_census {
+        eprintln!("{}", census.summary());
+    }
     if let Some(s) = fallback::STATS.lock().unwrap().as_ref() {
         let first: Vec<String> = s.first.iter().map(|f| format!("{:#x}", f.0)).collect();
         eprintln!(
@@ -1525,6 +1563,16 @@ mod string_ids;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn perf_env_note_names_what_writes_nothing() {
+        assert!(perf_env_note(false, false, true).unwrap().contains("--features perf"));
+        assert!(perf_env_note(false, true, false).unwrap().contains("--features perf"));
+        assert!(perf_env_note(true, false, true).unwrap().contains("H2_PERF_FROM"));
+        assert_eq!(perf_env_note(true, true, true), None);
+        assert_eq!(perf_env_note(false, false, false), None);
+        assert_eq!(perf_env_note(true, false, false), None);
+    }
 
     /// A minimal XBE: `.text` at 0x11000 holding `code` (int3-filled to
     /// 0x100 bytes), and `.rdata` at 0x12000 holding a kernel thunk table
