@@ -17,7 +17,7 @@ import { adminState } from "../admin/state";
 import { DASHBOARD_EXIT, STATS_HOME, statsNav } from "./modes";
 import { gameImage } from "../state/gameart";
 import { bannerKey } from "../lib/gameart";
-import { STATS_NAME } from "../brand";
+import { DASH_NAME, STATS_NAME } from "../brand";
 import Legal from "../components/Legal";
 import { STATS_ROOT, statsPath } from "../routes";
 
@@ -56,7 +56,7 @@ export default function StatsLayout(props: { children?: JSX.Element }) {
                     <li class="s-welcome-hi">Welcome, <b>guest</b>!</li>
                     <li class="ico ico-bolt"><A href={statsPath("/players")}>Players Online ({online()})</A></li>
                     <li class="ico ico-mail"><A href={statsPath("/games")}>Games Live ({liveGames(live.state).length})</A></li>
-                    <li><A href="/dash/signup">Sign Up</A><i>|</i><A href="/">Dashboard</A></li>
+                    <li><A href="/dash/signup">Sign Up</A><i>|</i><A href="/">{DASH_NAME}</A></li>
                   </ul>
                 </>
               }
@@ -88,7 +88,7 @@ export default function StatsLayout(props: { children?: JSX.Element }) {
         <footer class="s-foot">
           <Legal name={STATS_NAME} class="s-legal" />
           <ul>
-            <li><A href="/">Dashboard</A></li>
+            <li><A href="/">{DASH_NAME}</A></li>
             <li><A href={statsPath("/players")}>Players</A></li>
             <li><A href={statsPath("/ranks")}>Ranked</A></li>
             <li><A href={statsPath("/events")}>Event Log</A></li>
@@ -117,7 +117,7 @@ export function Crumbs(props: { trail: Array<[string, string?]> }) {
         </For>
       </span>
       <span class="s-crumbs-right">
-        {online()} h2 live Players Online ({games()} {games() === 1 ? "Game" : "Games"} Live)
+        {online()} Players Online ({games()} {games() === 1 ? "Game" : "Games"} Live)
         <Show when={live.status() !== "live"}><span class="s-conn"> · {live.status()}</span></Show>
       </span>
     </div>
@@ -132,7 +132,7 @@ export function Strip(props: { kind: "home" | "players"; children?: JSX.Element 
   return (
     <div class={`s-strip s-strip--${props.kind}`} classList={{ "s-strip--shot": !!shot() }}>
       <div class="s-strip-art" aria-hidden="true" style={shot() ? { "background-image": `url("${shot()!.url}")` } : undefined} />
-      <div class="s-strip-mark" aria-hidden="true"><Wordmark height={props.kind === "home" ? 34 : 24} /><small>{{ home: "online", players: "players" }[props.kind]}</small></div>
+      <div class="s-strip-mark" aria-hidden="true"><Wordmark height={props.kind === "home" ? 34 : 24} /><small>{{ home: "stats", players: "players" }[props.kind]}</small></div>
       {props.children}
     </div>
   );

@@ -463,7 +463,12 @@ the Worker redirects to ([live-worker.md](live-worker.md)).
   sends the `.br` copy to a browser that takes Brotli, else the `.gz` one;
   the publish uploads the `.br` copy with `Content-Encoding: br`. Brotli is
   decoded by the browser's network stack, before any script sees it.
-  Pictures get no copies (they are compressed already).
+  Pictures get no copies (they are compressed already). A copy older than
+  its file (by modification time) is stale and ignored, by the server's
+  redirects and by the publish, which then uploads the plain file: whoever
+  rewrites a file after extraction (`bun run banner` rewriting
+  `manifest.json`) writes its copies again, and a copy left behind cannot
+  go out in its place.
 - **Meshopt, where it pays.** A glb's vertex and index data is compressed
   with `EXT_meshopt_compression` (meshoptimizer's codecs, lossless, no
   quantisation or filters; the index codec may rotate a triangle's corners,
@@ -477,8 +482,11 @@ the Worker redirects to ([live-worker.md](live-worker.md)).
   positions, normals and texture coordinates (`KHR_mesh_quantization`) is
   what would make meshopt pay for levels; not done yet.
 - **Content-addressed by extraction.** Published files live under
-  `art/<stamp>/`, the stamp a hash of every file's path and size and the
-  manifest: a new extraction is a new set of addresses, so every object is
+  `art/<stamp>/`, the stamp a hash of every file's path and size, which
+  form of it is uploaded (plain, Brotli or gzip) and that form's size, and
+  the manifest: a new extraction, or any change to what would be uploaded
+  (a copy written again or gone stale), is a new set of addresses, so
+  every object is
   `Cache-Control: public, max-age=31536000, immutable`, the manifest too.
   The Worker's redirect to it is cacheable for five minutes (a
   `?v=<stamp>` address for a year). The web app loads the manifest
@@ -818,8 +826,10 @@ cd web && bun install && bun run banner [--art DIR] [--chrome PATH] [--shots DIR
 or `$H2_LIVE_DATA/game-art`). The banners are written into it as
 `banner/home.jpg` and `banner/strip.jpg` and added to its `manifest.json`
 as `banner/home` and `banner/strip` (earlier `banner/*` keys are replaced,
-nothing else is touched), so the native server serves them and
-`h2 live assets publish` uploads them with the rest. An extraction starts
+nothing else is touched), and the manifest's `.br` and `.gz` copies are
+written again from the new bytes (Brotli quality 11 with a 16 MiB window,
+gzip level 9, as the extractor writes them), so the native server serves
+them and `h2 live assets publish` uploads them with the rest. An extraction starts
 the directory afresh: run it again after `h2 live assets extract`. It
 takes about ten seconds. `--shots DIR` also writes each shot alone.
 
