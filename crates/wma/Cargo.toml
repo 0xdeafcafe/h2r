@@ -13,6 +13,8 @@ xbe.workspace = true
 thiserror.workspace = true
 sha2 = "0.10.9"
 asf = { path = "../asf" }
+# Machine snapshots: a session's whole state (Session::save_state).
+snapshot = { path = "../snapshot" }
 
 [dev-dependencies]
 asf = { path = "../asf", features = ["disc"] }

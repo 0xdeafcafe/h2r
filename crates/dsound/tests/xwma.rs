@@ -444,3 +444,44 @@ fn a_disc_stream_decodes_natively_through_the_boundary() {
         );
     }
 }
+
+#[test]
+fn a_loaded_codec_instance_decodes_on_like_the_saved_one() {
+    let key = snapshot::BuildKey {
+        stamp: "wma-test".into(),
+        switches: String::new(),
+    };
+    let mut a = world();
+    let (r, handle) = a.create(12003, 4459);
+    assert_eq!(r, OK);
+    a.input.lock().unwrap().packets = (0..4).map(|s| silent(s, 4459)).collect();
+    // Two packets in: the second held back for the reservoir.
+    for _ in 0..2 {
+        assert_eq!(a.call(BEGIN, &[handle]), OK);
+        assert_eq!(a.call(DECODE, &[handle]), PACKET_DONE);
+    }
+    a.pcm(handle);
+    let mut out = snapshot::SnapshotWriter::new(snapshot::Header {
+        build: key.clone(),
+        name: "wma".into(),
+        tick: 0,
+        presents: 0,
+        notes: Vec::new(),
+    });
+    a.hle.save_snapshot(&mut out).unwrap();
+    let file = out.finish().unwrap();
+    let want = a.decode_all(handle);
+
+    // Another world with an instance of its own, replaced by the load.
+    let mut b = world();
+    let (_, _other) = b.create(16002, 5945);
+    b.hle
+        .load_snapshot(&snapshot::Snapshot::open(&file, &key).unwrap())
+        .unwrap();
+    assert_eq!(b.hle.streams(), 1);
+    b.input.lock().unwrap().packets = (2..4).map(|s| silent(s, 4459)).collect();
+    assert_eq!(b.decode_all(handle), want);
+    assert_eq!(b.hle.stats().packets, a.hle.stats().packets);
+    // Handles carry on from the saved run's.
+    assert_eq!(a.create(12003, 4459).1, b.create(12003, 4459).1);
+}
