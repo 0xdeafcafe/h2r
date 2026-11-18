@@ -85,6 +85,8 @@ gltf = { version = "1", default-features = false, features = ["names"] }
 png = "0.18"
 
 [target.'cfg(unix)'.dependencies]
+# `h2 disk clean` (docs/dev/disk.md).
+diskclean = { path = "../diskclean" }
 libc = "0.2"
 # Enable runtime-detected ARM SHA instructions for full-image cache
 # validation. sha2-asm has no MSVC build; Windows uses the portable code.
