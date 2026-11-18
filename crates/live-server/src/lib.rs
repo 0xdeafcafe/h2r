@@ -61,7 +61,7 @@ use anyhow::{Context, Result, bail};
 
 pub use app::{ApiError, Live, MAX_TITLE_FILE, Policy};
 pub use identity::ServerIdentity;
-pub use sessions::{CoopGame, CoopLink, Viewer};
+pub use sessions::{CoopGame, CoopLink, Viewer, strip_addresses};
 
 /// The Postgres database servers used before SQLite was the default, and
 /// the one `h2 play --live`'s embedded server tries first.

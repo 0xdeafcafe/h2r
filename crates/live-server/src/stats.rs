@@ -778,7 +778,7 @@ pub async fn get_summary(
 ) -> Result<Response, ApiError> {
     let viewer = live.read_viewer(crate::http::bearer(&headers))?;
     let window = p.get("window").map_or("7d", String::as_str);
-    let all = viewer == crate::sessions::Viewer::Admin;
+    let all = viewer.is_admin();
     let v = live
         .stats
         .summary(window, crate::app::now(), all)

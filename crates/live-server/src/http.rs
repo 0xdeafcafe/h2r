@@ -115,6 +115,9 @@ struct Paging {
     limit: usize,
 }
 
+/// The most events one `GET /v1/events` page holds.
+pub const EVENTS_MAX_LIMIT: usize = 200;
+
 fn paging(p: &HashMap<String, String>) -> ApiResult<Paging> {
     let num = |k: &str| -> ApiResult<Option<u64>> {
         p.get(k)
@@ -491,7 +494,9 @@ fn event_query(p: &HashMap<String, String>) -> ApiResult<Query> {
     let paging = paging(p)?;
     Ok(Query {
         after: paging.after,
-        limit: paging.limit,
+        // A page of the log is at most EVENTS_MAX_LIMIT events: GameFrames
+        // make 1000 of them megabytes.
+        limit: paging.limit.min(EVENTS_MAX_LIMIT),
         stream: p.get("stream").filter(|s| !s.is_empty()).cloned(),
         types: list_param(p, &["type", "types"]),
         exclude: list_param(p, &["exclude"]),

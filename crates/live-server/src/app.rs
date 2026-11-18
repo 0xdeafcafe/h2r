@@ -959,7 +959,8 @@ impl Live {
     }
 
     pub async fn events(&self, query: &Query) -> Result<Page<WireEvent>, ApiError> {
-        self.events_for(query, crate::sessions::Viewer::Admin).await
+        self.events_for(query, crate::sessions::Viewer::Operator)
+            .await
     }
 
     /// `GET /v1/events` as `viewer` reads it: the events it may not see
@@ -980,7 +981,7 @@ impl Live {
             let s = self.model.read();
             read.iter()
                 .filter_map(|e| match viewer {
-                    crate::sessions::Viewer::Admin => Some(e.to_wire()),
+                    crate::sessions::Viewer::Operator => Some(e.to_wire()),
                     _ => crate::sessions::wire_for(&s, e, viewer),
                 })
                 .collect()

@@ -259,8 +259,18 @@ pub enum Viewer {
     /// No bearer: only public games.
     Anonymous,
     Account(live_proto::Xuid),
-    /// The operator or an admin account: every game.
+    /// An admin account: every game and every presence detail, but not
+    /// network addresses ([`strip_addresses`]).
     Admin,
+    /// The operator (a server-key token): the log exactly as stored.
+    Operator,
+}
+
+impl Viewer {
+    /// An admin account or the operator.
+    pub fn is_admin(self) -> bool {
+        matches!(self, Viewer::Admin | Viewer::Operator)
+    }
 }
 
 impl Live {
@@ -288,7 +298,7 @@ impl Live {
 
     /// [`wire_for`] against the current read model.
     pub fn wire_for(&self, e: &RecordedEvent, viewer: Viewer) -> Option<live_proto::WireEvent> {
-        if viewer == Viewer::Admin {
+        if viewer == Viewer::Operator {
             return Some(e.to_wire());
         }
         wire_for(&self.model.read(), e, viewer)
@@ -296,7 +306,7 @@ impl Live {
 
     /// Whether a live frame's game shows to `viewer`.
     pub fn frame_shows(&self, f: &crate::games::LiveFrame, viewer: Viewer) -> bool {
-        viewer == Viewer::Admin || game_shows_to(&self.model.read(), &f.frame.game_id, viewer)
+        viewer.is_admin() || game_shows_to(&self.model.read(), &f.frame.game_id, viewer)
     }
 
     /// Whether each of `games` shows to `viewer`, under one read of the
@@ -306,7 +316,7 @@ impl Live {
         games: impl IntoIterator<Item = &'a str>,
         viewer: Viewer,
     ) -> Vec<bool> {
-        if viewer == Viewer::Admin {
+        if viewer.is_admin() {
             return games.into_iter().map(|_| true).collect();
         }
         let s = self.model.read();
@@ -317,12 +327,15 @@ impl Live {
     }
 
     fn viewer_of(&self, author: &Author) -> Viewer {
+        if matches!(author, Author::Server(_)) {
+            return Viewer::Operator;
+        }
         if self.admins.is_admin(author, &self.model.read()) {
             return Viewer::Admin;
         }
         match author {
             Author::Account { xuid, .. } => Viewer::Account(*xuid),
-            Author::Server(_) => Viewer::Admin,
+            Author::Server(_) => Viewer::Operator,
         }
     }
 }
@@ -332,7 +345,7 @@ impl Live {
 /// follow its current visibility with [`finished_shows_to`]'s rule (who was
 /// in it counts), and every other event is public.
 pub fn event_shows_to(s: &State, stream: &str, viewer: Viewer) -> bool {
-    if viewer == Viewer::Admin {
+    if viewer.is_admin() {
         return true;
     }
     if let Some(id) = stream.strip_prefix("game-") {
@@ -370,7 +383,7 @@ pub fn presence_detail_shows(
     sessions: &[String],
     viewer: Viewer,
 ) -> bool {
-    if viewer == Viewer::Admin || viewer == Viewer::Account(xuid) {
+    if viewer.is_admin() || viewer == Viewer::Account(xuid) {
         return true;
     }
     game_id.is_none_or(|g| game_shows_to(s, g, viewer))
@@ -394,17 +407,70 @@ pub fn presence_for(
     (None, busy.then(|| GENERIC_ACTIVITY.to_string()))
 }
 
-/// A log event as `viewer` reads it: None when hidden ([`event_shows_to`]);
-/// a presence event whose details the reader may not see has them replaced
-/// ([`presence_for`]), its signature withheld (`jws` empty: it signed the
-/// real data) and `redacted: true` in its data.
+/// Keys that hold a network address (an IPv4, an XNADDR, an observed
+/// endpoint) anywhere in an event's data. `port` goes too where it sits
+/// beside an `addr`.
+const ADDRESS_KEYS: [&str; 6] = [
+    "addr",
+    "endpoint",
+    "host_address",
+    "xnaddr",
+    "ip",
+    "observed",
+];
+
+/// Removes every network address from `v` (any depth): what only the
+/// operator reads. True when something was removed.
+pub fn strip_addresses(v: &mut serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::Object(m) => {
+            let mut changed = false;
+            if m.contains_key("addr") && m.remove("port").is_some() {
+                changed = true;
+            }
+            for k in ADDRESS_KEYS {
+                changed |= m.remove(k).is_some();
+            }
+            for x in m.values_mut() {
+                changed |= strip_addresses(x);
+            }
+            changed
+        }
+        serde_json::Value::Array(a) => a.iter_mut().fold(false, |c, x| strip_addresses(x) | c),
+        _ => false,
+    }
+}
+
+/// Marks a wire event redacted: `redacted: true` in its data and its
+/// signature withheld (`jws` empty), since the signature covers the data
+/// as stored.
+fn mark_redacted(w: &mut live_proto::WireEvent) {
+    if let Some(d) = w.data.as_object_mut() {
+        d.insert("redacted".into(), true.into());
+    }
+    w.jws = String::new();
+    w.jws_index = None;
+}
+
+/// A log event as `viewer` reads it: None when hidden ([`event_shows_to`]).
+/// Anyone but the operator gets it without network addresses
+/// ([`strip_addresses`]); a presence event whose details the reader may not
+/// see has them replaced ([`presence_for`]). Either way a changed event is
+/// marked `redacted: true` with its signature withheld (`jws` empty: it
+/// signed the stored data).
 pub fn wire_for(s: &State, e: &RecordedEvent, viewer: Viewer) -> Option<live_proto::WireEvent> {
     if !event_shows_to(s, &e.body.stream, viewer) {
         return None;
     }
     let mut w = e.to_wire();
+    if viewer == Viewer::Operator {
+        return Some(w);
+    }
+    if strip_addresses(&mut w.data) {
+        mark_redacted(&mut w);
+    }
     let b = &e.body;
-    if viewer == Viewer::Admin
+    if viewer.is_admin()
         || !matches!(
             b.kind.as_str(),
             live_proto::types::SIGNED_IN | live_proto::types::PRESENCE_CHANGED
@@ -435,10 +501,8 @@ pub fn wire_for(s: &State, e: &RecordedEvent, viewer: Viewer) -> Option<live_pro
         if game_id.is_some() || activity.is_some() {
             d.insert("activity".into(), GENERIC_ACTIVITY.into());
         }
-        d.insert("redacted".into(), true.into());
     }
-    w.jws = String::new();
-    w.jws_index = None;
+    mark_redacted(&mut w);
     Some(w)
 }
 
@@ -486,7 +550,7 @@ pub fn finished_shows_to(
     friends: impl Fn(live_proto::Xuid, live_proto::Xuid) -> bool,
 ) -> bool {
     let v = match viewer {
-        Viewer::Admin => return true,
+        Viewer::Admin | Viewer::Operator => return true,
         _ if visibility.is_public() => return true,
         Viewer::Anonymous => return false,
         Viewer::Account(v) => v,
@@ -652,12 +716,13 @@ pub(crate) async fn detail(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    live.authorize_read(crate::http::bearer(&headers))?;
+    let viewer = live.read_viewer(crate::http::bearer(&headers))?;
     let state = live.model.read();
     let item = state
         .sessions
         .get(&id)
         .ok_or_else(|| not_found("no such session"))?;
+    let item = for_reader(item, viewer != Viewer::Anonymous);
     Ok(crate::http::json(
         StatusCode::OK,
         &json!({"session":item,"position":live.position()}),
@@ -669,6 +734,9 @@ pub(crate) async fn list(
     Query(q): Query<BTreeMap<String, String>>,
 ) -> Result<Response, ApiError> {
     let viewer = live.read_caller(crate::http::bearer(&headers))?;
+    // A checked bearer is a game (or the operator) looking for a host: it
+    // gets the addresses it joins by; an anonymous reader does not.
+    let signed = crate::http::bearer(&headers).is_some();
     let limit = q
         .get("limit")
         .map(|v| v.parse::<usize>())
@@ -725,11 +793,21 @@ pub(crate) async fn list(
     Ok(crate::http::json(
         StatusCode::OK,
         &Page {
-            items,
+            items: items.iter().map(|s| for_reader(s, signed)).collect(),
             next,
             position: live.position(),
         },
     ))
+}
+/// A session as the session endpoints answer it: whole for a signed-in
+/// reader (a game joins by its addresses), without them
+/// ([`strip_addresses`]) for an anonymous one.
+fn for_reader(s: &Session, signed: bool) -> serde_json::Value {
+    let mut v = serde_json::to_value(s).expect("serializes");
+    if !signed {
+        strip_addresses(&mut v);
+    }
+    v
 }
 /// `GET /v1/coop/games`: finished co-op campaign games, newest first. The
 /// cursor is the log position of the closing event; `?player=` narrows to
