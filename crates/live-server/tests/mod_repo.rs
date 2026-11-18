@@ -213,7 +213,11 @@ async fn lists_sort_filter_and_page() {
     assert_eq!(page1["next"], p3.to_string());
     let page2 = list(&h, &format!("limit=2&cursor={p3}")).await;
     assert_eq!(names(&page2), ["Midship Low Gravity", "Lockout Snipers"]);
-    let page3 = list(&h, &format!("limit=2&cursor={}", page2["next"].as_str().unwrap())).await;
+    let page3 = list(
+        &h,
+        &format!("limit=2&cursor={}", page2["next"].as_str().unwrap()),
+    )
+    .await;
     assert!(names(&page3).is_empty());
     assert!(page3["next"].is_null());
 
@@ -257,7 +261,10 @@ async fn lists_sort_filter_and_page() {
         ["Lockout Fog"]
     );
     // Empty parameters are absent ones.
-    assert_eq!(names(&list(&h, "q=&base=&category=&cursor=").await).len(), 4);
+    assert_eq!(
+        names(&list(&h, "q=&base=&category=&cursor=").await).len(),
+        4
+    );
 
     // Bad queries are refused.
     for bad in [
@@ -284,7 +291,10 @@ async fn downloads_count_once_per_signed_in_account() {
 
     // Anonymous reads (the web) and a token that does not check out on a
     // public server read the manifest but count nothing.
-    assert_eq!(h.get(&format!("/v1/maps/{old}")).await.status, StatusCode::OK);
+    assert_eq!(
+        h.get(&format!("/v1/maps/{old}")).await.status,
+        StatusCode::OK
+    );
     let bad = h
         .call(
             Method::GET,

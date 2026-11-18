@@ -251,16 +251,18 @@ pub fn import(opts: &ImportOptions) -> Result<Imported> {
     let input_path = &opts.input;
     let input =
         std::fs::read(input_path).with_context(|| format!("reading {}", input_path.display()))?;
-    let info_path = opts.info.clone().unwrap_or_else(|| {
-        input_path
-            .parent()
-            .unwrap_or(Path::new("."))
-            .join(MOD_FILE)
-    });
+    let info_path = opts
+        .info
+        .clone()
+        .unwrap_or_else(|| input_path.parent().unwrap_or(Path::new(".")).join(MOD_FILE));
     let info = ModInfo::read(&info_path)?.unwrap_or_default();
     let kind = match ModInfo::text(&info.format) {
-        Some(f) => InputKind::named(&f)
-            .ok_or_else(|| anyhow!("{}: format {f:?} is not map, ppf, ips or bps", info_path.display()))?,
+        Some(f) => InputKind::named(&f).ok_or_else(|| {
+            anyhow!(
+                "{}: format {f:?} is not map, ppf, ips or bps",
+                info_path.display()
+            )
+        })?,
         None => InputKind::sniff(&input).ok_or_else(|| {
             anyhow!(
                 "{}: not a map, PPF, IPS or BPS file (give format in {MOD_FILE})",
@@ -313,8 +315,8 @@ pub fn import(opts: &ImportOptions) -> Result<Imported> {
     }];
     if let Some(image) = ModInfo::text(&info.image) {
         let from = info_path.parent().unwrap_or(Path::new(".")).join(&image);
-        let bytes =
-            std::fs::read(&from).with_context(|| format!("reading the image {}", from.display()))?;
+        let bytes = std::fs::read(&from)
+            .with_context(|| format!("reading the image {}", from.display()))?;
         if bytes.len() as u64 > MAX_IMAGE_BYTES {
             bail!("{}: over {} KiB", from.display(), MAX_IMAGE_BYTES / 1024);
         }
@@ -327,14 +329,18 @@ pub fn import(opts: &ImportOptions) -> Result<Imported> {
     let extras = ModInfo {
         name: Some(name),
         source_url: ModInfo::text(&info.source_url),
-        category: opts.category.clone().or_else(|| ModInfo::text(&info.category)),
+        category: opts
+            .category
+            .clone()
+            .or_else(|| ModInfo::text(&info.category)),
         base_map: Some(base),
         ..ModInfo::default()
     };
     let mut doc = live_proto::maps::MapDocument::new(manifest.clone(), None);
     doc.category = extras.category.clone();
     doc.source_url = extras.source_url.clone();
-    doc.validate_extras().map_err(|e| anyhow!("{}: {e}", info_path.display()))?;
+    doc.validate_extras()
+        .map_err(|e| anyhow!("{}: {e}", info_path.display()))?;
 
     std::fs::write(dir.join(&file), &layer)?;
     std::fs::write(dir.join(MOD_FILE), toml::to_string(&extras)?)?;
@@ -354,7 +360,10 @@ pub fn import(opts: &ImportOptions) -> Result<Imported> {
 /// `publish`.
 pub fn extras_in(dir: &Path) -> Result<(Option<String>, Option<String>)> {
     let info = ModInfo::read(&dir.join(MOD_FILE))?.unwrap_or_default();
-    Ok((ModInfo::text(&info.category), ModInfo::text(&info.source_url)))
+    Ok((
+        ModInfo::text(&info.category),
+        ModInfo::text(&info.source_url),
+    ))
 }
 
 #[cfg(test)]

@@ -108,13 +108,23 @@ unknown_key = "ignored"
         ),
     );
     let out = import(&f.opts(input.clone())).unwrap();
-    assert_eq!(out.dir, input.parent().unwrap().join("lockout_snipers.package"));
+    assert_eq!(
+        out.dir,
+        input.parent().unwrap().join("lockout_snipers.package")
+    );
     let m = &out.manifest;
     assert_eq!(m.package.name, "Lockout Snipers");
     assert_eq!(m.package.author.as_deref(), Some("An Old Modder"));
-    assert_eq!(m.package.description.as_deref(), Some("Snipers on every rack."));
+    assert_eq!(
+        m.package.description.as_deref(),
+        Some("Snipers on every rack.")
+    );
     assert_eq!(m.base.map, "lockout");
-    assert_eq!(m.base.sha256, Some(Sha256::of(&f.lockout)), "the disc's own map");
+    assert_eq!(
+        m.base.sha256,
+        Some(Sha256::of(&f.lockout)),
+        "the disc's own map"
+    );
     assert!(!m.base.derived);
     assert_eq!(m.patches.len(), 1);
     assert_eq!(m.patches[0].file, "mod.bps", "the length changed");
@@ -203,7 +213,12 @@ fn patches_are_checked_against_the_disc_and_kept() {
 
     // One made against another map is refused: wrong base.
     let other = content::patch::write::bps(&f.midship, &grown_mod(&f.midship));
-    let input = f.mod_dir("wrong", "wrong.bps", &other, Some("base_map = \"lockout\"\n"));
+    let input = f.mod_dir(
+        "wrong",
+        "wrong.bps",
+        &other,
+        Some("base_map = \"lockout\"\n"),
+    );
     let err = format!("{:#}", import(&f.opts(input)).unwrap_err());
     assert!(err.contains("does not apply"), "{err}");
 }
