@@ -38,7 +38,7 @@ Opens a window and runs the recompiled game live (builds the dylib first when
 H2_FRAME_STATS=1) shows fps, p50/p99/max frame time and the split into game
 CPU, push-buffer decode, wgpu encode, submit, GPU wait and pacing over the
 last 5 s, in the window and once a second on stderr, and the worst frames at
-exit (docs/perf/frame-budget.md). A two-line development-build watermark (commit,
+exit (docs/perf/gameplay-budget.md). A two-line development-build watermark (commit,
 branch, build time, fps, frame time, draws, map, renderer) runs along the
 bottom of the picture; F3 toggles it, --no-watermark or H2_WATERMARK=0 turns
 it off. --input-timeline plays an
@@ -49,7 +49,7 @@ the game. --no-mappack or H2_MAPPACK=0 skips it (docs/game/map-pack.md).
 A halo1.iso next to the disc is converted into --data on the way in (its
 campaign under Campaign, its multiplayer maps in the map list), again only
 when the disc or the converter changed; a warning never stops the game.
---no-halo1 or H2_HALO1=0 skips it (docs/game/campaigns.md).
+--no-halo1 or H2_HALO1=0 skips it (docs/halo1/campaign.md).
 The intro, attract and credits movies play, with their sound, when `h2 movies`
 has installed them for this disc (in --movies DIR, by default the app data
 directory); otherwise, with --no-movies, or on a --level boot (unless --movies

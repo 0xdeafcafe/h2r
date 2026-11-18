@@ -5,7 +5,7 @@
 //! animated channel is a list of keyframes (frame number and value); frame 0
 //! is a per-node "static" value, and frames between keys are interpolated:
 //! linearly for translations and scales, normalised-linearly for rotations.
-//! Layout and evidence: `docs/formats/h1-models.md` ("Compressed
+//! Layout and evidence: `docs/halo1/models.md` ("Compressed
 //! animations").
 
 use crate::h1::{Transform, normalize, u16_at, u32_at};

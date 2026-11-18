@@ -10,7 +10,7 @@
 //!   tree. The sky's render model comes from [`h1models::model_from_map`].
 //!
 //! Layouts, offsets and their evidence are in
-//! `docs/formats/h1-sky.md`. Field names here are ours: the disc evidence
+//! `docs/halo1/sky.md`. Field names here are ours: the disc evidence
 //! fixes offsets, sizes and value ranges, not official names. No game data
 //! is in this crate or its tests; real maps are read only by the `#[ignore]`
 //! tests, from the owner's discs (`$H1_ISO`, `$H2_ISO`).

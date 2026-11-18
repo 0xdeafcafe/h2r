@@ -4,7 +4,7 @@
 //! On Xbox the samples are in the map itself, like bitmap pixels: a
 //! permutation's samples data reference holds a **file offset in the
 //! decompressed map** and a size. Layouts and their evidence are in
-//! `docs/formats/h1-sounds.md`; offsets below are the ones the disc
+//! `docs/halo1/sounds.md`; offsets below are the ones the disc
 //! confirms.
 
 use h1map::{Block, Group, H1Map, Tag, TagId, TagRef};

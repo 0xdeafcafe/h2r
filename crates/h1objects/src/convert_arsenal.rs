@@ -77,7 +77,7 @@ impl Converter<'_> {
     /// like a weapon's first-person model, once. The player
     /// representation names it (`h1convert::globals::set_player_hands`):
     /// the engine binds the arms' nodes to a weapon's first-person graph
-    /// by name (docs/formats/h1-models.md, "First-person graphs"), and
+    /// by name (docs/halo1/models.md, "First-person graphs"), and
     /// Halo 1's graphs name Halo 1's arms' nodes.
     pub fn first_person_arms(&mut self, id: h1map::TagId) -> Result<TagId> {
         let t = self.h1_tag(id)?;
@@ -232,7 +232,7 @@ impl Converter<'_> {
             None => None,
         };
         parts.first_person = (fp_model, fp_anim);
-        // Halo 1's weapon HUD (docs/game/hud.md): `+0x2b0` names it, and the
+        // Halo 1's weapon HUD (docs/halo1/hud.md): `+0x2b0` names it, and the
         // counterpart's becomes the Halo 2 side of the weapon's HUD pair.
         let mut halo2_hud = None;
         if let Some(wphi) = w.hud {

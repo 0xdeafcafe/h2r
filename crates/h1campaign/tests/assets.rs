@@ -1,4 +1,4 @@
-//! Both variants of every campaign level (docs/game/campaigns.md §5): Halo
+//! Both variants of every campaign level (docs/halo1/campaign.md §5): Halo
 //! 1's assets and Halo 2's, built as the import writes them. From the
 //! owner's discs (`$H1_ISO`, `$H2_DISC`); nothing is written to disk.
 //! `H1_LEVELS=a30,b40` picks levels.

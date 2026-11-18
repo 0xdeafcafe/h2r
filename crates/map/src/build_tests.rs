@@ -481,6 +481,42 @@ fn string_id_encoding() {
     assert_eq!(set.intern("beta").unwrap(), 4 << 24 | 1);
 }
 
+/// `intern` keeps an index between calls; it answers as a fresh pass over
+/// the table would: the first entry with the value, whatever was done to
+/// the table in between.
+#[test]
+fn intern_follows_the_table() {
+    let id = |i: u32, s: &str| (s.len() as u32) << 24 | i;
+    let mut set = TagSet::new(CacheType::Multiplayer, "x", "y");
+    set.strings = vec![
+        Some(String::new()),
+        Some("a".into()),
+        Some("a".into()),
+        None,
+    ];
+    assert_eq!(set.intern("a").unwrap(), id(1, "a"), "the first");
+    assert_eq!(set.intern("b").unwrap(), id(4, "b"));
+    // Entries pushed by hand are seen.
+    set.strings.push(Some("c".into()));
+    assert_eq!(set.intern("c").unwrap(), id(5, "c"));
+    // The table replaced, the same length or shorter.
+    set.strings = vec![Some("b".into()), Some("x".into()), None, None, None, None];
+    assert_eq!(set.intern("b").unwrap(), id(0, "b"));
+    assert_eq!(set.intern("a").unwrap(), id(6, "a"));
+    set.strings = vec![Some("a".into())];
+    assert_eq!(set.intern("a").unwrap(), id(0, "a"));
+    // An entry changed in place that the index would still name.
+    set.strings[0] = Some("z".into());
+    set.strings.push(Some("a".into()));
+    assert_eq!(set.intern("a").unwrap(), id(1, "a"));
+    // A copy has the same table and indexes it itself.
+    let mut copy = set.clone();
+    assert_eq!(copy, set);
+    assert_eq!(copy.intern("z").unwrap(), id(0, "z"));
+    assert_eq!(copy.intern("new").unwrap(), id(2, "new"));
+    assert_eq!(set.strings.len(), 2);
+}
+
 #[test]
 fn new_datums_carry_slot_and_salt() {
     let mut set = TagSet::new(CacheType::Multiplayer, "x", "y");

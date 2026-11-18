@@ -134,7 +134,7 @@ impl Level {
 
 /// `matg +0x178`: the level select's element; its block `+8` holds
 /// `0xb50`-byte level records: `+0` campaign id, `+4` map id, `+0x10` nine
-/// names of 32 UTF-16 units, English first (docs/game/multiple-campaigns.md).
+/// names of 32 UTF-16 units, English first (docs/halo1/campaign-picker.md).
 const MATG_UI: usize = 0x178;
 const UI_LEVELS: usize = 8;
 const UI_LEVEL_LEN: u32 = 0xb50;

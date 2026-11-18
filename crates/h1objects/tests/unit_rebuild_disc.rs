@@ -931,7 +931,7 @@ fn bipeds_rebuilt_against_the_template_path() {
             }
 
             // The player: the HUD interfaces name Halo 1's HUD, written
-            // from scratch (docs/game/hud.md).
+            // from scratch (docs/halo1/hud.md).
             if player {
                 players += 1;
                 let Some(Val::Block(hud)) = r.at(BIPD_HUD) else {

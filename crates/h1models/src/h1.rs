@@ -1,6 +1,6 @@
 //! Reading Halo 1 Xbox `mode` (model) and `antr` (animation graph) tags.
 //!
-//! Layouts are in `docs/formats/h1-models.md`, with the evidence for each
+//! Layouts are in `docs/halo1/models.md`, with the evidence for each
 //! field. Everything here reads through [`Memory`], so the same code runs on a
 //! real map ([`h1map::H1Map`]) and on invented bytes in tests.
 

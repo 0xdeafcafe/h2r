@@ -423,6 +423,37 @@ it isn't pictured here.)
 Then start a game on that map: a custom game for a multiplayer map. In
 multiplayer, everyone in the game needs the same edited map.
 
+### Play from the editor
+
+The quickest way: press **F5** (or **Play** in the **Game** tab beside the
+log). The game opens in its own window straight into the map, with your
+edits, saved or not; nothing is saved for it. Pick where you start under
+**Spawn**: the level's own spawn, under the editor camera, or at the
+selected placement. **Shift+F5** closes that game. Play needs `h2`
+installed (`~/.cargo/bin/h2`, or name it in the Game tab) and the disc.
+
+While the game runs, the editor stays paired with it:
+
+- the status bar shows the game's map, whether it is playing or paused,
+  and its tick;
+- the viewport shows the players (green), AI (red) and vehicles (blue)
+  where they are now;
+- **Go to player** brings the camera to you; **Teleport player here**
+  moves you to the spot the camera looks at, and **T** over the viewport
+  to the spot under the mouse;
+- **Pause**, **Step** and **Resume** freeze and step the game;
+- moving a placement, or changing its fields, goes to the game at once.
+  The game only reads a placement when it makes the object, so you see
+  it at the next respawn (a weapon or vehicle spawn, your own respawn at
+  a starting location) or after **Play** again. Things already in the
+  world stay put. Adding or removing placements needs **Play** again.
+
+To pair with a game you started yourself, start it with an agent socket
+(`H2_AGENT=<path> h2 play ...`, or `h2 serve`) and pick it under **Pair**
+(**Find** lists the sockets it can see). In a co-op game the editor sends
+nothing to the game: one machine changing alone would split it from the
+others.
+
 ### Your packages in the Maps list
 
 Every package in the data folder is listed under **Packages** in **Maps**,
@@ -441,7 +472,7 @@ that package. (The disc that has the package's map must be open.)
 The editor can show Halo 1 maps too.
 
 **Converted maps.** Once you have imported Halo 1 multiplayer maps
-([h1-multiplayer.md](../game/h1-multiplayer.md)), each is listed under
+([multiplayer.md](../halo1/multiplayer.md)), each is listed under
 **Halo 1** twice, once per sandbox: for example **Blood Gulch (H1
 sandbox)** (Halo 1's weapons and vehicles) and **Blood Gulch (H2
 sandbox)** (Halo 2's). Click one to open it in the Scenario tool and

@@ -1,4 +1,4 @@
-//! More than one campaign (docs/game/multiple-campaigns.md): a campaign's
+//! More than one campaign (docs/halo1/campaign-picker.md): a campaign's
 //! manifest, and the level-list records 1.0 reads, built from it.
 //!
 //! 1.0 keeps its campaign levels in two lists in the globals tag (`matg`) of

@@ -52,16 +52,16 @@ Pieces:
   a tag set: header, tag index, string IDs, metadata, raw resources and BSP
   slots. Today `MapEditor` only patches an existing map. The builder is the
   biggest missing piece, and Halo 1 needs it first. New maps made from
-  scratch also need it ([maps.md](maps.md)).
+  scratch also need it ([maps.md](../game/maps.md)).
 - **`crates/h1models`** (Built) converts Halo 1 `mode` and `antr` tags to
   Halo 2 `mode` and `jmad` block trees for the builder
-  ([h1-models.md](../formats/h1-models.md)).
+  ([models.md](models.md)).
 - **`crates/h1bitmaps`** (Built) decodes Halo 1 `bitm` images to RGBA8
   with Halo 2's texture decoder and converts them to Halo 2 `bitm` block
-  trees, pixels copied as they are ([h1-bitmaps.md](../formats/h1-bitmaps.md)).
+  trees, pixels copied as they are ([bitmaps.md](bitmaps.md)).
 - **The converter** (`crates/h1convert`) works one tag group at a time, in
   the order of §3: collision, structure BSP, placements, MOPP
-  (`h2 h1 convert`), see [h1-multiplayer.md](h1-multiplayer.md).
+  (`h2 h1 convert`), see [multiplayer.md](multiplayer.md).
   **`crates/h1campaign`** puts it and the other Halo 1 crates together for
   a campaign level (§9).
 - **The import command**, `h2 import halo1 [disc/halo1.iso]`, converts
@@ -78,13 +78,13 @@ Pieces:
 | `sbsp` structure BSP | `sbsp` + `ltmp` | collision BSP is close to Halo 2's shape. Render geometry becomes cluster sections. Halo 1 lightmap pages become Halo 2 lightmap bitmaps |
 | pathfinding | `sbsp` pathfinding data | Halo 1 maps don't contain the sectors, links and refs that Halo 2's AI needs, so we generate them from the collision BSP |
 | `shdr` family (`senv`, `soso`, `schi`, `scex`, `swat`, `sgla`, `smet`, `spla`) | `shad` written from its definition on a retail `stem` | each Halo 1 shader type (and flags: alpha-tested `senv`, additive `schi`/`sotr`) picks a stem in `shared.map` (sky layers: the sky stems where the base has them) and `h1convert::shad` fills its parameters from Halo 1's maps and tiling; no Halo 2 `shad` bytes are copied. An `senv` with detail maps draws on `tex_bump_detail_blend_detail` where the base has it (Coagulation, Beaver Creek, five campaign maps): the base alpha blends the primary (alpha 0) and secondary (alpha 1) details, then the micro detail, each a biased multiply, as Halo 1 does; elsewhere `tex_bump` with the primary detail. A normal (unblended) `senv` with a reflection cube map (`+0x324`) and a reflection brightness draws on `tex_bump_env`: Halo 1's cube map, its perpendicular and parallel colours (`+0x2a8`, `+0x2b4`) times the specular brightness (`+0x290`) as the facing and grazing tints, and the perpendicular and parallel brightnesses (`+0x2f4`, `+0x2f8`) as the facing and grazing brightness (`env_reflection_is_halo1s_rule`); a blended one keeps its blend without the reflection. Other specular colours are black (a Halo 1 base alpha is a blend or cut-out mask). Proof: `h1convert/tests/shad_rebuild.rs` (`detail_blend_is_halo1s_rule` runs the stem's colour pass on the CPU against Halo 1's rule). Water (`swat`) with a ripple map draws on `water_pool` where the base has it (Delta Approach, Beaver Creek, Coagulation): Halo 1's ripple map (`+0xc8`) as the bump, tiled by the ripple scale (`+0xc4`) and scrolling at the ripple velocity (`+0xc0`) along the ripple angle (`+0xbc`), and its reflection map (`+0x9c`), both offset by the ripple over the scene behind the water and weighed by retail's fresnel ramp (`a_swat_draws_on_water_pool_its_ripple_scrolling_along_the_ripple_angle`); elsewhere `one_alpha_env` with its base map. Halo 1's four extra ripple layers (`+0x124`), base map and tints have no place on `water_pool`. Not converted yet: model (`soso`) reflections (`soso +0x164`). The look will be close, not exact |
-| `bitm` | `bitm` | the same Xbox formats and layouts: pixels copy unchanged (**Built**, [h1-bitmaps.md](../formats/h1-bitmaps.md)) |
+| `bitm` | `bitm` | the same Xbox formats and layouts: pixels copy unchanged (**Built**, [bitmaps.md](bitmaps.md)) |
 | `mod2` + `coll` + `phys` | `mode` + `coll` + `phmo` under an `hlmt` | physics uses Halo 2's (decision 1) |
 | `antr` | `jmad` | animation codecs differ: decode, then re-encode |
 | `bipd`, `vehi`, `weap`, `eqip`, `scen`, `mach`, `ctrl` | the same groups | field-by-field. Halo 1 tuning values carry over where Halo 2 has the field |
 | `actr` + `actv` | `char` | |
 | encounters, squads, firing positions, command lists | squads, zones, firing positions, orders | |
-| scripts | Halo 2 scripts | decompile Halo 1's syntax nodes, rename the functions that differ, compile to Halo 2 nodes with `crates/hs`. Builtins Halo 2 lacks go in the Rust HS VM ([hs_vm.md](../engine/hs_vm.md)). `crates/h1scripts`, [h1-scripts.md](../formats/h1-scripts.md) |
+| scripts | Halo 2 scripts | decompile Halo 1's syntax nodes, rename the functions that differ, compile to Halo 2 nodes with `crates/hs`. Builtins Halo 2 lacks go in the Rust HS VM ([hs_vm.md](../engine/hs_vm.md)). `crates/h1scripts`, [scripts.md](scripts.md) |
 | `snd!` | `snd!` + `ugh!` | both Xbox ADPCM |
 | `ustr`, `hmt ` | string IDs, `unic` | |
 | recorded animations | recorded animations | versions differ |
@@ -97,8 +97,8 @@ Each step is proven with tests; the user plays the result.
    pull out its maps, decompress them, list their tags.
    **Built:** `crates/h1map`, `h2 h1 info|tags|bitmap|convert`,
    `h2 import halo1`; format in
-   [h1-map-format.md](../formats/h1-map-format.md). The disc's multiplayer maps
-   are read and converted in tests ([h1-multiplayer.md](h1-multiplayer.md)).
+   [map-format.md](map-format.md). The disc's multiplayer maps
+   are read and converted in tests ([multiplayer.md](multiplayer.md)).
 2. **Map builder.** Write a whole v8 map. Proof: read a retail Halo 2 map
    into a tag set, build it again, and check the result reads the same, tag
    by tag. **Built:** `map::build` and `tags::rebuild`
@@ -127,12 +127,12 @@ Each step is proven with tests; the user plays the result.
    Until cutscene animation and recordings are converted, the converter
    skips Halo 1's cinematics and a10's tutorial (§9, Cutscenes).
 8. **Menus.** The campaign picker and its level list (§4), and progress
-   saved per campaign. **Built** ([multiple-campaigns.md](multiple-campaigns.md)),
+   saved per campaign. **Built** ([campaign-picker.md](campaign-picker.md)),
    confirmed in the game.
 
 ## 4. More than one campaign
 
-**Built, confirmed in the game:** [multiple-campaigns.md](multiple-campaigns.md).
+**Built, confirmed in the game:** [campaign-picker.md](campaign-picker.md).
 In short: the level lists in `mainmenu.map`'s globals (`+0x170` start
 levels, `+0x178` the level select's campaigns and levels) are keyed by
 campaign id and have free slots, and looking a level up, starting it and
@@ -166,7 +166,7 @@ name (`h2assets::find`). No tag list is copied from either game.
 
 | Halo 1 | Halo 2 | Why |
 |---|---|---|
-| Assault rifle | SMG | The user's multiplayer rule ([h1-multiplayer.md](h1-multiplayer.md)): both automatic; a campaign has no game variant to make it the battle rifle |
+| Assault rifle | SMG | The user's multiplayer rule ([multiplayer.md](multiplayer.md)): both automatic; a campaign has no game variant to make it the battle rifle |
 | Pistol | Magnum | Same slot, the user's multiplayer choice |
 | Plasma pistol, plasma rifle, needler, sniper rifle, rocket launcher, shotgun | The same | |
 | Fuel rod (`plasma_cannon`) | Fuel rod gun (`flak_cannon`) | Halo 2's campaign has one (multiplayer's table makes it the rocket launcher only because multiplayer lacks it) |
@@ -288,7 +288,7 @@ input, what the converter must write, and the debug switch
 ## 7. Multiplayer
 
 Halo 1's multiplayer maps follow the same rules, with a sandbox setting:
-[h1-multiplayer.md](h1-multiplayer.md).
+[multiplayer.md](multiplayer.md).
 
 ## 9. The ten levels on a pinned base (**Built**, tests only)
 
@@ -440,7 +440,7 @@ Why (surveys `base_memory_and_vehicles`, `survey_bases`):
 - It is the only campaign map with every vehicle template Halo 1's levels
   use: warthog, ghost, scorpion, banshee, pelican,
   phantom (for the dropship), wraith and `c_turret_ap`, and the pelican
-  again for the lifepod (by role, h1-objects.md). 03b has most of
+  again for the lifepod (by role, objects.md). 03b has most of
   them but not `c_turret_ap`, and `0xca000` less room; 05b, 04a and 07b,
   the ones with more room, lack the warthog, ghost and scorpion.
 - It has Halo 2's marine, elite, grunt, jackal, drone and Chief bipeds and
@@ -469,7 +469,7 @@ largest groups and scenario fields):
    last `0xb4b80` bytes), so the two big ones were appended. Built tags
    are now placed largest first (`TagSet::largest_built_first`).
 
-With b40's repeated firing positions shared (h1-ai.md, Spawning), all ten
+With b40's repeated firing positions shared (ai.md, Spawning), all ten
 fit. Carrying every BSP costs little tag memory: a BSP region lives in
 the file, and only the largest region has to fit the base's BSP space
 (`0x394000`); each further BSP adds its lightmap `bitm`, its scenario
@@ -484,15 +484,15 @@ What each layer writes, from the base map up:
 
 | Layer | Written | Left out |
 |---|---|---|
-| Structure | Every Halo 1 BSP, in Halo 1's order: into the base's BSP slot of the same index, past the base's three into new `sbsp`/`ltmp` tags under Halo 1's names (templates from the base's first), with `h1convert::structure` (collision, render geometry, materials matched to the base's shaders and drawing Halo 1's own textures on copies of them (`h1convert::textures`), Halo 1's lightmap as a new `bitm`, MOPP, audibility, sound clusters, each cluster's background sound and sound environment from Halo 1's ([h1-multiplayer.md](h1-multiplayer.md), "Ambient sound")) and pathfinding generated from the collision at `sbsp+0xc4` | |
-| Sky | Halo 1's skies (`h1sky`), scaled to stay behind the level (h1-sky.md, "The model scale"), every cluster on the first; the model's materials name copies of the base's sky shaders with Halo 1's bitmaps and map scale (h1-sky.md, "The model's shaders"), else the base sky's shader, never NONE (`0x1bbf0` draws NONE, a null read in `0x16b90`; h1-multiplayer.md) | |
+| Structure | Every Halo 1 BSP, in Halo 1's order: into the base's BSP slot of the same index, past the base's three into new `sbsp`/`ltmp` tags under Halo 1's names (templates from the base's first), with `h1convert::structure` (collision, render geometry, materials matched to the base's shaders and drawing Halo 1's own textures on copies of them (`h1convert::textures`), Halo 1's lightmap as a new `bitm`, MOPP, audibility, sound clusters, each cluster's background sound and sound environment from Halo 1's ([multiplayer.md](multiplayer.md), "Ambient sound")) and pathfinding generated from the collision at `sbsp+0xc4` | |
+| Sky | Halo 1's skies (`h1sky`), scaled to stay behind the level (sky.md, "The model scale"), every cluster on the first; the model's materials name copies of the base's sky shaders with Halo 1's bitmaps and map scale (sky.md, "The model's shaders"), else the base sky's shader, never NONE (`0x1bbf0` draws NONE, a null read in `0x16b90`; multiplayer.md) | |
 | Scenario | The base `scnr` relocated as a block tree, replaced fields emptied. One BSP descriptor per Halo 1 BSP (`FixupKind::Bsp`, its `sbsp` and `ltmp`), so `switch_bsp`, zone and placement BSP indices keep Halo 1's meaning. The two root blocks every retail map holds one element per BSP of (survey `per_bsp_scenario_blocks`): cluster data `+0x290` (per cluster its background sound and sound environment, as the structure's cluster `+0x72`/`+0x74` names them, and the cluster's centroid, and the BSP's checksum `sbsp+0x08`) and `+0x388` (no points). BSP switch trigger volumes `+0x130`: Halo 1's (`scnr+0x39c`, 8 bytes, survey `h1_bsp_switch_volumes`) on its converted volumes | The base's own BSP switch volumes |
 | Player | The level's starting locations, each on the base's first element. The cyborg is converted and set as the campaign players' unit (`matg +0x138` elements 0 and 1, `h1convert::globals::set_player_unit`); Halo 1 health follows from the map name (`boot::health`) | |
-| Objects | Every base placement removed. Weapons, equipment, vehicles, scenery, placed bipeds and devices from the level's palettes through `h1objects` (palettes keep Halo 1's order, a null entry for one that doesn't convert; templates in h1-objects.md), placements with unique IDs `0x4831xxxx`, origin BSP -1, source 1. Object names are Halo 1's, each pointing at its converted placement or -1. A palette entry whose template only a donor brought places the retail object itself. Halo 1's "not placed automatically" (bit 0 of the `u16` at `+4`) is written as Halo 2's "not at start" (bit 0 of the `u32` at `+4`), so cutscene casts and props wait for the scripts that create them (a10: 67 of 107 bipeds, 51 of 56 vehicles, 92 of 274 scenery) | Palette entries with no template: over shield and camouflage (no powerup on 05a), b30's falling box. Vehicles with no template (a10's cryotube, chairs, fighterbomber and Halo ring) are built from the `vehi` definition as turrets since converter version 33, with a physics model so `vehicle_new` creates them (a stand-in sphere in version 38, Halo 1's collision as Havok polyhedra since 43; tag-definitions.md). Machines, controls and light fixtures (as machines) are placed since version 38 with their power and position device groups and flags; since version 43 a device with solid collision has a physics model built from it, a body per moving node, so a closed door blocks the player; fixtures give no light |
+| Objects | Every base placement removed. Weapons, equipment, vehicles, scenery, placed bipeds and devices from the level's palettes through `h1objects` (palettes keep Halo 1's order, a null entry for one that doesn't convert; templates in objects.md), placements with unique IDs `0x4831xxxx`, origin BSP -1, source 1. Object names are Halo 1's, each pointing at its converted placement or -1. A palette entry whose template only a donor brought places the retail object itself. Halo 1's "not placed automatically" (bit 0 of the `u16` at `+4`) is written as Halo 2's "not at start" (bit 0 of the `u32` at `+4`), so cutscene casts and props wait for the scripts that create them (a10: 67 of 107 bipeds, 51 of 56 vehicles, 92 of 274 scenery) | Palette entries with no template: over shield and camouflage (no powerup on 05a), b30's falling box. Vehicles with no template (a10's cryotube, chairs, fighterbomber and Halo ring) are built from the `vehi` definition as turrets since converter version 33, with a physics model so `vehicle_new` creates them (a stand-in sphere in version 38, Halo 1's collision as Havok polyhedra since 43; tag-definitions.md). Machines, controls and light fixtures (as machines) are placed since version 38 with their power and position device groups and flags; since version 43 a device with solid collision has a physics model built from it, a body per moving node, so a closed door blocks the player; fixtures give no light |
 | Trigger volumes | The base's parked (`h1convert::convert::PARKED`, object name -1); the level's appended after them | |
 | Donors | `h1campaign::donor`: each character `h1ai`'s table names, copied whole from the first donor that has it (`03a_oldmombasa`, `04b_floodlab`, `06a_sentinelwalls`) by `h1sounds::transplant`: the tag tree, its raw, and its sounds' gestalt entries | The sentinel (its animation graph does not relocate) and the crewman (no donor) |
 | AI | `h1ai`: squad groups, squads, zones, orders, character palette. Characters the base lacks and no donor brought fall back to the marine (marine kinds) or the folder's first | Sentinels: `none` |
-| Scripts | `h1scripts` with `Missing::Stub` and each level's cutscene policy (below); `ai_place` with one argument. A startup script `h1_initial_encounters` places the encounters Halo 1 creates at load. Hooks: object, unit and vehicle names, `short`, team and difficulty as `0xffff0000 \| index`; trigger volumes as the index; AI squads as the index and squad groups as `0x40000000 \| index`; string IDs interned; sounds as the converted tag's datum (encodings V: every such atom in 05a's and 03a's retail scripts). Halo 1's cutscene flags, camera points, titles and device groups written to Halo 2's blocks in Halo 1's order (`h1scripts::level`), their atoms the index (a device group's runtime datum); the seat-mapping table `+0x228` built from the vehicles' seat labels (`h1scripts::seats`); navpoints `default`; looping sounds, effects, damage and animation graphs by tag name among the converted tags. Squads with no starting locations that the scripts name are kept empty (`h1ai`), so their names resolve. Script references resolved by tag name ([h1-scripts.md](../formats/h1-scripts.md), "Level data the scripts name") | Looping sounds left out for room (Sounds, below), effects, damage effects, animation graphs and object definitions with no converted tag of that name: `none` |
+| Scripts | `h1scripts` with `Missing::Stub` and each level's cutscene policy (below); `ai_place` with one argument. A startup script `h1_initial_encounters` places the encounters Halo 1 creates at load. Hooks: object, unit and vehicle names, `short`, team and difficulty as `0xffff0000 \| index`; trigger volumes as the index; AI squads as the index and squad groups as `0x40000000 \| index`; string IDs interned; sounds as the converted tag's datum (encodings V: every such atom in 05a's and 03a's retail scripts). Halo 1's cutscene flags, camera points, titles and device groups written to Halo 2's blocks in Halo 1's order (`h1scripts::level`), their atoms the index (a device group's runtime datum); the seat-mapping table `+0x228` built from the vehicles' seat labels (`h1scripts::seats`); navpoints `default`; looping sounds, effects, damage and animation graphs by tag name among the converted tags. Squads with no starting locations that the scripts name are kept empty (`h1ai`), so their names resolve. Script references resolved by tag name ([scripts.md](scripts.md), "Level data the scripts name") | Looping sounds left out for room (Sounds, below), effects, damage effects, animation graphs and object definitions with no converted tag of that name: `none` |
 | Sounds | The `snd!` tags the scripts name (`h1sounds`, onto the base's gestalt), halving the count until the gestalt's 16-bit indices fit; each permutation's length at `+6`, which the scripts' waits read (`sound_impulse_time` is Halo 2's `sound_impulse_language_time`). `h1sounds::audit` reads every sound of a converted level back: a10's 3,988 play exactly what they were made from. The looping sounds (`lsnd`: music and ambience) the scripts start, stop or switch (`sound_looping_start`, `_stop`, `_set_alternate`), with their tracks' sounds (`h1sounds::looping`), in first-use order while they fit the map file (Music, below). Every BSP's background sounds and sound environments (`h1convert::ambience`, all BSPs' together) as the scenario's palettes `+0x250`/`+0x258` and each structure's copy (`sbsp+0xd4`/`+0xdc`) | Every other sound; looping sounds past the map file's size limit; lifepods drop the pelican template's engine loops |
 | Text | Nothing: the base's English table stays as it is. `h1text::Locales::extending` builds on the base's table (its rows and blob first, new rows after) for when Halo 1's text is converted | Halo 1's string lists and HUD messages; the scripts' HUD text builtins are stubbed |
 
@@ -523,7 +523,7 @@ What a cutscene needed (survey `cutscene_survey`, h1campaign
 - **Custom animations.** `custom_animation` (Halo 2 has it; the
   animation name casts from string to string ID). Halo 1's other
   animation builtins have Halo 2 builtins no retail script calls, found
-  by their place in the table (h1-scripts.md, "Builtins named by
+  by their place in the table (scripts.md, "Builtins named by
   position"): `scenery_animation_start` (184), `_at_frame` (188),
   `custom_animation_list` (205), `unit_custom_animation_at_frame` (206),
   `unit_is_playing_custom_animation` (207). Every graph the scripts name
@@ -580,7 +580,7 @@ What a cutscene needed (survey `cutscene_survey`, h1campaign
 - **Dialogue.** `sound_impulse_start` maps directly. `sound_impulse_time`
   (493 calls; the scripts sleep on it after almost every line, and wait
   `(sleep_until (= 0 (sound_impulse_time line)))` for a line to finish)
-  is Halo 2's `sound_impulse_language_time` (h1-scripts.md, Renamed): the
+  is Halo 2's `sound_impulse_language_time` (scripts.md, Renamed): the
   ticks the playing line has left, 0 once it ends. A constant length
   would never reach 0, so the cutscene round's length hook was dropped
   when the lanes were integrated. Looping sounds are the music lane's.
@@ -612,7 +612,7 @@ and not one whose zero is already the done value: `recording_time`,
 
 | Stub | Uses | Now |
 |---|---|---|
-| `ai_status` | 35 (a50 16, b40 17, b30 2) | `ai_combat_status` on Halo 1's scale (h1-scripts.md, Step 2) |
+| `ai_status` | 35 (a50 16, b40 17, b30 2) | `ai_combat_status` on Halo 1's scale (scripts.md, Step 2) |
 | `ai_conversation_status` | 34 | done value 5 |
 | `ai_command_list_status` | 20 | done value 2 |
 | `game_all_quiet` | 17 | done value true |
@@ -735,7 +735,7 @@ with `h1ai::h2::ScenarioAi::read` and its indices check; the scripts
 decode with the compiled counts, and the startup script's `ai_place`
 calls take one argument each, resolved to the squad groups it names;
 every converted sound resolves through the gestalt; `campaign.toml` lists
-a30. The object sweep (h1-objects.md; also over the retail base by
+a30. The object sweep (objects.md; also over the retail base by
 `object_sweep_is_clean_on_the_retail_base`) follows every palette entry
 and AI character: references resolve with data, each `hlmt` covers its
 render model's and physics model's nodes, and no root block retail
@@ -779,12 +779,12 @@ The bound is `0xc24000`; the base alone is `0xaed000`.
   has none. A squad group is no stand-in for a squad: Halo 2's
   `ai_migrate` ignores a destination with either top bit set
   (`0x002a54cc`), and `ai_attach_units` reads the low 16 bits as a squad
-  index (`0x0027305e`) (h1-ai.md). Every other level fits with them (the most: c40, 227).
+  index (`0x0027305e`) (ai.md). Every other level fits with them (the most: c40, 227).
   Survey: `ai_counts_against_the_caps`, `empty_squad_uses`.
 - **Cutscene flags, camera points, titles and device groups.** The
   engine indexes these blocks without a check (b40 faulted at
   `0x002a003f` in `object_teleport`, reading flag -1): a call naming one
-  that does not resolve is stubbed (h1-scripts.md, Indexed values).
+  that does not resolve is stubbed (scripts.md, Indexed values).
   `every_level_s_scripts_run_on_the_retail_interpreter` checks every
   reached atom of these types against its converted block on all ten
   levels. Names resolve without case (b30 and d40 named 3 and 9 flags
@@ -792,7 +792,7 @@ The bound is `0xc24000`; the base alone is `0xaed000`.
 - **Units opened or closed.** `unit_open` and `unit_close` do not check
   their unit for `none` (`0x00113eae` reads `+0x33e` through object
   header 0xffff's null pointer), so a call naming an object name with no
-  placement is stubbed (h1-scripts.md, Units the engine does not check for
+  placement is stubbed (scripts.md, Units the engine does not check for
   none). a10 faulted there as its opening cinematic ended:
   `fast_setup`'s `(unit_open cryotube_1)`, the cryotube then having no
   template. Since converter version 33 the cryotube is built from its
@@ -808,7 +808,7 @@ The bound is `0xc24000`; the base alone is `0xaed000`.
   chairs, fighterbomber, Halo ring) and fresh a10's
   `lifepod_atmosphere_entry` have none. Since converter version 35 every
   `unit_open`/`unit_close` runs inside `(if (> (list_count x) 0) ..)`,
-  a no-op on `none` as in Halo 1 (h1-scripts.md).
+  a no-op on `none` as in Halo 1 (scripts.md).
   `a10_opens_and_closes_only_placed_units` checks every reached call on
   a10 (fresh) is placed and guarded;
   `a10_cryotubes_are_placed_and_built_from_their_definition` checks the
@@ -904,7 +904,7 @@ unrunnable on every level.
 3. Sign in, **Campaign**, then **Halo: Combat Evolved**, the picker's first row (Halo 2 is second):
    the ten levels, a10 to d40, as far as the profile has got. Halo 1's
    multiplayer maps are `h1_<map>` in the multiplayer map list (Custom
-   Game, Xbox Live), named as in Halo 1 (docs/game/h1-multiplayer.md
+   Game, Xbox Live), named as in Halo 1 (docs/halo1/multiplayer.md
    "Importing"). `--level a30` starts a converted level directly.
 
 `--no-halo1` or `H2_HALO1=0` (also `false`, `no`, `off`) skips the check.

@@ -31,7 +31,7 @@ written from a definition has a defined value in every byte.
   Assembly plugins, H2EK/Guerilla, OpenH2, ...) is used for names or
   layouts. Two places in the repo carry such names already: `schema.rs`
   (OpenH2/Assembly provenance) and the `S` rows of
-  [h1-objects.md](h1-objects.md) ("recalled from the editing kits").
+  [objects.md](../halo1/objects.md) ("recalled from the editing kits").
   Neither was taken over: those fields stay unknown or typed-only unless a
   disc check (V) or engine code (E) supports the meaning, and then the
   name is ours.
@@ -229,11 +229,11 @@ summary:
     marker `0x000b8c40`).
   - V: widgets, change colours, predicted resources (each element's `+4`
     an existing tag), the `weap` magazines and barrels (strides and the
-    barrel's `proj` reference, [h1-objects.md](h1-objects.md) V2).
+    barrel's `proj` reference, [objects.md](../halo1/objects.md) V2).
   - The `weap` aim-assist floats (`+0x208..+0x218`) stay unknown here.
     Their offsets are E (`0x1a50a0`), but the names in
     [aim-assist.md](../game/aim-assist.md) came from a community file.
-    The heat, magazine and barrel scalars are `S` in h1-objects.md, so
+    The heat, magazine and barrel scalars are `S` in docs/halo1/objects.md, so
     they stay unknown too.
 - **`hlmt`**:
   - E: the model chain (`object_new`), variants (`0x0016d1bb`, region
@@ -302,7 +302,7 @@ words as the turret role's `0x6c..0x74`) and the `hlmt`'s `0x34..0x44`
 same object words (beavercreek also `0x1c`) and no `hlmt` majority.
 
 **Physics.** None of the rebuilt scenery gets a `phmo`: Havok sees it
-through its `coll`'s BSP physics slots, one per BSP (h1-objects.md,
+through its `coll`'s BSP physics slots, one per BSP (docs/halo1/objects.md,
 "Collision for Havok"). Retail holds both forms (V: 05a 11 scenery with
 collision and no `phmo`, 5 with one; beavercreek 6 and 3; coagulation 0
 and 6), and the slots key Halo 1's own surfaces exactly, where a built
@@ -648,7 +648,7 @@ before). Every Halo 1 biped is written from the `bipd` definition
   indices and references their datums, as the template path's copied
   bytes do.
 - **The player** (`health_hud::is_player_biped`) takes the counterpart's
-  HUD interfaces as health-meter copies (`*_h1_health`, docs/game/health.md),
+  HUD interfaces as health-meter copies (`*_h1_health`, docs/halo1/health.md),
   as the template path does.
 - **Halo 1 references with no converter here** (`unhi` HUDs, `effe`, `jpt!`, `actv`, `snd!`) are not carried: those come
   from the counterpart. Halo 2's `bipd` holds no weapons (`unit +0x1c0`)
@@ -1228,7 +1228,7 @@ starts from the definition default, then:
   the same over all elements of the magazines, barrels and firing effects
   pooled.
 - **Halo 1's values**: the named fields below, and by offset the words
-  the template path already wrote (S, V2 in h1-objects.md):
+  the template path already wrote (S, V2 in docs/halo1/objects.md):
   `WEAPON_WORDS` (heat; aim assist, E), `BARREL_WORDS` (rate of fire,
   magazine, rounds per shot, error, spread, first-person offset, heat per
   round), `PROJECTILE_WORDS` (radii, arming time, timer, gravity, damage
@@ -1259,7 +1259,7 @@ starts from the definition default, then:
   `TEMPLATES` row; references only): melee damage, effects and sounds (Halo 1's `effe` and
   most `snd!` are not converted), the barrels' firing effects. A
   projectile takes no `jpt!` from Halo 2. The HUD (`+0x2b0`) is Halo 1's
-  `wphi` converted (`Converter::weapon_hud`, docs/game/hud.md); the
+  `wphi` converted (`Converter::weapon_hud`, docs/halo1/hud.md); the
   counterpart's `nhdt` is the weapon's Halo 2 HUD in its HUD pair.
 
 Named on the way (V: `weapon_rebuild_disc`

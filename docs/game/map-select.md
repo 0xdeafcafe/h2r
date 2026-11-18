@@ -6,7 +6,7 @@ Status: **built and table-tested, not run in the game.** Started
 The pregame lobby's map list now holds maps from four places: the Halo 2
 disc, the Multiplayer Map Pack ([map-pack.md](map-pack.md)), community
 maps ([maps.md](maps.md) §4) and converted Halo 1 maps
-([h1-multiplayer.md](h1-multiplayer.md)). In one list sorted by the
+([multiplayer.md](../halo1/multiplayer.md)). In one list sorted by the
 game's sort order they come out mixed. So Game Setup's **Change Map** now
 opens a list of categories first, in the retail Select Map dialog itself
 (its list, picture and description):
@@ -42,7 +42,7 @@ path (`+0xb4c`, map-pack.md 8.1). `map_select::category_of` reads it:
 3. A new map's offer (`0x8000_0000 | list id`,
    `content::map_list::is_new_map_offer`, maps.md "Map ids and offer IDs")
    whose map name starts with `h1_` is **Halo 1**. Converted maps are
-   named `h1_<map>` (h1-multiplayer.md "The setting and the map list"), and
+   named `h1_<map>` (docs/halo1/multiplayer.md "The setting and the map list"), and
    `boot::new_maps` installs them like any new map.
 4. Any other content, new maps included, is **Mods**.
 5. A disc map that a package in `<data>/maps` replaces (not a derived
@@ -125,8 +125,16 @@ for those instances only (`map_select::MapSelect`, feature `map-select`).
 - **Closing the categories** (`MAP_SCREEN_FREE`, the screen's destructor
   `0x2bb384`, vtable `0x45c650` slot 0). When the maps screen whose map
   was pressed is freed, the hook calls the destructor (forgotten first,
-  so the hook passes it through) and then closes the categories, the top
-  screen of that window and slot (`0x14800c`), as B would.
+  so the hook passes it through) and then closes the categories screen
+  itself: the close message (`0x22e957(2)`) that the window's close
+  (`0x2351d4`) sends its top screen, unless the screen's state byte
+  `+0x42` has bit 1 (already closing) (`ui_kit::lifecycle::close_screen`).
+  It can't close by window and slot (`0x14800c`) as B does. The stack's
+  free (`0x2351ea`, from the UI update's free loop `0x148148`) zeroes the
+  window's top word (`+8`) for the screen it frees before it calls the
+  destructor. So `0x2351d4` read `0 + 0x42`, the first build's crash on
+  picking a map (`MemoryFault ... addr: 42`, `0x2351d9`, the window object
+  `0x54d84c` for window 3, slot 4).
 - **Message 3 stays inside its own screen.** `0x22eeee` walks the
   widget's parents (`+0x10`) to its root, the Select Map screen.
   `0x22e957` builds a kind-3 message (`0x22e65e`) and hands it to that
@@ -168,8 +176,10 @@ Tests (`boot` `map_select::tests`):
   labels only for categories and replacing packages, in 31 UTF-16 units
   and a NUL;
 - the flow: armed by Change Map only, categories then the picked maps,
-  B on the maps forgetting them, a map's press closing the categories
-  once, after its screen is freed;
+  B on the maps forgetting them, a map's press closing the categories'
+  own screen once, after its screen is freed, and nothing when no
+  categories are under it; `ui_kit::lifecycle`: the window's top word
+  is 0 mid-free, so the close goes to the screen itself;
 - a table driving the two steps with presses (A opens a category's maps,
   B returns with the focus kept, B on the categories closes them, A on a
   map is the action);
@@ -193,10 +203,13 @@ Tests (`boot` `map_select::tests`):
    categories.
 4. A on a map logs `map select: map 0x... pressed; the categories close
    after`, then `map select: the maps closed; closing the categories`.
-   Game Setup shows the new map. Start a game on it.
+   Game Setup shows the new map, with no crash (the first build died
+   here, at `0x2351d9` reading `0x42`). Do it for a Halo 2 map and a
+   Halo: CE one, then start a game on it.
 5. Unchecked: whether the second Select Map takes our request on the
    categories' window and slot as the first took Game Setup's. Whether
-   the close from the maps screen's destructor closes the categories.
+   the close message sent to the categories from the maps screen's
+   destructor closes them.
    Whether a category row standing on a locked map is skipped (category
    rows are written unlocked, but the constructor's check reads the
    element). Whether the dialog's description also comes from

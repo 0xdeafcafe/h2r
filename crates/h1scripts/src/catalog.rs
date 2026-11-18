@@ -3,7 +3,7 @@
 //!
 //! Unlike Halo 2's descriptors, Halo 1's carry the function's name, so every
 //! builtin is named straight from the executable. Evidence for each address
-//! is in `docs/formats/h1-scripts.md`.
+//! is in `docs/halo1/scripts.md`.
 
 use crate::{Result, invalid, u16_at, u32_at};
 

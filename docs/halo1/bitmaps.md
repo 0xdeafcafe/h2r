@@ -3,12 +3,12 @@
 How Halo 1's Xbox maps store bitmaps, read by `h1map::bitmap`, decoded by
 `crates/h1bitmaps` with Halo 2's texture decoder, and converted to Halo 2
 `bitm` tags for the Halo 1 → Halo 2 map converter
-([h1-multiplayer.md](../game/h1-multiplayer.md)). The cache file around them
-is in [h1-map-format.md](h1-map-format.md); Halo 2's bitmaps are in
-[bitmaps.md](bitmaps.md). All integers are little-endian, offsets
+([multiplayer.md](multiplayer.md)). The cache file around them
+is in [map-format.md](map-format.md); Halo 2's bitmaps are in
+[bitmaps.md](../formats/bitmaps.md). All integers are little-endian, offsets
 hexadecimal.
 
-Evidence labels, as in h1-map-format.md:
+Evidence labels, as in map-format.md:
 
 - **V — verified-on-disc:** checked on every map of the owner's Halo 1 disc
   by the `#[ignore]`d tests below (24 maps, 9,327 `bitm` tags, 14,815
@@ -208,7 +208,7 @@ the Halo 2 lightmap bitmap, one image per page, R5G6B5 2D.
 The structure writer (`h1convert::structure`) does not use them yet: it
 writes one lightmap group with no bitmap, and every cluster's render info
 entry stays `{-1, -1}`. What it has to do to show them, from
-[lighting.md](lighting.md) and [structure-bsp.md](structure-bsp.md):
+[lighting.md](../formats/lighting.md) and [structure-bsp.md](../formats/structure-bsp.md):
 
 1. Install the converted lightmap bitmap (`Converted::install`) and
    reference it from the lightmap group's bitmap reference (`ltmp` group
@@ -225,7 +225,7 @@ entry stays `{-1, -1}`. What it has to do to show them, from
 4. Lightmaps with no page (`None`, `-1` in Halo 1: sky and unlit surfaces)
    keep `{-1, -1}`.
 
-Done in `h1convert` (docs/game/h1-multiplayer.md, "Lightmap"). The open
+Done in `h1convert` (docs/halo1/multiplayer.md, "Lightmap"). The open
 question is settled from the executable: nothing needs P8. The renderer
 stores the page whatever the palette and binds one only when named (E
 `0x0004d40a`), and the CPU query that lights objects looks a sample up in

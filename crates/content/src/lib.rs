@@ -9,7 +9,7 @@
 //!   turns a map name into the bytes to serve.
 //! - [`store`]: writing packages and `active.toml` (the editor's side).
 //! - [`campaign_list`]: campaigns past Halo 2's own, as 1.0's campaign level
-//!   list records (docs/game/multiple-campaigns.md).
+//!   list records (docs/halo1/campaign-picker.md).
 //! - [`patch_lvl`] and [`map_list`]: 1.0's multiplayer map list entries,
 //!   read from the Map Pack and built for new maps.
 //!

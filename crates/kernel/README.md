@@ -698,4 +698,4 @@ fixture boundaries, and remaining full-activation checks.
 With `ExecCtx::enable_profiling(true)`, kernel adapters count and time every
 invocation (including failed and stopped calls) in `perf::Scope::Kernel`.
 The duration is inclusive host wall time, unrelated to the guest clock. See
-[performance](../../docs/perf/performance.md) for aggregation and interpretation.
+[performance](../../docs/perf/guest-memory.md) for aggregation and interpretation.

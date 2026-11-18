@@ -7,7 +7,7 @@
 //! one compression record, packed tangent frames, and one or two node
 //! indices (through a per-section node map) with u8 weights.
 //!
-//! Field layouts and their evidence are in `docs/formats/h1-models.md`.
+//! Field layouts and their evidence are in `docs/halo1/models.md`.
 
 use map::TagId;
 use map::build::{Block, RawId, RawRef};

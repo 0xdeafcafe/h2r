@@ -4,7 +4,7 @@
 //! built from an `hs::Catalog` that has observed the Halo 2 maps: only the
 //! builtins some retail Halo 2 script calls have names. A Halo 1 builtin
 //! whose name Halo 2 never calls is reported missing even if Halo 2 has it
-//! under an index nobody calls; see `docs/formats/h1-scripts.md`.
+//! under an index nobody calls; see `docs/halo1/scripts.md`.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -30,7 +30,7 @@ pub const RENAMES: &[(&str, &str)] = &[
     // times 30 (0x18a240). Halo 1's scripts wait on it after nearly every
     // line of dialogue; stubbed to 0, those waits ended at once, and a
     // script that replays a sound each time the wait ends replayed it every
-    // tick. `docs/formats/h1-scripts.md`.
+    // tick. `docs/halo1/scripts.md`.
     ("sound_impulse_time", "sound_impulse_language_time"),
 ];
 

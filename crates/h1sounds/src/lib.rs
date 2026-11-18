@@ -16,7 +16,7 @@
 //! - [`looping`] converts looping sounds (`lsnd`, with the sounds they
 //!   play) and sound environments (`snde`).
 //!
-//! Layouts and evidence: `docs/formats/h1-sounds.md`. No game data is in
+//! Layouts and evidence: `docs/halo1/sounds.md`. No game data is in
 //! this crate or its tests; real maps are read only by `#[ignore]` tests.
 #![forbid(unsafe_code)]
 // Strides here are format constants; indexed loops mirror the eleven blocks.

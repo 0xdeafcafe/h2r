@@ -1,6 +1,6 @@
 //! The Halo 1 / Halo 2 options a game on a Halo 1 map is played with, as
-//! rows on a pre-game screen (docs/game/h1-multiplayer.md "Halo 1
-//! options", docs/game/campaigns.md §5).
+//! rows on a pre-game screen (docs/halo1/multiplayer.md "Halo 1
+//! options", docs/halo1/campaign.md §5).
 //!
 //! - **Campaign:** on the Game Options page between the difficulty and a
 //!   Halo 1 level (`crate::skulls_screen`, the skulls page), above the

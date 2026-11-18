@@ -111,7 +111,7 @@ export interface Composition {
 // Chosen from contact sheets (`bun run banner --sheet`) of a retail disc.
 const RED = "#b8392e", BLUE = "#2f5fb3";
 export const SHOTS: Shot[] = [
-  { id: "containment", map: "containment", spot: "netgame:12", back: 3, lift: 1.2, fov: 50 },
+  { id: "containment", map: "containment", spot: "netgame:64", back: 3, lift: 0.8, drop: -2, fov: 50 },
   { id: "coagulation", map: "coagulation", spot: "netgame:50", back: 3, lift: 1.4, fov: 52 },
   { id: "zanzibar", map: "zanzibar", spot: "netgame:66", back: 3, lift: 0.9, fov: 50,
     cast: [

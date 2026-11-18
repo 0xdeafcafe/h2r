@@ -2,7 +2,7 @@
 //!
 //! Both games number their classes in one list that Halo 2 extended, so
 //! most classes keep their number. The names are from public tag
-//! definitions (S); the disc census in `docs/formats/h1-sounds.md` checks
+//! definitions (S); the disc census in `docs/halo1/sounds.md` checks
 //! them against the tag paths that use each value. Classes with no Halo 2
 //! equivalent go to the nearest one, listed in [`NEAREST`].
 

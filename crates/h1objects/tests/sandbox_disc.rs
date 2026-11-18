@@ -303,7 +303,7 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
     }
     // Their first-person arms are Halo 1's (element +0x0), converted:
     // the engine binds them to a weapon's first-person graph by name, and
-    // Halo 1's graphs name Halo 1's arms' nodes (h1-models.md).
+    // Halo 1's graphs name Halo 1's arms' nodes (halo1/models.md).
     for e in [2, 3] {
         let at = reps + e * PLAYER_REPRESENTATION_SIZE + REPRESENTATION_HANDS;
         let id = TagId(gw(at + 4));
@@ -331,7 +331,7 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
             assert!(markers.iter().any(|m| m == want), "{want} in {markers:?}");
         }
     }
-    // The player's HUD is Halo 1's (docs/game/hud.md): every HUD
+    // The player's HUD is Halo 1's (docs/halo1/hud.md): every HUD
     // interface names the converted unhi's nhdt, whose widgets draw Halo
     // 1's own HUD bitmaps (converted, so named as on the Halo 1 disc)
     // through Halo 2's HUD shaders, the meters on the shield and body
@@ -572,7 +572,7 @@ fn bloodgulch_shaders_all_have_their_compiled_postprocess_in_both_sandboxes() {
             );
         }
         if sandbox == Sandbox::Halo1 {
-            // The HUD pair (docs/game/hud.md): the player biped, its Halo 1
+            // The HUD pair (docs/halo1/hud.md): the player biped, its Halo 1
             // HUD, and its Halo 2 HUD with the health strip, kept by the
             // prune though only the pair names it, in the manifest by the
             // fresh map's datums.

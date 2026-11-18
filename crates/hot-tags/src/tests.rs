@@ -340,6 +340,50 @@ fn a_tag_without_a_definition_takes_raw_fields() {
 }
 
 #[test]
+fn raw_blocks_reach_an_elements_fields() {
+    // An invented block at scnr+0x20: 2 elements of 0x30 bytes.
+    const AT: u32 = META + 0x8000;
+    let mut g = level();
+    block(&mut g, META + 0x20, 2, AT);
+    g.set_f32(AT + 0x30 + 0x8, 7.0).unwrap();
+    let mut ed = Editor::new();
+    let s = sel("0xe0000000");
+    let v = ed.get(&g, &s, "+0x20/0x30[1].+0x8:f32[3]").unwrap();
+    assert_eq!(v["value"], json!([7.0, 0.0, 0.0]), "{v}");
+    assert_eq!(v["addr"], json!(format!("{:#010x}", AT + 0x38)));
+    let c = ed
+        .set(&mut g, &s, "+0x20/0x30[1].+0x8:f32[3]", &json!([1, 2, 3]))
+        .unwrap();
+    assert_eq!(g.f32(AT + 0x30 + 0x10).unwrap(), 3.0);
+    assert_eq!(c["old"], json!([7.0, 0.0, 0.0]), "{c}");
+    // Exact bytes, as an editor sends a changed field.
+    ed.set(&mut g, &s, "+0x20/0x30[0].+0x4:bytes[2]", &json!("beef"))
+        .unwrap();
+    assert_eq!(g.u16(AT + 4).unwrap(), 0xefbe);
+    // The whole element, last.
+    let v = ed.get(&g, &s, "+0x20/0x30[0]").unwrap();
+    assert_eq!(v["type"], json!("bytes[48]"), "{v}");
+    // Reverting undoes both.
+    ed.revert(&mut g, None).unwrap();
+    assert_eq!(g.f32(AT + 0x38).unwrap(), 7.0);
+    assert_eq!(g.u16(AT + 4).unwrap(), 0);
+    // The stored count bounds the index; names can't follow a raw block.
+    let e = ed.get(&g, &s, "+0x20/0x30[2].+0x8:f32").unwrap_err();
+    assert!(e.message.contains("has 2 elements"), "{e}");
+    let e = ed.get(&g, &s, "+0x20/0x30[0].position").unwrap_err();
+    assert!(e.message.contains("raw"), "{e}");
+    for bad in ["+0x20/0[0].+0x8:f32", "+0x20/0x30.+0x8:f32", "+0x20"] {
+        assert!(ed.get(&g, &s, bad).is_err(), "{bad}");
+    }
+    // In a defined group too: a raw block of the shader's root.
+    block(&mut g, SHAD_AT + 0x40, 1, AT);
+    let v = ed
+        .get(&g, &sel("0xe1110001"), "+0x40/0x30[0].+0x38:f32")
+        .unwrap();
+    assert_eq!(v["value"], json!(7.0), "{v}");
+}
+
+#[test]
 fn edits_from_another_map_are_never_written_back() {
     let mut g = level();
     let mut ed = Editor::new();

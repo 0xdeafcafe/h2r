@@ -81,7 +81,7 @@ and indices and translated the state. So:
 Decoding the push buffer itself on another thread, the way the NV2A
 fetches it, is not worth its risk here: the drain reads the state arrays
 and resource memory at the moment of the draw (game code changes them
-right after), it is 2% of the frame (docs/perf/perf-budget.md, row 11), and it
+right after), it is 2% of the frame (docs/perf/menu-budget.md, row 11), and it
 would need real asynchronous fences, which Halo would then wait on.
 
 ## Keeping guest-visible semantics exact
@@ -214,7 +214,7 @@ Against the requirements:
   at the device's existing Swap boundary, preserving frame numbers without
   making Swap wait. `render-wait_us` measures game-thread reply and throttle
   waits separately from `cpu`; renderer phases can overlap that game-thread
-  wall time. See [frame-budget.md](../perf/frame-budget.md).
+  wall time. See [gameplay-budget.md](../perf/gameplay-budget.md).
 - `menu_cpu` (docs/runtime/BOOT.md) now also prints
   `guest_thread_cpu_ms_per_frame`, the runner thread's own CPU time,
   which is the guest's critical path.
@@ -291,7 +291,7 @@ Estimate against the 33.3 ms budget: the render thread takes the
 backend's whole cost off the critical path. The frame then costs
 max(guest, render) instead of guest + render. Both are now about 100-130
 ms, so 30 fps needs both sides cut about 4x. The guest side is the
-runtime, generated code, x87 and kernel work in docs/perf/perf-budget.md. The
+runtime, generated code, x87 and kernel work in docs/perf/menu-budget.md. The
 render side is gfx-perf's encode and submit, now off the guest's thread
 but still a ceiling of about 10 fps at 100 ms.
 
@@ -315,7 +315,7 @@ error or wrong speculation. The render thread answered 27,300 pixel-count
 reads from reports already back (`landed_counts`) and still waited
 4,700-5,200 times (42-56 s over the run), for the read-backs below.
 menu-fps measured the menu flyover at 15.48 fps against 11.84 with it
-off, 29 PNGs byte-identical (docs/perf/perf-budget.md). So the render thread
+off, 29 PNGs byte-identical (docs/perf/menu-budget.md). So the render thread
 is now the default.
 
 The Heretic's remaining read-backs (`H2_D3D_WRITEBACK_TRACE=1`): 4 a

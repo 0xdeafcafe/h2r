@@ -1,9 +1,9 @@
 # Halo 1 skies and their conversion to Halo 2
 
 `crates/h1sky` reads Halo 1 `sky ` tags out of Xbox cache files
-([h1-map-format.md](h1-map-format.md)), decodes Halo 2 `sky ` tags
+([map-format.md](map-format.md)), decodes Halo 2 `sky ` tags
 retail-side, and converts one into the other as a `map::build` block tree
-(the `Converted { group, root, raw }` pattern of [h1-models.md](h1-models.md),
+(the `Converted { group, root, raw }` pattern of [models.md](models.md),
 with the render model supplied by `h1models::model_from_map`). This page
 documents both layouts and the mapping. It is not an on-disk Rust struct
 ABI.
@@ -16,7 +16,7 @@ Evidence labels:
   maps (`real_h2_disc_every_sky_decodes`). Structural facts: offsets,
   sizes, value ranges.
 - **E — engine:** the field's meaning was reviewed against the retail Halo 2
-  engine in [lighting.md](lighting.md) (the `sky ` rows of its atmosphere
+  engine in [lighting.md](../formats/lighting.md) (the `sky ` rows of its atmosphere
   table); the engine addresses there are the evidence, not this page.
 - **Design:** a converter choice.
 
@@ -114,7 +114,7 @@ unreferenced). Root sizes seen: `0xd0` (no lights), `0x144` (one), `0x1b8`
 
 The root struct is `0xac` bytes; the declared payload additionally covers
 the block elements, laid out after it. Root fields this crate reads
-(`h1sky::h2`), with the E rows from [lighting.md](lighting.md):
+(`h1sky::h2`), with the E rows from [lighting.md](../formats/lighting.md):
 
 | Offset | Field | Evidence |
 |---|---|---|
@@ -273,7 +273,7 @@ here for the next pass):
 ## Commands
 
 There is no CLI here; the crate is a library step of the campaign import
-([campaigns.md](../game/campaigns.md) §3 step 3). Checks:
+([campaign.md](campaign.md) §3 step 3). Checks:
 
 ```
 cargo test -p h1sky                                   # invented bytes

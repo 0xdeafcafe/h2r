@@ -1,7 +1,7 @@
 //! Frame-time stats: where each frame's wall time goes, split into a few
 //! phases, with a rolling window (fps, p50, p99, max) and a whole-run
 //! report of the worst frames. `H2_FRAME_STATS=1` turns it on for `h2 run`
-//! and `h2 play` (docs/perf/frame-budget.md).
+//! and `h2 play` (docs/perf/gameplay-budget.md).
 //!
 //! Each thread has one current phase. [`enter`] switches it until the
 //! returned guard drops, so nested phases are self time: a `Submit` inside

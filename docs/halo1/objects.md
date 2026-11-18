@@ -7,12 +7,12 @@ pack, cyborg, warthog, ghost) as Halo 2 tags on Coagulation. The built
 tags read back through `crates/tags`. No converted object has been loaded
 by the game yet ("Needs a game run").
 
-This is the Halo 1 sandbox of [h1-multiplayer.md](../game/h1-multiplayer.md)
-(phase 4) and the object step of [campaigns.md](../game/campaigns.md) §2.
+This is the Halo 1 sandbox of [multiplayer.md](multiplayer.md)
+(phase 4) and the object step of [campaign.md](campaign.md) §2.
 Physics is Halo 2's (decision 1); Halo 1's health is kept (decision 2,
-[health.md](../game/health.md)). Models and animations come from
-[h1-models.md](h1-models.md); the Halo 2 object family is in
-[objects.md](objects.md), collision in [collision.md](collision.md).
+[health.md](health.md)). Models and animations come from
+[models.md](models.md); the Halo 2 object family is in
+[objects.md](../formats/objects.md), collision in [collision.md](../formats/collision.md).
 
 No map bytes, tag dumps or extracted assets are in the repository. The
 unit tests use invented data; the `#[ignore]` tests read the discs at run
@@ -36,7 +36,7 @@ time and print counts, names and values only.
 - **S:** field order and meaning recalled from general Halo modding
   knowledge (the editing kits' field names), then placed by the data. No
   community code or definition file was opened or copied.
-- **E:** from [objects.md](objects.md) (engine code).
+- **E:** from [objects.md](../formats/objects.md) (engine code).
 - **Design:** a choice made here.
 
 ## Reading Halo 1
@@ -128,7 +128,7 @@ pack is type 5 with a positive time; the grenades are type 6).
 
 Read field by field since converter version 50 (`h1::Effect`,
 `h1::attachments`): layout and evidence in
-[tag-definitions.md](tag-definitions.md), "Effects from definitions".
+[tag-definitions.md](../formats/tag-definitions.md), "Effects from definitions".
 
 ### `part` (root `0x164`) as `prt3`
 
@@ -137,7 +137,7 @@ by the framebuffer blend function at `+0xda` (0 alpha blend, 3 additive,
 7 alpha-multiply-add: V, the particles both games ship pair that way; 6,
 on three particles, is drawn additive, unproven), the bitmap (`+0x4`) as
 the stem's `alpha_map_texture` with the compiled shader built from the
-stem ([tag-definitions.md](tag-definitions.md), "The compiled particle
+stem ([tag-definitions.md](../formats/tag-definitions.md), "The compiled particle
 shader"), Halo 1's sprite sequences (`+0x98` first, `+0x9a + +0x9c`
 counts, one picked per particle), the collision and death effects
 (`+0x48`, `+0x58`). The five properties and the input mask, vertex
@@ -151,7 +151,7 @@ are emitter-side in Halo 2.
 Since converter version 58 (`particles::effect_particles`,
 `particle_system`, `Converter::effect_particle_systems`): each Halo 1
 effect particle whose `part` converts becomes a particle system of its
-event, one emitter on the proven slots ([effects.md](effects.md),
+event, one emitter on the proven slots ([effects.md](../formats/effects.md),
 "Emitter"). The record (V, `halo1_effect_particle_survey`): `+0x8`
 location, `+0x54` the `part`, `+0x6c`/`+0x6e` count bounds, `+0x70`
 distribution radius, `+0x84` velocity bounds, `+0x8c` velocity cone
@@ -209,7 +209,7 @@ start still at the part's location.
 `cont` is Halo 1's compacted, span for span (V: the sniper, needler and
 plasma contrails of both games word for word, `particles_disc.rs`
 `contrail_survey`). `particles::CONT_SPANS` and `CONT_POINT_SPANS` list
-the spans; the layout is in [tag-definitions.md](tag-definitions.md),
+the spans; the layout is in [tag-definitions.md](../formats/tag-definitions.md),
 "Particles and contrails". Halo 2 effect parts never name a `cont` (the
 part groups on the disc are `deca`, `snd!`, `obje`, `ligh`, `lens`,
 `jpt!`, `MGS2`, `tdtl`): contrails are object attachments, so a Halo 1
@@ -251,13 +251,13 @@ moments, `5c` inertia matrices (2 x `0x24`), `68` powered mass points
 `hlmt` and its `mode`'s material list are written field by field from
 typed definitions, with the base's scenery role words in the unknown
 spans and Halo 1's model and bitmaps as predicted resources
-([tag-definitions.md](tag-definitions.md), "Scenery from definitions").
+([tag-definitions.md](../formats/tag-definitions.md), "Scenery from definitions").
 The scenery template (Delta Halo's `statue_shard_large`) described below
 is history.
 
 **Weapons, equipment, projectiles and damage have no template since
 converter version 51**: they are built from their typed definitions,
-with Halo 1's values and no template bytes ([tag-definitions.md](tag-definitions.md),
+with Halo 1's values and no template bytes ([tag-definitions.md](../formats/tag-definitions.md),
 Weapons, equipment, projectiles and damage). The template rows below
 for `weap`, `eqip` and `proj` only name the Halo 2 counterpart whose
 references (HUD, effects, sounds, melee damage) fill the slots Halo 1
@@ -266,7 +266,7 @@ has nothing converted for.
 **Vehicles have no template since converter version 49**: every Halo 1
 vehicle is built from the `vehi` definition, with its friction and hover
 points from Halo 1's powered mass points and its gears from its type's
-role ([tag-definitions.md](tag-definitions.md), "Every vehicle from
+role ([tag-definitions.md](../formats/tag-definitions.md), "Every vehicle from
 definitions"). The vehicle rows described below (warthog, ghost,
 scorpion, banshee, pelican, dropship, wraith, gun turret, lifepods) and
 the lifepods' quiet stand-in are history, kept for the record.
@@ -367,7 +367,7 @@ no tag named crate; its scenery with collision is ten tags). Havok moves the pla
 items, and it sees an object through the `hlmt`'s `phmo` or, with none,
 through the `coll` permutation's BSP physics slots: one `0x70`-byte slot
 per BSP, a Havok shape over the BSP inside a MOPP tree whose code keys
-the BSP's surfaces by index ([collision.md](collision.md), "BSP
+the BSP's surfaces by index ([collision.md](../formats/collision.md), "BSP
 physics"). Retail writes the slots exactly for the `coll`s of scenery
 with no `phmo` (V, every map on the disc: a Delta Halo statue, trees;
 not weapons, equipment, devices, bipeds or crates). So:
@@ -398,7 +398,7 @@ template is) has none, and blocks through these slots.
 **`hlmt` region bytes.** Each `hlmt` region (`0x10`) says which `coll`
 region it uses (`i8` at `+4`) and which physics region (`+5`); each
 permutation (`8`) its `coll` permutation (`+5`) and physics permutation
-(`+6`); -1 is none (V, retail; [collision.md](collision.md)). Until
+(`+6`); -1 is none (V, retail; [collision.md](../formats/collision.md)). Until
 version 18 these were all 0. Now (`convert::region_map`): the `coll`
 region of the same name (string ID form), else the one at the same
 index, else -1; the permutation likewise, then the region's first.
@@ -408,7 +408,7 @@ the report.
 
 **Physics.** No `phmo` is built from Halo 1's `phys` (BSP physics, above,
 covers objects without one): Halo 2's physics
-models are Havok shapes with runtime post-processing ([collision.md](collision.md)),
+models are Havok shapes with runtime post-processing ([collision.md](../formats/collision.md)),
 and a faithful one from mass-point spheres is a separate job. The
 borrowed `phmo` binds rigid bodies to Halo 2's node layout, which the
 converted model does not share (open question below).
@@ -432,7 +432,7 @@ converted model does not share (open question below).
 | barrel | `7c`, `8c`, `a4` | first-person offset, projectile, heat per round | S, V2 (`8c` is a `proj` reference) |
 | `proj` | `c0`..`e4` | detonation timer starts, impact noise, AI perception radius, collision radius, arming time, danger radius, timer (2), minimum velocity, maximum range, detonation noise | S, V2 (grenade-only fields zero on bullets) |
 | `proj` | `164`..`184` | air gravity scale, air damage range, water gravity scale, water damage range, initial, final, guided angular velocity | S, V2 (bullet speeds hundreds per second; grenade gravity set) |
-| `eqip` | `12c`, `130` | powerup type, powerup time | [health.md](../game/health.md) |
+| `eqip` | `12c`, `130` | powerup type, powerup time | [health.md](health.md) |
 
 Halo 1 speeds are multiplied by 30 (per tick to per second).
 
@@ -550,7 +550,7 @@ tag tries every matching row in table order (`template_candidates`) and
 takes the first the base holds: the biped falls back to
 `objects\characters\masterchief\masterchief`, the health pack to the frag
 grenade (its powerup type and time are still Halo 1's;
-[campaigns.md](../game/campaigns.md) §9 converts a30 onto Delta Halo
+[campaign.md](campaign.md) §9 converts a30 onto Delta Halo
 this way).
 
 ## API

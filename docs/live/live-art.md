@@ -61,7 +61,9 @@ copy and the map pack maps; 15 vehicles in their own colours, the
 reflection tints and shaders whose compiled data another shader shares;
 16 vehicles' turrets and hull decals that double what is under them;
 17 the weather volumes and the sky light's glow; 18 turrets as parts that aim;
-19 the title and save images, `title/image` and `title/save-image`).
+19 the title and save images, `title/image` and `title/save-image`;
+20 solid shaders whose template name only contains "overlay" keep their
+textures).
 
 ### `map.glb`
 
@@ -162,8 +164,9 @@ reflection tints and shaders whose compiled data another shader shares;
   model could be built), `clear` (the clear colour, RGB 0..1, when not
   black), `fog` (`colour`, `density` 0..1 reached at `end`, `start` and
   `end` in game units from the eye), `glow` (the first sky light's
-  sun-lit air: `colour`, `density` 0..1, and the light's `heading` and
-  `pitch` in radians, game frame) and `scale` (the model's scale in the
+  `colour`, a power the extractor calls `density`, and the light's
+  `heading` and `pitch` in radians, game frame; it is the light's
+  radiosity record, not a fog, so the viewer draws no haze from it) and `scale` (the model's scale in the
   game). `sky.glb` is the sky's render model at rest in model space (same
   axes), textured, every region's first permutation at the highest detail
   under 30,000 triangles; its `asset.extras.blend` says per material, in
@@ -230,16 +233,22 @@ reflection tints and shaders whose compiled data another shader shares;
 **Water, weather and haze.** The `water` class material ripples
 (`water3d.ts`: a few procedural travelling waves bend its normal, no
 pictures), is glassy, and at grazing angles reflects the sky's colour
-(its clear colour, else its fog's or glow's) and turns opaque (Schlick
+(its clear colour, else its fog's) and turns opaque (Schlick
 Fresnel). The weather (`weather3d.ts`) is GPU points in a box around what
 the camera looks at, fixed in the world and wrapping as it moves: rain
 falls as streaks, snow and motes drift; each point is drawn only inside
 one of its system's boxes and outside its kept-out volumes (tested in the
 vertex shader against float textures). The toolbar's Weather switch
 shows when a level has some. Both keep the view redrawing while shown,
-and hold still when motion is reduced. A level with no fog but a sky
-glow (Zanzibar, Colossus, Foundation) gets the viewer's exponential haze
-in the glow's colour, as thick as it says (`sky3d.ts` `glowHaze`).
+and hold still when motion is reduced. A level's fog is its sky's
+atmospheric fog (else its secondary fog) as the tag gives it: linear from
+`start` to `end` past the camera, never thicker than its maximum density.
+A level with no fog of its own (Zanzibar, Colossus, Foundation, the
+converted Halo 1 maps) is drawn nearly clear, as the game draws it: only
+the viewer's faint blue-grey haze, so far scenery still reads as far. The
+sky light's `glow` once gave such levels a haze in its colour, as thick
+as its "density"; that record is the light's colour and power (its
+radiosity parameters), and the haze drowned Halo 1's maps in cyan.
 
 **Loading.** The viewer draws the level as soon as `map.glb` has loaded,
 untextured (each look shows its class material), then fetches the
@@ -325,8 +334,8 @@ map pack later extracts again. Nothing of them is in the repository.
 
 The Halo 1 maps `h2 import halo1` (or `h2 play`'s automatic import)
 converted into Halo 2 maps under the runtime data root
-([campaigns.md](../game/campaigns.md#10-importing-built-clih1_import),
-[h1-multiplayer.md](../game/h1-multiplayer.md)) get the same art as the
+([campaign.md](../halo1/campaign.md#10-importing-built-clih1_import),
+[multiplayer.md](../halo1/multiplayer.md)) get the same art as the
 disc's maps: `map.glb`, `sky.glb`, the views and a preview, extracted by
 the same code (`live_halo1`). They are real Halo 2 cache files, opened
 with the Halo 2 disc's shared maps.
@@ -529,7 +538,10 @@ view), the same for every view.
    +0x50 (the same; used when there is no atmospheric fog) and the clear
    colour at +0xa0. The lights block at +0x78 (0x34 bytes each: heading
    and pitch at +0xc, a fog block at +0x2c whose first element has
-   colour at +4 and maximum density at +0x10) gives the `glow`. A sky
+   colour at +4 and maximum density at +0x10) gives the `glow`. That record is the
+   light's parameters (Halo 1's sky lights: flags, colour at +8, power at
+   +0x14), so the names are the extractor's, not the tag's; the viewer
+   no longer draws it. A sky
    that cannot be read is listed under `skipped` as `map/<stem>/sky`.
    **Weather** (`live_weather.rs`): per BSP, the weather palette at
    `sbsp+0x84` (0x88 bytes: a 32-byte name, the `weat` reference with its
@@ -568,7 +580,9 @@ view), the same for every view.
 10. **Looks.** For each BSP material whose surface is solid level (not
    glass or water), and each machine's and object's model material: the
    shader's template (`shad +0`) must not be in a `transparent` folder or
-   be an `overlay`; its base map is what the shader draws on texture
+   be an `overlay` (named so first: `overlay`, `overlay_...`; an opaque
+   `tex_bump_detail_overlay`, Coagulation's rocks, is a solid surface and
+   has a look); its base map is what the shader draws on texture
    stage 0 (`live_basemap`): the resolved material's (`tags::material`,
    docs/shader-instances.md) first level of detail, pass by pass, the
    instance bitmap on stage 0, skipping engine defaults (`rasterizer`,
@@ -720,6 +734,9 @@ without rings, aim rays or labels; teleporter markers off; ambient
 occlusion on), waits for its pictures and sky, puts the camera where the
 shot says (`aim`) and reads the frame back. Players in a shot are drawn
 with the server's models, each on the floor below them (`floorBelow`).
+The level's own vehicles are drawn as the viewer draws a game's (from
+`models/vehicle/*.glb`, so a Warthog has its turret) where it has a model
+for each; the level's turretless hulls are hidden then.
 
 **The plan** (`web/banner/plan.ts`) names no coordinates from the disc. A
 shot is either relative to the level's playable bounds (a point as

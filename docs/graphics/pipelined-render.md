@@ -14,7 +14,7 @@ RAM, so a frame costs `max(sim, render)` instead of `sim + render`?
 
 ## What it would buy
 
-From docs/perf/frame-budget.md, "Render front-end versus simulation"
+From docs/perf/gameplay-budget.md, "Render front-end versus simulation"
 (Old Mombasa, headless, `render-timing`, 2026-11-17), per frame:
 
 | draws | sim (guest, outside render) | render front-end (guest) | our D3D layer on the game thread | serial | pipelined, ideal |
@@ -26,7 +26,7 @@ The D3D layer moves with the render front-end (it is called from it), so
 the render side is 26.6 ms and the sim 7.8 ms. Pipelining hides the
 **smaller** side: at best it saves the sim's 6-8 ms a frame (about 22%),
 less whatever the snapshot and the hand-back cost. The render side stays
-the critical path, so the per-draw work in frame-budget.md keeps its
+the critical path, so the per-draw work in docs/perf/gameplay-budget.md keeps its
 value either way; pipelining stacks on top of it.
 
 ## Design
@@ -785,8 +785,8 @@ plain `ret`). On the game thread, at each entry:
 
 On the render thread the executor's dispatch has the generated original
 at `0x00223240` and a no-op at `0x0012b2e0`; it may run the D3D layer's
-overrides (the entries, the write barrier's and CreateDevice's shadow
-pages, the port I/O stubs). Everything else (kernel imports, XAPI, other
+overrides (the entries with their write barrier, CreateDevice's shadow
+page, the port I/O stubs). Everything else (kernel imports, XAPI, other
 features' hooks, plan chains) is refused, which ends the render there.
 
 **Hand-back** (join of a completed render): the render stack pages are
@@ -1393,7 +1393,7 @@ faults (about 190 pages a frame), which come to roughly as much as the
 overlap. At most that is about 20%, and only once the tick may run beside
 the render. With the tick joining first, the overlap is the frame's work
 outside the tick. The next real win has to come from a cheaper render
-(docs/perf/frame-budget.md), not from more pipelining.
+(docs/perf/gameplay-budget.md), not from more pipelining.
 
 ### Where it stands (2026-11-18)
 
@@ -1439,7 +1439,7 @@ without pipelining, so it comes first.
 
 ## Related
 
-- docs/perf/frame-budget.md, "Render front-end versus simulation": the
+- docs/perf/gameplay-budget.md, "Render front-end versus simulation": the
   times this starts from.
 - docs/graphics/render-thread.md: the backend's render thread, which
   stays as it is.

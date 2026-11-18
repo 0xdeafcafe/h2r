@@ -428,7 +428,7 @@ All of them write every channel, and the later ones are additive
 (`DstAlpha`, `One`) with depth `Equal`. So an earlier additive draw
 triggers it too, not only a masked one. In the bench it takes the
 churn scene from 200 render passes to 1, and from 41-53 us a draw to
-9-10.5 at a load average of about 55 (frame-budget.md, "The submit
+9-10.5 at a load average of about 55 (docs/perf/gameplay-budget.md, "The submit
 regression"). It became the default after play-testing showed nothing
 visible: the differences are a few levels on edge pixels, and merged
 passes already accept that trade. Whether the exact rule is exact on
@@ -494,7 +494,7 @@ hold them; release build, load average about 75):
 | of which the Metal compiler (`newLibraryWithSource`, `newRenderPipelineState`) | 68.7 |
 
 So about 97% is Metal's, not translation; the 220 ms per pipeline in
-docs/perf/frame-budget.md's worst frame is the same compile on a busier machine
+docs/perf/gameplay-budget.md's worst frame is the same compile on a busier machine
 with real combiners. Built on 4 threads the same 24 take 0.70 s of wall
 time against 1.99 s on one: the compiler scales across threads. wgpu 30's
 pipeline cache (`PipelineCacheDescriptor`) is a no-op on Metal

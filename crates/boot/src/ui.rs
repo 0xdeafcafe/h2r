@@ -146,6 +146,9 @@ impl Screen {
 pub struct Extension {
     pub list: List,
     pub retail: u32,
+    /// The index our rows start at: after the retail rows unless set
+    /// ([`Extension::at`]).
+    at: Option<u32>,
     rows: Vec<Row>,
 }
 
@@ -154,6 +157,7 @@ pub fn extend(list: List, retail: u32) -> Extension {
     Extension {
         list,
         retail,
+        at: None,
         rows: Vec::new(),
     }
 }
@@ -162,6 +166,16 @@ impl Extension {
     pub fn row(mut self, r: Row) -> Extension {
         self.rows.push(r);
         self
+    }
+    /// Our rows from index `at`, the retail rows from there on after
+    /// them: [`Model::retail_index`] says which retail row an index shows.
+    pub fn at(mut self, at: u32) -> Extension {
+        self.at = Some(at.min(self.retail));
+        self
+    }
+    /// The index our first row is at.
+    fn start(&self) -> u32 {
+        self.at.unwrap_or(self.retail)
     }
 }
 
@@ -377,7 +391,7 @@ impl Model {
                 .extensions
                 .iter()
                 .find(|e| e.list == list)
-                .map_or(0, |e| e.retail as i64),
+                .map_or(0, |e| e.start() as i64),
         };
         let i = usize::try_from(i64::from(index) - base).ok()?;
         self.rows(list).get(i)
@@ -391,10 +405,50 @@ impl Model {
                 .extensions
                 .iter()
                 .find(|e| e.list == list)
-                .map_or(0, |e| e.retail),
+                .map_or(0, |e| e.start()),
         };
         let i = self.rows(list).iter().position(|r| r.kind == *kind)?;
         i16::try_from(base as usize + i).ok()
+    }
+
+    /// The retail row index `index` of `list` shows: itself before our
+    /// rows, `index` less ours after them ([`Extension::at`]), `None` for
+    /// one of ours, a screen of ours, or past the list.
+    pub fn retail_index(&self, list: List, index: i16) -> Option<i16> {
+        let e = self.extensions.iter().find(|e| e.list == list)?;
+        let (i, at, n) = (i64::from(index), i64::from(e.start()), e.rows.len() as i64);
+        let retail = match i {
+            _ if i < 0 => return None,
+            _ if i < at => i,
+            _ if i < at + n => return None,
+            _ => i - n,
+        };
+        (retail < i64::from(e.retail)).then_some(retail as i16)
+    }
+
+    /// Row `row` as one line, its label then its value: for a list whose
+    /// items have one text (an in-game screen of ours,
+    /// `list_class::ingame`). A bool shown with the game's own On and Off
+    /// ids reads our "On" and "Off" here. Takes the store's lock: never
+    /// call it with guest memory held.
+    pub fn line(&self, row: &Row) -> String {
+        let [(_, label), (_, value)] = self.texts(row);
+        let text = |id: u32| {
+            self.strings
+                .iter()
+                .find(|(i, _)| *i == id)
+                .map(|(_, t)| t.clone())
+        };
+        let value = match row.bool_ids {
+            Some([on, _]) if value == on => Some("On".to_string()),
+            Some([_, off]) if value == off => Some("Off".to_string()),
+            _ => text(value),
+        };
+        let label = text(label).unwrap_or_default();
+        match value.filter(|v| !v.is_empty()) {
+            Some(v) => format!("{label}: {v}"),
+            None => label,
+        }
     }
 
     /// `(text slot, string id)` for the row's label and value. Takes the
@@ -574,5 +628,22 @@ mod tests {
             0..100,
         );
         assert!(r.err().unwrap().contains("string ids"));
+    }
+
+    /// A row as one line for the in-game items: label, then value; a
+    /// screen row alone; the game's On and Off ids as our words.
+    #[test]
+    fn a_row_reads_as_one_line() {
+        let store = Arc::new(Store::defaults(ALL));
+        let m = model(Arc::clone(&store));
+        let fov = m.row(List::Screen("video"), 0).unwrap();
+        let value = m.texts(fov)[1].1;
+        let value = &m.strings().iter().find(|(i, _)| *i == value).unwrap().1;
+        assert_eq!(m.line(fov), format!("{}: {value}", FOV.label));
+        let open = m.row(List::Controls, 7).unwrap();
+        assert_eq!(m.line(open), "Video", "an open row: its label alone");
+        let speaker = m.row(List::Controls, 6).unwrap();
+        let line = m.line(speaker);
+        assert!(line.ends_with(": On") || line.ends_with(": Off"), "{line}");
     }
 }

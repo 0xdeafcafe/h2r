@@ -183,7 +183,13 @@ pub fn model(store: Arc<Store>, on: Switches) -> Result<Model, String> {
                 .row(Row::open(SCREEN))
                 .row(Row::open(VOICE_SCREEN))
         };
-        extensions.push(rows(List::Pause, crate::pause_menu::PAUSE_ROWS));
+        // Below Controller Settings: on the campaign menu by index (the
+        // retail rows after it move down), on the multiplayer menu by the
+        // rows' order (`pause_menu::order_actions`).
+        extensions.push(
+            rows(List::Pause, crate::pause_menu::PAUSE_ROWS)
+                .at(crate::pause_menu::PAUSE_CONTROLLER_ROW as u32 + 1),
+        );
         extensions.push(rows(List::MpPause, crate::pause_menu::MP_ACTIONS));
     }
     Model::with_ids(

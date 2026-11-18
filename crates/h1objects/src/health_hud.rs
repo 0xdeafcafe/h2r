@@ -1,5 +1,5 @@
 //! Halo 1's health meter in the converted player's Halo 2 HUD
-//! (docs/game/health.md, "The health meter in the HUD").
+//! (docs/halo1/health.md, "The health meter in the HUD").
 //!
 //! A converted Halo 1 map runs Halo 1's health model (`boot::health`), so
 //! its player needs to see the body's health. Halo 2's HUD already reads it:

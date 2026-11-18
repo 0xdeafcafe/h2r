@@ -2,9 +2,9 @@
 
 The runtime side of the 30 fps work: guest memory accessors, the
 inline RAM path (`H2_FASTMEM`, on by default), runner transfers and their counters. The
-profiling and benchmark tools are in [perf.md](perf.md); the main-menu
+profiling and benchmark tools are in [profiling.md](profiling.md); the main-menu
 frame budget and the plan across every area are in
-[perf-budget.md](perf-budget.md).
+[menu-budget.md](menu-budget.md).
 
 The goal is **retail running correctly at 30 presented frames per wall second**,
 a **33.33 ms** budget per frame, measured in the main menu with `H2_BOOT_GFX`.
@@ -44,7 +44,7 @@ An unobserved category prints `unobserved`, not a misleading measured zero.
 
 Boot integration (not done; `H2_PERF` counters already reach the runtime
 through boot's bridge, and a timeline of a real run comes from `H2_TIMELINE`,
-see [perf.md](perf.md)):
+see [profiling.md](profiling.md)):
 
 - Enable profiling for every guest ExecCtx, including new threads and DPCs.
 - After registering D3D entries, use `Dispatch::profile_override(addr,
@@ -326,7 +326,7 @@ lane to focused tests and microbenchmarks.
 ## Inline RAM: one gate hold per run of accesses (2026-11-15)
 
 After FASTMEM, the "generated guest code" row of the level frame (14.9 ms,
-[frame-budget.md](frame-budget.md)) is mostly the inline RAM path itself.
+[gameplay-budget.md](gameplay-budget.md)) is mostly the inline RAM path itself.
 Each access took the memory gate with a compare-and-swap and released it
 with an ordered store, and that pair is most of an access's 6-7 ns: the
 `read` loop below spends 7.1 ns a trip on one load, against 0.8 ns for the
@@ -784,3 +784,37 @@ No exception flag other than PE and C1 differs. Most results are within one
 f64 ulp, as expected; the tails are the operand's own rounding to 53 bits,
 amplified near zeros of sin and cos (and of log2 at x near 1), and for large
 angles the operand error alone is up to |x| * 2^-53 of angle. Not turned on.
+
+## The D3D write barrier runs its entry in place (2026-11-18)
+
+Old Mombasa on the perf serve (03a, E1 on, 6,947 game-thread samples at
+1 kHz, shares because the machine was at load 50-90): every D3D entry went
+through `boot::d3d_glue`'s write barrier, which drained the watch and then
+reached the real handler as a guest call to a shadow address, with a boxed
+Rust continuation to return to the caller. Per D3D call that is two more
+runner transfers (the call to the shadow and the return to the token),
+a `Box` allocated and freed, a continuation slot and a token resolve. In
+the profile: `Continuations::insert` 0.53%, `Dispatch::resolve_resume`
+0.35%, the barrier closure itself 0.27% plus 0.23% in `malloc`, the free in
+`handler::execute` 0.37%, and a share of `Runner::run_inner`'s 4.8% self
+time (two of the transfers per call), about 2-3% of the game thread.
+
+Now the barrier wraps the entry's own override (`barrier_handler`, the
+pattern `pipeline_render` and `profile_override` already use): drain, then
+`OriginalHandler::invoke` in place. The guest sees the same registers,
+memory and return; the one difference is the dead stack word under the
+caller's `ESP` after the call, which keeps the caller's return address (as
+on the Xbox) instead of a token. Nothing is drained on return, as before:
+an entry that calls guest code before returning still leaves the stores
+made meanwhile for the next entry. The shadow page at `0xa0ff_4000` is gone.
+
+Proof (`crates/boot/tests/write_barrier.rs`): a real wrapped entry
+(`D3DResource_AddRef`) returns to its caller within one runner transfer
+with its stdcall cleanup, no live continuation and its pre-call store
+drained; and `barrier_handler` around an entry that returns through a guest
+call keeps the store that call made dirty after the return, while the
+store before the call went to the device first.
+
+`StateWords::read` (every draw) reads the guest's words straight into the
+arrays instead of through a zeroed byte buffer and a second array: about
+2.3 KB less copying per draw (`state_read_places_every_word`).

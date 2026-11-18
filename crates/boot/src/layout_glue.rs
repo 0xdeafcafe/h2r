@@ -557,7 +557,7 @@ pub fn install(
     let with_skulls = model
         .as_ref()
         .is_some_and(|m| skulls_menu::enabled(m.store()));
-    // The campaign picker (docs/game/multiple-campaigns.md), when a second
+    // The campaign picker (docs/halo1/campaign-picker.md), when a second
     // campaign is installed.
     let with_campaigns = crate::campaign_menu::class().is_some();
     // The Halo 1 options' texts (crate::h1_options): the campaign page's
@@ -1286,11 +1286,13 @@ pub fn install(
     });
     // The Video screen: our own list class, opened by the Settings row.
     if with_video {
+        // Opened from the pause menus too: one line a row in a game.
         let class = crate::list_class::ListClass::new(
             "video-screen",
             video_screen::SCREEN,
             Arc::clone(&model),
-        );
+        )
+        .lines();
         match registry.add(&class) {
             Ok(true) => {}
             Ok(false) => eprintln!("video screen: features.video-screen is off"),
@@ -1312,11 +1314,13 @@ pub fn install(
     }
     // The Voice screen: our own list class, opened from the pause menus.
     if with_voice {
+        // Opened from the pause menus too: one line a row in a game.
         let class = crate::list_class::ListClass::new(
             "voice-screen",
             video_screen::VOICE_SCREEN,
             Arc::clone(&model),
-        );
+        )
+        .lines();
         match registry.add(&class) {
             Ok(true) => {}
             Ok(false) => eprintln!("voice screen: features.voice-screen is off"),

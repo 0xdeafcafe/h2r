@@ -1,6 +1,6 @@
 //! Halo 1's unit HUD (`unhi`) as a Halo 2 HUD (`nhdt`), written from
 //! scratch: every byte of the `nhdt` and its widgets is set here, none is a
-//! template's (docs/game/hud.md).
+//! template's (docs/halo1/hud.md).
 //!
 //! Halo 2 draws an `nhdt`'s bitmap widgets one by one (`0x13a532`), each a
 //! sprite of its bitmap through a HUD shader, placed by anchor, offset and
@@ -305,7 +305,7 @@ pub fn grenade_huds(map: &H1Map) -> Result<Vec<Option<H1TagId>>> {
 /// anchor's corner (E `0x000e07a0`: x times -1 when anchor bit 0, the right
 /// edge, is set; y times -1 when bit 1, the bottom, is set; centre as
 /// is); Halo 2 adds it in screen directions (the health strip's -108 is
-/// up from a bottom anchor, docs/game/health.md).
+/// up from a bottom anchor, docs/halo1/health.md).
 pub fn to_halo2_offset(anchor: Anchor, (x, y): (i16, i16)) -> (i16, i16) {
     let right = matches!(anchor, Anchor::TopRight | Anchor::BottomRight);
     let bottom = matches!(anchor, Anchor::BottomLeft | Anchor::BottomRight);

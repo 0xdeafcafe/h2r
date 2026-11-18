@@ -250,7 +250,7 @@ together, and the sampler splits it.
 The header gives, per frame, the logical time (`logical us` counter),
 the logical/wall ratio, vblank DPCs, slices, charged accesses, and idle
 advances with the logical time they skipped. Contended memory-lock waits
-are listed per host thread. docs/perf/perf-budget.md is the main-menu budget
+are listed per host thread. docs/perf/menu-budget.md is the main-menu budget
 made with it.
 
 ## Benchmarks

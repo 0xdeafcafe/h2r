@@ -322,7 +322,7 @@ it, every time; every reference is on its leaf's path on the side its
 flip bit says (1,596,791 references); leaf flag bit 0 is set exactly on
 leaves whose references reach a two-sided surface (one leaf of 611,684
 differs); rings have at most 8 vertices. Halo 1's data meets all of it
-(below and [h1-map-format.md](h1-map-format.md)).
+(below and [map-format.md](../halo1/map-format.md)).
 
 ## Not established
 

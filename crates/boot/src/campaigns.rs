@@ -1,4 +1,4 @@
-//! More than one campaign in the menus (docs/game/multiple-campaigns.md).
+//! More than one campaign in the menus (docs/halo1/campaign-picker.md).
 //!
 //! 1.0's campaign data is already keyed by a campaign id, but its menus use
 //! campaign 1 only: the level select's list is built for campaign 1

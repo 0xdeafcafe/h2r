@@ -94,7 +94,7 @@ pub struct Hud;
 impl feature::Feature for Hud {
     fn manifest(&self) -> Manifest {
         Manifest::new("hud", "Which HUD a game shows: Halo 1's or Halo 2's")
-            .doc("docs/game/h1-multiplayer.md")
+            .doc("docs/halo1/multiplayer.md")
     }
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         b.game().on_start("pick the HUD style", |o| {

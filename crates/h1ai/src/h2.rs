@@ -4,7 +4,7 @@
 //! scenario's scripting data) and the character palette.
 //!
 //! Offsets and strides are in [`layout`]; evidence per field is in
-//! `docs/formats/h1-ai.md`. A block field is 8 bytes on Xbox: count, then
+//! `docs/halo1/ai.md`. A block field is 8 bytes on Xbox: count, then
 //! the address of element 0. A tag reference is 8 bytes: group, datum.
 //! These are also the types the converter writes, so a conversion reads
 //! back into exactly what it was built from.

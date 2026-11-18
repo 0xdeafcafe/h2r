@@ -1,5 +1,5 @@
 //! Draws the HUD style [`crate::hud`] picks on converted Halo 1 maps
-//! (docs/game/hud.md).
+//! (docs/halo1/hud.md).
 //!
 //! A converted map carries both HUDs for its player biped: Halo 1's
 //! (`h1objects::h1hud`, which the biped names as built) and Halo 2's with
@@ -270,7 +270,7 @@ pub fn campaign_halo2_levels(data_root: &Path) -> HashSet<String> {
 impl feature::Feature for HudSwap {
     fn manifest(&self) -> feature::Manifest {
         feature::Manifest::new(FEATURE, "Halo 1's or Halo 2's HUD on converted Halo 1 maps")
-            .doc("docs/game/hud.md")
+            .doc("docs/halo1/hud.md")
     }
     fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
         use feature::Flow;

@@ -5,7 +5,7 @@
 //! `W-driver enter`). Halo 2 looks animations up through a tree of string IDs:
 //! mode, weapon class, weapon type, action. This module splits a Halo 1 name
 //! into that tree and renames the labels whose Halo 2 counterpart differs.
-//! The table is in `docs/formats/h1-models.md`, "Animation names"; every
+//! The table is in `docs/halo1/models.md`, "Animation names"; every
 //! target below was checked against the `jmad` trees of every map on the
 //! owner's retail disc by the ignored test `retail_h2_animation_names`
 //! (evidence V3 there).

@@ -71,7 +71,7 @@ pub fn mount<R: vfs::Rewrite + 'static>(
 /// them; `None` is the default, Halo 1's), with the package resolver recording each disc base it hashes
 /// in `hashes` (shared with [`crate::map_bases::DiscBases`]), and
 /// `campaign_maps` (map name, host file) served as `maps\<map>.map` where
-/// the disc has no such map (docs/game/multiple-campaigns.md §3).
+/// the disc has no such map (docs/halo1/campaign-picker.md §3).
 ///
 /// Given a packages directory, the packages layer is always mounted, even
 /// with no package there yet: a package installed while the game runs (a
@@ -98,7 +98,7 @@ pub fn mount_with_hashes<R: vfs::Rewrite + 'static>(
         };
     }
     // A level's Halo 2-assets map, when there is one, is served while the
-    // pregame screen chooses Halo 2's assets (docs/game/campaigns.md §5).
+    // pregame screen chooses Halo 2's assets (docs/halo1/campaign.md §5).
     let disc = vfs::CampaignMapsBackend::new(vfs::open_disc(disc)?, campaign_maps.iter().cloned())
         .with_assets(
             crate::h1_variants::campaign_choice(),

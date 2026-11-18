@@ -1327,6 +1327,7 @@ dependencies = [
  "analyze",
  "anyhow",
  "app",
+ "bytemuck",
  "gfx",
  "hot-render",
  "iced-x86",
@@ -5902,6 +5903,8 @@ dependencies = [
 name = "studio"
 version = "0.1.0"
 dependencies = [
+ "agent",
+ "agent-proto",
  "anyhow",
  "app-icon",
  "assets",

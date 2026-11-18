@@ -181,7 +181,7 @@ The page (`boot::skulls_screen`, feature `skulls-page` for the hook and
 
 - **Rows**: "Start Level" first (focused when the page opens), then a
   Halo 1 level's options ("Assets: < Halo 1 >", "HUD: < Halo 1 >",
-  docs/game/h1-multiplayer.md "Halo 1 options"), then every skull, gold
+  docs/halo1/multiplayer.md "Halo 1 options"), then every skull, gold
   first ("Gold and silver" below), then our six ("Our skulls"), each one
   label with its state as a value to step: "Mythic: < On >", "Mythic: <
   Off >", and "Mythic: Locked". The list skin has one text per row, so the

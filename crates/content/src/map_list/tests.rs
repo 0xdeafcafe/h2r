@@ -275,3 +275,49 @@ fn base_entries_read_from_a_slot() {
     assert_eq!(BaseEntry::from_slot(&slot), None, "an empty slot");
     assert_eq!(BaseEntry::from_slot(&slot[..10]), None);
 }
+
+/// A preview made from an image has the frame's alpha but the image's
+/// colours on it, so the Select Map dialog showed it with no border.
+/// [`with_frame`] gives the frame retail's colours and leaves the rest.
+#[test]
+fn a_preview_takes_retail_s_frame_colours_and_keeps_its_picture() {
+    let img = preview_from_rgba(2, 2, &[200, 100, 50, 255].repeat(4));
+    // A retail preview: a frame colour of its own, a picture inside.
+    let retail: Vec<u8> = (0..PREVIEW_LEN / 4)
+        .flat_map(|i| {
+            let (x, y) = (i % PREVIEW_W, i / PREVIEW_W);
+            match preview_alpha(x, y) {
+                0xff => [0xf0, 0xd0, 0xa0, 0xff],
+                a => [1, 2, 3, a],
+            }
+        })
+        .collect();
+    let mut framed = img.clone();
+    with_frame(&mut framed, &retail);
+    let mut border = 0;
+    for (i, (f, o)) in framed
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(img.as_chunks::<4>().0)
+        .enumerate()
+    {
+        let (x, y) = (i % PREVIEW_W, i / PREVIEW_W);
+        if preview_alpha(x, y) == 0xff {
+            assert_eq!(*f, [0xf0, 0xd0, 0xa0, 0xff], "{x},{y}");
+            border += 1;
+        } else {
+            assert_eq!(f, o, "{x},{y}: the picture and the cut corner stay");
+        }
+    }
+    assert!(
+        border > 2 * (PREVIEW_W + PREVIEW_H) - 40,
+        "{border} border pixels"
+    );
+    // Before, the border was the image's own colour.
+    assert_eq!(&img[..4], [50, 100, 200, 0xff]);
+    // A wrong length leaves it.
+    let mut short = vec![9u8; 16];
+    with_frame(&mut short, &retail);
+    assert_eq!(short, [9u8; 16]);
+}
