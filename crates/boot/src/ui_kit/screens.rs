@@ -16,11 +16,12 @@ use crate::skulls_menu::{self, Mode, SkullsScreen};
 use crate::ui_kit::input::{Glyph, Input, Prompt};
 use crate::ui_kit::spec::{Describe, ListPlace, Press, RowSpec, ScreenSpec, ValueStyle};
 
-/// The campaign page's legend: left/right toggle, A starts, B backs out.
+/// The campaign page's legend: left/right change, A selects (Start Level
+/// goes on), B backs out.
 pub fn skulls_prompts() -> Vec<Prompt> {
     vec![
-        Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Toggle"),
-        Prompt::new(&[Glyph::A], "Start Level"),
+        Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
+        Prompt::new(&[Glyph::A], "Select"),
         Prompt::new(&[Glyph::B], "Back"),
     ]
 }
@@ -61,11 +62,30 @@ impl Describe for SkullsScreen {
                 Input::Right,
                 Input::A,
                 Input::B,
-                Input::X,
-                Input::Start,
             ];
+            let ids = |row: i16| -> Vec<u32> {
+                let mut ids: Vec<u32> = self.texts(row).into_iter().map(|(_, id)| id).collect();
+                ids.extend(Rows::description(self, row));
+                ids
+            };
+            s.rows.push(
+                RowSpec::action(skulls_menu::START)
+                    .press(Press::Act)
+                    .describe(skulls_menu::START_DESCRIPTION)
+                    .ids(&ids(0)),
+            );
+            for (n, o) in self.options().iter().enumerate() {
+                let row = 1 + n as i16;
+                let halo1 = crate::h1_options::is_halo1(&self.store(), o);
+                s.rows.push(
+                    RowSpec::value(o.label, &["Halo 1", "Halo 2"], usize::from(!halo1))
+                        .press(Press::Step)
+                        .describe(&crate::h1_options::description(o))
+                        .ids(&ids(row)),
+                );
+            }
             let mut order: Vec<(i16, usize)> = (0..TOTAL)
-                .filter_map(|i| Some((skulls_menu::row_of(i)?, i)))
+                .filter_map(|i| Some((self.row_of_skull(i)?, i)))
                 .collect();
             order.sort();
             for (row, i) in order {
@@ -75,12 +95,10 @@ impl Describe for SkullsScreen {
                     State::Off => RowSpec::value(label, &["On", "Off"], 1),
                     State::Locked => RowSpec::info(label, skulls_menu::LOCKED),
                 };
-                let mut ids: Vec<u32> = self.texts(row).into_iter().map(|(_, id)| id).collect();
-                ids.extend(Rows::description(self, row));
                 s.rows.push(
-                    r.press(Press::Act)
+                    r.press(Press::Step)
                         .describe(&skulls_menu::description(i))
-                        .ids(&ids),
+                        .ids(&ids(row)),
                 );
             }
         } else {
@@ -220,9 +238,11 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
 }
 
 /// The screens `h2 ui preview` knows, by name.
-pub const NAMES: [&str; 8] = [
+pub const NAMES: [&str; 10] = [
     "skulls",
+    "skulls.h1",
     "skulls.mp",
+    "h1-options",
     "coop",
     "coop.friends",
     "coop.join",
@@ -237,8 +257,7 @@ pub const NAMES: [&str; 8] = [
 /// example.
 pub fn sample(name: &str) -> Option<ScreenSpec> {
     let skull_store = || {
-        let defs: Vec<&'static settings::Def> = SKULLS.iter().collect();
-        let store = Arc::new(settings::Store::defaults(&defs));
+        let store = Arc::new(settings::Store::defaults(crate::setting_defs::ALL));
         for i in [0, 2, 4, 9, 12] {
             skulls::record_pickup(&store, &["Chief".to_string()], i);
         }
@@ -260,6 +279,15 @@ pub fn sample(name: &str) -> Option<ScreenSpec> {
             s.open("Chief".into());
             s.spec()
         }
+        "skulls.h1" => {
+            let s = SkullsScreen::new(skull_store());
+            s.open_with("Chief".into(), crate::h1_options::CAMPAIGN);
+            s.spec()
+        }
+        "h1-options" => crate::h1_options::OptionsScreen {
+            store: skull_store(),
+        }
+        .spec(),
         "skulls.mp" => {
             let s = SkullsScreen::multiplayer(skull_store());
             s.open("Chief".into());

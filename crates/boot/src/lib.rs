@@ -30,6 +30,9 @@ pub mod fallback;
 pub mod fov_row;
 pub mod game_glue;
 pub mod health;
+pub mod h1_options;
+pub mod h1_options_row;
+pub mod hud;
 pub mod h1_variants;
 pub mod precision;
 pub mod render_thread;
@@ -851,6 +854,22 @@ pub fn run_hosted_with_live(
     let campaigns = campaigns.map(campaign_menu::prepare);
     layout_glue::install(&loaded.runtime, &mut features, model).context("installing the button layouts")?;
     campaign_menu::install(&loaded.runtime, &mut features, campaigns).context("installing the campaigns")?;
+    // The Halo 1 / Halo 2 options (docs/game/h1-multiplayer.md "Halo 1
+    // options"): the switches follow the settings, the HUD style is picked
+    // at each game start, and a custom game's Game Setup gets the Halo 1
+    // Options row while its map is a converted Halo 1 map.
+    if let Some(store) = host.settings.as_ref() {
+        h1_options::install_switches(store);
+        let screen = Arc::new(h1_options::OptionsScreen { store: Arc::clone(store) });
+        let class = h1_options_row::class(screen, skulls_menu::DESCRIPTION_TEXT, skulls_menu::LIST_LAYOUT);
+        if let Err(e) = features.add(&class) {
+            eprintln!("h1 options: {e}");
+        }
+        features
+            .add(&h1_options_row::SetupRow { data_root: opts.data_root.clone() })
+            .map_err(|e| anyhow::anyhow!("h1 options row: {e}"))?;
+    }
+    features.add(&hud::Hud).map_err(|e| anyhow::anyhow!("hud: {e}"))?;
     // The party privacy as the Live session's visibility, and the Live
     // menu's Custom Game Browser and Content Download rows (registered with the layouts above;
     // docs/live/live-custom-games.md).
