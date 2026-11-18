@@ -28,6 +28,9 @@
 //! * `trace` answers `trace.*` and `flight.*`: rows of chosen objects
 //!   taken at every tick, streamed to a file or kept in a ring with the
 //!   tick's controller reads.
+//! * `state.*` saves and loads machine snapshots: the tick observer ends
+//!   the slice when one is due, and the boot loop runs it between slices
+//!   through a [`SnapshotMachine`] ([`Agent::run_snapshots`]).
 //!
 //! The observer adds dispatch transfers to every tick, as `lockstep`'s
 //! does: compare runs that all have the agent on, or all off.
@@ -46,7 +49,10 @@ mod tap;
 mod trace;
 
 pub use capture::{FrameSource, Sampler, TickMark, summarise, write_csv};
-pub use exec::{Access, Agent, ConnId, GameCtx, GameMethod, HostMethod, Page, TICK_STALE, query};
+pub use exec::{
+    Access, Agent, ConnId, GameCtx, GameMethod, HostMethod, Page, SnapshotMachine, Snapshots,
+    TICK_STALE, query,
+};
 pub use loads::{LoadTracker, TimelineTotals, TotalsSource};
 pub use reader::{
     GameStatus, GuestReader, Reader, actor_object, machine_object, player_object, vehicle_object,
@@ -71,7 +77,11 @@ impl feature::Feature for AgentFeature {
         b.frame()
             .on_tick("serve", move |o| {
                 let mut r = GuestReader::new(|| o.guest());
-                a.on_tick(&mut r);
+                // A save or load is due: end the slice a few transfers
+                // from here, where the boot loop runs it.
+                if a.on_tick(&mut r) {
+                    o.runtime.request_preempt(runtime::preempt::REQUEST);
+                }
             })
             .last();
         for (point, on, label) in [

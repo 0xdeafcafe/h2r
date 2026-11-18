@@ -11,7 +11,13 @@
 //! directory, which should be under `$TMPDIR` or `target/`.
 
 pub mod account_screen;
+pub mod agent_glue;
 pub mod aim_assist;
+pub mod campaign_cards;
+pub mod campaign_info;
+pub mod campaign_menu;
+pub mod campaigns;
+pub mod cheats;
 pub mod community_variants;
 pub mod controls_text;
 pub mod coop_jip;
@@ -19,43 +25,31 @@ pub mod coop_latency;
 pub mod coop_live;
 pub mod coop_players;
 pub mod coop_probe;
-pub mod campaign_cards;
-pub mod campaign_info;
-pub mod campaign_menu;
-pub mod cheats;
-pub mod campaigns;
 pub mod custom_games;
 pub mod d3d_diag;
 pub mod d3d_glue;
+pub mod debug_menu_glue;
 pub mod dsound_glue;
 pub mod effect_census;
 pub mod fallback;
 pub mod fov_row;
 pub mod game_glue;
-pub mod health;
 pub mod h1_options;
 pub mod h1_options_row;
-pub mod hud;
-pub mod loaded_map;
-pub mod hud_swap;
 pub mod h1_variants;
-pub mod precision;
-pub mod render_probe;
-pub mod registration;
-pub mod render_thread;
+pub mod health;
 pub mod host_perf;
 pub mod hot_glue;
-pub mod sampling;
+pub mod hud;
+pub mod hud_swap;
 pub mod icons;
-pub mod layout_glue;
-pub mod list_class;
-pub mod retail_rows;
-pub mod level_boot;
 pub mod keyboard_glue;
+pub mod layout_glue;
+pub mod level_boot;
+pub mod list_class;
 pub mod live_glue;
 pub mod live_notice;
-pub mod agent_glue;
-pub mod debug_menu_glue;
+pub mod loaded_map;
 pub mod lockstep_glue;
 pub mod map_bases;
 pub mod map_copy;
@@ -69,42 +63,49 @@ pub mod native_transparents_glue;
 pub mod native_world_glue;
 pub mod new_maps;
 pub mod pad_speaker;
+pub mod precision;
+pub mod registration;
+pub mod render_probe;
+pub mod render_thread;
+pub mod retail_rows;
+pub mod sampling;
 pub use live_telemetry as telemetry;
+pub mod bot_glue;
+pub mod bots_nav_auto;
+pub mod clankers;
+pub mod pause_menu;
+pub mod setting_defs;
 pub mod sha;
 pub mod shim;
+pub mod signin_keyboard;
+pub mod signin_screen;
 pub mod sim_bots;
-pub mod speaker_row;
-pub mod setting_defs;
 pub mod skulls;
 pub mod skulls_custom;
 pub mod skulls_menu;
 pub mod skulls_mp;
 pub mod skulls_mp_row;
-pub mod signin_keyboard;
-pub mod signin_screen;
 pub mod skulls_screen;
+pub mod snapshot_glue;
+pub mod snapshot_probe;
+pub mod speaker_row;
 pub mod speaker_setting;
+pub mod sse;
 pub mod steam_speaker;
+pub mod stopgaps;
+pub mod sweep_diag;
 pub mod tier;
+pub mod touch_glue;
+pub mod trace;
 pub mod ui;
 pub mod ui_kit;
 pub mod ui_watch;
 pub mod variant_ext;
 pub mod variant_options;
 pub mod variant_page;
-pub mod bot_glue;
-pub mod bots_nav_auto;
-pub mod clankers;
 pub mod video_screen;
 pub mod voice_glue;
 pub mod voice_settings;
-pub mod pause_menu;
-pub mod snapshot_probe;
-pub mod sse;
-pub mod sweep_diag;
-pub mod touch_glue;
-pub mod stopgaps;
-pub mod trace;
 pub mod wrappers;
 pub mod x87;
 pub mod xapi_glue;
@@ -115,18 +116,25 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
-use runtime::{Event, GuestFn};
 pub use live_hle::LiveConfig;
+use runtime::{Event, GuestFn};
 
 /// The bridge source linked into the generated dylib.
 pub const BRIDGE: &str = include_str!("../c/boot_bridge.c");
 /// The `h2x87_v1_*` forwarders generated code imports since x87 lowering:
 /// emit's own x87 bridge, installed with `h2x87bridge_install`.
-pub const BRIDGE_X87: &str = concat!("#include \"h2gen.h\"\n", include_str!("../../emit/c/bridge_x87.c"));
+pub const BRIDGE_X87: &str = concat!(
+    "#include \"h2gen.h\"\n",
+    include_str!("../../emit/c/bridge_x87.c")
+);
 /// The runtime ABI header, copied next to the generated sources.
 pub const H2ABI_H: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../runtime/include/h2abi.h");
 /// File name of the linked module inside the build directory.
-pub const DYLIB: &str = if cfg!(windows) { "h2game.dll" } else { "libh2game.dylib" };
+pub const DYLIB: &str = if cfg!(windows) {
+    "h2game.dll"
+} else {
+    "libh2game.dylib"
+};
 
 /// Read `default.xbe` from an XISO, a raw XBE, or a directory holding the
 /// disc's files (the tvOS bundle, docs/runtime/tvos.md).
@@ -195,9 +203,17 @@ fn stamp_target() -> emit::compile::Arch {
 /// so a module cross-built on a Mac with `H2_EMIT_TARGET=tvos` (or `ios`,
 /// `windows`) matches what the app computes on the device (where that is
 /// the host) and nothing else.
-fn stamp_for(xbe_bytes: &[u8], passes: &str, codegen: &str, flags: &[String], target: emit::compile::Arch) -> String {
+fn stamp_for(
+    xbe_bytes: &[u8],
+    passes: &str,
+    codegen: &str,
+    flags: &[String],
+    target: emit::compile::Arch,
+) -> String {
     let target = match target {
-        emit::compile::Arch::Arm64Tvos | emit::compile::Arch::Arm64Ios | emit::compile::Arch::X86_64Windows => {
+        emit::compile::Arch::Arm64Tvos
+        | emit::compile::Arch::Arm64Ios
+        | emit::compile::Arch::X86_64Windows => {
             format!(" target {}", target.triple())
         }
         emit::compile::Arch::Arm64 | emit::compile::Arch::X86_64 => String::new(),
@@ -218,7 +234,8 @@ fn stamp_path(dylib: &Path) -> PathBuf {
 
 /// Whether `dylib` exists and was built from this image by this generator.
 pub fn dylib_current(xbe_bytes: &[u8], dylib: &Path) -> bool {
-    dylib.exists() && std::fs::read_to_string(stamp_path(dylib)).is_ok_and(|s| s == build_stamp(xbe_bytes))
+    dylib.exists()
+        && std::fs::read_to_string(stamp_path(dylib)).is_ok_and(|s| s == build_stamp(xbe_bytes))
 }
 
 /// Where [`build`] (and the fallback interpreter at run time) keep
@@ -232,31 +249,46 @@ pub fn analysis_cache(xbe_bytes: &[u8]) -> Option<PathBuf> {
     if std::env::var_os("H2_TRACE").is_some_and(|v| !v.is_empty()) {
         return None;
     }
-    Some(analysis_cache_in(xbe_bytes, &fallback::boot_cache_dir()?, env!("ANALYSIS_SOURCE_HASH")))
+    Some(analysis_cache_in(
+        xbe_bytes,
+        &fallback::boot_cache_dir()?,
+        env!("ANALYSIS_SOURCE_HASH"),
+    ))
 }
 
 fn analysis_cache_in(xbe_bytes: &[u8], dir: &Path, analyzer: &str) -> PathBuf {
-    dir.join(format!("analysis-{:016x}-{:x}-{analyzer}.h2a", fallback::fnv64(xbe_bytes), xbe_bytes.len()))
+    dir.join(format!(
+        "analysis-{:016x}-{:x}-{analyzer}.h2a",
+        fallback::fnv64(xbe_bytes),
+        xbe_bytes.len()
+    ))
 }
 
 /// Discovery's result for the image: read from `cache` when an earlier
 /// build by the same analyzer left it there, otherwise computed and saved
 /// there. With no `cache`, always computed. Returns whether the cache
 /// served it.
-pub(crate) fn analyze_cached(x: &xbe::Xbe, cache: Option<&Path>) -> Result<(analyze::Analysis, bool)> {
+pub(crate) fn analyze_cached(
+    x: &xbe::Xbe,
+    cache: Option<&Path>,
+) -> Result<(analyze::Analysis, bool)> {
     if let Some(cache) = cache
         && let Ok(bytes) = std::fs::read(cache)
         && let Some(a) = analyze::Analysis::decode(&bytes)
     {
         // Pruning by modification time drops the least recently used.
-        let _ = std::fs::File::options().append(true).open(cache).and_then(|f| f.set_modified(std::time::SystemTime::now()));
+        let _ = std::fs::File::options()
+            .append(true)
+            .open(cache)
+            .and_then(|f| f.set_modified(std::time::SystemTime::now()));
         return Ok((a, true));
     }
     let a = analyze::analyze(x)?;
     // Best effort: a failed write only costs the next build the analysis.
     if let Some(cache) = cache
         && let Some(dir) = cache.parent()
-        && let Err(e) = std::fs::create_dir_all(dir).and_then(|()| emit::output::replace(cache, &a.encode()))
+        && let Err(e) =
+            std::fs::create_dir_all(dir).and_then(|()| emit::output::replace(cache, &a.encode()))
     {
         eprintln!("analyze: not cached ({}: {e})", cache.display());
     }
@@ -306,7 +338,10 @@ pub fn build(xbe_bytes: &[u8], out: &Path, jobs: usize) -> Result<PathBuf> {
     );
     let t = Instant::now();
     let owners = emit::plan(funcs);
-    eprintln!("plan: {:.1}s (IR passes and owner shapes)", t.elapsed().as_secs_f64());
+    eprintln!(
+        "plan: {:.1}s (IR passes and owner shapes)",
+        t.elapsed().as_secs_f64()
+    );
     let src = out.join("src");
     let t = Instant::now();
     let w = emit::write_module(&owners, &src)?;
@@ -328,16 +363,34 @@ pub fn build(xbe_bytes: &[u8], out: &Path, jobs: usize) -> Result<PathBuf> {
         arch.name(),
         b.compiled,
         b.reused,
-        if b.cold > 0 { format!(", {} sources in the cold tier", b.cold) } else { String::new() },
+        if b.cold > 0 {
+            format!(", {} sources in the cold tier", b.cold)
+        } else {
+            String::new()
+        },
         b.cache_secs,
         b.compile_secs,
         b.archive_secs,
         b.object_bytes as f64 / 1e6
     );
     let t = Instant::now();
-    emit::compile::host_dylib(&b, &src, &[("h2boot_bridge.c", BRIDGE), ("h2boot_bridge_x87.c", BRIDGE_X87)], &lib).map_err(anyhow::Error::msg)?;
-    eprintln!("link: {:.1}s -> {}", t.elapsed().as_secs_f64(), lib.display());
-    std::fs::write(stamp_path(&lib), build_stamp(xbe_bytes)).with_context(|| format!("stamping {}", lib.display()))?;
+    emit::compile::host_dylib(
+        &b,
+        &src,
+        &[
+            ("h2boot_bridge.c", BRIDGE),
+            ("h2boot_bridge_x87.c", BRIDGE_X87),
+        ],
+        &lib,
+    )
+    .map_err(anyhow::Error::msg)?;
+    eprintln!(
+        "link: {:.1}s -> {}",
+        t.elapsed().as_secs_f64(),
+        lib.display()
+    );
+    std::fs::write(stamp_path(&lib), build_stamp(xbe_bytes))
+        .with_context(|| format!("stamping {}", lib.display()))?;
     eprintln!("build: {:.1}s", total.elapsed().as_secs_f64());
     Ok(lib)
 }
@@ -379,7 +432,9 @@ pub struct Module {
 /// the module is elsewhere.
 pub fn package_relative(module: &Path, root: &Path) -> Option<PathBuf> {
     let rel = module.strip_prefix(root).ok()?;
-    let normal = rel.components().all(|c| matches!(c, std::path::Component::Normal(_)));
+    let normal = rel
+        .components()
+        .all(|c| matches!(c, std::path::Component::Normal(_)));
     (normal && !rel.as_os_str().is_empty()).then(|| rel.to_path_buf())
 }
 
@@ -430,11 +485,26 @@ mod packaged {
     /// # Safety
     /// As `libloading::Library::new`: the module's initialisers run.
     pub unsafe fn load(rel: &Path) -> anyhow::Result<libloading::Library> {
-        let wide: Vec<u16> = rel.as_os_str().encode_wide().map(|c| if c == u16::from(b'/') { u16::from(b'\\') } else { c }).chain([0]).collect();
+        let wide: Vec<u16> = rel
+            .as_os_str()
+            .encode_wide()
+            .map(|c| {
+                if c == u16::from(b'/') {
+                    u16::from(b'\\')
+                } else {
+                    c
+                }
+            })
+            .chain([0])
+            .collect();
         // SAFETY: NUL-terminated; the caller's contract for the rest.
         let h = unsafe { LoadPackagedLibrary(wide.as_ptr(), 0) };
         if h.is_null() {
-            anyhow::bail!("LoadPackagedLibrary({}): {}", rel.display(), std::io::Error::last_os_error());
+            anyhow::bail!(
+                "LoadPackagedLibrary({}): {}",
+                rel.display(),
+                std::io::Error::last_os_error()
+            );
         }
         // SAFETY: a module handle we own from here on.
         Ok(unsafe { libloading::os::windows::Library::from_raw(h as isize) }.into())
@@ -487,15 +557,22 @@ pub unsafe fn install_bridge(lib: &libloading::Library, bridge: &shim::Bridge) -
 /// # Safety
 /// `path` must be a dylib produced by [`build`] for this host.
 pub unsafe fn load_module(path: &Path, rt: &runtime::Runtime, xbe_bytes: &[u8]) -> Result<Module> {
-    let lib = unsafe { open_module(path) }.with_context(|| format!("loading {}", path.display()))?;
+    let lib =
+        unsafe { open_module(path) }.with_context(|| format!("loading {}", path.display()))?;
     unsafe {
-        let version: libloading::Symbol<unsafe extern "C" fn() -> u32> = lib.get(b"h2gen_module_abi_version")?;
+        let version: libloading::Symbol<unsafe extern "C" fn() -> u32> =
+            lib.get(b"h2gen_module_abi_version")?;
         if version() != runtime::cpu::ABI_VERSION {
-            bail!("module ABI {} != runtime {}", version(), runtime::cpu::ABI_VERSION);
+            bail!(
+                "module ABI {} != runtime {}",
+                version(),
+                runtime::cpu::ABI_VERSION
+            );
         }
         install_bridge(&lib, &shim::bridge())?;
-        let install_x87: libloading::Symbol<unsafe extern "C" fn(*const *const std::ffi::c_void, u32)> =
-            lib.get(b"h2x87bridge_install")?;
+        let install_x87: libloading::Symbol<
+            unsafe extern "C" fn(*const *const std::ffi::c_void, u32),
+        > = lib.get(b"h2x87bridge_install")?;
         let fns = shim::x87_helpers();
         install_x87(fns.as_ptr(), fns.len() as u32);
         let module: libloading::Symbol<*const GenModule> = lib.get(b"h2gen_module")?;
@@ -507,7 +584,9 @@ pub unsafe fn load_module(path: &Path, rt: &runtime::Runtime, xbe_bytes: &[u8]) 
         let resumes = std::slice::from_raw_parts(m.resumes, m.resume_count as usize);
         let mut rows = Vec::with_capacity(entries.len());
         for e in entries {
-            let (Some(f), Some(v)) = (e.f, e.abi_version) else { bail!("entry {:#x}: null row", e.addr) };
+            let (Some(f), Some(v)) = (e.f, e.abi_version) else {
+                bail!("entry {:#x}: null row", e.addr)
+            };
             if v() != runtime::cpu::ABI_VERSION {
                 bail!("entry {:#x}: object ABI {}", e.addr, v());
             }
@@ -530,18 +609,28 @@ pub unsafe fn load_module(path: &Path, rt: &runtime::Runtime, xbe_bytes: &[u8]) 
         }
         rt.edit_dispatch(|d| -> Result<()> {
             for &(addr, f) in &rows {
-                let f = if trampoline { fallback::trampoline as runtime::GuestFn } else { f };
-                d.register_generated(addr, runtime::cpu::ABI_VERSION, f).with_context(|| format!("entry {addr:#x}"))?;
+                let f = if trampoline {
+                    fallback::trampoline as runtime::GuestFn
+                } else {
+                    f
+                };
+                d.register_generated(addr, runtime::cpu::ABI_VERSION, f)
+                    .with_context(|| format!("entry {addr:#x}"))?;
             }
             for r in resumes {
-                d.register_resume(r.pc, r.owner, r.start).with_context(|| format!("resume {:#x}", r.pc))?;
+                d.register_resume(r.pc, r.owner, r.start)
+                    .with_context(|| format!("resume {:#x}", r.pc))?;
             }
             Ok(())
         })?;
         if !trampoline {
             fallback::install_stop_recovery(rt);
         }
-        Ok(Module { _lib: lib, entries: entries.len(), resumes: resumes.len() })
+        Ok(Module {
+            _lib: lib,
+            entries: entries.len(),
+            resumes: resumes.len(),
+        })
     }
 }
 
@@ -576,8 +665,11 @@ pub struct RunOpts {
 fn describe(ev: Option<&Event>, thread: u32) -> String {
     match ev {
         Some(Event::KernelCall(k)) => {
-            let args: Vec<String> =
-                k.stack_args.iter().map(|a| a.as_ref().map_or("?".into(), |v| format!("{v:#x}"))).collect();
+            let args: Vec<String> = k
+                .stack_args
+                .iter()
+                .map(|a| a.as_ref().map_or("?".into(), |v| format!("{v:#x}")))
+                .collect();
             format!(
                 "kernel call #{} {} (ret {:x?}, args [{}], ecx {:#x}, edx {:#x})",
                 k.ordinal,
@@ -601,7 +693,11 @@ fn describe(ev: Option<&Event>, thread: u32) -> String {
 /// this run, if they won't: the session needs an h2 built with
 /// `--features perf`, and opens only at `H2_PERF_FROM` (a present number
 /// or `level`), so `H2_TIMELINE`/`H2_PROFILE` alone write nothing.
-pub fn perf_env_note(perf_build: bool, perf_from: bool, session_vars: bool) -> Option<&'static str> {
+pub fn perf_env_note(
+    perf_build: bool,
+    perf_from: bool,
+    session_vars: bool,
+) -> Option<&'static str> {
     match (perf_build, perf_from, session_vars) {
         (false, true, _) | (false, _, true) => Some(
             "perf: H2_PERF_FROM, H2_TIMELINE and H2_PROFILE need an h2 built with --features perf; no session, nothing written",
@@ -707,14 +803,23 @@ pub fn run_hosted(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts, host: Host) ->
 }
 
 /// [`run`] with the opt-in client configuration. Offline callers keep [`run`].
-pub fn run_with_live(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts, live: &LiveConfig) -> Result<RunReport> {
+pub fn run_with_live(
+    xbe_bytes: &[u8],
+    dylib: &Path,
+    opts: &RunOpts,
+    live: &LiveConfig,
+) -> Result<RunReport> {
     run_hosted_with_live(xbe_bytes, dylib, opts, Host::default(), live)
 }
 
 /// [`run_hosted`] with explicit Live client settings. The host/CLI supplies
 /// the account path and server base URL; no implicit environment settings.
 pub fn run_hosted_with_live(
-    xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts, mut host: Host, live: &LiveConfig,
+    xbe_bytes: &[u8],
+    dylib: &Path,
+    opts: &RunOpts,
+    mut host: Host,
+    live: &LiveConfig,
 ) -> Result<RunReport> {
     let x = xbe::Xbe::parse(xbe_bytes)?;
     // Either tier's module, by its own stamp (tier.rs).
@@ -727,7 +832,11 @@ pub fn run_hosted_with_live(
             tier::fast_stamp(xbe_bytes).trim()
         );
     };
-    eprintln!("tier: running the {} module {}", tier.name(), dylib.display());
+    eprintln!(
+        "tier: running the {} module {}",
+        tier.name(),
+        dylib.display()
+    );
     // Keep Halo's fixed arena, physical [0x61000, 0x3145000), free, with its
     // contiguous window at 0x80061000 and (boot addition) its write-combined
     // window at 0xf0061000, so MmAllocateContiguousMemoryEx can return
@@ -757,20 +866,30 @@ pub fn run_hosted_with_live(
     fallback::set_recovery(opts.stopgaps);
     if opts.stopgaps {
         let unread = fallback::install_unread_targets(&loaded.runtime);
-        crate::log::note(&format!("fallback: {unread} unread jump-table targets registered"));
+        crate::log::note(&format!(
+            "fallback: {unread} unread jump-table targets registered"
+        ));
     }
-    eprintln!("registered {} entries, {} resumes in {:.1}s", module.entries, module.resumes, t.elapsed().as_secs_f64());
+    eprintln!(
+        "registered {} entries, {} resumes in {:.1}s",
+        module.entries,
+        module.resumes,
+        t.elapsed().as_secs_f64()
+    );
     let k = kernel::Kernel::for_image(&mut loaded).context("attaching the kernel")?;
     // The disc's map hashes, shared by the package resolver and the Live
     // map gate's bases (docs/game/maps.md §5): each disc map is read at most
     // once a session, or not at all when the stamp under <data>/maps/cache
     // already has it.
     let disc_hashes = content::DiscHashes::default();
-    let map_gate = live.enabled.then(|| map_bases::gate(&opts.disc, &opts.data_root, disc_hashes.clone()));
+    let map_gate = live
+        .enabled
+        .then(|| map_bases::gate(&opts.disc, &opts.data_root, disc_hashes.clone()));
     let _live = live_glue::install(&loaded.runtime, &k, live, map_gate.clone())?;
     // Features declare their hooks here; the plan is built and installed
     // once, below, after the last of them (docs/engine/feature-engine.md).
-    let mut features = feature::Registry::new(feature::Switches::from_env().map_err(anyhow::Error::msg)?);
+    let mut features =
+        feature::Registry::new(feature::Switches::from_env().map_err(anyhow::Error::msg)?);
     // Our text on the cannot-connect dialog when Live is off or its server
     // is unreachable (docs/live/live.md, "Client HLE: Live not set up").
     live_notice::install(&loaded.runtime, live).context("installing the Live notice")?;
@@ -785,7 +904,10 @@ pub fn run_hosted_with_live(
     }
     let icon_options = match host.icons {
         Some(o) => Some(o),
-        None => icons::choice_from_env()?.map(|choice| icons::IconOptions { choice, gamepads: false }),
+        None => icons::choice_from_env()?.map(|choice| icons::IconOptions {
+            choice,
+            gamepads: false,
+        }),
     };
     let icons = icon_options
         .map(|o| Arc::new(icons::Icons::new(o, host.keyboard.as_ref())))
@@ -804,7 +926,10 @@ pub fn run_hosted_with_live(
     // A second campaign (docs/halo1/campaign-picker.md): read before the
     // VFS mounts, which serves its converted maps.
     let campaigns = campaigns::boot_state(&opts.data_root, &opts.disc);
-    let campaign_maps = campaigns.as_ref().map(|s| campaigns::host_maps(&opts.data_root, s)).unwrap_or_default();
+    let campaign_maps = campaigns
+        .as_ref()
+        .map(|s| campaigns::host_maps(&opts.data_root, s))
+        .unwrap_or_default();
     // Map packages from <data>/maps (docs/game/maps.md) and edited maps from
     // H2_MAP_DIR in place of the disc's (docs/runtime/storage.md "Map overrides");
     // with neither, the disc is mounted as it always was.
@@ -813,13 +938,28 @@ pub fn run_hosted_with_live(
     // Our campaigns' level pictures, added to mainmenu as the VFS serves it
     // (docs/halo1/campaign-picker.md, "Pictures").
     let cards = campaigns.as_ref().and_then(|s| {
-        let levels: Vec<(String, String)> =
-            s.built.iter().flat_map(|b| b.levels.iter().map(|l| (b.key.clone(), l.map.clone()))).collect();
-        campaign_cards::CardRewrite::new(campaign_cards::read_cards(&opts.data_root, &levels), s.cards.clone())
+        let levels: Vec<(String, String)> = s
+            .built
+            .iter()
+            .flat_map(|b| b.levels.iter().map(|l| (b.key.clone(), l.map.clone())))
+            .collect();
+        campaign_cards::CardRewrite::new(
+            campaign_cards::read_cards(&opts.data_root, &levels),
+            s.cards.clone(),
+        )
     });
     let rewrites = vfs::Chain(icons.as_ref().map(|i| i.font_rewrite()), cards);
     let rewrites = (rewrites.0.is_some() || rewrites.1.is_some()).then_some(rewrites);
-    let mounted = map_override::mount_with_hashes(cfg.clone(), &opts.disc, rewrites, maps.as_deref(), Some(&packages), Some(halo1_sandbox), disc_hashes, &campaign_maps);
+    let mounted = map_override::mount_with_hashes(
+        cfg.clone(),
+        &opts.disc,
+        rewrites,
+        maps.as_deref(),
+        Some(&packages),
+        Some(halo1_sandbox),
+        disc_hashes,
+        &campaign_maps,
+    );
     if let Some(i) = &icons {
         icons::install(&loaded.runtime, Arc::clone(i))?;
     }
@@ -828,7 +968,10 @@ pub fn run_hosted_with_live(
         Err(e) => {
             // A raw XBE (or a file that is not an XISO) still boots, with no
             // DVD mounted: the first map open then fails in the guest.
-            eprintln!("warning: {} is not a mountable XISO ({e:?}); running with no DVD", opts.disc.display());
+            eprintln!(
+                "warning: {} is not a mountable XISO ({e:?}); running with no DVD",
+                opts.disc.display()
+            );
             vfs::Vfs::with_storage(cfg).map_err(|e| anyhow::anyhow!("vfs: {e:?}"))?
         }
     };
@@ -841,9 +984,13 @@ pub fn run_hosted_with_live(
     // at the map's next open), and the map-slots feature drops the game's
     // cached copy of a map whose package changed (docs/runtime/cache-slots.md).
     if let (Some(vfs), Some(gate)) = (k.vfs(), &map_gate) {
-        gate.on_installed(Box::new(move |_| vfs.lock().unwrap_or_else(|e| e.into_inner()).rescan_maps()));
+        gate.on_installed(Box::new(move |_| {
+            vfs.lock().unwrap_or_else(|e| e.into_inner()).rescan_maps()
+        }));
     }
-    let uses = opts.stopgaps.then(|| stopgaps::install(&k, &loaded.runtime));
+    let uses = opts
+        .stopgaps
+        .then(|| stopgaps::install(&k, &loaded.runtime));
     if let Some(u) = &uses {
         // Retired with the kernel round: the class-34 wrapper
         // (wrappers::install), XeLoad/UnloadSection (install_sections) and
@@ -871,14 +1018,16 @@ pub fn run_hosted_with_live(
         }
     }
     // Community classics in the built-in variant list (docs/game/community-gametypes.md).
-    community_variants::install(&loaded.runtime).context("installing the community game variants")?;
+    community_variants::install(&loaded.runtime)
+        .context("installing the community game variants")?;
     // Extra button layouts and the Controller Speaker row on the Controls
     // screen (docs/input/controller-layouts.md, docs/audio/playstation-audio.md).
     // The Video row on the Settings list opens our Video screen
     // (docs/game/settings-menu.md).
     let model = match host.settings.clone() {
         Some(store) => Some(Arc::new(
-            video_screen::model(store, video_screen::Switches::from_env()).map_err(anyhow::Error::msg)?,
+            video_screen::model(store, video_screen::Switches::from_env())
+                .map_err(anyhow::Error::msg)?,
         )),
         None => None,
     };
@@ -892,7 +1041,9 @@ pub fn run_hosted_with_live(
         None => level_boot::from_env(&opts.disc, Some(&opts.data_root)).context("H2_LEVEL")?,
     };
     let perf_from_var = std::env::var("H2_PERF_FROM").ok();
-    let perf_from = perf_from_var.as_deref().and_then(level_boot::PerfFrom::parse);
+    let perf_from = perf_from_var
+        .as_deref()
+        .and_then(level_boot::PerfFrom::parse);
     if let Some(v) = perf_from_var.as_deref().filter(|_| perf_from.is_none()) {
         eprintln!("perf: H2_PERF_FROM={v:?} is neither a present number nor `level`; ignored");
     }
@@ -903,7 +1054,11 @@ pub fn run_hosted_with_live(
         &mut features,
         registration::CoreInputs {
             rt: &loaded.runtime,
-            telemetry: telemetry::TelemetryConfig::from_live(live.enabled, live.accounts_path.as_deref(), live.server_url.as_deref()),
+            telemetry: telemetry::TelemetryConfig::from_live(
+                live.enabled,
+                live.accounts_path.as_deref(),
+                live.server_url.as_deref(),
+            ),
             vfs: k.vfs(),
             model,
             campaigns,
@@ -916,8 +1071,12 @@ pub fn run_hosted_with_live(
             xapi: opts.xapi,
         },
     )?;
-    let (skulls_on, skulls_mp_on, skulls_custom_on, health_on) =
-        (core.skulls_on, core.skulls_mp_on, core.skulls_custom_on, core.health_on);
+    let (skulls_on, skulls_mp_on, skulls_custom_on, health_on) = (
+        core.skulls_on,
+        core.skulls_mp_on,
+        core.skulls_custom_on,
+        core.health_on,
+    );
     // The bots' nav meshes, built in the background where missing or stale
     // (docs/game/bots.md §10 stage 2); H2_BOTS_NAV_AUTO=0 turns it off.
     if let (true, Some(vfs)) = (core.bots_on, k.vfs()) {
@@ -960,7 +1119,11 @@ pub fn run_hosted_with_live(
         t.set_map_locator(Box::new(move |map| {
             let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
             let file = v.host_file(&format!("\\Device\\CdRom0\\maps\\{map}.map"))?;
-            Some(telemetry::MapFile { path: file.path, offset: file.offset, len: file.len })
+            Some(telemetry::MapFile {
+                path: file.path,
+                offset: file.offset,
+                len: file.len,
+            })
         }));
     }
     // Sample the render thread too when profiling.
@@ -1007,7 +1170,9 @@ pub fn run_hosted_with_live(
                     d3d_glue::install_with_report(&loaded.runtime, b, report)?
                 }
             }
-            None if host.render_thread => d3d_glue::install_threaded(&loaded.runtime, b, None, interp)?,
+            None if host.render_thread => {
+                d3d_glue::install_threaded(&loaded.runtime, b, None, interp)?
+            }
             None => d3d_glue::install_with(&loaded.runtime, b)?,
         }),
         (true, None) => Some(d3d_glue::install_headless(&loaded.runtime, interp)?),
@@ -1015,8 +1180,13 @@ pub fn run_hosted_with_live(
     // Vblanks on the 60 Hz logical clock (docs/graphics/d3d.md "Vertical blank"),
     // delivered as DPCs; the frame wait above is the clocked one.
     if let Some(handler) = d3d_calls.as_mut().and_then(|i| i.vblank.take()) {
-        k.add_periodic(kernel::periodic::Source { name: "vblank", rate: kernel::periodic::Rate::HZ_60, max_catch_up: 4, handler })
-            .map_err(|e| anyhow::anyhow!("vblank source: {e:?}"))?;
+        k.add_periodic(kernel::periodic::Source {
+            name: "vblank",
+            rate: kernel::periodic::Rate::HZ_60,
+            max_catch_up: 4,
+            handler,
+        })
+        .map_err(|e| anyhow::anyhow!("vblank source: {e:?}"))?;
     }
     if d3d_calls.is_some() && uses.is_some() {
         d3d_glue::install_back_surfaces(&loaded.runtime)?;
@@ -1024,7 +1194,13 @@ pub fn run_hosted_with_live(
     let pad = host.pad_speaker.take();
     let ds = match (opts.dsound, host.audio_sink.take()) {
         (false, _) => None,
-        (true, Some(open)) => Some(dsound_glue::install_with_sinks(&loaded.runtime, &k, xbe_bytes, open, pad)?),
+        (true, Some(open)) => Some(dsound_glue::install_with_sinks(
+            &loaded.runtime,
+            &k,
+            xbe_bytes,
+            open,
+            pad,
+        )?),
         (true, None) => Some(dsound_glue::install(&loaded.runtime, &k, xbe_bytes)?),
     };
     if let Some(input) = host.input.as_mut() {
@@ -1033,7 +1209,10 @@ pub fn run_hosted_with_live(
     }
     let (xa, pad) = match (opts.xapi, host.input.take()) {
         (false, _) => (None, None),
-        (true, Some(input)) => (Some(xapi_glue::register_with(&loaded.runtime, &k, input)?), host.keyboard.take()),
+        (true, Some(input)) => (
+            Some(xapi_glue::register_with(&loaded.runtime, &k, input)?),
+            host.keyboard.take(),
+        ),
         (true, None) => {
             let (x, pad) = xapi_glue::register(&loaded.runtime, &k)?;
             (Some(x), Some(pad))
@@ -1041,14 +1220,19 @@ pub fn run_hosted_with_live(
     };
     // Voice chat's communicator (docs/live/live-voice.md): off until a
     // microphone is chosen on the Voice screen.
-    let mut voice_link = xa
-        .as_ref()
-        .and_then(|x| {
-            let game_mix = ds.as_ref().map(dsound_glue::Audio::mixer);
-            voice_glue::install(&loaded.runtime, x, host.settings.as_ref(), host.voice_io.take(), game_mix)
-        });
+    let mut voice_link = xa.as_ref().and_then(|x| {
+        let game_mix = ds.as_ref().map(dsound_glue::Audio::mixer);
+        voice_glue::install(
+            &loaded.runtime,
+            x,
+            host.settings.as_ref(),
+            host.voice_io.take(),
+            game_mix,
+        )
+    });
     if let Some(keyboard) = pad.as_ref() {
-        keyboard_glue::install(&loaded.runtime, keyboard.clone()).context("installing host keyboard entry")?;
+        keyboard_glue::install(&loaded.runtime, keyboard.clone())
+            .context("installing host keyboard entry")?;
     }
     let script = xapi_glue::InputScript::from_env();
     // H2_LOCKSTEP / H2_INPUT_RECORD / H2_INPUT_REPLAY (lockstep_glue.rs).
@@ -1062,7 +1246,8 @@ pub fn run_hosted_with_live(
         None => registration::AgentSource::None,
     };
     let watch_overrides = agent_glue::socket_from_env().is_some();
-    let pipeline = registration::pipeline_for(d3d_glue::pipeline_render(d3d_calls.as_ref()), lockstep_on);
+    let pipeline =
+        registration::pipeline_for(d3d_glue::pipeline_render(d3d_calls.as_ref()), lockstep_on);
     render_probe::set_pipeline(pipeline.clone());
     let coop_probe = coop_probe::parse(|k| std::env::var(k).ok()).map_err(anyhow::Error::msg)?;
     // The native world's map file (native_world_glue.rs): read from the
@@ -1071,7 +1256,11 @@ pub fn run_hosted_with_live(
         native_world_glue::set_locator(Box::new(move |map| {
             let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
             let file = v.host_file(&format!("\\Device\\CdRom0\\maps\\{map}.map"))?;
-            Some(telemetry::MapFile { path: file.path, offset: file.offset, len: file.len })
+            Some(telemetry::MapFile {
+                path: file.path,
+                offset: file.offset,
+                len: file.len,
+            })
         }));
     }
     // The lockstep harness, the agent, our cheats, the render features and
@@ -1101,15 +1290,26 @@ pub fn run_hosted_with_live(
             Box::new(move |map| {
                 let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
                 let file = v.host_file(&format!("\\Device\\CdRom0\\maps\\{map}.map"))?;
-                Some(telemetry::MapFile { path: file.path, offset: file.offset, len: file.len })
+                Some(telemetry::MapFile {
+                    path: file.path,
+                    offset: file.offset,
+                    len: file.len,
+                })
             })
         });
         hot_glue::install(&a.agent, &loaded.runtime, maps, watch_overrides);
     }
     // The debug menu's host methods and connection (debug_menu_glue.rs).
     if let Some(a) = &agent {
-        debug_menu_glue::install(host.debug_menu.as_ref(), &a.agent, host.settings.clone(), host.perf_overlay.clone());
+        debug_menu_glue::install(
+            host.debug_menu.as_ref(),
+            &a.agent,
+            host.settings.clone(),
+            host.perf_overlay.clone(),
+        );
     }
+    // Part of a machine snapshot's build key (snapshot_glue.rs).
+    let switch_spec = features.switches().spec();
     let plan = features.build(&feature::Base).map_err(|conflicts| {
         let c: Vec<String> = conflicts.iter().map(ToString::to_string).collect();
         anyhow::anyhow!("feature plan refused: {}", c.join("; "))
@@ -1117,7 +1317,9 @@ pub fn run_hosted_with_live(
     for line in plan.text().lines() {
         eprintln!("feature plan: {line}");
     }
-    let installed = plan.install(&loaded.runtime).context("installing the feature plan")?;
+    let installed = plan
+        .install(&loaded.runtime)
+        .context("installing the feature plan")?;
     for n in &installed.notes {
         eprintln!("feature plan: {n}");
     }
@@ -1144,22 +1346,29 @@ pub fn run_hosted_with_live(
         eprintln!("lockstep: hashing presents only: {why}");
         h.set_tick_note(why.to_owned());
     }
-    if opts.bink {
+    let bink = if opts.bink {
         // A lockstep run compares schedules and movie pacing follows the
         // wall clock, so it skips them; so, by default, do level boots and
         // headless runs.
-        let why_off = movies_glue::why_off(&opts.movies, lockstep_on, level_name.as_deref(), headless);
-        movies_glue::install(
+        let why_off =
+            movies_glue::why_off(&opts.movies, lockstep_on, level_name.as_deref(), headless);
+        let (_, hle) = movies_glue::install(
             &loaded.runtime,
             &opts.movies,
             &opts.disc,
             why_off.as_deref(),
             ds.as_ref().map(dsound_glue::Audio::mixer),
         );
+        Some(hle)
     } else {
         eprintln!("movies: off (--no-bink: the original player runs)");
-    }
-    let tr = trace::install_bounded(&loaded.runtime, opts.trace.as_deref(), host.trace_limit.unwrap_or(usize::MAX))?;
+        None
+    };
+    let tr = trace::install_bounded(
+        &loaded.runtime,
+        opts.trace.as_deref(),
+        host.trace_limit.unwrap_or(usize::MAX),
+    )?;
     let mut m = kernel::Machine::new(
         Arc::clone(&loaded.runtime),
         Arc::clone(&k),
@@ -1185,24 +1394,41 @@ pub fn run_hosted_with_live(
     // Logical time added for pending audio alone since a thread last ran.
     let mut audio_idle = 0u64;
     // H2_AUDIO_STATS=1: a line of audio health every few seconds.
-    let mut audio_report = ds.as_ref().and_then(|_| dsound_glue::AudioReport::from_env());
-    if let Some(p) = &mut snapshot_probe {
-        let installed: [(&'static str, bool); 6] = [
-            ("d3d", d3d_calls.is_some()),
-            ("dsound", ds.is_some()),
-            ("xapi", xa.is_some()),
-            ("bink", opts.bink),
-            ("live", _live.is_some()),
-            ("lockstep", harness.is_some()),
-        ];
-        p.set_host(installed.iter().filter(|(_, on)| *on).map(|(n, _)| *n).collect());
-    }
+    let mut audio_report = ds
+        .as_ref()
+        .and_then(|_| dsound_glue::AudioReport::from_env());
+    // Machine snapshots (snapshot_glue.rs, docs/runtime/snapshots.md):
+    // what holds state outside guest RAM, for `state.*` and the probe.
+    let snap_host = snapshot_glue::Host {
+        rt: &loaded.runtime,
+        d3d: d3d_calls.as_ref().map(|i| &*i.snapshot),
+        audio: ds.as_ref(),
+        xapi: xa.as_ref(),
+        bink: bink.as_deref(),
+        live: _live.as_deref(),
+    };
+    let mut rebuilders = kernel::snapshot::Rebuilders::new();
+    rebuilders.add(trace::KERNEL_CALL_RETURN, trace::rebuilder(&tr));
+    let shelf = agent.as_ref().and_then(|a| {
+        // The running tier's own stamp: a fast-tier snapshot is not a clang one's.
+        let stamp = match tier {
+            tier::Tier::Clang => build_stamp(xbe_bytes),
+            tier::Tier::Fast => tier::fast_stamp(xbe_bytes),
+        };
+        let key = snapshot_glue::build_key(stamp, &switch_spec, &plan, &snap_host.names());
+        let shelf = snapshot_glue::Shelf::from_env(key)?;
+        a.agent.set_snapshots(Box::new(shelf.clone()));
+        Some(shelf)
+    });
     // H2_BOOT_STOP_AT_PRESENT=N: end the run once N presents are out.
-    let stop_at: Option<u64> = std::env::var("H2_BOOT_STOP_AT_PRESENT").ok().and_then(|v| v.parse().ok());
+    let stop_at: Option<u64> = std::env::var("H2_BOOT_STOP_AT_PRESENT")
+        .ok()
+        .and_then(|v| v.parse().ok());
     // H2_HOST_PERF=1 (the Xbox app's default): a line every 100 frames or
     // 5 s of where frame time goes on this host (host_perf.rs); it starts
     // frame stats quietly if nothing else has.
-    let host_perf = host_perf::start_from_env(host.render_thread || d3d_glue::render_thread_requested());
+    let host_perf =
+        host_perf::start_from_env(host.render_thread || d3d_glue::render_thread_requested());
     // H2_FRAME_STATS=1: frame times split by phase (docs/perf/gameplay-budget.md).
     // `h2 play --frame-stats` may have started them already.
     let frame_stats = timeline::phase::enabled() || timeline::phase::start_from_env();
@@ -1212,10 +1438,14 @@ pub fn run_hosted_with_live(
     }
     // H2_EFFECT_CENSUS=1: a line per new timed light (EXPLOSION for a
     // grenade-sized one) and an exit summary (effect_census.rs).
-    let mut effect_census = effect_census::requested_by(std::env::var(effect_census::ENV).ok().as_deref()).then(|| {
-        eprintln!("effects: census on ({}): a line per new timed light, a summary at exit", effect_census::ENV);
-        (effect_census::Census::new(), u64::MAX)
-    });
+    let mut effect_census =
+        effect_census::requested_by(std::env::var(effect_census::ENV).ok().as_deref()).then(|| {
+            eprintln!(
+                "effects: census on ({}): a line per new timed light, a summary at exit",
+                effect_census::ENV
+            );
+            (effect_census::Census::new(), u64::MAX)
+        });
     // H2_PERF_FROM=N (cli built with `--features perf`): open
     // `perf::Session::from_env()` (H2_PROFILE, H2_TIMELINE) at present N;
     // H2_PERF_FROM=level at the first present after the level loaded
@@ -1224,7 +1454,9 @@ pub fn run_hosted_with_live(
     if let Some(note) = perf_env_note(
         cfg!(feature = "perf"),
         perf_from.is_some(),
-        ["H2_TIMELINE", "H2_PROFILE"].iter().any(|k| std::env::var_os(k).is_some_and(|v| !v.is_empty())),
+        ["H2_TIMELINE", "H2_PROFILE"]
+            .iter()
+            .any(|k| std::env::var_os(k).is_some_and(|v| !v.is_empty())),
     ) {
         eprintln!("{note}");
     }
@@ -1296,7 +1528,13 @@ pub fn run_hosted_with_live(
         }
         if let Some(x) = &xa
             && timeline::host::INPUT
-                .time(|| xapi::service_input(&loaded.runtime, x, &mut xapi_glue::KernelEvents(Arc::clone(&k))))
+                .time(|| {
+                    xapi::service_input(
+                        &loaded.runtime,
+                        x,
+                        &mut xapi_glue::KernelEvents(Arc::clone(&k)),
+                    )
+                })
                 .is_err()
         {
             input_errors += 1;
@@ -1317,8 +1555,17 @@ pub fn run_hosted_with_live(
         if let Some(a) = &agent {
             a.after_slice(&loaded.runtime, d3d_diag::presents());
         }
+        // A `state.save` or `state.load` is due: run it here, between
+        // slices (the agent's tick observer ended the slice for it).
+        if let (Some(a), Some(shelf)) = (&agent, &shelf)
+            && a.agent.snapshot_pending()
+        {
+            let mut machine =
+                snap_host.machine(&mut m, &plan, &rebuilders, shelf, d3d_diag::presents());
+            a.agent.run_snapshots(&mut machine);
+        }
         if let Some(p) = &mut snapshot_probe {
-            p.after_slice(&m, &plan);
+            p.after_slice(&m, &plan, || snap_host.blockers());
         }
         if let Some(a) = &ds
             && let Err(e) = dsound_glue::advance(a, &k)
@@ -1365,12 +1612,27 @@ pub fn run_hosted_with_live(
     let (stop, eip) = match &outcome {
         kernel::RunOutcome::Stopped { thread, transfer } => {
             let th = m.thread(*thread).context("stopped thread")?;
-            (format!("thread {thread}: {}", describe(th.ctx.event(transfer.event_id), *thread)), th.cpu.eip)
+            (
+                format!(
+                    "thread {thread}: {}",
+                    describe(th.ctx.event(transfer.event_id), *thread)
+                ),
+                th.cpu.eip,
+            )
         }
-        o => (format!("{o:?}"), m.threads().next().map_or(0, |t| t.cpu.eip)),
+        o => (
+            format!("{o:?}"),
+            m.threads().next().map_or(0, |t| t.cpu.eip),
+        ),
     };
-    eprintln!("ran {secs:.2}s, {} slices, {} preemptions", m.schedule().len(), m.preemptions());
-    let fps_from = std::env::var("H2_BOOT_FPS_FROM").ok().and_then(|v| v.parse().ok());
+    eprintln!(
+        "ran {secs:.2}s, {} slices, {} preemptions",
+        m.schedule().len(),
+        m.preemptions()
+    );
+    let fps_from = std::env::var("H2_BOOT_FPS_FROM")
+        .ok()
+        .and_then(|v| v.parse().ok());
     if let Some(fps) = d3d_diag::frame_rate(t, 100, fps_from) {
         eprintln!("{fps}");
     }
@@ -1386,7 +1648,9 @@ pub fn run_hosted_with_live(
             let mut bp = c.ebp;
             let mut chain = Vec::new();
             for _ in 0..24 {
-                let (Ok(next), Ok(ret)) = (mem.u32(bp), mem.u32(bp.wrapping_add(4))) else { break };
+                let (Ok(next), Ok(ret)) = (mem.u32(bp), mem.u32(bp.wrapping_add(4))) else {
+                    break;
+                };
                 chain.push(format!("{ret:#x}"));
                 if next <= bp {
                     break;
@@ -1394,12 +1658,20 @@ pub fn run_hosted_with_live(
                 bp = next;
             }
             eprintln!("  ebp chain (return addresses): {}", chain.join(" <- "));
-            let words: Vec<String> =
-                (0..24).filter_map(|i| mem.u32(c.esp.wrapping_add(4 * i)).ok()).map(|v| format!("{v:x}")).collect();
+            let words: Vec<String> = (0..24)
+                .filter_map(|i| mem.u32(c.esp.wrapping_add(4 * i)).ok())
+                .map(|v| format!("{v:x}"))
+                .collect();
             eprintln!("  stack: {}", words.join(" "));
         }
-        let tail: Vec<String> =
-            th.ctx.events().iter().rev().take(6).map(|e| format!("{e:x?}").chars().take(300).collect()).collect();
+        let tail: Vec<String> = th
+            .ctx
+            .events()
+            .iter()
+            .rev()
+            .take(6)
+            .map(|e| format!("{e:x?}").chars().take(300).collect())
+            .collect();
         for e in tail.iter().rev() {
             eprintln!("  event: {e}");
         }
@@ -1453,7 +1725,15 @@ pub fn run_hosted_with_live(
     {
         let t = tr.lock().unwrap();
         eprintln!("{} kernel calls; last 40:", t.total);
-        for c in t.calls.iter().rev().take(40).collect::<Vec<_>>().into_iter().rev() {
+        for c in t
+            .calls
+            .iter()
+            .rev()
+            .take(40)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+        {
             let args: Vec<String> = c.args.iter().map(|a| format!("{a:x}")).collect();
             eprintln!(
                 "  #{:<5} t{} {:>3} {:<30} ret {:#08x} [{}] -> {} {}",
@@ -1472,11 +1752,18 @@ pub fn run_hosted_with_live(
     if let Ok(spec) = std::env::var("H2_BOOT_DUMP") {
         let mem = loaded.runtime.memory();
         for item in spec.split(',') {
-            let Some((a, n)) = item.split_once(':') else { continue };
+            let Some((a, n)) = item.split_once(':') else {
+                continue;
+            };
             let parse = |v: &str| u32::from_str_radix(v.trim().trim_start_matches("0x"), 16).ok();
-            let (Some(a), Some(n)) = (parse(a), parse(n)) else { continue };
+            let (Some(a), Some(n)) = (parse(a), parse(n)) else {
+                continue;
+            };
             let words: Vec<String> = (0..n.div_ceil(4))
-                .map(|i| mem.u32(a + 4 * i).map_or("????????".into(), |w| format!("{w:08x}")))
+                .map(|i| {
+                    mem.u32(a + 4 * i)
+                        .map_or("????????".into(), |w| format!("{w:08x}"))
+                })
                 .collect();
             for (i, row) in words.chunks(8).enumerate() {
                 eprintln!("dump {:#010x}: {}", a + 32 * i as u32, row.join(" "));
@@ -1488,8 +1775,13 @@ pub fn run_hosted_with_live(
         let mem = loaded.runtime.memory();
         for item in spec.split(';') {
             let mut it = item.splitn(3, ':');
-            let parse = |v: Option<&str>| v.and_then(|v| u32::from_str_radix(v.trim().trim_start_matches("0x"), 16).ok());
-            let (Some(a), Some(n), Some(path)) = (parse(it.next()), parse(it.next()), it.next()) else { continue };
+            let parse = |v: Option<&str>| {
+                v.and_then(|v| u32::from_str_radix(v.trim().trim_start_matches("0x"), 16).ok())
+            };
+            let (Some(a), Some(n), Some(path)) = (parse(it.next()), parse(it.next()), it.next())
+            else {
+                continue;
+            };
             let bytes: Vec<u8> = (0..n).map(|i| mem.u8(a + i).unwrap_or(0)).collect();
             if let Err(e) = std::fs::write(path, bytes) {
                 eprintln!("dump {a:#x}: {e}");
@@ -1500,8 +1792,17 @@ pub fn run_hosted_with_live(
     for (o, r) in &stops {
         eprintln!("kernel stop reason #{o}: {r}");
     }
-    let outcome = if host_stop { "HostStop".to_string() } else { format!("{outcome:x?}") };
-    let report = RunReport { outcome, stop, eip, kernel_log: k.log() };
+    let outcome = if host_stop {
+        "HostStop".to_string()
+    } else {
+        format!("{outcome:x?}")
+    };
+    let report = RunReport {
+        outcome,
+        stop,
+        eip,
+        kernel_log: k.log(),
+    };
     drop(m);
     drop(loaded);
     drop(module);
@@ -1528,9 +1829,21 @@ mod tests {
 
     #[test]
     fn perf_env_note_names_what_writes_nothing() {
-        assert!(perf_env_note(false, false, true).unwrap().contains("--features perf"));
-        assert!(perf_env_note(false, true, false).unwrap().contains("--features perf"));
-        assert!(perf_env_note(true, false, true).unwrap().contains("H2_PERF_FROM"));
+        assert!(
+            perf_env_note(false, false, true)
+                .unwrap()
+                .contains("--features perf")
+        );
+        assert!(
+            perf_env_note(false, true, false)
+                .unwrap()
+                .contains("--features perf")
+        );
+        assert!(
+            perf_env_note(true, false, true)
+                .unwrap()
+                .contains("H2_PERF_FROM")
+        );
         assert_eq!(perf_env_note(true, true, true), None);
         assert_eq!(perf_env_note(false, false, false), None);
         assert_eq!(perf_env_note(true, false, false), None);
@@ -1552,9 +1865,10 @@ mod tests {
         put(&mut d, 0x120, BASE + 0x200);
         put(&mut d, 0x128, 0x11000 ^ 0xA8FC_57AB);
         put(&mut d, 0x158, 0x12000 ^ 0x5B6D_40B6);
-        for (o, flags, va, raw_at, name_at, name) in
-            [(0x200, 0x06, 0x11000, 0x1000, 0x280, &b".text\0"[..]), (0x238, 0x02, 0x12000, 0x1100, 0x290, b".rdata\0")]
-        {
+        for (o, flags, va, raw_at, name_at, name) in [
+            (0x200, 0x06, 0x11000, 0x1000, 0x280, &b".text\0"[..]),
+            (0x238, 0x02, 0x12000, 0x1100, 0x290, b".rdata\0"),
+        ] {
             put(&mut d, o, flags);
             put(&mut d, o + 4, va);
             put(&mut d, o + 8, 0x100);
@@ -1574,15 +1888,23 @@ mod tests {
     /// damaged, and bypassed entirely when there is no cache.
     #[test]
     fn the_analysis_cache_serves_only_its_image_and_analyzer() {
-        let dir = std::env::temp_dir().join(format!("h2boot-analysis-cache-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("h2boot-analysis-cache-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         // call 0x11010; ret / 0x11010: ret
-        let one = synthetic_xbe(&[0xE8, 0x0B, 0, 0, 0, 0xC3, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xC3]);
+        let one = synthetic_xbe(&[
+            0xE8, 0x0B, 0, 0, 0, 0xC3, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC,
+            0xC3,
+        ]);
         let two = synthetic_xbe(&[0xC3]);
         let x1 = xbe::Xbe::parse(&one).unwrap();
         let x2 = xbe::Xbe::parse(&two).unwrap();
         let fresh = analyze::analyze(&x1).unwrap().encode();
-        assert_ne!(fresh, analyze::analyze(&x2).unwrap().encode(), "the two images analyze differently");
+        assert_ne!(
+            fresh,
+            analyze::analyze(&x2).unwrap().encode(),
+            "the two images analyze differently"
+        );
 
         let path = analysis_cache_in(&one, &dir, "analyzer-a");
         let (a, hit) = analyze_cached(&x1, Some(&path)).unwrap();
@@ -1595,10 +1917,15 @@ mod tests {
         // Another image or another analyzer is another file.
         assert_ne!(path, analysis_cache_in(&two, &dir, "analyzer-a"));
         assert_ne!(path, analysis_cache_in(&one, &dir, "analyzer-b"));
-        let (b, hit) = analyze_cached(&x2, Some(&analysis_cache_in(&two, &dir, "analyzer-a"))).unwrap();
+        let (b, hit) =
+            analyze_cached(&x2, Some(&analysis_cache_in(&two, &dir, "analyzer-a"))).unwrap();
         assert!(!hit);
         assert_eq!(b.encode(), analyze::analyze(&x2).unwrap().encode());
-        assert!(!analyze_cached(&x1, Some(&analysis_cache_in(&one, &dir, "analyzer-b"))).unwrap().1);
+        assert!(
+            !analyze_cached(&x1, Some(&analysis_cache_in(&one, &dir, "analyzer-b")))
+                .unwrap()
+                .1
+        );
 
         // A damaged file is recomputed and replaced.
         std::fs::write(&path, b"not an analysis").unwrap();
@@ -1618,16 +1945,29 @@ mod tests {
     /// the analyzer (or its dependencies or compiler) misses.
     #[test]
     fn the_analysis_cache_is_named_by_the_analyzer_source() {
-        let p = analysis_cache_in(b"XBEH image", Path::new("/cache"), env!("ANALYSIS_SOURCE_HASH"));
-        assert!(p.to_string_lossy().contains(env!("ANALYSIS_SOURCE_HASH")), "{}", p.display());
+        let p = analysis_cache_in(
+            b"XBEH image",
+            Path::new("/cache"),
+            env!("ANALYSIS_SOURCE_HASH"),
+        );
+        assert!(
+            p.to_string_lossy().contains(env!("ANALYSIS_SOURCE_HASH")),
+            "{}",
+            p.display()
+        );
         if std::env::var_os("H2_TRACE").is_none() && std::env::var_os("H2_BOOT_CACHE").is_none() {
-            assert_eq!(analysis_cache(b"XBEH image").unwrap().parent(), Some(&*std::env::temp_dir().join("h2boot-cache")));
+            assert_eq!(
+                analysis_cache(b"XBEH image").unwrap().parent(),
+                Some(&*std::env::temp_dir().join("h2boot-cache"))
+            );
         }
     }
 
     #[test]
     fn generated_flags_are_part_of_the_dylib_stamp() {
-        let stamp = |flags: &[String]| stamp_with(b"synthetic", "all", "Codegen { accounting: false }", flags);
+        let stamp = |flags: &[String]| {
+            stamp_with(b"synthetic", "all", "Codegen { accounting: false }", flags)
+        };
         let base = vec!["-O1".to_owned()];
         let mut fast = base.clone();
         fast.push("-DH2_FASTMEM=1".to_owned());
@@ -1649,10 +1989,25 @@ mod tests {
     fn the_stamp_records_the_effective_fast_path_defaults() {
         let stamp = build_stamp(b"synthetic");
         let on = |name: &str| std::env::var(name).as_deref() != Ok("0");
-        for name in ["H2_FASTMEM", "H2_X87_NATIVE", "H2_SSE_NATIVE", "H2_DIRECT_CALLS"] {
-            assert_eq!(stamp.contains(&format!("\"-D{name}=1\"")), on(name), "{name}: {stamp}");
+        for name in [
+            "H2_FASTMEM",
+            "H2_X87_NATIVE",
+            "H2_SSE_NATIVE",
+            "H2_DIRECT_CALLS",
+        ] {
+            assert_eq!(
+                stamp.contains(&format!("\"-D{name}=1\"")),
+                on(name),
+                "{name}: {stamp}"
+            );
         }
-        let accounting = format!("{:?}", emit::Codegen { accounting: on("H2_ACCESS_COUNT"), reg_homes: on("H2_REG_HOMES") });
+        let accounting = format!(
+            "{:?}",
+            emit::Codegen {
+                accounting: on("H2_ACCESS_COUNT"),
+                reg_homes: on("H2_REG_HOMES")
+            }
+        );
         assert!(stamp.contains(&format!("codegen {accounting} ")), "{stamp}");
     }
 
@@ -1660,12 +2015,36 @@ mod tests {
     fn passes_and_codegen_are_part_of_the_dylib_stamp() {
         let flags = vec!["-O1".to_owned()];
         let off = format!("{:?}", emit::Codegen::default());
-        let on = format!("{:?}", emit::Codegen { accounting: true, ..emit::Codegen::default() });
-        let all_locals = format!("{:?}", emit::Codegen { reg_homes: false, ..emit::Codegen::default() });
+        let on = format!(
+            "{:?}",
+            emit::Codegen {
+                accounting: true,
+                ..emit::Codegen::default()
+            }
+        );
+        let all_locals = format!(
+            "{:?}",
+            emit::Codegen {
+                reg_homes: false,
+                ..emit::Codegen::default()
+            }
+        );
         let base = stamp_with(b"synthetic", "all", &off, &flags);
-        assert_ne!(base, stamp_with(b"synthetic", "all", &on, &flags), "H2_ACCESS_COUNT");
-        assert_ne!(base, stamp_with(b"synthetic", "all", &all_locals, &flags), "H2_REG_HOMES");
-        assert_ne!(base, stamp_with(b"synthetic", "none", &off, &flags), "H2_PASSES");
+        assert_ne!(
+            base,
+            stamp_with(b"synthetic", "all", &on, &flags),
+            "H2_ACCESS_COUNT"
+        );
+        assert_ne!(
+            base,
+            stamp_with(b"synthetic", "all", &all_locals, &flags),
+            "H2_REG_HOMES"
+        );
+        assert_ne!(
+            base,
+            stamp_with(b"synthetic", "none", &off, &flags),
+            "H2_PASSES"
+        );
         assert_eq!(base, stamp_with(b"synthetic", "all", &off, &flags));
     }
 
@@ -1674,15 +2053,27 @@ mod tests {
         use emit::compile::Arch;
         let flags = vec!["-O1".to_owned()];
         let mac = stamp_for(b"synthetic", "all", "c", &flags, Arch::Arm64);
-        assert_eq!(mac, stamp_for(b"synthetic", "all", "c", &flags, Arch::X86_64));
-        assert!(!mac.contains("target"), "macOS stamps stay as they were: {mac}");
+        assert_eq!(
+            mac,
+            stamp_for(b"synthetic", "all", "c", &flags, Arch::X86_64)
+        );
+        assert!(
+            !mac.contains("target"),
+            "macOS stamps stay as they were: {mac}"
+        );
         let tv = stamp_for(b"synthetic", "all", "c", &flags, Arch::Arm64Tvos);
         assert_ne!(mac, tv);
-        assert!(tv.trim_end().ends_with(" target arm64-apple-tvos17.0"), "{tv}");
+        assert!(
+            tv.trim_end().ends_with(" target arm64-apple-tvos17.0"),
+            "{tv}"
+        );
         let ios = stamp_for(b"synthetic", "all", "c", &flags, Arch::Arm64Ios);
         assert_ne!(ios, mac);
         assert_ne!(ios, tv);
-        assert!(ios.trim_end().ends_with(" target arm64-apple-ios17.0"), "{ios}");
+        assert!(
+            ios.trim_end().ends_with(" target arm64-apple-ios17.0"),
+            "{ios}"
+        );
     }
 
     #[test]
@@ -1692,9 +2083,19 @@ mod tests {
         let mac = stamp_for(b"synthetic", "all", "c", &flags, Arch::Arm64);
         let win = stamp_for(b"synthetic", "all", "c", &flags, Arch::X86_64Windows);
         assert_ne!(mac, win);
-        assert_ne!(win, stamp_for(b"synthetic", "all", "c", &flags, Arch::Arm64Tvos));
-        assert!(win.trim_end().ends_with(" target x86_64-pc-windows-msvc"), "{win}");
-        assert_eq!(win.strip_suffix(" target x86_64-pc-windows-msvc\n"), mac.strip_suffix('\n'), "only the target differs");
+        assert_ne!(
+            win,
+            stamp_for(b"synthetic", "all", "c", &flags, Arch::Arm64Tvos)
+        );
+        assert!(
+            win.trim_end().ends_with(" target x86_64-pc-windows-msvc"),
+            "{win}"
+        );
+        assert_eq!(
+            win.strip_suffix(" target x86_64-pc-windows-msvc\n"),
+            mac.strip_suffix('\n'),
+            "only the target differs"
+        );
         // What `h2 run`/`h2 play` look for is what `build` writes on this host.
         assert_eq!(DYLIB, Arch::host().module_file_name());
         assert_eq!(Arch::X86_64Windows.module_file_name(), "h2game.dll");
@@ -1719,13 +2120,22 @@ mod tests {
     #[test]
     fn a_packaged_module_is_named_relative_to_the_package_root() {
         let root = Path::new("/pkg");
-        assert_eq!(package_relative(Path::new("/pkg/h2game.dll"), root), Some(PathBuf::from("h2game.dll")));
-        assert_eq!(package_relative(Path::new("/pkg/lib/h2game.dll"), root), Some(PathBuf::from("lib/h2game.dll")));
+        assert_eq!(
+            package_relative(Path::new("/pkg/h2game.dll"), root),
+            Some(PathBuf::from("h2game.dll"))
+        );
+        assert_eq!(
+            package_relative(Path::new("/pkg/lib/h2game.dll"), root),
+            Some(PathBuf::from("lib/h2game.dll"))
+        );
         // Outside the package, the package itself, or climbing out: the
         // ordinary loader.
         assert_eq!(package_relative(Path::new("/other/h2game.dll"), root), None);
         assert_eq!(package_relative(Path::new("/pkg"), root), None);
-        assert_eq!(package_relative(Path::new("/pkg/../x/h2game.dll"), root), None);
+        assert_eq!(
+            package_relative(Path::new("/pkg/../x/h2game.dll"), root),
+            None
+        );
     }
 
     #[test]
@@ -1749,11 +2159,18 @@ mod tests {
         let (a, b) = (b"XBEH image a".as_slice(), b"XBEH image b".as_slice());
         assert!(!dylib_current(a, &lib), "missing");
         std::fs::write(&lib, b"").unwrap();
-        assert!(!dylib_current(a, &lib), "no stamp: built before stamps, or the build failed");
+        assert!(
+            !dylib_current(a, &lib),
+            "no stamp: built before stamps, or the build failed"
+        );
         std::fs::write(stamp_path(&lib), build_stamp(a)).unwrap();
         assert!(dylib_current(a, &lib));
         assert!(!dylib_current(b, &lib), "another image");
-        std::fs::write(stamp_path(&lib), build_stamp(a).replace(env!("GENERATOR_SOURCE_HASH"), "0000000000000000")).unwrap();
+        std::fs::write(
+            stamp_path(&lib),
+            build_stamp(a).replace(env!("GENERATOR_SOURCE_HASH"), "0000000000000000"),
+        )
+        .unwrap();
         assert!(!dylib_current(a, &lib), "another generator");
         let _ = std::fs::remove_dir_all(&dir);
     }
