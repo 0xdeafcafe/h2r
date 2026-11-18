@@ -335,8 +335,27 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
                 out.tag(id).unwrap().location.unwrap().address,
                 hh::NHDT_ROOT,
             );
-            // Bitmap widgets only.
-            assert!(root[0x10..hh::NHDT_ROOT].iter().all(|b| *b == 0), "{name}");
+            // Bitmap widgets, and Halo 1's grenade counts as Halo 2 number
+            // texts on inputs 20 and 21 reading hud_input1 (Halo 2's own
+            // string ID, as retail frag_count's), through text_flash.
+            assert!(root[0x18..hh::NHDT_ROOT].iter().all(|b| *b == 0), "{name}");
+            let texts = w(&root, h1hud::NHDT_TEXT_WIDGETS) as usize;
+            assert_eq!(texts, 2, "{name}: grenade counts");
+            let tb = bytes(w(&root, h1hud::NHDT_TEXT_WIDGETS + 4), texts * h1hud::text::SIZE);
+            for (k, t) in tb.as_chunks::<{ h1hud::text::SIZE }>().0.iter().enumerate() {
+                assert_eq!(t[h1hud::text::INPUTS], 20 + k as u8, "{name}");
+                assert_eq!(t[h1hud::text::STATE..h1hud::text::STATE + 20], h1hud::GRENADE_STATES[k]);
+                assert_eq!(w(t, h1hud::text::STRING), 0x0a00_05cf, "{name}: hud_input1");
+                assert_eq!(u16::from_le_bytes([t[h1hud::text::FLAGS], t[h1hud::text::FLAGS + 1]]), h1hud::TEXT_NUMBER);
+                let (sg, shader) = names[&TagId(w(t, h1hud::text::SHADER + 4))].clone();
+                assert_eq!((sg, shader.as_str()), (FourCC(*b"shad"), h1hud::TEXT_SHADER));
+                eprintln!(
+                    "{name}: grenade count {k} anchor {} justification {} offset {:?}",
+                    t[h1hud::text::ANCHOR],
+                    t[h1hud::text::JUSTIFICATION],
+                    hh::offset(t, h1hud::text::OFFSETS[0])
+                );
+            }
             let n = w(&root, hh::NHDT_BITMAP_WIDGETS) as usize;
             assert!(n >= 4, "{name}: {n} widgets");
             let widgets = bytes(

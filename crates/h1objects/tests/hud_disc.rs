@@ -131,6 +131,14 @@ fn grenade_huds_read() {
             assert_eq!(t.group, Group::new(b"grhi"), "{name}");
             let b = m.tag_data(t).unwrap();
             let els = h1hud::grenade_elements(&m, b).unwrap_or_else(|e| panic!("{name} {}: {e}", t.name));
+            // Its count: a number element Halo 2 draws as a number text
+            // ending where Halo 1's last digit does (h1hud::number_end).
+            if let Some(n) = h1hud::grenade_number(b).unwrap() {
+                let w = h1hud::digit_width(&m).unwrap_or_else(|e| panic!("{name}: {e}"));
+                assert_eq!(w, 9, "{name}: ui\\hud\\counter's digit width");
+                let end = h1hud::number_end(&n, w).unwrap_or_else(|e| panic!("{name} {}: {e}", t.name));
+                *looks.entry(format!("grhi count {:?} digits {} flags {:#x} ends {end:?}", n.anchor, n.digits, n.flags)).or_default() += 1;
+            }
             for el in &els {
                 let bt = m.tag(el.bitmap).unwrap();
                 let bm = h1map::bitmap::Bitmap::read(&m, bt).unwrap();

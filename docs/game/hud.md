@@ -164,9 +164,46 @@ bit `0x04` frag and `0x08` plasma, the same bits as its `frag_count` and
 `plasma_count` text widgets), so only the selected type's shows. Halo 1's
 type order (frag, plasma) is Halo 2's, as the converted globals keep it.
 
-Not carried: the count (`+0xf4`, a number element, drawn when `+0x138`
-is set; Halo 2 draws counts as text widgets, inputs 20 and 21, whose
-layout is not established here) and the messaging part (`+0x14c`).
+### The count
+
+Halo 1's count is the number element `grhi +0xf4`, drawn when byte
+`+0x138` is set (E `0x000db514`) by the number draw `0x000e1a60`: offset
+and scale as any element's, digits `+0x44`, flags `+0x45` (bit `0x04`
+one cell more), fraction digits `+0x46`, each digit `hud#` `+0x11` wide
+(9 on `ui\hud\counter`, the digits tag the globals' first interface
+element names at `+0xb0`). It draws right to left from a start the anchor
+moves: on a left anchor by `(cells - 2) * width`, on a right anchor not
+at all, centred by half of `(cells - 1) * width` (E the switch
+`0x000e1bd1`). On the disc every `grhi` count is one digit, top left, at
+(107, 3), so it ends at x 107.
+
+Halo 2 draws its counts as text widgets. The layout, from the retail
+`ui\hud\masterchief` `frag_count` and `plasma_count` and their draw
+(E `0x22aa16`, the string `0x22a871`, the value `0x22ace7`, the caller
+`0x13a63d`), `0x54` bytes in the `nhdt`'s `+0x10` block:
+
+| offset | field |
+|---|---|
+| `+0x00` | name (string ID) |
+| `+0x04` | four inputs (`0x13ad48`); their values are `hud_input1`..`hud_input4` |
+| `+0x08`..`+0x1b` | state flags, as a bitmap widget's (`0x13ac87`) |
+| `+0x1c` | anchor (`u16`) |
+| `+0x1e` | flags (`u16`): 1 draws the number `+0x28` names; 2 pads it to two digits, 4 to three; 8 draws the player's name; otherwise `+0x28` is a text |
+| `+0x20` | shader (tag reference; no shader, no draw) |
+| `+0x28` | string ID: `hud_input1` (retail) is the first input's value |
+| `+0x2c` | justification (`u16`): 0 starts at the point, 1 centred, 2 ends at it |
+| `+0x40`, `+0x44`, `+0x48` | offset (two `i16`) for fullscreen, half and quarter screen |
+
+Retail: inputs 20 (frag count, HUD state `+0x38`) and 21 (plasma, `+0x3a`),
+flags 1, `hud_input1`, `ui\hud\shaders\text_flash`, centred, top left at
+(65, -1) and (12, -1); the `_hidden` pair draws through `dim_text_flash`.
+
+The converter emits one text widget per type (`h1hud::grenade_count`):
+input `20 + type`, that type's grenade states, flags 1, `hud_input1`,
+`text_flash`, the grhi's anchor, justified to end (2) where Halo 1's last
+digit ends (`h1hud::number_end`). The text is Halo 2's font, not Halo 1's
+digit bitmaps; its top sits at Halo 1's y. Not carried: the low-count
+flash (`+0x148`) and the messaging part (`+0x14c`).
 
 ## Scale
 
@@ -208,7 +245,7 @@ or animation binding feeds it is not yet established
 
 ## Not converted yet
 
-- **Numbers** (`hud#`, the weapon and grenade counts) and **HUD globals**
+- **Weapon numbers** (`hud#`, the ammunition counts) and **HUD globals**
   (`hudg`).
 - **Motion sensor sweep and blips**: Halo 1 draws them from the `unhi`'s
   motion sensor placement (`+0x35c`, E `0x000dd658`..`0x000dd691`),
@@ -233,7 +270,9 @@ or animation binding feeds it is not yet established
   names its `_h1_weapon_hud` (Halo 1 bitmaps, Halo 2 weapon inputs); the
   HUD pairs (the biped's and the weapons') in the manifest; the motion
   sensor background's copy, decoded back from the built map, has a mean
-  alpha inside its circle within 1 of `0x28/255` of Halo 1's.
+  alpha inside its circle within 1 of `0x28/255` of Halo 1's; the
+  grenade counts are two number texts on inputs 20 and 21 reading
+  `hud_input1` through `text_flash`.
 - `H1_ISO=... cargo test -p h1objects --test hud_disc -- --ignored
   weapon_huds_read --nocapture`: prints every `wphi` chain of `$H1_MAPS`
   as read.

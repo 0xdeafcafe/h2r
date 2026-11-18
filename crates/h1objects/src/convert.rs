@@ -1884,6 +1884,7 @@ impl Converter<'_> {
         };
         let meter = find(b"shad", crate::h1hud::METER_SHADER)?;
         let plain = find(b"shad", crate::h1hud::STATIC_SHADER)?;
+        let text_shader = find(b"shad", crate::h1hud::TEXT_SHADER)?;
         let mut widgets = Vec::new();
         for e in &elements {
             if !crate::h1hud::unscaled(e.scale) {
@@ -1916,10 +1917,19 @@ impl Converter<'_> {
         // Halo 1's grenade HUDs (docs/game/hud.md "Grenades"): each type's
         // grhi, shown while that type is selected, after the unit's.
         let grenades = crate::h1hud::grenade_huds(self.h1)?;
+        let mut texts = Vec::new();
         for (k, g) in grenades.iter().enumerate().take(crate::h1hud::GRENADE_STATES.len()) {
             let Some(g) = g else { continue };
             let gt = self.h1.tag(*g)?.clone();
             let gb = crate::h1::tag_bytes(self.h1, &gt, b"grhi", crate::h1hud::grhi::SIZE)?.to_vec();
+            // Its count, a Halo 2 number text on the type's input.
+            if let Some(n) = crate::h1hud::grenade_number(&gb)? {
+                if !crate::h1hud::unscaled(n.scale) {
+                    return Err(Error::Invalid(format!("{} count: scaled {:?}", gt.name, n.scale)));
+                }
+                let w = crate::h1hud::digit_width(self.h1)?;
+                texts.push(crate::h1hud::grenade_count(&n, k, w, text_shader)?);
+            }
             for e in crate::h1hud::grenade_elements(self.h1, &gb)? {
                 if !crate::h1hud::unscaled(e.scale) {
                     return Err(Error::Invalid(format!("{}: scaled {:?}", gt.name, e.scale)));
@@ -1946,7 +1956,7 @@ impl Converter<'_> {
             &format!("{}{}", tag.name, crate::h1hud::NHDT_SUFFIX),
             Converted {
                 group: FourCC(*b"nhdt"),
-                root: crate::h1hud::nhdt(&widgets),
+                root: crate::h1hud::nhdt(&widgets, &texts),
                 raw: Vec::new(),
             },
         );
@@ -2002,7 +2012,7 @@ impl Converter<'_> {
             &format!("{}{}", tag.name, h1hud::WEAPON_NHDT_SUFFIX),
             Converted {
                 group: FourCC(*b"nhdt"),
-                root: h1hud::nhdt(&widgets),
+                root: h1hud::nhdt(&widgets, &[]),
                 raw: Vec::new(),
             },
         );
