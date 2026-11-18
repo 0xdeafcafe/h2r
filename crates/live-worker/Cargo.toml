@@ -1,0 +1,40 @@
+[package]
+name = "live-worker"
+description = "The Live server as a Cloudflare Worker: live-server's routes over D1, R2 and Durable Objects (docs/live/live-worker.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The routes, read model and store trait, without sockets, SQL drivers or
+# file serving.
+live-server = { path = "../live-server", default-features = false }
+live-proto.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
+async-trait = "0.1"
+tokio = { version = "1", default-features = false, features = ["sync"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+worker = { version = "0.9", features = ["http", "axum"] }
+axum = { version = "0.8", default-features = false }
+http = "1"
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+send_wrapper = { version = "0.6", features = ["futures"] }
+tower-service = "0.3"
+bytes = "1"
+futures-util = "0.3"
+object_store = { version = "0.14", default-features = false }
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+# The D1 store's SQL run on SQLite here, against the shared store tests and
+# the native SQLite store.
+live-server = { path = "../live-server", features = ["conformance"] }
+sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

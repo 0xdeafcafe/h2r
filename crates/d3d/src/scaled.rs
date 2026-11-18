@@ -1724,6 +1724,29 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         }
     }
 
+    fn surface_extent(&self, surface: Self::Surface) -> Option<(u32, u32)> {
+        // What a present shows: the view's copy while it draws, else the
+        // reference's.
+        match self.live(surface.view) {
+            Some(v) if !self.frame_failed => self.view.surface_extent(v),
+            _ => self.reference.surface_extent(surface.reference),
+        }
+    }
+
+    fn gpu_fence(&mut self) -> Option<Box<dyn Fn() -> bool + Send>> {
+        // Both are on one queue (`ScaleView`): the later fence covers the
+        // other's work too once both have submitted.
+        let reference = self.reference.gpu_fence();
+        if !self.awake() {
+            return reference;
+        }
+        let view = self.view.gpu_fence();
+        match (reference, view) {
+            (Some(r), Some(v)) => Some(Box::new(move || r() && v())),
+            (r, v) => r.or(v),
+        }
+    }
+
     fn present_replay(
         &mut self,
         surface: Self::Surface,

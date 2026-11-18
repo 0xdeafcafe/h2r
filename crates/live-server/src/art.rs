@@ -14,8 +14,9 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
+use crate::ConnectInfo;
 use axum::Router;
-use axum::extract::{ConnectInfo, Request};
+use axum::extract::Request;
 use axum::http::HeaderMap;
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -114,6 +115,7 @@ impl PublishedArt {
         self.store.public_url(&format!("{ART_PREFIX}{stamp}/{rel}"))
     }
 
+    #[cfg(feature = "native")]
     /// Uploads `art` ([`publish`]) and switches redirects on.
     pub async fn publish(&self, art: &GameArt) -> crate::blobs::Result<PublishReport> {
         let report = publish(art, &self.store).await?;
@@ -183,6 +185,7 @@ pub fn stamp(dir: &Path) -> std::io::Result<String> {
     Ok(hex[..16].to_string())
 }
 
+#[cfg(feature = "native")]
 /// Uploads shared `art` to `store` as `art/<stamp>/<path>`: each file with
 /// its type and [`PUBLISHED_CACHE`]; a file with a `.gz` copy as that copy,
 /// marked `Content-Encoding: gzip`. Files already there (same size) are
@@ -310,6 +313,7 @@ fn accepts_gzip(headers: &HeaderMap) -> bool {
         })
 }
 
+#[cfg(feature = "native")]
 /// The art routes: files from `art.dir` under [`PREFIX`], a JSON 404 for
 /// anything missing or refused, so the web app falls back to its own art
 /// the same way in both cases. With `published` ready, files are
