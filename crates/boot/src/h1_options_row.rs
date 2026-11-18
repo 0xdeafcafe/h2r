@@ -1,7 +1,7 @@
 //! The "Halo 1 Options" row on a multiplayer custom game's Game Setup
 //! dialog, next to its map and game type, while the lobby's map is a
 //! converted Halo 1 map; and the screen it opens (`crate::h1_options`,
-//! docs/game/h1-multiplayer.md "Halo 1 options").
+//! docs/halo1/multiplayer.md "Halo 1 options").
 //!
 //! **The row.** The Game Setup dialog (screen 23, `squad_settings_dialog`)
 //! builds its list in `0x2bb4d2` (ESI the handler): a datum array "squad
@@ -279,7 +279,7 @@ const fn list_class_slot() -> u32 {
 impl feature::Feature for SetupRow {
     fn manifest(&self) -> Manifest {
         Manifest::new(ROW_FEATURE, "The Halo 1 Options row on a custom game's Game Setup")
-            .doc("docs/game/h1-multiplayer.md")
+            .doc("docs/halo1/multiplayer.md")
     }
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         use engine::points::{

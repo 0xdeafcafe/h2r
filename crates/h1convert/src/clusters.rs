@@ -18,7 +18,7 @@
 //! - a cluster's lightmap is one page of its own, cut from the Halo 1
 //!   pages its surfaces sample ([`lightmap_pages`], [`h1bitmaps::atlas`]).
 //!
-//! Layouts and evidence: docs/game/h1-multiplayer.md, "Clusters and
+//! Layouts and evidence: docs/halo1/multiplayer.md, "Clusters and
 //! portals".
 
 use std::collections::BTreeMap;
@@ -312,7 +312,7 @@ pub struct Portal {
     /// (`+0x02`): the flood crosses from the first when the camera is
     /// behind the plane (E `0x001738e5`, `0x00172953`). Halo 1 orders them
     /// the same way (V, by cluster centres on both discs:
-    /// docs/game/h1-multiplayer.md, "Clusters and portals").
+    /// docs/halo1/multiplayer.md, "Clusters and portals").
     pub clusters: [u16; 2],
     /// The collision BSP plane it lies in (`+0x04`); the converted
     /// collision BSP keeps Halo 1's planes in order.

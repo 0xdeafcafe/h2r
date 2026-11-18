@@ -190,7 +190,7 @@ The boot stacks the layers as font rewrite, then `MapOverrideBackend`
 disc. `CampaignMapsBackend` serves a second campaign's converted maps
 (`<data>/campaigns/<key>/<map>.map`) as `maps\<map>.map` where the disc has
 no such file; a name the disc has is never shadowed
-([multiple-campaigns.md](../game/multiple-campaigns.md) §3). The packages layer
+([campaign-picker.md](../halo1/campaign-picker.md) §3). The packages layer
 is always there in a boot, even with an empty maps folder, so a package
 installed later is served; without a packages directory and without
 `H2_MAP_DIR`, `map_override::mount` is exactly `with_disc` /
@@ -325,7 +325,7 @@ to rewrite host birthtime or mtime.
 A write or truncation does not store the metadata record on the spot.
 Storing it durably cost two fsyncs per guest write: while Halo 2 fills
 its cache partition on the main menu, that was about a tenth of each
-frame (docs/perf/perf-budget.md). A synthetic bench put it at 16 ms per write
+frame (docs/perf/menu-budget.md). A synthetic bench put it at 16 ms per write
 against 0.09 ms (`cargo test -p vfs --release bench_write_metadata --
 --ignored --nocapture`). The new write and change times and the archive
 bit are stored:

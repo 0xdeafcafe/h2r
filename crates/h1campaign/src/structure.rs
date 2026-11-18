@@ -1,7 +1,7 @@
 //! Each Halo 1 structure BSP of a level, in Halo 1's order, converted into
 //! the base's BSP slot of the same index or, past the base's count, new
 //! `sbsp`/`ltmp` tags under Halo 1's name: `h1convert`'s collision, render geometry, materials, MOPP
-//! and lightmap (docs/game/h1-multiplayer.md, "The converted structure
+//! and lightmap (docs/halo1/multiplayer.md, "The converted structure
 //! BSP"), plus AI pathfinding generated from the collision
 //! (`pathfind::generate`, docs/formats/pathfinding.md) at `sbsp+0xc4`.
 

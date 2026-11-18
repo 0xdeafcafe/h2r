@@ -1,9 +1,9 @@
 # sky : sky (group word 736b7920). Engine rows from docs/formats/lighting.md (atmosphere
-# table), the rest from docs/formats/h1-sky.md and the disc (crates/h1sky/src/h2.rs:
+# table), the rest from docs/halo1/sky.md and the disc (crates/h1sky/src/h2.rs:
 # all 91 retail identities on 28 maps decode).
 group 736b7920 0xac align 4
   0x0 tagref model groups=mode -- render model; E 0x0003ea60 and 0x0003ede0 resolve the datum at +4
-  0x8 tagref unused_ref -- V null on every retail sky (h1-sky.md); group unknown
+  0x8 tagref unused_ref -- V null on every retail sky (halo1/sky.md); group unknown
   0x10 u32 word_10 -- V varies with the sky (0, 2, 6, 13, 18, 34, 35, 38); not interpreted
   0x14 f32 model_scale default=1 -- E 0x0003ebd0 assigns it as the sky transform's scale
   0x18 f32 camera_translation_scale default=1 -- E 0x0003ebd0 multiplies the camera position by it

@@ -105,7 +105,7 @@ pub const SHORT_PATHS: &[(&str, &str)] = &[("tutorial_setup", "fast_setup")];
 
 /// What a stubbed status query returns under [`Missing::Stub`] instead of
 /// zero, where zero would hold a `sleep_until` forever. Every use in the
-/// ten levels' scripts reads the value as "done" (docs/formats/h1-scripts.md):
+/// ten levels' scripts reads the value as "done" (docs/halo1/scripts.md):
 /// conversation status 5 passes `(< 4 s)`, `(> s 4)`, `(> s 3)` and
 /// `(< 2 s)`; command list status 2 passes `(= 2 s)` and `(!= 3 s)` (the
 /// four `(= 1 s)` waits still hold); the quiet and safe-to-speak tests

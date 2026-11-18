@@ -1,4 +1,4 @@
-//! The Halo 2-assets variant of a campaign level (docs/game/campaigns.md
+//! The Halo 2-assets variant of a campaign level (docs/halo1/campaign.md
 //! §5): Halo 1's player, weapons and vehicles swapped for their nearest
 //! Halo 2 equivalents, the retail tags themselves, from the base or a
 //! donor map off the Halo 2 disc.

@@ -187,7 +187,7 @@ game's frame rate (docs/input/input.md, "Keyboard and mouse").
 
 `h2 play --frame-stats`, or `H2_FRAME_STATS=1` for `h2 play` and `h2 run`,
 times every frame on the game thread and records the renderer's phases too
-(`timeline::phase`, docs/perf/frame-budget.md):
+(`timeline::phase`, docs/perf/gameplay-budget.md):
 
 | phase | what |
 |---|---|
@@ -216,7 +216,7 @@ game thread, so their sum can exceed the frame's wall time. `render-wait_us`
 is the game thread's own wait, including queue backlog, CPU encoding and
 GPU work needed for a reply. The CSV's `read_bytes` is file I/O, not GPU
 readback bytes. An incomplete render-thread tail at shutdown is omitted
-and counted in the exit report. See [frame-budget.md](../perf/frame-budget.md).
+and counted in the exit report. See [gameplay-budget.md](../perf/gameplay-budget.md).
 
 Cost: one clock read per phase switch, about six per draw. At 300 draws
 that is under 0.1 ms of a 75 ms level frame. Add one short lock per frame. Off, each hook is a relaxed
@@ -655,7 +655,7 @@ and `audio: false` (boot's output owns the device).
 
 The window draws no health meter. Halo 1's health meter is a widget in the
 converted Halo 1 player's HUD, drawn by the game (see
-[health.md](../game/health.md) "HUD").
+[health.md](../halo1/health.md) "HUD").
 
 ## Known gaps
 

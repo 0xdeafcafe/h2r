@@ -8,7 +8,7 @@ license.workspace = true
 thiserror.workspace = true
 xbe.workspace = true
 x87.workspace = true
-# Interrupt and HLE-call events (docs/perf/perf.md); dependency-free.
+# Interrupt and HLE-call events (docs/perf/profiling.md); dependency-free.
 timeline = { path = "../timeline" }
 rustc-hash = "2"
 

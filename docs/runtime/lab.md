@@ -207,7 +207,7 @@ started from a Terminal-launched host gets a window and the GPU, and that
   `h2 agent`); snapshots are its phase 5
 - [level-boot.md](level-boot.md): `--level`, `H2_PERF_FROM=level`
 - [BOOT.md](BOOT.md): the environment variables
-- [frame-budget.md](../perf/frame-budget.md): reading frame stats
-- [perf.md](../perf/perf.md): the profiler (`--features perf`)
+- [gameplay-budget.md](../perf/gameplay-budget.md): reading frame stats
+- [profiling.md](../perf/profiling.md): the profiler (`--features perf`)
 - [high-framerate.md](../game/high-framerate.md): `lockstep` and `xapi::tap`
 - [BUILD-CACHE.md](../lifter/BUILD-CACHE.md): `H2_OBJ_CACHE`

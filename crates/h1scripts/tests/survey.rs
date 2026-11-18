@@ -1,4 +1,4 @@
-//! Opt-in surveys behind the scenario layouts in docs/formats/h1-scripts.md:
+//! Opt-in surveys behind the scenario layouts in docs/halo1/scripts.md:
 //! which scenario block a script value of each type indexes, found from the
 //! names the scripts keep. Prints only offsets, strides and counts.
 use std::{collections::BTreeMap, fs::File, io::BufReader, path::PathBuf};

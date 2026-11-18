@@ -1,6 +1,6 @@
 //! `H2_EFFECT_CENSUS=1`: a read-only census of the effect, particle and
 //! light datum arrays at each present, so a headless run can show that an
-//! explosion happened and when (the grenade A/B in docs/perf/frame-budget.md).
+//! explosion happened and when (the grenade A/B in docs/perf/gameplay-budget.md).
 //!
 //! Every present it reads the arrays' headers and live slots (salt word
 //! non-zero, below the high-water mark) and counts the datums that are new

@@ -9,7 +9,7 @@ and play in the game (owner, 2026-11-17).
 `MapEditor` ([map-format.md](map-format.md), "Lossless writing") patches
 an existing map in place. The builder in `crates/map/src/build.rs` writes
 a whole v8 cache from a `TagSet` instead. The Halo 1 converter
-(`crates/h1convert`, [h1-multiplayer.md](../game/h1-multiplayer.md)) uses it to
+(`crates/h1convert`, [multiplayer.md](../halo1/multiplayer.md)) uses it to
 write a converted structure BSP and lightmap into a base map, and maps made
 from scratch ([maps.md](../game/maps.md) §4) need it too.
 

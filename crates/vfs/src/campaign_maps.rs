@@ -1,5 +1,5 @@
 //! A read-only backend that adds campaign maps the disc doesn't have
-//! (docs/game/multiple-campaigns.md §3).
+//! (docs/halo1/campaign-picker.md §3).
 //!
 //! 1.0 opens a campaign level's map as `d:\maps\<basename of its scenario
 //! path>.map` (`0x214db0`). A second campaign's converted maps live in
@@ -11,7 +11,7 @@
 //! kept while they are the ones to serve; nothing is written.
 //!
 //! **Assets.** A map may have a second file, its level with Halo 2's
-//! assets (docs/game/campaigns.md §5), served instead while the
+//! assets (docs/halo1/campaign.md §5), served instead while the
 //! [`SandboxChoice`] given to [`CampaignMapsBackend::with_assets`] says
 //! Halo 2. Without that file the Halo 1 one is served, with one line on
 //! stderr. The choice applies at a map's next open: an open file keeps

@@ -4,10 +4,10 @@ How Halo 1's Xbox maps store sounds, read by `crates/h1sounds` through
 `h1map`'s public API, decoded with the audio crate's Xbox ADPCM decoder (the
 one Halo 2's mixer uses), and converted to Halo 2 `snd!` tags plus their
 entries in the map's `ugh!` sound gestalt. The cache file around them is in
-[h1-map-format.md](h1-map-format.md); Halo 2's sound tags are in
-[sound.md](sound.md). All integers are little-endian, offsets hexadecimal.
+[map-format.md](map-format.md); Halo 2's sound tags are in
+[sound.md](../formats/sound.md). All integers are little-endian, offsets hexadecimal.
 
-Evidence labels, as in h1-map-format.md:
+Evidence labels, as in map-format.md:
 
 - **V — verified-on-disc:** checked by the `#[ignore]`d tests in
   `crates/h1sounds/tests/real_disc.rs` on every map of the owner's Halo 1
@@ -96,7 +96,7 @@ concatenated; every chain is whole ADPCM blocks.
 
 `decode::decode_chain` concatenates a chain's samples and decodes them with
 `audio::adpcm::decode` (64 samples per 36-byte block per channel, the
-hardware reading; see [sound.md](sound.md)). `Pcm::wav` writes 16-bit PCM.
+hardware reading; see [sound.md](../formats/sound.md)). `Pcm::wav` writes 16-bit PCM.
 
 ```
 h2 h1 sound <iso|map> [map] <tag> --out DIR [--force]
@@ -264,7 +264,7 @@ gestalt pass, skipping paths the set already has, and reuses an `lsnd` of
 the same path. `tests/looping_disc.rs`: every `lsnd` (734) and `snde` (63)
 on the Halo 1 disc converts, every named sound with it.
 
-The campaign converter (`h1campaign`, campaigns.md §9, "Music, ambience and the map
+The campaign converter (`h1campaign`, campaign.md §9, "Music, ambience and the map
 file") installs the looping sounds a level's scripts name, as many as fit
 the map file's size limit.
 
@@ -300,7 +300,7 @@ pointing at the wrong or too few bytes plays as a short repeating buzz.
 **V (2026-11-17):** a10 on 05a_deltaapproach, 3,988 sounds: 175 from
 Halo 1 (602.4 s), 3,813 the base's and donors', 14,667 permutations, no
 problem. The bytes were never the fault behind a10's "repeated
-wurrrring" (`docs/game/campaigns.md`, Sounds).
+wurrrring" (`docs/halo1/campaign.md`, Sounds).
 
 ## Merging a moved sound (`h1sounds::merge_sound`)
 

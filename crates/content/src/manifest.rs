@@ -32,7 +32,7 @@
 //! description.ja = "..."     # likewise, from [package] description
 //! ```
 //!
-//! A map converted from Halo 1 (docs/game/h1-multiplayer.md) is a derived
+//! A map converted from Halo 1 (docs/halo1/multiplayer.md) is a derived
 //! package holding one whole map per sandbox instead of `[[patch]]`:
 //!
 //! ```toml
@@ -96,18 +96,18 @@ pub struct Variant {
     pub sha256: Sha256,
     pub origin: Origin,
     /// Item swaps a precision game variant makes in this map at game start
-    /// (`boot::precision`; docs/game/h1-multiplayer.md, "Precision
+    /// (`boot::precision`; docs/halo1/multiplayer.md, "Precision
     /// variants"). Not part of the `MapId`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub precision: Vec<Swap>,
     /// HUD references the HUD setting switches in this map at game start
-    /// (`boot::hud`; docs/game/hud.md). Not part of the `MapId`.
+    /// (`boot::hud`; docs/halo1/hud.md). Not part of the `MapId`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hud: Vec<HudSwap>,
     /// Where Halo 1's HUD centres the motion sensor's blips: an offset
     /// from the bottom-left corner, as Halo 2's own table at `0x47ff40`
     /// holds it (`boot::hud_swap` writes it there while Halo 1's HUD is
-    /// shown; docs/game/hud.md). Not part of the `MapId`.
+    /// shown; docs/halo1/hud.md). Not part of the `MapId`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hud_sensor: Option<[i16; 2]>,
 }
@@ -132,7 +132,7 @@ pub struct Swap {
 }
 
 /// A converted campaign level's HUD pairs, written beside it as
-/// `<level>.hud.toml` (`boot::hud`; docs/game/hud.md): a campaign
+/// `<level>.hud.toml` (`boot::hud`; docs/halo1/hud.md): a campaign
 /// folder's `campaign.toml` is a level list others write too, so the pairs
 /// live in a file of their own.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -161,7 +161,7 @@ impl LevelHud {
 }
 
 /// A variant's `origin`: the source of a map converted from another game
-/// (docs/game/h1-multiplayer.md, "Package"). Not part of the `MapId`.
+/// (docs/halo1/multiplayer.md, "Package"). Not part of the `MapId`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Origin {
@@ -331,7 +331,7 @@ impl Manifest {
     /// The identity a package with variants keeps whichever variant is
     /// loaded: from its first variant's origin (game and map), so the map
     /// list gives a converted map one ID in both sandboxes
-    /// (docs/game/h1-multiplayer.md). `None` without variants.
+    /// (docs/halo1/multiplayer.md). `None` without variants.
     pub fn variants_key(&self) -> Option<MapId> {
         let o = &self.variants.first()?.origin;
         let key = format!("variants:{}:{}", o.game, o.map).to_ascii_lowercase();

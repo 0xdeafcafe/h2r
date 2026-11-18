@@ -35,6 +35,7 @@ goals, the two-stage plan, the crate table and milestones.
 - [xapi.md](runtime/xapi.md): which XAPI services are replaced (`crates/xapi`) and which stay generated, native saves included
 - [storage.md](runtime/storage.md): the Xbox storage boundary (`crates/vfs`): volumes, FATX names, file semantics, map overrides
 - [agent-api.md](runtime/agent-api.md): design for an agent-facing API to the running game: UI and world views, profiling by owner, snapshots, input, overrides and A/B experiments (design only; none of it is on master)
+- [debug-menu.md](runtime/debug-menu.md): our in-game debug menu: an overlay over the game image, in the 8x8 font, over the same registries as `h2 agent` (built and unit tested, not yet seen in the game)
 - [lab.md](runtime/lab.md): `h2 lab`: start levels on a second Mac over SSH, build branches there, replay input recordings, fetch frame stats, profiles and logs
 - [checkpoints.md](runtime/checkpoints.md): the checkpoint save and revert acceptance test
 - [snapshots.md](runtime/snapshots.md): machine snapshots for `state.save`/`state.load`: what state lives outside guest RAM, the file format, phases
@@ -64,6 +65,7 @@ goals, the two-stage plan, the crate table and milestones.
 - [render-loop.md](graphics/render-loop.md): stage 7a, the view and pass loops ported to Rust: what is built and what is next
 - [occlusion-culling.md](graphics/occlusion-culling.md): how a view's objects are chosen, the per-object skip point, and Hi-Z occlusion culling against the previous frame's depth (`impl.render.occlusion`)
 - [pipelined-render.md](graphics/pipelined-render.md): the render front-end one frame behind the simulation on its own thread: design, and the `render-census` that decides it
+- [second-executor.md](runtime/second-executor.md): a second guest executor, the runtime building block the pipelined-render prototype needs (`H2_PIPELINE_RENDER=1`)
 - [layer-draw.md](graphics/layer-draw.md): the layer draw and its entry loop, read and ported, with the `render-timing` breakdown
 - [hot-iteration.md](graphics/hot-iteration.md): live tag edits (`edit.*`) and hot WGSL overrides, parameters and toggles for the host renderer (`render.*`), without a rebuild or restart
 - [high-resolution.md](graphics/high-resolution.md): 4K and other internal resolutions (`H2_RENDER_SCALE`, the Resolution row); phases 1 and 2 built
@@ -82,10 +84,11 @@ goals, the two-stage plan, the crate table and milestones.
 
 ## Performance (`perf/`)
 
-- [perf.md](perf/perf.md) (**start here**): the profiler, timeline traces and benchmarks (`h2 profile`, `h2 bench`, `crates/perf`, `crates/timeline`); test and bench knobs
-- [performance.md](perf/performance.md): guest memory accessors, the inline RAM path (`H2_FASTMEM`, on by default), direct calls, the one exit call, the lent view and runtime counters
-- [frame-budget.md](perf/frame-budget.md): where an in-level frame's time goes, the worst frames and what a worst frame under 33 ms needs
-- [perf-budget.md](perf/perf-budget.md): the main-menu frame budget: the latest flyover numbers and the original plan to 30 fps
+- [README.md](perf/README.md) (**start here**): where the frame rate stands, which doc answers which question, and the order to read them in
+- [profiling.md](perf/profiling.md): the profiler, timeline traces and benchmarks (`h2 profile`, `h2 bench`, `crates/perf`, `crates/timeline`); test and bench knobs
+- [guest-memory.md](perf/guest-memory.md): guest memory accessors, the inline RAM path (`H2_FASTMEM`, on by default), direct calls, the one exit call, the lent view and runtime counters
+- [gameplay-budget.md](perf/gameplay-budget.md): where an in-level frame's time goes, the worst frames and what a worst frame under 33 ms needs
+- [menu-budget.md](perf/menu-budget.md): the main-menu frame budget: the latest flyover numbers and the original plan to 30 fps
 - [architecture-review.md](perf/architecture-review.md): a structural review of the gameplay frame-time gap, with ranked changes and their status
 - [fastmem-4k.md](perf/fastmem-4k.md): the 4 KiB guest translation experiment (branch only; slower than the inline path, not adopted)
 - [fastmem-proto.md](perf/fastmem-proto.md): the Mach exception write-watch prototype (`crates/fastmem-proto`) and its results
@@ -102,16 +105,7 @@ goals, the two-stage plan, the crate table and milestones.
 - [collision.md](formats/collision.md): collision and physics model tags (`h2 collision`)
 - [effects.md](formats/effects.md): the effects family (`effe`, `prt3`, `pmov` and more; `h2 effect`)
 - [fonts.md](formats/fonts.md): packed bitmap fonts and the text rasteriser (`crates/font`, `h2 font`)
-- [h1-map-format.md](formats/h1-map-format.md): Halo 1 Xbox cache files (v5, zlib) and the `h1map` reader (`h2 h1 info|tags|convert`, `h2 import halo1`)
-- [h1-models.md](formats/h1-models.md): Halo 1 Xbox models and animation graphs converted to Halo 2 `mode` and `jmad` (`crates/h1models`)
-- [h1-ai.md](formats/h1-ai.md): Halo 1 AI data (actors, encounters, command lists) read, Halo 2's scenario AI blocks and `char` decoded, and the conversion between them (`crates/h1ai`)
-- [h1-bitmaps.md](formats/h1-bitmaps.md): Halo 1 Xbox bitmaps: where the pixels are, decoding with Halo 2's decoder, conversion to Halo 2 `bitm` and lightmap pages (`crates/h1bitmaps`, `h2 h1 bitmap`)
-- [h1-sounds.md](formats/h1-sounds.md): Halo 1 Xbox sounds: where the samples are, decoding to PCM, conversion to Halo 2 `snd!` plus `ugh!` gestalt entries, the whole gestalt layout, class mapping (`crates/h1sounds`, `h2 h1 sound`)
-- [h1-objects.md](formats/h1-objects.md): Halo 1 sandbox objects (`weap`, `proj`, `eqip`, `bipd`, `vehi`, `coll`, `phys`) read from Halo 1 and built as Halo 2 tags on retail templates, with the tuning carried over (`crates/h1objects`)
-- [h1-sky.md](formats/h1-sky.md): Halo 1 and Halo 2 `sky ` tags: layouts, the disc census, and conversion (`crates/h1sky`)
-- [h1-text.md](formats/h1-text.md): Halo 1 `ustr` and `hmt ` text: reading UTF-16 lists and HUD messages, converting them to Halo 2 `unic` locale rows (`crates/h1text`)
 - [haloscript.md](formats/haloscript.md): HaloScript syntax, builtins and decoding (`crates/hs`, `h2 hs`)
-- [h1-scripts.md](formats/h1-scripts.md): Halo 1 campaign scripts decoded, decompiled, translated to Halo 2 builtins and compiled to Halo 2 nodes (`crates/h1scripts`)
 - [lighting.md](formats/lighting.md): level lighting, lightmaps and atmosphere
 - [localization.md](formats/localization.md): string IDs and localized text
 - [mopp.md](formats/mopp.md): Havok MOPP code in structure BSPs: the engine's opcodes, a query model, and the writer (`crates/mopp`)
@@ -141,15 +135,34 @@ goals, the two-stage plan, the crate table and milestones.
 - [community-gametypes.md](game/community-gametypes.md): community classics (Zombies, SWAT and more) as extra built-in game variants
 - [game-options.md](game/game-options.md): game variant options retail doesn't allow (no-weapon starts, instant respawn, gravity) and names with any character (design)
 - [maps.md](game/maps.md): new, edited, patched and shared maps: packages, patches, `MapId`; foundation built
-- [campaigns.md](game/campaigns.md): design for more than one campaign, starting with Halo 1's levels in the Halo 2 engine; the converter is built for multiplayer maps only
-- [health.md](game/health.md): Halo 1's health model on Halo 2's engine: no body regeneration, health packs, a health meter (`H2_HEALTH_MODEL`; the map-load switch for Halo 1 maps is not wired yet)
 - [bots.md](game/bots.md): design for multiplayer bots (Clankers): one brain feeding controller input, local slots then phantom peers, the Clankers Game Setup page, Clankermatch, and the bot roster interface with the server
-- [multiple-campaigns.md](game/multiple-campaigns.md): how 1.0's menus list campaign levels and keep progress, and the campaign picker and per-campaign progress built on them
-- [h1-multiplayer.md](game/h1-multiplayer.md): Halo 1's 13 disc multiplayer maps converted onto Halo 2 base maps (`h2 h1 convert`): collision, structure BSP, MOPP, placements, packages with variants; the Halo 1 sandbox and map list are not built
 - [map-pack.md](game/map-pack.md): the Multiplayer Map Pack disc, `h2 import-mappack` and how 1.0 lists its maps
+- [map-select.md](game/map-select.md): Change Map opens a list of categories first (Halo 2, Map Pack, community, Halo 1) in the retail Select Map dialog (built and table-tested, not run in the game)
 - [high-framerate.md](game/high-framerate.md): 60 and 120 fps keeping the 30 Hz tick exact (`H2_FPS`); the determinism harness is built
 - [theater.md](game/theater.md): design for saved films, free camera and spectating (not built)
 - [forge.md](game/forge.md): design for Forge on Halo 2 multiplayer maps (not built)
+
+## Halo 1 (`halo1/`)
+
+Halo 1 (Xbox) running in the Halo 2 engine: its data read from your own `halo1.iso` and converted offline into Halo 2 maps. [README.md](halo1/README.md) (**start here**) says where each part stands.
+
+- [campaign.md](halo1/campaign.md): Halo 1's campaign in the Halo 2 engine: the decisions, the pipeline, and every step. All ten levels convert offline at import (`h2 import halo1`); a30 has run headless, none has been played yet
+- [multiplayer.md](halo1/multiplayer.md): Halo 1's 13 disc multiplayer maps converted onto Halo 2 base maps (`h2 h1 convert`): collision, structure BSP, MOPP, placements, packages with variants
+- [campaign-picker.md](halo1/campaign-picker.md): how 1.0's menus list campaign levels and keep progress, and the campaign picker and per-campaign progress built on them (confirmed in the game)
+- [health.md](halo1/health.md): Halo 1's health model on Halo 2's engine: no body regeneration, health packs, the meter in Halo 2's HUD; picked from the map at game start (`H2_HEALTH_MODEL` overrides)
+- [hud.md](halo1/hud.md): Halo 1's HUD on converted maps: the unit HUD is built and the default; weapon HUDs, grenades and the HUD globals are not converted yet
+
+Reading and converting Halo 1 data:
+
+- [map-format.md](halo1/map-format.md): Halo 1 Xbox cache files (v5, zlib) and the `h1map` reader (`h2 h1 info|tags|convert`, `h2 import halo1`)
+- [models.md](halo1/models.md): Halo 1 Xbox models and animation graphs converted to Halo 2 `mode` and `jmad` (`crates/h1models`)
+- [bitmaps.md](halo1/bitmaps.md): Halo 1 Xbox bitmaps: where the pixels are, decoding with Halo 2's decoder, conversion to Halo 2 `bitm` and lightmap pages (`crates/h1bitmaps`, `h2 h1 bitmap`)
+- [sounds.md](halo1/sounds.md): Halo 1 Xbox sounds: where the samples are, decoding to PCM, conversion to Halo 2 `snd!` plus `ugh!` gestalt entries, the whole gestalt layout, class mapping (`crates/h1sounds`, `h2 h1 sound`)
+- [objects.md](halo1/objects.md): Halo 1 sandbox objects (`weap`, `proj`, `eqip`, `bipd`, `vehi`, `coll`, `phys`) read from Halo 1 and built as Halo 2 tags on retail templates, with the tuning carried over (`crates/h1objects`)
+- [ai.md](halo1/ai.md): Halo 1 AI data (actors, encounters, command lists) read, Halo 2's scenario AI blocks and `char` decoded, and the conversion between them (`crates/h1ai`)
+- [scripts.md](halo1/scripts.md): Halo 1 campaign scripts decoded, decompiled, translated to Halo 2 builtins and compiled to Halo 2 nodes (`crates/h1scripts`)
+- [sky.md](halo1/sky.md): Halo 1 and Halo 2 `sky ` tags: layouts, the disc census, and conversion (`crates/h1sky`)
+- [text.md](halo1/text.md): Halo 1 `ustr` and `hmt ` text: reading UTF-16 lists and HUD messages, converting them to Halo 2 `unic` locale rows (`crates/h1text`)
 
 ## Xbox Live (`live/`)
 
@@ -159,7 +172,9 @@ goals, the two-stage plan, the crate table and milestones.
 - [live-cloud-saves.md](live/live-cloud-saves.md): cloud saves: profiles, variants, campaign saves and profile settings follow the account; the merge and conflict rules
 - [live-admin.md](live/live-admin.md): who may publish title files, and the web MOTD editor and playlist builder
 - [web-boundary.md](live/web-boundary.md): what goes on the dashboard and what on the stats site, and the dashboard's dense style for admin and ops screens
+- [dash-concepts.md](live/dash-concepts.md): the Live dashboard as it is now: the orb, the menu blades, the Games screen and its Halo 2 panel
 - [live-hosting.md](live/live-hosting.md): hosting a server for friends (Cloudflare Tunnel, docker compose)
+- [live-worker.md](live/live-worker.md): moving the whole Live server to Cloudflare Workers, Durable Objects and R2, with the same axum router
 - [live-boundary.md](live/live-boundary.md): static inventory of the retail XOnline/XNet entry points and the sign-in sequence
 - [live-motd.md](live/live-motd.md): how retail fetches and parses `message_of_the_day.dat` and `multiplayer_hopper.dat`
 - [live-matchmaking.md](live/live-matchmaking.md): matchmaking, sessions and invites: the retail call trace and what is built

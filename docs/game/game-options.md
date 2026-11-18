@@ -358,7 +358,7 @@ guests"):
   table at `0x470828` has 0x70 entries). They go on a kit page of ours,
   "More Options", opened from a row added to the variant editor's page list
   with the list hooks the pregame dialog's "Halo 1 Options" row uses
-  ([h1-multiplayer.md](h1-multiplayer.md) "Halo 1 options",
+  ([multiplayer.md](../halo1/multiplayer.md) "Halo 1 options",
   [ui-screens.md](ui-screens.md)). Its rows are `Row::value`s whose get and
   set read and write the block in the record being edited. Built
   (`boot::variant_page`; "The variant editor's page list" below), with

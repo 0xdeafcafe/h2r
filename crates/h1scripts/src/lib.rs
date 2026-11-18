@@ -11,7 +11,7 @@
 //!   translation, for the converter to drop in.
 //!
 //! No game data is in this crate or its tests: tables and scripts are read
-//! from the owner's disc at run time. See `docs/formats/h1-scripts.md`.
+//! from the owner's disc at run time. See `docs/halo1/scripts.md`.
 #![forbid(unsafe_code)]
 
 pub mod catalog;

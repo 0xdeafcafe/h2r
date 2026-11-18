@@ -30,7 +30,7 @@
 //! (`TagSet::from_map`): template child blocks that are not rewritten stay
 //! where the pinned base has them, so the tree needs that base.
 //!
-//! Layouts, evidence and the tuning table: `docs/formats/h1-objects.md`. No
+//! Layouts, evidence and the tuning table: `docs/halo1/objects.md`. No
 //! game data is in this crate or its tests; real maps are read only by the
 //! `#[ignore]` tests.
 #![forbid(unsafe_code)]

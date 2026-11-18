@@ -597,7 +597,7 @@ from a flat draw list.
 render_timing.rs`, off by default) puts observers on both sides of the
 four orchestrators, `render_frame_and_present` and the per-light pass, and
 reports the front-end's guest time as the frame stats' `render` phase with
-an exclusive split per stage ([frame-budget.md](../perf/frame-budget.md), "Render
+an exclusive split per stage ([gameplay-budget.md](../perf/gameplay-budget.md), "Render
 front-end versus simulation"). It answers how much of the game thread's
 guest time 7a-7d can move at all.
 

@@ -1,4 +1,4 @@
-//! Halo 1 AI data to Halo 2's (docs/formats/h1-ai.md).
+//! Halo 1 AI data to Halo 2's (docs/halo1/ai.md).
 //!
 //! - [`h1`] reads Halo 1's AI data through [`h1map`]: the scenario's actor
 //!   palette, encounters (squads, platoons, firing positions, starting

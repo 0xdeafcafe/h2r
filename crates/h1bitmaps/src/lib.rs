@@ -10,7 +10,7 @@
 //! - [`convert`] builds a Halo 2 `bitm` block tree whose image LOD points at
 //!   the same bytes, in the [`h1models::Converted`] shape.
 //!
-//! Layouts and evidence: `docs/formats/h1-bitmaps.md`. No game data is in
+//! Layouts and evidence: `docs/halo1/bitmaps.md`. No game data is in
 //! this crate or its tests; real maps are read only by `#[ignore]` tests,
 //! from `$H1_ISO`.
 #![forbid(unsafe_code)]

@@ -522,7 +522,7 @@ fn real_import_is_found_by_the_game() {
             assert_eq!((r.campaign, r.map), (b.campaign_id, l.map_id));
         }
         // With Halo 2's assets chosen, each level's `h2/` map is served
-        // in its place (docs/game/campaigns.md §5).
+        // in its place (docs/halo1/campaign.md §5).
         let choice = vfs::SandboxChoice::default();
         choice.set_halo1(false);
         let maps = boot::campaigns::host_maps(&data, &state);

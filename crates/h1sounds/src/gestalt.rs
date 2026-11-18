@@ -16,7 +16,7 @@
 //! pinned file prefix holding the raw data does not move, and slots keep
 //! their datums. New chunks point at raw resources added to the set.
 //!
-//! Layouts and evidence: `docs/formats/h1-sounds.md` ("The Halo 2 gestalt").
+//! Layouts and evidence: `docs/halo1/sounds.md` ("The Halo 2 gestalt").
 
 use map::FourCC;
 use map::build::{Block, FixupKind, RawId, RawRef, TagPayload, TagSet};

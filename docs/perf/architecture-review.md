@@ -257,7 +257,7 @@ then one run with the trace off.
 ### 2. Memory access as a real inline load or store
 
 Status (2026-11-16): the width-specialised inline access with a cold,
-register-preserving slow call has landed (`docs/perf/performance.md`, "Inline
+register-preserving slow call has landed (`docs/perf/guest-memory.md`, "Inline
 guest loads and stores"); the host-address tables, dirty tracking through
 the write table and slice-long gate ownership below are not done.
 
@@ -334,7 +334,7 @@ frame from frame stats on Old Mombasa, to turn ns per access into ms.
 Status (2026-11-17): the epilogue now makes one call, `h2abi_v1_exit`, in
 place of `charge` and `fast_release`, and a direct callee runs on its
 caller's inline view, so it skips `fast_acquire` and `fast_release`
-(`docs/perf/performance.md`, "One exit call, and a callee on its caller's
+(`docs/perf/guest-memory.md`, "One exit call, and a callee on its caller's
 view"). Reading the budget and count from context fields, the execute
 permission by generation, direct calls that need no warming and the flat
 dispatch table below are not done.

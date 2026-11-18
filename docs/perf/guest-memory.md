@@ -2,9 +2,9 @@
 
 The runtime side of the 30 fps work: guest memory accessors, the
 inline RAM path (`H2_FASTMEM`, on by default), runner transfers and their counters. The
-profiling and benchmark tools are in [perf.md](perf.md); the main-menu
+profiling and benchmark tools are in [profiling.md](profiling.md); the main-menu
 frame budget and the plan across every area are in
-[perf-budget.md](perf-budget.md).
+[menu-budget.md](menu-budget.md).
 
 The goal is **retail running correctly at 30 presented frames per wall second**,
 a **33.33 ms** budget per frame, measured in the main menu with `H2_BOOT_GFX`.
@@ -44,7 +44,7 @@ An unobserved category prints `unobserved`, not a misleading measured zero.
 
 Boot integration (not done; `H2_PERF` counters already reach the runtime
 through boot's bridge, and a timeline of a real run comes from `H2_TIMELINE`,
-see [perf.md](perf.md)):
+see [profiling.md](profiling.md)):
 
 - Enable profiling for every guest ExecCtx, including new threads and DPCs.
 - After registering D3D entries, use `Dispatch::profile_override(addr,
@@ -326,7 +326,7 @@ lane to focused tests and microbenchmarks.
 ## Inline RAM: one gate hold per run of accesses (2026-11-15)
 
 After FASTMEM, the "generated guest code" row of the level frame (14.9 ms,
-[frame-budget.md](frame-budget.md)) is mostly the inline RAM path itself.
+[gameplay-budget.md](gameplay-budget.md)) is mostly the inline RAM path itself.
 Each access took the memory gate with a compare-and-swap and released it
 with an ordered store, and that pair is most of an access's 6-7 ns: the
 `read` loop below spends 7.1 ns a trip on one load, against 0.8 ns for the

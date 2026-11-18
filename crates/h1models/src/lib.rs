@@ -9,7 +9,7 @@
 //! resources, which [`Converted::install`] adds to a [`map::build::TagSet`].
 //! [`model_from_map`] and [`graph_from_map`] are the one-call forms.
 //!
-//! Layouts, evidence and the name table: `docs/formats/h1-models.md`. No
+//! Layouts, evidence and the name table: `docs/halo1/models.md`. No
 //! game data is in this crate or its tests; real maps are read only by the
 //! `#[ignore]` tests, from `$H1_MAPS`.
 #![forbid(unsafe_code)]

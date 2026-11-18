@@ -22,7 +22,7 @@ const USAGE: &str = "usage:
 never stops the run). --no-mappack or H2_MAPPACK=0 skips it (docs/game/map-pack.md).
 `run` and `serve` convert a halo1.iso found next to the disc into --data when
 it is new or the converter changed (a warning never stops the run);
---no-halo1 or H2_HALO1=0 skips it (docs/game/campaigns.md).
+--no-halo1 or H2_HALO1=0 skips it (docs/halo1/campaign.md).
 The intro, attract and credits movies are skipped: `run` and `serve` are
 headless, and a level boot (H2_LEVEL) has no intro. --movies DIR plays those
 `h2 movies` installed there for this disc. The run logs which

@@ -249,7 +249,7 @@ pub fn content_path(offer: u64, map: &str) -> String {
 }
 
 /// A converted map's two sandbox variants, when its package has both
-/// files (docs/game/h1-multiplayer.md): read from its manifest, each with
+/// files (docs/halo1/multiplayer.md): read from its manifest, each with
 /// the `MapId` it has when loaded.
 pub fn variant_pair(p: &Package) -> Option<vfs::VariantPair> {
     let text = std::fs::read_to_string(p.dir.join(content::manifest::MANIFEST_FILE)).ok()?;

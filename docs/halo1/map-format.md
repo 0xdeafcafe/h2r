@@ -1,9 +1,9 @@
 # Halo 1 Xbox cache files (version 5)
 
 This describes the reader in `crates/h1map`, step 1 of the campaigns work
-([campaigns.md](../game/campaigns.md)): Halo: Combat Evolved's Xbox maps,
+([campaign.md](campaign.md)): Halo: Combat Evolved's Xbox maps,
 read so they can later be converted into Halo 2 v8 maps
-([map-format.md](map-format.md)). It is not an on-disk Rust struct ABI.
+([map-format.md](../formats/map-format.md)). It is not an on-disk Rust struct ABI.
 All integers are little-endian. Offsets are hexadecimal. Unless a section
 says otherwise, they are offsets into the **decompressed** file: the
 `0x800`-byte header followed by the inflated body.
@@ -20,8 +20,8 @@ Evidence labels, as in map-format.md:
 
 **Status:** the multiplayer parts and the collision BSP were checked on two
 retail maps (`beavercreek`, `carousel`) cut from a partial download of the
-disc. The whole disc (24 maps, [h1-bitmaps.md](h1-bitmaps.md)) is read by
-`real_disc_every_map_reads`, and the converter ([h1-multiplayer.md](../game/h1-multiplayer.md))
+disc. The whole disc (24 maps, [bitmaps.md](bitmaps.md)) is read by
+`real_disc_every_map_reads`, and the converter ([multiplayer.md](multiplayer.md))
 reads all 13 multiplayer maps. What those confirm is marked V; the rest
 stays S.
 
@@ -47,9 +47,9 @@ Field offsets inside tags (the scenario's BSP block) are not on c20's tag
 page; those are marked S with a note.
 
 Model and animation tag layouts (`mode`, `antr`) are in
-[h1-models.md](h1-models.md), checked on real maps.
+[models.md](models.md), checked on real maps.
 Bitmap tags (`bitm`) and where their pixels are in the file are in
-[h1-bitmaps.md](h1-bitmaps.md), checked on every map of the disc.
+[bitmaps.md](bitmaps.md), checked on every map of the disc.
 
 ## Header and compression
 
@@ -264,7 +264,7 @@ Eight blocks, `{count, address, unused}` each:
 | `60` edges | 24 | `start vertex, end vertex, forward edge, reverse edge, left surface, right surface` (`i32`, `-1` none) | V: below |
 | `70` vertices | 16 | `x, y, z`, `i32 first edge` | V |
 
-Ring rule, the same as Halo 2's object collision ([collision.md](collision.md)):
+Ring rule, the same as Halo 2's object collision ([collision.md](../formats/collision.md)):
 from a surface's first edge, an edge whose right surface is this surface
 gives its end vertex and continues at its reverse edge; otherwise its start
 vertex and its forward edge, until the first edge comes round. **V:** on
@@ -277,7 +277,7 @@ surface, edge and vertex layouts together. `CollisionBsp::validate` runs it.
 the nineteen multiplayer maps and ten campaign levels, converted
 (`h1convert::collision`), encoded as a structure BSP holds them and read
 back with `Bsp::decode_structure`, give the same answer as Halo 1's own
-BSP to the engine's queries ([collision.md](collision.md), "What the
+BSP to the engine's queries ([collision.md](../formats/collision.md), "What the
 engine does with a BSP"): the leaf or solid holding 1,620,000 random
 points, and the vector test's outcome (hit fraction, plane, surface,
 leaf, and every solid entry with no surface) on 3,710,774 rays: into
@@ -364,11 +364,11 @@ needs every level and adds `ui`, `bitmaps` and `sounds` when present.
 - `h2 h1 tags <iso|map> [map] [--group G]`: ID, group, data range and name
   of every tag (or one group's).
 - `h2 h1 bitmap <iso|map> [map] <tag> --out DIR [--mips]`: one bitmap's
-  images as PNGs ([h1-bitmaps.md](h1-bitmaps.md)).
+  images as PNGs ([bitmaps.md](bitmaps.md)).
 - `h2 h1 convert <iso|map> [map] --out DIR [--sandbox h2|h1] [--base MAP]
   [--disc halo2.iso] [--dry-run] [--force]`: converts a multiplayer map onto
   a Halo 2 base map (`crates/h1convert`;
-  [h1-multiplayer.md](../game/h1-multiplayer.md)).
+  [multiplayer.md](multiplayer.md)).
 - `h2 import halo1 [iso] [--data DIR] [--force] [--dry-run]`: checks the
   title and every campaign map's header, then copies the maps as stored
   (still compressed) into `<data>/campaigns/halo1/source/` and writes

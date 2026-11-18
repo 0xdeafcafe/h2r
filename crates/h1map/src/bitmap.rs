@@ -4,7 +4,7 @@
 //!
 //! On Xbox the pixels are in the map file itself: each image's pixel data
 //! offset is a file offset in the decompressed map, outside the tag data (see
-//! `docs/formats/h1-bitmaps.md`, with evidence). This module only finds and
+//! `docs/halo1/bitmaps.md`, with evidence). This module only finds and
 //! describes the bytes; decoding them to RGBA (Xbox swizzle, DXT, cube
 //! faces) is `crates/h1bitmaps`, which reuses Halo 2's texture decoder.
 

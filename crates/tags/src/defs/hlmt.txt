@@ -1,7 +1,7 @@
 # hlmt: model (object model). Names from crates/tags/src/object/layouts.rs (HLMT, VARIANT*,
 # REGION*, NODE; E/V evidence), docs/formats/objects.md "hlmt object models",
 # docs/formats/collision.md "hlmt region bytes" and the Halo 1 converter
-# crates/h1objects/src/convert.rs (`h2` consts) / docs/formats/h1-objects.md.
+# crates/h1objects/src/convert.rs (`h2` consts) / docs/halo1/objects.md.
 # No community tag definition was used.
 
 group hlmt 0xfc align 4
@@ -10,7 +10,7 @@ group hlmt 0xfc align 4
   0x10 u32 animation_group -- D: group half of the animation reference; the converter writes a tag reference at +0x10 (convert.rs:314,776)
   0x14 datum animation -- E 0x000b7b40: object_new tests +0x14 before its animation and physics setup (layouts.rs:889-895; objects.md:159); jmad
   0x18 tagref phys_ref_18 groups=phys -- V: phys tags (layouts.rs:896)
-  0x20 tagref physics_model groups=phmo -- V (layouts.rs:897; objects.md:161); phmo rigid bodies bind to the object's nodes (h1-objects.md:204-208)
+  0x20 tagref physics_model groups=phmo -- V (layouts.rs:897; objects.md:161); phmo rigid bodies bind to the object's nodes (halo1/objects.md:204-208)
   0x28 unknown 0x4 seen=many -- floats
   0x2c unknown 0x4 seen=many -- floats
   0x30 unknown 0x4 seen=zero
@@ -136,7 +136,7 @@ group hlmt 0xfc align 4
     0x18 unknown 0x4 seen=7 -- floats
   0x70 block regions 0x10 align 4 -- E 0x0016d205 steps 0x10 over +0x70/+0x74; object_new reserves 10 bytes per region (layouts.rs:927-932; objects.md:166)
     0x0 string name -- E 0x0016d200 compares the requested region name with +0 (layouts.rs:851-857; objects.md:194)
-    0x4 i8 collision_region default=-1 -- V: coll region index, -1 none; -1 on 1,224 of 1,230 regions of objects with no coll (collision.md:106-115; h1-objects.md:278-281); the converter writes it (convert.rs:320-324,815)
+    0x4 i8 collision_region default=-1 -- V: coll region index, -1 none; -1 on 1,224 of 1,230 regions of objects with no coll (collision.md:106-115; halo1/objects.md:278-281); the converter writes it (convert.rs:320-324,815)
     0x5 i8 physics_region -- V: physics region index, -1 none; never -1 on an object with no phmo (collision.md:108-113; convert.rs:325,816)
     0x6 pad 0x2
     0x8 block permutations 0x8 align 4 -- V: stride from layout (layouts.rs:858-864; objects.md:196)
@@ -145,19 +145,19 @@ group hlmt 0xfc align 4
       0x5 i8 collision_permutation default=-1 -- V: coll permutation index, -1 none (collision.md:109-110; convert.rs:326,820)
       0x6 i8 physics_permutation -- V: physics permutation index, -1 none (collision.md:109-110; convert.rs:327,821)
       0x7 pad 0x1
-  0x78 block nodes 0x5c align 4 -- V: a retail hlmt node is its mode node's first 0x5c bytes with +0xa zero (h1-objects.md:214-218); E 0x000b7ef3, 0x000b800b: object_new reserves 0x34 bytes of node matrices per node, at least one (layouts.rs:934-940)
-    0x0 string name -- V: as the mode node's name (h1-objects.md:215; h1models mode.rs:244-252)
-    0x4 i16 parent_index -- V: as mode node +4 (schema.rs:447; h1-objects.md:215)
+  0x78 block nodes 0x5c align 4 -- V: a retail hlmt node is its mode node's first 0x5c bytes with +0xa zero (halo1/objects.md:214-218); E 0x000b7ef3, 0x000b800b: object_new reserves 0x34 bytes of node matrices per node, at least one (layouts.rs:934-940)
+    0x0 string name -- V: as the mode node's name (halo1/objects.md:215; h1models mode.rs:244-252)
+    0x4 i16 parent_index -- V: as mode node +4 (schema.rs:447; halo1/objects.md:215)
     0x6 i16 first_child_index -- V: as mode node +6 (schema.rs:448)
     0x8 i16 next_sibling_index -- V: as mode node +8 (schema.rs:449)
-    0xa pad 0x2 -- V: zero on retail hlmt nodes, where the mode node holds -1 (h1-objects.md:216-218; h1models mode.rs:249)
-    0xc f32[3] translation -- V: as mode node +0xc, default translation (schema.rs:450; h1-objects.md:216)
+    0xa pad 0x2 -- V: zero on retail hlmt nodes, where the mode node holds -1 (halo1/objects.md:216-218; h1models mode.rs:249)
+    0xc f32[3] translation -- V: as mode node +0xc, default translation (schema.rs:450; halo1/objects.md:216)
     0x18 f32[4] orientation -- V: as mode node +0x18, default rotation (schema.rs:451)
-    0x28 f32 default_scale default=1 -- V: as mode node +0x28, 1.0 (h1-models.md:315; h1-objects.md:216)
-    0x2c f32[3] inverse_forward -- V: as mode node +0x2c, inverse model-space basis (h1-models.md:315; h1-objects.md:216-217)
-    0x38 f32[3] inverse_left -- V: as mode node +0x38 (h1-models.md:315)
-    0x44 f32[3] inverse_up -- V: as mode node +0x44 (h1-models.md:315)
-    0x50 f32[3] inverse_position -- V: as mode node +0x50 (h1-models.md:315; h1-objects.md:217)
+    0x28 f32 default_scale default=1 -- V: as mode node +0x28, 1.0 (halo1/models.md:315; halo1/objects.md:216)
+    0x2c f32[3] inverse_forward -- V: as mode node +0x2c, inverse model-space basis (halo1/models.md:315; halo1/objects.md:216-217)
+    0x38 f32[3] inverse_left -- V: as mode node +0x38 (halo1/models.md:315)
+    0x44 f32[3] inverse_up -- V: as mode node +0x44 (halo1/models.md:315)
+    0x50 f32[3] inverse_position -- V: as mode node +0x50 (halo1/models.md:315; halo1/objects.md:217)
   0x80 unknown 0x4 seen=zero
   0x84 block block_84 0x14 align 4 -- V: at most one element (layouts.rs:941-947)
     0x0 unknown 0x4 seen=6

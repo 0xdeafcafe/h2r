@@ -119,7 +119,7 @@ group weap 0x31c
   0x2b8 block block_2b8 0x8 align 4
     0x0 unknown 0x4
     0x4 datum datum_4
-  0x2c0 block magazines 0x5c align 4 -- V2 (docs/formats/h1-objects.md): magazine elements, stride 0x5c
+  0x2c0 block magazines 0x5c align 4 -- V2 (docs/halo1/objects.md): magazine elements, stride 0x5c
     0x0 unknown 0x4
     0x4 unknown 0x2
     0x6 i16 rounds_total_initial -- V: equals Halo 1's magazine +0x6 on the retail pairs (weapon_rebuild_disc)
@@ -198,7 +198,7 @@ group weap 0x31c
     0x80 unknown 0x4
     0x84 unknown 0x4
     0x88 unknown 0x4
-    0x8c tagref projectile -- V2 (h1-objects.md): a proj reference on every barrel that fires one
+    0x8c tagref projectile -- V2 (halo1/objects.md): a proj reference on every barrel that fires one
     0x94 unknown 0x4
     0x98 unknown 0x4
     0x9c unknown 0x4
@@ -243,7 +243,7 @@ group weap 0x31c
   0x318 unknown 0x4
 group eqip 0x13c
   0x0 struct item item -- the item layer
-  0x12c i16 powerup_type -- V: Halo 1's eqip +0x308 values on the retail pairs (over shield 2, active camouflage 3, grenades 6); health 5 (docs/game/health.md)
+  0x12c i16 powerup_type -- V: Halo 1's eqip +0x308 values on the retail pairs (over shield 2, active camouflage 3, grenades 6); health 5 (docs/halo1/health.md)
   0x12e i16 grenade_type -- V: Halo 1's eqip +0x30a (frag 0, plasma 1) on the grenade pairs
   0x130 f32 powerup_time -- V: seconds; Halo 1's eqip +0x30c on the powerup pairs (over shield 60, active camouflage 45)
   0x134 tagref snd_ref_134 -- V

@@ -234,7 +234,7 @@ The live path: the only change on it is `Guest`'s RAM field, now a
 `runner_transfer_benchmark` after the change, minimum of 9 trials, ns per
 transfer: 41.1 (16 callees), 41.7 (256), 45.0 (1,024), 53.8 (4,096; median
 92.9, the machine was busy), against 39.2, 40.4, 42.2, 45.4 in
-docs/perf/performance.md, within the noise of a shared machine.
+docs/perf/guest-memory.md, within the noise of a shared machine.
 
 ## What remains before the render front-end can run on it
 

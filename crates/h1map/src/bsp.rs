@@ -1,7 +1,7 @@
 //! A structure BSP's region and the parts of its `sbsp` tag the converter
 //! reads: the region header, a few root fields and the collision BSP.
 //!
-//! Layouts and their evidence are in `docs/formats/h1-map-format.md`,
+//! Layouts and their evidence are in `docs/halo1/map-format.md`,
 //! "Structure BSPs". Everything here was read off the data (strides from the
 //! spacing of consecutive blocks, semantics from where retail spawn points
 //! land); no community definition file was used.

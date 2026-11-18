@@ -34,7 +34,7 @@ In short:
   and their leftover bugs were all on the rendering side.
 
 Nothing here is useful until a level holds a steady 30 fps. It doesn't today
-(about 15 fps in The Heretic when last measured, 2026-11-15, [frame-budget.md](../perf/frame-budget.md)). This mode
+(about 15 fps in The Heretic when last measured, 2026-11-15, [gameplay-budget.md](../perf/gameplay-budget.md)). This mode
 comes after that work, not instead of it.
 
 ## 1. How the tick, the frame and the vblank are coupled
@@ -124,7 +124,7 @@ Three things to take from this:
   (`crates/boot/src/lib.rs`, `d3d::vblank::clocked_vblanks`) on that clock.
   The frame-wait override `FrameWait::HALO2_CLOCKED` yields until the target,
   so the clock jumps straight to the vblank (d3d.md). A level frame is
-  33.3 ms of logical time and 2 vblanks ([frame-budget.md](../perf/frame-budget.md)).
+  33.3 ms of logical time and 2 vblanks ([gameplay-budget.md](../perf/gameplay-budget.md)).
 - **Wall time is outside.** `app::pacing::Pacer` and `kernel::pacer::Pacer`
   only sleep the host so guest time doesn't run ahead of real time. They
   never change the schedule ("schedule, history and guest state are the same
@@ -465,7 +465,7 @@ Two answers, in order:
   render-thread.md took it off.
 - **Budget.** At 60 Hz a replay gets 16.7 ms, at 120 8.3 ms, and the
   render thread also has the guest's own frame to encode. The 2026-11-17
-  measurement ([frame-budget.md](../perf/frame-budget.md), "Buffer count and
+  measurement ([gameplay-budget.md](../perf/gameplay-budget.md), "Buffer count and
   per-pass bookkeeping") is about 17.5 ms of encode and submit for ~1000
   draws in 193 passes (6.3 + 11.2), and 27.8 ms at 2000 draws; a render
   pass costs about 40-75 us of bookkeeping on its own. A replay that
@@ -585,7 +585,7 @@ fail.
 Heretic is reachable today. So the bounce test waits for a local
 multiplayer game on Lockout (or the first campaign bounce someone finds once
 the Armory loads). The same harness can start now, without a bounce:
-step 4 on the scripted run into The Heretic (frame-budget.md's input
+step 4 on the scripted run into The Heretic (docs/perf/gameplay-budget.md's input
 string) proves "mode on changes nothing the guest can see" over 300 level
 frames, before any bounce exists to record.
 
@@ -602,7 +602,7 @@ Rough sizes, for one person who knows the d3d and gfx crates.
 
 | phase | work | size | exit test |
 |---|---|---|---|
-| 0 | **Prerequisite, not part of this:** levels at a steady 30 fps; render thread on by default | (frame-budget.md) | worst frame under 33 ms |
+| 0 | **Prerequisite, not part of this:** levels at a steady 30 fps; render thread on by default | (docs/perf/gameplay-budget.md) | worst frame under 33 ms |
 | 1 | **Built** (section 6): determinism harness: per-tick guest-RAM hash, tick-keyed input recorder, run comparison, fake display clock | 1-2 weeks | two mode-off runs match; Heretic run matches with a replay that draws frame N unchanged |
 | 2 | Camera interpolation: two-frame store, alpha from measured arrivals, view constants rebuilt and verified, cut detection, replay on the render thread, 60 Hz pacing, the setting (first slice built, section 7); then E1 for comparison, bundles, 120/VRR once measured | 2-4 weeks | identical hashes with the replay on and off; replay cost under 16 ms at 60 (8 ms for 120) |
 | 3 | Objects: draw tagging by object, world recovery, node and skinning interpolation, first-person weapon, teleport snaps, shadows | 3-6 weeks | same; visual check in a level with moving actors |

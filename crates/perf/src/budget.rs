@@ -1,5 +1,5 @@
 //! Per-frame wall-time budget from a timeline trace (`h2 profile budget`,
-//! docs/perf/perf-budget.md).
+//! docs/perf/menu-budget.md).
 //!
 //! The game thread's spans are laid out on one time line and each instant
 //! of it is charged to the innermost span open then (its *self* time), or

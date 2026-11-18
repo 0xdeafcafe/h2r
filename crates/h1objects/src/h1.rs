@@ -3,7 +3,7 @@
 //! Each reader takes the tag's bytes (its root and, after it, its own
 //! blocks) through [`h1map::H1Map`] and keeps the fields the conversion
 //! carries, plus every reference. Offsets and evidence are in
-//! `docs/formats/h1-objects.md`.
+//! `docs/halo1/objects.md`.
 
 use h1map::{Block, Group, H1Map, Tag, TagId, TagRef};
 

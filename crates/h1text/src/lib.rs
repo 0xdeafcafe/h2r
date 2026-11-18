@@ -5,7 +5,7 @@
 //! - [`convert`] turns them into Halo 2 tags: one `unic` built block per
 //!   list, the locale rows behind it, and the string IDs that address them.
 //!
-//! Layouts and evidence: `docs/formats/h1-text.md`. No game data is in this
+//! Layouts and evidence: `docs/halo1/text.md`. No game data is in this
 //! crate or its tests; real maps are read only by the `#[ignore]` tests,
 //! from `$H1_ISO`.
 #![forbid(unsafe_code)]

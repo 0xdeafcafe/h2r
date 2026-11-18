@@ -97,7 +97,7 @@ map = "x1"
 name = "New"
 "#;
 
-// ---- the game's readers, transcribed (docs/game/multiple-campaigns.md) ----
+// ---- the game's readers, transcribed (docs/halo1/campaign-picker.md) ----
 
 fn read_list<M: Gm>(m: &M, at: u32, len: usize) -> Vec<Vec<u8>> {
     let b = block(m, at, len as u32).unwrap();
@@ -570,7 +570,7 @@ fn real_disc_lists_take_both_campaigns() {
 
 /// `0x214db0`: the file the cache loader opens for a scenario path: a `t:\`
 /// or `w:\` path as `<path>.map`, anything else as
-/// `d:\maps\<basename>.map` (docs/game/multiple-campaigns.md §3).
+/// `d:\maps\<basename>.map` (docs/halo1/campaign-picker.md §3).
 fn map_file_of(scenario: &str) -> String {
     let lower = scenario.to_ascii_lowercase();
     if lower.starts_with("t:\\") || lower.starts_with("w:\\") {
@@ -581,7 +581,7 @@ fn map_file_of(scenario: &str) -> String {
 }
 
 /// What `h2 import halo1` leaves in `<data>/campaigns/halo1/`
-/// (docs/game/campaigns.md "Importing"), followed from the picker to the
+/// (docs/halo1/campaign.md "Importing"), followed from the picker to the
 /// file the game opens: the picker lists Halo 1 after Halo 2; its level
 /// list holds the ten levels in play order with their names; each level's
 /// start record (`0x19c270` by the campaign and map id the menu selects)

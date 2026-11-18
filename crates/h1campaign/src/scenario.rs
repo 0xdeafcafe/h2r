@@ -354,7 +354,7 @@ pub struct ScenarioReport {
     /// The player biped, converted and set as the campaign players' unit.
     pub player_biped: Option<String>,
     /// HUD pairs `boot::hud` switches between (owner, Halo 1 HUD, Halo 2
-    /// HUD; docs/game/hud.md), as this set's datums.
+    /// HUD; docs/halo1/hud.md), as this set's datums.
     pub hud_swaps: Vec<[TagId; 3]>,
     /// Where the player's Halo 1 HUD centres the motion sensor's blips
     /// (`h1objects::h1hud::sensor_centre`), for `boot::hud_swap`.
@@ -741,7 +741,7 @@ pub const FRESH_NULL_REFS: [(u32, [u8; 4]); 4] = [
 /// The scenario root a fresh level starts from: every field empty, the
 /// null references of [`FRESH_NULL_REFS`], and every other root tag
 /// reference null. What the base's root held and a fresh level does not
-/// take (docs/game/campaigns.md, "Fresh levels"): its light volumes and
+/// take (docs/halo1/campaign.md, "Fresh levels"): its light volumes and
 /// their palette (`+0xe8`, `+0xf0`), decals and their palette (`+0x138`, `+0x140`), AI styles (`+0x150`;
 /// every converted order has style -1), mission scenes (`+0x170`), its
 /// chapter title, subtitles and objectives references (`+0x200`, `+0x358`,

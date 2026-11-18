@@ -6,7 +6,7 @@ Status: **built and table-tested, not run in the game.** Started
 The pregame lobby's map list now holds maps from four places: the Halo 2
 disc, the Multiplayer Map Pack ([map-pack.md](map-pack.md)), community
 maps ([maps.md](maps.md) §4) and converted Halo 1 maps
-([h1-multiplayer.md](h1-multiplayer.md)). In one list sorted by the
+([multiplayer.md](../halo1/multiplayer.md)). In one list sorted by the
 game's sort order they come out mixed. So Game Setup's **Change Map** now
 opens a list of categories first, in the retail Select Map dialog itself
 (its list, picture and description):
@@ -42,7 +42,7 @@ path (`+0xb4c`, map-pack.md 8.1). `map_select::category_of` reads it:
 3. A new map's offer (`0x8000_0000 | list id`,
    `content::map_list::is_new_map_offer`, maps.md "Map ids and offer IDs")
    whose map name starts with `h1_` is **Halo 1**. Converted maps are
-   named `h1_<map>` (h1-multiplayer.md "The setting and the map list"), and
+   named `h1_<map>` (docs/halo1/multiplayer.md "The setting and the map list"), and
    `boot::new_maps` installs them like any new map.
 4. Any other content, new maps included, is **Mods**.
 5. A disc map that a package in `<data>/maps` replaces (not a derived

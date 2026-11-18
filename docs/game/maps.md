@@ -597,7 +597,7 @@ variant per sandbox. `Manifest::select_variant` turns one variant into a
 plain derived manifest, so each has its own `MapId` (`origin` is in no id),
 and the resolver loads the default variant (`h1` if present, else the
 first). The form and the package layout are in
-[h1-multiplayer.md](h1-multiplayer.md#converting-a-map-built-h1convertconvert-h2-h1-convert).
+[multiplayer.md](../halo1/multiplayer.md#converting-a-map-built-h1convertconvert-h2-h1-convert).
 Nothing yet picks a variant by a setting.
 
 **Choice rule: one package per map name.**

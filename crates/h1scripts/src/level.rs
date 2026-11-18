@@ -5,7 +5,7 @@
 //! Each Halo 1 block is read from the scenario and written as Halo 2's
 //! block in the same order, so a script atom's value is the element's
 //! index (a device group's is its runtime datum). Offsets and their evidence
-//! are in `docs/formats/h1-scripts.md` ("Level data the scripts name").
+//! are in `docs/halo1/scripts.md` ("Level data the scripts name").
 
 use h1map::{Block as H1Block, H1Map};
 use map::build::Block;

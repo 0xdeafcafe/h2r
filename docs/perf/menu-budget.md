@@ -4,11 +4,11 @@ Where the wall time of one main-menu frame goes on master plus the boot
 runner, and a ranked plan for getting from under 2 fps to 30 fps.
 Measured 2026-11-15 on master 4620ba0 + `boot` (6eaa2cd), with a dylib
 built from 4620ba0, Apple Silicon (AGX G13), release build. The tools are
-in [perf.md](perf.md): the timeline, `h2 profile budget` and the sampler.
+in [profiling.md](profiling.md): the timeline, `h2 profile budget` and the sampler.
 The runtime's accessor work and its own menu profile are in
-[performance.md](performance.md).
+[guest-memory.md](guest-memory.md).
 The in-level budget and its worst frames are in
-[frame-budget.md](frame-budget.md).
+[gameplay-budget.md](gameplay-budget.md).
 
 Since then master has landed plan items 1 and 2 (draws batched per
 target into one submission, upload rings and cached texture bind groups,
@@ -91,7 +91,7 @@ things to `boot::run`:
 - A `boot: input + audio pump` span around the runner's per-slice
   `xapi::service_input` and `dsound_glue::advance`.
 
-`H2_PERF_FROM` has since landed on master (docs/perf/perf.md, "Boot
+`H2_PERF_FROM` has since landed on master (docs/perf/profiling.md, "Boot
 hook"); the pump span has not.
 
 | run | what | window mean / median ms | load avg |
@@ -256,7 +256,7 @@ plus the residue of each item. Honest reading:
 
 ## Instrumentation added
 
-Landed with this budget, with tests (docs/perf/perf.md lists every event):
+Landed with this budget, with tests (docs/perf/profiling.md lists every event):
 
 - `timeline`: `sched` and `lock` categories.
 - `kernel`:

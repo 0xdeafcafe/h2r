@@ -557,7 +557,7 @@ pub fn install(
     let with_skulls = model
         .as_ref()
         .is_some_and(|m| skulls_menu::enabled(m.store()));
-    // The campaign picker (docs/game/multiple-campaigns.md), when a second
+    // The campaign picker (docs/halo1/campaign-picker.md), when a second
     // campaign is installed.
     let with_campaigns = crate::campaign_menu::class().is_some();
     // The Halo 1 options' texts (crate::h1_options): the campaign page's
