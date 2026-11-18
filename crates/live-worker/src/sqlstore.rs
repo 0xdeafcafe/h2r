@@ -1,14 +1,13 @@
-//! The event log in D1 (Cloudflare's SQLite): the same tables and
-//! statements as the SQLite store on a machine (`live_server::sql`), over
-//! any [`Sql`] connection. In the Worker that is the D1 binding; in the
-//! tests here it is SQLite through sqlx, so the store is tested against
-//! the shared store tests and the machine's own SQLite store.
+//! The event log in SQLite reached through [`Sql`]: the same tables and
+//! statements as the SQLite store on a machine (`live_server::sql`). In
+//! the Worker that is the `LiveHub` Durable Object's own storage
+//! (`dosql`); in the tests here it is SQLite through sqlx, so the store is
+//! tested against the shared store tests and the machine's own SQLite
+//! store. Any other SQLite behind an atomic batch (D1) fits the same trait.
 //!
-//! D1 has no interactive transactions, only `batch`, which runs its
-//! statements atomically. An append reads the streams' heads, checks them,
-//! then writes every row in one batch. That is safe only with one writer:
-//! the log's Durable Object, which holds this store and appends one call
-//! at a time (`writer`).
+//! An append reads the streams' heads, checks them, then writes every row
+//! in one atomic batch. That is safe only with one writer: the hub, which
+//! holds this store and appends one call at a time (`writer`).
 
 use std::sync::Arc;
 
@@ -55,8 +54,8 @@ impl<T: Into<Param>> From<Option<T>> for Param {
     }
 }
 
-/// A row, by column name. Integers may come back as JSON floats (D1 hands
-/// JavaScript numbers) and blobs as arrays of byte values.
+/// A row, by column name. Integers may come back as JSON floats (from
+/// JavaScript's numbers) and blobs as arrays of byte values.
 pub type Row = serde_json::Map<String, Value>;
 
 /// A statement and its parameters.
@@ -73,8 +72,8 @@ pub trait Sql: Send + Sync + 'static {
     async fn script(&self, sql: &str) -> Result<(), StoreError>;
 }
 
-/// A script's statements, one by one, without its comments: D1 prepares
-/// one statement at a time (its `exec` wants each on one line).
+/// A script's statements, one by one, without its comments: JavaScript's
+/// SQLite bindings prepare one statement at a time.
 pub fn script_statements(script: &str) -> Vec<String> {
     let code: String = script
         .lines()
@@ -87,7 +86,7 @@ pub fn script_statements(script: &str) -> Vec<String> {
         .collect()
 }
 
-pub struct D1Store<S> {
+pub struct SqlStore<S> {
     sql: S,
     /// One append or import at a time (see the module's docs).
     writer: Mutex<()>,
@@ -180,12 +179,12 @@ fn event_params(
     ]
 }
 
-impl<S: Sql> D1Store<S> {
+impl<S: Sql> SqlStore<S> {
     /// Creates the tables if missing and reads the head.
     pub async fn open(sql: S) -> Result<Self, StoreError> {
         sql.script(sql::SCHEMA).await?;
         let head = scalar(&sql.all(sql::HEAD, vec![]).await?);
-        Ok(D1Store {
+        Ok(SqlStore {
             sql,
             writer: Mutex::new(()),
             head: watch::channel(head).0,
@@ -233,10 +232,10 @@ impl<S: Sql> D1Store<S> {
     }
 }
 
-struct D1Wake(watch::Receiver<u64>);
+struct SqlWake(watch::Receiver<u64>);
 
 #[async_trait]
-impl Wake for D1Wake {
+impl Wake for SqlWake {
     async fn wait(&mut self) {
         if self.0.changed().await.is_err() {
             std::future::pending::<()>().await;
@@ -245,9 +244,9 @@ impl Wake for D1Wake {
 }
 
 #[async_trait]
-impl<S: Sql> EventStore for D1Store<S> {
+impl<S: Sql> EventStore for SqlStore<S> {
     fn kind(&self) -> &'static str {
-        "d1"
+        "sql"
     }
 
     async fn append(
@@ -369,7 +368,7 @@ impl<S: Sql> EventStore for D1Store<S> {
     }
 
     async fn wake(&self) -> Result<Box<dyn Wake>, StoreError> {
-        Ok(Box::new(D1Wake(self.head.subscribe())))
+        Ok(Box::new(SqlWake(self.head.subscribe())))
     }
 
     async fn import(&self, events: &[RecordedEvent]) -> Result<(), StoreError> {
@@ -426,7 +425,7 @@ mod tests {
     use sqlx::sqlite::{SqlitePool, SqlitePoolOptions, SqliteRow};
     use sqlx::{Column, Row as _, TypeInfo, ValueRef};
 
-    /// The D1 interface over SQLite: rows come back as D1 hands them (JSON
+    /// The trait over sqlx's SQLite: rows come back as JavaScript hands them (JSON
     /// values by column name, blobs as byte arrays), and a batch is one
     /// transaction.
     struct Sqlite(SqlitePool);
@@ -455,7 +454,7 @@ mod tests {
             } else {
                 match raw.type_info().name() {
                     "INTEGER" => Value::from(r.get::<i64, _>(i)),
-                    // As D1: a float that happens to be whole.
+                    // As JavaScript: a float that happens to be whole.
                     "REAL" => Value::from(r.get::<f64, _>(i)),
                     "BLOB" => Value::from(r.get::<Vec<u8>, _>(i)),
                     _ => Value::from(r.get::<String, _>(i)),
@@ -523,10 +522,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_d1_store_conforms() {
+    async fn the_sql_store_conforms() {
         let path = temp_db("conforms");
-        let store = D1Store::open(Sqlite(pool(&path).await)).await.unwrap();
-        conformance::run(&store, "d1").await;
+        let store = SqlStore::open(Sqlite(pool(&path).await)).await.unwrap();
+        conformance::run(&store, "sql").await;
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
@@ -537,7 +536,7 @@ mod tests {
     async fn its_rows_are_the_sqlite_store_s() {
         let key = live_proto::sign::KeyPair::generate();
         let path = temp_db("shared");
-        let d1 = D1Store::open(Sqlite(pool(&path).await)).await.unwrap();
+        let store = SqlStore::open(Sqlite(pool(&path).await)).await.unwrap();
         let (jws, bodies) = conformance::batch(&key, "game-1", 3);
         let batch: Vec<NewEvent> = bodies
             .into_iter()
@@ -548,13 +547,13 @@ mod tests {
                 body,
             })
             .collect();
-        let mut written = d1
+        let mut written = store
             .append(vec![conformance::event(&key, "acct-1", 0)], &[])
             .await
             .unwrap();
-        written.extend(d1.append(batch, &[("game-1".into(), 0)]).await.unwrap());
-        d1.save_checkpoint("stats", 4).await.unwrap();
-        drop(d1);
+        written.extend(store.append(batch, &[("game-1".into(), 0)]).await.unwrap());
+        store.save_checkpoint("stats", 4).await.unwrap();
+        drop(store);
 
         let sqlite = SqliteStore::open(&path).await.unwrap();
         let all = sqlite.read(&Query::after(0, 100)).await.unwrap();
@@ -569,9 +568,9 @@ mod tests {
             .unwrap();
         drop(sqlite);
 
-        let d1 = D1Store::open(Sqlite(pool(&path).await)).await.unwrap();
-        assert_eq!(d1.head().await.unwrap(), more[0].position);
-        let tail = d1
+        let store = SqlStore::open(Sqlite(pool(&path).await)).await.unwrap();
+        assert_eq!(store.head().await.unwrap(), more[0].position);
+        let tail = store
             .read(&Query::after(written.len() as u64, 10))
             .await
             .unwrap();
@@ -589,7 +588,7 @@ mod tests {
     }
 
     #[test]
-    fn d1_s_numbers_read_as_integers() {
+    fn javascript_numbers_read_as_integers() {
         let mut r = Row::new();
         r.insert("position".into(), Value::from(42.0));
         r.insert("version".into(), Value::from(3));
