@@ -1,0 +1,176 @@
+# ltmp: lightmap. Names from crates/tags/src/structure.rs (Lightmap, LightmapGroup), lighting.rs
+# (LightmapLighting, LightProbe) and geometry.rs (GeometryBlockInfo, BlockResource, parts);
+# evidence in docs/formats/structure-bsp.md ("Lightmap") and lighting.md.
+group ltmp 0x104 align 4
+  0x0 unknown 0x34
+  0x34 f32 cycle_period -- E 0x00022850: positive values divide elapsed time and enable probe coefficient cycling (lighting.md:85; lighting.rs:109,130)
+  0x38 unknown 0x48
+  0x80 block groups 0x68 align 4 -- E 0x0004d2e9, 0x00015c00..0x00015c78 add esi, 68h (structure-bsp.md:266; structure.rs:460)
+    0x0 unknown 0x4
+    0x4 u32 structure_checksum -- V equals sbsp+0x08 on 76 of 78 groups (structure-bsp.md:274; structure.rs:541)
+    0x8 block palettes 0x15 align 16 -- E 0x00015c0a, 0x00015c51: 256 A8R8G8B8 words, 0x400 bytes each (lighting.md:45; structure.rs:506)
+      0x0 unknown 0x15
+    0x10 unknown 0x8
+    0x18 tagref bitmap groups=bitm -- E 0x00018bfe..: datum at +0x1c; V resolves (structure-bsp.md:277; structure.rs:531)
+    0x20 block cluster_geometry 0x54 align 16 -- V geometry header, 0x54 each, no raw blocks (structure-bsp.md:278; structure.rs:543)
+      0x0 u16 total_vertex_count -- V equals every vertex stream's count (structure.rs:74; structure-bsp.md:63)
+      0x2 u16 total_triangle_count -- V index count is 3x this (structure.rs:74)
+      0x4 u16 total_part_count -- V equals the loaded part count (structure.rs:75)
+      0x6 unknown 0x1e
+      0x24 u16 subpart_count -- V equals the loaded subpart count (structure-bsp.md:70)
+      0x26 unknown 0x2
+      0x28 raw block_raw -- V raw pointer of the geometry block info, 0xffffffff in lightmaps (geometry.rs:243; structure-bsp.md:105,117)
+      0x2c u32 block_size -- V 0 when the pointer is absent (geometry.rs:249)
+      0x30 u32 section_struct_size -- E 0x00223cb7 (geometry.rs:256; structure-bsp.md:107)
+      0x34 u32 resource_area_size -- V (geometry.rs:257; structure-bsp.md:108)
+      0x38 block resources 0x10 align 4 -- E 0x00223c8a, 0x00223ca1, 0x00223d61 (geometry.rs:239; structure-bsp.md:109)
+        0x0 enum8 kind values=tag_block|data_reference|vertex_data -- E 0x00223cc4..0x00223ccd (geometry.rs:172-176)
+        0x1 unknown 0x3
+        0x4 u16 field_offset -- E 0x00223cda (geometry.rs:183)
+        0x6 u16 element_size -- E 0x00223ccf: element size, vertex descriptor index or 0xffff (geometry.rs:184 secondary)
+        0x8 u32 size -- E 0x00223cf2 (geometry.rs:185)
+        0xc u32 offset -- E 0x00223ca8: 0xffffffff skips (geometry.rs:178)
+      0x40 datum owner -- V 0xffffffff or 0 without a raw block (geometry.rs:259,268-271)
+      0x44 i16 runtime_block_offset -- E 0x00223c73 (geometry.rs:260)
+      0x46 u8 runtime_loaded -- E 0x0012e31d (geometry.rs:261)
+      0x47 unknown 0x1
+      0x48 u32 runtime_cache_handle -- E 0x0012e380 (geometry.rs:263)
+      0x4c block embedded_section 0x44 align 4 -- V count 1 on 44 in-tag sections, range-checked only (structure.rs:113-121; structure-bsp.md:117-122)
+        0x0 block parts 0x48 align 4 -- E 0x000410da: section +4, index*0x48 (structure.rs:24 STRUCTURE_SECTION; structure-bsp.md:177)
+          0x0 u16 kind -- E 0x000410fc: kinds 0 and 5 not submitted (geometry.rs:698)
+          0x2 flags16 flags -- V bit 3 marks a triangle list (geometry.rs:699; structure-bsp.md:213)
+          0x4 u16 material_index -- V below the material count (geometry.rs:700)
+          0x6 u16 first_index -- V tiling (geometry.rs:701)
+          0x8 u16 index_count -- V tiling (geometry.rs:702)
+          0xa u16 first_subpart -- V tiling (geometry.rs:703)
+          0xc u16 subpart_count -- V tiling (geometry.rs:704)
+          0xe unknown 0x2
+          0x10 f32[3] bounding_sphere_center -- V the centre of the box at +0x30 (structure-bsp.md:218)
+          0x1c unknown 0x10
+          0x2c f32 bounding_sphere_radius -- E 0x00045da1 (structure-bsp.md:219)
+          0x30 f32[6] bounds -- V box of the part's vertices, x/y/z min,max (structure-bsp.md:220)
+        0x8 block subparts 0x8 align 4 -- V element 8 (structure.rs:26; structure-bsp.md:178)
+          0x0 u16 first_index -- V (geometry.rs:711)
+          0x2 u16 index_count -- V (geometry.rs:712)
+          0x4 unknown 0x2
+          0x6 u16 part -- V the owning part (geometry.rs:714)
+        0x10 unknown 0x10
+        0x20 block indices 0x2 align 4 -- V u16 indices (structure.rs:28; structure-bsp.md:179)
+          0x0 u16 index -- V below the vertex count (geometry.rs:719)
+        0x28 data visibility_mopp_code align 16 -- E 0x00044e90, 0x002dd930: MOPP code keyed by subpart (structure-bsp.md:184-195)
+        0x30 block visibility_reorder_table 0x2 align 16 -- E 0x000459cb: u16 keys in leaf order, then positions (structure-bsp.md:186,200-205)
+          0x0 unknown 0x2
+        0x38 block vertex_buffers 0x20 align 4 -- E 0x00223ced shl 5 (structure.rs:29; structure-bsp.md:180)
+          0x0 u8 type -- V stream type (geometry.rs:727; structure-bsp.md:242)
+          0x1 u8 stride -- E 0x00223cf8 (geometry.rs:727)
+          0x2 u16 count -- E 0x00223cf8 written back at load (structure-bsp.md:242-244)
+          0x4 unknown 0x1c
+        0x40 unknown 0x4
+    0x28 block cluster_render_info 0x4 align 4 -- E 0x0004d3f3, 0x000d1732 [group+2Ch], one per cluster (structure-bsp.md:279; structure.rs:545)
+      0x0 i16 bitmap_index -- E 0x0004d3ff: page in the lightmap bitmap, -1 none (structure.rs:356,481)
+      0x2 i8 palette_index -- E 0x0004d406, cmp -1 at 0x0004d40a (structure.rs:357,482)
+      0x3 unknown 0x1
+    0x30 block instance_geometry 0x54 align 8 -- V geometry header, one per instanced definition (structure-bsp.md:280; structure.rs:546)
+      0x0 u16 total_vertex_count -- V (structure.rs:74)
+      0x2 u16 total_triangle_count -- V (structure.rs:74)
+      0x4 u16 total_part_count -- V (structure.rs:75)
+      0x6 unknown 0x12
+      0x18 block block_18 0x38 align 4
+        0x0 unknown 0x38
+      0x20 unknown 0x4
+      0x24 u16 subpart_count -- V (structure-bsp.md:70)
+      0x26 unknown 0x2
+      0x28 raw block_raw -- V (geometry.rs:243)
+      0x2c u32 block_size -- V (geometry.rs:249)
+      0x30 u32 section_struct_size -- E 0x00223cb7 (geometry.rs:256)
+      0x34 u32 resource_area_size -- V (geometry.rs:257)
+      0x38 block resources 0x10 align 4 -- E 0x00223c8a (geometry.rs:239)
+        0x0 enum8 kind values=tag_block|data_reference|vertex_data -- E 0x00223cc4 (geometry.rs:172-176)
+        0x1 unknown 0x3
+        0x4 u16 field_offset -- E 0x00223cda (geometry.rs:183)
+        0x6 u16 element_size -- E 0x00223ccf (geometry.rs:184)
+        0x8 u32 size -- E 0x00223cf2 (geometry.rs:185)
+        0xc u32 offset -- E 0x00223ca8 (geometry.rs:178)
+      0x40 u32 owner -- V a datum, kept as a word: on four retail lightmaps (06a, 06b) it is not null and the loose-tag encoder cannot name it (geometry.rs:259)
+      0x44 i16 runtime_block_offset -- E 0x00223c73 (geometry.rs:260)
+      0x46 u8 runtime_loaded -- E 0x0012e31d (geometry.rs:261)
+      0x47 unknown 0x1
+      0x48 u32 runtime_cache_handle -- E 0x0012e380 (geometry.rs:263)
+      0x4c block embedded_section 0x44 align 4 -- V (structure.rs:113-121)
+        0x0 block parts 0x48 align 4 -- E 0x000410da (structure.rs:24)
+          0x0 u16 kind -- E 0x000410fc (geometry.rs:698)
+          0x2 flags16 flags -- V bit 3 triangle list (geometry.rs:699)
+          0x4 u16 material_index -- V (geometry.rs:700)
+          0x6 u16 first_index -- V (geometry.rs:701)
+          0x8 u16 index_count -- V (geometry.rs:702)
+          0xa u16 first_subpart -- V (geometry.rs:703)
+          0xc u16 subpart_count -- V (geometry.rs:704)
+          0xe unknown 0x2
+          0x10 f32[3] bounding_sphere_center -- V (structure-bsp.md:218)
+          0x1c unknown 0x10
+          0x2c f32 bounding_sphere_radius -- E 0x00045da1 (structure-bsp.md:219)
+          0x30 f32[6] bounds -- V (structure-bsp.md:220)
+        0x8 block subparts 0x8 align 4 -- V (structure.rs:26)
+          0x0 u16 first_index -- V (geometry.rs:711)
+          0x2 u16 index_count -- V (geometry.rs:712)
+          0x4 unknown 0x2
+          0x6 u16 part -- V (geometry.rs:714)
+        0x10 unknown 0x10
+        0x20 block indices 0x2 align 4 -- V (structure.rs:28)
+          0x0 u16 index -- V (geometry.rs:719)
+        0x28 data visibility_mopp_code align 16 -- E 0x00044e90 (structure-bsp.md:184-195)
+        0x30 block visibility_reorder_table 0x2 align 16 -- E 0x000459cb (structure-bsp.md:186,200-205)
+          0x0 unknown 0x2
+        0x38 block vertex_buffers 0x20 align 4 -- E 0x00223ced (structure.rs:29)
+          0x0 u8 type -- V (geometry.rs:727)
+          0x1 u8 stride -- E 0x00223cf8 (geometry.rs:727)
+          0x2 u16 count -- E 0x00223cf8 (structure-bsp.md:242-244)
+          0x4 unknown 0x1c
+        0x40 unknown 0x4
+    0x38 block light_probes 0xdc align 4 -- E 0x00022850, 0x00022cf0: index*0xdc (lighting.md:84; lighting.rs:134)
+      0x0 f32[3] position -- E 0x00022cf0: squared distance to the query (lighting.md:85; lighting.rs:92)
+      0xc f32[9] red_coefficients -- E 0x00022850, 0x00022cf0: nine SH terms per RGB channel (lighting.md:86; lighting.rs:93)
+      0x30 f32[9] green_coefficients -- E (lighting.md:86; lighting.rs:93)
+      0x54 f32[9] blue_coefficients -- E (lighting.md:86; lighting.rs:93)
+      0x78 unknown 0x28
+      0xa0 f32 rotation -- E 0x00022850: sine/cosine into coefficient rotation 0x00143600 (lighting.md:87; lighting.rs:94)
+      0xa4 f32[3] interpolated_direction -- E 0x00022cf0: interpolated alongside the coefficients (lighting.md:88; lighting.rs:95)
+      0xb0 unknown 0x2c
+    0x40 block buckets 0x38 align 4 -- E 0x0004d319, 0x0004d389 imul 38h (structure-bsp.md:282; structure.rs:511)
+      0x0 flags16 flags bits=patched -- E 0x0004d326, 0x0004d396: bit 0 gates the first-vertex offset patch (structure.rs:362-366,527)
+      0x2 unknown 0xa
+      0xc raw block_raw -- V (structure.rs:514; geometry.rs:243)
+      0x10 rawsize block_size of=0xc -- V (geometry.rs:249)
+      0x14 u32 section_struct_size -- E 0x00223cb7 (geometry.rs:256)
+      0x18 u32 resource_area_size -- V (geometry.rs:257)
+      0x1c block resources 0x10 align 4 -- E 0x00223c8a (geometry.rs:239)
+        0x0 enum8 kind values=tag_block|data_reference|vertex_data -- E 0x00223cc4 (geometry.rs:172-176)
+        0x1 unknown 0x3
+        0x4 u16 field_offset -- E 0x00223cda (geometry.rs:183)
+        0x6 u16 element_size -- E 0x00223ccf (geometry.rs:184)
+        0x8 u32 size -- E 0x00223cf2 (geometry.rs:185)
+        0xc u32 offset -- E 0x00223ca8 (geometry.rs:178)
+      0x24 datum owner -- V the lightmap tag (structure.rs:515)
+      0x28 i16 runtime_block_offset -- E 0x00223c73; V 0x24 (structure.rs:516)
+      0x2a u8 runtime_loaded -- E 0x0012e31d (geometry.rs:261)
+      0x2b unknown 0x1
+      0x2c u32 runtime_cache_handle -- E 0x0012e380 (geometry.rs:263)
+      0x30 u32 runtime_section_count -- E runtime section block; V zero on disc, enforced (structure.rs:519-524; structure-bsp.md:291)
+      0x34 u32 runtime_section_data -- E 0x0004d32b, 0x0004d39b read +34h (structure-bsp.md:291)
+    0x48 block instance_render_info 0x4 align 4 -- E 0x0004d3c2, 0x000d172b [group+4Ch], one per placement (structure-bsp.md:283; structure.rs:548)
+      0x0 i16 bitmap_index -- E 0x0004d3ff (structure.rs:356,481)
+      0x2 i8 palette_index -- E 0x0004d406 (structure.rs:357,482)
+      0x3 unknown 0x1
+    0x50 block instance_bucket_refs 0xc align 4 -- E 0x0004d373..0x0004d37c index*0xc, one per placement (structure-bsp.md:284; structure.rs:549)
+      0x0 unknown 0x2
+      0x2 u16 bucket_index -- E 0x0004d382 (structure.rs:391,500)
+      0x4 block first_vertex_offsets 0x4 align 4 -- E 0x0004d386 reads entry 0, times 4 (structure.rs:393-398,491)
+        0x0 word word_0
+    0x58 block block_58 0xc align 4
+      0x0 unknown 0xc
+    0x60 block cluster_bucket_refs 0xc align 4 -- E 0x0004d2f2..0x0004d303 index*0xc (structure-bsp.md:286; structure.rs:550)
+      0x0 unknown 0x2
+      0x2 u16 bucket_index -- E 0x0004d315 (structure.rs:391,500)
+      0x4 block first_vertex_offsets 0x2 align 4 -- E 0x0004d309..0x0004d311 entry chosen by the render key (structure.rs:393-398,491)
+        0x0 u16 offset -- E times 4 into the bucket's first descriptor (structure-bsp.md:304-306)
+  0x88 unknown 0x7c

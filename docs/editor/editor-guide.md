@@ -957,17 +957,20 @@ How to change things:
 - **Flags**: tick or untick. A bit with no name shows only when it is
   set.
 - **Colours**: click the swatch.
-- **Names (string IDs)**: type a name and press Enter. It has to be a
-  name the map already has somewhere; new names are not supported yet.
+- **Names (string IDs)**: type a name and press Enter. A name the map
+  doesn't have yet is added to it when you save (under 128 characters).
+  Undo takes it back. Maps with new names have not been tried in the game
+  yet.
 - **References to other tags**: open the list, type to narrow it, pick
   one (or `none`). Only tags of the right kind are listed. The button
   next to it jumps to that tag.
 - **Lists inside a tag (blocks)**: open the list, pick an element number,
   then edit its fields. **Add**, **Duplicate** and **Remove** change the
-  list, but a list can never get longer than it was on the disc (remove
-  something first). Hover a greyed-out button for the reason. Other
-  things in the map that point at a list entry by its number are not
-  updated when entries move.
+  list. A list can't get longer than it was on the disc unless
+  **Edit > Allow growing full blocks** is on; then the longer list is
+  saved as a new copy at the end of the map's tag data. Hover a
+  greyed-out button for the reason. Other things in the map that point at
+  a list entry by its number are not updated when entries move.
 - **Data** (raw bytes inside a tag): edit the hex; the length must stay
   the same.
 

@@ -1,0 +1,23 @@
+# unic: compiled multilingual string list; per language a (start, count) range of rows in the global locale index (matg +0x188).
+# Evidence: crates/tags/src/localization.rs (Unic), docs/formats/localization.md (E executable, D measured on disc).
+# Slot 8 (Portuguese in our enum) is empty on the disc, so its language is unverified and it is named by slot.
+group unic 0x34 align 4
+  0x0 unknown 0x10
+  0x10 i16 english_start -- E 0x1a01b4: first row of this language's range in its locale index (language stride 4); localization.rs:64,103; localization.md:52
+  0x12 i16 english_count -- E 0x1a01b9: rows in the range; empty ranges never read start; localization.rs:66,104; localization.md:52
+  0x14 i16 japanese_start -- E 0x1a01b4: first row of this language's range in its locale index (language stride 4); localization.rs:64,103; localization.md:52
+  0x16 i16 japanese_count -- E 0x1a01b9: rows in the range; empty ranges never read start; localization.rs:66,104; localization.md:52
+  0x18 i16 german_start -- E 0x1a01b4: first row of this language's range in its locale index (language stride 4); localization.rs:64,103; localization.md:52
+  0x1a i16 german_count -- E 0x1a01b9: rows in the range; empty ranges never read start; localization.rs:66,104; localization.md:52
+  0x1c i16 french_start -- E 0x1a01b4: first row of this language's range in its locale index (language stride 4); localization.rs:64,103; localization.md:52
+  0x1e i16 french_count -- E 0x1a01b9: rows in the range; empty ranges never read start; localization.rs:66,104; localization.md:52
+  0x20 i16 spanish_start -- E 0x1a01b4: first row of this language's range in its locale index (language stride 4); localization.rs:64,103; localization.md:52
+  0x22 i16 spanish_count -- E 0x1a01b9: rows in the range; empty ranges never read start; localization.rs:66,104; localization.md:52
+  0x24 i16 italian_start -- E 0x1a01b4: first row of this language's range in its locale index (language stride 4); localization.rs:64,103; localization.md:52
+  0x26 i16 italian_count -- E 0x1a01b9: rows in the range; empty ranges never read start; localization.rs:66,104; localization.md:52
+  0x28 i16 korean_start -- E 0x1a01b4: first row of this language's range in its locale index (language stride 4); localization.rs:64,103; localization.md:52
+  0x2a i16 korean_count -- E 0x1a01b9: rows in the range; empty ranges never read start; localization.rs:66,104; localization.md:52
+  0x2c i16 chinese_start -- E 0x1a01b4: first row of this language's range in its locale index (language stride 4); localization.rs:64,103; localization.md:52
+  0x2e i16 chinese_count -- E 0x1a01b9: rows in the range; empty ranges never read start; localization.rs:66,104; localization.md:52
+  0x30 i16 language_8_start -- E 0x1a01b4: first row of this language's range in its locale index (language stride 4); localization.rs:64,103; localization.md:52
+  0x32 i16 language_8_count -- E 0x1a01b9: rows in the range; empty ranges never read start; localization.rs:66,104; localization.md:52

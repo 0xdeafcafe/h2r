@@ -115,11 +115,31 @@ pub struct Changes {
     /// Blocks that outgrew their source: written as a new copy appended to
     /// the metadata, then the root's `(count, address)` pointed at it.
     pub grown: Vec<Grown>,
+    /// Other tags' blocks that outgrew their source (the tag editor's),
+    /// written the same way.
+    pub tag_grown: Vec<TagGrown>,
+    /// String IDs to add after the map's own, in order (the tag editor's).
+    pub strings: Vec<String>,
 }
 impl Changes {
     pub fn is_empty(&self) -> bool {
-        self.patches.is_empty() && self.grown.is_empty()
+        self.patches.is_empty()
+            && self.grown.is_empty()
+            && self.tag_grown.is_empty()
+            && self.strings.is_empty()
     }
+}
+
+/// A block of a tag other than the scenario with more elements than its
+/// source had: appended to the metadata, then its `(count, address)` pair
+/// pointed at the copy.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TagGrown {
+    /// Virtual address of the block's `(count, address)` pair.
+    pub root: u32,
+    pub count: u32,
+    /// Every element, in order.
+    pub bytes: Vec<u8>,
 }
 
 /// A block written to a new place because it has more elements than its
@@ -190,6 +210,10 @@ pub struct Scenario {
     /// outside this tag): `(ordinary metadata virtual address, bytes)`,
     /// saved with the scenario's own. See [`Self::set_tag_patches`].
     tag_patches: Vec<(u32, Vec<u8>)>,
+    /// Other tags' grown blocks. See [`Self::set_tag_grown`].
+    tag_grown: Vec<TagGrown>,
+    /// New string IDs. See [`Self::set_tag_strings`].
+    tag_strings: Vec<String>,
 }
 
 pub(crate) fn u32_at(b: &[u8], o: usize) -> u32 {
@@ -352,6 +376,8 @@ impl Scenario {
             names,
             tags,
             tag_patches: Vec::new(),
+            tag_grown: Vec::new(),
+            tag_strings: Vec::new(),
         })
     }
 
@@ -486,6 +512,8 @@ impl Scenario {
     pub fn changes(&self) -> Changes {
         let mut out = Changes {
             patches: self.tag_patches.clone(),
+            tag_grown: self.tag_grown.clone(),
+            strings: self.tag_strings.clone(),
             ..Changes::default()
         };
         for b in &self.blocks {
@@ -544,6 +572,49 @@ impl Scenario {
     /// The patches to other tags' bytes.
     pub fn tag_patches(&self) -> &[(u32, Vec<u8>)] {
         &self.tag_patches
+    }
+
+    /// Replace the other tags' grown blocks (all of them, not a delta).
+    /// Refused when a block's pair lies in this scenario's payload, or a
+    /// patch from [`Self::set_tag_patches`] covers it (the pair is written
+    /// at save, once the copy has its address).
+    pub fn set_tag_grown(&mut self, grown: Vec<TagGrown>) -> Result<()> {
+        let (lo, hi) = (self.address, self.address.saturating_add(self.size));
+        for g in &grown {
+            let end = g.root.saturating_add(8);
+            if g.root < hi && lo < end {
+                return Err(Error::Refused(
+                    "the scenario tag's bytes belong to the Scenario tool",
+                ));
+            }
+            if self
+                .tag_patches
+                .iter()
+                .any(|(a, b)| *a < end && g.root < a.saturating_add(b.len() as u32))
+            {
+                return Err(Error::Refused("a grown block's pair is also patched"));
+            }
+            if g.bytes.is_empty() || g.count == 0 {
+                return Err(Error::Refused("a grown block has no elements"));
+            }
+        }
+        self.tag_grown = grown;
+        Ok(())
+    }
+    /// The other tags' grown blocks.
+    pub fn tag_grown(&self) -> &[TagGrown] {
+        &self.tag_grown
+    }
+
+    /// Replace the string IDs to add (all of them, in order: the first
+    /// gets the index after the map's last). Their values are already in
+    /// the patches that use them; the save checks each gets the index it
+    /// was given.
+    pub fn set_tag_strings(&mut self, strings: Vec<String>) {
+        self.tag_strings = strings;
+    }
+    pub fn tag_strings(&self) -> &[String] {
+        &self.tag_strings
     }
 
     /// Why entries of a block may not be removed, if they may not.

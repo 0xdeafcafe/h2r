@@ -1,0 +1,16 @@
+# pmov: particle movement. A template reference and a block of movement stages, each with
+# {id, property} parameters. Evidence: crates/tags/src/effects/movement.rs, docs/formats/effects.md
+# ("pmov root", "Property"). Stage/parameter meanings and root +0x8 stay unnamed.
+group pmov 0x14 align 4
+  0x0 tagref template groups=pmov -- V 1,761/1,761 non-null resolve to pmov (movement.rs:42-44,76; effects.md:337)
+  0x8 unknown 0x4
+  0xc block movements 0x14 align 4 -- V stride 0x14, packed after the root (movement.rs:47,57; effects.md:339)
+    0x0 u32 kind -- E stage kinds dispatch at 0x002b8da0, kind 1 the collision bounce (0x002b9060); V 0..3 (movement.rs:29,69; effects.md:326,341)
+    0x4 block parameters 0x14 align 4 -- V stride 0x14 (movement.rs:31,60; effects.md:341)
+      0x0 u32 id -- V parameter slot, 0..8, meaning per kind not decoded (movement.rs:20,64; effects.md:343-345)
+      0x4 i16 input -- E property evaluator 0x00246cd0 evaluates the function at inputs[input] (mem.rs:233; effects.md:262-268)
+      0x6 i16 range_input -- E 0x00246cd0 (mem.rs:235; effects.md:262)
+      0x8 u16 output_modifier -- E 0x00246cd0: 1 add, 2 multiply (mem.rs:237; effects.md:263)
+      0xa i16 modifier_input -- E 0x00246cd0 (mem.rs:239; effects.md:263)
+      0xc data function align 4 -- E 0x0013b390 evaluates these bytes; V all 6,373 parse and evaluate finite (mem.rs:241; effects.md:263-264,541)
+    0xc unknown 0x8

@@ -18,10 +18,8 @@ Evidence labels, as in [map-format.md](map-format.md):
   `crates/h1ai/tests/disc.rs` on the owner's discs. Strides were read off
   the spacing of consecutive blocks (count × stride = gap to the next block)
   and then checked by decoding every element with range checks.
-- **S (from source):** field names and enum orders as Guerilla and c20
-  (<https://c20.reclaimers.net/h1/tags/scenario/>,
-  <https://c20.reclaimers.net/h1/tags/actor/>) list them, and Assembly's
-  Halo 2 plugins name them. Offsets were read off the maps, never copied.
+- **S (unverified):** a field name or enum order that our disc checks and
+  engine reads do not establish. Offsets were read off the maps.
 - **R (read on disc, meaning unproven):** the value is there and in range,
   but nothing has shown what the engine does with it.
 
@@ -80,7 +78,7 @@ position, surface `u32` `0c`). Atom (`20`): type `u16` `00`, modifier
 `i16` `02`, two `f32` parameters `04`, two point indices `0c`/`0e`,
 animation `10`, script `12`, recording `14`, "command" `16` (for a loop
 atom, an index into the list's own atoms), object name `18`. Atom types
-0..27 in Guerilla's order (S): pause, go to, go to and face, move in
+0..27 in this order (S): pause, go to, go to and face, move in
 direction, look, animation mode, crouch, shoot, grenade, vehicle, running
 jump, targeted jump, script, animate, recording, action, vocalize,
 targeting, initiative, wait, loop, die, move immediate, look random, look

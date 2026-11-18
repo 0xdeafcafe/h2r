@@ -95,7 +95,7 @@ pub struct Section {
     pub vertices: Vertices,
 }
 
-/// Compression flag bits of `ModeSection` (OpenH2 names; D: bit 0 is set
+/// Compression flag bits of `ModeSection` (D: bit 0 is set
 /// exactly when the position stream is s16, bit 1 when texcoords are).
 const COMPRESSED_POSITIONS: u16 = 1;
 const COMPRESSED_TEXCOORDS: u16 = 2;

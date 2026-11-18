@@ -18,7 +18,7 @@
 //! | `E+0x00` | the unit datum | `0x187130`; `fov_row` reads it |
 //! | `E+0x10`, `E+0x14` | yaw, pitch (radians; yaw kept in `[0, 2pi)`) | `0x187560` adds the frame's yaw delta, `0x1879e5` the pitch delta and clamps it; `0x186ab0` copies both into the player's action (`0x18701d`) |
 //! | `E+0x44` | the aim-assist target object, or none | written by `0x1a4900` through `0x186f1e` |
-//! | `E+0x60`, `E+0x64` | aim-assist strengths (autoaim, magnetism) | `0x187420` returns their max |
+//! | `E+0x60`, `E+0x64` | aim-assist strengths (cone, pull) | `0x187420` returns their max |
 //! | `E+0x80`, `E+0x84` | the live pitch limits | `0x187973` to `0x1879dd` |
 //!
 //! The main loop runs `0x1870a0` (each local player's look: stick to rate,
@@ -63,8 +63,8 @@ pub const PC_UNIT: u32 = 0x00;
 pub const PC_YAW: u32 = 0x10;
 pub const PC_PITCH: u32 = 0x14;
 pub const PC_TARGET: u32 = 0x44;
-pub const PC_AUTOAIM: u32 = 0x60;
-pub const PC_MAGNETISM: u32 = 0x64;
+pub const PC_CONE: u32 = 0x60;
+pub const PC_PULL: u32 = 0x64;
 pub const PC_PITCH_MIN: u32 = 0x80;
 pub const PC_PITCH_MAX: u32 = 0x84;
 /// Per local player (stride `0x140`): set, the game does not integrate look.
@@ -226,7 +226,7 @@ pub fn context<M: Gm>(m: &M, i: u32) -> Context {
 }
 
 /// The crosshair is on an aim-assist target: a target object and a
-/// positive autoaim or magnetism strength (what the red reticle and the
+/// positive aim cone or pull strength (what the red reticle and the
 /// game's own friction follow; the target search only keeps targets aim
 /// assist applies to).
 pub fn on_target<M: Gm>(m: &M, pc: u32) -> bool {
@@ -239,7 +239,7 @@ pub fn on_target<M: Gm>(m: &M, pc: u32) -> bool {
             .filter(|v| v.is_finite())
             .unwrap_or(0.0)
     };
-    s(PC_AUTOAIM).max(s(PC_MAGNETISM)) > 0.0
+    s(PC_CONE).max(s(PC_PULL)) > 0.0
 }
 
 /// Adds `turn` (radians, +x right, +y up) to player-control record `pc`'s

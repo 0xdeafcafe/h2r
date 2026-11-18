@@ -8,8 +8,8 @@
 //! bound *local* user and whose result is that player's action, the input
 //! the simulation is handed. Inside it, the aim-assist search `0x1a4900`
 //! asks [`AIM_ASSIST_PARAMS`] (`0x1a50a0`) for the held weapon's cone
-//! (autoaim and magnetism angles and ranges) and picks the target, and
-//! `0x18622b` reads the globals' magnetism friction and adhesion. So all of
+//! (aim cone and pull angles and ranges) and picks the target, and
+//! `0x18622b` reads the globals' slowdown and follow. So all of
 //! it is input side: it only shapes what this machine's own player sends.
 //!
 //! The one simulation-side reader is the shot aim `0x1a4c00` (from the
@@ -19,10 +19,10 @@
 //! **What we change.** Around one local player's control update, when that
 //! player is the touch player ([`player_level`]):
 //! - `before` `0x185be0`: open a window for that player and set the
-//!   globals' friction and adhesion to retail times the level's factor;
+//!   globals' slowdown and follow to retail times the level's factor;
 //! - `after` `0x1a50a0`, only inside the window: scale the 0x24-byte
 //!   result the engine just built from the tags ([`scale_params`]);
-//! - `after` `0x185be0`: put friction and adhesion back, bit for bit, and
+//! - `after` `0x185be0`: put slowdown and follow back, bit for bit, and
 //!   close the window.
 //!
 //! No weapon tag is written. Every other player, every other machine, and
@@ -33,9 +33,8 @@ use std::sync::Mutex;
 use crate::layout_glue::Gm;
 
 use super::{
-    Factors, Level, MAGNETISM_ADHESION, MAGNETISM_FRICTION, MATG_PLAYER_CONTROL, MAX_ANGLE,
-    MAX_PLAYER_CONTROLS, MAX_STICK, MODE_MULTIPLAYER, PLAYER_CONTROL_STRIDE, SETTING_DEFAULT,
-    SETTING_VERY_STRONG, scale,
+    FOLLOW, Factors, Level, MATG_PLAYER_CONTROL, MAX_ANGLE, MAX_PLAYER_CONTROLS, MAX_STICK,
+    MODE_MULTIPLAYER, PLAYER_CONTROL_STRIDE, SETTING_DEFAULT, SETTING_VERY_STRONG, SLOWDOWN, scale,
 };
 
 pub use feature::points::{AIM_ASSIST_PARAMS, PLAYER_CONTROL_UPDATE};
@@ -52,23 +51,23 @@ pub const TOUCH_CONTROLLER: u32 = 0;
 /// stores at `0x1a514f` to `0x1a5181`, `0x1a51a5`, `0x1a5292`, `0x1a52a2`
 /// and `0x1a51de`.
 pub mod params {
-    /// Autoaim angle, divided by the zoom magnification.
-    pub const AUTOAIM_ANGLE: u32 = 0x0;
-    /// Autoaim range, times the magnification.
-    pub const AUTOAIM_RANGE: u32 = 0x4;
-    /// Magnetism angle (the larger of both hands' when dual wielding).
-    pub const MAGNETISM_ANGLE: u32 = 0x8;
-    /// Magnetism range (likewise).
-    pub const MAGNETISM_RANGE: u32 = 0xc;
-    /// How far a shot may bend: the larger of the deviation and autoaim
+    /// Aim cone angle, divided by the zoom magnification.
+    pub const CONE_ANGLE: u32 = 0x0;
+    /// Aim cone range, times the magnification.
+    pub const CONE_RANGE: u32 = 0x4;
+    /// Pull angle (the larger of both hands' when dual wielding).
+    pub const PULL_ANGLE: u32 = 0x8;
+    /// Pull range (likewise).
+    pub const PULL_RANGE: u32 = 0xc;
+    /// How far a shot may bend: the larger of the bend and aim cone
     /// angles, zoom applied.
     pub const BEND_ANGLE: u32 = 0x10;
     /// Flags (`0x8`, `0x10`, `0x20`); not a value.
     pub const FLAGS: u32 = 0x14;
-    /// The second weapon's autoaim angle and range (dual wielding).
-    pub const SECOND_AUTOAIM_ANGLE: u32 = 0x18;
-    pub const SECOND_AUTOAIM_RANGE: u32 = 0x1c;
-    /// A copy of the autoaim range for some weapon classes (`0x1a51de`),
+    /// The second weapon's aim cone angle and range (dual wielding).
+    pub const SECOND_CONE_ANGLE: u32 = 0x18;
+    pub const SECOND_CONE_RANGE: u32 = 0x1c;
+    /// A copy of the aim cone range for some weapon classes (`0x1a51de`),
     /// else 0.
     pub const CLASS_RANGE: u32 = 0x20;
     pub const SIZE: u32 = 0x24;
@@ -95,8 +94,8 @@ pub fn player_level(setting: i64, mode: Option<u32>, controller: u32, touch_show
 
 /// Scales the aim-assist result at `out` by `f`, as the tag path would
 /// have: angles by `f.angle` (capped at [`MAX_ANGLE`]), ranges by
-/// `f.range`, and the bend angle raised to the scaled autoaim angle when
-/// that is larger (it is the larger of deviation and autoaim). Values that
+/// `f.range`, and the bend angle raised to the scaled aim cone angle when
+/// that is larger (it is the larger of bend and aim cone). Values that
 /// are not finite positive numbers are kept. Returns the fields written.
 pub fn scale_params<M: Gm>(m: &mut M, out: u32, f: Factors) -> u32 {
     use params::*;
@@ -109,14 +108,14 @@ pub fn scale_params<M: Gm>(m: &mut M, out: u32, f: Factors) -> u32 {
         }
         Some(want)
     };
-    let autoaim = set(m, AUTOAIM_ANGLE, f.angle, MAX_ANGLE);
-    set(m, AUTOAIM_RANGE, f.range, f32::MAX);
-    set(m, MAGNETISM_ANGLE, f.angle, MAX_ANGLE);
-    set(m, MAGNETISM_RANGE, f.range, f32::MAX);
-    set(m, SECOND_AUTOAIM_ANGLE, f.angle, MAX_ANGLE);
-    set(m, SECOND_AUTOAIM_RANGE, f.range, f32::MAX);
+    let cone = set(m, CONE_ANGLE, f.angle, MAX_ANGLE);
+    set(m, CONE_RANGE, f.range, f32::MAX);
+    set(m, PULL_ANGLE, f.angle, MAX_ANGLE);
+    set(m, PULL_RANGE, f.range, f32::MAX);
+    set(m, SECOND_CONE_ANGLE, f.angle, MAX_ANGLE);
+    set(m, SECOND_CONE_RANGE, f.range, f32::MAX);
     set(m, CLASS_RANGE, f.range, f32::MAX);
-    if let (Some(a), Some(bend)) = (autoaim, m.u32(out + BEND_ANGLE).map(f32::from_bits))
+    if let (Some(a), Some(bend)) = (cone, m.u32(out + BEND_ANGLE).map(f32::from_bits))
         && a.is_finite()
         && bend.is_finite()
         && a > bend
@@ -151,7 +150,7 @@ pub struct PerPlayer {
 
 impl PerPlayer {
     /// Before a local player's control update: opens the window when
-    /// `level` is not Default and sets friction and adhesion. Returns
+    /// `level` is not Default and sets slowdown and follow. Returns
     /// whether a window opened.
     pub fn enter<M: Gm>(&self, m: &mut M, level: Level) -> bool {
         let mut w = self.window.lock().unwrap_or_else(|e| e.into_inner());
@@ -177,7 +176,7 @@ impl PerPlayer {
         }
     }
 
-    /// After the control update: friction and adhesion back to retail,
+    /// After the control update: slowdown and follow back to retail,
     /// window closed.
     pub fn leave<M: Gm>(&self, m: &mut M) {
         let mut w = self.window.lock().unwrap_or_else(|e| e.into_inner());
@@ -195,7 +194,7 @@ impl PerPlayer {
     }
 }
 
-/// Sets the globals' player-control friction and adhesion to retail times
+/// Sets the globals' player-control slowdown and follow to retail times
 /// `factor` (capped at [`MAX_STICK`]); returns what to put back.
 fn stick_on<M: Gm>(m: &mut M, factor: f32) -> Vec<Held> {
     let mut held = Vec::new();
@@ -211,7 +210,7 @@ fn stick_on<M: Gm>(m: &mut M, factor: f32) -> Vec<Held> {
     }
     for k in 0..n {
         let el = at.wrapping_add(k * PLAYER_CONTROL_STRIDE);
-        for off in [MAGNETISM_FRICTION, MAGNETISM_ADHESION] {
+        for off in [SLOWDOWN, FOLLOW] {
             let a = el + off;
             let Some(retail) = m.u32(a) else { continue };
             let want = scale(f32::from_bits(retail), factor, MAX_STICK).to_bits();

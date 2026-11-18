@@ -487,9 +487,13 @@ impl Cx<'_> {
             } else if let Some(id) = self.doc.string_id(&typed) {
                 self.write(a, id.to_le_bytes().to_vec(), &f.name);
             } else {
-                self.st.problem = Some(format!(
-                    "{typed:?} is not a string ID of this map (adding strings is not supported yet)"
-                ));
+                // A string the map lacks: added to the map with the write.
+                self.actions.push(Action::Tag(TagAction::SetString {
+                    tag: self.tag,
+                    address: a,
+                    text: typed,
+                    label: f.name.clone(),
+                }));
             }
             self.st.text.remove(&a);
         } else if !active {

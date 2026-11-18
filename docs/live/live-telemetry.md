@@ -1011,13 +1011,13 @@ relying on live output, check in this order:
    that dropship-mounted turrets (vehicles parented to vehicles) look right
    (their `+0x64` is parent-relative and is sent as is).
 10. Stance and actions: crouch, airborne and the biped physics mode values
-   (likely, from Project Cartographer's names); that a jump and a melee
+   (value names unverified); that a jump and a melee
    (hit and miss) each show once; that reloads, weapon swaps, grenade
    throws and pickups each show once and not when firing; the grenade type
    names (likely 0 frag, 1 plasma).
 11. Hits: that `0x000d9640` runs once per damage instance on the host
     (its four callers include a network path, `0x0009c76e`); the reporting
-    type order (likely, from Project Cartographer); body and shield amounts
+    type order (unverified); body and shield amounts
     as vitality fractions (likely); a grenade's or vehicle's weapon falls
     back to the damage effect's stem.
 12. Machines: object type 7 is a machine and the scarab is one (its `mach`
