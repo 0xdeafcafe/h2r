@@ -19,7 +19,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use engine::entry::{Cx, EntryError, GuestCall};
@@ -235,6 +235,8 @@ pub struct KitScreen {
     after: AfterClose<After>,
     typing: Mutex<Option<usize>>,
     guard: OpenerGuard,
+    /// [`KitTexts`]' feature id, made once.
+    texts_id: OnceLock<&'static str>,
 }
 
 impl KitScreen {
@@ -260,6 +262,7 @@ impl KitScreen {
             after: AfterClose::default(),
             typing: Mutex::new(None),
             guard: OpenerGuard::default(),
+            texts_id: OnceLock::new(),
         }
     }
     pub fn row(mut self, row: Row) -> Self {
@@ -551,13 +554,23 @@ impl Describe for KitScreen {
 }
 
 /// The screen's texts as a locale source: its family's ids, from a page
-/// of ours.
+/// of ours. Its feature id is `ui-kit-texts.<name>`, so each kit screen's
+/// texts are a feature of their own.
 pub struct KitTexts(pub Arc<KitScreen>);
+
+impl KitTexts {
+    /// `ui-kit-texts.<name>`: leaked once per screen, as a manifest's id
+    /// is `'static`.
+    pub fn id(&self) -> &'static str {
+        let s = &self.0;
+        s.texts_id
+            .get_or_init(|| Box::leak(format!("ui-kit-texts.{}", s.name).into_boxed_str()))
+    }
+}
 
 impl feature::Feature for KitTexts {
     fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new("ui-kit-texts", "A kit screen's texts")
-            .doc("docs/game/ui-screens.md")
+        feature::Manifest::new(self.id(), "A kit screen's texts").doc("docs/game/ui-screens.md")
     }
     fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
         let s = &self.0;
@@ -608,6 +621,30 @@ pub fn example() -> (KitScreen, Arc<AtomicUsize>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each screen's texts are a feature of their own, so a second kit
+    /// screen in the game no longer fails the plan with DuplicateFeature.
+    #[test]
+    fn two_kit_screens_register_together() {
+        let a = Arc::new(example().0);
+        let b = Arc::new(crate::ui_kit::screens::choices_example(
+            crate::ui_kit::choice::example::store(),
+        ));
+        let mut r = feature::Registry::new(feature::Switches::defaults());
+        for s in [&a, &b] {
+            assert!(r.add(&KitTexts(Arc::clone(s))).unwrap());
+            assert!(r.add(&s.class()).unwrap());
+        }
+        assert_eq!(KitTexts(Arc::clone(&a)).id(), "ui-kit-texts.kit.example");
+        assert_eq!(KitTexts(Arc::clone(&b)).id(), "ui-kit-texts.kit.choices");
+        assert!(
+            std::ptr::eq(KitTexts(Arc::clone(&a)).id(), KitTexts(Arc::clone(&a)).id()),
+            "made once per screen"
+        );
+        if let Err(e) = r.build(&feature::Base) {
+            panic!("two kit screens conflict: {e:?}");
+        }
+    }
 
     #[test]
     fn rows_show_through_the_familys_slots() {
