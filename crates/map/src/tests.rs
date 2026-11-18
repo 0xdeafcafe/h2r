@@ -374,6 +374,49 @@ fn edits_rebuild_name_offsets_preserve_payloads_and_checksum_physical_tail() {
     }
 }
 
+/// Added string IDs follow the map's own: the tables are rewritten at the
+/// end of the file with every old entry first, the old bytes stay, and the
+/// values encode index and length.
+#[test]
+fn added_string_ids_follow_the_maps_own() {
+    let bytes = fixture();
+    let mut map = parse(bytes.clone()).unwrap();
+    let old = map.strings().to_vec();
+    let mut edit = map.edit();
+    let first = old.iter().flatten().next().unwrap().clone();
+    assert!(edit.add_string(&first).is_err(), "already there");
+    assert!(edit.add_string("").is_err());
+    assert!(edit.add_string("a\0b").is_err());
+    assert!(edit.add_string(&"x".repeat(0x80)).is_err());
+    let a = edit.add_string("brand_new").unwrap();
+    assert!(edit.add_string("brand_new").is_err(), "already added");
+    let b = edit.add_string("second").unwrap();
+    assert_eq!(a, 9 << 24 | old.len() as u32);
+    assert_eq!(b, 6 << 24 | (old.len() + 1) as u32);
+    edit.rename_tag(id(4), "renamed").unwrap();
+    let mut out = Cursor::new(Vec::new());
+    edit.write_to(&mut out).unwrap();
+    let out = out.into_inner();
+    let mut reread = Map::from_reader(Cursor::new(out.clone())).unwrap();
+    reread.validate_checksum().unwrap();
+    let mut want = old.clone();
+    want.extend([Some("brand_new".to_owned()), Some("second".to_owned())]);
+    assert_eq!(reread.strings(), &want[..]);
+    assert_eq!(reread.tag(id(4)).unwrap().name.as_deref(), Some("renamed"));
+    let h = reread.header();
+    assert!(h.strings.index_offset as usize >= bytes.len());
+    assert_eq!(h.fixed_strings_offset % 512, 0);
+    let slot = h.fixed_strings_offset as usize + old.len() * 0x80;
+    assert_eq!(&out[slot..slot + 10], b"brand_new\0");
+    // The old file's bytes change only in the header's table fields.
+    let allowed = [8..12, 0x160..0x174, 0x2c0..0x2d4];
+    for i in 0..bytes.len() {
+        if !allowed.iter().any(|r| r.contains(&i)) {
+            assert_eq!(out[i], bytes[i], "offset {i:#x}");
+        }
+    }
+}
+
 #[test]
 fn edits_reject_stale_handles_bounds_overlaps_and_nuls() {
     let mut map = parse(fixture()).unwrap();
