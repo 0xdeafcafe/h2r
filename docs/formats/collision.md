@@ -170,7 +170,7 @@ by the spacing of consecutive blocks across all 2,273 retail tags.
 | Offset | Block | Element | Evidence |
 |---|---|---|---|
 | `+0x28` | unmodelled, stride varies (nested children) | count kept | D |
-| `+0x30` | unmodelled (element 0x18 plus nested children) | count kept | D |
+| `+0x30` | node edges (constraints between two nodes; see "Constraints") | 0x18 | E (`0x001d6630`, `0x001d77d0`), V |
 | `+0x38` | rigid bodies | 0x90 | E, V |
 | `+0x40` | materials | 12 (name, word, `i16`, `u16`) | V |
 | `+0x48` | spheres | 0x80 | E, V |
@@ -185,11 +185,13 @@ by the spacing of consecutive blocks across all 2,273 retail tags.
 | `+0x98` | list children | 8 | E, V |
 | `+0xa0` | mopps | 0x14 | E, V |
 | `+0xa8` | mopp code bytes | 1 | E (cursor rule), V |
-| `+0xb8` | constraints (kept raw, name decoded) | 0x94 | V (span) only |
+| `+0xb0` | constraint type 0 | 0x78 | E (`0x001eb1b0`); none on the Chief |
+| `+0xb8` | ragdoll constraints (constraint type 2) | 0x94 | E (`0x001eb1b0`, `0x001d7b4f`), V |
 | `+0xc0` | regions, 12 bytes: `name`, permutations `{count, addr}`; permutation 12 bytes (`name` + 8 words kept raw) | 12 | V |
-| `+0xc8` | nodes, 12 bytes: name, four `u16` (kept raw) | 12 | V |
-| `+0xe8` | constraints (raw) | 0x84 | V (span) only |
-| `+0xf0` | constraints (raw) | 0x78 | V (span), 4 instances |
+| `+0xc8` | nodes, 12 bytes: name, `u16` flags (bit 0, E `0x001d5a5e`), `i16` parent, next sibling, first child | 12 | V |
+| `+0xe8` | limited hinge constraints (constraint type 1) | 0x84 | E (`0x001eb1b0`, `0x001d7a4d`), V |
+| `+0xf0` | constraint type 4 (raw) | 0x78 | E (`0x001eb1b0`), V (span), 4 instances |
+| `+0xf8`, `+0x100` | constraint types 3 and 5 | 0x7c, 0x84 | E (`0x001eb1b0`) |
 | `+0x108` | type 6 shapes (raw) | 0x20 | E, V |
 
 ### Shapes
@@ -277,6 +279,95 @@ where they meet most other layers. They now take the Chief's 3
 movement queries use is not established, so whether this caused the
 standing bounce needs a run.
 
+### Constraints
+
+Six constraint kinds; `0x001eb1b0` maps a `{i16 type, i16 index}`
+reference to its block and stride (E): type 0 `+0xb0` (0x78), 1 `+0xe8`
+(0x84), 2 `+0xb8` (0x94), 3 `+0xf8` (0x7c), 4 `+0xf0` (0x78), 5 `+0x100`
+(0x84). `0x001eb110` walks every constraint of every type in that order,
+and `0x001d77d0` creates each in the Havok world, switching on the type
+(table `0x001d7ed4`). Types 1 and 2 are the ones retail bipeds use; which
+Havok constraint each makes is named from the fields the engine reads
+(below) and the data, not from a class name.
+
+Every constraint starts with the same 0x78 bytes:
+
+| Offset | Field | Evidence |
+|---|---|---|
+| `+0` | name (string ID) | D |
+| `+4 i16`, `+6 i16` | node A, node B (phmo nodes; -1 none) | E `0x001d786f`..`0x001d78c2`: each is mapped to its body; the two must be different bodies, both or neither -1 |
+| `+8`, `+0x3c` | frames A and B, 0x34 bytes each: a float (1.0 on every retail constraint), then forward, left, up and position (`f32[3]` each) in that node's space | D; V (below) |
+| `+0x70 i16` | the node edge (`+0x30` index) of this constraint | E `0x001d78fb`: the edge's constraint list is searched for this constraint's `{type, index}` to take its friction |
+
+Type 2, **ragdoll** (cone, twist and plane limits), `+0x78`..`+0x94`, all
+degrees (E `0x001d7b4f`..`0x001d7c61`, the constant at `0x0045dc54` is
+pi/180): `+0x78`/`+0x7c` twist min and max (the engine orders the pair),
+`+0x80`/`+0x84` cone (only the larger is used, as its cosine),
+`+0x88`/`+0x8c` plane (each through its sine), `+0x90` the friction used
+when the edge's is zero.
+
+Type 1, **limited hinge**, `+0x78` friction (used when the edge's is zero),
+`+0x7c`/`+0x80` the angle pair: the engine negates both and orders them,
+so the hinge moves over `[-max, -min]` (E `0x001d7a4d`..`0x001d7ab5`).
+
+Node edges (`+0x30`, 0x18 bytes): `+0` a word (`0x00380038` on every
+Chief edge; not read by the code below), `+4 i16` and `+6 i16` the two
+nodes (E `0x001d67a3`, `0x001d67ae`), `+8` a block of 12-byte constraint
+references `{i16 type, i16 index, u32 flags, f32 friction}` (E
+`0x001d6830`, `0x001d7950`; flags bit 0 makes the reference conditional on
+the object through `0x000db540`, E `0x001d65c8`), `+0x10` and `+0x14`
+string IDs. `0x001d6630` floods the node graph over the edges, so the nodes
+an edge joins land in one Havok system (`0x001d5bf0` per system).
+
+V, the Chief (`masterchief` on `05a_deltaapproach`): 10 bodies (nine pills
+on both thighs, calves, upper arms, forearms and the head; a box on the
+pelvis), 9 edges, 4 limited hinges (knees: angles `(-80, 7.5)`; elbows
+`(-70, 25)`) and 5 ragdoll joints (hips: twist +-5, cone 30, plane
+`(-90, 0)` and `(0, 90)`; head: twist +-45, cone 35, plane `(-90, 20)`;
+shoulders: twist +-7.5, cone 20 and 60, plane `(-25, 90)` and
+`(-90, 25)`); every edge friction 0.25, every constraint friction 0; node
+flags all 0. Each constraint joins a body to the nearest body up its node
+chain (the head and the upper arms to the pelvis: no spine body). A
+hinge's node A is the parent, its frame B the child's own axes on the
+child's origin, and its frame A that frame carried by the child's rest
+transform; a ragdoll joint's node A is the child, its frame A on the
+child's origin with forward `-x` (back up the bone), and its frame B
+positioned on the child's rest origin in the parent's space (rotated a
+little off rest: the cone is not centred on the bone).
+`h1objects/tests/ragdoll_disc.rs` checks this on the Chief and the Elite.
+
+### Ragdolls (what makes a dead biped go limp)
+
+The biped's physics set-up `0x001d6b80` (object creation's switch at
+`0x001cf16c` on the object type, table `0x001cf20c`: bipeds 0x001d6b80,
+vehicles 0x001d56f0, machines the keyframed call at `0x001cf19c`, crates
+0x001d56a0, creatures 0x001d6ca0) chooses between two bodies (E):
+
+- when the biped's physics mode (`biped +0x3dc`, the struct `0x001d6d00`
+  is passed) is 3, the `hlmt` has a physics model, and either biped
+  `+0x34b` is 1 or `bipd +0x1f0` bit 11 is set, it adds the physics
+  model's rigid bodies with `0x001d5940(object, 0, 0, 1)`: not fixed, not
+  forced keyframed, so each takes its `+0x1a` motion (2: dynamic, box
+  inertia) and the constraints join them. With no body added it falls
+  back to the next case.
+- otherwise the character proxy (`0x001d6d00` with `bipd +0x264`, layer 9,
+  or 10/11 by `+0x34b`).
+
+`biped +0x34b` is a death state the biped update `0x000e0ef0` advances:
+0 to 1 at `0x000e1112` once the `hlmt` has a physics model, `bipd +0x1f0`
+bit 11 is clear and the biped's flags `+0x348` bit 10 is clear (with
+further checks not traced), 1 to 2 at `0x000e0f7d`. Who sets physics mode
+3 was not found (no direct byte write of 3 to `+0x3dc`; the mode is written
+through the `+0x3dc` struct). The Chief's `bipd +0x1f0` is `0x10` (bit 11
+clear), so retail goes through state 1.
+
+So a biped ragdolls only through its physics model: the tag-side gates are
+the `hlmt` physics model and `bipd +0x1f0` bit 11, both the same for a
+converted biped; the bodies' motion (2) and layer flags (3) were already
+retail's. Without node edges and constraints the dynamic bodies have
+nothing joining them. Converted bipeds get a ragdoll since this change
+(`h1objects::ragdoll`, docs/formats/tag-definitions.md).
+
 ### Structural validation (`PhysicsModel::validate`)
 
 Zero failures across all 30 maps (2,273 `phmo` tags): every shape reference in
@@ -331,8 +422,9 @@ differs); rings have at most 8 vertices. Halo 1's data meets all of it
   against the engine), the BSP physics slot's `+0x30` datum,
   `flags` of pathfinding spheres and leaves/surfaces beyond the bits the engine
   tests, and the engine's use of regions, nodes and pathfinding spheres.
-- `phmo`: blocks at `+0x28` and `+0x30`; the three constraint blocks beyond
-  their strides; the type-5/triangle layouts beyond stride and Havok offset
+- `phmo`: the block at `+0x28`; node edge word `+0` and its strings;
+  constraint types 0, 3, 4 and 5 beyond their strides, and the frames'
+  leading float; who sets biped physics mode 3; the type-5/triangle layouts beyond stride and Havok offset
   (no disc instance); the type-6 shape; rigid-body bytes `+0x18..+0x38` and
   `+0x80..+0x90`; whether the stored rotations act on rows or columns (the OBJ
   export assumes `R * v`); the mass-distribution table.

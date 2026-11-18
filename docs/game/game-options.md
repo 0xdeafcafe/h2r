@@ -306,26 +306,47 @@ The wire drops the spare bytes, so the host sends the block another way,
 through Live, as skulls already do (skulls.md "How the host's set reaches
 guests"):
 
-- **Custom games and hoppers:** the host's HLE puts `variant_ext` (the 0x24
-  bytes, base64) and a key on its session (`NewSession` / `Update`). At
-  `GAME_ACTIVATE` (`0x18f000`) each guest re-fetches the session, checks the
-  key and writes the block into its own `G+0x13c + 0x10c` before the first
-  tick; every hook reads only there. The key is a hash of the record's
-  wire projection (what encode then decode leaves: name, engine, the sent
-  fields, the rest zero) plus the map, the only part host and guests hold
-  identically. A guest whose key differs applies nothing and says so in
-  the log.
+- **Custom games and hoppers** (built, slice 4; `boot::variant_ext::Transport`
+  on `GAME_ACTIVATE`, the options in EAX, before the game copies them into
+  the globals):
+  - A **Live host** puts its record's block and the variant's key on its
+    session at every multiplayer start, extras or not
+    (`NewSession.variant_ext` / `Update`, `{block, key}` in hex;
+    `Hle::set_session_variant_ext`). Open advertisements are updated at
+    once. Its log says `variant options: sent to guests: ...`.
+  - A **Live guest** asks the server for its host's session
+    (`Hle::host_variant_ext`) until the key there is its own record's, for
+    at most 1.5 s (the host may publish a moment later, and its session may
+    still name the last game's variant). It then writes the block into the
+    options at `O+0x134+0x10c`, which the game copies to `G+0x13c+0x10c`,
+    and applies it (`variant_ext::decide`, "guest, the host's"). Its log
+    says `variant options: the host's for this game: ...`, or why none.
+  - **The key** is FNV-1a over the record's name (`+4`, 0x40 bytes) and
+    engine (`+0x44`), which the wire carries whole. Not the whole wire
+    projection plus the map, as first planned: which fields the codec
+    sends isn't pinned in our code, and a field one side holds differently
+    would make every key differ. Two variants with the same name and type
+    share a key; the cost is a guest taking the other's block.
+  - The server keeps the field as sent, checks its form only (72 and 16
+    lowercase hex digits), and lists it; both homes run the same routes.
 - **Hoppers:** the extension is already in the hopper slot's record, so the
   host has it the moment it picks the entry; the rest is the custom-game
   path. The server's hopper model and the editor's hopper tool carry it
   untouched (both copy the record whole).
-- **Older builds** (decided 5): they may join. Clients send their build's
-  capabilities with the session join; when the host's session carries a
-  block and a member lacks `variant-ext/1`, the host's lobby shows a
-  warning naming the player ("plays this variant with retail rules"), and
-  the older client is told the same if its build can show it (a new build
-  joining an older host cannot happen the other way round: an older host
-  never publishes a block). There is no refusal.
+- **Older builds** (decided 5): they may join, with no refusal.
+  - A new guest of an older host finds no `variant_ext` on the session and
+    logs `variant options: none from the host: the host's build sends no
+    variant options (an older build)`. An older host never applies a block,
+    so both play the game's own rules and agree.
+  - **An older guest of a new host is not detected (not built).** The plan
+    was for clients to send their capabilities with the session join, but
+    no join reaches the host's session: the HLE never writes
+    `PlayerJoined` (the server accepts it only from the host), and guests
+    can't write to the host's stream. A capability needs a channel of its
+    own first: for example the guest's HLE writing a signed
+    `{session, capabilities}` note the host's HLE reads with the session,
+    or a field on presence. Until then the host's lobby can't name the
+    older player, and the desync below goes unannounced.
 
   **The desync risk.** Halo 2's host simulates and its guests predict. A
   guest playing retail rules against a host with extras predicts wrong
@@ -338,10 +359,12 @@ guests"):
   replicate, so they look right. Nothing crashes and the host's result
   stands, but the older player's game feels broken, which is what the
   warning says.
-- **System Link** (decided 6a): extras are off. A host on System Link
-  never applies its variant's block (every machine plays retail rules, so
-  nobody disagrees) and its lobby says the variant's extras are off on
-  System Link.
+- **System Link** (decided 6a): extras are off. No machine on System Link
+  applies a block (`variant_ext::decide` checks the session's network
+  class at `+0x18`), so nobody disagrees. The warning is a log line at the
+  start (`variant options: ... off: System Link plays the game's own
+  rules`); the lobby itself doesn't say it yet (no lobby text hook of ours
+  there).
 
 ### Showing them
 
@@ -604,7 +627,8 @@ own slice (8 below):
    Tests: round trips, a bad CRC ignored, the block surviving
    `record::check`, portable files and a hopper slot; gravity on synthetic
    physics memory.
-4. **Live transport:** `variant_ext` and the key on the session, the
+4. **Done except the older-build warnings and the lobby texts** (section 3,
+   "How it reaches every player"). **Live transport:** `variant_ext` and the key on the session, the
    guest's apply at activation, capabilities on join and the warnings (the
    host's lobby, the older player where it can), System Link off with its
    warning. Tests in live-proto, live-server (both homes) and live-hle: a
@@ -667,20 +691,21 @@ After slice 3 (one machine; Studio writes the variant):
     `variant options: gravity A -> B`. With the Low Gravity skull too:
     higher again (a quarter). Back in the menus and into a retail variant:
     normal gravity, and the log says `variant options: none in this game`.
-3c. Host it on Live with a second machine: the host's log says `(host)`;
-    the guest's says the options were not applied (slice 4), and the
-    guest's jumps rubber-band. Over System Link: both say not applied,
-    normal gravity.
 
-After slices 3 and 4:
+After slice 4 (two machines on Live, both on this build):
 
-7. Gravity 50% in a custom game on Live with a second machine: both jump
-   the same height; the log says the block was applied on the guest.
-8. An older build joins that game: the host's lobby warns that it plays
-   retail rules.
-9. Low Gravity skull with gravity 50%: a quarter of normal.
-10. The same variant over System Link: normal gravity on both, and the
-    lobby says the extras are off.
+7. Gravity 50% in a custom game on Live: both jump the same height, and
+   the guest's jumps don't rubber-band. The host's log says
+   `variant options: sent to guests: Gravity 50% (key ...)`, the guest's
+   `variant options: the host's for this game: Gravity 50%` and then
+   `variant options: Gravity 50% (guest, the host's)`. A second game on a
+   retail variant: normal gravity on both (the host sends "none").
+8. A guest on an older build joins that game: nothing warns yet (not
+   built); note how its game feels (the desync above). A new guest of an
+   older host: its log says the host's build sends none.
+9. Low Gravity skull with gravity 50%: a quarter of normal, on both.
+10. The same variant over System Link: normal gravity on both, and each
+    log says the options are off on System Link.
 
 After slices 6 to 8:
 
@@ -787,6 +812,22 @@ After slices 6 to 8:
 - `boot::variant_page`: the "More Options" row and page in the game's
   variant editor (section 3, "The variant editor's page list").
 
+## Built: slice 4
+
+- `live_proto::session::VariantExt` (`{block, key}`, form checks, `bytes`,
+  `new`) on `NewSession` and `Update`; the server keeps and lists it (one
+  set of routes for both homes).
+- `live-hle`: `LocalSession.variant_ext`, `Sessions::set_variant_ext`
+  (updates open advertisements at once, only on a change),
+  `Hle::set_session_variant_ext`, `Hle::host_variant_ext`
+  (`HostVariantExt`).
+- `boot::variant_ext`: `key`, `part` (alone, System Link, Live host, Live
+  guest), `heard` and `wait_for_host` (the guest's poll), the `Transport`
+  feature (`variant-ext-live`) on `GAME_ACTIVATE`, and `decide` applying a
+  guest's block when it came from its host.
+- Not built: telling the host about an older guest (no channel), and lobby
+  texts for that and for System Link (log lines only).
+
 ## Tests
 
 `cargo test -p variants`, `cargo test -p hopper-edit`,
@@ -816,6 +857,16 @@ tests:
   `the_row_and_the_page_are_on_the_plan`; `ui_kit::screens` checks the
   page (`variant-more-options`) with the other screens. Run
   `cargo test -p boot --tests` (the plan goldens are integration tests).
+
+The slice 4 tests: `live-proto`
+`session::variant_options_are_optional_checked_and_updated`; `live-server`
+`sessions::sessions_carry_the_hosts_variant_options`; `live-hle`
+`server::guests_read_the_variant_options_their_host_advertises` (a host and
+a guest on the embedded server); `boot` `variant_ext`
+`a_live_guest_applies_only_what_its_host_sent`,
+`the_key_is_the_name_and_engine_only`,
+`a_guest_waits_for_its_hosts_key_and_says_why_not`,
+`a_guest_with_its_hosts_block_applies_it_in_game`.
 
 The slice 2 tests:
 

@@ -572,6 +572,11 @@ impl State {
         self.sessions
             .set_skulls(skulls, self.service.as_ref(), session.as_ref());
     }
+    pub fn set_session_variant_ext(&mut self, ext: Option<live_proto::session::VariantExt>) {
+        let session = self.session();
+        self.sessions
+            .set_variant_ext(ext, self.service.as_ref(), session.as_ref());
+    }
     /// Arms (Some) or leaves (None) a co-op campaign for this console's
     /// lobby advertisements, and says so in presence ("Co-op: <level>").
     pub fn set_coop(

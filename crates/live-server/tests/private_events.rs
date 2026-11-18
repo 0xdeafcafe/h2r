@@ -67,6 +67,7 @@ async fn open_session(h: &Harness, host: &User) -> String {
         skulls: None,
         campaign: None,
         ping_ms: None,
+        variant_ext: None,
     };
     let r = h
         .call(
