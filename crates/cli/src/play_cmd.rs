@@ -15,7 +15,7 @@ use input::backend::scripted::{ScriptedInput, Timeline};
 use input::bindings::{Bindings, Control, Input};
 
 const USAGE: &str = "usage:
-  h2 play <disc.iso> [--out DIR] [--data DIR] [--transfers N] [--slices N]
+  h2 play <disc.iso> [--out DIR] [--tier auto|fast|clang] [--data DIR] [--transfers N] [--slices N]
           [--aspect 4:3|16:9] [--scaling fit|integer|stretch] [--nearest] [--fullscreen]
           [--title TEXT] [--tile I/N]
           [--no-audio] [--no-gamepads] [--no-vsync] [--unpaced] [--bindings FILE] [--status]
@@ -32,7 +32,10 @@ const USAGE: &str = "usage:
 
 Opens a window and runs the recompiled game live (builds the dylib first when
 --out has none, or one built from another image or generator). --out and
---data default to $TMPDIR/h2boot and $TMPDIR/h2boot-data, as for `h2 run`. --slices is unlimited by default.
+--data default to $TMPDIR/h2boot and $TMPDIR/h2boot-data, as for `h2 run`.
+--tier (or H2_TIER) as for `h2 run`: by default clang's module when current,
+else the Cranelift fast tier (built in seconds) with clang's build started in
+the background for the next start. --slices is unlimited by default.
 --status prints the frame rates once a second and the slice count every
 1000 slices (the unit H2_BOOT_INPUT scripts in). --frame-stats (or
 H2_FRAME_STATS=1) shows fps, p50/p99/max frame time and the split into game
@@ -127,22 +130,6 @@ pub fn play_bindings() -> Bindings {
         }
     }
     b
-}
-
-/// Whether `lib` must be (re)built before playing: missing, or stamped
-/// for another image, generator or module ABI (`boot::dylib_current`), which
-/// `boot::run_hosted` would refuse inside the window.
-fn needs_build(xbe: &[u8], lib: &std::path::Path) -> bool {
-    if boot::dylib_current(xbe, lib) {
-        return false;
-    }
-    if lib.exists() {
-        eprintln!(
-            "play: {} was built from another image or generator; rebuilding",
-            lib.display()
-        );
-    }
-    true
 }
 
 /// Kernel calls `h2 play` keeps in memory for the report (the run is
@@ -535,6 +522,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let mut live = crate::play_live::LiveOpts::default();
     let mut level_flag: Option<String> = None;
     let mut difficulty_flag: Option<String> = None;
+    let mut tier: Option<boot::tier::Choice> = None;
     let mut config = app::AppConfig {
         // boot's DirectSound output owns the device; the shell's own
         // AudioOut would open it a second time (its discard renderer only
@@ -555,6 +543,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         }
         match a.as_str() {
             "--out" => out = PathBuf::from(val()?),
+            "--tier" => tier = Some(boot::tier::Choice::parse(&val()?)?),
             "--data" => data = PathBuf::from(val()?),
             "--slices" => slices = val()?.parse()?,
             "--transfers" => transfers = val()?.parse()?,
@@ -701,11 +690,12 @@ pub fn run(args: Vec<String>) -> Result<()> {
         eprintln!("play: starting {} {} ({})", l.name, l.game(), l.scenario);
     }
     let xbe = boot::read_xbe(&disc)?;
-    let lib = out.join(boot::DYLIB);
-    if needs_build(&xbe, &lib) {
-        let jobs = std::thread::available_parallelism().map_or(4, |n| n.get());
-        boot::build(&xbe, &out, jobs)?;
-    }
+    let choice = match tier {
+        Some(t) => t,
+        None => boot::tier::Choice::from_env()?,
+    };
+    let jobs = std::thread::available_parallelism().map_or(4, |n| n.get());
+    let lib = boot::tier::prepare(&xbe, &disc, &out, choice, jobs, true)?.dylib;
     if crate::mappack_cmd::auto_enabled(no_mappack) {
         crate::mappack_cmd::auto_install(&disc, &data);
     }
@@ -1247,6 +1237,12 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let lib = dir.join(boot::DYLIB);
         let xbe = b"XBEH synthetic image bytes";
+        // What play's `--tier clang` builds: clang's module, when stale.
+        let needs_build = |xbe: &[u8], lib: &std::path::Path| {
+            let p = boot::tier::plan(xbe, lib.parent().unwrap(), boot::tier::Choice::Clang);
+            assert_eq!(p.dylib, lib);
+            p.build
+        };
         assert!(needs_build(xbe, &lib), "missing");
         std::fs::write(&lib, b"").unwrap();
         assert!(needs_build(xbe, &lib), "no stamp");
