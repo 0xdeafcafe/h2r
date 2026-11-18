@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Frame, WireEvent } from "../src/api/types";
-import { ReplayClock, ReplayTimeline } from "../src/state/replay";
+import { ReplayClock, ReplayTimeline, fetchRecording } from "../src/state/replay";
 import { FrameBuffer } from "../src/state/frames";
 import { ev, resetPos } from "./helpers";
 
@@ -189,5 +189,97 @@ describe("players sent at the origin (older senders, nowhere known)", () => {
     b.push({ game_id: "g", tick: 0, players: [{ index: 0, alive: false, pos: [0, 0, 0], yaw: 0 }, { index: 1, alive: true, pos: [5, 5, 5], yaw: 1 }] }, 0);
     expect(b.frames[0]!.players.map((p) => p.index)).toEqual([1]);
     expect(b.bounds.minX).toBe(5);
+  });
+});
+
+describe("the transport's marks, steps and killcam", () => {
+  function marked() {
+    resetPos();
+    const frames: Frame[] = [frame(0, 0), frame(30, 3), frame(60, 6), frame(90, 9), frame(120, 12)];
+    frames[0]!.bsp = 0; frames[1]!.bsp = 0; frames[2]!.bsp = 1; frames[3]!.bsp = 1; frames[4]!.bsp = 1;
+    const events = [
+      ev("PlayerKilled", "game-g", { tick: 40, victim: 0, killer: 1, kind: "kill" }),
+      ev("PlayerKilled", "game-g", { tick: 100, victim: 1, kind: "world" }),
+      ev("PlayerKilled", "game-g", { tick: 110, victim: 1, killer: 1, kind: "suicide" }),
+    ];
+    return new ReplayTimeline(frames, events);
+  }
+
+  test("kills, deaths and zone changes, in order", () => {
+    const t = marked();
+    expect(t.marks.map((m) => [m.tick, m.kind])).toEqual([[40, "kill"], [60, "zone"], [100, "death"], [110, "death"]]);
+    expect(t.marks[1]!.bsp).toBe(1);
+  });
+
+  test("cuts are marks", () => {
+    const { frames, events } = rewound();
+    const t = new ReplayTimeline(frames, events);
+    expect(t.marks.filter((m) => m.kind === "cut").map((m) => m.tick)).toEqual(t.cuts);
+  });
+
+  test("frame stepping goes from recorded frame to recorded frame", () => {
+    const t = marked();
+    expect(t.frameStep(0, 1)).toBe(30);
+    expect(t.frameStep(45, 1)).toBe(60);
+    expect(t.frameStep(45, -1)).toBe(30);
+    expect(t.frameStep(30, -1)).toBe(0);
+    expect(t.frameStep(0, -1)).toBe(0);
+    expect(t.frameStep(120, 1)).toBe(t.endTick);
+  });
+
+  test("mark stepping, and back from just after a mark skips it", () => {
+    const t = marked();
+    expect(t.markStep(0, 1)).toBe(40);
+    expect(t.markStep(40, 1)).toBe(60);
+    expect(t.markStep(110, 1)).toBeNull();
+    expect(t.markStep(130, -1)).toBe(110);
+    expect(t.markStep(116, -1)).toBe(100);
+    expect(t.markStep(101, -1)).toBe(60);
+    expect(t.markStep(40, -1)).toBeNull();
+  });
+
+  test("a killcam starts five seconds before, slowed, through the killer's eyes", () => {
+    const t = marked();
+    expect(t.killcam(t.kills[0]!)).toEqual({ from: 0, speed: 0.5, follow: 1 });
+    expect(t.killcam(t.kills[1]!)).toEqual({ from: 0, speed: 0.5, follow: 1 });
+    const late = { ...t.kills[0]!, tick: 115 };
+    expect(t.killcam(late).from).toBe(0);
+    expect(t.killcam({ ...late, tick: 1000 }).from).toBe(t.endTick);
+  });
+});
+
+describe("fetchRecording", () => {
+  test("reads the frames once: the events come without their GameFrames", async () => {
+    const calls: string[] = [];
+    const a = {
+      frames: async (id: string) => { calls.push("frames " + id); return [frame(0, 1)]; },
+      streamEvents: async (stream: string, _s?: AbortSignal, opts?: { exclude?: string }) => { calls.push(`events ${stream} ${opts?.exclude}`); return []; },
+    };
+    const r = await fetchRecording(a, "g");
+    expect(calls.sort()).toEqual(["events game-g GameFrame", "frames g"]);
+    expect(r.frames).toHaveLength(1);
+  });
+
+  test("a failed event read still replays the frames", async () => {
+    const a = {
+      frames: async () => [frame(0, 1)],
+      streamEvents: async () => { throw new Error("nope"); },
+    };
+    expect((await fetchRecording(a, "g")).events).toBeNull();
+  });
+});
+
+describe("killNear", () => {
+  test("the latest kill at or just after the playhead, else the next", () => {
+    resetPos();
+    const t = new ReplayTimeline([frame(0, 0), frame(300, 3)], [
+      ev("PlayerKilled", "game-g", { tick: 100, victim: 0, killer: 1, kind: "kill" }),
+      ev("PlayerKilled", "game-g", { tick: 200, victim: 1, killer: 0, kind: "kill" }),
+    ]);
+    expect(t.killNear(0)!.tick).toBe(100);
+    expect(t.killNear(150)!.tick).toBe(100);
+    expect(t.killNear(180)!.tick).toBe(200);
+    expect(t.killNear(290)!.tick).toBe(200);
+    expect(new ReplayTimeline([frame(0, 0)], []).killNear(0)).toBeNull();
   });
 });

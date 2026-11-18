@@ -35,15 +35,46 @@ export function clockAgrees(c: ReplayClock, s: ClockState, now: number, slackTic
   return Math.abs(mine.tick - s.tick) <= (s.playing ? slackTicks * Math.max(1, s.speed) : 0.5);
 }
 
+/** A camera the replay asks its 3D views for (a killcam): a mode and the
+ *  player it is on. `seq` grows with each request, so the same request
+ *  twice is still two. */
+export interface CameraRequest {
+  mode: CameraMode;
+  follow: number;
+  seq: number;
+  /** Wall time (ms since the epoch) it was made: a 3D view that opens for
+   *  it takes it only while it is fresh. */
+  at: number;
+}
+
+/** How long a camera request stays fresh for a view that opens after it. */
+export const CAMERA_FRESH_MS = 3000;
+export const CAMERA_MODES = ["follow", "eyes"] as const;
+export type CameraMode = (typeof CAMERA_MODES)[number];
+
+export function nextCamera(last: CameraRequest | null, mode: CameraMode, follow: number, at = Date.now()): CameraRequest {
+  return { mode, follow, seq: (last?.seq ?? 0) + 1, at };
+}
+
+/** Whether a view opening at `now` should take `c`. */
+export function cameraFresh(c: CameraRequest | null, now = Date.now()): c is CameraRequest {
+  return !!c && now - c.at >= 0 && now - c.at < CAMERA_FRESH_MS;
+}
+
 export type SyncMessage =
   | { kind: "state"; from: string; state: ClockState }
-  | { kind: "hello"; from: string };
+  | { kind: "hello"; from: string }
+  | { kind: "camera"; from: string; camera: CameraRequest };
 
 export function isSyncMessage(v: unknown): v is SyncMessage {
   if (!v || typeof v !== "object") return false;
-  const m = v as { kind?: unknown; from?: unknown; state?: Partial<ClockState> };
+  const m = v as { kind?: unknown; from?: unknown; state?: Partial<ClockState>; camera?: Partial<CameraRequest> };
   if (typeof m.from !== "string") return false;
   if (m.kind === "hello") return true;
+  if (m.kind === "camera") {
+    const c = m.camera;
+    return !!c && (CAMERA_MODES as readonly unknown[]).includes(c.mode) && Number.isInteger(c.follow) && Number.isInteger(c.seq) && Number.isFinite(c.at);
+  }
   return m.kind === "state" && !!m.state && Number.isFinite(m.state.tick) && typeof m.state.playing === "boolean" && Number.isFinite(m.state.speed);
 }
 

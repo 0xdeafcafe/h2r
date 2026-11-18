@@ -13,6 +13,7 @@ import { zoneInPlay, type ZonePick } from "./zones";
 import { savePref, texturesPref } from "./textures3d";
 import { KIND_LABELS } from "./scenario3d";
 import { ViewerScene, hasWebGl, type ViewMode } from "./scene";
+import { cameraFresh, type CameraRequest } from "./sync";
 import "./viewer.css";
 
 export interface Viewer3DProps {
@@ -26,6 +27,8 @@ export interface Viewer3DProps {
   /** Camera to open with, and a player to follow. */
   mode?: ViewMode;
   follow?: number | null;
+  /** Camera requests from the replay (a killcam): each new one is taken. */
+  camera?: () => CameraRequest | null;
   ao?: boolean;
   /** Open with the height cut on, at this height (game z); and how the
    *  see-through starts (`auto` unless false or another mode is given). */
@@ -79,6 +82,7 @@ export default function Viewer3D(props: Viewer3DProps) {
     else if (e.key === "c") toggleCut();
     else if (e.key === "[" || e.key === "]") { if (scene) setRange(scene.cutRange()); moveCut(stepCut(cutValue(), e.key === "]" ? 1 : -1, range())); }
     else if (e.key === "x") toggleSee();
+    else if (e.key === "v") toggleEyes();
     else return;
     e.preventDefault();
   };
@@ -147,13 +151,24 @@ export default function Viewer3D(props: Viewer3DProps) {
   });
   const people = createMemo(() => [...props.roster()].map(([index, r]) => ({ index, ...r })).sort((a, b) => a.name.localeCompare(b.name)));
 
+  const onPlayer = (m: ViewMode) => m === "follow" || m === "eyes";
   const pick = (m: ViewMode, index: number | null = follow()) => {
-    if (m === "follow" && index === null) index = people()[0]?.index ?? null;
-    if (m === "follow" && index === null) return;
+    if (onPlayer(m) && index === null) index = people()[0]?.index ?? null;
+    if (onPlayer(m) && index === null) return;
+    if (scene?.flying) toggleFly();
     setMode(m);
-    setFollow(m === "follow" ? index : follow());
+    setFollow(onPlayer(m) ? index : follow());
     scene?.setMode(m, index);
   };
+  /** First person and back to the chase camera, on the player followed (or the first). */
+  const toggleEyes = () => pick(mode() === "eyes" ? "follow" : "eyes");
+  // A killcam (or another window's) asks for a camera: take each new one,
+  // and one made just before this view opened (it opened for it).
+  let opened = false;
+  createEffect(on(() => props.camera?.() ?? null, (c) => {
+    if (c && (opened || cameraFresh(c))) pick(c.mode, c.follow);
+    opened = true;
+  }));
 
   onMount(() => {
     if (!hasWebGl()) { setFailed("This browser can't draw 3D here (WebGL is off or unavailable). The 2D map still shows the game."); return; }
@@ -224,14 +239,15 @@ export default function Viewer3D(props: Viewer3DProps) {
           <button classList={{ on: mode() === "top" }} aria-pressed={mode() === "top"} onClick={() => pick("top")} title="Straight down, north up">Top-down</button>
           <button classList={{ on: flying() }} aria-pressed={flying()} onClick={toggleFly} title="Flycam: fly freely. WASD or arrows move, Q and E (or Ctrl and Space) go down and up, drag with either mouse button to look (a click locks the mouse), wheel changes speed, Shift is faster. One finger looks and two fly on a touch screen; a gamepad works too. Key: f">Fly</button>
           <select
-            classList={{ on: mode() === "follow" }}
+            classList={{ on: onPlayer(mode()) }}
             aria-label="Follow a player"
-            value={mode() === "follow" && follow() !== null ? String(follow()) : ""}
-            onChange={(e) => { const v = e.currentTarget.value; if (v === "") pick("orbit"); else pick("follow", +v); }}
+            value={onPlayer(mode()) && follow() !== null ? String(follow()) : ""}
+            onChange={(e) => { const v = e.currentTarget.value; if (v === "") pick("orbit"); else pick(mode() === "eyes" ? "eyes" : "follow", +v); }}
           >
             <option value="">Follow…</option>
             <For each={people()}>{(p) => <option value={p.index}>{p.name}</option>}</For>
           </select>
+          <button classList={{ on: mode() === "eyes" }} aria-pressed={mode() === "eyes"} onClick={toggleEyes} title="First person: through the followed player's eyes, where they aim. Key: v">Eyes</button>
           <button onClick={() => scene?.reset()} title="Back to the whole map">Reset</button>
           <button classList={{ on: ao() }} aria-pressed={ao()} onClick={() => setAo(scene?.setAo(!ao()) ?? false)} title="Ambient occlusion: soft shading in corners (costs frame rate)">AO</button>
           <select

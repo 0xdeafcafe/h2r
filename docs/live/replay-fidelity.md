@@ -131,7 +131,7 @@ bytes. The players, the part people watch, cost almost nothing.
 
 ### Other findings
 
-- **The viewer downloads every frame twice.** `createReplaySession` fetches
+- **The viewer downloaded every frame twice** (fixed in step 2). `createReplaySession` fetches
   `/frames?format=packed` and the game's whole event stream, which holds
   the same frames as `GameFrame` events at three times the size. For a
   20-minute mission that's about 6 MB plus 22 MB.
@@ -443,9 +443,14 @@ denser track; the rest don't.
 Each step is test-first and runs in both homes.
 
 1. **Done:** the game clock, the origin fix and the viewer guard.
-2. **Viewer, now:** read frames once, show cuts and more marks on the
-   timeline, frame stepping, first-person camera, killcam. This works on
-   today's data.
+2. **Done, viewer on today's data:** frames read once (`/frames` packed,
+   events with `exclude=GameFrame`, so the browser no longer verifies the
+   server's `GameFrame` signatures; the chunk events will be signed),
+   kills, deaths, cuts and zone changes on the scrubber, frame and mark
+   stepping (`,` `.` `<` `>`), 0.25×, a first-person camera (`Eyes`, key
+   `v`), and a killcam (click a kill or death mark, or `k`): 5 s before, at
+   0.5×, through the killer's eyes, opening the 3D view if it is closed and
+   reaching a popped-out one.
 3. **Protocol:** `vel`, `seat`, `vitality`, `fire`, `anim`, tick offsets
    for hits and actions, and the `cut` header. Packed format version 3
    (version 2 still reads). Golden vectors on both sides.

@@ -2,8 +2,8 @@ import { describe, expect, test } from "bun:test";
 import type { Frame } from "../src/api/types";
 import { ReplayClock, ReplayTimeline } from "../src/state/replay";
 import { TICKS_PER_SECOND, type SampledPlayer } from "../src/state/frames";
-import { applyClock, clockAgrees, isSyncMessage, readClock, smoothPlayers, syncChannelName, type SmoothPlayer } from "../src/viewer/sync";
-import { FOLLOW_DISTANCE, cameraFit, followDistance, markerScale } from "../src/viewer/camera";
+import { applyClock, clockAgrees, isSyncMessage, nextCamera, readClock, smoothPlayers, syncChannelName, type SmoothPlayer } from "../src/viewer/sync";
+import { EYE_HEIGHT, FOLLOW_DISTANCE, cameraFit, eyeView, followDistance, markerScale } from "../src/viewer/camera";
 import { MIN_H, MIN_W, placeWindow } from "../src/viewer/window";
 
 function frames(seconds: number): Frame[] {
@@ -193,5 +193,45 @@ describe("window placement", () => {
   test("a window bigger than a phone's screen is cut to fit", () => {
     const r = placeWindow({ x: 900, y: 300, w: 760, h: 520 }, { w: 390, h: 700 });
     expect(r).toEqual({ x: 8, y: 172, w: 374, h: 520 });
+  });
+});
+
+describe("first-person camera", () => {
+  test("eyes over the feet, looking along the aim", () => {
+    const v = eyeView({ x: 1, y: 2, z: 3, yaw: 0, aim: [0, 0.6, 0.8] }, 0.8);
+    expect(v.eye[0]).toBe(1);
+    expect(v.eye[2]).toBeCloseTo(3 + 0.72);
+    expect(v.look[1] - v.eye[1]).toBeCloseTo(0.6);
+    expect(v.look[2] - v.eye[2]).toBeCloseTo(0.8);
+  });
+
+  test("lower when crouched; level along the yaw without an aim; a default height without a model", () => {
+    const stand = eyeView({ x: 0, y: 0, z: 0, yaw: Math.PI / 2 }, null);
+    expect(stand.eye[2]).toBeCloseTo(EYE_HEIGHT);
+    expect(stand.look[1]).toBeCloseTo(1);
+    expect(stand.look[2]).toBeCloseTo(stand.eye[2]);
+    const crouch = eyeView({ x: 0, y: 0, z: 0, yaw: 0, stance: "crouch" }, null);
+    expect(crouch.eye[2]).toBeLessThan(stand.eye[2]);
+    expect(eyeView({ x: 0, y: 0, z: 0, yaw: 0, aim: [0, 0, 0] }, 1).look[0]).toBeCloseTo(1);
+  });
+});
+
+describe("camera requests between windows", () => {
+  test("count up and travel as sync messages", () => {
+    const a = nextCamera(null, "eyes", 3), b = nextCamera(a, "eyes", 3);
+    expect(b.seq).toBe(a.seq + 1);
+    expect(isSyncMessage({ kind: "camera", from: "w", camera: b })).toBe(true);
+    expect(isSyncMessage({ kind: "camera", from: "w", camera: { ...b, mode: "drone" } })).toBe(false);
+    expect(isSyncMessage({ kind: "camera", from: "w", camera: { ...b, follow: 1.5 } })).toBe(false);
+  });
+});
+
+describe("a camera request's freshness", () => {
+  test("a view that opens for a killcam takes it; one opened much later does not", async () => {
+    const { cameraFresh } = await import("../src/viewer/sync");
+    const c = nextCamera(null, "eyes", 2, 10_000);
+    expect(cameraFresh(c, 10_500)).toBe(true);
+    expect(cameraFresh(c, 20_000)).toBe(false);
+    expect(cameraFresh(null, 10_000)).toBe(false);
   });
 });

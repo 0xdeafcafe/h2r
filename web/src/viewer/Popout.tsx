@@ -12,7 +12,7 @@ import { geometryFor } from "../map/geometry";
 import { live } from "../state/live";
 import type { GameState } from "../state/reducer";
 import { createReplaySession } from "./session";
-import Transport from "./Transport";
+import Transport, { replayKey } from "./Transport";
 import type { ViewMode } from "./scene";
 import "../styles/stats.css";
 import "./viewer.css";
@@ -53,7 +53,7 @@ function Frame(props: { game: GameState; live: boolean; children: (geo: { glb: (
         <Suspense fallback={<div class="v3-note v3-note--mid">Loading the 3D view…</div>}>
           {props.children({
             glb: () => geometry()?.glb ?? null,
-            mode: params.cam === "top" || params.cam === "follow" ? params.cam : undefined,
+            mode: params.cam === "top" || params.cam === "follow" || params.cam === "eyes" ? params.cam : undefined,
             ao: params.ao !== "0",
             // `?cut=<height>` opens with the height cut there; `?see=0` without the see-through.
             cut: params.cut !== undefined && Number.isFinite(Number(params.cut)) ? Number(params.cut) : null,
@@ -80,12 +80,12 @@ function Recorded(props: { game: GameState }) {
   const session = createReplaySession(() => props.game, roster);
   const onKey = (e: KeyboardEvent) => {
     if ((e.target as HTMLElement).closest("input, select, button, a")) return;
-    if (e.key === " ") { e.preventDefault(); session.toggle(); }
+    replayKey(session, e);
   };
   return (
     <div class="v3-page-inner" onKeyDown={onKey} tabindex="-1">
       <Frame game={props.game} live={false}>
-        {(geo) => <Viewer3D frame={session.frame} roster={roster} soughtAt={session.soughtAt} {...geo} />}
+        {(geo) => <Viewer3D frame={session.frame} roster={roster} soughtAt={session.soughtAt} camera={session.camera} {...geo} />}
       </Frame>
       <Show when={session.error()}><p class="v3-note">Couldn't load the replay: {session.error()}</p></Show>
       <Transport session={session} killColour={(k) => (k !== null ? colourFor(props.game, props.game.players[k]?.team ?? 0, k) : undefined)} />

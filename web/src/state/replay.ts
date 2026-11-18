@@ -1,5 +1,6 @@
 // Replays of ended games: 1 Hz recorded frames plus the game's events,
-// sampled at any tick.
+// sampled at any tick, with the marks, steps and killcams the transport
+// offers.
 
 import type { Frame, FrameObject, PlayerKilled, PlayerScore, ScoreChanged, WireEvent } from "../api/types";
 import { recordedFrame } from "../api/pack";
@@ -14,6 +15,52 @@ export interface ReplayKill {
   position: number;
   /** Where the victim died: the event's `pos`, else from the frames. */
   at: { x: number; y: number; z: number } | null;
+}
+
+/** Something worth a mark on the scrubber: a kill (by a player of another),
+ *  a death (anything else: a fall, a suicide, the AI in campaign), a cut
+ *  (the recording's ticks ran backwards there: a revert) or the level
+ *  changing zone (structure BSP). */
+export interface TimelineMark {
+  tick: number;
+  kind: "kill" | "death" | "cut" | "zone";
+  /** For a kill or a death. */
+  kill?: ReplayKill;
+  /** For a zone change: the zone now loaded. */
+  bsp?: number;
+}
+
+/** How far before a kill the killcam starts, and how fast it plays. */
+export const KILLCAM_LEAD_TICKS = 5 * TICKS_PER_SECOND;
+export const KILLCAM_SPEED = 0.5;
+
+/** What watching a kill does: play from a little before it, slowed, from
+ *  the eyes of the killer (or the victim, when nobody killed them). */
+export interface Killcam {
+  from: number;
+  speed: number;
+  follow: number;
+}
+
+/** The recording a replay needs, each read once: the recorded frames
+ *  (packed) and the game's events without its `GameFrame`s, which hold the
+ *  same frames again at three times the size. */
+export async function fetchRecording(
+  a: {
+    frames: (id: string, from?: number, to?: number, s?: AbortSignal) => Promise<Frame[]>;
+    streamEvents: (stream: string, s?: AbortSignal, opts?: { exclude?: string }) => Promise<WireEvent[]>;
+  },
+  id: string,
+  signal?: AbortSignal,
+): Promise<{ frames: Frame[]; events: WireEvent[] | null }> {
+  const [frames, events] = await Promise.all([
+    a.frames(id, undefined, undefined, signal),
+    a.streamEvents("game-" + id, signal, { exclude: "GameFrame" }).catch((e: Error) => {
+      if (e?.name === "AbortError") throw e;
+      return null;
+    }),
+  ]);
+  return { frames, events };
 }
 
 export interface ScoreSnapshot {
@@ -106,6 +153,72 @@ export class ReplayTimeline {
     this.scores.sort((a, b) => a.tick - b.tick);
     this.startTick = this.frames.length ? this.frames[0]!.tick : 0;
     this.endTick = Math.max(endTick, this.startTick);
+  }
+
+  private marksCache: TimelineMark[] | null = null;
+
+  /** Every mark on the scrubber, in tick order. */
+  get marks(): TimelineMark[] {
+    if (this.marksCache) return this.marksCache;
+    const out: TimelineMark[] = [];
+    for (const k of this.kills) {
+      const kill = k.killer !== null && k.killer !== k.victim && k.kind !== "suicide";
+      out.push({ tick: k.tick, kind: kill ? "kill" : "death", kill: k });
+    }
+    for (const t of this.cuts) out.push({ tick: t, kind: "cut" });
+    let bsp: number | null = null;
+    for (const f of this.frames) {
+      const b = typeof f.bsp === "number" && Number.isInteger(f.bsp) && f.bsp >= 0 ? f.bsp : null;
+      if (b === null) continue;
+      if (bsp !== null && b !== bsp) out.push({ tick: f.tick, kind: "zone", bsp: b });
+      bsp = b;
+    }
+    out.sort((a, b) => a.tick - b.tick);
+    this.marksCache = out;
+    return out;
+  }
+
+  /** The recorded frame after (`dir` 1) or before (-1) `tick`, else the
+   *  end or the start: one step of frame stepping. */
+  frameStep(tick: number, dir: 1 | -1): number {
+    const f = this.frames;
+    if (dir > 0) {
+      for (const x of f) if (x.tick > tick + 1e-6) return this.clamp(x.tick);
+      return this.endTick;
+    }
+    for (let i = f.length - 1; i >= 0; i--) if (f[i]!.tick < tick - 1e-6) return this.clamp(f[i]!.tick);
+    return this.startTick;
+  }
+
+  /** The next (`dir` 1) or previous (-1) mark's tick from `tick`, or null.
+   *  Going back from just after a mark skips it (as a player's "previous"
+   *  does), so pressing it twice gets anywhere. */
+  markStep(tick: number, dir: 1 | -1): number | null {
+    const m = this.marks;
+    if (dir > 0) {
+      for (const x of m) if (x.tick > tick + 1e-6) return x.tick;
+      return null;
+    }
+    const slack = TICKS_PER_SECOND / 2;
+    for (let i = m.length - 1; i >= 0; i--) if (m[i]!.tick < tick - slack) return m[i]!.tick;
+    return null;
+  }
+
+  /** The kill to watch from `tick`: the latest at or before it (a second
+   *  of slack, so one just played still counts), else the next. */
+  killNear(tick: number): ReplayKill | null {
+    let best: ReplayKill | null = null;
+    for (const k of this.kills) {
+      if (k.tick <= tick + TICKS_PER_SECOND) best = k;
+      else return best ?? k;
+    }
+    return best;
+  }
+
+  /** Watching `kill` (viewer/session.ts). */
+  killcam(kill: ReplayKill): Killcam {
+    const by = kill.killer !== null && kill.killer !== kill.victim ? kill.killer : kill.victim;
+    return { from: this.clamp(kill.tick - KILLCAM_LEAD_TICKS), speed: KILLCAM_SPEED, follow: by };
   }
 
   get durationTicks(): number {
