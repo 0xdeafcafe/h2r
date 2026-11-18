@@ -174,8 +174,6 @@ struct State {
     peers: BTreeMap<u32, Peer>,
     qos: QosMemory,
     responder: Option<qos::Responder>,
-    /// Peers already said to share an IN_ADDR with another (base ports).
-    shared: std::collections::BTreeSet<SocketAddrV4>,
 }
 pub(crate) struct Network {
     pub config: NetworkConfig,
@@ -302,6 +300,25 @@ impl Network {
             None => a,
         }
     }
+    /// The IN_ADDR the title knows the peer whose XNet base is `remote`
+    /// by: the one it has; else its IP, unless that is this console's own
+    /// or another peer's (games on one Mac share an IP: 31000, 31010,
+    /// 31020 on 10.0.3.7), when one is made from the port
+    /// ([`NetworkConfig::shared_ip_in_addr`]). Peers are told apart by
+    /// IP and port, so each game on a Mac is a player of its own.
+    fn in_addr(&self, peers: &BTreeMap<u32, Peer>, remote: SocketAddrV4) -> u32 {
+        if let Some((ina, _)) = peers
+            .iter()
+            .find(|(_, p)| endpoint(&p.xna).ok() == Some(remote))
+        {
+            return *ina;
+        }
+        let real = ip_word(*remote.ip());
+        if remote.ip() != self.config.address.ip() && !peers.contains_key(&real) {
+            return real;
+        }
+        ip_word(NetworkConfig::shared_ip_in_addr(remote.port()))
+    }
     fn source(&self, mut a: SocketAddrV4, socket: &Socket) -> SocketAddrV4 {
         let guest_port = *lock(&socket.guest_port);
         if (1000..=1006).contains(&guest_port) {
@@ -313,28 +330,13 @@ impl Network {
             {
                 let mut s = lock(&self.state);
                 let from = SocketAddrV4::new(*a.ip(), base);
-                let known = s
-                    .peers
-                    .entry(ip_word(*a.ip()))
-                    .or_insert_with(|| Peer {
-                        xna: xnaddr(from),
-                        kid: [0; 8],
-                        connected: false,
-                    })
-                    .xna;
-                if let Ok(known) = endpoint(&known)
-                    && known != from
-                    && s.shared.insert(from)
-                {
-                    // Peers are told apart by IP alone: two games on one
-                    // Mac reach this one as one player.
-                    eprintln!(
-                        "live: xnet: {from} and {known} share the address {}; this console \
-                         answers both as {known}",
-                        a.ip()
-                    );
-                }
-                a.set_port(guest_port);
+                let ina = self.in_addr(&s.peers, from);
+                s.peers.entry(ina).or_insert_with(|| Peer {
+                    xna: xnaddr(from),
+                    kid: [0; 8],
+                    connected: false,
+                });
+                a = SocketAddrV4::new(Ipv4Addr::from(ina.to_le_bytes()), guest_port);
             }
         }
         a
@@ -497,8 +499,8 @@ impl Network {
                 let remote = endpoint(&xna)?;
                 let kid: [u8; 8] = read(rt, a[1], 8)?.try_into().unwrap();
                 writable(rt, a[2], 4)?;
-                let ip = ip_word(*remote.ip());
                 let mut s = lock(&self.state);
+                let ip = self.in_addr(&s.peers, remote);
                 if !s.keys.contains_key(&kid) {
                     eprintln!(
                         "live: join: {remote} for session {}: no key registered for it",
@@ -508,8 +510,9 @@ impl Network {
                 }
                 if !s.peers.contains_key(&ip) {
                     eprintln!(
-                        "live: join: {remote} for session {}: address made",
-                        hex(&kid)
+                        "live: join: {remote} for session {}: address made ({})",
+                        hex(&kid),
+                        Ipv4Addr::from(ip.to_le_bytes())
                     );
                 }
                 if let Some(old) = s.peers.get(&ip)
