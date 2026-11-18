@@ -54,12 +54,14 @@ fn app(t: &Temp) -> App {
         description: 0,
         pairs: Vec::new(),
     });
+    app.dispatch(Action::OpenSource(map));
+    assert!(app.session.is_open());
+    // After the source: opening one replaces a variant editor made for
+    // another (App::ensure_variants).
     app.set_variant_editor(::variants::VariantEditor::new(
         schema,
         Some(SaveStore::new(t.path("saves"), Some(names))),
     ));
-    app.dispatch(Action::OpenSource(map));
-    assert!(app.session.is_open());
     app
 }
 
