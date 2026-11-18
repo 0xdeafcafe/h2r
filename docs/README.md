@@ -60,6 +60,7 @@ goals, the two-stage plan, the crate table and milestones.
 
 - [graphics.md](graphics/graphics.md) (**start here**): D3D8 state and textures on wgpu (`crates/gfx`): batching, merged passes, the pipeline cache
 - [d3d.md](graphics/d3d.md): the guest-facing Direct3D 8 replacement (`crates/d3d`): entries, device model, push buffer, render targets, vblank
+- [render-switches.md](graphics/render-switches.md): every render switch, feature and experiment, default, measured result and verdict, and what was removed
 - [shaders.md](graphics/shaders.md): NV2A vertex microcode, register combiners, fog and shadow maps to WGSL (`crates/shaders`)
 - [render-thread.md](graphics/render-thread.md): the render thread (on by default, `H2_RENDER_THREAD=0` turns it off): what the guest can observe, measured gain
 - [render-loop.md](graphics/render-loop.md): stage 7a, the view and pass loops ported to Rust: what is built and what is next
