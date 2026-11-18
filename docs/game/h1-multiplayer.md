@@ -743,16 +743,50 @@ other manifests parse and resolve unchanged (the existing content
 tests).
 
 **The setting (Built):** `multiplayer.halo1_sandbox` in
-`boot::setting_defs` (`HALO1_SANDBOX`: `h1` default or `h2`, `Restart`,
-`H2_HALO1_SANDBOX`). `boot::new_maps::install` reads it and opens the
-library with `content::Library::open_with_sandbox`, so the next boot
-installs that variant of each converted map
-(`new_maps::tests::a_converted_map_installs_the_sandbox_the_setting_names`).
-Its row is "Halo 1 Maps" (Halo 1 Sandbox / Halo 2 Sandbox), the last on
-our Video screen; a change says "(restart)" until the next launch
-(`video_screen::tests::the_halo1_maps_row_picks_the_sandbox_for_the_next_launch`).
+`boot::setting_defs` (`HALO1_SANDBOX`: `h1` default or `h2`, `Live`,
+`H2_HALO1_SANDBOX`). `boot::new_maps::install` reads it at boot and
+writes that variant of each converted map into its content directory
+(`new_maps::tests::a_converted_map_installs_the_sandbox_the_setting_names`);
+a change after boot reaches `boot::h1_variants` through the setting's
+change callback (`h1_options::install_switches`) and counts from the
+map's next load (below). It is not on the Settings or Video screens: it
+is chosen on the Halo 1 options screen ("Halo 1 options" below).
 `h2 settings set multiplayer.halo1_sandbox h2` and `settings.toml` set it
 too.
+
+## Halo 1 options (**Built**, tests only: `boot::h1_options`, `boot::h1_options_row`)
+
+The per-game Halo 1 or Halo 2 choices, as rows of one list
+(`h1_options::OptionRow`: a two-choice setting, its label and what each
+choice means). Adding an option is a setting in `setting_defs` (choices
+1 Halo 1, 2 Halo 2), a row, and a switch in `h1_options::switch`.
+
+| Row | Setting | Where | Switch |
+|---|---|---|---|
+| Sandbox | `multiplayer.halo1_sandbox` (`H2_HALO1_SANDBOX`) | multiplayer | `h1_variants::set_mp_sandbox` |
+| Assets | `campaign.halo1_assets` (`H2_HALO1_ASSETS`) | campaign | `h1_variants::set_campaign_assets` |
+| HUD | `halo1.hud` (`H2_HALO1_HUD`) | both | `hud::set_choice` |
+
+- **Multiplayer:** the pregame Game Setup dialog (squad settings, screen
+  23; list ctor `0x2bb4d2`, row text `0x2bb74f`, row chosen `0x2bb801`)
+  gets a "Halo 1 Options" row after Change Map when the lobby's map
+  (`0x51098c`, set by `0x19a6f2`) is a converted map: its content
+  package's `h2recomp-map.toml` names an `h1_` map
+  (`h1_options_row::converted_map_name`). Only custom lobbies have Change
+  Map (action 0), so only they get the row. Choosing it opens the
+  options screen (`h1-options`, a list class of ours) on the dialog's own
+  window and slot, the way the skulls row opened its page. Left, right or
+  A changes a row; B backs out.
+- **Campaign:** a Halo 1 level's Game Options page (the skulls page after
+  the difficulty, docs/game/skulls.md) lists Assets and HUD under Start
+  Level, above the skulls, and opens even with no skull collected.
+- Each choice is saved to `settings.toml` at once and applies from the
+  next game or level load; an environment variable locks it ("locked").
+- **HUD:** `boot::hud` is the switch only: each game start picks
+  `HudStyle::Halo1` on a Halo 1 map (an `h1_` map or a Halo 1 campaign
+  level) with Halo 1's chosen, else Halo 2's, and logs
+  `hud: <map>: Halo 1 HUD`. Nothing draws a Halo 1 HUD yet; it is the
+  Halo 1 HUD lane's to read `hud::style()`.
 
 **Serving the chosen sandbox (Built, tests only).** The choice is
 `boot::h1_variants` (`set_mp_sandbox`, set from the setting at boot and
@@ -1007,9 +1041,8 @@ by hand, into any `--out`.
 ## The setting and the map list (design)
 
 - **Row:** `multiplayer.halo1_sandbox`, a choice `halo1` (default) /
-  `halo2`, one `settings::Def` in `boot::setting_defs` with a row on the
-  multiplayer settings screen, `Restart` (it applies when maps are
-  installed at boot), per [settings-menu.md](settings-menu.md).
+  `halo2`, one `settings::Def` in `boot::setting_defs`, on the Halo 1
+  options screen from the Game Setup dialog ("Halo 1 options" above).
 - **Packaging:** each converted map is a new map in the sense of
   [maps.md](maps.md) §4: Halo 1's maps aren't on the Halo 2 disc, so
   `boot::new_maps` installs each as a content package with its

@@ -133,11 +133,26 @@ logs"); the sign-in prompt logs `signin prompt: ...` lines (docs/live/live.md).
 
 ## Pitfalls we hit, and why
 
-- **A "Start" row at the top of the skulls page.** The user didn't want a row
-  that does nothing but continue. On the kit, A on any row can run the
-  screen's continue (`Row::action` returning `Then::CloseThen`), and value
-  rows keep left and right for themselves. The skulls page does this: left
-  and right toggle, A starts.
+- **A continue on X, or on A over any row.** The skulls page went on with
+  A on any row, X or Start, and X read as a mystery. It now does what the
+  game's own lists do: a visible Start Level row first, A selects the
+  focused row (Start Level goes on, a value row changes), B goes back, and
+  the class takes no extra buttons (`ListClass::action_buttons(&[])`).
+- **A widget of ours left on screen as its screen leaves.** A text or
+  bitmap block with animation 0 has no transition: it stays fully drawn
+  through its screen's out transition. Give it the animation the retail
+  screen it copies uses (`TextBlock::animation`, `PictureSpec::animation`).
+- **A list that stops a third of the way down.** Our screens are built on
+  the Controls tag, whose list lays out 6 rows (5 seen). A layout that
+  wants the page's height sets `ListLayout::visible`; the rows past the
+  Controls handler's six item widgets come from item widgets of ours
+  (`list_class::extra_items`).
+- **A level start that waits for a close.** Running a retail press from
+  the destructor of a closed screen of ours makes the player watch the
+  screen underneath come back first, and races the stack when the close
+  comes early. When the press itself pushes the next screen (the
+  difficulty's loading screen), run it from the press with our screen up.
+
 - **Start "stuck" on the skulls page.** The kept difficulty press
   (`0x2c9d38`) ran while the page was closing. It stored the difficulty, and
   the closing page's teardown reset it. The fix: close first (`0x14800c`) and
