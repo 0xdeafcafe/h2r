@@ -801,3 +801,18 @@ fn an_address_overridden_outside_the_plan_refuses_the_probe_cleanly() {
     );
     assert!(occupied(|_| None).is_empty());
 }
+
+/// The game-end path can return every tick: the probe said "game end at
+/// tick N" on each, thousands of lines. Once a game
+/// now, again after the next start.
+#[test]
+fn game_end_is_said_once_a_game() {
+    let mut s = State::default();
+    assert!(s.end_first(), "the first return of the end path");
+    for _ in 0..1000 {
+        assert!(!s.end_first(), "the frames after it");
+    }
+    s.started();
+    assert!(s.end_first(), "the next game's end");
+    assert!(!s.end_first());
+}
