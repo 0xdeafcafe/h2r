@@ -350,7 +350,8 @@ fn converted_lights_name_the_flares_given() {
                 }
                 _ => None,
             })
-            .expect("flare reference")
+            // A null reference built from the definition carries no fixup.
+            .unwrap_or(map::TagId::NULL)
     };
     assert_eq!(flare_of(0), map::TagId::NULL);
     assert_eq!(flare_of(1), flare);
