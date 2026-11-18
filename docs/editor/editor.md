@@ -654,11 +654,16 @@ arrays get a hint from their name and note: colours (`colour`/`color`,
 floats). Names come only from our definitions (their evidence is the
 XBE's readers and the disc), never from community tools or plugins.
 
-Coverage of the built-in registry: 996 named fields and 13,121 unnamed
-(by offset or type only), over 78 groups; per byte, 5,450 named, 10,895
-typed (references, blocks, string IDs whose role is not known), 502
-padding and 45,625 unknown. The names grow as definitions do: a name
-added to `defs/*.txt` shows in the editor with no other change.
+Definitions name fields in 52 of the registry's 78 groups. On the disc
+(`tests/tag_defs.rs`, opt-in) every tag of those groups decodes, and the
+share of their bytes that is named runs from 1.6% (`vrtx`, mostly
+compiled shader data) to 100% (`wgtz`): over 85% for `coll`, `lsnd`,
+`itmc`, `vehc`, `sily`, `spas` and `stem`; about half for `snd!`; under
+15% for `bipd`, `vehi`, `weap` and `sbsp` (`sbsp` is mostly data
+references and child blocks still typed only). `registry::tests::coverage_counts_every_byte_once`
+prints the registry's totals (named, typed, padding and unknown bytes)
+with `--nocapture`. The names grow as definitions do: a name added to
+`defs/*.txt` shows in the editor with no other change.
 
 ### The document
 
