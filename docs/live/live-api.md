@@ -902,8 +902,8 @@ stored: players use their own disc for the base.
 | `GET /v1/content/{sha256}` | public, or `read` on a private server | the bytes (`ETag` the hash, cached immutably); 404; 410 if taken down |
 | `POST /v1/content/{sha256}/report` | account token, `lxm: content.write`; `{reason}` | 201 `{ok, position}` |
 | `PUT /v1/maps` | account token, `lxm: content.write`; a signed `MapPublished` event (compact JWS) | 201 `{map, missing, position}`; 200 when the author republishes it |
-| `GET /v1/maps?base=&author=&limit=&cursor=` | read rule | `{items: [summary], next, position}`, newest first |
-| `GET /v1/maps/{map_id}` | read rule | `{map: summary + manifest, missing, position}`; 404; 410 if taken down |
+| `GET /v1/maps?sort=&base=&author=&category=&q=&limit=&cursor=` | read rule | `{items: [summary], next, position}`, newest first or most downloaded first (see "The mod repository") |
+| `GET /v1/maps/{map_id}` | read rule; a `read` token counts a download | `{map: summary + manifest, missing, position}`; 404; 410 if taken down |
 | `GET /v1/maps/{map_id}/image` | read rule | the preview (PNG or JPEG, its content type); 404 if none |
 | `POST /v1/maps/{map_id}/report` | account token, `lxm: content.write`; `{reason}` | 201 `{ok, position}` |
 | `GET /v1/hoppers/pins` | read rule | `{pins: [{hopper_id, map_ids}], position}` |
@@ -928,10 +928,14 @@ server with no data directory stores nothing (503).
 
 A package is published as an event the author signs with their own key,
 like the account's other events: stream `package-<map_id>`, type
-`MapPublished`, data `{manifest, image?}`. `manifest` is the package
+`MapPublished`, data `{manifest, image?, category?, source_url?}`. `manifest` is the package
 manifest as JSON (the TOML's tables and keys, with `[[patch]]` and
 `[[pack]]` as the arrays `patch` and `pack`); `image` is the SHA-256 of the
 preview, uploaded like a layer, given exactly when the manifest names one.
+`category` (one of `gameplay`, `weapons`, `vehicles`, `visuals`, `maps`,
+`other`) and `source_url` (an `http` or `https` URL of at most 300
+characters, where the mod came from) are the repository's display data,
+outside the `MapId` like the manifest's name (400 when malformed).
 The server checks the manifest as the runtime does ([maps.md](../game/maps.md) §7,
 "Manifest checks"), computes `MapId::of` and requires the stream to be that
 id's; refuses a manifest with no layers (only a retail base: 403) or naming a
@@ -943,14 +947,82 @@ and nonce checks apply.
 
 A summary is `{map_id, name, description?, author: {xuid, gamertag}, base:
 {map, sha256?, derived}, layers: [{sha256, size, kind: "patch"|"pack"}],
-size, image?, geometry?, published_at}`: `size` is the layers' bytes (what a
-player without them downloads), `image` the preview's hash, `geometry` the
+size, image?, geometry?, published_at, position, downloads, credit?,
+category?, source_url?}`: `size` is the layers' bytes (what a player
+without them downloads), `image` the preview's hash, `geometry` the
 manifest's `[result] geometry` (set when the mod changed the map's
-geometry). `missing` lists layers the server no longer holds (deleted by an
-admin). Lists leave out taken-down packages.
+geometry), `position` the `MapPublished` event's log position, `downloads`
+how many accounts fetched the manifest, `credit` the manifest's `[package]
+author` (who made the mod; `author` is who published it). `missing` lists
+layers the server no longer holds (deleted by an admin). Lists leave out
+taken-down packages. Servers before the repository send no `position` or
+`downloads`; read them as 0.
 
-The client side (`h2 live maps publish DIR`, `h2 live maps list`, and the
-join-time download) is in [maps.md](../game/maps.md) §5, "As built".
+### The mod repository
+
+The web's Mods pages (the stats site's "Mods" tab) and the game's Xbox
+Live menu browse the same list. The exact request, for clients:
+
+```
+GET /v1/maps?sort=new&limit=20
+GET /v1/maps?sort=new&limit=20&cursor=<the previous page's next>
+```
+
+```json
+{
+  "items": [
+    {
+      "map_id": "<64 hex>", "name": "Lockout Snipers",
+      "description": "...", "author": {"xuid": "0009...", "gamertag": "Modder"},
+      "credit": "who made it", "category": "weapons",
+      "source_url": "https://...",
+      "base": {"map": "lockout", "sha256": "<64 hex>", "derived": false},
+      "layers": [{"sha256": "<64 hex>", "size": 412345, "kind": "patch"}],
+      "size": 412345, "image": "<64 hex>",
+      "published_at": "2026-11-18T10:00:00Z",
+      "position": 4211, "downloads": 17
+    }
+  ],
+  "next": "4211",
+  "position": 4300
+}
+```
+
+- The id is `map_id` and the cursor is `next`, as everywhere in this API.
+  `next` is null on the last page (one shorter than `limit`); a page as
+  long as `limit` gives one, which may lead to an empty page.
+- `sort`: `new` (the default: newest first, by `position`) or `popular`
+  (most `downloads` first, ties newest first). Anything else is 400.
+- Filters, all optional, empty ones ignored: `base` (the base map's name,
+  any case), `author` (the publisher's gamertag; one no account has
+  matches nothing), `category` (400 when not one of the six), `q` (a
+  case-insensitive substring of the name, description, credit, base map
+  name or publisher's gamertag).
+- `limit` 1 to 1000 (default 100). `cursor` is opaque: for `new` it is the
+  last item's position (`"4211"`), for `popular` its downloads and
+  position (`"17:4211"`); one of the other sort's form is 400.
+- **New since last time** needs no per-account state: a client keeps the
+  highest `position` it has seen and counts the items above it as new.
+  `position` is the package's own, so a republish by its author (same
+  `MapId`) does not move it; a package an admin deleted and its author
+  published again is new again.
+- **Downloads.** `GET /v1/maps/{map_id}` with `Authorization: Bearer
+  <token>` (an account's `read` token; tokens are single use, so a fresh
+  one per request) counts that account once per package: the first time,
+  the server appends a server-signed `MapDownloaded` event (stream
+  `package-<map_id>`, data `{map_id, by}`) and answers with the new count.
+  Without a token, or with one that does not check out on a public server,
+  the read is answered and counts nothing (the web never sends one there).
+  A private server needs the token anyway. `MapDownloaded` events, like
+  reports, show in the log to admins only. The count is kept by the log's
+  projection, replayed at startup, so both homes (native and the Worker)
+  count the same way, with no background task.
+- The picture is `GET /v1/maps/{map_id}/image` when `image` is set, else
+  the base map's art.
+
+The client side (`h2 live maps publish DIR`, `h2 live maps import FILE`,
+`h2 live maps list`, and the join-time download) is in
+[maps.md](../game/maps.md) §5, "As built" and "Importing a mod".
 
 ## Player reports
 
