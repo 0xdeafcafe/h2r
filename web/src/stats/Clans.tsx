@@ -1,5 +1,5 @@
-// Clans on the stats site: the clan directory (/stats/clans) and a clan's
-// page (/stats/clans/:id) with its roster, combined numbers from games its
+// Clans on the stats site: the clan directory (/games/halo2/clans) and a clan's
+// page (/games/halo2/clans/:id) with its roster, combined numbers from games its
 // members played together, and the signed-in member's actions.
 
 import { gameMapTitle } from "../state/maps";
@@ -27,6 +27,7 @@ import "../styles/social.css";
 
 export { clanHref } from "./modes";
 import { clanHref } from "./modes";
+import { STATS_ROOT, statsPath } from "../routes";
 
 /** A small status line under a form or button. */
 function Note(props: { r: WriteResult | null; ok?: string }) {
@@ -50,7 +51,7 @@ export default function Clans() {
   const mine = () => (me() ? social.teamsOf(me()!.xuid) : []);
   return (
     <>
-      <Crumbs trail={[["Home", "/stats"], ["Clans"]]} />
+      <Crumbs trail={[["Home", STATS_ROOT], ["Clans"]]} />
       <Strip kind="players" />
       <div class="s-cols s-cols--over">
         <aside class="s-left">
@@ -58,7 +59,7 @@ export default function Clans() {
           <Pills label="Clans" items={[
             { label: `Clan Directory (${all().length})`, href: "#directory" },
             ...(me() ? [{ label: `My Clans (${mine().length})`, href: "#mine" }, { label: "Start a Clan", href: "#start" }] : [{ label: "Sign Up for h2 live", href: "/dash/signup" }]),
-            { label: "Players & Leaderboards", href: "/stats/players" },
+            { label: "Players & Leaderboards", href: statsPath("/players") },
           ]} />
           <Show when={me()}>
             <MyTeams />
@@ -173,11 +174,11 @@ export function ClanPage() {
   return (
     <Show when={team()} fallback={
       <>
-        <Crumbs trail={[["Home", "/stats"], ["Clans", "/stats/clans"], [id()]]} />
+        <Crumbs trail={[["Home", STATS_ROOT], ["Clans", statsPath("/clans")], [id()]]} />
         <Show when={social.teamsLoaded()} fallback={<div class="s-loading">Loading team…</div>}>
           <div class="s-full">
             <Title class="s-title--bar">Clan Not Found</Title>
-            <p class="s-pad">There's no clan {id()} on this server. It may have been disbanded. <A href="/stats/clans">Browse clans</A></p>
+            <p class="s-pad">There's no clan {id()} on this server. It may have been disbanded. <A href={statsPath("/clans")}>Browse clans</A></p>
           </div>
         </Show>
       </>
@@ -198,7 +199,7 @@ function TeamBody(props: { team: Team }) {
   const lead = () => leaderOf(t());
   return (
     <>
-      <Crumbs trail={[["Home", "/stats"], ["Clans", "/stats/clans"], [t().properties.name]]} />
+      <Crumbs trail={[["Home", STATS_ROOT], ["Clans", statsPath("/clans")], [t().properties.name]]} />
       <div class="s-id s-team-id">
         <span class="s-id-emblem s-team-emblem"><ClanEmblem team={t()} size={68} /></span>
         <div class="s-id-name s-team-name">
@@ -226,7 +227,7 @@ function TeamBody(props: { team: Team }) {
             { label: `Roster (${members().length})`, href: "#roster" },
             { label: "Combined Stats", href: "#combined" },
             { label: `Games Together (${rec().together})`, href: "#games" },
-            { label: "Clan Directory", href: "/stats/clans" },
+            { label: "Clan Directory", href: statsPath("/clans") },
           ]} />
           <Show when={can(t(), me()?.xuid, PRIV.recruit)}><Recruit team={t()} /></Show>
           <Show when={can(t(), me()?.xuid, PRIV.modifyTeam)}><EditTeam team={t()} /></Show>
@@ -290,7 +291,7 @@ function TeamBody(props: { team: Team }) {
                   <For each={rec().games.slice(0, 15)} fallback={<tr><td colspan="6" class="s-dim">No games with two members on the same side yet.</td></tr>}>
                     {(g) => (
                       <tr>
-                        <td><A href={`/stats/games/${g.game.game_id}`}>{gameTitle(g.game)} on {gameMapTitle(g.game)}</A></td>
+                        <td><A href={`${STATS_ROOT}/games/${g.game.game_id}`}>{gameTitle(g.game)} on {gameMapTitle(g.game)}</A></td>
                         <td class="hide-s">{g.game.status === "live" ? "playing now" : usDate(g.game.started_at)}</td>
                         <td>{g.slots.map((i) => g.game.players[i]?.name).filter(Boolean).join(", ")}</td>
                         <td class="num">{g.kills}</td>
@@ -313,7 +314,7 @@ function TeamBody(props: { team: Team }) {
                     <For each={rec().campaign.slice(0, 10)}>
                       {(g) => (
                         <tr>
-                          <td><A href={`/stats/games/${g.game_id}`}>{gameMapTitle(g)}</A> <span class="s-dim">{gameTypeLine(g)}</span></td>
+                          <td><A href={`${STATS_ROOT}/games/${g.game_id}`}>{gameMapTitle(g)}</A> <span class="s-dim">{gameTypeLine(g)}</span></td>
                           <td class="hide-s">{g.status === "live" ? "playing now" : usDate(g.started_at)}</td>
                           <td>{fireteam(g)}</td>
                           <td>{g.status === "live" ? <span class="s-soc-live">Live</span> : OUTCOME_WORDS[campaignOutcome(g)]}</td>
@@ -452,7 +453,7 @@ function EditTeam(props: { team: Team }) {
         <div class="s-soc-danger">
           <Show when={sure()} fallback={<button class="s-btn" onClick={() => setSure(true)}>Disband clan…</button>}>
             <span>Disband {p().name} for everyone?</span>
-            <button class="s-btn s-btn--bad" disabled={social.busy()} onClick={async () => { const res = await social.write(teamWrites.delete(props.team.id)); if (res.ok) navigate("/stats/clans"); else setR(res); }}>Disband</button>
+            <button class="s-btn s-btn--bad" disabled={social.busy()} onClick={async () => { const res = await social.write(teamWrites.delete(props.team.id)); if (res.ok) navigate(statsPath("/clans")); else setR(res); }}>Disband</button>
             <button class="s-btn" onClick={() => setSure(false)}>Keep</button>
           </Show>
         </div>

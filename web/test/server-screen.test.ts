@@ -133,7 +133,7 @@ describe("admin gating", () => {
     for (const who of [false, null] as const) {
       const pods = serverPods("overview", who);
       expect(pods.map((p) => p.label)).toEqual(["another server", "event log", "players", "stats site"]);
-      expect(pods.some((p) => p.to?.startsWith("/stats/admin") || p.to === "/dash/server/invites")).toBe(false);
+      expect(pods.some((p) => p.to?.startsWith("/games/halo2/admin") || p.to === "/dash/server/invites")).toBe(false);
       expect(serverPods("invites", who)).toEqual([]);
       expect(serverPods("accounts", who)).toEqual([]);
       // Importing is how a signed-out browser becomes a CLI account: open to all, no admin tools.
@@ -155,10 +155,10 @@ describe("admin gating", () => {
     // Every admin pod on the dashboard is a dashboard screen, apart from the one way into the Halo admin.
     for (const view of ["overview", "invites", "accounts", "import", "reports", "bans"] as const) {
       for (const p of serverPods(view, true)) {
-        if (p.to?.startsWith("/stats")) expect(p.to).toBe(HALO_ADMIN);
+        if (p.to?.startsWith("/games/halo2")) expect(p.to).toBe(HALO_ADMIN);
       }
     }
-    expect(HALO_ADMIN).toBe("/stats/admin");
+    expect(HALO_ADMIN).toBe("/games/halo2/admin");
     expect(LIVE_ADMIN_USAGE).toBe("/dash/admin/usage");
   });
 });

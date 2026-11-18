@@ -80,12 +80,12 @@ describe("sides of the site", () => {
     for (const p of ["/", "", "/dash", "/dash/players", "/dash/players/Some%20One", "/dash/settings/", "/players", "/?server=https://x.example"]) expect(sideOf(p)).toBe("dash");
   });
   test("everything else is the stats site", () => {
-    for (const p of ["/stats", "/stats/games/abc", "/stats/players/x/career?compare=y", "/games/1", "/players/x", "/events", "/dashboard"]) expect(sideOf(p)).toBe("stats");
+    for (const p of ["/games/halo2", "/games/halo2/games/abc", "/games/halo2/players/x/career?compare=y", "/games", "/stats/games/abc", "/games/1", "/players/x", "/events", "/dashboard"]) expect(sideOf(p)).toBe("stats");
   });
   test("crossing is a change of side", () => {
-    expect(crosses("/", "/stats")).toBe(true);
-    expect(crosses("/stats/events", "/dash/server")).toBe(true);
+    expect(crosses("/", "/games/halo2")).toBe(true);
+    expect(crosses("/games/halo2/events", "/dash/server")).toBe(true);
     expect(crosses("/dash/players", "/")).toBe(false);
-    expect(crosses("/stats", "/stats/players")).toBe(false);
+    expect(crosses("/games/halo2", "/games/halo2/players")).toBe(false);
   });
 });

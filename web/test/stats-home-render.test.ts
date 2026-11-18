@@ -45,10 +45,10 @@ beforeAll(async () => {
 
   const page = (sum: ReturnType<typeof parseSummary> | null, status: "ok" | "unsupported") =>
     renderToString(() => createComponent(Router, {
-      url: "/stats",
+      url: "/games/halo2",
       get children() {
         return createComponent(Route, {
-          path: "/stats", component: StatsLayout,
+          path: "/games/halo2", component: StatsLayout,
           get children() {
             return createComponent(Route, { path: "/", component: () => createComponent(HomeView, { win: "7d", week: sum, weekStatus: status, sum, status }) });
           },
@@ -82,7 +82,7 @@ describe("the stats home, rendered", () => {
   test("the boards name the mock's players and the windows are tabs", () => {
     expect(html).toContain("Sneaky Pete");
     for (const t of ["Today", "This Week", "This Month", "All Time"]) expect(html).toContain(`>${t}</a>`);
-    expect(html).toContain('href="/stats?window=30d"');
+    expect(html).toContain('href="/games/halo2?window=30d"');
   });
 
   test("the heatmap is a table with every hour of every day", () => {

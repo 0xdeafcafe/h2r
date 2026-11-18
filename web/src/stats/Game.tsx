@@ -27,6 +27,7 @@ import TacticalMap from "../viewer/TacticalMap";
 import Transport, { replayKey } from "../viewer/Transport";
 import { createReplaySession } from "../viewer/session";
 import "../styles/stats-game.css";
+import { STATS_ROOT, statsPath } from "../routes";
 
 export default function Game() {
   const params = useParams<{ id: string }>();
@@ -45,14 +46,14 @@ export default function Game() {
   };
   return (
     <>
-      <Crumbs trail={[["Home", "/stats"], ["Games", "/stats/games"], [crumb()]]} />
+      <Crumbs trail={[["Home", STATS_ROOT], ["Games", statsPath("/games")], [crumb()]]} />
       <Show
         when={game()}
         fallback={
           <div class="s-full s-game">
-            <Title class="s-title--bar" back={["see all games", "/stats/games"]}>Game Details</Title>
+            <Title class="s-title--bar" back={["see all games", statsPath("/games")]}>Game Details</Title>
             <Show when={missing()} fallback={<div class="s-loading">Loading game…</div>}>
-              <p class="s-pad">This game isn't available on this server. <A href="/stats/games">Back to games</A></p>
+              <p class="s-pad">This game isn't available on this server. <A href={statsPath("/games")}>Back to games</A></p>
             </Show>
           </div>
         }
@@ -81,7 +82,7 @@ function Header(props: { game: GameState }) {
   const host = () => hostName(g());
   return (
     <>
-      <Title class="s-title--bar" back={["see all games", "/stats/games"]}>Game Details</Title>
+      <Title class="s-title--bar" back={["see all games", statsPath("/games")]}>Game Details</Title>
       <div class="s-overview">
         <MapThumb game={g()} top />
         <ul class="s-summary">

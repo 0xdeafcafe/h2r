@@ -38,15 +38,15 @@
     {
       "name": "h2 Uplink",
       "short_name": "h2 Uplink",
-      "url": "/stats"
+      "url": "/games/halo2"
     },
     {
       "name": "Games",
-      "url": "/stats/games"
+      "url": "/games/halo2/games"
     },
     {
       "name": "Players",
-      "url": "/stats/players"
+      "url": "/games/halo2/players"
     }
   ]
 }

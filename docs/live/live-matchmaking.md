@@ -816,7 +816,7 @@ tables. Every player starts each ranked playlist at level 1.
 - Reads: `GET /v1/accounts/{who}/ranks`,
   `GET /v1/accounts/{who}/ranks/{playlist}` and `GET /v1/ranks/{playlist}`
   ([live-api.md](live-api.md#ranks)). The stats site shows them at
-  `/stats/ranks/{playlist}` and `/stats/players/{tag}/ranks`.
+  `/games/halo2/ranks/{playlist}` and `/games/halo2/players/{tag}/ranks`.
 
 ### 8.3 The game's side: stat reads, playlist ids, arbitration
 

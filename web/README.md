@@ -86,39 +86,41 @@ account (recovery code, authenticator, devices, sign out) and settings;
 profile and the server (`/dash/server`: service admin) sit under settings.
 Open **Games** (`/dash/games`) and select **Halo 2** to see recent games and,
 when signed in, your service record. Its link to the stats site (named by
-`STATS_NAME` in `src/brand.ts`) opens `/stats`.
+`STATS_NAME` in `src/brand.ts`) opens `/games/halo2`.
 The Halo admin area (MOTD, playlists, custom content) is on the stats site
-at `/stats/admin` ([docs/live/live-admin.md](../docs/live/live-admin.md)).
+at `/games/halo2/admin` ([docs/live/live-admin.md](../docs/live/live-admin.md)).
 Keyboard: arrows move, Enter (or `a`) selects,
 Escape / Backspace / ArrowLeft (or `b`) goes back; the mouse works too.
 
-**The stats site** (`/stats/...`, `src/stats/`) is the record, laid out like
+**The stats site** (`/games/halo2/...`, `src/stats/`; every link builds on
+`STATS_ROOT` / `statsPath()` in `src/routes.ts`, and the old `/stats/...`
+links redirect there) is the record, laid out like
 a mid-2000s game stats site: a fixed 902px column on a navy page, a header
 with the Welcome box, a black nav strip, breadcrumbs, a banner strip, then a
 290px menu column (pill menu, People Finder, reports, Recent Games) beside
 the content. The nav's tabs start with the home, "h2 live Online"; the
 way back to the dashboard is the small "‹ Dashboard" chip in the header's
-corner, not a tab, and every page's breadcrumbs start at "Home" (`/stats`).
-Pages: the home (`/stats`, `stats/Home.tsx`: live now with the live games,
+corner, not a tab, and every page's breadcrumbs start at "Home" (`/games/halo2`).
+Pages: the home (`/games/halo2`, `stats/Home.tsx`: live now with the live games,
 players online and open games; the last 24 hours and all-time totals;
 leaderboards for today, this week, this month or all time (`?window=`):
 most kills, best K/D with 3+ games, most wins, longest killing spree,
 Legendary levels and time played; most played maps, most used weapons, an
 activity heatmap by day and hour in your time, game types and playlists,
 skull use, medals from loaded games (derived), the weapon and map of the
-week, clan standings and recent games), games (`/stats/games`: the featured
-live map and the games spotlight), game details (`/stats/games/:id`: overview, the Game
+week, clan standings and recent games), games (`/games/halo2/games`: the featured
+live map and the games spotlight), game details (`/games/halo2/games/:id`: overview, the Game
 Viewer with the live tactical map or the replay, and the post game carnage
 report with Overview / Carnage / Medals / Weapons tabs), players and
-leaderboards (`/stats/players`), a player's service record, game history
+leaderboards (`/games/halo2/players`), a player's service record, game history
 with its preview pane, and career stats with Tool of Destruction, the Medal
-Chest and compare (`/stats/players/:tag`, `/history`,
-`/career?compare=<tag>`), and the event log (`/stats/events`).
+Chest and compare (`/games/halo2/players/:tag`, `/history`,
+`/career?compare=<tag>`), and the event log (`/games/halo2/events`).
 Campaign and multiplayer are kept apart: K/D, wins, medals, EXP,
 leaderboards and clan records count multiplayer games only, and campaign
-has its own record (`/stats/players/:tag/campaign`: levels, completions,
+has its own record (`/games/halo2/players/:tag/campaign`: levels, completions,
 time played, deaths, co-op partners), its own history tab
-(`/history?tab=campaign`) and spotlight tab (`/stats?games=campaign`), and
+(`/history?tab=campaign`) and spotlight tab (`/games/halo2?games=campaign`), and
 a mission report in place of the carnage report. A game's type is shown
 as Custom Game, Matchmaking: <playlist>, Campaign, Campaign Co-op or
 Campaign Online, with the difficulty (`src/state/gametype.ts`). The mock
@@ -202,7 +204,7 @@ UI says so. "Download for h2" saves an `accounts.json`-style file for
 protocol, the events and the code's types say team; everything the site
 shows says clan. The dashboard's friends and clans screens
 (`src/dash/Social.tsx`, `/dash/clans`), the stats site's clan directory and
-clan pages (`/stats/clans`, `/stats/clans/:id`; the old `/stats/teams`
+clan pages (`/games/halo2/clans`, `/games/halo2/clans/:id`; the old `/games/halo2/teams`
 paths redirect) and the Clans and Friends boxes on service records all
 read them and follow the stream, so they change as events arrive
 (`src/state/social.ts`). Writes are signed `h2live-event` JWS bodies sent to
@@ -286,7 +288,7 @@ either button to look or click to lock the mouse, wheel or trackpad for
 speed, Shift to go faster, one finger to look and two to fly on a touch
 screen, or a gamepad: `viewer/flycam.ts`), and a grid floor when the map has no geometry. The
 window can be dragged, resized, maximised, or popped out to
-`/stats/games/:id/3d`. The 2D map, the scrubber and the 3D window read one
+`/games/halo2/games/:id/3d`. The 2D map, the scrubber and the 3D window read one
 replay session (`src/viewer/session.ts`), and a popped-out window keeps in
 step with the page over a `BroadcastChannel`. `?view=3d` opens the window
 and `?map=iso-ne` picks a view, so both can be linked to. The mock builds

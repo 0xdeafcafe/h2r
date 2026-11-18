@@ -18,8 +18,9 @@ import { DASHBOARD_EXIT, STATS_HOME, statsNav } from "./modes";
 import { gameImage } from "../state/gameart";
 import { bannerKey } from "../lib/gameart";
 import { STATS_NAME } from "../brand";
+import { STATS_ROOT, statsPath } from "../routes";
 
-const playerHref = (tag: string) => `/stats/players/${encodeURIComponent(tag)}`;
+const playerHref = (tag: string) => `${STATS_ROOT}/players/${encodeURIComponent(tag)}`;
 
 export default function StatsLayout(props: { children?: JSX.Element }) {
   const navigate = useNavigate();
@@ -36,7 +37,7 @@ export default function StatsLayout(props: { children?: JSX.Element }) {
     if (!t) return;
     const a = accountByGamertag(live.state, t)
       ?? Object.values(live.state.accounts).find((x) => x.gamertag.toLowerCase().includes(t.toLowerCase()));
-    navigate(a ? playerHref(a.gamertag) : `/stats/players?q=${encodeURIComponent(t)}`);
+    navigate(a ? playerHref(a.gamertag) : `${STATS_ROOT}/players?q=${encodeURIComponent(t)}`);
   }
   return (
     <div class="stats">
@@ -52,8 +53,8 @@ export default function StatsLayout(props: { children?: JSX.Element }) {
                   <span class="s-welcome-pic"><Emblem seed="guest" size={56} /></span>
                   <ul>
                     <li class="s-welcome-hi">Welcome, <b>guest</b>!</li>
-                    <li class="ico ico-bolt"><A href="/stats/players">Players Online ({online()})</A></li>
-                    <li class="ico ico-mail"><A href="/stats/games">Games Live ({liveGames(live.state).length})</A></li>
+                    <li class="ico ico-bolt"><A href={statsPath("/players")}>Players Online ({online()})</A></li>
+                    <li class="ico ico-mail"><A href={statsPath("/games")}>Games Live ({liveGames(live.state).length})</A></li>
                     <li><A href="/dash/signup">Sign Up</A><i>|</i><A href="/">Dashboard</A></li>
                   </ul>
                 </>
@@ -65,7 +66,7 @@ export default function StatsLayout(props: { children?: JSX.Element }) {
                   <ul>
                     <li class="s-welcome-hi">Welcome, <b>{me().gamertag}</b>!</li>
                     <li class="ico ico-bolt"><A href="/dash/friends">Friends Online ({friendsOnline()})</A></li>
-                    <li class="ico ico-mail"><A href="/stats/games">Games Live ({liveGames(live.state).length})</A></li>
+                    <li class="ico ico-mail"><A href={statsPath("/games")}>Games Live ({liveGames(live.state).length})</A></li>
                     <li><A href={playerHref(me().gamertag)}>My Profile</A><i>|</i><A href={`${playerHref(me().gamertag)}/history`}>History</A><i>|</i><A href={`${playerHref(me().gamertag)}/career`}>Career</A></li>
                   </ul>
                   <button class="s-signout" onClick={() => identity.signOut()}>Sign Out</button>
@@ -87,9 +88,9 @@ export default function StatsLayout(props: { children?: JSX.Element }) {
           <p>h2 live is an independent community service for h2recomp. Not affiliated with any game publisher.</p>
           <ul>
             <li><A href="/">Dashboard</A></li>
-            <li><A href="/stats/players">Players</A></li>
-            <li><A href="/stats/ranks">Ranked</A></li>
-            <li><A href="/stats/events">Event Log</A></li>
+            <li><A href={statsPath("/players")}>Players</A></li>
+            <li><A href={statsPath("/ranks")}>Ranked</A></li>
+            <li><A href={statsPath("/events")}>Event Log</A></li>
             <li><A href="/dash/server">{live.wellKnown()?.id ?? new URL(live.server().base).host}</A></li>
             <li>position {live.state.position}</li>
           </ul>

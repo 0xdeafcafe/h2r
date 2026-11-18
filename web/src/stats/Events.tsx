@@ -9,6 +9,7 @@ import { Pills } from "./Side";
 import { num } from "./fmt";
 import { STATS_NAME } from "../brand";
 import { gameTypeLine } from "../state/gametype";
+import { STATS_ROOT, statsPath } from "../routes";
 
 const CATEGORY: Record<string, string> = {
   AccountCreated: "account", GamertagReserved: "account", TitleFilePublished: "file",
@@ -63,13 +64,13 @@ export default function Events() {
   const v = () => live.verifySummary;
   return (
     <>
-      <Crumbs trail={[["Home", "/stats"], ["Event Log"]]} />
+      <Crumbs trail={[["Home", STATS_ROOT], ["Event Log"]]} />
       <div class="s-cols">
         <aside class="s-left">
           <Title>Event Log</Title>
           <Pills label="Event log" items={[
-            { label: STATS_NAME, href: "/stats" },
-            { label: "Players & Leaderboards", href: "/stats/players" },
+            { label: STATS_NAME, href: STATS_ROOT },
+            { label: "Players & Leaderboards", href: statsPath("/players") },
             { label: "Server Details", href: "/dash/server" },
           ]} />
           <Panel title="Signature Check" sub="verified in this browser">

@@ -59,6 +59,18 @@ async fn fetch(
             crate::site::GameArt::NotFound(why) => live_server::app::not_found(why).into_response(),
         });
     }
+    // The stats site's first address: the same page where it is now.
+    // (live_server::page_meta::moved; wrangler.toml sends `/stats/*` here.)
+    if matches!(*req.method(), http::Method::GET | http::Method::HEAD)
+        && let Some(to) = live_server::page_meta::moved(&path, req.uri().query())
+    {
+        use axum::response::IntoResponse;
+        return Ok((
+            http::StatusCode::MOVED_PERMANENTLY,
+            [(http::header::LOCATION, to)],
+        )
+            .into_response());
+    }
     // The app's pages: its HTML with the page's link preview.
     if live_server::page_meta::is_page(&path)
         && matches!(*req.method(), http::Method::GET | http::Method::HEAD)

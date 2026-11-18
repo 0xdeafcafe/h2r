@@ -217,13 +217,13 @@ the game caches, to edit offline or import elsewhere.
 ## 3. The web admin area
 
 The admin tools are split between the app's two sides. The stats site's
-**Halo Admin** (`/stats/admin`, "Halo Admin" in its nav, shown only when the
+**Halo Admin** (`/games/halo2/admin`, "Halo Admin" in its nav, shown only when the
 signed-in browser account is an admin: the `admin` field above) keeps only
 the game's own things: what it shows and plays. Running the service
 (invites, accounts and admins, importing an account, the server's status)
 is the dashboard's server screens (§5), styled like the rest of the
 dashboard. Each side links to the other: the dashboard's "halo admin" pod
-opens `/stats/admin`, and the Halo Admin title bar's "Server admin" goes back
+opens `/games/halo2/admin`, and the Halo Admin title bar's "Server admin" goes back
 to `/dash/server`. The Halo Admin's three sections:
 
 - **Message of the Day** — the header and the message blocks, with a
@@ -353,7 +353,7 @@ live: sign this browser in as afr (one use, this machine only): http://127.0.0.1
 ```
 
 Opening it signs the browser in as the account the game plays as, which
-the embedded server has made an admin (§1), and lands on `/stats/admin`
+the embedded server has made an admin (§1), and lands on `/games/halo2/admin`
 (or the dashboard if that account is not an admin). How it works:
 
 - The CLI builds the same browser entry `account export` writes and hands
@@ -454,7 +454,7 @@ machine (a loopback peer with no proxy header, as for game art), so not
 through a tunnel. The plate shows uptime, how the server is reached,
 sign-up, reads, players, game art and the log's length (not the data
 directory or the admin list, which are long). Its pods: **invites**,
-**accounts**, **halo admin** (`/stats/admin`) and another server.
+**accounts**, **halo admin** (`/games/halo2/admin`) and another server.
 
 **Accounts** (`/dash/server/accounts`, admins): the counts, then blades
 for every player and importing an account, then each admin with how it
@@ -593,7 +593,7 @@ the server. It is read on each upload, so edits apply at once. Whatever
 the list says, a manifest with no layers (only a retail base) is never
 published: it would be the retail map itself.
 
-The Halo Admin's **Custom content** tab (`/stats/admin?tab=content`, linked
+The Halo Admin's **Custom content** tab (`/games/halo2/admin?tab=content`, linked
 from the dashboard's "halo admin" pod) lists packages and blobs with their state and
 report counts, the actions valid for each, the reports and the upload
 switch; the playlist builder pins published packages per hopper.

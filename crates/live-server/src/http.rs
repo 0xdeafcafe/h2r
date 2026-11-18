@@ -444,6 +444,12 @@ fn with_web(api: Router, live: Arc<Live>, dir: Option<&std::path::Path>) -> Rout
 /// ([`crate::page_meta`]), read afresh so a new build shows at once.
 #[cfg(feature = "native")]
 async fn app_page(live: &Live, index: &std::path::Path, req: Request) -> Response {
+    // The stats site's first address: the same page where it is now.
+    if let Some(to) = crate::page_meta::moved(req.uri().path(), req.uri().query())
+        && let Ok(to) = HeaderValue::from_str(&to)
+    {
+        return (StatusCode::MOVED_PERMANENTLY, [(header::LOCATION, to)]).into_response();
+    }
     let Ok(html) = tokio::fs::read_to_string(index).await else {
         return not_found("no web app").into_response();
     };

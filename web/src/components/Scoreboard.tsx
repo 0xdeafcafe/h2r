@@ -3,6 +3,7 @@ import { A } from "@solidjs/router";
 import type { GameState, Standing, TeamStanding } from "../state/reducer";
 import { standings, teamStandings } from "../state/reducer";
 import { colourFor, teamName } from "../lib/game";
+import { STATS_ROOT } from "../routes";
 
 function Row(props: { g: GameState; s: Standing; rank: number; onHover?: (i: number | null) => void }) {
   return (
@@ -19,7 +20,7 @@ function Row(props: { g: GameState; s: Standing; rank: number; onHover?: (i: num
       <td class="score-name">
         <span class="swatch" style={{ background: colourFor(props.g, props.s.team, props.s.index) }} />
         <Show when={props.s.xuid} fallback={props.s.name}>
-          {(x) => <A href={`/stats/players/${encodeURIComponent(props.s.name)}`} title={props.s.game_name ? `${x()} · in game as ${props.s.game_name}` : x()}>{props.s.name}</A>}
+          {(x) => <A href={`${STATS_ROOT}/players/${encodeURIComponent(props.s.name)}`} title={props.s.game_name ? `${x()} · in game as ${props.s.game_name}` : x()}>{props.s.name}</A>}
         </Show>
         <Show when={props.s.left}> <small>(left)</small></Show>
       </td>

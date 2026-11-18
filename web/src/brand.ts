@@ -11,7 +11,7 @@ export const SITE_NAME = "h2 live";
  *  titles and the header. */
 export const DASH_NAME = "Live Dashboard";
 
-/** The stats site's name (/stats): where the dashboard sends you for
+/** The stats site's name (/games/halo2): where the dashboard sends you for
  *  games, service records and leaderboards. The options considered are in
  *  web/README.md, "Names, icons and link previews". */
 export const STATS_NAME = "h2 Uplink";
