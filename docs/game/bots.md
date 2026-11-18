@@ -91,8 +91,9 @@ squads or pathfinding (§5.3). What we keep from that work is
 
   One machine has at most 4 users. More than 3 bots on one host therefore
   needs extra machines, which is a second reason for phantom peers.
-- **Local slots.** 4 entries of `0xc70` bytes at `0x54e8e0`. Flag bit 4 means
-  signed in with a profile; the profile copy is at `+0x18`.
+- **Local slots.** 4 entries of `0xc70` bytes at `0x54e8e0`. Flag `0x10`
+  (bit 4) means a profile is loaded, and `0x20` (bit 5) means signed in to
+  Live (§4.2). The profile block is at `+0x18`.
 
 ### 2.2 The action path, shared by both ways in (traced)
 
@@ -360,38 +361,122 @@ page's **Taunts** setting is off. A persistent bot has its own taunt value.
 
 ## 4. Way in 1: local slots
 
-### 4.1 Signing a bot in
+### 4.1 The bot's pad (traced, Repo)
 
-A bot takes a free controller port: 1 to 3 while the human is on 0. While
-the bot logic is active, the agent tap's per-port `input.pad` (Repo:
-`crates/agent/src/tap.rs`) already merges over `XInputGetState` at the xapi
-tap. We use the same seam, owned by the bot driver instead of the agent:
+A bot's controller is a pad on a free port, not a change to the agent tap.
+`input::InputManager::sync` (`crates/input/src/device.rs`) polls every
+`HostBackend` in order and puts each new pad on the lowest free port. So a
+**bots backend**, added last, makes its pads appear on ports 1 to 3 after
+the human's real pads. They show up in `XGetDevices`, so the game sees an
+inserted controller and opens it with `XInputOpen`, and every
+`XInputGetState` reads it. Two more points:
 
-1. On Game Setup and in pre-game lobbies, the bot's port "presses A" on the
-   players screen `0x1e`. That runs the join path at `0x25290f`, which picks
-   a profile.
-2. The bot needs its own profile. This is the open part. The retail join
-   picks a guest of the signed-in profile or a saved profile on the
-   memory unit. **Design:** add guest profiles named after the bot
-   ("Clanker 1" with the bot glyph, §8.2), written straight into the local
-   slot (`0x54e8e0 + i*0xc70`, flag bit 4 and the profile at `+0x18`) by a
-   hook at the profile pick, so that no profile file is saved. Whether the
-   pick accepts an injected slot is a Run item.
+- `supports_rumble` is false, so rumble is dropped.
+- The agent tap's `input.pad` still merges over the bot's pad. Tests and
+  scripts can use that to steer a bot.
 
-### 4.2 Hiding the views
+The brain writes one `Gamepad` per bot into shared state each tick. The
+backend's `poll` hands it back.
 
-This uses the render window from §2.3. It also needs:
+### 4.2 Signing a bot in (traced)
 
-- **HUD.** It is drawn per view, so it goes with the view. Confirm in a run.
-- **Sound.** One listener per local user. **Design:** the same window
-  around the listener update, so that only the human's ears count.
-- **Director (camera).** It still runs per user (`0x4e8c44 + u*0x140`).
-  That is harmless, but it costs a little CPU. Skip it for bot users once
-  the window is proven.
-- **Rumble.** The pad's motor output goes to a bot port that has no device:
-  drop it.
+**The slot flags.** In a local slot (`0x54e8e0 + i*0xc70`), `+0` holds two
+flags:
 
-### 4.3 What a local slot cannot do
+- `0x10`: a profile is loaded. It is read by `0x1902c1`, which returns the
+  name at `+0xc1c`, and set by `0x18fb34`.
+- `0x20`: the slot is signed in to Live. It is set and cleared by
+  `0x190074`. The Live account record is at `+0x470`; `0x1900a5` tests its
+  `+8 & 3`.
+
+**The sign-in function.** `0x18fb34(slot, block, file)`, stdcall, `ret 0xc`,
+signs a profile into a slot:
+
+- If the slot had no profile, it initialises `+8` (`0x14b410`) and sets
+  `+4` from `0x64610`.
+- It copies the 0x1e0-byte block (0x78 dwords) to `+0x18`, sets `0x10`, and
+  stores `file` at `+0x1f8`. `-1` means no saved file.
+- It then builds the controls table with `0x190c34` (eax = slot), and runs
+  `0x190eb3`, `0x53810` and `0x54fc0` with values from the block (`+0x148`,
+  `+0x14c`).
+
+Its callers are all "a profile was chosen" paths: the profile UI
+(`0x24b6ba` with `file = -1` for an unsaved profile, and `0x24b75b` after
+loading a file), the settings commit (`0x18fd0c`, `0x18fd59`) and
+`0x148b6b`. The sign-out is `0x18fc08`.
+
+**The players screen does not help.** In `0x1e`'s join path (`0x2528e5`):
+
+- `0x1900ff(port)` counts the other slots that are signed in to Live with
+  the same account (`+0x470`). If there are any, it opens dialog `0x88`.
+- Otherwise it opens the profile UI for that port: `0x24b6ea` (or
+  `0x24b779` in mode 4).
+- Then it sets the port's bit in the screen's mask (`or [screen+8], 1<<port`).
+
+So "press A" on a bot port opens a profile chooser that the bot would have
+to navigate, and it could pick a real profile.
+
+**Design:** the bot driver signs the bot in itself. On the players screen
+`0x1e`, it calls the game's `0x18fb34(port, block, -1)` with a guest call
+(`ExecCtx::call_guest`, as `coop_live` and `level_boot` use), then sets
+the port's bit in the screen mask.
+
+The block is a copy of the human's block (slot 0 `+0x18`) with these
+changes:
+
+- the 16-byte name field at block `+0x48` (single-byte characters:
+  `0x190001` copies 16 and zeroes the 16th) set to the bot's name, which is
+  ASCII and has no glyph;
+- the control fields set so the brain's sticks mean the same on every
+  machine (block `+0xfc` = slot `+0x114`, the record `0x190c34` reads):
+  - flags bits 0 and 2 cleared (look inversion and the other flag `0x190c34`
+    reads);
+  - layout `+0x100` = 0 (Default);
+  - thumbstick `+0x101` = 0;
+  - look sensitivity `+0x102` = 3.
+
+  The brain's aim spring is tuned against that sensitivity.
+- The name the game shows comes from slot `+0xc1c` (UTF-16, 32 units,
+  `0x1902c1`). The driver writes it after the sign-in.
+
+Because the file is `-1`, nothing is saved. The bot leaves through
+`0x18fc08`, called the same way, when the bot is removed or the game
+returns to the main menu.
+
+Whether a signed-in slot with its mask bit is enough for the game to make a
+local player in Split Screen, System Link and Live custom games is the
+first Run item of stage 1.
+
+### 4.3 Hiding the views (traced)
+
+These read the local-user map `[0x4e8c20]+0xc` or the count `+8`:
+
+| Reader | What for | Bot window |
+|---|---|---|
+| `render_game_views` `0x2234e0` (`0x223524`, `0x22359e`) | one view per user, layout from the count | **yes** |
+| HUD, per view (`0x1e6fe0`: user to player via the map, from the view's draw) | that view's HUD | covered by the render window |
+| sound frame service `0x125b40`, listener loop `0x125c93`..`0x125cd7` | one listener per mapped user (`0x221a70(user, listener)`) | **yes**, so only the human's ears count |
+| `0x1870a0` | actions | **no**: the bot must act |
+| `director_update` `0x1554b0` (`0x155939`, `0x155caf`) | one camera per user | no: harmless, small CPU |
+| about 70 others (game engine, UI, scoreboard; the full list is in the scratch trace) | | no |
+
+**The window:** at the entry of `0x2234e0` and of `0x125b40`, the driver
+does three things:
+
+1. It saves the count and the map.
+2. It sets each bot user's map entry to -1, and lowers the count.
+3. It puts the saved values back at exit.
+
+The order of the map entries for the human is kept. With the pipelined
+render, the render window runs against the render's own snapshot. Its write
+and its restore cancel out, so nothing reaches the game thread. The
+pipeline's hook plan has to list the window as a render-thread hook (its
+boot test checks that every hook is listed).
+
+**Rumble.** The bots backend has no motors, so rumble to a bot port is
+dropped.
+
+### 4.4 What a local slot cannot do
 
 - On **Live**, extra local players are guests of a signed-in account. Run
   item: whether the game's matchmaking allows guests at all, and how many.
@@ -701,15 +786,45 @@ Each stage ends in tests that can be run without the game, plus a short
 list for the user to play (§11).
 
 1. **Minimal bot (local slot).**
-   - The bot driver gives one port to one bot and signs it in (§4.1).
-   - The render, listener and director windows hide its view.
-   - The brain is trivial: walk toward the nearest enemy and hold fire when
-     it is in view.
-   - Tests:
-     - the view window as a pure function over synthetic `[0x4e8c20]`
-       memory (count and map in, restored after);
-     - the port merge;
-     - the brain's stick and button output from synthetic perception.
+   - The bots backend puts 1 to 3 bot pads on the ports after the human's
+     (§4.1).
+   - On the players screen, the driver signs each bot in with `0x18fb34`
+     and sets its bit in the screen mask (§4.2). It signs them out with
+     `0x18fc08`.
+   - The render and listener windows hide the bots' views (§4.3).
+   - The brain is trivial:
+     - turn toward the nearest living enemy and walk at it;
+     - hold the trigger while that enemy is within 15 degrees of the aim
+       and 10 world units (about 30 m);
+     - there is no line of sight yet, so it walks into walls.
+   - Switched on by `H2_BOTS=<n>` (1 to 3) for this stage; the Clankers
+     page replaces that in stage 7.
+   - Tests over synthetic guest memory:
+     - the view window: count and map in, the bot users hidden, the same
+       values restored after, the human's order kept;
+     - the sign-in block: the human's block copied, the name and control
+       fields set, everything else untouched;
+     - the slot and screen-mask writes;
+     - the backend: the pads come after the real ones and carry the
+       brain's state;
+     - the brain: stick and trigger output from synthetic positions and
+       facings.
+   - **Game run (the user):**
+     1. `H2_BOTS=1 h2 play`, then Split Screen. On the players screen a
+        second player appears, named "Clanker 1", without anyone pressing
+        anything.
+     2. Start a Slayer game on a small map (Lockout or Ivory Tower). The
+        screen is not split: you see one full-screen view and your own HUD.
+     3. You hear only what is near you, not what is near the bot.
+     4. The bot spawns, turns to you, walks at you, and shoots when you are
+        in front of it. It shows on your radar and on the scoreboard.
+     5. Killing it and being killed by it count on the scoreboard and in
+        the carnage report.
+     6. Repeat with `H2_BOTS=3`: three bots, one view, all on the
+        scoreboard.
+     7. Back at the main menu, Split Screen shows one player again (the
+        bots are signed out).
+     8. Send the log lines starting `bots:`.
 2. **Navigation.**
    - The nav mesh tool runs on BSP collision, with a cache.
    - Path following and stuck recovery.
@@ -762,10 +877,10 @@ list for the user to play (§11).
 Each item is for the user to play, or for a coordinator run.
 
 1. A bot port signing in through the players screen with an injected guest
-   profile (§4.1), on Split Screen, System Link and a Live custom game.
+   profile (§4.2), on Split Screen, System Link and a Live custom game.
 2. The view window: the human gets a full screen, and the HUD, sound and
    camera are right with 1 to 3 bots.
-3. Whether Live matchmaking accepts guests (§4.3), and how our Live names
+3. Whether Live matchmaking accepts guests (§4.4), and how our Live names
    them.
 4. Bot movement on real maps: the nav mesh and stuck recovery on every
    shipped MP map, jumps and lifts included.
@@ -785,13 +900,18 @@ Each item is for the user to play, or for a coordinator run.
 
 ## 12. Next tracing (offline)
 
+Done for stage 1 (§4.1 to §4.3): the pad seam, the slot flags and the
+sign-in function, the players screen's join path, and the readers of the
+local-user map.
+
+Still open:
+
 - The membership update `0x14bba8`/`0x14bc17`/`0x14bf84` → `0x14c090`, and
   the session fields that mark a peer joined (for phantoms).
+- How the players screen's mask becomes the game's local users when the
+  game starts. A run answers it for stage 1 (stage 1 run, step 1); a trace
+  is needed only if that fails.
 - The network receivers of remote actions, `0x6a81c` and `0x978bb`.
-- The HUD, listener and director loops: whether each reads the local-user
-  map or the view list.
-- The profile pick on the players screen (`0x18fc44`, `0x24b779`,
-  `0x24b6ea`) and where a guest profile comes from.
 - The `0x5c` action record's layout, for the converter's tests (the crouch
   bit and the weapon index first).
 - Which font slots draw player names in the lobby, scoreboard and carnage
