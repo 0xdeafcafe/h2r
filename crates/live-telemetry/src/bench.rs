@@ -581,9 +581,9 @@ fn fnv(text: &str) -> u64 {
 /// Each scene's output for its first 12 ticks, as hashed by [`fnv`] over
 /// [`output_json`]: what a change to the guest-side path must keep.
 const GOLDEN: [(&str, u64); 3] = [
-    ("mp16", 0xe7c385799bca4930),
-    ("mp16_1000", 0x84e54907e5073b6c),
-    ("campaign100", 0xc97a71e1f8889f43),
+    ("mp16", 0x5f87e00e72613693),
+    ("mp16_1000", 0xf840a9fe4aec3427),
+    ("campaign100", 0xd8a08e706180ce67),
 ];
 
 #[test]

@@ -215,6 +215,11 @@ fn installing_a_mod_counts_one_download_per_account() {
         time::OffsetDateTime::now_utc(),
     )
     .sign(&modder);
+    // Tokens are single use: a fresh one for the manifest.
+    let write = format!(
+        "Bearer {}",
+        issue_token(&modder, &modder_id, &server_id, lxm::CONTENT_WRITE, now())
+    );
     agent
         .put(&format!("{api}/maps"))
         .set("authorization", &write)
