@@ -257,6 +257,33 @@ vertices, and plane x vertex work is budgeted (`MAX_VALIDATE_WORK`); exported
 hull faces are deduplicated by vertex set and capped by `MAX_OBJ_TRIANGLES`.
 Capsules are built along their end-point axis, not a fixed one.
 
+## What the engine does with a BSP
+
+How the engine answers "which surface" from the blocks above; modelled in
+`h1convert::surface_query` and checked on the disc by
+`crates/h1convert/tests/collision_engine.rs`. The same code serves object
+and structure BSPs.
+
+| Step | Rule | Evidence |
+|---|---|---|
+| Vector test `0x001de6d0` | Recursive over the 3D tree with `t` in `[t0, t1]`. Both ends on one side (`d >= 0` is front): that child. Else split at `t = -(n.o - d)/(n.v)`, near child first (back when `n.v > 0`), then the far child, remembering the crossed plane. Leaf states: solid 3, a leaf with flag bit 0 2, any other leaf 1. A front-facing hit (query flag bit 0) is state 1 or 2 followed by 3, the surface looked up in the previous leaf; a back-facing one (bit 1) 3 followed by 1 or 2; unless query bit 2, 2 followed by 2 is a two-sided hit. A surface with flag bit 1 is skipped under query bit 3, flag bit 3 under bit 4 | E |
+| Fall-through | When the lookup finds no surface (`-1`) the walk goes on: the segment passes into solid unreported | E `0x001de8f1`, `0x001de921` |
+| Reference matcher `0x001dea00` | Every reference of the leaf whose `plane & 0x7fff` is the crossed plane (the flip bit is not compared); the point is projected and the 2D tree walked from the reference's node; a surface is accepted when `0x001debd0` puts the point inside its ring (and, for a breakable surface, its bit is set in the breakable mask) | E |
+| Projection | Dominant axis: z when `|nz| >= |ny|` and `|nz| >= |nx|`, else y when `|ny| >= |nx|`, else x. Sign `(n[axis] > 0) != flip`. Table `0x00440b94` (three `i16` per entry, `(axis, sign)`): x `(z, y)`, `(y, z)`; y `(x, z)`, `(z, x)`; z `(y, x)`, `(x, y)` | E `0x001dea5c`..`0x001deb4c`, `0x001de0c2`..`0x001de1e1` |
+| 2D point walk `0x00296520` | Front child (`+0xe`) when `a*u + b*v - d >= 0`, else back (`+0xc`); a child `0xffff` is none | E |
+| Volume query `0x001ddea0` (sphere) | At a node the sphere straddles, the plane is recorded with bit 15 set before the back child and clear before the front child; in a leaf only references whose `plane` (flip bit included) equals a recorded entry are walked, with the 2D sphere walk `0x001de220`. So a reference's flip bit must say the leaf is on its plane's back | E |
+| Breakable mask `0x4ed280` | Filled with ones at map reset (`0x00183ec0`): every breakable surface starts intact; Havok's structure key filter `0x001ef451` and the matcher skip a breakable surface only once its bit is cleared | E |
+| Havok surface shape `0x001edd00` | Havok's child shape for a structure key is the surface's ring as one polygon, its vertices written inline after a `0x20`-byte header with no count check | E |
+
+V (every retail structure BSP on the Halo 2 disc, 2,427,337 surfaces
+reached through 2D references): each surface's centroid, projected by
+its reference's plane and flip, walks its reference's 2D tree back to
+it, every time; every reference is on its leaf's path on the side its
+flip bit says (1,596,791 references); leaf flag bit 0 is set exactly on
+leaves whose references reach a two-sided surface (one leaf of 611,684
+differs); rings have at most 8 vertices. Halo 1's data meets all of it
+(below and [h1-map-format.md](h1-map-format.md)).
+
 ## Not established
 
 - `coll`: the BSP leading word (V: on every retail object it is a node

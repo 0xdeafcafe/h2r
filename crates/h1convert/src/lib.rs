@@ -4,6 +4,8 @@
 //! - [`collision`]: the structure collision BSP, Halo 1 layout to Halo 2's.
 //! - [`query`]: point and segment tests over either game's BSP tree, which
 //!   is how a conversion is checked against its source.
+//! - [`surface_query`]: the engine's vector test with surface lookup over
+//!   either game's BSP, to check a conversion surface for surface.
 //! - [`sandbox`]: Halo 1 multiplayer items to their nearest Halo 2 ones.
 //! - [`placements`]: spawns, flags and item spawns for the Halo 2 sandbox.
 //! - [`apply`]: a plan written into a base map's scenario.
@@ -35,6 +37,7 @@ pub mod sky;
 pub mod sky_shaders;
 pub mod slots;
 pub mod structure;
+pub mod surface_query;
 pub mod textures;
 pub mod ui;
 
