@@ -449,8 +449,24 @@ fn installed_map_pack_lists_opens_and_saves() {
         eprintln!("{}: {} tags, {shared} with raw data in a shared map", m.map, ids.len());
         assert!(shared > 0, "a pack map leans on shared.map");
         app.dispatch(Action::SetTool(ToolKind::Scenario));
-        let x = flag_x(&app);
-        move_flag(&mut app, x + 1.0);
+        // One float: x moves, y and z stay the map's own (move_flag's 3.0s
+        // match only the invented fixture).
+        let [x, y, z] = app
+            .session
+            .scenario()
+            .unwrap()
+            .get(BlockKind::NetgameFlags, 0, "position")
+            .unwrap()
+            .as_vec3()
+            .unwrap();
+        app.session
+            .apply(Command::set(
+                BlockKind::NetgameFlags,
+                0,
+                "position",
+                Value::Vec3([x + 1.0, y, z]),
+            ))
+            .unwrap();
         let out = scratch.0.join(format!("{}.map", m.map));
         app.dispatch(Action::SaveMapAs(out.clone()));
         let saved = std::fs::read(&out).unwrap();
