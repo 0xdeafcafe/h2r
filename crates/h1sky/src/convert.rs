@@ -63,9 +63,12 @@ pub fn convert_sky_with_flares(
     set(&mut r, "model_scale", Val::Float(model_scale));
     set(&mut r, "camera_translation_scale", Val::Float(1.0));
     set(&mut r, "fallback_color", Val::floats(&sky.ambient_first_rgb()));
-    // Halo 1's two fog runs as the two fog blocks, in order.
-    for (path, fog) in ["fog_a", "fog_b"].into_iter().zip(sky.fogs()) {
-        let Some(f) = fog else { continue };
+    // Halo 1's outdoor fog as `fog_a`, when it is one. Its indoor fog is
+    // not `fog_b`: Halo 2 blends `fog_b` from the same skies as `fog_a`
+    // (E 0x00131030), so it would fog the outdoors with Halo 1's indoor
+    // fog (`h1::Sky::indoor_fog`).
+    if let Some(f) = sky.outdoor_fog() {
+        let path = "fog_a";
         let fdef = def.child(path).expect("fog block");
         let mut e = defs::default_record(fdef);
         set(&mut e, "color", Val::floats(&f.color));

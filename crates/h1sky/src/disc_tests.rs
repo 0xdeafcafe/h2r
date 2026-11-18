@@ -54,6 +54,7 @@ fn real_h1_disc_every_sky_reads() {
     let (mut with_model, mut with_animation, mut with_fog, mut with_functions) = (0, 0, 0, 0);
     let mut lights = 0;
     let mut fogs = 0;
+    let mut unset_a = Vec::new();
     for e in &disc.maps {
         let name = h1map::disc::file_name(e);
         let map = h1_map(&mut x, h1map::disc::map_stem(e)).expect("map reads");
@@ -87,6 +88,17 @@ fn real_h1_disc_every_sky_reads() {
                 assert!(s[at + 6] <= s[at + 7], "{name} fog {k} start past opaque");
             }
             fogs += sky.fogs().iter().flatten().count();
+            // A fog A opaque at its start is the one shape: black, density
+            // 1, start and opaque 0 (h1::Sky::outdoor_fog).
+            if let (Some(f), None) = (sky.fogs()[0], sky.outdoor_fog()) {
+                assert_eq!(
+                    (f.color, f.max_density, f.start_distance, f.opaque_distance),
+                    ([0.0; 3], 1.0, 0.0, 0.0),
+                    "{name} {}",
+                    t.name
+                );
+                unset_a.push(format!("{name} {}", t.name));
+            }
             for l in &sky.lights {
                 if !l.lens_flare.id.is_none() {
                     let lens = map.tag(l.lens_flare.id).expect("lens resolves");
@@ -116,6 +128,8 @@ fn real_h1_disc_every_sky_reads() {
     assert_eq!(with_fog, 0);
     assert_eq!(with_functions, 2);
     assert_eq!(lights, 48);
+    println!("fog A opaque at its start: {unset_a:?}");
+    assert_eq!(unset_a.len(), 5, "a10's two, c20's, d40's space_x10 and ui's");
 }
 
 /// `H2_ISO=<iso> cargo test -p h1sky -- --ignored real_h2 --nocapture`
