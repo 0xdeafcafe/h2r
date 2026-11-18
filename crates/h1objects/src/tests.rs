@@ -1073,7 +1073,7 @@ fn built_physics_model_round_trips_with_every_piece() {
         node("a", 0, 2, -1),
         node("b", 0, -1, -1),
     ];
-    let root = physics_model(&bodies, &nodes, crate::rebuild::DEVICE_BODY).unwrap();
+    let root = physics_model(&bodies, &nodes, crate::rebuild::DEVICE_BODY, &[]).unwrap();
     let def = Defs::builtin().group(map::FourCC(*b"phmo")).unwrap();
     let got = defs::from_built(def, &root).unwrap();
     let again = defs::to_built(def, &got, &mut |_| None).unwrap();
@@ -1112,7 +1112,7 @@ fn built_physics_model_round_trips_with_every_piece() {
         other => panic!("{other:?}"),
     };
     assert!(rbs.iter().all(|b| words(b) == (vec![0, 0, 2, 0], vec![0, 0, 5, 0])));
-    let biped = physics_model(&bodies, &nodes, crate::rebuild::BIPED_BODY).unwrap();
+    let biped = physics_model(&bodies, &nodes, crate::rebuild::BIPED_BODY, &[]).unwrap();
     let biped = defs::from_built(def, &biped).unwrap();
     let Some(Val::Block(brbs)) = biped.at("rigid_bodies") else {
         panic!()
@@ -1194,6 +1194,8 @@ fn built_physics_model_round_trips_with_every_piece() {
         ["flags", "parent", "next_sibling", "first_child"].map(|f| ns[1].get(f).cloned()),
         [0, 0, 2, -1].map(|v| Some(Val::Int(v)))
     );
+    // No joints asked for: no edges or constraints.
+    assert!(block("node_edges").is_empty() && block("ragdoll_constraints").is_empty());
 }
 
 /// A rebuilt biped: the role's root and block words, then the object

@@ -1391,7 +1391,12 @@ pub const PIECE_MATERIAL: (&str, u16) = ("hard_metal_thick_cov", 76);
 ///
 /// Every runtime word (shape vtables and pointers) stays zero: the engine
 /// writes them at load (`0x001ea9c0`).
-pub fn physics_model(bodies: &[Body], nodes: &[PhysNode], words: BodyWords) -> Result<Block> {
+pub fn physics_model(
+    bodies: &[Body],
+    nodes: &[PhysNode],
+    words: BodyWords,
+    joints: &[crate::ragdoll::Constraint],
+) -> Result<Block> {
     let d = def(b"phmo")?;
     let mut r = defs::default_record(d);
     let f = |v: f32| Val::Bytes(v.to_le_bytes().to_vec());
@@ -1606,7 +1611,79 @@ pub fn physics_model(bodies: &[Body], nodes: &[PhysNode], words: BodyWords) -> R
             .collect::<Result<Vec<_>>>()?;
         set(&mut r, "nodes", Val::Block(ns))?;
     }
+    ragdoll(d, &mut r, joints)?;
     built(d, &r)
+}
+
+/// The friction every built ragdoll edge carries (`node_edges` constraint
+/// `+8`, which the engine uses in place of the constraint's own when not
+/// zero, E `0x001d796f`). V: 0.25 on every edge of the retail Chief's and
+/// Elite's ragdolls.
+pub const JOINT_FRICTION: f32 = 0.25;
+
+/// Writes `joints` into `r`: each a ragdoll or limited-hinge constraint
+/// (constraint types 2 and 1, E `0x001eb1b0`) with its own node edge
+/// naming it, as retail's ragdolls are laid out (V: one edge per
+/// constraint, the edge's nodes the constraint's, `+0x70` the edge).
+fn ragdoll(d: &StructDef, r: &mut Record, joints: &[crate::ragdoll::Constraint]) -> Result<()> {
+    use crate::ragdoll::{Frame, Joint};
+    if joints.is_empty() {
+        return Ok(());
+    }
+    let child = |p: &str| {
+        d.child(p)
+            .ok_or_else(|| Error::Invalid(format!("phmo {p}")))
+    };
+    let (rag_def, hinge_def) = (child("ragdoll_constraints")?, child("limited_hinge_constraints")?);
+    let (edge_def, ref_def) = (child("node_edges")?, child("node_edges.constraints")?);
+    let frame = |e: &mut Record, at: &str, f: &Frame| -> Result<()> {
+        set(e, &format!("header.{at}.unknown_0"), Val::Bytes(1.0f32.to_le_bytes().to_vec()))?;
+        set(e, &format!("header.{at}.forward"), Val::floats(&f.forward))?;
+        set(e, &format!("header.{at}.left"), Val::floats(&f.left))?;
+        set(e, &format!("header.{at}.up"), Val::floats(&f.up))?;
+        set(e, &format!("header.{at}.position"), Val::floats(&f.position))
+    };
+    let (mut rags, mut hinges, mut edges) = (vec![], vec![], vec![]);
+    for c in joints {
+        let (kind, def, list) = match c.joint {
+            Joint::Ragdoll { .. } => (2, rag_def, &mut rags),
+            Joint::Hinge { .. } => (1, hinge_def, &mut hinges),
+        };
+        let mut e = defs::default_record(def);
+        set(&mut e, "header.name", Val::text(&format!("{:?}", c.class).to_lowercase()))?;
+        set(&mut e, "header.node_a", Val::Int(c.node_a.into()))?;
+        set(&mut e, "header.node_b", Val::Int(c.node_b.into()))?;
+        frame(&mut e, "frame_a", &c.frame_a)?;
+        frame(&mut e, "frame_b", &c.frame_b)?;
+        set(&mut e, "header.edge", Val::Int(edges.len() as i64))?;
+        match c.joint {
+            Joint::Ragdoll { twist, cone, plane } => {
+                set(&mut e, "min_twist", Val::Float(twist.0))?;
+                set(&mut e, "max_twist", Val::Float(twist.1))?;
+                set(&mut e, "min_cone", Val::Float(-cone))?;
+                set(&mut e, "max_cone", Val::Float(cone))?;
+                set(&mut e, "min_plane", Val::Float(plane.0))?;
+                set(&mut e, "max_plane", Val::Float(plane.1))?;
+            }
+            Joint::Hinge { min, max } => {
+                set(&mut e, "min_angle", Val::Float(min))?;
+                set(&mut e, "max_angle", Val::Float(max))?;
+            }
+        }
+        let mut cref = defs::default_record(ref_def);
+        set(&mut cref, "constraint_type", Val::Int(kind))?;
+        set(&mut cref, "constraint_index", Val::Int(list.len() as i64))?;
+        set(&mut cref, "friction", Val::Float(JOINT_FRICTION))?;
+        let mut edge = defs::default_record(edge_def);
+        set(&mut edge, "node_a", Val::Int(c.node_a.into()))?;
+        set(&mut edge, "node_b", Val::Int(c.node_b.into()))?;
+        set(&mut edge, "constraints", Val::Block(vec![cref]))?;
+        edges.push(edge);
+        list.push(e);
+    }
+    set(r, "ragdoll_constraints", Val::Block(rags))?;
+    set(r, "limited_hinge_constraints", Val::Block(hinges))?;
+    set(r, "node_edges", Val::Block(edges))
 }
 
 /// `obje +0` for bipeds (docs/formats/objects.md).
