@@ -12,6 +12,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use crate::capture::{self, FrameSource, Sampler, TickMark, TimelineFrames};
 use crate::loads::{LoadTracker, TimelineTotals, TotalsSource};
 use crate::tap::{self as input, AgentTap, Chain, Input};
+use crate::trace::{self, Recorders};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -144,6 +145,8 @@ struct State {
     /// Frame-stats running totals (`timeline::phase` unless a test sets
     /// one).
     totals: Option<Box<dyn TotalsSource>>,
+    /// `trace.*` and `flight.*`: rows taken at every tick.
+    recorders: Recorders,
 }
 
 /// A `profile.capture` waiting for its window to pass.
@@ -347,6 +350,7 @@ impl Agent {
         if recording && let Err(e) = input::stop_and_write(&s.input) {
             eprintln!("agent: writing the input recording at exit: {}", e.message);
         }
+        s.recorders.shutdown();
         s.shutdown = true;
         s.paused = None;
         s.stepping = None;
@@ -404,6 +408,11 @@ impl Agent {
         self.lock().sampler = Some(sampler);
     }
 
+    #[cfg(test)]
+    pub(crate) fn input_for_tests(&self) -> Arc<Mutex<Input>> {
+        Arc::clone(&self.lock().input)
+    }
+
     pub fn is_paused(&self) -> bool {
         self.lock().paused.is_some()
     }
@@ -431,6 +440,7 @@ impl Agent {
             None => {}
         }
         s.mark_tick();
+        s.record_tick(reader);
         s.serve(reader, Where::Tick);
         s.settle_waits();
         s.settle_capture();
@@ -813,6 +823,10 @@ impl State {
                 v
             }));
         }
+        if trace::is_method(m) {
+            let (at, dir) = (self.at(), self.dir());
+            return Some(self.recorders.handle(m, p, at, &dir, &self.input));
+        }
         if self.game_methods.contains_key(m) {
             let at = self.at();
             let stamp = to_value(&at);
@@ -847,6 +861,11 @@ impl State {
                 method::ALL
                     .iter()
                     .map(|m| (*m).to_owned())
+                    .chain(
+                        agent_proto::trace::method::ALL
+                            .iter()
+                            .map(|m| (*m).to_owned()),
+                    )
                     .chain(self.host.keys().cloned())
                     .chain(self.game_methods.keys().cloned())
                     .collect::<Vec<String>>(),
@@ -1140,6 +1159,19 @@ impl State {
         Ok(())
     }
 
+    /// This tick's rows for a trace or the flight recorder.
+    fn record_tick(&mut self, reader: &mut dyn Reader) {
+        if !self.recorders.active() {
+            return;
+        }
+        let tick = trace::Tick {
+            ticks: self.ticks,
+            tick: self.game.tick,
+            map: self.game.map.clone(),
+        };
+        self.recorders.on_tick(&tick, reader, &self.input);
+    }
+
     fn tick_mark(&self) -> TickMark {
         TickMark {
             ns: timeline::now_ns(),
@@ -1338,7 +1370,7 @@ pub fn query(objects: Vec<Object>, p: &QueryParams) -> Result<Page, RpcError> {
     })
 }
 
-fn trim(v: Value, fields: Option<&[String]>) -> Value {
+pub(crate) fn trim(v: Value, fields: Option<&[String]>) -> Value {
     let (Value::Object(mut m), Some(fields)) = (v.clone(), fields) else {
         return v;
     };

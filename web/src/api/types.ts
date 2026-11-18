@@ -27,6 +27,10 @@ export interface GamePlayer {
   local?: boolean;
   /** Emblem and colours read from the game (palette indices), when known. */
   appearance?: import("../lib/gameart").Appearance | null;
+  /** A Clanker bot (docs/game/bots.md §6): shown with a BOT mark, never
+   *  linked to a player page, and kept out of career stats. A rostered bot
+   *  has a server-issued `xuid`; a host's own has none. */
+  bot?: boolean | null;
 }
 
 /** The animation a unit plays: its name in the unit's graph

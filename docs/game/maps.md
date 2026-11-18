@@ -582,13 +582,24 @@ fetches do not send yet.
 
 Many old mods are whole modded `.map` files: they hold the retail map's
 bytes and may not be shared. `h2 live maps import FILE [--base MAP]
-[--disc ISO] [--out DIR] [--name NAME] [--info mod.toml] [--category C]
-[--no-publish]` (`crates/cli/src/live_mod_import.rs`) makes a package that
-shares only the difference:
+[--disc ISO] [--mappack ISO] [--out DIR] [--name NAME] [--info mod.toml]
+[--category C] [--no-publish]` (`crates/cli/src/live_mod_import.rs`) makes
+a package that shares only the difference:
 
 1. The base map (`--base`, else `base_map` in the sidecar) is read from
    the user's own disc through `vfs::open_disc` (an image or a directory
-   of its files), and its SHA-256 is the package's `[base] sha256`.
+   of its files), and its SHA-256 is the package's `[base] sha256`. A map
+   the disc's `maps` lacks is looked up on the Multiplayer Map Pack disc
+   (`--mappack`, else `mappack.iso` beside the disc, found as `h2 play`
+   finds it: `mappack_cmd::discover`), read with the stats site
+   extractor's reader (`live_mappack::from_iso`: each
+   `/demos/dlc/<package>/<map>.map`, which the disc holds as plain files).
+   Its `[base]` is the same shape: `map` is the map file's stem as the
+   game names it (`containment`, `deltatap` for Sanctuary, `dune` for
+   Relic, `triplicate` for Terminal), `sha256` the map pack map's. The
+   names never collide with the Halo 2 disc's, and `h2 import-mappack`
+   installs the maps byte for byte, so the hash is also the installed
+   copy's.
 2. A whole map becomes one patch layer from that base,
    `content::patch::diff`: PPF3 when the length is unchanged (the resolver
    lays it over the disc's map as it streams), BPS otherwise. The patch is
@@ -596,9 +607,9 @@ shares only the difference:
    `.ips` or `.bps` mod is applied to the base to check it fits (a BPS's
    source CRC, a PPF's checks) and kept as it is.
 3. Refused: a mod that changes nothing, and a result that is byte for
-   byte one of the disc's maps (another retail map passed off as a mod,
-   whose bytes would fill the delta; only disc maps of the same size are
-   hashed).
+   byte one of the disc's maps or, when the map pack disc is there, one
+   of its maps (another retail map passed off as a mod, whose bytes would
+   fill the delta; only maps of the same size are hashed).
 4. The package directory (`--out`, else `<stem>.package` beside the file)
    gets `manifest.toml`, `mod.<ppf|bps|ips>`, the preview and a `mod.toml`
    with the repository's extras; then it is published as `h2 live maps
@@ -610,6 +621,51 @@ and unknown keys ignored: `name`, `author` (the credit), `description`,
 signature decides), `base_map`, `category`, `image` (a PNG or JPEG beside
 it, at most 512 KiB). `h2 live maps publish DIR` reads `category` and
 `source_url` from `DIR/mod.toml`; `--category` and `--source-url` win.
+
+**In the game.** A package on a Map Pack base installs and plays like one
+on a disc map, for a player who has the map pack installed (`h2
+import-mappack`, or `h2 play`'s automatic import):
+
+- **Bases.** The Live map gate's bases (`boot::map_bases::UserBases`) are
+  the disc's maps (`DiscBases`), then, for a name in
+  `content::map_pack::MAPS`, the installed copy
+  (`MapPackBases`: `<data>/disk/Partition1/TDATA/4D530064/$c/<offer>/<map>.map`,
+  the first map pack offer, by name, that holds it, `map_pack_file`).
+  The import copies each map byte for byte (`mappack_cmd::install`,
+  `Xiso::copy_to` of the entry's size), so its SHA-256 is the one
+  `live_mappack::from_iso` gives the mod. Each file is hashed once; the
+  hash is kept in `<data>/maps/cache/mappack-hashes.toml`, stamped per map
+  with the file's path, size and modification time, so a changed or
+  reinstalled map is hashed again and a removed one has no base.
+- **Install.** `MapGate::install` (the Mods screen) and `MapGate::prepare`
+  (a guest joining a game on the mod) check the base as for a disc map.
+  Without the map pack the refusal is `Refusal::NoMapPack` ("... from the
+  Multiplayer Map Pack, which isn't installed here (h2 import-mappack)");
+  the Mods screen's Download row says "Needs the Map Pack's Relic" (the
+  map's game name, `content::map_pack::title`, as on the Map row). A map
+  pack that is installed but differs is `NoBase`, with the same row text.
+- **Serving.** The game opens a Map Pack map from
+  `T:\$c\<offer>\<map>.map`. With `vfs::Config::map_packages` set (the
+  boot sets `<data>/maps`), the data partition is wrapped in
+  `vfs::PackageBackend::over_map_pack`: the package `active.toml` (or the
+  choice rule) picks for the map is served at exactly that path, over the
+  installed file as the DVD layer serves over the disc's map (PPF and IPS
+  stream, BPS is materialised; a longer map, as when a mod grows Relic,
+  reports and reads its full size). Everything else on the partition,
+  writes included, is untouched; the served map itself is read-only.
+  Changes while the game runs (a download, a join) are seen at the map's
+  next open, and `map_slots` drops a stale cached copy, as for disc maps
+  (§3); `Vfs::rescan_maps` reaches this layer too.
+- **Map select and sessions.** `map_select::Catalogue::with_mods` lists a
+  Map Pack map whose package is chosen under Mods by the package's name,
+  on the Map Pack map's own slot (its `T:\$c` path, which the vfs serves
+  patched), as for a disc map; the disc's slot wins if the disc had a map
+  of that name. `map_override::map_id(vfs, data_root, name)` names the
+  package serving a Map Pack map (through `map_pack_path`), so games and
+  advertisements carry its `map_id` and guests fetch it.
+
+Not handled: a Map Pack map installed some other way than `h2
+import-mappack` (another offer scheme) is not served over.
 
 Limits: a mod built on a different build of the base map than the user's
 disc still imports (the delta reproduces it exactly) but is larger, and
@@ -682,10 +738,11 @@ disc's):
 
 1. Xbox Live menu: six rows, all on screen, no scroll bar: Quickmatch,
    OptiMatch, Custom Game, Custom Game Browser, Co-op Campaign, Mods.
-   - The first row sits a little under the header (21 units), the hint
-     texts and the Y callout under the list sit lower than retail, and
-     nothing overlaps the footer. stderr: `custom games: xbox live menu
-     tag has 6 panes and room for 6 rows`.
+   - The first row and the hint block ("PRESS ... ANYTIME TO ACCESS")
+     are where retail has them; the rows stand closer together (29
+     units) and the last ends above the hint block. stderr: `custom
+     games: xbox live menu tag has 6 panes and shows 6 rows` and `custom
+     games: xbox live menu rows 29 apart (6 rows, 5 moved)`.
    - The last row reads "Mods (N new)" (N = maps published since you last
      opened it; all of them the first time), and its help text reads
      "Download maps other players made and shared on your Live server."
@@ -807,7 +864,10 @@ override): `stat` and listings of `maps` give the result's size,
 `MapId`. `host_file` is the cache file for a materialised map and none
 for an overlay, which is not one region of a host file (so telemetry and
 the speaker index fall back as for any file without one).
-`PackageBackend::map_id(path)` gives the `MapId` serving a map.
+`PackageBackend::map_id(path)` gives the `MapId` serving a map. A second
+`PackageBackend` (`over_map_pack`) wraps the data partition for packages
+on a Map Pack base, serving the installed `T:\$c\<offer>\<map>.map`
+(§5, "Importing a mod").
 
 **Boot.** `<data>/maps/` is scanned at mount and again whenever it
 changes (§3). The packages layer is always mounted, even while the folder

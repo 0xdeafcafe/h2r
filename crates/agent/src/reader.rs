@@ -128,6 +128,8 @@ fn physics(m: &Motion) -> Physics {
         hitbox_offset: m
             .hitbox_offset
             .map(|t| f64::from(t) / 30.0 * f64::from(layout::HITBOX_OFFSET_RATE)),
+        havok_pos: m.havok.map(|(p, _)| p),
+        havok_velocity: m.havok.map(|(_, v)| v),
     }
 }
 
@@ -220,6 +222,7 @@ mod tests {
                 biped_flags: Some(0x0001),
                 airborne_ticks: Some(4),
                 hitbox_offset: Some(-44),
+                havok: Some(([1.0, 2.0, 3.4], [0.5, 0.0, 0.0])),
                 ..Default::default()
             },
             ..Default::default()
@@ -254,6 +257,8 @@ mod tests {
         assert_eq!(p.unit_flags.as_deref(), Some("00800000"));
         assert_eq!(p.biped_flags.as_deref(), Some("0001"));
         assert_eq!(p.hitbox_offset_ticks, Some(-44));
+        assert_eq!(p.havok_pos, Some([1.0, 2.0, 3.4]));
+        assert_eq!(p.havok_velocity, Some([0.5, 0.0, 0.0]));
         assert!((p.hitbox_offset.unwrap() + 0.22).abs() < 1e-6);
         assert_eq!(o.team, Some(2));
         assert_eq!(o.tag.as_deref(), Some("12340001"));
@@ -276,6 +281,7 @@ mod tests {
             },
             appearance: Default::default(),
             local_user: Some(0),
+            controller: Some(0),
             machine: [0; 6],
             unit,
             stats: live_telemetry::PlayerStats::ZERO,

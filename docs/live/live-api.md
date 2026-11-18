@@ -63,6 +63,13 @@ A player: `{ "index": 0, "name": "Sneaky Pete", "xuid": "...?", "team": 1,
 "local": true }`. `index` is the game's player slot and is stable for the
 game. `team` is the game's team index; colours are the web app's business.
 
+A Clanker bot adds `"bot": true` ([bots.md](../game/bots.md) §6, §9). A
+bot from a server roster carries its rostered `xuid`, accepted only for the
+game's `session_id` roster; a host's own bot (a local slot, or a phantom it
+made) has no `xuid` and needs no session. Bots are game-only: no player
+page, no career stats ([Stats summary](#stats-summary)), no rank of their
+own unless rostered as persistent.
+
 A player may also carry `appearance`, read from a local player's signed-in
 profile; it is left out when nothing is known, and so is any field in it:
 
@@ -388,6 +395,11 @@ A game counts on the day it started; kills on the day they happened; time
 played (`player_seconds`, a player's `seconds`) on the day the game ended,
 capped at 12 hours a game. `players` lists accounts only (a player with an
 `xuid`), at most 500, by kills then games; totals count everyone.
+Bots (`bot: true` on a game's player, [bots.md](../game/bots.md) §6) are
+game-only: no row of their own (a rostered bot's xuid included), and a
+knockout with a bot on either side counts in the totals, maps and weapons
+but in nobody's row: a human's kill of a bot is not a career kill, nor a
+death to a bot a career death. The game record keeps every one of them.
 `activity` lists hours with any game starts or kills, within the window
 and at most 30 days back. There are no headshots or medals: the events do
 not carry them (the web app derives medals itself).

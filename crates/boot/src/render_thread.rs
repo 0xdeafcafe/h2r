@@ -88,6 +88,7 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     // match start, the variant editor and the Game Setup lists), which the
     // render never meets.
     ("hud", "GAME_ACTIVATE", AFTER),
+    ("loaded_map", "GAME_ACTIVATE", AFTER),
     ("variant-ext-live", "GAME_ACTIVATE", AFTER),
     (
         "live-telemetry",

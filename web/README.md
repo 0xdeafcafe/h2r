@@ -101,9 +101,12 @@ links redirect there) is the record, laid out like
 a mid-2000s game stats site: a fixed 902px column on a navy page, a header
 with the Welcome box, a black nav strip, breadcrumbs, a banner strip, then a
 290px menu column (pill menu, People Finder, reports, Recent Games) beside
-the content. The nav's tabs start with the home, "h2 live Online"; the
-way back to the dashboard is the small "‹ Dashboard" chip in the header's
-corner, not a tab, and every page's breadcrumbs start at "Home" (`/games/halo2`).
+the content. The header's logo and the banner strip's mark are the
+"h2 | UPLINK" wordmark (`stats/Wordmark.tsx`, original art), so the site
+reads as `STATS_NAME` throughout. The nav's tabs start with the home,
+"h2 Uplink"; the way back to the dashboard is the small "‹ Live Dashboard"
+chip in the header's corner (`DASH_NAME`, as are the other links back to
+it), not a tab, and every page's breadcrumbs start at "Home" (`/games/halo2`).
 Pages: the home (`/games/halo2`, `stats/Home.tsx`: live now with the live games,
 players online and open games; the last 24 hours and all-time totals;
 leaderboards for today, this week, this month or all time (`?window=`):
@@ -295,19 +298,30 @@ pictures of the level (top-down and four iso corners), named in the art
 manifest's `maps` table. When a map has them, the game page's Tactical Map
 lays players over the picture using the view's `world_to_pixel` matrix
 (`src/map/views.ts`, `src/map/ViewMap.tsx`), with a switcher for the views
-and pan and zoom; without them it is the fitted grid as before. The "3D view"
-button opens the level in a window (`src/viewer/`): three.js, loaded as its
+and pan and zoom; without them it is the fitted grid as before. The game
+page's viewer (`src/viewer/GameViewer.tsx`) sits at the top of the page,
+across the content column, about 16:9 and short enough that the scoreboard
+under it still shows on a laptop, with the scoreboard, field report and
+overview below. Its **2D map** / **3D view** switch shows the tactical map or
+the level in 3D (`src/viewer/`): three.js, loaded as its
 own chunk only then, with a sun and soft shadows, ambient occlusion (turned
 off by itself on a machine that can't keep up), orbit, top-down,
 follow-a-player and free-fly cameras (F; WASD, Q/E down and up, drag with
 either button to look or click to lock the mouse, wheel or trackpad for
 speed, Shift to go faster, one finger to look and two to fly on a touch
 screen, or a gamepad: `viewer/flycam.ts`), and a grid floor when the map has no geometry. The
-window can be dragged, resized, maximised, or popped out to
-`/games/halo2/games/:id/3d`. The 2D map, the scrubber and the 3D window read one
-replay session (`src/viewer/session.ts`), and a popped-out window keeps in
-step with the page over a `BroadcastChannel`. `?view=3d` opens the window
-and `?map=iso-ne` picks a view, so both can be linked to. The mock builds
+**Full screen** button puts the viewer's box full screen with the Fullscreen
+API (Escape leaves), or lays it over the window where there is none (an
+iPhone; Escape leaves that too); the canvas and the 2D map refit either way
+(`viewer/fullscreen.ts`). The viewer's keys (the replay's Space, arrows,
+`,` `.` `<` `>` `k`, and the 3D view's) are its own only while it has the
+focus or the pointer is over it, so the page keeps them otherwise. The 2D
+map, the 3D view and the scrubber read one replay session
+(`src/viewer/session.ts`; other tabs on the same game keep in step over a
+`BroadcastChannel`). `?view=3d` opens the 3D view (with `cam`, `cut`, `see`
+and `ao` as below) and `?map=iso-ne` picks a view, so both can be linked
+to; the old pop-out address, `/games/halo2/games/:id/3d`, goes to the game
+page with the 3D view showing. The mock builds
 two arenas of its own from its invented floor plans (`mock/arena.ts`:
 slabs, ramps, pillars and cone trees, with a small rasteriser for the
 pictures); its third map has none, so the fallbacks run too.
@@ -346,7 +360,12 @@ whatever of the level lies between the camera and the
 player being followed (or pointed at in the scoreboard), else every player
 (up to 8, nearest the camera first), a cone to each with a dithered rim,
 leaving the floor they stand on, so a player inside a building is seen
-through its walls and roof; *everyone* cuts to all of them as well as the
+through its walls and roof. Only a surface that is in the way is cut: one
+the line of sight passes through, near where it crosses, with the player
+behind it (its normal is the triangle's own, from the shader's
+derivatives; floors, terrain and ceilings count as level). Ground under or
+beside the line, a step near the player and a wall running alongside stay,
+so open terrain keeps its sand instead of showing a hole to the sky; *everyone* cuts to all of them as well as the
 one in focus. Players, vehicles and machines are never cut. Both are a clipping
 plane and a few lines in the map materials' shaders, shared by all of
 them, so a big level costs no more. `?cut=<height>` and `?see=0` on the

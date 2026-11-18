@@ -5,6 +5,7 @@
 mod bench;
 mod config;
 mod event;
+pub mod havok;
 mod hooks;
 pub mod layout;
 mod memory;

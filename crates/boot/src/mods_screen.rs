@@ -588,6 +588,12 @@ pub fn failed_text(e: &ModsError) -> String {
 /// What the Download row says after a failed install.
 pub fn failed_install_text(e: &ModsError) -> String {
     match e {
+        ModsError::Refused(Refusal::NoMapPack { map, .. }) => {
+            format!("Needs the Map Pack's {}", mods::base_title(map))
+        }
+        ModsError::Refused(Refusal::NoBase { map, .. }) if content::map_pack::is_map(map) => {
+            format!("Needs the Map Pack's {}", mods::base_title(map))
+        }
         ModsError::Refused(Refusal::NoBase { map, .. }) => {
             format!("Needs {} from your disc", mods::base_title(map))
         }

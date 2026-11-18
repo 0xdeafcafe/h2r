@@ -1,73 +1,31 @@
-// The player pages' friends and teams boxes: the player's friends (with
-// presence, live from the stream), their teams and roles, and, when you
-// are signed in, the add / accept / cancel friend button.
+// Public friends and clan membership on a player's service record.
 
-import { For, Match, Show, Switch, createSignal } from "solid-js";
+import { For, Show } from "solid-js";
 import { A } from "@solidjs/router";
 import { identity } from "../state/identity";
-import { social, type WriteResult } from "../state/social";
-import { ROLE_LABEL, friendStatus, friendWrites, roleOf } from "../api/social";
+import { social } from "../state/social";
+import { ROLE_LABEL, roleOf } from "../api/social";
 import type { AccountState } from "../state/reducer";
 import Emblem from "../components/Emblem";
 import { Panel, playerHref } from "./Layout";
-import { ClanEmblem, friendPresence, presenceLine } from "./clanBits";
-import { clanHref } from "./Clans";
+import { ClanEmblem } from "./clanBits";
+import { clanHref } from "./modes";
 import "../styles/social.css";
-import { STATS_ROOT, statsPath } from "../routes";
-
-/** The add-friend button for `account`, in whatever state the two are. */
-export function FriendButton(props: { account: AccountState }) {
-  const me = () => identity.me();
-  const status = () => friendStatus(social.mine(), me()?.xuid ?? null, props.account.xuid);
-  const [r, setR] = createSignal<WriteResult | null>(null);
-  const send = async (w: ReturnType<typeof friendWrites.request>) => setR(await social.write(w));
-  return (
-    <Show when={me() && social.mine() && status() !== "self"}>
-      <span class="s-soc-btns">
-        <Switch>
-          <Match when={status() === "none"}><button class="s-btn s-btn--go" disabled={social.busy()} onClick={() => send(friendWrites.request(me()!.xuid, props.account.xuid))}>Add Friend</button></Match>
-          <Match when={status() === "incoming"}>
-            <button class="s-btn s-btn--go" disabled={social.busy()} onClick={() => send(friendWrites.accept(me()!.xuid, props.account.xuid))}>Accept Friend</button>
-            <button class="s-btn" disabled={social.busy()} onClick={() => send(friendWrites.decline(me()!.xuid, props.account.xuid))}>Decline</button>
-          </Match>
-          <Match when={status() === "outgoing"}><button class="s-btn" disabled={social.busy()} title="Cancel the friend request" onClick={() => send(friendWrites.remove(me()!.xuid, props.account.xuid))}>Request Sent ✕</button></Match>
-          <Match when={status() === "friend"}><span class="s-soc-friend">✓ Friends</span></Match>
-        </Switch>
-        <Show when={r() && !r()!.ok}><span class="s-soc-err" role="alert">{(r() as { error: string }).error}</span></Show>
-      </span>
-    </Show>
-  );
-}
+import { statsPath } from "../routes";
 
 export function PlayerFriends(props: { account: AccountState }) {
   const doc = () => social.friendsOf(props.account.xuid, props.account.gamertag);
-  const mine = () => identity.me()?.xuid === props.account.xuid;
-  const list = () => {
-    const d = doc();
-    if (!d) return [];
-    return [...d.friends].sort((a, b) => Number(friendPresence(b).kind !== "offline") - Number(friendPresence(a).kind !== "offline"));
-  };
+  const list = () => doc()?.friends ?? [];
+  const manageHref = () => identity.me()?.xuid === props.account.xuid
+    ? "/dash/friends"
+    : `/dash/friends/${encodeURIComponent(props.account.gamertag)}`;
   return (
-    <Panel title="Friends" sub={mine() ? "your friends on this server" : "friends on this server"} right={<FriendButton account={props.account} />} class="s-soc-box">
+    <Panel title="Friends" right={<A href={manageHref()} class="s-soc-link">dashboard</A>} class="s-soc-box">
       <Show when={doc()} fallback={<p class="s-recent-empty">Loading friends…</p>}>
-        <Show when={mine() && doc()!.requests_in.length}>
-          <p class="s-soc-pending"><A href="/dash/friends">{doc()!.requests_in.length} friend request{doc()!.requests_in.length === 1 ? "" : "s"} waiting</A></p>
-        </Show>
-        <Show when={list().length} fallback={<p class="s-recent-empty">{mine() ? "No friends yet. Add someone from their service record." : "No friends yet."}</p>}>
+        <Show when={list().length} fallback={<p class="s-recent-empty">No friends yet.</p>}>
           <ul class="s-mini-list">
             <For each={list().slice(0, 10)}>
-              {(f) => {
-                const p = () => friendPresence(f);
-                return (
-                  <li>
-                    <Emblem seed={f.xuid} size={14} /><A href={playerHref(f.gamertag)}>{f.gamertag}</A>
-                    <span class="s-dim">
-                      <Show when={p().game_id} fallback={presenceLine(f)}>{(g) => <A href={`${STATS_ROOT}/games/${g()}`}>{presenceLine(f)}</A>}</Show>
-                    </span>
-                    <Show when={p().kind !== "offline"}><span class="s-online-dot" title={presenceLine(f)} /></Show>
-                  </li>
-                );
-              }}
+              {(f) => <li><Emblem seed={f.xuid} size={14} /><A href={playerHref(f.gamertag)}>{f.gamertag}</A></li>}
             </For>
           </ul>
           <Show when={list().length > 10}><p class="s-soc-more">and {list().length - 10} more</p></Show>
@@ -78,7 +36,7 @@ export function PlayerFriends(props: { account: AccountState }) {
 }
 
 export function PlayerClans(props: { account: AccountState }) {
-  const teams = () => social.teamsOf(props.account.xuid);
+  const teams = () => social.teamsOf(props.account.xuid).filter((t) => !!t.members[props.account.xuid]);
   return (
     <Panel title="Clans" sub="clans they're in" right={<A href={statsPath("/clans")} class="s-soc-link">all clans</A>} class="s-soc-box">
       <Show when={teams().length} fallback={<p class="s-recent-empty">{social.teamsLoaded() ? "Not in a clan." : "Loading clans…"}</p>}>
@@ -89,7 +47,7 @@ export function PlayerClans(props: { account: AccountState }) {
               return (
                 <li>
                   <ClanEmblem team={t} size={14} /><A href={clanHref(t.id)}>{t.properties.name}</A>
-                  <span class="s-dim">{role() === "recruit" ? "invited" : ROLE_LABEL[role() ?? "member"]}</span>
+                  <span class="s-dim">{ROLE_LABEL[role() ?? "member"]}</span>
                 </li>
               );
             }}

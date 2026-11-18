@@ -633,6 +633,7 @@ dependencies = [
  "audio",
  "bink-hle",
  "bots",
+ "clif",
  "content",
  "d3d",
  "debug-menu",
@@ -2496,6 +2497,7 @@ version = "0.1.0"
 dependencies = [
  "assets",
  "content",
+ "font",
  "h1bitmaps",
  "h1convert",
  "h1map",
@@ -3290,6 +3292,7 @@ dependencies = [
  "libloading",
  "lift",
  "runtime",
+ "snapshot",
  "thiserror 2.0.21",
  "timeline",
  "vfs",

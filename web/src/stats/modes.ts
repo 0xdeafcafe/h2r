@@ -2,7 +2,7 @@
 // path or `?tab=` asks for campaign. Pure, so routing is testable.
 
 import type { GameMode } from "../state/reducer";
-import { STATS_NAME } from "../brand";
+import { DASH_NAME, STATS_NAME } from "../brand";
 import { STATS_ROOT, statsPath } from "../routes";
 
 export type SpotlightTab = "live" | "recent" | "team" | "ffa" | "campaign";
@@ -39,7 +39,7 @@ export const STATS_HOME = STATS_ROOT;
 export const HOME_CRUMB: [string, string] = ["Home", STATS_HOME];
 
 /** The way back to the dashboard: kept out of the nav tabs, in the header's corner. */
-export const DASHBOARD_EXIT = { label: "‹ Dashboard", href: "/", title: "Leave the stats site for the dashboard" } as const;
+export const DASHBOARD_EXIT = { label: `‹ ${DASH_NAME}`, href: "/", title: `Leave ${STATS_NAME} for the ${DASH_NAME}` } as const;
 
 export interface NavItem { label: string; href: string; end?: boolean }
 

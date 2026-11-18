@@ -252,6 +252,13 @@ fn players_into(
             local_user: u8::try_from(local_user)
                 .ok()
                 .filter(|u| u32::from(*u) < layout::PLAYER_SLOT_COUNT),
+            controller: if local_user == -1 {
+                None
+            } else {
+                u8::try_from(guest.u32(elem + layout::PLAYER_CONTROLLER)? as i32)
+                    .ok()
+                    .filter(|c| *c < 4)
+            },
             machine: player.machine(guest).map_err(fault)?,
             unit: engine::handle::raw_or_none(player.unit(guest).map_err(fault)?),
             stats,
@@ -581,6 +588,7 @@ fn motion(guest: &Guest, kind: u8, body: u32, weapon: Option<u32>) -> Motion {
         .then(|| guest.u8(body + layout::BIPED_HITBOX_OFFSET).ok())
         .flatten()
         .map(|t| t as i8);
+    let havok = havok_body(guest, body).ok().flatten();
     Motion {
         velocity,
         crouch,
@@ -594,7 +602,34 @@ fn motion(guest: &Guest, kind: u8, body: u32, weapon: Option<u32>) -> Motion {
         biped_flags,
         airborne_ticks,
         hitbox_offset,
+        havok,
     }
+}
+
+/// The first Havok rigid body's world position and linear velocity, as
+/// `0x001d08e0` and `0x000dc67d` read them; `None` without a body or when
+/// a value is not finite.
+fn havok_body(guest: &Guest, body: u32) -> ReadResult<Option<([f64; 3], [f64; 3])>> {
+    let index = guest.u32(body + layout::BODY_PHYSICS)?;
+    if index == u32::MAX {
+        return Ok(None);
+    }
+    let array = guest.u32(layout::PHYSICS_COMPONENTS_PTR)?;
+    let data = guest.u32(array + layout::DATUM_DATA)?;
+    let component = data.wrapping_add((index & 0xffff) * layout::PHYSICS_COMPONENT_SIZE);
+    let bodies = guest.u32(component + layout::COMPONENT_BODIES)?;
+    let rigid = guest.u32(bodies + layout::COMPONENT_BODY_RIGID)?;
+    if rigid == 0 {
+        return Ok(None);
+    }
+    let motion = guest.u32(rigid + layout::RIGID_MOTION)?;
+    let pos = vector(guest, motion + layout::MOTION_POSITION)?;
+    let vel = vector(guest, motion + layout::MOTION_VELOCITY)?;
+    Ok(pos
+        .iter()
+        .chain(&vel)
+        .all(|c| c.is_finite())
+        .then_some((pos, vel)))
 }
 
 /// The animation the object whose data is at `body` plays: its animation
@@ -1537,6 +1572,48 @@ mod tests {
         assert!(object(&guest, 0x90020000).unwrap().is_none());
     }
 
+    /// A Clanker signed into a local slot (docs/game/bots.md §4.2) reads
+    /// as any local player, with its own name and its controller port,
+    /// which is how telemetry knows it for a bot; a remote player has no
+    /// port.
+    #[test]
+    fn reads_a_local_bot_slot_with_its_controller_port() {
+        let mut guest = fixture::memory();
+        fixture::put_player(&mut guest, 0, "Halo0001", 0, true, u32::MAX);
+        fixture::put_player(&mut guest, 1, "Clanker 2", 1, true, u32::MAX);
+        fixture::put_player(&mut guest, 2, "Remote", 0, false, u32::MAX);
+        let bot = fixture::PLAYER_DATA + layout::PLAYER_SIZE;
+        guest.set_u16(bot + layout::PLAYER_LOCAL_USER, 1).unwrap();
+        guest.set_u32(bot + layout::PLAYER_CONTROLLER, 2).unwrap();
+        // A remote player's controller field is -1; any value reads as none.
+        guest
+            .set_u32(
+                fixture::PLAYER_DATA + 2 * layout::PLAYER_SIZE + layout::PLAYER_CONTROLLER,
+                2,
+            )
+            .unwrap();
+
+        let players = players(&guest).unwrap();
+        assert_eq!(
+            players
+                .iter()
+                .map(|p| (p.player.name.as_str(), p.local_user, p.controller))
+                .collect::<Vec<_>>(),
+            [
+                ("Halo0001", Some(0), Some(0)),
+                ("Clanker 2", Some(1), Some(2)),
+                ("Remote", None, None),
+            ]
+        );
+        assert_eq!(players[1].player.index, 1, "keyed by its game slot");
+        assert_eq!(players[1].player.local, Some(true));
+        // An unbound local controller (-1) reads as none.
+        guest
+            .set_u32(bot + layout::PLAYER_CONTROLLER, u32::MAX)
+            .unwrap();
+        assert_eq!(players_after(&guest, &mut []).unwrap()[1].controller, None);
+    }
+
     #[test]
     fn reads_local_appearance_from_the_slot_profile() {
         let mut guest = fixture::memory();
@@ -2061,7 +2138,34 @@ mod tests {
         guest
             .set_u8(body + layout::BIPED_AIRBORNE_TICKS, 9)
             .unwrap();
+        // A Havok body: component 3 of the array, its first rigid body.
+        let (array, data, bodies, rigid, motion) =
+            (0x17_0000, 0x17_1000, 0x17_4000, 0x17_5000, 0x17_6000);
+        guest
+            .set_u32(body + layout::BODY_PHYSICS, 0xe003_0003)
+            .unwrap();
+        guest
+            .set_u32(layout::PHYSICS_COMPONENTS_PTR, array)
+            .unwrap();
+        guest.set_u32(array + layout::DATUM_DATA, data).unwrap();
+        guest
+            .set_u32(
+                data + 3 * layout::PHYSICS_COMPONENT_SIZE + layout::COMPONENT_BODIES,
+                bodies,
+            )
+            .unwrap();
+        guest
+            .set_u32(bodies + layout::COMPONENT_BODY_RIGID, rigid)
+            .unwrap();
+        guest.set_u32(rigid + layout::RIGID_MOTION, motion).unwrap();
+        guest
+            .set_f32(motion + layout::MOTION_POSITION + 8, -3.25)
+            .unwrap();
+        guest
+            .set_f32(motion + layout::MOTION_VELOCITY + 8, 12.5)
+            .unwrap();
         let m = object(&guest, unit).unwrap().unwrap().motion;
+        assert_eq!(m.havok, Some(([0.0, 0.0, -3.25], [0.0, 0.0, 12.5])));
         assert_eq!(m.unit_flags, Some(layout::UNIT_FLAG_CROUCH | 1));
         assert_eq!(m.biped_flags, Some(0x0201));
         assert_eq!(m.airborne_ticks, Some(9));

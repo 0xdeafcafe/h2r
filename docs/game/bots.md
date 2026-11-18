@@ -428,9 +428,18 @@ the port's bit in the screen mask.
 The block is a copy of the human's block (slot 0 `+0x18`) with these
 changes:
 
-- the 16-byte name field at block `+0x48` (single-byte characters:
-  `0x190001` copies 16 and zeroes the 16th) set to the bot's name, which is
-  ASCII and has no glyph;
+- the profile name at block `+8` (UTF-16, 32 units; the profile file's
+  `+8`, "Halo0001" for the user's) set to the bot's name. The game rebuilds
+  the slot's display name `+0xc1c` from it (`0x190eb3`: slot `+0x20`, 32
+  units) at sign-in and whenever the slot's Live state or account changes
+  (`0x190074`, `0x18fee9`), so the name the driver writes to `+0xc1c` alone
+  did not last. In the user's Xbox Live lobby every bot showed as the
+  human's "Halo0001", and the session's unique-name pass (`0x7f660`, from
+  `0x65e37`) renamed the copies from the game's default names (`0x19fd00`,
+  string ids `0x02000320` "Shadow" and `0x0200032b` "Wilshire");
+- the 16-byte field at block `+0x48` (single-byte characters: `0x190001`
+  copies 16 and zeroes the 16th; the profile UI's commit fills it at
+  `0x24b9ce`, and a saved profile has it empty) also set to the bot's name;
 - the control fields set so the brain's sticks mean the same on every
   machine (block `+0xfc` = slot `+0x114`, the record `0x190c34` reads):
   - flags bits 0 and 2 cleared (look inversion and the other flag `0x190c34`
@@ -680,8 +689,29 @@ retail Halo 2 ends the game when the host leaves.
 
 **Scoreboard and stats.** Bots are players, so the scoreboard, the carnage
 report and the post-game stats treat them like anyone else. Telemetry
-(`crates/live-telemetry`) records them as players. Their flag (§8) lets the
-web and the stats split them out.
+(`crates/live-telemetry`) records them as players, keyed by their game slot
+like anyone, with `bot: true` on their roster entries (`game::Player::bot`):
+a local-slot Clanker found by its controller port, a phantom by its machine
+id (`live_telemetry::Bots`, from `clankers::Driver::bots_in_force`). Only a
+phantom from a server roster in force has an `xuid` (§9); the rest have no
+account at all.
+
+The web shows a small BOT mark beside a bot's name (the live scoreboard,
+the carnage report, the map legend, the map and 3D viewer labels, the
+viewer's follow list) and never links a bot to a player page, even a
+rostered one with an xuid; a bot keeps the name the game sent.
+
+**Bots are game-only.** The game record keeps every bot with its kills,
+deaths and score, and every knockout between a bot and a human. Career
+stats do not: the conservative choice. A human's kill of a bot is not a
+career kill, and a death to a bot is not a career death (nor do they count
+toward sprees, weapons or medals); games, wins and time played still count.
+This holds in the server's stats summary (`live_server::stats`, both homes;
+the web mock's fold mirrors it) and in the web's derived service record
+(`derive.ts` `careerKills`, `serviceRecord`). Bots get no stats-summary row
+and are nobody's "played with". Ranks are unchanged: a matchmade game ranks
+accounts only, and a rostered persistent bot's own rank is sbmm-ranked's
+(§9.4).
 
 ## 7. Clankers in custom games (the Game Setup page)
 
@@ -873,7 +903,9 @@ These go in the normal game record (`games.rs`, the Live game recording),
 with these additions:
 
 - `kind: "clankermatch"`, `"custom"` or `"matchmade"` on the game;
-- `bot: true` on each bot's player entry, keyed by its `xuid`.
+- `bot: true` on each bot's player entry, keyed by its `xuid` when it has
+  one. A host's own Clanker (a local slot, or a phantom with a host-made
+  xuid) has `bot: true` and no `xuid` (§6).
 
 Per-player stats are the same as a human's. Persistent bots are ranked
 from these by the server's normal per-playlist rank update, which treats
@@ -885,7 +917,9 @@ is sbmm-ranked's call: the host is the only reporter for its bots.
 The roster is signed by the server like `MatchProposed`. A game record with
 `bot: true` entries is accepted only for xuids that the server marked as
 bots in that match's roster, or in the `/games/bots` answer. A console
-cannot claim a human as a bot, or a bot as a human.
+cannot claim a human as a bot, or a bot as a human. A `bot: true` entry
+with no `xuid` is accepted with or without a session: it names no account,
+so there is nothing to claim, and it counts toward no one's career (§6).
 
 ### 9.4 Interface with ranks (answers to live-matchmaking.md §8.4)
 
@@ -960,16 +994,19 @@ list for the user to play (§11).
      real pad holds it. `HostBackend::placed` reports where it went.
      `H2_BOTS=<n>` (1 to 3) adds `n` brains on ports 1 up at boot.
    - **Joining.** While the players screen `0x1e` is on top and a bot's slot
-     has no profile, the bot taps A (6 frames in every 60).
-     - The A reaches the screen's handler for a controller with no profile,
-       `0x252a67` (`PLAYERS_SCREEN_UNJOINED`; its caller `0x252ad7` sends a
-       controller with a profile to `0x25286d` instead).
-     - For a bot's port, a hook answers in the handler's place. It copies
-       the human's block with the bot's name and fixed controls, calls the
-       game's `0x18fb34(port, block, -1)`, writes the slot's display name,
-       and sets the port's bit in the screen mask.
-     - Once signed in, the bot never presses A again, so it cannot move the
-       human's menus on.
+     has no profile, the glue signs the bot in itself, before
+     `SOUND_UPDATE` (as the leaving bots are signed out), once a second at
+     most. The bot presses nothing (see stage 7, "The join gate").
+     - It copies the human's block with the bot's name and fixed controls,
+       calls the game's `0x18fb34(port, block, -1)`, writes the slot's
+       display name, and sets the port's bit in the players screen's mask
+       (the screen `ui_watch` read), then runs the frame.
+     - A bot's A that still reaches the screen's handler for a controller
+       with no profile, `0x252a67` (`PLAYERS_SCREEN_UNJOINED`; its caller
+       `0x252ad7` sends a controller with a profile to `0x25286d` instead),
+       as a sim script's can, is answered the same way.
+     - A bot never presses a menu button, so it cannot move the human's
+       menus on.
      - The bots stay signed in until the game exits.
      - `H2_BOTS` bots also join a split-screen campaign from its players
        screen; there their pads are idle (perception reads multiplayer
@@ -1354,7 +1391,8 @@ list for the user to play (§11).
        (`PlayerState::machine`, player `+0x14`) is a rostered phantom's
        goes out with its xuid and `bot: true`, on `GameStarted` and on a
        later `PlayerJoined`. Local-port Clankers, and phantoms with a
-       host-made xuid, go out with neither: a `0x000E` xuid is never sent.
+       host-made xuid, go out with `bot: true` and no xuid (§6): a
+       `0x000E` xuid is never sent.
      - Not yet: `teams` is always false in the request (the page does not
        know the gametype), and local-port Clankers are not rostered.
        Clankermatch's `MatchProposed` carries the same roster (stage 8,
@@ -1487,18 +1525,27 @@ list for the user to play (§11).
    - **No `H2_BOTS` needed.** Turning Clankers On is enough: the bots
      input backend, the bots feature and the driver are always installed
      (with the XAPI); `H2_BOTS` only adds bots of its own at boot.
-   - **The join gate.** A bot taps A only while the players screen takes
-     player one's input, nothing sits on windows 0 to 4 (`ui_watch::dialog`:
-     a dialog, or the profile chooser that `0x24b6ea` and `0x1905bf` open
-     for one controller), and its own slot has no profile
-     (`bot_glue::join_gate`). In the user's run the hook never fired, the
-     players screen showed the human's player four times, and the human
-     was left on "which profile?": a bot tap that reaches a profile
-     chooser picks the first profile, the human's. The log now says each
-     port's gate when it changes (`bots: join gate port 1: top 0x1e,
-     dialog none, signed_in false: taps A`), each tap (`bots: Clanker 1
-     taps A on port 1`), and any bot button the players screen's unjoined
-     handler sees that is not a join.
+   - **The join gate.** A bot is signed in only while the players screen
+     takes player one's input, nothing sits on windows 0 to 4
+     (`ui_watch::dialog`: a dialog, or the profile chooser that `0x24b6ea`
+     and `0x1905bf` open for one controller), its own slot has no profile,
+     a human has a profile to copy and no game runs (`bot_glue::to_sign_in`).
+     The log says each port's gate when it changes (`bots: join gate port
+     1: top 0x1e, dialog none, signed_in false (slot 0x0): signs in`; the
+     slot's flags: `0x10` a profile, `0x20` signed in to Xbox Live) and
+     each sign-in (`bots: signing Clanker 1 in on port 1`).
+
+     Bots used to tap A through the gate and let the screen's handler sign
+     them in. Every tap the game took elsewhere opened a profile chooser
+     for the bot's controller, and a tap that reached a chooser picked the
+     first profile, the human's. In the user's runs the players screen
+     showed the human's player four times, and an Xbox Live lobby kept
+     popping up "pick a profile": the pregame lobby's handler (`0x250b1e`)
+     sends A or START from a controller with no profile to the chooser
+     (`0x250cc3`, Live sessions), and B or Back from a profile that is not
+     on Live to the profile UI (`0x2511b6`, `0x251242`, `0x24b779`). Now a
+     joining bot's pad is idle (`Frame::joining`), the brain's and a sim
+     script's alike.
    - **Their own look.** The bot's block is the human's with the bot's
      name, controls and look: the 16 bytes at block `+0x118` are the
      appearance (`0x18fd94` copies them, from slot `+0x130`, into the
@@ -1559,6 +1606,56 @@ list for the user to play (§11).
         at; `h2 settings` lists the `clankers.*` values.
      8. Send the `clankers:` and `ui:` log lines if the row is missing,
         draws no text, or opens the page under the lobby.
+   **Built: bots in telemetry and the web** (§6). The user's ask: bots on
+   the live game tracking, the scoreboard and the post-game record,
+   marked as bots, without accounts.
+   - **Why they were not bots before.** Telemetry already sent every
+     listed player (`memory::players_into` filters only on salt and the
+     leaving flag), so local-slot Clankers did go out, but as anonymous
+     guests: `session::identity` marked a player as a bot only for a
+     remote player on a rostered phantom's machine, and
+     `clankers::Driver::bots_in_force` returned `None` unless a server
+     roster was in force, so a Clanker on a local slot (or a host-made
+     phantom) had no `bot` flag. The proto and server also refused `bot:
+     true` without an xuid (`game::validate_new`, `bots::check_players`),
+     and the web had no idea of `bot` at all: a rostered bot with an xuid
+     was linked to a player page by its name, and every bot's knockouts
+     went into the human's career stats.
+   - **Now:** `PlayerState::controller` (player `+0x24`); `Bots` has
+     `session_id: Option`, every phantom's machine and the local bot
+     `ports`; `bots_in_force` answers whenever there are bots. `bot:
+     true` without an xuid is accepted on both homes; the stats are
+     game-only (§6); the web marks and unlinks bots.
+   - Tests: `-p live-telemetry --lib` (`memory`: a local bot slot read
+     with its port; `session`: local Clankers as bots with no account
+     through the start, scores, frames and the end; a bot on local user 0
+     never the account; a rostered xuid only with its session; the
+     rostered test updated); `-p boot --tests clankers` (bots in force
+     before and after a roster, and after a refusal); `-p live-proto
+     game` (an xuid-less bot with or without a session); `-p live-server
+     --test bots` (a host's own Clankers taken and game-only; a human
+     still refused as a bot); `-p live-worker --lib sqlstore` (the same
+     on the Worker's composition); `web`: `bun test test/bots.test.ts`
+     (the record, the labels, the career, the mock's fold, the BOT mark
+     and no player link on the scoreboard and carnage report).
+   - **Game run (the user), bots in telemetry:**
+     1. With Live (`h2 play --live-local`, signed in), host a custom game,
+        set Clankers On, Count 2, and start Slayer.
+     2. On the site's live game page: the scoreboard lists "Clanker 1"
+        and "Clanker 2" with a BOT mark, not as links; the map shows
+        their dots and labels ("Clanker 1 · BOT") moving; their kills and
+        deaths tick up.
+     3. Open the 3D viewer: their labels carry BOT, and the follow list
+        says "(BOT)".
+     4. Kill a bot and get killed by one. After the game, the carnage
+        report lists both bots with their kills and deaths, marked BOT,
+        unlinked. Your player page's service record does not count those
+        kills or deaths; the game's history row does.
+     5. The server log shows no refused game record.
+     6. With Count 5 (phantoms past the free ports): the phantoms show
+        with BOT too, before and after a roster comes.
+     7. Not covered: a local bot added mid-game is marked as a bot only
+        from the next game's start.
 8. **Clankermatch.**
    - The Live menu row, the playlist filter, the fake search and the lobby
      fill.

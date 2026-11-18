@@ -16,7 +16,9 @@
 //! The Halo 1 sentinel (`sentinel_aggressor_halo1`, on 04a and 04b) does
 //! not copy: the schema refuses its animation graph (an unknown pointer).
 
+use std::collections::HashMap;
 use std::io::Cursor;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use h1map::H1Map;
 use map::build::TagSet;
@@ -31,6 +33,50 @@ pub const MAPS: [&str; 3] = ["03a_oldmombasa", "04b_floodlab", "06a_sentinelwall
 #[derive(Debug, Default, Clone)]
 pub struct Donors {
     pub maps: Vec<(String, Vec<u8>)>,
+    /// Each donor read for transplants, once (shared by every level
+    /// converted from these donors).
+    read: Cache,
+}
+
+/// A donor read once: its gestalt and its transplant source.
+struct ReadDonor {
+    gestalt: h1sounds::gestalt::SoundGestalt,
+    source: tags::schema::transplant::Source<'static>,
+}
+
+/// Donors read so far, by name: `None` when reading failed (the slow path
+/// reports why).
+#[derive(Default)]
+struct Cache(Mutex<HashMap<String, Arc<OnceLock<Option<Arc<ReadDonor>>>>>>);
+
+impl Clone for Cache {
+    fn clone(&self) -> Self {
+        Cache::default()
+    }
+}
+
+impl std::fmt::Debug for Cache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Cache")
+    }
+}
+
+impl Donors {
+    /// `donor` (its file `bytes`) read once.
+    fn read(&self, donor: &str, bytes: &[u8]) -> Option<Arc<ReadDonor>> {
+        let cell = {
+            let mut m = self.read.0.lock().unwrap_or_else(|e| e.into_inner());
+            Arc::clone(m.entry(donor.to_owned()).or_default())
+        };
+        cell.get_or_init(|| {
+            let mut src = Map::from_reader(Cursor::new(bytes)).ok()?;
+            let gestalt = donor_gestalt(&mut src).ok()?;
+            let schema = tags::schema::Schema::builtin();
+            let source = tags::schema::transplant::Source::new(schema, &mut src).ok()?;
+            Some(Arc::new(ReadDonor { gestalt, source }))
+        })
+        .clone()
+    }
 }
 
 /// One tag tree copied in.
@@ -107,7 +153,15 @@ pub fn bring(
             else {
                 continue;
             };
-            let src_gestalt = donor_gestalt(&mut src)?;
+            let read = donors.read(donor, bytes);
+            let own;
+            let src_gestalt = match &read {
+                Some(r) => &r.gestalt,
+                None => {
+                    own = donor_gestalt(&mut src)?;
+                    &own
+                }
+            };
             if gestalt.is_none() {
                 gestalt = Some(
                     h1sounds::gestalt::SoundGestalt::from_set(set)
@@ -115,9 +169,14 @@ pub fn bring(
                 );
             }
             let g = gestalt.as_mut().expect("set above");
-            match h1sounds::transplant(schema, &mut src, &src_gestalt, root, set, g)
-                .map_err(|e| invalid(format!("{group} {name} from {donor}: {e}")))?
-            {
+            let moved = match &read {
+                Some(r) => {
+                    h1sounds::transplant_from(&r.source, &mut src, src_gestalt, root, set, g)
+                }
+                // Reading it failed: the uncached path says why.
+                None => h1sounds::transplant(schema, &mut src, src_gestalt, root, set, g),
+            };
+            match moved.map_err(|e| invalid(format!("{group} {name} from {donor}: {e}")))? {
                 Ok(m) => {
                     report.brought.push(Brought {
                         root: format!("{group} {name}"),

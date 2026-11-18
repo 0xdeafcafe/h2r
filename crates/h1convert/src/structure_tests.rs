@@ -116,6 +116,7 @@ fn build_with(sections: &[Section], lit: bool, sounds: bool) -> Built {
         lit,
         sounds,
         &crate::clusters::Visibility::default(),
+        &[],
     )
 }
 
@@ -125,6 +126,7 @@ fn build_full(
     lit: bool,
     sounds: bool,
     visibility: &crate::clusters::Visibility,
+    atmosphere: &[u8],
 ) -> Built {
     let mut set = TagSet::new(CacheType::Multiplayer, "t", "invented\\t");
     for g in [b"matg", b"scnr", b"sbsp", b"ltmp"] {
@@ -206,6 +208,7 @@ fn build_full(
         lightmap_bitmap,
         sound: &sound,
         visibility,
+        atmosphere,
     };
     let section = s.write(&mut set, sbsp, ltmp).unwrap();
     let mut descriptor = Block::zeroed(0x44);
@@ -877,8 +880,9 @@ fn portals_and_each_cluster_s_list_are_written_where_the_flood_reads_them() {
             vertices: vec![[0.0, 0.0, 0.5], [1.0, 0.0, 0.5], [1.0, 1.0, 0.5]],
         }],
         clusters: vec![vec![0], vec![0]],
+        skies: vec![1, 0],
     };
-    let b = build_full(&sections, false, false, &visibility);
+    let b = build_full(&sections, false, false, &visibility, &[]);
     let map = Map::from_reader(Cursor::new(b.bytes.clone())).unwrap();
     let at = map.tag(b.sbsp).unwrap().location.unwrap().address;
     let mut m = map;
@@ -907,7 +911,29 @@ fn portals_and_each_cluster_s_list_are_written_where_the_flood_reads_them() {
         let (ln, lp) = field(&sbsp[clusters + CLUSTER * c..], 0x8c);
         assert_eq!(ln, 1, "cluster {c}");
         assert_eq!(&sbsp[lp..lp + 2], &[0, 0]);
+        // +0x6e: the cluster's sky, the one the engine draws from it.
+        assert_eq!(sbsp[clusters + CLUSTER * c + 0x6e], [1, 0][c], "cluster {c} sky");
     }
+}
+
+#[test]
+fn a_cluster_without_a_sky_shows_its_nearest_neighbour_s() {
+    use crate::clusters::{Portal, spread_skies};
+    let portal = |a: u16, b: u16| Portal {
+        clusters: [a, b],
+        plane: 0,
+        centroid: [0.0; 3],
+        radius: 1.0,
+        vertices: Vec::new(),
+    };
+    // 0 (sky 1) - 1 (none) - 2 (none) - 3 (sky 0); 4 sealed off.
+    let portals = [portal(0, 1), portal(1, 2), portal(2, 3)];
+    assert_eq!(
+        spread_skies(vec![1, -1, -1, 0, -1], &portals, 5),
+        vec![1, 1, 0, 0, 0]
+    );
+    // A structure with no Halo 1 clusters shows sky 0.
+    assert_eq!(spread_skies(Vec::new(), &[], 2), vec![0, 0]);
 }
 
 #[test]
@@ -1014,4 +1040,31 @@ fn a_cluster_with_no_geometry_gets_retail_s_empty_raw_block() {
         f32::from_le_bytes(c[0x54..0x58].try_into().unwrap()),
         f32::MAX
     );
+}
+
+#[test]
+fn a_surface_listed_by_two_clusters_is_drawn_by_both() {
+    let v = vec![vertex([0.0; 3]), vertex([1.0, 0.0, 0.0]), vertex([0.0, 1.0, 0.0])];
+    let tris = [[0, 1, 2], [0, 2, 1], [1, 2, 0]];
+    // Triangle 0 in cluster 0, 1 in clusters 0 and 2, 2 in none.
+    let meshes = crate::clusters::split_by_cluster("s", None, v, &tris, &[vec![0], vec![0, 2], vec![]]);
+    let got: Vec<(u16, Vec<[u32; 3]>)> = meshes.into_iter().map(|m| (m.cluster, m.triangles)).collect();
+    assert_eq!(got, vec![(0, vec![[0, 1, 2], [0, 2, 1]]), (2, vec![[0, 2, 1]])]);
+}
+
+#[test]
+fn a_cluster_names_its_atmosphere_where_halo_2_reads_it() {
+    let sections = crate::clusters::pack_clusters(&meshes(), &[0, 1], 2).unwrap();
+    // Cluster 0 has a sky; cluster 1 takes atmosphere 0 (E 0x0012efb0).
+    let b = build_full(&sections, false, false, &Default::default(), &[0xff, 0]);
+    let mut map = Map::from_reader(Cursor::new(b.bytes.clone())).unwrap();
+    let at = map.tag(b.sbsp).unwrap().location.unwrap().address;
+    let sbsp = map.read_tag_bytes(b.sbsp).unwrap();
+    let clusters = word(&sbsp, 0xa0).wrapping_sub(at) as usize;
+    let atmosphere: Vec<u8> = (0..2).map(|c| sbsp[clusters + CLUSTER * c + 0x6f]).collect();
+    assert_eq!(atmosphere, [0xff, 0]);
+    // +0x6c stays the scenario's first sky.
+    for c in 0..2 {
+        assert_eq!(sbsp[clusters + CLUSTER * c + 0x6c], 0);
+    }
 }

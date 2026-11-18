@@ -433,6 +433,32 @@ fn a_disc_map_a_package_replaces_is_listed_under_mods_by_the_package_name() {
     assert_eq!(cat.maps(Category::MapPack)[0].name, "Containment");
 }
 
+/// A mod on a Map Pack base is hosted on that map's slot, listed under
+/// Mods by the package's name: the slot loads the installed map, which
+/// the vfs serves patched.
+#[test]
+fn a_map_pack_map_a_package_replaces_is_listed_under_mods_by_the_package_name() {
+    let cat = Catalogue::with_mods(
+        [
+            map(0x0a, "Lockout", 10, "scenarios\\multi\\lockout\\lockout"),
+            map(0x3e8, "Turf", 130, "t:\\$C\\4D53006400000101\\turf"),
+            map(0x3f2, "Relic", 140, "t:\\$C\\4D53006400000102\\dune"),
+        ],
+        &[("turf".into(), "Ownage Turf".into())],
+    );
+    assert_eq!(cat.categories(), [Category::Halo2, Category::MapPack, Category::Mods]);
+    let m = &cat.maps(Category::Mods)[0];
+    assert_eq!((m.id, m.name.as_str()), (0x3e8, "Ownage Turf"));
+    assert_eq!(m.replaces.as_deref(), Some("Turf"));
+    assert_eq!(m.path, "t:\\$C\\4D53006400000101\\turf", "the slot loads the installed map");
+    let pack: Vec<&str> = cat.maps(Category::MapPack).iter().map(|m| m.name.as_str()).collect();
+    assert_eq!(pack, ["Relic"]);
+    assert_eq!(
+        row_label(&cat, Mode::Maps(Category::Mods), 0x3e8).map(|l| l.1),
+        Some("Ownage Turf".into())
+    );
+}
+
 #[test]
 fn the_flow_lists_categories_then_the_picked_maps_and_closes_after_a_map() {
     let f = Flow::default();

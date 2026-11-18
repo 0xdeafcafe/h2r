@@ -823,6 +823,9 @@ impl Prepared {
             lightmap_bitmap,
             sound: &sound,
             visibility: &self.visibility,
+            // A multiplayer level keeps the base's scenario, with no
+            // atmosphere block to name: every cluster takes its sky's fog.
+            atmosphere: &[],
         };
         let section = structure.write(&mut set, self.sbsp, self.ltmp)?;
 

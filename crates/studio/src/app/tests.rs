@@ -1185,3 +1185,169 @@ fn disc_converted_textures_decode_as_their_bases() {
         "the old reading agrees: the test proves nothing"
     );
 }
+
+// ---------- the Map Pack ----------
+
+impl Temp {
+    /// A folder of maps standing in for the Halo 2 disc, and a folder shaped
+    /// like the Map Pack disc beside it. Returns `(halo2, pack)`.
+    fn halo2_and_pack(&self) -> (PathBuf, PathBuf) {
+        let halo2 = self.0.join("halo2");
+        let pack = self.0.join("pack");
+        let dlc = pack.join("demos").join("dlc").join("00000001");
+        std::fs::create_dir_all(&halo2).unwrap();
+        std::fs::create_dir_all(&dlc).unwrap();
+        for name in ["alpha", "beta"] {
+            std::fs::write(halo2.join(format!("{name}.map")), fixture::fixture()).unwrap();
+        }
+        // The shared cache a pack map resolves from the Halo 2 side.
+        std::fs::write(halo2.join("shared.map"), fixture::fixture()).unwrap();
+        std::fs::write(dlc.join("ContentMeta.xbx"), b"meta").unwrap();
+        std::fs::write(dlc.join("backwash.map"), fixture::fixture()).unwrap();
+        (halo2, pack)
+    }
+}
+
+#[test]
+fn opening_a_map_pack_adds_it_and_keeps_the_halo_2_source() {
+    let t = Temp::new("pack-add");
+    let (halo2, pack) = t.halo2_and_pack();
+    let mut app = app_with(&t);
+    app.dispatch(Action::OpenSource(halo2.clone()));
+    assert_eq!(
+        app.maps(),
+        ["alpha".to_string(), "beta".to_string(), "shared".to_string()]
+    );
+    assert!(app.mappack().is_none());
+
+    app.dispatch(Action::OpenSource(pack.clone()));
+    assert!(
+        matches!(app.status(), Some(Status::Info(m)) if m.contains("Map Pack")),
+        "{:?}",
+        app.status()
+    );
+    // The disc stays, with its own maps; the pack's are their own group.
+    assert_eq!(app.source().unwrap().path(), halo2.as_path());
+    assert_eq!(
+        app.maps(),
+        ["alpha".to_string(), "beta".to_string(), "shared".to_string()]
+    );
+    assert_eq!(app.mappack().unwrap().path(), pack.as_path());
+    assert_eq!(app.mappack_maps(), ["backwash".to_string()]);
+    assert!(app.is_mappack_map("BACKWASH"));
+    assert!(!app.is_mappack_map("alpha"));
+
+    // Opening the Halo 2 side again keeps the pack.
+    app.dispatch(Action::OpenSource(halo2));
+    assert_eq!(app.mappack_maps(), ["backwash".to_string()]);
+}
+
+#[test]
+fn a_map_pack_can_be_opened_before_the_disc_and_by_contents_only() {
+    let t = Temp::new("pack-first");
+    let (halo2, pack) = t.halo2_and_pack();
+    // Under a name that says nothing about it.
+    let renamed = t.0.join("some-folder");
+    std::fs::rename(&pack, &renamed).unwrap();
+    let mut app = app_with(&t);
+    app.dispatch(Action::OpenSource(renamed));
+    assert!(app.source().is_none(), "the pack is not the Halo 2 source");
+    assert_eq!(app.mappack_maps(), ["backwash".to_string()]);
+    app.dispatch(Action::OpenSource(halo2.clone()));
+    assert_eq!(app.source().unwrap().path(), halo2.as_path());
+    assert_eq!(app.mappack_maps(), ["backwash".to_string()]);
+    // A plain folder of maps is a source, not a pack.
+    let mut plain = app_with(&t);
+    plain.dispatch(Action::OpenSource(halo2));
+    assert!(plain.mappack().is_none());
+}
+
+#[test]
+fn a_map_pack_map_opens_edits_and_saves_over_the_halo_2_caches() {
+    let t = Temp::new("pack-edit");
+    let (halo2, pack) = t.halo2_and_pack();
+    let mut app = app_with(&t);
+    app.dispatch(Action::OpenSource(halo2.clone()));
+    app.dispatch(Action::OpenSource(pack));
+    app.dispatch(Action::SelectMap("backwash".into()));
+    assert_eq!(app.loaded_map(), Some("backwash"));
+    assert!(app.session.is_open() && !app.is_dirty());
+    // Its caches are the Halo 2 source's.
+    let source = app.session.source().unwrap();
+    assert_eq!(source.shared.as_deref(), Some(halo2.as_path()));
+
+    // Edit, save as a package named for the map, reopen it over the pack's map.
+    move_flag(&mut app, 7.0);
+    app.open_package_form();
+    let mut form = app.package_form.clone().unwrap();
+    assert_eq!(form.dir, "backwash-edit");
+    form.name = "Pack edit".into();
+    app.dispatch(Action::SavePackage(form));
+    assert!(app.package_form.is_none(), "the form closes on success");
+    assert!(t.0.join("data/maps/backwash-edit").is_dir());
+    move_flag(&mut app, 1.0);
+    app.dispatch(Action::Undo);
+    app.dispatch(Action::OpenPackage("backwash-edit".into()));
+    assert!(matches!(app.status(), Some(Status::Info(m)) if m.contains("opened package")));
+    assert!((flag_x(&app) - 7.0).abs() < 1e-6);
+    // Save as a whole map file too.
+    let out = t.0.join("backwash-out.map");
+    app.dispatch(Action::SaveMapAs(out.clone()));
+    assert!(out.is_file());
+}
+
+#[test]
+fn a_map_pack_map_without_the_disc_says_what_it_needs() {
+    let t = Temp::new("pack-alone");
+    let (_, pack) = t.halo2_and_pack();
+    let mut app = app_with(&t);
+    app.dispatch(Action::OpenSource(pack));
+    app.dispatch(Action::SelectMap("backwash".into()));
+    assert_eq!(app.loaded_map(), Some("backwash"));
+    assert!(
+        app.log()
+            .iter()
+            .any(|l| l.status.text().contains("needs the Halo 2 disc")),
+        "{:?}",
+        app.log()
+    );
+}
+
+/// The user's Map Pack beside their Halo 2 disc: nine maps in their own
+/// group, each opening with its shared caches from the Halo 2 disc, and one
+/// saving as a package.
+/// `cargo test -p studio real_map_pack -- --ignored` (reads `$H2_DISC` and
+/// `$H2_MAPPACK_ISO`, else `disc/halo2.iso` and `disc/mappack.iso`).
+#[test]
+#[ignore = "needs disc/halo2.iso and disc/mappack.iso (or $H2_DISC, $H2_MAPPACK_ISO)"]
+fn real_map_pack_opens_beside_the_disc_and_saves_a_package() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let disc = |var: &str, file: &str| {
+        std::env::var_os(var).map_or_else(|| root.join("disc").join(file), PathBuf::from)
+    };
+    let (iso, pack) = (disc("H2_DISC", "halo2.iso"), disc("H2_MAPPACK_ISO", "mappack.iso"));
+    let t = Temp::new("pack-real");
+    let mut app = app_with(&t);
+    app.session.build_scenes = false;
+    app.dispatch(Action::OpenSource(iso.clone()));
+    app.dispatch(Action::OpenSource(pack));
+    assert_eq!(app.source().unwrap().path(), iso.as_path(), "the disc stays");
+    let names = app.mappack_maps();
+    assert_eq!(names.len(), 9, "{names:?}");
+    assert!(app.maps().iter().all(|m| !names.contains(m)));
+    for name in &names {
+        app.dispatch(Action::SelectMap(name.clone()));
+        assert_eq!(app.loaded_map(), Some(name.as_str()), "{name}");
+        assert!(app.session.scenario().is_some(), "{name}");
+        let (world, failed) = app.session.world();
+        assert!(!world.is_empty(), "{name}: a BSP");
+        assert_eq!(failed, 0, "{name}: every section loaded from the shared caches");
+    }
+    let name = names[0].clone();
+    app.dispatch(Action::SelectMap(name.clone()));
+    app.open_package_form();
+    let form = app.package_form.clone().unwrap();
+    app.dispatch(Action::SavePackage(form.clone()));
+    assert!(app.package_form.is_none());
+    assert!(t.0.join("data/maps").join(&form.dir).is_dir());
+}

@@ -28,12 +28,14 @@ pub const USAGE: &str = "usage: h2 live maps <command>
   publish DIR [--server URL] [--as GAMERTAG] [--category C] [--source-url URL]
                           upload a map package (DIR/manifest.toml, its
                           layers and image) and publish it as yours
-  import FILE [--base MAP] [--disc ISO] [--out DIR] [--name NAME]
-              [--info mod.toml] [--category C] [--no-publish]
+  import FILE [--base MAP] [--disc ISO] [--mappack ISO] [--out DIR]
+              [--name NAME] [--info mod.toml] [--category C] [--no-publish]
               [--server URL] [--as GAMERTAG]
                           make a package of a third-party mod (a modded
                           .map, or a .ppf/.ips/.bps) over your own disc's
-                          map, sharing only the difference, and publish it
+                          map, sharing only the difference, and publish it;
+                          a Map Pack map's base is read from --mappack,
+                          else a mappack.iso beside the disc
   list [--server URL] [--base MAP] [--author GAMERTAG] [--json]
                           the packages the server has
 
@@ -69,6 +71,7 @@ pub fn run(mut args: Args) -> Result<()> {
             let as_tag = args.take("--as")?;
             let base = args.take("--base")?;
             let disc = args.take("--disc")?;
+            let mappack = args.take("--mappack")?;
             let out = args.take("--out")?;
             let name = args.take("--name")?;
             let info = args.take("--info")?;
@@ -82,9 +85,14 @@ pub fn run(mut args: Args) -> Result<()> {
                 Some(d) => std::path::PathBuf::from(d),
                 None => crate::default_disc()?,
             };
+            // As `h2 play` finds it: mappack.iso beside the disc.
+            let mappack = mappack
+                .map(std::path::PathBuf::from)
+                .or_else(|| crate::mappack_cmd::discover(&disc));
             let made = import(&ImportOptions {
                 input: file.into(),
                 disc,
+                mappack,
                 base,
                 out: out.map(Into::into),
                 info: info.map(Into::into),
@@ -92,10 +100,14 @@ pub fn run(mut args: Args) -> Result<()> {
                 category,
             })?;
             println!(
-                "{}: {} on {}, a {} layer for a {} mod",
+                "{}: {} on {}{}, a {} layer for a {} mod",
                 made.dir.display(),
                 made.manifest.package.name,
                 made.manifest.base.map,
+                match made.base_from {
+                    crate::live_mod_import::BaseFrom::Disc => "",
+                    crate::live_mod_import::BaseFrom::MapPack => " (map pack)",
+                },
                 fmt_size(made.layer_size),
                 fmt_size(made.input_size)
             );
@@ -326,7 +338,11 @@ mod tests {
         let all = list(&client, None, None).unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].name, "Lockout Snipers");
-        assert!(list(&client, Some("midship".into()), None).unwrap().is_empty());
+        assert!(
+            list(&client, Some("midship".into()), None)
+                .unwrap()
+                .is_empty()
+        );
 
         // A layer whose bytes are not the manifest's is never uploaded.
         std::fs::write(pkg.join("snipers.ips"), b"PATCH changed").unwrap();

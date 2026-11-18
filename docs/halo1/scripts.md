@@ -289,6 +289,24 @@ retail compiler writes them; literals keep their source type.
   list each call in `Compiled::missing`. Engine globals Halo 2's scripts
   never name become the expected type's zero and are listed in
   `missing_globals` (4 across the campaign).
+- **Sleeping forever**: Halo 1's `(sleep -1)` sleeps until a `wake`,
+  and `(sleep -1 <script>)` puts another script to sleep that way (S:
+  Halo 1's scripting reference; the levels use it so: a10's continuous
+  `dialog_flavor_captain` is eight lines with `(sleep -1)` between them,
+  which `flavor_intercom` wakes one at a time, and a50's, b40's and
+  c10's `kill_all_continuous` is one `(sleep -1 <script>)` per
+  continuous script). Halo 2's `sleep` takes a negative duration as no
+  sleep at all (E `0x002087e0`, [hs_vm.md](../engine/hs_vm.md)), so
+  until converter version 67 these calls did nothing: every continuous
+  script with one restarted each tick, and a10's captain started all
+  eight flavour lines thirty times a second from the level's first tick,
+  the "big whirring sound" over the opening cinematic. A negative
+  literal duration now compiles as Halo 2's `sleep_forever` (builtin 20,
+  E `0x00208750`: wake -2 on this thread or on the script its optional
+  argument names; `wake` resumes after it), the script argument kept
+  (`Compiled::forever`). 312 calls on the ten levels (a10 35, a30 16,
+  a50 52, b30 2, b40 27, c10 22, c20 58, c40 7, d20 42, d40 51;
+  `negative_sleeps_sleep_forever_on_every_level`).
 - **Animation names**: a string literal right after an animation graph
   literal (`custom_animation`, `scenery_animation_start`, ...) is hooked
   with `h1_type` `compile::ANIMATION_NAME` and the token

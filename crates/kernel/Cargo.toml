@@ -9,6 +9,8 @@ runtime.workspace = true
 xbe.workspace = true
 thiserror.workspace = true
 vfs = { path = "../vfs" }
+# Machine snapshots: the kcore and machine sections (src/snapshot.rs).
+snapshot = { path = "../snapshot" }
 # Slice, wait, DPC and idle events (docs/perf/profiling.md).
 timeline = { path = "../timeline" }
 

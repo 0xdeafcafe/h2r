@@ -63,6 +63,10 @@ pub struct PlayerState {
     /// The local player slot (0..3) this player plays from, or `None` for a
     /// remote player.
     pub local_user: Option<u8>,
+    /// The controller port (0..3) a local player plays from (player
+    /// `+0x24`), or `None` for a remote player. A Clanker on a local slot
+    /// is known by its port (docs/game/bots.md §4.1).
+    pub controller: Option<u8>,
     /// The player's machine id (player `+0x14`): a phantom bot's is its
     /// own made-up one (docs/game/bots.md §5.1).
     pub machine: [u8; 6],
@@ -147,6 +151,9 @@ pub struct Motion {
     pub animation: Option<Animation>,
     /// Bipeds only: hitbox offset counter (`layout::BIPED_HITBOX_OFFSET`).
     pub hitbox_offset: Option<i8>,
+    /// The first Havok rigid body's world position and linear velocity
+    /// (`layout::BODY_PHYSICS`), when the object has one.
+    pub havok: Option<([f64; 3], [f64; 3])>,
 }
 
 /// An animation manager's first channel, as the guest holds it.
@@ -343,10 +350,8 @@ impl Shots {
 
 impl<'a> IntoIterator for &'a Shots {
     type Item = (&'a u32, &'a u32);
-    type IntoIter = std::iter::Map<
-        std::slice::Iter<'a, (u32, u32)>,
-        fn(&'a (u32, u32)) -> (&'a u32, &'a u32),
-    >;
+    type IntoIter =
+        std::iter::Map<std::slice::Iter<'a, (u32, u32)>, fn(&'a (u32, u32)) -> (&'a u32, &'a u32)>;
 
     fn into_iter(self) -> Self::IntoIter {
         let pair: fn(&'a (u32, u32)) -> (&'a u32, &'a u32) = |(w, n)| (w, n);

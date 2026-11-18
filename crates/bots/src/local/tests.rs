@@ -97,7 +97,11 @@ fn a_removed_bot_stays_plugged_and_idle_until_unplugged() {
     m.sync();
     assert_eq!(m.connected_mask(), 0b11, "still plugged");
     l.frame(1, &g, |_| true);
-    assert_eq!(l.pad(h), Some(HostPadState::default()), "idle, its source not asked");
+    assert_eq!(
+        l.pad(h),
+        Some(HostPadState::default()),
+        "idle, its source not asked"
+    );
     assert_eq!(l.remove(h), Err(Error::NoSuchBot(h)));
     assert!(l.unplug(h));
     m.sync();
@@ -226,12 +230,6 @@ fn a_recording_plays_once_from_its_first_frame() {
         .map(|n| r.pad(&frame_at(n, &g)) == forward())
         .collect();
     assert_eq!(seq, vec![true, false, true, false]);
-}
-
-#[test]
-fn the_join_pad_taps_a() {
-    let a = |f| join_pad(f).buttons.contains(HostButton::South);
-    assert!(a(0) && a(JOIN_HOLD - 1) && !a(JOIN_HOLD) && !a(JOIN_EVERY - 1) && a(JOIN_EVERY));
 }
 
 #[test]

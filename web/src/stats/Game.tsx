@@ -11,7 +11,7 @@ import { difficultyName, gameTypeLine } from "../state/gametype";
 import CampaignReport, { PlayerName, campaignPlayers } from "./CampaignReport";
 import Scoreboard from "../components/Scoreboard";
 import KillFeed from "../components/KillFeed";
-import { VerifySummary } from "../components/bits";
+import { BotTag, VerifySummary } from "../components/bits";
 import { Block, Crumbs, Title } from "./Layout";
 import Carnage from "./Carnage";
 import GametypeIcon from "../components/GametypeIcon";
@@ -23,7 +23,7 @@ import { colourFor, elapsedSeconds, gameSeconds, liveFrameSource, rosterFor, tea
 import { clock } from "../lib/format";
 import { now } from "../lib/now";
 import { TICKS_PER_SECOND } from "../state/frames";
-import TacticalMap from "../viewer/TacticalMap";
+import GameViewer from "../viewer/GameViewer";
 import Transport, { replayKey } from "../viewer/Transport";
 import { createReplaySession } from "../viewer/session";
 import "../styles/stats-game.css";
@@ -69,14 +69,15 @@ export default function Game() {
   );
 }
 
-function Header(props: { game: GameState }) {
+/** What the game was: its map, type, result, length and record. Under
+ *  the viewer and the scoreboard, which come first. */
+function Overview(props: { game: GameState }) {
   const g = () => props.game;
   const campaign = () => isCampaign(g());
   const result = () => resultWords(g());
   const host = () => hostName(g());
   return (
     <>
-      <Title class="s-title--bar" back={["see all games", statsPath("/games")]}>Game Details</Title>
       <div class="s-overview">
         <MapThumb game={g()} top />
         <ul class="s-summary">
@@ -167,7 +168,7 @@ function Legend(props: { game: GameState }) {
     <div class="s-legend" aria-label="Map legend">
       <Show
         when={props.game.team_play}
-        fallback={<For each={standings(props.game)}>{(s) => <span><i style={{ background: colourFor(props.game, s.team, s.index) }} />{s.name}</span>}</For>}
+        fallback={<For each={standings(props.game)}>{(s) => <span><i style={{ background: colourFor(props.game, s.team, s.index) }} />{s.name}<Show when={s.bot}><BotTag /></Show></span>}</For>}
       >
         <For each={teamStandings(props.game)}>{(t) => <span><i style={{ background: colourFor(props.game, t.team, 0) }} />{teamName(t.team)} Team</span>}</For>
       </Show>
@@ -177,26 +178,48 @@ function Legend(props: { game: GameState }) {
   );
 }
 
+/** The viewer's title: the game type on the map (the mission, in a campaign). */
+function viewerTitle(g: GameState): string {
+  return isCampaign(g) ? gameMapTitle(g) : `${gameTitle(g)} on ${gameMapTitle(g)}`;
+}
+
+const PageTitle = () => <Title class="s-title--bar" back={["see all games", statsPath("/games")]}>Game Details</Title>;
+
+/** Beside the viewer: the scoreboard (players, in a campaign) and the field report. */
+function Side(props: { game: GameState; scores: GameState; kills: Kill[]; at?: string; onHover: (i: number | null) => void }) {
+  return (
+    <div class="s-viewer s-viewer--below">
+      <Show
+        when={isCampaign(props.game)}
+        fallback={<Block title="Scoreboard" right={props.at} class="s-sec"><Scoreboard game={props.scores} onHover={props.onHover} /></Block>}
+      >
+        <Block title="Players" class="s-sec"><Fireteam game={props.game} onHover={props.onHover} /></Block>
+      </Show>
+      <Block title={isCampaign(props.game) ? "Deaths" : "Field Report"} right="newest first" class="s-sec"><KillFeed game={props.game} kills={props.kills} /></Block>
+    </div>
+  );
+}
+
 function GameView(props: { game: GameState }) {
   const roster = createMemo(() => rosterFor(props.game));
   const [hover, setHover] = createSignal<number | null>(null);
   return (
     <Show when={props.game.status === "live"} fallback={<Replay game={props.game} />}>
-      <Header game={props.game} />
-      <Title right={<span class="s-viewer-status"><i />Live coverage</span>}>Game Viewer</Title>
-      <div class="s-viewer">
-        <Block title="Tactical Map" right={`${gameMapTitle(props.game)}`} class="s-sec">
-          <TacticalMap game={props.game} frame={liveFrameSource(props.game.game_id, roster)} roster={roster} highlight={hover} label={`Live map of ${gameMapTitle(props.game)}`} />
-          <Legend game={props.game} />
-          <div class="s-live-clock"><span>Match in progress</span><b>{hms(elapsedSeconds(props.game, now()))}</b></div>
-        </Block>
-        <aside class="s-viewer-side">
-          <Show when={isCampaign(props.game)} fallback={<Block title="Scoreboard" class="s-sec"><Scoreboard game={props.game} onHover={setHover} /></Block>}>
-            <Block title="Players" class="s-sec"><Fireteam game={props.game} onHover={setHover} /></Block>
-          </Show>
-          <Block title={isCampaign(props.game) ? "Deaths" : "Field Report"} right="newest first" class="s-sec"><KillFeed game={props.game} kills={props.game.kills} /></Block>
-        </aside>
-      </div>
+      <PageTitle />
+      <GameViewer
+        game={props.game}
+        title={viewerTitle(props.game)}
+        status={<span class="s-viewer-status"><i />Live coverage</span>}
+        frame={liveFrameSource(props.game.game_id, roster)}
+        roster={roster}
+        highlight={hover}
+        label={`Live map of ${gameMapTitle(props.game)}`}
+        controls={<div class="s-live-clock"><span>Match in progress</span><b>{hms(elapsedSeconds(props.game, now()))}</b></div>}
+      >
+        <Legend game={props.game} />
+      </GameViewer>
+      <Side game={props.game} scores={props.game} kills={props.game.kills} onHover={setHover} />
+      <Overview game={props.game} />
     </Show>
   );
 }
@@ -204,7 +227,7 @@ function GameView(props: { game: GameState }) {
 function Replay(props: { game: GameState }) {
   const [hover, setHover] = createSignal<number | null>(null);
   const roster = createMemo(() => rosterFor(props.game));
-  // One session drives the 2D map, the scrubber and the 3D window alike.
+  // One session drives the 2D map, the 3D view and the scrubber alike.
   const session = createReplaySession(() => props.game, roster);
   const { timeline, error, tick } = session;
   const killColour = (k: number | null) => (k !== null ? colourFor(props.game, props.game.players[k]?.team ?? 0, k) : undefined);
@@ -221,48 +244,55 @@ function Replay(props: { game: GameState }) {
     return tl.killsBetween(-Infinity, tick()).map((k) => ({ ...k, at: "", pos: k.at ? [k.at.x, k.at.y, k.at.z] : null }));
   });
 
-  const onKey = (e: KeyboardEvent) => {
-    if (e.target !== e.currentTarget) return;
-    if (replayKey(session, e)) return;
-    if (e.key === "ArrowRight") { e.preventDefault(); session.seek(tick() + 5 * TICKS_PER_SECOND); }
-    if (e.key === "ArrowLeft") { e.preventDefault(); session.seek(tick() - 5 * TICKS_PER_SECOND); }
+  const onKey = (e: KeyboardEvent): boolean => {
+    if (!timeline()?.frames.length) return false;
+    if (replayKey(session, e)) return true;
+    if (e.ctrlKey || e.metaKey || e.altKey) return false;
+    if (e.key === "ArrowRight") { e.preventDefault(); session.seek(tick() + 5 * TICKS_PER_SECOND); return true; }
+    if (e.key === "ArrowLeft") { e.preventDefault(); session.seek(tick() - 5 * TICKS_PER_SECOND); return true; }
+    return false;
   };
+
+  const controls = () => (
+    <Show when={!error()} fallback={<p class="s-pad s-bad">Couldn't load the replay: {error()}</p>}>
+      <Show when={timeline()} fallback={<div class="s-loading">Loading recorded frames…</div>}>
+        {(tl) => (
+          <Show when={tl().frames.length} fallback={<p class="s-empty">No recorded frames for this game. The scoreboard and field report are still here.</p>}>
+            <div class="s-timeline-head"><span>Match Timeline</span><small>Marks show kills, deaths and cuts · click one to watch it · Space to play</small></div>
+            <Transport session={session} killColour={killColour} />
+          </Show>
+        )}
+      </Show>
+    </Show>
+  );
 
   return (
     <>
-      <Header game={props.game} />
-      <Title right={<span class="s-viewer-status">Recorded replay</span>}>Game Viewer</Title>
-      <div class="s-viewer">
-        <Block title="Tactical Map" right={gameMapTitle(props.game)} class="s-sec">
-          <Show when={!error()} fallback={<p class="s-pad s-bad">Couldn't load the replay: {error()}</p>}>
-            <Show when={timeline()} fallback={<div class="s-loading">Loading recorded frames…</div>}>
-              {(tl) => (
-                <Show when={tl().frames.length} fallback={<p class="s-empty">No recorded frames for this game. The scoreboard and field report are still here.</p>}>
-                  <TacticalMap
-                    game={props.game} frame={session.frame} roster={roster} highlight={hover} label={`Replay of ${gameMapTitle(props.game)}`}
-                    onKeyDown={onKey} keysLabel="Replay map. Space plays or pauses; arrow keys step five seconds; comma and full stop step a frame; less-than and greater-than jump between kills; k watches the latest kill."
-                    soughtAt={session.soughtAt}
-                    camera={session.camera}
-                    transport={() => <Transport session={session} killColour={killColour} />}
-                  />
-                  <Legend game={props.game} />
-                  <div class="s-timeline-head"><span>Match Timeline</span><small>Marks show kills, deaths and cuts · click one to watch it · Space to play</small></div>
-                  <Transport session={session} killColour={killColour} />
-                </Show>
-              )}
-            </Show>
-          </Show>
-        </Block>
-        <aside class="s-viewer-side">
-          <Show
-            when={isCampaign(props.game)}
-            fallback={<Block title="Scoreboard" right={`at ${clock((tick() - (timeline()?.startTick ?? 0)) / TICKS_PER_SECOND)}`} class="s-sec"><Scoreboard game={snapshot()} onHover={setHover} /></Block>}
-          >
-            <Block title="Players" class="s-sec"><Fireteam game={props.game} onHover={setHover} /></Block>
-          </Show>
-          <Block title={isCampaign(props.game) ? "Deaths" : "Field Report"} right="newest first" class="s-sec"><KillFeed game={props.game} kills={kills()} /></Block>
-        </aside>
-      </div>
+      <PageTitle />
+      <GameViewer
+        game={props.game}
+        title={viewerTitle(props.game)}
+        status={<span class="s-viewer-status">Recorded replay</span>}
+        frame={session.frame}
+        roster={roster}
+        highlight={hover}
+        label={`Replay of ${gameMapTitle(props.game)}`}
+        soughtAt={session.soughtAt}
+        camera={session.camera}
+        onKey={onKey}
+        keysLabel="Replay viewer. Space plays or pauses; arrow keys step five seconds; comma and full stop step a frame; less-than and greater-than jump between kills; k watches the latest kill."
+        controls={controls()}
+      >
+        <Legend game={props.game} />
+      </GameViewer>
+      <Side
+        game={props.game}
+        scores={snapshot()}
+        kills={kills()}
+        at={`at ${clock((tick() - (timeline()?.startTick ?? 0)) / TICKS_PER_SECOND)}`}
+        onHover={setHover}
+      />
+      <Overview game={props.game} />
     </>
   );
 }
