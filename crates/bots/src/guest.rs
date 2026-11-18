@@ -277,9 +277,44 @@ pub fn game_tick(m: &dyn GuestMemory) -> Option<u32> {
     m.u32(time + GAME_TIME_TICK).ok()
 }
 
-/// What the bot on `port` sees: in a multiplayer game, itself and every
-/// other player with a living unit. Outside one, nothing.
+/// Which player a bot is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Who {
+    /// A local bot: the local player on this controller port.
+    Port(u32),
+    /// A phantom: the player of this machine id (player `+0x14`).
+    Machine([u8; 6]),
+}
+
+/// Player `+0x14`: the player's machine id, 6 bytes.
+pub const PLAYER_MACHINE: u32 = 0x14;
+
+/// Player `p`'s machine id.
+pub fn player_machine(m: &dyn GuestMemory, p: u32) -> R<[u8; 6]> {
+    let mut id = [0; 6];
+    for (i, b) in (0u32..).zip(id.iter_mut()) {
+        *b = m.u8(p + PLAYER_MACHINE + i)?;
+    }
+    Ok(id)
+}
+
+fn is(m: &dyn GuestMemory, p: &players::Player, who: Who) -> R<bool> {
+    Ok(match who {
+        Who::Port(port) => {
+            p.local_user(m)? >= 0 && m.i32(p.addr + PLAYER_CONTROLLER)? == port as i32
+        }
+        Who::Machine(id) => player_machine(m, p.addr)? == id,
+    })
+}
+
+/// What the bot on `port` sees (see [`perceive_as`]).
 pub fn perceive(m: &dyn GuestMemory, port: u32) -> R<Perception> {
+    perceive_as(m, Who::Port(port))
+}
+
+/// What the bot `who` sees: in a multiplayer game, itself and every other
+/// player with a living unit. Outside one, nothing.
+pub fn perceive_as(m: &dyn GuestMemory, who: Who) -> R<Perception> {
     let mut out = Perception::default();
     let globals = m.u32(points::GAME_GLOBALS.base)?;
     if globals == 0 || m.u32(globals + OPTIONS)? != MODE_MULTIPLAYER {
@@ -298,8 +333,7 @@ pub fn perceive(m: &dyn GuestMemory, port: u32) -> R<Perception> {
             continue;
         };
         let team = i16::from(p.team(m)?);
-        let mine = p.local_user(m)? >= 0 && m.i32(p.addr + PLAYER_CONTROLLER)? == port as i32;
-        if mine {
+        if is(m, &p, who)? {
             out.me = Some(Me {
                 position,
                 aim,

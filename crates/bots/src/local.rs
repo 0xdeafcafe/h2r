@@ -36,8 +36,12 @@ pub struct Frame<'a> {
     /// frame runs several, a fast one may run none, and they restart with
     /// each game. Time a script by ticks to match the simulation.
     pub tick: Option<u32>,
-    /// The port the bot is on (where the input manager put it).
+    /// The port the bot is on (where the input manager put it). For a
+    /// phantom, which has no port, 4.
     pub port: u8,
+    /// A phantom's machine id, by which its player is found; `None` for a
+    /// local bot, whose player is the one on `port`.
+    pub machine: Option<[u8; 6]>,
     /// The game's memory, to read what the bot sees.
     pub guest: &'a dyn GuestMemory,
     /// The players screen is on top and this bot's slot has no profile:
@@ -277,6 +281,7 @@ impl Local {
                 frame,
                 tick,
                 port,
+                machine: None,
                 guest,
                 joining: joining(port),
             };

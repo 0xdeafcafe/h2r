@@ -130,6 +130,7 @@ fn frame_at(n: u64, g: &FakeGuest) -> Frame<'_> {
         frame: n,
         tick: None,
         port: 1,
+        machine: None,
         guest: g,
         joining: false,
     }
