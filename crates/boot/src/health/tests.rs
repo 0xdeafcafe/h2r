@@ -407,3 +407,21 @@ fn snapshots_wait_for_a_damage_update_or_restore_between_its_hooks() {
     *s.restore.lock().unwrap() = None;
     assert_eq!(s.live(), None);
 }
+
+#[test]
+fn a_loaded_snapshot_picks_the_model_from_the_loaded_map() {
+    let _l = model_lock();
+    force(None);
+    set_mode(HealthModel::Halo2);
+    let mut g = FakeGuest::new();
+    g.map(CACHE_MAP_NAME, 0x20);
+    g.put(CACHE_MAP_NAME, b"a30\0");
+    reload_mode(&g).unwrap();
+    assert_eq!(mode(), HealthModel::Halo1, "a Halo 1 level was loaded");
+    g.put(CACHE_MAP_NAME, b"03a_oldmombasa\0");
+    reload_mode(&g).unwrap();
+    assert_eq!(mode(), HealthModel::Halo2);
+    // No map name to read: the model stays and the load says why.
+    assert!(reload_mode(&FakeGuest::new()).is_err());
+    assert_eq!(mode(), HealthModel::Halo2);
+}
