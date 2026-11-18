@@ -350,8 +350,13 @@ impl Live {
         game::validate_new(&new).map_err(invalid)?;
         // Bots (docs/game/bots.md §9.3): the session's roster as it is now,
         // which is the one in force when GameStarted lands.
+        let host = match &author {
+            Author::Account { xuid, .. } => Some(*xuid),
+            _ => None,
+        };
         crate::bots::check_players(
             &self.model.read(),
+            host,
             new.session_id.as_deref(),
             u64::MAX,
             &new.players,
@@ -416,6 +421,14 @@ impl Live {
             return Err(conflict("nonce already used"));
         }
         // Validate in order against the players as the batch changes them.
+        // The host's record is trusted (docs/live/live-matchmaking.md
+        // §8.4): it adds anyone and ends the game. A player only joins as
+        // itself, and leaves rather than ending the game.
+        let by_host = author.to_string() == game.started.host;
+        let host = match Author::parse(&game.started.host) {
+            Some(Author::Account { xuid, .. }) => Some(xuid),
+            _ => None,
+        };
         let mut players = game.players.clone();
         for (i, b) in bodies.iter().enumerate() {
             let at = parse_time(&b.at)
@@ -442,8 +455,16 @@ impl Live {
                 game::PLAYER_JOINED => {
                     let p: game::Player =
                         serde_json::from_value(b.data["player"].clone()).expect("validated");
+                    let itself = matches!(author, Author::Account { xuid, .. }
+                        if p.xuid == Some(*xuid) && !p.is_bot());
+                    if !by_host && !itself {
+                        return Err(forbidden(format!(
+                            "event {i}: a player joins as itself; the host adds others"
+                        )));
+                    }
                     crate::bots::check_players(
                         &self.model.read(),
+                        host,
                         game.started.game.session_id.as_deref(),
                         game.position,
                         [&p],
@@ -453,6 +474,11 @@ impl Live {
                 }
                 game::PLAYER_LEFT => {
                     players.retain(|p| Some(p.index as u64) != b.data["index"].as_u64())
+                }
+                game::GAME_ENDED if !by_host => {
+                    return Err(forbidden(format!(
+                        "event {i}: only the host ends the game; a player leaves with PlayerLeft"
+                    )));
                 }
                 game::GAME_ENDED if i + 1 != bodies.len() => {
                     return Err(invalid("GameEnded must be the batch's last event"));

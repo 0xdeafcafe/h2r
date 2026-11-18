@@ -1242,8 +1242,9 @@ list for the user to play (§11).
      - Acceptance (§9.3), in `POST /v1/games` and in `PlayerJoined`: a
        host-made xuid is refused; a `bot: true` entry needs the game's
        `session_id` and an xuid in that session's roster (in force now at
-       the start; in force at the start for a join); an issued bot as a
-       human is refused. `session_id` is allowed on custom games now (a
+       the start; in force at the start for a join), a roster the game's
+       host made itself (`Rostered.host`; another account naming the
+       session cannot use it); an issued bot as a human is refused. `session_id` is allowed on custom games now (a
        game with bots names the session its roster came from); still not
        on campaign. `game::Player` has `bot: Option<bool>`.
      - Nobody else writes `bot-*`/`bots-*` or the two kinds.

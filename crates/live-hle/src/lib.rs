@@ -729,6 +729,11 @@ fn invoke(
     // The accepted-invitation read stamps the record in the guest's clock;
     // the kernel's clock lock comes before guest memory, so read it first.
     // (The kernel's epoch is 0: its system time is this counter.)
+    // A stat read names the session this console is in; the joined one
+    // comes from the network's keys, read before the state lock as
+    // `Hle::matchmade` does.
+    let read_keys = matches!(e.operation, Operation::Stats(crate::stats::Op::Read))
+        .then(|| hle.network.registered_keys());
     let guest_now = (e.operation == Operation::AcceptedInvite)
         .then(|| ctx.runtime().guest_time())
         .flatten();
@@ -736,6 +741,7 @@ fn invoke(
         let mut m = ctx.memory();
         let mut state = hle.state.lock().unwrap_or_else(|e| e.into_inner());
         state.set_guest_now(guest_now);
+        state.set_read_keys(read_keys);
         let result = state.invoke(e.operation, &args, &mut m);
         let cleanup = if matches!(result, Ok(0)) {
             hle.network.lifecycle(e.operation)
