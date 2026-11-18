@@ -67,6 +67,7 @@ fn collision_moves_node_bsps_under_region_permutations() {
         shield_vitality: 75.0,
         references: Vec::new(),
         materials: vec!["Skin".into(), "".into()],
+        material_types: vec![24, 0],
         regions: vec![CollRegion {
             name: "Body".into(),
             destroyed_effect: None,
@@ -317,6 +318,7 @@ fn collision_without_a_phmo_gets_bsp_physics_slots() {
         shield_vitality: 0.0,
         references: Vec::new(),
         materials: vec!["wood".into()],
+        material_types: vec![4],
         regions: vec![CollRegion {
             name: "default".into(),
             destroyed_effect: None,
@@ -1345,4 +1347,75 @@ fn rebuilt_biped_is_sized_to_halo_1_and_takes_its_counterparts_references() {
         assert!(close(f(&format!("{p}.unknown_78")), 0.2 * k));
         assert_eq!(f(&format!("{p}.unknown_3c")), 0.0, "the child pointer");
     }
+}
+
+/// An `hlmt`'s materials follow its `coll`'s: one per collision material
+/// in order, named as it, mapped through its Halo 1 type to the global
+/// material and that material's index in the globals; a type with no
+/// global material is an error, not a guess.
+#[test]
+fn hlmt_materials_follow_the_collision_materials() {
+    use crate::rebuild::{
+        HLMT_MATERIALS, HLMT_MATERIAL_SIZE, model_material_count, model_materials,
+        model_materials_of, set_model_materials,
+    };
+    let c = Collision {
+        body_vitality: 0.0,
+        shield_vitality: 0.0,
+        references: Vec::new(),
+        materials: vec!["Rubber".into(), "metal".into(), "glass".into()],
+        material_types: vec![8, 7, 9],
+        regions: Vec::new(),
+        modifiers: 0,
+        spheres: Vec::new(),
+        nodes: Vec::new(),
+    };
+    let globals: Vec<String> = [
+        "default_material",
+        "brittle_glass",
+        "hard_metal_thick",
+        "tough_inorganic_rubber",
+    ]
+    .map(String::from)
+    .to_vec();
+    let m = model_materials(&c, &globals).unwrap();
+    let got: Vec<_> = m
+        .iter()
+        .map(|m| (m.name.as_str(), m.global.as_str(), m.global_index))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            ("rubber", "tough_inorganic_rubber", 3),
+            ("metal", "hard_metal_thick", 2),
+            ("glass", "brittle_glass", 1),
+        ]
+    );
+    let mut hlmt = Block::zeroed(0x100);
+    set_model_materials(&mut hlmt, &m);
+    assert_eq!(model_material_count(&hlmt), 3);
+    assert_eq!(model_materials_of(&hlmt), m);
+    let child = hlmt
+        .fixups
+        .iter()
+        .find_map(|f| match &f.kind {
+            map::build::FixupKind::Block { child, .. } if f.offset == HLMT_MATERIALS => Some(child),
+            _ => None,
+        })
+        .unwrap();
+    let e = &child.bytes[HLMT_MATERIAL_SIZE..2 * HLMT_MATERIAL_SIZE];
+    assert_eq!(&e[4..8], &0xffff_0000u32.to_le_bytes());
+    assert_eq!(&e[8..12], &0xffff_0001u32.to_le_bytes(), "+8: k, high -1");
+    assert_eq!(&e[0x10..0x14], &2u32.to_le_bytes());
+
+    // Writing again replaces, never appends.
+    set_model_materials(&mut hlmt, &m[..1]);
+    assert_eq!(model_material_count(&hlmt), 1);
+    assert_eq!(
+        hlmt.fixups.iter().filter(|f| f.offset == HLMT_MATERIALS).count(),
+        1
+    );
+
+    let no_glass = &globals[..1];
+    assert!(model_materials(&c, no_glass).is_err());
 }

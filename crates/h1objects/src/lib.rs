@@ -46,6 +46,7 @@ pub mod query;
 pub mod rebuild;
 pub mod refs;
 pub mod sandbox;
+pub mod verify;
 
 pub use convert::Options;
 pub use h1models::Converted;

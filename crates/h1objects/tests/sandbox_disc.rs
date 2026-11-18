@@ -734,3 +734,39 @@ fn every_map_places_halo1_s_scenery_in_both_sandboxes() {
     assert!(total > 0, "no scenery placed");
     assert!(bad.is_empty(), "{bad:#?}");
 }
+
+/// Every `hlmt` of both sandboxes' fresh maps holds the materials the
+/// engine reads ([`h1objects::verify::hlmt_materials`]), beyond what
+/// retail's own base map already breaks: a ray's hit on an object reads
+/// its `hlmt` material of the hit's index with no bound check
+/// (`0x000d8ae0`), and the converted objects' empty blocks faulted at
+/// `0x000d8b33` in the Halo 1 sandbox.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn every_hlmt_holds_its_materials_in_both_sandboxes() {
+    let mut retail = std::collections::HashMap::new();
+    let mut bad = Vec::new();
+    let mut maps = 0;
+    every_fresh_map(|name, sandbox, _, fresh| {
+        let base_name = h1convert::convert::MAPS
+            .iter()
+            .find(|m| m.0 == name)
+            .unwrap()
+            .2;
+        let known: &Vec<String> = retail.entry(base_name).or_insert_with(|| {
+            h1objects::verify::hlmt_materials(&mut h2_map(base_name)).unwrap()
+        });
+        let mut out = Map::from_reader(Cursor::new(fresh.bytes.clone())).unwrap();
+        let lines = h1objects::verify::hlmt_materials(&mut out).unwrap();
+        let hlmts = out.tags().iter().filter(|t| t.group == FourCC(*b"hlmt")).count();
+        let new: Vec<_> = lines.into_iter().filter(|l| !known.contains(l)).collect();
+        println!("{name} {sandbox:?}: {hlmts} hlmts, {} problems", new.len());
+        bad.extend(new.into_iter().map(|l| format!("{name} {sandbox:?}: {l}")));
+        maps += 1;
+    });
+    for (base, lines) in &retail {
+        println!("retail {base}: {lines:#?}");
+    }
+    assert!(maps > 0);
+    assert!(bad.is_empty(), "{bad:#?}");
+}

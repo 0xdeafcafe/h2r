@@ -682,6 +682,12 @@ pub struct Collision {
     pub references: Vec<crate::refs::Found>,
     /// `0x234` materials (`0x48`), a name each.
     pub materials: Vec<String>,
+    /// Each material's type (`+0x24`, `u16`): an index into Halo 1's
+    /// material types, [`crate::arsenal::MATERIALS`] order (V:
+    /// `hlmt_materials_disc`, Blood Gulch: stone for boulders, wood for
+    /// trees, cyborg armor for the cyborg, rubber, metal and glass for
+    /// the warthog).
+    pub material_types: Vec<u16>,
     /// `0x240`.
     pub regions: Vec<CollRegion>,
     /// `0x24c` modifiers (`0x34`): counted only.
@@ -732,6 +738,10 @@ impl Collision {
             materials: elements(map, b, 0x234, 0x48)?
                 .into_iter()
                 .map(|m| name32(m, 0))
+                .collect(),
+            material_types: elements(map, b, 0x234, 0x48)?
+                .into_iter()
+                .map(|m| i16_at(m, 0x24) as u16)
                 .collect(),
             regions,
             modifiers: Block::read(b, 0x24c).map_or(0, |b| b.count),

@@ -134,7 +134,7 @@ units). Their tuning is not read yet (below).
 | Offset | Field | Evidence |
 |---|---|---|
 | `08` | f32 maximum body vitality; `cc` maximum shield vitality | V1 (nonzero on the cyborg) |
-| `234` | materials (`0x48`, name at `+0`) | V1 |
+| `234` | materials (`0x48`, name at `+0`, `u16` type at `+0x24`: an index into Halo 1's material types, `arsenal::MATERIALS` order) | V1 (Blood Gulch: boulders stone 2, trees wood 4, the cyborg cyborg armor 21, the warthog rubber 8, metal 7 and glass 9) |
 | `240` | regions (`0x54`): name, `+0x38` destroyed effect, `+0x48` permutations (`0x20`, a name) | V1 |
 | `24c` | modifiers (`0x34`), counted only | S |
 | `280` | pathfinding spheres (`0x20`): i16 node (-1 none), `+0x10` centre, `+0x1c` radius | V1 |
@@ -341,6 +341,47 @@ converted model does not share (open question below).
 | `eqip` | `12c`, `130` | powerup type, powerup time | [health.md](../game/health.md) |
 
 Halo 1 speeds are multiplied by 30 (per tick to per second).
+
+### Model materials (`hlmt +0x58`, **Built**, converter version 54)
+
+`hlmt +0x58` holds the model's materials, `0x14` each. The engine maps a
+hit on an object to a global material through it: `0x000d8ae0` (ecx the
+object, esi an index, eax the output) goes object tag `+0x38` (the `hlmt`)
+to `+0x5c` (this block's address) and reads element `esi`'s `u16` at
+`+0x10`, with no bound check (E). Its one caller, `0x001695fb` in
+`0x00169510`, tests a ray against an object's model and passes the hit's
+material index. An empty block faults there reading `[0 + esi*0x14 +
+0x10]`: the Halo 1 sandbox's crash at pc `0x000d8b33`, address `0x10`,
+after a few seconds of play (the player on the health pack), since every
+converted `hlmt` left the block empty.
+
+Retail (V, `tests/hlmt_materials_disc.rs` on coagulation, beavercreek and
+05a, 100 `hlmt`s, 197 elements):
+
+| Offset | Field | Evidence |
+|---|---|---|
+| `+0` | name: the `coll`'s material `k` (every `hlmt` with a `coll`: 80 of 80 in order, never fewer elements) | V |
+| `+4` | two `i16`s; `0xffff0000` most often (67 of 197) | V |
+| `+8` | low `i16` `k`, high `-1` (185 of 197) or 0 | V |
+| `+0xc` | the global material's name (empty on some; then `+0` names it) | V |
+| `+0x10` | `u16`: the index in the globals' materials (`matg +0x150`) of the `+0xc` name, else of `+0` (197 of 197); high half 0 | V |
+
+A `phmo`'s shapes name material indices below the count on 60 of 62
+(retail's exceptions: powerhaus, pelican_rear_gun, invisible_box, the
+phantom).
+
+The converter (`rebuild::model_materials`) writes one element per
+converted `coll` material, in order: the material's name, `+4`
+`0xffff0000`, `+8` `k | 0xffff0000`, the Halo 2 global material of its
+Halo 1 type (`arsenal::MATERIALS`) and that material's index in the base's
+globals. A `phmo` the converter builds (its shapes name material 0) adds
+an element for each of its materials past the `coll`'s; a borrowed retail
+`phmo` keeps the template's elements past the `coll`'s, each named as its
+global material. `h1objects::verify::hlmt_materials` checks the rule on a
+built map; `tests/sandbox_disc.rs`
+(`every_hlmt_holds_its_materials_in_both_sandboxes`) and
+`h1campaign/tests/disc.rs` (`every_campaign_level_converts`) run it on
+every converted map against what the retail base already breaks.
 
 ### Tuning carried over
 

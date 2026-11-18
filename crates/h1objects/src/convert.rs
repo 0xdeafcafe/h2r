@@ -570,6 +570,9 @@ pub struct Converter<'a> {
     done: HashMap<u32, TagId>,
     colls: HashMap<(u32, bool), TagId>,
     coll_names: HashMap<(u32, bool), Vec<(String, Vec<String>)>>,
+    /// Per converted `coll`, the `hlmt` materials it needs
+    /// ([`crate::rebuild::model_materials`]).
+    coll_materials: HashMap<(u32, bool), Vec<crate::rebuild::ModelMaterial>>,
     /// Each template `nhdt` given the health meter.
     health_huds: HashMap<TagId, TagId>,
     /// Biped role words, per role ([`Self::biped_role`]).
@@ -594,6 +597,7 @@ impl<'a> Converter<'a> {
             done: HashMap::new(),
             colls: HashMap::new(),
             coll_names: HashMap::new(),
+            coll_materials: HashMap::new(),
             health_huds: HashMap::new(),
             roles: HashMap::new(),
             item_roles: HashMap::new(),
@@ -795,6 +799,24 @@ impl<'a> Converter<'a> {
         hlmt.tag_ref(h2::HLMT_COLLISION as u32, coll.map_or(TagId::NULL, |c| c.0));
         hlmt.tag_ref(h2::HLMT_ANIMATION as u32, jmad.unwrap_or(TagId::NULL));
         hlmt.bytes[h2::HLMT_VARIANTS..h2::HLMT_VARIANTS + 8].fill(0);
+        // The materials of the converted coll, not the template's: a
+        // hit's material index reads them (crate::rebuild::HLMT_MATERIALS).
+        // A borrowed phmo's shapes index the template's materials: those
+        // past the coll's stay, each named as its global material.
+        let mut materials = coll.map_or_else(Vec::new, |c| self.coll_materials[&c.1].clone());
+        if has_phmo {
+            let mut k = materials.len();
+            while let Some(e) = self.base.element(&hlmt.bytes, crate::rebuild::HLMT_MATERIALS as usize, crate::rebuild::HLMT_MATERIAL_SIZE, k)? {
+                let i = i16::from_le_bytes([e[0x10], e[0x11]]);
+                let g = usize::try_from(i)
+                    .ok()
+                    .and_then(|i| self.base.materials.get(i))
+                    .ok_or_else(|| Error::Invalid(format!("{name}: template hlmt material {k}: global {i}")))?;
+                materials.push(crate::rebuild::model_material(g, g, &self.base.materials)?);
+                k += 1;
+            }
+        }
+        crate::rebuild::set_model_materials(&mut hlmt, &materials);
         // One node per render-model node: the engine sizes an object's node
         // matrices by this count, and the converted model and graph write
         // one per their node (h1models::mode::hlmt_nodes).
@@ -934,6 +956,7 @@ impl<'a> Converter<'a> {
             nodes: (count, nodes),
             regions,
             words,
+            materials: coll.map_or_else(Vec::new, |c| self.coll_materials[&c.1].clone()),
         })?;
         if obj.animation.is_none() {
             rep.no_home
@@ -1038,6 +1061,10 @@ impl<'a> Converter<'a> {
                 .iter()
                 .map(|r| (r.name.clone(), r.permutations.clone()))
                 .collect(),
+        );
+        self.coll_materials.insert(
+            key,
+            crate::rebuild::model_materials(&h1c, &self.base.materials)?,
         );
         self.coll_reports.push((name, cr));
         Ok((id, key))
@@ -1550,9 +1577,25 @@ impl<'a> Converter<'a> {
                 raw: Vec::new(),
             },
         );
+        // Every phmo material has an hlmt material: the built shapes name
+        // material 0, and a hit on one reads the hlmt's element of that
+        // index (crate::rebuild::HLMT_MATERIALS).
+        let mut extra = Vec::new();
+        let have = crate::rebuild::model_material_count(&self.tree.tags[k].1.root) as usize;
+        for g in crate::rebuild::phmo_material_globals(&self.tree.tags[phmo.0 as usize & 0xffff].1.root)
+            .iter()
+            .skip(have)
+        {
+            extra.push(crate::rebuild::model_material(g, g, &self.base.materials)?);
+        }
         let root = &mut self.tree.tags[k].1.root;
         root.fixups.retain(|f| f.offset != at);
         root.tag_ref(at, phmo);
+        if !extra.is_empty() {
+            let mut all = crate::rebuild::model_materials_of(root);
+            all.extend(extra);
+            crate::rebuild::set_model_materials(root, &all);
+        }
         rep.physics = Some(how);
         Ok(())
     }
