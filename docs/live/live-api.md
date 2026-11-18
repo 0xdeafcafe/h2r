@@ -524,7 +524,12 @@ Lists accept `state` (default `open`), `hopper` (numeric ID), `map`, `host`
 (author or canonical gamertag), `flags` (`custom`, `hopper`, `ranked` or
 `coop`: `?flags=coop` lists co-op campaign sessions), `visibility`, and `attributes` (URL-encoded
 JSON with exact value comparisons). Filters combine. `limit` is 1..1000, default 100; `cursor`
-is the previous `next` string. Ordering is by session ID. CLI queries are
+is the previous `next` string. Ordering is by session ID. `optimatch`
+(URL-encoded JSON `{hopper, average, lowest?, highest?, party?}`) is the
+game's decoded OptiMatch search ([live-matchmaking.md](live-matchmaking.md)
+§7): it keeps sessions on that playlist whose level window and party room
+fit, orders them by closeness to `average`, and returns one page with a
+null `next`. CLI queries are
 `h2 live q sessions [--state open|deleted|expired] [--hopper ID] [--map NAME]
 [--host GAMERTAG]` and `h2 live q session ID`, with the usual JSON formats.
 
