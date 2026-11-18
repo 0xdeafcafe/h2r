@@ -40,6 +40,44 @@ pub const BLOCK_NAME_LEN: usize = 16;
 pub const BLOCK_CONTROLS: usize = 0xfc;
 /// The bot's look sensitivity, which the brain's turning is tuned to.
 pub const BOT_SENSITIVITY: u8 = 3;
+/// In the block: the player's appearance, 16 bytes (slot `+0x130`, which
+/// `0x18fd94` copies to the player properties' `+0x40`). The block check
+/// `0x1a0540` zeroes all 16 when `0x153750` finds them bad, which reads
+/// the first 8: four colours (`+0..+3`, -1 or below 18: armour primary and
+/// secondary, emblem primary and secondary), the model (`+4`, below 4),
+/// the emblem's foreground (`+5`, below 0x40) and background (`+6`, below
+/// 0x20), and emblem flags (`+7`, high nibble clear). `+8..+0x10` are not
+/// checked; a bot keeps the human's.
+pub const BLOCK_LOOK: usize = 0x118;
+/// How many player colours there are (`0x153750`'s bound).
+pub const COLOURS: u8 = 18;
+/// The emblem bounds `0x153750` checks.
+pub const EMBLEM_FOREGROUNDS: u8 = 0x40;
+pub const EMBLEM_BACKGROUNDS: u8 = 0x20;
+
+/// A bot's own colours and emblem, by its port (1 to 3; other ports take
+/// port 1's): four colours and the emblem's foreground and background.
+/// Indices only; which colour each is, is the game's palette.
+pub const BOT_LOOKS: [([u8; 4], u8, u8); 3] = [
+    ([3, 1, 3, 1], 5, 2),
+    ([6, 9, 6, 9], 12, 7),
+    ([12, 4, 12, 4], 20, 11),
+];
+
+/// The look `bot_block` writes for the bot on `port`: [`BOT_LOOKS`], with
+/// each armour colour that is the human's (`human`, their 16 look bytes)
+/// moved one on, so the bot never wears the human's colours.
+pub fn bot_look(port: u32, human: &[u8]) -> [u8; 8] {
+    let i = (port as usize).clamp(1, 3) - 1;
+    let (mut colours, fg, bg) = BOT_LOOKS[i];
+    for (k, c) in colours.iter_mut().enumerate().take(2) {
+        if human.get(k) == Some(&*c) {
+            *c = (*c + 1) % COLOURS;
+        }
+    }
+    let model = human.get(4).copied().filter(|&m| m < 4).unwrap_or(0);
+    [colours[0], colours[1], colours[2], colours[3], model, fg, bg, 0]
+}
 
 pub fn slot(port: u32) -> u32 {
     SLOTS + port * SLOT_STRIDE
@@ -61,12 +99,15 @@ pub fn human_port(m: &dyn GuestMemory, bots: u32) -> R<Option<u32>> {
     Ok(None)
 }
 
-/// A bot's profile block: the human's, with the bot's name and controls
-/// that mean the same on every machine (inversion and the other flag off,
-/// the Default layouts, a fixed sensitivity). Everything else is the
-/// human's.
-pub fn bot_block(human: &[u8; BLOCK_LEN], name: &str) -> [u8; BLOCK_LEN] {
+/// A bot's profile block: the human's, with the bot's name, its own look
+/// ([`bot_look`]: colours and emblem by `port`, the human's model) and
+/// controls that mean the same on every machine (inversion and the other
+/// flag off, the Default layouts, a fixed sensitivity). Everything else is
+/// the human's.
+pub fn bot_block(human: &[u8; BLOCK_LEN], name: &str, port: u32) -> [u8; BLOCK_LEN] {
     let mut b = *human;
+    let look = bot_look(port, &human[BLOCK_LOOK..BLOCK_LOOK + 16]);
+    b[BLOCK_LOOK..BLOCK_LOOK + 8].copy_from_slice(&look);
     let field = &mut b[BLOCK_NAME..BLOCK_NAME + BLOCK_NAME_LEN];
     field.fill(0);
     for (dst, c) in field[..BLOCK_NAME_LEN - 1]
@@ -132,7 +173,7 @@ pub async fn sign_in(
         };
         let mut block = [0u8; BLOCK_LEN];
         m.read(slot(human) + SLOT_BLOCK, &mut block)?;
-        m.write(buffer, &bot_block(&block, &name))?;
+        m.write(buffer, &bot_block(&block, &name, port))?;
         Ok(true)
     })?;
     if !made {
@@ -146,6 +187,20 @@ pub async fn sign_in(
         m.set_u16(screen + SCREEN_MASK, mask | 1 << port)
     })?;
     Ok(Ret::new(1, 4))
+}
+
+/// Signs the profiles on `ports` out with the game's own
+/// `PROFILE_SIGN_OUT` (slot in EAX), then calls `then` (a `fn() ret 0`
+/// the hook answering for, so its frame still runs) and returns its EAX.
+/// The leaving bots' slots are empty after; their pads go a frame later
+/// ([`crate::local::leave_step`]).
+pub async fn sign_out_then(cx: Cx, ports: Vec<u8>, then: u32) -> Result<Ret, EntryError> {
+    for p in ports {
+        cx.call(GuestCall::new(points::PROFILE_SIGN_OUT.base).eax(u32::from(p)))
+            .await?;
+    }
+    let r = cx.call(GuestCall::new(then)).await?;
+    Ok(Ret::new(r.eax, 0))
 }
 
 // ---- the local users (section 4.3) ----

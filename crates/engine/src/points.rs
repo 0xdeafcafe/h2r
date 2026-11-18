@@ -601,6 +601,12 @@ points! { ALL;
     /// profile file (-1 for none, so nothing is saved). Sets the slot's
     /// `0x10` flag and builds the controls table (`0x190c34`).
     PROFILE_SIGN_IN @ 0x0018_fb34: [fn(slot: stack 0, block: stack 1, file: stack 2) ret 12]; "docs/game/bots.md";
+    /// Signs the profile out of local player slot EAX: closes its saved
+    /// file when it has one (`+0x1f8` not -1, `0x2172a0`), zeroes the
+    /// 0x1e0-byte block at `+0x18`, clears the slot's `0x10` flag and sets
+    /// `+0x1f8` to -1. Does nothing when the flag is clear. Callers
+    /// `0x190d76`, `0x24b7c8`.
+    PROFILE_SIGN_OUT @ 0x0018_fc08: [fn(slot: eax) ret 0]; "docs/game/bots.md";
     /// The sound frame service, once a frame after the render: among
     /// other things, one listener per mapped local user (`0x125c93`).
     SOUND_UPDATE @ 0x0012_5b40: [fn() ret 0]; "docs/engine/engine-map.md";

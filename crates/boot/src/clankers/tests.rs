@@ -163,12 +163,34 @@ fn the_driver_follows_the_store() {
     let local = Local::default();
     let d = drive(&s, Driver::new(local.clone()));
     assert!(local.is_empty(), "off by default");
+    assert!(!d.on());
     on(&s, 3, 1);
+    assert!(d.on());
     assert_eq!(d.ports(), vec![1, 2, 3]);
     s.set(COUNT.key, Value::Int(1)).unwrap();
     assert_eq!(d.ports(), vec![1]);
     s.set(ENABLED.key, Value::Bool(false)).unwrap();
+    assert!(!d.on());
     assert!(local.is_empty());
+    // Taken off, the bots keep their pads (idle) until the game glue signs
+    // them out and unplugs them: no "controller disconnected".
+    assert_eq!(local.leaving().len(), 3);
+}
+
+#[test]
+fn clankers_on_again_takes_the_leaving_bots_pads_back() {
+    let s = store();
+    let local = Local::default();
+    let d = drive(&s, Driver::new(local.clone()));
+    on(&s, 2, 1);
+    let first: Vec<BotHandle> = local.list().iter().map(|b| b.handle).collect();
+    s.set(ENABLED.key, Value::Bool(false)).unwrap();
+    assert_eq!(local.leaving().len(), 2);
+    s.set(ENABLED.key, Value::Bool(true)).unwrap();
+    assert_eq!(d.ports(), vec![1, 2]);
+    let again: Vec<BotHandle> = local.list().iter().map(|b| b.handle).collect();
+    assert_eq!(again, first, "the same pads: the game never saw them go");
+    assert!(local.leaving().is_empty());
 }
 
 // --- Server rosters (stage 6c) ---

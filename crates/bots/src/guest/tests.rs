@@ -241,7 +241,7 @@ fn the_bot_block_is_the_humans_with_a_name_and_fixed_controls() {
     human[BLOCK_CONTROLS + 4] = 2; // Boxer
     human[BLOCK_CONTROLS + 5] = 1;
     human[BLOCK_CONTROLS + 6] = 9;
-    let b = bot_block(&human, "Clanker 1 with a long name");
+    let b = bot_block(&human, "Clanker 1 with a long name", 1);
     assert_eq!(&b[BLOCK_NAME..BLOCK_NAME + 16], b"Clanker 1 with \0");
     let flags = u32::from_le_bytes(b[BLOCK_CONTROLS..BLOCK_CONTROLS + 4].try_into().unwrap());
     assert_eq!(flags, 0xffff_fffa, "bits 0 and 2 off, the rest kept");
@@ -251,16 +251,79 @@ fn the_bot_block_is_the_humans_with_a_name_and_fixed_controls() {
     );
     for (i, (x, y)) in human.iter().zip(&b).enumerate() {
         let ours = (BLOCK_NAME..BLOCK_NAME + 16).contains(&i)
-            || (BLOCK_CONTROLS..BLOCK_CONTROLS + 7).contains(&i);
+            || (BLOCK_CONTROLS..BLOCK_CONTROLS + 7).contains(&i)
+            || (BLOCK_LOOK..BLOCK_LOOK + 8).contains(&i);
         if !ours {
             assert_eq!(x, y, "byte {i:#x} is the human's");
         }
     }
     // Short names are padded with NULs.
     assert_eq!(
-        &bot_block(&human, "B")[BLOCK_NAME..BLOCK_NAME + 3],
+        &bot_block(&human, "B", 1)[BLOCK_NAME..BLOCK_NAME + 3],
         b"B\0\0"
     );
+}
+
+/// What `0x153750` accepts: the block check zeroes a look it does not.
+fn look_is_valid(l: &[u8]) -> bool {
+    l[..4].iter().all(|&c| c == 0xff || c < COLOURS)
+        && l[4] < 4
+        && l[5] < EMBLEM_FOREGROUNDS
+        && l[6] < EMBLEM_BACKGROUNDS
+        && l[7] & 0xf0 == 0
+}
+
+#[test]
+fn each_bot_has_its_own_colours_and_emblem_never_the_humans() {
+    let mut human = [0u8; BLOCK_LEN];
+    // The human: colours 3 and 1 (port 1's), model 1, emblem 9 on 4.
+    human[BLOCK_LOOK..BLOCK_LOOK + 8].copy_from_slice(&[3, 1, 3, 1, 1, 9, 4, 0x0f]);
+    human[BLOCK_LOOK + 8] = 0x77;
+    let looks: Vec<[u8; 8]> = (1..=3)
+        .map(|port| {
+            let b = bot_block(&human, "B", port);
+            assert_eq!(b[BLOCK_LOOK + 8], 0x77, "the unchecked half is the human's");
+            b[BLOCK_LOOK..BLOCK_LOOK + 8].try_into().unwrap()
+        })
+        .collect();
+    for (port, l) in (1..).zip(&looks) {
+        assert!(look_is_valid(l), "port {port}: {l:?}");
+        assert_eq!(l[4], 1, "the human's model");
+        assert_ne!(l[0], 3, "port {port}: not the human's primary");
+        assert_ne!(l[1], 1, "port {port}: not the human's secondary");
+        assert_ne!((l[5], l[6]), (9, 4), "port {port}: not the human's emblem");
+    }
+    assert_eq!(&looks[0][..2], &[4, 2], "port 1's colours moved one on");
+    assert_ne!(looks[0], looks[1]);
+    assert_ne!(looks[1], looks[2]);
+    assert_ne!(looks[0], looks[2]);
+    // A bad model is not copied.
+    human[BLOCK_LOOK + 4] = 9;
+    let b = bot_block(&human, "B", 2);
+    assert!(look_is_valid(&b[BLOCK_LOOK..BLOCK_LOOK + 8]));
+    for (port, (_, fg, bg)) in (1..).zip(BOT_LOOKS) {
+        assert!(fg < EMBLEM_FOREGROUNDS && bg < EMBLEM_BACKGROUNDS, "port {port}");
+    }
+}
+
+#[test]
+fn signing_out_calls_the_games_sign_out_per_port_then_the_frame() {
+    const THEN: u32 = 0x0012_5b40;
+    let f = |cx: Cx| -> EntryFuture { Box::pin(sign_out_then(cx, vec![1, 3], THEN)) };
+    let regs = Regs {
+        esp: STACK,
+        ..Regs::default()
+    };
+    let mut g = FakeGuest::new();
+    g.map(STACK - 0x100, 0x200);
+    let run = testing::run(&f, g, regs, |c, _| Regs {
+        eax: if c.target == THEN { 0x77 } else { 0 },
+        ..Regs::default()
+    });
+    assert_eq!(run.result, Ok(Ret::new(0x77, 0)), "the frame's own return");
+    let calls: Vec<(u32, Option<u32>)> = run.calls.iter().map(|c| (c.target, c.eax)).collect();
+    let out = points::PROFILE_SIGN_OUT.base;
+    assert_eq!(calls, vec![(out, Some(1)), (out, Some(3)), (THEN, None)]);
 }
 
 fn slots(g: &mut FakeGuest) {
