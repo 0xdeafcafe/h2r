@@ -40,6 +40,7 @@ pub mod hud_swap;
 pub mod h1_variants;
 pub mod precision;
 pub mod render_probe;
+pub mod registration;
 pub mod render_thread;
 pub mod host_perf;
 pub mod hot_glue;
@@ -760,7 +761,6 @@ pub fn run_hosted_with_live(
     // Features declare their hooks here; the plan is built and installed
     // once, below, after the last of them (docs/engine/feature-engine.md).
     let mut features = feature::Registry::new(feature::Switches::from_env().map_err(anyhow::Error::msg)?);
-    let _telemetry = telemetry::TelemetryConfig::from_live(live.enabled, live.accounts_path.as_deref(), live.server_url.as_deref()).and_then(|config| telemetry::install(&mut features, &config)).unwrap_or_else(|error| { eprintln!("live telemetry disabled: {error}"); None });
     // Our text on the cannot-connect dialog when Live is off or its server
     // is unreachable (docs/live/live.md, "Client HLE: Live not set up").
     live_notice::install(&loaded.runtime, live).context("installing the Live notice")?;
@@ -830,52 +830,8 @@ pub fn run_hosted_with_live(
     // join tells the VFS to look again at once (it also notices by itself
     // at the map's next open), and the map-slots feature drops the game's
     // cached copy of a map whose package changed (docs/runtime/cache-slots.md).
-    if let Some(vfs) = k.vfs() {
-        if let Some(gate) = &map_gate {
-            let vfs = Arc::clone(&vfs);
-            gate.on_installed(Box::new(move |_| vfs.lock().unwrap_or_else(|e| e.into_inner()).rescan_maps()));
-        }
-        features.add(&map_slots::MapSlots { vfs }).map_err(|e| anyhow::anyhow!("map slots: {e}"))?;
-    }
-    // Maps copy to their cache slots several steps a loading frame, not one
-    // (docs/runtime/cache-slots.md, "Copy speed on the loading screen").
-    features.add(&map_copy::MapCopy).map_err(|e| anyhow::anyhow!("map copy: {e}"))?;
-    // Frame species and weapon names come from the loaded map's tag names,
-    // which stay on disc: let telemetry find the map file through the VFS.
-    // Which map exactly (docs/game/maps.md §5): a package's MapId, None for the
-    // disc's own map. Games and advertisements carry it as `map_id`.
-    if let (Some(t), Some(vfs)) = (&_telemetry, k.vfs()) {
-        t.set_map_id_locator(Box::new(move |map| {
-            let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
-            map_override::map_id(&mut v, map)
-        }));
-    }
-    // A matchmaking game's record names its playlist and Live session
-    // (docs/live/live-matchmaking.md §8.3, §8.4): the server fills in the
-    // hopper's title and finds the arbitration round by the session.
-    if let (Some(t), Some(hle)) = (&_telemetry, &_live) {
-        let hle = Arc::clone(hle);
-        t.set_playlist_locator(Box::new(move || {
-            hle.matchmade().map(|(id, session)| telemetry::Playlist {
-                name: None,
-                id: id.to_string(),
-                session_id: Some(session),
-            })
-        }));
-    }
-    if let (Some(hle), Some(vfs)) = (&_live, k.vfs()) {
-        hle.set_map_probe(Some(Arc::new(move |g: &runtime::Guest| {
-            let name = telemetry::loaded_map_name(g).ok()?;
-            let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
-            map_override::map_id(&mut v, &name)
-        })));
-    }
-    if let (Some(t), Some(vfs)) = (&_telemetry, k.vfs()) {
-        t.set_map_locator(Box::new(move |map| {
-            let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
-            let file = v.host_file(&format!("\\Device\\CdRom0\\maps\\{map}.map"))?;
-            Some(telemetry::MapFile { path: file.path, offset: file.offset, len: file.len })
-        }));
+    if let (Some(vfs), Some(gate)) = (k.vfs(), &map_gate) {
+        gate.on_installed(Box::new(move |_| vfs.lock().unwrap_or_else(|e| e.into_inner()).rescan_maps()));
     }
     let uses = opts.stopgaps.then(|| stopgaps::install(&k, &loaded.runtime));
     if let Some(u) = &uses {
@@ -921,47 +877,6 @@ pub fn run_hosted_with_live(
     // picker in front of the level select. None installed: nothing is
     // hooked and the disc is not read for it.
     let campaigns = campaigns.map(|c| campaign_menu::prepare(c, host.settings.clone()));
-    layout_glue::install(&loaded.runtime, &mut features, model).context("installing the button layouts")?;
-    campaign_menu::install(&loaded.runtime, &mut features, campaigns).context("installing the campaigns")?;
-    map_select::install(&mut features).context("installing the map select")?;
-    // The Halo 1 / Halo 2 options (docs/halo1/multiplayer.md "Halo 1
-    // options"): the switches follow the settings, the HUD style is picked
-    // at each game start, and a custom game's Game Setup gets the Halo 1
-    // Options row while its map is a converted Halo 1 map.
-    if let Some(store) = host.settings.as_ref() {
-        h1_options::install_switches(store);
-        let screen = Arc::new(h1_options::OptionsScreen { store: Arc::clone(store) });
-        let class = h1_options_row::class(screen, skulls_menu::DESCRIPTION_TEXT, skulls_menu::LIST_LAYOUT);
-        if let Err(e) = features.add(&class) {
-            eprintln!("h1 options: {e}");
-        }
-        features
-            .add(&h1_options_row::SetupRow { data_root: opts.data_root.clone() })
-            .map_err(|e| anyhow::anyhow!("h1 options row: {e}"))?;
-    }
-    // The game variant editor's More Options row and page (our options in
-    // the record's extension block; docs/game/game-options.md section 3).
-    {
-        let page = Arc::new(variant_page::Page::new());
-        let class = variant_page::class(page, skulls_menu::DESCRIPTION_TEXT, skulls_menu::LIST_LAYOUT);
-        if let Err(e) = features.add(&class) {
-            eprintln!("variant options: {e}");
-        }
-        features.add(&variant_page::MoreRow).map_err(|e| anyhow::anyhow!("variant options row: {e}"))?;
-    }
-    features.add(&hud::Hud).map_err(|e| anyhow::anyhow!("hud: {e}"))?;
-    // The party privacy as the Live session's visibility, and the Live
-    // menu's Custom Game Browser and Content Download rows (registered with the layouts above;
-    // docs/live/live-custom-games.md).
-    custom_games::install_privacy(&loaded.runtime, _live.as_ref(), host.settings.as_ref())
-        .context("installing the Live game visibility")?;
-    // A Live sign-in that needs a code asks for it in game, on our own
-    // screen opened from the logon's polling (docs/live/live.md, "In-game
-    // sign-in").
-    signin_screen::install(&loaded.runtime, &mut features, _live.as_ref()).context("installing the sign-in prompt")?;
-    // A campaign level in place of the main menu (`h2 play --level`,
-    // H2_LEVEL) and the level-loaded mark H2_PERF_FROM=level waits on
-    // (docs/runtime/level-boot.md).
     let level = match host.level.take() {
         Some(l) => Some(l),
         None => level_boot::from_env(&opts.disc, Some(&opts.data_root)).context("H2_LEVEL")?,
@@ -972,70 +887,65 @@ pub fn run_hosted_with_live(
         eprintln!("perf: H2_PERF_FROM={v:?} is neither a present number nor `level`; ignored");
     }
     let level_name = level.as_ref().map(|l| l.name.clone());
-    level_boot::install(&loaded.runtime, &mut features, level, perf_from == Some(level_boot::PerfFrom::Level))
-        .context("installing the level boot")?;
-    // Campaign skulls kept per profile: a pickup is remembered and a
-    // campaign start turns on the profile's chosen skulls (docs/game/skulls.md).
-    // Headless runs (no settings store) leave skulls as retail. Hooks on
-    // the feature plan; the line after the plan installs says where.
-    let skulls_on = skulls::install(&mut features, host.settings.clone()).context("installing the skulls")?;
-    // Skulls in multiplayer games: the host's set, advertised to guests on
-    // our Live service and applied on every machine at game start
-    // (docs/game/skulls.md "In multiplayer").
-    let skulls_mp_on = skulls_mp::install(
+    // Every feature the plan gets up to the touch glue is registered in
+    // `registration` (and its tests build the plan from the same code).
+    let core = registration::register_core(
         &mut features,
-        host.settings.clone(),
-        _live.clone(),
-        _telemetry.clone(),
-    )
-    .context("installing the multiplayer skulls")?;
-    // The game variant's options sent to Live guests at each multiplayer
-    // start (docs/game/game-options.md section 3).
-    features
-        .add(&variant_ext::Transport { hle: _live.clone() })
-        .map_err(|e| anyhow::anyhow!("variant options transport: {e}"))?;
-    // Our own skulls (from 15): hidden in campaign levels, their effects
-    // ours on the tick (docs/game/skulls.md "Our skulls"). The skull weapon's
-    // tag comes from the loaded map's file, found through the VFS.
-    let custom_maps: Option<skulls_custom::MapLocator> = k.vfs().map(|vfs| -> skulls_custom::MapLocator {
-        Box::new(move |map| {
+        registration::CoreInputs {
+            rt: &loaded.runtime,
+            telemetry: telemetry::TelemetryConfig::from_live(live.enabled, live.accounts_path.as_deref(), live.server_url.as_deref()),
+            vfs: k.vfs(),
+            model,
+            campaigns,
+            settings: host.settings.clone(),
+            live: _live.clone(),
+            data_root: &opts.data_root,
+            packages: &packages,
+            level,
+            perf_level: perf_from == Some(level_boot::PerfFrom::Level),
+            xapi: opts.xapi,
+        },
+    )?;
+    let (skulls_on, skulls_mp_on, skulls_custom_on, health_on) =
+        (core.skulls_on, core.skulls_mp_on, core.skulls_custom_on, core.health_on);
+    let _telemetry = core.telemetry;
+    // Frame species and weapon names come from the loaded map's tag names,
+    // which stay on disc: let telemetry find the map file through the VFS.
+    // Which map exactly (docs/game/maps.md §5): a package's MapId, None for the
+    // disc's own map. Games and advertisements carry it as `map_id`.
+    if let (Some(t), Some(vfs)) = (&_telemetry, k.vfs()) {
+        t.set_map_id_locator(Box::new(move |map| {
+            let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
+            map_override::map_id(&mut v, map)
+        }));
+    }
+    // A matchmaking game's record names its playlist and Live session
+    // (docs/live/live-matchmaking.md §8.3, §8.4): the server fills in the
+    // hopper's title and finds the arbitration round by the session.
+    if let (Some(t), Some(hle)) = (&_telemetry, &_live) {
+        let hle = Arc::clone(hle);
+        t.set_playlist_locator(Box::new(move || {
+            hle.matchmade().map(|(id, session)| telemetry::Playlist {
+                name: None,
+                id: id.to_string(),
+                session_id: Some(session),
+            })
+        }));
+    }
+    if let (Some(hle), Some(vfs)) = (&_live, k.vfs()) {
+        hle.set_map_probe(Some(Arc::new(move |g: &runtime::Guest| {
+            let name = telemetry::loaded_map_name(g).ok()?;
+            let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
+            map_override::map_id(&mut v, &name)
+        })));
+    }
+    if let (Some(t), Some(vfs)) = (&_telemetry, k.vfs()) {
+        t.set_map_locator(Box::new(move |map| {
             let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
             let file = v.host_file(&format!("\\Device\\CdRom0\\maps\\{map}.map"))?;
             Some(telemetry::MapFile { path: file.path, offset: file.offset, len: file.len })
-        })
-    });
-    let skulls_custom_on = skulls_custom::install(&mut features, host.settings.clone(), _telemetry.clone(), custom_maps)
-        .context("installing our skulls")?;
-    // Halo 1's health model on Halo 1 maps (docs/halo1/health.md): no body
-    // regeneration, health packs, a health meter. Off (Halo 2's) until the
-    // map's identity or the H2_HEALTH_MODEL debug override says Halo 1.
-    let health_on = health::install(&mut features).context("installing the health model")?;
-    // Precision variants on converted Halo 1 maps in the Halo 2 sandbox
-    // (docs/halo1/multiplayer.md): the battle rifle for the SMG at game
-    // activation, from the swaps each package's manifest records.
-    precision::install(&mut features, &packages).context("installing the precision swaps")?;
-    // Halo 1's or Halo 2's HUD on converted Halo 1 maps (docs/halo1/hud.md):
-    // the owners' HUD references at game activation, by `hud::style_for_map`.
-    hud_swap::install(&mut features, &packages, &opts.data_root).context("installing the HUD swap")?;
-    // Stronger aim assist (docs/game/aim-assist.md): the weapons' autoaim and
-    // magnetism at each map load, from the Aim Assist setting (Auto: Strong
-    // while the touch controls show). Headless runs keep retail.
-    aim_assist::install(&mut features, host.settings.clone()).context("installing the aim assist")?;
-    // Local bots (docs/game/bots.md, stage 1): pads on controller ports,
-    // signed in on the players screen, their views and listeners hidden.
-    // `H2_BOTS` adds brains at boot; idle with none.
-    if opts.xapi {
-        bot_glue::add_from_env();
-        bot_glue::install(&mut features, &opts.data_root).context("installing the bots")?;
-        // The Clankers page and its Game Setup row (stage 7).
-        if let Some(store) = host.settings.as_ref() {
-            clankers::install(&mut features, store).context("installing the Clankers page")?;
-        }
+        }));
     }
-    // The iOS touch controls' game side (docs/runtime/ios.md): direct
-    // look into player one's facing, and the layout from player one's
-    // seat and weapon. Idle while no touch controls show.
-    touch_glue::install(&mut features).context("installing the touch glue")?;
     // Sample the render thread too when profiling.
     #[cfg(feature = "perf")]
     let _ = d3d::RENDER_THREAD_START.set(|| perf::register_current_thread("render"));
@@ -1123,36 +1033,38 @@ pub fn run_hosted_with_live(
     let script = xapi_glue::InputScript::from_env();
     // H2_LOCKSTEP / H2_INPUT_RECORD / H2_INPUT_REPLAY (lockstep_glue.rs).
     let lockstep_config = lockstep_glue::Config::from_env();
-    let input_replay = lockstep_config.replay.is_some();
     let lockstep_on = lockstep_config.enabled();
-    let mut harness = if lockstep_config.enabled() {
-        let h = lockstep_glue::Lockstep::install(&mut features, lockstep_config, lockstep::TickHook::HALO2, xa.as_deref())?;
-        if let Some(n) = &h.tick_note {
-            eprintln!("lockstep: hashing presents only: {n}");
-        }
-        Some(h)
-    } else {
-        None
-    };
-    // H2_AGENT=<socket>: the agent API (agent_glue.rs, docs/runtime/agent-api.md).
-    let agent = match agent_glue::socket_from_env() {
-        // Over TCP (the Xbox app) a refused port must not stop the game:
-        // it runs on, undriven, and says why.
-        Some(path) if matches!(agent_proto::Endpoint::from(path.clone()), agent_proto::Endpoint::Tcp(_)) => {
-            match agent_glue::AgentGlue::install(&mut features, path, xa.as_deref(), input_replay) {
-                Ok(a) => Some(a),
-                Err(e) => {
-                    eprintln!("agent: not listening: {e:#}");
-                    None
-                }
-            }
-        }
-        Some(path) => Some(agent_glue::AgentGlue::install(&mut features, path, xa.as_deref(), input_replay)?),
-        // The debug menu talks to an agent: a local one, with no socket.
-        None if host.debug_menu.is_some() => Some(agent_glue::AgentGlue::local()),
-        None => None,
+    // H2_AGENT=<socket>: the agent API (agent_glue.rs, docs/runtime/agent-api.md);
+    // the debug menu talks to a local one with no socket.
+    let agent_source = match agent_glue::socket_from_env() {
+        Some(path) => registration::AgentSource::Socket(path),
+        None if host.debug_menu.is_some() => registration::AgentSource::Local,
+        None => registration::AgentSource::None,
     };
     let watch_overrides = agent_glue::socket_from_env().is_some();
+    let pipeline = registration::pipeline_for(d3d_glue::pipeline_render(d3d_calls.as_ref()), lockstep_on);
+    render_probe::set_pipeline(pipeline.clone());
+    let coop_probe = coop_probe::parse(|k| std::env::var(k).ok()).map_err(anyhow::Error::msg)?;
+    // The lockstep harness, the agent, our cheats, the render features and
+    // the probes (registration.rs, the rest of the plan's features).
+    let late = registration::register_late(
+        &mut features,
+        registration::LateInputs {
+            rt: &loaded.runtime,
+            lockstep: lockstep_config,
+            agent: agent_source,
+            xa: xa.as_ref(),
+            pipeline,
+            coop_probe,
+            live: _live.clone(),
+            settings: host.settings.clone(),
+            disc: &opts.disc,
+            data_root: &opts.data_root,
+        },
+    )?;
+    let mut harness = late.harness;
+    let agent = late.agent;
+    let mut snapshot_probe = late.snapshot_probe;
     // edit.* and render.* on the agent (hot_glue.rs, docs/graphics/hot-iteration.md).
     if let Some(a) = &agent {
         let maps = k.vfs().map(|vfs| -> hot_glue::MapLocator {
@@ -1167,76 +1079,7 @@ pub fn run_hosted_with_live(
     // The debug menu's host methods and connection (debug_menu_glue.rs).
     if let Some(a) = &agent {
         debug_menu_glue::install(host.debug_menu.as_ref(), &a.agent, host.settings.clone(), host.perf_overlay.clone());
-        // Our cheats (cheats.rs): refused in co-op and lockstep runs.
-        cheats::install(&mut features, &a.agent, &loaded.runtime, lockstep_on)?;
     }
-    // The Rust datum, tag and locale functions, when H2_FEATURES has
-    // impl.engine=on (off by default).
-    features.add(&feature::leaves::EngineLeaves).map_err(|e| anyhow::anyhow!("engine leaves: {e}"))?;
-    // Render front-end time in the frame stats, when H2_FEATURES has
-    // render-timing (off by default).
-    features.add(&feature::render_timing::RenderTiming::new()).map_err(|e| anyhow::anyhow!("render timing: {e}"))?;
-    // Which pages the render front-end writes and the sim reads, when
-    // H2_FEATURES has render-census (off by default;
-    // docs/graphics/pipelined-render.md).
-    let census = feature::render_census::RenderCensus::new()
-        .with_region(d3d_glue::PUSH_BASE, d3d_glue::PUSH_BASE + d3d_glue::PUSH_LEN, "push_buffer")
-        .with_region(d3d_glue::SCRATCH_BASE, d3d_glue::SCRATCH_BASE + 0x1000, "d3d_scratch");
-    features.add(&census).map_err(|e| anyhow::anyhow!("render census: {e}"))?;
-    // H2_PIPELINE_RENDER=1: the render front-end one frame behind the
-    // sim, on its own host thread (docs/graphics/pipelined-render.md, "The
-    // prototype"). Pipelined and serial runs are not lockstep-compatible.
-    let mut pipeline = d3d_glue::pipeline_render(d3d_calls.as_ref());
-    if lockstep_on {
-        pipeline = pipeline.disabled("lockstep (H2_LOCKSTEP/H2_INPUT_RECORD/H2_INPUT_REPLAY) compares serial runs");
-    }
-    render_probe::set_pipeline(pipeline.clone());
-    features.add(&pipeline).map_err(|e| anyhow::anyhow!("pipeline render: {e}"))?;
-    // Stage 7a: the Rust render_views, when H2_FEATURES has
-    // impl.render.views=on (off by default; docs/graphics/render-loop.md).
-    features.add(&feature::render_loop::RenderLoop).map_err(|e| anyhow::anyhow!("render loop: {e}"))?;
-    // Occlusion culling of objects (H2_FEATURES=impl.render.occlusion=on,
-    // off by default; docs/graphics/occlusion-culling.md).
-    features.add(&feature::occlusion::OcclusionCull).map_err(|e| anyhow::anyhow!("occlusion: {e}"))?;
-    // H2_UI_WATCH=1: the screen player one's input goes to, a line on each
-    // change and `ui.screen` (`h2 coop test --drive`; ui_watch.rs).
-    ui_watch::install(&mut features)?;
-    // H2_COOP_PROBE=1: the retail synchronous campaign path over System Link
-    // (docs/live/live-coop.md section 9). Added last, so it can see every
-    // override placed outside the plan and refuse instead of failing it.
-    let coop_probe = coop_probe::parse(|k| std::env::var(k).ok()).map_err(anyhow::Error::msg)?;
-    let probe_on = coop_probe.is_some();
-    coop_probe::install(&loaded.runtime, &mut features, coop_probe, &opts.disc, &opts.data_root)?;
-    // Co-op over Live (docs/live/live-coop.md, "Co-op over Live (built)"):
-    // the Xbox Live menu's Co-op Campaign row and screens, and the probe's
-    // hooks armed only for a co-op session. With H2_COOP_PROBE on, the
-    // probe holds those hooks and the screens only advertise and invite.
-    if _live.is_some() && std::env::var_os("H2_NO_COOP_ROW").is_none() {
-        let arm = if probe_on {
-            None
-        } else {
-            coop_probe::install_live(&loaded.runtime, &mut features, &opts.data_root)?
-        };
-        // coop.max_players: the host's co-op limit (docs/live/live-coop.md 12).
-        if let (Some(arm), Some(store)) = (&arm, &host.settings) {
-            let n = arm.set_max_players(i64::from(setting_defs::coop_max_players(store)));
-            if n != coop_probe::MAX_PLAYERS {
-                eprintln!("coop-live: co-op takes up to {n} players (coop.max_players)");
-            }
-            // coop.join_in_progress: the host lets friends join a running
-            // game (docs/live/live-coop.md 14).
-            let jip = setting_defs::coop_join_in_progress(store);
-            coop_jip::set_enabled(jip);
-            if !jip {
-                eprintln!("coop-jip: off (coop.join_in_progress)");
-            }
-        }
-        let on = coop_live::install(&mut features, _live.clone(), arm, host.settings.clone(), &opts.disc)?;
-        custom_games::set_coop_row(on);
-    }
-    // H2_SNAPSHOT_PROBE=1: count, per game tick, what would stop a machine
-    // snapshot (snapshot_probe.rs, docs/runtime/snapshots.md).
-    let mut snapshot_probe = snapshot_probe::Probe::from_env(&mut features)?;
     let plan = features.build(&feature::Base).map_err(|conflicts| {
         let c: Vec<String> = conflicts.iter().map(ToString::to_string).collect();
         anyhow::anyhow!("feature plan refused: {}", c.join("; "))
