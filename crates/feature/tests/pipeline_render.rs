@@ -44,6 +44,9 @@ const FALLBACK: u32 = 0x2_4010;
 const WAITS: u32 = 0x2_4020;
 const KERNEL_OUT: u32 = 0x2_4038;
 const KERNEL_CALLS: u32 = 0x2_4040;
+/// Bytes of stack the render's entry probes below its `esp`, page by page,
+/// as `_chkstk` does for a large frame (0 for none).
+const DEEP: u32 = 0x2_4050;
 /// Only the render writes this page.
 const OUT: u32 = 0x2_5000;
 /// Both write this line: the sim byte 0, the render byte 8.
@@ -52,7 +55,9 @@ const SHARED_LINE: u32 = 0x2_6000;
 const PUSH: u32 = 0x2_7000;
 const DATA_LEN: u32 = 0x8000;
 
-const STACK_TOP: u32 = 0x4_0000;
+/// The game thread's stack: as large as Halo 2's (its main thread's).
+const GAME_STACK: u32 = 0x4_0000;
+const STACK_TOP: u32 = 0x10_0000;
 
 static ADDRS: Addrs = Addrs {
     frame_wait: FRAME_WAIT,
@@ -100,6 +105,7 @@ fn render(
     let mut m = rt.memory();
     match sel {
         FRAME => {
+            probe(&m, cpu.esp)?;
             let v = m.u32(INPUT)?;
             m.set_u32(OUT + 4 * (v % 64), v.wrapping_mul(3))?;
             m.set_u8(SHARED_LINE + 8, v as u8)?;
@@ -127,7 +133,10 @@ fn render(
             render(cpu, ctx, FRAME + 0x20)
         }
         s if s == FRAME + 0x20 => {
-            // After the kernel: what it answered goes to OUT too.
+            // After the kernel (on the game thread in a fallback, still on
+            // the render stack): a deep frame here too.
+            probe(&m, cpu.esp)?;
+            // What the kernel answered goes to OUT too.
             let k = m.u32(KERNEL_OUT)?;
             m.set_u32(OUT + 0x800, k)?;
             m.call(cpu, FRAME_WAIT, FRAME + 0x30)
@@ -139,6 +148,19 @@ fn render(
         }
         _ => unreachable!("selector {sel:#x}"),
     }
+}
+
+/// `_chkstk`'s probes: a read of every page of a DEEP-byte frame below
+/// `esp`, down to its last byte.
+fn probe(m: &Guest, esp: u32) -> Result<(), runtime::GuestFault> {
+    let deep = m.u32(DEEP)?;
+    let low = esp - deep;
+    let mut at = esp;
+    while at > low {
+        at -= 0x1000.min(at - low);
+        m.u32(at)?;
+    }
+    Ok(())
 }
 
 /// The guest callback D3D_CALLBACK calls: the kernel, then return.
@@ -225,7 +247,7 @@ fn rig(on: bool) -> Rig {
     let mut g = Guest::new();
     g.map_zeroed(CODE, 0x1_0000, Permissions::RX).unwrap();
     g.map_zeroed(DATA, DATA_LEN, Permissions::RW).unwrap();
-    g.map_zeroed(STACK_TOP - 0x1_0000, 0x1_0000, Permissions::RW)
+    g.map_zeroed(STACK_TOP - GAME_STACK, GAME_STACK, Permissions::RW)
         .unwrap();
     // The world path: globals point at a record with +0x1120 set.
     g.set_u32(GLOBALS, GLOBALS_RECORD).unwrap();
@@ -478,4 +500,55 @@ fn a_refusal_under_a_rust_continuation_stops_with_its_name_serial_runs_it() {
         Some(&1),
         "{s:?}"
     );
+}
+
+#[test]
+fn a_render_as_deep_as_the_game_threads_stack_runs_pipelined_and_in_fallbacks() {
+    // The game's first world frame probes a frame of over 128 KiB
+    // (`_chkstk`); the render stack was 128 KiB and that read faulted just
+    // under it. The render may use what the game thread could serially.
+    let deep = GAME_STACK - 0x1000;
+    let mut serial = rig(false);
+    let mut piped = rig(true);
+    for r in [&mut serial, &mut piped] {
+        r.rt.memory().set_u32(DEEP, deep).unwrap();
+    }
+    for k in 1..=8 {
+        serial.round(k, fallback_round(k));
+        piped.round(k, fallback_round(k));
+    }
+    serial.finish();
+    piped.finish();
+    compare(&serial.data(), &piped.data());
+    let s = piped.feature.stats();
+    assert_eq!(s.pipelined, 8, "{s:?}");
+    assert_eq!(s.completed, 7, "{s:?}");
+    assert_eq!(s.fallbacks.get("kernel:KeQuerySystemTime"), Some(&1));
+}
+
+#[test]
+fn switched_on_it_runs_menu_frames_serially_and_launches_nothing() {
+    // Off the world path (menus, loading screens): the original, on the
+    // game thread, with the same memory as the feature off.
+    let mut serial = rig(false);
+    let mut piped = rig(true);
+    for r in [&mut serial, &mut piped] {
+        let mut m = r.rt.memory();
+        m.set_u32(GLOBALS, 0).unwrap();
+        m.set_u32(DEEP, GAME_STACK - 0x1000).unwrap();
+    }
+    for k in 1..=20 {
+        serial.round(k, false);
+        piped.round(k, false);
+        assert!(!piped.feature.in_flight());
+    }
+    assert_eq!(
+        serial.data(),
+        piped.data(),
+        "no mark, counter or byte differs"
+    );
+    let s = piped.feature.stats();
+    assert_eq!(s.pipelined, 0, "{s:?}");
+    assert_eq!(s.serial.get("not_world"), Some(&20), "{s:?}");
+    assert!(piped.log.lock().unwrap().iter().all(|e| !e.2));
 }
