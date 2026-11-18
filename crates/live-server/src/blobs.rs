@@ -647,7 +647,7 @@ impl Blobs {
 }
 
 #[cfg(feature = "native")]
-fn check_public_url(url: &str) -> Result<()> {
+pub(crate) fn check_public_url(url: &str) -> Result<()> {
     let ok = (url.starts_with("https://") || url.starts_with("http://"))
         && !url.contains('?')
         && !url.contains('#');

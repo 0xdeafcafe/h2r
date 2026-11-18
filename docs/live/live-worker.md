@@ -60,6 +60,7 @@ Worker variables (`[vars]` in wrangler.toml) and secrets. The names are
 | `H2_LIVE_ADMINS` | variable | Admin gamertags, comma-separated. |
 | `H2_LIVE_INVITE_ONLY` | variable | `1`: account creation needs an invite. |
 | `H2_LIVE_PRIVATE` | variable | `1`: reads need a token too. |
+| `H2_LIVE_GAME_ART_URL` | variable | Published game art, `<public bucket URL>/art/<stamp>` (what `h2 live assets publish` prints). `/art/game/*` redirects there; unset, it is a JSON 404 and the web app uses its own art pack. |
 
 A missing id or key, or a bad value, fails the hub's start. The request then
 answers 500 with the reason; the hub never runs as some other server.
@@ -107,7 +108,7 @@ On wasm32 it uses getrandom's JavaScript backends (0.2 `js` and 0.3 `wasm_js`) a
 - **`dosql`** (slice 2; it replaced slice 1's `d1`): the hub's own storage as `Sql`.
 - **`r2`**: R2 as an `ObjectStore`. It covers get, range, head, put (overwrite, create-only, if-match), delete and list; multipart and copy are not done yet.
 - **`entry`**: the fetch handler and the `LiveHub` object, which starts `Live` on its first request and answers with the router.
-- **`wrangler.toml`**: a sketch with no ids in it.
+- **`wrangler.toml`**: the local defaults and the `staging`, `cutover` and `production` environments ([Deploy](#deploy)).
 
 ### Building and running on this machine
 
@@ -387,6 +388,100 @@ large share of the day's requests.
    - Deploy to a staging hostname (`live-staging.forbes.red`), playing against a copy.
    - Then cut over, as below.
 9. **Later.** The menu bar app gets a "worker" mode: deploy, tail and status in place of a local server.
+
+## Deploy
+
+`crates/live-worker/deploy.sh` builds and deploys; never run a bare
+`wrangler deploy`. Each environment in wrangler.toml is its own Worker, with
+its own Durable Objects (so its own log), bucket and key:
+
+| Environment | Worker | Id | Bucket | Reached at |
+|---|---|---|---|---|
+| `staging` | `h2-live-staging` | `live-staging.forbes.red` (fresh; nothing from production is valid there) | `h2-live-blobs-staging` | `https://h2-live-staging.<subdomain>.workers.dev` |
+| `cutover` | `h2-live` | `live.forbes.red` (the Mac's, from its discovery document) | `h2-live-blobs` | workers.dev only: no route |
+| `production` | `h2-live` | `live.forbes.red` | `h2-live-blobs` | the route `live.forbes.red/*`, and workers.dev |
+
+`cutover` and `production` are one Worker deployed two ways: `cutover`
+without the route (to copy the log into before the switch), `production`
+with it (the switch). Both need `--yes-production`.
+
+`deploy.sh` prints each step as it goes:
+
+1. **Toolchain.** Rust from rust-toolchain.toml with the wasm32 target and
+   `worker-build` 0.9.0, in a rustup of its own under
+   `~/.cache/h2-live-worker` (`$H2_WORKER_HOME`). `~/.rustup` and
+   `~/.cargo` are not touched. The first run installs it.
+2. **Web.** `bun install --frozen-lockfile` and `bun run build` into
+   `web/dist`, the Worker's static assets.
+3. **Wasm.** `worker-build --release` into `crates/live-worker/build`.
+4. **Sign-in.** `wrangler whoami`; if you are not signed in, it stops and
+   says to run `bunx wrangler@4 login`.
+5. **Bucket.** It creates the environment's R2 bucket if it is missing.
+6. **Key.** It asks for the key only if the Worker has no
+   `H2_LIVE_SERVER_KEY` secret:
+   - **staging:** it makes a fresh one;
+   - **cutover and production:** it reads `$H2_LIVE_KEY_FILE`, or asks for
+     the Mac's `server.key` without echoing it. It then checks that the
+     key's public half is the one `https://live.forbes.red/.well-known/h2live.json`
+     publishes.
+
+   The key goes to `wrangler secret put` on stdin, after the deploy (the
+   Worker has to exist to hold it). It is never printed.
+7. **Deploy.** `wrangler deploy --env <env>`.
+8. **Health.** `/healthz` and the discovery document's id.
+
+`--dry-run` builds and bundles without signing in or uploading.
+`--skip-build` deploys what `build/` and `web/dist` already hold.
+
+### Staging
+
+```
+crates/live-worker/deploy.sh staging
+# discovery's url: the workers.dev address the first deploy printed
+H2_LIVE_PUBLIC_URL=https://h2-live-staging.<subdomain>.workers.dev \
+  crates/live-worker/deploy.sh staging --skip-build
+```
+
+Staging is invite-only with `afr` as its admin, like production. Its log
+starts empty, until slice 7's copy fills it.
+
+### The site
+
+What the Mac's server serves, and where it comes from on the Worker:
+
+| Path | Mac | Worker |
+|---|---|---|
+| `/v1/*`, `/healthz`, `/.well-known/h2live.json` | the router | the router, in the hub (`run_worker_first`) |
+| `/assets/*` | `web/dist`, `public, max-age=31536000, immutable` | static assets, the same header from `web/public/_headers` |
+| `index.html`, any app route | `web/dist`, `no-cache` | static assets with SPA fallback, Cloudflare's default (`public, max-age=0, must-revalidate`) |
+| `/art/*` (the web's own art pack) | `web/dist` | static assets |
+| `/art/game/*` (art from the owner's disc) | served from `game-art/` (`--share-game-art`) | a redirect to the published copy (`H2_LIVE_GAME_ART_URL`), answered by the Worker without waking the hub, else a JSON 404 |
+
+The `/v1/` cache rules (`public, … s-maxage=5` with an `ETag` for
+anonymous reads, `private, no-store` for the rest) are the router's, so
+they hold on the Worker too.
+
+The disc's art can't be in the Worker, so the Worker redirects to a
+published copy. Publishing it once from the Mac:
+
+```
+export H2_LIVE_S3_PUBLIC_ENDPOINT=https://<account id>.r2.cloudflarestorage.com \
+       H2_LIVE_S3_PUBLIC_ACCESS_KEY_ID=… H2_LIVE_S3_PUBLIC_SECRET_ACCESS_KEY=…
+h2 live assets publish --to s3://h2-live-art --url https://<the bucket's public URL>
+# prints: H2_LIVE_GAME_ART_URL = "https://…/art/<stamp>"
+```
+
+Put that line in each environment's `vars` in wrangler.toml and deploy
+again. The bucket needs public access (its r2.dev address or a custom
+domain), and a CORS rule allowing `GET` from any origin. The web app
+fetches `manifest.json` with `fetch`, which follows the redirect
+cross-origin:
+
+```
+bunx wrangler@4 r2 bucket cors set h2-live-art --file crates/live-worker/art-cors.json
+```
+
+A new extraction is a new stamp: publish it again and change the variable.
 
 ## Migrating the current data
 
