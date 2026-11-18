@@ -341,6 +341,9 @@ pub mod wphi {
     pub const STATIC_SIZE: usize = 0xb4;
     pub const METER_SIZE: usize = 0xb4;
     pub const NUMBER_SIZE: usize = 0xa0;
+    /// A number entry's flags byte: bit 0 shows the value in magazines
+    /// (`0x000dbf5f`).
+    pub const NUMBER_MAGAZINES: usize = 0x78;
     pub const CROSSHAIR_SIZE: usize = 0x68;
     pub const OVERLAY_SIZE: usize = 0x68;
 
@@ -460,11 +463,18 @@ pub enum WeaponEntryKind {
     Meter(WeaponState, [u8; 3]),
     /// A crosshair overlay: its crosshair's type, the overlay's flags.
     Crosshair(i16, u32),
+    /// A number (`wphi +0x78`, drawn by the number draw `0x000e1a60` as the
+    /// grenade count is, E `0x000dbf1e`..`0x000dc0f0`): the state whose
+    /// value it shows, the number element (its anchor the `wphi`'s, its
+    /// offset Halo 1's), and whether it shows that value in magazines
+    /// (entry `+0x78` bit 0: divided by the weapon's magazine size,
+    /// `0x000dbf5f`..`0x000dbf77`, `0x000dc0de`).
+    Number(WeaponState, Number, bool),
 }
 
-/// Every static, meter and crosshair overlay of the `wphi` `tag` and its
-/// children, in Halo 1's draw order (the child first, `0x000dbded`), and
-/// how many numbers and overlay elements the chain holds.
+/// Every static, meter, number and crosshair overlay of the `wphi` `tag`
+/// and its children, in Halo 1's draw order (the child first,
+/// `0x000dbded`), and how many overlay elements the chain holds.
 pub fn weapon_entries(map: &H1Map, tag: H1TagId) -> Result<(Vec<WeaponEntry>, usize)> {
     let mut out = Vec::new();
     let mut skipped = 0;
@@ -540,6 +550,33 @@ fn weapon_chain(
             colour: u32_at(e, entry::ELEMENT + h1el::COLOUR),
         });
     }
+    for e in crate::h1::elements(map, b, wphi::NUMBERS, wphi::NUMBER_SIZE)? {
+        let at = entry::ELEMENT;
+        let number = Number {
+            anchor,
+            offset: (i16_at(e, at), i16_at(e, at + 2)),
+            scale: [f32_at(e, at + 4), f32_at(e, at + 8)],
+            digits: e[at + number::DIGITS],
+            flags: e[at + number::FLAGS],
+            fraction_digits: e[at + number::FRACTION_DIGITS],
+        };
+        out.push(WeaponEntry {
+            wphi: tag,
+            kind: WeaponEntryKind::Number(
+                WeaponState::from_halo1(i16_at(e, entry::STATE)),
+                number,
+                e[wphi::NUMBER_MAGAZINES] & 1 != 0,
+            ),
+            screen: e[entry::SCREEN],
+            hidden: e[entry::FLAGS] & 1 != 0,
+            anchor,
+            offset: number.offset,
+            scale: number.scale,
+            bitmap: None,
+            sequence: 0,
+            colour: u32_at(e, at + number::COLOUR),
+        });
+    }
     use wphi::{crosshair, overlay};
     for c in crate::h1::elements(map, b, wphi::CROSSHAIRS, wphi::CROSSHAIR_SIZE)? {
         let bitmap = crate::h1::reference(map, c, crosshair::BITMAP);
@@ -561,8 +598,7 @@ fn weapon_chain(
             });
         }
     }
-    *skipped += crate::h1::elements(map, b, wphi::NUMBERS, wphi::NUMBER_SIZE)?.len()
-        + crate::h1::elements(map, b, wphi::OVERLAYS, wphi::OVERLAY_SIZE)?.len();
+    *skipped += crate::h1::elements(map, b, wphi::OVERLAYS, wphi::OVERLAY_SIZE)?.len();
     Ok(())
 }
 
@@ -635,6 +671,17 @@ pub enum Skip {
     UnzoomedOnly,
     /// Scaled ([`unscaled`]).
     Scaled([f32; 2]),
+    /// A number: a text widget ([`weapon_number`]), not a bitmap one.
+    Text,
+    /// A number on a state no Halo 2 number input reads.
+    NumberState(WeaponState),
+    /// A number shown in magazines: Halo 2's text has no divide.
+    Magazines,
+    /// A number with fraction digits.
+    Fraction,
+    /// A static whose colour is all zero: Halo 1 draws nothing of it
+    /// ([`invisible_colour`]).
+    Invisible,
 }
 
 /// The widget for weapon HUD entry `e` (its bitmap converted as
@@ -655,8 +702,14 @@ pub fn weapon_widget(
     if e.screen == SPLIT_SCREEN_ONLY {
         return Err(Skip::SplitScreen);
     }
+    if matches!(e.kind, WeaponEntryKind::Number(..)) {
+        return Err(Skip::Text);
+    }
     if !unscaled(e.scale) {
         return Err(Skip::Scaled(e.scale));
+    }
+    if matches!(e.kind, WeaponEntryKind::Static(_)) && static_alpha(e.colour).is_none() {
+        return Err(Skip::Invisible);
     }
     let bitmap = bitmap.ok_or(Skip::NothingDrawn)?;
     let (name, inputs, shader, state) = match &e.kind {
@@ -675,6 +728,7 @@ pub fn weapon_widget(
             crosshair_type::AIM => ("h1_crosshair", [0; 4], plain, AIM_STATE),
             t => return Err(Skip::CrosshairType(t)),
         },
+        WeaponEntryKind::Number(..) => unreachable!("refused above"),
     };
     Ok(Widget {
         name: name.to_owned(),
@@ -706,6 +760,37 @@ pub fn unscaled(scale: [f32; 2]) -> bool {
 /// The alpha of Halo 1's element colour (ARGB `+0x34`).
 pub fn colour_alpha(colour: u32) -> u8 {
     (colour >> 24) as u8
+}
+
+/// The alpha a converted static element's sprite carries
+/// ([`scale_alpha`]) for Halo 1's element colour `colour`, `None` when
+/// Halo 1 draws nothing of it.
+///
+/// Halo 1's element draw (E `0x000e1320`, the draw struct's `+0x88` =
+/// 7) blends in Halo 1's mode 7, whose source factor is ONE, its
+/// destination factor ONE_MINUS_SRC_ALPHA and its operation ADD (E
+/// `0x0007f4e0`: the tables at `0x001e9c0c`, `0x001e9c30`, `0x001e9c54`,
+/// entry 7: `1`, `0x303`, `0x8006`, the D3D blend values). It writes the
+/// element's colour into every vertex's diffuse (`0x000e1320`, `+0x0c`);
+/// the texture is multiplied by it (inferred: the vertex layout, not the
+/// texture stage setup, was read). So what lands is `tex * colour +
+/// dst * (1 - tex.a * colour.a)`:
+///
+/// - colour `0x00000000` adds nothing and keeps all of the destination:
+///   the element is not drawn at all. Halo 1's weapon HUDs give one such
+///   static to every ballistic weapon (V: bloodgulch, `hud_ammo_alphas`
+///   on the assault rifle, pistol, shotgun, rocket launcher, sniper rifle
+///   and needler, on the "rounds loaded" state), which drew opaque in v66.
+/// - alpha 0 with a colour adds the sprite's colour over the destination
+///   (an additive glow): drawn at full alpha, the nearest Halo 2's
+///   `widget_gradient_flash` has (it blends by alpha only).
+/// - any other alpha scales the sprite's alpha (as before).
+pub fn static_alpha(colour: u32) -> Option<u8> {
+    match (colour, colour_alpha(colour)) {
+        (0, _) => None,
+        (_, 0) => Some(0xff),
+        (_, a) => Some(a),
+    }
 }
 
 /// Halo 1's pixels with every texel's alpha multiplied by `alpha` (of
@@ -1087,6 +1172,20 @@ impl TextWidget {
     }
 }
 
+/// A number element's fields after the element head (offset, scale):
+/// digits, flags, fraction digits (E `0x000e1a60`, `ebx` the element:
+/// `+0x44`, `+0x45`, `+0x46`).
+pub mod number {
+    /// The colour (ARGB): the number draw's default (`ebx+0x24`,
+    /// `0x000e1c85`; `+0x3c` disabled, `0x000e1c67`). A number element has
+    /// no bitmap reference, so its colour stands where a bitmap element's
+    /// reference does.
+    pub const COLOUR: usize = 0x24;
+    pub const DIGITS: usize = 0x44;
+    pub const FLAGS: usize = 0x45;
+    pub const FRACTION_DIGITS: usize = 0x46;
+}
+
 /// Halo 1's grenade count, the number element `grhi +0xf4` (E the number
 /// draw `0x000e1a60`, `ebx` the element): offset `+0x00` and scale
 /// `+0x04` as any element's, the digits `+0x44` (byte), its flags
@@ -1119,9 +1218,9 @@ pub fn grenade_number(b: &[u8]) -> Result<Option<Number>> {
         anchor,
         offset: (i16_at(b, at), i16_at(b, at + 2)),
         scale: [f32_at(b, at + 4), f32_at(b, at + 8)],
-        digits: b[at + 0x44],
-        flags: b[at + 0x45],
-        fraction_digits: b[at + 0x46],
+        digits: b[at + number::DIGITS],
+        flags: b[at + number::FLAGS],
+        fraction_digits: b[at + number::FRACTION_DIGITS],
     }))
 }
 
@@ -1261,6 +1360,86 @@ pub fn grenade_count(n: &Number, k: usize, w: i16, h: i16, shader: TagId) -> Res
     })
 }
 
+/// The Halo 2 text input that shows the value a Halo 1 weapon number's
+/// state does. Halo 1's number values (E `0x000dbc4e`..`0x000dbc99`): state
+/// 0 the magazine's `+6`, state 1 its `+8` (the per-magazine HUD block
+/// `0x000be2f0`: `+0x12`, `+0x0e`), state 3 `(1 - age) * 100`.
+/// Halo 2's (input switch `0x0013ad48`, its weapon block from `0x0013afa9`
+/// and `0x00100520`): `0x30` the block's `+6`, the magazine's `+0x22c`, its
+/// rounds loaded (the same field the magnum's ammo meter divides by the
+/// magazine size, `0x36`); `0x33` the block's `+8`, `0x001008f0`'s count,
+/// read from the magazine's `+0x22a`, the rounds in reserve (V: retail
+/// Halo 2's ammo counts, the battle rifle's, magnum's, shotgun's and
+/// rocket launcher's text, read it); `0x32` `100 - age * 100`
+/// (`0x0013aee3`), the battery's percentage (V: retail Halo 2's plasma
+/// rifle, energy sword and sentinel beam battery counts read it). Halo 1's magazine keeps its
+/// reserve and loaded rounds at `+6` and `+8`, the order Halo 2's keeps
+/// them in at `+0x22a` and `+0x22c` (inferred: the same field order).
+pub fn weapon_number_input(s: WeaponState) -> Option<u8> {
+    match s {
+        WeaponState::TotalAmmo => Some(0x33),
+        WeaponState::LoadedAmmo => Some(0x30),
+        WeaponState::Battery => Some(0x32),
+        _ => None,
+    }
+}
+
+/// The text widget for weapon HUD number `e`, or why it has none: Halo 2
+/// text on [`weapon_number_input`], standing where Halo 1's number does
+/// ([`number_point`], as the grenade count), with the weapon's other
+/// widgets' state flags ([`STATE`]).
+///
+/// The number's scale is not the element's: Halo 1's number draw takes
+/// its scale from its eighth argument (E `0x000e1b3d`), which the weapon
+/// HUD passes as 0 (`0x000dc0d6`), and a scale not above 0 is 1.0
+/// (`0x000e1b58`). The disc's weapon numbers hold 0 there (V).
+///
+/// Refused: hidden or split-screen-only numbers (as the bitmap entries),
+/// a colour of 0 ([`static_alpha`]), states no Halo 2 input shows (the
+/// sniper rifle's zoom numbers, states 6 and 7), numbers shown in
+/// magazines (`+0x78` bit 0: Halo 2's text cannot divide) and fraction
+/// digits ([`number_point`]). Halo 1's leading zeros (flags bit 0: a
+/// three-digit count of 60 shows `060`, E `0x000e1f5d`..`0x000e1f6f`) are
+/// not drawn: no padding of Halo 2's number text is established.
+pub fn weapon_number(
+    e: &WeaponEntry,
+    w: i16,
+    h: i16,
+    shader: TagId,
+) -> std::result::Result<TextWidget, Skip> {
+    let WeaponEntryKind::Number(state, n, magazines) = &e.kind else {
+        return Err(Skip::NothingDrawn);
+    };
+    if e.hidden {
+        return Err(Skip::Hidden);
+    }
+    if e.screen == SPLIT_SCREEN_ONLY {
+        return Err(Skip::SplitScreen);
+    }
+    if e.colour == 0 {
+        return Err(Skip::Invisible);
+    }
+    let input = weapon_number_input(*state).ok_or(Skip::NumberState(*state))?;
+    if *magazines {
+        return Err(Skip::Magazines);
+    }
+    if n.fraction_digits != 0 {
+        return Err(Skip::Fraction);
+    }
+    let offset = number_point(n, w, h).map_err(|_| Skip::Fraction)?;
+    Ok(TextWidget {
+        name: "h1_weapon_number".to_owned(),
+        inputs: [input, 0, 0, 0],
+        state: STATE,
+        anchor: n.anchor,
+        flags: TEXT_NUMBER,
+        shader,
+        string: TEXT_INPUT1,
+        justification: JUSTIFY_RIGHT,
+        offset,
+    })
+}
+
 /// The `nhdt` root drawing `widgets` and `texts` and nothing else: the
 /// root's reference null with its group word as on every retail `nhdt`, no
 /// effects.
@@ -1307,8 +1486,77 @@ mod tests {
             scale: [1.0, 1.0],
             bitmap: Some(H1TagId(1)),
             sequence: 6,
-            colour: 0,
+            colour: 0xdc2896ff,
         }
+    }
+
+    #[test]
+    fn a_static_of_colour_zero_is_not_drawn() {
+        assert_eq!(static_alpha(0), None);
+        assert_eq!(static_alpha(0xdc2896ff), Some(0xdc));
+        assert_eq!(static_alpha(0xffaad5ff), Some(0xff));
+        assert_eq!(static_alpha(0x002896ff), Some(0xff), "additive in Halo 1: shown");
+        let mut s = entry(WeaponEntryKind::Static(WeaponState::LoadedAmmo));
+        s.colour = 0;
+        assert_eq!(weapon_widget(&s, Some(TagId(1)), TagId(2), TagId(3)), Err(Skip::Invisible));
+        // Meters and crosshairs keep their own colour rules.
+        s.kind = WeaponEntryKind::Meter(WeaponState::LoadedAmmo, [0, 60, 1]);
+        assert!(weapon_widget(&s, Some(TagId(1)), TagId(2), TagId(3)).is_ok());
+    }
+
+    fn number_entry(state: WeaponState, magazines: bool) -> WeaponEntry {
+        // The disc's full-screen count (V: bloodgulch's assault rifle).
+        let n = Number {
+            anchor: Anchor::TopLeft,
+            offset: (29, 3),
+            scale: [0.0, 0.0],
+            digits: 3,
+            flags: 1,
+            fraction_digits: 0,
+        };
+        WeaponEntry {
+            kind: WeaponEntryKind::Number(state, n, magazines),
+            screen: 1,
+            offset: n.offset,
+            scale: n.scale,
+            bitmap: None,
+            sequence: 0,
+            colour: 0xff2896ff,
+            ..entry(WeaponEntryKind::Static(state))
+        }
+    }
+
+    #[test]
+    fn weapon_numbers_are_number_texts_on_halo2s_ammo_inputs() {
+        let e = number_entry(WeaponState::TotalAmmo, false);
+        let t = weapon_number(&e, 9, 12, TagId(7)).unwrap();
+        assert_eq!(t.inputs, [0x33, 0, 0, 0]);
+        assert_eq!((t.flags, t.string, t.justification), (TEXT_NUMBER, TEXT_INPUT1, JUSTIFY_RIGHT));
+        assert_eq!((t.anchor, t.state, t.shader), (Anchor::TopLeft, STATE, TagId(7)));
+        // Three cells from 29: the last ends at 29 + 2 * 9; the ink centred
+        // on the digit sprite's rows 3..15.
+        assert_eq!(t.offset, (47, -2));
+        let input = |s| weapon_number(&number_entry(s, false), 9, 12, TagId(7)).map(|t| t.inputs[0]);
+        assert_eq!(input(WeaponState::LoadedAmmo), Ok(0x30));
+        assert_eq!(input(WeaponState::Battery), Ok(0x32));
+        assert_eq!(input(WeaponState::Other(6)), Err(Skip::NumberState(WeaponState::Other(6))));
+        assert_eq!(input(WeaponState::Heat), Err(Skip::NumberState(WeaponState::Heat)));
+        let mags = number_entry(WeaponState::TotalAmmo, true);
+        assert_eq!(weapon_number(&mags, 9, 12, TagId(7)), Err(Skip::Magazines));
+        let mut e = number_entry(WeaponState::TotalAmmo, false);
+        e.screen = SPLIT_SCREEN_ONLY;
+        assert_eq!(weapon_number(&e, 9, 12, TagId(7)), Err(Skip::SplitScreen));
+        e.screen = 0;
+        e.colour = 0;
+        assert_eq!(weapon_number(&e, 9, 12, TagId(7)), Err(Skip::Invisible));
+        e.colour = 1;
+        if let WeaponEntryKind::Number(_, n, _) = &mut e.kind {
+            n.fraction_digits = 3;
+        }
+        assert_eq!(weapon_number(&e, 9, 12, TagId(7)), Err(Skip::Fraction));
+        // Not a bitmap widget.
+        let e = number_entry(WeaponState::TotalAmmo, false);
+        assert_eq!(weapon_widget(&e, Some(TagId(1)), TagId(2), TagId(3)), Err(Skip::Text));
     }
 
     #[test]

@@ -2704,8 +2704,12 @@ impl Converter<'_> {
             // A static element's colour alpha goes into its sprite (the
             // motion sensor's background is a faint disc in Halo 1); a
             // meter's colour is elsewhere in its element and stays out.
+            // Colour 0 draws nothing in Halo 1 (`h1hud::static_alpha`).
             let alpha = match e.role {
-                crate::h1hud::Role::Static => crate::h1hud::colour_alpha(e.colour),
+                crate::h1hud::Role::Static => match crate::h1hud::static_alpha(e.colour) {
+                    Some(a) => a,
+                    None => continue,
+                },
                 crate::h1hud::Role::Meter(_) => 0xff,
             };
             let bitmap = match e.role {
@@ -2748,8 +2752,11 @@ impl Converter<'_> {
                         gt.name, bt.name, e.sequence
                     )));
                 }
+                let Some(alpha) = crate::h1hud::static_alpha(e.colour) else {
+                    continue;
+                };
                 let bitmap = self
-                    .hud_bitmap(e.bitmap, crate::h1hud::colour_alpha(e.colour))
+                    .hud_bitmap(e.bitmap, alpha)
                     .ok_or_else(|| Error::Invalid(format!("bitmap {} unconverted", bt.name)))?;
                 let reg = crate::h1hud::registration(e.anchor);
                 let mut w = crate::h1hud::widget_for(&e, bitmap, reg, meter, plain);
@@ -2791,16 +2798,32 @@ impl Converter<'_> {
         };
         let meter = find(b"shad", h1hud::METER_SHADER)?;
         let plain = find(b"shad", h1hud::STATIC_SHADER)?;
+        let text_shader = find(b"shad", h1hud::TEXT_SHADER)?;
         let mut widgets = Vec::new();
+        let mut texts = Vec::new();
         let mut skipped = Vec::new();
         for e in &entries {
+            // Numbers: Halo 2 text, placed as the grenade count is.
+            if matches!(e.kind, h1hud::WeaponEntryKind::Number(..)) {
+                let w = h1hud::digit_width(self.h1)?;
+                let h = h1hud::digit_height(self.h1)?;
+                match h1hud::weapon_number(e, w, h, text_shader) {
+                    Ok(t) => texts.push(t),
+                    Err(why) => skipped.push(format!("{:?}: {why:?}", e.kind)),
+                }
+                continue;
+            }
             let drawn = match e.bitmap {
                 Some(b) => {
                     let bt = self.h1.tag(b)?.clone();
                     let bm = h1map::bitmap::Bitmap::read(self.h1, &bt)?;
-                    let meter = matches!(e.kind, h1hud::WeaponEntryKind::Meter(..));
-                    h1hud::sprite(&bm, e.sequence).and_then(|_| {
-                        if meter { self.meter_bitmap(b) } else { self.bitmap(b) }
+                    h1hud::sprite(&bm, e.sequence).and_then(|_| match e.kind {
+                        h1hud::WeaponEntryKind::Meter(..) => self.meter_bitmap(b),
+                        // A static's colour alpha goes into its sprite, as
+                        // the unit HUD's; colour 0 draws nothing.
+                        h1hud::WeaponEntryKind::Static(_) => h1hud::static_alpha(e.colour)
+                            .and_then(|a| self.hud_bitmap(b, a)),
+                        _ => self.bitmap(b),
                     })
                 }
                 None => None,
@@ -2811,16 +2834,16 @@ impl Converter<'_> {
             }
         }
         if uncounted > 0 {
-            skipped.push(format!("{uncounted} numbers and overlay elements not converted"));
+            skipped.push(format!("{uncounted} overlay elements not converted"));
         }
-        if widgets.is_empty() {
+        if widgets.is_empty() && texts.is_empty() {
             return Err(Error::Invalid(format!("{}: no drawable element", tag.name)));
         }
         let id = self.tree.push(
             &format!("{}{}", tag.name, h1hud::WEAPON_NHDT_SUFFIX),
             Converted {
                 group: FourCC(*b"nhdt"),
-                root: h1hud::nhdt(&widgets, &[]),
+                root: h1hud::nhdt(&widgets, &texts),
                 raw: Vec::new(),
             },
         );
