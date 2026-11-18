@@ -60,6 +60,7 @@ import SignInsScreen from "./SignIns";
 import GamesScreen from "./Games";
 import "../styles/social.css";
 import { DASH_NAME } from "../brand";
+import Legal from "../components/Legal";
 import { lockedHint, menuFor, type SectionId } from "./menu";
 
 type ScreenId = "menu" | "games" | "list" | "player" | "settings" | "signup" | "recovery" | "recover" | "server" | "social" | "sessions" | "signins";
@@ -560,6 +561,8 @@ export default function Dashboard() {
           <a class="dx-chip dx-chip--link" href="/dash/games">games</a>
         </Show>
       </header>
+
+      <Show when={screen() === "menu"}><Legal name={DASH_NAME} class="dx-legal" /></Show>
 
       <main class="dx-stage">
         <Switch>

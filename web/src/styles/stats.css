@@ -404,12 +404,21 @@
 /* The position and the clock are numbers: they read right-aligned. */
 .s-events-head > :first-child, .ev__pos, .s-events-head > :nth-child(5), .ev__at { text-align: right; }
 
-/* Footer */
-.s-foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 4px; padding: 11px 14px 20px; font-size: 10px; color: #7d7d7d; background: #000; border-top: 1px solid #2a2a2a; }
-.s-foot ul { display: flex; flex-wrap: wrap; }
-.s-foot li { padding: 0 7px; line-height: 11px; border-left: 1px solid #3a3a3a; }
-.s-foot li:first-child { border-left: 0; }
+/* Footer: the notice, then the links, then the position. The separators are
+   borders on the items, so on a phone, where the row wraps, they go: a wrapped
+   line must not start with one. */
+.s-foot { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; padding: 11px 14px 20px; font-size: 10px; color: #7d7d7d; background: #000; border-top: 1px solid #2a2a2a; }
+.s-foot p { margin: 0; line-height: 14px; max-width: 760px; }
 .stats .s-foot a { font-size: 10px; }
+.s-foot .s-legal a { color: #9d9d9d; text-decoration: underline; }
+.s-foot ul { display: flex; flex-wrap: wrap; gap: 4px 0; }
+.s-foot li { padding: 0 7px; line-height: 11px; border-left: 1px solid #3a3a3a; }
+.s-foot li:first-child { border-left: 0; padding-left: 0; }
+.s-foot-pos { font-size: 10px; color: #666; }
+@media (max-width: 600px) {
+  .s-foot ul { gap: 6px 14px; }
+  .s-foot li { padding: 0; border-left: 0; }
+}
 
 /* Stats home */
 .s-capbar-h { font: bold 13px/16px var(--font-ui); color: #fff; }

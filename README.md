@@ -12,6 +12,8 @@ scripts and stored in Git LFS (see CONTRIBUTING.md).
 
 Public repo: <https://github.com/0xdeafcafe/h2r>.
 
+h2recomp was created under Microsoft's "[Game Content Usage Rules](https://www.xbox.com/en-US/developers/rules)" using assets from Halo 2 and Halo: Combat Evolved, and it is not endorsed by or affiliated with Microsoft. Halo © Microsoft Corporation. This is a free, non-commercial fan project.
+
 ## Where it is
 
 The recompiled game boots to the main menu and runs campaign levels and
