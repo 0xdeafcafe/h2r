@@ -118,12 +118,28 @@ export function yawToGl(yaw: number): number {
 
 // ---- where a server keeps a map's files ----
 
-export interface MapFiles { geometry?: string; views?: string }
+export interface MapFiles {
+  geometry?: string;
+  views?: string;
+  /** `multiplayer` or `campaign`, when the manifest says. */
+  kind?: "multiplayer" | "campaign";
+  /** `halo1` for a Halo 1 map converted to run in Halo 2; absent for Halo 2's own. */
+  game?: string;
+  /** Its display name, when the manifest carries one (Halo 1 maps do). */
+  name?: string;
+}
 
 /** The map's stem, as the art manifest keys it: the file name without path
  *  or `.map`, lower case. */
 export function mapStem(map: string): string {
   return map.split(/[\\/]/).pop()!.replace(/\.map$/i, "").trim().toLowerCase();
+}
+
+/** True for a Halo 1 map: the manifest says so, or its stem is the
+ *  converter's `h1_<map>` (so a server without game art still tells its
+ *  multiplayer maps apart; campaign levels need the manifest). */
+export function isHalo1(stem: string, files?: MapFiles | null): boolean {
+  return files?.game === "halo1" || /^h1_./.test(mapStem(stem));
 }
 
 function safeFile(file: unknown): file is string {
@@ -139,11 +155,15 @@ export function parseMapFiles(raw: unknown): Record<string, MapFiles> {
   if (!raw || typeof raw !== "object") return out;
   const put = (stem: string, v: unknown) => {
     if (!v || typeof v !== "object") return;
-    const e = v as { geometry?: unknown; views?: unknown };
+    const e = v as { geometry?: unknown; views?: unknown; kind?: unknown; game?: unknown; name?: unknown };
     const f: MapFiles = {};
     if (safeFile(e.geometry)) f.geometry = e.geometry;
     if (safeFile(e.views)) f.views = e.views;
-    if (f.geometry || f.views) out[stem.toLowerCase()] = { ...out[stem.toLowerCase()], ...f };
+    if (!f.geometry && !f.views) return;
+    if (e.kind === "multiplayer" || e.kind === "campaign") f.kind = e.kind;
+    if (typeof e.game === "string" && /^[a-z0-9_]{1,16}$/.test(e.game)) f.game = e.game;
+    if (typeof e.name === "string" && e.name.trim()) f.name = e.name.trim().slice(0, 64);
+    out[stem.toLowerCase()] = { ...out[stem.toLowerCase()], ...f };
   };
   const r = raw as { maps?: unknown; images?: unknown };
   if (r.images && typeof r.images === "object") {

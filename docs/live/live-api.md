@@ -871,8 +871,11 @@ extract`; nothing of it is in this repo). Clients must work without it.
   ([live-admin.md](live-admin.md), "The catalog"), 404 likewise.
 - `GET /art/game/map/<stem>/map.glb` (`model/gltf-binary`),
   `.../views.json` (`application/json`) and `.../views/<id>.png`: a
-  multiplayer map's level geometry and pre-drawn views, named by the
-  manifest's `maps` ([live-art.md](live-art.md)), 404 likewise.
+  map's or campaign level's geometry and pre-drawn views, named by the
+  manifest's `maps` ([live-art.md](live-art.md)), 404 likewise. Converted
+  Halo 1 maps are there too, keyed by the name games report them by
+  (`h1_<map>`, or the level's), their entries marked `"game": "halo1"` with
+  a `"name"`.
 
 ```json
 { "version": 1,
@@ -883,7 +886,9 @@ extract`; nothing of it is in this repo). Clients must work without it.
   "palette": ["#ffffff", "..."],
   "skipped": { "<key or prefix>": "why it is missing" },
   "maps":    { "<stem>": { "geometry": "map/<stem>/map.glb",
-                           "views": "map/<stem>/views.json" } } }
+                           "views": "map/<stem>/views.json",
+                           "kind": "multiplayer", "bsps": 1,
+                           "game": "halo1", "name": "..." } } }
 ```
 
 `version` is the manifest format; it changes only when a client could no

@@ -129,10 +129,13 @@ const USAGE: &str = "usage: h2 live <command> [options]
                           upload and delete in a scratch prefix, pass or fail
                           for each (docs/live/live-hosting.md)
   assets extract [--disc PATH] [--out DIR] [--mappack ISO] [--installed DATA]
+                 [--halo1 ISO]
                           decode the stats site's art (emblems, ranks, game
                           types, weapons, map previews) from your own disc to
                           PNGs and a manifest.json; --out defaults to
-                          game-art/ in the server directory
+                          game-art/ in the server directory; Halo 1 maps
+                          converted under DATA are drawn too (--halo1
+                          converts what is missing first)
   assets check [--out DIR]
                           exit 0 when DIR holds art from this h2's extractor,
                           1 when it is missing or from an older one (then
@@ -457,13 +460,16 @@ fn assets_extract(mut args: Args) -> Result<()> {
     let installed = args
         .take("--installed")?
         .map_or_else(content::store::default_data_root, PathBuf::from);
+    // Halo 1 maps `h2 import halo1` converted there are read too; with
+    // --halo1, the import runs first.
+    let halo1 = args.take("--halo1")?.map(PathBuf::from);
     args.positional()?;
     let disc = disc.map_or_else(crate::default_disc, Ok)?;
     let out = out.map_or_else(
         || Ok(game_art_dir(&data_dir(None)?)),
         Ok::<_, anyhow::Error>,
     )?;
-    crate::live_art::run(disc, out, mappack, Some(installed))
+    crate::live_art::run(disc, out, mappack, Some(installed), halo1)
 }
 
 fn assets_check(mut args: Args) -> Result<()> {
