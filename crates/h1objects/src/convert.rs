@@ -162,29 +162,6 @@ pub const TEMPLATES: &[(&[u8; 4], &[&str], &str)] = &[
         &["health"],
         "objects\\weapons\\grenade\\frag_grenade\\frag_grenade",
     ),
-    (b"vehi", &["warthog"], "objects\\vehicles\\warthog\\warthog"),
-    (b"vehi", &["ghost"], "objects\\vehicles\\ghost\\ghost"),
-    (
-        b"vehi",
-        &["scorpion"],
-        "objects\\vehicles\\scorpion\\scorpion",
-    ),
-    (b"vehi", &["banshee"], "objects\\vehicles\\banshee\\banshee"),
-    // Campaign craft: Halo 2's counterpart where a base carries one
-    // (05a_deltaapproach has the pelican, phantom, wraith and Covenant
-    // turret).
-    (b"vehi", &["pelican"], "objects\\vehicles\\pelican\\pelican"),
-    (
-        b"vehi",
-        &["dropship"],
-        "objects\\vehicles\\phantom\\phantom",
-    ),
-    (b"vehi", &["wraith"], "objects\\vehicles\\wraith\\wraith"),
-    (
-        b"vehi",
-        &["gun turret"],
-        "objects\\vehicles\\c_turret_ap\\c_turret_ap",
-    ),
     // Scenery: a static rock of Delta Halo's with collision and no physics
     // model, so a converted model never inherits physics built for other
     // nodes.
@@ -193,31 +170,7 @@ pub const TEMPLATES: &[(&[u8; 4], &[&str], &str)] = &[
         &[],
         "scenarios\\objects\\solo\\deltatemple\\statue_shard_large\\statue_shard_large",
     ),
-    // Halo 1's lifepod (the escape pod) is a small flying craft, not Halo
-    // 2's insertion pod (the ODST drop pod, a different vehicle). By role:
-    // the scripts fly it with recordings (`recording_play`, a30's intro),
-    // load units into it (`unit_enter_vehicle`), open and close it, attach
-    // and animate it, and never give it to the player (`lifepod_use` in
-    // h1campaign's survey). The pelican is the base's flying unit with
-    // passenger seats; the model and animations stay Halo 1's.
-    (b"vehi", &["lifepod"], "objects\\vehicles\\pelican\\pelican"),
 ];
-
-/// Halo 1 craft built on another vehicle's template ([`TEMPLATES`]) that
-/// keep none of its looping sounds. The lifepod stands on the pelican,
-/// whose attachments (`obje +0x94`) loop six engine, hover and banking
-/// sounds at every placement: every lifepod a10 places hummed the
-/// pelican's engine for the whole level. Halo 1's own looping sounds are not converted, so the
-/// craft is quiet; the template's other attachments (lights, contrails)
-/// stay.
-pub const QUIET_STAND_INS: &[&str] = &["lifepod"];
-
-/// Whether the Halo 1 vehicle at `path` drops its template's looping
-/// sounds ([`QUIET_STAND_INS`]).
-pub fn quiet_stand_in(path: &str) -> bool {
-    let path = path.to_ascii_lowercase();
-    QUIET_STAND_INS.iter().any(|w| path.contains(w))
-}
 
 /// Every template row that matches a Halo 1 tag of `group` at `path`, in
 /// table order: the converter takes the first the base map holds.
@@ -435,6 +388,9 @@ pub enum PhysicsKind {
     Vehicle,
     /// One body per collision node, riding that node.
     Device,
+    /// As a device, with a biped's rigid body words
+    /// ([`crate::rebuild::BIPED_BODY`]); no stand-in.
+    Biped,
 }
 
 /// Stands for the `k`-th tag of a [`Tree`] until it is installed.
@@ -577,6 +533,39 @@ fn finish(b: &mut Block, raw: &[RawId], id: TagId) {
     }
 }
 
+/// A powered mass point: its Halo 2 point, model node and position in
+/// that node's space.
+struct PoweredPoint {
+    point: crate::rebuild::Point,
+    node: i16,
+    position: [f32; 3],
+}
+
+/// Adds a marker per powered point to a Halo 1 model before conversion:
+/// named as the point, on its node, one instance per permutation of the
+/// first region (D: so whichever permutation the object shows carries
+/// it), no rotation.
+fn add_point_markers(model: &mut h1models::h1::Model, points: &[PoweredPoint]) {
+    let perms = model.regions.first().map_or(1, |r| r.permutations.len().max(1));
+    for p in points {
+        if model.markers.iter().any(|m| m.name == p.point.marker) {
+            continue;
+        }
+        model.markers.push(h1models::h1::Marker {
+            name: p.point.marker.clone(),
+            instances: (0..perms)
+                .map(|k| h1models::h1::MarkerInstance {
+                    region: 0,
+                    permutation: k as i8,
+                    node: p.node as i8,
+                    translation: p.position,
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                })
+                .collect(),
+        });
+    }
+}
+
 fn put_f32(b: &mut [u8], at: usize, v: f32) {
     b[at..at + 4].copy_from_slice(&v.to_le_bytes());
 }
@@ -618,16 +607,18 @@ impl Writer<'_> {
 }
 
 /// How the [`Converter`] builds tags.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Options {
     /// Build scenery from typed definitions ([`crate::rebuild`]): the
     /// `scen`, its `hlmt` and its `mode`'s material list written field by
     /// field with no retail template bytes. Off by default until the
     /// rebuilt scenery has run in the game.
     pub rebuild: bool,
-    /// Build the Chief's, humans' and Covenant bipeds from the `bipd`
-    /// definition ([`crate::rebuild::biped`]) instead of on a template.
-    /// Off by default until a rebuilt biped has run in the game.
+    /// Build bipeds from the `bipd` definition ([`crate::rebuild::biped`])
+    /// instead of on a template: Halo 1's model, collision size and
+    /// physics, the role's words, and the references of the Halo 2
+    /// counterpart ([`crate::rebuild::COUNTERPARTS`]). On by default; off
+    /// builds them on templates.
     pub rebuild_bipeds: bool,
     /// Build weapons, equipment, projectiles and their damage effects from
     /// the definitions ([`crate::arsenal`]) instead of on templates. Off by
@@ -635,6 +626,16 @@ pub struct Options {
     /// still finds rebuilt projectiles without material responses and
     /// first-person graphs without modes, which every retail tag has.
     pub rebuild_items: bool,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            rebuild: false,
+            rebuild_bipeds: true,
+            rebuild_items: false,
+        }
+    }
 }
 
 /// Builds a [`Tree`] from Halo 1 objects on one base map.
@@ -655,6 +656,8 @@ pub struct Converter<'a> {
     /// Weapon, equipment, projectile and damage role words, per group
     /// ([`crate::arsenal::role`]).
     item_roles: HashMap<[u8; 4], crate::arsenal::Role>,
+    /// Vehicle role words, per vehicle type ([`Self::vehicle_role`]).
+    vehicle_roles: HashMap<u16, Option<crate::rebuild::VehicleRole>>,
 }
 
 impl<'a> Converter<'a> {
@@ -671,6 +674,7 @@ impl<'a> Converter<'a> {
             health_huds: HashMap::new(),
             roles: HashMap::new(),
             item_roles: HashMap::new(),
+            vehicle_roles: HashMap::new(),
         }
     }
 
@@ -782,8 +786,14 @@ impl<'a> Converter<'a> {
             // model is needed again.
             Some(_) => h1models::model_from_map(self.h1, mode_tag, &ModelOptions::default())?,
             None => {
-                let (h1_model, _) =
+                let (mut h1_model, _) =
                     h1models::model_from_map(self.h1, mode_tag, &ModelOptions::default())?;
+                // A vehicle's powered mass points become markers, which
+                // its friction or hover points name (crate::rebuild::Point).
+                if h1::OBJECT_TYPES.get(obj.object_type as usize) == Some(&b"vehi") {
+                    let points = self.powered_points(obj, &h1_model)?;
+                    add_point_markers(&mut h1_model, &points);
+                }
                 let shaders = self.model_shaders(rep, &h1_model);
                 // One material per Halo 1 shader, as convert_model writes.
                 let mut padded = shaders.clone();
@@ -1154,45 +1164,6 @@ impl<'a> Converter<'a> {
                 rep.stopgaps.push((at, g.to_string(), n));
             }
         }
-    }
-
-    /// Gives `root` its own copy of the template's attachments without the
-    /// looping sounds ([`QUIET_STAND_INS`]); every other element is the
-    /// template's as stored.
-    fn drop_looping_attachments(
-        &self,
-        rep: &mut ObjectReport,
-        root: &mut Block,
-        tpl_root: &[u8],
-    ) -> Result<()> {
-        let lsnd = u32::from_be_bytes(*b"lsnd");
-        let n = crate::base::u32_at(tpl_root, h2::ATTACHMENTS) as usize;
-        let mut kept = Vec::with_capacity(n);
-        for i in 0..n {
-            let e = self
-                .base
-                .element(tpl_root, h2::ATTACHMENTS, h2::ATTACHMENT, i)?
-                .expect("below the count");
-            if crate::base::u32_at(&e, 0) == lsnd {
-                if let Some(id) = self.base.reference(&e, 0) {
-                    let name = self.base.name(id).map_or("?", |(_, n)| n);
-                    rep.no_home
-                        .push(format!("template looping sound dropped: {name}"));
-                }
-            } else {
-                kept.push(e);
-            }
-        }
-        if kept.len() == n {
-            return Ok(());
-        }
-        if kept.is_empty() {
-            root.bytes[h2::ATTACHMENTS..h2::ATTACHMENTS + 8].fill(0);
-        } else {
-            let k = kept.len() as u32;
-            root.block(h2::ATTACHMENTS as u32, k, Block::new(kept.concat()));
-        }
-        Ok(())
     }
 
     fn report(tag: &Tag, template: &str) -> ObjectReport {
@@ -1789,25 +1760,93 @@ impl<'a> Converter<'a> {
         ))
     }
 
-    /// A Halo 1 vehicle no template row names, from the `vehi` definition
-    /// ([`crate::rebuild::vehicle`]): a10's cryotube, chairs,
-    /// fighterbomber and Halo ring. Before, these were dropped and their
-    /// object names pointed nowhere.
+    /// A Halo 1 vehicle from the `vehi` definition
+    /// ([`crate::rebuild::vehicle`]), no template: every vehicle (the
+    /// template path was removed in converter version 48).
     fn vehicle_rebuilt(&mut self, tag: &Tag, u: &Unit) -> Result<TagId> {
-        let mut rep = Self::report(tag, "none: rebuilt from tags::defs (turret role)");
+        let b = self.h1.tag_data(tag)?;
+        let word = |at: usize| {
+            b.get(at..at + 4)
+                .map_or(0, |x| u32::from_le_bytes(x.try_into().expect("4")))
+        };
+        let vehicle_type = word(crate::rebuild::H1_VEHICLE_TYPE) as u16;
+        let flags = word(crate::rebuild::H1_VEHICLE_FLAGS);
+        let role = self.vehicle_role(vehicle_type)?;
+        let mut rep = Self::report(
+            tag,
+            &match &role {
+                Some(r) => format!(
+                    "none: rebuilt from tags::defs (vehicle type {vehicle_type}, role over {} base vehicles)",
+                    r.words.members.len()
+                ),
+                None => format!(
+                    "none: rebuilt from tags::defs (vehicle type {vehicle_type}; the base has none of the type: turret role)"
+                ),
+            },
+        );
         let hlmt = self.model(&mut rep, &u.object, None, &tag.name, true)?;
         self.object_physics(&mut rep, hlmt, &u.object, &tag.name, PhysicsKind::Vehicle)?;
         let predicted = self.predicted(&u.object)?;
-        let root = crate::rebuild::vehicle(
-            &u.object,
+        let markers = match u.object.model {
+            Some(m) => {
+                h1models::model_from_map(self.h1, self.h1_tag(m)?, &ModelOptions::default())?
+                    .0
+                    .markers
+                    .into_iter()
+                    .map(|m| m.name)
+                    .collect()
+            }
+            None => Vec::new(),
+        };
+        let seats: Vec<_> = u
+            .seats
+            .iter()
+            .map(|s| crate::rebuild::seat_names(s, &markers))
+            .collect();
+        let points: Vec<crate::rebuild::Point> = match u.object.model {
+            Some(m) => {
+                let (model, _) =
+                    h1models::model_from_map(self.h1, self.h1_tag(m)?, &ModelOptions::default())?;
+                self.powered_points(&u.object, &model)?
+                    .into_iter()
+                    .map(|p| p.point)
+                    .collect()
+            }
+            None => Vec::new(),
+        };
+        // The unit's weapons: Halo 1's, converted where they convert.
+        let mut weapons = Vec::new();
+        for r in &u.references {
+            let Some(id) = r.tag else { continue };
+            if r.group.0.to_be_bytes() != *b"weap" {
+                continue;
+            }
+            let t = self.h1_tag(id)?;
+            match self.object(t) {
+                Ok(w) if !weapons.contains(&w) => weapons.push(w),
+                Ok(_) => {}
+                Err(e) => rep
+                    .no_home
+                    .push(format!("unit weapon {}: not converted ({e})", t.name)),
+            }
+        }
+        let root = crate::rebuild::vehicle(&crate::rebuild::VehicleSpec {
+            object: &u.object,
             hlmt,
-            &u.seats,
-            &predicted,
-            u.camera_field_of_view,
-        )?;
+            seats: &seats,
+            predicted: &predicted,
+            camera_field_of_view: u.camera_field_of_view,
+            vehicle_type,
+            flags,
+            weapons: &weapons,
+            role: role.as_ref(),
+            points: &points,
+        })?;
         rep.no_home.push(format!(
-            "vehi beyond the header, {} seats (label, marker, camera marker) and the turret role: definition defaults (no template); {} Halo 1 references not converted",
+            "vehi: Halo 1's type, flags (low half), camera, {} seats (label as the rider's mode, markers), {} weapons and {} powered mass points as friction or hover points; the type's role words and gears; HUD, sounds, effects and camera tracks null; {} Halo 1 references",
             u.seats.len(),
+            weapons.len(),
+            points.len(),
             u.references.iter().filter(|r| r.tag.is_some()).count()
         ));
         self.tree.reports.push(rep);
@@ -1819,6 +1858,86 @@ impl<'a> Converter<'a> {
                 raw: Vec::new(),
             },
         ))
+    }
+
+    /// The vehicle type's role over the base's vehicles
+    /// ([`crate::rebuild::vehicle_role`]), computed once per type. The
+    /// turret type keeps the disc-wide turret tables
+    /// ([`crate::rebuild::TURRET_ROLE`]): `None`.
+    pub fn vehicle_role(&mut self, vehicle_type: u16) -> Result<Option<crate::rebuild::VehicleRole>> {
+        if u32::from(vehicle_type) == crate::rebuild::ROLE_VEHICLE_TYPE {
+            return Ok(None);
+        }
+        if let Some(w) = self.vehicle_roles.get(&vehicle_type) {
+            return Ok(w.clone());
+        }
+        let w = crate::rebuild::vehicle_role(self.base, vehicle_type)?;
+        self.vehicle_roles.insert(vehicle_type, w.clone());
+        Ok(w)
+    }
+
+    /// Halo 1's powered mass points (`phys` mass points with a powered
+    /// mass point: the warthog's four tires, the ghost's hull and wings),
+    /// each as a marker on its model node and a Halo 2 point. V: Halo 1's
+    /// mass point positions are in the object's space (each warthog tire
+    /// point lies within its radius of its tire node's default
+    /// position, `tests/vehicle_rebuild_disc.rs`), so the marker holds the
+    /// position in its node's space. The region is the collision region
+    /// of the collision node named as the model node, else none.
+    fn powered_points(
+        &self,
+        obj: &h1::Object,
+        model: &h1models::h1::Model,
+    ) -> Result<Vec<PoweredPoint>> {
+        let Some(p) = obj.physics else {
+            return Ok(Vec::new());
+        };
+        let phys = h1::Physics::read(self.h1, self.h1_tag(p)?)?;
+        let coll = match obj.collision {
+            Some(c) => Some(h1::Collision::read(self.h1, self.h1_tag(c)?)?),
+            None => None,
+        };
+        let world = h1models::mode::world_transforms(
+            &model
+                .nodes
+                .iter()
+                .map(|n| (n.parent, n.rotation, n.translation))
+                .collect::<Vec<_>>(),
+        );
+        let mut out: Vec<PoweredPoint> = Vec::new();
+        for m in phys.mass_points.iter().filter(|m| m.powered_mass_point >= 0) {
+            let node = if (m.model_node as usize) < model.nodes.len() && m.model_node >= 0 {
+                m.model_node
+            } else {
+                0
+            };
+            let (r, t) = world
+                .get(node as usize)
+                .copied()
+                .unwrap_or(([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], [0.0; 3]));
+            let d: [f32; 3] = std::array::from_fn(|a| m.position[a] - t[a]);
+            // The inverse of a rotation is its transpose.
+            let local = std::array::from_fn(|a| (0..3).map(|k| r[k][a] * d[k]).sum());
+            let node_name = model.nodes.get(node as usize).map(|n| n.name.as_str());
+            let region = coll
+                .as_ref()
+                .and_then(|c| {
+                    let n = c.nodes.iter().find(|n| Some(n.name.as_str()) == node_name)?;
+                    c.regions.get(usize::try_from(n.region).ok()?)
+                })
+                .map(|r| crate::coll::sid_name(&r.name))
+                .unwrap_or_default();
+            let marker = crate::coll::sid_name(&m.name);
+            if out.iter().any(|p| p.point.marker == marker) {
+                continue;
+            }
+            out.push(PoweredPoint {
+                point: crate::rebuild::Point { marker, region },
+                node,
+                position: local,
+            });
+        }
+        Ok(out)
     }
 
     /// The role's words over the base's bipeds ([`crate::rebuild::biped_role`]),
@@ -1835,7 +1954,32 @@ impl<'a> Converter<'a> {
         Ok(w)
     }
 
-    /// A Halo 1 biped from the `bipd` definition ([`crate::rebuild::biped`]).
+    /// The Halo 2 biped a Halo 1 biped takes its references from: the
+    /// first [`crate::rebuild::COUNTERPARTS`] row the base holds, else the
+    /// template path's template. `None` when the base has neither.
+    pub fn biped_counterpart(&self, path: &str) -> Option<(TagId, &'static str)> {
+        crate::rebuild::counterpart_candidates(path)
+            .into_iter()
+            .chain(template_candidates(b"bipd", path))
+            .find_map(|n| Some((self.base.find(b"bipd", n)?, n)))
+    }
+
+    /// The role a Halo 1 biped is rebuilt with: its own
+    /// ([`crate::rebuild::BipedRole::of_h1`]), else its counterpart's (the
+    /// flood, sentinels and the monitor take the template path's template,
+    /// the Chief, as that path does).
+    pub fn biped_rebuild_role(&self, path: &str) -> Option<crate::rebuild::BipedRole> {
+        crate::rebuild::BipedRole::of_h1(path).or_else(|| {
+            self.biped_counterpart(path)
+                .and_then(|(_, n)| crate::rebuild::BipedRole::of_h2(n))
+        })
+    }
+
+    /// A Halo 1 biped from the `bipd` definition ([`crate::rebuild::biped`]):
+    /// Halo 1's model chain with a physics model built from its collision
+    /// ([`PhysicsKind::Biped`]), the counterpart's references on the
+    /// `bipd` and the `hlmt` (damage, dialogue, camouflage), and for the
+    /// player the counterpart's HUD with the health meter.
     fn biped_rebuilt(
         &mut self,
         tag: &Tag,
@@ -1843,18 +1987,77 @@ impl<'a> Converter<'a> {
         role: crate::rebuild::BipedRole,
         words: &crate::rebuild::RoleWords,
     ) -> Result<TagId> {
+        use crate::rebuild::{BIPED_OWN, BIPED_WITH_REFERENCES, BipedParts, MODEL_OWN};
+        let (cid, cname) = self
+            .biped_counterpart(&tag.name)
+            .ok_or_else(|| Error::NoTemplate(format!("bipd {}: no counterpart", tag.name)))?;
         let mut rep = Self::report(
             tag,
             &format!(
-                "none: rebuilt from tags::defs ({role:?} role over {} base bipeds)",
+                "none: rebuilt from tags::defs ({role:?} role over {} base bipeds; references from {cname})",
                 words.members.len()
             ),
         );
+        let bipd_def = tags::defs::Defs::builtin()
+            .group(FourCC(*b"bipd"))
+            .ok_or_else(|| Error::Invalid("no bipd definition".into()))?;
+        let counterpart = self.base.record(bipd_def, cid)?;
         let hlmt = self.model(&mut rep, &u.object, None, &tag.name, true)?;
+        let counterpart_hlmt = self.base.reference(&self.base.root(cid)?, h2::MODEL);
+        if let (Some(h), Some(ch)) = (hlmt, counterpart_hlmt) {
+            let hd = tags::defs::Defs::builtin()
+                .group(FourCC(*b"hlmt"))
+                .ok_or_else(|| Error::Invalid("no hlmt definition".into()))?;
+            let c = self.base.record(hd, ch)?;
+            let fields = crate::rebuild::counterpart_fields(hd, &c, MODEL_OWN, &[]);
+            let k = h.0 as usize & 0xffff;
+            let root = &mut self.tree.tags[k].1.root;
+            let mut r = tags::defs::from_built(hd, root)
+                .map_err(|e| Error::Invalid(format!("hlmt: {e}")))?;
+            for (path, v) in &fields {
+                r.set(path, v.clone())
+                    .map_err(|e| Error::Invalid(e.to_string()))?;
+            }
+            *root = tags::defs::to_built(hd, &r, &mut |_| None)
+                .map_err(|e| Error::Invalid(e.to_string()))?;
+            rep.no_home.push(format!(
+                "hlmt: {} reference fields from {} (damage, dialogue, camouflage shaders)",
+                fields.len(),
+                self.base.name(ch).map_or("?", |n| n.1)
+            ));
+        }
+        self.object_physics(&mut rep, hlmt, &u.object, &tag.name, PhysicsKind::Biped)?;
         let predicted = self.predicted(&u.object)?;
-        let root = crate::rebuild::biped(u, hlmt, &predicted, words)?;
+        let hud = if health_hud::is_player_biped(&tag.name) {
+            let tpl_root = self.base.root(cid)?;
+            match self.health_interfaces(&tpl_root) {
+                Ok(ids) => {
+                    rep.no_home.push(format!(
+                        "HUD: {cname}'s with Halo 1's health meter ({} interfaces; docs/game/health.md)",
+                        ids.len()
+                    ));
+                    Some(ids)
+                }
+                Err(e) => {
+                    rep.no_home.push(format!("HUD: no health meter: {e}"));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let parts = BipedParts {
+            counterpart: Some(counterpart),
+            hud,
+        };
+        let root = crate::rebuild::biped(u, hlmt, &predicted, words, &parts)?;
+        let taken = crate::rebuild::reference_fields(bipd_def)
+            .into_iter()
+            .filter(|p| !BIPED_OWN.contains(&p.as_str()))
+            .count()
+            + BIPED_WITH_REFERENCES.len();
         rep.no_home.push(format!(
-            "bipd: the role's words, Halo 1's camera field of view and {} matched words; references null (no HUD, weapons or character); {} Halo 1 references not converted",
+            "bipd: the role's words, Halo 1's camera field of view, {} matched words and collision size (character shapes sized to it); {taken} reference fields from {cname}; {} Halo 1 references not converted (their groups have no converter here)",
             crate::rebuild::BIPED_WORDS.len(),
             u.references.iter().filter(|r| r.tag.is_some()).count()
         ));
@@ -2013,7 +2216,7 @@ impl<'a> Converter<'a> {
                     mass,
                 }]
             }
-            PhysicsKind::Device => parts
+            PhysicsKind::Device | PhysicsKind::Biped => parts
                 .into_iter()
                 .map(|(node, cells)| {
                     let total = cells.len();
@@ -2043,7 +2246,15 @@ impl<'a> Converter<'a> {
                 ""
             }
         );
-        Ok(Some((crate::rebuild::physics_model(&bodies, &nodes)?, how)))
+        let words = if kind == PhysicsKind::Biped {
+            crate::rebuild::BIPED_BODY
+        } else {
+            crate::rebuild::DEVICE_BODY
+        };
+        Ok(Some((
+            crate::rebuild::physics_model(&bodies, &nodes, words)?,
+            how,
+        )))
     }
 
     /// The tree's tags of `group` that `b` references, in order, each once.
@@ -2097,14 +2308,14 @@ impl<'a> Converter<'a> {
     fn unit(&mut self, tag: &Tag) -> Result<TagId> {
         let u = Unit::read(self.h1, tag)?;
         let g: [u8; 4] = tag.group.0.to_be_bytes();
-        // No template row at all (not merely one the base lacks, which a
-        // donor may bring): built from the definition instead of dropped.
-        if &g == b"vehi" && template_candidates(&g, &tag.name).is_empty() {
+        // Every vehicle is built from the `vehi` definition: there is no
+        // vehicle template path.
+        if &g == b"vehi" {
             return self.vehicle_rebuilt(tag, &u);
         }
         if &g == b"bipd"
             && self.options.rebuild_bipeds
-            && let Some(role) = crate::rebuild::BipedRole::of_h1(&tag.name)
+            && let Some(role) = self.biped_rebuild_role(&tag.name)
             && let Some(words) = self.biped_role(role)?
         {
             return self.biped_rebuilt(tag, &u, role, &words);
@@ -2119,9 +2330,6 @@ impl<'a> Converter<'a> {
             tag.group,
             u.references.iter().filter(|r| r.tag.is_some()).count()
         ));
-        if &g == b"vehi" && quiet_stand_in(&tag.name) {
-            self.drop_looping_attachments(&mut rep, &mut root, &tpl_root)?;
-        }
         if &g == b"bipd" && health_hud::is_player_biped(&tag.name) {
             match self.health_hud(&mut root, &tpl_root) {
                 Ok(n) => rep.no_home.push(format!(
@@ -2129,13 +2337,6 @@ impl<'a> Converter<'a> {
                 )),
                 Err(e) => rep.no_home.push(format!("HUD: no health meter: {e}")),
             }
-        }
-        if &g == b"vehi" {
-            let hlmt = root.fixups.iter().find_map(|f| match f.kind {
-                FixupKind::TagRef(t) if f.offset == h2::MODEL as u32 && t != TagId::NULL => Some(t),
-                _ => None,
-            });
-            self.object_physics(&mut rep, hlmt, &u.object, &tag.name, PhysicsKind::Vehicle)?;
         }
         self.stopgaps(&mut rep, &tpl_root, &[h2::MODEL]);
         self.tree.reports.push(rep);
@@ -2156,11 +2357,26 @@ impl Converter<'_> {
     /// many interfaces it points.
     fn health_hud(&mut self, root: &mut Block, tpl_root: &[u8]) -> Result<usize> {
         use health_hud::{HUD_INTERFACE_SIZE, UNIT_HUD_INTERFACES};
+        let ids = self.health_interfaces(tpl_root)?;
+        let count = ids.len();
+        let mut elements = Block::new(vec![0; count * HUD_INTERFACE_SIZE]);
+        for (i, id) in ids.into_iter().enumerate() {
+            elements.tag_ref((i * HUD_INTERFACE_SIZE) as u32, id);
+        }
+        root.block(UNIT_HUD_INTERFACES as u32, count as u32, elements);
+        Ok(count)
+    }
+
+    /// The health-meter copies ([`Self::health_nhdt`]) of the HUD
+    /// interfaces (`unit +0x1a0`) of the unit whose root is `tpl_root`, in
+    /// order.
+    fn health_interfaces(&mut self, tpl_root: &[u8]) -> Result<Vec<TagId>> {
+        use health_hud::{HUD_INTERFACE_SIZE, UNIT_HUD_INTERFACES};
         let count = crate::base::u32_at(tpl_root, UNIT_HUD_INTERFACES) as usize;
         if count == 0 {
             return Err(Error::Invalid("the template unit has no HUD".into()));
         }
-        let mut elements = Block::new(vec![0; count * HUD_INTERFACE_SIZE]);
+        let mut out = Vec::with_capacity(count);
         for i in 0..count {
             let e = self
                 .base
@@ -2171,11 +2387,9 @@ impl Converter<'_> {
             let nhdt = self.base.reference(&e, 0).ok_or_else(|| {
                 Error::Invalid(format!("HUD interface {i} names no nhdt in the base map"))
             })?;
-            let id = self.health_nhdt(nhdt)?;
-            elements.tag_ref((i * HUD_INTERFACE_SIZE) as u32, id);
+            out.push(self.health_nhdt(nhdt)?);
         }
-        root.block(UNIT_HUD_INTERFACES as u32, count as u32, elements);
-        Ok(count)
+        Ok(out)
     }
 
     /// The template `nhdt` with the health widget added, built once.

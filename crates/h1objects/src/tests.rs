@@ -8,7 +8,7 @@ use map::{CacheType, FourCC, Map, TagId};
 
 use crate::Converted;
 use crate::coll::{convert_collision, sid_name};
-use crate::convert::{Tree, local, quiet_stand_in, template_for};
+use crate::convert::{Tree, local, template_for};
 use crate::h1::{CollNode, CollRegion, Collision, Sphere};
 
 fn one_bsp() -> CollisionBsp {
@@ -49,29 +49,11 @@ fn templates_pick_the_role_and_the_more_specific_name_first() {
     assert!(t(b"eqip", "powerups\\health pack").ends_with("\\over_shield"));
     assert!(t(b"eqip", "weapons\\frag grenade\\frag grenade").contains("grenade\\frag_grenade"));
     assert!(t(b"proj", "weapons\\plasma grenade\\plasma grenade").contains("plasma_grenade"));
-    assert!(t(b"vehi", "vehicles\\ghost\\ghost_mp").ends_with("\\ghost"));
+    // Vehicles have no template: every one is built from its definition.
+    assert_eq!(t(b"vehi", "vehicles\\ghost\\ghost_mp"), "-");
     assert!(t(b"bipd", "characters\\anything").contains("masterchief"));
     assert_eq!(t(b"proj", "weapons\\assault rifle\\bullet"), "-");
     assert_eq!(sid_name(" Front Left-Tire "), "front_left_tire");
-}
-
-#[test]
-fn lifepods_alone_drop_their_template_s_looping_sounds() {
-    for p in [
-        "vehicles\\lifepod\\lifepod",
-        "vehicles\\lifepod_docked\\lifepod_docked",
-        "scenery\\vehicles\\lifepod_atmosphere_entry\\lifepod_atmosphere_entry",
-    ] {
-        assert!(quiet_stand_in(p), "{p}");
-        assert!(template_for(b"vehi", p).unwrap().ends_with("\\pelican"));
-    }
-    for p in [
-        "vehicles\\pelican\\pelican_astral",
-        "vehicles\\warthog\\warthog",
-        "vehicles\\ghost\\ghost_mp",
-    ] {
-        assert!(!quiet_stand_in(p), "{p}");
-    }
 }
 
 #[test]
@@ -553,7 +535,22 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
         crate::rebuild::Predicted::RenderModel(mode),
         crate::rebuild::Predicted::Bitmap(bitmap),
     ];
-    let root = crate::rebuild::vehicle(&obj, Some(hlmt), &[seat], &predicted, 1.2).unwrap();
+    let weapon = map::TagId(0xe001_0005);
+    let markers = vec!["driver".to_string(), "driver enter".to_string()];
+    let seats = [crate::rebuild::seat_names(&seat, &markers)];
+    let root = crate::rebuild::vehicle(&crate::rebuild::VehicleSpec {
+        object: &obj,
+        hlmt: Some(hlmt),
+        seats: &seats,
+        predicted: &predicted,
+        camera_field_of_view: 1.2,
+        vehicle_type: ROLE_VEHICLE_TYPE as u16,
+        flags: 0xdead_00c0,
+        weapons: &[weapon],
+        role: None,
+        points: &[],
+    })
+    .unwrap();
     let def = Defs::builtin().group(map::FourCC(*b"vehi")).unwrap();
     let got = defs::from_built(def, &root).unwrap();
     // Written again from what was read, it reads back the same and has
@@ -587,8 +584,11 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
     for (p, w) in TURRET_SEAT_ROLE {
         s.set(p, word(*w)).unwrap();
     }
-    s.set("label", Val::text("CT-driver")).unwrap();
+    // The label is the rider's mode as the converted graphs name it.
+    s.set("label", Val::text("c_turret_ap_d")).unwrap();
     s.set("string_8", Val::text("driver")).unwrap();
+    // Marker names as the converted model keeps them (Halo 1's).
+    s.set("string_c", Val::text("driver enter")).unwrap();
     s.set("string_60", Val::text("camera")).unwrap();
     want.set(VEHI_SEATS, Val::Block(vec![s])).unwrap();
     let pr = def.child("unit.obje.predicted_resources").unwrap();
@@ -610,10 +610,23 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
     want.set(VEHI_PHYSICS, Val::Block(vec![p])).unwrap();
     want.set("unit.camera_field_of_view", Val::Float(1.2))
         .unwrap();
+    // Halo 1's flags: the low half only (the turret tables have no high
+    // half).
+    want.set("vehicle_flags", Val::Int(0xc0)).unwrap();
+    let mut w = defs::default_record(def.child("unit.weapons").unwrap());
+    w.set(
+        "weapon",
+        Val::Ref {
+            group: 0,
+            target: Target::Id(weapon),
+        },
+    )
+    .unwrap();
+    want.set("unit.weapons", Val::Block(vec![w])).unwrap();
     assert_eq!(defs::diff(def, &want, &got), Vec::new());
     assert_eq!(
         got.at("block_1c8[0].label"),
-        Some(&Val::String(Str::Text("CT-driver".into())))
+        Some(&Val::String(Str::Text("c_turret_ap_d".into())))
     );
     // References a fresh vehicle must not point at tag 0: the two the
     // schema could not see are null references, not zero words.
@@ -627,6 +640,113 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
             "{r}"
         );
     }
+}
+
+/// A vehicle with a role: the role's root, block and seat words, its
+/// flags' high half under Halo 1's low half, and Halo 1's type over the
+/// role's.
+#[test]
+fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
+    use crate::rebuild::{RoleWords, VEHI_PHYSICS, VehicleRole, VehicleSpec};
+    use tags::defs::{self, Defs, Val};
+    let obj = crate::h1::Object {
+        object_type: 1,
+        flags: 0,
+        bounding_radius: 2.0,
+        bounding_offset: [0.0; 3],
+        model: None,
+        animation: None,
+        collision: None,
+        physics: None,
+        modifier_shader: None,
+        creation_effect: None,
+        attachments: Vec::new(),
+        widgets: Vec::new(),
+    };
+    let role = VehicleRole {
+        words: RoleWords {
+            members: vec!["jeep".into()],
+            root: vec![("unknown_210".into(), 0x43e1_0000)],
+            blocks: vec![(
+                VEHI_PHYSICS.into(),
+                vec![vec![("unknown_48".into(), 0xbf80_0000)]],
+            )],
+        },
+        seat: vec![("unknown_20".into(), 0x3f00_0000)],
+        flags_high: 0x0012_0000,
+        friction: Some(vec![("unknown_8".into(), 0x4160_0000)]),
+        hover: None,
+        gears: vec![vec![
+            ("unknown_0".into(), 0x4795_6a00),
+            ("raw_14".into(), 0x4000_1234),
+        ]],
+    };
+    let points = [
+        crate::rebuild::Point {
+            marker: "tire_front_left".into(),
+            region: "left_front_tire".into(),
+        },
+        crate::rebuild::Point {
+            marker: "tire_back_left".into(),
+            region: String::new(),
+        },
+    ];
+    let seat = crate::h1::Seat {
+        flags: 0,
+        label: "W-driver".into(),
+        marker: "driver".into(),
+        camera_marker: String::new(),
+    };
+    let seats = [crate::rebuild::seat_names(&seat, &[])];
+    let root = crate::rebuild::vehicle(&VehicleSpec {
+        object: &obj,
+        hlmt: None,
+        seats: &seats,
+        predicted: &[],
+        camera_field_of_view: 1.0,
+        vehicle_type: 1,
+        flags: 0x0000_0cd1,
+        weapons: &[],
+        role: Some(&role),
+        points: &points,
+    })
+    .unwrap();
+    let def = Defs::builtin().group(map::FourCC(*b"vehi")).unwrap();
+    let got = defs::from_built(def, &root).unwrap();
+    let word = |w: u32| Some(Val::Bytes(w.to_le_bytes().to_vec()));
+    assert_eq!(got.at("vehicle_type"), Some(&Val::Enum(1)));
+    assert_eq!(got.at("vehicle_flags"), Some(&Val::Int(0x0012_0cd1)));
+    assert_eq!(got.at("unknown_210").cloned(), word(0x43e1_0000));
+    assert_eq!(
+        got.at("block_2f8[0].unknown_48").cloned(),
+        word(0xbf80_0000)
+    );
+    assert_eq!(got.at("block_1c8[0].unknown_20").cloned(), word(0x3f00_0000));
+    assert_eq!(
+        got.at("block_1c8[0].label"),
+        Some(&Val::text("warthog_d"))
+    );
+    // Halo 1's powered points as friction points with the role's words;
+    // the role's gear, its curve pointer kept as a word.
+    assert_eq!(
+        got.at("block_2f0[0].string_0"),
+        Some(&Val::text("tire_front_left"))
+    );
+    assert_eq!(
+        got.at("block_2f0[0].string_44"),
+        Some(&Val::text("left_front_tire"))
+    );
+    assert_eq!(got.at("block_2f0[1].unknown_8").cloned(), word(0x4160_0000));
+    assert!(matches!(got.at("block_2e8"), Some(Val::Block(b)) if b.is_empty()));
+    assert_eq!(got.at("block_268[0].unknown_0").cloned(), word(0x4795_6a00));
+    assert_eq!(
+        got.at("block_268[0].raw_14"),
+        Some(&Val::Raw(defs::RawVal::Word(0x4000_1234)))
+    );
+    let again = defs::to_built(def, &got, &mut |_| None).unwrap();
+    assert_eq!(defs::from_built(def, &again).unwrap(), got);
+    // Turret words stay off a vehicle with its own role.
+    assert_eq!(got.at("unknown_23c").cloned(), word(0));
 }
 
 #[test]
@@ -883,7 +1003,7 @@ fn built_physics_model_round_trips_with_every_piece() {
         node("a", 0, 2, -1),
         node("b", 0, -1, -1),
     ];
-    let root = physics_model(&bodies, &nodes).unwrap();
+    let root = physics_model(&bodies, &nodes, crate::rebuild::DEVICE_BODY).unwrap();
     let def = Defs::builtin().group(map::FourCC(*b"phmo")).unwrap();
     let got = defs::from_built(def, &root).unwrap();
     let again = defs::to_built(def, &got, &mut |_| None).unwrap();
@@ -1023,6 +1143,7 @@ fn rebuilt_biped_is_the_role_with_halo_1s_header_and_words() {
             .map(|w| (w.1, (w.1 as f32).to_bits()))
             .collect(),
         seats: Vec::new(),
+        size: None,
         references: Vec::new(),
     };
     let role = RoleWords {
@@ -1040,7 +1161,14 @@ fn rebuilt_biped_is_the_role_with_halo_1s_header_and_words() {
     let hlmt = map::TagId(0xe001_0002);
     let mode = map::TagId(0xe001_0003);
     let predicted = [crate::rebuild::Predicted::RenderModel(mode)];
-    let root = crate::rebuild::biped(&unit, Some(hlmt), &predicted, &role).unwrap();
+    let root = crate::rebuild::biped(
+        &unit,
+        Some(hlmt),
+        &predicted,
+        &role,
+        &crate::rebuild::BipedParts::default(),
+    )
+    .unwrap();
     let d = Defs::builtin().group(map::FourCC(*b"bipd")).unwrap();
     let r = defs::from_built(d, &root).unwrap();
     let again = defs::to_built(d, &r, &mut |_| None).unwrap();
@@ -1066,4 +1194,105 @@ fn rebuilt_biped_is_the_role_with_halo_1s_header_and_words() {
         panic!()
     };
     assert_eq!(pr.len(), 1);
+}
+
+/// A rebuilt biped's character shapes follow Halo 1's collision size: the
+/// standing and crouching pills run from one radius up to the height less
+/// a radius, the three spheres rest on the ground at 1, 1.35 and 1.7
+/// radii; the HUD interfaces given replace the counterpart's; and the
+/// counterpart's references come with it, the model staying Halo 1's.
+#[test]
+fn rebuilt_biped_is_sized_to_halo_1_and_takes_its_counterparts_references() {
+    use crate::h1::BipedSize;
+    use crate::rebuild::{BIPD_HUD, BIPD_PILLS, BIPD_SPHERES, BipedParts, RoleWords};
+    use tags::defs::{self, Defs, Target, Val};
+    let d = Defs::builtin().group(map::FourCC(*b"bipd")).unwrap();
+    let size = BipedSize {
+        standing_height: 0.7,
+        crouching_height: 0.5,
+        radius: 0.2,
+    };
+    let unit = crate::h1::Unit {
+        group: h1map::Group::new(b"bipd"),
+        object: crate::h1::Object {
+            object_type: 0,
+            flags: 0,
+            bounding_radius: 0.7,
+            bounding_offset: [0.0; 3],
+            model: None,
+            animation: None,
+            collision: None,
+            physics: None,
+            modifier_shader: None,
+            creation_effect: None,
+            attachments: Vec::new(),
+            widgets: Vec::new(),
+        },
+        camera_field_of_view: 1.2,
+        biped_words: Vec::new(),
+        seats: Vec::new(),
+        size: Some(size),
+        references: Vec::new(),
+    };
+    // A counterpart with a foot reference, a camera track and a model.
+    let foot = map::TagId(0xe100_0010);
+    let track = map::TagId(0xe100_0011);
+    let mut c = defs::default_record(d);
+    c.set(
+        "unit.obje.foot_ref_54",
+        Val::tag(map::FourCC(*b"foot"), foot),
+    )
+    .unwrap();
+    c.set(
+        "unit.obje.model",
+        Val::tag(map::FourCC(*b"hlmt"), map::TagId(0xe100_0012)),
+    )
+    .unwrap();
+    let mut e = defs::default_record(d.child("unit.block_e8").unwrap());
+    e.set("ref_0", Val::tag(map::FourCC(*b"trak"), track))
+        .unwrap();
+    c.set("unit.block_e8", Val::Block(vec![e])).unwrap();
+    let hud = map::TagId(0xfffd_0007);
+    let hlmt = map::TagId(0xfffd_0001);
+    let parts = BipedParts {
+        counterpart: Some(c),
+        hud: Some(vec![hud, hud]),
+    };
+    let root =
+        crate::rebuild::biped(&unit, Some(hlmt), &[], &RoleWords::default(), &parts).unwrap();
+    let r = defs::from_built(d, &root).unwrap();
+    let id = |p: &str| match r.at(p) {
+        Some(Val::Ref {
+            target: Target::Id(id),
+            ..
+        }) => *id,
+        x => panic!("{p}: {x:?}"),
+    };
+    assert_eq!(id("unit.obje.model"), hlmt, "Halo 1's model");
+    assert_eq!(id("unit.obje.foot_ref_54"), foot);
+    assert_eq!(id("unit.block_e8[0].ref_0"), track);
+    assert_eq!(id(&format!("{BIPD_HUD}[1].ref_0")), hud);
+    let f = |p: &str| match r.at(p) {
+        Some(Val::Bytes(b)) => f32::from_le_bytes(b[..4].try_into().unwrap()),
+        x => panic!("{p}: {x:?}"),
+    };
+    assert_eq!(
+        [f("unknown_268"), f("unknown_26c"), f("unknown_270")],
+        [0.7, 0.5, 0.2]
+    );
+    let close = |a: f32, b: f32| (a - b).abs() < 1e-6;
+    for (i, top) in [0.5, 0.3].into_iter().enumerate() {
+        let p = format!("{BIPD_PILLS}[{i}]");
+        assert!(close(f(&format!("{p}.unknown_2c")), 0.2));
+        assert!(close(f(&format!("{p}.unknown_38")), top), "{p}");
+        assert!(close(f(&format!("{p}.unknown_48")), 0.2));
+        // The Havok header the engine writes stays zero.
+        assert_eq!(f(&format!("{p}.unknown_20")), 0.0);
+    }
+    for (i, k) in [1.0, 1.35, 1.7].into_iter().enumerate() {
+        let p = format!("{BIPD_SPHERES}[{i}]");
+        assert!(close(f(&format!("{p}.unknown_2c")), 0.2 * k));
+        assert!(close(f(&format!("{p}.unknown_78")), 0.2 * k));
+        assert_eq!(f(&format!("{p}.unknown_3c")), 0.0, "the child pointer");
+    }
 }

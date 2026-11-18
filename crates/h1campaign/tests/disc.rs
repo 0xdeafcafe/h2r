@@ -1401,8 +1401,9 @@ fn every_campaign_sound_plays_what_it_was_made_from() {
                 a.unmatched.len()
             ));
         }
-        // Lifepods stand on the pelican and keep none of its looping
-        // sounds (`h1objects::convert::QUIET_STAND_INS`).
+        // Halo 1's vehicles are built from the `vehi` definition and loop
+        // no retail sound (the lifepods once hummed the pelican's engine
+        // from its template's attachments).
         let mut m = Map::from_reader(Cursor::new(done.bytes.clone())).unwrap();
         let mem = map_memory(&mut m);
         let word = |a: u32| u32::from_le_bytes(mem.slice(a, 4).unwrap().try_into().unwrap());
@@ -1413,7 +1414,7 @@ fn every_campaign_sound_plays_what_it_was_made_from() {
         let mut pods = 0;
         for t in m.tags().iter().filter(|t| t.group == FourCC(*b"vehi")) {
             let name = t.name.clone().unwrap_or_default();
-            if !h1objects::convert::quiet_stand_in(&name) {
+            if name.starts_with("objects\\") {
                 continue;
             }
             pods += 1;
@@ -1427,7 +1428,7 @@ fn every_campaign_sound_plays_what_it_was_made_from() {
                 failed.push(format!("{level}: {name} loops {loops} sounds"));
             }
         }
-        println!("  {pods} lifepods");
+        println!("  {pods} Halo 1 vehicles");
     }
     assert!(failed.is_empty(), "{failed:#?}");
 }
@@ -1497,8 +1498,10 @@ fn no_converted_model_on_any_campaign_level_has_a_none_material() {
 /// entry is the rebuilt cryotube. Read back from the converted map, the
 /// tag decodes through its definition and encodes byte-identical; its
 /// model chain resolves to tags in the map (`hlmt`, then `mode`, `coll`
-/// and `jmad`); it has one seat labelled `CT-driver`, as a10's scripts
-/// name it; and its unit fields are sane.
+/// and `jmad`); it has one seat labelled with the rider's mode for a10's
+/// `CT-driver` (`c_turret_ap_d`, as the converted graphs name it; the
+/// seat table matches the scripts' text to it); and its unit fields are
+/// sane.
 #[test]
 #[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
 fn a10_cryotubes_are_placed_and_built_from_their_definition() {
@@ -1611,7 +1614,7 @@ fn a10_cryotubes_are_placed_and_built_from_their_definition() {
         assert_eq!(seats.len(), 1, "pinned {pinned}: one seat");
         assert_eq!(
             seats[0].get("label"),
-            Some(&Val::String(Str::Text("CT-driver".into())))
+            Some(&Val::String(Str::Text("c_turret_ap_d".into())))
         );
         assert_eq!(
             seats[0].get("string_8"),
