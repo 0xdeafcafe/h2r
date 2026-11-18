@@ -11,7 +11,7 @@
 //!   in the source;
 //! - Halo 1's values: the named fields, the material responses, and the
 //!   words the removed template path wrote by offset ([`WEAPON_WORDS`], [`BARREL_WORDS`],
-//!   [`PROJECTILE_WORDS`]; offsets from `docs/formats/h1-objects.md`);
+//!   [`PROJECTILE_WORDS`]; offsets from `docs/halo1/objects.md`);
 //! - references: converted Halo 1 tags (model chain, first-person model
 //!   and animations, projectiles, damage effects), and, for slots Halo 1
 //!   has no converted tag for (HUD, effects, sounds, melee damage), the
@@ -42,7 +42,7 @@ pub const WEAPON_BLOCKS: &[&str] = &["magazines", "barrels", "barrels.block_e4"]
 /// `weap` root words written from Halo 1 by offset, as the removed template path
 /// did: (path, Halo 1 `weap` offset). The aim assist is E (`0x1a50a0`
 /// reads `+0x208..+0x218`); the heat words are S, V2
-/// (docs/formats/h1-objects.md).
+/// (docs/halo1/objects.md).
 pub const WEAPON_WORDS: &[(&str, usize)] = &[
     ("unknown_150", 0x34c), // heat recovery threshold
     ("unknown_154", 0x350), // overheated threshold
@@ -750,7 +750,7 @@ pub struct EquipmentParts {
 }
 
 /// The `eqip` root from Halo 1's equipment. A health pack needs a positive
-/// amount (docs/game/health.md): a zero time becomes 1.
+/// amount (docs/halo1/health.md): a zero time becomes 1.
 pub fn equipment(e: &h1::Equipment, parts: &EquipmentParts, role: &Role) -> Result<Block> {
     let d = def(b"eqip")?;
     let mut r = defs::default_record(d);
@@ -786,5 +786,5 @@ pub fn damage(b: &[u8], role: &Role) -> Result<Block> {
 }
 
 /// Halo 1's `jpt!` root size: where its first child block starts (V1,
-/// docs/formats/h1-objects.md); the damage bounds end at `+0x1dc`.
+/// docs/halo1/objects.md); the damage bounds end at `+0x1dc`.
 pub const H1_JPT_MIN: usize = 0x1dc;

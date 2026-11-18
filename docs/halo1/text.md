@@ -1,12 +1,12 @@
 # Halo 1 text: `ustr`, `hmt `, and their conversion to Halo 2
 
 Halo 1 keeps its user-facing text in two tag groups, read here by
-`crates/h1text` through the [`h1map`](h1-map-format.md) reader, and
-converted into Halo 2 localized text ([localization.md](localization.md)):
+`crates/h1text` through the [`h1map`](map-format.md) reader, and
+converted into Halo 2 localized text ([localization.md](../formats/localization.md)):
 string IDs, locale rows in the `matg` globals, and one `unic` tag per
 Halo 1 list. This page covers both sides.
 
-Evidence labels, as in h1-map-format.md:
+Evidence labels, as in map-format.md:
 
 - **V — verified-on-disc:** checked against the owner's retail Halo 1 disc
   by the ignored tests `real_disc_every_string_list_decodes` (every
@@ -109,7 +109,7 @@ A non-null reference that names a tag of the wrong group is refused.
 ## Conversion to Halo 2
 
 Halo 2 localized text is one global structure per map
-([localization.md](localization.md)): per language, an index of
+([localization.md](../formats/localization.md)): per language, an index of
 `(packed string ID, blob offset)` rows over a NUL-terminated UTF-8-like
 blob, described by a descriptor in the `matg` at `+0x188`; a `unic` tag
 is `0x34` bytes whose nine `(start, count)` ranges select rows in its
@@ -117,7 +117,7 @@ language's index. Halo 1 has only English, and addresses its lists by
 tag and index rather than by ID.
 
 `h1text::convert::Locales` builds the Halo 2 side, following the
-`Converted` pattern ([h1-models.md](h1-models.md)):
+`Converted` pattern ([models.md](models.md)):
 
 - `Locales::add_ustr` mints one string ID per string, named
   `<Halo 1 tag path>\<index>`, and interns it into the `TagSet` so other

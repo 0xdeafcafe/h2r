@@ -1,4 +1,4 @@
-//! Precision variants on converted Halo 1 maps (docs/game/h1-multiplayer.md,
+//! Precision variants on converted Halo 1 maps (docs/halo1/multiplayer.md,
 //! "Precision variants").
 //!
 //! In the Halo 2 sandbox Halo 1's assault rifle becomes the SMG; in a
@@ -134,7 +134,7 @@ struct Precision {
 impl feature::Feature for Precision {
     fn manifest(&self) -> feature::Manifest {
         feature::Manifest::new(FEATURE, "Precision variants on converted Halo 1 maps")
-            .doc("docs/game/h1-multiplayer.md")
+            .doc("docs/halo1/multiplayer.md")
     }
     fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
         use feature::Flow;

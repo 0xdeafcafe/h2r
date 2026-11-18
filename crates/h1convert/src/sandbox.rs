@@ -1,5 +1,5 @@
 //! The Halo 2 sandbox: each Halo 1 multiplayer item or vehicle and the
-//! nearest Halo 2 one (docs/game/h1-multiplayer.md, "Halo 2 sandbox").
+//! nearest Halo 2 one (docs/halo1/multiplayer.md, "Halo 2 sandbox").
 //!
 //! Items are recognised by the plain English words in the last part of their
 //! Halo 1 tag path ("assault rifle", "warthog"), read at run time; the Halo
@@ -26,7 +26,7 @@ pub enum H2Item {
 /// starts, from the variant: the converted maps place the default item and
 /// record each swap (`apply::precision_swaps`, the package manifest's
 /// `precision`), and `boot::precision` makes it when a precision variant
-/// starts (docs/game/h1-multiplayer.md).
+/// starts (docs/halo1/multiplayer.md).
 pub const PRECISION: &[(&str, H2Item)] = &[("assault rifle", H2Item::Weapon("battle_rifle"))];
 
 /// Halo 2 starting weapons that make a variant a precision one.

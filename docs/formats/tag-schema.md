@@ -349,7 +349,7 @@ picks the first map of the source's cache type that lacks the tag.
 **Sounds.** `snd!` tags index the map's sound gestalt (`ugh!`), which is
 per map. `transplant` copies a `snd!` with its source indices. The
 caller must then merge its gestalt entries with
-`h1sounds::merge_sound` (see [h1-sounds.md](h1-sounds.md), "Merging a
+`h1sounds::merge_sound` (see [sounds.md](../halo1/sounds.md), "Merging a
 moved sound"); `transplant` does not call it yet.
 
 ## Fresh maps (`h1convert::fresh`, `h2 h1 convert --fresh`)

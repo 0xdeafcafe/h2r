@@ -1,6 +1,6 @@
 //! The Halo 1 sandbox variant of a multiplayer map: the same structure and
 //! spawns as the Halo 2 one, but every item and vehicle spawn places a
-//! Halo 1 object converted to a Halo 2 tag (docs/game/h1-multiplayer.md,
+//! Halo 1 object converted to a Halo 2 tag (docs/halo1/multiplayer.md,
 //! "Halo 1 sandbox").
 //!
 //! The objects come from outside through [`Halo1Objects`]: `h1objects`
@@ -75,7 +75,7 @@ pub struct ObjectTags {
     /// One line per converted object (what it was built on, what it
     /// keeps of the template).
     pub notes: Vec<String>,
-    /// HUD pairs `boot::hud_swap` switches between (docs/game/hud.md): the
+    /// HUD pairs `boot::hud_swap` switches between (docs/halo1/hud.md): the
     /// owner, its Halo 1 HUD and its Halo 2 HUD.
     pub hud_swaps: Vec<[HudTag; 3]>,
     /// Where the player's Halo 1 HUD centres the motion sensor's blips

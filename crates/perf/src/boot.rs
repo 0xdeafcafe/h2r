@@ -101,7 +101,7 @@ impl Scenario for MenuHold {
     fn prepare(&mut self, ctx: &BenchCtx) -> Result<Prepared> {
         let Some(factory) = *FACTORY.lock().unwrap_or_else(|e| e.into_inner()) else {
             return Ok(Prepared::Skip(
-                "no boot driver in this build (see docs/perf/perf.md, \"Boot hook\")".into(),
+                "no boot driver in this build (see docs/perf/profiling.md, \"Boot hook\")".into(),
             ));
         };
         let Some(disc) = self

@@ -289,7 +289,7 @@ whole subtree.
 
 For per-draw cost, use the sampling profiler instead. It does not move
 code off the direct path and maps samples to guest functions, both
-inclusive and own code (docs/perf/perf.md, "Boot hook"):
+inclusive and own code (docs/perf/profiling.md, "Boot hook"):
 
 ```
 H2_PERF_FROM=level H2_PROFILE=$R/prof H2_PROFILE_HZ=1000 \

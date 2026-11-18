@@ -12,7 +12,7 @@
 //! not rewritten keep their retail addresses, so a [`Tree`] is installed
 //! into a `TagSet` built from the same base map (`TagSet::from_map`), which
 //! pins them in place. Halo 2 offsets and evidence:
-//! `docs/formats/h1-objects.md`.
+//! `docs/halo1/objects.md`.
 
 use std::collections::HashMap;
 
@@ -275,11 +275,11 @@ pub fn region_map(
 }
 
 /// Halo 1's cache keeps speeds per tick; Halo 2's tags hold them per
-/// second (S, docs/formats/h1-objects.md).
+/// second (S, docs/halo1/objects.md).
 pub const TICKS_PER_SECOND: f32 = 30.0;
 
 /// Halo 1's health powerup type, which Halo 2 handles the same way
-/// (docs/game/health.md).
+/// (docs/halo1/health.md).
 pub const POWERUP_HEALTH: i16 = 5;
 
 /// One value carried from Halo 1 into the Halo 2 tag.
@@ -325,7 +325,7 @@ pub struct Tree {
     /// What installing the sounds left out, and why.
     pub audio_notes: Vec<String>,
     /// The HUD each owner (the player biped) can switch between at game
-    /// start (`boot::hud`; docs/game/hud.md).
+    /// start (`boot::hud`; docs/halo1/hud.md).
     pub hud_swaps: Vec<HudSwap>,
     /// Where the player's Halo 1 HUD centres the motion sensor's blips
     /// ([`crate::h1hud::sensor_centre`]), for `boot::hud_swap`.
@@ -1622,7 +1622,7 @@ impl<'a> Converter<'a> {
     /// from their definitions; its unknown spans take the base's scenery
     /// role words ([`crate::rebuild::SceneryRole`]). Havok sees it through
     /// its `coll`'s BSP physics slots, as retail static scenery (no
-    /// `phmo`; docs/formats/h1-objects.md, "Collision for Havok").
+    /// `phmo`; docs/halo1/objects.md, "Collision for Havok").
     fn scenery(&mut self, tag: &Tag) -> Result<TagId> {
         let object = h1::Object::read(self.h1, self.h1.tag_data(tag)?)?;
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
@@ -2211,7 +2211,7 @@ impl<'a> Converter<'a> {
             match self.health_interfaces(&tpl_root) {
                 Ok(ids) => {
                     rep.no_home.push(format!(
-                        "HUD: {cname}'s with Halo 1's health meter ({} interfaces; docs/game/health.md)",
+                        "HUD: {cname}'s with Halo 1's health meter ({} interfaces; docs/halo1/health.md)",
                         ids.len()
                     ));
                     match self.unit_hud(u) {
@@ -2221,7 +2221,7 @@ impl<'a> Converter<'a> {
                                 Err(e) => rep.no_home.push(format!("HUD: motion sensor centre: {e}")),
                             }
                             rep.no_home.push(format!(
-                                "HUD: Halo 1's ({n} widgets; docs/game/hud.md), Halo 2's at the switch"
+                                "HUD: Halo 1's ({n} widgets; docs/halo1/hud.md), Halo 2's at the switch"
                             ));
                             swap = Some((h1, ids[0]));
                             Some(vec![h1; ids.len()])
@@ -2564,7 +2564,7 @@ impl<'a> Converter<'a> {
         if &g == b"bipd" && health_hud::is_player_biped(&tag.name) {
             match self.health_hud(&mut root, &tpl_root) {
                 Ok(n) => rep.no_home.push(format!(
-                    "HUD: the template's with Halo 1's health meter ({n} interfaces; docs/game/health.md)"
+                    "HUD: the template's with Halo 1's health meter ({n} interfaces; docs/halo1/health.md)"
                 )),
                 Err(e) => rep.no_home.push(format!("HUD: no health meter: {e}")),
             }
@@ -2651,7 +2651,7 @@ impl Converter<'_> {
         if widgets.is_empty() {
             return Err(Error::Invalid(format!("{}: no drawable element", tag.name)));
         }
-        // Halo 1's grenade HUDs (docs/game/hud.md "Grenades"): each type's
+        // Halo 1's grenade HUDs (docs/halo1/hud.md "Grenades"): each type's
         // grhi, shown while that type is selected, after the unit's.
         let grenades = crate::h1hud::grenade_huds(self.h1)?;
         let mut texts = Vec::new();

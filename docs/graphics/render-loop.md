@@ -543,6 +543,6 @@ leaves.
   Rust pass loop picks view-resolution targets.
 - **7d.** Geometry submission and materials (`0x00041040`, `0x0001bbf0`),
   after the pass loop is Rust.
-- **Measure first.** `render-timing` ([frame-budget.md](../perf/frame-budget.md),
+- **Measure first.** `render-timing` ([gameplay-budget.md](../perf/gameplay-budget.md),
   "Render front-end versus simulation") says how many ms the stages
   hold; the port itself saves no time until a pass body moves.

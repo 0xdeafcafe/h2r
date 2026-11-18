@@ -1,5 +1,5 @@
 //! Our campaigns' level pictures in the level select
-//! (docs/game/multiple-campaigns.md, "Pictures").
+//! (docs/halo1/campaign-picker.md, "Pictures").
 //!
 //! The level select draws each level's picture from its record in the
 //! globals' level list (`campaign_list::UI_LEVEL_PICTURE`, a `bitm`

@@ -4,7 +4,7 @@ Status: **built, and confirmed in the game by the owner (2026-11-17).** The leve
 picker, the campaign of a started level and per-campaign progress are
 proven by unit tests and an ignored test against the user's disc. Nothing
 here has been run in the game. Started 2026-11-16. Part of
-[campaigns.md](campaigns.md) (step 8, §4).
+[campaign.md](campaign.md) (step 8, §4).
 
 The goal: a campaign picker (Halo 2, Halo 1, ...) in front of the campaign
 level list, and progress kept per campaign. With no second campaign
@@ -21,7 +21,7 @@ test below), **S** inference. Addresses are 1.0's.
 
 Three lists in the globals tag (`matg`) of `mainmenu.map`. All three have
 free slots, the way the multiplayer list has 38 for downloaded maps
-([map-pack.md](map-pack.md) 8.1):
+([map-pack.md](../game/map-pack.md) 8.1):
 
 | list | where | element | on the user's disc |
 |---|---|---|---|
@@ -103,13 +103,13 @@ its record's path.
 
 Halo 1's converted maps go in `<data>/campaigns/halo1/`; `h2 import
 halo1`, or `h2 play` with `halo1.iso` beside the disc, writes them there
-([campaigns.md](campaigns.md) §10).
+([campaign.md](campaign.md) §10).
 Choices:
 
 1. **The VFS serves them as `maps\<name>.map`** (chosen). The records keep
    `scenarios\solo\<map>\<map>`; the game copies the map into a cache slot
    exactly as it does a Halo 2 level. The VFS already serves `maps\` from
-   packages ([maps.md](maps.md)); it gains names the disc lacks, from an
+   packages ([maps.md](../game/maps.md)); it gains names the disc lacks, from an
    installed campaign's folder. Halo 1's names (`a10` ... `d40`) don't
    meet any Halo 2 name, and the manifest refuses a map named twice.
    **Built:** `vfs::CampaignMapsBackend`, directly over the disc (so map
@@ -452,7 +452,7 @@ starts and chains levels from records it was never shipped with.
   Halo 1's levels no longer use them ("Pictures").
 - Whether the engine accepts mainmenu with its index tail cleared and one
   page more tag memory than retail's. The
-  converted maps already do (h1-sounds.md, "Open questions"). Only a run
+  converted maps already do (sounds.md, "Open questions"). Only a run
   can show the pictures.
 - The campaign record's name: campaign 1 has none on the user's disc; we
   fill ours, and nothing is known to read them.

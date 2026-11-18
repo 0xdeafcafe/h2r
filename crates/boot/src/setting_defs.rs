@@ -597,7 +597,7 @@ pub static HALO1_SANDBOX: Def = Def {
     help: "Which sandbox converted Halo 1 multiplayer maps play with: Halo 1's \
            weapons, vehicles and health packs, or Halo 2's. Chosen on the \
            pregame lobby's Halo 1 Options screen; applies at the next game's map \
-           load (docs/game/h1-multiplayer.md).",
+           load (docs/halo1/multiplayer.md).",
     kind: Kind::Choice(&[
         Choice {
             value: SANDBOX_HALO1,
@@ -645,7 +645,7 @@ const HALO_CHOICES: &[Choice] = &[
 ];
 
 /// Which assets a Halo 1 campaign level is played with (the level variant,
-/// docs/game/campaigns.md §5). On the campaign's Game Options page
+/// docs/halo1/campaign.md §5). On the campaign's Game Options page
 /// (crate::h1_options).
 pub static HALO1_ASSETS: Def = Def {
     key: "campaign.halo1_assets",
@@ -653,7 +653,7 @@ pub static HALO1_ASSETS: Def = Def {
     help: "Which characters, weapons and vehicles a Halo 1 campaign level plays \
            with: Halo 1's own, converted, or Halo 2's. Chosen on the Game Options \
            page before the level; applies at the level's load \
-           (docs/game/campaigns.md).",
+           (docs/halo1/campaign.md).",
     kind: Kind::Choice(HALO_CHOICES),
     default: Value::Int(HALO1),
     env: Some("H2_HALO1_ASSETS"),

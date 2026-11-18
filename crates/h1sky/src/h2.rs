@@ -5,7 +5,7 @@
 //! model scale, camera translation scale, fallback object-lighting colour,
 //! the lights block and its yaw/pitch, rotation) carry their engine
 //! evidence; the rest is read structurally from the retail disc — 91
-//! instances over 28 maps. `docs/formats/h1-sky.md` lists every field with
+//! instances over 28 maps. `docs/halo1/sky.md` lists every field with
 //! its evidence level. As in [`h1`], names are ours where the engine has
 //! not been consulted.
 
@@ -134,7 +134,7 @@ pub struct BitmapLayer {
 /// A fog element (root blocks `+0x48`, `+0x50`; `fog_a` and `fog_b` in
 /// `crates/tags/src/defs/sky_.txt`): a colour, the density and the start
 /// and opaque distances (0, 200, 700 seen on retail). E `0x00131030`
-/// blends element 0 of each into the view (docs/formats/h1-sky.md).
+/// blends element 0 of each into the view (docs/halo1/sky.md).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Gradient {
     /// The colour.

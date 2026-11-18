@@ -2,7 +2,7 @@
 //! [`map::build`] block trees for a built BSP section.
 //!
 //! What every field is and why it may be empty is in
-//! docs/game/h1-multiplayer.md, "The converted structure BSP"; the render
+//! docs/halo1/multiplayer.md, "The converted structure BSP"; the render
 //! geometry layout is docs/formats/structure-bsp.md. In short: each of
 //! Halo 1's clusters becomes one, with its rendered triangles, its portals
 //! and its own lightmap page ([`crate::clusters`]), and each collision leaf

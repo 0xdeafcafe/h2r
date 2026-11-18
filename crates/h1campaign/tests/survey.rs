@@ -3,7 +3,7 @@
 //!
 //! - `survey_bases`: per Halo 2 campaign level, which `h1objects`
 //!   templates and a30 characters it lacks, and its tag memory (the base
-//!   choice, docs/game/campaigns.md §9);
+//!   choice, docs/halo1/campaign.md §9);
 //! - `find_named_blocks`: Halo 1 scenario blocks of printable names (the
 //!   trigger volume and object name offsets);
 //! - `ai_and_name_literal_encoding`: how retail Halo 2 scripts encode
@@ -13,7 +13,7 @@
 //!   vehicles, scenery and bipeds (base choice and templates);
 //! - `h1_ai_sizes`, `squad_flag_bits`, `ai_place_counts`: Halo 1's firing
 //!   positions, which squads spawn at the start in either game, and the
-//!   count retail `ai_place` calls pass (docs/formats/h1-ai.md, Spawning);
+//!   count retail `ai_place` calls pass (docs/halo1/ai.md, Spawning);
 //! - `per_bsp_scenario_blocks`, `per_bsp_blocks_on_05a`: the scenario
 //!   blocks retail keeps one element per BSP of, and their contents;
 //! - `donor_survey`: which retail map holds each character and object 05a
@@ -21,10 +21,10 @@
 //! - `h1_bsp_switch_volumes`, `h2_bsp_switch_volumes`: where each game
 //!   keeps its BSP switch trigger volumes;
 //! - `lifepod_use`: how Halo 1's scripts and placements use the lifepods
-//!   (their template by role, docs/formats/h1-objects.md);
+//!   (their template by role, docs/halo1/objects.md);
 //! - `h1_placement_flags`, `h1_initial_encounters`: which placements
 //!   Halo 1 leaves for the scripts to create, and which encounters it
-//!   creates at load (docs/game/campaigns.md §9, Cutscenes).
+//!   creates at load (docs/halo1/campaign.md §9, Cutscenes).
 use std::fs::File;
 use std::io::{BufReader, Cursor};
 

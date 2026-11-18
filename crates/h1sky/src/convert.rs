@@ -3,7 +3,7 @@
 //! The output is a [`h1models::Converted`] block tree (the same shape
 //! `map::build` consumes for converted models): a `0xac`-byte root with the
 //! sky's lights as child blocks. What maps where, and what has no Halo 2
-//! home, is listed in `docs/formats/h1-sky.md`.
+//! home, is listed in `docs/halo1/sky.md`.
 //!
 //! Synthesised values (not read from the source sky, which has no such
 //! field): the light flags `15`, the retail-common value; the root word at

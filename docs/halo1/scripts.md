@@ -3,8 +3,8 @@
 `crates/h1scripts` reads Halo 1's compiled scripts from a scenario tag,
 decompiles them to HSC text, maps Halo 1's builtins and types to Halo 2's, and
 compiles the result to Halo 2 syntax nodes and scenario tables for the
-converter. It is step 6 of [campaigns.md](../game/campaigns.md) (the scripts
-row of §2). Halo 2's side is [haloscript.md](haloscript.md) (`crates/hs`);
+converter. It is step 6 of [campaign.md](campaign.md) (the scripts
+row of §2). Halo 2's side is [haloscript.md](../formats/haloscript.md) (`crates/hs`);
 builtins Halo 2 lacks are candidates for the Rust VM ([hs_vm.md](../engine/hs_vm.md)).
 
 No script text, table or value from either disc is in the repository. The
@@ -20,7 +20,7 @@ on all ten campaign maps (a10 a30 a50 b30 b40 c10 c20 c40 d20 d40).
 Offsets from the start of the `scnr` tag. Blocks are the usual Halo 1 tag
 block (count, address, unused); data references are 20 bytes: size `+0`,
 address `+0xc`. The structure BSP block at `0x5a4`
-([h1-map-format.md](h1-map-format.md)) places these fields in the same layout
+([map-format.md](map-format.md)) places these fields in the same layout
 as the PC scenario.
 
 | Field | Layout | Evidence |
@@ -313,7 +313,7 @@ retail compiler writes them; literals keep their source type.
   and closes `cryotube_1`; while the cryotube had no template the name
   pointed at no placement and the open faulted as the opening cinematic
   ended. Since converter version 33 the cryotube is built from the `vehi`
-  definition and placed ([tag-definitions.md](tag-definitions.md),
+  definition and placed ([tag-definitions.md](../formats/tag-definitions.md),
   Vehicles with no template), so a10 stubs none of these; the stub stays
   as the safety net for any other unplaced name. Every other call is
   guarded, since a placed name is still `none` when its object was never
@@ -327,14 +327,14 @@ retail compiler writes them; literals keep their source type.
   an object with no `none` check (each evaluator and its first callees
   read). With converter version 33 a10 still faulted there: the rebuilt
   cryotube is placed but never created, because `vehicle_new`
-  (`0x000eeb80`) refuses a model with no physics model (campaigns.md,
+  (`0x000eeb80`) refuses a model with no physics model (campaign.md,
   Units opened or closed; version 38 gives it a stand-in one).
 - **Cutscenes**: `compile_with(.., Cutscenes::Skip, ..)` compiles every call
   of the level's `cinematic_skip_start` script as `false` (Halo 1's path
   after a skip) and wakes a10's `fast_setup` where it wakes
   `tutorial_setup`; `Cutscenes::PlayShortPaths` keeps the cinematics and
   takes the short path; `compile` keeps `Cutscenes::Play`. Why, and what each
-  level does: [campaigns.md](../game/campaigns.md) §9, Cutscenes.
+  level does: [campaign.md](campaign.md) §9, Cutscenes.
 - **References** are Halo 1 group and tag name pairs; the converter maps them.
 
 `Compiled::install(&mut scnr_block, resolve_reference)` adds `map::build`
@@ -378,7 +378,7 @@ flags the bare index; `sound` the tag's datum; `ai` a squad's index, a
 squad group's `0x40000000 | index`, a squad's starting location
 `0xc0000000 | squad << 16 | location`. Adapter defaults arrive as
 `<builtin>:<value>` tokens. Counts for a30 are in
-[campaigns.md](../game/campaigns.md) §9.
+[campaign.md](campaign.md) §9.
 
 ## Level data the scripts name
 
@@ -449,7 +449,7 @@ used as squads; Halo 2 has no platoons.
   no longer passes a count (above).
 - `compile::add_startup_placements` appends a startup script of one-argument
   `ai_place` calls, each squad an `ai` hook: h1campaign places Halo 1's
-  initially created encounters with it (h1-ai.md).
+  initially created encounters with it (ai.md).
 - Halo 2's string literals are fixed up at load from `+0xc`; the compiled
   string atoms put the same offset in the data word. Untested in the engine.
 - Salts: `0x8000 | slot`. The engine rebuilds occupancy from salts at load;

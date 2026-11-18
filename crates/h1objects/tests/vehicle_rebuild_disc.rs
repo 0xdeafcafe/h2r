@@ -533,7 +533,7 @@ fn seat_flags_match_halo_2s_counterparts() {
     let d = def(b"vehi");
     let mut levels = BTreeMap::new();
     let (mut matched, mut agree) = (0, 0);
-    // Every retail seat on 05a: a boarding seat (`_b_` in its label, h1-scripts.md
+    // Every retail seat on 05a: a boarding seat (`_b_` in its label, halo1/scripts.md
     // "Seats") holds SEAT_BOARDING, no other does.
     for t in base.tags.iter().filter(|t| t.1 == FourCC(*b"vehi")) {
         let r = base.record(d, t.0).unwrap();

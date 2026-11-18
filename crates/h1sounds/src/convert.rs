@@ -427,7 +427,7 @@ pub fn install_sounds(
 /// them (as [`map::build::PinnedImage::clear_index_tail`] does for a map
 /// "built from scratch") and lets the entries use the whole index region.
 /// What the game does with those bytes is not known: see
-/// `docs/formats/h1-sounds.md`, "Open questions". Returns the nonzero
+/// `docs/halo1/sounds.md`, "Open questions". Returns the nonzero
 /// bytes cleared.
 pub fn make_index_room(set: &mut TagSet) -> usize {
     let Some(p) = set.pinned.as_mut() else {

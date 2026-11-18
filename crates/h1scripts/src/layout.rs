@@ -11,7 +11,7 @@
 //! A data reference is 20 bytes: size `+0`, address `+0xc`. The syntax data
 //! is a data array header (`0x38` bytes) followed by every slot up to its
 //! maximum count; each slot is a 20-byte node with the same wire layout as
-//! Halo 2's ([`hs::Node`]). Evidence is in `docs/formats/h1-scripts.md`.
+//! Halo 2's ([`hs::Node`]). Evidence is in `docs/halo1/scripts.md`.
 
 use h1map::{Block, H1Map, Space, TagRef};
 use hs::{Datum, Node};

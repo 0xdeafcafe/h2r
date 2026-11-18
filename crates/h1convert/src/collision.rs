@@ -1,6 +1,6 @@
 //! Halo 1 structure collision BSP to Halo 2's.
 //!
-//! The two layouts hold the same tree (docs/formats/h1-map-format.md,
+//! The two layouts hold the same tree (docs/halo1/map-format.md,
 //! "Collision BSP"; docs/formats/collision.md): Halo 1 stores every index as
 //! an `i32` with bit 31 as the flag; Halo 2 packs 3D children into 24 bits
 //! (bit 23 a leaf) and everything else into `u16` (bit 15 the flag). So the

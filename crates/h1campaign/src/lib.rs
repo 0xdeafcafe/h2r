@@ -1,4 +1,4 @@
-//! Halo 1 campaign levels as Halo 2 v8 maps (docs/game/campaigns.md, step
+//! Halo 1 campaign levels as Halo 2 v8 maps (docs/halo1/campaign.md, step
 //! 3 onward).
 //!
 //! A level is converted onto a **pinned retail Halo 2 campaign map** (the
@@ -61,7 +61,7 @@ pub const BASE: &str = "05a_deltaapproach";
 /// characters donors bring. b40 is the tightest (0xc24000 of 0xc24000).
 /// 05a is also the only campaign base with the pelican, phantom, wraith
 /// and Covenant turret templates next to the warthog, ghost, scorpion and
-/// banshee; the alternatives with more room each lack several of them (docs/game/campaigns.md §9). A level
+/// banshee; the alternatives with more room each lack several of them (docs/halo1/campaign.md §9). A level
 /// moves only when a measured reason says so.
 pub fn base_for(_level: &str) -> &'static str {
     BASE
@@ -170,7 +170,7 @@ pub struct Options<'a> {
     pub donors: Option<&'a donor::Donors>,
     /// Halo 1's cinematics and the a10 tutorial: played or skipped. `None`
     /// (the default) takes each level's own choice
-    /// ([`cutscenes::default_for`]; docs/game/campaigns.md, Cutscenes).
+    /// ([`cutscenes::default_for`]; docs/halo1/campaign.md, Cutscenes).
     pub cutscenes: Option<h1scripts::compile::Cutscenes>,
     /// The animation graphs and recorded animations the scripts name
     /// ([`cutscenes`]); off measures what they cost.
@@ -192,7 +192,7 @@ pub struct Options<'a> {
     /// b40 and d40).
     pub devices: Devices,
     /// Halo 1's characters, weapons and vehicles, or Halo 2's nearest
-    /// ([`h2assets`], docs/game/campaigns.md §5).
+    /// ([`h2assets`], docs/halo1/campaign.md §5).
     pub assets: h2assets::Assets,
 }
 
@@ -637,7 +637,7 @@ fn convert_with<R: Read + Seek>(
         // that fails.
         let file = scratch::file_bytes(base)?;
         // Each Halo 2 HUD is named by nothing but the HUD pairs: kept for
-        // `boot::hud` (docs/game/hud.md).
+        // `boot::hud` (docs/halo1/hud.md).
         let keep: Vec<TagId> = report.scenario.hud_swaps.iter().map(|h| h[2]).collect();
         let out = match scratch::build(&file, &set, &bytes, &keep) {
             Ok((out, r)) => {

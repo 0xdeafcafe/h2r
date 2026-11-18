@@ -3,7 +3,7 @@
 Status: in progress, started 2026-11-16; converted maps confirmed in the
 game by the owner (2026-11-17). Each section says what is
 **Built** (with its proof) and what is design only. This applies the rules
-of [campaigns.md](campaigns.md) to multiplayer: Halo 2's engine runs
+of [campaign.md](campaign.md) to multiplayer: Halo 2's engine runs
 everything (physics, AI, rendering, game types); Halo 1's health bar and
 health packs are the one thing kept from Halo 1; Halo 1's assets are the
 default, with a setting to use Halo 2's.
@@ -23,7 +23,7 @@ invented data, or read real maps at run time in `#[ignore]` tests
     equivalents (table below).
   - **Halo 1:** Halo 1's weapons, vehicles and biped, converted to Halo 2
     tags and running on Halo 2's physics, with a health bar and health
-    packs from the health subsystem ([campaigns.md](campaigns.md) §6).
+    packs from the health subsystem ([campaign.md](campaign.md) §6).
 - The import writes both variants of every map. The setting picks which one
   is served. It is chosen per game, on the pregame screen next to the map
   and game type options, and applies at the map's next load with no
@@ -62,7 +62,7 @@ index and keeps its tail (below, "Halo 1 sandbox").
 ## Halo 1 data read (**Built**)
 
 `crates/h1map`, verified on beavercreek and carousel
-([h1-map-format.md](../formats/h1-map-format.md) has every layout and its
+([map-format.md](map-format.md) has every layout and its
 evidence): the scenario's skies, player starting locations, netgame flags,
 netgame equipment, vehicle placements and palette; item collections; each
 BSP region's header and `sbsp` root; the collision BSP; and the render
@@ -397,7 +397,7 @@ The base's old BSP region stays in the file, unused.
   the first sky when the scenario has one). Every cluster gets 0. Each
   sky the Halo 1 scenario names is converted by `h1sky` (model, lights,
   fog colour, and a model scale that keeps it behind the level;
-  docs/formats/h1-sky.md) and added as a new tag, and every
+  docs/halo1/sky.md) and added as a new tag, and every
   element of the base's skies block names one (element `k` Halo 1's sky
   `k`, or Halo 1's last), so none names the base's. Rat Race and Chiron
   TL34 are indoors and name no sky: the base's stays, unseen. `disc_maps.rs`
@@ -659,7 +659,7 @@ don't move). Roots kept whatever references them (`fresh::KEEP_GROUPS`):
 hold as a reference). No group the engine walks on its own is confirmed
 in the XBE yet; the list is the conservative guess a game run tests.
 Campaign levels use the same machinery with their own scenario
-(`fresh::prune_with`, `fresh::Keep`; docs/game/campaigns.md §9).
+(`fresh::prune_with`, `fresh::Keep`; docs/halo1/campaign.md §9).
 Blood Gulch on Coagulation drops 253 tags (85 `bitm`, 50 `shad`, 15
 `snd!`, 14 `mode`, 13 `hlmt`, 12 `scen`, 11 `lsnd`, ...), 25 palette
 entries and 21 tag list entries; all 21471 references in the kept tags
@@ -687,7 +687,7 @@ slots, 0 dangling, 25.2 MB (pinned 48.6 MB); every tag but the sounds
 identical to the pinned map's by name, address- and index-free, the
 scenario's 20 blocks and root, every bitmap and the 9 languages' strings
 the same; 21,570 references resolve (`tests/fresh.rs`). The sound gestalt
-is cut to the 1,270 kept sounds (`h1convert::compact`; campaigns.md §9):
+is cut to the 1,270 kept sounds (`h1convert::compact`; campaign.md §9):
 5,293 chunks to 5,054, 223 raw resources (8.1 MB) dropped, each sound
 naming the same entries, import names and chunk bytes as in the pinned
 map.
@@ -799,7 +799,7 @@ choice means). Adding an option is a setting in `setting_defs` (choices
   level) with Halo 1's chosen, else Halo 2's, and logs
   `hud: <map>: Halo 1 HUD`. `boot::hud_swap` draws it: at game
   activation it points the converted owners' HUD references at Halo 1's
-  or Halo 2's `nhdt` by the same rule (docs/game/hud.md).
+  or Halo 2's `nhdt` by the same rule (docs/halo1/hud.md).
 
 **Serving the chosen sandbox (Built, tests only).** The choice is
 `boot::h1_variants` (`set_mp_sandbox`, set from the setting at boot and
@@ -991,7 +991,7 @@ weather, not Halo 1's. The structure side is also the render lane's
    environments fill the scenario's palettes ("Ambient sound"). Each
    cluster names its pair (above), on campaign levels too, and
    `h1campaign` converts its scripts' `looping_sound` references with
-   `h1sounds::looping` (campaigns.md, "Music, ambience and the map file"). The
+   `h1sounds::looping` (campaign.md, "Music, ambience and the map file"). The
    scenery palette at `+0x58` is settled (`0x28`) and pruned.
 3. ~~**Lightmaps**~~ and ~~**Halo 1's own textures**~~ on structure
    `senv`/`swat` shaders: done (above), and object and scenery models
@@ -1048,7 +1048,7 @@ Each map is `<data>/maps/h1_<map>/` with `h2/h1_<map>.map`,
 default base (`MAPS`), pinned. When it converts again, the stamp, the
 converter version to bump (`CONVERTER_VERSION`, `crates/cli/src/h1_import.rs`),
 `--no-halo1` / `H2_HALO1=0` and the tests are in
-[campaigns.md](campaigns.md) §10. `h2 h1 convert` still converts one map
+[campaign.md](campaign.md) §10. `h2 h1 convert` still converts one map
 by hand, into any `--out`.
 
 ## On the stats site and in the viewers (**Built**: `cli::live_halo1`)
@@ -1070,7 +1070,7 @@ the same name from the data root (`$H2_DATA`, else the default), or any
   `halo2`, one `settings::Def` in `boot::setting_defs`, on the Halo 1
   options screen from the Game Setup dialog ("Halo 1 options" above).
 - **Packaging:** each converted map is a new map in the sense of
-  [maps.md](maps.md) §4: Halo 1's maps aren't on the Halo 2 disc, so
+  [maps.md](../game/maps.md) §4: Halo 1's maps aren't on the Halo 2 disc, so
   `boot::new_maps` installs each as a content package with its
   `patch.lvl` record, and 1.0 lists it. One package per map holding both
   variants, each a `[[variant]]` with its `origin` (above).
@@ -1086,7 +1086,7 @@ the same name from the data root (`$H2_DATA`, else the default), or any
   Halo 2 has its own `beavercreek`), with Halo 1's display name in the
   list.
 - **In the map select (built):** a new map whose name starts `h1_` is
-  listed under **Halo: CE** ([map-select.md](map-select.md)).
+  listed under **Halo: CE** ([map-select.md](../game/map-select.md)).
 - **Identity (built):** one list ID per Halo 1 map, whichever
   variant (`Package::list_key`, above); the `MapId` (content hash)
   differs per variant; online, the host's variant is used.
@@ -1097,7 +1097,7 @@ the same name from the data root (`$H2_DATA`, else the default), or any
 as the Halo 2 variant, and places every Halo 1 item and vehicle spawn as
 the Halo 1 object itself: `h1objects` converts each `weap`, `eqip` and
 `vehi` (and what they reference: `proj`, models, collision, animations)
-onto a Halo 2 template ([h1-objects.md](../formats/h1-objects.md)), and
+onto a Halo 2 template ([objects.md](objects.md)), and
 the conversion adds the tags to the pinned base after its own slots.
 Nothing is left out but race flags. Slot `n` of a set made from a map gets
 salt `0xe174 + n` (`TagSet::from_map`), so the spawns name each new tag's
@@ -1245,7 +1245,7 @@ On Blood Gulch's sandbox 17 models are converted and 81 materials draw
 Halo 1 textures. A material with no Halo 1 base map to read names the
 base's model shader itself; Blood Gulch has none. The sky model's
 materials name copies of the base's sky shaders drawing Halo 1's sky
-bitmaps at Halo 1's scale (`h1convert::sky_shaders`, h1-sky.md "The
+bitmaps at Halo 1's scale (`h1convert::sky_shaders`, sky.md "The
 model's shaders"), or the base sky's own shader where one doesn't convert
 (`tests/sandbox_disc.rs`).
 
@@ -1278,7 +1278,7 @@ sniper rifle, rocket launcher, plasma pistol, plasma rifle, brute plasma
 rifle, needler, carbine, none, brute shot, beam rifle, energy sword,
 rocket launcher, sentinel beam, none). The Halo 1 cyborg's graph has no
 Halo 2 weapon type, so the default variants' SMG was refused
-(docs/formats/h1-objects.md, "Weapon class and type") and players spawned
+(docs/halo1/objects.md, "Weapon class and type") and players spawned
 unarmed. In the Halo 1 sandbox every entry naming a weapon now names a
 Halo 1 one (`sandbox::HALO1_WEAPON_LIST`, `convert::halo1`), the first of
 its choices the map has:
@@ -1319,11 +1319,11 @@ weapon the converted player biped's graph holds in mode `combat`.
 
 
 `weap`, `proj`, `bipd`, `vehi`, `eqip` and their `mod2`/`coll`/`phys`,
-`antr` and effects, converted per [campaigns.md](campaigns.md) §2, with
-Halo 2's physics. The health subsystem of campaigns.md §6 is shared with
+`antr` and effects, converted per [campaign.md](campaign.md) §2, with
+Halo 2's physics. The health subsystem of campaign.md §6 is shared with
 the campaign: no body regeneration, health packs refill on pickup, a
 health meter under the shield meter, on for Halo 1 maps in this variant.
-Hooks (docs/game/health.md): the game start sets the model from the map's
+Hooks (docs/halo1/health.md): the game start sets the model from the map's
 name; the converted cyborg's HUD (`nhdt`) has a widget on the body
 (input 17), built by `h1objects::health_hud`. A health pack
 is an `eqip` with `+0x12c` = 5 (i16) and `+0x130` > 0; retail Halo 2

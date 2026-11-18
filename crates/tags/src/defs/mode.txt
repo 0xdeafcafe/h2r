@@ -2,7 +2,7 @@
 # V = disc checks (`viewer --all`, docs/formats/map-format.md). Names whose only
 # support was another project's naming are left typed-only (`_<offset>`).
 # "Render-model geometry"), docs/formats/structure-bsp.md (geometry block info, E) and the
-# Halo 1 converter crates/h1models/src/mode.rs (docs/formats/h1-models.md "Halo 2 output", V2).
+# Halo 1 converter crates/h1models/src/mode.rs (docs/halo1/models.md "Halo 2 output", V2).
 # No community tag definition was used.
 
 # The shared 0x24-byte geometry block info (docs/formats/structure-bsp.md "Geometry block info"),
@@ -18,7 +18,7 @@ struct block_resource 0x10 align 4
 
 group mode 0x84 align 4
   0x0 string name -- V: the model's name (schema.rs:360; h1models mode.rs:192 writes the tag path's last component)
-  0x4 flags16 flags bits=_|_|_|_ -- E 0x00137650: with bit 2 (0x4) set the node-map count skips the section group and counts one (h1-models.md:320-322); bit meanings not established
+  0x4 flags16 flags bits=_|_|_|_ -- E 0x00137650: with bit 2 (0x4) set the node-map count skips the section group and counts one (halo1/models.md:320-322); bit meanings not established
   0x6 unknown 0x2 seen=zero
   0x8 unknown 0x4 seen=many
   0xc pad 0x8
@@ -68,17 +68,17 @@ group mode 0x84 align 4
     0x58 u32 runtime_cache_handle -- E 0x0012e380: 0xffffffff on disc (structure-bsp.md:114)
   0x2c block block_2c 0x4 align 4
     0x0 unknown 0x4 seen=zero
-  0x34 block section_groups 0xc align 4 -- E 0x00137650 reads groups[byte[+0x3c + lod]] (h1models mode.rs:208-219; h1-models.md:319)
+  0x34 block section_groups 0xc align 4 -- E 0x00137650 reads groups[byte[+0x3c + lod]] (h1models mode.rs:208-219; halo1/models.md:319)
     0x0 unknown 0x4 seen=4 -- small integers; h1models writes u16 0x3f (all six detail levels) (mode.rs:222)
     0x4 block compound_nodes 0x10 align 4 -- E 0x00137650: its count is added to the node count as the model's node maps (mode.rs:215-218)
       0x0 unknown 0x4 seen=3 -- small integers
       0x4 unknown 0x4 seen=7 -- floats
       0x8 unknown 0x4 seen=7 -- floats
       0xc unknown 0x4 seen=zero
-  0x3c u8[6] lod_section_groups -- E 0x00137650 reads byte[+0x3c + lod] as the section group index (h1-models.md:319; mode.rs:208-209)
+  0x3c u8[6] lod_section_groups -- E 0x00137650 reads byte[+0x3c + lod] as the section group index (halo1/models.md:319; mode.rs:208-209)
   0x42 unknown 0x2 seen=zero
-  0x44 u32 u32_44 -- typed only; zero on retail and in converted models (h1-models.md, header 44)
-  0x48 block nodes 0x60 align 4 -- V (schema.rs:365); an hlmt node is this element's first 0x5c bytes with +0xa zero (V, h1-objects.md:214-218)
+  0x44 u32 u32_44 -- typed only; zero on retail and in converted models (halo1/models.md, header 44)
+  0x48 block nodes 0x60 align 4 -- V (schema.rs:365); an hlmt node is this element's first 0x5c bytes with +0xa zero (V, halo1/objects.md:214-218)
     0x0 string name -- V: node name (crates/tags/schema.rs:446)
     0x4 i16 parent_index -- V: -1 or a node in range (schema.rs:447; model.rs checks)
     0x6 i16 first_child_index -- V: -1 or in range (schema.rs:448)
@@ -86,23 +86,23 @@ group mode 0x84 align 4
     0xa unknown 0x2 seen=many
     0xc f32[3] translation -- V: default translation relative to the parent (schema.rs:450; h1models mode.rs:277)
     0x18 f32[4] orientation -- V: default rotation quaternion relative to the parent (schema.rs:451; mode.rs:278)
-    0x28 f32 default_scale default=1 -- V2: 1.0 on every lockout node (docs/formats/h1-models.md:315; mode.rs:282)
-    0x2c f32[3] inverse_forward -- V2: with +0x38/+0x44/+0x50 inverts the model-space default pose from +0xc/+0x18 on every lockout node (h1-models.md:315; mode.rs:279-286)
-    0x38 f32[3] inverse_left -- V2: second inverse basis vector (h1-models.md:315)
-    0x44 f32[3] inverse_up -- V2: third inverse basis vector (h1-models.md:315)
-    0x50 f32[3] inverse_position -- V2: -R^T p of the model-space default pose (h1-models.md:315; mode.rs:280,286)
+    0x28 f32 default_scale default=1 -- V2: 1.0 on every lockout node (docs/halo1/models.md:315; mode.rs:282)
+    0x2c f32[3] inverse_forward -- V2: with +0x38/+0x44/+0x50 inverts the model-space default pose from +0xc/+0x18 on every lockout node (halo1/models.md:315; mode.rs:279-286)
+    0x38 f32[3] inverse_left -- V2: second inverse basis vector (halo1/models.md:315)
+    0x44 f32[3] inverse_up -- V2: third inverse basis vector (halo1/models.md:315)
+    0x50 f32[3] inverse_position -- V2: -R^T p of the model-space default pose (halo1/models.md:315; mode.rs:280,286)
     0x5c unknown 0x4 seen=many -- not the distance from the parent: 1,614 retail nodes disagree (map-format.md:576-578)
   0x50 pad 0x8
-  0x58 block marker_groups 0xc align 4 -- V2: every lockout marker sits in a named group here (h1-models.md:316; mode.rs:157-180)
-    0x0 string name -- V2: the marker name (h1-models.md:316)
-    0x4 block markers 0x24 align 4 -- V2 (h1-models.md:316)
-      0x0 i8 region -- V2: region index, -1 any (h1-models.md:316; mode.rs:166)
+  0x58 block marker_groups 0xc align 4 -- V2: every lockout marker sits in a named group here (halo1/models.md:316; mode.rs:157-180)
+    0x0 string name -- V2: the marker name (halo1/models.md:316)
+    0x4 block markers 0x24 align 4 -- V2 (halo1/models.md:316)
+      0x0 i8 region -- V2: region index, -1 any (halo1/models.md:316; mode.rs:166)
       0x1 i8 permutation -- V2: permutation index, -1 any (mode.rs:167)
       0x2 u8 node -- V2: node in range on every lockout marker (mode.rs:168)
       0x3 unknown 0x1 seen=zero
-      0x4 f32[3] translation -- V2 (h1-models.md:316; mode.rs:169)
+      0x4 f32[3] translation -- V2 (halo1/models.md:316; mode.rs:169)
       0x10 f32[4] rotation -- V2: unit quaternion on every lockout marker (mode.rs:170)
-      0x20 unknown 0x4 seen=51 -- floats; 0 on 842 of 922 lockout markers (h1-models.md:316)
+      0x20 unknown 0x4 seen=51 -- floats; 0 on 842 of 922 lockout markers (halo1/models.md:316)
   0x60 block materials 0x20 align 4 -- V: part material indices index this block (schema.rs:367; map-format.md:595)
     0x0 tagref reference_0 -- D: null on every retail material (map-format.md:595; h1models mode.rs:184 writes null)
     0x8 tagref shader groups=shad -- D: resolves to a shad tag on every retail material, some with group 0xffffffff (map-format.md:595; model.rs:200-204)

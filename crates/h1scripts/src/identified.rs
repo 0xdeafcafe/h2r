@@ -1,5 +1,5 @@
 //! Halo 2 builtins no retail Halo 2 script calls, identified by position
-//! and signature (docs/formats/h1-scripts.md, "Builtins named by position").
+//! and signature (docs/halo1/scripts.md, "Builtins named by position").
 //!
 //! Halo 2's descriptors carry no names, so `crates/hs` names only builtins
 //! some retail script calls. Halo 2's table keeps Halo 1's order with

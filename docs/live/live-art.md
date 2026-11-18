@@ -325,8 +325,8 @@ map pack later extracts again. Nothing of them is in the repository.
 
 The Halo 1 maps `h2 import halo1` (or `h2 play`'s automatic import)
 converted into Halo 2 maps under the runtime data root
-([campaigns.md](../game/campaigns.md#10-importing-built-clih1_import),
-[h1-multiplayer.md](../game/h1-multiplayer.md)) get the same art as the
+([campaign.md](../halo1/campaign.md#10-importing-built-clih1_import),
+[multiplayer.md](../halo1/multiplayer.md)) get the same art as the
 disc's maps: `map.glb`, `sky.glb`, the views and a preview, extracted by
 the same code (`live_halo1`). They are real Halo 2 cache files, opened
 with the Halo 2 disc's shared maps.

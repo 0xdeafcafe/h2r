@@ -1,6 +1,6 @@
 //! `h2 h1 info|tags` and `h2 import halo1`: the Halo 1 (Combat Evolved)
 //! disc and its cache files, step 1 of the campaigns work
-//! (docs/game/campaigns.md, docs/formats/h1-map-format.md).
+//! (docs/halo1/campaign.md, docs/halo1/map-format.md).
 //!
 //! The import converts the whole disc ([`crate::h1_import`]); with
 //! `--copy-source` it also copies the campaign maps byte for byte, as the
@@ -28,23 +28,23 @@ const H1_USAGE: &str = "usage: h2 h1 info <iso|map> [map]
 info: with a disc and no map, the disc's title and each map's header; with a
 map (a .map file, or a disc and a map name such as a30), its header, tag index
 and tag counts by group. tags: every tag, or one group's: ID, group, data
-range and name. See docs/formats/h1-map-format.md.
+range and name. See docs/halo1/map-format.md.
 
 bitmap: one bitm tag (its path, as `h2 h1 tags --group bitm` prints it):
 each image's format, type and size, decoded to PNGs in DIR (one per image,
 cube face and volume slice; every mip level with --mips). See
-docs/formats/h1-bitmaps.md.
+docs/halo1/bitmaps.md.
 
 sound: one snd! tag (its path, as `h2 h1 tags --group snd!` prints it): its
 class, rate, channels and codec, and each playable permutation decoded to a
 16-bit PCM WAV in DIR, named <tag>.r<range>p<permutation>.wav. See
-docs/formats/h1-sounds.md.
+docs/halo1/sounds.md.
 
 convert: a Halo 1 campaign level (a30) from a Halo 2 campaign base (default
 05a_deltaapproach), written as DIR/a30.map and DIR/campaign.toml: point --out
 at <data>/campaigns/halo1. The level is written fresh: its own scenario, and
 only the base's tags the level or the engine reaches; --pinned builds it on
-the pinned base instead. See docs/game/campaigns.md. Or a Halo 1
+the pinned base instead. See docs/halo1/campaign.md. Or a Halo 1
 multiplayer map (a .map file, or a disc and a map name such
 as beavercreek) onto a Halo 2 base map from the Halo 2 disc (--disc, else
 $H2_DISC, else disc/halo2.iso), written as the package DIR/h1_<map>/
@@ -53,7 +53,7 @@ mostly beavercreek). A multiplayer map is built with nothing of the base
 pinned: every tag laid out anew, raw data copied (docs/formats/tag-schema.md,
 \"Fresh maps\"); --pinned keeps the base's file and metadata instead. From a
 disc, the map's name, description and picture come from Halo 1's ui.map. --dry-run does everything but
-write and prints what it would write. See docs/game/h1-multiplayer.md.";
+write and prints what it would write. See docs/halo1/multiplayer.md.";
 
 const IMPORT_USAGE: &str = "usage: h2 import halo1 [halo1.iso] [--data DIR] [--disc halo2.iso]
                         [--force] [--dry-run] [--copy-source]
@@ -72,7 +72,7 @@ The disc defaults to disc/halo1.iso; --data to $TMPDIR/h2boot-data, as for
 else halo2.iso beside the Halo 1 disc, else disc/halo2.iso. --copy-source
 also copies the disc's campaign maps as they are (compressed) into
 <data>/campaigns/halo1/source/ with a SHA-256 manifest. See
-docs/game/campaigns.md.";
+docs/halo1/campaign.md.";
 
 /// Where an import writes, under the data root.
 const SOURCE_DIR: [&str; 3] = ["campaigns", "halo1", "source"];
@@ -933,7 +933,7 @@ pub(crate) fn prepare_mp<R: Read + Seek>(
 ) -> Result<h1convert::convert::Prepared> {
     let sha = content::Sha256::of(file);
     // The Halo 1 sandbox places Halo 1 objects, converted and added as
-    // new tags (docs/game/h1-multiplayer.md, "Halo 1 sandbox"); both
+    // new tags (docs/halo1/multiplayer.md, "Halo 1 sandbox"); both
     // sandboxes place Halo 1's scenery the same way.
     let templates = h1objects::base::Base::read(base)
         .with_context(|| format!("reading {base_name}'s object templates"))?;
@@ -946,7 +946,7 @@ pub(crate) fn prepare_mp<R: Read + Seek>(
 
 /// Writes a converted multiplayer map as `<out_root>/h1_<map>/`: its
 /// variant file and the package manifest, this run's variant beside any
-/// other already there (docs/game/h1-multiplayer.md, "Package"). Returns
+/// other already there (docs/halo1/multiplayer.md, "Package"). Returns
 /// the map file's and the manifest's paths.
 pub(crate) fn write_mp_package(
     out: &OutDir,
@@ -1036,7 +1036,7 @@ pub(crate) fn campaign_scripting(h1: &Path, h2: &Path) -> Result<Option<h1campai
 /// `h1 convert` of a campaign level: `DIR/<level>.map`, fresh (its own
 /// scenario, the base's unreachable tags dropped) or with `--pinned` on the
 /// pinned Halo 2 campaign base, and `DIR/campaign.toml` listing it
-/// (docs/game/campaigns.md). Point `--out` at `<data>/campaigns/halo1`.
+/// (docs/halo1/campaign.md). Point `--out` at `<data>/campaigns/halo1`.
 fn convert_campaign(a: &ConvertArgs, h1: &H1Map) -> Result<()> {
     let level = h1.header().name.to_ascii_lowercase();
     let base_name = a
@@ -1127,7 +1127,7 @@ pub(crate) fn write_campaign_level(
     let existing = std::fs::read_to_string(out_dir.join(manifest_name)).ok();
     let manifest = h1campaign::manifest::manifest_for(existing.as_deref(), level)?;
     let mut written = vec![out.write(&[h1campaign::manifest::map_file(level)], bytes)?];
-    // The HUD pairs `boot::hud` switches between (docs/game/hud.md),
+    // The HUD pairs `boot::hud` switches between (docs/halo1/hud.md),
     // always written so an older file never outlives its map.
     let pairs = content::LevelHud {
         hud: hud

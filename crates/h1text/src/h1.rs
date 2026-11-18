@@ -1,7 +1,7 @@
 //! Reading Halo 1 `ustr` and `hmt ` tags, and the scenario's text
 //! references.
 //!
-//! Layouts and evidence: `docs/formats/h1-text.md`. Every field this module
+//! Layouts and evidence: `docs/halo1/text.md`. Every field this module
 //! reads was checked on the owner's retail disc (every map: ten campaign
 //! levels, thirteen multiplayer maps and `ui.map`) by the ignored
 //! `real_disc_*` tests; nothing here comes from community definition

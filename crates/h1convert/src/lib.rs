@@ -1,5 +1,5 @@
 //! Halo 1 multiplayer maps converted to Halo 2 tags
-//! (docs/game/h1-multiplayer.md).
+//! (docs/halo1/multiplayer.md).
 //!
 //! - [`collision`]: the structure collision BSP, Halo 1 layout to Halo 2's.
 //! - [`query`]: point and segment tests over either game's BSP tree, which

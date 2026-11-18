@@ -3,7 +3,7 @@
 //! and the `actr` (actor) and `actv` (actor variant) tags.
 //!
 //! Offsets and strides are in [`layout`]; evidence per field is in
-//! `docs/formats/h1-ai.md`. Strides were confirmed on every campaign map by
+//! `docs/halo1/ai.md`. Strides were confirmed on every campaign map by
 //! tiling (a block's elements end where the next block starts) and the
 //! values by the range checks in the disc test.
 

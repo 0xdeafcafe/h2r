@@ -1,7 +1,7 @@
 //! The whole Halo 1 import: every campaign level and every multiplayer map
 //! (both sandboxes) of a Halo: Combat Evolved disc, converted onto the
 //! Halo 2 disc's maps and written into the data root the game reads
-//! (docs/game/campaigns.md "Importing", docs/game/h1-multiplayer.md
+//! (docs/halo1/campaign.md "Importing", docs/halo1/multiplayer.md
 //! "Importing").
 //!
 //! - campaign levels: `<data>/campaigns/halo1/<level>.map` and
@@ -62,7 +62,7 @@ const SANDBOXES: [Sandbox; 2] = [Sandbox::Halo2, Sandbox::Halo1];
 pub enum Job<'a> {
     /// A campaign level, `a10` .. `d40`.
     Campaign(&'a str),
-    /// A campaign level's Halo 2-assets variant (docs/game/campaigns.md
+    /// A campaign level's Halo 2-assets variant (docs/halo1/campaign.md
     /// §5).
     CampaignHalo2(&'a str),
     /// A multiplayer map in one sandbox.
@@ -163,7 +163,7 @@ pub struct Stamp {
 impl Stamp {
     pub fn to_text(&self) -> String {
         let mut s = format!(
-            "# h2 import halo1 (docs/game/campaigns.md \"Importing\"). Delete this file, or\n\
+            "# h2 import halo1 (docs/halo1/campaign.md \"Importing\"). Delete this file, or\n\
              # run `h2 import halo1 --force`, to convert everything again.\n\
              converter={}\nsha256={}\nsize={}\nmtime={}\n",
             self.converter, self.sha256, self.size, self.mtime

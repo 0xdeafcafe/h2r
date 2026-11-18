@@ -1,5 +1,5 @@
 //! The hooks and the picker screen of [`crate::campaigns`]
-//! (docs/game/multiple-campaigns.md "What we do").
+//! (docs/halo1/campaign-picker.md "What we do").
 //!
 //! - [`Campaigns`], a feature on the plan: the lists ([`campaigns::extend`])
 //!   before each of their readers we hook runs; the campaign the level
@@ -344,7 +344,7 @@ fn set_stack(c: &Call, n: u32, v: u32) -> bool {
 impl feature::Feature for Campaigns {
     fn manifest(&self) -> Manifest {
         Manifest::new(campaigns::FEATURE, "More than one campaign in the menus")
-            .doc("docs/game/multiple-campaigns.md")
+            .doc("docs/halo1/campaign-picker.md")
     }
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         let st = &self.state;

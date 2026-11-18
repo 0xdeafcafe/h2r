@@ -1,4 +1,4 @@
-//! The retail code the Halo 1 health model rests on (docs/game/health.md),
+//! The retail code the Halo 1 health model rests on (docs/halo1/health.md),
 //! checked instruction by instruction against the retail XBE. Addresses
 //! and instruction shapes only; no bytes are kept.
 //!
@@ -147,7 +147,7 @@ fn the_hud_has_a_body_input_beside_the_shield() {
 }
 
 /// Why the converted HUD's health widget shows and hides with the shield
-/// meter (docs/game/health.md "HUD"): the HUD render asks HUD_SHOWN first
+/// meter (docs/halo1/health.md "HUD"): the HUD render asks HUD_SHOWN first
 /// and draws no `nhdt` when it says no (Blind's hook answers there); each
 /// `nhdt` draw walks every bitmap widget through one state gate, its
 /// inputs and one draw; the shield meter's own code is special type 5.

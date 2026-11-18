@@ -4,7 +4,7 @@
 //! retail disc (24 maps): the sizes add up exactly as
 //! `0xd0 + functions × 0x24 + lights × 0x74`, and the reference and block
 //! fields resolve as described. Evidence and value ranges:
-//! `docs/formats/h1-sky.md`.
+//! `docs/halo1/sky.md`.
 //!
 //! Names are ours. The disc fixes the layout; the meanings of the ambient
 //! scalars are inferred from their values (colour-sized triples, fractions

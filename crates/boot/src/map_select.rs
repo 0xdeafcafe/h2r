@@ -100,7 +100,7 @@ impl Category {
 /// The Map Pack import's offers (docs/game/map-pack.md §5): `…0101` to
 /// `…03ff`.
 pub const MAP_PACK_OFFERS: std::ops::RangeInclusive<u32> = 0x0101..=0x03ff;
-/// Converted Halo 1 maps' names (docs/game/h1-multiplayer.md "Names").
+/// Converted Halo 1 maps' names (docs/halo1/multiplayer.md "Names").
 pub const HALO1_PREFIX: &str = "h1_";
 
 /// The category of the map the game loads from `path`, a list slot's path

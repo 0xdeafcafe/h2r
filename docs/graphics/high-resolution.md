@@ -316,7 +316,7 @@ on the view is possible but is the weaker tool:
 - the W-buffer path writes `frag_depth`, which is per pixel, not per sample;
 - the sample count is part of the pipeline key, so every pipeline compiles
   again, at about 220 ms per Metal pipeline on a cold cache
-  ([frame-budget.md](../perf/frame-budget.md)).
+  ([gameplay-budget.md](../perf/gameplay-budget.md)).
 
 Supersampling through the scale handles all of those uniformly. MSAA is a
 later option for hosts that cannot afford the fill. It must never reach the
@@ -425,10 +425,10 @@ resampled.
 - **GPU.** Fragment work on scaled targets grows with the pixel count. Work on
   unscaled targets does not grow. Snapshots are full copies of the back
   buffer: at 3840x2400 each is about 37 MB, and the menu took five a frame
-  when [perf-budget.md](../perf/perf-budget.md) was measured. That is about 185 MB of
+  when [menu-budget.md](../perf/menu-budget.md) was measured. That is about 185 MB of
   GPU copies a frame, which is tolerable but is the first thing to measure.
 - **CPU.** This is the real cost. The runtime is CPU-bound today: about 11-16
-  fps on the menu ([perf-budget.md](../perf/perf-budget.md), latest
+  fps on the menu ([menu-budget.md](../perf/menu-budget.md), latest
   flyover). The second backend repeats per-draw work (uniforms, bind
   groups, recording, encoding, submission) but not push-buffer decode, draw
   resolve, texture decode or shader translation. When the render thread was
