@@ -143,3 +143,24 @@ fn the_agent_can_be_switched_off() {
     assert!(text.contains("feature agent: off"), "{text}");
     assert!(!text.contains("[agent:"), "{text}");
 }
+
+/// The precision item swap (converted Halo 1 maps) and the aim assist both
+/// change weapons before GAME_ACTIVATE; the plan orders them instead of
+/// refusing to start the game.
+#[test]
+fn precision_and_aim_assist_share_the_game_activation() {
+    let mut r = feature::Registry::new(feature::Switches::defaults());
+    let packages = std::env::temp_dir().join(format!("h2-plan-pkgs-{}", std::process::id()));
+    assert!(boot::precision::install(&mut r, &packages).unwrap());
+    let settings = settings::Store::defaults(boot::setting_defs::ALL);
+    r.add(&boot::aim_assist::AimAssist::new(&settings)).unwrap();
+    let plan = r.build(&feature::Base).expect("the plan builds");
+    let line = plan
+        .text()
+        .lines()
+        .find(|l| l.contains("GAME_ACTIVATE"))
+        .unwrap()
+        .to_owned();
+    assert!(line.contains("h1-precision:precision item swap"), "{line}");
+    assert!(line.contains("aim-assist:weapon aim assist"), "{line}");
+}
