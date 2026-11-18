@@ -637,6 +637,14 @@ pub struct Physics {
     /// Bipeds: raw biped flags, 4 hex digits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub biped_flags: Option<String>,
+    /// Bipeds: the hitbox offset counter, ticks (a melee lunge sets it;
+    /// it steps toward 0 each tick).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hitbox_offset_ticks: Option<i8>,
+    /// Bipeds: how far the Havok body sits from the origin in z because
+    /// of that counter, world units (the body is at origin z minus this).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hitbox_offset: Option<f64>,
 }
 
 /// Field names a query's `fields` may keep (`id` and `kind` are always

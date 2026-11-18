@@ -532,6 +532,10 @@ fn motion(guest: &Guest, kind: u8, body: u32, weapon: Option<u32>) -> Motion {
         .then(|| guest.u8(body + layout::BIPED_AIRBORNE_TICKS).ok())
         .flatten()
         .map(|t| t as i8);
+    let hitbox_offset = biped
+        .then(|| guest.u8(body + layout::BIPED_HITBOX_OFFSET).ok())
+        .flatten()
+        .map(|t| t as i8);
     Motion {
         velocity,
         crouch,
@@ -543,6 +547,7 @@ fn motion(guest: &Guest, kind: u8, body: u32, weapon: Option<u32>) -> Motion {
         unit_flags,
         biped_flags,
         airborne_ticks,
+        hitbox_offset,
     }
 }
 
@@ -1948,12 +1953,16 @@ mod tests {
             .unwrap();
         guest.set_u16(body + layout::BIPED_FLAGS, 0x0201).unwrap();
         guest
+            .set_u8(body + layout::BIPED_HITBOX_OFFSET, (-44i8) as u8)
+            .unwrap();
+        guest
             .set_u8(body + layout::BIPED_AIRBORNE_TICKS, 9)
             .unwrap();
         let m = object(&guest, unit).unwrap().unwrap().motion;
         assert_eq!(m.unit_flags, Some(layout::UNIT_FLAG_CROUCH | 1));
         assert_eq!(m.biped_flags, Some(0x0201));
         assert_eq!(m.airborne_ticks, Some(9));
+        assert_eq!(m.hitbox_offset, Some(-44));
         assert_eq!(m.crouch, Some(0.75));
         assert_eq!(m.physics_mode, Some(2));
         assert_eq!(m.velocity, [0.0, 0.0, 0.5]);

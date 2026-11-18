@@ -249,7 +249,9 @@ can point at.
   Units also carry `physics` (**Code**): crouch amount, the crouch request
   (unit flags bit 23, which stays set after release until there is room to
   stand), physics mode, the biped airborne bit (`+0x348` bit 0, likely) and
-  its tick count (`+0x399`), and the raw unit and biped flag words. Polling
+  its tick count (`+0x399`), the hitbox offset a melee lunge leaves
+  (`+0x3aa`, ticks and units; docs/game/superbounce.md), and the raw unit
+  and biped flag words. Polling
   `object player.0` on one `h2 agent -` connection and keeping one reply per
   stamped tick gives a per-tick movement trace.
 - `world.raycast`, `world.visible {from: "camera" | player}`: what the player
