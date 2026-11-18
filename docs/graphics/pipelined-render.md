@@ -1087,6 +1087,19 @@ behaviour described above.
   functions. A render that reaches one falls back there and finishes on
   the game thread. A refusal makes the rest of that frame serial, so it
   tells you something only when the function is reached late in the frame.
+- `H2_PIPELINE_CONFLICTS=1`: tallies each hand-back's conflicts by word
+  (bytes both sides changed, to different values). Every 300 hand-backs
+  it prints the 32 most frequent, with their physical and virtual
+  addresses and the last live, render and snapshot bytes. The merge is
+  byte by byte, so a conflicted word ends up mixed: the render's bytes
+  where it changed them, the sim's elsewhere.
+
+The bisect at afde6702 ruled out the prediction, the seed replay and the
+lightmap sample: `H2_PIPELINE_REFUSE=0xd1850` gave 0 fallbacks, so no
+relight sample runs on the render thread in steady state. The `pipeline:`
+lines of that run report about 21,000 conflicts a second, roughly 350
+bytes a frame, against single digits in the first prototype runs. Two-writer state on
+that scale is the next lead for the unlit dynamic objects.
 
 The prediction leaves the render's own count unchanged. The launch
 snapshots before it credits live RAM, so the view counts from the serial

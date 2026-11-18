@@ -1436,3 +1436,29 @@ fn the_prediction_the_seed_replay_and_refusals_switch_off_for_bisecting() {
     assert_eq!(fell, u64::from(n), "{s:?}");
     assert_eq!(s.completed, 0, "{s:?}");
 }
+
+/// `H2_PIPELINE_CONFLICTS`: a word the sim writes while the render that
+/// also writes it is in flight is a conflict at the hand-back (the
+/// render's value wins), tallied by word and named by its virtual address.
+#[test]
+fn the_conflict_report_names_the_words_both_sides_wrote() {
+    let mut r = rig_tuned(true, &[], ADDRS.clone(), &[], |f| f.report_conflicts(true));
+    for k in 1..=8 {
+        r.round(k, false);
+        // Render k is in flight and writes OUT + 4 * k; so does the sim.
+        r.rt.memory().set_u32(OUT + 4 * k, 0xdead_0000 + k).unwrap();
+    }
+    r.finish();
+    let report = r.feature.conflict_report();
+    assert!(
+        report[0].contains("8 hand-backs") || report[0].contains("9 hand-backs"),
+        "{report:#?}"
+    );
+    for k in 1..=8 {
+        let va = format!("va [{:#010x}]", OUT + 4 * k);
+        assert!(report.iter().any(|l| l.contains(&va)), "{va}: {report:#?}");
+    }
+    // Byte by byte: the render's byte where it changed one (3 over 0), the
+    // sim's elsewhere. A conflicted word ends up mixed.
+    assert_eq!(r.rt.memory().u32(OUT + 4).unwrap(), 0xdead_0003);
+}

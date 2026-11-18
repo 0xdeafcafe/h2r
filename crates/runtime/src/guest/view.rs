@@ -185,6 +185,43 @@ impl Guest {
 }
 
 impl Guest {
+    /// The bytes [`hand_back`](Self::hand_back) would count as conflicts,
+    /// read only: `(physical, live, view, base)`, at most `limit`.
+    pub fn conflicts_with(
+        &self,
+        view: &Guest,
+        base: &FrozenRam,
+        written: &[WrittenPage],
+        limit: usize,
+    ) -> Vec<(u32, u8, u8, u8)> {
+        let base = base.bytes();
+        let mut out = Vec::new();
+        for page in written {
+            let start = page.physical as usize & !(PAGE_SIZE as usize - 1);
+            if start >= RAM_SIZE {
+                continue;
+            }
+            let mut lines = page.lines;
+            while lines != 0 {
+                let i = lines.trailing_zeros() as usize;
+                lines &= lines - 1;
+                let at = start + i * LINE_SIZE;
+                for k in at..at + LINE_SIZE {
+                    let (l, v, was) = (self.ram[k], view.ram[k], base[k]);
+                    if v != was && l != was && l != v {
+                        if out.len() == limit {
+                            return out;
+                        }
+                        out.push((k as u32, l, v, was));
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
+impl Guest {
     /// [`hand_back`](Self::hand_back) for one page against `reference` (the
     /// page's bytes as `view` had them when they were last merged, or the
     /// snapshot's): every byte where `view` differs from `reference` takes
@@ -226,6 +263,18 @@ impl Guest {
             self.watch.note(start, PAGE_SIZE as usize);
         }
         out
+    }
+
+    /// The virtual addresses mapping physical byte `physical`, lowest
+    /// mapping first (diagnostics).
+    pub fn virtual_of(&self, physical: u32) -> Vec<u32> {
+        self.mappings
+            .iter()
+            .filter(|m| {
+                (m.physical_start..m.physical_start.wrapping_add(m.len)).contains(&physical)
+            })
+            .map(|m| m.virtual_start + (physical - m.physical_start))
+            .collect()
     }
 
     /// The bytes of physical page `physical` (page-aligned).
@@ -365,6 +414,14 @@ mod tests {
             })
             .collect();
         written.sort_by_key(|p| p.physical);
+        // The two conflicts, found before the merge without making it.
+        let found = live.conflicts_with(&view, &base, &written, 8);
+        let at: Vec<u32> = found.iter().map(|c| c.0).collect();
+        assert_eq!(at, vec![0x0001, 0x1040], "{found:x?}");
+        assert_eq!(found[1].1..=found[1].2, 0x22..=0xcc);
+        assert_eq!(live.conflicts_with(&view, &base, &written, 1).len(), 1);
+        assert_eq!(live.u8(0x10001).unwrap(), 0x11, "nothing merged");
+        assert_eq!(live.virtual_of(0x1040), vec![0x11040]);
         assert_eq!(
             written,
             vec![
