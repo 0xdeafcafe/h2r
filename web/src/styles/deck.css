@@ -1,0 +1,145 @@
+/* The dense dashboard ("deck", src/deck/Deck.tsx; docs/live/web-boundary.md §3):
+   the console screens' fonts, greens and cut-corner bevelled panels, at a
+   working density for admin and ops screens. A scrolling page in real
+   pixels, not the 1280 x 720 stage, so 13px figures stay crisp and a table
+   can run as long as it needs. Chart colours live in src/deck/palette.ts. */
+
+.dk {
+  --f-tech: "Orbitron", "Michroma", "Eurostile", "Arial Black", sans-serif;
+  --f-cond: "Barlow Condensed", "Arial Narrow", "Roboto Condensed", sans-serif;
+  --ink: #e6ffc0;
+  --ink-2: #a5ce78;
+  --ink-3: #6f9a4c;
+  --lime: #9be34e;
+  --well: #08180a;
+  --grid: #163018;
+  --sel-1: #f4ff9c;
+  --sel-2: #b8f53a;
+  --sel-ink: #082000;
+  --good: #7fe230;
+  --bad: #ff7a5c;
+  --cut: polygon(0 10px, 14px 0, calc(100% - 20px) 0, 100% 16px, 100% calc(100% - 14px), calc(100% - 14px) 100%, 12px 100%, 0 calc(100% - 12px));
+  --cut-s: polygon(0 6px, 6px 0, 100% 0, 100% calc(100% - 6px), calc(100% - 6px) 100%, 0 100%);
+  position: fixed; inset: 0; overflow: auto; overscroll-behavior: contain;
+  color: var(--ink); font: 500 14px/1.3 var(--f-cond); letter-spacing: .03em;
+  background:
+    radial-gradient(ellipse 70% 50% at 18% -10%, rgba(126, 255, 48, .16), transparent 70%),
+    radial-gradient(ellipse 60% 40% at 100% 110%, rgba(60, 170, 20, .12), transparent 70%),
+    repeating-linear-gradient(0deg, rgba(125, 255, 42, .035) 0 1px, transparent 1px 48px),
+    repeating-linear-gradient(90deg, rgba(125, 255, 42, .035) 0 1px, transparent 1px 48px),
+    #010a01;
+  padding: 18px clamp(12px, 3vw, 36px) 48px;
+}
+.dk *, .dk *::before, .dk *::after { box-sizing: border-box; }
+.dk a { color: var(--lime); text-decoration: none; }
+.dk a:hover, .dk a:focus-visible { color: var(--sel-1); text-decoration: underline; }
+.dk :focus-visible { outline: 2px solid var(--sel-2); outline-offset: 2px; }
+
+/* ---- header: trail, title, the way back ---- */
+.dk-head { display: grid; grid-template-columns: 1fr auto; grid-template-areas: "trail back" "title back"; align-items: end; gap: 2px 16px; margin: 0 auto 14px; max-width: 1480px; }
+.dk-trail { grid-area: trail; display: flex; gap: 8px; font-weight: 600; font-size: 12px; letter-spacing: .16em; text-transform: uppercase; color: var(--ink-3); }
+.dk-trail > * + *::before { content: "›"; margin-right: 8px; color: var(--ink-3); }
+.dk-head h1 { grid-area: title; margin: 0; font: 700 28px/1.1 var(--f-tech); letter-spacing: .08em; text-transform: lowercase; color: var(--ink); text-shadow: 0 2px 0 rgba(0, 40, 0, .7), 0 0 12px rgba(180, 255, 100, .45); }
+.dk-back { grid-area: back; display: inline-flex; align-items: center; gap: 8px; font-weight: 600; font-size: 15px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-2) !important; text-decoration: none !important; }
+.dk-back i { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; font: 700 14px/1 var(--f-tech); font-style: normal; color: #fff; background: radial-gradient(circle at 35% 30%, #ff9a8a, #d8261c 60%, #6e0b06); box-shadow: 0 0 0 2px rgba(0, 0, 0, .6), 0 0 10px rgba(255, 80, 60, .35); }
+.dk-back:hover span { color: var(--sel-1); }
+
+/* ---- the filter row: one, above everything it scopes ---- */
+.dk-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; margin: 0 auto 14px; max-width: 1480px; }
+.dk-filters-note { color: var(--ink-3); font-size: 13px; }
+.dk-presets { display: flex; align-items: center; gap: 6px; }
+.dk-presets-label { font-weight: 600; font-size: 12px; letter-spacing: .16em; text-transform: uppercase; color: var(--ink-3); margin-right: 4px; }
+.dk-pill { font: 600 13px/1 var(--f-cond); letter-spacing: .1em; text-transform: uppercase; color: var(--ink-2); background: rgba(10, 40, 6, .6); border: 1px solid rgba(155, 227, 78, .45); border-radius: 999px; padding: 6px 12px; cursor: pointer; }
+.dk-pill:hover { color: var(--ink); border-color: var(--lime); }
+.dk-pill[aria-checked="true"], .dk-pill[aria-pressed="true"] { color: var(--sel-ink); background: linear-gradient(180deg, var(--sel-1), var(--sel-2)); border-color: var(--sel-1); box-shadow: 0 0 10px rgba(200, 255, 80, .35); }
+.dk-pill--small { padding: 3px 9px; font-size: 11px; }
+
+/* ---- the panel grid ---- */
+.dk-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 12px; max-width: 1480px; margin: 0 auto; align-items: start; }
+.dk-span-2 { grid-column: span 2; } .dk-span-3 { grid-column: span 3; } .dk-span-4 { grid-column: span 4; }
+.dk-span-6 { grid-column: span 6; } .dk-span-8 { grid-column: span 8; } .dk-span-12 { grid-column: span 12; }
+@media (max-width: 1180px) {
+  .dk-span-2 { grid-column: span 4; } .dk-span-3, .dk-span-4 { grid-column: span 6; } .dk-span-8 { grid-column: span 12; }
+}
+@media (max-width: 720px) {
+  .dk-grid > * { grid-column: span 12; }
+  .dk-tile { grid-column: span 6 !important; }
+}
+
+/* A panel: the console plate's bevel (a light-dark-light rim) round a flat
+   translucent green face, both cut on the same corners. */
+.dk-panel { position: relative; padding: 2px; clip-path: var(--cut); background: linear-gradient(126deg, #b5d77a 0, #5c9335 4%, #203f12 7%, #588734 47%, #101f0b 76%, #83b54d 97%, #d1e9a4); filter: drop-shadow(0 0 2px #4f7f2f); min-width: 0; }
+.dk-face { clip-path: var(--cut); background: linear-gradient(135deg, #2c5e1bf2, #133a0ef0 55%, #18420ef2); box-shadow: inset 0 0 20px #06180288; padding: 10px 14px 14px; height: 100%; display: grid; gap: 8px; align-content: start; }
+.dk-panel-head { display: flex; align-items: baseline; gap: 10px; min-height: 22px; border-bottom: 1px solid rgba(155, 227, 78, .22); padding-bottom: 5px; }
+.dk-panel-head h2 { margin: 0; font: 600 15px/1.2 var(--f-cond); letter-spacing: .14em; text-transform: uppercase; color: #f0ffc8; text-shadow: 0 1px 2px rgba(0, 40, 0, .9); }
+.dk-meta { color: var(--ink-3); font-size: 13px; letter-spacing: .06em; flex: 1; }
+.dk-panel-head .dk-pill { margin-left: auto; align-self: center; }
+.dk-note { margin: 0; color: var(--ink-3); font-size: 13px; }
+
+/* ---- metric tiles ---- */
+.dk-tile .dk-face { gap: 2px; padding: 9px 12px 10px; }
+.dk-tile-label { margin: 0; font: 600 12px/1.2 var(--f-cond); letter-spacing: .16em; text-transform: uppercase; color: var(--ink-2); }
+/* Proportional figures at display size (no tabular-nums). */
+.dk-tile-value { margin: 2px 0 0; font: 600 30px/1.05 var(--f-cond); letter-spacing: .02em; color: var(--ink); text-shadow: 0 0 10px rgba(180, 255, 100, .3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dk-tile-foot { display: flex; gap: 8px; align-items: baseline; font-size: 12px; color: var(--ink-3); min-height: 16px; }
+.dk-delta { font-weight: 600; font-size: 13px; letter-spacing: .04em; white-space: nowrap; }
+.dk-delta i { font-style: normal; font-size: 9px; margin-right: 3px; vertical-align: 1px; }
+.dk-delta--good { color: var(--good); } .dk-delta--bad { color: var(--bad); } .dk-delta--flat { color: var(--ink-2); }
+.dk-tile-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dk-spark { display: block; margin-top: 4px; width: 100%; max-width: 160px; height: auto; }
+
+/* ---- charts: a recessed well ---- */
+.dk-chart { display: grid; gap: 6px; min-width: 0; }
+/* No clip-path here: it would clip the tooltip. */
+.dk-well { position: relative; background: var(--well); box-shadow: inset 0 1px 6px #000c; border: 1px solid rgba(125, 255, 42, .1); min-width: 0; }
+.dk-well svg { display: block; }
+.dk-well svg:focus-visible { outline: 2px solid var(--sel-2); outline-offset: -2px; }
+.dk-tick { font: 500 11px var(--f-cond); letter-spacing: .04em; fill: var(--ink-3); font-variant-numeric: tabular-nums; }
+.dk-crosshair { stroke: var(--ink-2); stroke-width: 1; shape-rendering: crispEdges; pointer-events: none; }
+.dk-tip { position: absolute; top: 8px; pointer-events: none; z-index: 2; display: grid; gap: 2px; min-width: 120px; padding: 6px 9px; background: rgba(3, 18, 3, .95); border: 1px solid rgba(155, 227, 78, .5); box-shadow: 0 4px 14px #000a; font-size: 13px; white-space: nowrap; }
+.dk-tip-day { font-weight: 600; font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-2); }
+.dk-tip-row { display: grid; grid-template-columns: 12px auto 1fr; align-items: center; gap: 6px; }
+.dk-tip-row b { color: var(--ink); font-variant-numeric: tabular-nums; }
+.dk-tip-row span { color: var(--ink-2); }
+.dk-tip-total { border-top: 1px solid rgba(155, 227, 78, .25); padding-top: 2px; }
+
+.dk-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0; padding: 0; list-style: none; font-size: 13px; color: var(--ink-2); }
+.dk-legend li { display: inline-flex; align-items: center; gap: 6px; }
+.dk-key { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
+.dk-key--line { width: 12px; height: 2px; border-radius: 1px; }
+
+/* ---- ranked bars: one baseline, the value at the tip ---- */
+.dk-rank { display: grid; gap: 5px; margin: 0; padding: 0; list-style: none; }
+.dk-rank li { display: grid; grid-template-columns: minmax(80px, 38%) 1fr auto; align-items: center; gap: 8px; font-size: 14px; }
+.dk-rank-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--ink-2); }
+.dk-rank-track { position: relative; height: 10px; }
+.dk-rank-bar { position: absolute; left: 0; top: 0; bottom: 0; min-width: 1px; border-radius: 0 4px 4px 0; }
+.dk-rank li:hover .dk-rank-bar { filter: brightness(1.25); }
+.dk-rank-value { font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; min-width: 52px; text-align: right; }
+
+/* ---- the thin segmented bar: 6px, round ends, 2px gaps, no text ---- */
+.dk-seg { display: flex; gap: 2px; width: 100%; min-width: 80px; height: 6px; border-radius: 3px; overflow: hidden; vertical-align: middle; }
+.dk-seg i { display: block; min-width: 2px; flex-basis: 0; }
+
+/* ---- the dense table ---- */
+.dk-table-wrap { overflow-x: auto; min-width: 0; background: var(--well); clip-path: var(--cut-s); border: 1px solid rgba(125, 255, 42, .1); }
+.dk-table { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }
+.dk-table th { position: sticky; top: 0; z-index: 1; background: #0e2a0c; text-align: left; padding: 0; border-bottom: 1px solid rgba(155, 227, 78, .35); white-space: nowrap; }
+.dk-table th button { all: unset; box-sizing: border-box; display: block; width: 100%; padding: 6px 8px; cursor: pointer; font: 600 12px/1.1 var(--f-cond); letter-spacing: .14em; text-transform: uppercase; color: var(--ink-2); }
+.dk-table th button:hover { color: var(--ink); }
+.dk-table th button:focus-visible { outline: 2px solid var(--sel-2); outline-offset: -2px; }
+.dk-table th button i { font-style: normal; font-size: 9px; margin-left: 4px; color: var(--lime); }
+.dk-table th.num button { text-align: right; }
+.dk-table td { position: relative; padding: 4px 8px; border-bottom: 1px solid var(--grid); white-space: nowrap; color: var(--ink); }
+.dk-table td.num { text-align: right; }
+.dk-table tbody tr:nth-child(even) td { background: rgba(125, 255, 42, .025); }
+.dk-table tbody tr:hover td { background: rgba(184, 245, 58, .1); }
+.dk-cellbar { position: absolute; right: 8px; bottom: 2px; height: 2px; max-width: calc(100% - 16px); background: var(--lime); opacity: .55; border-radius: 1px; }
+.dk-col-seg { width: 18%; min-width: 110px; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .dk-pill, .dk-rank-bar { transition: background-color .12s, color .12s, border-color .12s, filter .12s; }
+}
+@media (forced-colors: active) {
+  .dk-panel, .dk-face, .dk-well, .dk-table-wrap { clip-path: none; border: 1px solid CanvasText; }
+}
