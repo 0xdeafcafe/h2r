@@ -8,7 +8,7 @@
 // This file pulls in three.js, so it is only ever loaded lazily.
 
 import * as THREE from "three";
-import { FOG_CLEAR, SkyDome, gameFog, glowHaze, useGameFog, skyColour, skyOf, skyUrl, type SkyInfo } from "./sky3d";
+import { FOG_CLEAR, SkyDome, gameFog, useGameFog, skyColour, skyOf, skyUrl, type SkyInfo } from "./sky3d";
 import { waterUniforms } from "./water3d";
 import { WeatherLook, weatherOf } from "./weather3d";
 import { bspNumber, isBackdrop, isCinematic, layerNode, zoneList, zoneVisibility, type ZoneBox, type ZoneEntry, type ZonePick } from "./zones";
@@ -56,7 +56,6 @@ export class LevelLook {
   private background: THREE.Color | null = null;
   private generation = 0;
   private centre = new THREE.Vector3();
-  private radius = 1;
   /** Each zone's extent in game coordinates, measured once a level is in. */
   private boxes: ZoneBox[] = [];
 
@@ -93,8 +92,9 @@ export class LevelLook {
     this.skyInfo = skyOf(assetExtras);
     const c = skyColour(this.skyInfo);
     this.background = c ? new THREE.Color().setRGB(c[0], c[1], c[2], THREE.SRGBColorSpace) : null;
-    // The water reflects the sky's colour (or its fog's, or the glow's).
-    const r = this.skyInfo?.clear ?? this.skyInfo?.fog?.colour ?? this.skyInfo?.glow?.colour;
+    // The water reflects the sky's colour (or its fog's). Not the `glow`:
+    // that is the sky light's colour (sky3d.ts), not the air's.
+    const r = this.skyInfo?.clear ?? this.skyInfo?.fog?.colour;
     if (r) this.water.uWaterSky.value.setRGB(r[0], r[1], r[2], THREE.SRGBColorSpace);
     else this.water.uWaterSky.value.setRGB(0.55, 0.68, 0.8, THREE.SRGBColorSpace);
     this.weather.adopt(weatherOf(assetExtras));
@@ -176,7 +176,7 @@ export class LevelLook {
       decals: this.layers.some((l) => l.kind === "decals"),
       effects: this.layers.some((l) => l.kind === "effects"),
       sky: !!this.skyInfo,
-      fog: !!this.skyInfo?.fog || !!this.skyInfo?.glow,
+      fog: !!this.skyInfo?.fog,
       weather: this.weather.has(),
     };
   }
@@ -199,7 +199,6 @@ export class LevelLook {
    *  haze is set by its size when the sky has no fog of its own. */
   setExtent(centre: THREE.Vector3, radius: number) {
     this.centre.copy(centre);
-    this.radius = radius;
     this.haze.density = 0.11 / radius;
     this.hazeDensity = this.haze.density;
   }
@@ -211,16 +210,12 @@ export class LevelLook {
     const f = this.skyInfo?.fog;
     if (!this.fogOn) { this.scene.fog = null; return; }
     if (!f) {
-      // No fog of its own: the haze, in the colour of the sun-lit air
-      // when the sky gives one (Zanzibar), as thick as it says.
-      const g = this.skyInfo?.glow;
-      if (g) {
-        this.haze.color.setRGB(g.colour[0], g.colour[1], g.colour[2], THREE.SRGBColorSpace);
-        this.haze.density = glowHaze(g, this.radius);
-      } else {
-        this.haze.color.copy(this.hazeColour);
-        this.haze.density = this.hazeDensity;
-      }
+      // No fog of its own: the game draws such a level clear. Only the
+      // viewer's faint haze, so far scenery still reads as far. (The sky's
+      // `glow` is not a fog: it is its light's colour and power, the
+      // radiosity record; as a haze it drowned Halo 1's maps in cyan.)
+      this.haze.color.copy(this.hazeColour);
+      this.haze.density = this.hazeDensity;
       this.scene.fog = this.haze;
       return;
     }

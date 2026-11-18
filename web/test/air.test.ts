@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import * as THREE from "three";
 import { LevelLook } from "../src/viewer/level3d";
-import { glowHaze, skyOf } from "../src/viewer/sky3d";
+import { skyOf } from "../src/viewer/sky3d";
 import { WAVES, dressWater, fresnel, isWater, rippleSlope, waterUniforms } from "../src/viewer/water3d";
 import { inside, weatherOf } from "../src/viewer/weather3d";
 
@@ -53,32 +53,38 @@ describe("the level's weather", () => {
 });
 
 describe("the sky's glow", () => {
-  test("is read when whole, and makes a haze where the level has no fog", () => {
+  test("is read when whole", () => {
     const glow = { colour: [0.9, 0.75, 0.6], density: 0.2, heading: 2.9, pitch: 0.6 };
     expect(skyOf({ sky: { name: "zanzibar", glow } })!.glow).toEqual(glow as never);
     expect(skyOf({ sky: { name: "x", glow: { ...glow, density: 0 } } })!.glow).toBeUndefined();
     expect(skyOf({ sky: { name: "x", glow: { ...glow, colour: [1, 1] } } })!.glow).toBeUndefined();
-    // About a quarter of the colour at the far side (twice the radius).
-    const k = glowHaze(skyOf({ sky: { name: "z", glow } })!.glow!, 100);
-    const far = 1 - Math.exp(-((k * 200) ** 2));
-    expect(far).toBeGreaterThan(0.2);
-    expect(far).toBeLessThan(0.35);
   });
 
-  test("tints the haze of a level without fog, and fog is offered", () => {
+  test("is not a fog: a level without fog gets the faint haze whatever its glow", () => {
     const scene = new THREE.Scene();
     scene.fog = new THREE.FogExp2(0x7f9fb6, 0.002);
     const look = new LevelLook(scene, new THREE.Texture(), () => {});
     look.setExtent(new THREE.Vector3(), 100);
-    look.adopt(new THREE.Group(), { sky: { name: "zanzibar", glow: { colour: [1, 0, 0], density: 0.2, heading: 0, pitch: 0 } } }, "map.glb");
+    // A converted Halo 1 sky's light read as a glow: cyan and thick.
+    look.adopt(new THREE.Group(), { sky: { name: "a30", glow: { colour: [0, 0.87, 0.86], density: 0.82, heading: 0, pitch: 0 } } }, "map.glb");
+    expect(look.info().fog).toBe(false);
+    look.beforeDraw(new THREE.PerspectiveCamera(), 10);
+    const haze = scene.fog as THREE.FogExp2;
+    expect(haze.color.getHex()).toBe(0x7f9fb6);
+    // Faint: under 5 % at the level's far side (twice its radius).
+    expect(1 - Math.exp(-((haze.density * 200) ** 2))).toBeLessThan(0.05);
+    look.dispose();
+  });
+
+  test("a level's own fog is drawn as the game's, and offered", () => {
+    const scene = new THREE.Scene();
+    const look = new LevelLook(scene, new THREE.Texture(), () => {});
+    look.setExtent(new THREE.Vector3(), 100);
+    look.adopt(new THREE.Group(), { sky: { name: "coagulation", fog: { colour: [0.64, 0.51, 0.51], density: 0.4, start: 10, end: 150 } } }, "map.glb");
     expect(look.info().fog).toBe(true);
-    look.beforeDraw(new THREE.PerspectiveCamera(), 10);
-    const fog = scene.fog as THREE.FogExp2;
-    expect(fog.color.r).toBeGreaterThan(0.9);
-    expect(fog.color.g).toBeLessThan(0.05);
-    look.adopt(new THREE.Group(), {}, "map.glb");
-    look.beforeDraw(new THREE.PerspectiveCamera(), 10);
-    expect((scene.fog as THREE.FogExp2).color.getHex()).toBe(0x7f9fb6);
+    look.beforeDraw(new THREE.PerspectiveCamera(), 0);
+    const fog = scene.fog as THREE.Fog;
+    expect([fog.near, fog.far]).toEqual([10, 150]);
     look.dispose();
   });
 });
