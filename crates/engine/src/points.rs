@@ -239,6 +239,15 @@ points! { ALL;
     /// A damage report is applied to its victim: the report in EDI, the
     /// victim object datum on the stack. Called once per damage instance.
     DAMAGE_REPORT @ 0x000d_9640: [fn(report: edi, victim: stack 0) ret 4], Optional; "docs/live/live-gamestate.md";
+    /// A damage instance's shield step (`0xd7b80` calls it once, at
+    /// `0xd80de`): stdcall `(object datum, ?, damage data, record)`. It
+    /// takes the shield's share of the amount at `record+0x1c` (divided by
+    /// the object's shield vitality) and leaves what is left there.
+    SHIELD_DAMAGE @ 0x000d_9110: [fn(object: stack 0, record: stack 3) ret 16], Optional; "docs/game/game-options.md";
+    /// A damage instance's body step (`0xd7b80` calls it once, at
+    /// `0xd8184`): the record in EDI, stdcall `(object datum, ?, damage
+    /// data)`. Reads the amount at `record+0x1c` through `0xd9020`.
+    BODY_DAMAGE @ 0x000d_8cb0: [fn(record: edi, object: stack 0) ret 12], Optional; "docs/game/game-options.md";
     /// An object's damage update: stdcall `(object datum)`, AL whether
     /// anything changed. Called once per object per tick by
     /// `object_update` (`0xbc470`, its only caller): stun timers, shield

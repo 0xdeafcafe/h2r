@@ -994,6 +994,10 @@ pub fn run_hosted_with_live(
     features
         .add(&variant_ext::Transport { hle: _live.clone() })
         .map_err(|e| anyhow::anyhow!("variant options transport: {e}"))?;
+    // Its damage, shield and health scales on each damage instance.
+    features
+        .add(&variant_ext::Vitality)
+        .map_err(|e| anyhow::anyhow!("variant options vitality: {e}"))?;
     // Our own skulls (from 15): hidden in campaign levels, their effects
     // ours on the tick (docs/game/skulls.md "Our skulls"). The skull weapon's
     // tag comes from the loaded map's file, found through the VFS.

@@ -249,8 +249,8 @@ offer is.
 | Lives above 99 | storable to 0x7fff | offer more steps |
 | Respawn above 30 s | storable to 0x7fff s | offer more steps |
 | Suicide and betrayal penalties beyond retail's | storable to 0x7fff s | offer more steps |
-| Damage multipliers beyond on/off | needs the extension | the record has two booleans (flag bits 12, 13), read through the trait query `0x24dda0` (trait 2 extra damage, 3 resistance) and per-engine overrides (`0x1926c0`); the scale they apply is in the damage code, not traced |
-| Shield and health multipliers | needs the extension | shields are a 0..2 choice (`+0x88`); a vitality scale needs the damage path above |
+| Damage multipliers beyond on/off | needs the extension (built, slice 5) | the record has two booleans (flag bits 12, 13), read through the trait query `0x24dda0` (trait 2 extra damage, 3 resistance; the engines' vtables at `0x453cb0` and `0x45c650` hold it at `+0x114`) and per-engine overrides (`0x1926c0`). Ours scales the amount of each damage instance on a player instead ("Damage, shield and health" below) |
+| Shield and health multipliers | needs the extension (built, slice 5) | shields are a 0..2 choice (`+0x88`); ours scales the amount the shield and body steps take |
 | Player speed for everyone | needs the extension | only Juggernaut and ball carrier speed exist (i16 0..2); the movement scale is not traced |
 | Unlimited grenades | needs the extension (built, slice 5) | only a starting on/off bit; the host keeps every player's unit at four or more of each type each tick (the unit's counts at `+0x23e`, as the Unlimited Grenades skull) |
 | Mixed vehicle sets | mostly offered; some storable | each slot (light, second light, heavy, flying, two turrets) is its own byte, so mixes exist today; values in range but not offered (75: 2; 76, 77: 4; 79: 2, 3; 81, 82: 2, 3; 83: 18) and setting 80 (no row, `+0xd0` 0..4) are not traced and are not offered until they are; a vehicle outside the sets needs the extension and a placement hook |
@@ -415,6 +415,27 @@ guests"):
   `+0x23e`). The host's counts are the game's and replicate, so a guest
   writes nothing. Row 1 of "More Options" ("Unlimited Grenades: < Off >",
   left, right and A toggle) and a Studio checkbox.
+- **Damage, shield and health** (slice 5, built; traced statically).
+  `0xd7b80` applies one damage instance; it calls the shield step
+  `0xd9110` (stdcall: object datum, ?, damage data, record; `ret 0x10`) at
+  `0xd80de` and the body step `0xd8cb0` (record in EDI; stdcall: object
+  datum, ?, damage data; `ret 0xc`) at `0xd8184`, each its only caller.
+  Both read the amount left to apply at `record+0x1c`: the shield step
+  takes `amount × material scale / shield vitality` (`0xd5d80` gives the
+  vitality) off the shield and leaves the rest at `+0x1c`; the body step
+  reads it through `0xd9020`. Our feature `variant-vitality`
+  (`variant_ext::Vitality`, points `SHIELD_DAMAGE` and `BODY_DAMAGE`), for
+  an object that is a player's unit, multiplies the amount by damage ÷
+  shield before the shield step, puts what the shield left back to the
+  game's units after it, and multiplies by damage ÷ health before the
+  body step. So a hit takes damage/shield of the game's shield share and
+  damage/health of the body's, whether or not the shield took part. It
+  applies wherever `Decision::vitality` says: alone, the host and a guest
+  with its host's block (a guest predicts the hits too), never System
+  Link. Vehicles, AI and objects keep the game's rules. Rows 3 to 5 of
+  "More Options" (gravity's steps, 10% to 400%) and Studio sliders. What
+  else reads `+0x1c` after the steps (`0xd82e0`, called between them, and
+  the damage report) sees the scaled amount; not traced further.
 - **Team count** (slice 5, built): a retail field (setting 93, `+0xb4`)
   with no retail row. Row 2 of "More Options" ("Team Count: < Map
   Default >", then 2 to 8; 1 is storable but not offered and shows as 2)
@@ -751,6 +772,10 @@ After slice 5 (unlimited grenades):
 9b. The same over Live (both on this build): host and guest both keep
     four of each (the host tops up the guest's unit). On System Link:
     normal grenades.
+9d. Damage 200%: two magnum body shots after the shield is down kill where
+    they wouldn't; Health 400%: a full clip barely kills; Shields 10%: one
+    shot pops the shield. Vehicles take normal damage. Over Live with both
+    on this build, the guest's hit markers and kills agree with the host.
 9c. More Options' third row, "Team Count: < Map Default >": set 3, save,
     and start a Team Slayer on a map with more teams. Players spread over
     at most three teams; note what the lobby's team switch offers (not
@@ -889,8 +914,12 @@ After slices 6 to 8:
   "Unlimited grenades".
 - Team count: `variants::record::{TEAM_COUNT, TEAM_COUNTS}`, the page's
   third row (`variant_page::TEAMS_ROW`, `EDITED_TEAMS`), Studio's box.
-- Not yet: damage, shield, health and speed scales (the code is not
-  traced), weapons outside the editor's list, team size.
+- Damage, shield and health: `variant_ext::{Vitality, shield_factor,
+  body_factor, scale_amount, is_player_unit}`, `Decision::vitality`,
+  `engine::points::{SHIELD_DAMAGE, BODY_DAMAGE}`, page rows 3 to 5
+  (`variant_page::Scale`), Studio sliders.
+- Not yet: movement speed (not traced), weapons outside the editor's
+  list, team size.
 
 ## Tests
 
@@ -926,7 +955,9 @@ Slice 5 so far: `boot` `variant_ext::grenades_are_topped_by_a_lone_machine_or_th
 `skulls_custom::tests::a_variants_unlimited_grenades_reach_every_players_unit`,
 `variant_page::tests::the_grenades_row_toggles_the_flag`,
 `variant_page::tests::the_team_count_row_edits_the_records_field`,
-`variants` `record::tests::every_offered_team_count_is_kept`.
+`variants` `record::tests::every_offered_team_count_is_kept`,
+`variant_ext::damage_shield_and_health_scale_the_amount`,
+`variant_page::tests::the_scale_rows_step_their_percents`.
 
 Older builds: `live-proto`
 `presence_carries_a_build_and_capabilities_checked_and_optional`,
