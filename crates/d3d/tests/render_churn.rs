@@ -439,7 +439,7 @@ fn per_frame_churn_stays_down() {
     // One blocking wait per frame, for the previous frame.
     assert_eq!(p.swap_waits, 1.0);
     // A submission per target visit and the present's: nothing more.
-    assert!(p.submits <= f64::from(2 * SWITCHES + 1), "{p:?}");
+    assert_eq!(p.submits, f64::from(2 * SWITCHES + 1), "{p:?}");
     assert_eq!(p.render_passes, f64::from(2 * SWITCHES + 1), "{p:?}");
 }
 
