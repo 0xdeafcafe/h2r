@@ -41,7 +41,7 @@ fn main() -> anyhow::Result<()> {
         d3d: true,
         bink: true,
         dsound: true,
-        movies: None,
+        movies: boot::movies_glue::Movies::Off,
     };
     let mut start = None;
     let host = boot::Host {
