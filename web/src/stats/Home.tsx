@@ -251,7 +251,7 @@ function LatestClear() {
     <Show when={clear()}>
       {(g) => (
         <Panel title="Latest Campaign Clear" sub={g().difficulty === "legendary" || g().difficulty === "heroic" ? `newest on ${difficultyName(g().difficulty)}` : "newest level finished"} class="s-clear">
-          <A href={`/stats/games/${g().game_id}`} class="s-clear-body">
+          <A href={statsPath(`/games/${g().game_id}`)} class="s-clear-body">
             <MapThumb game={g()} />
             <span>
               <b>{gameMapTitle(g())}</b>

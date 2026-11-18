@@ -6,6 +6,7 @@
 
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
 import { A } from "@solidjs/router";
+import { statsPath } from "../routes";
 import { live } from "../state/live";
 import { endedGames, isCampaign, type GameState } from "../state/reducer";
 import { gameMapTitle, packageLookup } from "../state/maps";
@@ -47,7 +48,7 @@ export default function LiveIdle(props: { week: StatsSummary | null }) {
 
 function LastGame(props: { game: GameState }) {
   const g = () => props.game;
-  const href = () => `/stats/games/${g().game_id}`;
+  const href = () => statsPath(`/games/${g().game_id}`);
   const hl = createMemo(() => highlights(endedGames(live.state, 200), now()));
   const report = () => (isCampaign(g()) ? "Mission report" : "Carnage report");
   return (
