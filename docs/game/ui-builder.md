@@ -357,7 +357,7 @@ The glue (`list_class` events, `TEXT_SET`, tints) keeps its runner tests
   `spec` replays them on the rows first, so a named state (given as
   presses, `.state(name, &[Down, A])`) shows what its presses chose. That
   holds for rows whose presses only choose; rows that toggle a store are
-  stepped through their own `ListPage`. The map select is the first
+  stepped through their own `ListPage`. The map select's model is the first
   ([map-select.md](map-select.md)).
 - **`AccountPage`**: the account screen (`AccountScreen`, already pure),
   with typed text and server answers as events.
