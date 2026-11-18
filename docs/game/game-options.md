@@ -360,9 +360,9 @@ guests"):
   with the list hooks the pregame dialog's "Halo 1 Options" row uses
   ([h1-multiplayer.md](h1-multiplayer.md) "Halo 1 options",
   [ui-screens.md](ui-screens.md)). Its rows are `Row::value`s whose get and
-  set read and write the block in the record being edited. The list's
-  hooks are traced ("The variant editor's page list" below); the page is
-  not built.
+  set read and write the block in the record being edited. Built
+  (`boot::variant_page`; "The variant editor's page list" below), with
+  gravity only so far.
 - **Studio** (`crates/studio/src/ui/variants.rs`): a "More options
   (h2recomp)" section under the pages edits the block through
   `VariantEditor::set_ext` (undoable; a drag on one option is one step).
@@ -403,14 +403,29 @@ Options" is row word 7, added the same way. Confirmed in the code:
 - **Opening ours:** `skulls_mp::open_request(mask, [screen+0x74],
   [screen+0x78], loader)`, as the Skulls row does, onto the editor's own
   stack.
-- **The record the page edits:** docs/game/skulls.md places it at
-  `0x54e4a4`, and the row chosen reads the engine at `0x54e4e4`. With the
-  engine at record `+0x44` that puts the record at `0x54e4a0`; which is
-  right must be settled before the page writes `+0x10c`.
+- **The record the page edits is at `0x54e4a0`** (confirmed):
+  `0x148a8d` zeroes 0x4c dwords (0x130 bytes, one record) from
+  `0x54e4a0`; `0x2387c6` copies 32 units of name to `0x54e4a4` (`+4`);
+  the row chosen reads the engine at `0x54e4e4` (`+0x44`). The block is at
+  `0x54e5ac`. `variant_page::tests::the_edited_record_starts_at_0x54e4a0`
+  pins it against the record layout and
+  `edited_record_is_where_the_xbe_says` (ignored; `H2_XBE`) against the
+  instructions.
 
-The page is a list class of ours (as `h1_options`) whose rows are
-`Row::value`s over the block of that record, written with
-`variants::ext::Ext::encode`.
+**Built** (`boot::variant_page`): `variant_count` grows the list by the
+Skulls row and ours (8 rows with both), `more_row` is word 7 (6 without
+Skulls), `skip_pane` keeps the last pane for it. The row's `before` hooks
+on `0x2b7581` and `0x2b75e8` draw "More Options" and open our page with
+`skulls_mp::open_request` on the editor's own window and slot. The page
+(`variant-more-options`, a list class laid out as the skulls page, left,
+right and A step) reads the block at `0x54e5ac` when it opens and at each
+row text, and after a change writes the new block back before the row is
+drawn again (`Rows::live_text`), so the game's editor saves it with the
+record. Gravity steps 10, 25, 50, 75, Normal, 125, 150, 200, 300 and
+400%; a value Studio set between steps shows as the nearest. Back to
+Normal writes all zeros (a retail record). Strings: the "variant page"
+family. Switches: `features.variant-more-options-row`,
+`features.variant-more-options`.
 
 ## 4. Names with any character
 
@@ -581,7 +596,7 @@ own slice (8 below):
 2. **Done** ("Built: slice 2"): our added choices in the game's editor and
    Studio, `record::ours` (respawn 0 with cycling refused), Bounce
    Practice's magnum, Bumper Cars.
-3. **Done** ("Built: slice 3") except the in-game page:
+3. **Done** ("Built: slice 3"; the page in section 3):
    **The extension block and gravity:** `variants::ext` (encode, decode,
    CRC, zero means none), Studio's section, the hopper tool carrying it,
    gravity applied at game start (the Low Gravity code), and the in-game
@@ -639,6 +654,13 @@ After slice 3 (one machine; Studio writes the variant):
     the game the variant still loads. Edit and save it in the game's own
     editor, then reopen it in Studio: note whether gravity is still 50
     (whether the game's editor copies the spare bytes is not traced).
+3a'. In the game: Settings, Game Variants, edit a Slayer copy. The
+    category list ends Skulls, More Options; More Options keeps the last
+    category's pane. It opens a page with one row, "Gravity: < Normal >";
+    left and right step it (stopping at 10% and 400%), A steps up and
+    wraps. Gravity 50, B, save; reopen the variant: More Options shows
+    50%, and Studio shows 50. Back to Normal and save: Studio shows no
+    options. The log says `variant options: gravity 100% -> 75%` per step.
 3b. A local custom game (or split-screen) on it: jumps go about twice as
     high and grenades fly flatter; the log says
     `variant options: Gravity 50% (local game)` and
@@ -702,8 +724,6 @@ After slices 6 to 8:
 - Which font slot draws names in each place (fonts.md); the audit above
   assumes `conduit` and `handel_gothic`.
 - What the game's editor shows for a storable value it doesn't list.
-- The address of the record the game's editor edits (`0x54e4a0` or
-  `0x54e4a4`), for the "More Options" page.
 - What the game does for an unarmed player (Bumper Cars, starting weapon
   None): melee, the HUD, picking a weapon up.
 - The unoffered vehicle values and setting 80.
@@ -764,8 +784,8 @@ After slices 6 to 8:
 - `boot::variant_ext`: `in_game` and `decide` (above); `skulls_custom`'s
   tick applies Low Gravity times the variant's gravity through the
   generalised `gravity_step`.
-- Not built: the in-game "More Options" page (section 3, "The variant
-  editor's page list", has what the trace found).
+- `boot::variant_page`: the "More Options" row and page in the game's
+  variant editor (section 3, "The variant editor's page list").
 
 ## Tests
 
@@ -787,7 +807,15 @@ tests:
 - `boot` `variant_ext::alone_or_hosting_applies_system_link_and_guests_dont`,
   `reads_the_active_records_block_in_multiplayer_only` (globals and a
   squad session in synthetic memory), `skulls_custom`
-  `a_variants_gravity_composes_with_low_gravity_on_physics_memory`.
+  `a_variants_gravity_composes_with_low_gravity_on_physics_memory`;
+- `boot` `variant_page::the_edited_record_starts_at_0x54e4a0` (and the
+  ignored `edited_record_is_where_the_xbe_says`),
+  `our_row_follows_the_skulls_row_and_grows_the_list_once`,
+  `a_press_opens_the_page_on_the_editors_stack`,
+  `the_page_edits_the_records_block`, `strings_are_ours_and_distinct`,
+  `the_row_and_the_page_are_on_the_plan`; `ui_kit::screens` checks the
+  page (`variant-more-options`) with the other screens. Run
+  `cargo test -p boot --tests` (the plan goldens are integration tests).
 
 The slice 2 tests:
 

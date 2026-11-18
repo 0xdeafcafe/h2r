@@ -268,12 +268,13 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
 }
 
 /// The screens `h2 ui preview` knows, by name.
-pub const NAMES: [&str; 13] = [
+pub const NAMES: [&str; 14] = [
     "campaigns",
     "skulls",
     "skulls.h1",
     "skulls.mp",
     "h1-options",
+    "variant-more-options",
     "coop",
     "coop.friends",
     "coop.join",
@@ -419,6 +420,18 @@ pub fn list_page(name: &str) -> Option<ListPage> {
                 skulls_menu::LIST_LAYOUT,
             );
             list(ListPage::new(class, move || s.spec()))
+        }
+        "variant-more-options" => {
+            let p = Arc::new(crate::variant_page::Page::new());
+            let mut e = variants::ext::Ext::default();
+            e.gravity = 50;
+            p.read(e.encode());
+            let class = crate::variant_page::class(
+                Arc::clone(&p),
+                skulls_menu::DESCRIPTION_TEXT,
+                skulls_menu::LIST_LAYOUT,
+            );
+            list(ListPage::new(class, move || p.spec()))
         }
         "coop" | "coop.friends" | "coop.join" => {
             let lobby = lobby();

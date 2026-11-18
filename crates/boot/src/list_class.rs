@@ -645,6 +645,9 @@ const PICTURE_BLOCK: u32 = 0x140;
 const _: () = assert!(PICTURE_BLOCK >= DESCRIPTION_BLOCK + TEXT_BLOCK_SIZE);
 /// Where the frame's bitmap block goes, after the picture's.
 const FRAME_BLOCK: u32 = PICTURE_BLOCK + BITMAP_BLOCK_SIZE;
+/// Where [`push`] builds its request (0x20 bytes), at the end of the page.
+const PUSH_BLOCK: u32 = 0x1000 - 0x20;
+const _: () = assert!(PUSH_BLOCK >= FRAME_BLOCK + BITMAP_BLOCK_SIZE);
 
 /// Where a class's description block goes, the block, and where to keep
 /// each screen's widget.
@@ -1488,9 +1491,11 @@ impl feature::Feature for ListClass {
         let rows = Arc::clone(&self.rows);
         let title = rows.title();
         let tables = b.guest_alloc(0x1000, Permissions::RW)?;
-        if PUSH_REQUEST.load(Ordering::SeqCst) == 0 {
-            set_push_request(b.guest_alloc(0x1000, Permissions::RW)?);
-        }
+        // The request [`push`] builds lives in the class's own table page:
+        // a page of its own, allocated only by the first class a process
+        // ever built, moved every later allocation of that plan by a page
+        // and left other plans pointing at memory they never allocated.
+        set_push_request(tables + PUSH_BLOCK);
         let name = self.id;
         let shown = self.description.map(|_| Arc::new(Shown::default()));
         // The loader needs every address, so the entries are made first and

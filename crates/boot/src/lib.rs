@@ -84,6 +84,7 @@ pub mod ui_kit;
 pub mod ui_watch;
 pub mod variant_ext;
 pub mod variant_options;
+pub mod variant_page;
 pub mod bot_glue;
 pub mod clankers;
 pub mod video_screen;
@@ -937,6 +938,16 @@ pub fn run_hosted_with_live(
         features
             .add(&h1_options_row::SetupRow { data_root: opts.data_root.clone() })
             .map_err(|e| anyhow::anyhow!("h1 options row: {e}"))?;
+    }
+    // The game variant editor's More Options row and page (our options in
+    // the record's extension block; docs/game/game-options.md section 3).
+    {
+        let page = Arc::new(variant_page::Page::new());
+        let class = variant_page::class(page, skulls_menu::DESCRIPTION_TEXT, skulls_menu::LIST_LAYOUT);
+        if let Err(e) = features.add(&class) {
+            eprintln!("variant options: {e}");
+        }
+        features.add(&variant_page::MoreRow).map_err(|e| anyhow::anyhow!("variant options row: {e}"))?;
     }
     features.add(&hud::Hud).map_err(|e| anyhow::anyhow!("hud: {e}"))?;
     // The party privacy as the Live session's visibility, and the Live
