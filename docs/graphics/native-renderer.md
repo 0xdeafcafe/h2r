@@ -982,8 +982,8 @@ skipped light never reaches.
 
 1. **The skip and the runs** (built: `feature::native_lights`,
    `native_render::lights`, `impl.render.native_lights`, off by default;
-   points `RENDER_DYNAMIC_LIGHTS` and `RENDER_LIGHT_PASSES`). No host yet,
-   so every light keeps its D3D passes.
+   points `RENDER_DYNAMIC_LIGHTS` and `RENDER_LIGHT_PASSES`). The host
+   (slice 3) takes no light yet, so every light keeps its D3D passes.
 2. **The light's constants**: trace `0x0004a1e0` and `0x00048ee0` and
    port them as pure functions of `Light` and the `ligh` definition, with
    tests against invented lights. `0x0004a1e0` and `0x000497a0` are done
@@ -1054,6 +1054,14 @@ skipped light never reaches.
 3. **Unshadowed lights over the native world**: the host takes lights
    without the shadow bit, the light's list copied at the hook, and draws
    the world's lit parts with their materials' layer-12 and 13 passes.
+   Started (Code): `boot::native_lights_glue` is installed on the device
+   with the world's host. Its `tail` runs `Device::light_passes_tail` over
+   the hook's memory (an adapter to the device's memory trait; the hook
+   holds the guest's memory, then the host locks the device, the D3D
+   entries' order) and its `target` is `Device::bound_target`. Its
+   `accepts` says no to every light until the passes are drawn, so the
+   feature records the view's target and every light keeps its D3D
+   passes.
 4. **Objects**, through the models as stage 3's objects.
 5. **Shadows**: layer 10 into our depth texture, the term in the light's
    pass.

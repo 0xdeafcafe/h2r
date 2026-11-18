@@ -337,8 +337,10 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     // The dynamic lights on the native GPU renderer
     // (H2_FEATURES=impl.render.native_lights=on, off by default;
     // docs/graphics/native-renderer.md, stage 4): a context-only skip on
-    // each light's passes, in the game's light order. No host yet, so
-    // every light keeps its D3D passes.
+    // each light's passes, in the game's light order. Its host
+    // (native_lights_glue) does the device side of a skipped light's tail
+    // and reports the bound target, but takes no light yet, so every light
+    // keeps its D3D passes.
     features
         .add(&feature::native_lights::NativeLights)
         .map_err(|e| anyhow::anyhow!("native lights: {e}"))?;
