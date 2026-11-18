@@ -310,6 +310,14 @@ fn main() {
                         actions: (tick % 120 < 3)
                             .then(|| vec![if i == 2 { "melee" } else { "reload" }.into()]),
                         grenade: Some(if i % 2 == 0 { "frag" } else { "plasma" }.into()),
+                        // Around the circle: d/dt of the position.
+                        vel: Some([-r * 0.4 * a.sin(), r * 0.4 * a.cos(), 0.0]),
+                        // The burst's shot on the frame's middle tick.
+                        fire: (tick % 60 < 9 && i != 2).then_some(0b10),
+                        body: Some(1.0),
+                        shield: Some(1.0),
+                        seat: None,
+                        actions_ago: (tick % 120 < 3).then(|| vec![1]),
                     }
                 })
                 .collect(),
@@ -334,10 +342,12 @@ fn main() {
                     pos: [24.0 * (-t * 0.2).cos(), 24.0 * (-t * 0.2).sin(), 1.0],
                     amount: Some(0.2),
                     kind: Some("bullet".into()),
+                    ago: Some(1),
                 })
                 .into_iter()
                 .collect(),
             bsp: Some(0),
+            cut: None,
             // A door opening and closing every eight seconds.
             machines: vec![live_proto::game::FrameMachine {
                 node: None,

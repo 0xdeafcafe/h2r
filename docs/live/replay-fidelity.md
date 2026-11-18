@@ -451,9 +451,15 @@ Each step is test-first and runs in both homes.
    `v`), and a killcam (click a kill or death mark, or `k`): 5 s before, at
    0.5×, through the killer's eyes, opening the 3D view if it is closed and
    reaching a popped-out one.
-3. **Protocol:** `vel`, `seat`, `vitality`, `fire`, `anim`, tick offsets
-   for hits and actions, and the `cut` header. Packed format version 3
-   (version 2 still reads). Golden vectors on both sides.
+3. **Done, protocol:** `vel`, `seat`, `body` and `shield`, `fire` (a
+   32-tick mask), `actions_ago` and hits' `ago`, and the frame's `cut`, in
+   JSON and packed format version 3 (versions 2 and 1 still read; a v2
+   golden stream proves it on both sides). Dropped frames' one-shots are
+   placed again against the delivering frame's tick. The telemetry session
+   sends `cut` on the first frame after a revert; the other fields wait for
+   capture (step 4). Filled, they cost about 25% on the sample frames
+   before any of the compression work. `anim` is not in version 3: it
+   waits for the research below, and goes in as a later appended field.
    **Research, alongside (decided):** find each unit's animation state in
    guest memory (the animation graph, its current state and frame) by
    static reading and the existing memory fixtures, and record it in the

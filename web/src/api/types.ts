@@ -51,6 +51,18 @@ export interface FramePlayer {
   actions?: string[] | null;
   /** "frag" | "plasma". */
   grenade?: string | null;
+  /** Velocity, game units a second (version 3). */
+  vel?: [number, number, number] | null;
+  /** Shots by tick: bit k is a shot k ticks before this frame's tick. */
+  fire?: number | null;
+  /** Body vitality, 0..1. */
+  body?: number | null;
+  /** Shield vitality, 0..4 (overshield above 1). */
+  shield?: number | null;
+  /** The seat in its vehicle (the vehicle's seat index). */
+  seat?: number | null;
+  /** Ticks before this frame's tick of each of `actions`, when known. */
+  actions_ago?: number[] | null;
 }
 
 /** A vehicle anywhere in the world. A player's or actor's `vehicle` is its `id`. */
@@ -82,6 +94,8 @@ export interface FrameHit {
   amount?: number | null;
   /** "bullet", "explosion", "grenade", "melee", "fall", "collision", "vehicle", ... */
   kind?: string | null;
+  /** Ticks before the frame's tick the hit landed (version 3). */
+  ago?: number | null;
 }
 
 /** A door, elevator, the scarab, ...: map.glb's `machines` child `node`. */
@@ -113,6 +127,18 @@ export interface FrameActor {
   speed?: number | null;
   actions?: string[] | null;
   grenade?: string | null;
+  /** Velocity, game units a second (version 3). */
+  vel?: [number, number, number] | null;
+  /** Shots by tick: bit k is a shot k ticks before this frame's tick. */
+  fire?: number | null;
+  /** Body vitality, 0..1. */
+  body?: number | null;
+  /** Shield vitality, 0..4 (overshield above 1). */
+  shield?: number | null;
+  /** The seat in its vehicle (the vehicle's seat index). */
+  seat?: number | null;
+  /** Ticks before this frame's tick of each of `actions`, when known. */
+  actions_ago?: number[] | null;
 }
 
 export interface Frame {
@@ -128,6 +154,9 @@ export interface Frame {
   /** Scenario placements not where the scenario put them (moved or gone),
    *  every one each frame, by kind then index. */
   objects?: FrameObject[];
+  /** A revert or restart happened just before this frame: the run it
+   *  starts, by the engine tick it came back to (version 3). */
+  cut?: number | null;
 }
 
 /** A scenario placement that moved (`p`, `f`, `u`) or is gone: map.glb's
