@@ -580,9 +580,9 @@ pub struct Flow {
     screens: Mutex<Vec<(u32, Mode)>>,
     /// The list handler whose rows are being drawn (`0x2c9ac4`).
     drawing: std::sync::atomic::AtomicU32,
-    /// Maps screens whose map was pressed: the categories' window and slot,
-    /// closed once that screen is freed.
-    closing: Mutex<Vec<(u32, (u32, u32))>>,
+    /// Maps screens whose map was pressed (by list handler): the
+    /// categories' screen under it, closed once that screen is freed.
+    closing: Mutex<Vec<(u32, u32)>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -610,16 +610,23 @@ impl Flow {
     pub fn pick(&self, c: Category) {
         *lock(&self.next) = Some(Mode::Maps(c));
     }
-    /// A map was pressed on `handler`'s screen: the categories (at
-    /// `window`, `slot`) close once it is freed.
-    pub fn picked(&self, handler: u32, window: u32, slot: u32) {
+    /// A map was pressed on `handler`'s screen: the categories' screen
+    /// under it (the latest categories built) closes once it is freed.
+    /// Returns that screen; `None` without one.
+    pub fn picked(&self, handler: u32) -> Option<u32> {
+        let categories = lock(&self.screens)
+            .iter()
+            .rev()
+            .find(|(_, m)| *m == Mode::Categories)
+            .map(|(h, _)| h.wrapping_sub(SCREEN_LIST))?;
         let mut c = lock(&self.closing);
         c.retain(|(h, _)| *h != handler);
-        c.push((handler, (window, slot)));
+        c.push((handler, categories));
+        Some(categories)
     }
-    /// `screen` is being freed: forget it; the categories to close, if a
-    /// map was pressed on it.
-    pub fn freed(&self, screen: u32) -> Option<(u32, u32)> {
+    /// `screen` is being freed: forget it; the categories' screen to
+    /// close, if a map was pressed on it.
+    pub fn freed(&self, screen: u32) -> Option<u32> {
         let handler = screen.wrapping_add(SCREEN_LIST);
         lock(&self.screens).retain(|(h, _)| *h != handler);
         let mut c = lock(&self.closing);
@@ -803,9 +810,13 @@ impl feature::Feature for MapSelect {
             };
             match mode {
                 Mode::Maps(_) => {
-                    // The categories under this screen: same window, same slot.
-                    flow.picked(handler, window, slot);
-                    eprintln!("map select: map {id:#x} pressed; the categories close after");
+                    // The categories under this screen.
+                    match flow.picked(handler) {
+                        Some(_) => {
+                            eprintln!("map select: map {id:#x} pressed; the categories close after")
+                        }
+                        None => eprintln!("map select: map {id:#x} pressed; no categories under it"),
+                    }
                     Ok(F::Continue)
                 }
                 Mode::Categories => {
@@ -847,7 +858,7 @@ impl feature::Feature for MapSelect {
         let flow = Arc::clone(&self.flow);
         b.raw().before(&MAP_SCREEN_FREE, "the categories close after a map", move |c| {
             let screen = c.cpu.ecx;
-            let Some((window, slot)) = flow.freed(screen) else {
+            let Some(categories) = flow.freed(screen) else {
                 return Ok(F::Continue);
             };
             let flags = {
@@ -857,12 +868,14 @@ impl feature::Feature for MapSelect {
             c.answer_async(move |cx| -> engine::entry::EntryFuture {
                 Box::pin(async move {
                     // The destructor itself (this hook passes it now: the
-                    // screen is forgotten), then the close.
+                    // screen is forgotten), then the close. Not by window
+                    // and slot: mid-free, the window's top word is 0 and
+                    // that close read 0x42 (lifecycle::close_screen).
                     let r = cx
                         .call(GuestCall::new(MAP_SCREEN_FREE_AT).ecx(screen).args([flags]))
                         .await?;
                     eprintln!("map select: the maps closed; closing the categories");
-                    lifecycle::close_slot(&cx, window, slot).await?;
+                    lifecycle::close_screen(&cx, categories).await?;
                     Ok(engine::entry::Ret::new(r.eax, 4))
                 })
             })

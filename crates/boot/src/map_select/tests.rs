@@ -451,9 +451,18 @@ fn the_flow_lists_categories_then_the_picked_maps_and_closes_after_a_map() {
     // Another category, then a map: the categories close once it's freed.
     f.pick(Category::Halo2);
     assert_eq!(f.building(0x3614), Some(Mode::Maps(Category::Halo2)));
-    f.picked(0x3614, 3, 4);
-    assert_eq!(f.freed(0x3000), Some((3, 4)));
+    assert_eq!(f.picked(0x3614), Some(0x1000), "the categories' screen");
+    assert_eq!(f.freed(0x3000), Some(0x1000));
     assert_eq!(f.freed(0x3000), None, "once");
     assert_eq!(f.freed(0x1000), None, "the categories: nothing after");
     assert_eq!(f.mode_of(0x1614), None);
+}
+
+#[test]
+fn a_map_pressed_with_no_categories_under_it_closes_nothing() {
+    let f = Flow::default();
+    f.pick(Category::Halo1);
+    assert_eq!(f.building(0x2614), Some(Mode::Maps(Category::Halo1)));
+    assert_eq!(f.picked(0x2614), None);
+    assert_eq!(f.freed(0x2000), None);
 }
