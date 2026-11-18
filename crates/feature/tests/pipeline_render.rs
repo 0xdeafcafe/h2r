@@ -278,6 +278,11 @@ fn rig_with(on: bool, serviced: &[&'static str]) -> Rig {
 
 /// [`rig_with`] with other addresses (the guards' settings).
 fn rig_cfg(on: bool, serviced: &[&'static str], addrs: Addrs) -> Rig {
+    rig_full(on, serviced, addrs, &[])
+}
+
+/// [`rig_cfg`] watching guest words (`H2_PIPELINE_WATCH`).
+fn rig_full(on: bool, serviced: &[&'static str], addrs: Addrs, watch: &[u32]) -> Rig {
     let log: Log = Arc::default();
     let mut d = Dispatch::default();
     d.register_generated_rust(FRAME, render).unwrap();
@@ -397,6 +402,7 @@ fn rig_cfg(on: bool, serviced: &[&'static str], addrs: Addrs) -> Rig {
             &[],
         )
         .serviced(serviced)
+        .watch(watch)
         .print(false);
     let mut r = Registry::new(Switches::defaults());
     assert!(r.add(&feature).unwrap());
@@ -926,4 +932,72 @@ fn the_guards_run_warm_up_busy_io_and_after_fallback_frames_serially() {
     let s = piped.feature.stats();
     assert_eq!(s.serial.get("warmup"), Some(&4), "{s:?}");
     piped.finish();
+}
+
+/// Switched on with every frame serial (a warm-up that never ends): guest
+/// memory after every frame is the switched-off run's, byte for byte (the
+/// data, visit marks included, the game thread's stack, the protected
+/// page), and the feature made no call of its own. A serial frame is the
+/// generated original on the game thread and nothing more.
+#[test]
+fn switched_on_with_every_frame_serial_memory_is_the_switched_off_runs() {
+    let n = rounds();
+    let all_serial = Addrs {
+        warmup: u32::MAX,
+        ..ADDRS.clone()
+    };
+    let calls = ["KeQuerySystemTime", "MmSetAddressProtect"];
+    let mut off = rig_cfg(false, &calls, ADDRS.clone());
+    let mut on = rig_cfg(true, &calls, all_serial);
+    let bytes = |r: &Rig, at: u32, len: u32| {
+        let mut v = vec![0; len as usize];
+        r.rt.memory().read_bytes(at, &mut v, 1).unwrap();
+        v
+    };
+    for k in 1..=n {
+        // Every kind of frame the pipelined tests use, each run serially.
+        let mode = [0, 1, 2, 3, 4, 6][(k % 6) as usize];
+        for r in [&mut off, &mut on] {
+            r.rt.memory().set_u32(CHURN, 1).unwrap();
+            r.round(k, false);
+            r.rt.memory().set_u32(FALLBACK, mode).unwrap();
+            r.run(FRAME);
+        }
+        assert_eq!(off.data(), on.data(), "round {k} (mode {mode})");
+        assert_eq!(
+            bytes(&off, STACK_TOP - GAME_STACK, GAME_STACK),
+            bytes(&on, STACK_TOP - GAME_STACK, GAME_STACK),
+            "round {k}: the game thread's stack"
+        );
+        assert_eq!(
+            bytes(&off, PROTECTED, 0x1000),
+            bytes(&on, PROTECTED, 0x1000)
+        );
+    }
+    let s = on.feature.stats();
+    assert_eq!(s.pipelined, 0, "{s:?}");
+    assert_eq!(s.serial.get("warmup"), Some(&(2 * u64::from(n))), "{s:?}");
+    assert!(s.fallbacks.is_empty() && s.serviced.is_empty(), "{s:?}");
+    assert!(!on.feature.in_flight());
+}
+
+/// `H2_PIPELINE_WATCH`: a watched word the sim changes every round is
+/// reported once a round; an unwatched run reports nothing, and watching
+/// changes nothing.
+#[test]
+fn a_watched_word_reports_each_change_once() {
+    let n = rounds();
+    let mut watched = rig_full(true, &[], ADDRS.clone(), &[INPUT]);
+    let mut plain = rig(true);
+    for k in 1..=n {
+        watched.round(k, false);
+        plain.round(k, false);
+    }
+    watched.finish();
+    plain.finish();
+    assert_eq!(watched.feature.stats().pipelined, u64::from(n));
+    // Seen first at round 1's frame; each later round changed it once.
+    assert_eq!(watched.feature.watch_lines(), n - 1);
+    assert_eq!(plain.feature.watch_lines(), 0);
+    compare(&plain.data(), &watched.data());
 }
