@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 mod client;
 mod endpoint;
 pub mod expect;
+pub mod havok;
 pub mod hot;
 mod load;
 mod pad;

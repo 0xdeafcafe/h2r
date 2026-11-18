@@ -394,6 +394,51 @@ pub const COMPONENT_BODY_RIGID: u32 = 0x40;
 pub const RIGID_MOTION: u32 = 0x3c;
 pub const MOTION_VELOCITY: u32 = 0x40;
 pub const MOTION_POSITION: u32 = 0xb0;
+// The Havok world as `havok.bodies` and `havok.contacts` walk it
+// (docs/engine/havok-runtime.md; addresses there). Arrays are Havok's
+// (pointer, count, capacity with bit 31 "not owned").
+/// The world pointer (`0x001c2f07` stores it after `0x003101c0`).
+pub const HAVOK_WORLD_PTR: u32 = 0x0051_e9a4;
+/// Active simulation islands (`0x0030ccd0` moves one here from the
+/// inactive array).
+pub const WORLD_ACTIVE_ISLANDS: u32 = 0x08;
+pub const WORLD_INACTIVE_ISLANDS: u32 = 0x14;
+/// The fixed island (the level, static bodies), built at `0x0031071a`.
+pub const WORLD_FIXED_ISLAND: u32 = 0x2c;
+/// An island's entities (`0x001c4082`) and constraints (`0x00316cf0`).
+pub const ISLAND_ENTITIES: u32 = 0x3c;
+pub const ISLAND_CONSTRAINTS: u32 = 0x58;
+/// An entity's properties: (key, value) pairs of 8 bytes (`0x001c3f33`).
+pub const ENTITY_PROPERTIES: u32 = 0x30;
+/// The property whose value is the physics component index.
+pub const PROPERTY_PHYSICS_COMPONENT: u32 = 0x2001;
+/// An entity's material friction and restitution (`0x00318d1c`).
+pub const ENTITY_FRICTION: u32 = 0x4c;
+pub const ENTITY_RESTITUTION: u32 = 0x50;
+/// A physics component's object datum handle (`0x001c3fa4`).
+pub const COMPONENT_OBJECT: u32 = 0x08;
+/// Motion: inverse mass (`0x00318e1c`) and angular velocity (`0x001c4f51`).
+pub const MOTION_INV_MASS: u32 = 0x2c;
+pub const MOTION_ANGULAR_VELOCITY: u32 = 0x50;
+/// The contact constraint's vtable (`0x0031c00f`): the constraint is
+/// embedded at contact manager `+0x10` (`0x00319110`).
+pub const CONTACT_CONSTRAINT_VTABLE: u32 = 0x0041_53c8;
+pub const CONSTRAINT_ENTITY_A: u32 = 0x0c;
+pub const CONSTRAINT_ENTITY_B: u32 = 0x10;
+/// Contact points (`0x0031bedb`, element `0x20`): position, then the
+/// normal; the separation distance in the position's `w` (`0x0031f810`).
+pub const CONTACT_POINTS: u32 = 0x34;
+pub const CONTACT_POINT_SIZE: u32 = 0x20;
+pub const POINT_DISTANCE: u32 = 0x0c;
+pub const POINT_NORMAL: u32 = 0x10;
+/// Per-point properties (`0x0031bf1f`, element `0x1c`), in point order: the
+/// impulse the solver applied (`0x0031e530`), friction, restitution
+/// (`0x00318d3c`).
+pub const CONTACT_PROPERTIES: u32 = 0x90;
+pub const CONTACT_PROPERTY_SIZE: u32 = 0x1c;
+pub const PROPERTY_IMPULSE: u32 = 0x00;
+pub const PROPERTY_FRICTION: u32 = 0x08;
+pub const PROPERTY_RESTITUTION: u32 = 0x0c;
 /// Units per second the hitbox offset decays by (`0x004407b8`).
 pub const HITBOX_OFFSET_RATE: f32 = 0.15;
 pub const BIPED_MODE_GROUND: u8 = 1;
