@@ -146,6 +146,11 @@ pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
         m::VARIANT_EXPORT => {
             need_open(app)?;
             let path = std::path::PathBuf::from(p.str("path")?);
+            // As doc.save_as: the folder is made.
+            if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+                std::fs::create_dir_all(dir)
+                    .map_err(|e| err(code::FAILED, format!("{}: {e}", dir.display())))?;
+            }
             run(app, Action::ExportVariant(path.clone()))?;
             Ok(json!({ "path": path.display().to_string() }))
         }
