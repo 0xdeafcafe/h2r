@@ -289,15 +289,85 @@ use HTTPS/WSS. The worker performs discovery lazily, creates each game through
 `POST /v1/games`, opens `/v1/ingest`, authenticates with a fresh
 `games.write` token, refreshes it before expiry, sends frames unsigned as the
 contract allows, and batches up to four game events into one JWS signed with
-the account key through `live-proto`. Empty batches and messages over 16 KiB
-are rejected. The account key is never included in debug output.
+the account key through `live-proto` (a `GameEnded` always goes in a batch of
+its own). Empty batches and messages over 16 KiB are rejected. The account
+key is never included in debug output.
 
 Frames go as [packed frames](#packed-frames): one record per binary
-message, a stream per connection (a reconnect starts a new one), a keyframe
+message, a stream per connection (a [reconnect](#reconnect) starts a new one), a keyframe
 every 150 frames (ten seconds) and deltas between. A frame the format
 cannot carry (it never should: the same checks the server makes) goes as
 the JSON `frame` message instead and the stream carries on. The offline
 JSONL capture stays JSON.
+
+### Reconnect
+
+The ingest socket can drop at any time: a Worker deploy restarts the hub's
+Durable Object and closes every socket to it, and networks fail. A drop does
+not stop telemetry. Before this, the sink kept the dead socket, the worker
+latched the first error, and the process sent nothing more: a game could
+stay live on the server with its `GameEnded` never sent, and later games
+were never created.
+
+- **Backoff.** On a send, receive or connect failure the sink drops the
+  connection and waits before the next attempt: 250 ms, doubling up to 30 s,
+  each wait jittered by up to a fifth. A connection that stayed up 30 s
+  before it dropped, or a batch or game the server takes, starts the wait
+  over at 250 ms. The attempt runs on the telemetry worker, never the game
+  thread.
+- **A new connection.** Discovery runs again (a redeployed server may name a
+  new API), then the socket opens and sends `auth` with a fresh token. The
+  server keeps nothing per socket that a game needs: frames and batches
+  carry the server's game id, and the game admits its host on any socket. A
+  new connection is a new [packed](#packed-frames) stream, so its first frame
+  is a keyframe, which is what the server's new decoder needs. A frame
+  refused with `frame: ...` (the server lost its decoder, as after a Durable
+  Object wakes from hibernation) also makes the next frame a keyframe.
+- **Frames** go now or never: while there is no connection, or before the
+  game is created, they are dropped.
+- **The outbox.** Game starts and events are kept in order in a bounded
+  outbox (4096) until the server has answered for them. A `GameStarted` is
+  created with `POST /v1/games` when it reaches the front; the game's events
+  wait behind it. Past the bound the oldest `PlayerKilled` or
+  `ScoreChanged` is dropped; starts, ends, joins and leaves never are.
+- **Answers.** A batch leaves the outbox only on its answer. Replies come in
+  the order the server took the messages, a batch is always answered and a
+  frame only when refused, so `appended` is the batch's, and a refusal is
+  the batch's once half a second passes with nothing after it (refusals
+  carry no id). No answer in 10 s counts as a lost connection.
+- **Resends.** A batch is kept as signed, so a resend repeats its nonces.
+  If the first copy landed and only the answer was lost, the server refuses
+  the copy with `conflict` "nonce already used" and the sink counts the
+  batch delivered. The server seeds its nonce set from the log, so this
+  holds across a restart, within the five minute `at` window. A batch
+  signed more than four minutes ago is signed again (new nonces) before it
+  is sent, since the server refuses an `at` over five minutes off.
+- **Refusals.** `rate_limited` and `unavailable` are retried like a drop. A
+  batch refused for good (`invalid`, `forbidden`, `not_found`, `conflict`
+  "the game has ended") is dropped and logged; it could never land.
+- **Giving up.** Only the account being refused stops the sink, and with
+  it telemetry for the process: a `banned` refusal (HTTP, a batch reply, or
+  a close naming the ban), or three auth refusals in a row (close 4401 or
+  HTTP 401) with nothing accepted between.
+- **Exit.** On shutdown the sink makes one last delivery on a live
+  connection, without reconnecting; anything left is logged as not
+  delivered. The outbox is in memory only.
+
+What a duplicate does on the server, when a resend is not the same signed
+batch:
+
+| Duplicate | What the server does |
+|---|---|
+| `POST /v1/games` retried after a lost answer | Makes a second game. The first gets no writes and the server's idle sweep ends it as `lost` |
+| `GameEnded`, new nonce | Refused, `conflict` "the game has ended" |
+| `PlayerJoined`, new nonce | Refused, `invalid` (the player is already in the game) |
+| `PlayerKilled` / `ScoreChanged`, new nonce | Appended again: a kill counted twice, a score repeated |
+| Any batch, same nonces | Refused, `conflict` "nonce already used"; nothing appended |
+
+Sign-out does not stop telemetry: the sink signs with the account boot
+read from `accounts.json`, for the life of the process, so a game's
+`GameEnded` still goes after a Live sign-out mid-game. Revoking that key on
+the server would refuse it, and count towards giving up.
 
 The player on local slot 0 is the signed-in account: its roster entries
 (`GameStarted`, `PlayerJoined`) carry that account's `xuid`, while `name`
@@ -713,8 +783,11 @@ relying on live output, check in this order:
 2. Player name decoding, roster changes, and statborg values against the
    in-game scoreboard; verify kill attribution and score coalescing.
 3. Vehicle-parent position/facing and the `vehicle` identifier.
-4. Server discovery, game creation, token refresh, signed-batch acceptance,
-   and reconnect behavior against the live ingest implementation.
+4. Server discovery, game creation, token refresh and signed-batch
+   acceptance against the live ingest implementation. Reconnect, the outbox
+   and resends are tested against the embedded server through a proxy that
+   cuts, refuses and mutes the socket (`crates/live-telemetry/src/server_tests.rs`);
+   a real Worker deploy mid-game is still to watch.
 5. Whether end-latch reasons other than `finished` can be distinguished; the
    current hook cannot reliably identify `quit` or `lost`.
 6. The likely appearance path: local player slots at `0x0054e8e0` (profile
