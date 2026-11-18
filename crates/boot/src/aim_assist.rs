@@ -342,10 +342,7 @@ impl feature::Feature for AimAssist {
                     );
                 }
                 Ok(Flow::Continue)
-            })
-            // Inside the precision item swap (crate::precision): both
-            // change the game's weapons as it activates.
-            .after_feature(crate::precision::FEATURE);
+            });
 
         // Multiplayer, per player: around one local player's control
         // update, and only for the touch player (player.rs).
