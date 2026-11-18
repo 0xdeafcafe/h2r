@@ -795,7 +795,7 @@ list for the user to play (§11).
    - The brain is trivial:
      - turn toward the nearest living enemy and walk at it;
      - hold the trigger while that enemy is within 15 degrees of the aim
-       and 30 world units;
+       and 10 world units (about 30 m);
      - there is no line of sight yet, so it walks into walls.
    - Switched on by `H2_BOTS=<n>` (1 to 3) for this stage; the Clankers
      page replaces that in stage 7.
