@@ -129,6 +129,7 @@ pub(crate) fn registry(case: &Case) -> feature::Registry {
                 .then(|| crate::coop_probe::parse(|k| (k == "H2_COOP_PROBE").then(|| "1".to_owned())).unwrap().unwrap()),
             live: None,
             settings,
+            map_gate: None,
             disc: nowhere,
             data_root: nowhere,
         },

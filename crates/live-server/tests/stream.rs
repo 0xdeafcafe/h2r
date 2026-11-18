@@ -418,24 +418,18 @@ async fn ingest_fans_out_and_records_frames() {
     };
     assert_eq!(event.position, position);
 
-    // One frame a second was recorded, server-signed, with its source.
-    let mut recorded = Vec::new();
-    for _ in 0..50 {
-        recorded = live
-            .recorded_frames(&game_id, None, None, 0, 100)
-            .await
-            .unwrap()
-            .items;
-        if !recorded.is_empty() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    // Two when the frames straddle a second boundary; the one-a-second rule
-    // itself is the frame clock's unit test.
-    assert!(matches!(recorded.len(), 1 | 2), "{recorded:?}");
-    assert_eq!(recorded[0]["tick"], 30);
-    assert_eq!(recorded[0]["source"], account.id.as_str());
+    // Every frame sent is recorded, in the game's chunk (stored at its
+    // end; flushed here), listed in its signed index.
+    let recorded = recorded_frames(&live, &game_id).await;
+    let ticks: Vec<_> = recorded.iter().map(|f| f["tick"].clone()).collect();
+    assert_eq!(ticks, [30, 33]);
+    let index = live.frame_chunks(&game_id).await.unwrap();
+    assert_eq!(index.len(), 1);
+    assert_eq!(
+        (index[0].from_tick, index[0].to_tick, index[0].frames),
+        (30, 33, 2)
+    );
+    assert_eq!(index[0].players, [0]);
 }
 
 #[tokio::test]
@@ -578,19 +572,8 @@ async fn frames_carry_species_aim_weapon_and_shots() {
     assert_eq!(next_frame.tick, 34);
     assert_eq!(next_frame.players[0].shots, Some(3));
 
-    // And the recorded GameFrame keeps the same fields.
-    let mut recorded = Vec::new();
-    for _ in 0..50 {
-        recorded = live
-            .recorded_frames(&game_id, None, None, 0, 100)
-            .await
-            .unwrap()
-            .items;
-        if !recorded.is_empty() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    // And the recorded frame keeps the same fields.
+    let recorded = recorded_frames(&live, &game_id).await;
     assert!(!recorded.is_empty());
     assert_eq!(recorded[0]["tick"], 30);
     let player = &recorded[0]["players"][0];
@@ -704,6 +687,10 @@ async fn campaign_frames_carry_vehicles_and_actors() {
             shield: Some(0.5),
             seat: None,
             actions_ago: Some(vec![1]),
+            anim: Some(live_proto::game::FrameAnim {
+                name: "combat:pistol:any:idle".into(),
+                frame: 4.5,
+            }),
         }],
         hits: vec![live_proto::game::FrameHit {
             from: Some("90070007".into()),
@@ -716,6 +703,7 @@ async fn campaign_frames_carry_vehicles_and_actors() {
         }],
         bsp: Some(1),
         cut: Some(61),
+        cinematic: false,
         machines: vec![live_proto::game::FrameMachine {
             node: Some("scarab_0".into()),
             id: "90090009".into(),
@@ -781,18 +769,7 @@ async fn campaign_frames_carry_vehicles_and_actors() {
     assert_eq!(frame.actors[0].team.as_deref(), Some("covenant"));
     assert_eq!(frame.actors[0].shots, Some(2));
 
-    let mut recorded = Vec::new();
-    for _ in 0..50 {
-        recorded = live
-            .recorded_frames(&game_id, None, None, 0, 100)
-            .await
-            .unwrap()
-            .items;
-        if !recorded.is_empty() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    let recorded = recorded_frames(&live, &game_id).await;
     assert_eq!(recorded[0]["vehicles"][0]["kind"], "warthog");
     assert_eq!(recorded[0]["actors"][0]["species"], "grunt");
     assert_eq!(recorded[0]["actors"][0]["weapon"], "plasma_pistol");
@@ -810,6 +787,23 @@ async fn campaign_frames_carry_vehicles_and_actors() {
         serde_json::json!([0.0, 1.0, 0.0])
     );
     assert_eq!(recorded[0]["objects"][1]["gone"], true);
+}
+
+/// Every frame a game recorded, as JSON: its open chunk flushed (as its end
+/// would), then its chunks read back, once the ingest has taken a frame.
+async fn recorded_frames(live: &Live, game_id: &str) -> Vec<serde_json::Value> {
+    for _ in 0..50 {
+        live.flush_frames(game_id).await;
+        let frames = live.chunk_frames(game_id).await.unwrap();
+        if !frames.is_empty() {
+            return frames
+                .iter()
+                .map(|f| serde_json::to_value(f).unwrap())
+                .collect();
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    Vec::new()
 }
 
 /// Reads a binary message of packed frames.
@@ -993,45 +987,42 @@ async fn packed_frames_ingest_stream_and_record() {
         live_proto::IngestReply::Error { .. }
     ));
 
-    // Recorded frames are stored packed and signed as such; JSON readers
-    // get them decoded, packed readers as a container of keyframes.
-    let mut data = Vec::new();
-    for _ in 0..50 {
-        data = live
-            .recorded_frame_data(&game_id, None, None, 0, 100)
-            .await
-            .unwrap()
-            .items;
-        if !data.is_empty() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert!(data[0]["packed"].is_string() && data[0].get("players").is_none());
-    let json = live
-        .recorded_frames(&game_id, None, None, 0, 100)
-        .await
-        .unwrap()
-        .items;
-    assert_eq!(json[0]["source"], account.id.as_str());
-    let first: live_proto::game::Frame = serde_json::from_value(json[0].clone()).unwrap();
+    // Recorded frames are stored as chunks: the index lists them, and each
+    // chunk holds the frames as sent.
+    let recorded = recorded_frames(&live, &game_id).await;
+    let first: live_proto::game::Frame = serde_json::from_value(recorded[0].clone()).unwrap();
     assert_eq!(first.tick, expect[0].tick);
     assert_eq!(first.players, expect[0].players);
+    let index = live.frame_chunks(&game_id).await.unwrap();
+    let from = index[0].from_tick;
     // Off the test's one runtime thread, which the server needs.
-    let url = format!("http://{addr}/v1/games/{game_id}/frames?format=packed");
-    let (kind, bytes) = tokio::task::spawn_blocking(move || {
-        let body = ureq::get(&url).call().unwrap();
+    let base = format!("http://{addr}/v1/games/{game_id}");
+    let (list, kind, cache, bytes, json_frames) = tokio::task::spawn_blocking(move || {
+        let list: serde_json::Value = ureq::get(&format!("{base}/chunks"))
+            .call()
+            .unwrap()
+            .into_json()
+            .unwrap();
+        let body = ureq::get(&format!("{base}/chunks/{from}")).call().unwrap();
         let kind = body.header("content-type").map(str::to_owned);
+        let cache = body.header("cache-control").map(str::to_owned);
         let mut bytes = Vec::new();
         std::io::Read::read_to_end(&mut body.into_reader(), &mut bytes).unwrap();
-        (kind, bytes)
+        // The JSON frames read is gone.
+        let json_frames = match ureq::get(&format!("{base}/frames?format=json")).call() {
+            Err(ureq::Error::Status(code, _)) => code,
+            Ok(r) => r.status(),
+            Err(e) => panic!("{e}"),
+        };
+        (list, kind, cache, bytes, json_frames)
     })
     .await
     .unwrap();
-    assert_eq!(kind.as_deref(), Some("application/x-h2-frames"));
-    let replay: Vec<_> = pack::records(&bytes)
-        .map(|r| pack::decode_keyframe(r.unwrap()).unwrap())
-        .collect();
-    assert_eq!(replay.len(), json.len());
+    assert_eq!(list["items"][0]["from_tick"], from);
+    assert_eq!(list["items"][0]["sha256"], index[0].sha256.as_str());
+    assert_eq!(kind.as_deref(), Some("application/x-h2-chunk"));
+    assert_eq!(cache.as_deref(), Some("public, max-age=31536000, immutable"));
+    let replay = live_proto::chunk::frames(&bytes).unwrap();
     assert_eq!(replay[0], first);
+    assert_eq!(json_frames, 400);
 }

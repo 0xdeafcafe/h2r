@@ -2,7 +2,10 @@
 //! extension block in the active record's spare bytes
 //! (`G+0x13c + 0x10c`; [`variants::ext`], docs/game/game-options.md
 //! section 3). Slice 3 applies gravity, through the Low Gravity code in
-//! [`crate::skulls_custom`]; the other options arrive with their slices.
+//! [`crate::skulls_custom`]; slice 5 unlimited grenades, through the
+//! Unlimited Grenades skull's top-up on every player's unit
+//! ([`Decision::unlimited_grenades`]); the other options arrive with their
+//! slices.
 //!
 //! **Who applies it.** A machine alone, the host of a Live game, and a
 //! Live guest whose block came from its host. Never on System Link
@@ -21,6 +24,15 @@
 //! one) leaves the field out: the guest says so and plays the game's own
 //! rules.
 //!
+//! **Older guests.** Each console's presence carries its build and its
+//! capabilities ([`live_proto::capability::VARIANT_EXT`] for this one). A
+//! Live host starting a game with options asks the server for its guests'
+//! presence ([`live_hle::Hle::players_lacking`], at most [`OLDER_WAIT`])
+//! and names each guest whose build lacks it: that guest plays the
+//! game's own rules against a host with extras. The guests' XUIDs come
+//! from the squad session's players ([`session_guests`]) until the Live
+//! session's roster names them.
+//!
 //! The decision is a pure function over guest memory ([`Gm`]), read each
 //! tick after the game's (cheap: the session is read only when the block
 //! asks for something).
@@ -32,6 +44,8 @@ use feature::{BuildError, Builder, Flow, Manifest};
 use live_hle::HostVariantExt;
 use live_proto::session::VariantExt;
 use variants::ext::{self, Ext};
+
+use engine::memory::{GuestMemory, MemFault};
 
 use crate::coop_probe::{self, Session};
 use crate::layout_glue::Gm;
@@ -54,6 +68,57 @@ pub const SYSTEM_LINK: u32 = 1;
 pub const OPTIONS_VARIANT: u32 = 0x134;
 /// How long a guest's start waits for its host's options.
 pub const HOST_WAIT: Duration = Duration::from_millis(1500);
+/// How long a host's start waits for its guests' presence.
+pub const OLDER_WAIT: Duration = Duration::from_millis(500);
+
+/// The squad session's players (docs/game/bots.md, "Session S"): a mask of
+/// the 16 slots in use, then the slots, each with a 12-byte id (the XUID,
+/// then the machine id's last four) and its peer.
+pub mod players {
+    pub const MASK: u32 = 0x111c;
+    pub const AT: u32 = 0x1120;
+    pub const STRIDE: u32 = 0x13c;
+    pub const XUID: u32 = 0;
+    pub const PEER: u32 = 0xc;
+    pub const SLOTS: u32 = 16;
+}
+
+/// The XUIDs of the session's players on other machines than this one
+/// (the host's guests), in slot order. Zero XUIDs (no account) are left
+/// out.
+pub fn session_guests<M: Gm + ?Sized>(m: &M, s: &Session) -> Vec<live_proto::Xuid> {
+    let Some(mask) = m.u32(s.addr.wrapping_add(players::MASK)) else {
+        return Vec::new();
+    };
+    (0..players::SLOTS)
+        .filter(|i| mask & (1u32 << i) != 0)
+        .filter_map(|i| {
+            let at = s.addr.wrapping_add(players::AT + i * players::STRIDE);
+            let peer = m.u32(at.wrapping_add(players::PEER))?;
+            let mut x = [0u8; 8];
+            m.rd(at.wrapping_add(players::XUID), &mut x).then_some(())?;
+            let xuid = u64::from_le_bytes(x);
+            (peer != s.local_peer && xuid != 0).then_some(live_proto::Xuid(xuid))
+        })
+        .collect()
+}
+
+/// The host's lines about guests whose build can't apply its options.
+pub fn older_lines(lacking: &live_hle::Lacking) -> Vec<String> {
+    match lacking {
+        live_hle::Lacking::Known(tags) => tags
+            .iter()
+            .map(|t| {
+                format!(
+                    "variant options: {t} plays this variant with the game's own rules (older build)"
+                )
+            })
+            .collect(),
+        live_hle::Lacking::Unknown(why) => {
+            vec![format!("variant options: the guests' builds are not known: {why}")]
+        }
+    }
+}
 
 /// The block this machine took from its host for the game running now
 /// (a guest), so [`in_game`] applies it.
@@ -79,6 +144,9 @@ pub fn key(record: &[u8]) -> u64 {
     h
 }
 
+/// [`Decision::Apply`]'s `who` on a Live guest applying its host's block.
+pub const GUEST: &str = "guest, the host's";
+
 /// What this machine does with the active variant's block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Decision {
@@ -96,6 +164,26 @@ impl Decision {
         match self {
             Decision::Apply { ext, .. } => ext.gravity_scale(),
             _ => 1.0,
+        }
+    }
+
+    /// Whether this machine tops up every player's grenades: a lone
+    /// machine or the host. A guest doesn't: the host's counts replicate.
+    pub fn unlimited_grenades(&self) -> bool {
+        matches!(self, Decision::Apply { ext, who } if ext.unlimited_grenades && *who != GUEST)
+    }
+
+    /// The options when this machine scales damage (damage dealt, shield
+    /// strength or health not 100%): host, guest with its host's block, or
+    /// alone. A guest scales too: it simulates the hits it predicts.
+    pub fn vitality(&self) -> Option<Ext> {
+        match self {
+            Decision::Apply { ext, .. }
+                if ext.damage != 100 || ext.shield != 100 || ext.health != 100 =>
+            {
+                Some(*ext)
+            }
+            _ => None,
         }
     }
 
@@ -133,10 +221,7 @@ pub fn decide(e: Ext, session: Option<(&Session, u32)>, host_sent: bool) -> Deci
                     who: "host",
                 }
             } else if host_sent {
-                Decision::Apply {
-                    ext: e,
-                    who: "guest, the host's",
-                }
+                Decision::Apply { ext: e, who: GUEST }
             } else {
                 Decision::Off {
                     ext: e,
@@ -255,6 +340,122 @@ pub fn wait_for_host(
     }
 }
 
+// ---- damage dealt, shield strength, health (slice 5) ----
+
+/// The amount left to apply in the record a damage instance (`0xd7b80`)
+/// passes its shield step (`0xd9110`) and body step (`0xd8cb0`).
+pub const DAMAGE_AMOUNT: u32 = 0x1c;
+
+/// The shield step's amount factor: damage dealt over shield strength
+/// (the shield step divides the amount by the shield's vitality, so a
+/// stronger shield takes a smaller share).
+pub fn shield_factor(e: &Ext) -> f32 {
+    f32::from(e.damage) / f32::from(e.shield)
+}
+
+/// The body step's amount factor: damage dealt over health. What the
+/// shield left goes back to the game's units first ([`shield_factor`]'s
+/// inverse, after the shield step), so the body sees damage over health
+/// whether or not the shield took part.
+pub fn body_factor(e: &Ext) -> f32 {
+    f32::from(e.damage) / f32::from(e.health)
+}
+
+/// Multiplies the amount in `record` by `f`; the amount now.
+pub fn scale_amount(m: &mut dyn GuestMemory, record: u32, f: f32) -> Result<f32, MemFault> {
+    let at = record.wrapping_add(DAMAGE_AMOUNT);
+    let v = m.f32(at)? * f;
+    m.set_f32(at, v)?;
+    Ok(v)
+}
+
+/// Whether `object` (a datum) is a player's unit: the scales are the
+/// players' (vehicles, AI and scenery keep the game's rules).
+pub fn is_player_unit(m: &dyn GuestMemory, object: u32) -> bool {
+    crate::skulls_custom::player_units(m, false)
+        .is_ok_and(|units| units.iter().any(|u| u.unit == object))
+}
+
+/// The shield step's record and the factor applied before it, put back
+/// after it so the body step starts from the game's units.
+static SHIELD_SCALED: Mutex<Option<(u32, f32)>> = Mutex::new(None);
+
+/// The feature id (`features.variant-vitality` switches it).
+pub const VITALITY_FEATURE: &str = "variant-vitality";
+
+/// Damage dealt, shield strength and health for players, on each damage
+/// instance's shield and body steps (docs/game/game-options.md, "Damage,
+/// shield and health").
+pub struct Vitality;
+
+impl feature::Feature for Vitality {
+    fn manifest(&self) -> Manifest {
+        Manifest::new(
+            VITALITY_FEATURE,
+            "Game variant damage, shield and health scales",
+        )
+        .doc("docs/game/game-options.md")
+    }
+    fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        use feature::points::{BODY_DAMAGE, SHIELD_DAMAGE};
+        b.raw()
+            .before(&SHIELD_DAMAGE, "scale a player's shield damage", |c| {
+                *SHIELD_SCALED.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                let (Some(object), Some(record)) = (c.arg_u32("object"), c.arg_u32("record"))
+                else {
+                    return Ok(Flow::Continue);
+                };
+                let rt = Arc::clone(c.ctx.runtime());
+                let mut mem = rt.memory();
+                let Some(e) = in_game(&*mem).vitality() else {
+                    return Ok(Flow::Continue);
+                };
+                let m: &mut dyn GuestMemory = &mut *mem;
+                if is_player_unit(m, object) {
+                    let f = shield_factor(&e);
+                    if scale_amount(m, record, f).is_ok() {
+                        *SHIELD_SCALED.lock().unwrap_or_else(|e| e.into_inner()) =
+                            Some((record, f));
+                    }
+                }
+                Ok(Flow::Continue)
+            });
+        b.raw()
+            .after(&SHIELD_DAMAGE, "put what the shield left back", |c| {
+                let Some((record, f)) = SHIELD_SCALED
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+                else {
+                    return Ok(());
+                };
+                let rt = Arc::clone(c.ctx.runtime());
+                let mut mem = rt.memory();
+                let m: &mut dyn GuestMemory = &mut *mem;
+                let _ = scale_amount(m, record, 1.0 / f);
+                Ok(())
+            });
+        b.raw()
+            .before(&BODY_DAMAGE, "scale a player's body damage", |c| {
+                let (Some(object), Some(record)) = (c.arg_u32("object"), c.arg_u32("record"))
+                else {
+                    return Ok(Flow::Continue);
+                };
+                let rt = Arc::clone(c.ctx.runtime());
+                let mut mem = rt.memory();
+                let Some(e) = in_game(&*mem).vitality() else {
+                    return Ok(Flow::Continue);
+                };
+                let m: &mut dyn GuestMemory = &mut *mem;
+                if is_player_unit(m, object) {
+                    let _ = scale_amount(m, record, body_factor(&e));
+                }
+                Ok(Flow::Continue)
+            });
+        Ok(())
+    }
+}
+
 /// The feature id (`features.variant-ext-live` switches it).
 pub const FEATURE: &str = "variant-ext-live";
 
@@ -276,7 +477,7 @@ impl feature::Feature for Transport {
             .before(&GAME_ACTIVATE, "the host's variant options", move |c| {
                 let rt = Arc::clone(c.ctx.runtime());
                 let options = c.cpu.eax;
-                let (mode, record, session) = {
+                let (mode, record, session, guests) = {
                     let mem = rt.memory();
                     let mut record = [0u8; 0x130];
                     let ok = Gm::rd(&*mem, options.wrapping_add(OPTIONS_VARIANT), &mut record);
@@ -284,10 +485,15 @@ impl feature::Feature for Transport {
                     let class = s
                         .as_ref()
                         .and_then(|s| Gm::u32(&*mem, s.addr.wrapping_add(SESSION_NETWORK_CLASS)));
+                    let guests = s
+                        .as_ref()
+                        .map(|s| session_guests(&*mem, s))
+                        .unwrap_or_default();
                     (
                         crate::skulls::options_mode(&*mem, options),
                         ok.then_some(record),
                         s.zip(class),
+                        guests,
                     )
                 };
                 set_from_host(None);
@@ -318,6 +524,16 @@ impl feature::Feature for Transport {
                                 "variant options: sent to guests: {} (key {own:016x})",
                                 mine.summary()
                             );
+                            if !mine.is_default() {
+                                let lacking = h.players_lacking(
+                                    live_proto::capability::VARIANT_EXT,
+                                    &guests,
+                                    OLDER_WAIT,
+                                );
+                                for line in older_lines(&lacking) {
+                                    eprintln!("{line}");
+                                }
+                            }
                         }
                     }
                     Part::LiveGuest => {
@@ -444,6 +660,67 @@ mod tests {
     }
 
     #[test]
+    fn grenades_are_topped_by_a_lone_machine_or_the_host_never_a_guest() {
+        let e = Ext {
+            unlimited_grenades: true,
+            ..Ext::default()
+        };
+        assert!(decide(e, None, false).unlimited_grenades());
+        assert!(decide(e, Some((&session(3, true), 2)), false).unlimited_grenades());
+        let guest = session(3, false);
+        assert!(matches!(
+            decide(e, Some((&guest, 2)), true),
+            Decision::Apply { who: GUEST, .. }
+        ));
+        assert!(!decide(e, Some((&guest, 2)), true).unlimited_grenades());
+        assert!(!decide(e, Some((&session(3, true), SYSTEM_LINK)), false).unlimited_grenades());
+        assert!(!decide(half(), None, false).unlimited_grenades());
+        assert!(decide(e, None, false).line().contains("Unlimited grenades"));
+    }
+
+    /// The scales as factors on a damage instance's amount, and the
+    /// amount scaled in place on synthetic memory: a player at 200%
+    /// health and 50% shields takes a hit as the game would at half the
+    /// health and double the shield damage; the shield's leftover goes
+    /// back to the game's units before the body step.
+    #[test]
+    fn damage_shield_and_health_scale_the_amount() {
+        let e = Ext {
+            damage: 150,
+            shield: 50,
+            health: 200,
+            ..Ext::default()
+        };
+        assert_eq!(shield_factor(&e), 3.0);
+        assert_eq!(body_factor(&e), 0.75);
+        assert_eq!(shield_factor(&Ext::default()), 1.0);
+        assert_eq!(body_factor(&Ext::default()), 1.0);
+        assert_eq!(decide(e, None, false).vitality(), Some(e));
+        assert_eq!(decide(half(), None, false).vitality(), None, "gravity only");
+        let guest = session(3, false);
+        assert_eq!(decide(e, Some((&guest, 2)), true).vitality(), Some(e));
+        assert_eq!(decide(e, Some((&guest, 2)), false).vitality(), None);
+        assert_eq!(
+            decide(e, Some((&session(3, true), SYSTEM_LINK)), false).vitality(),
+            None
+        );
+
+        let mut g = engine::testing::FakeGuest::new();
+        const REC: u32 = 0x0070_0000;
+        g.map(REC, 0x1000);
+        g.put_f32(REC + DAMAGE_AMOUNT, 10.0);
+        let m: &mut dyn GuestMemory = &mut g;
+        // Before the shield step, then back after it (the shield took 4).
+        assert_eq!(scale_amount(m, REC, shield_factor(&e)).unwrap(), 30.0);
+        m.set_f32(REC + DAMAGE_AMOUNT, 26.0).unwrap();
+        let left = scale_amount(m, REC, 1.0 / shield_factor(&e)).unwrap();
+        assert!((left - 26.0 / 3.0).abs() < 1e-5);
+        // The body takes damage over health of it.
+        let body = scale_amount(m, REC, body_factor(&e)).unwrap();
+        assert!((body - 26.0 / 3.0 * 0.75).abs() < 1e-5);
+    }
+
+    #[test]
     fn a_live_guest_applies_only_what_its_host_sent() {
         let e = half();
         let guest = session(3, false);
@@ -542,6 +819,50 @@ mod tests {
         set_from_host(Some(half().encode()));
         assert_eq!(in_game(&f).gravity(), 0.5);
         set_from_host(None);
+    }
+
+    #[test]
+    fn the_host_names_its_guests_from_the_sessions_players() {
+        const S: u32 = 0x9000_0000;
+        let mut f = Fake::default();
+        f.wr(S, &vec![0; 0x7420]);
+        let s = Session {
+            addr: S,
+            state: 5,
+            peers: 3,
+            local_peer: 0,
+            host_peer: 0,
+            ..Session::default()
+        };
+        let player = |f: &mut Fake, slot: u32, xuid: u64, peer: u32| {
+            let at = S + players::AT + slot * players::STRIDE;
+            f.wr(at + players::XUID, &xuid.to_le_bytes());
+            f.wr(at + players::XUID + 8, &[0xaa; 4]); // the machine id's end
+            f.set_u32(at + players::PEER, peer);
+        };
+        player(&mut f, 0, 0x0009_0000_0000_0001, 0); // the host
+        player(&mut f, 1, 0x0009_0000_0000_0002, 1);
+        player(&mut f, 3, 0x0009_0000_0000_0003, 2);
+        player(&mut f, 4, 0, 2); // no account
+        player(&mut f, 5, 0x0009_0000_0000_0005, 1); // a slot not in use
+        f.set_u32(S + players::MASK, 0b1_1011);
+        assert_eq!(
+            session_guests(&f, &s),
+            [
+                live_proto::Xuid(0x0009_0000_0000_0002),
+                live_proto::Xuid(0x0009_0000_0000_0003)
+            ]
+        );
+        // The last slot's end is inside the session.
+        assert!(players::AT + players::SLOTS * players::STRIDE <= 0x4980);
+
+        let lines = older_lines(&live_hle::Lacking::Known(vec!["Oldie".into()]));
+        assert_eq!(
+            lines,
+            ["variant options: Oldie plays this variant with the game's own rules (older build)"]
+        );
+        assert!(older_lines(&live_hle::Lacking::Known(Vec::new())).is_empty());
+        assert!(older_lines(&live_hle::Lacking::Unknown("no answer"))[0].contains("no answer"));
     }
 
     #[test]

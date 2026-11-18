@@ -708,3 +708,26 @@ fn an_input_tap_is_told_which_port_each_handle_opened_and_when_it_closed() {
     assert!(xapi.take_input_tap().is_some());
     assert!(xapi.take_input_tap().is_none());
 }
+
+#[test]
+fn each_ports_last_state_is_readable_by_the_host() {
+    // Voice chat's push-to-talk reads the pad the game last read, without
+    // a guest call (docs/live/live-voice.md, 5 step 4).
+    let (mut xapi, mut memory, pads) = initialized();
+    assert_eq!(xapi.last_input_state(0), None, "not open");
+    let handle = open(&mut xapi, &memory);
+    pads.button(input::host::HostButton::Back, true);
+    sync(&mut xapi, &mut memory, &mut Signals::default()).unwrap();
+    xapi.input_get_state(&mut memory, handle, 0x400).unwrap();
+    let state = xapi.last_input_state(0).expect("port 0 is open");
+    assert!(state.gamepad.buttons.contains(input::gamepad::Buttons::BACK));
+    assert_eq!(state.to_bytes()[..], memory::read::<{ State::SIZE }>(&memory, 0x400).unwrap());
+    assert_eq!(xapi.last_input_state(1), None);
+    assert_eq!(xapi.last_input_state(9), None);
+    pads.button(input::host::HostButton::Back, false);
+    sync(&mut xapi, &mut memory, &mut Signals::default()).unwrap();
+    xapi.input_get_state(&mut memory, handle, 0x400).unwrap();
+    assert!(!xapi.last_input_state(0).unwrap().gamepad.buttons.contains(input::gamepad::Buttons::BACK));
+    xapi.input_close(handle).unwrap();
+    assert_eq!(xapi.last_input_state(0), None, "closed");
+}

@@ -45,6 +45,7 @@ pub mod health_hud;
 pub mod particles;
 pub mod physics;
 pub mod query;
+pub mod ragdoll;
 pub mod rebuild;
 pub mod refs;
 pub mod sandbox;

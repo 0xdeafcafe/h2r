@@ -24,8 +24,10 @@ established).
   ceiling) is real. So is a crouch term that moves a mid-air biped by its
   height change. Neither was involved in any recorded bounce: all five
   were standing, 3.5 to 28 seconds after the last crouch. **Code**, **Trace**
-- Whether a crouch long before a bounce leaves a hidden offset is not
-  ruled out. The test is in [Open](#open). **Open**
+- A forced crouch leaves nothing behind: in a third trace the player
+  forced a crouch under the lip, walked out (standing up on the ground in
+  six ticks, every crouch field back to normal) and bounced on a later
+  standing jump. **Trace**
 
 ## Forced crouch (Code)
 
@@ -67,6 +69,28 @@ mode) or in a melee lunge (`0x000e0dc0`). For `masterchief_mp` (standing
 0.725, crouching 0.5) it is about 1.1 units/s per tick of change and 6.75
 over a full stand-up. In the traces it was zero on every bounce tick.
 
+## The melee-lunge hitbox offset (Code)
+
+The Havok body of a biped is not always at its origin. When the game
+places it (`0x001d401a`), for a biped it subtracts `0x000e0d70`'s
+offset from the matrix's z: biped `+0x3aa` (a signed tick counter) ×
+tick length × 0.15 (`0x004407b8`).
+
+- A melee lunge started while not crouching (`0x000e2941`) sets biped
+  flags bits 13 and 14, shrinks the capsule to crouch height
+  (`0x001c3770`) and sets the counter to minus (standing − crouching) /
+  (tick length × 0.15): −44 ticks, a 0.22 offset, for `masterchief_mp`.
+- Outside the lunge it steps one tick toward 0 per tick (`0x000e2870`),
+  so the body slides back to the origin over about 1.5 s.
+- When the lunge ends (`0x000e0c70`), a standing capsule is tested at the
+  offset place (`0x001d5120`). If it does not fit, the crouch request is
+  set instead: a second way into forced crouch.
+
+In both traces the physics mode was 1 (ground) on every tick and bits 13
+and 14 were never set: no lunge, so the offset was 0 on every bounce.
+`world.object`'s `physics.hitbox_offset_ticks` and `hitbox_offset` show
+it directly.
+
 ## Traces (Trace)
 
 `world.object` carries a `physics` block for units (crouch, crouch
@@ -103,6 +127,12 @@ The five bounces:
   has a small −y component.
 - Crouch was 0 with no request on every bounce tick.
 
+A third trace (fresh game, tick 2928) adds a sixth bounce: −5.40 in,
+0.084 below the floor, +11.89 out, 359 ticks after a forced crouch that
+had ended on the ground at tick 2569. Unit flags were back to
+`00000003` and the hitbox offset 0 from then on. Two melee swings with
+no target did not lunge (mode stayed 1, offset 0).
+
 ## The geometry (Code, from the map)
 
 The structure collision BSP of `ascension` at the patch (surface indices
@@ -127,9 +157,8 @@ rest on the ramp side of the crease.
   pushed into a concave crease next to a coplanar seam. Decoding it means
   reading the solver in the Havok library code (the step at `0x00311100`
   and its contact managers).
-- **A hidden crouch offset.** The traces show no drift in standing height
-  and no crouch near any bounce. They cannot see a state from before
-  they started. To rule it out: start a fresh game, never crouch, and
-  jump onto the patch until it bounces.
+- **Lunges.** Whether a landing on the crease during the 1.5 s after a
+  lunge (body offset from the origin) bounces differently is not
+  traced.
 - **Other bounce spots.** Only this patch was traced. Whether every
   superbounce spot is a crease next to a seam is not checked.

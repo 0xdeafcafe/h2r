@@ -630,25 +630,31 @@ static LAYOUTS: Mutex<Vec<(u32, u32, ListLayout)>> = Mutex::new(Vec::new());
 
 /// Whether `vtable` is the screen vtable of a class with a layout.
 pub fn has_layout(vtable: u32) -> bool {
-    LAYOUTS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .iter()
-        .any(|(v, _, _)| *v == vtable)
+    crate::ui_kit::dialog_tag::by_vtable(vtable).is_some()
+        || LAYOUTS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .any(|(v, _, _)| *v == vtable)
 }
 
 /// What the screen-tag function returns for `screen`, given that it found
-/// `retail`: our copy for a screen of a class with a layout (made once per
+/// `retail` (0 for none): a dialog class's copy of its base dialog
+/// whatever was found ([`crate::ui_kit::dialog_tag::served`]), our copy
+/// of `retail` for a screen of a class with a layout (made once per
 /// retail tag, made again when a map load moves it), else `None`.
 pub fn served_tag(
     m: &mut dyn GuestMemory,
     screen: u32,
     retail: u32,
 ) -> Result<Option<u32>, MemFault> {
+    let vtable = m.u32(screen)?;
+    if let Some(tag) = crate::ui_kit::dialog_tag::served(m, vtable)? {
+        return Ok(Some(tag));
+    }
     if retail == 0 {
         return Ok(None);
     }
-    let vtable = m.u32(screen)?;
     let Some((tables, layout)) = LAYOUTS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -930,6 +936,7 @@ pub struct ListClass {
     action_buttons: &'static [u32],
     lines: bool,
     loader: Arc<AtomicU32>,
+    dialog: Option<crate::ui_kit::dialog::DialogBase>,
 }
 
 impl ListClass {
@@ -955,6 +962,7 @@ impl ListClass {
             action_buttons: &ACTION_BUTTONS,
             lines: false,
             loader: Arc::new(AtomicU32::new(0)),
+            dialog: None,
         }
     }
     /// Opened in a game too (the pause menu's Video and Voice): there its
@@ -967,6 +975,19 @@ impl ListClass {
     pub fn description(mut self, block: TextBlock) -> Self {
         self.description = Some(block);
         self
+    }
+    /// Shown as a dialog of rows built from the retail dialog `base`
+    /// (docs/game/ui-builder.md "The Dialog kind"): its tag copied with
+    /// the list placed by the class's layout (the base's own list when it
+    /// has none), opened over the screen beneath on the dialogs' window,
+    /// and closed by B itself ([`crate::ui_kit::dialog_tag`]).
+    pub fn dialog(mut self, base: crate::ui_kit::dialog::DialogBase) -> Self {
+        self.dialog = Some(base);
+        self
+    }
+    /// The dialog base, if the class is a dialog.
+    pub fn dialog_base(&self) -> Option<crate::ui_kit::dialog::DialogBase> {
+        self.dialog
     }
     /// With a picture beside the description, tinted per focused row
     /// ([`Rows::tint`]). Only a class with a description shows one.
@@ -1158,6 +1179,11 @@ pub async fn load(
     cx.write(|m| rows.write_texts(m))?;
     let rows = count;
     let request = cx.arg(0)?;
+    // A dialog's tag copy is made before its pane is, from its base found
+    // in this interface.
+    if let Some(d) = crate::ui_kit::dialog_tag::by_vtable(e.screen_vtable) {
+        crate::ui_kit::dialog_tag::prepare(&cx, &d, name).await?;
+    }
     let screen = cx
         .call(GuestCall::new(points::UI_ALLOC.base).args([ui::CONTROLS_SCREEN_SIZE]))
         .await?
@@ -1256,6 +1282,10 @@ pub async fn open(cx: &Cx, chain: u32, screen: &str) -> Result<(), EntryError> {
         eprintln!("ui: no local player for the press; {screen} not opened");
         return Ok(());
     };
+    if let Some(d) = crate::ui_kit::dialog_tag::by_loader(loader) {
+        eprintln!("ui: opening {screen} over the screen beneath (the dialogs' window)");
+        return crate::ui_kit::dialog_tag::open_over(cx, &d, mask).await;
+    }
     eprintln!("ui: opening {screen}");
     cx.call(GuestCall::new(points::OPEN_SCREEN.base).args([mask, loader]))
         .await?;
@@ -1275,6 +1305,10 @@ pub async fn push(cx: &Cx, chain: u32, over: u32, screen: &str) -> Result<(), En
         eprintln!("ui: no local player for the press; {screen} not opened");
         return Ok(());
     };
+    if let Some(d) = crate::ui_kit::dialog_tag::by_loader(loader) {
+        eprintln!("ui: opening {screen} over the screen beneath (the dialogs' window)");
+        return crate::ui_kit::dialog_tag::open_over(cx, &d, mask).await;
+    }
     let (window, slot) = crate::ui_kit::lifecycle::window_slot(cx, over)?;
     let request = crate::skulls_mp::open_request(mask as u16, window, slot, loader);
     let at = PUSH_REQUEST.load(Ordering::SeqCst);
@@ -1482,6 +1516,13 @@ pub async fn event_with(
     if let Some(buttons) = &buttons
         && buttons(kind, button) == Button::Handled
     {
+        return Ok(Ret::new(1, 4));
+    }
+    // A screen whose window can't be read is no dialog of ours.
+    if cx.read(|m| {
+        crate::ui_kit::dialog_tag::closes_itself(m, screen, kind, button).unwrap_or(false)
+    }) {
+        crate::ui_kit::dialog_tag::close(&cx, screen).await?;
         return Ok(Ret::new(1, 4));
     }
     let routed = route(
@@ -1730,7 +1771,11 @@ impl feature::Feature for ListClass {
         // The Controls class's event handler, read from its vtable when
         // first needed (the class's own slot replaces it in our copy).
         let sideways = self.sideways.then(|| Arc::clone(&rows));
-        let event_at = if self.action.is_some() || sideways.is_some() || self.buttons.is_some() {
+        let event_at = if self.action.is_some()
+            || sideways.is_some()
+            || self.buttons.is_some()
+            || self.dialog.is_some()
+        {
             let (action, buttons) = (self.action.clone(), self.buttons.clone());
             let action_buttons = self.action_buttons;
             b.entry("event", move |cx| -> EntryFuture {
@@ -1796,7 +1841,23 @@ impl feature::Feature for ListClass {
         };
         cell.set(e).ok();
         self.loader.store(loader, Ordering::SeqCst);
-        if let Some(layout) = self.layout {
+        let layout = match self.dialog {
+            Some(base) => {
+                let list = self
+                    .layout
+                    .unwrap_or_else(|| crate::ui_kit::dialog_tag::base_layout(base, rows.count()));
+                crate::ui_kit::dialog_tag::register(crate::ui_kit::dialog_tag::Registered {
+                    vtable: tables,
+                    page: b.guest_alloc(0x1000, Permissions::RW)?,
+                    loader,
+                    base,
+                    list,
+                });
+                Some(list)
+            }
+            None => self.layout,
+        };
+        if let Some(layout) = layout {
             let mut v = LAYOUTS.lock().unwrap_or_else(|e| e.into_inner());
             v.retain(|(vt, _, _)| *vt != tables);
             v.push((tables, tables, layout));

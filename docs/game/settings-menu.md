@@ -520,16 +520,17 @@ skipped.
 
 ## Pause menu (built on tests)
 
-Both pause menus get two rows below their Controller Settings row:
+The pause menu's **Settings** (the in-game Controller Settings dialog,
+screen 200) gets two rows at its end, after its own rows and the
+Controller Speaker row ([playstation-audio.md](../audio/playstation-audio.md)):
 **Video** opens the Video screen above, and **Voice** opens the Voice
-screen below. Each opens over the pause menu, and B comes back to it.
-Code: `boot::pause_menu`, the model in `video_screen::model`
-(`ui::extend(List::Pause, 5).at(4)` and `ui::extend(List::MpPause, 6)`),
-and the hooks registered by
-`layout_glue::install`. `H2_NO_PAUSE_ROWS=1` takes the rows out, and
-`features.pause-rows` and `features.pause-mp-rows` switch each menu's
-hooks. No game was built or run for this. The trace below is a static
-reading of the retail XBE with `h2 disasm`, `h2 ui` and `h2 tags`.
+screen below. Each opens over the dialog, and B comes back to it. The
+top-level pause menus are retail. Code: `boot::pause_menu`, the model in
+`video_screen::model` (`ui::extend(List::GameSettings, 7)`), and the
+dialog's hooks in `layout_glue::install`, the same three the speaker row
+uses. `H2_NO_PAUSE_ROWS=1` takes the rows out. No game was built or run
+for this. The trace below is a static reading of the retail XBE with
+`h2 disasm`, `h2 ui` and `h2 tags`.
 
 ### How Start opens it (Local, static)
 
@@ -592,9 +593,9 @@ paused", and the tick budget `0x146660` runs no tick while it is set.
   up on any stack (`0x149227`: `0x14917c` over every window kind and
   slot). So a screen of ours on top of the pause menu keeps the game
   paused, B back to the pause menu changes nothing, and the game resumes
-  when the last screen closes, as with Controller Settings (whose row
-  closes the pause menu first; ours leave it up). Our screens and rows
-  never write the byte.
+  when the last screen closes. Settings' row closes the pause menu and
+  opens the dialog, which keeps the game paused the same way; ours open
+  over the dialog. Our screens and rows never write the byte.
 - **Multiplayer.** Nothing on this path writes the byte: `mp_menu` sets
   nothing, so the simulation runs while it and our screens are up, and
   the network game is never held. A press on a Video or Voice row writes
@@ -605,6 +606,45 @@ paused", and the tick budget `0x146660` runs no tick while it is set.
   sets the local paused byte, as without our rows. [not traced] Whether
   the synchronous client and server honour one console's paused byte. Our
   rows add nothing to it either way: compare with `H2_NO_PAUSE_ROWS=1`.
+
+### The Settings dialog (Local, static)
+
+Screen 200, `ui\screens\multiplayer\mp_menu\controller_settings`, in
+`shared`, `single_player_shared` and every level: one pane, a five-item
+list whose items have one text each. The campaign menu's row 3 closes the
+pause menu and opens it (loader `0x231db5`, constructor `0x231df3`,
+vtable `0x4590b8`); the multiplayer menu's action 1 opens it on the
+player's stack and leaves the menu up. Its list handler (`screen +
+0x614`, built by `0x2b48c2`, vtable `0x45b778`) makes a datum array
+named at `0x45b8b0`, six rows, and gives each datum a value word at `+2`,
+0 to 5. Row text (`0x2b49e6`, slot 20) looks the value up in a table of
+six string ids; row chosen (`0x2b4a4d`) switches on it (the press
+record's player at `[[esp+4]] + 4`, the row's handle at `[[esp+8]]`) and
+does nothing for any other value.
+
+### How our rows are added
+
+- **Rows.** `layout_glue`'s datum array hook (`0x1a480d`) grows the array
+  named at `0x45b8b0` by one for the speaker row and by one per row of
+  ours (`pause_menu::list_count`). An override on the list constructor
+  `0x2b48c2` runs the original, then adds a datum per extra row
+  (`0x16b840`) and writes its value: 6 for the speaker, then 7 for Video
+  and 8 for Voice (`pause_menu::FIRST_VALUE`). Value words, not indexes,
+  tell the rows apart, so the retail rows keep theirs and ours come last.
+  Without the speaker row ours are still 7 and 8.
+- **Text.** The row text override draws our label for a value of ours
+  (`pause_menu::text_row`) and passes every other value to the original.
+- **Press.** The row chosen override opens our screen for a value of ours
+  (`pause_menu::chosen_row`, `open_request`): a request built from the
+  dialog's own `+0x74` and `+0x78` (window and slot, as the retail menus
+  open their sub-screens) and the pressing player's mask, handed to the
+  class's loader. Every other value goes to the original.
+- **One set of hooks.** The speaker row and ours share the three
+  overrides, so nothing else hooks the same addresses. The rows are fixed
+  at install (`pause_menu::settings_rows`): the hooks never read the
+  settings store with guest memory held.
+- **Scrolling.** The list has five item widgets; with nine rows it
+  scrolls, as it already did with seven.
 
 ### In a game, our screens are built on screen 200
 
@@ -617,46 +657,12 @@ in a game the screen got no widgets. In a game (the UI's game kind byte
 `0x54d5a8` not 2) the loader now runs the Controls constructor's own
 steps on screen 200's tag instead (`list_class::construct_on`): the
 generic screen constructor `0x230451(200, ...)`, the Controls screen
-vtable, the Controls list constructor `0x2c84b8`. Screen 200 is the
-in-game Controller Settings (`mp_menu\controller_settings`), in `shared`,
-`single_player_shared` and every level, a five-item list whose items have
-one text each and the same header string id. So a row there is one line,
+vtable, the Controls list constructor `0x2c84b8`. Screen 200's items have
+one text each and the same header string id, so a row there is one line,
 label and value (`ui::Model::line`), drawn from a text slot of the class's
 own (`list_class::Lines`, the `ui lines` id family: two ids a row, taken
 in turn when the text changes so the widget sets it again). In the main
 menu nothing changes.
-
-### How our rows are added
-
-- **Campaign.** The shared datum array hook (`layout_glue`, `0x1a480d`)
-  makes the array named at `0x459134` seven rows, and the constructor's own
-  loop fills them. `before` hooks on the plan at `PAUSE_ROW_TEXT`
-  (`0x231f6c`) and `PAUSE_ROW_CHOSEN` (`0x231fe3`) answer rows 4 and 5
-  (`retail_rows::Extension` over `List::Pause`), below Controller Settings
-  (row 3), so the original never sees them. The original tells its rows
-  apart by index, so retail row 4, shown at index 6, goes to the original
-  with row 4's handle: the item's row word (`+0x70`) swapped for the call
-  and put back, or the press's row word pointing at row 4's handle
-  (`retail_rows::moved`). The list has five item widgets; with
-  seven rows it scrolls. A press opens our screen through `0x149f1e`, the
-  pause menu's own kind and slot.
-- **Multiplayer.** The array named at `0x4593a8` gets room for eight, and
-  an `after` hook on `MP_MENU_LIST_CTOR` (`0x232708`) adds a datum per row
-  of ours with action 6 (Video) and 7 (Voice) (`pause_menu::MpPauseRows`).
-  The rows show in datum order and are told apart by their action word
-  only, so the words are then written again row by row with ours below
-  action 1, Controller Settings (`pause_menu::order_actions`).
-  `before` hooks on `MP_MENU_ROW_TEXT` and `MP_MENU_ROW_CHOSEN` answer
-  those actions. A press opens our screen with a request built from the
-  menu screen's `+0x74` and `+0x78`, on the player's own stack, as the
-  retail Controller Settings row does.
-- The arrays grow only when that menu's hooks are on the plan, so the
-  original never meets a row it does not know.
-- **Panes.** Both tags have one pane. The list calls the pane setter
-  (`0x230427`, with no bounds check) only when its byte `+0x7e` is set
-  (`0x24c4e2`); with one pane and five rows, retail rows 1 to 4 would
-  already read past the pane array if it were, so it is taken to be clear
-  and no pane hook is added. [not checked in game]
 
 ### Per-player mute (not built)
 
@@ -673,75 +679,58 @@ later, should call that same HLE.
 
 ### Tests
 
-`boot::pause_menu::tests`: both menus get Video then Voice below
-Controller Settings and grow by two (`list_count`), the campaign menu's
-retail row 4 shown at index 6 (`retail_index`, `retail_rows::moved`), the
-multiplayer menu's action words written again in that order
-(`ordered`, `order_actions`); our rows draw their labels and
-the retail rows go to the original; a press opens our screen; the
-switches take rows out; the Voice and Video pages step, apply at once and
-close on B (`ui_kit::page::ListPage` over the real list class); the pause
-rule (`pause_menu::resumes`, `0x1482c4`) keeps the game paused while a
-screen of ours is up over the pause menu; our multiplayer actions are
-added once to a datum array after the game's and read back by handle, and
-a full array is refused; the five hooks are on the plan before the
-originals; a host with many devices still fits the model's string ids.
-`boot::list_class::tests`: in a game the loader builds on screen 200 (the
-generic constructor with id 200, the Controls list constructor) and in
-the main menu on the Controls constructor; in a game a row draws as one
-line in the class's slot; a line changes id when its text changes.
+`boot::pause_menu::tests`: the dialog gets Video then Voice at values 7
+and 8 and its array grows by two (`list_count`, `settings_rows`); a press
+opens our screen and no other value is ours; the switches take rows out;
+our datums are found by value with the speaker row or without it, and
+the retail ones go to the original; our screen opens on the dialog's own
+window and slot for the pressing player; the Voice and Video pages step,
+apply at once and close on B (`ui_kit::page::ListPage` over the real list
+class); the pause rule (`pause_menu::resumes`, `0x1482c4`) keeps the game
+paused while a screen of ours is up over the dialog; a host with many
+devices still fits the model's string ids. `boot::list_class::tests`: in
+a game the loader builds on screen 200 and in the main menu on the
+Controls constructor; in a game a row draws as one line in the class's
+slot; a line changes id when its text changes.
 `boot::ui::tests::a_row_reads_as_one_line`.
 
 ### To check in game
 
 Campaign (any level, and a co-op over Live game):
 
-1. Start: the pause menu shows Video and Voice right below Controller
-   Settings, and the menu's last row after them (the list scrolls).
-   stderr: `layouts: list 0x459134 grows from 5 to 7 rows`, `pause-rows:
-   row text`. Every retail row does what it did, the last one too (it is
-   answered by the original with its own row's handle); Controller
-   Settings still opens. If moving down shows a wrong pane, the list's
-   pane byte is set (see Panes).
-2. A on Video: the Video screen opens over the pause menu (`ui: opening
-   video`, `video-screen: in a game: built on screen 200's tag`), with
-   its title and one line a row ("Field of View: 70"), not a blank
-   screen. A on a row changes its value on the line. The world stays
-   frozen and the sound paused. Field of View and
-   Resolution change the frame behind it at once; Frame Rate changes the
-   watermark's rate. B returns to the pause menu, still paused; B (or
-   Resume) on the pause menu resumes the game.
-3. A on Voice: eight rows, Microphone, Voice Output, Talk, Talk Button,
-   Mute My Mic, Mute Everyone, Mic Volume, Voice Volume. Microphone steps
-   System default then each microphone the Mac had at launch; Voice
-   Output steps Same as Game then each output. `settings.toml` gains a
-   `[voice]` table with the chosen device's id. B returns to the pause
-   menu, still paused.
-4. Co-op over Live, two consoles: Start on one. Whatever the other console
-   does (pauses or not) must be the same with `H2_NO_PAUSE_ROWS=1`; open
-   Video and Voice, change a row, close: no desync line, no stall.
+1. Start: the pause menu is retail, with no Video or Voice row. Settings
+   opens the dialog: its own rows, Controller Speaker, then Video and
+   Voice at the end (the list scrolls). stderr: `layouts: list 0x45b8b0
+   grows from 6 to 9 rows`, `small controls built`. The retail rows and
+   Controller Speaker do what they did.
+2. A on Video: the Video screen opens over the dialog (`pause menu:
+   opening video from Settings`, `video-screen: in a game: built on screen
+   200's tag`), with its title and one line a row ("Field of View: 70"),
+   not a blank screen. A on a row changes its value on the line. The world
+   stays frozen and the sound paused. B returns to Settings, still paused;
+   B there resumes the game.
+3. A on Voice: eight rows, one line each (Microphone, Voice Output, Talk,
+   Talk Button, Mute My Mic, Mute Everyone, Mic Volume, Voice Volume). B
+   returns to Settings, still paused.
+4. Co-op over Live, two consoles: whatever the other console does on a
+   pause must be the same with `H2_NO_PAUSE_ROWS=1`; open Video and Voice,
+   change a row, close: no desync line, no stall.
 
 Multiplayer (local, system link, and a Live game with another console):
 
-5. Start: Video and Voice sit right below Controller Settings. stderr:
-   `pause menu: multiplayer list gets rows with actions [6, 7]`, `pause
-   menu: multiplayer row text`. The game keeps running behind (the timer,
-   other players).
-6. A on Video: `pause menu: opening video (player 0) on window 5, slot N`,
-   the screen in the same place as the menu; B back to the menu; Start or
-   B closes it. In split screen, player 2's opens in player 2's quarter.
-7. A Live game's menu with all six of its rows still shows ours (room for
-   eight).
-8. Keep a Voice screen up for 30 seconds in a networked game and press
-   rows: no stall, no lag spike beyond a frame, no disconnect.
-9. `H2_NO_PAUSE_ROWS=1`: both menus as retail. `H2_NO_VOICE_SCREEN=1`:
-   Video only. `H2_NO_VIDEO_SCREEN=1`: Voice only, at row 4 (action 6).
-10. Main menu Settings, Video: unchanged (the Controls layout, label and
-    value in two columns).
+5. Start, then Controller Settings: Video and Voice at the end of the
+   dialog. The game keeps running behind.
+6. A on Video: it opens where the dialog is; B back to the dialog. In
+   split screen, player 2's opens in player 2's quarter.
+7. Keep a Voice screen up for 30 seconds in a networked game and press
+   rows: no stall, no disconnect.
+8. `H2_NO_PAUSE_ROWS=1`: the dialog as before (retail rows and Controller
+   Speaker). `H2_NO_VOICE_SCREEN=1`: Video only. `H2_NO_VIDEO_SCREEN=1`:
+   Voice only.
 
 ## Voice screen (built on tests)
 
-Opened from the pause menus' Voice row. Every setting whose `Def` names
+Opened from the Voice row of the pause menu's Settings. Every setting whose `Def` names
 the screen `voice` (`boot::voice_settings`), in order; every one applies
 at once, touches only the host (`Scope::Host`) and is read by the voice
 chat (the `live-voice` lane) through `voice_settings::VoiceHandles`, one

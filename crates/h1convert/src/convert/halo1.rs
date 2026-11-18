@@ -179,21 +179,51 @@ pub fn plan_objects(h1: &H1Map) -> Result<Vec<Halo1Spawn>> {
             .and_then(|r| h1.tag(r.id).ok())
             .map(|t| t.name.clone())
             .unwrap_or_default();
+        let [x, y, z] = v.position;
         out.push(Halo1Spawn {
             collection: name.clone(),
             items: vec![Halo1Item {
                 group: *b"vehi",
-                name,
+                name: name.clone(),
                 weight: 1.0,
             }],
             collection_respawn: 0,
-            position: v.position,
+            position: [x, y, z + vehicle_depth(h1, &name)],
             facing: v.rotation[0],
             respawn: 0,
         });
     }
     Ok(out)
 }
+
+/// How far the Halo 1 vehicle `name`'s render model reaches below its
+/// origin (0 when it does not, or the model cannot be read): what a
+/// vehicle spawn is raised by, so the vehicle does not start in the floor.
+///
+/// V: Halo 1 places a vehicle's origin on the floor (every Blood Gulch
+/// vehicle placement is 0.001 above the structure's collision), and the
+/// hover vehicles reach below it: the ghost's hull to 0.143 under its
+/// origin (`h1objects/tests/vehicle_ground_disc.rs`). Halo 1's own mass
+/// points lifted it once spawned; in Halo 2 the converted ghost started
+/// 0.14 into the ground and stayed there.
+pub fn vehicle_depth(h1: &H1Map, name: &str) -> f32 {
+    let lowest = || -> Option<f32> {
+        let t = h1.find(h1map::Group::new(b"vehi"), name)?;
+        let r = h1map::TagRef::read(h1.tag_data(t).ok()?, VEHI_MODEL)?;
+        let mode = h1.tag(r.id).ok()?;
+        let (m, _) = h1models::model_from_map(h1, mode, &Default::default()).ok()?;
+        m.geometries
+            .iter()
+            .flat_map(|g| &g.parts)
+            .flat_map(|p| &p.vertices)
+            .map(|v| v.position[2])
+            .reduce(f32::min)
+    };
+    lowest().map_or(0.0, |z| (-z).max(0.0))
+}
+
+/// A Halo 1 object's render model reference (`obje +0x28`).
+const VEHI_MODEL: usize = 0x28;
 
 /// A collection the Halo 1 sandbox adds after its objects: one per Halo 1
 /// item collection (or vehicle) some spawn uses.

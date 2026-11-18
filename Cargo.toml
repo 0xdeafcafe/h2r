@@ -22,6 +22,7 @@ ir = { path = "crates/ir" }
 opt = { path = "crates/opt" }
 lift = { path = "crates/lift" }
 emit = { path = "crates/emit" }
+clif = { path = "crates/clif" }
 simd = { path = "crates/simd" }
 x87 = { path = "crates/x87" }
 kernel = { path = "crates/kernel" }

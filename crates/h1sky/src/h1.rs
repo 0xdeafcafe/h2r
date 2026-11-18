@@ -239,6 +239,27 @@ impl Sky {
         })
     }
 
+    /// The outdoor fog: fog A ([FOG_RUNS] `[0]`) when it is one, a density
+    /// above 0 reaching opacity past its start. Halo 1 draws it in the
+    /// clusters that see this sky; fog A's opaque distance of 0 (a10's and
+    /// d40's space skies, c20's interior atmosphere, the menu's `sky_ui`:
+    /// colour black, density 1, start and opaque 0) is no fog. V: the menu
+    /// level's every cluster names `sky_ui`, and x10's space BSP's names
+    /// `space_x10`, and neither draws black (docs/formats/h1-sky.md, "Fog").
+    pub fn outdoor_fog(&self) -> Option<Fog> {
+        self.fogs()[0].filter(|f| f.opaque_distance > f.start_distance)
+    }
+
+    /// The indoor fog: fog B ([FOG_RUNS] `[1]`) when it has a density.
+    /// Halo 1 draws the scenario's first sky's in every cluster naming no
+    /// sky, and never outdoors (E `0x000581a0`: sky `-1` takes skies[0]'s
+    /// run at `+0x78`, a sky index that sky's run at `+0x58`). Every fog B
+    /// on the disc with a density reaches opacity past its start (V). Its
+    /// Halo 2 home is the scenario's atmosphere block ([`crate::atmosphere`]).
+    pub fn indoor_fog(&self) -> Option<Fog> {
+        self.fogs()[1]
+    }
+
     /// Reads the `sky ` tag `tag` of `map`.
     pub fn from_map(map: &h1map::H1Map, tag: &h1map::Tag) -> Result<Self> {
         if tag.group != h1map::Group::new(b"sky ") {

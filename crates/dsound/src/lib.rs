@@ -15,6 +15,7 @@
 //! - [`padroute`]: recognising sounds by their bytes and routing chosen ones to a controller speaker.
 //! - [`output`]: the output thread, the one consumer that takes the mixer to a sink.
 //! - [`testing`]: a synthetic guest memory for tests.
+//! - [`voice_rings`]: the XHV per-port voice effects: remote voice into the headset rings.
 //! - [`xwma`]: the native WMA decoder at the game's codec boundary (`0x38a0c5`).
 
 pub mod abi;
@@ -26,6 +27,7 @@ pub mod padroute;
 pub mod register;
 pub mod state;
 pub mod testing;
+pub mod voice_rings;
 pub mod xwma;
 
 pub use host::{EventSink, GuestMemory, Host, MemFault, StreamCallback};

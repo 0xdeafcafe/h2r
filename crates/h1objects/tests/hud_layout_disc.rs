@@ -1,0 +1,504 @@
+//! Where the converted Halo 1 HUD lands on screen, against where Halo 1
+//! puts it, from the discs' own tags (docs/halo1/hud.md, "Layout").
+//!
+//! Each element's rectangle is computed as Halo 2 places the widget the
+//! converter writes (`h1hud::halo2_rect`, E `0x22aff1`) and as Halo 1
+//! places the element (`h1hud::halo1_rect`, E Halo 1 `0x000e07a0`,
+//! `0x000e0330`); the texels inside are the bitmaps', decoded. Prints names
+//! and counts only.
+//!
+//! ```sh
+//! H1_ISO=... H2_DISC=... cargo test -p h1objects --test hud_layout_disc -- --ignored --nocapture
+//! ```
+
+use std::fs::File;
+use std::io::{BufReader, Cursor};
+
+use h1map::bitmap::Bitmap;
+use h1map::{Group, H1Map};
+use h1objects::h1hud::{self, Anchor, Element, Rect, Role};
+use map::TagId;
+
+fn iso() -> xiso::Xiso<BufReader<File>> {
+    let path = std::env::var("H1_ISO").expect("set H1_ISO");
+    xiso::Xiso::open(BufReader::new(File::open(path).unwrap())).unwrap()
+}
+
+fn h1(name: &str) -> H1Map {
+    let mut iso = iso();
+    let disc = h1map::disc::Disc::open(&mut iso).unwrap();
+    let e = disc.map(name).expect("map on the disc").clone();
+    H1Map::from_reader(Cursor::new(iso.read(&e).unwrap())).unwrap()
+}
+
+fn h2_file(suffix: &str) -> Vec<u8> {
+    let path = std::env::var("H2_DISC").expect("set H2_DISC");
+    let mut iso = xiso::Xiso::open(BufReader::new(File::open(path).unwrap())).unwrap();
+    let e = iso
+        .entries()
+        .unwrap()
+        .into_iter()
+        .find(|e| e.path.replace('\\', "/").ends_with(suffix))
+        .unwrap_or_else(|| panic!("{suffix} on the Halo 2 disc"));
+    iso.read(&e).unwrap()
+}
+
+/// An element as drawn: its rectangle and its texels (RGBA, rows of the
+/// rectangle's width).
+struct Drawn {
+    rect: Rect,
+    rgba: Vec<[u8; 4]>,
+}
+
+impl Drawn {
+    fn at(&self, x: i32, y: i32) -> Option<[u8; 4]> {
+        let [x0, y0, x1, y1] = self.rect;
+        if x < x0 || y < y0 || x >= x1 || y >= y1 {
+            return None;
+        }
+        Some(self.rgba[((y - y0) * (x1 - x0) + (x - x0)) as usize])
+    }
+
+    /// The bounds of the texels with alpha.
+    fn ink(&self) -> Rect {
+        let [x0, y0, x1, y1] = self.rect;
+        let mut r = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
+        for y in y0..y1 {
+            for x in x0..x1 {
+                if self.at(x, y).unwrap()[3] > 0 {
+                    r = [r[0].min(x), r[1].min(y), r[2].max(x + 1), r[3].max(y + 1)];
+                }
+            }
+        }
+        r
+    }
+}
+
+/// The sprite of `bitmap`'s sequence `seq`, decoded, its texels inside the
+/// sprite's bounds; with `meter`, after the converter's meter copy
+/// (`h1hud::clear_meter_colour`).
+fn texels(m: &H1Map, bitmap: h1map::TagId, seq: i16, meter: bool) -> ((i32, i32), Vec<[u8; 4]>) {
+    let bm = Bitmap::read(m, m.tag(bitmap).unwrap()).unwrap();
+    let (b, _) = h1hud::sprite(&bm, seq).unwrap();
+    let s = &bm.sequences[seq as usize];
+    let i = s.sprites.first().map_or(s.first_image, |p| p.image) as usize;
+    let mut img = bm.images[i].clone();
+    let mut px = bm.pixels(m, i).unwrap().to_vec();
+    if meter && h1hud::clear_meter_colour(img.format, &mut px).is_none() {
+        // As the converter's copy: rewritten as linear A8R8G8B8 first.
+        let (argb, mut out) = h1hud::alpha_scaled_argb(&img, &px, 0xff).unwrap();
+        h1hud::clear_meter_colour(argb.format, &mut out).unwrap();
+        (img, px) = (argb, out);
+    }
+    let top = h1bitmaps::decode_image(&img, &px)
+        .unwrap()
+        .into_iter()
+        .find(|l| l.face == 0 && l.level == 0)
+        .unwrap();
+    let (w, h) = (top.width as usize, top.height as usize);
+    let (x0, x1) = ((b[0] * w as f32).round() as usize, (b[1] * w as f32).round() as usize);
+    let (y0, y1) = ((b[2] * h as f32).round() as usize, (b[3] * h as f32).round() as usize);
+    let size = h1hud::sprite_size(&bm, seq).unwrap();
+    assert_eq!(size, ((x1 - x0) as i32, (y1 - y0) as i32));
+    let mut out = Vec::new();
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let t = &top.rgba[(y * w + x) * 4..][..4];
+            out.push([t[0], t[1], t[2], t[3]]);
+        }
+    }
+    (size, out)
+}
+
+/// Element `e` as Halo 2 draws the converter's widget, checked against
+/// where Halo 1 draws it.
+fn drawn(m: &H1Map, e: &Element, meter: bool) -> Drawn {
+    let (size, rgba) = texels(m, e.bitmap, e.sequence, meter);
+    let w = h1hud::widget_for(e, TagId(1), h1hud::registration(e.anchor), TagId(2), TagId(3));
+    let rect = h1hud::halo2_rect(&w, size);
+    // Elements hold Halo 2's offset; Halo 1's is the same flip back.
+    let halo1 = h1hud::halo1_rect(e.anchor, h1hud::to_halo2_offset(e.anchor, e.offset), size);
+    assert_eq!(rect, halo1, "{}: Halo 2's rectangle against Halo 1's", e.name);
+    Drawn { rect, rgba }
+}
+
+/// Texels where `a` and `b` both show.
+fn overlap(a: &Drawn, b: &Drawn, show: impl Fn([u8; 4]) -> bool) -> usize {
+    let [x0, y0, x1, y1] = a.rect;
+    let mut n = 0;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            if let (Some(ta), Some(tb)) = (a.at(x, y), b.at(x, y)) {
+                n += usize::from(show(ta) && show(tb));
+            }
+        }
+    }
+    n
+}
+
+/// What shows of a Halo 1 element: its alpha (Halo 1's meter and element
+/// draws, E `0x000e20a0`, `0x000e1830`).
+fn halo1_shows(t: [u8; 4]) -> bool {
+    t[3] > 0
+}
+
+/// What shows of a converted meter, full (the shader's filled side,
+/// `h1hud::legacy_meter_alpha`).
+fn halo2_meter_shows(t: [u8; 4]) -> bool {
+    h1hud::legacy_meter_alpha(t, true) > 0
+}
+
+/// Every unit HUD on the disc: each element where Halo 1 puts it, and the
+/// shield meter and the health meter showing no texel in common, full, as
+/// Halo 1 lays them out. Without the meter copy the shield meter's clear
+/// texels that carry a luminance show over the health meter.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO)"]
+fn shield_and_health_meters_do_not_overlap() {
+    let mut iso = iso();
+    let entries = h1map::disc::maps(&iso.entries().unwrap());
+    let mut checked = 0;
+    for e in entries {
+        let name = h1map::disc::map_stem(&e).to_owned();
+        let Ok(m) = H1Map::from_reader(Cursor::new(iso.read(&e).unwrap())) else {
+            continue;
+        };
+        for t in m.tags().iter().filter(|t| t.group == Group::new(b"unhi")) {
+            let els = h1hud::unit_elements(&m, m.tag_data(t).unwrap()).unwrap();
+            for el in &els {
+                drawn(&m, el, matches!(el.role, Role::Meter(_)));
+            }
+            let find = |n: &str| els.iter().find(|e| e.name == n);
+            let (Some(shield), Some(health)) = (find("h1_shield_meter"), find("h1_health_meter"))
+            else {
+                continue;
+            };
+            let (s1, h1m) = (drawn(&m, shield, false), drawn(&m, health, false));
+            assert_eq!(overlap(&s1, &h1m, halo1_shows), 0, "{name} {}: Halo 1's own", t.name);
+            let before = overlap(&s1, &h1m, halo2_meter_shows);
+            let (s2, h2m) = (drawn(&m, shield, true), drawn(&m, health, true));
+            let after = overlap(&s2, &h2m, halo2_meter_shows);
+            if name == "bloodgulch" {
+                eprintln!(
+                    "{name} {}: shield {:?} ink {:?}, health {:?} ink {:?}; both full, shown in common: {before} from Halo 1's bitmaps, {after} from the meter copies",
+                    t.name,
+                    s2.rect,
+                    s2.ink(),
+                    h2m.rect,
+                    h2m.ink()
+                );
+                if t.name == "ui\\hud\\cyborg" {
+                    assert!(before > 0, "the bug: Halo 1's clear texels shown");
+                }
+            }
+            assert_eq!(after, 0, "{name} {}: shield over health", t.name);
+            // The copies show exactly Halo 1's texels.
+            for (d1, d2) in [(&s1, &s2), (&h1m, &h2m)] {
+                for (a, b) in d1.rgba.iter().zip(&d2.rgba) {
+                    assert_eq!(halo2_meter_shows(*b), halo1_shows(*a), "{name} {}", t.name);
+                }
+            }
+            checked += 1;
+        }
+    }
+    eprintln!("{checked} unit HUDs with both meters");
+    assert!(checked > 0);
+}
+
+/// Halo 2's HUD number font (`conduit-13`, the font the text widget's
+/// `+0x30` byte picks): its digits' ink rows from the text's top, and per
+/// digit its advance and ink columns from the pen.
+struct DigitFont {
+    ink_rows: (i16, i16),
+    glyphs: Vec<(char, i16, i16, i16)>,
+}
+
+impl DigitFont {
+    /// The ink of `text` (digits) drawn right-justified to end at `x`, its
+    /// top at `y` (E 0x22aa16).
+    fn ink(&self, text: &str, x: i16, y: i16) -> Rect {
+        let g = |c| self.glyphs.iter().find(|g| g.0 == c).unwrap();
+        let width: i16 = text.chars().map(|c| g(c).1).sum();
+        let mut pen = x - width;
+        let mut r = [i32::MAX, i32::from(y + self.ink_rows.0), i32::MIN, i32::from(y + self.ink_rows.1)];
+        for c in text.chars() {
+            let (_, advance, ink0, ink1) = *g(c);
+            r[0] = r[0].min(i32::from(pen + ink0));
+            r[2] = r[2].max(i32::from(pen + ink1));
+            pen += advance;
+        }
+        r
+    }
+}
+
+fn inside(a: Rect, b: Rect) -> bool {
+    a[0] >= b[0] && a[1] >= b[1] && a[2] <= b[2] && a[3] <= b[3]
+}
+
+fn digit_font() -> DigitFont {
+    // The font: font_table.txt line 6 (engine font 6, text font 0).
+    let table = String::from_utf8(h2_file("maps/fonts/font_table.txt")).unwrap();
+    let file = table
+        .split(['\r', '\n'])
+        .filter(|l| !l.is_empty())
+        .nth(6)
+        .unwrap()
+        .trim()
+        .to_owned();
+    assert_eq!(h1hud::TEXT_FONT, 0);
+    assert_eq!(file, "conduit-13");
+    let data = h2_file(&format!("maps/fonts/{file}"));
+    let font = font::Font::parse(&data).unwrap();
+    // Each digit's ink from the text's top-left: its bitmap's top row is
+    // the top (y offset = ascent), its left the pen plus its x offset.
+    let mut ink_rows = (i16::MAX, i16::MIN);
+    let mut glyphs = Vec::new();
+    for c in '0'..='9' {
+        let g = font.glyph(c as u16).unwrap();
+        let r = g.record.clone();
+        assert_eq!(r.y_offset, font.header.ascent);
+        let (w, h) = (usize::from(r.width), usize::from(r.height));
+        let shows = |x: usize, y: usize| g.pixels[y * w + x] >> 12 != 0;
+        let rows: Vec<i16> = (0..h).filter(|y| (0..w).any(|x| shows(x, *y))).map(|y| y as i16).collect();
+        let cols: Vec<i16> = (0..w).filter(|x| (0..h).any(|y| shows(*x, y))).map(|x| x as i16).collect();
+        ink_rows = (ink_rows.0.min(rows[0]), ink_rows.1.max(rows[rows.len() - 1] + 1));
+        glyphs.push((c, r.advance, r.x_offset + cols[0], r.x_offset + cols[cols.len() - 1] + 1));
+    }
+    assert_eq!(ink_rows, h1hud::TEXT_DIGIT_INK, "{file}'s digit ink rows");
+    DigitFont { ink_rows, glyphs }
+}
+
+/// The converted grenade count's digits sit inside the grenade indicator
+/// as Halo 1's do: every digit of Halo 2's HUD font drawn where the
+/// converter's text widget puts it, against the indicator's texels (the
+/// `grhi` background) and Halo 1's own digit sprites.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn grenade_count_digits_sit_inside_the_indicator() {
+    let DigitFont { ink_rows, glyphs } = digit_font();
+    let m = h1("bloodgulch");
+    let (w, h) = (h1hud::digit_width(&m).unwrap(), h1hud::digit_height(&m).unwrap());
+    let mut checked = 0;
+    for (k, g) in h1hud::grenade_huds(&m).unwrap().iter().enumerate() {
+        let Some(g) = g else { continue };
+        let gt = m.tag(*g).unwrap();
+        let gb = m.tag_data(gt).unwrap();
+        let n = h1hud::grenade_number(gb).unwrap().expect("a count");
+        assert_eq!(n.anchor, Anchor::TopLeft, "the disc's counts");
+        let els = h1hud::grenade_elements(&m, gb).unwrap();
+        let bkd = els.iter().find(|e| e.name == "h1_grenade_background").unwrap();
+        let indicator = drawn(&m, bkd, false).ink();
+        let t = h1hud::grenade_count(&n, k, w, h, TagId(1)).unwrap();
+        // Halo 2's text (E 0x22aa16): its rectangle's top at the point,
+        // justified to end at it (a one-digit count is one advance wide).
+        let inside = |y: i16| {
+            glyphs.iter().all(|(c, advance, ink0, ink1)| {
+                let left = i32::from(t.offset.0 - advance);
+                let d = [
+                    left + i32::from(*ink0),
+                    i32::from(y + ink_rows.0),
+                    left + i32::from(*ink1),
+                    i32::from(y + ink_rows.1),
+                ];
+                let ok = d[0] >= indicator[0] && d[1] >= indicator[1] && d[2] <= indicator[2] && d[3] <= indicator[3];
+                if !ok {
+                    eprintln!("  '{c}' at y {y}: ink {d:?} outside the indicator {indicator:?}");
+                }
+                ok
+            })
+        };
+        // Halo 1's digit sprite, where its number draw puts the last digit
+        // (h1hud::number_point), 18 wide on the disc.
+        let cells = i16::from(n.digits) + i16::from(n.flags & 0x04 != 0);
+        let start = n.offset.0 + (cells - 2) * w;
+        let halo1 = h1hud::halo1_rect(n.anchor, (start, n.offset.1), (18, i32::from(h)));
+        eprintln!(
+            "{}: indicator ink {indicator:?}, Halo 1's digit sprite {halo1:?}; Halo 2's digit ink rows {}..{} (at Halo 1's y: {}..{})",
+            gt.name,
+            t.offset.1 + ink_rows.0,
+            t.offset.1 + ink_rows.1,
+            n.offset.1 + ink_rows.0,
+            n.offset.1 + ink_rows.1
+        );
+        assert!(!inside(n.offset.1), "the bug: the text's top at Halo 1's y spills out");
+        assert!(inside(t.offset.1), "{}: the converted count", gt.name);
+        let mid = |a: i32, b: i32| (a + b) as f32 / 2.0;
+        assert_eq!(
+            mid(i32::from(t.offset.1 + ink_rows.0), i32::from(t.offset.1 + ink_rows.1)),
+            mid(halo1[1], halo1[3]),
+            "centred on Halo 1's digits"
+        );
+        checked += 1;
+    }
+    assert_eq!(checked, 2, "frag and plasma");
+}
+
+/// The weapon HUDs of Blood Gulch: every converted static and meter where
+/// Halo 1 puts it, and each meter copy showing exactly Halo 1's texels.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO)"]
+fn weapon_hud_widgets_stand_where_halo1_puts_them() {
+    let m = h1("bloodgulch");
+    let mut checked = 0;
+    for wt in m.tags().iter().filter(|t| t.group == Group::new(b"weap")) {
+        let Some(hud) = h1objects::h1::reference(&m, m.tag_data(wt).unwrap(), 0x480) else {
+            continue;
+        };
+        let (entries, _) = h1hud::weapon_entries(&m, hud).unwrap();
+        for e in &entries {
+            let Ok(w) = h1hud::weapon_widget(e, Some(TagId(1)), TagId(2), TagId(3)) else {
+                continue;
+            };
+            let Some(b) = e.bitmap else { continue };
+            let bm = Bitmap::read(&m, m.tag(b).unwrap()).unwrap();
+            let size = h1hud::sprite_size(&bm, e.sequence).unwrap();
+            assert_eq!(
+                h1hud::halo2_rect(&w, size),
+                h1hud::halo1_rect(e.anchor, e.offset, size),
+                "{} {:?}",
+                wt.name,
+                e.kind
+            );
+            if matches!(e.kind, h1hud::WeaponEntryKind::Meter(..)) {
+                let (_, raw) = texels(&m, b, e.sequence, false);
+                let (_, copy) = texels(&m, b, e.sequence, true);
+                for (a, c) in raw.iter().zip(&copy) {
+                    assert_eq!(halo2_meter_shows(*c), halo1_shows(*a), "{}", wt.name);
+                }
+            }
+            checked += 1;
+        }
+    }
+    eprintln!("{checked} weapon widgets placed as Halo 1's");
+    assert!(checked > 10);
+}
+
+
+/// The weapon HUDs' ammo counts: every number the converter makes a text
+/// widget of has its digits, every digit at every length up to Halo 1's
+/// digit count, inside the ink of the weapon's own panel (a converted
+/// static of the same `wphi`) where Halo 1's digits are, ending where
+/// Halo 1's last digit cell does and centred on Halo 1's digit sprites'
+/// rows. At Halo 1's y (the text's top there, as the v65 grenade count)
+/// they would spill out of the panel.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn weapon_ammo_digits_sit_inside_the_ammo_panel() {
+    let font = digit_font();
+    let m = h1("bloodgulch");
+    let (w, h) = (h1hud::digit_width(&m).unwrap(), h1hud::digit_height(&m).unwrap());
+    let mut checked = Vec::new();
+    for wt in m.tags().iter().filter(|t| t.group == Group::new(b"weap")) {
+        let Some(hud) = h1objects::h1::reference(&m, m.tag_data(wt).unwrap(), 0x480) else {
+            continue;
+        };
+        let (entries, _) = h1hud::weapon_entries(&m, hud).unwrap();
+        for e in &entries {
+            let h1hud::WeaponEntryKind::Number(state, n, _) = &e.kind else { continue };
+            let Ok(t) = h1hud::weapon_number(e, w, h, TagId(1)) else { continue };
+            // Halo 1's cells (h1hud::number_point): the last ends at
+            // `end`; the digit sprites' rows from Halo 1's y down.
+            let cells = i16::from(n.digits) + i16::from(n.flags & 0x04 != 0);
+            assert_eq!(n.anchor, Anchor::TopLeft, "the disc's weapon numbers");
+            let end = n.offset.0 + (cells - 2) * w + w;
+            let rows = (i32::from(n.offset.1), i32::from(n.offset.1 + h));
+            // The panel: the converted statics of the same wphi, drawn
+            // where Halo 1 puts them, with ink under Halo 1's last cell.
+            let mut panel = None;
+            for s in entries.iter().filter(|s| s.wphi == e.wphi) {
+                if !matches!(s.kind, h1hud::WeaponEntryKind::Static(_)) {
+                    continue;
+                }
+                let Ok(widget) = h1hud::weapon_widget(s, Some(TagId(1)), TagId(2), TagId(3)) else {
+                    continue;
+                };
+                let (size, rgba) = texels(&m, s.bitmap.unwrap(), s.sequence, false);
+                let d = Drawn { rect: h1hud::halo2_rect(&widget, size), rgba };
+                let ink = d.ink();
+                let mid = (rows.0 + rows.1) / 2;
+                if ink[0] < i32::from(end) && i32::from(end) <= ink[2] && ink[1] <= mid && mid < ink[3] {
+                    panel = Some(ink);
+                    break;
+                }
+            }
+            let panel = panel.unwrap_or_else(|| panic!("{} {state:?}: no panel under Halo 1's digits", wt.name));
+            for k in 1..=usize::from(n.digits) {
+                for (c, ..) in &font.glyphs {
+                    let text: String = std::iter::repeat_n(*c, k).collect();
+                    let ink = font.ink(&text, t.offset.0, t.offset.1);
+                    assert!(inside(ink, panel), "{} '{text}': ink {ink:?} outside the panel {panel:?}", wt.name);
+                    assert!(ink[2] <= i32::from(end), "{} '{text}': past Halo 1's last cell", wt.name);
+                    assert_eq!(ink[1] + ink[3], rows.0 + rows.1, "{} '{text}': centred on Halo 1's rows", wt.name);
+                }
+            }
+            let at_halo1_y = font.ink(&"0".repeat(usize::from(n.digits)), t.offset.0, n.offset.1);
+            assert!(!inside(at_halo1_y, panel), "{}: the text's top at Halo 1's y spills out", wt.name);
+            eprintln!(
+                "{} {state:?}: input {:#x}, point {:?}, panel ink {panel:?}, Halo 1's last cell ends at {end}, rows {rows:?}",
+                wt.name, t.inputs[0], t.offset
+            );
+            checked.push(wt.name.clone());
+        }
+    }
+    // One full-screen count per ballistic weapon and the plasma weapons'
+    // battery: the assault rifle, pistol, shotgun, rocket launcher, sniper
+    // rifle and needler; the plasma rifle and plasma pistol.
+    assert_eq!(checked.len(), 8, "{checked:?}");
+}
+
+/// Halo 1's statics of colour 0 draw nothing (`h1hud::static_alpha`): its
+/// HUD element blend, mode 7 of the tables `0x0007f4e0` indexes, read from
+/// the disc's XBE, is ONE, ONE_MINUS_SRC_ALPHA, ADD; and each such weapon
+/// static on Blood Gulch, the ballistic weapons' `hud_ammo_alphas`, has no
+/// widget.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO)"]
+fn halo1_statics_of_colour_zero_have_no_widget() {
+    let mut iso = iso();
+    let e = iso
+        .entries()
+        .unwrap()
+        .into_iter()
+        .find(|e| e.path.trim_start_matches(['\\', '/']).eq_ignore_ascii_case("default.xbe"))
+        .expect("default.xbe");
+    let xbe = iso.read(&e).unwrap();
+    let u32_at = |at: usize| u32::from_le_bytes(xbe[at..at + 4].try_into().unwrap());
+    let base = u32_at(0x104);
+    let (count, headers) = (u32_at(0x11c) as usize, (u32_at(0x120) - base) as usize);
+    let read = |va: u32| {
+        (0..count)
+            .map(|i| headers + i * 0x38)
+            .find_map(|h| {
+                let (sva, raw, size) = (u32_at(h + 4), u32_at(h + 0xc), u32_at(h + 0x10));
+                (sva..sva + size).contains(&va).then(|| u32_at((raw + va - sva) as usize))
+            })
+            .unwrap()
+    };
+    // D3DBLEND_ONE 1, D3DBLEND_INVSRCALPHA 0x303, D3DBLENDOP_ADD 0x8006.
+    let mode = 7;
+    assert_eq!(read(0x001e9c0c + mode * 4), 1, "source: ONE");
+    assert_eq!(read(0x001e9c30 + mode * 4), 0x303, "destination: ONE_MINUS_SRC_ALPHA");
+    assert_eq!(read(0x001e9c54 + mode * 4), 0x8006, "operation: ADD");
+
+    let m = h1("bloodgulch");
+    let mut zero = Vec::new();
+    for wt in m.tags().iter().filter(|t| t.group == Group::new(b"weap")) {
+        let Some(hud) = h1objects::h1::reference(&m, m.tag_data(wt).unwrap(), 0x480) else {
+            continue;
+        };
+        let (entries, _) = h1hud::weapon_entries(&m, hud).unwrap();
+        for e in entries.iter().filter(|e| matches!(e.kind, h1hud::WeaponEntryKind::Static(_))) {
+            let w = h1hud::weapon_widget(e, Some(TagId(1)), TagId(2), TagId(3));
+            if e.colour == 0 {
+                assert_eq!(w, Err(h1hud::Skip::Invisible), "{}", wt.name);
+                let b = m.tag(e.bitmap.unwrap()).unwrap();
+                assert!(b.name.ends_with("hud_ammo_alphas"), "{}: {}", wt.name, b.name);
+                zero.push(wt.name.clone());
+            } else {
+                assert_ne!(w, Err(h1hud::Skip::Invisible), "{}", wt.name);
+            }
+        }
+    }
+    eprintln!("statics of colour 0: {zero:?}");
+    assert_eq!(zero.len(), 6, "{zero:?}");
+}

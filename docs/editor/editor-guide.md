@@ -69,12 +69,24 @@ Options:
 | `--map <file.map>` | Open a single loose `.map` file instead of a disc. |
 | `--folder <dir>` | Open a folder of `.map` files. |
 | `--halo1 <file.iso or dir>` | A Halo 1 disc image or folder of Halo 1 maps, to look at (section 4). Without it, the editor uses `H1_ISO`, then `H1_MAP_DIR`, then `disc/halo1.iso`. |
+| `--mappack <file.iso or dir>` | The Halo 2 Multiplayer Map Pack disc, to add its nine maps. Without it, the editor uses `H2_MAPPACK_ISO`, then a `mappack.iso` next to the Halo 2 disc, then `disc/mappack.iso`. |
 | `--hopper <file>` | Open this `multiplayer_hopper.dat` in the Playlists tool at startup. |
 | `--data <dir>` | The game's data folder: where saved variants and map packages go. It defaults to the same folder `h2 play` uses (`$TMPDIR/h2boot-data`). |
 
 If you start the game with `h2 play --data <dir>`, give the editor the
 same `--data <dir>`, or the game won't see what you save. If you don't
 use `--data` with either, they already agree.
+
+**The Map Pack.** If you have the Halo 2 Multiplayer Map Pack disc, put it
+next to your Halo 2 disc as `mappack.iso` (or give `--mappack`) and the
+editor adds its nine maps under their own **Map Pack** heading in the Maps
+list. You can also add it by hand: **Open...** on the map pack ISO adds it
+and keeps your Halo 2 disc open. The editor knows it by what is on it, not
+its name. Its maps open, edit and save as a package like the disc's maps;
+keep the Halo 2 disc open too, because their textures and level geometry
+come from it. Press F5 (Play) as usual: the game starts from your Halo 2
+disc. If the map pack is not next to that disc, the game will not install
+it and the Log says so; your edited map still plays.
 
 With no disc found, the editor still starts: use **File > Open disc or
 map...**, or drop a disc image, `.map` file or folder onto the window.
@@ -101,7 +113,7 @@ The window is made of panels that dock together:
   anything: each tool keeps its state while hidden. Under the tools,
   **Maps** has **Open...** (a disc image or `.map`) and **Folder...** (a
   folder of maps), the path of what is open, and its maps. Below them,
-  **Packages** lists the map packages you have saved, and **Halo 1** the
+  **Map Pack** lists the Map Pack's maps, **Packages** lists the map packages you have saved, and **Halo 1** the
   Halo 1 maps (section 4). Clicking any of them opens it in the Scenario
   tool.
 - **Outliner** (bottom left), **Viewport** (middle) and **Inspector**

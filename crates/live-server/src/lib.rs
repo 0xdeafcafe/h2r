@@ -25,6 +25,8 @@
 pub mod admin;
 pub mod app;
 pub mod art;
+#[cfg(feature = "native")]
+pub mod art_pack;
 pub mod arbitration;
 pub mod bans;
 pub mod blobs;
@@ -54,12 +56,14 @@ pub mod logio;
 mod mailbox;
 pub mod model;
 pub mod mutes;
+pub mod page_meta;
 pub mod packed;
 #[cfg(feature = "native")]
 pub mod pg;
 pub mod public;
 pub mod ranks;
 pub mod recovery;
+pub mod signins;
 pub mod relay;
 pub mod reports;
 pub mod rt;

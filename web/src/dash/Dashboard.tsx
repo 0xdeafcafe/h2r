@@ -2,9 +2,9 @@
 // takes after:
 //   - the main menu: the orb and a ring of pods and their bars, which
 //     turns to bring the selected one into focus;
-//   - list screens (live now, friends, players, game history): a tilted
+//   - list screens (live now, friends, players, settings): a tilted
 //     panel of rows, a preview pod and an info plate;
-//   - pod screens (settings, a player, sign up, recovery, server, invites):
+//   - pod screens (a player, sign up, account, server, invites):
 //     one big pod, four small ones around it and an info plate.
 // Arrow keys (or the wheel) move, Enter (or a) selects, Escape /
 // Backspace (or b) goes back; the mouse and touch work too.
@@ -14,7 +14,7 @@ import { For, Match, Show, Switch, createEffect, createMemo, createSignal, on, o
 import { useNavigate, useParams } from "@solidjs/router";
 import { live } from "../state/live";
 import { identity, download } from "../state/identity";
-import { liveGames, endedGames, standings, teamStandings, type GameState, type AccountState } from "../state/reducer";
+import { liveGames, standings, teamStandings, type GameState, type AccountState } from "../state/reducer";
 import { OUTCOME_WORDS, campaignOutcome, campaignRecord, playedWith, serviceRecord } from "../state/derive";
 import { campaignLabel, difficultyName, gameTypeLabel, gameTypeLine } from "../state/gametype";
 
@@ -56,25 +56,28 @@ import { motdHeader } from "../lib/motd";
 import "../styles/dash-pages.css";
 import SocialScreen from "./Social";
 import SessionsScreen from "./Sessions";
+import SignInsScreen from "./SignIns";
 import GamesScreen from "./Games";
 import "../styles/social.css";
+import { DASH_NAME } from "../brand";
+import Legal from "../components/Legal";
 import { lockedHint, menuFor, type SectionId } from "./menu";
+import { STATS_ROOT, statsPath } from "../routes";
 
-type ScreenId = "menu" | "games" | "list" | "player" | "settings" | "signup" | "recovery" | "recover" | "server" | "social" | "sessions";
+type ScreenId = "menu" | "games" | "list" | "player" | "signup" | "recovery" | "recover" | "server" | "social" | "sessions" | "signins";
 
 const LABELS: Record<SectionId, () => string> = {
   live: () => "live now",
   games: () => "games",
   sessions: () => "find a game",
   friends: () => "friends",
-  clans: () => "clans",
+  teams: () => "teams",
   players: () => "players",
-  history: () => "game history",
   settings: () => "settings",
   signup: () => (identity.me() ? "profile" : "create account"),
   server: () => "server",
   signin: () => "sign in",
-  recover: () => "recover account",
+  recover: () => "sign in with a code",
   account: () => "account",
 };
 const SECTION_IDS = Object.keys(LABELS) as SectionId[];
@@ -84,7 +87,7 @@ const menuItems = (): SectionId[] => menuFor(!!identity.me());
  *  players when signed out), as they did in the original Live menu. */
 function menuHome(s: SectionId): SectionId {
   if (menuItems().includes(s)) return s;
-  if (s === "clans") return identity.me() ? "friends" : "players";
+  if (s === "teams") return identity.me() ? "friends" : "players";
   return s === "friends" ? "players" : "settings";
 }
 
@@ -122,7 +125,7 @@ function gameLine(g: GameState): string {
   return top ? `${top.name} ${top.score.score}` : "no score yet";
 }
 
-const playerHref = (tag: string) => `/stats/players/${encodeURIComponent(tag)}`;
+const playerHref = (tag: string) => `${STATS_ROOT}/players/${encodeURIComponent(tag)}`;
 
 /** A route segment as typed: the router hands it over still encoded. */
 function safeDecode(s: string): string {
@@ -145,13 +148,14 @@ export default function Dashboard() {
     if (!s) return "menu";
     if (s === "games") return "games";
     if (s === "server") return "server";
-    if (s === "friends" || s === "clans") return "social";
+    if (s === "friends" || s === "teams") return "social";
     if (s === "sessions") return "sessions";
-    if (s === "settings") return "settings";
     // /dash/recover (and the older /dash/signup/recover): a new device takes
     // an account over; /dash/account (and /dash/signup/recovery): the
     // signed-in account. Signed out, /dash/account is the sign-in list.
     if (s === "recover" || (s === "signup" && params.tag === "recover")) return "recover";
+    // /dash/account/signins: where the account is signed in.
+    if (s === "account" && params.tag === "signins" && identity.me()) return "signins";
     if ((s === "account" || (s === "signup" && params.tag === "recovery")) && identity.me()) return "recovery";
     if (s === "signin" || s === "account") return "list";
     if (s === "signup") return identity.me() ? "player" : "signup";
@@ -195,8 +199,16 @@ export default function Dashboard() {
       : online();
   });
 
+  const settings = createMemo(() => [
+    { key: "/dash/signup", label: identity.me() ? "profile" : "sign up", glyph: "key" },
+    { key: "/dash/games", label: "games", glyph: "disc" },
+    { key: adminState.isMeAdmin() === true ? "/dash/admin/events" : statsPath("/events"), label: "event log", glyph: "history" },
+    { key: "/dash/server", label: "server", glyph: "server" },
+  ] satisfies (Row & { glyph: GlyphName })[]);
+
   const rows = createMemo((): Row[] => {
     switch (section()) {
+      case "settings": return settings();
       case "live":
         return liveGames(live.state).map((g) => ({ key: g.game_id, label: gameMapTitle(g), meta: `${rowType(g)} ${clock(elapsedSeconds(g, now()))}` }));
       case "friends":
@@ -205,14 +217,12 @@ export default function Dashboard() {
         return Object.values(live.state.accounts)
           .sort((a, b) => Number(b.online) - Number(a.online) || a.gamertag.localeCompare(b.gamertag))
           .map((a) => ({ key: a.xuid, label: a.gamertag, meta: presenceText(a) }));
-      case "history":
-        return endedGames(live.state, 50).map((g) => ({ key: g.game_id, label: gameMapTitle(g), meta: rowType(g) }));
       case "signin": case "account": {
         // The accounts this browser keeps for this server, then the other ways in.
         const me = identity.me();
         return [
           ...identity.accounts().map((a) => ({ key: a.xuid, label: a.gamertag, meta: me?.xuid === a.xuid ? "signed in" : "kept here" })),
-          { key: "#recover", label: "recover account", meta: "gamertag and code" },
+          { key: "#recover", label: "sign in with a code", meta: "gamertag and code" },
           { key: "#create", label: "create account", meta: "new gamertag" },
           { key: "#import", label: "import account", meta: "account file" },
         ];
@@ -242,7 +252,8 @@ export default function Dashboard() {
       }
       return;
     }
-    if (s === "live" || s === "history") go(`/stats/games/${r.key}`, "deeper");
+    if (s === "settings") go(r.key, "deeper");
+    else if (s === "live") go(`${STATS_ROOT}/games/${r.key}`, "deeper");
     else go(`/dash/${s}/${encodeURIComponent(r.label)}`, "deeper");
   }
 
@@ -277,27 +288,33 @@ export default function Dashboard() {
           ];
         }
         return [...base,
-          { label: me ? "compare" : "leaderboard", glyph: "compare", act: () => go(me ? `${playerHref(me.gamertag)}/career?compare=${encodeURIComponent(a.gamertag)}` : "/stats/players", "deeper") },
+          { label: me ? "compare" : "leaderboard", glyph: "compare", act: () => go(me ? `${playerHref(me.gamertag)}/career?compare=${encodeURIComponent(a.gamertag)}` : statsPath("/players"), "deeper") },
           { label: "career stats", glyph: "career", act: () => go(`${playerHref(a.gamertag)}/career`, "deeper") },
         ];
       }
-      case "settings":
-        return [
-          { label: identity.me() ? "profile" : "sign up", glyph: "key", act: () => go("/dash/signup", "deeper") },
-          { label: "games", glyph: "disc", act: () => go("/dash/games", "deeper") },
-          { label: "event log", glyph: "history", act: () => go("/stats/events", "deeper") },
-          { label: "server", glyph: "server", act: () => go("/dash/server", "deeper") },
-        ];
       case "recovery": {
+        // The code stays hidden until asked for; copying doesn't show it.
+        // The setup's pods replace "signed in" with making a new code.
         const ready = recovery.phase() === "ready";
-        return [
+        const code: Sat[] = [
+          { label: recovery.revealed() ? "hide code" : "show code", glyph: "key", act: ready ? () => recovery.toggleReveal() : undefined },
           { label: "copy code", glyph: "sign", act: ready ? () => void recovery.copyCode() : undefined },
-          { label: recovery.showSetup() ? "hide setup" : "authenticator setup", glyph: "download", act: ready ? () => recovery.toggleSetup() : undefined },
-          {
-            label: recovery.confirming() ? "confirm reset" : ready ? "reset recovery" : "set up recovery", glyph: "gear",
-            act: recovery.phase() === "ready" || recovery.phase() === "none" ? () => recovery.setupOrReset() : undefined,
-          },
-          { label: "sign out", glyph: "exit", act: () => { identity.signOut(); go("/", "back"); } },
+        ];
+        if (recovery.phase() === "none") {
+          return [...code,
+            { label: "set up code", glyph: "gear", act: () => recovery.setupOrReset() },
+            { label: "signed in", glyph: "globe", act: () => go("/dash/account/signins", "deeper") },
+          ];
+        }
+        if (recovery.showSetup()) {
+          return [...code,
+            { label: "hide setup", glyph: "download", act: () => recovery.toggleSetup() },
+            { label: recovery.confirming() ? "confirm new code" : "new code", glyph: "gear", act: ready ? () => recovery.setupOrReset() : undefined },
+          ];
+        }
+        return [...code,
+          { label: "authenticator setup", glyph: "download", act: ready ? () => recovery.toggleSetup() : undefined },
+          { label: "signed in", glyph: "globe", act: () => go("/dash/account/signins", "deeper") },
         ];
       }
       case "recover":
@@ -335,7 +352,7 @@ export default function Dashboard() {
 
   // These screens manage selection and focus inside their own panels.
   let screenAct: ((a: Action) => boolean) | null = null;
-  const ownInput = () => screen() === "games" || screen() === "social" || screen() === "sessions";
+  const ownInput = () => screen() === "games" || screen() === "social" || screen() === "sessions" || screen() === "signins";
 
   const [serverErr, setServerErr] = createSignal<string | null>(null);
   const [serverBusy, setServerBusy] = createSignal(false);
@@ -365,13 +382,13 @@ export default function Dashboard() {
     else if (s === "server" && params.tag === "import" && !identity.me()) go("/dash/signin", "back");
     else if (s === "server" && params.tag) go("/dash/server", "back");
     else if (s === "signup" || s === "server") go("/dash/settings", "back");
-    else if (s === "clans") go(`/dash/${menuHome("clans")}`, "back");
+    else if (s === "teams") go(`/dash/${menuHome("teams")}`, "back");
     else go("/", "back");
   }
 
   function select() {
     switch (screen()) {
-      case "games": case "social": case "sessions": screenAct?.("select"); break;
+      case "games": case "social": case "sessions": case "signins": screenAct?.("select"); break;
       case "menu": {
         const id = items()[menu()]!;
         if (!lockedHint(id, !!identity.me())) go(`/dash/${id}`, "deeper");
@@ -537,7 +554,7 @@ export default function Dashboard() {
       <Tubes />
 
       <header class="dx-top">
-        <span class="dx-brand">h2 live</span>
+        <span class="dx-brand">{DASH_NAME}</span>
         <span class="dx-chip dx-chip--server"><i class={`dx-led dx-led--${live.status()}`} />{live.wellKnown()?.id ?? new URL(live.server().base).host}</span>
         <Show when={identity.me()} fallback={<Show when={section() !== "signin"}><a class="dx-chip dx-chip--link dx-chip--join" href="/dash/signin" onClick={(e) => { e.preventDefault(); go("/dash/signin", "deeper"); }}>sign in</a></Show>}>
           {(me) => <a class="dx-chip dx-chip--me" href="/dash/signup" onClick={(e) => { e.preventDefault(); if (screen() !== "player" || section() !== "signup") go("/dash/signup", section() === "signup" ? "back" : "deeper"); }}>{me().gamertag}</a>}
@@ -546,6 +563,8 @@ export default function Dashboard() {
           <a class="dx-chip dx-chip--link" href="/dash/games">games</a>
         </Show>
       </header>
+
+      <Show when={screen() === "menu"}><Legal name={DASH_NAME} class="dx-legal" /></Show>
 
       <main class="dx-stage">
         <Switch>
@@ -589,20 +608,36 @@ export default function Dashboard() {
             <GamesScreen back={back} bind={(f) => { screenAct = f; }} />
           </Match>
 
+          <Match when={section() === "settings"}>
+            <div class="dx-screen dx-list dx-pages dx-settings">
+              <ListPanel title="settings" rows={rows()} sel={sel()} onSel={setSel} onAct={openRow} empty="" />
+              <div class="dx-preview"><BigPod wire><Glyph name={settings()[sel()]?.glyph ?? "gear"} /></BigPod></div>
+              <Plate small="h2 live" title="system status">
+                <dl>
+                  <dt>server</dt><dd>{live.wellKnown()?.id ?? new URL(live.server().base).host}</dd>
+                  <dt>link</dt><dd>{live.status() === "live" ? "connected" : live.status()}</dd>
+                  <dt>account</dt><dd>{identity.me()?.gamertag ?? "not signed in"}</dd>
+                  <dt>online</dt><dd>{online().length} <span>players</span> {liveGames(live.state).length} <span>games</span></dd>
+                </dl>
+              </Plate>
+              <Prompts onA={select} onB={back} />
+            </div>
+          </Match>
+
           <Match when={screen() === "list"}>
             <div class="dx-screen dx-list dx-pages">
               <ListPanel title={title()} rows={rows()} sel={sel()} onSel={setSel} onAct={openRow} empty={emptyText(section())} />
               <Show when={section() === "signin" || section() === "account"} fallback={<>
               <div class="dx-preview">
                 <BigPod>
-                  <Show when={section() === "live" || section() === "history"} fallback={
+                  <Show when={section() === "live"} fallback={
                     <Show when={selAccount()} fallback={<Glyph name="empty" />}>{(a) => <Emblem seed={a().xuid} size={220} class="dx-emblem" />}</Show>
                   }>
                     <Show when={selGame()} keyed fallback={<Glyph name="empty" />}>{(g) => <GameMap game={g} />}</Show>
                   </Show>
                 </BigPod>
               </div>
-              <Show when={section() === "live" || section() === "history"} fallback={
+              <Show when={section() === "live"} fallback={
                 <Show when={selAccount()}>{(a) => <PlayerPlate account={a()} />}</Show>
               }>
                 <Show when={selGame()}>{(g) => <GamePlate game={g()} />}</Show>
@@ -630,22 +665,6 @@ export default function Dashboard() {
                 <Prompts onA={select} onB={back} />
               </div>
             )}
-          </Match>
-
-          <Match when={screen() === "settings"}>
-            <div class="dx-screen dx-pods dx-pages">
-              <div class="dx-centre"><BigPod wire><Glyph name="gear" /></BigPod></div>
-              <Sats sats={sats()} sel={sat()} onSel={setSat} />
-              <Plate small="h2 live" title="settings" main>
-                <dl>
-                  <dt>server</dt><dd>{live.wellKnown()?.id ?? new URL(live.server().base).host}</dd>
-                  <dt>link</dt><dd>{live.status() === "live" ? "connected" : live.status()}</dd>
-                  <dt>account</dt><dd>{identity.me()?.gamertag ?? "not signed in"}</dd>
-                  <dt>online</dt><dd>{online().length} <span>players</span> {liveGames(live.state).length} <span>games</span></dd>
-                </dl>
-              </Plate>
-              <Prompts onA={select} onB={back} />
-            </div>
           </Match>
 
           <Match when={screen() === "signup"}>
@@ -679,12 +698,16 @@ export default function Dashboard() {
               <div class="dx-centre"><BigPod wire><Glyph name="key" /></BigPod></div>
               <Sats sats={sats()} sel={sat()} onSel={setSat} />
               <RecoverPlate onDone={() => go("/dash/signup", "deeper", true)} />
-              <Prompts onA={select} onB={back} aLabel="recover" />
+              <Prompts onA={select} onB={back} aLabel="sign in" />
             </div>
           </Match>
 
           <Match when={screen() === "social"}>
-            <SocialScreen section={section() as "friends" | "clans"} tag={params.tag ? safeDecode(params.tag) : undefined} go={go} back={back} bind={(f) => { screenAct = f; }} />
+            <SocialScreen section={section() as "friends" | "teams"} tag={params.tag ? safeDecode(params.tag) : undefined} go={go} back={back} bind={(f) => { screenAct = f; }} />
+          </Match>
+
+          <Match when={screen() === "signins"}>
+            <SignInsScreen go={go} back={() => go("/dash/account", "back")} bind={(f) => { screenAct = f; }} />
           </Match>
 
           <Match when={screen() === "sessions"}>
@@ -766,7 +789,6 @@ function emptyText(s: SectionId | null): string {
     case "live": return "no games right now";
     case "friends": return identity.me() ? "play a game to meet people" : "nobody online";
     case "players": return "nobody here yet";
-    case "history": return "no finished games yet";
     default: return "nothing here yet";
   }
 }

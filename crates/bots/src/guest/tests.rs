@@ -241,7 +241,7 @@ fn the_bot_block_is_the_humans_with_a_name_and_fixed_controls() {
     human[BLOCK_CONTROLS + 4] = 2; // Boxer
     human[BLOCK_CONTROLS + 5] = 1;
     human[BLOCK_CONTROLS + 6] = 9;
-    let b = bot_block(&human, "Clanker 1 with a long name");
+    let b = bot_block(&human, "Clanker 1 with a long name", 1);
     assert_eq!(&b[BLOCK_NAME..BLOCK_NAME + 16], b"Clanker 1 with \0");
     let flags = u32::from_le_bytes(b[BLOCK_CONTROLS..BLOCK_CONTROLS + 4].try_into().unwrap());
     assert_eq!(flags, 0xffff_fffa, "bits 0 and 2 off, the rest kept");
@@ -251,16 +251,159 @@ fn the_bot_block_is_the_humans_with_a_name_and_fixed_controls() {
     );
     for (i, (x, y)) in human.iter().zip(&b).enumerate() {
         let ours = (BLOCK_NAME..BLOCK_NAME + 16).contains(&i)
-            || (BLOCK_CONTROLS..BLOCK_CONTROLS + 7).contains(&i);
+            || (BLOCK_PROFILE_NAME..BLOCK_PROFILE_NAME + 2 * BLOCK_PROFILE_NAME_UNITS).contains(&i)
+            || (BLOCK_CONTROLS..BLOCK_CONTROLS + 7).contains(&i)
+            || (BLOCK_LOOK..BLOCK_LOOK + 8).contains(&i);
         if !ours {
             assert_eq!(x, y, "byte {i:#x} is the human's");
         }
     }
     // Short names are padded with NULs.
     assert_eq!(
-        &bot_block(&human, "B")[BLOCK_NAME..BLOCK_NAME + 3],
+        &bot_block(&human, "B", 1)[BLOCK_NAME..BLOCK_NAME + 3],
         b"B\0\0"
     );
+}
+
+fn utf16(units: &[u8]) -> String {
+    let u: Vec<u16> = units
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .take_while(|&u| u != 0)
+        .collect();
+    String::from_utf16_lossy(&u)
+}
+
+/// The human's saved profile as its file starts: 8 bytes, then the name in
+/// UTF-16 ("Halo0001", the user's), then zeros.
+fn halo0001() -> [u8; BLOCK_LEN] {
+    let mut human = [0u8; BLOCK_LEN];
+    for (i, u) in "Halo0001".encode_utf16().enumerate() {
+        human[BLOCK_PROFILE_NAME + 2 * i..][..2].copy_from_slice(&u.to_le_bytes());
+    }
+    human
+}
+
+/// The game's display-name refresh for a slot with a profile and no Live
+/// account (`0x190eb3` at `0x190f71`): slot `+0x20` (the block's profile
+/// name), 32 units, to `+0xc1c`.
+fn refresh_name(m: &mut FakeGuest, port: u32) {
+    let name = m
+        .bytes(
+            slot(port) + SLOT_BLOCK + BLOCK_PROFILE_NAME as u32,
+            2 * SLOT_NAME_UNITS,
+        )
+        .unwrap();
+    m.write(slot(port) + SLOT_NAME, &name).unwrap();
+}
+
+#[test]
+fn the_bot_block_carries_the_bots_name_as_its_profile_name() {
+    let human = halo0001();
+    let b = bot_block(&human, "Clanker 2", 2);
+    let name = &b[BLOCK_PROFILE_NAME..BLOCK_PROFILE_NAME + 2 * BLOCK_PROFILE_NAME_UNITS];
+    assert_eq!(utf16(name), "Clanker 2", "not the human's Halo0001");
+    assert!(name[2 * 9..].iter().all(|&b| b == 0), "NUL to the end");
+    // At most 31 units and a NUL, whatever the name.
+    let long = "x".repeat(40);
+    let b = bot_block(&human, &long, 1);
+    let name = &b[BLOCK_PROFILE_NAME..BLOCK_PROFILE_NAME + 2 * BLOCK_PROFILE_NAME_UNITS];
+    assert_eq!(utf16(name).len(), BLOCK_PROFILE_NAME_UNITS - 1);
+    assert_eq!(&name[2 * 31..], &[0, 0]);
+    // Each bot is its own: no two share a name the session would rename.
+    let names: Vec<String> = (1..=3)
+        .map(|p| {
+            let b = bot_block(&human, &format!("Clanker {p}"), p);
+            utf16(&b[BLOCK_PROFILE_NAME..BLOCK_PROFILE_NAME + 2 * BLOCK_PROFILE_NAME_UNITS])
+        })
+        .collect();
+    assert_eq!(names, ["Clanker 1", "Clanker 2", "Clanker 3"]);
+}
+
+#[test]
+fn the_games_name_refresh_keeps_a_signed_in_bots_name() {
+    // The user's Live lobby: the human "afr" and three bots shown as
+    // "Halo0001", "Shadow" and "Wilshire". The game rebuilt each bot's
+    // display name from its block's profile name, the human's, and the
+    // session renamed the copies. Signed in now, a refresh says the bot's.
+    let mut g = FakeGuest::new();
+    slots(&mut g);
+    g.put_u32(slot(0), SLOT_PROFILE);
+    g.put(slot(0) + SLOT_BLOCK, &halo0001());
+    let mut run = sign_in_run(g);
+    assert_eq!(run.result, Ok(Ret::new(1, 4)));
+    refresh_name(&mut run.guest, 1);
+    assert_eq!(
+        run.guest
+            .utf16(slot(1) + SLOT_NAME, SLOT_NAME_UNITS)
+            .unwrap(),
+        "Clanker 1"
+    );
+}
+
+/// What `0x153750` accepts: the block check zeroes a look it does not.
+fn look_is_valid(l: &[u8]) -> bool {
+    l[..4].iter().all(|&c| c == 0xff || c < COLOURS)
+        && l[4] < 4
+        && l[5] < EMBLEM_FOREGROUNDS
+        && l[6] < EMBLEM_BACKGROUNDS
+        && l[7] & 0xf0 == 0
+}
+
+#[test]
+fn each_bot_has_its_own_colours_and_emblem_never_the_humans() {
+    let mut human = [0u8; BLOCK_LEN];
+    // The human: colours 3 and 1 (port 1's), model 1, emblem 9 on 4.
+    human[BLOCK_LOOK..BLOCK_LOOK + 8].copy_from_slice(&[3, 1, 3, 1, 1, 9, 4, 0x0f]);
+    human[BLOCK_LOOK + 8] = 0x77;
+    let looks: Vec<[u8; 8]> = (1..=3)
+        .map(|port| {
+            let b = bot_block(&human, "B", port);
+            assert_eq!(b[BLOCK_LOOK + 8], 0x77, "the unchecked half is the human's");
+            b[BLOCK_LOOK..BLOCK_LOOK + 8].try_into().unwrap()
+        })
+        .collect();
+    for (port, l) in (1..).zip(&looks) {
+        assert!(look_is_valid(l), "port {port}: {l:?}");
+        assert_eq!(l[4], 1, "the human's model");
+        assert_ne!(l[0], 3, "port {port}: not the human's primary");
+        assert_ne!(l[1], 1, "port {port}: not the human's secondary");
+        assert_ne!((l[5], l[6]), (9, 4), "port {port}: not the human's emblem");
+    }
+    assert_eq!(&looks[0][..2], &[4, 2], "port 1's colours moved one on");
+    assert_ne!(looks[0], looks[1]);
+    assert_ne!(looks[1], looks[2]);
+    assert_ne!(looks[0], looks[2]);
+    // A bad model is not copied.
+    human[BLOCK_LOOK + 4] = 9;
+    let b = bot_block(&human, "B", 2);
+    assert!(look_is_valid(&b[BLOCK_LOOK..BLOCK_LOOK + 8]));
+    for (port, (_, fg, bg)) in (1..).zip(BOT_LOOKS) {
+        assert!(
+            fg < EMBLEM_FOREGROUNDS && bg < EMBLEM_BACKGROUNDS,
+            "port {port}"
+        );
+    }
+}
+
+#[test]
+fn signing_out_calls_the_games_sign_out_per_port_then_the_frame() {
+    const THEN: u32 = 0x0012_5b40;
+    let f = |cx: Cx| -> EntryFuture { Box::pin(sign_out_then(cx, vec![1, 3], THEN)) };
+    let regs = Regs {
+        esp: STACK,
+        ..Regs::default()
+    };
+    let mut g = FakeGuest::new();
+    g.map(STACK - 0x100, 0x200);
+    let run = testing::run(&f, g, regs, |c, _| Regs {
+        eax: if c.target == THEN { 0x77 } else { 0 },
+        ..Regs::default()
+    });
+    assert_eq!(run.result, Ok(Ret::new(0x77, 0)), "the frame's own return");
+    let calls: Vec<(u32, Option<u32>)> = run.calls.iter().map(|c| (c.target, c.eax)).collect();
+    let out = points::PROFILE_SIGN_OUT.base;
+    assert_eq!(calls, vec![(out, Some(1)), (out, Some(3)), (THEN, None)]);
 }
 
 fn slots(g: &mut FakeGuest) {
@@ -335,6 +478,101 @@ fn sign_in_calls_the_games_sign_in_with_the_bot_block_and_joins_the_screen() {
         "Clanker 1"
     );
     assert_eq!(g.u16(SCREEN + SCREEN_MASK).unwrap(), 0b11);
+}
+
+fn sign_in_then_run(mut g: FakeGuest, screen: Option<u32>) -> testing::Run {
+    const THEN: u32 = 0x0012_5b40;
+    g.map(STACK - 0x100, 0x200);
+    g.map(SCREEN, 0x20).put_u16(SCREEN + SCREEN_MASK, 0b1);
+    g.map(BUFFER, BLOCK_LEN as u32);
+    let f = move |cx: Cx| -> EntryFuture {
+        Box::pin(sign_in_then(
+            cx,
+            vec![(1, "Clanker 1".into()), (3, "Clanker 3".into())],
+            0b1010,
+            BUFFER,
+            screen,
+            THEN,
+        ))
+    };
+    let regs = Regs {
+        esp: STACK,
+        ..Regs::default()
+    };
+    testing::run(&f, g, regs, |c, m| {
+        if c.target == THEN {
+            return Regs {
+                eax: 0x77,
+                ..Regs::default()
+            };
+        }
+        let (port, block) = (c.args[0], c.args[1]);
+        let b = m.bytes(block, BLOCK_LEN).unwrap();
+        m.write(slot(port) + SLOT_BLOCK, &b).unwrap();
+        let f = m.u32(slot(port)).unwrap();
+        m.set_u32(slot(port), f | SLOT_PROFILE).unwrap();
+        Regs::default()
+    })
+}
+
+#[test]
+fn the_glue_signs_bots_in_with_no_press_then_runs_the_frame() {
+    let mut g = FakeGuest::new();
+    slots(&mut g);
+    g.put_u32(slot(0), SLOT_PROFILE);
+    g.put(slot(0) + SLOT_BLOCK, &halo0001());
+    let run = sign_in_then_run(g, Some(SCREEN));
+    assert_eq!(run.result, Ok(Ret::new(0x77, 0)), "the frame's own return");
+    let calls: Vec<(u32, Vec<u32>)> = run
+        .calls
+        .iter()
+        .map(|c| (c.target, c.args.clone()))
+        .collect();
+    let sign_in = points::PROFILE_SIGN_IN.base;
+    assert_eq!(calls.len(), 3);
+    assert_eq!(calls[0], (sign_in, vec![1, BUFFER, u32::MAX]));
+    assert_eq!(calls[1], (sign_in, vec![3, BUFFER, u32::MAX]));
+    assert_eq!(calls[2].0, 0x0012_5b40, "then the frame");
+    let mut g = run.guest;
+    for (port, name) in [(1, "Clanker 1"), (3, "Clanker 3")] {
+        assert!(signed_in(&g, port).unwrap());
+        assert_eq!(
+            g.utf16(slot(port) + SLOT_NAME, SLOT_NAME_UNITS).unwrap(),
+            name
+        );
+        refresh_name(&mut g, port);
+        assert_eq!(
+            g.utf16(slot(port) + SLOT_NAME, SLOT_NAME_UNITS).unwrap(),
+            name
+        );
+    }
+    assert!(!signed_in(&g, 2).unwrap());
+    assert_eq!(
+        g.u16(SCREEN + SCREEN_MASK).unwrap(),
+        0b1011,
+        "joined on the screen"
+    );
+}
+
+#[test]
+fn with_no_players_screen_the_bots_sign_in_and_no_mask_is_touched() {
+    let mut g = FakeGuest::new();
+    slots(&mut g);
+    g.put_u32(slot(0), SLOT_PROFILE);
+    let run = sign_in_then_run(g, None);
+    assert_eq!(run.result, Ok(Ret::new(0x77, 0)));
+    assert!(signed_in(&run.guest, 1).unwrap() && signed_in(&run.guest, 3).unwrap());
+    assert_eq!(run.guest.u16(SCREEN + SCREEN_MASK).unwrap(), 0b1);
+}
+
+#[test]
+fn with_no_human_profile_the_glue_signs_no_one_in_and_runs_the_frame() {
+    let mut g = FakeGuest::new();
+    slots(&mut g);
+    let run = sign_in_then_run(g, Some(SCREEN));
+    assert_eq!(run.result, Ok(Ret::new(0x77, 0)));
+    assert_eq!(run.calls.len(), 1, "only the frame");
+    assert!(!signed_in(&run.guest, 1).unwrap());
 }
 
 #[test]

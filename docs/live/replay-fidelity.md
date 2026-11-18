@@ -354,6 +354,59 @@ tick, and each stream's offset), so a reader seeks within a chunk without
 decoding what comes before the keyframe it needs. Keyframes stay every
 10 s, and the 10 s spacing is a constant to tune against the size target.
 
+### Chunks as built (first cut, 2026-11-18)
+
+Built: the chunk container, recording, the index and the reads
+([live-api.md](live-api.md#frame-chunks)), with the codec slot for the
+work above. What differs from the plan:
+
+- **The index is the log.** Each chunk's `FrameChunk` event is its index
+  entry (window, frames, size, hash, packed versions, players present,
+  cuts, hits and shots); `GET /v1/games/{id}/chunks` reads them in one
+  store query. One keyframe heads each chunk, so no in-chunk index.
+- **Codec 1 is raw deflate over the packed records, opaque to the frame
+  version** (other lanes are changing the frame: version 5's fields, a
+  cinematic marker). The browser inflates it with `DecompressionStream`.
+  Steps 1 to 4 above need the codec to know the fields, so they are a
+  codec 2, written against the frame version once it settles. The header's
+  codec byte lets old and new chunks sit side by side.
+- **Each chunk's first frame lists every machine** (as recorded frames
+  did), so a reader that starts at any chunk has every door.
+- **`GameFrame` recording stopped** for new frames and the JSON `/frames`
+  read is gone; the packed `/frames` read stays for older games. The
+  viewer reads the chunks and falls back to `/frames` when a game has none.
+
+Measured and expected sizes:
+
+| | multiplayer, 16 players | campaign, 60 actors | bench scene (100 actors, 64 vehicles, 200 objects) |
+|---|---|---|---|
+| packed, per frame (deltas; `pack_tests`) | about 300 B | about 900 B | 1690 B (measured) |
+| chunk raw, a minute at 15 Hz | about 260 KB | about 800 KB | 1.56 MB (measured) |
+| stored (deflate) | about 0.85–0.9× raw: 220–240 KB | 700–750 KB | 0.93× (measured) |
+| target | 100 KB | 120 KB | |
+| today: `GameFrame` log events a minute (1 Hz) | about 190 KB | about 550 KB | |
+
+The first two columns are estimates from `pack_tests`' per-frame sizes;
+`cargo test -p live-proto --release chunk::tests::chunk_sizes_per_minute
+-- --nocapture` prints the real numbers, per deflate level. Deflate gains
+little on bit-packed records (0.93× on the bench scene), so chunks store
+about what the 1 Hz log did, at fifteen times the time resolution, and
+miss the targets by two to six times. Meeting them is codec 2.
+
+Decoding a ten second chunk in the browser (`bun run bench:telemetry`,
+`chunk` row, the bench scene): 39 ms median on a loaded machine, 150
+frames at the frame decoder's 70 us each plus about 1 ms to inflate.
+Against the 2 ms target, the frame decoder, not the inflate, is the cost.
+Codec 2's columns and prediction make the per-frame work a table lookup
+per value, which is what that target assumes.
+
+Query latency, expected: the index is one store read by stream and type
+(DO SQLite on the Worker, SQLite natively; well under a millisecond plus
+the request), a chunk read is one R2 or file get (R2 tens of ms cold;
+anonymous reads are immutable, so the CDN keeps them after the first).
+A seek is the two in series; a whole replay is the index then the chunks,
+six at a time.
+
 ### Interpolation and extrapolation in the viewer
 
 - **Replays** sample the chunk track at the clock's fractional tick, with
@@ -371,6 +424,111 @@ decoding what comes before the keyframe it needs. Keyframes stay every
 - **Seeking** fetches the chunk that holds the target, decodes from its
   keyframe and snaps. Scrubbing decodes keyframes only, until the user
   lets go.
+
+## Animation state (found, static reading)
+
+Every object has an animation manager inside its own data, and the frames
+read its first channel. Addresses are guest virtual addresses in the
+retail XBE, read with `h2 disasm`; no game was run. The reader is
+`memory::animation`, and its fixture test is `unit_motion_fields`.
+
+| what | where | evidence |
+|---|---|---|
+| manager | `object + i16 [object +0x12a]`, -1 none | `object_new` (`0x000b7b40`) builds it there (`0x000b80e0` into the constructor `0x001cafc0`) and gives it the model's graph (`0x001cb0d0`). The custom animation start (`0x001101e0`, reached from `custom_animation_relative` `0x002a3600` through `0x0011b520`) checks the offset against -1 and works on `object + offset`. 113 instructions read it sign-extended. |
+| channels | manager `+0x00`, `+0x20`, `+0x40`, `0x20` bytes each | The constructor sets up three alike. The animation start (`0x001ccae0` into `0x001cb410`) passes the manager's own address to the channel set (`0x001c6470`), so the first channel is the one playing; the other two blend out the animations before it. |
+| graph | manager `+0x68`, `jmad` datum | `0x001ccae0` and `0x001cb410` refuse a manager whose `+0x68` is -1 and hand it to the channel. |
+| channel graph | channel `+0x00`, `jmad` datum | Written by `0x001c6470`; `0x001c6c80` and `0x001ccb40` refuse -1 and index the tag instances (`[0x004e3b44]`, stride `0x10`, data at `+8`) with it. |
+| animation | channel `+0x04`: `i16` graph (-1 the channel's own, else a position in its inheritance list), `i16` index (-1 none) | `0x001c6470` refuses a reference whose high half is -1. `0x001daea0` resolves it (docs/engine/engine-map.md, "Animation graphs"). |
+| frame | channel `+0x1c`, `f32` | The frame setter `0x001c6560` clamps it to 0..frame count - 1, stores it, and advances it by the tick length times the rate at `+0x18` (1 by default). |
+
+Animations are named on the host from the loaded map's file, as tag names
+are: `TagNames` keeps each `jmad`'s animation names (string IDs through
+the map's string table) and its inheritance list. The guest is read for
+the datum, reference and frame only, at no cost beyond four reads per
+unit. Frames carry the result as `anim: {name, frame}`, for example
+`{"name": "combat:rifle:any:move_front", "frame": 12.5}` (packed version
+4: the name as an interned string, the frame in 1/16). The viewer's clips
+come from the same names (docs/live/live-art.md), so it can play the
+game's own animation at the game's own frame instead of guessing from
+stance and speed.
+
+Not yet established: what channels 2 and 3 hold during a blend, and how
+the unit-level overlay block at `object + i16 [object +0x33e]` (aim and
+look overlays, read by `0x0010e530`) is laid out. The first channel alone
+gives the base pose. Validate on one game: a standing player should read
+an `idle` animation whose frame loops, and a running one a `move_*` one.
+
+## Why bodies floated, and the viewer now (built)
+
+Players and AI hovered above the floor, slid, and floated in mid-air in
+and around vehicles. Five causes, each fixed where it starts:
+
+1. **Straight lines between sparse samples.** Recorded frames are about a
+   second apart, and the sampler drew a straight line between them. A
+   runner over a crest went through the air above it; one going down
+   stairs or into a dip hung over it. On a synthetic hill (the fixture in
+   `web/test/live-motion.test.ts`) the line is more than 0.15 units off
+   the ground. Now, when both samples carry `vel`, the path between them
+   is a cubic Hermite curve that leaves and arrives at the game's
+   velocities (`frames.ts`, `hermite`; gaps up to 2 s; longer ones, and
+   older senders without `vel`, stay straight).
+2. **Easing on top.** `smoothPlayers` eased every sample towards the last
+   shown place (18/s), so a body walking downhill trailed above its slope.
+   A sample with a velocity is already on the game's path: it is now taken
+   as it is (aim still eased). Older samples keep the easing.
+3. **No floor.** Even a good curve between two ground points isn't the
+   ground. A biped the game has on its feet (stance `stand` or `crouch`,
+   alive, not riding) is now put on the level's surface under it when
+   there is one between 0.6 below and 0.35 above where the samples have it
+   (`viewer/ground.ts`). The probe is a downward ray on the level glb,
+   machines left out, once per biped per 0.08 units moved, at most 16 an
+   update, the surface's plane used in between. In the air, dead or
+   riding, a body stays exactly where the frames put it. On the fixture
+   hill the feet are within 0.02 of the ground at every sample.
+4. **The model's own origin.** The extractor stands each biped on its
+   lowest vertex, but the game draws a model at its origin, which is what
+   the frames' position is. Extractor 22 writes how far it lifted the
+   model (`asset.extras.lift`) and the viewer lowers the model by as much
+   (`prepareBiped`), so the feet are where the game's are, not on top of
+   the lowest vertex. Art before 22 has no `lift` and draws as before.
+5. **Riders drawn at the vehicle's origin.** A rider's position is the
+   vehicle's (the telemetry replaces it), and the viewer hid riders
+   behind the vehicle. A rider is now drawn at the vehicle model's
+   `seat_` node for their seat, turned with the vehicle, in the seat's
+   pose (below). The node comes from the seat table (`seats` in the art's
+   models table, extractor 22, by the frame's `seat` index), else from the
+   animation mode's role (`warthog_d` driver, `_g` gunner, `_p` passenger,
+   `scorpion_p_lf` the left-front passenger), else (older senders) a
+   mounted turret's rider is its gunner and a vehicle's first rider its
+   driver. With no node or no seat pose in the glb (art before 22, a
+   Phantom with no seat markers) the rider stays hidden, as before.
+
+**The game's animation.** A frame's `anim` (version 4) names the
+animation the game plays, `mode:class:type:action`. The viewer maps it to
+the glb's clips (`anim.ts`, `gameAnim`): `idle`, `walk`, `run`, the
+strafing and backing-up states `run_left`/`run_right`/`run_back` and
+`walk_*`, `crouch` and `crouch_run`/`crouch_left`/`crouch_right`/
+`crouch_back`, `airborne`, `land`, `land_hard`, `grenade`, `melee`,
+`reload`, `fire`, `switch`, `die`, `dead`, and for a rider `seat_<mode>`.
+It plays that clip **at the game's frame**: the clip time is
+`frame / 30` (a frame a tick), wrapped for loops and held at the end
+otherwise, and the clip doesn't run on by itself, so it keeps the game's
+pace and stops with the replay (`BipedAnimator.setLoopAt`). Between
+samples the frame is interpolated when one animation runs on at about the
+game's pace, else carried on from the nearer sample a frame a tick
+(`blendAnim`). A strafe or a backward run plays its own clip with the
+legs facing the aim; art before extractor 22 falls back to `run`/`walk`
+with the legs turned to the movement as before. Without `anim` (older
+senders, or a name with no clip state) the stance-and-speed guess stays.
+Speed and leg heading come from `vel` when the frames have it.
+
+**Shots on their tick.** A frame with a `fire` mask has its shots drawn
+as the clock passes each one's tick (`fireTicks`, `ShotQueue`), the fire
+clip with them, instead of the whole frame's count at the frame's tick.
+Older frames keep the count.
+
+What the viewer doesn't use yet: `body`/`shield`, `actions_ago` and hits'
+`ago`, and live extrapolation past the newest frame.
 
 ## The theater
 
@@ -458,8 +616,11 @@ Each step is test-first and runs in both homes.
    placed again against the delivering frame's tick. The telemetry session
    sends `cut` on the first frame after a revert; the other fields wait for
    capture (step 4). Filled, they cost about 25% on the sample frames
-   before any of the compression work. `anim` is not in version 3: it
-   waits for the research below, and goes in as a later appended field.
+   before any of the compression work.
+   **Done, research:** the animation state is found ([Animation
+   state](#animation-state-found-static-reading)). It goes out as `anim` in
+   packed version 4, because version 3 frames may already be recorded.
+   Hits now carry the tick the damage hook saw them on (`ago`).
    **Research, alongside (decided):** find each unit's animation state in
    guest memory (the animation graph, its current state and frame) by
    static reading and the existing memory fixtures, and record it in the
@@ -469,7 +630,10 @@ Each step is test-first and runs in both homes.
 5. **Server:** `FrameChunk` recording to the `BlobStore`, read through the
    API with the same visibility check as `/frames` (decided), the chunk
    list endpoint, the compressed chunk codec and its benches, and the
-   parity case. Then retire `GameFrame` recording for new games, and
+   parity case. **First cut done** ([Chunks as built](#chunks-as-built-first-cut-2026-11-18)):
+   recording, the index, the reads, codec 1 (deflate), `GameFrame`
+   recording and JSON `/frames` retired, the viewer on chunks. Left: codec
+   2 (steps 1–4 of Compression) and the parity case. Then retire `GameFrame` recording for new games, and
    **remove the public JSON `/frames` read** (decided: the viewer is its
    only user). The packed `/frames` read stays for older games.
 6. **Viewer:** the chunk reader, Hermite sampling, one-shots on their tick,

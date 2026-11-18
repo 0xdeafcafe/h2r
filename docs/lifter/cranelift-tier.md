@@ -225,14 +225,23 @@ to the authority the same way.
 **The game starts on the fast tier; clang's build runs in the background;
 the next start uses clang's module.** No hot swap.
 
-- `h2 build --tier fast` (stage c) writes `libh2game.dylib` and its stamp
-  with the tier recorded in it. The default `h2 build` behaviour does not
-  change until the fast tier has been proved in a live run.
-- The clang build then runs as a separate, low-priority process
-  (`nice`, background QoS on macOS) into a staging directory, and on
-  success publishes its dylib and stamp beside the fast one under a
-  different name. Boot prefers a valid clang module, else the fast one;
-  both are checked against the stamp for the same image and generator.
+- `h2 build --tier fast` writes `<out>/fast/libh2game.dylib` and its own
+  stamp (`crates/boot/src/tier.rs`): it starts `tier fast` and names the
+  image, the generator's sources plus crates/clif and Cargo.lock, the IR
+  passes, Cranelift's optimisation level and the module ABI. Neither
+  tier's stamp passes for the other's. Plain `h2 build` still builds
+  clang's module in `<out>/libh2game.dylib`, as before.
+- `h2 run` and `h2 play` (`--tier auto`, the default, or `H2_TIER`) run
+  clang's module when it is current; else the fast tier's, building it
+  first if need be, and start clang's build as a separate process:
+  `h2 build <disc> --out <out> --tier clang --background`, at nice 19
+  (clang inherits it), logging to `<out>/clang-build.log`, and leaving at
+  once when another background build holds `<out>/clang-build.lock`. It
+  builds in place: `boot::build` removes the old stamp first and writes the
+  new one last, so a half-built module is never current. The next start
+  finds clang's module current and uses it. `--tier fast` runs the fast
+  tier only; `--tier clang` is the old foreground build. `h2 serve` never
+  builds and runs clang's module unless told `--tier`.
 - **Why not hot-swap**: a running guest has handlers on the host stack
   (direct calls), resumes recorded as `(owner handler, start)`, and the
   runtime's direct slots keyed by handler pointer and dispatch generation.
@@ -295,7 +304,12 @@ and report the count; it must be zero on the retail image.
   random states, and requires identical ends, CPU state and memory.
 - The x87 and SSE fixtures of the same harness, then `native_x87.rs` and
   `native_sse.rs`, cover the FP paths.
-- Timing: `h2 build --tier fast` over the retail XBE, compile-only.
+- Timing: `crates/clif/tests/image.rs` (ignored; `H2_XBE`) compiles the
+  retail XBE, compile-only: 18,647 owners in 1,000 shards, 37.5 s wall on
+  4 threads of a heavily loaded machine (78 s of CPU), 206 MB dylib.
+- `crates/boot/tests/fast_tier.rs`: a fast-tier module links with boot's
+  bridges and exports what `load_module` looks up; `tier.rs`'s tests
+  cover the stamps, the choice of module and the background command.
 
 ## 8. Stages
 

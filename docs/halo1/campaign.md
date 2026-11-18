@@ -602,6 +602,26 @@ and d40 the command lists (`ai_command_list_by_unit`, `ai_attach_free`).
 `unit_enter_vehicle` passes Halo 1's seat text as the string ID, which no
 Halo 2 seat label matches yet.
 
+**a10's opening (`x10`), call by call** (2026-11-18, converter version
+67). `x10` calls `autumn_glory_1`, `autumn_glory_2` (space, `a10_space`),
+`bridge` (BSP 1), then `hangar_1`, `hangar_2` and `cryo` (`x10hangar`, the
+cryo bay). Its fades, camera moves, letterbox, BSP switches and sounds
+are the Halo 2 builtins of the same name with the same parameter types,
+so every duration stays a count of ticks (`cinematic_calls_keep_halo1_s_ticks`,
+h1scripts: `fade_in`/`fade_out` `(real real real short)`, `camera_set`
+`(cutscene_camera_point short)`; retail Halo 2's own literals are 15, 30,
+60, 500 ticks). No fade or camera call is mistranslated. Stubbed in `x10`:
+`render_lights` (`hangar_1` turns dynamic lights off, `hangar_2` on),
+`rasterizer_lights_reset_for_new_map` (space), `game_skip_ticks`,
+`object_pvs_activate`, `cinematic_set_near_clip_distance` (0.0625, 0.01
+on the bridge), and the three `cinematic_screen_effect_set_*` calls, while
+`cinematic_screen_effect_start` (705) is kept: the bridge's last second
+starts Halo 2's screen effect with nothing set. The cinematic's
+"big whirring sound" was a10's continuous `dialog_flavor_captain`
+restarting each tick (scripts.md, Sleeping forever), fixed in version 67.
+The reported flicker has no cause in the script translation; what a run
+should check is in the lane's report.
+
 ### Waits on stubs (playing a level through)
 
 `h1scripts`' disc test `waits_on_stubs` counts, per level, the

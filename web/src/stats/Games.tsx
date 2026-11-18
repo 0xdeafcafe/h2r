@@ -1,4 +1,4 @@
-// The games page (/stats/games): the featured live map, the games spotlight
+// The games page (/games/halo2/games): the featured live map, the games spotlight
 // with its tabs, and the menu column with the finder and server reports.
 
 import { gameMapTitle } from "../state/maps";
@@ -25,6 +25,7 @@ import { motdMessages } from "../lib/motd";
 import { useMotd } from "../state/motd";
 import CoopGames from "./CoopGames";
 import { agoWords, count, dotDate, num, usDate } from "./fmt";
+import { STATS_ROOT, statsPath } from "../routes";
 
 type Tab = SpotlightTab;
 
@@ -48,7 +49,7 @@ export function ScoreLine(props: { game: GameState }) {
 /** A campaign game in the spotlight: who played, how it went, no scores. */
 function CampaignItem(props: { game: GameState }) {
   const g = () => props.game;
-  const href = () => `/stats/games/${g().game_id}`;
+  const href = () => `${STATS_ROOT}/games/${g().game_id}`;
   const deaths = () => deathsOf(g(), Object.keys(g().players).map(Number));
   return (
     <article class="s-item s-item--campaign" classList={{ "s-item--live": g().status === "live" }}>
@@ -85,7 +86,7 @@ function GameItem(props: { game: GameState }) {
 
 function MultiplayerItem(props: { game: GameState }) {
   const g = () => props.game;
-  const href = () => `/stats/games/${g().game_id}`;
+  const href = () => `${STATS_ROOT}/games/${g().game_id}`;
   const host = () => hostName(g());
   const kills = () => Object.values(g().scores).reduce((n, s) => n + s.kills, 0);
   return (
@@ -134,7 +135,7 @@ function Featured(props: { game: GameState | undefined; online: number }) {
           {(g) => (
             <>
               <span class="s-live-tag">LIVE</span>
-              <A href={`/stats/games/${g().game_id}`}>{gameTitle(g())} on {gameMapTitle(g())}</A>
+              <A href={`${STATS_ROOT}/games/${g().game_id}`}>{gameTitle(g())} on {gameMapTitle(g())}</A>
               <span class="s-capbar-right"><Show when={!isCampaign(g())} fallback={fireteam(g())}><ScoreLine game={g()} /></Show></span>
             </>
           )}
@@ -146,7 +147,7 @@ function Featured(props: { game: GameState | undefined; online: number }) {
             const roster = createMemo(() => rosterFor(g));
             const outline = outlineFor(() => g.map);
             return (
-              <A href={`/stats/games/${g.game_id}`} class="s-world-map" aria-label={`Watch ${gameTitle(g)} on ${gameMapTitle(g)} live`}>
+              <A href={`${STATS_ROOT}/games/${g.game_id}`} class="s-world-map" aria-label={`Watch ${gameTitle(g)} on ${gameMapTitle(g)} live`}>
                 <MapCanvas frame={liveFrameSource(g.game_id, roster)} roster={roster} outline={outline} label={`Live map of ${gameMapTitle(g)}`} />
               </A>
             );
@@ -271,16 +272,16 @@ export default function Games() {
   const tips = createMemo(() => motdMessages(motd()));
   return (
     <>
-      <Crumbs trail={[["Home", "/stats"], ["Games"]]} />
+      <Crumbs trail={[["Home", STATS_ROOT], ["Games"]]} />
       <Strip kind="home" />
       <div class="s-cols s-cols--over">
         <aside class="s-left">
           <Title>Games</Title>
           <Pills label="Games" items={[
             { label: `Live Games (${games().length})`, href: "#spotlight" },
-            { label: "Players & Leaderboards", href: "/stats/players" },
+            { label: "Players & Leaderboards", href: statsPath("/players") },
             me() ? { label: "My Service Record", href: playerHref(me()!.gamertag) } : { label: "Sign Up for h2 live", href: "/dash/signup" },
-            { label: "Signed Event Log", href: "/stats/events" },
+            { label: "Signed Event Log", href: statsPath("/events") },
           ]} />
           <PeopleFinder />
           <Panel title="Server Report" sub={`as of ${usDate(new Date(now()).toISOString())}`} class="s-report">

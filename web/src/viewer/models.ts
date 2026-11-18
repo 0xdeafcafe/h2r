@@ -30,7 +30,13 @@ export interface PlayerModels {
    *  weapon's projectile on the disc (viewer/projectiles.ts); absent when
    *  the art has none. */
   ballistics?: Record<string, { kind?: string; speed?: number; final_speed?: number; rate?: number }>;
+  /** Per vehicle stem, its seats in the game's order (a unit's `seat` is
+   *  an index into it): the seat's animation mode and the glb's `seat_`
+   *  node for it (extractor 22; absent before). */
+  seats?: Record<string, SeatInfo[]>;
 }
+
+export interface SeatInfo { label: string | null; node: string | null }
 
 export const MODELS_VERSION = 2;
 /** The species drawn for one this server has no model of. */
@@ -74,9 +80,23 @@ export function parseModels(raw: unknown): PlayerModels | null {
       ballistics[id] = { kind, speed: num(b.speed), final_speed: num(b.final_speed), rate: num(b.rate) };
     }
   }
+  const seats: Record<string, SeatInfo[]> = {};
+  const rawSeats = (raw as { seats?: unknown }).seats;
+  if (rawSeats && typeof rawSeats === "object") {
+    for (const [id, list] of Object.entries(rawSeats as Record<string, unknown>)) {
+      if (!/^[a-z0-9_]{1,32}$/.test(id) || !Array.isArray(list)) continue;
+      seats[id] = list.slice(0, 32).map((e) => {
+        const { label, node } = (e ?? {}) as { label?: unknown; node?: unknown };
+        return {
+          label: typeof label === "string" && /^[a-z0-9_]{1,48}$/.test(label) ? label : null,
+          node: typeof node === "string" && /^seat_[a-z0-9_]{1,48}$/.test(node) ? node : null,
+        };
+      });
+    }
+  }
   const animated = !!r.bipeds && typeof r.bipeds === "object" &&
     Object.values(r.bipeds as Record<string, unknown>).some((b) => Array.isArray((b as { clips?: unknown } | null)?.clips) && (b as { clips: unknown[] }).clips.length > 0);
-  return [bipeds, weapons, vehicles, objects].some((t) => Object.keys(t).length) ? { bipeds, weapons, vehicles, objects, classes, version: r.version, animated, ...(Object.keys(ballistics).length ? { ballistics } : {}) } : null;
+  return [bipeds, weapons, vehicles, objects].some((t) => Object.keys(t).length) ? { bipeds, weapons, vehicles, objects, classes, version: r.version, animated, ...(Object.keys(ballistics).length ? { ballistics } : {}), ...(Object.keys(seats).length ? { seats } : {}) } : null;
 }
 
 /** The glb to draw a player with: their species', else the spartan's.
@@ -96,6 +116,49 @@ export function weaponFile(models: PlayerModels | null | undefined, weapon: stri
  *  box is drawn then). */
 export function vehicleFile(models: PlayerModels | null | undefined, kind: string | null | undefined): string | null {
   return (models && kind ? models.vehicles[kind] : undefined) ?? null;
+}
+
+// ---- seats ----
+
+/** Words a seat's animation mode ends in, and the seat marker word for each. */
+const SEAT_ROLES: Array<[RegExp, string]> = [[/_d$/, "driver"], [/_g$/, "gunner"], [/_p(_[a-z0-9]+)?$/, "passenger"]];
+
+/** Which of a vehicle's `seat_` nodes a rider sits at: the seat table's
+ *  node for their seat index (or for their animation's mode), else the one
+ *  their mode's role names (`warthog_d` the driver's, `_g` the gunner's,
+ *  `_p` a passenger's, `scorpion_p_lf` `seat_passenger_lf` first). With
+ *  neither (an older sender), a rider of a mounted turret is its gunner
+ *  and the vehicle's first rider its driver. Null: nowhere to put them
+ *  (the vehicle stands for them). */
+export function seatNodeFor(
+  nodes: readonly string[],
+  rider: { seat?: number | null; mode?: string | null; turret?: boolean; first?: boolean },
+  table?: readonly SeatInfo[] | null,
+): string | null {
+  const have = (n: string | null | undefined): n is string => !!n && nodes.includes(n);
+  if (table && rider.seat != null && have(table[rider.seat]?.node)) return table[rider.seat]!.node;
+  if (table && rider.mode) { const e = table.find((s) => s.label === rider.mode && have(s.node)); if (e) return e.node; }
+  let role: string | null = null, side = "";
+  if (rider.mode) {
+    for (const [re, r] of SEAT_ROLES) {
+      const m = re.exec(rider.mode);
+      if (m) { role = r; side = m[1] ?? ""; break; }
+    }
+  } else if (rider.seat == null) {
+    role = rider.turret ? "gunner" : rider.first ? "driver" : null;
+  }
+  if (!role) return null;
+  if (side && have(`seat_${role}${side}`)) return `seat_${role}${side}`;
+  if (have(`seat_${role}`)) return `seat_${role}`;
+  return nodes.find((n) => n.startsWith(`seat_${role}`)) ?? null;
+}
+
+/** The seat pose a rider without a mode of their own takes: the clip
+ *  state of the vehicle's driver or gunner mode (`seat_warthog_d`), as the
+ *  graphs name a vehicle's seats after it. */
+export function seatState(kind: string, node: string): string {
+  const role = node.startsWith("seat_gunner") ? "g" : node.startsWith("seat_passenger") ? "p" : "d";
+  return `seat_${kind}_${role}`;
 }
 
 // ---- actors ----

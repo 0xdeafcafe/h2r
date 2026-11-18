@@ -12,6 +12,11 @@
 //! wins and sprees are multiplayer's; campaign games count their own games,
 //! deaths and Legendary completions. Per-player rows are for players with an
 //! account (an `xuid`); totals count everyone.
+//!
+//! Bots (`bot: true`, docs/game/bots.md §6) are game-only: they have no
+//! per-player row (a rostered bot's xuid included), and a kill with a bot
+//! on either side counts in the totals but in nobody's row: not the human's
+//! kills or spree, nor their deaths. The game record keeps them all.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, RwLock};
@@ -204,12 +209,20 @@ struct LiveGame {
     map_id: Option<String>,
     difficulty: Option<String>,
     /// Slot -> account and name; kept after a player leaves so late kills
-    /// still find them (a slot taken again is overwritten).
+    /// still find them (a slot taken again is overwritten). A bot's slot
+    /// has no account.
     slots: HashMap<u32, (Option<Xuid>, String, i32)>,
+    /// The slots bots play in.
+    bots: BTreeSet<u32>,
     /// Accounts counted as having played it.
     xuids: BTreeSet<Xuid>,
     /// Current scoring run per slot.
     spree: HashMap<u32, u64>,
+}
+
+/// The account a player's stats go to: none for a bot.
+fn account(p: &game::Player) -> Option<Xuid> {
+    p.xuid.filter(|_| !p.is_bot())
 }
 
 #[derive(Default)]
@@ -271,8 +284,14 @@ impl Inner {
                     return;
                 };
                 let p = d.player;
-                g.slots.insert(p.index, (p.xuid, p.name.clone(), p.team));
+                g.slots
+                    .insert(p.index, (account(&p), p.name.clone(), p.team));
                 g.spree.remove(&p.index);
+                if p.is_bot() {
+                    g.bots.insert(p.index);
+                    return;
+                }
+                g.bots.remove(&p.index);
                 if let Some(x) = p.xuid.filter(|x| g.xuids.insert(*x)) {
                     let campaign = g.campaign;
                     self.bump(at, |b| {
@@ -318,16 +337,22 @@ impl Inner {
             slots: ng
                 .players
                 .iter()
-                .map(|p| (p.index, (p.xuid, p.name.clone(), p.team)))
+                .map(|p| (p.index, (account(p), p.name.clone(), p.team)))
                 .collect(),
-            xuids: ng.players.iter().filter_map(|p| p.xuid).collect(),
+            bots: ng
+                .players
+                .iter()
+                .filter(|p| p.is_bot())
+                .map(|p| p.index)
+                .collect(),
+            xuids: ng.players.iter().filter_map(account).collect(),
             spree: HashMap::new(),
         };
         let coop = campaign && (ng.players.len() > 1 || ng.online == Some(true));
         let players: Vec<(Xuid, String)> = ng
             .players
             .iter()
-            .filter_map(|p| Some((p.xuid?, p.name.clone())))
+            .filter_map(|p| Some((account(p)?, p.name.clone())))
             .collect();
         let playlist = (kind == "matchmaking")
             .then(|| ng.playlist.clone())
@@ -376,7 +401,9 @@ impl Inner {
         let Some(g) = self.games.get_mut(id) else {
             return;
         };
-        let victim = g.slots.get(&k.victim).and_then(|s| s.0);
+        // A kill with a bot on either side is game-only (the module doc).
+        let bot = g.bots.contains(&k.victim) || k.killer.is_some_and(|s| g.bots.contains(&s));
+        let victim = g.slots.get(&k.victim).and_then(|s| s.0).filter(|_| !bot);
         if g.campaign {
             self.bump(at, |b| b.totals.campaign_deaths += 1);
             self.hour(at, |h| h.campaign_deaths += 1);
@@ -387,12 +414,14 @@ impl Inner {
         let kind = k.kind.as_str();
         let scoring = kind == "kill" && killer.is_some();
         let mut spree = 0;
-        if let Some(s) = killer.filter(|_| scoring) {
+        if let Some(s) = killer.filter(|_| scoring && !bot) {
             let n = g.spree.entry(s).or_default();
             *n += 1;
             spree = *n;
         }
-        let killer_acct = killer.and_then(|s| g.slots.get(&s).cloned());
+        let killer_acct = killer
+            .filter(|_| !bot)
+            .and_then(|s| g.slots.get(&s).cloned());
         let g = g.clone();
         let weapon = k.weapon.clone().filter(|w| !w.is_empty());
         let add = |t: &mut Totals| {

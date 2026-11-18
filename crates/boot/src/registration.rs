@@ -56,6 +56,8 @@ pub struct Core {
     pub skulls_mp_on: bool,
     pub skulls_custom_on: bool,
     pub health_on: bool,
+    /// The bots are installed (their nav meshes may be built at boot).
+    pub bots_on: bool,
 }
 
 /// Registers everything from the telemetry hooks to the touch glue.
@@ -109,6 +111,9 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
             .map_err(|e| anyhow::anyhow!("variant options row: {e}"))?;
     }
     features.add(&hud::Hud).map_err(|e| anyhow::anyhow!("hud: {e}"))?;
+    features
+        .add(&crate::loaded_map::LoadedMap)
+        .map_err(|e| anyhow::anyhow!("loaded map: {e}"))?;
     // The party privacy as the Live session's visibility, and the Live
     // menu's Custom Game Browser and Content Download rows (registered with the layouts above;
     // docs/live/live-custom-games.md).
@@ -137,6 +142,10 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
     features
         .add(&variant_ext::Transport { hle: i.live.clone() })
         .map_err(|e| anyhow::anyhow!("variant options transport: {e}"))?;
+    // Its damage, shield and health scales on each damage instance.
+    features
+        .add(&variant_ext::Vitality)
+        .map_err(|e| anyhow::anyhow!("variant options vitality: {e}"))?;
     // Our own skulls (from 15): hidden in campaign levels, their effects
     // ours on the tick (docs/game/skulls.md "Our skulls"). The skull weapon's
     // tag comes from the loaded map's file, found through the VFS.
@@ -167,19 +176,20 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
     // Local bots (docs/game/bots.md, stage 1): pads on controller ports,
     // signed in on the players screen, their views and listeners hidden.
     // `H2_BOTS` adds brains at boot; idle with none.
+    let mut bots_on = false;
     if i.xapi {
         bot_glue::add_from_env();
-        bot_glue::install(features, i.data_root).context("installing the bots")?;
+        bots_on = bot_glue::install(features, i.data_root).context("installing the bots")?;
         // The Clankers page and its Game Setup row (stage 7).
         if let Some(store) = i.settings.as_ref() {
-            clankers::install(features, store).context("installing the Clankers page")?;
+            clankers::install(features, store, i.live.clone(), telemetry.as_ref()).context("installing the Clankers page")?;
         }
     }
     // The iOS touch controls' game side (docs/runtime/ios.md): direct
     // look into player one's facing, and the layout from player one's
     // seat and weapon. Idle while no touch controls show.
     touch_glue::install(features).context("installing the touch glue")?;
-    Ok(Core { telemetry, skulls_on, skulls_mp_on, skulls_custom_on, health_on })
+    Ok(Core { telemetry, skulls_on, skulls_mp_on, skulls_custom_on, health_on, bots_on })
 }
 
 /// The agent API's way in.
@@ -204,6 +214,8 @@ pub struct LateInputs<'a> {
     pub coop_probe: Option<coop_probe::Config>,
     pub live: Option<Arc<live_hle::Hle>>,
     pub settings: Option<Arc<settings::Store>>,
+    /// The package gate, with Live on (the Mods screens download through it).
+    pub map_gate: Option<Arc<live_hle::maps::MapGate>>,
     pub disc: &'a Path,
     pub data_root: &'a Path,
 }
@@ -330,6 +342,11 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
         let on = crate::coop_live::install(features, i.live.clone(), arm, i.settings.clone(), i.disc)?;
         custom_games::set_coop_row(on);
     }
+    // The mod repository (docs/game/maps.md §5, "Mod downloads"): the Xbox
+    // Live menu's last row opens our Mods screens in place of Content
+    // Download's Map Pack dialog.
+    let mods_on = crate::mods_screen::install(features, i.live.clone(), i.map_gate, i.data_root)?;
+    custom_games::set_mods_row(mods_on);
     // H2_SNAPSHOT_PROBE=1: count, per game tick, what would stop a machine
     // snapshot (snapshot_probe.rs, docs/runtime/snapshots.md).
     let snapshot_probe = snapshot_probe::Probe::from_env(features)?;

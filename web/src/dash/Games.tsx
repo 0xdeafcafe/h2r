@@ -15,6 +15,8 @@ import { ListPanel } from "./Dashboard";
 import { BigPod, Plate, Prompts } from "./parts";
 import type { Action } from "./input";
 import "../styles/dash-games.css";
+import { STATS_NAME } from "../brand";
+import { STATS_ROOT } from "../routes";
 
 /** The disc's own pictures (crates/cli/src/live_art.rs `TITLE_IMAGES`): the
  *  game's tile and the picture of a save without one of its own. Null
@@ -53,7 +55,7 @@ export default function GamesScreen(props: {
     all[Math.max(0, Math.min(all.length - 1, (at < 0 ? all.length - 1 : at) + by))]?.focus();
   };
   const save = (dir: string) => saves.rows().find((s) => s.dir === dir);
-  // The deleted row goes away under the focus: it moves to View stats.
+  // The deleted row goes away under the focus: it moves to the stats link.
   const del = async (s: SaveRow) => {
     setArmed(null);
     await saves.remove(s);
@@ -86,7 +88,7 @@ export default function GamesScreen(props: {
   const aLabel = () => {
     const f = focus();
     if (f === "list") return "details";
-    if (f === "stats") return "view stats";
+    if (f === "stats") return `open ${STATS_NAME}`;
     return armed() === f ? "delete it" : "delete…";
   };
 
@@ -157,7 +159,7 @@ function Halo2Plate(props: {
 }
 
 function StatsLink(props: { onFocus: (f: string) => void }) {
-  return <a data-stop onFocus={() => props.onFocus("stats")} class="dx-chip dx-chip--link dx-game-stats" href="/stats">View stats</a>;
+  return <a data-stop onFocus={() => props.onFocus("stats")} class="dx-chip dx-chip--link dx-game-stats" href={STATS_ROOT}>{STATS_NAME}</a>;
 }
 
 /** The player's cloud saves for Halo 2, as the original dashboard's Memory

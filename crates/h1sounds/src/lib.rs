@@ -35,7 +35,7 @@ pub use convert::{ConvertedSound, convert_sound, install_sounds};
 pub use decode::{Pcm, decode_all, decode_chain};
 pub use gestalt::SoundGestalt;
 pub use h1::Sound;
-pub use merge::{MergeMap, Moved, merge_sound, transplant};
+pub use merge::{MergeMap, Moved, merge_sound, transplant, transplant_from};
 
 /// Decode and conversion failures.
 #[derive(Debug, thiserror::Error)]

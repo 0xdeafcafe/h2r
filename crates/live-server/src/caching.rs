@@ -36,7 +36,16 @@ pub const PRIVATE: &str = "private, no-store";
 /// The `/v1/` reads an anonymous reader may get from a shared cache: the
 /// first path segment.
 pub const PUBLIC_READS: &[&str] = &[
-    "snapshot", "games", "accounts", "presence", "stats", "events", "teams", "maps", "ranks",
+    "snapshot",
+    "games",
+    "accounts",
+    "presence",
+    "stats",
+    "events",
+    "teams",
+    "maps",
+    "ranks",
+    "page-meta",
 ];
 
 /// The largest public read buffered for its `ETag`; a bigger one goes out
@@ -156,7 +165,7 @@ mod tests {
             Some(REVALIDATE)
         );
         assert_eq!(policy("/", false, ok, true), Some(REVALIDATE));
-        assert_eq!(policy("/stats/games", false, ok, true), Some(REVALIDATE));
+        assert_eq!(policy("/games/halo2/games", false, ok, true), Some(REVALIDATE));
         assert_eq!(policy("/v1/games", false, ok, false), Some(PUBLIC));
         assert_eq!(policy("/v1/snapshot", false, ok, false), Some(PUBLIC));
         assert_eq!(policy("/v1/stats/summary", false, ok, false), Some(PUBLIC));

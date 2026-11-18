@@ -942,3 +942,21 @@ mod review_tests {
         ));
     }
 }
+
+impl crate::snapshot::Persist for File {
+    fn put(&self, w: &mut snapshot::codec::Writer) {
+        let Self {
+            mode,
+            access,
+            synchronous,
+        } = self;
+        w.u32(*mode).u32(access.0).bool(*synchronous);
+    }
+    fn get(r: &mut snapshot::codec::Reader<'_>) -> Result<Self, crate::snapshot::CodecError> {
+        Ok(Self {
+            mode: r.u32()?,
+            access: vfs::Access(r.u32()?),
+            synchronous: r.bool()?,
+        })
+    }
+}

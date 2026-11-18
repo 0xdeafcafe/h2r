@@ -100,6 +100,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "alloc-no-stdlib"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2fb6cfd47bf496ff64095c20eaba0c201404ee38714d4142fcfa1dc334fcc7a"
+
+[[package]]
+name = "alloc-stdlib"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b5c1865780388bfa186411ab5f247819487fc4864c6e9c3106611fa347586e1"
+dependencies = [
+ "alloc-no-stdlib",
+]
+
+[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -618,6 +633,7 @@ dependencies = [
  "audio",
  "bink-hle",
  "bots",
+ "clif",
  "content",
  "d3d",
  "debug-menu",
@@ -668,8 +684,30 @@ version = "0.1.0"
 dependencies = [
  "engine",
  "input",
+ "map",
  "pathfind",
  "tags",
+]
+
+[[package]]
+name = "brotli"
+version = "9.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9071f285ed78f04f37d675abaaef5de7689e2f30a216c8dc6795465d81910a13"
+dependencies = [
+ "alloc-no-stdlib",
+ "alloc-stdlib",
+ "brotli-decompressor",
+]
+
+[[package]]
+name = "brotli-decompressor"
+version = "6.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc031cd87c6529082b0b65c604e86af0ed7744841b17ccfe60b1e31fa606179e"
+dependencies = [
+ "alloc-no-stdlib",
+ "alloc-stdlib",
 ]
 
 [[package]]
@@ -953,6 +991,7 @@ dependencies = [
  "time",
  "timeline",
  "tokio",
+ "toml",
  "tungstenite 0.26.2",
  "ureq",
  "vfs",
@@ -1930,6 +1969,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "float-cmp"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b09cf3155332e944990140d967ff5eceb70df778b34f77d8075db46e4704e6d8"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "flume"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2449,6 +2497,7 @@ version = "0.1.0"
 dependencies = [
  "assets",
  "content",
+ "font",
  "h1bitmaps",
  "h1convert",
  "h1map",
@@ -3225,6 +3274,7 @@ dependencies = [
  "libloading",
  "lift",
  "runtime",
+ "snapshot",
  "thiserror 2.0.21",
  "timeline",
  "vfs",
@@ -3313,6 +3363,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "libwebp-sys"
+version = "0.9.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54cd30df7c7165ce74a456e4ca9732c603e8dc5e60784558c1c6dc047f876733"
+dependencies = [
+ "cc",
+ "glob",
+]
+
+[[package]]
 name = "lift"
 version = "0.1.0"
 dependencies = [
@@ -3396,9 +3456,11 @@ dependencies = [
  "axum",
  "axum-server",
  "base64 0.22.1",
+ "brotli",
  "bytes",
  "content",
  "coop",
+ "flate2",
  "futures-util",
  "getrandom 0.3.4",
  "gloo-timers",
@@ -3407,6 +3469,7 @@ dependencies = [
  "hyper-util",
  "libc",
  "live-proto",
+ "meshopt",
  "mime_guess",
  "object_store",
  "percent-encoding",
@@ -3429,6 +3492,7 @@ dependencies = [
  "ureq",
  "wasm-bindgen-futures",
  "web-time",
+ "webp",
 ]
 
 [[package]]
@@ -3438,12 +3502,14 @@ dependencies = [
  "engine",
  "feature",
  "live-proto",
+ "live-server",
  "map",
  "runtime",
  "runtime-test-probe",
  "rustls",
  "serde",
  "serde_json",
+ "tags",
  "time",
  "tungstenite 0.26.2",
  "ureq",
@@ -3595,6 +3661,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b0ca1155a9ecc25aa12e8313a119f32edf0255fea2f44839c4ac0a12b2ac157"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "meshopt"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a403c16e3ca5752600e1d4c5ba3ba2a6496f407ded66e767f05279514363f461"
+dependencies = [
+ "bitflags 2.13.2",
+ "cc",
+ "float-cmp",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -7236,6 +7314,15 @@ checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "webp"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c071456adef4aca59bf6a583c46b90ff5eb0b4f758fc347cea81290288f37ce1"
+dependencies = [
+ "libwebp-sys",
 ]
 
 [[package]]

@@ -381,6 +381,29 @@ pub enum PhysicsKind {
     Biped,
 }
 
+/// The ragdoll constraints of a built biped: its bodies joined over
+/// Halo 1's model nodes ([`crate::ragdoll`]), the frames from the nodes'
+/// rest transforms. Empty when the skeleton does not map.
+pub fn biped_ragdoll(
+    nodes: &[h1models::h1::Node],
+    bodies: &[crate::rebuild::Body],
+) -> Vec<crate::ragdoll::Constraint> {
+    let named: Vec<(&str, i16)> = nodes.iter().map(|n| (n.name.as_str(), n.parent)).collect();
+    let body_nodes: Vec<i16> = bodies.iter().map(|b| b.node).collect();
+    let Some(links) = crate::ragdoll::links(&named, &body_nodes) else {
+        return Vec::new();
+    };
+    let parents: Vec<i16> = nodes.iter().map(|n| n.parent).collect();
+    let rest: Vec<crate::physics::Transform> = nodes
+        .iter()
+        .map(|n| crate::physics::Transform {
+            r: h1models::mode::quat_matrix(n.rotation),
+            t: n.translation,
+        })
+        .collect();
+    crate::ragdoll::constraints(&links, &body_nodes, &parents, &rest)
+}
+
 /// Stands for the `k`-th tag of a [`Tree`] until it is installed.
 pub fn local(k: usize) -> TagId {
     TagId(LOCAL | k as u32)
@@ -750,6 +773,8 @@ pub struct Converter<'a> {
     weapon_hud_skips: HashMap<u32, Vec<String>>,
     /// HUD bitmaps with an element colour's alpha ([`Self::hud_bitmap`]).
     hud_bitmaps: HashMap<(u32, u8), TagId>,
+    /// Meter copies of Halo 1 bitmaps ([`Self::meter_bitmap`]), by tag.
+    meter_bitmaps: HashMap<u32, TagId>,
     /// Biped role words, per role ([`Self::biped_role`]).
     roles: HashMap<crate::rebuild::BipedRole, Option<crate::rebuild::RoleWords>>,
     /// Weapon, equipment, projectile and damage role words, per group
@@ -800,6 +825,7 @@ impl<'a> Converter<'a> {
             unit_hud_widgets: HashMap::new(),
             weapon_hud_skips: HashMap::new(),
             hud_bitmaps: HashMap::new(),
+            meter_bitmaps: HashMap::new(),
             roles: HashMap::new(),
             item_roles: HashMap::new(),
             vehicle_roles: HashMap::new(),
@@ -1840,6 +1866,37 @@ impl<'a> Converter<'a> {
         Some(out)
     }
 
+    /// The Halo 1 bitmap `id` for a HUD meter: a copy with the colour of
+    /// every clear texel made black (`h1hud::clear_meter_colour`; a format
+    /// without an alpha byte is decoded and rewritten as linear A8R8G8B8
+    /// first, `h1hud::alpha_scaled_argb` at 255), so Halo 2's legacy meter
+    /// shader leaves clear what Halo 1 leaves clear
+    /// (`h1hud::legacy_meter_alpha`). `<name>_meter`, built once.
+    fn meter_bitmap(&mut self, id: h1map::TagId) -> Option<TagId> {
+        if let Some(t) = self.meter_bitmaps.get(&id.0) {
+            return Some(*t);
+        }
+        let tag = self.h1.tag(id).ok()?.clone();
+        let bm = h1map::bitmap::Bitmap::read(self.h1, &tag).ok()?;
+        let mut cleared = bm.clone();
+        let mut pixels = Vec::with_capacity(bm.images.len());
+        for (i, img) in bm.images.iter().enumerate() {
+            let mut px = bm.pixels(self.h1, i).ok()?.to_vec();
+            if crate::h1hud::clear_meter_colour(img.format, &mut px).is_none() {
+                let (argb, mut out) = crate::h1hud::alpha_scaled_argb(img, &px, 0xff).ok()?;
+                crate::h1hud::clear_meter_colour(argb.format, &mut out)?;
+                cleared.images[i] = argb;
+                px = out;
+            }
+            pixels.push(px);
+        }
+        let (conv, _) =
+            h1bitmaps::convert::convert_with(&cleared, |i| Ok(std::mem::take(&mut pixels[i]))).ok()?;
+        let out = self.tree.push(&format!("{}_meter", tag.name), conv);
+        self.meter_bitmaps.insert(id.0, out);
+        Some(out)
+    }
+
     fn cached(&mut self, t: &Tag, conv: Converted) -> Result<TagId> {
         if let Some(id) = self.done.get(&t.id.0) {
             return Ok(*id);
@@ -1937,16 +1994,14 @@ impl<'a> Converter<'a> {
         let hlmt = self.model(&mut rep, &u.object, None, &tag.name, true)?;
         self.object_physics(&mut rep, hlmt, &u.object, &tag.name, PhysicsKind::Vehicle)?;
         let predicted = self.predicted(&u.object)?;
-        let markers = match u.object.model {
+        let (markers, bounds) = match u.object.model {
             Some(m) => {
-                h1models::model_from_map(self.h1, self.h1_tag(m)?, &ModelOptions::default())?
-                    .0
-                    .markers
-                    .into_iter()
-                    .map(|m| m.name)
-                    .collect()
+                let model =
+                    h1models::model_from_map(self.h1, self.h1_tag(m)?, &ModelOptions::default())?.0;
+                let bounds = crate::rebuild::model_sphere(&model);
+                (model.markers.into_iter().map(|m| m.name).collect(), bounds)
             }
-            None => Vec::new(),
+            None => (Vec::new(), None),
         };
         let seats: Vec<_> = u
             .seats
@@ -1985,6 +2040,7 @@ impl<'a> Converter<'a> {
             attachments: &attachments,
             creation_effect,
             object: &u.object,
+            bounds,
             hlmt,
             seats: &seats,
             predicted: &predicted,
@@ -2482,8 +2538,18 @@ impl<'a> Converter<'a> {
         } else {
             crate::rebuild::DEVICE_BODY
         };
+        let joints = if kind == PhysicsKind::Biped {
+            biped_ragdoll(&model.nodes, &bodies)
+        } else {
+            Vec::new()
+        };
+        let how = match (kind, joints.len()) {
+            (PhysicsKind::Biped, 0) => format!("{how}; no ragdoll (skeleton not mapped, crate::ragdoll::links)"),
+            (PhysicsKind::Biped, n) => format!("{how}; ragdoll of {n} constraints (crate::ragdoll)"),
+            _ => how,
+        };
         Ok(Some((
-            crate::rebuild::physics_model(&bodies, &nodes, words)?,
+            crate::rebuild::physics_model(&bodies, &nodes, words, &joints)?,
             how,
         )))
     }
@@ -2638,13 +2704,19 @@ impl Converter<'_> {
             // A static element's colour alpha goes into its sprite (the
             // motion sensor's background is a faint disc in Halo 1); a
             // meter's colour is elsewhere in its element and stays out.
+            // Colour 0 draws nothing in Halo 1 (`h1hud::static_alpha`).
             let alpha = match e.role {
-                crate::h1hud::Role::Static => crate::h1hud::colour_alpha(e.colour),
+                crate::h1hud::Role::Static => match crate::h1hud::static_alpha(e.colour) {
+                    Some(a) => a,
+                    None => continue,
+                },
                 crate::h1hud::Role::Meter(_) => 0xff,
             };
-            let bitmap = self
-                .hud_bitmap(e.bitmap, alpha)
-                .ok_or_else(|| Error::Invalid(format!("bitmap {} unconverted", bt.name)))?;
+            let bitmap = match e.role {
+                crate::h1hud::Role::Static => self.hud_bitmap(e.bitmap, alpha),
+                crate::h1hud::Role::Meter(_) => self.meter_bitmap(e.bitmap),
+            }
+            .ok_or_else(|| Error::Invalid(format!("bitmap {} unconverted", bt.name)))?;
             let reg = crate::h1hud::registration(e.anchor);
             widgets.push(crate::h1hud::widget_for(e, bitmap, reg, meter, plain));
         }
@@ -2665,7 +2737,8 @@ impl Converter<'_> {
                     return Err(Error::Invalid(format!("{} count: scaled {:?}", gt.name, n.scale)));
                 }
                 let w = crate::h1hud::digit_width(self.h1)?;
-                texts.push(crate::h1hud::grenade_count(&n, k, w, text_shader)?);
+                let h = crate::h1hud::digit_height(self.h1)?;
+                texts.push(crate::h1hud::grenade_count(&n, k, w, h, text_shader)?);
             }
             for e in crate::h1hud::grenade_elements(self.h1, &gb)? {
                 if !crate::h1hud::unscaled(e.scale) {
@@ -2679,8 +2752,11 @@ impl Converter<'_> {
                         gt.name, bt.name, e.sequence
                     )));
                 }
+                let Some(alpha) = crate::h1hud::static_alpha(e.colour) else {
+                    continue;
+                };
                 let bitmap = self
-                    .hud_bitmap(e.bitmap, crate::h1hud::colour_alpha(e.colour))
+                    .hud_bitmap(e.bitmap, alpha)
                     .ok_or_else(|| Error::Invalid(format!("bitmap {} unconverted", bt.name)))?;
                 let reg = crate::h1hud::registration(e.anchor);
                 let mut w = crate::h1hud::widget_for(&e, bitmap, reg, meter, plain);
@@ -2722,15 +2798,33 @@ impl Converter<'_> {
         };
         let meter = find(b"shad", h1hud::METER_SHADER)?;
         let plain = find(b"shad", h1hud::STATIC_SHADER)?;
+        let text_shader = find(b"shad", h1hud::TEXT_SHADER)?;
         let mut widgets = Vec::new();
+        let mut texts = Vec::new();
         let mut skipped = Vec::new();
         for e in &entries {
+            // Numbers: Halo 2 text, placed as the grenade count is.
+            if matches!(e.kind, h1hud::WeaponEntryKind::Number(..)) {
+                let w = h1hud::digit_width(self.h1)?;
+                let h = h1hud::digit_height(self.h1)?;
+                match h1hud::weapon_number(e, w, h, text_shader) {
+                    Ok(t) => texts.push(t),
+                    Err(why) => skipped.push(format!("{:?}: {why:?}", e.kind)),
+                }
+                continue;
+            }
             let drawn = match e.bitmap {
                 Some(b) => {
                     let bt = self.h1.tag(b)?.clone();
                     let bm = h1map::bitmap::Bitmap::read(self.h1, &bt)?;
-                    h1hud::sprite(&bm, e.sequence)
-                        .and_then(|_| self.bitmap(b))
+                    h1hud::sprite(&bm, e.sequence).and_then(|_| match e.kind {
+                        h1hud::WeaponEntryKind::Meter(..) => self.meter_bitmap(b),
+                        // A static's colour alpha goes into its sprite, as
+                        // the unit HUD's; colour 0 draws nothing.
+                        h1hud::WeaponEntryKind::Static(_) => h1hud::static_alpha(e.colour)
+                            .and_then(|a| self.hud_bitmap(b, a)),
+                        _ => self.bitmap(b),
+                    })
                 }
                 None => None,
             };
@@ -2740,16 +2834,16 @@ impl Converter<'_> {
             }
         }
         if uncounted > 0 {
-            skipped.push(format!("{uncounted} numbers and overlay elements not converted"));
+            skipped.push(format!("{uncounted} overlay elements not converted"));
         }
-        if widgets.is_empty() {
+        if widgets.is_empty() && texts.is_empty() {
             return Err(Error::Invalid(format!("{}: no drawable element", tag.name)));
         }
         let id = self.tree.push(
             &format!("{}{}", tag.name, h1hud::WEAPON_NHDT_SUFFIX),
             Converted {
                 group: FourCC(*b"nhdt"),
-                root: h1hud::nhdt(&widgets, &[]),
+                root: h1hud::nhdt(&widgets, &texts),
                 raw: Vec::new(),
             },
         );

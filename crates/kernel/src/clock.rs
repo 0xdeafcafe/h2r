@@ -129,3 +129,30 @@ impl Clock {
         Ok(clock)
     }
 }
+
+impl crate::snapshot::Persist for Clock {
+    fn put(&self, w: &mut snapshot::codec::Writer) {
+        let Self {
+            ticks_100ns,
+            epoch_100ns,
+            advances,
+            dropped_advances,
+            charging,
+        } = self;
+        ticks_100ns.put(w);
+        epoch_100ns.put(w);
+        advances.as_ref().put(w);
+        dropped_advances.put(w);
+        charging.put(w);
+    }
+    fn get(r: &mut snapshot::codec::Reader<'_>) -> Result<Self, crate::snapshot::CodecError> {
+        use crate::snapshot::Persist;
+        Ok(Self {
+            ticks_100ns: Persist::get(r)?,
+            epoch_100ns: Persist::get(r)?,
+            advances: Arc::new(Persist::get(r)?),
+            dropped_advances: Persist::get(r)?,
+            charging: Persist::get(r)?,
+        })
+    }
+}

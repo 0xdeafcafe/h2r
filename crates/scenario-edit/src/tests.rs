@@ -2114,3 +2114,29 @@ fn the_sky_model_is_drawn_behind_the_level_wherever_the_eye_is() {
     vp.set_scene(&device, &queue, &scene);
     assert!(!vp.has_sky());
 }
+
+/// A map's shared caches come from beside it, or from `shared` when the
+/// source names one (a Map Pack map leans on the Halo 2 disc's).
+#[test]
+fn shared_caches_come_from_the_named_place() {
+    let root = std::env::temp_dir().join(format!("h2-shared-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let pack = root.join("pack");
+    let base = root.join("base");
+    std::fs::create_dir_all(&pack).unwrap();
+    std::fs::create_dir_all(&base).unwrap();
+    let map = pack.join("backwash.map");
+    std::fs::write(&map, b"x").unwrap();
+    std::fs::write(base.join("shared.map"), b"x").unwrap();
+    std::fs::write(base.join("mainmenu.map"), b"x").unwrap();
+    // Beside the map there is nothing; the base folder has two.
+    assert!(geometry::shared_sources(&MapSource::file(&map)).is_empty());
+    let with = MapSource::file(&map).with_shared(Some(base.clone()));
+    let found = geometry::shared_sources(&with);
+    let mut paths: Vec<_> = found.iter().map(|(_, s)| s.path.clone()).collect();
+    paths.sort();
+    assert_eq!(paths, [base.join("mainmenu.map"), base.join("shared.map")]);
+    // Dropping the in-memory bytes keeps where the caches are.
+    assert_eq!(with.base().shared, Some(base));
+    let _ = std::fs::remove_dir_all(&root);
+}

@@ -63,6 +63,17 @@ pub struct GlbRef {
     pub ballistics: Option<crate::live_weapons::Ballistics>,
 }
 
+/// A vehicle seat ([`vehicle_seats`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Seat {
+    /// The rider's animation mode (`warthog_d`): the biped clip
+    /// `any:seat_<label>` poses the rider.
+    pub label: String,
+    /// The glb's `seat_` node at the seat's marker ([`seat_node`]); `None`
+    /// when the model has no such node.
+    pub node: Option<String>,
+}
+
 /// The manifest's `models` object.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ModelsEntry {
@@ -74,6 +85,11 @@ pub struct ModelsEntry {
     /// By vehicle tag file stem (`warthog`, `ghost`, ...).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub vehicles: BTreeMap<String, GlbRef>,
+    /// By vehicle stem, its seats in the tag's order: telemetry's `seat`
+    /// (`unit +0x1fc`) indexes the list. Vehicles without seats are left
+    /// out; absent when none has any.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub seats: BTreeMap<String, Vec<Seat>>,
 }
 
 impl ModelsEntry {
@@ -102,6 +118,7 @@ impl ModelsEntry {
             bipeds: refs("biped", bipeds),
             weapons: refs("weapon", weapons),
             vehicles: refs("vehicle", vehicles),
+            seats: BTreeMap::new(),
         })
     }
 }
@@ -762,6 +779,8 @@ pub struct Model {
     pub class: Option<String>,
     /// Weapons: their shots (crate::live_weapons).
     pub ballistics: Option<crate::live_weapons::Ballistics>,
+    /// Vehicles: the seats, in the tag's order ([`seat_entries`]).
+    pub seats: Vec<Seat>,
     /// Vehicles: moving parts drawn as meshes of their own (a turret and its
     /// gun, see [`turret_parts`]), each a node under the root or under an
     /// earlier part.
@@ -1605,6 +1624,9 @@ pub fn biped(
     }
     model.translate([0.0, 0.0, -lo[2]]);
     model.extras.insert("height".into(), json!(hi[2] - lo[2]));
+    // How far the feet were raised to the floor: lowering the model by it
+    // puts its own origin back where the game draws the object.
+    model.extras.insert("lift".into(), json!(0.0 - lo[2]));
     Ok(model)
 }
 
@@ -2233,11 +2255,18 @@ pub fn write_models(built: Vec<(Kind, String, Result<Model>)>, dir: &Path) -> Wr
             Kind::Weapon => weapons.push(name.clone()),
             Kind::Vehicle => vehicles.push(name.clone()),
         }
-        extra.push((kind, name, clips, model.class, model.ballistics));
+        extra.push((
+            kind,
+            name,
+            clips,
+            model.class,
+            model.ballistics,
+            model.seats,
+        ));
     }
     out.entry = ModelsEntry::new(&bipeds, &weapons, &vehicles);
     if let Some(entry) = &mut out.entry {
-        for (kind, name, clips, class, ballistics) in extra {
+        for (kind, name, clips, class, ballistics, seats) in extra {
             let table = match kind {
                 Kind::Biped => &mut entry.bipeds,
                 Kind::Weapon => &mut entry.weapons,
@@ -2247,6 +2276,9 @@ pub fn write_models(built: Vec<(Kind, String, Result<Model>)>, dir: &Path) -> Wr
                 r.clips = clips;
                 r.class = class;
                 r.ballistics = ballistics;
+            }
+            if kind == Kind::Vehicle && !seats.is_empty() {
+                entry.seats.insert(name, seats);
             }
         }
     }
@@ -2924,6 +2956,124 @@ const STATES: &[(&str, Want)] = &[
     ("switch", Want::Named(&["ready"])),
 ];
 
+/// Directional and crouched movement: actions of type `any` like `walk`
+/// and `run`, after a class's [`STATES`]. The first to go when a glb is
+/// too big ([`next_size_drop`]).
+const MOVE_STATES: &[(&str, Want)] = &[
+    ("run_back", Want::Action("combat", None, "move_back")),
+    ("run_left", Want::Action("combat", None, "move_left")),
+    ("run_right", Want::Action("combat", None, "move_right")),
+    ("walk_back", Want::Action("combat", None, "walk_back")),
+    ("walk_left", Want::Action("combat", None, "walk_left")),
+    ("walk_right", Want::Action("combat", None, "walk_right")),
+    ("crouch_run", Want::Action("crouch", None, "move_front")),
+    ("crouch_back", Want::Action("crouch", None, "move_back")),
+    ("crouch_left", Want::Action("crouch", None, "move_left")),
+    ("crouch_right", Want::Action("crouch", None, "move_right")),
+];
+
+/// The state of a clip name (`rifle:run_left` -> `run_left`).
+pub fn clip_state(name: &str) -> &str {
+    name.split_once(':').map_or("", |(_, s)| s)
+}
+
+/// Whether a clip is one of the [`MOVE_STATES`].
+pub fn is_move_clip(name: &str) -> bool {
+    let state = clip_state(name);
+    MOVE_STATES.iter().any(|(s, _)| *s == state)
+}
+
+/// A seat pose's state: `seat_<mode>`, written as `any:seat_<mode>`.
+pub const SEAT_STATE: &str = "seat_";
+/// The non-seat modes of the player graphs.
+const NOT_SEAT_MODES: &[&str] = &["combat", "crouch"];
+/// Classes a seat's idle is taken from, in order; then the first the
+/// graph has.
+const SEAT_CLASSES: &[&str] = &["rifle", "any"];
+
+/// Whether a graph mode is a vehicle seat: the rider's animation mode,
+/// as a vehicle's seat names it (`warthog_d`, `ghost_d`, `spectre_g`,
+/// `scorpion_p_lf`, `c_turret_ap_d`, `pelican_p_l01`): a word after the
+/// first is `d` (driver), `g` (gunner) or `p` (passenger). Generic, matched
+/// at run time; `combat` and `crouch` never are.
+pub fn is_seat_mode(mode: &str) -> bool {
+    !NOT_SEAT_MODES.contains(&mode)
+        && mode
+            .split('_')
+            .skip(1)
+            .any(|w| matches!(w, "d" | "g" | "p"))
+}
+
+/// Whether a clip is a seat pose, which holds one frame (see
+/// [`sampled_frames`]).
+pub fn is_seat_clip(name: &str) -> bool {
+    clip_class(name) == SHARED_CLASS && clip_state(name).starts_with(SEAT_STATE)
+}
+
+/// How many frames of a `frame_count`-frame animation a clip keeps: a seat
+/// pose only its first (a rider sits still; a glTF animation of one key at
+/// time 0 per channel), the others every frame.
+pub fn sampled_frames(name: &str, frame_count: usize) -> usize {
+    if is_seat_clip(name) {
+        frame_count.min(1)
+    } else {
+        frame_count
+    }
+}
+
+/// What a biped glb over [`MAX_BIPED_GLB`] loses next.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SizeDrop {
+    /// A class's [`MOVE_STATES`] clips.
+    Moves(String),
+    /// A whole class.
+    Class(String),
+}
+
+impl SizeDrop {
+    /// Whether the clip named `name` goes.
+    pub fn takes(&self, name: &str) -> bool {
+        match self {
+            SizeDrop::Moves(c) => clip_class(name) == c && is_move_clip(name),
+            SizeDrop::Class(c) => clip_class(name) == c,
+        }
+    }
+}
+
+impl std::fmt::Display for SizeDrop {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SizeDrop::Moves(c) => write!(f, "{c} moves"),
+            SizeDrop::Class(c) => f.write_str(c),
+        }
+    }
+}
+
+/// What to drop next from a glb too big with these clips: first the
+/// movement clips ([`MOVE_STATES`]) of every class but the first of
+/// [`CLIP_CLASSES`] (`rifle`, the most held), last class first (`ball`,
+/// `flag`, `unarmed`, `sword`, `support`, `missile`, `pistol`); then whole
+/// classes, last first, as before extractor 22; then (no class of
+/// [`CLIP_CLASSES`] left) the last clip's class (`any`: dying, the seats).
+/// `None` without clips.
+pub fn next_size_drop(names: &[&str]) -> Option<SizeDrop> {
+    let any = |f: &dyn Fn(&str) -> bool| names.iter().any(|&n| f(n));
+    CLIP_CLASSES
+        .iter()
+        .skip(1)
+        .rev()
+        .find(|c| any(&|n: &str| clip_class(n) == **c && is_move_clip(n)))
+        .map(|c| SizeDrop::Moves((*c).to_owned()))
+        .or_else(|| {
+            CLIP_CLASSES
+                .iter()
+                .rev()
+                .find(|c| any(&|n: &str| clip_class(n) == **c))
+                .map(|c| SizeDrop::Class((*c).to_owned()))
+        })
+        .or_else(|| names.last().map(|n| SizeDrop::Class(clip_class(n).to_owned())))
+}
+
 /// The class every class shares: its clips are written once, as
 /// `any:<state>`, and a reader falls back to them for any weapon class.
 pub const SHARED_CLASS: &str = "any";
@@ -2964,8 +3114,10 @@ pub enum ClipFrom {
 
 /// The clips a graph can give, `(<class>:<state>, source)`, from its actions
 /// ([`Stance`]s, type `any`) and its animations' names (`mode:class:action`
-/// or `mode:class:type:action`, maybe with `:varN`). States missing from
-/// the graph are left out.
+/// or `mode:class:type:action`, maybe with `:varN`): the shared states,
+/// then a seat pose `any:seat_<mode>` per seat mode ([`is_seat_mode`]), in
+/// graph order, then per class its [`STATES`] and [`MOVE_STATES`]. States
+/// missing from the graph are left out.
 pub fn plan_clips(stances: &[Stance], animations: &[String]) -> Vec<(String, ClipFrom)> {
     let mut out = Vec::new();
     // The shared clips first, so dropping classes for size never takes them.
@@ -2983,8 +3135,31 @@ pub fn plan_clips(stances: &[Stance], animations: &[String]) -> Vec<(String, Cli
             out.push((format!("{SHARED_CLASS}:{state}"), from));
         }
     }
+    // One pose per seat mode, from its idle: class `rifle`, else `any`,
+    // else the first the mode has; type `any` first.
+    let mut modes: Vec<&str> = Vec::new();
+    for s in stances {
+        if is_seat_mode(&s[0]) && !modes.contains(&s[0].as_str()) {
+            modes.push(&s[0]);
+        }
+    }
+    for mode in modes {
+        let idle = |s: &&Stance| s[0] == mode && s[3] == POSE_ACTION;
+        let mut found: Vec<(usize, &Stance)> =
+            stances.iter().enumerate().filter(|(_, s)| idle(s)).collect();
+        // Type `any` before the others, keeping graph order otherwise.
+        found.sort_by_key(|(_, s)| s[2] != POSE_TYPE);
+        let from = SEAT_CLASSES
+            .iter()
+            .find_map(|c| found.iter().find(|(_, s)| s[1] == *c))
+            .or(found.first())
+            .map(|(i, _)| ClipFrom::Action(*i));
+        if let Some(from) = from {
+            out.push((format!("{SHARED_CLASS}:{SEAT_STATE}{mode}"), from));
+        }
+    }
     for class in CLIP_CLASSES {
-        for (state, want) in STATES {
+        for (state, want) in STATES.iter().chain(MOVE_STATES) {
             let from = match *want {
                 Want::Action(mode, c, action) => stances
                     .iter()
@@ -3113,7 +3288,8 @@ impl Graphs {
         (g < self.graphs.len()).then_some((g, a.animation_index as usize))
     }
 
-    /// Every frame of an animation, sampled; aim grids give `None`.
+    /// The frames of an animation the clip `name` keeps ([`sampled_frames`]),
+    /// sampled; aim grids give `None`.
     fn clip(
         &self,
         files: &mut ResourceFiles,
@@ -3125,7 +3301,7 @@ impl Graphs {
         if clip.is_aim_grid() || clip.frame_count() == 0 {
             return Ok(None);
         }
-        let poses = (0..clip.frame_count())
+        let poses = (0..sampled_frames(&name, clip.frame_count()))
             .map(|f| clip.sample_frame(f))
             .collect::<tags::Result<Vec<_>>>()?;
         Ok(Some(ClipPoses {
@@ -3176,8 +3352,8 @@ pub struct BipedInfo {
     pub animation: String,
 }
 
-/// The largest biped glb; past it whole weapon classes are dropped, last
-/// of [`CLIP_CLASSES`] first. A quarter MiB over the contract's ~3 MB, so
+/// The largest biped glb; past it movement clips, then whole weapon
+/// classes, are dropped ([`next_size_drop`]). A quarter MiB over the contract's ~3 MB, so
 /// the elite keeps its sword clips beside its change-colour, glow and
 /// specular maps.
 pub const MAX_BIPED_GLB: usize = (3 << 20) + (1 << 18);
@@ -3203,10 +3379,10 @@ fn biped_from(
         if clips.is_empty() || write_glb(&model).len() <= MAX_BIPED_GLB {
             break model;
         }
-        let last = clips.last().map(|c| clip_class(&c.name).to_owned());
-        if let Some(class) = last {
-            clips.retain(|c| clip_class(&c.name) != class);
-            dropped.push(class);
+        let names: Vec<&str> = clips.iter().map(|c| c.name.as_str()).collect();
+        if let Some(drop) = next_size_drop(&names) {
+            clips.retain(|c| !drop.takes(&c.name));
+            dropped.push(drop.to_string());
         }
     };
     note += &format!("; {} clips", clips.len());
@@ -3395,6 +3571,8 @@ fn build_vehicles(disc: &Disc) -> Vec<(String, Result<Model>)> {
             let world = posed_world(&src.bones, &names, &pose);
             let attached = attach_objects(&mut map, &mut files, id, &src, &world, &mut model, 0);
             model.extras.insert("pose".into(), json!(animation));
+            let seats = vehicle_seats(&mut map, id).unwrap_or_default();
+            model.seats = seat_entries(&seats, &model.nodes);
             if !attached.is_empty() {
                 model.extras.insert("attached".into(), json!(attached));
             }
@@ -3402,6 +3580,47 @@ fn build_vehicles(disc: &Disc) -> Vec<(String, Result<Model>)> {
         })();
         (stem.clone(), result)
     })
+}
+
+/// A vehicle's seats block: `vehi +0x1c8` (count, address; stride `0xb0`,
+/// crates/tags/src/defs/unit.txt and crates/boot/src/touch_glue.rs), the
+/// block the unit's seat index (`unit +0x1fc` at run time) points into.
+/// Each seat's label (string ID at `+4`) is the rider's animation mode and
+/// `+8` (string ID) the marker the rider sits at.
+pub const VEHI_SEATS: usize = 0x1c8;
+pub const SEAT_STRIDE: usize = 0xb0;
+const SEAT_LABEL: usize = 4;
+const SEAT_MARKER: usize = 8;
+
+/// A vehicle's seats in the tag's order: `(label, marker)` (see
+/// [`VEHI_SEATS`]); a name that does not resolve is empty.
+fn vehicle_seats(map: &mut MapReader, vehicle: TagId) -> Result<Vec<(String, String)>> {
+    let bytes = map.read_tag_bytes(vehicle)?;
+    let seats = meta_block(map, &bytes, VEHI_SEATS, SEAT_STRIDE)?;
+    let strings = map.strings();
+    let name = |b: &[u8], at: usize| {
+        u32_at(b, at)
+            .and_then(|id| StringId(id).resolve(strings).ok().flatten())
+            .unwrap_or("")
+            .to_owned()
+    };
+    Ok(seats
+        .iter()
+        .map(|s| (name(s.as_slice(), SEAT_LABEL), name(s.as_slice(), SEAT_MARKER)))
+        .collect())
+}
+
+/// The manifest's seats of a vehicle from its `(label, marker)` seats and
+/// the model's nodes: a seat's node is its marker's [`seat_node`] when the
+/// model has that node.
+pub fn seat_entries(seats: &[(String, String)], nodes: &[(String, Mat4)]) -> Vec<Seat> {
+    seats
+        .iter()
+        .map(|(label, marker)| Seat {
+            label: label.clone(),
+            node: seat_node(marker).filter(|n| nodes.iter().any(|(k, _)| k == n)),
+        })
+        .collect()
 }
 
 /// Every multiplayer weapon: the `weap` tags under the weapons folder of the

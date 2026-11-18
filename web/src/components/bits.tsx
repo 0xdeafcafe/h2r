@@ -5,6 +5,7 @@ import { A } from "@solidjs/router";
 import type { AccountState } from "../state/reducer";
 import { countResults, summaryLine, verifyMarkText, type VerifyResult } from "../state/verify";
 import { live } from "../state/live";
+import { STATS_ROOT } from "../routes";
 
 export type PresenceKind = "playing" | "online" | "away" | "offline";
 
@@ -30,7 +31,7 @@ export function PresenceBadge(props: { account: AccountState | undefined }) {
     <span class={`presence presence--${kind()}`}>
       <span class="presence__dot" />
       <Show when={kind() === "playing" && props.account?.presence?.game_id} fallback={PRESENCE_LABEL[kind()]}>
-        {(gid) => <A href={`/stats/games/${gid()}`}>{PRESENCE_LABEL.playing}</A>}
+        {(gid) => <A href={`${STATS_ROOT}/games/${gid()}`}>{PRESENCE_LABEL.playing}</A>}
       </Show>
       <Show when={kind() !== "offline" && props.account?.presence?.activity}>{(a) => <span class="presence__activity"> ({a()})</span>}</Show>
     </span>
@@ -58,4 +59,10 @@ export function VerifySummary(props: { positions: () => number[] }) {
       <span class="verify__icon">{counts().bad ? "!" : counts().verified ? "✓" : "·"}</span> {summaryLine(counts())}
     </span>
   );
+}
+
+/** The mark beside a Clanker bot's name (docs/game/bots.md §6): it plays
+ *  in the game record, but has no Live account and no player page. */
+export function BotTag() {
+  return <span class="bot-tag" title="A Clanker bot: no Live account, no stats page">BOT</span>;
 }

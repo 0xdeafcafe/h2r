@@ -77,6 +77,9 @@ pub(crate) struct Context<'a> {
     pub storage: &'a mut Storage,
     pub service: Option<&'a Service>,
     pub session: Option<&'a Session>,
+    /// The Live session this console is in (hex), for made-up bots'
+    /// roster levels (docs/live/live-matchmaking.md §8.4).
+    pub game_session: Option<String>,
 }
 #[derive(Default)]
 pub(crate) struct Stats {
@@ -191,7 +194,12 @@ impl Stats {
                     let pending = match ranks_request(&queries) {
                         Some((boards, xuids)) => match (ctx.service, ctx.session) {
                             (Some(service), Some(session)) => {
-                                match service.ranks(session, boards, xuids) {
+                                match service.ranks(
+                                    session,
+                                    boards,
+                                    xuids,
+                                    ctx.game_session.clone(),
+                                ) {
                                     Ok(p) => Some(p),
                                     Err(hr) => return Ok(hr),
                                 }

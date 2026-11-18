@@ -300,6 +300,22 @@ Halo 1 (602.4 s), 3,813 the base's and donors', 14,667 permutations, no
 problem. The bytes were never the fault behind a10's "repeated
 wurrrring" (`docs/halo1/campaign.md`, Sounds).
 
+**What a10's opening cinematic plays** (`level_loops_and_their_character`
+in `tests/looping_disc.rs`, `$H1_LEVEL`, default a10; prints the length,
+RMS, zero crossings and the difference-to-RMS ratio `hf` of every
+permutation, near 0 for a low drone). The cinematic `x10` starts
+`sound\sinomatixx\x10_music01` (one stereo 44.1 kHz track, 114 s,
+flagged "not a loop"), then on the bridge and in the hangar
+`x10_foley1..3` and `x10_music02..04`, all "not a loop" with one track.
+The level's one background sound, `sound\sfx\ambience\a10\shipambience`
+(a `battleship` drone, `hf` 0.02, at -6 dB, and `shipcreaks` details),
+is named by every cluster of the ship's BSPs and the hangar's, none of
+the space BSP's (`a10_space`: one cluster, -1). No sound is a drone
+where Halo 1's is not. The whirr was a script: Halo 1's `(sleep -1)`
+did nothing in Halo 2 (scripts.md, Sleeping forever), so the
+continuous `dialog_flavor_captain` started eight captain lines every
+tick (converter version 67 fixes it).
+
 ## Merging a moved sound (`h1sounds::merge_sound`)
 
 A `snd!` moved to another map (`tags::schema::transplant`) still holds

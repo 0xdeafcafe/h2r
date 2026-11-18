@@ -33,7 +33,7 @@ it shows come from your own disc at run time.
 ## Running it
 
 ```
-cargo run --release -p studio -- [--disc <iso> | --map <file.map> | --folder <maps dir>] [--halo1 <iso|maps dir>] [--hopper <file>|default] [--data <dir>]
+cargo run --release -p studio -- [--disc <iso> | --map <file.map> | --folder <maps dir>] [--halo1 <iso|maps dir>] [--mappack <iso|folder>] [--hopper <file>|default] [--data <dir>]
 ```
 
 The package is `studio`; its binary is `h2-editor`. With no source it
@@ -49,6 +49,25 @@ or the repository's `disc/halo1.iso` (`editor_core::halo1::default_source`).
 **Open...** and a dropped path try Halo 1 first (`H1Source::open`: a disc
 whose XBE is Halo: Combat Evolved's, a Halo 1 `.map`, or a folder holding
 any), then Halo 2.
+
+The Halo 2 Map Pack opens beside the disc, as its own **Map Pack** group
+in the Maps list (`editor_core::mappack`): `--mappack`, else
+`$H2_MAPPACK_ISO` (`$H2_MAPPACK` is `h2 play`'s on/off switch, and `0`,
+`false`, `no` or `off` turns the lookups below off too), else
+`mappack.iso` beside the Halo 2 disc that was opened (any case, else the
+first other `.iso` there whose contents are the map pack's; so it works
+outside the repository), else the repository's `disc/mappack.iso`. A map
+pack is told by its contents, never its name: an XISO whose
+`/demos/dlc/<8 hex digits>/` directories hold a `ContentMeta.xbx` and
+`.map` files (`xiso::mappack`, the layout in
+[map-pack.md](../game/map-pack.md) section 1), or a folder with the same
+tree (an extracted disc, or its `dlc` directory). **Open...** and a
+dropped path try it first, so opening the map pack ISO by hand adds it
+and leaves the Halo 2 source as it was. Its nine maps are ordinary Halo 2
+cache maps: they open and edit like the disc's, and read their shared
+caches (`shared`, `mainmenu`, `single_player_shared`) from the open Halo 2
+source (`MapSource::shared`, used by `geometry::shared_sources`), so open
+the Halo 2 disc too for their textures and geometry.
 
 `--data` is the runtime's data root, as `h2 play --data`; the default is
 the runtime's, `$TMPDIR/h2boot-data` (`content::store::default_data_root`).
@@ -148,9 +167,16 @@ package...** and **Open package...** save and open map packages in
 
 ### Packages and Halo 1 in the Maps list
 
-Below the source's maps, **Maps** lists what is under `<data>/maps`
+Below the source's maps, **Maps** lists the **Map Pack**'s maps (when one
+is open, above), then what is under `<data>/maps`
 (`editor_core::packages::list`, re-read when the data root changes and
 after a save), then Halo 1:
+
+- **Map Pack**: the nine multiplayer maps, sorted by file name, opened
+  with `SelectMap` like the disc's. A package that edits one of them opens
+  that map, then the package over it, as for a disc map. **Save as
+  package...** writes a package with the pack's map as its base
+  ([maps.md](../game/maps.md) section 4).
 
 - **Packages**: edits of disc maps and new maps, by `[package] name`.
   An edit opens its disc map, then the package over it
@@ -374,7 +400,12 @@ H2_AGENT=<cache>/h2recomp/editor-<pid>-<n>.sock H2_MAP_DIR=$TMPDIR/h2-editor-pla
 - `h2` is the panel's path, else `$H2_BIN`, else `~/.cargo/bin/h2`, else
   `h2` on the `PATH` (`launch::find_h2`). The editor never builds it.
 - The disc is the open disc image, else `H2_DISC` or the repository's
-  `disc/halo2.iso` (`editor_core::default_disc`).
+  `disc/halo2.iso` (`editor_core::default_disc`). For a Map Pack map this
+  is still the Halo 2 disc: `h2 play` installs the map pack itself from
+  `mappack.iso` beside that disc (`mappack_cmd::auto_install`) and the
+  editor's copy plays through the override. When the open pack is
+  elsewhere, the editor logs that `h2 play` will not install it (it does
+  not run `h2 import-mappack` itself).
 - The editor's bytes, edits included, are written as `<map>.map` to the
   scratch directory (`scenario_edit::save::save_as`, which is not a save:
   the map stays unsaved) and served with `H2_MAP_DIR`, which wins over
@@ -853,6 +884,7 @@ last. The flags that set the scene up:
 | `--pick <map>` | open this map in the scenario tool |
 | `--tool tags --tag <group>:<path>` | show a tag of the open map in the Tags tool |
 | `--halo1 <iso\|dir>` | open a Halo 1 source (else `$H1_ISO`, `$H1_MAP_DIR`, `disc/halo1.iso`) |
+| `--mappack <iso\|dir>` | open the Map Pack (else `$H2_MAPPACK_ISO`, `mappack.iso` beside the disc, `disc/mappack.iso`) |
 | `--halo1-map <map>` | show a map of it, read-only |
 | `--package <dir>[#H1\|#H2]` | open a package from the Maps list (a converted map's variant by its sandbox) |
 | `--convert h2\|h1` | with `--halo1-map`, run Convert to Halo 2 with that sandbox, wait for it and open the result (writes under `--data`) |

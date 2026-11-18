@@ -53,6 +53,16 @@ pub struct Mixer {
     /// Frames rendered since creation: the clock [`StreamHealth`] uses.
     clock: u64,
     health: StreamHealth,
+    /// Bins whose sends are captured rather than mixed ([`Mixer::set_taps`]).
+    taps: Vec<Tap>,
+}
+
+/// A captured bin: the mono sum of every send to it, one sample per frame
+/// rendered, waiting for [`Mixer::take_tap`].
+#[derive(Debug)]
+struct Tap {
+    bin: u32,
+    samples: Vec<f32>,
 }
 
 /// How streams fared, for diagnostics ([`Mixer::stream_health`]).
@@ -91,7 +101,26 @@ impl Mixer {
             direct: Vec::new(),
             clock: 0,
             health: StreamHealth::default(),
+            taps: Vec::new(),
         }
+    }
+
+    /// Captures the FX sends to `bins` instead of leaving them to mix-ins:
+    /// the DSP effects that read those bins on an Xbox run on the host
+    /// instead (DirectSound's XHV voice effects, which feed a headset, not
+    /// the speakers). Each tap gets one mono sample per frame rendered, the
+    /// sum of the voices sent to it at their volumes, headroom and bin
+    /// volume but not the master volume, silence included, so it runs on
+    /// the mixer's clock. Replaces the previous set; their samples go.
+    pub fn set_taps(&mut self, bins: &[u32]) {
+        self.taps = bins.iter().map(|&bin| Tap { bin, samples: Vec::new() }).collect();
+    }
+
+    /// The samples captured on `bin` since the last call, at
+    /// [`Mixer::sample_rate`]; empty when `bin` is not tapped. A tap nobody
+    /// takes keeps only the last second.
+    pub fn take_tap(&mut self, bin: u32) -> Vec<f32> {
+        self.taps.iter_mut().find(|t| t.bin == bin).map(|t| std::mem::take(&mut t.samples)).unwrap_or_default()
     }
 
     /// Stream starvation and routing counters since creation.
@@ -252,6 +281,15 @@ impl Mixer {
             .map(|&id| Bus { id, bin: self.mix_ins[&id].input_bin(), input: vec![0.0; frames], done: false })
             .collect();
         let reverb_live = self.reverb.as_ref().is_some_and(|r| !r.params().is_silent());
+        let cap = rate as usize;
+        let mut taps = std::mem::take(&mut self.taps);
+        for t in &mut taps {
+            let keep = cap.saturating_sub(frames.min(cap));
+            if t.samples.len() > keep {
+                t.samples.drain(..t.samples.len() - keep);
+            }
+            t.samples.resize(t.samples.len() + frames.min(cap), 0.0);
+        }
         let mut rin = std::mem::take(&mut self.reverb_in);
         let mut direct = std::mem::take(&mut self.direct);
         direct.resize(frames * 2, 0.0);
@@ -275,7 +313,7 @@ impl Mixer {
             let has_direct = b.direct_shelf(&scratch[..produced * 2], &mut direct[..produced * 2], rate);
             let channels = b.format().channels() as usize;
             if !to_side(side.as_deref_mut(), &params, &scratch, master) {
-                let mut cx = Route { listener: &self.listener, master, buses: &mut buses, reverb_in: reverb_live.then_some(&mut rin) };
+                let mut cx = Route { listener: &self.listener, master, buses: &mut buses, taps: &mut taps, frames, reverb_in: reverb_live.then_some(&mut rin) };
                 route_voice(&mut cx, &params, channels, &scratch, has_direct.then_some(&direct[..produced * 2]), out);
             }
         }
@@ -306,7 +344,7 @@ impl Mixer {
                 s.dry_at = Some(self.clock + produced as u64);
             }
             if !to_side(side.as_deref_mut(), &params, &scratch, master) {
-                let mut cx = Route { listener: &self.listener, master, buses: &mut buses, reverb_in: reverb_live.then_some(&mut rin) };
+                let mut cx = Route { listener: &self.listener, master, buses: &mut buses, taps: &mut taps, frames, reverb_in: reverb_live.then_some(&mut rin) };
                 if !route_voice(&mut cx, &params, channels, &scratch, has_direct.then_some(&direct[..produced * 2]), out) {
                     self.health.unrouted_frames += produced as u64;
                 }
@@ -324,7 +362,7 @@ impl Mixer {
             mix.apply_fx(&mut scratch, c0, rate);
             mix.advance_clock(frames as u64);
             let has_direct = mix.direct_shelf(&scratch, &mut direct, rate);
-            let mut cx = Route { listener: &self.listener, master, buses: &mut buses, reverb_in: reverb_live.then_some(&mut rin) };
+            let mut cx = Route { listener: &self.listener, master, buses: &mut buses, taps: &mut taps, frames, reverb_in: reverb_live.then_some(&mut rin) };
             route_voice(&mut cx, &params, 1, &scratch, has_direct.then_some(&direct[..]), out);
         }
         if let (Some(r), true) = (self.reverb.as_mut(), reverb_live) {
@@ -334,6 +372,7 @@ impl Mixer {
                 *o += w * master;
             }
         }
+        self.taps = taps;
         self.scratch = scratch;
         self.reverb_in = rin;
         self.direct = direct;
@@ -374,6 +413,10 @@ struct Route<'a> {
     listener: &'a Listener,
     master: f32,
     buses: &'a mut [Bus],
+    /// The captured bins; this render's frames are each one's last `frames`
+    /// samples.
+    taps: &'a mut [Tap],
+    frames: usize,
     /// The reverb's mono input, when an audible environment is set.
     reverb_in: Option<&'a mut Vec<f32>>,
 }
@@ -413,7 +456,7 @@ fn route_voice(
         let dest = route::dest(bin);
         reached |= match dest {
             Dest::Out { .. } | Dest::Crosstalk { .. } => true,
-            Dest::Send(bin) => cx.buses.iter().any(|b| b.bin == bin && !b.done),
+            Dest::Send(bin) => cx.buses.iter().any(|b| b.bin == bin && !b.done) || cx.taps.iter().any(|t| t.bin == bin),
             Dest::Reverb => cx.reverb_in.is_some(),
             Dest::Dropped => false,
         };
@@ -435,6 +478,15 @@ fn route_voice(
                 add(out, dsrc, ch, if left { 0 } else { 1 }, g * w * master * direct);
             }
             Dest::Send(bin) => {
+                for tap in cx.taps.iter_mut().filter(|t| t.bin == bin) {
+                    // A render longer than the cap keeps its last second.
+                    let n = tap.samples.len().min(cx.frames);
+                    let skip = cx.frames - n;
+                    let start = tap.samples.len() - n;
+                    for (acc, frame) in tap.samples[start..].iter_mut().zip(dsrc.as_chunks::<2>().0.iter().skip(skip)) {
+                        *acc += frame[ch] * g * direct;
+                    }
+                }
                 for bus in cx.buses.iter_mut().filter(|b| b.bin == bin && !b.done) {
                     for (acc, frame) in bus.input.iter_mut().zip(dsrc.as_chunks::<2>().0) {
                         *acc += frame[ch] * g * direct;
@@ -1317,6 +1369,45 @@ mod tests {
         m.stream_mut(sid).unwrap().submit(&pcm).unwrap();
         m.render(&mut block);
         assert_eq!(m.stream_health().unrouted_frames, 128);
+    }
+
+    #[test]
+    fn a_tapped_bin_is_captured_instead_of_heard() {
+        // Two voice streams on two tapped FX sends (the XHV voice effects'
+        // input bins), one on a bin nobody taps.
+        let mut m = Mixer::new(8000);
+        m.set_taps(&[0x1b, 0x1c]);
+        let pcm = |v: i16| -> Vec<u8> { [v; 40].iter().flat_map(|s| s.to_le_bytes()).collect() };
+        let a = m.add_stream(Stream::new(WaveFormat::pcm16(1, 8000).unwrap()).unwrap());
+        m.stream_mut(a).unwrap().set_mix_bins(Some(vec![(0x1b, 0)]));
+        m.stream_mut(a).unwrap().submit(&pcm(8192)).unwrap();
+        let b = m.add_stream(Stream::new(WaveFormat::pcm16(1, 8000).unwrap()).unwrap());
+        // -602 mB is half.
+        m.stream_mut(b).unwrap().set_mix_bins(Some(vec![(0x1c, -602)]));
+        m.stream_mut(b).unwrap().submit(&pcm(8192)).unwrap();
+        m.set_master_volume(-602);
+        let mut out = vec![9.0; 2 * 50];
+        m.render(&mut out);
+        assert_eq!(out, vec![0.0; 100], "a tapped send is not on the speakers");
+        // Every rendered frame is in the tap, silence included, so the tap
+        // runs on the mixer's clock. The master volume is the speakers'.
+        let ta = m.take_tap(0x1b);
+        assert_eq!(ta.len(), 50);
+        assert!(ta[..40].iter().all(|&v| v == 0.25) && ta[40..].iter().all(|&v| v == 0.0));
+        let tb = m.take_tap(0x1c);
+        assert!(tb[..40].iter().all(|&v| (v - 0.125).abs() < 1e-3), "{:?}", &tb[..4]);
+        assert!(m.take_tap(0x1b).is_empty(), "taken");
+        assert!(m.take_tap(0x1d).is_empty(), "not a tap");
+        assert_eq!(m.stream_health().unrouted_frames, 0, "a tap is a destination");
+        // Undrained taps keep at most a second.
+        for _ in 0..200 {
+            m.render(&mut out);
+        }
+        assert_eq!(m.take_tap(0x1b).len(), 8000);
+        // No taps: the bin is an FX send nobody reads again.
+        m.set_taps(&[]);
+        m.render(&mut out);
+        assert!(m.take_tap(0x1b).is_empty());
     }
 
     #[test]

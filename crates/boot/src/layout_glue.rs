@@ -433,8 +433,10 @@ pub fn string_address(id: u32) -> Option<u32> {
 /// none yet). A map load replaces the tag, and the next screen build
 /// extends the new one before a pane is set.
 static LIVE_TAG: AtomicU32 = AtomicU32::new(0);
-/// Live menu item widgets of ours: one per open screen, this many slots.
+/// Live menu item widgets of ours: one set per open screen, this many
+/// slots, each of up to [`LIVE_MAX_EXTRA`] items.
 const LIVE_ITEM_SLOTS: u32 = 8;
+const LIVE_MAX_EXTRA: u32 = 2;
 
 /// In place of a row-chosen call (`ret 8`): open the screen of `loader`
 /// for `mask` through `0x149f1e`, then return to the caller.
@@ -549,10 +551,7 @@ pub fn install(
         .is_some_and(|m| !m.rows(video_screen::VOICE_LIST).is_empty());
     let with_pause = model
         .as_ref()
-        .is_some_and(|m| !m.rows(List::Pause).is_empty());
-    // Whether each pause menu's row hooks are on the plan: its list grows
-    // only then, so the original never sees a row it does not know.
-    let pause_on = Arc::new((AtomicBool::new(false), AtomicBool::new(false)));
+        .is_some_and(|m| !m.rows(List::GameSettings).is_empty());
     let with_custom_games = custom_games::row_enabled();
     let with_skulls = model
         .as_ref()
@@ -582,6 +581,11 @@ pub fn install(
     });
     let store = Arc::clone(model.store());
     let speaker_on = with_speaker.then(|| store.handle::<bool>(PAD_SPEAKER.key));
+    // Our rows at the end of the pause menu's Settings (crate::pause_menu),
+    // fixed now: the hooks run with guest memory held.
+    let pause_rows = if with_pause { crate::pause_menu::settings_rows(&model) } else { Vec::new() };
+    // The Settings dialog's hooks serve the speaker row, ours, or both.
+    let with_small = with_speaker || !pause_rows.is_empty();
     let fov = with_fov.then(|| store.handle::<u32>(FOV.key));
     let extra_rows =
         model.count(List::Controls, speaker_row::VANILLA_ROWS) - speaker_row::VANILLA_ROWS;
@@ -617,7 +621,9 @@ pub fn install(
             live = (
                 alloc,
                 alloc + custom_games::TAG_SPACE,
-                alloc + custom_games::TAG_SPACE + LIVE_ITEM_SLOTS * speaker_row::ITEM_SIZE,
+                alloc
+                    + custom_games::TAG_SPACE
+                    + LIVE_ITEM_SLOTS * LIVE_MAX_EXTRA * speaker_row::ITEM_SIZE,
             );
             alloc = live.2 + 0x100;
         }
@@ -654,6 +660,7 @@ pub fn install(
         custom_games::BROWSER_EVENT,
         custom_games::BROWSER_BACK_LOADER,
         custom_games::LIVE_MENU_LOADER,
+        custom_games::LIST_LAYOUT,
         speaker_row::ADD_ITEMS,
         PANE_SET,
     ];
@@ -664,7 +671,7 @@ pub fn install(
     let wanted: Vec<u32> = shared_hooks
         .into_iter()
         .chain(layout_hooks.into_iter().filter(|_| layouts))
-        .chain(speaker_hooks.into_iter().filter(|_| with_speaker))
+        .chain(speaker_hooks.into_iter().filter(|_| with_small))
         .chain(fov_hooks.into_iter().filter(|_| with_fov))
         .chain(video_hooks.into_iter().filter(|_| with_video))
         .chain(text_hooks.into_iter().filter(|_| layouts))
@@ -698,7 +705,7 @@ pub fn install(
             let grew_layouts = AtomicBool::new(false);
             let grew_controls = AtomicBool::new(false);
             let model = Arc::clone(&model);
-            let pause_on = Arc::clone(&pause_on);
+            let grow_pause = !pause_rows.is_empty();
             d.register_override(LIST_DATA_NEW, "layouts:list", move |cpu, ctx, _| {
                 announce(&seen, "layouts: list constructor");
                 let (n, name) = {
@@ -711,16 +718,9 @@ pub fn install(
                     ctx.runtime().memory().set_u8(cpu.esi + video_screen::SETTINGS_THIRD_ITEM, 1)?;
                 }
                 let n = if with_custom_games { custom_games::list_count(name, n) } else { n };
-                // The pause menus get our rows when their hooks are on.
-                let n = match name {
-                    crate::pause_menu::PAUSE_LIST_NAME if pause_on.0.load(Ordering::SeqCst) => {
-                        crate::pause_menu::list_count(&model, name, n)
-                    }
-                    crate::pause_menu::MP_LIST_NAME if pause_on.1.load(Ordering::SeqCst) => {
-                        crate::pause_menu::list_count(&model, name, n)
-                    }
-                    _ => n,
-                };
+                // The pause menu's Settings gets our rows when its hooks
+                // are on.
+                let n = if grow_pause { crate::pause_menu::list_count(&model, name, n) } else { n };
                 // The variant editor's categories get the multiplayer
                 // Skulls row and the More Options row.
                 let n = crate::variant_page::variant_count(
@@ -907,7 +907,10 @@ pub fn install(
                 let odd = Arc::clone(&odd);
                 let copied = Arc::clone(&copied);
                 call_then(cpu, ctx, sh, move |cpu, ctx| {
-                    if cpu.eax == 0 {
+                    // A dialog class of ours is served its copy even when
+                    // the lookup found nothing (in a game, where the
+                    // Controls tag isn't).
+                    if cpu.eax == 0 && !ours {
                         return Ok(());
                     }
                     let mut mem = ctx.runtime().memory();
@@ -934,8 +937,10 @@ pub fn install(
                         match custom_games::extend_tag(&mut *mem, cpu.eax, live.0) {
                             Some(true) => {
                                 LIVE_TAG.store(cpu.eax, Ordering::SeqCst);
-                                let panes = custom_games::extended_panes(custom_games::coop_row_enabled());
-                                eprintln!("custom games: xbox live menu tag has {panes} panes and room for 5 rows");
+                                let coop = custom_games::coop_row_enabled();
+                                let panes = custom_games::extended_panes(coop);
+                                let rows = custom_games::VANILLA_ITEMS + custom_games::extra_items(coop);
+                                eprintln!("custom games: xbox live menu tag has {panes} panes and shows {rows} rows");
                             }
                             Some(false) => eprintln!("custom games: the xbox live menu tag is not the retail one; left alone"),
                             None => eprintln!("custom games: could not extend the xbox live menu tag"),
@@ -1034,10 +1039,14 @@ pub fn install(
                         };
                         (0..extra_rows).map(|i| slot + i * speaker_row::ITEM_SIZE).collect()
                     } else if with_custom_games && vtable == custom_games::HANDLER_VTABLE {
+                        // One item widget per row of ours, so all six rows
+                        // show with no scroll bar.
+                        let n = custom_games::extra_items(custom_games::coop_row_enabled()).min(LIVE_MAX_EXTRA);
                         let mut g = live_slots.lock().unwrap_or_else(|e| e.into_inner());
                         let (table, next) = &mut *g;
-                        let size = LIVE_ITEM_SLOTS * speaker_row::ITEM_SIZE;
-                        vec![speaker_row::extra_slot(table, next, handler, live.1, size, 1)]
+                        let size = LIVE_ITEM_SLOTS * LIVE_MAX_EXTRA * speaker_row::ITEM_SIZE;
+                        let slot = speaker_row::extra_slot(table, next, handler, live.1, size, n);
+                        (0..n).map(|i| slot + i * speaker_row::ITEM_SIZE).collect()
                     } else {
                         let ours = crate::list_class::extra_items(handler, vtable);
                         if ours.is_empty() {
@@ -1055,41 +1064,46 @@ pub fn install(
                 })
             });
         }
-        // The smaller Controls screen: a seventh datum after the constructor.
-        if let (Some(o), true) = (originals.remove(&speaker_row::SMALL_CTOR), with_speaker) {
+        // The smaller Controls screen (the pause menu's Settings): after the
+        // constructor, the speaker's datum (value 6) and one per row of ours
+        // (crate::pause_menu), at the end.
+        if let (Some(o), true) = (originals.remove(&speaker_row::SMALL_CTOR), with_small) {
             let sh = alias(d, &mut next_shadow, &o, speaker_row::SMALL_CTOR);
             let seen = AtomicBool::new(false);
+            let values: Vec<u16> = with_speaker
+                .then_some(speaker_row::SMALL_VALUE)
+                .into_iter()
+                .chain(pause_rows.iter().map(|r| r.value))
+                .collect();
             d.register_override(speaker_row::SMALL_CTOR, "speaker:small-ctor", move |cpu, ctx, _| {
-                announce(&seen, "speaker row: small controls built");
+                announce(&seen, "small controls built");
                 let this = cpu.esi;
                 let rt = Arc::clone(ctx.runtime());
                 let mut mem = rt.memory();
                 let ret_pc = mem.u32(cpu.esp)?;
                 cpu.esp = cpu.esp.wrapping_add(4);
+                let values = values.clone();
                 ctx.call_guest(cpu, &mut mem, sh, move |cpu, ctx| {
-                    let rt = Arc::clone(ctx.runtime());
-                    let mut mem = rt.memory();
-                    let array = mem.u32(this + 0x70)?;
-                    cpu.edx = array;
-                    ctx.call_guest(cpu, &mut mem, speaker_row::DATUM_NEW, move |cpu, ctx| {
-                        let handle = cpu.eax;
-                        if !speaker_row::set_datum_value(&mut *ctx.runtime().memory(), array, handle, speaker_row::SMALL_VALUE) {
-                            eprintln!("speaker row: no room for the small controls row");
-                        }
-                        cpu.eax = this;
-                        Ok(TransferAbi::ret(ret_pc))
-                    })
+                    let array = ctx.runtime().memory().u32(this + 0x70)?;
+                    add_small_datums(cpu, ctx, array, this, values, ret_pc)
                 })
             });
         }
-        if let (Some(o), Some(s)) = (originals.remove(&speaker_row::SMALL_ROW_TEXT), speaker_on.clone()) {
+        if let (Some(o), true) = (originals.remove(&speaker_row::SMALL_ROW_TEXT), with_small) {
             let seen = AtomicBool::new(false);
+            let (s, rows) = (speaker_on.clone(), pause_rows.clone());
             d.register_override(speaker_row::SMALL_ROW_TEXT, "speaker:small-row-text", move |cpu, ctx, _| {
-                let on = s.get();
+                let on = s.as_ref().map(|s| s.get());
                 let rt = Arc::clone(ctx.runtime());
                 let mut mem = rt.memory();
-                if let Some(text) = speaker_row::small_row_text(&*mem, cpu.ecx, cpu.esp, on) {
-                    announce(&seen, "speaker row: small row text");
+                let text = on
+                    .and_then(|on| speaker_row::small_row_text(&*mem, cpu.ecx, cpu.esp, on))
+                    .or_else(|| {
+                        crate::pause_menu::text_row(&*mem, cpu.ecx, cpu.esp, &rows)
+                            .map(|r| (speaker_row::LABEL_TEXT_INDEX, r.label))
+                    });
+                if let Some(text) = text {
+                    announce(&seen, "small controls: row text of ours");
                     let item = mem.u32(cpu.esp + 4)?;
                     return row_texts(cpu, ctx, &mut mem, item, vec![text]);
                 }
@@ -1097,12 +1111,19 @@ pub fn install(
                 Ok(o.invoke(cpu, ctx, speaker_row::SMALL_ROW_TEXT))
             });
         }
-        if let (Some(o), true) = (originals.remove(&speaker_row::SMALL_ROW_CHOSEN), with_speaker) {
+        if let (Some(o), true) = (originals.remove(&speaker_row::SMALL_ROW_CHOSEN), with_small) {
             let store = Arc::clone(&store);
             let seen = AtomicBool::new(false);
+            let rows = pause_rows.clone();
             d.register_override(speaker_row::SMALL_ROW_CHOSEN, "speaker:small-row-chosen", move |cpu, ctx, _| {
-                let ours = speaker_row::small_is_ours(&*ctx.runtime().memory(), cpu.ecx, cpu.esp);
-                if ours {
+                let (speaker, ours) = {
+                    let mem = ctx.runtime().memory();
+                    (
+                        with_speaker && speaker_row::small_is_ours(&*mem, cpu.ecx, cpu.esp),
+                        crate::pause_menu::chosen_row(&*mem, cpu.ecx, cpu.esp, &rows),
+                    )
+                };
+                if speaker {
                     announce(&seen, "speaker row: small row chosen");
                     // Through the store: its change callback applies the
                     // speaker (guest memory is not held here).
@@ -1111,6 +1132,9 @@ pub fn install(
                         Err(e) => eprintln!("pad speaker: {e}"),
                     }
                     return ctx.runtime().memory().ret(cpu, 8);
+                }
+                if let Some(row) = ours {
+                    return open_from_small(cpu, ctx, row);
                 }
                 Ok(o.invoke(cpu, ctx, speaker_row::SMALL_ROW_CHOSEN))
             });
@@ -1149,13 +1173,51 @@ pub fn install(
             d.register_override(custom_games::ROW_TEXT, "custom-games:row-text", move |cpu, ctx, _| {
                 let rt = Arc::clone(ctx.runtime());
                 let mut mem = rt.memory();
-                let Some(id) = video_screen::text_row(&*mem, cpu.esp).and_then(custom_games::row_text_id) else {
+                let row = video_screen::text_row(&*mem, cpu.esp);
+                let Some(id) = row.and_then(custom_games::row_text_id) else {
                     drop(mem);
                     return Ok(o.invoke(cpu, ctx, custom_games::ROW_TEXT));
                 };
                 announce(&seen, "custom games: row text");
+                // The Mods row drawn: its "N new" wants a fresh list (the
+                // reader asks at most every few seconds; nothing waits).
+                if row.map(custom_games::row_kind) == Some(custom_games::Row::Download)
+                    && custom_games::mods_row_enabled()
+                    && let Some(repo) = crate::mods_screen::repo()
+                {
+                    repo.want_list();
+                }
                 let item = mem.u32(cpu.esp + 4)?;
                 row_texts(cpu, ctx, &mut mem, item, vec![(0, id)])
+            });
+        }
+        // The Live menu's rows, five or six, closer together than the skin's
+        // item height so they fit where retail's four do: the layout, then
+        // each row moved up to the pitch (`custom_games::repitch`). Every
+        // other list goes straight to the original.
+        if let Some(o) = originals.remove(&custom_games::LIST_LAYOUT) {
+            let sh = alias(d, &mut next_shadow, &o, custom_games::LIST_LAYOUT);
+            let told = Arc::new(AtomicBool::new(false));
+            d.register_override(custom_games::LIST_LAYOUT, "custom-games:row-pitch", move |cpu, ctx, _| {
+                let handler = cpu.esi;
+                let live = ctx.runtime().memory().u32(handler).ok() == Some(custom_games::HANDLER_VTABLE);
+                if !live {
+                    return Ok(o.invoke(cpu, ctx, custom_games::LIST_LAYOUT));
+                }
+                let told = Arc::clone(&told);
+                call_then(cpu, ctx, sh, move |_, ctx| {
+                    let mut mem = ctx.runtime().memory();
+                    let rows = speaker_row::children(&*mem, handler).map_or(0, |c| c.len() as u32);
+                    let pitch = custom_games::pitch(rows);
+                    match custom_games::repitch(&mut *mem, handler, custom_games::HANDLER_VTABLE, pitch) {
+                        Some(n) if n > 0 && !told.swap(true, Ordering::Relaxed) => {
+                            eprintln!("custom games: xbox live menu rows {pitch} apart ({rows} rows, {n} moved)")
+                        }
+                        None => eprintln!("custom games: the xbox live menu's rows could not be moved"),
+                        _ => {}
+                    }
+                    Ok(())
+                })
             });
         }
         if let Some(o) = originals.remove(&custom_games::ROW_CHOSEN) {
@@ -1183,6 +1245,14 @@ pub fn install(
                     return ctx.runtime().memory().ret(cpu, 8);
                 };
                 if kind == custom_games::Row::Download {
+                    let mods = custom_games::mods_row_enabled()
+                        .then(crate::mods_screen::repo)
+                        .flatten()
+                        .zip(crate::list_class::loader_of(crate::mods_screen::SCREEN));
+                    if let Some((repo, loader)) = mods {
+                        repo.opened();
+                        return open_screen(cpu, ctx, mask, loader, "mods: opening the mods screen");
+                    }
                     eprintln!("custom games: showing the map pack dialog");
                     return open_dialog(cpu, ctx, mask, custom_games::MAPPACK_ERROR);
                 }
@@ -1325,29 +1395,6 @@ pub fn install(
             Ok(true) => {}
             Ok(false) => eprintln!("voice screen: features.voice-screen is off"),
             Err(e) => eprintln!("voice screen: {e}"),
-        }
-    }
-    // Video and Voice on the pause menus (crate::pause_menu): the
-    // campaign menu's rows by index, the multiplayer menu's by action.
-    if with_pause {
-        let rows = crate::retail_rows::Extension {
-            id: crate::pause_menu::FEATURE,
-            title: "Our rows on the campaign pause menu",
-            list: List::Pause,
-            text: &feature::points::PAUSE_ROW_TEXT,
-            chosen: &feature::points::PAUSE_ROW_CHOSEN,
-            label_only: true,
-            model: Arc::clone(&model),
-        };
-        match registry.add(&rows) {
-            Ok(on) => pause_on.0.store(on, Ordering::SeqCst),
-            Err(e) => eprintln!("pause menu: {e}"),
-        }
-        match registry.add(&crate::pause_menu::MpPauseRows {
-            model: Arc::clone(&model),
-        }) {
-            Ok(on) => pause_on.1.store(on, Ordering::SeqCst),
-            Err(e) => eprintln!("pause menu: {e}"),
         }
     }
     // The Skulls page: our own list class, opened after the difficulty when
@@ -1542,6 +1589,67 @@ fn alias(
 }
 
 type Finish = Box<dyn FnOnce(&mut CpuAbi) -> Result<TransferAbi, GuestFault> + Send>;
+
+/// The pause menu's Settings: adds a datum with each of `values` to the
+/// rows' array, one guest call each, then returns from the constructor
+/// (EAX the list) to `ret_pc`.
+fn add_small_datums(
+    cpu: &mut CpuAbi,
+    ctx: &mut ExecCtx,
+    array: u32,
+    this: u32,
+    mut values: Vec<u16>,
+    ret_pc: u32,
+) -> Result<TransferAbi, GuestFault> {
+    if values.is_empty() {
+        cpu.eax = this;
+        return Ok(TransferAbi::ret(ret_pc));
+    }
+    let value = values.remove(0);
+    let rt = Arc::clone(ctx.runtime());
+    let mut mem = rt.memory();
+    cpu.edx = array;
+    ctx.call_guest(cpu, &mut mem, speaker_row::DATUM_NEW, move |cpu, ctx| {
+        let handle = cpu.eax;
+        if !speaker_row::set_datum_value(&mut *ctx.runtime().memory(), array, handle, value) {
+            eprintln!("small controls: no room for the row with value {value}");
+        }
+        add_small_datums(cpu, ctx, array, this, values, ret_pc)
+    })
+}
+
+/// A press on our row of the pause menu's Settings: opens its screen on
+/// the Settings screen's own window and slot (the request on the stack,
+/// handed to the class's loader), then returns as the row chosen does
+/// (`ret 8`).
+fn open_from_small(
+    cpu: &mut CpuAbi,
+    ctx: &mut ExecCtx,
+    row: crate::pause_menu::SettingsRow,
+) -> Result<TransferAbi, GuestFault> {
+    let rt = Arc::clone(ctx.runtime());
+    let mut mem = rt.memory();
+    let loader = crate::list_class::loader_of(row.screen);
+    let request = loader.and_then(|l| crate::pause_menu::open_request(&*mem, cpu.ecx, cpu.esp, l));
+    let (Some(loader), Some(request)) = (loader, request) else {
+        eprintln!("pause menu: {} not opened (its class is off, or no player or stack)", row.screen);
+        return mem.ret(cpu, 8);
+    };
+    eprintln!("pause menu: opening {} from Settings", row.screen);
+    let ret_pc = mem.u32(cpu.esp)?;
+    // Pop the return and the two arguments; the request below the stack.
+    cpu.esp = cpu.esp.wrapping_add(12);
+    let saved = cpu.esp;
+    cpu.esp = cpu.esp.wrapping_sub(0x20);
+    let at = cpu.esp;
+    mem.write(at, request)?;
+    cpu.esp = cpu.esp.wrapping_sub(4);
+    mem.set_u32(cpu.esp, at)?;
+    ctx.call_guest(cpu, &mut mem, loader, move |cpu, _| {
+        cpu.esp = saved;
+        Ok(TransferAbi::ret(ret_pc))
+    })
+}
 
 /// In place of a row text function (`ret 8`, item widget first): set each
 /// `(text index, string id)` of the item by the same two calls the game

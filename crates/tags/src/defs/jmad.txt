@@ -35,7 +35,7 @@ group jmad 0xbc align 4
     0xc unknown 0x4 seen=many
     0x10 enum8 animation_type values=base|overlay|replacement -- E 0 and 1 distinguished by the engine; 2 S
     0x11 u8 frame_info_type -- E passed to the movement decoder, 0..3
-    0x12 unknown 0x1 seen=many
+    0x12 unknown 0x1 seen=many -- E i8 blend screen index into +0x24, -1 none (0x001daf30)
     0x13 u8 node_count -- E
     0x14 i16 frame_count -- E valid frames 0..frame_count
     0x16 u16 flags -- E 0x10: data lives in a cache resource

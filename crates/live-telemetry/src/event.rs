@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use live_proto::game::{Frame, ObjectKind, PlayerScore, TeamScore, Winner};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -65,6 +63,13 @@ pub struct PlayerState {
     /// The local player slot (0..3) this player plays from, or `None` for a
     /// remote player.
     pub local_user: Option<u8>,
+    /// The controller port (0..3) a local player plays from (player
+    /// `+0x24`), or `None` for a remote player. A Clanker on a local slot
+    /// is known by its port (docs/game/bots.md §4.1).
+    pub controller: Option<u8>,
+    /// The player's machine id (player `+0x14`): a phantom bot's is its
+    /// own made-up one (docs/game/bots.md §5.1).
+    pub machine: [u8; 6],
     pub unit: u32,
     pub stats: PlayerStats,
 }
@@ -105,6 +110,17 @@ pub struct ObjectState {
     pub team: Option<i16>,
     /// Movement and inventory state for `stance` and `actions`.
     pub motion: Motion,
+    /// The velocity of what `pos` is (the vehicle's, or the mount's, when
+    /// riding; else the unit's own), world units a second (body `+0x88`);
+    /// `None` when its read faulted or is not finite.
+    pub velocity: Option<[f64; 3]>,
+    /// The seat of `vehicle` the unit is in (`+0x1fc`); `None` when -1 or
+    /// not read.
+    pub seat: Option<u16>,
+    /// Body and shield vitality (`+0xec`, `+0xf0`; 1.0 full), both 0 once
+    /// the body is depleted, as `object_get_health` reads them; `None` when
+    /// not read or not finite.
+    pub vitality: Option<(f64, f64)>,
 }
 
 /// What a unit's stance and one-shot actions are worked out from (each
@@ -131,6 +147,26 @@ pub struct Motion {
     pub biped_flags: Option<u16>,
     /// Bipeds only: airborne tick count (`layout::BIPED_AIRBORNE_TICKS`).
     pub airborne_ticks: Option<i8>,
+    /// The animation the unit plays.
+    pub animation: Option<Animation>,
+    /// Bipeds only: hitbox offset counter (`layout::BIPED_HITBOX_OFFSET`).
+    pub hitbox_offset: Option<i8>,
+    /// The first Havok rigid body's world position and linear velocity
+    /// (`layout::BODY_PHYSICS`), when the object has one.
+    pub havok: Option<([f64; 3], [f64; 3])>,
+}
+
+/// An animation manager's first channel, as the guest holds it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Animation {
+    /// The channel's `jmad` tag datum.
+    pub graph: u32,
+    /// -1 the graph itself, else a position in its inheritance list.
+    pub inherited: i16,
+    /// The animation's index in that graph.
+    pub index: i16,
+    /// The frame, 0 to the frame count minus one.
+    pub frame: f32,
 }
 
 /// A vehicle anywhere in the world.
@@ -176,6 +212,8 @@ pub struct HitRecord {
     pub pos: Option<[f64; 3]>,
     pub body: f32,
     pub shield: f32,
+    /// The engine tick the hook saw it on, when it could be read.
+    pub tick: Option<u64>,
 }
 
 /// Everything the once-per-frame object table scan finds.
@@ -257,6 +295,87 @@ impl GameInfo {
     }
 }
 
+/// Shots by weapon object datum, in datum order (as a `BTreeMap` iterates):
+/// a sorted list, so clearing it keeps its room and the game thread's
+/// weapon-fire hook does not allocate once it has grown.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Shots(Vec<(u32, u32)>);
+
+impl Shots {
+    /// Room the first shot reserves: more weapons than fire in one tick.
+    const ROOM: usize = 64;
+
+    pub fn get(&self, weapon: &u32) -> Option<&u32> {
+        self.find(*weapon).ok().map(|i| &self.0[i].1)
+    }
+
+    pub fn contains_key(&self, weapon: &u32) -> bool {
+        self.find(*weapon).is_ok()
+    }
+
+    /// Adds `n` shots of `weapon` (saturating).
+    pub fn add(&mut self, weapon: u32, n: u32) {
+        match self.find(weapon) {
+            Ok(i) => self.0[i].1 = self.0[i].1.saturating_add(n),
+            Err(i) => {
+                if self.0.capacity() == 0 {
+                    self.0.reserve(Self::ROOM);
+                }
+                self.0.insert(i, (weapon, n));
+            }
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Empties it, keeping its room.
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&u32, &u32)> {
+        self.0.iter().map(|(w, n)| (w, n))
+    }
+
+    fn find(&self, weapon: u32) -> Result<usize, usize> {
+        self.0.binary_search_by_key(&weapon, |(w, _)| *w)
+    }
+}
+
+impl<'a> IntoIterator for &'a Shots {
+    type Item = (&'a u32, &'a u32);
+    type IntoIter =
+        std::iter::Map<std::slice::Iter<'a, (u32, u32)>, fn(&'a (u32, u32)) -> (&'a u32, &'a u32)>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        let pair: fn(&'a (u32, u32)) -> (&'a u32, &'a u32) = |(w, n)| (w, n);
+        self.0.iter().map(pair)
+    }
+}
+
+/// Later counts of the same weapon add up.
+impl FromIterator<(u32, u32)> for Shots {
+    fn from_iter<I: IntoIterator<Item = (u32, u32)>>(iter: I) -> Self {
+        let mut shots = Shots::default();
+        for (weapon, n) in iter {
+            shots.add(weapon, n);
+        }
+        shots
+    }
+}
+
+impl<const N: usize> From<[(u32, u32); N]> for Shots {
+    fn from(shots: [(u32, u32); N]) -> Self {
+        shots.into_iter().collect()
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Snapshot {
     pub tick: u64,
@@ -266,7 +385,7 @@ pub struct Snapshot {
     pub objects: Vec<Option<ObjectState>>,
     /// Shots fired since the previous snapshot, by weapon object datum
     /// (from the weapon-fire hook; empty when it is not installed).
-    pub shots: BTreeMap<u32, u32>,
+    pub shots: Shots,
     /// AI-controlled bipeds; read on frame ticks only, empty otherwise.
     pub actors: Vec<ActorState>,
     /// Every vehicle; frame ticks only.
@@ -281,6 +400,9 @@ pub struct Snapshot {
     pub bsp: Option<u32>,
     /// Damage reports since the previous snapshot.
     pub hits: Vec<HitRecord>,
+    /// A HaloScript cinematic is playing (`memory::cinematic`): frames
+    /// carry no entities, and kills, hits and shots are not counted.
+    pub cinematic: bool,
 }
 
 impl Snapshot {

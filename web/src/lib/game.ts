@@ -15,7 +15,7 @@ export function colourFor(g: Pick<GameState, "team_play">, team: number, index: 
 
 export function rosterFor(g: GameState): Map<number, RosterEntry> {
   const m = new Map<number, RosterEntry>();
-  for (const p of Object.values(g.players)) m.set(p.index, { name: p.name, colour: colourFor(g, p.team, p.index) });
+  for (const p of Object.values(g.players)) m.set(p.index, { name: p.name, colour: colourFor(g, p.team, p.index), ...(p.bot ? { bot: true } : {}) });
   return m;
 }
 
@@ -34,6 +34,7 @@ export function liveFrameSource(gameId: string, roster: () => Map<number, Roster
       bsp: buf.sampleBsp(now),
       machines: buf.sampleMachines(now),
       objects: buf.sampleObjects(now),
+      cinematic: buf.cinematic(now),
       markers: buf.liveMarkers(now, MARKER_TTL_MS).map((m) => ({
         x: m.x, y: m.y, z: m.z,
         alpha: 1 - (now - m.bornAt) / MARKER_TTL_MS,

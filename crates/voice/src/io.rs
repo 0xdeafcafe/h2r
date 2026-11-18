@@ -12,13 +12,14 @@ use std::{
 pub type Frame = [i16; HOST_FRAME];
 
 pub trait Capture: Send {
-    /// The next 20 ms, after input volume. False when nothing was captured
+    /// The next 20 ms, as captured (the media objects apply the input
+    /// volume). False when nothing was captured
     /// (the frame is then silence).
     fn read(&mut self, frame: &mut Frame) -> bool;
 }
 
 pub trait Playback: Send {
-    /// One mixed 20 ms frame, before output volume.
+    /// One mixed 20 ms frame, after the output volume.
     fn write(&mut self, frame: &Frame);
 }
 

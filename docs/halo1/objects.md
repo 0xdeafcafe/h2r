@@ -269,6 +269,43 @@ definitions"). The vehicle rows described below (warthog, ghost,
 scorpion, banshee, pelican, dropship, wraith, gun turret, lifepods) and
 the lifepods' quiet stand-in are history, kept for the record.
 
+**Where a vehicle meets the ground (converter version 63).** Three
+things the engine reads at a vehicle's base, proved in
+`h1objects/tests/vehicle_ground_disc.rs`:
+
+- **Bounding sphere.** Halo 1 centres every vehicle's sphere on its
+  origin (`obje +0x08` zero on all of them), and its origin is where the
+  wheels or hull touch the ground: every Blood Gulch vehicle placement
+  is 1 mm above the floor. Halo 2 lights an object from that centre
+  (E: `0x000d1850` passes `obj +0x30` to `0x000d2a50`, which casts from
+  0.01 above it straight down 10 units, `0x004406e4` and `0x0045dc70`,
+  and reads the lightmap where the ray meets the structure) and finds
+  its cluster from it, then from the origin (`0x000b8600`: `obj +0x40`,
+  then `obj +0x64`; with neither in a cluster the object is outside the
+  map, `obj +4` bit 18, and the player's action search `0x00151110`,
+  which walks the clusters round the player, never offers it). A centre
+  a few millimetres under the ground leaves the vehicle unlit and,
+  outside the map, unboardable. The retail warthog's centre is 0.29
+  above its origin, inside the body; the ghost, banshee, scorpion and
+  wraith keep theirs on the origin (the wraith's 3 cm under its model),
+  so retail holds no general rule, and a centre on the contact point is
+  a centimetre of sinking from dark. A rebuilt vehicle's sphere is its model's: the middle of the box
+  round every vertex, reaching the farthest one
+  (`rebuild::model_sphere`).
+- **Entry facing.** `0x000c9040` admits a rider only when the entry
+  marker's forward points back at the rider's eye within the seat's
+  `+0x9c`. Retail entry markers face out of their door (the warthog's
+  `driver_enter`: (0.15, 0.85, 0.5)); Halo 1's `driver enter` faces the
+  vehicle's forward, so with the warthog role's 70 degrees a rider square
+  beside the door was refused; only one ahead of it, looking back, got in. Rebuilt seats hold pi there
+  (`rebuild::SEAT_ENTRY_FACING`), as the retail turrets do.
+- **Spawn height.** The ghost's hull reaches 0.143 below its origin, so
+  at Halo 1's placement it began 0.14 into the floor, where Halo 1's
+  hover mass points lifted it and Halo 2 left it. The Halo 1 sandbox
+  raises each vehicle spawn by how far its model reaches below its
+  origin (`h1convert::convert::halo1::vehicle_depth`); the Halo 2
+  sandbox's retail vehicles keep Halo 1's spot (not checked).
+
 Each object is built on the **retail Halo 2 tag that plays the same role**
 in the base map (`convert::TEMPLATES`): assault rifle on the SMG, pistol
 on the magnum, plasma rifle, needler, grenades on Halo 2's grenades,
@@ -460,6 +497,34 @@ report line. V: `tests/sandbox_disc.rs`
 (`every_halo1_weapon_is_held_by_the_halo1_player_graph`): on every
 multiplayer map, every Halo 1 hand weapon of the Halo 1 sandbox names a
 class and type the converted player biped's graph holds in mode `combat`.
+
+**Holding is finding** (converter version 64). The graph lookup
+`0x001db170` finds the mode, class, type and action each by binary
+search over signed string IDs (`0x001dd560`; the type falls back to
+`any`), so a graph holds a weapon only if every level of its tree is in
+string-ID order. Through version 63 the converted trees were in name
+order, which hides names from the search: on Blood Gulch at version 60
+the cyborg's graph found `idle` and `throw_grenade` for none of the eight
+Halo 1 weapons (a scratch probe over the imported map, the search as
+below), and all 13 converted graphs (the cyborg's, the eight first-person
+graphs, the vehicles') were out of order while all 59 retail ones were in
+order. So the cyborg refused every weapon:
+the Halo 1 sandbox's "no starting weapon", "can't pick up weapons" and,
+with nothing held, no first-person arms or weapon. The test held only "is in the tree".
+Now the trees are laid out by string ID when the map is built
+([models.md](models.md), `jmad`), and the disc tests look each weapon up
+as the engine does: `idle` under `combat`, its class and its type, and
+`idle` in its first-person graph, and `throw_grenade` under `combat`,
+its class and its type. Halo 1 has no class fallback for the throw: it
+finds a unit's animations through slot tables (per unit, weapon class
+and type, a list of animation indices), and on the cyborg every class's
+throw slot names `stand rifle throw-grenade` (V: Blood Gulch's cyborg
+`antr`, every unit and class). The converter carries those slots over:
+a slot naming another class's animation becomes an action of the
+borrowing class naming the same animation (`jmad::borrow_slots`), so the
+pistol, plasma pistol, needler and rocket launcher throw with the rifle's
+animation, as in Halo 1. The disc test fails on any weapon of any
+multiplayer map whose path finds no throw.
 
 ### Model materials (`hlmt +0x58`, **Built**, converter version 54)
 

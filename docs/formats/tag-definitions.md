@@ -715,8 +715,19 @@ cells, on the model node of that name (as devices,
 `PhysicsKind::Biped`), with the rigid body words `+0x1a` 2 and `+0x1e` 1
 every rigid body of every retail biped physics model on the base holds
 (`rebuild::BIPED_BODY`, 80 bodies). Retail's are ragdolls: ten bodies
-of pills and a box, with node pairs (`phmo +0x30`) the built model does
-not have. A biped Halo 1 gives no collision (the a10 pilot, d40's
+of pills and a box joined by node edges (`phmo +0x30`), four limited
+hinges (`+0xe8`) and five ragdoll joints (`+0xb8`)
+([collision.md](collision.md), "Constraints"). A built biped's bodies are
+joined the same way (`h1objects::ragdoll`, `convert::biped_ragdoll`):
+each body to the body of its nearest ancestor node, knees and elbows as
+limited hinges, every other joint (hips, shoulders, head, spine, feet,
+hands) a ragdoll joint, frames from Halo 1's rest pose (the child's frame
+on its origin, the parent's the same frame carried by the child's rest
+transform, as retail's), limits our own inside retail's range for each
+joint, one edge per constraint with friction 0.25. A skeleton that does
+not map (under three bodies, more than one body with no ancestor body, or
+no hip and knee by name) keeps its unjoined bodies and the report says
+so. A biped Halo 1 gives no collision (the a10 pilot, d40's
 cinematic Johnson) gets none, as retail's cinematic characters (miranda,
 regret_holo) have none; the template path borrowed the template's.
 
@@ -1427,8 +1438,7 @@ read from the engine yet.
   cells since version 43. Open: whether a device's bodies need retail's
   `block_30` node pairs, the shape header's material index table, and
   the rigid body words at `+0x18`/`+0x1c`.
-- **Rebuilt bipeds**: ragdoll node pairs for the built physics models,
-  Halo 1's body and shield vitality in the `hlmt` damage block (the
+- **Rebuilt bipeds**: Halo 1's body and shield vitality in the `hlmt` damage block (the
   counterpart's now), the ground-physics words after `bipd +0x29c` (the
   role's now), and what `BIPED_WORDS` mean.
 - **More converter paths**: the other objects (templated vehicles), shaders (`shad` with its postprocess mirrors kept consistent),

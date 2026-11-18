@@ -9,6 +9,9 @@ Phase 5 ([plan and what was built](#phase-5-testing-in-the-lightest-way-plan)):
 `load.timeline`, `h2 testmap` and `h2 agent run`.
 `sim.*` (simulated players, host writes, expectations, lobby steps) built
 over a bots stand-in ([below](#sim-simulated-players-and-direct-state)).
+`trace.*` and `flight.*` (per-tick rows taken in the game, a flight
+recorder with input, `h2 agent flight show`) built
+([below](#tick-traces-and-the-flight-recorder)).
 Everything else on this page is design; its Rust and JSON blocks are
 sketches, not code that compiles. The front end is the `h2 agent` CLI
 only: the MCP server is dropped (decided 2026-11-17).
@@ -249,9 +252,13 @@ can point at.
   Units also carry `physics` (**Code**): crouch amount, the crouch request
   (unit flags bit 23, which stays set after release until there is room to
   stand), physics mode, the biped airborne bit (`+0x348` bit 0, likely) and
-  its tick count (`+0x399`), and the raw unit and biped flag words. Polling
+  its tick count (`+0x399`), the hitbox offset a melee lunge leaves
+  (`+0x3aa`, ticks and units; docs/game/superbounce.md), and the raw unit
+  and biped flag words. Polling
   `object player.0` on one `h2 agent -` connection and keeping one reply per
   stamped tick gives a per-tick movement trace.
+  `physics.havok_pos` and `havok_velocity` are the object's first Havok
+  body; [`havok.*`](#havok-the-physics-world) has every body and contact.
 - `world.raycast`, `world.visible {from: "camera" | player}`: what the player
   can see, for both "is this on screen" and closed-loop movement.
 - `world.overhead {bsp, size}` renders a top-down map image with numbered
@@ -1152,6 +1159,84 @@ is the local embedded server (`h2 play --live-local`,
 `live_server::start_embedded`), which issues bot identities and accepts
 `bot: true` only for xuids it issued. Server-side bot accounts are
 bed6c8dc's. Never point a sim run at live.forbes.red.
+
+## `havok`: the physics world
+
+Built 2026-11-18, tested over synthetic guest memory; not run against the
+game. Layout and evidence: [havok-runtime.md](../engine/havok-runtime.md).
+Game methods (`agent::havok::install`), answered at a tick boundary.
+
+| Method | Access | What |
+|---|---|---|
+| `havok.bodies` | read | `{near?, radius?, limit?}`: rigid bodies: `entity` (address, the key contacts use), `state` (`active`, `inactive`, `fixed`), `object` (agent id) and `datum`, `pos`, `velocity`, `angular_velocity`, `inv_mass`, `mass`, `friction`, `restitution`. `near` (an object id) keeps bodies within `radius` (default 5) of its body, nearest first, with `distance`; `limit` default 64 |
+| `havok.contacts` | read | `{object?}`: contact constraints, each `a`, `b` (`entity`, `object`, `datum`, `fixed` for the level and static bodies) and `points`: `pos`, `normal` (from `b` toward `a`, **S**), `distance` (negative is penetration), `impulse` (what the solver applied on its last step), `friction`, `restitution`. With `object`, only its contacts, with it as `a` |
+
+```sh
+h2 agent havok.contacts '{"object":"player.0"}'
+h2 agent havok.bodies '{"near":"player.0","radius":3}'
+```
+
+For a superbounce, poll `havok.contacts {object: player.0}` once a tick
+on one `h2 agent -` connection next to `object player.0`: the contact
+with `b.fixed` is the level, and `impulse` over the body's `mass` is the
+velocity it gave. Which triangle a point is on is not read yet
+([havok-runtime.md](../engine/havok-runtime.md), "Open").
+
+## Tick traces and the flight recorder
+
+Polling `world.object` from outside (`h2 agent -`) drops ticks when the
+game or the client is busy. These take the rows inside the game, in the
+tick observer, before queued requests are served, so each tick gives
+exactly one row. Code: `crates/agent/src/trace.rs` (tests in
+`trace/tests.rs`), wire types and `show` in `crates/agent-proto/src/trace.rs`,
+CLI in `crates/cli/src/agent_flight.rs`.
+
+```sh
+h2 agent trace start player.0 physics,pos          # rows to traces/trace-<ms>.jsonl
+h2 agent trace stop                                # rows, bytes, first/last tick
+h2 agent flight start player.0 physics,pos,velocity 20
+h2 agent flight dump crouch-bug.jsonl              # flights/crouch-bug.jsonl
+h2 agent flight show ~/Library/Caches/h2recomp/flights/crouch-bug.jsonl \
+    --from 4100 --to 4160 --field physics.crouch --field physics.airborne --field input
+```
+
+How it behaves (**Code**, proven with a fake reader and the input tap fed
+synthetic packets; nothing here was run against the game):
+
+- **Rows.** One JSON line per tick: `{tick, ticks, map, objects: {id:
+  Object}, gone, error}`. `tick` is the stamp's game tick, `ticks` the
+  agent's count (never resets, one more each row). `objects` holds each
+  asked-for id in the world, trimmed to `fields` (`world.query`'s names;
+  `id` and `kind` always kept; all when absent). Ids not in the world that
+  tick are in `gone`; a failed world read gives `error` and still a row.
+  The world is read once a tick when either recorder runs, and not at all
+  otherwise. A paused game writes no rows; each `session.step` tick does.
+- **`trace.start {objects, fields?, path?}`.** 1 to 64 ids. Streams rows
+  to `path` (a bare file name in the cache directory's `traces/`, since
+  the socket may be unauthenticated TCP; default `traces/trace-<ms>.jsonl`; an existing file is replaced) through
+  one buffered writer, flushed every 30 rows, at `trace.stop` and at exit:
+  memory doesn't grow with length. `trace.stop` and `trace.status` give
+  `rows`, `bytes`, `first_tick`, `last_tick`, `path` and `error` (a write
+  failure ends the trace there). One trace at a time; the last one's
+  counts stay for `trace.status`.
+- **`flight.start {objects, fields?, seconds?}`.** Keeps the last
+  `seconds` (default 30, 1 to 600) × 30 rows in memory, at most 64 MiB of
+  JSON (the oldest go first). Each row also has `input`: every
+  `XInputGetState` result the game got since the last tick, taken at the
+  agent's input tap after agent steps merge in (`{port, handle, status,
+  packet, buttons, left, right, raw}`, `raw` the 18 pad bytes in hex), at
+  most 64 a tick (`input_dropped` counts the rest, as during a load).
+  Without XAPI input there is no tap and rows have no `input`.
+  `flight.dump {path?}` writes the ring (default `flights/flight-<ms>.jsonl`)
+  and keeps recording; `flight.stop` drops it; `flight.status` gives
+  `capacity`, `rows`, `bytes`, `ticks` seen and the ring's tick range.
+- **Scrub.** `h2 agent flight show <file>` reads a trace or flight file
+  without a game: whole rows, or with `--field` one line per tick of each
+  object's dotted paths (`physics.crouch`) and `input`'s reads, between
+  `--from` and `--to` game ticks. It doesn't re-simulate; replaying a
+  stretch needs machine snapshots (separate work).
+- **Access.** Read-only (no claim), answered between slices too. Files
+  are written where asked, as `input.record`'s are.
 
 ## Open decisions
 

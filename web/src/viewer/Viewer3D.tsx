@@ -42,6 +42,8 @@ export default function Viewer3D(props: Viewer3DProps) {
   let host!: HTMLDivElement;
   let scene: ViewerScene | null = null;
   const [failed, setFailed] = createSignal<string | null>(null);
+  // A cutscene: the frames hold no one; the view says so.
+  const [cutscene, setCutscene] = createSignal(false);
   const [mode, setMode] = createSignal<ViewMode>(props.mode ?? "orbit");
   const [follow, setFollow] = createSignal<number | null>(props.follow ?? null);
   const [ao, setAo] = createSignal(props.ao ?? true);
@@ -202,6 +204,7 @@ export default function Viewer3D(props: Viewer3DProps) {
       s.update(now, frame, props.roster(), props.highlight?.() ?? null, sought !== seen);
       seen = sought;
       if (!!frame.actors?.length !== hasActors()) setHasActors(!!frame.actors?.length);
+      if (!!frame.cinematic !== cutscene()) setCutscene(!!frame.cinematic);
       if ((frame.bsp ?? null) !== (level()?.active ?? null)) setLevel(s.levelInfo());
       // The opening camera, once there are players to follow.
       if (!started && frame.players.length) { started = true; if (mode() !== "orbit") pick(mode(), follow()); }
@@ -234,6 +237,7 @@ export default function Viewer3D(props: Viewer3DProps) {
       <Show when={!failed()} fallback={<p class="v3-fail">{failed()}</p>}>
         <div ref={host} class="v3-host" />
         <Show when={flyHint()}><div class="v3-fly-hint" role="status">{flyHint()}</div></Show>
+        <Show when={cutscene()}><div class="v3-cutscene" role="status">Cutscene</div></Show>
         <div class="v3-tools" role="group" aria-label="Camera">
           <button classList={{ on: mode() === "orbit" }} aria-pressed={mode() === "orbit"} onClick={() => pick("orbit")} title="Drag to orbit, scroll to zoom, right-drag to pan">Orbit</button>
           <button classList={{ on: mode() === "top" }} aria-pressed={mode() === "top"} onClick={() => pick("top")} title="Straight down, north up">Top-down</button>
@@ -245,7 +249,7 @@ export default function Viewer3D(props: Viewer3DProps) {
             onChange={(e) => { const v = e.currentTarget.value; if (v === "") pick("orbit"); else pick(mode() === "eyes" ? "eyes" : "follow", +v); }}
           >
             <option value="">Follow…</option>
-            <For each={people()}>{(p) => <option value={p.index}>{p.name}</option>}</For>
+            <For each={people()}>{(p) => <option value={p.index}>{p.bot ? `${p.name} (BOT)` : p.name}</option>}</For>
           </select>
           <button classList={{ on: mode() === "eyes" }} aria-pressed={mode() === "eyes"} onClick={toggleEyes} title="First person: through the followed player's eyes, where they aim. Key: v">Eyes</button>
           <button onClick={() => scene?.reset()} title="Back to the whole map">Reset</button>

@@ -4,7 +4,8 @@
 //! 1. ingest: packed frames through what the ingest socket does with a
 //!    binary message (`pack::records` -> `Decoder::decode` ->
 //!    `Live::ingest_frame`), every game sending at 15 Hz so each frame is
-//!    fanned out and every 15th recorded, as in a real game; and the same
+//!    fanned out and recorded in its game's frame chunk (one stored every
+//!    ten seconds of game time), as in a real game; and the same
 //!    frames back to back on one game, where all but 15 a second are
 //!    throttled.
 //! 2. events: signed batches of 1 and 32 game events through
@@ -914,9 +915,9 @@ fn main() {
         let fanout = bench_fanout(&s).await;
         let notes = "In-process, release, SQLite store (WAL, synchronous=normal) in the temp dir. \
             ingest: decode packed record + Live::ingest_frame, 64 games each at 15 Hz (every \
-            frame fanned out, one a second recorded as GameFrame); us_per_frame is the inline \
-            time of those calls (the dispatcher applying GameFrame runs in the background, not \
-            counted); throttled_path is one game back to back. events: append_game_batch, \
+            frame fanned out and added to its game's frame chunk, a chunk stored and its FrameChunk \
+            appended every 150 frames); us_per_frame is the inline time of those calls (the \
+            dispatcher applying FrameChunk runs in the background, not counted); throttled_path is one game back to back. events: append_game_batch, \
             sequential, includes waiting for the read model. fanout: loopback WebSocket readers \
             of /v1/stream (anonymous, all games, exclude=GameFrame), 8 games at 15 Hz; process \
             CPU above a no-reader run, so it includes the readers' own receive cost; top-level \

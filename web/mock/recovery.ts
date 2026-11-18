@@ -50,7 +50,7 @@ export class MockRecovery {
   }
 
   /** The account a bearer token speaks for, checked against its key. */
-  private async caller(auth: string | null, xuid: string, lxm: string): Promise<{ ok: true } | { ok: false; reply: Reply }> {
+  async caller(auth: string | null, xuid: string, lxm: string): Promise<{ ok: true } | { ok: false; reply: Reply }> {
     const raw = auth?.startsWith("Bearer ") ? auth.slice(7).trim() : "";
     const t = raw ? parseJws(raw) : null;
     const claims = t?.payload as { iss?: string; lxm?: string; aud?: string; exp?: number } | undefined;

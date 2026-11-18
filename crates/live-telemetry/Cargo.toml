@@ -11,6 +11,8 @@ feature = { path = "../feature" }
 engine = { path = "../engine", features = ["runtime-glue"] }
 live-proto.workspace = true
 map.workspace = true
+# Animation names (jmad) for frames' `anim`.
+tags.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 time = "0.3"
@@ -21,3 +23,4 @@ webpki-roots = "1"
 
 [dev-dependencies]
 runtime-test-probe = { path = "../runtime/test-probe" }
+live-server = { path = "../live-server" }

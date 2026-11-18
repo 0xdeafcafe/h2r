@@ -27,13 +27,16 @@ Per map, keyed by the map stem the art manifest already uses
 (`map/<stem>/preview`):
 
 ```
-map/<stem>/map.glb          glTF 2.0 binary: the level's render geometry
-map/<stem>/map.glb.gz       the same, gzipped (the server sends it when it can)
-map/<stem>/tex/<id>.jpg     the surface pictures map.glb names (or .png)
+map/<stem>/map.glb          glTF 2.0 binary: the level's render geometry (meshopt)
+map/<stem>/map.glb.br       the same, Brotli (and .gz, gzip): see Packing
+map/<stem>/tex/<id>.webp    the surface pictures map.glb names
 map/<stem>/views.json       the pre-drawn views and how to plot on them
-map/<stem>/views/<id>.png   top, iso-ne, iso-nw, iso-sw, iso-se
+map/<stem>/views/<id>.webp  top, iso-ne, iso-nw, iso-sw, iso-se
 map/<stem>/sky.glb          the level's sky model (when it has one)
 ```
+
+Every glb and JSON file has `.br` and `.gz` copies beside it
+([Packing](#packing)).
 
 `manifest.json` gains a `maps` object (absent when nothing was extracted):
 
@@ -53,7 +56,7 @@ entry; a single BSP of a level that could not be read is listed as
 `map/<stem>/bsp_<index>` and the level keeps its other BSPs.
 `GEOMETRY_VERSION` is 1 (`views.json` is unchanged; the web viewer checks
 it); the art's `EXTRACTOR_VERSION` (part of the cache
-key) is 19, so a disc extracted by an older build is extracted again
+key) is 22, so a disc extracted by an older build is extracted again
 (10 added the layers, the sky and `extras.name`; 12 the surface
 pictures, texture coordinates and the `scenario` node; 13 the base map
 from the shader's passes, pictures as files beside `map.glb`, the gzip
@@ -63,7 +66,10 @@ reflection tints and shaders whose compiled data another shader shares;
 17 the weather volumes and the sky light's glow; 18 turrets as parts that aim;
 19 the title and save images, `title/image` and `title/save-image`;
 20 solid shaders whose template name only contains "overlay" keep their
-textures).
+textures; 21 packing (Brotli and gzip copies, meshopt where it pays), WebP
+pictures and views, surface pictures at the disc's full size; 22 the
+bipeds' strafing, backwards and crouched movement clips, the vehicle seat
+poses `any:seat_<mode>`, the models' `seats` table and `asset.extras.lift`).
 
 ### `map.glb`
 
@@ -110,13 +116,15 @@ textures).
   (listed in `extensionsUsed`, not required: a reader without it draws
   the picture once per stored repeat). Each picture is stored once per
   bitmap however many shaders use it, as its own file beside `map.glb`:
-  the image has a `uri` (`tex/<bitmap tag id, 8 hex digits>.jpg`, `m`
+  the image has a `uri` (`tex/<bitmap tag id, 8 hex digits>.webp`, `m`
   after the id for a cut-out's alpha-kept copy), a `mimeType` and
   `extras` `width` and `height`, and no buffer view, so the geometry loads
   without them and each picture caches on its own (`tex/` is rewritten
-  with `map.glb`). JPEG (quality 80) when opaque, else PNG; at most 512 pixels a
-  side, every picture of a level halved until they total at most 6 MiB
-  (no retail level needs it). Machines and placed objects get looks the
+  with `map.glb`). WebP (lossy, quality 90; a cut-out's alpha kept
+  exactly, [Packing](#packing)) at the bitmap's full stored size (the
+  discs' largest are 1024 pixels a side; the cap is 2048), every picture of
+  a level halved until they total at most 32 MiB (no retail level needs
+  it). Machines and placed objects get looks the
   same way. Detail maps, bump maps, lightmaps and the shaders' colour
   parameters are not used.
 - **Machines.** When the scenario places machines (`mach` objects: doors,
@@ -260,8 +268,11 @@ art URL the site builds carries the manifest's `source` stamp (`?v=<first
 16 characters>`, `web/src/map/geometry.ts`); the picture and sky URLs
 keep it. The art server (`crates/live-server/src/art.rs`) answers a
 stamped request with `Cache-Control: private, max-age=31536000,
-immutable` and anything else with `no-cache`, and sends a file's `.gz`
-copy, when there is one, to a browser that takes gzip. A new extraction
+immutable` and anything else with `no-cache`, and sends a file's `.br`
+copy to a browser that takes Brotli, else its `.gz` copy to one that takes
+gzip ([Packing](#packing)). The glTF loader (`web/src/viewer/gltf.ts`)
+has meshoptimizer's decoder; the pictures get the GPU's most anisotropic
+filtering (up to 16) and mipmaps. A new extraction
 has a new stamp, so nothing stale is kept. Measured on a 10-core Mac,
 Chrome, cache off, median of five (time to the first drawn frame /
 fully textured, ms):
@@ -395,10 +406,10 @@ with the Halo 2 disc's shared maps.
   "views": [
     { "id": "top", "kind": "ortho", "width": 2048, "height": 2048,
       "world_to_pixel": [[a, b, c, d], [e, f, g, h]],
-      "file": "views/top.png", "up": "north", "cutaway": true,
+      "file": "views/top.webp", "up": "north", "cutaway": true,
       "elevation_deg": 90, "scale": 21.4, "forward": [0, 0, -1] },
     { "id": "iso-ne", "kind": "ortho", "width": 2048, "height": 1536,
-      "world_to_pixel": [[...], [...]], "file": "views/iso-ne.png",
+      "world_to_pixel": [[...], [...]], "file": "views/iso-ne.webp",
       "depth_sorted": true, "azimuth_deg": 45, "elevation_deg": 30,
       "scale": 18.2, "forward": [-0.61, -0.61, -0.5] }
   ] }
@@ -424,11 +435,106 @@ with the Halo 2 disc's shared maps.
 
 ### Pictures
 
-RGBA PNG with a transparent background, so the site can put them on its own
+RGBA WebP (lossy, quality 85, alpha kept exactly) with a transparent background, so the site can put them on its own
 backdrop. Colours are our own calm palette (light warm grey floors, slate
 walls, muted teal water and green foliage) lit by a fixed sun high in the
 north-west (hillshade convention: shadows fall to the lower right of the top
 view), the same for every view.
+
+## Packing
+
+The last step of an extraction (`crates/live-server/src/art_pack.rs`,
+`pack`) readies the art for the web, so both homes send the same bytes:
+the art server (`/art/game/`, `--share-game-art`) and the published copy
+the Worker redirects to ([live-worker.md](live-worker.md)).
+
+- **Pictures are WebP.** Surface pictures (`tex/<id>.webp`) are lossy
+  quality 90 at the disc's full stored size (they were JPEG quality 80,
+  PNG for cut-outs, at most 512 pixels a side); pre-drawn views
+  (`views/<id>.webp`) lossy quality 85 (they were barely compressed PNG,
+  1.3 MB each). A cut-out keeps its alpha exactly (a lossless alpha
+  plane) and the colour under clear pixels, so it cuts and filters as it
+  did. Every browser the app supports decodes WebP with
+  `createImageBitmap`, off the main thread. The stats site's small
+  pictures (emblems, ranks, medals, previews) stay PNG: emblems are
+  composited from their exact masks.
+- **Brotli and gzip copies.** Every glb and JSON file gets `<file>.br`
+  (quality 11, 16 MiB window) and `<file>.gz` (level 9). The art server
+  sends the `.br` copy to a browser that takes Brotli, else the `.gz` one;
+  the publish uploads the `.br` copy with `Content-Encoding: br`. Brotli is
+  decoded by the browser's network stack, before any script sees it.
+  Pictures get no copies (they are compressed already). A copy older than
+  its file (by modification time) is stale and ignored, by the server's
+  redirects and by the publish, which then uploads the plain file: whoever
+  rewrites a file after extraction (`bun run banner` rewriting
+  `manifest.json`) writes its copies again, and a copy left behind cannot
+  go out in its place.
+- **Meshopt, where it pays.** A glb's vertex and index data is compressed
+  with `EXT_meshopt_compression` (meshoptimizer's codecs, lossless, no
+  quantisation or filters; the index codec may rotate a triangle's corners,
+  keeping its winding) only when that makes its Brotli copy at least 5 %
+  smaller. On unquantised floats meshopt's byte deltas defeat Brotli's
+  matching: every level's `map.glb` came out bigger on the wire (all 59
+  levels together 120 MiB against 74 MiB as Brotli alone), so levels stay
+  plain; 10 model glbs keep it. A glb that uses it lists it in
+  `extensionsRequired`; `web/src/viewer/gltf.ts` gives every glTF loader
+  meshoptimizer's WebAssembly decoder (shipped with three.js). Quantising
+  positions, normals and texture coordinates (`KHR_mesh_quantization`) is
+  what would make meshopt pay for levels; not done yet.
+- **Content-addressed by extraction.** Published files live under
+  `art/<stamp>/`, the stamp a hash of every file's path and size, which
+  form of it is uploaded (plain, Brotli or gzip) and that form's size, and
+  the manifest: a new extraction, or any change to what would be uploaded
+  (a copy written again or gone stale), is a new set of addresses, so
+  every object is
+  `Cache-Control: public, max-age=31536000, immutable`, the manifest too.
+  The Worker's redirect to it is cacheable for five minutes (a
+  `?v=<stamp>` address for a year). The web app loads the manifest
+  through the redirect and every other file from the directory it was
+  redirected to (`web/src/lib/gameart.ts` `artBase`): no redirect per file.
+- **Coverage.** `art_pack::coverage` follows the manifest as the viewer
+  and the stats site do: `images`; per map its `map.glb`, `views.json` and
+  each view's picture, the pictures each glb names and its sky
+  (`asset.extras.sky.glb`, with the sky's own pictures); every biped,
+  weapon and vehicle glb; `catalog.json`. `h2 live assets publish`
+  refuses art whose manifest names a file the directory lacks, and prints
+  what it holds.
+
+Measured on the retail disc, the map pack disc and the Halo 1 disc (59
+levels: 36 Halo 2 and map pack, 23 converted Halo 1; 91 models), extractor
+18 against 21, bytes as stored and as sent (the compressed copy when there
+is one):
+
+| | files | before, stored | before, sent | after, stored | after, sent |
+|---|---|---|---|---|---|
+| level geometry (`map.glb`) | 59 | 343.7 MiB | 116.6 MiB (gzip) | 343.7 MiB | 73.6 MiB (Brotli) |
+| surface pictures (`tex/`) | 4,319 | 71.3 MiB (≤ 512 px JPEG/PNG) | 71.3 MiB | 64.6 MiB (full size WebP) | 64.6 MiB |
+| pre-drawn views | 295 | 370.8 MiB (PNG) | 370.8 MiB | 19.8 MiB (WebP) | 19.8 MiB |
+| models (bipeds, vehicles, weapons) | 91 | 89.0 MiB | 89.0 MiB | 87.9 MiB | 51.9 MiB |
+| skies (`sky.glb`) | 54 | 2.8 MiB | 2.8 MiB | 2.8 MiB | 1.8 MiB |
+| JSON (manifest, views, catalog) | 61 | 0.3 MiB | 0.3 MiB | 0.3 MiB | 0.05 MiB |
+| stats pictures (PNG) | 299 | 4.2 MiB | 4.2 MiB | 4.2 MiB | 4.2 MiB |
+| **total** | 5,178 | **882 MiB** | **655 MiB** | **523 MiB** | **216 MiB** |
+
+The biggest level, `a10` (Halo 1's Pillar of Autumn), sends 4.5 MiB (was
+15.6); the largest now, `03a_oldmombasa`, 6.8 MiB.
+
+Loading a level in headless Chrome (the development Mac, cache off, the
+harness loads `map.glb` with the viewer's loader and streams its pictures
+with `textures3d.ts`; median of three, ms to geometry / fully textured,
+and what came over the wire):
+
+| | before | after |
+|---|---|---|
+| `a10`, local | 156 / 211, 6.9 MiB | 204 / 271, 4.7 MiB |
+| `a10`, 50 Mbit/s | 911 / 1233 | 602 / 944 |
+| `03b_newmombasa` (189 pictures), local | 134 / 271, 8.7 MiB | 149 / 642, 6.9 MiB |
+| `03b_newmombasa`, 50 Mbit/s | 834 / 1797 | 661 / 1757 |
+
+On a real connection the smaller bytes win. Locally, decoding the full-size
+pictures (four times the pixels of the old 512-pixel cap) costs time after
+the level is already drawn; GPU-ready textures (KTX2/Basis) are the next
+step for that and for video memory.
 
 ## Pipeline
 
@@ -599,7 +705,7 @@ view), the same for every view.
    scale by the passes, most a scale (a carpet 6 × 6, rubber mats 16 ×
    16). Decoded once per bitmap (the
    largest stored level, DXT and swizzle as `assets::decode_image` does),
-   box-filtered down to 512 pixels; solid looks are made opaque (their
+   box-filtered down to 2048 pixels (none is larger); solid looks are made opaque (their
    alpha is a specular or blend mask); cut-out looks (`alpha_test`) have
    their alpha stretched so its strongest value is opaque, then doubled,
    so cutting at a half keeps what is at least a quarter: the leaves of
@@ -720,8 +826,10 @@ cd web && bun install && bun run banner [--art DIR] [--chrome PATH] [--shots DIR
 or `$H2_LIVE_DATA/game-art`). The banners are written into it as
 `banner/home.jpg` and `banner/strip.jpg` and added to its `manifest.json`
 as `banner/home` and `banner/strip` (earlier `banner/*` keys are replaced,
-nothing else is touched), so the native server serves them and
-`h2 live assets publish` uploads them with the rest. An extraction starts
+nothing else is touched), and the manifest's `.br` and `.gz` copies are
+written again from the new bytes (Brotli quality 11 with a 16 MiB window,
+gzip level 9, as the extractor writes them), so the native server serves
+them and `h2 live assets publish` uploads them with the rest. An extraction starts
 the directory afresh: run it again after `h2 live assets extract`. It
 takes about ten seconds. `--shots DIR` also writes each shot alone.
 
@@ -809,7 +917,10 @@ extracted):
                                            "class": "rifle",
                                            "ballistics": { "kind": "bullet", "speed": 400,
                                                            "final_speed": 400, "rate": 6.5 } } },
-            "vehicles": { "warthog": { "glb": "models/vehicle/warthog.glb" } } }
+            "vehicles": { "warthog": { "glb": "models/vehicle/warthog.glb" } },
+            "seats": { "warthog": [ { "label": "warthog_d", "node": "seat_driver" },
+                                    { "label": "warthog_p", "node": "seat_passenger" },
+                                    { "label": "warthog_g", "node": "seat_gunner" } ] } }
 ```
 
 `vehicles` is absent when there are none. `clips` (a biped's animations,
@@ -823,6 +934,19 @@ tag (`crates/cli/src/live_weapons.rs` has the offsets and how they were
 established) and drives the viewer's tracers, bolts and rockets. Version 1
 had none of these and unskinned bipeds; a version 1 reader that skips the
 version check still draws the version 2 files (below).
+
+`seats` (extractor 22) lists, by vehicle stem, the vehicle's seats in the
+order of its tag's seats block (`vehi +0x1c8`, stride `0xb0`;
+crates/tags/src/defs/unit.txt), the block the unit's seat index
+(`unit +0x1fc`, telemetry's `seat`) indexes: element `i` is seat `i`.
+`label` is the seat's label (string ID at `+4`), the rider's animation
+mode, so `any:seat_<label>` is the biped clip that seats the rider (the
+example's order is illustrative; the tag's order is what is written). `node` is the vehicle glb's `seat_` node for the seat's marker
+(string ID at `+8`, named as in pipeline step 8), or `null` when the
+marker is not a seat marker or the model has no such node (the rider is
+then placed by the reader's own rule). A vehicle without seats is not
+listed, and `seats` is absent when no vehicle has any. The vehicle's own
+entry under `vehicles` is unchanged.
 
 Art from an older extractor (the manifest's `extractor` below the running
 `h2`'s) is stale: before version 2 its bipeds had no clips, so the viewer's
@@ -974,7 +1098,12 @@ Keys (what telemetry sends):
   normals; the palette is the engine's, not the tag's) and detail maps are
   not used.
 - `asset.extras`: `generator`, `models_version` (2) and, for bipeds,
-  `height` (game units, feet to the top of the head).
+  `height` (game units, feet to the top of the head) and `lift` (game
+  units, extractor 22): how far the model was raised to put its lowest
+  vertex on the floor (pipeline step 7), positive when raised. The game
+  draws a biped at its object origin, not lowest vertex on the floor, so
+  a reader that lowers the model by `lift` puts the model's own origin at
+  the object's position.
 - A biped stands with its feet on the origin plane (lowest vertex at
   glTF y = 0) and faces glTF +x (game +x, yaw 0). It holds a rifle in its
   idle stance (or its own idle, below), and that posed shape is what the
@@ -993,13 +1122,21 @@ Keys (what telemetry sends):
   `ball` (what multiplayer weapons are held with; `dual`, vehicle seats and
   AI-only classes are left out), states `idle`, `walk`, `run`, `crouch`,
   `airborne`, `land`, `land_hard`, `grenade`, `melee`, `reload`, `fire`,
-  `switch`, each only where the graph has it; and `any:die`, `any:dead`
-  for every class (before extractor 13, `die` per class was the dead
-  pose). Every joint has a `rotation`
+  `switch`, then the movement states (extractor 22) `run_back`,
+  `run_left`, `run_right`, `walk_back`, `walk_left`, `walk_right`,
+  `crouch_run`, `crouch_back`, `crouch_left`, `crouch_right`, each only
+  where the graph has it; and `any:die`, `any:dead` for every class
+  (before extractor 13, `die` per class was the dead pose). After those,
+  one seat pose per vehicle seat mode of the graph, `any:seat_<mode>`
+  with `<mode>` the engine's animation mode as the seat names it
+  (`any:seat_warthog_d`, `any:seat_warthog_g`, `any:seat_ghost_d`,
+  `any:seat_scorpion_p_lf`, ...; extractor 22): the seated rider, one
+  frame. Every joint has a `rotation`
   channel (normalised i16 `VEC4`, the core glTF option) and a
   `translation` channel (float `VEC3`), `LINEAR`, one key per frame at
   30 fps; a channel that never changes in the clip has a single key at
-  time 0. The clip keeps the floor of the default pose (no root motion: the
+  time 0, so a seat pose has one key at time 0 on every channel. The clip
+  keeps the floor of the default pose (no root motion: the
   game moves the biped, not the animation).
 - A vehicle is in its neutral pose (below), origin at the vehicle's object
   origin, facing glTF +x. `asset.extras.pose` names the frame used
@@ -1011,7 +1148,9 @@ of it mesh and textures), elite 2,744 triangles, 58 clips and 2.8 MB
 likewise), 22 weapons of 430 to 1,400 triangles and 60 to
 380 KB; 34 campaign characters of 330 to 4,800 triangles, 0 to 56 clips
 and 0.2 to 2.8 MB; 38 vehicles of 26 to 4,750 triangles and 26 KB to 1.7 MB. The
-whole step takes about 0.6 s on 10 cores.
+whole step takes about 0.6 s on 10 cores. (Counted at extractor 21,
+before the movement clips and seat poses; the disc test prints the
+current counts.)
 
 ## Pipeline
 
@@ -1073,6 +1212,21 @@ whole step takes about 0.6 s on 10 cores.
    `walk_front` (walk), `move_front` (run), `airborne` (the whole leap:
    the game has no take-off clip), `land_soft` (land), `land_hard`
    (land_hard) in mode `combat`, and `idle` in mode `crouch` (crouch).
+   The movement states are actions of the same kind, after a class's
+   other states: `move_back`, `move_left`, `move_right` (`run_back`,
+   `run_left`, `run_right`), `walk_back`, `walk_left`, `walk_right` (the
+   same names) in mode `combat`, and `move_front`, `move_back`,
+   `move_left`, `move_right` in mode `crouch` (`crouch_run`,
+   `crouch_back`, `crouch_left`, `crouch_right`).
+   Seat poses: a mode is a vehicle seat when it is not `combat` or
+   `crouch` and a `_`-separated word after its first is `d`, `g` or `p`
+   (driver, gunner, passenger: `warthog_d`, `spectre_g`, `scorpion_p_lf`,
+   `c_turret_ap_d`, `pelican_p_l01`); generic, matched at run time. Each
+   seat mode in graph order gives `any:seat_<mode>` from its `idle`
+   action: class `rifle` (a passenger holding a weapon), else `any`, else
+   the first class the mode has, type `any` before the others. Only its
+   first frame is sampled. A seat mode without an `idle` (or whose idle
+   is an aim grid) has no pose.
    Dying and lying dead are the same for every class, so they are written
    once as `any:die` and `any:dead`, first in the glb: `die` is the death
    animation of a soft kill from the front (`s_kill:front:gut`, its first
@@ -1093,8 +1247,15 @@ whole step takes about 0.6 s on 10 cores.
    default pose's value. An overlay (`fire_1`) adds its change since its
    first frame to the default pose: rotation `default × first⁻¹ × frame`,
    translation `default + frame − first`. Scale channels are dropped. A
-   biped glb over 3.25 MiB loses whole classes, `ball`, then `flag`, then
-   `unarmed`, until it fits (the elite keeps its sword clips).
+   biped glb over 3.25 MiB is made to fit (`next_size_drop`): first the
+   movement clips of every class but `rifle` go, a class at a time, last
+   of the class list first (`ball`, `flag`, `unarmed`, `sword`,
+   `support`, `missile`, `pistol`); then whole classes, last first
+   (`ball`, `flag`, `unarmed`, ...; the rifle's movement goes only with
+   the rifle class); only then the shared `any` clips (dying and the seat
+   poses, which are one frame each and cost little). The elite keeps its
+   sword clips; the report's animation note names what was dropped
+   (`ball moves`, `flag`, ...).
 10. **Weapon class.** The string ID at `weap +0x288` (D: every multiplayer
     weapon names a class of the player graphs there: `rifle` for the
     battle rifle, carbine, shotgun, SMG and the snipers, `pistol` for the
@@ -1141,7 +1302,10 @@ is the rotation `tags::anim_sample` gives the node (to 6e-8). It checks
 true scale (the spartan 0.6 to 0.8 units tall, the elite taller, the
 Warthog 1.5 to 3 long), the looks (change-colour maps on the spartan, elite
 and banshee, the elite's glow, the Warthog's glass, the spartan's shine),
-that the elite keeps its sword clips, and the battle rifle's, plasma rifle's
+that the elite keeps its sword clips, that the spartan has `rifle:run_left`,
+`rifle:run_back`, `rifle:crouch_run` and `any:seat_warthog_d` and the
+Warthog's `seats` a `warthog_d` (it prints every vehicle's seats, the
+spartan's seat poses and every biped's `lift`), and the battle rifle's, plasma rifle's
 and rocket launcher's ballistics. `shaders_from_the_disc` (same flags)
 writes `shaders.txt`: every player biped's and vehicle's materials with
 their template, bitmaps (name, format, size, role) and instance colours and
@@ -1159,7 +1323,10 @@ Do not commit anything they write.
   `reload`, `melee` and `fire` are one representative weapon type's for the
   whole class (the battle rifle's for `rifle`, and so on), and `any:die`
   is one death animation for every way of dying (multiplayer deaths are
-  ragdolls in the game). No turning, strafing or backwards clips, no aim. Characters without a rifle stance
+  ragdolls in the game). Strafing, backwards and crouched movement are
+  separate clips (extractor 22), not blended by speed or direction; a
+  glb over the size cap may lose them for its less held classes. No
+  turning clips, no aim. Characters without a rifle stance
   use their own idle (grunts the pistol one, hunters and flood forms the
   unarmed one, prophets and sentinels a combat idle); Lord Hood has no idle
   and stands in his rest pose.
@@ -1170,7 +1337,10 @@ Do not commit anything they write.
   the game's exact hinge. A Warthog is always the chaingun one (a gauss
   Warthog is the same tag in another variant). A
   vehicle with no seat markers has no `seat_` nodes, and a seat node is the
-  marker's frame, not a seated pose.
+  marker's frame; the rider's seated pose is the biped's
+  `any:seat_<label>` clip, one still frame (no steering, aiming or
+  entering), and the seat's mode is matched by its name's `_d`, `_g`,
+  `_p` words.
 - `COLOR_0` change-colour weights are per vertex, so their edges are as
   coarse as the mesh; the per-pixel map in `extras.h2.change_colour` is
   exact. Only the primary and secondary colours are tinted.

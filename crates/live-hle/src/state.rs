@@ -162,6 +162,9 @@ pub(crate) struct State {
     /// The guest's system time for the call in progress, when it is the
     /// accepted-invitation read ([`State::set_guest_now`]).
     guest_now: Option<u64>,
+    /// The network's registered keys for the stat read in progress
+    /// ([`State::set_read_keys`]): they name the session joined.
+    read_keys: Option<Vec<[u8; 8]>>,
 }
 impl State {
     pub fn new(
@@ -201,6 +204,7 @@ impl State {
             activity: None,
             auto: crate::auto::Auto::from_env(),
             guest_now: None,
+            read_keys: None,
         }
     }
     pub fn set_accounts(&mut self, accounts: Vec<Account>) {
@@ -625,6 +629,20 @@ impl State {
     pub fn set_guest_now(&mut self, now: Option<u64>) {
         self.guest_now = now;
     }
+    /// The registered keys for the next stat read (read before this lock,
+    /// as [`crate::Hle::matchmade`] does), so it can name the session this
+    /// console is in.
+    pub fn set_read_keys(&mut self, keys: Option<Vec<[u8; 8]>>) {
+        self.read_keys = keys;
+    }
+    /// The Live session (hex) this console advertises, else the one it
+    /// joined.
+    fn game_session(&self, keys: &[[u8; 8]]) -> Option<String> {
+        self.sessions
+            .current_id()
+            .map(|id| live_proto::sign::hex(&id))
+            .or_else(|| self.joined_session(keys))
+    }
     /// The title's read of the accepted invitation, said in the log when
     /// one was there.
     fn accepted_invite(&mut self, m: &mut Guest, out: u32) -> std::result::Result<u32, Error> {
@@ -791,6 +809,89 @@ impl State {
         let p = live_proto::optimatch::playlist(&seen.get(&id)?.advertisement.attributes)?;
         Some((p, id))
     }
+    /// The Live session this console hosts (16 lowercase hex digits):
+    /// the advertisement it made last, while it still stands.
+    pub fn hosted_session(&self) -> Option<String> {
+        self.sessions.current_id().map(|id| live_proto::sign::hex(&id))
+    }
+    /// Asks the server for a bot roster (`POST /games/bots`,
+    /// docs/game/bots.md §9.1); `done` gets the checked roster, or why
+    /// there is none, on the Live worker. Never waits.
+    pub fn roster_bots(
+        &self,
+        request: live_proto::bots::RosterRequest,
+        done: Box<dyn FnOnce(std::result::Result<live_proto::bots::Roster, String>) + Send>,
+    ) -> std::result::Result<(), String> {
+        let service = self.service.as_ref().ok_or("Live is not connected")?;
+        let session = self.session().ok_or("not signed in to Live")?;
+        service
+            .bots(
+                &session,
+                request,
+                Box::new(move |r| {
+                    done(match r {
+                        Ok(Reply::Roster(roster)) => roster
+                            .check()
+                            .map(|()| roster)
+                            .map_err(|e| format!("the server's roster: {e}")),
+                        Ok(_) => Err("not a roster".into()),
+                        Err(code) => Err(format!("the server refused: {code:#010x}")),
+                    })
+                }),
+            )
+            .map_err(|code| format!("Live is busy ({code:#010x})"))
+    }
+    /// A page of the mod repository ([`crate::Hle::mod_list`]).
+    pub fn mod_list(
+        &self,
+        limit: u32,
+        cursor: Option<String>,
+        done: crate::mods::ListDone,
+    ) -> std::result::Result<(), crate::mods::ModsError> {
+        use crate::mods::ModsError;
+        let service = self.service.as_ref().ok_or(ModsError::Offline)?;
+        let session = self.session().ok_or(ModsError::NotSignedIn)?;
+        service
+            .mods(
+                &session,
+                limit,
+                cursor,
+                Box::new(move |r| {
+                    done(match r {
+                        Ok(Reply::Mods(page)) => Ok(page),
+                        Ok(_) => Err(ModsError::Server("not a list of maps".into())),
+                        Err(code) => Err(crate::mods::server_error(code)),
+                    })
+                }),
+            )
+            .map_err(|_| ModsError::Busy)
+    }
+    /// Installs map `id` from the mod repository ([`crate::Hle::install_mod`]).
+    pub fn install_mod(
+        &self,
+        id: content::MapId,
+        progress: crate::mods::Progress,
+        done: crate::mods::InstallDone,
+    ) -> std::result::Result<(), crate::mods::ModsError> {
+        use crate::mods::ModsError;
+        let service = self.service.as_ref().ok_or(ModsError::Offline)?;
+        let session = self.session().ok_or(ModsError::NotSignedIn)?;
+        service
+            .content_api(
+                &session,
+                Box::new(move |r| match r {
+                    Ok(Reply::Content {
+                        api,
+                        gate: Some(gate),
+                        reader,
+                    }) => crate::mods::spawn_install(api, gate, reader, id, progress, done),
+                    Ok(Reply::Content { gate: None, .. }) => done(Err(ModsError::Offline)),
+                    Ok(_) => done(Err(ModsError::Server("no content API".into()))),
+                    Err(code) => done(Err(crate::mods::server_error(code))),
+                }),
+            )
+            .map_err(|_| ModsError::Busy)
+    }
     /// Asks the server for session `id` again (its answer lands in the
     /// worker's [`crate::client::Seen`]); the request, when one could be
     /// sent, and where the answer goes.
@@ -807,6 +908,13 @@ impl State {
                 .ok()
         });
         (pending, Some(service.seen.clone()))
+    }
+    /// Asks the server for everyone's presence; the request, when one
+    /// could be sent (signed in to a server).
+    pub fn read_presence(&self) -> Option<crate::client::Pending> {
+        let service = self.service.as_ref()?;
+        let session = self.session()?;
+        service.read_presence(&session).ok()
     }
     pub fn set_visibility_probe(&mut self, probe: Option<crate::sessions::VisibilityProbe>) {
         self.sessions.set_probe(probe);
@@ -1006,6 +1114,8 @@ impl State {
             if matches!(op, crate::stats::Op::Read | crate::stats::Op::Write) && !self.connected() {
                 return Ok(NO_SESSION);
             }
+            let keys = self.read_keys.take().unwrap_or_default();
+            let game_session = self.game_session(&keys);
             let session = self.session();
             return self.stats.invoke(
                 op,
@@ -1015,6 +1125,7 @@ impl State {
                     storage: &mut self.storage,
                     service: self.service.as_ref(),
                     session: session.as_ref(),
+                    game_session,
                 },
             );
         }
