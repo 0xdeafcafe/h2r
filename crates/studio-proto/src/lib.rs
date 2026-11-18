@@ -128,7 +128,10 @@ pub mod method {
     pub const HUD_LIST: &str = "hud.list";
     pub const HUD_READ: &str = "hud.read";
     pub const HUD_SET: &str = "hud.set";
+    pub const HUD_MOVE: &str = "hud.move";
     pub const HUD_RENDER: &str = "hud.render";
+    pub const HUD_CHECK: &str = "hud.check";
+    pub const HUD_SAVE_AS: &str = "hud.save_as";
     pub const MODEL_LIST: &str = "model.list";
     pub const MODEL_READ: &str = "model.read";
     pub const MODEL_RENDER: &str = "model.render";

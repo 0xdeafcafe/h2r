@@ -31,10 +31,11 @@ pub fn parse_doc(d: &str) -> Result<ToolKind, RpcError> {
         "playlists" | "playlist" | "hopper" => ToolKind::Playlists,
         "ui" | "ui-screens" => ToolKind::UiScreens,
         "tags" => ToolKind::Tags,
+        "hud" => ToolKind::Hud,
         other => {
             return Err(err(
                 code::INVALID_PARAMS,
-                format!("no document {other:?} (map, tags, variant, playlists, ui)"),
+                format!("no document {other:?} (map, tags, variant, playlists, ui, hud)"),
             ));
         }
     })
@@ -47,6 +48,7 @@ pub fn doc_name(t: ToolKind) -> &'static str {
         ToolKind::Playlists => "playlists",
         ToolKind::UiScreens => "ui",
         ToolKind::Tags => "tags",
+        ToolKind::Hud => "hud",
     }
 }
 
@@ -57,6 +59,7 @@ fn is_open(app: &App, t: ToolKind) -> bool {
         ToolKind::Playlists => app.hoppers.is_open(),
         ToolKind::UiScreens => app.ui_screens.pick.is_some(),
         ToolKind::Tags => app.session.is_open(),
+        ToolKind::Hud => app.hud.session.is_some(),
     }
 }
 
@@ -70,6 +73,11 @@ fn can(app: &App, t: ToolKind) -> (bool, bool) {
         ToolKind::Playlists => (app.hoppers.can_undo(), app.hoppers.can_redo()),
         ToolKind::UiScreens => (false, false),
         ToolKind::Tags => (app.tags.can_undo(), app.tags.can_redo()),
+        ToolKind::Hud => app
+            .hud
+            .session
+            .as_ref()
+            .map_or((false, false), |s| (s.can_undo(), s.can_redo())),
     }
 }
 
@@ -89,6 +97,10 @@ fn name_of(app: &App, t: ToolKind) -> Option<String> {
         }),
         ToolKind::UiScreens => app.ui_screens.pick.as_ref().map(|p| format!("{p:?}")),
         ToolKind::Tags => app.loaded_map().map(str::to_owned),
+        ToolKind::Hud => app.hud.session.as_ref().map(|s| match s.hud() {
+            Some(h) => format!("{} / {}", s.name, h.name),
+            None => s.name.clone(),
+        }),
     }
 }
 
@@ -111,6 +123,7 @@ pub fn list(app: &App) -> Value {
                 let path = match t {
                     ToolKind::Scenario => app.saved_path().map(Path::to_path_buf),
                     ToolKind::Playlists => app.hoppers.path().map(Path::to_path_buf),
+                    ToolKind::Hud => app.hud.session.as_ref().and_then(|s| s.saved_path.clone()),
                     _ => None,
                 };
                 if let Some(p) = path {
@@ -362,12 +375,20 @@ fn save(app: &mut App, t: ToolKind) -> Reply {
             code::REFUSED,
             "UI screens have nothing to save: ui.render writes a PNG",
         )),
+        ToolKind::Hud => match app.hud.session.as_ref().and_then(|s| s.saved_path.clone()) {
+            Some(path) => save_as(app, t, path),
+            None => Err(err(
+                code::REFUSED,
+                "the HUD edits have no file of their own yet: doc.save_as {\"doc\": \"hud\", \"path\": ...} (the source is never overwritten)",
+            )),
+        },
     }
 }
 
 fn save_as(app: &mut App, t: ToolKind, path: PathBuf) -> Reply {
     need_open(app, t)?;
     let action = match t {
+        ToolKind::Hud => return super::hud::save_as(app, path),
         ToolKind::Scenario | ToolKind::Tags => {
             outside_git(&path)?;
             if let Some(src) = app.session.source()
@@ -398,7 +419,7 @@ fn save_as(app: &mut App, t: ToolKind, path: PathBuf) -> Reply {
     Ok(json!({ "saved": true, "path": path.display().to_string(), "bytes": bytes, "log": log }))
 }
 
-fn same_file(a: &Path, b: &Path) -> bool {
+pub fn same_file(a: &Path, b: &Path) -> bool {
     match (a.canonicalize(), b.canonicalize()) {
         (Ok(a), Ok(b)) => a == b,
         _ => a == b,
@@ -502,6 +523,7 @@ fn diff(app: &mut App, t: ToolKind) -> Reply {
             Ok(json!({ "doc": "variant", "dirty": dirty, "changed_from_defaults": changed }))
         }
         ToolKind::UiScreens => Ok(json!({ "doc": "ui", "dirty": false })),
+        ToolKind::Hud => super::hud::diff(app),
     }
 }
 

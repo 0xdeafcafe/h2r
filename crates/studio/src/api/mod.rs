@@ -12,8 +12,9 @@
 //!   owns the [`App`] answers ([`Api::pump`]): the window between frames
 //!   (the user sees an agent's edits live), or `h2-editor --serve`.
 //! - [`seams`]: where the parallel tools plug in. A [`Provider`] answers
-//!   methods ahead of the built-in ones; `hud.*`, `model.*` and
-//!   `custom.*` are planned namespaces answering NOT_YET until one does.
+//!   methods ahead of the built-in ones: the Tags tool's `tag.*` and the
+//!   HUD tool's `hud.*`; `model.*` and `custom.*` are planned namespaces
+//!   answering NOT_YET until one does.
 //!
 //! [`Action`]: crate::app::Action
 //! [`App::dispatch`]: crate::App::dispatch
@@ -25,6 +26,7 @@ use studio_proto::{code, method as m};
 use crate::App;
 
 mod docs;
+mod hud;
 mod params;
 mod playlists;
 mod scenario;
@@ -448,30 +450,6 @@ pub const METHODS: &[MethodDef] = &[
     ),
     // Planned namespaces: designed seams with no provider yet.
     planned(
-        m::HUD_LIST,
-        "The open map's HUDs (nhdt) and who names them",
-        r#"{}"#,
-        "studio-hud",
-    ),
-    planned(
-        m::HUD_READ,
-        "One HUD's widgets with their placement, state gates and fields",
-        r#"{"hud":"string"}"#,
-        "studio-hud",
-    ),
-    planned(
-        m::HUD_SET,
-        "Set a HUD widget's field (offset, anchor, bitmap, colour)",
-        r#"{"hud":"string","widget":"string","field":"string","value":"any"}"#,
-        "studio-hud",
-    ),
-    planned(
-        m::HUD_RENDER,
-        "Render a HUD at a game state to a PNG",
-        r#"{"hud":"string","state?":"any","out?":"string"}"#,
-        "studio-hud",
-    ),
-    planned(
         m::MODEL_LIST,
         "Bipeds and their model variants (hlmt, mode permutations)",
         r#"{"group?":"string"}"#,
@@ -771,5 +749,6 @@ pub fn tool_name(t: crate::ToolKind) -> &'static str {
         crate::ToolKind::Playlists => "playlists",
         crate::ToolKind::UiScreens => "ui-screens",
         crate::ToolKind::Tags => "tags",
+        crate::ToolKind::Hud => "hud",
     }
 }

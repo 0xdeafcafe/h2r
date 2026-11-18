@@ -8,7 +8,8 @@ object per line, short forms on the command line, scripts on stdin, and a
 `session.methods` call that lists every method with its params and result.
 
 Status: first slice built (`crates/studio/src/api`, `crates/studio-proto`).
-`hud.*`, `model.*` and `custom.*` are planned namespaces: listed by
+The Tags tool (`tag.*`) and the HUD tool (`hud.*`) answer through
+providers. `model.*` and `custom.*` are planned namespaces: listed by
 `session.methods` as `planned` and answering `NOT_YET` until their tools
 register.
 
@@ -98,7 +99,8 @@ construction.
 
 A `doc` param names one: `map` (the scenario tool's map), `tags` (the
 Tags tool's edits to the same map: their own undo stack; they save and
-diff with the map), `variant`, `playlists`, `ui`. Without one, a `doc.*` call means the tool shown.
+diff with the map), `variant`, `playlists`, `ui`, `hud` (the HUD tool's
+map: its widget edits, with their own undo stack and save). Without one, a `doc.*` call means the tool shown.
 `doc.list` says, for each, whether it is open, its name, dirty, and
 whether it can undo and redo.
 
@@ -136,7 +138,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `playlist` | `list`, `get {playlist}`, `set {playlist, title, description}`, `entry {playlist, op, entry, to, weight}`, `entry_variant` |
 | `ui` | `screens`, `pick {screen, state \| retail}`, `press {input}`, `widgets`, `render {out}` |
 | `view` | `camera {yaw, pitch, distance, target, focus, all}`, `snapshot {out, size, camera}` |
-| `hud` (planned) | `list`, `read`, `set`, `render` |
+| `hud` | `list {map \| package}`, `read {hud, state}`, `set {hud, widget, field, value, merge}`, `move {hud, widget, x, y, mode, merge}`, `render {hud, state, out}`, `check {hud, state}`, `save_as {path}` |
 | `model` (planned) | `list`, `read`, `render`, `colors`, `emblem` |
 | `custom` (planned) | `list`, `set` |
 
@@ -209,12 +211,20 @@ the window and the API stay one path.
   `tag_api::set_field`, `tag.block.*` through `tag_api::block`, applied as
   `Action::Tag` with `App::perform`; it returns `None` for the scenario
   tag's edits and for `tag.read {"raw": true}`.
-- **HUDs (studio-hud lane).** `hud.list` (the map's `nhdt` tags and who
-  names them), `hud.read` (a HUD's widgets: placement, state gates,
-  fields), `hud.set` (a widget field, one undo step through the HUD
-  session), `hud.render` (the 640 by 480 preview at a game state, to a
-  PNG outside Git). The shapes in the table are a starting point; the
-  provider's own definitions replace them.
+- **HUDs (studio-hud, landed).** `api/hud.rs`: `hud.list` opens a map of
+  the source (or a package) in the HUD tool and lists its `nhdt` tags
+  and who names them; `hud.read` shows one and gives its widgets
+  (`bitmap:<i>`, `text:<i>`, or a name), every field by its key in
+  `hud_edit::layout`'s tables, and where each lands at the HUD state;
+  `hud.set` and `hud.move` are `Action::HudSet` and `Action::HudMove`
+  (one undo step; `merge` joins a drag), a `mode` first setting the
+  state's screen mode; `hud.render` and `hud.check` draw at a `state`
+  (mode, shield, body, grenade, frags, plasmas, rounds, heat, battery,
+  zoomed, gate, words, inputs; `Action::HudState`) and give the PNG and
+  the checks' findings; `hud.save_as` is `Action::HudSaveAs`, never over
+  the source or into Git. `doc.*` with `"doc": "hud"` undoes, redoes,
+  diffs (patches by widget and field) and saves the same session. String
+  IDs are the Tags tool's to edit (`REFUSED`).
 - **Player models (planned, not started).** `model.list` (bipeds, `hlmt`
   model variants), `model.read` (regions, permutations, change colours),
   `model.render` (a variant with colours from a camera, to a PNG),
@@ -231,7 +241,8 @@ the window and the API stay one path.
   example), `Api::call` (shape check, providers, built-ins),
   `Api::pump` (the window's between-frames answer).
 - `api/server.rs`: the socket. `api/{docs,scenario,tags,variants,playlists,ui_screens,view}.rs`:
-  the namespaces. `api/seams.rs`: providers.
+  the namespaces. `api/seams.rs`: providers; `api/tag_fields.rs` and
+  `api/hud.rs` the Tags and HUD tools'.
 - `app/commands.rs`: the actions added for the API and the window
   (`SetField`, `EditSelection`, `MovePlacement`, `EditPlaylist`,
   `UndoIn`), `PlaylistEdit`, and `App::perform`.
@@ -255,6 +266,10 @@ system temp directory):
 - tags listed, read (raw and through the registry), referenced and
   followed; `tag.set` on a tag through the Tags tool, diffed, undone and
   redone as the `tags` document; a tag too short for its layout refused;
+- the HUD tool through the API on `hud_edit`'s invented map: read, check,
+  move (and in another mode), set, diff, undo and redo as the `hud`
+  document, render (refused in a Git checkout), save as and re-open; and
+  the window's actions and the API's make identical patches;
 - a registered provider answers a planned method;
 - the window's loop answers a client between frames.
 

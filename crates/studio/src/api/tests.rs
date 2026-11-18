@@ -201,6 +201,15 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             );
             c(m::DOC_UNDO, json!({"doc": "map"}));
         }
+        n if n.starts_with("hud.") => {
+            // The HUD fixture's map as the source (it has no scenario).
+            let map = t.path("hudtest.map");
+            std::fs::write(&map, hud_edit::fixture::build().0).unwrap();
+            app.dispatch(Action::OpenSource(map));
+            if n != m::HUD_LIST {
+                call(api, app, m::HUD_LIST, json!({"map": "hudtest"}));
+            }
+        }
         _ => {}
     }
 }
@@ -239,7 +248,7 @@ fn every_method_in_methods_has_a_test() {
             "{n} listed twice"
         );
     }
-    assert_eq!(ran.len(), METHODS.len());
+    assert_eq!(ran.len(), Api::new().methods().len());
 }
 
 #[test]
@@ -249,8 +258,10 @@ fn methods_describe_their_params_results_and_examples() {
     let mut api = Api::new();
     let list = call(&mut api, &mut app, m::METHODS, Value::Null);
     let list = list.as_array().unwrap();
-    assert_eq!(list.len(), METHODS.len());
-    for (d, v) in METHODS.iter().zip(list) {
+    // The table with the providers' methods over and after it.
+    let defs = api.methods();
+    assert_eq!(list.len(), defs.len());
+    for (d, v) in defs.iter().zip(list) {
         assert_eq!(v["name"], d.name);
         assert!(
             v["params"].is_object(),
@@ -290,8 +301,13 @@ fn methods_describe_their_params_results_and_examples() {
         .filter(|v| v["status"] == "planned")
         .map(|v| v["name"].as_str().unwrap().split('.').next().unwrap())
         .collect();
-    for ns in ["hud", "model", "custom"] {
+    for ns in ["model", "custom"] {
         assert!(planned.contains(&ns), "{ns}.* is a planned namespace");
+    }
+    // The HUD tool's provider answers all of hud.*.
+    assert!(!planned.contains(&"hud"));
+    for name in [m::HUD_LIST, m::HUD_READ, m::HUD_SET, m::HUD_MOVE, m::HUD_RENDER, m::HUD_CHECK, m::HUD_SAVE_AS] {
+        assert!(list.iter().any(|v| v["name"] == name && v["status"] == "ready"), "{name}");
     }
 }
 
@@ -674,12 +690,12 @@ fn tags_list_read_and_follow_references() {
     );
 }
 
-struct Hud;
-impl Provider for Hud {
+struct Models;
+impl Provider for Models {
     fn methods(&self) -> Vec<MethodDef> {
         vec![MethodDef {
-            name: m::HUD_LIST,
-            summary: "test HUDs",
+            name: m::MODEL_LIST,
+            summary: "test models",
             params: "{}",
             result: "[string]",
             example: "null",
@@ -687,7 +703,7 @@ impl Provider for Hud {
         }]
     }
     fn call(&mut self, _: &mut App, method: &str, _: &Value) -> Option<Reply> {
-        (method == m::HUD_LIST).then(|| Ok(json!(["hud"])))
+        (method == m::MODEL_LIST).then(|| Ok(json!(["masterchief"])))
     }
 }
 
@@ -697,25 +713,25 @@ fn a_registered_provider_answers_a_planned_method() {
     let mut app = app(&t);
     let mut api = Api::new();
     assert_eq!(
-        code_of(api.call(&mut app, m::HUD_LIST, Value::Null)),
+        code_of(api.call(&mut app, m::MODEL_LIST, Value::Null)),
         code::NOT_YET
     );
-    api.register(Box::new(Hud));
+    api.register(Box::new(Models));
     assert_eq!(
-        call(&mut api, &mut app, m::HUD_LIST, Value::Null),
-        json!(["hud"])
+        call(&mut api, &mut app, m::MODEL_LIST, Value::Null),
+        json!(["masterchief"])
     );
     let listed = call(&mut api, &mut app, m::METHODS, Value::Null);
-    let hud = listed
+    let model = listed
         .as_array()
         .unwrap()
         .iter()
-        .find(|v| v["name"] == m::HUD_LIST)
+        .find(|v| v["name"] == m::MODEL_LIST)
         .unwrap();
-    assert_eq!(hud["status"], "ready");
+    assert_eq!(model["status"], "ready");
     // The rest of the namespace stays planned.
     assert_eq!(
-        code_of(api.call(&mut app, m::HUD_READ, json!({"hud": "x"}))),
+        code_of(api.call(&mut app, m::MODEL_READ, json!({"tag": "x"}))),
         code::NOT_YET
     );
 }
@@ -881,5 +897,152 @@ fn a_window_answers_between_frames() {
     assert_eq!(
         app.log().last().unwrap().status.text(),
         "moved NetgameFlags 0"
+    );
+}
+
+/// An app with `hud_edit`'s invented map as the source, open in the HUD
+/// tool through the API (no game data).
+fn hud_app(t: &Temp) -> (Api, App) {
+    let map = t.path("hudtest.map");
+    std::fs::write(&map, hud_edit::fixture::build().0).unwrap();
+    let mut app = App::new();
+    app.set_data_root(t.path("data"));
+    app.dispatch(Action::OpenSource(map));
+    let mut api = Api::new();
+    let list = call(&mut api, &mut app, m::HUD_LIST, json!({"map": "hudtest"}));
+    assert_eq!(list["huds"].as_array().unwrap().len(), 2, "{list}");
+    assert_eq!(list["current"], "invented\\hud\\player");
+    (api, app)
+}
+
+/// The fixture's stray bitmap: full-screen offset (40, -48), flagged by
+/// the checks.
+const STRAY: hud_edit::WidgetKey = hud_edit::WidgetKey {
+    kind: hud_edit::WidgetKind::Bitmap,
+    index: 2,
+};
+
+/// The stray's entry in a hud.read.
+fn stray_of(read: &Value) -> Value {
+    read["widgets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["widget"] == "bitmap:2")
+        .expect("the stray")
+        .clone()
+}
+
+#[test]
+fn hud_read_check_move_set_render_and_save_through_the_hud_tool() {
+    let t = Temp::new("hud");
+    let (mut api, mut app) = hud_app(&t);
+    let read = call(&mut api, &mut app, m::HUD_READ, Value::Null);
+    let stray = stray_of(&read);
+    assert_eq!((stray["fields"]["x0"].clone(), stray["fields"]["y0"].clone()), (json!(40), json!(-48)));
+    assert!(stray["placed"].is_object(), "{stray}");
+    assert!(read["fields"]["bitmap"].as_array().unwrap().iter().any(|f| f["key"] == "anchor"));
+    // The checks name the stray.
+    let found = call(&mut api, &mut app, m::HUD_CHECK, Value::Null);
+    assert!(
+        found.as_array().unwrap().iter().any(|f| f["widgets"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({"hud": 0, "widget": "bitmap:2"}))),
+        "{found}"
+    );
+    // A move is the HUD tool's undo step and patch.
+    let moved = call(&mut api, &mut app, m::HUD_MOVE, json!({"widget": "bitmap:2", "x": 60, "y": -48}));
+    assert_eq!(moved["offset"], json!([60, -48]));
+    assert_eq!(app.hud.offset(STRAY), Some((60, -48)));
+    assert!(app.tool_dirty(crate::ToolKind::Hud));
+    let diff = call(&mut api, &mut app, m::DOC_DIFF, json!({"doc": "hud"}));
+    assert_eq!(diff["patches"][0]["widget"], "bitmap:2", "{diff}");
+    assert_eq!(diff["patches"][0]["fields"], json!(["x0"]));
+    call(&mut api, &mut app, m::DOC_UNDO, json!({"doc": "hud"}));
+    assert_eq!(app.hud.offset(STRAY), Some((40, -48)));
+    assert!(!app.tool_dirty(crate::ToolKind::Hud));
+    call(&mut api, &mut app, m::DOC_REDO, json!({"doc": "hud"}));
+    assert_eq!(app.hud.offset(STRAY), Some((60, -48)));
+    // Another mode's offset: the state's mode follows.
+    call(&mut api, &mut app, m::HUD_MOVE, json!({"widget": "bitmap:2", "x": 21, "y": -24, "mode": "half"}));
+    assert_eq!(app.hud.state.mode, hud_edit::Mode::Half);
+    let half = call(&mut api, &mut app, m::HUD_READ, Value::Null);
+    assert_eq!(half["state"]["mode"], "half");
+    assert_eq!(stray_of(&half)["fields"]["x1"], 21, "{half}");
+    // Fields by key; string IDs are the Tags tool's; unknown keys say so.
+    let set = call(&mut api, &mut app, m::HUD_SET, json!({"widget": "bitmap:2", "field": "anchor", "value": 3}));
+    assert_eq!(set["value"], 3);
+    assert_eq!(
+        app.hud.session.as_ref().unwrap().hud().unwrap().widget(STRAY).unwrap().anchor(),
+        3
+    );
+    assert_eq!(
+        code_of(api.call(&mut app, m::HUD_SET, json!({"widget": "bitmap:2", "field": "name", "value": 1}))),
+        code::REFUSED
+    );
+    assert_eq!(
+        code_of(api.call(&mut app, m::HUD_SET, json!({"widget": "bitmap:2", "field": "nope", "value": 1}))),
+        code::INVALID_PARAMS
+    );
+    assert_eq!(
+        code_of(api.call(&mut app, m::HUD_MOVE, json!({"widget": "bitmap:99", "x": 0, "y": 0}))),
+        code::INVALID_PARAMS
+    );
+    // Opening another map would drop the edits: refused without discard.
+    assert_eq!(
+        code_of(api.call(&mut app, m::HUD_LIST, json!({"map": "hudtest"}))),
+        code::UNSAVED
+    );
+    // The picture, never into the checkout.
+    let png = t.path("out/hud.png");
+    let r = call(&mut api, &mut app, m::HUD_RENDER, json!({"out": png.display().to_string(), "state": {"mode": "full", "shield": 0.5}}));
+    assert_eq!(r["width"], 640);
+    assert!(png.exists());
+    assert_eq!(app.hud.state.shield, 0.5);
+    let inside = Path::new(env!("CARGO_MANIFEST_DIR")).join("hud.png");
+    assert_eq!(
+        code_of(api.call(&mut app, m::HUD_RENDER, json!({"out": inside.display().to_string()}))),
+        code::REFUSED
+    );
+    assert!(!inside.exists());
+    assert_eq!(
+        code_of(api.call(&mut app, m::HUD_RENDER, json!({"state": {"shield": 2}}))),
+        code::INVALID_PARAMS
+    );
+    // The save: never over the source; the saved map has the edits.
+    assert_eq!(
+        code_of(api.call(&mut app, m::HUD_SAVE_AS, json!({"path": t.path("hudtest.map").display().to_string()}))),
+        code::REFUSED
+    );
+    let out = t.path("out/hud.map");
+    call(&mut api, &mut app, m::HUD_SAVE_AS, json!({"path": out.display().to_string()}));
+    assert!(!app.tool_dirty(crate::ToolKind::Hud));
+    // (No scenario in it, so the scenario tool's open logs an error.)
+    app.dispatch(Action::OpenSource(out));
+    call(&mut api, &mut app, m::HUD_LIST, json!({"map": "hud"}));
+    let back = call(&mut api, &mut app, m::HUD_READ, json!({"state": {"mode": "full"}}));
+    assert_eq!(stray_of(&back)["fields"]["x0"], 60);
+    assert_eq!(stray_of(&back)["fields"]["anchor"], 3);
+}
+
+#[test]
+fn the_hud_window_and_the_api_make_identical_documents() {
+    let t = Temp::new("hud-ui");
+    let (_, mut ui) = hud_app(&t);
+    // The window's drag: three moves merged, then a field.
+    for (i, x) in [41, 45, 60].into_iter().enumerate() {
+        ui.dispatch(Action::HudMove(STRAY, (x, -48), i > 0));
+    }
+    ui.dispatch(Action::HudSet(STRAY, "anchor".into(), hud_edit::Value::Int(3), false));
+    let t2 = Temp::new("hud-api");
+    let (mut api, mut agent) = hud_app(&t2);
+    call(&mut api, &mut agent, m::HUD_MOVE, json!({"widget": "bitmap:2", "x": 60, "y": -48}));
+    call(&mut api, &mut agent, m::HUD_SET, json!({"widget": "bitmap:2", "field": "anchor", "value": 3}));
+    let patches = |a: &App| a.hud.session.as_ref().unwrap().patches();
+    assert_eq!(patches(&ui), patches(&agent));
+    assert_eq!(
+        ui.hud.session.as_ref().unwrap().history().count(),
+        agent.hud.session.as_ref().unwrap().history().count()
     );
 }

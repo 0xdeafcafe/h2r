@@ -17,8 +17,9 @@
 //!   tag document's actions. Return `None` for the scenario tag's
 //!   placement blocks (paths `<block>[<i>].<field>`): the built-in methods
 //!   route those to the scenario's own commands.
-//! - **studio-hud** (the HUD editor): answer `hud.list`, `hud.read`,
-//!   `hud.set` and `hud.render` with the HUD tool's model and session.
+//! - **studio-hud** (the HUD editor): `hud.list`, `hud.read`, `hud.set`,
+//!   `hud.move`, `hud.render`, `hud.check` and `hud.save_as` through the
+//!   HUD tool's `Action::Hud*` ([`super::hud`]).
 //! - **player models** and **customisation**: `model.*` and `custom.*`
 //!   are planned the same way (docs/editor/agent-api.md).
 //!
@@ -39,13 +40,10 @@ pub trait Provider {
     fn call(&mut self, app: &mut App, method: &str, params: &Value) -> Option<Reply>;
 }
 
-/// Registers every tool's provider. Each lane adds its line here, e.g.
-/// the HUD editor's:
-///
-/// ```ignore
-/// api.register(Box::new(crate::api::hud::Hud::default())); // studio-hud
-/// ```
+/// Registers every tool's provider. Each lane adds its line here.
 pub fn register(api: &mut Api) {
     // studio-tags: every field of any tag through the Tags tool's commands.
     api.register(Box::new(super::tag_fields::TagFields));
+    // studio-hud: the HUD tool's HUDs, widgets, picture, checks and save.
+    api.register(Box::new(super::hud::Hud));
 }
