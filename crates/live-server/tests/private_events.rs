@@ -260,3 +260,68 @@ async fn invites_friends_and_reports_show_only_to_who_they_concern() {
         assert_eq!(private_types(&streamed(addr, t).await), want, "{who}");
     }
 }
+
+#[tokio::test]
+async fn pending_friend_requests_show_only_to_the_player_and_admins() {
+    let h = start(
+        std::sync::Arc::new(live_server::store::MemoryStore::new()),
+        live_server::Policy {
+            admins: vec![live_proto::Gamertag::new("Boss").unwrap()],
+            ..Default::default()
+        },
+    )
+    .await;
+    let host = h.create("Host").await;
+    let guest = h.create("Guest").await;
+    let pal = h.create("Pal").await;
+    let stranger = h.create("Stranger").await;
+    let boss = h.create("Boss").await;
+    friend(&h, &pal, types::FRIEND_REQUESTED, &pal, &host).await;
+    friend(&h, &host, types::FRIEND_ACCEPTED, &pal, &host).await;
+    friend(&h, &host, types::FRIEND_REQUESTED, &host, &guest).await;
+    friend(&h, &stranger, types::FRIEND_REQUESTED, &stranger, &host).await;
+
+    let tags = |v: &Value| -> Vec<String> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["gamertag"].as_str().unwrap().to_string())
+            .collect()
+    };
+    for (who, reader, own) in [
+        ("anonymous", None, false),
+        // Stranger sent Host a request, and still does not see it here.
+        ("stranger", Some(&stranger), false),
+        ("pal", Some(&pal), false),
+        ("host", Some(&host), true),
+        ("admin", Some(&boss), true),
+    ] {
+        let headers: Vec<_> = reader.map(|u| h.bearer(u, lxm::READ)).into_iter().collect();
+        let r = h
+            .call(
+                Method::GET,
+                "/v1/accounts/Host/friends",
+                &headers,
+                Body::empty(),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::OK, "{who}: {}", r.error());
+        let cache = r.headers["cache-control"].to_str().unwrap().to_string();
+        let v = r.json();
+        // Friendships stay public.
+        assert_eq!(tags(&v["friends"]), ["Pal"], "{who}");
+        if own {
+            assert_eq!(tags(&v["requests_in"]), ["Stranger"], "{who}");
+            assert_eq!(tags(&v["requests_out"]), ["Guest"], "{who}");
+        } else {
+            assert_eq!(v["requests_in"], json!([]), "{who}");
+            assert_eq!(v["requests_out"], json!([]), "{who}");
+        }
+        // Only the anonymous read is cached at the edge, and it has none.
+        assert_eq!(
+            cache.contains("s-maxage"),
+            reader.is_none(),
+            "{who}: {cache}"
+        );
+    }
+}

@@ -13,6 +13,21 @@ fn friend_event(h: &Harness, user: &User, kind: &str, data: Value) -> String {
     h.event(user, &streams::account(user.xuid), kind, data)
 }
 
+/// `tag`'s friends read as `user` (the account itself, so pending requests
+/// are in it: they show to no one else but admins).
+async fn own_friends(h: &Harness, user: &User, tag: &str) -> Value {
+    let r = h
+        .call(
+            Method::GET,
+            &format!("/v1/accounts/{tag}/friends"),
+            &[h.bearer(user, lxm::READ)],
+            axum::body::Body::empty(),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+    r.json()
+}
+
 #[tokio::test]
 async fn requests_are_directional_until_answered() {
     let h = harness().await;
@@ -39,11 +54,11 @@ async fn requests_are_directional_until_answered() {
     );
 
     // Pending in and out, on the two sides of it.
-    let alpha = h.get("/v1/accounts/Alpha/friends").await.json();
+    let alpha = own_friends(&h, &a, "Alpha").await;
     assert_eq!(alpha["requests_out"][0]["gamertag"], "Bravo");
     assert_eq!(alpha["requests_out"][0]["xuid"], b.xuid.to_string());
     assert_eq!(alpha["requests_in"], json!([]));
-    let bravo = h.get("/v1/accounts/Bravo/friends").await.json();
+    let bravo = own_friends(&h, &b, "Bravo").await;
     assert_eq!(bravo["requests_in"][0]["gamertag"], "Alpha");
     assert_eq!(bravo["requests_out"], json!([]));
     assert_eq!(bravo["friends"], json!([]));
@@ -115,8 +130,8 @@ async fn requests_are_directional_until_answered() {
         )
         .await;
     assert_eq!(r.status, StatusCode::CREATED, "{}", r.error());
-    for tag in ["Alpha", "Bravo"] {
-        let doc = h.get(&format!("/v1/accounts/{tag}/friends")).await.json();
+    for (tag, user) in [("Alpha", &a), ("Bravo", &b)] {
+        let doc = own_friends(&h, user, tag).await;
         assert_eq!(doc["requests_in"], json!([]), "{tag}");
         assert_eq!(doc["requests_out"], json!([]), "{tag}");
         assert_eq!(doc["friends"].as_array().map(Vec::len), Some(1), "{tag}");
@@ -306,7 +321,7 @@ async fn declining_and_removing() {
         )
         .await;
     assert_eq!(r.status, StatusCode::CREATED, "{}", r.error());
-    let alpha = h.get("/v1/accounts/Alpha/friends").await.json();
+    let alpha = own_friends(&h, &a, "Alpha").await;
     assert_eq!(alpha["requests_in"], json!([]));
 }
 
@@ -365,7 +380,7 @@ async fn friend_writes_are_checked_like_other_events() {
     assert_eq!(stored["stream"], format!("account-{}", a.xuid));
     assert_eq!(stored["type"], "FriendRequested");
     assert_eq!(
-        h.get("/v1/accounts/Alpha/friends").await.json()["requests_out"][0]["gamertag"],
+        own_friends(&h, &a, "Alpha").await["requests_out"][0]["gamertag"],
         "Bravo"
     );
 }

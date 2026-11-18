@@ -232,7 +232,7 @@ replays show the firing of the whole second; the same goes for `actions` and
 | `GET /v1/accounts/{gamertag}/keys` | account public keys with validity ranges |
 | `GET /v1/accounts` | accounts: `{xuid, gamertag, created_at, online}` |
 | `GET /v1/accounts/{gamertag}` | one account plus `recent_games` (without the co-op games the reader may not see: [Co-op games](#co-op-games)) |
-| `GET /v1/accounts/{gamertag}/friends` | friends with presence, pending requests in and out ([Friends](#friends), below) |
+| `GET /v1/accounts/{gamertag}/friends` | friends with presence; pending requests in and out for the player and admins only ([Friends](#friends), below) |
 | `GET /v1/presence` | who is online now: `{xuid, gamertag, state, game_id?, activity?, since}`; a player in a game or session the reader may not see shows no `game_id` and `activity: "In a game"` ([Co-op games](#co-op-games), "Presence") |
 | `GET /v1/coop/games?player=` | finished co-op campaign games, newest first ([Co-op games](#co-op-games), below) |
 | `GET /v1/games?state=live\|ended&map=&map_id=&skulls=` | game summaries: `{game_id, map, mode, kind, variant, playlist?, playlist_id?, difficulty?, online?, team_play, started_at, ended_at?, players, teams?, map_id?, skulls?}`; `map` keeps games on that base map, modded or not, `map_id` one exact map (`none`: games with no `map_id`), `skulls` (comma-separated indices, `4,6`) games that had every one of them on; without the co-op games the reader may not see ([Co-op games](#co-op-games)) |
@@ -340,9 +340,13 @@ either direction or the two are already friends, an answer on any account
 but the request's recipient or to a request that is not pending, and a
 removal without a friendship or pending request between the two.
 
-**`GET /v1/accounts/{gamertag}/friends`** (public like the other reads)
-is everything a friends list needs in one document, so clients enumerate
-with one call:
+**`GET /v1/accounts/{gamertag}/friends`** is everything a friends list
+needs in one document, so clients enumerate with one call. The friendships
+are public like the other reads; the pending requests (`requests_in`,
+`requests_out`) are filled in only for the player themselves (a `read`
+bearer of that account), admin accounts and the operator. Anyone else,
+anonymous included, gets both lists empty, so the anonymous response the
+edge caches holds no requests.
 
 ```json
 { "friends": [
@@ -559,8 +563,8 @@ log without them, the same way as hidden co-op events (a page can be short
 with a `next`). The game and the web read these through their own calls
 (`/v1/accounts/by-xuid/{xuid}/mailbox` for the owner,
 `/v1/accounts/{gamertag}/friends`, `/v1/admin/content` for admins), not
-the log. The friends read is still public (friends and pending requests);
-this section covers the log only.
+the log. The friends read keeps friendships public and pending requests
+for the player ([Friends](#friends)).
 
 Lists accept `state` (default `open`), `hopper` (numeric ID), `map`, `host`
 (author or canonical gamertag), `flags` (`custom`, `hopper`, `ranked` or

@@ -1138,10 +1138,18 @@ impl Live {
                 })
             })
             .collect();
-        let mut requests_in: Vec<FriendRequest> =
-            relations.incoming.iter().filter_map(&request).collect();
-        let mut requests_out: Vec<FriendRequest> =
-            relations.outgoing.iter().filter_map(&request).collect();
+        // Friendships are public; pending requests are the player's own
+        // (and the admins'), so anyone else, anonymous included, gets none.
+        let own = viewer.is_admin() || viewer == crate::sessions::Viewer::Account(a.xuid);
+        let pending = |v: &[(Xuid, String)]| -> Vec<FriendRequest> {
+            if own {
+                v.iter().filter_map(&request).collect()
+            } else {
+                Vec::new()
+            }
+        };
+        let mut requests_in = pending(&relations.incoming);
+        let mut requests_out = pending(&relations.outgoing);
         friends.sort_by_key(|f| f.gamertag.key());
         requests_in.sort_by_key(|r| r.gamertag.key());
         requests_out.sort_by_key(|r| r.gamertag.key());
