@@ -13,5 +13,7 @@ pub mod cull;
 pub mod gpu;
 #[cfg(feature = "gpu")]
 pub mod load;
+#[cfg(feature = "gpu")]
+pub mod look;
 pub mod skip;
 pub mod world;

@@ -311,7 +311,80 @@ hole: it means the pass was asked for and could not be drawn.
 The base map per material comes from a name rule today; step 4 moves the
 03a templates to their own translated programs (above, "Match the look"),
 each behind the per-material fallback, with mipmaps and the template's
-detail maps and scales.
+detail maps and scales. No hand-written per-template WGSL in between: it
+would be replaced by the translated programs.
+
+#### What a world pass reads (Code, `h2 disasm`, `h2 shader`, `vsh` disassembly)
+
+A world material's layer-3 pass, as `tags::material` resolves it: on 03a
+the opaque world templates are `tex_bump` and its variants (`_env`,
+`_detail_blend`, `_three_detail_blend`, `_two_detail`, ...). A `tex_bump`
+layer 3 is one pass (`lightmap_tex_detail`) with three implementations:
+per-pixel lightmap (stage 3 the lightmap), per-vertex, and dynamic. The
+engine picks the implementation per draw; the BSP's lightmapped sections
+take the per-pixel one (S, from the lightmap bind at `0x0004d40f`).
+
+The pass's vertex program comes from its `vrtx` tag's geometry
+classification. Classification 0 is world space (S: its program reads
+`v0` as a world position and applies no model transform). For the
+per-pixel `tex_detail` program it reads:
+
+| Input | Meaning | Our source |
+|---|---|---|
+| `v0` | world position | section positions |
+| `v1` | texture coordinate | section texcoords |
+| `v2`, `v3`, `v4` | the tangent frame (normal, binormal, tangent) | section tangent-frame stream |
+| `v5` | the lightmap bucket's signed lighting vector (stream `30`, [lighting.md](../formats/lighting.md)) | bucket stream, to decode |
+| `v6` | lightmap coordinate | bucket stream `1f` |
+
+and these constants (hardware numbering, D3D register + 96):
+
+| Constants | What | Set by | For the native pass |
+|---|---|---|---|
+| `c[0..3]` | view-projection rows (`dph` with `v0`) | per view, in one block upload | the device's values at the pass (below) |
+| `c[5].w`, `c[6]` | the scale that packs a unit vector into a colour (S: `0.5`, `n·s + s`); a world-space vector (dotted with the tangent frame into `oD0`) | per view | the device's values |
+| `c[10]`, `c[11]` | the viewport scale and offset (`oPos` fix-up) | per view | the device's values |
+| `c[12..17]` | six registers in one block | `0x00025c70` | the device's values |
+| `c[18..20]` | stage 0..2 texture-coordinate scale (xy) and offset (zw) | the instance (`0x00018e80`) | `tags::material`'s instance constants |
+| `c[50..52]` | model transform rows | `0x0004d830` from the render record's matrix, skipped for clusters (`[record+8] == -1`) | identity for clusters; the instance's matrix for instanced geometry |
+| `c[170..172]` | position and texcoord decompression (scale, offset) | `0x0001cdd0`; `0x0004d7c0` passes no compression for the BSP, so the default upload (`0x0001cf29`, scale 1, offset 0) | `(1, 1, 0, 0)`: BSP vertices are uncompressed |
+
+The per-view constants (`c[0..17]`) are the same for every draw of a
+view, and nothing in layer 3 writes them per draw (the per-draw uploads
+found are `c[18..]`, `c[21]`, `c[22]`, `c[24]`, `c[25]`, `c[31]`,
+`c[50..52]`, `c[170..172]`, `c[174]`). So the native pass reads them
+from the device's constant state when the pass is issued (after the
+drain, so the view's own upload is in): exact by construction, and no
+camera maths of ours to keep in step with the game's.
+
+The pixel side is the implementation's final pixel shader definition
+(variants built, instance colours patched), translated by `shaders::psh`.
+For `lightmap_tex_detail` it combines base (stage 0) and detail (stage 1,
+`x2`), the bump map (stage 2) dotted with the tangent-space lighting
+vector (`v1`) and view vector (`v0`), and the lightmap (stage 3). Two of
+its combiner constants are engine-driven (`c0` of stages 4 and 5: the
+specular amount and the lightmap's tint): spas `+0x38` bindings through
+`0x00019ca0`, whose inputs are not named yet. Until they are, the pass
+can take them from the D3D path's last value for the same program (the
+device's pixel constants), or keep such materials on the fallback.
+
+#### Order of work
+
+1. `d3d`: the external pass gets the device's vertex constants at issue
+   (a read-only snapshot, nothing else changes for other backends).
+2. `native-render::load`: per material, the resolved layer-3 pass and
+   implementation 0: the classification-0 program, the final pixel shader
+   definition, stage textures (instance bitmaps with their image, the
+   lightmap), sampler states and instance constants. Materials without
+   one (no layer 3, more than one pass, an engine texture source other
+   than the lightmap, unnamed engine pixel constants) stay on the D3D path.
+3. World vertices gain the tangent frame and the bucket's lighting vector;
+   textures keep their mip chains.
+4. `native-render::gpu`: one pipeline per (program, definition) through
+   `shaders::link`, the uniforms filled as the D3D path fills them, one
+   bind group per material.
+5. The A/B per template, and `native-world` keeps a material native only
+   once its template's A/B is clean.
 
 ## Open
 
