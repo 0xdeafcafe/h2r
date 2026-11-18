@@ -462,7 +462,34 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
                     spent_constants: Vec::new(),
                     spent_boxes: Vec::new(),
                 };
-                'batches: while let Ok(batch) = rx.recv() {
+                // When the inner backend wants its idle step
+                // (`Backend::idle`: host-only work such as interpolated
+                // frames). It runs only with nothing queued, so the
+                // guest's commands always go first.
+                let mut wake: Option<std::time::Instant> = None;
+                'batches: loop {
+                    let batch = match wake {
+                        None => match rx.recv() {
+                            Ok(b) => b,
+                            Err(_) => break,
+                        },
+                        Some(at) => {
+                            match rx.recv_timeout(
+                                at.saturating_duration_since(std::time::Instant::now()),
+                            ) {
+                                Ok(b) => b,
+                                Err(mpsc::RecvTimeoutError::Timeout) => {
+                                    let t = std::time::Instant::now();
+                                    wake = w.inner.idle();
+                                    let ns = t.elapsed().as_nanos() as u64;
+                                    w.shared.busy_ns.fetch_add(ns, Ordering::Relaxed);
+                                    BUSY_NS.fetch_add(ns, Ordering::Relaxed);
+                                    continue;
+                                }
+                                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                            }
+                        }
+                    };
                     let t = std::time::Instant::now();
                     // The jitter's delays are not backend work.
                     let mut slept = std::time::Duration::ZERO;
@@ -489,6 +516,10 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
                     w.shared.busy_ns.fetch_add(ns, Ordering::Relaxed);
                     BUSY_NS.fetch_add(ns, Ordering::Relaxed);
                     w.return_spent();
+                    // Ask once nothing is queued: a batch already waiting
+                    // is taken first (a zero timeout). Backends without
+                    // idle work answer `None` and the loop blocks again.
+                    wake = Some(std::time::Instant::now());
                 }
                 // Wake a guest waiting on a frame that will never finish.
                 *w.shared.presented.lock().unwrap() = u64::MAX;
@@ -850,8 +881,12 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         let gamma = gamma.map(|g| Box::new(*g));
         self.presents += 1;
         let n = self.presents;
+        // The arrival, read on the guest's thread (the render thread may
+        // reach this present a frame later).
+        let at = std::time::Instant::now();
         self.post(move |w| {
             let s = w.surface(surface)?;
+            w.inner.stamp_present(at);
             let r = w.inner.present_with_gamma(s, flags, gamma.as_deref());
             *w.shared.presented.lock().unwrap() = n;
             w.shared.presented_cv.notify_all();
@@ -1120,6 +1155,26 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
 
     fn can_sample_depth_surfaces(&self) -> bool {
         self.sample_depth
+    }
+
+    fn request_depth_grid(
+        &mut self,
+        surface: u32,
+        request: crate::backend::DepthGridRequest,
+        sink: crate::backend::DepthGridSink,
+    ) -> Result<bool, String> {
+        self.check()?;
+        // In order with the draws before it, on the render thread; the
+        // grid reaches `sink` from there.
+        let shared = Arc::clone(&self.shared);
+        self.post(move |w| {
+            let s = w.surface(surface)?;
+            if !w.inner.request_depth_grid(s, request, sink)? {
+                shared.miss("request_depth_grid returned false".into());
+            }
+            Ok(())
+        });
+        Ok(true)
     }
 
     fn depth_level_texture(&mut self, surface: u32) -> Result<Option<ProxyTexture<B>>, String> {

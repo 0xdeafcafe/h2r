@@ -95,6 +95,14 @@ impl NetworkConfig {
             guest
         }
     }
+    /// The IN_ADDR a peer on this console's own IP is known by, made from
+    /// its XNet base port: 169.254.(port >> 8).(port & 255), a link-local
+    /// address no peer of a game has. Each game on one Mac has its own base
+    /// (`h2 coop test`: 31000, 31010, 31020), so each gets its own.
+    pub fn shared_ip_in_addr(base: u16) -> Ipv4Addr {
+        let [hi, lo] = base.to_be_bytes();
+        Ipv4Addr::new(169, 254, hi, lo)
+    }
     pub(crate) fn channel_port(base: u16, guest: u16) -> u16 {
         if (1000..=1006).contains(&guest) {
             base + (guest - 1000)

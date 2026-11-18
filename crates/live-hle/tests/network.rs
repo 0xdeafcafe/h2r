@@ -207,6 +207,11 @@ fn free_base() -> SocketAddrV4 {
     }
     panic!("no free loopback port range");
 }
+/// The IN_ADDR a game on this Mac's own IP is known by to the others:
+/// made from its XNet base, so games sharing an IP stay apart.
+fn ina_of(w: &World) -> Ipv4Addr {
+    NetworkConfig::shared_ip_in_addr(w.config.address.port())
+}
 fn pair() -> (World, World) {
     let a = free_base();
     let mut b = free_base();
@@ -236,9 +241,10 @@ fn two_guest_udp_sockets_exchange_payloads_and_guest_sockaddrs() {
     assert_eq!(b.recvfrom(sb, 64), 7);
     assert_eq!(b.get(DATA, 7), b"request");
     assert_eq!(b.u32(OUT), 16);
+    // From a's own address, not the IP both share.
     assert_eq!(
         b.get(ADDR, 16),
-        sockaddr(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 1000))
+        sockaddr(SocketAddrV4::new(ina_of(&a), 1000))
     );
     assert_eq!(b.sendto(sb, a.config.address, b"reply"), 5);
     assert_eq!(a.readable(sa), 1);
@@ -343,7 +349,7 @@ fn loopback_broadcast_discovers_peer_on_port_1001_and_reply_uses_secure_mapping(
     assert_eq!(b.readable(sb), 1);
     assert_eq!(b.recvfrom(sb, 128), 19);
     assert_eq!(b.get(DATA, 19), b"synthetic-discovery");
-    let ina = u32::from_le_bytes(Ipv4Addr::LOCALHOST.octets());
+    let ina = u32::from_le_bytes(ina_of(&a).octets());
     assert_eq!(b.call("XNetInAddrToXnAddr", &[ina, XNA, KID]), 0);
     assert_eq!(b.get(XNA + 8, 2), a.config.address.port().to_be_bytes());
     // The real title broadcasts its reply too, on this same channel.
@@ -352,7 +358,7 @@ fn loopback_broadcast_discovers_peer_on_port_1001_and_reply_uses_secure_mapping(
     assert_eq!(a.recvfrom(sa, 64), 15);
     assert_eq!(a.get(DATA, 15), b"broadcast-reply");
     assert_eq!(
-        b.sendto(sb, SocketAddrV4::new(Ipv4Addr::LOCALHOST, 1001), b"found"),
+        b.sendto(sb, SocketAddrV4::new(ina_of(&a), 1001), b"found"),
         5
     );
     assert_eq!(a.readable(sa), 1);
@@ -361,6 +367,82 @@ fn loopback_broadcast_discovers_peer_on_port_1001_and_reply_uses_secure_mapping(
     a.nonblock(sa, true);
     assert_eq!(a.recvfrom(sa, 64), ERROR);
     assert_eq!(a.error(), 10035);
+}
+/// Three games on one Mac (`h2 coop test`: one IP, bases 7 or more
+/// apart): the host hears each guest from an address of its own and its
+/// replies reach the guest it answers, not whichever spoke first.
+#[test]
+fn a_host_tells_two_guests_on_its_own_ip_apart() {
+    let bases: Vec<_> = {
+        let mut v: Vec<SocketAddrV4> = Vec::new();
+        while v.len() < 3 {
+            let b = free_base();
+            if v.iter().all(|o| o.port().abs_diff(b.port()) > 6) {
+                v.push(b);
+            }
+        }
+        v
+    };
+    let world = |i: usize| {
+        let mut c = NetworkConfig::new(bases[i]);
+        c.loopback_peers = bases.iter().copied().filter(|b| *b != bases[i]).collect();
+        let mut w = World::with(c);
+        w.start();
+        w
+    };
+    let (mut host, mut bravo, mut charlie) = (world(0), world(1), world(2));
+    let sh = host.socket(17);
+    let sb = bravo.socket(17);
+    let sc = charlie.socket(17);
+    host.bind(sh, 1000);
+    bravo.bind(sb, 1000);
+    charlie.bind(sc, 1000);
+    // Each guest knows the host by the address XnToIn gives it.
+    bravo.key();
+    let to_host = Ipv4Addr::from(bravo.peer(&host).to_le_bytes());
+    assert_eq!(to_host, ina_of(&host));
+    assert_eq!(
+        bravo.sendto(sb, SocketAddrV4::new(to_host, 1000), b"bravo"),
+        5
+    );
+    assert_eq!(charlie.sendto(sc, host.config.address, b"charlie"), 7);
+    let mut from = Vec::new();
+    for _ in 0..2 {
+        assert_eq!(host.readable(sh), 1);
+        let n = host.recvfrom(sh, 64);
+        from.push((host.get(DATA, n as usize), host.get(ADDR, 16)));
+    }
+    from.sort();
+    assert_eq!(
+        from,
+        vec![
+            (
+                b"bravo".to_vec(),
+                sockaddr(SocketAddrV4::new(ina_of(&bravo), 1000)).to_vec()
+            ),
+            (
+                b"charlie".to_vec(),
+                sockaddr(SocketAddrV4::new(ina_of(&charlie), 1000)).to_vec()
+            ),
+        ]
+    );
+    // Replies to those addresses go to the right game.
+    assert_eq!(
+        host.sendto(sh, SocketAddrV4::new(ina_of(&charlie), 1000), b"to-charlie"),
+        10
+    );
+    assert_eq!(charlie.readable(sc), 1);
+    assert_eq!(charlie.recvfrom(sc, 64), 10);
+    assert_eq!(charlie.get(DATA, 10), b"to-charlie");
+    assert_eq!(
+        host.sendto(sh, SocketAddrV4::new(ina_of(&bravo), 1000), b"to-bravo"),
+        8
+    );
+    assert_eq!(bravo.readable(sb), 1);
+    assert_eq!(bravo.recvfrom(sb, 64), 8);
+    assert_eq!(bravo.get(DATA, 8), b"to-bravo");
+    bravo.nonblock(sb, true);
+    assert_eq!(bravo.recvfrom(sb, 64), ERROR, "nothing meant for Charlie");
 }
 #[test]
 fn loopback_broadcast_requires_so_broadcast() {
@@ -606,7 +688,7 @@ fn title_address_key_registration_roundtrip_and_connect_status_are_consistent() 
     a.put(XNA, &original);
     assert_eq!(a.call("XNetXnAddrToInAddr", &[XNA, KID, OUT]), 0);
     let ina = a.u32(OUT);
-    assert_eq!(ina.to_le_bytes(), Ipv4Addr::LOCALHOST.octets());
+    assert_eq!(ina.to_le_bytes(), ina_of(&b).octets());
     assert_eq!(a.call("XNetGetConnectStatus", &[ina]), 0);
     assert_eq!(a.call("XNetConnect", &[ina]), 0);
     assert_eq!(a.call("XNetGetConnectStatus", &[ina]), 2);
@@ -624,7 +706,8 @@ fn title_address_key_registration_roundtrip_and_connect_status_are_consistent() 
 fn secure_mapping_routes_guest_channel_ports_to_remote_instance_base() {
     let (mut a, mut b) = pair();
     a.key();
-    a.peer(&b);
+    let ina = a.peer(&b);
+    assert_eq!(Ipv4Addr::from(ina.to_le_bytes()), ina_of(&b));
     let sa = a.socket(254);
     let sb = b.socket(254);
     a.bind(sa, 1006);
@@ -632,7 +715,7 @@ fn secure_mapping_routes_guest_channel_ports_to_remote_instance_base() {
     assert_eq!(
         a.sendto(
             sa,
-            SocketAddrV4::new(Ipv4Addr::LOCALHOST, 1006),
+            SocketAddrV4::new(ina_of(&b), 1006),
             b"secure-without-encryption"
         ),
         25
@@ -667,7 +750,15 @@ fn key_and_address_errors_do_not_publish_invalid_or_ambiguous_mappings() {
     let mut other = old.clone();
     other[8..10].copy_from_slice(&(b.config.address.port() + 10).to_be_bytes());
     a.put(XNA, &other);
-    assert_eq!(a.call("XNetXnAddrToInAddr", &[XNA, KID, OUT]), 10048);
+    // Another game on the same IP: an address of its own, not b's.
+    assert_eq!(a.call("XNetXnAddrToInAddr", &[XNA, KID, OUT]), 0);
+    assert_eq!(
+        Ipv4Addr::from(a.u32(OUT).to_le_bytes()),
+        NetworkConfig::shared_ip_in_addr(b.config.address.port() + 10)
+    );
+    a.put(XNA, &old);
+    assert_eq!(a.call("XNetXnAddrToInAddr", &[XNA, KID, OUT]), 0);
+    assert_eq!(Ipv4Addr::from(a.u32(OUT).to_le_bytes()), ina_of(&b));
     a.word(OUT, 0xdeadbeef);
     a.put(XNA, &[0; 36]);
     assert_eq!(a.call("XNetXnAddrToInAddr", &[XNA, KID, OUT]), 10049);
@@ -792,6 +883,41 @@ fn qos_for_a_session_the_host_left_is_uncontacted_and_the_current_one_answers() 
     let q = a.u32(OUT);
     assert_eq!(a.get(q + 8, 1), vec![0xb]);
     assert_eq!(a.get(a.u32(q + 16), 15), b"synthetic-lobby");
+}
+/// The 2026-11-18 run: the host listens on its squad's XNKID with no data
+/// (`XNetQosListen` flags 5, `0x00073243`), then on the session id the
+/// server gave its advertisement with the 172-byte lobby data. A guest
+/// probes the squad's id; it gets the lobby data, which the title's join
+/// decodes.
+#[test]
+fn a_probe_for_the_squads_id_gets_the_lobby_data_set_under_the_server_id() {
+    let (mut a, mut b) = pair();
+    b.key();
+    let squad = b.get(KID, 8);
+    let key = b.get(KEY, 16);
+    assert_eq!(b.call("XNetQosListen", &[KID, 0, 0, 0, 5]), 0);
+    // The server's id for the advertisement, registered and listened on.
+    let mut server = squad.clone();
+    server[1] ^= 0xff;
+    b.put(KID, &server);
+    assert_eq!(b.call("XNetRegisterKey", &[KID, KEY]), 0);
+    assert_eq!(b.call("XNetQosListen", &[KID, 0, 0, 0, 5]), 0);
+    b.put(DATA, &[0xab; 172]);
+    assert_eq!(b.call("XNetQosListen", &[KID, DATA, 172, 0, 5]), 0);
+    // The guest: the squad's key, its address, the probe.
+    a.put(KID, &squad);
+    a.put(KEY, &key);
+    assert_eq!(a.call("XNetRegisterKey", &[KID, KEY]), 0);
+    a.peer(&b);
+    a.word(SET, XNA);
+    a.word(SET + 4, KID);
+    a.word(SET + 8, KEY);
+    let args = [1, SET, SET + 4, SET + 8, 0, 0, 0, 2, 0, 0, 0, OUT];
+    assert_eq!(a.call("XNetQosLookup", &args), 0);
+    let q = a.u32(OUT);
+    assert_eq!(a.get(q + 8, 1), vec![0xb], "contacted, with data");
+    assert_eq!(a.get(q + 14, 2), vec![172, 0]);
+    assert_eq!(a.get(a.u32(q + 16), 172), vec![0xab; 172]);
 }
 #[test]
 fn qos_rejects_invalid_counts_flags_pointers_and_cleans_up_allocations() {

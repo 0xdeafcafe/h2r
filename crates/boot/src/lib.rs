@@ -15,6 +15,7 @@ pub mod aim_assist;
 pub mod community_variants;
 pub mod controls_text;
 pub mod coop_jip;
+pub mod coop_latency;
 pub mod coop_live;
 pub mod coop_players;
 pub mod coop_probe;
@@ -920,6 +921,13 @@ pub fn run_hosted_with_live(
     // Sample the render thread too when profiling.
     #[cfg(feature = "perf")]
     let _ = d3d::RENDER_THREAD_START.set(|| perf::register_current_thread("render"));
+    // In-between frames at the display rate (docs/game/high-framerate.md,
+    // "Phase 2"): `impl.render.interpolate`, render thread only.
+    let interp = if opts.d3d && host.gfx.is_some() {
+        d3d_glue::interpolation(host.settings.as_ref(), host.render_thread)
+    } else {
+        None
+    };
     let mut d3d_calls = match (opts.d3d, host.gfx.take()) {
         (false, _) => None,
         (true, Some(b)) => Some(match host.gfx_view.take() {
@@ -939,12 +947,12 @@ pub fn run_hosted_with_live(
                 }
                 let report = Some(d3d_glue::scale_report(&mut b));
                 if host.render_thread {
-                    d3d_glue::install_with_report(&loaded.runtime, d3d::ThreadedBackend::new(b)?, report)?
+                    d3d_glue::install_threaded(&loaded.runtime, b, report, interp)?
                 } else {
                     d3d_glue::install_with_report(&loaded.runtime, b, report)?
                 }
             }
-            None if host.render_thread => d3d_glue::install_with(&loaded.runtime, d3d::ThreadedBackend::new(b)?)?,
+            None if host.render_thread => d3d_glue::install_threaded(&loaded.runtime, b, None, interp)?,
             None => d3d_glue::install_with(&loaded.runtime, b)?,
         }),
         (true, None) => Some(d3d_glue::install(&loaded.runtime)?),
@@ -979,6 +987,7 @@ pub fn run_hosted_with_live(
     // H2_LOCKSTEP / H2_INPUT_RECORD / H2_INPUT_REPLAY (lockstep_glue.rs).
     let lockstep_config = lockstep_glue::Config::from_env();
     let input_replay = lockstep_config.replay.is_some();
+    let lockstep_on = lockstep_config.enabled();
     let mut harness = if lockstep_config.enabled() {
         let h = lockstep_glue::Lockstep::install(&mut features, lockstep_config, lockstep::TickHook::HALO2, xa.as_deref())?;
         if let Some(n) = &h.tick_note {
@@ -1017,9 +1026,20 @@ pub fn run_hosted_with_live(
         .with_region(d3d_glue::PUSH_BASE, d3d_glue::PUSH_BASE + d3d_glue::PUSH_LEN, "push_buffer")
         .with_region(d3d_glue::SCRATCH_BASE, d3d_glue::SCRATCH_BASE + 0x1000, "d3d_scratch");
     features.add(&census).map_err(|e| anyhow::anyhow!("render census: {e}"))?;
+    // H2_PIPELINE_RENDER=1: the render front-end one frame behind the
+    // sim, on its own host thread (docs/graphics/pipelined-render.md, "The
+    // prototype"). Pipelined and serial runs are not lockstep-compatible.
+    let mut pipeline = d3d_glue::pipeline_render(d3d_calls.as_ref());
+    if lockstep_on {
+        pipeline = pipeline.disabled("lockstep (H2_LOCKSTEP/H2_INPUT_RECORD/H2_INPUT_REPLAY) compares serial runs");
+    }
+    features.add(&pipeline).map_err(|e| anyhow::anyhow!("pipeline render: {e}"))?;
     // Stage 7a: the Rust render_views, when H2_FEATURES has
     // impl.render.views=on (off by default; docs/graphics/render-loop.md).
     features.add(&feature::render_loop::RenderLoop).map_err(|e| anyhow::anyhow!("render loop: {e}"))?;
+    // Occlusion culling of objects (H2_FEATURES=impl.render.occlusion=on,
+    // off by default; docs/graphics/occlusion-culling.md).
+    features.add(&feature::occlusion::OcclusionCull).map_err(|e| anyhow::anyhow!("occlusion: {e}"))?;
     // H2_COOP_PROBE=1: the retail synchronous campaign path over System Link
     // (docs/live/live-coop.md section 9). Added last, so it can see every
     // override placed outside the plan and refuse instead of failing it.

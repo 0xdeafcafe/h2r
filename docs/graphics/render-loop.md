@@ -524,6 +524,10 @@ leaves.
    (`0x000c1d90`), `0x001320f0`, `0x00031660`. This is also 7b's seam.
 4. **`0x000335e0` (1.24 ms) and the visibility `0x00040e90` (0.91 ms,
    no D3D).** Guest-only subtrees; read them before choosing.
+   `0x00040e90` consumes the object render records; the objects are
+   chosen earlier, in `render_view_scene` (`0x0003f2c0`), read in
+   [occlusion-culling.md](occlusion-culling.md) with the per-object skip
+   point `0x00133790`.
 5. **Pass tags.** With `render_scene_passes` in Rust, set the device's
    `PassTag` from `ScenePasses::at()` before each layer call
    ([feature-engine.md](../engine/feature-engine.md), "Rendering").

@@ -789,13 +789,16 @@ host LAN address, wPortOnline contains the actual host base in network order,
 and the synthetic Ethernet identity includes the IP and both port bytes so
 local instances differ. The default base is 3074; guest ports 1000..1006 map to
 base plus their offset from 1000. Other ports pass through. XNetXnAddrToInAddr
-requires a registered XNKID and returns the peer's real IPv4, while retaining
-its full XNADDR, key ID and host base for later routing. XNetInAddrToXnAddr
-returns that record and optional key ID. recvfrom also learns a sender's base
-from the channel's source port before secure registration. Incoming channel
-ports are translated back to the guest's virtual port. A single IP can identify
-one remote endpoint in an HLE at a time; registering another base on that IP
-fails with WSAEADDRINUSE, instead of redirecting an existing peer.
+requires a registered XNKID and returns the peer's IN_ADDR, while retaining
+its full XNADDR, key ID and host base for later routing. Peers are told apart
+by IP and base port: a peer on another IP is known by its real IPv4; a peer on
+this console's own IP (several games on one Mac, as `h2 coop test` runs them)
+or on an IP another peer already holds is known by 169.254.(base >> 8).(base &
+255) (`NetworkConfig::shared_ip_in_addr`), so each game is a peer of its own.
+XNetInAddrToXnAddr returns that record and optional key ID. recvfrom also
+learns a sender's base from the channel's source port before secure
+registration, and reports the sender by the same IN_ADDR. Incoming channel
+ports are translated back to the guest's virtual port.
 
 XNetCreateKey fills an 8-byte system-link ID and a 16-byte key from host OS
 randomness; XNetRandom fills the requested buffer. Register/unregister maintain

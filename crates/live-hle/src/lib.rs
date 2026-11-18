@@ -40,6 +40,7 @@ mod stats;
 pub use stats::{Stat, StatSpec, StatValue, StatWrite};
 mod storage_api;
 mod teams;
+pub mod traffic;
 pub use teams::{MEMBER_SIZE, TEAM_PROPERTIES_SIZE, TEAM_SIZE};
 mod ui;
 pub use network_config::{COOP_PORT_OFFSET, NetworkConfig};

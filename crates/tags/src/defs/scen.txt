@@ -1,0 +1,5 @@
+# Scenery: the object header and 8 bytes of its own.
+group scen 0xc4
+  0x0 struct object obje -- the object header
+  0xbc unknown 0x4
+  0xc0 unknown 0x4

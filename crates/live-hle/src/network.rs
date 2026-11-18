@@ -1,6 +1,6 @@
 //! Guest Winsock and secure-address translation. Copy inputs/check outputs under
 //! the guest lock, then release it before any host wait or network operation.
-use crate::{NetworkConfig, host, qos, qos_memory::QosMemory};
+use crate::{NetworkConfig, host, qos, qos_memory::QosMemory, traffic};
 use runtime::{Runtime, guest::Access};
 use std::{
     collections::BTreeMap,
@@ -300,6 +300,25 @@ impl Network {
             None => a,
         }
     }
+    /// The IN_ADDR the title knows the peer whose XNet base is `remote`
+    /// by: the one it has; else its IP, unless that is this console's own
+    /// or another peer's (games on one Mac share an IP: 31000, 31010,
+    /// 31020 on 10.0.3.7), when one is made from the port
+    /// ([`NetworkConfig::shared_ip_in_addr`]). Peers are told apart by
+    /// IP and port, so each game on a Mac is a player of its own.
+    fn in_addr(&self, peers: &BTreeMap<u32, Peer>, remote: SocketAddrV4) -> u32 {
+        if let Some((ina, _)) = peers
+            .iter()
+            .find(|(_, p)| endpoint(&p.xna).ok() == Some(remote))
+        {
+            return *ina;
+        }
+        let real = ip_word(*remote.ip());
+        if remote.ip() != self.config.address.ip() && !peers.contains_key(&real) {
+            return real;
+        }
+        ip_word(NetworkConfig::shared_ip_in_addr(remote.port()))
+    }
     fn source(&self, mut a: SocketAddrV4, socket: &Socket) -> SocketAddrV4 {
         let guest_port = *lock(&socket.guest_port);
         if (1000..=1006).contains(&guest_port) {
@@ -310,12 +329,14 @@ impl Network {
                 .filter(|p| *p > 0 && *p <= 65529)
             {
                 let mut s = lock(&self.state);
-                s.peers.entry(ip_word(*a.ip())).or_insert_with(|| Peer {
-                    xna: xnaddr(SocketAddrV4::new(*a.ip(), base)),
+                let from = SocketAddrV4::new(*a.ip(), base);
+                let ina = self.in_addr(&s.peers, from);
+                s.peers.entry(ina).or_insert_with(|| Peer {
+                    xna: xnaddr(from),
                     kid: [0; 8],
                     connected: false,
                 });
-                a.set_port(guest_port);
+                a = SocketAddrV4::new(Ipv4Addr::from(ina.to_le_bytes()), guest_port);
             }
         }
         a
@@ -352,8 +373,13 @@ impl Network {
                 if !matches!((datagram, a[2]), (true, 0 | 17 | 254) | (false, 0 | 6)) {
                     return Err(10043);
                 }
+                let native = host(host::Socket::new(datagram))?;
+                if datagram && traffic::low_delay() {
+                    // Best effort: a refusal leaves the default class.
+                    let _ = native.low_delay();
+                }
                 let socket = Arc::new(self::Socket {
-                    host: host(host::Socket::new(datagram))?,
+                    host: native,
                     protocol: a[2],
                     options: Mutex::default(),
                     guest_port: Mutex::new(0),
@@ -473,8 +499,8 @@ impl Network {
                 let remote = endpoint(&xna)?;
                 let kid: [u8; 8] = read(rt, a[1], 8)?.try_into().unwrap();
                 writable(rt, a[2], 4)?;
-                let ip = ip_word(*remote.ip());
                 let mut s = lock(&self.state);
+                let ip = self.in_addr(&s.peers, remote);
                 if !s.keys.contains_key(&kid) {
                     eprintln!(
                         "live: join: {remote} for session {}: no key registered for it",
@@ -484,8 +510,9 @@ impl Network {
                 }
                 if !s.peers.contains_key(&ip) {
                     eprintln!(
-                        "live: join: {remote} for session {}: address made",
-                        hex(&kid)
+                        "live: join: {remote} for session {}: address made ({})",
+                        hex(&kid),
+                        Ipv4Addr::from(ip.to_le_bytes())
                     );
                 }
                 if let Some(old) = s.peers.get(&ip)
@@ -578,11 +605,15 @@ impl Network {
             }
             return Ok(data.len() as u32);
         }
-        Ok(host(
+        let sent = host(
             socket
                 .host
                 .send(&data, target.map(|p| self.target(p)), a[3] as i32),
-        )? as u32)
+        )?;
+        if socket.host.datagram {
+            traffic::sent(sent);
+        }
+        Ok(sent as u32)
     }
     fn recv(&self, op: Op, a: &[u32], rt: &Runtime) -> Result<u32> {
         let socket = self.socket(a[0])?;
@@ -604,15 +635,31 @@ impl Network {
         if a[2] == 0 && !socket.host.datagram {
             return Ok(0);
         }
-        let mut data = vec![
-            0;
-            if socket.host.datagram {
-                65536
-            } else {
-                a[2] as usize
-            }
-        ];
-        let (len, sender) = socket.host.recv(&mut data, a[3] as i32).map_err(|e| {
+        // A datagram is read whole (to report truncation) into a buffer
+        // kept per thread, not one allocated and zeroed per call: the game
+        // polls its sockets every frame and most polls find nothing.
+        let mut data = if socket.host.datagram {
+            traffic::take_buffer()
+        } else {
+            vec![0; a[2] as usize]
+        };
+        let got = socket.host.recv(&mut data, a[3] as i32);
+        let result = self.received(got, &data, &socket, a, rt, source);
+        if socket.host.datagram {
+            traffic::give_buffer(data);
+        }
+        result
+    }
+    fn received(
+        &self,
+        got: io::Result<(usize, SocketAddrV4)>,
+        data: &[u8],
+        socket: &Socket,
+        a: &[u32],
+        rt: &Runtime,
+        source: bool,
+    ) -> Result<u32> {
+        let (len, sender) = got.map_err(|e| {
             if e.kind() == io::ErrorKind::WouldBlock
                 && !socket.nonblocking.load(Ordering::Acquire)
                 && lock(&socket.options)
@@ -624,10 +671,13 @@ impl Network {
                 host::wsa(&e)
             }
         })?;
+        if socket.host.datagram {
+            traffic::received(len);
+        }
         let copy = len.min(a[2] as usize);
         write(rt, a[1], &data[..copy])?;
         if source {
-            let sender = self.source(sender, &socket);
+            let sender = self.source(sender, socket);
             write(rt, a[4], &address_bytes(sender))?;
             put_word(rt, a[5], 16)?;
         }
@@ -868,6 +918,9 @@ impl Network {
             entry.enabled = false;
         }
         if let Some(data) = data {
+            if !data.is_empty() {
+                entry.data_set = DATA_SET.fetch_add(1, Ordering::Relaxed);
+            }
             entry.data = data;
         }
         if a[4] & 8 != 0 {
@@ -977,6 +1030,8 @@ impl Network {
         Ok(0)
     }
 }
+/// Orders listeners' data ([`qos::answer`]).
+static DATA_SET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 fn hex(kid: &[u8; 8]) -> String {
     live_proto::sign::hex(kid)
 }

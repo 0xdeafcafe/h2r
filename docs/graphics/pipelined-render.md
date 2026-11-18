@@ -1,8 +1,10 @@
 # Pipelined rendering
 
-Status: **design and measurement only.** Nothing here is implemented
-except the census that decides it (`render-census`, below). The first
-census run and its verdict are in "Census results (2026-11-18)".
+Status: **a first prototype is built, off by default**
+(`H2_PIPELINE_RENDER=1`, "The prototype" below), on the census that
+decided it (`render-census`) and the second executor
+(docs/runtime/second-executor.md). The first census run and its verdict
+are in "Census results (2026-11-18)". Not yet run in the game.
 
 The question: can the game's own render front-end
 (`render_frame_and_present` `0x00223240` and everything under it,
@@ -742,6 +744,119 @@ and no particle updates. That does not happen in real play, so the
 speedup only comes after steps 6 and 7. The native renderer (feature
 engine stages 7b-7d) remains the alternative if steps 6 and 7 cost more
 than they save.
+
+## The prototype (`H2_PIPELINE_RENDER=1`)
+
+Build plan steps 3 (the cheap remedies), 4 (hand-back) and 5 (measure),
+as `crates/feature/src/pipeline_render.rs`, wired in the boot by
+`d3d_glue::pipeline_render`. Off unless `H2_PIPELINE_RENDER=1`; off under
+lockstep (`H2_LOCKSTEP`, `H2_INPUT_RECORD`, `H2_INPUT_REPLAY`) and with
+`render-census`. No image change: it needs a new `h2` binary only.
+
+**The frame.** An implementation at `render_frame_and_present`
+(`0x00223240`, which is: world path `0x002234e0` or fallback `0x002232a0`,
+then the frame wait `0x0012b2e0`, then `rasterizer_present(0, 0)` when
+both resource-cache countdowns `0x004e6470`/`0x004e64a0` are `<= 0`; a
+plain `ret`). On the game thread, at each entry:
+
+1. **Join** the render launched at the previous entry and hand it back
+   (below). Charge its guest accesses to the game thread's slice
+   (`ExecCtx::charge_accesses`), so the logical clock sees them at this
+   fixed point.
+2. **Decide.** Serial (the original, on the game thread) when the world
+   path would not be taken (the three tests at `0x00223240` and
+   `0x00068290` read in Rust: menus, loading screens, Bink), when a
+   countdown runs (loading), or after a quiesce request.
+3. Otherwise: the **frame wait** here (`call_guest` to `0x0012b2e0`, the
+   D3D layer's clocked wait), then **snapshot** (`SecondExecutor::snapshot`,
+   two COW copies), then the **launch remedies** on live RAM: the 64-bit
+   present counter `0x00485aa0` + 1 (the predicted present), the one-shot
+   byte `0x004e6098` cleared. Then **launch** `0x00223240` (the generated
+   original) on the render host thread with the entry's registers and its
+   own 128 KB guest stack from the feature arena, and return to the game.
+
+On the render thread the executor's dispatch has the generated original
+at `0x00223240` and a no-op at `0x0012b2e0`; it may run the D3D layer's
+overrides (the entries, the write barrier's and CreateDevice's shadow
+pages, the port I/O stubs). Everything else (kernel imports, XAPI, other
+features' hooks, plan chains) is refused, which ends the render there.
+
+**Hand-back** (join of a completed render): the render stack pages are
+dropped; the visit marks (`0x004de2f8..0x004e0300`, `0x004e0304..`,
+`0x004e7411`, `0x004e7418..0x004e7c18`, `0x004e7c18`, `0x004e7c20..0x004e8000`,
+counters `0x004de2fc`, `0x004e0308`, `0x004e7414`, `0x004e7c1c`) stay
+render-private; the present counter gets the render's delta less the
+prediction (a difference is a `mispredict`); the render-frame counter
+`0x004ba034` gets the render's delta (a frame late for particles, as the
+census row allows); `0x004e6098` and the host-owned vblank words
+(`0x00485ab0..0x00485ac0`, `0x0055e6b8..0x0055e6c0`) never come back.
+Every other byte the render changed is merged byte by byte against the
+snapshot (`Guest::hand_back`: a render-only page comes back whole, a page
+both wrote keeps the sim's bytes the render did not change, a byte both
+changed is a counted conflict, the render's value wins). The stamp array
+from `0x004e7c20` is assumed to end at the page (the census saw up to
+`0x004e7d7f`); its real end is still to read.
+
+**D3D.** The D3D handlers read guest memory through `ctx.memory()`, so on
+the render thread they read the snapshot and write the view by
+construction. The write barrier drains its watch by id; the executor
+takes the live Guest's `boot:d3d` subscription over at each snapshot
+(`Guest::adopt_watch`: same id, the sim's undrained pages moved to the
+view), so the device hears of the sim's writes and the render's own. The
+sim's D3D calls on the game thread (the `0x3f…` entries, wrapped at the
+first frame) join the render first; one from another guest thread is not
+ordered (`d3d_other_thread`).
+
+**Fallbacks.** A refused call does not rerun the frame: draws already
+made would be made twice and the device's own state could not be rolled
+back. Instead everything the render wrote is handed back (its stack too;
+the mark counters take the larger value, the marks themselves are
+merged), the present counter loses its prediction, and the game thread
+makes the refused call with the render's CPU at that call
+(`SecondExecutor::refused_cpu`) and runs the rest of the render through
+the generated code's resume points; the render's last `ret` lands in a
+continuation that restores the game thread and carries on (the next
+launch, or the sim's D3D call). The frame wait inside it is skipped (it
+ran at the launch). A refusal beneath a Rust continuation on the render
+thread (a D3D push callback, a destroy delivery) cannot move to the game
+thread's context: it is counted as `unresumable:<call>` and the run stops
+with that name. Faults stop the run as they would serially.
+
+**Snapshots and pause.** The feature's snapshot policy reports a render
+in flight and asks for the next frame to run serially, so a snapshot at
+the next tick boundary after it passes.
+
+**Output.** Once a second, from the game thread:
+
+```text
+pipeline: frames pipelined 58 completed 41 serial [loading 2] fallbacks 17 [kernel:<export> 12, <override> 5] d3d_joins 0 d3d_other_thread 0 join_wait 11.20ms hand_back 0.40ms snapshot 1.10ms render 25.70ms pages 231.0 conflicts 3 mispredicts 0
+```
+
+(an illustration of the shape, not a measurement). `completed` frames
+ran entirely on the render thread; `fallbacks` by the call that stopped
+them (`kernel:` for kernel imports, else the override's name); times are
+per pipelined frame: the game thread's wait at the join, the hand-back,
+the snapshot, and the render thread's run; `pages` handed back per frame.
+
+**Tests.** `crates/feature/tests/pipeline_render.rs`: a synthetic render
+front-end (a Rust function registered as generated code with resume
+points) and sim, run serially and pipelined over 120 rounds
+(`H2_PIPELINE_ROUNDS`; 2,000 pass): the same final memory but the marks,
+fallback frames finished on the game thread with the kernel called once
+each and one frame wait a frame, D3D reads from the launch snapshot while
+the sim has moved on, sim D3D calls after the render's, a snapshot
+waiting one frame, a refusal under a continuation stopping by name.
+`crates/emit/tests/second_executor.rs`: lifted x86 refused at a kernel
+call carries on on the main context from the refused CPU (twenty rounds).
+`crates/d3d/tests/registration.rs`: a real D3D entry on the executor (the
+recording backend) reads the snapshot and writes the view.
+
+**Not done** (fallbacks cover them; the `pipeline:` lines say which
+first): executor-safe kernel time reads; the async I/O requests and the
+texture and geometry caches (build plan 3.5); the game-time bracket
+(3.4); census v2's `game_state`/`datum`/`world_pool` lines; render-loop
+ports on the render thread (they are refused at their entry); the render
+thread's frame stats; the COW fault cost on the real working set.
 
 ## Related
 

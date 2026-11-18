@@ -151,6 +151,12 @@ impl WriteWatch {
             .find(|s| s.id == id)
             .ok_or(WatchError::UnknownWatch)
     }
+    /// Number later subscriptions from `first` on, so ids adopted from
+    /// another Guest ([`Guest::adopt_watch`]) never collide with this
+    /// Guest's own.
+    pub(crate) fn number_from(&mut self, first: u32) {
+        self.next_id = self.next_id.max(first);
+    }
 }
 
 /// Folded `[addr, addr + len)` to an inclusive physical page range.
@@ -305,6 +311,57 @@ impl Guest {
             Ok(r) => Ok(r),
             Err(panic) => std::panic::resume_unwind(panic),
         }
+    }
+    /// Take over `source`'s subscriptions named `owner` for a copy-on-write
+    /// view of it (docs/runtime/second-executor.md, "What remains", item 4):
+    /// each gets a subscriber here with the same [`WatchId`], owner and
+    /// watched pages (made the first time, its watched set refreshed after),
+    /// and `source`'s undrained dirty pages move here (cleared there). A
+    /// consumer that drains its id through whichever Guest it runs against
+    /// then sees, on the view, the source's writes it had not yet drained
+    /// and the view's own. Returns how many subscriptions matched. An id
+    /// this Guest already uses for another owner is left alone.
+    pub fn adopt_watch(&mut self, source: &mut Guest, owner: &str) -> usize {
+        let mut n = 0;
+        for s in source
+            .watch
+            .subscribers
+            .iter_mut()
+            .filter(|s| s.owner == owner)
+        {
+            n += 1;
+            let mine = match self.watch.subscribers.iter_mut().position(|m| m.id == s.id) {
+                Some(i) if self.watch.subscribers[i].owner != s.owner => continue,
+                Some(i) => &mut self.watch.subscribers[i],
+                None => {
+                    self.watch.subscribers.push(Subscriber {
+                        id: s.id,
+                        owner: s.owner,
+                        watched: bits(),
+                        dirty: bits(),
+                        any_dirty: false,
+                        dirty_words: (WORDS, 0),
+                        watches_any: false,
+                        muted: false,
+                    });
+                    self.watch.next_id = self.watch.next_id.max(s.id.0 + 1);
+                    self.watch.subscribers.last_mut().expect("just pushed")
+                }
+            };
+            mine.watched.copy_from_slice(&s.watched[..]);
+            if s.any_dirty {
+                let (lo, hi) = s.dirty_words;
+                for w in lo..hi.min(WORDS) {
+                    mine.dirty[w] |= std::mem::take(&mut s.dirty[w]);
+                }
+                mine.any_dirty = true;
+                mine.dirty_words = (mine.dirty_words.0.min(lo), mine.dirty_words.1.max(hi));
+                s.any_dirty = false;
+                s.dirty_words = (WORDS, 0);
+            }
+        }
+        self.watch.refresh();
+        n
     }
     /// The folded address (`0x80000000 | pa`) of mapped virtual `va`, or None
     /// if `va` is unmapped. Translation uses the current mappings; it is how a

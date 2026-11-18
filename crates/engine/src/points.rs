@@ -301,6 +301,20 @@ points! { ALL;
     /// each entry through `SetRenderState_Simple`, the D3D shadow and
     /// dirty bits, or a per-state setter.
     RENDER_STATES @ 0x0001_a170: [opaque]; "docs/graphics/render-loop.md";
+    /// The object render records for a visibility struct: EAX the struct
+    /// (`0x00547f88` the main view's), stack 0 an argument passed on,
+    /// `ret 4`. Reorders the struct's object list (`0x00134240`), then
+    /// calls `OBJECT_RENDER_SETUP` per listed object.
+    OBJECT_RENDER_RECORDS @ 0x0013_3720: [fn(vis: eax, arg: stack 0) ret 4]; "docs/graphics/occlusion-culling.md";
+    /// One listed object's render setup (view depth, LOD, nodes, children,
+    /// the `0x004ba138` records): ESI the visibility struct, stack
+    /// `(list index, byte, byte*, -1, arg)`, AL a retry flag, `ret 0x14`.
+    /// The occlusion skip point.
+    OBJECT_RENDER_SETUP @ 0x0013_3790: [fn(vis: esi, index: stack 0) -> al ret 20]; "docs/graphics/occlusion-culling.md";
+    /// The sorted transparents of a scene pass (`render_scene_passes`
+    /// calls it after the opaque layers and before the first-person
+    /// chain): the occlusion depth capture point.
+    SCENE_TRANSPARENTS @ 0x0001_e370: [opaque]; "docs/graphics/occlusion-culling.md";
     /// Shader draw begin: per draw.
     SHADER_DRAW_BEGIN @ 0x0001_bbf0: [opaque], Hot; "docs/formats/shader-instances.md";
     /// `submit_structure_or_model_geometry`: per draw.
@@ -462,6 +476,19 @@ points! { ALL;
     /// Apply one update record (stack): player entries, the player-set
     /// change (`+0xDD0`, mask `+0xDD4`), events, the save flag (`+0x403C`).
     SIM_UPDATE_APPLY @ 0x0006_83a0: [opaque], Optional; "docs/live/live-coop.md";
+    /// Synchronous: send this console's player actions for the tick to
+    /// the machine that builds the updates (message `0x28`, `0x180`
+    /// bytes, up to four local players).
+    SIM_ACTIONS_SEND @ 0x0008_5fc0: [opaque], Optional; "docs/live/live-coop.md";
+    /// Synchronous: a peer's actions arrived (from the `0x28` handler
+    /// `0x949d0`).
+    SIM_ACTIONS_RECEIVE @ 0x0008_5f50: [opaque], Optional; "docs/live/live-coop.md";
+    /// Synchronous: send one tick's update record to one peer's view
+    /// (message `0x27`; queued instead while that view is joining).
+    SIM_UPDATE_SEND @ 0x0008_60b0: [opaque], Optional; "docs/live/live-coop.md";
+    /// Synchronous: an update arrived; run the ticks it allows (from the
+    /// `0x27` handler `0x94990`).
+    SIM_CATCH_UP @ 0x0006_98e0: [opaque], Optional; "docs/live/live-coop.md";
     /// Save the game state (checkpoint): the save callbacks, then the
     /// writer `0x2151f0`.
     GAME_STATE_SAVE @ 0x0012_3e20: [opaque], Optional; "docs/runtime/checkpoints.md";

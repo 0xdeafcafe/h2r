@@ -24,7 +24,9 @@
 //! * [`backend`], [`gfx_backend`], [`shader`]: the host side;
 //! * [`nv2a`]: the [`ShaderProvider`] over `crates/shaders`;
 //! * [`threaded`]: a render thread that runs a backend's work off the
-//!   guest's thread (opt-in, docs/graphics/render-thread.md).
+//!   guest's thread (opt-in, docs/graphics/render-thread.md);
+//! * [`interp`]: in-between frames replayed with interpolated matrices
+//!   (opt-in, docs/game/high-framerate.md).
 
 pub mod abi;
 pub mod backend;
@@ -35,6 +37,7 @@ pub mod gfx_backend;
 pub mod glyph;
 pub mod guest;
 pub mod hw;
+pub mod interp;
 pub mod layout;
 pub mod nv2a;
 pub mod pipeline_store;
@@ -51,14 +54,15 @@ pub mod vblank;
 pub mod vertex_cache;
 
 pub use backend::{
-    Backend, ChannelMask, DrawOutcome, GuestLayoutKind, PixelRect, Recorded, RecordingBackend,
+    Backend, ChannelMask, DepthGridRequest, DepthGridResult, DepthGridSink, DrawOutcome, GuestLayoutKind, PixelRect, Recorded, RecordingBackend,
     RectClear, ResolvedDraw, StreamBytes, StreamData, CachedBytes, CachedIndices, IndexData, Viewport,
 };
-pub use device::{Device, DeviceConfig, GuestRange, PresentParameters, Stats, WritebackCause, WritebackCauses};
+pub use device::{DepthScale, Device, DeviceConfig, OcclusionSink, GuestRange, PresentParameters, Stats, WritebackCause, WritebackCauses};
 pub use dirty::{UploadPolicy, WriteTracker};
 pub use events::{D3dError, Event, HleStop};
 pub use gfx_backend::{GfxBackend, SwapFinish};
 pub use guest::{GuestError, GuestMemory, SparseMemory};
+pub use interp::InterpBackend;
 pub use layout::GuestLayout;
 pub use nv2a::Nv2aShaders;
 pub use resource::AddressMap;

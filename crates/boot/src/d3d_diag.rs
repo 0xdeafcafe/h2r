@@ -463,6 +463,15 @@ impl<B: Backend> Backend for DiagBackend<B> {
     fn can_sample_depth_surfaces(&self) -> bool {
         self.inner.can_sample_depth_surfaces()
     }
+    fn request_depth_grid(
+        &mut self,
+        surface: Self::Surface,
+        request: d3d::DepthGridRequest,
+        sink: d3d::DepthGridSink,
+    ) -> Result<bool, String> {
+        self.inner.request_depth_grid(surface, request, sink)
+    }
+
     fn depth_level_texture(&mut self, surface: Self::Surface) -> Result<Option<Self::Texture>, String> {
         let r = self.inner.depth_level_texture(surface)?;
         Ok(r.map(|inner| {
@@ -668,6 +677,17 @@ impl<B: Backend> Backend for DiagBackend<B> {
     }
     fn present(&mut self, surface: Self::Surface, flags: u32) -> Result<(), String> {
         self.present_with_gamma(surface, flags, None)
+    }
+    // The interpolated replay's host-only calls (d3d::interp): passed
+    // through, not counted as guest presents.
+    fn stamp_present(&mut self, at: std::time::Instant) {
+        self.inner.stamp_present(at)
+    }
+    fn present_replay(&mut self, surface: Self::Surface, gamma: Option<&[u8; 768]>) -> Result<(), String> {
+        self.inner.present_replay(surface, gamma)
+    }
+    fn idle(&mut self) -> Option<std::time::Instant> {
+        self.inner.idle()
     }
     fn present_with_gamma(&mut self, surface: Self::Surface, flags: u32, gamma: Option<&[u8; 768]>) -> Result<(), String> {
         self.line(format!("present {surface:?} flags={flags:#x}"));

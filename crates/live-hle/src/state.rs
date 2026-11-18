@@ -666,14 +666,25 @@ impl State {
             }
         }
         let now = time::OffsetDateTime::now_utc().unix_timestamp();
-        for v in self.auto.unread_too_long(&self.invites.unread(), now) {
-            eprintln!(
-                "coop-auto: {}'s invitation to session {} is accepted but the game hasn't \
-                 taken it after {}s (its menu poll reads it; docs/live/live-coop.md 12.1)",
-                v.gamertag,
-                v.session_id,
-                crate::auto::UNREAD_AFTER
-            );
+        for (v, queued) in self.auto.unread_too_long(&self.invites.unread(), now) {
+            if queued {
+                eprintln!(
+                    "coop-auto: {}'s invitation to session {} is accepted but the game hasn't \
+                     taken it after {}s (its reader runs from one menu screen; \
+                     docs/live/live-coop.md 12.1)",
+                    v.gamertag,
+                    v.session_id,
+                    crate::auto::UNREAD_AFTER
+                );
+            } else {
+                eprintln!(
+                    "coop-auto: {}'s invitation to session {}: the server never confirmed the \
+                     acceptance within {}s",
+                    v.gamertag,
+                    v.session_id,
+                    crate::auto::UNREAD_AFTER
+                );
+            }
         }
         let looked_up = self
             .auto
@@ -691,7 +702,7 @@ impl State {
                 crate::auto::OFFERS
             );
         }
-        let Some(own) = self.sessions.current_id() else {
+        let Some(own) = self.sessions.lobby_id() else {
             return;
         };
         let id = live_proto::sign::hex(&own);
@@ -722,7 +733,7 @@ impl State {
         if controller >= 4 || self.user_ids[controller] == 0 {
             return Err(INVALID_USER);
         }
-        let Some(id) = self.sessions.current_id() else {
+        let Some(id) = self.sessions.lobby_id() else {
             return Err(MATCH_INVALID_SESSION);
         };
         let session_id = live_proto::sign::hex(&id);

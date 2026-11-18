@@ -236,6 +236,86 @@ pub fn render_thread_requested() -> bool {
     render_thread_from(std::env::var("H2_RENDER_THREAD").ok().as_deref())
 }
 
+/// The frame-rate setting's reader for the interpolated replay
+/// (`d3d::InterpBackend`, docs/game/high-framerate.md "Phase 2"), when it
+/// is asked for: `impl.render.interpolate` in `H2_FEATURES` (that exact
+/// switch; `impl.render=on` does not include it). It needs the render
+/// thread, and is off under `H2_PIPELINE_RENDER` (the lockstep harness
+/// cannot certify that combination). The rate follows the Frame Rate row
+/// (`graphics.fps`, `H2_FPS`, `--fps`): 30 replays nothing.
+pub fn interpolation(
+    settings: Option<&std::sync::Arc<settings::Store>>,
+    render_thread: bool,
+) -> Option<Box<dyn Fn() -> u32 + Send>> {
+    let switches = feature::Switches::from_env().ok()?;
+    interpolation_from(
+        switches.feature("impl.render.interpolate", false),
+        render_thread,
+        std::env::var("H2_PIPELINE_RENDER").ok().as_deref(),
+    )
+    .then(|| -> Box<dyn Fn() -> u32 + Send> {
+        eprintln!(
+            "d3d: interpolated replay on (impl.render.interpolate): in-between frames at up to {} fps while the frame rate is above 30",
+            d3d::interp::pacing::MAX_REPLAY_HZ
+        );
+        match settings {
+            Some(store) => {
+                let fps = store.handle::<u32>(crate::setting_defs::FPS.key);
+                Box::new(move || fps.get())
+            }
+            None => {
+                let fps = fps_from(std::env::var("H2_FPS").ok().as_deref());
+                Box::new(move || fps)
+            }
+        }
+    })
+}
+
+/// [`interpolation`]'s decision: the switch, the render thread, and
+/// `H2_PIPELINE_RENDER` unset or `0`.
+pub fn interpolation_from(switch: bool, render_thread: bool, pipeline_render: Option<&str>) -> bool {
+    if !switch {
+        return false;
+    }
+    if !render_thread {
+        eprintln!("d3d: impl.render.interpolate needs the render thread (H2_RENDER_THREAD=0 is set): off");
+        return false;
+    }
+    if pipeline_render.is_some_and(|v| v != "0") {
+        eprintln!("d3d: impl.render.interpolate is off under H2_PIPELINE_RENDER");
+        return false;
+    }
+    true
+}
+
+/// `H2_FPS` as the setting stores it: 0 for uncapped, 30 when unset or
+/// unreadable.
+pub fn fps_from(value: Option<&str>) -> u32 {
+    match value.map(str::trim) {
+        Some("uncapped" | "unlimited" | "max") => 0,
+        Some(v) => v.parse().unwrap_or(30),
+        None => 30,
+    }
+}
+
+/// `backend` on a render thread, behind the interpolated replay when
+/// `interp` (from [`interpolation`]) is given.
+pub fn install_threaded<B>(
+    rt: &runtime::Runtime,
+    backend: B,
+    extra: Option<ExtraReport>,
+    interp: Option<Box<dyn Fn() -> u32 + Send>>,
+) -> anyhow::Result<Installed>
+where
+    B: d3d::backend::Backend + Send + 'static,
+    B::Texture: Sync,
+{
+    match interp {
+        Some(rate) => install_with_report(rt, d3d::ThreadedBackend::new(d3d::InterpBackend::new(backend, rate))?, extra),
+        None => install_with_report(rt, d3d::ThreadedBackend::new(backend)?, extra),
+    }
+}
+
 /// [`render_thread_requested`] for a given value of the variable: only
 /// `0` turns it off.
 pub fn render_thread_from(value: Option<&str>) -> bool {
@@ -428,6 +508,27 @@ impl d3d::backend::Backend for Headless {
         let r = self.0.present(surface, flags);
         self.forget(r)
     }
+    // The interpolated replay's host-only calls (d3d::interp).
+    fn stamp_present(&mut self, at: std::time::Instant) {
+        self.0.stamp_present(at)
+    }
+    fn present_replay(&mut self, surface: u32, gamma: Option<&[u8; 768]>) -> Result<(), String> {
+        let r = self.0.present_replay(surface, gamma);
+        self.forget(r)
+    }
+    fn idle(&mut self) -> Option<std::time::Instant> {
+        self.0.idle()
+    }
+    // Occlusion culling's depth grid (d3d::occlusion).
+    fn request_depth_grid(
+        &mut self,
+        surface: u32,
+        request: d3d::DepthGridRequest,
+        sink: d3d::DepthGridSink,
+    ) -> Result<bool, String> {
+        let r = self.0.request_depth_grid(surface, request, sink);
+        self.forget(r)
+    }
     fn present_with_gamma(&mut self, surface: u32, flags: u32, gamma: Option<&[u8; 768]>) -> Result<(), String> {
         let r = self.0.present_with_gamma(surface, flags, gamma);
         self.forget(r)
@@ -580,6 +681,7 @@ pub fn install_with_report<B: d3d::backend::Backend + Send + 'static>(
     };
     d3d::runtime_glue::map_device_memory(&mut rt.memory(), &cfg)?;
     let device = d3d::runtime_glue::shared(cfg, backend);
+    install_occlusion_capture(&device);
     let mut out = None;
     rt.edit_dispatch(|d| {
         out = Some(d3d::register(d, Arc::clone(&device)));
@@ -746,6 +848,31 @@ pub fn back_surfaces(mem: &mut runtime::Guest, device: u32) {
 /// Shadow page for the d3d entries the write barrier wraps (4 bytes each).
 const BARRIER_SHADOW: u32 = 0xa0ff_4000;
 
+/// The write barrier's write-watch owner: it drains its subscription by id
+/// through whichever Guest the entry runs against, so a pipelined render
+/// thread takes it over at each snapshot (`pipeline-render`).
+pub const WATCH_OWNER: &str = "boot:d3d";
+
+/// `pipeline-render` (docs/graphics/pipelined-render.md, "The prototype")
+/// with this D3D layer: the game's D3D entries (the sim's calls there join
+/// the render first), and every D3D override the render thread may run
+/// (the entries, the barrier's and CreateDevice's shadows, the port I/O
+/// stubs). Off unless `H2_PIPELINE_RENDER=1`.
+pub fn pipeline_render(i: Option<&Installed>) -> feature::pipeline_render::PipelineRender {
+    let entries: Vec<u32> = match i {
+        Some(i) => i.barrier.clone(),
+        None => Vec::new(),
+    };
+    let allowed: std::collections::BTreeSet<u32> =
+        entries.iter().copied().chain(d3d::abi::PORT_IO.iter().map(|p| p.0)).collect();
+    let shadows = [BARRIER_SHADOW, D3D_SHADOW];
+    feature::pipeline_render::PipelineRender::new().with_d3d(
+        entries,
+        move |addr, _| allowed.contains(&addr) || shadows.iter().any(|&s| (s..s + 0x1000).contains(&addr)),
+        &[WATCH_OWNER],
+    )
+}
+
 /// The D3D write barrier (docs/graphics/d3d.md "Integration", step 3) on the
 /// runtime's write watch: one subscriber watches all of RAM in the folded
 /// view, and every d3d entry is wrapped so that
@@ -771,7 +898,7 @@ fn install_write_barrier<B: d3d::backend::Backend + Send + 'static>(
     let id = {
         let mut mem = rt.memory();
         mem.map_zeroed(BARRIER_SHADOW, 0x1000, runtime::guest::Permissions::RX)?;
-        let id = mem.subscribe_writes("boot:d3d");
+        let id = mem.subscribe_writes(WATCH_OWNER);
         mem.watch_writes(id, CONTIGUOUS_BASE, 0x0400_0000).map_err(|e| anyhow::anyhow!("{e}"))?;
         id
     };
@@ -800,6 +927,35 @@ fn install_write_barrier<B: d3d::backend::Backend + Send + 'static>(
         }
     });
     Ok(())
+}
+
+/// The occlusion feature's depth capture (docs/graphics/occlusion-culling.md):
+/// its observer asks the device for a grid of the main depth, recorded in
+/// order with the draws; the finished grid goes back to the feature with
+/// the W-buffer's mapping to view depth. Inert unless
+/// `impl.render.occlusion` is on (nothing asks).
+fn install_occlusion_capture<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
+    let dev = Arc::clone(device);
+    feature::occlusion::set_capture(Box::new(move |tag, width, height| {
+        let Ok(mut d) = dev.lock() else { return };
+        d.request_depth_grid(
+            tag,
+            width,
+            height,
+            Arc::new(|r: d3d::DepthGridResult, s: d3d::DepthScale| {
+                feature::occlusion::deliver(r.tag, r.width, r.height, &r.depth, w_buffer_mapping(s));
+            }),
+        );
+    }));
+}
+
+/// The W-buffer's raw depth to view depth: stored `floor(w · inv_w_far ·
+/// z_scale) / z_scale` (`z_scale` the format's full scale, `+0x948`).
+pub fn w_buffer_mapping(s: d3d::DepthScale) -> engine::render_loop::occlusion::DepthMapping {
+    engine::render_loop::occlusion::DepthMapping::WBuffer {
+        zmax: s.z_scale,
+        scale: s.inv_w_far * s.z_scale,
+    }
 }
 
 #[cfg(test)]
@@ -843,6 +999,19 @@ mod tests {
         assert!(all_black(&px));
         px[4 * 9 + 1] = 1;
         assert!(!all_black(&px));
+    }
+
+    #[test]
+    fn interpolation_needs_its_switch_and_the_render_thread() {
+        assert!(!interpolation_from(false, true, None), "off by default");
+        assert!(interpolation_from(true, true, None));
+        assert!(interpolation_from(true, true, Some("0")));
+        assert!(!interpolation_from(true, false, None), "no render thread");
+        assert!(!interpolation_from(true, true, Some("1")), "pipelined render");
+        assert_eq!(fps_from(None), 30);
+        assert_eq!(fps_from(Some("60")), 60);
+        assert_eq!(fps_from(Some("uncapped")), 0);
+        assert_eq!(fps_from(Some("nonsense")), 30);
     }
 
     #[test]

@@ -1709,6 +1709,26 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         Ok(())
     }
 
+    fn present_replay(
+        &mut self,
+        surface: Self::Surface,
+        gamma: Option<&[u8; 768]>,
+    ) -> Result<(), String> {
+        // A host-only frame (crate::interp): shown by the view when it has
+        // the surface; not a frame boundary (no scale or lighting change).
+        if self.view.reference_present_reads(&self.reference) {
+            self.settle()?;
+        }
+        match self.live(surface.view) {
+            Some(v) if !self.frame_failed => self.view.present_replay(v, gamma),
+            _ => {
+                self.settle()?;
+                self.view
+                    .present_reference(&self.reference, surface.reference, 0, gamma)
+            }
+        }
+    }
+
     fn clear_rects(
         &mut self,
         color: Self::Surface,
@@ -1961,6 +1981,19 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
 
     fn can_sample_depth_surfaces(&self) -> bool {
         self.reference.can_sample_depth_surfaces()
+    }
+
+    fn request_depth_grid(
+        &mut self,
+        surface: Self::Surface,
+        request: crate::backend::DepthGridRequest,
+        sink: crate::backend::DepthGridSink,
+    ) -> Result<bool, String> {
+        self.settle()?;
+        match surface.view {
+            Some(v) => self.view.request_depth_grid(v, request, sink),
+            None => self.reference.request_depth_grid(surface.reference, request, sink),
+        }
     }
 
     fn depth_level_texture(

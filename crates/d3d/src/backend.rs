@@ -228,6 +228,35 @@ impl std::fmt::Debug for IndexData {
     }
 }
 
+/// A request for the occlusion test's depth grid
+/// (docs/graphics/occlusion-culling.md): the farthest raw depth per cell of
+/// a `width x height` grid over `rect` of a depth surface.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DepthGridRequest {
+    /// The caller's tag, handed back with the grid.
+    pub tag: u64,
+    /// The rectangle `(x, y, width, height)` in guest pixels of a surface
+    /// whose guest size is `surface_size`; a backend with a scaled copy
+    /// scales it to its texels.
+    pub rect: (u32, u32, u32, u32),
+    pub surface_size: (u32, u32),
+    pub width: u32,
+    pub height: u32,
+}
+
+/// A finished depth grid: raw depth in `[0, 1]` (1 far), row 0 the top.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DepthGridResult {
+    pub tag: u64,
+    pub width: u32,
+    pub height: u32,
+    pub depth: Vec<f32>,
+}
+
+/// Where finished grids go. Called on whatever thread finishes the read
+/// (the render thread under [`crate::ThreadedBackend`]); it must not block.
+pub type DepthGridSink = std::sync::Arc<dyn Fn(DepthGridResult) + Send + Sync>;
+
 /// `D3DVIEWPORT8`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Viewport {
@@ -474,6 +503,31 @@ pub trait Backend: Send {
     /// Marks this thread's frame-stat boundary. Asynchronous backends
     /// forward queued statistics without waiting for the render thread.
     fn frame_stats(&mut self) {}
+    /// When the guest called `Swap` for the present that comes next, read
+    /// on the guest's thread (a render thread passes it along with the
+    /// present). Only the interpolated replay uses it
+    /// ([`crate::interp`]); the default ignores it.
+    fn stamp_present(&mut self, at: std::time::Instant) {
+        let _ = at;
+    }
+    /// Shows a host-only frame between the guest's presents (an
+    /// interpolated replay, [`crate::interp`]): the present hook sees it,
+    /// but it is not a guest frame, so frame counters, shader upkeep and
+    /// the `D3DSWAP_FINISH` wait are left alone where a backend has them.
+    /// The default presents with no flags.
+    fn present_replay(
+        &mut self,
+        surface: Self::Surface,
+        gamma: Option<&[u8; 768]>,
+    ) -> Result<(), String> {
+        self.present_with_gamma(surface, 0, gamma)
+    }
+    /// Host-only work a render thread runs when it has nothing queued (the
+    /// interpolated replay's in-between frames). Returns when it wants to
+    /// be called again; `None` (the default) waits for the next command.
+    fn idle(&mut self) -> Option<std::time::Instant> {
+        None
+    }
     /// Shows `surface` (`Swap`). `flags` are the guest's `D3DSWAP_*` flags.
     fn present(&mut self, surface: Self::Surface, flags: u32) -> Result<(), String>;
     /// Presents with the current DAC ramp. Backends without a display may ignore it.
@@ -572,6 +626,20 @@ pub trait Backend: Send {
     /// `CLEAR_REPORT_VALUE` (zpass): the sample count restarts at zero.
     fn clear_pixel_count(&mut self) -> Result<(), String> {
         Ok(())
+    }
+    /// The occlusion depth grid of depth surface `surface` as drawn so far
+    /// ([`DepthGridRequest`]), recorded in order after the work before it
+    /// and handed to `sink` later, without the caller waiting for the GPU.
+    /// `Ok(false)`: the backend cannot (the default); nothing reaches
+    /// `sink`. Additive: only `impl.render.occlusion` asks.
+    fn request_depth_grid(
+        &mut self,
+        surface: Self::Surface,
+        request: DepthGridRequest,
+        sink: DepthGridSink,
+    ) -> Result<bool, String> {
+        let _ = (surface, request, sink);
+        Ok(false)
     }
     /// `GET_REPORT`: a ticket for the samples counted since the last
     /// [`clear_pixel_count`](Self::clear_pixel_count), by every draw whose
