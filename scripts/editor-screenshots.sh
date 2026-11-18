@@ -289,3 +289,8 @@ detail hopper-raw --hopper default --playlist 2 --do 'click Advanced: raw fields
 detail hopper-error --hopper default --playlist 2 --do 'click ##hopper-title; key end; key backspace*40' \
   --crop 'win:###viewport' --crop-height 430
 detail hopper-file-menu --tool playlists --hopper default --playlist 2 --do 'click File; hover Save as' $(menu File)
+
+## HUD
+
+# Lockout's Master Chief HUD with the shield meter selected.
+shot hud-masterchief --hud-map lockout --hud masterchief --hud-widget shield_meter
