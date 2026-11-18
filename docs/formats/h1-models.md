@@ -512,6 +512,26 @@ carries:
 
 The rotation error is the i16 re-quantisation of normalised quaternions.
 
+### First-person graphs (open)
+
+V5/V2, `skin_tests`: every retail first-person `jmad` on 05a (14 graphs)
+lists the arms model's 37 nodes first, in the arms model's own order
+(`base`, `l_upperarm`, ...), then the weapon's nodes (`gun`, ...) and
+`camera_control`. Halo 1's first-person graphs hold the same two sets
+sorted together (the assault rifle's `frame gun` is node 7, between the
+wrists and the fingers), and the converted graph keeps that order. The
+converted game also keeps Halo 2's arms model (h1-multiplayer.md, "The
+first-person arms stay Halo 2's"), whose node names, proportions and rest
+frames are not Halo 1's. If the engine binds arms nodes to graph nodes by
+position, as the retail order suggests, every arm node from the fingers on
+takes another node's transform; either way Halo 1's frames are applied to
+Halo 2's skeleton. The rotation fix above does not cover this. The fix
+needs (1) Halo 1's arms (`characters\cyborg\fp\fp`, converted like any
+model) in the player representation's first-person slot, (2) each
+first-person graph's nodes reordered to the arms' order then the weapon
+model's, and (3) the engine's rule for the weapon model's nodes (by
+position after the arms, or by name), from the XBE.
+
 ## Needs a game run
 
 - Whether the engine draws a model whose PRT and other

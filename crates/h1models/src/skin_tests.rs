@@ -2,8 +2,8 @@
 //! Halo 2 biped (`$H2_DISC`). Each test prints only counts and error
 //! figures.
 
-use crate::h1::{self, Memory};
-use crate::mode::{quat_matrix, world_transforms};
+use crate::h1;
+use crate::mode::world_transforms;
 
 type Mat = ([[f32; 3]; 3], [f32; 3]);
 
@@ -29,63 +29,64 @@ fn h1_disc_map(stem: &str) -> Option<h1map::H1Map> {
     Some(h1map::H1Map::from_reader(std::io::Cursor::new(bytes)).expect("map parses"))
 }
 
-/// Explores the Halo 1 conventions: which quaternion convention puts each
-/// vertex near its node, and what the cache-computed node words hold.
+/// Halo 1's rotation convention, from its own data. The reader returns
+/// rotations in Halo 2's convention (`h1::h2_rotation`); composing the
+/// nodes with them must put each vertex nearer its own node than the
+/// stored (conjugate) form does. Also prints how each graph's nodes line up
+/// with its model's, and the first-person models' and graphs' node lists.
+///
+/// `H1_ISO=disc/halo1.iso cargo test -p h1models --release -- --ignored h1_disc_biped_conventions --nocapture`
 #[test]
 #[ignore = "needs $H1_ISO"]
 fn h1_disc_biped_conventions() {
+    let mut checked = 0;
     for stem in ["a10", "bloodgulch"] {
         let Some(map) = h1_disc_map(stem) else {
             return;
         };
         for t in map.tags() {
-            if t.group != h1map::Group::new(b"mode") || !t.name.starts_with("characters\\") {
+            if t.group != h1map::Group::new(b"mode") {
                 continue;
             }
             let model = h1::Model::read(&map, t.data_address).unwrap();
-            let pose = |c: bool| {
+            if t.name.contains("\\fp\\") {
+                println!(
+                    "{stem} fp mode {}: {:?}",
+                    t.name,
+                    model.nodes.iter().map(|n| n.name.as_str()).collect::<Vec<_>>()
+                );
+            }
+            if !t.name.starts_with("characters\\") || t.name.contains("\\fp\\") {
+                continue;
+            }
+            let pose = |stored: bool| {
                 world_transforms(
                     &model
                         .nodes
                         .iter()
-                        .map(|n| (n.parent, if c { conj(n.rotation) } else { n.rotation }, n.translation))
+                        .map(|n| (n.parent, if stored { conj(n.rotation) } else { n.rotation }, n.translation))
                         .collect::<Vec<_>>(),
                 )
             };
-            let (wq, wc) = (pose(false), pose(true));
+            let (converted, stored) = (pose(false), pose(true));
             let mut sum = [0f64; 2];
             let mut count = 0usize;
             for p in &model.geometries[0].parts {
                 for v in &p.vertices {
                     let n = v.nodes[0].max(0) as usize;
-                    sum[0] += f64::from(dist(v.position, wq[n].1));
-                    sum[1] += f64::from(dist(v.position, wc[n].1));
+                    sum[0] += f64::from(dist(v.position, converted[n].1));
+                    sum[1] += f64::from(dist(v.position, stored[n].1));
                     count += 1;
                 }
             }
-            // Raw node words past +0x48.
-            let h = map.read(t.data_address, h1::MODE_HEADER).unwrap();
-            let nodes_at = h1::u32_at(h, 0xb8 + 4);
-            let raw = map.read(nodes_at, model.nodes.len() * 0x9c).unwrap();
+            let (c, s) = (sum[0] / count as f64, sum[1] / count as f64);
             println!(
-                "{stem} {}: {} nodes, {} vertices; mean vertex-node distance q {:.3}, conj {:.3}",
+                "{stem} {}: {} nodes, {count} vertices; mean vertex-node distance converted {c:.3}, as stored {s:.3}",
                 t.name,
                 model.nodes.len(),
-                count,
-                sum[0] / count as f64,
-                sum[1] / count as f64
             );
-            if t.name.contains("\\fp\\") {
-                println!("  nodes {:?}", model.nodes.iter().map(|n| n.name.as_str()).collect::<Vec<_>>());
-            }
-            for (i, n) in model.nodes.iter().enumerate().take(4) {
-                let e = &raw[i * 0x9c..(i + 1) * 0x9c];
-                let w: Vec<f32> = (0x48..0x9c).step_by(4).map(|o| h1::f32_at(e, o)).collect();
-                println!(
-                    "  node {i} {} parent {} t {:?} q {:?}\n    world q {:?}\n    raw48 {:?}",
-                    n.name, n.parent, n.translation, n.rotation, wq[i], w
-                );
-            }
+            assert!(c * 2.0 < s, "{}: converted {c}, stored {s}", t.name);
+            checked += 1;
         }
         for t in map.tags() {
             if t.group != h1map::Group::new(b"antr")
@@ -95,25 +96,17 @@ fn h1_disc_biped_conventions() {
             }
             let g = h1::Graph::read(&map, t.data_address).unwrap();
             let names: Vec<&str> = g.nodes.iter().map(|n| n.name.as_str()).collect();
-            let model = map
-                .find(h1map::Group::new(b"mode"), &t.name)
-                .map(|m| h1::Model::read(&map, m.data_address).unwrap());
-            let same = model.as_ref().map(|m| {
-                m.nodes.iter().map(|n| n.name.as_str()).collect::<Vec<_>>() == names
+            let same = map.find(h1map::Group::new(b"mode"), &t.name).map(|m| {
+                let m = h1::Model::read(&map, m.data_address).unwrap();
+                m.nodes.iter().map(|n| n.name.as_str()).eq(names.iter().copied())
             });
-            println!("{stem} antr {}: {} nodes, same order as mode: {same:?}", t.name, names.len());
-            if t.name.contains("\\fp\\") || !t.name.starts_with("characters") {
+            println!("{stem} antr {}: {} nodes, same order as its mode: {same:?}", t.name, names.len());
+            if t.name.contains("\\fp\\") {
                 println!("  nodes {names:?}");
-            }
-            if same == Some(false) {
-                println!("  antr {names:?}");
-                println!(
-                    "  mode {:?}",
-                    model.unwrap().nodes.iter().map(|n| n.name.clone()).collect::<Vec<_>>()
-                );
             }
         }
     }
+    assert!(checked > 0 || std::env::var_os("H1_ISO").is_none());
 }
 
 /// Retail Halo 2 map bytes and its shared maps, from `$H2_DISC`.
@@ -234,6 +227,12 @@ fn retail_h2_biped_skinning() {
         .unwrap_or_default();
     println!("fp arms nodes {}: {arms:?}", arms.len());
     for (g, name, id) in &tags_list {
+        if g.0 == *b"mode" && name.contains("\\fp\\") {
+            let n = node_names(&mut map, *id, 0x48, 0x60);
+            println!("fp mode {name}: {n:?}");
+        }
+    }
+    for (g, name, id) in &tags_list {
         if g.0 != *b"jmad" || !name.contains("\\fp\\") {
             continue;
         }
@@ -245,12 +244,17 @@ fn retail_h2_biped_skinning() {
             .unwrap_or_default();
         let arms_at: Vec<Option<usize>> = arms.iter().map(|a| jn.iter().position(|j| j == a)).collect();
         let weapon_at: Vec<Option<usize>> = weapon.iter().map(|a| jn.iter().position(|j| j == a)).collect();
+        let prefix = jn.len() >= arms.len() && jn[..arms.len()] == arms[..];
         println!(
-            "fp jmad {name}: {} nodes; arms prefix {}, arms at {arms_at:?}; weapon mode {} nodes at {weapon_at:?}\n  {jn:?}",
+            "fp jmad {name}: {} nodes; the arms' {} nodes first, in order: {prefix}; weapon mode {} nodes at {weapon_at:?}\n  {jn:?}",
             jn.len(),
-            jn.len() >= arms.len() && jn[..arms.len()] == arms[..],
+            arms.len(),
             weapon.len()
         );
+        let _ = arms_at;
+        // Every retail first-person graph lists the arms model's nodes
+        // first, in the arms model's order, then the weapon's.
+        assert!(arms.is_empty() || prefix, "{name}");
     }
     for (g, name, id) in &tags_list {
         if g.0 != *b"mode" || !name.contains("characters") {
@@ -271,6 +275,8 @@ fn retail_h2_biped_skinning() {
         for (si, s) in m.sections.iter().enumerate().take(6) {
             let rec = &tag[sections_at + si * 0x5c..sections_at + si * 0x5c + 0x30];
             let (a, b, n) = h2_vertex_node_distance(&m, si);
+            // Node indices are section-local, through the node map.
+            assert!(s.node_map.len() <= 1 || a <= b + 1e-6, "{name} section {si}: {a} {b}");
             println!(
                 "  section {si}: class {} vertices {} node map {} rec[10..30] {:02x?}; mean vertex-node distance mapped {a:.3}, unmapped {b:.3} over {n}",
                 h1::u16_at(rec, 0),
@@ -297,25 +303,14 @@ fn retail_h2_biped_skinning() {
     }
 }
 
-/// Set while the reader still returns Halo 1's raw quaternions: the Halo 1
-/// side then applies Halo 1's rule (the conjugate) itself.
-const READER_RAW: bool = false;
-
-/// A Halo 1 rotation as a matrix, by Halo 1's rule.
-fn h1_matrix(q: [f32; 4]) -> [[f32; 3]; 3] {
-    quat_matrix(if READER_RAW { conj(q) } else { q })
-}
-
-/// Model-space frames by Halo 1's rule from parent-relative transforms.
+/// Model-space frames from parent-relative transforms whose rotations the
+/// reader returned (Halo 1's stored rotations, converted).
 fn h1_world(parents: &[i16], local: &[([f32; 4], [f32; 3])]) -> Vec<Mat> {
-    // world_transforms takes quaternions in Halo 2's rule; give it the
-    // rotation Halo 1's rule means.
-    let q = |q: [f32; 4]| if READER_RAW { conj(q) } else { q };
     world_transforms(
         &parents
             .iter()
             .zip(local)
-            .map(|(&p, (r, t))| (p, q(*r), *t))
+            .map(|(&p, (r, t))| (p, *r, *t))
             .collect::<Vec<_>>(),
     )
 }
@@ -381,8 +376,11 @@ struct Skinned {
 
 /// Converts `model` (and `graph`), builds a map, decodes both through
 /// `crates/tags` and skins every vertex in the bind pose and in sampled
-/// frames, the Halo 2 way, against Halo 1's own vertices skinned the
-/// Halo 1 way.
+/// frames, the Halo 2 way (decoded vertex, node map, weights, decoded
+/// frame, the inverse frames the `mode` stores), against Halo 1's own
+/// vertices skinned with Halo 1's own cached inverse frames. The reader's
+/// rotations are checked against those cached frames first
+/// (`h1_inverse`), so the Halo 1 side does not rest on the conversion.
 fn skin_round_trip(map: &h1map::H1Map, mode_tag: &h1map::Tag, graph: Option<&h1map::Tag>) -> Skinned {
     use crate::tests::{Raw, build};
     let (src, conv) = crate::model_from_map(map, mode_tag, &crate::mode::ModelOptions::default()).unwrap();
