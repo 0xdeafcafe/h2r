@@ -116,8 +116,18 @@ fn the_mode_defaults_to_halo1_and_stays_until_set() {
 }
 
 #[test]
-fn no_packages_directory_reads_no_swaps() {
+fn campaign_levels_read_their_hud_files() {
     let dir = std::env::temp_dir().join(format!("h1-hud-table-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     assert!(read_table(&dir).is_empty());
+    assert!(read_campaign_table(&dir).is_empty());
+    let level = dir.join("campaigns").join("halo1");
+    std::fs::create_dir_all(&level).unwrap();
+    let file = content::LevelHud { hud: swaps() };
+    std::fs::write(level.join(content::LevelHud::file_name("A10")), file.to_toml()).unwrap();
+    std::fs::write(level.join("a30.hud.toml"), content::LevelHud::default().to_toml()).unwrap();
+    let t = read_campaign_table(&dir);
+    assert_eq!(t.len(), 1, "an empty file names nothing");
+    assert_eq!(t["a10"], (false, swaps()));
+    let _ = std::fs::remove_dir_all(&dir);
 }

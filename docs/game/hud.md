@@ -78,17 +78,19 @@ is drawn.
   references (a `bipd`'s HUD interfaces, a `weap`'s `+0x2b0`) at the HUD
   the mode asks for, both ways; a target that is not a loaded `nhdt`, or
   an owner that is not a loaded `bipd`/`weap`, is left alone.
-- The pairs come from the package manifest: `[[variant]] hud = [{ owner,
-  halo1, halo2 }]` (`content::HudSwap`), read for Halo 1 sandbox variants.
+- The pairs come from the package manifest, `[[variant]] hud = [{ owner,
+  halo1, halo2 }]` (`content::HudSwap`), read for Halo 1 sandbox variants,
+  and for campaign levels from `<data>/campaigns/<campaign>/<level>.hud.toml`
+  (`content::LevelHud`), which `h2 h1 campaign` writes beside each level.
 
-**Not done yet.** The converter records each pair
-(`h1objects::convert::Tree::hud_swaps`: the player biped, its Halo 1 HUD,
-its Halo 2 HUD with the health strip), but `h1convert` does not carry them
-to the manifest, and the fresh build prunes the Halo 2 HUD because nothing
-references it. Both need what precision swaps have: the pair's datums in
-the prune's keep list and remapped through the from-scratch rebuild
-(`h1convert::fresh`), then written as `hud`. Campaign levels have no
-content manifest; they need the same table from the campaign manifest.
+The converter records each pair (`h1objects::convert::Tree::hud_swaps`:
+the owner, its Halo 1 HUD, its Halo 2 HUD; a tree tag or a base-map tag).
+For converted multiplayer maps `h1convert` keeps every pair's Halo 2 HUD
+through the prune (nothing else references it), remaps the three datums
+through the from-scratch rebuild by group and name (`h1convert::fresh`,
+`Fresh::hud`) and writes them to the variant. For campaign levels
+`h1campaign` keeps them through its scratch build or prune the same way
+(`h1campaign::remap_hud`) and the CLI writes the level's `.hud.toml`.
 
 ## Not converted yet
 

@@ -55,6 +55,17 @@ pub struct ObjectTags {
     /// One line per converted object (what it was built on, what it
     /// keeps of the template).
     pub notes: Vec<String>,
+    /// HUD pairs `boot::hud` switches between (docs/game/hud.md): the
+    /// owner, its Halo 1 HUD and its Halo 2 HUD.
+    pub hud_swaps: Vec<[HudTag; 3]>,
+}
+
+/// A tag of a HUD pair: one [`ObjectTags::install`] adds (its index among
+/// them), or one of the base map's (a weapon's Halo 2 HUD).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HudTag {
+    Added(usize),
+    Base(TagId),
 }
 
 impl std::fmt::Debug for ObjectTags {

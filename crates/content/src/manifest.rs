@@ -125,6 +125,32 @@ pub struct Swap {
     pub to: u32,
 }
 
+/// A converted campaign level's HUD pairs, written beside it as
+/// `<level>.hud.toml` (`boot::hud`; docs/game/hud.md): a campaign
+/// folder's `campaign.toml` is a level list others write too, so the pairs
+/// live in a file of their own.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LevelHud {
+    #[serde(default)]
+    pub hud: Vec<HudSwap>,
+}
+
+impl LevelHud {
+    /// The file beside `<level>.map`.
+    pub fn file_name(level: &str) -> String {
+        format!("{}.hud.toml", level.to_ascii_lowercase())
+    }
+
+    pub fn from_toml(text: &str) -> Result<Self, toml::de::Error> {
+        toml::from_str(text)
+    }
+
+    pub fn to_toml(&self) -> String {
+        toml::to_string(self).expect("a HUD file serializes")
+    }
+}
+
 /// A variant's `origin`: the source of a map converted from another game
 /// (docs/game/h1-multiplayer.md, "Package"). Not part of the `MapId`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

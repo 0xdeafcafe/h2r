@@ -409,6 +409,12 @@ pub fn local(k: usize) -> TagId {
     TagId(LOCAL | k as u32)
 }
 
+/// The tree index `t` names, when it is one of the tree's own tags
+/// ([`local`]) rather than a base-map tag.
+pub fn local_index(t: TagId) -> Option<usize> {
+    (t.0 & 0xffff_0000 == LOCAL).then_some((t.0 & 0xffff) as usize)
+}
+
 fn rewrite(b: &mut Block, ids: &[TagId]) {
     for f in &mut b.fixups {
         match &mut f.kind {

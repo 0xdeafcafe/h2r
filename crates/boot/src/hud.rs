@@ -3,8 +3,9 @@
 //! A converted map carries both HUDs for its player biped: Halo 1's
 //! (`h1objects::h1hud`, which the biped names as built) and Halo 2's with
 //! the health strip (`h1objects::health_hud`). The converter records each
-//! pair (`[[variant]] hud` in the package manifest: owner, Halo 1's and
-//! Halo 2's `nhdt` datums). At each game activation this points every
+//! pair (owner, Halo 1's and Halo 2's `nhdt` datums): a multiplayer
+//! package's in its manifest (`[[variant]] hud`), a campaign level's beside
+//! it (`<data>/campaigns/<key>/<level>.hud.toml`, `content::LevelHud`). At each game activation this points every
 //! owner's HUD references at the HUD [`mode`] asks for, in guest memory
 //! only, both ways, so a change of the setting between games takes.
 //!
@@ -77,8 +78,10 @@ pub fn mode() -> HudMode {
     HudMode::from_code(MODE.load(Ordering::SeqCst))
 }
 
-/// Swaps by map name (the cache header's, lower case).
-pub type Table = HashMap<String, Vec<content::HudSwap>>;
+/// Swaps by map name (the cache header's, lower case), and whether they
+/// hold only while converted multiplayer maps are in the Halo 1 sandbox
+/// (a package's Halo 1 variant; a campaign level's always do).
+pub type Table = HashMap<String, (bool, Vec<content::HudSwap>)>;
 
 /// Points each swap's owner at the HUD `mode` asks for. Returns how many
 /// references changed. An owner that is not a loaded `bipd` or `weap`, or
@@ -142,7 +145,36 @@ pub fn read_table(packages: &Path) -> Table {
         };
         for v in m.variants.iter().filter(|v| v.origin.sandbox == "h1") {
             if !v.hud.is_empty() {
-                out.insert(m.base.map.to_ascii_lowercase(), v.hud.clone());
+                out.insert(m.base.map.to_ascii_lowercase(), (true, v.hud.clone()));
+            }
+        }
+    }
+    out
+}
+
+/// The HUD swaps of every converted campaign level under `<data>/campaigns`
+/// (`<key>/<level>.hud.toml`), by level name.
+pub fn read_campaign_table(data_root: &Path) -> Table {
+    let mut out = Table::new();
+    let Ok(dirs) = std::fs::read_dir(data_root.join("campaigns")) else {
+        return out;
+    };
+    for d in dirs.flatten() {
+        let Ok(files) = std::fs::read_dir(d.path()) else {
+            continue;
+        };
+        for f in files.flatten() {
+            let name = f.file_name().to_string_lossy().to_ascii_lowercase();
+            let Some(level) = name.strip_suffix(".hud.toml") else {
+                continue;
+            };
+            let Ok(text) = std::fs::read_to_string(f.path()) else {
+                continue;
+            };
+            if let Ok(h) = content::LevelHud::from_toml(&text)
+                && !h.hud.is_empty()
+            {
+                out.insert(level.to_owned(), (false, h.hud));
             }
         }
     }
@@ -164,18 +196,18 @@ impl feature::Feature for Hud {
         let table = Arc::clone(&self.table);
         b.raw()
             .before(&GAME_ACTIVATE, "HUD swap", move |c| {
-                if !crate::health::halo1_sandbox() {
-                    return Ok(Flow::Continue);
-                }
                 let rt = Arc::clone(c.ctx.runtime());
                 let mut mem = rt.memory();
                 let Ok(name) = crate::health::loaded_map_name(&*mem) else {
                     return Ok(Flow::Continue);
                 };
                 let table = table.read().unwrap_or_else(|e| e.into_inner());
-                let Some(swaps) = table.get(&name.trim().to_ascii_lowercase()) else {
+                let Some((sandboxed, swaps)) = table.get(&name.trim().to_ascii_lowercase()) else {
                     return Ok(Flow::Continue);
                 };
+                if *sandboxed && !crate::health::halo1_sandbox() {
+                    return Ok(Flow::Continue);
+                }
                 let mode = mode();
                 match apply(&mut *mem, swaps, mode) {
                     Ok(n) if n > 0 => eprintln!("hud: {name}: {n} HUD references now {mode:?}'s"),
@@ -191,9 +223,15 @@ impl feature::Feature for Hud {
     }
 }
 
-/// Adds the feature, with the swaps of the packages under `packages`.
-pub fn install(registry: &mut feature::Registry, packages: &Path) -> anyhow::Result<bool> {
-    let table = read_table(packages);
+/// Adds the feature, with the swaps of the packages under `packages` and
+/// the campaign levels under `data_root`.
+pub fn install(
+    registry: &mut feature::Registry,
+    packages: &Path,
+    data_root: &Path,
+) -> anyhow::Result<bool> {
+    let mut table = read_campaign_table(data_root);
+    table.extend(read_table(packages));
     if !table.is_empty() {
         eprintln!("hud: HUD swaps for {} converted maps", table.len());
     }

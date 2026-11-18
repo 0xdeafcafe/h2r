@@ -349,7 +349,7 @@ fn bloodgulch_shaders_all_have_their_compiled_postprocess_in_both_sandboxes() {
         // The fresh map is built from scratch on a new index, so the swaps
         // are named by its own datums (`Fresh::precision`), as the importer
         // writes them (`manifest_with`).
-        let manifest = p.manifest_with(&fresh.bytes, &fresh.precision);
+        let manifest = p.manifest_fresh(&fresh);
         let mut out = Map::from_reader(Cursor::new(fresh.bytes)).unwrap();
         if sandbox == Sandbox::Halo2 {
             // The precision swap: the SMG and the battle rifle collections,
@@ -374,6 +374,34 @@ fn bloodgulch_shaders_all_have_their_compiled_postprocess_in_both_sandboxes() {
                     to: swaps[0].1.0
                 }]
             );
+        }
+        if sandbox == Sandbox::Halo1 {
+            // The HUD pair (docs/game/hud.md): the player biped, its Halo 1
+            // HUD, and its Halo 2 HUD with the health strip, kept by the
+            // prune though only the pair names it, in the manifest by the
+            // fresh map's datums.
+            assert_eq!(fresh.hud.len(), 1, "{:?}", fresh.hud);
+            let [owner, halo1, halo2] = fresh.hud[0];
+            let name = |id: TagId| {
+                let t = out.tag(id).unwrap();
+                (t.group, t.name.clone().unwrap_or_default())
+            };
+            assert_eq!(name(owner).0, FourCC(*b"bipd"));
+            let (g1, n1) = name(halo1);
+            let (g2, n2) = name(halo2);
+            assert_eq!(g1, FourCC(*b"nhdt"));
+            assert_eq!(g2, FourCC(*b"nhdt"));
+            assert!(n1.ends_with(h1objects::h1hud::NHDT_SUFFIX), "{n1}");
+            assert!(n2.ends_with(h1objects::health_hud::NHDT_SUFFIX), "{n2}");
+            assert_eq!(
+                manifest.variants[0].hud,
+                [content::HudSwap {
+                    owner: owner.0,
+                    halo1: halo1.0,
+                    halo2: halo2.0
+                }]
+            );
+            eprintln!("hud: {} -> {n1} / {n2}", name(owner).1);
         }
         let shaders: Vec<(TagId, String)> = out
             .tags()
