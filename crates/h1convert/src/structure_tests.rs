@@ -1038,3 +1038,13 @@ fn a_cluster_with_no_geometry_gets_retail_s_empty_raw_block() {
         f32::MAX
     );
 }
+
+#[test]
+fn a_surface_listed_by_two_clusters_is_drawn_by_both() {
+    let v = vec![vertex([0.0; 3]), vertex([1.0, 0.0, 0.0]), vertex([0.0, 1.0, 0.0])];
+    let tris = [[0, 1, 2], [0, 2, 1], [1, 2, 0]];
+    // Triangle 0 in cluster 0, 1 in clusters 0 and 2, 2 in none.
+    let meshes = crate::clusters::split_by_cluster("s", None, v, &tris, &[vec![0], vec![0, 2], vec![]]);
+    let got: Vec<(u16, Vec<[u32; 3]>)> = meshes.into_iter().map(|m| (m.cluster, m.triangles)).collect();
+    assert_eq!(got, vec![(0, vec![[0, 1, 2], [0, 2, 1]]), (2, vec![[0, 2, 1]])]);
+}

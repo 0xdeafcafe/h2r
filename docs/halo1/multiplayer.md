@@ -321,11 +321,28 @@ The base's old BSP region stays in the file, unused.
   outside them). Flags (`+0x18`) are 0: bit 3 starts a portal closed (E
   `0x00210e43`). The converted collision BSP keeps Halo 1's planes in
   order, so the plane index carries over. A cluster's portals are its
-  Halo 1 list (`+0x5c`, i16). Every surface goes to the first Halo 1
-  cluster whose subclusters (`+0x34`, `0x24` each, a surface index block
-  at `+0x18`) list it; a few surfaces straddle two clusters and are listed
-  by both, and a handful (37 at most, b40) are in none, which Halo 1
-  never draws either. Each collision leaf names its Halo 1 cluster (leaf
+  Halo 1 list (`+0x5c`, i16). Every surface goes to each Halo 1 cluster
+  whose subclusters (`+0x34`, `0x24` each, a surface index block at
+  `+0x18`) list it, and a handful (37 at most, b40) are in none, which
+  Halo 1 never draws either. A surface that crosses a portal is listed by
+  every cluster it is in (760 of Blood Gulch's 5503): Halo 1 draws it
+  when any of them is seen, Halo 2 draws a cluster's section only when
+  the flood reaches that cluster. Until converter version 65 such a
+  surface went to its first cluster only, and looking from another of
+  its clusters without seeing the first, it vanished: the culling the
+  owner saw on Blood Gulch at version 60. `h1convert::flood` models the
+  flood (one node per chain of portals, at most 256, E `0x001729d9`; the
+  camera against the portal's collision plane within 1/64, E
+  `0x00173890`; the portal's screen polygon clipped to the node's, E
+  `0x00173380`) and `tests/portal_flood.rs`
+  (`bloodgulch_surfaces_in_two_clusters`) proves it from every spawn
+  turning through 360°: of the surfaces seen (centre in the frustum, the
+  sight line clear of solid), drawn with the first cluster 189 went
+  missing in 157 of 2556 views, drawn with each none. The same test
+  finds the portals sound: all 70 name the cluster behind their plane
+  first (the collision BSP's leaf 5 cm either side of each centre), the
+  flood never comes near its 256-node limit (94 at most) and reaches
+  every cluster a seen surface is in. Each collision leaf names its Halo 1 cluster (leaf
   `+0x08`). `tests/h1_clusters.rs`: every portal lies in its plane and is
   on both its clusters' lists, and every cluster with geometry is reached
   through portals from every other, on every level (Chiron TL-34 has no

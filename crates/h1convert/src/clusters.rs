@@ -7,9 +7,9 @@
 //! the level needs Halo 1's own clusters and portals, which have the same
 //! shape in both games (`tests/h1_clusters.rs`):
 //!
-//! - every rendered surface belongs to a Halo 1 cluster through its
+//! - every rendered surface belongs to the Halo 1 clusters whose
 //!   subclusters (cluster `+0x34`, `0x24` each, a surface index block at
-//!   `+0x18`), and becomes part of that cluster's section
+//!   `+0x18`) list it, and becomes part of each one's section
 //!   ([`surface_clusters`], [`pack_clusters`]);
 //! - Halo 1's portals (`sbsp +0x154`, `0x40` each) become Halo 2's
 //!   (`sbsp +0x5c`, `0x24` each) field for field, and each cluster's
@@ -78,22 +78,30 @@ pub fn cluster_count(bsp: &StructureBsp) -> Result<usize> {
         .max(1))
 }
 
-/// The Halo 1 cluster of each of `surfaces` render surfaces: the first
-/// cluster whose subclusters list it (a surface that straddles clusters is
-/// listed by each; Halo 1 draws it once). `None` for a surface no cluster
-/// lists, which Halo 1 never draws. A structure with no clusters has
-/// every surface in cluster 0.
-pub fn surface_clusters(bsp: &StructureBsp, surfaces: usize) -> Result<Vec<Option<u16>>> {
+/// The Halo 1 clusters of each of `surfaces` render surfaces: every
+/// cluster whose subclusters list it, in cluster order. A surface that
+/// crosses a portal is listed by each cluster it is in, and Halo 1 draws
+/// it when any of them is seen; Halo 2 draws a cluster's geometry only
+/// when its flood reaches that cluster, so the surface goes into each
+/// (`tests/portal_flood.rs`, `bloodgulch_surfaces_in_two_clusters`: 760
+/// of Blood Gulch's 5503 surfaces are listed twice, and drawn with the
+/// first cluster only, seen surfaces went missing in 157 of 2556 views
+/// from the spawns; drawn with each, in none). Empty for a surface no
+/// cluster lists, which Halo 1 never draws. A structure with no clusters
+/// has every surface in cluster 0.
+pub fn surface_clusters(bsp: &StructureBsp, surfaces: usize) -> Result<Vec<Vec<u16>>> {
     let clusters = bsp.space.block_at(bsp.root, H1_CLUSTERS, H1_CLUSTER)?;
     if clusters.is_empty() {
-        return Ok(vec![Some(0); surfaces]);
+        return Ok(vec![vec![0]; surfaces]);
     }
-    let mut owner = vec![None; surfaces];
+    let mut owner: Vec<Vec<u16>> = vec![Vec::new(); surfaces];
     for (c, cluster) in clusters.iter().enumerate() {
         for sub in bsp.space.block_at(cluster, H1_SUBCLUSTERS, H1_SUBCLUSTER)? {
             for ix in bsp.space.block_at(sub, H1_SUBCLUSTER_SURFACES, 4)? {
                 if let Some(o) = owner.get_mut(u32_at(ix, 0) as usize) {
-                    o.get_or_insert(c as u16);
+                    if o.last() != Some(&(c as u16)) {
+                        o.push(c as u16);
+                    }
                 }
             }
         }
@@ -498,19 +506,20 @@ pub fn sound_zones(
     Ok((zones, per_leaf))
 }
 
-/// Splits a material's triangles by the cluster of the surface each is
-/// (`clusters[first + k]` for triangle `k`), dropping those no cluster
-/// lists: one mesh per cluster, each with the material's vertices.
+/// Splits a material's triangles by the clusters of the surface each is
+/// (`clusters[first + k]` for triangle `k`; a triangle goes into each of
+/// its clusters, [`surface_clusters`]), dropping those no cluster lists:
+/// one mesh per cluster, each with the material's vertices.
 pub fn split_by_cluster(
     shader: &str,
     page: Option<u16>,
     vertices: Vec<Vertex>,
     triangles: &[[u32; 3]],
-    clusters: &[Option<u16>],
+    clusters: &[Vec<u16>],
 ) -> Vec<Mesh> {
     let mut by: BTreeMap<u16, Vec<[u32; 3]>> = BTreeMap::new();
-    for (t, c) in triangles.iter().zip(clusters) {
-        if let Some(c) = c {
+    for (t, cs) in triangles.iter().zip(clusters) {
+        for c in cs {
             by.entry(*c).or_default().push(*t);
         }
     }

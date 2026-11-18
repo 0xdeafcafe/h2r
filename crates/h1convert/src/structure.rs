@@ -158,8 +158,9 @@ pub struct Mesh {
 }
 
 /// Halo 1's render geometry, one mesh per lightmap material and cluster
-/// ([`crate::clusters::surface_clusters`]; a surface no cluster lists is
-/// dropped, as Halo 1 never draws it). `shader_name` names a Halo 1 shader
+/// ([`crate::clusters::surface_clusters`]; a surface listed by several
+/// clusters is in each one's mesh, and one no cluster lists is dropped, as
+/// Halo 1 never draws it). `shader_name` names a Halo 1 shader
 /// reference's tag.
 pub fn meshes(
     bsp: &StructureBsp,
