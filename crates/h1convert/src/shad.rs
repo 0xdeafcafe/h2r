@@ -1218,7 +1218,8 @@ pub const SPLA_MAP: usize = 0xd4;
 ///   base, detail and bump maps with their scales
 ///   ([`crate::textures::h1_maps_of`], [`crate::textures::h1_scales_of`]);
 ///   a bump map is kept only when it is palettized bump (format 17).
-/// - `soso`: [`TEX_BUMP`] with its base and detail maps.
+/// - `soso`: [`TEX_BUMP_ENV`] with its base and detail maps and its
+///   reflection (`soso_reflection`) when it has one, else [`TEX_BUMP`].
 /// - `swat` with a ripple map: [`WATER_POOL`] (`swat_water`), falling
 ///   back to [`ONE_ALPHA_ENV`] with the base map, as without one.
 /// - `sgla`: [`ONE_ALPHA_ENV`] with the base map.
@@ -1339,6 +1340,15 @@ fn read_h1_maps(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<H1Shader> {
                     out = e;
                 }
             }
+            if group == "soso"
+                && let Some((cube, extras)) = soso_reflection(h1, d)
+            {
+                let mut env = maps.clone();
+                env.push((Role::Cube, cube));
+                let mut e = mk(&TEX_BUMP_ENV, env, extras);
+                e.fallback = Some(Box::new(out));
+                out = e;
+            }
             Some(out)
         }
         "swat" => {
@@ -1369,7 +1379,19 @@ fn read_h1_maps(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<H1Shader> {
                 crate::sky_shaders::Recipe::Picture(k) | crate::sky_shaders::Recipe::Additive(k) => k,
                 crate::sky_shaders::Recipe::Clouds { tile, .. } => tile,
             };
-            let m = s.maps[k];
+            let maps: Vec<(H1Bound, Option<h1map::bitmap::ImageKind>)> = s
+                .maps
+                .iter()
+                .map(|m| {
+                    (
+                        H1Bound {
+                            bitmap: m.bitmap,
+                            scale: m.scale,
+                        },
+                        h1_texture_kind(h1, m.bitmap),
+                    )
+                })
+                .collect();
             Some(H1Shader {
                 name: tag.name.clone(),
                 group,
@@ -1378,19 +1400,53 @@ fn read_h1_maps(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<H1Shader> {
                 } else {
                     &ONE_ALPHA_ENV
                 },
-                maps: vec![(
-                    Role::Base,
-                    H1Bound {
-                        bitmap: m.bitmap,
-                        scale: m.scale,
-                    },
-                )],
+                maps: transparent_maps(&maps, k, s.additive),
                 extras: Extras::default(),
                 fallback: None,
             })
         }
         _ => None,
     }
+}
+
+/// The maps of a Halo 1 transparent shader (`schi`, `scex`, `sotr`;
+/// `maps`, each with its texture kind) for [`ONE_ALPHA_ENV`] or, when
+/// `additive`, [`ONE_ADD_ILLUM`]; `picture` is the map
+/// [`crate::sky_shaders::recipe`] chose, the least tiled.
+///
+/// The picture is a 2D map: when the chosen one is a cube (a glass's
+/// reflection, often its first map and at the same 1×1 scale as the
+/// glass's own texture), the least tiled 2D map stands in. An alpha
+/// blended shader's cube map is its reflection, in [`ONE_ALPHA_ENV`]'s
+/// cube slot. D: a10's `levels\a10\shaders\cryo glass` (blend 7) has the
+/// cube `cube map glass` first and the 2D `cryo glass` (DXT3, alpha about
+/// 10%) second, both 1×1. With the cube as the picture the base slot kept
+/// its default and the glass drew as a flat opaque pane: the grey slab
+/// over the view from inside a10's cryo tube.
+pub fn transparent_maps(
+    maps: &[(H1Bound, Option<h1map::bitmap::ImageKind>)],
+    picture: usize,
+    additive: bool,
+) -> Vec<(Role, H1Bound)> {
+    use h1map::bitmap::ImageKind;
+    let flat = |k: usize| maps[k].1 == Some(ImageKind::D2);
+    let area = |k: usize| (maps[k].0.scale[0] * maps[k].0.scale[1]).abs();
+    let base = if picture < maps.len() && flat(picture) {
+        Some(picture)
+    } else {
+        (0..maps.len())
+            .filter(|&k| flat(k))
+            .min_by(|&a, &b| area(a).total_cmp(&area(b)))
+            .or((picture < maps.len()).then_some(picture))
+    };
+    let mut out: Vec<(Role, H1Bound)> = base.map(|k| (Role::Base, maps[k].0)).into_iter().collect();
+    if !additive
+        && let Some(c) =
+            (0..maps.len()).find(|&k| Some(k) != base && maps[k].1 == Some(ImageKind::Cube))
+    {
+        out.push((Role::Cube, maps[c].0));
+    }
+    out
 }
 
 /// `swat`'s reflection map (D: a cube on each of the eight distinct
@@ -1525,10 +1581,92 @@ pub const SENV_CUBE: usize = 0x324;
 /// colour times its specular brightness; the brightnesses as alphas).
 /// `None` without a cube map or with both brightnesses 0.
 fn senv_reflection(h1: &h1map::H1Map, d: &[u8]) -> Option<(H1Bound, Extras)> {
-    let r = h1map::TagRef::read(d, SENV_CUBE)?;
+    reflection(
+        h1,
+        d,
+        &ReflectionAt {
+            cube: SENV_CUBE,
+            perpendicular_brightness: SENV_PERPENDICULAR_BRIGHTNESS,
+            parallel_brightness: SENV_PARALLEL_BRIGHTNESS,
+            perpendicular_color: SENV_PERPENDICULAR_COLOR,
+            parallel_color: SENV_PARALLEL_COLOR,
+            tint_brightness: Some(SENV_SPECULAR),
+        },
+    )
+}
+
+/// `soso` (Halo 1's model shader) reflection: brightness facing the eye
+/// (`+0x144`, f32) and its tint (`+0x148`, RGB f32), brightness grazing
+/// (`+0x154`) and its tint (`+0x158`), the cube map (`+0x164`). V (Blood
+/// Gulch's 106 `soso`): a `bitm` reference at `+0x164` on exactly those
+/// with a brightness set, brightnesses and tints in 0..1 on those read
+/// (the assault rifle's and sniper rifle's metal 1 and white, the
+/// cyborg's visor 1 and a blue grazing tint); the two f32 before them
+/// (`+0x13c`, `+0x140`, 6 and 8 on the ammunition bag) are not read.
+pub const SOSO_PERPENDICULAR_BRIGHTNESS: usize = 0x144;
+pub const SOSO_PERPENDICULAR_COLOR: usize = 0x148;
+pub const SOSO_PARALLEL_BRIGHTNESS: usize = 0x154;
+pub const SOSO_PARALLEL_COLOR: usize = 0x158;
+pub const SOSO_CUBE: usize = 0x164;
+
+/// A `soso`'s reflection for [`TEX_BUMP_ENV`], as [`senv_reflection`]'s:
+/// the tints are Halo 1's colours as they are (a `soso` has no separate
+/// specular brightness).
+///
+/// Without it a converted weapon drew its base map lit and nothing more:
+/// Halo 1's weapon base maps are dark (the sniper rifle's averages 35 of
+/// 255) and take their metal from this reflection, so the sniper rifle
+/// was near black in first person (converter version 76).
+fn soso_reflection(h1: &h1map::H1Map, d: &[u8]) -> Option<(H1Bound, Extras)> {
+    reflection(
+        h1,
+        d,
+        &ReflectionAt {
+            cube: SOSO_CUBE,
+            perpendicular_brightness: SOSO_PERPENDICULAR_BRIGHTNESS,
+            parallel_brightness: SOSO_PARALLEL_BRIGHTNESS,
+            perpendicular_color: SOSO_PERPENDICULAR_COLOR,
+            parallel_color: SOSO_PARALLEL_COLOR,
+            tint_brightness: None,
+        },
+    )
+}
+
+/// Where a Halo 1 shader keeps its reflection.
+struct ReflectionAt {
+    cube: usize,
+    perpendicular_brightness: usize,
+    parallel_brightness: usize,
+    perpendicular_color: usize,
+    parallel_color: usize,
+    /// A brightness the tints are scaled by (`senv`'s specular), if any.
+    tint_brightness: Option<usize>,
+}
+
+/// The cube map at `at.cube` and colours 1 to 4 of [`TEX_BUMP_ENV`]: the
+/// tints facing the eye and grazing (RGB), the brightnesses (alphas).
+/// `None` without a cube map or with both brightnesses 0.
+fn reflection(h1: &h1map::H1Map, d: &[u8], at: &ReflectionAt) -> Option<(H1Bound, Extras)> {
+    let r = h1map::TagRef::read(d, at.cube)?;
     if r.group != h1map::Group::new(b"bitm") || r.id.is_none() || h1.tag(r.id).is_err() {
         return None;
     }
+    let colors = reflection_colors(d, at)?;
+    Some((
+        H1Bound {
+            bitmap: r.id,
+            scale: [1.0, 1.0],
+        },
+        Extras {
+            colors,
+            scroll: None,
+        },
+    ))
+}
+
+/// [`reflection`]'s colours from the shader's bytes `d` alone: `None` when
+/// both brightnesses are 0.
+fn reflection_colors(d: &[u8], at: &ReflectionAt) -> Option<Vec<(usize, u32)>> {
     let f = |o: usize| {
         d.get(o..o + 4)
             .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
@@ -1536,28 +1674,19 @@ fn senv_reflection(h1: &h1map::H1Map, d: &[u8]) -> Option<(H1Bound, Extras)> {
             .unwrap_or(0.0)
             .clamp(0.0, 1.0)
     };
-    let (perp, par) = (f(SENV_PERPENDICULAR_BRIGHTNESS), f(SENV_PARALLEL_BRIGHTNESS));
+    let (perp, par) = (f(at.perpendicular_brightness), f(at.parallel_brightness));
     if perp == 0.0 && par == 0.0 {
         return None;
     }
-    let bright = f(SENV_SPECULAR);
+    let bright = at.tint_brightness.map_or(1.0, f);
     let byte = |v: f32| (v * 255.0).round() as u32;
     let rgb = |o: usize| (0..3).fold(0u32, |c, i| (c << 8) | byte(f(o + 4 * i) * bright));
-    Some((
-        H1Bound {
-            bitmap: r.id,
-            scale: [1.0, 1.0],
-        },
-        Extras {
-            colors: vec![
-                (1, rgb(SENV_PERPENDICULAR_COLOR)),
-                (2, rgb(SENV_PARALLEL_COLOR)),
-                (3, byte(perp) << 24),
-                (4, byte(par) << 24),
-            ],
-            scroll: None,
-        },
-    ))
+    Some(vec![
+        (1, rgb(at.perpendicular_color)),
+        (2, rgb(at.parallel_color)),
+        (3, byte(perp) << 24),
+        (4, byte(par) << 24),
+    ])
 }
 
 /// The [`lod_offset`] of the Halo 1 bitmap `id` (its first image), 0
@@ -1573,6 +1702,113 @@ pub fn h1_lod_offset(h1: &h1map::H1Map, id: h1map::TagId) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `soso`'s reflection (invented values): the tints as they are,
+    /// the brightnesses as the alphas of colours 3 and 4; none with both
+    /// brightnesses 0.
+    #[test]
+    fn a_model_shader_reflects_with_its_own_tints() {
+        let mut d = vec![0u8; 0x180];
+        let put = |d: &mut Vec<u8>, at: usize, v: f32| d[at..at + 4].copy_from_slice(&v.to_le_bytes());
+        let at = ReflectionAt {
+            cube: SOSO_CUBE,
+            perpendicular_brightness: SOSO_PERPENDICULAR_BRIGHTNESS,
+            parallel_brightness: SOSO_PARALLEL_BRIGHTNESS,
+            perpendicular_color: SOSO_PERPENDICULAR_COLOR,
+            parallel_color: SOSO_PARALLEL_COLOR,
+            tint_brightness: None,
+        };
+        assert_eq!(reflection_colors(&d, &at), None);
+        put(&mut d, SOSO_PERPENDICULAR_BRIGHTNESS, 1.0);
+        put(&mut d, SOSO_PARALLEL_BRIGHTNESS, 0.5);
+        for i in 0..3 {
+            put(&mut d, SOSO_PERPENDICULAR_COLOR + 4 * i, 1.0);
+        }
+        put(&mut d, SOSO_PARALLEL_COLOR, 0.0);
+        put(&mut d, SOSO_PARALLEL_COLOR + 4, 0.5);
+        put(&mut d, SOSO_PARALLEL_COLOR + 8, 2.0);
+        assert_eq!(
+            reflection_colors(&d, &at),
+            Some(vec![
+                (1, 0x00ff_ffff),
+                (2, 0x0000_80ff),
+                (3, 0xff00_0000),
+                (4, 0x8000_0000),
+            ])
+        );
+    }
+
+    fn h1_bound(id: u32, scale: f32) -> H1Bound {
+        H1Bound {
+            bitmap: h1map::TagId(id),
+            scale: [scale, scale],
+        }
+    }
+
+    /// a10's cryo glass: a 1×1 reflection cube first, the 1×1 glass
+    /// texture second. The glass is the picture, the cube its reflection.
+    #[test]
+    fn a_glass_whose_first_map_is_a_cube_draws_its_2d_map_and_reflects_the_cube() {
+        use h1map::bitmap::ImageKind;
+        let maps = [
+            (h1_bound(1, 1.0), Some(ImageKind::Cube)),
+            (h1_bound(2, 1.0), Some(ImageKind::D2)),
+        ];
+        assert_eq!(
+            transparent_maps(&maps, 0, false),
+            vec![
+                (Role::Base, h1_bound(2, 1.0)),
+                (Role::Cube, h1_bound(1, 1.0))
+            ]
+        );
+        // Additive: no reflection slot; the 2D map still draws.
+        assert_eq!(
+            transparent_maps(&maps, 0, true),
+            vec![(Role::Base, h1_bound(2, 1.0))]
+        );
+    }
+
+    /// A 2D picture stays the picture; with several 2D maps and a cube
+    /// chosen, the least tiled 2D map is taken.
+    #[test]
+    fn a_2d_picture_is_kept_and_a_cube_choice_falls_to_the_least_tiled_2d_map() {
+        use h1map::bitmap::ImageKind;
+        let maps = [
+            (h1_bound(1, 8.0), Some(ImageKind::D2)),
+            (h1_bound(2, 1.0), Some(ImageKind::D2)),
+        ];
+        assert_eq!(
+            transparent_maps(&maps, 1, false),
+            vec![(Role::Base, h1_bound(2, 1.0))]
+        );
+        let maps = [
+            (h1_bound(1, 1.0), Some(ImageKind::Cube)),
+            (h1_bound(2, 8.0), Some(ImageKind::D2)),
+            (h1_bound(3, 4.0), Some(ImageKind::D2)),
+        ];
+        assert_eq!(
+            transparent_maps(&maps, 0, false),
+            vec![
+                (Role::Base, h1_bound(3, 4.0)),
+                (Role::Cube, h1_bound(1, 1.0))
+            ]
+        );
+    }
+
+    /// With no 2D map, the chosen map stays (fit_kinds then moves a cube
+    /// to the cube slot), and an unreadable kind is not a reflection.
+    #[test]
+    fn with_no_2d_map_the_chosen_map_stays() {
+        use h1map::bitmap::ImageKind;
+        let maps = [
+            (h1_bound(1, 1.0), Some(ImageKind::Cube)),
+            (h1_bound(2, 1.0), None),
+        ];
+        assert_eq!(
+            transparent_maps(&maps, 0, false),
+            vec![(Role::Base, h1_bound(1, 1.0))]
+        );
+    }
 
     fn library() -> Library {
         let stems: Vec<(&'static str, TagId)> = LAYOUTS

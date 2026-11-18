@@ -463,7 +463,7 @@ export function HomeView(props: { win: StatsWindow; week: StatsSummary | null; w
   const me = () => identity.me();
   const motd = useMotd();
   const tips = createMemo(() => motdMessages(motd()));
-  const accounts = createMemo(() => Object.keys(live.state.accounts).length);
+  const accounts = createMemo(() => Object.values(live.state.accounts).filter((a) => !a.bot).length);
   const online = createMemo(() => Object.values(live.state.accounts).filter((a) => a.online).length);
   const since = () => (sum()?.from ? Date.parse(sum()!.from!) : win() === "all" ? 0 : now() - 7 * 86_400_000);
   const mapRows = () => (sum()?.maps ?? []).slice(0, 6);

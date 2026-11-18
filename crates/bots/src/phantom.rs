@@ -114,6 +114,14 @@ struct Phantom {
     made: bool,
     /// The tick of its last action.
     last_tick: Option<u32>,
+    /// Why it waits for hosting, as last logged ([`waiting_line`]).
+    waiting: Option<String>,
+}
+
+/// The log line for a phantom that waits because this console is not (or
+/// not yet) the game's host (`why`, [`session::NotNow::NotHost`]).
+pub fn waiting_line(gamertag: &str, why: &str) -> String {
+    format!("bots: phantom {gamertag} waits: this console is not the game's host yet ({why})")
 }
 
 #[derive(Default)]
@@ -166,6 +174,7 @@ impl Phantoms {
             source,
             made: false,
             last_tick: None,
+            waiting: None,
         });
         Ok(handle)
     }
@@ -293,14 +302,15 @@ impl Phantoms {
 
         let s = match host {
             Ok(s) => s,
-            Err(session::NotNow::NotHost) => {
+            Err(session::NotNow::NotHost(why)) => {
+                // Not the host, or not yet (the first frames of a game):
+                // the phantoms wait and try again each frame, said once
+                // per phantom and reason.
                 for p in &mut b.list {
-                    if p.info.state == State::Pending {
-                        p.info.state = State::Failed("this console is not the game's host".into());
-                        log.push(format!(
-                            "bots: phantom {} failed: not the host",
-                            p.info.identity.gamertag
-                        ));
+                    if p.info.state == State::Pending && p.waiting.as_deref() != Some(why.as_str())
+                    {
+                        log.push(waiting_line(&p.info.identity.gamertag, &why));
+                        p.waiting = Some(why.clone());
                     }
                 }
                 drop(b);
@@ -308,6 +318,11 @@ impl Phantoms {
                 return Ok(log);
             }
             Err(_) => {
+                // No game: a reason said in the last game is said again in
+                // the next.
+                for p in &mut b.list {
+                    p.waiting = None;
+                }
                 drop(b);
                 self.refresh_where(&*m, true)?;
                 return Ok(log);
@@ -334,6 +349,7 @@ impl Phantoms {
                 continue;
             }
             p.made = true;
+            p.waiting = None;
             log.push(format!(
                 "bots: phantom {} joins (peer {peer})",
                 p.info.identity.gamertag

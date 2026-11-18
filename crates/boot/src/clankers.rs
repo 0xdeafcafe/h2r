@@ -317,6 +317,13 @@ pub trait Rosters: Send + Sync {
     /// The Live session this console hosts (16 lowercase hex digits).
     /// Never waits.
     fn session(&self) -> Option<String>;
+    /// The playlist (hopper descriptor index, as game records and ranks
+    /// name it) when the hosted session is a matchmade one: its roster is
+    /// then the playlist's persistent bot accounts nearest the humans'
+    /// level (§9.4). `None` for a custom game. Never waits.
+    fn playlist(&self) -> Option<String> {
+        None
+    }
     /// Asks for a roster; `done` gets it, checked, or why there is none,
     /// perhaps on another thread. Never waits.
     fn ask(
@@ -329,6 +336,12 @@ pub trait Rosters: Send + Sync {
 impl Rosters for live_hle::Hle {
     fn session(&self) -> Option<String> {
         self.hosted_session()
+    }
+    fn playlist(&self) -> Option<String> {
+        let hosted = self.hosted_session()?;
+        self.matchmade()
+            .filter(|(_, session)| *session == hosted)
+            .map(|(playlist, _)| playlist.to_string())
     }
     fn ask(
         &self,
@@ -344,6 +357,7 @@ impl Rosters for live_hle::Hle {
 #[derive(Clone, Debug, PartialEq)]
 struct Asked {
     session: String,
+    playlist: Option<String>,
     count: u32,
     skill: Option<f32>,
 }
@@ -423,7 +437,8 @@ pub enum Seat {
 struct Own {
     seat: Seat,
     skill: Arc<AtomicU8>,
-    /// A phantom's xuid (0 for a local bot).
+    /// A phantom's xuid; a local bot's bot account's, once a roster gave
+    /// it one (0 none).
     xuid: u64,
     /// A roster bot: its skill is the server's, not the page's.
     rostered: bool,
@@ -433,12 +448,15 @@ struct Own {
 /// phantoms, phantom peers for the rest (docs/game/bots.md, stage 6).
 ///
 /// With Live ([`Driver::with_rosters`]) and a session this console hosts,
-/// the phantoms are the server's bots: the driver asks for a roster of that
-/// many (`POST /v1/games/bots`) and, once it comes, runs its bots in place
-/// of the host-made "Clanker N"s. It asks again when the count, the
-/// difficulty or the session changes; a new roster replaces the old.
-/// Without Live, or until a roster comes (or when none does), phantoms
-/// are host-made: local xuids, which no game record ever carries.
+/// every bot is one of the server's bot accounts (§9.5): the driver asks
+/// for a roster of the whole count (`POST /v1/games/bots`) and, once it
+/// comes, the local bots take its first bots as their accounts (they go on
+/// Live as them, not as the human's guests) and the phantoms run the rest
+/// in place of the host-made "Clanker N"s. It asks again when the count,
+/// the difficulty or the session changes; a new roster replaces the old.
+/// Without Live, or until a roster comes (or when none does), local bots
+/// have no account (on Live, the human's guests) and phantoms are
+/// host-made: local xuids, which no game record ever carries.
 pub struct Driver {
     local: Local,
     phantoms: Option<Phantoms>,
@@ -449,8 +467,8 @@ pub struct Driver {
     /// The last [`Want`] applied, for applying again when a roster comes
     /// or the session changes.
     last: Mutex<Option<Want>>,
-    /// The last apply wanted phantoms.
-    wants_phantoms: AtomicBool,
+    /// The last apply wanted bots (and so a roster, with Live).
+    wants_roster: AtomicBool,
     /// Itself, for a roster's answer to reach it ([`drive`] sets it).
     me: std::sync::Weak<Driver>,
 }
@@ -466,7 +484,7 @@ impl Driver {
             rosters: None,
             roster: Mutex::default(),
             last: Mutex::new(None),
-            wants_phantoms: AtomicBool::new(false),
+            wants_roster: AtomicBool::new(false),
             me: std::sync::Weak::new(),
         }
     }
@@ -497,6 +515,7 @@ impl Driver {
         let rosters = self.rosters.as_ref()?;
         let session = rosters.session()?;
         let asked = Asked {
+            playlist: rosters.playlist(),
             session,
             count: count as u32,
             skill: request_skill(difficulty),
@@ -510,7 +529,7 @@ impl Driver {
         drop(r);
         let request = live_proto::bots::RosterRequest {
             session_id: asked.session.clone(),
-            playlist: None,
+            playlist: asked.playlist.clone(),
             count: asked.count,
             skill: asked.skill,
             teams: false,
@@ -572,7 +591,7 @@ impl Driver {
         let Some(rosters) = &self.rosters else {
             return Vec::new();
         };
-        if !self.wants_phantoms.load(Ordering::Relaxed) {
+        if !self.wants_roster.load(Ordering::Relaxed) {
             return Vec::new();
         }
         let session = rosters.session();
@@ -603,9 +622,15 @@ impl Driver {
         // Only bit 0..7 can be a port.
         let mut ports = (self.local.port_mask() & 0xff) as u8;
         let mut machines = Vec::new();
+        let mut accounts = Vec::new();
         for o in own.iter() {
             match o.seat {
-                Seat::Port(p, _) => ports |= 1u8.checked_shl(u32::from(p)).unwrap_or(0),
+                Seat::Port(p, _) => {
+                    ports |= 1u8.checked_shl(u32::from(p)).unwrap_or(0);
+                    if o.xuid != 0 && session_id.is_some() {
+                        accounts.push((p, live_proto::Xuid(o.xuid)));
+                    }
+                }
                 Seat::Phantom(_, h) => {
                     let xuid = if o.rostered && session_id.is_some() {
                         o.xuid
@@ -630,6 +655,7 @@ impl Driver {
             session_id,
             machines,
             ports,
+            accounts,
         })
     }
 
@@ -690,7 +716,41 @@ impl Driver {
             .filter(|o| matches!(o.seat, Seat::Port(..)))
             .count();
         let wanted = want.count.saturating_sub(ports);
-        self.wants_phantoms.store(wanted > 0, Ordering::Relaxed);
+        self.wants_roster.store(want.count > 0, Ordering::Relaxed);
+        // With Live, every bot is a server bot account: the local bots take
+        // the roster's first, the phantoms the rest.
+        let mut roster = if want.count > 0 {
+            self.rostered(want.count, want.difficulty, &mut log)
+        } else {
+            None
+        }
+        .map(Vec::into_iter);
+        for o in own.iter_mut() {
+            let Seat::Port(port, h) = o.seat else {
+                continue;
+            };
+            let account =
+                roster
+                    .as_mut()
+                    .and_then(Iterator::next)
+                    .map(|r| bots::guest::BotAccount {
+                        xuid: r.identity.xuid,
+                        gamertag: r.identity.gamertag,
+                    });
+            let xuid = account.as_ref().map_or(0, |a| a.xuid);
+            if xuid != o.xuid {
+                match &account {
+                    Some(a) => log.push(format!(
+                        "Clanker {port} is {} on Xbox Live (bot account {:016x})",
+                        a.gamertag, a.xuid
+                    )),
+                    None => log.push(format!("Clanker {port} has no bot account")),
+                }
+            }
+            if self.local.set_account(h, account).is_ok() {
+                o.xuid = xuid;
+            }
+        }
         if wanted == 0 {
             return log;
         }
@@ -703,9 +763,8 @@ impl Driver {
             return log;
         };
         // The phantoms: the server's roster's bots, else host-made ones.
-        let seats: Vec<(RosterSeat, bool)> = match self.rostered(wanted, want.difficulty, &mut log)
-        {
-            Some(r) => r.into_iter().take(wanted).map(|s| (s, true)).collect(),
+        let seats: Vec<(RosterSeat, bool)> = match roster {
+            Some(r) => r.take(wanted).map(|s| (s, true)).collect(),
             None => (0..wanted)
                 .map(|i| {
                     let n = (ports + i + 1) as u32;

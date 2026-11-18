@@ -340,6 +340,20 @@ pub fn particle_postprocess(s: &ParticleShader, bitmap: Option<(TagId, u16, u16)
 // (`+0x48`, `+0x58`) converted. The five properties are constants as the
 // base's static particles write them ([`ParticleRole`]): white, opaque,
 // unit size (the emitter scales it), no rotation, the first sprite.
+//
+// **The frame property is never empty.** Many of the base's static
+// particles leave `frame` (`+0x5c`) with no function data: they draw the
+// static quad (`flags_2` bit 0, E `0x002246e0`), a path that never reads
+// it. A converted particle draws its bitmap's sprites (`flags_2` 0), and
+// that path (E `0x00224846`: a sprites bitmap with sprites in the chosen
+// sequence) evaluates `frame` through the property wrapper `0x00246cd0`,
+// which reads the function's header byte 1 (`test byte [edi+1], 0xf0`
+// at `0x00246cfc`) with no check for a null pointer. An empty `frame`
+// faults reading address 1 the moment such a particle is drawn (Blood
+// Gulch's grenade effects, P: the fault's property was a converted prt3's
+// `frame`, data count 0 and address 0). So an empty or unparseable frame
+// is written as [`first_sprite_frame`]: a constant with range `[0, 0]`,
+// the first sprite of the particle's sequence.
 
 /// Halo 1 `part` root size (V: all 143 distinct tags).
 pub const H1_PART_SIZE: usize = 0x164;
@@ -445,6 +459,34 @@ pub fn particle_role(base: &crate::base::Base) -> Result<Option<ParticleRole>> {
     }))
 }
 
+/// The function blob of a frame property that always picks the first
+/// sprite: a constant (type 1, unranged, so the evaluator gives 0) mapped
+/// onto the range `[0, 0]`; one set of one word, `0x1c` bytes.
+pub fn first_sprite_frame() -> Vec<u8> {
+    use tags::effects::function::{Function, FunctionType};
+    let kind = FunctionType::Constant;
+    Function {
+        kind,
+        flags: 0,
+        sub_types: [0, 0],
+        range: [0.0, 0.0],
+        unknown_0c: [0; 8],
+        payload: vec![0; kind.blob_len().expect("constant has a length") - tags::effects::function::HEADER_LEN],
+    }
+    .to_bytes()
+}
+
+/// Writes [`first_sprite_frame`] into a `prt3` record's `frame` function
+/// when it holds no function the engine can read (empty, or not one).
+pub fn sprite_frame(r: &mut Record) -> Result<()> {
+    let readable = matches!(r.at("frame.function"), Some(Val::Data(b))
+        if tags::effects::function::Function::parse(b).is_ok());
+    if !readable {
+        set(r, "frame.function", Val::Data(first_sprite_frame()))?;
+    }
+    Ok(())
+}
+
 /// The `prt3` root of a Halo 1 particle on `shader`: its bitmap (converted
 /// tag and first image's size), its collision and death effects
 /// (converted, with their groups).
@@ -472,6 +514,7 @@ pub fn particle(
     for (f, v) in &role.statics {
         set(&mut r, f, v.clone())?;
     }
+    sprite_frame(&mut r)?;
     for (f, e) in [("collision_effect", collision_effect), ("death_effect", death_effect)] {
         let v = match e {
             Some((g, id)) => Val::tag(g, id),

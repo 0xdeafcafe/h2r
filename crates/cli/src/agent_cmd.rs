@@ -69,6 +69,15 @@ or a short form:
                          function, hits and instructions
   render                 render.stats: in-between frames and why they held,
                          the pipelined render, native render path calls
+  state save <name> [replace]  state.save: the whole machine at the next tick
+                         boundary where nothing is live, under the cache
+                         directory's snapshots/ (retries for 90 ticks, then
+                         answers BUSY with what stayed live)
+  state load <name>      state.load: back to that moment; says whether guest
+                         RAM hashes as it did at the save
+  state list             state.list: this build's snapshots
+  state drop <name>      state.drop
+  state fork <from> <name> [replace]  state.fork: load <from>, save it as <name>
 {HOT}
 {SIM}
 {FLIGHT}
@@ -406,6 +415,41 @@ fn number(s: Option<&String>, what: &str) -> Result<u64> {
         .with_context(|| format!("{what} needs a number"))
 }
 
+/// `state <save|load|list|drop|fork> ...`.
+fn state_call(words: &[String]) -> Result<(String, Value)> {
+    use agent_proto::state::method as state;
+    const HOW: &str = "state save|load|drop <name>, state fork <from> <name>, or state list";
+    let w = |i: usize| words.get(i).map(String::as_str);
+    let replace = |i: usize| -> Result<bool> {
+        match w(i) {
+            None => Ok(false),
+            Some("replace") => Ok(true),
+            Some(other) => bail!("state: unexpected {other} (only `replace`)"),
+        }
+    };
+    let name = |i: usize| w(i).with_context(|| format!("{HOW}: a name is missing"));
+    let (m, p, n) = match w(0) {
+        Some("list") => (state::LIST, Value::Null, 1),
+        Some("save") => (
+            state::SAVE,
+            json!({ "name": name(1)?, "replace": replace(2)? }),
+            3,
+        ),
+        Some("load") => (state::LOAD, json!({ "name": name(1)? }), 2),
+        Some("drop") => (state::DROP, json!({ "name": name(1)? }), 2),
+        Some("fork") => (
+            state::FORK,
+            json!({ "from": name(1)?, "name": name(2)?, "replace": replace(3)? }),
+            4,
+        ),
+        _ => bail!("{HOW}"),
+    };
+    if let Some(extra) = words.get(n) {
+        bail!("state: unexpected {extra}");
+    }
+    Ok((m.into(), p))
+}
+
 /// A call's method and params from its words.
 fn parse_call(words: &[String]) -> Result<(String, Value)> {
     if let Some(hot) = crate::agent_hot_cmd::parse(words) {
@@ -559,6 +603,7 @@ fn parse_call(words: &[String]) -> Result<(String, Value)> {
                 Some(_) => json!({ "hz": number(arg, "sample-start")? }),
             },
         ),
+        "state" => return state_call(&words[1..]),
         "wait" => {
             let until = json_arg(arg)?;
             if until.is_null() {
@@ -705,6 +750,36 @@ mod tests {
         );
         assert_eq!(c("fallbacks"), ("profile.fallbacks".into(), Value::Null));
         assert_eq!(c("loads 3"), ("load.timeline".into(), json!({"last": 3})));
+        assert_eq!(
+            c("state save fight"),
+            (
+                "state.save".into(),
+                json!({"name": "fight", "replace": false})
+            )
+        );
+        assert_eq!(
+            c("state save fight replace"),
+            (
+                "state.save".into(),
+                json!({"name": "fight", "replace": true})
+            )
+        );
+        assert_eq!(
+            c("state load fight"),
+            ("state.load".into(), json!({"name": "fight"}))
+        );
+        assert_eq!(c("state list"), ("state.list".into(), Value::Null));
+        assert_eq!(
+            c("state drop fight"),
+            ("state.drop".into(), json!({"name": "fight"}))
+        );
+        assert_eq!(
+            c("state fork fight fight.b"),
+            (
+                "state.fork".into(),
+                json!({"from": "fight", "name": "fight.b", "replace": false})
+            )
+        );
         assert_eq!(frame_params(&words("frame")).unwrap(), json!({"arm": true}));
         assert_eq!(
             frame_params(&words("frame draws snap 0,3")).unwrap(),
@@ -759,6 +834,13 @@ mod tests {
             "capture soon",
             "capture 30 loud",
             "fallbacks many",
+            "state",
+            "state save",
+            "state load",
+            "state list now",
+            "state save a twice",
+            "state fork a",
+            "state nap a",
         ] {
             assert!(parse_call(&words(s)).is_err(), "{s}");
         }

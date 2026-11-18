@@ -86,8 +86,10 @@ pub const MAX: u32 = 16;
 pub enum NotNow {
     /// No game running: wait (phantoms join only once a game runs).
     Wait,
-    /// A game runs, but this console is not its host.
-    NotHost,
+    /// A game runs, but this console is not (or not yet) its host, and
+    /// what the check read. A phantom waits and tries again: in the first
+    /// frames of a game, and in a game this console joined, this is so.
+    NotHost(String),
     /// No room for another peer or player.
     Full,
 }
@@ -105,13 +107,31 @@ pub fn host_session(m: &dyn GuestMemory) -> Result<u32, NotNow> {
     let sim = read(SIM_GLOBALS).unwrap_or(0);
     if !ready || s == 0 || sim == 0 {
         // A game with no network session: a local game, no host.
-        return Err(NotNow::NotHost);
+        return Err(NotNow::NotHost(format!(
+            "no network session (network ready {ready}, session {s:#x}, simulation {sim:#x})"
+        )));
     }
-    if read(sim + SIM_MODE) != Some(MODE_DIST_SERVER)
-        || read(s + STATE) != Some(STATE_LIVE)
-        || read(s + CLASS) != Some(4)
-    {
-        return Err(NotNow::NotHost);
+    let shown = |v: Option<u32>| v.map_or_else(|| "?".to_owned(), |v| v.to_string());
+    let mode = read(sim + SIM_MODE);
+    if mode != Some(MODE_DIST_SERVER) {
+        return Err(NotNow::NotHost(format!(
+            "the simulation is not the distributed server (mode {}, the server's is {MODE_DIST_SERVER})",
+            shown(mode)
+        )));
+    }
+    let state = read(s + STATE);
+    if state != Some(STATE_LIVE) {
+        return Err(NotNow::NotHost(format!(
+            "the session is not live (state {}, live is {STATE_LIVE})",
+            shown(state)
+        )));
+    }
+    let class = read(s + CLASS);
+    if class != Some(4) {
+        return Err(NotNow::NotHost(format!(
+            "the session's class is {}, not 4",
+            shown(class)
+        )));
     }
     Ok(s)
 }

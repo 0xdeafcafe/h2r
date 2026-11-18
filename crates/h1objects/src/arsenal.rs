@@ -326,6 +326,127 @@ pub struct WeaponParts {
 pub const WEAPON_CLASS: &str = "string_288";
 pub const WEAPON_TYPE_NAME: &str = "string_28c";
 
+/// Magazine `+0xc` (i16): the most rounds held in reserve. E: the reserve
+/// (`W+0x22a`) is capped with it (`0x101a10`, docs/game/skulls.md,
+/// Unlimited Ammo). V: on all seven retail magazines on Coagulation it is
+/// the total maximum (`+0x8`) less the loaded maximum (`+0xa`): 144 - 36
+/// on the battle rifle, 60 - 12 on the magnum, 24 - 4 on the sniper rifle.
+/// Until converter version 76 it was 0, so a converted weapon could hold
+/// no reserve: the HUD's count read 0 and nothing reloaded.
+pub const MAGAZINE_RESERVE_MAXIMUM: &str = "unknown_c";
+
+/// [`MAGAZINE_RESERVE_MAXIMUM`] for a magazine of `total` rounds of which
+/// `loaded` sit in the weapon.
+pub fn reserve_maximum(total: i16, loaded: i16) -> u16 {
+    total.saturating_sub(loaded).max(0) as u16
+}
+
+/// `weap +0x2c8`: the triggers (`0x40` each). A weapon fires only through
+/// one: each names the barrels (`+0x2d0`) a press fires. Every retail
+/// weapon on Coagulation that has a barrel has at least one trigger (V,
+/// 27 of 27); the rebuild from definitions (`dac88db6`) wrote
+/// none, so no converted Halo 1 weapon fired (`h2_triggers`).
+pub const TRIGGERS: &str = "block_2c8";
+
+/// One trigger's first 12 words (`+0x0..+0x30`; the two references after
+/// stay null).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TriggerWords(pub [u32; 12]);
+
+impl TriggerWords {
+    fn i16s(lo: i16, hi: i16) -> u32 {
+        u32::from(lo as u16) | u32::from(hi as u16) << 16
+    }
+
+    /// `+0x4` i16 input: 0 on every retail weapon's first trigger, 1 on the
+    /// scorpion cannon's second (its machine gun), 2 on the banshee's. `+0x6` i16 firing behaviour: 0 on the
+    /// automatic weapons (SMG, plasma rifle, needler, turrets), 1 on the
+    /// ones that fire once per press (magnum, shotgun, sniper rifle, beam
+    /// rifle, the scorpion's cannon), 2 on the plasma pistol, which
+    /// charges. `+0x8` i16 primary barrel, `+0xa` i16 secondary barrel
+    /// (-1 none; 1 on the plasma pistol, its charged shot). `+0xc` i16: 1
+    /// with behaviour 0 (all but the wraith's minigun, 0), 0 with 1, 2
+    /// with 2. All V, Coagulation's retail weapons.
+    pub fn new(input: i16, behaviour: i16, primary: i16, secondary: i16) -> Self {
+        let mut w = [0u32; 12];
+        w[1] = Self::i16s(input, behaviour);
+        w[2] = Self::i16s(primary, secondary);
+        w[3] = Self::i16s(behaviour_pair(behaviour), 0);
+        Self(w)
+    }
+
+    pub fn input(&self) -> i16 {
+        self.0[1] as i16
+    }
+    pub fn behaviour(&self) -> i16 {
+        (self.0[1] >> 16) as i16
+    }
+    pub fn primary(&self) -> i16 {
+        self.0[2] as i16
+    }
+    pub fn secondary(&self) -> i16 {
+        (self.0[2] >> 16) as i16
+    }
+    /// `+0x1c` f32: seconds to charge. V: the plasma pistol's 0.6, as Halo
+    /// 1's first trigger `+0x48` holds on its plasma pistol.
+    pub fn charging_time(&self) -> f32 {
+        f32::from_bits(self.0[7])
+    }
+}
+
+/// `+0xc` for a firing behaviour ([`TriggerWords::new`]).
+fn behaviour_pair(behaviour: i16) -> i16 {
+    match behaviour {
+        0 => 1,
+        2 => 2,
+        _ => 0,
+    }
+}
+
+/// Halo 1 trigger flag `0x8`: set on exactly the Halo 1 weapons that fire
+/// once per press on Blood Gulch (rocket launcher, sniper rifle, the
+/// scorpion's cannon) and on none of the automatic ones. S for the name;
+/// V for that split.
+pub const H1_TRIGGER_ONE_PER_PRESS: u32 = 0x8;
+/// Halo 1 trigger `+0x48` f32: seconds to charge (V: 0.6 on the plasma
+/// pistol's first trigger, the only nonzero one on Blood Gulch, and Halo
+/// 2's plasma pistol charges for 0.6 at trigger `+0x1c`).
+pub const H1_TRIGGER_CHARGING_TIME: usize = 0x48;
+
+/// The Halo 2 triggers for Halo 1's (`h1`, each `h1::TRIGGER_SIZE`
+/// bytes), whose barrels are one per Halo 1 trigger in order. Halo 1
+/// fires each trigger from its own input; Halo 2 needs a trigger naming
+/// the barrel:
+///
+/// - a first trigger that charges (`+0x48` > 0) with a second one is one
+///   charging trigger, barrel 0 tapped and barrel 1 charged (Halo 1's
+///   plasma pistol: trigger 1 is its overcharge, as Halo 2's plasma
+///   pistol's secondary barrel);
+/// - otherwise each of the first two Halo 1 triggers is a trigger on input
+///   0 and 1 firing its barrel, once per press when it has
+///   [`H1_TRIGGER_ONE_PER_PRESS`], else automatically.
+pub fn h2_triggers(h1: &[Vec<u8>]) -> Vec<TriggerWords> {
+    let flags = |t: &Vec<u8>| u32_at(t, 0);
+    let charging = |t: &Vec<u8>| f32::from_bits(u32_at(t, H1_TRIGGER_CHARGING_TIME));
+    match h1 {
+        [] => Vec::new(),
+        [first, _, ..] if charging(first) > 0.0 => {
+            let mut t = TriggerWords::new(0, 2, 0, 1);
+            t.0[7] = charging(first).to_bits();
+            vec![t]
+        }
+        _ => h1
+            .iter()
+            .take(2)
+            .enumerate()
+            .map(|(i, t)| {
+                let behaviour = i16::from(flags(t) & H1_TRIGGER_ONE_PER_PRESS != 0);
+                TriggerWords::new(i as i16, behaviour, i as i16, -1)
+            })
+            .collect(),
+    }
+}
+
 /// The `weap` root from Halo 1's weapon `w` (the bytes of its tag: `b`).
 pub fn weapon(w: &h1::Weapon, b: &[u8], parts: &WeaponParts, role: &Role) -> Result<Block> {
     let d = def(b"weap")?;
@@ -373,6 +494,14 @@ pub fn weapon(w: &h1::Weapon, b: &[u8], parts: &WeaponParts, role: &Role) -> Res
             "rounds_reloaded",
             Val::Int(m.rounds_reloaded.into()),
         )?;
+        word(
+            &mut e,
+            MAGAZINE_RESERVE_MAXIMUM,
+            u32::from(reserve_maximum(
+                m.rounds_total_maximum,
+                m.rounds_loaded_maximum,
+            )),
+        )?;
         mags.push(e);
     }
     set(&mut r, "magazines", Val::Block(mags))?;
@@ -417,6 +546,18 @@ pub fn weapon(w: &h1::Weapon, b: &[u8], parts: &WeaponParts, role: &Role) -> Res
         barrels.push(e);
     }
     set(&mut r, "barrels", Val::Block(barrels))?;
+    let td = d.child(TRIGGERS).expect("weap triggers");
+    let mut triggers = Vec::new();
+    for t in h2_triggers(&trig) {
+        let mut e = defs::default_record(td);
+        for (k, w) in t.0.iter().enumerate() {
+            if *w != 0 {
+                word(&mut e, &format!("unknown_{:x}", 4 * k), *w)?;
+            }
+        }
+        triggers.push(e);
+    }
+    set(&mut r, TRIGGERS, Val::Block(triggers))?;
     // First person: one element per player character, as retail (the
     // Chief's, then the Arbiter's), both Halo 1's.
     let (model, anim) = parts.first_person;

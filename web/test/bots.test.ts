@@ -1,13 +1,13 @@
 // Clanker bots in a game (docs/game/bots.md §6): players in the game record
-// and the live view, with their own names and a BOT mark, never linked to a
-// player page, and game-only: a kill of a bot or a death to one stays out of
+// and the live view, with their own names and a BOT mark, a bot with a server account (an xuid) links to its page, a host's own
+// Clanker does not, and game-only: a kill of a bot or a death to one stays out of
 // the human's career. The scoreboard and carnage report are compiled for the
 // server as in stats-home-render.test.ts and rendered to HTML.
 
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { plugin } from "bun";
-import { applyAccountsSnapshot, applyEvents, initialState, standings, type GameState, type LiveState } from "../src/state/reducer";
-import { gameHistory, playedWith, serviceRecord } from "../src/state/derive";
+import { applyAccountsSnapshot, applyEvents, initialState, standings, type AccountState, type GameState, type LiveState } from "../src/state/reducer";
+import { gameHistory, playedWith, serviceRecord, type ServiceRecord } from "../src/state/derive";
 import { rosterFor } from "../src/lib/game";
 import { rosterLabel } from "../src/map/render";
 import { StatsFold } from "../mock/stats";
@@ -114,6 +114,8 @@ describe("bots are game-only in a career", () => {
 
 let scoreboard: (g: GameState) => string;
 let carnage: (g: GameState) => string;
+let strip: (a: AccountState, rec: ServiceRecord) => string;
+let playersPage: () => string;
 
 beforeAll(async () => {
   const babel = await import("@babel/core");
@@ -142,6 +144,10 @@ beforeAll(async () => {
       url: "/",
       get children() { return createComponent(Route, { path: "/", component: view }); },
     }));
+  const { PlayerStrip } = await import("../src/stats/Player");
+  const { default: Players } = await import("../src/stats/Players");
+  strip = (a, rec) => inRouter(() => createComponent(PlayerStrip, { account: a, rec }));
+  playersPage = () => inRouter(() => createComponent(Players, {}));
   scoreboard = (g) => inRouter(() => createComponent(Scoreboard, { game: g }));
   carnage = (g) => inRouter(() => createComponent(Carnage, { game: g }));
 });
@@ -159,7 +165,7 @@ function cells(html: string, cls: string): Map<string, string> {
 }
 
 describe("the BOT mark and no player link", () => {
-  test("the live scoreboard marks bots and links only the human", () => {
+  test("the live scoreboard marks bots and links the account-bot, not the account-less Clanker", () => {
     const html = scoreboard(botGame().games.g1!);
     const c = cells(html, "score-name");
     expect(c.size).toBe(3);
@@ -168,17 +174,77 @@ describe("the BOT mark and no player link", () => {
     for (const bot of ["Clanker 1", "Rusty Lugnut"]) {
       expect(c.get(bot)).toContain('class="bot-tag"');
       expect(c.get(bot)).toContain(">BOT<");
-      expect(c.get(bot)).not.toContain("href=");
     }
+    // A bot with an xuid is a server bot account and has a page; a host's Clanker has none.
+    expect(c.get("Rusty Lugnut")).toContain('href="/games/halo2/players/Rusty%20Lugnut"');
+    expect(c.get("Clanker 1")).not.toContain("href=");
   });
 
-  test("the carnage report marks bots and links only the human", () => {
+  test("the carnage report marks bots and links the account-bot, not the account-less Clanker", () => {
     const html = carnage(botGame().games.g1!);
     const c = cells(html, "who");
     expect(c.get("Halo0001")).toContain("/players/Halo0001");
-    for (const bot of ["Clanker 1", "Rusty Lugnut"]) {
-      expect(c.get(bot)).toContain('class="bot-tag"');
-      expect(c.get(bot)).not.toContain("/players/");
-    }
+    for (const bot of ["Clanker 1", "Rusty Lugnut"]) expect(c.get(bot)).toContain('class="bot-tag"');
+    expect(c.get("Rusty Lugnut")).toContain("/players/Rusty%20Lugnut");
+    expect(c.get("Clanker 1")).not.toContain("/players/");
+  });
+});
+
+/** botGame() plus the server's bot account for the rostered bot. */
+function withBotAccount(): LiveState {
+  const s = botGame();
+  applyEvents(s, [ev("BotIssued", `bot-${ROSTERED}`, {
+    xuid: ROSTERED, gamertag: "Rusty Lugnut", persistent: true, emblem: null, colors: null, personality: null,
+  })]);
+  return s;
+}
+
+describe("bot accounts", () => {
+  test("a BotIssued event makes a bot account; a human account is never overwritten", () => {
+    const s = withBotAccount();
+    expect(s.accounts[ROSTERED]).toMatchObject({ gamertag: "Rusty Lugnut", bot: true, online: false });
+    expect(s.accounts[HUMAN]!.bot).toBe(false);
+    applyEvents(s, [ev("BotIssued", `bot-${HUMAN}`, { xuid: HUMAN, gamertag: "Impostor" })]);
+    expect(s.accounts[HUMAN]).toMatchObject({ gamertag: "Halo0001", bot: false });
+  });
+
+  test("an accounts snapshot carries bot and keeps a known bot a bot", () => {
+    const s = withBotAccount();
+    applyAccountsSnapshot(s, [{ xuid: ROSTERED, gamertag: "Rusty Lugnut" }]);
+    expect(s.accounts[ROSTERED]!.bot).toBe(true);
+    applyAccountsSnapshot(s, [{ xuid: "000b000000000009", gamertag: "Other", bot: true }]);
+    expect(s.accounts["000b000000000009"]!.bot).toBe(true);
+  });
+
+  test("a bot with a known bot account keeps its name", () => {
+    expect(withBotAccount().games.g1!.players[2]!.name).toBe("Rusty Lugnut");
+  });
+
+  test("the bot's career counts its own kills and deaths; the human's still leaves them out", () => {
+    const s = withBotAccount();
+    const bot = serviceRecord(s, ROSTERED);
+    expect(bot.games).toBe(1);
+    expect(bot.wins).toBe(0);
+    expect(bot.kills).toBe(1);
+    expect(bot.deaths).toBe(1);
+    expect(bot.killsSeen).toBe(1);
+    const human = serviceRecord(s, HUMAN);
+    expect([human.kills, human.deaths, human.killsSeen]).toEqual([0, 0, 0]);
+    expect(playedWith(s, HUMAN)).toEqual([]);
+  });
+
+  test("the players list leaves bots out", () => {
+    // The page reads the live store, which is empty here: the filter is on accounts.
+    expect(playersPage()).not.toContain("Rusty Lugnut");
+    const s = withBotAccount();
+    expect(Object.values(s.accounts).filter((a) => !a.bot).map((a) => a.gamertag)).toEqual(["Halo0001"]);
+  });
+
+  test("a bot's identity strip has the BOT tag", () => {
+    const s = withBotAccount();
+    const html = strip(s.accounts[ROSTERED]!, serviceRecord(s, ROSTERED));
+    expect(html).toContain('class="bot-tag"');
+    expect(html).toContain("Rusty Lugnut");
+    expect(strip(s.accounts[HUMAN]!, serviceRecord(s, HUMAN))).not.toContain("bot-tag");
   });
 });

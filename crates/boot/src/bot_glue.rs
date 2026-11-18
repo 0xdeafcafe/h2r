@@ -4,16 +4,23 @@
 //! - The process-wide [`bots::local::global`] bots are an input backend,
 //!   added after the host's own pads, so they can be added at any time
 //!   (`H2_BOTS=<n>` adds `n` brains at boot; the agent API can add more).
-//! - On the players screen the glue signs each bot in itself, with the
-//!   game's own sign-in and a profile made from the human's
-//!   ([`bots::guest::sign_in_then`]), before `SOUND_UPDATE`. A bot never
-//!   presses a button to join (see "The join gate"). A bot's A that still
-//!   reaches the screen's handler for a controller with no profile
-//!   (`PLAYERS_SCREEN_UNJOINED`, a sim script's) is answered the same way
-//!   ([`bots::guest::sign_in`]).
+//! - On the players screen or in a pregame lobby the glue signs each bot
+//!   in itself, with the game's own sign-in and a profile made from the
+//!   human's ([`bots::guest::sign_in_then`]), before `SOUND_UPDATE`. A
+//!   bot never presses a button to join (see "The join gate"). A bot's A
+//!   that still reaches the players screen's handler for a controller with
+//!   no profile (`PLAYERS_SCREEN_UNJOINED`, a sim script's) is answered
+//!   the same way ([`bots::guest::sign_in`]).
 //! - With a human on Xbox Live, out of a game, each signed-in bot goes on
-//!   Live as the human's guest ([`bots::guest::go_live`], [`to_go_live`]),
-//!   as an Xbox signs in a guest. Offline and in System Link, nothing.
+//!   Live as its own bot account once the server leased it one
+//!   ([`bots::local::Local::account_on`], [`bots::guest::go_live_as`],
+//!   docs/game/bots.md §9.5), so the guest numbers stay free for real
+//!   guests; until then (or with no roster) as the human's guest
+//!   ([`bots::guest::go_live`], [`to_go_live`]), as an Xbox signs in a
+//!   guest. A guest bot moves to its account when one comes
+//!   ([`to_switch_account`]). When no human is on Live any more, a bot on
+//!   Live as its account leaves Live ([`to_leave_live`],
+//!   [`bots::guest::leave_live`]). Offline and in System Link, nothing.
 //! - A Start press in the pregame lobby (`PREGAME_LOBBY_INPUT`) while bots
 //!   are in logs the game's start state and what holds it back
 //!   ([`bots::lobby::start_state_then`]), before the next `SOUND_UPDATE`.
@@ -31,11 +38,26 @@
 //!   their players; each joined phantom's pad becomes its action. When the
 //!   game ends they leave the session and wait for the next.
 //!
-//! **The join gate.** A bot is signed in only while the players screen
-//! takes player one's input, nothing sits on windows 0 to 4 (a dialog, or
-//! the profile chooser: [`crate::ui_watch::dialog`]), its own slot has no
-//! profile, a human has one to copy and no game runs ([`to_sign_in`]).
-//! Each port's gate is logged when it changes, and each sign-in.
+//! **The join gate.** A bot is signed in only while its own slot has no
+//! profile, a human has one to copy, no game runs ([`to_sign_in`]) and
+//! one of two screens is up ([`screen`]):
+//!
+//! - the players screen takes player one's input and nothing sits on
+//!   windows 0 to 4 (a dialog, or the profile chooser:
+//!   [`crate::ui_watch::dialog`]); the bot's port also gets its bit in the
+//!   screen's join mask;
+//! - a pregame lobby (Live or System Link custom game), read from its
+//!   squad session ([`bots::lobby::pregame`]), since `ui_watch` reads the
+//!   lobby as no screen. The sign-in is all: the session's per-frame
+//!   local-player pass (`0x65770`) adds the new local user, as for a
+//!   second controller's profile chosen in the lobby. On Live it waits
+//!   for the user's Xbox Live identity (a local user with the offline id's
+//!   flags `0xBAD00000` counts as none there, `0x646df`), which the bot
+//!   gets from [`bots::guest::go_live_as`] within 30 frames.
+//!
+//! Each port's gate is logged when it changes, naming the screen it
+//! thinks is up (`players`, `lobby`, the top screen's id or `none`), and
+//! each sign-in.
 //!
 //! Bots used to tap A through that gate, and every tap the game took
 //! anywhere but the players screen's own handler opened a profile chooser
@@ -87,32 +109,96 @@ pub fn add_from_env() {
     }
 }
 
-/// Whether the bot on a port may tap A to join: the players screen takes
-/// player one's input (`top`, [`crate::ui_watch::read`]), no dialog or
-/// profile chooser is open over it (`dialog`, [`crate::ui_watch::dialog`]),
-/// and the port's slot has no profile yet (`signed_in`: `None` when the
-/// slot could not be read, which is a no).
+/// Where a joining bot would join, as the gate sees it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Screen {
+    /// The players screen (`0x1e`) takes player one's input: a bot joins
+    /// with the game's sign-in and its port's bit in the screen's join
+    /// mask (`+8`) at `screen`.
+    Players { screen: u32 },
+    /// A pregame lobby (Live or System Link custom game,
+    /// [`bots::lobby::pregame`]) and no game runs. The lobby is read from
+    /// its squad session, not from the screens: it shares its window and
+    /// slot with the screens over it, and `ui_watch` reads it as no screen
+    /// (the user's run: `top none`). A bot joins with the game's sign-in
+    /// alone: the session's per-frame local-player pass (`0x65770`) adds
+    /// every local user the session has no player for (`0x646b0` status 2,
+    /// `0x65a60`), as it does for a second controller's profile chosen
+    /// in the lobby. No screen mask is written.
+    Lobby,
+    /// Anything else: the top screen's id, if one was read.
+    Other(Option<u32>),
+}
+
+impl Screen {
+    /// The name the gate line gives it: `players`, `lobby`, the screen's
+    /// id, or `none`.
+    pub fn name(&self) -> String {
+        match self {
+            Screen::Players { .. } => "players".to_owned(),
+            Screen::Lobby => "lobby".to_owned(),
+            Screen::Other(Some(id)) => format!("0x{id:02x}"),
+            Screen::Other(None) => "none".to_owned(),
+        }
+    }
+
+    /// The players screen's address, for its join mask; `None` in the
+    /// lobby (and anywhere else).
+    pub fn mask_screen(&self) -> Option<u32> {
+        match self {
+            Screen::Players { screen } => Some(*screen),
+            _ => None,
+        }
+    }
+}
+
+/// Which screen the gate is on: the players screen when it takes player
+/// one's input (`top`, [`crate::ui_watch::read`]); otherwise the pregame
+/// lobby when its session is up (`pregame`, [`bots::lobby::in_pregame`])
+/// and no game runs (`in_game`); otherwise the top screen read, if any.
+pub fn screen(top: Option<crate::ui_watch::Top>, pregame: bool, in_game: bool) -> Screen {
+    match top {
+        Some(t) if t.id == crate::ui_watch::JOIN_SCREEN => Screen::Players { screen: t.screen },
+        _ if pregame && !in_game => Screen::Lobby,
+        _ => Screen::Other(top.map(|t| t.id)),
+    }
+}
+
+/// Whether the bot on a port may be signed in now, by the screen
+/// ([`screen`]) and the port's slot (`signed_in`: `None` when the slot
+/// could not be read, which is a no; a slot with a profile already, no).
+///
+/// - On the players screen, only with nothing on windows 0 to 4 (`dialog`,
+///   [`crate::ui_watch::dialog`]): the screen ignores input under a
+///   dialog, and the profile chooser it opens for a controller is one.
+/// - In the lobby, whatever sits over it: the Clankers page and Game
+///   Setup are dialogs over the lobby, and the sign-in presses nothing.
 pub fn join_gate(
-    top: Option<crate::ui_watch::Top>,
+    screen: Screen,
     dialog: Option<crate::ui_watch::Dialog>,
     signed_in: Option<bool>,
 ) -> bool {
-    top.is_some_and(|t| t.id == crate::ui_watch::JOIN_SCREEN)
-        && dialog.is_none()
-        && signed_in == Some(false)
+    let screen_open = match screen {
+        Screen::Players { .. } => dialog.is_none(),
+        Screen::Lobby => true,
+        Screen::Other(_) => false,
+    };
+    screen_open && signed_in == Some(false)
 }
 
-/// The log line for one port's gate: what it read and what it decided,
-/// with the slot's flags (`flags`, slot `+0`: `0x10` a profile, `0x20`
-/// signed in to Xbox Live), for what the lobby makes of the bot.
+/// The log line for one port's gate: the screen it thinks is up
+/// ([`Screen::name`]) and the top screen read, what it read and what it
+/// decided, with the slot's flags (`flags`, slot `+0`: `0x10` a profile,
+/// `0x20` signed in to Xbox Live), for what the lobby makes of the bot.
 pub fn gate_line(
     port: u8,
+    screen: Screen,
     top: Option<crate::ui_watch::Top>,
     dialog: Option<crate::ui_watch::Dialog>,
     signed_in: Option<bool>,
     flags: Option<u32>,
 ) -> String {
-    let verdict = if join_gate(top, dialog, signed_in) {
+    let verdict = if join_gate(screen, dialog, signed_in) {
         "signs in"
     } else {
         "waits"
@@ -129,7 +215,8 @@ pub fn gate_line(
     let signed = signed_in.map_or_else(|| "?".to_owned(), |b| b.to_string());
     let flags = flags.map_or_else(|| "?".to_owned(), |f| format!("{f:#x}"));
     format!(
-        "bots: join gate port {port}: top {top}, dialog {dialog}, signed_in {signed} (slot {flags}): {verdict}"
+        "bots: join gate port {port}: screen {} (top {top}), dialog {dialog}, signed_in {signed} (slot {flags}): {verdict}",
+        screen.name()
     )
 }
 
@@ -141,7 +228,7 @@ pub const SIGN_IN_EVERY: u64 = 30;
 /// (`joining`, a mask) whose [`join_gate`] is open, while no game runs
 /// (`in_game`) and a human has a profile to copy (`human`).
 pub fn to_sign_in(
-    top: Option<crate::ui_watch::Top>,
+    screen: Screen,
     dialog: Option<crate::ui_watch::Dialog>,
     joining: u32,
     signed_in: impl Fn(u8) -> Option<bool>,
@@ -152,8 +239,20 @@ pub fn to_sign_in(
         return Vec::new();
     }
     (0..4u8)
-        .filter(|&p| joining & 1 << p != 0 && join_gate(top, dialog, signed_in(p)))
+        .filter(|&p| joining & 1 << p != 0 && join_gate(screen, dialog, signed_in(p)))
         .collect()
+}
+
+/// The log line for one bot the glue signs in, and where: on the players
+/// screen (with its join mask) or in the pregame lobby (the session adds
+/// the player itself).
+pub fn sign_in_line(name: &str, port: u8, screen: Screen) -> String {
+    let at = match screen {
+        Screen::Players { .. } => "on the players screen",
+        Screen::Lobby => "in the pregame lobby",
+        Screen::Other(_) => "off any join screen",
+    };
+    format!("bots: signing {name} in on port {port} {at}")
 }
 
 /// The ports whose bot the glue signs in to Xbox Live as a guest of the
@@ -179,6 +278,50 @@ pub fn to_go_live(
         .collect()
 }
 
+/// The ports whose bot is on Xbox Live (`live_xuid`: the slot's record's
+/// user id, `None` when off Live or unread) as something other than its
+/// bot account (`account`: the xuid the driver gave it), so it goes on as
+/// that account now ([`bots::guest::go_live_as`]): a guest bot whose
+/// account came, or a bot whose roster changed. Only with a human on Xbox
+/// Live and out of a game.
+pub fn to_switch_account(
+    bots: u32,
+    live_xuid: impl Fn(u8) -> Option<u64>,
+    account: impl Fn(u8) -> Option<u64>,
+    host_live: bool,
+    in_game: bool,
+) -> Vec<u8> {
+    if in_game || !host_live {
+        return Vec::new();
+    }
+    (0..4u8)
+        .filter(|&p| bots & 1 << p != 0)
+        .filter(|&p| match (live_xuid(p), account(p)) {
+            (Some(on), Some(want)) => on != want,
+            _ => false,
+        })
+        .collect()
+}
+
+/// The ports whose bot is on Xbox Live as its own bot account (`slot`:
+/// the flags and record's guest number; a guest is signed out by the game
+/// itself, `0x190186`) once no human is on Live (`host_live`), out of a
+/// game: they leave Live ([`bots::guest::leave_live`]).
+pub fn to_leave_live(
+    bots: u32,
+    slot: impl Fn(u8) -> Option<(u32, u32)>,
+    host_live: bool,
+    in_game: bool,
+) -> Vec<u8> {
+    if in_game || host_live {
+        return Vec::new();
+    }
+    (0..4u8)
+        .filter(|&p| bots & 1 << p != 0)
+        .filter(|&p| slot(p).is_some_and(|(f, guest)| f & guest::SLOT_LIVE != 0 && guest == 0))
+        .collect()
+}
+
 /// The log line for what [`bots::guest::go_live`] did for the bot on
 /// `port`.
 pub fn go_live_line(port: u8, name: &str, r: guest::GoLive) -> String {
@@ -186,6 +329,9 @@ pub fn go_live_line(port: u8, name: &str, r: guest::GoLive) -> String {
     match r {
         Guest { host, number } => format!(
             "bots: {name} on port {port} is on Xbox Live as guest {number} of port {host}'s account"
+        ),
+        Account { host } => format!(
+            "bots: {name} on port {port} is on Xbox Live as its own bot account, beside port {host}'s"
         ),
         NoHost => format!("bots: {name} on port {port} stays offline: no one is on Xbox Live"),
         NoProfile => format!("bots: {name} on port {port} has no profile to take on Xbox Live"),
@@ -216,6 +362,9 @@ pub struct Bots {
     signing_out: Arc<AtomicBool>,
     /// Each port's last Xbox Live guest line, so it is logged on a change.
     live: Arc<Mutex<[String; 4]>>,
+    /// Each bot port's player id from before it went on Xbox Live (its
+    /// profile sign-in's), for [`bots::guest::leave_live`].
+    offline_ids: Arc<Mutex<[Option<[u8; guest::ID_LEN]>; 4]>>,
     /// A Start press in the lobby waits for its start-state line.
     pressed: Arc<AtomicBool>,
 }
@@ -237,6 +386,7 @@ impl Bots {
             gates: Arc::default(),
             signing_out: Arc::default(),
             live: Arc::default(),
+            offline_ids: Arc::default(),
             pressed: Arc::default(),
         }
     }
@@ -356,6 +506,11 @@ impl feature::Feature for Bots {
                 let dialog = crate::ui_watch::dialog(&*mem);
                 let joining = local.joining_mask();
                 let g: &runtime::Guest = &mem;
+                let on = screen(
+                    top,
+                    bots::lobby::in_pregame(g),
+                    guest::game_tick(g).is_some(),
+                );
                 let mut open = [false; 4];
                 {
                     let mut said = lock(&gates);
@@ -365,9 +520,9 @@ impl feature::Feature for Bots {
                             continue;
                         }
                         let signed_in = guest::signed_in(g, u32::from(port)).ok();
-                        open[usize::from(port)] = join_gate(top, dialog, signed_in);
+                        open[usize::from(port)] = join_gate(on, dialog, signed_in);
                         let flags = g.u32(guest::slot(u32::from(port))).ok();
-                        let line = gate_line(port, top, dialog, signed_in, flags);
+                        let line = gate_line(port, on, top, dialog, signed_in, flags);
                         if said[usize::from(port)] != line {
                             eprintln!("{line}");
                             said[usize::from(port)] = line;
@@ -416,13 +571,14 @@ impl feature::Feature for Bots {
         // The listeners: the humans' ears only.
         // And, out of a game, the leaving bots signed out, then unplugged.
         // And on the players screen, the joining bots signed in.
-        let (local, sound, busy, frame, live, pressed) = (
+        let (local, sound, busy, frame, live, pressed, offline_ids) = (
             self.local.clone(),
             Arc::clone(&self.sound),
             Arc::clone(&self.signing_out),
             Arc::clone(&self.frame),
             Arc::clone(&self.live),
             Arc::clone(&self.pressed),
+            Arc::clone(&self.offline_ids),
         );
         b.raw().before(
             &points::SOUND_UPDATE,
@@ -447,18 +603,56 @@ impl feature::Feature for Bots {
                         })
                     });
                 }
-                // Bots with a profile go on Xbox Live as the human's guests.
+                // Bots with a profile go on Xbox Live as their bot accounts
+                // (or, with none yet, as the human's guests).
                 let joined = local.joining_mask();
                 if joined != 0 && frame.load(Ordering::Relaxed) % SIGN_IN_EVERY == 0 {
                     let mut mem = rt.memory();
                     let bots = local.port_mask();
                     let host_live = guest::live_host(&*mem, bots).ok().flatten().is_some();
-                    let ports = to_go_live(
+                    let in_game = guest::game_tick(&*mem).is_some();
+                    let account = |p: u8| local.account_on(u32::from(p));
+                    let mut ports = to_go_live(
                         joined,
                         |p| guest::slot_flags(&*mem, u32::from(p)).ok(),
                         host_live,
-                        guest::game_tick(&*mem).is_some(),
+                        in_game,
                     );
+                    let live_xuid = |p: u8| {
+                        let p = u32::from(p);
+                        guest::on_live(&*mem, p)
+                            .ok()
+                            .filter(|on| *on)
+                            .and_then(|_| guest::account(&*mem, p).ok())
+                            .map(|a| guest::account_xuid(&a))
+                    };
+                    ports.extend(to_switch_account(
+                        joined,
+                        live_xuid,
+                        |p| account(p).map(|a| a.xuid),
+                        host_live,
+                        in_game,
+                    ));
+                    // No one on Live any more: bot accounts leave it.
+                    for p in to_leave_live(
+                        joined,
+                        |p| {
+                            let p = u32::from(p);
+                            let f = guest::slot_flags(&*mem, p).ok()?;
+                            let g = guest::account(&*mem, p).ok()?;
+                            Some((f, guest::guest_number(&g)))
+                        },
+                        host_live,
+                        in_game,
+                    ) {
+                        let name = local.name_on(u32::from(p)).unwrap_or_default();
+                        let Some(id) = lock(&offline_ids)[usize::from(p)] else {
+                            continue;
+                        };
+                        if let Ok(true) = guest::leave_live(&mut *mem, u32::from(p), &id, &name) {
+                            eprintln!("bots: {name} on port {p} leaves Xbox Live: no one is on it");
+                        }
+                    }
                     let mut said = lock(&live);
                     for p in 0..4u8 {
                         if !ports.contains(&p) {
@@ -467,7 +661,17 @@ impl feature::Feature for Bots {
                     }
                     for p in ports {
                         let name = local.name_on(u32::from(p)).unwrap_or_default();
-                        let line = match guest::go_live(&mut *mem, u32::from(p), bots, &name) {
+                        // The player id it had offline, kept for leaving.
+                        if let Ok(false) = guest::on_live(&*mem, u32::from(p))
+                            && let Ok(id) = guest::slot_id(&*mem, u32::from(p))
+                        {
+                            lock(&offline_ids)[usize::from(p)] = Some(id);
+                        }
+                        let r = match account(p) {
+                            Some(a) => guest::go_live_as(&mut *mem, u32::from(p), bots, &a),
+                            None => guest::go_live(&mut *mem, u32::from(p), bots, &name),
+                        };
+                        let line = match r {
                             Ok(r) => go_live_line(p, &name, r),
                             Err(e) => format!(
                                 "bots: {name} on port {p}: Xbox Live: fault at {:#x}",
@@ -488,30 +692,33 @@ impl feature::Feature for Bots {
                     let bots = local.port_mask();
                     let (ports, screen) = {
                         let mem = rt.memory();
-                        let top = crate::ui_watch::read(&*mem).top;
+                        let in_game = guest::game_tick(&*mem).is_some();
+                        let on = screen(
+                            crate::ui_watch::read(&*mem).top,
+                            bots::lobby::in_pregame(&*mem),
+                            in_game,
+                        );
                         let human = guest::human_port(&*mem, bots).ok().flatten().is_some();
                         let ports = to_sign_in(
-                            top,
+                            on,
                             crate::ui_watch::dialog(&*mem),
                             joining,
                             |p| guest::signed_in(&*mem, u32::from(p)).ok(),
                             human,
-                            guest::game_tick(&*mem).is_some(),
+                            in_game,
                         );
-                        let screen = top
-                            .filter(|t| t.id == crate::ui_watch::JOIN_SCREEN)
-                            .map(|t| t.screen);
-                        (ports, screen)
+                        (ports, on)
                     };
                     if !ports.is_empty() {
                         let joins: Vec<(u32, String)> = ports
                             .iter()
                             .map(|&p| {
                                 let name = local.name_on(u32::from(p)).unwrap_or_default();
-                                eprintln!("bots: signing {name} in on port {p}");
+                                eprintln!("{}", sign_in_line(&name, p, screen));
                                 (u32::from(p), name)
                             })
                             .collect();
+                        let screen = screen.mask_screen();
                         busy.store(true, Ordering::Relaxed);
                         let busy = Arc::clone(&busy);
                         let then = points::SOUND_UPDATE.base;
@@ -682,17 +889,69 @@ mod tests {
         id: Some(0x17),
     });
 
+    /// The players screen, as [`screen`] reads it from `on(JOIN_SCREEN)`.
+    const PLAYERS: Screen = Screen::Players {
+        screen: 0x8000_0000,
+    };
+
     #[test]
-    fn a_bot_taps_only_on_the_bare_players_screen_with_no_profile() {
-        assert!(join_gate(on(JOIN_SCREEN), None, Some(false)));
-        assert!(!join_gate(on(JOIN_SCREEN), None, Some(true)), "signed in");
-        assert!(!join_gate(on(JOIN_SCREEN), None, None), "slot unread");
+    fn the_screen_is_the_players_screen_then_the_pregame_lobby_then_whatever_was_read() {
+        assert_eq!(screen(on(JOIN_SCREEN), false, false), PLAYERS);
+        assert_eq!(
+            screen(on(JOIN_SCREEN), true, false),
+            PLAYERS,
+            "the players screen up over a lobby session: its mask"
+        );
+        // The user's run: a Live custom game lobby reads as no screen.
+        assert_eq!(screen(None, true, false), Screen::Lobby);
+        assert_eq!(
+            screen(on(0xe7), true, false),
+            Screen::Lobby,
+            "a screen read over the lobby"
+        );
+        assert_eq!(
+            screen(None, true, true),
+            Screen::Other(None),
+            "a game keeps the session in its lobby states: not the lobby"
+        );
+        assert_eq!(screen(on(0xba), false, false), Screen::Other(Some(0xba)));
+        assert_eq!(screen(None, false, false), Screen::Other(None));
+        assert_eq!(PLAYERS.name(), "players");
+        assert_eq!(Screen::Lobby.name(), "lobby");
+        assert_eq!(Screen::Other(Some(0xba)).name(), "0xba");
+        assert_eq!(Screen::Other(None).name(), "none");
+        assert_eq!(PLAYERS.mask_screen(), Some(0x8000_0000));
+        assert_eq!(Screen::Lobby.mask_screen(), None, "no mask in the lobby");
+    }
+
+    #[test]
+    fn a_bot_joins_only_on_the_bare_players_screen_with_no_profile() {
+        assert!(join_gate(PLAYERS, None, Some(false)));
+        assert!(!join_gate(PLAYERS, None, Some(true)), "signed in");
+        assert!(!join_gate(PLAYERS, None, None), "slot unread");
         assert!(
-            !join_gate(on(JOIN_SCREEN), CHOOSER, Some(false)),
+            !join_gate(PLAYERS, CHOOSER, Some(false)),
             "a profile chooser open: A would pick the human's profile"
         );
-        assert!(!join_gate(on(0x09), None, Some(false)), "the main menu");
-        assert!(!join_gate(None, None, Some(false)), "no screen");
+        assert!(
+            !join_gate(Screen::Other(Some(0x09)), None, Some(false)),
+            "the main menu"
+        );
+        assert!(
+            !join_gate(Screen::Other(None), None, Some(false)),
+            "no screen"
+        );
+    }
+
+    #[test]
+    fn the_gate_opens_in_the_pregame_lobby_whatever_sits_over_it() {
+        assert!(join_gate(Screen::Lobby, None, Some(false)));
+        assert!(
+            join_gate(Screen::Lobby, CHOOSER, Some(false)),
+            "the Clankers page or Game Setup over the lobby: the sign-in presses nothing"
+        );
+        assert!(!join_gate(Screen::Lobby, None, Some(true)), "signed in");
+        assert!(!join_gate(Screen::Lobby, None, None), "slot unread");
     }
 
     #[test]
@@ -701,35 +960,78 @@ mod tests {
         // Ports 1 and 3 joining, 2 an H2_BOTS bot already in.
         let slots = |p: u8| Some(p == 2);
         assert_eq!(
-            to_sign_in(on(JOIN_SCREEN), None, 0b1110, slots, true, false),
+            to_sign_in(PLAYERS, None, 0b1110, slots, true, false),
             vec![1, 3]
         );
         assert_eq!(
-            to_sign_in(on(JOIN_SCREEN), None, 0b0010, empty, true, false),
+            to_sign_in(PLAYERS, None, 0b0010, empty, true, false),
             vec![1],
             "a port with no joining bot is the human's"
         );
         assert!(
-            to_sign_in(on(JOIN_SCREEN), None, 0b10, empty, false, false).is_empty(),
+            to_sign_in(PLAYERS, None, 0b10, empty, false, false).is_empty(),
             "no human profile to copy yet"
         );
         assert!(
-            to_sign_in(on(JOIN_SCREEN), None, 0b10, empty, true, true).is_empty(),
+            to_sign_in(PLAYERS, None, 0b10, empty, true, true).is_empty(),
             "a game runs"
         );
         assert!(
-            to_sign_in(on(JOIN_SCREEN), CHOOSER, 0b10, empty, true, false).is_empty(),
+            to_sign_in(PLAYERS, CHOOSER, 0b10, empty, true, false).is_empty(),
             "a profile chooser is open"
         );
         // The Xbox Live menu and anything else: never, so nothing a bot does
         // reaches a screen that would open a chooser for it.
         for id in [0x09, crate::custom_games::SCREEN_ID as u32] {
             assert!(
-                to_sign_in(on(id), None, 0b10, empty, true, false).is_empty(),
+                to_sign_in(Screen::Other(Some(id)), None, 0b10, empty, true, false).is_empty(),
                 "screen {id:#x}"
             );
         }
-        assert!(to_sign_in(None, None, 0b10, empty, true, false).is_empty());
+        assert!(to_sign_in(Screen::Other(None), None, 0b10, empty, true, false).is_empty());
+    }
+
+    #[test]
+    fn in_the_pregame_lobby_each_joining_bot_is_signed_in_and_none_during_a_game() {
+        // The user's run: Live, Clankers On, Count 5, hosted from the Live
+        // menu. Ports 1 to 3 joining, no profile (slot 0x1), the lobby read
+        // as no screen: each is signed in, the Clankers page open or not.
+        let empty = |_: u8| Some(false);
+        let lobby = screen(None, true, false);
+        assert_eq!(
+            to_sign_in(lobby, None, 0b1110, empty, true, false),
+            vec![1, 2, 3]
+        );
+        assert_eq!(
+            to_sign_in(lobby, CHOOSER, 0b1110, empty, true, false),
+            vec![1, 2, 3]
+        );
+        // Each is signed in once: a slot with its profile is not again.
+        let slots = |p: u8| Some(p != 3);
+        assert_eq!(to_sign_in(lobby, None, 0b1110, slots, true, false), vec![3]);
+        // The game: the session stays in its lobby states, but nothing.
+        let in_game = screen(None, true, true);
+        assert!(to_sign_in(in_game, None, 0b1110, empty, true, true).is_empty());
+        assert!(
+            to_sign_in(Screen::Lobby, None, 0b1110, empty, true, true).is_empty(),
+            "a game runs, whatever the screen says"
+        );
+        assert!(
+            to_sign_in(lobby, None, 0b1110, empty, false, false).is_empty(),
+            "no human profile to copy"
+        );
+    }
+
+    #[test]
+    fn the_sign_in_line_says_where() {
+        assert_eq!(
+            sign_in_line("Clanker 1", 1, Screen::Lobby),
+            "bots: signing Clanker 1 in on port 1 in the pregame lobby"
+        );
+        assert_eq!(
+            sign_in_line("Clanker 2", 2, PLAYERS),
+            "bots: signing Clanker 2 in on port 2 on the players screen"
+        );
     }
 
     const PROFILE: u32 = guest::SLOT_PROFILE;
@@ -765,11 +1067,61 @@ mod tests {
     }
 
     #[test]
+    fn a_bot_moves_to_its_bot_account_when_one_comes_and_leaves_with_the_human() {
+        const BOT: u64 = 0x000b_0000_0000_0042;
+        const HOST: u64 = 0x0009_0000_0000_0afa;
+        // Port 1 a guest (the host's id), port 2 already its account, port 3
+        // off Live.
+        let on = |p: u8| match p {
+            1 => Some(HOST),
+            2 => Some(BOT + 2),
+            _ => None,
+        };
+        let account = |p: u8| Some(BOT + u64::from(p));
+        assert_eq!(
+            to_switch_account(0b1110, on, account, true, false),
+            vec![1],
+            "the guest moves; the one on its account stays; one off Live is to_go_live's"
+        );
+        assert!(
+            to_switch_account(0b1110, on, |_| None, true, false).is_empty(),
+            "no account yet"
+        );
+        assert!(to_switch_account(0b1110, on, account, false, false).is_empty());
+        assert!(
+            to_switch_account(0b1110, on, account, true, true).is_empty(),
+            "not in a game"
+        );
+        assert!(to_switch_account(0b0100, on, account, true, false).is_empty());
+
+        // The human leaves Live: the bot accounts leave too; a guest is the
+        // game's own to sign out, an offline bot has nothing to leave.
+        let slots = |p: u8| match p {
+            1 => Some((LIVE, 1)),
+            2 => Some((LIVE, 0)),
+            _ => Some((PROFILE, 0)),
+        };
+        assert_eq!(to_leave_live(0b1110, slots, false, false), vec![2]);
+        assert!(
+            to_leave_live(0b1110, slots, true, false).is_empty(),
+            "the human is still on"
+        );
+        assert!(
+            to_leave_live(0b1110, slots, false, true).is_empty(),
+            "not in a game"
+        );
+    }
+
+    #[test]
     fn the_go_live_line_says_whose_guest() {
         use guest::GoLive;
         assert_eq!(
             go_live_line(1, "Clanker 1", GoLive::Guest { host: 0, number: 1 }),
             "bots: Clanker 1 on port 1 is on Xbox Live as guest 1 of port 0's account"
+        );
+        assert_eq!(
+            go_live_line(2, "Rusty Lugnut", GoLive::Account { host: 0 }),
+            "bots: Rusty Lugnut on port 2 is on Xbox Live as its own bot account, beside port 0's"
         );
         assert_eq!(
             go_live_line(3, "Clanker 3", GoLive::Full),
@@ -780,21 +1132,33 @@ mod tests {
     #[test]
     fn the_gate_line_says_what_it_read() {
         assert_eq!(
-            gate_line(1, on(JOIN_SCREEN), None, Some(false), Some(0)),
-            "bots: join gate port 1: top 0x1e, dialog none, signed_in false (slot 0x0): signs in"
+            gate_line(1, PLAYERS, on(JOIN_SCREEN), None, Some(false), Some(0)),
+            "bots: join gate port 1: screen players (top 0x1e), dialog none, signed_in false (slot 0x0): signs in"
         );
         assert_eq!(
-            gate_line(2, on(JOIN_SCREEN), CHOOSER, Some(false), Some(0)),
-            "bots: join gate port 2: top 0x1e, dialog 0x17 (window 3, slot 4), signed_in false (slot 0x0): waits"
+            gate_line(2, PLAYERS, on(JOIN_SCREEN), CHOOSER, Some(false), Some(0)),
+            "bots: join gate port 2: screen players (top 0x1e), dialog 0x17 (window 3, slot 4), signed_in false (slot 0x0): waits"
         );
         assert_eq!(
-            gate_line(3, None, None, None, None),
-            "bots: join gate port 3: top none, dialog none, signed_in ? (slot ?): waits"
+            gate_line(3, Screen::Other(None), None, None, None, None),
+            "bots: join gate port 3: screen none (top none), dialog none, signed_in ? (slot ?): waits"
         );
         assert_eq!(
-            gate_line(1, on(0xba), None, Some(true), Some(0x10)),
-            "bots: join gate port 1: top 0xba, dialog none, signed_in true (slot 0x10): waits",
+            gate_line(
+                1,
+                Screen::Other(Some(0xba)),
+                on(0xba),
+                None,
+                Some(true),
+                Some(0x10)
+            ),
+            "bots: join gate port 1: screen 0xba (top 0xba), dialog none, signed_in true (slot 0x10): waits",
             "a profile, not on Xbox Live"
+        );
+        // The user's run, now: the Live lobby read as no screen is the lobby.
+        assert_eq!(
+            gate_line(1, Screen::Lobby, None, None, Some(false), Some(0x1)),
+            "bots: join gate port 1: screen lobby (top none), dialog none, signed_in false (slot 0x1): signs in"
         );
     }
 }

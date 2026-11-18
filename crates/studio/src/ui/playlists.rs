@@ -13,7 +13,7 @@ use hopper_edit::choices::{Choice, variant_label};
 use hopper_edit::model::{self, EditHopper, EditRecord, MAX_WEIGHT};
 use hopper_edit::presets::{self, PRESETS};
 use hopper_edit::{EditView, Format};
-use live_proto::hopper::{HOPPERS, MAX_DESCRIPTION, MAX_NAME, MAX_RECORDS, MAX_STRING, MAX_TITLE};
+use live_proto::hopper::{HOPPERS, MAX_NAME, MAX_RECORDS, MAX_STRING};
 use variants::GameVariant;
 
 use crate::app::{Action, App, PlaylistEdit};
@@ -230,17 +230,23 @@ pub fn entries(ui: &Ui, app: &mut App, fonts: &Fonts, actions: &mut Vec<Action>)
         ui.text_disabled("Title");
         ui.same_line_with_pos(label_w);
         ui.set_next_item_width(-1.0);
-        let c = ui.input_text("##hopper-title", &mut h.title).build();
-        clip(&mut h.title, MAX_TITLE);
+        // Typed text goes in as the API's edit (clipped there); the
+        // keystrokes of one run merge under the field's key.
+        let mut text = h.title.clone();
+        let c = ui.input_text("##hopper-title", &mut text).build();
+        if c && let Err(e) = (PlaylistEdit::Title { playlist: sel, text }).apply_to(h) {
+            fr.error = Some(e);
+        }
         fr.changed(ui, c, key(("title", sel)));
         ui.align_text_to_frame_padding();
         ui.text_disabled("Description");
         ui.same_line_with_pos(label_w);
         ui.set_next_item_width(-1.0);
-        let c = ui
-            .input_text("##hopper-description", &mut h.description)
-            .build();
-        clip(&mut h.description, MAX_DESCRIPTION);
+        let mut text = h.description.clone();
+        let c = ui.input_text("##hopper-description", &mut text).build();
+        if c && let Err(e) = (PlaylistEdit::Description { playlist: sel, text }).apply_to(h) {
+            fr.error = Some(e);
+        }
         fr.changed(ui, c, key(("description", sel)));
         ui.spacing();
         entries_table(ui, h, view, sel, &mut fr, actions);
