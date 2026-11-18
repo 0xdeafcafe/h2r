@@ -29,12 +29,77 @@ pub fn is_local_xuid(x: Xuid) -> bool {
     x.0 >> 48 == LOCAL_XUID_MARK >> 48
 }
 
-/// `POST /games/bots`: a host asking for bots for its session.
+/// The high 16 bits of the server's bot accounts: a range of their own,
+/// apart from human accounts' `0x0009`.
+pub const SERVER_XUID_MARK: u64 = 0x000b_0000_0000_0000;
+
+/// Whether `x` is in the server's bot range.
+pub fn is_server_xuid(x: Xuid) -> bool {
+    x.0 >> 48 == SERVER_XUID_MARK >> 48
+}
+
+/// `BotIssued` on [`bot_stream`]: the server made a bot account. Data:
+/// [`Issued`].
+pub const ISSUED: &str = "BotIssued";
+/// `BotsRostered` on [`roster_stream`]: the server gave a session's host a
+/// roster. Data: [`Rostered`].
+pub const ROSTERED: &str = "BotsRostered";
+/// Every event type of this module; only the server writes them.
+pub const KINDS: [&str; 2] = [ISSUED, ROSTERED];
+
+pub fn bot_stream(xuid: Xuid) -> String {
+    format!("bot-{xuid}")
+}
+
+pub fn roster_stream(session_id: &str) -> String {
+    format!("bots-{session_id}")
+}
+
+/// `BotIssued` data: a bot account and how it looks. A persistent bot keeps
+/// it for good; a made-up one is issued for one roster.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Issued {
+    pub xuid: Xuid,
+    pub gamertag: Gamertag,
+    pub persistent: bool,
+    pub emblem: Emblem,
+    pub colors: Colors,
+    pub personality: Personality,
+}
+
+/// `BotsRostered` data: the bots a session's host may run, from this
+/// event on (a later one replaces it).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Rostered {
+    pub session_id: String,
+    pub host: Xuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playlist: Option<String>,
+    pub bots: Vec<RosteredBot>,
+}
+
+/// One bot of a [`Rostered`].
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct RosteredBot {
+    pub xuid: Xuid,
+    pub persistent: bool,
+    /// The level the roster showed: the bot's own (persistent) or the
+    /// humans' (made up).
+    pub level: u8,
+    pub team: Option<u8>,
+    pub skill: f32,
+}
+
+/// `POST /v1/games/bots`: a host asking for bots for its session.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RosterRequest {
-    /// The playlist (hopper id) in matchmaking; absent in a custom game.
+    /// The host's Live session (16 lowercase hex digits): the roster is
+    /// filed under it, and the game record names it.
+    pub session_id: String,
+    /// The playlist id (`NewGame.playlist_id`) in matchmaking; absent in a
+    /// custom game.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub playlist: Option<u32>,
+    pub playlist: Option<String>,
     pub count: u32,
     /// 0 to 1; absent: the server picks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -255,6 +320,16 @@ mod tests {
     }
 
     #[test]
+    fn the_three_xuid_ranges_are_apart() {
+        let human = Xuid(0x0009_1234_5678_9abc);
+        let server = Xuid(SERVER_XUID_MARK | 5);
+        assert!(is_server_xuid(server) && !is_local_xuid(server));
+        assert!(!is_server_xuid(human) && !is_server_xuid(local_xuid(1)));
+        assert_eq!(bot_stream(server), "bot-000b000000000005");
+        assert_eq!(roster_stream("0123456789abcdef"), "bots-0123456789abcdef");
+    }
+
+    #[test]
     fn local_xuids_never_look_like_accounts() {
         assert!(is_local_xuid(local_xuid(0)));
         assert!(is_local_xuid(local_xuid(u32::MAX)));
@@ -264,10 +339,12 @@ mod tests {
 
     #[test]
     fn the_request_defaults() {
-        let r: RosterRequest = serde_json::from_str(r#"{"count": 4}"#).unwrap();
+        let r: RosterRequest =
+            serde_json::from_str(r#"{"session_id": "0123456789abcdef", "count": 4}"#).unwrap();
         assert_eq!(
             r,
             RosterRequest {
+                session_id: "0123456789abcdef".into(),
                 playlist: None,
                 count: 4,
                 skill: None,

@@ -290,6 +290,7 @@ async fn ingest_fans_out_and_records_frames() {
             team: 0,
             local: Some(true),
             appearance: None,
+            bot: None,
         }],
         ..NewGame::default()
     };
@@ -460,6 +461,7 @@ async fn frames_carry_species_aim_weapon_and_shots() {
             team: 0,
             local: Some(true),
             appearance: None,
+            bot: None,
         }],
         ..NewGame::default()
     };
@@ -625,6 +627,7 @@ async fn campaign_frames_carry_vehicles_and_actors() {
             team: 1,
             local: Some(true),
             appearance: None,
+            bot: None,
         }],
         difficulty: Some("heroic".into()),
         ..NewGame::default()
@@ -855,6 +858,7 @@ async fn packed_frames_ingest_stream_and_record() {
             team: 0,
             local: Some(true),
             appearance: None,
+            bot: None,
         }],
         ..NewGame::default()
     };

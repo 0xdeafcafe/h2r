@@ -753,6 +753,7 @@ fn same_roster(
                 team,
                 local,
                 appearance: wire_appearance,
+                bot: _,
             } = player;
             let xuid = match signed_in {
                 Some(x) if *local_user == Some(0) => Some(x),
@@ -1245,6 +1246,7 @@ mod tests {
                 team: 0,
                 local: Some(index == 0),
                 appearance: None,
+                bot: None,
             },
             appearance: Appearance::default(),
             local_user: (index == 0).then_some(0),

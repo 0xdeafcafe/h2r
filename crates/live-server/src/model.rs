@@ -187,6 +187,9 @@ pub struct State {
     pub ranks: crate::ranks::Ranks,
     /// Arbitration rounds, from the `round-*` streams (crate::arbitration).
     pub arbitration: crate::arbitration::Rounds,
+    /// Bot accounts and rosters, from the `bot-*` and `bots-*` streams
+    /// (crate::bots).
+    pub bots: crate::bots::Bots,
 }
 
 impl State {
@@ -481,6 +484,10 @@ impl Model {
         }
         if b.stream.starts_with("round-") {
             crate::arbitration::project(&mut s, e);
+            return;
+        }
+        if b.stream.starts_with("bot-") || b.stream.starts_with("bots-") {
+            crate::bots::project(&mut s, e);
             return;
         }
         if b.stream.starts_with("game-") {

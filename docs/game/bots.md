@@ -821,8 +821,9 @@ The host runs the bots. This is the one interface between them.
 
 The server tells a host which bots to run with a **bot roster**. In
 Clankermatch it comes in `MatchProposed` on `match-<id>`, as `bots`. In a
-custom game the host asks `POST /games/bots` with
-`{playlist?: hopper_id, count, skill?, teams}` and gets one back; without a
+custom game the host asks `POST /v1/games/bots` with
+`{session_id, playlist?: playlist_id, count, skill?, teams}` and gets one
+back; without a
 server (System Link, offline) the host makes its own from the Clankers page.
 
 ```json
@@ -830,7 +831,7 @@ server (System Link, offline) the host makes its own from the Clankers page.
   "match_id": "…",
   "bots": [
     {
-      "xuid": "0009…",            // a real account id; bots are accounts
+      "xuid": "000b…",            // issued by the server; bots have a range of their own
       "gamertag": "Rusty Lugnut", // passes live_proto::Gamertag
       "persistent": true,         // a persistent bot (ranked) or made up for this match
       "emblem": { "foreground": 12, "background": 3, "colors": [1, 7, 0] },
@@ -912,14 +913,19 @@ range); sbmm-ranked owns how bots are ranked and arbitration.
 2. **The read-model lookup.** A persistent bot is in many matches, so the
    level a roster showed belongs to the rostering, not the bot. Two
    lookups:
-   - `bot(xuid) -> Option<BotAccount { persistent: bool }>`: the server
-     issued this xuid as a bot (an account event `BotIssued` on
-     `account-<xuid>`, written by the server).
-   - `rostered(session_id, xuid) -> Option<Rostered { persistent, level:
-     u8, playlist: Option<u32> }>`: from `BotsRostered { session_id, host,
-     playlist?, bots: [{xuid, persistent, level}] }` on
+   - `bot(xuid) -> Option<&Issued>`: the server issued this xuid as a bot
+     (`BotIssued` on `bot-<xuid>`, written by the server; built in 6c as
+     `live_server::bots::Bots::bot`).
+   - `rostered(session_id, xuid, before) -> Option<(&Rostered,
+     &RosteredBot { persistent, level, team, skill })>`: from
+     `BotsRostered { session_id, host, playlist?, bots }` on
      `bots-<session_id>`, written by the server when it answers `POST
-     /games/bots` or proposes a Clankermatch. **The roster is keyed by the
+     /v1/games/bots` or proposes a Clankermatch. A session can roster more
+     than once (a later roster replaces the earlier), so `before` is a log
+     position and the answer is the latest roster before it: `rank_game`
+     passes the game's `GameStarted` position (`Game::position`), the
+     roster in force when the game started. Also `roster_at(session_id,
+     before)` for the whole roster. **The roster is keyed by the
      session id** (the roster's `match_id` is the session id), so
      `rank_game` finds it from `NewGame.session_id`, the same key
      arbitration uses. `POST /games/bots` already requires the host's
@@ -933,7 +939,8 @@ range); sbmm-ranked owns how bots are ranked and arbitration.
    refused in any record that reaches the server.
 
 Also agreed: `rank::bot_skill(level)` as the roster's `skill`, and
-`Ranks::nearest(playlist, level, n)` for choosing persistent bots, which
+`Ranks::nearest(playlist, level, n, bots)` (the candidates are
+`Bots::persistent`) for choosing persistent bots, which
 the roster endpoint calls; gaps are made-up bots shown at the humans'
 mean level.
 
@@ -1210,8 +1217,46 @@ list for the user to play (§11).
         turning: 3 rad/s and the strafe sign are guesses.
      7. Also useful: on the host, the session state and the network life
         cycle (`0x527334`) during the game.
-   - **Then (6c):** the server's bot identities, below, with sbmm-ranked's
-     persistent bots.
+   - **Built (6c), the server side, both homes** (`live_server::bots`,
+     on the shared router and read model):
+     - Bot xuids have a range of their own, `0x000B`
+       (`live_proto::bots::SERVER_XUID_MARK`): apart from humans' `0x0009`
+       and host-made `0x000E`. Each bot is a server-signed `BotIssued` on
+       `bot-<xuid>` (version 0, so an xuid is issued once) with its
+       gamertag, emblem, colours and personality (a seeded splitmix, so a
+       persistent bot's quirks are fixed).
+     - `POST /v1/games/bots` (`RosterRequest`, a `games.write` token):
+       only the host of the request's Live session; `count` 1 to 15,
+       cut to the session's room. With a `playlist` (the playlist id): the
+       persistent bots `Ranks::nearest` the humans' mean level there, each
+       at its own level and `bot_skill`; the gap made-up bots at the mean
+       level. Without one: made-up bots at the request's `skill` (Normal
+       when absent). `team` stays `null`; the host balances. The answer is
+       the §9.1 roster with `match_id` = the session id, and the server
+       writes `BotsRostered` on `bots-<session_id>`.
+     - `POST /v1/admin/bots {count}` (the operator, up to 64): persistent
+       bots, the pool rosters draw from. A persistent bot reserves its
+       gamertag as an account would (no account can take it). A made-up
+       bot does not: it only avoids names taken at the time, so made-up
+       bots never use up the namespace.
+     - Acceptance (§9.3), in `POST /v1/games` and in `PlayerJoined`: a
+       host-made xuid is refused; a `bot: true` entry needs the game's
+       `session_id` and an xuid in that session's roster (in force now at
+       the start; in force at the start for a join); an issued bot as a
+       human is refused. `session_id` is allowed on custom games now (a
+       game with bots names the session its roster came from); still not
+       on campaign. `game::Player` has `bot: Option<bool>`.
+     - Nobody else writes `bot-*`/`bots-*` or the two kinds.
+     - Tests: `cargo test -p live-server --test bots`, `-p live-proto
+       bots`/`game` (issued xuids and looks, host only, bounds, the
+       roster in force at a game's start, refusals at start and on a join,
+       persistent bots from the operator first in playlist rosters, their
+       gamertags held).
+   - **Still to do (6c), the console side:** the host asks for the roster
+     (live-hle, with Live on) and turns each entry into a
+     `bots::phantom::Identity` and a brain at its skill; telemetry marks
+     phantom players `bot: true` with their rostered xuid. Clankermatch's
+     `MatchProposed` carries the same roster (stage 8, with sbmm-ranked).
    - In-memory phantom machines, peers and players; action conversion and
      storage; network drop and keep-alive.
    - **`bots::phantom::add` and `remove`** keep the signatures they have
@@ -1278,9 +1323,11 @@ list for the user to play (§11).
      description pane, the legend in the footer). Its texts are the
      `clankers` id family. In the preview it is `h2 ui preview clankers`.
    - **The row.** A custom game's Game Setup dialog (any list with Change
-     Map) gets a "Clankers" row with action 11, after the Halo 1 Options
-     row's 10. It uses the same three points, and each hook is ordered
-     after the Halo 1 row's. A press opens the page on the dialog's own
+     Map) gets a "Clankers" row with action 11, under Quick Options and
+     the Halo 1 Options row's 10, above the "Switch To:" rows (retail
+     actions 6 to 8; `h1_options_row::insert_row` writes the rows'
+     actions back in that order). It uses the same three points, and each
+     hook is ordered after the Halo 1 row's. A press opens the page on the dialog's own
      stack. The row's text is the page's title slot.
    - **The bots.** While `enabled` is on, a driver keeps `min(count, free
      ports)` brains in the process-wide local bots, on ports 1 to 3 that no

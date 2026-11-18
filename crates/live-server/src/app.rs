@@ -256,10 +256,13 @@ fn may_write(author: &Author, stream: &str, kind: &str) -> bool {
         || stream.starts_with("reports-")
         || stream.starts_with("rank-")
         || stream.starts_with("round-")
+        || stream.starts_with("bot-")
+        || stream.starts_with("bots-")
         || stream.starts_with("bans-")
         || stream.starts_with("mutes-")
         || kind == live_proto::rank::CHANGED
         || live_proto::arbitration::KINDS.contains(&kind)
+        || live_proto::bots::KINDS.contains(&kind)
         || live_proto::maps::KINDS.contains(&kind)
         || live_proto::reports::KINDS.contains(&kind)
         || live_proto::bans::KINDS.contains(&kind)
