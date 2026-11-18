@@ -1641,6 +1641,51 @@ impl<B: Backend> Device<B> {
         });
     }
 
+    /// The device side of Halo's `render_light_passes` tail
+    /// (`0x000314e3`..`0x000314f2`), for a light whose passes the native
+    /// renderer draws in their place (docs/graphics/native-renderer.md,
+    /// stage 4), so a skipped light leaves the device as a drawn one does.
+    /// What is queued drains first, as before any entry (a pending external
+    /// pass is issued); then the tail's calls, through the code their
+    /// entries run: `SetRenderState_StencilEnable(FALSE)`,
+    /// `SetScissors(0, FALSE, NULL)`, and the game's depth-clip restore
+    /// `0x00015720`: `clip` (the game's two words) into the programmable
+    /// clip range, bit 1 of the clip flags (the game owns it), and the
+    /// viewport fragment (`0x3f6190`) at the put pointer.
+    ///
+    /// `Ok(false)` with nothing set when a push-buffer callback is queued
+    /// first (kept, as one whose write-back failed, for the next entry to
+    /// deliver where it was queued) or the push buffer has no room for the
+    /// fragment (the game would make room first): the caller keeps the
+    /// D3D path.
+    pub fn light_passes_tail(&mut self, mem: &mut dyn GuestMemory, clip: [u32; 2]) -> Result<bool, D3dError> {
+        const E: &str = "render_light_passes tail";
+        self.live(E)?;
+        let dev = mem.read_u32(self.cfg.layout.p_device)?;
+        if mem.read_u32(dev + field::PUT)? >= mem.read_u32(dev + field::THRESHOLD)? {
+            return Ok(false);
+        }
+        if let Some(cb) = self.drain_until_callback(mem)? {
+            self.undelivered = Some(cb);
+            return Ok(false);
+        }
+        self.set_render_state(mem, crate::state::slot::STENCILENABLE, 0)?;
+        self.set_scissors(mem, 0, 0, 0)?;
+        // 0x00015720: the clip range and flag, then the fragment at the put
+        // pointer, which it advances.
+        let put = mem.read_u32(dev + field::PUT)?;
+        if put >= mem.read_u32(dev + field::THRESHOLD)? {
+            return Err(D3dError::invalid(E, "no push-buffer room for the viewport fragment"));
+        }
+        mem.write_u32(dev + field::CLIP_PROGRAM, clip[0])?;
+        mem.write_u32(dev + field::CLIP_PROGRAM + 4, clip[1])?;
+        let flags = mem.read_u32(dev + field::CLIP_FLAGS)?;
+        mem.write_u32(dev + field::CLIP_FLAGS, flags | 2)?;
+        let put = self.push_viewport(mem, put, dev)?;
+        mem.write_u32(dev + field::PUT, put)?;
+        Ok(true)
+    }
+
     /// Whether the backend can draw an external pass: asked before the
     /// guest skips work the pass replaces.
     pub fn can_external_pass(&self) -> bool {
@@ -2829,6 +2874,26 @@ impl<B: Backend> Device<B> {
     /// The current viewport.
     pub fn viewport(&self) -> Viewport {
         self.viewport
+    }
+
+    /// The bound target as words: the colour and depth surfaces (guest
+    /// header addresses, 0 for none) and the viewport (`x, y, width,
+    /// height`, then `min_z` and `max_z` as bits). Equal words, the same
+    /// target: what a caller compares when it skips work that would have
+    /// set the target back (Halo's light passes,
+    /// docs/graphics/native-renderer.md, stage 4).
+    pub fn bound_target(&self) -> [u32; 8] {
+        let v = self.viewport;
+        [
+            self.render_target,
+            self.depth_stencil,
+            v.x,
+            v.y,
+            v.width,
+            v.height,
+            v.min_z.to_bits(),
+            v.max_z.to_bits(),
+        ]
     }
 
     /// `D3DDevice_SetScissors` (`0x3f8760`, stdcall `Count, Exclusive,

@@ -334,6 +334,16 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     features
         .add(&feature::native_transparents::NativeTransparents)
         .map_err(|e| anyhow::anyhow!("native transparents: {e}"))?;
+    // The dynamic lights on the native GPU renderer
+    // (H2_FEATURES=impl.render.native_lights=on, off by default;
+    // docs/graphics/native-renderer.md, stage 4): a context-only skip on
+    // each light's passes, in the game's light order. Its host
+    // (native_lights_glue) does the device side of a skipped light's tail
+    // and reports the bound target, but takes no light yet, so every light
+    // keeps its D3D passes.
+    features
+        .add(&feature::native_lights::NativeLights)
+        .map_err(|e| anyhow::anyhow!("native lights: {e}"))?;
     // H2_UI_WATCH=1: the screen player one's input goes to, a line on each
     // change and `ui.screen` (`h2 coop test --drive`; ui_watch.rs).
     ui_watch::install(features)?;
