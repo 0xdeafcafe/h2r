@@ -402,6 +402,13 @@ without padding.
 | actions | `eg(0)` count (at most 8), then `u(3)` each | `grenade`, `melee`, `reload`, `jump`, `switch`, `pickup` |
 | grenade | `u(1)` | `frag`, `plasma` |
 | device position | `u(10)` | 0..1 in 1023 steps |
+| velocity | three `seg(8)`; in a delta three `seg(4)`, the difference from the previous quantised value | 1/64 unit a second |
+| fire | `eg(1)` | a tick mask, bit k a shot k ticks before the frame's tick (0 is not sent) |
+| body | `u(6)` | 0..1 in 63 steps |
+| shield | `eg(3)` | 1/32 of a shield, at most 4 |
+| seat | `eg(0)` | at most 63 |
+| ticks ago | `eg(0)` count (at most 8), then `eg(1)` each | one per action, at most 900 |
+| hit ago | `eg(1)` | at most 900 |
 | string | `eg(3)`: index into the stream's string table | |
 | id | `u(2)` form: 0 datum, `u(32)` (exactly 8 lowercase hex digits in JSON); 1 player `p<n>`, `eg(2)`; 2 anything else, a string index | |
 | object kind | `u(4)` | the order of the kind table above, with `bipd` 0, `vehi` 1, `weap` 2, `eqip` 3, `scen` 4, `mach` 5, `ctrl` 6, `lifi` 7, `ssce` 8, `bloc` 9, `crea` 10, `netgame` 11 |
@@ -414,7 +421,7 @@ when present.
 
 | field | wire |
 |---|---|
-| version | `u(4)`, 2 (1 still reads: vehicles without parent and aim) |
+| version | `u(4)`, 3 (2 still reads: no version 3 fields; 1 too: vehicles without parent and aim) |
 | keyframe | `u(1)` |
 | stream id | `eg(0)` |
 | sequence | `eg(8)`, one more each frame of the stream |
@@ -423,6 +430,7 @@ when present.
 | bsp | `u(1)` present, then `eg(1)` |
 | **delta:** tick | `eg(2)`, the difference from the previous frame (never negative) |
 | bsp | `u(1)` changed; if so `u(1)` present, then `eg(1)` |
+| **both (version 3):** cut | `u(1)` present, then `eg(16)`: the engine tick a campaign revert or restart came back to; on that one frame only |
 | new strings | `eg(1)` count (at most 1024), then each a `str` literal, appended to the table (a keyframe starts an empty one) |
 | players | list |
 | vehicles | list |
@@ -446,10 +454,10 @@ change in its quantised value, so jitter below the quantum costs nothing.
 
 | list | fields (key in bold) |
 |---|---|
-| player | **index `eg(2)`**, alive `u(1)`, pos, yaw, opt vehicle id, opt species string, opt aim, opt weapon string, opt shots, opt stance, opt speed, opt actions, opt grenade |
+| player | **index `eg(2)`**, alive `u(1)`, pos, yaw, opt vehicle id, opt species string, opt aim, opt weapon string, opt shots, opt stance, opt speed, opt actions, opt grenade; version 3 adds opt velocity, opt fire, opt body, opt shield, opt seat, opt ticks ago |
 | vehicle | **id**, kind string, pos, forward, up, occupied `u(1)`, opt parent id, opt aim (version 2; version 1 ends at occupied) |
-| actor | **id**, species string, pos, yaw, opt aim, opt weapon string, opt shots, opt team string, opt vehicle id, opt stance, opt speed, opt actions, opt grenade |
-| hit | opt from id, opt to id, opt weapon string, pos, opt amount, opt kind string |
+| actor | **id**, species string, pos, yaw, opt aim, opt weapon string, opt shots, opt team string, opt vehicle id, opt stance, opt speed, opt actions, opt grenade; version 3 adds the same six as a player |
+| hit | opt from id, opt to id, opt weapon string, pos, opt amount, opt kind string; version 3 adds opt hit ago |
 | machine | opt node string, **id**, kind string, pos, forward, up, opt device position |
 | object | **kind**, **index**, gone `u(1)`, opt pos, opt forward, opt up |
 
@@ -469,10 +477,15 @@ encoder as it was.
 ### Compatibility
 
 The version is the first four bits; a decoder refuses versions it does not
-know. Version 2 (vehicles' parent and aim) is written now; decoders still
-read version 1 (recorded frames, an older game's stream), and a delta only
+know. Version 3 (units' velocity, fire ticks, vitality, seat and action
+ticks, hits' ticks, the frame's cut) is written now; decoders still read
+versions 2 and 1 (recorded frames, an older game's stream), and a delta only
 applies to a frame of its own version. `web/test/fixtures/pack/v1-multiplayer`
-is a version 1 stream both decoders are tested on. Recorded `GameFrame` events written before packed frames hold the
+and `v2-multiplayer` are older streams both decoders are tested on. Version
+3 costs about 25% more on the sample frames when every field is filled
+(multiplayer deltas 226 to 282 bytes, campaign 651 to 788); the senders
+fill them from capture onwards (docs/live/replay-fidelity.md, step 4), and
+an absent field is one bit. Recorded `GameFrame` events written before packed frames hold the
 JSON frame (no `packed` field) and stay readable: the server's
 `?format=json` returns them as they are, `?format=packed` packs them on
 the fly, and the web's `recordedFrame` reads both. The ingest socket takes

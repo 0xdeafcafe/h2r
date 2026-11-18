@@ -86,7 +86,14 @@ code { font-family: var(--font-mono); }
 .scrub input::-webkit-slider-thumb { -webkit-appearance: none; width: 9px; height: 14px; margin-top: -5px; border: 1px solid #000; border-radius: 1px; background: linear-gradient(180deg, #fff3b0, #f6b620 50%, #a36c06); }
 .scrub input::-moz-range-thumb { width: 8px; height: 13px; border: 1px solid #000; border-radius: 1px; background: linear-gradient(180deg, #fff3b0, #f6b620 50%, #a36c06); }
 .scrub__kills { position: absolute; left: 4px; right: 4px; top: 0; height: 4px; pointer-events: none; }
-.scrub__kill { position: absolute; width: 2px; height: 4px; transform: translateX(-1px); background: var(--s-ink-soft); }
+.scrub__kill { position: absolute; top: -2px; width: 3px; height: 7px; padding: 0; transform: translateX(-1px); border: 0; border-radius: 0; background: var(--s-ink-soft); cursor: pointer; pointer-events: auto; }
+.scrub__kill:hover { transform: translateX(-1px) scaleY(1.6); }
+.scrub__kill--death { background: #8a8a8a; }
+.scrub__mark { position: absolute; top: 0; height: 16px; transform: translateX(-1px); pointer-events: auto; }
+.scrub__mark--cut { width: 2px; background: repeating-linear-gradient(180deg, #e8b04a 0 3px, transparent 3px 5px); }
+.scrub__mark--zone { width: 1px; height: 6px; background: #5f8fa8; }
+.replay-bar .step { width: 22px; height: 19px; padding: 0; font-size: 9px; line-height: 16px; color: #ddd; cursor: pointer; border: 1px solid #6a6a6a; border-radius: 2px; background: linear-gradient(180deg, #444, #1d1d1d); }
+.replay-bar .step:hover { border-color: #56aacd; background: #17668a; }
 /* The stats site's scrubber is flat too: a thin dark track, a small plain
    thumb, no gradient and no gold. */
 .stats .scrub input::-webkit-slider-runnable-track { height: 4px; background: #101010; border: 1px solid #3a3a3a; }

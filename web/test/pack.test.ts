@@ -10,7 +10,7 @@ const load = (name: string) => ({
 });
 
 describe("packed frames", () => {
-  for (const name of ["multiplayer", "campaign", "odd", "v1-multiplayer"]) {
+  for (const name of ["multiplayer", "campaign", "odd", "v1-multiplayer", "v2-multiplayer"]) {
     test(`decodes the Rust encoder's ${name} stream exactly`, () => {
       const { bin, json } = load(name);
       const d = new FrameDecoder();
@@ -27,6 +27,24 @@ describe("packed frames", () => {
     const v1 = records(load("v1-multiplayer").bin).map((r) => d.decode(r).frame);
     expect(v1[0]!.vehicles!.length).toBeGreaterThan(0);
     expect(v1.flatMap((f) => f.vehicles ?? []).every((v) => v.parent === undefined && v.aim === undefined)).toBe(true);
+  });
+
+  test("version 3 fields; version 2 frames have none", () => {
+    const odd = load("odd").json[0];
+    const d = new FrameDecoder();
+    const p = d.decode(records(load("odd").bin)[0]!).frame.players.find((x) => x.index === 15)!;
+    expect(odd.cut).toBe(123456);
+    expect(p.fire).toBe(2 ** 32 - 1);
+    expect(p.vel).toEqual([-999, 0.015625, 12.5]);
+    expect(p.seat).toBe(63);
+    expect(p.actions_ago).toEqual([900, 31, 30, 7, 2, 1, 0, 0]);
+    const d2 = new FrameDecoder();
+    const v2 = records(load("v2-multiplayer").bin).map((r) => d2.decode(r).frame);
+    expect(v2.every((f) => f.cut === undefined && f.players.every((x) => x.vel === undefined && x.fire === undefined))).toBe(true);
+    // A version 2 delta never follows on from a version 3 frame.
+    const mixed = new FrameDecoder();
+    mixed.decode(records(load("multiplayer").bin)[0]!);
+    expect(() => mixed.decode(records(load("v2-multiplayer").bin)[1]!)).toThrow(PackError);
   });
 
   test("a dropped delta waits for the next keyframe", () => {

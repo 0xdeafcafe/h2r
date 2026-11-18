@@ -16,6 +16,7 @@ import { pickView, viewParam } from "../map/views";
 import { outlineFor } from "../state/outlines";
 import type { GameState } from "../state/reducer";
 import ViewerWindow from "./ViewerWindow";
+import type { CameraRequest } from "./sync";
 
 function LayerPicker(props: { count: number; value: number | null; onChange: (v: number | null) => void }) {
   return (
@@ -42,6 +43,8 @@ export default function TacticalMap(props: {
   soughtAt?: () => number;
   /** Controls shown under the 3D view (the replay's transport). */
   transport?: () => JSX.Element;
+  /** The replay's camera requests (a killcam): the 3D view opens for one. */
+  camera?: () => CameraRequest | null;
 }) {
   const outline = outlineFor(() => props.game.map);
   const geometry = geometryFor(() => props.game.map);
@@ -55,6 +58,8 @@ export default function TacticalMap(props: {
   const open = () => params.view === "3d";
   const setOpen = (on: boolean) => setParams({ view: on ? "3d" : undefined }, { replace: true });
   createEffect(on(() => props.game.map, () => setBroken(false), { defer: true }));
+  // A killcam wants the 3D view: open it (it takes the camera as it opens).
+  createEffect(on(() => props.camera?.() ?? null, (c) => { if (c && !open()) setOpen(true); }, { defer: true }));
 
   const views = () => (broken() ? null : geometry()?.views ?? null);
   // The chosen view lives in the URL (`?map=iso-ne`), so it can be linked
@@ -113,6 +118,7 @@ export default function TacticalMap(props: {
           glb={() => geometry()?.glb ?? null}
           highlight={props.highlight}
           soughtAt={props.soughtAt}
+          camera={props.camera}
         >
           {props.transport?.()}
         </ViewerWindow>

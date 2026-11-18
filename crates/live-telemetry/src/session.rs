@@ -47,6 +47,9 @@ struct Match {
     tick_offset: u64,
     /// The latest tick the match has sent (offset applied).
     sent_tick: u64,
+    /// The engine tick a campaign revert or restart came back to, for the
+    /// next frame's `cut`.
+    cut: Option<u64>,
     tick_rate: u64,
     team_play: bool,
     players: Vec<PlayerState>,
@@ -226,6 +229,7 @@ impl Session {
                 current.tick_offset = offset + offset % 2;
             }
             current.tick = info.tick;
+            current.cut = Some(info.tick);
             current.last_score_tick = info.tick;
             current.shots.clear();
             current.actor_shots.clear();
@@ -300,6 +304,7 @@ impl Session {
             tick: info.tick,
             tick_offset: 0,
             sent_tick: info.tick,
+            cut: None,
             tick_rate: u64::from(info.tick_rate.max(1)),
             team_play: info.team_play,
             last_emitted_scores: players
@@ -569,6 +574,8 @@ impl Session {
                         speed: observed.speed,
                         actions: observed.actions,
                         grenade: observed.grenade,
+                        // Read from step 4 on (docs/live/replay-fidelity.md).
+                        ..FramePlayer::default()
                     })
                 })
                 .collect();
@@ -606,6 +613,7 @@ impl Session {
                 bsp: snapshot.bsp,
                 machines,
                 objects,
+                cut: current.cut.take(),
             }));
         }
     }
@@ -1209,6 +1217,7 @@ fn frame_hits(
                 pos,
                 amount: amount.is_finite().then_some(amount),
                 kind: Some(kind.into()),
+                ago: None,
             })
         })
         .take(MAX_FRAME_HITS)
@@ -1712,6 +1721,16 @@ mod tests {
         events.extend(session.take_output());
 
         let ticks: Vec<u64> = sent.iter().map(|f| f.tick).collect();
+        // The first frame of each new run says where the engine came back to.
+        let cuts: Vec<(usize, u64)> = sent
+            .iter()
+            .enumerate()
+            .filter_map(|(i, f)| f.cut.map(|c| (i, c)))
+            .collect();
+        let starts: Vec<usize> = (1..sent.len())
+            .filter(|i| sent[*i].players[0].pos[0] != sent[i - 1].players[0].pos[0])
+            .collect();
+        assert_eq!(cuts, vec![(starts[0], 61), (starts[1], 3)]);
         assert!(
             ticks.windows(2).all(|w| w[0] < w[1]),
             "frame ticks only go up: {ticks:?}"

@@ -8,14 +8,19 @@
 
 import type { Frame, FrameActor, FrameHit, FrameMachine, FrameObject, FramePlayer, FrameVehicle } from "./types";
 
-/** The version written now; version 1 (vehicles without a parent and aim) still reads. */
-export const PACK_VERSION = 2;
+/** The version written now. Version 3 adds units' velocity, fire ticks,
+ *  vitality, seat and action ticks, hits' ticks and the frame's cut;
+ *  versions 1 (vehicles without a parent and aim) and 2 still read. */
+export const PACK_VERSION = 3;
 const POS_SCALE = 512;
 const ANGLE_BITS = 12;
 const DIR_BITS = 12;
 const DIR_MAX = 2 ** DIR_BITS - 2;
 const SPEED_SCALE = 16;
 const AMOUNT_SCALE = 256;
+const VEL_SCALE = 64;
+const BODY_MAX = 2 ** 6 - 1;
+const SHIELD_SCALE = 32;
 const DEVICE_BITS = 10;
 const DEVICE_MAX = 2 ** DEVICE_BITS - 1;
 const MAX_STRING = 255;
@@ -112,28 +117,41 @@ function dyaw(q: number): number {
 
 // Field values as the wire holds them.
 type Id = { datum: number } | { player: number } | { text: string };
-type Val = null | boolean | number | readonly [number, number, number] | { dir: [number, number] } | string | Id | readonly number[];
+type Val = null | boolean | number | readonly [number, number, number] | { dir: [number, number] } | { vel: readonly [number, number, number] } | string | Id | readonly number[];
 
-const enum K { Bool, Pos, Angle, Dir, Str, Id, Uint, Bits, Actions }
+const enum K { Bool, Pos, Angle, Dir, Str, Id, Uint, Bits, Actions, Vel, Agos }
 interface Field { kind: K; arg?: number; opt?: boolean; key?: boolean }
 
 const f = (kind: K, arg?: number): Field => ({ kind, arg });
 const o = (kind: K, arg?: number): Field => ({ kind, arg, opt: true });
 const key = (kind: K, arg?: number): Field => ({ kind, arg, key: true });
 
-const PLAYER: Field[] = [key(K.Uint, 2), f(K.Bool), f(K.Pos), f(K.Angle), o(K.Id), o(K.Str), o(K.Dir), o(K.Str), o(K.Uint, 1), o(K.Bits, 3), o(K.Uint, 6), o(K.Actions), o(K.Bits, 1)];
+/** Version 3's unit fields, after version 2's 13: vel, fire, body, shield, seat, actions_ago. */
+const UNIT_V3: Field[] = [o(K.Vel), o(K.Uint, 1), o(K.Bits, 6), o(K.Uint, 3), o(K.Uint, 0), o(K.Agos)];
+const PLAYER_V2: Field[] = [key(K.Uint, 2), f(K.Bool), f(K.Pos), f(K.Angle), o(K.Id), o(K.Str), o(K.Dir), o(K.Str), o(K.Uint, 1), o(K.Bits, 3), o(K.Uint, 6), o(K.Actions), o(K.Bits, 1)];
+const PLAYER = [...PLAYER_V2, ...UNIT_V3];
 /** Version 2 adds a vehicle's parent (a turret's vehicle) and aim. */
 const VEHICLE: Field[] = [key(K.Id), f(K.Str), f(K.Pos), f(K.Dir), f(K.Dir), f(K.Bool), o(K.Id), o(K.Dir)];
 const VEHICLE_V1 = VEHICLE.slice(0, 6);
-const ACTOR: Field[] = [key(K.Id), f(K.Str), f(K.Pos), f(K.Angle), o(K.Dir), o(K.Str), o(K.Uint, 1), o(K.Str), o(K.Id), o(K.Bits, 3), o(K.Uint, 6), o(K.Actions), o(K.Bits, 1)];
-const HIT: Field[] = [o(K.Id), o(K.Id), o(K.Str), f(K.Pos), o(K.Uint, 6), o(K.Str)];
+const ACTOR_V2: Field[] = [key(K.Id), f(K.Str), f(K.Pos), f(K.Angle), o(K.Dir), o(K.Str), o(K.Uint, 1), o(K.Str), o(K.Id), o(K.Bits, 3), o(K.Uint, 6), o(K.Actions), o(K.Bits, 1)];
+const ACTOR = [...ACTOR_V2, ...UNIT_V3];
+const HIT_V2: Field[] = [o(K.Id), o(K.Id), o(K.Str), f(K.Pos), o(K.Uint, 6), o(K.Str)];
+/** Version 3 adds the hit's ticks ago. */
+const HIT = [...HIT_V2, o(K.Uint, 1)];
 const MACHINE: Field[] = [o(K.Str), key(K.Id), f(K.Str), f(K.Pos), f(K.Dir), f(K.Dir), o(K.Bits, DEVICE_BITS)];
 const OBJECT: Field[] = [key(K.Bits, 4), key(K.Uint, 6), f(K.Bool), o(K.Pos), o(K.Dir), o(K.Dir)];
 
 /** The delta-coded lists in wire order; hits go between actors and machines, always whole. */
 const LISTS: [Field[], number][] = [[PLAYER, 16], [VEHICLE, 64], [ACTOR, 128], [MACHINE, 128], [OBJECT, 2048]];
-const LISTS_V1: [Field[], number][] = [[PLAYER, 16], [VEHICLE_V1, 64], [ACTOR, 128], [MACHINE, 128], [OBJECT, 2048]];
-const listsOf = (version: number) => (version === PACK_VERSION ? LISTS : version === 1 ? LISTS_V1 : null);
+const LISTS_V2: [Field[], number][] = [[PLAYER_V2, 16], [VEHICLE, 64], [ACTOR_V2, 128], [MACHINE, 128], [OBJECT, 2048]];
+const LISTS_V1: [Field[], number][] = [[PLAYER_V2, 16], [VEHICLE_V1, 64], [ACTOR_V2, 128], [MACHINE, 128], [OBJECT, 2048]];
+/** What a version this decoder reads has: its lists, its hits, and whether the header carries a cut. */
+interface Schema { lists: [Field[], number][]; hit: Field[]; cut: boolean }
+const SCHEMAS: Record<number, Schema> = {
+  1: { lists: LISTS_V1, hit: HIT_V2, cut: false },
+  2: { lists: LISTS_V2, hit: HIT_V2, cut: false },
+  [PACK_VERSION]: { lists: LISTS, hit: HIT, cut: true },
+};
 
 type Entity = Val[];
 
@@ -196,6 +214,21 @@ function readValue(r: BitReader, field: Field, prev: Val | undefined, strings: r
       if (n > MAX_ACTIONS) throw new PackError("too many actions");
       const out: number[] = [];
       for (let i = 0; i < n; i++) out.push(r.bits(3));
+      return out;
+    }
+    case K.Vel: {
+      // Differences against the value before in a delta.
+      if (prev !== null && typeof prev === "object" && "vel" in prev) {
+        const p = prev.vel;
+        return { vel: [p[0] + r.seg(4), p[1] + r.seg(4), p[2] + r.seg(4)] as const };
+      }
+      return { vel: [r.seg(8), r.seg(8), r.seg(8)] as const };
+    }
+    case K.Agos: {
+      const n = r.eg(0);
+      if (n > MAX_ACTIONS) throw new PackError("too many action ticks");
+      const out: number[] = [];
+      for (let i = 0; i < n; i++) out.push(r.eg(1));
       return out;
     }
   }
@@ -275,6 +308,16 @@ function actionsOf(v: Val): string[] {
   return (v as number[]).map((a) => enumOf(ACTIONS, a));
 }
 
+/** Version 3's unit fields (13 on); older versions have none. */
+function unitV3(u: FramePlayer | FrameActor, e: Entity): void {
+  if (e[13] != null) u.vel = (e[13] as { vel: readonly number[] }).vel.map((c) => c / VEL_SCALE) as [number, number, number];
+  if (e[14] != null) u.fire = e[14] as number;
+  if (e[15] != null) u.body = (e[15] as number) / BODY_MAX;
+  if (e[16] != null) u.shield = (e[16] as number) / SHIELD_SCALE;
+  if (e[17] != null) u.seat = e[17] as number;
+  if (e[18] != null) u.actions_ago = (e[18] as number[]).slice();
+}
+
 function playerOf(e: Entity): FramePlayer {
   const p: FramePlayer = { index: e[0] as number, alive: e[1] as boolean, pos: pos(e[2]!), yaw: dyaw(e[3] as number) };
   if (e[4] !== null) p.vehicle = idText(e[4]!);
@@ -286,6 +329,7 @@ function playerOf(e: Entity): FramePlayer {
   if (e[10] !== null) p.speed = (e[10] as number) / SPEED_SCALE;
   if (e[11] !== null) p.actions = actionsOf(e[11]!);
   if (e[12] !== null) p.grenade = enumOf(GRENADES, e[12] as number);
+  unitV3(p, e);
   return p;
 }
 
@@ -308,6 +352,7 @@ function actorOf(e: Entity): FrameActor {
   if (e[10] !== null) a.speed = (e[10] as number) / SPEED_SCALE;
   if (e[11] !== null) a.actions = actionsOf(e[11]!);
   if (e[12] !== null) a.grenade = enumOf(GRENADES, e[12] as number);
+  unitV3(a, e);
   return a;
 }
 
@@ -318,6 +363,7 @@ function hitOf(e: Entity): FrameHit {
   if (e[2] !== null) h.weapon = e[2] as string;
   if (e[4] !== null) h.amount = (e[4] as number) / AMOUNT_SCALE;
   if (e[5] !== null) h.kind = e[5] as string;
+  if (e[6] != null) h.ago = e[6] as number;
   return h;
 }
 
@@ -388,8 +434,8 @@ export class FrameDecoder {
   decode(bytes: Uint8Array): Decoded {
     const r = new BitReader(bytes);
     const version = r.bits(4);
-    const lists = listsOf(version);
-    if (!lists) throw new PackError(`packed frame version ${version} is not supported`);
+    const schema = SCHEMAS[version];
+    if (!schema) throw new PackError(`packed frame version ${version} is not supported`);
     const keyframe = r.bit();
     const sid = r.eg(0);
     const seq = r.eg(8);
@@ -410,15 +456,16 @@ export class FrameDecoder {
       state.tick = prev.tick + r.eg(2);
       if (r.bit()) state.bsp = r.bit() ? r.eg(1) : null;
     }
+    const cut = schema.cut && r.bit() ? r.eg(16) : null;
     const fresh = r.eg(1);
     if (fresh > MAX_NEW_STRINGS || state.strings.length + fresh > MAX_STRINGS) throw new PackError("too many strings");
     // The table is shared with the frame before until it grows.
     if (fresh > 0) state.strings = state.strings.slice();
     for (let i = 0; i < fresh; i++) state.strings.push(readStrLiteral(r));
     let hits: Entity[] = [];
-    lists.forEach(([schema, max], n) => {
-      if (n === 3) hits = readFull(r, HIT, 64, state.strings);
-      state.lists[n] = keyframe ? readFull(r, schema, max, state.strings) : readDelta(r, schema, max, prev.lists[n]!, state.strings);
+    schema.lists.forEach(([fields, max], n) => {
+      if (n === 3) hits = readFull(r, schema.hit, 64, state.strings);
+      state.lists[n] = keyframe ? readFull(r, fields, max, state.strings) : readDelta(r, fields, max, prev.lists[n]!, state.strings);
     });
     const frame: Frame = { game_id: state.gameId, tick: state.tick, players: state.lists[0]!.map(playerFrom) };
     const vehicles = state.lists[1]!.map(vehicleFrom);
@@ -432,6 +479,7 @@ export class FrameDecoder {
     if (state.bsp !== null) frame.bsp = state.bsp;
     if (machines.length) frame.machines = machines;
     if (objects.length) frame.objects = objects;
+    if (cut !== null) frame.cut = cut;
     this.streams.set(sid, state);
     return { sid, seq, keyframe, frame };
   }

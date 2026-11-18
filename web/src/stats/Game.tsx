@@ -24,7 +24,7 @@ import { clock } from "../lib/format";
 import { now } from "../lib/now";
 import { TICKS_PER_SECOND } from "../state/frames";
 import TacticalMap from "../viewer/TacticalMap";
-import Transport from "../viewer/Transport";
+import Transport, { replayKey } from "../viewer/Transport";
 import { createReplaySession } from "../viewer/session";
 import "../styles/stats-game.css";
 
@@ -228,7 +228,7 @@ function Replay(props: { game: GameState }) {
 
   const onKey = (e: KeyboardEvent) => {
     if (e.target !== e.currentTarget) return;
-    if (e.key === " ") { e.preventDefault(); session.toggle(); }
+    if (replayKey(session, e)) return;
     if (e.key === "ArrowRight") { e.preventDefault(); session.seek(tick() + 5 * TICKS_PER_SECOND); }
     if (e.key === "ArrowLeft") { e.preventDefault(); session.seek(tick() - 5 * TICKS_PER_SECOND); }
   };
@@ -245,12 +245,13 @@ function Replay(props: { game: GameState }) {
                 <Show when={tl().frames.length} fallback={<p class="s-empty">No recorded frames for this game. The scoreboard and field report are still here.</p>}>
                   <TacticalMap
                     game={props.game} frame={session.frame} roster={roster} highlight={hover} label={`Replay of ${gameMapTitle(props.game)}`}
-                    onKeyDown={onKey} keysLabel="Replay map. Space plays or pauses; arrow keys step five seconds."
+                    onKeyDown={onKey} keysLabel="Replay map. Space plays or pauses; arrow keys step five seconds; comma and full stop step a frame; less-than and greater-than jump between kills; k watches the latest kill."
                     soughtAt={session.soughtAt}
+                    camera={session.camera}
                     transport={() => <Transport session={session} killColour={killColour} />}
                   />
                   <Legend game={props.game} />
-                  <div class="s-timeline-head"><span>Match Timeline</span><small>Markers show kills · Space to play</small></div>
+                  <div class="s-timeline-head"><span>Match Timeline</span><small>Marks show kills, deaths and cuts · click one to watch it · Space to play</small></div>
                   <Transport session={session} killColour={killColour} />
                 </Show>
               )}

@@ -201,8 +201,11 @@ export function api(t: ServerTarget, reader: Reader = async () => null) {
     /** One page of the log; `from` is exclusive. */
     events: async (q: { from?: number; type?: string; stream?: string; limit?: number; cursor?: string; exclude?: string }, s?: AbortSignal) =>
       page<WireEvent>(await getJson(u("/events", q), s, await who())),
-    /** Every event of one stream, following cursors. */
-    streamEvents: async (stream: string, s?: AbortSignal) => (await all<WireEvent>("/events", { stream, limit: 1000 }, s)).items,
+    /** Every event of one stream, following cursors; `exclude` leaves out
+     *  types (comma-separated, `GameFrame` for a replay that reads its
+     *  frames from `/frames`). */
+    streamEvents: async (stream: string, s?: AbortSignal, opts: { exclude?: string } = {}) =>
+      (await all<WireEvent>("/events", { stream, limit: 1000, exclude: opts.exclude }, s)).items,
     /** The reader stream, resuming after `from` (exclusive), without the 1 Hz GameFrame events. */
     /** `auth`: the first message will be a `read` token (`?auth=1`). */
     streamUrl: (from: number | null, auth = false) => u("/stream", { from: from ?? 0, exclude: "GameFrame", frames: "packed", auth: auth ? 1 : undefined }),

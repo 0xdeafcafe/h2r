@@ -50,10 +50,11 @@ import type { SampledMachine } from "../state/frames";
 import { easeAngle, mountedTurrets, pickTurret, type TurretAim } from "./turrets";
 import { findTurrets, poseTurret, turretWant, type TurretObj } from "./turrets3d";
 import { BOOST, FLY_KEYS, MOUSE_LOOK, PAD_LOOK, TOUCH_LOOK, addMoves, anglesOf, approach, keyBoost, keyMove, lookStep, looksWith, moveIsIdle, padInput, pointerLook, speedLabel, speedStep, twoFingerMove, type FlyMove } from "./flycam";
-import { cameraFit, followDistance, markerScale, type Box3 } from "./camera";
+import { cameraFit, eyeView, followDistance, markerScale, type Box3 } from "./camera";
 import { SEE_MAX, SEE_RADIUS, cutHeight, cutRange, meshRole, patchSeeThrough, seeTargets, type SeeMode } from "./cutaway";
 
-export type ViewMode = "orbit" | "top" | "follow";
+/** `eyes`: first person, through the followed player's eyes along their aim. */
+export type ViewMode = "orbit" | "top" | "follow" | "eyes";
 
 export interface SceneOptions {
   reducedMotion: boolean;
@@ -621,7 +622,8 @@ export class ViewerScene {
       .sort((a, b) => a.d - b.d)
       .map((p) => p.i);
     const inFocus = focus !== null && this.shown.get(focus)?.alive && this.players.has(focus) ? focus : null;
-    const targets = seeTargets(this.seeMode, inFocus, alive);
+    // Through someone's eyes there is nothing between them and the camera.
+    const targets = seeTargets(this.mode === "eyes" ? "off" : this.seeMode, inFocus, alive);
     const u = this.see;
     let n = 0;
     for (const index of targets) {
@@ -762,8 +764,11 @@ export class ViewerScene {
     this.endFly(false);
     const was = this.mode;
     this.mode = mode;
-    this.followIndex = mode === "follow" ? follow : null;
+    this.followIndex = mode === "follow" || mode === "eyes" ? follow : null;
     const top = mode === "top";
+    // Through someone's eyes the camera is theirs, not the mouse's.
+    this.controls.enabled = mode !== "eyes";
+    if (mode === "eyes") this.tween = null;
     this.controls.enableRotate = !top;
     this.controls.screenSpacePanning = true;
     this.controls.mouseButtons.LEFT = top ? THREE.MOUSE.PAN : THREE.MOUSE.ROTATE;
@@ -780,10 +785,15 @@ export class ViewerScene {
         const want = followDistance(dir.length(), this.scale, !!this.players.get(follow!)?.biped, this.controls.minDistance);
         this.moveCamera(target.clone().addScaledVector(dir.normalize(), want), target, false);
       }
-    } else if (top || was === "top") {
+    } else if (top || was === "top" || (was === "eyes" && mode === "orbit")) {
       this.frameCamera(false);
     }
     this.dirty = true;
+  }
+
+  /** Whether the camera is behind `index`'s eyes: they aren't drawn then. */
+  private isEyes(index: number): boolean {
+    return this.mode === "eyes" && this.followIndex === index && !this.fly;
   }
 
   /** How far above a player's feet the follow camera looks: the chest of
@@ -824,7 +834,7 @@ export class ViewerScene {
     if (!f) return;
     this.fly = null;
     if (document.pointerLockElement === this.renderer.domElement) document.exitPointerLock();
-    this.controls.enabled = true;
+    this.controls.enabled = this.mode !== "eyes";
     if (back) this.moveCamera(f.saved.pos, f.saved.target, false);
     this.onFlyChange?.(false);
     this.dirty = true;
@@ -1421,7 +1431,7 @@ export class ViewerScene {
         // In a vehicle: the vehicle stands for them, and carries their label.
         const g = p.group;
         if (p.turn.visible || !g.visible || !g.position.equals(ride.group.position)) this.dirty = true;
-        g.visible = true;
+        g.visible = !this.isEyes(index);
         g.position.copy(ride.group.position);
         p.turn.visible = p.ring.visible = p.ray.visible = false;
         p.turn.rotation.y = yawToGl(s.yaw);
@@ -1452,7 +1462,7 @@ export class ViewerScene {
         : S * (big ? 1.25 : 1) * (p.actor ? 0.8 : 1);
       const yaw = yawToGl(s.yaw);
       if (g.visible !== show || g.position.x !== x || g.position.y !== y || g.position.z !== z || turn.scale.x !== k || turn.rotation.y !== yaw) this.dirty = true;
-      g.visible = show;
+      g.visible = show && !this.isEyes(index);
       p.label.visible = !dead && (!p.actor || this.actorNames);
       g.position.set(x, y, z);
       turn.rotation.y = yaw;
@@ -1520,6 +1530,22 @@ export class ViewerScene {
       this.controls.target.lerpVectors(tw.q0, tw.q1, e);
       if (u >= 1) this.tween = null;
       this.dirty = true;
+    } else if (this.mode === "eyes" && this.followIndex !== null) {
+      // First person: at their eyes, along their (eased) aim. The dead
+      // leave the camera where it was.
+      const s = this.shown.get(this.followIndex);
+      if (s && s.alive) {
+        const p = this.players.get(this.followIndex);
+        const height = p?.biped ? p.biped.height * p.turn.scale.x : null;
+        const v = eyeView(s, height);
+        const eye = this.v0.set(...gameToGl(...v.eye)), look = this.v1.set(...gameToGl(...v.look));
+        if (!this.camera.position.equals(eye) || !this.controls.target.equals(look)) {
+          this.camera.position.copy(eye);
+          this.controls.target.copy(look);
+          this.dirty = true;
+        }
+        this.camera.lookAt(look);
+      }
     } else if (this.mode === "follow" && this.followIndex !== null) {
       const s = this.shown.get(this.followIndex);
       if (s && s.alive) {
@@ -1533,7 +1559,8 @@ export class ViewerScene {
         }
       }
     }
-    if (!this.fly) this.controls.update();
+    // Through someone's eyes the orbit controls would pull the camera back to their least distance.
+    if (!this.fly && this.mode !== "eyes") this.controls.update();
     // The water's ripples and the weather move by themselves.
     // (Held still when motion is reduced, but the weather still follows the view.)
     const moving = this.look.animate(this.opts.reducedMotion ? 0 : now / 1000, this.controls.target, this.camera.position.distanceTo(this.controls.target));
