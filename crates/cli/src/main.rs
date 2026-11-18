@@ -11,6 +11,7 @@ mod agent_cmd;
 mod agent_hot_cmd;
 #[cfg(unix)]
 mod agent_run;
+mod agent_sim;
 mod testmap_cmd;
 mod anim;
 mod bitmap;

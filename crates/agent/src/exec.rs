@@ -47,6 +47,28 @@ pub enum Access {
 /// state locked, so it must be quick and must not call the [`Agent`].
 pub type HostMethod = Box<dyn FnMut(Value) -> Result<Value, RpcError> + Send>;
 
+/// A method that reads (or writes) the game at the boundary it is answered
+/// at ([`Agent::add_game_method`]): the `sim.*` methods. Like `world.*`,
+/// it waits for a tick while the game ticks.
+pub type GameMethod = Box<dyn FnMut(Value, &mut GameCtx<'_>) -> Result<Value, RpcError> + Send>;
+
+/// What a [`GameMethod`] gets besides its params.
+pub struct GameCtx<'a> {
+    /// The game at this boundary ([`Reader::with_guest`] for guest memory).
+    pub reader: &'a mut dyn Reader,
+    /// The stamp of this boundary.
+    pub at: At,
+    host: &'a mut BTreeMap<String, (Access, HostMethod)>,
+}
+
+impl GameCtx<'_> {
+    /// Answers a host method (`ui.screen`, `input.state`) as a client
+    /// would get it, when the host registered one of that name.
+    pub fn host(&mut self, name: &str, params: Value) -> Option<Result<Value, RpcError>> {
+        self.host.get_mut(name).map(|(_, f)| f(params))
+    }
+}
+
 /// With no tick for this long the game counts as loading, and world reads
 /// are answered between slices instead of waiting for a tick.
 pub const TICK_STALE: Duration = Duration::from_millis(500);
@@ -103,6 +125,8 @@ struct State {
     holding: bool,
     /// Methods the host answers, by name.
     host: BTreeMap<String, (Access, HostMethod)>,
+    /// Methods answered with the game at hand, by name.
+    game_methods: BTreeMap<String, (Access, GameMethod)>,
     /// The tick observer isn't installed (switched off, or the plan left
     /// it out): nothing can pause, and world reads come between slices.
     no_tick_hook: bool,
@@ -281,6 +305,23 @@ impl Agent {
         );
         self.lock()
             .host
+            .insert(name.to_owned(), (access, Box::new(f)));
+    }
+
+    /// Answers `name` with `f`, given the game at the boundary
+    /// ([`GameCtx`]), as [`add_method`](Self::add_method) otherwise.
+    pub fn add_game_method(
+        &self,
+        name: &str,
+        access: Access,
+        f: impl FnMut(Value, &mut GameCtx<'_>) -> Result<Value, RpcError> + Send + 'static,
+    ) {
+        assert!(
+            !method::ALL.contains(&name),
+            "{name} is a core method of the agent API"
+        );
+        self.lock()
+            .game_methods
             .insert(name.to_owned(), (access, Box::new(f)));
     }
 
@@ -682,7 +723,9 @@ impl State {
         let defer_world = where_ == Where::Slice && self.ticking();
         let mut keep = VecDeque::new();
         while let Some((conn, req)) = self.pending.pop_front() {
-            if defer_world && req.method.starts_with("world.") {
+            if defer_world
+                && (req.method.starts_with("world.") || self.game_methods.contains_key(&req.method))
+            {
                 keep.push_back((conn, req));
                 continue;
             }
@@ -770,6 +813,28 @@ impl State {
                 v
             }));
         }
+        if self.game_methods.contains_key(m) {
+            let at = self.at();
+            let stamp = to_value(&at);
+            let (access, f) = self.game_methods.get_mut(m)?;
+            if *access == Access::Act && self.controller.is_some_and(|c| c != conn) {
+                return Some(Err(RpcError::new(
+                    code::NOT_CONTROLLER,
+                    "another connection holds control",
+                )));
+            }
+            let mut ctx = GameCtx {
+                reader,
+                at,
+                host: &mut self.host,
+            };
+            return Some(f(p, &mut ctx).map(|mut v| {
+                if let Value::Object(o) = &mut v {
+                    o.entry("at").or_insert(stamp);
+                }
+                v
+            }));
+        }
         Some(match m {
             method::STATUS => Ok(to_value(Status {
                 at: self.at(),
@@ -783,6 +848,7 @@ impl State {
                     .iter()
                     .map(|m| (*m).to_owned())
                     .chain(self.host.keys().cloned())
+                    .chain(self.game_methods.keys().cloned())
                     .collect::<Vec<String>>(),
             )),
             method::CLAIM if self.conns.get(&conn).is_none_or(|c| c.closing) => Err(RpcError::new(
