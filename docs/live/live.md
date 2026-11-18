@@ -494,6 +494,14 @@ as the server: presence with no event or ping for 90 s gets
 `GameEnded {reason: "lost"}`. Pings (`POST /v1/presence/ping`, or `ping` on
 the ingest socket) refresh the in-memory deadline only. Deadlines start
 from the projection (the last event's `at`), so they survive a restart.
+Until the deadline passes, a game that has gone quiet still reads as live.
+The 5 minutes is generous on purpose. Across the live.forbes.red log on
+2026-11-18 (46 games), a game being played never went more than 17 s
+between recorded frames (p99.9 10 s). Half the games (23) ended `lost`,
+each 301-306 s after its last frame, and 9 of those never sent a frame at
+all. How long a paused game goes without a frame is not measured, so the
+wait stays well above it. The web shows a `lost` game as ended, labelled
+"Unfinished", with its length on the game clock (0 with no frames).
 
 **Security** ([live-security.md](live-security.md), all but §5
 federation). Every event is a JWS by its author; the server writes its own

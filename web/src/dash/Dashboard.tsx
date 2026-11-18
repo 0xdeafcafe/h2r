@@ -2,7 +2,7 @@
 // takes after:
 //   - the main menu: the orb and a ring of pods and their bars, which
 //     turns to bring the selected one into focus;
-//   - list screens (live now, friends, players, game history): a tilted
+//   - list screens (live now, friends, players): a tilted
 //     panel of rows, a preview pod and an info plate;
 //   - pod screens (settings, a player, sign up, account, server, invites):
 //     one big pod, four small ones around it and an info plate.
@@ -14,7 +14,7 @@ import { For, Match, Show, Switch, createEffect, createMemo, createSignal, on, o
 import { useNavigate, useParams } from "@solidjs/router";
 import { live } from "../state/live";
 import { identity, download } from "../state/identity";
-import { liveGames, endedGames, standings, teamStandings, type GameState, type AccountState } from "../state/reducer";
+import { liveGames, standings, teamStandings, type GameState, type AccountState } from "../state/reducer";
 import { OUTCOME_WORDS, campaignOutcome, campaignRecord, playedWith, serviceRecord } from "../state/derive";
 import { campaignLabel, difficultyName, gameTypeLabel, gameTypeLine } from "../state/gametype";
 
@@ -70,7 +70,6 @@ const LABELS: Record<SectionId, () => string> = {
   friends: () => "friends",
   clans: () => "clans",
   players: () => "players",
-  history: () => "game history",
   settings: () => "settings",
   signup: () => (identity.me() ? "profile" : "create account"),
   server: () => "server",
@@ -208,8 +207,6 @@ export default function Dashboard() {
         return Object.values(live.state.accounts)
           .sort((a, b) => Number(b.online) - Number(a.online) || a.gamertag.localeCompare(b.gamertag))
           .map((a) => ({ key: a.xuid, label: a.gamertag, meta: presenceText(a) }));
-      case "history":
-        return endedGames(live.state, 50).map((g) => ({ key: g.game_id, label: gameMapTitle(g), meta: rowType(g) }));
       case "signin": case "account": {
         // The accounts this browser keeps for this server, then the other ways in.
         const me = identity.me();
@@ -245,7 +242,7 @@ export default function Dashboard() {
       }
       return;
     }
-    if (s === "live" || s === "history") go(`/stats/games/${r.key}`, "deeper");
+    if (s === "live") go(`/stats/games/${r.key}`, "deeper");
     else go(`/dash/${s}/${encodeURIComponent(r.label)}`, "deeper");
   }
 
@@ -611,14 +608,14 @@ export default function Dashboard() {
               <Show when={section() === "signin" || section() === "account"} fallback={<>
               <div class="dx-preview">
                 <BigPod>
-                  <Show when={section() === "live" || section() === "history"} fallback={
+                  <Show when={section() === "live"} fallback={
                     <Show when={selAccount()} fallback={<Glyph name="empty" />}>{(a) => <Emblem seed={a().xuid} size={220} class="dx-emblem" />}</Show>
                   }>
                     <Show when={selGame()} keyed fallback={<Glyph name="empty" />}>{(g) => <GameMap game={g} />}</Show>
                   </Show>
                 </BigPod>
               </div>
-              <Show when={section() === "live" || section() === "history"} fallback={
+              <Show when={section() === "live"} fallback={
                 <Show when={selAccount()}>{(a) => <PlayerPlate account={a()} />}</Show>
               }>
                 <Show when={selGame()}>{(g) => <GamePlate game={g()} />}</Show>
@@ -786,7 +783,6 @@ function emptyText(s: SectionId | null): string {
     case "live": return "no games right now";
     case "friends": return identity.me() ? "play a game to meet people" : "nobody online";
     case "players": return "nobody here yet";
-    case "history": return "no finished games yet";
     default: return "nothing here yet";
   }
 }
