@@ -182,7 +182,6 @@ pub const LIKELY_FIELDS: &[(&str, u32)] = &[
     ("statborg.multiple_kill_counter", 0x14),
     ("object_header.flags", 0x2),
     ("object_header.cluster_index", 0x4),
-    ("unit.vehicle_seat", 0x1fc),
     ("damage_report.body_amount", 0x44),
     ("damage_report.shield_amount", 0x48),
     ("player_slot.signed_in_flag", 0x10),
@@ -204,10 +203,34 @@ pub const LIKELY_FIELDS: &[(&str, u32)] = &[
 /// `0x0011c1b0` / `0x00137d40` index the scenario's BSP block with it).
 pub const GLOBALS_ACTIVE_BSP: u32 = 0x2;
 
-/// Translational velocity (`f32[3]`, confirmed, docs/live/live-gamestate.md).
-/// Telemetry uses only its sign (a jump goes up); `speed` comes from
-/// positions.
+/// Translational velocity (`f32[3]`, confirmed, docs/live/live-gamestate.md),
+/// in world units a **second**, not a tick. Confirmed on the projectile
+/// update (`0x000f8ee2` on): it loads the seconds per tick (`T+0x04`) into
+/// a local, copies the velocity (`lea esi,[ebp+0x88]`, `0x000f90a0`),
+/// takes gravity times that tick length off its z (`0x000f9726`) and moves
+/// the position (`+0x64`) by the velocity times the tick length
+/// (`0x000f97df`..`0x000f9803`). The projectile's creation adds its tag's
+/// initial velocity (`proj +0x17c`, world units a second, 400 for a bullet)
+/// times a scale of 1.0 straight into it (`0x000f8487`..`0x000f84a0`). The
+/// field is the object's, so units and vehicles hold the same unit. Frames
+/// send it as `vel` unscaled; `motion` also uses its sign (a jump goes up),
+/// and `speed` still comes from positions.
 pub const BODY_VELOCITY: u32 = 0x88;
+/// Body and shield vitality (`f32`, 1.0 full; an overshield charges the
+/// shield past 1). Confirmed: `object_get_health` (`0x002a1a20`) returns
+/// `+0xec` and `object_get_shield` (`0x002a1a90`) `+0xf0`, each 0 instead
+/// while the damage flags' body-depleted bit ([`BODY_DEPLETED`]) is set
+/// (`0x002a1a5e`, `0x002a1ace`); `boot::health` reads the same two.
+pub const BODY_VITALITY: u32 = 0xec;
+pub const BODY_SHIELD_VITALITY: u32 = 0xf0;
+/// The unit's seat in the vehicle it rides (`i16`, -1 none), the index in
+/// the vehicle definition's seats block. Confirmed: `unit_new` (`0x000c44c1`)
+/// sets it to -1; the enter-vehicle routine (`0x000ea1f0`, the unit in
+/// `EAX`, the vehicle and seat on the stack, refused while the unit has a
+/// parent) indexes the seats block with the seat (`imul edi,0xb0`,
+/// `0x000ea330`) and stores it here (`0x000ea405`); leaving the vehicle
+/// stores -1 (`0x000ea995`).
+pub const UNIT_SEAT: u32 = 0x1fc;
 /// The scenario placement index (`i16`, -1 for objects the scenario did not
 /// place): the index in the scenario block of the object's type.
 /// Confirmed: `object_create` by name (`0x000bb670`) passes a name's type

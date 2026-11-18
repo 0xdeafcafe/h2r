@@ -466,7 +466,11 @@ impl World {
             );
             set_vec(g, at + layout::BODY_FORWARD, [-sin, cos, 0.0]);
             set_vec(g, at + layout::UNIT_AIM, [-sin, cos, 0.0]);
-            set_vec(g, at + layout::BODY_VELOCITY, [-sin / 7.5, cos / 7.5, 0.0]);
+            // World units a second (layout::BODY_VELOCITY), about the
+            // speed of the circle's four units a second.
+            set_vec(g, at + layout::BODY_VELOCITY, [-sin * 4.0, cos * 4.0, 0.0]);
+            g.set_f32(at + layout::BODY_VITALITY, 1.0).unwrap();
+            g.set_f32(at + layout::BODY_SHIELD_VITALITY, 1.0).unwrap();
         }
         for (i, s) in self.vehicles.iter().enumerate() {
             let at = body(*s);
@@ -475,6 +479,7 @@ impl World {
                 at + layout::BODY_POSITION,
                 [i as f32 * 8.0 + t * 6.0, 0.0, 1.0],
             );
+            set_vec(g, at + layout::BODY_VELOCITY, [6.0, 0.0, 0.0]);
         }
         for (i, s) in self.turrets.iter().enumerate() {
             let (cos, sin) = circle(t * 2.0 + i as f32);
@@ -601,6 +606,31 @@ fn scenes_produce_the_golden_output() {
                 golden,
                 "{name}: output changed (TELEMETRY_GOLDEN_UPDATE=1 writes it to $TMPDIR)"
             );
+        }
+    }
+}
+
+/// The scenes' frames carry what capture fills (docs/live/live-telemetry.md,
+/// "Velocity, seat, vitality and fire"), so the wire numbers count it.
+#[test]
+fn scenes_fill_velocity_and_vitality() {
+    for scene in &SCENES {
+        let (outputs, _) = outputs(scene, 4);
+        let frames: Vec<&Frame> = outputs
+            .iter()
+            .filter_map(|o| match o {
+                Output::Frame(f) => Some(f),
+                Output::Event(_) => None,
+            })
+            .collect();
+        assert!(!frames.is_empty(), "{}", scene.name);
+        for f in frames {
+            for p in &f.players {
+                assert!(p.vel.is_some(), "{}: player {} vel", scene.name, p.index);
+                assert_eq!(p.body, Some(1.0), "{}", scene.name);
+                assert_eq!(p.shield, Some(1.0), "{}", scene.name);
+                assert_eq!(p.seat.is_some(), p.vehicle.is_some(), "{}", scene.name);
+            }
         }
     }
 }

@@ -3,7 +3,8 @@ use std::collections::BTreeMap;
 use live_proto::game::{
     Frame, FrameActor, FrameAnim, FrameHit, FrameMachine, FrameObject, FramePlayer, FrameVehicle,
     GameEnded, MAX_FRAME_ACTORS, MAX_FRAME_HITS, MAX_FRAME_MACHINES, MAX_FRAME_OBJECTS,
-    MAX_FRAME_SHOTS, MAX_FRAME_VEHICLES, ObjectKind, PlayerKilled, PlayerLeft, ScoreChanged,
+    MAX_FRAME_SEAT, MAX_FRAME_SHIELD, MAX_FRAME_SHOTS, MAX_FRAME_SPEED, MAX_FRAME_VEHICLES,
+    ObjectKind, PlayerKilled, PlayerLeft, ScoreChanged,
 };
 
 use crate::event::{
@@ -19,7 +20,44 @@ use crate::tags::TagNames;
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct PendingShots {
     weapon: u32,
+    fired: Fired,
+}
+
+/// Shots since the last frame and the engine ticks they were on.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct Fired {
     count: u32,
+    /// Bit `k`: a shot on engine tick `at - k`.
+    mask: u32,
+    at: u64,
+}
+
+impl Fired {
+    /// The mask as of engine tick `tick`: bit `k` a shot on `tick - k`
+    /// (shots past 32 ticks drop off; none before `at`).
+    fn mask_at(&self, tick: u64) -> u32 {
+        match tick.checked_sub(self.at) {
+            Some(d) if d < 32 => self.mask << d,
+            _ => 0,
+        }
+    }
+
+    /// `n` shots on engine tick `tick`.
+    fn add(&mut self, tick: u64, n: u32) {
+        if n == 0 {
+            return;
+        }
+        self.mask = self.mask_at(tick) | 1;
+        self.at = tick;
+        self.count = self.count.saturating_add(n);
+    }
+
+    /// The frame's `shots` and `fire` at engine tick `tick`.
+    fn frame(&self, tick: u64) -> (Option<u32>, Option<u32>) {
+        let shots = Some(self.count.min(MAX_FRAME_SHOTS)).filter(|n| *n > 0);
+        let fire = shots.and(Some(self.mask_at(tick)).filter(|m| *m != 0));
+        (shots, fire)
+    }
 }
 
 /// Weapons whose shots wait for the next frame's actors; past this many the
@@ -64,7 +102,7 @@ struct Match {
     shots: BTreeMap<u32, PendingShots>,
     /// Every weapon's shots since the last frame, for actors (read only on
     /// frame ticks, so their held weapon is looked up then).
-    actor_shots: BTreeMap<u32, u32>,
+    actor_shots: BTreeMap<u32, Fired>,
     /// Each player's and sent actor's unit at the previous frame, by unit
     /// datum, for `speed` and `actions`.
     units: BTreeMap<u32, UnitMemory>,
@@ -487,10 +525,10 @@ impl Session {
                 .filter(|p| p.weapon == weapon.datum)
                 .unwrap_or(PendingShots {
                     weapon: weapon.datum,
-                    count: 0,
+                    fired: Fired::default(),
                 });
             let fired = snapshot.shots.get(&weapon.datum).copied().unwrap_or(0);
-            pending.count = pending.count.saturating_add(fired);
+            pending.fired.add(snapshot.tick, fired);
             shots.insert(index, pending);
         }
         current.shots = shots;
@@ -500,8 +538,11 @@ impl Session {
             {
                 current.actor_shots.clear();
             }
-            let count = current.actor_shots.entry(*weapon).or_insert(0);
-            *count = count.saturating_add(*n);
+            current
+                .actor_shots
+                .entry(*weapon)
+                .or_default()
+                .add(snapshot.tick, *n);
         }
 
         current.hits.extend(snapshot.hits.iter().cloned());
@@ -587,11 +628,11 @@ impl Session {
                                 .filter(|(unit, _, _)| alive && *unit == player.unit)
                                 .map(|(_, pos, yaw)| (*pos, *yaw))
                         })?;
-                    let shots = current.shots.get_mut(&index).map(|p| {
-                        let n = p.count.min(MAX_FRAME_SHOTS);
-                        p.count = 0;
-                        n
-                    });
+                    let (shots, fire) = current
+                        .shots
+                        .get_mut(&index)
+                        .map(|p| std::mem::take(&mut p.fired).frame(tick))
+                        .unwrap_or_default();
                     let observed = match object {
                         Some(o) => observe(player.unit, o, alive),
                         None if !alive => motion::Observed {
@@ -617,7 +658,8 @@ impl Session {
                             .and_then(|o| o.weapon)
                             .zip(tags)
                             .and_then(|(w, t)| t.weapon(w.definition)),
-                        shots: shots.filter(|n| *n > 0),
+                        shots,
+                        fire,
                         stance: observed.stance,
                         speed: observed.speed,
                         actions: observed.actions,
@@ -625,13 +667,17 @@ impl Session {
                         anim: object
                             .as_ref()
                             .and_then(|o| frame_anim(o.motion.animation.as_ref(), tags)),
-                        // Read from step 4 on (docs/live/replay-fidelity.md).
-                        ..FramePlayer::default()
+                        vel: object.as_ref().and_then(frame_vel),
+                        seat: object.as_ref().and_then(frame_seat),
+                        body: object.as_ref().and_then(|o| frame_vitality(o).0),
+                        shield: object.as_ref().and_then(|o| frame_vitality(o).1),
+                        // Not read yet (docs/live/replay-fidelity.md).
+                        actions_ago: None,
                     })
                 })
                 .collect();
             let actor_shots = std::mem::take(&mut current.actor_shots);
-            let mut actors = frame_actors(snapshot, tags, current.campaign, &actor_shots);
+            let mut actors = frame_actors(snapshot, tags, current.campaign, &actor_shots, tick);
             for (actor, object, datum) in &mut actors {
                 let observed = observe(*datum, object, true);
                 actor.stance = observed.stance;
@@ -864,6 +910,32 @@ fn hex(d: u32) -> String {
         .collect()
 }
 
+/// The frame's `vel`: the object's velocity (world units a second, as the
+/// engine holds it), absent when not read or faster than a frame takes.
+fn frame_vel(o: &ObjectState) -> Option<[f64; 3]> {
+    o.velocity.filter(|v| {
+        let speed = v.iter().map(|c| c * c).sum::<f64>().sqrt();
+        speed.is_finite() && speed <= MAX_FRAME_SPEED
+    })
+}
+
+/// The frame's `seat`: only while riding a vehicle, at most
+/// [`MAX_FRAME_SEAT`].
+fn frame_seat(o: &ObjectState) -> Option<u32> {
+    o.vehicle.and(o.seat).map(|s| u32::from(s).min(MAX_FRAME_SEAT))
+}
+
+/// The frame's `body` and `shield`, clamped to what a frame takes (body 0
+/// to 1, shield 0 to [`MAX_FRAME_SHIELD`]).
+fn frame_vitality(o: &ObjectState) -> (Option<f64>, Option<f64>) {
+    o.vitality.map_or((None, None), |(body, shield)| {
+        (
+            Some(body.clamp(0.0, 1.0)),
+            Some(shield.clamp(0.0, MAX_FRAME_SHIELD)),
+        )
+    })
+}
+
 fn finite_direction(v: [f64; 3]) -> bool {
     v.iter().all(|c| c.is_finite()) && v.iter().map(|c| c * c).sum::<f64>() > 1e-12
 }
@@ -881,7 +953,8 @@ fn frame_actors<'a>(
     snapshot: &'a Snapshot,
     tags: Option<&TagNames>,
     campaign: bool,
-    shots: &BTreeMap<u32, u32>,
+    shots: &BTreeMap<u32, Fired>,
+    tick: u64,
 ) -> Vec<(FrameActor, &'a ObjectState, u32)> {
     let players: Vec<[f64; 3]> = snapshot.objects.iter().flatten().map(|o| o.pos).collect();
     let distance = |pos: [f64; 3]| {
@@ -902,6 +975,12 @@ fn frame_actors<'a>(
         .take(MAX_FRAME_ACTORS)
         .map(|(_, a)| {
             let o = &a.object;
+            let (shots, fire) = o
+                .weapon
+                .and_then(|w| shots.get(&w.datum))
+                .map(|f| f.frame(tick))
+                .unwrap_or_default();
+            let (body, shield) = frame_vitality(o);
             let actor = FrameActor {
                 id: hex(a.datum),
                 species: o
@@ -913,13 +992,14 @@ fn frame_actors<'a>(
                 yaw: yaw(o.forward),
                 aim: o.aim,
                 weapon: o.weapon.zip(tags).and_then(|(w, t)| t.weapon(w.definition)),
-                shots: o
-                    .weapon
-                    .and_then(|w| shots.get(&w.datum))
-                    .map(|n| (*n).min(MAX_FRAME_SHOTS))
-                    .filter(|n| *n > 0),
+                shots,
+                fire,
                 team: o.team.map(|t| team_name(t, campaign)),
                 vehicle: o.vehicle.map(hex),
+                vel: frame_vel(o),
+                seat: frame_seat(o),
+                body,
+                shield,
                 ..FrameActor::default()
             };
             (actor, o, a.datum)
@@ -1770,6 +1850,107 @@ mod tests {
             sample(&mut session, 10, Some(rifle), &[(rifle, 500)]),
             Some(Some(MAX_FRAME_SHOTS))
         );
+    }
+
+    #[test]
+    fn fire_masks_move_older_and_drop_off_after_32_ticks() {
+        let mut f = Fired::default();
+        f.add(100, 1);
+        f.add(102, 0);
+        f.add(103, 2);
+        assert_eq!(f.count, 3);
+        assert_eq!(f.mask_at(103), 0b1001, "ticks 103 and 100");
+        assert_eq!(f.mask_at(110), 0b1001 << 7);
+        assert_eq!(f.mask_at(131), (1 << 31) | (1 << 28));
+        assert_eq!(f.mask_at(132), 1 << 29, "tick 100 is past 32 back");
+        assert_eq!(f.mask_at(135), 0);
+        assert_eq!(f.mask_at(99), 0, "none before the last shot's tick");
+        assert_eq!(f.frame(104), (Some(3), Some(0b10010)));
+        assert_eq!(Fired::default().frame(104), (None, None));
+    }
+
+    #[test]
+    fn frames_carry_velocity_seat_vitality_and_fire_ticks() {
+        let mut session = Session::new("test", None);
+        let mut p = player(0, 0);
+        p.unit = 0x90010000;
+        session.start(&info(), vec![p.clone()]);
+        session.take_output();
+        let rifle = 0x9005_0005;
+        let mut unit = armed(rifle, 0xe100_0020);
+        unit.velocity = Some([3.0, -4.0, 0.5]);
+        unit.seat = Some(2);
+        unit.vitality = Some((0.5, 3.5));
+        let mut state = snapshot(1, vec![p.clone()]);
+        state.objects[0] = Some(unit.clone());
+        state.shots = [(rifle, 1)].into_iter().collect();
+        session.sample(&state);
+        state.tick = 2;
+        state.shots = [(rifle, 2)].into_iter().collect();
+        session.sample(&state);
+        let f = frames(&mut session);
+        let sent = &f[0].players[0];
+        assert_eq!(sent.vel, Some([3.0, -4.0, 0.5]), "units a second, as read");
+        assert_eq!(sent.seat, None, "a seat only while in a vehicle");
+        assert_eq!((sent.body, sent.shield), (Some(0.5), Some(3.5)));
+        assert_eq!(sent.shots, Some(3));
+        assert_eq!(sent.fire, Some(0b11), "ticks 2 and 1");
+        // No shots: neither count nor mask.
+        state.shots = BTreeMap::new();
+        state.tick = 3;
+        session.sample(&state);
+        state.tick = 4;
+        session.sample(&state);
+        let f = frames(&mut session);
+        assert_eq!((f[0].players[0].shots, f[0].players[0].fire), (None, None));
+        // A shot on the odd tick lands a tick before the frame. In a
+        // vehicle, a seat, vitality and speed past what a frame takes:
+        // clamped, and a velocity too fast is left out.
+        state.tick = 5;
+        state.shots = [(rifle, 1)].into_iter().collect();
+        session.sample(&state);
+        unit.vehicle = Some(0x9002_0001);
+        unit.seat = Some(70);
+        unit.vitality = Some((1.5, 9.0));
+        unit.velocity = Some([2000.0, 0.0, 0.0]);
+        state.objects[0] = Some(unit.clone());
+        state.tick = 6;
+        state.shots = BTreeMap::new();
+        session.sample(&state);
+        let f = frames(&mut session);
+        let sent = &f[0].players[0];
+        assert_eq!((sent.shots, sent.fire), (Some(1), Some(0b10)));
+        assert_eq!(sent.seat, Some(MAX_FRAME_SEAT));
+        assert_eq!(
+            (sent.body, sent.shield),
+            (Some(1.0), Some(MAX_FRAME_SHIELD))
+        );
+        assert_eq!(sent.vel, None);
+        live_proto::game::validate_frame(&f[0]).unwrap();
+        // Actors: the same, by the weapon each holds.
+        let gun = 0x9007_0007;
+        let mut grunt = armed(gun, 0xe100_0020);
+        grunt.velocity = Some([0.0, 1.0, 0.0]);
+        grunt.vitality = Some((0.25, 0.0));
+        grunt.vehicle = Some(0x9002_0001);
+        grunt.seat = Some(1);
+        state.tick = 7;
+        state.shots = [(gun, 1)].into_iter().collect();
+        session.sample(&state);
+        state.tick = 8;
+        state.shots = BTreeMap::new();
+        state.actors = vec![crate::event::ActorState {
+            datum: 0x9008_0008,
+            object: grunt,
+        }];
+        session.sample(&state);
+        let f = frames(&mut session);
+        let actor = &f[0].actors[0];
+        assert_eq!((actor.shots, actor.fire), (Some(1), Some(0b10)));
+        assert_eq!(actor.vel, Some([0.0, 1.0, 0.0]));
+        assert_eq!(actor.seat, Some(1));
+        assert_eq!((actor.body, actor.shield), (Some(0.25), Some(0.0)));
+        live_proto::game::validate_frame(&f[0]).unwrap();
     }
 
     fn campaign() -> GameInfo {
