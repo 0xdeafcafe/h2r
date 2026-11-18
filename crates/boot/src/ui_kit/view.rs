@@ -59,6 +59,29 @@ pub enum Backing {
     /// The game shell's background screen (screen 5), as under every
     /// settings screen.
     GameShell,
+    /// A modal's: the screen beneath as it is, with nothing between it and
+    /// the panel. No retail dialog tag has a dim layer or any widget
+    /// outside its panel and corners (docs/game/ui-builder.md "Screen
+    /// kinds"). The preview draws `Beneath`'s screen there.
+    Over(Beneath),
+}
+
+/// The screen a preview draws under a modal: a sample of what it opens
+/// over in game.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Beneath {
+    /// The main menu (`main_menu`, screen 1) on the game shell background.
+    MainMenu,
+}
+
+impl Beneath {
+    /// Its screen tag in `mainmenu.map`.
+    pub fn tag(self) -> &'static str {
+        match self {
+            Beneath::MainMenu => r"ui\screens\game_shell\main_menu_screen\main_menu",
+        }
+    }
 }
 
 /// The order widgets are drawn in, and which may overlap: art under the
@@ -66,6 +89,9 @@ pub enum Backing {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Layer {
+    /// A modal's panel and its corners: the backing its content sits on
+    /// by design, so it is held to neither a list nor its pixels.
+    Panel,
     /// Frame art of the screen.
     Frame,
     /// A row's or a cell's own art (its bar, its box).

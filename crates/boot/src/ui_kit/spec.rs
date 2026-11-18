@@ -245,6 +245,10 @@ pub struct ScreenSpec {
     /// Retail art the screen adds of its own (a frame, a picture), drawn
     /// over the frame art the layout keeps.
     pub art: Vec<crate::ui_kit::view::PaneArt>,
+    /// A modal dialog over the screen beneath, drawn by
+    /// [`crate::ui_kit::dialog::dialog_view`] rather than as a list
+    /// (docs/game/ui-builder.md "Screen kinds").
+    pub dialog: Option<crate::ui_kit::dialog::DialogSpec>,
 }
 
 impl ScreenSpec {
@@ -263,6 +267,7 @@ impl ScreenSpec {
             footer: false,
             ids: Vec::new(),
             art: Vec::new(),
+            dialog: None,
         }
     }
     /// The footer legend as drawn, when the prompts go there.

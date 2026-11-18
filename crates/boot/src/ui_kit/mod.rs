@@ -3,6 +3,7 @@
 //! again (docs/game/ui-screens.md).
 //!
 //! - [`choice`]: a row of many choices over a setting ([`choice::ChoiceRow`]).
+//! - [`dialog`]: modal dialogs over the screen beneath ([`dialog::DialogSpec`]).
 //! - [`ids`]: the one registry of string-id families, checked at compile
 //!   time.
 //! - [`input`]: events as inputs, named glyphs and legends, the opener's
@@ -16,11 +17,12 @@
 //! - [`page`]: a screen's behaviour as a pure state machine, table-tested.
 
 pub mod choice;
+pub mod dialog;
 pub mod ids;
 pub mod input;
 pub mod layout;
-pub mod page;
 pub mod lifecycle;
+pub mod page;
 pub mod preview;
 pub mod screen;
 pub mod screens;

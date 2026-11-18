@@ -469,11 +469,10 @@ mod tests {
         assert_eq!(k["prompts"][0]["glyphs"][0], "DpadLeft");
     }
 
-    /// Findings left on purpose, each with its reason: the sign-in prompt's
-    /// help is words in its description, not a legend; the prompt is
-    /// rebuilt as a dialog with one (docs/game/ui-builder.md, slice 6).
-    fn known(screen: &str, issue: &crate::ui_kit::layout::Issue) -> bool {
-        screen == crate::signin_screen::SCREEN && *issue == crate::ui_kit::layout::Issue::NoLegend
+    /// Findings left on purpose, each with its reason. None today: the
+    /// sign-in prompt, the last, became a dialog with a glyph legend.
+    fn known(_screen: &str, _issue: &crate::ui_kit::layout::Issue) -> bool {
+        false
     }
 
     /// Without a disc: every screen in every state drawn from the synthetic
@@ -556,6 +555,11 @@ mod tests {
             let f = crate::ui_kit::view::Geometry::fallback(place);
             assert_eq!(f, d, "{name}: Geometry::fallback differs from the disc");
         }
+        assert_eq!(
+            crate::ui_kit::dialog::DialogGeometry::fallback(),
+            disc.dialog_geometry().unwrap(),
+            "DialogGeometry::fallback differs from the disc"
+        );
         // Every state passes the layout checks on the disc's art and fonts,
         // the art ones included.
         let mut issues = Vec::new();
