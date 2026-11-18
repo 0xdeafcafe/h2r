@@ -30,6 +30,7 @@ pub mod placements;
 pub mod query;
 pub mod sandbox;
 pub mod scratch;
+pub mod shad;
 pub mod shaders;
 pub mod sky;
 pub mod sky_shaders;
