@@ -161,7 +161,7 @@ impl AccountScreen {
         let (title, initial, max_chars) = match field {
             Field::Gamertag => ("Gamertag", self.gamertag.clone(), GAMERTAG_CHARS),
             Field::Invite => ("Invite code", self.invite.clone(), INVITE_CHARS),
-            Field::Code => ("Recovery code", String::new(), CODE_CHARS),
+            Field::Code => ("Sign-in code", String::new(), CODE_CHARS),
         };
         Effect::Keyboard(KeyboardRequest {
             field,

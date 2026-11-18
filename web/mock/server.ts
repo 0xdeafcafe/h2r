@@ -43,6 +43,7 @@ import { actionHooks } from "./action";
 import { machineHooks } from "./fixtures";
 import { Admin } from "./admin";
 import { MockRecovery } from "./recovery";
+import { MockSignIns } from "./signins";
 import { Content, customFor } from "./content";
 import { Reports } from "./reports";
 import { Bans } from "./bans";
@@ -125,6 +126,8 @@ world.run();
 const admin = new Admin(world, !!process.env.H2_MOCK_ADMIN && process.env.H2_MOCK_ADMIN !== "0");
 // Account recovery (mock/recovery.ts): TOTP codes and taking an account over.
 const recovery = new MockRecovery(world);
+// Where accounts are signed in (mock/signins.ts).
+const signins = new MockSignIns(world, recovery);
 const content = new Content(world, admin);
 // Player reports and the admin queue (mock/reports.ts).
 const reports = new Reports(world, admin);
@@ -189,7 +192,7 @@ world.listeners.add({
 
 const CORS = {
   "access-control-allow-origin": "*",
-  "access-control-allow-methods": "GET, HEAD, POST, OPTIONS",
+  "access-control-allow-methods": "GET, HEAD, POST, DELETE, OPTIONS",
   "access-control-allow-headers": "content-type, authorization",
 };
 
@@ -227,6 +230,8 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
 
   const rec = await recovery.handle(req, u);
   if (rec) return json(rec.body, rec.status);
+  const sig = await signins.handle(req, u);
+  if (sig) return json(sig.body, sig.status);
   const soc = await social.handle(req, u);
   if (soc) return json(soc.body, soc.status);
   const ses = sessions.handle(req, u);

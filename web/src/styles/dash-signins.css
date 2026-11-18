@@ -1,0 +1,13 @@
+/* "Signed in" (dash/SignIns.tsx): the list of the account's sign-ins and
+   its plate. The plate holds a confirmation as well as the details, so the
+   preview pod is smaller and higher than a list screen's usual one, and
+   the plate starts higher, ending above the prompts (top 632). */
+
+.dx .dx-pages.dx-signins .dx-preview { left: calc(var(--u) * 800); top: calc(var(--u) * 64); width: calc(var(--u) * 250); height: calc(var(--u) * 250); }
+.dx .dx-pages.dx-signins .dx-plate { top: calc(var(--u) * 330); min-height: 0; }
+.dx-signins .dx-plate .dx-note, .dx-signins .dx-plate .dx-error { margin: calc(var(--u) * 8) 0 0; }
+
+@media (max-aspect-ratio: 4/5) {
+  .dx .dx-pages.dx-signins .dx-preview { left: calc(var(--u) * 310); top: calc(var(--u) * 442); width: calc(var(--u) * 64); height: calc(var(--u) * 64); }
+  .dx .dx-pages.dx-signins .dx-plate { top: calc(var(--u) * 474); }
+}
