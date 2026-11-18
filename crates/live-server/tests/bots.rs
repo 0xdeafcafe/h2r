@@ -36,6 +36,7 @@ fn lobby() -> NewSession {
         skulls: None,
         campaign: None,
         ping_ms: None,
+        variant_ext: None,
     }
 }
 
