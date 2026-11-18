@@ -523,6 +523,15 @@ fn motion(guest: &Guest, kind: u8, body: u32, weapon: Option<u32>) -> Motion {
             .ok()? as i16;
         Some((reserve, loaded))
     });
+    let biped = kind == layout::OBJECT_TYPE_BIPED;
+    let unit_flags = guest.u32(body + layout::UNIT_FLAGS).ok();
+    let biped_flags = biped
+        .then(|| guest.u16(body + layout::BIPED_FLAGS).ok())
+        .flatten();
+    let airborne_ticks = biped
+        .then(|| guest.u8(body + layout::BIPED_AIRBORNE_TICKS).ok())
+        .flatten()
+        .map(|t| t as i8);
     Motion {
         velocity,
         crouch,
@@ -531,6 +540,9 @@ fn motion(guest: &Guest, kind: u8, body: u32, weapon: Option<u32>) -> Motion {
         grenades,
         weapons,
         magazine,
+        unit_flags,
+        biped_flags,
+        airborne_ticks,
     }
 }
 
@@ -1931,7 +1943,17 @@ mod tests {
                 .set_u32(body + layout::UNIT_WEAPONS + 4 * i, u32::MAX)
                 .unwrap();
         }
+        guest
+            .set_u32(body + layout::UNIT_FLAGS, layout::UNIT_FLAG_CROUCH | 1)
+            .unwrap();
+        guest.set_u16(body + layout::BIPED_FLAGS, 0x0201).unwrap();
+        guest
+            .set_u8(body + layout::BIPED_AIRBORNE_TICKS, 9)
+            .unwrap();
         let m = object(&guest, unit).unwrap().unwrap().motion;
+        assert_eq!(m.unit_flags, Some(layout::UNIT_FLAG_CROUCH | 1));
+        assert_eq!(m.biped_flags, Some(0x0201));
+        assert_eq!(m.airborne_ticks, Some(9));
         assert_eq!(m.crouch, Some(0.75));
         assert_eq!(m.physics_mode, Some(2));
         assert_eq!(m.velocity, [0.0, 0.0, 0.5]);

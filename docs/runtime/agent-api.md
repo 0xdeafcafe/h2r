@@ -246,6 +246,12 @@ can point at.
   first call. It answers "how much is alive" before anything is listed.
 - `world.object {id}` gives everything about one object, including its tag
   path and the effects attached to it.
+  Units also carry `physics` (**Code**): crouch amount, the crouch request
+  (unit flags bit 23, which stays set after release until there is room to
+  stand), physics mode, the biped airborne bit (`+0x348` bit 0, likely) and
+  its tick count (`+0x399`), and the raw unit and biped flag words. Polling
+  `object player.0` on one `h2 agent -` connection and keeping one reply per
+  stamped tick gives a per-tick movement trace.
 - `world.raycast`, `world.visible {from: "camera" | player}`: what the player
   can see, for both "is this on screen" and closed-loop movement.
 - `world.overhead {bsp, size}` renders a top-down map image with numbered
