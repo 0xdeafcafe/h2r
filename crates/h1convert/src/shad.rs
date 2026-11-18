@@ -202,6 +202,26 @@ pub const CLOUDS_TREE: AnimTree = AnimTree {
     bindings: &[[212, 5, 0, 0], [245, 5, 0, 0], [1, 0, 0, 0]],
 };
 
+/// `water_pool`'s animated tree. V (all 14 retail instances,
+/// `tests/shad_rebuild.rs`, `water_pool_instances_share_one_tree`): layer
+/// 15 of 25 animated, like the clouds; one vertex binding (target 178,
+/// parameter 1: `c[20]` whole, the ripple map's transform) and one bitmap
+/// binding (target 0, the ripple map's frame), both reading the ten
+/// components [`TextureScroll`] writes. Retail: component 0 the frame, an
+/// identity over 0..17 every 0.5 to 0.75 s (`water_mip` has 17 frames); 1
+/// and 2 the ripple's u and v scale (vector 0's x and y; periodic around
+/// them on two); 3 one; 4 and 5 its offsets (vector 0's z and w); 6 to 9
+/// zero. E `0x00017960` (vertex-constant animations): the binding word
+/// `0x01b2` is register 2 of bank 1 (`c[20]`), copy mode 13 (xyzw), and
+/// `0x0001b790` writes it as (u scale, v scale, u offset, v offset) when
+/// the transform's rotation is 0.
+pub const WATER_TREE: AnimTree = AnimTree {
+    layers: 25,
+    animated_layer: 15,
+    implementation: [(1, 1), (1, 0), (1, 0), (0, 0), (0, 1)],
+    bindings: &[[178, 1, 0, 0], [0, 0, 0, 0]],
+};
+
 /// A texture transform's scroll on one axis: the offset runs linearly
 /// from `from` to `to` every `period` seconds of game time.
 #[derive(Debug, Clone, Copy, PartialEq)]

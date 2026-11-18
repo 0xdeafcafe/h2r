@@ -899,3 +899,72 @@ fn every_rebuilt_bitmap_is_its_slots_retail_kind() {
     assert!(checked > 0);
     assert!(failures.is_empty(), "{} failures", failures.len());
 }
+
+/// Every retail `water_pool` instance has [`shad::WATER_TREE`] and the
+/// component values its doc gives: the frame (time-driven identity over
+/// 0..17), vector 0's x and y in components 1 and 2 (when constant), one
+/// in 3, vector 0's z and w in 4 and 5, zeros after; bitmaps 0, 3 and 4
+/// 2D. Evaluated at time 0 with `tags::effects::function`.
+#[test]
+#[ignore = "reads the Halo 2 disc ($H2_DISC)"]
+fn water_pool_instances_share_one_tree() {
+    use tags::effects::function::{Function, FunctionType};
+    let disc = std::env::var("H2_DISC").expect("set H2_DISC");
+    let tree = &shad::WATER_TREE;
+    let mut seen = HashSet::new();
+    let mut checked = 0;
+    let mut reflections: BTreeMap<String, usize> = BTreeMap::new();
+    for (name, base, size) in h2_maps(&disc) {
+        let mut map = open(&disc, base, size);
+        let Ok(lib) = ShaderLibrary::read(&mut map) else { continue };
+        let ids: Vec<(TagId, String)> = map
+            .tags()
+            .iter()
+            .filter(|t| t.group == SHAD && t.location.is_some())
+            .map(|t| (t.id, t.name.clone().unwrap_or_default()))
+            .collect();
+        for (id, sname) in ids {
+            let Ok(sh) = lib.shader(id) else { continue };
+            let stem = map.tag(sh.template.id).ok().and_then(|t| t.name.clone()).unwrap_or_default();
+            if !stem.ends_with("\\water_pool") || !seen.insert(sname.clone()) {
+                continue;
+            }
+            let p = sh.compiled().unwrap().clone();
+            let at = format!("{name}: {sname}");
+            assert_eq!(p.lods.len(), 1, "{at}");
+            assert_eq!(p.lods[0].layer_mask, 1 << tree.animated_layer, "{at}");
+            assert_eq!(p.layers.len(), usize::from(tree.layers), "{at}");
+            let a = &p.implementations[0];
+            let got = [a.bitmaps, a.render_states, a.stage_states, a.pixel_constants, a.vertex_constants]
+                .map(|r| (r.start, u16::from(r.count)));
+            assert_eq!(got, tree.implementation, "{at}");
+            let binds: Vec<[u8; 4]> = p.animations.iter().map(|b| [b.target, b.b1, b.b2, b.properties]).collect();
+            assert_eq!(binds, tree.bindings, "{at}");
+            assert_eq!(p.property_refs.len(), 10, "{at}");
+            let mut comp = [(f32::NAN, FunctionType::Constant, [0.0f32; 2]); 10];
+            for r in &p.property_refs {
+                let prop = &p.properties[r.property as usize];
+                let f = Function::parse(&prop.function).unwrap();
+                let v = f.evaluate(0.0, 0.0).clamp(0.0, 1.0);
+                let v = if f.is_raw_output() { v } else { (f.range[1] - f.range[0]) * v + f.range[0] };
+                comp[r.component as usize] = (v, f.kind, f.range);
+            }
+            let v0 = p.vectors[0];
+            assert!(comp[0].1 == FunctionType::Identity && comp[0].2 == [0.0, 17.0], "{at}: frame {:?}", comp[0]);
+            for (c, want) in [(1, v0[0]), (2, v0[1]), (3, 1.0), (4, v0[2]), (5, v0[3])] {
+                if comp[c].1 == FunctionType::Constant {
+                    assert_eq!(comp[c].0, want, "{at}: component {c}");
+                }
+            }
+            assert!(comp[6..].iter().all(|c| c.0 == 0.0 && c.1 == FunctionType::Constant), "{at}");
+            for k in [0, 3, 4] {
+                assert_eq!(h2_kind(&mut map, p.bitmaps[k].bitmap), Some(TextureKind::D2), "{at}: bitmap {k}");
+            }
+            let r = format!("{:?}", h2_kind(&mut map, p.bitmaps[1].bitmap));
+            *reflections.entry(r).or_default() += 1;
+            checked += 1;
+        }
+    }
+    eprintln!("{checked} retail water_pool instances; reflection kinds {reflections:?}");
+    assert_eq!(checked, 14);
+}
