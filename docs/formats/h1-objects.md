@@ -130,6 +130,21 @@ Read field by field since converter version 50 (`h1::Effect`,
 `h1::attachments`): layout and evidence in
 [tag-definitions.md](tag-definitions.md), "Effects from definitions".
 
+### `cont` (root `0x144`) and contrail attachments
+
+`h1objects::particles::H1Contrail` (since converter version 55): Halo 2's
+`cont` is Halo 1's compacted, span for span (V: the sniper, needler and
+plasma contrails of both games word for word, `particles_disc.rs`
+`contrail_survey`). `particles::CONT_SPANS` and `CONT_POINT_SPANS` list
+the spans; the layout is in [tag-definitions.md](tag-definitions.md),
+"Particles and contrails". Halo 2 effect parts never name a `cont` (the
+part groups on the disc are `deca`, `snd!`, `obje`, `ligh`, `lens`,
+`jpt!`, `MGS2`, `tdtl`): contrails are object attachments, so a Halo 1
+attachment that names one converts it (`Converter::contrail`), on
+vehicles with the other attachments and on rebuilt projectiles, whose
+attachment block is replaced by Halo 1's when any of them converts. A
+point's physics (`pphy`) is not converted: null.
+
 ### `bipd`, `vehi`, `scen`
 
 Read as the `obje` header (plus every reference, `refs::scan`, for the
@@ -378,8 +393,8 @@ speed (Halo 1's are slower than the Halo 2 templates').
   like the pistol), ready time, chamber time, charging (plasma pistol),
   first-person model and animations, the HUD (`wphi` vs `nhdt`), firing
   effects and sounds: all the template's.
-- **Projectile:** material responses and every effect, sound and contrail
-  (`cont`): the template's.
+- **Projectile:** material responses and every effect and sound: the
+  template's. Contrails are Halo 1's (above).
 - **Equipment:** non-health powerup and grenade type values (template's).
 - **Grenade throwing** reads the projectile from the globals' grenade
   block (`matg`), which this crate does not touch; the converted grenade
@@ -464,7 +479,16 @@ ghost) and `phmo` (cyborg, warthog, ghost); every converted `coll` passes
 `tags::collision::Collision::validate`; and every reference word pair in
 the new tags (136) names a tag of that group in the built map.
 
+`tests/particles_disc.rs`: `every_contrail_converts`: every Halo 1
+`cont` of the campaign and multiplayer maps (191) converts, reads back
+through the definition with Halo 1's spans at Halo 2's offsets and its
+bitmap converted; every rebuilt projectile and vehicle whose Halo 1
+attachments name a contrail (236 attachments) names the converted one.
+
 ## Needs a game run
+
+- Contrails: Halo 1's spans as Halo 2's (the flags and the root's
+  zeroed `+0x3c..+0x60`), and points with no physics (`pphy` null).
 
 - That the engine accepts objects whose `hlmt` has no variants
   and regions renamed from Halo 1, and whose template damage info names

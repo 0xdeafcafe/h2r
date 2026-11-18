@@ -1187,9 +1187,15 @@ here: an emitter's `+0x68` (the input pair of its seventh property) and an
 implementation's `+0x4` (its stage-state and pixel-constant ranges).
 
 `crates/tags/src/defs/cont.txt`: all 34 distinct retail `cont`
-round-trip; the layout from `crates/tags/src/effects/contrail.rs`
-(a `0xf0` root, the bitmap at `+0x30`, `0x40` points each with a `pphy`
-at `+0x10`). Most of the root is unknown spans yet.
+round-trip (a `0xf0` root, the bitmap at `+0x30` and `+0x88`, `0x40`
+points each with a `pphy` at `+0x10`). The spans are named by where they
+sit in Halo 1's `cont` (`0x144`, points `0x68`), which Halo 2's compacts
+(V, the same contrails of both games side by side): root `+0x4..+0x30`
+is Halo 1's `+0x4..+0x30`, `+0x38` Halo 1's `+0x40`, `+0x3c..+0x60` zero
+on every retail tag, `+0x60..+0x88` Halo 1's `+0xa8..+0xd0`, `+0x90..+0xe8`
+Halo 1's `+0xe0..+0x138`; a point's `+0x0..+0x10` and `+0x18..+0x40` are
+Halo 1's `+0x0..+0x10` and `+0x40..+0x68`. The fields' meanings are not
+read from the engine yet.
 
 ## Which converted objects use the definitions
 

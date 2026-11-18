@@ -30,6 +30,8 @@ use crate::{Error, Result};
 
 #[path = "convert_arsenal.rs"]
 mod arsenal_conv;
+#[path = "convert_particles.rs"]
+mod particles_conv;
 
 /// Retail Halo 2 template per Halo 1 object: Halo 1 group, words that must
 /// all be in the Halo 1 tag path, Halo 2 tag. First match wins.
@@ -1154,8 +1156,8 @@ impl<'a> Converter<'a> {
         Ok(id)
     }
 
-    /// The object's attachments that convert here (looping sounds and
-    /// effects) and its creation effect; the rest are listed in `rep`.
+    /// The object's attachments that convert here (looping sounds,
+    /// effects, lights and contrails) and its creation effect; the rest are listed in `rep`.
     pub fn object_effects(
         &mut self,
         object_bytes: &[u8],
@@ -1180,6 +1182,13 @@ impl<'a> Converter<'a> {
                     Ok(x) => Some(x),
                     Err(e) => {
                         rep.no_home.push(format!("attachment effe {}: not converted ({e})", t.name));
+                        None
+                    }
+                },
+                b"cont" => match self.contrail(t) {
+                    Ok(x) => Some(x),
+                    Err(e) => {
+                        rep.no_home.push(format!("attachment cont {}: not converted ({e})", t.name));
                         None
                     }
                 },

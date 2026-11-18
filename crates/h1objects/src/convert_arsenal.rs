@@ -302,6 +302,7 @@ impl Converter<'_> {
         }
         let role = self.item_role(b"proj")?;
         let root = arsenal::projectile(&p, b, &parts, &role)?;
+        let root = self.halo1_attachments(*b"proj", "object", root, b, &p.object, &mut rep)?;
         for (path, g, id) in &parts.halo2 {
             let n = self.base.name(*id).map_or("?", |n| n.1);
             rep.no_home

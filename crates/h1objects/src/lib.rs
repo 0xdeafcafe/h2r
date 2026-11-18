@@ -42,6 +42,7 @@ pub mod convert;
 pub mod h1;
 pub mod h1hud;
 pub mod health_hud;
+pub mod particles;
 pub mod physics;
 pub mod query;
 pub mod rebuild;
