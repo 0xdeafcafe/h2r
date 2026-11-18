@@ -463,6 +463,28 @@ report line. V: `tests/sandbox_disc.rs`
 multiplayer map, every Halo 1 hand weapon of the Halo 1 sandbox names a
 class and type the converted player biped's graph holds in mode `combat`.
 
+**Holding is finding** (converter version 64). The graph lookup
+`0x001db170` finds the mode, class, type and action each by binary
+search over signed string IDs (`0x001dd560`; the type falls back to
+`any`), so a graph holds a weapon only if every level of its tree is in
+string-ID order. Through version 63 the converted trees were in name
+order, which hides names from the search: on Blood Gulch at version 60
+the cyborg's graph found `idle` and `throw_grenade` for none of the eight
+Halo 1 weapons (a scratch probe over the imported map, the search as
+below), and all 13 converted graphs (the cyborg's, the eight first-person
+graphs, the vehicles') were out of order while all 59 retail ones were in
+order. So the cyborg refused every weapon:
+the Halo 1 sandbox's "no starting weapon", "can't pick up weapons" and,
+with nothing held, no first-person arms or weapon. The test held only "is in the tree".
+Now the trees are laid out by string ID when the map is built
+([models.md](models.md), `jmad`), and the disc tests look each weapon up
+as the engine does: `idle` under `combat`, its class and its type, and
+`idle` in its first-person graph. `throw_grenade` is found for the
+`rifle` class only: Halo 1's cyborg has `stand rifle throw-grenade` and
+no throw under `pistol` or `missile`, so a player holding the pistol,
+plasma pistol, needler or rocket launcher still finds no throw (still to
+do: which class Halo 1 falls back to).
+
 ### Model materials (`hlmt +0x58`, **Built**, converter version 54)
 
 `hlmt +0x58` holds the model's materials, `0x14` each. The engine maps a

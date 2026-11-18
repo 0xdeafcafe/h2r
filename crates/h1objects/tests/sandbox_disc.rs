@@ -1100,6 +1100,55 @@ fn every_hlmt_holds_its_materials_in_both_sandboxes() {
     assert!(bad.is_empty(), "{bad:#?}");
 }
 
+/// The string ID of `name` in a map's string table (`index | len << 24`).
+fn sid_of(strings: &[Option<String>], name: &str) -> Option<u32> {
+    let i = strings.iter().position(|s| s.as_deref() == Some(name))?;
+    Some((name.len() as u32) << 24 | i as u32)
+}
+
+/// The engine's search of one tree level: a binary search over the block
+/// at `a` (count, address; elements of `stride`, the string ID first) as
+/// signed words (E `0x001dd560`). An element out of order hides others.
+fn bsearch(mem: &tags::schema::Memory, a: u32, stride: u32, key: u32) -> Option<u32> {
+    let (n, f) = (rw(mem, a) as i32, rw(mem, a + 4));
+    let (mut lo, mut hi) = (0i32, n - 1);
+    while lo <= hi {
+        let mid = (lo + hi) >> 1;
+        let e = f + mid as u32 * stride;
+        let v = rw(mem, e) as i32;
+        match v.cmp(&(key as i32)) {
+            std::cmp::Ordering::Equal => return Some(e),
+            std::cmp::Ordering::Greater => hi = mid - 1,
+            std::cmp::Ordering::Less => lo = mid + 1,
+        }
+    }
+    None
+}
+
+/// Whether the graph `jmad` (at `a`) finds `action` for `mode`, `class`
+/// and `kind` the way the engine looks it up (`0x001db170`: binary search
+/// at every level, `jmad +0x34` modes, `+4` classes, `+4` types, `+4`
+/// actions), the type falling back to `any`.
+fn graph_finds(
+    mem: &tags::schema::Memory,
+    strings: &[Option<String>],
+    a: u32,
+    path: [&str; 4],
+) -> bool {
+    let key = |n: &str| sid_of(strings, n);
+    let (Some(m), Some(c), Some(act)) = (key(path[0]), key(path[1]), key(path[3])) else {
+        return false;
+    };
+    let Some(me) = bsearch(mem, a + 0x34, 0x14, m) else { return false };
+    let Some(ce) = bsearch(mem, me + 4, 0x14, c) else { return false };
+    [path[2], "any"].iter().any(|t| {
+        key(t)
+            .and_then(|t| bsearch(mem, ce + 4, 0x34, t))
+            .and_then(|te| bsearch(mem, te + 4, 8, act))
+            .is_some()
+    })
+}
+
 /// The modes, classes and types of the graph `jmad` (at `a`): `jmad +0x34`
 /// modes (`0x14`), each `+4` classes (`0x14`), each `+4` types (`0x34`),
 /// the name first in each.
@@ -1166,7 +1215,7 @@ fn every_halo1_weapon_is_held_by_the_halo1_player_graph() {
             .filter_map(|t| {
                 let h = at(rw(&mem, t.location?.address + 0x38))?;
                 let j = at(rw(&mem, h + 0x14))?;
-                Some((t.name.clone().unwrap_or_default(), jmad_tree(&mem, &s, j)))
+                Some((t.name.clone().unwrap_or_default(), jmad_tree(&mem, &s, j), j))
             })
             .collect();
         assert!(!graphs.is_empty(), "{name}: no converted biped");
@@ -1208,9 +1257,32 @@ fn every_halo1_weapon_is_held_by_the_halo1_player_graph() {
             }
             checked += 1;
             println!("{name}: {n}: {class:?} {kind:?}");
-            for (b, tree) in &graphs {
+            // Its first-person graph (`weap +0x2a8`, `0x10` each, the graph's
+            // datum at `+0xc`) finds the idle the first-person view plays
+            // (tree `any:any:any:idle`, the animation `first_person:idle`).
+            let fp = (rw(&mem, l.address + 0x2a8) > 0)
+                .then(|| at(rw(&mem, rw(&mem, l.address + 0x2ac) + 0xc)))
+                .flatten();
+            if !fp.is_some_and(|f| graph_finds(&mem, &strings, f, ["any", "any", "any", "idle"])) {
+                bad.push(format!("{name}: {n}: its first-person graph does not find any:any:any:idle"));
+            }
+            for (b, tree, j) in &graphs {
                 if !tree.contains(&("combat".into(), class.clone(), kind.clone())) {
                     bad.push(format!("{name}: {n} ({class:?}, {kind:?}) not in {b}'s combat"));
+                }
+                // As the engine finds it: binary search at every level.
+                if !graph_finds(&mem, &strings, *j, ["combat", &class, &kind, "idle"]) {
+                    bad.push(format!("{name}: {n}: {b}'s graph does not find combat:{class}:{kind}:idle"));
+                }
+                // Halo 1's cyborg throws only under `rifle` (`stand rifle
+                // throw-grenade`): holding a pistol-class weapon or the
+                // rocket launcher there is no throw to find (still to do).
+                let throws = graph_finds(&mem, &strings, *j, ["combat", &class, &kind, "throw_grenade"]);
+                if !throws {
+                    println!("{name}: {n}: {b}'s graph finds no combat:{class}:{kind}:throw_grenade");
+                }
+                if class == "rifle" && !throws {
+                    bad.push(format!("{name}: {n}: {b}'s graph does not find combat:{class}:{kind}:throw_grenade"));
                 }
             }
         }
@@ -1306,7 +1378,12 @@ fn every_starting_weapon_is_held_by_the_halo1_player_graph() {
             .find(|t| !t.name.as_deref().unwrap_or("").starts_with("objects\\"))
             .expect("a converted biped");
         let h = at(rw(&mem, player.location.unwrap().address + 0x38)).unwrap();
-        let tree = jmad_tree(&mem, &s, at(rw(&mem, h + 0x14)).unwrap());
+        let graph = at(rw(&mem, h + 0x14)).unwrap();
+        let tree = jmad_tree(&mem, &s, graph);
+        let finds = |class: &str, kind: &str| {
+            tree.contains(&("combat".into(), class.to_owned(), kind.to_owned()))
+                && graph_finds(&mem, &strings, graph, ["combat", class, kind, "idle"])
+        };
         let matg = tags.iter().find(|t| t.group == FourCC(*b"matg")).unwrap();
         let mulg = rw(&mem, matg.location.unwrap().address + 0x16c);
         let mulg_tag = tags.iter().find(|t| t.id.0 == mulg).unwrap().clone();
@@ -1337,8 +1414,7 @@ fn every_starting_weapon_is_held_by_the_halo1_player_graph() {
                         wt.name.as_deref().unwrap_or("?")
                     );
                     rolled += 1;
-                    if wt.group != FourCC(*b"weap")
-                        || !tree.contains(&("combat".into(), class.clone(), kind.clone()))
+                    if wt.group != FourCC(*b"weap") || !finds(&class, &kind)
                     {
                         bad.push(format!(
                             "{name}: starting equipment {i}: {} {} ({class:?}, {kind:?}) not in the player's combat",
@@ -1367,7 +1443,7 @@ fn every_starting_weapon_is_held_by_the_halo1_player_graph() {
                 wt.name.as_deref().unwrap_or("?")
             );
             checked += 1;
-            if !tree.contains(&("combat".into(), class.clone(), kind.clone())) {
+            if !finds(&class, &kind) {
                 bad.push(format!(
                     "{name}: byte {byte} -> {} ({class:?}, {kind:?}) not in the player's combat",
                     wt.name.as_deref().unwrap_or("?")

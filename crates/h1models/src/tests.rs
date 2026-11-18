@@ -780,6 +780,52 @@ fn synthetic_graph_round_trips_through_the_h2_decoder() {
     }
 }
 
+/// Every level of a converted graph's tree is laid out in ascending
+/// string-ID order, as the engine's binary search over it needs (E
+/// `0x001dd560`, from `0x001db170`). Here name order and string-ID order
+/// disagree at two levels: class `pistol` sorts before `rifle` by name, but
+/// `rifle` (5 bytes) has the smaller string ID; action `aim_still` before
+/// `idle` by name, `idle` (4 bytes) by ID.
+#[test]
+fn a_converted_graph_tree_is_in_string_id_order() {
+    let (img, at) = synthetic_graph();
+    let mut g = h1::Graph::read(&img, at).unwrap();
+    g.animations[0].name = "stand pistol idle".into();
+    g.animations[1].name = "stand pistol aim-still".into();
+    let mut third = g.animations[0].clone();
+    third.name = "stand rifle idle".into();
+    g.animations.push(third);
+    let (out, _) = jmad::convert_graph(&g, None).unwrap();
+    let (bytes, ids) = build(vec![(out, "invented\\graph")]);
+    let mut map = Map::from_reader(Cursor::new(bytes)).unwrap();
+    let base = map.tag(ids[0]).unwrap().location.unwrap().address;
+    let b = map.read_tag_bytes(ids[0]).unwrap();
+    let strings = map.strings().to_vec();
+    let w = |a: u32| u32::from_le_bytes(b[(a - base) as usize..][..4].try_into().unwrap());
+    let name = |sid: u32| strings[(sid & 0xff_ffff) as usize].clone().unwrap();
+    // (count, address) at `a`; the names of its elements of `stride`.
+    let level = |a: u32, stride: u32| -> Vec<(u32, u32)> {
+        (0..w(a)).map(|i| (w(w(a + 4) + i * stride), w(a + 4) + i * stride)).collect()
+    };
+    let ascending = |l: &[(u32, u32)]| l.windows(2).all(|p| (p[0].0 as i32) < (p[1].0 as i32));
+    let modes = level(base + 0x34, 0x14);
+    assert!(ascending(&modes));
+    let classes = level(modes[0].1 + 4, 0x14);
+    assert!(ascending(&classes));
+    assert_eq!(
+        classes.iter().map(|c| name(c.0)).collect::<Vec<_>>(),
+        ["rifle", "pistol"]
+    );
+    let pistol = classes[1].1;
+    let types = level(pistol + 4, 0x34);
+    let actions = level(types[0].1 + 4, 8);
+    assert!(ascending(&actions));
+    assert_eq!(
+        actions.iter().map(|a| name(a.0)).collect::<Vec<_>>(),
+        ["idle", "aim_still"]
+    );
+}
+
 /// The synthetic graph's base animation, re-encoded as compressed data with
 /// a key on every frame, reads back as the uncompressed original (within
 /// the 12-bit rotation quantisation) and converts.
