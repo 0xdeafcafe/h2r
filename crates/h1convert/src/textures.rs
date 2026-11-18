@@ -177,6 +177,8 @@ pub struct ShaderCopy {
     pub material: usize,
     /// The stem and parameter layout ([`crate::shad`]).
     pub layout: &'static shad::Layout,
+    /// Values over the layout's (tints).
+    pub extras: shad::Extras,
     /// (role, index into [`Retexture::bitmaps`], tiling, LOD offset).
     pub maps: Vec<(shad::Role, usize, [f32; 2], f32)>,
     /// What Halo 1 supplies, by role, as (role, Halo 1 bitmap name).
@@ -203,6 +205,7 @@ pub fn role_name(r: shad::Role) -> &'static str {
         shad::Role::Detail => "detail",
         shad::Role::Secondary => "secondary detail",
         shad::Role::Micro => "micro detail",
+        shad::Role::Cube => "reflection cube",
         shad::Role::Bump => "bump",
         shad::Role::Mask => "mask",
         shad::Role::Tile => "tile",
@@ -240,7 +243,7 @@ pub fn plan<R: Read + Seek>(
                 .push(format!("{name}: not a shader whose maps this reads"));
             continue;
         };
-        let Some((layout, chosen)) = s.choose(&out.library) else {
+        let Some(chosen) = s.choose(&out.library) else {
             out.notes.push(format!(
                 "{name}: the base lacks {} or its default bitmaps",
                 s.layout.stem
@@ -249,7 +252,7 @@ pub fn plan<R: Read + Seek>(
         };
         let mut maps = Vec::new();
         let mut swapped = Vec::new();
-        for (role, m) in chosen {
+        for (role, m) in &chosen.maps {
             let k = *converted.entry(m.bitmap).or_insert_with(|| {
                 let tag = h1.tag(m.bitmap).ok()?;
                 let (_, c, _) = h1bitmaps::convert_bitmap(h1, tag).ok()?;
@@ -268,7 +271,8 @@ pub fn plan<R: Read + Seek>(
         out.copies.push(ShaderCopy {
             h1_shader: name.clone(),
             material: *i,
-            layout,
+            layout: chosen.layout,
+            extras: chosen.extras.clone(),
             maps,
             swapped,
         });
@@ -319,7 +323,7 @@ impl Retexture {
                             )
                         })
                         .collect();
-                    let tree = self.library.build(c.layout, &maps)?;
+                    let tree = self.library.build_with(c.layout, &maps, &c.extras)?;
                     set.add_tag(SHAD, &c.h1_shader, TagPayload::Built(tree))?
                 }
             };

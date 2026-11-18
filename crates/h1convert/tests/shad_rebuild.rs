@@ -221,8 +221,9 @@ fn check_rebuilt(
     lib: &shad::Library,
     layout: &'static Layout,
     maps: &HashMap<Role, Bound>,
+    extras: &shad::Extras,
 ) -> Result<(), String> {
-    let tree = lib.build(layout, maps).map_err(|e| e.to_string())?;
+    let tree = lib.build_with(layout, maps, extras).map_err(|e| e.to_string())?;
     let rec = defs::from_built(shad::shad_def(), &tree).map_err(|e| e.to_string())?;
     let stem = lib.stem(layout).unwrap();
     if rec.at("postprocess[0].template") != Some(&Val::Datum(Target::Id(stem))) {
@@ -247,6 +248,13 @@ fn check_rebuilt(
                 != Some(&Val::Datum(Target::Id(m.id)))
         {
             return Err(format!("bitmap {k} isn't Halo 1's {r:?}"));
+        }
+    }
+    // The colours: the layout's, with the shader's over them.
+    for (k, c) in extras.colors_of(layout).iter().enumerate() {
+        let got = rec.at(&format!("postprocess[0].colors[{k}].color"));
+        if got != Some(&Val::Int(i64::from(*c))) {
+            return Err(format!("colour {k} {got:?}, want {c:08x}"));
         }
     }
     for (k, v) in layout.vectors.iter().enumerate() {
@@ -328,15 +336,14 @@ fn every_halo1_shader_and_sky_shader_rebuilds() {
                 .or_default() += 1;
             // The first choice, and the fallback a base without its
             // stem draws with.
-            for (layout, h1maps) in
-                std::iter::once((s.layout, &s.maps)).chain(s.fallback.iter().map(|(l, m)| (*l, m)))
-            {
-                let maps: HashMap<Role, Bound> = h1maps
+            for c in s.chain() {
+                let maps: HashMap<Role, Bound> = c
+                    .maps
                     .iter()
                     .map(|(r, m)| (*r, bound(m.scale, shad::h1_lod_offset(&h1, m.bitmap))))
                     .collect();
-                if let Err(e) = check_rebuilt(&lib, layout, &maps) {
-                    failures.push(format!("{name}: {}: {}: {e}", tag.name, layout.stem));
+                if let Err(e) = check_rebuilt(&lib, c.layout, &maps, &c.extras) {
+                    failures.push(format!("{name}: {}: {}: {e}", tag.name, c.layout.stem));
                 }
             }
         }
@@ -527,4 +534,123 @@ fn detail_blend_is_halo1s_rule() {
     }
     eprintln!("{checked} retail instances, {texels_run} texels");
     assert!(checked > 0, "coagulation has the stem's instances");
+}
+
+/// `tex_bump_env`'s lighting pass, run on the CPU for every retail
+/// instance on Coagulation, draws Halo 1's reflection rule: the cube
+/// map's colour times a tint and a brightness that are the facing
+/// (perpendicular) values where the bump normal faces the eye and the
+/// grazing (parallel) ones where it is edge-on. The instance's colours 1
+/// to 4 are where the layout says (colours 1 and 2 the stage 2
+/// constants, 3 and 4 the stage 3 alphas), so Halo 1's perpendicular
+/// colour and brightness go in 1 and 3, the parallel in 2 and 4.
+#[test]
+#[ignore = "reads the Halo 2 disc ($H2_DISC)"]
+fn env_reflection_is_halo1s_rule() {
+    let disc = std::env::var("H2_DISC").expect("set H2_DISC");
+    let (_, b, s) = h2_maps(&disc).into_iter().find(|m| m.0 == "coagulation").unwrap();
+    let mut map = open(&disc, b, s);
+    let mut lib = ShaderLibrary::read(&mut map).unwrap();
+    let layout = &shad::TEX_BUMP_ENV;
+    let ids: Vec<(TagId, String)> = map
+        .tags()
+        .iter()
+        .filter(|t| t.group == SHAD && t.location.is_some())
+        .map(|t| (t.id, t.name.clone().unwrap_or_default()))
+        .collect();
+    let argb = |c: u32| {
+        let ch = |s: u32| ((c >> s) & 0xff) as f32 / 255.0;
+        [ch(16), ch(8), ch(0), ch(24)]
+    };
+    let mut checked = 0;
+    for (id, name) in ids {
+        let Ok(sh) = lib.shader(id) else { continue };
+        let stem = map.tag(sh.template.id).ok().and_then(|t| t.name.clone()).unwrap_or_default();
+        if stem != layout.stem {
+            continue;
+        }
+        let p = sh.compiled().unwrap().clone();
+        let m = lib.material(id, None).unwrap();
+        let l = m.layers.iter().find(|l| l.lod == 0 && l.layer == 3).expect("the lighting layer");
+        let imp = &l.passes[0].implementations[0];
+        // Stage 1 the cube map, stage 2 the bump: the layout's roles.
+        for (stage, role) in [(1, Role::Cube), (2, Role::Bump)] {
+            let Some(tags::material::TextureSource::Bitmap { bitmap, .. }) = imp.textures[stage].map(|t| t.source)
+            else {
+                panic!("{name}: stage {stage} isn't a bitmap");
+            };
+            assert!(
+                (0..p.bitmaps.len())
+                    .any(|k| p.bitmaps[k].bitmap == bitmap && matches!(layout.bitmaps[k], Bm::Role(r, _) if r == role)),
+                "{name}: stage {stage} isn't {role:?}"
+            );
+        }
+        let def = shaders::psh::PixelShaderDef::from_bytes(&imp.pixel_shader).unwrap();
+        let (mut c0, c1) = def.embedded_constants();
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-3;
+        let (c_1, c_2, c_3, c_4) = (argb(p.colors[1]), argb(p.colors[2]), argb(p.colors[3]), argb(p.colors[4]));
+        assert!((0..3).all(|i| near(c0[2][i], c_1[i]) && near(c1[2][i], c_2[i])), "{name}: colours 1 and 2");
+        assert!(near(c0[3][3], c_3[3]) && near(c1[3][3], c_4[3]), "{name}: colours 3 and 4");
+        // Our values: colour 5 (the highlight) black.
+        c0[5] = [0.0; 4];
+        let run = |c0: &[[f32; 4]; 9], c1: &[[f32; 4]; 9], eye: [f32; 4], cube: [f32; 4]| {
+            let u = shaders::psh::interp::Uniforms {
+                c0: *c0,
+                c1: *c1,
+                ..Default::default()
+            };
+            let t = Texels([[0.5, 0.5, 0.5, 1.0], cube, [0.5, 0.5, 1.0, 1.0], [0.5, 0.5, 0.5, 1.0]]);
+            let inputs = shaders::psh::interp::Inputs {
+                d0: eye,
+                d1: [0.5, 0.5, 1.0, 1.0],
+                front: true,
+                ..Default::default()
+            };
+            shaders::psh::interp::run(&def, &shaders::psh::PixelOptions::default(), &inputs, &u, &t).unwrap()
+        };
+        // The reflection: the colour with the cube map less without it.
+        let cube = [0.6, 0.4, 0.2, 0.5];
+        let reflection = |tints: [[f32; 3]; 2], bright: [f32; 2], eye: [f32; 4]| {
+            let (mut a, mut b) = (c0, c1);
+            a[2][..3].copy_from_slice(&tints[0]);
+            b[2][..3].copy_from_slice(&tints[1]);
+            a[3][3] = bright[0];
+            b[3][3] = bright[1];
+            let with = run(&a, &b, eye, cube);
+            let without = run(&a, &b, eye, [0.0, 0.0, 0.0, cube[3]]);
+            [with[0] - without[0], with[1] - without[1], with[2] - without[2]]
+        };
+        let facing = [0.5, 0.5, 1.0, 1.0];
+        let grazing = [1.0, 0.5, 0.5, 1.0];
+        let (p1, p2) = ([0.8, 0.4, 0.2], [0.2, 0.4, 0.8]);
+        for (eye, own) in [(facing, 0usize), (grazing, 1usize)] {
+            let base = {
+                let mut t = [p2, p2];
+                t[own] = p1;
+                let mut b = [0.25, 0.25];
+                b[own] = 0.5;
+                reflection(t, b, eye)
+            };
+            assert!(base.iter().all(|c| *c > 1e-3), "{name}: no reflection {base:?}");
+            // The other angle's tint and brightness don't show.
+            let mut t = [p1, p1];
+            t[1 - own] = [1.0, 1.0, 1.0];
+            let mut b = [0.5, 0.5];
+            b[1 - own] = 1.0;
+            let other = reflection(t, b, eye);
+            assert!((0..3).all(|i| near(other[i], base[i])), "{name}: {own}: {other:?} vs {base:?}");
+            // Proportional to tint × cube per channel, and to brightness.
+            let k = base[0] / (p1[0] * cube[0]);
+            assert!((0..3).all(|i| (base[i] - k * p1[i] * cube[i]).abs() < 4e-3), "{name}: {base:?} not tint × cube");
+            let mut b = [0.25, 0.25];
+            b[own] = 0.25;
+            let mut t = [p2, p2];
+            t[own] = p1;
+            let half = reflection(t, b, eye);
+            assert!((0..3).all(|i| (half[i] * 2.0 - base[i]).abs() < 4e-3), "{name}: brightness {half:?} vs {base:?}");
+        }
+        checked += 1;
+    }
+    eprintln!("{checked} retail instances");
+    assert!(checked > 0);
 }

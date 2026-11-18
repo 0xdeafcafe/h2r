@@ -62,6 +62,8 @@ pub enum Role {
     /// Halo 1's micro detail map, multiplied over the blend.
     Micro,
     Bump,
+    /// A reflection cube map (Halo 1 `senv +0x324`).
+    Cube,
     /// A cloud layer's mask (`two_alpha_clouds` stage 1).
     Mask,
     /// A cloud layer's tiled texture (stage 2).
@@ -252,6 +254,41 @@ pub const TEX_BUMP_DETAIL_BLEND_DETAIL: Layout = Layout {
     root: Root::BaseMap,
 };
 
+/// Opaque bumped surfaces with a reflection: stage 0 the base (bitmap 2,
+/// `c[18]` vector 1), stage 1 the detail (bitmap 3, `c[19]` vector 0);
+/// the lighting layer reads the bump (bitmap 0, `c[20]` vector 2) and the
+/// cube map (bitmap 4). There colours 1 and 2 are the reflection's tint
+/// facing the eye and at a grazing angle, lerped by the bump normal's dot
+/// with the eye vector, and colours 3 and 4's alphas its brightness the
+/// same way; the reflection is masked by the colour pass's alpha (base
+/// × detail). Colours 5 and 6 (vectors 5 and 6 their copies) tint a
+/// lightmap highlight weighted by the cube map's alpha: black, Halo 1
+/// has none (`tests/shad_rebuild.rs`, `env_reflection_is_halo1s_rule`).
+pub const TEX_BUMP_ENV: Layout = Layout {
+    stem: "shaders\\shader_templates\\opaque\\tex_bump_env",
+    word_14: 1,
+    ints: [1, 0],
+    bitmaps: &[
+        Bm::Role(Role::Bump, Fixed::DefaultVector),
+        Bm::Fixed(Fixed::DefaultVector),
+        Bm::Role(Role::Base, Fixed::ColorWhite),
+        Bm::Role(Role::Detail, Fixed::DefaultDetail),
+        Bm::Role(Role::Cube, Fixed::DefaultCube),
+        Bm::Fixed(Fixed::CornerFade),
+    ],
+    colors: &[WHITE, WHITE, WHITE, OPAQUE_ALPHA, OPAQUE_ALPHA, 0, 0],
+    vectors: &[
+        Vector::Tile(Role::Detail),
+        Vector::Tile(Role::Base),
+        Vector::Tile(Role::Bump),
+        Vector::Const([0.276, 0.276, 0.93, 0.0]),
+        Vector::Const([0.39, 0.0, 0.93, 0.0]),
+        Vector::ColorOf(5),
+        Vector::ColorOf(6),
+    ],
+    root: Root::BaseMap,
+};
+
 /// [`TEX_BUMP`]'s layout with the base map's alpha cutting the surface
 /// out; bitmap 1 is `color_white` in 34 of 47 retail instances.
 pub const TEX_BUMP_ALPHA_TEST: Layout = Layout {
@@ -406,8 +443,9 @@ pub const SKY_ADDITIVE: Layout = Layout {
 };
 
 /// Every layout.
-pub const LAYOUTS: [&Layout; 9] = [
+pub const LAYOUTS: [&Layout; 10] = [
     &TEX_BUMP,
+    &TEX_BUMP_ENV,
     &TEX_BUMP_DETAIL_BLEND_DETAIL,
     &TEX_BUMP_ALPHA_TEST,
     &ILLUM,
@@ -439,6 +477,26 @@ pub struct Bound {
     pub id: TagId,
     pub scale: [f32; 2],
     pub lod_offset: f32,
+}
+
+/// Values a shader sets over its layout's.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Extras {
+    /// (colour index, ARGB) replacing the layout's colour.
+    pub colors: Vec<(usize, u32)>,
+}
+
+impl Extras {
+    /// `layout`'s colours with these over them.
+    pub fn colors_of(&self, layout: &Layout) -> Vec<u32> {
+        let mut c = layout.colors.to_vec();
+        for &(k, v) in &self.colors {
+            if let Some(x) = c.get_mut(k) {
+                *x = v;
+            }
+        }
+        c
+    }
 }
 
 /// The base's stems and default bitmaps by name.
@@ -515,6 +573,17 @@ impl Library {
 
     /// The `shad` record for `layout` drawing `maps`.
     pub fn record(&self, layout: &Layout, maps: &HashMap<Role, Bound>) -> Result<Record> {
+        self.record_with(layout, maps, &Extras::default())
+    }
+
+    /// [`Self::record`] with per-shader values over the layout's.
+    pub fn record_with(
+        &self,
+        layout: &Layout,
+        maps: &HashMap<Role, Bound>,
+        extras: &Extras,
+    ) -> Result<Record> {
+        let colors = extras.colors_of(layout);
         let stem = self.stem(layout).ok_or(Error::Invalid("the base lacks the stem"))?;
         let fixed = |f: &Fixed| {
             self.fixed
@@ -550,7 +619,7 @@ impl Library {
                     [0.0, 0.0, u, v]
                 }
                 Vector::ColorOf(k) => {
-                    let c = layout.colors.get(*k).copied().unwrap_or(0);
+                    let c = colors.get(*k).copied().unwrap_or(0);
                     let ch = |s: u32| ((c >> s) & 0xff) as f32 / 255.0;
                     [ch(16), ch(8), ch(0), 0.0]
                 }
@@ -563,12 +632,22 @@ impl Library {
                 .iter()
                 .position(|b| matches!(b, Bm::Role(Role::Base, _))),
         };
-        build_record(layout, stem, &bitmaps, &vectors, picture)
+        build_record(layout, stem, &bitmaps, &colors, &vectors, picture)
     }
 
     /// The `shad` tree for `layout` drawing `maps`.
     pub fn build(&self, layout: &Layout, maps: &HashMap<Role, Bound>) -> Result<Block> {
-        let rec = self.record(layout, maps)?;
+        self.build_with(layout, maps, &Extras::default())
+    }
+
+    /// [`Self::build`] with per-shader values over the layout's.
+    pub fn build_with(
+        &self,
+        layout: &Layout,
+        maps: &HashMap<Role, Bound>,
+        extras: &Extras,
+    ) -> Result<Block> {
+        let rec = self.record_with(layout, maps, extras)?;
         defs::to_built(shad_def(), &rec, &mut |_| None)
             .map_err(|e| Error::Textures(format!("shad: {e}")))
     }
@@ -600,6 +679,7 @@ fn build_record(
     layout: &Layout,
     stem: TagId,
     bitmaps: &[Option<Bound>],
+    colors_in: &[u32],
     vectors: &[[f32; 4]],
     picture: Option<usize>,
 ) -> Result<Record> {
@@ -647,8 +727,7 @@ fn build_record(
     }
     set(&mut pp, "bitmaps", Val::Block(brecs))?;
     let cdef = child(ppdef, "colors")?;
-    let crecs = layout
-        .colors
+    let crecs = colors_in
         .iter()
         .map(|c| {
             let mut r = defs::default_record(cdef);
@@ -755,22 +834,28 @@ pub struct H1Shader {
     pub group: String,
     pub layout: &'static Layout,
     pub maps: Vec<(Role, H1Bound)>,
-    /// The layout and maps to draw with when the base lacks
-    /// [`Self::layout`]'s stem.
-    pub fallback: Option<(&'static Layout, Vec<(Role, H1Bound)>)>,
+    /// Values over the layout's (tints).
+    pub extras: Extras,
+    /// What to draw with when the base lacks [`Self::layout`]'s stem.
+    pub fallback: Option<Box<H1Shader>>,
 }
 
 impl H1Shader {
-    /// The layout and maps for a base whose stems `library` holds: the
-    /// first choice, else the fallback; `None` when the base has neither.
-    pub fn choose(&self, library: &Library) -> Option<(&'static Layout, &[(Role, H1Bound)])> {
+    /// The first of this and its fallbacks whose stem `library` holds.
+    pub fn choose(&self, library: &Library) -> Option<&H1Shader> {
         if library.has(self.layout) {
-            return Some((self.layout, &self.maps));
+            return Some(self);
         }
-        self.fallback
-            .as_ref()
-            .filter(|(l, _)| library.has(l))
-            .map(|(l, m)| (*l, m.as_slice()))
+        self.fallback.as_deref().and_then(|f| f.choose(library))
+    }
+
+    /// This and its fallbacks, first choice first.
+    pub fn chain(&self) -> Vec<&H1Shader> {
+        let mut out = vec![self];
+        while let Some(f) = out.last().unwrap().fallback.as_deref() {
+            out.push(f);
+        }
+        out
     }
 }
 
@@ -821,6 +906,7 @@ pub fn read_h1(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<H1Shader> {
                     scale: [1.0, 1.0],
                 },
             )],
+            extras: Extras::default(),
             fallback: None,
         })
     };
@@ -871,25 +957,36 @@ pub fn read_h1(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<H1Shader> {
                     },
                 ));
             }
-            let blend = (group == "senv" && !alpha_tested)
-                .then(|| senv_blend(h1, d, &maps))
-                .flatten();
-            Some(match blend {
-                Some(blend) => H1Shader {
-                    name: tag.name.clone(),
-                    group,
-                    layout: &TEX_BUMP_DETAIL_BLEND_DETAIL,
-                    maps: blend,
-                    fallback: Some((layout, maps)),
-                },
-                None => H1Shader {
-                    name: tag.name.clone(),
-                    group,
-                    layout,
-                    maps,
-                    fallback: None,
-                },
-            })
+            let mk = |layout: &'static Layout, maps: Vec<(Role, H1Bound)>, extras: Extras| H1Shader {
+                name: tag.name.clone(),
+                group: group.clone(),
+                layout,
+                maps,
+                extras,
+                fallback: None,
+            };
+            // Last resort first: each choice falls back to the one before.
+            let mut out = mk(layout, maps.clone(), Extras::default());
+            if group == "senv" && !alpha_tested {
+                if let Some(blend) = senv_blend(h1, d, &maps) {
+                    let mut b = mk(&TEX_BUMP_DETAIL_BLEND_DETAIL, blend, Extras::default());
+                    b.fallback = Some(Box::new(out));
+                    out = b;
+                }
+                // A blended surface keeps its blend: no reflection stem
+                // on every base blends two details.
+                let blended = d
+                    .get(SENV_TYPE..SENV_TYPE + 2)
+                    .is_some_and(|b| u16::from_le_bytes([b[0], b[1]]) != 0);
+                if !blended && let Some((cube, extras)) = senv_reflection(h1, d) {
+                    let mut env = maps.clone();
+                    env.push((Role::Cube, cube));
+                    let mut e = mk(&TEX_BUMP_ENV, env, extras);
+                    e.fallback = Some(Box::new(out));
+                    out = e;
+                }
+            }
+            Some(out)
         }
         "swat" | "sgla" => one(&ONE_ALPHA_ENV, crate::textures::h1_maps_of(h1, tag)?.base),
         "smet" => one(&ILLUM, crate::textures::h1_maps_of(h1, tag)?.base),
@@ -921,6 +1018,7 @@ pub fn read_h1(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<H1Shader> {
                         scale: m.scale,
                     },
                 )],
+                extras: Extras::default(),
                 fallback: None,
             })
         }
@@ -975,6 +1073,58 @@ fn senv_blend(h1: &h1map::H1Map, d: &[u8], single: &[(Role, H1Bound)]) -> Option
         maps.push((Role::Micro, m));
     }
     Some(maps)
+}
+
+/// `senv` specular brightness (`+0x290`) and its colours facing the eye
+/// and at a grazing angle (`+0x2a8`, `+0x2b4`, RGB f32). V (395 `senv`):
+/// brightness 0.125 to 1, colours in 0..1.
+pub const SENV_SPECULAR: usize = 0x290;
+pub const SENV_PERPENDICULAR_COLOR: usize = 0x2a8;
+pub const SENV_PARALLEL_COLOR: usize = 0x2b4;
+/// `senv` reflection brightness facing the eye and grazing (`+0x2f4`,
+/// `+0x2f8`; V 0 to 1) and the reflection cube map (`+0x324`, V: a cube
+/// bitmap on 292 of 395).
+pub const SENV_PERPENDICULAR_BRIGHTNESS: usize = 0x2f4;
+pub const SENV_PARALLEL_BRIGHTNESS: usize = 0x2f8;
+pub const SENV_CUBE: usize = 0x324;
+
+/// An `senv`'s reflection for [`TEX_BUMP_ENV`]: its cube map and the
+/// colours 1 to 4 (the tint facing the eye and grazing, each Halo 1's
+/// colour times its specular brightness; the brightnesses as alphas).
+/// `None` without a cube map or with both brightnesses 0.
+fn senv_reflection(h1: &h1map::H1Map, d: &[u8]) -> Option<(H1Bound, Extras)> {
+    let r = h1map::TagRef::read(d, SENV_CUBE)?;
+    if r.group != h1map::Group::new(b"bitm") || r.id.is_none() || h1.tag(r.id).is_err() {
+        return None;
+    }
+    let f = |o: usize| {
+        d.get(o..o + 4)
+            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .filter(|v| v.is_finite())
+            .unwrap_or(0.0)
+            .clamp(0.0, 1.0)
+    };
+    let (perp, par) = (f(SENV_PERPENDICULAR_BRIGHTNESS), f(SENV_PARALLEL_BRIGHTNESS));
+    if perp == 0.0 && par == 0.0 {
+        return None;
+    }
+    let bright = f(SENV_SPECULAR);
+    let byte = |v: f32| (v * 255.0).round() as u32;
+    let rgb = |o: usize| (0..3).fold(0u32, |c, i| (c << 8) | byte(f(o + 4 * i) * bright));
+    Some((
+        H1Bound {
+            bitmap: r.id,
+            scale: [1.0, 1.0],
+        },
+        Extras {
+            colors: vec![
+                (1, rgb(SENV_PERPENDICULAR_COLOR)),
+                (2, rgb(SENV_PARALLEL_COLOR)),
+                (3, byte(perp) << 24),
+                (4, byte(par) << 24),
+            ],
+        },
+    ))
 }
 
 /// The [`lod_offset`] of the Halo 1 bitmap `id` (its first image), 0
