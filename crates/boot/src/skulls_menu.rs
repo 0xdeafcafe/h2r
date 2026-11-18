@@ -113,8 +113,28 @@ pub const FOOTER_ID: u32 = SKULLS_ID_BASE + 0x13;
 pub const LIST_LAYOUT: ListLayout = ListLayout {
     skin: 0,
     anchor: [-215, 130],
-    bitmaps_left_of: 0,
+    bitmaps_left_of: i16::MIN,
 };
+
+/// The level select's own screen id.
+pub const LEVEL_SELECT_SCREEN_ID: i16 = 11;
+
+/// The list's frame: the level select's left bracket (`ul_02`, its pane 0
+/// bitmap 1, `[177 -259 -79 -131]`, 128 by 256), at its own place, made
+/// for this list at this anchor. The Controls tag's bracket (`ul_03`) was
+/// made for the Controls list, 39 units further left and on another skin:
+/// kept under this list it framed an empty box and the first row's end cap
+/// cut its arm off (docs/game/ui-builder.md, slice 3), so none of the
+/// Controls frame art is kept ([`LIST_LAYOUT`]`.bitmaps_left_of`).
+pub const FRAME: PictureSpec = PictureSpec {
+    screen_id: LEVEL_SELECT_SCREEN_ID as u32,
+    pane: 0,
+    bitmap: 1,
+    image: 0,
+    at: [-259, 177],
+};
+/// [`FRAME`]'s image size.
+pub const FRAME_SIZE: [u16; 2] = [128, 256];
 /// The level select's picture box: `top, left, bottom, right`.
 pub const PICTURE_BOX: [i16; 4] = [177, 39, -30, 259];
 
@@ -1058,10 +1078,10 @@ mod tests {
     }
 
     /// The list (default skin rows: text and background to 210 right of the
-    /// anchor) stays left of the picture column; the frame art kept is the
-    /// Controls tag's left of the centre (`ul_03`, `[170 -280 42 -24]`), and
-    /// its bottom-right piece (`br_06`, `[-30 150 -286 406]`, which the old
-    /// description ran into) is left out by `bitmaps_left_of`.
+    /// anchor) stays left of the picture column; none of the Controls
+    /// frame art is kept (`ul_03` `[170 -280 42 -24]`, `br_06`
+    /// `[-30 150 -286 406]`), and the level select's bracket frames the list
+    /// from its left.
     #[test]
     fn the_columns_do_not_overlap_and_the_frame_stays_clear() {
         const ROW_RIGHT: i16 = 210;
@@ -1072,17 +1092,13 @@ mod tests {
             "list {list_right} left of the picture {bl}"
         );
         assert!(list_right < DESCRIPTION_TEXT.rect[1]);
-        let (ul_03_right, br_06_left) = (-24, 150);
-        assert!(
-            ul_03_right < LIST_LAYOUT.bitmaps_left_of,
-            "the left frame is kept"
-        );
-        assert!(
-            br_06_left >= LIST_LAYOUT.bitmaps_left_of,
-            "the right frame is not"
-        );
-        assert!(PICTURE.at[0] >= LIST_LAYOUT.bitmaps_left_of);
-        assert!(DESCRIPTION_TEXT.rect[1] >= LIST_LAYOUT.bitmaps_left_of);
+        // No Controls frame art is kept: every bitmap's x is at least the
+        // least there is.
+        assert_eq!(LIST_LAYOUT.bitmaps_left_of, i16::MIN);
+        // The bracket's left edge is left of the list, and its right edge
+        // over the list's first column, as on the level select.
+        assert!(FRAME.at[0] < LIST_LAYOUT.anchor[0]);
+        assert!(FRAME.at[0] + FRAME_SIZE[0] as i16 > LIST_LAYOUT.anchor[0]);
         let [top, left, bottom, right] = DESCRIPTION_TEXT.rect;
         assert!(
             top <= 240 && bottom >= -240 && left >= -320 && right <= 320,
