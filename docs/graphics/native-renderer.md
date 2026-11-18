@@ -262,7 +262,14 @@ The crate `native-render` (`crates/native-render`):
   `crates/d3d/tests/external_pass.rs` (direct, render thread, E1, and a
   backend that cannot).
 - **The feature `native-world`** (`crates/feature/src/native_world.rs`,
-  `H2_FEATURES=impl.render.native_world=on`, off by default, exact key).
+  on by default, `H2_FEATURES=impl.render.native_world=off` turns it off,
+  exact key). While it is on, pipelining is off (`pipeline_render` prints
+  `pipeline: off: native-world's layer-draw hooks run on the game
+  thread`): the observers are not render-thread safe (an after
+  continuation, guest masks, the device's pass), so on the render thread
+  every pipelined frame would fall back at its first layer draw. Making
+  them render-thread safe (no after part, an audit of the host's writes)
+  is a later step.
   `LAYER_DRAW` is an opaque point, so both hooks are observers: before,
   with layer 3 current, it reads the camera and the active BSP
   (`0x004e0348`) and asks the host; when the host accepts it clears layer
@@ -270,8 +277,9 @@ The crate `native-render` (`crates/native-render`):
   them back. Both sit inside `render-timing`'s observers
   (`after_feature`). Two observer calls per layer draw, nothing per draw.
   Tests: `crates/feature/tests/native_world.rs` (the plan with
-  `render-timing`, deep, and the layer-draw port all on; the switch off
-  places nothing; the skip and restore on synthetic memory).
+  `render-timing`, deep, and the layer-draw port all on; on by default
+  with pipelining off; the switch off places nothing and keeps
+  pipelining; the skip and restore on synthetic memory).
 - **Boot glue** (`crates/boot/src/native_world_glue.rs`). The host: on a
   new (map name, active BSP address) a worker opens the loaded map
   through the VFS with its shared maps, picks the scenario BSP whose tag

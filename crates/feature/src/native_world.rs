@@ -1,8 +1,10 @@
 //! `native-world`: the static world drawn by the native renderer instead
 //! of the game's layer-3 entries (docs/graphics/native-renderer.md, stage
-//! 1). Off by default; `H2_FEATURES=impl.render.native_world=on` turns it
-//! on (exactly that key: `impl.render=on` does not, since this one changes
-//! what draws the world).
+//! 1). On by default ([`DEFAULT`]); `H2_FEATURES=impl.render.native_world=off`
+//! turns it off (exactly that key: `impl.render=off` does not, since this
+//! one changes what draws the world). While it is on, pipelining is off
+//! (`pipeline_render`): these observers are not render-thread safe, so
+//! every pipelined frame would fall back at its first layer draw.
 //!
 //! Two observers on the layer draw `LAYER_DRAW` (`0x00044550`), an opaque
 //! point, so nothing here replaces guest code:
@@ -33,6 +35,15 @@ use crate::{BuildError, Builder, Feature, Manifest};
 pub const ID: &str = "native-world";
 /// The switch, looked up exactly.
 pub const SWITCH: &str = "impl.render.native_world";
+/// The switch's value when `H2_FEATURES` does not name it.
+pub const DEFAULT: bool = true;
+
+/// Whether the native world is on. Pipelining is off with it
+/// (`pipeline_render`): its layer-draw observers are not render-thread safe,
+/// so every pipelined frame would fall back at its first layer draw.
+pub fn on(switches: &crate::Switches) -> bool {
+    switches.feature(SWITCH, DEFAULT)
+}
 /// The active structure BSP's tag data (docs/formats/structure-bsp.md).
 pub const ACTIVE_BSP: u32 = 0x004e_0348;
 
@@ -131,7 +142,7 @@ impl Feature for NativeWorld {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        if !b.switches().feature(SWITCH, false) {
+        if !on(b.switches()) {
             return Ok(());
         }
         b.raw()

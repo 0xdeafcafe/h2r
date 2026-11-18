@@ -35,8 +35,8 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     (
         "native-world",
         "*",
-        "off by default; its layer-draw observers clear and restore the item masks around the \
-         layer and hand the device a pass, not yet audited for the pipelined render",
+        "pipelining is off with it: its layer-draw observers clear and restore the item masks \
+         around the layer (an after continuation) and hand the device a pass",
     ),
     (
         "render-census",

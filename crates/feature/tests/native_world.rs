@@ -28,12 +28,29 @@ fn the_plan_orders_it_inside_render_timing_with_the_layer_ports() {
     assert!(text.contains("native_world_skip") && text.contains("native_world_restore"), "{text}");
 }
 
-#[test]
-fn the_switch_off_places_nothing() {
-    let mut r = Registry::new(Switches::parse("").unwrap());
+/// The plan text with the native world and a pipeline that is on.
+fn plan_with_pipeline(switches: &str) -> String {
+    use feature::pipeline_render::{Addrs, PipelineRender};
+    let pipeline = PipelineRender::with(true, Addrs::HALO2).print(false);
+    let mut r = Registry::new(Switches::parse(switches).unwrap());
+    r.add(&pipeline).unwrap();
     r.add(&NativeWorld).unwrap();
-    let text = r.build(&Base).unwrap().text();
+    r.build(&Base).unwrap().text()
+}
+
+#[test]
+fn it_is_on_by_default_and_turns_pipelining_off() {
+    assert!(native_world::DEFAULT);
+    let text = plan_with_pipeline("");
+    assert!(text.contains("native_world_skip"), "{text}");
+    assert!(!text.contains("pipelined frame"), "{text}");
+}
+
+#[test]
+fn the_switch_off_places_nothing_and_keeps_pipelining() {
+    let text = plan_with_pipeline("impl.render.native_world=off");
     assert!(!text.contains("native_world"), "{text}");
+    assert!(text.contains("pipelined frame"), "{text}");
 }
 
 const LIST: u32 = 0x004c_1a48;

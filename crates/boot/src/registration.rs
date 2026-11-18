@@ -296,10 +296,11 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
         .add(&feature::occlusion::OcclusionCull)
         .map_err(|e| anyhow::anyhow!("occlusion: {e}"))?;
     // The static world on the native GPU renderer
-    // (H2_FEATURES=impl.render.native_world=on, off by default;
-    // docs/graphics/native-renderer.md). Its observers on the layer draw
-    // run after render-timing's; the world's map file comes from the
-    // locator boot sets (native_world_glue::set_locator).
+    // (on by default, H2_FEATURES=impl.render.native_world=off turns it
+    // off; docs/graphics/native-renderer.md). While it is on, pipelining is
+    // off: its layer-draw observers are not render-thread safe. They run
+    // after render-timing's; the world's map file comes from the locator
+    // boot sets (native_world_glue::set_locator).
     features
         .add(&feature::native_world::NativeWorld)
         .map_err(|e| anyhow::anyhow!("native world: {e}"))?;
