@@ -150,12 +150,28 @@ Children follow their parent's elements, depth first: the order
 
 What a converted sound adds (Design, checked by read-back):
 
-- `snd!` (20 bytes): flags, class, rate, encoding, compression (`1`), and
+- `snd!` (20 bytes): flags (below), class, rate, encoding, compression (`1`), and
   indices: playback `+6`, first pitch range `+8`, range count `+0xa`, scale
   `+0xb`, promotion `+0xc` (`ff`), custom playback `+0xd` (`ff`), extra info
   `+0xe` (`ffff`), max play time `+0x10` (floor ms of the longest
   permutation). **V:** no retail `snd!` index byte points outside its block,
   `ff`/`ffff` excepted.
+- Flags: Halo 1's bits 0 and 1, plus three the engine reads.
+  `0x400` takes the minimum distance from the sound class (class `+0x18`)
+  instead of playback `+0x00`, `0x800` the maximum (class `+0x1c`, playback
+  `+0x04`) (**E:** `0x00124fc0`, `0x00125010`, `0x0012ac20`). `0x1000`
+  skips the cone, so the source's facing is never looked up (**E:**
+  `0x0012adc2`). **V (all 30 maps, 65,309 sounds):** every sound whose
+  playback distances are 0 has `0x400` and `0x800`, no other has either,
+  and every one has `0x1000` (all retail cones are the whole sphere). A
+  Halo 1 distance of 0 is the class default (13,149 of 15,698 Halo 1
+  sounds), so it gets the class bits; whole-sphere cones (every Halo 1
+  sound) get `0x1000`. Before converter version 47 the bits were left
+  clear, and the engine took the zeros as distances: the minimum is raised
+  to 0.001 and the gain is `min / distance` inside a fade that a maximum
+  of 0 leaves at 1 (**E:** `0x0012aff0`), so a positioned converted sound
+  was at -60 dB a world unit away (`distance_and_cone_flags_follow_the_retail_rule`,
+  `tests/fields_disc.rs`).
 - One playback element and one scale element, shared with any identical
   existing element (scales are indexed by a byte).
 - Import names: each range and permutation name, interned as a string ID.
@@ -405,9 +421,13 @@ music, Cortana, UI.
   those bytes (as `PinnedImage::clear_index_tail` does) and lets the entries
   use the whole index region; the read-back proof uses it. Whether the game
   needs those bytes is unknown; the map builder owns the answer.
-- **Flags.** Every retail Halo 2 `snd!` has bit 12 (`0x1000`) set, most
-  also `0x0c00`, and nearly all bit 1; the converter writes only Halo 1's bits
-  0–1. Untested in game.
+- **Flags.** Bits 10 to 12 are settled (above). Nearly every retail sound
+  also has bit 1; the converter keeps Halo 1's bits 0 and 1 as they are.
+- **Scale gain at 0.** Halo 1 dialogue and impact sounds store a gain
+  modifier of 0 at scale 0 (every `unit_dialog` sound on a10);
+  `decibels` writes 0 dB for it, not silence. Retail Halo 2 impacts use
+  -64 dB there; which scale Halo 2 plays unscaled dialogue at is unchecked,
+  so silence there could mute dialogue.
 - **Pitch range `+4 = 0` form** (29,978 retail multi-permutation ranges):
   what `+6` holds there.
 - **Chunk size bit 31**: set on some retail chunks, never `0x7ff8` ones; meaning open.

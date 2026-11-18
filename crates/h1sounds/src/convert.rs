@@ -35,8 +35,27 @@ pub const CHUNK_ALIGN: u32 = 0x200;
 
 /// Halo 2 `snd!` fields (20 bytes).
 pub mod snd {
-    /// `u16` flags.
+    /// `u16` flags. Bits 0 and 1 are Halo 1's; the engine reads the three
+    /// below ([`CLASS_MIN_DISTANCE`], [`CLASS_MAX_DISTANCE`],
+    /// [`NO_CONE`]).
     pub const FLAGS: usize = 0;
+    /// Flag: the minimum distance is the class's (class `+0x18`), not the
+    /// playback element's `+0x00` (E `0x00124fc0`, `0x0012ac20`). **V:**
+    /// set on every retail sound whose minimum distance is 0, and on no
+    /// other (65,309 sounds, all 30 maps).
+    pub const CLASS_MIN_DISTANCE: u16 = 0x0400;
+    /// Flag: the maximum distance is the class's (class `+0x1c`), not the
+    /// playback element's `+0x04` (E `0x00125010`, `0x00218d30`). The
+    /// same retail rule as [`CLASS_MIN_DISTANCE`]. Without both, zeros
+    /// are taken as they stand: the minimum is raised to 0.001 and the
+    /// distance gain is `min / distance` times a fade that a maximum of 0
+    /// leaves at 1 (E `0x0012ac20`, `0x0012aff0`), so a positioned sound
+    /// is at -60 dB one world unit away: inaudible.
+    pub const CLASS_MAX_DISTANCE: u16 = 0x0800;
+    /// Flag: skip the cone, so the source's facing is never looked up
+    /// (E `0x0012adc2`, `0x00125060`). **V:** set on every retail sound;
+    /// every retail cone is the whole sphere.
+    pub const NO_CONE: u16 = 0x1000;
     /// `u8` class.
     pub const CLASS: usize = 2;
     /// `u8` sample rate: 0 22,050 Hz, 1 44,100 Hz, 2 32,000 Hz.
@@ -147,6 +166,28 @@ fn put_u16(b: &mut [u8], at: usize, v: u16) {
     b[at..at + 2].copy_from_slice(&v.to_le_bytes());
 }
 
+/// The Halo 2 `snd!` flags for `sound`: Halo 1's bits 0 and 1 (fit to
+/// ADPCM blocks, split into permutations), and the engine's class
+/// distance and cone bits. A Halo 1 distance of 0 means the class's
+/// default (S); Halo 2 says that with [`snd::CLASS_MIN_DISTANCE`] and
+/// [`snd::CLASS_MAX_DISTANCE`], as every retail sound with no distance
+/// of its own does. A sound whose cones are the whole sphere (Halo 1's
+/// `2π`, the default) gets [`snd::NO_CONE`].
+pub fn flags(sound: &Sound) -> u16 {
+    let mut f = (sound.flags & 3) as u16;
+    if sound.distance[0] <= 0.0 {
+        f |= snd::CLASS_MIN_DISTANCE;
+    }
+    if sound.distance[1] <= 0.0 {
+        f |= snd::CLASS_MAX_DISTANCE;
+    }
+    let whole = |a: f32| a >= std::f32::consts::TAU - 1e-3;
+    if whole(sound.cone_angles[0]) && whole(sound.cone_angles[1]) {
+        f |= snd::NO_CONE;
+    }
+    f
+}
+
 /// Reads what a Halo 2 sound needs out of `sound`, whose samples are in
 /// `file` (the decompressed Halo 1 map).
 pub fn convert_sound(sound: &Sound, file: &[u8]) -> Result<ConvertedSound> {
@@ -169,7 +210,7 @@ pub fn convert_sound(sound: &Sound, file: &[u8]) -> Result<ConvertedSound> {
     }
 
     let mut header = [0u8; snd::LEN];
-    put_u16(&mut header, snd::FLAGS, (sound.flags & 3) as u16);
+    put_u16(&mut header, snd::FLAGS, flags(sound));
     header[snd::CLASS] = class::to_h2(sound.class)?;
     header[snd::SAMPLE_RATE] = sound.sample_rate as u8;
     header[snd::ENCODING] = sound.encoding as u8;
