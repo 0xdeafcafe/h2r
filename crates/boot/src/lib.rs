@@ -1024,7 +1024,7 @@ pub fn run_hosted_with_live(
         bot_glue::install(&mut features, &opts.data_root).context("installing the bots")?;
         // The Clankers page and its Game Setup row (stage 7).
         if let Some(store) = host.settings.as_ref() {
-            clankers::install(&mut features, store).context("installing the Clankers page")?;
+            clankers::install(&mut features, store, _live.clone(), _telemetry.as_ref()).context("installing the Clankers page")?;
         }
     }
     // The iOS touch controls' game side (docs/runtime/ios.md): direct

@@ -1524,6 +1524,63 @@ fn advertisements_carry_the_hosts_map_id() {
     assert_eq!(created.data["advertisement"]["map_id"], id.to_string());
 }
 
+/// The host asks for a bot roster for the session it advertised
+/// (docs/game/bots.md §9.1, stage 6c): the server's own bot xuids, the
+/// skill asked for, filed under that session; with no session, nothing.
+#[test]
+fn the_host_asks_for_a_bot_roster_for_its_session() {
+    use live_proto::bots;
+    let s = Server::new();
+    let a = s.account("Host");
+    let mut host = World::new(&s.embedded.url, &[&a]);
+    host.logon();
+    assert_eq!(host.hle.hosted_session(), None, "no advertisement yet");
+    attr(&host, MATCH_ATTR, 1, 101);
+    assert_eq!(
+        host.call(
+            "XOnlineMatchSessionCreate",
+            &[1, 7, 0, 0, 1, MATCH_ATTR, 0, OUT]
+        ),
+        0
+    );
+    let create = host.u32(OUT);
+    assert_eq!(host.wait(create), TASK_SUCCESS);
+    let session = host.hle.hosted_session().expect("the advertised session");
+    assert!(live_proto::session::valid_id(&session), "{session}");
+
+    let ask = |session: &str| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        host.hle
+            .roster_bots(
+                bots::RosterRequest {
+                    session_id: session.to_owned(),
+                    playlist: None,
+                    count: 2,
+                    skill: Some(bots::HEROIC),
+                    teams: false,
+                },
+                Box::new(move |r| tx.send(r).unwrap()),
+            )
+            .unwrap();
+        rx.recv_timeout(Duration::from_secs(10)).unwrap()
+    };
+    let roster = ask(&session).expect("a roster");
+    assert_eq!(roster.match_id, session);
+    assert_eq!(roster.bots.len(), 2);
+    for b in &roster.bots {
+        assert!(bots::is_server_xuid(b.xuid), "{}", b.xuid);
+        assert_eq!(b.skill, bots::HEROIC);
+        assert_eq!(b.team, None);
+    }
+    assert!(
+        s.events()
+            .iter()
+            .any(|e| e.kind == bots::ROSTERED && e.data["session_id"] == session.as_str())
+    );
+    // Not this console's session: refused, and said so.
+    assert!(ask("0123456789abcdef").is_err());
+}
+
 // The same nine match entry points the retail wrappers drive, over two separate
 // guest memories and the actual HTTP worker. Values and frames are synthetic.
 const MATCH_ATTR: u32 = DATA + 0x5000;

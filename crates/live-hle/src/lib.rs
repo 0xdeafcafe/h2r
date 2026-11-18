@@ -396,6 +396,23 @@ impl Hle {
         let keys = self.network.registered_keys();
         self.lock().matchmade(&keys)
     }
+    /// The Live session this console hosts (16 lowercase hex digits),
+    /// while its advertisement stands. Never waits on the server.
+    pub fn hosted_session(&self) -> Option<String> {
+        self.lock().hosted_session()
+    }
+    /// Asks the server for a bot roster for this console's session
+    /// (`POST /v1/games/bots` with a `games.write` token, docs/game/bots.md
+    /// §9.1). Returns at once; `done` is called on the Live worker with the
+    /// roster, already [`live_proto::bots::Roster::check`]ed, or why there
+    /// is none. A later roster for the same session replaces this one.
+    pub fn roster_bots(
+        &self,
+        request: live_proto::bots::RosterRequest,
+        done: Box<dyn FnOnce(Result<live_proto::bots::Roster, String>) + Send>,
+    ) -> Result<(), String> {
+        self.lock().roster_bots(request, done)
+    }
     /// What the host of the session this console joined advertised as its
     /// skulls: [`Hle::joined`]'s answer, for the skulls.
     pub fn host_skulls(&self, wait: std::time::Duration) -> HostSkulls {
