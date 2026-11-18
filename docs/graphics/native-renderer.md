@@ -1061,7 +1061,34 @@ skipped light never reaches.
    entries' order) and its `target` is `Device::bound_target`. Its
    `accepts` says no to every light until the passes are drawn, so the
    feature records the view's target and every light keeps its D3D
-   passes.
+   passes. What the drawing needs, traced so far:
+   - **Engine textures** (`0x00019530`, a jump table at `0x00019b68`
+     indexed by id - 1; Code): ids 1, 9 and 14 are bitmaps from the
+     globals' rasterizer data (`[0x00485a80]`, set by `0x00022590` from
+     `matg +0x10c`, the block's first element), the datums at `+0xc`,
+     `+4` and `+0x14`; S from how the light passes sample them, 1 is the
+     vector normalization cube map and 9 the distance attenuation volume.
+     Id 10 is the light's own texture: with `[0x004858c8]` zero or no
+     definition, `0x000196d3` (not traced); definition flag `0x80000`
+     redirects to id 18; a definition `+0xe0` other than -1, with
+     `[0x00485a77]` clear, is render target 13; else the definition's
+     bitmap at `+0x7c` (the gel), through `0x000144f0`. Id 13 is render
+     target 9 (the shadow map, sized by `0x00048ee0`) and id 8 target 10
+     (the object shadows'), through `0x00014f60`.
+   - **Implementations.** A world material's layer 12 has one pass with
+     several implementations (on 03a's `tile_metal_dark`, the
+     `light_response` pass: 0 `lightaccum_frustum_tex` with stage 3 id 1,
+     1 `lightaccum_sphere_diffuse_tex` with stage 3 id 9 sampled as a
+     volume, 2 `lightaccum_frustum_no_specular_tex`, 3 with id 10, 4 with
+     a detail bitmap); layer 13 likewise. The engine picks one per draw:
+     the index is a stack argument of the bind `0x00016b90` (implementation
+     stride `0x132` at `0x00016c26`), reached through `0x0001bd47` from
+     `0x0001bbf0`, whose callers are the layer handlers (`0x0004b3b1`,
+     `0x0004c94f`, `0x0004da8e`, `0x0004e4b8`, ...). Next: where those
+     handlers compute the index for layers 12 and 13 (S: from the context
+     word `[0x004858c8]`, the frame block's projection type and the shadow
+     mode), then the lightaccum programs' engine constants against
+     `light_globals`' block.
 4. **Objects**, through the models as stage 3's objects.
 5. **Shadows**: layer 10 into our depth texture, the term in the light's
    pass.
