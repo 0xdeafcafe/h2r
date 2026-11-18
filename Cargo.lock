@@ -544,6 +544,7 @@ dependencies = [
 name = "bink-hle"
 version = "0.1.0"
 dependencies = [
+ "audio",
  "movies",
  "runtime",
  "xiso",
@@ -646,6 +647,7 @@ dependencies = [
  "live-telemetry",
  "lockstep",
  "map",
+ "movies",
  "perf",
  "png",
  "runtime",

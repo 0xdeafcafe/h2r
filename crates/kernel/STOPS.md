@@ -36,7 +36,6 @@ The inventory is checked against Runtime by `tests/stops.rs`.
 | 172 | MmFreeSystemMemory |
 | 175 | MmLockUnlockBufferPages |
 | 176 | MmLockUnlockPhysicalPage |
-| 181 | MmQueryStatistics |
 | 195 | NtDeleteFile |
 | 196 | NtDeviceIoControlFile |
 | 200 | NtFsControlFile |
