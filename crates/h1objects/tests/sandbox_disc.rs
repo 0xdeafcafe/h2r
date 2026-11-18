@@ -79,6 +79,7 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
     let done = p.build(&mut base_map, &mopp).unwrap();
     assert_eq!(done.manifest.variants[0].origin.sandbox, "h1");
 
+    let built: std::sync::Arc<[u8]> = done.bytes.clone().into();
     let mut out = Map::from_reader(Cursor::new(done.bytes)).unwrap();
     // The Halo 1 objects, then Halo 1's textures (bitmaps, shader copies;
     // a structure bitmap an object already added is reused), skies and
@@ -345,6 +346,7 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
             let mut inputs = Vec::new();
             let mut grenade_widgets = 0;
             let mut alphas = Vec::new();
+            let mut sensor = Vec::new();
             for x in widgets.as_chunks::<{ hh::BITMAP_WIDGET_SIZE }>().0 {
                 let name_of = |at: usize| names[&TagId(w(x, at + 4))].clone();
                 let (bg, bitmap) = name_of(widget::BITMAP);
@@ -359,6 +361,9 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
                 };
                 assert!(h1_bitmaps.contains(&source), "{name}: {bitmap} is Halo 1's");
                 if let Some(a) = alpha {
+                    if a == "28" {
+                        sensor.push((TagId(w(x, widget::BITMAP + 4)), source.clone(), x[widget::SEQUENCES]));
+                    }
                     alphas.push(a);
                 }
                 let state = &x[widget::STATE..widget::STATE_END];
@@ -384,11 +389,21 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
             // Halo 1's grenade HUD per grenade type (frag, plasma), each
             // background and total background.
             assert_eq!(grenade_widgets, 4, "{name}: grenade widgets");
-            // Byte-alpha sprites carry their element colour's alpha (the
-            // grenade outlines, 0xdc); the motion sensor's bitmap
-            // (hud_weapon_backgrounds) has no alpha byte and is not yet
-            // carried (docs/game/hud.md "Colours").
-            assert!(!alphas.is_empty(), "{name}: no colour alpha carried");
+            // Every sprite carries its element colour's alpha: the grenade
+            // outlines (0xdc, byte alpha, scaled in place) and the motion
+            // sensor background (0x28, DXT, decoded and rewritten as
+            // linear A8R8G8B8).
+            assert!(!sensor.is_empty(), "{name}: the motion sensor background carries 0x28");
+            for (id, source, seq) in &sensor {
+                let (copy, source_mean) = sensor_alpha(&h1, &mut out, built.clone(), *id, source, *seq);
+                eprintln!(
+                    "{name}: {source} seq {seq}: mean alpha in the circle {copy:.2}, source {source_mean:.2}, want {:.2}",
+                    source_mean * f64::from(0x28) / 255.0
+                );
+                assert!(source_mean > 64.0, "{source}: the source circle is mostly opaque");
+                let want = source_mean * f64::from(0x28) / 255.0;
+                assert!((copy - want).abs() < 1.0, "{source}: {copy:.2} against {want:.2}");
+            }
             eprintln!("{name}: colour alphas {alphas:?}");
         }
         // Every converted Halo 1 weapon with a wphi names its Halo 1 HUD at
@@ -591,6 +606,60 @@ fn bloodgulch_shaders_all_have_their_compiled_postprocess_in_both_sandboxes() {
 }
 
 /// The word at virtual address `a`.
+/// The mean alpha, over the circle inscribed in the sprite sequence `seq`
+/// draws, of the built map's bitmap `id` (decoded from the map's bytes,
+/// as the game reads it) and of the Halo 1 bitmap `source` it copies.
+fn sensor_alpha(
+    h1: &H1Map,
+    out: &mut Map<Cursor<Vec<u8>>>,
+    built: std::sync::Arc<[u8]>,
+    id: TagId,
+    source: &str,
+    seq: u8,
+) -> (f64, f64) {
+    let t = h1.tags().iter().find(|t| t.name == source).unwrap().clone();
+    let bm = h1map::bitmap::Bitmap::read(h1, &t).unwrap();
+    let s = &bm.sequences[usize::from(seq)];
+    let (image, bounds) = match s.sprites.first() {
+        Some(p) => (p.image as usize, p.bounds),
+        None => (s.first_image as usize, [0.0, 1.0, 0.0, 1.0]),
+    };
+    let src = h1bitmaps::decode::stack(
+        &h1bitmaps::decode_image(&bm.images[image], bm.pixels(h1, image).unwrap()).unwrap(),
+        0,
+    )
+    .unwrap();
+    let tags::TagData::Bitmap(copy) = tags::DecodedTag::read(out, id).unwrap().data else {
+        panic!("{source}: the copy is not a bitmap");
+    };
+    let mut files = assets::ResourceFiles::new();
+    files.set_bytes(map::ResourceFile::Local, built);
+    let level = assets::decode_image(&copy.images[image], &mut files)
+        .unwrap()
+        .levels
+        .into_iter()
+        .find(|l| l.face == 0 && l.level == 0)
+        .unwrap();
+    let (w, h) = (src.width as usize, src.height as usize);
+    assert_eq!((level.width as usize, level.height as usize), (w, h), "{source}: the copy's size");
+    let [l, r, top, b] = bounds.map(f64::from);
+    let (cx, cy) = ((l + r) / 2.0 * w as f64, (top + b) / 2.0 * h as f64);
+    let radius = ((r - l) * w as f64).min((b - top) * h as f64) / 2.0;
+    let (mut copy_sum, mut src_sum, mut n) = (0.0, 0.0, 0.0);
+    for y in 0..h {
+        for x in 0..w {
+            let (dx, dy) = (x as f64 + 0.5 - cx, y as f64 + 0.5 - cy);
+            if dx * dx + dy * dy <= radius * radius {
+                copy_sum += f64::from(level.rgba[(y * w + x) * 4 + 3]);
+                src_sum += f64::from(src.rgba[(y * w + x) * 4 + 3]);
+                n += 1.0;
+            }
+        }
+    }
+    assert!(n > 0.0, "{source}: an empty circle");
+    (copy_sum / n, src_sum / n)
+}
+
 fn rw(mem: &tags::schema::Memory, a: u32) -> u32 {
     mem.slice(a, 4)
         .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
@@ -804,11 +873,16 @@ fn print_halo2_weapon_hud_widgets() {
         while let Some(w) = base.element(&root, 0x10, 0x54, i).unwrap() {
             let sid = u32::from_le_bytes(w[0..4].try_into().unwrap());
             let label = strings.get((sid & 0xff_ffff) as usize).cloned().flatten().unwrap_or_default();
+            let shader = base.reference(&w, 0x20).and_then(|b| base.name(b)).map_or("-", |n| n.1);
+            let sid28 = u32::from_le_bytes(w[0x28..0x2c].try_into().unwrap());
+            let text = strings.get((sid28 & 0xff_ffff) as usize).cloned().flatten().unwrap_or_default();
             eprintln!(
-                "{name} text #{i} {label}: inputs {:?} state {:02x?} anchor {}",
+                "{name} text #{i} {label}: inputs {:?} state {:02x?} anchor {} shader {shader} string {sid28:08x} {text:?}\n  {:02x?}\n  {:02x?}",
                 &w[4..8],
                 &w[8..0x1c],
                 u16::from_le_bytes([w[0x1c], w[0x1d]]),
+                &w[0x1c..0x38],
+                &w[0x38..0x54],
             );
             i += 1;
         }

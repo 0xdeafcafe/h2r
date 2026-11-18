@@ -191,12 +191,17 @@ widget; the texture's alpha is kept (`a = t0.a * c0.a`).
 So the converter carries the alpha: a static unit or grenade element
 whose colour's alpha is under 255 draws a copy of its bitmap with every
 texel's alpha scaled by it (`h1hud::scale_alpha`,
-`Converter::hud_bitmap`, `<bitmap>_alpha_<aa>`), for formats with an alpha
-byte (A8, A8Y8, A8R8G8B8). **Not yet for the motion sensor:** its bitmap
-(`hud_weapon_backgrounds`, sequence 3) has no alpha byte, so its
-background still draws opaque in the shader's light blue (seen in a run
-on a10 and a30). The next step is to decode such a bitmap and write the
-copy as A8R8G8B8. Halo 1's colour RGB needs a `shad` per colour whose
+`Converter::hud_bitmap`, `<bitmap>_alpha_<aa>`). Formats with an alpha
+byte (A8, A8Y8, A8R8G8B8) are scaled in place. The rest (block-compressed,
+16-bit, no alpha), among them the motion sensor's
+(`hud_weapon_backgrounds`, sequence 3), are decoded with Halo 2's own
+decoder (`h1bitmaps::decode_image`) and the copy written as linear
+A8R8G8B8, top level only, rows at Halo 2's 64-byte linear pitch
+(`h1hud::alpha_scaled_argb`). Retail Halo 2 HUD bitmaps are stored the
+same way (E: `grenade_bkd`'s images, linear A8R8G8B8). Before this the
+sensor background drew opaque in the shader's light blue (seen in a run
+on a10 and a30); now it should be a faint disc at `0x28/255`.
+Halo 1's colour RGB needs a `shad` per colour whose
 constant reaches the pixel shader's last-stage `c0`; which `colors` entry
 or animation binding feeds it is not yet established
 (`docs/formats/shader-instances.md`: E `0x0001717b`).
@@ -226,7 +231,9 @@ or animation binding feeds it is not yet established
   `_h1_hud` `nhdt`, each widget a Halo 1 bitmap through the right shader,
   shield and health meters present; every Halo 1 weapon with a `wphi`
   names its `_h1_weapon_hud` (Halo 1 bitmaps, Halo 2 weapon inputs); the
-  HUD pairs (the biped's and the weapons') in the manifest.
+  HUD pairs (the biped's and the weapons') in the manifest; the motion
+  sensor background's copy, decoded back from the built map, has a mean
+  alpha inside its circle within 1 of `0x28/255` of Halo 1's.
 - `H1_ISO=... cargo test -p h1objects --test hud_disc -- --ignored
   weapon_huds_read --nocapture`: prints every `wphi` chain of `$H1_MAPS`
   as read.

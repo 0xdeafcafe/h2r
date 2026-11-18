@@ -1141,8 +1141,8 @@ impl<'a> Converter<'a> {
 
     /// The Halo 1 bitmap `id` for a HUD element whose colour's alpha is
     /// `alpha`: the bitmap itself at 255, else a copy with its alpha scaled
-    /// (`h1hud::scale_alpha`), `<name>_alpha_<alpha>`, built once. Falls back
-    /// to the bitmap itself when its format has no alpha byte.
+    /// (`h1hud::scale_alpha`, or `h1hud::alpha_scaled_argb` for a format
+    /// without an alpha byte), `<name>_alpha_<alpha>`, built once.
     fn hud_bitmap(&mut self, id: h1map::TagId, alpha: u8) -> Option<TagId> {
         if alpha == 0xff {
             return self.bitmap(id);
@@ -1153,19 +1153,21 @@ impl<'a> Converter<'a> {
         }
         let tag = self.h1.tag(id).ok()?.clone();
         let bm = h1map::bitmap::Bitmap::read(self.h1, &tag).ok()?;
-        let h1 = self.h1;
-        let mut scalable = true;
-        let (conv, _) = h1bitmaps::convert::convert_with(&bm, |i| {
-            let mut px = bm.pixels(h1, i)?.to_vec();
-            if crate::h1hud::scale_alpha(bm.images[i].format, &mut px, alpha).is_none() {
-                scalable = false;
+        // Byte-alpha formats scale in place; the rest (DXT, 16-bit, no
+        // alpha) are decoded and rewritten as linear A8R8G8B8.
+        let mut scaled = bm.clone();
+        let mut pixels = Vec::with_capacity(bm.images.len());
+        for (i, img) in bm.images.iter().enumerate() {
+            let mut px = bm.pixels(self.h1, i).ok()?.to_vec();
+            if crate::h1hud::scale_alpha(img.format, &mut px, alpha).is_none() {
+                let (argb, out) = crate::h1hud::alpha_scaled_argb(img, &px, alpha).ok()?;
+                scaled.images[i] = argb;
+                px = out;
             }
-            Ok(px)
-        })
-        .ok()?;
-        if !scalable {
-            return self.bitmap(id);
+            pixels.push(px);
         }
+        let (conv, _) =
+            h1bitmaps::convert::convert_with(&scaled, |i| Ok(std::mem::take(&mut pixels[i]))).ok()?;
         let out = self.tree.push(&format!("{}_alpha_{alpha:02x}", tag.name), conv);
         self.hud_bitmaps.insert(key, out);
         Some(out)

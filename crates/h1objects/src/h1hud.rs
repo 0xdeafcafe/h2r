@@ -708,6 +708,50 @@ pub fn scale_alpha(format: h1map::bitmap::PixelFormat, px: &mut [u8], alpha: u8)
     Some(())
 }
 
+/// A Halo 1 HUD image whose format has no alpha byte of its own (the
+/// motion sensor's sheets are DXT, `hud_weapon_backgrounds` and
+/// `hud_unit_backgrounds`), decoded with Halo 2's decoder and rewritten
+/// as a linear `A8R8G8B8` image with every texel's alpha multiplied by
+/// `alpha`, as [`scale_alpha`] does for byte-alpha formats. Only the top
+/// level is kept (a linear image has no mip levels; HUD sprites draw at
+/// their own size). Retail Halo 2 HUD bitmaps are linear `A8R8G8B8` too
+/// (E: `grenade_bkd`'s images, flags `linear | 0x290`). Rows are padded to
+/// Halo 2's linear pitch (64 bytes). 2D images only.
+pub fn alpha_scaled_argb(
+    img: &h1map::bitmap::Image,
+    pixels: &[u8],
+    alpha: u8,
+) -> h1bitmaps::Result<(h1map::bitmap::Image, Vec<u8>)> {
+    use h1map::bitmap::{self as b, ImageKind, PixelFormat};
+    if img.kind != ImageKind::D2 {
+        return Err(h1bitmaps::Error::Unsupported(format!("HUD image type {:?}", img.kind)));
+    }
+    let levels = h1bitmaps::decode_image(img, pixels)?;
+    let top = levels
+        .iter()
+        .find(|l| l.face == 0 && l.level == 0)
+        .ok_or_else(|| h1bitmaps::Error::Invalid("no top level".into()))?;
+    let mut argb = img.clone();
+    argb.format = PixelFormat::A8R8G8B8;
+    argb.flags = (img.flags & !(b::FLAG_COMPRESSED | b::FLAG_PALETTIZED | b::FLAG_SWIZZLED))
+        | b::FLAG_LINEAR;
+    argb.mip_count = 0;
+    argb.depth = 1;
+    let (w, h) = (top.width as usize, top.height as usize);
+    // The row pitch Halo 2's descriptor gives a linear image (64-byte rows).
+    let pitch = h1bitmaps::texture_desc(&argb)?.pitch as usize;
+    let mut out = vec![0u8; h1bitmaps::decode::layout_len(&argb)?.max(pitch * h)];
+    for y in 0..h {
+        for x in 0..w {
+            let s = &top.rgba[(y * w + x) * 4..][..4];
+            let a = ((u16::from(s[3]) * u16::from(alpha) + 127) / 255) as u8;
+            out[y * pitch + x * 4..][..4].copy_from_slice(&[s[2], s[1], s[0], a]);
+        }
+    }
+    argb.pixel_size = out.len() as u32;
+    Ok((argb, out))
+}
+
 /// A Halo 2 bitmap widget, every field of its `0x64` bytes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Widget {
@@ -923,6 +967,36 @@ mod tests {
         assert_eq!(px, [1, 2, 3, 0xa0]);
         assert!(scale_alpha(F::Dxt5, &mut [0; 16], 0x28).is_none());
         assert_eq!(colour_alpha(0x2806_1428), 0x28);
+    }
+
+    #[test]
+    fn a_format_without_an_alpha_byte_is_rewritten_as_linear_argb() {
+        use h1map::bitmap::{self as b, Image, ImageKind, PixelFormat as F};
+        // 2x2 swizzled X8R8G8B8 (a 2x2 swizzle is row order), B,G,R,X.
+        let img = Image {
+            width: 2,
+            height: 2,
+            depth: 1,
+            kind: ImageKind::D2,
+            format: F::X8R8G8B8,
+            flags: b::FLAG_SWIZZLED | b::FLAG_POWER_OF_TWO,
+            registration: [1, 1],
+            mip_count: 1,
+            pixel_offset: 0,
+            pixel_size: 20,
+            raw: [0; b::IMAGE_LEN],
+        };
+        let px = [1, 2, 3, 0, 4, 5, 6, 0, 7, 8, 9, 0, 10, 11, 12, 0, 13, 14, 15, 0];
+        let (argb, out) = alpha_scaled_argb(&img, &px, 0x28).unwrap();
+        assert_eq!(argb.format, F::A8R8G8B8);
+        assert_eq!(argb.flags, b::FLAG_LINEAR | b::FLAG_POWER_OF_TWO);
+        assert_eq!((argb.mip_count, argb.registration), (0, [1, 1]));
+        // Rows padded to 64 bytes.
+        assert_eq!(&out[..8], &[1, 2, 3, 0x28, 4, 5, 6, 0x28]);
+        assert_eq!(&out[64..72], &[7, 8, 9, 0x28, 10, 11, 12, 0x28]);
+        let back = h1bitmaps::decode_image(&argb, &out).unwrap();
+        assert_eq!(&back[0].rgba[..8], &[3, 2, 1, 0x28, 6, 5, 4, 0x28]);
+        assert_eq!(&back[0].rgba[8..], &[9, 8, 7, 0x28, 12, 11, 10, 0x28]);
     }
 
     #[test]
