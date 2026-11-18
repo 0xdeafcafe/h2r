@@ -878,6 +878,33 @@ thread (a D3D push callback, a destroy delivery) cannot move to the game
 thread's context: it is counted as `unresumable:<call>` and the run stops
 with that name. Faults stop the run as they would serially.
 
+A fallback after serviced calls had two more faults, fixed with the
+crash at present 1825 (a render-thread fault in object code at
+`0x00103823` after two `MmSetAddressProtect` fallbacks in the level's
+load burst). The render stack went back by the byte merge against the
+snapshot, but a serviced call had already copied it to live RAM, so a
+return address equal to the snapshot's kept live RAM's stale bytes and
+the rest of the render returned to the wrong place. The stack now goes
+to live RAM whole at a fallback. And pages flushed earlier and not
+stored to since were missing from the fallback's hand-back, so what the
+flushes leave out (the visit marks) never came back. They are now
+handed back with the rest.
+
+**Protection changes.** `MmSetAddressProtect` is serviced too: the
+game thread makes it, and each page of its range gets live RAM's
+permissions in the view, so the render's next access sees what it would
+serially.
+
+**Guards.** The decision adds three serial reasons, counted in the
+`serial [...]` list:
+
+- `warmup`: the first `Addrs::warmup` world frames (150) after a frame
+  that was not one (a level load, a menu, a loading screen). The load
+  burst of cache requests is over before the first launch.
+- `io_busy`: the async I/O queue head (`0x004e28ec`) is not empty.
+- `after_fallback`: the `Addrs::after_fallback` frames (30) after a
+  fallback.
+
 **Snapshots and pause.** The feature's snapshot policy reports a render
 in flight and asks for the next frame to run serially, so a snapshot at
 the next tick boundary after it passes.

@@ -99,6 +99,14 @@ pub struct Addrs {
     /// the view, so the render works on the live copy while it holds the
     /// lock. Left out of the final merge.
     pub live_bytes: &'static [Range],
+    /// The async I/O queue head (0: none): requests queued and not yet
+    /// done make the next frame serial (`io_busy`).
+    pub io_queue: u32,
+    /// World frames that run serially after a frame that was not (a level
+    /// load, a menu): the load burst of cache requests is over first.
+    pub warmup: u32,
+    /// Frames that run serially after a fallback.
+    pub after_fallback: u32,
 }
 
 impl Addrs {
@@ -134,6 +142,9 @@ impl Addrs {
         // worker `0x00120c40` takes the request there) and the request
         // count `0x004e28f0`.
         live_bytes: &[(0x004e_0354, 0x004e_28f4)],
+        io_queue: 0x004e_28ec,
+        warmup: 150,
+        after_fallback: 30,
     };
 }
 
@@ -149,6 +160,10 @@ pub const SERVICED: &[&str] = &[
     "NtWaitForSingleObjectEx",
     "NtReleaseMutant",
     "NtReleaseSemaphore",
+    // A protection change: made live, and the same protections copied to
+    // the view's pages, so the render's next access sees what it would
+    // serially.
+    "MmSetAddressProtect",
 ];
 
 /// Why a frame ran serially.
@@ -157,6 +172,12 @@ pub enum Serial {
     /// `0x00223240` would take its fallback path (menus, loading screens,
     /// Bink): only the world path is pipelined.
     NotWorld,
+    /// The async I/O queue has requests ([`Addrs::io_queue`]).
+    IoBusy,
+    /// Within [`Addrs::warmup`] world frames of a frame that was not one.
+    Warmup,
+    /// Within [`Addrs::after_fallback`] frames of a fallback.
+    AfterFallback,
     /// A resource-cache countdown is running (loading).
     Loading,
     /// A snapshot or pause asked for the render to be joined.
@@ -172,6 +193,9 @@ impl Serial {
             Serial::Loading => "loading",
             Serial::Quiesce => "quiesce",
             Serial::Unreadable => "unreadable",
+            Serial::IoBusy => "io_busy",
+            Serial::Warmup => "warmup",
+            Serial::AfterFallback => "after_fallback",
         }
     }
 }
@@ -349,6 +373,10 @@ struct Shared {
     /// frame wait has run at the launch already.
     resuming: AtomicBool,
     setup_failed: AtomicBool,
+    /// World frames in a row so far (for [`Addrs::warmup`]).
+    world_run: AtomicU32,
+    /// Frames still to run serially after a fallback.
+    serial_left: AtomicU32,
     inner: Mutex<Inner>,
 }
 
@@ -392,6 +420,8 @@ impl PipelineRender {
                 drain: AtomicBool::new(false),
                 resuming: AtomicBool::new(false),
                 setup_failed: AtomicBool::new(false),
+                world_run: AtomicU32::new(0),
+                serial_left: AtomicU32::new(0),
                 inner: Mutex::new(Inner {
                     exec: None,
                     setup: None,
@@ -756,6 +786,10 @@ fn settle(
             exec.revert(p.physical, p.last.len() as u32);
         }
     }
+    let flushed_pages: Vec<u32> = live
+        .as_ref()
+        .map(|l| l.flushed.keys().copied().collect())
+        .unwrap_or_default();
     let t = Instant::now();
     let mut inner = me.lock();
     let stack_pages = inner
@@ -774,6 +808,7 @@ fn settle(
                 predicted,
                 false,
                 &stack_pages,
+                &flushed_pages,
             );
             ctx.charge_accesses(out.accesses);
             inner.stats.accesses += out.accesses;
@@ -801,6 +836,8 @@ fn settle(
                 cause
             };
             *inner.stats.fallbacks.entry(cause.clone()).or_default() += 1;
+            me.serial_left
+                .store(me.addrs.after_fallback, Ordering::Relaxed);
             hand_back(
                 me,
                 &mut inner,
@@ -809,6 +846,7 @@ fn settle(
                 predicted,
                 true,
                 &stack_pages,
+                &flushed_pages,
             );
             ctx.charge_accesses(exec.last_accesses());
             inner.stats.accesses += exec.last_accesses();
@@ -835,11 +873,20 @@ fn settle(
                 predicted,
                 true,
                 &stack_pages,
+                &flushed_pages,
             );
             exec.context().clear_continuations();
             Some(Err(e.to_string()))
         }
     };
+    // The rest of the render runs on its stack in live RAM: the view's
+    // stack exactly. A byte merge against the snapshot is wrong there once
+    // a serviced call has copied the stack to live RAM (a return address
+    // equal to the snapshot's would keep live RAM's stale bytes).
+    if let Some(Ok(at)) = &outcome {
+        let top = me.stack_top.load(Ordering::Relaxed);
+        copy_stack(&exec.runtime().memory(), &mut rt.memory(), at.esp, top);
+    }
     inner.stats.hand_back += t.elapsed();
     inner.exec = Some(exec);
     drop(inner);
@@ -960,6 +1007,26 @@ fn va_pieces(g: &Guest, (start, end): Range) -> Vec<(u32, u32, u32)> {
     out
 }
 
+/// `MmSetAddressProtect(base, size, ...)`'s ordinal.
+const PROTECT_ORDINAL: u32 = 182;
+
+/// The permissions of each page of `[base, base + size)` in `from` (live
+/// RAM after a protection change) onto `to` (the view).
+fn copy_protection(from: &Guest, to: &mut Guest, base: u32, size: u32) {
+    let first = base & !0xfff;
+    let end = (u64::from(base) + u64::from(size)).next_multiple_of(0x1000);
+    let mut page = u64::from(first);
+    while page < end {
+        let va = page as u32;
+        if let Some(m) = from.mappings().iter().find(|m| {
+            va >= m.virtual_start && u64::from(va) < u64::from(m.virtual_start) + u64::from(m.len)
+        }) {
+            let _ = to.protect_range(va, 0x1000, m.permissions);
+        }
+        page += 0x1000;
+    }
+}
+
 /// Copies the render stack from `esp`'s page to its top, `from` to `to`.
 fn copy_stack(from: &Guest, to: &mut Guest, esp: u32, top: u32) {
     let start = (esp & !0xfff).max(top.saturating_sub(STACK_LEN));
@@ -1004,6 +1071,13 @@ fn service(
         inner.stats.bytes += h.bytes as u64;
         inner.stats.conflicts += h.conflicts as u64;
     }
+    // A protection change: its range, to copy to the view after.
+    let protect = (at.eip == runtime::kernel::function_token(PROTECT_ORDINAL))
+        .then(|| {
+            let v = exec.runtime().memory();
+            Some((v.u32(at.esp + 4).ok()?, v.u32(at.esp + 8).ok()?))
+        })
+        .flatten();
     let saved = *cpu;
     // The call as the render made it, its return address replaced by ours.
     let mut c = at;
@@ -1019,7 +1093,9 @@ fn service(
             move |cpu, ctx| {
                 let done = *cpu;
                 *cpu = saved;
-                carry_on(&me2, cpu, ctx, exec, at, ret, done, predicted, live, k)
+                carry_on(
+                    &me2, cpu, ctx, exec, at, ret, done, predicted, live, protect, k,
+                )
             },
         )
     };
@@ -1044,12 +1120,16 @@ fn carry_on(
     done: CpuAbi,
     predicted: u64,
     mut live: LiveSync,
+    protect: Option<(u32, u32)>,
     k: Cont,
 ) -> Result<TransferAbi, GuestFault> {
     let rt = Arc::clone(ctx.runtime());
     let top = me.stack_top.load(Ordering::Relaxed);
     copy_stack(&rt.memory(), &mut exec.runtime().memory(), at.esp, top);
     live.pull(&exec, &rt);
+    if let Some((base, size)) = protect {
+        copy_protection(&rt.memory(), &mut exec.runtime().memory(), base, size);
+    }
     let mut r = at;
     r.eax = done.eax;
     r.ecx = done.ecx;
@@ -1182,6 +1262,7 @@ fn hand_back(
     predicted: u64,
     fallback: bool,
     stack_pages: &[u32],
+    flushed: &[u32],
 ) {
     let a = &me.addrs;
     // Counters by delta, read before anything is reverted.
@@ -1244,6 +1325,21 @@ fn hand_back(
         exec.revert(r.0, r.1);
     }
     let mut written: Vec<WrittenPage> = exec.written();
+    // Pages flushed earlier and not stored to since: what the flushes left
+    // out (the marks, the counters) is still to come back.
+    if !flushed.is_empty()
+        && let Some(base) = exec.base()
+    {
+        let view = exec.runtime().memory();
+        for &p in flushed {
+            if !written.iter().any(|w| w.physical == p) {
+                written.push(WrittenPage {
+                    physical: p,
+                    lines: view.changed_lines(base, p),
+                });
+            }
+        }
+    }
     if !fallback {
         written.retain(|w| stack_pages.binary_search(&w.physical).is_err());
     }
@@ -1289,6 +1385,7 @@ fn decide(
     } else {
         serial_reason(&me.addrs, &rt.memory())
     };
+    let reason = guard(me, reason, &rt.memory());
     maybe_print(me);
     if let Some(r) = reason {
         let original = {
@@ -1310,6 +1407,35 @@ fn decide(
         "pipeline: frame wait before the launch",
         move |cpu, ctx| launch(&me2, cpu, ctx, saved, ret_pc, addr),
     )
+}
+
+/// The guards on top of [`serial_reason`]: warm-up after a frame that was
+/// not a world frame, a busy I/O queue, frames after a fallback.
+fn guard(me: &Shared, reason: Option<Serial>, g: &Guest) -> Option<Serial> {
+    let a = &me.addrs;
+    if matches!(
+        reason,
+        Some(Serial::NotWorld | Serial::Loading | Serial::Unreadable)
+    ) {
+        me.world_run.store(0, Ordering::Relaxed);
+        return reason;
+    }
+    let run = me.world_run.fetch_add(1, Ordering::Relaxed);
+    if reason.is_some() {
+        return reason;
+    }
+    if run < a.warmup {
+        return Some(Serial::Warmup);
+    }
+    let left = me.serial_left.load(Ordering::Relaxed);
+    if left > 0 {
+        me.serial_left.store(left - 1, Ordering::Relaxed);
+        return Some(Serial::AfterFallback);
+    }
+    if a.io_queue != 0 && !matches!(g.u32(a.io_queue), Ok(0)) {
+        return Some(Serial::IoBusy);
+    }
+    None
 }
 
 /// Why this frame must run serially, read from live memory.
