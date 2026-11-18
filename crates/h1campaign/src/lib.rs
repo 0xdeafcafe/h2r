@@ -37,7 +37,7 @@ pub mod structure;
 use std::io::{Read, Seek};
 
 use h1map::H1Map;
-use map::Map;
+use map::{Map, TagId};
 use std::collections::HashMap;
 
 use map::build::{TagPayload, TagSet};
@@ -601,7 +601,10 @@ fn convert_with<R: Read + Seek>(
         // From scratch ([`scratch`]); the base pruned ([`fresh`]) when
         // that fails.
         let file = scratch::file_bytes(base)?;
-        let out = match scratch::build(&file, &set, &bytes) {
+        // Each Halo 2 HUD is named by nothing but the HUD pairs: kept for
+        // `boot::hud` (docs/game/hud.md).
+        let keep: Vec<TagId> = report.scenario.hud_swaps.iter().map(|h| h[2]).collect();
+        let out = match scratch::build(&file, &set, &bytes, &keep) {
             Ok((out, r)) => {
                 report.fresh = true;
                 report.scratch = Some(r);
@@ -611,7 +614,7 @@ fn convert_with<R: Read + Seek>(
                 report
                     .dropped
                     .push(format!("from scratch: {e}; pruned instead"));
-                fresh(base, &set, bytes.clone(), &sections, &mut report)?
+                fresh(base, &set, bytes.clone(), &sections, &keep, &mut report)?
             }
         };
         let built = out.build()?;
@@ -625,6 +628,8 @@ fn convert_with<R: Read + Seek>(
                 built.0.len()
             ));
         } else {
+            report.scenario.hud_swaps = remap_hud(&set, &out, &report.scenario.hud_swaps)
+                .ok_or_else(|| invalid("a HUD pair's tag left out of the fresh map"))?;
             (bytes, layout) = built;
             set = out;
         }
@@ -715,6 +720,7 @@ fn fresh<R: Read + Seek>(
     set: &TagSet,
     bytes: Vec<u8>,
     sections: &[usize],
+    keep: &[TagId],
     report: &mut Report,
 ) -> Result<TagSet> {
     use h1convert::fresh;
@@ -736,7 +742,7 @@ fn fresh<R: Read + Seek>(
     // The scenario is the converter's (no base palette or tag list): what
     // it, the globals and [`KEEP`] reach stays; the simulation table then
     // lists what stayed.
-    report.pruned = fresh::prune_with(&mut out, first, &KEEP, &[]);
+    report.pruned = fresh::prune_with(&mut out, first, &KEEP, keep);
     fresh::check_refused(&mut out, &unpinned)?;
     report.raw_dropped = fresh::drop_unused_raw(&mut out);
     report.scenario.simulation = scenario::write_simulation_table(&mut out);
@@ -744,6 +750,25 @@ fn fresh<R: Read + Seek>(
     out.check_tag_memory = false;
     out.check_file_size = false;
     Ok(out)
+}
+
+/// The HUD pairs `hud` (datums of `from`) as datums of `to`, by group and
+/// path; `None` when one is not in `to`.
+pub fn remap_hud(from: &TagSet, to: &TagSet, hud: &[[TagId; 3]]) -> Option<Vec<[TagId; 3]>> {
+    let key = |d: TagId| {
+        let slot = from.slots.get(d.index())?;
+        let t = slot.tag.as_ref().filter(|t| t.id == d)?;
+        Some((t.group, slot.name.clone()))
+    };
+    let by_key: std::collections::HashMap<_, TagId> = to
+        .slots
+        .iter()
+        .filter_map(|s| s.tag.as_ref().map(|t| ((t.group, s.name.clone()), t.id)))
+        .collect();
+    let new = |d: TagId| key(d).and_then(|k| by_key.get(&k).copied());
+    hud.iter()
+        .map(|h| Some([new(h[0])?, new(h[1])?, new(h[2])?]))
+        .collect()
 }
 
 /// Bytes per tag group, largest first: (group, built, pinned).

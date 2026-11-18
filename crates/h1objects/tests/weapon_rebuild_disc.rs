@@ -372,8 +372,8 @@ fn every_weapon_equipment_and_projectile_rebuilds() {
                             assert_eq!(*word, bg.as_u32(), "{level} {name} {p}");
                         }
                         // Halo 2 references: the slots Halo 1 has nothing
-                        // converted for (its wphi HUDs, effe effects and
-                        // sounds have no converter; Halo 2's melee damage
+                        // converted for (its effe effects and sounds have
+                        // no converter; Halo 2's melee damage
                         // and pickup sounds), from the counterpart.
                         let slot = p
                             .split('.')

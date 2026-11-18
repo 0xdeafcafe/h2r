@@ -561,13 +561,39 @@ impl Prepared {
 
     /// The package manifest for `map_bytes`.
     pub fn manifest(&self, map_bytes: &[u8]) -> Manifest {
-        self.manifest_with(map_bytes, &self.applied.precision)
+        self.manifest_with(map_bytes, &self.applied.precision, &self.hud_swaps())
+    }
+
+    /// The package manifest for the fresh map `f`, with its own datums.
+    pub fn manifest_fresh(&self, f: &crate::fresh::Fresh) -> Manifest {
+        self.manifest_with(&f.bytes, &f.precision, &f.hud)
+    }
+
+    /// The HUD pairs of the Halo 1 objects (owner, Halo 1 HUD, Halo 2
+    /// HUD), as the datums the pinned build gives them.
+    pub fn hud_swaps(&self) -> Vec<[TagId; 3]> {
+        self.objects.as_ref().map_or(Vec::new(), |o| {
+            o.hud_swaps
+                .iter()
+                .map(|s| {
+                    s.map(|t| match t {
+                        halo1::HudTag::Added(k) => halo1::added_datum(self.objects_first + k),
+                        halo1::HudTag::Base(id) => id,
+                    })
+                })
+                .collect()
+        })
     }
 
     /// The package manifest for `map_bytes`, whose precision swaps'
-    /// collections are `precision` (a fresh map's own datums,
-    /// `crate::fresh::Fresh::precision`).
-    pub fn manifest_with(&self, map_bytes: &[u8], precision: &[(TagId, TagId)]) -> Manifest {
+    /// collections are `precision` and HUD pairs `hud` (a fresh map's own
+    /// datums, `crate::fresh::Fresh`).
+    pub fn manifest_with(
+        &self,
+        map_bytes: &[u8],
+        precision: &[(TagId, TagId)],
+        hud: &[[TagId; 3]],
+    ) -> Manifest {
         let name = map_name(&self.h1_name);
         let variant = Variant {
             file: variant_file(&self.h1_name, self.sandbox),
@@ -585,12 +611,20 @@ impl Prepared {
                     to: to.0,
                 })
                 .collect(),
+            hud: hud
+                .iter()
+                .map(|&[owner, halo1, halo2]| content::HudSwap {
+                    owner: owner.0,
+                    halo1: halo1.0,
+                    halo2: halo2.0,
+                })
+                .collect(),
         };
         // Parsed from text so the manifest's own checks run on it.
         let text = format!(
             "[package]\nformat = 1\nname = {display:?}\n\n[base]\nmap = {name:?}\nderived = true\n\n\
              [list]\nbase = {base:?}\n\n[[variant]]\nfile = {file:?}\nsha256 = \"{sha}\"\n\
-             origin = {{ game = \"halo1\", map = {map:?}, sandbox = \"{sandbox}\", source_sha256 = \"{src}\" }}\n{precision}",
+             origin = {{ game = \"halo1\", map = {map:?}, sandbox = \"{sandbox}\", source_sha256 = \"{src}\" }}\n{precision}{hud}",
             display = self.display_name,
             base = known(&self.h1_name).map_or("beavercreek", |(_, b)| b),
             file = variant.file,
@@ -607,6 +641,21 @@ impl Prepared {
                     .map(|p| format!("{{ from = {}, to = {} }}", p.from, p.to))
                     .collect();
                 format!("precision = [{}]\n", swaps.join(", "))
+            },
+            hud = if variant.hud.is_empty() {
+                String::new()
+            } else {
+                let swaps: Vec<String> = variant
+                    .hud
+                    .iter()
+                    .map(|h| {
+                        format!(
+                            "{{ owner = {}, halo1 = {}, halo2 = {} }}",
+                            h.owner, h.halo1, h.halo2
+                        )
+                    })
+                    .collect();
+                format!("hud = [{}]\n", swaps.join(", "))
             },
         );
         let m = Manifest::from_toml(&text).expect("a well-formed manifest");

@@ -100,6 +100,20 @@ pub struct Variant {
     /// variants"). Not part of the `MapId`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub precision: Vec<Swap>,
+    /// HUD references the HUD setting switches in this map at game start
+    /// (`boot::hud`; docs/game/hud.md). Not part of the `MapId`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hud: Vec<HudSwap>,
+}
+
+/// One `hud` swap: the `bipd` or `weap` datum `owner` names `nhdt` datum
+/// `halo1` for Halo 1's HUD and `halo2` for Halo 2's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HudSwap {
+    pub owner: u32,
+    pub halo1: u32,
+    pub halo2: u32,
 }
 
 /// One `precision` swap: every netgame item naming tag datum `from` names
@@ -109,6 +123,32 @@ pub struct Variant {
 pub struct Swap {
     pub from: u32,
     pub to: u32,
+}
+
+/// A converted campaign level's HUD pairs, written beside it as
+/// `<level>.hud.toml` (`boot::hud`; docs/game/hud.md): a campaign
+/// folder's `campaign.toml` is a level list others write too, so the pairs
+/// live in a file of their own.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LevelHud {
+    #[serde(default)]
+    pub hud: Vec<HudSwap>,
+}
+
+impl LevelHud {
+    /// The file beside `<level>.map`.
+    pub fn file_name(level: &str) -> String {
+        format!("{}.hud.toml", level.to_ascii_lowercase())
+    }
+
+    pub fn from_toml(text: &str) -> Result<Self, toml::de::Error> {
+        toml::from_str(text)
+    }
+
+    pub fn to_toml(&self) -> String {
+        toml::to_string(self).expect("a HUD file serializes")
+    }
 }
 
 /// A variant's `origin`: the source of a map converted from another game

@@ -875,7 +875,7 @@ fn convert(args: &[String]) -> Result<()> {
             }
         );
         h1convert::convert::Converted {
-            manifest: p.manifest_with(&f.bytes, &f.precision),
+            manifest: p.manifest_fresh(&f),
             name: f.name,
             bytes: f.bytes,
         }
@@ -1069,7 +1069,13 @@ fn convert_campaign(a: &ConvertArgs, h1: &H1Map) -> Result<()> {
         return Ok(());
     }
     let out = OutDir::new(out_dir, a.force)?.protecting(&a.path);
-    let written = write_campaign_level(&out, out_dir, &level, &done.bytes)?;
+    let written = write_campaign_level(
+        &out,
+        out_dir,
+        &level,
+        &done.bytes,
+        &done.report.scenario.hud_swaps,
+    )?;
     println!(
         "wrote {} ({} bytes)",
         written[0].display(),
@@ -1114,11 +1120,25 @@ pub(crate) fn write_campaign_level(
     out_dir: &Path,
     level: &str,
     bytes: &[u8],
+    hud: &[[map::TagId; 3]],
 ) -> Result<Vec<PathBuf>> {
     let manifest_name = h1campaign::manifest::file_name();
     let existing = std::fs::read_to_string(out_dir.join(manifest_name)).ok();
     let manifest = h1campaign::manifest::manifest_for(existing.as_deref(), level)?;
     let mut written = vec![out.write(&[h1campaign::manifest::map_file(level)], bytes)?];
+    // The HUD pairs `boot::hud` switches between (docs/game/hud.md),
+    // always written so an older file never outlives its map.
+    let pairs = content::LevelHud {
+        hud: hud
+            .iter()
+            .map(|&[owner, halo1, halo2]| content::HudSwap {
+                owner: owner.0,
+                halo1: halo1.0,
+                halo2: halo2.0,
+            })
+            .collect(),
+    };
+    written.push(out.write(&[content::LevelHud::file_name(level)], pairs.to_toml().as_bytes())?);
     if existing.as_deref() != Some(manifest.as_str()) {
         written.push(out.write(&[manifest_name.to_owned()], manifest.as_bytes())?);
     }

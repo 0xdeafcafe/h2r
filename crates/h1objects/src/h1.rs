@@ -53,7 +53,7 @@ pub fn reference(map: &H1Map, b: &[u8], at: usize) -> Option<TagId> {
     map.tag(r.id).ok().map(|t| t.id)
 }
 
-fn elements<'a>(map: &'a H1Map, b: &[u8], at: usize, stride: usize) -> Result<Vec<&'a [u8]>> {
+pub fn elements<'a>(map: &'a H1Map, b: &[u8], at: usize, stride: usize) -> Result<Vec<&'a [u8]>> {
     let blk = Block::read(b, at).ok_or(Error::Truncated("block field"))?;
     Ok(map.block(blk, stride)?.chunks_exact(stride).collect())
 }
