@@ -64,9 +64,12 @@ pub enum Anchor {
 }
 
 impl Anchor {
-    /// Halo 1's anchor enumeration (`unhi +0`): D, top left, top right,
-    /// bottom left, bottom right, centre. V: the cyborg's is 1, and Halo
-    /// 1's shield and health are top right.
+    /// Halo 1's anchor enumeration (`unhi +0`): top left, top right,
+    /// bottom left, bottom right, centre (E, Halo 1's XBE: `0x000e0330`
+    /// lays the sprite out from the anchor by a jump table on it, rightwards
+    /// for 0 and 2, leftwards for 1 and 3, downwards for 0 and 1, upwards
+    /// for 2 and 3, centred for 4; `0x000e07a0` takes the corner bit 0 for
+    /// right, bit 1 for bottom).
     pub fn from_halo1(v: u16) -> Option<Self> {
         Some(match v {
             0 => Anchor::TopLeft,
@@ -150,8 +153,9 @@ pub fn unit_elements(map: &H1Map, b: &[u8]) -> Result<Vec<Element>> {
     let raw = u16::from_le_bytes([b[unhi::ANCHOR], b[unhi::ANCHOR + 1]]);
     let anchor = Anchor::from_halo1(raw)
         .ok_or_else(|| Error::Invalid(format!("unhi anchor {raw}")))?;
-    // D: Halo 1's motion sensor has no anchor field (every word between
-    // its elements is accounted for) and is drawn bottom left.
+    // Halo 1 draws the motion sensor's elements with anchor 2, bottom left
+    // (E `0x000dd5ab`: a stand-in header whose anchor word is 2 is passed
+    // to the element draw `0x000e1830` in place of the `unhi`).
     let rows = [
         ("h1_shield_background", unhi::SHIELD_BACKGROUND, Role::Static, anchor),
         ("h1_health_background", unhi::HEALTH_BACKGROUND, Role::Static, anchor),
@@ -173,13 +177,30 @@ pub fn unit_elements(map: &H1Map, b: &[u8]) -> Result<Vec<Element>> {
             name,
             role,
             anchor,
-            offset: (i16_at(b, at + h1el::OFFSET), i16_at(b, at + h1el::OFFSET + 2)),
+            offset: to_halo2_offset(
+                anchor,
+                (i16_at(b, at + h1el::OFFSET), i16_at(b, at + h1el::OFFSET + 2)),
+            ),
             scale: [f32_at(b, at + h1el::SCALE), f32_at(b, at + h1el::SCALE + 4)],
             bitmap,
             sequence: i16_at(b, at + seq_at),
         });
     }
     Ok(out)
+}
+
+/// Halo 1's offset as Halo 2's. Halo 1 measures it inward from the
+/// anchor's corner (E `0x000e07a0`: x times -1 when anchor bit 0, the right
+/// edge, is set; y times -1 when bit 1, the bottom, is set; centre as
+/// is); Halo 2 adds it in screen directions (the health strip's -108 is
+/// up from a bottom anchor, docs/game/health.md).
+pub fn to_halo2_offset(anchor: Anchor, (x, y): (i16, i16)) -> (i16, i16) {
+    let right = matches!(anchor, Anchor::TopRight | Anchor::BottomRight);
+    let bottom = matches!(anchor, Anchor::BottomLeft | Anchor::BottomRight);
+    (
+        if right { x.saturating_neg() } else { x },
+        if bottom { y.saturating_neg() } else { y },
+    )
 }
 
 /// A Halo 2 bitmap widget, every field of its `0x64` bytes.
@@ -256,10 +277,11 @@ pub fn sprite(bm: &h1map::bitmap::Bitmap, seq: i16) -> Option<([f32; 4], [f32; 2
 
 /// The registration a widget gets: the sprite's corner on its anchor's
 /// side (its right edge on a right anchor, its bottom on a bottom one, its
-/// middle on the centre), so anchor + offset is that corner. D: Halo 1's
-/// sprite registration points do not read as fractions of the sprite
-/// (V: values from -3.9 to 1.0 on the cyborg's), so they are not used;
-/// the placement is for a game run to confirm.
+/// middle on the centre), so anchor + offset is that corner, as Halo 1
+/// lays it out (E `0x000e0330`: the sprite's rectangle from the placed
+/// point is `[0, w]` or `[-w, 0]` across and `[0, h]` or `[-h, 0]` down by
+/// the anchor, centred for 4). Halo 1 never reads the sprite's own
+/// registration point there.
 pub fn registration(anchor: Anchor) -> [f32; 2] {
     match anchor {
         Anchor::TopLeft => [0.0, 0.0],
@@ -321,6 +343,15 @@ pub fn nhdt(widgets: &[Widget]) -> Block {
 mod tests {
     use super::*;
     use map::build::FixupKind;
+
+    #[test]
+    fn halo1_offsets_point_inward_from_the_corner() {
+        assert_eq!(to_halo2_offset(Anchor::TopRight, (7, 3)), (-7, 3));
+        assert_eq!(to_halo2_offset(Anchor::BottomLeft, (7, 3)), (7, -3));
+        assert_eq!(to_halo2_offset(Anchor::BottomRight, (7, 3)), (-7, -3));
+        assert_eq!(to_halo2_offset(Anchor::TopLeft, (7, 3)), (7, 3));
+        assert_eq!(to_halo2_offset(Anchor::Centre, (7, 3)), (7, 3));
+    }
 
     #[test]
     fn halo1_anchors_map_to_the_same_corners() {

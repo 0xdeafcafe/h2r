@@ -25,13 +25,12 @@ cyborg, `health_hud::is_player_biped`) names it in every HUD interface
 | motion sensor background `+0x26c` | static, bottom left |
 | motion sensor foreground `+0x2d4` | static, bottom left |
 
-Halo 1 element layout (V: the cyborg's, every element's bitmap reference
-resolving at `+0x24`): offset (two `i16`) `+0`, scale (two `f32`) `+4`,
-bitmap `+0x24`, colour `+0x34`; a static element's sequence `+0x54`, a
-meter's `+0x46`. `unhi +0` is the anchor (`u16`, 1 on the cyborg, whose
-shield and health are top right: D, Halo 1's enumeration top left, top
-right, bottom left, bottom right, centre). The motion sensor has no anchor
-field and is drawn bottom left (D).
+Halo 1 element layout (V: every element's bitmap reference resolving at
+`+0x24`; E: the element draw `0x000e1830` reads the bitmap's datum at
+`+0x30`, the sequence at `+0x54`, the colour at `+0x34`, the scale at
+`+4`): offset (two `i16`) `+0`, scale (two `f32`) `+4`, bitmap `+0x24`,
+colour `+0x34`; a static element's sequence `+0x54`, a meter's `+0x46`.
+`unhi +0` is the anchor (`u16`; the enumeration under Placement).
 
 Why it draws as Halo 1's:
 
@@ -46,14 +45,26 @@ Why it draws as Halo 1's:
   ramp and the fill order is Halo 1's.
 - **Inputs**: 16 shield, 17 body (`0x13ad48`). No special type (5 is
   Halo 2's own shield meter code, `0x22aff1`).
-- **Placement**: Halo 2's anchors (E `0x1396c7`, the safe area's corner):
-  0 top right, 1 top left, 2 bottom left, 3 bottom right, 4 centre. The
-  widget's offset is Halo 1's; its registration is the sprite's corner on
-  the anchor's side (D). Halo 1's own sprite registration points are not
-  used: they do not read as fractions of the sprite (V: -3.9 to 1.0 on the
-  cyborg's elements), and Halo 1's offsets on a top-right anchor are
-  positive as well as negative, so how Halo 1 places from them is not
-  established. **The placement is the least proven part.**
+- **Placement** is Halo 1's, read from Halo 1's XBE (`disc/halo1.iso`,
+  `default.xbe`, with `h2 disasm`; E below means that XBE here):
+  - the unit HUD draw calls the element draw `0x000e1830` for each element
+    (`0x000db4ef` HUD background, `0x000db50f` shield background,
+    `0x000db549` the shield meter through the meter draw `0x000e1a60`);
+  - the element's sprite: its sequence (`+0x54`), the sequence's first
+    sprite and its bounds (`0x000e18a0`..`0x000e18c5`);
+  - the anchor is the `unhi`'s `+0` word; for the motion sensor a stand-in
+    whose anchor is 2, bottom left (`0x000dd5ab`);
+  - the offset is measured inward from the anchor's corner, x negated on a
+    right anchor and y on a bottom one (`0x000e07a0`), and scaled by the
+    element's scale (`0x000e15f4`);
+  - the sprite is laid out from that point away from the corner
+    (`0x000e0330`): Halo 1 never reads the sprite's registration point.
+
+  So a widget takes Halo 2's same corner (E `0x1396c7` in Halo 2: 0 top
+  right, 1 top left, 2 bottom left, 3 bottom right, 4 centre), Halo 1's
+  offset turned to screen directions (`h1hud::to_halo2_offset`), and is
+  registered at the sprite's corner on the anchor's side
+  (`h1hud::registration`).
 - **Hiding**: every widget has the state flags of Halo 2's shield meter
   (`h1hud::STATE`), so the per-widget gate `0x13ac87` answers as for it,
   and the `nhdt` is drawn behind HUD_SHOWN (`0x13939b`) like any other:
@@ -132,7 +143,6 @@ sandbox, or a Halo 1 campaign level: Halo 1's shield and health bars top
 right, Halo 1's motion sensor frame bottom left, Halo 2's weapon HUD and
 grenades as before. The shield bar drains from the right as the shield
 falls, the health bar likewise and stays down (Halo 1's health model). The
-whole HUD hides in the pause menu, under Blind and in cinematics. Bars
-that sit wrong or off screen are expected until the placement (D above)
-is confirmed: `h1hud::registration` and the offsets are the place to
-change.
+whole HUD hides in the pause menu, under Blind and in cinematics. Each
+element should sit where Halo 1 puts it (Placement above); one that does
+not points at a difference in how Halo 2 scales HUD pixels to the screen.
