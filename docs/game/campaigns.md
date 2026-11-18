@@ -760,8 +760,9 @@ unrunnable on every level.
   unit tuning) with Halo 1 health;
 - AI spawning: the startup script and Halo 1's own one-argument
   `ai_place` calls; actors on generated pathfinding;
-- scenery and placed bipeds on their templates (bipeds with no physics
-  model where the template's would not fit);
+- scenery built from the `scen` definition (converter version 50, no
+  template; tag-definitions.md): drawn at every distance, lit, and
+  blocking through its `coll`'s BSP physics; placed bipeds;
 - the pelican, phantom-for-dropship, wraith and turret templates under
   Halo 1 models;
 - every BSP past the third (new `sbsp`/`ltmp` tags and descriptors, the

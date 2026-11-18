@@ -1,7 +1,10 @@
-//! Halo 1 objects as Halo 2 tags, built on retail Halo 2 templates.
+//! Halo 1 objects as Halo 2 tags.
 //!
-//! Each object starts from the root of the retail Halo 2 tag that plays
-//! the same role ([`TEMPLATES`]). The fields known in both games are
+//! Scenery, vehicles, devices and (by default) bipeds are written from
+//! typed definitions ([`crate::rebuild`]), with no template. Weapons,
+//! equipment, projectiles and bipeds with no rebuilt role still start
+//! from the root of the retail Halo 2 tag that plays the same role
+//! ([`TEMPLATES`]). The fields known in both games are
 //! overwritten with Halo 1's values ([`Tuning`] rows), the model chain is
 //! replaced with converted tags, and the rest stays the template's: its
 //! effects, sounds, HUD, first-person model and physics model are the
@@ -158,14 +161,6 @@ pub const TEMPLATES: &[(&[u8; 4], &[&str], &str)] = &[
         b"eqip",
         &["health"],
         "objects\\weapons\\grenade\\frag_grenade\\frag_grenade",
-    ),
-    // Scenery: a static rock of Delta Halo's with collision and no physics
-    // model, so a converted model never inherits physics built for other
-    // nodes.
-    (
-        b"scen",
-        &[],
-        "scenarios\\objects\\solo\\deltatemple\\statue_shard_large\\statue_shard_large",
     ),
 ];
 
@@ -605,11 +600,6 @@ impl Writer<'_> {
 /// How the [`Converter`] builds tags.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Options {
-    /// Build scenery from typed definitions ([`crate::rebuild`]): the
-    /// `scen`, its `hlmt` and its `mode`'s material list written field by
-    /// field with no retail template bytes. Off by default until the
-    /// rebuilt scenery has run in the game.
-    pub rebuild: bool,
     /// Build bipeds from the `bipd` definition ([`crate::rebuild::biped`])
     /// instead of on a template: Halo 1's model, collision size and
     /// physics, the role's words, and the references of the Halo 2
@@ -621,7 +611,6 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
-            rebuild: false,
             rebuild_bipeds: true,
         }
     }
@@ -644,6 +633,8 @@ pub struct Converter<'a> {
     roles: HashMap<crate::rebuild::BipedRole, Option<crate::rebuild::RoleWords>>,
     /// Vehicle role words, per vehicle type ([`Self::vehicle_role`]).
     vehicle_roles: HashMap<u16, Option<crate::rebuild::VehicleRole>>,
+    /// Scenery role words ([`Self::scenery_role`]), computed once.
+    scenery_role: Option<Option<crate::rebuild::SceneryRole>>,
 }
 
 impl<'a> Converter<'a> {
@@ -660,6 +651,7 @@ impl<'a> Converter<'a> {
             health_huds: HashMap::new(),
             roles: HashMap::new(),
             vehicle_roles: HashMap::new(),
+            scenery_role: None,
         }
     }
 
@@ -951,6 +943,13 @@ impl<'a> Converter<'a> {
         name: &str,
     ) -> Result<Option<TagId>> {
         debug_assert!(!has_phmo, "the rebuilt path borrows no physics model");
+        // Scenery's unknown spans take the role's words; other groups'
+        // stay zero (their lanes own them).
+        let words = if h1::OBJECT_TYPES.get(obj.object_type as usize) == Some(&b"scen") {
+            self.scenery_role()?.map(|r| r.hlmt).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let (count, nodes) = h1models::mode::hlmt_nodes(h1_model);
         let render: Vec<(String, Vec<String>)> = h1_model
             .regions
@@ -987,6 +986,7 @@ impl<'a> Converter<'a> {
             physics: None,
             nodes: (count, nodes),
             regions,
+            words,
         })?;
         if obj.animation.is_none() {
             rep.no_home
@@ -1002,17 +1002,36 @@ impl<'a> Converter<'a> {
         )))
     }
 
-    /// Scenery from typed definitions: no template.
-    fn scenery_rebuilt(&mut self, tag: &Tag) -> Result<TagId> {
+    /// Scenery from the `scen` definition ([`crate::rebuild::scenery`]),
+    /// no template: every scenery object (the template path was removed in
+    /// converter version 50). Its `hlmt` and `mode` materials are written
+    /// from their definitions; its unknown spans take the base's scenery
+    /// role words ([`crate::rebuild::SceneryRole`]). Havok sees it through
+    /// its `coll`'s BSP physics slots, as retail static scenery (no
+    /// `phmo`; docs/formats/h1-objects.md, "Collision for Havok").
+    fn scenery(&mut self, tag: &Tag) -> Result<TagId> {
         let object = h1::Object::read(self.h1, self.h1.tag_data(tag)?)?;
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
-        rep.physics = Some("none (rebuilt scenery borrows no phmo)".into());
         let hlmt = self.model(&mut rep, &object, None, &tag.name, true)?;
-        let root = crate::rebuild::scenery(&object, hlmt)?;
-        rep.no_home.push(
-            "scen beyond the object header's bounds and model: definition defaults (no template)"
-                .into(),
-        );
+        rep.physics = Some(match object.collision {
+            Some(_) => "none: the coll's BSP physics slots, as retail static scenery".into(),
+            None => "none (no Halo 1 collision)".into(),
+        });
+        let predicted = self.predicted(&object)?;
+        let words = self.scenery_role()?.map(|r| r.scen).unwrap_or_default();
+        let root = crate::rebuild::scenery(&object, hlmt, &predicted, &words)?;
+        let attached = object.attachments.iter().flatten().count();
+        if attached > 0 {
+            rep.no_home.push(format!(
+                "obje attachments: {attached} Halo 1 attachments (lights, effects, sounds) not carried; the block is empty"
+            ));
+        }
+        let widgets = object.widgets.iter().flatten().count();
+        if widgets > 0 {
+            rep.no_home.push(format!(
+                "obje widgets: {widgets} Halo 1 widgets (flags, antennas) not carried"
+            ));
+        }
         self.tree.reports.push(rep);
         Ok(self.tree.push(
             &tag.name,
@@ -1022,6 +1041,18 @@ impl<'a> Converter<'a> {
                 raw: Vec::new(),
             },
         ))
+    }
+
+    /// The base map's scenery role words ([`crate::rebuild::scenery_role`]),
+    /// computed once. `None` when the base holds no scenery: the unknown
+    /// spans then stay zero.
+    pub fn scenery_role(&mut self) -> Result<Option<crate::rebuild::SceneryRole>> {
+        if let Some(r) = &self.scenery_role {
+            return Ok(r.clone());
+        }
+        let r = crate::rebuild::scenery_role(self.base)?;
+        self.scenery_role = Some(r.clone());
+        Ok(r)
     }
 
     /// The converted `coll` for Halo 1's `t`, with or without BSP physics
@@ -1673,30 +1704,6 @@ impl<'a> Converter<'a> {
             &tag.name,
             Converted {
                 group: FourCC(*b"eqip"),
-                root,
-                raw: Vec::new(),
-            },
-        ))
-    }
-
-    fn scenery(&mut self, tag: &Tag) -> Result<TagId> {
-        if self.options.rebuild {
-            return self.scenery_rebuilt(tag);
-        }
-        let object = h1::Object::read(self.h1, self.h1.tag_data(tag)?)?;
-        let (tpl, tpl_name) = self.template(b"scen", &tag.name, b"scen")?;
-        let tpl_root = self.base.root(tpl)?;
-        let mut rep = Self::report(tag, &tpl_name);
-        let mut root = Block::new(tpl_root.clone());
-        self.header(&mut rep, &mut root, &object, &tag.name)?;
-        rep.no_home
-            .push("scen tuning (pathfinding and lightmapping policy): the template's".into());
-        self.stopgaps(&mut rep, &tpl_root, &[h2::MODEL]);
-        self.tree.reports.push(rep);
-        Ok(self.tree.push(
-            &tag.name,
-            Converted {
-                group: FourCC(*b"scen"),
                 root,
                 raw: Vec::new(),
             },

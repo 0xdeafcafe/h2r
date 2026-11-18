@@ -51,6 +51,8 @@ fn templates_pick_the_role_and_the_more_specific_name_first() {
     assert!(t(b"proj", "weapons\\plasma grenade\\plasma grenade").contains("plasma_grenade"));
     // Vehicles have no template: every one is built from its definition.
     assert_eq!(t(b"vehi", "vehicles\\ghost\\ghost_mp"), "-");
+    // Nor does scenery (converter version 50).
+    assert_eq!(t(b"scen", "scenery\\rocks\\boulder\\boulder"), "-");
     assert!(t(b"bipd", "characters\\anything").contains("masterchief"));
     assert_eq!(t(b"proj", "weapons\\assault rifle\\bullet"), "-");
     assert_eq!(sid_name(" Front Left-Tire "), "front_left_tire");
@@ -457,7 +459,16 @@ fn rebuilt_scenery_has_only_definition_bytes() {
         widgets: Vec::new(),
     };
     let hlmt = map::TagId(0xe001_0002);
-    let root = crate::rebuild::scenery(&obj, Some(hlmt)).unwrap();
+    let (mode_id, bitm) = (map::TagId(0xe001_0003), map::TagId(0xe001_0004));
+    let predicted = [
+        crate::rebuild::Predicted::RenderModel(mode_id),
+        crate::rebuild::Predicted::Bitmap(bitm),
+    ];
+    let words = vec![
+        ("object.unknown_6c".to_owned(), 0x3f80_0000),
+        ("unknown_bc".to_owned(), 7),
+    ];
+    let root = crate::rebuild::scenery(&obj, Some(hlmt), &predicted, &words).unwrap();
     let def = Defs::builtin().group(map::FourCC(*b"scen")).unwrap();
     let got = defs::from_built(def, &root).unwrap();
     let mut want = defs::default_record(def);
@@ -473,7 +484,34 @@ fn rebuilt_scenery_has_only_definition_bytes() {
         },
     )
     .unwrap();
-    assert_eq!(defs::diff(def, &want, &got), Vec::new());
+    for (path, w) in &words {
+        want.set(path, Val::Bytes(w.to_le_bytes().to_vec())).unwrap();
+    }
+    // Everything but the predicted resources is the definition default
+    // with the fields above set.
+    let left: Vec<_> = defs::diff(def, &want, &got)
+        .into_iter()
+        .filter(|c| !c.path.starts_with("object.predicted_resources"))
+        .collect();
+    assert_eq!(left, Vec::new());
+    // The model first (kind 2, index -1), then its bitmaps (kind 0).
+    assert_eq!(
+        got.at("object.predicted_resources[0].unknown_0"),
+        Some(&Val::Bytes(0xffff_0002u32.to_le_bytes().to_vec()))
+    );
+    assert_eq!(
+        got.at("object.predicted_resources[0].tag"),
+        Some(&Val::Datum(Target::Id(mode_id)))
+    );
+    assert_eq!(
+        got.at("object.predicted_resources[1].unknown_0"),
+        Some(&Val::Bytes(vec![0; 4]))
+    );
+    assert_eq!(
+        got.at("object.predicted_resources[1].tag"),
+        Some(&Val::Datum(Target::Id(bitm)))
+    );
+    assert!(got.at("object.predicted_resources[2].tag").is_none());
 
     // The material list: one per shader, the shader set, null elsewhere.
     let mut mode = map::build::Block::zeroed(0x84);

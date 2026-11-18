@@ -1,11 +1,13 @@
-//! Scenery written field by field from typed definitions
-//! ([`tags::defs`]), with no retail template bytes: the `scen`, its
-//! `hlmt`, and its `mode`'s material list. Every field starts at its
-//! definition's default (zero, null or empty; unknown spans zero) and only
-//! what the conversion knows is set. Opt-in ([`crate::convert::Options`]);
-//! the template path stays the default until this one has run in the game.
-//! The field-by-field comparison with the template path is in
-//! `tests/rebuild_disc.rs` and `docs/formats/tag-definitions.md`.
+//! Objects written field by field from typed definitions
+//! ([`tags::defs`]), with no retail template bytes. Every field starts at
+//! its definition's default (zero, null or empty; unknown spans zero) and
+//! only what the conversion knows is set, plus, for unknown spans where
+//! zero is not neutral, the words most retail tags of the same role hold
+//! (computed from the base map at conversion time). Scenery: the `scen`,
+//! its `hlmt` and its `mode`'s material list, the only scenery path since
+//! converter version 50. The field-by-field comparison with the removed
+//! template path is in `tests/rebuild_disc.rs` and
+//! `docs/formats/tag-definitions.md`.
 
 use map::build::{Block, FixupKind};
 use map::{FourCC, TagId};
@@ -33,11 +35,18 @@ fn built(d: &StructDef, r: &Record) -> Result<Block> {
     defs::to_built(d, r, &mut |_| None).map_err(|e| Error::Invalid(e.to_string()))
 }
 
-/// The `scen` root: the object header with Halo 1's bounding sphere and
-/// the model, everything else at its default.
-pub fn scenery(obj: &h1::Object, hlmt: Option<TagId>) -> Result<Block> {
+/// The `scen` root: the object header with Halo 1's bounding sphere, the
+/// model and the predicted resources, the role's words ([`SceneryRole`])
+/// in its unknown spans, everything else at its default.
+pub fn scenery(
+    obj: &h1::Object,
+    hlmt: Option<TagId>,
+    predicted: &[Predicted],
+    words: &[(String, u32)],
+) -> Result<Block> {
     let d = def(b"scen")?;
     let mut r = defs::default_record(d);
+    role_words(&mut r, words)?;
     set(&mut r, "object.object_type", Val::Enum(SCENERY_TYPE))?;
     set(
         &mut r,
@@ -54,7 +63,52 @@ pub fn scenery(obj: &h1::Object, hlmt: Option<TagId>) -> Result<Block> {
         "object.model",
         Val::tag(FourCC(*b"hlmt"), hlmt.unwrap_or(TagId::NULL)),
     )?;
+    predicted_resources(b"scen", &mut r, "object", predicted)?;
     built(d, &r)
+}
+
+/// Scenery's role words: per 4-byte unknown span of the `scen` and of the
+/// `hlmt` its model is, the word at least half the base map's scenery
+/// holds there when it is not zero (the rule of [`TURRET_ROLE`] and
+/// [`RoleWords`]). Computed from the map at conversion time, so no retail
+/// value is kept in the source.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SceneryRole {
+    /// Scenery tags the words were taken from, and how many had a model.
+    pub members: usize,
+    pub models: usize,
+    pub scen: Vec<(String, u32)>,
+    pub hlmt: Vec<(String, u32)>,
+}
+
+/// [`SceneryRole`] over every `scen` the base map holds; `None` when it
+/// has none.
+pub fn scenery_role(base: &crate::base::Base) -> Result<Option<SceneryRole>> {
+    let (ds, dh) = (def(b"scen")?, def(b"hlmt")?);
+    let (mut ss, mut hs) = (Vec::new(), Vec::new());
+    word_spans(ds, "", 0, &mut ss);
+    word_spans(dh, "", 0, &mut hs);
+    let model = crate::convert::h2::MODEL;
+    let (mut st, mut ht) = (Tally::new(), Tally::new());
+    let (mut members, mut models) = (0, 0);
+    for t in base.tags.iter().filter(|t| t.1 == FourCC(*b"scen")) {
+        let bytes = base.root(t.0)?;
+        tally_words(&bytes, &ss, &mut st);
+        members += 1;
+        if let Some(h) = base.reference(&bytes, model) {
+            tally_words(&base.root(h)?, &hs, &mut ht);
+            models += 1;
+        }
+    }
+    if members == 0 {
+        return Ok(None);
+    }
+    Ok(Some(SceneryRole {
+        members,
+        models,
+        scen: majority(&st),
+        hlmt: majority(&ht),
+    }))
 }
 
 /// One `hlmt` region: name, collision region (-1 none), physics region,
@@ -75,12 +129,16 @@ pub struct Model {
     /// Node count and the node array ([`h1models::mode::hlmt_nodes`]).
     pub nodes: (u32, Block),
     pub regions: Vec<Region>,
+    /// Role words for the unknown spans ([`SceneryRole::hlmt`]); empty
+    /// leaves them zero.
+    pub words: Vec<(String, u32)>,
 }
 
 /// The `hlmt`.
 pub fn model(m: &Model) -> Result<Block> {
     let d = def(b"hlmt")?;
     let mut r = defs::default_record(d);
+    role_words(&mut r, &m.words)?;
     set(&mut r, "render_model", Val::tag(FourCC(*b"mode"), m.render))?;
     set(
         &mut r,
