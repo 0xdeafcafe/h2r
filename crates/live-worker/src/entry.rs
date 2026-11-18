@@ -24,7 +24,7 @@ use worker::{
     WebSocket, WebSocketIncomingMessage, WebSocketPair, durable_object, event,
 };
 
-use crate::bindings::{BLOBS, HUB, HUB_NAME};
+use crate::bindings::{BLOBS, HUB, HUB_NAME, RELAY};
 use crate::dosql::DoSql;
 use crate::ingest::{Ingests, Message};
 use crate::r2::R2;
@@ -39,11 +39,19 @@ async fn fetch(
     env: Env,
     _ctx: Context,
 ) -> Result<http::Response<axum::body::Body>> {
-    let hub = env
-        .durable_object(HUB)?
-        .id_from_name(HUB_NAME)?
-        .get_stub()?;
-    let resp = hub.fetch_with_request(Request::try_from(req)?).await?;
+    // A co-op session's relay is its own object; everything else, the hub.
+    let path = req.uri().path().to_string();
+    let stub = match crate::relay::session_of(&path) {
+        Some(session) => env
+            .durable_object(RELAY)?
+            .id_from_name(session)?
+            .get_stub()?,
+        None => env
+            .durable_object(HUB)?
+            .id_from_name(HUB_NAME)?
+            .get_stub()?,
+    };
+    let resp = stub.fetch_with_request(Request::try_from(req)?).await?;
     let resp: worker::HttpResponse = resp.try_into()?;
     Ok(resp.map(axum::body::Body::new))
 }
@@ -56,7 +64,7 @@ pub struct LiveHub {
     /// The object's `ctx` as JavaScript, for `storage.transactionSync`.
     ctx: JsValue,
     live: OnceCell<Arc<Live>>,
-    sockets: Rc<Sockets>,
+    sockets: Rc<Sockets<WebSocket>>,
     ingests: Ingests,
     /// The alarm as last set (ms since the epoch; `None` inside: no
     /// alarm), or `None` before this instance has set one.
@@ -123,7 +131,7 @@ impl LiveHub {
                 let (live, ms, head) = self.start().await?;
                 worker::console_log!("live: started in {ms} ms, the log at {head}");
                 cold = Some((ms, head));
-                self.sockets.adopt_all(&live, &self.state);
+                self.sockets.adopt_all(&live, self.state.get_websockets());
                 live_server::rt::spawn(pump(live.clone(), self.sockets.clone()));
                 Ok::<_, worker::Error>(live)
             })
@@ -211,9 +219,8 @@ impl LiveHub {
         let pair = WebSocketPair::new()?;
         match filter {
             Some(filter) => {
-                self.sockets
-                    .accept(&self.state, live, pair.server, filter)
-                    .await?
+                self.state.accept_web_socket(&pair.server);
+                self.sockets.accept(live, pair.server, filter).await
             }
             None => self.ingests.accept(&self.state, live, pair.server),
         }

@@ -350,6 +350,9 @@ pub struct ScenarioReport {
     pub dialogue_bytes: u64,
     /// The player biped, converted and set as the campaign players' unit.
     pub player_biped: Option<String>,
+    /// HUD pairs `boot::hud` switches between (owner, Halo 1 HUD, Halo 2
+    /// HUD; docs/game/hud.md), as this set's datums.
+    pub hud_swaps: Vec<[TagId; 3]>,
     /// `None` when the scenario was rebuilt from the base's relocated tree
     /// (the base scenario's old bytes freed); else why it was written over
     /// them.
@@ -1348,6 +1351,7 @@ fn place_objects(
     rep.dialogue_bytes = conv.dialogue_bytes;
     let mut tree = std::mem::take(&mut conv.tree);
     rep.object_tags = tree.tags.len();
+    let hud_swaps = std::mem::take(&mut tree.hud_swaps);
     // The sounds the objects' effects and attachments play, with the
     // gestalt, before the tags that name them.
     rep.object_sounds = tree.sounds.len();
@@ -1360,6 +1364,12 @@ fn place_objects(
         .install(set)
         .map_err(|e| invalid(format!("objects: {e}")))?;
     let real = |t: TagId| ids[(t.0 & 0xffff) as usize];
+    // A pair's Halo 2 HUD may be a base-map tag (a weapon's counterpart's).
+    let resolve = |t: TagId| h1objects::convert::local_index(t).map_or(t, |k| ids[k]);
+    rep.hud_swaps = hud_swaps
+        .iter()
+        .map(|s| [resolve(s.owner), resolve(s.halo1), resolve(s.halo2)])
+        .collect();
     let palette_id = |p: &Pal| match *p {
         Pal::Converted(t) => real(t),
         Pal::Retail(t) => t,

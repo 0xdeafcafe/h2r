@@ -204,6 +204,35 @@ R2 simulated locally by miniflare.
 `run.sh` makes a fresh admin gamertag each run (`H2_LIVE_ADMINS`); the
 smoke test signs up as it to publish the title file.
 
+## Slice 5 results
+
+Under local `wrangler dev`, as before.
+
+**Attachments on a busy stream** (`BUSY=100`: 100 sockets follow the log
+while 60 events are appended; one run each, so the tails are noisy):
+
+| Attachment written | Append p50 | Append p90 | Append max |
+|---|---|---|---|
+| Per event (slice 4) | 21.3 ms | 35.2 ms | 210 ms |
+| On a change of state only | 18.4 ms | 23.4 ms | 32.1 ms |
+| The same, in the full run below | 13.2 ms | 34.0 ms | 121 ms |
+
+Every socket had each event within 0.3 ms of the append's answer.
+
+**The co-op relay** (`WAKE=15 BUSY=100 smoke/run.sh 20`: two members of
+a real co-op session, through the `CoopRelay` object):
+
+| What | Result |
+|---|---|
+| Both members in and told of each other | 296 ms (two tickets from the hub) |
+| A stranger | closed with 4403 |
+| Round trip, 300 datagrams | p50 6.0 ms, p99 11.3 ms |
+| 30 a second each way for 17 s | 1,020 of 1,020 delivered; each member's ticket renewed once (`relay: renewed` in the log) |
+| 200 a second each way for 5 s | 2,000 of 2,000 delivered |
+
+The relay's own ceiling was not reached: 200 a second each way is the
+sender's pacing, under `relay_rate` (240 a second a socket).
+
 ## The stream on the hub
 
 `live_server::stream` holds `/v1/stream` with no socket underneath it:
@@ -220,14 +249,22 @@ Two drivers run the session:
   selecting over the socket, the feeds and the token deadline, as before.
 - **The hub** (`crates/live-worker/src/sockets.rs`).
   - Each socket is accepted with `state.accept_web_socket`, and its `Resume`
-    is kept as the socket's attachment.
+    is kept as the socket's attachment. The attachment is written when that
+    state changes (let in, a new token), not per event: every open session
+    is level with the log whenever the hub is idle, the only time it
+    hibernates, so a session rebuilt after a wake starts at the log's head.
+    Writing it per event cost about 3 ms an append at p50 and 12 ms at p90
+    with 100 sockets ([Slice 5 results](#slice-5-results)).
   - One pump task fans the hub's feeds out to every session. Expired tokens,
     and readers that sent no auth message within 10 s, are closed from the
     hub's alarm ([Timers and hibernation](#timers-and-hibernation)).
-  - Reader messages come in through `websocket_message`.
-  - Opening or catching up a session awaits the store, and the pump does not
-    reach the session meanwhile. So before the session is handed back, it is
-    caught up again until it is level with the log (`settle`).
+  - Reader messages come in through `websocket_message`. A socket's
+    messages are handled one at a time and in order, each session behind an
+    async lock, so none is lost while an earlier one awaits the store.
+  - The pump skips a session that is busy. Before the session is let go it
+    is caught up again until it is level with the log (`settle`).
+  - The code is generic over a `Socket` trait, so it is tested on a machine
+    with a fake socket.
   - After a wake (a new instance with the sockets still open), `adopt`
     rebuilds each session from its attachment.
 
@@ -259,6 +296,35 @@ instead, which spawns none of them:
   and stops by itself when none is.
 
 So an idle hub, sockets open or not, has nothing pending, and hibernates.
+
+## The co-op relay
+
+`/v1/sessions/{id}/relay` goes to a `CoopRelay` Durable Object named by
+the session id (`crates/live-worker/src/relay.rs`), so a session's
+datagrams never touch the hub. The client speaks the machine's protocol:
+its first message is `{kind: "auth", token}` with `sessions.relay`.
+
+- **Membership.** The relay hands the token to the hub as
+  `POST /v1/sessions/{id}/relay/ticket`. The hub spends the token's `jti`,
+  checks the account is the host or an accepted guest of an open co-op
+  session, and signs a ticket: session, xuid, author, the token's `exp`,
+  and the ticket's own end, 15 s on (`relay::TICKET_S`). The relay checks
+  it with the server's public key.
+- **Rechecks.** On a machine the relay rechecks membership every 5 s. Here,
+  a member whose ticket has run out gets a new one from the hub with the
+  old ticket (`{"ticket": ...}`, no token), in the background, so no
+  datagram waits for it. If the hub says no, the socket closes with 4403.
+- **The room** (`crates/live-worker/src/relayroom.rs`, generic and tested on
+  a machine): two accounts; the same account again replaces its old socket
+  (4409); a third is refused (4409); messages over 1,200 bytes close with
+  4413, faster than `relay_rate` with 4429; `{kind: "peer", present}`
+  when the other arrives or leaves.
+- **Hibernation.** Sockets are hibernatable, with the ticket as the
+  attachment; the room is rebuilt from them after a wake. The token's end
+  and the 10 s auth deadline are the object's alarm.
+
+The ticket endpoint is public: a client could fetch a ticket itself, but
+it carries nothing the account could not learn anyway.
 
 ## Cost of the relay
 
@@ -304,11 +370,11 @@ large share of the day's requests.
    - Content and cloud-save uploads stream into the blob store (R2 on the hub, multipart past 8 MiB) instead of a temporary file, on a machine too.
    - Title files are in R2.
    - Results: [Slice 4 results](#slice-4-results).
-5. **The co-op relay object.**
-   - `CoopRelay` per session.
-   - Membership: the hub checks it once and signs a short ticket; the relay checks the ticket.
+5. **The co-op relay object (done).**
+   - Stream sockets got ingest's per-socket lock; attachments are written on a change of state only.
+   - `CoopRelay` per session, membership by the hub's signed ticket ([The co-op relay](#the-co-op-relay)).
    - The forwarding, rate buckets and close codes of `relay.rs`.
-   - Tested with two `coop` peers against `wrangler dev`.
+   - Two relay clients in the smoke test: [Slice 5 results](#slice-5-results).
 6. **Cold start.**
    - Snapshot the read model at a log position in the hub's storage (or R2), and replay only the tail.
    - Needed if the replay is slow at today's log size; see [Slice 2 results](#slice-2-results) for the rate.

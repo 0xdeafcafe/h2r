@@ -190,6 +190,7 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
             "/v1/titles/{title}/hopper",
             get(crate::admin::get_hopper).put(crate::admin::put_hopper),
         )
+        .route("/v1/sessions/{id}/relay/ticket", post(relay_ticket))
         .route("/v1/admins", get(crate::admin::list_admins))
         .route(
             "/v1/admins/{gamertag}",
@@ -585,6 +586,32 @@ async fn get_file(
         bytes,
     )
         .into_response())
+}
+
+/// `POST /v1/sessions/{id}/relay/ticket`: with a `sessions.relay` token, a
+/// signed ticket for the session's relay; with `{"ticket"}` and no token,
+/// a renewal of a ticket that has (nearly) run out (docs/live/live-worker.md,
+/// The co-op relay).
+async fn relay_ticket(
+    State(live): Shared,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    body: Result<Bytes, BytesRejection>,
+) -> ApiResult<Response> {
+    let reply = match bearer(&headers) {
+        Some(token) => live.relay_ticket(Some(token), &id)?,
+        None => {
+            let bytes = body_bytes(body)?;
+            #[derive(serde::Deserialize)]
+            struct Renew {
+                ticket: String,
+            }
+            let r: Renew = serde_json::from_slice(&bytes)
+                .map_err(|_| invalid("send a sessions.relay token, or {\"ticket\": ...}"))?;
+            live.renew_relay_ticket(&r.ticket, &id)?
+        }
+    };
+    Ok(json(StatusCode::OK, &reply))
 }
 
 async fn put_file(

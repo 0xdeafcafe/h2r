@@ -295,12 +295,13 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
             assert!(markers.iter().any(|m| m == want), "{want} in {markers:?}");
         }
     }
-    // The player's HUD carries Halo 1's health meter (docs/game/health.md
-    // "HUD"): every HUD interface names the converted nhdt, which has the
-    // shield meter and, after it, a widget on the body input with the
-    // shield meter's state flags and anchor, drawing the sword battery's
-    // strip just above it.
+    // The player's HUD is Halo 1's (docs/game/hud.md): every HUD
+    // interface names the converted unhi's nhdt, whose widgets draw Halo
+    // 1's own HUD bitmaps (converted, so named as on the Halo 1 disc)
+    // through Halo 2's HUD shaders, the meters on the shield and body
+    // inputs, every widget behind the shield meter's state flags.
     {
+        use h1objects::h1hud;
         use h1objects::health_hud::{self as hh, widget};
         let space = out.metadata_space().unwrap();
         let meta = out
@@ -318,69 +319,98 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
             w(&unit, hh::UNIT_HUD_INTERFACES + 4),
             count * hh::HUD_INTERFACE_SIZE,
         );
+        let h1_bitmaps: std::collections::HashSet<String> = h1
+            .tags()
+            .iter()
+            .filter(|t| t.group == h1map::Group::new(b"bitm"))
+            .map(|t| t.name.clone())
+            .collect();
         for i in 0..count {
             let id = TagId(w(&huds, i * hh::HUD_INTERFACE_SIZE + 4));
             let (grp, name) = &names[&id];
             assert_eq!(*grp, FourCC(*b"nhdt"));
-            assert!(name.ends_with(hh::NHDT_SUFFIX), "interface {i}: {name}");
+            assert!(name.ends_with(h1hud::NHDT_SUFFIX), "interface {i}: {name}");
             let root = bytes(
                 out.tag(id).unwrap().location.unwrap().address,
                 hh::NHDT_ROOT,
             );
+            // Bitmap widgets only.
+            assert!(root[0x10..hh::NHDT_ROOT].iter().all(|b| *b == 0), "{name}");
             let n = w(&root, hh::NHDT_BITMAP_WIDGETS) as usize;
+            assert!(n >= 4, "{name}: {n} widgets");
             let widgets = bytes(
                 w(&root, hh::NHDT_BITMAP_WIDGETS + 4),
                 n * hh::BITMAP_WIDGET_SIZE,
             );
-            let shield = hh::shield_meter(&widgets).expect("a shield meter");
-            let s = &widgets[shield * hh::BITMAP_WIDGET_SIZE..][..hh::BITMAP_WIDGET_SIZE];
-            let health: Vec<&[u8]> = widgets
-                .as_chunks::<{ hh::BITMAP_WIDGET_SIZE }>()
-                .0
-                .iter()
-                .filter(|x| x[widget::INPUTS] == hh::INPUT_BODY)
-                .map(|x| x.as_slice())
-                .collect();
-            assert_eq!(health.len(), 1, "{name}: one body widget");
-            let h = health[0];
-            assert_eq!(
-                h[widget::STATE..0x20],
-                s[widget::STATE..0x20],
-                "{name}: the shield's gate"
-            );
-            let name_of = |at: usize| &names[&TagId(w(h, at + 4))].1;
-            assert_eq!(name_of(widget::BITMAP), hh::STRIP_BITMAP, "{name}");
-            assert_eq!(name_of(widget::SHADER), hh::STRIP_SHADER, "{name}");
-            // The strip and the shield meter as the HUD places them: the
-            // bitmaps' first images, registered at the top left, the strip
-            // GAP pixels above the shield meter in every screen mode.
-            let image = |r: &[u8], at: usize| {
-                let bitm = TagId(w(r, at + 4));
-                let root = bytes(
-                    out.tag(bitm).unwrap().location.unwrap().address,
-                    hh::BITM_IMAGES + 8,
+            let mut inputs = Vec::new();
+            for x in widgets.as_chunks::<{ hh::BITMAP_WIDGET_SIZE }>().0 {
+                let name_of = |at: usize| names[&TagId(w(x, at + 4))].clone();
+                let (bg, bitmap) = name_of(widget::BITMAP);
+                let (sg, shader) = name_of(widget::SHADER);
+                assert_eq!(bg, FourCC(*b"bitm"));
+                assert_eq!(sg, FourCC(*b"shad"));
+                assert!(h1_bitmaps.contains(&bitmap), "{name}: {bitmap} is Halo 1's");
+                assert_eq!(x[widget::STATE..widget::STATE_END], h1hud::STATE);
+                assert_eq!(x[widget::SPECIAL..widget::SPECIAL + 2], [0, 0]);
+                let input = x[widget::INPUTS];
+                let want = if input == 0 { h1hud::STATIC_SHADER } else { h1hud::METER_SHADER };
+                assert_eq!(shader, want, "{name}: {bitmap}");
+                inputs.push(input);
+                eprintln!(
+                    "{name}: {bitmap} seq {} input {input} anchor {} offset {:?}",
+                    x[widget::SEQUENCES],
+                    x[widget::ANCHOR],
+                    hh::offset(x, widget::OFFSETS[0])
                 );
-                let im = bytes(w(&root, hh::BITM_IMAGES + 4), hh::BITM_IMAGE_SIZE);
-                let half = |o: usize| i16::from_le_bytes([im[o], im[o + 1]]);
-                (half(4), half(6))
-            };
-            assert_eq!(image(h, widget::BITMAP), hh::STRIP_SIZE, "{name}");
-            assert_eq!(image(s, widget::BITMAP), hh::SHIELD_SIZE[0], "{name}");
-            assert!(
-                s[widget::REGISTRATION..widget::REGISTRATION_END]
-                    .iter()
-                    .all(|b| *b == 0),
-                "{name}: the shield meter is registered at its top left"
-            );
-            for (mode, at) in widget::OFFSETS.iter().enumerate() {
-                let strip = hh::Rect::at(hh::offset(h, *at), hh::STRIP_SIZE);
-                let shield = hh::Rect::at(hh::offset(s, *at), hh::SHIELD_SIZE[mode]);
-                assert!(!strip.overlaps(&shield), "{name} mode {mode}");
-                assert_eq!(shield.y0 - strip.y1, hh::GAP, "{name} mode {mode}");
-                eprintln!("{name} mode {mode}: strip {strip:?}, shield {shield:?}");
             }
-            eprintln!("player HUD interface {i}: {name}, health widget after {n} widgets");
+            assert!(inputs.contains(&hh::INPUT_SHIELD), "{name}: a shield meter");
+            assert!(inputs.contains(&hh::INPUT_BODY), "{name}: a health meter");
         }
+        // Every converted Halo 1 weapon with a wphi names its Halo 1 HUD at
+        // +0x2b0: Halo 1's bitmaps, a centred crosshair, meters on the
+        // Halo 2 inputs h1hud names.
+        let h1_weapons: std::collections::HashSet<String> = h1
+            .tags()
+            .iter()
+            .filter(|t| t.group == h1map::Group::new(b"weap"))
+            .filter(|t| {
+                let b = h1.tag_data(t).unwrap();
+                h1objects::h1::reference(&h1, b, 0x480).is_some()
+            })
+            .map(|t| t.name.clone())
+            .collect();
+        let mut weapons = 0;
+        for t in out.tags().iter().filter(|t| {
+            t.group == FourCC(*b"weap")
+                && t.location.is_some()
+                && t.name.as_ref().is_some_and(|n| h1_weapons.contains(n))
+        }) {
+            let wname = t.name.clone().unwrap();
+            let weap = bytes(t.location.unwrap().address, 0x2b8);
+            let id = TagId(w(&weap, 0x2b4));
+            let (grp, name) = &names[&id];
+            assert_eq!(*grp, FourCC(*b"nhdt"), "{wname}");
+            assert!(name.ends_with(h1hud::WEAPON_NHDT_SUFFIX), "{wname}: {name}");
+            let root = bytes(out.tag(id).unwrap().location.unwrap().address, hh::NHDT_ROOT);
+            let n = w(&root, hh::NHDT_BITMAP_WIDGETS) as usize;
+            let widgets = bytes(w(&root, hh::NHDT_BITMAP_WIDGETS + 4), n * hh::BITMAP_WIDGET_SIZE);
+            let mut centred = 0;
+            for x in widgets.as_chunks::<{ hh::BITMAP_WIDGET_SIZE }>().0 {
+                let (bg, bitmap) = names[&TagId(w(x, widget::BITMAP + 4))].clone();
+                let (sg, _) = names[&TagId(w(x, widget::SHADER + 4))].clone();
+                assert_eq!(bg, FourCC(*b"bitm"));
+                assert_eq!(sg, FourCC(*b"shad"));
+                assert!(h1_bitmaps.contains(&bitmap), "{name}: {bitmap} is Halo 1's");
+                let input = x[widget::INPUTS];
+                assert!([0, 0x31, 0x36, 0x38].contains(&input), "{name}: input {input}");
+                if x[widget::ANCHOR] == h1hud::Anchor::Centre as u8 {
+                    centred += 1;
+                }
+            }
+            eprintln!("{wname}: {name}, {n} widgets, {centred} centred");
+            weapons += 1;
+        }
+        assert!(weapons >= 5, "{weapons} Halo 1 weapons with Halo 1 HUDs");
     }
     assert_eq!(
         ours.keys()
@@ -417,7 +447,7 @@ fn bloodgulch_shaders_all_have_their_compiled_postprocess_in_both_sandboxes() {
         // The fresh map is built from scratch on a new index, so the swaps
         // are named by its own datums (`Fresh::precision`), as the importer
         // writes them (`manifest_with`).
-        let manifest = p.manifest_with(&fresh.bytes, &fresh.precision);
+        let manifest = p.manifest_fresh(&fresh);
         let mut out = Map::from_reader(Cursor::new(fresh.bytes)).unwrap();
         if sandbox == Sandbox::Halo2 {
             // The precision swap: the SMG and the battle rifle collections,
@@ -442,6 +472,50 @@ fn bloodgulch_shaders_all_have_their_compiled_postprocess_in_both_sandboxes() {
                     to: swaps[0].1.0
                 }]
             );
+        }
+        if sandbox == Sandbox::Halo1 {
+            // The HUD pair (docs/game/hud.md): the player biped, its Halo 1
+            // HUD, and its Halo 2 HUD with the health strip, kept by the
+            // prune though only the pair names it, in the manifest by the
+            // fresh map's datums.
+            let name = |id: TagId| {
+                let t = out.tag(id).unwrap();
+                (t.group, t.name.clone().unwrap_or_default())
+            };
+            // One pair for the player biped, one per Halo 1 weapon whose
+            // Halo 2 counterpart has a HUD: its Halo 1 HUD and the
+            // counterpart's.
+            let bipeds: Vec<_> =
+                fresh.hud.iter().filter(|p| name(p[0]).0 == FourCC(*b"bipd")).collect();
+            assert_eq!(bipeds.len(), 1, "{:?}", fresh.hud);
+            for [owner, halo1, halo2] in fresh.hud.iter().filter(|p| name(p[0]).0 != FourCC(*b"bipd")) {
+                assert_eq!(name(*owner).0, FourCC(*b"weap"));
+                assert!(name(*halo1).1.ends_with(h1objects::h1hud::WEAPON_NHDT_SUFFIX));
+                assert_eq!(name(*halo2).0, FourCC(*b"nhdt"));
+                assert!(name(*halo2).1.starts_with("ui\\hud\\"), "{}", name(*halo2).1);
+                eprintln!("hud: {} -> {} / {}", name(*owner).1, name(*halo1).1, name(*halo2).1);
+            }
+            assert!(fresh.hud.len() > 1, "weapon pairs too");
+            let [owner, halo1, halo2] = *bipeds[0];
+            let (g1, n1) = name(halo1);
+            let (g2, n2) = name(halo2);
+            assert_eq!(g1, FourCC(*b"nhdt"));
+            assert_eq!(g2, FourCC(*b"nhdt"));
+            assert!(n1.ends_with(h1objects::h1hud::NHDT_SUFFIX), "{n1}");
+            assert!(n2.ends_with(h1objects::health_hud::NHDT_SUFFIX), "{n2}");
+            assert_eq!(
+                manifest.variants[0].hud,
+                fresh
+                    .hud
+                    .iter()
+                    .map(|[o, a, b]| content::HudSwap {
+                        owner: o.0,
+                        halo1: a.0,
+                        halo2: b.0
+                    })
+                    .collect::<Vec<_>>()
+            );
+            eprintln!("hud: {} -> {n1} / {n2}", name(owner).1);
         }
         let shaders: Vec<(TagId, String)> = out
             .tags()
@@ -726,4 +800,49 @@ fn every_map_builds_in_both_sandboxes_with_the_objects_sounds() {
     });
     println!("{maps} builds, {attachments} vehicle attachments resolved");
     assert!(maps > 0);
+}
+
+/// Prints Halo 2's weapon HUD widgets on coagulation (inputs, state flags,
+/// anchor, special type): the evidence for the inputs and states the
+/// converted Halo 1 weapon HUDs use.
+#[test]
+#[ignore = "reads the Halo 2 disc ($H2_DISC)"]
+fn print_halo2_weapon_hud_widgets() {
+    let mut base_map = h2_map("coagulation");
+    let base = Base::read(&mut base_map).unwrap();
+    let strings = base_map.strings().to_vec();
+    for (id, g, name, _) in &base.tags {
+        if *g != FourCC(*b"nhdt") {
+            continue;
+        }
+        let root = base.head(*id, 0x28).unwrap();
+        let mut i = 0;
+        while let Some(w) = base.element(&root, 8, 0x64, i).unwrap() {
+            let bitmap = base.reference(&w, 0x20).and_then(|b| base.name(b)).map_or("-", |n| n.1);
+            let shader = base.reference(&w, 0x28).and_then(|b| base.name(b)).map_or("-", |n| n.1);
+            eprintln!(
+                "{name} #{i}: inputs {:?} state {:02x?} anchor {} flags {:x} seq {:?} offset {:?} special {} {bitmap} {shader}",
+                &w[4..8],
+                &w[8..0x1c],
+                u16::from_le_bytes([w[0x1c], w[0x1d]]),
+                u16::from_le_bytes([w[0x1e], w[0x1f]]),
+                &w[0x30..0x34],
+                (i16::from_le_bytes([w[0x34], w[0x35]]), i16::from_le_bytes([w[0x36], w[0x37]])),
+                u16::from_le_bytes([w[0x60], w[0x61]]),
+            );
+            i += 1;
+        }
+        let mut i = 0;
+        while let Some(w) = base.element(&root, 0x10, 0x54, i).unwrap() {
+            let sid = u32::from_le_bytes(w[0..4].try_into().unwrap());
+            let label = strings.get((sid & 0xff_ffff) as usize).cloned().flatten().unwrap_or_default();
+            eprintln!(
+                "{name} text #{i} {label}: inputs {:?} state {:02x?} anchor {}",
+                &w[4..8],
+                &w[8..0x1c],
+                u16::from_le_bytes([w[0x1c], w[0x1d]]),
+            );
+            i += 1;
+        }
+    }
 }

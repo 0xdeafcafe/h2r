@@ -363,6 +363,36 @@ const HOST_SLOTS: u32 = 0;
 const FRIEND_SLOTS: u32 = 16;
 const JOIN_SLOTS: u32 = 64;
 const LINE_SLOT: u32 = 96;
+/// The three screens' footer legends: host, friends, join.
+const FOOTER_SLOTS: [u32; 3] = [97, 98, 99];
+
+/// A co-op screen's button legend, for its footer (as the game's own
+/// screens give theirs, docs/game/ui-screens.md): A on a row, Start (or X)
+/// for the screen's action, B back.
+pub fn prompts(screen: &str) -> Vec<crate::ui_kit::input::Prompt> {
+    use crate::ui_kit::input::{Glyph, Prompt};
+    let action = match screen {
+        SCREEN => Some("Start Game"),
+        JOIN => Some("Ready"),
+        _ => None,
+    };
+    let mut p = vec![Prompt::new(&[Glyph::A], "Select")];
+    if let Some(a) = action {
+        p.push(Prompt::new(&[Glyph::Start], a));
+    }
+    p.push(Prompt::new(&[Glyph::B], "Back"));
+    p
+}
+
+/// Screen `screen`'s footer legend's string id, its text set.
+fn footer_id(texts: &Texts, screen: &str) -> u32 {
+    let slot = match screen {
+        SCREEN => FOOTER_SLOTS[0],
+        FRIENDS => FOOTER_SLOTS[1],
+        _ => FOOTER_SLOTS[2],
+    };
+    texts.set(slot, &crate::ui_kit::input::footer_legend(&prompts(screen)))
+}
 /// Rows a friends screen lists at most.
 pub const MAX_FRIENDS: usize = 20;
 
@@ -1718,7 +1748,8 @@ pub fn install(
             SCREEN,
             Arc::new(HostRows(Arc::clone(&lobby))),
         )
-        .action(host),
+        .action(host)
+        .footer(footer_id(&lobby.texts, SCREEN)),
     )?;
     add(
         registry,
@@ -1726,12 +1757,14 @@ pub fn install(
             "coop-friends",
             FRIENDS,
             Arc::new(FriendRows(Arc::clone(&lobby))),
-        ),
+        )
+        .footer(footer_id(&lobby.texts, FRIENDS)),
     )?;
     add(
         registry,
         ListClass::with_rows("coop-join", JOIN, Arc::new(JoinRows(Arc::clone(&lobby))))
-            .action(ready),
+            .action(ready)
+            .footer(footer_id(&lobby.texts, JOIN)),
     )?;
     registry
         .add(&CoopScreens {

@@ -19,8 +19,13 @@ pub use h1convert::scratch::{ScratchReport, file_bytes};
 
 /// The level from scratch. `base` is the retail base map's file, `set` the
 /// conversion (the intermediate, pinned on the base) and `bytes` its built
-/// map.
-pub fn build(base: &[u8], set: &TagSet, bytes: &[u8]) -> Result<(TagSet, ScratchReport)> {
+/// map; `extra` are tags kept though nothing names them.
+pub fn build(
+    base: &[u8],
+    set: &TagSet,
+    bytes: &[u8],
+    extra: &[map::TagId],
+) -> Result<(TagSet, ScratchReport)> {
     let schema = tags::schema::Schema::builtin();
     let repo = |e: tags::repo::Error| crate::invalid(format!("from scratch: {e}"));
     let mut base_map = Map::from_reader(Cursor::new(base))?;
@@ -41,7 +46,7 @@ pub fn build(base: &[u8], set: &TagSet, bytes: &[u8]) -> Result<(TagSet, Scratch
     };
     let from_level = src.from_level.clone();
     let (mut out, report) =
-        scratch::build(&mut src, set, &crate::KEEP, &[], &from_level, low_detail)?;
+        scratch::build(&mut src, set, &crate::KEEP, extra, &from_level, low_detail)?;
     crate::scenario::write_simulation_table(&mut out);
     out.check_tag_memory = false;
     out.check_file_size = false;

@@ -377,7 +377,13 @@ impl Converter for DiscConverter {
                 let opts = h1_cmd::campaign_options(scripting, self.donors.as_ref());
                 let done = h1campaign::convert(&h1, &mut base, &opts)?;
                 let dir = campaign_dir(&self.data);
-                h1_cmd::write_campaign_level(&self.out(dir.clone())?, &dir, level, &done.bytes)?;
+                h1_cmd::write_campaign_level(
+                    &self.out(dir.clone())?,
+                    &dir,
+                    level,
+                    &done.bytes,
+                    &done.report.scenario.hud_swaps,
+                )?;
                 // Its picture for the level select (boot::campaign_cards).
                 if self.card_ui.is_none() {
                     self.card_ui = Some(self.read("ui").ok().map(|(_, m)| m));
@@ -404,7 +410,7 @@ impl Converter for DiscConverter {
                 // Fresh: nothing of the base pinned.
                 let f = p.build_fresh(&mut base, &mopp)?;
                 let done = h1convert::convert::Converted {
-                    manifest: p.manifest_with(&f.bytes, &f.precision),
+                    manifest: p.manifest_fresh(&f),
                     name: f.name,
                     bytes: f.bytes,
                 };

@@ -19,6 +19,8 @@ use d3d::{Backend, RecordingBackend, ResolvedDraw};
 use gfx::vertex::{PrimitiveType, VertexLayout};
 use gfx::xdk::RenderStateTable;
 use gfx::{Clear, D3DFormat};
+use shaders::vsh::encode::{Inst, Operand as O};
+use shaders::vsh::{IluOp, MacOp, OutReg};
 
 const F: u64 = 1_000_000_000 / 30;
 /// Where the camera goes (c0, hardware order 96) and the node (c4).
@@ -56,7 +58,7 @@ fn draw(c: Block, mesh: u32, pretransformed: bool) -> ResolvedDraw {
         shader: ShaderInputs {
             vertex: VertexProcessing::Program {
                 start: 0,
-                microcode: vec![mesh, 1, 2, 3].into(),
+                microcode: program_words().into(),
             },
             provided_inputs: 1,
             vertex_defaults: [[0.0, 0.0, 0.0, 1.0]; 16],
@@ -111,10 +113,66 @@ fn node(x: f64, turn: f64) -> Similarity {
 
 fn block() -> Block {
     let mut c = [[0.0f32; 4]; CONSTANTS];
+    // The program's own viewport constants: the whole 640x480 target.
+    c[SCALE] = [320.0, -240.0, 1.0, 0.0];
+    c[OFFSET] = [320.0, 240.0, 0.0, 0.0];
     // Some lighting constants that are no matrix.
     c[110] = [0.3, 0.6, 0.9, 1.0];
     c[111] = [0.5, 0.5, 0.5, 0.0];
     c
+}
+
+/// The program's viewport scale and offset constants (hardware numbering),
+/// as Halo 2's programs keep them: not D3D's c58/c59.
+const SCALE: usize = 10;
+const OFFSET: usize = 11;
+/// The constants a screen-space lookup dots the clip position with.
+const LOOKUP: usize = 8;
+
+/// The test draws' vertex program, Halo 2's shape: the clip position from
+/// the camera's rows at c96..c99, a screen-space lookup from it (`oT0.xy`
+/// from c8 and c9, `oT0.w` the clip w), then the program's own viewport
+/// transform (`mul oPos.xyz, r12, c10 : rcc r1.w, r12.w`, `mad oPos.xyz,
+/// r12, r1.w, c11`).
+fn program_words() -> Vec<u32> {
+    let (x, y, z, w) = (8, 4, 2, 1);
+    let mut insts: Vec<Inst> = (0..4)
+        .map(|i| {
+            Inst::mac(MacOp::Dp4, Some(O::v(0)), Some(O::c(CAM as u8 + i)), None).to_out(
+                false,
+                OutReg::Pos,
+                8 >> i,
+            )
+        })
+        .collect();
+    insts.extend([
+        Inst::mac(MacOp::Dp4, Some(O::r(12)), Some(O::c(LOOKUP as u8)), None).to_out(
+            false,
+            OutReg::T(0),
+            x,
+        ),
+        Inst::mac(
+            MacOp::Dp4,
+            Some(O::r(12)),
+            Some(O::c(LOOKUP as u8 + 1)),
+            None,
+        )
+        .to_out(false, OutReg::T(0), y),
+        Inst::mac(MacOp::Mov, Some(O::r(12).swz("w")), None, None).to_out(false, OutReg::T(0), w),
+        Inst::mac(MacOp::Mul, Some(O::r(12)), Some(O::c(SCALE as u8)), None)
+            .to_out(false, OutReg::Pos, x | y | z)
+            .with_ilu(IluOp::Rcc, O::r(12).swz("w"))
+            .ilu_to_temp(1, w),
+        Inst::mac(
+            MacOp::Mad,
+            Some(O::r(12)),
+            Some(O::r(1).swz("w")),
+            Some(O::c(OFFSET as u8)),
+        )
+        .to_out(false, OutReg::Pos, x | y | z)
+        .last(),
+    ]);
+    insts.iter().flat_map(|i| i.words()).collect()
 }
 
 /// What a scene holds in one frame.
@@ -727,18 +785,26 @@ fn reproject_draws_the_world_once_and_warps_it_with_the_overlay_on_top() {
         ],
         "{t:#?}"
     );
-    // The world image is drawn with overscan: the camera's clip x and y
-    // scaled, z and w as they were.
-    let s = overscan_scale();
+    // The world image is drawn with overscan through the program's own
+    // viewport scale (x and y times the overscan, about the offset, the
+    // screen's centre): the camera, and so the clip position everything
+    // else in the program reads, is as the guest drew it.
+    let s = overscan_scale() as f32;
     let d = r.draws_since(before);
     let world: Vec<_> = d.iter().filter(|(c, _)| c.to_string() == w).collect();
-    let m = mat(&world[0].1, CAM, Layout::Rows);
-    for j in 0..4 {
-        assert!((m[0][j] - b.cam[0][j] * s).abs() < 1e-5);
-        assert!((m[1][j] - b.cam[1][j] * s).abs() < 1e-5);
-        assert!((m[2][j] - b.cam[2][j]).abs() < 1e-5);
-        assert!((m[3][j] - b.cam[3][j]).abs() < 1e-5);
-    }
+    let guest: Vec<_> = d.iter().filter(|(c, _)| *c == g).collect();
+    let (wc, gc) = (&world[0].1.shader.constants, &guest[0].1.shader.constants);
+    assert_eq!(wc[CAM..CAM + 4], gc[CAM..CAM + 4]);
+    assert_eq!(
+        wc[SCALE],
+        [
+            gc[SCALE][0] * s,
+            gc[SCALE][1] * s,
+            gc[SCALE][2],
+            gc[SCALE][3]
+        ]
+    );
+    assert_eq!(wc[OFFSET], gc[OFFSET]);
     // The overlay draws as the guest drew it.
     let overlay: Vec<_> = d.iter().filter(|(c, _)| *c == shown).collect();
     assert_eq!(*overlay[0].1.shader.constants, {
@@ -1003,16 +1069,16 @@ fn menu_frames_are_shown_as_the_guest_drew_them() {
 type Mapping<'a> = &'a dyn Fn(usize) -> ([f32; 2], [f32; 2]);
 
 /// A frame of `s` whose world draws map to the target through `screen(i)`
-/// (viewport scale and offset registers) for level draw `i`.
+/// (the program's viewport scale and offset constants) for level draw `i`.
 fn frame_mapped(r: &mut Rig, s: &Scene, screen: Mapping<'_>) {
     let (color, depth) = (r.color, r.depth);
     r.b.clear(color, Some(depth), Clear::default()).unwrap();
-    let world = world_block(&s.cam);
     for (i, mesh) in [1, 2, 3].into_iter().enumerate() {
-        let mut d = draw(world, mesh, false);
+        let mut c = world_block(&s.cam);
         let (scale, offset) = screen(i);
-        d.hw.viewport_scale = [scale[0], scale[1], 1.0, 0.0];
-        d.hw.viewport_offset = [offset[0], offset[1], 0.0, 0.0];
+        c[SCALE] = [scale[0], scale[1], 1.0, 0.0];
+        c[OFFSET] = [offset[0], offset[1], 0.0, 0.0];
+        let d = draw(c, mesh, false);
         r.b.draw(color, Some(depth), &d, [None; 4]).unwrap();
     }
     r.b.draw(color, None, &draw(hud_block(), 1000, true), [None; 4])
@@ -1180,4 +1246,336 @@ fn a_render_target_a_frame_samples_is_kept_as_it_was_drawn() {
     }
     let st = *r.b.stats().lock().unwrap();
     assert_eq!((st.blended_frames, st.unsure), (0, 1));
+}
+
+#[test]
+fn a_shadow_map_the_world_samples_does_not_hold_the_frame() {
+    // The texture a depth level is sampled through is the level's texels
+    // as of the call (the backend makes it, once each time the level is
+    // drawn), not a view of the surface: a frame that samples it can be
+    // made again. Every gameplay frame with dynamic shadows samples one.
+    for mode in modes() {
+        let mut r = rig_with(60, mode);
+        r.b.inner_mut().sample_depth = true;
+        let (a, b) = turning();
+        for i in 1..=3u64 {
+            let s = if i % 2 == 1 { &a } else { &b };
+            let shadow =
+                r.b.create_surface(D3DFormat::D24S8, 256, 256, true)
+                    .unwrap();
+            let tex = r.b.depth_level_texture(shadow).unwrap().unwrap();
+            let (color, depth) = (r.color, r.depth);
+            r.at(i * F);
+            r.b.clear(color, Some(depth), Clear::default()).unwrap();
+            let world = world_block(&s.cam);
+            for mesh in [1, 2, 3] {
+                let t = (mesh == 2).then_some(&tex);
+                r.b.draw(
+                    color,
+                    Some(depth),
+                    &draw(world, mesh, false),
+                    [t, None, None, None],
+                )
+                .unwrap();
+            }
+            r.b.draw(color, None, &draw(hud_block(), 1000, true), [None; 4])
+                .unwrap();
+            r.b.present(color, 4).unwrap();
+        }
+        let st = *r.b.stats().lock().unwrap();
+        assert_eq!((st.unsure, st.blended_frames), (0, 2), "{mode:?}: {st}");
+    }
+}
+
+/// A frame's level draws for a camera.
+type Draws<'a> = &'a dyn Fn(&Mat4) -> Vec<ResolvedDraw>;
+
+/// A frame of `s` whose level draws are `draws(cam)`, then the weapon and
+/// the HUD.
+fn frame_with(r: &mut Rig, s: &Scene, draws: Draws<'_>) {
+    let (color, depth) = (r.color, r.depth);
+    r.b.clear(color, Some(depth), Clear::default()).unwrap();
+    for d in draws(&s.cam) {
+        let depth = (!d.layout.pretransformed).then_some(depth);
+        r.b.draw(color, depth, &d, [None; 4]).unwrap();
+    }
+    if let Some(m) = s.weapon {
+        let mut c = block();
+        write(&mut c, CAM, Layout::Rows, 4, &m);
+        r.b.draw(color, Some(depth), &draw(c, 900, false), [None; 4])
+            .unwrap();
+    }
+    r.b.draw(color, None, &draw(hud_block(), 1000, true), [None; 4])
+        .unwrap();
+    r.b.present(color, 4).unwrap();
+}
+
+/// E1 over two turning frames of `draws`: whether the guest's frame was
+/// shown as drawn (and nothing warped), and the counters.
+fn reproject_pair(draws: &dyn Fn(&Mat4) -> Vec<ResolvedDraw>) -> (bool, d3d::interp::InterpStats) {
+    let mut r = rig_with(60, Mode::Reproject { ahead: false });
+    let (a, b) = turning();
+    r.at(F);
+    frame_with(&mut r, &a, draws);
+    let before = r.calls();
+    r.at(2 * F);
+    frame_with(&mut r, &b, draws);
+    r.b.idle_at(2 * F + F / 2);
+    let held = r.presents_since(before) == vec![(r.color, 4)] && warps_since(&r, before).is_empty();
+    (held, *r.b.stats().lock().unwrap())
+}
+
+fn level(cam: &Mat4) -> Vec<ResolvedDraw> {
+    [1, 2, 3]
+        .into_iter()
+        .map(|mesh| draw(world_block(cam), mesh, false))
+        .collect()
+}
+
+#[test]
+fn reproject_reads_the_screen_mapping_from_the_program_not_d3ds_registers() {
+    // D3D's viewport registers (c58/c59, `hw`) say the whole target, but
+    // the program maps with its own constants, as Halo 2's do (c10/c11):
+    // the registers are not what the draws used.
+    let stale = |mut d: ResolvedDraw| {
+        d.hw.viewport_scale = [320.0, -240.0, 1.0, 0.0];
+        d.hw.viewport_offset = [320.0, 240.0, 0.0, 0.0];
+        d
+    };
+    // The program maps clip space to pixels one to one (screen space), or
+    // onto the top-left quarter: the warp would zoom and turn the picture
+    // about the wrong point, so it moves up and to the left.
+    for (name, scale, offset) in [
+        ("screen space", [1.0, 1.0], [0.0, 0.0]),
+        ("quarter", [160.0, -120.0], [160.0, 120.0]),
+    ] {
+        let (held, st) = reproject_pair(&|cam| {
+            level(cam)
+                .into_iter()
+                .map(|d| {
+                    let mut c = *d.shader.constants;
+                    c[SCALE] = [scale[0], scale[1], 1.0, 0.0];
+                    c[OFFSET] = [offset[0], offset[1], 0.0, 0.0];
+                    stale(draw(c, d.vertex_count, false))
+                })
+                .collect()
+        });
+        assert!(held, "{name}: {st}");
+        assert_eq!((st.size_mismatch, st.captures), (1, 0), "{name}: {st}");
+    }
+    // The program's mapping covers the target and D3D's registers were
+    // never pushed: warped.
+    let (held, st) = reproject_pair(&level);
+    assert!(!held && st.size_mismatch == 0 && st.warps > 0, "{st}");
+}
+
+#[test]
+fn reproject_holds_a_world_it_cannot_overscan() {
+    let cases: [(&str, Draws<'_>); 5] = [
+        // A pre-transformed (screen-space) draw among the level's: its
+        // pixels are not overscanned, so the warp would zoom it.
+        ("pre-transformed", &|cam| {
+            let mut v = level(cam);
+            v.insert(1, draw(block(), 50, true));
+            v
+        }),
+        // An orthographic (screen-space) quad among the level's: it would
+        // shrink with the overscan and turn with the world.
+        ("orthographic", &|cam| {
+            let mut v = level(cam);
+            v.insert(1, draw(hud_block(), 53, false));
+            v
+        }),
+        // A program whose screen mapping is not a viewport transform the
+        // replay can read (it writes its position as it reads it).
+        ("unknown program", &|cam| {
+            let mut v = level(cam);
+            let mut d = draw(world_block(cam), 51, false);
+            let mov = Inst::mac(MacOp::Mov, Some(O::v(0)), None, None)
+                .to_out(false, OutReg::Pos, 0xF)
+                .last();
+            d.shader.vertex = VertexProcessing::Program {
+                start: 0,
+                microcode: mov.words().to_vec().into(),
+            };
+            v.push(d);
+            v
+        }),
+        // Fixed-function vertices.
+        ("fixed function", &|cam| {
+            let mut v = level(cam);
+            let mut d = draw(world_block(cam), 52, false);
+            d.shader.vertex = VertexProcessing::FixedFunction { fvf: 0x142 };
+            v.push(d);
+            v
+        }),
+        // A level draw scissored to part of the target: the overscanned
+        // image would be cut at the guest's rectangle.
+        ("scissored", &|cam| {
+            let mut v = level(cam);
+            v[1].clip = Some(d3d::backend::PixelRect {
+                x: 0,
+                y: 0,
+                width: 320,
+                height: 480,
+            });
+            v
+        }),
+    ];
+    for (name, draws) in cases {
+        let (held, st) = reproject_pair(draws);
+        assert!(held, "{name}: {st}");
+        assert_eq!((st.size_mismatch, st.captures), (1, 0), "{name}: {st}");
+    }
+}
+
+#[test]
+fn reproject_holds_level_draws_after_the_overlay_starts() {
+    // A level draw after the first-person weapon would go on top of the
+    // warped world unwarped, at frame N's camera: held.
+    let mut r = rig_with(60, Mode::Reproject { ahead: false });
+    let (a, b) = turning();
+    for (i, s) in [a, b].iter().enumerate() {
+        let (color, depth) = (r.color, r.depth);
+        r.at((i as u64 + 1) * F);
+        r.b.clear(color, Some(depth), Clear::default()).unwrap();
+        let world = world_block(&s.cam);
+        for mesh in [1, 2] {
+            r.b.draw(color, Some(depth), &draw(world, mesh, false), [None; 4])
+                .unwrap();
+        }
+        let mut c = block();
+        write(&mut c, CAM, Layout::Rows, 4, &weapon());
+        r.b.draw(color, Some(depth), &draw(c, 900, false), [None; 4])
+            .unwrap();
+        r.b.draw(color, Some(depth), &draw(world, 3, false), [None; 4])
+            .unwrap();
+        r.b.present(color, 4).unwrap();
+    }
+    let st = *r.b.stats().lock().unwrap();
+    assert_eq!(
+        (st.blended_frames, st.size_mismatch, st.captures),
+        (0, 1, 0),
+        "{st}"
+    );
+}
+
+/// A loading screen: a pre-transformed background, particles drawn with a
+/// centred perspective camera they share, and text.
+fn loading_frame(r: &mut Rig, turn: f64) {
+    let (color, depth) = (r.color, r.depth);
+    r.b.clear(color, Some(depth), Clear::default()).unwrap();
+    r.b.draw(color, None, &draw(block(), 7, true), [None; 4])
+        .unwrap();
+    let cam = camera(0.0, turn);
+    for mesh in 20..26 {
+        r.b.draw(
+            color,
+            None,
+            &draw(world_block(&cam), mesh, false),
+            [None; 4],
+        )
+        .unwrap();
+    }
+    r.b.draw(color, None, &draw(hud_block(), 1000, false), [None; 4])
+        .unwrap();
+    r.b.present(color, 4).unwrap();
+}
+
+#[test]
+fn loading_screens_are_shown_as_the_guest_drew_them() {
+    for ahead in [false, true] {
+        let mut r = rig_with(60, Mode::Reproject { ahead });
+        let before = r.calls();
+        for i in 1..=4 {
+            r.at(i * F);
+            loading_frame(&mut r, 0.05 * i as f64);
+            r.b.idle_at(i * F + F / 2);
+        }
+        assert_eq!(
+            r.presents_since(before),
+            vec![(r.color, 4); 4],
+            "ahead {ahead}"
+        );
+        assert!(warps_since(&r, before).is_empty(), "ahead {ahead}");
+        let st = *r.b.stats().lock().unwrap();
+        assert_eq!(
+            (st.blended_frames, st.captures),
+            (0, 0),
+            "ahead {ahead}: {st}"
+        );
+    }
+}
+
+/// Runs the test program on world point `v` with constants `c`: (window
+/// position, `oT0`).
+fn run_program(c: &Block, v: [f32; 3]) -> ([f32; 4], [f32; 4]) {
+    let p = shaders::vsh::Program::from_words(shaders::vsh::ProgramKind::Normal, &program_words())
+        .unwrap();
+    let mut inputs = [[0.0f32; 4]; 16];
+    inputs[0] = [v[0], v[1], v[2], 1.0];
+    let mut c = *c;
+    let out = shaders::vsh::interp::run(&p, &inputs, &mut c);
+    (out.get(OutReg::Pos), out.get(OutReg::T(0)))
+}
+
+#[test]
+fn the_world_image_keeps_screen_space_lookups_where_the_guest_had_them() {
+    // Level draws that look a screen-space texture up from their clip
+    // position (Halo 2 has many: `dp4 oT0.x, r12, c8`) must read the same
+    // texel for the same point in the world image, while the point itself
+    // moves in by the overscan about the screen's centre.
+    let mut r = rig_with(60, Mode::Reproject { ahead: false });
+    let (a, b) = turning();
+    let lookup = |mut c: Block| {
+        c[LOOKUP] = [0.5, 0.0, 0.0, 0.5];
+        c[LOOKUP + 1] = [0.0, -0.5, 0.0, 0.5];
+        c
+    };
+    let draws = move |cam: &Mat4| -> Vec<ResolvedDraw> {
+        [1, 2, 3]
+            .into_iter()
+            .map(|mesh| draw(lookup(world_block(cam)), mesh, false))
+            .collect()
+    };
+    r.at(F);
+    frame_with(&mut r, &a, &draws);
+    let before = r.calls();
+    r.at(2 * F);
+    frame_with(&mut r, &b, &draws);
+    let shown = r.presents_since(before)[0].0;
+    assert_ne!(shown, r.color, "warped");
+    let d = r.draws_since(before);
+    let guest = &d.iter().find(|(c, _)| *c == r.color).unwrap().1;
+    let world = &d
+        .iter()
+        .find(|(c, x)| *c != r.color && *c != shown && x.vertex_count == 1)
+        .unwrap()
+        .1;
+    let s = overscan_scale() as f32;
+    // In front of the camera (it looks down -z).
+    for p in [[0.5, 0.3, -10.0], [3.0, -2.0, -40.0], [-1.0, 1.0, -5.0]] {
+        let (gp, gt) = run_program(&guest.shader.constants, p);
+        let (wp, wt) = run_program(&world.shader.constants, p);
+        assert_eq!(gt, wt, "{p:?}: the lookup");
+        for (i, centre) in [(0, 320.0), (1, 240.0)] {
+            let want = centre + s * (gp[i] - centre);
+            assert!((wp[i] - want).abs() < 1e-3, "{p:?}: {wp:?} vs {gp:?}");
+        }
+    }
+}
+
+#[test]
+fn the_held_counters_say_why() {
+    let (_, st) = reproject_pair(&|cam| {
+        let mut v = level(cam);
+        v.insert(1, draw(block(), 50, true));
+        v
+    });
+    let line = st.to_string();
+    assert!(
+        line.contains("size_mismatch 1 (extent 0 mapping 0 screen 1 overlay 0)"),
+        "{line}"
+    );
+    assert!(line.contains("unsure 0 (camera 0 unpinned 0)"), "{line}");
 }
