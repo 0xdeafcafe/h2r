@@ -519,6 +519,16 @@ impl d3d::backend::Backend for Headless {
     fn idle(&mut self) -> Option<std::time::Instant> {
         self.0.idle()
     }
+    // Occlusion culling's depth grid (d3d::occlusion).
+    fn request_depth_grid(
+        &mut self,
+        surface: u32,
+        request: d3d::DepthGridRequest,
+        sink: d3d::DepthGridSink,
+    ) -> Result<bool, String> {
+        let r = self.0.request_depth_grid(surface, request, sink);
+        self.forget(r)
+    }
     fn present_with_gamma(&mut self, surface: u32, flags: u32, gamma: Option<&[u8; 768]>) -> Result<(), String> {
         let r = self.0.present_with_gamma(surface, flags, gamma);
         self.forget(r)
