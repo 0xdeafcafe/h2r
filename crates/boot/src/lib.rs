@@ -843,12 +843,17 @@ pub fn run_hosted_with_live(
             map_override::map_id(&mut v, map)
         }));
     }
-    // A matchmaking game's record names its playlist (docs/live/
-    // live-matchmaking.md §8); the server fills in the hopper's title.
+    // A matchmaking game's record names its playlist and Live session
+    // (docs/live/live-matchmaking.md §8.3, §8.4): the server fills in the
+    // hopper's title and finds the arbitration round by the session.
     if let (Some(t), Some(hle)) = (&_telemetry, &_live) {
         let hle = Arc::clone(hle);
         t.set_playlist_locator(Box::new(move || {
-            hle.playlist().map(|id| telemetry::Playlist { name: None, id: id.to_string() })
+            hle.matchmade().map(|(id, session)| telemetry::Playlist {
+                name: None,
+                id: id.to_string(),
+                session_id: Some(session),
+            })
         }));
     }
     if let (Some(hle), Some(vfs)) = (&_live, k.vfs()) {

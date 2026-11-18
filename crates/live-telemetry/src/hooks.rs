@@ -547,6 +547,7 @@ mod tests {
             Some(Playlist {
                 name: None,
                 id: "1".into(),
+                session_id: Some("0123456789abcdef".into()),
             })
         }));
         let mut guest = fixture::memory();
@@ -575,6 +576,7 @@ mod tests {
         let game = &started["data"];
         assert_eq!(game["kind"], "matchmaking", "{started}");
         assert_eq!(game["playlist_id"], "1");
+        assert_eq!(game["session_id"], "0123456789abcdef");
         assert!(game.get("playlist").is_none_or(|p| p.is_null()));
         let _ = std::fs::remove_file(path);
     }

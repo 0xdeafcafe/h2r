@@ -120,6 +120,12 @@ pub struct NewGame {
     pub playlist: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub playlist_id: Option<String>,
+    /// Matchmaking only: the Live session the game was played in (16
+    /// lowercase hex digits, `arbitration::valid_id`). A ranked game ranks
+    /// the humans who registered an arbitration round under it
+    /// (docs/live/live-matchmaking.md §8.4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     /// Campaign only: `easy`, `normal`, `heroic` or `legendary`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub difficulty: Option<String>,
@@ -762,6 +768,14 @@ pub fn validate_new(game: &NewGame) -> Result<(), String> {
         && !valid_id(id)
     {
         return Err("playlist_id must be [A-Za-z0-9_-]{1,64}".into());
+    }
+    if let Some(id) = &game.session_id {
+        if kind != "matchmaking" {
+            return Err("session_id is for matchmaking games".into());
+        }
+        if !crate::arbitration::valid_id(id) {
+            return Err("session_id must be 16 lowercase hex digits".into());
+        }
     }
     if let Some(difficulty) = &game.difficulty {
         if kind != "campaign" {
@@ -1640,6 +1654,30 @@ mod tests {
             serde_json::from_value::<Winner>(json!({"player": 3})).unwrap(),
             Winner::Player { player: 3 }
         );
+    }
+
+    #[test]
+    fn a_matchmaking_game_names_its_live_session() {
+        let mm = NewGame {
+            map: "lockout".into(),
+            mode: "multiplayer".into(),
+            kind: Some("matchmaking".into()),
+            playlist_id: Some("1".into()),
+            session_id: Some("0123456789abcdef".into()),
+            ..NewGame::default()
+        };
+        assert_eq!(validate_new(&mm), Ok(()));
+        let upper = NewGame {
+            session_id: Some("0123456789ABCDEF".into()),
+            ..mm.clone()
+        };
+        assert!(validate_new(&upper).is_err());
+        let custom = NewGame {
+            kind: Some("custom".into()),
+            playlist_id: None,
+            ..mm.clone()
+        };
+        assert!(validate_new(&custom).is_err());
     }
 
     #[test]

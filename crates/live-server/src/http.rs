@@ -296,6 +296,10 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         .route("/v1/ranks/{playlist}", get(crate::ranks::leaderboard))
         .route("/v1/rank-stats", get(crate::ranks::stats))
         .route(
+            "/v1/arbitration/{session}/{round}/{action}",
+            axum::routing::post(crate::arbitration::post_round),
+        )
+        .route(
             "/v1/accounts/{gamertag}/ranks",
             get(crate::ranks::player_ranks),
         )

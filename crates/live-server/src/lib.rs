@@ -25,6 +25,7 @@
 pub mod admin;
 pub mod app;
 pub mod art;
+pub mod arbitration;
 pub mod bans;
 pub mod blobs;
 pub mod caching;

@@ -172,6 +172,8 @@ pub struct Live {
     pub(crate) session_writes: tokio::sync::Mutex<()>,
     /// Serializes ranking, so a game is ranked once.
     pub(crate) rank_writes: tokio::sync::Mutex<()>,
+    /// Serializes arbitration writes, so a round is registered once per account.
+    pub(crate) round_writes: tokio::sync::Mutex<()>,
     pub(crate) local_signin: crate::local_signin::Offers,
     pub(crate) relays: crate::relay::Relays,
     pub(crate) invites: Arc<crate::invites::Invites>,
@@ -253,9 +255,11 @@ fn may_write(author: &Author, stream: &str, kind: &str) -> bool {
     if stream.starts_with("session-")
         || stream.starts_with("reports-")
         || stream.starts_with("rank-")
+        || stream.starts_with("round-")
         || stream.starts_with("bans-")
         || stream.starts_with("mutes-")
         || kind == live_proto::rank::CHANGED
+        || live_proto::arbitration::KINDS.contains(&kind)
         || live_proto::maps::KINDS.contains(&kind)
         || live_proto::reports::KINDS.contains(&kind)
         || live_proto::bans::KINDS.contains(&kind)
@@ -517,6 +521,7 @@ impl Live {
             team_writes: Default::default(),
             session_writes: Default::default(),
             rank_writes: Default::default(),
+            round_writes: Default::default(),
             local_signin: Default::default(),
             relays: Default::default(),
             invites,

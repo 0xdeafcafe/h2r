@@ -179,6 +179,10 @@ enum Work {
     Report { user: u64, request: ReportRequest },
     MuteList { user: u64 },
     Mute { user: u64, target: u64, mute: bool },
+    Arbitration {
+        path: String,
+        body: String,
+    },
     Ranks {
         leaderboards: Vec<u32>,
         xuids: Vec<u64>,
@@ -317,6 +321,12 @@ impl Service {
             },
         };
         self.submit(s, Work::Report { user, request })
+    }
+    /// An arbitration call (docs/live/live-matchmaking.md §8.4), posted
+    /// for every account signed in on this console: `path` under
+    /// `/arbitration/`.
+    pub fn arbitrate(&self, s: &Session, path: String, body: String) -> Result<Pending, u32> {
+        self.submit(s, Work::Arbitration { path, body })
     }
     /// `user`'s mute list (docs/live/live-voice.md §3.6).
     pub fn mute_list(&self, s: &Session, user: u64) -> Result<Pending, u32> {
@@ -1238,6 +1248,30 @@ impl Worker {
                     )
                     .map_err(Error::result)?;
                 Ok(Reply::Mutes(list.items.iter().map(|e| e.xuid.0).collect()))
+            }
+            Work::Arbitration { path, body } => {
+                let active = self
+                    .active
+                    .as_ref()
+                    .filter(|a| a.session.id == c.session.id)
+                    .ok_or(NO_SESSION)?;
+                if active.users.is_empty() {
+                    return Err(NO_USER);
+                }
+                for user in active.users.values() {
+                    self.response(
+                        self.request(
+                            "POST",
+                            &format!("/arbitration/{path}"),
+                            user,
+                            lxm::GAMES_WRITE,
+                        ),
+                        Some(body),
+                        64 * 1024,
+                    )
+                    .map_err(Error::result)?;
+                }
+                Ok(Reply::Done)
             }
             Work::Mute { user, target, mute } => {
                 let active = self

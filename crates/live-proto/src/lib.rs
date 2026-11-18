@@ -5,6 +5,7 @@
 //!
 //! No runtime and no I/O, so the recomp can link it without tokio.
 
+pub mod arbitration;
 pub mod audit;
 pub mod bans;
 pub mod bots;
