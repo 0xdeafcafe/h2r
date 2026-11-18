@@ -40,6 +40,7 @@ fn ad(addr: Option<&str>, visibility: Visibility) -> NewSession {
         skulls: None,
         campaign: None,
         ping_ms: None,
+        variant_ext: None,
     }
 }
 

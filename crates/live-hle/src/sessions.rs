@@ -57,6 +57,9 @@ pub struct LocalSession {
     pub campaign: Option<live_proto::session::Campaign>,
     /// A co-op lobby's measured round trip to its guest, in ms.
     pub ping_ms: Option<u16>,
+    /// The game variant's h2recomp options for the host's next game
+    /// (docs/game/game-options.md section 3), when the host set them.
+    pub variant_ext: Option<live_proto::session::VariantExt>,
 }
 struct Record {
     session: LocalSession,
@@ -128,6 +131,9 @@ pub(crate) struct Sessions {
     map_probe: Option<MapProbe>,
     /// The host's multiplayer skulls, for new and updated advertisements.
     skulls: Option<Vec<u8>>,
+    /// The host's variant options for its next game, for new and updated
+    /// advertisements.
+    variant_ext: Option<live_proto::session::VariantExt>,
     /// Reads them afresh (boot: the signed-in profiles' choice) each time
     /// the game advertises or updates a lobby.
     skulls_probe: Option<SkullsProbe>,
@@ -241,6 +247,41 @@ impl Sessions {
                 }
             }
             record.session.skulls = self.skulls.clone();
+        }
+    }
+    /// The host's variant options for the game it is starting (boot, at
+    /// each multiplayer start as a Live host): new advertisements carry
+    /// them, and open ones are updated now, so guests that look again find
+    /// them before their own start.
+    pub fn set_variant_ext(
+        &mut self,
+        ext: Option<live_proto::session::VariantExt>,
+        service: Option<&Service>,
+        connection: Option<&Session>,
+    ) {
+        self.variant_ext = ext;
+        self.background.retain(|p| p.take().is_none());
+        let Some(ext) = self.variant_ext.clone() else {
+            return;
+        };
+        for (id, record) in &mut self.records {
+            if record.session.variant_ext.as_ref() == Some(&ext) {
+                continue;
+            }
+            if let (Some(service), Some(connection)) = (service, connection) {
+                let request = MatchRequest::Update {
+                    id: live_proto::sign::hex(id),
+                    update: live_proto::session::Update {
+                        variant_ext: Some(ext.clone()),
+                        ..Default::default()
+                    },
+                };
+                match service.match_request(connection, request) {
+                    Ok(p) => self.background.push(p),
+                    Err(_) => continue,
+                }
+            }
+            record.session.variant_ext = Some(ext.clone());
         }
     }
     /// The host armed (Some) or left (None) a co-op campaign on its co-op
@@ -520,6 +561,7 @@ impl Sessions {
                             skulls: self.advertised_skulls(),
                             campaign: self.coop.clone(),
                             ping_ms: self.coop.as_ref().and(self.coop_ping),
+                            variant_ext: self.variant_ext.clone(),
                         },
                     )
                 } else {
@@ -532,6 +574,9 @@ impl Sessions {
                 session.slots = slots;
                 session.visibility = coop_visibility(self.visibility, self.coop.is_some());
                 session.skulls = self.advertised_skulls();
+                if self.variant_ext.is_some() {
+                    session.variant_ext = self.variant_ext.clone();
+                }
                 let was_coop = session.campaign.clone();
                 session.campaign = self.coop.clone();
                 // A session keeps its map id once it has one (the wire has
@@ -596,6 +641,12 @@ impl Sessions {
                                     .get(&id)
                                     .is_none_or(|r| r.session.skulls != session.skulls)
                                     .then(|| session.skulls.clone().unwrap_or_default()),
+                                // Only a change, as for the skulls.
+                                variant_ext: session.variant_ext.clone().filter(|v| {
+                                    self.records
+                                        .get(&id)
+                                        .is_none_or(|r| r.session.variant_ext.as_ref() != Some(v))
+                                }),
                                 ..Default::default()
                             },
                         }
@@ -1066,6 +1117,7 @@ fn advertisement(s: &LocalSession) -> live_proto::session::NewSession {
         skulls: s.skulls.clone(),
         campaign: s.campaign.clone(),
         ping_ms: s.ping_ms,
+        variant_ext: s.variant_ext.clone(),
     }
 }
 /// Whether a new round trip is worth a session update: it appeared, went,
