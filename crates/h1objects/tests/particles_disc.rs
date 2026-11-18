@@ -596,3 +596,155 @@ fn every_particle_converts() {
     println!("{parts} particles converted; stems {stems_named:?}");
     assert!(parts > 0);
 }
+
+/// Survey: Halo 1 effect particles (event `+0x38`, `0xe8` each): per
+/// 4-byte word the value range over every distinct record, then sample
+/// records with their event's duration bounds (`N` of them).
+#[test]
+#[ignore]
+fn halo1_effect_particle_survey() {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut words_at: BTreeMap<usize, BTreeMap<u32, usize>> = BTreeMap::new();
+    let mut samples = Vec::new();
+    let mut durations: BTreeMap<String, usize> = BTreeMap::new();
+    for (_, m) in h1_maps() {
+        for t in m.tags().iter().filter(|t| t.group == Group::new(b"effe")) {
+            if !seen.insert(t.name.clone()) {
+                continue;
+            }
+            let b = m.tag_data(t).unwrap();
+            let Some(ev) = Block::read(b, 0x34) else { continue };
+            let evs = m.block(ev, 0x44).unwrap().to_vec();
+            for e in evs.chunks_exact(0x44) {
+                let Some(pb) = Block::read(e, 0x38) else { continue };
+                if pb.count == 0 {
+                    continue;
+                }
+                *durations.entry(words(e, 0x8, 0x18)).or_default() += 1;
+                let ps = m.block(pb, 0xe8).unwrap().to_vec();
+                for p in ps.chunks_exact(0xe8) {
+                    for o in (0..0xe8).step_by(4) {
+                        *words_at.entry(o).or_default().entry(u32_at(p, o)).or_default() += 1;
+                    }
+                    if samples.len() < 400 {
+                        let name = TagRef::read(p, 0x54).and_then(|r| m.tag(r.id).ok()).map(|x| x.name.clone()).unwrap_or_default();
+                        samples.push(format!("{} [{}] {name}\n   {}\n   {}\n   {}\n   {}", t.name, words(e, 0x8, 0x18), words(p, 0, 0x3c), words(p, 0x3c, 0x78), words(p, 0x78, 0xb4), words(p, 0xb4, 0xe8)));
+                    }
+                }
+            }
+        }
+    }
+    for (o, v) in &words_at {
+        let n: usize = v.values().sum();
+        let nz: usize = v.iter().filter(|(w, _)| **w != 0).map(|(_, c)| c).sum();
+        let mut top: Vec<_> = v.iter().collect();
+        top.sort_by_key(|x| std::cmp::Reverse(*x.1));
+        let show: Vec<String> = top.iter().take(6).map(|(w, c)| {
+            let f = f32::from_bits(**w);
+            if f.is_finite() && f.abs() > 1e-4 && f.abs() < 1e6 { format!("{f}x{c}") } else { format!("{w:#x}x{c}") }
+        }).collect();
+        println!("{o:#05x}: nonzero {nz}/{n}, {} distinct: {}", v.len(), show.join(" "));
+    }
+    let mut d: Vec<_> = durations.into_iter().collect();
+    d.sort_by_key(|x| std::cmp::Reverse(x.1));
+    println!("event delay/duration bounds: {:?}", &d[..d.len().min(12)]);
+    let n = std::env::var("N").ok().and_then(|n| n.parse().ok()).unwrap_or(30);
+    for s in samples.iter().step_by((samples.len() / n).max(1)) {
+        println!("{s}");
+    }
+}
+
+/// Every Halo 1 effect particle of the campaign and multiplayer maps whose
+/// `part` converts becomes a particle system of its event in the converted
+/// effect: one emitter on the converted `prt3`, at Halo 1's location, its
+/// spawn rate times 30 times the event's duration Halo 1's count (the
+/// event lasting at least a tick), its lifespan, speed, cone and size
+/// Halo 1's.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn every_effect_particle_becomes_a_particle_system() {
+    use h1objects::base::Base;
+    use h1objects::convert::Converter;
+    use h1objects::particles::{TICK, effect_particles};
+    use tags::defs::{self, Defs, Record, Target, Val};
+    let d = Defs::builtin().group(map::FourCC(*b"effe")).unwrap();
+    let blk = |r: &Record, p: &str| -> Vec<Record> {
+        match r.at(p) {
+            Some(Val::Block(b)) => b.clone(),
+            x => panic!("{p}: {x:?}"),
+        }
+    };
+    let constant = |r: &Record, p: &str| -> f32 {
+        match r.at(&format!("{p}.function")) {
+            Some(Val::Data(b)) => f32::from_le_bytes(b[4..8].try_into().unwrap()),
+            x => panic!("{p}: {x:?}"),
+        }
+    };
+    let close = |a: f32, b: f32| (a - b).abs() <= 1e-3 * (1.0 + b.abs());
+    let (mut systems, mut effects) = (0usize, 0usize);
+    for (base_name, levels) in level_sets() {
+        let mut base_map = h2_map(base_name);
+        let base = Base::read(&mut base_map).unwrap();
+        for level in levels {
+            let Some(m) = h1_level(&level) else { continue };
+            let mut c = Converter::new(&m, &base);
+            let mut got = Vec::new();
+            for t in m.tags().iter().filter(|t| t.group == Group::new(b"effe")) {
+                let id = c.effect(t).unwrap_or_else(|e| panic!("{level} {}: {e}", t.name));
+                got.push((t, id));
+            }
+            for (t, id) in &got {
+                let name = format!("{level} {}", t.name);
+                let h1 = effect_particles(&m, t).unwrap();
+                // The converted ones, in order, per event.
+                let converted: Vec<Vec<_>> = h1
+                    .iter()
+                    .map(|(_, list)| {
+                        list.iter()
+                            .filter(|p| {
+                                p.particle
+                                    .and_then(|i| m.tag(i).ok())
+                                    .is_some_and(|pt| c.particle(pt).ok().flatten().is_some())
+                            })
+                            .cloned()
+                            .collect()
+                    })
+                    .collect();
+                let built = &c.tree.tags[id.0 as usize & 0xffff].1;
+                let r = defs::from_built(d, &built.root).unwrap_or_else(|e| panic!("{name}: {e}"));
+                let events = blk(&r, "events");
+                assert_eq!(events.len(), h1.len(), "{name}");
+                let mut any = false;
+                for ((ev, (dur, _)), list) in events.iter().zip(&h1).zip(&converted) {
+                    let ps = blk(ev, "particle_systems");
+                    if ps.is_empty() {
+                        continue;
+                    }
+                    any = true;
+                    let Some(Val::List(db)) = ev.at("duration_bounds") else { panic!() };
+                    let Val::Float(dmax) = db[1] else { panic!() };
+                    assert!(dmax >= TICK - 1e-6, "{name}: event shorter than a tick");
+                    let dm = ((dur[0] + dur[1]) * 0.5).max(TICK);
+                    assert_eq!(ps.len(), list.len(), "{name}: one system per converted particle");
+                    let mut h = list.iter();
+                    for s in &ps {
+                        let p = h.next().unwrap_or_else(|| panic!("{name}: more systems than particles"));
+                        let Some(Val::Ref { target: Target::Id(pid), .. }) = s.at("particle") else { panic!() };
+                        assert_eq!(c.tree.tags[pid.0 as usize & 0xffff].1.group, map::FourCC(*b"prt3"), "{name}");
+                        assert_eq!(s.at("location"), Some(&Val::Int(p.location.into())), "{name}");
+                        let e = &blk(s, "emitters")[0];
+                        let count = (f32::from(p.count[0].max(0)) + f32::from(p.count[1].max(p.count[0]).max(0))) * 0.5;
+                        assert!(close(constant(e, "property_8") * 30.0 * dm, count), "{name}: count");
+                        assert!(close(constant(e, "property_28"), (p.velocity[0] + p.velocity[1]) * 0.5), "{name}: speed");
+                        assert!(close(constant(e, "velocity_input"), p.velocity_cone.to_degrees()), "{name}: cone");
+                        assert!(close(constant(e, "property_48"), p.radius[0] + p.radius[1]), "{name}: size");
+                        systems += 1;
+                    }
+                }
+                effects += usize::from(any);
+            }
+        }
+    }
+    println!("{systems} particle systems on {effects} effects");
+    assert!(systems > 0);
+}

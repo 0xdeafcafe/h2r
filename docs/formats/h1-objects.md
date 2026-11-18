@@ -144,8 +144,38 @@ counts, one picked per particle), the collision and death effects
 shader, quad and UV window are those of the base's static particles
 (white, opaque, unit size, unrotated, first sprite; the most common
 set). Lifespan, fade, radius and frame animation, physics and the rest
-are emitter-side in Halo 2; no effect spawns a converted particle yet
-(the effect's particle systems need the emitter's spawn rate, below).
+are emitter-side in Halo 2.
+
+### Effect particles (event `+0x38`, `0xe8`) as particle systems
+
+Since converter version 58 (`particles::effect_particles`,
+`particle_system`, `Converter::effect_particle_systems`): each Halo 1
+effect particle whose `part` converts becomes a particle system of its
+event, one emitter on the proven slots ([effects.md](effects.md),
+"Emitter"). The record (V, `halo1_effect_particle_survey`): `+0x8`
+location, `+0x54` the `part`, `+0x6c`/`+0x6e` count bounds, `+0x70`
+distribution radius, `+0x84` velocity bounds, `+0x8c` velocity cone
+(radians), `+0x90` angular velocity bounds, `+0xa0` radius bounds,
+`+0xb0`/`+0xc0` tint bounds (alpha, red, green, blue), `+0xe0`/`+0xe4`
+scale words.
+
+- Count: the engine spawns `rate x 30 x dt` per step, `dt` the event's
+  step in seconds (E, the tick length `[0x510c54]+4` cut to the event's
+  remaining time), so the rate is Halo 1's count over 30 times the event's
+  duration, floored at a tick; an event with particles shorter than a
+  tick lasts one (retail's usual duration). Halo 1 creates the count at
+  once; over a longer event Halo 2 spreads it.
+- Lifespan (the `part`'s), speed (velocity), cone (degrees), size (twice
+  the radius: unproven), tint (packed ARGB: unproven) and alpha: Halo 1's
+  midpoints, as constants.
+- The words no slot names (system flags, fade and LOD distances; emitter
+  `+0x9c..+0xb8`; the constants' input words) are the base's most common
+  (`EmitterRole`).
+- Not carried: distribution radius, relative direction and offset,
+  angular velocity, the `part`'s physics (`pmov` null), the scale words.
+- A particle's collision or death effect that leads back to the effect
+  being converted is left out.
+
 
 ### `cont` (root `0x144`) and contrail attachments
 
@@ -564,6 +594,11 @@ ghost) and `phmo` (cyborg, warthog, ghost); every converted `coll` passes
 `tags::collision::Collision::validate`; and every reference word pair in
 the new tags (136) names a tag of that group in the built map.
 
+`tests/particles_disc.rs`: `every_effect_particle_becomes_a_particle_system`:
+every Halo 1 effect particle whose `part` converts (42,266 over the
+campaign and multiplayer conversions) is a particle system of its event
+on the converted `prt3`, at its location, its rate times 30 times the
+event's duration its count, its speed, cone and size Halo 1's.
 `tests/particles_disc.rs`: `every_particle_converts`: every Halo 1
 `part` of the campaign and multiplayer maps (2,301 conversions) reads
 back and writes the same, names its blend function's stem, its bitmap as
@@ -579,6 +614,9 @@ attachments name a contrail (236 attachments) names the converted one.
 
 ## Needs a game run
 
+- Particles: the spawn count over an event, the size factor (twice the
+  radius), the packed tint, null `pmov` (no gravity or drag), the base's
+  role words on the systems and emitters.
 - Contrails: Halo 1's spans as Halo 2's (the flags and the root's
   zeroed `+0x3c..+0x60`), and points with no physics (`pphy` null).
 

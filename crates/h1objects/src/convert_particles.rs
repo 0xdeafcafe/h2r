@@ -136,6 +136,10 @@ impl Converter<'_> {
         };
         let effect = |c: &mut Self, id: Option<h1map::TagId>, rep: &mut super::ObjectReport, what: &str| {
             let t = id.and_then(|i| c.h1.tag(i).ok())?;
+            if c.effects_open.contains(&t.id.0) {
+                rep.no_home.push(format!("{what}: {} leads back to the effect being converted, left out", t.name));
+                return None;
+            }
             let got = if t.group == h1map::Group::new(b"effe") {
                 c.effect(t).ok().map(|id| (FourCC(*b"effe"), id))
             } else if t.group == h1map::Group::new(b"snd!") {
@@ -165,5 +169,81 @@ impl Converter<'_> {
         );
         self.done.insert(tag.id.0, id);
         Ok(Some(id))
+    }
+}
+
+impl Converter<'_> {
+    /// The built `effe` root of Halo 1 effect `tag` with each event's Halo 1
+    /// particles as particle systems ([`particles::particle_system`]): those
+    /// whose `part` converts. An event that gains particle systems and is
+    /// shorter than a tick lasts a tick. Unchanged when none converts.
+    pub(super) fn effect_particle_systems(
+        &mut self,
+        tag: &Tag,
+        root: map::build::Block,
+        rep: &mut super::ObjectReport,
+    ) -> Result<map::build::Block> {
+        let events = particles::effect_particles(self.h1, tag)?;
+        let total: usize = events.iter().map(|e| e.1.len()).sum();
+        if total == 0 {
+            return Ok(root);
+        }
+        if self.emitter_role.is_none() {
+            self.emitter_role = Some(particles::emitter_role(self.base)?);
+        }
+        let Some(role) = self.emitter_role.clone().flatten() else {
+            rep.no_home.push(format!("{total} particles left out (the base has no emitter role)"));
+            return Ok(root);
+        };
+        let d = tags::defs::Defs::builtin()
+            .group(FourCC(*b"effe"))
+            .ok_or_else(|| crate::Error::Invalid("no effe definition".into()))?;
+        let inv = |e: tags::defs::DefError| crate::Error::Invalid(e.to_string());
+        let mut r = tags::defs::from_built(d, &root).map_err(inv)?;
+        let Some(tags::defs::Val::Block(mut evs)) = r.at("events").cloned() else {
+            return Ok(root);
+        };
+        self.effects_open.push(tag.id.0);
+        let (mut made, mut left) = (0usize, 0usize);
+        for (k, (duration, list)) in events.iter().enumerate() {
+            let Some(ev) = evs.get_mut(k) else { continue };
+            let d = (duration[0] + duration[1]) * 0.5;
+            let mut systems = Vec::new();
+            for p in list {
+                let part = p.particle.and_then(|i| self.h1.tag(i).ok());
+                let got = match part {
+                    Some(t) => match (self.particle(t), H1Particle::read(self.h1, t)) {
+                        (Ok(Some(id)), Ok(h)) => Some((id, h)),
+                        _ => None,
+                    },
+                    None => None,
+                };
+                let Some((id, h)) = got else {
+                    left += 1;
+                    continue;
+                };
+                systems.push(particles::particle_system(p, &h, id, &role, d)?);
+            }
+            if systems.is_empty() {
+                continue;
+            }
+            made += systems.len();
+            ev.set("particle_systems", tags::defs::Val::Block(systems)).map_err(inv)?;
+            if duration[1] < particles::TICK {
+                ev.set("duration_bounds", tags::defs::Val::floats(&[particles::TICK; 2])).map_err(inv)?;
+            }
+        }
+        self.effects_open.pop();
+        if left > 0 {
+            rep.no_home.push(format!("{left} particles left out (their part did not convert)"));
+        }
+        if made == 0 {
+            return Ok(root);
+        }
+        rep.no_home.push(format!(
+            "{made} particles as particle systems (count, lifespan, speed, cone, size, tint and alpha; distribution radius, direction, offset, angular velocity and physics not carried)"
+        ));
+        r.set("events", tags::defs::Val::Block(evs)).map_err(inv)?;
+        tags::defs::to_built(d, &r, &mut |_| None).map_err(inv)
     }
 }

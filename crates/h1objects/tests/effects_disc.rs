@@ -232,8 +232,17 @@ fn every_effect_rebuilds_from_its_definition() {
                         assert!(loc < locs.len() as i64, "{name}: location {loc}");
                     }
                     parts_kept += parts.len();
-                    for k in ["beams", "accelerations", "particle_systems"] {
+                    for k in ["beams", "accelerations"] {
                         assert!(block(x, k).is_empty(), "{name}: {k}");
+                    }
+                    // Halo 1's particles whose part converts
+                    // (tests/particles_disc.rs checks them).
+                    let systems = block(x, "particle_systems");
+                    assert!(systems.len() <= ev.particles, "{name}: particle systems");
+                    for s in systems {
+                        let (_, tag) = target(s, "particle");
+                        let tag = tag.unwrap_or_else(|| panic!("{name}: null particle"));
+                        assert_eq!(resolve(tree, tag), Some(FourCC(*b"prt3")), "{name}");
                     }
                 }
                 effects += 1;
@@ -288,7 +297,7 @@ fn every_effect_rebuilds_from_its_definition() {
                 for a in att {
                     let (_, tag) = target(a, "type");
                     let g = resolve(tree, tag.expect("attachment")).expect("resolves");
-                    assert!([*b"lsnd", *b"effe", *b"ligh"].contains(&g.0), "{name}: {g}");
+                    assert!([*b"lsnd", *b"effe", *b"ligh", *b"cont"].contains(&g.0), "{name}: {g}");
                     let marker = text(a, "marker");
                     assert!(
                         h1a.iter().any(|x| x.marker == marker && x.group.0.to_be_bytes() == g.0),
@@ -299,7 +308,7 @@ fn every_effect_rebuilds_from_its_definition() {
                     .iter()
                     .filter(|x| {
                         x.tag.is_some()
-                            && [*b"lsnd", *b"effe", *b"ligh"].contains(&x.group.0.to_be_bytes())
+                            && [*b"lsnd", *b"effe", *b"ligh", *b"cont"].contains(&x.group.0.to_be_bytes())
                     })
                     .count();
                 if att.len() != kept {

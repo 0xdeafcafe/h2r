@@ -358,12 +358,15 @@ pub struct H1Particle {
     pub sequences: [u16; 4],
     /// `+0xda` framebuffer blend function.
     pub blend: u16,
+    /// `+0x38` lifespan bounds, seconds.
+    pub lifespan: [f32; 2],
 }
 
 impl H1Particle {
     pub fn read(map: &H1Map, tag: &Tag) -> Result<Self> {
         let b = tag_bytes(map, tag, b"part", H1_PART_SIZE)?;
         let h = |o: usize| u16::from_le_bytes([b[o], b[o + 1]]);
+        let f = |o: usize| f32::from_le_bytes(b[o..o + 4].try_into().expect("4"));
         Ok(Self {
             flags: u32::from_le_bytes(b[0..4].try_into().expect("4")),
             bitmap: reference(map, b, 0x4),
@@ -371,6 +374,7 @@ impl H1Particle {
             death_effect: reference(map, b, 0x58),
             sequences: [h(0x98), h(0x9a), h(0x9c), h(0x9e)],
             blend: h(0xda),
+            lifespan: [f(0x38), f(0x3c)],
         })
     }
 
@@ -477,4 +481,257 @@ pub fn particle(
     }
     set(&mut r, "postprocess", Val::Block(vec![particle_postprocess(shader, bitmap)?]))?;
     defs::to_built(d, &r, &mut |_| None).map_err(|e| Error::Invalid(e.to_string()))
+}
+
+// ------------------------------------------------------ effect particles
+//
+// **Effect particles as particle systems.** A Halo 1 effect event's
+// particles (`+0x38`, `0xe8` each; `tests/particles_disc.rs`
+// `halo1_effect_particle_survey`, V) become the event's Halo 2 particle
+// systems, one emitter each, on the engine's emitter slots (E,
+// docs/formats/effects.md "Emitter"):
+//
+// - `+0x8` spawn rate: the engine creates `rate x 30 x dt` particles per
+//   step, `dt` the event's step in seconds (the game tick's length,
+//   `[0x510c54]+4`, cut to what is left of the event), so an event of
+//   duration `d` spawns `rate x 30 x d`. Halo 1's count (`+0x6c`, `+0x6e`
+//   bounds) is created at the event's start; the rate is the count over
+//   `30 x d`, the event's duration floored at one tick (`1/30`, retail's
+//   most common duration; an event with converted particles and a shorter
+//   duration is given one tick).
+// - `+0x18` lifespan: the particle's (`part +0x38` bounds).
+// - `+0x28` initial speed: Halo 1's velocity bounds (`+0x84`), world units
+//   per second in both.
+// - `+0x78` shape 0, its cone (`+0x8c`, degrees) Halo 1's velocity cone
+//   (`+0x8c`, radians).
+// - `+0x48` size: twice Halo 1's radius (`+0xa0` bounds), the sprite quad
+//   of the static particles spanning one unit (unproven: the quad's corner
+//   order is open).
+// - `+0x58` tint and `+0x68` alpha: Halo 1's tint bounds (`+0xb0`, `+0xc0`,
+//   alpha then RGB) as a packed colour and a scalar.
+//
+// Bounds become their midpoint. The record words nothing above names
+// (the particle system's flags, fade and LOD distances; the emitter's
+// `+0x9c..+0xb8`; each constant property's input words) are the base's
+// most common ([`EmitterRole`]). Halo 1's distribution radius, relative
+// direction and offset, angular velocity and physics have no proven slot
+// and are not carried.
+
+/// Halo 1 effect particle size.
+pub const H1_EFFECT_PARTICLE: usize = 0xe8;
+
+/// A Halo 1 effect particle (`0xe8`), the fields converted.
+#[derive(Clone, Debug, PartialEq)]
+pub struct H1EffectParticle {
+    /// `+0x8` index into the effect's locations.
+    pub location: i16,
+    /// `+0x54` the `part`.
+    pub particle: Option<H1TagId>,
+    /// `+0x6c`, `+0x6e` count bounds.
+    pub count: [i16; 2],
+    /// `+0x84` velocity bounds (world units per second), `+0x8c` cone
+    /// angle (radians).
+    pub velocity: [f32; 2],
+    pub velocity_cone: f32,
+    /// `+0xa0` radius bounds.
+    pub radius: [f32; 2],
+    /// `+0xb0`, `+0xc0` tint bounds, (alpha, red, green, blue).
+    pub tint: [[f32; 4]; 2],
+}
+
+/// Per event of a Halo 1 effect, its particles, with the event's
+/// duration bounds.
+pub fn effect_particles(map: &H1Map, tag: &Tag) -> Result<Vec<([f32; 2], Vec<H1EffectParticle>)>> {
+    let b = tag_bytes(map, tag, b"effe", crate::h1::EFFE_SIZE)?;
+    let mut out = Vec::new();
+    let Some(ev) = h1map::Block::read(b, 0x34) else { return Ok(out) };
+    let evs = map.block(ev, crate::h1::EFFE_EVENT)?.to_vec();
+    let f = |x: &[u8], o: usize| f32::from_le_bytes(x[o..o + 4].try_into().expect("4"));
+    let i = |x: &[u8], o: usize| i16::from_le_bytes([x[o], x[o + 1]]);
+    for e in evs.chunks_exact(crate::h1::EFFE_EVENT) {
+        let mut list = Vec::new();
+        if let Some(pb) = h1map::Block::read(e, 0x38) {
+            for p in map.block(pb, H1_EFFECT_PARTICLE)?.chunks_exact(H1_EFFECT_PARTICLE) {
+                let argb = |o: usize| [f(p, o), f(p, o + 4), f(p, o + 8), f(p, o + 0xc)];
+                list.push(H1EffectParticle {
+                    location: i(p, 0x8),
+                    particle: reference(map, p, 0x54),
+                    count: [i(p, 0x6c), i(p, 0x6e)],
+                    velocity: [f(p, 0x84), f(p, 0x88)],
+                    velocity_cone: f(p, 0x8c),
+                    radius: [f(p, 0xa0), f(p, 0xa4)],
+                    tint: [argb(0xb0), argb(0xc0)],
+                });
+            }
+        }
+        out.push(([f(e, 0x10), f(e, 0x14)], list));
+    }
+    Ok(out)
+}
+
+fn mid(b: [f32; 2]) -> f32 {
+    (b[0] + b[1]) * 0.5
+}
+
+/// One tick, seconds.
+pub const TICK: f32 = 1.0 / 30.0;
+
+/// The rate (particles per tick, the engine's `+0x8` unit) that spawns
+/// `count` over an event of `duration` seconds (floored at one tick).
+pub fn spawn_rate(count: [i16; 2], duration: f32) -> f32 {
+    let n = (f32::from(count[0].max(0)) + f32::from(count[1].max(count[0]).max(0))) * 0.5;
+    n / (30.0 * duration.max(TICK))
+}
+
+/// The base's emitter role: the most common particle-system words, emitter
+/// words (on shape-0 emitters) and per property slot the most common
+/// constant encoding.
+#[derive(Clone, Debug)]
+pub struct EmitterRole {
+    pub system: Vec<(&'static str, Val)>,
+    pub emitter: Vec<(&'static str, Val)>,
+    /// Per emitter property field, a constant property record of the base.
+    pub constants: Vec<(&'static str, Record)>,
+}
+
+/// Particle-system fields the role holds.
+pub const SYSTEM_ROLE_FIELDS: [&str; 8] =
+    ["unknown_c", "unknown_e", "unknown_10", "unknown_12", "unknown_14", "unknown_16", "fade", "lod"];
+/// Emitter fields the role holds.
+pub const EMITTER_ROLE_FIELDS: [&str; 3] = ["unknown_9c", "unknown_b0", "unknown_b4"];
+/// Emitter property fields.
+pub const EMITTER_PROPERTIES: [&str; 9] = [
+    "property_8", "lifespan", "property_28", "property_38", "property_48", "property_58", "property_68",
+    "shape_input", "velocity_input",
+];
+
+fn is_constant(r: &Record, colour: bool) -> bool {
+    let Some(Val::Data(b)) = r.at("function") else { return false };
+    let Ok(f) = tags::effects::function::Function::parse(b) else { return false };
+    f.kind == tags::effects::function::FunctionType::Constant
+        && f.flags & 1 == 0
+        && (f.flags & 0xf0 != 0) == colour
+}
+
+pub fn emitter_role(base: &crate::base::Base) -> Result<Option<EmitterRole>> {
+    use std::collections::BTreeMap;
+    let d = def(b"effe")?;
+    fn top<T: Clone>(m: BTreeMap<String, (usize, T)>) -> Option<T> {
+        m.into_iter()
+            .max_by_key(|(k, (n, _))| (*n, std::cmp::Reverse(k.clone())))
+            .map(|(_, (_, v))| v)
+    }
+    let mut systems: BTreeMap<String, (usize, Vec<(&'static str, Val)>)> = BTreeMap::new();
+    let mut emitters: BTreeMap<String, (usize, Vec<(&'static str, Val)>)> = BTreeMap::new();
+    let mut constants: BTreeMap<&'static str, BTreeMap<String, (usize, Record)>> = BTreeMap::new();
+    let tally = |m: &mut BTreeMap<String, (usize, Vec<(&'static str, Val)>)>, v: Vec<(&'static str, Val)>| {
+        m.entry(format!("{v:?}")).or_insert((0, v)).0 += 1;
+    };
+    for t in base.tags.iter().filter(|t| t.1 == FourCC(*b"effe")) {
+        let r = base.record(d, t.0)?;
+        for ev in block_of(&r, "events") {
+            for s in block_of(ev, "particle_systems") {
+                tally(&mut systems, SYSTEM_ROLE_FIELDS.iter().map(|f| (*f, s.at(f).cloned().unwrap_or(Val::Int(0)))).collect());
+                for e in block_of(s, "emitters") {
+                    if int(e, "emission_shape") != 0 {
+                        continue;
+                    }
+                    tally(&mut emitters, EMITTER_ROLE_FIELDS.iter().map(|f| (*f, e.at(f).cloned().unwrap_or(Val::Int(0)))).collect());
+                    for f in EMITTER_PROPERTIES {
+                        let Some(Val::Struct(p)) = e.at(f) else { continue };
+                        if !is_constant(p, f == "property_58") {
+                            continue;
+                        }
+                        let mut key = p.clone();
+                        // The encoding, not the value.
+                        if let Some(Val::Data(b)) = key.at("function").cloned() {
+                            let mut b = b.clone();
+                            b[4..12].fill(0);
+                            key.set("function", Val::Data(b)).map_err(|e| Error::Invalid(e.to_string()))?;
+                        }
+                        constants.entry(f).or_default().entry(format!("{key:?}")).or_insert((0, p.clone())).0 += 1;
+                    }
+                }
+            }
+        }
+    }
+    let (Some(system), Some(emitter)) = (top(systems), top(emitters)) else { return Ok(None) };
+    let mut list = Vec::new();
+    for f in EMITTER_PROPERTIES {
+        let Some(c) = constants.remove(f).and_then(top) else { return Ok(None) };
+        list.push((f, c));
+    }
+    Ok(Some(EmitterRole { system, emitter, constants: list }))
+}
+
+/// The role's constant for `field` with value `v` (a scalar), or the packed
+/// colour `argb` for the tint.
+fn constant_property(role: &EmitterRole, field: &str, v: f32, argb: Option<u32>) -> Result<Record> {
+    let mut p = role
+        .constants
+        .iter()
+        .find(|c| c.0 == field)
+        .map(|c| c.1.clone())
+        .ok_or_else(|| Error::Invalid(format!("no constant for {field}")))?;
+    let Some(Val::Data(b)) = p.at("function") else { return Err(Error::Invalid("constant".into())) };
+    let mut b = b.clone();
+    match argb {
+        Some(c) => b[4..8].copy_from_slice(&c.to_le_bytes()),
+        None => {
+            b[4..8].copy_from_slice(&v.to_le_bytes());
+            b[8..12].copy_from_slice(&v.to_le_bytes());
+        }
+    }
+    set(&mut p, "function", Val::Data(b))?;
+    Ok(p)
+}
+
+/// Halo 1's tint midpoint as a packed colour (alpha 0xff, the alpha is the
+/// emitter's own property).
+pub fn packed_tint(t: &[[f32; 4]; 2]) -> u32 {
+    let c = |k: usize| (((t[0][k] + t[1][k]) * 0.5).clamp(0.0, 1.0) * 255.0).round() as u32;
+    0xff00_0000 | c(1) << 16 | c(2) << 8 | c(3)
+}
+
+/// The `effe` particle-system record (one emitter) of a Halo 1 effect
+/// particle `p` whose `part` converted to `prt3` (`particle`), in an event
+/// of `duration` seconds.
+pub fn particle_system(
+    p: &H1EffectParticle,
+    part: &H1Particle,
+    particle: TagId,
+    role: &EmitterRole,
+    duration: f32,
+) -> Result<Record> {
+    let sd = def(b"effe")?.child("events.particle_systems").expect("effe particle systems");
+    let ed = sd.child("emitters").expect("emitters");
+    let mut s = defs::default_record(sd);
+    set(&mut s, "particle", Val::tag(FourCC(*b"prt3"), particle))?;
+    set(&mut s, "location", Val::Int(p.location.into()))?;
+    for (f, v) in &role.system {
+        set(&mut s, f, v.clone())?;
+    }
+    let mut e = defs::default_record(ed);
+    set(&mut e, "movement", Val::tag(FourCC(*b"pmov"), TagId::NULL))?;
+    for (f, v) in &role.emitter {
+        set(&mut e, f, v.clone())?;
+    }
+    set(&mut e, "emission_shape", Val::Int(0))?;
+    let alpha = mid([p.tint[0][0], p.tint[1][0]]);
+    let props: [(&str, f32, Option<u32>); 9] = [
+        ("property_8", spawn_rate(p.count, duration), None),
+        ("lifespan", mid(part.lifespan), None),
+        ("property_28", mid(p.velocity), None),
+        ("property_38", 0.0, None),
+        ("property_48", 2.0 * mid(p.radius), None),
+        ("property_58", 0.0, Some(packed_tint(&p.tint))),
+        ("property_68", alpha, None),
+        ("shape_input", 0.0, None),
+        ("velocity_input", p.velocity_cone.to_degrees(), None),
+    ];
+    for (f, v, c) in props {
+        set(&mut e, f, Val::Struct(constant_property(role, f, v, c)?))?;
+    }
+    set(&mut s, "emitters", Val::Block(vec![e]))?;
+    Ok(s)
 }

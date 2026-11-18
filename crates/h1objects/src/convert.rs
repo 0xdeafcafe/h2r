@@ -769,6 +769,11 @@ pub struct Converter<'a> {
     decals_open: Vec<u32>,
     /// The base's particle role ([`crate::particles::particle_role`]), once.
     particle_role: Option<Option<crate::particles::ParticleRole>>,
+    /// The base's emitter role ([`crate::particles::emitter_role`]), once.
+    emitter_role: Option<Option<crate::particles::EmitterRole>>,
+    /// Effects whose particles are being converted (a particle's own
+    /// effects that lead back to one are left out).
+    effects_open: Vec<u32>,
     /// Scenery role words ([`Self::scenery_role`]), computed once.
     scenery_role: Option<Option<crate::rebuild::SceneryRole>>,
     /// Per Halo 1 weapon label, the weapon class the map's graphs hold it
@@ -800,6 +805,8 @@ impl<'a> Converter<'a> {
             light_roles: HashMap::new(),
             decal_role: None,
             particle_role: None,
+            emitter_role: None,
+            effects_open: Vec::new(),
             decals_open: Vec::new(),
             dialogue_bytes: 0,
             scenery_role: None,
@@ -1159,10 +1166,7 @@ impl<'a> Converter<'a> {
         for (g, n) in left {
             rep.no_home.push(format!("{n} {g} parts left out (no converter here, or did not convert)"));
         }
-        let particles: usize = e.events.iter().map(|ev| ev.particles).sum();
-        if particles > 0 {
-            rep.no_home.push(format!("{particles} particles left out (Halo 2's are prt3 on shader templates)"));
-        }
+        let root = self.effect_particle_systems(tag, root, &mut rep)?;
         self.tree.reports.push(rep);
         let id = self.tree.push(
             &tag.name,
