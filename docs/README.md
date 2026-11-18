@@ -172,7 +172,3 @@ goals, the two-stage plan, the crate table and milestones.
 - [editor.md](editor/editor.md): the editor for developers (`crates/studio`, Dear ImGui + wgpu): window, the tools, Halo 1 maps and converting, the playlist format rules, code layout, scripted headless screenshots (`--do`, `--crop`, `--callout`), viewport gaps
 - [scenario-editor.md](editor/scenario-editor.md): the scenario placement editor (`crates/scenario-edit`): blocks, fields, save rules, packages
 - [variants.md](editor/variants.md): the game variant record, its schema and saved files (`crates/variants`)
-
-## Development machine (`dev/`)
-
-- [disk.md](dev/disk.md): `h2 disk clean` removes merged idle worktrees, idle Cargo targets and stale artifacts; a LaunchAgent runs it every 15 minutes when disk is low
