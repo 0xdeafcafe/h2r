@@ -56,3 +56,5 @@ impl HandleTable {
         self.entries.values().filter(|id| **id == object).count()
     }
 }
+
+crate::snapshot::persist_struct!(HandleTable { next, entries });

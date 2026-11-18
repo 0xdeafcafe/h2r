@@ -5,6 +5,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use editor_core::halo1::{self, H1Kind, H1Source, H1View};
+use editor_core::{MapPack, MapSource};
 use editor_core::packages::{self, Halo1Origin, PackageEntry};
 use scenario_edit::geometry::{Marker, Tri, WorldPart};
 use scenario_edit::scene::{Blend, Image, ReferencePart, Scene, reference_scene};
@@ -166,6 +167,33 @@ impl App {
         true
     }
 
+    /// Open `path` as the Map Pack if its contents are the map pack's.
+    /// It is added beside the open source: the Halo 2 disc stays, and the
+    /// pack's maps read their shared caches from it. Returns false (and
+    /// changes nothing) when it is not a map pack.
+    pub(super) fn try_open_mappack(&mut self, path: &Path) -> bool {
+        let Ok(pack) = MapPack::open(path) else {
+            return false;
+        };
+        self.info(format!(
+            "opened the Map Pack {} ({} maps)",
+            path.display(),
+            pack.map_names().len()
+        ));
+        self.mappack = Some(pack);
+        true
+    }
+
+    /// Where a Map Pack map finds the shared caches: the open Halo 2
+    /// source (a disc image's `/maps/`, or a directory of maps).
+    pub(super) fn shared_caches(&self) -> Option<std::path::PathBuf> {
+        match self.source.as_ref()? {
+            MapSource::Disc(d) => Some(d.path().to_owned()),
+            MapSource::Folder(dir) => Some(dir.clone()),
+            MapSource::Loose(file) => file.parent().map(Path::to_owned),
+        }
+    }
+
     /// Leave whatever the scenario tool showed that is not a disc map.
     pub(super) fn forget_library_state(&mut self) {
         self.opened_package = None;
@@ -223,7 +251,9 @@ impl App {
         };
         if !entry.derived && entry.halo1.is_none() {
             // An edit of a disc map: open that map, then the package over it.
-            if !self.maps.iter().any(|m| m.eq_ignore_ascii_case(&entry.map)) {
+            if !self.maps.iter().any(|m| m.eq_ignore_ascii_case(&entry.map))
+                && !self.is_mappack_map(&entry.map)
+            {
                 self.error(format!(
                     "{} edits {}: open a disc that has that map first",
                     entry.dir, entry.map

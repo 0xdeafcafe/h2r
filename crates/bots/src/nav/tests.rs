@@ -78,6 +78,13 @@ fn bsp_from(points: &[GV3], polys: &[&[u16]]) -> Bsp {
 /// Axis-aligned floor quads `(x0, y0, x1, y1, z)`, counter-clockwise from
 /// above, sharing vertices where they meet.
 fn floors(quads: &[(f32, f32, f32, f32, f32)]) -> NavMesh {
+    let bsp = floors_bsp(quads);
+    let pf = generate(&bsp, 0, 0, &Options::default()).unwrap();
+    NavMesh::from_pathfinding(&pf, &Build::default())
+}
+
+/// [`floors`]' collision.
+fn floors_bsp(quads: &[(f32, f32, f32, f32, f32)]) -> Bsp {
     let mut points: Vec<GV3> = Vec::new();
     let idx = |p: GV3, points: &mut Vec<GV3>| -> u16 {
         match points.iter().position(|q| q == &p) {
@@ -94,9 +101,7 @@ fn floors(quads: &[(f32, f32, f32, f32, f32)]) -> NavMesh {
         polys.push(ring.iter().map(|&p| idx(p, &mut points)).collect());
     }
     let refs: Vec<&[u16]> = polys.iter().map(|p| p.as_slice()).collect();
-    let bsp = bsp_from(&points, &refs);
-    let pf = generate(&bsp, 0, 0, &Options::default()).unwrap();
-    NavMesh::from_pathfinding(&pf, &Build::default())
+    bsp_from(&points, &refs)
 }
 
 fn kinds(m: &NavMesh, from: u32, to: u32) -> Vec<Kind> {
@@ -255,4 +260,48 @@ fn the_follower_jumps_at_a_jump() {
         0,
     );
     assert!(f.steer([0.0, 0.0, 0.0], 1).jump);
+}
+
+/// The generator's output on a small scene (a seam, a low ledge, a high
+/// ledge, a narrow gap and a wide one), as counts, links and coordinates
+/// to the millimetre. When this changes, the maps' `.bots` files built
+/// before are wrong: bump `cache::GENERATOR` (so every map is built again,
+/// docs/game/bots.md §10 stage 2) and record the new pair here.
+#[test]
+fn generator_output_is_pinned() {
+    let bsp = floors_bsp(&[
+        (0.0, 0.0, 2.0, 2.0, 0.0),
+        (2.0, 0.0, 4.0, 2.0, 0.25),
+        (-2.0, 0.0, 0.0, 2.0, 0.05),
+        (4.0, 0.0, 6.0, 2.0, 1.2),
+        (6.6, 0.0, 8.0, 2.0, 1.2),
+        (9.5, 0.0, 11.0, 2.0, 1.2),
+    ]);
+    let d = crate::cache::build(&bsp).unwrap();
+    let mut s = Vec::new();
+    let mm = |v: &[f32; 3], s: &mut Vec<u8>| {
+        for f in v {
+            s.extend_from_slice(&((f * 1000.0).round() as i64).to_le_bytes());
+        }
+    };
+    s.extend_from_slice(&(d.nav.polys.len() as u64).to_le_bytes());
+    for p in &d.nav.polys {
+        s.extend_from_slice(&(p.verts.len() as u64).to_le_bytes());
+        p.verts.iter().for_each(|v| mm(v, &mut s));
+    }
+    for e in &d.nav.edges {
+        s.extend_from_slice(&e.from.to_le_bytes());
+        s.extend_from_slice(&e.to.to_le_bytes());
+        s.push(e.kind as u8);
+        mm(&e.a, &mut s);
+        mm(&e.b, &mut s);
+    }
+    s.extend_from_slice(&(d.walls.tris.len() as u64).to_le_bytes());
+    d.walls.tris.iter().flatten().for_each(|v| mm(v, &mut s));
+    let got = (crate::cache::GENERATOR, crate::autonav::fingerprint(&s));
+    assert_eq!(
+        got,
+        (1, 0x96880c12653c7760),
+        "the nav output changed: bump cache::GENERATOR and record the new pair"
+    );
 }

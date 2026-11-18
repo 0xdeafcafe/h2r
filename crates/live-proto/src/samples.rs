@@ -4,7 +4,8 @@
 //! game would send them at 15 Hz (every second tick). Deterministic.
 
 use crate::game::{
-    Frame, FrameActor, FrameHit, FrameMachine, FrameObject, FramePlayer, FrameVehicle, ObjectKind,
+    Frame, FrameActor, FrameAnim, FrameHit, FrameMachine, FrameObject, FramePlayer, FrameVehicle,
+    ObjectKind,
 };
 
 /// A small deterministic generator (xorshift).
@@ -147,6 +148,14 @@ fn player(index: u32, m: &Mover, t: f64, tick: u64, rng: &mut Rng) -> FramePlaye
         shield: Some(round(0.5 + 0.5 * (t * 0.7 + f64::from(index)).sin())),
         seat: None,
         actions_ago: None,
+        // A 30-frame move cycle, advancing a frame a tick.
+        anim: Some(FrameAnim {
+            name: format!(
+                "combat:{}:any:move_front",
+                m.weapon.split('_').next().unwrap_or("rifle")
+            ),
+            frame: (tick % 30) as f64,
+        }),
     }
 }
 
@@ -238,6 +247,7 @@ pub fn multiplayer(frames: usize) -> Vec<Frame> {
                 machines: Vec::new(),
                 objects,
                 cut: None,
+                cinematic: false,
             }
         })
         .collect()
@@ -310,6 +320,11 @@ pub fn campaign(frames: usize) -> Vec<Frame> {
                         shield: None,
                         seat: None,
                         actions_ago: None,
+                        // Guards' graphs are ones the reader can't name.
+                        anim: (i % 4 != 0).then(|| FrameAnim {
+                            name: "combat:pistol:any:move_front".into(),
+                            frame: ((tick + i as u64 * 7) % 45) as f64 * 0.5,
+                        }),
                     }
                 })
                 .collect();
@@ -418,6 +433,7 @@ pub fn campaign(frames: usize) -> Vec<Frame> {
                 machines,
                 objects,
                 cut: None,
+                cinematic: false,
             }
         })
         .collect()

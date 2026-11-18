@@ -62,7 +62,11 @@
           1,
           0,
           0
-        ]
+        ],
+        "anim": {
+          "name": "s_kill:front:gut-2",
+          "frame": 32767.0
+        }
       }
     ],
     "hits": [
@@ -178,7 +182,11 @@
           1,
           0,
           0
-        ]
+        ],
+        "anim": {
+          "name": "s_kill:front:gut-2",
+          "frame": 32767.0
+        }
       }
     ],
     "hits": [

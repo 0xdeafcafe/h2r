@@ -353,3 +353,25 @@ impl Core {
         Ok(old)
     }
 }
+
+crate::snapshot::persist_struct!(Timer {
+    deadline,
+    period_ms,
+    dpc,
+});
+
+impl crate::snapshot::Persist for Queued {
+    fn put(&self, w: &mut snapshot::codec::Writer) {
+        match *self {
+            Queued::Kdpc(a) => w.u8(0).u32(a),
+            Queued::Host(id) => w.u8(1).u32(id),
+        };
+    }
+    fn get(r: &mut snapshot::codec::Reader<'_>) -> Result<Self, crate::snapshot::CodecError> {
+        Ok(match r.u8()? {
+            0 => Queued::Kdpc(r.u32()?),
+            1 => Queued::Host(r.u32()?),
+            _ => return Err(crate::snapshot::corrupt("DPC queue entry")),
+        })
+    }
+}

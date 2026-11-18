@@ -1,8 +1,10 @@
 //! Custom games over Live (docs/live/live-custom-games.md): a "Custom Game
 //! Browser" row on the Xbox Live menu that opens the retail System Link
-//! browser in its dormant Live mode, a Content Download row that explains how
-//! to install the Multiplayer Map Pack, and the party privacy the title
-//! already has, carried to the server as the session's visibility.
+//! browser in its dormant Live mode, a Content Download row that opens the
+//! mod repository's Mods screen (`crate::mods_screen`; without it, a dialog
+//! that explains how to install the Multiplayer Map Pack), and the party
+//! privacy the title already has, carried to the server as the session's
+//! visibility.
 //!
 //! **The browser.** The System Link game browser (screen `0x0d`, 0x940
 //! bytes, constructor `0x253221`) has two loaders that differ only in the
@@ -87,6 +89,10 @@ pub const DOWNLOAD_TEXT_ID: u32 = 0x1000_0445;
 /// Its row text (stdcall, `ret 8`) and row chosen (`ret 8`) functions.
 pub const ROW_TEXT: u32 = 0x0023_0f36;
 pub const ROW_CHOSEN: u32 = 0x0023_0f92;
+/// The list handler's layout (`0x24bc12`: the handler in ESI, a flag byte
+/// on the stack, `ret 4`): each child item one item height below the
+/// last. Shared by every list; [`repitch`] follows it for this one.
+pub const LIST_LAYOUT: u32 = 0x0024_bc12;
 /// The System Link browser's Live-mode loader (stdcall, request, `ret 4`).
 pub const LIVE_BROWSER_LOADER: u32 = 0x0025_31c9;
 /// The browser screen's vtable and its Live byte (0 LAN, 1 Live).
@@ -123,6 +129,10 @@ pub const COOP_TEXT: &str = "Co-op Campaign";
 pub const COOP_HELP_ID: u32 = ID_BASE + 0x37;
 pub const COOP_HELP: &str =
     "Play the campaign with a friend over Xbox Live, one player per console.";
+/// Content Download's help once it opens the Mods screen
+/// (`crate::mods_screen`), in place of retail's on its pane.
+pub const MODS_HELP_ID: u32 = ID_BASE + 0x38;
+pub const MODS_HELP: &str = "Download maps other players made and shared on your Live server.";
 
 /// The screen, its list handler's vtable and its retail item widgets.
 pub const SCREEN_ID: i16 = 0xba;
@@ -181,6 +191,24 @@ pub fn set_coop_row(on: bool) {
     COOP_ROW_ON.store(on, std::sync::atomic::Ordering::SeqCst);
 }
 
+/// Whether Content Download opens the Mods screen (`crate::mods_screen`,
+/// installed with Live and a map gate; `H2_NO_MODS_ROW=1` takes it out).
+pub fn mods_row_enabled() -> bool {
+    MODS_ROW_ON.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+static MODS_ROW_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_mods_row(on: bool) {
+    MODS_ROW_ON.store(on, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// The item widgets of ours the Live menu's list needs so that every row
+/// shows with no scrolling: one per row of ours (the handler embeds four).
+pub fn extra_items(coop: bool) -> u32 {
+    ours(coop)
+}
+
 /// Our rows on the Live menu: the browser's, and co-op's when on.
 fn ours(coop: bool) -> u32 {
     1 + u32::from(coop)
@@ -209,7 +237,8 @@ pub enum Row {
     Browser,
     /// Ours: opens the co-op screen (`crate::coop_live`).
     Coop,
-    /// Content Download, moved down one: opens the Map Pack dialog.
+    /// Content Download, moved down: opens the Mods screen
+    /// (`crate::mods_screen`), else the Map Pack dialog.
     Download,
 }
 
@@ -227,12 +256,23 @@ pub fn row_kind_with(row: i16, coop: bool) -> Row {
 }
 
 /// The label of a row the retail row text cannot draw: ours, and Content
-/// Download at its new place.
+/// Download at its new place ("Mods" or "Mods (N new)" when it opens the
+/// Mods screen).
 pub fn row_text_id(row: i16) -> Option<u32> {
-    match row_kind(row) {
+    let mods = mods_row_enabled()
+        .then(crate::mods_screen::repo)
+        .flatten()
+        .map(|r| r.menu_label());
+    row_text_id_with(row, coop_row_enabled(), mods)
+}
+
+/// [`row_text_id`] with the co-op row on or off and the Mods label's id,
+/// if Content Download opens the Mods screen.
+pub fn row_text_id_with(row: i16, coop: bool, mods: Option<u32>) -> Option<u32> {
+    match row_kind_with(row, coop) {
         Row::Browser => Some(TEXT_ID),
         Row::Coop => Some(COOP_TEXT_ID),
-        Row::Download => Some(DOWNLOAD_TEXT_ID),
+        Row::Download => Some(mods.unwrap_or(DOWNLOAD_TEXT_ID)),
         Row::Retail => None,
     }
 }
@@ -314,6 +354,7 @@ pub fn strings() -> Vec<(u32, &'static str)> {
         (HELP_ID, HELP),
         (COOP_TEXT_ID, COOP_TEXT),
         (COOP_HELP_ID, COOP_HELP),
+        (MODS_HELP_ID, MODS_HELP),
         (MAPPACK_TITLE_ID, MAPPACK_TITLE),
         (MAPPACK_MESSAGE_ID, MAPPACK_MESSAGE),
     ]
@@ -330,22 +371,22 @@ pub fn answer_error<M: Gm>(m: &mut M, entry: u32, error: u32) -> bool {
         && m.set_u32(entry.wrapping_add(ENTRY_MESSAGE), MAPPACK_MESSAGE_ID)
 }
 
-// ---- the screen's tag: a fifth pane and room for the fifth item ----
+// ---- the screen's tag: our panes; the rows' pitch ----
 //
 // The tag (`wgit`, docs/formats/ui.md) has four panes, one per row, each with the
 // hint texts under the list, the "Y" callout, the row's help text and
 // picture; pane 0 also holds the list (anchor, up to seven visible items,
-// the default list skin). The list lays items out from the anchor, each one
-// item height below the last (`0x24bc12`): the height of the item's bounding
-// box (`0x2bafa4`), which for the default skin is its text (top 28) down to
-// its background bitmap (bottom -15), 43 units; the end cap bitmap is
-// flagged out of the box. A fifth item would cover the hint text, which
-// starts 21 units below the fourth item. So [`extend_tag`] moves the list
-// up by [`LIFT`] and everything under it in its column down by [`DROP`]:
-// together one item height, the gap under the list stays 21 units, and the
-// first item stays 36 units under the header. It also adds pane 4 for our
-// row: a copy of the Custom Game pane (2) with our help text. The copies
-// live in our memory; the retail arrays are left as they are.
+// the default list skin). [`extend_tag`] adds a pane per row of ours (a
+// copy of the Custom Game pane, its picture included, with our help text)
+// and raises the list's visible count to the rows. It moves nothing: the
+// list's top and the hint block stay where retail has them.
+//
+// The list lays items out from the anchor, each one item height below the
+// last (`0x24bc12`): the height of the item's bounding box (`0x2bafa4`),
+// 43 units for the default skin. Five or six rows at that pitch run into
+// the hint block, so after each layout of this list [`repitch`] moves the
+// rows up to [`pitch`] apart, inside the room the retail four rows and
+// the gap under them take.
 
 const VANILLA_PANES: u32 = 4;
 /// Panes once extended: one per row of ours after the retail four.
@@ -364,16 +405,81 @@ const BITMAP_SIZE: u32 = 0x38;
 const PANE_LISTS: usize = 0xc;
 const PANE_TEXTS: usize = 0x1c;
 const PANE_BITMAPS: usize = 0x24;
-/// The default skin's item height and bottom, relative to the item origin.
+/// The default skin's item height, top and bottom, relative to the item
+/// origin (its text's top, its background bitmap's bottom).
 pub const ITEM_HEIGHT: i16 = 43;
-const ITEM_BOTTOM: i16 = -15;
-/// How far right of the list's anchor a block may start and still be "in
-/// the list's column": half an item's width (the skin is 210 wide). The
-/// hints and the callout start at or left of the anchor; the message of the
-/// day panel to the right starts 253 units right of it.
-const COLUMN: i16 = 105;
-pub const LIFT: i16 = 21;
-pub const DROP: i16 = ITEM_HEIGHT - LIFT;
+pub const ITEM_TOP: i16 = 28;
+pub const ITEM_BOTTOM: i16 = -15;
+/// What the retail tag leaves between the fourth row's bottom and the hint
+/// block's top (`hint_top` at -70, the list anchored at 95).
+pub const RETAIL_GAP: i16 = 21;
+/// The least gap kept under the last row.
+pub const MIN_GAP: i16 = 5;
+/// The smallest pitch allowed (the skin's text is 20 units tall).
+pub const MIN_PITCH: i16 = 22;
+
+/// The pitch for `rows` rows inside the room the retail four take, from
+/// the first row's top to the hint block less [`MIN_GAP`]: the retail 43
+/// for four, 36 for five, 29 for six. `H2_LIVE_MENU_PITCH` overrides it
+/// (clamped to [`MIN_PITCH`]..=43), to tune it in game without a build.
+pub fn pitch(rows: u32) -> i16 {
+    if let Some(p) = std::env::var("H2_LIVE_MENU_PITCH")
+        .ok()
+        .and_then(|v| v.trim().parse::<i16>().ok())
+    {
+        return p.clamp(MIN_PITCH, ITEM_HEIGHT);
+    }
+    pitch_for(rows)
+}
+
+/// [`pitch`] with no override.
+pub fn pitch_for(rows: u32) -> i16 {
+    if rows <= VANILLA_ITEMS {
+        return ITEM_HEIGHT;
+    }
+    let room = VANILLA_ITEMS as i16 * ITEM_HEIGHT + RETAIL_GAP - ITEM_HEIGHT - MIN_GAP;
+    (room / (rows as i16 - 1)).clamp(MIN_PITCH, ITEM_HEIGHT)
+}
+
+/// After the list handler laid out its rows (`0x24bc12`), moves row `i`'s
+/// widgets up by `i` times (the laid-out pitch less `pitch`), so the rows
+/// stand `pitch` apart from the first, which stays. A widget's rectangle is
+/// at `+0x20` (top, left) and `+0x24` (bottom, right), as `0x2bacbc` writes
+/// it; an item's widgets are `[item + 0x14]`, then each one's `+0x18`.
+/// Returns how many rows moved: none for another list, four rows or fewer,
+/// or a layout whose pitch is not a plain item height (20 to 60 units).
+pub fn repitch<M: Gm>(m: &mut M, handler: u32, vtable: u32, pitch: i16) -> Option<usize> {
+    if m.u32(handler)? != vtable {
+        return Some(0);
+    }
+    let items = crate::speaker_row::children(&*m, handler)?;
+    if items.len() <= VANILLA_ITEMS as usize {
+        return Some(0);
+    }
+    use crate::speaker_row::children as widgets;
+    let top = |m: &M, item: u32| -> Option<i16> {
+        let first = *widgets(m, item)?.first()?;
+        Some(m.u16(first + 0x20)? as i16)
+    };
+    let laid = top(&*m, items[0])?.saturating_sub(top(&*m, items[1])?);
+    if !(20..=60).contains(&laid) || laid <= pitch {
+        return Some(0);
+    }
+    let mut moved = 0;
+    for (i, item) in items.iter().enumerate().skip(1) {
+        let up = (laid - pitch).saturating_mul(i as i16);
+        for w in widgets(&*m, *item)? {
+            for at in [w + 0x20, w + 0x24] {
+                let v = m.u16(at)? as i16;
+                if !m.set_u16(at, v.saturating_add(up) as u16) {
+                    return None;
+                }
+            }
+        }
+        moved += 1;
+    }
+    Some(moved)
+}
 /// Bytes [`extend_tag`] may use for its copies.
 pub const TAG_SPACE: u32 = 0x1000;
 
@@ -442,10 +548,22 @@ pub fn extend_tag<M: Gm>(m: &mut M, wgit: u32, base: u32) -> Option<bool> {
 }
 
 /// [`extend_tag`] within `space` bytes, with or without the co-op row's
-/// pane. The list keeps room for five items either way: with the co-op
-/// row the sixth row (Content Download) scrolls into view.
+/// pane. The list shows every row (none scrolls); nothing moves.
+/// With the Mods screen on, Content Download's pane says so.
 fn extend_tag_in<M: Gm>(m: &mut M, wgit: u32, base: u32, space: u32, coop: bool) -> Option<bool> {
+    extend_tag_with(m, wgit, base, space, coop, mods_row_enabled())
+}
+
+fn extend_tag_with<M: Gm>(
+    m: &mut M,
+    wgit: u32,
+    base: u32,
+    space: u32,
+    coop: bool,
+    mods: bool,
+) -> Option<bool> {
     let panes = extended_panes(coop);
+    let extra = ours(coop);
     if m.u16(wgit.wrapping_add(4))? as i16 != SCREEN_ID || m.u32(wgit + 0x20)? != VANILLA_PANES {
         return Some(false);
     }
@@ -453,13 +571,6 @@ fn extend_tag_in<M: Gm>(m: &mut M, wgit: u32, base: u32, space: u32, coop: bool)
     if m.u32(old + PANE_LISTS as u32)? as i32 <= 0 {
         return Some(false);
     }
-    let list = m.u32(old + PANE_LISTS as u32 + 4)?;
-    let anchor_x = m.u16(list + 8)? as i16;
-    let anchor_y = m.u16(list + 0xa)? as i16;
-    let list_bottom = anchor_y
-        .saturating_sub((VANILLA_ITEMS as i16 - 1) * ITEM_HEIGHT)
-        .saturating_add(ITEM_BOTTOM);
-    let below = |left: i16, top: i16| top < list_bottom && left < anchor_x.saturating_add(COLUMN);
     // Our help text replaces the one text that differs between the Custom
     // Game pane and the next (the row's help); none if that is unclear.
     let template = text_ids(m, old + TEMPLATE_PANE * PANE_SIZE)?;
@@ -491,8 +602,7 @@ fn extend_tag_in<M: Gm>(m: &mut M, wgit: u32, base: u32, space: u32, coop: bool)
             &mut next,
             end,
             |_, e| {
-                put_i16(e, 0xa, get_i16(e, 0xa).saturating_add(LIFT));
-                let rows = (VANILLA_ROWS + 1) as i16;
+                let rows = (VANILLA_ROWS + extra) as i16;
                 if get_i16(e, 6) < rows {
                     put_i16(e, 6, rows);
                 }
@@ -506,13 +616,11 @@ fn extend_tag_in<M: Gm>(m: &mut M, wgit: u32, base: u32, space: u32, coop: bool)
             &mut next,
             end,
             |i, e| {
-                // Rectangle: top, left, bottom, right.
-                if below(get_i16(e, 0x1e), get_i16(e, 0x1c)) {
-                    put_i16(e, 0x1c, get_i16(e, 0x1c).saturating_sub(DROP));
-                    put_i16(e, 0x20, get_i16(e, 0x20).saturating_sub(DROP));
-                }
                 if ours && help == Some(i) {
                     e[0x24..0x28].copy_from_slice(&help_id.to_le_bytes());
+                }
+                if mods && p == RETAIL_DOWNLOAD_ROW as u32 && help == Some(i) {
+                    e[0x24..0x28].copy_from_slice(&MODS_HELP_ID.to_le_bytes());
                 }
             },
         )?;
@@ -523,12 +631,7 @@ fn extend_tag_in<M: Gm>(m: &mut M, wgit: u32, base: u32, space: u32, coop: bool)
             BITMAP_SIZE,
             &mut next,
             end,
-            |_, e| {
-                // Top-left point: x, y.
-                if below(get_i16(e, 0xc), get_i16(e, 0xe)) {
-                    put_i16(e, 0xe, get_i16(e, 0xe).saturating_sub(DROP));
-                }
-            },
+            |_, _| {},
         )?;
         if !m.wr(base + p * PANE_SIZE, &pane) {
             return None;
@@ -851,34 +954,24 @@ mod tests {
         let pane = |p: u32| BASE + p * PANE_SIZE;
         let text = |m: &Fake, p: u32, i: u32| m.u32(pane(p) + 0x20).unwrap() + i * TEXT_SIZE;
         let bitmap = |m: &Fake, p: u32, i: u32| m.u32(pane(p) + 0x28).unwrap() + i * BITMAP_SIZE;
-        // The list moves up; it still shows its seven.
+        // The list stays where retail anchors it; it still shows its seven.
         let list = m.u32(pane(0) + 0x10).unwrap();
         assert_eq!(i16_at(&m, list + 6), 7);
         assert_eq!(i16_at(&m, list + 8), ANCHOR.0);
-        let anchor_y = i16_at(&m, list + 0xa);
-        assert_eq!(anchor_y, ANCHOR.1 + LIFT);
-        // Item i spans origin + 28 down to origin - 15, one item height apart.
-        let bottom = |y: i16, i: i16| y - i * ITEM_HEIGHT + ITEM_BOTTOM;
-        let retail_gap = -60 - bottom(ANCHOR.1, 3);
+        assert_eq!(i16_at(&m, list + 0xa), ANCHOR.1);
         for p in 0..EXTENDED_PANES {
-            // The hint under the list moves down, and the gap under the
-            // fifth item is the retail gap under the fourth.
+            // Nothing moves: the hint, the panel, the help, the callout.
             let hint = text(&m, p, 0);
-            assert_eq!(i16_at(&m, hint + 0x1c), -60 - DROP, "pane {p}");
-            assert_eq!(i16_at(&m, hint + 0x20), -80 - DROP);
-            assert_eq!(i16_at(&m, hint + 0x1c) - bottom(anchor_y, 4), retail_gap);
-            // The panel to the right and the help text above stay.
+            assert_eq!(i16_at(&m, hint + 0x1c), -60, "pane {p}");
+            assert_eq!(i16_at(&m, hint + 0x20), -80);
             assert_eq!(i16_at(&m, text(&m, p, 1) + 0x1c), -50);
             assert_eq!(i16_at(&m, text(&m, p, 2) + 0x1c), 150);
-            // The callout moves with the hint; the decoration stays.
-            assert_eq!(i16_at(&m, bitmap(&m, p, 0) + 0xe), -150 - DROP);
+            assert_eq!(i16_at(&m, bitmap(&m, p, 0) + 0xe), -150);
             assert_eq!(i16_at(&m, bitmap(&m, p, 1) + 0xe), 150);
             // The other bytes of each element are copied.
             assert_eq!(m.u8(text(&m, p, 0) + 0x2a), Some(0x5a));
             assert_eq!(m.u8(bitmap(&m, p, 0) + 0x30), Some(0x3c));
         }
-        // The first item stays under where the decoration starts.
-        assert!(anchor_y + 28 <= 150);
         // Panes 0 to 3 keep their help; ours is pane 2's with our help text.
         for p in 0..4 {
             assert_eq!(m.u32(text(&m, p, 2) + 0x24), Some(0x0a00_0100 + p));
@@ -905,15 +998,146 @@ mod tests {
         let text = |m: &Fake, p: u32, i: u32| m.u32(pane(p) + 0x20).unwrap() + i * TEXT_SIZE;
         assert_eq!(m.u32(text(&m, 4, 2) + 0x24), Some(HELP_ID));
         assert_eq!(m.u32(text(&m, 5, 2) + 0x24), Some(COOP_HELP_ID));
+        for p in 0..6 {
+            // The hint block stays where retail has it, ours included.
+            assert_eq!(i16_at(&m, text(&m, p, 0) + 0x1c), -60, "pane {p}");
+            assert_eq!(i16_at(&m, text(&m, p, 0) + 0x20), -80);
+        }
         for p in 4..6 {
-            // Both of ours are the Custom Game pane, moved like the rest.
+            // Both of ours are the Custom Game pane.
             assert_eq!(m.u32(text(&m, p, 0) + 0x24), Some(0x0800_0001));
-            assert_eq!(i16_at(&m, text(&m, p, 0) + 0x1c), -60 - DROP);
             assert_eq!(m.u32(pane(p) + 0xc), Some(0), "no list on our pane");
         }
-        // The list keeps room for five items: the sixth row scrolls.
+        // The list's top stays; it shows all six (none scrolls).
         let list = m.u32(pane(0) + 0x10).unwrap();
-        assert_eq!(i16_at(&m, list + 0xa), ANCHOR.1 + LIFT);
+        assert_eq!(i16_at(&m, list + 0xa), ANCHOR.1);
+        assert_eq!(i16_at(&m, list + 6), 7);
+    }
+
+    #[test]
+    fn six_rows_fit_with_the_retail_gaps_and_no_scroll() {
+        assert_eq!(pitch_for(4), ITEM_HEIGHT, "retail: as it was");
+        assert_eq!(pitch_for(5), 36);
+        assert_eq!(pitch_for(6), 29);
+        assert_eq!(extra_items(false), 1);
+        assert_eq!(extra_items(true), 2, "a child item per row: no scroll");
+        assert_eq!(VANILLA_ITEMS + extra_items(true), 6);
+        // The retail tag: the list anchored at 95, `hint_top` at -70 (21
+        // under the fourth row's bottom). Every row ends above it, the
+        // first row's top where retail's is, and the text (20 units) fits
+        // in a row.
+        let (anchor, hint) = (95i16, -70i16);
+        assert_eq!(hint, anchor - 3 * ITEM_HEIGHT + ITEM_BOTTOM - RETAIL_GAP);
+        for rows in [5u32, 6] {
+            let p = pitch_for(rows);
+            let last_bottom = anchor - (rows as i16 - 1) * p + ITEM_BOTTOM;
+            assert!(
+                last_bottom >= hint + MIN_GAP,
+                "{rows} rows end at {last_bottom}"
+            );
+            assert!(p >= MIN_PITCH && MIN_PITCH > 20);
+        }
+        // The tag: the list shows six; its anchor and the hints stay.
+        let mut m = Fake::default();
+        let wgit = live_tag(&mut m, 4);
+        assert_eq!(
+            extend_tag_in(&mut m, wgit, BASE, TAG_SPACE, true),
+            Some(true)
+        );
+        let list = m.u32(BASE + 0x10).unwrap();
+        assert_eq!(i16_at(&m, list + 6), 6, "the list shows six");
+        assert_eq!(i16_at(&m, list + 0xa), ANCHOR.1);
+        let hint = m.u32(BASE + 0x20).unwrap();
+        assert_eq!(i16_at(&m, hint + 0x1c), -60);
+    }
+
+    /// Six item widgets laid out 43 apart from `anchor`, two widgets each
+    /// (text and bar), as `0x24bc12` leaves them.
+    fn laid_out(m: &mut Fake, handler: u32, vtable: u32, rows: u32, anchor: i16) -> Vec<u32> {
+        m.set_u32(handler, vtable);
+        let items: Vec<u32> = (0..rows).map(|i| 0x60_0000 + i * 0x1000).collect();
+        m.set_u32(handler + 0x14, items[0]);
+        for (i, item) in items.iter().enumerate() {
+            m.set_u32(item + 0x18, items.get(i + 1).copied().unwrap_or(0));
+            let origin = anchor - i as i16 * ITEM_HEIGHT;
+            let (text, bar) = (item + 0x100, item + 0x200);
+            m.set_u32(item + 0x14, text);
+            m.set_u32(text + 0x18, bar);
+            m.set_u32(bar + 0x18, 0);
+            put_i16s(m, text + 0x20, &[origin + ITEM_TOP, -236, origin + 8, -46]);
+            put_i16s(
+                m,
+                bar + 0x20,
+                &[origin + 6, -246, origin + ITEM_BOTTOM, -46],
+            );
+        }
+        items
+    }
+
+    #[test]
+    fn the_rows_are_moved_to_the_pitch_and_end_above_the_hints() {
+        let mut m = Fake::default();
+        let handler = 0x50_0000;
+        let items = laid_out(&mut m, handler, HANDLER_VTABLE, 6, 95);
+        let p = pitch_for(6);
+        assert_eq!(repitch(&mut m, handler, HANDLER_VTABLE, p), Some(5));
+        let top = |m: &Fake, i: usize| i16_at(m, items[i] + 0x100 + 0x20);
+        let bar_bottom = |m: &Fake, i: usize| i16_at(m, items[i] + 0x200 + 0x24);
+        assert_eq!(top(&m, 0), 95 + ITEM_TOP, "the first row stays");
+        for i in 1..6 {
+            assert_eq!(top(&m, i - 1) - top(&m, i), p, "row {i}");
+            // Both edges of every widget move; left and right do not.
+            assert_eq!(i16_at(&m, items[i] + 0x100 + 0x24), top(&m, i) - 20);
+            assert_eq!(i16_at(&m, items[i] + 0x100 + 0x22), -236);
+        }
+        assert!(bar_bottom(&m, 5) >= -70 + MIN_GAP, "{}", bar_bottom(&m, 5));
+        // Another list, or four rows: left alone.
+        let mut other = Fake::default();
+        laid_out(&mut other, handler, 0x0045_0000, 6, 95);
+        assert_eq!(repitch(&mut other, handler, HANDLER_VTABLE, p), Some(0));
+        let mut four = Fake::default();
+        laid_out(&mut four, handler, HANDLER_VTABLE, 4, 95);
+        assert_eq!(repitch(&mut four, handler, HANDLER_VTABLE, p), Some(0));
+        // Run after each layout, never twice on one: a layout already at
+        // the pitch is left alone.
+        assert_eq!(repitch(&mut m, handler, HANDLER_VTABLE, p), Some(0));
+        assert_eq!(top(&m, 5), 95 + ITEM_TOP - 5 * p);
+    }
+
+    #[test]
+    fn content_download_says_mods_and_its_pane_says_why() {
+        let label = 0x20ff_d100;
+        assert_eq!(
+            row_text_id_with(DOWNLOAD_ROW, true, Some(label)),
+            Some(label)
+        );
+        assert_eq!(row_text_id_with(COOP_ROW, false, Some(label)), Some(label));
+        assert_eq!(
+            row_text_id_with(DOWNLOAD_ROW, true, None),
+            Some(DOWNLOAD_TEXT_ID)
+        );
+        assert_eq!(row_text_id_with(ROW, true, Some(label)), Some(TEXT_ID));
+        assert_eq!(row_text_id_with(1, true, Some(label)), None, "retail rows");
+        let text =
+            |m: &Fake, p: u32, i: u32| m.u32(BASE + p * PANE_SIZE + 0x20).unwrap() + i * TEXT_SIZE;
+        for (mods, want) in [(true, MODS_HELP_ID), (false, 0x0a00_0103)] {
+            let mut m = Fake::default();
+            let wgit = live_tag(&mut m, 7);
+            assert_eq!(
+                extend_tag_with(&mut m, wgit, BASE, TAG_SPACE, true, mods),
+                Some(true)
+            );
+            assert_eq!(m.u32(text(&m, 3, 2) + 0x24), Some(want), "mods {mods}");
+            for p in 0..3 {
+                assert_eq!(m.u32(text(&m, p, 2) + 0x24), Some(0x0a00_0100 + p));
+            }
+            assert_eq!(
+                m.u32(text(&m, 3, 0) + 0x24),
+                Some(0x0800_0001),
+                "only the help"
+            );
+        }
+        assert!(MODS_HELP.len() <= HELP.len() + 8);
     }
 
     #[test]

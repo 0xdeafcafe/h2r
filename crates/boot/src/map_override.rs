@@ -1,7 +1,9 @@
 //! Edited maps in place of the disc's.
 //!
 //! - Map packages in `<data>/maps/` (docs/game/maps.md, `vfs::PackageBackend`):
-//!   a base plus patches, served as `D:\maps\<name>.map`.
+//!   a base plus patches, served as `D:\maps\<name>.map`, or for a
+//!   Multiplayer Map Pack base as the installed `T:\$c\<offer>\<name>.map`
+//!   (`vfs::Config::map_packages`).
 //! - `H2_MAP_DIR` names a host directory whose `<name>.map` files the game
 //!   reads as `D:\maps\<name>.map` (`vfs::MapOverrideBackend`,
 //!   docs/runtime/storage.md "Map overrides", docs/editor/scenario-editor.md "How patched
@@ -31,11 +33,29 @@ pub fn dir() -> Option<PathBuf> {
 }
 
 /// Which map exactly the game gets for `maps\<name>.map`: a package's
-/// `MapId`, or a whole-file override's (`H2_MAP_DIR`). `None` means the
-/// retail disc map. For sessions and telemetry: pass the loaded map's
-/// short name (the cache header's, `0x00547898`, docs/live/live-gamestate.md).
-pub fn map_id(vfs: &mut vfs::Vfs, name: &str) -> Option<content::MapId> {
-    vfs.map_id(&format!("{}\\maps\\{name}.map", vfs::CDROM_DEVICE))
+/// `MapId`, or a whole-file override's (`H2_MAP_DIR`). For a map pack
+/// map (`content::map_pack`), the package served over its installed copy
+/// under `data_root`. `None` means the retail map. For sessions and
+/// telemetry: pass the loaded map's short name (the cache header's,
+/// `0x00547898`, docs/live/live-gamestate.md).
+pub fn map_id(vfs: &mut vfs::Vfs, data_root: &Path, name: &str) -> Option<content::MapId> {
+    if let Some(id) = vfs.map_id(&format!("{}\\maps\\{name}.map", vfs::CDROM_DEVICE)) {
+        return Some(id);
+    }
+    let path = map_pack_path(data_root, name)?;
+    vfs.map_id(&path)
+}
+
+/// Where the VFS serves map pack map `name` installed under `data_root`:
+/// `\Device\Harddisk0\Partition1\TDATA\<title>\$c\<offer>\<file>`.
+pub fn map_pack_path(data_root: &Path, name: &str) -> Option<String> {
+    let (offer, file, _) = crate::map_bases::map_pack_file(data_root, name)?;
+    Some(format!(
+        "{}\\TDATA\\{:08X}\\{}\\{offer}\\{file}",
+        vfs::DATA_DEVICE,
+        crate::new_maps::HALO2_TITLE,
+        vfs::CONTENT_DIR
+    ))
 }
 
 /// Where map packages live: `<data>/maps`.
@@ -74,7 +94,8 @@ pub fn mount<R: vfs::Rewrite + 'static>(
 /// the disc has no such map (docs/halo1/campaign-picker.md §3).
 ///
 /// Given a packages directory, the packages layer is always mounted, even
-/// with no package there yet: a package installed while the game runs (a
+/// with no package there yet, over the disc and (`vfs::Config::map_packages`)
+/// over the map pack's installed maps on the data partition: a package installed while the game runs (a
 /// Live join, the editor) is served at the map's next open
 /// (`vfs::PackageBackend`, docs/game/maps.md §3). With an empty folder it serves
 /// the disc's bytes unchanged.
@@ -89,6 +110,10 @@ pub fn mount_with_hashes<R: vfs::Rewrite + 'static>(
     hashes: content::DiscHashes,
     campaign_maps: &[(String, PathBuf)],
 ) -> vfs::Result<vfs::Vfs> {
+    let mut cfg = cfg;
+    if let Some(p) = packages {
+        cfg.map_packages = Some(p.to_path_buf());
+    }
     let library =
         packages.map(|p| content::Library::open_with_sandbox(p, sandbox).with_disc_hashes(hashes));
     if library.is_none() && maps.is_none() && campaign_maps.is_empty() {
@@ -365,26 +390,26 @@ pub(crate) mod tests {
         let t = Temp::new();
         // Retail: nothing to say.
         let mut v = mounted(&t, false, None);
-        assert_eq!(map_id(&mut v, "level"), None);
+        assert_eq!(map_id(&mut v, &t.0.join("data"), "level"), None);
         // A package: its manifest's id, through the font rewrite too.
         let root = level_package(&t);
         let mut ids = Vec::new();
         for fonts in [true, false] {
             let mut v = mounted_with(&t, fonts, None, Some(&root));
-            ids.push(map_id(&mut v, "LEVEL").expect("a package names its map"));
-            assert_eq!(map_id(&mut v, "other"), None);
+            ids.push(map_id(&mut v, &t.0.join("data"), "LEVEL").expect("a package names its map"));
+            assert_eq!(map_id(&mut v, &t.0.join("data"), "other"), None);
         }
         assert_eq!(ids[0], ids[1]);
         // An override wins and has an id of its own, stable per contents.
         let dir = t.0.join("maps");
         std::fs::write(dir.join("level.map"), b"edited!!!").unwrap();
         let mut v = mounted_with(&t, true, Some(&dir), Some(&root));
-        let o = map_id(&mut v, "level").unwrap();
+        let o = map_id(&mut v, &t.0.join("data"), "level").unwrap();
         assert_ne!(o, ids[0]);
-        assert_eq!(map_id(&mut v, "level"), Some(o));
+        assert_eq!(map_id(&mut v, &t.0.join("data"), "level"), Some(o));
         std::fs::write(dir.join("level.map"), b"edited again").unwrap();
         let mut v = mounted_with(&t, true, Some(&dir), Some(&root));
-        assert_ne!(map_id(&mut v, "level"), Some(o));
+        assert_ne!(map_id(&mut v, &t.0.join("data"), "level"), Some(o));
     }
 
     #[test]

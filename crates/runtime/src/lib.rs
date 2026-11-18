@@ -35,7 +35,9 @@ pub mod tsc;
 pub mod watch;
 
 pub use abi::{GuestFn, TransferAbi};
-pub use continuation::ContinuationInfo;
+pub use continuation::{
+    Continuation, ContinuationInfo, ContinuationLayout, LayoutError, LiveRecord, SlotRecord,
+};
 pub use cow::CopyKind;
 pub use cpu::CpuAbi;
 pub use dispatch::Dispatch;

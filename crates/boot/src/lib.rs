@@ -36,6 +36,7 @@ pub mod health;
 pub mod h1_options;
 pub mod h1_options_row;
 pub mod hud;
+pub mod loaded_map;
 pub mod hud_swap;
 pub mod h1_variants;
 pub mod precision;
@@ -61,6 +62,7 @@ pub mod map_copy;
 pub mod map_override;
 pub mod map_select;
 pub mod map_slots;
+pub mod mods_screen;
 pub mod movies_glue;
 pub mod new_maps;
 pub mod pad_speaker;
@@ -80,6 +82,7 @@ pub mod signin_screen;
 pub mod skulls_screen;
 pub mod speaker_setting;
 pub mod steam_speaker;
+pub mod tier;
 pub mod ui;
 pub mod ui_kit;
 pub mod ui_watch;
@@ -87,6 +90,7 @@ pub mod variant_ext;
 pub mod variant_options;
 pub mod variant_page;
 pub mod bot_glue;
+pub mod bots_nav_auto;
 pub mod clankers;
 pub mod video_screen;
 pub mod voice_glue;
@@ -710,14 +714,17 @@ pub fn run_hosted_with_live(
     xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts, mut host: Host, live: &LiveConfig,
 ) -> Result<RunReport> {
     let x = xbe::Xbe::parse(xbe_bytes)?;
-    if !dylib_current(xbe_bytes, dylib) {
+    // Either tier's module, by its own stamp (tier.rs).
+    let Some(tier) = tier::module_tier(xbe_bytes, dylib) else {
         bail!(
-            "{} was not built from this image by this generator (stamp {} wants {:?}); rebuild it with `h2 build`",
+            "{} was not built from this image by this generator (stamp {} wants {:?}, or the fast tier's {:?}); rebuild it with `h2 build`",
             dylib.display(),
             stamp_path(dylib).display(),
-            build_stamp(xbe_bytes).trim()
+            build_stamp(xbe_bytes).trim(),
+            tier::fast_stamp(xbe_bytes).trim()
         );
-    }
+    };
+    eprintln!("tier: running the {} module {}", tier.name(), dylib.display());
     // Keep Halo's fixed arena, physical [0x61000, 0x3145000), free, with its
     // contiguous window at 0x80061000 and (boot addition) its write-combined
     // window at 0xf0061000, so MmAllocateContiguousMemoryEx can return
@@ -908,15 +915,21 @@ pub fn run_hosted_with_live(
     )?;
     let (skulls_on, skulls_mp_on, skulls_custom_on, health_on) =
         (core.skulls_on, core.skulls_mp_on, core.skulls_custom_on, core.health_on);
+    // The bots' nav meshes, built in the background where missing or stale
+    // (docs/game/bots.md §10 stage 2); H2_BOTS_NAV_AUTO=0 turns it off.
+    if let (true, Some(vfs)) = (core.bots_on, k.vfs()) {
+        bots_nav_auto::start(&opts.data_root, &opts.disc, vfs, level_name.clone());
+    }
     let _telemetry = core.telemetry;
     // Frame species and weapon names come from the loaded map's tag names,
     // which stay on disc: let telemetry find the map file through the VFS.
     // Which map exactly (docs/game/maps.md §5): a package's MapId, None for the
     // disc's own map. Games and advertisements carry it as `map_id`.
     if let (Some(t), Some(vfs)) = (&_telemetry, k.vfs()) {
+        let data_root = opts.data_root.clone();
         t.set_map_id_locator(Box::new(move |map| {
             let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
-            map_override::map_id(&mut v, map)
+            map_override::map_id(&mut v, &data_root, map)
         }));
     }
     // A matchmaking game's record names its playlist and Live session
@@ -933,10 +946,11 @@ pub fn run_hosted_with_live(
         }));
     }
     if let (Some(hle), Some(vfs)) = (&_live, k.vfs()) {
+        let data_root = opts.data_root.clone();
         hle.set_map_probe(Some(Arc::new(move |g: &runtime::Guest| {
             let name = telemetry::loaded_map_name(g).ok()?;
             let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
-            map_override::map_id(&mut v, &name)
+            map_override::map_id(&mut v, &data_root, &name)
         })));
     }
     if let (Some(t), Some(vfs)) = (&_telemetry, k.vfs()) {
@@ -1026,7 +1040,10 @@ pub fn run_hosted_with_live(
     // microphone is chosen on the Voice screen.
     let mut voice_link = xa
         .as_ref()
-        .and_then(|x| voice_glue::install(&loaded.runtime, x, host.settings.as_ref(), host.voice_io.take()));
+        .and_then(|x| {
+            let game_mix = ds.as_ref().map(dsound_glue::Audio::mixer);
+            voice_glue::install(&loaded.runtime, x, host.settings.as_ref(), host.voice_io.take(), game_mix)
+        });
     if let Some(keyboard) = pad.as_ref() {
         keyboard_glue::install(&loaded.runtime, keyboard.clone()).context("installing host keyboard entry")?;
     }
@@ -1058,6 +1075,7 @@ pub fn run_hosted_with_live(
             coop_probe,
             live: _live.clone(),
             settings: host.settings.clone(),
+            map_gate: map_gate.clone(),
             disc: &opts.disc,
             data_root: &opts.data_root,
         },

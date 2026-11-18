@@ -238,25 +238,37 @@ so its visible count need not change. The tag copy raises it to five if
 it were lower.
 
 **Positions.** `0x24bc12` lays the children out from the list's anchor,
-each one item height below the last. The height is the item's bounding box
-(`0x2bafa4`). With the default list skin that is its text (top 28) down to
-its background bitmap (bottom −15): 43 units. The end-cap bitmap is flagged
-out of the box. In the retail tag the hint text starts 21 units below the
-fourth item, in the list's column, so a fifth item 43 units lower would
-cover it. The screen-tag hook (`0x22f871`) therefore gives the tag copies
-of its panes (`custom_games::extend_tag`):
+each one item height below the last (it places each item's widgets with
+`0x2bacbc`, which writes a widget's rectangle at `+0x20`/`+0x24`). The
+height is the item's bounding box (`0x2bafa4`). With the default list skin
+that is its text (top 28) down to its background bitmap (bottom −15): 43
+units. The end-cap bitmap is flagged out of the box. In the retail tag
+(list anchored at 95, `hint_top` at −70) the hint block starts 21 units
+below the fourth row, so a fifth row 43 units lower would cover it.
 
-- the list's anchor moves up by 21;
-- every text and bitmap that starts below the fourth item, in the list's
-  column (less than half an item right of the anchor), moves down by 22.
-  Those are the two hint texts and the Y callout. The message panel to the
-  right and everything above stay put;
-- together that is one item height, so the five rows keep the retail
-  spacing. The gap under the last row stays 21, and the first row stays
-  36 units under the header (57 before);
-- a fifth pane is added for our row: a copy of the Custom Game pane, its
-  picture included, with our help text in place of the one text that
-  differs between panes.
+The list's top and the hint block stay where retail has them. Instead the
+rows stand closer together:
+
+- `custom_games::LIST_LAYOUT` hooks `0x24bc12`. For the Live menu's
+  handler only, after the original lays the rows out, `repitch` moves row
+  *i*'s widgets up by *i* × (43 − pitch). The first row stays put.
+- The pitch (`custom_games::pitch`) fits the rows into the room the
+  retail four rows and the gap under them take, keeping at least 5 units
+  above the hint block: 43 for four rows, 36 for five, 29 for six. The
+  skin's text is 20 units tall, so it fits in a row of 29.
+- `H2_LIVE_MENU_PITCH=N` overrides the pitch (22 to 43) to tune it in
+  game without a build.
+- The screen-tag hook (`0x22f871`) gives the tag copies of its panes
+  (`custom_games::extend_tag`). They move nothing. They raise the list's
+  visible count to the rows, and add a pane per row of ours: a copy of the
+  Custom Game pane, its picture included, with our help text in place of
+  the one text that differs between panes.
+
+Not seen in game yet: whether the background bar of one row shows behind
+the next row's text at a pitch under 43. Both the text and the bar are
+about 20 units tall, and they sit one above the other within the 43-unit
+item. If they overlap visibly, raise `H2_LIVE_MENU_PITCH` towards 32 (the
+last row then ends level with the hint block's top).
 
 The copies (about 2.7 KB) live in our data page. The retail arrays are not
 written, and the copies are reused when a map load brings the tag back.
@@ -342,6 +354,15 @@ its help text); the list keeps five item widgets, so Content Download
 scrolls into view ([live-coop.md](live-coop.md) section 10).
 `H2_NO_COOP_ROW=1` takes it out (five rows, as above).
 
+With the co-op row the list has six rows. The add-items hook links one
+item widget of ours per row of ours (two), so all six show with no scroll
+bar, 29 units apart (above, "Positions").
+
+With the mod repository on (Live and the map gate), Content Download reads
+"Mods" or "Mods (N new)", its pane's help text is ours, and it opens the
+Mods screen instead of the Map Pack dialog ([maps.md](../game/maps.md) §5,
+"Mod downloads (in game)"). `H2_NO_MODS_ROW=1` gives Content Download back.
+
 ## 7. To check in game
 
 Nothing here ran in the game. With two consoles (or two instances, per the
@@ -351,18 +372,18 @@ friends. Then check:
 1. **The rows.** Xbox Live menu: Quickmatch, OptiMatch, Custom Game,
    Custom Game Browser, Content Download, all five on screen with no
    scrolling.
-   - The five rows are evenly spaced, the first a little higher than
-     before, and the hint text and Y callout under the list sit a little
-     lower, with the same gap under the last row as before. Nothing
-     overlaps; the callout stays inside the screen's safe area.
+   - The rows are evenly spaced, closer than retail's; the first row and
+     the hint text and Y callout under the list are where retail has
+     them, and the last row ends above the hint text. Nothing overlaps.
    - "Custom Game Browser" fits on its row without being cut off.
    - Moving onto Custom Game Browser shows the Custom Game picture with our
      help text ("Find custom games hosted on your Live server and join
      one."); onto Content Download, its own picture and help.
    - Leaving the menu and coming back (and after playing a game, which
      reloads the main menu) still shows five rows.
-   - stderr says `custom games: xbox live menu tag has 5 panes and room for
-     5 rows`, `speaker row: add items active` and `custom games: row text`
+   - stderr says `custom games: xbox live menu tag has 5 panes and shows
+     5 rows`, `custom games: xbox live menu rows 36 apart (5 rows, 4
+     moved)`, `speaker row: add items active` and `custom games: row text`
      the first time.
    - If only four rows show and the list scrolls, the fifth item widget was
      not linked (the list handler's vtable differs from `0x458b48`). If the

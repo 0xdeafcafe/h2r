@@ -1890,7 +1890,14 @@ fn effects_image_descriptor_walks_like_the_xhv_engine_and_the_library_do() {
             "effect {index} segment {seg:#x}"
         );
         let v = rig.h.read_u32(seg + 0x14).unwrap();
-        assert_eq!(v.wrapping_sub(0x1400) >> 5, 0, "effect {index}");
+        // The XHV voice effects get a mix bin each (see
+        // remote_voice_reaches_the_ports_ring_not_the_speakers); the rest 0.
+        let bin = v.wrapping_sub(0x1400) >> 5;
+        if (0xb..=0xe).contains(&index) {
+            assert!((11..=30).contains(&bin), "effect {index}: an FX send, not {bin}");
+        } else {
+            assert_eq!(bin, 0, "effect {index}");
+        }
         // The same bytes through GetEffectData (0x37e5f2: [map + 8] + offset).
         assert_eq!(
             get_effect(&mut rig, index, 0x14, 4),
@@ -1956,6 +1963,105 @@ fn xhv_voice_effects_have_an_output_ring_the_headphone_feed_can_read() {
     }
     rings.sort_unstable();
     assert!(rings.windows(2).all(|w| w[0].0 + w[0].1 <= w[1].0));
+}
+
+/// The headphone feed's read of port `port`'s voice ring, as 0x334d1f does
+/// it through 0x332c9c: base at map +0x18, size at map +0x1c, the effect's
+/// write offset at state +0x34, its own read offset (`talker +0x2c`) in
+/// `read`. 320 samples, the high 16 bits of each 32-bit one, wrapping at
+/// the end of the ring; then the read offset moves on 0x500 bytes if that
+/// many were ready, or to 0x280 behind the write offset if not.
+fn headphone_feed(rig: &Rig, desc: u32, port: u32, read: &mut u32) -> Vec<i16> {
+    let map = desc + 8 + (0xb + port) * 32;
+    let base = rig.h.read_u32(map + 0x18).unwrap();
+    let size = rig.h.read_u32(map + 0x1c).unwrap();
+    let state = rig.h.read_u32(map + 8).unwrap();
+    let write = rig.h.read_u32(state + 0x34).unwrap();
+    let ready = (write.wrapping_sub(*read).wrapping_add(size)) % size;
+    let mut out = Vec::with_capacity(0x140);
+    let mut at = *read;
+    for _ in 0..0x140 {
+        if at >= size {
+            at = 0;
+        }
+        out.push(rig.h.read_u32(base + at).unwrap().cast_signed().wrapping_shr(16) as i16);
+        at += 4;
+    }
+    *read = if ready >= 0x500 {
+        (*read + 0x500) % size
+    } else {
+        (write + size - 0x280) % size
+    };
+    out
+}
+
+#[test]
+fn remote_voice_reaches_the_ports_ring_not_the_speakers() {
+    let mut rig = Rig::new();
+    let desc = rig.download_dry_image();
+    // 0x333330: each port's voice streams get the bin
+    // (state[0xb + port] +0x14 - 0x1400) >> 5. Distinct per port, and not
+    // the mix-ins' 0x17..=0x19.
+    let bins: Vec<u32> = (0..4)
+        .map(|port| {
+            let state = rig.h.read_u32(desc + 8 + (0xb + port) * 32 + 8).unwrap();
+            (rig.h.read_u32(state + 0x14).unwrap() - 0x1400) >> 5
+        })
+        .collect();
+    for (i, b) in bins.iter().enumerate() {
+        assert!(!(0x17..=0x19).contains(b), "{b:#x}");
+        assert!(!bins[..i].contains(b), "{bins:?}");
+    }
+    // A decoder's stream for port 1, as 0x335ed3 makes it: 8 kHz mono PCM16,
+    // two packets, DSMIXBINS { 1, { bin, 0 } }.
+    let wfx = rig.wfx(1, 1, 8000, 16, 2);
+    let pairs = dwords(&mut rig, &[bins[1], 0]);
+    let mix = dwords(&mut rig, &[1, pairs]);
+    let sdesc = dwords(&mut rig, &[0x4000_0000, 2, wfx, 0, 0, mix]);
+    let out = rig.scratch(4);
+    assert_eq!(rig.call(CREATE_STREAM, &[rig.ds_ptr, sdesc, out, 0]).eax, S_OK);
+    let stream = rig.h.read_u32(out).unwrap();
+    // 40 ms of a constant 0x2000 (two 320-byte packets).
+    rig.process(stream, &pcm16(&[0x2000; 160]), 1);
+    rig.process(stream, &pcm16(&[0x2000; 160]), 2);
+
+    // 20 ms rendered (160 frames at the rig's 8 kHz): nothing on the
+    // speakers; DoWork puts 320 samples (16 kHz) in port 1's ring.
+    let speakers = rig.render(160);
+    assert!(speakers.iter().all(|&v| v == 0.0), "remote voice is the headset's");
+    rig.call(DO_WORK, &[]);
+    let state = |rig: &Rig, port: u32| rig.h.read_u32(desc + 8 + (0xb + port) * 32 + 8).unwrap();
+    assert_eq!(rig.h.read_u32(state(&rig, 1) + 0x34).unwrap(), 0x500);
+    let mut read = 0;
+    let got = headphone_feed(&rig, desc, 1, &mut read);
+    // The rate conversion starts from silence, a two-sample ramp.
+    assert_eq!(&got[..3], &[0, 0x1000, 0x2000]);
+    assert!(got[2..].iter().all(|&s| s == 0x2000), "{:?}", &got[..4]);
+    assert_eq!(read, 0x500, "a whole packet was ready");
+    // The other ports' rings move on the same clock, silent.
+    let mut other = 0;
+    assert_eq!(rig.h.read_u32(state(&rig, 0) + 0x34).unwrap(), 0x500);
+    assert!(headphone_feed(&rig, desc, 0, &mut other).iter().all(|&s| s == 0));
+
+    // Three more 20 ms: the ring (0x1400 bytes, 80 ms) wraps; the second
+    // packet then silence.
+    for _ in 0..3 {
+        rig.render(160);
+        rig.call(DO_WORK, &[]);
+    }
+    assert_eq!(rig.h.read_u32(state(&rig, 1) + 0x34).unwrap(), 0);
+    let got = headphone_feed(&rig, desc, 1, &mut read);
+    assert!(got.iter().all(|&s| s == 0x2000), "second packet {:?}", &got[..4]);
+    let got = headphone_feed(&rig, desc, 1, &mut read);
+    assert_eq!(&got[..3], &[0x2000, 0x1000, 0], "the ramp down");
+    assert!(got[2..].iter().all(|&s| s == 0), "then silence");
+    // The last 20 ms brings the feed level with the writer; with nothing
+    // new after that it is short, and 0x334d1f backs off to 0x280 behind
+    // the write offset.
+    headphone_feed(&rig, desc, 1, &mut read);
+    assert_eq!(read, 0);
+    headphone_feed(&rig, desc, 1, &mut read);
+    assert_eq!(read, 0x1400 - 0x280);
 }
 
 // ---- Voice effects -------------------------------------------------------

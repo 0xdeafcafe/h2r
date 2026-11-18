@@ -1,10 +1,14 @@
-//! `h2 live maps publish|list`: share a map package over Live
+//! `h2 live maps publish|import|list`: share a map package over Live
 //! (docs/game/maps.md §5, docs/live/live-api.md "Custom maps").
 //!
 //! `publish DIR` reads the package's `manifest.toml` (checked as the
 //! runtime checks it), uploads every layer and the preview image to the
 //! content store by SHA-256, then signs the manifest as a `MapPublished`
-//! event with the local account's key and puts it. `list` prints what the
+//! event with the local account's key and puts it; the repository's
+//! extras (category, source URL) come from the package's `mod.toml` or
+//! the flags. `import FILE` turns a third-party mod (a whole modded map,
+//! or a PPF, IPS or BPS) into a package over the user's own disc map
+//! (crate::live_mod_import) and publishes it. `list` prints what the
 //! server has.
 use std::path::Path;
 
@@ -17,14 +21,25 @@ use live_proto::{Page, lxm};
 
 use crate::live_accounts;
 use crate::live_cmd::{Args, Client, accounts_path, call, now, pick_account};
+use crate::live_mod_import::{ImportOptions, extras_in, import};
 
 pub const USAGE: &str = "usage: h2 live maps <command>
 
-  publish DIR [--server URL] [--as GAMERTAG]
+  publish DIR [--server URL] [--as GAMERTAG] [--category C] [--source-url URL]
                           upload a map package (DIR/manifest.toml, its
                           layers and image) and publish it as yours
+  import FILE [--base MAP] [--disc ISO] [--mappack ISO] [--out DIR]
+              [--name NAME] [--info mod.toml] [--category C] [--no-publish]
+              [--server URL] [--as GAMERTAG]
+                          make a package of a third-party mod (a modded
+                          .map, or a .ppf/.ips/.bps) over your own disc's
+                          map, sharing only the difference, and publish it;
+                          a Map Pack map's base is read from --mappack,
+                          else a mappack.iso beside the disc
   list [--server URL] [--base MAP] [--author GAMERTAG] [--json]
-                          the packages the server has";
+                          the packages the server has
+
+  Categories: gameplay, weapons, vehicles, visuals, maps, other.";
 
 pub fn run(mut args: Args) -> Result<()> {
     match args.0.first().map(String::as_str) {
@@ -32,20 +47,83 @@ pub fn run(mut args: Args) -> Result<()> {
             args = args.shift();
             let server = args.take("--server")?;
             let as_tag = args.take("--as")?;
+            let category = args.take("--category")?;
+            let source_url = args.take("--source-url")?;
             let [dir] = args
                 .positional_for(USAGE)?
                 .try_into()
                 .map_err(|_| anyhow::anyhow!("publish takes one package directory\n\n{USAGE}"))?;
             let client = Client::connect(server)?;
-            let answer = publish(&client, &accounts_path()?, as_tag.as_deref(), Path::new(&dir))?;
-            let m = &answer.map.summary;
+            let answer = publish(
+                &client,
+                &accounts_path()?,
+                as_tag.as_deref(),
+                Path::new(&dir),
+                category,
+                source_url,
+            )?;
+            print_published(&answer);
+            Ok(())
+        }
+        Some("import") => {
+            args = args.shift();
+            let server = args.take("--server")?;
+            let as_tag = args.take("--as")?;
+            let base = args.take("--base")?;
+            let disc = args.take("--disc")?;
+            let mappack = args.take("--mappack")?;
+            let out = args.take("--out")?;
+            let name = args.take("--name")?;
+            let info = args.take("--info")?;
+            let category = args.take("--category")?;
+            let no_publish = args.flag("--no-publish");
+            let [file] = args
+                .positional_for(USAGE)?
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("import takes one mod file\n\n{USAGE}"))?;
+            let disc = match disc {
+                Some(d) => std::path::PathBuf::from(d),
+                None => crate::default_disc()?,
+            };
+            // As `h2 play` finds it: mappack.iso beside the disc.
+            let mappack = mappack
+                .map(std::path::PathBuf::from)
+                .or_else(|| crate::mappack_cmd::discover(&disc));
+            let made = import(&ImportOptions {
+                input: file.into(),
+                disc,
+                mappack,
+                base,
+                out: out.map(Into::into),
+                info: info.map(Into::into),
+                name,
+                category,
+            })?;
             println!(
-                "published {} ({}) on {}: {}",
-                m.name,
-                fmt_size(m.size),
-                m.base.map,
-                m.map_id
+                "{}: {} on {}{}, a {} layer for a {} mod",
+                made.dir.display(),
+                made.manifest.package.name,
+                made.manifest.base.map,
+                match made.base_from {
+                    crate::live_mod_import::BaseFrom::Disc => "",
+                    crate::live_mod_import::BaseFrom::MapPack => " (map pack)",
+                },
+                fmt_size(made.layer_size),
+                fmt_size(made.input_size)
             );
+            if no_publish {
+                return Ok(());
+            }
+            let client = Client::connect(server)?;
+            let answer = publish(
+                &client,
+                &accounts_path()?,
+                as_tag.as_deref(),
+                &made.dir,
+                None,
+                None,
+            )?;
+            print_published(&answer);
             Ok(())
         }
         Some("list") => {
@@ -81,6 +159,17 @@ pub fn run(mut args: Args) -> Result<()> {
     }
 }
 
+fn print_published(answer: &MapAnswer) {
+    let m = &answer.map.summary;
+    println!(
+        "published {} ({}) on {}: {}",
+        m.name,
+        fmt_size(m.size),
+        m.base.map,
+        m.map_id
+    );
+}
+
 fn fmt_size(n: u64) -> String {
     match n {
         n if n >= 1 << 20 => format!("{:.1} MiB", n as f64 / f64::from(1 << 20)),
@@ -112,12 +201,16 @@ pub(crate) fn list(
 }
 
 /// Uploads `dir`'s layers and image, then publishes its manifest as the
-/// local account `as_tag` (by default the only one on this server).
+/// local account `as_tag` (by default the only one on this server), with
+/// the repository's extras from `dir/mod.toml` unless `category` or
+/// `source_url` are given.
 pub(crate) fn publish(
     client: &Client,
     accounts: &Path,
     as_tag: Option<&str>,
     dir: &Path,
+    category: Option<String>,
+    source_url: Option<String>,
 ) -> Result<MapAnswer> {
     let path = dir.join(MANIFEST_FILE);
     let text =
@@ -126,6 +219,11 @@ pub(crate) fn publish(
     manifest
         .validate_in(dir)
         .with_context(|| path.display().to_string())?;
+    let (dir_category, dir_source) = extras_in(dir)?;
+    let mut doc = MapDocument::new(manifest.clone(), None);
+    doc.category = category.or(dir_category);
+    doc.source_url = source_url.or(dir_source);
+    doc.validate_extras().map_err(|e| anyhow::anyhow!(e))?;
     let me = pick_account(client, accounts, as_tag)?;
     let key = me.key_pair()?;
     let author = me
@@ -162,10 +260,7 @@ pub(crate) fn publish(
     }
 
     let id = MapId::of(&manifest);
-    let doc = MapDocument {
-        manifest,
-        image: image_hash,
-    };
+    doc.image = image_hash;
     let jws = EventBody::at_unix(
         &key,
         &author,
@@ -235,7 +330,7 @@ mod tests {
         }];
         std::fs::write(pkg.join(MANIFEST_FILE), m.to_toml()).unwrap();
 
-        let answer = publish(&client, &accounts, None, &pkg).unwrap();
+        let answer = publish(&client, &accounts, None, &pkg, None, None).unwrap();
         assert_eq!(answer.map.summary.map_id, MapId::of(&m));
         assert_eq!(answer.map.summary.author.gamertag, "Modder");
         assert!(answer.map.summary.image.is_some());
@@ -243,11 +338,15 @@ mod tests {
         let all = list(&client, None, None).unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].name, "Lockout Snipers");
-        assert!(list(&client, Some("midship".into()), None).unwrap().is_empty());
+        assert!(
+            list(&client, Some("midship".into()), None)
+                .unwrap()
+                .is_empty()
+        );
 
         // A layer whose bytes are not the manifest's is never uploaded.
         std::fs::write(pkg.join("snipers.ips"), b"PATCH changed").unwrap();
-        let err = publish(&client, &accounts, None, &pkg).unwrap_err();
+        let err = publish(&client, &accounts, None, &pkg, None, None).unwrap_err();
         assert!(format!("{err:#}").contains("SHA-256"), "{err:#}");
         drop(server);
         let _ = std::fs::remove_dir_all(&dir);

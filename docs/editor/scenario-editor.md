@@ -73,8 +73,10 @@ facing `+0x0c` f32 (E `0x0023cee1`), team `+0x10` i16 (V, C), player type
 read-only here).
 
 **Netgame flags** (`0x20`): position `+0x00` (E `0x0019cbce`..`0x0019cbd9`),
-facing `+0x0c` (E `0x0019cf65`), type `+0x10` u16 and team `+0x12` u16
-(V, C).
+facing `+0x0c` (E `0x0019cf65`), type `+0x10` u16, team `+0x12` u16
+(V, C) and identifier `+0x14` i16 (V: the teleporter channel; on every
+retail map with teleporters a source pairs with the destinations of its
+identifier, while the team is 8 or mixed).
 
 **Netgame equipment** (`0x90`), all read in the spawner `0x0015aad0` and
 its tick `0x0015ae70`:

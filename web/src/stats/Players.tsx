@@ -12,6 +12,7 @@ import { PresenceBadge } from "../components/bits";
 import { Crumbs, Derived, Pager, Panel, Strip, Tabs, Title, playerHref } from "./Layout";
 import { PeopleFinder, Pills } from "./Side";
 import { num, ratio } from "./fmt";
+import { STATS_ROOT } from "../routes";
 
 type Board = "kills" | "kd" | "wins" | "spree" | "exp";
 const BOARDS: Array<[Board, string, string]> = [
@@ -45,7 +46,7 @@ export default function Players() {
   const me = () => identity.me();
   return (
     <>
-      <Crumbs trail={[["Home", "/stats"], ["Players"]]} />
+      <Crumbs trail={[["Home", STATS_ROOT], ["Players"]]} />
       <Strip kind="players" />
       <div class="s-cols s-cols--over">
         <aside class="s-left">

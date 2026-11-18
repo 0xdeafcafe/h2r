@@ -78,16 +78,87 @@ fn adding_checks_the_port_and_the_count() {
 }
 
 #[test]
-fn removing_a_bot_unplugs_its_pad() {
+fn a_removed_bot_stays_plugged_and_idle_until_unplugged() {
+    let l = Local::default();
+    let h = l.add(1, "a", Box::new(|_: &Frame<'_>| forward())).unwrap();
+    let mut m = manager(&l, 1);
+    assert_eq!(m.connected_mask(), 0b11);
+    let g = FakeGuest::new();
+    l.frame(0, &g, |_| false);
+    assert_eq!(l.pad(h), Some(forward()));
+    l.remove(h).unwrap();
+    // Off the books at once, but the game still sees its pad: pulling it
+    // in a game pauses on "controller disconnected".
+    assert!(l.is_empty() && l.list().is_empty());
+    assert_eq!(l.leaving(), vec![(h, Some(1))]);
+    assert_eq!(l.port_mask(), 0b10, "its view stays hidden");
+    assert_eq!(l.joining_mask(), 0, "it does not sign in again");
+    assert_eq!(l.name_on(1), None);
+    m.sync();
+    assert_eq!(m.connected_mask(), 0b11, "still plugged");
+    l.frame(1, &g, |_| true);
+    assert_eq!(
+        l.pad(h),
+        Some(HostPadState::default()),
+        "idle, its source not asked"
+    );
+    assert_eq!(l.remove(h), Err(Error::NoSuchBot(h)));
+    assert!(l.unplug(h));
+    m.sync();
+    assert_eq!(m.connected_mask(), 0b1);
+    assert!(l.leaving().is_empty());
+    assert!(!l.unplug(h));
+}
+
+#[test]
+fn only_a_leaving_bot_is_unplugged() {
+    let l = Local::default();
+    let h = l.add(1, "a", idle()).unwrap();
+    assert!(!l.unplug(h), "on the books");
+    assert_eq!(l.list().len(), 1);
+}
+
+#[test]
+fn a_bot_added_on_a_leaving_port_takes_its_pad_back() {
     let l = Local::default();
     let h = l.add(1, "a", idle()).unwrap();
     let mut m = manager(&l, 1);
-    assert_eq!(m.connected_mask(), 0b11);
     l.remove(h).unwrap();
+    let again = l.add(1, "b", Box::new(|_: &Frame<'_>| forward())).unwrap();
+    assert_eq!(again, h, "the same pad: the game never sees it go");
+    assert!(l.leaving().is_empty());
     m.sync();
-    assert_eq!(m.connected_mask(), 0b1);
-    assert_eq!(l.remove(h), Err(Error::NoSuchBot(h)));
-    assert!(l.is_empty());
+    assert_eq!(m.connected_mask(), 0b11);
+    l.frame(0, &FakeGuest::new(), |_| false);
+    assert_eq!(l.pad(h), Some(forward()));
+    assert_eq!(l.name_on(1).as_deref(), Some("b"));
+}
+
+#[test]
+fn leaving_bots_wait_out_the_game_then_sign_out_then_unplug() {
+    let (a, b, c) = (BotHandle(0), BotHandle(1), BotHandle(2));
+    let leaving = [(a, Some(1)), (b, Some(2)), (c, None)];
+    // In a game: nothing at all, whatever the slots say.
+    assert_eq!(leave_step(true, &leaving, |_| true), LeaveStep::default());
+    // Back in the menus: port 1 still signed in, port 2 already empty, the
+    // never-placed bot has no slot.
+    let step = leave_step(false, &leaving, |p| p == 1);
+    assert_eq!(
+        step,
+        LeaveStep {
+            sign_out: vec![1],
+            unplug: vec![b, c],
+        }
+    );
+    // The frame after the sign-out: the slot is empty, so the pad goes.
+    let step = leave_step(false, &[(a, Some(1))], |_| false);
+    assert_eq!(
+        step,
+        LeaveStep {
+            sign_out: vec![],
+            unplug: vec![a],
+        }
+    );
 }
 
 #[test]
@@ -159,12 +230,6 @@ fn a_recording_plays_once_from_its_first_frame() {
         .map(|n| r.pad(&frame_at(n, &g)) == forward())
         .collect();
     assert_eq!(seq, vec![true, false, true, false]);
-}
-
-#[test]
-fn the_join_pad_taps_a() {
-    let a = |f| join_pad(f).buttons.contains(HostButton::South);
-    assert!(a(0) && a(JOIN_HOLD - 1) && !a(JOIN_HOLD) && !a(JOIN_EVERY - 1) && a(JOIN_EVERY));
 }
 
 #[test]

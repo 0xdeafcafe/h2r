@@ -314,6 +314,36 @@ instead, which spawns none of them:
 
 So an idle hub, sockets open or not, has nothing pending, and hibernates.
 
+## Deploys and retries
+
+A deploy resets every Durable Object: calls in flight throw ("Durable
+Object reset because its code was updated", "Network connection lost") with
+`retryable` set, and the hub replays its log on the next call. The fetch
+handler (`entry::fetch_retrying`, decisions in `doretry`, unit-tested on
+this machine) answers such a throw by:
+- calling again, 100 ms then 400 ms later (3 calls in all), if the request is
+  safe to repeat: GET, HEAD, OPTIONS, PUT, DELETE, `POST /v1/presence/ping`,
+  and the signed-event POSTs (`/v1/events`, `/v1/sessions/{id}/events`), which
+  the hub takes once by their nonce, a guard rebuilt from the log;
+- otherwise, or when the calls run out, `503` with `Retry-After: 2` and the
+  API's error body (`unavailable`), not a bare 500, so a client knows to
+  come back;
+- an overloaded object (`overloaded`) gets the 503 at once: calling again
+  would only add to its load.
+
+Anything else thrown surfaces as before. The single-use token guard (`jti`)
+is in the hub's memory and is lost on a reset, so a repeat with the same
+token is accepted; that is why only requests that are idempotent or nonce-
+guarded are repeated here. The game client has its own retries and a grace
+before it calls the connection lost ([live.md](live.md) "Outages"), and the
+restarted hub renews presence, session and game deadlines, so a deploy does
+not expire anyone who is still pinging.
+
+Sockets (`/v1/stream`, ingest, the co-op relay) are closed by a deploy;
+their attachments survive hibernation, not a deploy. The relay is not used
+by the game at runtime yet; for the telemetry ingest socket's reconnect,
+see [live-telemetry.md](live-telemetry.md).
+
 ## The co-op relay
 
 `/v1/sessions/{id}/relay` goes to a `CoopRelay` Durable Object named by
@@ -475,14 +505,38 @@ anonymous reads, `private, no-store` for the rest) are the router's, so
 they hold on the Worker too.
 
 The disc's art can't be in the Worker, so the Worker redirects to a
-published copy. Publishing it once from the Mac:
+published copy. Extracting everything the viewer and the stats site use
+(Halo 2's maps, the map pack's, the Halo 1 maps converted from the Halo 1
+disc, models, pictures) and publishing it once from the Mac:
 
 ```
+ART=$TMPDIR/live-art
+h2 live assets extract --disc disc/halo2.iso --mappack disc/mappack.iso \
+  --halo1 disc/halo1.iso --out "$ART"
 export H2_LIVE_S3_PUBLIC_ENDPOINT=https://<account id>.r2.cloudflarestorage.com \
        H2_LIVE_S3_PUBLIC_ACCESS_KEY_ID=… H2_LIVE_S3_PUBLIC_SECRET_ACCESS_KEY=…
-h2 live assets publish --to s3://h2-live-art --url https://<the bucket's public URL>
-# prints: H2_LIVE_GAME_ART_URL = "https://…/art/<stamp>"
+h2 live assets publish --to s3://live-art --url https://live-art.forbes.red --out "$ART"
+# prints what it holds (maps, maps (halo 1), textures, views, models, ...)
+# and: H2_LIVE_GAME_ART_URL = "https://live-art.forbes.red/art/<stamp>"
 ```
+
+`--halo1` converts the Halo 1 maps into the runtime data root (`h2 play`'s;
+`--installed DATA` names another) first, only what is missing. Publishing
+refuses art whose manifest names a file it lacks (the web app would ask
+for it).
+
+What goes up ([live-art.md](live-art.md#packing)): every file under
+`art/<stamp>/`, the stamp a hash of the whole extraction, each object with
+its `Content-Type` and `Cache-Control: public, max-age=31536000,
+immutable` (a new extraction is a new stamp, so nothing is ever replaced
+in place); glbs and JSON as their Brotli copies with `Content-Encoding:
+br`, pictures (WebP, PNG) as they are. The Worker's redirect for
+`/art/game/<file>` is `307` with `Cache-Control: public, max-age=300` (the
+manifest and anything unversioned) or `public, max-age=31536000,
+immutable` (a `?v=<stamp>` address). The web app then fetches every other
+file straight from the bucket, from the directory the manifest was
+redirected to (`web/src/lib/gameart.ts` `artBase`), so a map's dozens of
+pictures cost no redirects.
 
 Put that line in each environment's `vars` in wrangler.toml and deploy
 again. The bucket needs public access (its r2.dev address or a custom
@@ -491,7 +545,7 @@ fetches `manifest.json` with `fetch`, which follows the redirect
 cross-origin:
 
 ```
-bunx wrangler@4 r2 bucket cors set h2-live-art --file crates/live-worker/art-cors.json
+bunx wrangler@4 r2 bucket cors set live-art --file crates/live-worker/art-cors.json
 ```
 
 A new extraction is a new stamp: publish it again and change the variable.
@@ -602,27 +656,31 @@ bunx wrangler@4 login
 keeps serving meanwhile.
 1. Make the bucket, public with CORS:
    ```
-   bunx wrangler@4 r2 bucket create h2-live-art
-   bunx wrangler@4 r2 bucket domain add h2-live-art --domain art.forbes.red --zone-id <forbes.red zone id>
-   bunx wrangler@4 r2 bucket cors set h2-live-art --file crates/live-worker/art-cors.json
+   bunx wrangler@4 r2 bucket create live-art
+   bunx wrangler@4 r2 bucket domain add live-art --domain live-art.forbes.red --zone-id <forbes.red zone id>
+   bunx wrangler@4 r2 bucket cors set live-art --file crates/live-worker/art-cors.json
    ```
-   `bunx wrangler@4 r2 bucket dev-url enable h2-live-art` gives an r2.dev
+   `bunx wrangler@4 r2 bucket dev-url enable live-art` gives an r2.dev
    address instead of a custom domain; it is rate limited, so it is for
    trying it out.
-2. Make an R2 API token with Object Read & Write on `h2-live-art` and
+2. Make an R2 API token with Object Read & Write on `live-art` and
    `h2-live-blobs` (dashboard: R2, Manage API tokens).
-3. Upload, with the token's keys:
+3. Extract (with the Halo 1 maps) and upload, with the token's keys:
    ```
+   ~/.cargo/bin/h2 live assets extract --disc disc/halo2.iso --mappack disc/mappack.iso \
+     --halo1 disc/halo1.iso --out "$DATA/game-art"
    export H2_LIVE_S3_ENDPOINT=https://<account id>.r2.cloudflarestorage.com
    export H2_LIVE_S3_ACCESS_KEY_ID=… H2_LIVE_S3_SECRET_ACCESS_KEY=…
-   ~/.cargo/bin/h2 live assets publish --to s3://h2-live-art --url https://art.forbes.red --out "$DATA/game-art"
+   ~/.cargo/bin/h2 live assets publish --to s3://live-art --url https://live-art.forbes.red --out "$DATA/game-art"
    ```
-4. It prints `H2_LIVE_GAME_ART_URL = "https://art.forbes.red/art/<stamp>"`.
+4. It prints `H2_LIVE_GAME_ART_URL = "https://live-art.forbes.red/art/<stamp>"`.
    Put that line under `[env.cutover.vars]`, `[env.production.vars]` and
    `[env.staging.vars]` in `crates/live-worker/wrangler.toml`.
-5. Check: `curl -sI https://art.forbes.red/art/<stamp>/manifest.json`
-   answers 200, with `access-control-allow-origin` when sent an `Origin`
-   header.
+5. Check: `curl -sI -H 'Origin: https://live.forbes.red' -H 'Accept-Encoding: br'
+   https://live-art.forbes.red/art/<stamp>/manifest.json` answers 200 with
+   `content-encoding: br`, `cache-control: public, max-age=31536000,
+   immutable`, `content-type: application/json` and
+   `access-control-allow-origin`.
 
 **2. Deploy the Worker without the route.** It holds the real key, from
 the Mac's `server.key`, which deploy.sh checks against the public key at
@@ -677,7 +735,7 @@ record. The DNS record and the tunnel's configuration stay as they are.
 curl -s https://live.forbes.red/healthz                 # the position from step 5, or just past it
 curl -sI https://live.forbes.red/ | grep -i cache-control   # public, max-age=0, must-revalidate (static assets)
 curl -s https://live.forbes.red/.well-known/h2live.json  # id live.forbes.red
-curl -sI https://live.forbes.red/art/game/manifest.json | grep -i location   # https://art.forbes.red/art/<stamp>/…
+curl -sI https://live.forbes.red/art/game/manifest.json | grep -i location   # https://live-art.forbes.red/art/<stamp>/…
 ```
 Then sign in from the game (`h2 play`) and from the web, and watch a game
 or a co-op session go through. Finally, in the dashboard under Workers &

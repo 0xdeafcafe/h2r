@@ -59,7 +59,8 @@ shots"):
   counts go to the players holding those weapons and add up until their
   next frame. A weapon change or death drops the pending count. Shots of a
   tick the worker folds into another (see "Threads") are added to the one
-  it keeps.
+  it keeps. The ticks they were on go out as `fire` (see "Velocity, seat,
+  vitality and fire").
 
 Frames also carry `vehicles` and `actors` ([live-gamestate.md](live-gamestate.md),
 "AI bipeds, teams and vehicles"):
@@ -169,6 +170,46 @@ that puts the first one past the last tick sent. Before, the reverted run's
 ticks overlapped the first's, a replay sorted them together and the player
 flicked between the two runs.
 
+## Cinematics
+
+In a campaign cutscene the scripts own the world: they teleport the
+players, hide or freeze them, move AI bipeds and vehicles as puppets and
+kill whom the story needs. Before, telemetry sent all of it as play, so a
+replay or the live view showed players jumping about, frozen in place or
+gone, and a scripted death counted. Now telemetry reads, every tick, the
+byte the game itself asks whether a cinematic is playing: `[0x00510c50]+5`,
+set by HaloScript's `cinematic_start` and cleared by `cinematic_stop`
+([live-gamestate.md](live-gamestate.md), "Cinematics (cutscenes)"). It is
+in the game state, so it is right across checkpoint reverts too.
+
+While it is set:
+
+- Frames keep coming on frame ticks, on the game's clock (reverts and all,
+  as above), but each is only the tick, the BSP, a `cut` if one is due and
+  `cinematic: true`: no players, actors, vehicles, hits, machines or
+  objects. The game thread skips the world scan for them. A frame of
+  nothing costs a few bytes, and keeps the live view and the 1 Hz recording
+  told, where no frames would look like a stalled game.
+- Kills are not sent (the kill hook reads the byte as the kill happens, and
+  the worker also drops one queued in a cutscene); hits and shots counted
+  in it are dropped, and actors' shots with them.
+- Scores and the roster are read as ever: they are the game's own record.
+- Each unit's last frame is forgotten, so the first frame after the
+  cutscene works out no speed or actions across it (a `pickup` for the
+  weapon the scripts handed over, a run at the speed of a teleport).
+  Machines are sent from their last sent state, so the doors the cutscene
+  moved are sent in that first frame.
+
+The web viewer ([live-api.md](live-api.md) frames) draws a "Cutscene" card
+over the map and the 3D view for a cinematic frame and never draws the
+entities of the frames around it into it. A replay marks each cutscene on
+the scrubber and, playing, skips from its start to the first frame after
+it; seeking into one shows the card.
+
+The packed format carries the mark as version 5 ([Packed frames](#packed-frames)),
+written for cinematic frames alone, so a server or page from before it
+still reads every other frame.
+
 Tag names are (likely) not in guest memory: nothing in the XBE refers to
 the cache header's tag-name fields, and the loader reads the tag index and
 metadata. On map activation telemetry asks the boot for the
@@ -178,6 +219,95 @@ rows. The table is used only if the file's scenario datum equals the
 guest's (tag index header `[0x00547f00]+0x0c`), since both indexes hold the
 same salted datums. Without a match, or without a locator (tests, a raw
 XBE), `species` and `weapon` are left out.
+
+## Velocity, seat, vitality and fire
+
+Players and actors carry the protocol's version 3 unit fields from capture
+(docs/live/replay-fidelity.md, step 4). Offsets and evidence are in
+`crates/live-telemetry/src/layout.rs`; all are confirmed by static reading
+of the retail XBE.
+
+- `vel`: body `+0x88`, sent as read, in world units **a second**. The
+  engine keeps the field per second, not per tick: the projectile update
+  (from `0x000f8ee2`) loads the seconds per tick (`T+0x04`), takes gravity
+  times it off the velocity's z and moves the position (`+0x64`) by the
+  velocity times it (`0x000f97df`..`0x000f9803`), and projectile creation
+  adds the tag's initial velocity (`proj +0x17c`, 400 for a bullet, world
+  units a second) straight in (`0x000f8487`). It is an object field, so
+  bipeds and vehicles hold the same unit. A rider sends the velocity of what
+  its `pos` is: the vehicle's, or the mount's for a gunner. Absent when the
+  read faults or is not finite, or faster than `MAX_FRAME_SPEED` (1000 a
+  second); a standing unit sends zeros, which cost nothing in a delta once
+  sent. A dead player sends none.
+- `seat`: unit `+0x1fc` (`i16`, -1 none), the index in the vehicle
+  definition's seats block. `unit_new` sets it to -1 (`0x000c44c1`), the
+  enter-vehicle routine (`0x000ea1f0`) indexes the seats block with it and
+  stores it (`0x000ea405`), leaving stores -1 (`0x000ea995`). Sent only
+  with `vehicle`, at most 63.
+- `body` and `shield`: `+0xec` and `+0xf0` (`f32`, 1.0 full), as
+  `object_get_health` (`0x002a1a20`) and `object_get_shield`
+  (`0x002a1a90`) read them: both 0 while the body-depleted damage flag is
+  set. Sent clamped to 0..1 and 0..4 (an overshield charges past 1).
+  Bodies (stance `dead`) carry none.
+- `fire`: each tick's fire-hook count for the held weapon also sets bit 0
+  of a 32-bit mask, after moving the mask older by the ticks since the
+  last shot (bits past 32 ticks drop off). The frame sends the mask as of
+  its tick, so bit `k` is a shot on `tick - k`, beside `shots`, the count;
+  both reset at each frame. Actors' masks are kept by weapon datum, like
+  their counts. A weapon change, death or campaign revert drops them.
+
+`actions_ago` and hits' `ago` are not filled yet.
+
+### Rate: 15 Hz, players included
+
+Frames stay on even ticks (15 Hz) for everything, players included. A
+players-only frame on odd ticks does not fit the current protocol: a
+frame's lists are complete, so an odd frame without actors, vehicles and
+machines says they are gone. The viewer would drop them for a tick, and the
+packed delta of the next even frame would carry every actor again whole
+(no previous entity to match), a keyframe's worth of bytes 15 times a
+second. Sending everything every tick doubles the world scan's game-thread
+cost (it runs on frame ticks only, `pipeline.rs`) and the bytes, while the
+server forwards at most 15 frames a second (`FRAME_INTERVAL`, 66 ms,
+`crates/live-server/src/games.rs`) and records the first frame of each
+wall-clock second, so the extra frames would be dropped or folded before
+anyone saw them. With `vel` and `fire` filled, the viewer can place each
+shot on its tick and interpolate between 15 Hz samples with the velocity
+(Hermite) at no extra rate.
+
+What 30 Hz players would need: a frame flag (packed version 5, JSON
+`partial: true`) meaning "these lists are unchanged since the last full
+frame", so an odd frame carries players only and the delta encoder matches
+against the last full frame's other lists; the session building one each
+odd tick (the snapshot already reads players every tick); the server's
+throttle letting players-only frames through (or the chunk recorder of
+step 5 taking every frame); and the 15-delta keyframe interval and `seq`
+counting the odd frames too. `tick_offset` staying even keeps full frames
+on even ticks either way.
+
+### Bandwidth (estimates, until the bench runs)
+
+From the packed codes (`pack.rs`): a delta sends a changed `vel` as three
+`seg(4)` differences in 1/64 unit a second. A unit walking a curve at about
+4 units a second changes it by some 17 steps a component a frame, about
+22 bits with the field's flag (about 2.75 bytes); a still or steadily
+moving one costs nothing after the first frame. `body` and `shield` cost
+about 2 bytes a unit in a keyframe and nothing until they change; `fire`
+about half a byte on a frame its unit fired; `seat` a few bits on entering a
+vehicle.
+
+| scene (bench fixture) | before, B a frame | estimate with vel, fire, seat, vitality | per minute |
+|---|---:|---:|---:|
+| `mp16` (16 players circling) | 325 | about 375 | about 330 KiB (286 before) |
+| `mp16_1000` | 407 | about 455 | about 400 KiB (357 before) |
+| `campaign100` (all 100 actors circling) | 1330 | about 1610 | about 1.4 MiB (1.2 before) |
+
+The fixture moves every unit on a curve, so these are an upper end; in a
+real campaign most actors stand still and cost nothing extra. The bench
+fixture now sets the units' velocity in units a second (it was a per-tick
+guess) and full vitality. `cargo test --release -p live-telemetry --lib
+bench -- --ignored --nocapture` measures them; replace these estimates with
+its numbers.
 
 ## Player appearance
 
@@ -228,15 +358,44 @@ settings are queued in order with them. One worker thread
 (`crates/live-telemetry/src/pipeline.rs`) runs the session over the queue
 in order: it builds the events and frames (ids, species, weapon, team and
 stance names, actor order, placements), loads the map's tag names at a
-match start, and hands everything to the sink. It sleeps until woken:
-everything queued wakes it except a tick between frames (odd), which waits
-for the next frame tick or anything else, at most 100 ms (a wake costs the
-game thread a system call).
+match start, and hands everything to the sink, which diffs, packs, signs,
+serialises and sends on that thread too.
+
+Ticks do not wake the worker: on the game thread a wake is a system call
+(a futex wake on Linux, `pthread_cond_signal` with a waiter on macOS). In
+a game the worker polls the queue every 33 ms (one tick), so a tick waits
+at most that long before the worker takes it, and a batch is usually two
+ticks. After a second with no work (a menu, a paused game) it parks, and
+the next tick wakes it once. Starts, kills, ends and settings always wake
+it; they are a few a minute.
 
 The worker hands each snapshot back cleared and the game thread fills it
 again, so a steady game allocates nothing for it: the lists keep their
 room, and the roster keeps its names for the next read while the players'
 datums and names are unchanged.
+
+What the game thread does per tick, and nothing else:
+
+| step | what | cost |
+|---|---|---|
+| weapon-fire hook | add one to the weapon's count: a sorted list that keeps its room (`event::Shots`) | a lock nobody else takes, a binary search |
+| damage hook | read the report's fields, push one record (newest 256 kept) | a few guest reads |
+| tick hook | read the game clock; an unchanged tick stops here | one read |
+| | take a cleared snapshot from the worker's spares | an uncontended lock (the worker holds it for one push) |
+| | read the roster (no names while unchanged), team scores, the players' objects | about 5 µs for 16 players |
+| | frame ticks: the object-header scan into kept lists (actors, vehicles, machines, placed objects, bodies) | 5–25 µs (bench) |
+| | swap the hooks' shots and hits into it, push it | an uncontended lock (the worker holds it to swap the queue out) |
+
+No allocation once the lists have grown (the first few ticks of a game),
+no system call, and no lock the worker holds for more than a swap or a
+push. The guest is read as raw values (positions, datums, flags);
+everything that turns them into a frame (names, ids, stance, speed,
+actions, actor order, diffs against the last frame, packing) is the
+worker's. Starts, kills and ends allocate (they read the roster and, at a
+start, the scenario's placements); they are events, not ticks.
+`bench::the_game_threads_tick_does_not_allocate` (not ignored, in
+`cargo test -p live-telemetry`) fails if a steady tick allocates on the
+game thread in any bench scene, and if an unchanged tick does.
 
 The queue holds every start, kill, end and setting. Ticks are bounded: with
 four waiting (the worker behind, say a slow sink), a new tick is folded
@@ -289,20 +448,102 @@ use HTTPS/WSS. The worker performs discovery lazily, creates each game through
 `POST /v1/games`, opens `/v1/ingest`, authenticates with a fresh
 `games.write` token, refreshes it before expiry, sends frames unsigned as the
 contract allows, and batches up to four game events into one JWS signed with
-the account key through `live-proto`. Empty batches and messages over 16 KiB
-are rejected. The account key is never included in debug output.
+the account key through `live-proto` (a `GameEnded` always goes in a batch of
+its own). Empty batches and messages over 16 KiB are rejected. The account
+key is never included in debug output.
 
 Frames go as [packed frames](#packed-frames): one record per binary
-message, a stream per connection (a reconnect starts a new one), a keyframe
+message, a stream per connection (a [reconnect](#reconnect) starts a new one), a keyframe
 every 150 frames (ten seconds) and deltas between. A frame the format
 cannot carry (it never should: the same checks the server makes) goes as
 the JSON `frame` message instead and the stream carries on. The offline
 JSONL capture stays JSON.
 
+### Reconnect
+
+The ingest socket can drop at any time: a Worker deploy restarts the hub's
+Durable Object and closes every socket to it, and networks fail. A drop does
+not stop telemetry. Before this, the sink kept the dead socket, the worker
+latched the first error, and the process sent nothing more: a game could
+stay live on the server with its `GameEnded` never sent, and later games
+were never created.
+
+- **Backoff.** On a send, receive or connect failure the sink drops the
+  connection and waits before the next attempt: 250 ms, doubling up to 30 s,
+  each wait jittered by up to a fifth. A connection that stayed up 30 s
+  before it dropped, or a batch or game the server takes, starts the wait
+  over at 250 ms. The attempt runs on the telemetry worker, never the game
+  thread.
+- **A new connection.** Discovery runs again (a redeployed server may name a
+  new API), then the socket opens and sends `auth` with a fresh token. The
+  server keeps nothing per socket that a game needs: frames and batches
+  carry the server's game id, and the game admits its host on any socket. A
+  new connection is a new [packed](#packed-frames) stream, so its first frame
+  is a keyframe, which is what the server's new decoder needs. A frame
+  refused with `frame: ...` (the server lost its decoder, as after a Durable
+  Object wakes from hibernation) also makes the next frame a keyframe.
+- **Frames** go now or never: while there is no connection, or before the
+  game is created, they are dropped.
+- **The outbox.** Game starts and events are kept in order in a bounded
+  outbox (4096) until the server has answered for them. A `GameStarted` is
+  created with `POST /v1/games` when it reaches the front; the game's events
+  wait behind it. Past the bound the oldest `PlayerKilled` or
+  `ScoreChanged` is dropped; starts, ends, joins and leaves never are.
+- **Answers.** A batch leaves the outbox only on its answer. Replies come in
+  the order the server took the messages, a batch is always answered and a
+  frame only when refused, so `appended` is the batch's, and a refusal is
+  the batch's once half a second passes with nothing after it (refusals
+  carry no id). No answer in 10 s counts as a lost connection.
+- **Resends.** A batch is kept as signed, so a resend repeats its nonces.
+  If the first copy landed and only the answer was lost, the server refuses
+  the copy with `conflict` "nonce already used" and the sink counts the
+  batch delivered. The server seeds its nonce set from the log, so this
+  holds across a restart, within the five minute `at` window. A batch
+  signed more than four minutes ago is signed again (new nonces) before it
+  is sent, since the server refuses an `at` over five minutes off.
+- **Refusals.** `rate_limited` and `unavailable` are retried like a drop. A
+  batch refused for good (`invalid`, `forbidden`, `not_found`, `conflict`
+  "the game has ended") is dropped and logged; it could never land.
+- **Giving up.** Only the account being refused stops the sink, and with
+  it telemetry for the process: a `banned` refusal (HTTP, a batch reply, or
+  a close naming the ban), or three auth refusals in a row (close 4401 or
+  HTTP 401) with nothing accepted between.
+- **Exit.** On shutdown the sink makes one last delivery on a live
+  connection, without reconnecting; anything left is logged as not
+  delivered. The outbox is in memory only.
+
+What a duplicate does on the server, when a resend is not the same signed
+batch:
+
+| Duplicate | What the server does |
+|---|---|
+| `POST /v1/games` retried after a lost answer | Makes a second game. The first gets no writes and the server's idle sweep ends it as `lost` |
+| `GameEnded`, new nonce | Refused, `conflict` "the game has ended" |
+| `PlayerJoined`, new nonce | Refused, `invalid` (the player is already in the game) |
+| `PlayerKilled` / `ScoreChanged`, new nonce | Appended again: a kill counted twice, a score repeated |
+| Any batch, same nonces | Refused, `conflict` "nonce already used"; nothing appended |
+
+Sign-out does not stop telemetry: the sink signs with the account boot
+read from `accounts.json`, for the life of the process, so a game's
+`GameEnded` still goes after a Live sign-out mid-game. Revoking that key on
+the server would refuse it, and count towards giving up.
+
 The player on local slot 0 is the signed-in account: its roster entries
 (`GameStarted`, `PlayerJoined`) carry that account's `xuid`, while `name`
 stays the in-game profile name. Other local slots and remote players have no
 `xuid` until their accounts are known. Offline capture links no one.
+
+Clanker bots ([bots.md](../game/bots.md) §6) are players like any other,
+keyed by their game slot (`index`): roster, scores, kills, frames and the
+final standings carry them under their own names ("Clanker 1"). Their
+roster entries add `bot: true`. The boot's bots locator (asked at each
+multiplayer start) names the bots: a local-slot Clanker by its controller
+port (player `+0x24`, read as `PlayerState::controller`), a phantom by its
+machine id. Only a phantom from a server roster in force carries an `xuid`
+(its rostered one, with the roster's `session_id` on the game); every
+other bot has none, so no account, stats page, career or rank. A bot is
+never given the signed-in account, even on local slot 0. A local bot added
+after the game started is not known as a bot until the next start.
 
 ## Scenario objects
 
@@ -363,9 +604,10 @@ stream sends only the ones that changed.
 
 Frames travel bit-packed: game to server (`/v1/ingest`, binary messages),
 server to readers (`/v1/stream?frames=packed`), recorded frames at rest
-(`GameFrame.data.packed`) and the replay fetch
-(`/v1/games/{id}/frames?format=packed`). JSON stays for the public read
-API (`?format=json`, the default, decoded on the server) and for events.
+(frame chunks, [live-api.md](live-api.md#frame-chunks); before them
+`GameFrame.data.packed`) and the replay fetch (`/v1/games/{id}/chunks`,
+and `/frames` for older games). JSON stays for JSON stream readers and for
+events; the JSON frames read is gone.
 `crates/live-proto/src/pack.rs` writes and reads it;
 `web/src/api/pack.ts` reads it; the golden vectors in
 `web/test/fixtures/pack` (written by the Rust tests from invented frames,
@@ -409,6 +651,8 @@ without padding.
 | seat | `eg(0)` | at most 63 |
 | ticks ago | `eg(0)` count (at most 8), then `eg(1)` each | one per action, at most 900 |
 | hit ago | `eg(1)` | at most 900 |
+| anim name | `str` | `[a-z0-9_:-]{1,64}` |
+| anim frame | `eg(4)` | 1/16 of a frame, at most 32767 |
 | string | `eg(3)`: index into the stream's string table | |
 | id | `u(2)` form: 0 datum, `u(32)` (exactly 8 lowercase hex digits in JSON); 1 player `p<n>`, `eg(2)`; 2 anything else, a string index | |
 | object kind | `u(4)` | the order of the kind table above, with `bipd` 0, `vehi` 1, `weap` 2, `eqip` 3, `scen` 4, `mach` 5, `ctrl` 6, `lifi` 7, `ssce` 8, `bloc` 9, `crea` 10, `netgame` 11 |
@@ -421,7 +665,7 @@ when present.
 
 | field | wire |
 |---|---|
-| version | `u(4)`, 3 (2 still reads: no version 3 fields; 1 too: vehicles without parent and aim) |
+| version | `u(4)`, 4, or 5 for a cinematic frame (4 with the cinematic bit; 3 still reads: no anim; 2: none of version 3's fields either; 1: vehicles without parent and aim) |
 | keyframe | `u(1)` |
 | stream id | `eg(0)` |
 | sequence | `eg(8)`, one more each frame of the stream |
@@ -431,6 +675,7 @@ when present.
 | **delta:** tick | `eg(2)`, the difference from the previous frame (never negative) |
 | bsp | `u(1)` changed; if so `u(1)` present, then `eg(1)` |
 | **both (version 3):** cut | `u(1)` present, then `eg(16)`: the engine tick a campaign revert or restart came back to; on that one frame only |
+| **both (version 5):** cinematic | `u(1)`: a cinematic is playing ([Cinematics](#cinematics)); version 5 is written only for such frames, so it is always 1 |
 | new strings | `eg(1)` count (at most 1024), then each a `str` literal, appended to the table (a keyframe starts an empty one) |
 | players | list |
 | vehicles | list |
@@ -454,7 +699,7 @@ change in its quantised value, so jitter below the quantum costs nothing.
 
 | list | fields (key in bold) |
 |---|---|
-| player | **index `eg(2)`**, alive `u(1)`, pos, yaw, opt vehicle id, opt species string, opt aim, opt weapon string, opt shots, opt stance, opt speed, opt actions, opt grenade; version 3 adds opt velocity, opt fire, opt body, opt shield, opt seat, opt ticks ago |
+| player | **index `eg(2)`**, alive `u(1)`, pos, yaw, opt vehicle id, opt species string, opt aim, opt weapon string, opt shots, opt stance, opt speed, opt actions, opt grenade; version 3 adds opt velocity, opt fire, opt body, opt shield, opt seat, opt ticks ago; version 4 opt anim name, opt anim frame (both or neither) |
 | vehicle | **id**, kind string, pos, forward, up, occupied `u(1)`, opt parent id, opt aim (version 2; version 1 ends at occupied) |
 | actor | **id**, species string, pos, yaw, opt aim, opt weapon string, opt shots, opt team string, opt vehicle id, opt stance, opt speed, opt actions, opt grenade; version 3 adds the same six as a player |
 | hit | opt from id, opt to id, opt weapon string, pos, opt amount, opt kind string; version 3 adds opt hit ago |
@@ -477,15 +722,22 @@ encoder as it was.
 ### Compatibility
 
 The version is the first four bits; a decoder refuses versions it does not
-know. Version 3 (units' velocity, fire ticks, vitality, seat and action
-ticks, hits' ticks, the frame's cut) is written now; decoders still read
-versions 2 and 1 (recorded frames, an older game's stream), and a delta only
+know. Version 5 is version 4 with the frame's cinematic bit, and only a
+cinematic frame is written in it: an encoder moving between the two sends
+a keyframe (a delta follows a frame of its own version), and a decoder from
+before version 5 refuses only the cutscene's frames, waits for the next
+keyframe and reads on. `web/test/fixtures/pack/cinematic` is a stream in
+and out of a cutscene. Version 4 (units' animation) is written now; version 3 added units'
+velocity, fire ticks, vitality, seat and action ticks, hits' ticks and the
+frame's cut. Decoders still read versions 3, 2 and 1 (recorded frames, an older game's stream), and a delta only
 applies to a frame of its own version. `web/test/fixtures/pack/v1-multiplayer`
-and `v2-multiplayer` are older streams both decoders are tested on. Version
+, `v2-multiplayer` and `v3-multiplayer` are older streams both decoders are tested on. Version
 3 costs about 25% more on the sample frames when every field is filled
 (multiplayer deltas 226 to 282 bytes, campaign 651 to 788); the senders
 fill them from capture onwards (docs/live/replay-fidelity.md, step 4), and
-an absent field is one bit. Recorded `GameFrame` events written before packed frames hold the
+an absent field is one bit. Version 4's animation on every unit adds about
+a sixth again (multiplayer deltas 324 bytes, campaign 931): the frame is
+sent whole until the chunk codec predicts it. Recorded `GameFrame` events written before packed frames hold the
 JSON frame (no `packed` field) and stay readable: the server's
 `?format=json` returns them as they are, `?format=packed` packs them on
 the fly, and the web's `recordedFrame` reads both. The ingest socket takes
@@ -645,6 +897,29 @@ What is left on the game thread is reading the guest: the snapshot (about
 first touch of each object's body (the fixture spaces bodies 4 KiB apart;
 the game packs them).
 
+The telemetry-store lane (2026-11-18) took the last of the game thread's
+per-tick costs off it. It was not measured on the machine it was written
+on (no cargo runs there); the numbers below are what to expect and what to
+check with the bench command above:
+
+| scene | allocs per tick before | after | frame tick before | expected | other tick before | expected |
+|---|---:|---:|---:|---:|---:|---:|
+| mp16 | 4 | 0 | 10.6 | 8–10 | 4.9 | 4–5 |
+| mp16_1000 | 4 | 0 | 21.2 | 18–21 | 4.7 | 4–5 |
+| campaign100 | 4 | 0 | 25.6 | 22–25 | 1.0 | 1.0 |
+
+The four allocations were the roster walk's list (`Datums::live` collects
+the live player slots; the read now walks the slots in place) and the shots
+map's B-tree node (a `BTreeMap` frees its nodes on `clear`; `event::Shots`
+is a sorted list that keeps its room, iterated in the same order, so frames
+are unchanged). The frame tick also no longer wakes the worker (the worker
+polls in a game, see "Threads"): a futex wake is 1–5 µs on a loaded
+machine, more when it lands on a sleeping core. An unchanged tick now reads
+the clock and stops, where it read the whole roster first. The zero is
+enforced by `bench::the_game_threads_tick_does_not_allocate`; the µs are
+expected, so read them from `guest.json` (`frame_tick.total.p50_us`,
+`other_tick.total.p50_us`, `*.allocs_per_tick`).
+
 The fourth lane worked on the server and the web page. Server, before and
 after, both at a load average of 177 to 188, so read the numbers as
 directions, not measurements (the CPU-only `open+verify` step, whose code
@@ -709,42 +984,55 @@ relying on live output, check in this order:
 2. Player name decoding, roster changes, and statborg values against the
    in-game scoreboard; verify kill attribution and score coalescing.
 3. Vehicle-parent position/facing and the `vehicle` identifier.
-4. Server discovery, game creation, token refresh, signed-batch acceptance,
-   and reconnect behavior against the live ingest implementation.
+4. Server discovery, game creation, token refresh and signed-batch
+   acceptance against the live ingest implementation. Reconnect, the outbox
+   and resends are tested against the embedded server through a proxy that
+   cuts, refuses and mutes the socket (`crates/live-telemetry/src/server_tests.rs`);
+   a real Worker deploy mid-game is still to watch.
 5. Whether end-latch reasons other than `finished` can be distinguished; the
    current hook cannot reliably identify `quit` or `lost`.
 6. The likely appearance path: local player slots at `0x0054e8e0` (profile
    copy at `+0x18`, appearance at `+0x118` inside it) joined by player
    `+0x28`, checked against the profile editor's colours and emblem; and
    where remote players' appearance lives in the `0x21c` player record.
-7. Frame models: `species` for both bipeds, `weapon` names for each
+7. Velocity, seat and vitality: `vel` against `speed` (a running Spartan
+   a few units a second, as the static reading says, not 30 times that), riders' `vel` the vehicle's, `seat` 0 for a Warthog
+   driver and the gunner's on the turret, `body`/`shield` falling with
+   hits and recharging, an overshield above 1.
+8. Frame models: `species` for both bipeds, `weapon` names for each
    multiplayer weapon (the map-file lookup by short name), `aim` following
    the reticle (and not lagging it: `+0x15c` is the other candidate),
    `shots` matching trigger pulls (battle rifle 3 per burst, shotgun 1 per
    pull, plasma weapons and the sentinel beam counted at all), and the fire
    hook installing (stderr says when it does not).
-8. Campaign: one game per mission across deaths and reverts; actors'
+9. Campaign: one game per mission across deaths and reverts; actors'
    `+0x12c`/`+0x13c` split (allies, enemies, Flood, the Arbiter's levels);
    the team names (likely: tag-definition order); vehicle `up` for banshees;
    that dropship-mounted turrets (vehicles parented to vehicles) look right
    (their `+0x64` is parent-relative and is sent as is).
-9. Stance and actions: crouch, airborne and the biped physics mode values
+10. Stance and actions: crouch, airborne and the biped physics mode values
    (likely, from Project Cartographer's names); that a jump and a melee
    (hit and miss) each show once; that reloads, weapon swaps, grenade
    throws and pickups each show once and not when firing; the grenade type
    names (likely 0 frag, 1 plasma).
-10. Hits: that `0x000d9640` runs once per damage instance on the host
+11. Hits: that `0x000d9640` runs once per damage instance on the host
     (its four callers include a network path, `0x0009c76e`); the reporting
     type order (likely, from Project Cartographer); body and shield amounts
     as vitality fractions (likely); a grenade's or vehicle's weapon falls
     back to the damage effect's stem.
-11. Machines: object type 7 is a machine and the scarab is one (its `mach`
+12. Machines: object type 7 is a machine and the scarab is one (its `mach`
     tag is in `03a`/`03b`); `+0x1a` matching map.glb's machine names; the
     device position `+0x140` moving 0 to 1 as doors open and elevators
     travel (likely); the active BSP switching between campaign zones.
-12. Scenario objects: crates knocked about in campaign show as moved in the
+13. Scenario objects: crates knocked about in campaign show as moved in the
     3D viewer and settle where they stop; a weapon picked up off the floor
     and a multiplayer spawn's weapon after a pickup go gone and come back
     on respawn (`+0xaf`); scenery destroyed (for example glass or barrels)
     goes gone; that `+0x1a` indexes match map.glb's `scenario` children (a
     moved crate moves the right model).
+13. Cinematics: that `[0x00510c50]+5` is set for the whole of each
+    cutscene (`00a_introduction`, the opening and closing cinematics of a
+    mission, the mid-level ones) and only then; that a level's first ticks,
+    before its opening cinematic starts, send ordinary frames; that a
+    skipped cutscene ends the cinematic frames; and that the player is
+    where they should be in the first frame after one.

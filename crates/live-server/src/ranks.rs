@@ -17,7 +17,7 @@ use axum::{
     response::Response,
 };
 use live_proto::{
-    Author, Xuid,
+    Author, Xuid, arbitration,
     game::Winner,
     hopper::{HALO_2_HOPPER_FILE, HOPPERS, HopperFile},
     rank::{self, Changed, Entrant, LeaderboardRow, Standing},
@@ -146,6 +146,31 @@ pub(crate) fn project(s: &mut State, e: &RecordedEvent) {
     });
 }
 
+/// Who an entrant of a ranked game is (docs/live/live-matchmaking.md §8.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Seat {
+    /// A human who registered the game's arbitration round.
+    Human,
+    /// A persistent bot of the roster: ranked like a human, its changes
+    /// marked `bot: true`.
+    Bot,
+    /// A made-up bot of the roster, at the level the roster showed: an
+    /// opponent with no standing of its own.
+    MadeUp(u8),
+}
+
+/// A made-up bot's standing for the rules: its roster level, with the
+/// experience that level starts at.
+fn made_up(level: u8) -> Standing {
+    let level = level.clamp(rank::MIN_LEVEL, rank::MAX_LEVEL);
+    Standing {
+        level,
+        experience: rank::threshold(level),
+        highest: level,
+        ..Standing::default()
+    }
+}
+
 /// Who played a finished game and where they placed, for the rank rules:
 /// players with an account only. Team games place teams by the winner,
 /// then by team score; free-for-all places players by the winner, then by
@@ -267,11 +292,18 @@ impl Live {
             .collect()
     }
 
-    /// Ranks a finished ranked matchmaking game once: one `RankChanged` per
-    /// player with an account who registered the game's arbitration round
-    /// (its session's latest round the host registered that has not ranked
-    /// a game). Anything else (custom, campaign, unranked, lost contact, no
-    /// session or round, already ranked) writes nothing.
+    /// Ranks a finished ranked matchmaking game once (docs/live/
+    /// live-matchmaking.md §8.4), and only the session host's own record.
+    /// Its entrants are the humans who registered the game's arbitration
+    /// round (the latest round the host registered in its session before
+    /// the game started that has not ranked a game) and the bots of the
+    /// host's roster in force when it started. One `RankChanged` per human
+    /// and per persistent bot (`bot: true`) whose standing moved; a
+    /// made-up bot is an opponent at its roster level and gets none. The
+    /// round is then spent (`ArbitrationUsed`), even if nobody moved.
+    /// Anything else (custom, campaign, unranked, lost contact, not the
+    /// session host's, no session or round, already ranked) writes
+    /// nothing.
     pub(crate) async fn rank_game(&self, game_id: &str) -> Result<(), ApiError> {
         let _guard = self.rank_writes.lock().await;
         let (playlist, entrants, round) = {
@@ -302,38 +334,87 @@ impl Live {
             let Some(Author::Account { xuid: host, .. }) = Author::parse(&g.started.host) else {
                 return Ok(());
             };
-            let Some((round, r)) = s.arbitration.for_game(session, host, &s.ranks.rounds) else {
+            // Only the session host's record ranks: the server trusts it,
+            // and nobody else's (a guest's own record of the session, say).
+            if s.sessions.get(session).is_none_or(|x| x.host_xuid != host) {
+                return Ok(());
+            }
+            let Some((round, r)) =
+                s.arbitration
+                    .for_game(session, host, g.position, &s.ranks.rounds)
+            else {
                 return Ok(());
             };
-            let entrants: Vec<Entrant> = entrants(g)
+            // Bots never register: the host vouches for them, and the game
+            // record's acceptance check (bots.md §9.3) let in only the
+            // roster's.
+            let entrants: Vec<(Entrant, Seat)> = entrants(g)
                 .into_iter()
-                .filter(|e| r.registered.contains_key(&e.xuid))
+                .filter_map(|e| {
+                    let rostered = s
+                        .bots
+                        .rostered(session, e.xuid, g.position)
+                        .filter(|(roster, _)| roster.host == host);
+                    let seat = match rostered {
+                        Some((_, b)) if b.persistent => Seat::Bot,
+                        Some((_, b)) => Seat::MadeUp(b.level),
+                        None if r.registered.contains_key(&e.xuid) => Seat::Human,
+                        None => return None,
+                    };
+                    Some((e, seat))
+                })
                 .collect();
-            (playlist, entrants, format!("{session}-{round}"))
+            (playlist, entrants, (session.to_string(), round))
         };
-        if entrants.len() < 2 || !self.ranked_playlist(&playlist).await {
+        if !self.ranked_playlist(&playlist).await {
+            return Ok(());
+        }
+        // The round is spent on this game whether or not anyone moves.
+        let (session, round_id) = round;
+        let used = self.server_event(
+            arbitration::stream(&session, &round_id),
+            arbitration::USED,
+            serde_json::to_value(arbitration::Used {
+                session_id: session.clone(),
+                round_id: round_id.clone(),
+                game_id: game_id.to_string(),
+            })
+            .expect("serializes"),
+        );
+        let round = format!("{session}-{round_id}");
+        if entrants.len() < 2 {
+            let recorded = self.store.append(vec![used], &[]).await?;
+            self.wait_applied(recorded[0].position).await?;
             return Ok(());
         }
         let game: Vec<(Entrant, Standing)> = {
             let s = self.model.read();
             entrants
                 .iter()
-                .map(|e| (*e, s.ranks.standing(e.xuid, &playlist)))
+                .map(|(e, seat)| {
+                    let standing = match seat {
+                        Seat::MadeUp(level) => made_up(*level),
+                        _ => s.ranks.standing(e.xuid, &playlist),
+                    };
+                    (*e, standing)
+                })
                 .collect()
         };
         let after = rank::apply(&game);
         let events = game
             .iter()
+            .zip(&entrants)
             .zip(after)
-            .filter(|((_, before), after)| before != after)
-            .map(|((e, before), after)| {
+            .filter(|((_, (_, seat)), _)| !matches!(seat, Seat::MadeUp(_)))
+            .filter(|(((_, before), _), after)| before != after)
+            .map(|(((e, before), (_, seat)), after)| {
                 let c = Changed {
                     xuid: e.xuid,
                     playlist: playlist.clone(),
                     game_id: game_id.to_string(),
                     before: *before,
                     after,
-                    bot: false,
+                    bot: matches!(seat, Seat::Bot),
                     round: Some(round.clone()),
                 };
                 self.server_event(
@@ -342,10 +423,8 @@ impl Live {
                     serde_json::to_value(c).expect("serializes"),
                 )
             })
+            .chain(std::iter::once(used))
             .collect::<Vec<_>>();
-        if events.is_empty() {
-            return Ok(());
-        }
         let recorded = self.store.append(events, &[]).await?;
         let last = recorded.last().map_or(0, |e| e.position);
         self.wait_applied(last).await?;
@@ -355,15 +434,30 @@ impl Live {
 
 type Shared = HttpState<Arc<Live>>;
 
+/// An account's or a bot's xuid, by xuid or gamertag.
 pub(crate) fn xuid_of(s: &State, who: &str) -> Option<Xuid> {
     Xuid::parse(who)
         .ok()
-        .filter(|x| s.accounts.contains_key(x))
+        .filter(|x| s.accounts.contains_key(x) || s.bots.bot(*x).is_some())
         .or_else(|| {
-            live_proto::Gamertag::new(who)
-                .ok()
-                .and_then(|t| s.account_by_tag(&t).map(|a| a.xuid))
+            let t = live_proto::Gamertag::new(who).ok()?;
+            s.account_by_tag(&t).map(|a| a.xuid).or_else(|| {
+                s.bots
+                    .issued
+                    .values()
+                    .find(|b| b.gamertag.key() == t.key())
+                    .map(|b| b.xuid)
+            })
         })
+}
+
+/// A player's gamertag on rank pages: the account's, or the bot's.
+fn tag_of(s: &State, x: Xuid) -> String {
+    s.accounts
+        .get(&x)
+        .map(|a| a.gamertag.to_string())
+        .or_else(|| s.bots.bot(x).map(|b| b.gamertag.to_string()))
+        .unwrap_or_default()
 }
 
 /// `GET /v1/accounts/{who}/ranks`: every playlist the player has a rank in.
@@ -381,10 +475,11 @@ pub(crate) async fn player_ranks(
         .iter()
         .filter_map(|(p, m)| m.get(&xuid).map(|st| (p, *st)))
         .collect();
-    Ok(crate::http::json(
-        StatusCode::OK,
-        &json!({"xuid": xuid, "ranks": ranks, "position": live.position()}),
-    ))
+    let mut body = json!({"xuid": xuid, "ranks": ranks, "position": live.position()});
+    if s.bots.bot(xuid).is_some() {
+        body["bot"] = json!(true);
+    }
+    Ok(crate::http::json(StatusCode::OK, &body))
 }
 
 /// `GET /v1/accounts/{who}/ranks/{playlist}`: the standing and its history,
@@ -403,22 +498,27 @@ pub(crate) async fn player_history(
         .get(&(xuid, playlist.clone()))
         .map(|h| h.iter().rev().collect())
         .unwrap_or_default();
-    Ok(crate::http::json(
-        StatusCode::OK,
-        &json!({
-            "xuid": xuid,
-            "playlist": playlist,
-            "standing": s.ranks.standing(xuid, &playlist),
-            "history": history,
-            "position": live.position(),
-        }),
-    ))
+    let mut body = json!({
+        "xuid": xuid,
+        "playlist": playlist,
+        "standing": s.ranks.standing(xuid, &playlist),
+        "history": history,
+        "position": live.position(),
+    });
+    if s.bots.bot(xuid).is_some() {
+        body["bot"] = json!(true);
+    }
+    Ok(crate::http::json(StatusCode::OK, &body))
 }
 
 #[derive(Serialize)]
 struct Row {
     xuid: Xuid,
     gamertag: String,
+    /// A bot (docs/live/live-matchmaking.md §8.4): ranked with everyone,
+    /// marked so a view can leave bots out.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    bot: bool,
     #[serde(flatten)]
     standing: Standing,
 }
@@ -450,11 +550,8 @@ pub(crate) async fn leaderboard(
         .flatten()
         .map(|(x, st)| Row {
             xuid: *x,
-            gamertag: s
-                .accounts
-                .get(x)
-                .map(|a| a.gamertag.to_string())
-                .unwrap_or_default(),
+            gamertag: tag_of(&s, *x),
+            bot: s.bots.bot(*x).is_some(),
             standing: *st,
         })
         .collect();
@@ -485,12 +582,14 @@ fn list<T: std::str::FromStr>(q: &BTreeMap<String, String>, key: &str) -> Result
         .collect()
 }
 
-/// `GET /v1/rank-stats?leaderboards=&xuids=`: the game's stats read
-/// (docs/live/live-matchmaking.md §8.1). Each leaderboard is a playlist id;
-/// one row per player for every leaderboard that is a ranked playlist in
-/// the served hopper file, a player with no games at level 1. Other
-/// leaderboards (the recent-players board, unranked playlists) have no
-/// rows.
+/// `GET /v1/rank-stats?leaderboards=&xuids=&session=`: the game's stats
+/// read (docs/live/live-matchmaking.md §8.3). Each leaderboard is a
+/// playlist id; one row per player for every leaderboard that is a ranked
+/// playlist in the served hopper file, a player with no games at level 1.
+/// Other leaderboards (the recent-players board, unranked playlists) have
+/// no rows. With `session`, a made-up bot of that session's current roster
+/// answers its roster level on the roster's playlist (§8.4), as the lobby
+/// showed it.
 pub(crate) async fn stats(
     HttpState(live): Shared,
     headers: HeaderMap,
@@ -509,9 +608,22 @@ pub(crate) async fn stats(
     if boards.len() > MAX_STATS_BOARDS || xuids.len() > MAX_STATS_XUIDS {
         return Err(invalid("too many leaderboards or xuids"));
     }
+    let session = q.get("session").map(String::as_str);
+    if session.is_some_and(|v| !live_proto::arbitration::valid_id(v)) {
+        return Err(invalid("session must be 16 lowercase hex digits"));
+    }
     let ranked = live.ranked_leaderboards().await;
     let s = live.model.read();
-    let r = &s.ranks;
+    let standing = |x: Xuid, playlist: &str| {
+        let made_up_level = session
+            .and_then(|id| s.bots.rostered(id, x, u64::MAX))
+            .filter(|(r, b)| !b.persistent && r.playlist.as_deref() == Some(playlist))
+            .map(|(_, b)| b.level);
+        match made_up_level {
+            Some(level) => made_up(level),
+            None => s.ranks.standing(x, playlist),
+        }
+    };
     let items: Vec<LeaderboardRow> = boards
         .iter()
         .filter_map(|b| Some((*b, ranked.get(b)?)))
@@ -520,7 +632,7 @@ pub(crate) async fn stats(
                 xuid: *x,
                 leaderboard: b,
                 playlist: playlist.clone(),
-                standing: r.standing(*x, playlist),
+                standing: standing(*x, playlist),
             })
         })
         .collect();

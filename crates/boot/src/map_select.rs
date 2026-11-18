@@ -99,7 +99,7 @@ impl Category {
 
 /// The Map Pack import's offers (docs/game/map-pack.md §5): `…0101` to
 /// `…03ff`.
-pub const MAP_PACK_OFFERS: std::ops::RangeInclusive<u32> = 0x0101..=0x03ff;
+pub const MAP_PACK_OFFERS: std::ops::RangeInclusive<u32> = content::map_pack::OFFERS;
 /// Converted Halo 1 maps' names (docs/halo1/multiplayer.md "Names").
 pub const HALO1_PREFIX: &str = "h1_";
 
@@ -167,6 +167,13 @@ impl Map {
             .unwrap_or("")
             .to_ascii_lowercase()
     }
+
+    /// Its short name, what its `.map` file and cache header are named
+    /// (`lockout`): [`Map::file`] without a `.map` ending.
+    pub fn short_name(&self) -> String {
+        let f = self.file();
+        f.strip_suffix(".map").map_or_else(|| f.clone(), str::to_owned)
+    }
 }
 
 /// The maps by category: categories in [`Category::ALL`] order, the empty
@@ -214,13 +221,33 @@ impl Catalogue {
     /// the package's name. The vfs serves one map per name
     /// (docs/game/maps.md §7, "Choice rule"), so while a package is chosen
     /// for a disc map its slot loads the package, and the disc's own map
-    /// can't be offered beside it.
+    /// can't be offered beside it. A package on a Map Pack base replaces
+    /// the Map Pack map's slot the same way (the vfs serves it over the
+    /// installed copy), unless the disc has a map of that name.
     pub fn with_mods(maps: impl IntoIterator<Item = Map>, mods: &[(String, String)]) -> Self {
-        Self::new(maps.into_iter().map(|mut m| {
-            if category_of(&m.path) == Category::Halo2
-                && let Some((_, package)) = mods.iter().find(|(f, _)| f.eq_ignore_ascii_case(&m.file()))
-            {
-                m.replaces = Some(std::mem::replace(&mut m.name, package.clone()));
+        let maps: Vec<Map> = maps.into_iter().collect();
+        let on_disc = |file: &str| {
+            maps.iter()
+                .any(|m| category_of(&m.path) == Category::Halo2 && m.file() == file)
+        };
+        let replaced: Vec<Option<String>> = maps
+            .iter()
+            .map(|m| {
+                let file = m.file();
+                let replaceable = match category_of(&m.path) {
+                    Category::Halo2 => true,
+                    Category::MapPack => !on_disc(&file),
+                    _ => false,
+                };
+                replaceable
+                    .then(|| mods.iter().find(|(f, _)| f.eq_ignore_ascii_case(&file)))
+                    .flatten()
+                    .map(|(_, package)| package.clone())
+            })
+            .collect();
+        Self::new(maps.into_iter().zip(replaced).map(|(mut m, package)| {
+            if let Some(package) = package {
+                m.replaces = Some(std::mem::replace(&mut m.name, package));
             }
             m
         }))
@@ -810,6 +837,18 @@ impl feature::Feature for MapSelect {
             };
             match mode {
                 Mode::Maps(_) => {
+                    // With Clankers on, the map's nav mesh is asked for now
+                    // (docs/game/bots.md §10 stage 2).
+                    let map = sel
+                        .catalogue
+                        .categories()
+                        .into_iter()
+                        .flat_map(|k| sel.catalogue.maps(k).iter())
+                        .find(|m| m.id == id)
+                        .map(Map::short_name);
+                    if let Some(map) = map {
+                        crate::clankers::map_picked(&map);
+                    }
                     // The categories under this screen.
                     match flow.picked(handler) {
                         Some(_) => {

@@ -21,7 +21,8 @@ pub enum H2Flag {
     CtfFlagReturn,
     /// Oddball spawn.
     OddballSpawn,
-    /// Teleporter entrance; the team field is the channel.
+    /// Teleporter entrance; its channel is written to the identifier
+    /// (`+0x14`), which Halo 2 pairs entrances and exits by.
     TeleporterSource,
     /// Teleporter exit.
     TeleporterDestination,

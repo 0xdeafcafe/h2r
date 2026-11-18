@@ -140,6 +140,22 @@ describe("campaign record", () => {
     expect(campaignRecord(s, C, NOW)).toMatchObject({ games: 1, completed: 0, kills: null });
   });
 
+  test("a game the server ended as lost before any frame counts as unfinished, with no time", () => {
+    const s = world();
+    applyEvents(s, [
+      ev("GameStarted", "game-c4", { game_id: "c4", map: "harbor_dawn", mode: "campaign", team_play: false, tick: 0, players: [
+        { index: 0, name: "a", xuid: A, team: 0 },
+      ] }, "2026-11-15T14:00:00.000Z"),
+      // The console went quiet; the server's idle sweep gave up 5 minutes on.
+      ev("GameEnded", "game-c4", { tick: 0, reason: "lost", winner: null, players: [] }, "2026-11-15T14:05:01.000Z"),
+    ]);
+    const row = campaignHistory(s, A, NOW).find((r) => r.game.game_id === "c4")!;
+    expect(row).toMatchObject({ outcome: "lost", seconds: 0 });
+    const rec = campaignRecord(s, A, NOW);
+    expect(rec).toMatchObject({ games: 4, completed: 1, unfinished: 2, live: 1 });
+    expect(rec.seconds).toBe(90 + 60 + 60);
+  });
+
   test("a player with no campaign games has an empty record", () => {
     resetPos();
     const s = initialState();
@@ -210,13 +226,13 @@ describe("routing", () => {
     expect(historyMode("team")).toBe("multiplayer");
   });
 
-  test("clans live under /stats/clans", () => {
-    expect(clanHref("abc123")).toBe("/stats/clans/abc123");
+  test("clans live under /games/halo2/clans", () => {
+    expect(clanHref("abc123")).toBe("/games/halo2/clans/abc123");
   });
 
   test("service record halves", () => {
-    expect(recordHref("Sneaky Pete", "multiplayer")).toBe("/stats/players/Sneaky%20Pete");
-    expect(recordHref("Sneaky Pete", "campaign")).toBe("/stats/players/Sneaky%20Pete/campaign");
+    expect(recordHref("Sneaky Pete", "multiplayer")).toBe("/games/halo2/players/Sneaky%20Pete");
+    expect(recordHref("Sneaky Pete", "campaign")).toBe("/games/halo2/players/Sneaky%20Pete/campaign");
   });
 });
 

@@ -428,9 +428,18 @@ the port's bit in the screen mask.
 The block is a copy of the human's block (slot 0 `+0x18`) with these
 changes:
 
-- the 16-byte name field at block `+0x48` (single-byte characters:
-  `0x190001` copies 16 and zeroes the 16th) set to the bot's name, which is
-  ASCII and has no glyph;
+- the profile name at block `+8` (UTF-16, 32 units; the profile file's
+  `+8`, "Halo0001" for the user's) set to the bot's name. The game rebuilds
+  the slot's display name `+0xc1c` from it (`0x190eb3`: slot `+0x20`, 32
+  units) at sign-in and whenever the slot's Live state or account changes
+  (`0x190074`, `0x18fee9`), so the name the driver writes to `+0xc1c` alone
+  did not last. In the user's Xbox Live lobby every bot showed as the
+  human's "Halo0001", and the session's unique-name pass (`0x7f660`, from
+  `0x65e37`) renamed the copies from the game's default names (`0x19fd00`,
+  string ids `0x02000320` "Shadow" and `0x0200032b` "Wilshire");
+- the 16-byte field at block `+0x48` (single-byte characters: `0x190001`
+  copies 16 and zeroes the 16th; the profile UI's commit fills it at
+  `0x24b9ce`, and a saved profile has it empty) also set to the bot's name;
 - the control fields set so the brain's sticks mean the same on every
   machine (block `+0xfc` = slot `+0x114`, the record `0x190c34` reads):
   - flags bits 0 and 2 cleared (look inversion and the other flag `0x190c34`
@@ -440,12 +449,15 @@ changes:
   - look sensitivity `+0x102` = 3.
 
   The brain's aim spring is tuned against that sensitivity.
+- the look at block `+0x118` (colours and emblem) set to the bot's own,
+  by port (stage 7, "Their own look"), so it does not wear the human's.
 - The name the game shows comes from slot `+0xc1c` (UTF-16, 32 units,
   `0x1902c1`). The driver writes it after the sign-in.
 
 Because the file is `-1`, nothing is saved. The bot leaves through
-`0x18fc08`, called the same way, when the bot is removed or the game
-returns to the main menu.
+`0x18fc08` (`PROFILE_SIGN_OUT`, slot in EAX), called the same way, once
+it is removed and no game runs; its pad is unplugged only after that
+(stage 7, "a lower count, or Off").
 
 Whether a signed-in slot with its mask bit is enough for the game to make a
 local player in Split Screen, System Link and Live custom games is the
@@ -677,8 +689,29 @@ retail Halo 2 ends the game when the host leaves.
 
 **Scoreboard and stats.** Bots are players, so the scoreboard, the carnage
 report and the post-game stats treat them like anyone else. Telemetry
-(`crates/live-telemetry`) records them as players. Their flag (§8) lets the
-web and the stats split them out.
+(`crates/live-telemetry`) records them as players, keyed by their game slot
+like anyone, with `bot: true` on their roster entries (`game::Player::bot`):
+a local-slot Clanker found by its controller port, a phantom by its machine
+id (`live_telemetry::Bots`, from `clankers::Driver::bots_in_force`). Only a
+phantom from a server roster in force has an `xuid` (§9); the rest have no
+account at all.
+
+The web shows a small BOT mark beside a bot's name (the live scoreboard,
+the carnage report, the map legend, the map and 3D viewer labels, the
+viewer's follow list) and never links a bot to a player page, even a
+rostered one with an xuid; a bot keeps the name the game sent.
+
+**Bots are game-only.** The game record keeps every bot with its kills,
+deaths and score, and every knockout between a bot and a human. Career
+stats do not: the conservative choice. A human's kill of a bot is not a
+career kill, and a death to a bot is not a career death (nor do they count
+toward sprees, weapons or medals); games, wins and time played still count.
+This holds in the server's stats summary (`live_server::stats`, both homes;
+the web mock's fold mirrors it) and in the web's derived service record
+(`derive.ts` `careerKills`, `serviceRecord`). Bots get no stats-summary row
+and are nobody's "played with". Ranks are unchanged: a matchmade game ranks
+accounts only, and a rostered persistent bot's own rank is sbmm-ranked's
+(§9.4).
 
 ## 7. Clankers in custom games (the Game Setup page)
 
@@ -870,7 +903,9 @@ These go in the normal game record (`games.rs`, the Live game recording),
 with these additions:
 
 - `kind: "clankermatch"`, `"custom"` or `"matchmade"` on the game;
-- `bot: true` on each bot's player entry, keyed by its `xuid`.
+- `bot: true` on each bot's player entry, keyed by its `xuid` when it has
+  one. A host's own Clanker (a local slot, or a phantom with a host-made
+  xuid) has `bot: true` and no `xuid` (§6).
 
 Per-player stats are the same as a human's. Persistent bots are ranked
 from these by the server's normal per-playlist rank update, which treats
@@ -882,7 +917,9 @@ is sbmm-ranked's call: the host is the only reporter for its bots.
 The roster is signed by the server like `MatchProposed`. A game record with
 `bot: true` entries is accepted only for xuids that the server marked as
 bots in that match's roster, or in the `/games/bots` answer. A console
-cannot claim a human as a bot, or a bot as a human.
+cannot claim a human as a bot, or a bot as a human. A `bot: true` entry
+with no `xuid` is accepted with or without a session: it names no account,
+so there is nothing to claim, and it counts toward no one's career (§6).
 
 ### 9.4 Interface with ranks (answers to live-matchmaking.md §8.4)
 
@@ -957,16 +994,19 @@ list for the user to play (§11).
      real pad holds it. `HostBackend::placed` reports where it went.
      `H2_BOTS=<n>` (1 to 3) adds `n` brains on ports 1 up at boot.
    - **Joining.** While the players screen `0x1e` is on top and a bot's slot
-     has no profile, the bot taps A (6 frames in every 60).
-     - The A reaches the screen's handler for a controller with no profile,
-       `0x252a67` (`PLAYERS_SCREEN_UNJOINED`; its caller `0x252ad7` sends a
-       controller with a profile to `0x25286d` instead).
-     - For a bot's port, a hook answers in the handler's place. It copies
-       the human's block with the bot's name and fixed controls, calls the
-       game's `0x18fb34(port, block, -1)`, writes the slot's display name,
-       and sets the port's bit in the screen mask.
-     - Once signed in, the bot never presses A again, so it cannot move the
-       human's menus on.
+     has no profile, the glue signs the bot in itself, before
+     `SOUND_UPDATE` (as the leaving bots are signed out), once a second at
+     most. The bot presses nothing (see stage 7, "The join gate").
+     - It copies the human's block with the bot's name and fixed controls,
+       calls the game's `0x18fb34(port, block, -1)`, writes the slot's
+       display name, and sets the port's bit in the players screen's mask
+       (the screen `ui_watch` read), then runs the frame.
+     - A bot's A that still reaches the screen's handler for a controller
+       with no profile, `0x252a67` (`PLAYERS_SCREEN_UNJOINED`; its caller
+       `0x252ad7` sends a controller with a profile to `0x25286d` instead),
+       as a sim script's can, is answered the same way.
+     - A bot never presses a menu button, so it cannot move the human's
+       menus on.
      - The bots stay signed in until the game exits.
      - `H2_BOTS` bots also join a split-screen campaign from its players
        screen; there their pads are idle (perception reads multiplayer
@@ -1044,20 +1084,84 @@ list for the user to play (§11).
      (1 s), jumps once, then asks for a new path.
    - **Walls** (`los::Walls`): every collision surface as triangles on a
      2 m grid, for line of sight (stage 3).
-   - **The file.** `h2 bots nav <map|all> [--disc ISO] [--data DIR]` writes
-     `<data>/bots/<map>.<bsp>.bots` (mesh and walls; magic `H2BT`). The
-     data comes from the disc, so it stays on this machine and out of git.
-     When the loaded map's name (`0x547898`) changes, the glue loads
-     `<map>.0.bots` on a thread of its own. Until then, or with no file,
-     the bots walk straight at their goal and see through walls, as in
-     stage 1, and the log says to run `h2 bots nav <map>`.
+   - **The file.** `<data>/bots/<map>.<bsp>.bots`: magic `H2BT`, format
+     version 2, the **stamp** (the generator version
+     `cache::GENERATOR` and the source map's fingerprint), then the mesh
+     and the walls. The data comes from the disc, so it stays on this
+     machine and out of git. When the loaded map's name (`0x547898`)
+     changes, the glue loads `<map>.0.bots` on a thread of its own. Until
+     then, or with no file, the bots walk straight at their goal and see
+     through walls, as in stage 1.
+   - **Built for you** (`bots::autonav`, `boot::bots_nav_auto`). At boot a
+     worker thread (named `bots-nav`, at utility QoS on Apple systems)
+     looks at every map the game can load, as the VFS serves it: the
+     disc's `D:\maps\*.map` (so a package or `H2_MAP_DIR` map in a disc
+     map's place is what counts) and the content packages'
+     `T:\$c\<offer>\*.map` (the Map Pack, new maps, converted Halo 1
+     maps). A multiplayer map whose `<map>.0.bots` is missing, damaged, of
+     an older format, built by another generator version, or built from
+     another map file is **stale** and is built; the rest are left alone.
+     The boot never waits for it.
+     - **The fingerprint** is FNV-1a (64-bit) over the map's 2 KiB cache
+       header, which holds its size, the tag index's offsets, its name and
+       the XOR checksum of the rest (every map writer here recomputes it).
+       Reading it costs 2 KiB a map, so a boot with every file up to date
+       does almost nothing. A converted Halo 1 map's two sandbox variants
+       are two map files: switching sandbox builds that map again (about
+       a second).
+     - **The generator version** (`cache::GENERATOR`) is bumped whenever
+       `bots::nav`, `bots::los`, `cache::build` or `crates/pathfind`'s
+       generator change what a map builds. The test
+       `generator_output_is_pinned` records its output on a small scene
+       with the version, so changing the output without the bump fails.
+     - **Order.** The level being booted (`H2_LEVEL`) first, then the scan
+       in order. When a map loads, the glue asks for it
+       (`Handle::want`): the worker scans again (a map installed since
+       boot is found), looks at that map next, and builds it if stale.
+       The bots walk straight until it lands, then take the new mesh
+       without a reload (`autonav::offer`; a file read as the map loaded
+       never replaces data the worker built after it).
+     - **Picked with Clankers on.** `bots::autonav::build_soon(map)` asks
+       for a map the same way, from the Clankers page and the map pick
+       (Clankers turned on, or a map picked with them on), so a stale
+       mesh is usually built by the time the game starts.
+     - **Writes** are atomic: each file is written to
+       `.<file>.<pid>.tmp` beside it, synced and renamed over it, the
+       other BSPs first and `<map>.0.bots` (the one checked) last. A crash
+       leaves the old file or the new one, never half of one.
+     - **Log**: one line a map built (`bots: built the nav mesh for
+       lockout (none yet): 590 polygons, ... in 0.0 s`), and one summary
+       after the pass (`bots: nav meshes: 12 built, 0 up to date (0.5 s)`).
+     - **Off**: `H2_BOTS_NAV_AUTO=0` (or `off`). The worker also stays
+       off when the bots feature is (`H2_FEATURES=-bots`).
+   - **By hand**: `h2 bots nav <map|all> [--force] [--disc ISO] [--data DIR]`
+     runs the same worker in the foreground over the disc. `all` builds
+     the disc's multiplayer maps that are stale and skips the rest;
+     `--force` builds them all. A named map (or a map file) is always
+     built, whatever its kind. Measured on an M-series Mac: the retail
+     disc's 12 multiplayer maps build in about half a second together;
+     every map on the disc, campaign included (80 BSPs), in about 20 s.
    - Tests (`cargo test -p bots`): synthetic collision through the real
      generator (two floors sharing an edge, an L-shaped corridor, a ledge
      dropped off but not climbed, a low ledge jumped onto, a narrow gap
      jumped and a wide one not); locating the floor under a biped; the
      funnel turning at the inner corner; the follower walking the
      waypoints, jumping at a jump, and jumping once then re-planning when
-     stuck; the file round trip, refusing damaged files.
+     stuck; the file round trip, refusing damaged files and version 1;
+     the generator's output pinned to `GENERATOR`. The automatic build
+     (`bots::autonav` tests): the off switch; the header's name, kind and
+     fingerprint; staleness (missing, fresh, other map, old generator,
+     old format, damaged); the atomic write leaving no temporary file and
+     the old file when the rename fails; BSP 0 written last; the queue
+     (the booted map first, one source per map); a pass building the
+     stale multiplayer maps only, then nothing, then only an edited one;
+     a map installed after boot built when wanted; the worker's data
+     winning over a late file read. `cargo test -p boot --lib
+     bots_nav_auto`: the scan finding content maps through the VFS, a
+     map read through the VFS in chunks, nothing started when off.
+     Against the disc (ignored, `--ignored`): `cargo test -p cli
+     bots_nav -- --ignored` builds every multiplayer map into a scratch
+     directory, then finds them all up to date.
    - **Game run (the user):** see stage 3, which uses the same run.
 3. **Combat.** Built: `bots::mind` (`Mind`, the `H2_BOTS` brain).
    - **Seeing.** An enemy is seen when it is inside 65 degrees of the
@@ -1098,12 +1202,15 @@ list for the user to play (§11).
      teammate never a target; a dead bot lets go of every input; grenades
      rare and spaced.
    - **Game run (the user), stages 2 and 3:**
-     1. Once: `h2 bots nav all` (or `h2 bots nav lockout`). It prints each
-        map's polygons, links and wall triangles, and writes
-        `bots/<map>.0.bots` under the data root.
+     1. Nothing to do first: the game builds the meshes itself. On the
+        first boot after this change the log says `bots: built the nav
+        mesh for <map> (...)` for each multiplayer map, then `bots: nav
+        meshes: N built, ...`; on the next boot only the summary, with
+        every map up to date.
      2. `H2_BOTS=1 h2 play`, Split Screen, Slayer on Lockout. The log says
         `bots: lockout: N polygons, ...` when the map loads (not "no nav
-        mesh").
+        mesh"). If the map loads before its mesh is built, the log says
+        `building it`, then `bots: lockout: the new nav mesh is in use`.
      3. Hide behind a wall: the bot does not turn to you or shoot through
         the wall. It walks around the wall to where it last saw you.
      4. Stand still out of its sight: within a few seconds it roams the
@@ -1242,8 +1349,9 @@ list for the user to play (§11).
      - Acceptance (§9.3), in `POST /v1/games` and in `PlayerJoined`: a
        host-made xuid is refused; a `bot: true` entry needs the game's
        `session_id` and an xuid in that session's roster (in force now at
-       the start; in force at the start for a join); an issued bot as a
-       human is refused. `session_id` is allowed on custom games now (a
+       the start; in force at the start for a join), a roster the game's
+       host made itself (`Rostered.host`; another account naming the
+       session cannot use it); an issued bot as a human is refused. `session_id` is allowed on custom games now (a
        game with bots names the session its roster came from); still not
        on campaign. `game::Player` has `bot: Option<bool>`.
      - Nobody else writes `bot-*`/`bots-*` or the two kinds.
@@ -1252,11 +1360,65 @@ list for the user to play (§11).
        roster in force at a game's start, refusals at start and on a join,
        persistent bots from the operator first in playlist rosters, their
        gamertags held).
-   - **Still to do (6c), the console side:** the host asks for the roster
-     (live-hle, with Live on) and turns each entry into a
-     `bots::phantom::Identity` and a brain at its skill; telemetry marks
-     phantom players `bot: true` with their rostered xuid. Clankermatch's
-     `MatchProposed` carries the same roster (stage 8, with sbmm-ranked).
+   - **Built (6c), the console side:**
+     - `live_hle::Hle::hosted_session` (the advertisement this console made
+       last, while it stands) and `Hle::roster_bots`: `POST
+       /v1/games/bots` on the Live worker with a `games.write` token of the
+       account that made the session; the answer is
+       `Roster::check`ed and handed to a callback on the worker. Never
+       waits.
+     - `boot::clankers::Driver::with_rosters` (installed with Live): when
+       the page wants more bots than free ports and this console hosts a
+       Live session, the driver asks for a roster of the phantoms' count,
+       at the page's difficulty (`request_skill`: Easy 0, Normal 0.33,
+       Heroic 0.67, Legendary 1; Mixed asks for none, so Normal). It asks
+       again when the count, the difficulty or the session changes (the
+       bots' frame hook checks the session about once a second, so a
+       session made after the page was set gets one); an answer to an
+       older ask is dropped.
+     - Until a roster comes, or when none does (refused, Live off, System
+       Link, offline), phantoms are host-made, as in 6b. Once it comes,
+       they all go and the roster's bots replace them
+       (`clankers::roster_seats`): xuid, gamertag, emblem and colours as
+       the `Identity`; the roster's team when not null; a brain at the
+       nearest named skill (`skill_of`), seeded with the personality's
+       seed and taunting at its `taunt` (Taunts off still makes it 0). The
+       page's difficulty never changes a roster bot's skill.
+     - Telemetry (`live_telemetry::Bots`, from the driver's
+       `bots_in_force` through `Telemetry::set_bots_locator`, asked at
+       each multiplayer start): a custom game names the roster's session
+       as `NewGame.session_id`, and each player whose machine id
+       (`PlayerState::machine`, player `+0x14`) is a rostered phantom's
+       goes out with its xuid and `bot: true`, on `GameStarted` and on a
+       later `PlayerJoined`. Local-port Clankers, and phantoms with a
+       host-made xuid, go out with `bot: true` and no xuid (§6): a
+       `0x000E` xuid is never sent.
+     - Not yet: `teams` is always false in the request (the page does not
+       know the gametype), and local-port Clankers are not rostered.
+       Clankermatch's `MatchProposed` carries the same roster (stage 8,
+       with sbmm-ranked).
+     - Tests: `cargo test -p boot --tests clankers` (roster to identities
+       and brains; the skill mapping; the driver asking, running the
+       roster, asking again on a count or difficulty change, dropping an
+       old answer, keeping host-made bots on a refusal or another
+       session's roster, asking once a session appears);
+       `-p live-telemetry --lib session` (rostered phantoms as bots with
+       their xuids at the start and on a join, no local xuids, the
+       session named; none without a roster); `-p live-hle --test server
+       roster` (a real roster from the embedded server for the advertised
+       session, refused for another).
+   - **Game run (the user), 6c**: as 6b, with Live (`h2 play
+     --live-local`, or a Live server). Host a custom game over Live; on
+     the Clankers page set On and Count 5.
+     1. The log says `clankers: asking Live for 2 bots for session …`,
+        then `clankers: Live rostered bots for session …` and two
+        `… (phantom, rostered) on` lines with made-up gamertags (not
+        "Clanker 4").
+     2. Start Slayer: the phantoms join under those gamertags.
+     3. After the game, the web's game page shows them as bots, with the
+        same names; the server log shows no refused game record.
+     4. Set Count to 4 in the lobby: a new ask, a new roster of one.
+     5. Over System Link the phantoms are still "Clanker 4" and up.
    - In-memory phantom machines, peers and players; action conversion and
      storage; network drop and keep-alive.
    - **`bots::phantom::add` and `remove`** keep the signatures they have
@@ -1323,12 +1485,17 @@ list for the user to play (§11).
      description pane, the legend in the footer). Its texts are the
      `clankers` id family. In the preview it is `h2 ui preview clankers`.
    - **The row.** A custom game's Game Setup dialog (any list with Change
-     Map) gets a "Clankers" row with action 11, under Quick Options and
+     Map) gets a "Clanker Options..." row with action 11, under Quick Options and
      the Halo 1 Options row's 10, above the "Switch To:" rows (retail
      actions 6 to 8; `h1_options_row::insert_row` writes the rows'
      actions back in that order). It uses the same three points, and each
      hook is ordered after the Halo 1 row's. A press opens the page on the dialog's own
-     stack. The row's text is the page's title slot.
+     stack. The row's text has a slot of its own after the page's footer
+     (`KitScreen::row_label`, "Clanker Options..."), so the page's title
+     stays "Clankers". The Halo 1 row does the same with its id 2
+     (`h1_options::ROW_LABEL_ID`, "Halo 1 Options..."), its screen's title
+     staying "Halo 1 Options"; both read like the dialog's other
+     "...Options..." rows.
    - **The bots.** While `enabled` is on, a driver keeps `min(count, free
      ports)` brains in the process-wide local bots, on ports 1 to 3 that no
      other bot asked for (an `H2_BOTS` or `sim` bot keeps its port). They
@@ -1338,8 +1505,16 @@ list for the user to play (§11).
        frame;
      - a higher count adds bots;
      - a lower count, or Off, takes the last added off. Taking a bot off
-       unplugs its pad, which in a game may bring up the game's
-       "controller disconnected" prompt, so change the count in the lobby.
+       does not unplug its pad (in the user's run that brought up
+       "CONTROLLER DISCONNECTED" for port 4 and the human could not move):
+       the bot leaves the books with an idle pad still plugged. Out of a
+       game (`guest::game_tick` is `None`), before `SOUND_UPDATE`, the glue
+       signs it out of its slot with the game's `PROFILE_SIGN_OUT`
+       (`0x18fc08`, slot in EAX; a guest call, then the frame runs), and
+       once the slot is empty it unplugs the pad
+       (`bots::local::leave_step`). During a game nothing is removed: the
+       bot stands idle until the game ends. Turning Clankers on again
+       before then gives the new bot the leaving bot's pad back.
 
      The setting persists, so with `enabled` left on, the bots are added
      at the next boot too, and join any players screen, campaign
@@ -1347,13 +1522,59 @@ list for the user to play (§11).
    - Past the free ports the count adds phantom peers (stage 6b), which
      join once a hosted game runs; without phantoms (tests) it adds what
      fits and says so in the log.
+   - **No `H2_BOTS` needed.** Turning Clankers On is enough: the bots
+     input backend, the bots feature and the driver are always installed
+     (with the XAPI); `H2_BOTS` only adds bots of its own at boot.
+   - **The join gate.** A bot is signed in only while the players screen
+     takes player one's input, nothing sits on windows 0 to 4
+     (`ui_watch::dialog`: a dialog, or the profile chooser that `0x24b6ea`
+     and `0x1905bf` open for one controller), its own slot has no profile,
+     a human has a profile to copy and no game runs (`bot_glue::to_sign_in`).
+     The log says each port's gate when it changes (`bots: join gate port
+     1: top 0x1e, dialog none, signed_in false (slot 0x0): signs in`; the
+     slot's flags: `0x10` a profile, `0x20` signed in to Xbox Live) and
+     each sign-in (`bots: signing Clanker 1 in on port 1`).
+
+     Bots used to tap A through the gate and let the screen's handler sign
+     them in. Every tap the game took elsewhere opened a profile chooser
+     for the bot's controller, and a tap that reached a chooser picked the
+     first profile, the human's. In the user's runs the players screen
+     showed the human's player four times, and an Xbox Live lobby kept
+     popping up "pick a profile": the pregame lobby's handler (`0x250b1e`)
+     sends A or START from a controller with no profile to the chooser
+     (`0x250cc3`, Live sessions), and B or Back from a profile that is not
+     on Live to the profile UI (`0x2511b6`, `0x251242`, `0x24b779`). Now a
+     joining bot's pad is idle (`Frame::joining`), the brain's and a sim
+     script's alike.
+   - **Their own look.** The bot's block is the human's with the bot's
+     name, controls and look: the 16 bytes at block `+0x118` are the
+     appearance (`0x18fd94` copies them, from slot `+0x130`, into the
+     player properties at `+0x40`; `0x1a0540` zeroes them when
+     `0x153750` rejects the first 8: four colours below 18, a model below
+     4, an emblem foreground below 0x40 and background below 0x20, flags
+     in the low nibble). Each port has its colours and emblem
+     (`guest::BOT_LOOKS`), an armour colour the human wears is moved one
+     on, and the model is the human's.
+   - **Nav meshes early.** A map picked in the lobby's map list with
+     Clankers on, or Clankers coming on after a map was picked, asks
+     `bots::autonav::build_soon` for its mesh (`clankers::map_picked`).
    - Tests:
      - the settings in `setting_defs::ALL`, and off by default;
      - Mixed by port;
      - the driver: ports no one else asked for, the last added off first,
        only its own taken off, a difficulty change reaching the bots
-       already there, and following the store's changes;
+       already there, and following the store's changes; taken off, the
+       bots stay plugged as leaving, and on again they take their pads
+       back;
+     - leaving: nothing during a game, then sign-out, then unplug
+       (`local::leave_step`); `guest::sign_out_then` calls
+       `PROFILE_SIGN_OUT` per port, then the frame;
+     - the gate: only the bare players screen with an empty slot
+       (`bot_glue` tests, `ui_watch` dialog tests);
+     - the look: valid by `0x153750`'s checks, never the human's colours
+       or emblem, distinct per port;
      - the page: a row per setting, steps saved in the store, wrapping;
+       the row's text in its own slot, not the title's;
      - the row: only a custom game's list, once, beside the Halo 1 row;
        on the plan after the Halo 1 row's hooks;
      - the kit's own checks over the page (`ui_kit::screens`: every
@@ -1361,7 +1582,9 @@ list for the user to play (§11).
    - **Game run (the user):**
      1. Run `h2 play` (no `H2_BOTS`). Choose Split Screen (or System Link),
         then a custom game's Game Setup. Below Change Map and the others,
-        a "Clankers" row shows (after Halo 1 Options on a Halo 1 map).
+        a "Clanker Options..." row shows (after "Halo 1 Options..." on a
+        Halo 1 map). The pages they open are titled "Clankers" and "Halo 1
+        Options".
      2. Press A on it: the Clankers page opens over the dialog, with
         seven rows and a description of the focused row. B goes back to
         Game Setup.
@@ -1375,12 +1598,64 @@ list for the user to play (§11).
         difficulty chosen.
      5. Quit to the lobby, open the page, set Difficulty to Legendary,
         and play again: the bots play harder.
-     6. Set Count to 1: one bot leaves (its slot stays on the players
-        screen until the game exits). Set Clankers to Off: none play.
+     6. Set Count to 1: one bot leaves. In a game it stands idle until
+        the game ends (no "controller disconnected"); in the menus the log
+        says `bots: signing the bots on ports [2] out`, then `bots: bot N
+        left: its pad is unplugged`. Set Clankers to Off: none play.
      7. Quit and start `h2 play` again: the page shows what you left it
         at; `h2 settings` lists the `clankers.*` values.
      8. Send the `clankers:` and `ui:` log lines if the row is missing,
         draws no text, or opens the page under the lobby.
+   **Built: bots in telemetry and the web** (§6). The user's ask: bots on
+   the live game tracking, the scoreboard and the post-game record,
+   marked as bots, without accounts.
+   - **Why they were not bots before.** Telemetry already sent every
+     listed player (`memory::players_into` filters only on salt and the
+     leaving flag), so local-slot Clankers did go out, but as anonymous
+     guests: `session::identity` marked a player as a bot only for a
+     remote player on a rostered phantom's machine, and
+     `clankers::Driver::bots_in_force` returned `None` unless a server
+     roster was in force, so a Clanker on a local slot (or a host-made
+     phantom) had no `bot` flag. The proto and server also refused `bot:
+     true` without an xuid (`game::validate_new`, `bots::check_players`),
+     and the web had no idea of `bot` at all: a rostered bot with an xuid
+     was linked to a player page by its name, and every bot's knockouts
+     went into the human's career stats.
+   - **Now:** `PlayerState::controller` (player `+0x24`); `Bots` has
+     `session_id: Option`, every phantom's machine and the local bot
+     `ports`; `bots_in_force` answers whenever there are bots. `bot:
+     true` without an xuid is accepted on both homes; the stats are
+     game-only (§6); the web marks and unlinks bots.
+   - Tests: `-p live-telemetry --lib` (`memory`: a local bot slot read
+     with its port; `session`: local Clankers as bots with no account
+     through the start, scores, frames and the end; a bot on local user 0
+     never the account; a rostered xuid only with its session; the
+     rostered test updated); `-p boot --tests clankers` (bots in force
+     before and after a roster, and after a refusal); `-p live-proto
+     game` (an xuid-less bot with or without a session); `-p live-server
+     --test bots` (a host's own Clankers taken and game-only; a human
+     still refused as a bot); `-p live-worker --lib sqlstore` (the same
+     on the Worker's composition); `web`: `bun test test/bots.test.ts`
+     (the record, the labels, the career, the mock's fold, the BOT mark
+     and no player link on the scoreboard and carnage report).
+   - **Game run (the user), bots in telemetry:**
+     1. With Live (`h2 play --live-local`, signed in), host a custom game,
+        set Clankers On, Count 2, and start Slayer.
+     2. On the site's live game page: the scoreboard lists "Clanker 1"
+        and "Clanker 2" with a BOT mark, not as links; the map shows
+        their dots and labels ("Clanker 1 · BOT") moving; their kills and
+        deaths tick up.
+     3. Open the 3D viewer: their labels carry BOT, and the follow list
+        says "(BOT)".
+     4. Kill a bot and get killed by one. After the game, the carnage
+        report lists both bots with their kills and deaths, marked BOT,
+        unlinked. Your player page's service record does not count those
+        kills or deaths; the game's history row does.
+     5. The server log shows no refused game record.
+     6. With Count 5 (phantoms past the free ports): the phantoms show
+        with BOT too, before and after a roster comes.
+     7. Not covered: a local bot added mid-game is marked as a bot only
+        from the next game's start.
 8. **Clankermatch.**
    - The Live menu row, the playlist filter, the fake search and the lobby
      fill.
@@ -1403,8 +1678,11 @@ small surface. Everything in it is controller input.
   - Errors: `NoSuchPort`, `PortTaken` (another bot asked for it), and
     `Full` (3 bots already).
   - If a real pad holds the port, the bot goes to the lowest free one.
-- `bots::local::remove(handle)` unplugs the bot's pad at the next input
-  sync. Its slot stays signed in until the game exits.
+- `bots::local::remove(handle)` takes the bot off the books (`list` no
+  longer has it); its pad stays plugged and idle. The boot glue signs its
+  slot out once no game runs, then unplugs the pad
+  (`Local::leaving`, `leave_step`, `Local::unplug`). Adding a bot on that
+  port before then takes the pad back.
 - `bots::local::list() -> Vec<BotInfo>` gives each bot's handle, name, the
   port it asked for, and the port it got (`None` until the input manager
   has placed it).
@@ -1454,8 +1732,8 @@ Known limits, for the agent API's `sim.*` docs (agent-api.md):
 4. A local bot signs in by pressing A only while the players screen is on
    top. One added in a lobby or mid-game does not join until that screen
    shows.
-5. `remove` on a local bot in a game unplugs its pad, which may bring up
-   the controller-disconnected prompt.
+5. `remove` on a local bot in a game leaves it standing idle until the
+   game ends; it is signed out and unplugged in the menus.
 
 ## 11. What needs a game run
 

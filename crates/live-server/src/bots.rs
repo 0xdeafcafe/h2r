@@ -101,16 +101,22 @@ pub(crate) fn project(s: &mut State, e: &RecordedEvent) {
 }
 
 /// The acceptance check (docs/game/bots.md §9.3) for players taken into a
-/// game recorded under `session` whose roster is the one in force before
-/// `before`: no host-made xuid, each `bot: true` entry in the roster, and
-/// no issued bot played as a human. A record that fails is refused whole.
+/// game recorded by `host` under `session` whose roster is the one in force
+/// before `before`: no host-made xuid, each `bot: true` entry with an xuid
+/// in the roster, which `host` itself made, and no issued bot played as a
+/// human. A `bot: true` entry without an xuid is the host's own Clanker:
+/// taken, with no account to credit (game-only, §6). A record that fails
+/// is refused whole.
 pub(crate) fn check_players<'a>(
     s: &State,
+    host: Option<Xuid>,
     session: Option<&str>,
     before: u64,
     players: impl IntoIterator<Item = &'a Player>,
 ) -> Result<(), String> {
-    let roster = session.and_then(|id| s.bots.roster_at(id, before));
+    let roster = session
+        .and_then(|id| s.bots.roster_at(id, before))
+        .filter(|r| Some(r.host) == host);
     for p in players {
         if let Some(x) = p.xuid
             && bots::is_local_xuid(x)
@@ -119,7 +125,7 @@ pub(crate) fn check_players<'a>(
         }
         if p.is_bot() {
             let Some(x) = p.xuid else {
-                return Err("a bot has its rostered xuid".into());
+                continue;
             };
             if !roster.is_some_and(|r| r.bots.iter().any(|b| b.xuid == x)) {
                 return Err(format!("{x} is not a bot of the session's roster"));

@@ -36,6 +36,7 @@ fn lobby() -> NewSession {
         skulls: None,
         campaign: None,
         ping_ms: None,
+        variant_ext: None,
     }
 }
 
@@ -409,4 +410,127 @@ async fn persistent_bots_come_from_the_operator_and_fill_playlist_rosters_first(
         let (_, bot) = s.rostered(&session, persistent[0], u64::MAX).unwrap();
         assert!(bot.persistent && bot.level == 1);
     });
+}
+
+#[tokio::test]
+async fn only_the_sessions_host_records_its_roster() {
+    let h = harness().await;
+    let a = h.create("Host").await;
+    let session = host(&h, &a).await;
+    let b = roster(&h, &a, json!({"session_id": session, "count": 1}))
+        .await
+        .bots[0]
+        .xuid;
+    // Another account names a's session for a game of its own: a's bots
+    // are not its to record, at the start or by a mid-game join.
+    let c = h.create("Other").await;
+    let r = try_start(&h, &c, custom(&c, &session, json!([bot_entry(1, b)]))).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    let r = try_start(&h, &c, custom(&c, &session, json!([]))).await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    let id = r.json()["game_id"].as_str().unwrap().to_string();
+    let late = h.batch(
+        &c,
+        &id,
+        &[(
+            "PlayerJoined",
+            json!({"tick": 10, "player": bot_entry(1, b)}),
+        )],
+    );
+    assert_eq!(
+        h.post_batch(&c, &id, late).await.status,
+        StatusCode::BAD_REQUEST
+    );
+    // The host can.
+    let r = try_start(&h, &a, custom(&a, &session, json!([bot_entry(1, b)]))).await;
+    assert_eq!(r.status, StatusCode::CREATED);
+}
+
+/// A host's own Clankers (docs/game/bots.md §6): `bot: true` with no xuid,
+/// with or without a session, at the start and on a join. The game record
+/// keeps them with their names, kills and deaths; the stats summary keeps
+/// them out of every player's row: the human's kill of a bot and a bot's
+/// kill of the human count in the totals only.
+#[tokio::test]
+async fn a_hosts_own_clankers_are_game_only_bots() {
+    let h = harness().await;
+    let a = h.create("Host").await;
+    let clanker = |index: u32, port: u32| json!({"index": index, "name": format!("Clanker {port}"), "team": 1, "local": true, "bot": true});
+    let mut game = custom(&a, "0123456789abcdef", json!([clanker(1, 1)]));
+    game.as_object_mut().unwrap().remove("session_id");
+    let id = h.start_game(&a, game).await;
+    let events = h.batch(
+        &a,
+        &id,
+        &[
+            ("PlayerJoined", json!({"tick": 10, "player": clanker(2, 2)})),
+            (
+                "PlayerKilled",
+                json!({"tick": 30, "victim": 1, "killer": 0, "weapon": "battle_rifle", "kind": "kill"}),
+            ),
+            (
+                "PlayerKilled",
+                json!({"tick": 60, "victim": 0, "killer": 2, "weapon": "smg", "kind": "kill"}),
+            ),
+            (
+                "GameEnded",
+                json!({"tick": 900, "reason": "finished", "winner": {"player": 0},
+                    "players": [
+                        {"index": 0, "score": 1, "kills": 1, "deaths": 1, "assists": 0},
+                        {"index": 1, "score": 0, "kills": 0, "deaths": 1, "assists": 0},
+                        {"index": 2, "score": 1, "kills": 1, "deaths": 0, "assists": 0}
+                    ]}),
+            ),
+        ],
+    );
+    let r = h.post_batch(&a, &id, events).await;
+    assert_eq!(
+        r.status,
+        StatusCode::CREATED,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+
+    let g = h.get(&format!("/v1/games/{id}")).await.json();
+    let players = g["players"].as_array().unwrap();
+    assert_eq!(players.len(), 3);
+    for (p, name) in players[1..].iter().zip(["Clanker 1", "Clanker 2"]) {
+        assert_eq!(p["name"], name);
+        assert_eq!(p["bot"], true);
+        assert!(p.get("xuid").is_none_or(Value::is_null));
+    }
+    assert_eq!(g["kills"].as_array().unwrap().len(), 2);
+    let bot_row = g["scoreboard"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["index"] == 2)
+        .unwrap();
+    assert_eq!(bot_row["kills"], 1);
+
+    let v = h.get("/v1/stats/summary?window=all").await.json();
+    assert_eq!(v["totals"]["kills"], 2, "the totals count everyone");
+    let rows = v["players"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "no row for a bot: {rows:?}");
+    assert_eq!(rows[0]["xuid"], a.xuid.to_string());
+    assert_eq!(rows[0]["games"], 1);
+    assert_eq!(rows[0]["kills"], 0, "a bot's death is not a career kill");
+    assert_eq!(rows[0]["deaths"], 0, "nor a bot's kill a career death");
+}
+
+/// A bot with an xuid still needs its session's roster, and a xuid-less
+/// bot cannot be used to slip a human in: it has no account to claim.
+#[tokio::test]
+async fn an_xuid_less_bot_does_not_loosen_the_roster_check() {
+    let h = harness().await;
+    let a = h.create("Host").await;
+    let human = h.create("Human").await;
+    let session = host(&h, &a).await;
+    let mut g = custom(&a, &session, json!([bot_entry(1, human.xuid)]));
+    assert_eq!(
+        try_start(&h, &a, g.clone()).await.status,
+        StatusCode::BAD_REQUEST
+    );
+    g.as_object_mut().unwrap().remove("session_id");
+    assert_eq!(try_start(&h, &a, g).await.status, StatusCode::BAD_REQUEST);
 }

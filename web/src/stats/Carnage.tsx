@@ -7,6 +7,7 @@ import type { GameState, Standing } from "../state/reducer";
 import { standings, teamStandings } from "../state/reducer";
 import { bestSprees, countMedals, gameMedals, ordinal, places, weaponBreakdown, MEDALS, type MedalId } from "../state/derive";
 import Emblem from "../components/Emblem";
+import { BotTag } from "../components/bits";
 import MedalIcon from "../components/MedalIcon";
 import WeaponIcon from "../components/WeaponIcon";
 import { colourFor, teamName } from "../lib/game";
@@ -62,9 +63,10 @@ export default function Carnage(props: { game: GameState }) {
   const Who = (p: { r: Row }) => (
     <td>
       <span class="who">
-        <Show when={p.r.s.xuid} fallback={<><Emblem seed={p.r.s.name} appearance={p.r.s.appearance} size={19} /><span>{p.r.s.name}</span></>}>
+        <Show when={!p.r.s.bot && p.r.s.xuid} fallback={<><Emblem seed={p.r.s.xuid ?? p.r.s.name} appearance={p.r.s.appearance} size={19} /><span>{p.r.s.name}</span></>}>
           {(x) => <><Emblem seed={x()} appearance={p.r.s.appearance} size={19} /><A href={playerHref(p.r.s.name)}>{p.r.s.name}</A></>}
         </Show>
+        <Show when={p.r.s.bot}><BotTag /></Show>
         <Show when={p.r.s.game_name}>{(n) => <small class="who-game-name" title="Name in the game">{n()}</small>}</Show>
         <Show when={p.r.s.left}><small>(left)</small></Show>
       </span>

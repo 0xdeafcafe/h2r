@@ -24,6 +24,7 @@ use crate::abi::*;
 use crate::host::{Host, MAX_GUEST_COPY, MemFault, StreamCallback, at};
 use crate::mixbins::VoiceBins;
 use crate::padroute::{Classified, PadRouter, next_output};
+use crate::voice_rings::{self, VoiceRings};
 
 /// Why the shim cannot continue. Distinct from an HRESULT failure, which the
 /// game is allowed to see and handle.
@@ -123,7 +124,8 @@ const EFFECT_STATE_MAX: u32 = 0x1000;
 /// The dword at state `+0x14` the XHV engine reads for its effects
 /// (`0x333380`: `(value - 0x1400) >> 5`). The real value is the DSP address of
 /// the effect's parameter block, which a dry image has no equivalent of; the
-/// base makes the derived index 0. Invented, not evidenced.
+/// base makes the derived index 0. Invented, not evidenced. The XHV voice
+/// effects get [`voice_rings::dsp_base`] instead, a bin per port.
 const EFFECT_STATE_DSP_BASE_FIELD: u32 = 0x14;
 const EFFECT_STATE_DSP_BASE: u32 = 0x1400;
 
@@ -134,8 +136,7 @@ const EFFECT_STATE_DSP_BASE: u32 = 0x1400;
 /// its size in bytes at map +0x1c, and the write offset at state +0x34
 /// (docs/live/live-voice.md, 3.3 item 7). The feed divides by the size,
 /// so a zero size would be a divide fault the moment a headphone exists.
-/// The dry model gives each a zeroed ring and never writes it: the feed
-/// reads silence.
+/// [`VoiceRings`] writes them from the port's voice streams.
 const XHV_VOICE_EFFECT_FIRST: u32 = 0xb;
 const XHV_VOICE_EFFECT_COUNT: u32 = 4;
 const EFFECT_MAP_OUTPUT_BASE: u32 = 0x18;
@@ -407,6 +408,8 @@ pub struct DirectSound {
     ignored: BTreeMap<&'static str, u64>,
     /// The effect index the game gave the I3DL2 reverb at download time.
     reverb_index: Option<u32>,
+    /// The XHV voice effects, once the image has their rings.
+    voice_rings: Option<VoiceRings>,
     /// Recognises sounds and routes chosen ones to the controller speaker;
     /// `None` (the default) leaves every voice on the main mix.
     pad_router: Option<PadRouter>,
@@ -453,6 +456,7 @@ impl DirectSound {
             next_token: 0,
             ignored: BTreeMap::new(),
             reverb_index: None,
+            voice_rings: None,
             pad_router: None,
         }
     }
@@ -873,11 +877,13 @@ impl DirectSound {
         for i in 0..img.count {
             let map = at(img.desc, EFFECT_MAPS_OFFSET + i * EFFECT_MAP_SIZE)?;
             h.write_u32(at(map, EFFECT_MAP_STATE)?, img.state_of(i))?;
-            h.write_u32(
-                at(img.state_of(i), EFFECT_STATE_DSP_BASE_FIELD)?,
-                EFFECT_STATE_DSP_BASE,
-            )?;
             let voice = i.wrapping_sub(XHV_VOICE_EFFECT_FIRST);
+            let dsp_base = if img.rings != 0 && voice < XHV_VOICE_EFFECT_COUNT {
+                voice_rings::dsp_base(voice_rings::bin(voice))
+            } else {
+                EFFECT_STATE_DSP_BASE
+            };
+            h.write_u32(at(img.state_of(i), EFFECT_STATE_DSP_BASE_FIELD)?, dsp_base)?;
             if img.rings != 0 && voice < XHV_VOICE_EFFECT_COUNT {
                 let ring = at(img.rings, voice * XHV_VOICE_RING_SIZE)?;
                 h.write_u32(at(map, EFFECT_MAP_OUTPUT_BASE)?, ring)?;
@@ -962,6 +968,23 @@ impl DirectSound {
                     return Err(e.into());
                 }
                 self.effects = Some(img);
+                if rings != 0 {
+                    let ports: Vec<(u32, u32, u32)> = (0..XHV_VOICE_EFFECT_COUNT)
+                        .map(|v| {
+                            (
+                                rings + v * XHV_VOICE_RING_SIZE,
+                                XHV_VOICE_RING_SIZE,
+                                img.state_of(XHV_VOICE_EFFECT_FIRST + v),
+                            )
+                        })
+                        .collect();
+                    let vr = VoiceRings::new(&ports);
+                    self.mixer
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .set_taps(&vr.bins());
+                    self.voice_rings = Some(vr);
+                }
                 desc
             }
         };
@@ -2385,6 +2408,10 @@ impl DirectSound {
     }
 
     fn service_all(&mut self, h: &mut dyn Host) -> R {
+        if let Some(rings) = self.voice_rings.as_mut() {
+            let mut mixer = self.mixer.lock().unwrap_or_else(|e| e.into_inner());
+            rings.pump(h, &mut mixer)?;
+        }
         let mut streams: Vec<u32> = self
             .objects
             .iter()

@@ -7,12 +7,21 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 
 const USAGE: &str = "usage:
-  h2 build <disc.iso|default.xbe> [--out DIR] [--jobs N] [--check]
-  h2 run   <disc.iso> [--out DIR] [--data DIR] [--fresh-data] [--slices N] [--transfers N] [--no-stopgaps] [--no-d3d] [--no-bink] [--no-dsound] [--no-xapi] [--no-mappack] [--no-halo1]
+  h2 build <disc.iso|default.xbe> [--out DIR] [--jobs N] [--check] [--tier fast|clang]
+  h2 run   <disc.iso> [--out DIR] [--tier auto|fast|clang] [--data DIR] [--fresh-data] [--slices N] [--transfers N] [--no-stopgaps] [--no-d3d] [--no-bink] [--no-dsound] [--no-xapi] [--no-mappack] [--no-halo1]
            [--movies DIR | --no-movies]
   h2 serve <disc.iso> [--socket PATH] [run's options]
 
 --out defaults to $TMPDIR/h2boot (generated C, objects, libh2game.dylib).
+--tier (or H2_TIER): `build` builds clang's optimised module by default, or
+  with `fast` the Cranelift fast tier in --out/fast/ in seconds
+  (docs/lifter/cranelift-tier.md). `run` defaults to `auto`: clang's module
+  when it is current, else the fast tier (built first if need be) with
+  clang's build started in the background at low priority (log
+  --out/clang-build.log), used from the next start. `fast` runs the fast
+  tier only; `clang` builds clang's in the foreground, as before tiers.
+  `build --background` is that background build: low priority, and gone at
+  once when another holds --out.
 --data defaults to $TMPDIR/h2boot-data (host root of the hard-disk partitions).
 --fresh-data empties it first: the cache partitions, profiles and saves a
   run leaves behind change what the next run does, so runs compared frame
@@ -57,6 +66,8 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     let mut check = false;
     let mut no_mappack = false;
     let mut no_halo1 = false;
+    let mut tier = None;
+    let mut background = false;
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
         let mut val = || it.next().with_context(|| format!("{a} needs a value"));
@@ -66,6 +77,8 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             "--jobs" => jobs = val()?.parse()?,
             "--fresh-data" => fresh = true,
             "--check" if cmd == "build" => check = true,
+            "--background" if cmd == "build" => background = true,
+            "--tier" => tier = Some(boot::tier::Choice::parse(&val()?)?),
             "--socket" if serve => socket = Some(PathBuf::from(val()?)),
             "--no-stopgaps" => stopgaps = false,
             "--no-d3d" => d3d = false,
@@ -87,21 +100,54 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
         .or_else(|| std::env::var_os("H2_DISC").map(PathBuf::from))
         .context(USAGE)?;
     let xbe = boot::read_xbe(&disc)?;
-    let lib = out.join(boot::DYLIB);
-    if check {
-        let current = boot::dylib_current(&xbe, &lib);
-        eprintln!(
-            "h2 build --check: {} is {}",
-            lib.display(),
-            if current { "current" } else { "out of date" }
-        );
-        std::process::exit(if current { 0 } else { 3 });
+    use boot::tier::{Choice, Tier};
+    let choice = match tier {
+        Some(t) => t,
+        None => Choice::from_env()?,
+    };
+    if cmd == "build" {
+        // `build` builds one tier: clang's unless asked for the fast one.
+        let fast = choice == Choice::Fast;
+        let lib = if fast { boot::tier::fast_dylib(&out) } else { boot::tier::clang_dylib(&out) };
+        if check {
+            let current = if fast { boot::tier::fast_current(&xbe, &lib) } else { boot::dylib_current(&xbe, &lib) };
+            eprintln!(
+                "h2 build --check: {} is {}",
+                lib.display(),
+                if current { "current" } else { "out of date" }
+            );
+            std::process::exit(if current { 0 } else { 3 });
+        }
+        if fast {
+            boot::tier::build_fast(&xbe, &out, jobs)?;
+        } else {
+            #[cfg(unix)]
+            let _lock = if background {
+                match background_lock(&out)? {
+                    Some(l) => Some(l),
+                    None => {
+                        eprintln!("h2 build --background: another build holds {}; leaving it to that one", out.display());
+                        return Ok(());
+                    }
+                }
+            } else {
+                None
+            };
+            #[cfg(not(unix))]
+            let _ = background;
+            boot::build(&xbe, &out, jobs)?;
+        }
+        return Ok(());
     }
+    // `serve` never builds, and runs clang's module unless told otherwise.
+    let choice = if serve && tier.is_none() && std::env::var_os("H2_TIER").is_none() { Choice::Clang } else { choice };
     if serve {
-        if !boot::dylib_current(&xbe, &lib) {
+        let plan = boot::tier::plan(&xbe, &out, choice);
+        if plan.build {
             bail!(
-                "h2 serve: {} isn't built for this image and this h2; build it with `h2 build` first (serve never builds)",
-                lib.display()
+                "h2 serve: {} isn't built for this image and this h2; build it with `h2 build{}` first (serve never builds)",
+                plan.dylib.display(),
+                if plan.tier == Tier::Fast { " --tier fast" } else { "" }
             );
         }
         let path = socket.unwrap_or_else(agent_proto::default_socket);
@@ -110,18 +156,8 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
         #[cfg(unix)]
         stop_on_signal(path)?;
     }
-    if cmd == "build" || !boot::dylib_current(&xbe, &lib) {
-        if cmd != "build" && lib.exists() {
-            eprintln!(
-                "h2 run: {} was built from another image or generator; rebuilding",
-                lib.display()
-            );
-        }
-        boot::build(&xbe, &out, jobs)?;
-    }
-    if cmd == "build" {
-        return Ok(());
-    }
+    // `serve` built nothing above, so this only picks its module.
+    let lib = boot::tier::prepare(&xbe, &disc, &out, choice, jobs, !serve)?.dylib;
     if fresh {
         for d in fresh_data_dirs(&data, &[&disc, &out])? {
             std::fs::remove_dir_all(&d).with_context(|| format!("emptying {}", d.display()))?;
@@ -165,6 +201,35 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     println!("stop: {}", r.stop);
     println!("last eip: {:#010x}", r.eip);
     Ok(())
+}
+
+/// `build --background`: lower this process's priority (clang's processes
+/// inherit it) and take `out`'s background-build lock, held until the
+/// returned file drops; `None` when another build holds it.
+#[cfg(unix)]
+fn background_lock(out: &Path) -> Result<Option<std::fs::File>> {
+    use std::os::fd::AsRawFd;
+    std::fs::create_dir_all(out)?;
+    let path = out.join("clang-build.lock");
+    let f = std::fs::File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    // SAFETY: flock on a descriptor this function owns.
+    if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        let e = std::io::Error::last_os_error();
+        if e.raw_os_error() == Some(libc::EWOULDBLOCK) {
+            return Ok(None);
+        }
+        return Err(e).with_context(|| format!("locking {}", path.display()));
+    }
+    // SAFETY: plain priority change of this process.
+    if unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, 19) } != 0 {
+        eprintln!("warning: build --background: lowering priority: {}", std::io::Error::last_os_error());
+    }
+    Ok(Some(f))
 }
 
 /// The directories `--fresh-data` empties (`<data>/disk`, `<data>/metadata`,

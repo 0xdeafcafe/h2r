@@ -1,4 +1,4 @@
-// The Halo admin area, a stats-site page at /stats/admin shown only to
+// The Halo admin area, a stats-site page at /games/halo2/admin shown only to
 // admins: the message-of-the-day editor, the playlist (hopper) builder and
 // custom content moderation (map packages, blobs, reports, uploads). Only
 // the game's own things live here; running the service (invites, accounts
@@ -15,6 +15,7 @@ import HopperBuilder from "./HopperBuilder";
 import ContentAdmin from "./ContentAdmin";
 import { ADMIN_TABS, IMPORT_ACCOUNT, SERVER_ADMIN, adminTab } from "./tabs";
 import "../styles/admin.css";
+import { STATS_ROOT } from "../routes";
 
 export default function Admin() {
   // ?tab=hopper opens the playlists (the dashboard links here).
@@ -23,8 +24,8 @@ export default function Admin() {
   const admin = adminState.isMeAdmin;
   return (
     <div class="s-full">
-      <Crumbs trail={[["Home", "/stats"], ["Halo Admin"]]} />
-      <Title class="s-title--bar" right={<A class="adm-server-link" href={SERVER_ADMIN}>Server admin ›</A>}>
+      <Crumbs trail={[["Home", STATS_ROOT], ["Halo Admin"]]} />
+      <Title class="s-title--bar" right={<A class="adm-server-link" href={SERVER_ADMIN}>Dashboard server admin ›</A>}>
         Halo Admin
       </Title>
       <div class="adm">

@@ -163,6 +163,7 @@ pub async fn recover(
     live: &Live,
     path_tag: &Gamertag,
     body: &RecoverBody,
+    device: Option<crate::signins::Device>,
 ) -> Result<CreatedAccount, ApiError> {
     if !live.allow_create("accounts.recover") {
         return Err(ApiError::new(
@@ -171,7 +172,7 @@ pub async fn recover(
         ));
     }
     let now = now();
-    let (req, device) =
+    let (req, key) =
         RecoverRequest::open(&body.request, &live.identity.id, now).map_err(sign_error)?;
     let tag = Gamertag::new(&req.gamertag).map_err(|e| invalid(e.to_string()))?;
     if tag.key() != path_tag.key() {
@@ -193,7 +194,7 @@ pub async fn recover(
         let a = s
             .account_by_tag(&tag)
             .ok_or_else(|| not_found("no such gamertag"))?;
-        if s.keys.contains_key(device.kid()) {
+        if s.keys.contains_key(key.kid()) {
             return Err(ApiError::new(
                 ErrorCode::Conflict,
                 "that key is already registered",
@@ -220,11 +221,11 @@ pub async fn recover(
             "that code was used already; wait for the next one",
         ));
     }
-    let event: NewEvent = live.server_event(
-        streams::account(xuid),
-        types::KEY_ADDED,
-        json!({"kid": device.kid(), "jwk": device.jwk(), "proof": body.request, "via": "totp"}),
-    );
+    let mut added = json!({"kid": key.kid(), "jwk": key.jwk(), "proof": body.request, "via": "totp"});
+    if let Some(d) = &device {
+        added["device"] = live.signins.seal(d).into();
+    }
+    let event: NewEvent = live.server_event(streams::account(xuid), types::KEY_ADDED, added);
     let recorded = live.store.append(vec![event], &[]).await?;
     live.wait_applied(recorded[0].position).await?;
     live.recovery.lockout.clear(&lock);
@@ -268,6 +269,7 @@ pub async fn post_recovery(
 
 pub async fn post_recover(
     State(live): Shared,
+    headers: HeaderMap,
     Path(tag): Path<String>,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, ApiError> {
@@ -275,6 +277,6 @@ pub async fn post_recover(
     let bytes = body.map_err(|e| invalid(e.body_text()))?;
     let body: RecoverBody =
         serde_json::from_slice(&bytes).map_err(|e| invalid(format!("body: {e}")))?;
-    let created = recover(&live, &tag, &body).await?;
+    let created = recover(&live, &tag, &body, crate::signins::device_of(&headers)).await?;
     Ok(crate::http::json(StatusCode::CREATED, &created))
 }

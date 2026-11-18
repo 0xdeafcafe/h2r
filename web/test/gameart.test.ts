@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { inflateSync } from "node:zlib";
 import {
   compositeEmblem, countKeys, emblemCacheKey, emblemChoice, gameArt, gameArtRoot, gametypeKey, levelForExp,
-  emblemFromIndices, emblemPalette, loadGameArt, mapKey, normaliseMask, medalKey, weaponKey, parseHexColour, parseManifest, rankKey, EMBLEM_COLOURS, type EmblemSpec,
+  artBase, emblemFromIndices, emblemPalette, loadGameArt, mapKey, normaliseMask, medalKey, weaponKey, parseHexColour, parseManifest, rankKey, EMBLEM_COLOURS, type EmblemSpec,
 } from "../src/lib/gameart";
 import { MEDALS, RANKS } from "../src/state/derive";
 import { encodePng, mockGameArt } from "../mock/gameart";
@@ -37,6 +37,20 @@ describe("game art manifest", () => {
     expect(asked).toBe("http://127.0.0.1:8074/art/game/manifest.json");
     expect(art!.get("rank/12")).toEqual({ url: "http://127.0.0.1:8074/art/game/rank/12.png", width: 28, height: 26 });
     expect(art!.get("map/lockout/preview")!.url).toBe("http://127.0.0.1:8074/art/game/map/lock%20out.png");
+  });
+
+  test("a manifest redirected to its published copy roots every file there", async () => {
+    const published = "https://live-art.example.net/art/0123456789abcdef/";
+    const art = await loadGameArt("https://live.example.net", async () => ({ ...(await reply(200, MANIFEST)()), url: published + "manifest.json" }));
+    expect(art!.root).toBe(published);
+    expect(art!.get("rank/12")!.url).toBe(published + "rank/12.png");
+    // Same place, not redirected: the server's own address.
+    expect(artBase("http://h/art/game/", "http://h/art/game/manifest.json")).toBe("http://h/art/game/");
+    expect(artBase("http://h/art/game/", "https://b.example/art/x/manifest.json?v=1")).toBe("https://b.example/art/x/");
+    // Unknown, or not where a manifest would be: the server's address.
+    for (const odd of [undefined, "", "not a url", "https://b.example/elsewhere.json", "data:,manifest.json", "blob:https://h/manifest.json"]) {
+      expect(artBase("http://h/art/game/", odd)).toBe("http://h/art/game/");
+    }
   });
 
   test("looks a key up in aliases first, then images", () => {

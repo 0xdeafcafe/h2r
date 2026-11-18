@@ -240,6 +240,9 @@ impl Object {
 pub struct MediaObjects {
     present: u32,
     talker: Option<u8>,
+    /// Input and output volume, 0 to 1 ([`MediaObjects::set_gains`]).
+    capture_gain: f32,
+    playback_gain: f32,
     objects: BTreeMap<Handle, Object>,
     next: u32,
 }
@@ -255,6 +258,8 @@ impl MediaObjects {
         Self {
             present: 0,
             talker: None,
+            capture_gain: 1.0,
+            playback_gain: 1.0,
             objects: BTreeMap::new(),
             next: 1,
         }
@@ -288,6 +293,21 @@ impl MediaObjects {
     /// so the engine's voice detection never fires.
     pub fn set_talker(&mut self, port: Option<u8>) {
         self.talker = port.filter(|&p| p < 4);
+    }
+
+    /// The Voice settings' input and output volumes, as gains from 0 (muted)
+    /// to 1 (the default): the microphone is scaled before it reaches the
+    /// talker's packets, and the headphone mix before it is played.
+    pub fn set_gains(&mut self, capture: f32, playback: f32) {
+        let clean = |g: f32| {
+            if g.is_finite() {
+                g.clamp(0.0, 1.0)
+            } else {
+                0.0
+            }
+        };
+        self.capture_gain = clean(capture);
+        self.playback_gain = clean(playback);
     }
 
     /// XVoiceCreateMediaObjectEx(type, port, max packets, format, callback,
@@ -421,6 +441,9 @@ impl MediaObjects {
         if mics && !io.capture().read(&mut captured) {
             captured.fill(0);
         }
+        if self.capture_gain != 1.0 {
+            scale(&mut captured, self.capture_gain);
+        }
         let mut mix = [0i32; HOST_FRAME];
 
         for (&handle, object) in &mut self.objects {
@@ -469,10 +492,22 @@ impl MediaObjects {
         if phones {
             let mut out: Frame = [0; HOST_FRAME];
             for (o, m) in out.iter_mut().zip(mix) {
+                let m = if self.playback_gain == 1.0 {
+                    m
+                } else {
+                    (m as f32 * self.playback_gain).round() as i32
+                };
                 *o = m.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
             }
             io.playback().write(&out);
         }
         Ok(done)
+    }
+}
+
+/// Each sample times `gain` (0 to 1), rounded.
+fn scale(frame: &mut Frame, gain: f32) {
+    for s in frame.iter_mut() {
+        *s = (f32::from(*s) * gain).round() as i16;
     }
 }

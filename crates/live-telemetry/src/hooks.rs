@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -8,14 +7,14 @@ use engine::points;
 use runtime::Runtime;
 
 use crate::config::{TelemetryConfig, TelemetrySinkConfig};
-use crate::event::{PlayerState, World};
+use crate::event::{PlayerState, Shots, World};
 use crate::layout;
 use crate::memory;
 use crate::pipeline::{Kill, Names, Pipeline, Start, Work};
 use crate::server::ServerSink;
 use crate::session::{Playlist, Session};
 use crate::sink::{JsonlSink, Sink};
-use crate::tags::{MapIdLocator, MapLocator, PlaylistLocator};
+use crate::tags::{BotsLocator, MapIdLocator, MapLocator, PlaylistLocator};
 
 /// Weapons with uncollected shots are few (only those fired since the last
 /// completed tick); past this many the counts are dropped, not grown.
@@ -31,7 +30,7 @@ pub struct Telemetry {
     last_tick: Mutex<Option<u64>>,
     /// Shots by weapon object datum since the last sample, from the weapon
     /// fire hook.
-    shots: Mutex<BTreeMap<u32, u32>>,
+    shots: Mutex<Shots>,
     /// Damage reports since the last sample, from the damage hook (oldest
     /// dropped past [`MAX_PENDING_HITS`]).
     hits: Mutex<Vec<crate::event::HitRecord>>,
@@ -45,6 +44,8 @@ pub struct Telemetry {
     map_ids: Mutex<Option<MapIdLocator>>,
     /// Names the starting game's playlist; set by the boot with Live.
     playlists: Mutex<Option<PlaylistLocator>>,
+    /// Names the starting game's bot roster; set by the boot with Live.
+    bots: Mutex<Option<BotsLocator>>,
 }
 
 impl Telemetry {
@@ -53,12 +54,13 @@ impl Telemetry {
             pipeline: Pipeline::new(session, sink),
             disabled: AtomicBool::new(false),
             last_tick: Mutex::new(None),
-            shots: Mutex::new(BTreeMap::new()),
+            shots: Mutex::default(),
             hits: Mutex::new(Vec::new()),
             scan: Mutex::default(),
             maps: Mutex::new(None),
             map_ids: Mutex::new(None),
             playlists: Mutex::new(None),
+            bots: Mutex::new(None),
         }
     }
 
@@ -86,6 +88,13 @@ impl Telemetry {
     /// the start, so a ranked game is recorded as one.
     pub fn set_playlist_locator(&self, locator: PlaylistLocator) {
         *self.playlists.lock().unwrap() = Some(locator);
+    }
+
+    /// Lets each multiplayer game know its Clankers (docs/game/bots.md §6,
+    /// stage 6c): asked at the start, so every bot goes out with `bot:
+    /// true` and a game with a server roster names the roster's session.
+    pub fn set_bots_locator(&self, locator: BotsLocator) {
+        *self.bots.lock().unwrap() = Some(locator);
     }
 
     /// The skulls the next multiplayer games run with (the host's set as
@@ -134,8 +143,7 @@ impl Telemetry {
         if shots.len() >= MAX_FIRING_WEAPONS && !shots.contains_key(&weapon) {
             shots.clear();
         }
-        let count = shots.entry(weapon).or_insert(0);
-        *count = count.saturating_add(1);
+        shots.add(weapon, 1);
     }
 
     /// The damage hook: one damage report.
@@ -219,6 +227,11 @@ impl Telemetry {
             if let Some(playlist) = playlist {
                 self.configure(move |s| s.set_playlist(playlist));
             }
+            let bots = self.bots.lock().unwrap().as_ref().map(|locate| locate());
+            // Asked every start, so a game without a roster names none.
+            if let Some(bots) = bots {
+                self.configure(move |s| s.set_bots(bots));
+            }
         }
         let tick = info.tick;
         self.pipeline.push(Work::Start(Box::new(Start {
@@ -241,7 +254,17 @@ impl Telemetry {
 
     /// The tick's observation, queued for the worker; false when the game
     /// tick has not changed since the last one.
+    ///
+    /// Runs on the game thread every tick (docs/live/live-telemetry.md,
+    /// "Threads"): guest reads into a recycled snapshot and a queue push,
+    /// no allocation and no system call once steady (`bench.rs`'s
+    /// `the_game_threads_tick_does_not_allocate`).
     pub(crate) fn observe_tick(&self, guest: &runtime::Guest) -> Result<bool, String> {
+        // An unchanged tick reads nothing else.
+        let tick = memory::game_tick(guest).map_err(|e| format!("read tick snapshot: {e:?}"))?;
+        if *self.last_tick.lock().unwrap() == Some(tick) {
+            return Ok(false);
+        }
         let mut scan = self.scan.lock().unwrap();
         let (buffers, roster) = &mut *scan;
         // A snapshot the worker is done with: its lists are empty but keep
@@ -262,8 +285,8 @@ impl Telemetry {
         std::mem::swap(&mut snapshot.shots, &mut *self.shots.lock().unwrap());
         std::mem::swap(&mut snapshot.hits, &mut *self.hits.lock().unwrap());
         // Actors, vehicles and machines only go out in frames (every second
-        // tick).
-        if snapshot.tick.is_multiple_of(2) {
+        // tick), and not in a cinematic's (they hold no entities).
+        if snapshot.tick.is_multiple_of(2) && !snapshot.cinematic {
             let mut world = World {
                 actors: std::mem::take(&mut snapshot.actors),
                 vehicles: std::mem::take(&mut snapshot.vehicles),
@@ -321,6 +344,8 @@ impl Telemetry {
             victim: victim_index,
             betrayal,
             object,
+            // The scripts' kills in a cutscene are not play.
+            cinematic: memory::cinematic(guest).unwrap_or(false),
         })))
     }
 }
@@ -616,11 +641,31 @@ mod tests {
         telemetry.protect(|| telemetry.start(&guest));
         telemetry.protect(|| telemetry.kill(&guest, 0x80010000, 0x80010001, false));
         telemetry.protect(|| telemetry.kill(&guest, 0x80010000, 0x80010000, false));
+        // In a cutscene the scripts' kills are not counted, and the tick's
+        // frame is a marked, empty one.
+        fixture::set_cinematic(&mut guest, true);
+        guest
+            .set_u32(fixture::TIME + layout::TIME_TICK, 10)
+            .unwrap();
+        telemetry.protect(|| telemetry.kill(&guest, 0x80010000, 0x80010001, false));
+        telemetry.protect(|| telemetry.sample(&guest));
+        assert!(!telemetry.disabled());
         drop(telemetry);
-        let events: Vec<serde_json::Value> = std::fs::read_to_string(&path)
+        let lines: Vec<serde_json::Value> = std::fs::read_to_string(&path)
             .unwrap()
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let frames: Vec<&serde_json::Value> = lines
+            .iter()
+            .filter(|event| event["type"] == "GameFrame")
+            .collect();
+        assert_eq!(frames.len(), 1, "{lines:?}");
+        assert_eq!(frames[0]["data"]["cinematic"], true);
+        assert_eq!(frames[0]["data"]["tick"], 10);
+        assert_eq!(frames[0]["data"]["players"], serde_json::json!([]));
+        let events: Vec<serde_json::Value> = lines
+            .into_iter()
             .filter(|event: &serde_json::Value| event["type"] == "PlayerKilled")
             .collect();
         assert_eq!(events.len(), 2);
@@ -756,6 +801,7 @@ mod tests {
             pos: Some([0.0, 0.0, 0.0]),
             body: 0.2,
             shield: 0.0,
+            tick: None,
         });
         telemetry.protect(|| telemetry.sample(&guest));
         assert!(!telemetry.disabled());

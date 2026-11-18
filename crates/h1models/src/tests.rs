@@ -780,6 +780,125 @@ fn synthetic_graph_round_trips_through_the_h2_decoder() {
     }
 }
 
+/// Every level of a converted graph's tree is laid out in ascending
+/// string-ID order, as the engine's binary search over it needs (E
+/// `0x001dd560`, from `0x001db170`). Here name order and string-ID order
+/// disagree at two levels: class `pistol` sorts before `rifle` by name, but
+/// `rifle` (5 bytes) has the smaller string ID; action `aim_still` before
+/// `idle` by name, `idle` (4 bytes) by ID.
+#[test]
+fn a_converted_graph_tree_is_in_string_id_order() {
+    let (img, at) = synthetic_graph();
+    let mut g = h1::Graph::read(&img, at).unwrap();
+    g.animations[0].name = "stand pistol idle".into();
+    g.animations[1].name = "stand pistol aim-still".into();
+    let mut third = g.animations[0].clone();
+    third.name = "stand rifle idle".into();
+    g.animations.push(third);
+    let (out, _) = jmad::convert_graph(&g, None).unwrap();
+    let (bytes, ids) = build(vec![(out, "invented\\graph")]);
+    let mut map = Map::from_reader(Cursor::new(bytes)).unwrap();
+    let base = map.tag(ids[0]).unwrap().location.unwrap().address;
+    let b = map.read_tag_bytes(ids[0]).unwrap();
+    let strings = map.strings().to_vec();
+    let w = |a: u32| u32::from_le_bytes(b[(a - base) as usize..][..4].try_into().unwrap());
+    let name = |sid: u32| strings[(sid & 0xff_ffff) as usize].clone().unwrap();
+    // (count, address) at `a`; the names of its elements of `stride`.
+    let level = |a: u32, stride: u32| -> Vec<(u32, u32)> {
+        (0..w(a)).map(|i| (w(w(a + 4) + i * stride), w(a + 4) + i * stride)).collect()
+    };
+    let ascending = |l: &[(u32, u32)]| l.windows(2).all(|p| (p[0].0 as i32) < (p[1].0 as i32));
+    let modes = level(base + 0x34, 0x14);
+    assert!(ascending(&modes));
+    let classes = level(modes[0].1 + 4, 0x14);
+    assert!(ascending(&classes));
+    assert_eq!(
+        classes.iter().map(|c| name(c.0)).collect::<Vec<_>>(),
+        ["rifle", "pistol"]
+    );
+    let pistol = classes[1].1;
+    let types = level(pistol + 4, 0x34);
+    let actions = level(types[0].1 + 4, 8);
+    assert!(ascending(&actions));
+    assert_eq!(
+        actions.iter().map(|a| name(a.0)).collect::<Vec<_>>(),
+        ["idle", "aim_still"]
+    );
+}
+
+/// Halo 1 finds a unit's animations through slot tables, and a class's slot
+/// may name another class's animation: the cyborg's pistol class throws with
+/// `stand rifle throw-grenade`. The converted tree names that animation under
+/// the pistol too, so Halo 2's search for `combat:pistol:any:throw_grenade`
+/// (`0x000e8220`) finds it; the rifle keeps its own, and nothing is added
+/// for a slot that names its own class's animation.
+#[test]
+fn a_class_that_borrows_a_slot_finds_it_by_name() {
+    let (img, at) = synthetic_graph();
+    let mut g = h1::Graph::read(&img, at).unwrap();
+    g.animations[0].name = "stand rifle throw-grenade".into();
+    g.animations[1].name = "stand pistol idle".into();
+    g.units = vec![h1::UnitSlots {
+        label: "stand".into(),
+        classes: vec![
+            h1::ClassSlots { label: "rifle".into(), slots: vec![-1, 0], types: vec![] },
+            h1::ClassSlots { label: "pistol".into(), slots: vec![1, 0], types: vec![] },
+        ],
+    }];
+    let (out, _) = jmad::convert_graph(&g, None).unwrap();
+    let (bytes, ids) = build(vec![(out, "invented\\graph")]);
+    let mut map = Map::from_reader(Cursor::new(bytes)).unwrap();
+    let base = map.tag(ids[0]).unwrap().location.unwrap().address;
+    let b = map.read_tag_bytes(ids[0]).unwrap();
+    let strings = map.strings().to_vec();
+    let w = |a: u32| u32::from_le_bytes(b[(a - base) as usize..][..4].try_into().unwrap());
+    let name = |sid: u32| strings[(sid & 0xff_ffff) as usize].clone().unwrap();
+    let level = |a: u32, stride: u32| -> Vec<(String, u32)> {
+        (0..w(a)).map(|i| (name(w(w(a + 4) + i * stride)), w(a + 4) + i * stride)).collect()
+    };
+    let modes = level(base + 0x34, 0x14);
+    assert_eq!(modes.iter().map(|m| m.0.as_str()).collect::<Vec<_>>(), ["combat"]);
+    let actions = |class: &str| -> Vec<(String, i16)> {
+        let c = level(modes[0].1 + 4, 0x14).into_iter().find(|c| c.0 == class).unwrap();
+        let t = level(c.1 + 4, 0x34);
+        assert_eq!(t.len(), 1);
+        level(t[0].1 + 4, 8)
+            .into_iter()
+            .map(|(n, a)| (n, (w(a + 4) >> 16) as i16))
+            .collect()
+    };
+    let mut pistol = actions("pistol");
+    pistol.sort();
+    assert_eq!(pistol, [("idle".to_owned(), 1), ("throw_grenade".to_owned(), 0)]);
+    assert_eq!(actions("rifle"), [("throw_grenade".to_owned(), 0)]);
+}
+
+/// No converted animation names a blend screen: the graph has none, and
+/// the engine indexes `blend_screens` (`+0x24`) by an animation's `+0x12`
+/// unless it is -1 (E `0x001daf30`). Written 0, the player's aim update
+/// (`0x00112a51`) read the empty block's element 0 and faulted at `0xc`
+/// on every converted map once the sorted trees let a graph find its
+/// animations.
+#[test]
+fn a_converted_animation_names_no_blend_screen() {
+    let (img, at) = synthetic_graph();
+    let g = h1::Graph::read(&img, at).unwrap();
+    let (out, _) = jmad::convert_graph(&g, None).unwrap();
+    let (bytes, ids) = build(vec![(out, "invented\\graph")]);
+    let mut map = Map::from_reader(Cursor::new(bytes)).unwrap();
+    let base = map.tag(ids[0]).unwrap().location.unwrap().address;
+    let b = map.read_tag_bytes(ids[0]).unwrap();
+    let w = |a: u32| u32::from_le_bytes(b[(a - base) as usize..][..4].try_into().unwrap());
+    // The graph holds no blend screens.
+    assert_eq!(w(base + 0x24), 0);
+    let (count, at) = (w(base + 0x2c), w(base + 0x30));
+    assert!(count > 0);
+    for i in 0..count {
+        let e = (at + i * 0x6c - base) as usize;
+        assert_eq!(b[e + 0x12] as i8, -1, "animation {i}");
+    }
+}
+
 /// The synthetic graph's base animation, re-encoded as compressed data with
 /// a key on every frame, reads back as the uncompressed original (within
 /// the 12-bit rotation quantisation) and converts.

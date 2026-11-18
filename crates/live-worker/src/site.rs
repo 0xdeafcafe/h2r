@@ -1,5 +1,8 @@
 //! What the Worker answers itself, ahead of the hub: the game art at
-//! `/art/game/*`.
+//! `/art/game/*`, the stats site's old addresses (`/stats/*`, a 301 to
+//! the same page under `/games/halo2`, in entry.rs), and the app's pages
+//! (the built `index.html` with each page's link preview,
+//! [`live_server::page_meta`]).
 //!
 //! The Worker has no art files (they are the owner's, extracted from their
 //! disc). Art published to a public bucket (`h2 live assets publish`,
@@ -37,9 +40,110 @@ pub fn game_art(base: Option<&str>, path: &str, query: Option<&str>) -> Option<G
     })
 }
 
+/// The hub's answer to "what is this page" for its link preview, when
+/// the page names a player, game or clan; `None` when the path alone
+/// says (so the hub is not woken for it).
+pub fn page_meta_url(path: &str) -> Option<String> {
+    live_server::page_meta::subject(path)?;
+    Some(format!(
+        "https://hub/v1/page-meta?path={}",
+        encode_query(path)
+    ))
+}
+
+/// `s` for a query value: unreserved characters and `/` as they are,
+/// everything else percent-encoded.
+fn encode_query(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || b"-._~/".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// wrangler.toml sends the Worker exactly the app's pages (and the
+    /// paths it had before): every page pattern is a page, and every kind
+    /// of page has a pattern.
+    #[test]
+    fn wrangler_sends_the_worker_the_app_pages() {
+        let toml = include_str!("../wrangler.toml");
+        let list = toml.split("run_worker_first = [").nth(1).unwrap();
+        let list = &list[..list.find(']').unwrap()];
+        let patterns: Vec<&str> = list
+            .split(',')
+            .map(|p| p.trim().trim_matches('"'))
+            .filter(|p| !p.is_empty())
+            .collect();
+        let api = [
+            "/v1/*",
+            "/.well-known/*",
+            "/healthz",
+            "/art/game",
+            "/art/game/*",
+        ];
+        for p in &patterns {
+            let sample = p.replace('*', "x");
+            assert!(
+                api.contains(p) || live_server::page_meta::is_page(&sample),
+                "{p} is sent to the Worker but is not a page"
+            );
+        }
+        for page in [
+            "/",
+            "/dash",
+            "/dash/x",
+            "/stats",
+            "/stats/x",
+            "/players",
+            "/players/x",
+            "/games",
+            "/games/x",
+            "/games/halo2",
+            "/games/halo2/players/x",
+            "/events",
+            "/signin",
+        ] {
+            let covered = patterns.iter().any(|p| match p.strip_suffix('*') {
+                Some(prefix) => page.starts_with(prefix),
+                None => *p == page,
+            });
+            assert!(
+                covered,
+                "{page} is a page but wrangler.toml serves it without the Worker"
+            );
+        }
+    }
+
+    #[test]
+    fn only_pages_naming_something_ask_the_hub() {
+        assert_eq!(
+            page_meta_url("/games/halo2/players/Two Words&x"),
+            Some("https://hub/v1/page-meta?path=/games/halo2/players/Two%20Words%26x".into())
+        );
+        assert_eq!(
+            page_meta_url("/games/halo2/games/0123"),
+            Some("https://hub/v1/page-meta?path=/games/halo2/games/0123".into())
+        );
+        for path in [
+            "/",
+            "/dash/players",
+            "/games",
+            "/games/halo2",
+            "/games/halo2/games",
+            // Redirected before any preview.
+            "/stats/players/x",
+        ] {
+            assert_eq!(page_meta_url(path), None, "{path}");
+        }
+    }
 
     #[test]
     fn art_is_a_redirect_when_published_and_a_404_when_not() {
@@ -48,14 +152,14 @@ mod tests {
             game_art(base, "/art/game/manifest.json", None),
             Some(GameArt::Redirect {
                 to: "https://art.example.net/art/0123456789abcdef/manifest.json".into(),
-                cache_control: "no-cache",
+                cache_control: "public, max-age=300",
             })
         );
         assert_eq!(
             game_art(base, "/art/game/map/x/map.glb", Some("v=1")),
             Some(GameArt::Redirect {
                 to: "https://art.example.net/art/0123456789abcdef/map/x/map.glb".into(),
-                cache_control: "private, max-age=31536000, immutable",
+                cache_control: "public, max-age=31536000, immutable",
             })
         );
         assert_eq!(

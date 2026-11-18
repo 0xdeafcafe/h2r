@@ -142,7 +142,8 @@ pub struct PublishReport {
 }
 
 /// Every file under `dir`, as `/`-separated relative paths, in order;
-/// `.gz` copies left out (they are the encoded form of their sibling).
+/// `.br` and `.gz` copies left out (they are encoded forms of their
+/// sibling, [`encoded`]).
 fn art_files(dir: &Path) -> std::io::Result<Vec<(String, u64)>> {
     let mut out = Vec::new();
     let mut todo = vec![dir.to_path_buf()];
@@ -153,7 +154,7 @@ fn art_files(dir: &Path) -> std::io::Result<Vec<(String, u64)>> {
             let ty = entry.file_type()?;
             if ty.is_dir() {
                 todo.push(path);
-            } else if ty.is_file() && path.extension().is_none_or(|e| e != "gz") {
+            } else if ty.is_file() && path.extension().is_none_or(|e| e != "gz" && e != "br") {
                 let rel = path
                     .strip_prefix(dir)
                     .expect("under dir")
@@ -170,8 +171,12 @@ fn art_files(dir: &Path) -> std::io::Result<Vec<(String, u64)>> {
 }
 
 /// The extraction's stamp: 16 hex digits of a SHA-256 over every file's
-/// path and size and the manifest's bytes. A new extraction (a new
-/// extractor, another disc) is a new stamp, so a new set of addresses.
+/// path and size, which representation of it is published ([`encoded`]:
+/// plain, `br` or `gzip`) and that representation's size, and the
+/// manifest's bytes. A new extraction (a new extractor, another disc) is a
+/// new stamp, so a new set of addresses; so is any change to what would be
+/// uploaded (a compressed copy written again, or dropped as stale), since
+/// published objects are immutable and the old addresses stay cached.
 pub fn stamp(dir: &Path) -> std::io::Result<String> {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
@@ -179,16 +184,47 @@ pub fn stamp(dir: &Path) -> std::io::Result<String> {
         h.update(rel.as_bytes());
         h.update([0]);
         h.update(size.to_le_bytes());
+        let plain = dir.join(&rel);
+        let (coding, source) = match encoded(&plain) {
+            Some((p, enc)) => (enc, std::fs::metadata(p)?.len()),
+            None => ("identity", size),
+        };
+        h.update(coding.as_bytes());
+        h.update([0]);
+        h.update(source.to_le_bytes());
     }
     h.update(std::fs::read(dir.join(MANIFEST))?);
     let hex: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
     Ok(hex[..16].to_string())
 }
 
+/// The compressed copy of `plain` a client is sent instead, and its
+/// `Content-Encoding`: the Brotli one (`<file>.br`, written by
+/// [`crate::art_pack`]) when there is one, else the gzip one (`<file>.gz`,
+/// older extractions' `map.glb.gz`). What is published is the same. A copy
+/// older than its plain file (by modification time) is stale, written
+/// before the file was changed (`bun run banner` rewriting the manifest),
+/// and is ignored.
+fn encoded(plain: &Path) -> Option<(PathBuf, &'static str)> {
+    let plain_modified = std::fs::metadata(plain).and_then(|m| m.modified()).ok();
+    [("br", "br"), ("gz", "gzip")]
+        .into_iter()
+        .find_map(|(ext, enc)| {
+            let p = PathBuf::from(format!("{}.{ext}", plain.display()));
+            let m = std::fs::metadata(&p).ok().filter(|m| m.is_file())?;
+            let stale = match (m.modified().ok(), plain_modified) {
+                (Some(copy), Some(plain)) => copy < plain,
+                _ => false,
+            };
+            (!stale).then_some((p, enc))
+        })
+}
+
 #[cfg(feature = "native")]
 /// Uploads shared `art` to `store` as `art/<stamp>/<path>`: each file with
-/// its type and [`PUBLISHED_CACHE`]; a file with a `.gz` copy as that copy,
-/// marked `Content-Encoding: gzip`. Files already there (same size) are
+/// its type and [`PUBLISHED_CACHE`]; a file with a compressed copy as that
+/// copy ([`encoded`]: Brotli, else gzip), marked with its
+/// `Content-Encoding`. Files already there (same size) are
 /// skipped, so an interrupted publish resumes; a published extraction is
 /// recognised by its last object and costs one request. Refuses art that is
 /// not shared.
@@ -222,9 +258,8 @@ pub async fn publish(
             let (base, dir) = (&base, &art.dir);
             async move {
                 let plain = dir.join(&rel);
-                let gz = PathBuf::from(format!("{}.gz", plain.display()));
-                let gz = gz.is_file().then_some(gz);
-                let source = gz.as_deref().unwrap_or(&plain);
+                let enc = encoded(&plain);
+                let source = enc.as_ref().map_or(plain.as_path(), |(p, _)| p.as_path());
                 let size = std::fs::metadata(source)?.len();
                 let key = format!("{base}{rel}");
                 if store.head(&key).await?.is_some_and(|i| i.size == size) {
@@ -237,7 +272,7 @@ pub async fn publish(
                             .essence_str()
                             .to_string(),
                     ),
-                    content_encoding: gz.is_some().then(|| "gzip".to_string()),
+                    content_encoding: enc.as_ref().map(|(_, e)| e.to_string()),
                     cache_control: Some(PUBLISHED_CACHE.into()),
                 };
                 let bytes = tokio::fs::read(source).await?;
@@ -265,7 +300,7 @@ pub async fn publish(
 /// Where a request for `uri_path` (under [`PREFIX`]) should go instead of
 /// being served here: the published file's public URL, when `published`
 /// is ready, the file exists in `dir`, and the client can take how it was
-/// stored (a gzipped one needs `Accept-Encoding: gzip`).
+/// stored (a Brotli one needs `Accept-Encoding: br`, a gzipped one `gzip`).
 fn redirect_for(
     dir: &Path,
     published: &PublishedArt,
@@ -280,8 +315,10 @@ fn redirect_for(
     if !plain.is_file() {
         return None;
     }
-    if Path::new(&format!("{}.gz", plain.display())).is_file() && !accepts_gzip(headers) {
-        return None;
+    if let Some((_, enc)) = encoded(&plain) {
+        if !accepts(headers, enc) {
+            return None;
+        }
     }
     published.url(&rel)
 }
@@ -291,14 +328,16 @@ fn redirect_for(
 /// at `to` (`s3://BUCKET[/PREFIX]` with the `H2_LIVE_S3_PUBLIC_*` or
 /// `H2_LIVE_S3_*` settings from `env`, or a directory), readable by anyone
 /// at `url`, for a server with no art files of its own (the Worker). The
-/// art is shared by doing so. Returns what was done and the published
-/// extraction's address, the Worker's `H2_LIVE_GAME_ART_URL`.
+/// art is shared by doing so. Refuses art whose manifest names a file the
+/// directory lacks ([`crate::art_pack::coverage`]): the web app would ask
+/// for it. Returns what was done, the published extraction's address (the
+/// Worker's `H2_LIVE_GAME_ART_URL`) and what it holds.
 pub async fn publish_to(
     dir: &Path,
     to: &str,
     url: &str,
     env: &dyn Fn(&str) -> Option<String>,
-) -> anyhow::Result<(PublishReport, String)> {
+) -> anyhow::Result<(PublishReport, String, crate::art_pack::Coverage)> {
     use anyhow::Context;
     let Some(art) = GameArt::found(dir, true) else {
         anyhow::bail!(
@@ -308,6 +347,20 @@ pub async fn publish_to(
         );
     };
     crate::blobs::check_public_url(url)?;
+    let coverage = crate::art_pack::coverage(dir).map_err(anyhow::Error::msg)?;
+    if !coverage.missing.is_empty() {
+        anyhow::bail!(
+            "{} names {} files it does not have ({}{}); extract the art again",
+            dir.join(MANIFEST).display(),
+            coverage.missing.len(),
+            coverage.missing[..coverage.missing.len().min(5)].join(", "),
+            if coverage.missing.len() > 5 {
+                ", ..."
+            } else {
+                ""
+            }
+        );
+    }
     let store = crate::blobs::BlobStore::open(&crate::blobs::Location::parse(to)?, env, true)
         .context("opening the public store")?
         .with_public_url(url);
@@ -317,7 +370,7 @@ pub async fn publish_to(
     let base = store
         .public_url(&format!("{ART_PREFIX}{}", report.stamp))
         .expect("the store has a public URL");
-    Ok((report, base))
+    Ok((report, base, coverage))
 }
 
 /// The relative path a request for `uri_path` (under [`PREFIX`]) names,
@@ -340,8 +393,8 @@ fn art_rel(uri_path: &str) -> Option<&str> {
 /// For a server with no art files of its own (the Worker): where a request
 /// for `uri_path` goes, given `base`, the published extraction's public
 /// address (`<public bucket URL>/art/<stamp>`, what [`publish`] printed).
-/// The redirect's `Cache-Control` is [`cache_control`] of the request's
-/// query, as on a server that has the files.
+/// The redirect's `Cache-Control` is [`published_cache_control`] of the
+/// request's query.
 pub fn published_redirect(
     base: &str,
     uri_path: &str,
@@ -349,10 +402,25 @@ pub fn published_redirect(
 ) -> Option<(String, &'static str)> {
     let rel = art_rel(uri_path)?;
     let to = format!("{}/{rel}", base.trim_end_matches('/'));
-    Some((to, cache_control(versioned(query))))
+    Some((to, published_cache_control(versioned(query))))
 }
 
-fn accepts_gzip(headers: &HeaderMap) -> bool {
+/// How long a browser may keep the Worker's redirect to published art.
+/// The published copy is public and the deployment fixes its address (a new
+/// extraction is a new stamp and a new deployment), so a versioned address
+/// is kept for good; anything else, the manifest above all, for five
+/// minutes, so a new deployment's art shows soon after. The files the
+/// redirects lead to are all [`PUBLISHED_CACHE`].
+pub fn published_cache_control(versioned: bool) -> &'static str {
+    if versioned {
+        PUBLISHED_CACHE
+    } else {
+        "public, max-age=300"
+    }
+}
+
+/// Whether the request's `Accept-Encoding` takes `coding` (`br`, `gzip`).
+fn accepts(headers: &HeaderMap, coding: &str) -> bool {
     headers
         .get_all(axum::http::header::ACCEPT_ENCODING)
         .iter()
@@ -367,7 +435,7 @@ fn accepts_gzip(headers: &HeaderMap) -> bool {
                     .and_then(|q| q.trim().parse::<f32>().ok())
                     == Some(0.0)
             });
-            (name == "gzip" || name == "*") && !refused
+            (name.eq_ignore_ascii_case(coding) || name == "*") && !refused
         })
 }
 
@@ -383,9 +451,11 @@ pub fn routes(art: &GameArt, published: Option<PublishedArt>) -> Router {
     let dir = art.dir.clone();
     // Never publish what is not shared.
     let published = published.filter(|_| share);
-    // A file's `.gz` copy (the extractor writes one beside each `map.glb`)
-    // goes to a browser that takes gzip.
-    let files = tower_http::services::ServeDir::new(&art.dir).precompressed_gzip();
+    // A file's compressed copies ([`crate::art_pack`]: `.br` and `.gz`
+    // beside each glb and JSON file) go to a browser that takes them.
+    let files = tower_http::services::ServeDir::new(&art.dir)
+        .precompressed_br()
+        .precompressed_gzip();
     Router::new()
         .nest_service(PREFIX, files)
         .layer(middleware::from_fn(move |req: Request, next: Next| {
@@ -555,7 +625,8 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// A map's geometry goes out gzipped, from the extractor's copy.
+    /// A map's geometry goes out compressed, from the packed copies: Brotli
+    /// to a browser that takes it, else gzip, else plain.
     #[tokio::test]
     async fn geometry_goes_out_compressed_when_the_browser_takes_it() {
         use axum::body::Body;
@@ -565,23 +636,37 @@ mod tests {
         std::fs::write(dir.join(MANIFEST), "{}").unwrap();
         std::fs::write(dir.join("map/x/map.glb"), b"glTF plain").unwrap();
         std::fs::write(dir.join("map/x/map.glb.gz"), b"gzipped").unwrap();
+        std::fs::write(dir.join("map/x/map.glb.br"), b"brotli").unwrap();
         let app = routes(&GameArt::found(&dir, true).unwrap(), None);
-        let get = |gzip: bool| {
+        let get = |accept: Option<&str>| {
             let mut req = axum::http::Request::get("/art/game/map/x/map.glb?v=s");
-            if gzip {
-                req = req.header("accept-encoding", "gzip, br");
+            if let Some(a) = accept {
+                req = req.header("accept-encoding", a);
             }
             app.clone().oneshot(req.body(Body::empty()).unwrap())
         };
-        let r = get(true).await.unwrap();
-        assert_eq!(r.headers()[axum::http::header::CONTENT_ENCODING], "gzip");
-        assert_eq!(
-            r.headers()[axum::http::header::CONTENT_TYPE],
-            "model/gltf-binary"
-        );
-        let body = axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap();
-        assert_eq!(&body[..], b"gzipped");
-        let r = get(false).await.unwrap();
+        for (accept, enc, bytes) in [
+            ("gzip, deflate, br, zstd", "br", &b"brotli"[..]),
+            ("gzip, deflate", "gzip", &b"gzipped"[..]),
+        ] {
+            let r = get(Some(accept)).await.unwrap();
+            assert_eq!(
+                r.headers()[axum::http::header::CONTENT_ENCODING],
+                enc,
+                "{accept}"
+            );
+            assert_eq!(
+                r.headers()[axum::http::header::CONTENT_TYPE],
+                "model/gltf-binary"
+            );
+            assert_eq!(
+                r.headers()[axum::http::header::CACHE_CONTROL],
+                "private, max-age=31536000, immutable"
+            );
+            let body = axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap();
+            assert_eq!(&body[..], bytes, "{accept}");
+        }
+        let r = get(None).await.unwrap();
         assert!(
             r.headers()
                 .get(axum::http::header::CONTENT_ENCODING)
@@ -694,7 +779,7 @@ mod tests {
         std::fs::write(dir.join("map/x/map.glb"), b"glTF").unwrap();
         let none = |_: &str| None;
         let to = format!("file:{}", bucket.display());
-        let (report, base) = publish_to(&dir, &to, "https://art.example.net/", &none)
+        let (report, base, _) = publish_to(&dir, &to, "https://art.example.net/", &none)
             .await
             .unwrap();
         assert_eq!((report.uploaded, report.files), (2, 2));
@@ -706,7 +791,7 @@ mod tests {
         let key = to_url.strip_prefix("https://art.example.net/").unwrap();
         assert_eq!(std::fs::read(bucket.join(key)).unwrap(), b"glTF");
         // Again: nothing to upload, the same address.
-        let (again, base2) = publish_to(&dir, &to, "https://art.example.net", &none)
+        let (again, base2, _) = publish_to(&dir, &to, "https://art.example.net", &none)
             .await
             .unwrap();
         assert_eq!((again.uploaded, base2), (0, base));
@@ -717,6 +802,18 @@ mod tests {
                 .is_err()
         );
         assert!(publish_to(&dir, &to, "ftp://a", &none).await.is_err());
+        // A manifest naming a file the art lacks: refused, nothing uploaded.
+        let holey = root.join("holey");
+        std::fs::create_dir_all(&holey).unwrap();
+        std::fs::write(
+            holey.join(MANIFEST),
+            r#"{"images":{"rank/1":{"file":"rank/1.png"}}}"#,
+        )
+        .unwrap();
+        let err = publish_to(&holey, &to, "https://a.example.net", &none)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("rank/1.png"), "{err}");
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -730,14 +827,14 @@ mod tests {
             published_redirect(base, "/art/game/map/x%20y/map.glb", Some("v=abc")),
             Some((
                 "https://art.example.net/art/0123456789abcdef/map/x%20y/map.glb".into(),
-                "private, max-age=31536000, immutable"
+                "public, max-age=31536000, immutable"
             ))
         );
         assert_eq!(
             published_redirect(base, "/art/game/manifest.json", None),
             Some((
                 "https://art.example.net/art/0123456789abcdef/manifest.json".into(),
-                "no-cache"
+                "public, max-age=300"
             ))
         );
         for bad in [
@@ -756,18 +853,21 @@ mod tests {
     }
 
     #[test]
-    fn gzip_acceptance() {
-        let h = |v: &str| {
+    fn encoding_acceptance() {
+        let h = |v: &str, coding: &str| {
             let mut m = HeaderMap::new();
             m.insert("accept-encoding", v.parse().unwrap());
-            accepts_gzip(&m)
+            accepts(&m, coding)
         };
-        assert!(h("gzip"));
-        assert!(h("br, gzip;q=0.8"));
-        assert!(h("*"));
-        assert!(!h("br"));
-        assert!(!h("gzip;q=0"));
-        assert!(!accepts_gzip(&HeaderMap::new()));
+        assert!(h("gzip", "gzip"));
+        assert!(h("br, gzip;q=0.8", "gzip"));
+        assert!(h("*", "gzip"));
+        assert!(!h("br", "gzip"));
+        assert!(!h("gzip;q=0", "gzip"));
+        assert!(h("gzip, deflate, br, zstd", "br"));
+        assert!(!h("gzip, deflate", "br"));
+        assert!(!h("br;q=0, gzip", "br"));
+        assert!(!accepts(&HeaderMap::new(), "gzip"));
     }
 
     #[test]
@@ -778,5 +878,96 @@ mod tests {
         assert!(!versioned(Some("version=1")));
         assert!(!versioned(None));
         assert_eq!(cache_control(false), "no-cache");
+    }
+
+    /// A compressed copy older than its plain file (the manifest rewritten
+    /// after extraction, by `bun run banner`) is stale: it is neither served
+    /// nor published, and a fresh one is. The stamp follows what is
+    /// published, so a copy going stale, or being written again, is a new
+    /// stamp.
+    #[test]
+    fn stale_compressed_copies_are_skipped_and_change_the_stamp() {
+        use std::time::{Duration, SystemTime};
+        let dir = std::env::temp_dir().join(format!("h2-art-stale-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = dir.join(MANIFEST);
+        let br = dir.join("manifest.json.br");
+        let gz = dir.join("manifest.json.gz");
+        let set = |p: &Path, t: SystemTime| {
+            std::fs::File::options()
+                .write(true)
+                .open(p)
+                .unwrap()
+                .set_modified(t)
+                .unwrap();
+        };
+        let t0 = SystemTime::now() - Duration::from_secs(3600);
+        std::fs::write(&manifest, r#"{"images":{}}"#).unwrap();
+        std::fs::write(&br, b"brotli").unwrap();
+        std::fs::write(&gz, b"gzipped").unwrap();
+        set(&manifest, t0);
+        set(&br, t0 + Duration::from_secs(1));
+        set(&gz, t0 + Duration::from_secs(1));
+        // Fresh copies: the Brotli one is used.
+        assert_eq!(encoded(&manifest), Some((br.clone(), "br")));
+        let fresh = stamp(&dir).unwrap();
+
+        // The manifest rewritten after its copies (same size, so only the
+        // representation differs): both copies are stale, the plain file
+        // goes up.
+        std::fs::write(&manifest, r#"{"images":[]}"#).unwrap();
+        set(&manifest, t0 + Duration::from_secs(2));
+        assert_eq!(encoded(&manifest), None);
+        let plain = stamp(&dir).unwrap();
+        assert_ne!(plain, fresh, "a stale copy dropped is a new stamp");
+
+        // Only the gzip copy written again: it is used, and the stamp moves.
+        set(&gz, t0 + Duration::from_secs(3));
+        assert_eq!(encoded(&manifest), Some((gz.clone(), "gzip")));
+        let gzipped = stamp(&dir).unwrap();
+        assert_ne!(gzipped, plain);
+
+        // Both written again: Brotli again, a stamp of its own.
+        std::fs::write(&br, b"brotli, longer").unwrap();
+        set(&br, t0 + Duration::from_secs(3));
+        assert_eq!(encoded(&manifest), Some((br.clone(), "br")));
+        let again = stamp(&dir).unwrap();
+        assert_ne!(again, gzipped);
+        // A Brotli copy of another size is another stamp.
+        std::fs::write(&br, b"brotli").unwrap();
+        set(&br, t0 + Duration::from_secs(3));
+        assert_ne!(stamp(&dir).unwrap(), again);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// `publish` uploads the plain file in place of a stale compressed copy.
+    #[cfg(feature = "native")]
+    #[tokio::test]
+    async fn publishing_skips_a_stale_compressed_copy() {
+        use std::time::{Duration, SystemTime};
+        let root = std::env::temp_dir().join(format!("h2-art-stale-pub-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (dir, bucket) = (root.join("art"), root.join("bucket"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&bucket).unwrap();
+        let manifest = dir.join(MANIFEST);
+        std::fs::write(&manifest, br#"{"source":"banner"}"#).unwrap();
+        std::fs::write(dir.join("manifest.json.br"), b"old brotli").unwrap();
+        let old = SystemTime::now() - Duration::from_secs(3600);
+        std::fs::File::options()
+            .write(true)
+            .open(dir.join("manifest.json.br"))
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        let none = |_: &str| None;
+        let to = format!("file:{}", bucket.display());
+        let (report, _, _) = publish_to(&dir, &to, "https://art.example.net/", &none)
+            .await
+            .unwrap();
+        let key = bucket.join(format!("art/{}/{MANIFEST}", report.stamp));
+        assert_eq!(std::fs::read(key).unwrap(), br#"{"source":"banner"}"#);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

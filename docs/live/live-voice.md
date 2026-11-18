@@ -255,11 +255,11 @@ lane's device trait (section 4):
 
 ```
 trait Capture: Send {
-    /// 20 ms mono frames at 48 kHz, after input volume.
+    /// 20 ms mono frames at 48 kHz, as captured.
     fn read(&mut self, frame: &mut [i16; 960]) -> bool;
 }
 trait Playback: Send {
-    /// One mixed 20 ms frame, before output volume.
+    /// One mixed 20 ms frame, after output volume.
     fn write(&mut self, frame: &[i16; 960]);
 }
 trait VoiceIo {
@@ -277,9 +277,10 @@ Other ports implement the trait.
 
 Playback has two routes: the voice output device when `voice.output_device`
 names one (a headset), or mixed into the game's own output when it is "same as
-game". The second route uses the DirectSound output thread's side sink
-(`crates/dsound/src/output.rs`), so voice follows the game's volume and device
-without a second stream.
+game". The second route is a host stream in DirectSound's mixer
+(`boot::voice_glue::GameMix`), so voice plays wherever the mixer's output
+thread plays the game (`crates/dsound/src/output.rs`), follows the game's
+master volume, and opens no second device stream.
 
 Push-to-talk is a gate in the microphone XMO: with the button up it fills
 packets with silence, so the engine's own voice detection never fires and
@@ -424,7 +425,8 @@ confirmed in the disassembly, **I** means inferred):
      ready, it moves the read position to write − 0x280. So remote voice
      reaches a headphone object only if the host's DirectSound runs those
      effects and their output rings. That is a slice 4 dependency on
-     crates/dsound; the slice 3 objects do not depend on it.
+     crates/dsound (built: `dsound::voice_rings`); the slice 3 objects do
+     not depend on it.
    - **The XMO vtable is at 0x417544 (C).** Slots: AddRef 0x41058f,
      Release 0x4112dc, GetInfo 0x4105ab, GetStatus 0x410603, Process
      0x410e77, Discontinuity 0x4105fe (S_OK) and Flush 0x4105f6
@@ -659,27 +661,36 @@ Each is its own slice, with tests:
      slices. The port mask is 0 until a microphone is chosen on the Voice
      screen (`voice.input_device` not System default). Then every port
      with a pad has a communicator.
-   - **Talker.** In open-mic mode the talker is the first such port.
-     `voice.mic_muted` silences it. Push-to-talk is not read from the pad
-     yet, so that mode is silent.
+   - **Talker.** In open-mic mode the talker is the first such port. In
+     push-to-talk mode it is the first such port whose pad holds the
+     chosen button (`voice.push_to_talk_button`), read from the state the
+     game last got for that port (`Xapi::last_input_state`, no guest
+     call); with no pad holding it nobody talks. `voice.mic_muted`
+     silences it in either mode.
+   - **Volumes.** `voice.input_volume` and `voice.output_volume` (and the
+     two mutes) reach the media objects as gains
+     (`MediaObjects::set_gains`, from `VoiceHandles::capture_gain` and
+     `playback_gain`): the microphone frame is scaled before it fills the
+     talker's packets, the headphone mix before it is played.
    - **Devices.** The chosen devices open through the host's opener
      (`Host::voice_io`). `h2 play` uses `voice::host::HostVoiceIo`, which
-     runs cpal on its own thread. Output plays on its own stream only when
-     a voice output device is chosen; "Same as Game" plays nothing extra.
-   - **DirectSound.** It does not run the per-port voice effects; the
-     effects image is dry. The descriptor now gives effects 0xb..=0xe a
-     zeroed output ring. Without one, the headphone feed divides by zero
-     as soon as a headphone object exists. The headphone therefore plays
-     silence.
-   - **Where remote voice is heard.** Probably through the engine's
-     DirectSound voice streams, on mixbin index 0 (dsound.md, "Dry effects
-     image"). This has not been checked in a run.
-   - **Still to do:**
-     - a real voice effect that converts the voice streams into the rings,
-       so headphone output and the volume settings apply;
-     - push-to-talk from the pad;
-     - the input and output volume settings;
-     - "Same as Game" through the DirectSound side sink.
+     runs cpal on its own thread. Output plays on its own stream when a
+     voice output device is chosen. "Same as Game" (`voice.output_device`
+     at System default) plays the headphone mix in the game's mix instead:
+     `voice_glue::GameMix` is a 48 kHz mono stream in DirectSound's mixer,
+     one 20 ms packet per media-object tick, with 20 ms of silence in
+     front whenever it ran dry (to ride out the tick's jitter) and at most
+     100 ms queued.
+   - **DirectSound.** It runs the per-port voice effects on the host
+     (dsound.md, "Dry effects image"). Each port's voice streams get a
+     mix bin of their own (`0x1b + port`), which the mixer captures
+     instead of playing; after every render the capture goes into the
+     port's ring at 16 kHz and the write offset at state +0x34 moves on.
+     The headphone feed therefore reads the remote talkers of its port.
+     Before this, every port's remote voice was on mixbin 0, the left
+     speaker.
+   - **Still to do:** a run in the game. Nothing above has been heard
+     yet; the tests read guest memory and the mixer.
 5. **Voice messages**: the voice-mail mode on the same objects, blob storage
    with the size and header check, inbox delivery (this depends on the
    inbox HLE delivering messages at all).

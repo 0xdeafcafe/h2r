@@ -11,4 +11,7 @@ engine = { path = "../engine" }
 # The nav mesh's polygons come from the pathfinding generator's sectors,
 # made from the structure BSP's collision.
 tags = { path = "../tags" }
+# Reading a map file's scenario and structure BSPs for the nav build
+# (bots::autonav).
+map = { path = "../map" }
 pathfind = { path = "../pathfind" }

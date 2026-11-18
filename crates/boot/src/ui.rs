@@ -27,12 +27,10 @@ pub enum List {
     Controls,
     /// The retail Settings list (Player Profiles, Game Variants).
     Settings,
-    /// The campaign pause menu (screen 18, `crate::pause_menu`).
-    Pause,
-    /// The multiplayer pause menu (screen 195, `crate::pause_menu`): its
-    /// rows are told apart by action word, and our row `i` past the retail
-    /// ones has action `retail + i`.
-    MpPause,
+    /// The pause menu's Settings dialog (screen 200, `crate::pause_menu`):
+    /// its rows are told apart by a value word, and our row `i` has value
+    /// `retail + i` (the retail rows and the Controller Speaker's before).
+    GameSettings,
     /// One of our screens, by id.
     Screen(&'static str),
 }
@@ -146,9 +144,6 @@ impl Screen {
 pub struct Extension {
     pub list: List,
     pub retail: u32,
-    /// The index our rows start at: after the retail rows unless set
-    /// ([`Extension::at`]).
-    at: Option<u32>,
     rows: Vec<Row>,
 }
 
@@ -157,7 +152,6 @@ pub fn extend(list: List, retail: u32) -> Extension {
     Extension {
         list,
         retail,
-        at: None,
         rows: Vec::new(),
     }
 }
@@ -166,16 +160,6 @@ impl Extension {
     pub fn row(mut self, r: Row) -> Extension {
         self.rows.push(r);
         self
-    }
-    /// Our rows from index `at`, the retail rows from there on after
-    /// them: [`Model::retail_index`] says which retail row an index shows.
-    pub fn at(mut self, at: u32) -> Extension {
-        self.at = Some(at.min(self.retail));
-        self
-    }
-    /// The index our first row is at.
-    fn start(&self) -> u32 {
-        self.at.unwrap_or(self.retail)
     }
 }
 
@@ -360,7 +344,7 @@ impl Model {
     pub fn rows(&self, list: List) -> &[Row] {
         match list {
             List::Screen(id) => self.screen(id).map_or(&[], |s| &s.rows),
-            List::Controls | List::Settings | List::Pause | List::MpPause => self
+            List::Controls | List::Settings | List::GameSettings => self
                 .extensions
                 .iter()
                 .find(|e| e.list == list)
@@ -374,7 +358,7 @@ impl Model {
     pub fn count(&self, list: List, retail: u32) -> u32 {
         match list {
             List::Screen(_) => self.rows(list).len() as u32,
-            List::Controls | List::Settings | List::Pause | List::MpPause => {
+            List::Controls | List::Settings | List::GameSettings => {
                 match self.extensions.iter().find(|e| e.list == list) {
                     Some(e) if e.retail == retail => retail + e.rows.len() as u32,
                     _ => retail,
@@ -387,11 +371,11 @@ impl Model {
     pub fn row(&self, list: List, index: i16) -> Option<&Row> {
         let base = match list {
             List::Screen(_) => 0,
-            List::Controls | List::Settings | List::Pause | List::MpPause => self
+            List::Controls | List::Settings | List::GameSettings => self
                 .extensions
                 .iter()
                 .find(|e| e.list == list)
-                .map_or(0, |e| e.start() as i64),
+                .map_or(0, |e| e.retail as i64),
         };
         let i = usize::try_from(i64::from(index) - base).ok()?;
         self.rows(list).get(i)
@@ -401,29 +385,14 @@ impl Model {
     pub fn index_of(&self, list: List, kind: &RowKind) -> Option<i16> {
         let base = match list {
             List::Screen(_) => 0,
-            List::Controls | List::Settings | List::Pause | List::MpPause => self
+            List::Controls | List::Settings | List::GameSettings => self
                 .extensions
                 .iter()
                 .find(|e| e.list == list)
-                .map_or(0, |e| e.start()),
+                .map_or(0, |e| e.retail),
         };
         let i = self.rows(list).iter().position(|r| r.kind == *kind)?;
         i16::try_from(base as usize + i).ok()
-    }
-
-    /// The retail row index `index` of `list` shows: itself before our
-    /// rows, `index` less ours after them ([`Extension::at`]), `None` for
-    /// one of ours, a screen of ours, or past the list.
-    pub fn retail_index(&self, list: List, index: i16) -> Option<i16> {
-        let e = self.extensions.iter().find(|e| e.list == list)?;
-        let (i, at, n) = (i64::from(index), i64::from(e.start()), e.rows.len() as i64);
-        let retail = match i {
-            _ if i < 0 => return None,
-            _ if i < at => i,
-            _ if i < at + n => return None,
-            _ => i - n,
-        };
-        (retail < i64::from(e.retail)).then_some(retail as i16)
     }
 
     /// Row `row` as one line, its label then its value: for a list whose

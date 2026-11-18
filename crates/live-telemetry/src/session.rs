@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
 
 use live_proto::game::{
-    Frame, FrameActor, FrameHit, FrameMachine, FrameObject, FramePlayer, FrameVehicle, GameEnded,
-    MAX_FRAME_ACTORS, MAX_FRAME_HITS, MAX_FRAME_MACHINES, MAX_FRAME_OBJECTS, MAX_FRAME_SHOTS,
-    MAX_FRAME_VEHICLES, ObjectKind, PlayerKilled, PlayerLeft, ScoreChanged,
+    Frame, FrameActor, FrameAnim, FrameHit, FrameMachine, FrameObject, FramePlayer, FrameVehicle,
+    GameEnded, MAX_FRAME_ACTORS, MAX_FRAME_HITS, MAX_FRAME_MACHINES, MAX_FRAME_OBJECTS,
+    MAX_FRAME_SEAT, MAX_FRAME_SHIELD, MAX_FRAME_SHOTS, MAX_FRAME_SPEED, MAX_FRAME_VEHICLES,
+    ObjectKind, PlayerKilled, PlayerLeft, ScoreChanged,
 };
 
 use crate::event::{
@@ -19,7 +20,44 @@ use crate::tags::TagNames;
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct PendingShots {
     weapon: u32,
+    fired: Fired,
+}
+
+/// Shots since the last frame and the engine ticks they were on.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct Fired {
     count: u32,
+    /// Bit `k`: a shot on engine tick `at - k`.
+    mask: u32,
+    at: u64,
+}
+
+impl Fired {
+    /// The mask as of engine tick `tick`: bit `k` a shot on `tick - k`
+    /// (shots past 32 ticks drop off; none before `at`).
+    fn mask_at(&self, tick: u64) -> u32 {
+        match tick.checked_sub(self.at) {
+            Some(d) if d < 32 => self.mask << d,
+            _ => 0,
+        }
+    }
+
+    /// `n` shots on engine tick `tick`.
+    fn add(&mut self, tick: u64, n: u32) {
+        if n == 0 {
+            return;
+        }
+        self.mask = self.mask_at(tick) | 1;
+        self.at = tick;
+        self.count = self.count.saturating_add(n);
+    }
+
+    /// The frame's `shots` and `fire` at engine tick `tick`.
+    fn frame(&self, tick: u64) -> (Option<u32>, Option<u32>) {
+        let shots = Some(self.count.min(MAX_FRAME_SHOTS)).filter(|n| *n > 0);
+        let fire = shots.and(Some(self.mask_at(tick)).filter(|m| *m != 0));
+        (shots, fire)
+    }
 }
 
 /// Weapons whose shots wait for the next frame's actors; past this many the
@@ -64,7 +102,7 @@ struct Match {
     shots: BTreeMap<u32, PendingShots>,
     /// Every weapon's shots since the last frame, for actors (read only on
     /// frame ticks, so their held weapon is looked up then).
-    actor_shots: BTreeMap<u32, u32>,
+    actor_shots: BTreeMap<u32, Fired>,
     /// Each player's and sent actor's unit at the previous frame, by unit
     /// datum, for `speed` and `actions`.
     units: BTreeMap<u32, UnitMemory>,
@@ -77,6 +115,9 @@ struct Match {
     placements: Placements,
     /// Scratch for [`frame_objects`], kept to spare an allocation a frame.
     found: Vec<u32>,
+    /// The last sample was in a HaloScript cinematic: kills are not
+    /// counted until it ends.
+    cinematic: bool,
     /// Each player's unit while alive, and where it stood, by player index:
     /// a dead player is placed at their body (else where they fell).
     player_units: BTreeMap<u32, (u32, [f64; 3], f64)>,
@@ -101,6 +142,8 @@ pub struct Session {
     current: Option<Match>,
     /// Set while the console is in a matchmaking game.
     playlist: Option<Playlist>,
+    /// The server's bot roster the next multiplayer games run with.
+    bots: Option<Bots>,
     /// The `MapId` of the map the next game starts on, when a package
     /// serves it (None: the disc's own map).
     map_id: Option<live_proto::maps::MapId>,
@@ -128,6 +171,51 @@ pub struct Playlist {
     pub session_id: Option<String>,
 }
 
+/// The Clankers a host runs (docs/game/bots.md §6, §9): every bot goes
+/// out with `bot: true`, keyed by its game slot like any player. A bot on
+/// a local slot is found by its controller port, a phantom by its machine
+/// id. Only a phantom from a server roster carries an xuid (its rostered
+/// one), and only while the roster is in force: the rest have no account,
+/// so the server and the web keep them off stats pages and ranks.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Bots {
+    /// The Live session a server roster was given for (16 hex digits), while
+    /// one is in force: a custom game names it as `NewGame.session_id`,
+    /// which the server finds the roster by. `None`: no roster, and no bot
+    /// carries an xuid.
+    pub session_id: Option<String>,
+    /// Each phantom bot's machine id and its xuid. Host-made xuids
+    /// (`live_proto::bots::is_local_xuid`) are never sent; a rostered one
+    /// is sent only with `session_id`.
+    pub machines: Vec<([u8; 6], live_proto::Xuid)>,
+    /// The controller ports (bit `p` for port `p`) Clankers play from on
+    /// local slots.
+    pub ports: u8,
+}
+
+impl Bots {
+    /// Whether `p` is one of the bots: a local player on a bot's port, or a
+    /// remote player on a phantom's machine.
+    fn plays(&self, p: &PlayerState) -> bool {
+        match p.local_user {
+            Some(_) => p
+                .controller
+                .is_some_and(|c| c < 8 && self.ports & 1 << c != 0),
+            None => self.machines.iter().any(|(m, _)| *m == p.machine),
+        }
+    }
+
+    /// The rostered xuid of a remote player on `machine`, if one of the
+    /// roster's bots plays there and the roster is in force.
+    fn xuid(&self, machine: [u8; 6]) -> Option<live_proto::Xuid> {
+        self.session_id.as_ref()?;
+        self.machines
+            .iter()
+            .find(|(m, x)| *m == machine && x.0 != 0 && !live_proto::bots::is_local_xuid(*x))
+            .map(|(_, x)| *x)
+    }
+}
+
 impl Session {
     pub fn new(host: impl Into<String>, console: Option<String>) -> Self {
         Self {
@@ -136,6 +224,7 @@ impl Session {
             signed_in: None,
             current: None,
             playlist: None,
+            bots: None,
             map_id: None,
             multiplayer_skulls: None,
             campaign_custom_skulls: None,
@@ -152,7 +241,13 @@ impl Session {
     /// Sets the signed-in account's XUID on the player who plays from local
     /// slot 0. Other players keep whatever the game said (nothing, today).
     fn link(&self, players: &mut [PlayerState]) {
-        link(self.signed_in, players);
+        link(self.signed_in, self.bots.as_ref(), players);
+    }
+
+    /// The server's bot roster the next multiplayer games run with
+    /// (`None`: no roster; bots, if any, are sent as guests).
+    pub fn set_bots(&mut self, bots: Option<Bots>) {
+        self.bots = bots;
     }
 
     /// The matchmaking playlist multiplayer games start from; `None` makes
@@ -270,7 +365,18 @@ impl Session {
             players: players.iter().map(|p| p.wire_player()).collect(),
             kind: Some(kind.into()),
             playlist: playlist.as_ref().and_then(|p| p.name.clone()),
-            session_id: playlist.as_ref().and_then(|p| p.session_id.clone()),
+            // A matchmaking game's session, else the session a bot
+            // roster was given for (the server checks `bot: true` entries
+            // against it, docs/game/bots.md §9.3).
+            session_id: playlist
+                .as_ref()
+                .and_then(|p| p.session_id.clone())
+                .or_else(|| {
+                    self.bots
+                        .as_ref()
+                        .filter(|_| !campaign)
+                        .and_then(|b| b.session_id.clone())
+                }),
             playlist_id: playlist.map(|p| p.id),
             difficulty,
             // Live co-op does not exist yet.
@@ -325,6 +431,7 @@ impl Session {
             found: Vec::new(),
             player_units: BTreeMap::new(),
             player_bodies: std::collections::BTreeSet::new(),
+            cinematic: false,
         });
     }
 
@@ -380,6 +487,7 @@ impl Session {
 
     pub fn sample(&mut self, snapshot: &Snapshot) {
         let signed_in = self.signed_in;
+        let bots = self.bots.as_ref();
         let Some(current) = &mut self.current else {
             return;
         };
@@ -390,9 +498,9 @@ impl Session {
         let clock = current.clock(snapshot.tick);
         // Most ticks the roster is as it was: nothing joined or left, and
         // nothing to copy.
-        if !same_roster(signed_in, &current.players, &snapshot.players) {
+        if !same_roster(signed_in, bots, &current.players, &snapshot.players) {
             let mut linked = snapshot.players.clone();
-            link(signed_in, &mut linked);
+            link(signed_in, bots, &mut linked);
             Self::roster_changed(&mut self.output, current, &snapshot.players, linked);
         }
         for (player, object) in snapshot.players.iter().zip(&snapshot.objects) {
@@ -439,10 +547,10 @@ impl Session {
                 .filter(|p| p.weapon == weapon.datum)
                 .unwrap_or(PendingShots {
                     weapon: weapon.datum,
-                    count: 0,
+                    fired: Fired::default(),
                 });
             let fired = snapshot.shots.get(&weapon.datum).copied().unwrap_or(0);
-            pending.count = pending.count.saturating_add(fired);
+            pending.fired.add(snapshot.tick, fired);
             shots.insert(index, pending);
         }
         current.shots = shots;
@@ -452,8 +560,37 @@ impl Session {
             {
                 current.actor_shots.clear();
             }
-            let count = current.actor_shots.entry(*weapon).or_insert(0);
-            *count = count.saturating_add(*n);
+            current
+                .actor_shots
+                .entry(*weapon)
+                .or_default()
+                .add(snapshot.tick, *n);
+        }
+
+        current.cinematic = snapshot.cinematic;
+        if snapshot.cinematic {
+            // A cutscene: the scripts move puppets about, teleport the
+            // players and kill whom they like. Nothing it does is play, so
+            // nothing is counted: no shots, no hits, and frames carry only
+            // the tick and the BSP, marked, for viewers to show a cutscene.
+            // The units' last frames are forgotten, so the first frame
+            // after it works out no speed or actions across the cut.
+            current.shots.clear();
+            current.actor_shots.clear();
+            current.hits.clear();
+            current.units.clear();
+            if snapshot.tick.is_multiple_of(2) {
+                current.sent_tick = current.sent_tick.max(clock);
+                self.output.push(Output::Frame(Frame {
+                    game_id: current.game_id.clone(),
+                    tick: clock,
+                    bsp: snapshot.bsp,
+                    cut: current.cut.take(),
+                    cinematic: true,
+                    ..Frame::default()
+                }));
+            }
+            return;
         }
 
         current.hits.extend(snapshot.hits.iter().cloned());
@@ -470,7 +607,7 @@ impl Session {
                 .filter(|p| p.unit != u32::MAX)
                 .map(|p| (p.unit, p.player.index))
                 .collect();
-            let frame_hits = frame_hits(&hits, &player_of_unit, tags);
+            let frame_hits = frame_hits(&hits, snapshot.tick, &player_of_unit, tags);
             // Units that dealt melee damage since the last frame.
             let meleed: std::collections::BTreeSet<u32> = hits
                 .iter()
@@ -539,11 +676,11 @@ impl Session {
                                 .filter(|(unit, _, _)| alive && *unit == player.unit)
                                 .map(|(_, pos, yaw)| (*pos, *yaw))
                         })?;
-                    let shots = current.shots.get_mut(&index).map(|p| {
-                        let n = p.count.min(MAX_FRAME_SHOTS);
-                        p.count = 0;
-                        n
-                    });
+                    let (shots, fire) = current
+                        .shots
+                        .get_mut(&index)
+                        .map(|p| std::mem::take(&mut p.fired).frame(tick))
+                        .unwrap_or_default();
                     let observed = match object {
                         Some(o) => observe(player.unit, o, alive),
                         None if !alive => motion::Observed {
@@ -569,24 +706,33 @@ impl Session {
                             .and_then(|o| o.weapon)
                             .zip(tags)
                             .and_then(|(w, t)| t.weapon(w.definition)),
-                        shots: shots.filter(|n| *n > 0),
+                        shots,
+                        fire,
                         stance: observed.stance,
                         speed: observed.speed,
                         actions: observed.actions,
                         grenade: observed.grenade,
-                        // Read from step 4 on (docs/live/replay-fidelity.md).
-                        ..FramePlayer::default()
+                        anim: object
+                            .as_ref()
+                            .and_then(|o| frame_anim(o.motion.animation.as_ref(), tags)),
+                        vel: object.as_ref().and_then(frame_vel),
+                        seat: object.as_ref().and_then(frame_seat),
+                        body: object.as_ref().and_then(|o| frame_vitality(o).0),
+                        shield: object.as_ref().and_then(|o| frame_vitality(o).1),
+                        // Not read yet (docs/live/replay-fidelity.md).
+                        actions_ago: None,
                     })
                 })
                 .collect();
             let actor_shots = std::mem::take(&mut current.actor_shots);
-            let mut actors = frame_actors(snapshot, tags, current.campaign, &actor_shots);
+            let mut actors = frame_actors(snapshot, tags, current.campaign, &actor_shots, tick);
             for (actor, object, datum) in &mut actors {
                 let observed = observe(*datum, object, true);
                 actor.stance = observed.stance;
                 actor.speed = observed.speed;
                 actor.actions = observed.actions;
                 actor.grenade = observed.grenade;
+                actor.anim = frame_anim(object.motion.animation.as_ref(), tags);
             }
             let vehicles = frame_vehicles(snapshot, &actors, tags);
             let bodies = frame_bodies(
@@ -614,6 +760,7 @@ impl Session {
                 machines,
                 objects,
                 cut: current.cut.take(),
+                cinematic: false,
             }));
         }
     }
@@ -668,6 +815,8 @@ impl Session {
         self.current.as_ref().is_some_and(|m| m.campaign)
     }
 
+    /// A player was killed; `cinematic` when a cinematic was playing at
+    /// the time, which (like a kill after the end) is not counted.
     pub fn kill(
         &mut self,
         tick: u64,
@@ -675,6 +824,7 @@ impl Session {
         victim: u32,
         betrayal: bool,
         object: Option<ObjectState>,
+        cinematic: bool,
     ) {
         let kind = match attacker {
             None => "world",
@@ -685,7 +835,8 @@ impl Session {
         let Some(current) = &mut self.current else {
             return;
         };
-        if current.ended {
+        // Post-end kills, and the scripts' kills in a cutscene, do not count.
+        if current.ended || cinematic || current.cinematic {
             return;
         }
         let tick = current.clock(tick);
@@ -729,17 +880,37 @@ impl Session {
     }
 }
 
-/// Gives local player 0 the signed-in account's XUID.
-fn link(signed_in: Option<live_proto::Xuid>, players: &mut [PlayerState]) {
-    let Some(xuid) = signed_in else { return };
-    for p in players.iter_mut().filter(|p| p.local_user == Some(0)) {
-        p.player.xuid = Some(xuid);
+/// Who `p` is to the server: a bot is a bot (`bot: true`, with its
+/// rostered xuid when it has one), whichever slot it plays from; local
+/// player 0 is otherwise the signed-in account; anyone else is as the game
+/// said.
+fn identity(
+    signed_in: Option<live_proto::Xuid>,
+    bots: Option<&Bots>,
+    p: &PlayerState,
+) -> (Option<live_proto::Xuid>, Option<bool>) {
+    if let Some(b) = bots.filter(|b| b.plays(p)) {
+        let xuid = p.local_user.is_none().then(|| b.xuid(p.machine)).flatten();
+        return (xuid, Some(true));
+    }
+    if let Some(x) = signed_in.filter(|_| p.local_user == Some(0)) {
+        return (Some(x), p.player.bot);
+    }
+    (p.player.xuid, p.player.bot)
+}
+
+/// Gives local player 0 the signed-in account's XUID, and marks each bot
+/// (a rostered phantom with its own xuid).
+fn link(signed_in: Option<live_proto::Xuid>, bots: Option<&Bots>, players: &mut [PlayerState]) {
+    for p in players.iter_mut() {
+        (p.player.xuid, p.player.bot) = identity(signed_in, bots, p);
     }
 }
 
 /// Whether `current` is `fresh` once [`link`]ed, without copying it.
 fn same_roster(
     signed_in: Option<live_proto::Xuid>,
+    bots: Option<&Bots>,
     current: &[PlayerState],
     fresh: &[PlayerState],
 ) -> bool {
@@ -751,30 +922,33 @@ fn same_roster(
                 player,
                 appearance,
                 local_user,
+                controller,
+                machine,
                 unit,
                 stats,
             } = f;
             let live_proto::game::Player {
                 index,
                 name,
-                xuid,
+                // Both as `identity` makes them.
+                xuid: _,
                 team,
                 local,
                 appearance: wire_appearance,
                 bot: _,
             } = player;
-            let xuid = match signed_in {
-                Some(x) if *local_user == Some(0) => Some(x),
-                _ => *xuid,
-            };
+            let (xuid, bot) = identity(signed_in, bots, f);
             c.datum == *datum
                 && c.appearance == *appearance
                 && c.local_user == *local_user
+                && c.controller == *controller
                 && c.unit == *unit
                 && c.stats == *stats
                 && c.player.index == *index
                 && c.player.name == *name
                 && c.player.xuid == xuid
+                && c.player.bot == bot
+                && c.machine == *machine
                 && c.player.team == *team
                 && c.player.local == *local
                 && c.player.appearance == *wire_appearance
@@ -789,6 +963,34 @@ fn hex(d: u32) -> String {
         .rev()
         .map(|i| char::from(DIGITS[(d >> (i * 4)) as usize & 0xf]))
         .collect()
+}
+
+/// The frame's `vel`: the object's velocity (world units a second, as the
+/// engine holds it), absent when not read or faster than a frame takes.
+fn frame_vel(o: &ObjectState) -> Option<[f64; 3]> {
+    o.velocity.filter(|v| {
+        let speed = v.iter().map(|c| c * c).sum::<f64>().sqrt();
+        speed.is_finite() && speed <= MAX_FRAME_SPEED
+    })
+}
+
+/// The frame's `seat`: only while riding a vehicle, at most
+/// [`MAX_FRAME_SEAT`].
+fn frame_seat(o: &ObjectState) -> Option<u32> {
+    o.vehicle
+        .and(o.seat)
+        .map(|s| u32::from(s).min(MAX_FRAME_SEAT))
+}
+
+/// The frame's `body` and `shield`, clamped to what a frame takes (body 0
+/// to 1, shield 0 to [`MAX_FRAME_SHIELD`]).
+fn frame_vitality(o: &ObjectState) -> (Option<f64>, Option<f64>) {
+    o.vitality.map_or((None, None), |(body, shield)| {
+        (
+            Some(body.clamp(0.0, 1.0)),
+            Some(shield.clamp(0.0, MAX_FRAME_SHIELD)),
+        )
+    })
 }
 
 fn finite_direction(v: [f64; 3]) -> bool {
@@ -808,7 +1010,8 @@ fn frame_actors<'a>(
     snapshot: &'a Snapshot,
     tags: Option<&TagNames>,
     campaign: bool,
-    shots: &BTreeMap<u32, u32>,
+    shots: &BTreeMap<u32, Fired>,
+    tick: u64,
 ) -> Vec<(FrameActor, &'a ObjectState, u32)> {
     let players: Vec<[f64; 3]> = snapshot.objects.iter().flatten().map(|o| o.pos).collect();
     let distance = |pos: [f64; 3]| {
@@ -829,6 +1032,12 @@ fn frame_actors<'a>(
         .take(MAX_FRAME_ACTORS)
         .map(|(_, a)| {
             let o = &a.object;
+            let (shots, fire) = o
+                .weapon
+                .and_then(|w| shots.get(&w.datum))
+                .map(|f| f.frame(tick))
+                .unwrap_or_default();
+            let (body, shield) = frame_vitality(o);
             let actor = FrameActor {
                 id: hex(a.datum),
                 species: o
@@ -840,13 +1049,14 @@ fn frame_actors<'a>(
                 yaw: yaw(o.forward),
                 aim: o.aim,
                 weapon: o.weapon.zip(tags).and_then(|(w, t)| t.weapon(w.definition)),
-                shots: o
-                    .weapon
-                    .and_then(|w| shots.get(&w.datum))
-                    .map(|n| (*n).min(MAX_FRAME_SHOTS))
-                    .filter(|n| *n > 0),
+                shots,
+                fire,
                 team: o.team.map(|t| team_name(t, campaign)),
                 vehicle: o.vehicle.map(hex),
+                vel: frame_vel(o),
+                seat: frame_seat(o),
+                body,
+                shield,
                 ..FrameActor::default()
             };
             (actor, o, a.datum)
@@ -1184,11 +1394,25 @@ fn frame_objects_with(
     out
 }
 
+/// The animation a unit plays, named through the map's graphs; none when
+/// the graph or the animation has no name the frames take.
+fn frame_anim(
+    animation: Option<&crate::event::Animation>,
+    tags: Option<&TagNames>,
+) -> Option<FrameAnim> {
+    let a = animation?;
+    Some(FrameAnim {
+        name: tags?.animation(a)?,
+        frame: f64::from(a.frame).clamp(0.0, live_proto::game::MAX_ANIM_FRAME),
+    })
+}
+
 /// The frame's hits: attacker and victim as `p<index>` for a player's unit
 /// (or the reporting player), else the object datum; the weapon from the
 /// damage reporting type, else the damage effect's stem.
 fn frame_hits(
     hits: &[HitRecord],
+    tick: u64,
     player_of_unit: &BTreeMap<u32, u32>,
     tags: Option<&TagNames>,
 ) -> Vec<FrameHit> {
@@ -1218,7 +1442,12 @@ fn frame_hits(
                 pos,
                 amount: amount.is_finite().then_some(amount),
                 kind: Some(kind.into()),
-                ago: None,
+                // Engine ticks on both sides: the run's offset cancels.
+                ago: h
+                    .tick
+                    .and_then(|t| tick.checked_sub(t))
+                    .and_then(|a| u32::try_from(a).ok())
+                    .filter(|a| *a <= live_proto::game::MAX_FRAME_AGO),
             })
         })
         .take(MAX_FRAME_HITS)
@@ -1259,6 +1488,8 @@ mod tests {
             },
             appearance: Appearance::default(),
             local_user: (index == 0).then_some(0),
+            controller: (index == 0).then_some(0),
+            machine: [0; 6],
             unit: u32::MAX,
             stats: PlayerStats {
                 score,
@@ -1274,7 +1505,7 @@ mod tests {
             objects: players.iter().map(|_| None).collect(),
             players,
             teams: Vec::new(),
-            shots: BTreeMap::new(),
+            shots: Default::default(),
             actors: Vec::new(),
             vehicles: Vec::new(),
             machines: Vec::new(),
@@ -1282,6 +1513,7 @@ mod tests {
             bodies: Vec::new(),
             bsp: None,
             hits: Vec::new(),
+            cinematic: false,
         }
     }
 
@@ -1418,10 +1650,10 @@ mod tests {
             forward: [1.0, 0.0, 0.0],
             ..ObjectState::default()
         };
-        session.kill(9, Some(0), 1, false, Some(object.clone()));
-        session.kill(10, Some(0), 0, false, Some(object.clone()));
-        session.kill(11, Some(0), 1, true, Some(object.clone()));
-        session.kill(12, None, 1, false, Some(object));
+        session.kill(9, Some(0), 1, false, Some(object.clone()), false);
+        session.kill(10, Some(0), 0, false, Some(object.clone()), false);
+        session.kill(11, Some(0), 1, true, Some(object.clone()), false);
+        session.kill(12, None, 1, false, Some(object), false);
         let events = session.take_output();
         let expected = [
             ("kill", 9),
@@ -1446,7 +1678,7 @@ mod tests {
         session.start(&info(), vec![player(0, 0), player(1, 0)]);
         session.end(&snapshot(30, vec![player(0, 0), player(1, 0)]));
         session.take_output();
-        session.kill(31, Some(0), 1, false, None);
+        session.kill(31, Some(0), 1, false, None, false);
         assert!(session.take_output().is_empty());
     }
 
@@ -1533,6 +1765,59 @@ mod tests {
                 ),
             ],
         )
+    }
+
+    #[test]
+    fn frames_carry_the_animation_by_name() {
+        use crate::event::Animation;
+        use crate::tags::Graph;
+        let mut session = Session::new("test", None);
+        let mut p = player(0, 0);
+        p.unit = 0x90010000;
+        session.start(&info(), vec![p.clone()]);
+        session.take_output();
+        let mut state = snapshot(2, vec![p]);
+        let mut object = armed(0x9005_0005, 0xe100_0020);
+        object.motion.animation = Some(Animation {
+            graph: 0xe100_0030,
+            inherited: -1,
+            index: 1,
+            frame: 7.25,
+        });
+        state.objects[0] = Some(object);
+        // No names yet: no animation, never a guess.
+        session.sample(&state);
+        assert_eq!(frames(&mut session)[0].players[0].anim, None);
+        session.set_tag_names(names().with_graphs([(
+            0xe100_0030,
+            Graph {
+                names: vec![None, Some("combat:rifle:any:idle".into())],
+                parents: vec![],
+            },
+        )]));
+        state.tick = 4;
+        session.sample(&state);
+        let frame = &frames(&mut session)[0];
+        assert_eq!(
+            frame.players[0].anim,
+            Some(FrameAnim {
+                name: "combat:rifle:any:idle".into(),
+                frame: 7.25
+            })
+        );
+        assert_eq!(live_proto::game::validate_frame(frame), Ok(()));
+        // An animation the graph doesn't name: none.
+        state.objects[0]
+            .as_mut()
+            .unwrap()
+            .motion
+            .animation
+            .as_mut()
+            .unwrap()
+            .index = 0;
+        state.tick = 6;
+        session.sample(&state);
+        assert_eq!(frames(&mut session)[0].players[0].anim, None);
     }
 
     #[test]
@@ -1626,6 +1911,107 @@ mod tests {
         );
     }
 
+    #[test]
+    fn fire_masks_move_older_and_drop_off_after_32_ticks() {
+        let mut f = Fired::default();
+        f.add(100, 1);
+        f.add(102, 0);
+        f.add(103, 2);
+        assert_eq!(f.count, 3);
+        assert_eq!(f.mask_at(103), 0b1001, "ticks 103 and 100");
+        assert_eq!(f.mask_at(110), 0b1001 << 7);
+        assert_eq!(f.mask_at(131), (1 << 31) | (1 << 28));
+        assert_eq!(f.mask_at(132), 1 << 29, "tick 100 is past 32 back");
+        assert_eq!(f.mask_at(135), 0);
+        assert_eq!(f.mask_at(99), 0, "none before the last shot's tick");
+        assert_eq!(f.frame(104), (Some(3), Some(0b10010)));
+        assert_eq!(Fired::default().frame(104), (None, None));
+    }
+
+    #[test]
+    fn frames_carry_velocity_seat_vitality_and_fire_ticks() {
+        let mut session = Session::new("test", None);
+        let mut p = player(0, 0);
+        p.unit = 0x90010000;
+        session.start(&info(), vec![p.clone()]);
+        session.take_output();
+        let rifle = 0x9005_0005;
+        let mut unit = armed(rifle, 0xe100_0020);
+        unit.velocity = Some([3.0, -4.0, 0.5]);
+        unit.seat = Some(2);
+        unit.vitality = Some((0.5, 3.5));
+        let mut state = snapshot(1, vec![p.clone()]);
+        state.objects[0] = Some(unit.clone());
+        state.shots = [(rifle, 1)].into_iter().collect();
+        session.sample(&state);
+        state.tick = 2;
+        state.shots = [(rifle, 2)].into_iter().collect();
+        session.sample(&state);
+        let f = frames(&mut session);
+        let sent = &f[0].players[0];
+        assert_eq!(sent.vel, Some([3.0, -4.0, 0.5]), "units a second, as read");
+        assert_eq!(sent.seat, None, "a seat only while in a vehicle");
+        assert_eq!((sent.body, sent.shield), (Some(0.5), Some(3.5)));
+        assert_eq!(sent.shots, Some(3));
+        assert_eq!(sent.fire, Some(0b11), "ticks 2 and 1");
+        // No shots: neither count nor mask.
+        state.shots.clear();
+        state.tick = 3;
+        session.sample(&state);
+        state.tick = 4;
+        session.sample(&state);
+        let f = frames(&mut session);
+        assert_eq!((f[0].players[0].shots, f[0].players[0].fire), (None, None));
+        // A shot on the odd tick lands a tick before the frame. In a
+        // vehicle, a seat, vitality and speed past what a frame takes:
+        // clamped, and a velocity too fast is left out.
+        state.tick = 5;
+        state.shots = [(rifle, 1)].into_iter().collect();
+        session.sample(&state);
+        unit.vehicle = Some(0x9002_0001);
+        unit.seat = Some(70);
+        unit.vitality = Some((1.5, 9.0));
+        unit.velocity = Some([2000.0, 0.0, 0.0]);
+        state.objects[0] = Some(unit.clone());
+        state.tick = 6;
+        state.shots.clear();
+        session.sample(&state);
+        let f = frames(&mut session);
+        let sent = &f[0].players[0];
+        assert_eq!((sent.shots, sent.fire), (Some(1), Some(0b10)));
+        assert_eq!(sent.seat, Some(MAX_FRAME_SEAT));
+        assert_eq!(
+            (sent.body, sent.shield),
+            (Some(1.0), Some(MAX_FRAME_SHIELD))
+        );
+        assert_eq!(sent.vel, None);
+        live_proto::game::validate_frame(&f[0]).unwrap();
+        // Actors: the same, by the weapon each holds.
+        let gun = 0x9007_0007;
+        let mut grunt = armed(gun, 0xe100_0020);
+        grunt.velocity = Some([0.0, 1.0, 0.0]);
+        grunt.vitality = Some((0.25, 0.0));
+        grunt.vehicle = Some(0x9002_0001);
+        grunt.seat = Some(1);
+        state.tick = 7;
+        state.shots = [(gun, 1)].into_iter().collect();
+        session.sample(&state);
+        state.tick = 8;
+        state.shots.clear();
+        state.actors = vec![crate::event::ActorState {
+            datum: 0x9008_0008,
+            object: grunt,
+        }];
+        session.sample(&state);
+        let f = frames(&mut session);
+        let actor = &f[0].actors[0];
+        assert_eq!((actor.shots, actor.fire), (Some(1), Some(0b10)));
+        assert_eq!(actor.vel, Some([0.0, 1.0, 0.0]));
+        assert_eq!(actor.seat, Some(1));
+        assert_eq!((actor.body, actor.shield), (Some(0.25), Some(0.0)));
+        live_proto::game::validate_frame(&f[0]).unwrap();
+    }
+
     fn campaign() -> GameInfo {
         GameInfo {
             map: "03a_oldmombasa".into(),
@@ -1639,6 +2025,110 @@ mod tests {
             tick_rate: 30,
             tick: 0,
         }
+    }
+
+    /// A cutscene sends marked frames with no one in them, on the game's
+    /// clock, and counts nothing the scripts do: no kills, hits or shots.
+    /// The first frame after it has the players back where the scripts left
+    /// them, with no speed or actions worked out across the cut.
+    #[test]
+    fn a_cinematic_sends_marked_empty_frames_and_counts_nothing() {
+        let mut session = Session::new("test", None);
+        let mut p = player(0, 0);
+        p.unit = 0x9001_0001;
+        let rifle = 0xe400_0001;
+        session.start(&campaign(), vec![p.clone()]);
+        session.take_output();
+        let at = |pos: [f64; 3]| ObjectState {
+            pos,
+            forward: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            weapon: Some(crate::event::Weapon {
+                datum: rifle,
+                definition: 0xe100_0002,
+            }),
+            ..ObjectState::default()
+        };
+        let state = |tick: u64, pos: [f64; 3], cinematic: bool| {
+            let mut s = snapshot(tick, vec![p.clone()]);
+            s.objects[0] = Some(at(pos));
+            s.actors = vec![actor(3, [9.0, 9.0, 0.0], 1)];
+            s.bsp = Some(1);
+            s.shots.add(rifle, 2);
+            s.hits = vec![HitRecord {
+                code: 7,
+                effect: 0,
+                owner_player: 0,
+                owner_object: p.unit,
+                victim: 0x9000_0003,
+                pos: Some([9.0, 9.0, 0.0]),
+                body: 0.5,
+                shield: 0.0,
+                tick: Some(tick),
+            }];
+            s.cinematic = cinematic;
+            s
+        };
+        session.sample(&state(10, [0.0, 0.0, 0.0], false));
+        let before = frames(&mut session);
+        assert_eq!(before.len(), 1);
+        assert!(!before[0].cinematic);
+        assert_eq!(before[0].players.len(), 1);
+        assert_eq!(before[0].actors.len(), 1);
+        assert_eq!(before[0].hits.len(), 1);
+
+        // The cutscene: the scripts walk the player off and kill them.
+        for tick in 11..=14 {
+            session.sample(&state(tick, [tick as f64, 0.0, 0.0], true));
+        }
+        session.kill(14, None, 0, false, None, false);
+        session.kill(14, None, 0, false, None, true);
+        let output = session.take_output();
+        assert!(
+            output.iter().all(|o| matches!(o, Output::Frame(_))),
+            "no kills: {output:?}"
+        );
+        let during: Vec<Frame> = output
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::Frame(f) => Some(f),
+                Output::Event(_) => None,
+            })
+            .collect();
+        assert_eq!(
+            during.iter().map(|f| f.tick).collect::<Vec<_>>(),
+            [12, 14],
+            "frames keep the game's clock"
+        );
+        for f in &during {
+            assert!(f.cinematic);
+            assert_eq!(f.bsp, Some(1));
+            assert!(f.players.is_empty() && f.actors.is_empty() && f.vehicles.is_empty());
+            assert!(f.hits.is_empty() && f.machines.is_empty() && f.objects.is_empty());
+            assert_eq!(live_proto::game::validate_frame(f), Ok(()));
+        }
+
+        // After it: the player is back where the scripts left them, the
+        // shots and hits are this tick's only, and nothing moved "fast".
+        // 10 units in 0.2 s from the frame before the cutscene: a speed,
+        // were the cut not forgotten.
+        session.sample(&state(15, [10.0, 0.0, 0.0], false));
+        session.sample(&state(16, [10.0, 0.0, 0.0], false));
+        let after = frames(&mut session);
+        assert_eq!(after.len(), 1);
+        let f = &after[0];
+        assert!(!f.cinematic);
+        assert_eq!(f.tick, 16);
+        assert_eq!(f.players[0].pos, [10.0, 0.0, 0.0]);
+        assert_eq!(f.players[0].speed, None, "no speed across the cut");
+        assert_eq!(f.players[0].actions, None);
+        assert_eq!(f.players[0].shots, Some(4), "ticks 15 and 16 only");
+        assert_eq!(f.hits.len(), 2, "ticks 15 and 16 only");
+        assert_eq!(f.actors.len(), 1);
+
+        // A kill outside the cutscene counts again.
+        session.kill(17, None, 0, false, None, false);
+        assert_eq!(kinds(&mut session), ["PlayerKilled"]);
     }
 
     #[test]
@@ -1703,7 +2193,7 @@ mod tests {
         }
         // The player dies and the game reverts to a checkpoint 20 seconds
         // back, then to the mission's start.
-        session.kill(661, None, 0, false, None);
+        session.kill(661, None, 0, false, None, false);
         let mut revert = campaign();
         revert.tick = 61;
         session.start(&revert, vec![p.clone()]);
@@ -1718,7 +2208,7 @@ mod tests {
             session.sample(&at(tick, -50.0));
             sent.extend(frames(&mut session));
         }
-        session.kill(31, None, 0, false, None);
+        session.kill(31, None, 0, false, None, false);
         session.end(&at(32, -50.0));
         events.extend(session.take_output());
 
@@ -2188,19 +2678,19 @@ mod tests {
         let xuid = live_proto::Xuid::parse("0009a1b2c3d4e5f6").unwrap();
         let fresh = vec![player(0, 1), player(1, 2)];
         let mut current = fresh.clone();
-        link(Some(xuid), &mut current);
-        assert!(same_roster(Some(xuid), &current, &fresh));
+        link(Some(xuid), None, &mut current);
+        assert!(same_roster(Some(xuid), None, &current, &fresh));
         assert!(
-            !same_roster(None, &current, &fresh),
+            !same_roster(None, None, &current, &fresh),
             "the link is part of it"
         );
         let mut renamed = fresh.clone();
         renamed[1].player.name = "Q".into();
-        assert!(!same_roster(Some(xuid), &current, &renamed));
+        assert!(!same_roster(Some(xuid), None, &current, &renamed));
         let mut scored = fresh.clone();
         scored[0].stats.kills = 1;
-        assert!(!same_roster(Some(xuid), &current, &scored));
-        assert!(!same_roster(Some(xuid), &current, &fresh[..1]));
+        assert!(!same_roster(Some(xuid), None, &current, &scored));
+        assert!(!same_roster(Some(xuid), None, &current, &fresh[..1]));
     }
 
     #[test]
@@ -2261,6 +2751,259 @@ mod tests {
             })
             .unwrap();
         assert_eq!(rejoin.data["player"]["xuid"], "0009a1b2c3d4e5f6");
+    }
+
+    /// Phantom bots from a server roster (docs/game/bots.md stage 6c):
+    /// found by machine id, each carries its rostered xuid and `bot:
+    /// true`, on the game's start and when it joins later; the game names
+    /// the roster's session. A local-port Clanker and a phantom with a
+    /// host-made xuid are bots too, with no xuid.
+    #[test]
+    fn rostered_phantoms_are_bots_with_their_xuids() {
+        use live_proto::Xuid;
+        let me = Xuid::parse("0009a1b2c3d4e5f6").unwrap();
+        let (a, b, c) = (
+            [0xc1, 0xa4, 0, 0, 0, 1],
+            [0xc1, 0xa4, 0, 0, 0, 2],
+            [0xc1, 0xa4, 0, 0, 0, 3],
+        );
+        let (bot_a, bot_c) = (
+            Xuid(live_proto::bots::SERVER_XUID_MARK | 1),
+            Xuid(live_proto::bots::SERVER_XUID_MARK | 3),
+        );
+        let mut session = Session::new("test", None).with_signed_in(Some(me));
+        session.set_bots(Some(Bots {
+            session_id: Some("0123456789abcdef".into()),
+            machines: vec![(a, bot_a), (b, live_proto::bots::local_xuid(2)), (c, bot_c)],
+            ports: 1 << 1,
+        }));
+        let mut port = player(1, 0);
+        port.local_user = Some(1);
+        port.controller = Some(1);
+        port.machine = [0x00, 0x50, 0xf2, 1, 2, 3];
+        let mut human = player(0, 0);
+        human.machine = port.machine;
+        let mut pa = player(2, 0);
+        pa.machine = a;
+        let roster = vec![human, port, pa];
+        session.start(&info(), roster.clone());
+        let outputs = session.take_output();
+        let Output::Event(started) = &outputs[0] else {
+            panic!()
+        };
+        let game = &started.data;
+        assert_eq!(game["session_id"], "0123456789abcdef");
+        assert_eq!(game["kind"], "custom");
+        let players = &game["players"];
+        assert_eq!(players[0]["xuid"], me.to_string());
+        assert!(players[0].get("bot").is_none());
+        assert!(players[1].get("xuid").is_none(), "a local-port Clanker");
+        assert_eq!(players[1]["bot"], true);
+        assert_eq!(players[2]["xuid"], bot_a.to_string());
+        assert_eq!(players[2]["bot"], true);
+
+        // Two more phantoms join once the game runs: one rostered, one
+        // with a host-made xuid, which is never sent.
+        let mut pb = player(3, 0);
+        pb.machine = b;
+        let mut pc = player(4, 0);
+        pc.machine = c;
+        let mut later = roster.clone();
+        later.extend([pb, pc]);
+        session.sample(&snapshot(2, later.clone()));
+        let joined: Vec<_> = session
+            .take_output()
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::Event(e) if e.kind == "PlayerJoined" => Some(e.data["player"].clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(joined.len(), 2, "{joined:?}");
+        assert!(joined[0].get("xuid").is_none());
+        assert_eq!(joined[0]["bot"], true, "a host-made phantom");
+        assert_eq!(joined[1]["xuid"], bot_c.to_string());
+        assert_eq!(joined[1]["bot"], true);
+        for p in joined.iter().chain(players.as_array().unwrap()) {
+            let x = p.get("xuid").and_then(|x| x.as_str()).unwrap_or("");
+            assert!(!x.starts_with("000e"), "a host-made xuid sent: {x}");
+        }
+        // Marking does not make the roster look changed.
+        session.sample(&snapshot(4, later));
+        assert!(!kinds(&mut session).contains(&"PlayerJoined".to_string()));
+    }
+
+    /// Clankers on local slots (docs/game/bots.md §4), without Live: each
+    /// is a player with its own name, keyed by its game slot, `bot: true`
+    /// and no xuid, from the start to the end: in the roster, the scores,
+    /// the frames' positions and the final standings. The human on port 0
+    /// keeps the signed-in account; no session is named.
+    #[test]
+    fn local_slot_clankers_are_bots_without_an_account() {
+        use live_proto::Xuid;
+        let me = Xuid::parse("0009a1b2c3d4e5f6").unwrap();
+        let mut session = Session::new("test", None).with_signed_in(Some(me));
+        session.set_bots(Some(Bots {
+            session_id: None,
+            machines: Vec::new(),
+            ports: 1 << 1 | 1 << 2,
+        }));
+        let human = player(0, 0);
+        let mut roster = vec![human];
+        for (slot, port) in [(1u32, 1u8), (2, 2)] {
+            let mut b = player(slot, 0);
+            b.player.name = format!("Clanker {port}");
+            b.local_user = Some(port);
+            b.controller = Some(port);
+            b.player.local = Some(true);
+            b.unit = 0xe000_0000 | slot;
+            roster.push(b);
+        }
+        session.start(&info(), roster.clone());
+        let outputs = session.take_output();
+        let Output::Event(started) = &outputs[0] else {
+            panic!()
+        };
+        let game = &started.data;
+        assert!(game.get("session_id").is_none(), "no roster, no session");
+        let players = game["players"].as_array().unwrap();
+        assert_eq!(players[0]["xuid"], me.to_string());
+        assert!(players[0].get("bot").is_none());
+        for (p, name) in players[1..].iter().zip(["Clanker 1", "Clanker 2"]) {
+            assert_eq!(p["name"], name);
+            assert_eq!(p["bot"], true);
+            assert!(p.get("xuid").is_none(), "a Clanker has no account");
+        }
+        // The server takes the start as it is.
+        let new: live_proto::game::NewGame = serde_json::from_value(game.clone()).unwrap();
+        assert_eq!(live_proto::game::validate_new(&new), Ok(()));
+
+        // Clanker 1 scores and moves: its score and position go out under
+        // its slot like anyone's.
+        let mut later = roster.clone();
+        later[1].stats.kills = 2;
+        later[1].stats.score = 2;
+        later[0].stats.deaths = 2;
+        let mut snap = snapshot(30, later.clone());
+        snap.objects[1] = Some(ObjectState {
+            pos: [4.0, 5.0, 6.0],
+            forward: [1.0, 0.0, 0.0],
+            ..ObjectState::default()
+        });
+        session.sample(&snap);
+        let out = session.take_output();
+        assert!(
+            !out.iter()
+                .any(|o| matches!(o, Output::Event(e) if e.kind == "PlayerJoined")),
+            "marking a bot does not make the roster look changed"
+        );
+        let score = out
+            .iter()
+            .find_map(|o| match o {
+                Output::Event(e) if e.kind == "ScoreChanged" => Some(e.data.clone()),
+                _ => None,
+            })
+            .expect("a score change");
+        let row = score["players"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["index"] == 1)
+            .unwrap()
+            .clone();
+        assert_eq!(row["kills"], 2);
+        let frame = out
+            .iter()
+            .find_map(|o| match o {
+                Output::Frame(f) => Some(f.clone()),
+                _ => None,
+            })
+            .expect("a frame");
+        let bot = frame
+            .players
+            .iter()
+            .find(|p| p.index == 1)
+            .expect("the bot in the frame");
+        assert_eq!(bot.pos, [4.0, 5.0, 6.0]);
+
+        session.end(&snapshot(60, later));
+        let ended = session
+            .take_output()
+            .into_iter()
+            .find_map(|o| match o {
+                Output::Event(e) if e.kind == "GameEnded" => Some(e.data),
+                _ => None,
+            })
+            .expect("the game ends");
+        let final_row = ended["players"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["index"] == 1)
+            .unwrap()
+            .clone();
+        assert_eq!(final_row["kills"], 2);
+    }
+
+    /// The signed-in account never goes to a bot, even one on local user 0.
+    #[test]
+    fn a_clanker_on_local_user_zero_is_not_the_account() {
+        use live_proto::Xuid;
+        let me = Xuid::parse("0009a1b2c3d4e5f6").unwrap();
+        let mut session = Session::new("test", None).with_signed_in(Some(me));
+        session.set_bots(Some(Bots {
+            ports: 1 << 3,
+            ..Bots::default()
+        }));
+        let mut b = player(0, 0);
+        b.controller = Some(3);
+        session.start(&info(), vec![b]);
+        let outputs = session.take_output();
+        let Output::Event(started) = &outputs[0] else {
+            panic!()
+        };
+        let p = &started.data["players"][0];
+        assert!(p.get("xuid").is_none());
+        assert_eq!(p["bot"], true);
+    }
+
+    /// A rostered phantom's xuid goes out only with its roster's session:
+    /// without one the server would refuse the record.
+    #[test]
+    fn a_phantom_out_of_its_roster_is_a_bot_without_an_xuid() {
+        let m = [0xc1, 0xa4, 0, 0, 0, 1];
+        let mut session = Session::new("test", None);
+        session.set_bots(Some(Bots {
+            session_id: None,
+            machines: vec![(m, live_proto::Xuid(live_proto::bots::SERVER_XUID_MARK | 1))],
+            ports: 0,
+        }));
+        let mut p = player(1, 0);
+        p.machine = m;
+        session.start(&info(), vec![player(0, 0), p]);
+        let outputs = session.take_output();
+        let Output::Event(started) = &outputs[0] else {
+            panic!()
+        };
+        assert!(started.data.get("session_id").is_none());
+        let bot = &started.data["players"][1];
+        assert_eq!(bot["bot"], true);
+        assert!(bot.get("xuid").is_none());
+    }
+
+    #[test]
+    fn without_a_bot_roster_a_custom_game_names_no_session() {
+        let mut session = Session::new("test", None);
+        let mut p = player(1, 0);
+        p.machine = [0xc1, 0xa4, 0, 0, 0, 1];
+        session.start(&info(), vec![player(0, 0), p]);
+        let outputs = session.take_output();
+        let Output::Event(started) = &outputs[0] else {
+            panic!()
+        };
+        assert!(started.data.get("session_id").is_none());
+        assert_eq!(started.data["kind"], "custom");
+        assert!(started.data["players"][1].get("bot").is_none());
     }
 
     #[test]
@@ -2355,6 +3098,7 @@ mod tests {
                 pos: Some([3.0, 0.0, 0.0]),
                 body: 0.25,
                 shield: 0.5,
+                tick: Some(1),
             },
             // An AI punches player 0: a melee for the AI and a weapon from
             // the damage effect's name.
@@ -2367,6 +3111,7 @@ mod tests {
                 pos: Some([0.0, 0.0, 0.0]),
                 body: 0.1,
                 shield: 0.0,
+                tick: None,
             },
             // No position: not sent.
             HitRecord {
@@ -2378,6 +3123,7 @@ mod tests {
                 pos: None,
                 body: 0.1,
                 shield: 0.0,
+                tick: None,
             },
         ];
         session.sample(&state);
@@ -2391,6 +3137,8 @@ mod tests {
         assert_eq!(shot.weapon.as_deref(), Some("battle_rifle"));
         assert_eq!(shot.kind.as_deref(), Some("bullet"));
         assert_eq!(shot.amount, Some(0.75));
+        assert_eq!(shot.ago, Some(1), "a tick before the frame's");
+        assert_eq!(frame.hits[1].ago, None, "no tick read");
         let punch = &frame.hits[1];
         assert_eq!(punch.from.as_deref(), Some("90030003"));
         assert_eq!(punch.to.as_deref(), Some("p0"));

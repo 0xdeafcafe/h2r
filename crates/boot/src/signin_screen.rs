@@ -326,7 +326,7 @@ pub fn page(prompt: Option<&Prompt>, entry: &CodeEntry, now: i64) -> (String, St
             "Signed in. A: done".into(),
             vec![
                 format!("{tag} is made on {host}."),
-                "Set up recovery on /dash.".into(),
+                "Set up a sign-in code on /dash.".into(),
             ],
         ),
         Phase::Done => (
@@ -530,6 +530,7 @@ pub fn dialog_for(
         cells,
         status,
         opener,
+        ..DialogSpec::new("", opener)
     };
     let Some(p) = prompt else {
         return (
@@ -631,7 +632,7 @@ pub fn dialog_for(
             "Signed in".into(),
             vec![a("Done")],
             dialog(
-                format!("{tag} is made on {host}. Set up recovery on /dash."),
+                format!("{tag} is made on {host}. Set up a sign-in code on /dash."),
                 None,
                 None,
             ),

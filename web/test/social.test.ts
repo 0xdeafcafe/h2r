@@ -230,6 +230,24 @@ describe("a team's combined record", () => {
     ];
   }
 
+  test("counts medals earned by the clan's slots in completed shared games", () => {
+    resetPos();
+    const s = initialState();
+    const match = game("medals", true, [[0, A, 0], [1, B, 0], [2, C, 1]], [], { team: 0 });
+    applyEvents(s, [
+      match[0]!,
+      ev("PlayerKilled", "game-medals", { tick: 1, killer: 0, victim: 2, kind: "kill" }),
+      ev("PlayerKilled", "game-medals", { tick: 15, killer: 0, victim: 2, kind: "kill" }),
+      ev("PlayerKilled", "game-medals", { tick: 30, killer: 2, victim: 0, kind: "kill" }),
+    ]);
+    expect(teamRecord(s, [A, B]).medals.size).toBe(0);
+    applyEvents(s, [ev("GameEnded", "game-medals", match[1]!.data)]);
+    const medals = teamRecord(s, [A, B]).medals;
+    expect(medals.size).toBe(2);
+    expect(medals.get("twofer")).toBe(1);
+    expect(medals.get("opening-act")).toBe(1);
+  });
+
   test("counts games two members played on one side, with their numbers and wins", () => {
     resetPos();
     const s = initialState();

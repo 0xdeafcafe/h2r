@@ -60,8 +60,10 @@ pub struct Player {
     /// (docs/live/live-telemetry.md, Player appearance).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub appearance: Option<Appearance>,
-    /// A bot (docs/game/bots.md §9.2): the server accepts it only for an
-    /// xuid in the session's roster.
+    /// A bot (docs/game/bots.md §6, §9.2). With an `xuid`, the server
+    /// accepts it only for an xuid in the session's roster. Without one it
+    /// is a host's own Clanker (a local slot, or a phantom it made): no
+    /// account, so no stats page, career stats or rank.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bot: Option<bool>,
 }
@@ -318,6 +320,9 @@ pub struct FramePlayer {
     /// [`MAX_FRAME_AGO`].
     #[serde(default, skip_serializing_if = "no_ago")]
     pub actions_ago: Option<Vec<u32>>,
+    /// The animation it plays and where in it (version 4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anim: Option<FrameAnim>,
 }
 
 fn no_shots(shots: &Option<u32>) -> bool {
@@ -343,6 +348,26 @@ pub const MAX_FRAME_SEAT: u32 = 63;
 /// Furthest back (ticks before the frame's) a one-shot may be placed: 30
 /// seconds, past any frame a server holds back.
 pub const MAX_FRAME_AGO: u32 = 900;
+
+/// Highest animation frame a frame reports (frame counts are `i16`).
+pub const MAX_ANIM_FRAME: f64 = 32767.0;
+
+/// The animation a player or actor plays: the name of the animation in the
+/// unit's graph (`combat:rifle:any:idle`, `s_kill:front:gut`) and the frame,
+/// 0 to its frame count minus one, fractional between ticks.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct FrameAnim {
+    pub name: String,
+    pub frame: f64,
+}
+
+/// An animation's name: `[a-z0-9_:-]{1,64}`.
+pub fn valid_anim_name(s: &str) -> bool {
+    (1..=64).contains(&s.len())
+        && s.bytes().all(|b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b':' || b == b'-'
+        })
+}
 
 /// The values `stance` may take.
 pub const STANCES: [&str; 5] = ["stand", "crouch", "airborne", "vehicle", "dead"];
@@ -412,6 +437,14 @@ pub struct Frame {
     /// this is the one place the two meet (version 3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cut: Option<u64>,
+    /// A campaign cinematic is playing (between HaloScript's
+    /// `cinematic_start` and `cinematic_stop`): the game sends no players,
+    /// actors, vehicles, hits, machines or objects, only the tick and the
+    /// BSP, so a viewer shows a cutscene rather than the puppets the
+    /// scripts move about (docs/live/live-telemetry.md, "Cinematics";
+    /// packed version 5).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub cinematic: bool,
 }
 
 /// Which scenario block a [`FrameObject`] is placed by. The order is the
@@ -653,6 +686,9 @@ pub struct FrameActor {
     /// [`MAX_FRAME_AGO`].
     #[serde(default, skip_serializing_if = "no_ago")]
     pub actions_ago: Option<Vec<u32>>,
+    /// The animation it plays and where in it (version 4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anim: Option<FrameAnim>,
 }
 
 /// Most actors one frame may carry.
@@ -771,6 +807,11 @@ pub fn validate(kind: &str, data: &Value, players: &[Player]) -> Result<(), Stri
             if known(d.player.index) {
                 return Err(format!("player {} is already in the game", d.player.index));
             }
+            if let Some(x) = d.player.xuid
+                && players.iter().any(|p| p.xuid == Some(x))
+            {
+                return Err(format!("{x} is already in the game"));
+            }
             if players.len() >= MAX_PLAYERS {
                 return Err("the game is full".into());
             }
@@ -830,16 +871,22 @@ pub fn validate_new(game: &NewGame) -> Result<(), String> {
     if !game.players.iter().all(|p| seen.insert(p.index)) {
         return Err("player indexes must be unique".into());
     }
+    let mut seen = std::collections::HashSet::new();
+    if !game
+        .players
+        .iter()
+        .filter_map(|p| p.xuid)
+        .all(|x| seen.insert(x))
+    {
+        return Err("player xuids must be unique".into());
+    }
     if game.players.iter().any(|p| p.name.chars().count() > 32) {
         return Err("player names are at most 32 characters".into());
     }
-    if game.players.iter().any(Player::is_bot) {
-        if game.session_id.is_none() {
-            return Err("a game with bots names the session they were rostered for".into());
-        }
-        if game.players.iter().any(|p| p.is_bot() && p.xuid.is_none()) {
-            return Err("a bot has its rostered xuid".into());
-        }
+    // A bot with an xuid is a rostered one; a bot without one is the
+    // host's own and needs no session.
+    if game.players.iter().any(|p| p.is_bot() && p.xuid.is_some()) && game.session_id.is_none() {
+        return Err("a game with rostered bots names the session they were rostered for".into());
     }
     if let Some(kind) = &game.kind {
         if !GAME_KINDS.contains(&kind.as_str()) {
@@ -918,6 +965,7 @@ pub fn validate_frame(frame: &Frame) -> Result<(), String> {
         }
         validate_motion(&p.stance, p.speed, &p.actions, &p.grenade)?;
         validate_v3(p.vel, p.body, p.shield, p.seat, &p.actions, &p.actions_ago)?;
+        validate_anim(&p.anim)?;
     }
     if frame.vehicles.len() > MAX_FRAME_VEHICLES {
         return Err(format!("at most {MAX_FRAME_VEHICLES} vehicles"));
@@ -965,6 +1013,7 @@ pub fn validate_frame(frame: &Frame) -> Result<(), String> {
         }
         validate_motion(&a.stance, a.speed, &a.actions, &a.grenade)?;
         validate_v3(a.vel, a.body, a.shield, a.seat, &a.actions, &a.actions_ago)?;
+        validate_anim(&a.anim)?;
     }
     if frame.hits.len() > MAX_FRAME_HITS {
         return Err(format!("at most {MAX_FRAME_HITS} hits"));
@@ -1095,6 +1144,16 @@ fn validate_v3(
         }
     }
     Ok(())
+}
+
+fn validate_anim(anim: &Option<FrameAnim>) -> Result<(), String> {
+    match anim {
+        Some(a) if !valid_anim_name(&a.name) => Err("anim names must be [a-z0-9_:-]{1,64}".into()),
+        Some(a) if !(0.0..=MAX_ANIM_FRAME).contains(&a.frame) => {
+            Err(format!("anim frames must be 0 to {MAX_ANIM_FRAME}"))
+        }
+        _ => Ok(()),
+    }
 }
 
 fn length(v: [f64; 3]) -> f64 {
@@ -2037,7 +2096,11 @@ mod tests {
             playlist_id: None,
             ..mm.clone()
         };
-        assert_eq!(validate_new(&custom), Ok(()), "a custom game with bots names one too");
+        assert_eq!(
+            validate_new(&custom),
+            Ok(()),
+            "a custom game with bots names one too"
+        );
     }
 
     #[test]
@@ -2065,11 +2128,20 @@ mod tests {
             ..game.clone()
         };
         assert!(validate_new(&no_session).is_err());
-        let no_xuid = NewGame {
+        // A host's own Clanker: a bot with no account, with or without a
+        // session.
+        let own = NewGame {
             players: vec![Player { xuid: None, ..bot }],
             ..game
         };
-        assert!(validate_new(&no_xuid).is_err());
+        assert_eq!(validate_new(&own), Ok(()));
+        assert_eq!(
+            validate_new(&NewGame {
+                session_id: None,
+                ..own
+            }),
+            Ok(())
+        );
     }
 
     #[test]

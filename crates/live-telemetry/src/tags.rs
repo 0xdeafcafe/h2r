@@ -38,6 +38,12 @@ pub type MapIdLocator = Box<dyn Fn(&str) -> Option<live_proto::maps::MapId> + Se
 /// memory held, so it must not wait.
 pub type PlaylistLocator = Box<dyn Fn() -> Option<crate::session::Playlist> + Send + Sync>;
 
+/// Names the Clankers a starting multiplayer game runs with, and the server
+/// bot roster if one is in force (docs/game/bots.md §6, stage 6c): the boot
+/// answers it from the Clankers driver and the local and phantom books. It runs with guest memory held, so it
+/// must not wait.
+pub type BotsLocator = Box<dyn Fn() -> Option<crate::session::Bots> + Send + Sync>;
+
 const BIPED: [u8; 4] = *b"bipd";
 const WEAPON: [u8; 4] = *b"weap";
 const VEHICLE: [u8; 4] = *b"vehi";
@@ -52,6 +58,16 @@ const KEPT: [[u8; 4]; 5] = [BIPED, WEAPON, VEHICLE, MACHINE, DAMAGE_EFFECT];
 pub struct TagNames {
     scenario: u32,
     names: HashMap<u32, Named>,
+    /// Animation graphs (`jmad`) by datum, for the animation units play.
+    graphs: HashMap<u32, Graph>,
+}
+
+/// An animation graph's animation names (by index; `None` for one the
+/// frames can't name) and its inheritance list's graphs.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Graph {
+    pub names: Vec<Option<String>>,
+    pub parents: Vec<u32>,
 }
 
 /// A kept tag's group and the frame ids of its name.
@@ -92,24 +108,64 @@ impl TagNames {
                     (datum, named)
                 })
                 .collect(),
+            graphs: HashMap::new(),
         }
     }
 
-    pub fn from_map<R: Read + Seek>(map: &map::Map<R>) -> Option<Self> {
+    /// The table with these animation graphs, by datum.
+    pub fn with_graphs(mut self, graphs: impl IntoIterator<Item = (u32, Graph)>) -> Self {
+        self.graphs.extend(graphs);
+        self
+    }
+
+    /// Every `jmad` of the map: its animations' names (from the map's
+    /// string table) and the graphs it inherits from. A graph that doesn't
+    /// decode is left out (its units send no `anim`).
+    fn graphs_of<R: Read + Seek>(map: &mut map::Map<R>) -> Vec<(u32, Graph)> {
+        let ids: Vec<map::TagId> = map
+            .tags()
+            .iter()
+            .filter(|t| t.group.0 == *b"jmad")
+            .map(|t| t.id)
+            .collect();
+        let strings = map.strings().to_vec();
+        ids.into_iter()
+            .filter_map(|id| {
+                let graph = tags::anim::AnimationGraph::read(map, id).ok()?;
+                let names = graph
+                    .animations
+                    .iter()
+                    .map(|a| {
+                        a.name
+                            .resolve(&strings)
+                            .ok()
+                            .flatten()
+                            .filter(|n| live_proto::game::valid_anim_name(n))
+                            .map(str::to_owned)
+                    })
+                    .collect();
+                let parents = graph.inheritance.iter().map(|i| i.graph.id.0).collect();
+                Some((id.0, Graph { names, parents }))
+            })
+            .collect()
+    }
+
+    pub fn from_map<R: Read + Seek>(map: &mut map::Map<R>) -> Option<Self> {
         let scenario = map.scenario()?.id.0;
-        Some(Self::new(
+        let names = Self::new(
             scenario,
             map.tags()
                 .iter()
                 .filter_map(|tag| Some((tag.id.0, tag.group.0, tag.name.clone()?))),
-        ))
+        );
+        Some(names.with_graphs(Self::graphs_of(map)))
     }
 
     pub fn load(file: &MapFile) -> Result<Self, String> {
         let reader = File::open(&file.path).map_err(|e| format!("{}: {e}", file.path.display()))?;
-        let map = map::Map::from_region(BufReader::new(reader), file.offset, file.len)
+        let mut map = map::Map::from_region(BufReader::new(reader), file.offset, file.len)
             .map_err(|e| format!("{}: {e}", file.path.display()))?;
-        Self::from_map(&map).ok_or_else(|| format!("{}: no scenario tag", file.path.display()))
+        Self::from_map(&mut map).ok_or_else(|| format!("{}: no scenario tag", file.path.display()))
     }
 
     /// Whether this table is for the map whose scenario datum the guest's
@@ -145,6 +201,17 @@ impl TagNames {
     /// The file stem of the damage effect (`jpt!`) `datum`.
     pub fn damage_effect(&self, datum: u32) -> Option<String> {
         self.named(datum, DAMAGE_EFFECT)?.id.clone()
+    }
+
+    /// The name of the animation a unit plays: its graph's, or an inherited
+    /// graph's when the channel says so (`combat:rifle:any:idle`).
+    pub fn animation(&self, a: &crate::event::Animation) -> Option<String> {
+        let own = self.graphs.get(&a.graph)?;
+        let graph = match usize::try_from(a.inherited) {
+            Ok(i) => self.graphs.get(own.parents.get(i)?)?,
+            Err(_) => own,
+        };
+        graph.names.get(usize::try_from(a.index).ok()?)?.clone()
     }
 
     /// An AI biped's species: the directory of its biped tag
@@ -253,6 +320,53 @@ mod tests {
         assert_eq!(stem_of("objects\\weapons\\x\\has space"), None);
         assert_eq!(stem_of(&format!("w\\{}", "a".repeat(33))), None);
         assert_eq!(stem_of(""), None);
+    }
+
+    #[test]
+    fn animations_are_named_through_the_graph_or_its_parents() {
+        use crate::event::Animation;
+        let names = TagNames::new(1, []).with_graphs([
+            (
+                0xe000_0010,
+                Graph {
+                    names: vec![Some("combat:rifle:any:idle".into()), None],
+                    parents: vec![0xe000_0020],
+                },
+            ),
+            (
+                0xe000_0020,
+                Graph {
+                    names: vec![Some("a".into()), Some("combat:unarmed:any:idle".into())],
+                    parents: vec![],
+                },
+            ),
+        ]);
+        let at = |graph, inherited, index| Animation {
+            graph,
+            inherited,
+            index,
+            frame: 0.0,
+        };
+        assert_eq!(
+            names.animation(&at(0xe000_0010, -1, 0)).as_deref(),
+            Some("combat:rifle:any:idle")
+        );
+        assert_eq!(
+            names.animation(&at(0xe000_0010, 0, 1)).as_deref(),
+            Some("combat:unarmed:any:idle")
+        );
+        assert_eq!(names.animation(&at(0xe000_0010, -1, 1)), None, "unnamed");
+        assert_eq!(
+            names.animation(&at(0xe000_0010, 1, 0)),
+            None,
+            "no such parent"
+        );
+        assert_eq!(names.animation(&at(0xe000_0010, -1, 9)), None);
+        assert_eq!(
+            names.animation(&at(0xe000_0099, -1, 0)),
+            None,
+            "unknown graph"
+        );
     }
 
     #[test]

@@ -212,3 +212,49 @@ export function clanStandings(clans: ClanLike[], players: PlayerRow[], top = 5):
     .sort((a, b) => b.kills - a.kills || b.wins - a.wins || a.name.localeCompare(b.name))
     .slice(0, top);
 }
+
+/** Games started on each of the last `days` days (the viewer's days),
+ *  oldest first, today last. From the summary's hourly activity, which a
+ *  `30d` summary carries for the whole span. */
+export function dailyGames(activity: ActivityRow[], now: number, days = 14): Array<{ day: Date; games: number }> {
+  const today = new Date(now);
+  today.setHours(0, 0, 0, 0);
+  const out = Array.from({ length: days }, (_, i) => {
+    const d = new Date(today);
+    d.setDate(d.getDate() - (days - 1 - i));
+    return { day: d, games: 0 };
+  });
+  const first = out[0]!.day.getTime();
+  for (const a of activity) {
+    const t = Date.parse(a.hour);
+    if (!(t >= first) || t > now) continue;
+    const d = new Date(t);
+    d.setHours(0, 0, 0, 0);
+    const i = out.findIndex((o) => o.day.getTime() === d.getTime());
+    if (i >= 0) out[i]!.games += a.games;
+  }
+  return out;
+}
+
+export interface FactRow { label: string; value: string }
+
+/** The rows worth showing out of `rows`: the zeros dropped (a young
+ *  server's Kills 0 and Legendary 0 say nothing), keeping any marked
+ *  `always` (they count towards `max` and are never the ones dropped). */
+export function nonZeroRows(rows: Array<{ label: string; n: number; text?: string; always?: boolean }>, max: number): FactRow[] {
+  let room = max - rows.filter((r) => r.always).length;
+  return rows
+    .filter((r) => r.always || (r.n > 0 && room-- > 0))
+    .map((r) => ({ label: r.label, value: r.text ?? r.n.toLocaleString("en-US") }));
+}
+
+/** The week's most played campaign level, for when the week has no kills
+ *  to name a weapon by. */
+export function missionOfTheWeek(sum: Pick<StatsSummary, "maps">): MapRow | null {
+  return sum.maps.filter((m) => m.campaign && m.games > 0).sort((a, b) => b.games - a.games)[0] ?? null;
+}
+
+/** Multiplayer maps after the map of the week, most played first. */
+export function alsoPopular(sum: Pick<StatsSummary, "maps">, pick: MapRow | null, n = 3): MapRow[] {
+  return sum.maps.filter((m) => m !== pick && !m.campaign && m.games > 0).slice(0, n);
+}

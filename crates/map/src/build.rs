@@ -65,6 +65,13 @@ pub struct Block {
     /// (default 0). A tag moved with its source layout keeps its old
     /// address modulo 16, so its 16-aligned arrays stay aligned.
     pub phase: u32,
+    /// Element order: `Some(stride)` lays the block's elements (`stride`
+    /// bytes each) out in ascending order of the string ID at each
+    /// element's first word, once string IDs are known. The engine finds
+    /// names in such blocks by binary search (E `0x001dd560`, over the
+    /// animation graph's modes, classes, types and actions), and a string
+    /// ID is only known when the map is built.
+    pub sort_by_string_id: Option<u32>,
 }
 
 /// One layout-dependent field of a [`Block`].
@@ -165,6 +172,7 @@ impl Block {
             fixups: Vec::new(),
             share: None,
             phase: 0,
+            sort_by_string_id: None,
         }
     }
     /// A zero-filled block.
@@ -179,6 +187,12 @@ impl Block {
     /// Set the address alignment (a power of two).
     pub fn aligned(mut self, align: u32) -> Self {
         self.align = align;
+        self
+    }
+    /// Lay the elements (`stride` bytes each) out by ascending string ID
+    /// at each element's first word (see [`Block::sort_by_string_id`]).
+    pub fn sorted_by_string_id(mut self, stride: u32) -> Self {
+        self.sort_by_string_id = Some(stride);
         self
     }
     /// Write a little-endian u32 at `offset` (panics when out of range).
@@ -919,6 +933,48 @@ struct Resolve<'a> {
     bsps: Vec<(u32, u32, u32)>,
 }
 
+/// `block` with its elements (`stride` bytes each) in ascending order of
+/// the string ID at each element's offset 0 (a `StringId` fixup there, else
+/// the word written), ties in their first order; fixups move with their
+/// element. The result is not sorted again.
+fn sort_elements(block: &Block, stride: u32, r: &Resolve) -> Result<Block> {
+    let len = block.bytes.len();
+    if stride < 4 || len % stride as usize != 0 {
+        return Err(Error::Invalid("sorted block: length not a multiple of its stride"));
+    }
+    let stride = stride as usize;
+    let n = len / stride;
+    let mut keys = Vec::with_capacity(n);
+    for i in 0..n {
+        let at = i * stride;
+        let fixed = block.fixups.iter().find_map(|f| match &f.kind {
+            FixupKind::StringId(s) if f.offset as usize == at => Some(s),
+            _ => None,
+        });
+        let key = match fixed {
+            Some(s) => string_id(r.strings[s.as_str()], s)?,
+            None => u32::from_le_bytes(block.bytes[at..at + 4].try_into().expect("4 bytes")),
+        };
+        keys.push(key as i32);
+    }
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by_key(|&i| (keys[i], i));
+    let mut out = block.clone();
+    out.sort_by_string_id = None;
+    out.fixups.clear();
+    for (to, &from) in order.iter().enumerate() {
+        out.bytes[to * stride..(to + 1) * stride]
+            .copy_from_slice(&block.bytes[from * stride..(from + 1) * stride]);
+        let range = (from * stride) as u32..((from + 1) * stride) as u32;
+        for f in block.fixups.iter().filter(|f| range.contains(&f.offset)) {
+            let mut f = f.clone();
+            f.offset = f.offset - range.start + (to * stride) as u32;
+            out.fixups.push(f);
+        }
+    }
+    Ok(out)
+}
+
 /// A growing virtual region (BSP or ordinary metadata).
 struct Region {
     base: u32,
@@ -986,6 +1042,10 @@ impl Region {
                 .or_else(|| outer.and_then(|o| o.get(&k)))
         {
             return Ok(a);
+        }
+        if let Some(stride) = block.sort_by_string_id {
+            let sorted = sort_elements(block, stride, r)?;
+            return self.emit_in(&sorted, r, outer);
         }
         let addr = self.alloc(block.bytes.len(), block.align, block.phase)?;
         if let Some(k) = block.share {

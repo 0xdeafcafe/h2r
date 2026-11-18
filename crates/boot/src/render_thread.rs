@@ -55,6 +55,11 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "the loading screen's cache copy on the game thread; steps it with guest calls",
     ),
     // Game-thread points: the simulation, the UI and the level start.
+    (
+        "variant-vitality",
+        "*",
+        "a damage instance in the simulation, on the game thread; scales the body and shield parts",
+    ),
     ("h1-health", "OBJECT_DAMAGE_UPDATE", AFTER),
     ("h1-health", "BODY_RESTORE", AFTER),
     ("h1-health", "GAME_ACTIVATE", AFTER),
@@ -83,6 +88,7 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     // match start, the variant editor and the Game Setup lists), which the
     // render never meets.
     ("hud", "GAME_ACTIVATE", AFTER),
+    ("loaded_map", "GAME_ACTIVATE", AFTER),
     ("variant-ext-live", "GAME_ACTIVATE", AFTER),
     (
         "live-telemetry",

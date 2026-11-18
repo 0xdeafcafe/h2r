@@ -6,6 +6,8 @@
 //!   [`h1map`].
 //! - [`h2`] decodes a Halo 2 `sky ` tag's payload back into values: the
 //!   read-back check for conversions, and a reader for retail maps.
+//! - [`atmosphere`] writes and reads Halo 2's per-cluster atmosphere
+//!   element (scenario `+0x340`), the home of Halo 1's indoor fog.
 //! - [`convert`] builds a Halo 2 `sky ` as a [`h1models::Converted`] block
 //!   tree. The sky's render model comes from [`h1models::model_from_map`].
 //!
@@ -17,6 +19,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod atmosphere;
 pub mod convert;
 pub mod h1;
 pub mod h2;

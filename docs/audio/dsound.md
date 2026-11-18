@@ -654,17 +654,28 @@ internals, which are unmatched):
   disc). Zero is not derived from evidence; revisit it if sound init
   misbehaves.
 - **`XAudioSetEffectData` is dry too.** See the next section.
-- **The XHV voice effects have output rings.** Effects 0xb..=0xe are the
+- **The XHV voice effects run on the host.** Effects 0xb..=0xe are the
   per-port voice effects. On an Xbox each writes its port's voice mix into
   a ring that the headphone feed (`0x334d1f`, through `0x332c9c`) reads:
   the ring base is at map +0x18, its size at map +0x1c, and the write
-  offset at state +0x34. The feed divides by the size, so the descriptor
-  gives each of these effects a zeroed 0x1400-byte ring (80 ms of 16 kHz
-  32-bit samples). The other effects keep zeros there. Nothing writes the
-  rings, so a headphone hears silence. The engine's voice streams still
-  play, on the mixbin index the invented `0x1400` above gives them (0).
-  Where that is heard has not been checked in a run
-  (docs/live/live-voice.md, 3.3 item 7).
+  offset (bytes) at state +0x34. The feed divides by the size, so the
+  descriptor gives each of these effects a 0x1400-byte ring (80 ms of
+  16 kHz 32-bit samples); the other effects keep zeros there. The engine's
+  voice streams (`0x335ed3`) take their one mix bin from `0x333330`, as
+  `(state +0x14 - 0x1400) >> 5` of effect `0xb + port`. With `0x1400` for
+  every effect, every port's remote voice landed on bin 0 and played on
+  the left speaker. Each voice effect now gets its own invented base,
+  `0x1400 + (bin << 5)` with bins `0x1b..=0x1e` (the top four FX sends,
+  clear of the mix-ins' `0x17..=0x19`), so each port's streams have a bin
+  of their own. The mixer captures those bins instead of mixing them
+  (`audio::Mixer::set_taps`): remote voice is not on the speakers, as on an
+  Xbox. After every render (`service_all`, so on every consumer's clock)
+  `voice_rings::VoiceRings::pump` converts what was captured to 16 kHz,
+  writes it into the port's ring as `sample << 16`, and moves state +0x34
+  on. The rings advance by exactly the frames rendered, voice or not. The
+  capture leaves out the master volume (it is the speakers'). Tested by
+  reading the ring the way `0x334d1f` does (`tests/guest.rs`,
+  `remote_voice_reaches_the_ports_ring_not_the_speakers`).
 
 This is enough for the init path to proceed. The guest-visible image stays
 dry: the DSP program is never run and the converted DSP words are not

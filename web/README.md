@@ -39,6 +39,9 @@ like a server with no game art. The mock's own map geometry (below) is served
 either way; `H2_MOCK_MAP_GEOMETRY=0` turns that off too, and then `/art/game`
 answers 404. `H2_MOCK_SESSIONS=<n>` sets how many open sessions the mock keeps
 for the dashboard's "find a game" (default 5; 0 shows its empty state).
+`H2_MOCK_QUIET=1` ends the games in progress after the history is seeded and
+starts no more, so the stats home's Live Now panel shows the last game on a
+loop (with `H2_MOCK_HISTORY_MIN=0` too, no games at all: the map montage).
 `H2_MOCK_ACTORS=1` puts the mock campaign's AI and vehicles
 (`mock/campaign.ts`: about thirty actors, two vehicles in use and three
 parked empty, and a `bsp` zone that changes every 25 s, added by a frame
@@ -79,45 +82,51 @@ The choice and recent servers are kept in localStorage.
 **The dashboard** (`/`, `/dash/:section`, `/dash/players/:tag`, `src/dash/`) is the "live" side:
 a glass orb, a wireframe tunnel and an arc of menu blades. The selected blade
 lights its connector. Recessed panels hold lists and details. Signed out the menu leads with sign
-in, create and recover, then live now, game history, games, find a game, players
+in, create and recover, then live now, games, find a game, players
 and settings (the ones that need an account show greyed with a hint).
-Signed in it is live now, games, find a game, friends, players, game history,
+Signed in it is live now, games, find a game, friends, players,
 account (recovery code, authenticator, devices, sign out) and settings;
 profile and the server (`/dash/server`: service admin) sit under settings.
 Open **Games** (`/dash/games`) and select **Halo 2** to see recent games and,
-when signed in, your service record. **View stats** opens `/stats`.
+when signed in, your service record. Its link to the stats site (named by
+`STATS_NAME` in `src/brand.ts`) opens `/games/halo2`.
 The Halo admin area (MOTD, playlists, custom content) is on the stats site
-at `/stats/admin` ([docs/live/live-admin.md](../docs/live/live-admin.md)).
+at `/games/halo2/admin` ([docs/live/live-admin.md](../docs/live/live-admin.md)).
 Keyboard: arrows move, Enter (or `a`) selects,
 Escape / Backspace / ArrowLeft (or `b`) goes back; the mouse works too.
 
-**The stats site** (`/stats/...`, `src/stats/`) is the record, laid out like
+**The stats site** (`/games/halo2/...`, `src/stats/`; every link builds on
+`STATS_ROOT` / `statsPath()` in `src/routes.ts`, and the old `/stats/...`
+links redirect there) is the record, laid out like
 a mid-2000s game stats site: a fixed 902px column on a navy page, a header
 with the Welcome box, a black nav strip, breadcrumbs, a banner strip, then a
 290px menu column (pill menu, People Finder, reports, Recent Games) beside
-the content. The nav's tabs start with the home, "h2 live Online"; the
-way back to the dashboard is the small "‹ Dashboard" chip in the header's
-corner, not a tab, and every page's breadcrumbs start at "Home" (`/stats`).
-Pages: the home (`/stats`, `stats/Home.tsx`: live now with the live games,
+the content. The header's logo and the banner strip's mark are the
+"h2 | UPLINK" wordmark (`stats/Wordmark.tsx`, original art), so the site
+reads as `STATS_NAME` throughout. The nav's tabs start with the home,
+"h2 Uplink"; the way back to the dashboard is the small "‹ Live Dashboard"
+chip in the header's corner (`DASH_NAME`, as are the other links back to
+it), not a tab, and every page's breadcrumbs start at "Home" (`/games/halo2`).
+Pages: the home (`/games/halo2`, `stats/Home.tsx`: live now with the live games,
 players online and open games; the last 24 hours and all-time totals;
 leaderboards for today, this week, this month or all time (`?window=`):
 most kills, best K/D with 3+ games, most wins, longest killing spree,
 Legendary levels and time played; most played maps, most used weapons, an
 activity heatmap by day and hour in your time, game types and playlists,
 skull use, medals from loaded games (derived), the weapon and map of the
-week, clan standings and recent games), games (`/stats/games`: the featured
-live map and the games spotlight), game details (`/stats/games/:id`: overview, the Game
+week, clan standings and recent games), games (`/games/halo2/games`: the featured
+live map and the games spotlight), game details (`/games/halo2/games/:id`: overview, the Game
 Viewer with the live tactical map or the replay, and the post game carnage
 report with Overview / Carnage / Medals / Weapons tabs), players and
-leaderboards (`/stats/players`), a player's service record, game history
+leaderboards (`/games/halo2/players`), a player's service record, game history
 with its preview pane, and career stats with Tool of Destruction, the Medal
-Chest and compare (`/stats/players/:tag`, `/history`,
-`/career?compare=<tag>`), and the event log (`/stats/events`).
+Chest and compare (`/games/halo2/players/:tag`, `/history`,
+`/career?compare=<tag>`), and the event log (`/games/halo2/events`).
 Campaign and multiplayer are kept apart: K/D, wins, medals, EXP,
 leaderboards and clan records count multiplayer games only, and campaign
-has its own record (`/stats/players/:tag/campaign`: levels, completions,
+has its own record (`/games/halo2/players/:tag/campaign`: levels, completions,
 time played, deaths, co-op partners), its own history tab
-(`/history?tab=campaign`) and spotlight tab (`/stats?games=campaign`), and
+(`/history?tab=campaign`) and spotlight tab (`/games/halo2?games=campaign`), and
 a mission report in place of the carnage report. A game's type is shown
 as Custom Game, Matchmaking: <playlist>, Campaign, Campaign Co-op or
 Campaign Online, with the difficulty (`src/state/gametype.ts`). The mock
@@ -157,6 +166,19 @@ its game's page. The mock (`mock/content.ts`) serves three invented
 packages (one with a picture, one with changed geometry, one blocked) and
 puts about a third of its sessions and multiplayer games on them or on an
 id it doesn't know; `H2_MOCK_CUSTOM_MAPS=0` turns that off.
+
+**Mods.** The stats site's Mods tab (`/games/halo2/mods`, `stats/Mods.tsx`)
+browses the server's map packages (`GET /v1/maps`): Newest or Most
+Downloaded, filtered by base map, category and a search box, paged with the
+server's `next` cursor (the earlier cursors are kept in the page so
+"Previous" works). The query lives in the URL (`?sort=popular&base=teacup&category=&q=&author=`).
+A mod's page (`/games/halo2/mods/:id`) shows its picture (else the base map's),
+author and credit, description, source link (http and https only), size,
+downloads, files, and Report for signed-in players. Downloading happens in
+the game. The page asks for the package without a token, because a token
+there counts a download. The pure rules are in `src/lib/mods.ts`. The mock serves eight more invented mods beside
+the three above, with categories, credits, source links and download
+counts, and sorts, filters and pages them as the server does.
 
 **Server stats.** The home's windowed numbers come from the server's
 summary (`GET /v1/stats/summary?window=`, docs/live/live-api.md "Stats
@@ -201,7 +223,7 @@ UI says so. "Download for h2" saves an `accounts.json`-style file for
 protocol, the events and the code's types say team; everything the site
 shows says clan. The dashboard's friends and clans screens
 (`src/dash/Social.tsx`, `/dash/clans`), the stats site's clan directory and
-clan pages (`/stats/clans`, `/stats/clans/:id`; the old `/stats/teams`
+clan pages (`/games/halo2/clans`, `/games/halo2/clans/:id`; the old `/games/halo2/teams`
 paths redirect) and the Clans and Friends boxes on service records all
 read them and follow the stream, so they change as events arrive
 (`src/state/social.ts`). Writes are signed `h2live-event` JWS bodies sent to
@@ -276,19 +298,30 @@ pictures of the level (top-down and four iso corners), named in the art
 manifest's `maps` table. When a map has them, the game page's Tactical Map
 lays players over the picture using the view's `world_to_pixel` matrix
 (`src/map/views.ts`, `src/map/ViewMap.tsx`), with a switcher for the views
-and pan and zoom; without them it is the fitted grid as before. The "3D view"
-button opens the level in a window (`src/viewer/`): three.js, loaded as its
+and pan and zoom; without them it is the fitted grid as before. The game
+page's viewer (`src/viewer/GameViewer.tsx`) sits at the top of the page,
+across the content column, about 16:9 and short enough that the scoreboard
+under it still shows on a laptop, with the scoreboard, field report and
+overview below. Its **2D map** / **3D view** switch shows the tactical map or
+the level in 3D (`src/viewer/`): three.js, loaded as its
 own chunk only then, with a sun and soft shadows, ambient occlusion (turned
 off by itself on a machine that can't keep up), orbit, top-down,
 follow-a-player and free-fly cameras (F; WASD, Q/E down and up, drag with
 either button to look or click to lock the mouse, wheel or trackpad for
 speed, Shift to go faster, one finger to look and two to fly on a touch
 screen, or a gamepad: `viewer/flycam.ts`), and a grid floor when the map has no geometry. The
-window can be dragged, resized, maximised, or popped out to
-`/stats/games/:id/3d`. The 2D map, the scrubber and the 3D window read one
-replay session (`src/viewer/session.ts`), and a popped-out window keeps in
-step with the page over a `BroadcastChannel`. `?view=3d` opens the window
-and `?map=iso-ne` picks a view, so both can be linked to. The mock builds
+**Full screen** button puts the viewer's box full screen with the Fullscreen
+API (Escape leaves), or lays it over the window where there is none (an
+iPhone; Escape leaves that too); the canvas and the 2D map refit either way
+(`viewer/fullscreen.ts`). The viewer's keys (the replay's Space, arrows,
+`,` `.` `<` `>` `k`, and the 3D view's) are its own only while it has the
+focus or the pointer is over it, so the page keeps them otherwise. The 2D
+map, the 3D view and the scrubber read one replay session
+(`src/viewer/session.ts`; other tabs on the same game keep in step over a
+`BroadcastChannel`). `?view=3d` opens the 3D view (with `cam`, `cut`, `see`
+and `ao` as below) and `?map=iso-ne` picks a view, so both can be linked
+to; the old pop-out address, `/games/halo2/games/:id/3d`, goes to the game
+page with the 3D view showing. The mock builds
 two arenas of its own from its invented floor plans (`mock/arena.ts`:
 slabs, ramps, pillars and cone trees, with a small rasteriser for the
 pictures); its third map has none, so the fallbacks run too.
@@ -327,7 +360,12 @@ whatever of the level lies between the camera and the
 player being followed (or pointed at in the scoreboard), else every player
 (up to 8, nearest the camera first), a cone to each with a dithered rim,
 leaving the floor they stand on, so a player inside a building is seen
-through its walls and roof; *everyone* cuts to all of them as well as the
+through its walls and roof. Only a surface that is in the way is cut: one
+the line of sight passes through, near where it crosses, with the player
+behind it (its normal is the triangle's own, from the shader's
+derivatives; floors, terrain and ceilings count as level). Ground under or
+beside the line, a step near the player and a wall running alongside stay,
+so open terrain keeps its sand instead of showing a hole to the sky; *everyone* cuts to all of them as well as the
 one in focus. Players, vehicles and machines are never cut. Both are a clipping
 plane and a few lines in the map materials' shaders, shared by all of
 them, so a big level costs no more. `?cut=<height>` and `?see=0` on the
@@ -465,6 +503,56 @@ a translucent column with an arrow along its push
 with chevrons, reading the extras from the head of the glb (a streamed read
 that stops after the JSON, never the meshes). Both have a "Lifts &
 teleporters" button when the map has any.
+
+## Names, icons and link previews
+
+**Names.** `src/brand.ts` holds the product names: `DASH_NAME` ("Live
+Dashboard", /dash: the page titles, the header, the installed app's name),
+`STATS_NAME` (the stats site, "h2 Uplink") and `SITE_NAME` ("h2 live", the
+service itself, which only the link-preview card's mark carries), plus the
+two sides' theme colours. Renaming is a one-line
+change there; routes never change with a name. `vite.config.ts` writes the
+names into `index.html` (`%H2_DASH_NAME%`, `%H2_STATS_NAME%`), and the
+server reads them back out of the built HTML (`h2-dash-name`, `h2-stats-name`) for link previews. Names
+considered for the stats site, avoiding anyone's trademarks as a product
+name: **h2 Uplink** (chosen: a terminal you dial into for the record, in
+the network-era voice of the old stats sites), h2 Debrief, h2 Dispatch,
+Combat Record (too close to the Service Record pages), h2 Archive, and the
+old "h2 live Online".
+
+**Icons.** `bun run brand` draws the favicons (`favicon.ico` at 16, 32 and
+48 from the hand-tuned micro icon, `favicon.svg`), the Apple touch icon,
+the manifest's 192, 512 and maskable 512 icons, `manifest.webmanifest` and
+the default link-preview card (`og/default.jpg`, 1200 x 630) into
+`public/`, from the project's own icon art (`art/app-icon/`, the iOS,
+tvOS and Mac exports; `brand/plan.ts` lists them). A headless Chrome draws
+them. Rerun it when the art or a name changes and commit the results:
+they are our art, not the game's.
+
+**Link previews.** The app renders in the browser and crawlers run no
+script, so the server writes each page's `<title>`, description, theme
+colour, Open Graph and Twitter card tags into `index.html` in place of the
+block between `<!-- page-meta -->` and `<!-- /page-meta -->`
+(`crates/live-server/src/page_meta.rs`). A player's page gets their record
+(games, wins, kills, K/D from the public stats), a game's its variant, map,
+score, winner and players, a clan's its name, members and motto; other
+pages their section. Only what an anonymous reader may see is used: a
+hidden game or a private server gives the section's preview. The machine's
+server does it in its SPA fallback; the Worker for the paths
+`wrangler.toml` sends it first, reading `index.html` through the `ASSETS`
+binding and asking the hub (`GET /v1/page-meta?path=`) only for a page that
+names a player, game or clan. Pages stay `no-cache`.
+
+Every page shares the default card for now. Planned: per-game and
+per-player cards (a game's map picture, score and players; a player's
+emblem and record) drawn on request at `/og/game/{id}.png` and
+`/og/player/{tag}.png`, in Rust so both homes share it (a small rasteriser
+such as `resvg`/`tiny-skia` with an OFL font embedded, built for wasm32 as
+well), the map picture fetched from the published game art
+(`H2_LIVE_GAME_ART_URL`, never from the repository), and the result kept
+by the CDN under a key that includes the game's log position (an ended
+game's card never changes). The open questions are the Worker's wasm size
+and CPU budget for a 1200 x 630 render.
 
 ## Architecture
 

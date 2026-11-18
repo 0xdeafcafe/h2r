@@ -58,6 +58,9 @@ pub const PLAYER_SALT: u32 = Player::SALT;
 pub const PLAYER_FLAGS: u32 = Player::FLAGS;
 #[allow(dead_code)]
 pub const PLAYER_LOCAL_USER: u32 = Player::LOCAL_USER;
+/// The local controller index (`i32`, `-1` for a remote player;
+/// docs/live/live-gamestate.md, Players).
+pub const PLAYER_CONTROLLER: u32 = 0x24;
 #[allow(dead_code)]
 pub const PLAYER_UNIT: u32 = Player::UNIT;
 #[allow(dead_code)]
@@ -182,7 +185,6 @@ pub const LIKELY_FIELDS: &[(&str, u32)] = &[
     ("statborg.multiple_kill_counter", 0x14),
     ("object_header.flags", 0x2),
     ("object_header.cluster_index", 0x4),
-    ("unit.vehicle_seat", 0x1fc),
     ("damage_report.body_amount", 0x44),
     ("damage_report.shield_amount", 0x48),
     ("player_slot.signed_in_flag", 0x10),
@@ -200,14 +202,53 @@ pub const LIKELY_FIELDS: &[(&str, u32)] = &[
     ("damage_report.reporting_type_names", 0),
 ];
 
+/// Pointer to a 0x24-byte game-state block that HaloScript's cinematics
+/// drive (confirmed, docs/live/live-gamestate.md, "Cinematics"). Allocated
+/// in the game state by `0x0013bf00` (size `0x24` at `0x0013bf27`, stored
+/// at `0x0013bf4e`), so a checkpoint saves and restores it with the rest.
+pub const CINEMATIC_GLOBALS_PTR: u32 = 0x0051_0c50;
+/// Its "a cinematic is playing" byte (confirmed): `cinematic_start`
+/// (`0x002a9740` → `0x0013bff0`) sets `+4` and `+5` to 1 (`0x0013c01b`,
+/// `0x0013c01e`); `cinematic_stop` (`0x002a9760` → `0x0013ca80`) clears
+/// both (`0x0013caa9`, `0x0013cac2`). `0x0013cb40` returns `+5` (0 with no
+/// block): the campaign pause menu is refused while it is set (docs/game/
+/// settings-menu.md), and the tick budget `0x00146660`, the camera's
+/// projection (`0x0002fc96`, the cinematic's aspect) and a dozen other
+/// systems test it. Of the two, `+5` is the one the game itself asks.
+pub const CINEMATIC_IN_PROGRESS: u32 = 0x5;
+
 /// Active structure-BSP index in the game globals (`i16`, confirmed:
 /// `0x0011c1b0` / `0x00137d40` index the scenario's BSP block with it).
 pub const GLOBALS_ACTIVE_BSP: u32 = 0x2;
 
-/// Translational velocity (`f32[3]`, confirmed, docs/live/live-gamestate.md).
-/// Telemetry uses only its sign (a jump goes up); `speed` comes from
-/// positions.
+/// Translational velocity (`f32[3]`, confirmed, docs/live/live-gamestate.md),
+/// in world units a **second**, not a tick. Confirmed on the projectile
+/// update (`0x000f8ee2` on): it loads the seconds per tick (`T+0x04`) into
+/// a local, copies the velocity (`lea esi,[ebp+0x88]`, `0x000f90a0`),
+/// takes gravity times that tick length off its z (`0x000f9726`) and moves
+/// the position (`+0x64`) by the velocity times the tick length
+/// (`0x000f97df`..`0x000f9803`). The projectile's creation adds its tag's
+/// initial velocity (`proj +0x17c`, world units a second, 400 for a bullet)
+/// times a scale of 1.0 straight into it (`0x000f8487`..`0x000f84a0`). The
+/// field is the object's, so units and vehicles hold the same unit. Frames
+/// send it as `vel` unscaled; `motion` also uses its sign (a jump goes up),
+/// and `speed` still comes from positions.
 pub const BODY_VELOCITY: u32 = 0x88;
+/// Body and shield vitality (`f32`, 1.0 full; an overshield charges the
+/// shield past 1). Confirmed: `object_get_health` (`0x002a1a20`) returns
+/// `+0xec` and `object_get_shield` (`0x002a1a90`) `+0xf0`, each 0 instead
+/// while the damage flags' body-depleted bit ([`BODY_DEPLETED`]) is set
+/// (`0x002a1a5e`, `0x002a1ace`); `boot::health` reads the same two.
+pub const BODY_VITALITY: u32 = 0xec;
+pub const BODY_SHIELD_VITALITY: u32 = 0xf0;
+/// The unit's seat in the vehicle it rides (`i16`, -1 none), the index in
+/// the vehicle definition's seats block. Confirmed: `unit_new` (`0x000c44c1`)
+/// sets it to -1; the enter-vehicle routine (`0x000ea1f0`, the unit in
+/// `EAX`, the vehicle and seat on the stack, refused while the unit has a
+/// parent) indexes the seats block with the seat (`imul edi,0xb0`,
+/// `0x000ea330`) and stores it here (`0x000ea405`); leaving the vehicle
+/// stores -1 (`0x000ea995`).
+pub const UNIT_SEAT: u32 = 0x1fc;
 /// The scenario placement index (`i16`, -1 for objects the scenario did not
 /// place): the index in the scenario block of the object's type.
 /// Confirmed: `object_create` by name (`0x000bb670`) passes a name's type
@@ -286,6 +327,39 @@ pub const UNIT_GRENADE_COUNTS: u32 = 0x23e;
 /// code against 1, 2, 3 and 5. Names from Project Cartographer's
 /// `e_biped_physics_mode`.
 pub const BIPED_PHYSICS_MODE: u32 = 0x3dc;
+
+// The animation state (docs/live/replay-fidelity.md, "Animation state").
+/// Where the object's animation manager is, `i16`: an offset from the
+/// object's own data, -1 none. Confirmed: `object_new` (`0x000b7b40`)
+/// builds the manager there (`0x000b80e0` into the constructor
+/// `0x001cafc0`) and gives it the model's graph (`0x001cb0d0`); the custom
+/// animation start (`0x001101e0`) checks it against -1 and works on
+/// `object + offset`. Read by 113 sites.
+pub const OBJECT_ANIMATION_MANAGER: u32 = 0x12a;
+/// The manager's animation graph, a `jmad` tag datum (-1 none). Confirmed:
+/// `0x001ccae0` and `0x001cb410` refuse a manager whose `+0x68` is -1 and
+/// pass it on as the channel's graph.
+pub const MANAGER_GRAPH: u32 = 0x68;
+/// The manager's first channel (of three, `0x20` bytes each, built by
+/// `0x001cafc0`): the animation it plays; the other two blend out the ones
+/// before. Confirmed: `0x001ccae0` starts an animation on the manager's own
+/// address as the channel (`0x001cb410` into the channel set `0x001c6470`).
+pub const MANAGER_CHANNEL: u32 = 0x0;
+/// A channel's graph datum (`u32`, -1 none); confirmed, `0x001c6470`
+/// writes it, `0x001c6c80` checks it.
+pub const CHANNEL_GRAPH: u32 = 0x0;
+/// A channel's animation: `i16` graph (-1 the channel's graph, else a
+/// position in its inheritance list) then `i16` animation index (-1 none).
+/// Confirmed: `0x001c6470` refuses a reference whose high half is -1 and
+/// stores it here; `0x001c6560` resolves it through `0x001daea0`.
+pub const CHANNEL_ANIMATION: u32 = 0x4;
+/// A channel's frame, `f32`, 0 to the animation's frame count minus one.
+/// Confirmed: the frame setter `0x001c6560` clamps it to that and stores it
+/// here, then advances it by the tick length times the rate at `+0x18`.
+pub const CHANNEL_FRAME: u32 = 0x1c;
+/// Offsets a manager can be at: past the object's fixed fields, inside its
+/// data.
+pub const MANAGER_OFFSETS: std::ops::Range<i16> = 0x12c..0x2000;
 /// Unit flags (`u32`). Bit 23 is the crouch request: the crouch update at
 /// `0x000dd83f` tests it, and the biped physics update sets it at
 /// `0x000e291b` while crouch is held and clears it at `0x000e2928` only
@@ -308,6 +382,66 @@ pub const BIPED_AIRBORNE_TICKS: u32 = 0x399;
 /// at the object's origin minus `counter × tick length ×
 /// HITBOX_OFFSET_RATE` in z (`0x000e0d70`, used at `0x001d405b`).
 pub const BIPED_HITBOX_OFFSET: u32 = 0x3aa;
+/// The Havok body behind an object (confirmed, `0x001d08e0`): the
+/// object's physics component index at body `+0xb4` (-1 none) indexes the
+/// component array (`PHYSICS_COMPONENTS_PTR`, element `0xa0`); a component
+/// keeps its rigid bodies at `+0x70` (entry `0x60`, the rigid body pointer
+/// at `+0x40`); a rigid body's motion is at `+0x3c`, its linear velocity at
+/// motion `+0x40` (`0x000dc67d`) and its world transform at motion `+0x80`
+/// with the position at `+0xb0`.
+pub const BODY_PHYSICS: u32 = 0xb4;
+pub const PHYSICS_COMPONENTS_PTR: u32 = 0x0051_e9b8;
+pub const PHYSICS_COMPONENT_SIZE: u32 = 0xa0;
+pub const COMPONENT_BODIES: u32 = 0x70;
+pub const COMPONENT_BODY_RIGID: u32 = 0x40;
+pub const RIGID_MOTION: u32 = 0x3c;
+pub const MOTION_VELOCITY: u32 = 0x40;
+pub const MOTION_POSITION: u32 = 0xb0;
+// The Havok world as `havok.bodies` and `havok.contacts` walk it
+// (docs/engine/havok-runtime.md; addresses there). Arrays are Havok's
+// (pointer, count, capacity with bit 31 "not owned").
+/// The world pointer (`0x001c2f07` stores it after `0x003101c0`).
+pub const HAVOK_WORLD_PTR: u32 = 0x0051_e9a4;
+/// Active simulation islands (`0x0030ccd0` moves one here from the
+/// inactive array).
+pub const WORLD_ACTIVE_ISLANDS: u32 = 0x08;
+pub const WORLD_INACTIVE_ISLANDS: u32 = 0x14;
+/// The fixed island (the level, static bodies), built at `0x0031071a`.
+pub const WORLD_FIXED_ISLAND: u32 = 0x2c;
+/// An island's entities (`0x001c4082`) and constraints (`0x00316cf0`).
+pub const ISLAND_ENTITIES: u32 = 0x3c;
+pub const ISLAND_CONSTRAINTS: u32 = 0x58;
+/// An entity's properties: (key, value) pairs of 8 bytes (`0x001c3f33`).
+pub const ENTITY_PROPERTIES: u32 = 0x30;
+/// The property whose value is the physics component index.
+pub const PROPERTY_PHYSICS_COMPONENT: u32 = 0x2001;
+/// An entity's material friction and restitution (`0x00318d1c`).
+pub const ENTITY_FRICTION: u32 = 0x4c;
+pub const ENTITY_RESTITUTION: u32 = 0x50;
+/// A physics component's object datum handle (`0x001c3fa4`).
+pub const COMPONENT_OBJECT: u32 = 0x08;
+/// Motion: inverse mass (`0x00318e1c`) and angular velocity (`0x001c4f51`).
+pub const MOTION_INV_MASS: u32 = 0x2c;
+pub const MOTION_ANGULAR_VELOCITY: u32 = 0x50;
+/// The contact constraint's vtable (`0x0031c00f`): the constraint is
+/// embedded at contact manager `+0x10` (`0x00319110`).
+pub const CONTACT_CONSTRAINT_VTABLE: u32 = 0x0041_53c8;
+pub const CONSTRAINT_ENTITY_A: u32 = 0x0c;
+pub const CONSTRAINT_ENTITY_B: u32 = 0x10;
+/// Contact points (`0x0031bedb`, element `0x20`): position, then the
+/// normal; the separation distance in the position's `w` (`0x0031f810`).
+pub const CONTACT_POINTS: u32 = 0x34;
+pub const CONTACT_POINT_SIZE: u32 = 0x20;
+pub const POINT_DISTANCE: u32 = 0x0c;
+pub const POINT_NORMAL: u32 = 0x10;
+/// Per-point properties (`0x0031bf1f`, element `0x1c`), in point order: the
+/// impulse the solver applied (`0x0031e530`), friction, restitution
+/// (`0x00318d3c`).
+pub const CONTACT_PROPERTIES: u32 = 0x90;
+pub const CONTACT_PROPERTY_SIZE: u32 = 0x1c;
+pub const PROPERTY_IMPULSE: u32 = 0x00;
+pub const PROPERTY_FRICTION: u32 = 0x08;
+pub const PROPERTY_RESTITUTION: u32 = 0x0c;
 /// Units per second the hitbox offset decays by (`0x004407b8`).
 pub const HITBOX_OFFSET_RATE: f32 = 0.15;
 pub const BIPED_MODE_GROUND: u8 = 1;
