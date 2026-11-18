@@ -20,7 +20,7 @@ use tags::ui::{
 };
 use tags::wire::StringId;
 
-const USAGE: &str = "usage: h2 ui <map-name-or-file> <screen tag> [--disc disc.iso]\n       h2 ui preview <screen|list> [--state NAME|all] [--focus N] [--synthetic] [--disc disc.iso] [--out DIR]\n       h2 ui sheet [--synthetic] [--disc disc.iso] [--out DIR]\n       h2 ui --all <map-name-or-file|all> [--disc disc.iso]\n\nPrints the widget tree of a wgit screen: widget kinds, rectangles as\n[top left bottom right] in UI units (origin at the screen centre, Y up),\nbitmap tag paths and string IDs. Localized text is never printed.\nWith --all, decodes every wgit, wgtz, wigl and skin tag of the map (or of\nevery disc map with `all`) and runs the engine index cross-checks; prints\ncounts and exits non-zero on any failure, on a map without UI tags, or on a\nmap that does not hold exactly one wigl.";
+const USAGE: &str = "usage: h2 ui <map-name-or-file> <screen tag> [--disc disc.iso]\n       h2 ui preview <screen|list> [--state NAME|all] [--focus N] [--press up,a,...] [--synthetic] [--disc disc.iso] [--out DIR]\n       h2 ui sheet [--synthetic] [--disc disc.iso] [--out DIR]\n       h2 ui --all <map-name-or-file|all> [--disc disc.iso]\n\nPrints the widget tree of a wgit screen: widget kinds, rectangles as\n[top left bottom right] in UI units (origin at the screen centre, Y up),\nbitmap tag paths and string IDs. Localized text is never printed.\nWith --all, decodes every wgit, wgtz, wigl and skin tag of the map (or of\nevery disc map with `all`) and runs the engine index cross-checks; prints\ncounts and exits non-zero on any failure, on a map without UI tags, or on a\nmap that does not hold exactly one wigl.";
 
 pub(super) fn run(args: Vec<String>) -> Result<()> {
     match args.first().map(String::as_str) {
@@ -436,7 +436,9 @@ impl<'a> Printer<'a> {
     }
 }
 
-const PREVIEW_USAGE: &str = "usage: h2 ui preview <screen|list> [--state NAME|all] [--focus N] [--synthetic] [--disc disc.iso] [--out DIR]\n\nDraws one of our screens (boot::ui_kit::screens::NAMES) in its named\nstates (boot::ui_kit::screens::states; default all), or its sample with\nthe focus on row N, from the disc's tags, art and fonts (or, with\n--synthetic, from layout numbers and block text, no disc). Writes\n<screen>-<state>.png and <screen>-<state>.json (every widget's rect) into\nDIR (default $TMPDIR) and prints the kit's checks and the layout checks\n(boot::ui_kit::layout). Nothing is written into\nthe repository. docs/game/ui-builder.md.";
+const PREVIEW_USAGE: &str = "usage: h2 ui preview <screen|list> [--state NAME|all] [--focus N] [--synthetic] [--disc disc.iso] [--out DIR]\n\nDraws one of our screens (boot::ui_kit::screens::NAMES) in its named\nstates (boot::ui_kit::screens::states; default all), or its sample with\nthe focus on row N, or stepped from --state (default its first) through
+the presses (up, down, left, right, a, b, x, y, start, back; each
+effect printed, the end state drawn as <state>-pressed), from the disc's tags, art and fonts (or, with\n--synthetic, from layout numbers and block text, no disc). Writes\n<screen>-<state>.png and <screen>-<state>.json (every widget's rect) into\nDIR (default $TMPDIR) and prints the kit's checks and the layout checks\n(boot::ui_kit::layout). Nothing is written into\nthe repository. docs/game/ui-builder.md.";
 
 const SHEET_USAGE: &str = "usage: h2 ui sheet [--synthetic] [--disc disc.iso] [--out DIR]\n\nEvery screen of ours in every state, as `h2 ui preview` draws them, and\nsheet.png with all of them on one page, into DIR (default\n$RUSH_KEEP/ui-builder). docs/game/ui-builder.md.";
 
@@ -446,6 +448,7 @@ struct DrawArgs {
     name: Option<String>,
     state: Option<String>,
     focus: Option<usize>,
+    press: Option<String>,
     synthetic: bool,
     disc: Option<PathBuf>,
     out: Option<PathBuf>,
@@ -458,6 +461,7 @@ fn draw_args(args: Vec<String>, usage: &str) -> Result<Option<DrawArgs>> {
         match a.as_str() {
             "--state" => d.state = Some(args.next().context("--state needs a name or all")?),
             "--focus" => d.focus = Some(args.next().context("--focus needs a row")?.parse()?),
+            "--press" => d.press = Some(args.next().context("--press needs inputs: up,a,b")?),
             "--synthetic" => d.synthetic = true,
             "--disc" => {
                 d.disc = Some(PathBuf::from(
@@ -502,7 +506,28 @@ fn preview(args: Vec<String>) -> Result<()> {
     }
     let mut states = screens::states(&name)
         .with_context(|| format!("no screen {name:?}; one of {:?}", screens::NAMES))?;
-    if let Some(f) = a.focus {
+    if let Some(presses) = &a.press {
+        use boot::ui_kit::input::Input;
+        let mut live = screens::live(&name).context("no page")?;
+        let start = a
+            .state
+            .clone()
+            .filter(|s| s != "all")
+            .unwrap_or_else(|| live.state_names()[0].clone());
+        if !live.go(&start) {
+            bail!(
+                "{name} has no state {start:?}; one of {:?}",
+                live.state_names()
+            );
+        }
+        println!("{start}: {}", live.summary());
+        for p in presses.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+            let input = Input::named(p).with_context(|| format!("no input {p:?}"))?;
+            let effect = live.press(input);
+            println!("{input:?}: {effect}; {}", live.summary());
+        }
+        states = vec![(format!("{start}-pressed"), live.spec())];
+    } else if let Some(f) = a.focus {
         let mut s = screens::sample(&name).context("no sample")?;
         s.focus = f;
         states = vec![(format!("focus-{f}"), s)];
@@ -616,6 +641,27 @@ mod tests {
         // --all takes exactly one target.
         assert!(run(vec!["--all".into()]).is_err());
         assert!(run(vec!["--all".into(), "a".into(), "b".into()]).is_err());
+    }
+
+    /// `--press` steps the page and draws where it ends; a bad input or
+    /// state is an error.
+    #[test]
+    fn preview_presses_step_the_page() {
+        let out = std::env::temp_dir().join(format!("h2-ui-press-{}", std::process::id()));
+        let args = |extra: &[&str]| {
+            let mut v: Vec<String> = ["preview", "signin-code", "--synthetic", "--out"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+            v.push(out.display().to_string());
+            v.extend(extra.iter().map(|s| s.to_string()));
+            v
+        };
+        run(args(&["--state", "code", "--press", "up,right,a"])).unwrap();
+        assert!(out.join("signin-code-code-pressed.png").exists());
+        assert!(run(args(&["--press", "up,jump"])).is_err());
+        assert!(run(args(&["--state", "nope", "--press", "a"])).is_err());
+        let _ = std::fs::remove_dir_all(&out);
     }
 
     #[test]
