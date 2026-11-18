@@ -160,9 +160,37 @@ what is synthesised, and what has no Halo 2 home:
 | light yaw/pitch (`+68/+6c`) | light `+0c/+10` | copied (which of the two angles is yaw follows Halo 2's engine order; the pairing itself is **Design**) |
 | light colour/power/falloff/cutoff | params `+08/+14/+18/+24` | copied |
 | — | params flags `+00` | **Design:** `15`, the retail-common value; Halo 1's flags (1/3) have a different, unknown meaning |
-| — | model scale `+14` | **Design:** `1.0`; Halo 1 sky models are authored full size |
+| — | model scale `+14` | **Design:** the least scale, at least 1, that puts every surface of the model as far from the camera as the level is wide (below) |
 | — | camera translation scale `+18` | **Design:** `1.0`; the Halo 1 sky box stays centred on the camera |
 | — | `+10` word, bitmap layers, gradients, `+44`, rotation | **Design:** `0`, empty blocks, `0`, `0.0` — retail zeroes |
+
+### The model scale
+
+Halo 1 sky models are authored full size (5,600 to 98,000 units out on
+most skies), but some carry surfaces near the camera: a30's distant ground
+lies 68 units below it on `skydusk1`, d20's 100, d40's 138, Damnation's 54.
+Halo 1 draws the sky first and the level over it, so those never show in
+front of the level. Halo 2 draws the sky after the opaque layers (the
+scene loop calls the sky draw `0x0003ede0` at `0x0002c0bc`, after layers 1
+to 6), depth-tested, centred on the camera when the camera translation
+scale is 1 (E `0x0003ebd0`: the sky's translation is that scale times the
+camera position `0x004b9da0`). At scale 1, a30's ground cut through the
+level wherever the level was more than 68 units away.
+
+Scaling a sky about the camera leaves its picture unchanged and only moves
+it back in depth. `h1sky::convert::model_scale` takes the nearest surface
+(`nearest_surface`: the least distance from the model's origin to any
+triangle, except triangles whose plane passes within one unit of the
+origin, which the camera sees edge-on as a line) and the level's reach
+(`level_reach`: the diagonal of the box around every structure BSP's world
+bounds) and returns `reach / nearest`, or 1 when the sky is already that
+far. Then no level surface is ever behind the sky from a camera inside the
+level. On the retail disc 10 of the 25 skies with a model are scaled:
+a30's two (7.5 and 12.2), a50's `skynight1` (3.0), d20's two (3.0, 4.0),
+d40's four (17.9) and Damnation's (1.5). The largest sky after scaling
+reaches about a million units; retail Halo 2 skies reach 2.8 million
+(Delta Approach's, 14,200 units at scale 200).
+`real_h1_disc_every_sky_stays_behind_its_level` checks every sky.
 
 Fields with **no Halo 2 home** (kept readable on the Halo 1 side, listed
 here for the next pass):
