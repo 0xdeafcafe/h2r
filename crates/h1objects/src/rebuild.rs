@@ -326,7 +326,7 @@ impl Predicted {
 
 /// Writes `list` as the predicted resources of the object header at `path`
 /// in a record of `group`.
-fn predicted_resources(
+pub(crate) fn predicted_resources(
     group: &[u8; 4],
     r: &mut Record,
     path: &str,
@@ -1410,11 +1410,11 @@ pub struct RoleWords {
 /// One block element's role words, as (path in the element, word).
 pub type RoleElement = Vec<(String, u32)>;
 
-type Tally = std::collections::BTreeMap<String, std::collections::BTreeMap<u32, usize>>;
+pub(crate) type Tally = std::collections::BTreeMap<String, std::collections::BTreeMap<u32, usize>>;
 
 /// The 4-byte unknown spans of `d` and the structs it embeds (not its
 /// blocks), as (path, offset).
-fn word_spans(d: &StructDef, prefix: &str, at: u32, out: &mut Vec<(String, u32)>) {
+pub(crate) fn word_spans(d: &StructDef, prefix: &str, at: u32, out: &mut Vec<(String, u32)>) {
     for f in &d.fields {
         let p = format!("{prefix}{}", f.name);
         match &f.kind {
@@ -1449,7 +1449,7 @@ fn word_blocks<'d>(
     }
 }
 
-fn tally_words(bytes: &[u8], spans: &[(String, u32)], t: &mut Tally) {
+pub(crate) fn tally_words(bytes: &[u8], spans: &[(String, u32)], t: &mut Tally) {
     for (p, o) in spans {
         let o = *o as usize;
         if o + 4 <= bytes.len() {
@@ -1459,7 +1459,7 @@ fn tally_words(bytes: &[u8], spans: &[(String, u32)], t: &mut Tally) {
     }
 }
 
-fn majority(t: &Tally) -> Vec<(String, u32)> {
+pub(crate) fn majority(t: &Tally) -> Vec<(String, u32)> {
     let mut out = Vec::new();
     for (p, vals) in t {
         let n: usize = vals.values().sum();

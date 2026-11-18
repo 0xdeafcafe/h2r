@@ -161,6 +161,14 @@ spans and Halo 1's model and bitmaps as predicted resources
 The scenery template (Delta Halo's `statue_shard_large`) described below
 is history.
 
+**Weapons, equipment, projectiles and damage have no template since
+converter version 51**: they are built from their typed definitions,
+with Halo 1's values and no template bytes ([tag-definitions.md](tag-definitions.md),
+Weapons, equipment, projectiles and damage). The template rows below
+for `weap`, `eqip` and `proj` only name the Halo 2 counterpart whose
+references (HUD, effects, sounds, melee damage) fill the slots Halo 1
+has nothing converted for.
+
 **Vehicles have no template since converter version 49**: every Halo 1
 vehicle is built from the `vehi` definition, with its friction and hover
 points from Halo 1's powered mass points and its gears from its type's

@@ -1,5 +1,5 @@
-//! The player's biped in a converted map's globals (`matg`): which unit a
-//! player spawns as. Shared by the multiplayer converter (the Halo 1
+//! The player's biped and the grenades in a converted map's globals
+//! (`matg`): which unit a player spawns as, and what each grenade type is. Shared by the multiplayer converter (the Halo 1
 //! sandbox's cyborg) and the campaign converter (`h1campaign`).
 //!
 //! **The player representation block**, `matg +0x138` (count) / `+0x13c`
@@ -17,6 +17,16 @@
 //!
 //! So a multiplayer map's player unit is elements 2 and 3 (one per
 //! representation the profile picks), a campaign's elements 0 and 1.
+//!
+//! **The grenades**, `matg +0x100` (Halo 2) and `matg +0x128` (Halo 1),
+//! one element per grenade type in the order of the equipment's grenade
+//! type (fragmentation, plasma). Halo 2's elements are `0x2c` bytes: the
+//! maximum count (i16) at `+0`, the equipment at `+0x1c` and the
+//! projectile at `+0x24` (8-byte references); Halo 1's are `0x44`: the
+//! maximum at `+0`, the equipment at `+0x24` and the projectile at
+//! `+0x34` (16-byte references). V: on every Halo 2 base and Halo 1 map
+//! of the discs, element 0 names the frag grenade's `eqip` and `proj` and
+//! element 1 the plasma grenade's (h1objects `weapon_rebuild_disc`).
 
 use map::build::{TagPayload, TagSet};
 use map::{FourCC, TagId};
@@ -106,6 +116,110 @@ pub fn set_player_unit_in(
     Ok(old)
 }
 
+/// `matg +0x100`: the grenades block (count, then address).
+pub const GRENADES: usize = 0x100;
+/// Its element size.
+pub const GRENADE_SIZE: usize = 0x2c;
+/// The element's maximum count (i16), equipment and projectile.
+pub const GRENADE_MAXIMUM: usize = 0;
+pub const GRENADE_EQUIPMENT: usize = 0x1c;
+pub const GRENADE_PROJECTILE: usize = 0x24;
+/// Halo 1's: `matg +0x128`, elements of `0x44`.
+pub const H1_GRENADES: usize = 0x128;
+pub const H1_GRENADE_SIZE: usize = 0x44;
+pub const H1_GRENADE_EQUIPMENT: usize = 0x24;
+pub const H1_GRENADE_PROJECTILE: usize = 0x34;
+
+/// One grenade type of a map's globals.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Grenade<T> {
+    pub maximum: i16,
+    pub equipment: Option<T>,
+    pub projectile: Option<T>,
+}
+
+/// Halo 1's grenade types, from its globals: per type the maximum, and
+/// the equipment and projectile tags.
+pub fn h1_grenades(h1: &h1map::H1Map) -> Result<Vec<Grenade<h1map::TagId>>> {
+    let Some(t) = h1
+        .tags()
+        .iter()
+        .find(|t| t.group == h1map::Group::new(b"matg"))
+    else {
+        return Ok(Vec::new());
+    };
+    let b = h1.tag_data(t)?;
+    let blk =
+        h1map::Block::read(b, H1_GRENADES).ok_or(Error::Invalid("Halo 1 globals: grenades"))?;
+    let reference = |e: &[u8], at: usize| {
+        h1map::TagRef::read(e, at)
+            .map(|r| r.id)
+            .filter(|id| !id.is_none())
+    };
+    Ok(h1
+        .block(blk, H1_GRENADE_SIZE)?
+        .chunks_exact(H1_GRENADE_SIZE)
+        .map(|e| Grenade {
+            maximum: i16::from_le_bytes([e[0], e[1]]),
+            equipment: reference(e, H1_GRENADE_EQUIPMENT),
+            projectile: reference(e, H1_GRENADE_PROJECTILE),
+        })
+        .collect())
+}
+
+/// Writes `grenades` over the grenade types of the globals of `set`
+/// (pinned), element for element: the maximum, and the equipment and
+/// projectile where given (the base's stay where not). Types past the
+/// base's count are left out. Returns how many elements were written.
+pub fn set_grenades(set: &mut TagSet, grenades: &[Grenade<TagId>]) -> Result<usize> {
+    let globals = set.globals;
+    let tag = set
+        .tag_mut(globals)
+        .ok_or(Error::Invalid("the set has no globals"))?;
+    let TagPayload::Pinned { address, bytes } = &mut tag.payload else {
+        return Err(Error::Invalid("the base globals should be pinned"));
+    };
+    set_grenades_in(bytes, *address, grenades)
+}
+
+/// [`set_grenades`] on the globals' bytes, whose first byte is at
+/// virtual `address`.
+pub fn set_grenades_in(
+    bytes: &mut [u8],
+    address: u32,
+    grenades: &[Grenade<TagId>],
+) -> Result<usize> {
+    let word = |b: &[u8], at: usize| -> Result<u32> {
+        b.get(at..at + 4)
+            .map(|w| u32::from_le_bytes(w.try_into().unwrap()))
+            .ok_or(Error::Invalid("the globals are too short"))
+    };
+    let count = word(bytes, GRENADES)? as usize;
+    let first = word(bytes, GRENADES + 4)?
+        .checked_sub(address)
+        .ok_or(Error::Invalid("the grenades lie outside the globals"))? as usize;
+    let n = count.min(grenades.len());
+    if first + n * GRENADE_SIZE > bytes.len() {
+        return Err(Error::Invalid("the grenades lie outside the globals"));
+    }
+    for (i, g) in grenades.iter().take(n).enumerate() {
+        let at = first + i * GRENADE_SIZE;
+        bytes[at + GRENADE_MAXIMUM..at + GRENADE_MAXIMUM + 2]
+            .copy_from_slice(&g.maximum.to_le_bytes());
+        for (field, group, id) in [
+            (GRENADE_EQUIPMENT, b"eqip", g.equipment),
+            (GRENADE_PROJECTILE, b"proj", g.projectile),
+        ] {
+            if let Some(id) = id {
+                let r = at + field;
+                bytes[r..r + 4].copy_from_slice(&FourCC(*group).as_u32().to_le_bytes());
+                bytes[r + 4..r + 8].copy_from_slice(&id.0.to_le_bytes());
+            }
+        }
+    }
+    Ok(n)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,5 +277,56 @@ mod tests {
         assert!(set_player_unit_in(&mut b, 0x8000_1000, TagId(1), Players::Campaign).is_ok());
         b.truncate(0x284 + PLAYER_REPRESENTATION_SIZE);
         assert!(set_player_unit_in(&mut b, 0x8000_1000, TagId(1), Players::Campaign).is_err());
+    }
+
+    #[test]
+    fn grenades_are_written_element_for_element_and_the_rest_kept() {
+        let address: u32 = 0x8000_1000;
+        let mut b = vec![0u8; 0x200 + 2 * GRENADE_SIZE];
+        b[GRENADES..GRENADES + 4].copy_from_slice(&2u32.to_le_bytes());
+        b[GRENADES + 4..GRENADES + 8].copy_from_slice(&(address + 0x200).to_le_bytes());
+        for e in 0..2 {
+            let at = 0x200 + e * GRENADE_SIZE;
+            b[at..at + 2].copy_from_slice(&4i16.to_le_bytes());
+            b[at + GRENADE_EQUIPMENT + 4..at + GRENADE_EQUIPMENT + 8]
+                .copy_from_slice(&(0xe000_0010 + e as u32).to_le_bytes());
+            b[at + GRENADE_PROJECTILE + 4..at + GRENADE_PROJECTILE + 8]
+                .copy_from_slice(&(0xe000_0020 + e as u32).to_le_bytes());
+        }
+        let g = |m: i16, e: Option<u32>, p: Option<u32>| Grenade::<TagId> {
+            maximum: m,
+            equipment: e.map(TagId),
+            projectile: p.map(TagId),
+        };
+        let n = set_grenades_in(
+            &mut b,
+            address,
+            &[
+                g(2, Some(0xe123_0001), Some(0xe123_0002)),
+                g(3, None, Some(0xe123_0003)),
+                g(9, Some(1u32), Some(1u32)),
+            ],
+        )
+        .unwrap();
+        assert_eq!(n, 2, "a third type has no element");
+        let w = |at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+        let (e0, e1) = (0x200, 0x200 + GRENADE_SIZE);
+        assert_eq!(i16::from_le_bytes([b[e0], b[e0 + 1]]), 2);
+        assert_eq!(i16::from_le_bytes([b[e1], b[e1 + 1]]), 3);
+        assert_eq!(
+            (w(e0 + GRENADE_EQUIPMENT), w(e0 + GRENADE_EQUIPMENT + 4)),
+            (FourCC(*b"eqip").as_u32(), 0xe123_0001)
+        );
+        assert_eq!(
+            (w(e0 + GRENADE_PROJECTILE), w(e0 + GRENADE_PROJECTILE + 4)),
+            (FourCC(*b"proj").as_u32(), 0xe123_0002)
+        );
+        assert_eq!(
+            w(e1 + GRENADE_EQUIPMENT + 4),
+            0xe000_0011,
+            "no equipment: the base's stays"
+        );
+        assert_eq!(w(e1 + GRENADE_PROJECTILE + 4), 0xe123_0003);
+        assert!(set_grenades_in(&mut b, address + 0x1000, &[]).is_err());
     }
 }

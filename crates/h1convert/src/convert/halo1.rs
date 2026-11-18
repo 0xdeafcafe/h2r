@@ -238,6 +238,25 @@ pub fn prepare_halo1<R: Read + Seek>(
             None
         }
     };
+    // Halo 1's grenade types, converted like the objects.
+    let mut grenades = Vec::new();
+    for g in crate::globals::h1_grenades(h1)? {
+        let mut one = |id: Option<h1map::TagId>, group: [u8; 4]| -> Option<TagId> {
+            let tag = h1.tag(id?).ok()?;
+            match objects.object(group, &tag.name) {
+                Ok(k) => Some(added_datum(first + k)),
+                Err(w) => {
+                    applied.unresolved.push(format!("grenade {}: {w}", tag.name));
+                    None
+                }
+            }
+        };
+        grenades.push(crate::globals::Grenade {
+            maximum: g.maximum,
+            equipment: one(g.equipment, *b"eqip"),
+            projectile: one(g.projectile, *b"proj"),
+        });
+    }
     let tags_out = objects.take();
     p.applied = applied;
     p.dropped = plan
@@ -250,6 +269,7 @@ pub fn prepare_halo1<R: Read + Seek>(
     p.objects = Some(tags_out);
     p.objects_first = first;
     p.player_biped = player_biped;
+    p.grenades = grenades;
     Ok(p)
 }
 
