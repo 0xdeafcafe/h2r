@@ -160,3 +160,86 @@ fn replaced_retail_levels() {
         assert_eq!(other.1, 0, "{name}");
     }
 }
+
+/// Code size of our structure programs with each of converter version
+/// 72's builder changes undone, over every retail BSP and on lockout:
+/// `cargo test -p mopp --release --test disc size_by_change -- --ignored --nocapture`.
+#[test]
+#[ignore = "needs the disc"]
+fn size_by_change() {
+    use mopp::build::{Legacy, build_legacy};
+    let levels = common::all_levels().unwrap();
+    let all = Legacy {
+        margin: true,
+        inclusive_tops: true,
+        zoom: true,
+        region: true,
+    };
+    let cases = [
+        ("v72", Legacy::default()),
+        ("v71 (all undone)", all),
+        (
+            "margin only undone",
+            Legacy {
+                margin: true,
+                ..Default::default()
+            },
+        ),
+        (
+            "tops only undone",
+            Legacy {
+                inclusive_tops: true,
+                ..Default::default()
+            },
+        ),
+        (
+            "zoom only undone",
+            Legacy {
+                zoom: true,
+                ..Default::default()
+            },
+        ),
+        (
+            "region only undone",
+            Legacy {
+                region: true,
+                ..Default::default()
+            },
+        ),
+        (
+            "all but margin undone",
+            Legacy {
+                margin: false,
+                ..all
+            },
+        ),
+        (
+            "all but tops undone",
+            Legacy {
+                inclusive_tops: false,
+                ..all
+            },
+        ),
+        ("all but zoom undone", Legacy { zoom: false, ..all }),
+        (
+            "all but region undone",
+            Legacy {
+                region: false,
+                ..all
+            },
+        ),
+    ];
+    for (name, l) in cases {
+        let (mut total, mut lockout) = (0usize, 0usize);
+        for lv in &levels {
+            let n = build_legacy(&structure_surfaces(&lv.collision), l)
+                .to_block()
+                .len();
+            total += n;
+            if lv.name == "lockout" && lv.bsp_index == 0 {
+                lockout = n;
+            }
+        }
+        println!("{name:>24}: total {total} bytes, lockout {lockout}");
+    }
+}
