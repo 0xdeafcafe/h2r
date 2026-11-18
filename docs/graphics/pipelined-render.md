@@ -922,6 +922,25 @@ them (`kernel:` for kernel imports, else the override's name);
 per pipelined frame: the game thread's wait at the join, the hand-back,
 the snapshot, and the render thread's run; `pages` handed back per frame.
 
+The line is printed at a decision, at most once a second, so a run that
+stops less than a second after the warm-up ends shows only serial lines
+although frames were pipelined. A line at each switch says which kind
+ran last: `pipeline: pipelining from here (0 pipelined, 150 serial so
+far)` and `pipeline: serial from here (...)`. A kernel call in the stop
+dump whose return address is a continuation token (`0xb...`) and whose
+arguments point into the render stack (in the feature arena) is a
+serviced call, so it is also a sign of pipelined frames.
+
+**Watching words** (`H2_PIPELINE_WATCH=0x485a80,0x4e034c`). Every change
+to a listed guest word prints `pipeline: watch <addr> <old> -> <new>
+after <step>`, at most 200 lines. A step says who changed it: `the game
+thread ran (at a frame / before the hand-back / before a service)` is the
+game or another guest thread; `a serviced kernel call` is the kernel
+call; `the frame wait and the launch` covers the launch's counter writes;
+`the hand-back`, `the hand-back before a fallback` and `a service's stack
+copy, push and flush` are merges of the feature's. It is the switch that
+settles whether a bad global came from a merge.
+
 **Tests.** `crates/feature/tests/pipeline_render.rs`: a synthetic render
 front-end (a Rust function registered as generated code with resume
 points) and sim, run serially and pipelined over 120 rounds
@@ -939,7 +958,10 @@ crash above; the same call serviced keeps the render on its own frame,
 the memory equal to the serial run's, the kernel called once a call on
 the game thread, its answer reaching the render through a live range and
 through a stack local; a serviced call under a Rust continuation
-carries on too.
+carries on too. Switched on with every frame serial (a warm-up that never
+ends), every kind of frame leaves guest memory (data, marks, the game
+thread's stack, the protected page) equal to the switched-off run's after
+each frame; a watched word reports each change once.
 `crates/emit/tests/second_executor.rs`: lifted x86 refused at a kernel
 call carries on on the main context from the refused CPU (twenty rounds).
 `crates/d3d/tests/registration.rs`: a real D3D entry on the executor (the

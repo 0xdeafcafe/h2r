@@ -46,6 +46,12 @@ use crate::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 pub const ID: &str = "pipeline-render";
 /// `H2_PIPELINE_RENDER=1` turns it on.
 pub const ENV: &str = "H2_PIPELINE_RENDER";
+/// `H2_PIPELINE_WATCH=0x485a80,...`: guest words to watch. Each change is
+/// printed with the step it showed up after (`pipeline: watch ...`), so a
+/// run says whether a merge of ours or the game itself changed a word.
+pub const WATCH_ENV: &str = "H2_PIPELINE_WATCH";
+/// At most this many `pipeline: watch` lines.
+const WATCH_LINES: u32 = 200;
 /// The render thread's guest stack: as large as the game thread's own
 /// (the XBE header's stack size for the main thread, 256 KiB), since the
 /// front-end runs there serially and may use as much. 128 KiB was not
@@ -352,6 +358,11 @@ struct Inner {
     stats: Stats,
     printed: Stats,
     last_print: Option<Instant>,
+    /// The last decision pipelined (a switch either way prints a line).
+    pipelining: bool,
+    /// [`Shared::watch`]'s words as last seen, and lines printed.
+    watched: Vec<Option<u32>>,
+    watch_lines: u32,
 }
 
 /// Overrides the render thread may run besides the D3D layer's.
@@ -377,6 +388,8 @@ struct Shared {
     world_run: AtomicU32,
     /// Frames still to run serially after a fallback.
     serial_left: AtomicU32,
+    /// Guest words whose changes are printed ([`WATCH_ENV`]).
+    watch: Vec<u32>,
     inner: Mutex<Inner>,
 }
 
@@ -398,7 +411,8 @@ impl PipelineRender {
     /// On when `H2_PIPELINE_RENDER=1`.
     pub fn new() -> Self {
         let on = std::env::var(ENV).is_ok_and(|v| v == "1");
-        Self::with(on, Addrs::HALO2)
+        let watch = parse_watch(std::env::var(WATCH_ENV).ok().as_deref());
+        Self::with(on, Addrs::HALO2).watch(&watch)
     }
 
     /// Explicitly on or off, with `addrs`. Prints no `pipeline:` lines
@@ -422,6 +436,7 @@ impl PipelineRender {
                 setup_failed: AtomicBool::new(false),
                 world_run: AtomicU32::new(0),
                 serial_left: AtomicU32::new(0),
+                watch: Vec::new(),
                 inner: Mutex::new(Inner {
                     exec: None,
                     setup: None,
@@ -429,6 +444,9 @@ impl PipelineRender {
                     stats: Stats::default(),
                     printed: Stats::default(),
                     last_print: None,
+                    pipelining: false,
+                    watched: Vec::new(),
+                    watch_lines: 0,
                 }),
             }),
         }
@@ -466,6 +484,20 @@ impl PipelineRender {
     pub fn disabled(mut self, why: impl Into<String>) -> Self {
         self.off_reason = Some(why.into());
         self
+    }
+
+    /// Watch guest words ([`WATCH_ENV`]): every change is printed with the
+    /// step after which it was seen.
+    pub fn watch(mut self, words: &[u32]) -> Self {
+        let s = self.shared_mut();
+        s.watch = words.to_vec();
+        s.inner.get_mut().unwrap_or_else(|e| e.into_inner()).watched = vec![None; words.len()];
+        self
+    }
+
+    /// The `pipeline: watch` lines so far (tests).
+    pub fn watch_lines(&self) -> u32 {
+        self.shared.lock().watch_lines
     }
 
     /// Print `pipeline:` lines once a second or not.
@@ -1065,11 +1097,28 @@ fn service(
     // Everything else the render wrote so far, so another guest thread the
     // call wakes (the I/O worker reading a request's fields and what they
     // point at) sees it.
+    if !me.watch.is_empty() {
+        let mut inner = me.lock();
+        check_watch(
+            me,
+            &mut inner,
+            &rt.memory(),
+            "the game thread ran (before a service)",
+        );
+    }
     let h = exec.flush(&rt, &mut live.flushed, &live.skip);
     {
         let mut inner = me.lock();
         inner.stats.bytes += h.bytes as u64;
         inner.stats.conflicts += h.conflicts as u64;
+        if !me.watch.is_empty() {
+            check_watch(
+                me,
+                &mut inner,
+                &rt.memory(),
+                "a service's stack copy, push and flush",
+            );
+        }
     }
     // A protection change: its range, to copy to the view after.
     let protect = (at.eip == runtime::kernel::function_token(PROTECT_ORDINAL))
@@ -1124,6 +1173,7 @@ fn carry_on(
     k: Cont,
 ) -> Result<TransferAbi, GuestFault> {
     let rt = Arc::clone(ctx.runtime());
+    watch_now(me, &rt, "a serviced kernel call");
     let top = me.stack_top.load(Ordering::Relaxed);
     copy_stack(&rt.memory(), &mut exec.runtime().memory(), at.esp, top);
     live.pull(&exec, &rt);
@@ -1265,6 +1315,14 @@ fn hand_back(
     flushed: &[u32],
 ) {
     let a = &me.addrs;
+    if !me.watch.is_empty() {
+        check_watch(
+            me,
+            inner,
+            &rt.memory(),
+            "the game thread ran (before the hand-back)",
+        );
+    }
     // Counters by delta, read before anything is reverted.
     let (present, frame) = {
         let g = rt.memory();
@@ -1370,6 +1428,14 @@ fn hand_back(
             }
         }
     }
+    if !me.watch.is_empty() {
+        let stage = if fallback {
+            "the hand-back before a fallback"
+        } else {
+            "the hand-back"
+        };
+        check_watch(me, inner, &g, stage);
+    }
 }
 
 /// After the join: serial, or frame wait, snapshot and launch.
@@ -1386,6 +1452,25 @@ fn decide(
         serial_reason(&me.addrs, &rt.memory())
     };
     let reason = guard(me, reason, &rt.memory());
+    watch_now(me, &rt, "the game thread ran (at a frame)");
+    if me.print {
+        // A line at each switch between serial and pipelined frames, so the
+        // last line before a stop says which kind ran.
+        let mut inner = me.lock();
+        if inner.pipelining != reason.is_none() {
+            inner.pipelining = reason.is_none();
+            eprintln!(
+                "pipeline: {} from here ({} pipelined, {} serial so far)",
+                if reason.is_none() {
+                    "pipelining"
+                } else {
+                    "serial"
+                },
+                inner.stats.pipelined,
+                inner.stats.serial.values().sum::<u64>(),
+            );
+        }
+    }
     maybe_print(me);
     if let Some(r) = reason {
         let original = {
@@ -1507,6 +1592,7 @@ fn launch(
         }
         g.set_u8(a.launch_clear, 0)?;
     }
+    watch_now(me, &rt, "the frame wait and the launch");
     let (tx, rx) = sync_channel(1);
     let mut render_cpu = saved;
     render_cpu.esp = me.stack_top.load(Ordering::Relaxed);
@@ -1539,6 +1625,53 @@ fn launch(
     Ok(TransferAbi::ret(ret_pc))
 }
 
+/// `0x485a80,0x4e034c` (hex, `0x` optional; commas or spaces): the words
+/// to watch. Unreadable entries are dropped.
+fn parse_watch(v: Option<&str>) -> Vec<u32> {
+    v.unwrap_or("")
+        .split([',', ' '])
+        .filter_map(|s| {
+            let s = s.trim();
+            let s = s.strip_prefix("0x").unwrap_or(s);
+            (!s.is_empty())
+                .then(|| u32::from_str_radix(s, 16).ok())
+                .flatten()
+        })
+        .collect()
+}
+
+/// Compare the watched words with their last values and print each change
+/// as seen after `stage` (a change "before the join" was the game's own,
+/// one "after the hand-back" or "after the service" a merge of ours).
+fn check_watch(me: &Shared, inner: &mut Inner, g: &Guest, stage: &str) {
+    for (i, &va) in me.watch.iter().enumerate() {
+        let now = g.u32(va).ok();
+        let then = inner.watched[i];
+        inner.watched[i] = now;
+        if then.is_none() || then == now {
+            continue;
+        }
+        inner.watch_lines += 1;
+        if inner.watch_lines <= WATCH_LINES && me.print {
+            eprintln!(
+                "pipeline: watch {va:#010x} {} -> {} after {stage} (pipelined {}, serial {})",
+                then.map_or("unmapped".into(), |v| format!("{v:#010x}")),
+                now.map_or("unmapped".into(), |v| format!("{v:#010x}")),
+                inner.stats.pipelined,
+                inner.stats.serial.values().sum::<u64>(),
+            );
+        }
+    }
+}
+
+fn watch_now(me: &Shared, rt: &Runtime, stage: &str) {
+    if me.watch.is_empty() {
+        return;
+    }
+    let mut inner = me.lock();
+    check_watch(me, &mut inner, &rt.memory(), stage);
+}
+
 fn maybe_print(me: &Shared) {
     if !me.print {
         return;
@@ -1562,6 +1695,15 @@ fn maybe_print(me: &Shared) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn watch_words_parse_as_hex_with_or_without_0x() {
+        assert_eq!(
+            parse_watch(Some("0x485a80, 4e034c,zz,,0x10")),
+            vec![0x0048_5a80, 0x004e_034c, 0x10]
+        );
+        assert!(parse_watch(None).is_empty());
+    }
 
     #[test]
     fn a_line_averages_per_pipelined_frame() {
