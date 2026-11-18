@@ -562,7 +562,10 @@ mod tests {
             Some("Sign in as Chief | 1 [1] 0 - 0 0 0 | -")
         );
         h.step(&mut app, &click("A##pad-A")).unwrap();
-        assert_eq!(app.ui_screens.last.as_deref(), Some("A: Submit(\"110000\")"));
+        assert_eq!(
+            app.ui_screens.last.as_deref(),
+            Some("A: Submit(\"110000\")")
+        );
         // The picture: hover the middle of the title.
         let (origin, zoom) = h.studio.ui_screens.shown.expect("the picture is shown");
         let title = {
@@ -580,9 +583,72 @@ mod tests {
         assert_eq!(hovered.as_deref(), Some("title"));
         assert!(app.ui_screens.widget_json("title").is_some());
         let (rgba, _) = h.capture(&mut app, 2).unwrap();
-        let distinct: std::collections::HashSet<[u8; 4]> =
-            rgba.as_chunks::<4>().0.iter().step_by(97).copied().collect();
+        let distinct: std::collections::HashSet<[u8; 4]> = rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .step_by(97)
+            .copied()
+            .collect();
         assert!(distinct.len() > 8);
+    }
+
+    /// The Tags tool through its widgets: open the weapon group in the
+    /// tree, pick the weapon, tick a flag and pick an enum value in the
+    /// field panel. The edits land in the document, as undo steps, and
+    /// the hex pane shows the element. Skipped without a wgpu adapter.
+    #[test]
+    fn the_tags_tool_edits_a_field_through_its_widgets() {
+        use crate::app::tag_tests;
+        use crate::script::{Button, Step};
+        let Some((_turn, mut h)) = headless() else {
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("h2-editor-tags-ui-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mut app, ..) = tag_tests::app(&dir);
+        h.frames(&mut app, 3).unwrap();
+        let click = |t: &str| Step::Click(t.into(), Button::Left);
+        h.step(&mut app, &click("weap  (1)")).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        h.step(&mut app, &click("objects\\test\\blaster")).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        assert_eq!(app.tags.selected, Some(tag_tests::weap_id()));
+        h.step(&mut app, &click("quiet##b1")).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        let flags = app.tags.read(tag_tests::WEAP + 4, 2).unwrap();
+        assert_eq!(flags, [3, 0], "both flags set");
+        assert!(app.tags.is_changed(tag_tests::weap_id()));
+        // The block lists its elements; the hex pane follows the mouse.
+        assert!(
+            h.scene
+                .items
+                .iter()
+                .any(|i| i.label.starts_with("parts  [2]"))
+        );
+        h.step(&mut app, &Step::Hover("loud##b0".into())).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        assert_eq!(
+            h.studio
+                .tags
+                .panel
+                .hovered
+                .as_ref()
+                .map(|h| h.name.as_str()),
+            Some("flags")
+        );
+        app.dispatch(Action::Undo);
+        assert_eq!(app.tags.read(tag_tests::WEAP + 4, 2).unwrap(), [1, 0]);
+        let (rgba, _) = h.capture(&mut app, 2).unwrap();
+        let distinct: std::collections::HashSet<[u8; 4]> = rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .step_by(97)
+            .copied()
+            .collect();
+        assert!(distinct.len() > 8);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Dear ImGui allows one context at a time: the tests take turns.

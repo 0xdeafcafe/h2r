@@ -6,6 +6,8 @@
 //! - [`app`]: the state and commands, testable without a window.
 //! - [`ui`]: the shell (menus, dockspace, tools, outliner, inspector, log,
 //!   status bar, modals).
+//! - [`fields`]: the tag field panel (every field of a tag element,
+//!   labelled, a widget per type), for the Tags tool and any other.
 //! - [`viewport`]: the 3D view with picking and the ImGuizmo gizmo.
 //! - [`theme`]: the dark theme, bundled fonts and icons.
 //! - [`headless`]: renders real frames offscreen to PNG (screenshots),
@@ -14,6 +16,7 @@
 //! Nothing here contains game data: maps come from the user's own disc.
 
 pub mod app;
+pub mod fields;
 pub mod headless;
 pub mod probe;
 pub mod script;
