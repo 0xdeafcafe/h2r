@@ -20,6 +20,7 @@ pub mod entry;
 pub mod install;
 pub mod leaves;
 pub mod locale;
+pub mod occlusion;
 pub mod plan;
 pub mod render_census;
 pub mod render_loop;

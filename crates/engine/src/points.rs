@@ -301,6 +301,16 @@ points! { ALL;
     /// each entry through `SetRenderState_Simple`, the D3D shadow and
     /// dirty bits, or a per-state setter.
     RENDER_STATES @ 0x0001_a170: [opaque]; "docs/graphics/render-loop.md";
+    /// The object render records for a visibility struct: EAX the struct
+    /// (`0x00547f88` the main view's), stack 0 an argument passed on,
+    /// `ret 4`. Reorders the struct's object list (`0x00134240`), then
+    /// calls `OBJECT_RENDER_SETUP` per listed object.
+    OBJECT_RENDER_RECORDS @ 0x0013_3720: [fn(vis: eax, arg: stack 0) ret 4]; "docs/graphics/occlusion-culling.md";
+    /// One listed object's render setup (view depth, LOD, nodes, children,
+    /// the `0x004ba138` records): ESI the visibility struct, stack
+    /// `(list index, byte, byte*, -1, arg)`, AL a retry flag, `ret 0x14`.
+    /// The occlusion skip point.
+    OBJECT_RENDER_SETUP @ 0x0013_3790: [fn(vis: esi, index: stack 0) -> al ret 20]; "docs/graphics/occlusion-culling.md";
     /// Shader draw begin: per draw.
     SHADER_DRAW_BEGIN @ 0x0001_bbf0: [opaque], Hot; "docs/formats/shader-instances.md";
     /// `submit_structure_or_model_geometry`: per draw.

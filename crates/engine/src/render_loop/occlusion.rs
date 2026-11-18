@@ -20,6 +20,12 @@
 //! and occlude nothing.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+use crate::memory::{GuestMemory, MemFault};
+use crate::render_loop::Regs;
+
+pub mod guest;
 
 pub type Vec3 = [f32; 3];
 
@@ -153,6 +159,17 @@ impl DepthGrid {
 
     pub fn at(&self, x: u32, y: u32) -> f32 {
         self.depth[(y * self.width + x) as usize]
+    }
+
+    /// Makes cells whose farthest depth is nearer than `min` far: they are
+    /// wholly covered by something at the camera (the first-person weapon,
+    /// the player's own body), which must not occlude the world.
+    pub fn ignore_nearer(&mut self, min: f32) {
+        for d in &mut self.depth {
+            if *d < min {
+                *d = f32::INFINITY;
+            }
+        }
     }
 }
 
@@ -387,6 +404,8 @@ pub struct Frame {
 }
 
 /// The conservative rules (docs/graphics/occlusion-culling.md, "Rules").
+/// Distances are world units (about 3 m: a running player covers about
+/// 0.08 a frame at 30 fps).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rules {
     /// Consecutive occluded tests before an object is skipped.
@@ -410,11 +429,11 @@ impl Default for Rules {
         Self {
             frames: 2,
             inflate: 1.1,
-            margin: 0.1,
-            bias: 0.25,
-            cut_distance: 4.0,
+            margin: 0.05,
+            bias: 0.15,
+            cut_distance: 2.0,
             cut_cos: 0.7,
-            max_radius: 100.0,
+            max_radius: 50.0,
         }
     }
 }
@@ -461,7 +480,7 @@ pub struct Tracker {
     pub rules: Rules,
     entries: HashMap<u32, Entry>,
     frame: u64,
-    depth: Option<Frame>,
+    depth: Option<Arc<Frame>>,
     last_camera: Option<Camera>,
     /// The current camera's displacement from the depth's: added to radii.
     parallax: f32,
@@ -489,9 +508,11 @@ impl Tracker {
 
     /// Starts frame `frame` with the current `camera` and the newest depth
     /// the GPU has handed over (`None`: nothing is culled this frame).
-    pub fn begin(&mut self, frame: u64, camera: Camera, depth: Option<Frame>) {
+    pub fn begin(&mut self, frame: u64, camera: Camera, depth: Option<Arc<Frame>>) {
+        // A camera cut, or time going backwards (a snapshot restored, a
+        // new map): every streak is stale.
         if let Some(last) = self.last_camera
-            && self.is_cut(&last, &camera)
+            && (self.is_cut(&last, &camera) || frame < self.frame)
         {
             self.reset();
         }
@@ -507,7 +528,8 @@ impl Tracker {
             .map_or(0.0, |d| len(sub(camera.position, d.camera.position)));
         // Drop objects not seen for a while.
         if frame.is_multiple_of(64) {
-            self.entries.retain(|_, e| frame - e.seen <= 64);
+            self.entries
+                .retain(|_, e| frame.saturating_sub(e.seen) <= 64);
         }
     }
 
@@ -549,7 +571,7 @@ impl Tracker {
         let Some(d) = &self.depth else {
             return Verdict::Unknown;
         };
-        if !(b.radius >= 0.0) || b.radius >= self.rules.max_radius {
+        if b.radius.is_nan() || b.radius < 0.0 || b.radius >= self.rules.max_radius {
             return Verdict::Unknown;
         }
         let radius = b.radius * self.rules.inflate + self.rules.margin + self.parallax;
@@ -563,6 +585,57 @@ impl Tracker {
             },
             None => Verdict::Unknown,
         }
+    }
+}
+
+/// The once-a-second `occlusion:` line: counts and the time spent
+/// deciding, over the last window.
+#[derive(Debug, Default)]
+pub struct Meter {
+    start: Option<u64>,
+    last: Counts,
+    ns: u64,
+    frames: u64,
+}
+
+impl Meter {
+    /// Adds `ns` of cull time (the hooks' reads, tests and projection).
+    pub fn spent(&mut self, ns: u64) {
+        self.ns += ns;
+    }
+
+    /// Counts one main-view frame.
+    pub fn frame(&mut self) {
+        self.frames += 1;
+    }
+
+    /// At `now_ns`, with the running `counts`: the line when a second has
+    /// passed since the window began (and starts the next window).
+    pub fn tick(&mut self, now_ns: u64, counts: Counts) -> Option<String> {
+        let start = *self.start.get_or_insert(now_ns);
+        if now_ns.saturating_sub(start) < 1_000_000_000 {
+            return None;
+        }
+        let tested = counts.tested - self.last.tested;
+        let culled = counts.culled - self.last.culled;
+        let pct = if tested == 0 {
+            0.0
+        } else {
+            100.0 * culled as f64 / tested as f64
+        };
+        let line = format!(
+            "occlusion: tested {tested} culled {culled} ({pct:.1}%) unknown {} exempt {} resets {} cull {:.3} ms/frame over {} frames",
+            counts.unknown - self.last.unknown,
+            counts.exempt - self.last.exempt,
+            counts.resets - self.last.resets,
+            self.ns as f64 / 1e6 / self.frames.max(1) as f64,
+            self.frames,
+        );
+        self.start = Some(now_ns);
+        self.last = counts;
+        self.ns = 0;
+        self.frames = 0;
+        Some(line)
     }
 }
 
@@ -603,7 +676,7 @@ mod tests {
         // A stored value of 100 world units reads back at or beyond 100.
         let d = (100.0f32 * 16_777.215).floor() / 16_777_215.0;
         let v = m.view_depth(d);
-        assert!(v >= 99.999 && v <= 100.01, "{v}");
+        assert!((99.999..=100.01).contains(&v), "{v}");
         assert_eq!(m.view_depth(1.0), f32::INFINITY);
         assert_eq!(m.view_depth(f32::NAN), f32::INFINITY);
         let p = DepthMapping::Projective {
@@ -752,8 +825,8 @@ mod tests {
         }
     }
 
-    fn frame_of(buffer: &[f32], w: u32, h: u32, frame: u64) -> Frame {
-        Frame {
+    fn frame_of(buffer: &[f32], w: u32, h: u32, frame: u64) -> Arc<Frame> {
+        Arc::new(Frame {
             hiz: HiZ::build(DepthGrid::reduce(
                 buffer,
                 w,
@@ -764,7 +837,7 @@ mod tests {
             )),
             camera: cam(),
             frame,
-        }
+        })
     }
 
     #[test]
@@ -896,7 +969,7 @@ mod tests {
         let buf = wall_buffer(256, 128, 0, 128, 5.0);
         let b = Bounds {
             key: 1,
-            center: [20.0, 3.0, 0.0],
+            center: [20.0, 1.0, 0.0],
             radius: 0.5,
             exempt: false,
         };
@@ -909,8 +982,32 @@ mod tests {
         let mut c = cam();
         moving.begin(1, c, Some(frame_of(&buf, 256, 128, 0)));
         moving.decide(&b);
-        c.position = [0.0, -3.0, 0.0];
+        c.position = [0.0, -1.5, 0.0];
         moving.begin(2, c, Some(frame_of(&buf, 256, 128, 1)));
         assert!(!moving.decide(&b));
+    }
+
+    #[test]
+    fn meter_reports_once_a_second_over_the_window() {
+        let mut m = Meter::default();
+        let mut c = Counts::default();
+        assert_eq!(m.tick(5, c), None);
+        c.tested = 200;
+        c.culled = 50;
+        m.frame();
+        m.frame();
+        m.spent(3_000_000);
+        assert_eq!(m.tick(500_000_000, c), None);
+        let line = m.tick(1_000_000_005, c).unwrap();
+        assert_eq!(
+            line,
+            "occlusion: tested 200 culled 50 (25.0%) unknown 0 exempt 0 resets 0 cull 1.500 ms/frame over 2 frames"
+        );
+        c.tested = 300;
+        let line = m.tick(2_000_000_005, c).unwrap();
+        assert!(
+            line.starts_with("occlusion: tested 100 culled 0 (0.0%)"),
+            "{line}"
+        );
     }
 }
