@@ -271,25 +271,30 @@ fn jobs_run_on_several_workers_each_once() {
 }
 
 #[test]
-fn jobs_start_campaign_first_each_beside_the_jobs_sharing_its_map() {
+fn jobs_start_campaign_first_each_maps_first_job_before_its_second_biggest_first() {
     let todo = jobs(&stems(&["a10", "a30", "bloodgulch", "sidewinder"]));
-    let keys: Vec<String> = schedule(&todo).iter().map(Job::key).collect();
+    let size = |m: &str| match m {
+        "a30" => 9,
+        "sidewinder" => 5,
+        _ => 1,
+    };
+    let keys: Vec<String> = schedule(&todo, size).iter().map(Job::key).collect();
     assert_eq!(
         keys,
         [
-            "a10",
-            "a10/h2",
             "a30",
+            "a10",
             "a30/h2",
-            "bloodgulch/h2",
-            "bloodgulch/h1",
+            "a10/h2",
             "sidewinder/h2",
-            "sidewinder/h1"
+            "bloodgulch/h2",
+            "sidewinder/h1",
+            "bloodgulch/h1"
         ]
     );
     // Only what is to do.
     let some = [todo[1], todo[4]];
-    assert_eq!(schedule(&some), some);
+    assert_eq!(schedule(&some, size), some);
 }
 
 #[test]
