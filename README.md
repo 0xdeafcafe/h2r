@@ -47,6 +47,7 @@ Heretic on an M-series Mac, against a target of 30
 | | Campaign skulls per profile, a Skulls page, our own skulls | Built | [skulls](docs/game/skulls.md) |
 | | Twelve community game variants (Zombies, SWAT and more) as built-ins | Built | [variants](docs/game/community-gametypes.md) |
 | | Aim assist strength setting | Built | [aim assist](docs/game/aim-assist.md) |
+| | Multiplayer bots (Clankers) on free controller ports; their nav meshes build themselves in the background, again when a map or the generator changes (`H2_BOTS_NAV_AUTO=0` turns that off) | Built | [bots](docs/game/bots.md) |
 | | Multiplayer Map Pack installed from your own disc | Built | [map pack](docs/game/map-pack.md) |
 | | New, edited and patched maps as packages | Built | [maps](docs/game/maps.md) |
 | | More than one campaign: picker and per-campaign progress | Built | [campaigns](docs/halo1/campaign-picker.md) |
