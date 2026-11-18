@@ -150,15 +150,65 @@ up: reload, overheat, no ammunition, no grenades; V: `hud_reticle_warnings`),
 the zoom-level readout (type 1, its sprite chosen by the zoom level),
 aim overlays shown only unzoomed (bit 6), numbers and overlay elements.
 
+## Grenades
+
+Halo 1 draws the selected grenade type's `grhi` (E `0x000db3c0`..`0x000db5c1`:
+the type `[unit +0x2cc]`, its `grhi` from the globals' grenades block
+`matg +0x128`, `0x44` each, reference `+0x14`). `h1hud::grenade_huds`
+reads each type's, `h1hud::grenade_elements` its background `+0x24` and
+total background `+0x8c` (the element layout of the unit HUD), and
+`Converter::unit_hud` appends them to the unit's `nhdt` per type, with
+the state flags of Halo 2's own grenade background for that type
+(`h1hud::GRENADE_STATES`; V: `ui\hud\masterchief` widgets 0 and 1, word 0
+bit `0x04` frag and `0x08` plasma, the same bits as its `frag_count` and
+`plasma_count` text widgets), so only the selected type's shows. Halo 1's
+type order (frag, plasma) is Halo 2's, as the converted globals keep it.
+
+Not carried: the count (`+0xf4`, a number element, drawn when `+0x138`
+is set; Halo 2 draws counts as text widgets, inputs 20 and 21, whose
+layout is not established here) and the messaging part (`+0x14c`).
+
+## Scale
+
+Halo 1 multiplies an element's size and offset by its scale (`+4`; E
+`0x000e15f4`, `0x000e15ff`). A Halo 2 bitmap widget has no scale. Every
+element on the disc is unscaled (V: `hud_disc` `grenade_huds_read`: the
+unit and grenade elements of every map, the weapon entries of bloodgulch
+and a10, all 1.0), so Halo 1's sizes are kept as they are; a scaled one
+is refused (`h1hud::unscaled`).
+
+## Colours: alpha only; the motion sensor
+
+Halo 1 tints every element with its colour (ARGB `+0x34`; overlays
+`+0x24`), alpha included (E `0x000e1830`). On the disc the colours are
+few: `0x2896ff` and `0xaad5ff` blues at alphas `0xc8`..`0xff`, and the
+motion sensor's background `0x28061428` (alpha `0x28`: a faint dark disc)
+and foreground `0xa06986a0`. The widgets draw through
+`widget_gradient_flash`, whose colours come from its own constants (its
+`colors` block and six animated pixel-constant bindings), not from the
+widget; the texture's alpha is kept (`a = t0.a * c0.a`).
+
+So the converter carries the alpha: a static unit or grenade element
+whose colour's alpha is under 255 draws a copy of its bitmap with every
+texel's alpha scaled by it (`h1hud::scale_alpha`,
+`Converter::hud_bitmap`, `<bitmap>_alpha_<aa>`), for formats with an alpha
+byte (A8, A8Y8, A8R8G8B8). **Not yet for the motion sensor:** its bitmap
+(`hud_weapon_backgrounds`, sequence 3) has no alpha byte, so its
+background still draws opaque in the shader's light blue (seen in a run
+on a10 and a30). The next step is to decode such a bitmap and write the
+copy as A8R8G8B8. Halo 1's colour RGB needs a `shad` per colour whose
+constant reaches the pixel shader's last-stage `c0`; which `colors` entry
+or animation binding feeds it is not yet established
+(`docs/formats/shader-instances.md`: E `0x0001717b`).
+
 ## Not converted yet
 
-- **Grenades** (`grhi`), **HUD globals** (`hudg`), **numbers** (`hud#`):
-  Halo 2 draws counts as text widgets in its HUD font (`ui\hud\masterchief`
-  `frag_count`), not from a numbers bitmap.
-- **Motion sensor blips**: Halo 2 draws them by its own code; whether they
-  follow the converted background's place is for a game run to show.
-- Halo 1's element colours and scale are not carried: Halo 2's HUD
-  shaders have their own colours.
+- **Numbers** (`hud#`, the weapon and grenade counts) and **HUD globals**
+  (`hudg`).
+- **Motion sensor sweep and blips**: Halo 1 draws them from the `unhi`'s
+  motion sensor placement (`+0x35c`, E `0x000dd658`..`0x000dd691`),
+  Halo 2 by its own code; whether Halo 2's follow the converted
+  background is for a game run to show.
 
 ## Tests
 
@@ -183,7 +233,7 @@ aim overlays shown only unzoomed (bit 6), numbers and overlay elements.
 
 ## What a game run should show
 
-On a converted Halo 1 map (converter version 53 or later) in the Halo 1
+On a converted Halo 1 map (converter version 54 or later) in the Halo 1
 sandbox, or a Halo 1 campaign level: Halo 1's shield and health bars top
 right, Halo 1's motion sensor frame bottom left, Halo 1's ammunition
 counter top left and its crosshair centred (the sniper's scope lines only

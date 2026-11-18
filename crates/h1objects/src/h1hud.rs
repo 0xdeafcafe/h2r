@@ -136,6 +136,8 @@ pub struct Element {
     pub scale: [f32; 2],
     pub bitmap: H1TagId,
     pub sequence: i16,
+    /// Halo 1's colour (`+0x34`, ARGB).
+    pub colour: u32,
 }
 
 fn i16_at(b: &[u8], at: usize) -> i16 {
@@ -167,29 +169,112 @@ pub fn unit_elements(map: &H1Map, b: &[u8]) -> Result<Vec<Element>> {
         ("h1_motion_background", unhi::MOTION_BACKGROUND, Role::Static, Anchor::BottomLeft),
         ("h1_motion_foreground", unhi::MOTION_FOREGROUND, Role::Static, Anchor::BottomLeft),
     ];
-    let mut out = Vec::new();
-    for (name, at, role, anchor) in rows {
-        let Some(bitmap) = crate::h1::reference(map, b, at + h1el::BITMAP) else {
-            continue;
-        };
-        let seq_at = match role {
-            Role::Static => h1el::SEQUENCE,
-            Role::Meter(_) => h1el::METER_SEQUENCE,
-        };
-        out.push(Element {
-            name,
-            role,
+    Ok(rows
+        .into_iter()
+        .filter_map(|(name, at, role, anchor)| element_at(map, b, at, name, role, anchor))
+        .collect())
+}
+
+/// The element at `at` of the HUD tag `b`, when it has a bitmap.
+fn element_at(
+    map: &H1Map,
+    b: &[u8],
+    at: usize,
+    name: &'static str,
+    role: Role,
+    anchor: Anchor,
+) -> Option<Element> {
+    let bitmap = crate::h1::reference(map, b, at + h1el::BITMAP)?;
+    let seq_at = match role {
+        Role::Static => h1el::SEQUENCE,
+        Role::Meter(_) => h1el::METER_SEQUENCE,
+    };
+    Some(Element {
+        name,
+        role,
+        anchor,
+        offset: to_halo2_offset(
             anchor,
-            offset: to_halo2_offset(
-                anchor,
-                (i16_at(b, at + h1el::OFFSET), i16_at(b, at + h1el::OFFSET + 2)),
-            ),
-            scale: [f32_at(b, at + h1el::SCALE), f32_at(b, at + h1el::SCALE + 4)],
-            bitmap,
-            sequence: i16_at(b, at + seq_at),
-        });
+            (i16_at(b, at + h1el::OFFSET), i16_at(b, at + h1el::OFFSET + 2)),
+        ),
+        scale: [f32_at(b, at + h1el::SCALE), f32_at(b, at + h1el::SCALE + 4)],
+        bitmap,
+        sequence: i16_at(b, at + seq_at),
+        colour: u32::from_le_bytes(b[at + h1el::COLOUR..at + h1el::COLOUR + 4].try_into().unwrap()),
+    })
+}
+
+/// Halo 1's grenade HUD (`grhi`), from its draw (E `0x000db3c0`..`0x000db5c1`,
+/// `esi` the `grhi` of the unit's selected grenade type, `[unit +0x2cc]`,
+/// from the globals' grenades block `+0x12c`, `0x44` each, its reference
+/// `+0x14`, datum `+0x20`).
+pub mod grhi {
+    /// The anchor (`u16`; the `grhi` is the header handed to the element
+    /// draw, `0x000db4ed`).
+    pub const ANCHOR: usize = 0x00;
+    /// The background (`0x000db4ef`, drawn when its bitmap's datum
+    /// `+0x54` is live).
+    pub const BACKGROUND: usize = 0x24;
+    /// The total-grenades background (`0x000db50f`, datum `+0xbc`).
+    pub const TOTAL_BACKGROUND: usize = 0x8c;
+    /// The count, a number element drawn by `0x000e1a60` when byte
+    /// `+0x138` is set (`0x000db514`).
+    pub const NUMBER: usize = 0xf4;
+    pub const NUMBER_SHOWN: usize = 0x138;
+    /// The count at or under which it flashes (`i16`, `0x000db494`).
+    pub const LOW: usize = 0x148;
+    /// The messaging part, drawn by `0x000e16b0` when the bitmap `+0x14c`
+    /// is live (`0x000db54e`).
+    pub const MESSAGING: usize = 0x14c;
+    pub const SIZE: usize = 0x15c;
+    /// In the Halo 1 globals (`matg`): the grenades block and an element's
+    /// HUD reference.
+    pub const GLOBALS_GRENADES: usize = 0x128;
+    pub const GLOBALS_GRENADE_SIZE: usize = 0x44;
+    pub const GLOBALS_GRENADE_HUD: usize = 0x14;
+}
+
+/// The drawable elements of the `grhi` `b`: background, then the total
+/// background, as Halo 1 draws them.
+pub fn grenade_elements(map: &H1Map, b: &[u8]) -> Result<Vec<Element>> {
+    if b.len() < grhi::SIZE {
+        return Err(Error::Truncated("grhi"));
     }
-    Ok(out)
+    let raw = u16::from_le_bytes([b[grhi::ANCHOR], b[grhi::ANCHOR + 1]]);
+    let anchor =
+        Anchor::from_halo1(raw).ok_or_else(|| Error::Invalid(format!("grhi anchor {raw}")))?;
+    Ok([
+        ("h1_grenade_background", grhi::BACKGROUND),
+        ("h1_grenade_total_background", grhi::TOTAL_BACKGROUND),
+    ]
+    .into_iter()
+    .filter_map(|(name, at)| element_at(map, b, at, name, Role::Static, anchor))
+    .collect())
+}
+
+/// The state flags of a grenade type's widgets, by Halo 2's grenade
+/// type index: those of Halo 2's own grenade backgrounds (V:
+/// `ui\hud\masterchief` widgets 0 and 1, `grenade_bkd` sequences 0 and 1,
+/// shown on `+0x08` word 0 bit `0x04` and `0x08`; its text widgets
+/// `frag_count` and `plasma_count` have the same bits), so each shows only
+/// while its type is the selected one, as Halo 1 draws only the selected
+/// type's `grhi` (E `0x000db3f5`: `[unit +0x2cc]`).
+pub const GRENADE_STATES: [[u8; 20]; 2] = [
+    [0x04, 0, 0, 0, 0, 0, 0, 0, 0x2a, 0x06, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0x08, 0, 0, 0, 0, 0, 0, 0, 0x26, 0x06, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+];
+
+/// Each Halo 1 grenade type's HUD (`grhi`), in the globals' order (the
+/// type index), `None` for a type with none.
+pub fn grenade_huds(map: &H1Map) -> Result<Vec<Option<H1TagId>>> {
+    let Some(t) = map.tags().iter().find(|t| t.group == h1map::Group::new(b"matg")) else {
+        return Ok(Vec::new());
+    };
+    let b = map.tag_data(t)?;
+    Ok(crate::h1::elements(map, b, grhi::GLOBALS_GRENADES, grhi::GLOBALS_GRENADE_SIZE)?
+        .into_iter()
+        .map(|e| crate::h1::reference(map, e, grhi::GLOBALS_GRENADE_HUD))
+        .collect())
 }
 
 /// Halo 1's offset as Halo 2's. Halo 1 measures it inward from the
@@ -340,6 +425,8 @@ pub struct WeaponEntry {
     pub scale: [f32; 2],
     pub bitmap: Option<H1TagId>,
     pub sequence: i16,
+    /// Halo 1's colour (ARGB): an element's `+0x34`, an overlay's `+0x24`.
+    pub colour: u32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -389,6 +476,7 @@ fn weapon_chain(
             i16_at(e, at + seq),
         )
     };
+    let u32_at = |e: &[u8], at: usize| u32::from_le_bytes(e[at..at + 4].try_into().unwrap());
     use wphi::entry;
     for e in crate::h1::elements(map, b, wphi::STATICS, wphi::STATIC_SIZE)? {
         let (offset, scale, bitmap, sequence) = el(e, entry::ELEMENT, h1el::SEQUENCE);
@@ -402,6 +490,7 @@ fn weapon_chain(
             scale,
             bitmap,
             sequence,
+            colour: u32_at(e, entry::ELEMENT + h1el::COLOUR),
         });
     }
     for e in crate::h1::elements(map, b, wphi::METERS, wphi::METER_SIZE)? {
@@ -424,6 +513,7 @@ fn weapon_chain(
             scale,
             bitmap,
             sequence,
+            colour: u32_at(e, entry::ELEMENT + h1el::COLOUR),
         });
     }
     use wphi::{crosshair, overlay};
@@ -443,6 +533,7 @@ fn weapon_chain(
                 scale: [f32_at(o, overlay::SCALE), f32_at(o, overlay::SCALE + 4)],
                 bitmap,
                 sequence: i16_at(o, overlay::SEQUENCE),
+                colour: u32_at(o, overlay::COLOUR),
             });
         }
     }
@@ -518,6 +609,8 @@ pub enum Skip {
     /// An aim overlay drawn only unzoomed: no Halo 2 state flags for it
     /// are established.
     UnzoomedOnly,
+    /// Scaled ([`unscaled`]).
+    Scaled([f32; 2]),
 }
 
 /// The widget for weapon HUD entry `e` (its bitmap converted as
@@ -537,6 +630,9 @@ pub fn weapon_widget(
     }
     if e.screen == SPLIT_SCREEN_ONLY {
         return Err(Skip::SplitScreen);
+    }
+    if !unscaled(e.scale) {
+        return Err(Skip::Scaled(e.scale));
     }
     let bitmap = bitmap.ok_or(Skip::NothingDrawn)?;
     let (name, inputs, shader, state) = match &e.kind {
@@ -569,6 +665,47 @@ pub fn weapon_widget(
         registration: registration(e.anchor),
         special: 0,
     })
+}
+
+/// Whether Halo 1 draws an element at its sprite's own size. Halo 1
+/// multiplies the sprite's size and the offset by the element's scale
+/// (`+4`, two `f32`; E `0x000e15f4`, `0x000e15ff`). A Halo 2
+/// bitmap widget has no scale: it draws the sprite at its size. Every
+/// element on the disc is unscaled (V: `hud_disc` `grenade_huds_read`, the
+/// unit and grenade elements of every map and the weapon entries of
+/// bloodgulch and a10, all 1.0), so Halo 1's size is kept; a scaled one
+/// is refused rather than drawn at the wrong size.
+pub fn unscaled(scale: [f32; 2]) -> bool {
+    scale == [1.0, 1.0]
+}
+
+/// The alpha of Halo 1's element colour (ARGB `+0x34`).
+pub fn colour_alpha(colour: u32) -> u8 {
+    (colour >> 24) as u8
+}
+
+/// Halo 1's pixels with every texel's alpha multiplied by `alpha` (of
+/// 255), as Halo 1's draw multiplies the sprite by its element's colour,
+/// alpha included (E `0x000e1830`: the colour `+0x34`). Halo 2's HUD shader
+/// keeps the texture's alpha (`widget_gradient_flash`: `a = t0.a * c0.a`)
+/// but takes no colour from the widget, so the colour's alpha goes into
+/// the sprite. Every texel's alpha scales alike, so the Xbox swizzle does
+/// not matter. `None` for a format whose alpha is not a byte of its own
+/// (block-compressed, 16-bit, no alpha).
+pub fn scale_alpha(format: h1map::bitmap::PixelFormat, px: &mut [u8], alpha: u8) -> Option<()> {
+    use h1map::bitmap::PixelFormat as F;
+    let (stride, at) = match format {
+        F::A8 => (1, 0),
+        // Y then A (h1bitmaps decode).
+        F::A8Y8 => (2, 1),
+        // B, G, R, A.
+        F::A8R8G8B8 => (4, 3),
+        _ => return None,
+    };
+    for t in px.chunks_exact_mut(stride) {
+        t[at] = ((u16::from(t[at]) * u16::from(alpha) + 127) / 255) as u8;
+    }
+    Some(())
 }
 
 /// A Halo 2 bitmap widget, every field of its `0x64` bytes.
@@ -723,6 +860,7 @@ mod tests {
             scale: [1.0, 1.0],
             bitmap: Some(H1TagId(1)),
             sequence: 6,
+            colour: 0,
         }
     }
 
@@ -775,6 +913,19 @@ mod tests {
     }
 
     #[test]
+    fn the_colours_alpha_scales_the_sprites_alpha() {
+        use h1map::bitmap::PixelFormat as F;
+        let mut px = vec![0x10, 0xff, 0x20, 0x80];
+        scale_alpha(F::A8Y8, &mut px, 0x28).unwrap();
+        assert_eq!(px, [0x10, 0x28, 0x20, 0x14], "luminance kept, alpha times 0x28/255");
+        let mut px = vec![1, 2, 3, 0xff];
+        scale_alpha(F::A8R8G8B8, &mut px, 0xa0).unwrap();
+        assert_eq!(px, [1, 2, 3, 0xa0]);
+        assert!(scale_alpha(F::Dxt5, &mut [0; 16], 0x28).is_none());
+        assert_eq!(colour_alpha(0x2806_1428), 0x28);
+    }
+
+    #[test]
     fn halo1_offsets_point_inward_from_the_corner() {
         assert_eq!(to_halo2_offset(Anchor::TopRight, (7, 3)), (-7, 3));
         assert_eq!(to_halo2_offset(Anchor::BottomLeft, (7, 3)), (7, -3));
@@ -808,6 +959,7 @@ mod tests {
             scale: [1.0, 1.0],
             bitmap: H1TagId(0),
             sequence: 3,
+            colour: 0,
         }
     }
 

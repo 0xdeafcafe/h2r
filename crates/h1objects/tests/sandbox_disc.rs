@@ -343,14 +343,30 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
                 n * hh::BITMAP_WIDGET_SIZE,
             );
             let mut inputs = Vec::new();
+            let mut grenade_widgets = 0;
+            let mut alphas = Vec::new();
             for x in widgets.as_chunks::<{ hh::BITMAP_WIDGET_SIZE }>().0 {
                 let name_of = |at: usize| names[&TagId(w(x, at + 4))].clone();
                 let (bg, bitmap) = name_of(widget::BITMAP);
                 let (sg, shader) = name_of(widget::SHADER);
                 assert_eq!(bg, FourCC(*b"bitm"));
                 assert_eq!(sg, FourCC(*b"shad"));
-                assert!(h1_bitmaps.contains(&bitmap), "{name}: {bitmap} is Halo 1's");
-                assert_eq!(x[widget::STATE..widget::STATE_END], h1hud::STATE);
+                // Halo 1's bitmap, or its copy with the element colour's
+                // alpha (h1hud::scale_alpha).
+                let (source, alpha) = match bitmap.rsplit_once("_alpha_") {
+                    Some((s, a)) => (s.to_owned(), Some(a.to_owned())),
+                    None => (bitmap.clone(), None),
+                };
+                assert!(h1_bitmaps.contains(&source), "{name}: {bitmap} is Halo 1's");
+                if let Some(a) = alpha {
+                    alphas.push(a);
+                }
+                let state = &x[widget::STATE..widget::STATE_END];
+                if h1hud::GRENADE_STATES.iter().any(|g| g == state) {
+                    grenade_widgets += 1;
+                } else {
+                    assert_eq!(state, h1hud::STATE);
+                }
                 assert_eq!(x[widget::SPECIAL..widget::SPECIAL + 2], [0, 0]);
                 let input = x[widget::INPUTS];
                 let want = if input == 0 { h1hud::STATIC_SHADER } else { h1hud::METER_SHADER };
@@ -365,6 +381,15 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
             }
             assert!(inputs.contains(&hh::INPUT_SHIELD), "{name}: a shield meter");
             assert!(inputs.contains(&hh::INPUT_BODY), "{name}: a health meter");
+            // Halo 1's grenade HUD per grenade type (frag, plasma), each
+            // background and total background.
+            assert_eq!(grenade_widgets, 4, "{name}: grenade widgets");
+            // Byte-alpha sprites carry their element colour's alpha (the
+            // grenade outlines, 0xdc); the motion sensor's bitmap
+            // (hud_weapon_backgrounds) has no alpha byte and is not yet
+            // carried (docs/game/hud.md "Colours").
+            assert!(!alphas.is_empty(), "{name}: no colour alpha carried");
+            eprintln!("{name}: colour alphas {alphas:?}");
         }
         // Every converted Halo 1 weapon with a wphi names its Halo 1 HUD at
         // +0x2b0: Halo 1's bitmaps, a centred crosshair, meters on the
