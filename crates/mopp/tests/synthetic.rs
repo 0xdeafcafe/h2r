@@ -239,6 +239,7 @@ fn built_program_is_a_tight_superset() {
     let m = measure(&code, &surfaces, &boxes, 1e-4);
     assert_eq!(m.misses, 0);
     assert_eq!(m.sphere_misses, 0);
+    assert_eq!(m.box_misses, 0, "{m:?}");
     assert!(m.truth > 1000, "{m:?}");
     // Returned per surface whose box overlaps: 1.0 would be a box test on
     // every surface.
@@ -256,6 +257,7 @@ fn large_programs_use_long_jumps() {
     assert_eq!(r.keys.len(), surfaces.len());
     let m = measure(&code, &surfaces, &sample_boxes(&surfaces, 100, 5), 1e-4);
     assert_eq!(m.misses, 0);
+    assert_eq!(m.box_misses, 0, "{m:?}");
 }
 
 #[test]
@@ -276,6 +278,11 @@ fn mixed_key_types_and_sparse_keys() {
     // Every key comes back for a box around its own surface.
     for s in &surfaces {
         assert!(query_aabb(&code, &s.bounds()).unwrap().contains(&s.key));
+        assert!(
+            mopp::query_box(&code, &s.bounds())
+                .unwrap()
+                .contains(&s.key)
+        );
     }
 }
 
@@ -329,5 +336,41 @@ fn key_bounds_hold_each_surface() {
             // Tight to within a frame unit or so of a 300 m world.
             assert!(b.min[a] - k.min[a] < 1.5 && k.max[a] - b.max[a] < 1.5);
         }
+    }
+}
+
+/// The engine's box query (`0x002ff8b0`) keeps a surface for a box that
+/// starts at the surface's highest point and reaches up: a body standing
+/// on the top of a ramp. Its splits and bound checks treat the low child's
+/// and the bound's top as exclusive, so a program that stores the top cell
+/// inclusively cuts such a box off as soon as its low corner enters that
+/// cell (Blood Gulch's blue ramp, converter version 71).
+#[test]
+fn box_query_keeps_a_surface_from_its_top() {
+    for (world, seed) in [(60.0, 19), (300.0, 23), (2000.0, 29)] {
+        let surfaces = triangles_in(2000, seed, world);
+        let code = mopp::build(&surfaces);
+        let mut missed = Vec::new();
+        for s in &surfaces {
+            let top = *s
+                .vertices
+                .iter()
+                .max_by(|a, b| a[2].total_cmp(&b[2]))
+                .unwrap();
+            let b = Aabb {
+                min: top.map(|v| v - 0.01),
+                max: [top[0] + 0.2, top[1] + 0.2, top[2] + 0.7],
+            };
+            if !mopp::query_box(&code, &b).unwrap().contains(&s.key) {
+                missed.push(s.key);
+            }
+        }
+        assert!(
+            missed.is_empty(),
+            "world {world}: {} of {} surfaces missed from their tops: {:#x?}",
+            missed.len(),
+            surfaces.len(),
+            &missed[..missed.len().min(8)]
+        );
     }
 }

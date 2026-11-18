@@ -5,7 +5,8 @@
 //! terminal. Intersecting the axis-aligned bounds on that path (bound
 //! checks, both split forms, the 24-bit checks; diagonal splits are left
 //! out, which only makes the box larger) gives a box the primitive is
-//! inside. Used to carry keys we have no geometry for (instanced geometry
+//! inside. Split low maxima and bound-check tops are read as exclusive, as
+//! the engine's box query reads them (`crate::boxvm`). Used to carry keys we have no geometry for (instanced geometry
 //! and the other non-structure key types) from a retail program into a
 //! rebuilt one.
 
@@ -95,6 +96,7 @@ pub fn key_bounds(code: &Code) -> Result<BTreeMap<u32, Aabb>, Fault> {
                         0x20..=0x22 => {
                             let v = byte(s.pc + 1)?;
                             let j = byte(s.pc + 2)? as usize;
+                            // Low when L <= v: an exclusive top of v + 1.
                             (usize::from(op - 0x20), v + 1, v, s.pc + 3, s.pc + 3 + j)
                         }
                         _ => {
@@ -112,11 +114,15 @@ pub fn key_bounds(code: &Code) -> Result<BTreeMap<u32, Aabb>, Fault> {
                     };
                     let mut low = s;
                     low.pc = first;
-                    // The engine also enters the low child when the query
+                    // `low_max` is exclusive: the box query (E 0x002ffa85)
+                    // enters the low child only when the box's low cell is
+                    // below it, so its primitives end in cell low_max - 1
+                    // (V: the box query misses nothing on retail with this
+                    // reading). The sphere query also enters when the query
                     // ends below high_min, so a query there may lie in a
-                    // gap above low_max (E 0x003003cd); the box covers that
-                    // too, so it holds whatever the program can return.
-                    low.hi[a] = low.hi[a].min(full_hi(&s, a, low_max.max(high_min - 1)));
+                    // gap (E 0x003003cd); the box covers that too, so it
+                    // holds whatever the program can return.
+                    low.hi[a] = low.hi[a].min(full_hi(&s, a, (low_max - 1).max(high_min - 1)));
                     stack.push(low);
                     s.lo[a] = s.lo[a].max(full_lo(&s, a, high_min));
                     s.pc = second;
@@ -132,7 +138,8 @@ pub fn key_bounds(code: &Code) -> Result<BTreeMap<u32, Aabb>, Fault> {
                     let a = usize::from(op - 0x26);
                     let (l, h) = (byte(s.pc + 1)?, byte(s.pc + 2)?);
                     s.lo[a] = s.lo[a].max(full_lo(&s, a, l));
-                    s.hi[a] = s.hi[a].min(full_hi(&s, a, h));
+                    // `h` is exclusive (E 0x002ffb73: ends when L >= h).
+                    s.hi[a] = s.hi[a].min(full_hi(&s, a, h - 1));
                     s.pc += 3;
                 }
                 0x29..=0x2b => {

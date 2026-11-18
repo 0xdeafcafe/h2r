@@ -9,6 +9,7 @@ compiler. Format, opcodes and proof: [docs/formats/mopp.md](../../docs/formats/m
 |---|---|
 | `code` | the code object: 0x30-byte header and bytecode (`Code::parse`, `Code::to_block`) |
 | `vm` | `query_sphere` (the engine's `0x00300290`, bit for bit) and `query_aabb` (its semantics on boxes) |
+| `boxvm` | `query_box`: the engine's box query (`0x00300150`, `0x002ff8b0`), bit for bit; it keeps bodies' contacts with the structure |
 | `check` | `validate`: every branch by the engine's rules; histogram, keys, reach |
 | `bounds` | `key_bounds`: the box each key's path guarantees |
 | `geom` | `Surface`, structure keys, and an exact polygon/box overlap test |

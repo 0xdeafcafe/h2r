@@ -58,6 +58,10 @@ pub struct Metrics {
     /// that circumscribes the box: returned keys and misses.
     pub sphere_returned: usize,
     pub sphere_misses: usize,
+    /// The same through the engine's box query (`mopp::query_box`) on the
+    /// box itself: the query that keeps bodies' contacts.
+    pub box_returned: usize,
+    pub box_misses: usize,
 }
 impl Metrics {
     pub fn add(&mut self, o: &Metrics) {
@@ -68,6 +72,8 @@ impl Metrics {
         self.misses += o.misses;
         self.sphere_returned += o.sphere_returned;
         self.sphere_misses += o.sphere_misses;
+        self.box_returned += o.box_returned;
+        self.box_misses += o.box_misses;
     }
     /// Returned per truly touching surface.
     pub fn ratio(&self) -> f64 {
@@ -121,6 +127,12 @@ pub fn measure(code: &Code, surfaces: &[Surface], boxes: &[Aabb], eps: f32) -> M
             mopp::query_sphere(code, center, radius).expect("program faults"),
         );
         m.sphere_returned += sphere_hit.iter().filter(|h| **h).count();
+        let mut box_hit = vec![false; surfaces.len()];
+        mark(
+            &mut box_hit,
+            mopp::query_box(code, b).expect("program faults"),
+        );
+        m.box_returned += box_hit.iter().filter(|h| **h).count();
         mark(&mut hit, keys);
         m.queries += 1;
         m.returned += hit.iter().filter(|h| **h).count();
@@ -137,6 +149,9 @@ pub fn measure(code: &Code, surfaces: &[Surface], boxes: &[Aabb], eps: f32) -> M
                 }
                 if !sphere_hit[i] {
                     m.sphere_misses += 1;
+                }
+                if !box_hit[i] {
+                    m.box_misses += 1;
                 }
             }
         }
