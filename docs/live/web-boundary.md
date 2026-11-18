@@ -288,3 +288,59 @@ picture in `docs/images/`.
   message events there are (`FriendRequested`, `GameInviteSent`). The
   counter is `messages` with a kind per message type, so text slots in as
   `messages.text` when a messaging feature exists.
+
+## 5. Usage
+
+Who uses the most of the server, and on what: the Live admin's usage
+screen, `/dash/admin/usage` (`/dash/admin` opens it; the accounts screen
+has a pod to it). The counting and the two endpoints it reads are in
+[live-api.md](live-api.md) "Usage"; this section is what the screen
+shows and where its numbers stop.
+
+**On the dashboard, not the stats site.** Usage is about running the
+service and the accounts on it (§1), and it is for admins only. The stats
+site keeps what is about Halo: games, records, ranks. A player's row
+links to their service record there, and nothing more crosses.
+
+**The screen** is the deck (§3), with a range (7, 30 or 90 days) and a
+sort for the accounts table:
+
+- Six tiles: data uploaded, events written, messages sent, games played,
+  sign-ins and player reports, each with its change against the range
+  before (read as twice the range) and a sparkline. More reports is
+  marked as bad news, not good.
+- Data uploaded per day, stacked by kind: events, live frames, content,
+  cloud saves.
+- What is stored now, by kind (events, content, cloud saves).
+- Events written, messages sent (friend requests and game invites), and
+  active accounts with sign-ins, per day.
+- Events by type, the largest seven and the rest folded into one row.
+- The top 25 accounts by the chosen sort (uploaded, stored, events,
+  messages, reported), with uploads split by kind, stored, events,
+  messages, games, reports against them, active days and last active.
+  The table re-sorts in place; the sort chooses who is in it.
+
+A refetch keeps the last numbers on screen, dimmed. Signed out, or signed
+in as someone who is not an admin, the screen says so and reads nothing.
+The shaping is `web/src/deck/usageView.ts`, the reads
+`web/src/admin/usage.ts`; the dev mock answers both endpoints from the
+style page's seeded sample (`web/mock/admin.ts`), so `bun run dev` with
+`H2_MOCK_ADMIN=1` draws it.
+
+**Where the numbers stop.**
+
+- Bytes uploaded are request bodies as received, which is the cost.
+  Stored bytes are kept apart, and live frames are not stored at all
+  (their 1 Hz record is in the events).
+- Cloud saves stored counts from when counting began: saves written
+  before then are not in it, and nothing goes back to add them.
+- The co-op relay is not metered (in the Worker it has no line to the
+  hub's store).
+- Events by type are counts, not bytes.
+- 400 days are kept. Older days are dropped by the write that starts a
+  new day; stored totals have no day and stay.
+- `h2 live store copy` copies the log, so the counts read from it rebuild
+  on the other side. The metered counts (frames, content and save bytes,
+  stored saves) are not copied yet and start again from zero.
+- A later sink, Cloudflare Analytics Engine, would sit behind the same
+  `meter` call, beside the in-process counts. It is not built.
