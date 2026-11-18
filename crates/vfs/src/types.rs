@@ -262,6 +262,17 @@ impl Default for OpenOptions {
 /// Owned by VFS, never a guest HANDLE. Kernel must put this in its own object table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Handle(pub(crate) u64);
+impl Handle {
+    /// The handle's number, for a machine snapshot ([`crate::VfsState`]).
+    pub fn raw(self) -> u64 {
+        self.0
+    }
+    /// A handle saved with [`Handle::raw`], valid once the VFS state it
+    /// belongs to is restored ([`crate::Vfs::restore_state`]).
+    pub fn from_raw(raw: u64) -> Self {
+        Self(raw)
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OpenResult {
     pub handle: Handle,

@@ -379,6 +379,24 @@ impl ExecCtx {
     pub fn live_continuations(&self) -> Vec<crate::continuation::ContinuationInfo> {
         self.continuations.live_list()
     }
+    /// The continuation pool as plain data, for a machine snapshot: refuses
+    /// while a continuation that is not rebuildable is live.
+    pub fn continuation_layout(
+        &self,
+    ) -> Result<crate::ContinuationLayout, crate::continuation::LayoutError> {
+        self.continuations.layout()
+    }
+    /// Replace the continuation pool with a saved one, rebuilding each live
+    /// continuation through `rebuild(origin, target, state)`, so its token,
+    /// which is on the guest stack, resolves again and later tokens match
+    /// the saved run's. Nothing changes on an error.
+    pub fn restore_continuations(
+        &mut self,
+        layout: &crate::ContinuationLayout,
+        rebuild: impl FnMut(&str, u32, [u32; 4]) -> Option<(&'static str, crate::Continuation)>,
+    ) -> Result<(), crate::continuation::LayoutError> {
+        self.continuations.restore(layout, rebuild)
+    }
     /// A delivered interrupt callback is running on this context: the
     /// interrupted CPU state is held host-side until it returns.
     pub fn interrupt_in_service(&self) -> bool {

@@ -337,25 +337,16 @@ impl Machine {
                 let mut ctx = ExecCtx::new(Arc::clone(&self.runtime), id);
                 if id != 1 {
                     let entry = cpu.eip;
-                    let kernel = Arc::clone(&self.kernel);
                     // Owned completion survives child waits/stops and runs
                     // only when the guest SystemRoutine actually returns.
+                    // A snapshot load makes it again at the same token.
                     record.resume = ctx.call_guest_rebuildable(
                         &mut cpu,
                         &mut self.runtime.memory(),
                         entry,
                         crate::quiesce::THREAD_RETURN,
                         [0; 4],
-                        move |_, ctx| {
-                            let mut core = kernel.lock();
-                            core.terminate(
-                                ctx.thread_id,
-                                status::SUCCESS,
-                                &mut ctx.runtime().memory(),
-                            )?;
-                            core.yielded.insert(ctx.thread_id, TransferAbi::jump(0));
-                            Ok(TransferAbi::stop(0))
-                        },
+                        crate::snapshot::thread_return(&self.kernel),
                     )?;
                     self.runtime
                         .memory()
@@ -1323,5 +1314,108 @@ impl Kernel {
             .ok_or(Error::Invalid("TLS cell arithmetic"))?;
         memory.check(cell, 4, Access::Write, 1)?;
         Ok(cell)
+    }
+}
+
+impl crate::snapshot::Persist for State {
+    fn put(&self, w: &mut snapshot::codec::Writer) {
+        match self {
+            State::Ready => {
+                w.u8(0);
+            }
+            State::Running => {
+                w.u8(1);
+            }
+            State::Suspended => {
+                w.u8(2);
+            }
+            State::Waiting(wait) => {
+                w.u8(3);
+                wait.put(w);
+            }
+            State::Sleeping(deadline) => {
+                w.u8(4).u64(*deadline);
+            }
+            State::Terminated(status) => {
+                w.u8(5).u32(*status);
+            }
+        }
+    }
+    fn get(r: &mut snapshot::codec::Reader<'_>) -> Result<Self, crate::snapshot::CodecError> {
+        use crate::snapshot::Persist;
+        Ok(match r.u8()? {
+            0 => State::Ready,
+            1 => State::Running,
+            2 => State::Suspended,
+            3 => State::Waiting(Persist::get(r)?),
+            4 => State::Sleeping(r.u64()?),
+            5 => State::Terminated(r.u32()?),
+            _ => return Err(crate::snapshot::corrupt("thread state")),
+        })
+    }
+}
+crate::snapshot::persist_struct!(Record {
+    object,
+    tls,
+    state,
+    suspend_count,
+    initial_cpu,
+    resume,
+    wake_value,
+    tib,
+    irql,
+    polling,
+    work_since_poll,
+    productive,
+    base_priority,
+    priority,
+    saturation,
+});
+
+/// The machine's own scheduling state, for a snapshot.
+pub(crate) struct ScheduleState {
+    schedule: Vec<u32>,
+    dropped_schedule: u64,
+    dpc_stack_top: u32,
+    drained: BTreeSet<timers::Queued>,
+    preemptions: u64,
+}
+crate::snapshot::persist_struct!(ScheduleState {
+    schedule,
+    dropped_schedule,
+    dpc_stack_top,
+    drained,
+    preemptions,
+});
+
+impl Machine {
+    pub(crate) fn save_schedule(&self, w: &mut snapshot::codec::Writer) {
+        use crate::snapshot::Persist;
+        ScheduleState {
+            schedule: self.schedule.clone(),
+            dropped_schedule: self.dropped_schedule,
+            dpc_stack_top: self.dpc_stack_top,
+            drained: self.drained.clone(),
+            preemptions: self.preemptions,
+        }
+        .put(w);
+    }
+    pub(crate) fn read_schedule(
+        &self,
+        r: &mut snapshot::codec::Reader<'_>,
+    ) -> Result<ScheduleState, crate::snapshot::CodecError> {
+        <ScheduleState as crate::snapshot::Persist>::get(r)
+    }
+    /// Install loaded threads and scheduling state. Nothing is stopped and
+    /// no DPC context is kept: a snapshot is only taken when neither is so.
+    pub(crate) fn replace_threads(&mut self, threads: BTreeMap<u32, Thread>, s: ScheduleState) {
+        self.threads = threads;
+        self.schedule = s.schedule;
+        self.dropped_schedule = s.dropped_schedule;
+        self.dpc_stack_top = s.dpc_stack_top;
+        self.drained = s.drained;
+        self.preemptions = s.preemptions;
+        self.stopped = None;
+        self.dpc = None;
     }
 }
