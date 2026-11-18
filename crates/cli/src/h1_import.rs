@@ -288,13 +288,24 @@ pub fn pending<'a>(jobs: &[Job<'a>], stamp: &Stamp, data: &Path) -> Vec<Job<'a>>
 }
 
 /// The order [`import`] starts `todo` in: the campaign levels first (the
-/// longest jobs, so the short ones fill in at the end), each beside its
-/// other variant, then each multiplayer map's sandboxes together, so the
-/// jobs that share a Halo 1 map run close together and it is read once.
-pub fn schedule<'a>(todo: &[Job<'a>]) -> Vec<Job<'a>> {
-    let first = |j: &Job| todo.iter().position(|t| t.source() == j.source());
+/// longest jobs, so the short ones fill in at the end), then the
+/// multiplayer maps; within each, every map's first job before any map's
+/// second, so a map's second job starts once its first has read it (a
+/// level's two variants and a map's two sandboxes share the read), and
+/// the biggest maps (`size`, its file on the disc) first.
+pub fn schedule<'a>(todo: &[Job<'a>], size: impl Fn(&str) -> u64) -> Vec<Job<'a>> {
+    let round = |j: &Job| {
+        let i = todo.iter().position(|t| t == j).unwrap_or(0);
+        todo[..i].iter().filter(|t| t.source() == j.source()).count()
+    };
     let mut out = todo.to_vec();
-    out.sort_by_key(|j| (matches!(j, Job::Multiplayer(..)), first(j)));
+    out.sort_by_key(|j| {
+        (
+            matches!(j, Job::Multiplayer(..)),
+            round(j),
+            std::cmp::Reverse(size(j.source())),
+        )
+    });
     out
 }
 
@@ -393,6 +404,7 @@ pub fn run_jobs(
     save: &mut dyn FnMut(&Stamp) -> Result<()>,
     say: &mut dyn FnMut(String),
 ) -> (Summary, Vec<JobTime>) {
+    h1map::phase::set_cpu_clock(thread_cpu);
     let mut sum = Summary::default();
     let mut times = Vec::new();
     let next = AtomicUsize::new(0);
@@ -454,43 +466,86 @@ pub fn run_jobs(
 /// The timing report's file, in `<data>/campaigns/halo1/`.
 pub const TIMING_FILE: &str = "import-timing.txt";
 
+/// The calling thread's CPU time, for [`h1map::phase`].
+fn thread_cpu() -> Duration {
+    let mut t = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `t` is a valid timespec to write.
+    if unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut t) } != 0 {
+        return Duration::ZERO;
+    }
+    Duration::new(t.tv_sec as u64, t.tv_nsec as u32)
+}
+
+/// The process's CPU time and peak memory so far, for the report.
+fn usage_text() -> String {
+    // SAFETY: `ru` is a valid rusage to write.
+    let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
+    if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut ru) } != 0 {
+        return String::new();
+    }
+    let t = |v: libc::timeval| v.tv_sec as f64 + v.tv_usec as f64 / 1e6;
+    // Bytes on macOS, KiB elsewhere.
+    let rss = if cfg!(target_os = "macos") {
+        ru.ru_maxrss as f64
+    } else {
+        ru.ru_maxrss as f64 * 1024.0
+    };
+    format!(
+        "\nprocess: {:.1} s user, {:.1} s system, peak resident {:.2} GB, {} page reclaims\n",
+        t(ru.ru_utime),
+        t(ru.ru_stime),
+        rss / 1e9,
+        ru.ru_minflt
+    )
+}
+
 /// The timing report: the run's wall time and workers, each phase's time
-/// over every job (most first), then each job's.
+/// over every job (most CPU first), then each job's. Wall time stretches
+/// on a loaded machine; a phase's CPU time (its thread's) does not.
 pub fn timing_text(wall: Duration, workers: usize, times: &[JobTime]) -> String {
     let secs = |d: &Duration| d.as_secs_f64();
-    let mut all: Vec<(&'static str, Duration)> = Vec::new();
-    for (name, d) in times.iter().flat_map(|t| t.phases.iter()) {
-        match all.iter_mut().find(|(n, _)| n == name) {
-            Some((_, t)) => *t += *d,
-            None => all.push((name, *d)),
+    let mut all: h1map::phase::Phases = Vec::new();
+    for &(name, w, c) in times.iter().flat_map(|t| t.phases.iter()) {
+        match all.iter_mut().find(|p| p.0 == name) {
+            Some(p) => {
+                p.1 += w;
+                p.2 += c;
+            }
+            None => all.push((name, w, c)),
         }
     }
-    all.sort_by(|a, b| b.1.cmp(&a.1));
+    all.sort_by(|a, b| b.2.cmp(&a.2).then(b.1.cmp(&a.1)));
     let jobs: Duration = times.iter().map(|t| t.total).sum();
+    let cpu: Duration = all.iter().map(|p| p.2).sum();
     let mut s = format!(
         "# h2 import halo1: where the time went (converter version {CONVERTER_VERSION})\n\
-         wall {:.1} s, {workers} workers, {} jobs, {:.1} s of job time\n",
+         wall {:.1} s, {workers} workers, {} jobs, {:.1} s of job time, {:.1} s of it on a CPU\n",
         secs(&wall),
         times.len(),
-        secs(&jobs)
+        secs(&jobs),
+        secs(&cpu),
     );
     s += "\nphases over every job (each phase's own time):\n";
-    for (n, d) in &all {
-        let pct = if jobs.is_zero() {
+    s += &format!("  {:<24} {:>8} {:>8} {:>6}\n", "", "wall", "cpu", "cpu%");
+    for (n, w, c) in &all {
+        let pct = if cpu.is_zero() {
             0.0
         } else {
-            100.0 * secs(d) / secs(&jobs)
+            100.0 * secs(c) / secs(&cpu)
         };
-        s += &format!("  {n:<24} {:>8.2} s {pct:>5.1}%\n", secs(d));
+        s += &format!("  {n:<24} {:>8.2} {:>8.2} {pct:>5.1}%\n", secs(w), secs(c));
     }
-    s += "\njobs:\n";
+    s += "\njobs (wall; each phase's CPU time):\n";
     for t in times {
         let mut phases = t.phases.clone();
-        phases.sort_by(|a, b| b.1.cmp(&a.1));
+        phases.sort_by(|a, b| b.2.cmp(&a.2));
         let ph: Vec<String> = phases
             .iter()
-            .filter(|(_, d)| d.as_millis() >= 50)
-            .map(|(n, d)| format!("{n} {:.2}", secs(d)))
+            .filter(|p| p.2.as_millis() >= 50)
+            .map(|(n, _, c)| format!("{n} {:.2}", secs(c)))
             .collect();
         s += &format!(
             "  {:<24} {:>7.2} s  {}\n",
@@ -526,7 +581,9 @@ impl AsRef<[u8]> for Shared {
 struct H1Entry {
     /// Its jobs not yet done.
     jobs: usize,
-    map: Arc<OnceLock<Result<Arc<(Vec<u8>, H1Map)>, String>>>,
+    map: Arc<OnceLock<Result<Arc<(content::Sha256, H1Map)>, String>>>,
+    /// What a level's two variants share beyond the map (its BSPs).
+    campaign: Arc<h1campaign::Shared>,
 }
 
 /// The real converter: maps from the Halo 1 disc, bases from the Halo 2
@@ -631,11 +688,11 @@ impl DiscConverter {
         sandbox: Sandbox,
     ) -> Result<(h1convert::convert::Prepared, h1convert::fresh::Fresh)> {
         let source = self.h1_map(name)?;
-        let (file, h1) = (&source.0, &source.1);
+        let (sha, h1) = (source.0, &source.1);
         let base_name = known(name).map_or("beavercreek", |k| k.1);
         let mut base = self.h2_base(base_name)?;
         let p = h1map::phase::time("convert", || {
-            h1_cmd::prepare_mp(h1, file, &mut base, base_name, sandbox)
+            h1_cmd::prepare_mp_with(h1, sha, &mut base, base_name, sandbox)
         })?;
         let mopp = h1map::phase::time("mopp", || structure_mopp(&p.collision))?;
         let f = h1map::phase::time("build map", || p.build_fresh(&mut base, &mopp))?;
@@ -644,7 +701,7 @@ impl DiscConverter {
 
     /// A Halo 1 map off the disc, read once while [`Self::expect`]ed jobs
     /// still need it.
-    fn h1_map(&self, name: &str) -> Result<Arc<(Vec<u8>, H1Map)>> {
+    fn h1_map(&self, name: &str) -> Result<Arc<(content::Sha256, H1Map)>> {
         let cell = self
             .h1_maps
             .lock()
@@ -659,7 +716,9 @@ impl DiscConverter {
             .map_err(|e| anyhow!("{e}"))
     }
 
-    fn read(&self, name: &str) -> Result<(Vec<u8>, H1Map)> {
+    /// A Halo 1 map off the disc, inflated, and its file's SHA-256 (the
+    /// file itself let go).
+    fn read(&self, name: &str) -> Result<(content::Sha256, H1Map)> {
         let e = self
             .disc
             .map(name)
@@ -669,9 +728,9 @@ impl DiscConverter {
             self.iso.lock().unwrap_or_else(|e| e.into_inner()).read(&e)
         })?;
         let m = h1map::phase::time("open halo 1 map", || {
-            H1Map::from_reader(Cursor::new(bytes.as_slice())).with_context(|| e.path.clone())
+            H1Map::from_bytes(&bytes).with_context(|| e.path.clone())
         })?;
-        Ok((bytes, m))
+        Ok((content::Sha256::of(&bytes), m))
     }
 
     fn card_ui(&self) -> Option<&H1Map> {
@@ -707,8 +766,15 @@ impl DiscConverter {
             .as_ref()
             .map_err(|e| anyhow!("{e}"))?;
         let mut base = self.h2_base(h1campaign::base_for(level))?;
+        let shared = self
+            .h1_maps
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(level)
+            .map(|e| e.campaign.clone());
         let opts = h1campaign::Options {
             assets,
+            shared: shared.as_deref(),
             ..h1_cmd::campaign_options(scripting, Some(donors))
         };
         let done = h1map::phase::time("convert", || h1campaign::convert(h1, &mut base, &opts))?;
@@ -902,7 +968,7 @@ pub fn import(r: &Request, say: &mut dyn FnMut(String)) -> Result<Summary> {
     let data = r.data.to_path_buf();
     let workers = workers();
     let wall = Instant::now();
-    let order = schedule(&todo);
+    let order = schedule(&todo, |m| conv.disc.map(m).map_or(0, |e| u64::from(e.size)));
     conv.expect(&order);
     let (mut sum, times) = run_jobs(
         &order,
@@ -912,7 +978,7 @@ pub fn import(r: &Request, say: &mut dyn FnMut(String)) -> Result<Summary> {
         &mut |s| s.write(&data),
         say,
     );
-    let report = timing_text(wall.elapsed(), workers, &times);
+    let report = timing_text(wall.elapsed(), workers, &times) + &usage_text();
     let path = campaign_dir(r.data).join(TIMING_FILE);
     match std::fs::write(&path, report) {
         Ok(()) => say(format!(
