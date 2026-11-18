@@ -44,7 +44,7 @@ const ROW_IDS: u32 = 4;
 const PER_ROW: u32 = 3;
 pub const TITLE: &str = "Halo 1 Options";
 /// The options screen's buttons, in the footer as retail's are.
-pub const PROMPT: &str = "\u{e10a} \u{e10b} CHANGE  \u{e101} BACK";
+pub const PROMPT: &str = "\u{e10a}  \u{e10b} CHANGE  \u{e101} BACK";
 
 /// One option: a setting of two choices, Halo 1's then Halo 2's.
 pub struct OptionRow {

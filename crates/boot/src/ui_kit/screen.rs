@@ -630,7 +630,7 @@ mod tests {
         assert_eq!(t(d), "Grunts' heads pop.", "the legend is the footer's");
         assert_eq!(
             s.spec().footer_text().unwrap(),
-            "\u{e10a} \u{e10b} CHANGE  \u{e100} START  \u{e101} BACK"
+            "\u{e10a}  \u{e10b} CHANGE  \u{e100} START  \u{e101} BACK"
         );
         assert!(s.slots() <= IDS.len);
     }

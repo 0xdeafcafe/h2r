@@ -199,7 +199,7 @@ The page (`boot::skulls_screen`, feature `skulls-page` for the hook and
   the level was a mystery to the player. A pressed over and over still
   goes from the level list through the difficulty and the page into the
   game, since Start Level is the first row.
-- **Footer**: "◀ ▶ CHANGE  Ⓐ SELECT  Ⓑ BACK" in the font's button glyphs, the two arrows a space apart (side by side the font draws them as one diamond).
+- **Footer**: "◀  ▶ CHANGE  Ⓐ SELECT  Ⓑ BACK" in the font's button glyphs, the two arrows two spaces apart (side by side the font draws them as one diamond, and one narrow space left them touching).
 - **Right column**: the skull picture, gold or silver for the focused
   skull's tier and dimmed (to 60%) while it is locked, and under it the
   description: for a skull its tier, what it does, where it is found and

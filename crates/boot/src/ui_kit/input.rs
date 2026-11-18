@@ -204,14 +204,17 @@ impl Prompt {
     }
 }
 
-/// A prompt's glyphs a space apart: the fonts draw the d-pad's left and
-/// right arrows edge to edge, so side by side they read as one diamond
-/// (the Game Options footer, 2026-11-18).
+/// A prompt's glyphs two spaces apart: the fonts draw the d-pad's left
+/// and right arrows edge to edge, so side by side they read as one
+/// diamond, and the footer font's space is narrow enough that one still
+/// left them touching (the Game Options footer, 2026-11-18).
+pub const GLYPH_GAP: &str = "  ";
+
 fn glyphs(gs: &[Glyph]) -> String {
     gs.iter()
         .map(|g| g.char().to_string())
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(GLYPH_GAP)
 }
 
 /// The legend as the font draws it: each prompt's glyphs, a space, its
@@ -362,7 +365,7 @@ mod tests {
         ];
         assert_eq!(
             legend(&p),
-            "\u{e10a} \u{e10b} Toggle   \u{e100} Start Level   \u{e101} Back"
+            "\u{e10a}  \u{e10b} Toggle   \u{e100} Start Level   \u{e101} Back"
         );
         assert_eq!(
             legend_named(&p),
