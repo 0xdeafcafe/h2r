@@ -1,10 +1,11 @@
-// The mod repository's browser (`/stats/mods`) and mod pages: the list
+// The mod repository's browser (`statsPath("/mods")`) and mod pages: the list
 // query (`GET /v1/maps?sort=&base=&category=&q=&limit=&cursor=`), its state
 // in the page URL, the client-side stack of `next` cursors for paging back,
 // category labels and the small rules a mod page shows. Pure; the pages are
 // in stats/Mods.tsx.
 
 import type { MapSummary } from "./maps";
+import { statsPath } from "../routes";
 
 export { safeSourceUrl } from "./maps";
 
@@ -70,7 +71,7 @@ export function modsHref(q: ModQuery): string {
   const s = new URLSearchParams();
   for (const [k, v] of Object.entries(modSearchParams(q))) if (v) s.set(k, v);
   const t = s.toString();
-  return t ? `/stats/mods?${t}` : "/stats/mods";
+  return t ? `${statsPath("/mods")}?${t}` : statsPath("/mods");
 }
 
 export const MODS_PER_PAGE = 20;
@@ -130,7 +131,7 @@ export function downloadsText(n: number): string {
 /** A layer's sha256, short: its first 12 hex. */
 export const shortSha = (h: string) => h.slice(0, 12);
 
-export const modHref = (id: string) => `/stats/mods/${encodeURIComponent(id)}`;
+export const modHref = (id: string) => statsPath(`/mods/${encodeURIComponent(id)}`);
 
 /** What the mod page says when the package can't be shown. */
 export function modMissingText(state: "unknown" | "gone" | "error"): { title: string; text: string } {

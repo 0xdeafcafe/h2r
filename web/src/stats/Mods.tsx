@@ -1,6 +1,6 @@
-// The mod repository: the browser (`/stats/mods`, newest or most
+// The mod repository: the browser (`statsPath("/mods")`, newest or most
 // downloaded, filtered by base map, category and text, paged with the
-// server's cursors) and one mod's page (`/stats/mods/:id`). Read-only but
+// server's cursors) and one mod's page (`statsPath("/mods/:id")`). Read-only but
 // for Report; mods are downloaded in the game. The rules are in lib/mods.ts.
 
 import { For, Show, createEffect, createMemo, createResource, createSignal, on } from "solid-js";
@@ -17,18 +17,20 @@ import {
 } from "../lib/mods";
 import { reportMap } from "../admin/content";
 import MapPicture from "../components/MapPicture";
+import { statsPath } from "../routes";
+import { HOME_CRUMB } from "./modes";
 import { Crumbs, Panel, Tabs, Title, playerHref } from "./Layout";
 import { dotDate, longDate, num } from "./fmt";
 import "../styles/mods.css";
 
-const CRUMB: [string, string] = ["Mods", "/stats/mods"];
+const CRUMB: [string, string] = ["Mods", statsPath("/mods")];
 
 function NoPicture(props: { map: string }) {
   return <span class="s-mod-nopic">{mapTitle(props.map)}</span>;
 }
 
 /** The menu column. The pills are lit by the query, not the path: every
- *  one of them is /stats/mods. */
+ *  one of them is the mods page. */
 function ModSide(props: { query?: ModQuery }) {
   const q = () => props.query ?? { sort: "new" as const };
   const plain = () => !!props.query && !q().base && !q().category && !q().q;
@@ -88,7 +90,7 @@ export default function Mods() {
 
   return (
     <>
-      <Crumbs trail={[["Home", "/stats"], [CRUMB[0]]]} />
+      <Crumbs trail={[HOME_CRUMB, [CRUMB[0]]]} />
       <div class="s-cols">
         <ModSide query={query()} />
         <div class="s-right">
@@ -97,14 +99,14 @@ export default function Mods() {
           <div class="s-matte s-mods-wrap">
             <form class="s-toolbar s-mod-filters" role="search" onSubmit={(e) => { e.preventDefault(); set({ q: text().trim() || undefined }); }}>
               <label for="s-mod-base">base map</label>
-              <select id="s-mod-base" value={query().base ?? ""} onChange={(e) => set({ base: e.currentTarget.value || undefined })}>
-                <option value="">All maps</option>
-                <For each={bases()}>{(b) => <option value={b.map}>{b.title}</option>}</For>
+              <select id="s-mod-base" onChange={(e) => set({ base: e.currentTarget.value || undefined })}>
+                <option value="" selected={!query().base}>All maps</option>
+                <For each={bases()}>{(b) => <option value={b.map} selected={query().base === b.map}>{b.title}</option>}</For>
               </select>
               <label for="s-mod-cat">category</label>
-              <select id="s-mod-cat" value={query().category ?? ""} onChange={(e) => set({ category: (e.currentTarget.value || undefined) as ModQuery["category"] })}>
-                <option value="">All categories</option>
-                <For each={[...MOD_CATEGORIES]}>{(c) => <option value={c}>{categoryLabel(c)}</option>}</For>
+              <select id="s-mod-cat" onChange={(e) => set({ category: (e.currentTarget.value || undefined) as ModQuery["category"] })}>
+                <option value="" selected={!query().category}>All categories</option>
+                <For each={[...MOD_CATEGORIES]}>{(c) => <option value={c} selected={query().category === c}>{categoryLabel(c)}</option>}</For>
               </select>
               <label for="s-mod-q" class="sr-only">Search mods</label>
               <input id="s-mod-q" type="search" placeholder="Search mods" value={text()} onInput={(e) => setText(e.currentTarget.value)} />
@@ -199,7 +201,7 @@ export function ModPage() {
   const mod = () => { const l = lookup.latest; return l?.state === "ok" ? l.map : null; };
   return (
     <>
-      <Crumbs trail={[["Home", "/stats"], CRUMB, [mod()?.name ?? "Mod"]]} />
+      <Crumbs trail={[HOME_CRUMB, CRUMB, [mod()?.name ?? "Mod"]]} />
       <div class="s-cols">
         <ModSide />
         <div class="s-right">
@@ -220,7 +222,7 @@ function ModMissing(props: { state: "unknown" | "gone" | "error" }) {
   const t = () => modMissingText(props.state === "unknown" || props.state === "gone" ? props.state : "error");
   return (
     <>
-      <Title class="s-title--cap" back={["see all mods", "/stats/mods"]}>{t().title}</Title>
+      <Title class="s-title--cap" back={["see all mods", statsPath("/mods")]}>{t().title}</Title>
       <p class="s-empty">{t().text}</p>
     </>
   );
@@ -249,7 +251,7 @@ function ModDetail(props: { m: MapDetail; missing: string[] }) {
   const credit = () => creditBeyondAuthor(m());
   return (
     <>
-      <Title class="s-title--cap" back={["see all mods", "/stats/mods"]}>{m().name}</Title>
+      <Title class="s-title--cap" back={["see all mods", statsPath("/mods")]}>{m().name}</Title>
       <div class="s-matte s-mod-page">
         <div class="s-mod-hero">
           <MapPicture map={m().base.map} mapId={m().map_id} class="s-mod-hero-img" fallback={<NoPicture map={m().base.map} />} />

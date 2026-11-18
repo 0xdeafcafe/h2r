@@ -6,7 +6,7 @@
 // bytes of any real map are involved. Some sessions and games name a
 // package (`customFor`): one with a picture, one whose geometry changed, one
 // an admin took down (410), and an id the server doesn't know (404). Eight
-// more invented mods fill the repository browser (`/stats/mods`), with
+// more invented mods fill the repository browser (`/games/halo2/mods`), with
 // categories, credits, source links and download counts; the list sorts,
 // filters and pages with cursors as the server does.
 

@@ -161,6 +161,19 @@ packages (one with a picture, one with changed geometry, one blocked) and
 puts about a third of its sessions and multiplayer games on them or on an
 id it doesn't know; `H2_MOCK_CUSTOM_MAPS=0` turns that off.
 
+**Mods.** The stats site's Mods tab (`/games/halo2/mods`, `stats/Mods.tsx`)
+browses the server's map packages (`GET /v1/maps`): Newest or Most
+Downloaded, filtered by base map, category and a search box, paged with the
+server's `next` cursor (the earlier cursors are kept in the page so
+"Previous" works). The query lives in the URL (`?sort=popular&base=teacup&category=&q=&author=`).
+A mod's page (`/games/halo2/mods/:id`) shows its picture (else the base map's),
+author and credit, description, source link (http and https only), size,
+downloads, files, and Report for signed-in players. Downloading happens in
+the game. The page asks for the package without a token, because a token
+there counts a download. The pure rules are in `src/lib/mods.ts`. The mock serves eight more invented mods beside
+the three above, with categories, credits, source links and download
+counts, and sorts, filters and pages them as the server does.
+
 **Server stats.** The home's windowed numbers come from the server's
 summary (`GET /v1/stats/summary?window=`, docs/live/live-api.md "Stats
 summary"), a projection the server keeps in day and hour buckets; the page

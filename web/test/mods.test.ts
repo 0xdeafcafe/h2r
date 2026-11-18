@@ -1,4 +1,4 @@
-// The mod repository (/stats/mods): the new MapSummary fields, the list
+// The mod repository (/games/halo2/mods): the new MapSummary fields, the list
 // query and its URL state, the cursor stack, labels, and the mock's list
 // (sorts, filters and cursors as the server's API says). Every name, id and
 // size here is invented.
@@ -62,10 +62,10 @@ describe("the list query and the page URL", () => {
 
   test("writes it back, the default sort left out, and round-trips", () => {
     expect(modSearchParams({ sort: "new" })).toEqual({ sort: undefined, base: undefined, category: undefined, author: undefined, q: undefined });
-    expect(modsHref({ sort: "new" })).toBe("/stats/mods");
+    expect(modsHref({ sort: "new" })).toBe("/games/halo2/mods");
     const q = { sort: "popular" as const, base: "teacup", category: "maps" as const, q: "crate box" };
     const href = modsHref(q);
-    expect(href).toBe("/stats/mods?sort=popular&base=teacup&category=maps&q=crate+box");
+    expect(href).toBe("/games/halo2/mods?sort=popular&base=teacup&category=maps&q=crate+box");
     expect(modQueryFromSearch(new URL(href, "http://x").searchParams)).toEqual(q);
   });
 
@@ -125,7 +125,7 @@ describe("labels and bits", () => {
     expect(downloadsText(1)).toBe("1 download");
     expect(downloadsText(1204)).toBe("1,204 downloads");
     expect(shortSha("ab".repeat(32))).toBe("abababababab");
-    expect(modHref(ID)).toBe(`/stats/mods/${ID}`);
+    expect(modHref(ID)).toBe(`/games/halo2/mods/${ID}`);
     expect(modMissingText("unknown").text).toMatch(/no mod/i);
     expect(modMissingText("gone").text).toMatch(/taken down by an admin/);
   });
