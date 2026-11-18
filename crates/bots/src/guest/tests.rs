@@ -585,3 +585,196 @@ fn with_no_human_profile_there_is_nothing_to_copy_and_no_sign_in() {
     assert!(!signed_in(&run.guest, 1).unwrap());
     assert_eq!(run.guest.u16(SCREEN + SCREEN_MASK).unwrap(), 0b1);
 }
+
+// ---- Xbox Live guests ----
+
+const AFR: u64 = 0x0009_0000_0000_0afa;
+
+/// The human's account record: its id, user flags `flags` (0 the account's
+/// own player), "afr", and a logon result.
+fn afr_account(flags: u32) -> [u8; ACCOUNT_LEN] {
+    let mut a = [0u8; ACCOUNT_LEN];
+    a[..8].copy_from_slice(&AFR.to_le_bytes());
+    a[ACCOUNT_FLAGS..ACCOUNT_FLAGS + 4].copy_from_slice(&(0x0001_0000 | flags).to_le_bytes());
+    a[0xc..0xf].copy_from_slice(b"afr");
+    a[0x6c..0x70].copy_from_slice(&0x1234u32.to_le_bytes());
+    a
+}
+
+/// Slots: the human on port 0 (on Xbox Live when `live`), and a signed-in
+/// bot on each of `bots` with local user `port` (in use) and an id the
+/// profile sign-in made up.
+fn lobby(live: bool, bots: &[u32]) -> FakeGuest {
+    let mut g = FakeGuest::new();
+    slots(&mut g);
+    g.map(LOCAL_USERS, LOCAL_USER_COUNT * LOCAL_USER_STRIDE);
+    let flags = if live {
+        SLOT_PROFILE | SLOT_LIVE
+    } else {
+        SLOT_PROFILE
+    };
+    g.put_u32(slot(0), flags)
+        .put_u32(slot(0) + SLOT_LOCAL_USER, 0)
+        .put(slot(0) + SLOT_ACCOUNT, &afr_account(0))
+        .put_u8(LOCAL_USERS, 1);
+    for &p in bots {
+        g.put_u32(slot(p), SLOT_PROFILE)
+            .put_u32(slot(p) + SLOT_LOCAL_USER, p)
+            .put(slot(p) + SLOT_ID, &[0xee; ID_LEN])
+            .put_u8(LOCAL_USERS + p * LOCAL_USER_STRIDE, 1)
+            .put(
+                LOCAL_USERS + p * LOCAL_USER_STRIDE + LOCAL_USER_ID,
+                &[0xee; ID_LEN],
+            );
+        set_slot_name(&mut g, p, &format!("Clanker {p}")).unwrap();
+    }
+    g
+}
+
+#[test]
+fn a_bot_goes_on_live_as_the_humans_guest_with_the_games_writes() {
+    let mut g = lobby(true, &[1, 2, 3]);
+    for p in 1..=3 {
+        assert_eq!(
+            go_live(&mut g, p, 0b1110, &format!("Clanker {p}")).unwrap(),
+            GoLive::Guest { host: 0, number: p },
+            "port {p}"
+        );
+    }
+    for p in 1..=3u32 {
+        let flags = g.u32(slot(p)).unwrap();
+        assert_eq!(
+            flags,
+            SLOT_PROFILE | SLOT_LIVE,
+            "port {p}: 0x190074(port, 1)"
+        );
+        let a = account(&g, p).unwrap();
+        assert_eq!(account_xuid(&a), AFR, "the human's account");
+        assert_eq!(guest_number(&a), p, "guest {p}");
+        assert_eq!(a, guest_account(&afr_account(0), p));
+        assert_eq!(&a[0xc..0xf], b"afr", "the host's gamertag, as on an Xbox");
+        assert_eq!(
+            &a[0x6c..0x70],
+            &0x1234u32.to_le_bytes(),
+            "the host's logon result"
+        );
+        // The player id the session knows: the slot's and its local user's.
+        let id = g.bytes(slot(p) + SLOT_ID, ID_LEN).unwrap();
+        assert_eq!(id, a[..ID_LEN].to_vec(), "0x18fee9: +0x470 to +8");
+        let user = LOCAL_USERS + p * LOCAL_USER_STRIDE + LOCAL_USER_ID;
+        assert_eq!(
+            g.bytes(user, ID_LEN).unwrap(),
+            id,
+            "0x64820: to the local user"
+        );
+        // The flags are the host's but for the guest number.
+        let f = u32::from_le_bytes(id[8..12].try_into().unwrap());
+        assert_eq!(f, 0x0001_0000 | p);
+        // Its own name, not "afr(1)".
+        assert_eq!(
+            g.utf16(slot(p) + SLOT_NAME, SLOT_NAME_UNITS).unwrap(),
+            format!("Clanker {p}")
+        );
+    }
+    // The human is untouched.
+    assert_eq!(account(&g, 0).unwrap(), afr_account(0));
+    assert_eq!(g.u32(slot(0)).unwrap(), SLOT_PROFILE | SLOT_LIVE);
+}
+
+#[test]
+fn offline_or_system_link_nothing_changes() {
+    let mut g = lobby(false, &[1, 2]);
+    let before = (
+        g.u32(slot(1)).unwrap(),
+        g.bytes(slot(1) + SLOT_ID, ID_LEN).unwrap(),
+    );
+    assert_eq!(
+        go_live(&mut g, 1, 0b110, "Clanker 1").unwrap(),
+        GoLive::NoHost
+    );
+    assert_eq!(
+        (
+            g.u32(slot(1)).unwrap(),
+            g.bytes(slot(1) + SLOT_ID, ID_LEN).unwrap()
+        ),
+        before
+    );
+    assert_eq!(account(&g, 1).unwrap(), [0; ACCOUNT_LEN]);
+    assert_eq!(live_host(&g, 0b110).unwrap(), None);
+}
+
+#[test]
+fn guest_numbers_skip_the_ones_taken_and_run_out_at_three() {
+    let mut g = lobby(true, &[1, 2, 3]);
+    // A real guest of the human's on port 2 already: guest 1.
+    g.put_u32(slot(2), SLOT_PROFILE | SLOT_LIVE)
+        .put(slot(2) + SLOT_ACCOUNT, &afr_account(1));
+    assert_eq!(free_guest_number(&g, 0).unwrap(), Some(2));
+    assert_eq!(
+        go_live(&mut g, 1, 0b1010, "Clanker 1").unwrap(),
+        GoLive::Guest { host: 0, number: 2 }
+    );
+    assert_eq!(
+        go_live(&mut g, 3, 0b1010, "Clanker 3").unwrap(),
+        GoLive::Guest { host: 0, number: 3 }
+    );
+    assert_eq!(free_guest_number(&g, 0).unwrap(), None);
+    // Another account's guest does not take a number from the human's.
+    let mut other = afr_account(1);
+    other[0] ^= 0xff;
+    g.put(slot(2) + SLOT_ACCOUNT, &other);
+    assert_eq!(free_guest_number(&g, 0).unwrap(), Some(1));
+}
+
+#[test]
+fn going_live_needs_a_profile_a_local_user_and_a_free_number() {
+    let mut g = lobby(true, &[1]);
+    assert_eq!(
+        go_live(&mut g, 2, 0b110, "Clanker 2").unwrap(),
+        GoLive::NoProfile
+    );
+    g.put_u32(slot(1) + SLOT_LOCAL_USER, u32::MAX);
+    assert_eq!(
+        go_live(&mut g, 1, 0b10, "Clanker 1").unwrap(),
+        GoLive::NoLocalUser
+    );
+    g.put_u32(slot(1) + SLOT_LOCAL_USER, 1)
+        .put_u8(LOCAL_USERS + LOCAL_USER_STRIDE, 0);
+    assert_eq!(
+        go_live(&mut g, 1, 0b10, "Clanker 1").unwrap(),
+        GoLive::NoLocalUser,
+        "a local user not in use"
+    );
+    assert_eq!(g.u32(slot(1)).unwrap(), SLOT_PROFILE, "nothing written");
+    g.put_u8(LOCAL_USERS + LOCAL_USER_STRIDE, 1);
+    assert!(matches!(
+        go_live(&mut g, 1, 0b10, "Clanker 1").unwrap(),
+        GoLive::Guest { .. }
+    ));
+    assert_eq!(
+        go_live(&mut g, 1, 0b10, "Clanker 1").unwrap(),
+        GoLive::Already
+    );
+}
+
+#[test]
+fn the_host_is_a_human_on_live_as_their_own_account() {
+    let mut g = lobby(true, &[1]);
+    assert_eq!(live_host(&g, 0b10).unwrap(), Some(0));
+    assert_eq!(live_host(&g, 0b11).unwrap(), None, "port 0 a bot's");
+    // A human guest is no host; a second human on Live after it is.
+    g.put(slot(0) + SLOT_ACCOUNT, &afr_account(2))
+        .put_u32(slot(2), SLOT_PROFILE | SLOT_LIVE)
+        .put(slot(2) + SLOT_ACCOUNT, &afr_account(0));
+    assert_eq!(live_host(&g, 0b10).unwrap(), Some(2));
+}
+
+#[test]
+fn the_slot_summary_says_profile_live_and_guest() {
+    let mut g = lobby(true, &[1, 2]);
+    go_live(&mut g, 1, 0b110, "Clanker 1").unwrap();
+    assert_eq!(slot_summary(&g, 0), "port 0 0x30 Live");
+    assert_eq!(slot_summary(&g, 1), "port 1 0x30 Live guest 1");
+    assert_eq!(slot_summary(&g, 2), "port 2 0x10 offline");
+    assert_eq!(slot_summary(&g, 3), "port 3 0x0 empty");
+}

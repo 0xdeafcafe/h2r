@@ -126,6 +126,11 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "PLAYERS_SCREEN_UNJOINED",
         "a players screen event on the game thread; signs a bot in with guest calls",
     ),
+    (
+        "bots",
+        "PREGAME_LOBBY_INPUT",
+        "a lobby input event on the game thread; notes a Start press for the start-state log",
+    ),
 ];
 
 #[cfg(test)]
@@ -153,8 +158,15 @@ mod tests {
         // The native world (on by default) and objects at the layer draw,
         // with nothing else there, are render-thread safe together.
         let native = "impl.render.native_objects=on".to_owned();
-        for switches in [String::new(), native, ALL_ON.to_owned(), format!("{ALL_ON},render-census")] {
-            let plan = registry(&Case::full(&switches)).build(&feature::Base).unwrap();
+        for switches in [
+            String::new(),
+            native,
+            ALL_ON.to_owned(),
+            format!("{ALL_ON},render-census"),
+        ] {
+            let plan = registry(&Case::full(&switches))
+                .build(&feature::Base)
+                .unwrap();
             for c in plan.chains.values() {
                 match c.render_thread() {
                     Ok(()) => safe.push(c.point.name),
