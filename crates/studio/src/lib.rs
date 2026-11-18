@@ -7,6 +7,7 @@
 //! - [`ui`]: the shell (menus, dockspace, tools, outliner, inspector, log,
 //!   status bar, modals).
 //! - [`viewport`]: the 3D view with picking and the ImGuizmo gizmo.
+//! - [`camera`]: the viewport's camera controls as plain maths.
 //! - [`theme`]: the dark theme, bundled fonts and icons.
 //! - [`headless`]: renders real frames offscreen to PNG (screenshots),
 //!   with [`script`]ed input aimed at widgets that [`probe`] finds.
@@ -14,6 +15,7 @@
 //! Nothing here contains game data: maps come from the user's own disc.
 
 pub mod app;
+pub mod camera;
 pub mod headless;
 pub mod probe;
 pub mod script;

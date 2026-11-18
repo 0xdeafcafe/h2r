@@ -5904,6 +5904,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "app-icon",
+ "assets",
  "boot",
  "content",
  "dear-imgui-rs",
