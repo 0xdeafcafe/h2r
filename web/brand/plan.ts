@@ -3,7 +3,7 @@
 // app icon art (art/app-icon/README.md: hand-drawn, NASA Blue Marble
 // albedo, nothing from the game). Everything here is pure, for tests.
 
-import { BACKGROUND, SITE_NAME, STATS_NAME, THEME } from "../src/brand";
+import { BACKGROUND, DASH_NAME, STATS_NAME, THEME } from "../src/brand";
 
 /** Paths from the repository root. */
 export const SOURCES = {
@@ -89,8 +89,8 @@ export function ico(images: Array<{ size: number; png: Uint8Array }>): Uint8Arra
  *  the dashboard, in the dashboard's colours. */
 export function webManifest() {
   return {
-    name: SITE_NAME,
-    short_name: SITE_NAME,
+    name: DASH_NAME,
+    short_name: DASH_NAME,
     description: `The dashboard and ${STATS_NAME}: who is online, live games, service records and clans for h2recomp.`,
     start_url: "/",
     scope: "/",

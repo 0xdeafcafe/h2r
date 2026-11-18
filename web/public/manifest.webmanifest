@@ -1,6 +1,6 @@
 {
-  "name": "h2 live",
-  "short_name": "h2 live",
+  "name": "Live Dashboard",
+  "short_name": "Live Dashboard",
   "description": "The dashboard and h2 Uplink: who is online, live games, service records and clans for h2recomp.",
   "start_url": "/",
   "scope": "/",

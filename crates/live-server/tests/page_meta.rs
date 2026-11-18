@@ -15,8 +15,8 @@ use serde_json::json;
 use tower::ServiceExt;
 
 const INDEX: &str = "<!doctype html>\n<html>\n  <head>\n    <meta charset=\"UTF-8\" />\n    \
-    <!-- page-meta -->\n    <title>h2 live</title>\n    <!-- /page-meta -->\n    \
-    <meta name=\"application-name\" content=\"h2 live\" />\n    \
+    <!-- page-meta -->\n    <title>Live Dashboard</title>\n    <!-- /page-meta -->\n    \
+    <meta name=\"h2-dash-name\" content=\"Live Dashboard\" />\n    \
     <meta name=\"h2-stats-name\" content=\"h2 Uplink\" />\n  </head>\n  \
     <body><div id=\"root\"></div></body>\n</html>\n";
 
@@ -87,8 +87,8 @@ async fn every_app_page_gets_its_sections_preview() {
     let h = harness().await;
     let web = Web::new(&h);
     let home = web.page("/").await;
-    assert_eq!(title(&home), "h2 live");
-    assert_eq!(meta(&home, "og:site_name"), "h2 live");
+    assert_eq!(title(&home), "Live Dashboard");
+    assert_eq!(meta(&home, "og:site_name"), "Live Dashboard");
     assert_eq!(meta(&home, "theme-color"), "#0c4406");
     assert_eq!(meta(&home, "og:url"), "https://live.example/");
     assert_eq!(
@@ -101,7 +101,7 @@ async fn every_app_page_gets_its_sections_preview() {
     assert_eq!(title(&stats), "h2 Uplink");
     assert_eq!(meta(&stats, "theme-color"), "#071a35");
     assert_eq!(title(&web.page("/stats/games").await), "Games · h2 Uplink");
-    assert_eq!(title(&web.page("/dash/players").await), "Players · h2 live");
+    assert_eq!(title(&web.page("/dash/players").await), "Players · Live Dashboard");
     assert_eq!(title(&web.page("/stats/clans").await), "Clans · h2 Uplink");
     // An unknown player or game still gets its section's.
     assert_eq!(

@@ -7,6 +7,7 @@ import { VerifyMark } from "../components/bits";
 import { Crumbs, Panel, Title } from "./Layout";
 import { Pills } from "./Side";
 import { num } from "./fmt";
+import { STATS_NAME } from "../brand";
 import { gameTypeLine } from "../state/gametype";
 
 const CATEGORY: Record<string, string> = {
@@ -67,7 +68,7 @@ export default function Events() {
         <aside class="s-left">
           <Title>Event Log</Title>
           <Pills label="Event log" items={[
-            { label: "h2 live Online", href: "/stats" },
+            { label: STATS_NAME, href: "/stats" },
             { label: "Players & Leaderboards", href: "/stats/players" },
             { label: "Server Details", href: "/dash/server" },
           ]} />

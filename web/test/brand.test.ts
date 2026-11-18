@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { HTML_NAMES, SITE_NAME, STATS_NAME, THEME, fillNames } from "../src/brand";
+import { DASH_NAME, HTML_NAMES, STATS_NAME, THEME, fillNames } from "../src/brand";
 import { CARD, ICONS, ICO_PARTS, SOURCES, faviconSvg, ico, outputs, webManifest } from "../brand/plan";
 
 const WEB = resolve(import.meta.dir, "..");
@@ -29,10 +29,10 @@ function jpegSize(b: Uint8Array): [number, number] {
 
 describe("brand names", () => {
   test("index.html's placeholders are filled and escaped", () => {
-    const html = fillNames(`<title>%H2_SITE_NAME%</title><meta name="h2-stats-name" content="%H2_STATS_NAME%" />`);
-    expect(html).toBe(`<title>${SITE_NAME}</title><meta name="h2-stats-name" content="${STATS_NAME}" />`);
-    expect(fillNames("%H2_SITE_NAME%".repeat(2))).toBe(SITE_NAME.repeat(2));
-    expect(Object.keys(HTML_NAMES)).toEqual(["%H2_SITE_NAME%", "%H2_STATS_NAME%"]);
+    const html = fillNames(`<title>%H2_DASH_NAME%</title><meta name="h2-stats-name" content="%H2_STATS_NAME%" />`);
+    expect(html).toBe(`<title>${DASH_NAME}</title><meta name="h2-stats-name" content="${STATS_NAME}" />`);
+    expect(fillNames("%H2_DASH_NAME%".repeat(2))).toBe(DASH_NAME.repeat(2));
+    expect(Object.keys(HTML_NAMES)).toEqual(["%H2_DASH_NAME%", "%H2_STATS_NAME%"]);
   });
 
   test("index.html has the block the server replaces and the names it reads", () => {
@@ -46,7 +46,8 @@ describe("brand names", () => {
       expect(block).toContain(tag);
       expect(rest).not.toContain(tag);
     }
-    expect(rest).toContain('<meta name="application-name" content="%H2_SITE_NAME%" />');
+    expect(rest).toContain('<meta name="application-name" content="%H2_DASH_NAME%" />');
+    expect(rest).toContain('<meta name="h2-dash-name" content="%H2_DASH_NAME%" />');
     expect(rest).toContain('<meta name="h2-stats-name" content="%H2_STATS_NAME%" />');
     for (const href of ["/favicon.ico", "/favicon.svg", "/apple-touch-icon.png", "/manifest.webmanifest"]) {
       expect(rest).toContain(`href="${href}"`);
@@ -107,7 +108,8 @@ describe("icons", () => {
 
   test("the manifest names the dashboard, its colours and a maskable icon", () => {
     const m = webManifest();
-    expect(m.name).toBe(SITE_NAME);
+    expect(m.name).toBe(DASH_NAME);
+    expect(m.short_name).toBe(DASH_NAME);
     expect(m.theme_color).toBe(THEME.dash);
     expect(m.start_url).toBe("/");
     expect(m.icons.some((i) => i.purpose === "maskable" && i.sizes === "512x512")).toBe(true);

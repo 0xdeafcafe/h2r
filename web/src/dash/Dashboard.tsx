@@ -59,6 +59,7 @@ import SessionsScreen from "./Sessions";
 import SignInsScreen from "./SignIns";
 import GamesScreen from "./Games";
 import "../styles/social.css";
+import { DASH_NAME } from "../brand";
 import { lockedHint, menuFor, type SectionId } from "./menu";
 
 type ScreenId = "menu" | "games" | "list" | "player" | "settings" | "signup" | "recovery" | "recover" | "server" | "social" | "sessions" | "signins";
@@ -550,7 +551,7 @@ export default function Dashboard() {
       <Tubes />
 
       <header class="dx-top">
-        <span class="dx-brand">h2 live</span>
+        <span class="dx-brand">{DASH_NAME}</span>
         <span class="dx-chip dx-chip--server"><i class={`dx-led dx-led--${live.status()}`} />{live.wellKnown()?.id ?? new URL(live.server().base).host}</span>
         <Show when={identity.me()} fallback={<Show when={section() !== "signin"}><a class="dx-chip dx-chip--link dx-chip--join" href="/dash/signin" onClick={(e) => { e.preventDefault(); go("/dash/signin", "deeper"); }}>sign in</a></Show>}>
           {(me) => <a class="dx-chip dx-chip--me" href="/dash/signup" onClick={(e) => { e.preventDefault(); if (screen() !== "player" || section() !== "signup") go("/dash/signup", section() === "signup" ? "back" : "deeper"); }}>{me().gamertag}</a>}

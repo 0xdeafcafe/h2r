@@ -3,8 +3,13 @@
 // for link previews (crates/live-server/src/page_meta.rs), so a rename is
 // a one-line change here. Routes never change with a name.
 
-/** The service, and the dashboard's name. */
+/** The service's name: the link-preview card's mark, and what the CLI and
+ *  server call themselves. Neither site is named this. */
 export const SITE_NAME = "h2 live";
+
+/** The dashboard's name (/dash): the app the manifest installs, the page
+ *  titles and the header. */
+export const DASH_NAME = "Live Dashboard";
 
 /** The stats site's name (/stats): where the dashboard sends you for
  *  games, service records and leaderboards. The options considered are in
@@ -21,7 +26,7 @@ export const BACKGROUND = "#010a01";
 
 /** index.html's placeholders and what they become. */
 export const HTML_NAMES: Record<string, string> = {
-  "%H2_SITE_NAME%": SITE_NAME,
+  "%H2_DASH_NAME%": DASH_NAME,
   "%H2_STATS_NAME%": STATS_NAME,
 };
 
