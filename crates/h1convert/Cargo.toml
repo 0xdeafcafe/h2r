@@ -26,6 +26,8 @@ thiserror.workspace = true
 scenario-edit = { path = "../scenario-edit", default-features = false }
 
 [dev-dependencies]
+# Halo 2 pixel combiners evaluated on the CPU (tests/shad_rebuild.rs: the detail blend).
+shaders = { path = "../shaders" }
 # Converted maps' bitmaps decoded against the base's (tests/disc_maps.rs).
 assets.workspace = true
 xiso.workspace = true

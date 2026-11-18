@@ -53,7 +53,14 @@ pub enum Role {
     /// The picture: a surface's base map, a transparent shader's or a sky
     /// layer's map.
     Base,
+    /// A surface's detail map; with [`Role::Secondary`], Halo 1's primary
+    /// detail, shown where the base map's alpha is 1.
     Detail,
+    /// Halo 1's secondary detail map, shown where the base map's alpha is
+    /// 0 (`senv` type blended).
+    Secondary,
+    /// Halo 1's micro detail map, multiplied over the blend.
+    Micro,
     Bump,
     /// A cloud layer's mask (`two_alpha_clouds` stage 1).
     Mask,
@@ -123,6 +130,10 @@ pub enum Vector {
     /// transparent stem's texture transform.
     URow(Role),
     VRow(Role),
+    /// `[0, 0, u, v]`: the role's tiling in a vector's second half
+    /// (`tex_bump_detail_blend_detail` binds `c[20]` from vector 1's
+    /// first half and vector 2's second).
+    Zw(Role),
     /// Colour `k`'s red, green and blue as floats (the opaque stems bind
     /// a colour to a pixel constant and its float copy to a vertex
     /// default; V every retail `tex_bump` instance has vector 7 = colour 0
@@ -167,7 +178,10 @@ const V1: [f32; 4] = [0.0, 1.0, 0.0, 0.0];
 /// Opaque bumped, lightmapped surfaces: stage 0 base (`c[18]` vector 1),
 /// stage 1 detail (`c[19]` vector 2), stage 2 bump (`c[20]` vector 0),
 /// stage 3 the lightmap. Vectors 3 to 6 are the same in all 498 retail
-/// instances (V); colours 0 and 1 white (untinted).
+/// instances (V). Colours 0 and 1 (vectors 7 and 8) are the specular
+/// colours, which the base map's alpha masks: black, as on 39 of 498
+/// retail instances, since a Halo 1 base alpha is a blend or cut-out
+/// mask, not a specular one (white lit Blood Gulch's ground flat).
 const OPAQUE_BITMAPS: [Bm; 5] = [
     Bm::Role(Role::Bump, Fixed::DefaultVector),
     Bm::Null,
@@ -192,8 +206,49 @@ pub const TEX_BUMP: Layout = Layout {
     word_14: 1,
     ints: [1, 0],
     bitmaps: &OPAQUE_BITMAPS,
-    colors: &[WHITE, WHITE],
+    colors: &[0, 0],
     vectors: &OPAQUE_VECTORS,
+    root: Root::BaseMap,
+};
+
+/// Opaque bumped surfaces with Halo 1's detail blend: stage 0 the base
+/// (bitmap 1, `c[18]` vector 3), stage 1 the detail shown where the base
+/// alpha is 0 (bitmap 2, `c[19]` vector 0), stage 2 the one shown where
+/// it is 1 (bitmap 3, `c[20].xy` vector 1), stage 3 a micro detail
+/// (bitmap 4, `c[20].zw` vector 2); layer 1 is `lerp(t1, t2, t0.a) ×
+/// t0 × 2 × t3 × 2`, Halo 1's `senv` blend with biased multiplies
+/// (`tests/shad_rebuild.rs`). The bump is bitmap 0 (`c[20]` vector 4 in
+/// the lighting layer). Colours 0 and 1 white and black (the final
+/// combiner; all 27 retail instances), 2 and 3 the specular colours,
+/// vectors 7 and 8 their copies; 3 of 27 retail instances (Delta
+/// Temple's stone) have them black, the value written: Halo 1's
+/// specular is not carried.
+pub const TEX_BUMP_DETAIL_BLEND_DETAIL: Layout = Layout {
+    stem: "shaders\\shader_templates\\opaque\\tex_bump_detail_blend_detail",
+    word_14: 1,
+    ints: [0, 1],
+    bitmaps: &[
+        Bm::Role(Role::Bump, Fixed::DefaultVector),
+        Bm::Role(Role::Base, Fixed::ColorWhite),
+        Bm::Role(Role::Secondary, Fixed::DefaultDetail),
+        Bm::Role(Role::Detail, Fixed::DefaultDetail),
+        Bm::Role(Role::Micro, Fixed::DefaultDetail),
+        Bm::Fixed(Fixed::CornerFade),
+        Bm::Fixed(Fixed::DefaultDetail),
+    ],
+    colors: &[WHITE, 0, 0, 0],
+    vectors: &[
+        Vector::Tile(Role::Secondary),
+        Vector::Tile(Role::Detail),
+        Vector::Zw(Role::Micro),
+        Vector::Tile(Role::Base),
+        Vector::Tile(Role::Bump),
+        Vector::Const([0.276, 0.276, 0.93, 0.0]),
+        Vector::Const([0.39, 0.0, 0.93, 0.0]),
+        Vector::ColorOf(2),
+        Vector::ColorOf(3),
+        Vector::Const([1.0, 1.0, 0.0, 0.0]),
+    ],
     root: Root::BaseMap,
 };
 
@@ -210,7 +265,7 @@ pub const TEX_BUMP_ALPHA_TEST: Layout = Layout {
         Bm::Role(Role::Detail, Fixed::DefaultDetail),
         Bm::Fixed(Fixed::CornerFade),
     ],
-    colors: &[WHITE, WHITE],
+    colors: &[0, 0],
     vectors: &OPAQUE_VECTORS,
     root: Root::BaseMap,
 };
@@ -351,8 +406,9 @@ pub const SKY_ADDITIVE: Layout = Layout {
 };
 
 /// Every layout.
-pub const LAYOUTS: [&Layout; 8] = [
+pub const LAYOUTS: [&Layout; 9] = [
     &TEX_BUMP,
+    &TEX_BUMP_DETAIL_BLEND_DETAIL,
     &TEX_BUMP_ALPHA_TEST,
     &ILLUM,
     &ONE_ADD_ILLUM,
@@ -489,6 +545,10 @@ impl Library {
                 }
                 Vector::URow(r) => [scale(r)[0], 0.0, 0.0, 0.0],
                 Vector::VRow(r) => [0.0, scale(r)[1], 0.0, 0.0],
+                Vector::Zw(r) => {
+                    let [u, v] = scale(r);
+                    [0.0, 0.0, u, v]
+                }
                 Vector::ColorOf(k) => {
                     let c = layout.colors.get(*k).copied().unwrap_or(0);
                     let ch = |s: u32| ((c >> s) & 0xff) as f32 / 255.0;
@@ -695,16 +755,47 @@ pub struct H1Shader {
     pub group: String,
     pub layout: &'static Layout,
     pub maps: Vec<(Role, H1Bound)>,
+    /// The layout and maps to draw with when the base lacks
+    /// [`Self::layout`]'s stem.
+    pub fallback: Option<(&'static Layout, Vec<(Role, H1Bound)>)>,
+}
+
+impl H1Shader {
+    /// The layout and maps for a base whose stems `library` holds: the
+    /// first choice, else the fallback; `None` when the base has neither.
+    pub fn choose(&self, library: &Library) -> Option<(&'static Layout, &[(Role, H1Bound)])> {
+        if library.has(self.layout) {
+            return Some((self.layout, &self.maps));
+        }
+        self.fallback
+            .as_ref()
+            .filter(|(l, _)| library.has(l))
+            .map(|(l, m)| (*l, m.as_slice()))
+    }
 }
 
 /// `senv` flags (`+0x28`), bit 0 alpha-tested (`editor_core::halo1_art`).
 pub const SENV_FLAGS: usize = 0x28;
+/// `senv` type (`+0x2a`): 0 normal, 1 blended (the base map's alpha
+/// blends the primary and secondary detail maps), 2 blended with the
+/// base specular. V (395 `senv` on the disc): 0 or 1; Blood Gulch's
+/// ground (primary sand, secondary grass) is 1.
+pub const SENV_TYPE: usize = 0x2a;
+/// `senv` primary detail map (`+0xb8`, its scale the f32 before it).
+pub const SENV_PRIMARY: usize = 0xb8;
+/// `senv` secondary detail map (`+0xcc`, scale before it). V: set on 29.
+pub const SENV_SECONDARY: usize = 0xcc;
+/// `senv` micro detail map (`+0xfc`, scale before it).
+pub const SENV_MICRO: usize = 0xfc;
 /// `spla` base map (`+0xd4`, `editor_core::halo1_art`).
 pub const SPLA_MAP: usize = 0xd4;
 
 /// Reads the Halo 1 shader `tag` (any of [`H1_GROUPS`]). `None` for
 /// another group or one with no map this reads.
 ///
+/// - `senv` not alpha-tested, with a detail map:
+///   [`TEX_BUMP_DETAIL_BLEND_DETAIL`] (`senv_blend`), falling back to the
+///   single-detail [`TEX_BUMP`] on a base without its stem.
 /// - `senv`: [`TEX_BUMP`], or [`TEX_BUMP_ALPHA_TEST`] with flags bit 0;
 ///   base, detail and bump maps with their scales
 ///   ([`crate::textures::h1_maps_of`], [`crate::textures::h1_scales_of`]);
@@ -730,6 +821,7 @@ pub fn read_h1(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<H1Shader> {
                     scale: [1.0, 1.0],
                 },
             )],
+            fallback: None,
         })
     };
     match group.as_str() {
@@ -740,7 +832,8 @@ pub fn read_h1(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<H1Shader> {
             let flags = d
                 .get(SENV_FLAGS..SENV_FLAGS + 2)
                 .map_or(0, |b| u16::from_le_bytes([b[0], b[1]]));
-            let layout = if group == "senv" && flags & 1 != 0 {
+            let alpha_tested = group == "senv" && flags & 1 != 0;
+            let layout = if alpha_tested {
                 &TEX_BUMP_ALPHA_TEST
             } else {
                 &TEX_BUMP
@@ -778,11 +871,24 @@ pub fn read_h1(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<H1Shader> {
                     },
                 ));
             }
-            Some(H1Shader {
-                name: tag.name.clone(),
-                group,
-                layout,
-                maps,
+            let blend = (group == "senv" && !alpha_tested)
+                .then(|| senv_blend(h1, d, &maps))
+                .flatten();
+            Some(match blend {
+                Some(blend) => H1Shader {
+                    name: tag.name.clone(),
+                    group,
+                    layout: &TEX_BUMP_DETAIL_BLEND_DETAIL,
+                    maps: blend,
+                    fallback: Some((layout, maps)),
+                },
+                None => H1Shader {
+                    name: tag.name.clone(),
+                    group,
+                    layout,
+                    maps,
+                    fallback: None,
+                },
             })
         }
         "swat" | "sgla" => one(&ONE_ALPHA_ENV, crate::textures::h1_maps_of(h1, tag)?.base),
@@ -815,10 +921,60 @@ pub fn read_h1(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<H1Shader> {
                         scale: m.scale,
                     },
                 )],
+                fallback: None,
             })
         }
         _ => None,
     }
+}
+
+/// The maps of an `senv` (`d`, its data) for
+/// [`TEX_BUMP_DETAIL_BLEND_DETAIL`], from `single`, its maps for
+/// [`TEX_BUMP`] (base and bump): Halo 1's primary detail where the base
+/// alpha is 1 ([`Role::Detail`]) and, for a blended type, its secondary
+/// where it is 0 ([`Role::Secondary`]); a normal one (or one missing
+/// either) shows the one it has everywhere. The micro detail is
+/// [`Role::Micro`]. `None` when it names no detail map.
+fn senv_blend(h1: &h1map::H1Map, d: &[u8], single: &[(Role, H1Bound)]) -> Option<Vec<(Role, H1Bound)>> {
+    let at = |o: usize| {
+        let r = h1map::TagRef::read(d, o)?;
+        if r.group != h1map::Group::new(b"bitm") || r.id.is_none() || h1.tag(r.id).is_err() {
+            return None;
+        }
+        let s = d
+            .get(o - 4..o)
+            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .filter(|s| s.is_finite() && *s > 0.0)
+            .unwrap_or(1.0);
+        Some(H1Bound {
+            bitmap: r.id,
+            scale: [s, s],
+        })
+    };
+    let blended = d
+        .get(SENV_TYPE..SENV_TYPE + 2)
+        .is_some_and(|b| u16::from_le_bytes([b[0], b[1]]) != 0);
+    let primary = at(SENV_PRIMARY);
+    let secondary = if blended { at(SENV_SECONDARY) } else { None };
+    let micro = at(SENV_MICRO);
+    if primary.is_none() && secondary.is_none() && micro.is_none() {
+        return None;
+    }
+    let mut maps: Vec<(Role, H1Bound)> = single
+        .iter()
+        .filter(|(r, _)| matches!(r, Role::Base | Role::Bump))
+        .copied()
+        .collect();
+    if let Some(p) = primary.or(secondary) {
+        maps.push((Role::Detail, p));
+    }
+    if let Some(s) = secondary.or(primary) {
+        maps.push((Role::Secondary, s));
+    }
+    if let Some(m) = micro {
+        maps.push((Role::Micro, m));
+    }
+    Some(maps)
 }
 
 /// The [`lod_offset`] of the Halo 1 bitmap `id` (its first image), 0
@@ -942,7 +1098,7 @@ mod tests {
         assert_eq!(vec(0), [4.0, 4.0, 0.0, 0.0], "bump");
         assert_eq!(vec(1), [1.0, 1.0, 0.0, 0.0], "base");
         assert_eq!(vec(2), [16.0, 16.0, 0.0, 0.0], "detail");
-        assert_eq!(vec(7), [1.0, 1.0, 1.0, 0.0], "colour 0 as floats");
+        assert_eq!(vec(7), [0.0, 0.0, 0.0, 0.0], "specular colour 0 (black) as floats");
         let bm = |k: usize| rec.at(&format!("postprocess[0].bitmaps[{k}].bitmap")).cloned();
         assert_eq!(bm(2), Some(Val::Datum(Target::Id(TagId(0xe3000001)))));
         assert_eq!(bm(1), Some(Val::Datum(Target::Null)));
@@ -971,6 +1127,46 @@ mod tests {
             rec.at("postprocess[0].bitmaps[3].bitmap"),
             Some(&Val::Datum(Target::Id(lib.fixed[&Fixed::DefaultDetail].id)))
         );
+    }
+
+    #[test]
+    fn the_detail_blend_layout_puts_each_detail_in_its_stage() {
+        let lib = library();
+        let b = |id: u32, s: f32| Bound {
+            id: TagId(id),
+            scale: [s, s],
+            lod_offset: 3.0,
+        };
+        let maps: HashMap<Role, Bound> = [
+            (Role::Base, b(0xe3000001, 1.0)),
+            (Role::Detail, b(0xe3000002, 100.0)),
+            (Role::Secondary, b(0xe3000003, 60.0)),
+            (Role::Micro, b(0xe3000004, 12.0)),
+        ]
+        .into_iter()
+        .collect();
+        let rec = lib.record(&TEX_BUMP_DETAIL_BLEND_DETAIL, &maps).unwrap();
+        let vec = |k: usize| match rec.at(&format!("postprocess[0].vectors[{k}].vector")) {
+            Some(Val::List(v)) => v
+                .iter()
+                .map(|x| match x {
+                    Val::Float(f) => *f,
+                    _ => f32::NAN,
+                })
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        };
+        let bm = |k: usize| rec.at(&format!("postprocess[0].bitmaps[{k}].bitmap")).cloned();
+        let id = |n: u32| Some(Val::Datum(Target::Id(TagId(n))));
+        assert_eq!(bm(1), id(0xe3000001), "base, stage 0");
+        assert_eq!(bm(2), id(0xe3000003), "secondary, stage 1 (base alpha 0)");
+        assert_eq!(bm(3), id(0xe3000002), "primary, stage 2 (base alpha 1)");
+        assert_eq!(bm(4), id(0xe3000004), "micro, stage 3");
+        assert_eq!(vec(0), [60.0, 60.0, 0.0, 0.0]);
+        assert_eq!(vec(1), [100.0, 100.0, 0.0, 0.0]);
+        assert_eq!(vec(2), [0.0, 0.0, 12.0, 12.0], "c[20].zw");
+        assert_eq!(vec(3), [1.0, 1.0, 0.0, 0.0]);
+        assert_eq!(vec(7), [0.0, 0.0, 0.0, 0.0], "no specular");
     }
 
     #[test]

@@ -252,14 +252,15 @@ fn check_rebuilt(
     for (k, v) in layout.vectors.iter().enumerate() {
         let got = floats(&rec, &format!("postprocess[0].vectors[{k}].vector"));
         let scale = |r: &Role| maps.get(r).map_or([1.0, 1.0], |m| m.scale);
-        let want: Option<[f32; 2]> = match v {
-            Vector::Tile(r) => Some(scale(r)),
-            Vector::URow(r) => Some([scale(r)[0], 0.0]),
-            Vector::VRow(r) => Some([0.0, scale(r)[1]]),
-            _ => None,
+        let (at, want): (usize, Option<[f32; 2]>) = match v {
+            Vector::Tile(r) => (0, Some(scale(r))),
+            Vector::URow(r) => (0, Some([scale(r)[0], 0.0])),
+            Vector::VRow(r) => (0, Some([0.0, scale(r)[1]])),
+            Vector::Zw(r) => (2, Some(scale(r))),
+            _ => (0, None),
         };
         if let Some(w) = want
-            && got[..2] != w
+            && got[at..at + 2] != w
         {
             return Err(format!("vector {k} {got:?}, want {w:?}"));
         }
@@ -325,13 +326,18 @@ fn every_halo1_shader_and_sky_shader_rebuilds() {
             *counts
                 .entry((group.clone(), s.layout.stem.rsplit('\\').next().unwrap().into()))
                 .or_default() += 1;
-            let maps: HashMap<Role, Bound> = s
-                .maps
-                .iter()
-                .map(|(r, m)| (*r, bound(m.scale, shad::h1_lod_offset(&h1, m.bitmap))))
-                .collect();
-            if let Err(e) = check_rebuilt(&lib, s.layout, &maps) {
-                failures.push(format!("{name}: {}: {e}", tag.name));
+            // The first choice, and the fallback a base without its
+            // stem draws with.
+            for (layout, h1maps) in
+                std::iter::once((s.layout, &s.maps)).chain(s.fallback.iter().map(|(l, m)| (*l, m)))
+            {
+                let maps: HashMap<Role, Bound> = h1maps
+                    .iter()
+                    .map(|(r, m)| (*r, bound(m.scale, shad::h1_lod_offset(&h1, m.bitmap))))
+                    .collect();
+                if let Err(e) = check_rebuilt(&lib, layout, &maps) {
+                    failures.push(format!("{name}: {}: {}: {e}", tag.name, layout.stem));
+                }
             }
         }
         // The sky models' shaders.
@@ -399,4 +405,126 @@ fn every_halo1_shader_and_sky_shader_rebuilds() {
     assert!(maps_read > campaign_read, "multiplayer maps");
     assert!(failures.is_empty(), "{failures:#?}");
     let _ = FourCC(*b"shad");
+}
+
+/// Halo 1's `senv` detail blend for one texel: the base map's alpha
+/// blends the secondary detail (alpha 0) into the primary (alpha 1), the
+/// blend is multiplied into the base's colour and the micro detail into
+/// that, each a biased multiply (`2 × a × b`, saturated; detail function
+/// 0, the "double biased multiply" of 394 of 395 retail `senv`).
+fn halo1_blend(base: [f32; 4], primary: [f32; 4], secondary: [f32; 4], micro: [f32; 4]) -> [f32; 3] {
+    let a = base[3];
+    std::array::from_fn(|i| {
+        let detail = secondary[i] * (1.0 - a) + primary[i] * a;
+        let c = (2.0 * detail * base[i]).clamp(0.0, 1.0);
+        (2.0 * c * micro[i]).clamp(0.0, 1.0)
+    })
+}
+
+struct Texels([[f32; 4]; 4]);
+
+impl shaders::psh::interp::Sampler for Texels {
+    fn sample(&self, stage: usize, _: shaders::psh::TextureDim, _: [f32; 3]) -> [f32; 4] {
+        self.0[stage]
+    }
+}
+
+/// `tex_bump_detail_blend_detail`'s colour pass, run on the CPU
+/// (`shaders::psh::interp`) for every retail instance on Coagulation
+/// with the texels our layout puts in each stage, is Halo 1's blend: the
+/// layout's roles are bound where the program reads them, and the final
+/// combiner's colours (which the layout writes) are the retail ones the
+/// program is run with.
+#[test]
+#[ignore = "reads the Halo 2 disc ($H2_DISC)"]
+fn detail_blend_is_halo1s_rule() {
+    let disc = std::env::var("H2_DISC").expect("set H2_DISC");
+    let (_, b, s) = h2_maps(&disc).into_iter().find(|m| m.0 == "coagulation").unwrap();
+    let mut map = open(&disc, b, s);
+    let mut lib = ShaderLibrary::read(&mut map).unwrap();
+    let layout = &shad::TEX_BUMP_DETAIL_BLEND_DETAIL;
+    let ids: Vec<(TagId, String)> = map
+        .tags()
+        .iter()
+        .filter(|t| t.group == SHAD && t.location.is_some())
+        .map(|t| (t.id, t.name.clone().unwrap_or_default()))
+        .collect();
+    let mut checked = 0;
+    let mut texels_run = 0;
+    for (id, name) in ids {
+        let Ok(sh) = lib.shader(id) else { continue };
+        let stem = map.tag(sh.template.id).ok().and_then(|t| t.name.clone()).unwrap_or_default();
+        if stem != layout.stem {
+            continue;
+        }
+        let p = sh.compiled().unwrap().clone();
+        assert_eq!(p.colors[..2], layout.colors[..2], "{name}: final combiner colours");
+        let m = lib.material(id, None).unwrap();
+        let l = m
+            .layers
+            .iter()
+            .find(|l| l.lod == 0 && l.layer == 1)
+            .expect("the colour layer");
+        let imp = &l.passes[0].implementations[0];
+        // The role each stage samples.
+        let mut roles = [None; 4];
+        for (stage, t) in imp.textures.iter().enumerate() {
+            let Some(tags::material::TextureSource::Bitmap { bitmap, .. }) = t.map(|t| t.source) else {
+                panic!("{name}: stage {stage} isn't a bitmap");
+            };
+            let ks: Vec<usize> = (0..p.bitmaps.len()).filter(|&k| p.bitmaps[k].bitmap == bitmap).collect();
+            let roles_of: HashSet<Role> = ks
+                .iter()
+                .filter_map(|&k| match layout.bitmaps[k] {
+                    Bm::Role(r, _) => Some(r),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(roles_of.len(), 1, "{name}: stage {stage} reads bitmaps {ks:?}");
+            roles[stage] = roles_of.into_iter().next();
+        }
+        let def = shaders::psh::PixelShaderDef::from_bytes(&imp.pixel_shader).unwrap();
+        let (c0, c1) = def.embedded_constants();
+        let u = shaders::psh::interp::Uniforms {
+            c0,
+            c1,
+            ..Default::default()
+        };
+        let mut seed = 0x1234_5678u32;
+        let mut rnd = || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed >> 8) as f32 / (1u32 << 24) as f32
+        };
+        for _ in 0..2000 {
+            let mut texel = || [rnd(), rnd(), rnd(), rnd()];
+            let (base, primary, secondary, micro) = (texel(), texel(), texel(), texel());
+            let of = |r: Role| match r {
+                Role::Base => base,
+                Role::Detail => primary,
+                Role::Secondary => secondary,
+                Role::Micro => micro,
+                other => panic!("{name}: {other:?} in the colour pass"),
+            };
+            let t = Texels(std::array::from_fn(|k| of(roles[k].unwrap())));
+            let got = shaders::psh::interp::run(
+                &def,
+                &shaders::psh::PixelOptions::default(),
+                &shaders::psh::interp::Inputs::default(),
+                &u,
+                &t,
+            )
+            .unwrap();
+            let want = halo1_blend(base, primary, secondary, micro);
+            for i in 0..3 {
+                assert!(
+                    (got[i] - want[i]).abs() < 2e-3,
+                    "{name}: base {base:?} primary {primary:?} secondary {secondary:?} micro {micro:?}: {got:?} want {want:?}"
+                );
+            }
+            texels_run += 1;
+        }
+        checked += 1;
+    }
+    eprintln!("{checked} retail instances, {texels_run} texels");
+    assert!(checked > 0, "coagulation has the stem's instances");
 }

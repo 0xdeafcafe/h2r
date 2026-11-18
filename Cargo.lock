@@ -2450,6 +2450,7 @@ dependencies = [
  "map",
  "mopp",
  "scenario-edit",
+ "shaders",
  "tags",
  "thiserror 2.0.21",
  "xbe",

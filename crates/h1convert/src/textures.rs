@@ -201,6 +201,8 @@ pub fn role_name(r: shad::Role) -> &'static str {
     match r {
         shad::Role::Base => "base",
         shad::Role::Detail => "detail",
+        shad::Role::Secondary => "secondary detail",
+        shad::Role::Micro => "micro detail",
         shad::Role::Bump => "bump",
         shad::Role::Mask => "mask",
         shad::Role::Tile => "tile",
@@ -238,16 +240,16 @@ pub fn plan<R: Read + Seek>(
                 .push(format!("{name}: not a shader whose maps this reads"));
             continue;
         };
-        if !out.library.has(s.layout) {
+        let Some((layout, chosen)) = s.choose(&out.library) else {
             out.notes.push(format!(
                 "{name}: the base lacks {} or its default bitmaps",
                 s.layout.stem
             ));
             continue;
-        }
+        };
         let mut maps = Vec::new();
         let mut swapped = Vec::new();
-        for (role, m) in &s.maps {
+        for (role, m) in chosen {
             let k = *converted.entry(m.bitmap).or_insert_with(|| {
                 let tag = h1.tag(m.bitmap).ok()?;
                 let (_, c, _) = h1bitmaps::convert_bitmap(h1, tag).ok()?;
@@ -266,7 +268,7 @@ pub fn plan<R: Read + Seek>(
         out.copies.push(ShaderCopy {
             h1_shader: name.clone(),
             material: *i,
-            layout: s.layout,
+            layout,
             maps,
             swapped,
         });
