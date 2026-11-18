@@ -41,7 +41,7 @@ use crate::safe_out::OutDir;
 /// use) changes the maps they write**: every import stamped with an older
 /// version is converted again at the next `h2 play`, so `--follow` users
 /// get the new maps after the merge.
-pub const CONVERTER_VERSION: u32 = 53;
+pub const CONVERTER_VERSION: u32 = 54;
 
 /// The stamp's file, in `<data>/campaigns/halo1/`.
 pub const STAMP_FILE: &str = "import.stamp";
@@ -336,6 +336,22 @@ struct DiscConverter {
 }
 
 impl DiscConverter {
+    /// A multiplayer job's map, converted and built as the import writes
+    /// it (fresh: nothing of the base pinned), with its preparation.
+    fn multiplayer(
+        &mut self,
+        name: &str,
+        sandbox: Sandbox,
+    ) -> Result<(h1convert::convert::Prepared, h1convert::fresh::Fresh)> {
+        let (file, h1) = self.read(name)?;
+        let base_name = known(name).map_or("beavercreek", |k| k.1);
+        let mut base = h1_cmd::h2_base(&self.h2, base_name)?;
+        let p = h1_cmd::prepare_mp(&h1, &file, &mut base, base_name, sandbox)?;
+        let mopp = structure_mopp(&p.collision)?;
+        let f = p.build_fresh(&mut base, &mopp)?;
+        Ok((p, f))
+    }
+
     fn read(&mut self, name: &str) -> Result<(Vec<u8>, H1Map)> {
         let e = self
             .disc
@@ -402,13 +418,7 @@ impl Converter for DiscConverter {
                 }
             }
             Job::Multiplayer(name, sandbox) => {
-                let (file, h1) = self.read(name)?;
-                let base_name = known(name).map_or("beavercreek", |k| k.1);
-                let mut base = h1_cmd::h2_base(&self.h2, base_name)?;
-                let p = h1_cmd::prepare_mp(&h1, &file, &mut base, base_name, sandbox)?;
-                let mopp = structure_mopp(&p.collision)?;
-                // Fresh: nothing of the base pinned.
-                let f = p.build_fresh(&mut base, &mopp)?;
+                let (p, f) = self.multiplayer(name, sandbox)?;
                 let done = h1convert::convert::Converted {
                     manifest: p.manifest_fresh(&f),
                     name: f.name,

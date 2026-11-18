@@ -60,7 +60,7 @@ impl Halo1Objects for Objects<'_> {
                 )
             })
             .collect();
-        let tags = tree.tags;
+        let (tags, sounds, loops) = (tree.tags, tree.sounds, tree.loops);
         let tag = |id: map::TagId| match crate::convert::local_index(id) {
             Some(k) => HudTag::Added(k),
             None => HudTag::Base(id),
@@ -73,14 +73,24 @@ impl Halo1Objects for Objects<'_> {
         ObjectTags {
             hud_swaps,
             count: tags.len(),
+            // The tags first, at the datums the placements name; the
+            // sounds they play once the collections are in after them.
             install: Box::new(move |set| {
                 Tree {
                     tags: tags.clone(),
-                    reports: Vec::new(),
-                    hud_swaps: Vec::new(),
+                    ..Tree::default()
                 }
-                .install(set)
+                .install_tags(set)
                 .map_err(|e| e.to_string())
+            }),
+            after: Box::new(move |set, ids| {
+                Tree {
+                    sounds: sounds.clone(),
+                    loops: loops.clone(),
+                    ..Tree::default()
+                }
+                .install_audio_for(set, ids);
+                Ok(())
             }),
             notes,
         }

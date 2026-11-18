@@ -1,0 +1,963 @@
+//! Halo 1 effects (`effe`) against the disc. Reads `$H1_ISO` (and
+//! `$H2_DISC` where a base map is needed); nothing is written.
+//!
+//! ```sh
+//! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test effects_disc -- --ignored --nocapture
+//! ```
+//!
+//! - `halo1_effect_layout_survey`: the Halo 1 `effe` layout
+//!   (`h1objects::h1::Effect`) over every map: root, events, parts (each
+//!   reference of its own group word) and particles, with the value range
+//!   of every part word.
+//! - `every_effect_rebuilds_from_its_definition`: every `effe` and `vehi`
+//!   of the ten campaign levels (on 05a_deltaapproach) and the multiplayer
+//!   maps (on coagulation and beavercreek) converts; every built `effe`
+//!   reads back through the definition, writes the same again, pins
+//!   nothing (no template bytes: nothing but the definition is read); its
+//!   locations and events are Halo 1's; every part's reference resolves
+//!   to a converted sound or a tree tag of its group; every vehicle
+//!   attachment resolves to a converted looping sound or effect at Halo
+//!   1's marker.
+
+use std::collections::BTreeMap;
+use std::fs::File;
+use std::io::{BufReader, Cursor};
+
+use h1map::{Block, Group, H1Map, TagRef};
+use h1objects::base::Base;
+use h1objects::convert::{Converter, Tree};
+use h1objects::{Converted, h1};
+use map::{FourCC, Map, TagId};
+use tags::defs::{self, Defs, Record, Str, StructDef, Target, Val};
+
+fn h2_map(want: &str) -> Map<Cursor<Vec<u8>>> {
+    let mut iso = xiso::Xiso::open(BufReader::new(
+        File::open(disc("H2_DISC", "halo2.iso")).unwrap(),
+    ))
+    .unwrap();
+    let e = iso
+        .entries()
+        .unwrap()
+        .into_iter()
+        .find(|e| e.path.rsplit(['/', '\\']).next() == Some(&format!("{want}.map")))
+        .unwrap();
+    Map::from_reader(Cursor::new(iso.read(&e).unwrap())).unwrap()
+}
+
+fn h1_level(name: &str) -> Option<H1Map> {
+    let mut iso = xiso::Xiso::open(BufReader::new(
+        File::open(disc("H1_ISO", "halo1.iso")).unwrap(),
+    ))
+    .unwrap();
+    let d = h1map::disc::Disc::open(&mut iso).unwrap();
+    let e = d.map(name)?.clone();
+    Some(H1Map::from_reader(Cursor::new(iso.read(&e).unwrap())).unwrap())
+}
+
+fn def(g: &[u8; 4]) -> &'static StructDef {
+    Defs::builtin().group(FourCC(*g)).unwrap()
+}
+
+const PLACEHOLDER: u32 = 0xffff_0000;
+
+/// What a placeholder datum names: a tree tag's group, a sound or a
+/// looping sound of the tree.
+fn resolve(tree: &Tree, id: TagId) -> Option<FourCC> {
+    let k = id.0 as usize & 0xffff;
+    let kind = id.0 & PLACEHOLDER;
+    if kind == h1objects::convert::local(0).0 {
+        tree.tags.get(k).map(|t| t.1.group)
+    } else if kind == h1objects::convert::sound(0).0 {
+        (k < tree.sounds.len()).then_some(FourCC(*b"snd!"))
+    } else if kind == h1objects::convert::looping(0).0 {
+        (k < tree.loops.len()).then_some(FourCC(*b"lsnd"))
+    } else {
+        None
+    }
+}
+
+fn pinned_blocks(d: &StructDef, r: &Record, path: &str, out: &mut Vec<String>) {
+    for (f, (_, v)) in d.fields.iter().zip(&r.fields) {
+        let p = format!("{path}.{}", f.name);
+        match (&f.kind, v) {
+            (_, Val::Unresolved { .. }) => out.push(p),
+            (defs::Kind::Block(s), Val::Block(e)) => {
+                for x in e {
+                    pinned_blocks(s, x, &p, out);
+                }
+            }
+            (defs::Kind::Struct(s), Val::Struct(x)) => pinned_blocks(s, x, &p, out),
+            _ => {}
+        }
+    }
+}
+
+/// Reads `c`'s root through its group's definition, checks it writes the
+/// same again and pins nothing.
+fn read_back(c: &Converted, name: &str) -> Record {
+    let d = def(&c.group.0);
+    assert!(c.raw.is_empty(), "{name}: {} raw", c.group);
+    let r = defs::from_built(d, &c.root).unwrap_or_else(|e| panic!("{name}: {e}"));
+    let again = defs::to_built(d, &r, &mut |_| None).unwrap();
+    assert_eq!(defs::from_built(d, &again).unwrap(), r, "{name}: {}", c.group);
+    let mut pinned = Vec::new();
+    pinned_blocks(d, &r, &c.group.to_string(), &mut pinned);
+    assert!(pinned.is_empty(), "{name}: pinned {pinned:?}");
+    r
+}
+
+fn block<'r>(r: &'r Record, path: &str) -> &'r [Record] {
+    match r.at(path) {
+        Some(Val::Block(b)) => b,
+        x => panic!("{path}: {x:?}"),
+    }
+}
+
+fn text(r: &Record, path: &str) -> String {
+    match r.at(path) {
+        Some(Val::String(Str::Text(t))) => t.clone(),
+        _ => String::new(),
+    }
+}
+
+fn target(r: &Record, path: &str) -> (u32, Option<TagId>) {
+    match r.at(path) {
+        Some(Val::Ref { group, target: Target::Id(id) }) => (*group, Some(*id)),
+        Some(Val::Ref { group, .. }) => (*group, None),
+        x => panic!("{path}: {x:?}"),
+    }
+}
+
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn every_effect_rebuilds_from_its_definition() {
+    let only = std::env::var("H1_LEVELS").ok();
+    let mut sets: Vec<(&str, Vec<String>)> = vec![(
+        "05a_deltaapproach",
+        h1map::disc::CAMPAIGN_LEVELS
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+    )];
+    for mp in ["coagulation", "beavercreek"] {
+        sets.push((
+            mp,
+            h1convert::convert::MAPS
+                .iter()
+                .filter(|m| m.2 == mp)
+                .map(|m| m.0.to_string())
+                .collect(),
+        ));
+    }
+    let effe = Group::new(b"effe");
+    let (mut effects, mut parts_kept, mut attached) = (0usize, 0usize, 0usize);
+    let (mut lit, mut cones) = (0usize, 0usize);
+    let (mut decaled, mut unbitmapped) = (0usize, 0usize);
+    let mut left: BTreeMap<String, usize> = BTreeMap::new();
+    for (base_name, levels) in sets {
+        let mut base_map = h2_map(base_name);
+        let base = Base::read(&mut base_map).unwrap();
+        for level in levels {
+            if only
+                .as_deref()
+                .is_some_and(|o| !o.split(',').any(|x| x == level))
+            {
+                continue;
+            }
+            let Some(m) = h1_level(&level) else { continue };
+            let mut c = Converter::new(&m, &base);
+            let mut wanted = Vec::new();
+            for t in m.tags() {
+                if t.group == effe {
+                    let id = c.effect(t).unwrap_or_else(|e| panic!("{level} {}: {e}", t.name));
+                    wanted.push((t, id));
+                }
+            }
+            let mut lights = Vec::new();
+            for t in m.tags().iter().filter(|t| t.group == Group::new(b"ligh")) {
+                let id = c.light(t).unwrap_or_else(|e| panic!("{level} {}: {e}", t.name));
+                lights.push((t, id));
+            }
+            let mut decals = Vec::new();
+            for t in m.tags().iter().filter(|t| t.group == Group::new(b"deca")) {
+                let id = c.decal(t).unwrap_or_else(|e| panic!("{level} {}: {e}", t.name));
+                decals.push((t, id));
+            }
+            let mut vehicles = Vec::new();
+            for t in m.tags().iter().filter(|t| t.group == Group::new(b"vehi")) {
+                let id = c.object(t).unwrap_or_else(|e| panic!("{level} {}: {e}", t.name));
+                vehicles.push((t, id));
+            }
+            for r in &c.tree.reports {
+                if r.group == "effe" {
+                    for n in r.no_home.iter().filter(|n| n.contains("parts left out")) {
+                        let mut w = n.split(' ');
+                        let k: usize = w.next().unwrap().parse().unwrap();
+                        *left.entry(w.next().unwrap().to_owned()).or_default() += k;
+                    }
+                }
+            }
+            let tree = &c.tree;
+            for (t, id) in &wanted {
+                let name = format!("{level} {}", t.name);
+                let e = h1::Effect::read(&m, t).unwrap();
+                let got = &tree.tags[id.0 as usize & 0xffff].1;
+                assert_eq!(got.group, FourCC(*b"effe"), "{name}");
+                let r = read_back(got, &name);
+                let locs = block(&r, "locations");
+                assert_eq!(locs.len(), e.locations.len(), "{name}");
+                for (x, l) in locs.iter().zip(&e.locations) {
+                    assert_eq!(&text(x, "marker"), l, "{name}");
+                }
+                let events = block(&r, "events");
+                assert_eq!(events.len(), e.events.len(), "{name}");
+                for (x, ev) in events.iter().zip(&e.events) {
+                    assert_eq!(x.at("skip_fraction"), Some(&Val::Float(ev.skip_fraction)));
+                    let parts = block(x, "parts");
+                    assert!(parts.len() <= ev.parts.len(), "{name}");
+                    for p in parts {
+                        let (_, tag) = target(p, "reference");
+                        let tag = tag.unwrap_or_else(|| panic!("{name}: null part"));
+                        let g = resolve(tree, tag)
+                            .unwrap_or_else(|| panic!("{name}: part names {tag:?}"));
+                        let tg = match p.at("type_group") {
+                            Some(Val::Int(v)) => (*v as u32).to_be_bytes(),
+                            x => panic!("{x:?}"),
+                        };
+                        assert_eq!(tg, h1objects::rebuild::part_type_group(g.0), "{name}");
+                        let loc = match p.at("location") {
+                            Some(Val::Int(v)) => *v,
+                            x => panic!("{x:?}"),
+                        };
+                        assert!(loc < locs.len() as i64, "{name}: location {loc}");
+                    }
+                    parts_kept += parts.len();
+                    for k in ["beams", "accelerations", "particle_systems"] {
+                        assert!(block(x, k).is_empty(), "{name}: {k}");
+                    }
+                }
+                effects += 1;
+            }
+            for (t, id) in &lights {
+                let name = format!("{level} {}", t.name);
+                let l = h1::Light::read(&m, t).unwrap();
+                let got = &tree.tags[id.0 as usize & 0xffff].1;
+                assert_eq!(got.group, FourCC(*b"ligh"), "{name}");
+                let r = read_back(got, &name);
+                let kind = if l.is_cone() { 2 } else { 0 };
+                assert_eq!(r.at("kind"), Some(&Val::Enum(kind)), "{name}");
+                let range = if l.is_cone() { "cutoff_distance" } else { "radius" };
+                assert_eq!(r.at(range), Some(&Val::Float(l.radius)), "{name}");
+                assert_eq!(
+                    r.at("diffuse_colour_upper"),
+                    Some(&Val::floats(&l.colour_upper[1..])),
+                    "{name}"
+                );
+                lit += 1;
+                cones += usize::from(l.is_cone());
+            }
+            for (t, id) in &decals {
+                let name = format!("{level} {}", t.name);
+                let x = h1::Decal::read(&m, t).unwrap();
+                let got = &tree.tags[id.0 as usize & 0xffff].1;
+                assert_eq!(got.group, FourCC(*b"deca"), "{name}");
+                let r = read_back(got, &name);
+                assert_eq!(r.at("radius"), Some(&Val::floats(&x.radius)), "{name}");
+                assert_eq!(r.at("lifetime_bounds"), Some(&Val::floats(&x.lifetime)), "{name}");
+                for (field, group, h1ref) in [("bitmap", *b"bitm", x.bitmap), ("next_decal", *b"deca", x.next)] {
+                    let (_, tag) = target(&r, field);
+                    match tag {
+                        Some(tag) => assert_eq!(resolve(tree, tag), Some(FourCC(group)), "{name}"),
+                        None => {
+                            assert!(h1ref.is_none() || field == "bitmap", "{name}: {field}");
+                            if h1ref.is_some() {
+                                unbitmapped += 1;
+                            }
+                        }
+                    }
+                }
+                decaled += 1;
+            }
+            for (t, id) in &vehicles {
+                let name = format!("{level} {}", t.name);
+                let got = &tree.tags[id.0 as usize & 0xffff].1;
+                let r = read_back(got, &name);
+                let b = m.tag_data(t).unwrap();
+                let h1a = h1::attachments(&m, b).unwrap();
+                let att = block(&r, "unit.obje.attachments");
+                for a in att {
+                    let (_, tag) = target(a, "type");
+                    let g = resolve(tree, tag.expect("attachment")).expect("resolves");
+                    assert!([*b"lsnd", *b"effe", *b"ligh"].contains(&g.0), "{name}: {g}");
+                    let marker = text(a, "marker");
+                    assert!(
+                        h1a.iter().any(|x| x.marker == marker && x.group.0.to_be_bytes() == g.0),
+                        "{name}: {marker}"
+                    );
+                }
+                let kept = h1a
+                    .iter()
+                    .filter(|x| {
+                        x.tag.is_some()
+                            && [*b"lsnd", *b"effe", *b"ligh"].contains(&x.group.0.to_be_bytes())
+                    })
+                    .count();
+                if att.len() != kept {
+                    println!("{name}: {} of {kept} looping sounds and effects attached", att.len());
+                }
+                attached += att.len();
+                println!(
+                    "{name}: {} attachments (Halo 1's: {:?})",
+                    att.len(),
+                    h1a.iter()
+                        .map(|a| format!("{} {}", a.group, a.tag.is_some()))
+                        .collect::<Vec<_>>()
+                );
+            }
+            let bytes: usize = tree
+                .sounds
+                .iter()
+                .flat_map(|(_, s)| &s.ranges)
+                .flat_map(|r| &r.permutations)
+                .map(|p| p.size())
+                .sum();
+            println!(
+                "{level}: {} effects, {} sounds ({bytes:#x} sample bytes), {} looping sounds",
+                wanted.len(),
+                tree.sounds.len(),
+                tree.loops.len()
+            );
+        }
+    }
+    println!(
+        "{effects} effects, {parts_kept} parts kept, {attached} vehicle attachments, {lit} lights ({cones} cones), {decaled} decals ({unbitmapped} without their bitmap)"
+    );
+    for (g, n) in &left {
+        println!("{n:8} {g} parts left out");
+    }
+    assert!(effects > 0);
+}
+
+fn disc(var: &str, name: &str) -> String {
+    std::env::var(var)
+        .unwrap_or_else(|_| format!("{}/../../disc/{name}", env!("CARGO_MANIFEST_DIR")))
+}
+
+/// Every Halo 1 map on the disc, by stem.
+fn h1_maps() -> Vec<(String, H1Map)> {
+    let mut iso = xiso::Xiso::open(BufReader::new(
+        File::open(disc("H1_ISO", "halo1.iso")).unwrap(),
+    ))
+    .unwrap();
+    let entries = iso.entries().unwrap();
+    let mut out = Vec::new();
+    for e in h1map::disc::maps(&entries) {
+        let stem = h1map::disc::map_stem(&e).to_ascii_lowercase();
+        if let Ok(only) = std::env::var("H1_LEVELS")
+            && !only.split(',').any(|l| l == stem)
+        {
+            continue;
+        }
+        let bytes = iso.read(&e).unwrap();
+        if let Ok(m) = H1Map::from_reader(Cursor::new(bytes)) {
+            out.push((stem, m));
+        }
+    }
+    out
+}
+
+fn u16_at(b: &[u8], o: usize) -> u16 {
+    u16::from_le_bytes([b[o], b[o + 1]])
+}
+fn u32_at(b: &[u8], o: usize) -> u32 {
+    u32::from_le_bytes(b[o..o + 4].try_into().unwrap())
+}
+
+/// Survey: prints, per candidate offset, how the Halo 1 `effe` fields
+/// hold up over every map.
+#[test]
+#[ignore]
+fn halo1_effect_layout_survey() {
+    let effe = Group::new(b"effe");
+    let mut stats: BTreeMap<String, usize> = BTreeMap::new();
+    let mut ranges: BTreeMap<usize, (f32, f32)> = BTreeMap::new();
+    let mut bump = |k: String| *stats.entry(k).or_default() += 1;
+    for (stem, m) in h1_maps() {
+        for t in m.tags().iter().filter(|t| t.group == effe) {
+            let b = m.tag_data(t).unwrap();
+            bump(format!("root len {:#x}", b.len().min(0x40)));
+            let locs = Block::read(b, 0x28).unwrap();
+            let events = Block::read(b, 0x34).unwrap();
+            let Ok(lb) = m.block(locs, 0x20) else {
+                bump("locations unreadable".into());
+                continue;
+            };
+            let Ok(eb) = m.block(events, 0x44) else {
+                bump("events unreadable".into());
+                continue;
+            };
+            bump(format!("flags {:#x}", u32_at(b, 0)));
+            bump(format!(
+                "loop {} {}",
+                u16_at(b, 4) as i16,
+                u16_at(b, 6) as i16
+            ));
+            for k in 8..0x28 {
+                if b[k] != 0 {
+                    bump(format!("root nonzero at {k:#x}"));
+                }
+            }
+            let _ = lb;
+            for e in eb.chunks_exact(0x44) {
+                for k in (0..4).chain(0x18..0x2c) {
+                    if e[k] != 0 {
+                        bump(format!("event nonzero at {k:#x}"));
+                    }
+                }
+                let parts = Block::read(e, 0x2c).unwrap();
+                let parts_b = match m.block(parts, 0x68) {
+                    Ok(p) => p,
+                    Err(_) => {
+                        bump("parts unreadable".into());
+                        continue;
+                    }
+                };
+                for p in parts_b.chunks_exact(0x68) {
+                    let loc = u16_at(p, 4) as i16;
+                    if loc < 0 || loc as u32 >= locs.count {
+                        bump("part location out of range".into());
+                    }
+                    let fourcc = u32_at(p, 0x18);
+                    let r = TagRef::read(p, 0x18).unwrap();
+                    let resolved = (!r.id.is_none())
+                        .then(|| m.tag(r.id).ok())
+                        .flatten()
+                        .map(|t| t.group.to_string());
+                    bump(format!(
+                        "part type {} ref {} -> {resolved:?}",
+                        Group(fourcc),
+                        r.group
+                    ));
+                    bump(format!("part create_in {} violence {}", u16_at(p, 0), u16_at(p, 2)));
+                    for k in (8..0x18).step_by(4).chain((0x28..0x68).step_by(4)) {
+                        let w = u32_at(p, k);
+                        if w != 0 {
+                            bump(format!("part word {k:#04x} nonzero"));
+                            let f = f32::from_bits(w);
+                            let e = ranges.entry(k).or_insert((f32::MAX, f32::MIN));
+                            e.0 = e.0.min(f);
+                            e.1 = e.1.max(f);
+                        }
+                    }
+                    bump(format!("part flags {:#x}", u16_at(p, 6)));
+                    bump(format!("part 0x60 {:#x} 0x64 {:#x}", u32_at(p, 0x60), u32_at(p, 0x64)));
+                }
+                let particles = Block::read(e, 0x38).unwrap();
+                match m.block(particles, 0xe8) {
+                    Ok(pb) => {
+                        for p in pb.chunks_exact(0xe8) {
+                            let loc = u16_at(p, 4) as i16;
+                            if loc < 0 || loc as u32 >= locs.count {
+                                bump(format!("particle +4 out of range {loc}"));
+                            }
+
+                            // Every reference in the element.
+                            for at in (0..0xe8 - 16).step_by(4) {
+                                if let Some(r) = TagRef::read(p, at)
+                                    && !r.id.is_none()
+                                    && let Ok(t) = m.tag(r.id)
+                                    && t.group == r.group
+                                {
+                                    bump(format!("particle ref at {at:#x} {}", r.group));
+                                }
+                            }
+                        }
+                    }
+                    Err(_) => bump("particles unreadable".into()),
+                }
+            }
+        }
+        println!("{stem} done");
+    }
+    for (k, n) in &stats {
+        println!("{n:8} {k}");
+    }
+    for (k, (a, b)) in &ranges {
+        println!("part word {k:#04x} as f32 {a} ..= {b}");
+    }
+}
+
+/// Survey: the Halo 1 root of `$H1_GROUP` (default `ligh`) over every
+/// map: lengths, every reference by offset, and per word how often it is
+/// nonzero with its range as a float.
+#[test]
+#[ignore]
+fn halo1_group_word_survey() {
+    let g = std::env::var("H1_GROUP").unwrap_or_else(|_| "ligh".into());
+    let group = Group::new(g.as_bytes().try_into().unwrap());
+    let mut lens: BTreeMap<usize, usize> = BTreeMap::new();
+    let mut words: BTreeMap<usize, (usize, f32, f32, BTreeMap<u32, usize>)> = BTreeMap::new();
+    let mut refs: BTreeMap<String, usize> = BTreeMap::new();
+    let mut n = 0;
+    for (_, m) in h1_maps() {
+        for t in m.tags().iter().filter(|t| t.group == group) {
+            let b = m.tag_data(t).unwrap();
+            n += 1;
+            *lens.entry(b.len()).or_default() += 1;
+            let len = b.len().min(0x200);
+            for at in (0..len.saturating_sub(16)).step_by(4) {
+                if let Some(r) = TagRef::read(b, at)
+                    && !r.id.is_none()
+                    && let Ok(x) = m.tag(r.id)
+                    && x.group == r.group
+                {
+                    *refs.entry(format!("{at:#05x} {}", r.group)).or_default() += 1;
+                }
+            }
+            for at in (0..len).step_by(4).filter(|a| a + 4 <= len) {
+                let w = u32_at(b, at);
+                let e = words.entry(at).or_insert((0, f32::MAX, f32::MIN, BTreeMap::new()));
+                if w != 0 {
+                    e.0 += 1;
+                    let f = f32::from_bits(w);
+                    if f.is_finite() {
+                        e.1 = e.1.min(f);
+                        e.2 = e.2.max(f);
+                    }
+                    if e.3.len() < 6 {
+                        *e.3.entry(w).or_default() += 1;
+                    }
+                }
+            }
+        }
+    }
+    println!("{n} {g} tags; lengths {lens:?}");
+    for (k, v) in &refs {
+        println!("ref {k}: {v}");
+    }
+    for (at, (nz, a, b, few)) in &words {
+        if *nz > 0 {
+            let few: Vec<String> = few.keys().map(|w| format!("{w:#x}")).collect();
+            println!("{at:#05x}: nonzero {nz}, float {a} ..= {b}, first words {few:?}");
+        }
+    }
+}
+
+/// Survey: every reference of every Halo 1 `udlg` by offset, with the
+/// last component of the names it holds there.
+#[test]
+#[ignore]
+fn halo1_dialogue_survey() {
+    let udlg = Group::new(b"udlg");
+    let mut slots: BTreeMap<usize, BTreeMap<String, usize>> = BTreeMap::new();
+    let mut lens: BTreeMap<usize, usize> = BTreeMap::new();
+    for (_, m) in h1_maps() {
+        for t in m.tags().iter().filter(|t| t.group == udlg) {
+            let b = m.tag_data(t).unwrap();
+            *lens.entry(b.len()).or_default() += 1;
+            for at in (0..b.len().saturating_sub(16)).step_by(4) {
+                if let Some(r) = TagRef::read(b, at)
+                    && !r.id.is_none()
+                    && let Ok(x) = m.tag(r.id)
+                    && x.group == r.group
+                {
+                    let tail = x.name.rsplit('\\').next().unwrap_or("").to_owned();
+                    *slots.entry(at).or_default().entry(format!("{} {tail}", r.group)).or_default() += 1;
+                }
+            }
+        }
+    }
+    println!("lengths {lens:?}");
+    for (at, names) in &slots {
+        let mut v: Vec<_> = names.iter().collect();
+        v.sort_by_key(|(_, c)| std::cmp::Reverse(**c));
+        println!("{at:#05x}: {:?}", &v[..v.len().min(3)]);
+    }
+}
+
+/// Survey: the Halo 2 base's `udlg` elements: each element's string and
+/// the group of the tag its datum names, and the root's words.
+#[test]
+#[ignore]
+fn halo2_dialogue_survey() {
+    let mut m = h2_map(&std::env::var("H2_BASE").unwrap_or_else(|_| "05a_deltaapproach".into()));
+    let base = Base::read(&mut m).unwrap();
+    let strings = m.strings().to_vec();
+    let text = |v: Option<&Val>| match v {
+        Some(Val::String(Str::Index(i))) => strings
+            .get((*i & 0xffff) as usize)
+            .cloned()
+            .flatten()
+            .unwrap_or_default(),
+        x => format!("{x:?}"),
+    };
+    let d = def(b"udlg");
+    let mut names: BTreeMap<String, usize> = BTreeMap::new();
+    let mut groups: BTreeMap<String, usize> = BTreeMap::new();
+    let mut roots: BTreeMap<String, usize> = BTreeMap::new();
+    let mut pairs: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+    let ids: Vec<TagId> = base.tags.iter().filter(|t| t.1 == FourCC(*b"udlg")).map(|t| t.0).collect();
+    for id in &ids {
+        let r = base.record(d, *id).unwrap();
+        *roots.entry(format!("{:?} {:?} {:?} {:?}", r.at("unknown_0"), r.at("unknown_4"), r.at("unknown_8"), r.at("string_14"))).or_default() += 1;
+        let tag_name = base.tags.iter().find(|x| x.0 == *id).map(|x| x.2.clone()).unwrap_or_default();
+        println!("{tag_name}: string_14 {:?}, {} lines", text(r.at("string_14")), block(&r, "vocalizations").len());
+        for e in block(&r, "vocalizations") {
+            *names.entry(text(e.at("vocalization"))).or_default() += 1;
+            if let Some(Val::Datum(Target::Id(t))) = e.at("sound") {
+                let g = base.tags.iter().find(|x| x.0 == *t).map(|x| x.1.to_string());
+                if let Some(n) = base.tags.iter().find(|x| x.0 == *t).map(|x| x.2.clone()) {
+                    let tail = n.rsplit('\\').next().unwrap_or("").to_owned();
+                    let parent = n.rsplit('\\').nth(1).unwrap_or("").to_owned();
+                    *pairs
+                        .entry(text(e.at("vocalization")))
+                        .or_default()
+                        .entry(format!("{parent}\\{tail}"))
+                        .or_default() += 1;
+                }
+                *groups.entry(format!("{g:?} {:?}", e.at("unknown_8"))).or_default() += 1;
+            }
+        }
+    }
+    println!("{} udlg", ids.len());
+    for (k, v) in roots.iter().take(10) { println!("root {v}: {k}"); }
+    for (k, v) in &groups { println!("datum {v}: {k}"); }
+    let all: Vec<String> = names.keys().cloned().collect();
+    println!("{}", all.join(" "));
+    println!("{} distinct names", names.len());
+    // Sounds named otherwise than the vocalization they play for.
+    for (v, ns) in &pairs {
+        let other: Vec<_> = ns
+            .iter()
+            .filter(|(n, _)| n.rsplit('\\').next() != Some(v.as_str()))
+            .collect();
+        if !other.is_empty() {
+            println!("{v}: {other:?}");
+        }
+    }
+}
+
+/// Every Halo 1 dialogue tag of the ten campaign levels and the
+/// multiplayer maps converts to a `udlg` from its definition: the
+/// vocalizations are [`h1objects::rebuild::DIALOGUE`]'s for the slots
+/// holding a sound, each a name the base's own dialogue uses, each sound
+/// one the tree converted; it reads back with no pinned bytes. Every
+/// rebuilt biped whose Halo 1 unit names a dialogue tag points its
+/// model's dialogue at the converted one.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn every_dialogue_converts() {
+    let mut sets: Vec<(&str, Vec<String>)> = vec![(
+        "05a_deltaapproach",
+        h1map::disc::CAMPAIGN_LEVELS
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+    )];
+    for mp in ["coagulation", "beavercreek"] {
+        sets.push((
+            mp,
+            h1convert::convert::MAPS
+                .iter()
+                .filter(|m| m.2 == mp)
+                .map(|m| m.0.to_string())
+                .collect(),
+        ));
+    }
+    let udlg = Group::new(b"udlg");
+    let (mut tags, mut lines, mut slots) = (0usize, 0usize, 0usize);
+    let (mut bipeds, mut speaking, mut two) = (0usize, 0usize, 0usize);
+    let mut sample_bytes = 0u64;
+    for (base_name, levels) in sets {
+        let mut base_map = h2_map(base_name);
+        let base = Base::read(&mut base_map).unwrap();
+        // The base's own vocalization names.
+        let strings = base_map.strings().to_vec();
+        let mut vocab = std::collections::BTreeSet::new();
+        for (id, g, _, _) in base.tags.iter() {
+            if *g != FourCC(*b"udlg") {
+                continue;
+            }
+            let r = base.record(def(b"udlg"), *id).unwrap();
+            for e in block(&r, "vocalizations") {
+                if let Some(Val::String(Str::Index(i))) = e.at("vocalization") {
+                    if let Some(Some(s)) = strings.get((*i & 0xffff) as usize) {
+                        vocab.insert(s.clone());
+                    }
+                }
+            }
+        }
+        for (_, voc) in h1objects::rebuild::DIALOGUE {
+            assert!(
+                base_name != "05a_deltaapproach" || vocab.contains(*voc),
+                "{voc}: not a vocalization on {base_name}"
+            );
+        }
+        for level in levels {
+            let Some(m) = h1_level(&level) else { continue };
+            let mut c = Converter::new(&m, &base);
+            let mut rep = Default::default();
+            let mut got = Vec::new();
+            for t in m.tags().iter().filter(|t| t.group == udlg) {
+                let id = c
+                    .dialogue(t, &mut rep)
+                    .unwrap_or_else(|e| panic!("{level} {}: {e}", t.name));
+                got.push((t, id));
+            }
+            let mut rebuilt = Vec::new();
+            for t in m.tags().iter().filter(|t| t.group == Group::new(b"bipd")) {
+                let u = h1::Unit::read(&m, t).unwrap();
+                let named: Vec<_> = u
+                    .references
+                    .iter()
+                    .filter(|r| r.group == udlg && r.tag.is_some())
+                    .collect();
+                bipeds += 1;
+                speaking += usize::from(!named.is_empty());
+                two += usize::from(named.len() > 1);
+                if let Ok(id) = c.object(t) {
+                    rebuilt.push((t, id, named.first().and_then(|r| r.tag)));
+                }
+            }
+            sample_bytes += c.dialogue_bytes;
+            let tree = &c.tree;
+            for (t, id) in &got {
+                let name = format!("{level} {}", t.name);
+                let d = h1::Dialogue::read(&m, t).unwrap();
+                let want = h1objects::rebuild::dialogue_lines(&d);
+                tags += 1;
+                slots += d.lines.len();
+                let Some(id) = id else {
+                    assert!(want.is_empty(), "{name}: no udlg for {} lines", want.len());
+                    continue;
+                };
+                let got = &tree.tags[id.0 as usize & 0xffff].1;
+                assert_eq!(got.group, FourCC(*b"udlg"), "{name}");
+                let r = read_back(got, &name);
+                let els = block(&r, "vocalizations");
+                assert_eq!(els.len(), want.len(), "{name}");
+                for (e, (voc, _, _)) in els.iter().zip(&want) {
+                    assert_eq!(&text(e, "vocalization"), voc, "{name}");
+                    assert!(vocab.contains(*voc) || base_name != "05a_deltaapproach");
+                    let Some(Val::Datum(Target::Id(s))) = e.at("sound") else {
+                        panic!("{name} {voc}: no sound");
+                    };
+                    assert_eq!(resolve(tree, *s), Some(FourCC(*b"snd!")), "{name} {voc}");
+                }
+                lines += els.len();
+            }
+            for (t, id, named) in &rebuilt {
+                let b = &tree.tags[id.0 as usize & 0xffff].1;
+                if b.group != FourCC(*b"bipd") {
+                    continue;
+                }
+                let r = defs::from_built(def(b"bipd"), &b.root).unwrap();
+                let (_, Some(h)) = target(&r, "unit.obje.model") else {
+                    continue;
+                };
+                if h.0 & PLACEHOLDER != h1objects::convert::local(0).0 {
+                    continue;
+                }
+                let hl = &tree.tags[h.0 as usize & 0xffff].1;
+                let hr = defs::from_built(def(b"hlmt"), &hl.root).unwrap();
+                let (_, d) = target(&hr, h1objects::convert::DIALOGUE_FIELD);
+                if let Some(n) = named {
+                    let want = got.iter().find(|g| g.0.id == *n).and_then(|g| g.1);
+                    if want.is_some() {
+                        assert_eq!(d, want, "{level} {}: model dialogue", t.name);
+                    }
+                }
+            }
+        }
+    }
+    println!(
+        "{tags} dialogue tags, {slots} slots holding a sound, {lines} Halo 2 lines, {sample_bytes:#x} sample bytes; {bipeds} bipeds, {speaking} name dialogue, {two} name more than one"
+    );
+}
+
+/// Survey: Halo 1 `foot` tags: the root's block fields (count at each
+/// offset), and every reference in the tag's bytes by offset with its
+/// group, for the layout of the material effects.
+#[test]
+#[ignore]
+fn halo1_foot_survey() {
+    let foot = Group::new(b"foot");
+    let want = std::env::var("H1_LEVELS").unwrap_or_else(|_| "a10".into());
+    for (stem, m) in h1_maps() {
+        if !want.split(',').any(|w| w == stem) {
+            continue;
+        }
+        for t in m.tags().iter().filter(|t| t.group == foot) {
+            let b = m.tag_data(t).unwrap();
+            println!("{stem} {} len {:#x}", t.name, b.len());
+            for at in (0..0x40.min(b.len())).step_by(4) {
+                if let Some(k) = Block::read(b, at)
+                    && k.count > 0
+                    && k.count < 0x100
+                {
+                    println!("  root {at:#x}: count {} address {:#x}", k.count, k.address);
+                }
+            }
+            let mut last = 0;
+            for at in (0..b.len().saturating_sub(16)).step_by(4) {
+                if let Some(r) = TagRef::read(b, at)
+                    && (r.group == Group::new(b"effe") || r.group == Group::new(b"snd!"))
+                {
+                    let n = if r.id.is_none() {
+                        "-".to_owned()
+                    } else {
+                        m.tag(r.id).map(|x| x.name.rsplit('\\').next().unwrap_or("").to_owned()).unwrap_or_default()
+                    };
+                    println!("  {at:#06x} (+{:#x}) {} {n}", at - last, r.group);
+                    last = at;
+                }
+            }
+            for at in (0..b.len().saturating_sub(12)).step_by(4) {
+                if let Some(k) = Block::read(b, at)
+                    && k.count > 0
+                    && k.count < 0x40
+                    && k.address >> 28 == 8
+                    && at >= 0x40
+                {
+                    println!("  block? {at:#x}: count {}", k.count);
+                }
+            }
+        }
+    }
+}
+
+/// Survey: the Halo 2 base's `foot` tags: per effect kind (index), its
+/// sounds and effects elements with the names and material strings.
+#[test]
+#[ignore]
+fn halo2_foot_survey() {
+    let mut m = h2_map(&std::env::var("H2_BASE").unwrap_or_else(|_| "05a_deltaapproach".into()));
+    let base = Base::read(&mut m).unwrap();
+    let strings = m.strings().to_vec();
+    let text = |v: Option<&Val>| match v {
+        Some(Val::String(Str::Index(i))) => strings
+            .get((*i & 0xffff) as usize)
+            .cloned()
+            .flatten()
+            .unwrap_or_default(),
+        x => format!("{x:?}"),
+    };
+    let name = |v: Option<&Val>| match v {
+        Some(Val::Ref { target: Target::Id(t), .. }) => base
+            .tags
+            .iter()
+            .find(|x| x.0 == *t)
+            .map(|x| format!("{} {}", x.1, x.2))
+            .unwrap_or_else(|| format!("{t:?}")),
+        x => format!("{x:?}"),
+    };
+    let d = def(b"foot");
+    for (id, g, n, _) in base.tags.iter() {
+        if *g != FourCC(*b"foot") {
+            continue;
+        }
+        let r = base.record(d, *id).unwrap();
+        let kinds = block(&r, "effects");
+        println!("{n}: {} kinds", kinds.len());
+        for (k, e) in kinds.iter().enumerate() {
+            let s = block(e, "sounds");
+            let f = block(e, "effects");
+            println!("  kind {k}: {} sounds, {} effects, +0 {:?}", s.len(), f.len(), e.at("unknown_0"));
+            for x in s.iter().take(6) {
+                println!("    sound {} [{}] +8 {:?} +14 {:?}", name(x.at("tag_0")), text(x.at("material")), x.at("unknown_8"), x.at("unknown_14"));
+            }
+            for x in f.iter().take(6) {
+                println!("    effect {} / {} [{}] +14 {:?}", name(x.at("tag_0")), name(x.at("tag_8")), text(x.at("material")), x.at("unknown_14"));
+            }
+        }
+    }
+}
+
+/// Every Halo 1 `foot` of the ten campaign levels and the multiplayer
+/// maps converts from the definition: Halo 1's kinds at their index,
+/// each element's material a global material of the base at the index
+/// it gives, each tag a converted sound or effect; it reads back with no
+/// pinned bytes, and every rebuilt unit naming a `foot` names the
+/// converted one.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn every_foot_converts() {
+    let mut sets: Vec<(&str, Vec<String>)> = vec![(
+        "05a_deltaapproach",
+        h1map::disc::CAMPAIGN_LEVELS
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+    )];
+    for mp in ["coagulation", "beavercreek"] {
+        sets.push((
+            mp,
+            h1convert::convert::MAPS
+                .iter()
+                .filter(|m| m.2 == mp)
+                .map(|m| m.0.to_string())
+                .collect(),
+        ));
+    }
+    let foot = Group::new(b"foot");
+    let (mut feet, mut sounds, mut effects, mut units) = (0usize, 0usize, 0usize, 0usize);
+    for (base_name, levels) in sets {
+        let mut base_map = h2_map(base_name);
+        let base = Base::read(&mut base_map).unwrap();
+        for level in levels {
+            let Some(m) = h1_level(&level) else { continue };
+            let mut c = Converter::new(&m, &base);
+            let mut rep = Default::default();
+            let mut got = Vec::new();
+            for t in m.tags().iter().filter(|t| t.group == foot) {
+                let id = c.foot(t, &mut rep).unwrap_or_else(|e| panic!("{level} {}: {e}", t.name));
+                got.push((t, id));
+            }
+            let mut rebuilt = Vec::new();
+            for t in m.tags().iter().filter(|t| {
+                t.group == Group::new(b"bipd") || t.group == Group::new(b"vehi")
+            }) {
+                let u = h1::Unit::read(&m, t).unwrap();
+                let named = u.references.iter().find(|r| r.group == foot).and_then(|r| r.tag);
+                if let Ok(id) = c.object(t) {
+                    rebuilt.push((t, id, named));
+                }
+            }
+            let tree = &c.tree;
+            for (t, id) in &got {
+                let name = format!("{level} {}", t.name);
+                let f = h1::Foot::read(&m, t).unwrap();
+                let built = &tree.tags[id.0 as usize & 0xffff].1;
+                assert_eq!(built.group, FourCC(*b"foot"), "{name}");
+                let r = read_back(built, &name);
+                let kinds = block(&r, "effects");
+                assert_eq!(kinds.len(), f.kinds.len().min(6), "{name}");
+                for k in kinds {
+                    for (list, want) in [("sounds", "snd!"), ("effects", "effe")] {
+                        for e in block(k, list) {
+                            let mat = text(e, "material");
+                            let Some(Val::Int(i)) = e.at("material_index") else { panic!() };
+                            assert_eq!(base.materials.get(*i as usize), Some(&mat), "{name}");
+                            let path = if list == "sounds" { "sound" } else { "effect" };
+                            let (_, tag) = target(e, path);
+                            let tag = tag.unwrap_or_else(|| panic!("{name}: null {path}"));
+                            assert_eq!(resolve(tree, tag), Some(FourCC(*want.as_bytes().first_chunk().unwrap())), "{name}");
+                            if list == "sounds" { sounds += 1 } else { effects += 1 }
+                        }
+                    }
+                }
+                feet += 1;
+            }
+            for (t, id, named) in &rebuilt {
+                let b = &tree.tags[id.0 as usize & 0xffff].1;
+                let Some(n) = named else { continue };
+                let r = defs::from_built(def(&b.group.0), &b.root).unwrap();
+                let (_, f) = target(&r, h1objects::convert::FOOT_FIELD);
+                let want = got.iter().find(|g| g.0.id == *n).map(|g| g.1);
+                assert_eq!(f, want, "{level} {}: material effects", t.name);
+                units += 1;
+            }
+        }
+    }
+    println!("{feet} foot tags, {sounds} sound and {effects} effect elements; {units} rebuilt units name theirs");
+}
