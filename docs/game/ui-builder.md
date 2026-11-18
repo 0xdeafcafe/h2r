@@ -311,14 +311,25 @@ over the logo's lower half, and ours sit at the same height. So our
 cells are already where retail's are. The body is the one part that
 could do better.
 
-**Proposed tweak (not built).** Raise the body's top from 66 to 72, as
-retail's text blocks are. Keep the code page's body to the lines that fit
-above the logo, 72 down to 45 (about two lines of font 1; the code
-page's text is one line on the disc). Put the status line under the body
-in that band when the body is one line, rather than at -51, where it sits
-over the menu's first item. The cells stay at retail's height. Longer
-bodies (the gamertag page, the recovery page) still run over the logo, as
-retail's own dialogs do. Nothing gets dimmed or filled.
+**The tweak, built.** The body starts at 72, as retail's text blocks
+do. A code page's body stays in the band from 72 down to 45, the strip
+above the logo. When the body is one line and two lines of its font fit
+in the band, the status line goes under it there (`dialog::status_place`).
+Otherwise it stays above the legend. The cells stay at retail's height.
+On the disc the band holds one line, not two: font 1 (`conduit-12`) is
+19 units a line in a 27-unit band. So the code page's body (one line)
+fills it, and Checking... and the errors stay above the legend, over the
+menu's first item. Making them fit would take a smaller font or text
+placed over the logo, and neither is retail's. The `placement` check
+(`Issue::Placement`, run for every modal) holds all of this:
+
+- the body at 72;
+- a code page's body above 45;
+- every cell at top 6;
+- a one-line status under a one-line body in the band, when it fits.
+
+Longer bodies (the gamertag page, the recovery page) still run over the
+logo, as retail's own dialogs do.
 
 **Not built yet: the runtime.** In game, the prompt is still the
 one-row list on the Controls layout. Serving the dialog needs the tag
