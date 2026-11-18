@@ -6246,6 +6246,7 @@ dependencies = [
  "serde_json",
  "tags",
  "variants",
+ "vfs",
  "wgpu",
  "winit",
 ]

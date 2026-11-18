@@ -116,6 +116,9 @@ pub fn fields(ui: &Ui, app: &App, st: &mut TagsUi, fonts: &Fonts, actions: &mut 
         t.size,
         if doc.is_changed(id) { "  *edited" } else { "" }
     ));
+    if let Some(line) = app.tag_shared_note(id) {
+        ui.text_disabled(format!("{} {line}", icon::LAYERS));
+    }
     match &t.access {
         Access::Edit => {}
         Access::Read(why) => {
