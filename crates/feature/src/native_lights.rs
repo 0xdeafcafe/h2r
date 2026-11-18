@@ -119,7 +119,10 @@ pub fn target_refusals() -> u64 {
 pub fn new_view() {
     OPEN.lock().unwrap_or_else(|e| e.into_inner()).take();
     let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    *VIEW_TARGET.lock().unwrap_or_else(|e| e.into_inner()) = host.and_then(|h| h.target());
+    // The host's target takes the device lock: asked before VIEW_TARGET is
+    // taken, so no guard is held across it.
+    let target = host.and_then(|h| h.target());
+    *VIEW_TARGET.lock().unwrap_or_else(|e| e.into_inner()) = target;
 }
 
 /// The light `handle` as the passes would draw it, with the caller's
@@ -199,8 +202,10 @@ pub fn zero_tail(mem: &mut dyn GuestMemory) -> bool {
 /// Adds the light to the open run, or opens one; `false` when no pass
 /// could be asked for.
 fn join(host: &dyn Host, m: &Ro<'_>, light: Light) -> bool {
-    let mut open = OPEN.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(run) = open.as_ref()
+    // OPEN is only held to read or store the run: never across the run's
+    // own lock or the host's (open takes the device lock).
+    let current = OPEN.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if let Some(run) = current
         && !run.is_sealed()
     {
         return run.push(light);
@@ -210,11 +215,11 @@ fn join(host: &dyn Host, m: &Ro<'_>, light: Light) -> bool {
     };
     let run = Arc::new(Run::new());
     run.push(light);
-    if !host.open(&camera, Arc::clone(&run)) {
-        *open = None;
+    let opened = host.open(&camera, Arc::clone(&run));
+    *OPEN.lock().unwrap_or_else(|e| e.into_inner()) = opened.then_some(run);
+    if !opened {
         return false;
     }
-    *open = Some(run);
     let runs = RUNS.fetch_add(1, Ordering::Relaxed) + 1;
     if runs % 1800 == 1 {
         let (l, s, r) = counts();
