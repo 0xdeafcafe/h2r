@@ -323,7 +323,9 @@ site's art from your own disc into PNGs and a `manifest.json`. The default
 `--out` is `game-art/` in the server directory. It covers emblem layers, rank
 icons, Live icons, game-type icons, weapon silhouettes, medals, the player
 colour palette, every multiplayer map's preview and every campaign level's
-level-select picture (`map/<stem>/preview` too). A cold run takes well
+level-select picture (`map/<stem>/preview` too), and the game's title and
+save images from `default.xbe` (`title/image`, `title/save-image`: the
+`$$XTIMAGE` and `$$XSIMAGE` sections, `crates/assets/src/xpr.rs`). A cold run takes well
 under a second. Keys and emblem colouring are in
 [live-api.md](live-api.md#optional-game-art).
 

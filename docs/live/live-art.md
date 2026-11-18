@@ -53,14 +53,15 @@ entry; a single BSP of a level that could not be read is listed as
 `map/<stem>/bsp_<index>` and the level keeps its other BSPs.
 `GEOMETRY_VERSION` is 1 (`views.json` is unchanged; the web viewer checks
 it); the art's `EXTRACTOR_VERSION` (part of the cache
-key) is 17, so a disc extracted by an older build is extracted again
+key) is 19, so a disc extracted by an older build is extracted again
 (10 added the layers, the sky and `extras.name`; 12 the surface
 pictures, texture coordinates and the `scenario` node; 13 the base map
 from the shader's passes, pictures as files beside `map.glb`, the gzip
 copy and the map pack maps; 15 vehicles in their own colours, the
 reflection tints and shaders whose compiled data another shader shares;
 16 vehicles' turrets and hull decals that double what is under them;
-17 the weather volumes and the sky light's glow; 18 turrets as parts that aim).
+17 the weather volumes and the sky light's glow; 18 turrets as parts that aim;
+19 the title and save images, `title/image` and `title/save-image`).
 
 ### `map.glb`
 
