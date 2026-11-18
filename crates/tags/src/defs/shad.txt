@@ -1,0 +1,84 @@
+# shad: shader instance. The engine draws from the compiled postprocess (+0x20)
+# and the root words +0x3e..+0x4c only (docs/formats/shader-instances.md, "shad").
+# The parameter block (+0x0c) is never read by the draw path; its values are
+# mirrored into postprocess +0x5c/+0x64/+0x6c (V, below) and, through the template,
+# into +0x04 bitmaps and +0x0c colours. A tag written from scratch must fill the
+# postprocess: that is what the engine binds.
+group shad 0x54 align 4
+  0x0 tagref template groups=stem -- shader template; E 0x0001663a reads the datum at +4 (shader.rs:282); V always a stem
+  0x8 string material_name -- V string IDs read as physical material names (hard_metal_thick, hard_terrain_concrete, brittle_elec_for, ...), null in 924 of 2,288 distinct tags; not read by the draw path
+  0xc block parameters 0x50 align 4 -- V count 1 in every tag; not dereferenced by the draw path (shader.rs:284). Mirrored into postprocess +0x5c (bitmaps), +0x64 (colours), +0x6c (scalars)
+    0x0 tagref base_map groups=bitm -- V mirrored by postprocess +0x5c[0] (that entry indexes the +0x04 bitmap with this datum in 1,735 of 1,736 set); V names are base/diffuse art (*_dif, gray_50_percent, color_black)
+    0x8 tagref self_illum_map groups=bitm -- V mirrored by postprocess +0x5c[1]; V names are *_illum, *_emissive, light_*, default_additive
+    0x10 f32[3] color_10 -- V equals postprocess +0x64[0] in all 2,288 tags; nonzero with self_illum_map set in 239, without in 93; role unproven
+    0x1c f32 scalar_1c -- V equals postprocess +0x6c[0] when nonzero; nonzero mostly with self_illum_map (198 of 218)
+    0x20 f32 scalar_20 -- V postprocess +0x6c[1] slot; zero in every retail tag
+    0x24 f32 scalar_24 -- V equals postprocess +0x6c[2] (3 nonzero tags)
+    0x28 f32 scalar_28 -- V postprocess +0x6c[3] slot; zero in every retail tag
+    0x2c tagref bitmap_2c groups=bitm -- V mirrored by postprocess +0x5c[2]; names mix color_white, alpha_black, foliage and grate maps; role unproven
+    0x34 tagref specular_map groups=bitm -- V mirrored by postprocess +0x5c[3]; names *_spec, *_specular, glass_*, color_white; set in 115 tags, exactly those with specular_color nonzero (114 of 115)
+    0x3c f32[3] specular_color -- V equals postprocess +0x64[1] in all 2,288 tags; nonzero only with specular_map set (114 of 115)
+    0x48 f32 scalar_48 -- V equals postprocess +0x6c[4]; nonzero only with specular_map set (36)
+    0x4c f32 scalar_4c -- V equals postprocess +0x6c[5]; nonzero only with bitmap_2c set (13)
+  0x14 unknown 0x2 seen=2 default=0100 -- 1 or 5 (5 only with one postprocess LOD)
+  0x16 unknown 0x2 seen=4 -- 0..4, mostly 0
+  0x18 pad 0x8
+  0x20 block postprocess 0x7c align 4 -- compiled postprocess P; E 0x00016bc7 reads its pointer and uses element 0 (shader.rs:286); V exactly 1 element
+    0x0 datum template groups=stem -- E 0x00016bde path; V equals the root template (shader.rs:381)
+    0x4 block bitmaps 0xc align 4 -- bitmap parameters, E 0x00016f60 (shader.rs:307). The Halo 1 converter patches +0 of these (h1convert/src/textures.rs:494)
+      0x0 datum bitmap groups=bitm -- E 0x00016f60; null selects the rasterizer default ([0x485a80]+0x64) (shader.rs:310)
+      0x4 i32 image -- E 0x00016f60 to the slot frame; 0x0001b0a0 wraps it by the bitmap's image count (shader.rs:312); V 0 in all but 5 elements
+      0x8 f32 lod_offset -- E 0x0001b15c adds it to the draw's LOD term before mip selection (shader.rs:315)
+    0xc block colors 0x4 align 4 -- E 0x00017170 (shader.rs:384)
+      0x0 u32 color -- packed ARGB; E 0x0001717b merges it into PSConstant0/1 or the final-combiner constants per the template binding
+    0x14 block vectors 0x10 align 4 -- E 0x00017000 (shader.rs:386)
+      0x0 f32[4] vector -- E 0x00017039 copies components to vertex defaults or c[18+n] per the template binding
+    0x1c block lods 0x6 align 4 -- E 0x000174d0 (shader.rs:319)
+      0x0 u32 layer_mask -- E 0x000174d9: bit n set when layer n has animation data
+      0x4 u16 layers -- E 0x000174f3: range into layers (start low 9 bits, count high 7)
+    0x24 block layers 0x2 align 4
+      0x0 u16 passes -- E 0x00017507: range into passes
+    0x2c block passes 0x2 align 4
+      0x0 u16 implementations -- E 0x00017519: range into implementations
+    0x34 block implementations 0xa align 4 -- per-implementation animation ranges into animations, E 0x00017532 (shader.rs:328)
+      0x0 u16 bitmap_animations -- E 0x00017550: texture-slot fields
+      0x2 u16 render_state_animations -- E 0x00017b60
+      0x4 u16 stage_state_animations -- E 0x00018560: texture-stage states
+      0x6 u16 pixel_constant_animations -- E 0x000176a0
+      0x8 u16 vertex_constant_animations -- E 0x00017960: vertex constants and vertex defaults
+    0x3c block properties 0x14 align 4 -- animated properties, evaluated by E 0x0001b230 (shader.rs:344)
+      0x0 string input -- E 0x000175d9: null = driven by game time, else an object function name (V shield_glow_source, hud_elite, ...)
+      0x4 string input_a -- second object-function selector passed to the object callback (shader.rs:350); V position, shield_vitality, ...
+      0x8 f32 input_b -- E 0x0001b230: period in seconds when input is null (shader.rs:352); V mostly 1.0
+      0xc data function align 4 -- mapping-function blob, E 0x0013b390 evaluates it; when function[1] & 0xf0 == 0, bytes +4/+8 are the f32 output range (shader.rs:353)
+    0x44 block property_refs 0x4 align 4 -- E 0x000175d0 (shader.rs:358)
+      0x0 i16 property -- E 0x000175d0: index into properties
+      0x2 i16 component -- E 0x00017635
+    0x4c block property_ranges 0x2 align 4
+      0x0 u16 property_refs -- E 0x0001759d: range into property_refs
+    0x54 block animations 0x4 align 4 -- animation bindings, E 0x00017568 (shader.rs:365)
+      0x0 u8 target -- texture slot, state table index or register, by the range that selects it
+      0x1 u8 param_1 -- kind-specific (render-state animations: 1 = scalar output) (shader.rs:371)
+      0x2 u8 param_2 -- kind-specific (colour: channel mask and transform) (shader.rs:373)
+      0x3 u8 property_range -- index into property_ranges (shader.rs:375)
+    0x5c block parameter_bitmaps 0x4 align 4 -- V count 5 in every tag; entry k (k < 4) belongs to root parameter bitmap k (+0x0, +0x8, +0x2c, +0x34); not dereferenced by the draw path (shader.rs:399)
+      0x0 i16 bitmap_index -- V index into bitmaps holding the parameter's datum (1,735 of 1,736 for base_map), -1 when the parameter is null; entry 4 has no root parameter
+      0x2 unknown 0x2 seen=many -- -1, else 0 or 1
+    0x64 block parameter_colors 0xc align 4 -- V count 2; not dereferenced by the draw path
+      0x0 f32[3] color -- V equal to root parameter colours +0x10 and +0x3c, all 2,288 tags
+    0x6c block parameter_scalars 0x4 align 4 -- V count 6; not dereferenced by the draw path
+      0x0 f32 value -- V equal to root parameter scalars +0x1c, +0x20, +0x24, +0x28, +0x48, +0x4c in order
+    0x74 pad 0x8
+  0x28 unknown 0x4 seen=const default=ffffffff
+  0x2c block bitmap_images 0x8 align 4 -- not dereferenced by the draw path (shader.rs:289); V every datum is one of postprocess bitmaps' datums (12,311 of 12,311)
+    0x0 pad 0x2
+    0x2 u16 image -- V equals the number of earlier entries naming the same bitmap (12,311 of 12,311); D read as that bitmap's image index
+    0x4 datum bitmap groups=bitm -- V always one of the postprocess +0x04 bitmaps
+  0x34 tagref slit_ref_34 groups=slit -- group bytes slit, datum null in every tag (7 have group -1 too); not read by the draw path (shader.rs:291)
+  0x3c unknown 0x2 seen=5 -- 0, 3, 4, 5 or 6
+  0x3e u16 int_input_4 -- E 0x0001bce1 copies it to 0x485a64, returned as engine integer input 4 (0x0003408f): selects combiner variants (shader.rs:293)
+  0x40 u16 int_input_5 -- E 0x0001bceb copies it to 0x485a68, engine integer input 5 (0x00034097)
+  0x42 pad 0x2
+  0x44 f32 scalar_input default=1 -- E 0x0001bcf5 copies it to 0x485a6c: engine scalar input 21 (0x000337e0) and a multiplier on vector inputs 23 and 35 (0x00033b11) (shader.rs:297)
+  0x48 f32 vector_input -- E 0x0001bd02 copies it to 0x485a70: source of object-driven vector input 24 (0x00033c63) (shader.rs:300)
+  0x4c pad 0x8

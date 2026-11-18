@@ -1,0 +1,160 @@
+# jmad: animation graph. Names from crates/tags/src/anim.rs and docs/formats/animation.md
+# (E = read by the retail animation code, engine-map.md "Animation graphs"; V = disc).
+# Fields the doc marks S (name only from general vocabulary) keep offset-suffixed names.
+group jmad 0xbc align 4
+  0x0 tagref tagref_0 -- V a jmad reference, null on most graphs; role S (animation.md tag layout)
+  0x8 unknown 0x4 seen=3 -- V version-like word (anim.rs version_word), raw
+  0xc block nodes 0x20 align 4 -- V; stride E (count equals each animation's node count)
+    0x0 string name -- V every name resolves to a bone name
+    0x4 i16 next_sibling -- V links form a valid tree, -1 none (anim.rs Node)
+    0x6 i16 first_child -- V
+    0x8 i16 parent -- V
+    0xa u16 flags_a -- S (anim.rs model_flags)
+    0xc u32 flags_c -- S (anim.rs joint_flags)
+    0x10 unknown 0x10 seen=many
+  0x14 block sound_references 0xc align 4 -- E 0x001c7450
+    0x0 tagref sound -- E datum read at +4
+    0x8 u16 flags -- E 0x001c7450 reads a flag word at +8
+    0xa unknown 0x2 seen=zero
+  0x1c block effect_references 0xc align 4 -- E same shape as sound references
+    0x0 tagref effect -- E datum read at +4
+    0x8 u16 flags -- E flag word at +8
+    0xa unknown 0x2 seen=zero
+  0x24 block blend_screens 0x1c align 4 -- V size; field names S
+    0x0 string name -- V
+    0x4 unknown 0x4 seen=13 -- floats
+    0x8 unknown 0x4 seen=13 -- floats
+    0xc unknown 0x4 seen=3
+    0x10 unknown 0x4 seen=15 -- floats
+    0x14 unknown 0x4 seen=14 -- floats
+    0x18 unknown 0x4 seen=2
+  0x2c block animations 0x6c align 4 -- E (animation.md "Animation record")
+    0x0 string name -- V
+    0x4 word checksum_4 -- V constant within a graph; name S (anim.rs node_list_checksum)
+    0x8 unknown 0x4 seen=many
+    0xc unknown 0x4 seen=many
+    0x10 enum8 animation_type values=base|overlay|replacement -- E 0 and 1 distinguished by the engine; 2 S
+    0x11 u8 frame_info_type -- E passed to the movement decoder, 0..3
+    0x12 unknown 0x1 seen=many
+    0x13 u8 node_count -- E
+    0x14 i16 frame_count -- E valid frames 0..frame_count
+    0x16 u16 flags -- E 0x10: data lives in a cache resource
+    0x18 unknown 0x4 seen=22
+    0x1c unknown 0x4 seen=many -- floats
+    0x20 unknown 0x4 seen=2 -- small integers
+    0x24 u32 resource_index -- E index into the data resources block (+0xac)
+    0x28 u32 data_offset -- E byte offset of the animation's blob inside the resource
+    0x2c i16 static_pose -- E index into static poses, -1 none
+    0x2e unknown 0x2 seen=many
+    0x30 i16 linked_animation_a -- E an animation index the engine preloads (role S)
+    0x32 i16 linked_animation_b -- E an animation index the engine preloads (role S)
+    0x34 u32 inline_data_size -- E used when flag 0x10 is clear; never on the disc
+    0x38 u32 inline_data_address -- E
+    0x3c u8 static_flag_set_size -- E size of the static node flag set
+    0x3d u8 animated_flag_set_size -- E size of the animated node flag set
+    0x3e unknown 0x2 seen=many
+    0x40 unknown 0x2 seen=many
+    0x42 u16 static_stream_size -- E
+    0x44 unknown 0x4 seen=zero
+    0x48 u32 animated_stream_size -- E
+    0x4c block frame_events 0x4 align 4 -- E type i16, frame i16
+      0x0 i16 event_type -- E
+      0x2 i16 frame -- E
+    0x54 block sound_events 0x8 align 4 -- E
+      0x0 i16 sound -- E index into sound_references
+      0x2 i16 frame -- E
+      0x4 string string_4
+    0x5c block effect_events 0x4 align 4 -- E
+      0x0 i16 effect -- E index into effect_references
+      0x2 i16 frame -- E
+    0x64 block block_64 0x1c align 4
+      0x0 unknown 0x4 seen=8
+      0x4 unknown 0x4 seen=32
+      0x8 unknown 0x4 seen=32
+      0xc unknown 0x4 seen=31 -- floats
+      0x10 unknown 0x4 seen=37
+      0x14 unknown 0x4 seen=38 -- floats
+      0x18 unknown 0x4 seen=const -- floats
+  0x34 block modes 0x14 align 4 -- E lookup 0x001db170; names resolve to mode names (V)
+    0x0 string name -- E/V
+    0x4 block classes 0x14 align 4 -- E 0x001db170
+      0x0 string name -- E/V weapon class names
+      0x4 block types 0x34 align 4 -- E 0x001db170
+        0x0 string name -- E/V weapon type names
+        0x4 block actions 0x8 align 4 -- E 0x001db170; V every non-null animation index in range
+          0x0 string name -- E/V
+          0x4 i16 graph_index -- E -1 this graph, otherwise a position in the inheritance list
+          0x6 i16 animation_index -- E
+        0xc block block_c 0x8 align 4
+          0x0 string string_0
+          0x4 unknown 0x4 seen=many
+        0x14 block block_14 0xc align 4
+          0x0 string string_0
+          0x4 block block_4 0x8 align 4
+            0x0 block block_0 0x4 align 4
+              0x0 unknown 0x4 seen=many
+        0x1c block block_1c 0x14 align 4
+          0x0 string string_0
+          0x4 string string_4
+          0x8 unknown 0x4 seen=const -- small integers
+          0xc block block_c 0x14 align 4
+            0x0 string string_0
+            0x4 string string_4
+            0x8 string string_8
+            0xc unknown 0x4 seen=const -- small integers
+            0x10 unknown 0x4 seen=many
+        0x24 block preloaded_resources_a 0x4 align 4 -- E resource indices the engine preloads
+          0x0 u32 resource -- E
+        0x2c block preloaded_resources_b 0x4 align 4 -- E resource indices the engine preloads
+          0x0 u32 resource -- E
+      0xc block block_c 0x8 align 4
+        0x0 string string_0
+        0x4 string string_4
+    0xc block block_c 0x8 align 4
+      0x0 string string_0
+      0x4 string string_4
+  0x3c block block_3c 0x28 align 4
+    0x0 string string_0
+    0x4 unknown 0x4 seen=10
+    0x8 string string_8
+    0xc unknown 0x4 seen=2 -- floats
+    0x10 unknown 0x4 seen=5 -- floats
+    0x14 unknown 0x4 seen=4 -- floats
+    0x18 string string_18
+    0x1c unknown 0x4 seen=zero
+    0x20 unknown 0x4 seen=2 -- floats
+    0x24 unknown 0x4 seen=2 -- floats
+  0x44 block block_44 0x14 align 4
+    0x0 string string_0
+    0x4 unknown 0x4 seen=2
+    0x8 unknown 0x4 seen=zero
+    0xc string string_c
+    0x10 unknown 0x4 seen=zero
+  0x4c block inheritance 0x20 align 4 -- E
+    0x0 tagref graph -- E the datum at +4 selects a parent graph (anim.rs Inheritance)
+    0x8 block block_8 0x2 align 4
+      0x0 unknown 0x2 seen=many
+    0x10 block block_10 0x4 align 4
+      0x0 unknown 0x4 seen=13
+    0x18 unknown 0x4 seen=9 -- floats
+    0x1c unknown 0x4 seen=3 -- small integers
+  0x54 block block_54 0x8 align 4 -- V string-ID pairs, count >= 1 on every graph; meaning unknown
+    0x0 string string_0
+    0x4 string string_4
+  0x5c unknown 0x4 seen=16
+  0x60 unknown 0x4 seen=11
+  0x64 unknown 0x18 seen=zero
+  0x7c unknown 0x4 seen=39
+  0x80 unknown 0x4 seen=28
+  0x84 unknown 0x4 seen=4 -- small integers
+  0x88 unknown 0x24 seen=zero
+  0xac block data_resources 0x14 align 4 -- E (animation.md "Data resources")
+    0x0 datum owner -- E owning datum
+    0x4 rawsize size of=0x8 -- E
+    0x8 raw data -- E top two bits select the file
+    0xc u32 runtime_handle -- E 0xffffffff in the tag
+    0x10 u32 load_flag -- E
+  0xb4 block static_poses 0x18 align 4 -- E 0x001dd8f0 uses one for a transform of an animation
+    0x0 i16[4] rotation -- E normalised quaternion (anim.rs StaticPose)
+    0x8 f32[3] translation -- E
+    0x14 f32 float_14 -- E (anim.rs scale; role S)

@@ -33,9 +33,11 @@ pub mod coll;
 pub mod convert;
 pub mod h1;
 pub mod query;
+pub mod rebuild;
 pub mod refs;
 pub mod sandbox;
 
+pub use convert::Options;
 pub use h1models::Converted;
 
 /// Conversion failures.

@@ -1,0 +1,68 @@
+# The object header shared by every object group (scen, bloc, mach, ctrl,
+# lifi, ssce, crea, proj, and through unit and item: bipd, vehi, weap,
+# eqip, garb). Evidence: docs/formats/objects.md.
+struct obje 0xbc
+  0x0 enum16 object_type values=bipd|vehi|weap|eqip|garb|proj|scen|mach|ctrl|lifi|ssce|bloc|crea -- E 0x000b7b40: indexes the engine object type table at 0x00468630; must match the group
+  0x2 flags16 flags -- E bit 0 tested by object_new 0x000b7b40
+  0x4 f32 bounding_radius -- E multiplied by the object scale (0x000be075)
+  0x8 f32[3] bounding_offset -- E transformed by the root node into the bounding-sphere centre (0x000bdfa9)
+  0x14 unknown 0x4
+  0x18 unknown 0x4
+  0x1c unknown 0x4
+  0x20 unknown 0x4
+  0x24 unknown 0x4
+  0x28 unknown 0x4
+  0x2c unknown 0x4
+  0x30 string default_variant -- E 0x000ba571: the variant used when none is asked for, passed to the variant lookup 0x0016d180
+  0x34 tagref model groups=hlmt -- E object_new 0x000b7b40 resolves the datum (+0x38) and reads the hlmt through it
+  0x3c tagref bloc_ref_3c groups=bloc -- V: references a bloc where set (bloc, mach)
+  0x44 tagref shad_ref_44 groups=shad -- V (objects.md): a shad reference; null on every disc instance of these groups
+  0x4c tagref creation_effect groups=effe -- E object_new passes the datum (+0x50) to 0x00176780 once the object exists; null on the disc
+  0x54 tagref foot_ref_54 groups=foot -- V: references a foot (material effects) where set
+  0x5c block block_5c 0x10 align 4 -- V: at most one element
+    0x0 unknown 0x4
+    0x4 string string_4
+    0x8 unknown 0x4
+    0xc unknown 0x4
+  0x64 block functions 0x20 align 4 -- E 0x000bac20 steps 0x20 and matches element +8 against the requested ID
+    0x0 unknown 0x4
+    0x4 string string_4
+    0x8 string output -- E 0x000bac20: the string ID a function lookup matches
+    0xc string string_c
+    0x10 unknown 0x4
+    0x14 data data_14 align 4 -- V: a byte array, nonempty in every element
+    0x1c string string_1c
+  0x6c unknown 0x4
+  0x70 unknown 0x4
+  0x74 unknown 0x4
+  0x78 unknown 0x4
+  0x7c unknown 0x4
+  0x80 unknown 0x4
+  0x84 unknown 0x4
+  0x88 unknown 0x4
+  0x8c unknown 0x4
+  0x90 unknown 0x4
+  0x94 block attachments 0x18 align 4 -- E 0x000b8c82 indexes x0x18; 0x000bed2a builds each by its +0 class
+    0x0 tagref type -- E 0x000bed2a switches on the class: ligh, lsnd, effe, cont built; lens, MGS2, tdtl skipped
+    0x8 string marker -- E accessor 0x000b8c40 loads element +8 by attachment index (0x000b8c8b)
+    0xc unknown 0x4
+    0x10 string string_10
+    0x14 string string_14
+  0x9c block widgets 0x8 align 4 -- V: one reference per element (clwd, tdtl seen); name D
+    0x0 tagref widget -- V: the widget tag
+  0xa4 unknown 0x8 -- a block (objects.md, V) empty on every disc instance: element unknown
+  0xac block change_colors 0x10 align 4 -- V: object_new reserves 0x18 bytes per element; name D
+    0x0 block block_0 0x20 align 4
+      0x0 unknown 0x4
+      0x4 unknown 0x4
+      0x8 unknown 0x4
+      0xc unknown 0x4
+      0x10 unknown 0x4
+      0x14 unknown 0x4
+      0x18 unknown 0x4
+      0x1c string string_1c
+    0x8 unknown 0x4
+    0xc unknown 0x4
+  0xb4 block predicted_resources 0x8 align 4 -- V: element +4 is the full salted datum of an existing tag; name D (resources loaded with the object)
+    0x0 unknown 0x4
+    0x4 datum tag -- V: an existing tag of any group

@@ -454,3 +454,63 @@ fn hlmt_regions_select_collision_regions_by_name_then_index() {
     assert_eq!(m[0], (0, vec![0, 0]));
     assert!(region_map(&render, &[]).iter().all(|r| r.0 == -1));
 }
+
+/// Rebuilt scenery: written from the definitions alone, every field the
+/// conversion does not set at its default, nothing pinned.
+#[test]
+fn rebuilt_scenery_has_only_definition_bytes() {
+    use tags::defs::{self, Defs, Target, Val};
+    let obj = crate::h1::Object {
+        object_type: 6,
+        flags: 0,
+        bounding_radius: 2.5,
+        bounding_offset: [1.0, 2.0, 3.0],
+        model: None,
+        animation: None,
+        collision: None,
+        physics: None,
+        modifier_shader: None,
+        creation_effect: None,
+        attachments: Vec::new(),
+        widgets: Vec::new(),
+    };
+    let hlmt = map::TagId(0xe001_0002);
+    let root = crate::rebuild::scenery(&obj, Some(hlmt)).unwrap();
+    let def = Defs::builtin().group(map::FourCC(*b"scen")).unwrap();
+    let got = defs::from_built(def, &root).unwrap();
+    let mut want = defs::default_record(def);
+    want.set("object.object_type", Val::Enum(6)).unwrap();
+    want.set("object.bounding_radius", Val::Float(2.5)).unwrap();
+    want.set("object.bounding_offset", Val::floats(&[1.0, 2.0, 3.0]))
+        .unwrap();
+    want.set(
+        "object.model",
+        Val::Ref {
+            group: 0,
+            target: Target::Id(hlmt),
+        },
+    )
+    .unwrap();
+    assert_eq!(defs::diff(def, &want, &got), Vec::new());
+
+    // The material list: one per shader, the shader set, null elsewhere.
+    let mut mode = map::build::Block::zeroed(0x84);
+    crate::rebuild::mode_materials(&mut mode, &[map::TagId(0xe001_0005), map::TagId::NULL])
+        .unwrap();
+    let m = Defs::builtin().group(map::FourCC(*b"mode")).unwrap();
+    let r = defs::from_built(m, &mode).unwrap();
+    assert_eq!(
+        r.at("materials[0].shader"),
+        Some(&Val::Ref {
+            group: 0,
+            target: Target::Id(map::TagId(0xe001_0005)),
+        })
+    );
+    assert_eq!(
+        r.at("materials[1].shader"),
+        Some(&Val::Ref {
+            group: u32::MAX,
+            target: Target::Null,
+        })
+    );
+}
