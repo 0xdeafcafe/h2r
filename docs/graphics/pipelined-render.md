@@ -773,7 +773,15 @@ plain `ret`). On the game thread, at each entry:
    present counter `0x00485aa0` + 1 (the predicted present), the one-shot
    byte `0x004e6098` cleared. Then **launch** `0x00223240` (the generated
    original) on the render host thread with the entry's registers and its
-   own 128 KB guest stack from the feature arena, and return to the game.
+   own 256 KiB guest stack from the feature arena, and return to the game.
+   The stack is as large as the game thread's own (the main thread's size
+   in the XBE header), because the front-end may use as much as it does
+   serially. The first build gave it 128 KiB, and the first world frame
+   crashed: a function under the render probes (`_chkstk`, `0x00320560`)
+   a frame of over 128 KiB, and the probe read the unmapped page under the
+   render stack (`MemoryFault ... Read, Unmapped` about 128 KiB below
+   `esp`). A fallback runs the rest of the render on the game thread but
+   still on this stack, so the same limit holds there.
 
 On the render thread the executor's dispatch has the generated original
 at `0x00223240` and a no-op at `0x0012b2e0`; it may run the D3D layer's
@@ -845,7 +853,11 @@ points) and sim, run serially and pipelined over 120 rounds
 fallback frames finished on the game thread with the kernel called once
 each and one frame wait a frame, D3D reads from the launch snapshot while
 the sim has moved on, sim D3D calls after the render's, a snapshot
-waiting one frame, a refusal under a continuation stopping by name.
+waiting one frame, a refusal under a continuation stopping by name, a
+render probing a frame as deep as a game-sized thread stack (pipelined
+and in a fallback; it faults with a 128 KiB render stack), and menu
+frames with the feature on running serially with nothing launched and
+the same memory as off.
 `crates/emit/tests/second_executor.rs`: lifted x86 refused at a kernel
 call carries on on the main context from the refused CPU (twenty rounds).
 `crates/d3d/tests/registration.rs`: a real D3D entry on the executor (the

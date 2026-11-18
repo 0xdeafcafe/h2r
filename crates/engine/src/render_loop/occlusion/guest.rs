@@ -235,6 +235,20 @@ impl Occlusion {
         self.current.as_ref().map(|(v, _)| *v)
     }
 
+    /// The most telling test over every view since the last call
+    /// ([`Tracker::take_probe`]).
+    pub fn take_probe(&mut self) -> Option<Probe> {
+        let mut best: Option<Probe> = None;
+        for t in self.trackers.values_mut() {
+            if let Some(p) = t.take_probe()
+                && best.as_ref().is_none_or(|b| p.better(b))
+            {
+                best = Some(p);
+            }
+        }
+        best
+    }
+
     /// The counts over every view.
     pub fn counts(&self) -> Counts {
         let mut c = Counts::default();
@@ -244,6 +258,7 @@ impl Occlusion {
             c.unknown += t.counts.unknown;
             c.exempt += t.counts.exempt;
             c.resets += t.counts.resets;
+            c.no_depth += t.counts.no_depth;
         }
         c
     }

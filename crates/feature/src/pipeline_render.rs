@@ -46,8 +46,13 @@ use crate::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 pub const ID: &str = "pipeline-render";
 /// `H2_PIPELINE_RENDER=1` turns it on.
 pub const ENV: &str = "H2_PIPELINE_RENDER";
-/// The render thread's guest stack.
-pub const STACK_LEN: u32 = 0x2_0000;
+/// The render thread's guest stack: as large as the game thread's own
+/// (the XBE header's stack size for the main thread, 256 KiB), since the
+/// front-end runs there serially and may use as much. 128 KiB was not
+/// enough: the first world frame reaches a function whose `_chkstk`
+/// (`0x00320560`) probes a frame of over 128 KiB, which faulted just below
+/// the render stack (an unmapped read about 128 KiB under its `esp`).
+pub const STACK_LEN: u32 = 0x4_0000;
 
 /// A byte range of guest memory `[start, end)` (virtual).
 pub type Range = (u32, u32);

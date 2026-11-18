@@ -992,10 +992,7 @@ fn install_occlusion_capture<B: d3d::backend::Backend + Send + 'static>(device: 
 /// The W-buffer's raw depth to view depth: stored `floor(w · inv_w_far ·
 /// z_scale) / z_scale` (`z_scale` the format's full scale, `+0x948`).
 pub fn w_buffer_mapping(s: d3d::DepthScale) -> engine::render_loop::occlusion::DepthMapping {
-    engine::render_loop::occlusion::DepthMapping::WBuffer {
-        zmax: s.z_scale,
-        scale: s.inv_w_far * s.z_scale,
-    }
+    engine::render_loop::occlusion::DepthMapping::w_buffer(s.inv_w_far, s.z_scale)
 }
 
 #[cfg(test)]

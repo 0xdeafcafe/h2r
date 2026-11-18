@@ -29,7 +29,9 @@ use std::time::Instant;
 use engine::points;
 use engine::render_loop::Regs;
 use engine::render_loop::occlusion::guest::{self, Mailbox, Occlusion};
-use engine::render_loop::occlusion::{Camera, DepthGrid, DepthMapping, Frame, HiZ, Meter, Rules};
+use engine::render_loop::occlusion::{
+    Camera, DepthGrid, DepthMapping, Frame, GridSummary, HiZ, Meter, Rules, probe_line,
+};
 use runtime::guest::{Access, FaultReason};
 use runtime::{CpuAbi, GuestFault};
 
@@ -73,6 +75,9 @@ static CAPTURE: Mutex<Option<CaptureFn>> = Mutex::new(None);
 static INFLIGHT: Mutex<Vec<(u64, Shot)>> = Mutex::new(Vec::new());
 static NEXT_TAG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 static PUBLISHED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// The newest published grid at a glance and its mapping, for the
+/// `occlusion probe:` line.
+static LAST_GRID: Mutex<Option<(GridSummary, DepthMapping)>> = Mutex::new(None);
 
 /// Installs the capture function (boot: the D3D device's
 /// `request_depth_grid`). Called once; only used with the switch on.
@@ -96,7 +101,9 @@ pub fn deliver(tag: u64, width: u32, height: u32, raw: &[f32], map: DepthMapping
     let Some(mut grid) = DepthGrid::from_raw(width, height, raw, map) else {
         return;
     };
-    grid.ignore_nearer(MIN_OCCLUDER);
+    let mut summary = grid.summary();
+    summary.dropped = grid.ignore_nearer(MIN_OCCLUDER);
+    *LAST_GRID.lock().unwrap() = Some((summary, map));
     MAILBOX.publish(
         shot.view,
         Frame {
@@ -106,6 +113,12 @@ pub fn deliver(tag: u64, width: u32, height: u32, raw: &[f32], map: DepthMapping
         },
     );
     PUBLISHED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The newest published grid at a glance and its mapping (the
+/// `occlusion probe:` line's second half).
+pub fn last_grid() -> Option<(GridSummary, DepthMapping)> {
+    *LAST_GRID.lock().unwrap()
 }
 
 /// Grids published so far.
@@ -166,6 +179,15 @@ impl Feature for OcclusionCull {
                     let now = epoch().elapsed().as_nanos() as u64;
                     if let Some(line) = st.meter.tick(now, st.occ.counts()) {
                         eprintln!("{line} grids {}", published());
+                        // One object's test and what the newest grid held,
+                        // so a run can tell a grid that occludes nothing
+                        // from a test that never reaches it.
+                        let probe = st.occ.take_probe();
+                        let grid = last_grid();
+                        eprintln!(
+                            "{}",
+                            probe_line(probe.as_ref(), grid.as_ref().map(|(g, m)| (g, *m)))
+                        );
                     }
                 }
             });
