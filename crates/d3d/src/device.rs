@@ -64,11 +64,13 @@ mod display;
 mod fragments;
 mod mirror;
 mod raster;
+mod snap;
 mod visibility;
 
 pub use display::{GAMMA_RAMP_BYTES, MINIPORT, VBLANK_SWAPDONE, VBlank};
 use raster::FrameTexture;
 pub use raster::{RttTarget, scissor_region};
+pub use snap::{SECTION as SNAPSHOT_SECTION, SnapshotError};
 pub use visibility::{
     D3DERR_TESTINCOMPLETE, VISIBILITY_INDICES, VISIBILITY_PENDING_SWAPS, VisibilityAnswer,
 };

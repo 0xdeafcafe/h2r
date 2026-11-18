@@ -1576,6 +1576,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shaders",
+ "snapshot",
  "thiserror 2.0.21",
  "timeline",
  "wgpu",
