@@ -322,7 +322,7 @@ impl Session {
         let decoder = Decoder::load(Arc::clone(&tables), format, r)?;
         let partial = r.blob()?.to_vec();
         let queued = r.blob()?;
-        if queued.len() % 4 != 0 {
+        if !queued.len().is_multiple_of(4) {
             return Err(bad("PCM is not whole stereo frames"));
         }
         let pcm = queued
