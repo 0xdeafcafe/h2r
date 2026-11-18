@@ -12,6 +12,8 @@ use map::{Map, TagId};
 use tags::material::{Material, Origin, Register, ResolvedImplementation, TextureSource};
 use tags::shader::{Metadata, PSDEF_SIZE, StageStates};
 
+use crate::pass_state::{PassState, StateRefusal, pass_state};
+
 /// The layer the native world draws.
 pub const LIGHTMAP_LAYER: usize = 3;
 /// The `vrtx` geometry classification of world-space geometry (S: its
@@ -98,6 +100,13 @@ pub fn layer3_look(material: &Material) -> Result<PassLook, Refusal> {
         .iter()
         .find(|i| samples_lightmap(i))
         .ok_or(Refusal::NoLightmapImplementation)?;
+    implementation_look(pass.pass, imp)
+}
+
+/// One implementation of the pass `pass` as the native pass draws it, or
+/// why it stays on the D3D path: its vertex program, stage textures and
+/// instance constants, nothing animated or computed per draw.
+pub fn implementation_look(pass: TagId, imp: &ResolvedImplementation) -> Result<PassLook, Refusal> {
     let vertex_shader = imp.vertex_shader.ok_or(Refusal::NoVertexShader)?;
     if !imp.animated.is_empty() {
         return Err(Refusal::Animated);
@@ -117,7 +126,7 @@ pub fn layer3_look(material: &Material) -> Result<PassLook, Refusal> {
         };
     }
     Ok(PassLook {
-        pass: pass.pass,
+        pass,
         implementation: imp.index,
         vertex_shader,
         textures,
@@ -127,6 +136,60 @@ pub fn layer3_look(material: &Material) -> Result<PassLook, Refusal> {
         vertex_defaults: imp.vertex_defaults.clone(),
         per_draw_inputs: imp.per_draw_inputs,
     })
+}
+
+/// The template layer the sorted transparents draw: `0x00040f60` walks
+/// the pass range at `+0x1e` of the template's layer table, and passes
+/// layer `0xf` to the build and draw.
+pub const TRANSPARENT_LAYER: usize = 15;
+
+/// One pass of a material's transparent layer: what it draws and how it
+/// blends.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TransparentPass {
+    pub look: PassLook,
+    pub state: PassState,
+}
+
+/// Why a material's transparent layer stays on the D3D path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransparentRefusal {
+    /// Its template draws nothing in layer 15 at the first level of detail.
+    NoLayer15,
+    /// Pass `pass` has more than one implementation (S: which one the
+    /// engine binds for a transparent entry is not traced).
+    Implementations { pass: usize, count: usize },
+    /// Pass `pass`'s implementation does not fit the native pass.
+    Pass { pass: usize, refusal: Refusal },
+    /// Pass `pass`'s render states do not.
+    State { pass: usize, refusal: StateRefusal },
+    /// Pass `pass` reads engine-driven render states.
+    EngineRenderStates { pass: usize },
+}
+
+/// Every pass of `material`'s layer 15 (first level of detail), in the
+/// order the handler draws them, or why not. All or nothing: an entry is
+/// drawn natively only when every pass is.
+pub fn transparent_passes(material: &Material) -> Result<Vec<TransparentPass>, TransparentRefusal> {
+    let layer = material
+        .layers
+        .iter()
+        .find(|l| l.lod == 0 && l.layer == TRANSPARENT_LAYER)
+        .filter(|l| !l.passes.is_empty())
+        .ok_or(TransparentRefusal::NoLayer15)?;
+    let mut out = Vec::with_capacity(layer.passes.len());
+    for (n, pass) in layer.passes.iter().enumerate() {
+        let [imp] = pass.implementations.as_slice() else {
+            return Err(TransparentRefusal::Implementations { pass: n, count: pass.implementations.len() });
+        };
+        let look = implementation_look(pass.pass, imp).map_err(|refusal| TransparentRefusal::Pass { pass: n, refusal })?;
+        if !imp.engine_render_states.is_empty() {
+            return Err(TransparentRefusal::EngineRenderStates { pass: n });
+        }
+        let state = pass_state(&imp.render_states).map_err(|refusal| TransparentRefusal::State { pass: n, refusal })?;
+        out.push(TransparentPass { look, state });
+    }
+    Ok(out)
 }
 
 fn samples_lightmap(i: &ResolvedImplementation) -> bool {
@@ -162,6 +225,7 @@ pub fn world_program<R: Read + Seek>(map: &mut Map<R>, meta: &Metadata, vrtx: Ta
 mod tests {
     use super::*;
     use tags::material::{EngineInputs, ResolvedLayer, ResolvedPass, StageTexture};
+    use tags::shader::RenderStateValue;
 
     fn texture(source: TextureSource) -> Option<StageTexture> {
         Some(StageTexture { source, size: None, stage_size: None })
@@ -246,6 +310,77 @@ mod tests {
         let mut bare = implementation(0, true);
         bare.vertex_shader = None;
         assert_eq!(layer3_look(&material(3, vec![vec![bare]])), Err(Refusal::NoVertexShader));
+    }
+
+    fn blended(mut imp: ResolvedImplementation) -> ResolvedImplementation {
+        use gfx::state::{BlendFactor, RenderStateType as R};
+        let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+        let slot = |t: R| {
+            (0..=255u8)
+                .find(|&s| R::from_guest_index(&table, u32::from(s)) == Some(t))
+                .unwrap()
+        };
+        imp.render_states = vec![
+            RenderStateValue { state: slot(R::AlphaBlendEnable), value: 1 },
+            RenderStateValue { state: slot(R::SrcBlend), value: BlendFactor::One.xbox_value() },
+            RenderStateValue { state: slot(R::DestBlend), value: BlendFactor::One.xbox_value() },
+            RenderStateValue { state: slot(R::ZWriteEnable), value: 0 },
+        ];
+        imp
+    }
+
+    #[test]
+    fn every_transparent_pass_is_taken_in_order_with_its_blend() {
+        let m = material(
+            TRANSPARENT_LAYER,
+            vec![vec![blended(implementation(0, false))], vec![blended(implementation(1, true))]],
+        );
+        let m = Material {
+            layers: m
+                .layers
+                .into_iter()
+                .map(|mut l| {
+                    for p in &mut l.passes {
+                        for i in &mut p.implementations {
+                            i.textures[3] = None;
+                        }
+                    }
+                    l
+                })
+                .collect(),
+            ..m
+        };
+        let passes = transparent_passes(&m).unwrap();
+        assert_eq!(passes.len(), 2);
+        assert_eq!(passes[1].look.implementation, 1);
+        let c = passes[0].state.blend.unwrap().color;
+        assert_eq!((c.src_factor, c.dst_factor), (wgpu::BlendFactor::One, wgpu::BlendFactor::One));
+        assert!(!passes[0].state.depth_write);
+    }
+
+    #[test]
+    fn transparent_materials_outside_the_rules_say_why() {
+        let lit = |i| blended(implementation(i, true));
+        assert_eq!(
+            transparent_passes(&material(3, vec![vec![lit(0)]])),
+            Err(TransparentRefusal::NoLayer15)
+        );
+        assert_eq!(
+            transparent_passes(&material(TRANSPARENT_LAYER, vec![vec![lit(0), lit(1)]])),
+            Err(TransparentRefusal::Implementations { pass: 0, count: 2 })
+        );
+        let mut engine = lit(0);
+        engine.textures[2] = texture(TextureSource::Engine(5));
+        assert_eq!(
+            transparent_passes(&material(TRANSPARENT_LAYER, vec![vec![lit(0)], vec![engine]])),
+            Err(TransparentRefusal::Pass { pass: 1, refusal: Refusal::EngineTexture(5) })
+        );
+        let mut inherits = lit(0);
+        inherits.render_states.clear();
+        assert_eq!(
+            transparent_passes(&material(TRANSPARENT_LAYER, vec![vec![inherits]])),
+            Err(TransparentRefusal::State { pass: 0, refusal: StateRefusal::Unset("ALPHABLENDENABLE") })
+        );
     }
 
     #[test]

@@ -144,15 +144,17 @@ mod tests {
     /// it), either runs on the pipelined render thread or is listed in
     /// [`REFUSED`] with its reason, and every listed entry is still used.
     /// The ones the render path meets in a default run (the locale lookups,
-    /// Blind, the native world's and objects' layer draw) are context-only.
+    /// Blind, the native world's and objects' layer draw) are context-only,
+    /// and so is the native transparents' geometry handler.
     #[test]
     fn every_feature_hook_runs_on_the_render_thread_or_says_why_not() {
         let mut unlisted = Vec::new();
         let mut used = vec![false; REFUSED.len()];
         let mut safe = Vec::new();
         // The native world (on by default) and objects at the layer draw,
-        // with nothing else there, are render-thread safe together.
-        let native = "impl.render.native_objects=on".to_owned();
+        // and the transparents' handler, with nothing else there, are
+        // render-thread safe together.
+        let native = "impl.render.native_objects=on,impl.render.native_transparents=on".to_owned();
         for switches in [String::new(), native, ALL_ON.to_owned(), format!("{ALL_ON},render-census")] {
             let plan = registry(&Case::full(&switches)).build(&feature::Base).unwrap();
             for c in plan.chains.values() {
@@ -193,6 +195,7 @@ mod tests {
             "HUD_SHOWN",
             "FIRST_PERSON_RENDER",
             "LAYER_DRAW",
+            "TRANSPARENT_GEOMETRY",
         ] {
             assert!(safe.contains(&p), "{p} runs on the render thread");
         }

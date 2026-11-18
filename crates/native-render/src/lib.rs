@@ -12,6 +12,10 @@
 //! per view from the game's own node matrices ([`objects`],
 //! [`instances`]), skinned on the GPU, while the game skips their layer-3
 //! entries ([`objects::clear_objects`]).
+//!
+//! Stage 3, transparents: the sorted transparent list's geometry
+//! entries the native renderer draws, met in the game's order and drawn in
+//! runs between the D3D path's ([`transparent`]).
 
 pub mod camera;
 pub mod cull;
@@ -23,6 +27,8 @@ pub mod load;
 #[cfg(feature = "gpu")]
 pub mod look;
 #[cfg(feature = "gpu")]
+pub mod pass_state;
+#[cfg(feature = "gpu")]
 pub mod program;
 pub mod model;
 #[cfg(feature = "gpu")]
@@ -31,4 +37,5 @@ pub mod model_gpu;
 pub mod model_load;
 pub mod objects;
 pub mod skip;
+pub mod transparent;
 pub mod world;

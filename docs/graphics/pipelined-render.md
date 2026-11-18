@@ -1030,6 +1030,11 @@ Marked now:
   copies the drawn objects' node matrices out of the memory its context
   sees, which on the render thread is the frame's snapshot, so the pass
   draws the poses of the frame the render draws.
+- `native-transparents`' `before` on `TRANSPARENT_GEOMETRY` (the sorted
+  transparents' geometry handler) and its observer before
+  `SCENE_TRANSPARENTS`. The `before` answers `ret 4` for an entry the
+  native renderer draws and writes no guest memory; its runs of entries
+  reach the D3D device in render order, as the world's pass does.
 
 Everything else is in `boot::render_thread::REFUSED`, with its reason:
 

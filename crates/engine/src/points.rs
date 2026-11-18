@@ -324,6 +324,11 @@ points! { ALL;
     /// calls it after the opaque layers and before the first-person
     /// chain): the occlusion depth capture point.
     SCENE_TRANSPARENTS @ 0x0001_e370: [opaque]; "docs/graphics/occlusion-culling.md";
+    /// A sorted transparent geometry entry's handler: the transparents call
+    /// it through the entry's `+0x20` with the entry's `+0x24` (shader
+    /// datum, then the render record argument), stdcall, `ret 4`. Runs the
+    /// opaque path's build and draw over the template's layer-15 passes.
+    TRANSPARENT_GEOMETRY @ 0x0004_1020: [fn(data: stack 0) ret 4]; "docs/graphics/native-renderer.md";
     /// Shader draw begin: per draw.
     SHADER_DRAW_BEGIN @ 0x0001_bbf0: [opaque], Hot; "docs/formats/shader-instances.md";
     /// `submit_structure_or_model_geometry`: per draw.
