@@ -13,16 +13,36 @@
 //!   rounds-loaded maximum, so no reload is ever needed;
 //! * `game_speed`: game time's tick rate, seconds per tick and speed
 //!   fields set the way the game's own set-speed helper (`0x146980`) sets
-//!   them, from the options' tick rate; held while not 1, restored once.
+//!   them, from the options' tick rate; held while not 1, restored once;
+//! * `fly` ([`flight`]): flight with the player's own controls, through
+//!   the game's physics (walls still stop you). On the ground, a crouch
+//!   press takes off. In the air the move stick flies where you look (look
+//!   up and push forward to climb), jump climbs, crouch sinks, and holding
+//!   the stick fully for half a second ramps the speed up to four times.
+//!   Coming down onto a floor with crouch held lands; switching fly off in
+//!   the air drops you, shielded from the fall;
+//! * `noclip` ([`flight`]): the same controls, flying from the moment it
+//!   is on, through walls: we hold the body's position ourselves and write
+//!   it over the physics' each tick. The body takes no damage meanwhile.
+//!   Off hands the body back to the physics where it is; for three seconds
+//!   it is shielded and watched, and put back on the last floor the
+//!   physics stood it on if it is stuck (not moving while airborne or
+//!   pushing the stick) or falls 20 units. With fly on too, turning noclip
+//!   off leaves you flying;
+//! * `hide_hud`: the HUD globals' shown flag, which the HUD's draw test
+//!   (`0x13939b`) reads and a script builtin (`0x2aa61a`) writes, held at 0;
+//!   the value the game last set is put back when off.
 //!
-//! The host methods: `cheat.list` (each cheat, its value, and why they
-//! are refused if they are) and `cheat.set {name, value}`.
+//! The host methods: `cheat.list` (each cheat, its value, and why it is
+//! refused if it is) and `cheat.set {name, value}`.
 //!
-//! Refused in a co-op or networked session (the simulation's mode is a
-//! sync or distributed one): only this machine would cheat, and the
-//! players would desync. Also refused in a lockstep run (`H2_LOCKSTEP`,
-//! input record or replay), which compares deterministic runs. When a
-//! session turns into one of those with cheats on, they are switched off.
+//! Who may cheat, and where ([`policy`]): anyone off Xbox Live; on Live,
+//! only the gamertags on [`policy::LIVE_ALLOWED`]. Whoever you are, a
+//! lockstep run refuses every cheat, and a co-op session or a networked
+//! game's guest refuses the ones that change the simulation (all but
+//! `hide_hud`): only this machine would change. A networked game's host
+//! keeps them (its simulation is the game) but not `game_speed`. A cheat
+//! that becomes refused while on is switched off and undone.
 //!
 //! Research points (addresses and offsets only):
 //! * game time at `[0x510c54]` (`engine::points::GAME_TIME`): `+0x2` the
@@ -33,9 +53,20 @@
 //!   (`[0x4e6948]`);
 //! * a weapon's magazine: loaded rounds at `+0x4` in its state (`0x228 +
 //!   0x10 * i`); the definition's rounds-loaded maximum at `+0xa` in its
-//!   magazine block (`0x101a10` fills a magazine from it).
+//!   magazine block (`0x101a10` fills a magazine from it);
+//! * the unit control (`0xc6de0`, copied into the unit at `0xc6e02..`):
+//!   control flags at unit `+0x148` (bit 0 crouch, read by the biped's
+//!   crouch request at `0xe28b1`; bit 1 jump, read by its jump test at
+//!   `0xe469c`), throttle at `+0x1b0` (forward, left, up), aiming vector
+//!   at `+0x15c`; the object's position at `+0x64` (object_set_position,
+//!   `0xb75a0`, stores it at `0xb74c4`);
+//! * the HUD globals at `[0x510c4c]`: `+0x1d2` the shown flag (byte; set
+//!   to 1 at `0x1391a1`).
 
-use std::collections::HashSet;
+pub mod flight;
+pub mod policy;
+
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use agent::Access;
@@ -48,6 +79,8 @@ use crate::skulls_custom::{
     MAX_MAGAZINES, UNIT_GRENADES, WEAP_MAGAZINE_BLOCK, WEAP_MAGAZINE_COUNT, WEAP_MAGAZINE_STRIDE,
     WEAPON_MAGAZINES, local_units, refill, topped, weapon_definition, weapons_of,
 };
+use flight::Pilot;
+use policy::{Reach, Refusals, Session};
 
 /// The feature id in the plan and `H2_FEATURES`.
 pub const FEATURE: &str = "cheats";
@@ -64,6 +97,9 @@ pub const GLOBALS_TICK_RATE: u32 = 0xe;
 pub const MAGAZINE_LOADED: u32 = 0x4;
 /// The definition's rounds-loaded maximum (i16), in a magazine block.
 pub const WEAP_LOADED_MAX: u32 = 0xa;
+/// The HUD globals pointer, and its shown flag (byte).
+pub const HUD_GLOBALS: u32 = 0x0051_0c4c;
+pub const HUD_SHOWN: u32 = 0x1d2;
 
 /// The game modes cheats act in (the game globals' mode): campaign and
 /// multiplayer, not the main menu.
@@ -72,21 +108,19 @@ const PLAYING: [u32; 2] = [1, 2];
 /// The speeds offered.
 pub const SPEEDS: [f32; 5] = [0.25, 0.5, 1.0, 1.5, 2.0];
 
-/// Why cheats are refused, if they are: `sim_mode` is the simulation's
-/// mode (`coop_probe::read_sim`), `lockstep` a lockstep run.
-pub fn refusal(sim_mode: Option<u32>, lockstep: bool) -> Option<&'static str> {
-    if lockstep {
-        return Some(
-            "a lockstep run (H2_LOCKSTEP or input record/replay) compares deterministic runs",
-        );
-    }
-    match sim_mode {
-        Some(2 | 3) => {
-            Some("a co-op session: only this machine would cheat, and the players would desync")
-        }
-        Some(4 | 5) => Some("a networked session: only this machine would cheat"),
-        _ => None,
-    }
+/// Seconds per tick when game time can't say (30 ticks a second).
+const DEFAULT_TICK: f32 = 1.0 / 30.0;
+
+/// Why cheats are refused, if they are, in a session that is not on
+/// Live: `sim_mode` is the simulation's mode (`coop_probe::read_sim`),
+/// `lockstep` a lockstep run. The simulation cheats' answer.
+pub fn refusal(sim_mode: Option<u32>, lockstep: bool) -> Option<String> {
+    policy::refusals(&Session {
+        sim_mode,
+        lockstep,
+        live: policy::Live::Off,
+    })
+    .simulation
 }
 
 /// The simulation's mode, read as `coop_probe::read_sim` does.
@@ -107,6 +141,12 @@ pub fn speed_fields(options_rate: i16, s: f32) -> (i16, f32, f32) {
     (rate, 1.0 / f32::from(rate), base / f32::from(rate))
 }
 
+/// A held byte: what the game last set, and whether ours is there.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Held {
+    game: Option<u8>,
+}
+
 /// What is on, and what we did to undo.
 #[derive(Debug)]
 pub struct Cheats {
@@ -114,10 +154,17 @@ pub struct Cheats {
     pub ammo: bool,
     pub bottomless: bool,
     pub speed: f32,
+    pub fly: bool,
+    pub noclip: bool,
+    pub hide_hud: bool,
     /// Units whose damage flag we set (datums).
     flagged: HashSet<u32>,
     /// Game time is at a speed we set.
     sped: bool,
+    /// Each local unit's flight (datums).
+    pilots: HashMap<u32, Pilot>,
+    /// The HUD's shown flag, while we hold it.
+    hud: Held,
     /// The feature is in the plan.
     pub installed: bool,
 }
@@ -129,8 +176,13 @@ impl Default for Cheats {
             ammo: false,
             bottomless: false,
             speed: 1.0,
+            fly: false,
+            noclip: false,
+            hide_hud: false,
             flagged: HashSet::new(),
             sped: false,
+            pilots: HashMap::new(),
+            hud: Held::default(),
             installed: true,
         }
     }
@@ -141,67 +193,138 @@ struct Info {
     name: &'static str,
     label: &'static str,
     about: &'static str,
+    reach: Reach,
 }
 
 const GOD: Info = Info {
     name: "god",
     label: "god mode",
     about: "the local players take no damage",
+    reach: Reach::Simulation,
 };
 const AMMO: Info = Info {
     name: "infinite_ammo",
     label: "infinite ammo",
     about: "reserve ammo, battery and grenades kept full; still reloads",
+    reach: Reach::Simulation,
 };
 const BOTTOMLESS: Info = Info {
     name: "bottomless_clip",
     label: "bottomless clip",
     about: "the loaded magazine kept full: no reloads (not plasma heat)",
+    reach: Reach::Simulation,
 };
 const SPEED: Info = Info {
     name: "game_speed",
     label: "game speed",
     about: "game time against real time; back to 1 on a new map",
+    reach: Reach::Clock,
 };
+const FLY: Info = Info {
+    name: "fly",
+    label: "fly",
+    about: "crouch to take off; stick flies where you look, jump up, crouch down; land with crouch",
+    reach: Reach::Simulation,
+};
+const NOCLIP: Info = Info {
+    name: "noclip",
+    label: "noclip",
+    about: "fly through walls: stick where you look, jump up, crouch down; off drops you here",
+    reach: Reach::Simulation,
+};
+const HUD: Info = Info {
+    name: "hide_hud",
+    label: "hide HUD",
+    about: "the HUD hidden, as a script's HUD switch hides it",
+    reach: Reach::Local,
+};
+
+const ALL: [&Info; 7] = [&GOD, &AMMO, &BOTTOMLESS, &SPEED, &FLY, &NOCLIP, &HUD];
 
 impl Cheats {
     pub fn any(&self) -> bool {
-        self.god || self.ammo || self.bottomless || self.speed != 1.0
+        ALL.iter().any(|i| self.on(i.name))
+    }
+
+    /// Whether cheat `name` is on.
+    fn on(&self, name: &str) -> bool {
+        match name {
+            "god" => self.god,
+            "infinite_ammo" => self.ammo,
+            "bottomless_clip" => self.bottomless,
+            "game_speed" => self.speed != 1.0,
+            "fly" => self.fly,
+            "noclip" => self.noclip,
+            "hide_hud" => self.hide_hud,
+            _ => false,
+        }
+    }
+
+    /// Switches cheat `name` off.
+    fn off(&mut self, name: &str) {
+        match name {
+            "god" => self.god = false,
+            "infinite_ammo" => self.ammo = false,
+            "bottomless_clip" => self.bottomless = false,
+            "game_speed" => self.speed = 1.0,
+            "fly" => self.fly = false,
+            "noclip" => self.noclip = false,
+            "hide_hud" => self.hide_hud = false,
+            _ => {}
+        }
+    }
+
+    /// Whether a tick has anything to do: something on or left to undo.
+    pub fn busy(&self) -> bool {
+        self.any()
+            || !self.flagged.is_empty()
+            || self.sped
+            || self.hud.game.is_some()
+            || self.pilots.values().any(|p| !p.idle())
     }
 
     /// `cheat.list`'s answer.
-    pub fn list(&self, refused: Option<&str>) -> Value {
-        let b = |i: &Info, v: bool| json!({"name": i.name, "label": i.label, "about": i.about, "kind": "bool", "value": v});
-        let choices: Vec<Value> = SPEEDS
+    pub fn list(&self, refused: &Refusals) -> Value {
+        let cheats: Vec<Value> = ALL
             .iter()
-            .map(|s| json!({"value": s, "label": format!("{s}x")}))
+            .map(|i| {
+                let mut v = json!({
+                    "name": i.name, "label": i.label, "about": i.about,
+                    "refused": refused.of(i.reach),
+                });
+                if i.name == SPEED.name {
+                    let choices: Vec<Value> = SPEEDS
+                        .iter()
+                        .map(|s| json!({"value": s, "label": format!("{s}x")}))
+                        .collect();
+                    v["kind"] = json!("choice");
+                    v["value"] = json!(self.speed);
+                    v["choices"] = json!(choices);
+                } else {
+                    v["kind"] = json!("bool");
+                    v["value"] = json!(self.on(i.name));
+                }
+                v
+            })
             .collect();
-        json!({
-            "refused": refused,
-            "cheats": [
-                b(&GOD, self.god),
-                b(&AMMO, self.ammo),
-                b(&BOTTOMLESS, self.bottomless),
-                {
-                    "name": SPEED.name, "label": SPEED.label, "about": SPEED.about,
-                    "kind": "choice", "value": self.speed, "choices": choices,
-                },
-            ],
-        })
+        json!({ "refused": refused.all, "cheats": cheats })
     }
 
     /// `cheat.set {name, value}`; the effect follows at the next tick.
-    pub fn set(&mut self, p: &Value, refused: Option<&str>) -> Result<Value, RpcError> {
-        if let Some(why) = refused {
+    pub fn set(&mut self, p: &Value, refused: &Refusals) -> Result<Value, RpcError> {
+        let invalid = |m: String| RpcError::new(code::INVALID_PARAMS, m);
+        let name = p["name"]
+            .as_str()
+            .ok_or_else(|| invalid("name: the cheat (cheat.list lists them)".into()))?;
+        let Some(info) = ALL.iter().find(|i| i.name == name) else {
+            return Err(invalid(format!("no cheat {name:?}")));
+        };
+        if let Some(why) = refused.of(info.reach) {
             return Err(RpcError::new(
                 code::UNAVAILABLE,
                 format!("cheats are off: {why}"),
             ));
         }
-        let invalid = |m: String| RpcError::new(code::INVALID_PARAMS, m);
-        let name = p["name"]
-            .as_str()
-            .ok_or_else(|| invalid("name: the cheat (cheat.list lists them)".into()))?;
         let v = &p["value"];
         let flag = |v: &Value| {
             v.as_bool()
@@ -211,7 +334,10 @@ impl Cheats {
             "god" => self.god = flag(v)?,
             "infinite_ammo" => self.ammo = flag(v)?,
             "bottomless_clip" => self.bottomless = flag(v)?,
-            "game_speed" => {
+            "fly" => self.fly = flag(v)?,
+            "noclip" => self.noclip = flag(v)?,
+            "hide_hud" => self.hide_hud = flag(v)?,
+            _ => {
                 let s = v
                     .as_f64()
                     .ok_or_else(|| invalid(format!("game_speed: a number, not {v}")))?
@@ -221,17 +347,15 @@ impl Cheats {
                 }
                 self.speed = s;
             }
-            _ => return Err(invalid(format!("no cheat {name:?}"))),
         }
-        Ok(self.list(None))
+        Ok(self.list(refused))
     }
 
     /// Switches everything off (a session that refuses them).
     pub fn all_off(&mut self) {
-        self.god = false;
-        self.ammo = false;
-        self.bottomless = false;
-        self.speed = 1.0;
+        for i in ALL {
+            self.off(i.name);
+        }
     }
 
     /// After a game tick: applies what is on to the local players, and
@@ -240,31 +364,51 @@ impl Cheats {
     pub fn tick(
         &mut self,
         m: &mut dyn GuestMemory,
-        refused: Option<&str>,
+        refused: &Refusals,
     ) -> Result<Vec<String>, MemFault> {
         let mut said = Vec::new();
-        if refused.is_some() && self.any() {
-            self.all_off();
-            said.push(format!(
-                "cheats: switched off: {}",
-                refused.unwrap_or_default()
-            ));
+        for i in ALL {
+            if self.on(i.name)
+                && let Some(why) = refused.of(i.reach)
+            {
+                self.off(i.name);
+                said.push(format!("cheats: {} switched off: {why}", i.name));
+            }
         }
-        if !self.any() && self.flagged.is_empty() && !self.sped {
+        if !self.busy() {
             return Ok(said);
         }
         let globals = m.u32(GAME_GLOBALS)?;
         let playing = globals != 0 && PLAYING.contains(&m.u32(globals.wrapping_add(GLOBALS_MODE))?);
         if !playing {
-            // The menus: a new map resets the speed and the units go.
+            // The menus: a new map resets the speed and the HUD, and the
+            // units go.
             self.flagged.clear();
             self.sped = false;
+            self.pilots.clear();
+            self.hud = Held::default();
             return Ok(said);
         }
         self.time(m, globals)?;
+        self.hud(m)?;
         let units = local_units(m)?;
+        let dt = self.tick_seconds(m)?;
+        said.extend(self.flight(m, &units, dt)?);
         self.units(m, &units)?;
         Ok(said)
+    }
+
+    fn tick_seconds(&self, m: &dyn GuestMemory) -> Result<f32, MemFault> {
+        let t = m.u32(engine::points::GAME_TIME.base)?;
+        if t == 0 {
+            return Ok(DEFAULT_TICK);
+        }
+        let s = m.f32(t.wrapping_add(TIME_TICK_SECONDS))?;
+        Ok(if s.is_finite() && s > 0.0 && s < 1.0 {
+            s
+        } else {
+            DEFAULT_TICK
+        })
     }
 
     fn time(&mut self, m: &mut dyn GuestMemory, globals: u32) -> Result<(), MemFault> {
@@ -293,12 +437,70 @@ impl Cheats {
         Ok(())
     }
 
+    /// Hide HUD: the shown flag held at 0. A value the game writes while
+    /// we hold it (a script showing or hiding the HUD) is what goes back.
+    fn hud(&mut self, m: &mut dyn GuestMemory) -> Result<(), MemFault> {
+        if !self.hide_hud && self.hud.game.is_none() {
+            return Ok(());
+        }
+        let g = m.u32(HUD_GLOBALS)?;
+        if g == 0 {
+            self.hud = Held::default();
+            return Ok(());
+        }
+        let at = g.wrapping_add(HUD_SHOWN);
+        let now = m.u8(at)?;
+        if self.hide_hud {
+            if now != 0 || self.hud.game.is_none() {
+                self.hud.game = Some(now);
+            }
+            if now != 0 {
+                m.set_u8(at, 0)?;
+            }
+        } else if let Some(v) = self.hud.game.take()
+            && now == 0
+        {
+            m.set_u8(at, v)?;
+        }
+        Ok(())
+    }
+
+    /// Fly and noclip for each local biped on foot.
+    fn flight(
+        &mut self,
+        m: &mut dyn GuestMemory,
+        units: &[LocalUnit],
+        dt: f32,
+    ) -> Result<Vec<String>, MemFault> {
+        let mut said = Vec::new();
+        if !self.fly && !self.noclip && self.pilots.values().all(Pilot::idle) {
+            self.pilots.clear();
+            return Ok(said);
+        }
+        for u in units {
+            if !flight::on_foot(m, u)? {
+                // In a vehicle or a seat: the vehicle moves it.
+                self.pilots.remove(&u.unit);
+                continue;
+            }
+            let p = self.pilots.entry(u.unit).or_default();
+            if let Some(line) = flight::step(m, u, p, self.fly, self.noclip, dt)? {
+                said.push(line);
+            }
+        }
+        // Units gone (dead, a new map): nothing to fly.
+        self.pilots
+            .retain(|d, p| units.iter().any(|u| u.unit == *d) && !(p.idle() && !self.fly));
+        Ok(said)
+    }
+
     fn units(&mut self, m: &mut dyn GuestMemory, units: &[LocalUnit]) -> Result<(), MemFault> {
         for u in units {
             let b = u.body;
             let at = b.wrapping_add(BODY_DAMAGE_FLAGS);
             let f = m.u16(at)?;
-            if self.god {
+            let shield = self.god || self.pilots.get(&u.unit).is_some_and(Pilot::shielded);
+            if shield {
                 if f & CANNOT_TAKE_DAMAGE == 0 {
                     m.set_u16(at, f | CANNOT_TAKE_DAMAGE)?;
                     self.flagged.insert(u.unit);
@@ -331,10 +533,8 @@ impl Cheats {
                 }
             }
         }
-        if !self.god {
-            // Units gone (dead, a new map): nothing left to undo on them.
-            self.flagged.retain(|d| units.iter().any(|u| u.unit == *d));
-        }
+        // Units gone (dead, a new map): nothing left to undo on them.
+        self.flagged.retain(|d| units.iter().any(|u| u.unit == *d));
         Ok(())
     }
 }
@@ -360,8 +560,59 @@ pub fn load(m: &mut dyn GuestMemory, weapon_body: u32, def: u32) -> Result<bool,
     Ok(changed)
 }
 
+/// Live as the cheats need it: who is signed in, by gamertag.
+pub type LiveProbe = Box<dyn Fn() -> policy::Live + Send + Sync>;
+
+/// The Live probe over the Live client: its signed-in users, named from
+/// this machine's accounts file (re-read only when the users change).
+pub fn live_probe(hle: Option<Arc<live_hle::Hle>>) -> LiveProbe {
+    let Some(hle) = hle else {
+        return Box::new(|| policy::Live::Off);
+    };
+    let names: Mutex<(Vec<u64>, HashMap<u64, String>)> = Mutex::default();
+    Box::new(move || {
+        let users: Vec<u64> = (0..4).map(|c| hle.user(c)).collect();
+        let mut n = names.lock().unwrap_or_else(|e| e.into_inner());
+        if n.0 != users {
+            let entries = hle
+                .config()
+                .accounts_path
+                .as_deref()
+                .and_then(|p| live_hle::account_setup::load(p).ok())
+                .unwrap_or_default();
+            *n = (
+                users.clone(),
+                entries
+                    .into_iter()
+                    .map(|e| (e.xuid.0, e.gamertag))
+                    .collect(),
+            );
+        }
+        policy::live_from(&users, |x| n.1.get(&x).cloned())
+    })
+}
+
 /// The cheats' after-tick hook.
-pub struct CheatsFeature(pub Arc<Mutex<Cheats>>, pub bool);
+pub struct CheatsFeature(pub Arc<Mutex<Cheats>>, pub Arc<Policy>);
+
+/// What decides the refusals: the run and Live.
+pub struct Policy {
+    pub lockstep: bool,
+    pub live: LiveProbe,
+}
+
+impl Policy {
+    pub fn refusals(&self, m: &dyn GuestMemory, installed: bool) -> Refusals {
+        if !installed {
+            return Refusals::every("the cheats feature is switched off (H2_FEATURES)");
+        }
+        policy::refusals(&Session {
+            sim_mode: sim_mode(m),
+            lockstep: self.lockstep,
+            live: (self.live)(),
+        })
+    }
+}
 
 fn lock(c: &Mutex<Cheats>) -> std::sync::MutexGuard<'_, Cheats> {
     c.lock().unwrap_or_else(|e| e.into_inner())
@@ -371,33 +622,33 @@ impl feature::Feature for CheatsFeature {
     fn manifest(&self) -> feature::Manifest {
         feature::Manifest::new(
             FEATURE,
-            "Our cheats: god mode, ammo, game speed (debug menu)",
+            "Our cheats: god mode, ammo, game speed, fly, noclip, HUD (debug menu)",
         )
         .doc("docs/runtime/debug-menu.md")
     }
     fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
         use feature::points::GAME_TICK;
         let c = Arc::clone(&self.0);
-        let lockstep = self.1;
+        let policy = Arc::clone(&self.1);
         b.raw()
             .after(&GAME_TICK, "our cheats", move |cx| {
                 let mut c = lock(&c);
-                if !c.any() && c.flagged.is_empty() && !c.sped {
+                if !c.busy() {
                     return Ok(());
                 }
                 let rt = Arc::clone(cx.ctx.runtime());
                 let mut mem = rt.memory();
                 let m: &mut dyn GuestMemory = &mut *mem;
-                let refused = refusal(sim_mode(m), lockstep);
-                match c.tick(m, refused) {
+                let refused = policy.refusals(m, true);
+                match c.tick(m, &refused) {
                     Ok(said) => said.iter().for_each(|l| eprintln!("{l}")),
                     Err(e) => eprintln!("cheats: {e:?}"),
                 }
                 Ok(())
             })
             // touch-glue and skulls-custom also hook after the tick. Cheats run
-            // outside them (last), so a cheat's writes (health, ammo, speed)
-            // are what the next tick starts from, whatever they set.
+            // outside them (last), so a cheat's writes (health, ammo, speed,
+            // position) are what the next tick starts from, whatever they set.
             .after_feature(crate::touch_glue::FEATURE)
             .after_feature(crate::skulls_custom::FEATURE);
         Ok(())
@@ -405,43 +656,42 @@ impl feature::Feature for CheatsFeature {
 }
 
 /// Adds the cheats to `registry` and `cheat.list`/`cheat.set` to `agent`.
-/// `lockstep`: a lockstep run, which refuses them.
+/// `lockstep`: a lockstep run, which refuses them; `live`: the Live
+/// client, whose signed-in gamertags decide on Live.
 pub fn install(
     registry: &mut feature::Registry,
     agent: &agent::Agent,
     rt: &Arc<runtime::Runtime>,
     lockstep: bool,
+    live: Option<Arc<live_hle::Hle>>,
 ) -> anyhow::Result<bool> {
     let cheats = Arc::new(Mutex::new(Cheats::default()));
+    let policy = Arc::new(Policy {
+        lockstep,
+        live: live_probe(live),
+    });
     let added = registry
-        .add(&CheatsFeature(Arc::clone(&cheats), lockstep))
+        .add(&CheatsFeature(Arc::clone(&cheats), Arc::clone(&policy)))
         .map_err(|e| anyhow::anyhow!("cheats: {e}"))?;
     lock(&cheats).installed = added;
-    let off = "the cheats feature is switched off (H2_FEATURES)";
-    let refused = move |rt: &runtime::Runtime, installed: bool| -> Option<&'static str> {
-        if !installed {
-            return Some(off);
-        }
-        let m = rt.memory();
-        refusal(sim_mode(&*m), lockstep)
-    };
-    let (c, r) = (Arc::clone(&cheats), Arc::clone(rt));
+    let (c, r, p) = (Arc::clone(&cheats), Arc::clone(rt), Arc::clone(&policy));
     agent.add_method(
         debug_menu::sources::method::CHEAT_LIST,
         Access::Read,
         move |_| {
             let c = lock(&c);
-            Ok(c.list(refused(&r, c.installed)))
+            let refused = p.refusals(&*r.memory(), c.installed);
+            Ok(c.list(&refused))
         },
     );
-    let (c, r) = (Arc::clone(&cheats), Arc::clone(rt));
+    let (c, r, p) = (Arc::clone(&cheats), Arc::clone(rt), Arc::clone(&policy));
     agent.add_method(
         debug_menu::sources::method::CHEAT_SET,
         Access::Act,
-        move |p| {
+        move |params| {
             let mut c = lock(&c);
-            let why = refused(&r, c.installed);
-            c.set(&p, why)
+            let refused = p.refusals(&*r.memory(), c.installed);
+            c.set(&params, &refused)
         },
     );
     if !added {

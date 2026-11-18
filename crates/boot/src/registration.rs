@@ -269,9 +269,10 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
         AgentSource::Local => Some(agent_glue::AgentGlue::local()),
         AgentSource::None => None,
     };
-    // Our cheats (cheats.rs): refused in co-op and lockstep runs.
+    // Our cheats (cheats.rs): refused in co-op and lockstep runs, and on
+    // Live but for the allowed gamertags.
     if let Some(a) = &agent {
-        cheats::install(features, &a.agent, i.rt, lockstep_on)?;
+        cheats::install(features, &a.agent, i.rt, lockstep_on, i.live.clone())?;
     }
     // The Rust datum, tag and locale functions, when H2_FEATURES has
     // impl.engine=on (off by default).
