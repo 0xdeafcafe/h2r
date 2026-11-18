@@ -97,7 +97,13 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
         + p.skies
             .skies
             .iter()
-            .map(|s| 1 + usize::from(s.model.is_some()))
+            .map(|s| {
+                // The sky, its model, and at most a shader copy per
+                // material and each Halo 1 bitmap they draw.
+                1 + usize::from(s.model.is_some())
+                    + s.shaders.iter().flatten().count()
+                    + s.bitmaps.len()
+            })
             .sum::<usize>();
     let slots = out.index_slots() as usize;
     assert!(
@@ -114,8 +120,14 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
         .map(|t| (t.id, t.name.clone().unwrap_or_default()))
         .collect();
     let stand_in = templates.model_shader.as_ref().map(|t| t.shader);
-    // The sky model's materials name the base sky's shader (h1convert::sky).
-    let sky_shader = p.skies.shader.expect("the base sky's shader");
+    // The sky model's materials name copies of the base's sky shaders
+    // drawing Halo 1's bitmaps, or the base sky's own (h1convert::sky).
+    let sky_fallback = p.skies.templates.fallback;
+    let sky_templates = [
+        h1convert::sky_shaders::ALPHA_TEMPLATE,
+        h1convert::sky_shaders::CLOUDS_TEMPLATE,
+        h1convert::sky_shaders::ADDITIVE_TEMPLATE,
+    ];
     let (mut drawn, mut null, mut stood_in, mut sky) = (0, 0, 0, 0);
     for (id, name) in &modes {
         let b = out.read_tag_bytes(*id).unwrap();
@@ -133,12 +145,20 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
                 stood_in += 1;
                 continue;
             }
-            if shader == sky_shader {
+            if Some(shader) == sky_fallback {
                 sky += 1;
                 continue;
             }
             let (template, bitmaps) = scenario_edit::scene::shader_bitmaps(&mut out, shader)
                 .unwrap_or_else(|e| panic!("{name} material {k}: {e}"));
+            if sky_templates.contains(&template.as_str()) {
+                assert!(
+                    bitmaps.iter().any(|b| (b.0 & 0xffff) as usize >= first),
+                    "{name} sky material {k} draws no Halo 1 bitmap"
+                );
+                sky += 1;
+                continue;
+            }
             assert_eq!(template, h1convert::textures::MODEL_TEMPLATE, "{name}");
             assert!(
                 bitmaps.iter().any(|b| (b.0 & 0xffff) as usize >= first),
@@ -148,7 +168,7 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
         }
     }
     eprintln!(
-        "models: {} converted, {drawn} materials with Halo 1 textures, {stood_in} the base's model shader, {sky} the base sky's shader, {null} null",
+        "models: {} converted, {drawn} materials with Halo 1 textures, {stood_in} the base's model shader, {sky} sky shaders, {null} null",
         modes.len()
     );
     // No material is null: the shader draw does not skip a NONE shader.
