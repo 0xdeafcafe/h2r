@@ -10,7 +10,7 @@
 //! ([`crate::ui_kit::choice::ChoiceRow`]), laid out as the Halo 1 Options
 //! page is.
 //!
-//! **The row.** A custom game's Game Setup dialog gets a "Clankers" row,
+//! **The row.** A custom game's Game Setup dialog gets a "Clanker Options..." row,
 //! the way it gets the Halo 1 Options row (`crate::h1_options_row`, whose
 //! helpers this uses): an `after` on the list's constructor adds a row with
 //! [`ROW_ACTION`] to every list that has Change Map; `before` hooks draw
@@ -201,9 +201,13 @@ static ROWS: [ChoiceRow; 7] = [
     ChoiceRow::new(&TAUNTS, "Taunts", "Whether they taunt after a kill."),
 ];
 
+/// The Game Setup row's text; the page's title stays "Clankers".
+pub const ROW_LABEL: &str = "Clanker Options...";
+
 /// The Clankers page over `store`.
 pub fn page(store: Arc<Store>) -> KitScreen {
     let mut s = KitScreen::new(FEATURE, SCREEN, IDS, "Clankers")
+        .row_label(ROW_LABEL)
         .layout(crate::skulls_menu::LIST_LAYOUT, ValueStyle::Inline)
         .description(crate::skulls_menu::DESCRIPTION_TEXT)
         // Seven rows in a list that shows five.
@@ -772,6 +776,12 @@ impl Driver {
         }
     }
 
+    /// Whether the last [`Want`] applied asked for any bot (Clankers on).
+    pub fn on(&self) -> bool {
+        let last = *self.last.lock().unwrap_or_else(|e| e.into_inner());
+        last.is_some_and(|w| w.count > 0)
+    }
+
     /// The ports of the local bots it keeps.
     pub fn ports(&self) -> Vec<u8> {
         self.seats()
@@ -829,6 +839,36 @@ pub fn frame(n: u64) {
     }
 }
 
+/// The map picked last in the lobby's map list (its short name), for
+/// [`build_soon_on`] when Clankers comes on after it.
+static PICKED: Mutex<String> = Mutex::new(String::new());
+
+/// A map picked in the lobby's map list (`crate::map_select`): with
+/// Clankers on, its nav mesh is asked for now ([`bots::autonav::build_soon`]),
+/// so it is usually there when the game starts.
+pub fn map_picked(map: &str) {
+    *PICKED.lock().unwrap_or_else(|e| e.into_inner()) = map.to_owned();
+    let on = DRIVER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|w| w.upgrade())
+        .is_some_and(|d| d.on());
+    if on {
+        bots::autonav::build_soon(map);
+    }
+}
+
+/// Clankers just came on (`was` off, `now` on): asks for the nav mesh of
+/// the map picked last, if one was. Returns at once; a no-op when the
+/// automatic build is off.
+fn build_soon_on(was: bool, now: bool) {
+    if !was && now {
+        let map = PICKED.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        bots::autonav::build_soon(&map);
+    }
+}
+
 /// Starts `driver` over `store`: matches it now and on every change.
 pub fn drive(store: &Arc<Store>, driver: Driver) -> Arc<Driver> {
     let d = Arc::new_cyclic(|me| Driver {
@@ -839,9 +879,11 @@ pub fn drive(store: &Arc<Store>, driver: Driver) -> Arc<Driver> {
         let (d, store) = (Arc::clone(&d), Arc::downgrade(store));
         move |_: &Value| {
             if let Some(store) = store.upgrade() {
+                let was = d.on();
                 for line in d.apply(Want::read(&store)) {
                     eprintln!("clankers: {line}");
                 }
+                build_soon_on(was, d.on());
             }
         }
     };
@@ -885,9 +927,9 @@ fn row_text(c: &mut Call, page: &KitScreen, seen: &AtomicBool) -> Result<Flow, G
         let Some(item) = item.filter(|_| action == Some(ROW_ACTION)) else {
             return Ok(Flow::Continue);
         };
-        // The row says the page's title, from its first text slot, written
-        // before it is drawn.
-        let id = page.title();
+        // The row's own text ("Clanker Options..."), from its slot after the
+        // page's footer, written before it is drawn.
+        let id = page.row_label_id();
         if let Err(e) = page.write_texts(&mut *mem) {
             eprintln!("clankers: the row's text: {e:?}");
         }

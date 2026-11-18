@@ -39,6 +39,10 @@ use crate::ui_kit::ids::{self, Family};
 pub const IDS: Family = ids::family("h1 options");
 pub const TITLE_ID: u32 = IDS.id(0);
 pub const FOOTER_ID: u32 = IDS.id(1);
+/// The Game Setup row that opens the screen: its own text, so the screen's
+/// title stays "Halo 1 Options" (`crate::h1_options_row`).
+pub const ROW_LABEL_ID: u32 = IDS.id(2);
+pub const ROW_LABEL: &str = "Halo 1 Options...";
 /// Rows' strings start here, [`PER_ROW`] ids each.
 const ROW_IDS: u32 = 4;
 const PER_ROW: u32 = 3;
@@ -135,6 +139,7 @@ static STRINGS: std::sync::LazyLock<Vec<(u32, String)>> = std::sync::LazyLock::n
     let mut v = vec![
         (TITLE_ID, TITLE.to_string()),
         (FOOTER_ID, PROMPT.to_string()),
+        (ROW_LABEL_ID, ROW_LABEL.to_string()),
     ];
     for r in ALL {
         v.push((label_id(r, true), label(r, true)));
@@ -323,6 +328,11 @@ mod tests {
         assert!(ids.iter().all(|i| crate::layout_glue::is_ours(*i)));
         assert_ne!(label_id(&SANDBOX, true), label_id(&SANDBOX, false));
         assert_ne!(label_id(&SANDBOX, false), label_id(&ASSETS, true));
+        // The Game Setup row says "...Options..." as its neighbours do; the
+        // screen's title keeps its name.
+        let text = |id| v.iter().find(|(i, _)| *i == id).map(|(_, t)| *t);
+        assert_eq!(text(ROW_LABEL_ID), Some("Halo 1 Options..."));
+        assert_eq!(text(TITLE_ID), Some("Halo 1 Options"));
         // A description fits the pane's five lines (the kit's disc check
         // measures it; a skull's, at most 140, does).
         for r in ALL {

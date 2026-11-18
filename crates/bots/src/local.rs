@@ -8,7 +8,17 @@
 //! ([`input::HostBackend::preferred_port`]); a port a real pad already
 //! holds sends the bot to the lowest free one, and [`list`] says where it
 //! went. The game sees an inserted controller and reads it through
-//! `XInputGetState` like any other; removing a bot unplugs it.
+//! `XInputGetState` like any other.
+//!
+//! **Leaving.** [`Local::remove`] does not unplug the pad: a pad pulled
+//! during a game makes the game pause on "controller disconnected" for a
+//! port no human holds (the user's run, docs/game/bots.md §4.2). The bot
+//! leaves the books at once ([`list`] no longer has it) but stays plugged
+//! with an idle pad. The boot glue takes it the rest of the way with
+//! [`leave_step`]: once no game runs it signs the bot's profile out of its
+//! slot (`PROFILE_SIGN_OUT`), and once the slot is empty it unplugs the pad
+//! ([`Local::unplug`]). A bot added again on that port before then takes
+//! the leaving bot's pad back, so the game never sees it go.
 //!
 //! The free functions work on one process-wide [`Local`] ([`global`]),
 //! which the boot glue drives. Tests make their own.
@@ -175,6 +185,9 @@ struct Bot {
     port: Option<u8>,
     pad: HostPadState,
     source: Box<dyn PadSource>,
+    /// Taken off the books; plugged with an idle pad until the glue has
+    /// signed it out ([`leave_step`]).
+    leaving: bool,
 }
 
 #[derive(Default)]
@@ -203,8 +216,17 @@ impl Local {
             return Err(Error::NoSuchPort(port));
         }
         let mut s = self.lock();
-        if s.bots.iter().any(|b| b.wanted == port) {
+        if s.bots.iter().any(|b| b.wanted == port && !b.leaving) {
             return Err(Error::PortTaken(port));
+        }
+        // A bot still leaving that port: the new one takes its pad, which
+        // stays plugged (and signed in, if it was).
+        if let Some(b) = s.bots.iter_mut().find(|b| b.wanted == port && b.leaving) {
+            b.name = name.to_owned();
+            b.source = source;
+            b.leaving = false;
+            b.pad = HostPadState::default();
+            return Ok(b.handle);
         }
         if s.bots.len() >= MAX_LOCAL {
             return Err(Error::Full);
@@ -218,27 +240,51 @@ impl Local {
             port: None,
             pad: HostPadState::default(),
             source,
+            leaving: false,
         });
         Ok(handle)
     }
 
-    /// Takes a bot off: its pad is unplugged at the input manager's next
-    /// sync.
+    /// Takes a bot off the books. Its pad stays plugged, idle, until the
+    /// glue signs it out and unplugs it ([`leave_step`], [`Local::unplug`]);
+    /// pulling it at once would show "controller disconnected" in a game.
     pub fn remove(&self, handle: BotHandle) -> Result<(), Error> {
         let mut s = self.lock();
-        let i = s
+        let b = s
             .bots
-            .iter()
-            .position(|b| b.handle == handle)
+            .iter_mut()
+            .find(|b| b.handle == handle && !b.leaving)
             .ok_or(Error::NoSuchBot(handle))?;
-        s.bots.remove(i);
+        b.leaving = true;
+        b.pad = HostPadState::default();
         Ok(())
     }
 
+    /// The bots leaving ([`Local::remove`]) and the port each is on.
+    pub fn leaving(&self) -> Vec<(BotHandle, Option<u8>)> {
+        self.lock()
+            .bots
+            .iter()
+            .filter(|b| b.leaving)
+            .map(|b| (b.handle, b.port))
+            .collect()
+    }
+
+    /// Unplugs a leaving bot's pad (at the input manager's next sync). A
+    /// bot on the books stays: [`Local::remove`] it first.
+    pub fn unplug(&self, handle: BotHandle) -> bool {
+        let mut s = self.lock();
+        let before = s.bots.len();
+        s.bots.retain(|b| !(b.handle == handle && b.leaving));
+        s.bots.len() != before
+    }
+
+    /// The bots on the books (not those leaving).
     pub fn list(&self) -> Vec<BotInfo> {
         self.lock()
             .bots
             .iter()
+            .filter(|b| !b.leaving)
             .map(|b| BotInfo {
                 handle: b.handle,
                 name: b.name.clone(),
@@ -248,11 +294,14 @@ impl Local {
             .collect()
     }
 
+    /// No bot on the books (leaving ones may still be plugged).
     pub fn is_empty(&self) -> bool {
-        self.lock().bots.is_empty()
+        self.lock().bots.iter().all(|b| b.leaving)
     }
 
-    /// Every placed bot's port, as a mask (bit `p` for port `p`).
+    /// Every placed bot's port, as a mask (bit `p` for port `p`), leaving
+    /// ones included: their players are still in the game until they are
+    /// signed out, so their views stay hidden.
     pub fn port_mask(&self) -> u32 {
         self.lock()
             .bots
@@ -261,11 +310,23 @@ impl Local {
             .fold(0, |m, p| m | 1 << p)
     }
 
-    /// The name of the bot on `port`.
+    /// The placed bots on the books, as a port mask: the ones that may
+    /// sign in.
+    pub fn joining_mask(&self) -> u32 {
+        self.lock()
+            .bots
+            .iter()
+            .filter(|b| !b.leaving)
+            .filter_map(|b| b.port)
+            .fold(0, |m, p| m | 1 << p)
+    }
+
+    /// The name of the bot on `port` (on the books).
     pub fn name_on(&self, port: u32) -> Option<String> {
         self.lock()
             .bots
             .iter()
+            .filter(|b| !b.leaving)
             .find(|b| b.port.map(u32::from) == Some(port))
             .map(|b| b.name.clone())
     }
@@ -277,6 +338,10 @@ impl Local {
         let mut s = self.lock();
         for b in &mut s.bots {
             let Some(port) = b.port else { continue };
+            if b.leaving {
+                b.pad = HostPadState::default();
+                continue;
+            }
             let f = Frame {
                 frame,
                 tick,
@@ -324,6 +389,39 @@ pub fn remove(handle: BotHandle) -> Result<(), Error> {
 /// The bots on this machine.
 pub fn list() -> Vec<BotInfo> {
     global().list()
+}
+
+/// What the glue does for the leaving bots this frame ([`leave_step`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LeaveStep {
+    /// Ports whose profile to sign out (`PROFILE_SIGN_OUT`), first.
+    pub sign_out: Vec<u8>,
+    /// Bots whose pad to unplug: their slot is empty already.
+    pub unplug: Vec<BotHandle>,
+}
+
+/// The next step for the `leaving` bots ([`Local::leaving`]): nothing while
+/// a game runs (`in_game`: the bot's player is in it, and an unplugged pad
+/// pauses the game); else sign out each bot whose port's slot still has a
+/// profile (`signed_in`), and unplug each whose slot has none (or that was
+/// never placed). A bot is signed out one frame and unplugged a later one,
+/// so the game never sees a signed-in slot without its pad.
+pub fn leave_step(
+    in_game: bool,
+    leaving: &[(BotHandle, Option<u8>)],
+    signed_in: impl Fn(u8) -> bool,
+) -> LeaveStep {
+    let mut step = LeaveStep::default();
+    if in_game {
+        return step;
+    }
+    for &(h, port) in leaving {
+        match port {
+            Some(p) if signed_in(p) => step.sign_out.push(p),
+            _ => step.unplug.push(h),
+        }
+    }
+    step
 }
 
 /// The input backend: one always-connected, synthesised pad per bot.

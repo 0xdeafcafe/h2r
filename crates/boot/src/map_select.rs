@@ -167,6 +167,13 @@ impl Map {
             .unwrap_or("")
             .to_ascii_lowercase()
     }
+
+    /// Its short name, what its `.map` file and cache header are named
+    /// (`lockout`): [`Map::file`] without a `.map` ending.
+    pub fn short_name(&self) -> String {
+        let f = self.file();
+        f.strip_suffix(".map").map_or_else(|| f.clone(), str::to_owned)
+    }
 }
 
 /// The maps by category: categories in [`Category::ALL`] order, the empty
@@ -810,6 +817,18 @@ impl feature::Feature for MapSelect {
             };
             match mode {
                 Mode::Maps(_) => {
+                    // With Clankers on, the map's nav mesh is asked for now
+                    // (docs/game/bots.md §10 stage 2).
+                    let map = sel
+                        .catalogue
+                        .categories()
+                        .into_iter()
+                        .flat_map(|k| sel.catalogue.maps(k).iter())
+                        .find(|m| m.id == id)
+                        .map(Map::short_name);
+                    if let Some(map) = map {
+                        crate::clankers::map_picked(&map);
+                    }
                     // The categories under this screen.
                     match flow.picked(handler) {
                         Some(_) => {
