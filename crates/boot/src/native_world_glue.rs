@@ -15,6 +15,12 @@
 //! - **Fallback.** A material whose base map does not decode is left out
 //!   of the world and keeps its D3D draws (the skip only clears items of
 //!   the shaders the world draws).
+//! - **Material programs** (`impl.render.native_world_programs`, off by
+//!   default). A native material whose layer-3 pass translates
+//!   (`native_render::look`, `native_render::program`) draws with its own
+//!   vertex program, pixel shader, stage textures and constants, and the
+//!   device's view constants each frame; the others keep stage 1's base
+//!   map times lightmap.
 
 use std::collections::HashMap;
 use std::io::BufReader;
@@ -26,6 +32,8 @@ use map::{Map, ResourceFile, TagId};
 use native_render::camera::RenderCamera;
 use native_render::gpu::{DepthRule, GpuWorld, Image, PassViewport};
 use native_render::load::{self, LoadedWorld};
+use native_render::look::{self, Stage};
+use native_render::program::{self, MaterialProgram, ProgramSet, ViewInputs};
 use native_render::world::{LightmapKey, World};
 
 use crate::telemetry::{MapFile, MapLocator};
@@ -46,6 +54,9 @@ pub struct CpuWorld {
     pub world: World,
     pub base_maps: HashMap<u16, Image>,
     pub lightmaps: HashMap<LightmapKey, Image>,
+    /// Materials with their own programs, and their stages' images.
+    pub programs: HashMap<u16, MaterialProgram>,
+    pub stage_images: StageImages,
 }
 
 /// One loaded world: CPU data until the first pass uploads it.
@@ -123,6 +134,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         d.request_external_pass(Box::new(WorldPass {
             ready: Arc::clone(&ready),
             camera: *camera,
+            view: None,
         }));
         Some(Arc::clone(&ready.shaders))
     }
@@ -140,25 +152,66 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
 struct WorldPass {
     ready: Arc<Ready>,
     camera: RenderCamera,
+    /// The device's view constants at the pass (material programs).
+    view: Option<[[f32; 4]; d3d::VIEW_CONSTANTS]>,
 }
 
 impl d3d::ExternalPass for WorldPass {
+    fn view_constants(&mut self, constants: &[[f32; 4]; d3d::VIEW_CONSTANTS]) {
+        self.view = Some(*constants);
+    }
+
     fn encode(&mut self, t: d3d::ExternalTarget<'_>) {
         let mut gpu = self.ready.gpu.lock().unwrap_or_else(|e| e.into_inner());
         if gpu.is_none() {
             let Some(cpu) = self.ready.cpu.lock().unwrap_or_else(|e| e.into_inner()).take() else {
                 return;
             };
-            let CpuWorld { world, mut base_maps, mut lightmaps } = cpu;
-            *gpu = Some(GpuWorld::new(
+            let CpuWorld {
+                world,
+                mut base_maps,
+                lightmaps,
+                programs,
+                mut stage_images,
+            } = cpu;
+            let mut g = GpuWorld::new(
                 t.device,
                 t.queue,
                 world,
                 &mut |m| base_maps.remove(&m),
-                &mut |k| lightmaps.remove(&k),
-            ));
+                &mut |k| lightmaps.get(&k).cloned(),
+            );
+            if !programs.is_empty() {
+                let set = ProgramSet::new(
+                    t.device,
+                    t.queue,
+                    g.world(),
+                    programs,
+                    &mut |s| match s {
+                        Stage::Bitmap { bitmap, image } => stage_images.remove(&(bitmap, image)),
+                        Stage::Empty | Stage::Lightmap => None,
+                    },
+                    &mut |k| lightmaps.get(&k).cloned(),
+                );
+                eprintln!("native-world: {} materials draw with their own programs", set.len());
+                g.set_programs(set);
+            }
+            *gpu = Some(g);
         }
         let Some(gpu) = gpu.as_mut() else { return };
+        if let Some(constants) = self.view
+            && gpu.program_count() > 0
+        {
+            gpu.prepare_programs(
+                t.queue,
+                &ViewInputs {
+                    constants,
+                    guest_size: t.guest_size,
+                    size: t.size,
+                    z_scale: t.z_scale,
+                },
+            );
+        }
         gpu.prepare(
             t.queue,
             &self.camera,
@@ -176,6 +229,7 @@ impl d3d::ExternalPass for WorldPass {
             t.depth,
             t.depth_format,
             PassViewport { x, y, width, height },
+            t.size,
         );
     }
 }
@@ -268,6 +322,14 @@ fn load_ready(name: &str, bsp: u32) -> Result<Ready, load::Error> {
             lightmaps.insert(key, page);
         }
     }
+    // Material programs: each native material's own layer-3 pass where it
+    // translates, with its stages' images.
+    let programs_on = feature::Switches::from_env().is_ok_and(|s| feature::native_world::programs_on(&s));
+    let (programs, stage_images) = if programs_on {
+        material_programs(&mut map, &mut files, &shaders, &base_maps)
+    } else {
+        Default::default()
+    };
     // Draw only what a native material owns: the rest keeps its D3D draws.
     let world = keep_materials(world, &base_maps);
     Ok(Ready {
@@ -275,6 +337,8 @@ fn load_ready(name: &str, bsp: u32) -> Result<Ready, load::Error> {
             world,
             base_maps,
             lightmaps,
+            programs,
+            stage_images,
         })),
         gpu: Mutex::new(None),
         shaders: Arc::new(native),
@@ -298,12 +362,78 @@ fn keep_materials(mut world: World, native: &HashMap<u16, Image>) -> World {
     world
 }
 
+/// Stage images by (bitmap, image index).
+pub type StageImages = HashMap<(TagId, u32), Image>;
+
+/// The materials of `native` (by BSP material index; `shaders` the BSP's
+/// shader per material) whose layer-3 pass translates, with the images
+/// their stages sample. Says on stderr how many stay with stage 1 and why.
+fn material_programs<R: std::io::Read + std::io::Seek>(
+    map: &mut Map<R>,
+    files: &mut assets::ResourceFiles,
+    shaders: &[TagId],
+    native: &HashMap<u16, Image>,
+) -> (HashMap<u16, MaterialProgram>, StageImages) {
+    let mut programs = HashMap::new();
+    let mut images = StageImages::new();
+    let mut lib = match tags::material::ShaderLibrary::read(map) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("native-world: material programs: the shader tags do not read ({e}); stage 1 draws every material");
+            return (programs, images);
+        }
+    };
+    let mut refused: HashMap<String, usize> = HashMap::new();
+    let mut materials: Vec<u16> = native.keys().copied().collect();
+    materials.sort_unstable();
+    for m in materials {
+        let Some(&shader) = shaders.get(usize::from(m)) else { continue };
+        let compiled = lib
+            .material(shader, None)
+            .map_err(|e| format!("material: {e}"))
+            .and_then(|mat| look::layer3_look(&mat).map_err(|r| format!("{r:?}")))
+            .and_then(|pass| {
+                let code = look::world_program(map, lib.metadata(), pass.vertex_shader).ok_or("no world-space vertex program")?;
+                program::compile(&pass, &code)
+            });
+        match compiled {
+            Ok(p) => {
+                for (n, s) in p.stages.iter().enumerate() {
+                    if let Stage::Bitmap { bitmap, image } = *s
+                        && p.dims[n].is_some()
+                        && !images.contains_key(&(bitmap, image))
+                        && let Some(i) = decode_image(map, files, bitmap, image as usize)
+                    {
+                        images.insert((bitmap, image), i);
+                    }
+                }
+                programs.insert(m, p);
+            }
+            Err(why) => *refused.entry(why).or_default() += 1,
+        }
+    }
+    let mut why: Vec<_> = refused.into_iter().collect();
+    why.sort();
+    eprintln!("native-world: {} materials translate; with stage 1: {why:?}", programs.len());
+    (programs, images)
+}
+
 /// The first image of a bitmap as RGBA, with its mip chain.
 fn decode_first<R: std::io::Read + std::io::Seek>(map: &mut Map<R>, files: &mut assets::ResourceFiles, id: TagId) -> Option<Image> {
+    decode_image(map, files, id, 0)
+}
+
+/// Image `index` of a bitmap as RGBA, with its mip chain.
+fn decode_image<R: std::io::Read + std::io::Seek>(
+    map: &mut Map<R>,
+    files: &mut assets::ResourceFiles,
+    id: TagId,
+    index: usize,
+) -> Option<Image> {
     let tags::TagData::Bitmap(b) = tags::DecodedTag::read(map, id).ok()?.data else {
         return None;
     };
-    let d = assets::decode_image(b.images.first()?, files).ok()?;
+    let d = assets::decode_image(b.images.get(index)?, files).ok()?;
     let mut levels: Vec<_> = d.levels.into_iter().filter(|l| l.face == 0 && l.depth <= 1).collect();
     levels.sort_by_key(|l| l.level);
     // The whole decoded chain: the native pass samples with mipmaps, as

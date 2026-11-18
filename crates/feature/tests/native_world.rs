@@ -29,6 +29,15 @@ fn the_plan_orders_it_inside_render_timing_with_the_layer_ports() {
 }
 
 /// The plan text with the native world and a pipeline that is on.
+#[test]
+fn material_programs_are_off_unless_asked_and_need_the_world() {
+    let on = |s: &str| native_world::programs_on(&Switches::parse(s).unwrap());
+    assert!(!on(""));
+    assert!(on("impl.render.native_world_programs=on"));
+    assert!(!on("impl.render.native_world=off,impl.render.native_world_programs=on"));
+    assert!(!on("impl.render=on"), "looked up exactly, not through impl.render");
+}
+
 fn plan_with_pipeline(switches: &str) -> String {
     use feature::pipeline_render::{Addrs, PipelineRender};
     let pipeline = PipelineRender::with(true, Addrs::HALO2).print(false);

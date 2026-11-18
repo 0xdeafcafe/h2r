@@ -418,7 +418,29 @@ device's pixel constants), or keep such materials on the fallback.
    chain, `gpu::Image::from_levels`).
 4. `native-render::gpu`: one pipeline per (program, definition) through
    `shaders::link`, the uniforms filled as the D3D path fills them, one
-   bind group per material.
+   bind group per material. Built as `native-render::program` behind
+   `impl.render.native_world_programs` (off by default; exact key, and
+   only with the native world on):
+   - `program::compile` translates the pass (inputs `v0..v6` from the
+     world vertex: position, uv, normal, binormal, tangent, lighting
+     vector, lightmap uv) and fills the instance constants by their
+     written components, `c[172] = (1, 1, 0, 0)` and identity model rows
+     `c[50..52]` (the vertices are already placed). It refuses, and the
+     material keeps stage 1's look: engine pixel constants, a program
+     reading other inputs, a translation warning, a non-2D fetch, a
+     sampled stage with nothing bound, signed channels on the lightmap.
+     Signed channels of a stage bitmap are stored biased (`s + 128`) as
+     the D3D path stores them.
+   - Per frame the device's `c[0..18]` (the external pass's
+     `view_constants`), the guest and texel sizes (surface and the
+     render-scale shift) and the W-buffer's depth scale (`w_clip`,
+     `depth`, `depth_range`). A program batch draws over the whole
+     target: the game's viewport is in `c[10..11]`.
+   - Gaps (S): fog stays at the pixel shader's default (no fog colour
+     from the device yet), stage borders clamp to the edge, `D3DTSS`
+     LOD bias and anisotropy are not applied.
+   The load line says how many materials translate and why the rest do
+   not (`native-world: N materials translate; with stage 1: [...]`).
 5. The A/B per template, and `native-world` keeps a material native only
    once its template's A/B is clean.
 

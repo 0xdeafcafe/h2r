@@ -44,6 +44,17 @@ pub const DEFAULT: bool = true;
 pub fn on(switches: &crate::Switches) -> bool {
     switches.feature(SWITCH, DEFAULT)
 }
+
+/// Draws each world material that allows it with its own layer-3 pass
+/// (vertex program, pixel shader, stage textures and constants) instead of
+/// stage 1's base map times lightmap (`native_render::program`). Off by
+/// default until the A/B against the D3D path is read; looked up exactly.
+pub const PROGRAMS_SWITCH: &str = "impl.render.native_world_programs";
+
+/// Whether [`PROGRAMS_SWITCH`] is on (only with the native world on).
+pub fn programs_on(switches: &crate::Switches) -> bool {
+    on(switches) && switches.feature(PROGRAMS_SWITCH, false)
+}
 /// The active structure BSP's tag data (docs/formats/structure-bsp.md).
 pub const ACTIVE_BSP: u32 = 0x004e_0348;
 
