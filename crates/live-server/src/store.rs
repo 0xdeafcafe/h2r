@@ -162,6 +162,9 @@ pub enum StoreError {
     /// problem.
     #[error("stored event at position {position} does not decode: {reason}")]
     Corrupt { position: u64, reason: String },
+    /// Writes are held while a log is copied in ([`crate::hold`]).
+    #[error("writes are held while the log is copied in (h2 live store copy --release)")]
+    Held,
     /// [`EventStore::import`] was given an event that does not follow the
     /// log it is going into: nothing of that batch was written.
     #[error("cannot import position {position}: {reason}")]

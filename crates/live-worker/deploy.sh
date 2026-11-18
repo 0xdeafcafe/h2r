@@ -25,6 +25,9 @@
 #   H2_LIVE_KEY_FILE      cutover/production: read the key from this file
 #                         (the machine server's server.key) instead of asking
 #   H2_LIVE_PUBLIC_URL    staging: the workers.dev address, for discovery
+#   H2_LIVE_STAGING_DIR   staging: where its identity is kept, server.key and
+#                         server.json, for `h2 live store copy --operator`
+#                         (default ~/.config/h2-live-worker/staging)
 #   H2_WORKER_HOME        the toolchain's home (default ~/.cache/h2-live-worker)
 #   WRANGLER              how to run wrangler (default: bunx wrangler@4)
 set -eu
@@ -151,12 +154,25 @@ fi
 # has to exist to hold a secret).
 step "server key: is H2_LIVE_SERVER_KEY set on the Worker?"
 key=""
+staging_dir=${H2_LIVE_STAGING_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/h2-live-worker/staging}
 if wrangler secret list --env "$env_name" 2>/dev/null | grep -q '"H2_LIVE_SERVER_KEY"'; then
     echo "set; leaving it as it is"
+    if [ "$env_name" = staging ] && [ ! -f "$staging_dir/server.key" ]; then
+        echo "warning: $staging_dir has no server.key, so nothing here can sign as staging's"
+        echo "operator (h2 live store copy --operator). To give staging a key kept here:"
+        echo "  bunx wrangler@4 secret delete H2_LIVE_SERVER_KEY --env staging, then deploy again"
+    fi
 else
     if [ "$env_name" = staging ]; then
-        echo "not set: making a fresh key for staging (it is no other server's)"
-        key=$(openssl rand 32 | base64 | tr '+/' '-_' | tr -d '=\n')
+        echo "not set: making a fresh key for staging (it is no other server's),"
+        echo "kept as $staging_dir/server.key (mode 0600) for the operator's copy"
+        if [ -f "$staging_dir/server.key" ]; then
+            key=$(tr -d ' \r\n' < "$staging_dir/server.key")
+        else
+            key=$(openssl rand 32 | base64 | tr '+/' '-_' | tr -d '=\n')
+            (umask 077 && mkdir -p "$staging_dir" && printf '%s\n' "$key" > "$staging_dir/server.key")
+        fi
+        printf '{"id":"%s"}\n' "$server_id" > "$staging_dir/server.json"
     elif [ -n "${H2_LIVE_KEY_FILE:-}" ]; then
         echo "not set: reading it from \$H2_LIVE_KEY_FILE"
         key=$(tr -d ' \r\n' < "$H2_LIVE_KEY_FILE")
