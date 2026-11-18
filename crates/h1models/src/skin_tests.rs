@@ -226,6 +226,22 @@ fn retail_h2_biped_skinning() {
         .map(|(_, _, id)| node_names(&mut map, *id, 0x48, 0x60))
         .unwrap_or_default();
     println!("fp arms nodes {}: {arms:?}", arms.len());
+    // The first-person body is drawn with the third-person unit's node
+    // matrices, only when the two `mode`s agree on the node count (+0x48)
+    // and +0x44 (E 0x001661d8, 0x001661e0): the Chief's do.
+    let header = |map: &mut map::Map<std::io::Cursor<Vec<u8>>>, suffix: &str| {
+        tags_list.iter().find(|(g, n, _)| g.0 == *b"mode" && n.ends_with(suffix)).map(|(_, _, id)| {
+            let tag = map.read_tag_bytes(*id).unwrap();
+            (h1::u32_at(&tag, 0x48), h1::u32_at(&tag, 0x44))
+        })
+    };
+    if let (Some(body), Some(chief)) = (
+        header(&mut map, "masterchief\\fp_body\\fp_body"),
+        header(&mut map, "masterchief\\masterchief"),
+    ) {
+        println!("fp_body (nodes, +0x44) {body:?}, the Chief's {chief:?}");
+        assert_eq!(body, chief);
+    }
     for (g, name, id) in &tags_list {
         if g.0 == *b"mode" && name.contains("\\fp\\") {
             let n = node_names(&mut map, *id, 0x48, 0x60);
@@ -408,18 +424,8 @@ fn skin_round_trip(map: &h1map::H1Map, mode_tag: &h1map::Tag, graph: Option<&h1m
     let (bytes, ids) = build(tags_in);
     let mut m2 = map::Map::from_reader(std::io::Cursor::new(bytes.clone())).unwrap();
     let dm = tags::model::RenderModelGeometry::read(&mut m2, ids[0], &mut Raw(bytes.clone())).unwrap();
-    // The converted inverse frames, as stored (+0x2c: three vectors, rows
-    // of the inverse; +0x50 position).
-    let tag = m2.read_tag_bytes(ids[0]).unwrap();
-    let base = m2.tag(ids[0]).unwrap().location.unwrap().address;
-    let nodes_at = (h1::u32_at(&tag, 0x4c) - base) as usize;
-    let inverse: Vec<Mat> = (0..n)
-        .map(|i| {
-            let e = &tag[nodes_at + i * 0x60..];
-            let r = std::array::from_fn(|row| std::array::from_fn(|c| h1::f32_at(e, 0x2c + 12 * row + 4 * c)));
-            (r, h1::f32s(e, 0x50))
-        })
-        .collect();
+    // The converted inverse frames, as stored.
+    let inverse = h2_inverse(&mut m2, ids[0]);
     for (a, b) in inverse.iter().zip(&cached) {
         for i in 0..3 {
             for j in 0..3 {
@@ -637,16 +643,7 @@ fn h1_disc_first_person_skin() {
                     graph_names.iter().position(|g| g == name).unwrap_or_else(|| panic!("{path}: {name} not in the graph"))
                 })
                 .collect();
-            let t = m2.read_tag_bytes(id).unwrap();
-            let base = m2.tag(id).unwrap().location.unwrap().address;
-            let at = (h1::u32_at(&t, 0x4c) - base) as usize;
-            let inverse: Vec<Mat> = (0..dm.nodes.len())
-                .map(|i| {
-                    let e = &t[at + i * 0x60..];
-                    let r = std::array::from_fn(|row| std::array::from_fn(|c| h1::f32_at(e, 0x2c + 12 * row + 4 * c)));
-                    (r, h1::f32s(e, 0x50))
-                })
-                .collect();
+            let inverse = h2_inverse(&mut m2, id);
             let cached = h1_cached_inverse(&map, tag.data_address, src.nodes.len());
             models.push((src, dm, inverse, cached, table));
         }
@@ -696,4 +693,169 @@ fn h1_disc_first_person_skin() {
     }
     println!("worst {worst:.2e}");
     assert!(worst < 2e-3, "{worst}");
+}
+
+
+/// The inverse rest frame each node of a `mode` stores: `+0x2c`, `+0x38`,
+/// `+0x44` its forward, left and up vectors (the matrix's columns), `+0x50`
+/// its position. Every retail node's frame inverts its model-space rest
+/// transform read that way (`retail_h2_bipeds_pose_sanely`).
+fn h2_inverse<R: std::io::Read + std::io::Seek>(m2: &mut map::Map<R>, id: map::TagId) -> Vec<Mat> {
+    let tag = m2.read_tag_bytes(id).unwrap();
+    let base = m2.tag(id).unwrap().location.unwrap().address;
+    let n = h1::u32_at(&tag, 0x48) as usize;
+    let nodes_at = (h1::u32_at(&tag, 0x4c) - base) as usize;
+    (0..n)
+        .map(|i| {
+            let e = &tag[nodes_at + i * 0x60..];
+            let r = std::array::from_fn(|row| std::array::from_fn(|c| h1::f32_at(e, 0x2c + 12 * c + 4 * row)));
+            (r, h1::f32s(e, 0x50))
+        })
+        .collect()
+}
+
+/// How much a pose stretches the mesh: each triangle edge's skinned
+/// length over its bind length, `(median, 99th percentile, max)`. One in
+/// the bind pose; near one in any sane pose (skin moves with its bones),
+/// far from it when node frames and inverse frames disagree.
+fn edge_stretch(
+    dm: &tags::model::RenderModelGeometry,
+    inverse: &[Mat],
+    pose: Option<&tags::anim_sample::Pose>,
+    flip: bool,
+) -> (f32, f32, f32) {
+    let world = world_transforms(
+        &dm.nodes
+            .iter()
+            .enumerate()
+            .map(|(i, x)| {
+                let t = pose.map(|p| &p.nodes[i]);
+                let r = match t {
+                    Some(t) if t.has_rotation => {
+                        if flip { conj(t.rotation) } else { t.rotation }
+                    }
+                    _ => x.wire.orientation,
+                };
+                let p = match t {
+                    Some(t) if t.has_translation => t.translation,
+                    _ => x.wire.translation,
+                };
+                (x.wire.parent_index, r, p)
+            })
+            .collect::<Vec<_>>(),
+    );
+    let skin_m: Vec<Mat> = world.iter().zip(inverse).map(|(w, i)| mul(w, i)).collect();
+    let mut ratios = Vec::new();
+    for s in &dm.sections {
+        let v = &s.vertices;
+        let posed: Vec<[f32; 3]> = (0..v.positions.len())
+            .map(|i| {
+                let ix = v.node_indices.get(i).copied().unwrap_or([0; 4]);
+                let w = v.node_weights.get(i).copied().unwrap_or([1.0, 0.0, 0.0, 0.0]);
+                let nodes: Vec<(usize, f32)> = (0..4)
+                    .filter(|&k| w[k] > 0.0)
+                    .map(|k| {
+                        let l = usize::from(ix[k]);
+                        (s.node_map.get(l).map_or(l, |&g| usize::from(g)), w[k])
+                    })
+                    .collect();
+                skin(&skin_m, v.positions[i], &nodes)
+            })
+            .collect();
+        for part in &s.geometry.parts {
+            let idx = &s.geometry.indices[part.index_range()];
+            let tris: Vec<[u16; 3]> = if part.is_triangle_list() {
+                idx.chunks_exact(3).map(|t| [t[0], t[1], t[2]]).collect()
+            } else {
+                idx.windows(3).map(|t| [t[0], t[1], t[2]]).collect()
+            };
+            for t in tris {
+                for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                    let (a, b) = (usize::from(a), usize::from(b));
+                    if a >= posed.len() || b >= posed.len() {
+                        continue;
+                    }
+                    let bind = dist(v.positions[a], v.positions[b]);
+                    if bind > 1e-3 {
+                        ratios.push(dist(posed[a], posed[b]) / bind);
+                    }
+                }
+            }
+        }
+    }
+    ratios.sort_by(f32::total_cmp);
+    let at = |q: f32| ratios.get(((ratios.len() as f32 - 1.0) * q) as usize).copied().unwrap_or(0.0);
+    (at(0.5), at(0.99), at(1.0))
+}
+
+/// The control for the posed round trips: retail Halo 2 bipeds, their
+/// stored inverse frames read by [`h2_inverse`], and their own retail
+/// animations decoded by `crates/tags` and composed as the converted ones
+/// are. The rest pose times the stored inverse is the identity on every
+/// node, and posed frames stretch the mesh's edges little (median 1, 99th
+/// percentile under 3), less than the same frames with conjugated
+/// rotations do.
+///
+/// `H2_DISC=disc/halo2.iso cargo test -p h1models --release -- --ignored retail_h2_bipeds_pose_sanely --nocapture`
+#[test]
+#[ignore = "needs $H2_DISC"]
+fn retail_h2_bipeds_pose_sanely() {
+    let Some(mut disc) = h2_disc("05a_deltaapproach") else {
+        return;
+    };
+    let mut map = map::Map::from_reader(std::io::Cursor::new(disc.local.clone())).unwrap();
+    let strings = map.strings().to_vec();
+    let mut checked = 0;
+    for name in ["objects\\characters\\marine\\marine", "objects\\characters\\elite\\elite", "objects\\characters\\grunt\\grunt"] {
+        let find = |g: &[u8; 4]| map.tags().iter().find(|t| t.group.0 == *g && t.name.as_deref() == Some(name)).map(|t| t.id);
+        let (Some(mid), Some(jid)) = (find(b"mode"), find(b"jmad")) else {
+            println!("{name}: not on 05a");
+            continue;
+        };
+        let dm = match tags::model::RenderModelGeometry::read(&mut map, mid, &mut disc) {
+            Ok(m) => m,
+            Err(e) => {
+                println!("{name}: {e}");
+                continue;
+            }
+        };
+        let inverse = h2_inverse(&mut map, mid);
+        let mut rest_error = 0f32;
+        for (w, inv) in h2_rest(&dm).iter().zip(&inverse) {
+            let id = mul(w, inv);
+            for i in 0..3 {
+                for j in 0..3 {
+                    rest_error = rest_error.max((id.0[i][j] - f32::from(u8::from(i == j))).abs());
+                }
+                rest_error = rest_error.max(id.1[i].abs());
+            }
+        }
+        let bind = edge_stretch(&dm, &inverse, None, false);
+        println!("{name}: rest times inverse {rest_error:.1e}; bind stretch {bind:?}");
+        assert!(rest_error < 1e-5, "{name}: {rest_error}");
+        assert!((bind.2 - 1.0).abs() < 1e-3, "{name}: {bind:?}");
+        let g = tags::anim::AnimationGraph::read(&mut map, jid).unwrap();
+        let mut shown = 0;
+        for (ai, a) in g.animations.iter().enumerate() {
+            if a.anim_type != tags::anim::AnimationType::Base || shown >= 8 || ai % 7 != 0 {
+                continue;
+            }
+            let Ok(clip) = g.load_clip(ai, &mut disc) else { continue };
+            if clip.is_aim_grid() {
+                continue;
+            }
+            let f = (a.frame_count as usize) / 2;
+            let pose = clip.sample_frame(f).unwrap();
+            let an = a.name.resolve(&strings).ok().flatten().unwrap_or("?");
+            let (ok, flipped) = (
+                edge_stretch(&dm, &inverse, Some(&pose), false),
+                edge_stretch(&dm, &inverse, Some(&pose), true),
+            );
+            println!("  {an} frame {f}: stretch {ok:?}; with conjugated rotations {flipped:?}");
+            assert!((ok.0 - 1.0).abs() < 0.01 && ok.1 < 3.0 && ok.1 < flipped.1, "{name} {an}: {ok:?} {flipped:?}");
+            shown += 1;
+        }
+        checked += 1;
+    }
+    assert!(checked > 0);
 }
