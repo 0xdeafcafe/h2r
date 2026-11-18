@@ -112,7 +112,7 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
     }
     features.add(&hud::Hud).map_err(|e| anyhow::anyhow!("hud: {e}"))?;
     features
-        .add(&loaded_map::LoadedMap)
+        .add(&crate::loaded_map::LoadedMap)
         .map_err(|e| anyhow::anyhow!("loaded map: {e}"))?;
     // The party privacy as the Live session's visibility, and the Live
     // menu's Custom Game Browser and Content Download rows (registered with the layouts above;
