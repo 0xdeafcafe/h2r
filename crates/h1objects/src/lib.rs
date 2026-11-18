@@ -10,6 +10,9 @@
 //! - [`coll::convert_collision`] builds a Halo 2 `coll` from a Halo 1 one,
 //!   with BSP physics slots (Havok's view) for scenery.
 //! - [`query`] answers points and rays on either game's collision BSP.
+//! - [`physics`] cuts a collision BSP into its solid convex cells, which
+//!   [`rebuild::physics_model`] writes as a Halo 2 physics model for
+//!   vehicles and devices.
 //! - [`convert`] builds each object as a Halo 2 tag on a **retail Halo 2
 //!   template** of the same role, read from the base map ([`base::Base`]):
 //!   the template's root is copied, the fields this crate knows in both
@@ -37,6 +40,7 @@ pub mod coll;
 pub mod convert;
 pub mod h1;
 pub mod health_hud;
+pub mod physics;
 pub mod query;
 pub mod rebuild;
 pub mod refs;

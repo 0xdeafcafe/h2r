@@ -15,6 +15,16 @@ use std::collections::HashMap;
 /// Alignment for copied raw resources (the builder's minimum).
 pub const RAW_ALIGN: u32 = 0x200;
 
+/// Groups whose blocks the engine rewrites in place when the map loads,
+/// so no two tags may share one: equal blocks are placed once per tag. A
+/// `phmo`'s loader (`0x001ea9c0`) turns each rigid body's and list
+/// child's `{type, index}` shape reference into a pointer in the block
+/// itself; a second tag sharing that block would then read a pointer as
+/// a reference, and its shapes resolve to null (a list's child read at
+/// `0x002fc139`, the fault of converter version 42's a10, whose
+/// `cryotube` vehicle and machine had equal `list_children`).
+pub const IN_PLACE: [&[u8; 4]; 1] = [b"phmo"];
+
 /// What a map built from loose tags needs besides its tags.
 #[derive(Clone, Debug)]
 pub struct BuildOptions {
@@ -252,6 +262,14 @@ impl Ctx<'_> {
         }
         let node = &tree.nodes[n as usize];
         let share = self.hash(ti, tree, n, 0);
+        let share = if IN_PLACE.contains(&&key.group.0) {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (share, b"rewritten at load", ti).hash(&mut h);
+            h.finish()
+        } else {
+            share
+        };
         let mut b = Block::new(node.bytes.clone())
             .aligned(node.align.max(1))
             .shared(share);
