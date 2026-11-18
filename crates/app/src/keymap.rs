@@ -173,6 +173,39 @@ pub fn shortcut(code: KeyCode) -> Option<Shortcut> {
     }
 }
 
+/// What a key does with the debug menu (docs/runtime/debug-menu.md).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuKey {
+    /// The menu takes it (the guest never sees the press); `None` is a key
+    /// it swallows without using, while it is open.
+    Take(Option<debug_menu::Key>),
+    /// Not the menu's: as before.
+    Pass,
+}
+
+/// Backquote opens and closes the menu (it is bound to nothing and not in
+/// docs/input/host-keyboard.md). While open: the arrows move and change,
+/// Enter or Space selects, Escape or Backspace goes back, and every other
+/// key is swallowed.
+pub fn menu_key(code: KeyCode, open: bool) -> MenuKey {
+    use debug_menu::{Key, Nav};
+    if code == KeyCode::Backquote {
+        return MenuKey::Take(Some(Key::Toggle));
+    }
+    if !open {
+        return MenuKey::Pass;
+    }
+    MenuKey::Take(match code {
+        KeyCode::ArrowUp => Some(Key::Nav(Nav::Up)),
+        KeyCode::ArrowDown => Some(Key::Nav(Nav::Down)),
+        KeyCode::ArrowLeft => Some(Key::Nav(Nav::Left)),
+        KeyCode::ArrowRight => Some(Key::Nav(Nav::Right)),
+        KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space => Some(Key::Nav(Nav::Select)),
+        KeyCode::Escape | KeyCode::Backspace => Some(Key::Nav(Nav::Back)),
+        _ => None,
+    })
+}
+
 /// What the shell knows when a mouse button changes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MouseContext {
@@ -220,6 +253,46 @@ mod tests {
     use input::backend::keyboard::KeyboardMouse;
     use input::bindings::{Bindings, canonical_key};
     use input::host::HostButton;
+
+    #[test]
+    fn backquote_is_the_menu_and_an_open_menu_takes_every_key() {
+        use debug_menu::{Key, Nav};
+        assert_eq!(
+            menu_key(KeyCode::Backquote, false),
+            MenuKey::Take(Some(Key::Toggle))
+        );
+        assert_eq!(
+            menu_key(KeyCode::Backquote, true),
+            MenuKey::Take(Some(Key::Toggle))
+        );
+        assert_eq!(
+            menu_key(KeyCode::ArrowUp, false),
+            MenuKey::Pass,
+            "closed: the game's"
+        );
+        assert_eq!(menu_key(KeyCode::KeyW, false), MenuKey::Pass);
+        assert_eq!(
+            menu_key(KeyCode::ArrowDown, true),
+            MenuKey::Take(Some(Key::Nav(Nav::Down)))
+        );
+        assert_eq!(
+            menu_key(KeyCode::Space, true),
+            MenuKey::Take(Some(Key::Nav(Nav::Select)))
+        );
+        assert_eq!(
+            menu_key(KeyCode::Escape, true),
+            MenuKey::Take(Some(Key::Nav(Nav::Back)))
+        );
+        assert_eq!(
+            menu_key(KeyCode::KeyW, true),
+            MenuKey::Take(None),
+            "swallowed"
+        );
+        // Backquote is no binding of the default table.
+        let b =
+            Bindings::from_toml(include_str!("../../../docs/input/input-default.toml")).unwrap();
+        assert!(!format!("{b:?}").to_lowercase().contains("backquote"));
+    }
 
     /// Every `KeyCode` winit can deliver that we name.
     fn all_named() -> Vec<(KeyCode, &'static str)> {

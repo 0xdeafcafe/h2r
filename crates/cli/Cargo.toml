@@ -46,6 +46,7 @@ agent-proto = { path = "../agent-proto" }
 settings = { path = "../settings" }
 timeline = { path = "../timeline" }
 app = { path = "../app" }
+debug-menu = { path = "../debug-menu" }
 lockstep = { path = "../lockstep" }
 d3d = { path = "../d3d" }
 kernel.workspace = true
