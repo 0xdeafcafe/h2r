@@ -5,7 +5,11 @@
 
 import type { AccountKeyEntry, WireEvent } from "../api/types";
 
-export type VerifyStatus = "verified" | "bad" | "unsigned" | "unknown";
+/** `redacted`: the server hid part of the event from this reader (network
+ *  addresses, presence details) and dropped its signature, since the
+ *  redacted body no longer matches what was signed. Only the server can
+ *  check those; it is not tampering. */
+export type VerifyStatus = "verified" | "bad" | "unsigned" | "redacted" | "unknown";
 
 export interface VerifyResult {
   position: number;
@@ -17,15 +21,28 @@ export interface Jwk { kty: string; crv: string; x: string; kid?: string }
 
 
 /** Signature results for a set of log positions (one game's events). */
-export interface VerifyCounts { verified: number; bad: number; other: number; pending: number }
+export interface VerifyCounts { verified: number; bad: number; redacted: number; other: number; pending: number }
+
+/** What a mark shows for a status: icon, short text, and the full label. */
+export function verifyMarkText(r: VerifyResult | undefined): { icon: string; text: string; label: string } {
+  if (!r) return { icon: "…", text: "checking", label: "checking signature" };
+  switch (r.status) {
+    case "verified": return { icon: "✓", text: "verified", label: "signature verified" };
+    case "bad": return { icon: "!", text: "tampered?", label: `bad signature: ${r.reason ?? "does not verify"}` };
+    case "unsigned": return { icon: "–", text: "unsigned", label: "not signed" };
+    case "redacted": return { icon: "◌", text: "redacted", label: "addresses hidden, signature checked by the server only" };
+    default: return { icon: "?", text: "unchecked", label: `could not check: ${r.reason ?? "unknown"}` };
+  }
+}
 
 export function countResults(positions: readonly number[], results: Readonly<Record<number, VerifyResult | undefined>>): VerifyCounts {
-  const c = { verified: 0, bad: 0, other: 0, pending: 0 };
+  const c = { verified: 0, bad: 0, redacted: 0, other: 0, pending: 0 };
   for (const p of positions) {
     const r = results[p];
     if (!r) c.pending++;
     else if (r.status === "verified") c.verified++;
     else if (r.status === "bad") c.bad++;
+    else if (r.status === "redacted") c.redacted++;
     else c.other++;
   }
   return c;
@@ -36,10 +53,11 @@ export function countResults(positions: readonly number[], results: Readonly<Rec
 export function summaryLine(c: VerifyCounts): string {
   const plural = (n: number) => (n === 1 ? "" : "s");
   if (c.bad) return `${c.bad} event${plural(c.bad)} failed signature checks`;
-  if (!c.verified && !c.pending && !c.other) return "No events loaded to check yet";
-  if (!c.verified && !c.other) return `Checking ${c.pending} signed event${plural(c.pending)}…`;
+  if (!c.verified && !c.pending && !c.other && !c.redacted) return "No events loaded to check yet";
+  if (!c.verified && !c.other && !c.redacted) return `Checking ${c.pending} signed event${plural(c.pending)}…`;
   let s = `${c.verified} signed event${plural(c.verified)} verified`;
   if (c.pending) s += ` · ${c.pending} checking`;
+  if (c.redacted) s += ` · ${c.redacted} redacted`;
   if (c.other) s += ` · ${c.other} unchecked`;
   return s;
 }
@@ -196,10 +214,17 @@ function keyValidAt(k: CachedKey, position: number): boolean {
   return true;
 }
 
+/** The server marks an event it redacted for this reader with
+ *  `data.redacted: true` and sends it without a signature. */
+export function isRedacted(ev: WireEvent): boolean {
+  const d = ev.data as Record<string, unknown> | null | undefined;
+  return !!d && typeof d === "object" && d.redacted === true;
+}
+
 /** Verifies one event's signature and that its copies match what was signed. */
 export async function verifyEvent(ev: WireEvent, keys: KeyCache): Promise<VerifyResult> {
   const position = ev.position;
-  if (!ev.jws) return { position, status: "unsigned" };
+  if (!ev.jws) return { position, status: isRedacted(ev) ? "redacted" : "unsigned" };
   const jws = parseJws(ev.jws);
   if (!jws) return { position, status: "bad", reason: "malformed JWS" };
   if (jws.header.alg !== "EdDSA") return { position, status: "unknown", reason: `alg ${jws.header.alg}` };

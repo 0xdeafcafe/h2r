@@ -84,7 +84,7 @@ pub use axum::extract::ConnectInfo;
 #[derive(Debug, Clone, Copy)]
 pub struct ConnectInfo<T>(pub T);
 pub use identity::ServerIdentity;
-pub use sessions::{CoopGame, CoopLink, Viewer};
+pub use sessions::{CoopGame, CoopLink, Viewer, strip_addresses};
 
 /// The Postgres database servers used before SQLite was the default, and
 /// the one `h2 play --live`'s embedded server tries first.
