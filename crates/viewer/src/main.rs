@@ -30,7 +30,8 @@ use winit::window::{Window, WindowId};
 
 const USAGE: &str = "usage: viewer [--disc ISO] <map> <mode tag name>
        viewer [--disc ISO] --png OUT [--force] [--size WxH] [--yaw DEG] [--pitch DEG] [--shade flat|smooth|normals] [--lod N] <map> <tag>
-       viewer [--disc ISO] --all <map>...   (or --all all)";
+       viewer [--disc ISO] --all <map>...   (or --all all)
+<map> is a disc map, a .map file, or a Halo 1 map converted under $H2_DATA";
 
 struct Args {
     disc: Option<PathBuf>,

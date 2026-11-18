@@ -1,5 +1,5 @@
 import { gameMapTitle, packageLookup } from "../state/maps";
-import { mapTitle } from "../state/gameart";
+import { isHalo1Map, mapTitle } from "../state/gameart";
 import { identity } from "../state/identity";
 import { reportMap } from "../admin/content";
 import { For, Show, createMemo, createSignal, createEffect, on } from "solid-js";
@@ -145,7 +145,7 @@ function CustomMapLine(props: { game: GameState }) {
     <Show when={props.game.map_id}>
       {(id) => (
         <li class="s-custom-map">
-          <Show when={pkg()} fallback={lookup()?.state === "gone" ? "Custom map, unavailable" : `Custom map on ${mapTitle(props.game.map)}`}>
+          <Show when={pkg()} fallback={lookup()?.state === "gone" ? "Custom map, unavailable" : isHalo1Map(props.game.map) ? "Halo 1 map" : `Custom map on ${mapTitle(props.game.map)}`}>
             {(m) => <>Custom map by {m().author.gamertag} on {mapTitle(m().base.map)}</>}
           </Show>
           <Show when={identity.me() && pkg() && !said()}>

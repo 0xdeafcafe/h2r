@@ -7,6 +7,7 @@ import { compositeEmblem, countKeys, emblemCacheKey, emblemPalette, normaliseMas
 import { live } from "./live";
 import { loadCatalog } from "../admin/catalog";
 import { titleCase } from "../lib/format";
+import { isHalo1 } from "../map/views";
 
 const [art, setArt] = createSignal<GameArt | null>(null);
 export const gameArt = art;
@@ -25,7 +26,20 @@ export function mapStem(map: string | null | undefined): string {
  *  title-cased, without a campaign level's ordering prefix ("01b_"). Reactive. */
 export function mapTitle(map: string | null | undefined): string {
   const stem = mapStem(map);
-  return mapNames().get(stem) ?? titleCase(stem.replace(/^\d{1,2}[a-z]?_(?=.)/, ""));
+  return mapNames().get(stem) ?? art()?.manifest.maps?.[stem]?.name ?? titleCase(stem.replace(/^(\d{1,2}[a-z]?|h1)_(?=.)/, ""));
+}
+
+/** True when the map is a Halo 1 map converted to run in Halo 2: the art
+ *  manifest says so, or its stem is `h1_<map>` (map/views.ts `isHalo1`).
+ *  Reactive. */
+export function isHalo1Map(map: string | null | undefined): boolean {
+  const stem = mapStem(map);
+  return !!stem && isHalo1(stem, art()?.manifest.maps?.[stem]);
+}
+
+/** Test hook: set the game art directly. */
+export function setGameArtForTest(a: GameArt | null) {
+  setArt(a);
 }
 
 /** Test hook: set the stem-to-name table directly. */
