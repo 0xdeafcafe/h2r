@@ -66,9 +66,24 @@ pub struct User {
 }
 
 pub async fn start(store: Arc<dyn EventStore>, policy: Policy) -> Harness {
+    start_with(store, policy, live_server::app::Timers::Spawned).await
+}
+
+#[allow(dead_code)]
+pub async fn start_driven(store: Arc<dyn EventStore>, policy: Policy) -> Harness {
+    start_with(store, policy, live_server::app::Timers::Driven).await
+}
+
+pub async fn start_with(
+    store: Arc<dyn EventStore>,
+    policy: Policy,
+    timers: live_server::app::Timers,
+) -> Harness {
     let dir = temp_dir();
     let identity = ServerIdentity::open(&dir, Some("live.test")).unwrap();
-    let live = Live::start(store, identity, policy).await.unwrap();
+    let live = Live::start_with(store, identity, policy, timers)
+        .await
+        .unwrap();
     Harness {
         app: http::router(live.clone()),
         live,

@@ -52,6 +52,9 @@ pub const UI_CAMPAIGNS: u32 = 0;
 pub const UI_LEVELS: u32 = 8;
 /// A card's reference group, `bitm` as the guest stores it.
 pub const CARD_GROUP: u32 = u32::from_be_bytes(*b"bitm");
+/// The Halo 1 campaign's key (`content::campaign_list::HALO1`'s
+/// `[campaign] key`).
+pub const HALO1_KEY: &str = "halo1";
 /// The menu's selection: campaign id, map id, difficulty.
 pub const SELECTED_CAMPAIGN: u32 = 0x0054_e7c0;
 pub const SELECTED_MAP: u32 = 0x0054_e7c4;

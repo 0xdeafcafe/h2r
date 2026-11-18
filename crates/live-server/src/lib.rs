@@ -41,7 +41,6 @@ pub mod games;
 pub mod guard;
 pub mod http;
 pub mod identity;
-#[cfg(feature = "native")]
 pub mod ingest;
 pub mod invites;
 pub mod local_signin;
@@ -63,8 +62,10 @@ pub mod standalone;
 pub mod stats;
 pub mod status;
 pub mod store;
+pub mod stream;
 mod teams;
 pub mod title_headers;
+pub mod titleblobs;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
