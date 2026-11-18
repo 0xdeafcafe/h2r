@@ -61,7 +61,6 @@ pub const FILES: &[(&str, &str)] = &[
     ("foot.txt", include_str!("defs/foot.txt")),
     ("lens.txt", include_str!("defs/lens.txt")),
     ("garb.txt", include_str!("defs/garb.txt")),
-    // HUD widgets (docs/editor/hud-editor.md).
     ("nhdt.txt", include_str!("defs/nhdt.txt")),
 ];
 

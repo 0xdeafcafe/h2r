@@ -367,6 +367,8 @@ fn main() -> Result<()> {
                 .map(|w| w.key)
                 .ok_or_else(|| anyhow!("--hud-widget: no widget {name:?}"))?;
             app.dispatch(Action::HudSelect(Some(key)));
+        }
+    }
     if let Some(t) = &args.tag {
         app.dispatch(Action::SetTool(ToolKind::Tags));
         match studio::app::tag_api::find_tag(&app.tags, t) {
