@@ -799,10 +799,17 @@ render's snapshot of the frame.
    kind-4 parts in the world's vertex and index buffers, keyed by
    (cluster or placement, the part's index in its section; the loader now
    keeps every part in place, a part not drawn as an empty one), their
-   lightmap pages in the lightmap array. Left: the run's pass draws,
-   per entry in order, that part with each layer-15 pass's program and
-   blend, depth tested, writing depth only where the state says so. Boot's
-   host accepts an entry when its part and material are loaded.
+   lightmap pages in the lightmap array. The GPU side is built too
+   (`transparent_gpu::TransparentSet`, `GpuWorld::encode_transparents`):
+   each material's passes compiled with `program::compile_pass` (the
+   world programs' translation plus the pass's alpha test) and uploaded
+   with the same per-program code as the world's (`program::Gpu`), one
+   pipeline per pass with its `PassState` (blend, write mask, depth write
+   and compare, cull) and its blend constant set per draw. A run's pass
+   loads the target and depth and draws, per entry in order, the part
+   with each of its passes, over the whole target (the programs carry
+   the viewport). Boot's host accepts an entry when its part and
+   material are loaded.
 4. **Objects' transparent parts.** The node matrices are copied at the
    hook into the run (as stage 2 does at layer 3), so the pass draws the
    frame's poses.
