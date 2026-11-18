@@ -15,7 +15,9 @@
 //! mainmenu already meets, lifted for a few kilobytes), one `bitm` per
 //! card shaped like
 //! `campaign0` ([`TEMPLATE`]; `tags::rgba_bitmap`), scaled to cover its
-//! 220x207, and the map built again. The free slots' bitmaps are left alone.
+//! 220x207, put in the template's frame ([`framed`]: retail's frame is in
+//! each picture's pixels, not drawn by the screen), and the map built
+//! again. The free slots' bitmaps are left alone.
 //! Each card's datum goes into a table the level lists read
 //! (`campaigns::extend`). The rebuilt map's checksum is the builder's; the
 //! cache copy's compare at `0x214616` (the header checksum's one reader,
@@ -135,9 +137,57 @@ pub fn cover(sw: u32, sh: u32, rgba: &[u8], dw: u32, dh: u32) -> Vec<u8> {
     out
 }
 
-/// `mainmenu` with one new `bitm` per card, shaped like [`TEMPLATE`].
-/// Returns the map and each card's datum by map name.
-pub fn add_cards(mainmenu: &[u8], cards: &[Card]) -> Result<(Vec<u8>, BTreeMap<String, u32>)> {
+/// Whether `template`'s pixels (RGBA) carry the level pictures' frame:
+/// every retail picture (`campaign0` to `campaign14`, V) is 220x207 with a
+/// one-pixel opaque border (alpha 255, a pale blue), a bottom-right corner
+/// cut off on the diagonal (alpha 0 past it, 136 pixels), and the picture
+/// inside at alpha 191, so the screen shows it a quarter see-through. The
+/// screen draws no frame of its own: the bitmap is the frame. A template
+/// is taken as a frame when it has opaque pixels and more part
+/// see-through ones than those (retail: 834 and 44,570), so a plain
+/// picture is never stamped over a card.
+pub fn has_frame(template: &[u8]) -> bool {
+    let (mut inside, mut border) = (0usize, 0usize);
+    for p in template.chunks_exact(4) {
+        match p[3] {
+            255 => border += 1,
+            0 => {}
+            _ => inside += 1,
+        }
+    }
+    border > 0 && inside > border
+}
+
+/// `card` (RGBA, the template's size) in the frame of `template`, pixel by
+/// pixel from the template's alpha: opaque, the template's own pixel (the
+/// border); clear, clear (the cut corner); anything else, the card's
+/// colour at the template's alpha (the see-through inside). Only the
+/// user's disc's pixels go in: nothing of the frame is kept here.
+pub fn framed(card: &[u8], template: &[u8]) -> Vec<u8> {
+    card.chunks_exact(4)
+        .zip(template.chunks_exact(4))
+        .flat_map(|(c, t)| match t[3] {
+            255 => [t[0], t[1], t[2], 255],
+            0 => [0; 4],
+            a => [c[0], c[1], c[2], a],
+        })
+        .collect()
+}
+
+/// What [`add_cards`] made.
+#[derive(Debug)]
+pub struct Added {
+    pub map: Vec<u8>,
+    /// Each card's datum by map name.
+    pub table: BTreeMap<String, u32>,
+    /// Whether the cards took [`TEMPLATE`]'s frame ([`framed`]); when its
+    /// pixels can't be read or hold none, the cards go in plain.
+    pub framed: bool,
+}
+
+/// `mainmenu` with one new `bitm` per card, shaped like [`TEMPLATE`] and
+/// in its frame.
+pub fn add_cards(mainmenu: &[u8], cards: &[Card]) -> Result<Added> {
     let mut map = Map::from_reader(Cursor::new(mainmenu.to_vec()))?;
     let template_id = map
         .tags()
@@ -147,6 +197,10 @@ pub fn add_cards(mainmenu: &[u8], cards: &[Card]) -> Result<(Vec<u8>, BTreeMap<S
         .with_context(|| format!("no {TEMPLATE}"))?;
     let template = Template::read(&mut map, template_id)?;
     let (w, h) = template.size();
+    let frame = template
+        .rgba(&mut map)
+        .ok()
+        .filter(|px| px.len() == usize::from(w) * usize::from(h) * 4 && has_frame(px));
     let mut set = TagSet::from_map(&mut map)?;
     // The index takes more tags (h1sounds::convert::make_index_room).
     let pinned = set
@@ -163,13 +217,20 @@ pub fn add_cards(mainmenu: &[u8], cards: &[Card]) -> Result<(Vec<u8>, BTreeMap<S
     set.check_tag_memory = false;
     let mut table = BTreeMap::new();
     for c in cards {
-        let rgba = cover(c.width, c.height, &c.rgba, u32::from(w), u32::from(h));
+        let mut rgba = cover(c.width, c.height, &c.rgba, u32::from(w), u32::from(h));
+        if let Some(f) = &frame {
+            rgba = framed(&rgba, f);
+        }
         let id: TagId = rgba_bitmap::install(&mut set, &template, &c.name, w, h, &rgba)
             .with_context(|| c.name.clone())?;
         table.insert(c.map.clone(), id.0);
     }
-    let (bytes, _) = set.build()?;
-    Ok((bytes, table))
+    let (map, _) = set.build()?;
+    Ok(Added {
+        map,
+        table,
+        framed: frame.is_some(),
+    })
 }
 
 /// Serves mainmenu with the cards in it (see the module docs), and fills
@@ -193,14 +254,15 @@ impl vfs::Rewrite for CardRewrite {
     fn rewrite(&mut self, _path: &str, original: &[u8]) -> Option<Vec<u8>> {
         let started = std::time::Instant::now();
         match add_cards(original, &self.cards) {
-            Ok((bytes, table)) => {
+            Ok(Added { map, table, framed }) => {
                 eprintln!(
-                    "campaigns: {} level pictures added to mainmenu ({} ms)",
+                    "campaigns: {} level pictures added to mainmenu{} ({} ms)",
                     table.len(),
+                    if framed { ", framed as retail's" } else { ", unframed (the template has no frame)" },
                     started.elapsed().as_millis()
                 );
                 *self.table.lock().unwrap_or_else(|e| e.into_inner()) = table;
-                Some(bytes)
+                Some(map)
             }
             Err(e) => {
                 eprintln!("campaigns: mainmenu left as it is, no level pictures: {e:#}");

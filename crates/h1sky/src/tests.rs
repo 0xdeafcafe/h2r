@@ -38,10 +38,14 @@ fn invented_sky() -> (Vec<u8>, usize) {
     // Fog reference (null) at 0x98.
     put(&mut bytes, root + 0x98, h1map::Group::new(b"fog ").0);
     put(&mut bytes, root + 0xa4, 0xffff_ffff);
-    // Lighting scalars: first RGB, a fraction, the second RGB.
+    // Lighting scalars: first RGB and a fraction, then the two fog runs
+    // (colour, two zeros, density, start, opaque distance).
     let scalars = root + h1::LIGHTING_SCALARS;
-    for (i, v) in [0.3f32, 0.4, 0.5, 0.25, 0.6, 0.7, 0.8]
-        .into_iter()
+    for (i, v) in [
+        0.3f32, 0.4, 0.5, 0.25, 0.6, 0.7, 0.8, 0.0, 0.0, 0.5, 1.0, 300.0, 0.2, 0.2, 0.3, 0.0,
+        0.0, 0.4, 5.0, 120.0,
+    ]
+    .into_iter()
         .enumerate()
     {
         putf(&mut bytes, scalars + 4 * i, v);
@@ -119,6 +123,19 @@ fn h1_reader_gets_every_field() {
     assert_eq!(sky.ambient_first_rgb(), [0.3, 0.4, 0.5]);
     assert_eq!(sky.ambient_first_fraction(), 0.25);
     assert_eq!(sky.ambient_second_rgb(), [0.6, 0.7, 0.8]);
+    let fog = |color, max_density, start_distance, opaque_distance| h1::Fog {
+        color,
+        max_density,
+        start_distance,
+        opaque_distance,
+    };
+    assert_eq!(
+        sky.fogs(),
+        [
+            Some(fog([0.6, 0.7, 0.8], 0.5, 1.0, 300.0)),
+            Some(fog([0.2, 0.2, 0.3], 0.4, 5.0, 120.0)),
+        ]
+    );
     assert_eq!(sky.shader_functions.len(), 1);
     assert_eq!(sky.shader_functions[0][0], 0x5a);
     assert_eq!(sky.lights.len(), 2);
@@ -162,8 +179,14 @@ fn converted_sky_round_trips_through_a_built_map() {
     assert_eq!(out.word_44, 0.0);
     assert_eq!(out.rotation, 0.0);
     assert!(out.bitmap_layers.is_empty());
-    assert!(out.gradients_a.is_empty());
-    assert!(out.gradients_b.is_empty());
+    // Halo 1's fog runs, in order, as the two fog blocks.
+    for (got, want) in [&out.gradients_a, &out.gradients_b].into_iter().zip(sky.fogs()) {
+        let f = want.expect("both runs have a density");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].color, f.color);
+        assert_eq!(got[0].fraction, f.max_density);
+        assert_eq!(got[0].tail, [f.start_distance, f.opaque_distance]);
+    }
     assert_eq!(out.lights.len(), sky.lights.len());
     for (a, b) in out.lights.iter().zip(&sky.lights) {
         assert_eq!(a.yaw, b.direction[0]);

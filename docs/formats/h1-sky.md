@@ -54,19 +54,37 @@ positions (ours, from the values — **V** for the ranges):
 |---|---|
 | `0–2` | RGB, set on every sky (the **first ambient colour**) |
 | `3` | fraction, 0–0.55 |
-| `4–6` | RGB, zero on some skies (the **second ambient colour**) |
-| `7, 8` | zero on all 31 skies |
-| `9` | fraction, 0–1 |
-| `10` | small scalar, 0.0001–5 |
-| `11` | distance, 8–500 |
-| `12–14` | RGB (many maps share `(0.196, 0.173, 0.329)`) |
-| `15, 16` | zero |
-| `17` | fraction, 0.1–1 |
-| `18` | fraction, 0–40 |
-| `19` | distance, 18–120 (`120` on most skies) |
+| `4–11` | **fog A**: RGB `4–6`, two zero words `7, 8`, density `9` (0–1), start `10` (0.0001–5), opaque distance `11` (8–500) |
+| `12–19` | **fog B**: RGB `12–14`, two zero words `15, 16`, density `17` (0.1–1), start `18` (0–40), opaque distance `19` (18–120, `120` on most skies) |
 
-Which ambient lights what, and whether the distance pairs delimit fog, has
-not been established against the engine; the names above are positional.
+The two fog runs have the shape of Halo 2's sky fog blocks (`+0x48` and
+`+0x50`: colour, density, start and opaque distance; below), and on every
+retail sky their padding is zero, the density a fraction and the start no
+farther than the opaque distance (`real_h1_disc_every_sky_reads`). **V**
+for the shape; the names are ours. The converter writes fog A as Halo 2's
+`fog_a` and fog B as `fog_b`, each only when its density is above zero
+(**Design**: the order is kept; which of the two Halo 1 draws indoors has
+not been traced). Indices `4–6` are also what `Sky::ambient_second_rgb`
+returns, from before the fog runs were read.
+
+### Halo 2's sky fog (`+0x48`, `+0x50`, `+0x58`)
+
+`0x00131030` (called from `0x0012f673`) takes a sky datum and three
+accumulators. For each sky it is given, weighted by how much of the view
+it covers, it adds element 0 of `+0x48` (`fog_a`), `+0x50` (`fog_b`) and
+`+0x58` into them: colour times the weight, each of the three scalars
+times the weight, the weight itself, and one minus the weight into a
+product. `0x0012fb1b` divides by the summed weight and writes the
+results to the view's atmosphere state: `fog_a` to `+0x1c..+0x30`,
+`fog_b` to `+0x34..+0x48`, `+0x58` to `+0x4c..+0x58`. **E** for the
+layout: `0x18`-byte elements, an RGB at `+0`, scalars at `+0xc`, `+0x10`
+and `+0x14`; `+0x58`'s are `0x10` bytes, an RGB and one scalar. Then
+`0x001301c0` checks each: when the blended `+0xc` is above a threshold it
+clamps the colour to 0..1, raises `+0x14` to at least `+0x10` plus a
+constant, and clamps `+0xc` to at most 1; otherwise it zeroes `+0xc`.
+Hence the names: `+0xc` the density (zero: no fog), `+0x10` the start
+and `+0x14` the opaque distance. **E** for those roles; the shader that
+consumes the view state has not been traced.
 
 ### The sky light record (`0x74` bytes)
 
@@ -109,9 +127,10 @@ the block elements, laid out after it. Root fields this crate reads
 | `24–33` | Zeros on retail skies | V |
 | `34` | Fallback object-lighting colour (RGB) | E `0x000d1a30`; V values |
 | `44` | Scalar, set by one retail sky (5.0) | V |
-| `48` | Gradient block; elements `0x18`: RGB, fraction, two scalars (0, 200, 700 seen). Meaning not established | V: 68 of 91 have one |
-| `50` | A second gradient block, same element shape | V: 13 of 91 have one |
-| `58–77` | Zeros on retail skies | V |
+| `48` | Fog block A (`fog_a`); elements `0x18`: RGB, density, start and opaque distances (0, 200, 700 seen) | E `0x00131030` (above); V: 68 of 91 have one |
+| `50` | Fog block B (`fog_b`), the same element | E `0x00131030`; V: 13 of 91 have one |
+| `58` | Block of `0x10` elements: RGB and one scalar | E `0x00131030` |
+| `60–77` | Zeros on retail skies | V |
 | `78` | Sky lights block; elements `0x34` | E `0x0003eec0`, `0x000d1a30`; V |
 | `80` | Rotation angle, radians | E `0x0003ebd0`/`0x0003eec0`; V: 0.0 on 90 of 91 |
 
@@ -146,7 +165,7 @@ same-class payload at the same address).
 
 Census (the whole disc): 91 identities on 28 maps, 71 lights (67 skies
 with one, two with two, 22 with none), 70 with a bitmap layer, 13 with the
-second gradient.
+second fog block.
 
 ## The conversion
 
@@ -162,7 +181,8 @@ what is synthesised, and what has no Halo 2 home:
 | — | params flags `+00` | **Design:** `15`, the retail-common value; Halo 1's flags (1/3) have a different, unknown meaning |
 | — | model scale `+14` | **Design:** the least scale, at least 1, that puts every surface of the model as far from the camera as the level is wide (below) |
 | — | camera translation scale `+18` | **Design:** `1.0`; the Halo 1 sky box stays centred on the camera |
-| — | `+10` word, bitmap layers, gradients, `+44`, rotation | **Design:** `0`, empty blocks, `0`, `0.0` — retail zeroes |
+| fog A, fog B (scalars `4–11`, `12–19`) | `+48` `fog_a`, `+50` `fog_b` | colour, density, start and opaque distance copied, one element each, when the density is above zero |
+| — | `+10` word, bitmap layers, `+58`, `+44`, rotation | **Design:** `0`, empty blocks, `0`, `0.0` — retail zeroes |
 
 ### The model scale
 
@@ -245,10 +265,7 @@ here for the next pass):
   retail sky, so its group is unknown and nothing is written there;
 - the fog reference (`fog `): null on every retail Halo 1 sky anyway;
 - the shader-function elements;
-- the second ambient colour and the fraction, and the rest of the 20
-  lighting scalars — Halo 2's gradient blocks (`+48/+50`) hold an RGB, a
-  fraction and two scalars and are the plausible home, but that is
-  unproven, so nothing is written there yet;
+- the first ambient colour's fraction (scalar `3`);
 - each light's `0x006e7500` constant and flags;
 - lens flares: the Halo 1 `lens` tags have no converter yet, so converted
   lights reference none.

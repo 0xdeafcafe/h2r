@@ -1073,6 +1073,8 @@ the same name from the data root (`$H2_DATA`, else the default), or any
 - **Names (decided):** converted maps are `h1_<map>` (`h1_beavercreek`:
   Halo 2 has its own `beavercreek`), with Halo 1's display name in the
   list.
+- **In the map select (built):** a new map whose name starts `h1_` is
+  listed under **Halo: CE** ([map-select.md](map-select.md)).
 - **Identity (built):** one list ID per Halo 1 map, whichever
   variant (`Package::list_key`, above); the `MapId` (content hash)
   differs per variant; online, the host's variant is used.
@@ -1156,8 +1158,22 @@ On the disc every multiplayer map's elements are none, none,
 elements 2 and 3 at the converted cyborg and clears the word;
 `Players::Campaign` does elements 0 and 1, for `h1campaign`. The
 sandbox's disc test checks both elements name the added cyborg, which
-decodes with a render model. The first-person arms stay Halo 2's (element
-`+0x0`).
+decodes with a render model.
+
+**First-person arms (converter version 54).** The element's `+0x0` is the
+first-person arms model (`+0x8` the first-person body). The Halo 1
+sandbox and the Halo 1 campaign put Halo 1's arms there
+(`globals::set_player_hands`; the arms Halo 1's globals name at
+`matg +0x17c`, element `+0x0`, `characters\cyborg\fp\fp` on every map,
+converted on their own by `h1objects`). The engine binds the arms' nodes
+and the weapon's first-person model's nodes to the weapon's first-person
+graph **by name** (E `0x001dd4c0`, called from `0x001680eb` for the
+weapon model and `0x00168083` for the arms): Halo 2's arms name no node
+of a converted Halo 1 graph (`l_upperarm` against `frame l upperarm`), so
+until version 54 every converted first-person graph drove the arms with
+no node bound. Halo 2's arms stay in the Halo 2 sandbox. The first-person
+body stays Halo 2's (Halo 1 has none; its nodes bind to no node of a
+Halo 1 graph either).
 
 **The player's camera and hands (converter version 52).** A rebuilt
 biped names its model's Halo 1 markers in the unit's marker fields
@@ -1229,6 +1245,63 @@ the table) as a `shad` and dereferences its compiled postprocess
 (`0x16bc7`, `0x16bde`). Before converter version 21, converted skies named NONE on all 5
 materials. That is the likely cause of the null read on Blood Gulch's
 first frame (pc `0x16bde`, ebp `0x485b48`, the state cache).
+
+### Starting weapons (**Built**, converter version 56)
+
+A game variant's starting weapons are bytes (primary `+0xd6`, secondary
+`+0xd7` of the variant; `variants` settings 89 and 94). `0x0019eda0`
+turns one into a weapon: it jumps on the byte minus 1 through the table
+at `0x0019eee8` to a read of one entry of the multiplayer globals' weapon
+list (globals `+0x168` names the `mulg`; its `+8` block's first element,
+`+0x68`, 8-byte tag references). Byte 1 gives none, 2 a random byte in
+3..=18, and bytes 3..=20 each one entry (E; the table is
+`h1convert::globals::STARTING_WEAPON_ENTRY`):
+
+| Byte | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Entry | 3 | 0 | 1 | 6 | 7 | 5 | 2 | 4 | 12 | 9 | 10 | 13 | 11 | 15 | 14 | 8 | 16 | 17 |
+
+The list is Halo 2's (Coagulation: magnum, SMG, shotgun, battle rifle,
+sniper rifle, rocket launcher, plasma pistol, plasma rifle, brute plasma
+rifle, needler, carbine, none, brute shot, beam rifle, energy sword,
+rocket launcher, sentinel beam, none). The Halo 1 cyborg's graph has no
+Halo 2 weapon type, so the default variants' SMG was refused
+(docs/formats/h1-objects.md, "Weapon class and type") and players spawned
+unarmed. In the Halo 1 sandbox every entry naming a weapon now names a
+Halo 1 one (`sandbox::HALO1_WEAPON_LIST`, `convert::halo1`), the first of
+its choices the map has:
+
+| Halo 2 weapon | Halo 1 weapon | Why |
+|---|---|---|
+| magnum | pistol | the sandbox table reversed |
+| SMG | assault rifle | reversed |
+| battle rifle | assault rifle | the precision row reversed |
+| shotgun, sniper rifle, rocket launcher, plasma pistol, plasma rifle, needler | the same | reversed |
+| carbine | pistol | **D**: Halo 1's mid-range precision weapon |
+| beam rifle | sniper rifle | **D**: long-range precision |
+| brute shot | rocket launcher | **D**: explosive launcher |
+| brute plasma rifle | plasma rifle | **D**: automatic Covenant plasma |
+| energy sword | plasma rifle | **D**: Halo 1 has no melee weapon; nearest close-range Covenant one |
+| sentinel beam | plasma rifle | **D**: continuous Covenant beam |
+
+**Byte 0, the map's default** (64 of the 78 starting weapon bytes of
+mainmenu's built-in variants, Slayer among them): `0x0019ef40` reads the
+scenario's starting equipment (`scnr +0x128`, `0x9c` each; entries whose
+game type `0x0015a090` accepts) and rolls its five `itmc` references
+(`+0x3c`, 8 apart; `0x0019efef` -> `0x0019f1a0`) for the default (E). The
+base's (Coagulation's one entry: the SMG collection) named Halo 2 weapons
+too. In the Halo 1 sandbox each collection it names is rebuilt from the
+same table, weight for weight, as a new `itmc` after the objects
+(`convert::halo1::plan_starting_equipment`): players start with the
+assault rifle on every map.
+
+A weapon the map lacks falls to the next choice (the needler to the
+plasma pistol, the plasma rifle, then the assault rifle, which every Halo 1
+multiplayer map has). V: `tests/sandbox_disc.rs`
+(`every_starting_weapon_is_held_by_the_halo1_player_graph`): on every
+map, every byte the table maps, each built-in variant's primary and
+secondary, and every weapon of the starting equipment's collections, is a
+weapon the converted player biped's graph holds in mode `combat`.
 
 ### Design notes
 

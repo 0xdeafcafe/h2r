@@ -1372,6 +1372,21 @@ fn place_objects(
             profile_weapons.insert(w, p);
         }
     }
+    // The players' first-person arms: Halo 1's, which Halo 1's
+    // first-person graphs name node for node (the engine binds them by
+    // name).
+    let hands = match h1convert::globals::h1_first_person_hands(h1)
+        .map_err(|e| invalid(format!("first-person arms: {e}")))?
+    {
+        Some(id) => match conv.first_person_arms(id) {
+            Ok(t) => Some(t),
+            Err(e) => {
+                dropped.push(format!("first-person arms: {e}"));
+                None
+            }
+        },
+        None => None,
+    };
     let mut player = None;
     let mut retail_player = None;
     rep.player_biped = match h1.find(h1map::Group::new(b"bipd"), PLAYER_BIPED) {
@@ -1450,6 +1465,10 @@ fn place_objects(
     if let Some(p) = player.map(real).or(retail_player) {
         h1convert::globals::set_player_unit(set, p, h1convert::globals::Players::Campaign)
             .map_err(|e| invalid(format!("player unit: {e}")))?;
+    }
+    if let Some(h) = hands {
+        h1convert::globals::set_player_hands(set, real(h), h1convert::globals::Players::Campaign)
+            .map_err(|e| invalid(format!("first-person arms: {e}")))?;
     }
 
     let grenades: Vec<_> = grenades

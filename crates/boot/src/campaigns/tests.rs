@@ -765,3 +765,20 @@ fn snapshots_wait_while_the_level_select_is_built_or_a_request_passes() {
     assert!(s.take_pass());
     assert_eq!(s.snapshot_live(), None);
 }
+
+/// The picker's picture for a campaign: its first level's in the level
+/// select's list, read from the loaded map's records.
+#[test]
+fn each_campaign_s_picture_is_its_first_level_s() {
+    let mut g = globals(4, 3, true);
+    let b = built(&[SMALL]);
+    let cards = BTreeMap::from([("x1".to_owned(), 0xe123_0456)]);
+    extend_with_cards(&mut g, &b, &REGION, &cards).unwrap();
+    let id = b[0].campaign_id;
+    assert_eq!(
+        first_pictures(&g),
+        BTreeMap::from([(1, 0xe000_0000), (id, 0xe000_0002)]),
+        "Halo 2's first level; ours borrows retail l2's"
+    );
+    assert!(first_pictures(&globals(4, 3, false)).is_empty());
+}
