@@ -209,6 +209,26 @@ impl World {
         Self::raw_network(url, accounts, heartbeat, 31000)
     }
     fn raw_network(url: &str, accounts: Value, heartbeat: Duration, port: u16) -> Self {
+        Self::configured(
+            url,
+            accounts,
+            port,
+            ServerOptions {
+                request_timeout: Duration::from_secs(2),
+                heartbeat_interval: heartbeat,
+                ..Default::default()
+            },
+        )
+    }
+    fn with_options(url: &str, accounts: &[&Account], options: ServerOptions) -> Self {
+        Self::configured(
+            url,
+            json!(accounts.iter().map(|a| a.json()).collect::<Vec<_>>()),
+            31000,
+            options,
+        )
+    }
+    fn configured(url: &str, accounts: Value, port: u16, options: ServerOptions) -> Self {
         let path = std::env::temp_dir().join(format!("h2-hle-accounts-{}.json", sign::random_id()));
         std::fs::write(&path, serde_json::to_vec(&accounts).unwrap()).unwrap();
         let hle = Hle::with_server_options(
@@ -219,11 +239,7 @@ impl World {
                 offer_new_account: false,
             },
             NetworkConfig::new(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port)),
-            ServerOptions {
-                request_timeout: Duration::from_secs(2),
-                heartbeat_interval: heartbeat,
-                ..Default::default()
-            },
+            options,
         )
         .unwrap();
         std::fs::remove_file(path).unwrap();
@@ -879,18 +895,27 @@ fn every_selected_account_is_signed_in_pinged_and_signed_out() {
 fn heartbeat_failure_reaches_the_persistent_connection_task() {
     let server = Server::new();
     let a = server.account("Disconnected");
-    let mut w = World::new(&server.embedded.url, &[&a]);
+    let mut w = World::with_options(
+        &server.embedded.url,
+        &[&a],
+        ServerOptions {
+            request_timeout: Duration::from_secs(2),
+            heartbeat_interval: Duration::from_millis(100),
+            connection_grace: Duration::from_millis(500),
+            ..Default::default()
+        },
+    );
     let h = w.logon();
     drop(server);
-    let deadline = Instant::now() + Duration::from_secs(4);
-    while w.hle.server_status().last_error == 0 {
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while w.call("XOnlineTaskContinue", &[h]) != CONNECTION_LOST {
         assert!(
             Instant::now() < deadline,
             "heartbeat never detected disconnect"
         );
         std::thread::sleep(Duration::from_millis(2));
     }
-    assert_eq!(w.call("XOnlineTaskContinue", &[h]), CONNECTION_LOST);
+    assert_ne!(w.hle.server_status().last_error, 0);
     assert_eq!(w.call("XOnlineLogonTaskGetResults", &[h]), CONNECTION_LOST);
     assert_eq!(w.call("XOnlineGetLogonUsers", &[]), 0);
 }
@@ -3480,4 +3505,330 @@ fn arbitration_registers_and_reports_the_round_as_the_signed_in_account() {
     let body = SignedEvent::open(&events[1].jws).unwrap().body;
     assert_eq!(body.data["xuid"], account.xuid.to_string());
     assert_eq!(body.data["procedures"], json!([0x8001]));
+}
+
+// Outages (docs/live/live.md "Outages"): a Worker deploy or a dropped
+// connection is ridden out; only a real outage, past the grace, loses the
+// connection.
+
+/// What [`Flaky`] does with one request.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Fault {
+    /// A Worker mid-deploy: 503 with `Retry-After: 0`, not passed on.
+    Busy,
+    /// The connection drops before the request reaches the server.
+    Drop,
+    /// The server takes the request, but its answer is lost.
+    Lost,
+    /// 404: the server has no presence for the player.
+    NotFound,
+}
+/// A proxy in front of a [`Server`] that fails requests on cue.
+struct Flaky {
+    url: String,
+    /// Faults for requests whose path contains the key, used up in order.
+    faults: Arc<std::sync::Mutex<Vec<(String, Fault)>>>,
+    /// While set, every request is answered 503 (the server is down).
+    down: Arc<std::sync::atomic::AtomicBool>,
+    /// Every request seen: method and path.
+    seen: Arc<std::sync::Mutex<Vec<(String, String)>>>,
+}
+impl Flaky {
+    fn new(upstream: &str) -> Self {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let flaky = Self {
+            url,
+            faults: Default::default(),
+            down: Default::default(),
+            seen: Default::default(),
+        };
+        let (faults, down, seen) = (
+            flaky.faults.clone(),
+            flaky.down.clone(),
+            flaky.seen.clone(),
+        );
+        let upstream = upstream.to_string();
+        std::thread::spawn(move || {
+            for socket in listener.incoming() {
+                let Ok(socket) = socket else { return };
+                let (faults, down, seen, upstream) =
+                    (faults.clone(), down.clone(), seen.clone(), upstream.clone());
+                std::thread::spawn(move || {
+                    flaky_request(socket, &upstream, &faults, &down, &seen)
+                });
+            }
+        });
+        flaky
+    }
+    fn fail(&self, path: &str, fault: Fault) {
+        self.faults.lock().unwrap().push((path.into(), fault));
+    }
+    fn set_down(&self, down: bool) {
+        self.down
+            .store(down, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn count(&self, method: &str, path: &str) -> usize {
+        self.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(m, p)| m == method && p.contains(path))
+            .count()
+    }
+}
+fn flaky_request(
+    mut socket: std::net::TcpStream,
+    upstream: &str,
+    faults: &std::sync::Mutex<Vec<(String, Fault)>>,
+    down: &std::sync::atomic::AtomicBool,
+    seen: &std::sync::Mutex<Vec<(String, String)>>,
+) {
+    let header = String::from_utf8(receive_headers(&mut socket)).unwrap();
+    let mut lines = header.lines();
+    let first = lines.next().unwrap().split_whitespace().collect::<Vec<_>>();
+    let (method, path) = (first[0].to_string(), first[1].to_string());
+    let fields = lines
+        .filter_map(|s| s.split_once(':'))
+        .map(|(k, v)| (k.to_ascii_lowercase(), v.trim().to_string()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut body = vec![
+        0;
+        fields
+            .get("content-length")
+            .map_or(0, |s| s.parse::<usize>().unwrap())
+    ];
+    socket.read_exact(&mut body).unwrap();
+    seen.lock().unwrap().push((method.clone(), path.clone()));
+    let fault = if down.load(std::sync::atomic::Ordering::SeqCst) {
+        Some(Fault::Busy)
+    } else {
+        let mut faults = faults.lock().unwrap();
+        faults
+            .iter()
+            .position(|(p, _)| path.contains(p.as_str()))
+            .map(|i| faults.remove(i).1)
+    };
+    match fault {
+        Some(Fault::Busy) => {
+            http_response(&mut socket, "503 Service Unavailable", "Retry-After: 0\r\n", b"");
+            return;
+        }
+        Some(Fault::Drop) => return,
+        Some(Fault::NotFound) => {
+            http_response(
+                &mut socket,
+                "404 Not Found",
+                "Content-Type: application/json\r\n",
+                br#"{"error":"not_found","message":"not signed in: append SignedIn first"}"#,
+            );
+            return;
+        }
+        Some(Fault::Lost) | None => {}
+    }
+    let agent = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(3))
+        .build();
+    let mut req = agent.request(&method, &format!("{upstream}{path}"));
+    for key in ["authorization", "content-type"] {
+        if let Some(v) = fields.get(key) {
+            req = req.set(key, v);
+        }
+    }
+    let response = if body.is_empty() && method == "GET" {
+        req.call()
+    } else {
+        req.send_bytes(&body)
+    };
+    let (code, response) = match response {
+        Ok(r) => (r.status(), r),
+        Err(ureq::Error::Status(code, r)) => (code, r),
+        Err(e) => panic!("upstream: {e}"),
+    };
+    let mut result = Vec::new();
+    response.into_reader().read_to_end(&mut result).unwrap();
+    if fault == Some(Fault::Lost) {
+        return;
+    }
+    http_response(
+        &mut socket,
+        &format!("{code} Proxied"),
+        "Content-Type: application/json\r\n",
+        &result,
+    );
+}
+/// A client with a quick heartbeat and quick retries, through `proxy`.
+fn outage_world(proxy: &Flaky, account: &Account, heartbeat: Duration, grace: Duration) -> World {
+    World::with_options(
+        &proxy.url,
+        &[account],
+        ServerOptions {
+            request_timeout: Duration::from_secs(2),
+            heartbeat_interval: heartbeat,
+            connection_grace: grace,
+            retry: live_hle::Retry {
+                attempts: 3,
+                backoff: Duration::from_millis(10),
+                max_wait: Duration::from_millis(50),
+            },
+            ..Default::default()
+        },
+    )
+}
+fn kinds(server: &Server, kind: &str) -> Vec<WireEvent> {
+    server
+        .events()
+        .into_iter()
+        .filter(|e| e.kind == kind)
+        .collect()
+}
+
+#[test]
+fn an_outage_shorter_than_the_grace_keeps_the_player_signed_in() {
+    let server = Server::new();
+    let a = server.account("Deployed");
+    let proxy = Flaky::new(&server.embedded.url);
+    let mut w = outage_world(&proxy, &a, Duration::from_millis(50), Duration::from_secs(2));
+    let h = w.logon();
+    // The Worker is redeployed: every request fails for a second.
+    let pinged = proxy.count("POST", "/v1/presence/ping");
+    proxy.set_down(true);
+    let end = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < end {
+        assert_eq!(w.call("XOnlineTaskContinue", &[h]), CONNECTED);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        proxy.count("POST", "/v1/presence/ping") >= pinged + 6,
+        "the heartbeat kept trying, and retried, through the outage"
+    );
+    assert_eq!(w.hle.server_status().last_error, SERVERS_BUSY);
+    // Back up: heartbeats are answered again and the player never left.
+    proxy.set_down(false);
+    let acknowledged = w.hle.server_status().acknowledged_pings;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while w.hle.server_status().acknowledged_pings <= acknowledged {
+        assert!(Instant::now() < deadline, "no heartbeat after the outage");
+        assert_eq!(w.call("XOnlineTaskContinue", &[h]), CONNECTED);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // The grace starts again after a good heartbeat: a second short outage
+    // is ridden out as well.
+    proxy.set_down(true);
+    let end = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < end {
+        assert_eq!(w.call("XOnlineTaskContinue", &[h]), CONNECTED);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // A real outage: once the grace has run out, the connection is lost.
+    let deadline = Instant::now() + Duration::from_secs(6);
+    while w.call("XOnlineTaskContinue", &[h]) != CONNECTION_LOST {
+        assert!(Instant::now() < deadline, "a real outage never lost the connection");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(w.call("XOnlineLogonTaskGetResults", &[h]), CONNECTION_LOST);
+}
+
+#[test]
+fn a_presence_change_whose_answer_is_lost_is_sent_once() {
+    let server = Server::new();
+    let a = server.account("LostAnswer");
+    let proxy = Flaky::new(&server.embedded.url);
+    let mut w = outage_world(&proxy, &a, Duration::from_secs(3600), Duration::from_secs(90));
+    let h = w.logon();
+    let posted = proxy.count("POST", "/v1/events");
+    // The first send lands but its answer is lost; the second meets a
+    // deploy; the third is refused as a replay: the event is in.
+    proxy.fail("/v1/events", Fault::Lost);
+    proxy.fail("/v1/events", Fault::Busy);
+    assert_eq!(w.hle.set_game_id(Some("lost-answer")), Ok(()));
+    server.until(|| proxy.count("POST", "/v1/events") >= posted + 3);
+    server.until(|| {
+        server
+            .presence()
+            .first()
+            .is_some_and(|p| p.game_id.as_deref() == Some("lost-answer"))
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(kinds(&server, types::PRESENCE_CHANGED).len(), 1);
+    assert_eq!(w.hle.server_status().last_error, 0);
+    assert_eq!(w.call("XOnlineTaskContinue", &[h]), CONNECTED);
+}
+
+#[test]
+fn reads_and_logon_ride_out_dropped_connections_and_a_deploy() {
+    let server = Server::new();
+    let a = server.account("Rider");
+    server.publish("message_of_the_day.dat", &motd());
+    let proxy = Flaky::new(&server.embedded.url);
+    proxy.fail("/.well-known/h2live.json", Fault::Busy);
+    proxy.fail("/keys", Fault::Drop);
+    let mut w = outage_world(&proxy, &a, Duration::from_secs(3600), Duration::from_secs(90));
+    w.logon();
+    assert_eq!(proxy.count("GET", "/.well-known/h2live.json"), 2);
+    proxy.fail("/files/message_of_the_day.dat", Fault::Drop);
+    proxy.fail("/files/message_of_the_day.dat", Fault::Busy);
+    let path = w.storage_path("9809", "message_of_the_day.dat");
+    let h = w.storage_start(path, 0x8000);
+    assert_eq!(w.wait(h), TASK_SUCCESS);
+    assert_eq!(w.bytes(BUFFER, motd().len()), motd());
+    assert_eq!(proxy.count("GET", "/files/message_of_the_day.dat"), 3);
+}
+
+#[test]
+fn retries_give_up_with_the_servers_answer() {
+    let server = Server::new();
+    let a = server.account("GiveUp");
+    let proxy = Flaky::new(&server.embedded.url);
+    let mut w = outage_world(&proxy, &a, Duration::from_secs(3600), Duration::from_secs(90));
+    let h = w.logon();
+    proxy.set_down(true);
+    let path = w.storage_path("9809", "message_of_the_day.dat");
+    let task = w.storage_start(path, 0x8000);
+    assert_eq!(w.wait(task), SERVERS_BUSY);
+    assert_eq!(proxy.count("GET", "/files/message_of_the_day.dat"), 3);
+    // A failed read is not a lost connection.
+    assert_eq!(w.call("XOnlineTaskContinue", &[h]), CONNECTED);
+}
+
+#[test]
+fn a_player_the_server_forgot_during_an_outage_signs_back_in_as_it_was() {
+    let server = Server::new();
+    let a = server.account("Forgotten");
+    let proxy = Flaky::new(&server.embedded.url);
+    let mut w = outage_world(&proxy, &a, Duration::from_millis(50), Duration::from_secs(90));
+    let h = w.logon();
+    assert_eq!(w.hle.set_game_id(Some("still-playing")), Ok(()));
+    server.until(|| kinds(&server, types::PRESENCE_CHANGED).len() == 1);
+    // The presence expired while the server could not be reached.
+    proxy.fail("/v1/presence/ping", Fault::NotFound);
+    server.until(|| kinds(&server, types::SIGNED_IN).len() == 2);
+    server.until(|| kinds(&server, types::PRESENCE_CHANGED).len() == 2);
+    let last = kinds(&server, types::PRESENCE_CHANGED).pop().unwrap();
+    let body = SignedEvent::open(&last.jws).unwrap().body;
+    assert_eq!(body.data["game_id"], "still-playing");
+    assert_eq!(w.call("XOnlineTaskContinue", &[h]), CONNECTED);
+}
+
+#[test]
+fn presence_set_during_an_outage_reaches_the_server_after_it() {
+    let server = Server::new();
+    let a = server.account("Patient");
+    let proxy = Flaky::new(&server.embedded.url);
+    let mut w = outage_world(&proxy, &a, Duration::from_millis(50), Duration::from_secs(90));
+    let h = w.logon();
+    let posted = proxy.count("POST", "/v1/events");
+    proxy.set_down(true);
+    assert_eq!(w.hle.set_game_id(Some("set-while-down")), Ok(()));
+    server.until(|| proxy.count("POST", "/v1/events") >= posted + 3);
+    assert_eq!(w.call("XOnlineTaskContinue", &[h]), CONNECTED);
+    assert!(kinds(&server, types::PRESENCE_CHANGED).is_empty());
+    proxy.set_down(false);
+    server.until(|| {
+        server
+            .presence()
+            .first()
+            .is_some_and(|p| p.game_id.as_deref() == Some("set-while-down"))
+    });
+    assert_eq!(w.call("XOnlineTaskContinue", &[h]), CONNECTED);
 }

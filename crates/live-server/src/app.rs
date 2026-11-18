@@ -555,6 +555,7 @@ impl Live {
             dispatcher,
         };
         applied.wait_for(|p| *p >= head).await?;
+        live.model.renew_deadlines(now());
         let live = Arc::new(live);
         if timers == Timers::Driven {
             return Ok(live);

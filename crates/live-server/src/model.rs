@@ -340,6 +340,30 @@ impl Model {
             .is_some()
     }
 
+    /// A (re)start: every presence, open session and live game is given
+    /// a fresh deadline from `now`. Pings and game frames are not in the
+    /// log, so a replay rebuilds their deadlines from the last event's `at`,
+    /// and a player who sat in a lobby for longer than the TTL would be
+    /// expired by the first sweep after a restart (a Worker deploy restarts
+    /// the hub) while still connected. A restart is not an absence: whoever
+    /// is really gone still expires a TTL after it.
+    pub fn renew_deadlines(&self, now: i64) {
+        let mut s = self.state.write().unwrap();
+        for p in s.presence.values_mut() {
+            p.last_seen = p.last_seen.max(now);
+        }
+        for item in s.sessions.values_mut() {
+            if item.state == "open" {
+                item.last_activity = item.last_activity.max(now);
+            }
+        }
+        for g in s.games.values_mut() {
+            if g.ended.is_none() {
+                g.last_activity = g.last_activity.max(now);
+            }
+        }
+    }
+
     pub fn touch_host_sessions(&self, xuid: Xuid, now: i64) {
         for item in self.state.write().unwrap().sessions.values_mut() {
             if item.host_xuid == xuid && item.state == "open" {

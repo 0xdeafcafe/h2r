@@ -493,7 +493,13 @@ as the server: presence with no event or ping for 90 s gets
 `PresenceExpired`, and a game with no frame or event for 5 minutes gets
 `GameEnded {reason: "lost"}`. Pings (`POST /v1/presence/ping`, or `ping` on
 the ingest socket) refresh the in-memory deadline only. Deadlines start
-from the projection (the last event's `at`), so they survive a restart.
+from the projection (the last event's `at`), so they survive a restart; a
+restart then renews every presence, open session and live game to a full
+deadline from the moment it finishes (`Model::renew_deadlines`). Pings and
+frames are not in the log, so without that a player who sat in a lobby for
+longer than the TTL would be expired by the first sweep after a restart
+(every Worker deploy restarts the hub) while still connected. Whoever really
+is gone still expires a TTL after the restart.
 Until the deadline passes, a game that has gone quiet still reads as live.
 The 5 minutes is generous on purpose. Across the live.forbes.red log on
 2026-11-18 (46 games), a game being played never went more than 17 s
@@ -929,8 +935,46 @@ events also carry their own signed envelopes. Invalid/unknown/revoked identities
 return `XONLINE_E_LOGON_INVALID_USER` (`0x80151006`); transport/protocol failures
 return CANNOT_ACCESS_SERVICE (`0x80151001`); HTTP 429/503 returns SERVERS_TOO_BUSY
 (`0x80151003`). These are task results, so the title's own error classifier sees
-them. Failed logon publishes no guest user array. A failed heartbeat changes the
-persistent connection task to CONNECTION_LOST (`0x80151004`).
+them. Failed logon publishes no guest user array. A heartbeat that keeps
+failing changes the persistent connection task to CONNECTION_LOST
+(`0x80151004`), after a grace (below).
+
+### Outages
+
+A Worker deploy restarts the hub, and a network blip drops a request; neither
+should sign anyone out. The client rides out a short outage at two levels:
+
+- **Retries.** A request that is safe to repeat is retried on a transport
+  failure, 5xx or 429: 3 attempts, 0.5 s then 1 s apart, or the server's
+  `Retry-After` (capped at 5 s) (`ServerOptions::retry`). Each attempt gets
+  a fresh bearer, since a token is spent by its first use. Safe to repeat:
+  every GET, mute PUT/DELETE, the heartbeat, and signed events (presence,
+  Teams, mailbox, session events). The server takes an event once by its
+  nonce, so a resend of one whose answer was lost comes back 409 "nonce
+  already used", and after a retry that counts as sent. Session creation,
+  reports and arbitration are sent once. When retries run out, the server's
+  own last answer (503: SERVERS_TOO_BUSY) is reported over a later failure
+  to reach it.
+- **Grace.** A failed heartbeat (after its retries) is not a lost
+  connection. The connection is lost once heartbeats have failed for
+  `ServerOptions::connection_grace` (90 s: the fourth failed beat at 30 s),
+  and any answered heartbeat starts it over. A presence change that fails
+  for the same reasons counts the same way, and is kept and sent after the
+  next good heartbeat (unless a newer one went through first). A refused
+  account is not an outage: a ban (ACCOUNT_REQUIRES_MANAGEMENT) or 401/403
+  (INVALID_USER) ends the connection at once.
+- **Forgotten presence.** If the heartbeat comes back 404 ("not signed in"),
+  the server expired the player's presence while it could not be reached.
+  The player never left: the client appends `SignedIn` again, then the
+  presence it last had, and carries on.
+
+The Worker retries too ([live-worker.md](live-worker.md) "Deploys and
+retries"), and the server renews deadlines on restart (Managers, above).
+Tests: `crates/live-hle/tests/server.rs` drives a proxy (`Flaky`) in front of
+the embedded server that fails requests on cue: an outage shorter than the
+grace, then a real one; a lost answer to a presence event (one event on the
+server); dropped connections and a deploy under logon and storage reads;
+retries running out; a forgotten presence; presence set while down.
 
 As required by [live-security.md](live-security.md), remote services require
 HTTPS; HTTP is allowed only for loopback. Discovery can select a same-origin API

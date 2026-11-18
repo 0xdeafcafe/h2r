@@ -12,7 +12,7 @@ mod invites;
 pub mod maps;
 mod messages;
 mod mutes;
-pub use client::{ServerOptions, ServerStatus};
+pub use client::{Retry, ServerOptions, ServerStatus};
 pub use messages::{ATTACHMENT_CAP, SUMMARY_SIZE};
 pub mod entries;
 #[cfg(unix)]
