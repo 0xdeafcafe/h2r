@@ -462,3 +462,31 @@ fn the_checkpoint_line_is_logged_once_per_change() {
     assert_eq!(save::note(&last, &[2]), None);
     assert!(save::note(&last, &[2, 5]).unwrap().contains("2, 5"));
 }
+
+/// docs/runtime/snapshots.md: a snapshot waits while co-op is armed or a
+/// spawn of ours is running; disarmed and idle it doesn't.
+#[test]
+fn players_block_snapshots_while_armed_or_spawning() {
+    let arm = Arm::session();
+    let st = Mutex::new(State::default());
+    assert_eq!(players_live(&arm, &st), None);
+    arm.arm(None);
+    assert_eq!(
+        players_live(&arm, &st).as_deref(),
+        Some("a co-op session has armed the co-op hooks")
+    );
+    arm.disarm();
+    lock(&st).spawning = Some(0x0002_0002);
+    assert_eq!(
+        players_live(&arm, &st),
+        Some(format!(
+            "player {}'s spawn is running",
+            index_of(0x0002_0002)
+        ))
+    );
+    lock(&st).spawning = None;
+    // Flags left from the session: not a blocker once disarmed.
+    lock(&st).pending = true;
+    lock(&st).cinematic = true;
+    assert_eq!(players_live(&arm, &st), None);
+}

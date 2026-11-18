@@ -20,8 +20,16 @@ const HUDS: u32 = 0x0053_0000;
 
 fn swaps() -> Vec<content::HudSwap> {
     vec![
-        content::HudSwap { owner: CYBORG, halo1: H1_HUD, halo2: H2_HUD },
-        content::HudSwap { owner: RIFLE, halo1: H1_HUD, halo2: H2_HUD },
+        content::HudSwap {
+            owner: CYBORG,
+            halo1: H1_HUD,
+            halo2: H2_HUD,
+        },
+        content::HudSwap {
+            owner: RIFLE,
+            halo1: H1_HUD,
+            halo2: H2_HUD,
+        },
     ]
 }
 
@@ -54,7 +62,8 @@ fn world(interfaces: u32, weapon: u32) -> FlatMemory {
         m.set_u32(e + entry_layout::ADDRESS, at).unwrap();
     }
     m.set_u32(BIPED + UNIT_HUD_INTERFACES, 2).unwrap();
-    m.set_u32(BIPED + UNIT_HUD_INTERFACES + 4, INTERFACES).unwrap();
+    m.set_u32(BIPED + UNIT_HUD_INTERFACES + 4, INTERFACES)
+        .unwrap();
     for i in 0..2 {
         m.set_u32(INTERFACES + i * 8, NHDT).unwrap();
         m.set_u32(INTERFACES + i * 8 + 4, interfaces).unwrap();
@@ -99,9 +108,17 @@ fn a_reference_to_another_hud_is_left_alone() {
 #[test]
 fn a_target_that_is_not_a_loaded_nhdt_changes_nothing() {
     let mut m = world(H1_HUD, H1_HUD);
-    let bad = [content::HudSwap { owner: CYBORG, halo1: H1_HUD, halo2: CYBORG }];
+    let bad = [content::HudSwap {
+        owner: CYBORG,
+        halo1: H1_HUD,
+        halo2: CYBORG,
+    }];
     assert_eq!(apply(&mut m, &bad, HudStyle::Halo2).unwrap(), 0);
-    let gone = [content::HudSwap { owner: 0xe1f7_0007, halo1: H1_HUD, halo2: H2_HUD }];
+    let gone = [content::HudSwap {
+        owner: 0xe1f7_0007,
+        halo1: H1_HUD,
+        halo2: H2_HUD,
+    }];
     assert_eq!(apply(&mut m, &gone, HudStyle::Halo2).unwrap(), 0);
     assert_eq!(huds(&m), [H1_HUD; 3]);
 }
@@ -114,14 +131,29 @@ fn campaign_levels_read_their_hud_files() {
     assert!(read_campaign_table(&dir).is_empty());
     let level = dir.join("campaigns").join("halo1");
     std::fs::create_dir_all(&level).unwrap();
-    let file = content::LevelHud { hud: swaps(), sensor: Some([45, -43]) };
-    std::fs::write(level.join(content::LevelHud::file_name("A10")), file.to_toml()).unwrap();
-    std::fs::write(level.join("a30.hud.toml"), content::LevelHud::default().to_toml()).unwrap();
+    let file = content::LevelHud {
+        hud: swaps(),
+        sensor: Some([45, -43]),
+    };
+    std::fs::write(
+        level.join(content::LevelHud::file_name("A10")),
+        file.to_toml(),
+    )
+    .unwrap();
+    std::fs::write(
+        level.join("a30.hud.toml"),
+        content::LevelHud::default().to_toml(),
+    )
+    .unwrap();
     let t = read_campaign_table(&dir);
     assert_eq!(t.len(), 1, "an empty file names nothing");
     assert_eq!(
         t["a10"],
-        MapHud { sandboxed: false, swaps: swaps(), sensor: Some([45, -43]) }
+        MapHud {
+            sandboxed: false,
+            swaps: swaps(),
+            sensor: Some([45, -43])
+        }
     );
     // A Halo 2-assets map beside it (written by the import) is not read as
     // a level of its own, and marks the level as having one.
@@ -140,7 +172,8 @@ fn campaign_levels_read_their_hud_files() {
 fn retail_sensor(m: &mut FlatMemory) {
     for (i, [x, y]) in [[41i16, -42], [31, -31], [31, -31]].iter().enumerate() {
         m.set_u16(SENSOR_CENTRES + 4 * i as u32, *x as u16).unwrap();
-        m.set_u16(SENSOR_CENTRES + 4 * i as u32 + 2, *y as u16).unwrap();
+        m.set_u16(SENSOR_CENTRES + 4 * i as u32 + 2, *y as u16)
+            .unwrap();
     }
     m.set_u32(SENSOR_CENTRES + 12, 0).unwrap();
 }
@@ -150,16 +183,32 @@ fn halo1s_hud_centres_the_motion_sensor_and_halo2s_puts_it_back() {
     let mut m = world(H1_HUD, H1_HUD);
     retail_sensor(&mut m);
     let mut s = Sensor::default();
-    assert!(s.activate(&mut m, Some([45, -43]), HudStyle::Halo1).unwrap());
+    assert!(
+        s.activate(&mut m, Some([45, -43]), HudStyle::Halo1)
+            .unwrap()
+    );
     assert_eq!(read_sensor(&m).unwrap(), [[45, -43]; 3]);
-    assert_eq!(m.u32(SENSOR_CENTRES + 12).unwrap(), 0, "the fourth entry is left alone");
+    assert_eq!(
+        m.u32(SENSOR_CENTRES + 12).unwrap(),
+        0,
+        "the fourth entry is left alone"
+    );
     // Again: already there.
-    assert!(!s.activate(&mut m, Some([45, -43]), HudStyle::Halo1).unwrap());
+    assert!(
+        !s.activate(&mut m, Some([45, -43]), HudStyle::Halo1)
+            .unwrap()
+    );
     // The setting changed between games: Halo 2's table back.
-    assert!(s.activate(&mut m, Some([45, -43]), HudStyle::Halo2).unwrap());
+    assert!(
+        s.activate(&mut m, Some([45, -43]), HudStyle::Halo2)
+            .unwrap()
+    );
     assert_eq!(read_sensor(&m).unwrap(), [[41, -42], [31, -31], [31, -31]]);
     // And Halo 1's again.
-    assert!(s.activate(&mut m, Some([45, -43]), HudStyle::Halo1).unwrap());
+    assert!(
+        s.activate(&mut m, Some([45, -43]), HudStyle::Halo1)
+            .unwrap()
+    );
     assert_eq!(read_sensor(&m).unwrap(), [[45, -43]; 3]);
 }
 
@@ -170,7 +219,10 @@ fn a_map_without_a_halo1_sensor_gets_halo2s_back() {
     let mut s = Sensor::default();
     // A retail map first: nothing written, Halo 2's table remembered.
     assert!(!s.activate(&mut m, None, HudStyle::Halo2).unwrap());
-    assert!(s.activate(&mut m, Some([45, -43]), HudStyle::Halo1).unwrap());
+    assert!(
+        s.activate(&mut m, Some([45, -43]), HudStyle::Halo1)
+            .unwrap()
+    );
     // Then a retail map (or a converted one without a centre) under either style.
     assert!(s.activate(&mut m, None, HudStyle::Halo1).unwrap());
     assert_eq!(read_sensor(&m).unwrap(), [[41, -42], [31, -31], [31, -31]]);
@@ -190,4 +242,27 @@ fn the_swap_plans_after_the_live_options() {
     let line = text.lines().find(|l| l.contains("GAME_ACTIVATE")).unwrap();
     let ext = line.find(crate::variant_ext::FEATURE).unwrap();
     assert!(ext < line.find(FEATURE).unwrap(), "{line}");
+}
+
+#[test]
+fn a_snapshot_keeps_halo2s_sensor_table() {
+    let mut m = world(H1_HUD, H1_HUD);
+    retail_sensor(&mut m);
+    let mut s = Sensor::default();
+    assert!(
+        s.activate(&mut m, Some([45, -43]), HudStyle::Halo1)
+            .unwrap()
+    );
+    let bytes = s.save_state();
+    // A fresh boot loads the snapshot, whose guest table is Halo 1's.
+    let mut b = Sensor::default();
+    b.load_state(&bytes).unwrap();
+    assert_eq!(b.save_state(), bytes, "the same state again");
+    assert!(b.activate(&mut m, None, HudStyle::Halo2).unwrap());
+    assert_eq!(read_sensor(&m).unwrap(), [[41, -42], [31, -31], [31, -31]]);
+    // Nothing remembered round-trips as nothing.
+    let none = Sensor::default().save_state();
+    b.load_state(&none).unwrap();
+    assert_eq!(b.save_state(), none);
+    assert!(b.load_state(&bytes[..bytes.len() - 1]).is_err());
 }

@@ -1237,3 +1237,56 @@ fn the_retail_co_op_lobby_on_live_drawn_from_the_disc() {
         }
     }
 }
+
+/// docs/runtime/snapshots.md: the screens block a snapshot while this
+/// console hosts or joined a co-op campaign, while the join screen is due
+/// and while the hooks are armed; idle they don't.
+#[test]
+fn the_co_op_screens_block_snapshots_while_in_a_session() {
+    let (lobby, arm) = lobby_with(Arc::default());
+    assert_eq!(lobby.snapshot_live(), None, "idle");
+    lobby.open_from_menu();
+    assert_eq!(
+        lobby.snapshot_live().as_deref(),
+        Some("hosting a co-op campaign")
+    );
+    lobby.leave();
+    assert_eq!(lobby.snapshot_live(), None, "left");
+
+    let j = live_hle::Joined::Known {
+        session: Box::new(coop_session(None)),
+        refreshed: true,
+    };
+    assert!(lobby.joined(&j));
+    assert_eq!(
+        lobby.snapshot_live().as_deref(),
+        Some("joined Alpha's co-op campaign")
+    );
+    assert!(!lobby.joined(&live_hle::Joined::NotJoined));
+    assert_eq!(
+        lobby.snapshot_live().as_deref(),
+        Some("the co-op join screen is due"),
+        "not opened yet"
+    );
+    assert!(lobby.take_open_join());
+    assert_eq!(lobby.snapshot_live(), None);
+
+    // Armed by someone else (the probe's arm is shared).
+    arm.arm(None);
+    assert_eq!(
+        lobby.snapshot_live().as_deref(),
+        Some("a co-op session has armed the co-op hooks")
+    );
+    arm.disarm();
+    assert_eq!(lobby.snapshot_live(), None);
+}
+
+#[test]
+fn the_co_op_rows_lobby_mode_waits_only_inside_its_window() {
+    let now = std::time::Instant::now();
+    assert!(!coop_mode_waits(None, now));
+    assert!(coop_mode_waits(Some(now + COOP_MODE_WINDOW), now));
+    assert!(coop_mode_waits(Some(now), now));
+    let late = now + COOP_MODE_WINDOW + std::time::Duration::from_secs(1);
+    assert!(!coop_mode_waits(Some(now + COOP_MODE_WINDOW), late));
+}

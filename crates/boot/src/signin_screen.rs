@@ -1029,6 +1029,16 @@ pub async fn open_keyboard(cx: &Cx, rows: &SigninRows, field: Field) -> Result<(
     Ok(())
 }
 
+/// Why `signin-strings` can't be snapshotted now: a keyboard of ours is
+/// open, so the lookup serves our titles for retail ids and the text read
+/// back goes to a prompt only the host knows. Otherwise the page is
+/// allocated at build and every id's address is fixed.
+pub fn snapshot_live(typing: &Typing) -> Option<String> {
+    typing
+        .field()
+        .map(|f| format!("the sign-in keyboard for the {f:?} is open"))
+}
+
 /// The served strings: a page of ours the locale lookup reads.
 pub struct Strings(pub Arc<SigninRows>);
 
@@ -1042,6 +1052,10 @@ impl feature::Feature for Strings {
         let rows = Arc::clone(&self.0);
         b.locale()
             .source("signin text", move |id| rows.string(base, id));
+        let rows = Arc::clone(&self.0);
+        b.snapshot(feature::SnapshotPolicy::forbid_while(move || {
+            snapshot_live(&rows.typing)
+        }));
         Ok(())
     }
 }
@@ -1562,5 +1576,13 @@ mod tests {
             text_block(Some("10, -20, -30, 40")).rect,
             [10, -20, -30, 40]
         );
+    }
+
+    #[test]
+    fn a_snapshot_waits_while_our_keyboard_is_open() {
+        let typing = Typing::default();
+        assert_eq!(snapshot_live(&typing), None);
+        typing.start(Field::Invite);
+        assert!(snapshot_live(&typing).is_some());
     }
 }

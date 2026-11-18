@@ -28,10 +28,7 @@ pub const SCREEN_SLOT: u32 = 0x78;
 /// `screen`'s window and slot.
 pub fn window_slot(cx: &Cx, screen: u32) -> Result<(u32, u32), EntryError> {
     Ok(cx.read(|m| -> Result<_, MemFault> {
-        Ok((
-            m.u32(screen + SCREEN_WINDOW)?,
-            m.u32(screen + SCREEN_SLOT)?,
-        ))
+        Ok((m.u32(screen + SCREEN_WINDOW)?, m.u32(screen + SCREEN_SLOT)?))
     })?)
 }
 
@@ -129,6 +126,10 @@ impl<T> AfterClose<T> {
     /// Whether `screen` is closing with work waiting.
     pub fn closing(&self, screen: u32) -> bool {
         self.lock().contains_key(&screen)
+    }
+    /// Whether any screen is closing with work waiting.
+    pub fn waiting(&self) -> bool {
+        !self.lock().is_empty()
     }
     /// `screen` was freed: its waiting work, if any.
     pub fn freed(&self, screen: u32) -> Option<T> {

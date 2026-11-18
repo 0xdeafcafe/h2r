@@ -176,6 +176,9 @@ impl feature::Feature for Precision {
             // The precision choice is read from the options the host's
             // block was just written into.
             .after_feature(crate::variant_ext::FEATURE);
+        // The swap table is read at install and never changes; the swap
+        // itself is in guest memory.
+        b.snapshot(feature::SnapshotPolicy::Stateless);
         Ok(())
     }
 }

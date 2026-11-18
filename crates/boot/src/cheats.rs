@@ -618,6 +618,17 @@ fn lock(c: &Mutex<Cheats>) -> std::sync::MutexGuard<'_, Cheats> {
     c.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Why `cheats` can't be snapshotted now (docs/runtime/snapshots.md): a
+/// cheat is on or has something left to undo (units we flagged, a game
+/// speed we set, the HUD flag we hold, a flight). That is host state a
+/// load would not put back. With nothing on and nothing to undo the tick
+/// hook does nothing.
+pub fn snapshot_live(c: &Mutex<Cheats>) -> Option<String> {
+    lock(c)
+        .busy()
+        .then(|| "a cheat is on or has something to undo".into())
+}
+
 impl feature::Feature for CheatsFeature {
     fn manifest(&self) -> feature::Manifest {
         feature::Manifest::new(
@@ -651,6 +662,10 @@ impl feature::Feature for CheatsFeature {
             // position) are what the next tick starts from, whatever they set.
             .after_feature(crate::touch_glue::FEATURE)
             .after_feature(crate::skulls_custom::FEATURE);
+        let live = Arc::clone(&self.0);
+        b.snapshot(feature::SnapshotPolicy::forbid_while(move || {
+            snapshot_live(&live)
+        }));
         Ok(())
     }
 }

@@ -773,6 +773,17 @@ impl Arm {
             CEILING
         }
     }
+    /// Why a machine snapshot must wait (docs/runtime/snapshots.md): armed,
+    /// the hooks follow a co-op session whose peers and Live state no
+    /// snapshot holds. The probe's arm is on for the whole run.
+    pub fn snapshot_live(&self) -> Option<String> {
+        if self.forced {
+            return Some("the co-op probe is on".into());
+        }
+        self.on
+            .load(Ordering::SeqCst)
+            .then(|| "a co-op session has armed the co-op hooks".into())
+    }
     /// The level the host sets, when armed as host.
     pub fn want(&self) -> Option<Want> {
         if !self.active() {
@@ -780,6 +791,25 @@ impl Arm {
         }
         self.want.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
+}
+
+/// Why the probe (or the co-op over Live hooks) can't be snapshotted now:
+/// armed ([`Arm::snapshot_live`]), a session start's peer or player count
+/// is shown changed until `OPTIONS_NEW` puts it back, or a hash log is
+/// open (a file the snapshot does not hold). Disarmed, what is left is the
+/// last values said and the host setup's retry count, which only shape the
+/// log and the next session's first setup attempt.
+fn probe_live(arm: &Arm, st: &Mutex<State>) -> Option<String> {
+    if let Some(why) = arm.snapshot_live() {
+        return Some(why);
+    }
+    let s = lock(st);
+    if s.pending.is_some() {
+        return Some("a session start's peer count is shown changed".into());
+    }
+    s.log
+        .as_ref()
+        .map(|log| format!("the co-op hash log {} is open", log.path.display()))
 }
 
 /// The probe as a feature: added when `H2_COOP_PROBE` is on (armed from
@@ -1078,6 +1108,10 @@ impl feature::Feature for Probe {
                 })
                 .optional();
         }
+        let (arm, st) = (Arc::clone(&self.arm), Arc::clone(&self.state));
+        b.snapshot(feature::SnapshotPolicy::forbid_while(move || {
+            probe_live(&arm, &st)
+        }));
         Ok(())
     }
 }

@@ -338,6 +338,44 @@ impl Agent {
         self.lock().cinematic = on;
     }
 
+    /// What a machine snapshot keeps of the game as the agent saw it
+    /// (docs/runtime/snapshots.md): whether a cutscene is running, the map
+    /// and its tick count. Without them a loaded cutscene reads as gameplay,
+    /// and the map the agent last saw makes the first tick after a load
+    /// look like a map change. Connections, pauses and recordings are the
+    /// session's, not the game's, and stay.
+    pub fn save_state(&self) -> Vec<u8> {
+        let s = self.lock();
+        let mut w = snapshot::codec::Writer::new();
+        w.bool(s.cinematic);
+        match &s.game.map {
+            Some(map) => w.bool(true).str(map),
+            None => w.bool(false),
+        };
+        w.u64(s.map_ticks);
+        w.into_bytes()
+    }
+
+    /// Puts [`Self::save_state`]'s bytes back; nothing changes unless all
+    /// of them decode.
+    pub fn load_state(&self, bytes: &[u8]) -> Result<(), String> {
+        let r = &mut snapshot::codec::Reader::new(bytes, "agent");
+        let e = |e: snapshot::Error| e.to_string();
+        let cinematic = r.bool().map_err(e)?;
+        let map = if r.bool().map_err(e)? {
+            Some(r.str().map_err(e)?.to_owned())
+        } else {
+            None
+        };
+        let map_ticks = r.u64().map_err(e)?;
+        r.finish().map_err(e)?;
+        let mut s = self.lock();
+        s.cinematic = cinematic;
+        s.game.map = map;
+        s.map_ticks = map_ticks;
+        Ok(())
+    }
+
     /// The game is exiting: fail what's queued and waiting, and let a
     /// paused game go.
     pub fn shutdown(&self) {

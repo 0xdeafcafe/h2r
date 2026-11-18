@@ -45,13 +45,33 @@ fn a_map_s_category_is_where_the_game_loads_it_from() {
 #[test]
 fn categories_in_order_empty_ones_hidden_and_maps_sorted() {
     let cat = Catalogue::new([
-        map(0x14, "Ascension", 20, "scenarios\\multi\\ascension\\ascension"),
+        map(
+            0x14,
+            "Ascension",
+            20,
+            "scenarios\\multi\\ascension\\ascension",
+        ),
         map(0x0a, "Lockout", 10, "scenarios\\multi\\lockout\\lockout"),
-        map(0x2_0002, "battle creek", 1000, &new_map_path(0x2_0002, "h1_beavercreek")),
-        map(0x2_0001, "Blood Gulch", 1000, &new_map_path(0x2_0001, "h1_bloodgulch")),
+        map(
+            0x2_0002,
+            "battle creek",
+            1000,
+            &new_map_path(0x2_0002, "h1_beavercreek"),
+        ),
+        map(
+            0x2_0001,
+            "Blood Gulch",
+            1000,
+            &new_map_path(0x2_0001, "h1_bloodgulch"),
+        ),
     ]);
     assert_eq!(cat.categories(), [Category::Halo2, Category::Halo1]);
-    let names = |c| cat.maps(c).iter().map(|m| m.name.as_str()).collect::<Vec<_>>();
+    let names = |c| {
+        cat.maps(c)
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect::<Vec<_>>()
+    };
     // Halo 2 keeps the game's order (sort order), Halo 1 by name, any case.
     assert_eq!(names(Category::Halo2), ["Lockout", "Ascension"]);
     assert_eq!(names(Category::Halo1), ["battle creek", "Blood Gulch"]);
@@ -61,13 +81,25 @@ fn categories_in_order_empty_ones_hidden_and_maps_sorted() {
 
 #[test]
 fn the_map_pack_keeps_its_sort_and_mods_go_by_name_then_id() {
-    let mp = |id, name: &str, sort| map(id, name, sort, &format!("t:\\$C\\4d530064{:08x}\\m", 0x100 + id - 0x3e7));
+    let mp = |id, name: &str, sort| {
+        map(
+            id,
+            name,
+            sort,
+            &format!("t:\\$C\\4d530064{:08x}\\m", 0x100 + id - 0x3e7),
+        )
+    };
     let cat = Catalogue::new([
         mp(0x3f2, "Warlock", 140),
         mp(0x3e8, "Containment", 130),
         map(0x2_0003, "Arena", 1000, &new_map_path(0x2_0003, "arena2")),
         map(0x2_0001, "Arena", 1000, &new_map_path(0x2_0001, "arena")),
-        map(0x2_0002, "Coldsnap", 1000, &new_map_path(0x2_0002, "coldsnap")),
+        map(
+            0x2_0002,
+            "Coldsnap",
+            1000,
+            &new_map_path(0x2_0002, "coldsnap"),
+        ),
     ]);
     let ids = |c| cat.maps(c).iter().map(|m| m.id).collect::<Vec<_>>();
     assert_eq!(ids(Category::MapPack), [0x3e8, 0x3f2]);
@@ -80,7 +112,12 @@ fn a_package_naming_a_slot_s_id_takes_the_slot() {
     // package's.
     let cat = Catalogue::new([
         map(0x0a, "Lockout", 10, "scenarios\\multi\\lockout\\lockout"),
-        map(0x0a, "Lockout (pack)", 10, "t:\\$C\\4D53006400000101\\lockout"),
+        map(
+            0x0a,
+            "Lockout (pack)",
+            10,
+            "t:\\$C\\4D53006400000101\\lockout",
+        ),
         map(u32::MAX, "free", 0, ""),
     ]);
     assert_eq!(cat.categories(), [Category::MapPack]);
@@ -162,7 +199,12 @@ fn slots_and_packages_read_as_the_game_lists_them() {
 #[test]
 fn one_category_or_none_leaves_the_retail_list() {
     assert!(prepare(Catalogue::default()).is_none());
-    let retail = Catalogue::new([map(0x0a, "Lockout", 10, "scenarios\\multi\\lockout\\lockout")]);
+    let retail = Catalogue::new([map(
+        0x0a,
+        "Lockout",
+        10,
+        "scenarios\\multi\\lockout\\lockout",
+    )]);
     assert!(prepare(retail).is_none());
 }
 
@@ -179,8 +221,15 @@ fn check(cases: &[(&str, &[Input], Vec<ListEffect>, &str)]) {
         let p = page();
         let mut s = named(&p, from);
         let got = run(&p, &mut s, inputs.iter().copied());
-        assert_eq!(&got, effects, "case {i}: from {from} on {inputs:?}: effects");
-        assert_eq!(p.summary(&s), *after, "case {i}: from {from} on {inputs:?}: shows");
+        assert_eq!(
+            &got, effects,
+            "case {i}: from {from} on {inputs:?}: effects"
+        );
+        assert_eq!(
+            p.summary(&s),
+            *after,
+            "case {i}: from {from} on {inputs:?}: shows"
+        );
     }
 }
 
@@ -224,7 +273,12 @@ fn categories_open_their_maps_and_b_comes_back() {
             "map-list | focus 0 Arena",
         ),
         // Mods and Halo 1 by name.
-        ("maps-mods", &[Down], vec![E::Focus(1)], "map-list | focus 1 Coldsnap"),
+        (
+            "maps-mods",
+            &[Down],
+            vec![E::Focus(1)],
+            "map-list | focus 1 Coldsnap",
+        ),
         (
             "maps-halo1",
             &[Down, Down, Down],
@@ -233,11 +287,26 @@ fn categories_open_their_maps_and_b_comes_back() {
         ),
         // A on a map is the screen's action (the lobby's map, then back to
         // Game Setup); B on the categories closes them.
-        ("maps-halo2", &[Down, A], vec![E::Focus(1), E::Action], "map-list | focus 1 Ascension"),
+        (
+            "maps-halo2",
+            &[Down, A],
+            vec![E::Focus(1), E::Action],
+            "map-list | focus 1 Ascension",
+        ),
         ("open", &[B], vec![E::Close], "closed"),
-        ("open", &[A, B, B], vec![E::Open(MAPS), E::Close, E::Close], "closed"),
+        (
+            "open",
+            &[A, B, B],
+            vec![E::Open(MAPS), E::Close, E::Close],
+            "closed",
+        ),
         // Back is B; X, Y, Start and sideways do nothing.
-        ("maps-halo2", &[Back], vec![E::Close], "map-categories | focus 0 Halo 2"),
+        (
+            "maps-halo2",
+            &[Back],
+            vec![E::Close],
+            "map-categories | focus 0 Halo 2",
+        ),
         (
             "maps-halo2",
             &[X, Y, Start, Left, Right],
@@ -282,7 +351,13 @@ fn named_states_replay_their_presses() {
     let names: Vec<&str> = states.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(
         names,
-        ["open", "maps-halo2", "maps-mappack", "maps-mods", "maps-halo1"]
+        [
+            "open",
+            "maps-halo2",
+            "maps-mappack",
+            "maps-mods",
+            "maps-halo1"
+        ]
     );
     let titles: Vec<String> = states.iter().map(|(_, s)| p.spec(s).title).collect();
     assert_eq!(
@@ -290,7 +365,6 @@ fn named_states_replay_their_presses() {
         ["Select Map", "Halo 2", "Map Pack", "Mods", "Halo: CE"]
     );
 }
-
 
 /// What boot adds when a second campaign and a map list of several
 /// categories are both installed: the campaigns' hooks and picker, the map
@@ -320,7 +394,10 @@ fn the_boot_s_features_plan_together_with_the_campaigns() {
     r.add(&crate::list_class::ListClass::with_rows(
         "campaigns-screen",
         crate::campaign_menu::SCREEN,
-        Arc::new(crate::campaign_menu::PickerRows::new(Arc::clone(&campaigns), None)),
+        Arc::new(crate::campaign_menu::PickerRows::new(
+            Arc::clone(&campaigns),
+            None,
+        )),
     ))
     .unwrap();
     r.add(&MapSelect {
@@ -336,7 +413,10 @@ fn the_boot_s_features_plan_together_with_the_campaigns() {
         Ok(p) => p.text(),
         Err(c) => panic!(
             "refused: {}",
-            c.iter().map(|c| c.to_string()).collect::<Vec<_>>().join("; ")
+            c.iter()
+                .map(|c| c.to_string())
+                .collect::<Vec<_>>()
+                .join("; ")
         ),
     };
     for line in [
@@ -394,8 +474,18 @@ fn rows_show_the_category_or_the_replacing_package_and_nothing_else() {
     let cat = Catalogue::with_mods(
         [
             map(0x0a, "Lockout", 10, "scenarios\\multi\\lockout\\lockout"),
-            map(0x3e8, "Containment", 130, "t:\\$C\\4D53006400000101\\triplicate"),
-            map(0x46, "Containment", 70, "scenarios\\multi\\containment\\containment"),
+            map(
+                0x3e8,
+                "Containment",
+                130,
+                "t:\\$C\\4D53006400000101\\triplicate",
+            ),
+            map(
+                0x46,
+                "Containment",
+                70,
+                "scenarios\\multi\\containment\\containment",
+            ),
         ],
         &[("containment".into(), "Containment (Rockets)".into())],
     );
@@ -404,7 +494,10 @@ fn rows_show_the_category_or_the_replacing_package_and_nothing_else() {
         row_label(&cat, Mode::Categories, first(Category::Mods)),
         Some((2, "Mods".into()))
     );
-    assert_eq!(row_label(&cat, Mode::Categories, 0x0a), Some((0, "Halo 2".into())));
+    assert_eq!(
+        row_label(&cat, Mode::Categories, 0x0a),
+        Some((0, "Halo 2".into()))
+    );
     // A map's own name is the slot's: no label, unless a package replaces it.
     assert_eq!(row_label(&cat, Mode::Maps(Category::Halo2), 0x0a), None);
     let (n, text) = row_label(&cat, Mode::Maps(Category::Mods), 0x46).unwrap();
@@ -419,14 +512,31 @@ fn a_disc_map_a_package_replaces_is_listed_under_mods_by_the_package_name() {
     let cat = Catalogue::with_mods(
         [
             map(0x0a, "Lockout", 10, "scenarios\\multi\\lockout\\lockout"),
-            map(0x46, "Containment", 70, "scenarios\\multi\\Containment\\Containment"),
+            map(
+                0x46,
+                "Containment",
+                70,
+                "scenarios\\multi\\Containment\\Containment",
+            ),
             // A Map Pack map of the same file name is not the disc's.
-            map(0x3e8, "Containment", 130, "t:\\$C\\4D53006400000101\\containment"),
+            map(
+                0x3e8,
+                "Containment",
+                130,
+                "t:\\$C\\4D53006400000101\\containment",
+            ),
         ],
         &[("containment".into(), "Rocket Containment".into())],
     );
-    assert_eq!(cat.categories(), [Category::Halo2, Category::MapPack, Category::Mods]);
-    assert_eq!(cat.maps(Category::Halo2).len(), 1, "the disc's slot serves the package");
+    assert_eq!(
+        cat.categories(),
+        [Category::Halo2, Category::MapPack, Category::Mods]
+    );
+    assert_eq!(
+        cat.maps(Category::Halo2).len(),
+        1,
+        "the disc's slot serves the package"
+    );
     let m = &cat.maps(Category::Mods)[0];
     assert_eq!((m.id, m.name.as_str()), (0x46, "Rocket Containment"));
     assert_eq!(m.replaces.as_deref(), Some("Containment"));
@@ -446,12 +556,22 @@ fn a_map_pack_map_a_package_replaces_is_listed_under_mods_by_the_package_name() 
         ],
         &[("turf".into(), "Ownage Turf".into())],
     );
-    assert_eq!(cat.categories(), [Category::Halo2, Category::MapPack, Category::Mods]);
+    assert_eq!(
+        cat.categories(),
+        [Category::Halo2, Category::MapPack, Category::Mods]
+    );
     let m = &cat.maps(Category::Mods)[0];
     assert_eq!((m.id, m.name.as_str()), (0x3e8, "Ownage Turf"));
     assert_eq!(m.replaces.as_deref(), Some("Turf"));
-    assert_eq!(m.path, "t:\\$C\\4D53006400000101\\turf", "the slot loads the installed map");
-    let pack: Vec<&str> = cat.maps(Category::MapPack).iter().map(|m| m.name.as_str()).collect();
+    assert_eq!(
+        m.path, "t:\\$C\\4D53006400000101\\turf",
+        "the slot loads the installed map"
+    );
+    let pack: Vec<&str> = cat
+        .maps(Category::MapPack)
+        .iter()
+        .map(|m| m.name.as_str())
+        .collect();
     assert_eq!(pack, ["Relic"]);
     assert_eq!(
         row_label(&cat, Mode::Maps(Category::Mods), 0x3e8).map(|l| l.1),
@@ -499,4 +619,22 @@ fn a_maps_short_name_is_its_file_without_the_ending() {
     assert_eq!(m.short_name(), "lockout");
     let m = map(0x1001, "Blood Gulch", 1, "maps\\H1_BloodGulch.map");
     assert_eq!(m.short_name(), "h1_bloodgulch");
+}
+
+#[test]
+fn snapshots_wait_while_a_select_map_of_ours_is_armed_or_up() {
+    let f = Flow::default();
+    assert_eq!(f.snapshot_live(), None);
+    f.change_map();
+    assert!(f.snapshot_live().unwrap().contains("to be built"));
+    assert_eq!(f.building(0x1614), Some(Mode::Categories));
+    assert!(f.snapshot_live().unwrap().contains("1 Select Map"));
+    f.pick(Category::Halo2);
+    assert_eq!(f.building(0x2614), Some(Mode::Maps(Category::Halo2)));
+    assert_eq!(f.picked(0x2614), Some(0x1000));
+    assert!(f.snapshot_live().is_some());
+    assert_eq!(f.freed(0x2000), Some(0x1000));
+    assert!(f.snapshot_live().unwrap().contains("1 Select Map"));
+    assert_eq!(f.freed(0x1000), None);
+    assert_eq!(f.snapshot_live(), None, "every screen of ours freed");
 }
