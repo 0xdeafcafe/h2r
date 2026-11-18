@@ -56,6 +56,14 @@ pub const SETUP_ROWS: u32 = 0x70;
 pub const SETUP_ACTION: u32 = 2;
 /// Retail's "Change Map": only a multiplayer custom game's list has it.
 pub const CHANGE_MAP: i16 = 0;
+/// Retail's "Quick Options..." row.
+pub const QUICK_OPTIONS: i16 = 4;
+/// Retail's "Switch To:" rows (co-op 6, custom game 7, matchmaking 8; the
+/// row text table at `0x2bb74f`). Our rows go above the first of them, so
+/// they sit under Quick Options (a custom game's list is Change Map,
+/// Change Rules, Quick Options, Switch To: Co-Op Game, Switch To:
+/// Matchmaking; ctor `0x2bb5a8`).
+pub const SWITCH_TO: [i16; 3] = [6, 7, 8];
 /// Our row's action: past retail's (0 to 9; the row-chosen jump table has
 /// no bounds check, so the press must never reach the original).
 pub const OPTIONS_ACTION: i16 = 10;
@@ -124,22 +132,46 @@ pub fn setup_actions(m: &dyn GuestMemory, list: u32) -> Result<Vec<i16>, engine:
 
 /// Adds our row to the list at `list`; the new count.
 pub fn add_row(m: &mut dyn GuestMemory, list: u32) -> Result<usize, String> {
-    let actions = setup_actions(m, list).map_err(|e| format!("{e:?}"))?;
-    let array = engine::datum::DatumArray::at(
-        m.u32(list.wrapping_add(SETUP_ROWS))
-            .map_err(|e| format!("{e:?}"))?,
-    );
-    let h = array
-        .new_datum(m)
-        .map_err(|e| format!("{e:?}"))?
-        .ok_or("the list is full")?;
-    let elem = array
-        .try_get(m, h)
-        .map_err(|e| format!("{e:?}"))?
-        .ok_or("the new row is not there")?;
-    m.set_u16(elem.wrapping_add(SETUP_ACTION), OPTIONS_ACTION as u16)
-        .map_err(|e| format!("{e:?}"))?;
-    Ok(actions.len() + 1)
+    insert_row(m, list, OPTIONS_ACTION)
+}
+
+/// The list's actions with `ours` placed above the first "Switch To:" row
+/// (at the end when there is none).
+pub fn placed(actions: &[i16], ours: i16) -> Vec<i16> {
+    let at = actions
+        .iter()
+        .position(|a| SWITCH_TO.contains(a))
+        .unwrap_or(actions.len());
+    let mut out = actions.to_vec();
+    out.insert(at, ours);
+    out
+}
+
+/// Adds a row with `action` to the list at `list`, above the "Switch To:"
+/// rows ([`placed`]): a new datum, then the rows' actions written back in
+/// slot order. The new count.
+pub fn insert_row(m: &mut dyn GuestMemory, list: u32, action: i16) -> Result<usize, String> {
+    let e = |e: engine::memory::MemFault| format!("{e:?}");
+    let actions = setup_actions(m, list).map_err(e)?;
+    let array = engine::datum::DatumArray::at(m.u32(list.wrapping_add(SETUP_ROWS)).map_err(e)?);
+    array.new_datum(m).map_err(e)?.ok_or("the list is full")?;
+    let hw = array
+        .header_field(m, engine::datum::layout::HIGH_WATER)
+        .map_err(e)?;
+    let mut elems = Vec::new();
+    for i in 0..hw.max(0) {
+        if let Some(elem) = array.get_absolute(m, i).map_err(e)? {
+            elems.push(elem);
+        }
+    }
+    let order = placed(&actions, action);
+    if elems.len() != order.len() {
+        return Err(format!("{} rows after adding, not {}", elems.len(), order.len()));
+    }
+    for (elem, a) in elems.into_iter().zip(&order) {
+        m.set_u16(elem.wrapping_add(SETUP_ACTION), *a as u16).map_err(e)?;
+    }
+    Ok(order.len())
 }
 
 /// The action of the row whose handle is `row` on the list at `list`.
@@ -316,6 +348,18 @@ mod tests {
         assert!(!wants_row(&[0, 1, 2], None), "a disc map");
         assert!(!wants_row(&[1, 2], Some("h1_bloodgulch")), "no Change Map: not a custom game");
         assert!(!wants_row(&[0, 10], Some("h1_bloodgulch")), "already there");
+    }
+
+    #[test]
+    fn our_rows_sit_under_quick_options_above_switch_to() {
+        // A custom game's list: Change Map, Change Rules, Quick Options,
+        // Switch To: Co-Op Game, Switch To: Matchmaking.
+        let custom = [CHANGE_MAP, 1, QUICK_OPTIONS, 6, 8];
+        let h1 = placed(&custom, OPTIONS_ACTION);
+        assert_eq!(h1, [0, 1, 4, OPTIONS_ACTION, 6, 8]);
+        assert_eq!(placed(&h1, 11), [0, 1, 4, OPTIONS_ACTION, 11, 6, 8], "Clankers after it");
+        assert_eq!(placed(&[0, 1, 4], 11), [0, 1, 4, 11], "no Switch To: last");
+        assert_eq!(placed(&[2, 3, 7, 8], 11), [2, 3, 11, 7, 8]);
     }
 
     #[test]
