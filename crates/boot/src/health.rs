@@ -156,6 +156,14 @@ pub fn loaded_map_name(m: &dyn GuestMemory) -> Result<String, MemFault> {
     Ok(String::from_utf8_lossy(&name).into_owned())
 }
 
+/// After a machine snapshot loads: the model for the loaded map, as the
+/// game start picks it (the debug override still beats it).
+pub fn reload_mode(m: &dyn GuestMemory) -> Result<(), String> {
+    let name = loaded_map_name(m).map_err(|e| format!("the map's name: {e:?}"))?;
+    set_mode(model_for_map(&name, HALO1_SANDBOX.load(Ordering::Relaxed)));
+    Ok(())
+}
+
 /// The model in force: the debug override if set, else the map's.
 pub fn mode() -> HealthModel {
     HealthModel::from_code(FORCED.load(Ordering::Relaxed))
@@ -272,10 +280,21 @@ impl State {
     /// loaded map (`set_mode` at game start, from guest memory), so a load
     /// rebuilds it.
     fn live(&self) -> Option<String> {
-        if self.armed.load(Ordering::Relaxed) || self.pending.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+        if self.armed.load(Ordering::Relaxed)
+            || self
+                .pending
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_some()
+        {
             return Some("a damage update is between its hooks".into());
         }
-        if self.restore.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+        if self
+            .restore
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+        {
             return Some("a body restore is between its hooks".into());
         }
         None
@@ -362,8 +381,14 @@ impl feature::Feature for H1Health {
                 });
         }
         {
+            // Nothing saved: the model follows the loaded map, picked again
+            // from guest memory as at a game start (docs/runtime/snapshots.md).
             let s = Arc::clone(&self.state);
-            b.snapshot(feature::SnapshotPolicy::forbid_while(move || s.live()));
+            b.snapshot(feature::SnapshotPolicy::section_forbid_while(
+                move || s.live(),
+                Vec::new,
+                |_, rt| reload_mode(&*rt.memory()),
+            ));
         }
         {
             let s = Arc::clone(&self.state);

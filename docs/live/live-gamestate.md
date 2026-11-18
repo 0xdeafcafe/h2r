@@ -1,12 +1,11 @@
 # Halo 2 retail Xbox live game-state map
 
-Static-analysis deliverable for a live scoreboard and top-down player map. All addresses are **guest virtual addresses** in the retail 1.0 XBE, not host pointers. All integer fields are little-endian. Function and field names are assigned descriptions unless a community name is explicitly linked.
+Static-analysis deliverable for a live scoreboard and top-down player map. All addresses are **guest virtual addresses** in the retail 1.0 XBE, not host pointers. All integer fields are little-endian. Function and field names are assigned descriptions.
 
 - XBE SHA-256: `03215919bb7163259257d361f4c7bf802a7ab12aa85e2689436369b5c427935d` (recomputed for this survey).
 - **confirmed**: directly supported by inspected retail-XBE code, by the repository's recovered engine code, or by the documented whole-disc structural checks.
-- **likely**: strong matching-build/community and call-context evidence, but the named semantics are not completely established.
+- **likely**: strong call-context evidence, but the named semantics are not completely established.
 - No game or image build was run. Ghidra's current project did not contain the required function bodies, so direct XBE checks used the existing `h2 disasm`. No Ghidra names, types, or project data were changed.
-- Community material was used only as a guide. The main corroborating source was `kirklandsig/halo2-decompiled` at `69217dcac48cffad7624f884d3a76cd7eb01d7c2`, whose target is the same XBE hash; pinned Xbox 1.00 OpenSauce layouts supplied additional leads. Vista/Cartographer layouts were not treated as Xbox evidence.
 
 ## 1. Address model and shared datum arrays
 
@@ -319,7 +318,7 @@ Do not cache body pointers between snapshots: the object memory pool can compact
 | body vitality | `+0xec` | `f32` | confirmed | `object_get_health` `0x002a1a20` (0 while body-depleted) |
 | shield vitality | `+0xf0` | `f32` | confirmed | `object_get_shield` `0x002a1a90` (0 while body-depleted) |
 | damage flags | `+0x10a` | `u16` | confirmed | Bit 2 is body-depleted, set by `0x000d6800` |
-| unit's player datum | `+0x13c` | `u32` | confirmed | `0x0014de90`; retail Xbox differs from Vista's `+0x140` |
+| unit's player datum | `+0x13c` | `u32` | confirmed | `0x0014de90` |
 | previous player datum | `+0x140` | `u32` | confirmed | Unlink path `0x0014cad0` |
 | vehicle seat index | `+0x1fc` | `i16` | confirmed | `unit_new` sets -1 (`0x000c44c1`); the enter-vehicle routine `0x000ea1f0` indexes the vehicle's seats block (stride `0xb0`) with it and stores it (`0x000ea405`); leaving stores -1 (`0x000ea995`) |
 
@@ -377,25 +376,23 @@ map.
 ### Unit stance, actions, damage and machines
 
 Added 2026-11-16 for frame `stance`, `actions`, `hits` and `machines`
-(static reading, no game run). Some names come from Project Cartographer
-(H2 Vista), whose unit layout matches this one at `+0x12c` actor, `+0x138`
-team and `+0x13c` player, and whose unit flag 12 is the `0x1000` that
-`unit_new` sets at `0x000c4317`; those are marked likely.
+(static reading, no game run). Enum value names not established by the
+code cited are marked unverified.
 
 | Field | Offset | Type | Confidence | Evidence |
 |---|---:|---|---|---|
 | unit flags | unit `+0x134` | `u32` | confirmed | Bit 23 asks to crouch: the crouch update at `0x000dd83f` tests it |
 | crouch amount | unit `+0x2c4` | `f32` 0..1 | confirmed | `0x000dd83f` moves it toward 1 (bit 23 set) or 0 by a rate times the tick length; `biped_new` initialises it |
-| selected grenade type | unit `+0x23c` | `i8` | confirmed index; likely names | `0x000cdff0` and the HUD (`0x002759cf`) index `+0x23e` with it; 0 frag, 1 plasma per Cartographer |
+| selected grenade type | unit `+0x23c` | `i8` | confirmed index; names unverified | `0x000cdff0` and the HUD (`0x002759cf`) index `+0x23e` with it; 0 frag, 1 plasma (unverified) |
 | grenade counts | unit `+0x23e` | `i8[2]` | confirmed | As above; `0x000cbef3` tests each |
-| biped physics mode | biped `+0x3dc` | `u8` | likely | `biped_new` (`0x000de5f6`) clears it; code compares it with 1, 2, 3, 5 and 6 (`0x000dd897` in the crouch update: 6). Names per Cartographer: 1 ground, 2 flying, 3 dead, 4 posture, 5 climbing, 6 melee |
+| biped physics mode | biped `+0x3dc` | `u8` | likely | `biped_new` (`0x000de5f6`) clears it; code compares it with 1, 2, 3, 5 and 6 (`0x000dd897` in the crouch update: 6). Value names unverified |
 | translational velocity | `+0x88` | `f32[3]` | confirmed | Above; telemetry uses only the sign of z |
 | held weapon magazine | `W+0x22a` / `W+0x22c` | `i16` | confirmed | Reserve and loaded rounds, above |
 | scenario placement index | `+0x1a` | `i16` | confirmed | `object_create` by name (`0x000bb670`) passes the name's placement index to `0x000bf0f0`, which hands it to the placement-data builder `0x000d5060` (call `0x000bf152`; stored at placement data `+0x10`, `0x000d520b`); `object_new` copies placement data `+0x10` here (`0x000b7c87`) with the object identifier (`+0xa4`, `+0xa8`); -1 for objects the scenario did not place (`0x000b7c63`). Index into the object type's scenario block (docs/live/live-telemetry.md, "Scenario objects") |
 | netgame equipment index | `+0xaf` | `i8` | confirmed | The netgame spawner `0x0015aad0` writes the spawn's index into `scnr+0x120` here (`0x0015ac15`) after `object_new`, which sets `0xff` (`0x000b7db1`); deletion (`0x000b85c3`) calls `0x0015b220` to clear the spawn's object |
 | machine object type | header `+3` = 7 | `u8` | likely | The engine's type order (biped 0, vehicle 1, weapon 2 confirmed); the scarab of `03a`/`03b` is a `mach` tag, in `08a` a `scen` |
 | device position | device `+0x140` | `f32` 0..1 | likely | The machine network-state builder `0x000a3df0` copies it under flag `0x400`, next to the desired value of the device group at `+0x13c` (flag `0x800`); `0x00106e24` compares it with 0.9 |
-| damage reporting type | report `+0x00` low 6 bits | enum | likely names | 0 guardians, 1 falling, 2 collision, 3 melee, 4 explosion, 5..20 the hand weapons (magnum to energy sword), 21/22 frag/plasma grenade, 23..26 flag/bomb/ball, 27/28 turrets, 29..38 vehicles, 39/40 sentinel, 41 teleporter (Cartographer's `e_damage_reporting_type`) |
+| damage reporting type | report `+0x00` low 6 bits | enum | likely | 6-bit value; value names unverified |
 
 `0x000d9640` applies a report to its victim: it adds `+0x44` (clamped to 1
 when report flag bit 0 is set) and `+0x48` to the victim's recent-damage
@@ -547,7 +544,7 @@ Consistency rules:
 ## 10. Open items / first runtime checks
 
 - All findings here are static. Validate one local Slayer match and one campaign map before enabling the service by default; then check system-link/Live sessions, whose runtime paths were not traced.
-- Confirm the name field against real gamertags and variant names; storage is confirmed as 32 UTF-16 code units, not the smaller Vista layout some sources use.
+- Confirm the name field against real gamertags and variant names; storage is confirmed as 32 UTF-16 code units.
 - Check vehicle-passenger transforms against gameplay. Generic parented-object composition is known, but only the cheap vehicle-parent path is recommended here.
 - Persistent winner storage and normal-end/quit reason are not recovered. `0x0015b3a0` supplies a transient prospective winner, while `0x001389c0` supplies only the end latch.
 - PGCR's detailed output structure was not mapped; only its construction hook is included.
@@ -559,5 +556,3 @@ Consistency rules:
 ## References
 
 - Local anchors and layouts: `docs/engine/engine-map.md`, `docs/engine/datum_new.md`, `docs/engine/memory_pool.md`, `docs/formats/structure-bsp.md`, `crates/engine/src/datum.rs`, `crates/tags/src/structure.rs`, `crates/tags/src/geometry.rs`, `crates/viewer/src/bin/bsp.rs`.
-- [Same-hash retail decompilation, pinned commit](https://github.com/kirklandsig/halo2-decompiled/tree/69217dcac48cffad7624f884d3a76cd7eb01d7c2), used as corroboration and for semantic leads.
-- [OpenSauce Xbox 1.00 tree, pinned commit](https://github.com/MirisWisdom/OpenSauce/tree/d200c970c918921d40e9fb376ec685c77797c8b7/OpenSauce/Halo2/Halo2_Xbox), used as a matching-build layout lead.

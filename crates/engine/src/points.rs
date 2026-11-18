@@ -324,6 +324,11 @@ points! { ALL;
     /// calls it after the opaque layers and before the first-person
     /// chain): the occlusion depth capture point.
     SCENE_TRANSPARENTS @ 0x0001_e370: [opaque]; "docs/graphics/occlusion-culling.md";
+    /// A sorted transparent geometry entry's handler: the transparents call
+    /// it through the entry's `+0x20` with the entry's `+0x24` (shader
+    /// datum, then the render record argument), stdcall, `ret 4`. Runs the
+    /// opaque path's build and draw over the template's layer-15 passes.
+    TRANSPARENT_GEOMETRY @ 0x0004_1020: [fn(data: stack 0) ret 4]; "docs/graphics/native-renderer.md";
     /// Shader draw begin: per draw.
     SHADER_DRAW_BEGIN @ 0x0001_bbf0: [opaque], Hot; "docs/formats/shader-instances.md";
     /// `submit_structure_or_model_geometry`: per draw.
@@ -589,11 +594,11 @@ points! { ALL;
     /// action): stdcall, the local user index first of five stack words,
     /// the player's local controller index (player `+0x24`) in EDX. Its
     /// only caller is `0x186ab0` (`0x186b16`), which `0x1870a0` runs for
-    /// each bound local user. Reads magnetism friction and adhesion at
+    /// each bound local user. Reads slowdown and follow at
     /// `0x18622b` and calls the aim-assist search `0x1a4900` at `0x1861a1`.
     PLAYER_CONTROL_UPDATE @ 0x0018_5be0: [fn(user: stack 0, controller: edx) ret 0x14]; "docs/game/aim-assist.md";
     /// The aim-assist parameters of a unit's held weapons, from the weapon
-    /// tags (autoaim and magnetism angles and ranges, zoom applied):
+    /// tags (aim cone and pull angles and ranges, zoom applied):
     /// unit in ECX, the 0x24-byte result at ESI (kept to the return), zoom
     /// level on the stack, AL whether there is one. Callers: the local
     /// aim-assist search `0x1a4900` (`0x1a49a1`) and the shot aim

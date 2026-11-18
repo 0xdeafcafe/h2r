@@ -45,6 +45,6 @@ pub mod touchpad;
 pub mod trackpad;
 
 pub use backend::HostBackend;
-pub use device::{GatedPad, InputManager, PadGate, PortIndex};
+pub use device::{GatedPad, InputManager, PadGate, PortIndex, PortSnapshot};
 pub use gamepad::{AnalogButton, Buttons, Gamepad, Rumble, State};
 pub use host::{HostPad, HostPadId, HostPadState, Touchpad};

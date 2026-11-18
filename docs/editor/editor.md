@@ -170,14 +170,16 @@ package...** and **Open package...** save and open map packages in
 
 ### Packages and Halo 1 in the Maps list
 
-Below the source's maps, **Maps** lists the **Map Pack**'s maps (when one
-is open, above), then what is under `<data>/maps`
+Below the source's maps, **Maps** lists the **Map Pack**'s maps (the
+open map pack disc's, else the installed ones), then what is under
+`<data>/maps`
 (`editor_core::packages::list`, re-read when the data root changes and
 after a save), then Halo 1:
 
-- **Map Pack**: the nine multiplayer maps, sorted by file name, opened
-  with `SelectMap` like the disc's. A package that edits one of them opens
-  that map, then the package over it, as for a disc map. **Save as
+- **Map Pack**: the nine multiplayer maps, named, ordered and pictured as
+  the game's Select Map shows them ("The Map Pack", below), opened like
+  the disc's. A package that edits one of them opens that map, then the
+  package over it, as for a disc map. **Save as
   package...** writes a package with the pack's map as its base
   ([maps.md](../game/maps.md) section 4).
 
@@ -295,6 +297,85 @@ and placement glyphs in orange at 35 % over the converted map, through
 everything (`render::Viewport::set_overlay`), to check a conversion by
 eye. The inspector says where the map came from, and why there is no
 overlay when there is none.
+
+### The Map Pack
+
+The **Map Pack** group (`app::map_pack`, drawn by `ui::map_pack`, under
+the source's maps) has two places to take the maps from:
+
+- the map pack disc or folder opened beside the Halo 2 disc
+  (`editor_core::mappack`, above): when it is open, the group lists its
+  maps;
+- otherwise the copy the game installed under the data root (`h2
+  import-mappack` or `h2 play`'s automatic install,
+  [map-pack.md](../game/map-pack.md) §4, §5): one content package a map at
+  `<data>/disk/Partition1/TDATA/4D530064/$c/<offer ID>/` (`T:\$c` to the
+  game, `vfs::Config::title_data_dir` + `vfs::CONTENT_DIR`), each holding
+  `<map>.map` and a version 2 `patch.lvl`. So the maps are there without
+  the map pack ISO.
+
+Either way the group names, orders and pictures the maps as the game's
+Select Map does, from the installed records, read with the game's own
+code (`boot::map_select`): `map_of_package` reads each record,
+`category_of` keeps the offers in the Map Pack's range (`0x0101..=0x03ff`;
+new maps' packages, whose offers have the top bit set, stay out), and
+`Catalogue` orders them by sort order, then id. Names, descriptions and
+pictures are the records' (the `A8R8G8B8` preview turned to RGBA). A disc
+map with no installed record keeps its file name and goes last. A record
+whose map file is missing is left out and logged once. The group is
+rebuilt with the packages (data root change, save, `refresh_packages`)
+and when a map pack opens. With neither, it shows one line on how to
+install the pack.
+
+`Action::OpenMapPack(<map>)` (the map name, or an installed package's
+offer directory) opens a pack map through `select_map`, as `SelectMap`
+does: its bytes from the disc (`MapPack::location`) or the installed file
+(`App::pack_location`), the shared caches from the open Halo 2 source
+(`MapSource::shared`, see above). The pack ships no shared map of its
+own. Re-picking the open map keeps its edits; another one asks first.
+Every tool reads the session's document, so the Tags tool, the viewport
+and later tools see a pack map as they see a disc map. The UI Screens
+tool draws the disc's screens and has nothing per map.
+
+Every tag a map uses has its metadata in that map
+([map-builder.md](../formats/map-builder.md)); shared maps are reached
+only through raw pointers, whose top two bits pick the map. The Tags
+tool counts the selected tag's raw pointers by map through its layout
+(`app::shared_refs::raw_homes`) and shows a line such as `raw data lives
+in a shared map: shared.map (3)` when any is outside this map.
+
+Saving never writes the installed files:
+
+- **Save as package** writes a package over the pack map (its base, by
+  hash), as for a disc map. Its **Packages** tooltip names the pack map.
+- **Save map as** writes the patched `.map` (`save::save_as`) anywhere
+  but the installed content: `App::save_refusal` refuses a path inside
+  `T:\$c` on the host, or any installed pack map file (whatever the data
+  root).
+
+Tests (`app::map_pack_tests`, a synthetic install of the fixture map
+under invented names and records):
+- the listing and its order, pictures, missing files, the empty group;
+- the map pack disc's maps named and ordered from the install, and
+  opened from the disc;
+- opening in the Scenario and Tags tools, the unsaved-edits guard;
+- Save map as: byte-exact when unedited; with one edit, only the edited
+  field and the checksum differ, the same as the same edit on the map
+  opened loose; refused inside `$c`;
+- a package based on the pack map that reopens with the edit and
+  resolves to the pack map plus the edit.
+
+Headless (`headless::tests::the_map_pack_group_lists_and_opens_a_pack_map`):
+the hint, then the row with its picture on screen, clicked open. With
+the owner's install:
+
+```sh
+H2_MAPPACK_DATA=<data root> cargo test -p studio --release installed_map_pack -- --ignored
+```
+
+lists the nine maps, opens the first and last with every section loaded
+from the disc's shared maps, finds tags with raw data in `shared.map`,
+and saves one edit.
 
 ### What the viewport shows, and what it does not yet
 
@@ -655,15 +736,18 @@ arrays get a hint from their name and note: colours (`colour`/`color`,
 3 floats), angles (`angle`, `field_of_view`, `_yaw`, `_pitch`, or
 "radians" in the note; shown in degrees), bounds (`bounds`, `_range`, 2
 floats). Names come only from our definitions (their evidence is the
-XBE's readers and the disc), never from community tools or plugins;
-`tags::object::layouts` carries some Assembly-sourced names (the weapon
-aim-assist fields), which the registry does not read.
+XBE's readers and the disc), never from community tools or plugins.
 
-Coverage of the built-in registry: 996 named fields and 13,121 unnamed
-(by offset or type only), over 78 groups; per byte, 5,450 named, 10,895
-typed (references, blocks, string IDs whose role is not known), 502
-padding and 45,625 unknown. The names grow as definitions do: a name
-added to `defs/*.txt` shows in the editor with no other change.
+Definitions name fields in 52 of the registry's 78 groups. On the disc
+(`tests/tag_defs.rs`, opt-in) every tag of those groups decodes, and the
+share of their bytes that is named runs from 1.6% (`vrtx`, mostly
+compiled shader data) to 100% (`wgtz`): over 85% for `coll`, `lsnd`,
+`itmc`, `vehc`, `sily`, `spas` and `stem`; about half for `snd!`; under
+15% for `bipd`, `vehi`, `weap` and `sbsp` (`sbsp` is mostly data
+references and child blocks still typed only). `registry::tests::coverage_counts_every_byte_once`
+prints the registry's totals (named, typed, padding and unknown bytes)
+with `--nocapture`. The names grow as definitions do: a name added to
+`defs/*.txt` shows in the editor with no other change.
 
 ### The document
 
@@ -688,21 +772,44 @@ the refusal's text):
 | Tags in a structure BSP region (`sbsp`, `ltmp`) | Not shown yet: they have their own address space. |
 | Tags with no data in the map (shared-map tags) | Nothing to show. |
 | A group with no layout, a tag shorter than its layout | Read-only (hex only without a layout). |
-| String IDs | Any string the map's string table has; adding strings is not supported yet. |
+| String IDs | Any string the map's string table has, or new text: a string the map lacks is added after its own (below). |
 | Data references | Their bytes, in place (same length), up to 4 KiB shown and edited. |
 
-**Blocks** change only within the elements they had in the source:
-remove moves later elements down (the last slot keeps its bytes, dead
-until re-added), duplicate inserts a copy after the element, add appends
-a blank one (zero, null references). A block is full when it has as many
-elements as in the source and still points where it did; growing it would
-mean appending to the metadata and repointing it, which the tag editor
-does not do (and the engine's headroom for more tag memory is not
-established, the same reason scenario growth is off by default,
-[scenario-editor.md](scenario-editor.md) §6). An element with nonempty
-child blocks or data is not duplicated: the copy would share them.
-Elsewhere in the map, indices into a block are not updated when its
-elements move.
+**Blocks**: remove moves later elements down (the last slot keeps its
+bytes, dead until re-added), duplicate inserts a copy after the element,
+add appends a blank one (zero, null references). Within the elements it
+had in the source (and while it still points where it did) a block
+changes in place. Past that it is full, and grows only while **Edit >
+Allow growing full blocks** is on (the session's switch, shared with the
+Scenario tool; off by default because the engine's headroom for more tag
+memory is not established, [scenario-editor.md](scenario-editor.md) §6).
+A grown block's elements are copied, with the new one, to room past the
+end of the metadata (provisional addresses only the document uses, with
+room for twice the elements so the next adds fit there) and its pair
+points there; undo points it back. On save each grown block is appended
+to the metadata through `MapEditor::append_metadata` and its `(count,
+address)` pair patched to the real address
+(`scenario_edit::TagGrown`, `Changes::tag_grown`); the old elements
+stay as dead bytes, and the elements' own child blocks keep pointing
+where they did. A block inside grown elements does not grow until the
+map is saved and reopened. Growth needs the metadata to end the file (as
+on retail maps) and the engine's size limits to hold; the save refuses
+otherwise. An element with nonempty child blocks or data is not
+duplicated: the copy would share them. Elsewhere in the map, indices into
+a block are not updated when its elements move.
+
+**New string IDs**: typing text the map's string table lacks into a
+string ID field (or `set_field` with it) adds the string after the map's
+own, with the value its index and length encode (index in the low 24
+bits, byte length in the top 8), as one undo step with the write; undo
+takes the string back. Under 128 bytes (the fixed slot), no NUL. On save
+`MapEditor::add_string` rewrites the three string tables (the 0x80-byte
+fixed slots, the offset index, the blob) whole at the end of the file,
+the source's entries first and unchanged, and points the header's
+`+0x160..+0x174` at them; the old tables stay as dead bytes. Maps written
+so have not been loaded by the game yet. The string tables then follow
+the metadata, so a map saved with new strings cannot grow blocks until it
+is rebuilt.
 
 ### The windows and the panel
 
@@ -735,8 +842,12 @@ sit at their offsets; an invented group), `tests/tag_registry.rs`
 (opt-in, `H2_DISC`: every tag of every disc map walks through the
 registry with its blocks inside the metadata),
 `scenario_edit::tests::other_tags_patches_save_with_the_scenario_s`,
+`scenario_edit::tests::another_tags_grown_block_is_appended_and_repointed`,
+`scenario_edit::tests::new_string_ids_save_with_the_patches_that_use_them`,
+`map::tests::added_string_ids_follow_the_maps_own`,
 `app::tag_tests` (listing and refusals, a field edit saved byte-exactly
-then undone, drag merging, blocks within capacity; opt-in
+then undone, drag merging, blocks within capacity, a full block grown
+and saved appended, a new string ID added, saved and undone; opt-in
 `disc_a_retail_tag_field_saves_byte_exactly`), and
 `headless::tests::the_tags_tool_edits_a_field_through_its_widgets`,
 which clicks the tree and a flag through the test-engine hooks.

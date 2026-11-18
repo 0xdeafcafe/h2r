@@ -12,17 +12,17 @@ pub trait Events {
 }
 
 pub(crate) struct OpenInput {
-    device_handle: Handle,
-    port: PortIndex,
-    last_state: State,
+    pub(crate) device_handle: Handle,
+    pub(crate) port: PortIndex,
+    pub(crate) last_state: State,
 }
 
 /// XPP_DEVICE_TYPE state consumed by 0x004098c5 and inspected by 0x00409884.
 #[derive(Default)]
 pub(crate) struct DeviceChanges {
-    current: u32,
-    changed: u32,
-    previous: u32,
+    pub(crate) current: u32,
+    pub(crate) changed: u32,
+    pub(crate) previous: u32,
 }
 
 #[derive(Default)]

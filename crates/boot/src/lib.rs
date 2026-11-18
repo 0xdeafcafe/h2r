@@ -64,6 +64,8 @@ pub mod map_select;
 pub mod map_slots;
 pub mod mods_screen;
 pub mod movies_glue;
+pub mod native_objects_glue;
+pub mod native_world_glue;
 pub mod new_maps;
 pub mod pad_speaker;
 pub use live_telemetry as telemetry;
@@ -1062,6 +1064,15 @@ pub fn run_hosted_with_live(
     let pipeline = registration::pipeline_for(d3d_glue::pipeline_render(d3d_calls.as_ref()), lockstep_on);
     render_probe::set_pipeline(pipeline.clone());
     let coop_probe = coop_probe::parse(|k| std::env::var(k).ok()).map_err(anyhow::Error::msg)?;
+    // The native world's map file (native_world_glue.rs): read from the
+    // loaded map's file, found through the VFS.
+    if let Some(vfs) = k.vfs() {
+        native_world_glue::set_locator(Box::new(move |map| {
+            let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
+            let file = v.host_file(&format!("\\Device\\CdRom0\\maps\\{map}.map"))?;
+            Some(telemetry::MapFile { path: file.path, offset: file.offset, len: file.len })
+        }));
+    }
     // The lockstep harness, the agent, our cheats, the render features and
     // the probes (registration.rs, the rest of the plan's features).
     let late = registration::register_late(

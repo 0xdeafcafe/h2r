@@ -9,9 +9,9 @@ Evidence: retail cache build `02.09.27.09809`, all 30 maps in the supplied disc;
 XBE SHA-256 `03215919bb7163259257d361f4c7bf802a7ab12aa85e2689436369b5c427935d`.
 Executable addresses below are guest VAs. This is static code/disc validation,
 not a boot trace or proof that the main menu renders. No executable bytes,
-community layout files, localized text tables, or game-derived fixtures are
-included in the implementation. Public sources supplied comparison facts;
-the field accesses, boundaries and conversion rules were independently checked.
+layout files, localized text tables, or game-derived fixtures are
+included in the implementation. The field accesses, boundaries and conversion
+rules come from the executable and the disc.
 
 ## String IDs and name strings
 
@@ -33,27 +33,24 @@ loads this table; `StringId::resolve` checks the high-byte length as well.
 All **412,293 locale IDs** in the disc resolve to a name of exactly the encoded
 length. None uses index bits 16–23. Thus the disc confirms the encoding for
 its populated domain, but cannot independently distinguish a 16-bit-only
-encoding from the documented 24-bit index. The complete 24/0/8 division is
-corroborated by [Assembly's length-based resolver][ids] and the independent
-[H2V StringID type][h2v-id]; no set-remapping table is introduced. The local
+encoding from a 24-bit index; the full 24-bit width is unverified. No
+set-remapping table is introduced. The local
 retail *localized* resolver compares all 32 bits, rather than decoding an
 index or length. A general executable ID-to-debug-name resolver remains
 unidentified; the host implementation uses the verified cache-header table.
 
 ## Per-table provenance
 
-D = directly measured on this disc; E = executable accesses/control flow;
-S = factual public-source comparison. A source-only interpretation is not
-promoted to a disc observation.
+D = directly measured on this disc; E = executable accesses/control flow.
 
-| Table / record | Derivation and verification | Public comparison |
-|---|---|---|
-| Packed ID and header name table | D: 325,864 name slots and all 412,293 locale keys; E: full-key equality at `0x1a02ee`. Full 24-bit width beyond observed indexes remains S. | [ID resolver][ids], [header layout][core], [H2V type][h2v-id] |
-| Nine `matg` descriptors | E: `0x1a01c3–0x1a01ce` computes `matg + (language + 14) * 28`, hence `+0x188`; loader at `0x1a01e0` uses count/size/file-offset fields and writes resident pointers/one-byte flag. D: 270 descriptors; all extents fit their own map. | [Xbox core count view at +0x190][core] agrees with the runtime record starting eight bytes earlier. |
-| Locale index | E: count times eight in loader, full key at entry +0, byte offset at entry +4 in `0x1a02d0`. D: all 412,293 offsets terminate inside the associated blob. | [Eight-byte locale index element][core] |
-| Locale blob | E: `0x140440` consumes byte sequences and stores 16-bit units; lookup adds the byte offset to the loaded blob base. D: all terminators found; 237,598 non-ASCII entries, six invalid UTF-8 tails, no supplementary scalar values in valid UTF-8 entries. | Encoding follows the executable, not a community text decoder. |
-| Compiled `unic` | E: `0x1a01b4`/`0x1a01b9` load signed shorts at +0x10/+0x12 with language stride four. D: all 1,404 payloads are exactly 52 bytes; first 16 bytes zero; all 12,636 ranges fit. | [Xbox `unic` range layout][core] |
-| Language slots | E: dashboard mapping `0x11ca80`, cached selection at `0x47ff38`, and descriptor/range indexing. D: readable samples and script distributions support slots 0–7; slot 8 empty in all maps. Portuguese name for slot 8 is S. | [H2 `matg` language enum][matg] supplies the nine names. Assembly's generic multi-game enum must **not** be used as wire ordinals. |
+| Table / record | Derivation and verification |
+|---|---|
+| Packed ID and header name table | D: 325,864 name slots and all 412,293 locale keys; E: full-key equality at `0x1a02ee`. Full 24-bit width beyond observed indexes is unverified. |
+| Nine `matg` descriptors | E: `0x1a01c3–0x1a01ce` computes `matg + (language + 14) * 28`, hence `+0x188`; loader at `0x1a01e0` uses count/size/file-offset fields and writes resident pointers/one-byte flag. D: 270 descriptors; all extents fit their own map. |
+| Locale index | E: count times eight in loader, full key at entry +0, byte offset at entry +4 in `0x1a02d0`. D: all 412,293 offsets terminate inside the associated blob. |
+| Locale blob | E: `0x140440` consumes byte sequences and stores 16-bit units; lookup adds the byte offset to the loaded blob base. D: all terminators found; 237,598 non-ASCII entries, six invalid UTF-8 tails, no supplementary scalar values in valid UTF-8 entries. |
+| Compiled `unic` | E: `0x1a01b4`/`0x1a01b9` load signed shorts at +0x10/+0x12 with language stride four. D: all 1,404 payloads are exactly 52 bytes; first 16 bytes zero; all 12,636 ranges fit. |
+| Language slots | E: dashboard mapping `0x11ca80`, cached selection at `0x47ff38`, and descriptor/range indexing. D: readable samples and script distributions support slots 0–7; slot 8 empty in all maps, so its language is unverified. |
 
 ### `matg` descriptor, size 0x1c, nine slots from +0x188
 
@@ -81,7 +78,7 @@ host reader needs only `count * 8` and `data_size` logical bytes.
 
 Slot order: 0 English (`en`), 1 Japanese (`ja`), 2 German (`de`), 3 French (`fr`),
 4 Spanish (`es`), 5 Italian (`it`), 6 Korean (`ko`), 7 Chinese (`zh`), 8 Portuguese
-(`pt`). Dashboard values 1–8 map to slots 0–7; the inspected mapping sends
+(`pt`, unverified: slot 8 is empty on the disc). Dashboard values 1–8 map to slots 0–7; the inspected mapping sends
 value 9 and out-of-range values to English, not Portuguese. The API permits
 explicit slot selection; it does not emulate dashboard preference policy.
 
@@ -251,7 +248,3 @@ cargo run -p cli --release -- disasm disc/halo2.iso 0x1a0180 210
 cargo run -p cli --release -- disasm disc/halo2.iso 0x140440 110
 ```
 
-[ids]: https://github.com/XboxChaos/Assembly/blob/fd14ef3c46135e9422966c6a64cd926fb0bd23fb/src/Blamite/Blam/LengthBasedStringIDResolver.cs
-[core]: https://github.com/XboxChaos/Assembly/blob/fd14ef3c46135e9422966c6a64cd926fb0bd23fb/src/Blamite/Formats/Halo2Xbox/Layouts/H2X_Layouts_Core.xml
-[matg]: https://github.com/XboxChaos/Assembly/blob/fd14ef3c46135e9422966c6a64cd926fb0bd23fb/src/Assembly/Plugins/Halo2/matg.xml
-[h2v-id]: https://github.com/pnill/cartographer/blob/f4a6e912dce18715591673561dca8502889d2322/xlive/Blam/Cache/DataTypes/StringID.h

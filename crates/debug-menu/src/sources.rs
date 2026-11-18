@@ -287,13 +287,15 @@ fn leaf(name: &str) -> &str {
     name.rsplit(['\\', '/']).next().unwrap_or(name)
 }
 
-/// The game's cheats as `cheat.list` gives them. In a co-op session the
-/// answer says why they are refused, and every row is greyed with it.
+/// The game's cheats as `cheat.list` gives them. When every cheat is
+/// refused (a lockstep run, Xbox Live) the answer says why and every row
+/// is greyed with it; a cheat refused on its own (in co-op, those that
+/// change the simulation) carries its own reason and only its row greys.
 pub fn cheats() -> Section {
     Section {
         id: "cheats".into(),
         title: "Cheats".into(),
-        about: "god mode, ammo, game speed; off in co-op".into(),
+        about: "god mode, ammo, speed, fly, noclip, HUD; off in co-op".into(),
         calls: vec![Call::bare(method::CHEAT_LIST)],
         rows: cheat_rows,
     }
@@ -328,8 +330,9 @@ fn cheat_rows(a: &[Answer]) -> Vec<Row> {
             _ => Row::toggle(label, c["value"].as_bool().unwrap_or(false), set),
         }
         .about(str_of(&c, "about"));
-        out.push(match &refused {
-            Some(why) => row.disabled(why.clone()),
+        let own = c["refused"].as_str().map(str::to_owned);
+        out.push(match refused.clone().or(own) {
+            Some(why) => row.disabled(why),
             None => row,
         });
     }

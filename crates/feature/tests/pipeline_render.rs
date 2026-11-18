@@ -822,7 +822,7 @@ fn rig_tuned(
         .watch(watch)
         .print(false);
     let feature = tune(feature);
-    let mut r = Registry::new(Switches::defaults());
+    let mut r = Registry::new(Switches::default());
     assert!(r.add(&feature).unwrap());
     let plan = r
         .build(&Remap::new(&[(&points::RENDER_FRAME, FRAME)]))

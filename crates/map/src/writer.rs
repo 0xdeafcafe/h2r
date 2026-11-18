@@ -32,6 +32,7 @@ impl<R: Read + Seek> Map<R> {
             patches: BTreeMap::new(),
             names: BTreeMap::new(),
             appended: Vec::new(),
+            strings: Vec::new(),
         }
     }
 }
@@ -45,6 +46,8 @@ pub struct MapEditor<'a, R> {
     names: BTreeMap<usize, String>,
     /// Bytes appended after the ordinary metadata region, unpadded.
     appended: Vec<u8>,
+    /// New string IDs, after the source's.
+    strings: Vec<String>,
 }
 
 /// Growth granularity of the ordinary metadata region: every size the
@@ -239,12 +242,39 @@ impl<R: Read + Seek> MapEditor<'_, R> {
         self.names.insert(id.index(), name.to_owned());
         Ok(())
     }
+    /// Add a string ID after the map's own (and those added before) and
+    /// return its value (index in the low 24 bits, byte length in the top
+    /// 8). On write the three string tables (the fixed 0x80-byte slots,
+    /// the offset index and the blob) are rewritten whole at the end of
+    /// the file, the source's entries first and unchanged, and the header's
+    /// `+0x160..+0x174` pointed at them; the old tables stay as dead bytes.
+    /// A string the map already has is refused: use its value.
+    pub fn add_string(&mut self, value: &str) -> Result<u32> {
+        if value.is_empty() || value.as_bytes().contains(&0) {
+            return Err(Error::Invalid("string ID empty or with a NUL"));
+        }
+        if value.len() >= crate::build::FIXED_STRING_SLOT {
+            return Err(Error::Invalid("string ID too long for its fixed slot"));
+        }
+        let have = |s: &Option<String>| s.as_deref() == Some(value);
+        if self.map.strings().iter().any(have) || self.strings.iter().any(|s| s == value) {
+            return Err(Error::Invalid("the map already has that string ID"));
+        }
+        let index = self.map.strings().len() + self.strings.len();
+        let id = crate::build::string_id(index, value)?;
+        self.strings.push(value.to_owned());
+        Ok(id)
+    }
     /// Write at the destination's current position and refresh +0x2d0 if edited.
     /// Output must be empty at/after that position, and must not alias the source.
     /// The caller handles truncation/atomic replacement and flush/sync policy.
     /// Returns the byte length written, leaving the cursor at the end.
     pub fn write_to(mut self, out: &mut (impl Write + Seek)) -> Result<u64> {
-        if self.patches.is_empty() && self.names.is_empty() && self.appended.is_empty() {
+        if self.patches.is_empty()
+            && self.names.is_empty()
+            && self.appended.is_empty()
+            && self.strings.is_empty()
+        {
             return self.map.write_to(out);
         }
         let limit = cache_size_limit(self.map.header().cache_type)?;
@@ -277,6 +307,8 @@ impl<R: Read + Seek> MapEditor<'_, R> {
         let names_base = self.map.storage_length() + grown.len() as u64;
         let mut append = grown;
         append.extend(self.rebuild_names(&mut header, names_base)?);
+        let strings_base = self.map.storage_length() + append.len() as u64;
+        append.extend(self.rebuild_strings(&mut header, strings_base)?);
         let length = self.map.storage_length() + append.len() as u64;
         let end = origin.checked_add(length).ok_or(Error::Limit)?;
         if length > limit {
@@ -310,6 +342,72 @@ impl<R: Read + Seek> MapEditor<'_, R> {
         out.write_all(&checksum.finish().to_le_bytes())?;
         out.seek(SeekFrom::Start(end))?;
         Ok(length)
+    }
+    /// The string-ID tables with the added strings, placed from file offset
+    /// `base` (the end of everything written before them), each sector
+    /// aligned as the name tables are.
+    fn rebuild_strings(&mut self, header: &mut [u8], base: u64) -> Result<Vec<u8>> {
+        if self.strings.is_empty() {
+            return Ok(Vec::new());
+        }
+        const SLOT: usize = crate::build::FIXED_STRING_SLOT;
+        let table = self.map.header().strings;
+        let fixed_offset = self.map.header().fixed_strings_offset;
+        let count = table.count as usize;
+        let mut index = self
+            .map
+            .read_file_range(table.index_offset.into(), table.count as u64 * 4)?;
+        let mut blob = self
+            .map
+            .read_file_range(table.data_offset.into(), table.data_size.into())?;
+        // The source's fixed slots as stored; a map without them gets them
+        // from its strings.
+        let mut fixed = if fixed_offset != 0 {
+            self.map
+                .read_file_range(fixed_offset.into(), (count * SLOT) as u64)?
+        } else {
+            let mut f = vec![0; count * SLOT];
+            for (i, s) in self.map.strings().iter().enumerate() {
+                if let Some(s) = s.as_deref().filter(|s| s.len() < SLOT) {
+                    f[i * SLOT..][..s.len()].copy_from_slice(s.as_bytes());
+                }
+            }
+            f
+        };
+        for s in &self.strings {
+            let offset = u32::try_from(blob.len()).map_err(|_| Error::Limit)?;
+            index.extend_from_slice(&offset.to_le_bytes());
+            blob.extend_from_slice(s.as_bytes());
+            blob.push(0);
+            let mut slot = [0u8; SLOT];
+            slot[..s.len()].copy_from_slice(s.as_bytes());
+            fixed.extend_from_slice(&slot);
+        }
+        if blob.len() > MAX_TABLE || fixed.len() > MAX_TABLE {
+            return Err(Error::Limit);
+        }
+        let sector = |n: u64| (n + 511) & !511;
+        let fixed_at = sector(base);
+        let index_at = sector(fixed_at + fixed.len() as u64);
+        let blob_at = sector(index_at + index.len() as u64);
+        let end = sector(blob_at + blob.len() as u64);
+        let mut out = vec![0; usize::try_from(end - base).map_err(|_| Error::Limit)?];
+        for (at, bytes) in [(fixed_at, &fixed), (index_at, &index), (blob_at, &blob)] {
+            let at = (at - base) as usize;
+            out[at..at + bytes.len()].copy_from_slice(bytes);
+        }
+        let word = |v: u64| u32::try_from(v).map_err(|_| Error::Limit);
+        for (at, value) in [
+            (8, word(end)?),
+            (0x160, word(fixed_at)?),
+            (0x164, word((count + self.strings.len()) as u64)?),
+            (0x168, word(blob.len() as u64)?),
+            (0x16c, word(index_at)?),
+            (0x170, word(blob_at)?),
+        ] {
+            header[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        Ok(out)
     }
     /// The rebuilt name tables, placed from file offset `base` (the end of
     /// everything written before them).

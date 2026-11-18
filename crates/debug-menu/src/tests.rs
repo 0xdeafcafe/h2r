@@ -15,7 +15,10 @@ struct Game {
     gain: f64,
     fov: i64,
     cheats_refused: Option<String>,
+    /// One cheat's own refusal (`cheat.list`'s per-cheat `refused`).
+    speed_refused: Option<String>,
     god: bool,
+    noclip: bool,
     speed: f64,
     changes: Vec<u64>,
     calls: Vec<Call>,
@@ -31,7 +34,9 @@ impl Default for Game {
             gain: 1.0,
             fov: 70,
             cheats_refused: None,
+            speed_refused: None,
             god: false,
+            noclip: false,
             speed: 1.0,
             changes: vec![3, 4],
             calls: Vec::new(),
@@ -101,7 +106,9 @@ impl Game {
             "cheat.list" => Ok(json!({"refused": self.cheats_refused, "cheats": [
                 {"name": "god", "label": "God mode", "kind": "bool", "value": self.god, "about": "no damage"},
                 {"name": "speed", "label": "Game speed", "kind": "choice", "value": self.speed,
+                 "refused": self.speed_refused,
                  "choices": [{"value": 0.5, "label": "0.5x"}, {"value": 1.0, "label": "1x"}, {"value": 2.0, "label": "2x"}]},
+                {"name": "noclip", "label": "noclip", "kind": "bool", "value": self.noclip, "about": "through walls"},
             ]})),
             "cheat.set" => {
                 if let Some(why) = &self.cheats_refused {
@@ -109,7 +116,9 @@ impl Game {
                 }
                 match p["name"].as_str() {
                     Some("god") => self.god = p["value"].as_bool().ok_or("value")?,
-                    Some("speed") => self.speed = p["value"].as_f64().ok_or("value")?,
+                    Some("noclip") => self.noclip = p["value"].as_bool().ok_or("value")?,
+                    Some("speed") if self.speed_refused.is_some() => return Err("refused".into()),
+                    Some("speed") =>self.speed = p["value"].as_f64().ok_or("value")?,
                     _ => return Err("no cheat".into()),
                 }
                 Ok(json!({}))
@@ -404,6 +413,27 @@ fn tag_edits_are_read_only_and_revert_one_or_all() {
     assert_eq!(rows(&s).len(), 2, "relisted: revert all and #4");
     go(&s, &[Nav::Up, Nav::Select]);
     assert_eq!(rows(&s)[0].label, "no edits");
+}
+
+#[test]
+fn a_cheat_refused_on_its_own_greys_only_its_row() {
+    let (s, fake) = menu();
+    // A networked game's host: game speed refused, the rest on offer.
+    let why = "a networked game: game speed would not reach the guests";
+    fake.game(|g| g.speed_refused = Some(why.into()));
+    enter(&s, "cheats");
+    assert_ne!(rows(&s)[0].label, "cheats are off");
+    assert_eq!(row(&s, "Game speed").disabled.as_deref(), Some(why));
+    assert_eq!(row(&s, "God mode").disabled, None);
+    assert_eq!(row(&s, "noclip").disabled, None);
+    let sets = || fake.game(|g| g.calls.iter().filter(|c| c.method == "cheat.set").count());
+    let before = sets();
+    to(&s, "Game speed");
+    go(&s, &[Nav::Right]);
+    assert_eq!(sets(), before, "a greyed row sends nothing");
+    to(&s, "noclip");
+    go(&s, &[Nav::Select]);
+    assert!(fake.game(|g| g.noclip));
 }
 
 #[test]

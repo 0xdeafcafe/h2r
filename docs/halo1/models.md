@@ -36,11 +36,8 @@ run time and print only counts and error figures.
   (2026-11-18), which print only counts and error figures.
 - **X:** read from the Halo 1 Xbox XBE's own code (disassembled from
   `default.xbe` on the disc; addresses are virtual addresses in that XBE).
-- **S:** field order and meaning recalled from general Halo modding
-  knowledge (the Halo 1 and Halo 2 editing kits' field names), then checked
-  against the data where a V label says so. No community code or
-  definition file (Invader, Assembly plugins, OpenH2) was opened or copied
-  for this page.
+- **S:** field order and meaning unverified, checked against the data
+  where a V label says so.
 - **Design:** an implementation choice.
 
 ## Halo 1 Xbox `mode` (render model)
@@ -336,7 +333,7 @@ section:
 | Node map | the nodes this geometry's vertices use, ascending | map-format.md |
 | Vertices | type `04` (s16 position, u8 node) or `06` (s16 position, two u8 nodes, u8 weights summing to 255); `19` s16 texcoords; `1b` normal, binormal, tangent repacked 11:11:10 | map-format.md |
 | Nodes (`0x60`) | name, parent `04`, first child `06`, next sibling `08`, import index -1 `0a`, default translation `0c`, rotation `18`, **default scale 1 at `28`, inverse forward/left/up at `2c`/`38`/`44`, inverse position at `50`, distance from parent at `5c`** | V2: on every lockout node, `2c`..`5c` invert the model-space default pose computed from `0c`/`18`: the three vectors are the inverse's columns (the rows of the model-space rotation R); `28` is 1. V5: the same on every node of 05a's marine and grunt (`retail_h2_bipeds_pose_sanely`, rest frame times stored inverse within 5e-7). Until converter version 59 the converter wrote R's columns there, which skins a vertex of a rotated node by R twice: the twisted shards a30's marines and the first-person arms were drawn as |
-| Marker groups (`58`, `0xc`) | one per Halo 1 marker name: name, block of markers (`0x24`): i8 region (-1 = any), i8 permutation (-1 = any), i8 node, pad, translation `04`, rotation `10`, f32 `20` written 0 | V2: all 922 lockout markers sit in named groups at `58`, with a node in range and a unit rotation; `20` is 0 on 842 and nonzero on 80 (likely a scale; meaning not established) |
+| Marker groups (`58`, `0xc`) | one per Halo 1 marker name, then one per engine marker name the model has a Halo 1 marker for ("Marker names" below): name, block of markers (`0x24`): i8 region (-1 = any), i8 permutation (-1 = any), i8 node, pad, translation `04`, rotation `10`, f32 `20` written 0 | V2: all 922 lockout markers sit in named groups at `58`, with a node in range and a unit rotation; `20` is 0 on 842 and nonzero on 80 (likely a scale; meaning not established) |
 | Materials (`60`, `0x20`) | first reference null, second the caller's `shad` for that shader index, or null | map-format.md |
 | Header `44` | 0, as on every retail `mode` (Halo 1's node list checksum was written here until converter version 38; one that fell in the map's address range read as a stray pointer and a fresh level refused the tag) | V |
 | Section groups (`34`, `0xc`) | one: detail levels `0x3f` (all six) at `00`, compound nodes (`04` block) empty; the LOD bytes at `3c`..`41` stay 0, naming it | V: all 181 of 05a's `mode`s have exactly this. E: `0x00137650` reads `groups[byte[3c + lod]]`'s `+4` (compound node count) with no count check and adds the node count; an empty block faulted at `0x0013767a` (a30's second crash) |
@@ -348,6 +345,40 @@ skips the section group and counts one. Meaning not established.
 Left empty: the node
 map block at `50`, errors, PRT info and render leaves, and the section
 blocks the decoder does not interpret (`10`, `28`, `30`, `44`, `54`, `5c`).
+
+### Marker names
+
+Halo 2's engine finds a marker by string ID through `0x000b8d30`, which
+takes the first marker group of that name (`0x001d8f00`, a linear scan;
+an empty name is the object's origin, a name not found fails). Most names
+come from tags (seat, attachment, effect and unit marker fields), and the
+converted tags write Halo 1's names, which the converted model keeps. A
+few are written in the engine's code; every string ID pushed to a marker
+lookup in the XBE (E), each also a marker of some retail model on
+Coagulation (V):
+
+| Name | Use (E) |
+|---|---|
+| `left_hand` | where a thrown grenade leaves (`0x000e7730`, from `0x000e77f8`) |
+| `head`, `body` | `head` at 20 sites, `body` at 6 (units, AI, camera; uses not traced one by one) |
+| `primary_trigger` | `0x0023bd20`, `0x0023be75` |
+| `ground_point` | `0x0010c238`, `0x0010d061`, `0x0010d27d`, `0x0010d74f` (items) |
+| `hover_thrusters` | `0x000f60b8`, `0x000f636b` (vehicles) |
+| `drop`, `drop_left`, `drop_right` | `0x000ce704` via `0x000ce6b0` (units) |
+| `melee` | `0x000cf240` (units) |
+| `fp_body_cam` | `0x000de1dc` |
+| `bumper` | `0x0022a185` |
+| `flashlight` | `0x0016632b`, first person, via `0x0016898b` |
+
+Halo 1 writes marker names with spaces (`left hand`, `primary trigger`).
+A converted model carries each engine name it has a Halo 1 marker for in
+Halo 2's form (lower case, `_` for spaces and `-`) as an extra group with
+the same instances (`mode::marker_aliases`); Halo 1's names stay, so the
+seat, attachment and unit fields the converter writes still resolve. The
+disc test `every_engine_marker_resolves_on_the_converted_objects` checks
+both on every converted biped, weapon, vehicle and equipment of every
+multiplayer map. Before this the cyborg had no `left_hand`, so its
+grenades left from its origin (inferred: the lookup's fallback).
 
 ### `jmad`
 

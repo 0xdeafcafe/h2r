@@ -658,6 +658,7 @@ dependencies = [
  "lockstep",
  "map",
  "movies",
+ "native-render",
  "perf",
  "png",
  "runtime",
@@ -666,6 +667,7 @@ dependencies = [
  "serde",
  "serde_json",
  "settings",
+ "snapshot",
  "tags",
  "timeline",
  "toml",
@@ -1574,6 +1576,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shaders",
+ "snapshot",
  "thiserror 2.0.21",
  "timeline",
  "wgpu",
@@ -1940,6 +1943,7 @@ name = "feature"
 version = "0.1.0"
 dependencies = [
  "engine",
+ "native-render",
  "runtime",
  "runtime-test-probe",
  "timeline",
@@ -3828,6 +3832,7 @@ dependencies = [
  "gfx",
  "map",
  "pollster",
+ "shaders",
  "tags",
  "wgpu",
 ]
@@ -6260,6 +6265,7 @@ dependencies = [
  "serde_json",
  "tags",
  "variants",
+ "vfs",
  "wgpu",
  "winit",
 ]
@@ -8034,6 +8040,7 @@ dependencies = [
  "libloading",
  "lift",
  "runtime",
+ "snapshot",
  "vfs",
  "xbe",
 ]

@@ -65,7 +65,7 @@ change.
 | Render | `render.toggle`, `render.param`, `settings.list {prefix: "graphics."}`, `render.stats` | the renderer's switches and parameters (a parameter steps by a tenth of its default), the graphics settings, the last frame's stats (read-only). A setting that applies after a restart is greyed with that reason, and so is one locked for this run by a flag or env var. |
 | Shader overrides | `render.overrides`, `render.reload` | the all-overrides switch, reload, the overrides directory, each override and its state; a rejected override is greyed with its error |
 | Tag edits | `edit.changes`, `edit.revert` | each live tag edit (group, tag, field, old -> new). Select one to revert it, or revert all. |
-| Cheats | `cheat.list`, `cheat.set` | god mode, infinite ammo, bottomless clip, game speed |
+| Cheats | `cheat.list`, `cheat.set` | god mode, infinite ammo, bottomless clip, game speed, fly, noclip, hide HUD; a cheat refused on its own is greyed with its reason |
 | Perf | `perf.overlay`, `profile.counters` | the perf overlay switch (the same one F3 flips), fps and frame-time percentiles, per-phase ms and counts |
 | Features | `features.list` | every feature with its state (read-only) |
 
@@ -81,23 +81,82 @@ local players' units, with the helpers our custom skulls use:
 | `infinite_ammo` | each magazine's reserve to its maximum, an energy weapon's charge to full, both grenade counts topped; reloads still happen |
 | `bottomless_clip` | each magazine's loaded rounds to its maximum, so no reloads (plasma heat still builds) |
 | `game_speed` | 0.25x, 0.5x, 1x, 1.5x or 2x game time, set the way the game's own set-speed helper sets it; a new map puts it back to 1 |
+| `fly` | flight through the game's own physics (walls still stop you); controls below |
+| `noclip` | the same flight through walls; the body takes no damage while it is on |
+| `hide_hud` | the HUD hidden through the game's own HUD switch (the flag a script's HUD builtin sets); the game's last value goes back when off |
 
-They act only in a campaign or multiplayer game, not on the main menu. They
-are refused in a co-op or networked session (simulation modes 2 to 5), because
-only this machine would cheat and the players would desync. They are also
-refused in a lockstep run (`H2_LOCKSTEP`, input record or replay). The menu
-then shows "cheats are off" with the reason and greys every cheat.
-`cheat.set` answers `UNAVAILABLE` with the same reason. If a session becomes
-one of those while cheats are on, they are switched off and undone.
+### Fly and noclip
 
-`h2 agent cheat.set '{"name":"god","value":true}'` does the same as the
+Both read the player's own controls from the unit after the tick: the
+control flags (crouch, jump), the move stick (throttle) and the aiming
+vector. With either on:
+
+- **Move stick**: fly where you look. Forward follows the view, up and down
+  included, so look up and push forward to climb. Sideways stays level.
+- **Jump**: climb. **Crouch**: sink.
+- **Speed boost**: hold the stick all the way for half a second and the
+  speed ramps from 5 to 20 world units a second over the next second. Let
+  go and it drops back.
+- **Fly only, take off**: on the ground, a crouch press takes off (a lift
+  of 0.1 and a climb). No jump is needed.
+- **Fly only, land**: sink onto a floor with crouch held. Crouch still held
+  after landing does not take off again; a fresh press does. So with fly
+  on, crouching on the ground always takes off: switch fly off to
+  crouch-walk.
+- **Fly off in the air**: you drop, shielded from damage for three seconds.
+
+Noclip flies from the moment it is on, with no take-off. It holds the
+body's position itself and writes it over the physics' each tick, so
+nothing stops it. Turning it off hands the body back to the physics where
+it is. For three seconds after, the body is shielded and watched. If it
+does not move for half a second while airborne or while you push the stick
+(stuck in a wall), or falls 20 units, it is put back on the last floor the
+physics stood it on (where noclip began, if none since). With fly on too,
+turning noclip off leaves you flying, with walls again.
+
+Fly sets the body's velocity, the way our Acrophobia skull does. Noclip
+writes the position. Both act only on a biped on foot: in a vehicle, the
+vehicle moves you. The research points are in the module doc.
+
+### Who may cheat
+
+- **Off Xbox Live** (offline, split screen, System Link): anyone.
+- **On Live** (a local player signed in to our Live service): only the
+  gamertags on `cheats::policy::LIVE_ALLOWED` (today `afr`, matched
+  case-insensitively and trimmed). Every signed-in Live player on this
+  machine must be on it. Otherwise every cheat is refused with "cheats are
+  off on Xbox Live". The gamertags come from the Live client's signed-in
+  xuids, named from this machine's accounts file; a xuid it can't name
+  refuses.
+- **Whoever you are**, where a cheat would break the run:
+
+| Session | Refused | Allowed |
+|---|---|---|
+| lockstep run (`H2_LOCKSTEP`, input record or replay) | every cheat | none |
+| synchronous co-op (simulation modes 2, 3) | all but `hide_hud`: only this machine's simulation would change, and the players would desync | `hide_hud` |
+| a networked game's guest (mode 4) | all but `hide_hud`: the host's simulation decides | `hide_hud` |
+| a networked game's host (mode 5) | `game_speed`: the guests' clocks would not follow | god, ammo, clip, fly and noclip on the host's own players; `hide_hud` |
+
+They act only in a campaign or multiplayer game, not on the main menu.
+When every cheat is refused, the menu shows "cheats are off" with the
+reason and greys every row. A cheat refused on its own greys only its row,
+with its own reason. `cheat.set` answers `UNAVAILABLE` with the reason. If
+the session turns into one that refuses a cheat while it is on (someone
+else signs in to Live, a co-op session starts), it is switched off and
+undone.
+
+`h2 agent cheat.set '{"name":"noclip","value":true}'` does the same as the
 menu.
 
 Not built:
 
-- noclip: no tested movement path;
 - infinite plasma heat: the heat fields are not researched;
-- "all weapons": would need object creation.
+- AI ignores the player, active camouflage, one-hit kills, kill all
+  enemies, give weapons, spawn vehicles, teleport to the crosshair, a free
+  camera: each needs more research, or calls into the game (object
+  creation, ray casts) that these cheats do not make yet;
+- low gravity: our Low Gravity skull already owns the gravity constant, and
+  two writers would fight over it.
 
 ## Adding an item
 
@@ -159,6 +218,15 @@ answers the calls the way the host methods do.
 - God mode, infinite ammo, bottomless clip and each game speed in a campaign
   level. Game speed during a cutscene, where scripts ramp it, and on the next
   map.
-- The cheats are refused in a co-op session.
+- Fly: a crouch press on the ground takes off (if it does nothing, the
+  ground physics drops our velocity); the stick flies along the view, and
+  stick left goes left (the throttle is read as forward, left); jump
+  climbs, crouch sinks; sinking onto a floor with crouch held lands.
+- Noclip: through a wall and out the other side; off in the open falls;
+  off inside a wall puts you back on the last floor after half a second;
+  no damage meanwhile.
+- Hide HUD, and that a cutscene's own HUD switch is kept after it is off.
+- The cheats are refused in a co-op session, and on Live for any gamertag
+  but afr.
 - The perf overlay switch matches F3.
 - Shader overrides reload from the default directory.

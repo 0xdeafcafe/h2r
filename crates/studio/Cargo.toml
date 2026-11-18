@@ -46,6 +46,8 @@ tags.workspace = true
 # The UI Screens tool: our game screens' pages, preview and checks
 # (boot::ui_kit; docs/game/ui-builder.md).
 boot.workspace = true
+# The Map Pack's content directory (`T:\$c`) on the host.
+vfs.workspace = true
 serde_json.workspace = true
 
 # Play and pair (src/play.rs): the agent API's wire types and client.

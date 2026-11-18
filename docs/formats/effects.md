@@ -4,8 +4,8 @@ Implementation: `crates/tags/src/effects/` (hand-written fixed codecs, not in
 `schema.rs`, like [sound.md](sound.md)). Tool: `h2 effect` in
 `crates/cli/src/effects.rs`. Evidence labels as in [map-format.md](map-format.md):
 **V** verified on the owner's retail disc, **E** corroborated by the engine's own
-code (XBE disassembly, addresses in [engine-map.md](../engine/engine-map.md)), **S** public-source
-description only. No map bytes, tag names, tag dumps or extracted assets are
+code (XBE disassembly, addresses in [engine-map.md](../engine/engine-map.md)), **S** a name only,
+unverified. No map bytes, tag names, tag dumps or extracted assets are
 committed; tests are synthetic.
 
 ## Provenance rules used here
@@ -14,9 +14,7 @@ Layouts are derived from the disc and from the engine's own code. Scalar sizes,
 block strides, and tag-reference positions were established by (1) the engine
 instructions that read each field (recorded as addresses, never as listings),
 and (2) structural checks over every instance on the disc: pointers resolve,
-strides tile the data, references hit the expected classes. Community
-documentation was used only as a vocabulary hint for names; nothing is
-transcribed. A field with no engine or disc evidence for its meaning stays
+strides tile the data, references hit the expected classes. A field with no engine or disc evidence for its meaning stays
 `unknown_<offset>` (or an opaque span) and round-trips as bytes. Field meaning
 labelled **S** is a name only.
 

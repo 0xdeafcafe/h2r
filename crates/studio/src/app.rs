@@ -10,6 +10,8 @@ pub(crate) mod convert;
 pub mod hud;
 mod editing;
 mod library;
+pub mod map_pack;
+pub mod shared_refs;
 pub mod tag_api;
 pub mod tag_doc;
 pub mod ui_screens;
@@ -88,6 +90,9 @@ pub enum Action {
     ///
     /// [`PackageEntry::key`]: editor_core::packages::PackageEntry::key
     OpenPackageEntry(String),
+    /// Open a Map Pack map (by its map name, `warlock`, or an installed
+    /// package's offer directory): [`map_pack::PackMap`].
+    OpenMapPack(String),
     /// Show a map of the open Halo 1 source, read-only.
     SelectHalo1Map(String),
     /// Draw a converted map's Halo 1 source over it.
@@ -223,6 +228,11 @@ impl Action {
             Action::OpenPackageEntry(key) if app.opened_package.as_deref() != Some(key) => {
                 dirty(ToolKind::Scenario)
             }
+            Action::OpenMapPack(key)
+                if app.pack_entry(key).is_some_and(|m| app.opened_pack_map() != Some(m.map.as_str())) =>
+            {
+                dirty(ToolKind::Scenario)
+            }
             Action::SelectHalo1Map(_) => dirty(ToolKind::Scenario),
             Action::OpenVariant(o) if app.variant_origin() != Some(o) => dirty(ToolKind::Variants),
             Action::NewVariant(_)
@@ -301,6 +311,10 @@ pub struct App {
     /// The open Map Pack, beside the Halo 2 source (its maps resolve their
     /// shared caches from that source).
     mappack: Option<MapPack>,
+    /// The Map Pack group (the open disc's maps, else the installed
+    /// ones), and the problems with the install already logged.
+    pack: Vec<map_pack::PackMap>,
+    pack_notes: Vec<String>,
     /// The open Halo 1 source and its maps.
     h1: Option<editor_core::halo1::H1Source>,
     h1_maps: Vec<String>,
@@ -324,6 +338,8 @@ pub struct App {
     pub hud: HudTool,
     /// The tag editor's document over the open map.
     pub tags: TagDoc,
+    /// The selected tag's shared-map line, for the tag and revision.
+    tag_homes: std::cell::RefCell<Option<(map::TagId, u64, Option<String>)>>,
 }
 
 impl Default for App {
@@ -357,6 +373,8 @@ impl App {
             packages: Vec::new(),
             opened_package: None,
             mappack: None,
+            pack: Vec::new(),
+            pack_notes: Vec::new(),
             h1: None,
             h1_maps: Vec::new(),
             h1_view: None,
@@ -371,6 +389,7 @@ impl App {
             ui_screens: UiScreens::default(),
             hud: HudTool::default(),
             tags: TagDoc::default(),
+            tag_homes: Default::default(),
         }
     }
 
@@ -400,9 +419,11 @@ impl App {
     pub fn mappack_maps(&self) -> Vec<String> {
         self.mappack.as_ref().map(MapPack::map_names).unwrap_or_default()
     }
-    /// Whether `name` is a Map Pack map (and not one of the source's own).
+    /// Whether `name` is a Map Pack map, from the open map pack disc or
+    /// the installed copy (and not one of the source's own).
     pub fn is_mappack_map(&self, name: &str) -> bool {
-        self.mappack.as_ref().is_some_and(|p| p.has(name))
+        (self.mappack.as_ref().is_some_and(|p| p.has(name))
+            || self.pack.iter().any(|m| m.map.eq_ignore_ascii_case(name)))
             && !self.maps.iter().any(|m| m.eq_ignore_ascii_case(name))
     }
     /// The map open in the scenario tool.
@@ -613,6 +634,10 @@ impl App {
                     && self.opened_package.is_none() => {}
             Action::SelectMap(name) => self.select_map(&name),
             Action::SaveMapAs(path) => {
+                if let Some(why) = self.save_refusal(&path) {
+                    self.error(why);
+                    return;
+                }
                 let r = self.session.save_as(&path);
                 if self.session_result(r).is_some() {
                     self.saved_path = Some(path);
@@ -629,6 +654,7 @@ impl App {
                 }
             }
             Action::OpenPackageEntry(key) => self.open_package_entry(&key),
+            Action::OpenMapPack(key) => self.open_pack_map(&key),
             Action::SelectHalo1Map(name) => self.select_halo1_map(&name),
             Action::SetOverlay(on) => self.set_overlay(on),
             Action::ConvertHalo1(sandbox) => self.start_convert(sandbox),
@@ -676,7 +702,10 @@ impl App {
             }
             Action::FrameAll => self.session.frame_all(),
             Action::FocusSelected => self.frame_selection(),
-            Action::SetAllowGrowth(allow) => self.session.set_allow_growth(allow),
+            Action::SetAllowGrowth(allow) => {
+                self.session.set_allow_growth(allow);
+                self.tags.allow_growth = allow;
+            }
             Action::SetTool(tool) => self.set_tool(tool),
             Action::Quit => self.quit = true,
             Action::UiPick(pick) => {
@@ -810,6 +839,7 @@ impl App {
     /// Load the tag editor's document from the open map when the session
     /// opened another one since (its edits went with that map).
     pub fn sync_tags(&mut self) {
+        self.tags.allow_growth = self.session.allow_growth();
         let rev = Some(self.session.world_rev());
         if self.tags.for_rev == rev && self.tags.is_open() == self.session.is_open() {
             return;
@@ -839,6 +869,12 @@ impl App {
         }
         let r = self.session.set_tag_patches(self.tags.patches());
         self.ok_or_log(r);
+        let r = self.session.set_tag_grown(self.tags.grown());
+        self.ok_or_log(r);
+        let r = self
+            .session
+            .set_tag_strings(self.tags.new_strings().to_vec());
+        self.ok_or_log(r);
     }
 
     fn run_tag(&mut self, action: TagAction) {
@@ -859,6 +895,12 @@ impl App {
                 layout,
                 op,
             } => self.tags.block_op(tag, pair, &layout, &op),
+            TagAction::SetString {
+                tag,
+                address,
+                text,
+                label,
+            } => self.tags.set_string(tag, address, &text, &label),
             TagAction::Seal => {
                 self.tags.seal();
                 Ok(())
@@ -1098,9 +1140,8 @@ impl App {
                     "{name} needs the Halo 2 disc's shared maps for its textures and geometry: open the disc too"
                 ));
             }
-            self.mappack.as_ref().map(|pack| {
-                pack.location(name)
-                    .map(|(path, region)| EditSource::region(path, region).with_shared(shared))
+            self.pack_location(name).map(|located| {
+                located.map(|(path, region)| EditSource::region(path, region).with_shared(shared))
             })
         } else {
             self.source.as_ref().map(|source| {
@@ -1156,5 +1197,7 @@ impl App {
 
 #[cfg(test)]
 pub(crate) mod tag_tests;
+#[cfg(test)]
+mod map_pack_tests;
 #[cfg(test)]
 mod tests;

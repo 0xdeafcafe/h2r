@@ -1,14 +1,17 @@
 # Machine snapshots (design)
 
-Status: phases 1 and 2 built, phase 3 partly. Phase 1
+Status: phases 1, 2 and 3 built; phase 4 built for D3D, audio left. Phase 1
 ([below](#phase-1-what-was-built)): the file format, the guest RAM page
 codec, the store, the guest layout and RAM restore, and the time-stamp
 counter, in `crates/snapshot` and `crates/runtime`, with the input tap's
 resume in `crates/xapi`. Phase 2 ([below](#phase-2-the-quiescence-probe)):
 `Machine::quiescent`, per-feature snapshot policies and the opt-in
 `H2_SNAPSHOT_PROBE`. Phase 3 ([below](#phase-3-what-was-built)): the
-kernel's `Core`, the machine's threads and their continuation pools, and
-the VFS's read-only open files. Nothing saves or loads a running game yet.
+kernel's `Core`, the machine's threads and their continuation pools, the
+VFS's read-only open files, the raw disk, XAPI's pads and the input tap's
+cursor, and feature sections (`h1-health`, skulls, lockstep). Phase 4
+([below](#phase-4-what-was-built)): the `d3d` section. Nothing saves or
+loads a running game yet.
 Whatever is not marked built on this page is design.
 
 This is phase 5 of the [agent API](agent-api.md): `state.save {name}` and
@@ -165,7 +168,7 @@ otherwise), **Ignore** (diagnostics). Sources are **Code** unless marked.
 | Timers and DPC queue | `Core::timers`, `dpcs` | Save | Records keyed by guest address. |
 | Periodic sources | `Core::periodic: Periodic`, `periodic.rs` | Save + Check | Schedule fields (`origin`, `next`, `owed`, `missed`, `queued`) are data; `handler` is a Rust closure registered at boot, matched by id and name. |
 | Files | `Core::files`, `file_handles`, `files.rs` | Save | Each kernel file handle maps to a `vfs::Handle`; re-opened through VFS on load (below). Built. |
-| Raw disk device | `rawdisk::RawDisk`, a VFS backend holding up to 2 MiB of written sectors (the cache database) in host memory | Save (not built) | Made fresh by `set_shared_vfs` at boot, so a load sees the boot's sectors, not the saved run's. |
+| Raw disk device | `rawdisk::RawDisk`, a VFS backend holding up to 2 MiB of written sectors (the cache database) in host memory | Save | Shared with `Core::raw_disk` (`RawSectors`) since the VFS owns the backend. Built. |
 | Kernel memory allocator | `Core::memory: memory::Memory`, `memory.rs` | Save | Allocator bookkeeping over guest pages. |
 | Config, console, launch page, TLS template, KPCR, bridge | `Core::console`, `launch_page`, `tls`, `kpcr`, `bridge`, `data` | Check | Set by the boot. |
 | Deferred signals | `Kernel::deferred` | Quiesce | Drained every slice. |
@@ -185,12 +188,13 @@ otherwise), **Ignore** (diagnostics). Sources are **Code** unless marked.
 
 | State | Where | Decision | Why |
 |---|---|---|---|
-| Open pad handles, `next_handle`, last state | `Xapi::handles`, `xapi/src/lib.rs` | Save | The guest holds the tokens; replay counts handle mismatches (`tap.rs`), so numbering must continue. Rebind each to a port. |
-| Device change words | `Xapi::changes` | Save | 12 bytes; mirrored in guest RAM too. |
-| Rumble, completions, signals, launch request | `Xapi::pending_feedback`, `completions`, `signals`, `launch_request` | Quiesce | |
-| Save-game searches | `Xapi::searches` | Save or Quiesce | Rare; refuse first. |
-| Input tap cursor | `Replayer::next`, `Recorder` log length, `xapi/src/tap.rs` | Save | The cursor is `ReplayStats::replayed` (or the recorder's log length); `Replayer::resume` and `Recorder::resume` continue from it. Built. |
-| Live pads, keyboard and mouse, touch | `input::InputManager`, `backend/*`, touch statics | Rebuild | Host devices. Release held keys on load. Packet numbers per port: Save (S), if the game compares them. |
+| Open pad handles, `next_handle`, last state | `Xapi::handles`, `xapi/src/lib.rs` | Save | The guest holds the tokens; replay counts handle mismatches (`tap.rs`), so numbering must continue. Rebound to the device now on the port. Built. |
+| Device change words | `Xapi::changes`, voice types' | Save | 12 bytes each; mirrored in guest RAM too. Built. |
+| Rumble, completions, signals, launch request | `Xapi::pending_feedback`, `completions`, `signals`, `launch_request` | Quiesce | Built (`Xapi::snapshot_blockers`). |
+| Save-game searches | `Xapi::searches` | Quiesce | Refused while open. Built. |
+| Input tap cursor | `InputTap::cursor`/`seek`, `xapi/src/tap.rs` | Save | In the `xapi` section; a load seeks the installed recorder or replayer. Built. |
+| Live pads, keyboard and mouse, touch | `input::InputManager`, `backend/*`, touch statics | Rebuild | Host devices. Held keys are not carried: the next sync publishes the host's state. |
+| Per-port published state and polling | `InputManager` ports | Save | Packet numbers continue from the saved run's (`port_snapshot`, `restore_port`). Built. |
 | Scripted pad cursor | `ScriptedInput` `Playback` | Save | Refuses to rewind today (`ScriptError::Rewind`). |
 
 ### d3d and gfx
@@ -200,21 +204,24 @@ module doc already separates what the guest owns from what the device owns.
 
 | State | Where | Decision | Why |
 |---|---|---|---|
-| Bindings: render target, depth, textures, palettes, shaders, streams, viewport, transforms, scissors | `Device` fields | Save | The device is authoritative for them. |
-| Vertex program and constants, NV2A register state, pushed render state | `program`, `constants`, `hw: HwState`, `pushed` | Save | What the GPU model last saw can differ from guest arrays. |
-| Push-buffer cursors, fence, swap count | `consumed`, `fence`, `swap_count`, … | Save | After `sync_push_buffer`; no Begin/End open, no callback in flight (Quiesce). |
-| Display: gamma, flicker, vblank counters | `Display`, `device/display.rs` | Save | |
-| Visibility tests | `visibility: HashMap<u32, VisibilityTest>` | Save | Resolve every ticket to a count first. Polling mode makes counts depend on GPU timing, a determinism hazard (`threaded.rs`). |
-| Frame-buffer ring order and flags | `swap: Swap` | Save | |
-| Frame and depth surface pixels | backend surfaces | Save (S) | Only on the host. Halo samples last frame's buffers by parity, so blanks would show for about a frame. Phase 4 decides whether a frame of wrong pixels matters to a profile; if not, Rebuild blank. |
-| Texture, vertex and index caches, memos, write tracker | `cache`, `vertex_cache`, `index_cache`, `tracker`, … | Rebuild | Keyed by guest address and validated by generations. |
-| Render-to-texture targets, alias mirror | `rtt`, `mirror`, `raster.rs` | Rebuild | After `flush_render_targets` writes dirty host pixels back to guest RAM. |
-| Backend GPU objects, pipelines, upload rings, presenter | `GfxBackend`, `ScaledBackend`, `Nv2aShaders`, `gfx::*` | Rebuild | Flush and wait first. |
-| Render thread | `d3d-render`, `threaded.rs` | Quiesce | Drain with `finish()`. |
+| Bindings: render target, depth, textures, palettes, shaders, streams, viewport, transforms, scissors | `Device` fields | Save | The device is authoritative for them. Built. |
+| Vertex program and constants, NV2A register state, pushed render state, immediate-mode registers | `program`, `constants`, `hw: HwState`, `pushed`, `immediate` | Save | What the GPU model last saw can differ from guest arrays. Built. |
+| Push-buffer cursors, fence, swap count, register-window shadow | `consumed`, `fence`, `fence_at`, `swap_count`, `regs` | Save | After `sync_push_buffer`. Built. |
+| Begin/End open, push-buffer callback, latched fault, depth-grid request, visibility counting, `PersistDisplay` surface | `immediate`, `active_callback`, `undelivered`, `fault`, `pending_grid`, `hw.zpass_count_enable`, `display.persisted` | Quiesce | `Device::snapshot_blockers`. Built. |
+| Display: gamma, flicker, vblank counters, vblanks not delivered | `Display`, `device/display.rs` | Save | `per_swap` is a host setting, kept. Built. |
+| Visibility tests | `visibility: HashMap<u32, VisibilityTest>` | Save | The save reads every ticket's count first (a wait), so the saving run and a load answer the same from then on. Polling mode still makes later counts depend on GPU timing (`threaded.rs`). Built. |
+| Frame-buffer ring order and flags | `swap: Swap` | Save | By each buffer's `Data`; the buffers themselves are Check. Built. |
+| Destroys the guest has yet to run | `pending_destroys`, `torn_down` | Save | Built. |
+| Frame and depth surface pixels | backend surfaces | Rebuild | Not saved: a load keeps the loading device's pixels, so the first frame's history (Halo samples last frame's buffers by parity) is the loading run's. Draw streams do not depend on it. |
+| Surfaces of guest surface headers that are not texture levels | `other_surfaces` | Rebuild | Made again blank on next use. Pixels lost. |
+| Texture, vertex and index caches, memos, depth copies and aliases | `cache`, `vertex_cache`, `index_cache`, `translated`, `draw_*`, `microcode_*`, `depth_*` | Rebuild | Keyed by guest address; `Device::drop_host_caches`. Built. |
+| Render-to-texture targets, alias mirror | `rtt`, `mirror`, `raster.rs` | Rebuild | The save writes dirty levels and the mirror back to guest RAM first; a load drops them. Built. |
+| Write tracker | `tracker` | Keep | Every copy held over it is dropped with the caches. |
+| Backend GPU objects, pipelines, upload rings, presenter | `GfxBackend`, `ScaledBackend`, `Nv2aShaders`, `gfx::*` | Rebuild | Kept as they are; nothing in them is guest state. |
+| Render thread | `d3d-render`, `threaded.rs` | Quiesce | The caller drains it with `ThreadedBackend::finish()` before saving. |
 
-The existing teardown (`Device::release_device`) is not usable as is: it
-writes refcounts into guest memory. Phase 4 adds a host-only "drop caches"
-next to it.
+The teardown (`Device::release_device`) writes refcounts into guest
+memory, so a load uses the host-only `Device::drop_host_caches` instead.
 
 ### audio (dsound, audio, wma)
 
@@ -239,12 +246,12 @@ next to it.
 | Switches | `feature::Switches` | Check | Part of the build key. |
 | Feature plan, hooks, arena | `feature::Registry`, `Plan`, `Installed` | Check | Deterministic from switches; arena bytes are guest RAM. |
 | Boot glue statics holding guest addresses | `layout_glue`, `campaign_menu`, `list_class`, `stopgaps::KSTACK_NEXT` | Check | Fixed by boot order. |
-| Boot glue statics set during play | `health::MAP_MODE`, `METER`; `skulls_custom::CAMPAIGN`; `level_boot::LOADED_AT`; `skulls_mp`/`skulls_custom` shared state | Save | Each feature owns a section. |
+| Boot glue statics set during play | `health::MAP_MODE`; `skulls_custom::CAMPAIGN`; `level_boot::LOADED_AT`; `skulls_mp`/`skulls_custom` shared state | Save | Each feature owns a section (`SnapshotPolicy::Section`). Built for `h1-health` (re-derived from the loaded map), `skulls-custom`, `skulls-mp`. |
 | Co-op | `coop_live::LOBBY`, `COOP_MODE_PENDING` | Quiesce | Refuse during co-op. |
 | Live | `live-hle` sockets, client thread | Quiesce | Refuse while signed in. |
 | Bink | `BinkHle` slots, platform decoder | Quiesce | Refuse while a movie plays. |
 | Interpreter fallback caches | `boot/src/fallback.rs` | Rebuild | |
-| Lockstep recorder counters | `lockstep::Recorder::ticks`, `presents` | Save | So a trace can continue across a load. |
+| Lockstep recorder counters | `lockstep::Recorder::ticks`, `presents` | Save | So a trace can continue across a load. Built: the `lockstep` feature's section. |
 | Agent session, timeline, perf, telemetry | | Ignore | Observers. |
 
 ### What "the guest can rebuild" means here
@@ -273,7 +280,8 @@ boundary that passes the quiescence check:
 6. Devices: D3D bindings and GPU-model state, surfaces; dsound objects,
    mixer, WMA sessions, re-pinned events.
 7. XAPI handles, input tap cursor (resume replay, or continue recording),
-   lockstep counters, feature sections.
+   lockstep counters, feature sections (built; the boot does not call them
+   yet).
 8. **Determinism check**: `lockstep::hash_guest` over the loaded machine
    must equal the hash stored at save time (per-MiB chunks, so a mismatch
    names the MiB), and `hash_sim` likewise. Then, optionally, run N ticks
@@ -354,14 +362,15 @@ None needs a game run until the last step of phase 5.
    which blockers were live. Tests: synthetic machines with a thread
    blocked in a guest callback, a queued interrupt, a DPC. The user's one
    run with the probe on in a fight answers the biggest unknown.
-3. **Kernel and machine.** Partly built (below): sections for `Core` and
-   the machine's threads; VFS re-open. Left: xapi handles; tap cursor
-   wiring; feature statics; the raw disk. Tests: the
+3. **Kernel and machine.** Built (below): sections for `Core` and the
+   machine's threads; VFS re-open; the raw disk; XAPI and the tap cursor;
+   feature sections. Tests: the
    kernel crate's existing synthetic threads (`kernel/tests`): run a
    synthetic multi-threaded guest for N slices, snapshot, run M more and
    hash; load into a freshly booted machine, run M and compare hashes
    tick by tick.
-4. **Devices.** D3D save, drop caches, restore; dsound, mixer, WMA. Tests
+4. **Devices.** D3D built (below). D3D save, drop caches, restore;
+   dsound, mixer, WMA. Tests
    over the D3D null backend and the audio crate's synthetic voices:
    render, snapshot, render more; load, render the same, compare draw
    streams and mixed PCM.
@@ -535,8 +544,10 @@ the host subsystems. The features are now audited:
 Still unaudited: the features that were off in that run (skulls, co-op,
 aim assist, sign-in strings, kit screens, settings rows) and the host
 subsystems (d3d, dsound, xapi, bink, live, lockstep), which are phase 4.
-The D3D frame wait keeps Rust state across yields that no machine check
-sees, so `host d3d` stays a blocker until phase 4 audits it.
+Phase 4 found that the D3D frame wait and vblank delivery keep their Rust
+state in `ExecCtx::call_guest` continuations, which the machine check does
+see; `host d3d` can report `Device::snapshot_blockers` once the probe is
+wired to it (phase 5).
 
 ## Phase 3: what was built
 
@@ -583,17 +594,112 @@ machine's. Per-context event logs are not saved (diagnostics; a quiescent
 resume transfer carries no event). Writable files are refused rather than
 recorded.
 
-Left for phase 3:
+Second round (branch `snapshot-phase3b`):
 
-- xapi: open pad handles and `next_handle`, device-change words, rebound
-  to ports through `InputManager::open` with their polling parameters; the
-  input crate's per-port packet numbers. Wire the tap cursor
-  (`Replayer::resume`) into the same section.
-- Feature sections for the statics set during play (`h1-health` must call
-  `set_mode` again from the loaded map; skulls; lockstep counters).
-- The raw disk's written sectors (inventory above).
+- Raw disk: `RawDisk` keeps its sectors behind `rawdisk::RawSectors`, which
+  `Core::raw_disk` shares from `set_shared_vfs`; `kcore` (version 2) saves
+  them and a load replaces the booted disk's (`kernel/tests/snapshot.rs`).
+- `xapi::snapshot`: the `xapi` section. Pad handles (token, port, last
+  state), `next_handle`, the gamepad and communicator change words, each
+  port's published state and polling parameters
+  (`InputManager::port_snapshot`/`restore_port`). A load rebinds each
+  handle with `InputManager::reopen`: on an empty port it reads as
+  unplugged and stays stale after an insertion, and the change words
+  report the difference from the saved ports at the next
+  `XGetDeviceChanges`. Refused while rumble, a launch request or a save
+  search is in flight. Tests in `xapi/tests/snapshot.rs`.
+- Tap cursor: `InputTap::cursor` and `seek` (recorder: read count,
+  truncate; replayer: next read; the agent's tap forwards to the chained
+  one). The `xapi` section saves the installed tap's cursor; a load seeks
+  the installed tap and returns the cursor for a caller that installs one
+  later.
+- Feature sections: `SnapshotPolicy::Section` (and
+  `section_forbid_while`): a feature's bytes and a load function given the
+  runtime. `Plan::save_sections`/`load_sections` collect them; a load
+  refuses a file whose section features differ before loading any.
+  `snapshot::features` stores them as one `features` section. Built for
+  `h1-health` (no bytes; the load calls `set_mode` from the loaded map's
+  name), `skulls-custom` (campaign set, said/found bits, ticks, the
+  level's skull, gravity, falls; waits while its guest calls are queued),
+  `skulls-mp` (active set, said flags, profiles; waits while a Famine call
+  is between its hooks) and `lockstep` (tick and present counters).
+
+Left:
+
+- The boot calls none of the new sections yet: phase 5 adds
+  `Xapi::save_snapshot`/`load_snapshot`, `Plan::save_sections` through
+  `snapshot::features` and the kernel's sections to `state.save`.
+- Still unaudited features: `skulls` (campaign skulls per profile), the
+  skulls screens and rows, co-op, aim assist, sign-in strings, kit screens,
+  settings rows.
 - A load into a running game drops the old contexts' fast-memory views and
   direct-call blocks with them; untested outside synthetic machines.
+
+## Phase 4: what was built
+
+D3D (`d3d/src/device/snap.rs`, tests in `d3d/tests/snapshot.rs`):
+
+- `Device::save_snapshot(mem, out)` adds the `d3d` section. Called
+  between slices and before guest RAM is saved, since it writes to guest
+  memory: it drains the push buffer, writes dirty render-to-texture levels
+  and the alias mirror back, and reads every visibility count. Refused
+  (`SnapshotError::Busy`) while `Device::snapshot_blockers` names
+  anything.
+- `saved()` destructures `Device` and `Display` without `..`, each field
+  under its decision, so a new field does not compile until it has one.
+- `Device::load_snapshot(snapshot)` decodes and checks first (frame-buffer
+  and depth headers, the ring's buffers, size and flip, the register
+  window), then drops host caches and restores. Nothing changes on a
+  mismatch. Guest RAM must already be loaded.
+- When a D3D save is allowed: the frame wait (`vblank.rs`, `Wait`) and
+  vblank delivery hold their state only in `call_guest` continuations,
+  which `Machine::quiescent` reports. The device itself holds no Rust
+  state across yields. So a save is allowed when the machine is quiescent,
+  `snapshot_blockers` is empty and a render thread has been drained.
+- Tests over `RecordingBackend`: a device draws three frames with a
+  transform, a scissor and a visibility test, is saved and draws three
+  more. A second device, created the same way but having drawn other
+  frames with other state, loads the section over the saved guest memory
+  and draws the same three frames. The recorded clears, draws and
+  presents match, as do the ring, the visibility answer and guest memory.
+  A device created with other present parameters refuses the section
+  unchanged; a save inside Begin/End is refused.
+
+Left:
+
+- Audio. Audited, not built (**Code**, decisions for the next lane):
+  - `audio::Mixer`: master volume, listener, `buffers`, `streams`,
+    `mix_ins` (by id) and `next_id`, the render `clock`: Save.
+    `scratch`, `reverb_in`, `direct`: Rebuild. `health`: Ignore. `taps`:
+    Quiesce (samples not yet taken) or Save. `sample_rate`: Check.
+  - `SoundBuffer`: format, the guest-byte copy `data` (Save, for
+    bit-exact audio), `params`, play and loop state, cursor `pos`,
+    `fx_state`; `decoded` and `frames` Rebuild from `data`.
+  - `Stream`: format, params, packet queue (decoded frames, ids),
+    `history`, `pos`, `paused`, `next_id`, `completed`, `fx_state`,
+    `dry_at`: Save. `MixIn`: input bin, params, playing, `fx_state`.
+  - `FxState`: clock, envelope start, Doppler, biquad and shelf memory,
+    `phase_off` Save; `coeffs` and `cached` Rebuild.
+  - `Reverb` is plain delay lines and poles (`Clone`), so Save is exact
+    and cheaper to get right than a reset that breaks PCM comparison.
+  - `dsound::Hle`: `ds` (the `DirectSound` state), `arena` and `pins`
+    Save (pins re-made from kernel handles); `callbacks` and `outbox`
+    Quiesce; `stops`, `signal_failures` Ignore. `Output` `Grid` Save
+    under logical pacing; device pacing Quiesce.
+  - `dsound::xwma::WmaHle`: `streams` (a `wma` boundary `Session` per
+    handle, with callback and context) and `next` Save; the decoder's
+    overlap buffers and partial packets need a `wma` save of their own.
+    `refusals`, `totals` Ignore.
+  - Test plan: the audio crate's synthetic voices (buffers, a stream with
+    queued packets, a mix-in, a filter and envelope, reverb on) render N
+    blocks, save, render M; a fresh mixer loads and renders M; the PCM is
+    bit-equal.
+- Phase 5 wiring: call `save_snapshot` after `ThreadedBackend::finish`
+  and before the RAM section; call `load_snapshot` after the RAM is
+  loaded; report `snapshot_blockers` as `host d3d` in the probe.
+- Frame pixels could be saved through `Backend::read_surface` and
+  `write_surface` if the first frame after a load matters to
+  `render.compare`.
 
 ## Related
 

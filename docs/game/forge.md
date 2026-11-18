@@ -30,9 +30,7 @@ names, strings or tables are reproduced.
 - **Budget**: each palette item has a cost and a per-item limit, and the
   map has a total budget; there is also a separate overall object-count cap
   that every object counts against equally ([Halopedia: Sandbox][hp-sandbox],
-  [GameFAQs thread][gf-limit]; the latter is anecdotal). The palette, the
-  costs and the limits are data in the scenario tag ([Assembly
-  introduction][asm-intro]).
+  [GameFAQs thread][gf-limit]; the latter is anecdotal).
 - **Per-object properties** in the Halo 3 map-variant file include placed
   at start, respawn time, team, spare clips (or teleporter channel / spawn
   order), a game-type mask and symmetry flags. Positions are quantised
@@ -83,9 +81,8 @@ after them were located for this page:
 | `+0x328` / `+0x330` | crates (`bloc`) / palette | `0x4c` | E (type table) |
 
 "At most" strides are the gap to the next block divided by the count (V),
-not yet confirmed by an engine loop. The block names for `+0x100..+0x128`
-follow the public Halo 2 scenario layout ([Assembly][asm-intro], the H2EK
-tag definitions); the offsets and readers above are ours.
+not yet confirmed by an engine loop. The names for `+0x100`, `+0x118` and
+`+0x128` are unverified labels; the offsets and readers above are ours.
 
 **How MP maps place weapons (V, E).** On the eleven retail multiplayer
 maps, the weapon and vehicle placement blocks are empty, apart from a
@@ -364,7 +361,6 @@ rocket launcher in a game is for the user to check.
 [hp-forge]: https://www.halopedia.org/Forge
 [hp-sandbox]: https://www.halopedia.org/Sandbox
 [gf-limit]: https://gamefaqs.gamespot.com/boards/926632-halo-3/49202034
-[asm-intro]: https://assembly-halo.fandom.com/wiki/Introduction_to_Assembly
 [hms]: https://github.com/Sopitive/HaloMapStudio/releases/tag/v1.8.0
 [gdc-reach]: https://www.youtube.com/watch?v=h47zZrqjgLc
 [pc]: https://github.com/pnill/cartographer
@@ -372,8 +368,6 @@ rocket launcher in a game is for the user to check.
 
 - Halopedia, [Forge][hp-forge] and [Sandbox][hp-sandbox].
 - [GameFAQs: object count limit][gf-limit] (anecdotal).
-- [Assembly introduction][asm-intro] (scenario holds the sandbox palette
-  and budget in Halo 3).
 - [HaloMapStudio v1.8.0][hms] (Halo 3 map-variant fields; not read for
   layout).
 - David Aldridge, [I Shot You First: Networking the Gameplay of Halo:

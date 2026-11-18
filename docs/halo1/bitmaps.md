@@ -13,9 +13,8 @@ Evidence labels, as in map-format.md:
 - **V — verified-on-disc:** checked on every map of the owner's Halo 1 disc
   by the `#[ignore]`d tests below (24 maps, 9,327 `bitm` tags, 14,815
   images).
-- **S — from-source:** public documentation (c20's *bitmap* tag page,
-  <https://c20.reclaimers.net/h1/tags/bitmap/>, read 2026-11-16) gives the
-  field; the reader relies on it but the disc can't confirm its meaning.
+- **S — unverified:** the reader relies on the field but the disc can't
+  confirm its meaning.
 - **Design:** an implementation choice.
 
 No pixels, tag dumps or tag-name lists are in the repository. Tests invent

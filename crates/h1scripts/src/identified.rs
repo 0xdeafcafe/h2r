@@ -48,7 +48,7 @@ pub const IDENTIFIED: &[Identified] = &[
         "void",
         &["object", "cutscene_flag"],
     ),
-    // Halo 1 66..70, between physics_disable_character_ground_adhesion_forces
+    // Halo 1 66..70, between physics_disable_character_ground_follow_forces
     // (129) and texture_camera_set_object_marker (144); E above.
     id(
         "recording_play",

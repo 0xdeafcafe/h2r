@@ -31,10 +31,9 @@ pub enum H2Flag {
 }
 
 impl H2Flag {
-    /// The stored `u16` (`scnr+0x118` element `+0x10`). The order is the
-    /// community's enum for Halo 2's netgame flags; what the disc shows
-    /// (`tests/h2_scenario.rs`, all 12 multiplayer maps) agrees with it:
-    /// 0 and 1 come once per team on every map, 4 is always neutral (team
+    /// The stored `u16` (`scnr+0x118` element `+0x10`). The values rest on
+    /// what the disc shows (`tests/h2_scenario.rs`, all 12 multiplayer
+    /// maps): 0 and 1 come once per team on every map, 4 is always neutral (team
     /// 8) and two or three per map, 7 and 8 come in equal numbers on the
     /// five maps that have them, 11 and up are runs of hill boundary
     /// points. Not yet confirmed from engine code.
@@ -228,4 +227,48 @@ pub fn resolve(item: H2Item, tags: &[(String, String)]) -> Option<&str> {
                 .find(|(g, name)| g == group && h2_name_matches(name, role))
         })
         .map(|(_, name)| name.as_str())
+}
+
+/// Raises each vehicle spawn of `plan` by how far its vehicle reaches
+/// below its origin (`depth` of the role, [`retail_vehicle_depth`] for
+/// the base's): Halo 1 places a vehicle's origin on the floor, and the
+/// retail ghost's hull reaches 0.15 under its origin, so at Halo 1's spot
+/// it would start in the ground (as the converted ghost did,
+/// `halo1::vehicle_depth`).
+pub fn lift_vehicles(plan: &mut Plan, depth: impl Fn(&str) -> Option<f32>) {
+    for item in &mut plan.items {
+        if let H2Item::Vehicle(role) = item.item {
+            item.position[2] += depth(role).unwrap_or(0.0).max(0.0);
+        }
+    }
+}
+
+/// How far the base's vehicle for `role` (the `vehi` whose last name
+/// component is [`crate::sandbox::vehicle_class`]'s) reaches below its
+/// origin: minus the lowest z of its render model's position bounds
+/// (`obje +0x38` the `hlmt` datum, `hlmt +4` the `mode` datum, `mode
+/// +0x14` the compression block, element `+0x10` z min; V:
+/// `tags/src/defs/{obje,hlmt,mode}.txt`). `None` when any step is missing.
+pub fn retail_vehicle_depth(ctx: &tags::object::Context, role: &str) -> Option<f32> {
+    let leaf = crate::sandbox::vehicle_class(role)?.vehicle;
+    let cat = &ctx.catalog;
+    let u32_at = |address: u32, off: u32| -> Option<u32> {
+        let b = ctx.meta.slice(address.checked_add(off)?, 4).ok()?;
+        Some(u32::from_le_bytes(b.try_into().ok()?))
+    };
+    let vehi = cat.tags.values().find(|t| {
+        t.group == map::FourCC(*b"vehi")
+            && t.name
+                .as_deref()
+                .and_then(|n| n.rsplit(['\\', '/']).next())
+                .is_some_and(|l| l.eq_ignore_ascii_case(leaf))
+    })?;
+    let hlmt = cat.get(map::TagId(u32_at(vehi.location?.0, 0x38)?))?;
+    let mode = cat.get(map::TagId(u32_at(hlmt.location?.0, 4)?))?;
+    let at = mode.location?.0;
+    if u32_at(at, 0x14)? == 0 {
+        return None;
+    }
+    let z_min = f32::from_bits(u32_at(u32_at(at, 0x18)?, 0x10)?);
+    Some((-z_min).max(0.0))
 }

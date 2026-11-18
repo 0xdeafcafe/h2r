@@ -203,10 +203,10 @@ pub mod h2 {
     pub const ATTACHMENTS: usize = 0x94;
     pub const ATTACHMENT: usize = 0x18;
     /// `weap` root.
-    pub const AUTOAIM_ANGLE: usize = 0x208;
-    pub const AUTOAIM_RANGE: usize = 0x20c;
-    pub const MAGNETISM_ANGLE: usize = 0x210;
-    pub const MAGNETISM_RANGE: usize = 0x214;
+    pub const CONE_ANGLE: usize = 0x208;
+    pub const CONE_RANGE: usize = 0x20c;
+    pub const PULL_ANGLE: usize = 0x210;
+    pub const PULL_RANGE: usize = 0x214;
     pub const BARRELS: usize = 0x2d0;
     pub const MAGAZINE_SIZE: usize = 0x5c;
     /// Barrel element.
@@ -1257,6 +1257,8 @@ impl<'a> Converter<'a> {
                     group: g,
                     tag,
                     marker: a.marker,
+                    primary_scale: String::new(),
+                    h1_primary: a.primary_scale,
                 });
             }
         }
@@ -2035,9 +2037,23 @@ impl<'a> Converter<'a> {
                     .push(format!("unit weapon {}: not converted ({e})", t.name)),
             }
         }
-        let (attachments, creation_effect) = self.object_effects(b, &u.object, &mut rep)?;
+        let (mut attachments, creation_effect) = self.object_effects(b, &u.object, &mut rep)?;
+        // Halo 1's functions, and the attachments' primary scales naming
+        // their outputs (`crate::functions`).
+        let mut notes = Vec::new();
+        let inputs = h1::FunctionInputs::read(b, u.object.object_type);
+        let converted = crate::functions::convert(&h1::functions(self.h1, b)?, &inputs, &mut notes);
+        for a in &mut attachments {
+            a.primary_scale = crate::functions::primary_scale(a.h1_primary, &converted);
+            if a.h1_primary != 0 && a.primary_scale.is_empty() {
+                notes.push(format!("attachment at {:?}: output {} not converted, always on", a.marker, a.h1_primary));
+            }
+        }
+        let functions: Vec<_> = converted.into_iter().flatten().collect();
+        rep.no_home.extend(notes.into_iter().map(|n| format!("vehi {n}")));
         let root = crate::rebuild::vehicle(&crate::rebuild::VehicleSpec {
             attachments: &attachments,
+            functions: &functions,
             creation_effect,
             object: &u.object,
             bounds,

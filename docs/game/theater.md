@@ -605,7 +605,7 @@ expensive one).
 | `0x001870a0`, `0x0014d3a0` | player-control preparation; players-before (action consumption) | local, likely; the action record is unfound |
 | `0x004E8C44`, stride `0x140`, `+0xC` | director record per local player; camera update function | local, read for this page |
 | `0x00155760` | camera kind classifier | local, read for this page |
-| `0x0023c110`, `0x0023cbb0`, `0x0016c840` | first-person, following, scripted camera updates | local + OpenSauce (engine-map.md) |
+| `0x0023c110`, `0x0023cbb0`, `0x0016c840` | first-person, following, scripted camera updates | local (engine-map.md); `0x0023cbb0` unverified |
 | `0x0023d090`, `0x0051EC10` | candidate flying (debug) camera and its gate flag | guess |
 | `0x00155380`, `0x00155d80`, `0x00155dd0` | director functions that install camera kinds | local, unread |
 | `0x00468cfc` | director camera kind names | local |

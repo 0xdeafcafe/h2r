@@ -125,7 +125,7 @@ pub struct CommandScript {
     /// The command list's (and point set's, and order's) name.
     pub name: String,
     /// Atoms: type name ([`h1::atom_name`]), and the points they name.
-    pub atoms: Vec<(&'static str, [i16; 2])>,
+    pub atoms: Vec<(String, [i16; 2])>,
 }
 
 /// A conversion: the Halo 2 AI data, with the character palette as paths

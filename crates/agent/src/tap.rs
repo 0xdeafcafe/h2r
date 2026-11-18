@@ -340,6 +340,19 @@ impl InputTap for AgentTap {
             t.closed(handle);
         }
     }
+
+    /// The chained recording's or replay's: the agent's own steps keep no
+    /// log.
+    fn cursor(&self) -> Option<u64> {
+        self.inner.as_ref().and_then(|(t, _)| t.cursor())
+    }
+
+    fn seek(&mut self, cursor: u64) -> Result<(), String> {
+        match &mut self.inner {
+            Some((t, _)) => t.seek(cursor),
+            None => Ok(()),
+        }
+    }
 }
 
 // ---- the methods ----

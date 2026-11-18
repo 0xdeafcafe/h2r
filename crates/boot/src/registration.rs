@@ -169,8 +169,8 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
     // Halo 1's or Halo 2's HUD on converted Halo 1 maps (docs/halo1/hud.md):
     // the owners' HUD references at game activation, by `hud::style_for_map`.
     hud_swap::install(features, i.packages, i.data_root).context("installing the HUD swap")?;
-    // Stronger aim assist (docs/game/aim-assist.md): the weapons' autoaim and
-    // magnetism at each map load, from the Aim Assist setting (Auto: Strong
+    // Stronger aim assist (docs/game/aim-assist.md): the weapons' aim cone and
+    // pull at each map load, from the Aim Assist setting (Auto: Strong
     // while the touch controls show). Headless runs keep retail.
     aim_assist::install(features, i.settings.clone()).context("installing the aim assist")?;
     // Local bots (docs/game/bots.md, stage 1): pads on controller ports,
@@ -272,9 +272,10 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
         AgentSource::Local => Some(agent_glue::AgentGlue::local()),
         AgentSource::None => None,
     };
-    // Our cheats (cheats.rs): refused in co-op and lockstep runs.
+    // Our cheats (cheats.rs): refused in co-op and lockstep runs, and on
+    // Live but for the allowed gamertags.
     if let Some(a) = &agent {
-        cheats::install(features, &a.agent, i.rt, lockstep_on)?;
+        cheats::install(features, &a.agent, i.rt, lockstep_on, i.live.clone())?;
     }
     // The Rust datum, tag and locale functions, when H2_FEATURES has
     // impl.engine=on (off by default).
@@ -307,6 +308,31 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     features
         .add(&feature::occlusion::OcclusionCull)
         .map_err(|e| anyhow::anyhow!("occlusion: {e}"))?;
+    // The static world on the native GPU renderer
+    // (on by default, H2_FEATURES=impl.render.native_world=off turns it
+    // off; docs/graphics/native-renderer.md). Its layer-draw observer is
+    // context-only, so the pipelined render runs it on its own thread. It
+    // runs after render-timing's; the world's map file comes from the
+    // locator boot sets (native_world_glue::set_locator).
+    features
+        .add(&feature::native_world::NativeWorld)
+        .map_err(|e| anyhow::anyhow!("native world: {e}"))?;
+    // Objects' render models on the native GPU renderer, skinned on the
+    // GPU (H2_FEATURES=impl.render.native_objects=on, off by default;
+    // docs/graphics/native-renderer.md, stage 2). Its observers on the
+    // layer draw sit inside render-timing's and the world's; the models
+    // load per map through native_objects_glue.
+    features
+        .add(&feature::native_objects::NativeObjects)
+        .map_err(|e| anyhow::anyhow!("native objects: {e}"))?;
+    // The sorted transparents' geometry on the native GPU renderer
+    // (H2_FEATURES=impl.render.native_transparents=on, off by default;
+    // docs/graphics/native-renderer.md, stage 3): a context-only skip on
+    // the geometry entries' handler, in the game's sort order. Without a
+    // host (none is installed yet) every entry keeps its D3D draw.
+    features
+        .add(&feature::native_transparents::NativeTransparents)
+        .map_err(|e| anyhow::anyhow!("native transparents: {e}"))?;
     // H2_UI_WATCH=1: the screen player one's input goes to, a line on each
     // change and `ui.screen` (`h2 coop test --drive`; ui_watch.rs).
     ui_watch::install(features)?;

@@ -481,6 +481,36 @@ that package. (The disc that has the package's map must be open.)
 
 *Below the disc's maps: **Packages**, then **Halo 1** with the maps of an open Halo 1 disc.*
 
+### Map Pack maps
+
+The Multiplayer Map Pack's nine maps have a group of their own, **Map
+Pack**, under the disc's maps. They are listed as the game's **Select
+Map** lists them: the same names, in the same order, each with its
+picture beside it. Hover a map to see its whole picture and description.
+
+The maps come from the Map Pack disc when the editor has it (section 2),
+else from the copy the game installed in your data folder
+(`<data>/disk/Partition1/TDATA/4D530064/$c/`). The names and pictures
+come from that installed copy, so install it once even if you keep the
+disc: put the Map Pack disc image next to your Halo 2 disc as
+`mappack.iso` and start the game once (`h2 play` installs it), or run
+`h2 import-mappack <iso> --data <data>`
+([map-pack.md](../game/map-pack.md)). If the group says *Not installed*,
+the editor has neither.
+
+Click a map to open it. It opens in the Scenario tool like a disc map,
+and the Tags tool and the viewport show it too. Its textures, models and
+sounds partly live in the Halo 2 disc's `shared.map`, so keep that disc
+open: the log says so when it isn't, and the Tags tool says when a tag's
+data is in a shared map.
+
+Saving never changes the Map Pack's files:
+
+- **File > Save as package...** saves a package in `<data>/maps` over
+  the Map Pack map, as for a disc map.
+- **File > Save map as...** writes a whole `.map` wherever you choose,
+  except into the game's installed content, which the editor refuses.
+
 ### Halo 1 maps
 
 The editor can show Halo 1 maps too.
@@ -1009,17 +1039,20 @@ How to change things:
 - **Flags**: tick or untick. A bit with no name shows only when it is
   set.
 - **Colours**: click the swatch.
-- **Names (string IDs)**: type a name and press Enter. It has to be a
-  name the map already has somewhere; new names are not supported yet.
+- **Names (string IDs)**: type a name and press Enter. A name the map
+  doesn't have yet is added to it when you save (under 128 characters).
+  Undo takes it back. Maps with new names have not been tried in the game
+  yet.
 - **References to other tags**: open the list, type to narrow it, pick
   one (or `none`). Only tags of the right kind are listed. The button
   next to it jumps to that tag.
 - **Lists inside a tag (blocks)**: open the list, pick an element number,
   then edit its fields. **Add**, **Duplicate** and **Remove** change the
-  list, but a list can never get longer than it was on the disc (remove
-  something first). Hover a greyed-out button for the reason. Other
-  things in the map that point at a list entry by its number are not
-  updated when entries move.
+  list. A list can't get longer than it was on the disc unless
+  **Edit > Allow growing full blocks** is on; then the longer list is
+  saved as a new copy at the end of the map's tag data. Hover a
+  greyed-out button for the reason. Other things in the map that point at
+  a list entry by its number are not updated when entries move.
 - **Data** (raw bytes inside a tag): edit the hex; the length must stay
   the same.
 
@@ -1062,7 +1095,8 @@ uses, `$TMPDIR/h2boot-data`.
 | What | Where | How the game finds it |
 |---|---|---|
 | Map packages (yours, and converted Halo 1 maps) | `<data>/maps/<directory>/` | Automatically, the next time it loads that map ([maps.md](../game/maps.md) §7). `<data>/maps/active.toml` records which package is active for each map. |
-| Edited `.map` files | Wherever you save them | With `H2_MAP_DIR=<that folder> h2 play`; the file must have the disc's map name. |
+| Edited `.map` files | Wherever you save them (never inside the game's installed content) | With `H2_MAP_DIR=<that folder> h2 play`; the file must have the disc's map name. |
+| The Map Pack (read only) | `<data>/disk/Partition1/TDATA/4D530064/$c/<offer ID>/` | Installed by `h2 play` or `h2 import-mappack`. |
 | Saved game variants | `<data>/disk/Partition1/UDATA/4D530064/` (the game's saved data) | Listed in the game with its own saved variants. |
 | Exported variants | Wherever you save the `.h2variant` | Not directly: import it in the editor and save it. |
 | Playlists | Wherever you save the `.dat` | Through your Live server (`h2 live hopper import`). |
