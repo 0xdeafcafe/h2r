@@ -20,6 +20,9 @@ const ATTR: u32 = DATA + 0x100;
 const NAME: u32 = DATA + 0x140;
 const NAME_TEXT: u32 = DATA + 0x200;
 const READ: u32 = DATA + 0x300;
+/// SYNCHRONIZE | FILE_READ_ATTRIBUTES | FILE_READ_DATA: synchronous I/O
+/// needs SYNCHRONIZE, and nothing here may write.
+const OPEN_ACCESS: u32 = 0x0010_0081;
 const ROM_PATH: &str = "\\Device\\Rom\\data.bin";
 const COUNTER: u32 = DATA + 0x80;
 const MIX_A: u32 = DATA + 0x84;
@@ -159,7 +162,7 @@ fn boot(epoch: u64) -> (Harness, Machine) {
             cpu,
             ctx,
             202,
-            &[FILE, 0x81, ATTR, IOSB, 7, 0x60],
+            &[FILE, OPEN_ACCESS, ATTR, IOSB, 7, 0x60],
             CODE + 0x30,
         )
     });
@@ -305,6 +308,9 @@ fn a_loaded_machine_runs_the_same_slices_as_the_saved_one() {
     assert!(machine_a.quiescent().is_quiescent());
     assert_eq!(live_returns(&machine_a), vec![2, 3]);
     assert!(a.get(ROUNDS_B) < B_ROUNDS);
+    // The file is open at the save (NtOpenFile succeeded).
+    assert_eq!(a.get(IOSB), 0);
+    assert_ne!(a.get(FILE), 0);
     let bytes = save(&a, &machine_a).unwrap();
     let expected = run(&a, &mut machine_a, M);
     // Thread B returned during the M slices, through its continuation;
