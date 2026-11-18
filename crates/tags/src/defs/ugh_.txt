@@ -1,0 +1,53 @@
+# ugh!: the map's sound gestalt; every snd! indexes its pitch ranges, permutations and chunks.
+# Evidence: crates/tags/src/sound.rs (Gestalt), docs/formats/sound.md, crates/h1sounds/src/gestalt.rs
+# and docs/halo1/sounds.md ("The Halo 2 gestalt"). Fields whose only source is a public
+# description (marked S there: playback/scale/pitch-range-parameter fields, promotions,
+# custom playbacks, extra infos) stay unnamed.
+group ugh! 0x58 align 4
+  0x0 block playbacks 0x38 align 4 -- E snd! flags 0x400/0x800 take the distances from the sound class instead of playback +0x0/+0x4 (0x00124fc0, 0x00125010, 0x0012ac20); stride V (docs/halo1/sounds.md:134,158; h1sounds gestalt.rs:39)
+    0x0 f32 minimum_distance -- E 0x00124fc0/0x0012ac20 read in place of the class minimum unless snd! flag 0x400 (docs/halo1/sounds.md:158)
+    0x4 f32 maximum_distance -- E 0x00125010/0x0012ac20 read in place of the class maximum unless snd! flag 0x800 (docs/halo1/sounds.md:158)
+    0x8 unknown 0x30
+  0x8 block block_8 0x14 align 4
+    0x0 unknown 0x14
+  0x10 block import_names 0x4 align 4 -- V string IDs (docs/halo1/sounds.md:136; h1sounds gestalt.rs:43)
+    0x0 string name -- V string ID (docs/halo1/sounds.md:136)
+  0x18 block block_18 0xa align 4
+    0x0 unknown 0xa
+  0x20 block pitch_ranges 0xc align 4 -- V stride 12; snd! +8/+0xa select a run (sound.rs:162,195; sound.md:31-32)
+    0x0 unknown 0x8
+    0x8 u16 first_permutation -- V every run in range, chunk sums exact (sound.rs:205; sound.md:32)
+    0xa u16 permutation_count -- V (sound.rs:206; sound.md:32)
+  0x28 block permutations 0x10 align 4 -- V stride 16 (sound.rs:163,196; sound.md:33)
+    0x0 unknown 0x6
+    0x6 u16 length_ms -- E 0x00218c60 returns it x0.001 as a playing impulse's length in campaign; V 03a dialogue (docs/halo1/sounds.md:188-191)
+    0x8 u32 encoded_size -- V equals the sum of its chunks' sizes for every permutation (sound.rs:215,287; sound.md:33)
+    0xc u16 first_chunk -- V (sound.rs:216; sound.md:33)
+    0xe u16 chunk_count -- V (sound.rs:217; sound.md:33)
+  0x30 block block_30 0x34 align 4
+    0x0 unknown 0x14
+    0x14 block block_14 0x48 align 4
+      0x0 unknown 0x48
+    0x1c block block_1c 0x30 align 4
+      0x0 unknown 0x30
+    0x24 unknown 0x10
+  0x38 data runtime_permutation_flags align 4 -- V one bit per permutation; multi-permutation ranges own non-overlapping bit runs inside it (h1sounds gestalt.rs:53; tests/real_disc.rs:257-299; docs/halo1/sounds.md:141)
+  0x40 block chunks 0xc align 4 -- V stride 12; raw-resource spans of encoded samples (sound.rs:164,197; sound.md:34)
+    0x0 raw pointer -- V file selector in the top two bits; every span lies inside its file (sound.rs:226; sound.md:34)
+    0x4 u32 size -- V byte length (bit 31 a flag of unknown meaning, masked off) (sound.rs:228-229; sound.md:34)
+    0x8 unknown 0x4
+  0x48 block block_48 0x1c align 4
+    0x0 block block_0 0x10 align 4
+      0x0 unknown 0x10
+    0x8 block block_8 0x4 align 4
+      0x0 unknown 0x4
+    0x10 unknown 0xc
+  0x50 block block_50 0x2c align 4
+    0x0 unknown 0x8
+    0x8 raw raw_8
+    0xc rawsize raw_size_c of=0x8
+    0x10 unknown 0x8
+    0x18 block block_18 0x10 align 4
+      0x0 unknown 0x10
+    0x20 datum datum_20
+    0x24 unknown 0x8

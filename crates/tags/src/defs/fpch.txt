@@ -1,0 +1,5 @@
+# fpch: fog patch. crates/tags/src/lighting.rs (Atmosphere::decode); docs/formats/lighting.md.
+group fpch 0x50 align 4
+  0x0 unknown 0x14
+  0x14 tagref bitmap groups=bitm -- V class word/datum, resolves on all maps (lighting.md:153; lighting.rs:403)
+  0x1c unknown 0x34

@@ -8,6 +8,7 @@
 //! decided per subsystem in the design doc.
 pub mod codec;
 pub mod container;
+pub mod features;
 pub mod guest;
 pub mod pages;
 pub mod store;

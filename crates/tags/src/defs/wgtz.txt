@@ -1,0 +1,8 @@
+# wgtz: UI globals per scenario type, chosen from matg interface (+0x110) by 0x001482e8.
+# Evidence: crates/tags/src/ui.rs (UiGlobals), docs/formats/ui.md, docs/game/community-gametypes.md.
+group wgtz 0x20 align 4
+  0x0 tagref shared_globals groups=wigl -- E 0x00148350; V; ui.rs:1086
+  0x8 block screens 0x8 align 4 -- E 0x00148098: searched by wgit screen_id; V; ui.rs:1075
+    0x0 tagref screen groups=wgit -- E; V; ui.rs:1093
+  0x10 tagref variant_settings groups=goof -- E 0x00236a7f; V; ui.rs:1077
+  0x18 tagref strings groups=unic -- V; ui.rs:1102; ui.md wgtz table

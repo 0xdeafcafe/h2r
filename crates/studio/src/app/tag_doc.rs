@@ -12,6 +12,16 @@
 //! Layouts come from [`tags::registry`]: every byte of every root and
 //! block element as a labelled field.
 //!
+//! A block grows past the elements it had in the source only while
+//! growth is allowed (the session's switch, [`TagDoc::allow_growth`]):
+//! its elements are copied to a new place past the end of the metadata
+//! (provisional addresses the document alone uses) and its pair pointed
+//! there. On save each such block is appended to the metadata
+//! (`MapEditor::append_metadata`) and its pair pointed at the real
+//! address ([`TagDoc::grown`], [`scenario_edit::TagGrown`]). Its old
+//! elements stay as dead bytes; its elements' own child blocks keep
+//! pointing where they did.
+//!
 //! [`App`]: crate::App
 //! [`Session::set_tag_patches`]: scenario_edit::Session::set_tag_patches
 use std::collections::{BTreeMap, HashMap};
@@ -31,9 +41,12 @@ pub const NO_LAYOUT: &str = "no layout for this group in the registry";
 pub const TOO_SHORT: &str = "shorter than its group's root layout";
 /// Why a block may not grow past the elements it had in the source.
 pub const GROWTH_REFUSAL: &str = "the block is full: it has as many elements as in the source. \
-     Growing it means appending to the map's metadata and repointing it, which the tag editor \
-     does not do yet (and the engine's headroom for more tag memory is not established, \
-     docs/editor/scenario-editor.md §6)";
+     Growing it appends a copy to the map's metadata, and the engine's headroom for more tag \
+     memory is not established (docs/editor/scenario-editor.md §6): turn on Edit > Allow \
+     growing full blocks to do it";
+/// Why a block inside a grown block's elements does not grow.
+pub const NESTED_GROWTH: &str = "the block lies in elements that were grown and not yet saved: \
+     save, reopen the map, then grow it";
 /// Why an element with child arrays is not duplicated.
 pub const SHARED_CHILDREN: &str = "the element has nonempty child blocks or data: a copy would \
      share those arrays with it";
@@ -103,6 +116,14 @@ pub enum TagAction {
         layout: Arc<Layout>,
         op: BlockOp,
     },
+    /// Set the string ID field at `address` to `text`, adding the string
+    /// to the map when it has none (see [`TagDoc::set_string`]).
+    SetString {
+        tag: TagId,
+        address: u32,
+        text: String,
+        label: String,
+    },
     /// End the current merge run.
     Seal,
 }
@@ -113,6 +134,8 @@ struct Step {
     /// `(address, before, after)`.
     writes: Vec<(u32, Vec<u8>, Vec<u8>)>,
     merge: Option<u64>,
+    /// String IDs this step added (the last of the document's).
+    strings: Vec<String>,
 }
 
 /// The open map's tags and the edits over them.
@@ -123,6 +146,8 @@ struct Loaded {
     parents: HashMap<FourCC, [Option<FourCC>; 2]>,
     strings: Vec<Option<String>>,
     string_ids: HashMap<String, u32>,
+    /// String IDs added, after the map's own.
+    new_strings: Vec<String>,
     /// Virtual address of `meta[0]`.
     base: u32,
     /// The source's ordinary metadata.
@@ -131,6 +156,34 @@ struct Loaded {
     overlay: BTreeMap<u32, u8>,
     /// The scenario payload `[lo, hi)`.
     scenario: Option<(u32, u32)>,
+    /// Provisional address of grown elements (past the metadata's end,
+    /// aligned); `ext` zero bytes of room there so far.
+    ext_base: u32,
+    ext: Vec<u8>,
+    /// Pairs of the source that were grown at some point: pair → element
+    /// size. Exported while they point into `ext`.
+    grown: BTreeMap<u32, u32>,
+    /// Grown allocations: provisional address → elements they hold.
+    allocs: BTreeMap<u32, u32>,
+}
+
+impl Loaded {
+    /// The source's byte at `a` (zero in the grown room).
+    fn src(&self, a: u32) -> Option<u8> {
+        if a >= self.ext_base {
+            return self.ext.get((a - self.ext_base) as usize).copied();
+        }
+        self.meta.get(a.checked_sub(self.base)? as usize).copied()
+    }
+    fn src_range(&self, address: u32, len: u32) -> Option<&[u8]> {
+        let (buf, start) = if address >= self.ext_base {
+            (&self.ext, self.ext_base)
+        } else {
+            (&self.meta, self.base)
+        };
+        let at = address.checked_sub(start)? as usize;
+        buf.get(at..at.checked_add(len as usize)?)
+    }
 }
 
 /// The tag editor's document.
@@ -148,6 +201,8 @@ pub struct TagDoc {
     pub(crate) for_rev: Option<u64>,
     /// Why the last load failed.
     pub error: Option<String>,
+    /// Whether a full block may grow (the session's switch).
+    pub allow_growth: bool,
 }
 
 impl Default for TagDoc {
@@ -172,6 +227,7 @@ impl TagDoc {
             rev: 0,
             for_rev: None,
             error: None,
+            allow_growth: false,
         }
     }
 
@@ -237,16 +293,24 @@ impl TagDoc {
                 Some((s.clone(), i as u32 | len << 24))
             })
             .collect();
+        let base = space.map_or(0, |s| s.virtual_base);
+        let ext_base = (base as u64 + meta.len() as u64).next_multiple_of(0x1000);
+        let ext_base = u32::try_from(ext_base).unwrap_or(u32::MAX);
         self.loaded = Some(Loaded {
             tags,
             by_id,
             parents,
             strings,
             string_ids,
-            base: space.map_or(0, |s| s.virtual_base),
+            new_strings: Vec::new(),
+            base,
             meta,
             overlay: BTreeMap::new(),
             scenario,
+            ext_base,
+            ext: Vec::new(),
+            grown: BTreeMap::new(),
+            allocs: BTreeMap::new(),
         });
         self.rev += 1;
         Ok(())
@@ -285,18 +349,19 @@ impl TagDoc {
     /// metadata.
     pub fn read(&self, address: u32, len: u32) -> Option<Vec<u8>> {
         let l = self.loaded.as_ref()?;
-        let at = address.checked_sub(l.base)? as usize;
-        let mut out = l.meta.get(at..at.checked_add(len as usize)?)?.to_vec();
+        let mut out = l.src_range(address, len)?.to_vec();
         for (a, b) in l.overlay.range(address..address + len) {
             out[(a - address) as usize] = *b;
         }
         Some(out)
     }
-    /// The source's bytes, no edits.
+    /// The source's bytes, no edits (zeros in grown room).
     pub fn read_source(&self, address: u32, len: u32) -> Option<&[u8]> {
-        let l = self.loaded.as_ref()?;
-        let at = address.checked_sub(l.base)? as usize;
-        l.meta.get(at..at.checked_add(len as usize)?)
+        self.loaded.as_ref()?.src_range(address, len)
+    }
+    /// Whether `address` is a grown block's provisional place.
+    pub fn is_grown_room(&self, address: u32) -> bool {
+        self.loaded.as_ref().is_some_and(|l| address >= l.ext_base)
     }
     fn read_u32(&self, address: u32) -> Option<u32> {
         self.read(address, 4).map(|b| u32_at(&b))
@@ -323,6 +388,9 @@ impl TagDoc {
         let (Some((n, a)), Some(src)) = (self.pair(pair), self.read_source(pair, 8)) else {
             return 0;
         };
+        if let Some(cap) = self.loaded.as_ref().and_then(|l| l.allocs.get(&a)) {
+            return (*cap).max(n);
+        }
         let (sn, sa) = (u32_at(&src[..4]), u32_at(&src[4..]));
         if sa == a { sn.max(n) } else { n }
     }
@@ -382,13 +450,23 @@ impl TagDoc {
         };
         for (k, b) in bytes.iter().enumerate() {
             let a = address + k as u32;
-            if l.meta[(a - l.base) as usize] == *b {
+            if l.src(a) == Some(*b) {
                 l.overlay.remove(&a);
             } else {
                 l.overlay.insert(a, *b);
             }
         }
         self.rev += 1;
+    }
+
+    /// Show `bytes` at `address` without an undo step: for a tool that
+    /// keeps its own edits and history (the HUD tool) and draws them with
+    /// [`crate::fields::panel`]. Outside the metadata, nothing.
+    pub fn mirror(&mut self, address: u32, bytes: &[u8]) {
+        let len = bytes.len() as u32;
+        if self.read(address, len).is_some_and(|now| now != bytes) {
+            self.put(address, bytes);
+        }
     }
 
     /// Write a field, as one undo step (or merged into the last by key).
@@ -419,6 +497,7 @@ impl TagDoc {
                 label: format!("set {}", w.label),
                 writes: vec![(w.address, before, w.bytes)],
                 merge: w.merge,
+                ..Step::default()
             });
         }
         self.sealed = w.merge.is_none();
@@ -438,6 +517,9 @@ impl TagDoc {
         }
         let (n, a) = self.pair(pair).ok_or("no block here")?;
         let size = layout.size;
+        if matches!(op, BlockOp::Add | BlockOp::Duplicate(_)) && n >= self.capacity(pair) {
+            return self.grow(tag, pair, layout, op, n, a);
+        }
         let elem = |i: u32| a + i * size;
         let mut step = Step {
             label: match op {
@@ -487,6 +569,70 @@ impl TagDoc {
         Ok(())
     }
 
+    /// Add or duplicate past the block's room: copy its elements, with the
+    /// new one, to new room in `ext` (twice the elements, so the next adds
+    /// fit) and point the pair there, as one undo step.
+    fn grow(
+        &mut self,
+        tag: TagId,
+        pair: u32,
+        layout: &Layout,
+        op: &BlockOp,
+        n: u32,
+        a: u32,
+    ) -> Result<(), String> {
+        let size = layout.size;
+        let mut bytes = if n == 0 {
+            Vec::new()
+        } else {
+            self.read(a, n * size).ok_or("block unreadable")?
+        };
+        let label = match *op {
+            BlockOp::Add => {
+                bytes.extend(layout.blank());
+                format!("add {} (grown)", layout.name)
+            }
+            BlockOp::Duplicate(i) => {
+                let at = (i * size) as usize;
+                let copy = bytes[at..at + size as usize].to_vec();
+                bytes.splice(at..at, copy);
+                format!("duplicate {} {i} (grown)", layout.name)
+            }
+            BlockOp::Remove(_) => unreachable!("removal never grows"),
+        };
+        let cap = (n + 1).max(n * 2).max(4);
+        let room = cap.checked_mul(size).ok_or("block too large")?;
+        let l = self.loaded.as_mut().ok_or("no map is open")?;
+        let at = (l.ext_base as u64 + l.ext.len() as u64).next_multiple_of(16);
+        let end = at + u64::from(room);
+        let at = u32::try_from(at)
+            .ok()
+            .filter(|_| end <= u64::from(u32::MAX))
+            .ok_or("no address room left to grow into")?;
+        l.ext.resize((end - u64::from(l.ext_base)) as usize, 0);
+        l.allocs.insert(at, cap);
+        l.grown.insert(pair, size);
+        let mut pair_bytes = (n + 1).to_le_bytes().to_vec();
+        pair_bytes.extend(at.to_le_bytes());
+        let mut step = Step {
+            label,
+            ..Step::default()
+        };
+        for (to, after) in [(at, bytes), (pair, pair_bytes)] {
+            self.check(tag, to, after.len() as u32)?;
+            let before = self.read(to, after.len() as u32).expect("checked");
+            step.writes.push((to, before, after));
+        }
+        for (to, _, after) in &step.writes {
+            let after = after.clone();
+            self.put(*to, &after);
+        }
+        self.undo.push(step);
+        self.redo.clear();
+        self.sealed = true;
+        Ok(())
+    }
+
     /// Why `op` may not be done to the block at `pair`, if it may not.
     pub fn block_refusal(
         &self,
@@ -503,7 +649,19 @@ impl TagDoc {
         };
         match *op {
             BlockOp::Add | BlockOp::Duplicate(_) if n >= self.capacity(pair) => {
-                Some(GROWTH_REFUSAL)
+                if !self.allow_growth {
+                    Some(GROWTH_REFUSAL)
+                } else if self.is_grown_room(pair) {
+                    Some(NESTED_GROWTH)
+                } else {
+                    match *op {
+                        BlockOp::Duplicate(i) if i >= n => Some("no such element"),
+                        BlockOp::Duplicate(i) if self.has_children(pair, layout, i) => {
+                            Some(SHARED_CHILDREN)
+                        }
+                        _ => None,
+                    }
+                }
             }
             BlockOp::Duplicate(i) | BlockOp::Remove(i) if i >= n => Some("no such element"),
             BlockOp::Duplicate(i) if self.has_children(pair, layout, i) => Some(SHARED_CHILDREN),
@@ -534,6 +692,10 @@ impl TagDoc {
         for (at, before, _) in step.writes.iter().rev() {
             self.put(*at, before);
         }
+        if let Some(l) = self.loaded.as_mut() {
+            let keep = l.new_strings.len().saturating_sub(step.strings.len());
+            l.new_strings.truncate(keep);
+        }
         let label = step.label.clone();
         self.redo.push(step);
         self.sealed = true;
@@ -544,6 +706,9 @@ impl TagDoc {
         for (at, _, after) in &step.writes {
             self.put(*at, after);
         }
+        if let Some(l) = self.loaded.as_mut() {
+            l.new_strings.extend(step.strings.iter().cloned());
+        }
         let label = step.label.clone();
         self.undo.push(step);
         self.sealed = true;
@@ -553,13 +718,36 @@ impl TagDoc {
         self.sealed = true;
     }
 
-    /// Every changed run: `(address, bytes)`, ascending.
+    /// Every changed run in the source's metadata: `(address, bytes)`,
+    /// ascending. A grown block's elements and its pair are not here: see
+    /// [`Self::grown`]. A grown block emptied again by removals has its
+    /// pair written as `(0, 0)`.
     pub fn patches(&self) -> Vec<(u32, Vec<u8>)> {
         let mut out: Vec<(u32, Vec<u8>)> = Vec::new();
         let Some(l) = self.loaded.as_ref() else {
             return out;
         };
-        for (a, b) in &l.overlay {
+        // Pairs pointing into grown room: written at save, not patched.
+        let mut skip: BTreeMap<u32, Option<[u8; 8]>> = BTreeMap::new();
+        for &p in l.grown.keys() {
+            if let Some((n, a)) = self.pair(p)
+                && a >= l.ext_base
+            {
+                skip.insert(p, (n == 0).then_some([0; 8]));
+            }
+        }
+        let mut bytes = l.overlay.clone();
+        for (p, empty) in &skip {
+            for k in 0..8u32 {
+                bytes.remove(&(p + k));
+                if let Some(e) = empty
+                    && l.src(p + k) != Some(e[k as usize])
+                {
+                    bytes.insert(p + k, e[k as usize]);
+                }
+            }
+        }
+        for (a, b) in bytes.range(..l.ext_base) {
             match out.last_mut() {
                 Some((s, run)) if *s + run.len() as u32 == *a => run.push(*b),
                 _ => out.push((*a, vec![*b])),
@@ -567,6 +755,28 @@ impl TagDoc {
         }
         out
     }
+    /// The blocks grown past their source room, with every element as it
+    /// stands, for the save to append and repoint.
+    pub fn grown(&self) -> Vec<scenario_edit::TagGrown> {
+        let Some(l) = self.loaded.as_ref() else {
+            return Vec::new();
+        };
+        l.grown
+            .iter()
+            .filter_map(|(&root, &size)| {
+                let (count, a) = self.pair(root)?;
+                if a < l.ext_base || count == 0 {
+                    return None;
+                }
+                Some(scenario_edit::TagGrown {
+                    root,
+                    count,
+                    bytes: self.read(a, count * size)?,
+                })
+            })
+            .collect()
+    }
+
     /// Any byte in the tag's own payload differs from the source.
     pub fn is_changed(&self, id: TagId) -> bool {
         let (Some(l), Some(t)) = (self.loaded.as_ref(), self.tag(id)) else {
@@ -580,17 +790,89 @@ impl TagDoc {
     }
     /// Whether anything differs from the source.
     pub fn has_edits(&self) -> bool {
-        self.loaded.as_ref().is_some_and(|l| !l.overlay.is_empty())
+        self.loaded
+            .as_ref()
+            .is_some_and(|l| !l.overlay.is_empty() || !l.new_strings.is_empty())
     }
 
-    /// The string of a string ID's value, if the map has it.
+    /// The string of a string ID's value, if the map has it (or it was
+    /// added).
     pub fn string(&self, value: u32) -> Option<&str> {
         let l = self.loaded.as_ref()?;
-        tags::StringId(value).resolve(&l.strings).ok().flatten()
+        if let Some(s) = tags::StringId(value).resolve(&l.strings).ok().flatten() {
+            return Some(s);
+        }
+        let index = (value & 0x00ff_ffff) as usize;
+        let s = l.new_strings.get(index.checked_sub(l.strings.len())?)?;
+        (s.len() == (value >> 24) as usize).then_some(s.as_str())
     }
-    /// The value of the string ID for `text`, if the map has the string.
+    /// The value of the string ID for `text`, if the map has the string
+    /// (or it was added).
     pub fn string_id(&self, text: &str) -> Option<u32> {
-        self.loaded.as_ref()?.string_ids.get(text).copied()
+        let l = self.loaded.as_ref()?;
+        if let Some(v) = l.string_ids.get(text) {
+            return Some(*v);
+        }
+        let k = l.new_strings.iter().position(|s| s == text)?;
+        Some(((l.strings.len() + k) as u32) | (text.len() as u32) << 24)
+    }
+    /// The string IDs added, in order, after the map's own.
+    pub fn new_strings(&self) -> &[String] {
+        self.loaded.as_ref().map_or(&[], |l| &l.new_strings)
+    }
+
+    /// Set the string ID field at `address` to `text`, as one undo step.
+    /// A string the map lacks is added after its own (saved with the map:
+    /// `MapEditor::add_string`); undoing the step takes it back.
+    pub fn set_string(
+        &mut self,
+        tag: TagId,
+        address: u32,
+        text: &str,
+        label: &str,
+    ) -> Result<(), String> {
+        let (value, new) = match self.string_id(text) {
+            Some(v) => (v, false),
+            None => {
+                if text.is_empty() || text.contains('\0') {
+                    return Err("a new string ID needs text, and no NUL".into());
+                }
+                if text.len() >= map::build::FIXED_STRING_SLOT {
+                    return Err(format!(
+                        "a string ID is under {} bytes",
+                        map::build::FIXED_STRING_SLOT
+                    ));
+                }
+                let l = self.loaded.as_ref().ok_or("no map is open")?;
+                let index = l.strings.len() + l.new_strings.len();
+                let v = map::build::string_id(index, text).map_err(|e| e.to_string())?;
+                (v, true)
+            }
+        };
+        self.check(tag, address, 4)?;
+        let after = value.to_le_bytes().to_vec();
+        let before = self.read(address, 4).expect("checked");
+        if before == after && !new {
+            return Ok(());
+        }
+        self.put(address, &after);
+        let mut step = Step {
+            label: format!("set {label}"),
+            writes: vec![(address, before, after)],
+            ..Step::default()
+        };
+        if new {
+            step.label = format!("set {label} (new string {text:?})");
+            step.strings.push(text.to_owned());
+            if let Some(l) = self.loaded.as_mut() {
+                l.new_strings.push(text.to_owned());
+            }
+            self.rev += 1;
+        }
+        self.undo.push(step);
+        self.redo.clear();
+        self.sealed = true;
+        Ok(())
     }
 
     /// Whether a tag of `group` fits a reference allowing `groups` (empty:

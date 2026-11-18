@@ -470,6 +470,37 @@ impl Recorder {
         self.ticks.load(Ordering::Relaxed)
     }
 
+    pub fn presents(&self) -> u64 {
+        self.presents.load(Ordering::Relaxed)
+    }
+
+    /// Carry the counters on from a loaded machine snapshot, so the next
+    /// records' sequence numbers are the saved run's and its trace can be
+    /// compared from there (`compare` on records from that number on).
+    /// Records already in this trace stay.
+    pub fn resume_counters(&self, ticks: u64, presents: u64) {
+        self.ticks.store(ticks, Ordering::Relaxed);
+        self.presents.store(presents, Ordering::Relaxed);
+    }
+
+    /// The counters as the `lockstep` feature's snapshot section.
+    fn save_counters(&self) -> Vec<u8> {
+        let mut out = self.ticks().to_le_bytes().to_vec();
+        out.extend_from_slice(&self.presents().to_le_bytes());
+        out
+    }
+
+    fn load_counters(&self, bytes: &[u8]) -> Result<(), String> {
+        let bytes =
+            <[u8; 16]>::try_from(bytes).map_err(|_| format!("{} bytes, not 16", bytes.len()))?;
+        let (ticks, presents) = bytes.split_at(8);
+        self.resume_counters(
+            u64::from_le_bytes(ticks.try_into().expect("8 bytes")),
+            u64::from_le_bytes(presents.try_into().expect("8 bytes")),
+        );
+        Ok(())
+    }
+
     fn game_tick(&self, guest: &Guest) -> Option<u32> {
         let ptr = guest.u32(self.game_time?).ok()?;
         guest.u32(ptr.wrapping_add(8)).ok()
@@ -531,6 +562,12 @@ impl feature::Feature for TickObserver {
             let clock = o.clock();
             recorder.record(Kind::Tick, &o.guest(), clock);
         });
+        // The counters carry across a snapshot; the records are the run's.
+        let (save, load) = (Arc::clone(&self.0), Arc::clone(&self.0));
+        b.snapshot(feature::SnapshotPolicy::section(
+            move || save.save_counters(),
+            move |bytes, _| load.load_counters(bytes),
+        ));
         Ok(())
     }
 }
@@ -754,5 +791,32 @@ mod tests {
         assert_eq!(hash_sim(&g, region), None);
         g.set_u32(0x40000, 0x13800).unwrap();
         assert_eq!(hash_sim(&g, region), None);
+    }
+
+    #[test]
+    fn the_counters_carry_across_a_snapshot() {
+        let g = guest_with(&[(0x10000, 0x1000)]);
+        let saved = Recorder::new(None);
+        saved.record(Kind::Tick, &g, None);
+        saved.record(Kind::Tick, &g, None);
+        saved.record_presents(1, &g, None);
+        let bytes = saved.save_counters();
+
+        // A fresh run loads them: its next records continue the numbering.
+        let loaded = Recorder::new(None);
+        loaded.load_counters(&bytes).unwrap();
+        assert_eq!((loaded.ticks(), loaded.presents()), (2, 1));
+        loaded.record(Kind::Tick, &g, None);
+        loaded.record_presents(2, &g, None);
+        assert_eq!(
+            loaded
+                .trace()
+                .records
+                .iter()
+                .map(|r| (r.kind, r.seq))
+                .collect::<Vec<_>>(),
+            [(Kind::Tick, 2), (Kind::Present, 1)]
+        );
+        assert!(loaded.load_counters(&bytes[..15]).is_err());
     }
 }

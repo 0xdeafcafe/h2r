@@ -1020,6 +1020,21 @@ Marked now:
   registers and stack.
 - `community:strings` and `community:descriptions`. These are direct
   overrides that mark themselves; the old address-and-name list is gone.
+- `native-world`'s observer before `LAYER_DRAW`
+  (docs/graphics/native-renderer.md). It clears the world's layer-3 item
+  bits in the memory its context sees and sets them back before the next
+  layer draw (not after the layer, which would need a continuation), and
+  its host's pass request goes to the D3D device in render order. It
+  used to turn pipelining off.
+- `native-objects`' observer before `LAYER_DRAW`, the same shape. It
+  copies the drawn objects' node matrices out of the memory its context
+  sees, which on the render thread is the frame's snapshot, so the pass
+  draws the poses of the frame the render draws.
+- `native-transparents`' `before` on `TRANSPARENT_GEOMETRY` (the sorted
+  transparents' geometry handler) and its observer before
+  `SCENE_TRANSPARENTS`. The `before` answers `ret 4` for an entry the
+  native renderer draws and writes no guest memory; its runs of entries
+  reach the D3D device in render order, as the world's pass does.
 
 Everything else is in `boot::render_thread::REFUSED`, with its reason:
 

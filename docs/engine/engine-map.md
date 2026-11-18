@@ -45,9 +45,7 @@ applies to the narrow description in each row, not every implication of its
 assigned name. All addresses are guest virtual addresses, never host pointers.
 
 Evidence uses direct calls, global accesses, selected string xrefs, FourCC
-constants, and table entries. The public Xbox 1.00 OpenSauce layouts independently
-match many local anchors; H2V/H2EK sources supply vocabulary and comparison,
-**not transferable addresses or structure layouts**. Ghidra's inferred C
+constants, and table entries. Ghidra's inferred C
 signatures are particularly unreliable with LTCG: EAX/EBX/EDI often carry
 arguments omitted from the displayed parameter list.
 
@@ -79,7 +77,7 @@ arguments omitted from the displayed parameter list.
 | `0x00120a90` `async_io_initialize` | Likely | Initializes a request pool, mutexes, worker state; creates a thread at `0x00120c30`. Cache reads and preferences wait on completion flags. |
 | `0x00137c20` `engine_systems_initialize` | Confirmed | Allocates/clears game globals, stores the pointer at `0x004e6948`, then calls 68 initialization slots at `0x00440dd8 + n*0x24`. |
 | `0x0012b690` `main_loop_run` | Confirmed | Initializes timing and systems, repeatedly calls `0x0012b450` until exit byte `0x00547f2b` changes, then walks disposal callbacks backwards. |
-| `0x0012b450` `main_loop_iteration` | Confirmed | Reached from that back edge; exact address also named MAIN_LOOP by [OpenSauce Xbox game layout][os-game]. |
+| `0x0012b450` `main_loop_iteration` | Confirmed | Reached from that back edge. |
 
 The ordered bootstrap children in `0x00012000` are useful stopping points:
 `0x00120a90` async I/O, `0x00121350` preferences, `0x00121fc0` fonts,
@@ -120,8 +118,7 @@ Inside a simulated tick, inspected call order includes players-before
 `0x0014d3a0`, AI `0x001c83c0`, script scheduler `0x00209310`, object pre-physics
 `0x000b6f10`, Havok `0x001c3d30`, object post-physics `0x000b7060`, object
 finalization `0x000b7150`, then players-after `0x0014d8b0`. Other game systems
-interleave these calls. OpenSauce independently identifies both player phases
-and their call sites. [Xbox player hooks][os-game]
+interleave these calls.
 
 ## Cache files, tags, strings, and allocation
 
@@ -146,10 +143,8 @@ Important globals, confirmed by loader stores and subsequent reads:
 `0x00547700` is the **inline header buffer**, `0x00547f00` holds the tag-index
 pointer, `0x004e3b44` the tag-entry pointer, `0x004e0350` the scenario pointer,
 `0x004e034c` the globals pointer, `0x004e0348` the active BSP pointer, and
-`0x004e0344` the lightmap pointer. OpenSauce's names corroborate these locations,
-but its pointer macros are not a substitute for inspecting the accesses:
-the header at `0x00547700` is copied inline, not fetched through another pointer.
-[Xbox cache layout][os-cache], [Assembly Xbox index/BSP layouts][assembly]
+`0x004e0344` the lightmap pointer. The header at `0x00547700` is copied
+inline, not fetched through another pointer.
 
 The root identities `scnr`/`matg` follow their index roles and layouts, rather
 than literal FourCC comparisons in every caller. Explicit local constants
@@ -177,19 +172,18 @@ masks it. Capture the actual contract for each entry.
 | `0x001a02d0` `locale_string_id_find` | Confirmed | Scans a bounded locale-index range, compares the **full** string-ID key, returns blob base plus matched offset; miss returns an empty-string address. |
 | `0x001a0350` `localized_string_copy` | Confirmed | Requires loaded locale state, invokes lookup, conversion helper `0x00140440`, and bounded wide-string copy. |
 
-A StringID's high byte encodes length and low 24 bits its identifier in the
-public H2V/cache model. The local **localized** resolver compares the packed
+A StringID's high byte encodes length and low 24 bits its identifier
+(unverified here; see [map-format.md](../formats/map-format.md) for the
+on-disc checks). The local **localized** resolver compares the packed
 value; do not strip its high byte before that comparison. The general
 StringID-to-debug/name-string resolver for the map header's string table was
 **not identified**. It is distinct from resolving menu text through `unic` and
 `matg`. Implement host-side indexed string names using the map reader, while
-preserving this runtime localization path. [Pinned H2V StringID definition][h2v-string],
-[Assembly locale layouts][assembly]
+preserving this runtime localization path.
 
-The runtime locale record starts eight bytes before Assembly's documented
-count field: local code uses `matg + 0x188 + language*0x1c`, with two resident
-pointers followed by count/size/file offsets. Assembly reports the count at
-`matg + 0x190`. These are compatible views, not two competing offsets.
+The runtime locale record: local code uses `matg + 0x188 + language*0x1c`,
+with two resident pointers followed by count/size/file offsets, so the count
+is at `matg + 0x190`.
 
 ### Arenas, pools, and datums
 
@@ -201,7 +195,7 @@ pointers followed by count/size/file offsets. Assembly reports the count at
 | `0x0016b570` / `0x0016b5f0` / `0x0016b650` `data_new` / `data_initialize_contiguous` / `data_initialize` | Confirmed | Allocation and construction of named arrays with capacity, element stride, salt and occupancy bitmap. `0x0011cc20` is another arena-backed constructor. |
 | `0x0016b840` `datum_new` | Confirmed | Finds free bitmap slot, clears element, assigns/increments salt, returns `(salt << 16) | slot`; failure is all ones. |
 | `0x0016ba40` `datum_delete` | Confirmed | Clears occupancy bit and salt, updates free-slot/high-water/live-count fields; used by object rollback and script-thread retirement. |
-| `0x0016bc00` `data_next_index` | Confirmed | Searches occupancy bitmap up to array high-water mark; independently named by [OpenSauce engine functions][os-functions]. |
+| `0x0016bc00` `data_next_index` | Confirmed | Searches occupancy bitmap up to array high-water mark. |
 | `0x0013d170` `lruv_cache_new` | Likely | Shared named animation/texture/geometry/sound-cache constructor over a data array. |
 
 These are good small Rust candidates once guest allocation identity and failure
@@ -227,16 +221,16 @@ allocation order before changing ownership.
 | `0x000c4410` / `0x000c6b30` `unit_new` / `unit_update` | Confirmed callback roles | The `unit` descriptor at `0x004679b0` supplies these at `+0x2c` / `+0x40`; biped ancestry includes it. Full behaviors are not audited. |
 | `0x000dc540` / `0x000dd360` / `0x000dd990` `biped_new` / `biped_update` / `biped_post_physics` | Confirmed callback roles | The `bipd` descriptor at `0x00467a78` supplies `+0x2c` / `+0x40` / `+0x44`; biped_new calls `0x000de4c0`. |
 | `0x0014b4b0` `players_initialize` | Confirmed | Allocates 16 entries of stride `0x21c`; players-name xref `0x00453984`, published pointer `0x004e8c24`. |
-| `0x0014de70` / `0x0014de90` `local_player_get_player_index` / `player_index_from_unit_index` | Confirmed | Local-player mapping and unit-to-player access; exact addresses in [OpenSauce engine functions][os-functions]. The latter reads unit `+0x13c` here. |
-| `0x001c7790` / `0x001c79e0` `ai_initialize` / `ai_initialize_for_new_map` | Likely / Confirmed | Lifecycle-table slots; new-map entry explicitly identified by [OpenSauce AI layout][os-ai]. |
+| `0x0014de70` / `0x0014de90` `local_player_get_player_index` / `player_index_from_unit_index` | Confirmed | Local-player mapping and unit-to-player access. The latter reads unit `+0x13c` here. |
+| `0x001c7790` / `0x001c79e0` `ai_initialize` / `ai_initialize_for_new_map` | Likely | Lifecycle-table slots. |
 | `0x001c83c0` `ai_update` | Confirmed | Called per tick, gates on AI globals `0x004f55d0`, invokes actor/squad/behavior work. Actor array at `0x004f55f0` has extensive local consumers. |
-| `0x00257d00` `ai_command_scripts_initialize` | Confirmed | Allocates command-script and joint-command-script arrays; diagnostic-name xrefs `0x0045a690`/`0x0045a678`, corresponding [OpenSauce globals][os-ai]. |
+| `0x00257d00` `ai_command_scripts_initialize` | Confirmed | Allocates command-script and joint-command-script arrays; diagnostic-name xrefs `0x0045a690`/`0x0045a678`. |
 | `0x0020a700` / `0x00208ff0` `hs_initialize` / `hs_runtime_initialize` | Confirmed | Script-node array has stride `0x14`; runtime creates named thread/global arrays and publishes pointers. |
 | `0x00209310` `hs_update` | Confirmed | Walks script-thread datums, compares wake tick with `game_time +8`, executes ready threads via `0x00209850`. |
 | `0x00209850` `hs_thread_execute` | Confirmed | Uses scenario scripts, node array, thread stack frames; dispatches builtins through table `0x004744e0` or expression handling `0x00209bf0`. |
 
-The game-time layout agrees with [H2V's named 0x24-byte structure][h2v-time],
-but the local tick rate is read from options; this survey does not hard-code
+The game-time structure is `0x24` bytes; the local tick rate is read from
+options, and this survey does not hard-code
 30 Hz as a universally valid runtime contract.
 
 Object headers and variable-size object bodies are separate. The local common
@@ -246,17 +240,13 @@ descriptor. Its ancestry list is object (`0x004678e8`, `obje`), unit
 (`0x004679b0`, `unit`), biped (`0x00467a78`, `bipd`), then null. The FourCC
 at descriptor `+4`, short diagnostic name, and actual dispatcher offsets
 establish the callback roles above. Their bodies are discoverable with
-`h2 disasm` even where Ghidra has no function. Do not copy the H2V biped layout
-wholesale: its public player datum is at `+0x140`, whereas this Xbox helper
-reads `+0x13c`.
-[H2V comparison, not Xbox ABI][h2v-objects]
+`h2 disasm` even where Ghidra has no function. The unit's player datum is
+read at `+0x13c` by the Xbox helper.
 
 HaloScript globals are `0x004f9394` nodes, `0x004f9384` threads,
-`0x004f9380` globals, matching [OpenSauce HS layout][os-hs]. The scheduler uses
+`0x004f9380` globals. The scheduler uses
 `0x418`-byte thread records and script nodes with `0x14` stride. Runtime execution
-is not a console text parser. H2Codez's opcode/global tables and prolog/epilog
-interface explain the vocabulary, but their editor opcodes and function
-addresses must not be imported unverified. [Pinned H2EK interface][h2c-hs]
+is not a console text parser.
 
 **Rewrite order:** datums first, common object identity next, type-specific
 behavior later. Keep the scheduler and reached script opcodes working for menu
@@ -279,7 +269,7 @@ work is unnecessary.
 | `0x00041040` `submit_structure_or_model_geometry` | Likely | Branches between active BSP cluster/instance records and render-model tag geometry, then shader/material and vertex/index submission callbacks. Strong choke point for separating asset interpretation from D3D. |
 | `0x0003d270` `object_render_cache_initialize` | Confirmed | Cached-object-render-state diagnostic xref at `0x004508c0`, data-array initialization. |
 | `0x001554b0` `director_update` | Confirmed | Dispatches camera callbacks per local player; explicitly recognizes scripted and first-person callback addresses. |
-| `0x0016c840` / `0x0023c110` `scripted_camera_update` / `first_person_camera_update` | Confirmed | Local director references plus exact names in [OpenSauce camera layout][os-game]. Following/dead cameras have public anchors `0x0023cbb0`/`0x0023de50` (likely here; not deeply inspected). |
+| `0x0016c840` / `0x0023c110` `scripted_camera_update` / `first_person_camera_update` | Confirmed | Local director references. Following/dead cameras at `0x0023cbb0`/`0x0023de50` are unverified (not inspected). |
 | `0x00187130` `player_control_get_field_of_view` | Confirmed | Observer default `[0x54e854]`, else the unit definition's camera FOV (`+0xcc`) divided by the zoom magnification (`0xc8880`). Only caller `0x23c202`; hooked for the FOV setting ([settings-menu.md](../game/settings-menu.md) "Field of view"). |
 | `0x0023bd70` | Likely | Following (vehicle) camera: sets its FOV from `[0x54e854]`. |
 | `0x00171d90` | Likely | Observer camera result: vertical FOV `+0x4c` from horizontal `+0x38` and aspect, scale `+0x50`. |
@@ -323,7 +313,7 @@ size is 78,948 bytes, including data/tails. [LTCG and boundary design](../lifter
 | Havok BSP integration `0x001c2910` | Confirmed | Diagnostic at `0x004558f0` describes building BSP physics; reads active BSP and creates collision representation. |
 | Physics step `0x001c3d30` → `0x00311100` | Confirmed wrapper; likely inner step identity | Called between object phases; reads tick delta and world pointer, manages x87/MXCSR, invokes Havok and collision callbacks. Preserve generated behavior first. |
 | Collision query `0x0016a8e0` | Likely sphere/world contact query | Geometry/planes, radius and contact adjustment math, used by effects; exact API name and argument ABI are unresolved. Collision includes Halo geometry queries as well as Havok. |
-| Transport `0x000b4d50`, `0x000b4fa0`, `0x000b5000`, `0x000b5060`, `0x000b5110` | Likely create/read/write/read-from/write-to | Exact names from [OpenSauce networking layout][os-network]; SDK/XNet-linked neighborhood, but full socket ABI and error paths not audited. |
+| Transport `0x000b4d50`, `0x000b4fa0`, `0x000b5000`, `0x000b5060`, `0x000b5110` | Guess: create/read/write/read-from/write-to | SDK/XNet-linked neighborhood; roles unverified, full socket ABI and error paths not audited. |
 | Network pumps `0x0008df50` / `0x0008dfc0` | Likely semantic phases | Link polling via `0x0008d7e0` reaches matched XNetGetEthernetLinkStatus `0x0036c47d`; state/session operations surround ticks. Do not remove local simulation merely because Xbox Live is offline. |
 | Simulation lifecycle `0x00067e30`, tick envelope `0x000683a0` / `0x000684e0` | Likely | Lifecycle slot plus calls enclosing game_tick. Multiplayer/session and local simulation boundaries still need a runtime trace. |
 | Preferences `0x00121350` | Confirmed | File-path xref `0x0045333c`, async read, XCalculateSignature calls, version/size checks and defaults on invalid/missing data. |
@@ -467,44 +457,10 @@ here substitutes for those runtime checks.
 
 ## Pinned public references
 
-- OpenSauce commit [`d200c970c918921d40e9fb376ec685c77797c8b7`][os-root],
-  **Halo2_Xbox / Memory / 1.00**, is the matching-build comparison, not its
-  Alpha or AutoUpdate address maps: [game/camera/time/players][os-game],
-  [engine helpers][os-functions], [cache][os-cache], [objects][os-objects],
-  [HaloScript][os-hs], [AI][os-ai], [physics][os-physics],
-  [networking][os-network], [input/interface][os-interface], [sound][os-sound].
-  Local accesses were checked before treating these names as confirmed.
-- Assembly commit `fd14ef3c46135e9422966c6a64cd926fb0bd23fb`:
-  [Xbox core index/BSP/locale layouts][assembly]. Additional pinned format
-  sources and the on-disc validation limits are in [map-format.md](../formats/map-format.md).
-- Project Cartographer / H2V commit
-  `f4a6e912dce18715591673561dca8502889d2322`:
-  [game-time structure][h2v-time], [StringID encoding][h2v-string],
-  [object/player comparison][h2v-objects]. These are comparison material, not
-  a source of Xbox addresses or authoritative Xbox member offsets.
-- H2Codez / H2EK commit `a5a89d3200a15d5ab80f1a0a6fb57f3724858f28`:
-  [HaloScript command/global interface][h2c-hs]. Editor extensions do not
-  establish retail opcode counts or availability.
 - XbSymbolDatabase commit `20eced544726f5558c5a408458f38a086cc4e543`:
   [signature source][xbsym]. Signatures and their database are not reproduced
   here; the reported SDK identities were checked at the indicated call sites.
 
-[os-root]: https://github.com/MirisWisdom/OpenSauce/tree/d200c970c918921d40e9fb376ec685c77797c8b7/OpenSauce/Halo2/Halo2_Xbox
-[os-game]: https://github.com/MirisWisdom/OpenSauce/blob/d200c970c918921d40e9fb376ec685c77797c8b7/OpenSauce/Halo2/Halo2_Xbox/Memory/1.00/_EngineLayout.Game.inl
-[os-functions]: https://github.com/MirisWisdom/OpenSauce/blob/d200c970c918921d40e9fb376ec685c77797c8b7/OpenSauce/Halo2/Halo2_Xbox/Memory/1.00/_EngineLayout.Game.EngineFunctions.inl
-[os-cache]: https://github.com/MirisWisdom/OpenSauce/blob/d200c970c918921d40e9fb376ec685c77797c8b7/OpenSauce/Halo2/Halo2_Xbox/Memory/1.00/_EngineLayout.Cache.inl
-[os-objects]: https://github.com/MirisWisdom/OpenSauce/blob/d200c970c918921d40e9fb376ec685c77797c8b7/OpenSauce/Halo2/Halo2_Xbox/Memory/1.00/_EngineLayout.Objects.inl
-[os-hs]: https://github.com/MirisWisdom/OpenSauce/blob/d200c970c918921d40e9fb376ec685c77797c8b7/OpenSauce/Halo2/Halo2_Xbox/Memory/1.00/_EngineLayout.HS.inl
-[os-ai]: https://github.com/MirisWisdom/OpenSauce/blob/d200c970c918921d40e9fb376ec685c77797c8b7/OpenSauce/Halo2/Halo2_Xbox/Memory/1.00/_EngineLayout.AI.inl
-[os-physics]: https://github.com/MirisWisdom/OpenSauce/blob/d200c970c918921d40e9fb376ec685c77797c8b7/OpenSauce/Halo2/Halo2_Xbox/Memory/1.00/_EngineLayout.Physics.inl
-[os-network]: https://github.com/MirisWisdom/OpenSauce/blob/d200c970c918921d40e9fb376ec685c77797c8b7/OpenSauce/Halo2/Halo2_Xbox/Memory/1.00/_EngineLayout.Networking.inl
-[os-interface]: https://github.com/MirisWisdom/OpenSauce/blob/d200c970c918921d40e9fb376ec685c77797c8b7/OpenSauce/Halo2/Halo2_Xbox/Memory/1.00/_EngineLayout.Interface.inl
-[os-sound]: https://github.com/MirisWisdom/OpenSauce/blob/d200c970c918921d40e9fb376ec685c77797c8b7/OpenSauce/Halo2/Halo2_Xbox/Memory/1.00/_EngineLayout.Sound.inl
-[assembly]: https://github.com/XboxChaos/Assembly/blob/fd14ef3c46135e9422966c6a64cd926fb0bd23fb/src/Blamite/Formats/Halo2Xbox/Layouts/H2X_Layouts_Core.xml
-[h2v-time]: https://github.com/pnill/cartographer/blob/f4a6e912dce18715591673561dca8502889d2322/xlive/Blam/Engine/Game/GameTimeGlobals.h
-[h2v-string]: https://github.com/pnill/cartographer/blob/f4a6e912dce18715591673561dca8502889d2322/xlive/Blam/Cache/DataTypes/StringID.h
-[h2v-objects]: https://github.com/pnill/cartographer/blob/f4a6e912dce18715591673561dca8502889d2322/xlive/Blam/Engine/Objects/Objects.h
-[h2c-hs]: https://github.com/num0005/H2Codez/blob/a5a89d3200a15d5ab80f1a0a6fb57f3724858f28/H2Codez/HaloScriptInterface.h
 [xbsym]: https://github.com/Cxbx-Reloaded/XbSymbolDatabase/tree/20eced544726f5558c5a408458f38a086cc4e543
 
 ## Collision and physics model layouts (2026-11-15)

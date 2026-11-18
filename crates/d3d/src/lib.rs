@@ -54,7 +54,7 @@ pub mod vblank;
 pub mod vertex_cache;
 
 pub use backend::{
-    Backend, ChannelMask, DepthGridRequest, DepthGridResult, DepthGridSink, DrawOutcome, GuestLayoutKind, PixelRect, Recorded, RecordingBackend,
+    Backend, ChannelMask, DepthGridRequest, DepthGridResult, DepthGridSink, DrawOutcome, ExternalPass, ExternalPassRequest, ExternalTarget, VIEW_CONSTANTS, external_viewport, GuestLayoutKind, PixelRect, Recorded, RecordingBackend,
     RectClear, ResolvedDraw, StreamBytes, StreamData, CachedBytes, CachedIndices, IndexData, Viewport,
 };
 pub use device::{DepthScale, Device, DeviceConfig, OcclusionSink, GuestRange, PresentParameters, Stats, WritebackCause, WritebackCauses};

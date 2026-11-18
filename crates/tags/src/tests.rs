@@ -589,7 +589,7 @@ fn bsp_data_references_use_the_bsp_address_space_and_payload_end() {
         assert!(matches!(
             read(corrupt),
             Err(Error::Field {
-                field: "cluster_data",
+                field: "data_054",
                 ..
             })
         ));

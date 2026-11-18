@@ -12,10 +12,8 @@ Evidence labels, as in map-format.md:
 - **V — verified-on-disc:** checked by the `#[ignore]`d tests in
   `crates/h1sounds/tests/real_disc.rs` on every map of the owner's Halo 1
   disc (24 maps, 15,698 `snd!` tags) and every map of the Halo 2 disc (30).
-- **S — from-source:** a public description (c20's Halo 1 *sound* tag page,
-  <https://c20.reclaimers.net/h1/tags/sound/>, and the Halo 2 tag definitions
-  credited in sound.md) gives the name or meaning; the reader relies on it
-  but the disc doesn't prove the meaning.
+- **S — unverified:** the reader relies on the name or meaning but the
+  disc doesn't prove it.
 - **Design:** an implementation choice.
 
 No samples, tag dumps or tag-name lists are in the repository. Tests invent

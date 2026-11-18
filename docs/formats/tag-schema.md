@@ -15,9 +15,7 @@ string IDs. Raw-resource pointers stay where they are for now (see "Open").
 
 The retail XBE has no tag field definitions (field-name strings are
 absent), so the layouts are **inferred from data**: every instance of
-every group in every retail map. No community definition files are used.
-Assembly's plugins and similar files could be used later to cross-check
-the result, but nothing has been copied from them.
+every group in every retail map. No outside definition files are used.
 
 ## The schema
 

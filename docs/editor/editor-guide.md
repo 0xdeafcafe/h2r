@@ -19,7 +19,7 @@ see [editor.md](editor.md), [scenario-editor.md](scenario-editor.md) and
 The screenshots were taken from a retail Halo 2 disc. Your window shows
 whatever is on your own disc. Whole-window pictures are JPEGs; close-ups
 of a single panel, menu or tooltip are cropped from the same window at
-full resolution so their text reads. Section 11 says how they are made.
+full resolution so their text reads. Section 13 says how they are made.
 
 ## Contents
 
@@ -30,11 +30,12 @@ full resolution so their text reads. Section 11 says how they are made.
 5. [Game variants](#5-game-variants)
 6. [Playlists (hoppers)](#6-playlists-hoppers)
 7. [UI Screens](#7-ui-screens)
-8. [Tags: every field of a tag](#8-tags-every-field-of-a-tag)
-9. [Undo and redo](#9-undo-and-redo)
-10. [Where files go](#10-where-files-go)
-11. [Troubleshooting](#11-troubleshooting)
-12. [Regenerating the screenshots](#12-regenerating-the-screenshots)
+8. [HUD](#8-hud)
+9. [Tags: every field of a tag](#9-tags-every-field-of-a-tag)
+10. [Undo and redo](#10-undo-and-redo)
+11. [Where files go](#11-where-files-go)
+12. [Troubleshooting](#12-troubleshooting)
+13. [Regenerating the screenshots](#13-regenerating-the-screenshots)
 
 ## 1. What you need
 
@@ -107,8 +108,8 @@ map...**, or drop a disc image, `.map` file or folder onto the window.
 
 The window is made of panels that dock together:
 
-- **Tools** (top left): the four tools, **Scenario**, **Game variants**,
-  **Playlists** and **UI Screens**. Click one to switch to it. A tool with unsaved
+- **Tools** (top left): the tools, **Scenario**, **Tags**, **Game
+  variants**, **Playlists**, **UI Screens** and **HUD**. Click one to switch to it. A tool with unsaved
   changes shows a `*` after its name. Switching tools never loses
   anything: each tool keeps its state while hidden. Under the tools,
   **Maps** has **Open...** (a disc image or `.map`) and **Folder...** (a
@@ -479,6 +480,36 @@ that package. (The disc that has the package's map must be open.)
 ![The bottom of the Maps list: the disc's last maps, then Packages with ascension edit, then Halo 1 with the Halo 1 disc's path, marked read only, and its maps from a10 to wizard, each with an eye](../images/editor/maps-groups.png)
 
 *Below the disc's maps: **Packages**, then **Halo 1** with the maps of an open Halo 1 disc.*
+
+### Map Pack maps
+
+The Multiplayer Map Pack's nine maps have a group of their own, **Map
+Pack**, under the disc's maps. They are listed as the game's **Select
+Map** lists them: the same names, in the same order, each with its
+picture beside it. Hover a map to see its whole picture and description.
+
+The maps come from the Map Pack disc when the editor has it (section 2),
+else from the copy the game installed in your data folder
+(`<data>/disk/Partition1/TDATA/4D530064/$c/`). The names and pictures
+come from that installed copy, so install it once even if you keep the
+disc: put the Map Pack disc image next to your Halo 2 disc as
+`mappack.iso` and start the game once (`h2 play` installs it), or run
+`h2 import-mappack <iso> --data <data>`
+([map-pack.md](../game/map-pack.md)). If the group says *Not installed*,
+the editor has neither.
+
+Click a map to open it. It opens in the Scenario tool like a disc map,
+and the Tags tool and the viewport show it too. Its textures, models and
+sounds partly live in the Halo 2 disc's `shared.map`, so keep that disc
+open: the log says so when it isn't, and the Tags tool says when a tag's
+data is in a shared map.
+
+Saving never changes the Map Pack's files:
+
+- **File > Save as package...** saves a package in `<data>/maps` over
+  the Map Pack map, as for a disc map.
+- **File > Save map as...** writes a whole `.map` wherever you choose,
+  except into the game's installed content, which the editor refuses.
 
 ### Halo 1 maps
 
@@ -898,7 +929,88 @@ screen in each of its states, try its buttons, and check its layout.
 To open the editor straight on a screen: `h2-editor --ui-screen
 signin-code/code-wrong --ui-press up,right`.
 
-## 8. Tags: every field of a tag
+## 8. HUD
+
+**HUD** shows a map's HUDs the way the game places them on the screen,
+from the map's own art and the disc's fonts, and lets you fix their
+layout: move a piece, change where it hangs from, swap its art, and save
+the map. Use it when something on a HUD sits in the wrong place, such as
+a converted Halo 1 map's shield bar over its health bar or a grenade
+count spilling out of its box.
+
+![The HUD tool on Lockout: the Master Chief's HUD drawn at 640 by 480 with the HUD frame in green and the widgets outlined and the checks in the inspector](../images/editor/hud-masterchief.jpg)
+
+- **HUDs** (left):
+  - **Map** (the menu at the top): the maps of the disc or folder you
+    opened, then your packages under the data folder, among them the
+    converted Halo 1 maps (a mountain). Pick one to open it in the HUD
+    tool. Type in the filter at the top of the menu to find one.
+  - **HUDs**: every HUD of that map, grouped by who uses it: players and
+    bipeds, weapons, vehicles, the globals, and the converted Halo 1
+    HUDs. Hover one to see who names it. Click one to show it. A `*`
+    marks a HUD with unsaved edits.
+  - **Widgets**: the HUD's pieces in the order the game draws them, art
+    (a box) then text (a page). Click one to select it.
+- **HUD** (centre): the HUD on a 640 by 480 screen.
+  - The menu at the top picks **fullscreen**, **half screen** or
+    **quarter screen** (split screen; each widget has its own placement
+    for each). **Zoom** makes it bigger. **Rects** outlines every widget
+    (blue: this HUD; amber: a HUD drawn with it; grey: hidden by its
+    state flags). **HUD frame** draws the frame the game hangs widgets
+    from (green): its corners and centre are the anchors.
+  - Click a widget to select it (white outline). Drag it to move it: that
+    edits its offset for the screen mode shown, and the whole drag is one
+    undo step. Hover to see the HUD pixel under the mouse and the widget
+    there.
+  - **State**, under the picture: shield and health, grenade counts and
+    which type is selected, zoomed, rounds loaded and the magazine, heat
+    and battery. Meters fill from these. **Gate widgets by their state
+    flags** hides what the game would hide in that state (off: every
+    widget is drawn). The game's state words are mostly not known yet, so
+    with the gate on you can type them in (Word A to D); the grenade type
+    and zoom set the bits that are known. **Inputs** lists the values the
+    HUD's widgets read; the ones the editor does not know are 1 until you
+    type a value.
+- **Inspector** (right):
+  - **Widget**: the selected widget's fields, in the same field panel as
+    the **Tags** tool (section 9): its name, inputs, the words that show
+    and hide it, anchor (which corner of the frame, or the centre),
+    flags, bitmap and shader (pick from the map's tags), the sequence,
+    offset and registration for each screen mode, and its special type;
+    a text widget has its string, fonts and offsets instead of art.
+    Hover a field for what it means and where that comes from. A text's
+    **Justification** sits above the panel under **HUD fields** (the
+    panel shows those bytes as a size it cannot change). Each change is
+    an undo step of the HUD tool (typing in one field is one step).
+  - **Checks**: art that half covers other art, art off the screen or
+    outside the frame, and text that spills out of the art it sits on, or
+    over other text. Hover one to outline its widgets in red. Art that
+    sits wholly inside another piece (a panel over its meter) is a layer,
+    not a problem, and is not listed. Under the checks, notes about what
+    could not be drawn (a missing sequence, art that did not decode).
+  - **Draw with (weapon held, vehicle seat)**: the game draws the
+    player's HUD and the weapon's together. Tick a weapon's or vehicle's
+    HUD to draw it with this one (read-only; open it from the list to
+    edit it). The checks then also catch the two overlapping.
+  - **Placement rules and their proof**: how the editor places
+    widgets, each rule marked E (read in the game's code), V (seen on the
+    disc or in a frame of the game) or D (assumed, not proven yet). The
+    frame's top and right edges and the split-screen frames are D: if a
+    widget near those edges looks wrong in the game, that is why.
+  - **Save map as...**: writes a new `.map`, the source byte for byte
+    except the fields you edited. It never writes over the map it opened.
+    Play it with `H2_MAP_DIR=<that folder> h2 play` (section 11); the
+    file must have the disc's map name.
+
+What the picture does not show: widgets' animations and flashes, the
+shaders' colours (art is drawn in its own colours, text in light blue),
+and text other than numbers (a text shows its string ID's name in angle
+brackets).
+
+To open the editor straight on a HUD: `h2-editor --hud-map lockout --hud
+masterchief`; add `--hud-widget <name>` to select a widget by its name.
+
+## 9. Tags: every field of a tag
 
 **Tags** shows every tag of the open map and lets you change any field of
 it: a weapon's numbers, a projectile's flags, the tag a vehicle's weapon
@@ -927,17 +1039,20 @@ How to change things:
 - **Flags**: tick or untick. A bit with no name shows only when it is
   set.
 - **Colours**: click the swatch.
-- **Names (string IDs)**: type a name and press Enter. It has to be a
-  name the map already has somewhere; new names are not supported yet.
+- **Names (string IDs)**: type a name and press Enter. A name the map
+  doesn't have yet is added to it when you save (under 128 characters).
+  Undo takes it back. Maps with new names have not been tried in the game
+  yet.
 - **References to other tags**: open the list, type to narrow it, pick
   one (or `none`). Only tags of the right kind are listed. The button
   next to it jumps to that tag.
 - **Lists inside a tag (blocks)**: open the list, pick an element number,
   then edit its fields. **Add**, **Duplicate** and **Remove** change the
-  list, but a list can never get longer than it was on the disc (remove
-  something first). Hover a greyed-out button for the reason. Other
-  things in the map that point at a list entry by its number are not
-  updated when entries move.
+  list. A list can't get longer than it was on the disc unless
+  **Edit > Allow growing full blocks** is on; then the longer list is
+  saved as a new copy at the end of the map's tag data. Hover a
+  greyed-out button for the reason. Other things in the map that point at
+  a list entry by its number are not updated when entries move.
 - **Data** (raw bytes inside a tag): edit the hex; the length must stay
   the same.
 
@@ -951,7 +1066,7 @@ Scenario tool: **File > Save map as...** or **Save as package...** writes
 your tag edits and your placement edits together. The Scenario tool's
 `*` shows when the map has unsaved edits of either kind.
 
-## 9. Undo and redo
+## 10. Undo and redo
 
 Each tool has its own history; **Edit > Undo** and **Edit > Redo** (and
 Cmd+Z, Cmd+Shift+Z) act on the tool you're in.
@@ -972,7 +1087,7 @@ Cmd+Z, Cmd+Shift+Z) act on the tool you're in.
 
 *The log records each undo (`undid set position`).*
 
-## 10. Where files go
+## 11. Where files go
 
 `<data>` is the data folder: `--data`, or by default the one `h2 play`
 uses, `$TMPDIR/h2boot-data`.
@@ -980,7 +1095,8 @@ uses, `$TMPDIR/h2boot-data`.
 | What | Where | How the game finds it |
 |---|---|---|
 | Map packages (yours, and converted Halo 1 maps) | `<data>/maps/<directory>/` | Automatically, the next time it loads that map ([maps.md](../game/maps.md) §7). `<data>/maps/active.toml` records which package is active for each map. |
-| Edited `.map` files | Wherever you save them | With `H2_MAP_DIR=<that folder> h2 play`; the file must have the disc's map name. |
+| Edited `.map` files | Wherever you save them (never inside the game's installed content) | With `H2_MAP_DIR=<that folder> h2 play`; the file must have the disc's map name. |
+| The Map Pack (read only) | `<data>/disk/Partition1/TDATA/4D530064/$c/<offer ID>/` | Installed by `h2 play` or `h2 import-mappack`. |
 | Saved game variants | `<data>/disk/Partition1/UDATA/4D530064/` (the game's saved data) | Listed in the game with its own saved variants. |
 | Exported variants | Wherever you save the `.h2variant` | Not directly: import it in the editor and save it. |
 | Playlists | Wherever you save the `.dat` | Through your Live server (`h2 live hopper import`). |
@@ -988,7 +1104,7 @@ uses, `$TMPDIR/h2boot-data`.
 
 Your disc image is only ever read.
 
-## 11. Troubleshooting
+## 12. Troubleshooting
 
 **"Unsaved changes" window.** Anything that would throw away a tool's
 unsaved changes asks first: opening another disc or map (Scenario),
@@ -1079,7 +1195,7 @@ section 3).
 renderer. Check that your GPU driver supports Metal (macOS), Vulkan or
 DirectX 12.
 
-## 12. Regenerating the screenshots
+## 13. Regenerating the screenshots
 
 The pictures in this guide are rendered by the editor itself, offscreen,
 from your own disc image (no window opens and the game does not run):

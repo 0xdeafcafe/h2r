@@ -27,27 +27,26 @@ naga validation, and none of them produce a translation warning.
 
 ### `vrtx` (vertex_shader)
 
-The layout follows the Assembly plugin `Halo2Xbox/vrtx.xml`, confirmed on the
-data:
+The layout, as checked on the data:
 
 ```text
-root (0xC):  enum16 platform (1 = Xbox in all 2,261 tags) | int16 | block geometry classifications
-classification (0x1C): u32 | block<u16> | dataref compiled shader | dataref code
+root (0xC):  u16 (1 in all 2,261 tags) | int16 | block program entries
+entry (0x1C): u32 | block<u16> | dataref compiled shader | dataref code
 ```
 
 - **compiled shader** is the `XGAssembleShader` output: the bytes `'x' 0x20`,
   a u16 instruction count, then 16 bytes per instruction. Every retail
   program has kind `0x20` (a normal shader). None are read/write (`'xw'`) or
   state (`'xs'`) programs.
-- **code** is empty in every classification (all 11,837). Retail maps carry no D3D
+- **code** is empty in every entry (all 11,837). Retail maps carry no D3D
   `vs.1.1` token streams or source, so the crate only takes microcode.
   Nothing on the disc needs a D3D token parser.
 - The `u16` block is a short list of small integers, such as `0,1,2,3,4,5,6`.
   It is **not** the set of `v` registers the program reads: of the 10,712
-  classifications with a non-empty block, it matches in 1,985 and differs in
+  entries with a non-empty block, it matches in 1,985 and differs in
   8,727. It is probably vertex-declaration related, and its meaning is still
   unconfirmed.
-- 765 classifications are empty; the other 11,072 all hold `'x' 0x20`
+- 765 entries are empty; the other 11,072 all hold `'x' 0x20`
   programs. Some data pointers land in neighbouring tags because the cache
   deduplicates identical blocks, so the extractor resolves pointers against
   the whole metadata region rather than one tag.
@@ -62,11 +61,11 @@ spas root + 0x1C: block postprocess definitions (0x58 each)
   + 0x00: block implementations (0x132 each)
             +0x00..0x06  three int16 block-index fields
             +0x06..0xF6  D3DPIXELSHADERDEF, verbatim, 2-byte aligned
-            +0xF6..      fragment/permutation/combiner indices, vertex shader tag ref (+0xFC), ...
+            +0xF6..      index fields (meaning unverified), vertex shader tag ref (+0xFC), ...
 ```
 
-Assembly marks `+0x8..0xF4` as unknown. To locate the struct we looked for
-fields that only make sense at one offset. Taken from `+6`, `PSCombinerCount`
+To locate the struct we looked for fields that only make sense at one
+offset. Taken from `+6`, `PSCombinerCount`
 reads as the classic `0x00011101` (and `0x000111nn` across the corpus).
 `PSTextureModes` gives meaningful stage chains, for example lightmap passes
 decode as 2D, 2D, 2D, cube. RGB input/output pairs then form real programs,
@@ -117,7 +116,7 @@ H2_SHADER_CORPUS=$TMPDIR/h2-shaders cargo test -p shaders --test corpus     # al
 H2_SHADER_CORPUS=$TMPDIR/h2-shaders cargo test -p d3d --test shader_corpus -- --ignored   # every shader drawn through GfxBackend
 ```
 
-Each blob is the bytes of a `vrtx` classification's compiled shader
+Each blob is the bytes of a `vrtx` entry's compiled shader
 (`*.xvu`), or the 0xF0 bytes at `+6` of a `spas` implementation
 (`*.psdef`), named by the first 16 hex digits of its SHA-256.
 `manifest.tsv` lists every file with its full hash, how many times it occurs
@@ -934,10 +933,6 @@ facts only. No code was copied, and xemu and Cxbx-Reloaded are GPL.
   `X_VSH_SHADER_HEADER` and the `0x2078`/`0x7778`/`0x7378` versions) and
   `Direct3D9/CxbxVertexShaderTemplate.hlsl` (the screen-space epilogue and
   its reversal). <https://github.com/Cxbx-Reloaded/Cxbx-Reloaded>
-- Assembly (XboxChaos), commit `fd14ef3c46135e9422966c6a64cd926fb0bd23fb`:
-  `src/Assembly/Plugins/Halo2Xbox/vrtx.xml` and `spas.xml` (tag layouts;
-  the PSDEF offset inside the implementation block is our own finding,
-  above). <https://github.com/XboxChaos/Assembly>
 - xemu, same commit: `glsl/psh.c` `psh_append_shadowmap` (shadow-map
   comparison, PROJECT2D against 0, PROJECT3D against clamped `r/q`,
   NEVER/ALWAYS), `nv2a_regs.h` (`NV097_SET_SHADOW_DEPTH_FUNC` values),

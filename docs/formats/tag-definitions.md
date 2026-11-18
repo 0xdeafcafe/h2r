@@ -27,14 +27,11 @@ written from a definition has a defined value in every byte.
 
 ## Rules
 
-- **Our own names and evidence only.** No community definition (Invader,
-  Assembly plugins, H2EK/Guerilla, OpenH2, ...) is used for names or
-  layouts. Two places in the repo carry such names already: `schema.rs`
-  (OpenH2/Assembly provenance) and the `S` rows of
-  [objects.md](../halo1/objects.md) ("recalled from the editing kits").
-  Neither was taken over: those fields stay unknown or typed-only unless a
-  disc check (V) or engine code (E) supports the meaning, and then the
-  name is ours.
+- **Our own names and evidence only.** No outside tag definition is used
+  for names or layouts. Unverified names elsewhere in the repo (the `S`
+  rows of [objects.md](../halo1/objects.md)) were not taken over: those
+  fields stay unknown or typed-only unless a disc check (V) or engine code
+  (E) supports the meaning, and then the name is ours.
 - **A name needs evidence.** A field whose type is known but not its role
   (a reference, a string ID, a block found by the schema) gets a name
   ending in `_<offset in hex>`: `string_1c`, `foot_ref_54`, `block_5c`.
@@ -231,8 +228,9 @@ summary:
     an existing tag), the `weap` magazines and barrels (strides and the
     barrel's `proj` reference, [objects.md](../halo1/objects.md) V2).
   - The `weap` aim-assist floats (`+0x208..+0x218`) stay unknown here.
-    Their offsets are E (`0x1a50a0`), but the names in
-    [aim-assist.md](../game/aim-assist.md) came from a community file.
+    Their offsets are E (`0x1a50a0`); [aim-assist.md](../game/aim-assist.md)
+    labels them by those reads (`cone_angle`, `cone_range`, `pull_angle`,
+    `pull_range`, `bend_angle`).
     The heat, magazine and barrel scalars are `S` in docs/halo1/objects.md, so
     they stay unknown too.
 - **`hlmt`**:
@@ -261,16 +259,60 @@ summary:
     The engine never reads it.
 - **`bitm`**: image fields from the repo's own pixel decoder (size,
   format, flags, levels of detail, sizes; the cache handles, E
-  `0x0012c9fb`). The root scalars stay unknown: their only source is a
-  community plugin.
+  `0x0012c9fb`). The root scalars stay unknown: nothing of ours supports
+  their meaning.
 - **`jmad`**: [animation.md](animation.md), E fields of the animation
   record, events, modes, classes and actions (`0x001db170`), and static
   poses (`0x001dd8f0`).
 - **`snd!`**: the sample rate, encoding, compression (E `0x0021e421`) and
-  pitch ranges. Flags, class and playback index stay unknown (community
-  source only).
+  pitch ranges. Flags, class and playback index stay unknown (nothing of
+  ours supports their meaning).
 - **`lsnd`**: the Halo 2 layout the Halo 1 sound converter writes
   (`h1sounds::looping`), D.
+
+### Editor-name groups (2026-11-18)
+
+These files exist so the tag editor shows names. They have not been taken
+through the disc proof above, only checked against the schema
+(`builtin_definitions_agree_with_the_schema`). Each one is the schema
+layout with typed-only names (`tagref_44`) and `unknown` spans. On top of
+that come names for the offsets our own decoders read, each with its source
+file in the meaning text:
+
+- `bloc`, `ssce`, `crea`: the `obje` header (`crea` also has two `jpt!`
+  references, from `tags::object` `CREA`).
+- `itmc`, `vehc`: `tags::object` `COLLECTION` (E `0x0019f200..`).
+- `stem`, `spas`, `vrtx`: `tags::shader` and
+  [shader-instances.md](shader-instances.md); `vrtx` from
+  `cli::extract_shaders`.
+- `ugh!`: `tags::sound` and [sound.md](sound.md). The playback distances
+  and the permutation length come from
+  [halo1/sounds.md](../halo1/sounds.md) (E). The fields that doc marks S
+  stay unnamed.
+- `pmov`: `tags::effects::movement`, with the property layout from
+  `effects::mem`.
+- `MGS2`, `snde`, `fpch`, `fog `: `tags::lighting` and
+  [lighting.md](lighting.md). The `snde` names are the reverb API's (I),
+  and the reads are E.
+- `sbsp`, `ltmp`: `tags::structure`, `geometry`, `collision`,
+  `pathfinding` and `lighting`, with
+  [structure-bsp.md](structure-bsp.md). The cluster, material and
+  instanced-definition elements stay typed-only, because the schema has
+  their element sizes smaller than the engine strides.
+- `skin`, `wigl`, `wgtz`, `wgit`: `tags::ui` and [ui.md](ui.md).
+- `unic`: `tags::localization`.
+- `goof`, `sily`: `variants::schema` and
+  [community-gametypes.md](../game/community-gametypes.md) (read from the
+  XBE).
+- `matg`:
+  - aim-assist slowdown and follow ([aim-assist.md](../game/aim-assist.md));
+  - grenades and player representations (`h1convert::globals`);
+  - the UI globals references ([ui.md](ui.md));
+  - start levels and level select (`content::campaign_list`);
+  - the locale descriptors ([localization.md](localization.md)).
+
+  Some level-select text slots and map ids stay unnamed, because the
+  schema has a raw pointer or a raw size at those offsets.
 
 ## Scenery from definitions (`h1objects::rebuild::scenery`)
 

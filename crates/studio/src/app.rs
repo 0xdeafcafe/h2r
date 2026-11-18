@@ -8,8 +8,11 @@ use std::path::{Path, PathBuf};
 
 pub mod commands;
 pub(crate) mod convert;
+pub mod hud;
 mod editing;
 mod library;
+pub mod map_pack;
+pub mod shared_refs;
 pub mod tag_api;
 pub mod tag_doc;
 pub mod ui_screens;
@@ -20,6 +23,7 @@ pub use convert::{
 };
 pub use h1convert::convert::Sandbox as ConvertSandbox;
 pub use library::{Compare, block_of, kind_of, markers as library_markers, tris as library_tris};
+pub use hud::HudTool;
 pub use tag_doc::{BlockOp, TagAction, TagDoc, TagWrite};
 pub use ui_screens::{Pick, UiScreens};
 
@@ -41,17 +45,21 @@ pub enum ToolKind {
     /// Our native game screens, drawn and stepped offline
     /// (docs/game/ui-builder.md).
     UiScreens,
+    /// A map's HUDs, drawn as the game places them and edited
+    /// (docs/editor/hud-editor.md).
+    Hud,
     /// Every field of every tag of the open map (docs/editor/editor.md).
     Tags,
 }
 
 impl ToolKind {
-    pub const ALL: [ToolKind; 5] = [
+    pub const ALL: [ToolKind; 6] = [
         ToolKind::Scenario,
         ToolKind::Tags,
         ToolKind::Variants,
         ToolKind::Playlists,
         ToolKind::UiScreens,
+        ToolKind::Hud,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -59,6 +67,7 @@ impl ToolKind {
             ToolKind::Variants => "Game variants",
             ToolKind::Playlists => "Playlists",
             ToolKind::UiScreens => "UI Screens",
+            ToolKind::Hud => "HUD",
             ToolKind::Tags => "Tags",
         }
     }
@@ -83,6 +92,9 @@ pub enum Action {
     ///
     /// [`PackageEntry::key`]: editor_core::packages::PackageEntry::key
     OpenPackageEntry(String),
+    /// Open a Map Pack map (by its map name, `warlock`, or an installed
+    /// package's offer directory): [`map_pack::PackMap`].
+    OpenMapPack(String),
     /// Show a map of the open Halo 1 source, read-only.
     SelectHalo1Map(String),
     /// Draw a converted map's Halo 1 source over it.
@@ -180,6 +192,31 @@ pub enum Action {
     /// a Git checkout).
     UiExport(PathBuf),
 
+    // HUD.
+    /// Open a map of the source in the HUD tool.
+    HudOpenMap(String),
+    /// Open a package from the Maps list (by key) in the HUD tool.
+    HudOpenPackage(String),
+    /// Show and edit one of the open map's HUDs.
+    HudPick(map::TagId),
+    /// Draw another HUD with it (a weapon held, a vehicle seat), or stop.
+    HudWith(map::TagId, bool),
+    HudSelect(Option<hud_edit::WidgetKey>),
+    /// Set a widget field (by its key in the field table); with `merge`
+    /// the step joins the last one of the same field.
+    HudSet(hud_edit::WidgetKey, String, hud_edit::Value, bool),
+    /// Move a widget in the screen mode shown (a drag merges its moves).
+    HudMove(hud_edit::WidgetKey, (i16, i16), bool),
+    /// The state the HUD is drawn at.
+    HudState(Box<hud_edit::HudState>),
+    /// Write the map with the HUD edits as a new `.map`.
+    HudSaveAs(PathBuf),
+    /// A write from the generic field panel into the selected widget's
+    /// element (an HUD edit, with the HUD tool's undo).
+    HudWrite(TagWrite),
+    /// The field panel asked for something the HUD tool leaves to the Tags
+    /// tool: why.
+    HudRefused(String),
     // Tags.
     /// A tag editor command: select a tag, write a field, change a block.
     Tag(TagAction),
@@ -225,6 +262,11 @@ impl Action {
             Action::OpenPackageEntry(key) if app.opened_package.as_deref() != Some(key) => {
                 dirty(ToolKind::Scenario)
             }
+            Action::OpenMapPack(key)
+                if app.pack_entry(key).is_some_and(|m| app.opened_pack_map() != Some(m.map.as_str())) =>
+            {
+                dirty(ToolKind::Scenario)
+            }
             Action::SelectHalo1Map(_) => dirty(ToolKind::Scenario),
             Action::OpenVariant(o) if app.variant_origin() != Some(o) => dirty(ToolKind::Variants),
             Action::NewVariant(_)
@@ -234,6 +276,7 @@ impl Action {
             Action::OpenHopper(_) | Action::NewHopper | Action::NewDefaultHopper => {
                 dirty(ToolKind::Playlists)
             }
+            Action::HudOpenMap(_) | Action::HudOpenPackage(_) => dirty(ToolKind::Hud),
             _ => None,
         }
     }
@@ -304,6 +347,10 @@ pub struct App {
     /// The open Map Pack, beside the Halo 2 source (its maps resolve their
     /// shared caches from that source).
     mappack: Option<MapPack>,
+    /// The Map Pack group (the open disc's maps, else the installed
+    /// ones), and the problems with the install already logged.
+    pack: Vec<map_pack::PackMap>,
+    pack_notes: Vec<String>,
     /// The open Halo 1 source and its maps.
     h1: Option<editor_core::halo1::H1Source>,
     h1_maps: Vec<String>,
@@ -323,8 +370,12 @@ pub struct App {
     pub convert_sandbox: ConvertSandbox,
     /// The UI Screens tool.
     pub ui_screens: UiScreens,
+    /// The HUD tool.
+    pub hud: HudTool,
     /// The tag editor's document over the open map.
     pub tags: TagDoc,
+    /// The selected tag's shared-map line, for the tag and revision.
+    tag_homes: std::cell::RefCell<Option<(map::TagId, u64, Option<String>)>>,
 }
 
 impl Default for App {
@@ -359,6 +410,8 @@ impl App {
             packages: Vec::new(),
             opened_package: None,
             mappack: None,
+            pack: Vec::new(),
+            pack_notes: Vec::new(),
             h1: None,
             h1_maps: Vec::new(),
             h1_view: None,
@@ -371,7 +424,9 @@ impl App {
             converter: from_scratch,
             convert_sandbox: ConvertSandbox::Halo2,
             ui_screens: UiScreens::default(),
+            hud: HudTool::default(),
             tags: TagDoc::default(),
+            tag_homes: Default::default(),
         }
     }
 
@@ -401,9 +456,11 @@ impl App {
     pub fn mappack_maps(&self) -> Vec<String> {
         self.mappack.as_ref().map(MapPack::map_names).unwrap_or_default()
     }
-    /// Whether `name` is a Map Pack map (and not one of the source's own).
+    /// Whether `name` is a Map Pack map, from the open map pack disc or
+    /// the installed copy (and not one of the source's own).
     pub fn is_mappack_map(&self, name: &str) -> bool {
-        self.mappack.as_ref().is_some_and(|p| p.has(name))
+        (self.mappack.as_ref().is_some_and(|p| p.has(name))
+            || self.pack.iter().any(|m| m.map.eq_ignore_ascii_case(name)))
             && !self.maps.iter().any(|m| m.eq_ignore_ascii_case(name))
     }
     /// The map open in the scenario tool.
@@ -423,6 +480,7 @@ impl App {
             ToolKind::Scenario => self.session.is_dirty(),
             ToolKind::Variants => self.variants.as_ref().is_some_and(|e| e.is_dirty()),
             ToolKind::Playlists => self.hoppers.is_dirty(),
+            ToolKind::Hud => self.hud.is_dirty(),
             // The tag editor's edits are the map's: the scenario session
             // saves them and its dirty mark counts them.
             ToolKind::UiScreens | ToolKind::Tags => false,
@@ -447,6 +505,7 @@ impl App {
             ToolKind::Variants => self.variants.as_ref().is_some_and(|e| e.can_undo()),
             ToolKind::Playlists => self.hoppers.can_undo(),
             ToolKind::UiScreens => false,
+            ToolKind::Hud => self.hud.session.as_ref().is_some_and(|s| s.can_undo()),
             ToolKind::Tags => self.tags.can_undo(),
         }
     }
@@ -456,6 +515,7 @@ impl App {
             ToolKind::Variants => self.variants.as_ref().is_some_and(|e| e.can_redo()),
             ToolKind::Playlists => self.hoppers.can_redo(),
             ToolKind::UiScreens => false,
+            ToolKind::Hud => self.hud.session.as_ref().is_some_and(|s| s.can_redo()),
             ToolKind::Tags => self.tags.can_redo(),
         }
     }
@@ -490,6 +550,10 @@ impl App {
             ToolKind::UiScreens => self.ui_screens.pick.as_ref().map(|p| match p {
                 Pick::Native { screen, state } => format!("{screen} / {state}"),
                 Pick::Retail(tag) => tag.clone(),
+            }),
+            ToolKind::Hud => self.hud.session.as_ref().map(|s| {
+                let hud = s.hud().map(|h| h.name.clone()).unwrap_or_default();
+                format!("{} / {hud}", s.name)
             }),
             ToolKind::Tags => self.loaded.clone(),
         };
@@ -561,12 +625,14 @@ impl App {
                 ToolKind::Scenario => self.error("save the map with Save as..."),
                 ToolKind::Variants => self.run(Action::SaveVariant),
                 ToolKind::Playlists => self.run(Action::SaveHopper),
+                ToolKind::Hud => self.error("save the HUD edits with Save as..."),
                 ToolKind::UiScreens | ToolKind::Tags => {}
             },
             Answer::SaveAs(path) => match tool {
                 ToolKind::Scenario => self.run(Action::SaveMapAs(path)),
                 ToolKind::Playlists => self.run(Action::SaveHopperAs(path)),
                 ToolKind::Variants => self.run(Action::SaveVariant),
+                ToolKind::Hud => self.run(Action::HudSaveAs(path)),
                 ToolKind::UiScreens | ToolKind::Tags => {}
             },
         }
@@ -592,6 +658,7 @@ impl App {
                 }
             }
             ToolKind::Playlists => self.hoppers.close(),
+            ToolKind::Hud => self.hud = HudTool::default(),
             ToolKind::UiScreens | ToolKind::Tags => {}
         }
     }
@@ -605,6 +672,10 @@ impl App {
                     && self.opened_package.is_none() => {}
             Action::SelectMap(name) => self.select_map(&name),
             Action::SaveMapAs(path) => {
+                if let Some(why) = self.save_refusal(&path) {
+                    self.error(why);
+                    return;
+                }
                 let r = self.session.save_as(&path);
                 if self.session_result(r).is_some() {
                     self.saved_path = Some(path);
@@ -621,6 +692,7 @@ impl App {
                 }
             }
             Action::OpenPackageEntry(key) => self.open_package_entry(&key),
+            Action::OpenMapPack(key) => self.open_pack_map(&key),
             Action::SelectHalo1Map(name) => self.select_halo1_map(&name),
             Action::SetOverlay(on) => self.set_overlay(on),
             Action::ConvertHalo1(sandbox) => self.start_convert(sandbox),
@@ -690,7 +762,10 @@ impl App {
             }
             Action::FrameAll => self.session.frame_all(),
             Action::FocusSelected => self.frame_selection(),
-            Action::SetAllowGrowth(allow) => self.session.set_allow_growth(allow),
+            Action::SetAllowGrowth(allow) => {
+                self.session.set_allow_growth(allow);
+                self.tags.allow_growth = allow;
+            }
             Action::SetTool(tool) => self.set_tool(tool),
             Action::Quit => self.quit = true,
             Action::UiPick(pick) => {
@@ -708,6 +783,38 @@ impl App {
                 Ok(files) => self.info(format!("wrote {} files to {}", files.len(), dir.display())),
                 Err(e) => self.error(format!("{e:#}")),
             },
+            Action::HudOpenMap(name) => self.hud_open_map(&name),
+            Action::HudOpenPackage(key) => self.hud_open_package(&key),
+            Action::HudPick(id) => {
+                let r = self.hud.pick(id);
+                self.hud_result(r);
+            }
+            Action::HudWith(id, on) => {
+                let r = match self.hud.session.as_mut() {
+                    Some(s) => s.set_with(id, on),
+                    None => Err(anyhow::anyhow!("no HUD open")),
+                };
+                self.hud_result(r);
+            }
+            Action::HudSelect(key) => self.hud.selected = key,
+            Action::HudSet(key, field, v, merge) => self.hud_set(key, &field, v, merge),
+            Action::HudMove(key, to, merge) => {
+                let mode = self.hud.state.mode;
+                self.hud_move(key, mode, to, merge);
+            }
+            Action::HudState(st) => {
+                self.hud.state = *st;
+                self.hud.redraw();
+            }
+            Action::HudSaveAs(path) => self.hud_save_as(&path),
+            Action::HudWrite(w) => {
+                let r = match self.hud.session.as_mut() {
+                    Some(s) => s.write(w.address, &w.bytes, &w.label, w.merge).map(drop),
+                    None => Err(anyhow::anyhow!("no HUD open")),
+                };
+                self.hud_result(r);
+            }
+            Action::HudRefused(why) => self.error(why),
             Action::Tag(a) => self.run_tag(a),
             a @ (Action::OpenVariant(_)
             | Action::NewVariant(_)
@@ -751,6 +858,7 @@ impl App {
                 }
             }
             ToolKind::UiScreens => false,
+            ToolKind::Hud => self.hud_undo_redo(undo),
             ToolKind::Tags => {
                 self.sync_tags();
                 let r = if undo {
@@ -769,7 +877,7 @@ impl App {
         match (done, undo) {
             (false, true) => self.info("nothing to undo"),
             (false, false) => self.info("nothing to redo"),
-            (true, _) if !matches!(tool, ToolKind::Scenario | ToolKind::Tags) => {
+            (true, _) if !matches!(tool, ToolKind::Scenario | ToolKind::Tags | ToolKind::Hud) => {
                 self.info(if undo { "undone" } else { "redone" })
             }
             _ => {}
@@ -783,6 +891,7 @@ impl App {
             ToolKind::Variants => self.ensure_variants(),
             ToolKind::Playlists => self.refresh_playlist_sources(),
             ToolKind::UiScreens => self.sync_ui_disc(),
+            ToolKind::Hud => {}
             ToolKind::Tags => self.sync_tags(),
         }
     }
@@ -790,6 +899,7 @@ impl App {
     /// Load the tag editor's document from the open map when the session
     /// opened another one since (its edits went with that map).
     pub fn sync_tags(&mut self) {
+        self.tags.allow_growth = self.session.allow_growth();
         let rev = Some(self.session.world_rev());
         if self.tags.for_rev == rev && self.tags.is_open() == self.session.is_open() {
             return;
@@ -819,6 +929,12 @@ impl App {
         }
         let r = self.session.set_tag_patches(self.tags.patches());
         self.ok_or_log(r);
+        let r = self.session.set_tag_grown(self.tags.grown());
+        self.ok_or_log(r);
+        let r = self
+            .session
+            .set_tag_strings(self.tags.new_strings().to_vec());
+        self.ok_or_log(r);
     }
 
     fn run_tag(&mut self, action: TagAction) {
@@ -839,6 +955,12 @@ impl App {
                 layout,
                 op,
             } => self.tags.block_op(tag, pair, &layout, &op),
+            TagAction::SetString {
+                tag,
+                address,
+                text,
+                label,
+            } => self.tags.set_string(tag, address, &text, &label),
             TagAction::Seal => {
                 self.tags.seal();
                 Ok(())
@@ -1061,8 +1183,8 @@ impl App {
                     ToolKind::Variants => self.ensure_variants(),
                     ToolKind::Playlists => self.refresh_playlist_sources(),
                     ToolKind::UiScreens => self.sync_ui_disc(),
+                    ToolKind::Scenario | ToolKind::Hud => {}
                     ToolKind::Tags => self.sync_tags(),
-                    ToolKind::Scenario => {}
                 }
             }
             Err(e) => self.error(format!("{}: {e:#}", path.display())),
@@ -1078,9 +1200,8 @@ impl App {
                     "{name} needs the Halo 2 disc's shared maps for its textures and geometry: open the disc too"
                 ));
             }
-            self.mappack.as_ref().map(|pack| {
-                pack.location(name)
-                    .map(|(path, region)| EditSource::region(path, region).with_shared(shared))
+            self.pack_location(name).map(|located| {
+                located.map(|(path, region)| EditSource::region(path, region).with_shared(shared))
             })
         } else {
             self.source.as_ref().map(|source| {
@@ -1136,5 +1257,7 @@ impl App {
 
 #[cfg(test)]
 pub(crate) mod tag_tests;
+#[cfg(test)]
+mod map_pack_tests;
 #[cfg(test)]
 mod tests;

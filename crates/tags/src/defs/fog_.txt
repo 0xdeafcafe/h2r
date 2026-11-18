@@ -1,0 +1,14 @@
+# fog : planar fog. crates/tags/src/lighting.rs (Atmosphere::decode, Fog); docs/formats/lighting.md.
+# The four references are absent from the schema (definition-only).
+group 666f6720 0x60 align 4
+  0x0 unknown 0x4
+  0x4 string string_4
+  0x8 unknown 0x28
+  0x30 block block_30 0x34 align 4
+    0x0 unknown 0x2c
+    0x2c tagref tagref_2c
+  0x38 tagref looping_sound groups=lsnd -- V class word and datum; use not traced (lighting.md:152; lighting.rs:392)
+  0x40 tagref sound_environment groups=snde -- V (lighting.md:152; lighting.rs:393)
+  0x48 unknown 0x8
+  0x50 tagref sound_50 groups=snd! -- V a snd! reference; role not traced (lighting.md:152; lighting.rs:394)
+  0x58 tagref sound_58 groups=snd! -- V (lighting.md:152; lighting.rs:395)

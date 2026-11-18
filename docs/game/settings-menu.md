@@ -781,7 +781,7 @@ is not traced; A is the only press we see, through the row-chosen handler).
 
 | Address | Role | Evidence |
 |---|---|---|
-| `0x187130` | per-local-player field of view (`player_control_get_field_of_view` in Cartographer's H2V names). `eax` = player-control index (array `[0x4ed284]`, stride `0x94`, unit at `+0x14`), result in `xmm0`, plain `ret` | starts from the observer default `[0x54e854]`; with a unit, takes the unit definition's camera field of view (`+0xcc`, found through the object header table `[0x4e0300]+0x44` and the tag instances `[0x4e3b44]`), calls `0xc8880` for the zoom magnification of the player's zoom level (`[pc+0x2e]`), and returns `fov / magnification` when that is between `0x45e25c` and `0x45e258` (about 1.8 and 178 degrees), else the unzoomed value. So zoom divides the angle |
+| `0x187130` | per-local-player field of view. `eax` = player-control index (array `[0x4ed284]`, stride `0x94`, unit at `+0x14`), result in `xmm0`, plain `ret` | starts from the observer default `[0x54e854]`; with a unit, takes the unit definition's camera field of view (`+0xcc`, found through the object header table `[0x4e0300]+0x44` and the tag instances `[0x4e3b44]`), calls `0xc8880` for the zoom magnification of the player's zoom level (`[pc+0x2e]`), and returns `fov / magnification` when that is between `0x45e25c` and `0x45e258` (about 1.8 and 178 degrees), else the unzoomed value. So zoom divides the angle |
 | `0x23c110` | first-person camera update (director callback, [engine-map.md](../engine/engine-map.md)) | the **only** call to `0x187130` (`0x23c202`; a scan of every `call`/`jmp` rel32 in `.text` and every absolute dword finds no other reference). Multiplies by 1.0, clamps to `[0x55e484, 0x55e488]` and stores the director camera's field of view at `+0x28`; a change sets the observer's 0.18 s transition (`+0xa4`, `+0x90`) |
 | `0x55e484` / `0x55e488` | clamp globals, set by static initialisers `0x3782a0` / `0x3782c0` from `0x45dc54` / `0x45e098` | 1 and 110 degrees. `0x55e488` has one reader, `0x23c225` |
 | `0x171d90` | observer: camera result from the command | vertical FOV `+0x4c = 2 atan(tan(h/2) / aspect)` from the horizontal `+0x38`; the scale `+0x50 = h / [0x54e854]` |
@@ -789,14 +789,8 @@ is not traced; A is the only press we see, through the row-chosen handler).
 | `0x54e854` and the other `70` copies | 70 degrees (`0x45e628`) copied into about 40 per-file globals by static initialisers in `0x3763b0`..`0x378894` | only `0x54e854` (camera code), `0x5234dc` (render, the no-observer fallback) and `0x557c28` are read; we change none of them |
 
 Community comparison: Cartographer (H2V) replaces the unit's camera field of
-view inside its `player_control_get_field_of_view` and keeps the same
-`[1, 110]` clamp in its first-person camera
-([`player_control.cpp`](https://github.com/pnill/cartographer/blob/master/xlive/Blam/Engine/game/player_control.cpp),
-[`first_person_camera.cpp`](https://github.com/pnill/cartographer/blob/master/xlive/Blam/Engine/camera/first_person_camera.cpp));
-its vehicle FOV patches the following camera's default separately
-([`following_camera.cpp`](https://github.com/pnill/cartographer/blob/master/xlive/Blam/Engine/camera/following_camera.cpp)).
-Cited for the names and the shape; nothing is copied, and H2V's addresses
-and structures differ.
+view and keeps the same `[1, 110]` clamp in its first-person camera. Nothing
+is copied, and H2V's addresses and structures differ.
 
 ### What the hook does
 

@@ -417,7 +417,7 @@ pub static AIM_ASSIST: Def = Def {
     label: "Aim Assist",
     help: "How strongly the crosshair is pulled to and held on targets. Auto is Strong \
            while the on-screen touch controls show and the game's own otherwise; Strong and \
-           Very strong widen the weapons' autoaim and magnetism. Applies at the next map \
+           Very strong widen the weapons' aim cone and pull. Applies at the next map \
            load; multiplayer games always use the game's own (docs/game/aim-assist.md).",
     kind: Kind::Choice(&[
         Choice {

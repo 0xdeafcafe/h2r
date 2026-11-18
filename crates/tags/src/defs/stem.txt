@@ -1,0 +1,28 @@
+# stem: shader template. The engine draws from the compiled postprocess (+0x58)
+# only: which passes run per LOD and layer, and how instance parameters bind to
+# each pass's inputs (docs/formats/shader-instances.md "stem"; crates/tags/src/shader.rs).
+# Ranges are packed u16: first element in the low 9 bits, count in the high 7.
+group stem 0x60 align 4
+  0x0 unknown 0x40
+  0x40 tagref shad_ref_40 groups=shad -- U not read by the draw path; D resolves to a shad or is null (shader.rs:666, cli/src/shader.rs:426)
+  0x48 unknown 0x4
+  0x4c tagref shad_ref_4c groups=shad -- U not read by the draw path; D resolves to a shad or is null (shader.rs:666, cli/src/shader.rs:426)
+  0x54 unknown 0x4
+  0x58 block postprocess 0x28 align 4 -- compiled postprocess T; E 0x00016bf4 reads its pointer and uses element 0 (shader.rs:661); D exactly 1 element
+    0x0 block lods 0xa align 4 -- E 0x00016bfd, indexed by the draw's LOD argument (shader.rs:681)
+      0x0 u16 layers -- E 0x00016bfd: range into layers, one entry per layer index (shader.rs:683)
+      0x2 u32 layer_mask -- E 0x0001666d: bit n set when layer n is drawn; also engine integer input 6 (0x000340a4) (shader.rs:684)
+      0x6 unknown 0x4
+    0x8 block layers 0x2 align 4 -- E 0x00016c0d (shader.rs:689)
+      0x0 u16 passes -- E 0x00016c0d: range into passes
+    0x10 block passes 0xa align 4 -- E 0x00016c2c (shader.rs:693)
+      0x0 tagref pass groups=spas -- E 0x00016c2c reads the datum at +4 (shader.rs:695); D always resolves to a spas (cli/src/shader.rs:432)
+      0x8 u16 implementations -- E 0x00016d66: range into implementations, one per spas implementation (shader.rs:696)
+    0x18 block implementations 0x6 align 4 -- E 0x00016d71: which bindings feed one implementation (shader.rs:700)
+      0x0 u16 bitmaps -- E 0x00016f60: range into bindings, bitmap bindings (shader.rs:703)
+      0x2 u16 pixel_constants -- E 0x00017170: range into bindings, colour (pixel-shader constant) bindings (shader.rs:704)
+      0x4 u16 vertex_constants -- E 0x00017000: range into bindings, vector (vertex constant / default) bindings (shader.rs:705)
+    0x20 block bindings 0x4 align 4 -- parameter bindings; E 0x00016f60, 0x00017000, 0x00017170 (shader.rs:709)
+      0x0 u16 target -- meaning by the selecting range: bitmap byte 0 = texture slot; colour bits 0-2 fragment, 3-5 selector value, 6-9 register (8 = final combiner), bit 10 = c1; vector bits 0-3 register, bit 4 bank, 5-9 component mode (shader.rs:711, doc "Parameter bindings")
+      0x2 u8 lane_mask -- E 0x00017170: colour bindings, bits 0-2 pick a lane mask from 0x467068 (shader.rs:712)
+      0x3 u8 source -- index into the instance's bitmaps / colours / vectors (shader.rs:713)

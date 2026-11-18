@@ -195,10 +195,11 @@ Halo 2 disc's `beavercreek` (70 spawns, 88 flags, 28 items, 56 base
 placements removed; the 3 camouflage spawns are reported, the base has
 none) and reads the scenario back.
 
-Halo 2's netgame flag kind values (`H2Flag::raw`) follow the community
-enum, and the disc agrees (`h1convert/tests/h2_scenario.rs`: 0 and 1 once
-per team on all 12 maps, 4 always neutral, 7 and 8 in equal numbers, 10
-to 16 runs of boundary points); not yet confirmed from engine code.
+The names of Halo 2's netgame flag kind values (`H2Flag::raw`) are
+unverified; the disc's values fit them (`h1convert/tests/h2_scenario.rs`:
+0 and 1 once per team on all 12 maps, 4 always neutral, 7 and 8 in equal
+numbers, 10 to 16 runs of boundary points); not yet confirmed from engine
+code.
 
 **Trigger volumes (Built, `convert::park_trigger_volumes`).** The base's
 trigger volumes (`scnr+0x108`, stride `0x44`, E `0x0011c383`..

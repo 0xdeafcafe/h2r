@@ -154,7 +154,7 @@ There is another verified tail jump at `0x0008d9de` to the already-listed `XNetC
 
 ## Sign-in as driven by the game
 
-Game function names below are descriptive labels or names from the independent decompilation, not renamed Ghidra symbols. The addresses and branches were checked against this XBE. Game functions commonly use register arguments; the public API table above is stdcall.
+Game function names below are descriptive labels, not renamed Ghidra symbols. The addresses and branches were checked against this XBE. Game functions commonly use register arguments; the public API table above is stdcall.
 
 ### 1. Bring up transport when the link is active
 
@@ -281,7 +281,6 @@ Public references used for names and declarations, with retail behavior taking p
 
 - [RXDK public XOnline header, pinned revision](https://github.com/Team-Resurgent/RXDK-SDK/blob/1dc30011768cf75366428f23380e099afa4dce0d/include/xonline.h): API names, argument shapes, public status constants. Its rewritten explanatory comments are not treated as proof of retail behavior.
 - [RXDK public Winsock/XNet header, same revision](https://github.com/Team-Resurgent/RXDK-SDK/blob/1dc30011768cf75366428f23380e099afa4dce0d/include/winsockx.h): socket/XNet prototypes and public record definitions.
-- [Independent Halo 2 decompilation, pinned revision](https://github.com/kirklandsig/halo2-decompiled/tree/69217dcac48cffad7624f884d3a76cd7eb01d7c2/src), especially [online tasks](https://github.com/kirklandsig/halo2-decompiled/blob/69217dcac48cffad7624f884d3a76cd7eb01d7c2/src/online_tasks.cpp), [transport](https://github.com/kirklandsig/halo2-decompiled/blob/69217dcac48cffad7624f884d3a76cd7eb01d7c2/src/transport.cpp), [dialog routing](https://github.com/kirklandsig/halo2-decompiled/blob/69217dcac48cffad7624f884d3a76cd7eb01d7c2/src/unknown_147f6d.cpp) and [callbacks](https://github.com/kirklandsig/halo2-decompiled/blob/69217dcac48cffad7624f884d3a76cd7eb01d7c2/src/dialog_callbacks.cpp): useful caller-name and API-name cross-checks. The report does not copy their implementations or data tables.
 - [Public OnlineDash symbol names](https://github.com/Cxbx-Reloaded/sym2idc/blob/master/FFFE0000_4C0590E3_Xbox%20OnlineDash.sym): older related SDK name/decoration cross-checks only; its addresses are not Halo 2 addresses.
 
 The existing XbSymbolDatabase matcher was also run read-only for leads. Its small XOnline/XNet match set agreed with the checked logon/match/startup/socket bodies; no signature data was copied. The 68 likely rows still need individual semantic confirmation before binding production implementations. Exact `htonl` versus `ntohl`, and `htons` versus `ntohs`, names cannot be distinguished from their shared operation; the combined names are intentional. This inventory does not claim to discover every possible address-taken, indirect or cross-section library entry beyond the verified direct calls, the tail-jump audit, and the additional link-status entry.

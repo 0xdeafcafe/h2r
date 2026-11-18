@@ -34,8 +34,8 @@ pub(super) fn set_f32(m: &mut Fake, a: u32, v: f32) {
 
 const INDEX: u32 = 0x10_0000;
 const ENTRIES: u32 = 0x11_0000;
-/// Synthetic weapon tags: slot -> (address, autoaim angle, autoaim range,
-/// magnetism angle, magnetism range).
+/// Synthetic weapon tags: slot -> (address, aim cone angle, aim cone range,
+/// pull angle, pull range).
 const WEAPONS: [(u32, u32, [f32; 4]); 3] = [
     (1, 0x20_0000, [0.05, 20.0, 0.1, 15.0]),
     (3, 0x21_0000, [0.02, 50.0, 0.4, 40.0]),
@@ -43,8 +43,8 @@ const WEAPONS: [(u32, u32, [f32; 4]); 3] = [
 ];
 const GLOBALS: u32 = 0x30_0000;
 const PLAYER_CONTROLS: u32 = 0x31_0000;
-const FRICTION: f32 = 0.6;
-const ADHESION: f32 = 0.9;
+const SLOWDOWN_V: f32 = 0.6;
+const FOLLOW_V: f32 = 0.9;
 /// A biped tag whose bytes at the weapon offsets must stay put.
 const BIPD: u32 = 0x40_0000;
 
@@ -68,18 +68,13 @@ fn world() -> Fake {
     }
     for (slot, addr, v) in WEAPONS {
         entry(&mut m, slot, b"weap", addr, 0x31c);
-        for (off, x) in [
-            AUTOAIM_ANGLE,
-            AUTOAIM_RANGE,
-            MAGNETISM_ANGLE,
-            MAGNETISM_RANGE,
-        ]
-        .into_iter()
-        .zip(v)
+        for (off, x) in [CONE_ANGLE, CONE_RANGE, PULL_ANGLE, PULL_RANGE]
+            .into_iter()
+            .zip(v)
         {
             set_f32(&mut m, addr + off, x);
         }
-        // The deviation angle next to them is never touched.
+        // The bend angle next to them is never touched.
         set_f32(&mut m, addr + 0x218, 0.25);
     }
     entry(&mut m, 2, b"bipd", BIPD, 0x314);
@@ -89,14 +84,14 @@ fn world() -> Fake {
     entry(&mut m, 5, b"matg", GLOBALS, 0x5000);
     m.set_u32(GLOBALS + MATG_PLAYER_CONTROL, 1);
     m.set_u32(GLOBALS + MATG_PLAYER_CONTROL + 4, PLAYER_CONTROLS);
-    set_f32(&mut m, PLAYER_CONTROLS + MAGNETISM_FRICTION, FRICTION);
-    set_f32(&mut m, PLAYER_CONTROLS + MAGNETISM_ADHESION, ADHESION);
+    set_f32(&mut m, PLAYER_CONTROLS + SLOWDOWN, SLOWDOWN_V);
+    set_f32(&mut m, PLAYER_CONTROLS + FOLLOW, FOLLOW_V);
     set_f32(&mut m, PLAYER_CONTROLS + 8, 0.5);
     m
 }
 
 /// The six values a level should leave: per weapon its four, then
-/// friction and adhesion.
+/// slowdown and follow.
 fn expect(m: &Fake, level: Level) {
     let f = level.factors();
     for (_, addr, v) in WEAPONS {
@@ -106,23 +101,17 @@ fn expect(m: &Fake, level: Level) {
             scale(v[2], f.angle, MAX_ANGLE),
             scale(v[3], f.range, f32::MAX),
         ];
-        let got = [
-            AUTOAIM_ANGLE,
-            AUTOAIM_RANGE,
-            MAGNETISM_ANGLE,
-            MAGNETISM_RANGE,
-        ]
-        .map(|o| f32_at(m, addr + o));
+        let got = [CONE_ANGLE, CONE_RANGE, PULL_ANGLE, PULL_RANGE].map(|o| f32_at(m, addr + o));
         assert_eq!(got, want, "{level:?} weapon at {addr:#x}");
         assert_eq!(f32_at(m, addr + 0x218), 0.25);
     }
     assert_eq!(
         f32_at(m, PLAYER_CONTROLS),
-        scale(FRICTION, f.stick, MAX_STICK)
+        scale(SLOWDOWN_V, f.stick, MAX_STICK)
     );
     assert_eq!(
         f32_at(m, PLAYER_CONTROLS + 4),
-        scale(ADHESION, f.stick, MAX_STICK)
+        scale(FOLLOW_V, f.stick, MAX_STICK)
     );
     assert_eq!(
         f32_at(m, PLAYER_CONTROLS + 8),
@@ -140,21 +129,16 @@ fn the_offsets_are_the_tag_layouts() {
             .find(|f| f.name == name)
             .map(|f| f.offset)
     };
-    assert_eq!(at("autoaim_angle"), Some(AUTOAIM_ANGLE));
-    assert_eq!(at("autoaim_range"), Some(AUTOAIM_RANGE));
-    assert_eq!(at("magnetism_angle"), Some(MAGNETISM_ANGLE));
-    assert_eq!(at("magnetism_range"), Some(MAGNETISM_RANGE));
+    assert_eq!(at("cone_angle"), Some(CONE_ANGLE));
+    assert_eq!(at("cone_range"), Some(CONE_RANGE));
+    assert_eq!(at("pull_angle"), Some(PULL_ANGLE));
+    assert_eq!(at("pull_range"), Some(PULL_RANGE));
     assert_eq!(
-        (
-            AUTOAIM_ANGLE,
-            AUTOAIM_RANGE,
-            MAGNETISM_ANGLE,
-            MAGNETISM_RANGE
-        ),
+        (CONE_ANGLE, CONE_RANGE, PULL_ANGLE, PULL_RANGE),
         (0x208, 0x20c, 0x210, 0x214)
     );
     assert_eq!((MATG_PLAYER_CONTROL, PLAYER_CONTROL_STRIDE), (0xf0, 0x80));
-    assert_eq!((MAGNETISM_FRICTION, MAGNETISM_ADHESION), (0, 4));
+    assert_eq!((SLOWDOWN, FOLLOW), (0, 4));
     assert_eq!((TAG_INDEX, TAG_ENTRIES), (0x0054_7f00, 0x004e_3b44));
     assert_eq!(WEAP, 0x7765_6170);
 }
@@ -231,13 +215,9 @@ fn strong_and_very_strong_scale_by_their_factors() {
         expect(&m, level);
         // Spot checks against hand-worked numbers.
         let f = level.factors();
-        assert_eq!(f32_at(&m, 0x20_0000 + AUTOAIM_ANGLE), 0.05 * f.angle);
-        assert_eq!(f32_at(&m, 0x20_0000 + MAGNETISM_RANGE), 15.0 * f.range);
-        assert_eq!(
-            f32_at(&m, 0x22_0000 + MAGNETISM_ANGLE),
-            0.0,
-            "zero stays zero"
-        );
+        assert_eq!(f32_at(&m, 0x20_0000 + CONE_ANGLE), 0.05 * f.angle);
+        assert_eq!(f32_at(&m, 0x20_0000 + PULL_RANGE), 15.0 * f.range);
+        assert_eq!(f32_at(&m, 0x22_0000 + PULL_ANGLE), 0.0, "zero stays zero");
         // The biped's bytes at the same offsets are not a weapon's.
         for off in (0x200..0x220).step_by(4) {
             assert_eq!(f32_at(&m, BIPD + off), 0.125);
@@ -246,7 +226,7 @@ fn strong_and_very_strong_scale_by_their_factors() {
     let mut m = world();
     Remembered::default().apply(&mut m, Level::VeryStrong);
     assert_eq!(
-        f32_at(&m, 0x21_0000 + MAGNETISM_ANGLE),
+        f32_at(&m, 0x21_0000 + PULL_ANGLE),
         MAX_ANGLE,
         "0.4 x 2 capped"
     );
@@ -287,16 +267,16 @@ fn a_reloaded_map_is_its_own_retail() {
     // weapon's slot now holds a tag with other values (another map).
     let mut reloaded = world();
     // (Not 0.03: that is what Strong wrote there, which would read as ours.)
-    set_f32(&mut reloaded, 0x21_0000 + AUTOAIM_ANGLE, 0.07);
+    set_f32(&mut reloaded, 0x21_0000 + CONE_ANGLE, 0.07);
     let fresh = reloaded.clone();
     m = reloaded;
     r.apply(&mut m, Level::Strong);
     assert_eq!(
-        f32_at(&m, 0x20_0000 + AUTOAIM_ANGLE),
+        f32_at(&m, 0x20_0000 + CONE_ANGLE),
         0.05 * 1.5,
         "not 0.05 x 1.5 x 1.5"
     );
-    assert_eq!(f32_at(&m, 0x21_0000 + AUTOAIM_ANGLE), 0.07 * 1.5);
+    assert_eq!(f32_at(&m, 0x21_0000 + CONE_ANGLE), 0.07 * 1.5);
     r.apply(&mut m, Level::Default);
     assert_eq!(m, fresh);
 }
@@ -316,8 +296,8 @@ fn missing_or_odd_tables_are_left_alone() {
     let done = Remembered::default().apply(&mut m, Level::VeryStrong);
     assert_eq!((done.weapons, done.player_controls), (2, 0));
     assert_eq!(
-        m.u32(0x20_0000 + AUTOAIM_ANGLE),
-        before.u32(0x20_0000 + AUTOAIM_ANGLE)
+        m.u32(0x20_0000 + CONE_ANGLE),
+        before.u32(0x20_0000 + CONE_ANGLE)
     );
     assert_eq!(m.u32(PLAYER_CONTROLS), before.u32(PLAYER_CONTROLS));
 }
@@ -358,7 +338,7 @@ fn auto_follows_the_touch_controls_and_multiplayer_is_retail() {
 
 /// Plausibility on the retail disc (values printed, never committed):
 /// every weapon's angles are finite, positive or zero and under the cap,
-/// ranges finite and non-negative, and friction and adhesion in [0, 1].
+/// ranges finite and non-negative, and slowdown and follow in [0, 1].
 /// `H2_DISC=/path/halo2.iso cargo test -p boot aim_assist -- --ignored --nocapture`
 #[test]
 #[ignore = "needs the retail disc in $H2_DISC"]
@@ -390,13 +370,7 @@ fn retail_tags_hold_plausible_aim_assist_values() {
             .collect();
         for (id, name) in ids {
             let b = m.read_tag_bytes(id).unwrap();
-            let v = [
-                AUTOAIM_ANGLE,
-                AUTOAIM_RANGE,
-                MAGNETISM_ANGLE,
-                MAGNETISM_RANGE,
-            ]
-            .map(|o| f(&b, o));
+            let v = [CONE_ANGLE, CONE_RANGE, PULL_ANGLE, PULL_RANGE].map(|o| f(&b, o));
             eprintln!("{} {:?}: {v:?}", e.path, name);
             assert!(v.iter().all(|x| x.is_finite() && *x >= 0.0), "{name:?}");
             assert!(v[0] < MAX_ANGLE && v[2] < MAX_ANGLE, "{name:?}");
@@ -413,7 +387,7 @@ fn retail_tags_hold_plausible_aim_assist_values() {
                     .unwrap();
                 let (fr, ad) = (f(&pc, 0), f(&pc, 4));
                 eprintln!(
-                    "{} globals: {n} player controls, friction {fr}, adhesion {ad}",
+                    "{} globals: {n} player controls, slowdown {fr}, follow {ad}",
                     e.path
                 );
                 assert!((0.0..=1.0).contains(&fr) && (0.0..=1.0).contains(&ad));

@@ -76,7 +76,7 @@ Layouts follow player one's state (below). On foot:
     scope as far on screen as an unzoomed view.
   - Aim slowdown: while the crosshair is on an aim-assist target (the red
     reticle: the player-control record's target is set with a positive
-    autoaim or magnetism strength) the turn is 0.55x. Fire turns red too.
+    cone or pull strength) the turn is 0.55x. Fire turns red too.
   - Every button on the right side looks as well: a finger on Fire looks
     at once, one on any other button once it has moved 8 points (so a tap
     stays a tap), and keeps holding its button.

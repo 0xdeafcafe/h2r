@@ -17,7 +17,8 @@ use winit::window::{Window, WindowId};
 
 const USAGE: &str = "usage: h2-editor call <call> [args] | h2-editor --serve [--socket PATH] [...]
        h2-editor [--socket PATH | --no-listen] [--disc <iso> | --map <file.map> | --folder <maps dir>] \
-[--halo1 <iso|maps dir>] [--mappack <iso|folder>] [--data <dir>] [--package <dir>[#H1|#H2]] [--halo1-map <map> [--convert h2|h1]] [--overlay on|off] [--tool scenario|tags|variants|playlists|ui-screens] [--tag <group>:<path>] [--ui-screen <screen>/<state> [--ui-press up,a,...]] [--pick <map>] [--select <block>:<index>] [--hopper <file.dat>|default] \
+[--halo1 <iso|maps dir>] [--mappack <iso|folder>] [--data <dir>] [--package <dir>[#H1|#H2]] [--halo1-map <map> [--convert h2|h1]] [--overlay on|off] [--tool scenario|tags|variants|playlists|ui-screens|hud] [--tag <group>:<path>] [--ui-screen <screen>/<state> [--ui-press up,a,...]] \
+[--hud-map <map>|--hud-package <key>] [--hud <nhdt name>] [--hud-widget <name>] [--pick <map>] [--select <block>:<index>] [--hopper <file.dat>|default] \
 [--variant <built-in index>] [--copy-variant <name>] [--playlist <1..16>] [--preset <n>] \
 [--focus] [--camera <yaw>,<pitch>,<distance>] [--dialog unsaved|package] \
 [--no-disc] [--nudge <x>,<y>,<z>] [--page <variant settings page>] [--screenshot <out.png> [--size <w>x<h>] [--scale <s>] [--do <steps>] \
@@ -48,6 +49,11 @@ struct Args {
     /// The UI Screens tool's screen and state, and presses on it.
     ui_screen: Option<String>,
     ui_press: Option<String>,
+    /// The HUD tool's map (or package), HUD and selected widget.
+    hud_map: Option<String>,
+    hud_package: Option<String>,
+    hud: Option<String>,
+    hud_widget: Option<String>,
     /// The Tags tool's tag, `group:path`.
     tag: Option<String>,
     hopper: Option<String>,
@@ -96,6 +102,10 @@ fn args() -> Result<Args> {
         tool: None,
         ui_screen: None,
         ui_press: None,
+        hud_map: None,
+        hud_package: None,
+        hud: None,
+        hud_widget: None,
         tag: None,
         hopper: None,
         variant: None,
@@ -149,6 +159,10 @@ fn args() -> Result<Args> {
             "--pick" => a.pick = Some(value()?),
             "--ui-screen" => a.ui_screen = Some(value()?),
             "--ui-press" => a.ui_press = Some(value()?),
+            "--hud-map" => a.hud_map = Some(value()?),
+            "--hud-package" => a.hud_package = Some(value()?),
+            "--hud" => a.hud = Some(value()?),
+            "--hud-widget" => a.hud_widget = Some(value()?),
             "--tag" => a.tag = Some(value()?),
             "--tool" => {
                 a.tool = Some(match value()?.as_str() {
@@ -156,6 +170,7 @@ fn args() -> Result<Args> {
                     "variants" => ToolKind::Variants,
                     "playlists" => ToolKind::Playlists,
                     "ui-screens" => ToolKind::UiScreens,
+                    "hud" => ToolKind::Hud,
                     "tags" => ToolKind::Tags,
                     t => bail!("unknown tool {t}\n{USAGE}"),
                 })
@@ -344,6 +359,34 @@ fn main() -> Result<()> {
                 Some(i) => app.dispatch(Action::UiPress(i)),
                 None => bail!("--ui-press: no input {p:?}"),
             }
+        }
+    }
+    if args.hud_map.is_some() || args.hud_package.is_some() {
+        app.dispatch(Action::SetTool(ToolKind::Hud));
+        if let Some(m) = &args.hud_map {
+            app.dispatch(Action::HudOpenMap(m.clone()));
+        }
+        if let Some(k) = &args.hud_package {
+            app.dispatch(Action::HudOpenPackage(k.clone()));
+        }
+        let session = app.hud.session.as_ref();
+        if let Some(name) = &args.hud {
+            let id = session
+                .and_then(|s| s.huds.iter().find(|e| e.name == *name || e.name.ends_with(&format!("\\{name}"))))
+                .map(|e| e.id)
+                .ok_or_else(|| anyhow!("--hud: no HUD {name:?}"))?;
+            app.dispatch(Action::HudPick(id));
+        }
+        if let Some(name) = &args.hud_widget {
+            let key = app
+                .hud
+                .session
+                .as_ref()
+                .and_then(|s| s.hud())
+                .and_then(|h| h.widgets.iter().find(|w| w.name == *name))
+                .map(|w| w.key)
+                .ok_or_else(|| anyhow!("--hud-widget: no widget {name:?}"))?;
+            app.dispatch(Action::HudSelect(Some(key)));
         }
     }
     if let Some(t) = &args.tag {

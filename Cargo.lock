@@ -658,6 +658,7 @@ dependencies = [
  "lockstep",
  "map",
  "movies",
+ "native-render",
  "perf",
  "png",
  "runtime",
@@ -666,6 +667,7 @@ dependencies = [
  "serde",
  "serde_json",
  "settings",
+ "snapshot",
  "tags",
  "timeline",
  "toml",
@@ -1575,6 +1577,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shaders",
+ "snapshot",
  "thiserror 2.0.21",
  "timeline",
  "wgpu",
@@ -1941,6 +1944,7 @@ name = "feature"
 version = "0.1.0"
 dependencies = [
  "engine",
+ "native-render",
  "runtime",
  "runtime-test-probe",
  "timeline",
@@ -2796,6 +2800,24 @@ name = "httpdate"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
+
+[[package]]
+name = "hud-edit"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "assets",
+ "font",
+ "h1bitmaps",
+ "h1map",
+ "h1models",
+ "hud-edit",
+ "map",
+ "png",
+ "scenario-edit",
+ "tags",
+ "xiso",
+]
 
 [[package]]
 name = "humantime"
@@ -3811,6 +3833,7 @@ dependencies = [
  "gfx",
  "map",
  "pollster",
+ "shaders",
  "tags",
  "wgpu",
 ]
@@ -6233,6 +6256,7 @@ dependencies = [
  "h1map",
  "h1objects",
  "hopper-edit",
+ "hud-edit",
  "live-proto",
  "map",
  "png",
@@ -6243,6 +6267,7 @@ dependencies = [
  "studio-proto",
  "tags",
  "variants",
+ "vfs",
  "wgpu",
  "winit",
 ]
@@ -8026,6 +8051,7 @@ dependencies = [
  "libloading",
  "lift",
  "runtime",
+ "snapshot",
  "vfs",
  "xbe",
 ]

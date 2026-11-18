@@ -10,23 +10,23 @@ const REMOTE: u32 = u32::MAX;
 
 const MATG: u32 = 0x30_0000;
 const CONTROLS: u32 = 0x31_0000;
-const FRICTION: f32 = 0.6;
-const ADHESION: f32 = 0.9;
+const SLOWDOWN_V: f32 = 0.6;
+const FOLLOW_V: f32 = 0.9;
 /// Where `0x1a50a0` writes its result in these tests.
 const OUT: u32 = 0x50_0000;
 const OUT2: u32 = 0x50_1000;
 
-/// A made-up result of `0x1a50a0`: autoaim 0.05 rad / 20 wu, magnetism
+/// A made-up result of `0x1a50a0`: aim cone 0.05 rad / 20 wu, pull
 /// 0.1 rad / 15 wu, bend 0.06, flags 0x20, a second weapon 0.04 / 10 wu,
 /// class range 20.
 const PARAMS: [(u32, f32); 8] = [
-    (params::AUTOAIM_ANGLE, 0.05),
-    (params::AUTOAIM_RANGE, 20.0),
-    (params::MAGNETISM_ANGLE, 0.1),
-    (params::MAGNETISM_RANGE, 15.0),
+    (params::CONE_ANGLE, 0.05),
+    (params::CONE_RANGE, 20.0),
+    (params::PULL_ANGLE, 0.1),
+    (params::PULL_RANGE, 15.0),
     (params::BEND_ANGLE, 0.06),
-    (params::SECOND_AUTOAIM_ANGLE, 0.04),
-    (params::SECOND_AUTOAIM_RANGE, 10.0),
+    (params::SECOND_CONE_ANGLE, 0.04),
+    (params::SECOND_CONE_RANGE, 10.0),
     (params::CLASS_RANGE, 20.0),
 ];
 
@@ -37,8 +37,8 @@ fn world() -> Fake {
     m.set_u32(GLOBALS_TAG, MATG);
     m.set_u32(MATG + MATG_PLAYER_CONTROL, 1);
     m.set_u32(MATG + MATG_PLAYER_CONTROL + 4, CONTROLS);
-    set_f32(&mut m, CONTROLS + MAGNETISM_FRICTION, FRICTION);
-    set_f32(&mut m, CONTROLS + MAGNETISM_ADHESION, ADHESION);
+    set_f32(&mut m, CONTROLS + SLOWDOWN, SLOWDOWN_V);
+    set_f32(&mut m, CONTROLS + FOLLOW, FOLLOW_V);
     set_f32(&mut m, CONTROLS + 8, 0.5);
     built(&mut m, OUT);
     built(&mut m, OUT2);
@@ -126,27 +126,27 @@ fn scaling_the_result_matches_the_tag_factors() {
     let mut m = world();
     let f = Level::Strong.factors();
     let n = scale_params(&mut m, OUT, f);
-    assert_eq!(f32_at(&m, OUT + params::AUTOAIM_ANGLE), 0.05 * 1.5);
-    assert_eq!(f32_at(&m, OUT + params::AUTOAIM_RANGE), 20.0 * 1.25);
-    assert_eq!(f32_at(&m, OUT + params::MAGNETISM_ANGLE), 0.1 * 1.5);
-    assert_eq!(f32_at(&m, OUT + params::MAGNETISM_RANGE), 15.0 * 1.25);
-    assert_eq!(f32_at(&m, OUT + params::SECOND_AUTOAIM_ANGLE), 0.04 * 1.5);
-    assert_eq!(f32_at(&m, OUT + params::SECOND_AUTOAIM_RANGE), 10.0 * 1.25);
+    assert_eq!(f32_at(&m, OUT + params::CONE_ANGLE), 0.05 * 1.5);
+    assert_eq!(f32_at(&m, OUT + params::CONE_RANGE), 20.0 * 1.25);
+    assert_eq!(f32_at(&m, OUT + params::PULL_ANGLE), 0.1 * 1.5);
+    assert_eq!(f32_at(&m, OUT + params::PULL_RANGE), 15.0 * 1.25);
+    assert_eq!(f32_at(&m, OUT + params::SECOND_CONE_ANGLE), 0.04 * 1.5);
+    assert_eq!(f32_at(&m, OUT + params::SECOND_CONE_RANGE), 10.0 * 1.25);
     assert_eq!(f32_at(&m, OUT + params::CLASS_RANGE), 20.0 * 1.25);
-    // Bend is max(deviation, autoaim): 0.075 now beats 0.06.
+    // Bend is max(bend, aim cone): 0.075 now beats 0.06.
     assert_eq!(f32_at(&m, OUT + params::BEND_ANGLE), 0.05 * 1.5);
     assert_eq!(m.u32(OUT + params::FLAGS), Some(0x20));
     assert_eq!(n, 8);
 
-    // Caps, zeros (no magnetism) and a bend already past the autoaim.
+    // Caps, zeros (no pull) and a bend already past the aim cone.
     let mut m = world();
-    set_f32(&mut m, OUT + params::MAGNETISM_ANGLE, 0.4);
-    set_f32(&mut m, OUT + params::MAGNETISM_RANGE, 0.0);
+    set_f32(&mut m, OUT + params::PULL_ANGLE, 0.4);
+    set_f32(&mut m, OUT + params::PULL_RANGE, 0.0);
     set_f32(&mut m, OUT + params::BEND_ANGLE, 0.3);
     set_f32(&mut m, OUT + params::CLASS_RANGE, 0.0);
     scale_params(&mut m, OUT, Level::VeryStrong.factors());
-    assert_eq!(f32_at(&m, OUT + params::MAGNETISM_ANGLE), MAX_ANGLE);
-    assert_eq!(f32_at(&m, OUT + params::MAGNETISM_RANGE), 0.0);
+    assert_eq!(f32_at(&m, OUT + params::PULL_ANGLE), MAX_ANGLE);
+    assert_eq!(f32_at(&m, OUT + params::PULL_RANGE), 0.0);
     assert_eq!(f32_at(&m, OUT + params::CLASS_RANGE), 0.0);
     assert_eq!(f32_at(&m, OUT + params::BEND_ANGLE), 0.3);
 }
@@ -159,18 +159,18 @@ fn the_touch_players_update_is_scaled_and_put_back() {
 
     assert!(pp.enter(&mut m, Level::Strong));
     assert!(pp.open());
-    assert_eq!(f32_at(&m, CONTROLS + MAGNETISM_FRICTION), FRICTION * 1.25);
+    assert_eq!(f32_at(&m, CONTROLS + SLOWDOWN), SLOWDOWN_V * 1.25);
     // 0.9 * 1.25 is past the engine's own cap of 1.0.
-    assert_eq!(f32_at(&m, CONTROLS + MAGNETISM_ADHESION), MAX_STICK);
+    assert_eq!(f32_at(&m, CONTROLS + FOLLOW), MAX_STICK);
     // The inconsequential-target scale is not ours.
     assert_eq!(f32_at(&m, CONTROLS + 8), 0.5);
     // The search's `0x1a50a0` call inside the window.
     assert_eq!(pp.params(&mut m, OUT), 8);
-    assert_eq!(f32_at(&m, OUT + params::AUTOAIM_ANGLE), 0.05 * 1.5);
+    assert_eq!(f32_at(&m, OUT + params::CONE_ANGLE), 0.05 * 1.5);
 
     pp.leave(&mut m);
     assert!(!pp.open());
-    // Friction and adhesion back bit for bit; only our result buffer moved.
+    // Slowdown and follow back bit for bit; only our result buffer moved.
     built(&mut m, OUT);
     assert_eq!(m, before);
 }
@@ -199,14 +199,8 @@ fn everyone_else_sees_retail_bit_for_bit() {
     pp.leave(&mut m);
     assert_eq!(pp.params(&mut m, OUT2), 0);
     assert_eq!(result(&m, OUT2), result(&before, OUT2));
-    assert_eq!(
-        m.u32(CONTROLS + MAGNETISM_FRICTION),
-        before.u32(CONTROLS + MAGNETISM_FRICTION)
-    );
-    assert_eq!(
-        m.u32(CONTROLS + MAGNETISM_ADHESION),
-        before.u32(CONTROLS + MAGNETISM_ADHESION)
-    );
+    assert_eq!(m.u32(CONTROLS + SLOWDOWN), before.u32(CONTROLS + SLOWDOWN));
+    assert_eq!(m.u32(CONTROLS + FOLLOW), before.u32(CONTROLS + FOLLOW));
 }
 
 #[test]
@@ -217,7 +211,7 @@ fn a_window_left_open_is_closed_by_the_next() {
     pp.enter(&mut m, Level::Strong);
     // No `after` (it cannot happen in game; belt and braces).
     pp.enter(&mut m, Level::Strong);
-    assert_eq!(f32_at(&m, CONTROLS + MAGNETISM_FRICTION), FRICTION * 1.25);
+    assert_eq!(f32_at(&m, CONTROLS + SLOWDOWN), SLOWDOWN_V * 1.25);
     pp.leave(&mut m);
     assert_eq!(m, before);
 }
@@ -227,10 +221,10 @@ fn a_reload_inside_the_window_is_left_alone() {
     let pp = PerPlayer::default();
     let mut m = world();
     pp.enter(&mut m, Level::Strong);
-    set_f32(&mut m, CONTROLS + MAGNETISM_FRICTION, 0.2);
+    set_f32(&mut m, CONTROLS + SLOWDOWN, 0.2);
     pp.leave(&mut m);
-    assert_eq!(f32_at(&m, CONTROLS + MAGNETISM_FRICTION), 0.2);
-    assert_eq!(f32_at(&m, CONTROLS + MAGNETISM_ADHESION), ADHESION);
+    assert_eq!(f32_at(&m, CONTROLS + SLOWDOWN), 0.2);
+    assert_eq!(f32_at(&m, CONTROLS + FOLLOW), FOLLOW_V);
 }
 
 #[test]
@@ -315,7 +309,7 @@ fn two_peers_simulate_the_same_values() {
         // Everything the simulation reads is the same on both, and retail.
         assert_eq!(h_shots, g_shots, "setting {setting}");
         assert_eq!(result(&host.mem, OUT2), retail);
-        assert_eq!(host.mem.u32(CONTROLS), Some(FRICTION.to_bits()));
+        assert_eq!(host.mem.u32(CONTROLS), Some(SLOWDOWN_V.to_bits()));
         // Only the touch player's own action differs from retail.
         assert_ne!(h_actions[0], retail);
         assert_eq!(g_actions, vec![retail.clone(), retail.clone()]);

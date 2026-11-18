@@ -10,6 +10,7 @@ mod launch;
 pub mod memory;
 pub mod register;
 pub mod saves;
+pub mod snapshot;
 pub mod storage;
 pub mod tap;
 mod vfs_saves;

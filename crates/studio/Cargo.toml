@@ -28,6 +28,8 @@ rfd = "0.18"
 content.workspace = true
 editor-core = { path = "../editor-core" }
 scenario-edit = { path = "../scenario-edit" }
+# The HUD tool's logic (docs/editor/hud-editor.md).
+hud-edit = { path = "../hud-edit" }
 variants = { path = "../variants" }
 hopper-edit = { path = "../hopper-edit" }
 live-proto.workspace = true
@@ -44,12 +46,17 @@ tags.workspace = true
 # The UI Screens tool: our game screens' pages, preview and checks
 # (boot::ui_kit; docs/game/ui-builder.md).
 boot.workspace = true
+# The Map Pack's content directory (`T:\$c`) on the host.
+vfs.workspace = true
 serde_json.workspace = true
+
 # Play and pair (src/play.rs): the agent API's wire types and client.
 agent-proto = { path = "../agent-proto" }
 # The agent API (src/api): method names, short forms and the client.
 studio-proto = { path = "../studio-proto" }
 
 [dev-dependencies]
+# The HUD tool's tests draw the invented HUD map.
+hud-edit = { path = "../hud-edit", features = ["fixture"] }
 # The agent's real server behind an invented game (src/play/tests.rs).
 agent = { path = "../agent" }

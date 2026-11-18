@@ -464,6 +464,53 @@ impl MpSkulls {
         self.activate(&set);
         line
     }
+    /// Why a machine snapshot must wait: a Famine call is between its
+    /// hooks, with the placement's rounds halved in guest memory.
+    fn snapshot_live(&self) -> Option<String> {
+        let open = self.famine.lock().unwrap_or_else(|e| e.into_inner()).len();
+        (open != 0).then(|| format!("{open} Famine calls are between their hooks"))
+    }
+
+    /// The game's state as a machine snapshot keeps it
+    /// (docs/runtime/snapshots.md): the active set, which effects have
+    /// said they act, and the host's profiles as last read. Choices are
+    /// the settings store's.
+    fn save_state(&self) -> Vec<u8> {
+        let w = &mut snapshot::codec::Writer::new();
+        w.u32(self.active.load(Ordering::SeqCst))
+            .bool(self.said_blind.load(Ordering::Relaxed))
+            .bool(self.said_famine.load(Ordering::Relaxed));
+        let profiles = self.profiles.lock().unwrap_or_else(|e| e.into_inner());
+        w.list(&profiles[..], |w, p| {
+            w.str(p);
+        });
+        std::mem::take(w).into_bytes()
+    }
+
+    /// Puts [`Self::save_state`]'s bytes back; nothing changes unless all
+    /// of them decode.
+    fn load_state(&self, bytes: &[u8]) -> Result<(), String> {
+        let r = &mut snapshot::codec::Reader::new(bytes, "skulls-mp");
+        let decoded = (|| {
+            let active = r.u32()?;
+            let blind = r.bool()?;
+            let famine = r.bool()?;
+            let profiles = r.list(4, |r| Ok(r.str()?.to_owned()))?;
+            r.finish()?;
+            Ok::<_, snapshot::Error>((active, blind, famine, profiles))
+        })();
+        let (active, blind, famine, profiles) = decoded.map_err(|e| e.to_string())?;
+        self.active.store(active, Ordering::SeqCst);
+        self.said_blind.store(blind, Ordering::Relaxed);
+        self.said_famine.store(famine, Ordering::Relaxed);
+        self.set_profiles(profiles);
+        if let Some(t) = &self.telemetry {
+            let set = (0..32u8).filter(|&i| active & (1u32 << i) != 0);
+            t.set_multiplayer_skulls(live_proto::skulls::normalize(set));
+        }
+        Ok(())
+    }
+
     /// The first time `skull`'s effect acts this game: the line to log.
     fn first(&self, skull: usize) -> Option<&'static str> {
         let (flag, line) = match skull {
@@ -600,6 +647,16 @@ impl feature::Feature for SkullsMp {
                 }
                 Ok(())
             });
+        let (live, save, load) = (
+            Arc::clone(&self.0),
+            Arc::clone(&self.0),
+            Arc::clone(&self.0),
+        );
+        b.snapshot(feature::SnapshotPolicy::section_forbid_while(
+            move || live.snapshot_live(),
+            move || save.save_state(),
+            move |bytes, _| load.load_state(bytes),
+        ));
         Ok(())
     }
 }
@@ -1027,5 +1084,28 @@ mod tests {
         assert_eq!((word(4), word(8), word(0xc)), (3, 4, 0));
         assert_eq!(&r[0x10..0x1c], &[0xff; 12]);
         assert_eq!(word(0x1c), 0xa0f0_5000);
+    }
+
+    #[test]
+    fn a_snapshot_carries_the_games_multiplayer_skulls() {
+        let a = MpSkulls::new(store(), None, None);
+        a.activate(&[FAMINE as u8, BLIND as u8]);
+        assert!(a.first(BLIND).is_some());
+        a.set_profiles(names_of(&["Chief", "Arbiter"]));
+        assert_eq!(a.snapshot_live(), None);
+        let bytes = a.save_state();
+
+        let b = MpSkulls::new(store(), None, None);
+        b.load_state(&bytes).unwrap();
+        assert!(b.active(FAMINE) && b.active(BLIND));
+        assert!(b.first(BLIND).is_none(), "Blind already said so this game");
+        assert!(b.first(FAMINE).is_some());
+        assert_eq!(*b.profiles.lock().unwrap(), names_of(&["Chief", "Arbiter"]));
+        assert!(b.load_state(&bytes[..bytes.len() - 1]).is_err());
+        assert!(b.active(FAMINE), "a damaged section changes nothing");
+
+        // A Famine call between its hooks holds a snapshot off.
+        b.famine.lock().unwrap().push((0x1000, [1, 2]));
+        assert!(b.snapshot_live().is_some());
     }
 }

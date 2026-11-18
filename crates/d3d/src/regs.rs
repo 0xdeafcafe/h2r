@@ -151,6 +151,21 @@ impl RegisterWindow {
         self.base
     }
 
+    /// The words the device last wrote to each page (a snapshot saves them,
+    /// so the next sync after a load reports the same guest stores).
+    pub(crate) fn shadow(&self) -> &[Vec<u8>; 2] {
+        &self.shadow
+    }
+
+    /// Puts back [`shadow`](Self::shadow). Each page must be [`PAGE`] bytes.
+    pub(crate) fn restore_shadow(&mut self, shadow: [Vec<u8>; 2]) -> Result<(), String> {
+        if shadow.iter().any(|p| p.len() != PAGE as usize) {
+            return Err("register window page is not 4 KiB".into());
+        }
+        self.shadow = shadow;
+        Ok(())
+    }
+
     /// The guest ranges to map read/write (see
     /// [`crate::runtime_glue::map_device_memory`]).
     pub fn pages(&self) -> [GuestRange; 2] {
