@@ -172,28 +172,52 @@ pub fn set_allow_growth(&mut self, allow: bool)
 pub fn begin_gesture(&mut self)                           // a gizmo drag: one undo step
 pub fn gesture_set(&mut self, position: Vec3, ypr: Vec3) -> Result<()>
 pub fn end_gesture(&mut self)
+pub fn gesture_scale(&mut self, scale: f32) -> Result<()>
+
+// session/multi.rs: the multi-selection (the primary first)
+pub fn selection(&self) -> Vec<(BlockKind, usize)>
+pub fn toggle_select(&mut self, entry: (BlockKind, usize))
+pub fn select_many(&mut self, entries: Vec<(BlockKind, usize)>)
+pub fn shared_fields(&self) -> Vec<&'static FieldDef>
+pub fn edit_selection(&mut self, field: &str, edit: FieldEdit, merge: u64) -> Result<usize>
+pub fn remove_selection(&mut self) -> Result<usize>
+pub fn duplicate_selection(&mut self) -> Result<Vec<(BlockKind, usize)>>
+pub fn surface_hit(&self, ray: &Ray) -> Option<Vec3>
+pub fn add_entry_at(&mut self, kind: BlockKind, like: Option<usize>, at: Vec3) -> Result<usize>
+pub fn selection_sphere(&self) -> Option<(Vec3, f32)>
 ```
 
 - **Outliner:** blocks, then entries labelled with the base name of their
   palette tag or item, read from the map's own tag names at run time.
-  Delete and Duplicate act on the selection; right-click an entry for
-  Duplicate / Delete / Add new, or a block header for Add new. A new entry
-  is a copy of the selected one (or zeroed with the palette's first item)
-  placed at the camera focus. Each is one undo step. A refused action is
-  greyed out with its reason on hover.
+  Delete and Duplicate act on the selection (all of it, when several are
+  selected: delete removes from each block's end first so indices stay
+  good; duplicate copies each in place); right-click an entry for
+  Duplicate / Delete / Add new / Place a copy with the mouse, or a block
+  header for Add new / Place new with the mouse. A new entry is a copy of
+  the selected one (or zeroed with the palette's first item) placed at
+  the camera focus, or where the cursor's ray meets the level
+  (`surface_hit`, `add_entry_at`). Each is one undo step. A refused
+  action is greyed out with its reason on hover.
 - **Growth:** adding to a block that is full (as many entries as the
   source) would grow it. That is off by default: the engine's limit is
   not established (§6), so add works only in the room a removal made.
   `set_allow_growth(true)` (the editor's **Edit > Allow growing full
   blocks**) turns it on.
 - **Inspector:** each typed field with its offset and evidence (hover);
-  vectors and numbers as drag values, palette index and item as pickers.
-- **Viewport:** the structure BSPs (through `tags::structure`), textured,
-  the placed objects' models, and a glyph per placement, coloured by
-  block (editor.md, "What the viewport shows"). Right-drag orbits,
-  middle-drag pans, scroll zooms, WASD/QE fly. Click selects; the
-  selection's gizmo moves or rotates it (`begin_gesture`, `gesture_set`,
-  `end_gesture`), one drag being one undo step.
+  vectors and numbers as drag values, palette index and item as
+  searchable pickers, flags as checkboxes. With several selected, the
+  fields all of them have; an edit applies to each as one undo step
+  (`edit_selection` with a `FieldEdit`: the whole value, one vector
+  component, or one flag bit, keeping each entry's others).
+- **Viewport:** the scenario's sky, the structure BSPs (through
+  `tags::structure`), textured, the placed objects' models, and a glyph
+  per placement, coloured by block (editor.md, "What the viewport
+  shows"). Right button held: look, WASD/QE fly, wheel sets the speed;
+  Alt+left drag orbits; middle drag pans; the wheel dollies; F frames.
+  Click selects, Cmd/Ctrl+click adds; the selection's gizmo moves,
+  rotates or scales it (`begin_gesture`, `gesture_set`, `gesture_scale`,
+  `end_gesture`), the rest of the selection riding along, one drag being
+  one undo step.
 
 `render::Viewport` renders offscreen into its own colour and depth
 textures; the editor registers the colour texture with Dear ImGui and

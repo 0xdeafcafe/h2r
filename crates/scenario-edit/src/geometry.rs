@@ -751,6 +751,9 @@ pub fn surface(tris: &[Tri], ray: &Ray) -> Option<Vec3> {
 /// level's flatness let it come closer.
 pub const FRAME_DISTANCE: f32 = 1.4;
 
+/// The sky's near plane, in its model's units ([`Camera::sky_view_proj`]).
+pub const SKY_NEAR: f32 = 0.05;
+
 /// An orbit camera with a fly mode: it looks at `target` from `distance`
 /// along yaw and pitch; flying moves the target with the eye.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -855,6 +858,23 @@ impl Camera {
     /// Column-major view-projection for wgpu clip space (depth 0..1).
     pub fn view_proj(&self, aspect: f32) -> Mat4 {
         mul(&self.proj(aspect), &self.view())
+    }
+    /// The sky's view-projection: the view turned but not moved (the eye
+    /// at the origin, so the sky turns with the camera and never comes
+    /// nearer), and a projection with no far plane, so a sky model of any
+    /// size is drawn whole. Depth runs from 0 at [`SKY_NEAR`] to 1 at
+    /// infinity.
+    pub fn sky_view_proj(&self, aspect: f32) -> Mat4 {
+        let mut view = self.view();
+        view[3] = [0.0, 0.0, 0.0, 1.0];
+        let t = 1.0 / (self.fov_y * 0.5).tan();
+        let proj = [
+            [t / aspect.max(1e-3), 0.0, 0.0, 0.0],
+            [0.0, t, 0.0, 0.0],
+            [0.0, 0.0, -1.0, -1.0],
+            [0.0, 0.0, -SKY_NEAR, 0.0],
+        ];
+        mul(&proj, &view)
     }
     /// The ray through a viewport point given in 0..1 (x right, y down).
     pub fn ray(&self, u: f32, v: f32, aspect: f32) -> Ray {

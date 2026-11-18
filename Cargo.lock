@@ -5920,6 +5920,7 @@ dependencies = [
  "agent-proto",
  "anyhow",
  "app-icon",
+ "assets",
  "boot",
  "content",
  "dear-imgui-rs",
