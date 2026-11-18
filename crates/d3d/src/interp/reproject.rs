@@ -58,6 +58,24 @@ impl Screen {
             size,
         }
     }
+
+    /// Whether normalised device coordinates cover the whole target,
+    /// centred (within a pixel: D3D's half-pixel and super-sample biases).
+    /// A screen-space mapping (offset 0, scale 1) or a sub-viewport is not:
+    /// the warp would zoom and turn about the wrong point.
+    pub fn covers_target(&self) -> bool {
+        let [w, h] = self.size;
+        (self.scale[0] - w / 2.0).abs() <= 1.0
+            && (self.scale[1] + h / 2.0).abs() <= 1.0
+            && (self.offset[0] - w / 2.0).abs() <= 1.0
+            && (self.offset[1] - h / 2.0).abs() <= 1.0
+    }
+
+    /// The same mapping as `o` (within a hundredth of a pixel).
+    pub fn same(&self, o: &Screen) -> bool {
+        let close = |a: [f64; 2], b: [f64; 2]| (0..2).all(|i| (a[i] - b[i]).abs() <= 0.01);
+        close(self.scale, o.scale) && close(self.offset, o.offset) && self.size == o.size
+    }
 }
 
 type M3 = [[f64; 3]; 3];
