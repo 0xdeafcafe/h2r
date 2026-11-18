@@ -140,6 +140,9 @@ checks, in order:
 - sign-up;
 - a token-signed read (sign-in);
 - an event append, read back from the log;
+- the stream: a socket subscribed before the append receives the event live,
+  a replay from a position, a token-authed reader, a bad token closed with
+  4401, and a plain GET refused with 400;
 - warm timings;
 - with `--seed N`, 2N more events so a restart has a log to replay.
 
@@ -168,6 +171,52 @@ heavy with GameFrames, which are larger to decode. Read-model snapshots
 
 The hub reports its own start on the request that caused it, in a
 `server-timing: start;dur=<ms>, events;desc=<head>` header.
+
+## Slice 3 results
+
+These come from `smoke/run.sh 200` under local `wrangler dev`, as in slice 2.
+
+| What | Result |
+|---|---|
+| Open `/v1/stream` and get `caught_up` | 24 ms |
+| Append to the event reaching the subscribed socket | 23 ms, the same as the append's own round trip |
+| Replay from a position (one event, then `caught_up`) | 8 ms |
+| `?auth=1` with a fresh read token | let in; a bad token closes with 4401 |
+
+Read tokens are single-use, so a reader needs a fresh one for each socket.
+
+## The stream on the hub
+
+`live_server::stream` holds `/v1/stream` with no socket underneath it:
+- `StreamFilter` is the query string.
+- `StreamSession` turns what happens into messages for the reader (`Out`:
+  text, binary, or a close). The things that happen are: the reader being let
+  in, its auth message, a new event, a JSON frame, a packed tick, falling
+  behind, and a token running out.
+- `Resume` is a session's lasting state as plain data: the filter, the last
+  position the reader has, who it is and when its token ends.
+
+Two drivers run the session:
+- **axum** (`http::run_stream`), on a machine. It is one task per socket,
+  selecting over the socket, the feeds and the token deadline, as before.
+- **The hub** (`crates/live-worker/src/sockets.rs`).
+  - Each socket is accepted with `state.accept_web_socket`, and its `Resume`
+    is kept as the socket's attachment.
+  - One pump task fans the hub's feeds out to every session. Once a second it
+    closes expired tokens and readers that sent no auth message within 10 s.
+  - Reader messages come in through `websocket_message`.
+  - Opening or catching up a session awaits the store, and the pump does not
+    reach the session meanwhile. So before the session is handed back, it is
+    caught up again until it is level with the log (`settle`).
+  - After a wake (a new instance with the sockets still open), `adopt`
+    rebuilds each session from its attachment.
+
+**Hibernation is not reached yet.** The hub still runs timers: the
+dispatcher poll, the presence sweep, the packed tick, and now the pump's
+one-second check. A Durable Object with timers pending does not hibernate,
+so the wake path (`adopt`) is written and its data round trip is unit
+tested, but no real wake has been seen. Slice 4 moves the timers onto an
+alarm; then an idle hub can sleep, and a wake can be tested.
 
 ## Cost of the relay
 
@@ -203,9 +252,9 @@ large share of the day's requests.
    - Built with `worker-build`, run with `bunx wrangler@4 dev --local`.
    - [Settings](#settings) come from variables and secrets, and `CF-Connecting-IP` is trusted at the edge.
    - The smoke test passes, and the cold start is measured ([Slice 2 results](#slice-2-results)).
-3. **The event stream.**
-   - Hibernatable WebSockets on the hub.
-   - `run_stream`, `catch_up` and the frame feeds go behind a small socket trait, so axum's WebSocket and the object's share one implementation.
+3. **The event stream (done).**
+   - Hibernatable WebSockets on the hub ([The stream on the hub](#the-stream-on-the-hub)).
+   - One stream implementation, `live_server::stream::StreamSession`, run by axum's per-socket task and by the hub.
    - JSON and packed readers, auth messages and token expiry.
 4. **Ingest, timers and uploads.**
    - The game's ingest socket on the hub.

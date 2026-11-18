@@ -70,9 +70,11 @@ trap stop EXIT
 
 start first
 bun "$here/smoke/smoke.ts" "http://127.0.0.1:$port" --seed "$seed" | tee "$out/first.json"
+grep -q '"ok": true' "$out/first.json" || { echo "smoke test failed" >&2; exit 1; }
 stop
 start restart
 bun "$here/smoke/smoke.ts" "http://127.0.0.1:$port" --cold-only | tee "$out/restart.json"
+grep -q '"ok": true' "$out/restart.json" || { echo "smoke test failed after the restart" >&2; exit 1; }
 stop
 cp "$work/wrangler-first.log" "$work/wrangler-restart.log" "$out/"
 echo "results in $out" >&2
