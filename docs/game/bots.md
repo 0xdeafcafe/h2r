@@ -882,6 +882,60 @@ The roster is signed by the server like `MatchProposed`. A game record with
 bots in that match's roster, or in the `/games/bots` answer. A console
 cannot claim a human as a bot, or a bot as a human.
 
+### 9.4 Interface with ranks (answers to live-matchmaking.md §8.4)
+
+Ownership: this lane owns the bot accounts and their events (`POST
+/games/bots`, the roster, `bot: true` on a game's entries, the `0x000E`
+range); sbmm-ranked owns how bots are ranked and arbitration.
+
+1. **Marking a clanker hopper.** Not in the game's `0x614`-byte
+   descriptor: every byte there is a game field the validator
+   (`0x193560`) reads, and the game never needs to know. The mark is in
+   the server's hopper source, beside the descriptor it writes:
+   `clankers: Option<Clankers>` on the playlist, with
+   `Clankers { ranks_as: Option<u32> }`, where `ranks_as` is the playlist
+   id of the human hopper whose standing it shares (`None`: its own rank
+   playlist). The server serves the mark with the hopper list (per
+   descriptor index), and live-hle reads it for the menu row's filter
+   (§8.3) and for the search (§8.4).
+
+   **Disagreement, small:** §8.4 has the clanker hopper carry the *same*
+   descriptor playlist id (`+0x08`) as the human hopper. Two descriptors
+   with one playlist id in one file is untested against the validator and
+   the playlist UI (`0x65530`). With `ranks_as` the clanker hopper keeps an
+   id of its own, and the server answers its stat read (`GET
+   /v1/rank-stats` for that playlist id) with the `ranks_as` standing, so
+   the lobby shows the same rank either way. If a test of the validator
+   shows duplicate ids are fine, `ranks_as` can default to the
+   descriptor's own id and nothing else changes.
+2. **The read-model lookup.** A persistent bot is in many matches, so the
+   level a roster showed belongs to the rostering, not the bot. Two
+   lookups:
+   - `bot(xuid) -> Option<BotAccount { persistent: bool }>`: the server
+     issued this xuid as a bot (an account event `BotIssued` on
+     `account-<xuid>`, written by the server).
+   - `rostered(session_id, xuid) -> Option<Rostered { persistent, level:
+     u8, playlist: Option<u32> }>`: from `BotsRostered { session_id, host,
+     playlist?, bots: [{xuid, persistent, level}] }` on
+     `bots-<session_id>`, written by the server when it answers `POST
+     /games/bots` or proposes a Clankermatch. **The roster is keyed by the
+     session id** (the roster's `match_id` is the session id), so
+     `rank_game` finds it from `NewGame.session_id`, the same key
+     arbitration uses. `POST /games/bots` already requires the host's
+     session.
+3. **Agreed: ranking only reads the acceptance result.** The check runs
+   when a game record is taken in (§9.3): each `bot: true` entry must be
+   in that session's `BotsRostered`, and a rostered xuid cannot be claimed
+   as a human. A record that fails is refused whole, so `rank_game` only
+   ever sees accepted bot entries, and reads `rostered` for `persistent`
+   and `level`. Host-made xuids (`live_proto::bots::is_local_xuid`) are
+   refused in any record that reaches the server.
+
+Also agreed: `rank::bot_skill(level)` as the roster's `skill`, and
+`Ranks::nearest(playlist, level, n)` for choosing persistent bots, which
+the roster endpoint calls; gaps are made-up bots shown at the humans'
+mean level.
+
 ## 10. Stages
 
 Each stage ends in tests that can be run without the game, plus a short
