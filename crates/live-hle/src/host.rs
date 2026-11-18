@@ -131,6 +131,13 @@ impl Socket {
         s.set_int(SOL_SOCKET, 0x1022, 1)?; // SO_NOSIGPIPE
         Ok(s)
     }
+    /// Marks the socket's datagrams low delay (IP_TOS `0xb8`, DSCP EF):
+    /// Wi-Fi (WMM) puts them in its voice queue and routers that honour it
+    /// send them first.
+    pub fn low_delay(&self) -> io::Result<()> {
+        // IPPROTO_IP 0, IP_TOS 3 on both platforms.
+        self.set_int(0, 3, 0xb8)
+    }
     pub fn bind(&self, a: SocketAddrV4) -> io::Result<()> {
         let a = Address::new(a);
         // SAFETY: a is a live, initialized native sockaddr_in with the given size.

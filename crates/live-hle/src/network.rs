@@ -1,6 +1,6 @@
 //! Guest Winsock and secure-address translation. Copy inputs/check outputs under
 //! the guest lock, then release it before any host wait or network operation.
-use crate::{NetworkConfig, host, qos, qos_memory::QosMemory};
+use crate::{NetworkConfig, host, qos, qos_memory::QosMemory, traffic};
 use runtime::{Runtime, guest::Access};
 use std::{
     collections::BTreeMap,
@@ -352,8 +352,13 @@ impl Network {
                 if !matches!((datagram, a[2]), (true, 0 | 17 | 254) | (false, 0 | 6)) {
                     return Err(10043);
                 }
+                let native = host(host::Socket::new(datagram))?;
+                if datagram && traffic::low_delay() {
+                    // Best effort: a refusal leaves the default class.
+                    let _ = native.low_delay();
+                }
                 let socket = Arc::new(self::Socket {
-                    host: host(host::Socket::new(datagram))?,
+                    host: native,
                     protocol: a[2],
                     options: Mutex::default(),
                     guest_port: Mutex::new(0),
@@ -578,11 +583,15 @@ impl Network {
             }
             return Ok(data.len() as u32);
         }
-        Ok(host(
+        let sent = host(
             socket
                 .host
                 .send(&data, target.map(|p| self.target(p)), a[3] as i32),
-        )? as u32)
+        )?;
+        if socket.host.datagram {
+            traffic::sent(sent);
+        }
+        Ok(sent as u32)
     }
     fn recv(&self, op: Op, a: &[u32], rt: &Runtime) -> Result<u32> {
         let socket = self.socket(a[0])?;
@@ -604,15 +613,31 @@ impl Network {
         if a[2] == 0 && !socket.host.datagram {
             return Ok(0);
         }
-        let mut data = vec![
-            0;
-            if socket.host.datagram {
-                65536
-            } else {
-                a[2] as usize
-            }
-        ];
-        let (len, sender) = socket.host.recv(&mut data, a[3] as i32).map_err(|e| {
+        // A datagram is read whole (to report truncation) into a buffer
+        // kept per thread, not one allocated and zeroed per call: the game
+        // polls its sockets every frame and most polls find nothing.
+        let mut data = if socket.host.datagram {
+            traffic::take_buffer()
+        } else {
+            vec![0; a[2] as usize]
+        };
+        let got = socket.host.recv(&mut data, a[3] as i32);
+        let result = self.received(got, &data, &socket, a, rt, source);
+        if socket.host.datagram {
+            traffic::give_buffer(data);
+        }
+        result
+    }
+    fn received(
+        &self,
+        got: io::Result<(usize, SocketAddrV4)>,
+        data: &[u8],
+        socket: &Socket,
+        a: &[u32],
+        rt: &Runtime,
+        source: bool,
+    ) -> Result<u32> {
+        let (len, sender) = got.map_err(|e| {
             if e.kind() == io::ErrorKind::WouldBlock
                 && !socket.nonblocking.load(Ordering::Acquire)
                 && lock(&socket.options)
@@ -624,10 +649,13 @@ impl Network {
                 host::wsa(&e)
             }
         })?;
+        if socket.host.datagram {
+            traffic::received(len);
+        }
         let copy = len.min(a[2] as usize);
         write(rt, a[1], &data[..copy])?;
         if source {
-            let sender = self.source(sender, &socket);
+            let sender = self.source(sender, socket);
             write(rt, a[4], &address_bytes(sender))?;
             put_word(rt, a[5], 16)?;
         }
