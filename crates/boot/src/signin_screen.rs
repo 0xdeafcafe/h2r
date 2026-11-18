@@ -1023,6 +1023,18 @@ pub fn prompt_on(env: Option<&str>) -> bool {
     !matches!(env.map(str::trim), Some("0" | "off" | "false" | "no"))
 }
 
+/// The window the prompt opens in: the dialogs' (window kind 1, as the
+/// game's own dialogs open) with `H2_SIGNIN_DIALOG=1`, else the main
+/// menu's, as `0x149f1e` opens a screen. Off until a game run settles it
+/// (docs/game/ui-builder.md "The game run").
+pub fn window(env: Option<&str>) -> u32 {
+    use crate::ui_kit::dialog_tag::{DIALOG_WINDOW, MAIN_WINDOW};
+    match env.map(str::trim) {
+        Some("1" | "on" | "true" | "yes") => DIALOG_WINDOW,
+        _ => MAIN_WINDOW,
+    }
+}
+
 /// Registers the screen and its strings and wraps the logon's polling so a
 /// waiting sign-in opens it. Nothing without Live or a server.
 pub fn install(
@@ -1046,7 +1058,8 @@ pub fn install(
             Err(e) => eprintln!("signin prompt: {e}"),
         }
     }
-    wrap_continue(rt, rows, on)
+    let window = window(std::env::var("H2_SIGNIN_DIALOG").ok().as_deref());
+    wrap_continue(rt, rows, on, window)
 }
 
 /// The description block, moved by `H2_SIGNIN_TEXT_RECT` when it parses.
@@ -1068,7 +1081,12 @@ pub fn text_block(env: Option<&str>) -> TextBlock {
 /// Wraps the HLE's `XOnlineTaskContinue`: after each call, a sign-in that
 /// has just started waiting opens the prompt for its controller (or, with
 /// the prompt off, is cancelled).
-fn wrap_continue(rt: &Runtime, rows: Arc<SigninRows>, on: bool) -> anyhow::Result<bool> {
+fn wrap_continue(
+    rt: &Runtime,
+    rows: Arc<SigninRows>,
+    on: bool,
+    window: u32,
+) -> anyhow::Result<bool> {
     let hle = Arc::clone(&rows.hle);
     let Some(inner) = rt.edit_dispatch(|d| d.override_handler(TASK_CONTINUE)) else {
         eprintln!("signin prompt: no Live entry at {TASK_CONTINUE:#x}; not wrapped");
@@ -1089,8 +1107,10 @@ fn wrap_continue(rt: &Runtime, rows: Arc<SigninRows>, on: bool) -> anyhow::Resul
             }
             match list_class::loader_of(SCREEN) {
                 Some(loader) if done.kind == abi::RETURN && controller < 4 => {
-                    eprintln!("signin prompt: opening for controller {controller}");
-                    open_after(cpu, ctx, done, &rows, 1 << controller, loader)
+                    eprintln!(
+                        "signin prompt: opening for controller {controller} (window kind {window})"
+                    );
+                    open_after(cpu, ctx, done, &rows, 1 << controller, loader, window)
                 }
                 _ => {
                     eprintln!("signin prompt: its screen is off; the sign-in is cancelled");
@@ -1103,9 +1123,11 @@ fn wrap_continue(rt: &Runtime, rows: Arc<SigninRows>, on: bool) -> anyhow::Resul
     Ok(true)
 }
 
-/// After the wrapped call returned (`done`, EAX its result): calls
-/// `0x149f1e(mask, loader)` (stdcall, `ret 8`), then returns as `done`
-/// with EAX restored.
+/// After the wrapped call returned (`done`, EAX its result): opens the
+/// screen in `window`, then returns as `done` with EAX restored. The main
+/// menu's window is `0x149f1e(mask, loader)` (stdcall, `ret 8`); another
+/// (the dialogs') is a request of that kind on the stack handed to the
+/// loader (stdcall, `ret 4`), as the game's dialogs (`0x19b527`) do.
 fn open_after(
     cpu: &mut CpuAbi,
     ctx: &mut ExecCtx,
@@ -1113,6 +1135,7 @@ fn open_after(
     rows: &SigninRows,
     mask: u32,
     loader: u32,
+    window: u32,
 ) -> Result<TransferAbi, GuestFault> {
     let saved = *cpu;
     // The title and the first page are in place before the screen's pane
@@ -1127,18 +1150,23 @@ fn open_after(
             break;
         }
     }
-    cpu.esp -= 8;
-    m.set_u32(cpu.esp, mask)?;
-    m.set_u32(cpu.esp + 4, loader)?;
-    ctx.call_guest(
-        cpu,
-        &mut m,
-        engine::points::OPEN_SCREEN.base,
-        move |cpu, _| {
-            *cpu = saved;
-            Ok(done)
-        },
-    )
+    use crate::ui_kit::dialog_tag::{MAIN_WINDOW, REQUEST_SIZE, request};
+    let target = if window == MAIN_WINDOW {
+        cpu.esp -= 8;
+        m.set_u32(cpu.esp, mask)?;
+        m.set_u32(cpu.esp + 4, loader)?;
+        engine::points::OPEN_SCREEN.base
+    } else {
+        cpu.esp -= REQUEST_SIZE + 4;
+        let at = cpu.esp + 4;
+        m.write_bytes(at, &request(window, mask as u16, loader), 1)?;
+        m.set_u32(cpu.esp, at)?;
+        loader
+    };
+    ctx.call_guest(cpu, &mut m, target, move |cpu, _| {
+        *cpu = saved;
+        Ok(done)
+    })
 }
 
 #[cfg(test)]
@@ -1470,6 +1498,18 @@ mod tests {
         assert!(prompt_on(Some("1")));
         for off in ["0", "off", " false ", "no"] {
             assert!(!prompt_on(Some(off)));
+        }
+    }
+
+    #[test]
+    fn the_dialog_switch_picks_the_dialogs_window() {
+        use crate::ui_kit::dialog_tag::{DIALOG_WINDOW, MAIN_WINDOW};
+        assert_eq!(window(None), MAIN_WINDOW, "off until a game run settles it");
+        for off in ["0", "off", ""] {
+            assert_eq!(window(Some(off)), MAIN_WINDOW);
+        }
+        for on in ["1", " on ", "true"] {
+            assert_eq!(window(Some(on)), DIALOG_WINDOW);
         }
     }
 

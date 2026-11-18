@@ -1482,7 +1482,7 @@ Not established without a run:
 
 1. Xbox Live on the main menu lists "New Account". Pick it. Stderr:
    `live: New Account: asking in game for a gamertag on <url>` and
-   `signin prompt: opening for controller 0`.
+   `signin prompt: opening for controller 0 (window kind 5)`.
 2. The prompt reads "New Xbox Live account". Press A: `signin prompt:
    opening the keyboard for the Gamertag (context 8, controller 0)`; the
    game's keyboard opens, titled "Your gamertag", and the system keyboard
@@ -1504,7 +1504,7 @@ made on that server's web dashboard and none on this machine):
    prompt.
 2. Xbox Live on the main menu lists the gamertag; pick it. Stderr:
    `live: <tag> needs a code to sign in on <url>; asking in game`, then
-   `signin prompt: opening for controller 0`.
+   `signin prompt: opening for controller 0 (window kind 5)`.
 3. The prompt is drawn over the signing-in step, titled "Xbox Live
    sign-in", the row reading "Sign in as <tag>", the description the code
    page. If the description is off-screen, move it with

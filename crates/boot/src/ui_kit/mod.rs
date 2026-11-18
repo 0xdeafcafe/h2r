@@ -4,6 +4,8 @@
 //!
 //! - [`choice`]: a row of many choices over a setting ([`choice::ChoiceRow`]).
 //! - [`dialog`]: modal dialogs over the screen beneath ([`dialog::DialogSpec`]).
+//! - [`dialog_tag`]: a dialog's tag pieces and tag copy, and the request
+//!   that opens it as the game opens its dialogs.
 //! - [`ids`]: the one registry of string-id families, checked at compile
 //!   time.
 //! - [`input`]: events as inputs, named glyphs and legends, the opener's
@@ -18,6 +20,7 @@
 
 pub mod choice;
 pub mod dialog;
+pub mod dialog_tag;
 pub mod ids;
 pub mod input;
 pub mod layout;
