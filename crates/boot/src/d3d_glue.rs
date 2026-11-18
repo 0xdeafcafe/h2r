@@ -904,7 +904,11 @@ pub fn pipeline_render(i: Option<&Installed>) -> feature::pipeline_render::Pipel
         None => Vec::new(),
     };
     let allow = pipeline_allow(&entries);
-    feature::pipeline_render::PipelineRender::new().with_d3d(entries, allow, &[WATCH_OWNER])
+    // The push buffer and the device's surface scratch: the render's
+    // between its launch and its join, as the device is.
+    feature::pipeline_render::PipelineRender::new()
+        .with_d3d(entries, allow, &[WATCH_OWNER])
+        .render_owned(&[(PUSH_BASE, SCRATCH_BASE + 0x1000)])
 }
 
 /// The overrides the pipelined render thread may run besides those marked
