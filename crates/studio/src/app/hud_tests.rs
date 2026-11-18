@@ -109,7 +109,22 @@ fn field_panel_writes_are_hud_edits() {
     let (element, layout) = app.hud.fields.resolve(hud, &[(0x08, 2)]).unwrap();
     assert_eq!(element, at);
     let anchor = layout.fields.iter().find(|f| f.offset == 0x1c).unwrap();
-    assert_eq!((anchor.name.as_str(), anchor.named), ("anchor", true));
+    // Which layout came back, and what the built-in registry has there,
+    // when the name is not the definition's.
+    let builtin = tags::registry::Registry::builtin()
+        .group(map::FourCC(*b"nhdt"))
+        .and_then(|l| l.field_at(0x08))
+        .and_then(|f| match &f.kind {
+            tags::registry::Kind::Block(c) => Some((c.name.clone(), c.field_at(0x1c)?.name.clone())),
+            _ => None,
+        });
+    assert_eq!(
+        (anchor.name.as_str(), anchor.named),
+        ("anchor", true),
+        "layout {:?} of a tag of group {:?}; the built-in nhdt bitmap block: {builtin:?}",
+        layout.name,
+        app.hud.fields.tag(hud).map(|t| t.group)
+    );
     let write = |address: u32, bytes: Vec<u8>| {
         Action::HudWrite(TagWrite {
             tag: hud,

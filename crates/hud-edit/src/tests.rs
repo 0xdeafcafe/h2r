@@ -291,8 +291,19 @@ fn retail_huds_land_on_the_screen() {
     let hud = s.hud().unwrap();
     let shield = hud.widgets.iter().find(|w| w.key.kind == WidgetKind::Bitmap && w.special() == 5).unwrap();
     assert_eq!(rect(&p, 0, shield.key).pixels(), [47, 346, 175, 378]);
-    let sensor = hud.widgets.iter().find(|w| w.name == "motion_sensor").unwrap();
-    assert_eq!(rect(&p, 0, sensor.key).pixels(), [47, 360, 130, 443]);
+    // The motion tracker rim seen in a frame of a10 (x 47..129, y
+    // 360..442): some bitmap widget lands exactly there. Found by its
+    // place, not a name (the retail names are not ours to rely on).
+    let rects: Vec<_> = p
+        .placed
+        .iter()
+        .filter(|w| w.hud == 0 && w.key.kind == WidgetKind::Bitmap)
+        .filter_map(|w| Some((w.name.clone(), w.rect?.pixels())))
+        .collect();
+    assert!(
+        rects.iter().any(|(_, r)| *r == [47, 360, 130, 443]),
+        "no widget on the tracker's rectangle: {rects:?}"
+    );
     let ids: Vec<_> = s.huds.iter().map(|e| (e.id, e.name.clone())).collect();
     let mut drawn = 0;
     for (id, name) in ids {

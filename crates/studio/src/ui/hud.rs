@@ -74,19 +74,22 @@ fn heading(ui: &Ui, fonts: &Fonts, t: &str) {
     f.pop();
 }
 
-/// The outliner: the maps to open, the open map's HUDs by who uses them,
-/// and the HUD's widgets.
+/// The outliner: the map open (a combo of the source's maps and the
+/// packages, so the lists below keep the height), the open map's HUDs by
+/// who uses them, and the HUD's widgets.
 pub fn tree(ui: &Ui, app: &mut App, st: &mut HudUi, fonts: &Fonts, actions: &mut Vec<Action>) {
-    heading(ui, fonts, "Map");
     let opened = app.hud.opened.clone();
-    ui.input_text("##hud-filter", &mut st.filter)
-        .hint(format!("{} filter maps", icon::SEARCH))
-        .build();
-    let filter = st.filter.to_ascii_lowercase();
-    let keep = |s: &str| filter.is_empty() || s.to_ascii_lowercase().contains(&filter);
-    ui.child_window("##hud-maps").size([0.0, 110.0]).build(ui, || {
+    let shown = opened.clone().unwrap_or_else(|| "pick a map".to_owned());
+    ui.set_next_item_width(-1.0);
+    if let Some(_combo) = ui.begin_combo("##hud-map-combo", format!("{}  {shown}", icon::MAP)) {
+        ui.set_next_item_width(-1.0);
+        ui.input_text("##hud-filter", &mut st.filter)
+            .hint(format!("{} filter maps", icon::SEARCH))
+            .build();
+        let filter = st.filter.to_ascii_lowercase();
+        let keep = |s: &str| filter.is_empty() || s.to_ascii_lowercase().contains(&filter);
         if app.maps().is_empty() && app.packages().is_empty() {
-            ui.text_wrapped("Open a disc, a map or a folder of maps (File > Open).");
+            ui.text_disabled("Open a disc, a map or a folder of maps (File > Open).");
         }
         for name in app.maps().to_vec() {
             if !keep(&name) {
@@ -121,7 +124,7 @@ pub fn tree(ui: &Ui, app: &mut App, st: &mut HudUi, fonts: &Fonts, actions: &mut
                 actions.push(Action::HudOpenPackage(key.clone()));
             }
         }
-    });
+    }
     ui.separator();
     let Some(s) = app.hud.session.as_ref() else {
         ui.text_disabled("Pick a map to list its HUDs.");
@@ -131,7 +134,9 @@ pub fn tree(ui: &Ui, app: &mut App, st: &mut HudUi, fonts: &Fonts, actions: &mut
     let current = s.current;
     let edited = s.edited();
     let mut last = "";
-    ui.child_window("##hud-list").size([0.0, 140.0]).build(ui, || {
+    // A third of what is left, the rest for the widgets.
+    let list = (ui.content_region_avail()[1] / 3.0).clamp(48.0, 220.0);
+    ui.child_window("##hud-list").size([0.0, list]).build(ui, || {
         for e in &s.huds {
             if e.category() != last {
                 last = e.category();

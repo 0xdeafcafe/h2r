@@ -293,4 +293,4 @@ detail hopper-file-menu --tool playlists --hopper default --playlist 2 --do 'cli
 ## HUD
 
 # Lockout's Master Chief HUD with the shield meter selected.
-shot hud-masterchief --hud-map lockout --hud masterchief --hud-widget shield_meter
+shot hud-masterchief --hud-map lockout --hud masterchief

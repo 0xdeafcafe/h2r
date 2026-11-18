@@ -908,13 +908,13 @@ the map. Use it when something on a HUD sits in the wrong place, such as
 a converted Halo 1 map's shield bar over its health bar or a grenade
 count spilling out of its box.
 
-![The HUD tool on Lockout: the Master Chief's HUD drawn at 640 by 480 with the HUD frame in green and the widgets outlined, the shield meter selected with its fields in the inspector](../images/editor/hud-masterchief.jpg)
+![The HUD tool on Lockout: the Master Chief's HUD drawn at 640 by 480 with the HUD frame in green and the widgets outlined and the checks in the inspector](../images/editor/hud-masterchief.jpg)
 
 - **HUDs** (left):
-  - **Map**: the maps of the disc or folder you opened, then your
-    packages under the data folder, among them the converted Halo 1 maps
-    (a mountain). Click one to open it in the HUD tool. Type in the
-    filter to find one.
+  - **Map** (the menu at the top): the maps of the disc or folder you
+    opened, then your packages under the data folder, among them the
+    converted Halo 1 maps (a mountain). Pick one to open it in the HUD
+    tool. Type in the filter at the top of the menu to find one.
   - **HUDs**: every HUD of that map, grouped by who uses it: players and
     bipeds, weapons, vehicles, the globals, and the converted Halo 1
     HUDs. Hover one to see who names it. Click one to show it. A `*`
@@ -974,11 +974,11 @@ count spilling out of its box.
 
 What the picture does not show: widgets' animations and flashes, the
 shaders' colours (art is drawn in its own colours, text in light blue),
-and text other than numbers (a text shows its string's name, such as
-`<frag_count>`).
+and text other than numbers (a text shows its string ID's name in angle
+brackets).
 
 To open the editor straight on a HUD: `h2-editor --hud-map lockout --hud
-masterchief --hud-widget shield_meter`.
+masterchief`; add `--hud-widget <name>` to select a widget by its name.
 
 ## 9. Tags: every field of a tag
 

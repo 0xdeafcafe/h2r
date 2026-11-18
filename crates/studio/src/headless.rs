@@ -596,7 +596,7 @@ mod tests {
     }
 
     /// The HUD tool through its widgets: pick the invented map in the
-    /// outliner, the stray widget in the list, then drag it on the picture
+    /// outliner's map combo, the stray widget in the list, then drag it on the picture
     /// by 20 HUD pixels. One undo step, its offset moved by the drag, and
     /// the checks still find it. Skipped without a wgpu adapter.
     #[test]
@@ -617,6 +617,7 @@ mod tests {
         app.dispatch(Action::SetTool(ToolKind::Hud));
         h.frames(&mut app, 3).unwrap();
         let click = |t: &str| Step::Click(t.into(), Button::Left);
+        h.step(&mut app, &click("##hud-map-combo")).unwrap();
         h.step(&mut app, &click("##hud-map-hudtest")).unwrap();
         h.frames(&mut app, 2).unwrap();
         assert!(app.hud.session.is_some(), "the map opened");
@@ -624,21 +625,7 @@ mod tests {
             kind: WidgetKind::Bitmap,
             index: 2,
         };
-        let target = h.scene.find("##hud-w-Bitmap-2");
         h.step(&mut app, &click("##hud-w-Bitmap-2")).unwrap();
-        if app.hud.selected != Some(stray) {
-            // Where the click went, for the failure's report.
-            eprintln!("target {target:?}");
-            for w in &h.scene.windows {
-                eprintln!("window {} {:?}", w.name, w.rect);
-            }
-            for i in h.scene.items.iter().filter(|i| i.label.contains("hud-")) {
-                eprintln!("item {} in {} {:?}", i.label, i.window, i.rect);
-            }
-            for l in app.log().iter().rev().take(5) {
-                eprintln!("log {:?}", l.status);
-            }
-        }
         assert_eq!(app.hud.selected, Some(stray));
         let (origin, zoom) = h.studio.hud.shown.expect("the picture is shown");
         // The stray's middle (88..152, 396..412), then 20 HUD pixels right.

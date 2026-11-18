@@ -8,7 +8,7 @@
 group nhdt 0x28 align 4
   0x0 unknown 0x8
   0x8 block bitmap_widgets 0x64 align 4 -- E 0x0013a532: +0x08 count, +0x0c address; drawn by 0x0022aff1
-    0x0 string name -- V names such as shield_meter in retail HUDs; nothing found reads it in the draw
+    0x0 string name -- D the widget's name, a string ID; nothing found reads it in the draw
     0x4 u8 input_1 -- E 0x0013ad48: the HUD input the widget's shader reads as hud_input1 (16 shield, 17 body, 20 and 21 grenade counts, 0x31 heat, 0x36 rounds, 0x38 battery)
     0x5 u8 input_2 -- E 0x0013ad48: hud_input2
     0x6 u8 input_3 -- E 0x0013ad48: hud_input3
@@ -60,7 +60,7 @@ group nhdt 0x28 align 4
     0x60 u16 special -- E 0x0022b2d0: 5 the shield meter (fills by the shield)
     0x62 unknown 0x2
   0x10 block text_widgets 0x54 align 4 -- E 0x0013a532: +0x10 count, +0x14 address; drawn by 0x0022aa16
-    0x0 string name -- V names in retail HUDs; nothing found reads it in the draw
+    0x0 string name -- D the widget's name, a string ID; nothing found reads it in the draw
     0x4 u8 input_1 -- E 0x0013ad48: the HUD input a number shows
     0x5 u8 input_2 -- E 0x0013ad48
     0x6 u8 input_3 -- E 0x0013ad48
