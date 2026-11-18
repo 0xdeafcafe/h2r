@@ -719,7 +719,7 @@ fn read_source(path: &Path, map: Option<&str>) -> Result<(Vec<u8>, H1Map)> {
 }
 
 /// A Halo 2 map's bytes from the disc.
-fn read_h2_map(disc: &Path, name: &str) -> Result<Vec<u8>> {
+pub(crate) fn read_h2_map(disc: &Path, name: &str) -> Result<Vec<u8>> {
     crate::safe_out::protect(disc);
     let f = File::open(disc).with_context(|| format!("opening {}", disc.display()))?;
     let mut iso = Xiso::open(BufReader::new(f))?;
@@ -924,10 +924,10 @@ pub(crate) fn h2_base(disc: &Path, name: &str) -> Result<map::Map<Cursor<Vec<u8>
 
 /// The first step of a multiplayer conversion: `h1` (whose file bytes are
 /// `file`) onto `base` in `sandbox`.
-pub(crate) fn prepare_mp(
+pub(crate) fn prepare_mp<R: Read + Seek>(
     h1: &H1Map,
     file: &[u8],
-    base: &mut map::Map<Cursor<Vec<u8>>>,
+    base: &mut map::Map<R>,
     base_name: &str,
     sandbox: Sandbox,
 ) -> Result<h1convert::convert::Prepared> {

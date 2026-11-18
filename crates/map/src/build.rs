@@ -376,7 +376,11 @@ pub struct TagSet {
     /// Group hierarchy table. Every tag's group must be declared.
     pub groups: Vec<TagGroup>,
     /// String-ID table in index order; `None` keeps a missing entry.
+    /// [`TagSet::intern`] keeps an index of it, which follows entries
+    /// added or the table replaced, not an entry changed in place.
     pub strings: Vec<Option<String>>,
+    /// [`TagSet::intern`]'s index of `strings`.
+    strings_index: StringsIndex,
     /// Tag-index slots in order.
     pub slots: Vec<Slot>,
     /// Root scenario datum (`scnr`).
@@ -490,6 +494,7 @@ impl TagSet {
             scenario_path: scenario_path.to_owned(),
             groups: Vec::new(),
             strings: Vec::new(),
+            strings_index: StringsIndex::default(),
             slots: Vec::new(),
             scenario: TagId::NULL,
             globals: TagId::NULL,
@@ -561,7 +566,7 @@ impl TagSet {
     }
     /// The string ID for `value`, adding it to the table if needed.
     pub fn intern(&mut self, value: &str) -> Result<u32> {
-        let (index, _) = intern(&mut self.strings, &mut HashMap::new(), value)?;
+        let index = self.strings_index.intern(&mut self.strings, value)?;
         string_id(index, value)
     }
     /// Add a raw resource to be placed in this map.
@@ -713,6 +718,7 @@ impl TagSet {
             scenario_path: h.scenario_path.clone(),
             groups,
             strings: map.strings().to_vec(),
+            strings_index: StringsIndex::default(),
             slots,
             scenario,
             globals,
@@ -787,6 +793,69 @@ pub fn string_id(index: usize, value: &str) -> Result<u32> {
     let len = u8::try_from(value.len()).map_err(|_| Error::Invalid("string ID over 255 bytes"))?;
     Ok(u32::from(len) << 24 | index as u32)
 }
+/// The first index of each string in a [`TagSet`]'s table, kept between
+/// [`TagSet::intern`] calls (built afresh each call, a level's tens of
+/// thousands of strings made every call a pass over the table). It follows
+/// the table: entries added after it are indexed when next asked, and a
+/// table replaced (another buffer, or shorter) is indexed again.
+#[derive(Default)]
+struct StringsIndex {
+    lookup: HashMap<String, usize>,
+    /// How many entries of the table are in `lookup`.
+    indexed: usize,
+    /// The table's buffer when last indexed.
+    buffer: usize,
+}
+
+impl StringsIndex {
+    fn intern(&mut self, strings: &mut Vec<Option<String>>, value: &str) -> Result<usize> {
+        let buffer = strings.as_ptr() as usize;
+        if buffer != self.buffer || strings.len() < self.indexed {
+            self.lookup.clear();
+            self.indexed = 0;
+        }
+        for (i, s) in strings.iter().enumerate().skip(self.indexed) {
+            if let Some(s) = s {
+                self.lookup.entry(s.clone()).or_insert(i);
+            }
+        }
+        self.indexed = strings.len();
+        // An entry changed in place would make a stale hit: checked.
+        let (index, _) = match self.lookup.get(value) {
+            Some(&i) if strings.get(i).and_then(|s| s.as_deref()) != Some(value) => {
+                let mut fresh = HashMap::new();
+                let r = intern(strings, &mut fresh, value)?;
+                self.lookup = fresh;
+                r
+            }
+            _ => intern(strings, &mut self.lookup, value)?,
+        };
+        self.indexed = strings.len();
+        self.buffer = strings.as_ptr() as usize;
+        Ok(index)
+    }
+}
+
+/// A copy of a set indexes its own table when first asked.
+impl Clone for StringsIndex {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+/// Sets compare and print by their contents, not the index.
+impl PartialEq for StringsIndex {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl std::fmt::Debug for StringsIndex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("StringsIndex")
+    }
+}
+
 fn intern(
     strings: &mut Vec<Option<String>>,
     lookup: &mut HashMap<String, usize>,

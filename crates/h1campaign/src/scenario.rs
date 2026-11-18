@@ -928,20 +928,22 @@ pub fn write(
             // Device groups are written with the scripts' level data;
             // without them a placement's group index would dangle.
             let groups = opts.scripts.is_some() && !lean.leaves_out(crate::Lean::LevelData);
-            place_objects(
-                h1,
-                set,
-                b,
-                &mut root,
-                rep,
-                &mut report.dropped,
-                groups,
-                opts.devices,
-                opts.rebuild_bipeds,
-                dialogue,
-                opts.assets,
-                &mut aliases,
-            )?
+            h1map::phase::time("objects", || {
+                place_objects(
+                    h1,
+                    set,
+                    b,
+                    &mut root,
+                    rep,
+                    &mut report.dropped,
+                    groups,
+                    opts.devices,
+                    opts.rebuild_bipeds,
+                    dialogue,
+                    opts.assets,
+                    &mut aliases,
+                )
+            })?
         }
         None => HashMap::new(),
     };
@@ -1064,7 +1066,9 @@ pub fn write(
                     && named.contains(&format!("{encounter}/{}", q.name).to_ascii_lowercase()))
         });
     }
-    let plan = h1ai::convert::convert(&ai_src, &Default::default());
+    let plan = h1map::phase::time("ai", || {
+        h1ai::convert::convert(&ai_src, &Default::default())
+    });
     if plan.ai.squads.len() > MAX_SQUADS || plan.ai.squad_groups.len() > MAX_SQUAD_GROUPS {
         return Err(invalid(format!(
             "ai: {} squads and {} squad groups, the engine holds {MAX_SQUADS} and {MAX_SQUAD_GROUPS}",
@@ -1154,6 +1158,7 @@ pub fn write(
             } else {
                 Vec::new()
             };
+            let _scripts = h1map::phase::start("scripts");
             rep.scripts = Some(install_scripts(
                 h1,
                 s,
