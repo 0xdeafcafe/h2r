@@ -6,7 +6,7 @@ Status: phase 1 built ([below](#phase-1-what-was-built)): the socket,
 `profile.capture` built too ([below](#phase-3-and-4-what-was-built)).
 Phase 5 ([plan and what was built](#phase-5-testing-in-the-lightest-way-plan)):
 `render.frame`, `render.stats`, spike causes, `profile.fallbacks`,
-`load.timeline` and `h2 testmap`.
+`load.timeline`, `h2 testmap` and `h2 agent run`.
 Everything else on this page is design; its Rust and JSON blocks are
 sketches, not code that compiles. The front end is the `h2 agent` CLI
 only: the MCP server is dropped (decided 2026-11-17).
@@ -743,7 +743,7 @@ a separate effort; this phase leaves their names free and builds neither.
 | Features | `features.list` (the plan text) | state as data; setting a switch live | `features.list` grows `{name, on, sim, live}` per switch; a `features.set` for the `Host`/`View` switches whose hooks read a flag each call, and for the rest the reason a restart is needed (the switch places or removes hooks at build) |
 | Loading | `present N: last 100 at X fps` lines; `read_bytes` per frame | a load's timeline; stalls; loading a named level or BSP | `load.timeline` (built: stall and settle with bytes, uploads, compiles, phase times); seeks and cache hits need kernel I/O counters (later); `load.level` needs a runtime level switch (the game's own map change, through `hs.eval` once it exists) |
 | Editing, test maps | `scenario-edit` (placements, undo, save), `h2-editor`, `h2 map testbuild` | a scripted, headless way to make a small test map | `h2 testmap`: a JSON edit script (clear blocks, keep, add, set, remove) over `scenario-edit`, saved to a new `.map` (built, on disk only) |
-| Lightest testing | unit tests over synthetic data; `h2 agent -` scripts | assertions; one call that runs a scenario and returns a verdict | `h2 agent run script.txt`: the `-` script with `expect` lines (JSON-pointer comparisons on the last answer) and one JSON verdict with each call's timing (next) |
+| Lightest testing | unit tests over synthetic data; `h2 agent -` scripts | assertions; one call that runs a scenario and returns a verdict | `h2 agent run script.txt`: the `-` script with `expect` lines (JSON-pointer comparisons on the last answer) and one JSON verdict with each call's timing (built) |
 
 What to reach for first, cheapest first:
 
@@ -900,6 +900,34 @@ The user or coordinator loads the result (`H2_MAP_DIR`); agents don't.
 Not covered: AI (squads and their spawn points aren't in the editor's
 blocks yet), and tag references other than through a palette index.
 Live edits in a running game are the separate `edit.*` effort.
+
+### Scripted scenarios with a verdict
+
+```sh
+cat > grenade.txt <<'X'
+wait {"phase":"gameplay","map_ticks":30}
+expect /at/phase == "gameplay"
+claim
+press rt 100
+capture 90
+expect /over_budget <= 2
+expect /causes missing
+release
+X
+h2 agent run grenade.txt          # one JSON verdict; exit 1 unless it passed
+```
+
+`h2 agent run <script|->` (`crates/cli/src/agent_run.rs`): the `h2 agent
+-` script on one connection, plus `expect <pointer> <op> [JSON]` on the
+last answer (a JSON pointer; ops `==`, `!=`, `<`, `<=`, `>`, `>=` on
+numbers, `contains` for a substring, an array element or an object key,
+`exists`, `missing`) and `keep` (put the last answer in the verdict).
+The verdict is `{"pass", "failed", "ms", "calls": [{line, call, ms, ok,
+error}], "expects": [{line, expect, want, pass, got}], "kept",
+"stopped"}`. A failed expect is recorded and the script goes on; a failed
+call stops it. Answers aren't printed except kept ones, so a long
+scenario costs a few lines of context. Tested with a fake caller; not run
+against the game.
 
 Not built in phase 5 so far: per-subsystem guest time (engine-phase
 spans), A/B of feature sets, features set live, kernel I/O seeks and

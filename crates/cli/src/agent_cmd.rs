@@ -15,6 +15,9 @@ const USAGE: &str = "usage:
   h2 agent <call> [args] [--socket PATH|tcp://HOST:PORT] [--xbox [HOST]] [--timeout SECONDS]
   h2 agent - [--socket PATH]          calls from stdin, one per line, on one connection
   h2 agent watch [phase map bsp pause] print events until the game exits
+  h2 agent run <script|-> [--socket PATH]  a `-` script with `expect <pointer> <op>
+                                      [JSON]` and `keep` lines, answered as one
+                                      JSON verdict; exits 1 unless it passed
 
 A call is a method and JSON params (`session.wait '{\"until\":{\"phase\":\"gameplay\"}}'`)
 or a short form:
@@ -125,6 +128,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     match first.as_str() {
         "-" => script(&mut c),
         "watch" => watch(&mut c, &rest[1..]),
+        "run" => run_script(&mut c, &rest[1..]),
         "frame" => {
             let v = frame(&mut c, &rest)?;
             println!("{}", serde_json::to_string_pretty(&v)?);
@@ -206,6 +210,43 @@ fn script(c: &mut Client) -> Result<()> {
             call(c, &m, p)?
         };
         println!("{}", serde_json::to_string(&v)?);
+    }
+    Ok(())
+}
+
+/// The words of a script line (for `agent_run`).
+pub(crate) fn split_words(line: &str) -> Result<Vec<String>> {
+    split(line)
+}
+
+/// `h2 agent run`: the script, then its verdict.
+fn run_script(c: &mut Client, args: &[String]) -> Result<()> {
+    let [path] = args else {
+        bail!("run needs one script file (or - for stdin)")
+    };
+    let text = if path == "-" {
+        std::io::read_to_string(std::io::stdin())?
+    } else {
+        std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?
+    };
+    let lines = crate::agent_run::parse(&text, split)?;
+    let verdict = crate::agent_run::execute(
+        &lines,
+        |words| {
+            if words[0] == "frame" {
+                return frame(c, words).map_err(|e| format!("{e:#}"));
+            }
+            let (m, p) = parse_call(words).map_err(|e| format!("{e:#}"))?;
+            c.call(&m, p).map_err(|e| match e {
+                CallError::Rpc(e) => serde_json::to_string(&e).unwrap_or_default(),
+                e => format!("{m}: {e}"),
+            })
+        },
+        |ms| std::thread::sleep(Duration::from_millis(ms)),
+    );
+    println!("{}", serde_json::to_string_pretty(&verdict)?);
+    if verdict["pass"] != true {
+        std::process::exit(1);
     }
     Ok(())
 }

@@ -7,6 +7,8 @@ use xiso::Xiso;
 
 #[cfg(unix)]
 mod agent_cmd;
+#[cfg(unix)]
+mod agent_run;
 mod testmap_cmd;
 mod anim;
 mod bitmap;
