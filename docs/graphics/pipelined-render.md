@@ -947,6 +947,25 @@ call; `the frame wait and the launch` covers the launch's counter writes;
 copy, push and flush` are merges of the feature's. It is the switch that
 settles whether a bad global came from a merge.
 
+From the first check on, the watched words' pages also carry a write trap
+on live memory (`Guest::set_trap_focus`, `crates/runtime/src/trap.rs`):
+every write over a watched word through the checked path prints at once
+`trap: focus <word> = <value> written by pc <pc> (<addr>+<len>, thread
+<guest thread>, hle <handler>, host thread <name>)` (400 lines at most),
+so a write in the middle of a frame that is followed by a crash before
+the next check is still named. `pc 0` is the host (HLE, a Rust port);
+`hle` is then the kernel export or override running. Not seen: raw
+physical writers (the feature's merges, which the step lines cover). The
+trapped pages stay on the slow path for the rest of the run.
+
+Run 7 (2026-11-18) had `0x00485a80 = 0x804d9f58` at every check while the
+game thread faulted at `0x1958f` with `edx = 0xfbdc19a8`, which `mov
+edx,[0x485A80]` at `0x19585` loaded in the same serial frame, the first
+after 6 pipelined ones (no other branch reaches `0x19585..0x19599`; the
+jump table at `0x19b68` enters the case at `0x19581`). So the word was
+written in that frame before the read and the crash came before the next
+check: the focus trap names that write.
+
 **Tests.** `crates/feature/tests/pipeline_render.rs`: a synthetic render
 front-end (a Rust function registered as generated code with resume
 points) and sim, run serially and pipelined over 120 rounds

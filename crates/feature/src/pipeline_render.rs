@@ -364,6 +364,8 @@ struct Inner {
     /// printed.
     watched: Vec<Option<Watched>>,
     watch_lines: u32,
+    /// The watched words' write trap is set on live memory.
+    focused: bool,
 }
 
 /// Overrides the render thread may run besides the D3D layer's.
@@ -448,6 +450,7 @@ impl PipelineRender {
                     pipelining: false,
                     watched: Vec::new(),
                     watch_lines: 0,
+                    focused: false,
                 }),
             }),
         }
@@ -1725,7 +1728,14 @@ fn watch_now(me: &Shared, rt: &Runtime, stage: &str) {
         return;
     }
     let mut inner = me.lock();
-    check_watch(me, &mut inner, &rt.memory(), stage);
+    let mut g = rt.memory();
+    if !inner.focused {
+        // From here every write over a watched word is printed with its
+        // pc and thread as it happens (`trap: focus ...`).
+        inner.focused = true;
+        g.set_trap_focus(&me.watch);
+    }
+    check_watch(me, &mut inner, &g, stage);
 }
 
 fn maybe_print(me: &Shared) {
