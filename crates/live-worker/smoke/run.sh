@@ -4,7 +4,10 @@
 # (smoke.ts). The cold start is measured twice: on an empty log, and after
 # a restart with the log `--seed` grew.
 #
-#   crates/live-worker/smoke/run.sh [SEED_PAIRS] [OUT_DIR]
+#   [WAKE=S] crates/live-worker/smoke/run.sh [SEED_PAIRS] [OUT_DIR]
+#
+# WAKE=S: also idle S seconds with a socket open, and check that the hub
+# hibernated and woke (smoke.ts, step 8).
 #
 # Needs build/ from `worker-build --release` in crates/live-worker. Keeps
 # its state (the hub's storage, a dev server key) under
@@ -25,6 +28,9 @@ if [ ! -f "$work/.dev.vars" ]; then
     printf 'H2_LIVE_SERVER_KEY=%s\n' "$key" > "$work/.dev.vars"
     chmod 600 "$work/.dev.vars"
 fi
+# A fresh admin gamertag each run: the state persists, and the smoke test
+# signs up as the admin to publish a title file.
+admin=SmokeA$(openssl rand -hex 3)
 cat > "$work/wrangler.toml" <<EOF
 name = "h2-live-dev"
 main = "$here/build/index.js"
@@ -33,7 +39,7 @@ compatibility_date = "2026-11-01"
 [vars]
 H2_LIVE_ID = "live.test"
 H2_LIVE_PUBLIC_URL = "http://127.0.0.1:$port"
-H2_LIVE_ADMINS = "SmokeAdmin"
+H2_LIVE_ADMINS = "$admin"
 
 [[r2_buckets]]
 binding = "BLOBS"
@@ -69,7 +75,7 @@ stop() {
 trap stop EXIT
 
 start first
-bun "$here/smoke/smoke.ts" "http://127.0.0.1:$port" --seed "$seed" | tee "$out/first.json"
+bun "$here/smoke/smoke.ts" "http://127.0.0.1:$port" --seed "$seed" --wake "${WAKE:-0}" --admin "$admin" | tee "$out/first.json"
 grep -q '"ok": true' "$out/first.json" || { echo "smoke test failed" >&2; exit 1; }
 stop
 start restart

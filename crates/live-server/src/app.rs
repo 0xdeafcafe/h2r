@@ -401,6 +401,19 @@ fn validate(state: &State, body: &EventBody) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// Who runs the server's timed work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Timers {
+    /// The server spawns its own loops: the dispatcher's poll, the
+    /// managers' sweep every `sweep_every`, the packed tick.
+    Spawned,
+    /// Nothing runs on a timer. The host calls [`Live::sweep`] by
+    /// [`Live::sweep_due`] and [`Live::publish_packed`] every
+    /// [`crate::packed::TICK`] while [`Live::packed_active`]: a Durable
+    /// Object, with an alarm, so an idle one can hibernate.
+    Driven,
+}
+
 impl Live {
     /// Starts the dispatcher and waits until the read model has replayed
     /// the whole log.
@@ -408,6 +421,16 @@ impl Live {
         store: Arc<dyn EventStore>,
         identity: ServerIdentity,
         policy: Policy,
+    ) -> anyhow::Result<Arc<Self>> {
+        Self::start_with(store, identity, policy, Timers::Spawned).await
+    }
+
+    /// [`Live::start`], with the timed work run as `timers` says.
+    pub async fn start_with(
+        store: Arc<dyn EventStore>,
+        identity: ServerIdentity,
+        policy: Policy,
+        timers: Timers,
     ) -> anyhow::Result<Arc<Self>> {
         let model = Arc::new(Model::default());
         let admins = Arc::new(crate::admin::Admins::new(policy.admins.clone()));
@@ -432,7 +455,8 @@ impl Live {
         let feed = dispatcher.feed();
         let wake = store.wake().await?;
         let head = store.head().await?;
-        let dispatcher = crate::rt::spawn(dispatcher.run(wake));
+        let poll = (timers == Timers::Spawned).then_some(crate::dispatch::POLL);
+        let dispatcher = crate::rt::spawn(dispatcher.run_with(wake, poll));
         let live = Live {
             store,
             model,
@@ -466,6 +490,9 @@ impl Live {
         };
         applied.wait_for(|p| *p >= head).await?;
         let live = Arc::new(live);
+        if timers == Timers::Driven {
+            return Ok(live);
+        }
         // The presence and game managers; they stop with the service.
         let weak = Arc::downgrade(&live);
         let every = live.policy.sweep_every;
@@ -535,15 +562,6 @@ impl Live {
 
     pub fn published_art(&self) -> Option<&crate::art::PublishedArt> {
         self.published_art.get()
-    }
-
-    /// A new temporary file's path for an upload on its way into the blob
-    /// store: `<data>/tmp/<random>` (beside a directory store, so the
-    /// upload is renamed into place, not copied). The directory is not
-    /// made here.
-    pub(crate) fn upload_file(&self) -> Option<std::path::PathBuf> {
-        self.data_dir()
-            .map(|d| d.join("tmp").join(live_proto::sign::random_id()))
     }
 
     pub fn data_dir(&self) -> Option<&std::path::Path> {

@@ -196,7 +196,8 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
             post(crate::admin::grant_admin).delete(crate::admin::revoke_admin),
         )
         .layer(DefaultBodyLimit::max(MAX_TITLE_FILE));
-    // Uploads stream to disk under their own caps (ContentLimits).
+    // Uploads stream into the blob store under their own caps
+    // (ContentLimits, StorageLimits).
     let uploads = Router::new()
         .route(
             "/v1/content/{sha256}",
@@ -618,15 +619,6 @@ async fn stream(
 }
 
 #[cfg(feature = "native")]
-pub(crate) async fn send_json<T: serde::Serialize>(
-    socket: &mut WebSocket,
-    msg: &T,
-) -> Result<(), axum::Error> {
-    let text = serde_json::to_string(msg).expect("serializes");
-    socket.send(Message::Text(text.into())).await
-}
-
-#[cfg(feature = "native")]
 pub(crate) async fn close(socket: &mut WebSocket, code: u16, reason: &str) {
     let frame = CloseFrame {
         code,
@@ -648,7 +640,7 @@ pub(crate) fn auth_message(live: &Live, text: &str, method: &str) -> Result<i64,
 
 /// Sends a session's messages. `Ok(false)`: it closed the socket.
 #[cfg(feature = "native")]
-async fn send_all(socket: &mut WebSocket, out: Vec<Out>) -> Result<bool, String> {
+pub(crate) async fn send_all(socket: &mut WebSocket, out: Vec<Out>) -> Result<bool, String> {
     for o in out {
         if !send_out(socket, o).await? {
             return Ok(false);

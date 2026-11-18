@@ -24,7 +24,7 @@ without the crate's `native` feature, so the routes are not forked.
 | Game ingest (`/v1/ingest`) | `LiveHub` | Frames feed the read model and the stream. A per-game object is the fallback if one hub's CPU is not enough. |
 | Co-op relay (`/v1/sessions/{id}/relay`) | `CoopRelay`, one object per session id | Its traffic stays off the hub's thread, and the object can sit near the players (location hint). |
 | Content, cloud saves, published art | R2 bucket `BLOBS` (published art in a public bucket) | `BlobStore` over R2 (`crates/live-worker/src/r2.rs`). |
-| Title files | The hub's `blobs` table today; move to R2 | A Durable Object's SQLite row holds at most 2 MB, but a title file may be up to 2 MiB (`MAX_TITLE_FILE`). |
+| Title files | R2, under `title/<sha256>` (`live_server::titleblobs`) | A Durable Object's SQLite row holds at most 2 MB, but a title file may be up to 2 MiB (`MAX_TITLE_FILE`). Ones already in the log's `blobs` table are still read from there. |
 | Server key | Worker secret `H2_LIVE_SERVER_KEY` | `ServerIdentity::from_secret`. The id is the variable `H2_LIVE_ID` ([Settings](#settings)). |
 | Web app | Workers static assets (`web/dist`) | Served by Cloudflare ahead of the Worker; it is immutable and cached at the edge. |
 
@@ -143,6 +143,9 @@ checks, in order:
 - the stream: a socket subscribed before the append receives the event live,
   a replay from a position, a token-authed reader, a bad token closed with
   4401, and a plain GET refused with 400;
+- with `WAKE=S`, a hibernation wake with a socket open;
+- game ingest, to JSON and packed readers;
+- R2: a multipart content upload, a cloud save and a 2 MiB title file;
 - warm timings;
 - with `--seed N`, 2N more events so a restart has a log to replay.
 
@@ -185,6 +188,22 @@ These come from `smoke/run.sh 200` under local `wrangler dev`, as in slice 2.
 
 Read tokens are single-use, so a reader needs a fresh one for each socket.
 
+## Slice 4 results
+
+These come from `WAKE=15 smoke/run.sh 20` under local `wrangler dev`, with
+R2 simulated locally by miniflare.
+
+| What | Result |
+|---|---|
+| Hibernation wake | With a stream socket open and 15 s idle, the next request found a new hub (`start;dur=7`), and the socket got the next event, its session rebuilt from the attachment |
+| Ingest | A game started, a frame sent on `/v1/ingest`, the frame reached a JSON reader and a packed reader (the packed tick on demand): 79 ms in all |
+| Content upload, 9 MiB | 636 ms streamed into a two-part upload; read back whole in 541 ms; a body that does not hash to its path is refused and not stored |
+| Cloud save, 300 KiB | 62 ms to write and read back |
+| Title file, 2 MiB | 243 ms to publish and read back (too big for a SQLite row) |
+
+`run.sh` makes a fresh admin gamertag each run (`H2_LIVE_ADMINS`); the
+smoke test signs up as it to publish the title file.
+
 ## The stream on the hub
 
 `live_server::stream` holds `/v1/stream` with no socket underneath it:
@@ -202,8 +221,9 @@ Two drivers run the session:
 - **The hub** (`crates/live-worker/src/sockets.rs`).
   - Each socket is accepted with `state.accept_web_socket`, and its `Resume`
     is kept as the socket's attachment.
-  - One pump task fans the hub's feeds out to every session. Once a second it
-    closes expired tokens and readers that sent no auth message within 10 s.
+  - One pump task fans the hub's feeds out to every session. Expired tokens,
+    and readers that sent no auth message within 10 s, are closed from the
+    hub's alarm ([Timers and hibernation](#timers-and-hibernation)).
   - Reader messages come in through `websocket_message`.
   - Opening or catching up a session awaits the store, and the pump does not
     reach the session meanwhile. So before the session is handed back, it is
@@ -211,12 +231,34 @@ Two drivers run the session:
   - After a wake (a new instance with the sockets still open), `adopt`
     rebuilds each session from its attachment.
 
-**Hibernation is not reached yet.** The hub still runs timers: the
-dispatcher poll, the presence sweep, the packed tick, and now the pump's
-one-second check. A Durable Object with timers pending does not hibernate,
-so the wake path (`adopt`) is written and its data round trip is unit
-tested, but no real wake has been seen. Slice 4 moves the timers onto an
-alarm; then an idle hub can sleep, and a wake can be tested.
+`/v1/ingest` works the same way: `live_server::ingest::IngestSession` is
+the game socket's logic, driven by axum's task on a machine and by the hub
+(`crates/live-worker/src/ingest.rs`). The hub handles each ingest socket's
+messages one at a time, behind an async lock, since a message's work awaits
+the store. Its attachment keeps the author and the token's end; the packed
+decoder is not kept, so after a wake the sender's next keyframe picks its
+frames up again.
+
+## Timers and hibernation
+
+A Durable Object with a timer pending does not hibernate. On a machine
+the server spawns loops: the dispatcher's poll, the sweep every 5 s and the
+100 ms packed tick. The hub starts the server with `Timers::Driven`
+instead, which spawns none of them:
+- The dispatcher waits only for the store's wake. The hub's store has one
+  writer, and its wake sees every append.
+- After every request, socket message and alarm, the hub sets its one
+  alarm (`LiveHub::schedule`) for the earliest of:
+  - `Live::sweep_due`: the next presence to expire, game to end as lost,
+    or co-op session to expire;
+  - each stream or ingest socket's auth deadline or token end.
+
+  With nothing due there is no alarm. The alarm runs the sweep and the
+  sockets' checks, then sets the next one.
+- The packed tick runs only while a game is live (`Live::packed_active`),
+  and stops by itself when none is.
+
+So an idle hub, sockets open or not, has nothing pending, and hibernates.
 
 ## Cost of the relay
 
@@ -256,11 +298,12 @@ large share of the day's requests.
    - Hibernatable WebSockets on the hub ([The stream on the hub](#the-stream-on-the-hub)).
    - One stream implementation, `live_server::stream::StreamSession`, run by axum's per-socket task and by the hub.
    - JSON and packed readers, auth messages and token expiry.
-4. **Ingest, timers and uploads.**
-   - The game's ingest socket on the hub.
-   - The spawned loops (dispatcher poll, presence sweep, the 100 ms packed tick) become an alarm plus work done on demand, so an idle hub can be evicted.
-   - Content and cloud-save uploads stream into R2 instead of a temporary file.
-   - Title files move to R2.
+4. **Ingest, timers and uploads (done).**
+   - The game's ingest socket on the hub, one session shared with axum.
+   - No timers on the hub: an alarm plus work done on demand ([Timers and hibernation](#timers-and-hibernation)). A real hibernation wake is shown under `wrangler dev`.
+   - Content and cloud-save uploads stream into the blob store (R2 on the hub, multipart past 8 MiB) instead of a temporary file, on a machine too.
+   - Title files are in R2.
+   - Results: [Slice 4 results](#slice-4-results).
 5. **The co-op relay object.**
    - `CoopRelay` per session.
    - Membership: the hub checks it once and signs a short ticket; the relay checks the ticket.
