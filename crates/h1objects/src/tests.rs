@@ -794,6 +794,14 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
     assert_eq!(got.at("block_1c8[1].unknown_20").cloned(), word(0x3d00_0000));
     assert_eq!(got.at("block_1c8[0].unknown_0").cloned(), word(0x0008_8014));
     assert_eq!(got.at("block_1c8[1].unknown_0").cloned(), word(0x60));
+    // Halo 1's entry markers face the vehicle's forward: no facing test,
+    // whatever the role's seats hold.
+    for k in 0..2 {
+        assert_eq!(
+            got.at(&format!("block_1c8[{k}].unknown_9c")).cloned(),
+            word(std::f32::consts::PI.to_bits()),
+        );
+    }
     // The sphere given, not Halo 1's.
     assert_eq!(got.at("unit.obje.bounding_radius"), Some(&Val::Float(1.5)));
     assert_eq!(
