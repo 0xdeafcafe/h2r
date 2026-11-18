@@ -607,6 +607,8 @@ mod tests {
         let Some((_turn, mut h)) = headless() else {
             return;
         };
+        // A combo reports no label of its own: name it to the probe.
+        crate::probe::want(vec!["##hud-map-combo".to_owned()]);
         let dir = std::env::temp_dir().join(format!("h2-editor-hud-shot-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let map = dir.join("hudtest.map");

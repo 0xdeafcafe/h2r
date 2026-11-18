@@ -121,9 +121,11 @@ fn field_panel_writes_are_hud_edits() {
     assert_eq!(
         (anchor.name.as_str(), anchor.named),
         ("anchor", true),
-        "layout {:?} of a tag of group {:?}; the built-in nhdt bitmap block: {builtin:?}",
+        "layout {:?} of a tag of group {:?}; the built-in nhdt bitmap block: {builtin:?}; \
+         this build's definitions have nhdt: {}",
         layout.name,
-        app.hud.fields.tag(hud).map(|t| t.group)
+        app.hud.fields.tag(hud).map(|t| t.group),
+        tags::defs::Defs::builtin().group(map::FourCC(*b"nhdt")).is_some()
     );
     let write = |address: u32, bytes: Vec<u8>| {
         Action::HudWrite(TagWrite {

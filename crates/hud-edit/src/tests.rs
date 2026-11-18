@@ -402,3 +402,20 @@ fn the_nhdt_definition_agrees_with_the_layout_tables() {
         }
     }
 }
+
+/// The registry the generic field panel draws from (schema and
+/// definitions merged) names the widget fields from the nhdt definition.
+#[test]
+fn the_registry_names_the_widget_fields() {
+    use tags::registry::{Kind, Registry};
+    let root = Registry::builtin().group(map::FourCC(*b"nhdt")).unwrap();
+    for (block, names) in [(0x08, [(0x1c, "anchor"), (0x34, "offset_full")]), (0x10, [(0x1c, "anchor"), (0x40, "offset_full")])] {
+        let Kind::Block(child) = &root.field_at(block).unwrap().kind else {
+            panic!("no block at {block:#x}");
+        };
+        for (at, name) in names {
+            let f = child.field_at(at).unwrap();
+            assert_eq!((f.name.as_str(), f.named), (name, true), "{} +{at:#x}", child.name);
+        }
+    }
+}
