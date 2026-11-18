@@ -37,6 +37,9 @@ pub struct Sky {
     pub sky: h1sky::h1::Sky,
     /// Its render model's path and conversion.
     pub model: Option<(String, h1models::Converted)>,
+    /// `sky +0x14`: the least that keeps the sky behind the level
+    /// ([`h1sky::convert::model_scale`]).
+    pub model_scale: f32,
 }
 
 /// The level's skies, and why any didn't convert.
@@ -118,10 +121,11 @@ pub fn read(h1: &h1map::H1Map) -> Skies {
     for r in refs {
         let Ok(tag) = h1.tag(r.id) else { continue };
         match h1sky::convert::sky_from_map(h1, tag) {
-            Ok((sky, model)) => out.skies.push(Sky {
+            Ok(f) => out.skies.push(Sky {
                 name: tag.name.clone(),
-                sky,
-                model,
+                sky: f.sky,
+                model: f.model,
+                model_scale: f.model_scale,
             }),
             Err(e) => out.notes.push(format!("{}: {e}", tag.name)),
         }
@@ -145,7 +149,7 @@ impl Skies {
                     }
                     _ => None,
                 };
-                h1sky::convert::install_sky(set, &s.sky, model, &s.name)
+                h1sky::convert::install_sky(set, &s.sky, model, &s.name, s.model_scale)
                     .map_err(|e| Error::Sky(format!("{}: {e}", s.name)))
             })
             .collect()

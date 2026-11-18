@@ -767,8 +767,11 @@ pub fn write(
     let mut skies = Vec::new();
     for r in &mp.skies {
         let tag = h1.tag(r.id)?;
-        let (sky, model) =
-            h1sky::convert::sky_from_map(h1, tag).map_err(|e| invalid(format!("sky: {e}")))?;
+        let h1sky::convert::FromMap {
+            sky,
+            model,
+            model_scale,
+        } = h1sky::convert::sky_from_map(h1, tag).map_err(|e| invalid(format!("sky: {e}")))?;
         // The model's materials name the base sky's shader; without one the
         // sky goes in without its model (h1convert::sky).
         let model = match (model, base.sky_shader) {
@@ -783,6 +786,7 @@ pub fn write(
             &sky,
             model.as_ref().map(|(n, c)| (n.as_str(), c.clone())),
             &tag.name,
+            model_scale,
         )
         .map_err(|e| invalid(format!("sky: {e}")))?;
         let mut e = Block::zeroed(8);

@@ -351,7 +351,8 @@ The base's old BSP region stays in the file, unused.
   references; E `0x0014b38d`..`0x0014b3c4`, where -1 also falls back to
   the first sky when the scenario has one). Every cluster gets 0. Each
   sky the Halo 1 scenario names is converted by `h1sky` (model, lights,
-  fog colour; docs/formats/h1-sky.md) and added as a new tag, and every
+  fog colour, and a model scale that keeps it behind the level;
+  docs/formats/h1-sky.md) and added as a new tag, and every
   element of the base's skies block names one (element `k` Halo 1's sky
   `k`, or Halo 1's last), so none names the base's. Rat Race and Chiron
   TL34 are indoors and name no sky: the base's stays, unseen. `disc_maps.rs`
