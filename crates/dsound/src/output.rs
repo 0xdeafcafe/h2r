@@ -410,6 +410,79 @@ impl Output {
     }
 }
 
+/// The logical output's snapshot section: its grid.
+pub const SECTION: snapshot::Tag = snapshot::Tag::new("audioout");
+const SECTION_VERSION: u32 = 1;
+
+impl Output {
+    /// What refuses a save of this output: device pacing renders on wall
+    /// time, so no saved point in it can be found again.
+    pub fn snapshot_blockers(&self) -> Vec<String> {
+        match self.grid {
+            Some(_) => Vec::new(),
+            None => vec!["the audio output is paced by the device (wall time)".into()],
+        }
+    }
+
+    /// Adds the `audioout` section: where the logical grid stands (its
+    /// origin and the frames rendered since), so a load renders the next
+    /// quantum at the same logical time. The audio rendered and not yet
+    /// played is output only, and is not saved.
+    pub fn save_snapshot(
+        &self,
+        out: &mut snapshot::SnapshotWriter,
+    ) -> Result<(), crate::register::SnapshotError> {
+        let Some(grid) = &self.grid else {
+            return Err(crate::register::SnapshotError::Busy(
+                self.snapshot_blockers(),
+            ));
+        };
+        let g = grid.lock().unwrap_or_else(|e| e.into_inner());
+        let Grid {
+            origin,
+            done,
+            rate,
+            // Keep: the loading output's setting.
+            max_queued: _,
+        } = &*g;
+        let mut w = snapshot::codec::Writer::new();
+        w.u64(*origin).u64(*done).u32(*rate);
+        out.section(
+            SECTION,
+            SECTION_VERSION,
+            snapshot::Codec::Stored,
+            w.into_bytes(),
+        )?;
+        Ok(())
+    }
+
+    /// Puts the grid where the `audioout` section says. Refused, changing
+    /// nothing, for a device-paced output or one at another rate.
+    pub fn load_snapshot(
+        &self,
+        snapshot: &snapshot::Snapshot<'_>,
+    ) -> Result<(), crate::register::SnapshotError> {
+        use crate::register::SnapshotError;
+        let bytes = snapshot.require(SECTION, SECTION_VERSION..=SECTION_VERSION)?;
+        let mut r = snapshot::codec::Reader::new(&bytes, "audioout");
+        let (origin, done, rate) = (r.u64()?, r.u64()?, r.u32()?);
+        r.finish()?;
+        let Some(grid) = &self.grid else {
+            return Err(SnapshotError::Busy(self.snapshot_blockers()));
+        };
+        let mut g = grid.lock().unwrap_or_else(|e| e.into_inner());
+        if g.rate != rate {
+            return Err(SnapshotError::Mismatch(format!(
+                "audio grid saved at {rate} Hz, this output runs at {} Hz",
+                g.rate
+            )));
+        }
+        g.origin = origin;
+        g.done = done;
+        Ok(())
+    }
+}
+
 impl Drop for Output {
     fn drop(&mut self) {
         self.shared.stop.store(true, Ordering::Release);

@@ -56,6 +56,12 @@ impl DispatcherReference {
     pub fn release(self) {
         drop(self);
     }
+    /// Ends the pin without releasing it: a snapshot load replaced the
+    /// kernel state that counted it (`Core::references` is the saved
+    /// run's), so a release would take a count this pin no longer owns.
+    pub fn forget(mut self) {
+        self.armed = false;
+    }
 }
 impl Drop for DispatcherReference {
     fn drop(&mut self) {
@@ -90,6 +96,21 @@ impl Kernel {
         *count = count
             .checked_add(1)
             .ok_or(Error::Resource(status::INSUFFICIENT_RESOURCES))?;
+        Ok(DispatcherReference {
+            kernel: Arc::clone(self),
+            address,
+            armed: true,
+        })
+    }
+    /// A pin on the object at `address` that the kernel already counts:
+    /// after a snapshot load, `Core::references` holds the saving run's
+    /// pins, and their owners make them again with this instead of
+    /// [`Kernel::reference_dispatcher`], which would count them twice.
+    /// Fails unless a pin on `address` is counted.
+    pub fn adopt_reference(self: &Arc<Self>, address: u32) -> Result<DispatcherReference, Error> {
+        if !self.lock().references.get(&address).is_some_and(|c| *c > 0) {
+            return Err(Error::Invalid("no pin is counted on this object"));
+        }
         Ok(DispatcherReference {
             kernel: Arc::clone(self),
             address,

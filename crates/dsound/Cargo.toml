@@ -12,6 +12,8 @@ thiserror.workspace = true
 runtime.workspace = true
 # The clean-room WMA decoder registered at the game's codec boundary (xwma).
 wma = { path = "../wma" }
+# Machine snapshots: the dsound and audioout sections (src/register/snap.rs).
+snapshot = { path = "../snapshot" }
 # The controller-speaker settings (padroute), in the input bindings' style.
 serde = { workspace = true }
 toml = "0.9"

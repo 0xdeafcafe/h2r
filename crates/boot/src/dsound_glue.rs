@@ -22,6 +22,13 @@ impl dsound::EventRef for Pin {
     fn signal(&mut self) -> Result<(), String> {
         self.0.signal_event().map(drop).map_err(|e| e.to_string())
     }
+    fn address(&self) -> Option<u32> {
+        Some(self.0.address())
+    }
+    fn forget(self: Box<Self>) {
+        let Pin(pin) = *self;
+        pin.forget();
+    }
 }
 
 impl dsound::Events for KernelEvents {
@@ -32,6 +39,14 @@ impl dsound::Events for KernelEvents {
         Some(
             self.0
                 .reference_dispatcher(handle)
+                .map(|r| Box::new(Pin(r)) as Box<dyn dsound::EventRef>)
+                .map_err(|e| e.to_string()),
+        )
+    }
+    fn adopt(&mut self, address: u32) -> Option<Result<Box<dyn dsound::EventRef>, String>> {
+        Some(
+            self.0
+                .adopt_reference(address)
                 .map(|r| Box::new(Pin(r)) as Box<dyn dsound::EventRef>)
                 .map_err(|e| e.to_string()),
         )

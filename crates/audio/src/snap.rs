@@ -561,10 +561,9 @@ fn get_buffer(r: &mut Reader<'_>) -> Result<SoundBuffer, Error> {
     b.playing = r.bool()?;
     b.looping = r.bool()?;
     b.loop_region = get_opt(r, |r| Ok((get_usize(r)?, get_usize(r)?)))?;
-    if let Some((start, end)) = b.loop_region {
-        if start >= end || end > b.frames {
-            return Err(corrupt("loop region outside its buffer"));
-        }
+    let frames = b.frames;
+    if b.loop_region.is_some_and(|(start, end)| start >= end || end > frames) {
+        return Err(corrupt("loop region outside its buffer"));
     }
     b.pos = get_f64(r)?;
     b.fx_state = get_fx_state(r)?;
@@ -844,8 +843,9 @@ fn get_reverb(r: &mut Reader<'_>) -> Result<Reverb, Error> {
 
 // ---- the mixer -------------------------------------------------------------
 
-/// The section, decoded and checked before anything changes.
-struct Saved {
+/// The `audio` section, decoded and checked against a mixer
+/// ([`Mixer::check_snapshot`]) and not yet applied.
+pub struct LoadedMixer {
     sample_rate: u32,
     master_mb: i32,
     listener: Listener,
@@ -918,7 +918,7 @@ impl Mixer {
         }
     }
 
-    fn get(r: &mut Reader<'_>) -> Result<Saved, Error> {
+    fn get(r: &mut Reader<'_>) -> Result<LoadedMixer, Error> {
         let sample_rate = r.u32()?;
         let master_mb = get_i32(r)?;
         let listener = get_listener(r)?;
@@ -934,7 +934,7 @@ impl Mixer {
                 samples: get_f32s(r)?,
             })
         })?;
-        let saved = Saved {
+        let saved = LoadedMixer {
             sample_rate,
             master_mb,
             listener,
@@ -958,6 +958,15 @@ impl Mixer {
     /// section's. Decoded and checked first: on any error the mixer is
     /// unchanged.
     pub fn load_snapshot(&mut self, snapshot: &Snapshot<'_>) -> Result<(), SnapshotError> {
+        let s = self.check_snapshot(snapshot)?;
+        self.apply_snapshot(s);
+        Ok(())
+    }
+
+    /// The first half of [`Mixer::load_snapshot`], for a caller that must
+    /// check other sections too before it changes anything: decodes the
+    /// section and checks it fits this mixer. Changes nothing.
+    pub fn check_snapshot(&self, snapshot: &Snapshot<'_>) -> Result<LoadedMixer, SnapshotError> {
         let bytes = snapshot.require(SECTION, VERSION..=VERSION)?;
         let mut r = Reader::new(&bytes, "audio");
         let s = Self::get(&mut r)?;
@@ -968,11 +977,15 @@ impl Mixer {
                 s.sample_rate, self.sample_rate
             )));
         }
-        if let Some(rv) = &s.reverb {
-            if rv.rate != s.sample_rate {
-                return Err(corrupt("reverb at another rate than its mixer").into());
-            }
+        if s.reverb.as_ref().is_some_and(|rv| rv.rate != s.sample_rate) {
+            return Err(corrupt("reverb at another rate than its mixer").into());
         }
+        Ok(s)
+    }
+
+    /// The second half of [`Mixer::load_snapshot`]: `s` must come from
+    /// this mixer's [`Mixer::check_snapshot`].
+    pub fn apply_snapshot(&mut self, s: LoadedMixer) {
         let Mixer {
             sample_rate: _,
             master_mb,
@@ -998,6 +1011,5 @@ impl Mixer {
         *reverb = s.reverb;
         *clock = s.clock;
         *taps = s.taps;
-        Ok(())
     }
 }

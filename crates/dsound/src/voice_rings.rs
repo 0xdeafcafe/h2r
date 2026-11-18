@@ -49,12 +49,12 @@ const STATE_WRITE: u32 = 0x34;
 /// time, however the input is split. Output `k` sits between the previous
 /// call's last sample and the next: a one-sample delay.
 #[derive(Clone, Debug)]
-struct Converter {
-    from: u64,
-    to: u64,
+pub(crate) struct Converter {
+    pub(crate) from: u64,
+    pub(crate) to: u64,
     /// The next output's position, in 1/`to` input samples after `last`.
-    pos: u64,
-    last: f32,
+    pub(crate) pos: u64,
+    pub(crate) last: f32,
 }
 
 impl Converter {
@@ -86,22 +86,22 @@ impl Converter {
 
 /// One port's ring.
 #[derive(Debug)]
-struct Ring {
-    bin: u32,
-    base: u32,
-    size: u32,
-    state: u32,
+pub(crate) struct Ring {
+    pub(crate) bin: u32,
+    pub(crate) base: u32,
+    pub(crate) size: u32,
+    pub(crate) state: u32,
     /// Byte offset of the next sample, `< size`, 4-aligned.
-    write: u32,
+    pub(crate) write: u32,
     /// The converter and the mixer rate it was made for.
-    conv: Option<(u32, Converter)>,
+    pub(crate) conv: Option<(u32, Converter)>,
 }
 
 /// The four rings and where they are in guest memory.
 #[derive(Debug, Default)]
 pub struct VoiceRings {
-    rings: Vec<Ring>,
-    bytes: Vec<u8>,
+    pub(crate) rings: Vec<Ring>,
+    pub(crate) bytes: Vec<u8>,
 }
 
 impl VoiceRings {

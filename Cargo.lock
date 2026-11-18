@@ -1804,6 +1804,7 @@ dependencies = [
  "kernel",
  "runtime",
  "serde",
+ "snapshot",
  "thiserror 2.0.21",
  "toml",
  "wma",

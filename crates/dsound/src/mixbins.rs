@@ -27,8 +27,8 @@ pub const MAX_BINS: usize = 8;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct VoiceBins {
-    list: Vec<u32>,
-    volumes: BTreeMap<u32, i32>,
+    pub(crate) list: Vec<u32>,
+    pub(crate) volumes: BTreeMap<u32, i32>,
 }
 
 /// The level the library gives a mix-in send: `1 / channels`, in millibels
