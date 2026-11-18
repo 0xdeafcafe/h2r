@@ -627,6 +627,7 @@ dependencies = [
  "assets",
  "audio",
  "bink-hle",
+ "bots",
  "content",
  "d3d",
  "dsound",
@@ -664,6 +665,16 @@ dependencies = [
  "xapi",
  "xbe",
  "xiso",
+]
+
+[[package]]
+name = "bots"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "input",
+ "pathfind",
+ "tags",
 ]
 
 [[package]]
@@ -936,6 +947,7 @@ dependencies = [
  "assets",
  "audio",
  "boot",
+ "bots",
  "cloud-saves",
  "content",
  "d3d",

@@ -39,6 +39,8 @@ ir.workspace = true
 anyhow.workspace = true
 sha2 = "0.10"
 boot.workspace = true
+# h2 bots nav (docs/game/bots.md).
+bots = { path = "../bots" }
 # `h2 agent` and `h2 serve` (docs/runtime/agent-api.md).
 agent-proto = { path = "../agent-proto" }
 # Our settings (play --set, h2 settings).

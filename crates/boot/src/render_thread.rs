@@ -72,6 +72,16 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     ("touch-glue", "GAME_TICK", AFTER),
     ("layouts-value", "CONTROLS_ROW_TEXT", AFTER),
     ("controls-text", "CONTROLS_ROW_TEXT", AFTER),
+    // Local bots: the game thread's frame, sound and players screen. Around
+    // RENDER_FRAME, the pipeline's snapshot is taken with the bot views
+    // hidden; the render thread never meets these points.
+    ("bots", "RENDER_FRAME", AFTER),
+    ("bots", "SOUND_UPDATE", AFTER),
+    (
+        "bots",
+        "PLAYERS_SCREEN_UNJOINED",
+        "a players screen event on the game thread; signs a bot in with guest calls",
+    ),
 ];
 
 #[cfg(test)]
@@ -106,6 +116,7 @@ mod tests {
         crate::precision::install(&mut r, std::path::Path::new("")).unwrap();
         crate::hud_swap::install(&mut r, std::path::Path::new(""), std::path::Path::new("")).unwrap();
         crate::aim_assist::install(&mut r, store).unwrap();
+        crate::bot_glue::install(&mut r, std::path::Path::new("")).unwrap();
         r.add(&feature::leaves::EngineLeaves).unwrap();
         r.add(&feature::render_timing::RenderTiming::new()).unwrap();
         r.add(&feature::render_census::RenderCensus::new()).unwrap();

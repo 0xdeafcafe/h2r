@@ -46,6 +46,8 @@ live-hle = { path = "../live-hle" }
 live-telemetry = { path = "../live-telemetry" }
 live-proto.workspace = true
 input = { path = "../input", default-features = false }
+# Local bots (docs/game/bots.md).
+bots = { path = "../bots" }
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info"] }
 timeline = { path = "../timeline" }
 # The determinism harness (H2_LOCKSTEP, H2_INPUT_RECORD, H2_INPUT_REPLAY).

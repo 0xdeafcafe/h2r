@@ -10,6 +10,7 @@ mod agent_cmd;
 mod anim;
 mod bitmap;
 mod boot_cmd;
+mod bots_nav;
 mod collision;
 mod coop_probe_cmd;
 mod coop_drive;
@@ -109,6 +110,8 @@ const USAGE: &str = "usage: h2 <command> [disc]
   bitmap --all <map>      bulk decode check of every bitmap in a map
   collision <map> <tag>   summarise a coll/phmo tag; --obj FILE exports geometry
   collision --all <map|all>  validate every coll/phmo tag (all = every disc map)
+  bots nav <map|all>      build the bots' nav mesh and walls into <data>/bots
+                          (docs/game/bots.md)
   lighting <map>          lighting/atmosphere summary; --bsp N; --page N --out DIR
   lighting --all          validate every disc map (optional <map> for one map)
   sound <map> <tag>       export a snd! tag to WAV; --all <map> validates every sound
@@ -271,6 +274,9 @@ fn main() -> Result<()> {
     }
     if cmd == "collision" {
         return collision::run(args.collect());
+    }
+    if cmd == "bots" {
+        return bots_nav::run(args.collect());
     }
     if cmd == "anim" {
         return anim::run(args.collect());
