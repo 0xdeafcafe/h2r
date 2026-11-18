@@ -124,6 +124,17 @@ pub mod constant {
 /// Words in the frame block.
 pub const FRAME_WORDS: usize = 31;
 
+/// `0x0003a550` (the call's last) uploads the frame block and the five
+/// words after it as vertex constants through `0x003f7330`: ECX `0x1f`,
+/// the first register in hardware numbering (`c[31]`..`c[39]`), stack
+/// `0x24` dwords.
+pub const FRAME_REGISTER: u32 = 0x1f;
+pub const FRAME_UPLOAD_DWORDS: usize = 0x24;
+/// The frame words the engine's vector inputs 5 (`0x00033a0b`, colour A
+/// scaled and clamped) and 6 (`0x00033a25`, colour B) return.
+pub const FRAME_COLOUR_A: usize = 24;
+pub const FRAME_COLOUR_B: usize = 28;
+
 /// The call's registers and stack arguments.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Call {
@@ -200,6 +211,30 @@ pub struct LightGlobals {
 }
 
 impl LightGlobals {
+    /// The 36 dwords `0x0003a550` uploads at [`FRAME_REGISTER`]: the frame
+    /// block, then the five words after it, which the call leaves as they
+    /// were (read from `m`).
+    pub fn frame_constants(&self, m: &dyn GuestMemory) -> Result<[u32; FRAME_UPLOAD_DWORDS], MemFault> {
+        let mut out = [0u32; FRAME_UPLOAD_DWORDS];
+        out[..FRAME_WORDS].copy_from_slice(&self.frame);
+        for (i, w) in out.iter_mut().enumerate().skip(FRAME_WORDS) {
+            *w = m.u32(global::FRAME + 4 * i as u32)?;
+        }
+        Ok(out)
+    }
+
+    /// Engine vector input 5: colour A as the frame holds it.
+    pub fn colour_a_input(&self) -> [u32; 3] {
+        [0, 1, 2].map(|i| self.frame[FRAME_COLOUR_A + i])
+    }
+
+    /// Engine vector input 6: colour B as the frame holds it (before
+    /// `render_light_passes` may zero the colour B globals, which the
+    /// frame does not see).
+    pub fn colour_b_input(&self) -> [u32; 3] {
+        [0, 1, 2].map(|i| self.frame[FRAME_COLOUR_B + i])
+    }
+
     /// Stores the block as the original does (everything but the scissor).
     pub fn write(&self, m: &mut dyn GuestMemory) -> Result<(), MemFault> {
         use global::*;
