@@ -16,6 +16,7 @@ import { BigPod, Plate, Prompts } from "./parts";
 import type { Action } from "./input";
 import "../styles/dash-games.css";
 import { STATS_NAME } from "../brand";
+import { STATS_ROOT } from "../routes";
 
 /** The disc's own pictures (crates/cli/src/live_art.rs `TITLE_IMAGES`): the
  *  game's tile and the picture of a save without one of its own. Null
@@ -158,7 +159,7 @@ function Halo2Plate(props: {
 }
 
 function StatsLink(props: { onFocus: (f: string) => void }) {
-  return <a data-stop onFocus={() => props.onFocus("stats")} class="dx-chip dx-chip--link dx-game-stats" href="/stats">{STATS_NAME}</a>;
+  return <a data-stop onFocus={() => props.onFocus("stats")} class="dx-chip dx-chip--link dx-game-stats" href={STATS_ROOT}>{STATS_NAME}</a>;
 }
 
 /** The player's cloud saves for Halo 2, as the original dashboard's Memory

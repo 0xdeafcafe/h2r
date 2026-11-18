@@ -44,6 +44,15 @@ pub const STATS_THEME: &str = "#071a35";
 pub const DEFAULT_DASH_NAME: &str = "Live Dashboard";
 pub const DEFAULT_STATS_NAME: &str = "h2 Uplink";
 
+/// Where the stats site lives: web/src/routes.ts's `STATS_ROOT`. It
+/// leaves `/games/` for each game's site (Halo 2's now, Halo 1's later).
+pub const STATS_ROOT: &str = "/games/halo2";
+
+/// Where the stats site lived first. Its pages answer a permanent
+/// redirect to the same page under [`STATS_ROOT`] ([`moved`]) and are
+/// described as nothing else.
+pub const OLD_STATS_ROOT: &str = "/stats";
+
 /// The longest description written (crawlers cut at about 200).
 const DESCRIPTION_MAX: usize = 200;
 
@@ -153,6 +162,32 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// The page under [`STATS_ROOT`] that `path` (with its `query`) named
+/// when the stats site was at [`OLD_STATS_ROOT`]; `None` for any other
+/// path. Both homes answer it with a 301.
+pub fn moved(path: &str, query: Option<&str>) -> Option<String> {
+    let rest = path.strip_prefix(OLD_STATS_ROOT)?;
+    if !(rest.is_empty() || rest.starts_with('/')) {
+        return None;
+    }
+    let rest = if rest == "/" { "" } else { rest };
+    let mut to = format!("{STATS_ROOT}{rest}");
+    if let Some(q) = query.filter(|q| !q.is_empty()) {
+        to.push('?');
+        to.push_str(q);
+    }
+    Some(to)
+}
+
+/// The segments of a stats-site page after [`STATS_ROOT`]'s, or `None`
+/// when `s` is not under it.
+fn stats_page<'a>(s: &'a [&'a str]) -> Option<&'a [&'a str]> {
+    match s {
+        ["games", "halo2", rest @ ..] => Some(rest),
+        _ => None,
+    }
+}
+
 /// What a page names that only the read model can describe.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Subject {
@@ -167,20 +202,26 @@ pub enum Subject {
 pub fn subject(path: &str) -> Option<Subject> {
     let s = segments(path);
     let s: Vec<&str> = s.iter().map(String::as_str).collect();
+    if let Some(page) = stats_page(&s) {
+        return match page {
+            ["players", tag, ..] => Some(Subject::Player(tag.to_string())),
+            ["games", id, ..] => Some(Subject::Game(id.to_string())),
+            ["clans", id, ..] | ["teams", id, ..] => Some(Subject::Clan(id.to_string())),
+            _ => None,
+        };
+    }
+    // The oldest links, which the app redirects into the stats site.
     match s.as_slice() {
-        ["stats", "players", tag, ..] | ["players", tag, ..] => {
-            Some(Subject::Player(tag.to_string()))
-        }
-        ["stats", "games", id, ..] | ["games", id, ..] => Some(Subject::Game(id.to_string())),
-        ["stats", "clans", id, ..] | ["stats", "teams", id, ..] | ["dash", "clans", id, ..] => {
-            Some(Subject::Clan(id.to_string()))
-        }
+        ["players", tag, ..] => Some(Subject::Player(tag.to_string())),
+        ["games", id, ..] => Some(Subject::Game(id.to_string())),
+        ["dash", "clans", id, ..] => Some(Subject::Clan(id.to_string())),
         _ => None,
     }
 }
 
 /// Whether `path` is one of the app's pages (as opposed to the API, art
-/// or a file): what the Worker answers with the app's HTML.
+/// or a file): what the Worker answers with the app's HTML, or for a
+/// page under [`OLD_STATS_ROOT`], its redirect ([`moved`]).
 pub fn is_page(path: &str) -> bool {
     let first = path.trim_start_matches('/').split('/').next().unwrap_or("");
     matches!(
@@ -208,6 +249,24 @@ pub fn describe_static(path: &str) -> PageMeta {
     };
     const DASH: &str = "The dashboard of a community online service for h2recomp: who is online, games running now, friends, clans and matchmaking.";
     const STATS: &str = "Live games, leaderboards, service records and carnage reports from a community online service for h2recomp.";
+    if let Some(page) = stats_page(&s) {
+        return match page {
+            [] => stats(None, STATS),
+            ["games"] => stats(
+                Some("Games"),
+                "Games being played now and the latest finished, with their carnage reports.",
+            ),
+            ["games", ..] => stats(Some("Game"), STATS),
+            ["players"] => stats(Some("Players"), "Who is online and the leaderboards."),
+            ["players", ..] => stats(Some("Service Record"), STATS),
+            ["ranks", ..] => stats(Some("Ranked"), "Ranked playlists and their leaderboards."),
+            ["clans"] | ["teams"] => stats(Some("Clans"), "Every clan, its members and its games."),
+            ["clans", ..] | ["teams", ..] => stats(Some("Clan"), STATS),
+            ["events"] => stats(Some("Event Log"), "The service's signed public event log."),
+            ["admin"] => stats(Some("Admin"), STATS),
+            _ => stats(None, STATS),
+        };
+    }
     match s.as_slice() {
         [] | ["dash"] => dash(None, DASH),
         ["signin"] => stats(Some("Sign in"), STATS),
@@ -216,24 +275,11 @@ pub fn describe_static(path: &str) -> PageMeta {
         ["dash", "clans", ..] => dash(Some("Clans"), DASH),
         ["dash", "players", ..] | ["players"] => dash(Some("Players"), DASH),
         ["dash", section, ..] => dash(Some(&title_case(section)), DASH),
-        ["stats"] => stats(None, STATS),
-        ["stats", "games"] => stats(
-            Some("Games"),
-            "Games being played now and the latest finished, with their carnage reports.",
-        ),
-        ["stats", "games", ..] | ["games", ..] => stats(Some("Game"), STATS),
-        ["stats", "players"] => stats(Some("Players"), "Who is online and the leaderboards."),
-        ["stats", "players", ..] | ["players", ..] => stats(Some("Service Record"), STATS),
-        ["stats", "ranks", ..] => stats(Some("Ranked"), "Ranked playlists and their leaderboards."),
-        ["stats", "clans"] | ["stats", "teams"] => {
-            stats(Some("Clans"), "Every clan, its members and its games.")
-        }
-        ["stats", "clans", ..] | ["stats", "teams", ..] => stats(Some("Clan"), STATS),
-        ["stats", "events"] | ["events"] => {
-            stats(Some("Event Log"), "The service's signed public event log.")
-        }
-        ["stats", "admin"] => stats(Some("Admin"), STATS),
-        ["stats", ..] => stats(None, STATS),
+        // `/games` redirects to the stats home; the oldest links into it.
+        ["games"] => stats(None, STATS),
+        ["games", ..] => stats(Some("Game"), STATS),
+        ["players", ..] => stats(Some("Service Record"), STATS),
+        ["events"] => stats(Some("Event Log"), "The service's signed public event log."),
         _ => dash(None, DASH),
     }
 }
@@ -637,31 +683,36 @@ mod tests {
     #[test]
     fn subjects_are_the_pages_that_need_the_read_model() {
         assert_eq!(
-            subject("/stats/players/afr"),
+            subject("/games/halo2/players/afr"),
             Some(Subject::Player("afr".into()))
         );
         assert_eq!(
-            subject("/stats/players/Two%20Words/career"),
+            subject("/games/halo2/players/Two%20Words/career"),
             Some(Subject::Player("Two Words".into()))
         );
         assert_eq!(subject("/players/afr"), Some(Subject::Player("afr".into())));
         assert_eq!(
-            subject("/stats/games/abc/3d"),
+            subject("/games/halo2/games/abc/3d"),
             Some(Subject::Game("abc".into()))
         );
         assert_eq!(subject("/games/abc"), Some(Subject::Game("abc".into())));
         assert_eq!(
-            subject("/stats/clans/0009000000000001"),
+            subject("/games/halo2/clans/0009000000000001"),
             Some(Subject::Clan("0009000000000001".into()))
         );
-        assert_eq!(subject("/stats/teams/x"), Some(Subject::Clan("x".into())));
+        assert_eq!(
+            subject("/games/halo2/teams/x"),
+            Some(Subject::Clan("x".into()))
+        );
         for none in [
             "/",
             "/dash",
-            "/stats",
-            "/stats/games",
-            "/stats/players",
-            "/stats/clans",
+            "/games",
+            "/games/halo2",
+            "/games/halo2/games",
+            "/games/halo2/players",
+            "/games/halo2/clans",
+            "/stats/players/afr",
             "/v1/games/abc",
         ] {
             assert_eq!(subject(none), None, "{none}");
@@ -674,6 +725,9 @@ mod tests {
             "/",
             "/dash",
             "/dash/players",
+            "/games",
+            "/games/halo2",
+            "/games/halo2/games/x",
             "/stats",
             "/stats/games/x",
             "/players/x",
@@ -699,15 +753,41 @@ mod tests {
         assert_eq!((m.page, m.side), (None, Side::Dash));
         let m = describe_static("/dash/sessions");
         assert_eq!((m.page.as_deref(), m.side), (Some("Sessions"), Side::Dash));
-        let m = describe_static("/stats");
+        let m = describe_static("/games/halo2");
         assert_eq!((m.page, m.side), (None, Side::Stats));
-        let m = describe_static("/stats/ranks/team-slayer");
+        let m = describe_static("/games/halo2/ranks/team-slayer");
         assert_eq!((m.page.as_deref(), m.side), (Some("Ranked"), Side::Stats));
-        let m = describe_static("/stats/players/afr");
+        let m = describe_static("/games/halo2/players/afr");
         assert_eq!(
             (m.page.as_deref(), m.kind.as_str()),
             (Some("Service Record"), "website")
         );
+        let m = describe_static("/games/halo2/events");
+        assert_eq!((m.page.as_deref(), m.side), (Some("Event Log"), Side::Stats));
+        let m = describe_static("/games");
+        assert_eq!((m.page, m.side), (None, Side::Stats));
+    }
+
+    #[test]
+    fn the_old_stats_root_moves_under_games() {
+        assert_eq!(segments(STATS_ROOT), ["games", "halo2"]);
+        assert_eq!(moved("/stats", None).as_deref(), Some("/games/halo2"));
+        assert_eq!(moved("/stats/", None).as_deref(), Some("/games/halo2"));
+        assert_eq!(
+            moved("/stats/players/Two%20Words/career", Some("compare=x")).as_deref(),
+            Some("/games/halo2/players/Two%20Words/career?compare=x")
+        );
+        assert_eq!(
+            moved("/stats", Some("window=30d")).as_deref(),
+            Some("/games/halo2?window=30d")
+        );
+        assert_eq!(
+            moved("/stats/games/abc", Some("")).as_deref(),
+            Some("/games/halo2/games/abc")
+        );
+        for not in ["/", "/statsx", "/games/halo2", "/v1/stats/summary", "/dash/stats"] {
+            assert_eq!(moved(not, None), None, "{not}");
+        }
     }
 
     #[test]
@@ -726,7 +806,7 @@ mod tests {
             &meta,
             &names,
             "https://live.example",
-            "/stats/players/x?y=1#z",
+            "/games/halo2/players/x?y=1#z",
         );
         assert!(
             t.contains("<title>&lt;b&gt;&quot;x&quot; &amp; y · h2 Uplink</title>"),
@@ -736,7 +816,7 @@ mod tests {
         assert!(t.contains("<meta property=\"og:type\" content=\"profile\" />"));
         assert!(t.contains("<meta name=\"description\" content=\"one two\" />"));
         assert!(t.contains(
-            "<meta property=\"og:url\" content=\"https://live.example/stats/players/x\" />"
+            "<meta property=\"og:url\" content=\"https://live.example/games/halo2/players/x\" />"
         ));
         assert!(t.contains(
             "<meta property=\"og:image\" content=\"https://live.example/og/default.jpg\" />"

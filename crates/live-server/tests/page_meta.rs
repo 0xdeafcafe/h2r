@@ -97,20 +97,20 @@ async fn every_app_page_gets_its_sections_preview() {
     );
     assert_eq!(meta(&home, "twitter:card"), "summary_large_image");
 
-    let stats = web.page("/stats").await;
+    let stats = web.page("/games/halo2").await;
     assert_eq!(title(&stats), "h2 Uplink");
     assert_eq!(meta(&stats, "theme-color"), "#071a35");
-    assert_eq!(title(&web.page("/stats/games").await), "Games · h2 Uplink");
+    assert_eq!(title(&web.page("/games/halo2/games").await), "Games · h2 Uplink");
     assert_eq!(title(&web.page("/dash/players").await), "Players · Live Dashboard");
-    assert_eq!(title(&web.page("/stats/clans").await), "Clans · h2 Uplink");
+    assert_eq!(title(&web.page("/games/halo2/clans").await), "Clans · h2 Uplink");
     // An unknown player or game still gets its section's.
     assert_eq!(
-        title(&web.page("/stats/players/nobody").await),
+        title(&web.page("/games/halo2/players/nobody").await),
         "Service Record · h2 Uplink"
     );
     assert_eq!(
         title(
-            &web.page("/stats/games/0123456789abcdef0123456789abcdef")
+            &web.page("/games/halo2/games/0123456789abcdef0123456789abcdef")
                 .await
         ),
         "Game · h2 Uplink"
@@ -121,8 +121,34 @@ async fn every_app_page_gets_its_sections_preview() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(body.contains("not_found"));
     // A local server's URLs are its own.
-    let (_, local, _) = web.get("/stats", "127.0.0.1:8075").await;
-    assert_eq!(meta(&local, "og:url"), "http://127.0.0.1:8075/stats");
+    let (_, local, _) = web.get("/games/halo2", "127.0.0.1:8075").await;
+    assert_eq!(meta(&local, "og:url"), "http://127.0.0.1:8075/games/halo2");
+}
+
+#[tokio::test]
+async fn the_old_stats_pages_move_permanently() {
+    let h = harness().await;
+    let web = Web::new(&h);
+    for (old, new) in [
+        ("/stats", "/games/halo2"),
+        ("/stats/", "/games/halo2"),
+        ("/stats?window=30d", "/games/halo2?window=30d"),
+        (
+            "/stats/players/Two%20Words/career?compare=x",
+            "/games/halo2/players/Two%20Words/career?compare=x",
+        ),
+    ] {
+        let req = axum::http::Request::get(old)
+            .header("host", "live.example")
+            .body(Body::empty())
+            .unwrap();
+        let r = web.app.clone().oneshot(req).await.unwrap();
+        assert_eq!(r.status(), StatusCode::MOVED_PERMANENTLY, "{old}");
+        assert_eq!(r.headers()["location"], new, "{old}");
+    }
+    // The API's stats stay where they are.
+    let (status, _, _) = web.get("/v1/stats/summary", "x").await;
+    assert_ne!(status, StatusCode::MOVED_PERMANENTLY);
 }
 
 #[tokio::test]
@@ -132,7 +158,7 @@ async fn player_and_game_pages_say_who_and_what() {
     let id = h.start_game(&host, two_player_game(&host)).await;
     let web = Web::new(&h);
 
-    let live = web.page(&format!("/stats/games/{id}")).await;
+    let live = web.page(&format!("/games/halo2/games/{id}")).await;
     assert_eq!(title(&live), "Team Slayer on Lockout · h2 Uplink");
     assert_eq!(meta(&live, "og:title"), "Team Slayer on Lockout");
     let d = meta(&live, "og:description");
@@ -162,13 +188,13 @@ async fn player_and_game_pages_say_who_and_what() {
         h.post_batch(&host, &id, end).await.status,
         StatusCode::CREATED
     );
-    let ended = web.page(&format!("/stats/games/{id}/3d")).await;
+    let ended = web.page(&format!("/games/halo2/games/{id}/3d")).await;
     assert_eq!(
         meta(&ended, "og:description"),
         "Final · Red 50, Blue 43 · Red team wins · with Host, Guest."
     );
 
-    let player = web.page("/stats/players/host/career").await;
+    let player = web.page("/games/halo2/players/host/career").await;
     assert_eq!(title(&player), "Host · h2 Uplink");
     assert_eq!(meta(&player, "og:type"), "profile");
     assert_eq!(
@@ -177,7 +203,7 @@ async fn player_and_game_pages_say_who_and_what() {
     );
     // The old link and the JSON the Worker asks for say the same.
     assert_eq!(title(&web.page("/players/Host").await), "Host · h2 Uplink");
-    let j = h.get("/v1/page-meta?path=/stats/players/Host").await;
+    let j = h.get("/v1/page-meta?path=/games/halo2/players/Host").await;
     assert_eq!(j.status, StatusCode::OK);
     assert_eq!(j.json()["page"], "Host");
     assert_eq!(j.json()["side"], "stats");
@@ -192,7 +218,7 @@ async fn names_are_escaped_into_the_html() {
     game["variant"] = json!("<script>\"x\"</script>");
     let id = h.start_game(&host, game).await;
     let web = Web::new(&h);
-    let body = web.page(&format!("/stats/games/{id}")).await;
+    let body = web.page(&format!("/games/halo2/games/{id}")).await;
     assert!(!body.contains("<script>\"x\""), "{body}");
     assert!(body.contains("&lt;script&gt;&quot;x&quot;&lt;/script&gt; on Lockout"));
 }
@@ -208,11 +234,11 @@ async fn a_private_server_previews_nothing_of_its_players() {
     )
     .await;
     let web = Web::new(&h);
-    let page = web.page("/stats/players/Anyone").await;
+    let page = web.page("/games/halo2/players/Anyone").await;
     assert_eq!(title(&page), "Service Record · h2 Uplink");
     // The JSON answer, which the Worker asks for, says no more.
     let j = h
-        .get("/v1/page-meta?path=/stats/players/Anyone")
+        .get("/v1/page-meta?path=/games/halo2/players/Anyone")
         .await
         .json();
     assert_eq!(j["page"], "Service Record");

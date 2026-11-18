@@ -4,6 +4,7 @@
 // albedo, nothing from the game). Everything here is pure, for tests.
 
 import { BACKGROUND, DASH_NAME, STATS_NAME, THEME } from "../src/brand";
+import { STATS_ROOT, statsPath } from "../src/routes";
 
 /** Paths from the repository root. */
 export const SOURCES = {
@@ -105,9 +106,9 @@ export function webManifest() {
       { src: "/favicon.svg", sizes: "any", type: "image/svg+xml", purpose: "any" },
     ],
     shortcuts: [
-      { name: STATS_NAME, short_name: STATS_NAME, url: "/stats" },
-      { name: "Games", url: "/stats/games" },
-      { name: "Players", url: "/stats/players" },
+      { name: STATS_NAME, short_name: STATS_NAME, url: STATS_ROOT },
+      { name: "Games", url: statsPath("/games") },
+      { name: "Players", url: statsPath("/players") },
     ],
   };
 }

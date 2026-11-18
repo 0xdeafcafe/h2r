@@ -255,6 +255,7 @@ fn start(sink: &mut ServerSink) -> String {
             local_user: None,
             unit: u32::MAX,
             stats: PlayerStats::ZERO,
+            machine: [0; 6],
         }],
     );
     let mut local = None;

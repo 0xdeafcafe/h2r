@@ -14,6 +14,7 @@ import { adminState } from "../admin/state";
 import { ago } from "../lib/format";
 import { BanForm } from "./Bans";
 import { KIND_LABELS, fetchReports, recordFor, reviewProblem, reviewReport, type PlayerReport, type ReportList, type ReportState, type ReviewAction } from "../admin/reports";
+import { STATS_ROOT } from "../routes";
 
 const STATES: { id: ReportState; label: string }[] = [
   { id: "open", label: "open" },
@@ -90,7 +91,7 @@ export function ReportsQueue() {
                     <p class="dx-report-head">
                       <b>{r.target.gamertag}</b> {KIND_LABELS[r.kind]}
                       <span> by {r.by.gamertag}, {r.at ? ago(r.at) : "at an unknown time"}</span>
-                      <Show when={r.game_id}>{(g) => <> · <a href={`/stats/games/${encodeURIComponent(g())}`}>the game</a></>}</Show>
+                      <Show when={r.game_id}>{(g) => <> · <a href={`${STATS_ROOT}/games/${encodeURIComponent(g())}`}>the game</a></>}</Show>
                     </p>
                     <Show when={r.reason}><p class="dx-report-reason">{r.reason}</p></Show>
                     <p class="dx-note">

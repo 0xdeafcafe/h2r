@@ -13,6 +13,7 @@ import { Panel, playerHref } from "./Layout";
 import { ClanEmblem, friendPresence, presenceLine } from "./clanBits";
 import { clanHref } from "./Clans";
 import "../styles/social.css";
+import { STATS_ROOT, statsPath } from "../routes";
 
 /** The add-friend button for `account`, in whatever state the two are. */
 export function FriendButton(props: { account: AccountState }) {
@@ -61,7 +62,7 @@ export function PlayerFriends(props: { account: AccountState }) {
                   <li>
                     <Emblem seed={f.xuid} size={14} /><A href={playerHref(f.gamertag)}>{f.gamertag}</A>
                     <span class="s-dim">
-                      <Show when={p().game_id} fallback={presenceLine(f)}>{(g) => <A href={`/stats/games/${g()}`}>{presenceLine(f)}</A>}</Show>
+                      <Show when={p().game_id} fallback={presenceLine(f)}>{(g) => <A href={`${STATS_ROOT}/games/${g()}`}>{presenceLine(f)}</A>}</Show>
                     </span>
                     <Show when={p().kind !== "offline"}><span class="s-online-dot" title={presenceLine(f)} /></Show>
                   </li>
@@ -79,7 +80,7 @@ export function PlayerFriends(props: { account: AccountState }) {
 export function PlayerClans(props: { account: AccountState }) {
   const teams = () => social.teamsOf(props.account.xuid);
   return (
-    <Panel title="Clans" sub="clans they're in" right={<A href="/stats/clans" class="s-soc-link">all clans</A>} class="s-soc-box">
+    <Panel title="Clans" sub="clans they're in" right={<A href={statsPath("/clans")} class="s-soc-link">all clans</A>} class="s-soc-box">
       <Show when={teams().length} fallback={<p class="s-recent-empty">{social.teamsLoaded() ? "Not in a clan." : "Loading clans…"}</p>}>
         <ul class="s-mini-list">
           <For each={teams()}>
