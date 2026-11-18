@@ -14,7 +14,9 @@
 //!
 //! It also answers the host methods `profile.sample.*` (the in-process
 //! sampler, [`crate::sampling`], which `profile.capture {"sample": true}`
-//! runs too) and `host.perf` (the newest host perf line).
+//! runs too) and `host.perf` (the newest host perf line), and
+//! `render.frame` and `render.stats` (crates/agent's `render`, over
+//! [`crate::render_probe`] and the draw wrapper in [`crate::d3d_diag`]).
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -142,6 +144,7 @@ pub fn add_host_methods(agent: &agent::Agent) {
         });
         agent.set_sampler(Box::new(BootSampler));
     }
+    agent::render::add_methods(agent, &agent::render::PROBE, crate::render_probe::sources());
     agent.add_method(method::SAMPLE_STATUS, Access::Read, |_| {
         Ok(crate::sampling::status())
     });
@@ -209,6 +212,10 @@ mod tests {
             a.between_slices(&mut Nothing, 0);
             serde_json::from_str(&rx.recv_timeout(Duration::from_secs(5)).unwrap()).unwrap()
         };
+        let r = call(method::RENDER_STATS, Value::Null);
+        assert!(r["result"]["paths"].is_object(), "{r}");
+        let r = call(method::RENDER_FRAME, Value::Null);
+        assert_eq!(r["result"]["armed"], false, "{r}");
         let r = call(method::INPUT_STATE, Value::Null);
         assert_eq!(r["result"]["pad"]["active"], false, "{r}");
         let r = call(method::SAMPLE_STATUS, Value::Null);

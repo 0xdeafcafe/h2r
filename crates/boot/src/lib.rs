@@ -36,6 +36,7 @@ pub mod hud;
 pub mod hud_swap;
 pub mod h1_variants;
 pub mod precision;
+pub mod render_probe;
 pub mod render_thread;
 pub mod host_perf;
 pub mod sampling;
@@ -1057,6 +1058,7 @@ pub fn run_hosted_with_live(
     if lockstep_on {
         pipeline = pipeline.disabled("lockstep (H2_LOCKSTEP/H2_INPUT_RECORD/H2_INPUT_REPLAY) compares serial runs");
     }
+    render_probe::set_pipeline(pipeline.clone());
     features.add(&pipeline).map_err(|e| anyhow::anyhow!("pipeline render: {e}"))?;
     // Stage 7a: the Rust render_views, when H2_FEATURES has
     // impl.render.views=on (off by default; docs/graphics/render-loop.md).

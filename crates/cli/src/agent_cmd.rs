@@ -51,6 +51,14 @@ or a short form:
   sample-status          profile.sample.status
   hostperf               host.perf: the newest host perf line
   ui                     ui.screen: the menu screen player one's input goes to (H2_UI_WATCH=1)
+  frame [draws] [snap N[,M...]]  render.frame: record the next whole frame and
+                         print it: passes (target, clears, draws by outcome,
+                         primitive, entry, texture formats), copies and reads,
+                         native render paths; `draws` lists each draw; `snap`
+                         reads passes N... back as PNGs under the cache
+                         directory's frames/ (waits up to 10 s for the frame)
+  render                 render.stats: in-between frames and why they held,
+                         the pipelined render, native render path calls
 
 Input calls need no claim while nobody holds control; once a connection
 does, only it may send them. Queued steps outlive the connection and play out.
@@ -110,6 +118,11 @@ pub fn run(args: Vec<String>) -> Result<()> {
     match first.as_str() {
         "-" => script(&mut c),
         "watch" => watch(&mut c, &rest[1..]),
+        "frame" => {
+            let v = frame(&mut c, &rest)?;
+            println!("{}", serde_json::to_string_pretty(&v)?);
+            Ok(())
+        }
         _ => {
             let (m, p) = parse_call(&rest)?;
             let v = call(&mut c, &m, p)?;
@@ -177,11 +190,66 @@ fn script(c: &mut Client) -> Result<()> {
             std::thread::sleep(Duration::from_millis(ms));
             continue;
         }
-        let (m, p) = parse_call(&words)?;
-        let v = call(c, &m, p)?;
+        let v = if words[0] == "frame" {
+            frame(c, &words)?
+        } else {
+            let (m, p) = parse_call(&words)?;
+            call(c, &m, p)?
+        };
         println!("{}", serde_json::to_string(&v)?);
     }
     Ok(())
+}
+
+/// How long `frame` waits for the frame it armed.
+const FRAME_WAIT: Duration = Duration::from_secs(10);
+
+/// `frame`'s arming params from its words.
+fn frame_params(words: &[String]) -> Result<Value> {
+    let mut p = json!({ "arm": true });
+    let mut it = words[1..].iter();
+    while let Some(w) = it.next() {
+        match w.as_str() {
+            "draws" => p["draws"] = json!(true),
+            "snap" => {
+                let list = it
+                    .next()
+                    .context("snap needs pass numbers, e.g. snap 0,3")?;
+                let passes: Vec<u64> = list
+                    .split(',')
+                    .map(|n| n.trim().parse::<u64>())
+                    .collect::<Result<_, _>>()
+                    .with_context(|| format!("snap: pass numbers, not {list}"))?;
+                p["snap"] = json!(passes);
+            }
+            other => bail!("frame: unexpected {other} (draws, snap N[,M...])"),
+        }
+    }
+    Ok(p)
+}
+
+/// `render.frame`: arms, then reads until the frame it armed is in.
+fn frame(c: &mut Client, words: &[String]) -> Result<Value> {
+    let armed = call(c, method::RENDER_FRAME, frame_params(words)?)?;
+    let seq = armed["seq"].clone();
+    let deadline = std::time::Instant::now() + FRAME_WAIT;
+    loop {
+        let r = call(c, method::RENDER_FRAME, Value::Null)?;
+        if !r["frame"].is_null()
+            && r["frame"]["seq"] == seq
+            && !r["armed"].as_bool().unwrap_or(false)
+        {
+            return Ok(r["frame"].clone());
+        }
+        if std::time::Instant::now() > deadline {
+            bail!(
+                "frame: no whole frame within {} s (armed at present {}; a paused or loading game presents nothing)",
+                FRAME_WAIT.as_secs(),
+                armed["armed_at_present"]
+            );
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 fn watch(c: &mut Client, kinds: &[String]) -> Result<()> {
@@ -264,6 +332,7 @@ fn parse_call(words: &[String]) -> Result<(String, Value)> {
         "sample-stop" => Some(method::SAMPLE_STOP),
         "sample-status" => Some(method::SAMPLE_STATUS),
         "hostperf" => Some(method::HOST_PERF),
+        "render" => Some(method::RENDER_STATS),
         "ui" => Some(method::UI_SCREEN),
         _ => None,
     };
@@ -511,6 +580,15 @@ mod tests {
         );
         assert_eq!(c("hostperf"), ("host.perf".into(), Value::Null));
         assert_eq!(c("ui"), ("ui.screen".into(), Value::Null));
+        assert_eq!(c("render"), ("render.stats".into(), Value::Null));
+        assert_eq!(frame_params(&words("frame")).unwrap(), json!({"arm": true}));
+        assert_eq!(
+            frame_params(&words("frame draws snap 0,3")).unwrap(),
+            json!({"arm": true, "draws": true, "snap": [0, 3]})
+        );
+        for bad in ["frame loud", "frame snap", "frame snap x"] {
+            assert!(frame_params(&words(bad)).is_err(), "{bad}");
+        }
     }
 
     #[test]

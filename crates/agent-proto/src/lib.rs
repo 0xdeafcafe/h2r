@@ -14,9 +14,14 @@ use std::collections::BTreeMap;
 mod client;
 mod endpoint;
 mod pad;
+mod render;
 pub use client::{CallError, Client};
 pub use endpoint::Endpoint;
 pub use pad::{AtTick, Now, PAD_BUTTONS, PadParams, PadStep};
+pub use render::{
+    DrawRecord, FrameParams, FrameRecord, FrameReply, FrameTotals, OpRecord, PassRecord,
+    RenderStats, SnapRecord,
+};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -127,6 +132,13 @@ pub mod method {
     /// The menu screen player one's input goes to (`H2_UI_WATCH=1`,
     /// `boot::ui_watch`): `{"screen", "window", "slot", "live_menu_row"}`.
     pub const UI_SCREEN: &str = "ui.screen";
+    /// Record the next whole frame's passes, draws and targets, or read
+    /// the last one recorded ([`crate::FrameParams`]).
+    pub const RENDER_FRAME: &str = "render.frame";
+    /// The render pipeline's counters: in-between frames and their hold
+    /// reasons, the pipelined render, native render paths
+    /// ([`crate::RenderStats`]).
+    pub const RENDER_STATS: &str = "render.stats";
 }
 
 /// Error codes. The negative ones are JSON-RPC's own.

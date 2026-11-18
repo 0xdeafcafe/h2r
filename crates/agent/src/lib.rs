@@ -13,6 +13,9 @@
 //!   a read-only observer on the `frame` bridge) and
 //!   [`Agent::between_slices`] from the boot loop. Every answer is read
 //!   on the game's thread, at a tick boundary when the game is ticking.
+//! * [`render`] records one frame's passes and draws for `render.frame`
+//!   (boot's backend wrapper feeds [`render::PROBE`]) and answers
+//!   `render.stats` from what the host registers.
 //! * [`Reader`] is what it reads: [`GuestReader`] over `live-telemetry`'s
 //!   readers in the game, a fake in tests.
 //!
@@ -22,6 +25,7 @@
 mod capture;
 mod exec;
 mod reader;
+pub mod render;
 mod server;
 mod tap;
 
