@@ -28,6 +28,8 @@ rfd = "0.18"
 content.workspace = true
 editor-core = { path = "../editor-core" }
 scenario-edit = { path = "../scenario-edit" }
+# The HUD tool's logic (docs/editor/hud-editor.md).
+hud-edit = { path = "../hud-edit" }
 variants = { path = "../variants" }
 hopper-edit = { path = "../hopper-edit" }
 live-proto.workspace = true
@@ -41,3 +43,7 @@ map.workspace = true
 # (boot::ui_kit; docs/game/ui-builder.md).
 boot.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+# The HUD tool's tests draw the invented HUD map.
+hud-edit = { path = "../hud-edit", features = ["fixture"] }

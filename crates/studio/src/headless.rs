@@ -585,6 +585,62 @@ mod tests {
         assert!(distinct.len() > 8);
     }
 
+    /// The HUD tool through its widgets: pick the invented map in the
+    /// outliner, the stray widget in the list, then drag it on the picture
+    /// by 20 HUD pixels. One undo step, its offset moved by the drag, and
+    /// the checks still find it. Skipped without a wgpu adapter.
+    #[test]
+    fn the_hud_tool_picks_and_drags_a_widget() {
+        use crate::app::ToolKind;
+        use crate::script::{Button, Step};
+        use hud_edit::{WidgetKey, WidgetKind};
+        let Some((_turn, mut h)) = headless() else {
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("h2-editor-hud-shot-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let map = dir.join("hudtest.map");
+        std::fs::write(&map, hud_edit::fixture::build().0).unwrap();
+        let mut app = App::new();
+        app.set_data_root(dir.join("data"));
+        app.dispatch(Action::OpenSource(map));
+        app.dispatch(Action::SetTool(ToolKind::Hud));
+        h.frames(&mut app, 3).unwrap();
+        let click = |t: &str| Step::Click(t.into(), Button::Left);
+        h.step(&mut app, &click("##hud-map-hudtest")).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        assert!(app.hud.session.is_some(), "the map opened");
+        let stray = WidgetKey {
+            kind: WidgetKind::Bitmap,
+            index: 2,
+        };
+        for w in &h.scene.windows { eprintln!("WIN {} {:?}", w.name, w.rect); }
+        for i in h.scene.items.iter().filter(|i| i.label.contains("hud-")) { eprintln!("ITEM {} {} {:?}", i.label, i.window, i.rect); }
+        h.step(&mut app, &click("##hud-w-Bitmap-2")).unwrap();
+        assert_eq!(app.hud.selected, Some(stray));
+        let (origin, zoom) = h.studio.hud.shown.expect("the picture is shown");
+        // The stray's middle (88..152, 396..412), then 20 HUD pixels right.
+        let at = |x: f32, y: f32| format!("{},{}", origin[0] + x * zoom, origin[1] + y * zoom);
+        for step in [
+            Step::Move(at(120.0, 404.0)),
+            Step::Down,
+            Step::Move(at(130.0, 404.0)),
+            Step::Move(at(140.0, 404.0)),
+            Step::Up,
+        ] {
+            h.step(&mut app, &step).unwrap();
+        }
+        assert_eq!(app.hud.selected, Some(stray));
+        assert_eq!(app.hud.offset(stray), Some((60, -48)));
+        assert_eq!(app.hud.session.as_ref().unwrap().history().count(), 1);
+        assert!(app.tool_dirty(ToolKind::Hud));
+        let (rgba, _) = h.capture(&mut app, 2).unwrap();
+        let distinct: std::collections::HashSet<[u8; 4]> =
+            rgba.as_chunks::<4>().0.iter().step_by(97).copied().collect();
+        assert!(distinct.len() > 8);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// Dear ImGui allows one context at a time: the tests take turns.
     static ONE_CONTEXT: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
