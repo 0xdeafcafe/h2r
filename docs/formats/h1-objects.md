@@ -153,10 +153,21 @@ moments, `5c` inertia matrices (2 x `0x24`), `68` powered mass points
 
 ## Building Halo 2 tags (Design)
 
-`Options::rebuild` (off by default) builds scenery with no template:
-the `scen`, its `hlmt` and its `mode`'s material list are written field by
-field from typed definitions. See [tag-definitions.md](tag-definitions.md)
-for the field-by-field comparison with the template path below.
+**Scenery has no template since converter version 50**: the `scen`, its
+`hlmt` and its `mode`'s material list are written field by field from
+typed definitions, with the base's scenery role words in the unknown
+spans and Halo 1's model and bitmaps as predicted resources
+([tag-definitions.md](tag-definitions.md), "Scenery from definitions").
+The scenery template (Delta Halo's `statue_shard_large`) described below
+is history.
+
+**Weapons, equipment, projectiles and damage have no template since
+converter version 51**: they are built from their typed definitions,
+with Halo 1's values and no template bytes ([tag-definitions.md](tag-definitions.md),
+Weapons, equipment, projectiles and damage). The template rows below
+for `weap`, `eqip` and `proj` only name the Halo 2 counterpart whose
+references (HUD, effects, sounds, melee damage) fill the slots Halo 1
+has nothing converted for.
 
 **Vehicles have no template since converter version 49**: every Halo 1
 vehicle is built from the `vehi` definition, with its friction and hover
@@ -267,7 +278,7 @@ physics"). Retail writes the slots exactly for the `coll`s of scenery
 with no `phmo` (V, every map on the disc: a Delta Halo statue, trees;
 not weapons, equipment, devices, bipeds or crates). So:
 
-- a scenery object (every converted one: the template has no `phmo`)
+- a scenery object (every converted one: none gets a `phmo`)
   gets its `coll` with one slot per BSP: the box of the BSP's vertices at
   `+0x10`/`+0x20`, the `coll`'s own datum at `+0x30`, and MOPP code from
   `crates/mopp` over the BSP's surfaces, keyed `0..n` (`coll::bsp_mopp`),

@@ -1006,7 +1006,7 @@ datum before it exists (`convert::halo1::added_datum`), and the build
 checks the datums came out so.
 
 **Each netgame equipment spawn names a collection built from Halo 1's**
-(converter version 50). The spawner `0x0015aad0` reads the entry's item
+(converter version 52). The spawner `0x0015aad0` reads the entry's item
 (`+0x58` group, `+0x5c` datum) and rolls it with `0x0019f1a0` only when
 the group is `itmc` or `vehc` (E `0x0015ab12`..`0x0015ab23`); any other
 group leaves the item -1, and `0x0015ab8b` returns without placing.
@@ -1074,7 +1074,7 @@ sandbox's disc test checks both elements name the added cyborg, which
 decodes with a render model. The first-person arms stay Halo 2's (element
 `+0x0`).
 
-**The player's camera and hands (converter version 50).** A rebuilt
+**The player's camera and hands (converter version 52).** A rebuilt
 biped names its model's Halo 1 markers in the unit's marker fields
 (`h1objects::rebuild::UNIT_MARKERS`): the camera at `unit +0xd4`
 (`head`), and the weapon markers at `+0x158`/`+0x15c` (`right hand`,

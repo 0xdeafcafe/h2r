@@ -197,6 +197,10 @@ pub struct Prepared {
     /// the multiplayer player unit when the map is built
     /// ([`crate::globals::set_player_unit`]); `None` keeps the base's.
     pub player_biped: Option<TagId>,
+    /// The Halo 1 sandbox's grenade types (their equipment and projectile
+    /// among the added objects), written over the globals' when the map
+    /// is built ([`crate::globals::set_grenades`]); empty keeps the base's.
+    pub grenades: Vec<crate::globals::Grenade<TagId>>,
     /// The base's scenario with the placements applied.
     scenario: Scenario,
     /// The base's structure BSP and lightmap slots, reused.
@@ -533,6 +537,7 @@ pub fn prepare<R: Read + Seek>(
         objects_first: 0,
         scenery: None,
         player_biped: None,
+        grenades: Vec::new(),
         scenario,
         sbsp,
         ltmp,
@@ -688,6 +693,9 @@ impl Prepared {
         }
         if let Some(biped) = self.player_biped {
             crate::globals::set_player_unit(&mut set, biped, crate::globals::Players::Multiplayer)?;
+        }
+        if !self.grenades.is_empty() {
+            crate::globals::set_grenades(&mut set, &self.grenades)?;
         }
 
         set.name = map_name(&self.h1_name);

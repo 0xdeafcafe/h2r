@@ -1,7 +1,10 @@
-//! Halo 1 objects as Halo 2 tags, built on retail Halo 2 templates.
+//! Halo 1 objects as Halo 2 tags.
 //!
-//! Each object starts from the root of the retail Halo 2 tag that plays
-//! the same role ([`TEMPLATES`]). The fields known in both games are
+//! Scenery, vehicles, devices and (by default) bipeds are written from
+//! typed definitions ([`crate::rebuild`]), with no template. Weapons,
+//! equipment, projectiles and bipeds with no rebuilt role still start
+//! from the root of the retail Halo 2 tag that plays the same role
+//! ([`TEMPLATES`]). The fields known in both games are
 //! overwritten with Halo 1's values ([`Tuning`] rows), the model chain is
 //! replaced with converted tags, and the rest stays the template's: its
 //! effects, sounds, HUD, first-person model and physics model are the
@@ -21,9 +24,12 @@ use map::{FourCC, TagId};
 
 use crate::base::Base;
 use crate::coll::{convert_collision, put_sid};
-use crate::h1::{self, Equipment, Projectile, Unit, Weapon};
+use crate::h1::{self, Unit};
 use crate::health_hud;
 use crate::{Error, Result};
+
+#[path = "convert_arsenal.rs"]
+mod arsenal_conv;
 
 /// Retail Halo 2 template per Halo 1 object: Halo 1 group, words that must
 /// all be in the Halo 1 tag path, Halo 2 tag. First match wins.
@@ -159,14 +165,6 @@ pub const TEMPLATES: &[(&[u8; 4], &[&str], &str)] = &[
         &["health"],
         "objects\\weapons\\grenade\\frag_grenade\\frag_grenade",
     ),
-    // Scenery: a static rock of Delta Halo's with collision and no physics
-    // model, so a converted model never inherits physics built for other
-    // nodes.
-    (
-        b"scen",
-        &[],
-        "scenarios\\objects\\solo\\deltatemple\\statue_shard_large\\statue_shard_large",
-    ),
 ];
 
 /// Every template row that matches a Halo 1 tag of `group` at `path`, in
@@ -201,67 +199,18 @@ pub mod h2 {
     pub const ATTACHMENTS: usize = 0x94;
     pub const ATTACHMENT: usize = 0x18;
     /// `weap` root.
-    pub const HEAT_RECOVERY_THRESHOLD: usize = 0x150;
-    pub const OVERHEATED_THRESHOLD: usize = 0x154;
-    pub const HEAT_DETONATION_THRESHOLD: usize = 0x158;
-    pub const HEAT_DETONATION_FRACTION: usize = 0x15c;
-    pub const HEAT_LOSS_PER_SECOND: usize = 0x160;
-    pub const HEAT_ILLUMINATION: usize = 0x164;
     pub const AUTOAIM_ANGLE: usize = 0x208;
     pub const AUTOAIM_RANGE: usize = 0x20c;
     pub const MAGNETISM_ANGLE: usize = 0x210;
     pub const MAGNETISM_RANGE: usize = 0x214;
-    pub const DEVIATION_ANGLE: usize = 0x218;
-    pub const MAGAZINES: usize = 0x2c0;
     pub const BARRELS: usize = 0x2d0;
     pub const MAGAZINE_SIZE: usize = 0x5c;
-    pub const BARREL_SIZE: usize = 0xec;
-    /// Magazine element.
-    pub const MAG_ROUNDS_RECHARGED: usize = 0x04;
-    pub const MAG_ROUNDS_TOTAL_INITIAL: usize = 0x06;
-    pub const MAG_ROUNDS_TOTAL_MAXIMUM: usize = 0x08;
-    pub const MAG_ROUNDS_LOADED_MAXIMUM: usize = 0x0a;
-    pub const MAG_RELOAD_TIME: usize = 0x10;
-    pub const MAG_ROUNDS_RELOADED: usize = 0x14;
     /// Barrel element.
     pub const BARREL_ROUNDS_PER_SECOND: usize = 0x04;
-    pub const BARREL_ACCELERATION_TIME: usize = 0x0c;
-    pub const BARREL_DECELERATION_TIME: usize = 0x10;
-    pub const BARREL_MAGAZINE: usize = 0x28;
-    pub const BARREL_ROUNDS_PER_SHOT: usize = 0x2a;
-    pub const BARREL_MINIMUM_ROUNDS_LOADED: usize = 0x2c;
-    pub const BARREL_ROUNDS_BETWEEN_TRACERS: usize = 0x2e;
-    pub const BARREL_ERROR_ACCELERATION_TIME: usize = 0x38;
-    pub const BARREL_ERROR_DECELERATION_TIME: usize = 0x3c;
-    pub const BARREL_DISTRIBUTION_FUNCTION: usize = 0x68;
-    pub const BARREL_PROJECTILES_PER_SHOT: usize = 0x6a;
-    pub const BARREL_DISTRIBUTION_ANGLE: usize = 0x6c;
-    pub const BARREL_MINIMUM_ERROR: usize = 0x70;
-    pub const BARREL_ERROR_ANGLE: usize = 0x74;
-    pub const BARREL_FIRST_PERSON_OFFSET: usize = 0x7c;
     pub const BARREL_PROJECTILE: usize = 0x8c;
-    pub const BARREL_HEAT_PER_ROUND: usize = 0xa4;
     /// `proj` root.
-    pub const PROJ_DETONATION_TIMER_STARTS: usize = 0xc0;
-    pub const PROJ_IMPACT_NOISE: usize = 0xc2;
-    pub const PROJ_AI_PERCEPTION_RADIUS: usize = 0xc4;
-    pub const PROJ_COLLISION_RADIUS: usize = 0xc8;
-    pub const PROJ_ARMING_TIME: usize = 0xcc;
-    pub const PROJ_DANGER_RADIUS: usize = 0xd0;
-    pub const PROJ_TIMER: usize = 0xd4;
-    pub const PROJ_MINIMUM_VELOCITY: usize = 0xdc;
-    pub const PROJ_MAXIMUM_RANGE: usize = 0xe0;
-    pub const PROJ_DETONATION_NOISE: usize = 0xe4;
-    pub const PROJ_AIR_GRAVITY_SCALE: usize = 0x164;
-    pub const PROJ_AIR_DAMAGE_RANGE: usize = 0x168;
-    pub const PROJ_WATER_GRAVITY_SCALE: usize = 0x170;
-    pub const PROJ_WATER_DAMAGE_RANGE: usize = 0x174;
     pub const PROJ_INITIAL_VELOCITY: usize = 0x17c;
     pub const PROJ_FINAL_VELOCITY: usize = 0x180;
-    pub const PROJ_GUIDED_ANGULAR_VELOCITY: usize = 0x184;
-    /// `eqip` root (docs/game/health.md).
-    pub const EQIP_POWERUP_TYPE: usize = 0x12c;
-    pub const EQIP_POWERUP_TIME: usize = 0x130;
     /// `hlmt` root.
     pub const HLMT_RENDER: usize = 0x00;
     pub const HLMT_COLLISION: usize = 0x08;
@@ -566,14 +515,8 @@ fn add_point_markers(model: &mut h1models::h1::Model, points: &[PoweredPoint]) {
 fn put_f32(b: &mut [u8], at: usize, v: f32) {
     b[at..at + 4].copy_from_slice(&v.to_le_bytes());
 }
-fn put_i16(b: &mut [u8], at: usize, v: i16) {
-    b[at..at + 2].copy_from_slice(&v.to_le_bytes());
-}
 fn get_f32(b: &[u8], at: usize) -> f32 {
     f32::from_le_bytes(b[at..at + 4].try_into().unwrap())
-}
-fn get_i16(b: &[u8], at: usize) -> i16 {
-    i16::from_le_bytes([b[at], b[at + 1]])
 }
 
 /// Writes Halo 1 values into a Halo 2 record, recording each one.
@@ -586,11 +529,6 @@ impl Writer<'_> {
         let old = get_f32(b, at);
         put_f32(b, at, h2);
         self.row(field, format!("{h1}"), format!("{h2}"), format!("{old}"));
-    }
-    fn i16(&mut self, b: &mut [u8], at: usize, field: &str, v: i16) {
-        let old = get_i16(b, at);
-        put_i16(b, at, v);
-        self.row(field, v.to_string(), v.to_string(), old.to_string());
     }
     fn row(&mut self, field: &str, halo1: String, halo2: String, template: String) {
         self.rep.tuning.push(Tuning {
@@ -605,11 +543,6 @@ impl Writer<'_> {
 /// How the [`Converter`] builds tags.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Options {
-    /// Build scenery from typed definitions ([`crate::rebuild`]): the
-    /// `scen`, its `hlmt` and its `mode`'s material list written field by
-    /// field with no retail template bytes. Off by default until the
-    /// rebuilt scenery has run in the game.
-    pub rebuild: bool,
     /// Build bipeds from the `bipd` definition ([`crate::rebuild::biped`])
     /// instead of on a template: Halo 1's model, collision size and
     /// physics, the role's words, and the references of the Halo 2
@@ -621,7 +554,6 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
-            rebuild: false,
             rebuild_bipeds: true,
         }
     }
@@ -642,8 +574,13 @@ pub struct Converter<'a> {
     health_huds: HashMap<TagId, TagId>,
     /// Biped role words, per role ([`Self::biped_role`]).
     roles: HashMap<crate::rebuild::BipedRole, Option<crate::rebuild::RoleWords>>,
+    /// Weapon, equipment, projectile and damage role words, per group
+    /// ([`crate::arsenal::role`]).
+    item_roles: HashMap<[u8; 4], crate::arsenal::Role>,
     /// Vehicle role words, per vehicle type ([`Self::vehicle_role`]).
     vehicle_roles: HashMap<u16, Option<crate::rebuild::VehicleRole>>,
+    /// Scenery role words ([`Self::scenery_role`]), computed once.
+    scenery_role: Option<Option<crate::rebuild::SceneryRole>>,
 }
 
 impl<'a> Converter<'a> {
@@ -659,7 +596,9 @@ impl<'a> Converter<'a> {
             coll_names: HashMap::new(),
             health_huds: HashMap::new(),
             roles: HashMap::new(),
+            item_roles: HashMap::new(),
             vehicle_roles: HashMap::new(),
+            scenery_role: None,
         }
     }
 
@@ -951,6 +890,13 @@ impl<'a> Converter<'a> {
         name: &str,
     ) -> Result<Option<TagId>> {
         debug_assert!(!has_phmo, "the rebuilt path borrows no physics model");
+        // Scenery's unknown spans take the role's words; other groups'
+        // stay zero (their lanes own them).
+        let words = if h1::OBJECT_TYPES.get(obj.object_type as usize) == Some(&b"scen") {
+            self.scenery_role()?.map(|r| r.hlmt).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let (count, nodes) = h1models::mode::hlmt_nodes(h1_model);
         let render: Vec<(String, Vec<String>)> = h1_model
             .regions
@@ -987,6 +933,7 @@ impl<'a> Converter<'a> {
             physics: None,
             nodes: (count, nodes),
             regions,
+            words,
         })?;
         if obj.animation.is_none() {
             rep.no_home
@@ -1002,17 +949,36 @@ impl<'a> Converter<'a> {
         )))
     }
 
-    /// Scenery from typed definitions: no template.
-    fn scenery_rebuilt(&mut self, tag: &Tag) -> Result<TagId> {
+    /// Scenery from the `scen` definition ([`crate::rebuild::scenery`]),
+    /// no template: every scenery object (the template path was removed in
+    /// converter version 50). Its `hlmt` and `mode` materials are written
+    /// from their definitions; its unknown spans take the base's scenery
+    /// role words ([`crate::rebuild::SceneryRole`]). Havok sees it through
+    /// its `coll`'s BSP physics slots, as retail static scenery (no
+    /// `phmo`; docs/formats/h1-objects.md, "Collision for Havok").
+    fn scenery(&mut self, tag: &Tag) -> Result<TagId> {
         let object = h1::Object::read(self.h1, self.h1.tag_data(tag)?)?;
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
-        rep.physics = Some("none (rebuilt scenery borrows no phmo)".into());
         let hlmt = self.model(&mut rep, &object, None, &tag.name, true)?;
-        let root = crate::rebuild::scenery(&object, hlmt)?;
-        rep.no_home.push(
-            "scen beyond the object header's bounds and model: definition defaults (no template)"
-                .into(),
-        );
+        rep.physics = Some(match object.collision {
+            Some(_) => "none: the coll's BSP physics slots, as retail static scenery".into(),
+            None => "none (no Halo 1 collision)".into(),
+        });
+        let predicted = self.predicted(&object)?;
+        let words = self.scenery_role()?.map(|r| r.scen).unwrap_or_default();
+        let root = crate::rebuild::scenery(&object, hlmt, &predicted, &words)?;
+        let attached = object.attachments.iter().flatten().count();
+        if attached > 0 {
+            rep.no_home.push(format!(
+                "obje attachments: {attached} Halo 1 attachments (lights, effects, sounds) not carried; the block is empty"
+            ));
+        }
+        let widgets = object.widgets.iter().flatten().count();
+        if widgets > 0 {
+            rep.no_home.push(format!(
+                "obje widgets: {widgets} Halo 1 widgets (flags, antennas) not carried"
+            ));
+        }
         self.tree.reports.push(rep);
         Ok(self.tree.push(
             &tag.name,
@@ -1022,6 +988,18 @@ impl<'a> Converter<'a> {
                 raw: Vec::new(),
             },
         ))
+    }
+
+    /// The base map's scenery role words ([`crate::rebuild::scenery_role`]),
+    /// computed once. `None` when the base holds no scenery: the unknown
+    /// spans then stay zero.
+    pub fn scenery_role(&mut self) -> Result<Option<crate::rebuild::SceneryRole>> {
+        if let Some(r) = &self.scenery_role {
+            return Ok(r.clone());
+        }
+        let r = crate::rebuild::scenery_role(self.base)?;
+        self.scenery_role = Some(r.clone());
+        Ok(r)
     }
 
     /// The converted `coll` for Halo 1's `t`, with or without BSP physics
@@ -1155,552 +1133,6 @@ impl<'a> Converter<'a> {
             template: template.to_owned(),
             ..Default::default()
         }
-    }
-
-    fn weapon(&mut self, tag: &Tag) -> Result<TagId> {
-        let w = Weapon::read(self.h1, tag)?;
-        let (tpl, tpl_name) = self.template(b"weap", &tag.name, b"weap")?;
-        let tpl_root = self.base.root(tpl)?;
-        let mut rep = Self::report(tag, &tpl_name);
-        let mut root = Block::new(tpl_root.clone());
-        self.header(&mut rep, &mut root, &w.object, &tag.name)?;
-        let mut wr = Writer {
-            rep: &mut rep,
-            prefix: "weap.".into(),
-        };
-        let b = &mut root.bytes;
-        wr.f32(
-            b,
-            h2::AUTOAIM_ANGLE,
-            "autoaim_angle",
-            w.autoaim_angle,
-            w.autoaim_angle,
-        );
-        wr.f32(
-            b,
-            h2::AUTOAIM_RANGE,
-            "autoaim_range",
-            w.autoaim_range,
-            w.autoaim_range,
-        );
-        wr.f32(
-            b,
-            h2::MAGNETISM_ANGLE,
-            "magnetism_angle",
-            w.magnetism_angle,
-            w.magnetism_angle,
-        );
-        wr.f32(
-            b,
-            h2::MAGNETISM_RANGE,
-            "magnetism_range",
-            w.magnetism_range,
-            w.magnetism_range,
-        );
-        wr.f32(
-            b,
-            h2::DEVIATION_ANGLE,
-            "deviation_angle",
-            w.deviation_angle,
-            w.deviation_angle,
-        );
-        wr.f32(
-            b,
-            h2::HEAT_RECOVERY_THRESHOLD,
-            "heat_recovery_threshold",
-            w.heat_recovery_threshold,
-            w.heat_recovery_threshold,
-        );
-        wr.f32(
-            b,
-            h2::OVERHEATED_THRESHOLD,
-            "overheated_threshold",
-            w.overheated_threshold,
-            w.overheated_threshold,
-        );
-        wr.f32(
-            b,
-            h2::HEAT_DETONATION_THRESHOLD,
-            "heat_detonation_threshold",
-            w.heat_detonation_threshold,
-            w.heat_detonation_threshold,
-        );
-        wr.f32(
-            b,
-            h2::HEAT_DETONATION_FRACTION,
-            "heat_detonation_fraction",
-            w.heat_detonation_fraction,
-            w.heat_detonation_fraction,
-        );
-        wr.f32(
-            b,
-            h2::HEAT_LOSS_PER_SECOND,
-            "heat_loss_per_second",
-            w.heat_loss_per_second,
-            w.heat_loss_per_second,
-        );
-        wr.f32(
-            b,
-            h2::HEAT_ILLUMINATION,
-            "heat_illumination",
-            w.illumination,
-            w.illumination,
-        );
-
-        // Magazines: each a copy of the template's first, with Halo 1's
-        // counts and times.
-        let tpl_mag = self
-            .base
-            .element(&tpl_root, h2::MAGAZINES, h2::MAGAZINE_SIZE, 0)?;
-        let mut mags = Vec::new();
-        for (i, m) in w.magazines.iter().enumerate() {
-            let Some(mut e) = tpl_mag.clone() else {
-                wr.rep.no_home.push(format!(
-                    "magazine {i}: the template has no magazine to build on"
-                ));
-                continue;
-            };
-            wr.prefix = format!("magazine[{i}].");
-            wr.i16(
-                &mut e,
-                h2::MAG_ROUNDS_RECHARGED,
-                "rounds_recharged",
-                m.rounds_recharged,
-            );
-            wr.i16(
-                &mut e,
-                h2::MAG_ROUNDS_TOTAL_INITIAL,
-                "rounds_total_initial",
-                m.rounds_total_initial,
-            );
-            wr.i16(
-                &mut e,
-                h2::MAG_ROUNDS_TOTAL_MAXIMUM,
-                "rounds_total_maximum",
-                m.rounds_total_maximum,
-            );
-            wr.i16(
-                &mut e,
-                h2::MAG_ROUNDS_LOADED_MAXIMUM,
-                "rounds_loaded_maximum",
-                m.rounds_loaded_maximum,
-            );
-            wr.f32(
-                &mut e,
-                h2::MAG_RELOAD_TIME,
-                "reload_time",
-                m.reload_time,
-                m.reload_time,
-            );
-            wr.i16(
-                &mut e,
-                h2::MAG_ROUNDS_RELOADED,
-                "rounds_reloaded",
-                m.rounds_reloaded,
-            );
-            if m.chamber_time != 0.0 {
-                wr.rep.no_home.push(format!(
-                    "magazine {i} chamber time {} (Halo 2 offset not established)",
-                    m.chamber_time
-                ));
-            }
-            mags.push(e);
-        }
-        if !mags.is_empty() {
-            let n = mags.len();
-            root.block(h2::MAGAZINES as u32, n as u32, Block::new(mags.concat()));
-        } else {
-            root.bytes[h2::MAGAZINES..h2::MAGAZINES + 8].fill(0);
-        }
-
-        // Barrels: Halo 1 triggers, each on the template's barrel of the
-        // same index (or its last).
-        let tpl_barrels =
-            u32::from_le_bytes(tpl_root[h2::BARRELS..h2::BARRELS + 4].try_into().unwrap()) as usize;
-        let mut barrels = Block::zeroed(0);
-        for (i, t) in w.triggers.iter().enumerate() {
-            let Some(mut e) = self.base.element(
-                &tpl_root,
-                h2::BARRELS,
-                h2::BARREL_SIZE,
-                i.min(tpl_barrels.saturating_sub(1)),
-            )?
-            else {
-                wr.rep.no_home.push(format!(
-                    "trigger {i}: the template has no barrel to build on"
-                ));
-                continue;
-            };
-            wr.prefix = format!("barrel[{i}].");
-            for (k, at) in [
-                h2::BARREL_ROUNDS_PER_SECOND,
-                h2::BARREL_ROUNDS_PER_SECOND + 4,
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                wr.f32(
-                    &mut e,
-                    at,
-                    &format!("rounds_per_second[{k}]"),
-                    t.rounds_per_second[k],
-                    t.rounds_per_second[k],
-                );
-            }
-            wr.f32(
-                &mut e,
-                h2::BARREL_ACCELERATION_TIME,
-                "acceleration_time",
-                t.firing_acceleration_time,
-                t.firing_acceleration_time,
-            );
-            wr.f32(
-                &mut e,
-                h2::BARREL_DECELERATION_TIME,
-                "deceleration_time",
-                t.firing_deceleration_time,
-                t.firing_deceleration_time,
-            );
-            wr.i16(&mut e, h2::BARREL_MAGAZINE, "magazine", t.magazine);
-            wr.i16(
-                &mut e,
-                h2::BARREL_ROUNDS_PER_SHOT,
-                "rounds_per_shot",
-                t.rounds_per_shot,
-            );
-            wr.i16(
-                &mut e,
-                h2::BARREL_MINIMUM_ROUNDS_LOADED,
-                "minimum_rounds_loaded",
-                t.minimum_rounds_loaded,
-            );
-            wr.i16(
-                &mut e,
-                h2::BARREL_ROUNDS_BETWEEN_TRACERS,
-                "rounds_between_tracers",
-                t.rounds_between_tracers,
-            );
-            wr.f32(
-                &mut e,
-                h2::BARREL_ERROR_ACCELERATION_TIME,
-                "error_acceleration_time",
-                t.error_acceleration_time,
-                t.error_acceleration_time,
-            );
-            wr.f32(
-                &mut e,
-                h2::BARREL_ERROR_DECELERATION_TIME,
-                "error_deceleration_time",
-                t.error_deceleration_time,
-                t.error_deceleration_time,
-            );
-            wr.i16(
-                &mut e,
-                h2::BARREL_DISTRIBUTION_FUNCTION,
-                "distribution_function",
-                t.distribution_function,
-            );
-            wr.i16(
-                &mut e,
-                h2::BARREL_PROJECTILES_PER_SHOT,
-                "projectiles_per_shot",
-                t.projectiles_per_shot,
-            );
-            wr.f32(
-                &mut e,
-                h2::BARREL_DISTRIBUTION_ANGLE,
-                "distribution_angle",
-                t.distribution_angle,
-                t.distribution_angle,
-            );
-            wr.f32(
-                &mut e,
-                h2::BARREL_MINIMUM_ERROR,
-                "minimum_error",
-                t.minimum_error,
-                t.minimum_error,
-            );
-            for k in 0..2 {
-                wr.f32(
-                    &mut e,
-                    h2::BARREL_ERROR_ANGLE + 4 * k,
-                    &format!("error_angle[{k}]"),
-                    t.error_angle[k],
-                    t.error_angle[k],
-                );
-            }
-            for k in 0..3 {
-                let v = t.first_person_offset[k];
-                wr.f32(
-                    &mut e,
-                    h2::BARREL_FIRST_PERSON_OFFSET + 4 * k,
-                    &format!("first_person_offset[{k}]"),
-                    v,
-                    v,
-                );
-            }
-            wr.f32(
-                &mut e,
-                h2::BARREL_HEAT_PER_ROUND,
-                "heat_per_round",
-                t.heat_per_round,
-                t.heat_per_round,
-            );
-            let mut el = Block::new(e);
-            if let Some(p) = t.projectile {
-                let tpl_proj = self.base.reference(&el.bytes, h2::BARREL_PROJECTILE);
-                let ptag = self.h1_tag(p)?;
-                let id = self.object_with(ptag, tpl_proj)?;
-                el.tag_ref(h2::BARREL_PROJECTILE as u32, id);
-            }
-            let at = barrels.bytes.len() as u32;
-            barrels.bytes.extend_from_slice(&el.bytes);
-            for mut f in el.fixups {
-                f.offset += at;
-                barrels.fixups.push(f);
-            }
-        }
-        let n = barrels.bytes.len() / h2::BARREL_SIZE;
-        if n > 0 {
-            root.block(h2::BARRELS as u32, n as u32, barrels);
-        }
-        rep.no_home.extend(weapon_no_home(&w));
-        self.stopgaps(&mut rep, &tpl_root, &[h2::MODEL]);
-        self.tree.reports.push(rep);
-        Ok(self.tree.push(
-            &tag.name,
-            Converted {
-                group: FourCC(*b"weap"),
-                root,
-                raw: Vec::new(),
-            },
-        ))
-    }
-
-    fn projectile(&mut self, tag: &Tag, template: Option<TagId>) -> Result<TagId> {
-        let p = Projectile::read(self.h1, tag)?;
-        let (tpl, tpl_name) = match template {
-            Some(t) => (
-                t,
-                self.base.name(t).map_or(String::new(), |n| n.1.to_owned()),
-            ),
-            None => self.template(b"proj", &tag.name, b"proj")?,
-        };
-        let tpl_root = self.base.root(tpl)?;
-        let mut rep = Self::report(tag, &tpl_name);
-        let mut root = Block::new(tpl_root.clone());
-        self.header(&mut rep, &mut root, &p.object, &tag.name)?;
-        let mut wr = Writer {
-            rep: &mut rep,
-            prefix: "proj.".into(),
-        };
-        let b = &mut root.bytes;
-        wr.i16(
-            b,
-            h2::PROJ_DETONATION_TIMER_STARTS,
-            "detonation_timer_starts",
-            p.detonation_timer_starts,
-        );
-        wr.i16(b, h2::PROJ_IMPACT_NOISE, "impact_noise", p.impact_noise);
-        wr.f32(
-            b,
-            h2::PROJ_AI_PERCEPTION_RADIUS,
-            "ai_perception_radius",
-            p.ai_perception_radius,
-            p.ai_perception_radius,
-        );
-        wr.f32(
-            b,
-            h2::PROJ_COLLISION_RADIUS,
-            "collision_radius",
-            p.collision_radius,
-            p.collision_radius,
-        );
-        wr.f32(
-            b,
-            h2::PROJ_ARMING_TIME,
-            "arming_time",
-            p.arming_time,
-            p.arming_time,
-        );
-        wr.f32(
-            b,
-            h2::PROJ_DANGER_RADIUS,
-            "danger_radius",
-            p.danger_radius,
-            p.danger_radius,
-        );
-        for k in 0..2 {
-            wr.f32(
-                b,
-                h2::PROJ_TIMER + 4 * k,
-                &format!("timer[{k}]"),
-                p.timer[k],
-                p.timer[k],
-            );
-        }
-        let t = TICKS_PER_SECOND;
-        wr.f32(
-            b,
-            h2::PROJ_MINIMUM_VELOCITY,
-            "minimum_velocity",
-            p.minimum_velocity,
-            p.minimum_velocity * t,
-        );
-        wr.f32(
-            b,
-            h2::PROJ_MAXIMUM_RANGE,
-            "maximum_range",
-            p.maximum_range,
-            p.maximum_range,
-        );
-        wr.i16(
-            b,
-            h2::PROJ_DETONATION_NOISE,
-            "detonation_noise",
-            p.detonation_noise,
-        );
-        wr.f32(
-            b,
-            h2::PROJ_AIR_GRAVITY_SCALE,
-            "air_gravity_scale",
-            p.air_gravity_scale,
-            p.air_gravity_scale,
-        );
-        wr.f32(
-            b,
-            h2::PROJ_WATER_GRAVITY_SCALE,
-            "water_gravity_scale",
-            p.water_gravity_scale,
-            p.water_gravity_scale,
-        );
-        for k in 0..2 {
-            wr.f32(
-                b,
-                h2::PROJ_AIR_DAMAGE_RANGE + 4 * k,
-                &format!("air_damage_range[{k}]"),
-                p.air_damage_range[k],
-                p.air_damage_range[k],
-            );
-            wr.f32(
-                b,
-                h2::PROJ_WATER_DAMAGE_RANGE + 4 * k,
-                &format!("water_damage_range[{k}]"),
-                p.water_damage_range[k],
-                p.water_damage_range[k],
-            );
-        }
-        wr.f32(
-            b,
-            h2::PROJ_INITIAL_VELOCITY,
-            "initial_velocity",
-            p.initial_velocity,
-            p.initial_velocity * t,
-        );
-        wr.f32(
-            b,
-            h2::PROJ_FINAL_VELOCITY,
-            "final_velocity",
-            p.final_velocity,
-            p.final_velocity * t,
-        );
-        wr.f32(
-            b,
-            h2::PROJ_GUIDED_ANGULAR_VELOCITY,
-            "guided_angular_velocity",
-            p.guided_angular_velocity,
-            p.guided_angular_velocity * t,
-        );
-        if p.impact_damage.is_some() || p.attached_detonation_damage.is_some() {
-            rep.no_home.push("damage (jpt!): the template's damage effects are kept; Halo 1 damage amounts are not carried yet".into());
-        }
-        rep.no_home.push(format!(
-            "{} material responses: the template's are kept",
-            p.material_responses.len()
-        ));
-        self.stopgaps(&mut rep, &tpl_root, &[h2::MODEL]);
-        self.tree.reports.push(rep);
-        Ok(self.tree.push(
-            &tag.name,
-            Converted {
-                group: FourCC(*b"proj"),
-                root,
-                raw: Vec::new(),
-            },
-        ))
-    }
-
-    fn equipment(&mut self, tag: &Tag) -> Result<TagId> {
-        let e = Equipment::read(self.h1, tag)?;
-        let (tpl, tpl_name) = self.template(b"eqip", &tag.name, b"eqip")?;
-        let tpl_root = self.base.root(tpl)?;
-        let mut rep = Self::report(tag, &tpl_name);
-        let mut root = Block::new(tpl_root.clone());
-        self.header(&mut rep, &mut root, &e.object, &tag.name)?;
-        let mut wr = Writer {
-            rep: &mut rep,
-            prefix: "eqip.".into(),
-        };
-        if e.powerup_type == POWERUP_HEALTH {
-            wr.i16(
-                &mut root.bytes,
-                h2::EQIP_POWERUP_TYPE,
-                "powerup_type",
-                e.powerup_type,
-            );
-            // Health needs a positive amount (docs/game/health.md).
-            let v = if e.powerup_time > 0.0 {
-                e.powerup_time
-            } else {
-                1.0
-            };
-            wr.f32(
-                &mut root.bytes,
-                h2::EQIP_POWERUP_TIME,
-                "powerup_time",
-                e.powerup_time,
-                v,
-            );
-        } else {
-            rep.no_home.push(format!(
-                "powerup type {} / grenade type {}: the template's are kept (Halo 2's values for them are not established)",
-                e.powerup_type, e.grenade_type
-            ));
-        }
-        self.stopgaps(&mut rep, &tpl_root, &[h2::MODEL]);
-        self.tree.reports.push(rep);
-        Ok(self.tree.push(
-            &tag.name,
-            Converted {
-                group: FourCC(*b"eqip"),
-                root,
-                raw: Vec::new(),
-            },
-        ))
-    }
-
-    fn scenery(&mut self, tag: &Tag) -> Result<TagId> {
-        if self.options.rebuild {
-            return self.scenery_rebuilt(tag);
-        }
-        let object = h1::Object::read(self.h1, self.h1.tag_data(tag)?)?;
-        let (tpl, tpl_name) = self.template(b"scen", &tag.name, b"scen")?;
-        let tpl_root = self.base.root(tpl)?;
-        let mut rep = Self::report(tag, &tpl_name);
-        let mut root = Block::new(tpl_root.clone());
-        self.header(&mut rep, &mut root, &object, &tag.name)?;
-        rep.no_home
-            .push("scen tuning (pathfinding and lightmapping policy): the template's".into());
-        self.stopgaps(&mut rep, &tpl_root, &[h2::MODEL]);
-        self.tree.reports.push(rep);
-        Ok(self.tree.push(
-            &tag.name,
-            Converted {
-                group: FourCC(*b"scen"),
-                root,
-                raw: Vec::new(),
-            },
-        ))
     }
 
     /// A Halo 1 machine, control or light fixture, from the `mach` or
@@ -2426,31 +1858,3 @@ impl Converter<'_> {
     }
 }
 
-/// Halo 1 weapon data this conversion does not carry.
-fn weapon_no_home(w: &Weapon) -> Vec<String> {
-    let mut out = Vec::new();
-    if w.magnification_levels > 0 {
-        out.push(format!(
-            "zoom: {} levels, {:?}x (the template's zoom is kept; Halo 2 offset not established)",
-            w.magnification_levels, w.magnification_range
-        ));
-    }
-    if w.first_person_model.is_some() {
-        out.push(
-            "first-person model and animations: the template's (Halo 1's not converted yet)".into(),
-        );
-    }
-    if w.hud.is_some() {
-        out.push("HUD (wphi): the template's nhdt".into());
-    }
-    if w.ready_time != 0.0 {
-        out.push(format!(
-            "ready time {} (Halo 2 offset not established)",
-            w.ready_time
-        ));
-    }
-    if w.triggers.iter().any(|t| t.charging_effect.is_some()) {
-        out.push("trigger charging (plasma pistol): the template's".into());
-    }
-    out
-}
