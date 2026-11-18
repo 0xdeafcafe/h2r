@@ -359,6 +359,89 @@ fn the_supervisor_merges_two_games_and_the_verdict_reads_the_log() {
     fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A game whose guest thread exits (its window stays open) is a stop: the
+/// others are closed, and the stopped one is left for the player. A game
+/// that ends in failure is one too; one closed normally is not.
+#[cfg(unix)]
+#[test]
+fn a_stopped_game_closes_the_others() {
+    let dir = scratch("stop");
+    let roles = Roles {
+        host: "Alpha".into(),
+        guests: vec!["Bravo".into(), "Charlie".into()],
+        late: vec![],
+    };
+    let merged = dir.join("coop.log");
+    let mut sup = Supervisor::new(&merged, &dir, &roles).unwrap();
+    // `exec` so the signal reaches the process holding the pipes.
+    let script = |body: &str| {
+        let mut c = Command::new("/bin/sh");
+        c.arg("-c")
+            .arg(body)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        c
+    };
+    sup.spawn_command(
+        script("echo 'live: playing as Alpha (1)' >&2; exec sleep 30"),
+        "Alpha",
+    )
+    .unwrap();
+    sup.spawn_command(
+        script("echo 'app: guest thread exited: Fault' >&2; exec sleep 30"),
+        "Bravo",
+    )
+    .unwrap();
+    sup.spawn_command(script("exit 0"), "Charlie").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let stop = loop {
+        sup.pump(Duration::from_millis(50)).unwrap();
+        if let Some(s) = sup.crash() {
+            break s;
+        }
+        assert!(Instant::now() < deadline, "no stop seen");
+    };
+    assert_eq!(stop, (1, "its guest thread exited".to_string()));
+    sup.close_others(1);
+    while !sup.exited(0) {
+        sup.pump(Duration::from_millis(50)).unwrap();
+        assert!(Instant::now() < deadline, "Alpha was not closed");
+    }
+    assert!(!sup.exited(1), "the stopped game is left open");
+    assert_eq!(sup.crash(), None, "said once");
+    let text = fs::read_to_string(&merged).unwrap();
+    assert!(
+        text.contains("] Bravo | app: guest thread exited"),
+        "{text}"
+    );
+    sup.close_others(0);
+    while !sup.all_exited() {
+        sup.pump(Duration::from_millis(50)).unwrap();
+        assert!(Instant::now() < deadline, "Bravo was not closed");
+    }
+
+    // A crash (a failed exit) with another still running.
+    let mut sup = Supervisor::new(&dir.join("coop2.log"), &dir, &roles).unwrap();
+    sup.spawn_command(script("exec sleep 30"), "Alpha").unwrap();
+    sup.spawn_command(script("exit 3"), "Bravo").unwrap();
+    let stop = loop {
+        sup.pump(Duration::from_millis(50)).unwrap();
+        if let Some(s) = sup.crash() {
+            break s;
+        }
+        assert!(Instant::now() < deadline, "no stop seen");
+    };
+    assert_eq!(stop.0, 1);
+    assert!(stop.1.contains('3'), "{}", stop.1);
+    sup.close_others(1);
+    while !sup.all_exited() {
+        sup.pump(Duration::from_millis(50)).unwrap();
+        assert!(Instant::now() < deadline, "Alpha was not closed");
+    }
+    fs::remove_dir_all(&dir).unwrap();
+}
+
 #[test]
 fn players_go_up_to_sixteen_and_the_host_gets_the_limit() {
     use super::*;

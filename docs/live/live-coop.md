@@ -1444,13 +1444,19 @@ It:
 5. Writes every line of each game to `<root>/logs/<time>/<gamertag>.log`
    and its co-op lines (`coop-live`, `coop-probe`, `coop-auto`, `skulls`,
    `session`, `game start: options`, `live: playing as`, `custom games`,
-   `agent: listening`, panics) to `coop.log` there, as `[+SECONDS]
+   `agent: listening`, the join's steps `live: join`, `live: qos` and
+   `live: xnet`, `guest thread exited`, panics) to `coop.log` there, as `[+SECONDS]
    GAMERTAG | line`, also shown on the terminal as they come. Boot-time
    dumps that only name a co-op hook are left out: the `feature plan:`
    lines, each hook's first `feature: ... active`, `health:` lines and the
    features' `hooks installed via feature plan` summaries.
 6. When the last window closes (Ctrl-C closes them; twice exits at once),
    prints the checklist and the log's path.
+7. When a game stops while others run (its `app: guest thread exited`
+   line, or its process ending in failure), closes the others (SIGTERM)
+   and prints the checklist at once. The stopped game's window stays open
+   on its last frame until you close it; a game closed normally is no
+   stop.
 
 ### 12.1 What `--auto` does
 
@@ -1463,6 +1469,28 @@ on by `H2_COOP_AUTO_INVITE=<gamertags>` on the host and
 invitation. They print `coop-auto: invited Bravo to session <id>` and
 `coop-auto: accepting Alpha's invitation to session <id>`.
 
+The lobby's session is the one advertised last (`Sessions::current_id`):
+a lobby that re-advertises gets a new random id, so the host invites
+again to that one, and a guest accepts only an invitation newer than the
+last it accepted. An older invitation names a session the host left; a
+newer accepted one replaces it in the queue the title reads.
+
+When the title reads the accepted invitation
+(`XOnlineFriendsGetAcceptedGameInvite`, from its reader `0x0022f3b5`), the
+guest prints `coop-auto: joining Alpha's session <id> (the game took the
+invitation)` (without `--auto`: `live: join: the game took ...`). If it
+hasn't after 20 s, it says so once. If the title took it but never looked
+the session up (FindFromID) within 15 s, it is offered again, up to three
+times.
+
+The reader drops a record whose FILETIME at +100 is not before the
+guest's own KeQuerySystemTime (`0x0022f3d7`) or is 15 minutes or more
+before it. The guest's clock starts at the NT epoch (the kernel's
+`epoch_100ns` is 0), so a record stamped with the Mac's date was in the
+title's future: it read the record, dropped it, and nothing happened (the
+2026-11-18 run: Bravo's `accepting` and then nothing). The HLE now stamps
+the record a second before the guest's clock as it is read.
+
 Menus are still yours: there is no input over the agent API yet (see
 12.5). With `--auto`: on every window, Xbox Live (that signs the game in
 to Live; until then the host sees nobody online and a guest can't take an
@@ -1470,13 +1498,47 @@ invitation); on the host, Co-op Campaign, a level and difficulty, then
 Start Game. Without `--auto`, invite from the lobby's Y (friends list) and
 accept on the guest, as on a console.
 
-Not established without a game run: that the title reads an invitation
+Still not established without a game run: that the title reads an invitation
 accepted this way (`XOnlineFriendsGetAcceptedGameInvite`, which the
 retail flow reads after its own Accept) and joins at that moment, rather
 than only when its friends list is open. The test
 `coop_auto_invites_the_named_friend_and_the_guest_accepts_by_itself`
 (`crates/live-hle/tests/server.rs`) shows the accepted record is there,
 naming the host's lobby, without a press.
+
+#### "UNABLE TO JOIN ... network problems"
+
+The dialog's title is `unable_to_join` (`0x0e00169d`, mainmenu) and its
+text "You aren't able to join this party because we're having network
+problems." is two strings: `error_join_qos_failure` (`0x160016e2`) and
+`error_join_data_decode_failure` (`0x1e0016e3`). Both come after the
+title's session lookup (`XOnlineMatchSessionFindFromID`, its only call at
+`0x00090121`) found the session, at the QoS probe: `XNetQosLookup` (one
+call, `0x0007b558`, synchronous: no event, no flags) to the host's XNADDR
+with the session's XNKID. The HLE answers it on the host's XNet base + 2
+(`crates/live-hle/src/qos.rs`), and only for a session the host listens
+for (`XNetQosListen`, `0x00073243`: enable, then its lobby data at
+`0x000732bb`). No answer leaves the target uncontacted (flags 1:
+`qos_failure`); an answer without the lobby data fails the decode.
+
+Each step is now in the games' logs and `coop.log`:
+
+| Line | Step |
+|---|---|
+| `live: session <id> advertised for <ip>:<port>` / `deleted` | the host's lobby on the server |
+| `live: xnet: key for session <id> registered` / `unregistered` | XNetRegisterKey on either side |
+| `live: qos: listening for session <id> on <ip>:<port+2>: on, N bytes of data` | the host's QosListen, on each change |
+| `live: qos: <guest> asked about session <id>, which this console isn't listening for (listening: ...)` | the host, once per unknown session: the usual cause |
+| `live: join: find session <id>: <host> hosts it at <ip>:<port> ...` (or `no such session`, `the session is <state>`) | the guest's FindFromID |
+| `live: join: qos lookup: <ip>:<port+2> session <id>: contacted, N bytes of data` (or `no answer in 3 tries ...`, `nothing on that port`) | the guest's QoS probe |
+| `live: join: <ip>:<port> for session <id>: address made` / `connecting to ...` | XNetXnAddrToInAddr and XNetConnect |
+
+A probe now tries three times, 100 ms each (once, 50 ms before): three
+games on one Mac run at a few frames a second, and a single short window
+could be missed. The 2026-11-18 run logged none of this (it predates the
+lines), so which step failed there is for the next run's log to say:
+look for the host's `asked about session` line or the guest's `no
+answer`.
 
 ### 12.2 Two games on one Mac
 
@@ -1560,8 +1622,15 @@ without `--auto`; 11; 1); the filter over the host's log of the
 (`crates/cli/src/coop_verdict/host-at-menu.log`, our own lines, paths
 shortened): only the co-op lines kept, no feature plan; the next-steps
 line; the wait for the main menu against a stand-in agent socket;
-`H2_LIVE_DIR`; and the automatic invite and acceptance between two HLEs
-and a server.
+`H2_LIVE_DIR`; the automatic invite and acceptance between two HLEs
+and a server, and to the lobby's newest session when its id isn't the
+smallest; a stopped game (its guest thread exited, or a failed exit)
+closing the others while it stays open, and a normal exit not counting;
+the accepted record stamped in the guest's clock so the reader's check
+takes it, said once and offered again; a guest accepting only the newest
+invitation; one log line per QoS target; and a QoS probe for a session
+the host doesn't listen for coming back uncontacted after its tries,
+while the current one is answered with its data.
 
 ### 12.5 Driving the host's menus (not built)
 
