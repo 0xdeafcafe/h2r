@@ -172,7 +172,10 @@ impl feature::Feature for Precision {
             })
             // Aim assist scales weapon tags and the swap moves item
             // spawns; neither reads the other, but the plan wants an order.
-            .after_feature(crate::aim_assist::FEATURE);
+            .after_feature(crate::aim_assist::FEATURE)
+            // The precision choice is read from the options the host's
+            // block was just written into.
+            .after_feature(crate::variant_ext::FEATURE);
         Ok(())
     }
 }

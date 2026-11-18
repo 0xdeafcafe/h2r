@@ -318,7 +318,8 @@ impl feature::Feature for HudSwap {
             })
             // Neither reads what the other writes; the plan wants an order.
             .after_feature(crate::precision::FEATURE)
-            .after_feature(crate::aim_assist::FEATURE);
+            .after_feature(crate::aim_assist::FEATURE)
+            .after_feature(crate::variant_ext::FEATURE);
         Ok(())
     }
 }

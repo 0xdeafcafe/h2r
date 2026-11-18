@@ -169,3 +169,17 @@ fn precision_and_aim_assist_plan_together() {
     let plan = r.build(&feature::Base).unwrap_or_else(|e| panic!("{e:?}"));
     assert!(plan.text().contains(FEATURE), "{}", plan.text());
 }
+
+#[test]
+fn the_swap_and_aim_assist_plan_after_the_live_options() {
+    let mut r = feature::Registry::new(feature::Switches::defaults());
+    let store = settings::Store::defaults(crate::setting_defs::ALL);
+    r.add(&crate::variant_ext::Transport { hle: None }).unwrap();
+    r.add(&crate::aim_assist::AimAssist::new(&store)).unwrap();
+    r.add(&Precision { table: Arc::default() }).unwrap();
+    let text = r.build(&feature::Base).unwrap().text();
+    let line = text.lines().find(|l| l.contains("GAME_ACTIVATE")).unwrap();
+    let ext = line.find(crate::variant_ext::FEATURE).unwrap();
+    assert!(ext < line.find(crate::aim_assist::FEATURE).unwrap(), "{line}");
+    assert!(ext < line.find(FEATURE).unwrap(), "{line}");
+}

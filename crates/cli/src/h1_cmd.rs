@@ -931,7 +931,17 @@ pub(crate) fn prepare_mp<R: Read + Seek>(
     base_name: &str,
     sandbox: Sandbox,
 ) -> Result<h1convert::convert::Prepared> {
-    let sha = content::Sha256::of(file);
+    prepare_mp_with(h1, content::Sha256::of(file), base, base_name, sandbox)
+}
+
+/// [`prepare_mp`] with the Halo 1 map file's SHA-256 already taken.
+pub(crate) fn prepare_mp_with<R: Read + Seek>(
+    h1: &H1Map,
+    sha: content::Sha256,
+    base: &mut map::Map<R>,
+    base_name: &str,
+    sandbox: Sandbox,
+) -> Result<h1convert::convert::Prepared> {
     // The Halo 1 sandbox places Halo 1 objects, converted and added as
     // new tags (docs/halo1/multiplayer.md, "Halo 1 sandbox"); both
     // sandboxes place Halo 1's scenery the same way.

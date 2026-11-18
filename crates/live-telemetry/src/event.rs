@@ -128,6 +128,12 @@ pub struct Motion {
     pub weapons: Option<[u32; 4]>,
     /// The held weapon's first magazine: (reserve, loaded).
     pub magazine: Option<(i16, i16)>,
+    /// Raw unit flags (`layout::UNIT_FLAGS`), for diagnostics.
+    pub unit_flags: Option<u32>,
+    /// Bipeds only: raw biped flags (`layout::BIPED_FLAGS`).
+    pub biped_flags: Option<u16>,
+    /// Bipeds only: airborne tick count (`layout::BIPED_AIRBORNE_TICKS`).
+    pub airborne_ticks: Option<i8>,
     /// The animation the unit plays.
     pub animation: Option<Animation>,
 }

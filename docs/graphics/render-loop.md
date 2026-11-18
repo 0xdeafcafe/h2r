@@ -160,55 +160,21 @@ vertical one). Not ported: the records are camera state other code reads.
   `ScenePasses::at()` names the call in progress by its original return
   address: the pass identity a `PassTag` needs. `Regs` gained `xmm1` for
   `render_scene_passes`' `0x0002afa0` call.
-- The layer sort (`engine::render_loop::sort`, `impl.render.layer_sort`,
-  off by default): the bookkeeping port of this stage, below.
 - The shader draw's render-state list (`engine::render_loop::states`;
   `impl.render.states` exact, `impl.render.states_skip` skipping the
   redundant D3D calls; off by default), below.
-- The transparents' index sort (`engine::render_loop::sort_indexed`,
-  `impl.render.transparent_sort`, off by default), below.
+- The layer sort (`0x0013da70`) and the transparents' index sort
+  (`0x0013df80`) were ported with their comparators and removed: they
+  matched the lifted originals, but the profile puts both at about
+  0.01 ms a frame (30 samples over 142 s in the 2026-11-17 Old Mombasa
+  run), and each cost a hooked call
+  ([render-switches.md](render-switches.md), "Removed").
 - The one guest-visible difference: callees see the continuation token
   as their return address, not `0x0002b6b9` etc., as with every chain that
   runs something after a body. That includes `render-timing`'s per-site
   breakdown inside the scene passes, which keys on those return addresses:
   with `impl.render.scene_passes` on, the site lines are empty and the time
   stays in the stages. Read the site lines with the switch off.
-
-### The layer sort (`0x0013da70`, `impl.render.layer_sort`)
-
-The bookkeeping port of 7a: work the original does in guest code that
-Rust does with fewer guest transfers and the same result.
-
-The layer build `0x0003bab0` sorts each layer's entries with the engine's
-qsort (Code: ECX count, EAX base, stack `(size, compare, context)`,
-`ret 0xc`). It is the old CRT shape: an explicit stack of 30 partitions
-in a 0x10c-byte frame, middle pivot swapped to the front, ranges of 8 or
-fewer to a selection sort (`0x0013dcd0`, stdcall, six arguments), dword
-swaps when base and size are multiples of 4 and byte swaps otherwise.
-It is not stable, so only this algorithm leaves ties in this order, and
-the order of the entries is the order of the draws: a Rust `sort_by`
-would change the draw stream. The comparator is called through a pointer
-(`call [esp+0x130]`), and that indirect call leaves the direct path:
-every comparison is a round trip through the runner (out of the qsort,
-resolve, the comparator, back into a qsort continuation). In the sampling
-profile no comparator sample has the qsort on its stack.
-
-`engine::render_loop::sort::Sort` ports it at Port grade, block by block,
-and evaluates the layer build's two comparators (`0x0003bb80`, and
-`0x0003bbd0` for layer 5: stdcall `(a, b, context)`, AL whether `a`
-sorts after `b`, comparing the entries' key fields in turn; the first
-starts at `+0x10`, `+2`, `+5`, the layer-5 one at `+5`, `+6`, `+0x10`) in Rust with their exact register
-and stack effects, so a layer sort makes no guest call at all. Any other
-comparator is still called (`Step::Call`), so the port is correct for
-every caller of `0x0013da70`.
-
-**Expected saving.** In the 2026-11-17 Old Mombasa profile (142.37 s at
-500 Hz, about 4,260 frames, menus included) the qsort holds 188 samples
-inclusive and the comparators 192: 380 samples, 0.76 s, about 0.18 ms a
-frame over the run. The runner round trips per comparison are charged to
-neither (they show as `runtime::` frames), so that is a lower bound, and
-gameplay frames sort more entries than the average. The cost of turning it
-on is one hooked call per layer build (about 15 a view).
 
 ### The render-state list (`0x0001a170`, `impl.render.states`, `impl.render.states_skip`)
 
@@ -293,36 +259,6 @@ hook's cost, and the counters show how many calls were skipped.
 These are running totals: `simple` counts the calls made and `skipped`
 the calls not made.
 
-### The transparents' index sort (`0x0013df80`, `impl.render.transparent_sort`)
-
-The transparents (`0x0001e370`) are sorted by `0x0013df80`. This is the
-engine's second qsort, and it sorts u16 indices. EAX holds the count and
-ECX the base. The stack holds `(unused, compare, context)`, and it
-returns with `ret 0xc`. Ranges shorter than 9 go to a short sort at
-`0x0013e140`. Pending ranges are kept on a 30-deep stack in the frame.
-
-The comparator `0x0001e700` reads 0x70-byte records at
-`context + 0x70*index`:
-
-1. It orders by the dword at +0.
-2. On a tie, if either record has its flag at +0xc set, it orders by
-   which side of the record's plane (+0x10..+0x1c) the other record's
-   point (+0x64..+0x6c) and the camera (`0x004b9da0`) fall on.
-3. Otherwise it orders by the float at +4, then by the dword at +8.
-
-`engine::render_loop::sort_indexed::IndexSort` runs the sort, the short
-sort and this comparator in Rust. It reproduces SSE's NaN quieting and
-the registers the comparator leaves (EAX, ECX, EDX, `xmm0`, `xmm1`). Any
-other comparator is called in the guest. The original comparator also
-changes `xmm2`, but the port does not model it, since `Regs` has no
-`xmm2`. Callers do not read a caller-saved register after a call.
-
-**Expected saving: small.** In the 2026-11-17 Old Mombasa profile, the
-sort, the short sort and the comparator hold 30 samples between them (13,
-7 and 10) over 142 s. That is about 0.01 ms a frame. The port is worth
-having for coverage, at the cost of one hooked call per frame, not for
-the time it saves.
-
 ## Evidence
 
 - **Differential against the lifted original (Test, needs the XBE).**
@@ -359,13 +295,6 @@ the time it saves.
   are random per state, so the branches on frame bytes the callees would
   fill go both ways. Call logs, registers at return and all 64 MB must be
   equal. Every callee is reached.
-- **The layer sort against the lifted original (Test, needs the XBE).**
-  `crates/engine/tests/sort_differential.rs`: 120 seeded states with
-  0 to 2529 entries and tie-heavy keys, both layer comparators run for real
-  on the interpreter (natively in the port), a foreign comparator stubbed
-  to cover the guest-call path, aligned and byte-swap element sizes. The
-  sorted buffer (the layer's draw order), the foreign comparator's call
-  log, the registers and all 64 MB are equal.
 - **The runtime driver for the new ports (Test, no game code).**
   `crates/feature/tests/render_loop.rs` places `render_game_view` and
   `render_scene_passes` and checks the runtime's calls against the port
@@ -410,12 +339,6 @@ the time it saves.
 
   The skip rate depends on draw order. The game's real share is in the
   counters' line.
-- **The index sort against the lifted original (Test, needs the XBE).**
-  `crates/engine/tests/transparent_sort_differential.rs` runs 180 seeded
-  states. 135 use the transparent comparator, and the rest use a foreign
-  comparator, stubbed. Records include NaNs and infinities, with up to
-  599 entries. The draw order, the foreign comparator's calls, the
-  registers (`xmm0` and `xmm1` included) and all 64 MB are equal.
 - **The render-state driver (Test, no game code).**
   `crates/feature/tests/render_loop.rs` places `0x0001a170` with each
   switch, over a list holding every kind of entry. The runtime's calls
@@ -437,17 +360,17 @@ switches are off by default; `impl.render=on` turns on every
 `impl.render.*` port at once.
 
 ```sh
-# The three new ports.
-H2_FEATURES=impl.render.game_view=on,impl.render.scene_passes=on,impl.render.layer_sort=on
+# The orchestrator ports.
+H2_FEATURES=impl.render.game_view=on,impl.render.scene_passes=on
 
 # The render-state list skipping redundant Simple calls (logs the
-# render-states counter line), and the transparents' sort.
-H2_FRAME_STATS=1 H2_FEATURES=impl.render.states_skip=on,impl.render.transparent_sort=on
+# render-states counter line).
+H2_FRAME_STATS=1 H2_FEATURES=impl.render.states_skip=on
 # The list port without skipping: the hook's own cost.
 H2_FRAME_STATS=1 H2_FEATURES=impl.render.states=on
 
 # Frame stats and the stage split (the site lines need scene_passes off).
-H2_FRAME_STATS=1 H2_FEATURES=render-timing,impl.render.game_view=on,impl.render.scene_passes=on,impl.render.layer_sort=on
+H2_FRAME_STATS=1 H2_FEATURES=render-timing,impl.render.game_view=on,impl.render.scene_passes=on
 
 # Draw streams: the same frame of a run with and without, then diff.
 H2_BOOT_DRAWLOG=$R/on.txt H2_BOOT_DRAWLOG_FRAMES=600 H2_FEATURES=impl.render=on
@@ -456,10 +379,7 @@ H2_BOOT_DRAWLOG=$R/off.txt H2_BOOT_DRAWLOG_FRAMES=600
 
 What to expect: the orchestrator ports change no draw and save no time on
 their own (each adds a runner round trip per call they make, about 100 a
-view for the scene passes; compare `render` with and without). The layer
-sort should take `render` down by the sort's share (above); `render-timing`
-shows it in `scene_passes`, where the layer draws run, and the site line
-`0x0002bed0` (layer 3) most. Draw logs from two runs line up only when the
+view for the scene passes; compare `render` with and without). Draw logs from two runs line up only when the
 two runs render the same frame (same input and timing, or a replay).
 
 For the render-state list, compare `render` across three runs:
@@ -516,8 +436,8 @@ leaves.
 
    [layer-draw.md](layer-draw.md) records that the original already
    skips unchanged textures, constants and pixel shaders.
-2. **The transparents (`0x0001e370`, 2.58 ms).** The sort is built
-   (above), and saves about 0.01 ms. The rest of the time is in the
+2. **The transparents (`0x0001e370`, 2.58 ms).** The sort is about
+   0.01 ms (a port was built and removed, above). The rest of the time is in the
    per-entry handlers, which are called through a pointer per entry.
 3. **The dynamic lights' bookkeeping (`0x00031c80`, 1.88 ms, no D3D).**
    Per light: collection (`0x00031910`), object and cluster gathering

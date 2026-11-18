@@ -342,7 +342,10 @@ impl feature::Feature for AimAssist {
                     );
                 }
                 Ok(Flow::Continue)
-            });
+            })
+            // It reads the mode from the options the host's block was
+            // just written into.
+            .after_feature(crate::variant_ext::FEATURE);
 
         // Multiplayer, per player: around one local player's control
         // update, and only for the touch player (player.rs).

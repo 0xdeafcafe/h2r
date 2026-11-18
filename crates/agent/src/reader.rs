@@ -5,8 +5,10 @@
 
 use std::ops::DerefMut;
 
-use agent_proto::{Kind, Object, ObjectId};
-use live_telemetry::{ActorState, MachineState, ObjectState, PlayerState, VehicleState};
+use agent_proto::{Kind, Object, ObjectId, Physics};
+use live_telemetry::{
+    ActorState, MachineState, Motion, ObjectState, PlayerState, VehicleState, layout,
+};
 use runtime::Guest;
 
 /// The game's state as the stamp needs it.
@@ -111,11 +113,25 @@ fn id(kind: Kind, key: u32) -> String {
     ObjectId { kind, key }.to_string()
 }
 
+/// Crouch and character-physics state, from what telemetry read.
+fn physics(m: &Motion) -> Physics {
+    Physics {
+        crouch: m.crouch,
+        crouch_request: m.unit_flags.map(|f| f & layout::UNIT_FLAG_CROUCH != 0),
+        mode: m.physics_mode,
+        airborne: m.biped_flags.map(|f| f & 1 != 0),
+        airborne_ticks: m.airborne_ticks,
+        unit_flags: m.unit_flags.map(hex),
+        biped_flags: m.biped_flags.map(|f| format!("{f:04x}")),
+    }
+}
+
 /// The fields every unit shares (a player's unit, an actor, a body).
 fn unit_fields(o: &mut Object, s: &ObjectState) {
     o.pos = Some(s.pos);
     o.forward = Some(s.forward);
     o.velocity = Some(s.motion.velocity);
+    o.physics = Some(physics(&s.motion));
     o.team = s.team.map(i32::from);
     o.tag = s.definition.map(hex);
     o.vehicle = s.vehicle.map(|v| id(Kind::Vehicle, v));
@@ -178,7 +194,7 @@ pub fn machine_object(m: &MachineState) -> Object {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use live_telemetry::{Motion, Weapon};
+    use live_telemetry::Weapon;
 
     fn unit() -> ObjectState {
         ObjectState {
@@ -193,6 +209,11 @@ mod tests {
             team: Some(2),
             motion: Motion {
                 velocity: [0.5, 0.0, 0.0],
+                crouch: Some(1.0),
+                physics_mode: Some(1),
+                unit_flags: Some(1 << 23),
+                biped_flags: Some(0x0001),
+                airborne_ticks: Some(4),
                 ..Default::default()
             },
             ..Default::default()
@@ -218,6 +239,14 @@ mod tests {
         assert_eq!(o.kind, Kind::Actor);
         assert_eq!(o.pos, Some([1.0, 2.0, 3.0]));
         assert_eq!(o.velocity, Some([0.5, 0.0, 0.0]));
+        let p = o.physics.expect("units carry physics");
+        assert_eq!(p.crouch, Some(1.0));
+        assert_eq!(p.crouch_request, Some(true));
+        assert_eq!(p.mode, Some(1));
+        assert_eq!(p.airborne, Some(true));
+        assert_eq!(p.airborne_ticks, Some(4));
+        assert_eq!(p.unit_flags.as_deref(), Some("00800000"));
+        assert_eq!(p.biped_flags.as_deref(), Some("0001"));
         assert_eq!(o.team, Some(2));
         assert_eq!(o.tag.as_deref(), Some("12340001"));
         assert_eq!(o.vehicle.as_deref(), Some("vehicle.e0000007"));
