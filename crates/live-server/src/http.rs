@@ -430,7 +430,7 @@ fn with_web(api: Router, live: Arc<Live>, dir: Option<&std::path::Path>) -> Rout
     let index = dir.join("index.html");
     let page = get(move |State(live): Shared, req: Request| {
         let index = index.clone();
-        async move { app_page(&live, &index, &req).await }
+        async move { app_page(&live, &index, req).await }
     })
     .with_state(live);
     // `/` too: the app's HTML is always the page's, never the bare file.
@@ -443,7 +443,7 @@ fn with_web(api: Router, live: Arc<Live>, dir: Option<&std::path::Path>) -> Rout
 /// The app's HTML for a page: `index.html` with the page's link preview
 /// ([`crate::page_meta`]), read afresh so a new build shows at once.
 #[cfg(feature = "native")]
-async fn app_page(live: &Live, index: &std::path::Path, req: &Request) -> Response {
+async fn app_page(live: &Live, index: &std::path::Path, req: Request) -> Response {
     let Ok(html) = tokio::fs::read_to_string(index).await else {
         return not_found("no web app").into_response();
     };

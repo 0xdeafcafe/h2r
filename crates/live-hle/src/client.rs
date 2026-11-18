@@ -1521,11 +1521,17 @@ impl Worker {
                     .or_else(|| active.users.values().next())
                     .ok_or(NO_USER)?;
                 let body = serde_json::to_string(request).map_err(|_| INVALID_ARGUMENT)?;
-                self.json::<live_proto::bots::Roster>(
+                // Sent once: a roster request is not safe to repeat.
+                self.response(
                     self.request("POST", "/games/bots", user, lxm::GAMES_WRITE)
                         .set("content-type", "application/json"),
                     Some(&body),
+                    64 * 1024,
                 )
+                .and_then(|b| {
+                    serde_json::from_slice::<live_proto::bots::Roster>(&b)
+                        .map_err(|_| Error::Protocol)
+                })
                 .map(Reply::Roster)
                 .map_err(|e| match e {
                     Error::Status(404 | 409) => MATCH_INVALID_SESSION,
