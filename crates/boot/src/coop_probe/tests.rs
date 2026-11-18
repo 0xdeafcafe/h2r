@@ -816,3 +816,76 @@ fn game_end_is_said_once_a_game() {
     assert!(s.end_first(), "the next game's end");
     assert!(!s.end_first());
 }
+
+/// docs/runtime/snapshots.md: the hooks block a snapshot while armed, while
+/// a session start's counts are shown changed, and while a hash log is
+/// open; disarmed and idle they don't.
+#[test]
+fn the_probe_blocks_snapshots_while_armed_mid_start_or_logging() {
+    let arm = Arm::session();
+    let st = Mutex::new(State::default());
+    assert_eq!(probe_live(&arm, &st), None, "disarmed and idle");
+    arm.arm(None);
+    assert_eq!(
+        probe_live(&arm, &st).as_deref(),
+        Some("a co-op session has armed the co-op hooks")
+    );
+    arm.disarm();
+    assert_eq!(probe_live(&arm, &st), None);
+
+    lock(&st).pending = Some(Pending {
+        addr: 0x1000,
+        peers: 2,
+        players: None,
+    });
+    assert_eq!(
+        probe_live(&arm, &st).as_deref(),
+        Some("a session start's peer count is shown changed")
+    );
+    lock(&st).pending = None;
+
+    let name = format!("coop-probe-snap-{}", std::process::id());
+    let dir = std::env::temp_dir().join(name);
+    lock(&st).log = Some(HashLog::open(&dir, "host", &[]).unwrap());
+    let why = probe_live(&arm, &st).unwrap();
+    assert!(why.starts_with("the co-op hash log "), "{why}");
+    lock(&st).log = None;
+    assert_eq!(probe_live(&arm, &st), None);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let forced = Arm::forced(None);
+    assert_eq!(
+        probe_live(&forced, &st).as_deref(),
+        Some("the co-op probe is on")
+    );
+}
+
+/// The co-op over Live features on one plan: none blocks a snapshot until
+/// a session arms them; armed, the probe, players and join in progress do.
+#[test]
+fn the_co_op_features_block_snapshots_only_while_armed() {
+    let rt = runtime::Runtime::new(
+        runtime::Guest::new(),
+        runtime::dispatch::Dispatch::default(),
+    );
+    let mut r = feature::Registry::new(feature::Switches::defaults());
+    let arm = install_live(&rt, &mut r, Path::new("/nonexistent"))
+        .unwrap()
+        .unwrap();
+    let plan = r.build(&feature::Base).unwrap();
+    assert_eq!(plan.snapshot_blockers(), Vec::new());
+    arm.arm(None);
+    let blockers = plan.snapshot_blockers();
+    let mut ids: Vec<&str> = blockers.iter().map(|(id, _)| *id).collect();
+    ids.sort_unstable();
+    assert_eq!(
+        ids,
+        [
+            crate::coop_jip::FEATURE,
+            LIVE_ID,
+            crate::coop_players::FEATURE,
+        ]
+    );
+    arm.disarm();
+    assert_eq!(plan.snapshot_blockers(), Vec::new());
+}

@@ -943,6 +943,25 @@ impl Lobby {
             .as_ref()
             .map_or(coop_probe::MAX_PLAYERS, |a| a.limit_for(s))
     }
+    /// Why the co-op screens can't be snapshotted now
+    /// (docs/runtime/snapshots.md): hosting or joined (the role, the
+    /// invites, the friends read and the ping are host state shaped by
+    /// Live; the texts the tick writes follow them), the join screen is
+    /// due, or the hooks are armed. Idle, the level and difficulty chosen
+    /// are menu state no screen shows until the next hosting.
+    pub fn snapshot_live(&self) -> Option<String> {
+        let i = self.lock();
+        match &i.role {
+            Role::Host => return Some("hosting a co-op campaign".into()),
+            Role::Guest(g) => return Some(format!("joined {}'s co-op campaign", g.host)),
+            Role::Idle => {}
+        }
+        if i.open_join {
+            return Some("the co-op join screen is due".into());
+        }
+        drop(i);
+        self.arm.as_ref().and_then(|a| a.snapshot_live())
+    }
     /// The co-op hooks are on.
     pub fn armed(&self) -> bool {
         self.arm.as_ref().is_some_and(|a| a.active())
@@ -1442,6 +1461,21 @@ pub fn drop_coop_mode() {
         .unwrap_or_else(|e| e.into_inner())
         .take();
 }
+/// Whether the Co-op Campaign row's press still waits, at `now`, for its
+/// lobby mode call; a window run out acts as none.
+pub fn coop_mode_waits(pending: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    pending.is_some_and(|until| now <= until)
+}
+/// Why the co-op screens can't be snapshotted now: the lobby
+/// ([`Lobby::snapshot_live`]), or the row's co-op lobby mode waits for its
+/// call (a wall-clock window no snapshot holds).
+pub fn screens_live(lobby: &Lobby) -> Option<String> {
+    let pending = *COOP_MODE_PENDING.lock().unwrap_or_else(|e| e.into_inner());
+    if coop_mode_waits(pending, std::time::Instant::now()) {
+        return Some("the Co-op Campaign row's lobby mode is pending".into());
+    }
+    lobby.snapshot_live()
+}
 /// The mode a `LOBBY_MODE_SET(mode)` call should set: co-op once, for the
 /// custom game mode the Co-op Campaign row's press asked for.
 pub fn lobby_mode(mode: u32, now: std::time::Instant) -> u32 {
@@ -1583,6 +1617,8 @@ impl feature::Feature for CoopScreens {
                 .after_feature(coop_probe::ID)
                 .after_feature(crate::skulls_custom::FEATURE);
         }
+        let lobby = Arc::clone(&self.lobby);
+        b.snapshot(feature::SnapshotPolicy::forbid_while(move || screens_live(&lobby)));
         Ok(())
     }
 }
