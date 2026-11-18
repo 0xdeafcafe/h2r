@@ -5,7 +5,12 @@
 //! Built: `impl.render.views`, the Rust `render_views`
 //! ([`engine::render_loop::Machine`]); `impl.render.layer_draw` and
 //! `impl.render.layer_entries`, the layer draw `0x00044550` and its entry
-//! loop `0x0003bc30` ([`engine::render_loop::layer`], docs/graphics/layer-draw.md).
+//! loop `0x0003bc30` ([`engine::render_loop::layer`], docs/graphics/layer-draw.md);
+//! `impl.render.game_view` and `impl.render.scene_passes`, `render_game_view`
+//! `0x0002b790` and `render_scene_passes` `0x0002bcd0`
+//! ([`engine::render_loop::scene`]); `impl.render.layer_sort`, the layer
+//! entries' qsort `0x0013da70` with the layer comparators in Rust
+//! ([`engine::render_loop::sort`]).
 //! The driver runs the port to each
 //! guest call, makes it with `call_guest` (the callee returns into a
 //! continuation that resumes the port), and returns to the caller when the
@@ -18,6 +23,8 @@ use std::sync::Arc;
 use engine::memory::{GuestMemory, MemFault};
 use engine::points;
 use engine::render_loop::layer::{Draw, Entries};
+use engine::render_loop::scene::{GameView, ScenePasses};
+use engine::render_loop::sort::Sort;
 use engine::render_loop::{Machine, Regs, Step};
 use runtime::guest::{Access, FaultReason};
 use runtime::{CpuAbi, ExecCtx, Guest, GuestFault, TransferAbi};
@@ -52,6 +59,26 @@ impl Feature for RenderLoop {
                     run(cpu, ctx, Entries::start)
                 });
         }
+        if b.switches().implementation("render.game_view", false) {
+            b.raw().implement(
+                &points::RENDER_GAME_VIEW,
+                "render_game_view",
+                |cpu, ctx, _| run(cpu, ctx, GameView::start),
+            );
+        }
+        if b.switches().implementation("render.scene_passes", false) {
+            b.raw().implement(
+                &points::RENDER_SCENE_PASSES,
+                "render_scene_passes",
+                |cpu, ctx, _| run(cpu, ctx, ScenePasses::start),
+            );
+        }
+        if b.switches().implementation("render.layer_sort", false) {
+            b.raw()
+                .implement(&points::LAYER_SORT, "layer_sort", |cpu, ctx, _| {
+                    run(cpu, ctx, Sort::start)
+                });
+        }
         // A port's state lives in the continuation it is parked in, which
         // the machine's quiescence check reports.
         b.snapshot(crate::SnapshotPolicy::Stateless);
@@ -70,6 +97,7 @@ fn regs(cpu: &CpuAbi) -> Regs {
         esi: cpu.esi,
         edi: cpu.edi,
         xmm0: u128::from_le_bytes(cpu.xmm[0]),
+        xmm1: u128::from_le_bytes(cpu.xmm[1]),
     }
 }
 
@@ -83,6 +111,7 @@ fn store(cpu: &mut CpuAbi, r: &Regs) {
     cpu.esi = r.esi;
     cpu.edi = r.edi;
     cpu.xmm[0] = r.xmm0.to_le_bytes();
+    cpu.xmm[1] = r.xmm1.to_le_bytes();
 }
 
 fn fault(f: engine::memory::MemFault) -> GuestFault {
@@ -112,6 +141,22 @@ impl Port for Draw {
 impl Port for Entries {
     fn resume(&mut self, r: &mut Regs, m: &mut dyn GuestMemory) -> Result<Step, MemFault> {
         Entries::resume(self, r, m)
+    }
+}
+
+impl Port for GameView {
+    fn resume(&mut self, r: &mut Regs, m: &mut dyn GuestMemory) -> Result<Step, MemFault> {
+        GameView::resume(self, r, m)
+    }
+}
+impl Port for ScenePasses {
+    fn resume(&mut self, r: &mut Regs, m: &mut dyn GuestMemory) -> Result<Step, MemFault> {
+        ScenePasses::resume(self, r, m)
+    }
+}
+impl Port for Sort {
+    fn resume(&mut self, r: &mut Regs, m: &mut dyn GuestMemory) -> Result<Step, MemFault> {
+        Sort::resume(self, r, m)
     }
 }
 

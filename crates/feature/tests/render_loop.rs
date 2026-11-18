@@ -22,8 +22,12 @@ type Log = Arc<Mutex<Vec<(u32, [u32; 7])>>>;
 /// The stub's answer for call `n` to `target`: EAX, ECX, EDX.
 fn answer(n: usize, target: u32) -> [u32; 3] {
     let k = (n as u32).wrapping_mul(0x9e37_79b9) ^ target;
+    use engine::render_loop::scene::scene_passes as sp;
     let al = if target == views::VIEW_TEST {
         n as u32 & 1
+    } else if target == sp::SKIP_A || target == sp::SKIP_B {
+        // render_scene_passes' early-outs: never taken.
+        0
     } else {
         k & 0xff
     };
@@ -66,6 +70,7 @@ fn entry() -> Regs {
         esi: 0x5151,
         edi: 0xd1d1,
         xmm0: 0,
+        xmm1: 0,
     }
 }
 
@@ -247,6 +252,7 @@ fn the_runtime_runs_the_rust_layer_entry_loop() {
         esi: 0x5151,
         edi: LIST,
         xmm0: 0,
+        xmm1: 0,
     };
 
     // Directly.
@@ -324,4 +330,199 @@ fn the_runtime_runs_the_rust_layer_entry_loop() {
     assert_eq!(got, want, "the runtime's calls are the port's");
     assert_eq!(cpu.esp, ESP + 8);
     assert_eq!([cpu.ebp, cpu.esi, cpu.edi], [0xe0e0, 0x5151, LIST]);
+}
+
+type Fault = engine::memory::MemFault;
+type Calls = Vec<(u32, [u32; 7])>;
+type StartFn<P> = fn(&mut Regs, &mut dyn engine::memory::GuestMemory) -> Result<(P, Step), Fault>;
+type ResumeFn<P> =
+    fn(&mut P, &mut Regs, &mut dyn engine::memory::GuestMemory) -> Result<Step, Fault>;
+
+/// A port, its point and its callees, for [`both`].
+struct Under<P> {
+    switch: &'static str,
+    point: &'static engine::points::Point,
+    callees: &'static [u32],
+    cleanup: fn(u32) -> u32,
+    start: StartFn<P>,
+    resume: ResumeFn<P>,
+}
+
+/// The port driven directly over `guest()`, every callee answered by
+/// `answer` (EAX, ECX, EDX) and popping its arguments; then the same port
+/// placed by the feature on the runtime, every callee a Rust override with
+/// the same answers. Both call logs and both register sets at return.
+fn both<P>(
+    u: &Under<P>,
+    guest: impl Fn() -> Guest,
+    entry: Regs,
+) -> (Calls, Calls, [u32; 8], [u32; 8]) {
+    let mut g = guest();
+    let mut r = entry;
+    let mut want = Vec::new();
+    let (mut m, mut step) = (u.start)(&mut r, &mut g).unwrap();
+    loop {
+        match step {
+            Step::Return { to } => {
+                assert_eq!(to, HARNESS_EXIT);
+                break;
+            }
+            Step::Call {
+                target, cleanup, ..
+            } => {
+                want.push((target, snapshot(&r)));
+                [r.eax, r.ecx, r.edx] = answer(want.len() - 1, target);
+                r.esp += cleanup;
+                step = (u.resume)(&mut m, &mut r, &mut g).unwrap();
+            }
+        }
+    }
+    let direct = [r.eax, r.ecx, r.edx, r.ebx, r.esp, r.ebp, r.esi, r.edi];
+
+    let log: Log = Arc::default();
+    let mut d = Dispatch::default();
+    for &target in u.callees {
+        let log = Arc::clone(&log);
+        let cleanup = u.cleanup;
+        d.register_override(target, format!("stub {target:#x}"), move |cpu, ctx, _| {
+            let mut l = log.lock().unwrap();
+            l.push((
+                target,
+                [
+                    cpu.eax, cpu.ecx, cpu.edx, cpu.ebx, cpu.ebp, cpu.esi, cpu.edi,
+                ],
+            ));
+            [cpu.eax, cpu.ecx, cpu.edx] = answer(l.len() - 1, target);
+            ctx.memory().ret(cpu, cleanup(target))
+        });
+    }
+    let rt = Runtime::new(guest(), d);
+    let mut reg = Registry::new(Switches::parse(u.switch).unwrap());
+    reg.add(&feature::render_loop::RenderLoop).unwrap();
+    reg.build(&feature::Base).unwrap().install(&rt).unwrap();
+    let mut cpu = CpuAbi {
+        eax: entry.eax,
+        ecx: entry.ecx,
+        edx: entry.edx,
+        ebx: entry.ebx,
+        esp: entry.esp,
+        ebp: entry.ebp,
+        esi: entry.esi,
+        edi: entry.edi,
+        ..Default::default()
+    };
+    let mut ctx = ExecCtx::new(Arc::clone(&rt), 1);
+    let t = Runner::default().run(&mut cpu, &mut ctx, u.point.base);
+    assert!(
+        matches!(ctx.event(t.event_id), Some(Event::HarnessExit)),
+        "{:?}",
+        ctx.event(t.event_id)
+    );
+    let got = log.lock().unwrap().clone();
+    let runtime = [
+        cpu.eax, cpu.ecx, cpu.edx, cpu.ebx, cpu.esp, cpu.ebp, cpu.esi, cpu.edi,
+    ];
+    (want, got, direct, runtime)
+}
+
+/// Globals and stack for the scene ports: the data pages mapped, no object
+/// chain (`0x004b9ed8` = -1), every layer bit on.
+fn scene_guest() -> Guest {
+    let mut g = Guest::new();
+    g.map_zeroed(0x0001_0000, 0x0016_0000, Permissions::RX)
+        .unwrap();
+    g.map_zeroed(0x0045_0000, 0x0011_0000, Permissions::RW)
+        .unwrap();
+    g.map_zeroed(0x0060_0000, 0x1000, Permissions::RW).unwrap();
+    g.map_zeroed(0x0070_0000, 0x1000, Permissions::RW).unwrap();
+    g.set_u32(0x004c_1a50, u32::MAX).unwrap();
+    g.set_u32(0x004b_9ed8, u32::MAX).unwrap();
+    g.set_u32(0x0048_5898, 5).unwrap();
+    g.set_u8(0x004b_a022, 1).unwrap();
+    g.set_u32(STACK, HARNESS_EXIT).unwrap();
+    // View kind 1 (the base layers with targets), transparents on, two
+    // flags, the view, mode 0.
+    for (i, v) in [1u32, 1, 1, 1, 0x0060_0000, 0].into_iter().enumerate() {
+        g.set_u32(STACK + 4 + 4 * i as u32, v).unwrap();
+    }
+    g
+}
+
+/// `impl.render.scene_passes` on the runtime: the calls the runtime makes
+/// are the port's, through the targeted base layers, the light pass and
+/// the transparents.
+#[test]
+fn the_runtime_runs_the_rust_scene_passes() {
+    use engine::render_loop::scene::{ScenePasses, scene_passes as sp};
+    let u = Under {
+        switch: "impl.render.scene_passes=on",
+        point: &points::RENDER_SCENE_PASSES,
+        callees: &sp::CALLEES,
+        cleanup: sp::cleanup,
+        start: ScenePasses::start,
+        resume: ScenePasses::resume,
+    };
+    let entry = Regs {
+        esp: STACK,
+        ..entry()
+    };
+    let (want, got, direct, runtime) = both(&u, scene_guest, entry);
+    let targets: Vec<u32> = got.iter().map(|c| c.0).collect();
+    for t in [
+        sp::TARGET,
+        sp::LAYER_DRAW,
+        sp::LIGHTS,
+        sp::TRANSPARENTS,
+        sp::EXIT,
+    ] {
+        assert!(targets.contains(&t), "{t:#x} not reached: {targets:#x?}");
+    }
+    assert_eq!(got, want, "the runtime's calls are the port's");
+    assert_eq!(runtime, direct);
+    assert_eq!(runtime[4], STACK + 4 + sp::RET_CLEANUP, "ret 0x18");
+}
+
+/// `impl.render.game_view` on the runtime, through to `render_view_scene`.
+#[test]
+fn the_runtime_runs_the_rust_game_view() {
+    use engine::render_loop::scene::{GameView, game_view as gv};
+    const VIEW: u32 = 0x0060_0000;
+    let guest = || {
+        let mut g = scene_guest();
+        g.set_u32(0x0046_86d4, VIEW + 0x200).unwrap();
+        g.set_u32(0x0046_86cc, VIEW + 0x300).unwrap();
+        g.set_u32(VIEW + 4, 1).unwrap();
+        g.set_u32(VIEW + 8, u32::MAX).unwrap();
+        g.set_u32(VIEW + 0x34, 1000.0f32.to_bits()).unwrap();
+        g.set_u32(STACK + 4, VIEW).unwrap();
+        g
+    };
+    let u = Under {
+        switch: "impl.render.game_view=on",
+        point: &points::RENDER_GAME_VIEW,
+        callees: &gv::CALLEES,
+        cleanup: gv::cleanup,
+        start: GameView::start,
+        resume: GameView::resume,
+    };
+    let entry = Regs {
+        esp: STACK,
+        ..entry()
+    };
+    let (want, got, direct, runtime) = both(&u, guest, entry);
+    let targets: Vec<u32> = got.iter().map(|c| c.0).collect();
+    assert_eq!(
+        targets,
+        [
+            gv::PREPARE,
+            gv::OBSERVER,
+            gv::CAMERA,
+            gv::PROJECTION,
+            gv::VIEW_SCENE
+        ],
+        "no object for the view: no cluster call"
+    );
+    assert_eq!(got, want, "the runtime's calls are the port's");
+    assert_eq!(runtime, direct);
+    assert_eq!(runtime[4], STACK + 4 + gv::RET_CLEANUP, "ret 8");
 }

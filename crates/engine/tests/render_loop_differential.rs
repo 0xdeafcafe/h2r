@@ -205,6 +205,7 @@ impl Lifted<'_> {
                 esi: g[6],
                 edi: g[7],
                 xmm0: cpu.xmm[0],
+                xmm1: cpu.xmm[1],
             },
             log,
         ))
@@ -307,6 +308,7 @@ fn state(image: &FlatMemory, seed: u64, case: u32) -> (FlatMemory, Regs) {
         esi: r.u32(),
         edi: r.u32(),
         xmm0: (r.next() as u128) << 64 | r.next() as u128,
+        xmm1: 0,
     };
     (mem, regs)
 }
