@@ -8,21 +8,43 @@ import "./styles/stats.css";
 import Dashboard from "./dash/Dashboard";
 import Veil from "./dash/Veil";
 import StatsLayout, { Title } from "./stats/Layout";
-import Game from "./stats/Game";
-import Games from "./stats/Games";
-import Home from "./stats/Home";
-import Players from "./stats/Players";
-import { CareerPage, HistoryPage, ServiceRecordPage } from "./stats/Player";
-import CampaignRecordPage from "./stats/CampaignRecord";
-import Events from "./stats/Events";
-import Clans, { ClanPage } from "./stats/Clans";
-import Admin from "./admin/Admin";
-import SignIn from "./signin/SignIn";
 import { live } from "./state/live";
 import { startGameArt } from "./state/gameart";
 
-// The 3D view in a window of its own; three.js stays out of the main bundle.
+// The dashboard (the front page) is in the main chunk; the stats pages,
+// admin and sign-in are chunks of their own that come in once the browser
+// is idle, so moving to them waits on nothing. The 3D view, with
+// three.js, loads only when opened.
+const parts = {
+  game: () => import("./stats/Game"),
+  games: () => import("./stats/Games"),
+  home: () => import("./stats/Home"),
+  players: () => import("./stats/Players"),
+  player: () => import("./stats/Player"),
+  campaign: () => import("./stats/CampaignRecord"),
+  events: () => import("./stats/Events"),
+  clans: () => import("./stats/Clans"),
+  admin: () => import("./admin/Admin"),
+  signin: () => import("./signin/SignIn"),
+};
+const Game = lazy(parts.game);
+const Games = lazy(parts.games);
+const Home = lazy(parts.home);
+const Players = lazy(parts.players);
+const ServiceRecordPage = lazy(() => parts.player().then((m) => ({ default: m.ServiceRecordPage })));
+const HistoryPage = lazy(() => parts.player().then((m) => ({ default: m.HistoryPage })));
+const CareerPage = lazy(() => parts.player().then((m) => ({ default: m.CareerPage })));
+const CampaignRecordPage = lazy(parts.campaign);
+const Events = lazy(parts.events);
+const Clans = lazy(parts.clans);
+const ClanPage = lazy(() => parts.clans().then((m) => ({ default: m.ClanPage })));
+const Admin = lazy(parts.admin);
+const SignIn = lazy(parts.signin);
 const Viewer3DPage = lazy(() => import("./viewer/Popout"));
+
+const idle = (f: () => void) =>
+  "requestIdleCallback" in globalThis ? requestIdleCallback(f, { timeout: 3000 }) : setTimeout(f, 1500);
+addEventListener("load", () => idle(() => { for (const load of Object.values(parts)) void load(); }));
 
 live.start();
 startGameArt();

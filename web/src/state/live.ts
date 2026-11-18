@@ -99,7 +99,11 @@ function createLive() {
 
   function makeVerifier(target: ServerTarget, r: Api): Verifier {
     const keys = new KeyCache({
-      serverKeys: async () => (await fetchWellKnown(target.base)).keys ?? [],
+      // Discovery already read them; ask again only if it did not.
+      serverKeys: async () => {
+        const wk = wellKnown();
+        return (wk && server().base === target.base ? wk : await fetchWellKnown(target.base)).keys ?? [];
+      },
       accountKeys: async (author) => {
         const xuid = authorXuid(author);
         return xuid ? r.accountKeys(xuid) : null;
