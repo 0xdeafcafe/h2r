@@ -826,6 +826,53 @@ fn a_converted_graph_tree_is_in_string_id_order() {
     );
 }
 
+/// Halo 1 finds a unit's animations through slot tables, and a class's slot
+/// may name another class's animation: the cyborg's pistol class throws with
+/// `stand rifle throw-grenade`. The converted tree names that animation under
+/// the pistol too, so Halo 2's search for `combat:pistol:any:throw_grenade`
+/// (`0x000e8220`) finds it; the rifle keeps its own, and nothing is added
+/// for a slot that names its own class's animation.
+#[test]
+fn a_class_that_borrows_a_slot_finds_it_by_name() {
+    let (img, at) = synthetic_graph();
+    let mut g = h1::Graph::read(&img, at).unwrap();
+    g.animations[0].name = "stand rifle throw-grenade".into();
+    g.animations[1].name = "stand pistol idle".into();
+    g.units = vec![h1::UnitSlots {
+        label: "stand".into(),
+        classes: vec![
+            h1::ClassSlots { label: "rifle".into(), slots: vec![-1, 0], types: vec![] },
+            h1::ClassSlots { label: "pistol".into(), slots: vec![1, 0], types: vec![] },
+        ],
+    }];
+    let (out, _) = jmad::convert_graph(&g, None).unwrap();
+    let (bytes, ids) = build(vec![(out, "invented\\graph")]);
+    let mut map = Map::from_reader(Cursor::new(bytes)).unwrap();
+    let base = map.tag(ids[0]).unwrap().location.unwrap().address;
+    let b = map.read_tag_bytes(ids[0]).unwrap();
+    let strings = map.strings().to_vec();
+    let w = |a: u32| u32::from_le_bytes(b[(a - base) as usize..][..4].try_into().unwrap());
+    let name = |sid: u32| strings[(sid & 0xff_ffff) as usize].clone().unwrap();
+    let level = |a: u32, stride: u32| -> Vec<(String, u32)> {
+        (0..w(a)).map(|i| (name(w(w(a + 4) + i * stride)), w(a + 4) + i * stride)).collect()
+    };
+    let modes = level(base + 0x34, 0x14);
+    assert_eq!(modes.iter().map(|m| m.0.as_str()).collect::<Vec<_>>(), ["combat"]);
+    let actions = |class: &str| -> Vec<(String, i16)> {
+        let c = level(modes[0].1 + 4, 0x14).into_iter().find(|c| c.0 == class).unwrap();
+        let t = level(c.1 + 4, 0x34);
+        assert_eq!(t.len(), 1);
+        level(t[0].1 + 4, 8)
+            .into_iter()
+            .map(|(n, a)| (n, (w(a + 4) >> 16) as i16))
+            .collect()
+    };
+    let mut pistol = actions("pistol");
+    pistol.sort();
+    assert_eq!(pistol, [("idle".to_owned(), 1), ("throw_grenade".to_owned(), 0)]);
+    assert_eq!(actions("rifle"), [("throw_grenade".to_owned(), 0)]);
+}
+
 /// The synthetic graph's base animation, re-encoded as compressed data with
 /// a key on every frame, reads back as the uncompressed original (within
 /// the 12-bit rotation quantisation) and converts.
