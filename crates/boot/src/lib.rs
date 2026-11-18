@@ -80,6 +80,7 @@ pub mod signin_screen;
 pub mod skulls_screen;
 pub mod speaker_setting;
 pub mod steam_speaker;
+pub mod tier;
 pub mod ui;
 pub mod ui_kit;
 pub mod ui_watch;
@@ -710,14 +711,17 @@ pub fn run_hosted_with_live(
     xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts, mut host: Host, live: &LiveConfig,
 ) -> Result<RunReport> {
     let x = xbe::Xbe::parse(xbe_bytes)?;
-    if !dylib_current(xbe_bytes, dylib) {
+    // Either tier's module, by its own stamp (tier.rs).
+    let Some(tier) = tier::module_tier(xbe_bytes, dylib) else {
         bail!(
-            "{} was not built from this image by this generator (stamp {} wants {:?}); rebuild it with `h2 build`",
+            "{} was not built from this image by this generator (stamp {} wants {:?}, or the fast tier's {:?}); rebuild it with `h2 build`",
             dylib.display(),
             stamp_path(dylib).display(),
-            build_stamp(xbe_bytes).trim()
+            build_stamp(xbe_bytes).trim(),
+            tier::fast_stamp(xbe_bytes).trim()
         );
-    }
+    };
+    eprintln!("tier: running the {} module {}", tier.name(), dylib.display());
     // Keep Halo's fixed arena, physical [0x61000, 0x3145000), free, with its
     // contiguous window at 0x80061000 and (boot addition) its write-combined
     // window at 0xf0061000, so MmAllocateContiguousMemoryEx can return

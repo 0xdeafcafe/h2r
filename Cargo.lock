@@ -618,6 +618,7 @@ dependencies = [
  "audio",
  "bink-hle",
  "bots",
+ "clif",
  "content",
  "d3d",
  "debug-menu",
