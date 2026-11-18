@@ -333,8 +333,10 @@ pub fn with_frame(preview: &mut [u8], retail: &[u8]) {
         return;
     }
     for (i, (p, r)) in preview
-        .chunks_exact_mut(4)
-        .zip(retail.chunks_exact(4))
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(retail.as_chunks::<4>().0)
         .enumerate()
     {
         if preview_alpha(i % PREVIEW_W, i / PREVIEW_W) == 0xff {

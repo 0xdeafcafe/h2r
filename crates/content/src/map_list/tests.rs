@@ -295,10 +295,16 @@ fn a_preview_takes_retail_s_frame_colours_and_keeps_its_picture() {
     let mut framed = img.clone();
     with_frame(&mut framed, &retail);
     let mut border = 0;
-    for (i, (f, o)) in framed.chunks_exact(4).zip(img.chunks_exact(4)).enumerate() {
+    for (i, (f, o)) in framed
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(img.as_chunks::<4>().0)
+        .enumerate()
+    {
         let (x, y) = (i % PREVIEW_W, i / PREVIEW_W);
         if preview_alpha(x, y) == 0xff {
-            assert_eq!(f, [0xf0, 0xd0, 0xa0, 0xff], "{x},{y}");
+            assert_eq!(*f, [0xf0, 0xd0, 0xa0, 0xff], "{x},{y}");
             border += 1;
         } else {
             assert_eq!(f, o, "{x},{y}: the picture and the cut corner stay");
