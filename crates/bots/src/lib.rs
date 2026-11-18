@@ -92,6 +92,7 @@ mod tests {
         let mut b = Brain::default();
         let f = |frame, joining| Frame {
             frame,
+            tick: None,
             port: 1,
             guest: &g,
             joining,
