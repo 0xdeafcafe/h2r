@@ -116,12 +116,20 @@ pub enum Issue {
     /// The clean-up keeps it, but the game cannot play it
     /// ([`record::ours`]); our editors refuse it.
     Ours(record::Problem),
+    /// The spare bytes hold something that isn't a valid extension block;
+    /// the game plays retail rules ([`crate::ext`]).
+    Ext(crate::ext::Why),
 }
 
 impl std::fmt::Display for Issue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Issue::Record(p) | Issue::Ours(p) => write!(f, "+{:#x}: {}", p.offset, p.what),
+            Issue::Ext(why) => write!(
+                f,
+                "+{:#x}: the h2recomp options are ignored: {why}",
+                crate::ext::AT
+            ),
             Issue::NotOffered { id, value } => {
                 write!(
                     f,
@@ -375,6 +383,9 @@ impl Schema {
     pub fn validate(&self, v: &GameVariant) -> Vec<Issue> {
         let mut out: Vec<Issue> = record::check(v).into_iter().map(Issue::Record).collect();
         out.extend(record::ours(v).into_iter().map(Issue::Ours));
+        if let crate::ext::Block::Ignored(why) = v.ext_state() {
+            out.push(Issue::Ext(why));
+        }
         let ty = v.game_type();
         for page in self.pages_for(ty) {
             for id in page.settings {

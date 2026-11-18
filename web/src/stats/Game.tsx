@@ -6,7 +6,7 @@ import { For, Show, createMemo, createSignal, createEffect, on } from "solid-js"
 import { A, useParams } from "@solidjs/router";
 import { live } from "../state/live";
 import { isCampaign, type GameState, type Kill } from "../state/reducer";
-import { OUTCOME_WORDS, campaignOutcome, deathsOf } from "../state/derive";
+import { LOST_NOTE, OUTCOME_WORDS, campaignOutcome, deathsOf } from "../state/derive";
 import { difficultyName, gameTypeLine } from "../state/gametype";
 import CampaignReport, { PlayerName, campaignPlayers } from "./CampaignReport";
 import Scoreboard from "../components/Scoreboard";
@@ -24,7 +24,7 @@ import { clock } from "../lib/format";
 import { now } from "../lib/now";
 import { TICKS_PER_SECOND } from "../state/frames";
 import TacticalMap from "../viewer/TacticalMap";
-import Transport from "../viewer/Transport";
+import Transport, { replayKey } from "../viewer/Transport";
 import { createReplaySession } from "../viewer/session";
 import "../styles/stats-game.css";
 
@@ -75,7 +75,7 @@ function Header(props: { game: GameState }) {
     const w = g().winner;
     if (g().status !== "ended") return "In progress";
     if (campaign()) return OUTCOME_WORDS[campaignOutcome(g())];
-    if (!w) return g().end_reason === "quit" ? "Ended early" : g().end_reason === "lost" ? "Connection lost" : "No winner";
+    if (!w) return g().end_reason === "quit" ? "Ended early" : g().end_reason === "lost" ? "Unfinished" : "No winner";
     return "team" in w ? `${teamName(w.team)} Team won` : `${g().players[w.player]?.name ?? "Someone"} placed 1st`;
   };
   const host = () => hostName(g());
@@ -91,7 +91,7 @@ function Header(props: { game: GameState }) {
           >
             <li class="first"><span>{gameMapTitle(g())}<small>{gameTitle(g())}</small></span></li>
           </Show>
-          <li class="s-match-status"><Show when={g().status === "live"} fallback={<span class="s-final">FINAL</span>}><span class="s-live-tag">LIVE</span></Show><span>{result()}</span></li>
+          <li class="s-match-status"><Show when={g().status === "live"} fallback={<span class="s-final">FINAL</span>}><span class="s-live-tag">LIVE</span></Show><span title={g().end_reason === "lost" ? LOST_NOTE : undefined}>{result()}</span></li>
           <Show
             when={campaign()}
             fallback={<li class="styled">{gameTypeLine(g())}{g().score_limit ? `, first to ${g().score_limit}` : ""}{g().time_limit_s ? `, ${Math.round(g().time_limit_s! / 60)} minutes` : ""}</li>}
@@ -228,7 +228,7 @@ function Replay(props: { game: GameState }) {
 
   const onKey = (e: KeyboardEvent) => {
     if (e.target !== e.currentTarget) return;
-    if (e.key === " ") { e.preventDefault(); session.toggle(); }
+    if (replayKey(session, e)) return;
     if (e.key === "ArrowRight") { e.preventDefault(); session.seek(tick() + 5 * TICKS_PER_SECOND); }
     if (e.key === "ArrowLeft") { e.preventDefault(); session.seek(tick() - 5 * TICKS_PER_SECOND); }
   };
@@ -245,12 +245,13 @@ function Replay(props: { game: GameState }) {
                 <Show when={tl().frames.length} fallback={<p class="s-empty">No recorded frames for this game. The scoreboard and field report are still here.</p>}>
                   <TacticalMap
                     game={props.game} frame={session.frame} roster={roster} highlight={hover} label={`Replay of ${gameMapTitle(props.game)}`}
-                    onKeyDown={onKey} keysLabel="Replay map. Space plays or pauses; arrow keys step five seconds."
+                    onKeyDown={onKey} keysLabel="Replay map. Space plays or pauses; arrow keys step five seconds; comma and full stop step a frame; less-than and greater-than jump between kills; k watches the latest kill."
                     soughtAt={session.soughtAt}
+                    camera={session.camera}
                     transport={() => <Transport session={session} killColour={killColour} />}
                   />
                   <Legend game={props.game} />
-                  <div class="s-timeline-head"><span>Match Timeline</span><small>Markers show kills · Space to play</small></div>
+                  <div class="s-timeline-head"><span>Match Timeline</span><small>Marks show kills, deaths and cuts · click one to watch it · Space to play</small></div>
                   <Transport session={session} killColour={killColour} />
                 </Show>
               )}

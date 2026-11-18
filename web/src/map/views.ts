@@ -135,11 +135,18 @@ export function mapStem(map: string): string {
   return map.split(/[\\/]/).pop()!.replace(/\.map$/i, "").trim().toLowerCase();
 }
 
+/** Halo 1's campaign levels by the stem the game reports them by (the
+ *  level's own short name; the import keeps it). File stems only, no names:
+ *  without game art nothing else tells a Halo 1 level from a modded Halo 2
+ *  one, and none of these is a Halo 2 stem (those are `00a_`..`08b_`). */
+const HALO1_LEVELS = new Set(["a10", "a30", "a50", "b30", "b40", "c10", "c20", "c40", "d20", "d40"]);
+
 /** True for a Halo 1 map: the manifest says so, or its stem is the
- *  converter's `h1_<map>` (so a server without game art still tells its
- *  multiplayer maps apart; campaign levels need the manifest). */
+ *  converter's `h1_<map>` or one of Halo 1's campaign levels (so a server
+ *  without game art still tells them apart). */
 export function isHalo1(stem: string, files?: MapFiles | null): boolean {
-  return files?.game === "halo1" || /^h1_./.test(mapStem(stem));
+  const s = mapStem(stem);
+  return files?.game === "halo1" || /^h1_./.test(s) || HALO1_LEVELS.has(s);
 }
 
 function safeFile(file: unknown): file is string {

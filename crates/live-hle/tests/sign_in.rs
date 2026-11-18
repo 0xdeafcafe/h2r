@@ -687,6 +687,7 @@ fn unimplemented_entries_stop_by_name_without_reading_stack_or_running_library()
         "XOnlineArbitrationCreateRoundID",
         "XOnlineArbitrationRegister",
         "XOnlineArbitrationReport",
+        "XOnlineArbitrationExtendRound",
         "XOnlineQuerySearch",
         "XOnlineQuerySearchGetResults",
         "XOnlinePresenceClear",
@@ -2965,6 +2966,13 @@ fn arbitration_makes_round_ids_and_keeps_registrations_and_reports() {
     let registered = w.u32(OUTPUT);
     assert_eq!(w.call("XOnlineTaskContinue", &[registered]), TASK_SUCCESS);
     assert_eq!(w.call("XOnlineTaskClose", &[registered]), OK);
+    assert_eq!(
+        w.call("XOnlineArbitrationExtendRound", &[ROUND, 60, 0, OUTPUT]),
+        OK
+    );
+    let extended = w.u32(OUTPUT);
+    assert_eq!(w.call("XOnlineTaskContinue", &[extended]), TASK_SUCCESS);
+    assert_eq!(w.call("XOnlineTaskClose", &[extended]), OK);
 
     for (i, id) in [0x8001u16, 0x8003, 0x8007].into_iter().enumerate() {
         let p = PROCEDURES + i as u32 * 0x88;
@@ -3011,6 +3019,10 @@ fn arbitration_makes_round_ids_and_keeps_registrations_and_reports() {
                 round,
                 duration: 300,
                 flags: 0xc,
+            },
+            Arbitration::Extended {
+                round,
+                duration: 60,
             },
             Arbitration::Reported {
                 round,

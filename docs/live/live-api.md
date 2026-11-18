@@ -148,6 +148,20 @@ the one-shot actions since the previous frame, oldest first, at most 8, each
 `grenade` (a throw), `melee`, `reload`, `jump`, `switch` (weapon swap) or
 `pickup`; `grenade` the selected type, `frag` or `plasma`.
 
+They may also carry, from senders that read them (packed format version 3):
+
+```json
+"vel": [1.5, -0.25, 0.0], "fire": 5, "body": 1.0, "shield": 0.5, "seat": 0,
+"actions_ago": [1]
+```
+
+`vel` is the velocity in game units a second; `fire` the shots by tick, bit
+k a shot k ticks before the frame's tick (a 32-tick window); `body` the body
+vitality 0..1 and `shield` the shield 0..4 (over 1 is an overshield);
+`seat` the seat index in its vehicle, at most 63; `actions_ago` how many
+ticks before the frame's tick each of `actions` happened, one each, at most
+900, and only beside `actions`.
+
 A frame may also carry `hits`, `bsp` and `machines`:
 
 ```json
@@ -166,7 +180,8 @@ weapon's tag stem when known, else the damage effect's; `pos` the victim's
 position; `amount` body plus shield damage as fractions of the victim's
 vitality (1 is a full body); `kind` `bullet`, `explosion`, `grenade`,
 `melee`, `fall`, `collision`, `vehicle`, `turret`, `sentinel`,
-`teleporter`, `guardians` or `unknown`. `bsp` is the structure BSP the game
+`teleporter`, `guardians` or `unknown`; `ago` (optional) how many ticks
+before the frame's tick it landed, at most 900. `bsp` is the structure BSP the game
 has loaded (campaign switches between zones). `machines` are device
 machines and other big scripted movers (doors, elevators, the scarab): those
 that moved since the previous frame, all of them in a game's first frame,
@@ -197,8 +212,14 @@ them. Everything not listed is at its placement. The server refuses more
 than 2048 entries, entries not in (kind, index) order or repeated, and
 entries that break those rules.
 
+A frame may carry `cut`: a campaign checkpoint revert or restart happened
+just before it, and the engine's clock came back to that tick (the game's
+ticks keep counting; see below). Only the first frame of the new run has it.
+
 Shots, actions and hits of frames that are dropped (the 15 Hz throttle, a
-full sink queue) go to the next delivered frame, and a recorded 1 Hz frame
+full sink queue) go to the next delivered frame (`fire`, `actions_ago` and
+hits' `ago` placed again against that frame's tick, those older than they
+can say dropped, and a `cut` kept), and a recorded 1 Hz frame
 holds every one of them since the previous recorded frame (capped as
 above). A recorded frame also lists every machine the game has sent, at its
 latest state, so a replay can start at any second.
@@ -217,6 +238,7 @@ game it is; all five fields are optional and old senders leave them out:
 |---|---|---|
 | `kind` | `custom`, `matchmaking`, `campaign` | `campaign` exactly when `mode` is; absent means `campaign` for campaign mode, else `custom` |
 | `playlist`, `playlist_id` | hopper name (1-32 characters, no control characters), id `[A-Za-z0-9_-]{1,64}` | matchmaking only; with no `playlist`, the server names it from the served hopper file when `playlist_id` is a descriptor index there |
+| `session_id` | the Live session, 16 lowercase hex digits (the game's 8 bytes in order) | matchmaking only; ranking finds the game's arbitration round by it ([Arbitration](#arbitration)) |
 | `difficulty` | `easy`, `normal`, `heroic`, `legendary` | campaign only |
 | `online` | boolean | campaign only: co-op partners on other machines (Live co-op, not sent yet); split-screen co-op is more than one player without it |
 
@@ -1139,6 +1161,8 @@ to the manifest. Keys (a client looks a key up in
 | `weapon/<0..18>` | weapon silhouettes (small, single-mask: blue channel with matching alpha); aliases `weapon/energy_sword`, `plasma_pistol`, `plasma_rifle`, `sniper_rifle`, `rocket_launcher`, `smg`, `beam_rifle`, `sentinel_beam` (by eye; the others have only an index) |
 | `medal/<0..31>` | medals, full colour; aliases `medal/double_kill`, `triple_kill`, `killtacular`, `kill_frenzy`, `killtrocity`, `killimanjaro`, `killing_spree`, `running_riot`, `rampage`, `berserker`, `overkill`, `sniper_kill`, `splatter`, `bone_cracker`, `assassin`, `stick_it`, `flag_carrier_kill`, `bomb_carrier_kill`, `flag_returned`, `bomb_returned` (by eye; the spree order is inferred from the medals' growing number of points) |
 | `map/<map>/preview` | a multiplayer map's preview picture; `<map>` is the map file name without `.map` |
+| `title/image` | the game's title image, from the executable's `$$XTIMAGE` section (128x128): what the original dashboard showed as the game's tile |
+| `title/save-image` | the game's save image, from `$$XSIMAGE` (64x64): the picture of a save that has no `SaveImage.xbx` of its own |
 
 `palette` is the player colour palette, `#rrggbb` by colour index (the
 colours are stored at 4 bits per channel); empty, with a `skipped` entry,
@@ -1253,4 +1277,28 @@ may write those streams. A standing is
 `playlist` is the hopper descriptor index, as sessions and games name it.
 A leaderboard is the playlist id the hopper file gives that descriptor,
 which is what the game's `XOnlineStatRead` names.
+A game is ranked only for the players who registered its arbitration
+round ([Arbitration](#arbitration)); each `RankChanged` names that round
+as `round`, `{session}-{round}`, and a round ranks one game.
+
+## Arbitration
+
+The game's `XOnlineArbitration` calls, posted by the Live HLE once for
+each account signed in on the console
+([live-matchmaking.md](live-matchmaking.md) §8.4). Each takes a
+`games.write` token of the account. `session` and `round` are 16
+lowercase hex digits. The server writes `ArbitrationRegistered`,
+`ArbitrationExtended` or `ArbitrationReported`, server-signed, on
+`round-<session>-<round>`, with `{session_id, round_id, xuid}` and the
+call's fields; `xuid` is the token's account. Nobody writes these through
+`/v1/events`.
+
+| endpoint | body | result |
+|---|---|---|
+| `POST /v1/arbitration/{session}/{round}/register` | `{duration, flags}` | 201 with `{position}`; 200, writing nothing, when the account already registered |
+| `POST /v1/arbitration/{session}/{round}/extend` | `{duration}` | 201; 409 unless the account registered the round |
+| `POST /v1/arbitration/{session}/{round}/report` | `{flags, procedures}`: the stat procedure ids, at most 1000 | 201; 200 when the account already reported; 409 unless it registered |
+
+An id that is not 16 lowercase hex digits, or another call name, is a
+404.
 

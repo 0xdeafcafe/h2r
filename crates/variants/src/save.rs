@@ -617,6 +617,19 @@ mod tests {
     }
 
     #[test]
+    fn a_saved_file_keeps_the_extension_block() {
+        let mut v = slayer("Moon");
+        let e = crate::ext::Ext {
+            gravity: 25,
+            ..Default::default()
+        };
+        v.set_ext(&e).unwrap();
+        let d = decode_file(&encode_file(&v, &RUNTIME_KEY), &RUNTIME_KEY).unwrap();
+        assert!(d.signed, "the game signs the whole record, block and all");
+        assert_eq!(d.variant.ext(), e);
+    }
+
+    #[test]
     fn store_creates_lists_updates_and_deletes() {
         let root = temp("store");
         let store = SaveStore::new(&root, Some(names()));

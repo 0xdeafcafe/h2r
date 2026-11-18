@@ -22,7 +22,7 @@
 .dx-pages .dx-plate-frame::before {
   inset: 0;
   clip-path: var(--page-cut);
-  background: linear-gradient(126deg, #b5d77a 0, #5c9335 3%, #203f12 5%, #588734 47%, #101f0b 76%, #83b54d 98%, #d1e9a4);
+  background: linear-gradient(133deg, #d3deaa 0%, #9baa76 2%, #526846 6%, #263c2d 26%, #799263 50%, #334e36 73%, #a1b586 95%, #465b40);
   box-shadow: none;
 }
 .dx-pages .dx-panel-frame::after,
@@ -31,10 +31,13 @@
   border: 0;
   border-image: none;
   clip-path: var(--page-cut);
-  /* The same flat translucent green as the plates (Settings): no tab, no header band. */
-  background: linear-gradient(135deg, #346820ee, #163b0fed 60%, #1b450f);
   filter: none;
-  box-shadow: inset 0 0 calc(var(--u) * 20) #06180288;
+  --socket: radial-gradient(circle, #07170d 0 24%, #425e3d 36%, #b9ca93 48%, #455d3c 58%, transparent 68%);
+  background:
+    var(--socket) right calc(var(--u) * 15) top calc(var(--u) * 19) / calc(var(--u) * 11) calc(var(--u) * 11) no-repeat,
+    var(--socket) right calc(var(--u) * 15) top calc(var(--u) * 32) / calc(var(--u) * 11) calc(var(--u) * 11) no-repeat,
+    linear-gradient(130deg, #345234f5, #173a22f7 34%, #132e1bf5 76%, #29452af5);
+  box-shadow: inset 0 1px #c6dea361, inset 0 -2px #091c10;
 }
 .dx-pages .dx-panel-head { height: calc(var(--u) * 12); margin-bottom: calc(var(--u) * 12); }
 .dx-pages .dx-panel-head small {
@@ -55,18 +58,18 @@
 .dx-pages .dx-row {
   height: calc(var(--u) * 44); margin: 0 0 calc(var(--u) * 6);
   padding: 0 calc(var(--u) * 15); gap: calc(var(--u) * 10);
-  border: 1px solid #507e35; border-top-color: #0c2809; border-left-color: #12350b;
-  border-radius: calc(var(--u) * 2); background: linear-gradient(180deg, #122e0b, #204914);
+  border: 1px solid;
+  border-color: #557049 #3a583d #72875b #38503a;
+  border-radius: calc(var(--u) * 2); background: linear-gradient(174deg, #122c19, #193720 47%, #24432a);
   box-shadow: inset 0 calc(var(--u) * 2) calc(var(--u) * 4) #00130066;
   font-size: calc(var(--u) * 24); line-height: 1.1; font-weight: 500; letter-spacing: .055em;
-  color: #b9e28a; text-shadow: 0 0 calc(var(--u) * 6) #99e76144;
+  color: #d2e4b3; text-shadow: 0 0 calc(var(--u) * 6) #99e76144;
 }
-.dx-pages .dx-row:hover { background: linear-gradient(180deg, #244b15, #315e1c); }
 .dx-pages .dx-row.on {
-  color: #234408; border-color: #edff8b;
   border-radius: calc(var(--u) * 3) calc(var(--u) * 12) calc(var(--u) * 3) calc(var(--u) * 3);
-  background: linear-gradient(180deg, #edff96, #d4ed55 20%, #b4d62e 58%, #d7f25e 100%);
-  box-shadow: inset 0 1px 0 #f8ffc8, 0 0 calc(var(--u) * 9) #d7ff5977;
+  border-color: #f0ffaf #adbf65 #789644 #d2e88a;
+  color: #213515; background: linear-gradient(175deg,#eefba3,#d7e877 25%,#b8d157 58%,#cadd70);
+  box-shadow: inset 3px 0 #f3ffbb, inset 0 -1px #899d44, 0 1px 2px #07190f;
   text-shadow: 0 1px #e8ff8e; font-weight: 600;
 }
 .dx-pages .dx-row-label { flex: 1; min-width: 0; }
@@ -74,7 +77,11 @@
   flex: 0 1 43%; margin-left: auto; font-size: calc(var(--u) * 15);
   text-align: right; letter-spacing: .035em; opacity: 1;
 }
-.dx-pages .dx-row--empty { height: auto; min-height: calc(var(--u) * 88); white-space: normal; border-style: dashed; line-height: 1.4; padding: calc(var(--u) * 14); }
+.dx-pages .dx-row--empty {
+  color: #b9e28a; background: linear-gradient(180deg, #122e0b, #204914);
+  border-color: #0c2809 #507e35 #507e35 #12350b;
+  height: auto; min-height: calc(var(--u) * 88); white-space: normal; border-style: dashed; line-height: 1.4; padding: calc(var(--u) * 14);
+}
 .dx-pages .dx-arrow { right: calc(var(--u) * 18); border-left-width: calc(var(--u) * 7); border-right-width: calc(var(--u) * 7); }
 .dx-pages .dx-arrow--up { top: calc(var(--u) * 102); }
 .dx-pages .dx-arrow--down { top: calc(var(--u) * 422); }
@@ -93,9 +100,6 @@
   min-height: calc(var(--u) * 194); padding: calc(var(--u) * 38) calc(var(--u) * 28) calc(var(--u) * 24);
   transform: perspective(calc(var(--u) * 1400)) rotateY(12deg) rotateZ(-1deg);
   filter: drop-shadow(0 0 calc(var(--u) * 2) #6c973b99) drop-shadow(0 calc(var(--u) * 12) calc(var(--u) * 18) #0008);
-}
-.dx-pages .dx-plate-frame::after {
-  background: linear-gradient(135deg, #346820ee, #163b0fed 60%, #1b450f);
 }
 .dx-pages .dx-plate > small {
   left: calc(var(--u) * 28); top: calc(var(--u) * 17); width: auto; height: auto;

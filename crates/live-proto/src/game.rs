@@ -60,6 +60,16 @@ pub struct Player {
     /// (docs/live/live-telemetry.md, Player appearance).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub appearance: Option<Appearance>,
+    /// A bot (docs/game/bots.md §9.2): the server accepts it only for an
+    /// xuid in the session's roster.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot: Option<bool>,
+}
+
+impl Player {
+    pub fn is_bot(&self) -> bool {
+        self.bot == Some(true)
+    }
 }
 
 /// A player's colours and emblem: `primary`..`quaternary` index the art
@@ -120,6 +130,14 @@ pub struct NewGame {
     pub playlist: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub playlist_id: Option<String>,
+    /// Multiplayer only: the Live session the game was played in (16
+    /// lowercase hex digits, `arbitration::valid_id`). A ranked game ranks
+    /// the humans who registered an arbitration round under it
+    /// (docs/live/live-matchmaking.md §8.4); a game with bots names the
+    /// session whose roster they came from (docs/game/bots.md §9.4), custom
+    /// games too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     /// Campaign only: `easy`, `normal`, `heroic` or `legendary`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub difficulty: Option<String>,
@@ -276,6 +294,30 @@ pub struct FramePlayer {
     /// The selected grenade type: `frag` or `plasma`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grenade: Option<String>,
+    /// Velocity, game units a second (packed version 3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vel: Option<[f64; 3]>,
+    /// The ticks the held weapon fired on: bit `k` is a shot on tick
+    /// `tick - k`, over the frame's span and up to 32 ticks back (version
+    /// 3; no shots is sent as absent). `shots` still counts them.
+    #[serde(default, skip_serializing_if = "no_fire")]
+    pub fire: Option<u32>,
+    /// Body vitality, 0 (dead) to 1 (version 3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<f64>,
+    /// Shield vitality, 0 to [`MAX_FRAME_SHIELD`] (1 is a full shield; an
+    /// overshield goes past it) (version 3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shield: Option<f64>,
+    /// The seat of `vehicle` they are in, the vehicle's own seat index, at
+    /// most [`MAX_FRAME_SEAT`] (version 3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seat: Option<u32>,
+    /// How many ticks before `tick` each of `actions` started, in the same
+    /// order (version 3): present only with `actions`, one each, at most
+    /// [`MAX_FRAME_AGO`].
+    #[serde(default, skip_serializing_if = "no_ago")]
+    pub actions_ago: Option<Vec<u32>>,
 }
 
 fn no_shots(shots: &Option<u32>) -> bool {
@@ -285,6 +327,22 @@ fn no_shots(shots: &Option<u32>) -> bool {
 fn no_actions(actions: &Option<Vec<String>>) -> bool {
     actions.as_ref().is_none_or(Vec::is_empty)
 }
+
+fn no_fire(fire: &Option<u32>) -> bool {
+    fire.is_none_or(|m| m == 0)
+}
+
+fn no_ago(ago: &Option<Vec<u32>>) -> bool {
+    ago.as_ref().is_none_or(Vec::is_empty)
+}
+
+/// Most shield a frame reports (an overshield is three full shields).
+pub const MAX_FRAME_SHIELD: f64 = 4.0;
+/// Highest vehicle seat index a frame reports.
+pub const MAX_FRAME_SEAT: u32 = 63;
+/// Furthest back (ticks before the frame's) a one-shot may be placed: 30
+/// seconds, past any frame a server holds back.
+pub const MAX_FRAME_AGO: u32 = 900;
 
 /// The values `stance` may take.
 pub const STANCES: [&str; 5] = ["stand", "crouch", "airborne", "vehicle", "dead"];
@@ -348,6 +406,12 @@ pub struct Frame {
     /// [`MAX_FRAME_OBJECTS`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub objects: Vec<FrameObject>,
+    /// Set on the first frame after a campaign checkpoint revert or mission
+    /// restart: the engine tick the game resumed at. The game's `tick`
+    /// keeps counting (docs/live/replay-fidelity.md, "The game clock"), so
+    /// this is the one place the two meet (version 3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cut: Option<u64>,
 }
 
 /// Which scenario block a [`FrameObject`] is placed by. The order is the
@@ -471,6 +535,10 @@ pub struct FrameHit {
     /// `vehicle`, ...
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
+    /// How many ticks before the frame's tick it landed, at most
+    /// [`MAX_FRAME_AGO`] (version 3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ago: Option<u32>,
 }
 
 /// A device machine or other big scripted mover.
@@ -561,6 +629,30 @@ pub struct FrameActor {
     /// The selected grenade type: `frag` or `plasma`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grenade: Option<String>,
+    /// Velocity, game units a second (packed version 3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vel: Option<[f64; 3]>,
+    /// The ticks the held weapon fired on: bit `k` is a shot on tick
+    /// `tick - k`, over the frame's span and up to 32 ticks back (version
+    /// 3; no shots is sent as absent). `shots` still counts them.
+    #[serde(default, skip_serializing_if = "no_fire")]
+    pub fire: Option<u32>,
+    /// Body vitality, 0 (dead) to 1 (version 3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<f64>,
+    /// Shield vitality, 0 to [`MAX_FRAME_SHIELD`] (1 is a full shield; an
+    /// overshield goes past it) (version 3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shield: Option<f64>,
+    /// The seat of `vehicle` they are in, the vehicle's own seat index, at
+    /// most [`MAX_FRAME_SEAT`] (version 3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seat: Option<u32>,
+    /// How many ticks before `tick` each of `actions` started, in the same
+    /// order (version 3): present only with `actions`, one each, at most
+    /// [`MAX_FRAME_AGO`].
+    #[serde(default, skip_serializing_if = "no_ago")]
+    pub actions_ago: Option<Vec<u32>>,
 }
 
 /// Most actors one frame may carry.
@@ -741,6 +833,14 @@ pub fn validate_new(game: &NewGame) -> Result<(), String> {
     if game.players.iter().any(|p| p.name.chars().count() > 32) {
         return Err("player names are at most 32 characters".into());
     }
+    if game.players.iter().any(Player::is_bot) {
+        if game.session_id.is_none() {
+            return Err("a game with bots names the session they were rostered for".into());
+        }
+        if game.players.iter().any(|p| p.is_bot() && p.xuid.is_none()) {
+            return Err("a bot has its rostered xuid".into());
+        }
+    }
     if let Some(kind) = &game.kind {
         if !GAME_KINDS.contains(&kind.as_str()) {
             return Err("kind must be custom, matchmaking or campaign".into());
@@ -762,6 +862,14 @@ pub fn validate_new(game: &NewGame) -> Result<(), String> {
         && !valid_id(id)
     {
         return Err("playlist_id must be [A-Za-z0-9_-]{1,64}".into());
+    }
+    if let Some(id) = &game.session_id {
+        if kind == "campaign" {
+            return Err("session_id is for multiplayer games".into());
+        }
+        if !crate::arbitration::valid_id(id) {
+            return Err("session_id must be 16 lowercase hex digits".into());
+        }
     }
     if let Some(difficulty) = &game.difficulty {
         if kind != "campaign" {
@@ -809,6 +917,7 @@ pub fn validate_frame(frame: &Frame) -> Result<(), String> {
             return Err("vehicle ids must be [a-z0-9_]{1,32}".into());
         }
         validate_motion(&p.stance, p.speed, &p.actions, &p.grenade)?;
+        validate_v3(p.vel, p.body, p.shield, p.seat, &p.actions, &p.actions_ago)?;
     }
     if frame.vehicles.len() > MAX_FRAME_VEHICLES {
         return Err(format!("at most {MAX_FRAME_VEHICLES} vehicles"));
@@ -855,6 +964,7 @@ pub fn validate_frame(frame: &Frame) -> Result<(), String> {
             return Err(format!("at most {MAX_FRAME_SHOTS} shots a frame"));
         }
         validate_motion(&a.stance, a.speed, &a.actions, &a.grenade)?;
+        validate_v3(a.vel, a.body, a.shield, a.seat, &a.actions, &a.actions_ago)?;
     }
     if frame.hits.len() > MAX_FRAME_HITS {
         return Err(format!("at most {MAX_FRAME_HITS} hits"));
@@ -869,6 +979,9 @@ pub fn validate_frame(frame: &Frame) -> Result<(), String> {
         }
         if h.amount.is_some_and(|a| !a.is_finite() || a < 0.0) {
             return Err("hit amount must be finite and not negative".into());
+        }
+        if h.ago.is_some_and(|a| a > MAX_FRAME_AGO) {
+            return Err(format!("hit ago must be at most {MAX_FRAME_AGO}"));
         }
     }
     if frame.machines.len() > MAX_FRAME_MACHINES {
@@ -952,28 +1065,72 @@ fn validate_motion(
     Ok(())
 }
 
+/// The version 3 fields of a player or actor.
+fn validate_v3(
+    vel: Option<[f64; 3]>,
+    body: Option<f64>,
+    shield: Option<f64>,
+    seat: Option<u32>,
+    actions: &Option<Vec<String>>,
+    ago: &Option<Vec<u32>>,
+) -> Result<(), String> {
+    if vel.is_some_and(|v| !v.iter().all(|c| c.is_finite()) || length(v) > MAX_FRAME_SPEED) {
+        return Err(format!("vel must be finite and at most {MAX_FRAME_SPEED}"));
+    }
+    if body.is_some_and(|b| !(0.0..=1.0).contains(&b)) {
+        return Err("body must be 0 to 1".into());
+    }
+    if shield.is_some_and(|s| !(0.0..=MAX_FRAME_SHIELD).contains(&s)) {
+        return Err(format!("shield must be 0 to {MAX_FRAME_SHIELD}"));
+    }
+    if seat.is_some_and(|s| s > MAX_FRAME_SEAT) {
+        return Err(format!("seat must be at most {MAX_FRAME_SEAT}"));
+    }
+    if let Some(ago) = ago.as_ref().filter(|a| !a.is_empty()) {
+        if actions.as_ref().map_or(0, Vec::len) != ago.len() {
+            return Err("actions_ago must have one entry for each action".into());
+        }
+        if ago.iter().any(|a| *a > MAX_FRAME_AGO) {
+            return Err(format!("actions_ago must be at most {MAX_FRAME_AGO}"));
+        }
+    }
+    Ok(())
+}
+
 fn length(v: [f64; 3]) -> f64 {
     v.iter().map(|c| c * c).sum::<f64>().sqrt()
 }
 
 /// What a dropped frame (coalesced in a queue or throttled by the server)
 /// hands on to the next delivered one so nothing one-shot is lost: shots,
-/// actions, hits, and the latest state of each machine.
+/// fire, actions, hits, a cut, and the latest state of each machine. What
+/// is placed in time (fire, actions' and hits' `ago`) is kept on absolute
+/// ticks and placed again against the frame that takes it.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct FrameCarry {
     shots: Vec<(Shooter, u32)>,
-    actions: Vec<(Shooter, Vec<String>)>,
-    hits: Vec<FrameHit>,
+    /// Each shooter's fire mask as of a tick.
+    fire: Vec<(Shooter, u64, u32)>,
+    /// Each action with the tick it started on, when its frame said.
+    actions: Vec<(Shooter, Vec<(String, Option<u64>)>)>,
+    hits: Vec<(FrameHit, Option<u64>)>,
     machines: Vec<FrameMachine>,
+    cut: Option<u64>,
 }
 
 /// How many shooters a carry keeps shots and actions for.
 const MAX_CARRIED_SHOOTERS: usize = 4 * (MAX_PLAYERS + MAX_FRAME_ACTORS);
 
+/// A fire mask moved `by` ticks older (shots past 32 ticks drop off).
+fn older(mask: u32, by: u64) -> u32 {
+    if by >= 32 { 0 } else { mask << by }
+}
+
 impl FrameCarry {
     /// Adds a frame that will not be delivered (or whose one-shot data a
     /// later frame must repeat, as a recorded frame does).
     pub fn add(&mut self, frame: &Frame) {
+        let t = frame.tick;
         for (shooter, n) in frame.shots() {
             if let Some((_, total)) = self.shots.iter_mut().find(|(s, _)| *s == shooter) {
                 *total = total.saturating_add(n).min(MAX_FRAME_SHOTS);
@@ -981,16 +1138,33 @@ impl FrameCarry {
                 self.shots.push((shooter, n.min(MAX_FRAME_SHOTS)));
             }
         }
-        for (shooter, actions) in frame.actions() {
+        for (shooter, mask) in frame.fire() {
+            if let Some((_, at, kept)) = self.fire.iter_mut().find(|(s, _, _)| *s == shooter) {
+                if t >= *at {
+                    *kept = older(*kept, t - *at) | mask;
+                    *at = t;
+                } else {
+                    *kept |= older(mask, *at - t);
+                }
+            } else if self.fire.len() < MAX_CARRIED_SHOOTERS {
+                self.fire.push((shooter, t, mask));
+            }
+        }
+        for (shooter, actions) in frame.timed_actions() {
             if let Some((_, kept)) = self.actions.iter_mut().find(|(s, _)| *s == shooter) {
-                kept.extend(actions.iter().cloned());
+                kept.extend(actions);
                 let over = kept.len().saturating_sub(MAX_FRAME_ACTIONS);
                 kept.drain(..over);
             } else if self.actions.len() < MAX_CARRIED_SHOOTERS {
-                self.actions.push((shooter, actions.to_vec()));
+                self.actions.push((shooter, actions));
             }
         }
-        self.hits.extend(frame.hits.iter().cloned());
+        self.hits.extend(
+            frame
+                .hits
+                .iter()
+                .map(|h| (h.clone(), h.ago.map(|a| t.saturating_sub(u64::from(a))))),
+        );
         let over = self.hits.len().saturating_sub(MAX_FRAME_HITS);
         self.hits.drain(..over);
         for m in &frame.machines {
@@ -1000,59 +1174,140 @@ impl FrameCarry {
                 self.machines.push(m.clone());
             }
         }
+        if frame.cut.is_some() {
+            self.cut = frame.cut;
+        }
     }
 
     pub fn is_empty(&self) -> bool {
         self.shots.is_empty()
+            && self.fire.is_empty()
             && self.actions.is_empty()
             && self.hits.is_empty()
             && self.machines.is_empty()
+            && self.cut.is_none()
     }
 }
 
+/// Ticks before `now` that `at` was, capped at [`MAX_FRAME_AGO`].
+fn ago(now: u64, at: u64) -> u32 {
+    now.saturating_sub(at).min(u64::from(MAX_FRAME_AGO)) as u32
+}
+
 impl Frame {
-    /// Each player's and actor's actions, for carrying.
-    fn actions(&self) -> impl Iterator<Item = (Shooter, &[String])> + '_ {
-        let players = self.players.iter().filter_map(|p| {
-            let a = p.actions.as_deref().filter(|a| !a.is_empty())?;
-            Some((Shooter::Player(p.index), a))
+    /// Each player's and actor's fire mask, for carrying.
+    fn fire(&self) -> impl Iterator<Item = (Shooter, u32)> + '_ {
+        let players = self
+            .players
+            .iter()
+            .filter_map(|p| Some((Shooter::Player(p.index), p.fire.filter(|m| *m != 0)?)));
+        let actors = self
+            .actors
+            .iter()
+            .filter_map(|a| Some((Shooter::Actor(a.id.clone()), a.fire.filter(|m| *m != 0)?)));
+        players.chain(actors)
+    }
+
+    /// Each player's and actor's actions with the tick each started on
+    /// (when the frame says), for carrying.
+    fn timed_actions(&self) -> impl Iterator<Item = (Shooter, Vec<(String, Option<u64>)>)> + '_ {
+        let t = self.tick;
+        let timed = move |actions: &Option<Vec<String>>, ago: &Option<Vec<u32>>| {
+            let actions = actions.as_ref().filter(|a| !a.is_empty())?;
+            let ago = ago.as_ref().filter(|g| g.len() == actions.len());
+            Some(
+                actions
+                    .iter()
+                    .enumerate()
+                    .map(|(i, a)| (a.clone(), ago.map(|g| t.saturating_sub(u64::from(g[i])))))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let players = self.players.iter().filter_map(move |p| {
+            Some((Shooter::Player(p.index), timed(&p.actions, &p.actions_ago)?))
         });
-        let actors = self.actors.iter().filter_map(|x| {
-            let a = x.actions.as_deref().filter(|a| !a.is_empty())?;
-            Some((Shooter::Actor(x.id.clone()), a))
+        let actors = self.actors.iter().filter_map(move |a| {
+            Some((
+                Shooter::Actor(a.id.clone()),
+                timed(&a.actions, &a.actions_ago)?,
+            ))
         });
         players.chain(actors)
     }
 
     /// Takes in what earlier, undelivered frames carried: their shots are
-    /// added, their actions and hits go before this frame's (the oldest
-    /// dropped past the caps), and their machines are kept where this frame
-    /// has no newer state. Players and actors not in this frame lose theirs.
+    /// added and their fire masks merged, their actions and hits go before
+    /// this frame's (the oldest dropped past the caps) and are placed in
+    /// time against this frame's tick, their machines are kept where this
+    /// frame has no newer state, and their cut is this frame's when it has
+    /// none. Players and actors not in this frame lose theirs.
     pub fn absorb(&mut self, carry: FrameCarry) {
+        let now = self.tick;
         self.add_shots(carry.shots);
+        for (shooter, at, mask) in carry.fire {
+            let mask = if now >= at {
+                older(mask, now - at)
+            } else {
+                mask
+            };
+            let slot = match &shooter {
+                Shooter::Player(index) => self
+                    .players
+                    .iter_mut()
+                    .find(|p| p.index == *index)
+                    .map(|p| &mut p.fire),
+                Shooter::Actor(id) => self
+                    .actors
+                    .iter_mut()
+                    .find(|a| a.id == *id)
+                    .map(|a| &mut a.fire),
+            };
+            if let Some(slot) = slot {
+                let all = slot.unwrap_or(0) | mask;
+                *slot = (all != 0).then_some(all);
+            }
+        }
         for (shooter, earlier) in carry.actions {
             let slot = match &shooter {
                 Shooter::Player(index) => self
                     .players
                     .iter_mut()
                     .find(|p| p.index == *index)
-                    .map(|p| &mut p.actions),
+                    .map(|p| (&mut p.actions, &mut p.actions_ago)),
                 Shooter::Actor(id) => self
                     .actors
                     .iter_mut()
                     .find(|a| a.id == *id)
-                    .map(|a| &mut a.actions),
+                    .map(|a| (&mut a.actions, &mut a.actions_ago)),
             };
-            if let Some(slot) = slot {
+            if let Some((actions, agos)) = slot {
+                let mine = actions.take().unwrap_or_default();
+                let my_ago = agos.take().filter(|g| g.len() == mine.len());
                 let mut all = earlier;
-                all.extend(slot.take().unwrap_or_default());
+                all.extend(mine.into_iter().enumerate().map(|(i, a)| {
+                    (
+                        a,
+                        my_ago.as_ref().map(|g| now.saturating_sub(u64::from(g[i]))),
+                    )
+                }));
                 let over = all.len().saturating_sub(MAX_FRAME_ACTIONS);
                 all.drain(..over);
-                *slot = Some(all);
+                *agos = all
+                    .iter()
+                    .map(|(_, at)| at.map(|at| ago(now, at)))
+                    .collect::<Option<Vec<u32>>>();
+                *actions = Some(all.into_iter().map(|(a, _)| a).collect());
             }
         }
         if !carry.hits.is_empty() {
-            let mut hits = carry.hits;
+            let mut hits: Vec<FrameHit> = carry
+                .hits
+                .into_iter()
+                .map(|(mut h, at)| {
+                    h.ago = at.map(|at| ago(now, at));
+                    h
+                })
+                .collect();
             hits.append(&mut self.hits);
             let over = hits.len().saturating_sub(MAX_FRAME_HITS);
             hits.drain(..over);
@@ -1064,6 +1319,9 @@ impl Frame {
             {
                 self.machines.push(m);
             }
+        }
+        if self.cut.is_none() {
+            self.cut = carry.cut;
         }
     }
 
@@ -1156,6 +1414,20 @@ pub fn normalize_frame(frame: &mut Frame) {
         if p.shots == Some(0) {
             p.shots = None;
         }
+        if p.fire == Some(0) {
+            p.fire = None;
+        }
+        if p.actions.is_none() || p.actions_ago.as_ref().is_some_and(Vec::is_empty) {
+            p.actions_ago = None;
+        }
+    }
+    for a in &mut frame.actors {
+        if a.fire == Some(0) {
+            a.fire = None;
+        }
+        if a.actions.is_none() || a.actions_ago.as_ref().is_some_and(Vec::is_empty) {
+            a.actions_ago = None;
+        }
     }
 }
 
@@ -1163,6 +1435,99 @@ pub fn normalize_frame(frame: &mut Frame) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn unit(index: u32, tick_fire: Option<u32>) -> FramePlayer {
+        FramePlayer {
+            index,
+            alive: true,
+            fire: tick_fire,
+            ..FramePlayer::default()
+        }
+    }
+
+    /// One-shots carried over dropped frames are placed again against the
+    /// frame that takes them: fire masks shift, actions and hits keep their
+    /// tick, a cut comes along.
+    #[test]
+    fn carried_one_shots_keep_their_ticks() {
+        let mut carry = FrameCarry::default();
+        let mut a = Frame {
+            tick: 100,
+            players: vec![unit(0, Some(0b1))],
+            ..Frame::default()
+        };
+        a.players[0].actions = Some(vec!["jump".into()]);
+        a.players[0].actions_ago = Some(vec![1]);
+        a.hits = vec![FrameHit {
+            ago: Some(0),
+            ..FrameHit::default()
+        }];
+        a.cut = Some(7);
+        carry.add(&a);
+        let b = Frame {
+            tick: 102,
+            players: vec![unit(0, Some(0b10))],
+            ..Frame::default()
+        };
+        carry.add(&b);
+        let mut c = Frame {
+            tick: 104,
+            players: vec![unit(0, Some(0b1))],
+            ..Frame::default()
+        };
+        c.players[0].actions = Some(vec!["melee".into()]);
+        c.players[0].actions_ago = Some(vec![0]);
+        c.absorb(carry);
+        // Shots on 100, 101 and 104: 4, 3 and 0 ticks back.
+        assert_eq!(c.players[0].fire, Some(0b11001));
+        assert_eq!(
+            c.players[0].actions.as_deref(),
+            Some(&["jump".to_string(), "melee".to_string()][..])
+        );
+        assert_eq!(c.players[0].actions_ago.as_deref(), Some(&[5, 0][..]));
+        assert_eq!(c.hits[0].ago, Some(4));
+        assert_eq!(c.cut, Some(7));
+        assert_eq!(validate_frame(&c), Ok(()));
+    }
+
+    #[test]
+    fn carried_actions_without_ticks_drop_the_ticks() {
+        let mut carry = FrameCarry::default();
+        let mut a = Frame {
+            tick: 10,
+            players: vec![unit(0, None)],
+            ..Frame::default()
+        };
+        a.players[0].actions = Some(vec!["reload".into()]);
+        carry.add(&a);
+        let mut b = Frame {
+            tick: 12,
+            players: vec![unit(0, None)],
+            ..Frame::default()
+        };
+        b.players[0].actions = Some(vec!["switch".into()]);
+        b.players[0].actions_ago = Some(vec![0]);
+        b.absorb(carry);
+        assert_eq!(b.players[0].actions.as_ref().map(Vec::len), Some(2));
+        assert_eq!(
+            b.players[0].actions_ago, None,
+            "an older sender's action has no tick"
+        );
+        // Fire older than 32 ticks drops off.
+        let mut carry = FrameCarry::default();
+        carry.add(&Frame {
+            tick: 0,
+            players: vec![unit(0, Some(1))],
+            ..Frame::default()
+        });
+        let mut late = Frame {
+            tick: 40,
+            players: vec![unit(0, None)],
+            ..Frame::default()
+        };
+        late.absorb(carry);
+        assert_eq!(late.players[0].fire, None);
+    }
 
     fn players() -> Vec<Player> {
         vec![
@@ -1173,6 +1538,7 @@ mod tests {
                 team: 0,
                 local: Some(true),
                 appearance: None,
+                bot: None,
             },
             Player {
                 index: 1,
@@ -1181,6 +1547,7 @@ mod tests {
                 team: 1,
                 local: None,
                 appearance: None,
+                bot: None,
             },
         ]
     }
@@ -1643,6 +2010,69 @@ mod tests {
     }
 
     #[test]
+    fn a_matchmaking_game_names_its_live_session() {
+        let mm = NewGame {
+            map: "lockout".into(),
+            mode: "multiplayer".into(),
+            kind: Some("matchmaking".into()),
+            playlist_id: Some("1".into()),
+            session_id: Some("0123456789abcdef".into()),
+            ..NewGame::default()
+        };
+        assert_eq!(validate_new(&mm), Ok(()));
+        let upper = NewGame {
+            session_id: Some("0123456789ABCDEF".into()),
+            ..mm.clone()
+        };
+        assert!(validate_new(&upper).is_err());
+        let campaign = NewGame {
+            mode: "campaign".into(),
+            kind: Some("campaign".into()),
+            playlist_id: None,
+            ..mm.clone()
+        };
+        assert!(validate_new(&campaign).is_err());
+        let custom = NewGame {
+            kind: Some("custom".into()),
+            playlist_id: None,
+            ..mm.clone()
+        };
+        assert_eq!(validate_new(&custom), Ok(()), "a custom game with bots names one too");
+    }
+
+    #[test]
+    fn bots_come_with_their_session_and_xuid() {
+        let bot = Player {
+            index: 1,
+            name: "Clanker".into(),
+            xuid: Some(Xuid(0x000b_0000_0000_0001)),
+            team: 0,
+            local: Some(true),
+            appearance: None,
+            bot: Some(true),
+        };
+        let game = NewGame {
+            map: "lockout".into(),
+            mode: "multiplayer".into(),
+            kind: Some("custom".into()),
+            session_id: Some("0123456789abcdef".into()),
+            players: vec![bot.clone()],
+            ..NewGame::default()
+        };
+        assert_eq!(validate_new(&game), Ok(()));
+        let no_session = NewGame {
+            session_id: None,
+            ..game.clone()
+        };
+        assert!(validate_new(&no_session).is_err());
+        let no_xuid = NewGame {
+            players: vec![Player { xuid: None, ..bot }],
+            ..game
+        };
+        assert!(validate_new(&no_xuid).is_err());
+    }
+
+    #[test]
     fn game_kinds_playlists_and_difficulty() {
         let campaign = NewGame {
             map: "03a_oldmombasa".into(),
@@ -1762,6 +2192,7 @@ mod tests {
                 pos: [1.0, 2.0, 3.0],
                 amount: Some(0.4),
                 kind: Some("bullet".into()),
+                ago: Some(1),
             }],
             bsp: Some(2),
             machines: vec![FrameMachine {

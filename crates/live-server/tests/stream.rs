@@ -290,6 +290,7 @@ async fn ingest_fans_out_and_records_frames() {
             team: 0,
             local: Some(true),
             appearance: None,
+            bot: None,
         }],
         ..NewGame::default()
     };
@@ -460,6 +461,7 @@ async fn frames_carry_species_aim_weapon_and_shots() {
             team: 0,
             local: Some(true),
             appearance: None,
+            bot: None,
         }],
         ..NewGame::default()
     };
@@ -625,6 +627,7 @@ async fn campaign_frames_carry_vehicles_and_actors() {
             team: 1,
             local: Some(true),
             appearance: None,
+            bot: None,
         }],
         difficulty: Some("heroic".into()),
         ..NewGame::default()
@@ -695,6 +698,12 @@ async fn campaign_frames_carry_vehicles_and_actors() {
             speed: Some(3.5),
             actions: Some(vec!["grenade".into()]),
             grenade: Some("plasma".into()),
+            vel: Some([1.5, -0.25, 0.0]),
+            fire: Some(0b101),
+            body: Some(1.0),
+            shield: Some(0.5),
+            seat: None,
+            actions_ago: Some(vec![1]),
         }],
         hits: vec![live_proto::game::FrameHit {
             from: Some("90070007".into()),
@@ -703,8 +712,10 @@ async fn campaign_frames_carry_vehicles_and_actors() {
             pos: [1.0, 2.0, 3.0],
             amount: Some(0.3),
             kind: Some("bullet".into()),
+            ago: Some(1),
         }],
         bsp: Some(1),
+        cut: Some(61),
         machines: vec![live_proto::game::FrameMachine {
             node: Some("scarab_0".into()),
             id: "90090009".into(),
@@ -855,6 +866,7 @@ async fn packed_frames_ingest_stream_and_record() {
             team: 0,
             local: Some(true),
             appearance: None,
+            bot: None,
         }],
         ..NewGame::default()
     };

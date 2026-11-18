@@ -13,7 +13,7 @@ import {
   serviceRecord, serviceTag, type CampaignRow, type HistoryRow, type MedalId, type ServiceRecord,
 } from "../state/derive";
 import type { GameMode } from "../state/reducer";
-import { difficultyName, gameTypeLine } from "../state/gametype";
+import { difficultyName, gameTypeLine, variantLabel } from "../state/gametype";
 import { historyTab, recordHref } from "./modes";
 import Emblem from "../components/Emblem";
 import MedalIcon from "../components/MedalIcon";
@@ -620,7 +620,7 @@ export function CareerPage() {
                   <label for="s-f-var">Gametype</label>
                   <select id="s-f-var" value={variant()} onChange={(e) => setVariant(e.currentTarget.value)}>
                     <option value="">All</option>
-                    <For each={variants()}>{(v) => <option value={v}>{titleCase(v)}</option>}</For>
+                    <For each={variants()}>{(v) => <option value={v}>{variantLabel(v)}</option>}</For>
                   </select>
                 </div>
                 <div class="s-filter-maps" aria-label="Maps">

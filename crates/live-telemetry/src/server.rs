@@ -487,6 +487,7 @@ mod tests {
                         team: 0,
                         local: Some(true),
                         appearance: None,
+                        bot: None,
                     },
                 },
             ),

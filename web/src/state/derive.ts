@@ -339,9 +339,16 @@ export function campaignOutcome(g: Pick<GameState, "status" | "end_reason">): Ca
   }
 }
 
+/** A `lost` game is one whose console went quiet without saying how it
+ *  ended (closed, crashed, or cut off); the server closed it after waiting.
+ *  It reads "Unfinished", not "Connection lost": closing the game is the
+ *  usual way it happens. */
 export const OUTCOME_WORDS: Record<CampaignOutcome, string> = {
-  complete: "Level complete", playing: "Playing now", quit: "Quit", lost: "Connection lost", ended: "Ended",
+  complete: "Level complete", playing: "Playing now", quit: "Quit", lost: "Unfinished", ended: "Ended",
 };
+
+/** A tooltip for an outcome that needs one. */
+export const LOST_NOTE = "The console stopped reporting before the game ended, so the server closed it";
 
 export interface CampaignRow {
   game: GameState;

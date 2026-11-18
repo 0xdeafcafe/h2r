@@ -52,3 +52,28 @@ export function markerScale(b: Box3): number {
   const across = Math.hypot(b.max[0] - b.min[0], b.max[1] - b.min[1]);
   return Math.min(4, Math.max(1, across / 45));
 }
+
+/** A standing Spartan's eyes above their feet, game units, when the model's
+ *  height isn't known; and the share of a model's height the eyes are at,
+ *  standing and crouched. */
+export const EYE_HEIGHT = 0.62;
+export const EYE_SHARE = 0.9;
+export const CROUCH_EYE_SHARE = 0.55;
+
+/** The first-person camera for a player: where their eyes are and a point
+ *  one unit along where they look (game coordinates). `height` is their
+ *  model's, feet to head, or null. Their aim when the frame has one, else
+ *  level along their yaw. */
+export function eyeView(
+  p: { x: number; y: number; z: number; yaw: number; aim?: readonly [number, number, number] | null; stance?: string | null },
+  height: number | null,
+): { eye: Vec3; look: Vec3 } {
+  const crouched = p.stance === "crouch";
+  const h = height && height > 0 ? height * (crouched ? CROUCH_EYE_SHARE : EYE_SHARE) : EYE_HEIGHT * (crouched ? CROUCH_EYE_SHARE / EYE_SHARE : 1);
+  const eye: Vec3 = [p.x, p.y, p.z + h];
+  const a = p.aim && p.aim.every(Number.isFinite) && Math.hypot(p.aim[0], p.aim[1], p.aim[2]) > 1e-6
+    ? p.aim
+    : [Math.cos(p.yaw), Math.sin(p.yaw), 0];
+  const len = Math.hypot(a[0], a[1], a[2]);
+  return { eye, look: [eye[0] + a[0] / len, eye[1] + a[1] / len, eye[2] + a[2] / len] };
+}

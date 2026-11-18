@@ -323,7 +323,9 @@ site's art from your own disc into PNGs and a `manifest.json`. The default
 `--out` is `game-art/` in the server directory. It covers emblem layers, rank
 icons, Live icons, game-type icons, weapon silhouettes, medals, the player
 colour palette, every multiplayer map's preview and every campaign level's
-level-select picture (`map/<stem>/preview` too). A cold run takes well
+level-select picture (`map/<stem>/preview` too), and the game's title and
+save images from `default.xbe` (`title/image`, `title/save-image`: the
+`$$XTIMAGE` and `$$XSIMAGE` sections, `crates/assets/src/xpr.rs`). A cold run takes well
 under a second. Keys and emblem colouring are in
 [live-api.md](live-api.md#optional-game-art).
 
@@ -343,6 +345,10 @@ under a second. Keys and emblem colouring are in
   decoded is listed under `skipped`. The manifest's `source` is a SHA-256
   over the extractor version and every map file's path, size, sector and
   first 2 KiB; this is the cache key.
+- **Stats banners.** `bun run banner` in `web/` draws the stats site's
+  header collages from the extracted maps into the same directory and
+  manifest (`banner/home`, `banner/strip`); run it after each extraction.
+  See [live-art.md](live-art.md#stats-banners).
 - **Serving.** `h2 live serve` serves the art at `/art/game/` from
   `--game-art DIR`, or from `game-art/` in `--data` when it is there. By
   default it goes only to clients on the same machine, since it is your copy
@@ -363,6 +369,23 @@ under a second. Keys and emblem colouring are in
 - **`h2 live assets check [--out DIR]`** exits 0 when the directory holds art
   from this `h2`'s extractor and 1 when it is missing or older, so a script
   knows when to extract again (`deploy/live/setup.sh` does).
+- **Map names and pictures on the site.** Wherever a map is named, the
+  site reads the disc's name from `catalog.json` (Halo 2's multiplayer maps
+  and campaign levels), then the manifest's `maps.<stem>.name` (converted
+  Halo 1 maps), then the stem title-cased. A thumbnail is the map's
+  `map/<stem>/preview`, the picture the game's Select Map screen shows; a
+  game page's header shows it too for a finished game. A Halo 1 map reported
+  by its bare name (`bloodgulch`) finds its `h1_` entry when the server
+  knows no map by that stem. The catalog is fetched on its own, so names
+  hold when the manifest is missing. A disc variant whose name doesn't say
+  its game type gets it from the catalog ("Rockets (Slayer)"). Halo 1's
+  campaign levels are told apart by stem (`a10`..`d40`) even without art,
+  so their unpublished packages never read as "modded". With no art (a 404, or art served only to
+  this machine and the page opened from another), names are the title-cased
+  stems and a finished game's thumbnail is a card with that name. On the
+  Worker the art and catalog come from the published copy
+  ([live-worker.md](live-worker.md#the-site)); nothing of them is in the
+  repository or the Worker's bundle.
 
 #### For agents: `h2 live q`
 
@@ -964,7 +987,7 @@ through synthetic guest stacks; browsing every screen has not been run here.
 | `0x0022387b` | SaveLogonState writes the public 516-byte launch-state layout with users and service IDs; it contains no signing key. |
 | `0x0008e750`, manager `0x002c7410` | Message polling exposes pending game invitations. Title files use storage and never enter the player inbox. |
 
-These 7 entries still stop by API name because their backend behavior is not
+These 4 entries still stop by API name because their backend behavior is not
 implemented. Their menu/game fallbacks are a separate follow-up slice; the
 storage entries below no longer stop. Prefixes in the table are part of each
 listed API name.
@@ -973,14 +996,12 @@ listed API name.
 |---|---|
 | `XOnline` | `TitleUpdate` |
 | `XOnlineFriends` | `Remove`, `AnswerRequest` |
-| `XOnlineMutelist` | `Add`, `Remove` |
-| `XOnlineArbitration` | `ExtendRound` |
 | `XNet` | `TsAddrToInAddr` |
 
 Server-backed sessions, invitation delivery, clans and cached friend presence are
 implemented in the Client HLE sections below. Friend mutations
-outside the existing capture path, checking ranked arbitration against the
-games log ([live-matchmaking.md](live-matchmaking.md) §8.3) and NAT traversal
+outside the existing capture path, comparing ranked arbitration reports
+([live-matchmaking.md](live-matchmaking.md) §8.4) and NAT traversal
 remain unfinished. Synthetic tests prove invitation discovery through bidirectional
 host UDP traffic; actual menu transitions and a full retail match are unconfirmed.
 

@@ -30,6 +30,8 @@ use crate::{Error, Result};
 
 #[path = "convert_arsenal.rs"]
 mod arsenal_conv;
+#[path = "convert_particles.rs"]
+mod particles_conv;
 #[path = "convert_flares.rs"]
 pub mod flares_conv;
 
@@ -765,6 +767,16 @@ pub struct Converter<'a> {
     decal_role: Option<Option<crate::rebuild::DecalRole>>,
     /// Decals being converted (a next-decal chain that loops ends there).
     decals_open: Vec<u32>,
+    /// The base's particle role ([`crate::particles::particle_role`]), once.
+    particle_role: Option<Option<crate::particles::ParticleRole>>,
+    /// The base's emitter role ([`crate::particles::emitter_role`]), once.
+    emitter_role: Option<Option<crate::particles::EmitterRole>>,
+    /// Effects whose particles are being converted (a particle's own
+    /// effects that lead back to one are left out).
+    effects_open: Vec<u32>,
+    /// Per Halo 1 `pctl`, its lasting particle states' `prt3`s with the
+    /// state and its type's initial count ([`Self::effect_particle_systems`]).
+    pctl_done: HashMap<u32, Vec<(TagId, crate::particles::H1ParticleState, u16)>>,
     /// Scenery role words ([`Self::scenery_role`]), computed once.
     scenery_role: Option<Option<crate::rebuild::SceneryRole>>,
     /// Per Halo 1 weapon label, the weapon class the map's graphs hold it
@@ -795,6 +807,10 @@ impl<'a> Converter<'a> {
             loop_index: HashMap::new(),
             light_roles: HashMap::new(),
             decal_role: None,
+            particle_role: None,
+            emitter_role: None,
+            effects_open: Vec::new(),
+            pctl_done: HashMap::new(),
             decals_open: Vec::new(),
             dialogue_bytes: 0,
             scenery_role: None,
@@ -1140,7 +1156,8 @@ impl<'a> Converter<'a> {
                 }
                 _ => None,
             };
-            if got.is_none() {
+            // Particle systems become the event's (Self::effect_particle_systems).
+            if got.is_none() && p.group != h1map::Group::new(b"pctl") {
                 *left.entry(p.group.to_string()).or_default() += 1;
             }
             targets.push(got.map(|tag| crate::rebuild::PartTarget {
@@ -1154,10 +1171,7 @@ impl<'a> Converter<'a> {
         for (g, n) in left {
             rep.no_home.push(format!("{n} {g} parts left out (no converter here, or did not convert)"));
         }
-        let particles: usize = e.events.iter().map(|ev| ev.particles).sum();
-        if particles > 0 {
-            rep.no_home.push(format!("{particles} particles left out (Halo 2's are prt3 on shader templates)"));
-        }
+        let root = self.effect_particle_systems(tag, root, &mut rep)?;
         self.tree.reports.push(rep);
         let id = self.tree.push(
             &tag.name,
@@ -1171,8 +1185,8 @@ impl<'a> Converter<'a> {
         Ok(id)
     }
 
-    /// The object's attachments that convert here (looping sounds and
-    /// effects) and its creation effect; the rest are listed in `rep`.
+    /// The object's attachments that convert here (looping sounds,
+    /// effects, lights and contrails) and its creation effect; the rest are listed in `rep`.
     pub fn object_effects(
         &mut self,
         object_bytes: &[u8],
@@ -1197,6 +1211,13 @@ impl<'a> Converter<'a> {
                     Ok(x) => Some(x),
                     Err(e) => {
                         rep.no_home.push(format!("attachment effe {}: not converted ({e})", t.name));
+                        None
+                    }
+                },
+                b"cont" => match self.contrail(t) {
+                    Ok(x) => Some(x),
+                    Err(e) => {
+                        rep.no_home.push(format!("attachment cont {}: not converted ({e})", t.name));
                         None
                     }
                 },

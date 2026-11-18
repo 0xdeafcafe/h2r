@@ -197,11 +197,25 @@ reset (`0x2a2ad0`); 31 readers in physics and AI multiply by it.
 ("Our skulls"): we write our scale of whatever the game last wrote, so a
 map script's change is kept and scaled.
 
-A variant's gravity is a scale in the extension (say 25% to 200%). It is
-applied at game start the way Low Gravity is, on every machine, and the two
-multiply (Low Gravity on a 50% variant is 25%). Gravity is simulated on
-every machine, so a machine without the scale disagrees with the host;
-section 3 keeps such a machine out of the game.
+A variant's gravity is a scale in the extension (10% to 400%). It is
+applied the way Low Gravity is, each tick after the game's, and the two
+multiply (Low Gravity on a 50% variant is 25%):
+`skulls_custom::gravity_step(scale, now, ..)` writes `game × scale`, keeps
+the game's own value to rescale when the scale changes, and gives it back
+at scale 1. The scale comes from the active record's block
+(`G+0x13c + 0x10c`, read by `boot::variant_ext::in_game`) in a
+multiplayer game only (globals mode 2).
+
+Who applies it (`variant_ext::decide`): a machine alone (no networked
+session, or one machine in it) and the host of a Live game. Never on System
+Link (decided 6a; the squad session's network class at `+0x18` is 1, the
+field `0x59840` checks before answering a LAN search). A Live guest
+applies nothing until slice 4 brings it the host's block: the wire drops
+the spare bytes, so its own record has none. Gravity is simulated on every
+machine, so until then a guest predicts with the game's gravity against a
+host with the scale (the desync in section 3). The log says
+`variant options: Gravity 50% (host)` (or why not) when the decision
+changes, and `variant options: gravity A -> B` on each write.
 
 ### Bounce Practice's magnum and Bumper Cars (built)
 
@@ -262,21 +276,25 @@ variant):
 |---|---|---|
 | `+0x10c` | 2 | magic `hx` |
 | `+0x10e` | 1 | version (1) |
-| `+0x10f` | 1 | flags: bit 0 instant respawn, bit 1 unlimited grenades |
-| `+0x110` | 2 | gravity, percent (0 means 100) |
-| `+0x112` | 2 | damage dealt, percent (0 means 100) |
+| `+0x10f` | 1 | flags: bit 0 reserved (was instant respawn, dropped by decision 3), bit 1 unlimited grenades |
+| `+0x110` | 2 | gravity, percent (0 means 100; 10..400) |
+| `+0x112` | 2 | damage dealt, percent (0 means 100; 10..400, as the next three) |
 | `+0x114` | 2 | shield strength, percent |
 | `+0x116` | 2 | health, percent |
 | `+0x118` | 2 | movement speed, percent |
 | `+0x11a` | 2 | primary weapon, our id (0 means use `+0xd6`) |
 | `+0x11c` | 2 | secondary weapon, our id |
-| `+0x11e` | 1 | team size (0 means any) |
+| `+0x11e` | 1 | team size (0 means any; at most 16) |
 | `+0x11f..+0x12b` | 13 | reserved, zero |
 | `+0x12c` | 4 | CRC-32 of `+0x10c..+0x12b` |
 
 Our weapon ids are a table in our code naming tags by path (the weapons the
 multiplayer maps carry), never a datum, which differs per map. A block with
-a bad magic, version or CRC is ignored. Because retail never writes these
+a bad magic, version or CRC, or a value out of its range, is ignored as a
+whole (`variants::ext::Block::Ignored`): the game plays retail rules and
+Studio lists it as an issue. The CRC is zlib's CRC-32 over the 0x20 bytes
+before it, little-endian. The default options encode as all zero, so a
+variant whose extras are all put back is a retail record again. Because retail never writes these
 bytes, a record from a retail editor is all zero there.
 
 An older build ignores the block and keeps it: it loads, plays and re-saves
@@ -342,14 +360,72 @@ guests"):
   with the list hooks the pregame dialog's "Halo 1 Options" row uses
   ([h1-multiplayer.md](h1-multiplayer.md) "Halo 1 options",
   [ui-screens.md](ui-screens.md)). Its rows are `Row::value`s whose get and
-  set read and write the block in the record being edited. The editor
-  screen's list hooks are not traced yet.
-- **Studio** (`crates/studio/src/ui/variants.rs`): a "More options" section
-  under the pages, editing the block through `variants::ext`, and
-  `issues()` gains our own rule (respawn 0 with cycling).
+  set read and write the block in the record being edited. Built
+  (`boot::variant_page`; "The variant editor's page list" below), with
+  gravity only so far.
+- **Studio** (`crates/studio/src/ui/variants.rs`): a "More options
+  (h2recomp)" section under the pages edits the block through
+  `VariantEditor::set_ext` (undoable; a drag on one option is one step).
+  It shows only what the game applies (gravity in slice 3); a block the
+  game would ignore shows a warning and an `Issue::Ext`. `issues()` also
+  has our own rule (respawn 0 with cycling).
 - **The stats site** today records only the engine name (`GameStarted`'s
   `variant`). Adding the variant's name and a summary of the extension
   ("Gravity 50%") to `GameStarted` is a later Live slice.
+
+### The variant editor's page list (traced, static)
+
+The list already has a row of ours: Skulls, row word 6
+(`boot::skulls_mp_row`, docs/game/skulls.md "Choosing them"). "More
+Options" is row word 7, added the same way. Confirmed in the code:
+
+- **Screen.** `variant_editing_options`, screen 178: loader `0x23764f`
+  (stdcall, the request, `ret 4`; 0x9b4 bytes, pushed by `0x147f6d`),
+  constructor `0x23768d` (vtable `0x459ae8`), list handler at screen
+  `+0x614`. Reached from Settings, Game Variants (`0x2b1b01`), then
+  `0x2387d8` or `0x2ba9d0`, on window 5.
+- **List constructor `0x2b74c3`** (handler vtable `0x45bdb8`): six item
+  widgets, a datum array named by `0x45be10` with a **fixed** count of 6
+  (`push 6`), each row's word (`+2`) set to its index by a loop over the
+  array's count. The rows don't come from the `goof` pages, so
+  `skulls_mp::variant_count` grows it by name; for two rows it must add 2.
+- **Row text `0x2b7581`** (thiscall, `[esp+4]` the item, `ret 8`): a
+  table of six (word, string id) pairs through `0x24c75c`; an unknown word
+  leaves the text alone, so a `before` hook draws ours.
+- **Row chosen `0x2b75e8`** (thiscall, `[esp+8]` the row's handle,
+  `ret 8`): words above 5 return at `0x2b7711`. Words 0..5 open page
+  `E - 1`, 9, `0x1e + E`, `0xc + E`, 0xb, 0xc (E the engine of the record
+  being edited) through `0x2c83e6(page, window 5, slot 4, 1 << player)`;
+  the page screen (`0x2c7e5b`, rows filled by `0x2c7f7f` from the `goof`
+  page via `0x2369b3`) is retail's and has no room for our options.
+- **Panes:** the tag has six; `skulls_mp::skip_pane` covers row 6 only and
+  must cover 7 too (`0x230427` doesn't check the index).
+- **Opening ours:** `skulls_mp::open_request(mask, [screen+0x74],
+  [screen+0x78], loader)`, as the Skulls row does, onto the editor's own
+  stack.
+- **The record the page edits is at `0x54e4a0`** (confirmed):
+  `0x148a8d` zeroes 0x4c dwords (0x130 bytes, one record) from
+  `0x54e4a0`; `0x2387c6` copies 32 units of name to `0x54e4a4` (`+4`);
+  the row chosen reads the engine at `0x54e4e4` (`+0x44`). The block is at
+  `0x54e5ac`. `variant_page::tests::the_edited_record_starts_at_0x54e4a0`
+  pins it against the record layout and
+  `edited_record_is_where_the_xbe_says` (ignored; `H2_XBE`) against the
+  instructions.
+
+**Built** (`boot::variant_page`): `variant_count` grows the list by the
+Skulls row and ours (8 rows with both), `more_row` is word 7 (6 without
+Skulls), `skip_pane` keeps the last pane for it. The row's `before` hooks
+on `0x2b7581` and `0x2b75e8` draw "More Options" and open our page with
+`skulls_mp::open_request` on the editor's own window and slot. The page
+(`variant-more-options`, a list class laid out as the skulls page, left,
+right and A step) reads the block at `0x54e5ac` when it opens and at each
+row text, and after a change writes the new block back before the row is
+drawn again (`Rows::live_text`), so the game's editor saves it with the
+record. Gravity steps 10, 25, 50, 75, Normal, 125, 150, 200, 300 and
+400%; a value Studio set between steps shows as the nearest. Back to
+Normal writes all zeros (a retail record). Strings: the "variant page"
+family. Switches: `features.variant-more-options-row`,
+`features.variant-more-options`.
 
 ## 4. Names with any character
 
@@ -520,7 +596,8 @@ own slice (8 below):
 2. **Done** ("Built: slice 2"): our added choices in the game's editor and
    Studio, `record::ours` (respawn 0 with cycling refused), Bounce
    Practice's magnum, Bumper Cars.
-3. **The extension block and gravity:** `variants::ext` (encode, decode,
+3. **Done** ("Built: slice 3"; the page in section 3):
+   **The extension block and gravity:** `variants::ext` (encode, decode,
    CRC, zero means none), Studio's section, the hopper tool carrying it,
    gravity applied at game start (the Low Gravity code), and the in-game
    "More Options" kit page (tracing the variant editor's list hooks first).
@@ -569,6 +646,31 @@ After slice 2:
    Bumper Cars was left out.
 6. Studio: the new choices show with "(h2recomp)"; respawn 0 with cycling
    (typed in by hand) can't be saved.
+
+After slice 3 (one machine; Studio writes the variant):
+
+3a. Studio: open a saved Slayer variant, "More options (h2recomp)",
+    gravity 50, save. Undo and redo move the slider back and forth. In
+    the game the variant still loads. Edit and save it in the game's own
+    editor, then reopen it in Studio: note whether gravity is still 50
+    (whether the game's editor copies the spare bytes is not traced).
+3a'. In the game: Settings, Game Variants, edit a Slayer copy. The
+    category list ends Skulls, More Options; More Options keeps the last
+    category's pane. It opens a page with one row, "Gravity: < Normal >";
+    left and right step it (stopping at 10% and 400%), A steps up and
+    wraps. Gravity 50, B, save; reopen the variant: More Options shows
+    50%, and Studio shows 50. Back to Normal and save: Studio shows no
+    options. The log says `variant options: gravity 100% -> 75%` per step.
+3b. A local custom game (or split-screen) on it: jumps go about twice as
+    high and grenades fly flatter; the log says
+    `variant options: Gravity 50% (local game)` and
+    `variant options: gravity A -> B`. With the Low Gravity skull too:
+    higher again (a quarter). Back in the menus and into a retail variant:
+    normal gravity, and the log says `variant options: none in this game`.
+3c. Host it on Live with a second machine: the host's log says `(host)`;
+    the guest's says the options were not applied (slice 4), and the
+    guest's jumps rubber-band. Over System Link: both say not applied,
+    normal gravity.
 
 After slices 3 and 4:
 
@@ -622,7 +724,6 @@ After slices 6 to 8:
 - Which font slot draws names in each place (fonts.md); the audit above
   assumes `conduit` and `handel_gothic`.
 - What the game's editor shows for a storable value it doesn't list.
-- The variant editor screen's list hooks, for the "More Options" row.
 - What the game does for an unarmed player (Bumper Cars, starting weapon
   None): melee, the HUD, picking a weapon up.
 - The unoffered vehicle values and setting 80.
@@ -632,6 +733,13 @@ After slices 6 to 8:
   pending options (`0x4ed3a8`); a full scan before the block ships.
 - Host migration: a new host holds only the wire fields, so it would need
   the block from the session as a guest does.
+- Whether the game's own editor copies the spare bytes when it edits and
+  saves a variant (checklist 3a).
+- `coop_probe::Session::class` reads `S+0x4980`, the byte the lobby
+  setters compare with 1 (`0x63f00`), and `skulls_mp::Role` calls it 1
+  System Link, 2 Live. The network class `0x59840` checks is `S+0x18`;
+  `variant_ext` reads that one. Which the `+0x4980` byte is was not
+  traced.
 
 ## Built: slice 2
 
@@ -657,11 +765,59 @@ After slices 6 to 8:
   Practice has the magnum; Bumper Cars is the thirteenth variant
   (description number 92).
 
+## Built: slice 3
+
+- `variants::ext`: `Ext` (gravity, damage, shield, health and speed
+  percents, unlimited grenades, two weapon ids, team size), `encode`
+  (all zero for the default) and `decode` (`Block::None`, `Ext` or
+  `Ignored(Why)`: magic, version, CRC, range), `in_effect`, `summary`,
+  `crc32`. `GameVariant::ext_block`, `ext_state`, `ext` and `set_ext`
+  (refuses out-of-range values). `Schema::validate` reports a block the
+  game would ignore as `Issue::Ext`; it is a warning, not refused.
+- The block is in every copy of the record, so saved variants (signed
+  over the whole record), `.h2variant` files, Studio's undo and hopper
+  slots keep it with no further code. The hopper tool's editable fields
+  inside the variant are the raw string (`+0x00`), flags (`+0x48`) and
+  second dword (`+0x58`), all before `+0x10c`.
+- Studio: `Action::SetVariantExt`, `VariantEditor::set_ext`, the "More
+  options (h2recomp)" section (gravity).
+- `boot::variant_ext`: `in_game` and `decide` (above); `skulls_custom`'s
+  tick applies Low Gravity times the variant's gravity through the
+  generalised `gravity_step`.
+- `boot::variant_page`: the "More Options" row and page in the game's
+  variant editor (section 3, "The variant editor's page list").
+
 ## Tests
 
 `cargo test -p variants`, `cargo test -p hopper-edit`,
-`cargo test -p boot --lib` (community_variants, variant_options,
-string_ids). The slice 2 tests:
+`cargo test -p studio`, `cargo test -p boot --lib` (community_variants,
+variant_options, variant_ext, skulls_custom, string_ids). The slice 3
+tests:
+
+- `ext::crc_matches_zlib`, `the_default_is_all_zero_and_reads_as_none`,
+  `a_block_round_trips`, `a_damaged_block_is_ignored` (every byte flipped
+  in turn), `out_of_range_values_are_ignored_even_with_a_good_crc`,
+  `a_damaged_block_shows_as_an_issue`;
+- `record::the_extension_block_survives_the_cleanup_and_every_setter`;
+- `save::a_saved_file_keeps_the_extension_block`,
+  `portable::the_extension_block_travels_in_a_portable_file`,
+  `panel::extension_options_edit_and_undo_per_option`;
+- `hopper-edit` `model::a_hopper_slot_carries_the_extension_block`;
+- `studio` `app::tests` (the variant actions test sets and undoes it);
+- `boot` `variant_ext::alone_or_hosting_applies_system_link_and_guests_dont`,
+  `reads_the_active_records_block_in_multiplayer_only` (globals and a
+  squad session in synthetic memory), `skulls_custom`
+  `a_variants_gravity_composes_with_low_gravity_on_physics_memory`;
+- `boot` `variant_page::the_edited_record_starts_at_0x54e4a0` (and the
+  ignored `edited_record_is_where_the_xbe_says`),
+  `our_row_follows_the_skulls_row_and_grows_the_list_once`,
+  `a_press_opens_the_page_on_the_editors_stack`,
+  `the_page_edits_the_records_block`, `strings_are_ours_and_distinct`,
+  `the_row_and_the_page_are_on_the_plan`; `ui_kit::screens` checks the
+  page (`variant-more-options`) with the other screens. Run
+  `cargo test -p boot --tests` (the plan goldens are integration tests).
+
+The slice 2 tests:
 
 - `extra::every_added_choice_is_one_the_game_keeps`,
   `added_choices_go_in_value_order_and_never_twice`,

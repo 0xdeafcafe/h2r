@@ -26,9 +26,11 @@ use crate::game::{
 };
 
 /// The packed format's version, the first four bits of every frame. Version
-/// 2 adds a vehicle's parent and aim; version 1 frames (recorded ones, an
-/// older game's) still decode.
-pub const VERSION: u64 = 2;
+/// 3 adds a player's and actor's velocity, fire ticks, vitality, seat and
+/// action ticks, a hit's tick and a frame's cut; version 2 added a
+/// vehicle's parent and aim. Versions 1 and 2 (recorded frames, an older
+/// game's) still decode.
+pub const VERSION: u64 = 3;
 /// Positions are whole multiples of 1/512 world unit (about 6 mm).
 pub const POS_SCALE: f64 = 512.0;
 /// Yaw: a full turn in 4096 steps.
@@ -39,6 +41,12 @@ pub const DIR_BITS: u32 = 12;
 pub const SPEED_SCALE: f64 = 16.0;
 /// Hit amounts in 1/256 of a vitality.
 pub const AMOUNT_SCALE: f64 = 256.0;
+/// Velocities in 1/64 unit a second.
+pub const VEL_SCALE: f64 = 64.0;
+/// Body vitality (0..1) in 6 bits.
+pub const BODY_BITS: u32 = 6;
+/// Shield vitality in 1/32 of a shield.
+pub const SHIELD_SCALE: f64 = 32.0;
 /// Machine device positions (0..1) in 10 bits.
 pub const DEVICE_BITS: u32 = 10;
 /// Most strings a stream's table holds before the encoder starts over with
@@ -272,6 +280,18 @@ fn qfixed(v: f64, scale: f64, what: &'static str) -> Result<u64> {
 }
 
 const DEVICE_MAX: f64 = ((1u32 << DEVICE_BITS) - 1) as f64;
+const BODY_MAX: f64 = ((1u32 << BODY_BITS) - 1) as f64;
+
+fn qvel(v: [f64; 3]) -> Result<[i64; 3]> {
+    if !v.iter().all(|c| c.is_finite() && c.abs() <= MAX_COORD) {
+        return Err(PackError::Value("velocity out of range"));
+    }
+    Ok(v.map(|c| (c * VEL_SCALE).round() as i64))
+}
+
+fn dvel(q: [i64; 3]) -> [f64; 3] {
+    q.map(|c| c as f64 / VEL_SCALE)
+}
 
 // ------------------------------------------------------------- values
 
@@ -322,6 +342,8 @@ enum Val {
     Str(String),
     Id(Id),
     List(Vec<u8>),
+    Vel([i64; 3]),
+    Ints(Vec<u64>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -343,6 +365,11 @@ enum Kind {
     Bits(u32),
     /// A count (Exp-Golomb k 0), then 3 bits each.
     Actions,
+    /// Three signed Exp-Golomb (k 8), as differences k 4 in a delta.
+    Vel,
+    /// A count (Exp-Golomb k 0, at most [`MAX_FRAME_ACTIONS`]), then
+    /// Exp-Golomb k 1 each: ticks back.
+    Agos,
 }
 
 #[derive(Clone, Copy)]
@@ -388,8 +415,17 @@ const PLAYER: &[Field] = &[
     o(Kind::Bits(3)), // stance
     o(Kind::Uint(6)), // speed
     o(Kind::Actions),
-    o(Kind::Bits(1)), // grenade
+    o(Kind::Bits(1)),         // grenade
+    o(Kind::Vel),             // vel (version 3)
+    o(Kind::Uint(1)),         // fire
+    o(Kind::Bits(BODY_BITS)), // body
+    o(Kind::Uint(3)),         // shield
+    o(Kind::Uint(0)),         // seat
+    o(Kind::Agos),            // actions_ago
 ];
+/// Fields a version 2 player or actor has: the version 3 ones are last.
+const V2_UNIT_FIELDS: usize = 13;
+const PLAYER_V2: &[Field] = PLAYER.split_at(V2_UNIT_FIELDS).0;
 const VEHICLE: &[Field] = &[
     k(Kind::Id),
     f(Kind::Str), // kind
@@ -415,8 +451,15 @@ const ACTOR: &[Field] = &[
     o(Kind::Bits(3)), // stance
     o(Kind::Uint(6)), // speed
     o(Kind::Actions),
-    o(Kind::Bits(1)), // grenade
+    o(Kind::Bits(1)),         // grenade
+    o(Kind::Vel),             // vel (version 3)
+    o(Kind::Uint(1)),         // fire
+    o(Kind::Bits(BODY_BITS)), // body
+    o(Kind::Uint(3)),         // shield
+    o(Kind::Uint(0)),         // seat
+    o(Kind::Agos),            // actions_ago
 ];
+const ACTOR_V2: &[Field] = ACTOR.split_at(V2_UNIT_FIELDS).0;
 const HIT: &[Field] = &[
     o(Kind::Id),  // from
     o(Kind::Id),  // to
@@ -424,7 +467,9 @@ const HIT: &[Field] = &[
     f(Kind::Pos),
     o(Kind::Uint(6)), // amount
     o(Kind::Str),     // kind
+    o(Kind::Uint(1)), // ago (version 3)
 ];
+const HIT_V2: &[Field] = HIT.split_at(6).0;
 const MACHINE: &[Field] = &[
     o(Kind::Str), // node
     k(Kind::Id),
@@ -451,20 +496,48 @@ const LISTS: [(&[Field], usize); 5] = [
     (MACHINE, MAX_FRAME_MACHINES),
     (OBJECT, MAX_FRAME_OBJECTS),
 ];
+/// Version 2's lists.
+const LISTS_V2: [(&[Field], usize); 5] = [
+    (PLAYER_V2, MAX_PLAYERS),
+    (VEHICLE, MAX_FRAME_VEHICLES),
+    (ACTOR_V2, MAX_FRAME_ACTORS),
+    (MACHINE, MAX_FRAME_MACHINES),
+    (OBJECT, MAX_FRAME_OBJECTS),
+];
 /// Version 1's lists.
 const LISTS_V1: [(&[Field], usize); 5] = [
-    (PLAYER, MAX_PLAYERS),
+    (PLAYER_V2, MAX_PLAYERS),
     (VEHICLE_V1, MAX_FRAME_VEHICLES),
-    (ACTOR, MAX_FRAME_ACTORS),
+    (ACTOR_V2, MAX_FRAME_ACTORS),
     (MACHINE, MAX_FRAME_MACHINES),
     (OBJECT, MAX_FRAME_OBJECTS),
 ];
 
-/// The lists of a version this decoder reads.
-fn lists_of(version: u64) -> Option<&'static [(&'static [Field], usize); 5]> {
+/// What a version this decoder reads has: its lists and its hits.
+struct Schema {
+    lists: &'static [(&'static [Field], usize); 5],
+    hit: &'static [Field],
+    /// The header carries a cut (version 3).
+    cut: bool,
+}
+
+fn schema_of(version: u64) -> Option<Schema> {
     match version {
-        1 => Some(&LISTS_V1),
-        VERSION => Some(&LISTS),
+        1 => Some(Schema {
+            lists: &LISTS_V1,
+            hit: HIT_V2,
+            cut: false,
+        }),
+        2 => Some(Schema {
+            lists: &LISTS_V2,
+            hit: HIT_V2,
+            cut: false,
+        }),
+        VERSION => Some(Schema {
+            lists: &LISTS,
+            hit: HIT,
+            cut: true,
+        }),
         _ => None,
     }
 }
@@ -501,6 +574,16 @@ fn actions_val(actions: &Option<Vec<String>>) -> Result<Val> {
                 .collect::<Result<Vec<u8>>>()
                 .map(Val::List)
         }
+    }
+}
+
+/// A unit's `actions_ago`: only beside actions, one each.
+fn agos_val(actions: &Option<Vec<String>>, ago: &Option<Vec<u32>>) -> Result<Val> {
+    let n = actions.as_ref().map_or(0, Vec::len);
+    match ago.as_ref().filter(|g| !g.is_empty()) {
+        None => Ok(Val::None),
+        Some(g) if g.len() == n => Ok(Val::Ints(g.iter().map(|a| u64::from(*a)).collect())),
+        Some(_) => Err(PackError::Value("actions_ago must match actions")),
     }
 }
 
@@ -542,6 +625,19 @@ fn player_vals(p: &FramePlayer) -> Result<Entity> {
         opt(p.grenade.as_deref(), |g| {
             enum_code(&GRENADES, g, "unknown grenade")
         })?,
+        opt(p.vel, |v| qvel(v).map(Val::Vel))?,
+        opt(p.fire.filter(|m| *m != 0), |m| Ok(Val::Int(u64::from(m))))?,
+        opt(p.body, |b| {
+            if !(0.0..=1.0).contains(&b) {
+                return Err(PackError::Value("body out of range"));
+            }
+            Ok(Val::Int((b * BODY_MAX).round() as u64))
+        })?,
+        opt(p.shield, |v| {
+            qfixed(v, SHIELD_SCALE, "shield").map(Val::Int)
+        })?,
+        opt(p.seat, |n| Ok(Val::Int(u64::from(n))))?,
+        agos_val(&p.actions, &p.actions_ago)?,
     ])
 }
 
@@ -577,6 +673,19 @@ fn actor_vals(a: &FrameActor) -> Result<Entity> {
         opt(a.grenade.as_deref(), |g| {
             enum_code(&GRENADES, g, "unknown grenade")
         })?,
+        opt(a.vel, |v| qvel(v).map(Val::Vel))?,
+        opt(a.fire.filter(|m| *m != 0), |m| Ok(Val::Int(u64::from(m))))?,
+        opt(a.body, |b| {
+            if !(0.0..=1.0).contains(&b) {
+                return Err(PackError::Value("body out of range"));
+            }
+            Ok(Val::Int((b * BODY_MAX).round() as u64))
+        })?,
+        opt(a.shield, |v| {
+            qfixed(v, SHIELD_SCALE, "shield").map(Val::Int)
+        })?,
+        opt(a.seat, |n| Ok(Val::Int(u64::from(n))))?,
+        agos_val(&a.actions, &a.actions_ago)?,
     ])
 }
 
@@ -590,6 +699,7 @@ fn hit_vals(h: &FrameHit) -> Result<Entity> {
             qfixed(a, AMOUNT_SCALE, "hit amount").map(Val::Int)
         })?,
         opt(h.kind.as_deref(), string)?,
+        opt(h.ago, |n| Ok(Val::Int(u64::from(n))))?,
     ])
 }
 
@@ -719,6 +829,26 @@ fn as_actions(v: &Val) -> Result<Option<Vec<String>>> {
         _ => Err(PackError::Bad("expected actions")),
     }
 }
+fn as_opt_vel(v: &Val) -> Result<Option<[f64; 3]>> {
+    match v {
+        Val::None => Ok(None),
+        Val::Vel(q) => Ok(Some(dvel(*q))),
+        _ => Err(PackError::Bad("expected a velocity")),
+    }
+}
+
+fn as_agos(v: &Val) -> Result<Option<Vec<u32>>> {
+    match v {
+        Val::None => Ok(None),
+        Val::Ints(l) => l
+            .iter()
+            .map(|n| u32::try_from(*n).map_err(|_| PackError::Bad("ago out of range")))
+            .collect::<Result<Vec<_>>>()
+            .map(Some),
+        _ => Err(PackError::Bad("expected ticks")),
+    }
+}
+
 fn as_u32(v: &Val) -> Result<u32> {
     u32::try_from(as_int(v)?).map_err(|_| PackError::Bad("number out of range"))
 }
@@ -738,6 +868,33 @@ fn player_of(e: &Entity) -> Result<FramePlayer> {
         speed: as_opt_int(&e[10])?.map(|q| q as f64 / SPEED_SCALE),
         actions: as_actions(&e[11])?,
         grenade: as_enum(&e[12], &GRENADES)?,
+        // Versions 1 and 2 have none of these.
+        vel: e.get(13).map(as_opt_vel).transpose()?.flatten(),
+        fire: e
+            .get(14)
+            .map(as_opt_int)
+            .transpose()?
+            .flatten()
+            .map(|m| m as u32),
+        body: e
+            .get(15)
+            .map(as_opt_int)
+            .transpose()?
+            .flatten()
+            .map(|q| q as f64 / BODY_MAX),
+        shield: e
+            .get(16)
+            .map(as_opt_int)
+            .transpose()?
+            .flatten()
+            .map(|q| q as f64 / SHIELD_SCALE),
+        seat: e
+            .get(17)
+            .map(as_opt_int)
+            .transpose()?
+            .flatten()
+            .map(|n| n as u32),
+        actions_ago: e.get(18).map(as_agos).transpose()?.flatten(),
     })
 }
 
@@ -770,6 +927,33 @@ fn actor_of(e: &Entity) -> Result<FrameActor> {
         speed: as_opt_int(&e[10])?.map(|q| q as f64 / SPEED_SCALE),
         actions: as_actions(&e[11])?,
         grenade: as_enum(&e[12], &GRENADES)?,
+        // Versions 1 and 2 have none of these.
+        vel: e.get(13).map(as_opt_vel).transpose()?.flatten(),
+        fire: e
+            .get(14)
+            .map(as_opt_int)
+            .transpose()?
+            .flatten()
+            .map(|m| m as u32),
+        body: e
+            .get(15)
+            .map(as_opt_int)
+            .transpose()?
+            .flatten()
+            .map(|q| q as f64 / BODY_MAX),
+        shield: e
+            .get(16)
+            .map(as_opt_int)
+            .transpose()?
+            .flatten()
+            .map(|q| q as f64 / SHIELD_SCALE),
+        seat: e
+            .get(17)
+            .map(as_opt_int)
+            .transpose()?
+            .flatten()
+            .map(|n| n as u32),
+        actions_ago: e.get(18).map(as_agos).transpose()?.flatten(),
     })
 }
 
@@ -781,6 +965,12 @@ fn hit_of(e: &Entity) -> Result<FrameHit> {
         pos: as_pos(&e[3])?,
         amount: as_opt_int(&e[4])?.map(|q| q as f64 / AMOUNT_SCALE),
         kind: as_opt_str(&e[5])?,
+        ago: e
+            .get(6)
+            .map(as_opt_int)
+            .transpose()?
+            .flatten()
+            .map(|n| n as u32),
     })
 }
 
@@ -856,6 +1046,7 @@ fn frame_of(
     game_id: &str,
     tick: u64,
     bsp: Option<u64>,
+    cut: Option<u64>,
     lists: &[Vec<Entity>; 5],
     hits: &[Entity],
 ) -> Result<Frame> {
@@ -879,6 +1070,7 @@ fn frame_of(
             .transpose()?,
         machines: map(&lists[3], machine_of)?,
         objects: map(&lists[4], object_of)?,
+        cut,
     })
 }
 
@@ -890,6 +1082,7 @@ pub fn quantize(frame: &Frame) -> Result<Frame> {
         &frame.game_id,
         frame.tick,
         frame.bsp.map(u64::from),
+        frame.cut,
         &lists.lists,
         &lists.hits,
     )
@@ -954,6 +1147,14 @@ fn write_value(w: &mut BitWriter, kind: Kind, v: &Val, prev: Option<&Val>, t: &T
             w.eg(l.len() as u64, 0);
             l.iter().for_each(|a| w.bits(u64::from(*a), 3));
         }
+        (Kind::Vel, Val::Vel(q)) => match prev {
+            Some(Val::Vel(p)) => (0..3).for_each(|i| w.seg(q[i] - p[i], 4)),
+            _ => q.iter().for_each(|c| w.seg(*c, 8)),
+        },
+        (Kind::Agos, Val::Ints(l)) => {
+            w.eg(l.len() as u64, 0);
+            l.iter().for_each(|a| w.eg(*a, 1));
+        }
         (kind, v) => unreachable!("{kind:?} cannot hold {v:?}"),
     }
 }
@@ -1012,6 +1213,25 @@ fn read_value(
                 return Err(PackError::Bad("device position out of range"));
             }
             Val::Int(v)
+        }
+        Kind::Vel => match prev {
+            Some(Val::Vel(p)) => {
+                let mut q = *p;
+                for c in &mut q {
+                    *c = c
+                        .checked_add(r.seg(4)?)
+                        .ok_or(PackError::Bad("velocity out of range"))?;
+                }
+                Val::Vel(q)
+            }
+            _ => Val::Vel([r.seg(8)?, r.seg(8)?, r.seg(8)?]),
+        },
+        Kind::Agos => {
+            let n = r.eg(0)?;
+            if n > MAX_FRAME_ACTIONS as u64 {
+                return Err(PackError::Bad("too many action ticks"));
+            }
+            Val::Ints((0..n).map(|_| r.eg(1)).collect::<Result<Vec<u64>>>()?)
         }
         Kind::Actions => {
             let n = r.eg(0)?;
@@ -1348,6 +1568,10 @@ impl Encoder {
                 }
             }
         }
+        w.bit(frame.cut.is_some());
+        if let Some(c) = frame.cut {
+            w.eg(c, 16);
+        }
         w.eg(new_strings.len() as u64, 1);
         for s in &new_strings {
             write_str_literal(&mut w, s);
@@ -1410,7 +1634,7 @@ impl Decoder {
     pub fn decode(&mut self, bytes: &[u8]) -> Result<Decoded> {
         let mut r = BitReader::new(bytes);
         let version = r.bits(4)?;
-        let lists = lists_of(version).ok_or(PackError::Version(version))?;
+        let schema = schema_of(version).ok_or(PackError::Version(version))?;
         let key = r.bit()?;
         let sid = r.eg(0)?;
         let seq = r.eg(8)?;
@@ -1448,6 +1672,11 @@ impl Decoder {
                 state.bsp = if r.bit()? { Some(r.eg(1)?) } else { None };
             }
         }
+        let cut = if schema.cut && r.bit()? {
+            Some(r.eg(16)?)
+        } else {
+            None
+        };
         let fresh = r.eg(1)?;
         if fresh > MAX_NEW_STRINGS || state.strings.len() as u64 + fresh > MAX_STRINGS as u64 {
             return Err(PackError::Bad("too many strings"));
@@ -1456,17 +1685,24 @@ impl Decoder {
             state.strings.push(read_str_literal(&mut r)?);
         }
         let mut hits = Vec::new();
-        for (n, (schema, max)) in lists.iter().enumerate() {
+        for (n, (fields, max)) in schema.lists.iter().enumerate() {
             if n == 3 {
-                hits = read_full(&mut r, HIT, MAX_FRAME_HITS, &state.strings)?;
+                hits = read_full(&mut r, schema.hit, MAX_FRAME_HITS, &state.strings)?;
             }
             state.lists[n] = if key {
-                read_full(&mut r, schema, *max, &state.strings)?
+                read_full(&mut r, fields, *max, &state.strings)?
             } else {
-                read_delta(&mut r, schema, *max, &mut prev.lists[n], &state.strings)?
+                read_delta(&mut r, fields, *max, &mut prev.lists[n], &state.strings)?
             };
         }
-        let frame = frame_of(&state.game_id, state.tick, state.bsp, &state.lists, &hits)?;
+        let frame = frame_of(
+            &state.game_id,
+            state.tick,
+            state.bsp,
+            cut,
+            &state.lists,
+            &hits,
+        )?;
         if !self.streams.contains_key(&sid) && self.streams.len() >= MAX_STREAMS {
             return Err(PackError::Bad("too many streams"));
         }

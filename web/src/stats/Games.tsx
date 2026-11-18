@@ -24,7 +24,7 @@ import { DidYouKnow, MapThumb, PeopleFinder, Pills, RecentGames, fireteam, gameT
 import { motdMessages } from "../lib/motd";
 import { useMotd } from "../state/motd";
 import CoopGames from "./CoopGames";
-import { agoWords, dotDate, num, usDate } from "./fmt";
+import { agoWords, count, dotDate, num, usDate } from "./fmt";
 
 type Tab = SpotlightTab;
 
@@ -57,7 +57,7 @@ function CampaignItem(props: { game: GameState }) {
         <div class="s-item-text">
           <h4><A href={href()}>{gameMapTitle(g())}</A></h4>
           <p>{gameTypeLine(g())}, {usDate(g().started_at)}</p>
-          <p class="s-item-dim">{Object.keys(g().players).length} {Object.keys(g().players).length === 1 ? "player" : "players"}</p>
+          <p class="s-item-dim">{count(Object.keys(g().players).length, "player")}</p>
           <div class="s-item-skulls"><SkullBadges skulls={g().skulls} size={18} /></div>
         </div>
         <div class="s-item-author">
@@ -95,7 +95,7 @@ function MultiplayerItem(props: { game: GameState }) {
         <div class="s-item-text">
           <h4><GametypeIcon variant={g().variant} /><A href={href()}>{gameTitle(g())}</A></h4>
           <p>{playlist(g())} on {gameMapTitle(g())}, {usDate(g().started_at)}</p>
-          <p class="s-item-dim">{Object.keys(g().players).length} players{g().score_limit ? `, first to ${g().score_limit}` : ""}</p>
+          <p class="s-item-dim">{count(Object.keys(g().players).length, "player")}{g().score_limit ? `, first to ${g().score_limit}` : ""}</p>
           <div class="s-item-skulls"><SkullBadges skulls={g().skulls} size={18} /></div>
         </div>
         <div class="s-item-author">

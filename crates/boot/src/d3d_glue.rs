@@ -49,6 +49,23 @@ impl Installed {
 /// N frames that sample a shadow map (`d3d_diag::samples_shadow_map`).
 /// Halo's frame wait goes through `d3d::register_frame_wait` either way.
 pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
+    install_headless(rt, None)
+}
+
+/// [`install`], with in-between frames on the headless GPU backend when
+/// `interp` (from [`interpolation`], asked with [`interp_render_thread`])
+/// is given (docs/game/high-framerate.md "E1", "Headless"): the backend at
+/// 1x, or the scaled one, goes behind `d3d::InterpBackend` on the render
+/// thread, as a window's does. There is no display, so the in-between
+/// frames are paced on the wall clock at the frame rate (a display clock
+/// of their own): each is made (replayed or warped) and presented through
+/// the backend's replay hook, which counts no guest swap. With
+/// `H2_BOOT_GFX_BETWEEN=N` the first N in-between frames are written as
+/// `frame-NNNNN-between-KK.png` (KK-th after guest swap NNNNN), and the
+/// guest frames shown meanwhile as `frame-NNNNN.png` ([`BetweenShots`]). Without
+/// `H2_BOOT_GFX` (nothing is drawn) and under the lighting A/B, `interp`
+/// is ignored.
+pub fn install_headless(rt: &runtime::Runtime, interp: Option<Interpolation>) -> anyhow::Result<Installed> {
     match std::env::var_os("H2_BOOT_GFX") {
         None => install_with(rt, Headless::default()),
         Some(dir) => {
@@ -71,14 +88,36 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(0);
+            // `H2_BOOT_GFX_BETWEEN=N`: the first N in-between frames
+            // (with in-between frames on), and the guest frames among them.
+            let between = BetweenShots::new(
+                std::env::var("H2_BOOT_GFX_BETWEEN")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .filter(|_| interp.is_some())
+                    .unwrap_or(0),
+            );
             // `shadow_limit`: how many shadow-map frames it may add.
-            let shots = |suffix: &'static str, shadow_limit: u64| {
+            // `between`: the in-between frames' shared state, for the
+            // backend that shows them.
+            let shots = |suffix: &'static str, shadow_limit: u64, between: Option<Arc<BetweenShots>>| {
                 let dir = dir.clone();
                 let mut swaps = 0u64;
                 let mut shadows = 0u64;
                 move |ctx: &gfx::GfxContext, store: &gfx::surface::SurfaceStore, id, _flags, _gamma: Option<&[u8; 768]>| {
                     swaps += 1;
-                    let regular = (swaps == 1 && every != u64::MAX) || swaps.is_multiple_of(every);
+                    // An in-between frame's neighbours: this frame after
+                    // one now; before one later, from a GPU copy.
+                    let around = match between.as_ref().map(|b| (b, b.guest_swap(swaps))) {
+                        Some((b, shot)) => {
+                            if shot.keep {
+                                b.keep(ctx, store, id);
+                            }
+                            shot.write
+                        }
+                        None => false,
+                    };
+                    let regular = (swaps == 1 && every != u64::MAX) || swaps.is_multiple_of(every) || around;
                     let shadow = !regular
                         && shadows < shadow_limit
                         && crate::d3d_diag::samples_shadow_map(swaps);
@@ -98,14 +137,14 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
                 // `scale` (`d3d::LightingAb`). `frame-N-retail.png` and
                 // `frame-N-e3.png` are a pair from the same frame.
                 let scale = scale.max(2);
-                let reference = configure_gfx(d3d::GfxBackend::new(share_context(&ctx)).on_present(shots("-1x", 0)));
+                let reference = configure_gfx(d3d::GfxBackend::new(share_context(&ctx)).on_present(shots("-1x", 0, None)));
                 // Every shadow-map frame is compared between the views; the
                 // first `H2_BOOT_GFX_SHADOWS` (default 40) that differ are
                 // written as pairs. `H2_BOOT_GFX_EVERY` writes both views'
                 // frames as usual.
                 let ab = Arc::new(Mutex::new(AbCompare::default()));
                 let pairs = if shadow_shots == 0 { 40 } else { shadow_shots };
-                let mut retail_shots = shots("-retail", 0);
+                let mut retail_shots = shots("-retail", 0, None);
                 let held = Arc::clone(&ab);
                 let mut retail_swaps = 0u64;
                 let retail_hook = move |ctx: &gfx::GfxContext, store: &gfx::surface::SurfaceStore, id, flags, gamma: Option<&[u8; 768]>| {
@@ -118,7 +157,7 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
                     }
                     retail_shots(ctx, store, id, flags, gamma);
                 };
-                let mut e3_shots = shots("-e3", 0);
+                let mut e3_shots = shots("-e3", 0, None);
                 let held = Arc::clone(&ab);
                 let (dir_ab, mut e3_swaps, mut written) = (dir.clone(), 0u64, 0u64);
                 let e3_hook = move |ctx: &gfx::GfxContext, store: &gfx::surface::SurfaceStore, id, flags, gamma: Option<&[u8; 768]>| {
@@ -141,6 +180,9 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
                 };
                 let retail = configure_gfx(d3d::GfxBackend::new(share_context(&ctx)).on_present(retail_hook));
                 let e3 = configure_gfx(d3d::GfxBackend::new(ctx).on_present(e3_hook));
+                if interp.is_some() {
+                    eprintln!("d3d: in-between frames are off under the lighting A/B (H2_BOOT_GFX_LIGHTING_AB)");
+                }
                 let mut b = d3d::lighting_ab(reference, retail, e3, scale).map_err(anyhow::Error::msg)?;
                 eprintln!("d3d: lighting A/B at {scale}x (H2_BOOT_GFX_LIGHTING_AB): a retail and an E3 view of one run; the guest sees a 1x reference");
                 let (retail_report, e3_report) = (scale_report(b.reference_mut()), scale_report(&mut b));
@@ -156,26 +198,175 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
             if scale > 1 || lighting != d3d::Lighting::Retail {
                 // The reference answers the guest at 1x; the view, on the
                 // same device, renders at `scale` and presents.
-                let reference = configure_gfx(d3d::GfxBackend::new(share_context(&ctx)).on_present(shots("-1x", shadow_shots)));
-                let view = configure_gfx(d3d::GfxBackend::new(ctx).on_present(shots("", shadow_shots)));
+                // In-between frames show on the view; the reference's
+                // replay hook keeps its `-1x` swap count the guest's.
+                let reference = configure_gfx(
+                    d3d::GfxBackend::new(share_context(&ctx))
+                        .on_present(shots("-1x", shadow_shots, None))
+                        .on_present_replay(|_, _, _, _, _| {}),
+                );
+                let view = configure_gfx(
+                    d3d::GfxBackend::new(ctx)
+                        .on_present(shots("", shadow_shots, Some(Arc::clone(&between))))
+                        .on_present_replay(between.hook(dir.clone(), "")),
+                );
                 let mut b = d3d::ScaledBackend::new(reference, view, scale).map_err(anyhow::Error::msg)?;
                 b.set_lighting(lighting);
                 eprintln!("d3d: rendering at {scale}x (H2_RENDER_SCALE), {lighting:?} lighting (H2_LIGHTING); the guest sees a 1x reference");
                 let report = scale_report(&mut b);
                 return if render_thread_requested() {
-                    install_with_report(rt, d3d::ThreadedBackend::new(b)?, Some(report))
+                    install_threaded(rt, b, Some(report), interp)
                 } else {
                     install_with_report(rt, b, Some(report))
                 };
             }
-            let backend = configure_gfx(d3d::GfxBackend::new(ctx).on_present(shots("", shadow_shots)));
+            let backend = configure_gfx(
+                d3d::GfxBackend::new(ctx)
+                    .on_present(shots("", shadow_shots, Some(Arc::clone(&between))))
+                    .on_present_replay(between.hook(dir.clone(), "")),
+            );
             // Backend work (shader preparation, encoding, uploads,
             // submission, present) on a render thread of its own
-            // (docs/graphics/render-thread.md), unless H2_RENDER_THREAD=0.
+            // (docs/graphics/render-thread.md), unless H2_RENDER_THREAD=0;
+            // behind the in-between frames when `interp` is given.
             if render_thread_requested() {
-                return install_with(rt, d3d::ThreadedBackend::new(backend)?);
+                return install_threaded(rt, backend, None, interp);
             }
             install_with(rt, backend)
+        }
+    }
+}
+
+/// `H2_BOOT_GFX_BETWEEN`'s captures: the in-between frames a headless
+/// run's replay hook is handed, numbered after the guest swap before them,
+/// until `limit` are written, and each one's neighbours: the guest frame
+/// shown before it and the one shown after it (as shown: a blended present
+/// is a made frame). So at most `limit` in-between frames and `2 * limit`
+/// guest frames are written, however rarely in-between frames come.
+///
+/// The guest frame before is only known to be wanted once an in-between
+/// frame follows it, so while captures are left each guest frame is copied
+/// on the GPU ([`gfx::surface::SurfaceStore::keep_color`], no read back) and
+/// that copy is read back only then. (The first version wrote every guest
+/// frame from the first in-between frame on until `limit` in-between
+/// frames were written: a run that made one and then held, or whose
+/// readbacks pushed every frame past the gap, wrote thousands.)
+pub struct BetweenShots {
+    limit: u64,
+    state: Mutex<BetweenState>,
+    /// The last guest frame, copied while captures are left.
+    kept: Mutex<Option<gfx::surface::KeptImage>>,
+}
+
+#[derive(Default)]
+struct BetweenState {
+    /// The last guest swap's number (the present hook's count).
+    swap: u64,
+    /// In-between frames written so far, and since the last guest swap.
+    written: u64,
+    since: u64,
+    /// The last guest swap written (directly or from its copy).
+    shown: Option<u64>,
+}
+
+/// What the present hook does with guest swap `n` ([`BetweenShots::guest_swap`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GuestShot {
+    /// Write it now: an in-between frame came before it.
+    pub write: bool,
+    /// Copy it on the GPU: an in-between frame may come after it.
+    pub keep: bool,
+}
+
+/// What the replay hook writes for an in-between frame ([`BetweenShots::next_between`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BetweenShot {
+    /// The in-between frame's file name.
+    pub name: String,
+    /// The guest frame before it, from its copy, when not written yet.
+    pub before: Option<String>,
+}
+
+impl BetweenShots {
+    pub fn new(limit: u64) -> Arc<Self> {
+        Arc::new(Self { limit, state: Mutex::default(), kept: Mutex::new(None) })
+    }
+
+    fn state(&self) -> std::sync::MutexGuard<'_, BetweenState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The present hook's guest swap `n`: written when the frame before it
+    /// was followed by an in-between frame (its neighbour after), kept on
+    /// the GPU while in-between frames are left to write.
+    pub fn guest_swap(&self, n: u64) -> GuestShot {
+        let mut s = self.state();
+        let write = s.since > 0 && s.shown != Some(n);
+        s.swap = n;
+        s.since = 0;
+        if write {
+            s.shown = Some(n);
+        }
+        GuestShot { write, keep: !write && s.written < self.limit }
+    }
+
+    /// The next in-between frame's file name (`suffix` after the swap
+    /// number) and the guest frame before it when that is not written yet,
+    /// or `None` when `limit` are written.
+    pub fn next_between(&self, suffix: &str) -> Option<BetweenShot> {
+        let mut s = self.state();
+        if s.written >= self.limit {
+            return None;
+        }
+        s.written += 1;
+        s.since += 1;
+        let swap = s.swap;
+        let before = (swap > 0 && s.shown != Some(swap)).then(|| format!("frame-{swap:05}{suffix}.png"));
+        s.shown = Some(swap);
+        Some(BetweenShot { name: format!("frame-{swap:05}{suffix}-between-{:02}.png", s.since), before })
+    }
+
+    /// Copies guest frame `id` on the GPU, for [`Self::next_between`]'s
+    /// `before`.
+    fn keep(&self, ctx: &gfx::GfxContext, store: &gfx::surface::SurfaceStore, id: gfx::surface::SurfaceId) {
+        let mut kept = self.kept.lock().unwrap_or_else(|e| e.into_inner());
+        if let Err(e) = store.keep_color(ctx, id, &mut kept) {
+            *kept = None;
+            eprintln!("boot: gfx in-between neighbour copy: {e:?}");
+        }
+    }
+
+    /// Writes the kept guest frame as `path`.
+    fn write_kept(&self, ctx: &gfx::GfxContext, path: &std::path::Path) -> anyhow::Result<()> {
+        let kept = self.kept.lock().unwrap_or_else(|e| e.into_inner());
+        let k = kept.as_ref().ok_or_else(|| anyhow::anyhow!("no copy of the guest frame"))?;
+        let (mut px, order, (w, h)) = k.read(ctx);
+        opaque_rgba(&mut px, order);
+        write_png(path, &px, w, h)
+    }
+
+    /// The replay hook: writes the next in-between frame, and the guest
+    /// frame before it, while any are left; otherwise does nothing (no
+    /// read back).
+    fn hook(
+        self: &Arc<Self>,
+        dir: std::path::PathBuf,
+        suffix: &'static str,
+    ) -> impl FnMut(&gfx::GfxContext, &gfx::surface::SurfaceStore, gfx::surface::SurfaceId, u32, Option<&[u8; 768]>) + Send + 'static
+    {
+        let me = Arc::clone(self);
+        move |ctx, store, id, _flags, _gamma| {
+            let Some(shot) = me.next_between(suffix) else {
+                return;
+            };
+            if let Some(before) = &shot.before
+                && let Err(e) = me.write_kept(ctx, &dir.join(before))
+            {
+                eprintln!("boot: gfx in-between neighbour {before}: {e}");
+            }
+            if let Err(e) = save_png(ctx, store, id, &dir.join(&shot.name), false) {
+                eprintln!("boot: gfx in-between screenshot {}: {e}", shot.name);
+            }
         }
     }
 }
@@ -316,6 +507,22 @@ pub fn interp_mode(interpolate: bool, reproject: bool, ahead: bool) -> Option<d3
     }
 }
 
+/// Whether a run has a GPU backend for in-between frames, and the
+/// render-thread answer [`interpolation`] is asked with: a window's backend
+/// runs on the host's render thread (`host_render_thread`); with no window,
+/// the headless GPU backend `H2_BOOT_GFX` makes (`boot_gfx`) runs on one
+/// unless `H2_RENDER_THREAD=0` (`env_render_thread`). `None`: no GPU
+/// backend (the headless recorder draws nothing to make frames from).
+pub fn interp_render_thread(windowed: bool, host_render_thread: bool, boot_gfx: bool, env_render_thread: bool) -> Option<bool> {
+    if windowed {
+        Some(host_render_thread)
+    } else if boot_gfx {
+        Some(env_render_thread)
+    } else {
+        None
+    }
+}
+
 /// [`interpolation`]'s decision: the switch, the render thread, and
 /// `H2_PIPELINE_RENDER` unset or `0`.
 pub fn interpolation_from(switch: bool, render_thread: bool, pipeline_render: Option<&str>) -> bool {
@@ -360,6 +567,7 @@ where
             let interp = d3d::InterpBackend::new(backend, rate).with_mode(mode);
             // The agent's render.stats reads its counters.
             crate::render_probe::set_interp(interp.stats());
+            crate::render_probe::set_interp_holds(interp.holds());
             install_with_report(rt, d3d::ThreadedBackend::new(interp)?, extra)
         }
         None => install_with_report(rt, d3d::ThreadedBackend::new(backend)?, extra),
@@ -395,6 +603,12 @@ fn read_rgba(
 ) -> anyhow::Result<(Vec<u8>, u32, u32)> {
     let (mut px, order) = store.read_color(ctx, id).map_err(|e| anyhow::anyhow!("{e:?}"))?;
     let d = store.get(id).map_err(|e| anyhow::anyhow!("{e:?}"))?.desc();
+    opaque_rgba(&mut px, order);
+    Ok((px, d.width, d.height))
+}
+
+/// Host pixels in `order` as RGBA with opaque alpha, in place.
+fn opaque_rgba(px: &mut [u8], order: gfx::surface::HostPixelOrder) {
     if matches!(order, gfx::surface::HostPixelOrder::Bgra8) {
         for p in px.as_chunks_mut::<4>().0 {
             p.swap(0, 2);
@@ -403,7 +617,6 @@ fn read_rgba(
     for p in px.as_chunks_mut::<4>().0 {
         p[3] = 0xff; // X8R8G8B8 back buffer: alpha is undefined
     }
-    Ok((px, d.width, d.height))
 }
 
 pub(crate) fn write_png(path: &std::path::Path, px: &[u8], w: u32, h: u32) -> anyhow::Result<()> {
@@ -1089,6 +1302,90 @@ mod tests {
         assert!(interpolation_from(true, true, Some("0")));
         assert!(!interpolation_from(true, false, None), "no render thread");
         assert!(!interpolation_from(true, true, Some("1")), "pipelined render");
+    }
+
+    #[test]
+    fn interpolation_runs_on_a_window_or_the_headless_gpu() {
+        // A window: the host's render thread decides, H2_BOOT_GFX ignored.
+        assert_eq!(interp_render_thread(true, true, false, false), Some(true));
+        assert_eq!(interp_render_thread(true, false, true, true), Some(false));
+        // Headless on the GPU (H2_BOOT_GFX): H2_RENDER_THREAD decides.
+        assert_eq!(interp_render_thread(false, false, true, true), Some(true));
+        assert_eq!(interp_render_thread(false, false, true, false), Some(false));
+        // Headless without the GPU: nothing to make frames from.
+        assert_eq!(interp_render_thread(false, true, false, true), None);
+    }
+
+    #[test]
+    fn in_between_captures_stop_at_their_limit() {
+        let (keep, write, skip) = (
+            GuestShot { write: false, keep: true },
+            GuestShot { write: true, keep: false },
+            GuestShot { write: false, keep: false },
+        );
+        let shot = |name: &str, before: Option<&str>| {
+            Some(BetweenShot { name: name.into(), before: before.map(Into::into) })
+        };
+        let b = BetweenShots::new(3);
+        assert_eq!(b.guest_swap(10), keep, "no in-between yet: only a GPU copy");
+        assert_eq!(b.next_between(""), shot("frame-00010-between-01.png", Some("frame-00010.png")), "its neighbour before, from the copy");
+        assert_eq!(b.next_between(""), shot("frame-00010-between-02.png", None), "written once");
+        assert_eq!(b.guest_swap(11), write, "its neighbour after");
+        assert_eq!(b.next_between(""), shot("frame-00011-between-01.png", None), "already written");
+        assert_eq!(b.guest_swap(12), write, "the last one's neighbour after");
+        assert_eq!(b.next_between(""), None, "the limit reached");
+        assert_eq!(b.guest_swap(13), skip);
+        assert_eq!(b.next_between(""), None);
+        let off = BetweenShots::new(0);
+        assert_eq!(off.guest_swap(1), skip);
+        assert_eq!(off.next_between(""), None);
+    }
+
+    #[test]
+    fn in_between_captures_write_only_their_neighbours() {
+        // The live bug: one in-between frame, then thousands of guest
+        // frames with none (held, or every frame a gap once the readbacks
+        // slowed the run), each written while the limit was not reached.
+        let b = BetweenShots::new(12);
+        let mut written = Vec::new();
+        let mut copies = 0;
+        for n in 1..=3000u64 {
+            let g = b.guest_swap(n);
+            copies += u64::from(g.keep);
+            if g.write {
+                written.push(format!("frame-{n:05}.png"));
+            }
+            // In-between frames after swaps 465 and 2000 only.
+            if n == 465 || n == 2000 {
+                let s = b.next_between("").unwrap();
+                written.extend(s.before);
+                written.push(s.name);
+            }
+        }
+        assert_eq!(
+            written,
+            [
+                "frame-00465.png",
+                "frame-00465-between-01.png",
+                "frame-00466.png",
+                "frame-02000.png",
+                "frame-02000-between-01.png",
+                "frame-02001.png",
+            ]
+        );
+        // Copies on the GPU (no read back) while captures are left.
+        assert_eq!(copies, 3000 - 2);
+        // With every slot used, nothing more: at most N in-between frames
+        // and 2N guest frames.
+        let b = BetweenShots::new(2);
+        let mut files = 0;
+        for n in 1..=100u64 {
+            files += usize::from(b.guest_swap(n).write);
+            if let Some(s) = b.next_between("") {
+                files += 1 + usize::from(s.before.is_some());
+            }
+        }
+        assert_eq!(files, 2 + 3, "frames 1 and 2 between, guest frames 1, 2 and 3");
     }
 
     #[test]

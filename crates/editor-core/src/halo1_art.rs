@@ -182,6 +182,20 @@ pub fn picture(map: &H1Map, bitmap: &Bitmap, index: usize) -> Option<H1Picture> 
     })
 }
 
+/// Halves a Halo 1 lightmap page's colour (RGBA8; alpha kept, each
+/// channel rounded to nearest, halves up): Halo 1's light, the albedo's
+/// multiplier, on the scale the renderer draws (albedo × page × 2, as
+/// Halo 2 does), the same as the converter's pages
+/// (`h1bitmaps::atlas::to_halo2_light`). Drawn as stored, Halo 1's full
+/// light doubled.
+pub fn to_halo2_light(rgba: &mut [u8]) {
+    for px in rgba.chunks_exact_mut(4) {
+        for c in &mut px[..3] {
+            *c = (u16::from(*c)).div_ceil(2) as u8;
+        }
+    }
+}
+
 /// Builds the art of `map`'s structure BSPs from what [`crate::halo1::view`]
 /// read: per BSP its render surfaces, lightmaps and lightmap bitmap.
 pub struct ArtBuilder<'m> {
@@ -248,7 +262,8 @@ impl<'m> ArtBuilder<'m> {
         for (li, l) in lightmaps.iter().enumerate() {
             let page = pages.get(li).copied().flatten().and_then(|p| {
                 let map = self.map;
-                let pic = picture(map, self.bitmap(bitmap?)?, usize::from(p))?;
+                let mut pic = picture(map, self.bitmap(bitmap?)?, usize::from(p))?;
+                to_halo2_light(&mut pic.rgba);
                 self.art.lightmaps.push(pic);
                 Some(self.art.lightmaps.len() - 1)
             });
@@ -318,6 +333,21 @@ mod tests {
     use super::*;
     use h1map::bsp::{LightmapVertex, Material, RenderVertex};
     use std::io::Cursor;
+
+    /// A page's colour halves (full light 255 to 128, which the
+    /// renderer's ×2 draws full again); alpha stays.
+    #[test]
+    fn lightmap_pages_draw_on_halo2s_scale() {
+        let mut rgba = vec![255, 0, 7, 200, 128, 64, 1, 255];
+        to_halo2_light(&mut rgba);
+        assert_eq!(rgba, [128, 0, 4, 200, 64, 32, 1, 255]);
+        for v in 0..=255u8 {
+            let mut px = [v, v, v, v];
+            to_halo2_light(&mut px);
+            assert!((f32::from(px[0]) - f32::from(v) / 2.0).abs() <= 0.5);
+            assert_eq!(px[3], v);
+        }
+    }
 
     fn tiny() -> H1Map {
         H1Map::from_reader(Cursor::new(h1map::testing::tiny_map())).unwrap()

@@ -9,9 +9,11 @@ use gfx::texture::{DecodedTexture, TextureDesc};
 use gfx::{Clear, D3DFormat};
 
 use super::epilogue::{Epilogue, Position, position};
+use super::holds::{DrawAt, Facts, FrameFacts, HoldLog, Offence, Why};
 use super::model::{FrameModel, Kind, Substituted, Tuning, match_draws, substitute};
 use super::pacing::{Rate, Schedule, alpha, blendable, defer};
 use super::reproject::{self, Screen};
+use super::screen_space::{self, Fit, PassThrough};
 use crate::backend::{
     Backend, DrawJudge, DrawOutcome, GuestLayoutKind, RectClear, ResolvedDraw, StreamBytes,
 };
@@ -50,6 +52,13 @@ pub struct InterpStats {
     pub warps: u64,
     pub warp_ns: u64,
     pub warp_max_ns: u64,
+    /// E1: pass-through world draws (window pixels: sprites, full-target
+    /// layers) drawn into world images, scaled about the centre with the
+    /// world (`screen_shrunk`) or kept over the whole image with their
+    /// other inputs carried outward (`screen_extended`)
+    /// (`interp::screen_space`).
+    pub screen_shrunk: u64,
+    pub screen_extended: u64,
     /// Frames held because a made frame would not have matched the
     /// guest's: the sum of the four below.
     pub size_mismatch: u64,
@@ -200,6 +209,13 @@ impl std::fmt::Display for InterpStats {
                 avg_ms(self.warp_ns, self.warps),
                 self.warp_max_ns as f64 / 1e6
             )?;
+            if self.screen_shrunk > 0 || self.screen_extended > 0 {
+                write!(
+                    f,
+                    ", screen-space draws {} shrunk {} extended",
+                    self.screen_shrunk, self.screen_extended
+                )?;
+            }
         }
         Ok(())
     }
@@ -235,6 +251,8 @@ enum Op<B: Backend> {
         depth: Option<B::Surface>,
         draw: Box<ResolvedDraw>,
         textures: [Option<Arc<B::Texture>>; 4],
+        /// Where it was in the guest's frame (for the hold log).
+        at: DrawAt,
     },
     Copy {
         src: B::Surface,
@@ -271,6 +289,9 @@ struct Frame<B: Backend> {
     epilogues: Vec<Option<Epilogue>>,
     /// E1: this frame's world image has been drawn.
     captured: bool,
+    /// E1: per draw, the streams a pass-through world draw is drawn with
+    /// into the world image, and how they were made (`screen_space`).
+    streams: Vec<Option<(Vec<StreamBytes>, Fit)>>,
     /// Why the frame may not be made again, if it may not.
     hold: Option<Hold>,
 }
@@ -313,9 +334,20 @@ enum Mismatch {
     Overlay,
 }
 
+impl Why {
+    fn mismatch(self) -> Mismatch {
+        match self.reason() {
+            "screen" => Mismatch::Screen,
+            "overlay" => Mismatch::Overlay,
+            _ => Mismatch::Mapping,
+        }
+    }
+}
+
 /// E1: the screen mapping the frame's world image is warped through, or
 /// why the warp could not be shown to put the world where the guest drew
-/// it. The world image is the ops before `world_end` again with every
+/// it: every world draw or clear the guard refuses, in order (the first is
+/// the frame's hold reason). The world image is the ops before `world_end` again with every
 /// program's viewport scale times the overscan; that moves a draw with
 /// the rest only when its program's viewport transform is known, is the
 /// camera's and covers the whole target, unscissored. Screen-space draws
@@ -329,7 +361,8 @@ fn world_screen<B: Backend>(
     world_end: usize,
     model: &FrameModel,
     epilogues: &[Option<Epilogue>],
-) -> Result<Screen, Mismatch> {
+    pass_throughs: &[Option<PassThrough>],
+) -> Result<(Screen, Vec<Option<(Vec<StreamBytes>, Fit)>>), Vec<Offence>> {
     let draws: Vec<(usize, &ResolvedDraw)> = ops
         .iter()
         .enumerate()
@@ -338,6 +371,7 @@ fn world_screen<B: Backend>(
             _ => None,
         })
         .collect();
+    let one = |op: usize, draw: Option<usize>, why: Why| vec![Offence { op, draw, why }];
     // The screen mapping is the first draw's the camera places.
     let first = (0..draws.len())
         .find(|&k| {
@@ -345,50 +379,105 @@ fn world_screen<B: Backend>(
                 .position_block()
                 .is_some_and(|b| b.kind == Kind::Camera)
         })
-        .ok_or(Mismatch::Mapping)?;
-    let e = epilogues[first].as_ref().ok_or(Mismatch::Mapping)?;
+        .ok_or_else(|| one(0, None, Why::NoCameraDraw))?;
+    let e = epilogues[first]
+        .as_ref()
+        .ok_or_else(|| one(draws[first].0, Some(first), Why::NoEpilogue))?;
     let screen = Screen::of(draws[first].1, e);
     if !screen.covers_target() {
-        return Err(Mismatch::Mapping);
+        return Err(one(draws[first].0, Some(first), Why::CameraNotCovering));
     }
     let (w, h) = (screen.size[0] as u32, screen.size[1] as u32);
-    for o in &ops[..world_end] {
+    let mut out = Vec::new();
+    let mut streams = vec![None; draws.len()];
+    for (i, o) in ops[..world_end].iter().enumerate() {
         if let Op::ClearRects { clear, .. } = o
             && clear.rects.iter().any(|r| !r.is_whole(w, h))
         {
-            return Err(Mismatch::Mapping);
+            out.push(Offence {
+                op: i,
+                draw: None,
+                why: Why::PartialClear,
+            });
         }
     }
     for (k, &(i, d)) in draws.iter().enumerate() {
-        let m = &model.draws[k];
-        if i >= world_end {
-            if m.placed_by_camera() {
-                return Err(Mismatch::Overlay);
-            }
+        let why = draw_offence(
+            d,
+            &model.draws[k],
+            epilogues[k].as_ref(),
+            &screen,
+            i >= world_end,
+        );
+        // A world draw in window pixels whose program moves its position
+        // and nothing else: drawn into the world image moved with the
+        // world (`screen_space`), when its positions can be rewritten and
+        // it is not scissored.
+        if why == Some(Why::PassThrough)
+            && let Some(pt) = pass_throughs[k]
+            && d.clip.is_none_or(|c| c.is_whole(w, h))
+            && d.clip_rects.is_empty()
+            && let Some(sub) =
+                screen_space::world_image_streams(d, pt, reproject::overscan_scale(), &screen)
+        {
+            streams[k] = Some(sub);
             continue;
         }
-        // Only the block the program puts its vertices through says where
-        // they go: the rest of its constants may hold anything.
-        let perspective = m.position_block().is_some_and(|b| match b.kind {
-            Kind::Camera | Kind::World(_) => true,
-            Kind::Local(p) => p.centred(),
-            Kind::Node(_) | Kind::Eye => false,
-        });
-        if d.layout.pretransformed
-            || matches!(d.shader.vertex, VertexProcessing::FixedFunction { .. })
-            || !perspective
-        {
-            return Err(Mismatch::Screen);
-        }
-        let e = epilogues[k].as_ref().ok_or(Mismatch::Mapping)?;
-        if !screen.same(&Screen::of(d, e))
-            || d.clip.is_some_and(|c| !c.is_whole(w, h))
-            || !d.clip_rects.is_empty()
-        {
-            return Err(Mismatch::Mapping);
+        if let Some(why) = why {
+            out.push(Offence {
+                op: i,
+                draw: Some(k),
+                why,
+            });
         }
     }
-    Ok(screen)
+    if out.is_empty() {
+        Ok((screen, streams))
+    } else {
+        Err(out)
+    }
+}
+
+/// Why world draw `d` (or, `overlay`, a draw after the overlay starts)
+/// stops the warp from showing the frame, if it does.
+fn draw_offence(
+    d: &ResolvedDraw,
+    m: &super::model::DrawModel,
+    e: Option<&Epilogue>,
+    screen: &Screen,
+    overlay: bool,
+) -> Option<Why> {
+    let (w, h) = (screen.size[0] as u32, screen.size[1] as u32);
+    if overlay {
+        return m.placed_by_camera().then_some(Why::CameraAfterOverlay);
+    }
+    // Only the block the program puts its vertices through says where
+    // they go: the rest of its constants may hold anything.
+    let block = m.position_block().map(|b| b.kind);
+    if d.layout.pretransformed {
+        return Some(Why::Pretransformed);
+    }
+    if matches!(d.shader.vertex, VertexProcessing::FixedFunction { .. }) {
+        return Some(Why::FixedFunction);
+    }
+    match (m.position, block) {
+        (_, Some(Kind::Camera | Kind::World(_))) => {}
+        (_, Some(Kind::Local(p))) if p.centred() => {}
+        (_, Some(Kind::Local(_))) => return Some(Why::OffCentre),
+        (Position::Fixed, _) => return Some(Why::PassThrough),
+        (Position::Unknown, _) => return Some(Why::PositionUnknown),
+        (Position::Rows(_), _) => return Some(Why::NotPerspective),
+    }
+    let Some(e) = e else {
+        return Some(Why::NoEpilogue);
+    };
+    if !screen.same(&Screen::of(d, e)) {
+        return Some(Why::OtherMapping);
+    }
+    if d.clip.is_some_and(|c| !c.is_whole(w, h)) || !d.clip_rects.is_empty() {
+        return Some(Why::Scissored);
+    }
+    None
 }
 
 /// Runs `ops` on `inner`, each surface through `to`, draw `k` (counting
@@ -399,6 +488,7 @@ fn run_ops<B: Backend>(
     first_draw: usize,
     to: &dyn Fn(B::Surface) -> B::Surface,
     subs: &dyn Fn(usize) -> Option<Constants>,
+    streams: &dyn Fn(usize) -> Option<Vec<StreamBytes>>,
 ) -> Result<(), String> {
     let mut k = first_draw;
     for o in ops.iter_mut() {
@@ -423,19 +513,20 @@ fn run_ops<B: Backend>(
                 depth,
                 draw,
                 textures,
+                ..
             } => {
                 let tex: [Option<&B::Texture>; 4] = std::array::from_fn(|i| textures[i].as_deref());
-                match subs(k) {
-                    Some(c) => {
-                        let own = std::mem::replace(&mut draw.shader.constants, c);
-                        let r = inner.draw(to(*color), depth.map(to), draw, tex);
-                        draw.shader.constants = own;
-                        r?;
-                    }
-                    None => {
-                        inner.draw(to(*color), depth.map(to), draw, tex)?;
-                    }
+                let own_constants =
+                    subs(k).map(|c| std::mem::replace(&mut draw.shader.constants, c));
+                let own_streams = streams(k).map(|s| std::mem::replace(&mut draw.streams, s));
+                let r = inner.draw(to(*color), depth.map(to), draw, tex);
+                if let Some(c) = own_constants {
+                    draw.shader.constants = c;
                 }
+                if let Some(s) = own_streams {
+                    draw.streams = s;
+                }
+                r?;
                 k += 1;
             }
         }
@@ -534,9 +625,19 @@ pub struct InterpBackend<B: Backend> {
     /// Each vertex program, as read from its microcode once: its viewport
     /// transform ([`Epilogue::of`]; `None`: not one E1 can follow) and the
     /// block its clip position comes from ([`position`]).
-    programs: HashMap<Microcode, (Option<Epilogue>, Position)>,
+    programs: HashMap<Microcode, (Option<Epilogue>, Position, Option<PassThrough>)>,
+    /// Each vertex program's id (`pipeline_store::program_id`), for the
+    /// hold log.
+    program_ids: HashMap<Microcode, u64>,
     /// Whether the GPU has finished the last made frame.
     fence: Option<Box<dyn Fn() -> bool + Send>>,
+    /// The guest frame so far, numbered as `render.frame` numbers it: its
+    /// draws over every target, the pass (`None` before its first work)
+    /// and that pass's colour and depth surfaces.
+    frame_draws: u32,
+    pass: Option<(u32, B::Surface, Option<B::Surface>)>,
+    /// E1: which draws held frames ([`HoldLog`]).
+    holds: Arc<Mutex<HoldLog>>,
 }
 
 impl<B: Backend> InterpBackend<B> {
@@ -571,7 +672,11 @@ impl<B: Backend> InterpBackend<B> {
             snaps: Vec::new(),
             unpinned: false,
             programs: HashMap::new(),
+            program_ids: HashMap::new(),
             fence: None,
+            frame_draws: 0,
+            pass: None,
+            holds: Arc::default(),
         }
     }
 
@@ -599,6 +704,92 @@ impl<B: Backend> InterpBackend<B> {
     /// The counters.
     pub fn stats(&self) -> Arc<Mutex<InterpStats>> {
         Arc::clone(&self.stats)
+    }
+
+    /// E1: the draws that held frames, kind by kind (`render.stats`'s
+    /// `interp.holds`).
+    pub fn holds(&self) -> Arc<Mutex<HoldLog>> {
+        Arc::clone(&self.holds)
+    }
+
+    /// Work on `color` and `depth` in the guest's frame: a new pass when
+    /// they are not the current pass's.
+    fn enter(&mut self, color: B::Surface, depth: Option<B::Surface>) -> u32 {
+        let n = match self.pass {
+            Some((n, c, d)) if c == color && d == depth => n,
+            Some((n, ..)) => n + 1,
+            None => 0,
+        };
+        self.pass = Some((n, color, depth));
+        n
+    }
+
+    /// A draw in the guest's frame: where it is ([`DrawAt`]).
+    fn draw_at(&mut self, color: B::Surface, depth: Option<B::Surface>) -> DrawAt {
+        let pass = self.enter(color, depth);
+        let draw = self.frame_draws;
+        self.frame_draws += 1;
+        DrawAt { draw, pass }
+    }
+
+    /// `d`'s vertex program's id, if it has one.
+    fn program_id(&mut self, d: &ResolvedDraw) -> Option<u64> {
+        match &d.shader.vertex {
+            VertexProcessing::Program { microcode, .. } => Some(
+                *self
+                    .program_ids
+                    .entry(microcode.clone())
+                    .or_insert_with(|| crate::pipeline_store::program_id(microcode)),
+            ),
+            VertexProcessing::FixedFunction { .. } => None,
+        }
+    }
+
+    /// Notes a frame the screen guard held in the hold log: every
+    /// offence, with its draw.
+    fn note_held(
+        &mut self,
+        frame: u64,
+        ops: &[Op<B>],
+        model: &FrameModel,
+        world_end: usize,
+        offences: &[Offence],
+    ) {
+        let draws: Vec<(&ResolvedDraw, DrawAt)> = ops
+            .iter()
+            .filter_map(|o| match o {
+                Op::Draw { draw, at, .. } => Some((&**draw, *at)),
+                _ => None,
+            })
+            .collect();
+        let world_draws = draws_in(&ops[..world_end]);
+        let ids: Vec<Option<u64>> = offences
+            .iter()
+            .map(|o| o.draw.and_then(|k| self.program_id(draws[k].0)))
+            .collect();
+        let facts: Vec<(Why, Option<Facts<'_>>)> = offences
+            .iter()
+            .zip(ids)
+            .map(|(o, program)| {
+                (
+                    o.why,
+                    o.draw.map(|k| Facts {
+                        draw: draws[k].0,
+                        at: draws[k].1,
+                        recorded: k,
+                        model: &model.draws[k],
+                        program,
+                    }),
+                )
+            })
+            .collect();
+        let frame = FrameFacts {
+            frame,
+            recorded_draws: draws.len(),
+            world_draws,
+            overlay_draw: draws.get(world_draws).map(|d| d.1.draw),
+        };
+        self.holds.lock().unwrap().record(&frame, &facts);
     }
 
     /// The wrapped backend.
@@ -690,13 +881,18 @@ impl<B: Backend> InterpBackend<B> {
 
     /// `d`'s vertex program's viewport transform, if E1 can follow it, and
     /// what its clip position comes from.
-    fn program(&mut self, d: &ResolvedDraw) -> (Option<Epilogue>, Position) {
+    fn program(&mut self, d: &ResolvedDraw) -> (Option<Epilogue>, Position, Option<PassThrough>) {
         match &d.shader.vertex {
-            VertexProcessing::Program { microcode, .. } => *self
-                .programs
-                .entry(microcode.clone())
-                .or_insert_with(|| (Epilogue::of(microcode), position(microcode))),
-            VertexProcessing::FixedFunction { .. } => (None, Position::Unknown),
+            VertexProcessing::Program { microcode, .. } => {
+                *self.programs.entry(microcode.clone()).or_insert_with(|| {
+                    (
+                        Epilogue::of(microcode),
+                        position(microcode),
+                        screen_space::pass_through(microcode),
+                    )
+                })
+            }
+            VertexProcessing::FixedFunction { .. } => (None, Position::Unknown, None),
         }
     }
 
@@ -803,9 +999,25 @@ impl<B: Backend> InterpBackend<B> {
         }
         let to = |s: B::Surface| map.iter().find(|(r, _)| *r == s).map_or(s, |(_, p)| *p);
         let cur = self.cur.as_mut().expect("checked above");
-        run_ops(&mut self.inner, &mut cur.ops[..end], 0, &to, &|k| {
-            subs.get(k).cloned().flatten()
-        })?;
+        let streams = std::mem::take(&mut cur.streams);
+        let r = run_ops(
+            &mut self.inner,
+            &mut cur.ops[..end],
+            0,
+            &to,
+            &|k| subs.get(k).cloned().flatten(),
+            &|k| streams.get(k).and_then(|s| s.as_ref()).map(|s| s.0.clone()),
+        );
+        let (shrunk, extended) = streams.iter().flatten().fold((0, 0), |n, s| match s.1 {
+            Fit::Shrink => (n.0 + 1, n.1),
+            Fit::Extend => (n.0, n.1 + 1),
+        });
+        cur.streams = streams;
+        r?;
+        let mut st = self.stats.lock().unwrap();
+        st.screen_shrunk += shrunk;
+        st.screen_extended += extended;
+        drop(st);
         cur.captured = true;
         Ok(())
     }
@@ -861,6 +1073,7 @@ impl<B: Backend> InterpBackend<B> {
             first_overlay_draw,
             &to,
             &|_| None,
+            &|_| None,
         )?;
         Ok(shown)
     }
@@ -909,9 +1122,14 @@ impl<B: Backend> InterpBackend<B> {
         let to = |s: B::Surface| map.iter().find(|(r, _)| *r == s).map_or(s, |(_, p)| *p);
         let cur = self.cur.as_mut().expect("checked above");
         let surface = to(cur.surface);
-        run_ops(&mut self.inner, &mut cur.ops, 0, &to, &|k| {
-            subs.get(k).cloned().flatten()
-        })?;
+        run_ops(
+            &mut self.inner,
+            &mut cur.ops,
+            0,
+            &to,
+            &|k| subs.get(k).cloned().flatten(),
+            &|_| None,
+        )?;
         Ok((surface, st))
     }
 
@@ -926,6 +1144,9 @@ impl<B: Backend> InterpBackend<B> {
         let rate = self.rate();
         let now = (self.clock)();
         let at = self.stamp.take().unwrap_or(now);
+        // A new guest frame: its draws and passes count from zero.
+        self.frame_draws = 0;
+        self.pass = None;
         let Some(period) = rate.period_ns() else {
             if self.cur.is_some() || !self.ops.is_empty() {
                 self.reset();
@@ -954,7 +1175,7 @@ impl<B: Backend> InterpBackend<B> {
                 _ => None,
             })
             .collect();
-        let programs: Vec<(Option<Epilogue>, Position)> =
+        let programs: Vec<(Option<Epilogue>, Position, Option<PassThrough>)> =
             draws.iter().map(|d| self.program(d)).collect();
         let positions: Vec<Position> = programs.iter().map(|p| p.1).collect();
         let model = FrameModel::build(&draws, &positions);
@@ -1002,18 +1223,29 @@ impl<B: Backend> InterpBackend<B> {
                 k += 1;
             }
         }
+        let pass_throughs: Vec<Option<PassThrough>> = programs.iter().map(|p| p.2).collect();
         let mut screen = None;
+        let mut streams = Vec::new();
         let hold = if unpinned {
             Some(Hold::Unsure(Unsure::Unpinned))
         } else if !model.cameras.iter().all(|c| c.camera.centred()) {
             Some(Hold::Unsure(Unsure::Camera))
         } else if reproject {
-            match world_screen(&ops, world_end, &model, &epilogues) {
-                Ok(s) => {
+            match world_screen(&ops, world_end, &model, &epilogues, &pass_throughs) {
+                Ok((s, subs)) => {
                     screen = Some(s);
+                    streams = subs;
                     None
                 }
-                Err(m) => Some(Hold::SizeMismatch(m)),
+                Err(offences) => {
+                    // A frame with no camera is held as unpaired, with
+                    // nothing to warp: not logged.
+                    if !model.cameras.is_empty() {
+                        let frame = self.stats.lock().unwrap().frames + 1;
+                        self.note_held(frame, &ops, &model, world_end, &offences);
+                    }
+                    Some(Hold::SizeMismatch(offences[0].why.mismatch()))
+                }
             }
         } else {
             None
@@ -1032,6 +1264,7 @@ impl<B: Backend> InterpBackend<B> {
             screen,
             epilogues,
             captured: false,
+            streams,
             hold,
         });
         let mut st = self.stats.lock().unwrap();
@@ -1267,6 +1500,7 @@ where
         depth: Option<Self::Surface>,
         clear: Clear,
     ) -> Result<(), String> {
+        self.enter(color, depth);
         self.wrote(color);
         if let Some(d) = depth {
             self.wrote(d);
@@ -1290,6 +1524,7 @@ where
     ) -> Result<DrawOutcome, String> {
         let tex: [Option<&B::Texture>; 4] = std::array::from_fn(|i| textures[i].map(|t| &**t));
         let r = self.inner.draw(color, depth, draw, tex)?;
+        let at = self.draw_at(color, depth);
         self.wrote(color);
         if let Some(d) = depth {
             self.wrote(d);
@@ -1301,6 +1536,7 @@ where
                 depth,
                 draw: Box::new(draw.clone()),
                 textures,
+                at,
             });
         }
         Ok(r)
@@ -1313,6 +1549,7 @@ where
         draw: ResolvedDraw,
         textures: [Option<&Self::Texture>; 4],
     ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
+        let at = self.draw_at(color, depth);
         self.wrote(color);
         if let Some(d) = depth {
             self.wrote(d);
@@ -1330,6 +1567,7 @@ where
                 depth,
                 draw: Box::new(draw),
                 textures,
+                at,
             });
         }
         (r, Vec::new())
@@ -1388,6 +1626,7 @@ where
         clear: &RectClear,
     ) -> Result<DrawOutcome, String> {
         let r = self.inner.clear_rects(color, depth, clear)?;
+        self.enter(color, depth);
         self.wrote(color);
         if let Some(d) = depth {
             self.wrote(d);

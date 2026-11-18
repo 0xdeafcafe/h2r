@@ -8,6 +8,7 @@ import { useCoopGames } from "../state/sessions";
 import { coopDifficulty, coopLevel, coopMinutes, type CoopGame } from "../lib/coop";
 import { playerHref } from "./Layout";
 import { usDateTime } from "./fmt";
+import { mapTitle } from "../state/gameart";
 
 function Names(props: { game: CoopGame }) {
   return (
@@ -26,7 +27,7 @@ export function CoopTable(props: { games: CoopGame[]; empty: string }) {
         <For each={props.games} fallback={<tr><td colspan="5" class="s-dim">{props.empty}</td></tr>}>
           {(g) => (
             <tr>
-              <td>{coopLevel(g)}</td>
+              <td>{coopLevel(g, mapTitle)}</td>
               <td><Names game={g} /></td>
               <td class="hide-s">{coopDifficulty(g)}</td>
               <td class="num">{usDateTime(g.ended)}</td>

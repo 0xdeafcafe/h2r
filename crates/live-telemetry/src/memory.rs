@@ -230,6 +230,7 @@ fn players_into(
                 team: i32::from(player.team(guest).map_err(fault)?),
                 local: Some(local_user != -1),
                 appearance: None,
+                bot: None,
             },
             appearance: appearance(guest, local_user)?,
             local_user: u8::try_from(local_user)

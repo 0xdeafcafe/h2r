@@ -1320,14 +1320,42 @@ pub struct PhysNode {
     pub first_child: i16,
 }
 
-/// Rigid body `+0x1a` and `+0x1e` of a built device's bodies (V: the
-/// disc's polyhedron physics models, `high_small_door`, `ghost`,
-/// `pelican`).
-pub const DEVICE_BODY: (u16, u16) = (2, 5);
-/// Rigid body `+0x1a` and `+0x1e` of a built biped's bodies. V: every
-/// rigid body of every retail biped physics model on the base holds 2 and
-/// 1 there (`tests/unit_rebuild_disc.rs`).
-pub const BIPED_BODY: (u16, u16) = (2, 1);
+/// The words of a built rigid body the engine reads to add it to the
+/// Havok world (docs/formats/collision.md, "Rigid bodies").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BodyWords {
+    /// `+0x18`. Bit 1 puts the body on collision layer 2, which collides
+    /// with layers 0 to 2 only (E: `0x001d5bf0` passes it to
+    /// `0x001d70d0`, which takes layer 2 over the default; the layer pairs
+    /// are disabled at `0x001c302d`). Bit 0 is read at `0x001d5d81`; its
+    /// effect is not established.
+    pub flags: u16,
+    /// `+0x1a`, the motion: 0 to 5 are Havok motions 2 to 7 (E: the table
+    /// at `0x001d5bd4`); 2 is box inertia.
+    pub motion: u16,
+    /// `+0x1e`; meaning not established.
+    pub word_1e: u16,
+}
+
+/// A built device's body words (V: the disc's polyhedron physics models,
+/// `high_small_door`, `ghost`, `pelican`).
+pub const DEVICE_BODY: BodyWords = BodyWords {
+    flags: 0,
+    motion: 2,
+    word_1e: 5,
+};
+/// A built biped's body words. V: every rigid body of every retail biped
+/// physics model on the base holds motion 2 and `+0x1e` 1, and every body
+/// of the Chief's and the Covenant's (`masterchief`, `elite`, `brute`,
+/// `hunter`, `jackal`, `bugger`) flags 3 (`tests/unit_rebuild_disc.rs`,
+/// `tests/biped_physics_disc.rs`). Without bit 1 a living biped's bodies
+/// sit on layer 1 when fixed or 9 or 11 when keyframed (E: `0x001d69d0`
+/// and the table at `0x001d6ab0`), which collide with most other layers.
+pub const BIPED_BODY: BodyWords = BodyWords {
+    flags: 3,
+    motion: 2,
+    word_1e: 1,
+};
 
 /// The global material every built piece names, with the index retail
 /// shapes of that material hold at header `+6` (V: the disc's
@@ -1356,18 +1384,19 @@ pub const PIECE_MATERIAL: (&str, u16) = ("hard_metal_thick_cov", 76);
 ///   `0x80000004`, unused slots type 0 index 0xffff); a longer one takes
 ///   them from the root `list_children` block, capacity `0x80000000 | n`.
 ///   `+6` 0x80.
-/// - rigid body `+0x1a` and `+0x1e` as `words` ([`DEVICE_BODY`],
+/// - rigid body `+0x18`, `+0x1a` and `+0x1e` as `words` ([`DEVICE_BODY`],
 ///   [`BIPED_BODY`]), `+0x20` 1.0, `+0x28` 0.05.
 /// - node `+4` flags (0), `+6` parent, `+8` next sibling, `+0xa` first
 ///   child, each `-1` none.
 ///
 /// Every runtime word (shape vtables and pointers) stays zero: the engine
 /// writes them at load (`0x001ea9c0`).
-pub fn physics_model(bodies: &[Body], nodes: &[PhysNode], words: (u16, u16)) -> Result<Block> {
+pub fn physics_model(bodies: &[Body], nodes: &[PhysNode], words: BodyWords) -> Result<Block> {
     let d = def(b"phmo")?;
     let mut r = defs::default_record(d);
     let f = |v: f32| Val::Bytes(v.to_le_bytes().to_vec());
-    let u16_hi = |v: u16| Val::Bytes([0, 0, v as u8, (v >> 8) as u8].to_vec());
+    let u16_pair = |lo: u16, hi: u16| Val::Bytes([lo.to_le_bytes(), hi.to_le_bytes()].concat());
+    let u16_hi = |v: u16| u16_pair(0, v);
     let u32b = |v: u32| Val::Bytes(v.to_le_bytes().to_vec());
     let child = |p: &str| {
         d.child(p)
@@ -1521,8 +1550,8 @@ pub fn physics_model(bodies: &[Body], nodes: &[PhysNode], words: (u16, u16)) -> 
         set(&mut rb, "node", Val::Int(body.node.into()))?;
         set(&mut rb, "bounding_sphere_offset", Val::floats(&centre))?;
         set(&mut rb, "bounding_sphere_radius", Val::Float(radius))?;
-        set(&mut rb, "unknown_18", u16_hi(words.0))?;
-        set(&mut rb, "unknown_1c", u16_hi(words.1))?;
+        set(&mut rb, "unknown_18", u16_pair(words.flags, words.motion))?;
+        set(&mut rb, "unknown_1c", u16_hi(words.word_1e))?;
         set(&mut rb, "unknown_20", f(1.0))?;
         set(&mut rb, "unknown_28", f(0.05))?;
         set(&mut rb, "shape_type", Val::Int(shape_type))?;

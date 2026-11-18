@@ -82,10 +82,13 @@ pub mod steam_speaker;
 pub mod ui;
 pub mod ui_kit;
 pub mod ui_watch;
+pub mod variant_ext;
 pub mod variant_options;
+pub mod variant_page;
 pub mod bot_glue;
 pub mod clankers;
 pub mod video_screen;
+pub mod voice_glue;
 pub mod voice_settings;
 pub mod pause_menu;
 pub mod snapshot_probe;
@@ -634,6 +637,10 @@ pub struct Host {
     /// Where the logical-time audio output plays (an audio device), instead
     /// of a `NullSink` (`dsound_glue::install_with_sink`).
     pub audio_sink: Option<dsound_glue::SinkOpener>,
+    /// Opens the host's microphone and voice output for voice chat
+    /// (`voice_glue`, docs/live/live-voice.md). `None`: the communicator
+    /// still works when a microphone is chosen, with a silent microphone.
+    pub voice_io: Option<voice::io::OpenIo>,
     /// The controller speaker (docs/audio/playstation-audio.md): a second sink
     /// for the sounds its routes pick, and the sound index built from each
     /// map the game opens. Needs `audio_sink`'s logical output; ignored
@@ -843,12 +850,17 @@ pub fn run_hosted_with_live(
             map_override::map_id(&mut v, map)
         }));
     }
-    // A matchmaking game's record names its playlist (docs/live/
-    // live-matchmaking.md §8); the server fills in the hopper's title.
+    // A matchmaking game's record names its playlist and Live session
+    // (docs/live/live-matchmaking.md §8.3, §8.4): the server fills in the
+    // hopper's title and finds the arbitration round by the session.
     if let (Some(t), Some(hle)) = (&_telemetry, &_live) {
         let hle = Arc::clone(hle);
         t.set_playlist_locator(Box::new(move || {
-            hle.playlist().map(|id| telemetry::Playlist { name: None, id: id.to_string() })
+            hle.matchmade().map(|(id, session)| telemetry::Playlist {
+                name: None,
+                id: id.to_string(),
+                session_id: Some(session),
+            })
         }));
     }
     if let (Some(hle), Some(vfs)) = (&_live, k.vfs()) {
@@ -926,6 +938,16 @@ pub fn run_hosted_with_live(
         features
             .add(&h1_options_row::SetupRow { data_root: opts.data_root.clone() })
             .map_err(|e| anyhow::anyhow!("h1 options row: {e}"))?;
+    }
+    // The game variant editor's More Options row and page (our options in
+    // the record's extension block; docs/game/game-options.md section 3).
+    {
+        let page = Arc::new(variant_page::Page::new());
+        let class = variant_page::class(page, skulls_menu::DESCRIPTION_TEXT, skulls_menu::LIST_LAYOUT);
+        if let Err(e) = features.add(&class) {
+            eprintln!("variant options: {e}");
+        }
+        features.add(&variant_page::MoreRow).map_err(|e| anyhow::anyhow!("variant options row: {e}"))?;
     }
     features.add(&hud::Hud).map_err(|e| anyhow::anyhow!("hud: {e}"))?;
     // The party privacy as the Live session's visibility, and the Live
@@ -1014,9 +1036,16 @@ pub fn run_hosted_with_live(
     let _ = d3d::RENDER_THREAD_START.set(|| perf::register_current_thread("render"));
     // In-between frames at the display rate (docs/game/high-framerate.md,
     // "Phase 2" and "E1"): `impl.render.interpolate` or
-    // `impl.render.reproject`, render thread only.
-    let interp = if opts.d3d && host.gfx.is_some() {
-        d3d_glue::interpolation(host.settings.as_ref(), host.render_thread)
+    // `impl.render.reproject`, render thread only; in a window, or on the
+    // headless GPU backend (`H2_BOOT_GFX`, paced on the wall clock).
+    let interp = if opts.d3d {
+        d3d_glue::interp_render_thread(
+            host.gfx.is_some(),
+            host.render_thread,
+            std::env::var_os("H2_BOOT_GFX").is_some(),
+            d3d_glue::render_thread_requested(),
+        )
+        .and_then(|render_thread| d3d_glue::interpolation(host.settings.as_ref(), render_thread))
     } else {
         None
     };
@@ -1049,7 +1078,7 @@ pub fn run_hosted_with_live(
             None if host.render_thread => d3d_glue::install_threaded(&loaded.runtime, b, None, interp)?,
             None => d3d_glue::install_with(&loaded.runtime, b)?,
         }),
-        (true, None) => Some(d3d_glue::install(&loaded.runtime)?),
+        (true, None) => Some(d3d_glue::install_headless(&loaded.runtime, interp)?),
     };
     // Vblanks on the 60 Hz logical clock (docs/graphics/d3d.md "Vertical blank"),
     // delivered as DPCs; the frame wait above is the clocked one.
@@ -1078,6 +1107,11 @@ pub fn run_hosted_with_live(
             (Some(x), Some(pad))
         }
     };
+    // Voice chat's communicator (docs/live/live-voice.md): off until a
+    // microphone is chosen on the Voice screen.
+    let mut voice_link = xa
+        .as_ref()
+        .and_then(|x| voice_glue::install(&loaded.runtime, x, host.settings.as_ref(), host.voice_io.take()));
     if let Some(keyboard) = pad.as_ref() {
         keyboard_glue::install(&loaded.runtime, keyboard.clone()).context("installing host keyboard entry")?;
     }
@@ -1378,6 +1412,9 @@ pub fn run_hosted_with_live(
         // slice that just delivered vblank.
         if dsound_glue::ran_guest_thread(&m, ran_before) {
             audio_idle = 0;
+        }
+        if let Some(link) = voice_link.as_mut() {
+            link.pump();
         }
         if let Some(x) = &xa
             && timeline::host::INPUT

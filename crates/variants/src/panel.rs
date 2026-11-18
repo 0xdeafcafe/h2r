@@ -11,6 +11,7 @@
 
 use std::path::PathBuf;
 
+use crate::ext::Ext;
 use crate::portable::{self, PortableError};
 use crate::record::{GameType, GameVariant, RecordError, SettingId};
 use crate::save::{SaveError, SaveStore, SavedVariant};
@@ -43,11 +44,37 @@ pub enum EditError {
     Import(#[from] PortableError),
 }
 
-/// What the last edit changed, so typing a name is one undo step.
+/// What the last edit changed, so typing a name or dragging one of our
+/// options is one undo step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Target {
     Name,
     Setting(SettingId),
+    /// One extension option (its index in [`ext_changed`]).
+    Ext(u8),
+}
+
+impl Target {
+    /// Runs of edits to the same target merge into one undo step.
+    fn merges(self) -> bool {
+        matches!(self, Target::Name | Target::Ext(_))
+    }
+}
+
+/// Which extension option differs between `a` and `b` (the first one).
+fn ext_changed(a: &Ext, b: &Ext) -> u8 {
+    let fields = [
+        a.gravity != b.gravity,
+        a.damage != b.damage,
+        a.shield != b.shield,
+        a.health != b.health,
+        a.speed != b.speed,
+        a.unlimited_grenades != b.unlimited_grenades,
+        a.primary != b.primary,
+        a.secondary != b.secondary,
+        a.team_size != b.team_size,
+    ];
+    fields.iter().position(|&d| d).unwrap_or(fields.len()) as u8
 }
 
 #[derive(Debug, Clone)]
@@ -236,7 +263,7 @@ impl VariantEditor {
         if doc.variant == before {
             return Ok(());
         }
-        if doc.last != Some(target) || target != Target::Name {
+        if doc.last != Some(target) || !target.merges() {
             doc.undo.push(before);
             if doc.undo.len() > MAX_UNDO {
                 doc.undo.remove(0);
@@ -253,6 +280,13 @@ impl VariantEditor {
 
     pub fn set_name(&mut self, name: &str) -> Result<(), EditError> {
         self.edit(Target::Name, |v| v.set_name(name))
+    }
+
+    /// Sets our extension options (docs/game/game-options.md section 3).
+    /// The game's own rules clear the block.
+    pub fn set_ext(&mut self, e: &Ext) -> Result<(), EditError> {
+        let now = self.current().map(GameVariant::ext).unwrap_or_default();
+        self.edit(Target::Ext(ext_changed(&now, e)), |v| v.set_ext(e))
     }
 
     pub fn can_undo(&self) -> bool {
@@ -521,6 +555,54 @@ mod tests {
         // An edit that changes nothing is not a step.
         e.set_setting(SettingId(89), 0).unwrap();
         assert!(e.undo() && !e.can_undo());
+    }
+
+    #[test]
+    fn extension_options_edit_and_undo_per_option() {
+        let mut e = VariantEditor::new(schema(), None);
+        e.open_builtin(0);
+        assert!(matches!(
+            e.set_ext(&Ext {
+                gravity: 50,
+                ..Ext::default()
+            }),
+            Err(EditError::ReadOnly)
+        ));
+        e.new_variant(GameType::Slayer);
+        // Dragging gravity is one step; then damage is another.
+        for g in [90, 70, 50] {
+            e.set_ext(&Ext {
+                gravity: g,
+                ..Ext::default()
+            })
+            .unwrap();
+        }
+        let both = Ext {
+            gravity: 50,
+            damage: 200,
+            ..Ext::default()
+        };
+        e.set_ext(&both).unwrap();
+        assert_eq!(e.current().unwrap().ext(), both);
+        assert!(e.undo());
+        assert_eq!(e.current().unwrap().ext().gravity, 50);
+        assert_eq!(e.current().unwrap().ext().damage, 100);
+        assert!(e.undo());
+        assert_eq!(e.current().unwrap().ext(), Ext::default());
+        assert!(e.current().unwrap().ext_block().iter().all(|&b| b == 0));
+        // Out of range is refused and changes nothing.
+        assert!(matches!(
+            e.set_ext(&Ext {
+                gravity: 1,
+                ..Ext::default()
+            }),
+            Err(EditError::Record(RecordError::ExtRange("gravity")))
+        ));
+        // It travels through export and import.
+        e.set_ext(&both).unwrap();
+        let text = e.export_current().unwrap();
+        e.import(&text).unwrap();
+        assert_eq!(e.current().unwrap().ext(), both);
     }
 
     #[test]

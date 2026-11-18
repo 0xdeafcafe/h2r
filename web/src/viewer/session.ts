@@ -12,8 +12,8 @@ import { onAnimationFrame } from "../map/scheduler";
 import { TICKS_PER_SECOND } from "../state/frames";
 import { live } from "../state/live";
 import type { GameState } from "../state/reducer";
-import { ReplayClock, ReplayTimeline } from "../state/replay";
-import { applyClock, clockAgrees, isSyncMessage, readClock, syncChannelName, type SyncMessage } from "./sync";
+import { ReplayClock, ReplayTimeline, fetchRecording, type ReplayKill } from "../state/replay";
+import { applyClock, clockAgrees, isSyncMessage, nextCamera, readClock, syncChannelName, type CameraRequest, type SyncMessage } from "./sync";
 
 export interface ReplaySession {
   timeline: Accessor<ReplayTimeline | null>;
@@ -29,9 +29,18 @@ export interface ReplaySession {
   frame(now: number): MapFrame;
   /** Wall time of the last seek, so a view can jump rather than glide. */
   soughtAt(): number;
+  /** Pauses and steps to the next (1) or previous (-1) recorded frame. */
+  stepFrame(dir: 1 | -1): void;
+  /** Seeks to the next or previous mark (kill, death, cut, zone change). */
+  stepMark(dir: 1 | -1): void;
+  /** Plays a kill from a little before it, slowed, through the killer's
+   *  eyes (the 3D view takes `camera`). */
+  watchKill(kill: ReplayKill): void;
+  /** The camera the 3D views are asked for, newest last (`seq` grows). */
+  camera: Accessor<CameraRequest | null>;
 }
 
-export const SPEEDS = [0.5, 1, 2, 4, 8];
+export const SPEEDS = [0.25, 0.5, 1, 2, 4, 8];
 
 export function createReplaySession(game: Accessor<GameState>, roster: Accessor<Map<number, RosterEntry>>): ReplaySession {
   const [timeline, setTimeline] = createSignal<ReplayTimeline | null>(null);
@@ -39,6 +48,7 @@ export function createReplaySession(game: Accessor<GameState>, roster: Accessor<
   const [tick, setTick] = createSignal(0);
   const [playing, setPlaying] = createSignal(false);
   const [speed, setSpeedSignal] = createSignal(1);
+  const [camera, setCamera] = createSignal<CameraRequest | null>(null);
   let clock: ReplayClock | null = null;
   let sought = 0;
 
@@ -72,6 +82,7 @@ export function createReplaySession(game: Accessor<GameState>, roster: Accessor<
         const m: unknown = e.data;
         if (!isSyncMessage(m) || m.from === me || !clock) return;
         if (m.kind === "hello") { post({ kind: "state", from: me, state: readClock(clock, performance.now()) }); return; }
+        if (m.kind === "camera") { setCamera(m.camera); return; }
         leading = false;
         const n = performance.now();
         if (clockAgrees(clock, m.state, n)) return;
@@ -81,10 +92,7 @@ export function createReplaySession(game: Accessor<GameState>, roster: Accessor<
       };
     }
     const a = live.api();
-    Promise.all([
-      a.frames(id, undefined, undefined, ac.signal),
-      a.streamEvents("game-" + id, ac.signal).catch(() => null),
-    ]).then(([frames, events]) => {
+    fetchRecording(a, id, ac.signal).then(({ frames, events }) => {
       // The game's whole stream: also what the Game Record's signature
       // count covers, since a snapshot-loaded game knows no event positions.
       if (events?.length) live.checkGameEvents(id, events);
@@ -160,6 +168,44 @@ export function createReplaySession(game: Accessor<GameState>, roster: Accessor<
       reflect();
       announce();
     },
+    stepFrame(dir) {
+      const tl = timeline();
+      if (!clock || !tl) return;
+      const n = performance.now();
+      if (clock.playing) clock.pause(n);
+      clock.seek(tl.frameStep(clock.tickAt(n), dir), n);
+      sought = n;
+      reflect();
+      announce();
+    },
+    stepMark(dir) {
+      const tl = timeline();
+      if (!clock || !tl) return;
+      const n = performance.now();
+      const t = tl.markStep(clock.tickAt(n), dir);
+      if (t === null) return;
+      clock.seek(t, n);
+      sought = n;
+      reflect();
+      announce();
+    },
+    watchKill(kill) {
+      const tl = timeline();
+      if (!clock || !tl) return;
+      const k = tl.killcam(kill);
+      const n = performance.now();
+      if (clock.playing) clock.pause(n);
+      clock.setSpeed(k.speed, n);
+      clock.seek(k.from, n);
+      clock.play(n);
+      sought = n;
+      const c = nextCamera(camera(), "eyes", k.follow);
+      setCamera(c);
+      post({ kind: "camera", from: me, camera: c });
+      reflect();
+      announce();
+    },
+    camera,
   };
 }
 

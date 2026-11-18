@@ -3,6 +3,7 @@
 // repo. Everything here is pure, so it can be tested; state/gameart.ts loads
 // the manifest and components fall back to the art pack when a key is absent.
 
+import { titleCase } from "./format";
 import { parseMapFiles } from "../map/views";
 import { parseModels, type PlayerModels } from "../viewer/models";
 
@@ -92,12 +93,48 @@ export async function loadGameArt(serverBase: string, fetcher: Fetch = (u) => fe
   }
 }
 
+// ---- map names ----
+
+/** What a server knows about its maps' names: the disc catalog's names by
+ *  stem, and the art manifest's per-map entries (Halo 1 maps carry a name). */
+export interface MapNameSources {
+  names: ReadonlyMap<string, string>;
+  maps?: Record<string, { name?: string }> | null;
+}
+
+/** The stem a map's names and art are keyed by. A converted Halo 1 map is
+ *  keyed `h1_<map>`; when a game reports Halo 1's bare name ("bloodgulch")
+ *  and nothing knows that stem, the `h1_` entry the manifest has stands in.
+ *  A stem the server knows as itself (Halo 2's "beavercreek") stays. */
+export function resolveMapStem(stem: string, src: MapNameSources, hasArt: (stem: string) => boolean = () => false): string {
+  if (!stem || src.names.has(stem) || src.maps?.[stem] || hasArt(stem)) return stem;
+  const h1 = "h1_" + stem;
+  return !stem.startsWith("h1_") && (src.maps?.[h1] || hasArt(h1)) ? h1 : stem;
+}
+
+/** A map's display name, first match wins: the disc catalog's name, the
+ *  art manifest's name (converted Halo 1 maps), else the stem title-cased
+ *  without a campaign level's ordering prefix ("01b_") or Halo 1's `h1_`. */
+export function mapDisplayName(stem: string, src: MapNameSources, hasArt?: (stem: string) => boolean): string {
+  const s = resolveMapStem(stem, src, hasArt);
+  const known = src.names.get(s) ?? src.maps?.[s]?.name;
+  if (known) return known;
+  return titleCase(s.replace(/^(\d{1,2}[a-z]?|h1)_(?=.)/, ""));
+}
+
 // ---- keys ----
 
 /** `map/<map>/preview`: the map file name without path or `.map`. */
 export function mapKey(map: string): string {
   const name = map.split(/[\\/]/).pop()!.replace(/\.map$/i, "").trim().toLowerCase();
   return `map/${name}/preview`;
+}
+
+/** The stats banner a page's strip shows (`bun run banner` draws them
+ *  from the owner's maps; docs/live/live-art.md, "Stats banners"): the
+ *  home page's tall one, else the slim strip. */
+export function bannerKey(kind: "home" | "players"): string {
+  return kind === "home" ? "banner/home" : "banner/strip";
 }
 
 const GAMETYPES: Array<[RegExp, string]> = [

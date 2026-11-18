@@ -366,6 +366,18 @@ fn the_variant_tool_builds_from_the_fallback_and_undoes_through_actions() {
         app.variants.as_ref().unwrap().current().unwrap().get(id),
         Some(was)
     );
+    // Our options (the extension block), then undo.
+    let low = variants::ext::Ext {
+        gravity: 50,
+        ..Default::default()
+    };
+    app.dispatch(Action::SetVariantExt(low));
+    assert_eq!(app.variants.as_ref().unwrap().current().unwrap().ext(), low);
+    app.dispatch(Action::Undo);
+    assert_eq!(
+        app.variants.as_ref().unwrap().current().unwrap().ext(),
+        variants::ext::Ext::default()
+    );
 }
 
 #[test]

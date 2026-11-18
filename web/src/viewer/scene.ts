@@ -50,15 +50,19 @@ import type { SampledMachine } from "../state/frames";
 import { easeAngle, mountedTurrets, pickTurret, type TurretAim } from "./turrets";
 import { findTurrets, poseTurret, turretWant, type TurretObj } from "./turrets3d";
 import { BOOST, FLY_KEYS, MOUSE_LOOK, PAD_LOOK, TOUCH_LOOK, addMoves, anglesOf, approach, keyBoost, keyMove, lookStep, looksWith, moveIsIdle, padInput, pointerLook, speedLabel, speedStep, twoFingerMove, type FlyMove } from "./flycam";
-import { cameraFit, followDistance, markerScale, type Box3 } from "./camera";
+import { cameraFit, eyeView, followDistance, markerScale, type Box3 } from "./camera";
 import { SEE_MAX, SEE_RADIUS, cutHeight, cutRange, meshRole, patchSeeThrough, seeTargets, type SeeMode } from "./cutaway";
 
-export type ViewMode = "orbit" | "top" | "follow";
+/** `eyes`: first person, through the followed player's eyes along their aim. */
+export type ViewMode = "orbit" | "top" | "follow" | "eyes";
 
 export interface SceneOptions {
   reducedMotion: boolean;
   /** Called when a player's label is clicked. */
   onPick?: (index: number) => void;
+  /** Players as the game draws them, without their rings, aim rays or
+   *  labels (still pictures: web/banner). */
+  bare?: boolean;
 }
 
 // The sun, in game coordinates: the same corner the pre-drawn views are lit from.
@@ -621,7 +625,8 @@ export class ViewerScene {
       .sort((a, b) => a.d - b.d)
       .map((p) => p.i);
     const inFocus = focus !== null && this.shown.get(focus)?.alive && this.players.has(focus) ? focus : null;
-    const targets = seeTargets(this.seeMode, inFocus, alive);
+    // Through someone's eyes there is nothing between them and the camera.
+    const targets = seeTargets(this.mode === "eyes" ? "off" : this.seeMode, inFocus, alive);
     const u = this.see;
     let n = 0;
     for (const index of targets) {
@@ -762,8 +767,11 @@ export class ViewerScene {
     this.endFly(false);
     const was = this.mode;
     this.mode = mode;
-    this.followIndex = mode === "follow" ? follow : null;
+    this.followIndex = mode === "follow" || mode === "eyes" ? follow : null;
     const top = mode === "top";
+    // Through someone's eyes the camera is theirs, not the mouse's.
+    this.controls.enabled = mode !== "eyes";
+    if (mode === "eyes") this.tween = null;
     this.controls.enableRotate = !top;
     this.controls.screenSpacePanning = true;
     this.controls.mouseButtons.LEFT = top ? THREE.MOUSE.PAN : THREE.MOUSE.ROTATE;
@@ -780,10 +788,15 @@ export class ViewerScene {
         const want = followDistance(dir.length(), this.scale, !!this.players.get(follow!)?.biped, this.controls.minDistance);
         this.moveCamera(target.clone().addScaledVector(dir.normalize(), want), target, false);
       }
-    } else if (top || was === "top") {
+    } else if (top || was === "top" || (was === "eyes" && mode === "orbit")) {
       this.frameCamera(false);
     }
     this.dirty = true;
+  }
+
+  /** Whether the camera is behind `index`'s eyes: they aren't drawn then. */
+  private isEyes(index: number): boolean {
+    return this.mode === "eyes" && this.followIndex === index && !this.fly;
   }
 
   /** How far above a player's feet the follow camera looks: the chest of
@@ -795,6 +808,36 @@ export class ViewerScene {
 
   /** Back to the whole map, in the current mode. */
   reset() { this.endFly(false); this.frameCamera(false); }
+
+  /** A still shot: the camera at `eye` looking at `at` (game coordinates)
+   *  with a vertical field of view of `fov` degrees, at once (web/banner). */
+  aim(eye: [number, number, number], at: [number, number, number], fov = this.camera.fov) {
+    this.endFly(false);
+    this.camera.fov = fov;
+    this.camera.updateProjectionMatrix();
+    this.moveCamera(new THREE.Vector3(...gameToGl(...eye)), new THREE.Vector3(...gameToGl(...at)), true);
+    this.fitNear();
+  }
+
+  /** The loaded level's playable bounds (game coordinates), or null before a map. */
+  levelBounds(): Box3 | null { return this.hasMap ? this.bounds : null; }
+
+  /** The height of the level's first surface below (x, y, z), game
+   *  coordinates, within `reach` units; null when there is none. */
+  floorBelow(x: number, y: number, z: number, reach = 20): number | null {
+    if (!this.map) return null;
+    this.raycaster.set(new THREE.Vector3(...gameToGl(x, y, z)), new THREE.Vector3(0, -1, 0));
+    this.raycaster.far = reach;
+    const hit = this.raycaster.intersectObject(this.map, true).find((h) => (h.object as THREE.Mesh).isMesh && h.object.visible);
+    this.raycaster.far = Infinity;
+    return hit ? hit.point.y : null;
+  }
+
+  /** The level's placed objects and where they stand (scenario3d.ts). */
+  spots() { return this.scenarioObjects.spots(); }
+
+  /** Settles when the level's sky model has loaded (or failed to). */
+  skyReady(): Promise<void> { return this.look.skyReady; }
 
   // ---- flycam ----
 
@@ -824,7 +867,7 @@ export class ViewerScene {
     if (!f) return;
     this.fly = null;
     if (document.pointerLockElement === this.renderer.domElement) document.exitPointerLock();
-    this.controls.enabled = true;
+    this.controls.enabled = this.mode !== "eyes";
     if (back) this.moveCamera(f.saved.pos, f.saved.target, false);
     this.onFlyChange?.(false);
     this.dirty = true;
@@ -1421,12 +1464,12 @@ export class ViewerScene {
         // In a vehicle: the vehicle stands for them, and carries their label.
         const g = p.group;
         if (p.turn.visible || !g.visible || !g.position.equals(ride.group.position)) this.dirty = true;
-        g.visible = true;
+        g.visible = !this.isEyes(index);
         g.position.copy(ride.group.position);
         p.turn.visible = p.ring.visible = p.ray.visible = false;
         p.turn.rotation.y = yawToGl(s.yaw);
         p.turn.scale.setScalar(ride.group.scale.x);
-        p.label.visible = !p.actor || this.actorNames;
+        p.label.visible = !this.opts.bare && (!p.actor || this.actorNames);
         p.label.position.y = ride.height * ride.group.scale.x + 0.25 * S;
         p.el.classList.toggle("on", highlight === index || this.followIndex === index);
         if (s.weapon !== p.weaponName) { p.weaponName = s.weapon; p.gun.textContent = weaponLabel(s.weapon); }
@@ -1440,8 +1483,8 @@ export class ViewerScene {
       this.dress(p, s);
       const show = s.alive || (p.actor && dead);
       p.turn.visible = true;
-      p.ring.visible = !dead;
-      p.ray.visible = !dead && !p.actor;
+      p.ring.visible = !dead && !this.opts.bare;
+      p.ray.visible = !dead && !p.actor && !this.opts.bare;
       const [x, y, z] = gameToGl(s.x, s.y, s.z);
       const g = p.group, turn = p.turn;
       const big = highlight === index || this.followIndex === index;
@@ -1452,8 +1495,8 @@ export class ViewerScene {
         : S * (big ? 1.25 : 1) * (p.actor ? 0.8 : 1);
       const yaw = yawToGl(s.yaw);
       if (g.visible !== show || g.position.x !== x || g.position.y !== y || g.position.z !== z || turn.scale.x !== k || turn.rotation.y !== yaw) this.dirty = true;
-      g.visible = show;
-      p.label.visible = !dead && (!p.actor || this.actorNames);
+      g.visible = show && !this.isEyes(index);
+      p.label.visible = !dead && !this.opts.bare && (!p.actor || this.actorNames);
       g.position.set(x, y, z);
       turn.rotation.y = yaw;
       turn.scale.setScalar(k);
@@ -1520,6 +1563,22 @@ export class ViewerScene {
       this.controls.target.lerpVectors(tw.q0, tw.q1, e);
       if (u >= 1) this.tween = null;
       this.dirty = true;
+    } else if (this.mode === "eyes" && this.followIndex !== null) {
+      // First person: at their eyes, along their (eased) aim. The dead
+      // leave the camera where it was.
+      const s = this.shown.get(this.followIndex);
+      if (s && s.alive) {
+        const p = this.players.get(this.followIndex);
+        const height = p?.biped ? p.biped.height * p.turn.scale.x : null;
+        const v = eyeView(s, height);
+        const eye = this.v0.set(...gameToGl(...v.eye)), look = this.v1.set(...gameToGl(...v.look));
+        if (!this.camera.position.equals(eye) || !this.controls.target.equals(look)) {
+          this.camera.position.copy(eye);
+          this.controls.target.copy(look);
+          this.dirty = true;
+        }
+        this.camera.lookAt(look);
+      }
     } else if (this.mode === "follow" && this.followIndex !== null) {
       const s = this.shown.get(this.followIndex);
       if (s && s.alive) {
@@ -1533,7 +1592,8 @@ export class ViewerScene {
         }
       }
     }
-    if (!this.fly) this.controls.update();
+    // Through someone's eyes the orbit controls would pull the camera back to their least distance.
+    if (!this.fly && this.mode !== "eyes") this.controls.update();
     // The water's ripples and the weather move by themselves.
     // (Held still when motion is reduced, but the weather still follows the view.)
     const moving = this.look.animate(this.opts.reducedMotion ? 0 : now / 1000, this.controls.target, this.camera.position.distanceTo(this.controls.target));

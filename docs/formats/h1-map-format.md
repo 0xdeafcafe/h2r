@@ -272,6 +272,34 @@ both maps every ring closes and every ring vertex lies within 1 cm of its
 surface's (flip-applied) plane. That one check confirms the plane, flip,
 surface, edge and vertex layouts together. `CollisionBsp::validate` runs it.
 
+**The converted collision answers as Halo 1's (V, converter version 54;
+`crates/h1convert/tests/collision_engine.rs`).** All 81 collision BSPs of
+the nineteen multiplayer maps and ten campaign levels, converted
+(`h1convert::collision`), encoded as a structure BSP holds them and read
+back with `Bsp::decode_structure`, give the same answer as Halo 1's own
+BSP to the engine's queries ([collision.md](collision.md), "What the
+engine does with a BSP"): the leaf or solid holding 1,620,000 random
+points, and the vector test's outcome (hit fraction, plane, surface,
+leaf, and every solid entry with no surface) on 3,710,774 rays: into
+every surface at its centroid and at each edge midpoint (seams),
+straight down onto every floor, and random ones. No disagreement.
+
+Halo 1's data also follows the Halo 2 engine's rules, which the
+conversion relies on (V, same test): every surface reached through a
+leaf's 2D reference is found again at its centroid with Halo 2's
+projection table and tie rule (2,413,786 of 2,413,786); every reference
+lies on its leaf's path on the side its flip bit says (the volume
+query's match); leaf flag bit 0 is set exactly on leaves reaching a
+two-sided surface (none differ); surface flags use bits 0 to 3 as Halo 2
+does (two-sided, invisible (Halo 2's skip-with-query-bit-3), climbable,
+breakable); no ring has more than 8 vertices. Rays that enter solid with
+no surface found (the engine's fall-through) are 0.30 % on Halo 1's data
+and 0.16 % on retail Halo 2's, the same edge cases on both encodings.
+The converted structure's MOPP code returns each surface to a 1 cm
+sphere at its centroid and at every corner (5,231,511 queries, no miss).
+So structure collision is not where a converted level's player falls
+through or jitters.
+
 The Halo 1 layout is Halo 2's with every index widened to `i32` (Halo 2
 packs 3D children into 24 bits and the rest into `u16`, with bit 15 for the
 flags Halo 1 keeps in bit 31).

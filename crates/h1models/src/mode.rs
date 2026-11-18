@@ -280,11 +280,13 @@ fn default_pose(model: &Model, len: usize) -> Vec<Block> {
                 .put_f32s(0xc, &n.translation)
                 .put_f32s(0x18, &n.rotation);
             // +0x28 default scale; +0x2c the inverse of the model-space
-            // transform: three basis vectors, then the position, -R^T p.
+            // transform: its three columns (forward, left, up: the rows of
+            // R, as every retail node stores them), then the position,
+            // -R^T p.
             let inv_p = [0, 1, 2].map(|c| -(0..3).map(|r| m[r][c] * p[r]).sum::<f32>());
             b.put_f32(0x28, 1.0);
             for c in 0..3 {
-                b.put_f32s(0x2c + 12 * c, &[m[0][c], m[1][c], m[2][c]]);
+                b.put_f32s(0x2c + 12 * c, &m[c]);
             }
             b.put_f32s(0x50, &inv_p);
             if len >= NODE_LEN {

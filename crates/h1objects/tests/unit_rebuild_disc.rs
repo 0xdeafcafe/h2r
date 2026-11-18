@@ -703,7 +703,12 @@ fn biped_shapes_follow_the_collision_size() {
                 Some(Val::Bytes(b)) => u16::from_le_bytes([b[2], b[3]]),
                 x => panic!("{x:?}"),
             };
-            assert_eq!((w("unknown_18"), w("unknown_1c")), BIPED_BODY, "{}", t.2);
+            assert_eq!(
+                (w("unknown_18"), w("unknown_1c")),
+                (BIPED_BODY.motion, BIPED_BODY.word_1e),
+                "{}",
+                t.2
+            );
             bodies += 1;
         }
     }

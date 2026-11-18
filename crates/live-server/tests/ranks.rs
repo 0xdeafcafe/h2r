@@ -15,6 +15,7 @@ fn duel(host: &User, guest: &User, playlist: &str, kind: &str) -> Value {
         "console": "Den", "map": "lockout", "mode": "multiplayer", "variant": "Team Slayer",
         "team_play": true, "tick": 0, "kind": kind,
         "playlist": "Synthetic", "playlist_id": playlist,
+        "session_id": SESSION,
         "players": [
             {"index": 0, "name": "Host", "xuid": host.xuid, "team": 0, "local": true},
             {"index": 1, "name": "Guest", "xuid": guest.xuid, "team": 1}
@@ -22,7 +23,36 @@ fn duel(host: &User, guest: &User, playlist: &str, kind: &str) -> Value {
     })
 }
 
-async fn play(h: &Harness, host: &User, game: Value, reason: &str) -> String {
+/// The Live session every test game is played in.
+const SESSION: &str = "5e5510005e551000";
+
+/// A fresh arbitration round id.
+fn round() -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    format!(
+        "{:016x}",
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
+
+/// `user` registers arbitration round `round` of [`SESSION`].
+async fn register(h: &Harness, user: &User, round: &str) -> Resp {
+    h.call(
+        axum::http::Method::POST,
+        &format!("/v1/arbitration/{SESSION}/{round}/register"),
+        &[h.bearer(user, live_proto::lxm::GAMES_WRITE)],
+        r#"{"duration":300,"flags":12}"#.to_string(),
+    )
+    .await
+}
+
+/// Plays `game` to its end, host and guest having registered a fresh
+/// round first, as their consoles do.
+async fn play(h: &Harness, host: &User, guest: &User, game: Value, reason: &str) -> String {
+    let r = round();
+    for u in [host, guest] {
+        assert_eq!(register(h, u, &r).await.status, StatusCode::CREATED);
+    }
     let id = h.start_game(host, game).await;
     let end = h.batch(
         host,
@@ -70,6 +100,7 @@ async fn a_finished_ranked_game_ranks_both_players_once() {
     let id = play(
         &h,
         &host,
+        &guest,
         duel(&host, &guest, "1", "matchmaking"),
         "finished",
     )
@@ -109,6 +140,7 @@ async fn a_finished_ranked_game_ranks_both_players_once() {
     play(
         &h,
         &host,
+        &guest,
         duel(&host, &guest, "1", "matchmaking"),
         "finished",
     )
@@ -128,15 +160,24 @@ async fn unranked_custom_and_lost_games_rank_nobody() {
     play(
         &h,
         &host,
+        &guest,
         duel(&host, &guest, "7", "matchmaking"),
         "finished",
     )
     .await;
-    play(&h, &host, duel(&host, &guest, "1", "matchmaking"), "quit").await;
+    play(
+        &h,
+        &host,
+        &guest,
+        duel(&host, &guest, "1", "matchmaking"),
+        "quit",
+    )
+    .await;
     let mut custom = duel(&host, &guest, "1", "custom");
     custom.as_object_mut().unwrap().remove("playlist");
     custom.as_object_mut().unwrap().remove("playlist_id");
-    play(&h, &host, custom, "finished").await;
+    custom.as_object_mut().unwrap().remove("session_id");
+    play(&h, &host, &guest, custom, "finished").await;
     let ranks = h.get("/v1/accounts/Host/ranks").await.json();
     assert_eq!(ranks["ranks"], json!({}));
     assert_eq!(h.get("/v1/ranks/1").await.json()["items"], json!([]));
@@ -173,6 +214,7 @@ async fn the_games_stats_read_gets_every_player_on_every_ranked_leaderboard() {
     play(
         &h,
         &host,
+        &guest,
         duel(&host, &guest, "1", "matchmaking"),
         "finished",
     )
@@ -271,5 +313,157 @@ async fn a_matchmaking_game_without_a_playlist_name_gets_the_hoppers_title() {
     assert_eq!(
         h.get(&format!("/v1/games/{unknown}")).await.json()["playlist"],
         Value::Null
+    );
+}
+
+/// Ends `game` as a host win without registering any round.
+async fn play_unregistered(h: &Harness, host: &User, game: Value) {
+    let id = h.start_game(host, game).await;
+    let end = h.batch(
+        host,
+        &id,
+        &[(
+            "GameEnded",
+            json!({"tick": 900, "reason": "finished", "winner": {"team": 0}}),
+        )],
+    );
+    assert_eq!(
+        h.post_batch(host, &id, end).await.status,
+        StatusCode::CREATED
+    );
+}
+
+async fn board(h: &Harness) -> Value {
+    h.get("/v1/ranks/1").await.json()["items"].clone()
+}
+
+async fn arbitrate(h: &Harness, user: &User, path: &str, body: &str) -> StatusCode {
+    h.call(
+        axum::http::Method::POST,
+        &format!("/v1/arbitration/{path}"),
+        &[h.bearer(user, live_proto::lxm::GAMES_WRITE)],
+        body.to_string(),
+    )
+    .await
+    .status
+}
+
+#[tokio::test]
+async fn only_the_players_who_registered_the_round_are_ranked() {
+    let h = harness().await;
+    let host = h.create("Host").await;
+    let guest = h.create("Guest").await;
+
+    // The guest never registered: only the host would be ranked, and one
+    // player is no ranked game.
+    let r = round();
+    assert_eq!(register(&h, &host, &r).await.status, StatusCode::CREATED);
+    play_unregistered(&h, &host, duel(&host, &guest, "1", "matchmaking")).await;
+    assert_eq!(board(&h).await, json!([]));
+
+    // The guest alone registered a round: without the host's, no round.
+    let r = round();
+    assert_eq!(register(&h, &guest, &r).await.status, StatusCode::CREATED);
+    play_unregistered(&h, &host, duel(&host, &guest, "1", "matchmaking")).await;
+    assert_eq!(board(&h).await, json!([]));
+
+    // No session in the record: no round to find.
+    let r = round();
+    for u in [&host, &guest] {
+        assert_eq!(register(&h, u, &r).await.status, StatusCode::CREATED);
+    }
+    let mut sessionless = duel(&host, &guest, "1", "matchmaking");
+    sessionless.as_object_mut().unwrap().remove("session_id");
+    play_unregistered(&h, &host, sessionless).await;
+    assert_eq!(board(&h).await, json!([]));
+
+    // Both registered (that same round, still unused): ranked, once.
+    play_unregistered(&h, &host, duel(&host, &guest, "1", "matchmaking")).await;
+    let host_rank = h
+        .get(&format!("/v1/events?stream=rank-{}", host.xuid))
+        .await
+        .json();
+    let c = changes(&host_rank);
+    assert_eq!(c.len(), 1);
+    assert_eq!(c[0]["data"]["round"], format!("{SESSION}-{r}"));
+    // A round ranks one game: the next game without a new round is not.
+    play_unregistered(&h, &host, duel(&host, &guest, "1", "matchmaking")).await;
+    let again = h
+        .get(&format!("/v1/events?stream=rank-{}", host.xuid))
+        .await
+        .json();
+    assert_eq!(changes(&again).len(), 1);
+}
+
+#[tokio::test]
+async fn arbitration_calls_are_each_accounts_own() {
+    let h = harness().await;
+    let host = h.create("Host").await;
+    let r = round();
+    let at = format!("{SESSION}/{r}");
+    let report = r#"{"flags":3,"procedures":[32769,32771,32775]}"#;
+    // Report and extend need the account's registration first.
+    assert_eq!(
+        arbitrate(&h, &host, &format!("{at}/report"), report).await,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(register(&h, &host, &r).await.status, StatusCode::CREATED);
+    assert_eq!(register(&h, &host, &r).await.status, StatusCode::OK);
+    assert_eq!(
+        arbitrate(&h, &host, &format!("{at}/extend"), r#"{"duration":60}"#).await,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        arbitrate(&h, &host, &format!("{at}/report"), report).await,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        arbitrate(&h, &host, &format!("{at}/report"), report).await,
+        StatusCode::OK
+    );
+    for bad in [
+        format!("{SESSION}/nothex/register"),
+        format!("{SESSION}/{r}/cancel"),
+    ] {
+        assert_eq!(
+            arbitrate(&h, &host, &bad, r#"{"duration":1,"flags":0}"#).await,
+            StatusCode::NOT_FOUND,
+            "{bad}"
+        );
+    }
+    let log = h
+        .get(&format!(
+            "/v1/events?stream={}",
+            live_proto::arbitration::stream(SESSION, &r)
+        ))
+        .await
+        .json();
+    let kinds: Vec<&str> = log["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "ArbitrationRegistered",
+            "ArbitrationExtended",
+            "ArbitrationReported"
+        ]
+    );
+    assert_eq!(log["items"][0]["data"]["xuid"], host.xuid.to_string());
+    assert_eq!(log["items"][0]["author"], "server:live.test");
+    // Nobody writes a round's events themselves.
+    let forged = h.event(
+        &host,
+        &live_proto::arbitration::stream(SESSION, &round()),
+        live_proto::arbitration::REGISTERED,
+        json!({"session_id": SESSION, "round_id": "0000000000000001", "xuid": host.xuid,
+            "duration": 1, "flags": 0}),
+    );
+    assert_eq!(
+        h.post_event(&host, forged).await.status,
+        StatusCode::FORBIDDEN
     );
 }

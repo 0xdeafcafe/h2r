@@ -7,6 +7,27 @@ use crate::register::addr;
 pub struct DeviceTypes {
     /// Address of the guest XPP_DEVICE_TYPE object, not numeric XID type 1.
     pub gamepad: u32,
+    /// The communicator's two device types, when the host answers for them
+    /// (docs/live/live-voice.md, 2.1). `None` leaves them unknown types:
+    /// every device call reports no ports, as before voice.
+    pub voice: Option<VoiceTypes>,
+}
+
+/// The guest XPP_DEVICE_TYPE objects of a communicator: 12 bytes each
+/// (current, changed, previous), as the gamepad's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VoiceTypes {
+    pub microphone: u32,
+    pub headphone: u32,
+}
+
+impl VoiceTypes {
+    /// The retail 5849 objects ([`addr::XDEVICE_TYPE_VOICE_MICROPHONE`],
+    /// [`addr::XDEVICE_TYPE_VOICE_HEADPHONE`]).
+    pub const RETAIL: Self = Self {
+        microphone: addr::XDEVICE_TYPE_VOICE_MICROPHONE,
+        headphone: addr::XDEVICE_TYPE_VOICE_HEADPHONE,
+    };
 }
 
 /// Which cache partition backs the second cache volume, N: (`0x002d5d0a`).
@@ -81,6 +102,7 @@ impl Config {
         Self {
             devices: DeviceTypes {
                 gamepad: gamepad_type_address,
+                voice: None,
             },
             utility_partition: 5,
             cache_drive: CacheDrive::default(),

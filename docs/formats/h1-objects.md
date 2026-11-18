@@ -130,6 +130,94 @@ Read field by field since converter version 50 (`h1::Effect`,
 `h1::attachments`): layout and evidence in
 [tag-definitions.md](tag-definitions.md), "Effects from definitions".
 
+### `part` (root `0x164`) as `prt3`
+
+`h1objects::particles::H1Particle` and `Converter::particle`: the stem
+by the framebuffer blend function at `+0xda` (0 alpha blend, 3 additive,
+7 alpha-multiply-add: V, the particles both games ship pair that way; 6,
+on three particles, is drawn additive, unproven), the bitmap (`+0x4`) as
+the stem's `alpha_map_texture` with the compiled shader built from the
+stem ([tag-definitions.md](tag-definitions.md), "The compiled particle
+shader"), Halo 1's sprite sequences (`+0x98` first, `+0x9a + +0x9c`
+counts, one picked per particle), the collision and death effects
+(`+0x48`, `+0x58`). The five properties and the input mask, vertex
+shader, quad and UV window are those of the base's static particles
+(white, opaque, unit size, unrotated, first sprite; the most common
+set). Lifespan, fade, radius and frame animation, physics and the rest
+are emitter-side in Halo 2.
+
+### Effect particles (event `+0x38`, `0xe8`) as particle systems
+
+Since converter version 58 (`particles::effect_particles`,
+`particle_system`, `Converter::effect_particle_systems`): each Halo 1
+effect particle whose `part` converts becomes a particle system of its
+event, one emitter on the proven slots ([effects.md](effects.md),
+"Emitter"). The record (V, `halo1_effect_particle_survey`): `+0x8`
+location, `+0x54` the `part`, `+0x6c`/`+0x6e` count bounds, `+0x70`
+distribution radius, `+0x84` velocity bounds, `+0x8c` velocity cone
+(radians), `+0x90` angular velocity bounds, `+0xa0` radius bounds,
+`+0xb0`/`+0xc0` tint bounds (alpha, red, green, blue), `+0xe0`/`+0xe4`
+scale words.
+
+- Count: the engine spawns `rate x 30 x dt` per step, `dt` the event's
+  step in seconds (E, the tick length `[0x510c54]+4` cut to the event's
+  remaining time), so the rate is Halo 1's count over 30 times the event's
+  duration, floored at a tick; an event with particles shorter than a
+  tick lasts one (retail's usual duration). Halo 1 creates the count at
+  once; over a longer event Halo 2 spreads it.
+- Lifespan (the `part`'s), speed (velocity), cone (degrees), size (twice
+  the radius: unproven), tint (packed ARGB: unproven) and alpha: Halo 1's
+  midpoints, as constants.
+- The words no slot names (system flags, fade and LOD distances; emitter
+  `+0x9c..+0xb8`; the constants' input words) are the base's most common
+  (`EmitterRole`).
+- Not carried: distribution radius, relative direction and offset,
+  angular velocity, the `part`'s physics (`pmov` null), the scale words.
+- A particle's collision or death effect that leads back to the effect
+  being converted is left out.
+
+
+### `pctl` (particle systems) as particle systems
+
+Since converter version 59 (`particles::particle_system_types`,
+`Converter::particle_system_states`): an effect part naming a Halo 1
+`pctl` becomes particle systems of its event, after the event's own
+particles. The layout (V, all 28 distinct tags,
+`halo1_pctl_structure_survey`): a `0x68` root (`+0x38` point physics,
+`+0x48` update physics, `+0x50` 4-byte constants, `+0x5c` particle types
+of `0x80`); a type's `+0x0` name, `+0x24` initial count, `+0x2c` radius,
+`+0x54` creation physics (0, 1, 2) and `+0x5c` its 4-byte constants,
+`+0x68` system states (`0xc0`), `+0x74` particle states (`0x178`); a
+particle state's `+0x0` name, `+0x20` duration and `+0x28` transition
+bounds, `+0x30` bitmap, `+0x40` sequence index, `+0x48` radius bounds,
+`+0x58` rotation rate bounds, `+0x60`/`+0x70` colour bounds, `+0x84`
+point physics, and from `+0xdc` `part`'s shader words (`+0xe2` the blend
+function: 298 fire states 3, 104 smoke states 0).
+
+Each particle state that lasts becomes its own system, its `prt3` built
+from it as from a `part`, all created with the part: the type's initial
+count, the state's duration plus transition as lifespan, its radius and
+colour. Halo 1 moves each particle through the states in order (fire
+turning to smoke); here every state's particles appear at once. Not
+carried: the state sequence, the creation physics and its constants (no
+proven meaning), the system states, the rotation rate. The particles
+start still at the part's location.
+
+### `cont` (root `0x144`) and contrail attachments
+
+`h1objects::particles::H1Contrail` (since converter version 55): Halo 2's
+`cont` is Halo 1's compacted, span for span (V: the sniper, needler and
+plasma contrails of both games word for word, `particles_disc.rs`
+`contrail_survey`). `particles::CONT_SPANS` and `CONT_POINT_SPANS` list
+the spans; the layout is in [tag-definitions.md](tag-definitions.md),
+"Particles and contrails". Halo 2 effect parts never name a `cont` (the
+part groups on the disc are `deca`, `snd!`, `obje`, `ligh`, `lens`,
+`jpt!`, `MGS2`, `tdtl`): contrails are object attachments, so a Halo 1
+attachment that names one converts it (`Converter::contrail`), on
+vehicles with the other attachments and on rebuilt projectiles, whose
+attachment block is replaced by Halo 1's when any of them converts. A
+point's physics (`pphy`) is not converted: null.
+
 ### `bipd`, `vehi`, `scen`
 
 Read as the `obje` header (plus every reference, `refs::scan`, for the
@@ -446,8 +534,8 @@ speed (Halo 1's are slower than the Halo 2 templates').
   like the pistol), ready time, chamber time, charging (plasma pistol),
   first-person model and animations, the HUD (`wphi` vs `nhdt`), firing
   effects and sounds: all the template's.
-- **Projectile:** material responses and every effect, sound and contrail
-  (`cont`): the template's.
+- **Projectile:** material responses and every effect and sound: the
+  template's. Contrails are Halo 1's (above).
 - **Equipment:** non-health powerup and grenade type values (template's).
 - **Grenade throwing** reads the projectile from the globals' grenade
   block (`matg`), which this crate does not touch; the converted grenade
@@ -532,7 +620,38 @@ ghost) and `phmo` (cyborg, warthog, ghost); every converted `coll` passes
 `tags::collision::Collision::validate`; and every reference word pair in
 the new tags (136) names a tag of that group in the built map.
 
+`tests/particles_disc.rs`: `every_pctl_part_becomes_particle_systems`:
+every `pctl` effect part (201 over the conversions) becomes one system
+per lasting particle state (402), on that state's `prt3`, at the part's
+location, the type's count over the event, the state's lifespan and size.
+`every_effect_particle_becomes_a_particle_system`:
+every Halo 1 effect particle whose `part` converts (42,266 over the
+campaign and multiplayer conversions) is a particle system of its event
+on the converted `prt3`, at its location, its rate times 30 times the
+event's duration its count, its speed, cone and size Halo 1's.
+`tests/particles_disc.rs`: `every_particle_converts`: every Halo 1
+`part` of the campaign and multiplayer maps (2,301 conversions) reads
+back and writes the same, names its blend function's stem, its bitmap as
+parameter and compiled bitmap, Halo 1's sequences and converted effects.
+`retail_particle_shaders_compile_from_their_stems`: the compiled shader
+rule on 533 retail particles.
+
+`tests/particles_disc.rs`: `every_contrail_converts`: every Halo 1
+`cont` of the campaign and multiplayer maps (191) converts, reads back
+through the definition with Halo 1's spans at Halo 2's offsets and its
+bitmap converted; every rebuilt projectile and vehicle whose Halo 1
+attachments name a contrail (236 attachments) names the converted one.
+
 ## Needs a game run
+
+- Particle systems (`pctl`): every state at once instead of in
+  sequence, and still particles (no creation physics): whether explosions
+  read as explosions.
+- Particles: the spawn count over an event, the size factor (twice the
+  radius), the packed tint, null `pmov` (no gravity or drag), the base's
+  role words on the systems and emitters.
+- Contrails: Halo 1's spans as Halo 2's (the flags and the root's
+  zeroed `+0x3c..+0x60`), and points with no physics (`pphy` null).
 
 - That the engine accepts objects whose `hlmt` has no variants
   and regions renamed from Halo 1, and whose template damage info names

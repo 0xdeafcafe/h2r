@@ -306,6 +306,26 @@ impl Surface {
     }
 }
 
+/// A colour image copied on the GPU ([`SurfaceStore::keep_color`]).
+pub struct KeptImage {
+    texture: wgpu::Texture,
+    size: (u32, u32),
+    format: wgpu::TextureFormat,
+}
+
+impl KeptImage {
+    /// The image as host pixels (4 bytes per pixel, tight rows), their
+    /// byte order, and its size: a blocking read back.
+    pub fn read(&self, ctx: &GfxContext) -> (Vec<u8>, HostPixelOrder, (u32, u32)) {
+        let order = match self.format {
+            wgpu::TextureFormat::Bgra8Unorm => HostPixelOrder::Bgra8,
+            _ => HostPixelOrder::Rgba8,
+        };
+        let px = crate::readback::read_texture(ctx, &self.texture, wgpu::TextureAspect::All, 4, self.size);
+        (px, order, self.size)
+    }
+}
+
 /// Owns all render-target and depth surfaces.
 pub struct SurfaceStore {
     surfaces: HashMap<SurfaceId, Surface>,
@@ -768,6 +788,38 @@ impl SurfaceStore {
         };
         let px = crate::readback::read_texture(ctx, &s.texture, wgpu::TextureAspect::All, 4, (s.desc.width, s.desc.height));
         Ok((px, order))
+    }
+
+    /// Copies a colour surface's single-sample image into `into` on the GPU
+    /// (no read back, no wait): kept to be read with [`KeptImage::read`]
+    /// later, if at all. `into` is reused while the size and format match.
+    pub fn keep_color(&self, ctx: &GfxContext, id: SurfaceId, into: &mut Option<KeptImage>) -> Result<(), SurfaceError> {
+        let mut enc = ctx.device.create_command_encoder(&Default::default());
+        self.resolve_msaa(&mut enc, id)?;
+        let s = self.typed(id, SurfaceKind::Color)?;
+        let size = (s.desc.width, s.desc.height);
+        if !into.as_ref().is_some_and(|k| k.size == size && k.format == s.wgpu_format) {
+            let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("kept image"),
+                size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: s.wgpu_format,
+                usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            *into = Some(KeptImage { texture, size, format: s.wgpu_format });
+        }
+        let k = into.as_ref().expect("made above");
+        let info = |t| wgpu::TexelCopyTextureInfo { texture: t, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All };
+        enc.copy_texture_to_texture(
+            info(&s.texture),
+            info(&k.texture),
+            wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
+        );
+        ctx.queue.submit([enc.finish()]);
+        Ok(())
     }
 
     /// Reads a colour surface and encodes it in the guest format and layout.

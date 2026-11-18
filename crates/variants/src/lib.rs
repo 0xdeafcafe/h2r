@@ -4,6 +4,7 @@
 //! portable sharing format ([`portable`]) and the editor
 //! ([`VariantEditor`]: UI-free state and commands, drawn by `h2-editor`). docs/editor/variants.md has the format and the evidence.
 
+pub mod ext;
 pub mod extra;
 pub mod panel;
 pub mod portable;

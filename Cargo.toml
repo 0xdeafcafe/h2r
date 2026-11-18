@@ -25,6 +25,7 @@ emit = { path = "crates/emit" }
 simd = { path = "crates/simd" }
 x87 = { path = "crates/x87" }
 kernel = { path = "crates/kernel" }
+voice = { path = "crates/voice" }
 vfs = { path = "crates/vfs" }
 boot = { path = "crates/boot" }
 content = { path = "crates/content" }

@@ -1428,8 +1428,8 @@ fn reproject_holds_a_world_it_cannot_overscan() {
         }),
         // A full-target quad in pixels among the level's draws (a
         // pass-through program, `mov oPos, v0`, with the camera in its
-        // constants all the same): a screen-space pass over the world so
-        // far, which the overscan would not shrink.
+        // constants all the same) whose vertices E1 cannot read (no
+        // position attribute) to move with the overscan.
         ("pass-through", &|cam| {
             let mut v = level(cam);
             v.insert(1, pass_through(world_block(cam), 54));
@@ -1856,4 +1856,488 @@ fn every_held_frame_says_why() {
             );
         }
     }
+}
+
+/// A draw in window pixels: `program` (no `.last()` needed) over vertices
+/// with a float4 position at register 0 and a float2 texture coordinate at
+/// register 1, as Halo 2's pass-through world draws are.
+fn screen_draw(c: Block, program: &[Inst], verts: &[([f32; 4], [f32; 2])]) -> ResolvedDraw {
+    use gfx::vertex::{StreamLayout, VertexAttribute, VertexDataType, VertexRegister};
+    let mut d = draw(c, verts.len() as u32, false);
+    d.primitive = PrimitiveType::TriangleFan;
+    let n = program.len();
+    d.shader.vertex = VertexProcessing::Program {
+        start: 0,
+        microcode: program
+            .iter()
+            .enumerate()
+            .flat_map(|(i, x)| {
+                if i + 1 == n {
+                    x.clone().last().words()
+                } else {
+                    x.words()
+                }
+            })
+            .collect::<Vec<u32>>()
+            .into(),
+    };
+    d.layout.streams = vec![StreamLayout {
+        stream: 0,
+        attributes: vec![
+            VertexAttribute {
+                register: VertexRegister(0),
+                data_type: VertexDataType::Float4,
+                offset: 0,
+            },
+            VertexAttribute {
+                register: VertexRegister(1),
+                data_type: VertexDataType::Float2,
+                offset: 16,
+            },
+        ],
+        stride: 24,
+    }];
+    d.streams = vec![StreamBytes {
+        data: verts
+            .iter()
+            .flat_map(|(p, t)| {
+                p.iter()
+                    .chain(t)
+                    .flat_map(|v| v.to_le_bytes())
+                    .collect::<Vec<u8>>()
+            })
+            .collect::<Vec<u8>>()
+            .into(),
+        stride: 24,
+    }];
+    d
+}
+
+fn mov_out(src: O, out: OutReg) -> Inst {
+    Inst::mac(MacOp::Mov, Some(src), None, None).to_out(false, out, 0xF)
+}
+
+/// The corners of the whole 640x480 target, texture coordinates 0 to 1.
+fn full_target() -> Vec<([f32; 4], [f32; 2])> {
+    vec![
+        ([0.0, 0.0, 0.0, 1.0], [0.0, 0.0]),
+        ([640.0, 0.0, 0.0, 1.0], [1.0, 0.0]),
+        ([640.0, 480.0, 0.0, 1.0], [1.0, 1.0]),
+        ([0.0, 480.0, 0.0, 1.0], [0.0, 1.0]),
+    ]
+}
+
+/// A full-target quad in pixels that looks a texture up from its own
+/// position (`mov oPos, v0`, `mov oT0, v0`): E1 cannot move it.
+fn screen_quad(c: Block) -> ResolvedDraw {
+    screen_draw(
+        c,
+        &[
+            mov_out(O::v(0), OutReg::Pos),
+            mov_out(O::v(0), OutReg::T(0)),
+        ],
+        &full_target(),
+    )
+}
+
+fn vertex_program_id(d: &ResolvedDraw) -> String {
+    match &d.shader.vertex {
+        VertexProcessing::Program { microcode, .. } => {
+            format!("{:016x}", d3d::pipeline_store::program_id(microcode))
+        }
+        VertexProcessing::FixedFunction { .. } => panic!("no program"),
+    }
+}
+
+#[test]
+fn the_hold_log_names_every_draw_that_held_a_frame() {
+    // A gameplay-like frame with work on another target first (so draw
+    // and pass numbers are the guest frame's, as `render.frame` counts
+    // them), then the level with a full-target screen-space pass that
+    // looks a texture up from its own position (held: moved, it would read
+    // another texel) and an orthographic quad among its draws, the weapon
+    // and the HUD.
+    let mut r = rig_with(60, Mode::Reproject { ahead: false });
+    let shadow =
+        r.b.create_surface(D3DFormat::A8R8G8B8, 128, 128, false)
+            .unwrap();
+    let (a, b) = turning();
+    for (i, s) in [&a, &b].into_iter().enumerate() {
+        let (color, depth) = (r.color, r.depth);
+        r.at((i as u64 + 1) * F);
+        // Pass 0: draw 0.
+        r.b.clear(shadow, None, Clear::default()).unwrap();
+        r.b.draw(
+            shadow,
+            None,
+            &draw(world_block(&s.cam), 7, false),
+            [None; 4],
+        )
+        .unwrap();
+        // Pass 1: draws 1 to 6 (the quad is 2, the orthographic draw 4,
+        // the weapon 6).
+        r.b.clear(color, Some(depth), Clear::default()).unwrap();
+        let mut v = level(&s.cam);
+        v.insert(1, screen_quad(world_block(&s.cam)));
+        v.insert(3, draw(hud_block(), 53, false));
+        for d in v {
+            r.b.draw(color, Some(depth), &d, [None; 4]).unwrap();
+        }
+        let mut c = block();
+        write(&mut c, CAM, Layout::Rows, 4, &weapon());
+        r.b.draw(color, Some(depth), &draw(c, 900, false), [None; 4])
+            .unwrap();
+        // Pass 2 (no depth): the HUD, draw 7.
+        r.b.draw(color, None, &draw(hud_block(), 1000, true), [None; 4])
+            .unwrap();
+        r.b.present(color, 4).unwrap();
+    }
+    let st = *r.b.stats().lock().unwrap();
+    assert_eq!((st.mismatch_screen, st.blended_frames), (1, 0), "{st}");
+    let log = r.b.holds().lock().unwrap().clone();
+    // Both frames are held by the guard; the first is also unpaired (the
+    // rig's empty first frame has no camera), so it is not in the counter.
+    assert_eq!(log.frames, 2);
+    let last = log.last.as_ref().unwrap();
+    assert_eq!((last.reason, last.why), ("screen", "pass_through"));
+    assert_eq!(last.frame, 3, "the rig's own present is frame 1");
+    assert_eq!(
+        (last.draw, last.pass, last.recorded),
+        (Some(2), Some(1), Some(1))
+    );
+    assert_eq!((last.recorded_draws, last.world_draws), (7, 5));
+    assert_eq!(last.overlay_draw, Some(6), "the weapon");
+    assert_eq!(
+        (last.position.as_str(), last.block.as_str()),
+        ("pass-through", "none")
+    );
+    assert_eq!(last.primitive, "TriangleFan");
+    assert_eq!(
+        last.window,
+        Some([0.0, 0.0, 640.0, 480.0]),
+        "a full-target pass"
+    );
+    assert_eq!(last.target, [640, 480]);
+    let id = vertex_program_id(&screen_quad(block()));
+    assert_eq!(last.vertex_program.as_ref(), Some(&id));
+    assert!(
+        log.programs[&id].contains("mov oPos, v0"),
+        "disassembled: {:?}",
+        log.programs
+    );
+    // Every kind, not only the first: the quad and the orthographic draw,
+    // each in both frames.
+    let kinds: Vec<(&str, &str, u64, u64, u64)> = log
+        .kinds
+        .iter()
+        .map(|k| (k.reason, k.why, k.frames_first, k.frames, k.draws))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            ("screen", "pass_through", 2, 2, 2),
+            ("screen", "not_perspective", 0, 2, 2),
+        ]
+    );
+    let ortho = &log.kinds[1].example;
+    assert_eq!(
+        (ortho.position.as_str(), ortho.block.as_str()),
+        ("rows c[96]", "none")
+    );
+    assert_eq!(
+        ortho.rows.unwrap()[3],
+        [0.0, 0.0, 0.0, 1.0],
+        "the orthographic rows as uploaded"
+    );
+    assert_eq!(ortho.draw, Some(4));
+    assert_eq!(
+        ortho.vertex_program,
+        Some(vertex_program_id(&draw(block(), 1, false)))
+    );
+}
+
+#[test]
+fn the_hold_log_says_off_centre_and_after_the_overlay() {
+    // A perspective into pixels before the level's draws.
+    let mut r = rig_with(60, Mode::Reproject { ahead: false });
+    let (a, _) = turning();
+    r.at(F);
+    frame_with(&mut r, &a, &|cam| {
+        let mut v = level(cam);
+        v.insert(0, draw(pixel_perspective(), 60, false));
+        v
+    });
+    let last = r.b.holds().lock().unwrap().last.clone().unwrap();
+    assert_eq!(
+        (last.reason, last.why, last.block.as_str()),
+        ("screen", "off_centre", "local off-centre")
+    );
+    assert!(last.projection.is_some(), "the split projection is shown");
+    // A level draw after the weapon.
+    let mut r = rig_with(60, Mode::Reproject { ahead: false });
+    let (color, depth) = (r.color, r.depth);
+    r.at(F);
+    let world = world_block(&a.cam);
+    r.b.clear(color, Some(depth), Clear::default()).unwrap();
+    for mesh in [1, 2] {
+        r.b.draw(color, Some(depth), &draw(world, mesh, false), [None; 4])
+            .unwrap();
+    }
+    let mut c = block();
+    write(&mut c, CAM, Layout::Rows, 4, &weapon());
+    r.b.draw(color, Some(depth), &draw(c, 900, false), [None; 4])
+        .unwrap();
+    r.b.draw(color, Some(depth), &draw(world, 3, false), [None; 4])
+        .unwrap();
+    r.b.present(color, 4).unwrap();
+    let log = r.b.holds().lock().unwrap().clone();
+    let last = log.last.unwrap();
+    assert_eq!((last.reason, last.why), ("overlay", "camera_after_overlay"));
+    assert_eq!(
+        (last.draw, last.world_draws, last.overlay_draw),
+        (Some(3), 2, Some(2))
+    );
+    // A frame with no camera (the rig's first) is not logged: it is held
+    // as unpaired, with nothing to warp.
+    assert_eq!(log.frames, 1);
+}
+
+/// The vertices of a recorded `screen_draw` draw: (position, texture
+/// coordinate).
+fn screen_vertices(d: &ResolvedDraw) -> Vec<([f32; 4], [f32; 2])> {
+    let f: Vec<f32> = d.streams[0]
+        .data
+        .chunks_exact(4)
+        .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+        .collect();
+    f.chunks_exact(6)
+        .map(|v| ([v[0], v[1], v[2], v[3]], [v[4], v[5]]))
+        .collect()
+}
+
+/// A sprite of Halo 2's kind: a few pixels at `(x, y)`, its program moving
+/// position and texture coordinate.
+fn sprite(c: Block, x: f32, y: f32) -> ResolvedDraw {
+    let v = |dx: f32, dy: f32, u: f32, t: f32| ([x + dx, y + dy, 0.5, 1.0], [u, t]);
+    screen_draw(
+        c,
+        &[
+            mov_out(O::v(0), OutReg::Pos),
+            mov_out(O::v(1), OutReg::T(0)),
+        ],
+        &[
+            v(0.0, 0.0, 0.0, 0.0),
+            v(6.0, 0.0, 1.0, 0.0),
+            v(6.0, 6.0, 1.0, 1.0),
+            v(0.0, 6.0, 0.0, 1.0),
+        ],
+    )
+}
+
+/// A full-target layer whose program moves everything (Halo 2's
+/// `55c33fa0a8b277de` shape).
+fn layer(c: Block) -> ResolvedDraw {
+    screen_draw(
+        c,
+        &[
+            mov_out(O::v(0), OutReg::Pos),
+            mov_out(O::v(1), OutReg::T(0)),
+        ],
+        &full_target(),
+    )
+}
+
+/// A full-target layer whose texture coordinate goes through a texture
+/// matrix (`dp4 oT0.x, v1, c18`): not affine-checkable from the inputs
+/// alone, so it is shrunk instead.
+fn matrix_layer(c: Block) -> ResolvedDraw {
+    screen_draw(
+        c,
+        &[
+            mov_out(O::v(0), OutReg::Pos),
+            Inst::mac(MacOp::Dp4, Some(O::v(1)), Some(O::c(18)), None).to_out(
+                false,
+                OutReg::T(0),
+                8,
+            ),
+        ],
+        &full_target(),
+    )
+}
+
+/// Two turning frames of `draws` in E1: the second frame's world-image
+/// draws (into a surface other than the shown one), and the counters.
+fn reproject_world_image(
+    draws: Draws<'_>,
+) -> (
+    Vec<ResolvedDraw>,
+    Vec<ResolvedDraw>,
+    d3d::interp::InterpStats,
+) {
+    let mut r = rig_with(60, Mode::Reproject { ahead: false });
+    let (a, b) = turning();
+    r.at(F);
+    frame_with(&mut r, &a, draws);
+    let before = r.calls();
+    r.at(2 * F);
+    frame_with(&mut r, &b, draws);
+    let all = r.draws_since(before);
+    let guest = all
+        .iter()
+        .filter(|(c, _)| *c == r.color)
+        .map(|d| d.1.clone())
+        .collect();
+    let image = all
+        .into_iter()
+        .filter(|(c, _)| *c != r.color)
+        .map(|d| d.1)
+        .collect();
+    (guest, image, *r.b.stats().lock().unwrap())
+}
+
+#[test]
+fn screen_space_sprites_and_layers_in_the_world_turn_with_it() {
+    // Halo 2's two kinds of pass-through world draws (the live hold log
+    // on 03a_oldmombasa: every held gameplay frame had them), among the
+    // level's draws: a sprite placed in pixels, a full-target layer whose
+    // program only moves its inputs, and one with a texture matrix.
+    let draws = |cam: &Mat4| {
+        let mut v = level(cam);
+        v.insert(1, sprite(world_block(cam), 100.0, 50.0));
+        v.insert(3, layer(world_block(cam)));
+        v.insert(4, matrix_layer(world_block(cam)));
+        v
+    };
+    let (guest, image, st) = reproject_world_image(&draws);
+    assert_eq!(
+        (st.blended_frames, st.size_mismatch, st.captures),
+        (1, 0, 1),
+        "{st}"
+    );
+    assert_eq!((st.screen_shrunk, st.screen_extended), (2, 1), "{st}");
+    assert!(
+        st.to_string()
+            .contains("screen-space draws 2 shrunk 1 extended"),
+        "{st}"
+    );
+    let fans = |v: &[ResolvedDraw]| -> Vec<Vec<([f32; 4], [f32; 2])>> {
+        v.iter()
+            .filter(|d| d.primitive == PrimitiveType::TriangleFan)
+            .map(screen_vertices)
+            .collect()
+    };
+    let (g, w) = (fans(&guest), fans(&image));
+    assert_eq!(
+        (g.len(), w.len()),
+        (3, 3),
+        "the guest's and the world image's"
+    );
+    // The guest's own draws are untouched.
+    assert_eq!(g[0][0].0, [100.0, 50.0, 0.5, 1.0]);
+    assert_eq!(g[1], full_target());
+    let s = overscan_scale() as f32;
+    let close = |a: f32, b: f32| (a - b).abs() < 1e-3;
+    // The sprite: shrunk about the centre with the world, its texture
+    // coordinates and depth as the guest's.
+    for (gv, wv) in g[0].iter().zip(&w[0]) {
+        assert!(close(wv.0[0], 320.0 + (gv.0[0] - 320.0) * s), "{wv:?}");
+        assert!(close(wv.0[1], 240.0 + (gv.0[1] - 240.0) * s), "{wv:?}");
+        assert_eq!((wv.0[2], wv.0[3], wv.1), (gv.0[2], gv.0[3], gv.1));
+    }
+    // The layer: still over the whole image, its texture coordinates
+    // those of the guest's pixel the image shows there (outside 0..1 in
+    // the band the overscan adds).
+    for (gv, wv) in g[1].iter().zip(&w[1]) {
+        assert_eq!(wv.0, gv.0, "positions kept");
+        let q = [320.0 + (gv.0[0] - 320.0) / s, 240.0 + (gv.0[1] - 240.0) / s];
+        assert!(
+            close(wv.1[0], q[0] / 640.0) && close(wv.1[1], q[1] / 480.0),
+            "{wv:?}"
+        );
+    }
+    assert!(close(w[1][0].1[0], 0.5 - 0.5 / s), "{:?}", w[1][0]);
+    // The layer with a texture matrix: shrunk.
+    for (gv, wv) in g[2].iter().zip(&w[2]) {
+        assert!(close(wv.0[0], 320.0 + (gv.0[0] - 320.0) * s), "{wv:?}");
+        assert_eq!(wv.1, gv.1);
+    }
+}
+
+#[test]
+fn screen_space_world_draws_e1_cannot_move_still_hold() {
+    let cases: [(&str, Draws<'_>); 3] = [
+        // A scissored sprite: the overscanned image would be cut at the
+        // guest's rectangle.
+        ("scissored sprite", &|cam| {
+            let mut v = level(cam);
+            let mut d = sprite(world_block(cam), 100.0, 50.0);
+            d.clip = Some(d3d::backend::PixelRect {
+                x: 0,
+                y: 0,
+                width: 320,
+                height: 480,
+            });
+            v.insert(1, d);
+            v
+        }),
+        // A layer that looks a texture up from its own position.
+        ("position lookup", &|cam| {
+            let mut v = level(cam);
+            v.insert(1, screen_quad(world_block(cam)));
+            v
+        }),
+        // An orthographic quad (the letterbox bars and full-screen fills
+        // the hold log showed in two frames): screen-fixed, held.
+        ("orthographic", &|cam| {
+            let mut v = level(cam);
+            v.insert(1, draw(hud_block(), 53, false));
+            v
+        }),
+    ];
+    for (name, draws) in cases {
+        let (held, st) = reproject_pair(draws);
+        assert!(held, "{name}: {st}");
+        assert_eq!(
+            (st.mismatch_screen, st.captures, st.screen_shrunk),
+            (1, 0, 0),
+            "{name}: {st}"
+        );
+    }
+}
+
+#[test]
+fn screen_space_draws_turn_with_the_world_through_the_interpreter() {
+    // Run the world image's sprite and the level's program through the
+    // shader interpreter: a world point and a sprite placed on it by the
+    // guest (projected with frame N's camera) still coincide in the world
+    // image, so the warp turns them together.
+    let cam = camera(0.0, 0.0);
+    let c = world_block(&cam);
+    let point = [0.3f32, 4.0, 1.2];
+    let (guest_win, _) = run_program(&c, point);
+    let mut over = c;
+    over[SCALE][0] *= overscan_scale() as f32;
+    over[SCALE][1] *= overscan_scale() as f32;
+    let (image_win, _) = run_program(&over, point);
+    let d = sprite(c, guest_win[0], guest_win[1]);
+    let pt = d3d::interp::screen_space::pass_through(match &d.shader.vertex {
+        VertexProcessing::Program { microcode, .. } => microcode,
+        VertexProcessing::FixedFunction { .. } => unreachable!(),
+    })
+    .unwrap();
+    let screen = d3d::interp::reproject::Screen {
+        scale: [320.0, -240.0],
+        offset: [320.0, 240.0],
+        size: [640.0, 480.0],
+    };
+    let (streams, fit) =
+        d3d::interp::screen_space::world_image_streams(&d, pt, overscan_scale(), &screen).unwrap();
+    assert_eq!(fit, d3d::interp::screen_space::Fit::Shrink);
+    let mut moved = d.clone();
+    moved.streams = streams;
+    let corner = screen_vertices(&moved)[0].0;
+    assert!(
+        (corner[0] - image_win[0]).abs() < 1e-2 && (corner[1] - image_win[1]).abs() < 1e-2,
+        "sprite {corner:?}, world point {image_win:?}"
+    );
 }

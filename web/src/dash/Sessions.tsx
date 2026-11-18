@@ -5,7 +5,7 @@
 // is nothing to join from here: joining happens in the game.
 
 import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
-import { gameImage, mapTitle } from "../state/gameart";
+import { artStem, gameImage, mapTitle } from "../state/gameart";
 import { mapKey } from "../lib/gameart";
 import { live } from "../state/live";
 import { now } from "../lib/now";
@@ -44,7 +44,7 @@ const badgeOf = (s: Session) => customMapBadge(s.map_id, packageLookup(s.map_id)
 function SessionPod(props: { session: Session | null | undefined }) {
   const pic = () => {
     const s = props.session;
-    return pictureChoice(packageImage(s?.map_id), s?.map ? gameImage(mapKey(s.map))?.url : null)?.src ?? null;
+    return pictureChoice(packageImage(s?.map_id), s?.map ? gameImage(mapKey(artStem(s.map)))?.url : null)?.src ?? null;
   };
   return (
     <Show when={props.session} fallback={<Glyph name="globe" />}>
@@ -74,7 +74,7 @@ function Facts(props: { session: Session }) {
   return (
     <dl>
       <Show when={isCoop(s()) && s().campaign}>
-        {(c) => <><dt>campaign</dt><dd>{levelName(c())}</dd><dt>difficulty</dt><dd>{difficultyName(c().difficulty)}</dd><dt>players</dt><dd>{coopPlayers(s(), (x) => live.state.accounts[x]?.gamertag).join(", ")}</dd></>}
+        {(c) => <><dt>campaign</dt><dd>{levelName(c(), mapTitle)}</dd><dt>difficulty</dt><dd>{difficultyName(c().difficulty)}</dd><dt>players</dt><dd>{coopPlayers(s(), (x) => live.state.accounts[x]?.gamertag).join(", ")}</dd></>}
       </Show>
       <Show when={isCoop(s()) && pingText(s())}>
         {(p) => <><dt>ping</dt><dd>{p()}</dd></>}

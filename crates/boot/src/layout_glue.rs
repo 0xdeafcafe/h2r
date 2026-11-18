@@ -606,6 +606,8 @@ pub fn install(
             served.extend(crate::h1_options::strings());
         }
         served.extend(crate::campaign_menu::strings());
+        let variant_page = crate::variant_page::strings();
+        served.extend(variant_page.iter().map(|(i, t)| (*i, t.as_str())));
         let (addrs, used) = write_strings(&mut *mem, DATA_BASE, &served)
             .ok_or_else(|| anyhow::anyhow!("layouts: strings"))?;
         let mut alloc = (used + 0xff) & !0xff;
@@ -720,12 +722,13 @@ pub fn install(
                     _ => n,
                 };
                 // The variant editor's categories get the multiplayer
-                // Skulls row.
-                let n = if with_skulls && crate::skulls_mp_row::row_on() {
-                    crate::skulls_mp::variant_count(name, n)
-                } else {
-                    n
-                };
+                // Skulls row and the More Options row.
+                let n = crate::variant_page::variant_count(
+                    name,
+                    n,
+                    with_skulls && crate::skulls_mp_row::row_on(),
+                    crate::variant_page::row_on(),
+                );
                 // One of our list class screens being built: its own count.
                 let n = crate::list_class::array_count(name, n);
                 if n != cpu.eax {
@@ -813,6 +816,10 @@ pub fn install(
                 // The Skulls row in the variant editor has no pane: keep
                 // the one shown (thiscall, `ret 4`).
                 if with_skulls && crate::skulls_mp::skip_pane(id, row) {
+                    return mem.ret(cpu, 4);
+                }
+                // Nor has the More Options row.
+                if crate::variant_page::skip_pane(id, row) {
                     return mem.ret(cpu, 4);
                 }
                 // Our Video row on the Settings list has none either.

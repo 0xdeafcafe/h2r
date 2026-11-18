@@ -151,7 +151,7 @@ function summary(e: WireEvent): string {
         mode: s("mode") ?? "", kind: s("kind"), playlist: s("playlist"), online: d.online === true, players: { ...players },
         variant: s("variant"), difficulty: s("difficulty"),
       });
-      return `${gameMapTitle({ map: d.map as string, map_id: typeof d.map_id === "string" ? d.map_id : null })} · ${type} · ${players.length} players`;
+      return `${gameMapTitle({ map: d.map as string, map_id: typeof d.map_id === "string" ? d.map_id : null })} · ${type} · ${players.length} ${players.length === 1 ? "player" : "players"}`;
     }
     case "PlayerKilled": return `${d.killer ?? "world"} → ${d.victim} (${d.kind}${d.weapon ? ", " + d.weapon : ""})`;
     case "ScoreChanged": return `tick ${d.tick}`;

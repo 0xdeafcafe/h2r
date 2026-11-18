@@ -179,6 +179,7 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
             post(crate::reports::post_report),
         )
         .route("/v1/admin/bans", get(crate::bans::get_admin_bans))
+        .route("/v1/admin/bots", post(crate::bots::post_admin_bots))
         .route("/v1/admin/bans/{xuid}", post(crate::bans::post_ban))
         .route("/v1/admin/bans/{xuid}/lift", post(crate::bans::post_lift))
         .route("/v1/accounts/by-xuid/{xuid}/ban", get(crate::bans::get_ban))
@@ -296,6 +297,10 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         .route("/v1/ranks/{playlist}", get(crate::ranks::leaderboard))
         .route("/v1/rank-stats", get(crate::ranks::stats))
         .route(
+            "/v1/arbitration/{session}/{round}/{action}",
+            axum::routing::post(crate::arbitration::post_round),
+        )
+        .route(
             "/v1/accounts/{gamertag}/ranks",
             get(crate::ranks::player_ranks),
         )
@@ -316,6 +321,7 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         .route("/v1/sessions/{id}/events", post(crate::sessions::append))
         .route("/v1/snapshot", get(snapshot))
         .route("/v1/games", get(list_games).post(start_game))
+        .route("/v1/games/bots", post(crate::bots::post_roster))
         .route("/v1/games/{id}", get(game))
         .route("/v1/games/{id}/frames", get(game_frames))
         .route("/v1/games/{id}/events", post(game_events))

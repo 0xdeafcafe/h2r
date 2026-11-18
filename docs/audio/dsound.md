@@ -654,6 +654,17 @@ internals, which are unmatched):
   disc). Zero is not derived from evidence; revisit it if sound init
   misbehaves.
 - **`XAudioSetEffectData` is dry too.** See the next section.
+- **The XHV voice effects have output rings.** Effects 0xb..=0xe are the
+  per-port voice effects. On an Xbox each writes its port's voice mix into
+  a ring that the headphone feed (`0x334d1f`, through `0x332c9c`) reads:
+  the ring base is at map +0x18, its size at map +0x1c, and the write
+  offset at state +0x34. The feed divides by the size, so the descriptor
+  gives each of these effects a zeroed 0x1400-byte ring (80 ms of 16 kHz
+  32-bit samples). The other effects keep zeros there. Nothing writes the
+  rings, so a headphone hears silence. The engine's voice streams still
+  play, on the mixbin index the invented `0x1400` above gives them (0).
+  Where that is heard has not been checked in a run
+  (docs/live/live-voice.md, 3.3 item 7).
 
 This is enough for the init path to proceed. The guest-visible image stays
 dry: the DSP program is never run and the converted DSP words are not

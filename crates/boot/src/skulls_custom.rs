@@ -358,28 +358,34 @@ pub fn held_by(skull: u32, parent: Option<u32>, units: &[(u32, Vec<u32>)]) -> Op
 
 // ---- the effects ----
 
-/// Low Gravity's bookkeeping: the last value we wrote, and the game's own
-/// value we scaled, so a script's `physics_set_gravity` is scaled too and
-/// turning the skull off gives the game's value back.
+/// Gravity's bookkeeping: the last value we wrote, the game's own value we
+/// scaled and the scale, so a script's `physics_set_gravity` is scaled too,
+/// a new scale rescales the game's value, and scale 1 gives it back.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Gravity {
     pub written: Option<f32>,
     pub game: Option<f32>,
 }
 
-/// The value to write to the gravity constant, if any, given whether Low
-/// Gravity is on and the value there now.
-pub fn gravity_step(on: bool, now: f32, g: &mut Gravity) -> Option<f32> {
+/// The value to write to the gravity constant, if any, given the scale
+/// wanted now (Low Gravity's [`GRAVITY_SCALE`] times the variant's, 1.0
+/// for the game's own) and the value there now.
+pub fn gravity_step(scale: f32, now: f32, g: &mut Gravity) -> Option<f32> {
     let ours = g.written == Some(now);
-    if on {
-        if ours {
+    if scale != 1.0 {
+        // The game's value: ours to rescale, or one the game (a reset, a
+        // new map, a script) just set.
+        let game = match (ours, g.game) {
+            (true, Some(game)) => game,
+            _ => now,
+        };
+        let v = game * scale;
+        if ours && v == now {
             return None;
         }
-        // The game (a reset, a new map, a script) set it: scale that.
-        let v = now * GRAVITY_SCALE;
         *g = Gravity {
             written: Some(v),
-            game: Some(now),
+            game: Some(game),
         };
         Some(v)
     } else {
@@ -699,6 +705,8 @@ pub struct Custom {
     work: Mutex<Vec<Work>>,
     reentry: AtomicBool,
     gravity: Mutex<Gravity>,
+    /// The variant options' last decision, for the log.
+    variant: Mutex<Option<crate::variant_ext::Decision>>,
     falls: Mutex<HashMap<u32, Fall>>,
     /// Bits of the skulls whose effect has said it acts this game.
     said: AtomicU32,
@@ -724,6 +732,7 @@ impl Custom {
             work: Mutex::default(),
             reentry: AtomicBool::new(false),
             gravity: Mutex::default(),
+            variant: Mutex::default(),
             falls: Mutex::default(),
             said: AtomicU32::new(0),
             found: AtomicU32::new(0),
@@ -754,6 +763,17 @@ impl Custom {
                 Active::of(if on { &[LOW_GRAVITY] } else { &[] })
             }
             _ => Active::default(),
+        }
+    }
+
+    /// Logs the variant options' decision when it changes.
+    fn variant_said(&self, d: &crate::variant_ext::Decision) {
+        let mut last = self.variant.lock().unwrap_or_else(|e| e.into_inner());
+        if last.as_ref() != Some(d) {
+            if last.is_some() || *d != crate::variant_ext::Decision::Retail {
+                eprintln!("{}", d.line());
+            }
+            *last = Some(*d);
         }
     }
 
@@ -796,6 +816,8 @@ impl Custom {
     /// After each tick: the effects, then the hidden skull of the level.
     fn after_tick(&self, rt: &Arc<runtime::Runtime>) {
         let mut mem = rt.memory();
+        let variant = crate::variant_ext::in_game(&*mem);
+        self.variant_said(&variant);
         let m: &mut dyn GuestMemory = &mut *mem;
         let globals = m.u32(GAME_GLOBALS).unwrap_or(0);
         if globals == 0 {
@@ -803,13 +825,19 @@ impl Custom {
         }
         let mode = m.u32(globals.wrapping_add(GLOBALS_MODE)).ok();
         let active = self.active(mode);
-        // Gravity, whatever the players.
+        // Gravity, whatever the players: Low Gravity times the variant's.
+        let skull = if active.has(LOW_GRAVITY) {
+            GRAVITY_SCALE
+        } else {
+            1.0
+        };
+        let scale = skull * variant.gravity();
         if let Ok(pc) = m.u32(PHYSICS_CONSTANTS)
             && pc != 0
             && let Ok(now) = m.f32(pc)
         {
             let mut g = self.gravity.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(v) = gravity_step(active.has(LOW_GRAVITY), now, &mut g) {
+            if let Some(v) = gravity_step(scale, now, &mut g) {
                 let _ = m.set_f32(pc, v);
                 if active.has(LOW_GRAVITY) {
                     self.say_once(LOW_GRAVITY, || {
@@ -817,6 +845,13 @@ impl Custom {
                             "skulls: Low Gravity: gravity {now} -> {v} (physics constants {pc:#x})"
                         )
                     });
+                }
+                if variant.gravity() != 1.0 {
+                    eprintln!(
+                        "variant options: gravity {now} -> {v} (variant {}%, Low Gravity {})",
+                        (variant.gravity() * 100.0).round(),
+                        if skull != 1.0 { "on" } else { "off" }
+                    );
                 }
             }
         }

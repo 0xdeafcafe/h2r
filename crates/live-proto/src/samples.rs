@@ -84,6 +84,17 @@ impl Mover {
             a + std::f64::consts::FRAC_PI_2,
         )
     }
+
+    /// Velocity at `t`, game units a second (the circle's tangent).
+    fn vel(&self, t: f64) -> [f64; 3] {
+        let a = self.phase + t * self.speed / self.radius;
+        let w = self.speed / self.radius;
+        [
+            -self.radius * w * a.sin(),
+            self.radius * w * a.cos(),
+            0.6 * w * (a * 3.0).cos(),
+        ]
+    }
 }
 
 fn round(v: f64) -> f64 {
@@ -129,6 +140,13 @@ fn player(index: u32, m: &Mover, t: f64, tick: u64, rng: &mut Rng) -> FramePlaye
             .is_multiple_of(40)
             .then(|| vec!["reload".to_owned()]),
         grenade: Some("frag".into()),
+        vel: Some(r3(m.vel(t))),
+        // The two ticks a 15 Hz frame spans: the rifle fires on one or both.
+        fire: firing.then(|| 1 + (tick / 2 % 3) as u32),
+        body: Some(1.0),
+        shield: Some(round(0.5 + 0.5 * (t * 0.7 + f64::from(index)).sin())),
+        seat: None,
+        actions_ago: None,
     }
 }
 
@@ -194,6 +212,7 @@ pub fn multiplayer(frames: usize) -> Vec<Frame> {
                     pos: r3(movers[(rng.next() % 16) as usize].at(t).0),
                     amount: Some(round(rng.range(0.05, 0.4))),
                     kind: Some("bullet".into()),
+                    ago: Some((rng.next() % 2) as u32),
                 })
                 .collect();
             // Weapons taken from their spawns come back after 30 s.
@@ -218,6 +237,7 @@ pub fn multiplayer(frames: usize) -> Vec<Frame> {
                 bsp: Some(0),
                 machines: Vec::new(),
                 objects,
+                cut: None,
             }
         })
         .collect()
@@ -284,6 +304,12 @@ pub fn campaign(frames: usize) -> Vec<Frame> {
                         speed: Some(if i % 4 == 0 { 0.0 } else { round(m.speed) }),
                         actions: None,
                         grenade: Some("plasma".into()),
+                        vel: (i % 4 != 0).then(|| r3(m.vel(t))),
+                        fire: firing.then_some(1),
+                        body: None,
+                        shield: None,
+                        seat: None,
+                        actions_ago: None,
                     }
                 })
                 .collect();
@@ -316,6 +342,7 @@ pub fn campaign(frames: usize) -> Vec<Frame> {
                     pos: r3(hero.at(t).0),
                     amount: Some(round(rng.range(0.05, 0.6))),
                     kind: Some("bullet".into()),
+                    ago: None,
                 })
                 .collect();
             // An elevator and two doors moving; all twelve machines in the
@@ -390,6 +417,7 @@ pub fn campaign(frames: usize) -> Vec<Frame> {
                 bsp: Some(1),
                 machines,
                 objects,
+                cut: None,
             }
         })
         .collect()

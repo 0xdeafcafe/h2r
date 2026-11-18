@@ -43,7 +43,26 @@
           "jump",
           "melee"
         ],
-        "grenade": "plasma"
+        "grenade": "plasma",
+        "vel": [
+          -999.0,
+          0.015625,
+          12.5
+        ],
+        "fire": 4294967295,
+        "body": 0.3333333333333333,
+        "shield": 4.0,
+        "seat": 63,
+        "actions_ago": [
+          900,
+          31,
+          30,
+          7,
+          2,
+          1,
+          0,
+          0
+        ]
       }
     ],
     "hits": [
@@ -55,7 +74,8 @@
           0.0
         ],
         "amount": 2.5,
-        "kind": "fall"
+        "kind": "fall",
+        "ago": 900
       },
       {
         "from": "p01",
@@ -92,7 +112,8 @@
         "i": 32767,
         "gone": true
       }
-    ]
+    ],
+    "cut": 123456
   },
   {
     "game_id": "odd-game_1",
@@ -138,7 +159,26 @@
           "jump",
           "melee"
         ],
-        "grenade": "plasma"
+        "grenade": "plasma",
+        "vel": [
+          -999.0,
+          0.015625,
+          12.5
+        ],
+        "fire": 4294967295,
+        "body": 0.3333333333333333,
+        "shield": 4.0,
+        "seat": 63,
+        "actions_ago": [
+          900,
+          31,
+          30,
+          7,
+          2,
+          1,
+          0,
+          0
+        ]
       }
     ],
     "hits": [
@@ -150,7 +190,8 @@
           0.0
         ],
         "amount": 2.5,
-        "kind": "fall"
+        "kind": "fall",
+        "ago": 900
       },
       {
         "from": "p01",
@@ -173,6 +214,7 @@
         "i": 32767,
         "gone": true
       }
-    ]
+    ],
+    "cut": 123456
   }
 ]

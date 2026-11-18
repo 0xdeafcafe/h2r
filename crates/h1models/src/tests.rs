@@ -63,6 +63,50 @@ fn hlmt_nodes_match_the_render_model() {
     assert_eq!(names(&nodes, n), names(mode_nodes, 0x60));
 }
 
+/// Each node's inverse rest frame is stored as retail stores it: at `+0x2c`,
+/// `+0x38`, `+0x44` the inverse's columns (the rows of the model-space
+/// rotation R), at `+0x50` its position, so that the rest frame times it is
+/// the identity (`skin_tests::retail_h2_bipeds_pose_sanely` holds every
+/// retail biped node to the same reading). Writing R's columns there
+/// instead skins every vertex of a rotated node by R twice, which the
+/// engine drew as twisted shards.
+#[test]
+fn node_inverse_frames_are_stored_as_columns() {
+    let (img, at) = synthetic_model();
+    let m = h1::Model::read(&img, at).unwrap();
+    let out = convert_model(&m, "thing", &ModelOptions::default()).unwrap();
+    let (bytes, ids) = build(vec![(out, "invented\\thing")]);
+    let mut map = Map::from_reader(Cursor::new(bytes.clone())).unwrap();
+    let g = RenderModelGeometry::read(&mut map, ids[0], &mut Raw(bytes)).unwrap();
+    let tag = map.read_tag_bytes(ids[0]).unwrap();
+    let base = map.tag(ids[0]).unwrap().location.unwrap().address;
+    let at = (u32::from_le_bytes(tag[0x4c..0x50].try_into().unwrap()) - base) as usize;
+    let world = crate::mode::world_transforms(
+        &g.nodes
+            .iter()
+            .map(|n| (n.wire.parent_index, n.wire.orientation, n.wire.translation))
+            .collect::<Vec<_>>(),
+    );
+    let mut rotated = 0;
+    for (i, (r, p)) in world.iter().enumerate() {
+        let e = &tag[at + i * 0x60..];
+        // inv[row][col] = vector col, component row.
+        let inv: [[f32; 3]; 3] = std::array::from_fn(|row| std::array::from_fn(|col| h1::f32_at(e, 0x2c + 12 * col + 4 * row)));
+        let ip: [f32; 3] = std::array::from_fn(|k| h1::f32_at(e, 0x50 + 4 * k));
+        for row in 0..3 {
+            for col in 0..3 {
+                let v: f32 = (0..3).map(|k| r[row][k] * inv[k][col]).sum();
+                assert!((v - f32::from(u8::from(row == col))).abs() < 1e-6, "node {i}: R inv [{row}][{col}] {v}");
+            }
+            let t: f32 = (0..3).map(|k| r[row][k] * ip[k]).sum::<f32>() + p[row];
+            assert!(t.abs() < 1e-6, "node {i}: position {t}");
+        }
+        rotated += usize::from((0..3).any(|a| (0..3).any(|b| a != b && (r[a][b] - r[b][a]).abs() > 0.5)));
+    }
+    // The synthetic arm turns 90 degrees, so the transpose would fail.
+    assert_eq!(rotated, 1);
+}
+
 /// Every converted model has the one section group retail models have:
 /// the engine indexes `mode +0x34` by the detail level's byte at `+0x3c`
 /// with no count check (a30's second fault, on an empty block).

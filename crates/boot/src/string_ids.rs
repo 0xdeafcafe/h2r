@@ -41,6 +41,13 @@ fn table_members() -> Vec<(&'static str, Vec<u32>)> {
         ("live menu rows", ids(custom_games::strings())),
         ("skulls pages", ids(skulls_menu::strings())),
         (
+            "variant page",
+            crate::variant_page::strings()
+                .into_iter()
+                .map(|(i, _)| i)
+                .collect(),
+        ),
+        (
             "campaign picker",
             (0..=campaign_menu::MAX_ROWS as u32)
                 .map(|i| campaign_menu::ID_BASE + i)

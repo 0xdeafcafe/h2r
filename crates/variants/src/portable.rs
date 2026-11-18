@@ -88,6 +88,21 @@ mod tests {
     }
 
     #[test]
+    fn the_extension_block_travels_in_a_portable_file() {
+        let mut v = GameVariant::blank(GameType::Slayer);
+        let e = crate::ext::Ext {
+            gravity: 50,
+            speed: 150,
+            ..Default::default()
+        };
+        v.set_ext(&e).unwrap();
+        let (back, problems) = import(&export(&v)).unwrap();
+        assert!(problems.is_empty());
+        assert_eq!(back.ext(), e);
+        assert_eq!(back, v);
+    }
+
+    #[test]
     fn bad_files_are_refused() {
         let good = export(&GameVariant::blank(GameType::Slayer));
         assert!(matches!(import("{"), Err(PortableError::Json(_))));

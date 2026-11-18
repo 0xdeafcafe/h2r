@@ -1077,6 +1077,178 @@ Times are render-thread wall time measured the same way as D's `replay
 mode` part, so the two runs' lines compare directly: D's per-frame cost
 against E1's world image per guest frame plus its warped frames.
 
+### Headless (an off-screen serve)
+
+The same switches work with no window, on the headless GPU backend
+`H2_BOOT_GFX=<dir>` makes (`h2 run`, `h2 serve`), so an agent can read
+E1's (or D's) counters and hold reasons through `h2 agent render` without
+anyone playing:
+
+```sh
+H2_OPT=2 H2_BOOT_GFX=$TMPDIR/h2-gfx H2_BOOT_GFX_EVERY=never \
+  H2_FPS=60 H2_FEATURES=impl.render.reproject \
+  h2 serve disc/halo2.iso --out <the image you built>
+h2 agent render          # "interp": frames, warps, the held split
+```
+
+- **What runs.** `boot::d3d_glue::install_headless` puts the GPU backend
+  (at 1x, or `ScaledBackend` under `H2_RENDER_SCALE`) behind
+  `InterpBackend` on the render thread, exactly as a window does; which
+  host has a GPU backend is `d3d_glue::interp_render_thread`. Without
+  `H2_BOOT_GFX` (the recorder draws nothing) and under
+  `H2_BOOT_GFX_LIGHTING_AB` there are no in-between frames. The refusals
+  stand: `H2_RENDER_THREAD=0` and `H2_PIPELINE_RENDER` turn them off.
+- **Pacing.** No display, so no vsync: the in-between frames are paced on
+  the wall clock at the frame rate, the same schedule a window uses (the
+  backend's own clock, `pacing::Schedule`), a display clock of their own.
+  At real-time speed a guest frame at 30 gets one in-between frame at 60;
+  a serve sped up past that shows fewer, since a frame arriving early
+  takes the slot. Each is made for real (the world image warped,
+  the overlay drawn, presented through `GfxBackend::on_present_replay`)
+  and every guest frame is classified, so `blended_frames`, `replays`,
+  `warps` and the hold reasons are the game's own. A guest frame more than
+  45 ms after the last (a slow GPU, a hitch) is `unpaired_gap`, as in a
+  window.
+- **Pictures.** `H2_BOOT_GFX_BETWEEN=N` writes the first N in-between
+  frames to the directory as `frame-NNNNN-between-KK.png` (the KK-th
+  after guest swap NNNNN), and each one's neighbours as `frame-NNNNN.png`:
+  the guest frame shown before it and the one shown after it (as shown: a
+  blended present is a warped frame too), so a warped frame can be
+  compared with both. At most N in-between and 2N guest frames are
+  written. The guest frame before is only known to be wanted once an
+  in-between frame follows it, so while captures are left each guest
+  frame is copied on the GPU (no read back) and the copy is read back only
+  then. In-between frames go to their own hook, so the guest's swap
+  numbering (`H2_BOOT_GFX_EVERY`, `H2_BOOT_GFX_SHADOWS`) is unchanged.
+  (The first version wrote every guest frame from the first in-between
+  frame on until N in-between frames were written. A live run on
+  03a_oldmombasa made one, at swap 465, and then wrote 2,636 guest frames
+  (715 MB): the readbacks took encode and render-wait from about 5 ms to
+  200 to 370 ms and the rate from 38 to 3 fps, so every frame came more
+  than 45 ms after the last (`unpaired_gap`), no in-between frame was
+  made again and the limit was never reached. The replay hook does fire
+  for every in-between frame presented; there were simply no more.)
+- **Held frames, draw by draw.** `h2 agent render`'s `interp.holds` (see
+  "Held frames, draw by draw" below) names the draws that keep gameplay
+  at 30.
+
+### Held frames, draw by draw
+
+The `mismatch_*` counters say which guard held a frame; `interp.holds` in
+`render.stats` (`d3d::interp::holds::HoldLog`, kept by `InterpBackend`,
+registered by `boot::render_probe::set_interp_holds`) says which draws.
+For every frame the screen guard (`world_screen`) refuses, with a camera,
+every world draw or clear it refuses is listed, not only the first:
+
+- `last`: the last such frame's first offending draw in full.
+- `kinds`: each kind of offending draw (`reason`: `screen`, `mapping` or
+  `overlay`; `why`: the detail, below; the vertex program; the primitive),
+  with the held frames it was first in (`frames_first`), the held frames
+  it was in at all (`frames`), its draws over all of them, and an example.
+  At most 48 kinds; more are counted in `other_kinds`.
+- `programs`: the kinds' vertex programs, disassembled, by id (at most 24).
+
+Each draw says: its number in the guest frame and its pass, as
+`render.frame` numbers them (draws over every target since the present;
+a pass is a run of work on one colour and depth surface), so `h2 agent
+frame draws` shows the same draw; its number among the presented
+surface's draws, how many of those were world draws, and where the
+overlay started; the vertex program's id (`pipeline_store::program_id` of
+its microcode, the id `pipelines-v2.jsonl` records it under); entry,
+primitive, vertex count, texture formats and sizes, blend and depth write;
+where its clip position comes from (`rows c[N]`, `pass-through`,
+`unknown`) and what the block there is (`camera`, `world`, `local
+centred`, `local off-centre`, `none`), the block's four rows as uploaded
+and the projection split from them; and the bounding box in window pixels
+where its first 64 vertices land after its program (run through the
+shader interpreter), next to the target's size, so a full-target pass and
+a sprite tell apart.
+
+| `why` | reason | what the draw is |
+|---|---|---|
+| `pretransformed` | screen | `XYZRHW` vertices, already in pixels |
+| `fixed_function` | screen | fixed-function vertex processing |
+| `pass_through` | screen | a program that moves a vertex to `oPos` (`mov oPos, v0`) |
+| `position_unknown` | screen | a clip position not from one block's rows |
+| `not_perspective` | screen | the block there is no perspective (orthographic, or no matrix) |
+| `off_centre` | screen | a perspective of its own, not centred (into pixels, sheared) |
+| `no_camera_draw`, `no_epilogue`, `camera_not_covering`, `partial_clear`, `other_mapping`, `scissored` | mapping | where the world lands is not one mapping the warp can follow |
+| `camera_after_overlay` | overlay | a draw the camera places after the overlay starts |
+
+A frame's first offence is its hold reason, so the counters are unchanged.
+Frames with no camera (menus, loads) are not logged: they are held as
+`unpaired` with nothing to warp.
+
+### Screen-space draws in the world
+
+What held gameplay, from the hold log on a live serve (03a_oldmombasa,
+headless, `H2_FPS=60 impl.render.reproject`, master b0e5f8fc): 5,161
+frames held by the screen guard, 4,353 of them counted as
+`mismatch_screen` (the rest also unpaired), every one by a pass-through
+world draw (`mov oPos, v0`: its vertices are window pixels). Three kinds:
+
+| kind | program | in held frames | what it is |
+|---|---|---|---|
+| full-target layer | `55c33fa0a8b277de` (moves `v0`-`v6` to `oPos`, `oT0`-`oT3`, `oD0`, `oD1`) | first offender in 5,041 of 5,161; 1 a frame | one blended TriangleFan over the whole 640x480 target among the world draws (draw 691 of pass 8 in a full frame, before the particles), four textures: a 640x480 target drawn that frame and three noise sheets (or a 64x64 one and two 8x8) |
+| sprites | `a325e7d25a154e2d` (moves `v0` to `oPos`, `v3` to `oT0`, `v9` to `oD0`) | in 1,200 frames, first in 120; about 144 a frame (172,498 draws) | blended 6x6-pixel TriangleFans with one 8x8 Dxt3 texture, among the opaque world draws (pass 2), with the depth surface bound: by all appearances points of the world the game projected to the screen with the frame's camera |
+| orthographic quads | `9159724c0888b680`, `81feff991dfe6871` (`rows c[177]`: an orthographic 640x480 transform, then Halo 2's epilogue) | 2 frames (4 and 8 draws) | an untextured full-target fan and a 640x60 strip at the top: a fill and letterbox bars, in short frames (29 draws) |
+
+The decisions (`interp::screen_space`, used by `world_screen` and the
+world image):
+
+- **Sprites: warped with the world.** The game put each on the screen by
+  projecting a world point with frame N's camera, so in the world image its
+  positions are scaled by the overscan about the screen's centre exactly
+  as the world's are (each program's viewport scale times `s` scales about
+  the same centre), its depth and texture coordinates kept. After the warp
+  at frame N's rotation it is where the guest drew it (to float rounding);
+  in between it turns with the point it marks. (Drawn unwarped on top it
+  would be wrong twice: it would slide against the world, and it is drawn
+  among the opaque world draws with their depth, so moving it after them
+  changes what covers what. If some were screen-fixed instead, warping moves
+  them by at most half a frame's turn, a few pixels.) It ends up 1/1.1 of its size in the image and 1.1 times
+  that after the warp: its own size, as everything else.
+- **The full-target layer: warped with the world, kept over the whole
+  image.** It is blended over the world drawn so far and the particles are
+  drawn over it, so it can be neither moved on top (blend order) nor left
+  out. Its first texture is a 640x480 target drawn that frame and looked
+  up per pixel, so it belongs with the world: inside the guest's view the world image must show
+  at each pixel what the guest showed at the pixel it maps to. Shrinking it
+  with the overscan would do that but leave the band the overscan adds (the
+  only pixels a turn reveals) without the layer, a strip at the leading
+  edge on every turn. So it keeps covering the whole image and every other
+  input is moved to its value at the guest's pixel the image shows there
+  (`q = c + (p - c) / s`): the same texels inside, its own coordinates
+  carried on in the band (clamped or wrapped as its samplers say, like the
+  warp's own edge pixels). That is exact only when the program's outputs
+  are its inputs moved (no constant, no arithmetic) and the inputs are
+  affine over the quad's pixels with one `w`; both are checked
+  (`Fit::Extend`), otherwise it is shrunk (`Fit::Shrink`).
+- **Orthographic quads: held.** A fill and letterbox bars are fixed to the
+  screen, not to the world, and they sit among the world draws: warped they
+  would turn, moved on top they would change the blend order. They were in
+  2 frames of 5,161 (cinematic edges), so those frames stay at 30.
+- **Still held, as before:** a pass-through draw whose program also reads
+  its position elsewhere (a texture looked up from it would read another
+  texel once moved), whose position is not a float attribute at register 0
+  (nothing to rewrite), or that is scissored; pre-transformed and
+  fixed-function draws; unknown positions; off-centre perspectives.
+
+`InterpStats` counts the moved draws per world image: `screen_shrunk` and
+`screen_extended` (the exit line's `screen-space draws S shrunk E
+extended`). On the serve above a frame with the layer and about 144
+sprites would count 144 and 1.
+
+To verify live (rebuild `h2`, no image rebuild), the same serve: `h2
+agent render` should show `mismatch_screen` near 0 in gameplay (only the
+orthographic frames and anything new), `blended_frames` and `captures`
+rising with gameplay frames (minus `unpaired_gap`, high on a loaded
+machine), `replays` and `warps` rising, `screen_shrunk` about 144 times
+`screen_extended`, and `interp.holds.kinds` without the two pass-through
+programs. `H2_BOOT_GFX_BETWEEN=12` then writes in-between frames to look
+at: the layer should have no edge band, and the sprites should stay on
+what they mark.
+
 ### How it works
 
 - **The overlay.** Without a pass tag, the draws that go on top unwarped
@@ -1227,11 +1399,55 @@ with Halo 2's epilogue, `c[10]`/`c[11]`):
 - the held counters name the guard.
 
 `cargo test -p d3d --test interp_gpu` draws E1 through the XDK's own
-epilogue (`c-38`/`c-37`).
+epilogue (`c-38`/`c-37`), and on one plain `GfxBackend` as a headless run
+has it: the in-between frame goes to the replay hook (flags 0), never the
+present hook, and is the guest's picture within filtering with the camera
+still; a 100 ms gap is counted as `unpaired_gap` and makes nothing after
+it.
+
+`cargo test -p boot --test headless_interp` (GPU; skips without an
+adapter): with `H2_BOOT_GFX`, `impl.render.reproject` and `H2_FPS=60`,
+`install_headless` builds the interp and the agent's `render.stats`
+source reads it, every hold reason present, instead of `null`.
 
 `cargo test -p gfx --lib warp` validates the warp shader with naga.
 `cargo test -p boot --lib interpolation` checks the switches (off by
-default; reproject wins over interpolate, `_ahead` over plain).
+default; reproject wins over interpolate, `_ahead` over plain) and which
+host has a GPU backend for them (a window's render thread; headless,
+`H2_BOOT_GFX` and `H2_RENDER_THREAD`; the headless recorder none);
+`d3d_glue::tests::in_between_captures_stop_at_their_limit` the
+`H2_BOOT_GFX_BETWEEN` names and limit, and
+`in_between_captures_write_only_their_neighbours` that one in-between
+frame in 3,000 guest frames writes its two neighbours and no more (the
+live bug), and that N slots write at most N in-between and 2N guest
+frames.
+
+`cargo test -p d3d --test interp` `the_hold_log_names_every_draw_that_held_a_frame`
+and `the_hold_log_says_off_centre_and_after_the_overlay`: on a frame with
+a shadow pass first, a full-target pass-through quad and an orthographic
+quad among the level's draws, the log has both kinds (the quad first in
+both frames, the orthographic one in both), the quad's guest draw and
+pass numbers, its program id and disassembly, and a window covering the
+target; an off-centre perspective and a level draw after the weapon are
+named; a frame with no camera is not logged. `cargo test -p boot --test
+headless_interp` checks `interp.holds` is in `render.stats`.
+
+`cargo test -p d3d --test interp`
+`screen_space_sprites_and_layers_in_the_world_turn_with_it`: a level with a
+sprite, a full-target layer that only moves its inputs and one with a
+texture matrix blends; the guest's own draws are untouched, the world
+image's sprite and matrix layer are shrunk about the centre with their
+texture coordinates and depth kept, and the layer keeps its positions with
+texture coordinates those of the guest's pixel shown there (−0.05 at the
+corner); the counters say 2 shrunk, 1 extended.
+`screen_space_world_draws_e1_cannot_move_still_hold`: a scissored sprite, a
+layer that looks a texture up from its own position and an orthographic
+quad hold. `screen_space_draws_turn_with_the_world_through_the_interpreter`:
+a sprite placed on a world point's window position, moved, lands where the
+level's program puts that point with the overscan. `cargo test -p d3d --lib
+interp::screen_space`: which programs move only their position (pure or
+not; a position also read, swizzled, negated or through a constant is not)
+and the affine fit.
 
 ### Left
 
@@ -1244,8 +1460,10 @@ default; reproject wins over interpolate, `_ahead` over plain).
    pass boundary with a wider projection set by the guest, instead of a
    second world draw (that halves its cost), and 120 Hz (a warp per
    display frame is cheap).
-4. After the guards above, a live run's held split says what still keeps
-   gameplay at 30: `size_mismatch (... mapping M screen S overlay O)`
+4. Done for Halo 2 (see "Screen-space draws in the world"): its
+   pass-through sprites and full-target layer are moved with the world.
+   Before that, after the guards above, a live run's held split said what
+   still kept gameplay at 30: `size_mismatch (... mapping M screen S overlay O)`
    names the guard. The one gameplay capture we have (a converted Halo 1
    level, 307 draws into the shown surface) is now classified right (the
    camera at `c[0]`, centred, in 300 draws; the HUD's `Rows(177)` and

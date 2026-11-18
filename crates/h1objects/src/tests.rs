@@ -1105,6 +1105,19 @@ fn built_physics_model_round_trips_with_every_piece() {
         rbs.iter().map(|b| int(b, "node")).collect::<Vec<_>>(),
         [1, 2, 0]
     );
+    // The body words: flags in `+0x18`'s low half, the motion in its high
+    // half, `+0x1e` in `+0x1c`'s high half.
+    let words = |r: &tags::defs::Record| match (r.get("unknown_18"), r.get("unknown_1c")) {
+        (Some(Val::Bytes(a)), Some(Val::Bytes(b))) => (a.clone(), b.clone()),
+        other => panic!("{other:?}"),
+    };
+    assert!(rbs.iter().all(|b| words(b) == (vec![0, 0, 2, 0], vec![0, 0, 5, 0])));
+    let biped = physics_model(&bodies, &nodes, crate::rebuild::BIPED_BODY).unwrap();
+    let biped = defs::from_built(def, &biped).unwrap();
+    let Some(Val::Block(brbs)) = biped.at("rigid_bodies") else {
+        panic!()
+    };
+    assert!(brbs.iter().all(|b| words(b) == (vec![3, 0, 2, 0], vec![0, 0, 1, 0])));
     assert_eq!(got.at("mass"), Some(&Val::Float(160.0)));
     let polys = block("polyhedra");
     assert_eq!(polys.len(), 1 + 2 + 5);

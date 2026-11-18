@@ -77,13 +77,15 @@ The choice and recent servers are kept in localStorage.
 ## Two sides
 
 **The dashboard** (`/`, `/dash/:section`, `/dash/players/:tag`, `src/dash/`) is the "live" side:
-a glowing orb, a wireframe tunnel and an arc of menu bars, each opening a
-bezelled list panel (`dash/menu.ts`). Signed out the menu leads with sign
-in, create and recover, then live now, game history, find a game, players
+a glass orb, a wireframe tunnel and an arc of menu blades. The selected blade
+lights its connector. Recessed panels hold lists and details. Signed out the menu leads with sign
+in, create and recover, then live now, game history, games, find a game, players
 and settings (the ones that need an account show greyed with a hint).
-Signed in it is live now, find a game, friends, players, game history,
+Signed in it is live now, games, find a game, friends, players, game history,
 account (recovery code, authenticator, devices, sign out) and settings;
 profile and the server (`/dash/server`: service admin) sit under settings.
+Open **Games** (`/dash/games`) and select **Halo 2** to see recent games and,
+when signed in, your service record. **View stats** opens `/stats`.
 The Halo admin area (MOTD, playlists, custom content) is on the stats site
 at `/stats/admin` ([docs/live/live-admin.md](../docs/live/live-admin.md)).
 Keyboard: arrows move, Enter (or `a`) selects,
@@ -242,6 +244,10 @@ any picture whose key it has replaces the pack's (`src/lib/gameart.ts`):
   the colours from the manifest's `palette` when it has one;
   `<Emblem emblem={...}>` takes real values (`emblemFromIndices` turns
   profile colour indices into them).
+- **Stats banners** (`banner/home`, `banner/strip`): collages of in-game
+  views of the owner's maps, drawn by `bun run banner` (`banner/`: the shot
+  list, layout and grade in `plan.ts` and `page.ts`; docs/live/live-art.md
+  "Stats banners"). `Strip` shows them; without, the pack's header art.
 - **Ranks**: our experience ladder is spread over the game's levels
   (`levelForExp`, then `rank/<1..50>`).
 - **Map previews** (`map/<map>/preview`) replace the top-down thumbnail in

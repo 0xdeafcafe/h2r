@@ -703,6 +703,28 @@ mod tests {
     }
 
     #[test]
+    fn a_hopper_slot_carries_the_extension_block() {
+        let f = sample();
+        let mut m = load(&f);
+        let mut v = good_variant("Moon Pick");
+        let e = variants::ext::Ext {
+            gravity: 50,
+            unlimited_grenades: true,
+            ..Default::default()
+        };
+        v.set_ext(&e).unwrap();
+        set_variant(&mut m[1].records[2], &v).unwrap();
+        // The editable fields end before the block (the raw string,
+        // flags and second dword are at variant +0x00, +0x48, +0x58).
+        m[1].records[2].dwords[0] = 7;
+        let out = apply(&f, &m).unwrap();
+        let back = load(&out);
+        let got = entry_variant(&out, &back[1].records[2]).unwrap();
+        assert_eq!(got.ext(), e);
+        assert_eq!(got.ext_block(), v.ext_block());
+    }
+
+    #[test]
     fn entry_variant_decodes_the_source_or_the_pick() {
         let f = sample();
         let mut m = load(&f);

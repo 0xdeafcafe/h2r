@@ -30,7 +30,7 @@ use tags::{DecodedTag, TagData};
 
 /// Bumped when the output for a given disc would change (part of the cache
 /// key).
-pub const EXTRACTOR_VERSION: u32 = 18;
+pub const EXTRACTOR_VERSION: u32 = 19;
 /// The manifest's format, bumped only for changes a client cannot read
 /// (clients check it; added fields do not count).
 pub const MANIFEST_VERSION: u32 = 1;
@@ -963,6 +963,63 @@ fn font_art(disc: &Disc) -> Found {
     found
 }
 
+/// The executable's own pictures, as the original dashboard showed them:
+/// the title image (`$$XTIMAGE`, the game's tile in the Games and Memory
+/// screens) and the save image (`$$XSIMAGE`, the picture of a save that
+/// has none of its own). Each section is an `XPR0` texture (`assets::xpr`);
+/// the section names are the XDK's, not the game's.
+pub const TITLE_IMAGES: [(&str, &str); 2] = [
+    ("$$XTIMAGE", "title/image"),
+    ("$$XSIMAGE", "title/save-image"),
+];
+
+fn title_art(disc: &Disc) -> Found {
+    let mut found = Found::default();
+    let bytes = match disc.read("/default.xbe") {
+        Ok(b) => b,
+        Err(e) => {
+            for (_, key) in TITLE_IMAGES {
+                found.skip(key, format!("{e:#}"));
+            }
+            return found;
+        }
+    };
+    title_pieces(&bytes, &mut found);
+    found
+}
+
+/// [`TITLE_IMAGES`] from an executable's bytes.
+fn title_pieces(xbe_bytes: &[u8], found: &mut Found) {
+    let xbe = match xbe::Xbe::parse(xbe_bytes) {
+        Ok(x) => x,
+        Err(e) => {
+            for (_, key) in TITLE_IMAGES {
+                found.skip(key, format!("default.xbe: {e}"));
+            }
+            return;
+        }
+    };
+    for (section, key) in TITLE_IMAGES {
+        let Some(s) = xbe.section(section) else {
+            found.skip(key, format!("no {section} section"));
+            continue;
+        };
+        match xbe
+            .section_bytes(s)
+            .map_err(anyhow::Error::from)
+            .and_then(|b| assets::xpr::decode(b).map_err(anyhow::Error::from))
+        {
+            Ok(l) => found.pieces.push(Piece {
+                key: key.to_string(),
+                width: l.width,
+                height: l.height,
+                rgba: l.rgba,
+            }),
+            Err(e) => found.skip(key, format!("{section}: {e:#}")),
+        }
+    }
+}
+
 /// Decodes one tag's images (or its sprites, when it has any) under
 /// `key(i)`, recording failures as skipped.
 fn decode_tag(
@@ -1115,6 +1172,7 @@ pub fn extract(disc: &Disc, out: &Path) -> Result<Report> {
             s.spawn(|| category_art(disc, CacheType::Shared)),
             s.spawn(|| font_art(disc)),
             s.spawn(|| campaign_previews(disc)),
+            s.spawn(|| title_art(disc)),
         ];
         workers.extend(
             disc.maps_of(CacheType::Multiplayer)
@@ -1705,6 +1763,122 @@ mod tests {
         write_pieces(&pieces, &dir).unwrap();
         assert_eq!(fs::read(dir.join("medal/4.png")).unwrap(), first);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// An invented XPR0 of one `side`x`side` DXT1 texture, every block
+    /// colour 0 = `c565`.
+    fn xpr(log_side: u32, c565: u16) -> Vec<u8> {
+        let side = 1u32 << log_side;
+        let data = (side.div_ceil(4) * side.div_ceil(4) * 8) as usize;
+        let mut out = vec![0u8; 0x40 + data];
+        out[..4].copy_from_slice(b"XPR0");
+        let format = (log_side << 24) | (log_side << 20) | (1 << 16) | (0x0c << 8) | (2 << 4) | 1;
+        for (i, v) in [
+            (0x40 + data) as u32,
+            0x40,
+            0x0004_0001,
+            0,
+            0,
+            format,
+            0,
+            u32::MAX,
+        ]
+        .iter()
+        .enumerate()
+        {
+            out[4 + i * 4..8 + i * 4].copy_from_slice(&v.to_le_bytes());
+        }
+        for c in out[0x40..].chunks_mut(8) {
+            c[..2].copy_from_slice(&c565.to_le_bytes());
+        }
+        out
+    }
+
+    /// An invented executable: a code section and the two image sections.
+    fn xbe_with_images(title: &[u8], save: &[u8]) -> Vec<u8> {
+        let base = 0x10000u32;
+        let mut d = vec![0u8; 0x1000];
+        d[..4].copy_from_slice(b"XBEH");
+        let put = |d: &mut Vec<u8>, o: usize, v: u32| d[o..o + 4].copy_from_slice(&v.to_le_bytes());
+        for (o, v) in [
+            (0x104, base),
+            (0x108, 0x1000),
+            (0x118, base + 0x800),
+            (0x11c, 3),
+            (0x120, base + 0x200),
+            (0x128, 0x11000 ^ 0xa8fc57ab),
+        ] {
+            put(&mut d, o, v);
+        }
+        let sections = [
+            (".text", 0x06u32, vec![0xccu8; 0x10]),
+            ("$$XTIMAGE", 0, title.to_vec()),
+            ("$$XSIMAGE", 0, save.to_vec()),
+        ];
+        let mut va = 0x11000u32;
+        for (i, (name, flags, bytes)) in sections.iter().enumerate() {
+            let raw = d.len() as u32;
+            let h = 0x200 + i * 56;
+            let name_at = 0x400 + i * 16;
+            d[name_at..name_at + name.len()].copy_from_slice(name.as_bytes());
+            for (o, v) in [
+                (0, *flags),
+                (4, va),
+                (8, bytes.len() as u32),
+                (12, raw),
+                (16, bytes.len() as u32),
+                (20, base + name_at as u32),
+            ] {
+                put(&mut d, h + o, v);
+            }
+            d.extend_from_slice(bytes);
+            va += (bytes.len() as u32).next_multiple_of(0x1000);
+        }
+        d
+    }
+
+    #[test]
+    fn title_and_save_images_come_from_the_executable() {
+        let mut found = Found::default();
+        title_pieces(
+            &xbe_with_images(&xpr(7, 0xF800), &xpr(6, 0x001F)),
+            &mut found,
+        );
+        assert!(found.skipped.is_empty(), "{:?}", found.skipped);
+        let by: BTreeMap<_, _> = found.pieces.iter().map(|p| (p.key.as_str(), p)).collect();
+        let t = by["title/image"];
+        assert_eq!((t.width, t.height), (128, 128));
+        assert_eq!(&t.rgba[..4], &[255, 0, 0, 255]);
+        let s = by["title/save-image"];
+        assert_eq!((s.width, s.height), (64, 64));
+        assert_eq!(&s.rgba[..4], &[0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn a_missing_or_broken_image_section_is_skipped_not_fatal() {
+        let mut found = Found::default();
+        title_pieces(&xbe_with_images(&xpr(7, 0xF800), b"not an xpr"), &mut found);
+        assert_eq!(found.pieces.len(), 1);
+        assert!(found.skipped["title/save-image"].contains("$$XSIMAGE"));
+        let mut found = Found::default();
+        title_pieces(b"not an xbe", &mut found);
+        assert!(found.pieces.is_empty());
+        assert_eq!(found.skipped.len(), 2);
+    }
+
+    /// The disc's title and save images, written outside the repository
+    /// (`$H2_TITLE_CHECK`) for review.
+    #[test]
+    #[ignore = "needs the disc (H2_DISC) and H2_TITLE_CHECK"]
+    fn title_images_from_the_disc() {
+        let disc = Disc::scan(Path::new(&std::env::var("H2_DISC").expect("H2_DISC"))).unwrap();
+        let out = std::env::var("H2_TITLE_CHECK").expect("H2_TITLE_CHECK");
+        let found = title_art(&disc);
+        assert!(found.skipped.is_empty(), "{:?}", found.skipped);
+        write_pieces(&found.pieces, Path::new(&out)).unwrap();
+        for p in &found.pieces {
+            println!("{} {}x{}", p.key, p.width, p.height);
+        }
     }
 
     /// The campaign level-select pictures from the owner's disc, written

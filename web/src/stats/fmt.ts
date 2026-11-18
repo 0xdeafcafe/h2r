@@ -44,6 +44,11 @@ export function num(n: number): string {
   return n.toLocaleString("en-US");
 }
 
+/** "1 player", "3 players". */
+export function count(n: number, word: string, plural = word + "s"): string {
+  return `${num(n)} ${n === 1 ? word : plural}`;
+}
+
 export function ratio(kills: number, deaths: number): string {
   return deaths ? (kills / deaths).toFixed(2) : kills.toFixed(2);
 }

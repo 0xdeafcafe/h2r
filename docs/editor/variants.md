@@ -243,6 +243,14 @@ the game's own editor shows them too (`boot::variant_options`).
 modifier divides by zero in the game, so `record::refused` (the clean-up's
 rules plus ours) gates Studio's save, the hopper tool and portable import.
 
+Options the record has no field for (gravity first) live in our
+extension block in the spare bytes `+0x10c..+0x12f` (`variants::ext`;
+layout and CRC in docs/game/game-options.md section 3). All zero means
+none, so a retail record has none, and every copy of the record (saves,
+`.h2variant` files, hopper slots) carries it. Studio edits it in "More
+options (h2recomp)" (`VariantEditor::set_ext`); a block the game would
+ignore is reported as `Issue::Ext`.
+
 ## Open
 
 - The signing key on our runtime (above): one in-game save settles it.

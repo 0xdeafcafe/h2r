@@ -135,7 +135,7 @@ pub fn d3d_format(format: PixelFormat, linear: bool) -> Result<D3DFormat> {
     }
 }
 
-fn invalid(msg: impl Into<String>) -> Error {
+pub(crate) fn invalid(msg: impl Into<String>) -> Error {
     Error::Invalid(msg.into())
 }
 

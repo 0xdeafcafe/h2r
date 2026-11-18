@@ -11,6 +11,7 @@
     "preview": "vite preview",
     "test": "bun test",
     "bench:telemetry": "bun run bench/telemetry.bench.ts",
+    "banner": "bun run banner/run.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

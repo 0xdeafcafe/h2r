@@ -180,6 +180,12 @@ fn odd_frame() -> Frame {
                     .to_vec(),
                 ),
                 grenade: Some("plasma".into()),
+                vel: Some([-999.0, 0.015625, 12.5]),
+                fire: Some(u32::MAX),
+                body: Some(1.0 / 3.0),
+                shield: Some(4.0),
+                seat: Some(63),
+                actions_ago: Some(vec![900, 31, 30, 7, 2, 1, 0, 0]),
             },
         ],
         hits: vec![
@@ -190,6 +196,7 @@ fn odd_frame() -> Frame {
                 pos: [0.0, 0.0, 0.0],
                 amount: Some(2.5),
                 kind: Some("fall".into()),
+                ago: Some(900),
             },
             FrameHit {
                 from: Some("p01".into()),
@@ -198,6 +205,7 @@ fn odd_frame() -> Frame {
             },
         ],
         bsp: None,
+        cut: Some(123_456),
         objects: vec![
             FrameObject {
                 k: ObjectKind::Biped,
@@ -376,11 +384,12 @@ fn frame_sizes_stay_under_budget() {
         );
     }
     // Budgets: the live stream at most a tenth of JSON, keyframes at most a
-    // quarter.
-    assert!(mp.live < 260.0, "multiplayer live {}", mp.live);
-    assert!(mp.keyframe < 700.0, "multiplayer keyframe {}", mp.keyframe);
-    assert!(cp.live < 700.0, "campaign live {}", cp.live);
-    assert!(cp.keyframe < 2300.0, "campaign keyframe {}", cp.keyframe);
+    // quarter. Version 3's velocity, shield and fire ticks cost about a
+    // fifth more (226 to 282 B multiplayer live, 651 to 788 B campaign).
+    assert!(mp.live < 320.0, "multiplayer live {}", mp.live);
+    assert!(mp.keyframe < 760.0, "multiplayer keyframe {}", mp.keyframe);
+    assert!(cp.live < 850.0, "campaign live {}", cp.live);
+    assert!(cp.keyframe < 2500.0, "campaign keyframe {}", cp.keyframe);
     assert!(mp.live * 10.0 < mp.json && cp.live * 10.0 < cp.json);
 }
 
@@ -560,4 +569,106 @@ fn a_turret_keeps_its_parent_and_aim() {
         .unwrap();
     t.parent = Some(t.id.clone());
     assert!(validate_frame(&bad).is_err(), "its own parent");
+}
+
+/// Version 2 frames (recorded before version 3's unit, hit and cut fields)
+/// still decode: `v2-multiplayer` is the golden stream version 2's encoder
+/// wrote. A version 2 delta never applies to a version 3 frame.
+#[test]
+fn version_two_frames_still_decode() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/test/fixtures/pack");
+    let bin = std::fs::read(dir.join("v2-multiplayer.bin")).unwrap();
+    let want: Vec<Frame> =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("v2-multiplayer.json")).unwrap())
+            .unwrap();
+    let recs: Vec<&[u8]> = records(&bin).collect::<Result<_>>().unwrap();
+    assert_eq!(recs[0][0] & 0xf, 2, "a version 2 stream");
+    let mut d = Decoder::new();
+    let got: Vec<Frame> = recs.iter().map(|r| d.decode(r).unwrap().frame).collect();
+    assert_eq!(got, want);
+    assert!(
+        got.iter()
+            .all(|f| f.cut.is_none() && f.hits.iter().all(|h| h.ago.is_none()))
+    );
+    assert!(
+        got.iter()
+            .flat_map(|f| &f.players)
+            .all(|p| p.vel.is_none() && p.fire.is_none())
+    );
+    let mut e = Encoder::new(5, 100);
+    let mut d = Decoder::new();
+    d.decode(recs[0]).unwrap();
+    let frames = samples::multiplayer(2);
+    let _ = e.encode(&frames[0]).unwrap();
+    let (delta, key) = e.encode(&frames[1]).unwrap();
+    assert!(!key);
+    assert!(matches!(d.decode(&delta), Err(PackError::Gap { .. })));
+}
+
+#[test]
+fn version_three_fields_round_trip_quantised() {
+    let frame = odd_frame();
+    let back = decode_keyframe(&encode_keyframe(&frame).unwrap()).unwrap();
+    let p = &back.players[1];
+    assert_eq!(back.cut, Some(123_456));
+    assert_eq!(p.fire, Some(u32::MAX));
+    assert_eq!(p.seat, Some(63));
+    assert_eq!(
+        p.actions_ago.as_deref(),
+        Some(&[900, 31, 30, 7, 2, 1, 0, 0][..])
+    );
+    assert_eq!(
+        p.vel,
+        Some([-999.0, 0.015625, 12.5]),
+        "multiples of 1/64 are exact"
+    );
+    assert!((p.body.unwrap() - 1.0 / 3.0).abs() <= 0.5 / 63.0);
+    assert_eq!(p.shield, Some(4.0));
+    assert_eq!(back.hits[0].ago, Some(900));
+    assert_eq!(back.players[0].vel, None);
+    // Actions ticks without their actions can't be packed.
+    let mut bad = frame.clone();
+    bad.players[1].actions_ago = Some(vec![1]);
+    assert!(encode_keyframe(&bad).is_err());
+    assert!(validate_frame(&bad).is_err());
+}
+
+#[test]
+fn a_cut_is_on_its_own_frame_through_deltas() {
+    let mut frames = samples::campaign(4);
+    frames[2].cut = Some(42);
+    let mut e = Encoder::new(9, 100);
+    let mut d = Decoder::new();
+    let cuts: Vec<Option<u64>> = frames
+        .iter()
+        .map(|f| {
+            let (bytes, _) = e.encode(f).unwrap();
+            d.decode(&bytes).unwrap().frame.cut
+        })
+        .collect();
+    assert_eq!(cuts, [None, None, Some(42), None]);
+}
+
+#[test]
+fn version_three_values_are_checked() {
+    let base = || odd_frame();
+    let mut f = base();
+    f.players[1].body = Some(1.5);
+    assert!(validate_frame(&f).is_err());
+    let mut f = base();
+    f.players[1].shield = Some(-0.1);
+    assert!(validate_frame(&f).is_err());
+    let mut f = base();
+    f.players[1].seat = Some(64);
+    assert!(validate_frame(&f).is_err());
+    let mut f = base();
+    f.players[1].vel = Some([f64::NAN, 0.0, 0.0]);
+    assert!(validate_frame(&f).is_err());
+    let mut f = base();
+    f.hits[0].ago = Some(901);
+    assert!(validate_frame(&f).is_err());
+    let mut f = base();
+    f.players[1].actions_ago = Some(vec![0; 8].into_iter().chain([901]).skip(1).collect());
+    assert!(validate_frame(&f).is_err());
+    assert_eq!(validate_frame(&base()), Ok(()));
 }
