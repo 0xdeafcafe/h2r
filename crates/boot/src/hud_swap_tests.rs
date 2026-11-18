@@ -120,5 +120,15 @@ fn campaign_levels_read_their_hud_files() {
     let t = read_campaign_table(&dir);
     assert_eq!(t.len(), 1, "an empty file names nothing");
     assert_eq!(t["a10"], (false, swaps()));
+    // A Halo 2-assets map beside it (written by the import) is not read as
+    // a level of its own, and marks the level as having one.
+    assert!(campaign_halo2_levels(&dir).is_empty());
+    std::fs::create_dir_all(level.join("h2")).unwrap();
+    std::fs::write(level.join("h2").join("A10.map"), b"map").unwrap();
+    assert_eq!(read_campaign_table(&dir).len(), 1);
+    assert_eq!(
+        campaign_halo2_levels(&dir),
+        std::collections::HashSet::from(["a10".to_owned()])
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
