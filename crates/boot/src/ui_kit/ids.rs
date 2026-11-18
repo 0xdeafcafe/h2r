@@ -80,6 +80,7 @@ pub const FAMILIES: &[Family] = &[
     Family::new("ui model more", TABLE + 0x0700_0000, 0x100),
     Family::new("map select", TABLE + 0x0800_0000, 0x40),
     Family::new("campaign picker info", TABLE + 0x0900_0000, 0x40),
+    Family::new("ui lines", TABLE + 0x0a00_0000, 0x100),
 ];
 
 const fn same(a: &str, b: &str) -> bool {

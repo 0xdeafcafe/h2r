@@ -28,6 +28,18 @@
 //! constructor's hook (`layout_glue`, `0x1a480d`) asks [`array_count`].
 //! Past six rows the list scrolls through the Controls list's six item
 //! widgets.
+//!
+//! **In a game** the Controls tag (screen 39,
+//! `game_shell\settings_screen\player_profile\controller_settings`) is
+//! not loaded: it is in `mainmenu` only. A screen built on it there has no
+//! widgets, a blank screen (the pause menu's Video and Voice rows opened
+//! one). So while the UI's game kind ([`UI_GAME_KIND`]) is not the main
+//! menu, the loader runs the Controls constructor's own steps on screen
+//! 200's tag instead ([`construct_on`]): the in-game Controller Settings
+//! (`mp_menu\controller_settings`), in `shared`, `single_player_shared`
+//! and every level. Its list's items have one text each, so a class with
+//! [`ListClass::lines`] draws each row as one line, label and value
+//! ([`Rows::line`]), from text slots of its own.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -166,6 +178,12 @@ pub trait Rows: Send + Sync {
     fn describe(&self, _count: usize) -> Option<String> {
         None
     }
+    /// Row `row` as one line (label and value), for an in-game screen
+    /// whose items have one text ([`ListClass::lines`]); `None` draws
+    /// [`Rows::texts`].
+    fn line(&self, _row: i16) -> Option<String> {
+        None
+    }
 }
 
 /// See [`Rows::live_text`].
@@ -182,6 +200,144 @@ pub enum Button {
     Handled,
     /// Goes on as before (B and Back close, the rest reach the list).
     Pass,
+}
+
+/// The UI's game kind byte (`0x14954a` switches on it): 0 a campaign game,
+/// 1 a multiplayer game, [`MAIN_MENU_KIND`] the main menu.
+pub const UI_GAME_KIND: u32 = 0x0054_d5a8;
+pub const MAIN_MENU_KIND: u8 = 2;
+/// The screen whose tag a screen of ours is built on: the Controls screen
+/// in the main menu, the in-game Controller Settings in a game (module
+/// docs).
+pub const CONTROLS_SCREEN_ID: u32 = 39;
+pub const INGAME_SCREEN_ID: u32 = 200;
+/// The generic screen constructor (`0x230451`: screen in EAX, stack: the
+/// screen id, the request's two words, the player, the list handler;
+/// `ret 0x14`), and the Controls list's (`0x2c84b8`: list in ESI, the
+/// player; `ret 4`). The Controls constructor (`0x2b7752`) is these two
+/// with the screen vtable stored between.
+pub const GENERIC_SCREEN_CTOR: u32 = 0x0023_0451;
+pub const CONTROLS_LIST_CTOR: u32 = 0x002c_84b8;
+
+/// The screen id a screen of ours is built on, for the UI's game kind.
+pub fn base_screen_id(game_kind: u8) -> u32 {
+    if game_kind == MAIN_MENU_KIND {
+        CONTROLS_SCREEN_ID
+    } else {
+        INGAME_SCREEN_ID
+    }
+}
+
+/// Whether the UI is in a game (not the main menu): screens of ours are
+/// built on [`INGAME_SCREEN_ID`] there.
+pub fn ingame(m: &dyn GuestMemory) -> Result<bool, MemFault> {
+    Ok(m.u8(UI_GAME_KIND)? != MAIN_MENU_KIND)
+}
+
+/// The Controls constructor's steps (`0x2b7752`) on screen `id`'s tag:
+/// the generic screen constructor, the Controls screen vtable, the
+/// Controls list constructor. With `id` 39 it is the Controls
+/// constructor.
+pub async fn construct_on(
+    cx: &Cx,
+    screen: u32,
+    id: u32,
+    a: u32,
+    b: u32,
+    player: u32,
+) -> Result<(), EntryError> {
+    let list = screen.wrapping_add(ui::LIST);
+    cx.call(
+        GuestCall::new(GENERIC_SCREEN_CTOR)
+            .eax(screen)
+            .edi(screen)
+            .esi(list)
+            .args([id, a, b, player, list]),
+    )
+    .await?;
+    cx.write(|m| m.set_u32(screen, CONTROLS_SCREEN_VTABLE.base))?;
+    cx.call(
+        GuestCall::new(CONTROLS_LIST_CTOR)
+            .esi(list)
+            .edi(screen)
+            .args([player]),
+    )
+    .await?;
+    Ok(())
+}
+
+/// One line a row, for the in-game items' one text ([`ListClass::lines`]):
+/// ids of the `ui lines` family, [`LINES_PER_CLASS`] a class, two a row
+/// (a row's text changes id when it changes, so the widget sets it again),
+/// UTF-8 in [`LINE_LEN`]-byte slots of the class's own memory.
+const LINES: crate::ui_kit::ids::Family = crate::ui_kit::ids::family("ui lines");
+pub const LINES_PER_CLASS: u32 = 0x20;
+pub const LINE_LEN: u32 = 0x80;
+/// The classes with lines, in the order they took their ids.
+static LINE_CLASSES: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+
+/// Bytes to write at a guest address: a line's text and its NUL.
+pub type LineWrite = (u32, Vec<u8>);
+
+/// A class's line slots.
+pub struct Lines {
+    /// Its first id.
+    first: u32,
+    /// Its slots' guest memory (0 before build).
+    at: AtomicU32,
+    /// Each row's last text and which of its two ids shows it.
+    shown: Mutex<Vec<Option<(String, bool)>>>,
+}
+
+impl Lines {
+    /// The lines of class `id`; `None` once the family is used up.
+    pub fn of(id: &'static str) -> Option<Lines> {
+        let mut c = LINE_CLASSES.lock().unwrap_or_else(|e| e.into_inner());
+        let n = match c.iter().position(|x| *x == id) {
+            Some(n) => n,
+            None => {
+                c.push(id);
+                c.len() - 1
+            }
+        } as u32;
+        ((n + 1) * LINES_PER_CLASS <= LINES.len).then(|| Lines {
+            first: LINES.base + n * LINES_PER_CLASS,
+            at: AtomicU32::new(0),
+            shown: Mutex::new(Vec::new()),
+        })
+    }
+    /// Where id `id`'s text is, if it is one of the class's.
+    pub fn address(&self, id: u32) -> Option<u32> {
+        let at = self.at.load(Ordering::SeqCst);
+        (at != 0 && id >= self.first && id - self.first < LINES_PER_CLASS)
+            .then(|| at + (id - self.first) * LINE_LEN)
+    }
+    /// Row `row`'s line: the id to show and, when the text changed, the
+    /// bytes to write at that id's slot. `None` past the class's rows.
+    pub fn set(&self, row: i16, text: &str) -> Option<(u32, Option<LineWrite>)> {
+        let r = usize::try_from(row).ok().filter(|r| *r < (LINES_PER_CLASS / 2) as usize)?;
+        let mut shown = self.shown.lock().unwrap_or_else(|e| e.into_inner());
+        if shown.len() <= r {
+            shown.resize(r + 1, None);
+        }
+        let (flip, changed) = match &shown[r] {
+            Some((t, f)) if t == text => (*f, false),
+            Some((_, f)) => (!*f, true),
+            None => (false, true),
+        };
+        shown[r] = Some((text.to_string(), flip));
+        let id = self.first + 2 * r as u32 + u32::from(flip);
+        let write = changed.then(|| {
+            let mut cut = text.len().min(LINE_LEN as usize - 1);
+            while !text.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            let mut b = text.as_bytes()[..cut].to_vec();
+            b.push(0);
+            (self.address(id).unwrap_or(0), b)
+        });
+        Some((id, write))
+    }
 }
 
 /// A class's own handling of every event, given its kind word and button
@@ -686,6 +842,11 @@ impl Rows for ModelRows {
             .row(List::Screen(self.screen), row)
             .map_or(Chosen::Nothing, |r| self.model.press(r))
     }
+    fn line(&self, row: i16) -> Option<String> {
+        self.model
+            .row(List::Screen(self.screen), row)
+            .map(|r| self.model.line(r))
+    }
 }
 
 /// The loaders of the classes built so far, by screen id, so an `Open` row
@@ -764,6 +925,7 @@ pub struct ListClass {
     on_free: Option<OnFree>,
     footer: Option<u32>,
     action_buttons: &'static [u32],
+    lines: bool,
     loader: Arc<AtomicU32>,
 }
 
@@ -788,8 +950,15 @@ impl ListClass {
             on_free: None,
             footer: None,
             action_buttons: &ACTION_BUTTONS,
+            lines: false,
             loader: Arc::new(AtomicU32::new(0)),
         }
+    }
+    /// Opened in a game too (the pause menu's Video and Voice): there its
+    /// rows draw as one line each ([`Rows::line`], module docs).
+    pub fn lines(mut self) -> Self {
+        self.lines = true;
+        self
     }
     /// With a description text: the focused row's [`Rows::description`].
     pub fn description(mut self, block: TextBlock) -> Self {
@@ -1001,14 +1170,21 @@ pub async fn load(
             u32::from(m.u16(request + 2)?),
         ))
     })?;
+    // Unreadable (no game kind byte): the main menu's.
+    let base = cx.read(|m| m.u8(UI_GAME_KIND).map_or(CONTROLS_SCREEN_ID, base_screen_id));
     {
         let _building = Building::start(rows);
-        cx.call(
-            GuestCall::new(points::CONTROLS_SCREEN_CTOR.base)
-                .edi(screen)
-                .args([a, b, player]),
-        )
-        .await?;
+        if base == CONTROLS_SCREEN_ID {
+            cx.call(
+                GuestCall::new(points::CONTROLS_SCREEN_CTOR.base)
+                    .edi(screen)
+                    .args([a, b, player]),
+            )
+            .await?;
+        } else {
+            eprintln!("{name}: in a game: built on screen {base}'s tag");
+            construct_on(&cx, screen, base, a, b, player).await?;
+        }
     }
     match cx.write(|m| adopt(m, screen, &e, rows))? {
         Adopted::Ours { rows } => {
@@ -1127,6 +1303,7 @@ pub async fn row_text(
     cx: Cx,
     rows: Arc<dyn Rows>,
     shown: Option<Arc<Shown>>,
+    lines: Option<Arc<Lines>>,
 ) -> Result<Ret, EntryError> {
     let item = cx.arg(0)?;
     let live = rows.live_text();
@@ -1141,6 +1318,22 @@ pub async fn row_text(
     let row = cx.read(|m| item_row(m, item))?;
     // The rows read the settings store; no guest memory is held here.
     let texts = row.map(|r| rows.texts(r)).unwrap_or_default();
+    // In a game the items have one text: the row as one line.
+    let line = match (&lines, row) {
+        (Some(l), Some(r)) if cx.read(ingame).unwrap_or(false) => {
+            rows.line(r).and_then(|t| l.set(r, &t))
+        }
+        _ => None,
+    };
+    let texts = match line {
+        Some((id, write)) => {
+            if let Some((at, bytes)) = write.filter(|(at, _)| *at != 0) {
+                cx.write(|m| m.write(at, &bytes))?;
+            }
+            vec![(0, id)]
+        }
+        None => texts,
+    };
     cx.write(|m| rows.write_texts(m))?;
     draw_texts(&cx, item, texts).await?;
     if let Some(shown) = shown {
@@ -1504,12 +1697,23 @@ impl feature::Feature for ListClass {
                 Box::pin(load(cx, e, Arc::clone(&rows), name))
             })?
         };
+        let lines = match self.lines.then(|| Lines::of(self.id)).flatten() {
+            Some(l) => {
+                let l = Arc::new(l);
+                let at = b.guest_alloc(LINES_PER_CLASS * LINE_LEN, Permissions::RW)?;
+                l.at.store(at, Ordering::SeqCst);
+                let me = Arc::clone(&l);
+                b.locale().source("ui lines", move |id| me.address(id));
+                Some(l)
+            }
+            None => None,
+        };
         let row_text_at = {
             let (rows, shown) = (Arc::clone(&rows), shown.clone());
             let seen = Arc::new(AtomicBool::new(false));
             b.entry("row text", move |cx| -> EntryFuture {
                 once(&seen, &format!("{name}: row text"));
-                Box::pin(row_text(cx, Arc::clone(&rows), shown.clone()))
+                Box::pin(row_text(cx, Arc::clone(&rows), shown.clone(), lines.clone()))
             })?
         };
         let row_chosen_at = {
@@ -1896,6 +2100,152 @@ mod tests {
         assert_eq!(array_count(crate::speaker_row::LIST_NAME, 7), 7);
     }
 
+    /// The pause menu's Video and Voice opened blank in a game: the
+    /// Controls tag (screen 39) is in mainmenu only. In a game the loader
+    /// runs the Controls constructor's steps on screen 200's tag, the
+    /// in-game Controller Settings; in the main menu, the Controls
+    /// constructor as before.
+    #[test]
+    fn in_a_game_the_loader_builds_on_the_in_game_controller_settings() {
+        let _serial = LOADING.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(base_screen_id(MAIN_MENU_KIND), CONTROLS_SCREEN_ID);
+        assert_eq!(base_screen_id(0), INGAME_SCREEN_ID, "a campaign game");
+        assert_eq!(base_screen_id(1), INGAME_SCREEN_ID, "a multiplayer game");
+        for (kind, ingame_) in [(0u8, true), (MAIN_MENU_KIND, false)] {
+            let mut g = guest();
+            g.map(SCREEN, ui::CONTROLS_SCREEN_SIZE)
+                .map(ROWS - 0x20, 0x200)
+                .map(UI_GAME_KIND & !0xfff, 0x1000);
+            g.put_u8(UI_GAME_KIND, kind);
+            g.put_u16(REQUEST + 2, 0x4)
+                .put_u32(REQUEST + 4, 5)
+                .put_u32(REQUEST + 8, 4);
+            g.put_u32(STACK, 0xdead).put_u32(STACK + 4, REQUEST);
+            assert_eq!(ingame(&g), Ok(ingame_));
+            let e = entries();
+            let f = move |cx| -> EntryFuture { Box::pin(load(cx, e, video_rows(), "test")) };
+            let regs = Regs {
+                esp: STACK,
+                ..Default::default()
+            };
+            let run = testing::run(&f, g, regs, |c, m| {
+                if c.target == points::CONTROLS_SCREEN_CTOR.base || c.target == CONTROLS_LIST_CTOR {
+                    construct(m, 7);
+                }
+                Regs {
+                    eax: if c.target == points::UI_ALLOC.base { SCREEN } else { 0 },
+                    ..Default::default()
+                }
+            });
+            let list = SCREEN + ui::LIST;
+            let push = Gc::new(points::SCREEN_PUSH.base).edi(SCREEN).ebx(REQUEST);
+            if ingame_ {
+                assert_eq!(run.calls.len(), 4, "{:?}", run.calls);
+                assert_eq!(
+                    run.calls[1],
+                    Gc::new(GENERIC_SCREEN_CTOR)
+                        .eax(SCREEN)
+                        .edi(SCREEN)
+                        .esi(list)
+                        .args([INGAME_SCREEN_ID, 5, 4, 4, list])
+                );
+                assert_eq!(
+                    run.calls[2],
+                    Gc::new(CONTROLS_LIST_CTOR).esi(list).edi(SCREEN).args([4])
+                );
+                assert_eq!(run.calls[3], push);
+            } else {
+                let calls: Vec<u32> = run.calls.iter().map(|c| c.target).collect();
+                assert_eq!(
+                    calls,
+                    [points::UI_ALLOC.base, points::CONTROLS_SCREEN_CTOR.base, push.target]
+                );
+            }
+            assert_eq!(run.result, Ok(Ret::new(SCREEN, 4)));
+            // Adopted as ours either way.
+            assert_eq!(Screen::at(SCREEN).vtable(&run.guest), Ok(TABLES), "kind {kind}");
+        }
+    }
+
+    /// In a game a row is one line (the in-game items have one text):
+    /// label and value in a slot of the class's, its id set on text 0.
+    #[test]
+    fn in_a_game_a_row_draws_as_one_line() {
+        const ITEM: u32 = 0x0060_0000;
+        const LINES_AT: u32 = 0x0062_0000;
+        let m = model();
+        let lines = Arc::new(Lines::of("test-in-game-lines").unwrap());
+        lines.at.store(LINES_AT, Ordering::SeqCst);
+        let mut g = guest();
+        g.put_u32(STACK + 4, ITEM).put_u32(STACK + 8, 0);
+        g.map(ITEM, Item::SIZE)
+            .map(LINES_AT, LINES_PER_CLASS * LINE_LEN)
+            .map(UI_GAME_KIND & !0xfff, 0x1000);
+        g.put_u8(UI_GAME_KIND, 0);
+        Item::at(ITEM)
+            .set_row(&mut g, Some(DatumHandle::new(0x8001, 1)))
+            .unwrap();
+        let want = m.line(m.row(video_screen::LIST, 1).unwrap());
+        assert!(want.starts_with("Frame Rate: "), "{want}");
+        let f = {
+            let (m, lines) = (Arc::clone(&m), Arc::clone(&lines));
+            move |cx| -> EntryFuture {
+                Box::pin(row_text(
+                    cx,
+                    Arc::new(ModelRows {
+                        model: Arc::clone(&m),
+                        screen: video_screen::SCREEN,
+                    }),
+                    None,
+                    Some(Arc::clone(&lines)),
+                ))
+            }
+        };
+        let regs = Regs {
+            esp: STACK,
+            ..Default::default()
+        };
+        let run = testing::run(&f, g, regs, |c, _| Regs {
+            eax: if c.target == points::ITEM_TEXT.base { 0x7000 + c.args[1] } else { 0 },
+            ..Default::default()
+        });
+        assert_eq!(run.result, Ok(Ret::new(0, 8)));
+        let (id, _) = lines.set(1, &want).unwrap();
+        assert_eq!(
+            run.calls,
+            [
+                Gc::new(points::ITEM_TEXT.base).ecx(ITEM).args([6, 0, 0]),
+                Gc::new(points::TEXT_SET.base).edi(0x7000).esi(ITEM).args([id]),
+            ]
+        );
+        let at = lines.address(id).unwrap();
+        let mut bytes = vec![0u8; want.len() + 1];
+        run.guest.read(at, &mut bytes).unwrap();
+        assert_eq!(&bytes[..want.len()], want.as_bytes());
+        assert_eq!(bytes[want.len()], 0);
+    }
+
+    /// A row's line keeps its id while its text stays, and takes the
+    /// row's other id when it changes, so the text widget sets it again.
+    #[test]
+    fn a_line_changes_id_when_its_text_changes() {
+        let l = Lines::of("test-line-ids").unwrap();
+        l.at.store(0x1000_0000, Ordering::SeqCst);
+        let (a, w) = l.set(2, "Frame Rate: 30").unwrap();
+        assert_eq!(w, Some((l.address(a).unwrap(), b"Frame Rate: 30\0".to_vec())));
+        assert_eq!(l.set(2, "Frame Rate: 30").unwrap(), (a, None), "unchanged");
+        let (b, w) = l.set(2, "Frame Rate: 60").unwrap();
+        assert_ne!(a, b);
+        assert!(w.is_some());
+        let (c, _) = l.set(2, "Frame Rate: 30").unwrap();
+        assert_eq!(c, a, "two ids a row, in turn");
+        assert_ne!(l.set(3, "x").unwrap().0, a, "another row");
+        assert_eq!(l.set(LINES_PER_CLASS as i16 / 2, "past"), None);
+        assert_eq!(l.set(-1, "none"), None);
+        assert!(crate::ui_kit::ids::family("ui lines").owns(a));
+        assert_eq!(Lines::of("test-line-ids").unwrap().first, l.first, "the same class's ids");
+    }
+
     #[test]
     fn a_screen_of_fifteen_rows_gets_an_array_of_fifteen() {
         let _serial = LOADING.lock().unwrap_or_else(|e| e.into_inner());
@@ -1989,6 +2339,7 @@ mod tests {
                         model: Arc::clone(&m),
                         screen: video_screen::SCREEN,
                     }),
+                    None,
                     None,
                 ))
             }
@@ -2262,7 +2613,7 @@ mod tests {
             let f = {
                 let (s, shown) = (Arc::clone(&rows), Arc::clone(&shown));
                 move |cx| -> EntryFuture {
-                    Box::pin(row_text(cx, Arc::clone(&s), Some(Arc::clone(&shown))))
+                    Box::pin(row_text(cx, Arc::clone(&s), Some(Arc::clone(&shown)), None))
                 }
             };
             let regs = Regs {
@@ -2348,7 +2699,7 @@ mod tests {
             let f = {
                 let (s, shown) = (Arc::clone(&rows), Arc::clone(&shown));
                 move |cx| -> EntryFuture {
-                    Box::pin(row_text(cx, Arc::clone(&s), Some(Arc::clone(&shown))))
+                    Box::pin(row_text(cx, Arc::clone(&s), Some(Arc::clone(&shown)), None))
                 }
             };
             let regs = Regs {
@@ -2608,7 +2959,7 @@ mod tests {
         let f = {
             let shown = Arc::clone(&shown);
             move |cx| -> EntryFuture {
-                Box::pin(row_text(cx, Arc::new(Described), Some(Arc::clone(&shown))))
+                Box::pin(row_text(cx, Arc::new(Described), Some(Arc::clone(&shown)), None))
             }
         };
         let regs = Regs {
