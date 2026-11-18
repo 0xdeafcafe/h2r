@@ -1,8 +1,18 @@
-# Three directions for h2 Live
+# Refining the current Live dashboard
 
-**Use Orbital for the player dashboard and Switchboard for Server / Admin.** Orbital makes the menu itself memorable. Move focus from Friends to Messages and the monitor beside the orb changes from a presence list to an inbox. Switchboard spends that same space on player traffic and match history. Silverline is the strongest choice for a short menu opened from inside a game.
+**Keep the current dashboard.** Its rotating pod menu, tilted lists, and account satellites already express the console layout. The in-place study changes their lighting and surface finishes. Open the review on the local dev server and switch between **Original** and **Refined** at the bottom of the same screen. The selected item, data, and camera position carry across the switch. [Compare the current dashboard](http://localhost:5174/dash/concepts)
 
-## Compare the pages
+| Where to look | What to compare |
+| --- | --- |
+| Main menu | The existing orb has a cooler glass rim around its luminous yellow core. The active blade catches a narrow reflection and lights its own connector. |
+| Sign in | The tilted plate has a brushed bevel and two recessed sockets. The selection has a bright leading edge and the idle rows sit deeper in the panel. |
+| Settings and account | The same bevel surrounds the existing information plate. The labels, satellites and controller prompts retain their positions. |
+
+Run `cd web && bun run dev` from the worktree. Direct comparisons also work on individual screens, including [Sign in](http://localhost:5174/dash/signin?finish=refined) and [Settings](http://localhost:5174/dash/settings?finish=refined). These screens use the usual local development server and its data. The comparison travels with dashboard navigation. Opening the ordinary dashboard URL gives the standard view.
+
+The adjustments draw on the translucent skins in reference 25, the blade highlights in 20–21, and the recessed panels in 22–24. They reuse the current SVG and CSS, geometry, fonts and reduced-motion handling. Adoption would mean applying the reviewed finish rules to the existing components. The three earlier studies below remain available as references for individual details.
+
+## Earlier standalone studies
 
 From this worktree, run `cd web && bun run dev`. Open any of the following pages. The concept selector in the footer keeps the current screen when you switch designs.
 

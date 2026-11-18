@@ -11,7 +11,7 @@
 
 import { gameMapTitle } from "../state/maps";
 import { For, Match, Show, Switch, createEffect, createMemo, createSignal, on, onCleanup, onMount, untrack } from "solid-js";
-import { useNavigate, useParams } from "@solidjs/router";
+import { useNavigate, useParams, useSearchParams } from "@solidjs/router";
 import { live } from "../state/live";
 import { identity, download } from "../state/identity";
 import { liveGames, endedGames, standings, teamStandings, type GameState, type AccountState } from "../state/reducer";
@@ -54,6 +54,8 @@ import "../styles/dash-pages.css";
 import SocialScreen from "./Social";
 import SessionsScreen from "./Sessions";
 import "../styles/social.css";
+import { finishHref, readFinish } from "./concepts/finish";
+import "../styles/dash-finish.css";
 import { lockedHint, menuFor, type SectionId } from "./menu";
 
 type ScreenId = "menu" | "list" | "player" | "settings" | "signup" | "recovery" | "recover" | "server" | "social" | "sessions";
@@ -127,6 +129,9 @@ function safeDecode(s: string): string {
 export default function Dashboard() {
   const params = useParams<{ section?: string; tag?: string }>();
   const navigate = useNavigate();
+  const [query, setQuery] = useSearchParams();
+  const finish = () => readFinish(query.finish);
+  const dashHref = (href: string) => finishHref(href, finish());
 
   const section = createMemo((): SectionId | null => SECTION_IDS.find((s) => s === params.section) ?? null);
   const viewed = createMemo((): AccountState | null => {
@@ -172,10 +177,10 @@ export default function Dashboard() {
     setDir(d);
     // Off to the stats site: the veil carries it (and plays this screen out).
     if (sideOf(href) === "stats") { crossTo(href, { replace }); return; }
-    if (reducedMotion()) { navigate(href, { replace }); return; }
+    if (reducedMotion()) { navigate(dashHref(href), { replace }); return; }
     setLeaving(true);
     clearTimeout(timer);
-    timer = setTimeout(() => { navigate(href, { replace }); setLeaving(false); }, 190);
+    timer = setTimeout(() => { navigate(dashHref(href), { replace }); setLeaving(false); }, 190);
   }
   onCleanup(() => clearTimeout(timer));
   createEffect(() => { lastScreen = screen(); });
@@ -525,6 +530,7 @@ export default function Dashboard() {
       classList={{ "dx--leaving": going(), "dx--boot": boot, "dx--back": dir() === "back" || (cameFrom !== null && cameFrom !== "menu" && screen() === "menu" && !leaving()) }}
       data-screen={screen()}
       data-input={inputMode()}
+      data-finish={finish()}
     >
       <Tunnel aim={aim()} />
       <Tubes />
@@ -538,6 +544,15 @@ export default function Dashboard() {
         <a class="dx-chip dx-chip--link" href="/stats">stats site</a>
       </header>
 
+      <Show when={finish()}>
+        <div class="dx-finish-picker" role="group" aria-label="Compare dashboard finishes">
+          <For each={["original", "refined"] as const}>{mode =>
+            <button type="button" aria-pressed={finish() === mode}
+              onClick={() => setQuery({ finish: mode }, { replace: true, scroll: false })}
+              onKeyDown={e => { if (e.key === "Enter" || e.key === " ") e.stopPropagation(); }}>{mode}</button>
+          }</For>
+        </div>
+      </Show>
       <main class="dx-stage">
         <Switch>
           <Match when={screen() === "menu"}>
@@ -639,7 +654,7 @@ export default function Dashboard() {
             <div class="dx-screen dx-pods dx-pods--form dx-pages">
               <div class="dx-centre"><BigPod wire><Glyph name="key" /></BigPod></div>
               <Sats sats={sats()} sel={-1} onSel={() => {}} />
-              <SignUpPlate onRecovery={() => navigate("/dash/account")} />
+              <SignUpPlate onRecovery={() => navigate(dashHref("/dash/account"))} />
               <Prompts onA={select} onB={back} aLabel="create" />
             </div>
           </Match>

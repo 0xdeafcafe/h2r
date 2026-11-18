@@ -77,9 +77,9 @@ const OldPlayer = () => <Navigate href={`/stats/players/${useParams().tag}`} />;
 render(
   () => (
     <Router root={AppRoot}>
-      <Route path="/dash/concepts" component={() => <Navigate href="/dash/concepts/orbital" />} />
+      <Route path={["/dash/concepts", "/dash/concepts/refined"]} component={() => <Navigate href="/?finish=refined" />} />
       <Route path="/dash/concepts/:concept" matchFilters={{ concept: ["orbital", "silverline", "switchboard"] }} component={ConceptPage} />
-      <Route path="/dash/concepts/*invalid" component={() => <Navigate href="/dash/concepts/orbital" />} />
+      <Route path="/dash/concepts/*invalid" component={() => <Navigate href="/dash/concepts" />} />
       <Route path="/dash/teams" component={() => <Navigate href="/dash/clans" />} />
       <Route path="/dash/teams/:tag" component={() => <Navigate href={`/dash/clans/${useParams().tag}`} />} />
       <Route path={["/", "/dash/:section", "/dash/:section/:tag"]} component={Dashboard} />

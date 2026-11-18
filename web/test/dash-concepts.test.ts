@@ -20,3 +20,14 @@ test("presence and chart summaries match the fixtures and their sample times", (
   expect(sampleTime(traffic.length-1)).toBe("18:00");
   expect(players).toBe(42);
 });
+
+test("the finish follows dashboard navigation and leaves other destinations alone", async () => {
+  const { readFinish, finishHref } = await import("../src/dash/concepts/finish");
+  for (const finish of ["original", "refined"] as const) {
+    expect(readFinish(finish)).toBe(finish);
+    expect(finishHref("/", finish)).toBe("/?finish=" + finish);
+    expect(finishHref("/dash/signin?source=menu#account", finish)).toBe("/dash/signin?source=menu&finish=" + finish + "#account");
+    expect(finishHref("/stats", finish)).toBe("/stats");
+  }
+  expect(finishHref("/dash/signin", readFinish("unknown"))).toBe("/dash/signin");
+});
