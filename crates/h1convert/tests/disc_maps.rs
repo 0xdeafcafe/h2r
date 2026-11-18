@@ -319,7 +319,9 @@ fn check_shader_copy(
         .flat_map(|p| &p.implementations)
         .flat_map(|i| &i.vertex_constants)
         .filter(|c| (18..22).contains(&c.index))
-        .map(|c| [c.value[0], c.value[1]])
+        // A stage's tiling is a constant's first half, or (the micro
+        // detail of `tex_bump_detail_blend_detail`) its second.
+        .flat_map(|c| [[c.value[0], c.value[1]], [c.value[2], c.value[3]]])
         .collect();
     if c.layout.stem.contains("\\opaque\\tex_bump") {
         for &(_, _, scale, _) in &c.maps {
@@ -958,7 +960,21 @@ fn every_multiplayer_map_converts_and_keeps_the_bases_bitmaps() {
             .into_iter()
             .filter(|g| g.0 != converted_lightmap)
             .filter(|g| !p.textures.bitmaps.iter().any(|(n, _)| *n == g.0))
+            .filter(|g| {
+                !p.skies
+                    .skies
+                    .iter()
+                    .any(|s| s.bitmaps.iter().any(|b| b.1 == g.0))
+            })
             .collect();
+        if got.len() != want.len() {
+            let extra: std::collections::BTreeSet<&str> = got
+                .iter()
+                .filter(|g| !want.iter().any(|w| w.0 == g.0))
+                .map(|g| g.0.as_str())
+                .collect();
+            eprintln!("    extra images' bitmaps: {extra:?}");
+        }
         assert_eq!(got.len(), want.len(), "{name}: image count");
         let differ: Vec<_> = got
             .iter()
