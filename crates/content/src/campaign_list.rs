@@ -217,6 +217,42 @@ impl CampaignManifest {
     }
 }
 
+impl CampaignManifest {
+    /// The built-in manifest of the same campaign ([`HALO1`] for `halo1`),
+    /// when there is one.
+    pub fn builtin(key: &str) -> Option<CampaignManifest> {
+        (key == "halo1").then(|| CampaignManifest::parse(HALO1).ok())?
+    }
+
+    /// Descriptions this manifest lacks, from `from` (the campaign's, and
+    /// each level's by map name). A manifest written before the
+    /// descriptions existed (the import keeps the one it finds) shows them
+    /// without being rewritten. A description of its own is kept. Returns
+    /// how many were filled.
+    pub fn fill_from(&mut self, from: &CampaignManifest) -> usize {
+        let mut n = 0;
+        if self.campaign.description.is_none() && from.campaign.description.is_some() {
+            self.campaign.description = from.campaign.description.clone();
+            n += 1;
+        }
+        for l in &mut self.levels {
+            if l.description.is_some() {
+                continue;
+            }
+            if let Some(d) = from
+                .levels
+                .iter()
+                .find(|f| f.map == l.map)
+                .and_then(|f| f.description.clone())
+            {
+                l.description = Some(d);
+                n += 1;
+            }
+        }
+        n
+    }
+}
+
 impl LevelInfo {
     /// The scenario path its records hold: its own, else
     /// `scenarios\solo\<map>\<map>`. 1.0 loads the map from the basename.
@@ -228,54 +264,70 @@ impl LevelInfo {
 }
 
 /// The Halo 1 campaign (`h2 import halo1` writes the levels' maps beside
-/// it): the ten levels in play order, with their names. No picture: until
-/// the import makes them, each shows its free slot's own.
+/// it): the ten levels in play order, with their names and a line each for
+/// the level select's description, as Halo 2's levels have. The lines are
+/// our own, written for this project, not the game's text. No picture:
+/// until the import makes them, each shows its free slot's own.
+///
+/// A manifest the import wrote before the descriptions existed lacks them;
+/// [`CampaignManifest::fill_from`] gives it these at boot.
 pub const HALO1: &str = r#"format = 1
 
 [campaign]
 key = "halo1"
 name = "Halo: Combat Evolved"
+description = "An ancient ring, and the secret it was built to keep."
 order = 10
 
 [[level]]
 map = "a10"
 name = "The Pillar of Autumn"
+description = "The ship is lost. Reach the lifeboats before the boarders reach you."
 
 [[level]]
 map = "a30"
 name = "Halo"
+description = "A world that curves up into the sky, and survivors scattered across it."
 
 [[level]]
 map = "a50"
 name = "The Truth and Reconciliation"
+description = "The captain is a prisoner on their flagship. Nobody is left behind."
 
 [[level]]
 map = "b30"
 name = "The Silent Cartographer"
+description = "Somewhere under this island lies a map to the ring's heart."
 
 [[level]]
 map = "b40"
 name = "Assault on the Control Room"
+description = "Bridges, canyons and an army between you and the center of it all."
 
 [[level]]
 map = "c10"
 name = "343 Guilty Spark"
+description = "A wrecked dropship in the swamp, and no word from its crew."
 
 [[level]]
 map = "c20"
 name = "The Library"
+description = "The key waits at the end of endless halls. Something hungry fills them."
 
 [[level]]
 map = "c40"
 name = "Two Betrayals"
+description = "Everyone wants the ring now. Make sure nobody gets it."
 
 [[level]]
 map = "d20"
 name = "Keyes"
+description = "One last rescue, deep in a ship gone rotten."
 
 [[level]]
 map = "d40"
 name = "The Maw"
+description = "Light the engines, then outrun the fire you started."
 "#;
 
 /// A campaign made of retail Halo 2 levels, so the picker and the second

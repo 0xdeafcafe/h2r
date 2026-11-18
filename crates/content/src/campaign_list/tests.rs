@@ -29,6 +29,51 @@ fn the_halo1_manifest_lists_its_ten_levels_in_order() {
     CampaignManifest::parse(FIXTURE).unwrap();
 }
 
+/// Every Halo 1 level has a description, as Halo 2's levels do, and it
+/// reaches the level-select record at `+0x250` in all nine languages, cut
+/// to nothing: each fits the field's 127 units with its terminator.
+#[test]
+fn every_halo1_level_s_description_is_in_its_record() {
+    let (c, m) = retail();
+    let b = &build(&[halo1()], &c, &m).unwrap()[0];
+    assert!(halo1().campaign.description.is_some());
+    for (l, info) in b.levels.iter().zip(halo1().levels) {
+        let want = info.description.expect("a description");
+        assert!(!want.trim().is_empty() && want.chars().count() < DESCRIPTION_UNITS, "{want}");
+        let r = ui_level_record(b.campaign_id, l, [0, 0]);
+        for lang in 0..9 {
+            let at = UI_LEVEL_DESCRIPTIONS + lang * DESCRIPTION_UNITS * 2;
+            assert_eq!(utf16_from(&r[at..at + DESCRIPTION_UNITS * 2]), want, "{} {lang}", l.map);
+        }
+        // The name is where it was.
+        assert_eq!(read_ui_level(&r).unwrap().3, info.name);
+    }
+    let r = ui_campaign_record(b);
+    assert_eq!(
+        utf16_from(&r[UI_CAMPAIGN_DESCRIPTIONS..UI_CAMPAIGN_DESCRIPTIONS + DESCRIPTION_UNITS * 2]),
+        halo1().campaign.description.unwrap()
+    );
+}
+
+/// A manifest an older import wrote has no descriptions: the built-in
+/// ones fill it, and one the user wrote is kept.
+#[test]
+fn an_older_halo1_manifest_takes_the_built_in_descriptions() {
+    let mut old = halo1();
+    old.campaign.description = None;
+    for l in &mut old.levels {
+        l.description = None;
+    }
+    old.levels[1].description = Some("Mine.".into());
+    let builtin = CampaignManifest::builtin("halo1").unwrap();
+    assert_eq!(old.fill_from(&builtin), 10);
+    assert_eq!(old.levels[1].description.as_deref(), Some("Mine."));
+    assert_eq!(old.levels[0].description, halo1().levels[0].description);
+    assert_eq!(old.campaign.description, halo1().campaign.description);
+    assert_eq!(old.fill_from(&builtin), 0, "nothing left to fill");
+    assert!(CampaignManifest::builtin("test").is_none());
+}
+
 #[test]
 fn ids_come_after_retail_and_rise_in_play_order() {
     let (c, m) = retail();
@@ -176,12 +221,13 @@ fn records_read_back_field_for_field() {
             "The Truth and Reconciliation".into()
         ))
     );
-    // Every language holds the name; the descriptions are empty.
+    // Every language holds the name and the description.
+    let want = halo1().levels[2].description.clone().unwrap();
     for i in 0..9 {
         let at = UI_LEVEL_NAMES + i * 64;
         assert_eq!(utf16_from(&u[at..at + 64]), "The Truth and Reconciliation");
         let at = UI_LEVEL_DESCRIPTIONS + i * 256;
-        assert_eq!(utf16_from(&u[at..at + 256]), "");
+        assert_eq!(utf16_from(&u[at..at + 256]), want);
     }
     let k = ui_campaign_record(&b);
     assert_eq!(k.len(), UI_CAMPAIGN_LEN);
