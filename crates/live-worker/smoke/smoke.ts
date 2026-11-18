@@ -9,8 +9,11 @@
 //   2. GET /v1/snapshot, anonymous;
 //   3. sign up two accounts;
 //   4. sign in: a token-signed read of /v1/snapshot that shows the new account;
-//   5. append an event (a friend request) and read it back from the log;
-//   6. warm timings: /v1/snapshot ten times.
+//   5. append an event (a friend request) and read it back from the log,
+//      while a /v1/stream socket subscribed before it receives it live;
+//   6. the stream: replay from a position, a token-authed socket, a bad
+//      token closed with 4401, and a plain GET refused;
+//   7. warm timings: /v1/snapshot ten times.
 // It prints one JSON object and exits non-zero if a step fails.
 //
 // --seed N: then grows the log by 2N events (friend requests, declined),
@@ -89,6 +92,67 @@ const seen = (JSON.parse(mine.body).accounts?.items ?? []).some((x: { xuid: stri
 if (!seen) fail("sign-in", "the new account is not in the snapshot");
 out.sign_in = { ms: mine.ms, cache_control: mine.r.headers.get("cache-control") };
 
+// A /v1/stream socket: its messages as they come, and how it closed.
+type Msg = { kind: string; position?: number; event?: { position: number; type: string } };
+function subscribe(query: string) {
+  const ws = new WebSocket(`${base.replace(/^http/, "ws")}/v1/stream${query}`);
+  const got: Msg[] = [];
+  const waiters: (() => void)[] = [];
+  let closed: { code: number; reason: string } | null = null;
+  const poke = () => waiters.splice(0).forEach((w) => w());
+  ws.onmessage = (m) => {
+    if (typeof m.data === "string") got.push(JSON.parse(m.data));
+    poke();
+  };
+  ws.onclose = (c) => {
+    closed = { code: c.code, reason: c.reason };
+    poke();
+  };
+  const opened = new Promise<void>((ok, no) => {
+    ws.onopen = () => ok();
+    ws.onerror = (e) => no(e);
+  });
+  // The first message that `pred` accepts, within `ms`.
+  const until = async (pred: (m: Msg) => boolean, ms = 5000) => {
+    const end = Date.now() + ms;
+    for (;;) {
+      const m = got.find(pred);
+      if (m) return m;
+      if (closed) throw new Error(`closed ${closed.code} ${closed.reason}`);
+      const left = end - Date.now();
+      if (left <= 0) throw new Error(`timed out; got ${JSON.stringify(got)}`);
+      await new Promise<void>((ok) => {
+        waiters.push(ok);
+        setTimeout(ok, left);
+      });
+    }
+  };
+  const close = async (ms = 5000) => {
+    if (!closed) {
+      const end = Date.now() + ms;
+      while (!closed && Date.now() < end)
+        await new Promise<void>((ok) => {
+          waiters.push(ok);
+          setTimeout(ok, end - Date.now());
+        });
+    }
+    return closed;
+  };
+  return { ws, got, opened, until, close };
+}
+
+// The live socket, let in and caught up before the append.
+const t5s = performance.now();
+const live = subscribe("");
+let caughtUp: Msg | undefined;
+try {
+  await live.opened;
+  caughtUp = await live.until((m) => m.kind === "caught_up");
+} catch (e) {
+  fail("stream-subscribe", e);
+}
+const subscribeMs = +(performance.now() - t5s).toFixed(1);
+
 // 5. Append an event, and find it in the log.
 const t5 = performance.now();
 let position: number | null = null;
@@ -103,8 +167,59 @@ const log = await (await fetch(`${api}/events?stream=account-${a!.xuid}&limit=10
 const found = (log.items ?? []).some((e: { type: string; position: number }) => e.type === "FriendRequested" && e.position === position);
 if (!found) fail("append", `position ${position} is not in the stream`);
 out.append = { ms: +(performance.now() - t5).toFixed(1), position };
+try {
+  await live.until((m) => m.kind === "event" && m.event?.position === position);
+} catch (e) {
+  fail("stream-receive", e);
+}
+out.stream = {
+  subscribe_ms: subscribeMs,
+  caught_up_at: caughtUp!.position,
+  // From the append's start until the socket had the event.
+  receive_ms: +(performance.now() - t5).toFixed(1),
+};
+live.ws.close();
 
-// 6. Warm.
+// 6. Replay from just before the event: it, then caught_up.
+const t6 = performance.now();
+const replay = subscribe(`?from=${position! - 1}&stream=account-${a!.xuid}`);
+try {
+  await replay.opened;
+  const done = await replay.until((m) => m.kind === "caught_up");
+  const events = replay.got.filter((m) => m.kind === "event").map((m) => m.event!.position);
+  if (events.length !== 1 || events[0] !== position) throw new Error(`replayed ${JSON.stringify(events)}`);
+  if (replay.got.indexOf(done) !== 1) throw new Error("caught_up came before the replay");
+} catch (e) {
+  fail("stream-replay", e);
+}
+(out.stream as Record<string, unknown>).replay_ms = +(performance.now() - t6).toFixed(1);
+replay.ws.close();
+
+// A reader that signs in first (?auth=1), and one with a bad token.
+const authed = subscribe("?auth=1");
+try {
+  await authed.opened;
+  // A fresh token: each one is good for a single use.
+  authed.ws.send(JSON.stringify({ kind: "auth", token: await issueToken(a!, aud, "read") }));
+  await authed.until((m) => m.kind === "caught_up");
+} catch (e) {
+  fail("stream-auth", e);
+}
+authed.ws.close();
+const bad = subscribe("?auth=1");
+try {
+  await bad.opened;
+  bad.ws.send(JSON.stringify({ kind: "auth", token: "not-a-token" }));
+  const c = await bad.close();
+  if (c?.code !== 4401) throw new Error(`closed with ${JSON.stringify(c)}`);
+} catch (e) {
+  fail("stream-bad-token", e);
+}
+const plain = await fetch(api + "/stream");
+if (plain.status !== 400) fail("stream-plain-get", `${plain.status} ${await plain.text()}`);
+(out.stream as Record<string, unknown>).auth = "ok";
+
+// 7. Warm.
 await warmTimes();
 
 if (seed > 0) {

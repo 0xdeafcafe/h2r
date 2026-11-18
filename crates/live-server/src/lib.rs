@@ -63,6 +63,7 @@ pub mod standalone;
 pub mod stats;
 pub mod status;
 pub mod store;
+pub mod stream;
 mod teams;
 pub mod title_headers;
 

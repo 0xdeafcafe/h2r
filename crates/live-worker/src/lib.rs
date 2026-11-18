@@ -19,6 +19,8 @@ mod dosql;
 mod entry;
 #[cfg(target_arch = "wasm32")]
 mod r2;
+#[cfg(target_arch = "wasm32")]
+mod sockets;
 
 /// The Worker's bindings (wrangler.toml). Its variables and secrets are in
 /// [`settings`].
