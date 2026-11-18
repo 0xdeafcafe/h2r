@@ -433,9 +433,10 @@ stream sends only the ones that changed.
 
 Frames travel bit-packed: game to server (`/v1/ingest`, binary messages),
 server to readers (`/v1/stream?frames=packed`), recorded frames at rest
-(`GameFrame.data.packed`) and the replay fetch
-(`/v1/games/{id}/frames?format=packed`). JSON stays for the public read
-API (`?format=json`, the default, decoded on the server) and for events.
+(frame chunks, [live-api.md](live-api.md#frame-chunks); before them
+`GameFrame.data.packed`) and the replay fetch (`/v1/games/{id}/chunks`,
+and `/frames` for older games). JSON stays for JSON stream readers and for
+events; the JSON frames read is gone.
 `crates/live-proto/src/pack.rs` writes and reads it;
 `web/src/api/pack.ts` reads it; the golden vectors in
 `web/test/fixtures/pack` (written by the Rust tests from invented frames,

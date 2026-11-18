@@ -354,6 +354,59 @@ tick, and each stream's offset), so a reader seeks within a chunk without
 decoding what comes before the keyframe it needs. Keyframes stay every
 10 s, and the 10 s spacing is a constant to tune against the size target.
 
+### Chunks as built (first cut, 2026-11-18)
+
+Built: the chunk container, recording, the index and the reads
+([live-api.md](live-api.md#frame-chunks)), with the codec slot for the
+work above. What differs from the plan:
+
+- **The index is the log.** Each chunk's `FrameChunk` event is its index
+  entry (window, frames, size, hash, packed versions, players present,
+  cuts, hits and shots); `GET /v1/games/{id}/chunks` reads them in one
+  store query. One keyframe heads each chunk, so no in-chunk index.
+- **Codec 1 is raw deflate over the packed records, opaque to the frame
+  version** (other lanes are changing the frame: version 5's fields, a
+  cinematic marker). The browser inflates it with `DecompressionStream`.
+  Steps 1 to 4 above need the codec to know the fields, so they are a
+  codec 2, written against the frame version once it settles. The header's
+  codec byte lets old and new chunks sit side by side.
+- **Each chunk's first frame lists every machine** (as recorded frames
+  did), so a reader that starts at any chunk has every door.
+- **`GameFrame` recording stopped** for new frames and the JSON `/frames`
+  read is gone; the packed `/frames` read stays for older games. The
+  viewer reads the chunks and falls back to `/frames` when a game has none.
+
+Measured and expected sizes:
+
+| | multiplayer, 16 players | campaign, 60 actors | bench scene (100 actors, 64 vehicles, 200 objects) |
+|---|---|---|---|
+| packed, per frame (deltas; `pack_tests`) | about 300 B | about 900 B | 1690 B (measured) |
+| chunk raw, a minute at 15 Hz | about 260 KB | about 800 KB | 1.56 MB (measured) |
+| stored (deflate) | about 0.85–0.9× raw: 220–240 KB | 700–750 KB | 0.93× (measured) |
+| target | 100 KB | 120 KB | |
+| today: `GameFrame` log events a minute (1 Hz) | about 190 KB | about 550 KB | |
+
+The first two columns are estimates from `pack_tests`' per-frame sizes;
+`cargo test -p live-proto --release chunk::tests::chunk_sizes_per_minute
+-- --nocapture` prints the real numbers, per deflate level. Deflate gains
+little on bit-packed records (0.93× on the bench scene), so chunks store
+about what the 1 Hz log did, at fifteen times the time resolution, and
+miss the targets by two to six times. Meeting them is codec 2.
+
+Decoding a ten second chunk in the browser (`bun run bench:telemetry`,
+`chunk` row, the bench scene): 39 ms median on a loaded machine, 150
+frames at the frame decoder's 70 us each plus about 1 ms to inflate.
+Against the 2 ms target, the frame decoder, not the inflate, is the cost.
+Codec 2's columns and prediction make the per-frame work a table lookup
+per value, which is what that target assumes.
+
+Query latency, expected: the index is one store read by stream and type
+(DO SQLite on the Worker, SQLite natively; well under a millisecond plus
+the request), a chunk read is one R2 or file get (R2 tens of ms cold;
+anonymous reads are immutable, so the CDN keeps them after the first).
+A seek is the two in series; a whole replay is the index then the chunks,
+six at a time.
+
 ### Interpolation and extrapolation in the viewer
 
 - **Replays** sample the chunk track at the clock's fractional tick, with
@@ -505,7 +558,10 @@ Each step is test-first and runs in both homes.
 5. **Server:** `FrameChunk` recording to the `BlobStore`, read through the
    API with the same visibility check as `/frames` (decided), the chunk
    list endpoint, the compressed chunk codec and its benches, and the
-   parity case. Then retire `GameFrame` recording for new games, and
+   parity case. **First cut done** ([Chunks as built](#chunks-as-built-first-cut-2026-11-18)):
+   recording, the index, the reads, codec 1 (deflate), `GameFrame`
+   recording and JSON `/frames` retired, the viewer on chunks. Left: codec
+   2 (steps 1–4 of Compression) and the parity case. Then retire `GameFrame` recording for new games, and
    **remove the public JSON `/frames` read** (decided: the viewer is its
    only user). The packed `/frames` read stays for older games.
 6. **Viewer:** the chunk reader, Hermite sampling, one-shots on their tick,
