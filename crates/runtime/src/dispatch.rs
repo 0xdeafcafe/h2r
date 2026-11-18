@@ -23,6 +23,11 @@ pub struct Override {
     pub name: String,
     handler: Handler,
     pub enabled: bool,
+    /// The handler acts only on the context it runs on (its registers,
+    /// stack and the memory that context sees) and returns without a Rust
+    /// continuation, so a second executor may run it as it is
+    /// ([`Dispatch::mark_context_only`]).
+    pub context_only: bool,
 }
 
 /// See [`Dispatch::set_stop_recovery`].
@@ -134,8 +139,28 @@ impl Dispatch {
                 name,
                 handler,
                 enabled: true,
+                context_only: false,
             },
         )
+    }
+
+    /// Marks the override at `addr` as acting only on the context it runs
+    /// on: a [second executor](crate::executor) keeps it whatever its
+    /// `allow` says. False when nothing overrides `addr`. Registering a new
+    /// override at `addr` clears the mark.
+    pub fn mark_context_only(&mut self, addr: u32) -> bool {
+        match self.overrides.get_mut(&addr) {
+            Some(o) => {
+                o.context_only = true;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Whether the override at `addr` is [marked](Self::mark_context_only).
+    pub fn is_context_only(&self, addr: u32) -> bool {
+        self.overrides.get(&addr).is_some_and(|o| o.context_only)
     }
 
     /// Restore a previously displaced override, returning the one it replaces.
@@ -247,8 +272,9 @@ impl Dispatch {
     }
     /// A copy for a second executor ([`crate::executor`]): the generated
     /// handlers, resumes and stop recovery hook as they are, and each
-    /// override, enabled or not, kept where `keep(addr, name)` says so and
-    /// otherwise replaced by `refuse(addr, name)` (enabled).
+    /// override, enabled or not, kept where it is
+    /// [context-only](Self::mark_context_only) or `keep(addr, name)` says so,
+    /// and otherwise replaced by `refuse(addr, name)` (enabled).
     pub(crate) fn fork(
         &self,
         keep: impl Fn(u32, &str) -> bool,
@@ -258,13 +284,14 @@ impl Dispatch {
             .overrides
             .iter()
             .map(|(&addr, o)| {
-                let o = if keep(addr, &o.name) {
+                let o = if o.context_only || keep(addr, &o.name) {
                     o.clone()
                 } else {
                     Override {
                         name: o.name.clone(),
                         handler: refuse(addr, &o.name),
                         enabled: true,
+                        context_only: false,
                     }
                 };
                 (addr, o)

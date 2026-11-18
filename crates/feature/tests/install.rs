@@ -465,3 +465,68 @@ fn render_timing_feeds_the_frame_stats() {
     call(&rt, MAIN, 0);
     assert_eq!(phase::thread_ns(Phase::Render), None);
 }
+
+/// A chain made only of context-only hooks, with nothing after the body,
+/// runs on a second executor (the pipelined render thread) whatever its
+/// `allow` says; an unmarked hook, or anything after the body, keeps the
+/// chain refused there, so the render falls back rather than run it.
+#[test]
+fn only_context_only_chains_run_on_a_second_executor() {
+    use runtime::executor::{ExecutorError, SecondExecutor};
+    // (what, mark the before, add an after, mark the after, runs there)
+    let cases = [
+        ("marked before", true, false, false, true),
+        ("unmarked before", false, false, false, false),
+        ("marked before and after", true, true, true, false),
+        ("marked before, unmarked after", true, true, false, false),
+    ];
+    for (what, mark, after, mark_after, runs) in cases {
+        let rt = runtime();
+        let mut r = Registry::new(Switches::defaults());
+        r.add(&from_fn("test", move |b| {
+            let h = b.raw().before(&points::GAME_TICK, "bump", |c| {
+                c.cpu.ebx += 1;
+                Ok(Flow::Continue)
+            });
+            if mark {
+                h.context_only();
+            }
+            if after {
+                let h = b.raw().after(&points::GAME_TICK, "bump after", |c| {
+                    c.cpu.ebx += 1;
+                    Ok(())
+                });
+                if mark_after {
+                    h.context_only();
+                }
+            }
+            Ok(())
+        }))
+        .unwrap();
+        r.build(&at(&points::GAME_TICK))
+            .unwrap()
+            .install(&rt)
+            .unwrap();
+        let mut marked = false;
+        rt.edit_dispatch(|d| marked = d.is_context_only(LEAF));
+        assert_eq!(marked, runs, "{what}: the override's mark");
+        let mut exec = SecondExecutor::new(&rt, |_, _| false);
+        exec.snapshot(&rt);
+        let mut cpu = CpuAbi {
+            esp: STACK,
+            ..Default::default()
+        };
+        match exec.call(&mut cpu, LEAF, &[]) {
+            Ok(_) => {
+                assert!(runs, "{what}: ran on the second executor");
+                assert_eq!((cpu.eax, cpu.ebx), (41, 1), "{what}");
+            }
+            Err(ExecutorError::Refused(r)) => {
+                assert!(!runs, "{what}: refused");
+                assert_eq!(r.target, LEAF, "{what}");
+                assert!(r.name.starts_with("plan:GAME_TICK"), "{what}: {}", r.name);
+            }
+            Err(e) => panic!("{what}: {e}"),
+        }
+    }
+}

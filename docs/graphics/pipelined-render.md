@@ -984,9 +984,58 @@ is left out of that flush (a fallback copies it whole from the view).
 lookup `0x001a0180` on the render thread, where `community:strings` (and
 `community:descriptions` at `0x0019fd00`) were refused: after a cinematic
 every pipelined frame fell back there. Both act only on the context they
-run on (registers, stack, the caller's buffer, the original), so they are
-allowed by address and name (`community_variants::RENDER_THREAD_SAFE`,
-`d3d_glue::pipeline_allow`).
+run on (registers, stack, the caller's buffer, the original), so they run
+there now.
+
+**Render-safe hooks.** After that, `plan:LOCALE_FIND[engine-leaves]` was
+the steady-state fallback: one or two a second after the cinematic, each
+followed by `after_fallback` serial frames. Rather than allowing one hook
+per run, an override can now be marked context-only
+(`Dispatch::mark_context_only`): it acts only on the context it runs on
+(its registers, guest stack and the memory that context sees, plus host
+state it only reads) and returns without a Rust continuation. The
+executor's fork keeps every marked override, whatever `allow` says, and a
+new override at the same address clears the mark. Plan hooks say it on
+declaration (`HookRef::context_only`). The plan marks a chain when every
+hook in it says so and nothing runs after the body (`Chain::render_thread`):
+an `after` or `observe_after` hook means the body is called through the
+shadow with a Rust continuation, which a fallback cannot resume.
+
+Marked now:
+
+- `engine-leaves`: every adapter, including `LOCALE_FIND` and
+  `LOCALE_EXISTS`. They are functions of the registers and the guest
+  memory they are given. `LOCALE_FIND` also asks the plan's string
+  sources, which answer with addresses from state set at boot (or, for
+  co-op's lobby line, state the game thread sets and the render only
+  reads).
+- The `locale` bridge's `before` on `LOCALE_FIND`, when engine-leaves is
+  off.
+- `skulls-mp`'s Blind hooks on `HUD_SHOWN` and `FIRST_PERSON_RENDER`. They
+  read the skull set fixed at the game's start and answer through
+  registers and stack.
+- `community:strings` and `community:descriptions`. These are direct
+  overrides that mark themselves; the old address-and-name list is gone.
+
+Everything else is in `boot::render_thread::REFUSED`, with its reason:
+
+- `render-timing`, `render-loop` and `render-census` are off by default.
+  Timing writes the game thread's frame table and needs after
+  continuations. The render-loop ports park in Rust continuations around
+  their guest calls. Pipelining is off while the census is on.
+- On `RENDER_FRAME`, the pipeline's own implementation and map-slots'
+  observer run on the game thread.
+- Game-thread points have after parts: health, precision, level-boot,
+  aim-assist, skulls (tick, stock), skulls-mp (start, Famine), the custom
+  skulls, touch glue and the Controls row text. Skulls' `OPTIONS_QUEUE`
+  writes the settings store.
+
+A boot test builds the plan from every feature boot adds, with every hook
+switch on. It fails on a hook that is neither context-only nor listed, and
+on a listed entry that nothing places any more. Direct overrides outside
+the plan (layouts, d3d, kernel wrappers) are not covered: the render thread
+keeps only the D3D entries, their shadows, the port I/O stubs and marked
+overrides, so any other override it reaches is still a fallback.
 
 **What the sim reads (determinism against serial).**
 

@@ -74,21 +74,29 @@ impl Feature for EngineLeaves {
             if std::ptr::eq(*point, &points::LOCALE_FIND) {
                 // The Rust lookup asks our string sources first.
                 let sources = b.locale().serve();
-                b.raw().implement(point, o.name, move |cpu, ctx, _| {
-                    let mut guest = ctx.memory();
-                    if let Some(a) = sources.find(cpu.edi) {
-                        cpu.eax = a;
-                        return guest.ret(cpu, 0);
-                    }
-                    engine::runtime_glue::invoke(o, cpu, &mut guest)
-                });
+                b.raw()
+                    .implement(point, o.name, move |cpu, ctx, _| {
+                        let mut guest = ctx.memory();
+                        if let Some(a) = sources.find(cpu.edi) {
+                            cpu.eax = a;
+                            return guest.ret(cpu, 0);
+                        }
+                        engine::runtime_glue::invoke(o, cpu, &mut guest)
+                    })
+                    .context_only();
                 continue;
             }
-            b.raw().implement(point, o.name, move |cpu, ctx, _| {
-                let mut guest = ctx.memory();
-                engine::runtime_glue::invoke(o, cpu, &mut guest)
-            });
+            b.raw()
+                .implement(point, o.name, move |cpu, ctx, _| {
+                    let mut guest = ctx.memory();
+                    engine::runtime_glue::invoke(o, cpu, &mut guest)
+                })
+                .context_only();
         }
+        // Every adapter is a function of its registers and the memory of
+        // the context it runs on (the string sources answer from state
+        // fixed at boot, or read only), so each runs on the pipelined
+        // render thread too.
         // Pure functions of guest memory; the string sources are fixed at
         // boot.
         b.snapshot(crate::SnapshotPolicy::Stateless);

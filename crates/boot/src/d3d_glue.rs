@@ -907,18 +907,17 @@ pub fn pipeline_render(i: Option<&Installed>) -> feature::pipeline_render::Pipel
     feature::pipeline_render::PipelineRender::new().with_d3d(entries, allow, &[WATCH_OWNER])
 }
 
-/// The overrides the pipelined render thread may run: the D3D entries and
-/// their shadows, the port I/O stubs, and the render-safe hooks of other
-/// features (by address and name, so a different hook placed there later
-/// is refused).
+/// The overrides the pipelined render thread may run besides those marked
+/// context-only (`Dispatch::mark_context_only`; other features' render-safe
+/// hooks, docs/graphics/pipelined-render.md): the D3D entries and their
+/// shadows, and the port I/O stubs.
 pub fn pipeline_allow(entries: &[u32]) -> impl Fn(u32, &str) -> bool + Send + Sync + 'static {
     let allowed: std::collections::BTreeSet<u32> =
         entries.iter().copied().chain(d3d::abi::PORT_IO.iter().map(|p| p.0)).collect();
     let shadows = [BARRIER_SHADOW, D3D_SHADOW];
-    move |addr, name| {
+    move |addr, _| {
         allowed.contains(&addr)
             || shadows.iter().any(|&s| (s..s + 0x1000).contains(&addr))
-            || crate::community_variants::RENDER_THREAD_SAFE.contains(&(addr, name))
     }
 }
 

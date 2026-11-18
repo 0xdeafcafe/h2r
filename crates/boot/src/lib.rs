@@ -31,6 +31,7 @@ pub mod fov_row;
 pub mod game_glue;
 pub mod health;
 pub mod precision;
+pub mod render_thread;
 pub mod host_perf;
 pub mod sampling;
 pub mod icons;

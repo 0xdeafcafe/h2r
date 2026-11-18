@@ -251,6 +251,12 @@ pub struct Hook {
     pub optional: bool,
     /// What the hook is for, in the plan text and the "active" line.
     pub label: &'static str,
+    /// The hook acts only on the context it runs on: the registers, the
+    /// guest stack and the memory that context sees, plus host state it
+    /// only reads. A chain made only of such hooks, with nothing after the
+    /// body, may run on the pipelined render thread
+    /// ([`HookRef::context_only`], [`Chain::render_thread`](crate::plan::Chain::render_thread)).
+    pub context_only: bool,
 }
 
 impl Hook {
@@ -278,6 +284,18 @@ impl HookRef<'_> {
     }
     pub fn optional(self) -> Self {
         self.0.optional = true;
+        self
+    }
+    /// Says the hook acts only on the context it runs on: it reads and
+    /// writes the registers, the guest stack and memory through its
+    /// `Call`/`Obs` (or `ExecCtx`), never live RAM through the runtime,
+    /// never host state it shares with the game thread except to read it,
+    /// and returns without a Rust continuation (no guest call it waits
+    /// on). The pipelined render runs such a chain on its own thread
+    /// against its view instead of falling back
+    /// (docs/graphics/pipelined-render.md).
+    pub fn context_only(self) -> Self {
+        self.0.context_only = true;
         self
     }
 }
@@ -507,6 +525,7 @@ impl<'r> Builder<'r> {
             after_features: Vec::new(),
             optional: false,
             label,
+            context_only: false,
         });
         HookRef(self.hooks.last_mut().expect("just pushed"))
     }

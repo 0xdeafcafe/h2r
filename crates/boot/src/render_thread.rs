@@ -1,0 +1,180 @@
+//! Which of boot's feature hooks the pipelined render thread runs, and why
+//! the rest stay on the game thread (docs/graphics/pipelined-render.md,
+//! "Render-safe hooks").
+//!
+//! A chain runs on the render thread when every hook in it is marked
+//! [`context_only`](feature::HookRef::context_only) and nothing runs after
+//! the body ([`feature::plan::Chain::render_thread`]). The plan marks the
+//! chain's override (`Dispatch::mark_context_only`) and the executor's fork
+//! keeps it. Every other hook is listed in [`REFUSED`] with the reason it
+//! stays off. The test builds the plan from every feature boot adds and
+//! fails on a hook that is in neither, so a new hook cannot quietly turn
+//! into a fallback.
+
+/// Why a hook stays on the game thread when its chain has an "after" part:
+/// the chain calls the body through its shadow with a Rust continuation,
+/// which a fallback cannot resume.
+const AFTER: &str = "something runs after the body (a Rust continuation a fallback cannot resume)";
+
+/// The hooks that are not context-only, as `(feature, point, why)`. `"*"`
+/// stands for every point of a feature. A hook on a game-thread point costs
+/// nothing here, because the render never meets it.
+pub const REFUSED: &[(&str, &str, &str)] = &[
+    // The render path's own points.
+    (
+        "render-timing",
+        "*",
+        "off by default; times the front-end against the frame stats the game thread owns, \
+         and its timed points need the after continuation",
+    ),
+    (
+        "render-loop",
+        "*",
+        "off by default; the Rust ports park in Rust continuations around their guest calls",
+    ),
+    (
+        "render-census",
+        "*",
+        "off by default, and pipelining is off with it (it watches the render on the game thread)",
+    ),
+    // render_frame_and_present itself: the game thread runs it, and the
+    // pipeline's implementation is what hands the rest to the render thread.
+    (
+        "pipeline-render",
+        "RENDER_FRAME",
+        "the launch point: runs on the game thread",
+    ),
+    (
+        "map-slots",
+        "RENDER_FRAME",
+        "after render_frame_and_present, on the game thread",
+    ),
+    // Game-thread points: the simulation, the UI and the level start.
+    ("h1-health", "OBJECT_DAMAGE_UPDATE", AFTER),
+    ("h1-health", "BODY_RESTORE", AFTER),
+    ("h1-health", "GAME_ACTIVATE", AFTER),
+    ("h1-precision", "GAME_ACTIVATE", AFTER),
+    ("level-boot", "GAME_ACTIVATE", AFTER),
+    ("aim-assist", "GAME_ACTIVATE", AFTER),
+    ("aim-assist", "PLAYER_CONTROL_UPDATE", AFTER),
+    ("aim-assist", "AIM_ASSIST_PARAMS", AFTER),
+    ("skulls-mp", "GAME_ACTIVATE", AFTER),
+    ("skulls-mp", "WEAPON_FROM_PLACEMENT", AFTER),
+    ("skulls", "GAME_TICK", AFTER),
+    ("skulls", "SKULL_STOCK", AFTER),
+    (
+        "skulls",
+        "OPTIONS_QUEUE",
+        "writes the skull selection to the settings store (host state the game thread shares)",
+    ),
+    ("skulls-custom", "GAME_TICK", AFTER),
+    ("touch-glue", "GAME_TICK", AFTER),
+    ("layouts-value", "CONTROLS_ROW_TEXT", AFTER),
+    ("controls-text", "CONTROLS_ROW_TEXT", AFTER),
+];
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::REFUSED;
+
+    /// Every switch that adds hooks, on.
+    const ALL_ON: &str = "impl.engine=on,impl.render=on,render-timing,render-loop,occlusion";
+
+    /// Every feature boot adds that a test can make, with `switches`.
+    fn registry(switches: &str) -> feature::Registry {
+        let rt = runtime::Runtime::new(runtime::Guest::new(), runtime::Dispatch::default());
+        let store = Some(Arc::new(settings::Store::defaults(
+            crate::setting_defs::ALL,
+        )));
+        let mut r = feature::Registry::new(feature::Switches::parse(switches).unwrap());
+        crate::level_boot::install(&rt, &mut r, None, true).unwrap();
+        r.add(&crate::controls_text::ControlsText).unwrap();
+        r.add(&crate::layout_glue::StringsFeature).unwrap();
+        r.add(&crate::layout_glue::LayoutValueText).unwrap();
+        crate::touch_glue::install(&mut r).unwrap();
+        r.add(&crate::map_slots::MapSlots {
+            vfs: Arc::new(std::sync::Mutex::new(vfs::Vfs::new())),
+        })
+        .unwrap();
+        crate::skulls::install(&mut r, store.clone()).unwrap();
+        crate::skulls_mp::install(&mut r, store.clone(), None, None).unwrap();
+        crate::skulls_custom::install(&mut r, store.clone(), None, None).unwrap();
+        crate::health::install(&mut r).unwrap();
+        crate::precision::install(&mut r, std::path::Path::new("")).unwrap();
+        crate::aim_assist::install(&mut r, store).unwrap();
+        r.add(&feature::leaves::EngineLeaves).unwrap();
+        r.add(&feature::render_timing::RenderTiming::new()).unwrap();
+        r.add(&feature::render_census::RenderCensus::new()).unwrap();
+        r.add(&feature::pipeline_render::PipelineRender::with(
+            true,
+            feature::pipeline_render::Addrs::HALO2,
+        ))
+        .unwrap();
+        r.add(&feature::render_loop::RenderLoop).unwrap();
+        r.add(&feature::occlusion::OcclusionCull).unwrap();
+        r
+    }
+
+    fn refused(feature: &str, point: &str) -> Option<usize> {
+        REFUSED
+            .iter()
+            .position(|&(f, p, _)| f == feature && (p == "*" || p == point))
+    }
+
+    /// Every hook boot's features place, with every switch that adds one
+    /// on (the census in a second build, since pipelining is off with it),
+    /// either runs on the pipelined render thread or is listed in
+    /// [`REFUSED`] with its reason, and every listed entry is still used.
+    /// The ones the render path meets in a default run (the locale lookups,
+    /// Blind) are context-only.
+    #[test]
+    fn every_feature_hook_runs_on_the_render_thread_or_says_why_not() {
+        let mut unlisted = Vec::new();
+        let mut used = vec![false; REFUSED.len()];
+        let mut safe = Vec::new();
+        for switches in [ALL_ON.to_owned(), format!("{ALL_ON},render-census")] {
+            let plan = registry(&switches).build(&feature::Base).unwrap();
+            for c in plan.chains.values() {
+                match c.render_thread() {
+                    Ok(()) => safe.push(c.point.name),
+                    Err(hooks) => {
+                        for (h, why) in hooks {
+                            match refused(h.feature, c.point.name) {
+                                Some(i) => used[i] = true,
+                                None => unlisted.push(format!(
+                                    "{} {} {}:{} ({why})",
+                                    c.point.name,
+                                    h.kind().as_str(),
+                                    h.feature,
+                                    h.label
+                                )),
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            unlisted.is_empty(),
+            "hooks the pipelined render would fall back on; mark them context_only or list them in REFUSED:\n{}",
+            unlisted.join("\n")
+        );
+        let stale: Vec<_> = REFUSED
+            .iter()
+            .zip(&used)
+            .filter(|(_, u)| !**u)
+            .map(|(r, _)| r)
+            .collect();
+        assert!(stale.is_empty(), "listed but not placed: {stale:?}");
+        for p in [
+            "LOCALE_FIND",
+            "LOCALE_EXISTS",
+            "HUD_SHOWN",
+            "FIRST_PERSON_RENDER",
+        ] {
+            assert!(safe.contains(&p), "{p} runs on the render thread");
+        }
+    }
+}
