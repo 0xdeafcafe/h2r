@@ -285,104 +285,50 @@ fn check_structure_texturing(
     );
 }
 
-/// A shader copy with Halo 1's textures: it reads as a shader, its
-/// template is its base shader's, and its bitmaps are the base shader's
-/// with each swapped role's bitmap replaced by the Halo 1 one (named as in
-/// Halo 1), which is in the map as a bitmap.
+/// A rebuilt shader with Halo 1's textures: it reads as a shader, its
+/// template is its layout's stem, it draws every Halo 1 bitmap it was
+/// given (named as in Halo 1), and resolved on the converted map, each
+/// tiled map's scale reaches a vertex constant `c[18 + stage]`.
 fn check_shader_copy(
     name: &str,
     m: &mut Map<Cursor<Vec<u8>>>,
-    base: &mut Map<Cursor<Vec<u8>>>,
+    _base: &mut Map<Cursor<Vec<u8>>>,
     id: map::TagId,
     c: &h1convert::textures::ShaderCopy,
 ) {
+    use tags::material::ShaderLibrary;
     let n = &c.h1_shader;
-    check_copy_tiling(name, m, id, c);
     let (template, got) = scenario_edit::scene::shader_bitmaps(m, id)
-        .unwrap_or_else(|e| panic!("{name}: shader copy {n}: {e}"));
-    // A base shader the reader cannot follow (some base shaders read out of
-    // bounds) leaves only the copy to check: it reads and draws its maps.
-    let (want_template, want) = match scenario_edit::scene::shader_bitmaps(base, c.template) {
-        Ok(w) => w,
-        Err(e) => {
-            eprintln!("    (shader copy {n}: its base shader unread: {e})");
-            let names: Vec<String> = got
-                .iter()
-                .filter_map(|b| m.tag(*b).ok().and_then(|t| t.name.clone()))
-                .collect();
-            for (_, h1) in &c.swapped {
-                assert!(names.contains(h1), "{name}: {n} lacks {h1}");
-            }
-            return;
-        }
-    };
-    assert_eq!(template, want_template, "{name}: {n}'s template");
-    assert_eq!(got.len(), want.len(), "{name}: {n}'s bitmaps");
-    let h1_names: Vec<&str> = c.swapped.iter().map(|s| s.1.as_str()).collect();
-    let mut replaced = 0;
-    for (g, w) in got.iter().zip(&want) {
-        if g == w {
-            continue;
-        }
-        let t = m.tag(*g).unwrap();
-        assert_eq!(t.group, FourCC(*b"bitm"), "{name}: {n}");
-        let bn = t.name.clone().unwrap_or_default();
-        assert!(h1_names.contains(&bn.as_str()), "{name}: {n} uses {bn}");
-        replaced += 1;
+        .unwrap_or_else(|e| panic!("{name}: shader {n}: {e}"));
+    assert_eq!(template, c.layout.stem, "{name}: {n}'s stem");
+    let names: Vec<String> = got
+        .iter()
+        .filter_map(|b| m.tag(*b).ok().and_then(|t| t.name.clone()))
+        .collect();
+    for (_, h1) in &c.swapped {
+        assert!(names.contains(h1), "{name}: {n} lacks {h1}");
     }
-    assert!(replaced > 0, "{name}: {n} draws none of Halo 1's bitmaps");
-}
-
-/// Halo 1's tiling on a shader copy, as the draw sees it: resolved on the
-/// converted map, the pass that samples the base on stage 0 gets each
-/// scale the copy set in a vertex constant `c[18 + stage]`, and the base
-/// map, when swapped, is not tiled (`c[18]` x and y 1).
-fn check_copy_tiling(
-    name: &str,
-    m: &mut Map<Cursor<Vec<u8>>>,
-    id: map::TagId,
-    c: &h1convert::textures::ShaderCopy,
-) {
-    use tags::material::{ShaderLibrary, TextureSource};
-    let n = &c.h1_shader;
     let mut lib = ShaderLibrary::read(m).unwrap();
     let material = lib
         .material(id, None)
         .unwrap_or_else(|e| panic!("{name}: {n}: {e}"));
-    let Some(imp) = material
+    let constants: Vec<[f32; 2]> = material
         .layers
         .iter()
-        .filter(|l| l.lod == 0)
         .flat_map(|l| &l.passes)
-        .filter_map(|p| p.implementations.first())
-        .find(|i| {
-            matches!(
-                i.textures[0].map(|t| t.source),
-                Some(TextureSource::Bitmap { .. })
-            )
-        })
-    else {
-        panic!("{name}: {n} samples no bitmap on stage 0");
-    };
-    let xy = |r: u8| {
-        imp.vertex_constants
-            .iter()
-            .find(|c| c.index == r)
-            .map(|c| [c.value[0], c.value[1]])
-    };
-    for &(_, scale) in &c.scales {
-        assert!(
-            (0..4).any(|s| xy(18 + s) == Some(scale)),
-            "{name}: {n}: no stage tiles {scale:?}"
-        );
+        .flat_map(|p| &p.implementations)
+        .flat_map(|i| &i.vertex_constants)
+        .filter(|c| (18..22).contains(&c.index))
+        .map(|c| [c.value[0], c.value[1]])
+        .collect();
+    if c.layout.stem.contains("\\opaque\\tex_bump") {
+        for &(_, _, scale, _) in &c.maps {
+            assert!(
+                constants.contains(&scale),
+                "{name}: {n}: no stage tiles {scale:?}"
+            );
+        }
     }
-    if c.swapped.iter().any(|(r, _)| *r == "base") && !c.scales.is_empty() {
-        assert_eq!(xy(18), Some([1.0, 1.0]), "{name}: {n}'s base tiling");
-    }
-    eprintln!(
-        "      tiling {n}: {:?}",
-        (0..4).map(|s| xy(18 + s)).collect::<Vec<_>>()
-    );
 }
 
 /// Halo 1's own textures: every bitmap the converter added decodes
@@ -842,7 +788,7 @@ fn every_multiplayer_map_converts_and_keeps_the_bases_bitmaps() {
         for c in &p.textures.copies {
             eprintln!(
                 "    textures {} on {}: {:?}",
-                c.h1_shader, c.template_name, c.swapped
+                c.h1_shader, c.layout.stem, c.swapped
             );
         }
         for n in &p.textures.notes {

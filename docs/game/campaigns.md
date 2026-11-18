@@ -77,7 +77,7 @@ Pieces:
 | `scnr` scenario | `scnr` | placements, spawn points, trigger volumes, cutscene flags and cameras |
 | `sbsp` structure BSP | `sbsp` + `ltmp` | collision BSP is close to Halo 2's shape. Render geometry becomes cluster sections. Halo 1 lightmap pages become Halo 2 lightmap bitmaps |
 | pathfinding | `sbsp` pathfinding data | Halo 1 maps don't contain the sectors, links and refs that Halo 2's AI needs, so we generate them from the collision BSP |
-| `shdr` family (`senv`, `soso`, `schi`, `scex`, `swat`, `sgla`, `smet`, `spla`) | `shad` on existing `stem` templates | each Halo 1 shader type maps to the closest Halo 2 template in the shared maps, with its parameters. The look will be close, not exact |
+| `shdr` family (`senv`, `soso`, `schi`, `scex`, `swat`, `sgla`, `smet`, `spla`) | `shad` written from its definition on a retail `stem` | each Halo 1 shader type (and flags: alpha-tested `senv`, additive `schi`/`sotr`) picks a stem in `shared.map` (sky layers: the sky stems where the base has them) and `h1convert::shad` fills its parameters from Halo 1's maps and tiling; no Halo 2 `shad` bytes are copied. Proof: `h1convert/tests/shad_rebuild.rs`. Not converted yet: animation (scrolling clouds, water), tints, reflection cube maps. The look will be close, not exact |
 | `bitm` | `bitm` | the same Xbox formats and layouts: pixels copy unchanged (**Built**, [h1-bitmaps.md](../formats/h1-bitmaps.md)) |
 | `mod2` + `coll` + `phys` | `mode` + `coll` + `phmo` under an `hlmt` | physics uses Halo 2's (decision 1) |
 | `antr` | `jmad` | animation codecs differ: decode, then re-encode |

@@ -168,7 +168,7 @@ impl Sky {
                                 let maps: Vec<_> = s
                                     .maps
                                     .iter()
-                                    .map(|m| ids.get(&m.bitmap).map(|&id| (id, m.scale)))
+                                    .map(|m| ids.get(&m.bitmap).map(|&id| (id, m.scale, m.lod_offset)))
                                     .collect();
                                 match recipe(s).and_then(|r| templates.copy(r, &maps)) {
                                     Some(tree) => Some(
