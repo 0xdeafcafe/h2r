@@ -621,6 +621,8 @@ impl Studio {
         let dialogs = self.dialogs;
         ui.window(&self.keys.inspector)
             .build(|| hud::inspector(ui, app, st, fonts, dialogs, actions));
+    }
+
     /// The Tags tool: the tag tree, the fields, the raw bytes.
     fn tag_windows(&mut self, ui: &Ui, app: &mut App, actions: &mut Vec<Action>) {
         app.sync_tags();
