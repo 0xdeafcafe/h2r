@@ -128,8 +128,8 @@ fn diagonal(st: &State, op: u8) -> (i64, i64, i64, i64) {
         _ => ([1, -1, -1], 3, 0x1fe),
     };
     let (mut lower, mut upper) = (0, 0);
-    for a in 0..3 {
-        match s[a] {
+    for (a, &sign) in s.iter().enumerate() {
+        match sign {
             1 => {
                 lower += st.l[a];
                 upper += st.h[a];
