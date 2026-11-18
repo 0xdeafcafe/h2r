@@ -432,6 +432,9 @@ pub enum PhysicsKind {
     Vehicle,
     /// One body per collision node, riding that node.
     Device,
+    /// As a device, with a biped's rigid body words
+    /// ([`crate::rebuild::BIPED_BODY`]); no stand-in.
+    Biped,
 }
 
 /// Stands for the `k`-th tag of a [`Tree`] until it is installed.
@@ -614,17 +617,28 @@ impl Writer<'_> {
 }
 
 /// How the [`Converter`] builds tags.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Options {
     /// Build scenery from typed definitions ([`crate::rebuild`]): the
     /// `scen`, its `hlmt` and its `mode`'s material list written field by
     /// field with no retail template bytes. Off by default until the
     /// rebuilt scenery has run in the game.
     pub rebuild: bool,
-    /// Build the Chief's, humans' and Covenant bipeds from the `bipd`
-    /// definition ([`crate::rebuild::biped`]) instead of on a template.
-    /// Off by default until a rebuilt biped has run in the game.
+    /// Build bipeds from the `bipd` definition ([`crate::rebuild::biped`])
+    /// instead of on a template: Halo 1's model, collision size and
+    /// physics, the role's words, and the references of the Halo 2
+    /// counterpart ([`crate::rebuild::COUNTERPARTS`]). On by default; off
+    /// builds them on templates.
     pub rebuild_bipeds: bool,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            rebuild: false,
+            rebuild_bipeds: true,
+        }
+    }
 }
 
 /// Builds a [`Tree`] from Halo 1 objects on one base map.
@@ -1815,7 +1829,32 @@ impl<'a> Converter<'a> {
         Ok(w)
     }
 
-    /// A Halo 1 biped from the `bipd` definition ([`crate::rebuild::biped`]).
+    /// The Halo 2 biped a Halo 1 biped takes its references from: the
+    /// first [`crate::rebuild::COUNTERPARTS`] row the base holds, else the
+    /// template path's template. `None` when the base has neither.
+    pub fn biped_counterpart(&self, path: &str) -> Option<(TagId, &'static str)> {
+        crate::rebuild::counterpart_candidates(path)
+            .into_iter()
+            .chain(template_candidates(b"bipd", path))
+            .find_map(|n| Some((self.base.find(b"bipd", n)?, n)))
+    }
+
+    /// The role a Halo 1 biped is rebuilt with: its own
+    /// ([`crate::rebuild::BipedRole::of_h1`]), else its counterpart's (the
+    /// flood, sentinels and the monitor take the template path's template,
+    /// the Chief, as that path does).
+    pub fn biped_rebuild_role(&self, path: &str) -> Option<crate::rebuild::BipedRole> {
+        crate::rebuild::BipedRole::of_h1(path).or_else(|| {
+            self.biped_counterpart(path)
+                .and_then(|(_, n)| crate::rebuild::BipedRole::of_h2(n))
+        })
+    }
+
+    /// A Halo 1 biped from the `bipd` definition ([`crate::rebuild::biped`]):
+    /// Halo 1's model chain with a physics model built from its collision
+    /// ([`PhysicsKind::Biped`]), the counterpart's references on the
+    /// `bipd` and the `hlmt` (damage, dialogue, camouflage), and for the
+    /// player the counterpart's HUD with the health meter.
     fn biped_rebuilt(
         &mut self,
         tag: &Tag,
@@ -1823,18 +1862,77 @@ impl<'a> Converter<'a> {
         role: crate::rebuild::BipedRole,
         words: &crate::rebuild::RoleWords,
     ) -> Result<TagId> {
+        use crate::rebuild::{BIPED_OWN, BIPED_WITH_REFERENCES, BipedParts, MODEL_OWN};
+        let (cid, cname) = self
+            .biped_counterpart(&tag.name)
+            .ok_or_else(|| Error::NoTemplate(format!("bipd {}: no counterpart", tag.name)))?;
         let mut rep = Self::report(
             tag,
             &format!(
-                "none: rebuilt from tags::defs ({role:?} role over {} base bipeds)",
+                "none: rebuilt from tags::defs ({role:?} role over {} base bipeds; references from {cname})",
                 words.members.len()
             ),
         );
+        let bipd_def = tags::defs::Defs::builtin()
+            .group(FourCC(*b"bipd"))
+            .ok_or_else(|| Error::Invalid("no bipd definition".into()))?;
+        let counterpart = self.base.record(bipd_def, cid)?;
         let hlmt = self.model(&mut rep, &u.object, None, &tag.name, true)?;
+        let counterpart_hlmt = self.base.reference(&self.base.root(cid)?, h2::MODEL);
+        if let (Some(h), Some(ch)) = (hlmt, counterpart_hlmt) {
+            let hd = tags::defs::Defs::builtin()
+                .group(FourCC(*b"hlmt"))
+                .ok_or_else(|| Error::Invalid("no hlmt definition".into()))?;
+            let c = self.base.record(hd, ch)?;
+            let fields = crate::rebuild::counterpart_fields(hd, &c, MODEL_OWN, &[]);
+            let k = h.0 as usize & 0xffff;
+            let root = &mut self.tree.tags[k].1.root;
+            let mut r = tags::defs::from_built(hd, root)
+                .map_err(|e| Error::Invalid(format!("hlmt: {e}")))?;
+            for (path, v) in &fields {
+                r.set(path, v.clone())
+                    .map_err(|e| Error::Invalid(e.to_string()))?;
+            }
+            *root = tags::defs::to_built(hd, &r, &mut |_| None)
+                .map_err(|e| Error::Invalid(e.to_string()))?;
+            rep.no_home.push(format!(
+                "hlmt: {} reference fields from {} (damage, dialogue, camouflage shaders)",
+                fields.len(),
+                self.base.name(ch).map_or("?", |n| n.1)
+            ));
+        }
+        self.object_physics(&mut rep, hlmt, &u.object, &tag.name, PhysicsKind::Biped)?;
         let predicted = self.predicted(&u.object)?;
-        let root = crate::rebuild::biped(u, hlmt, &predicted, words)?;
+        let hud = if health_hud::is_player_biped(&tag.name) {
+            let tpl_root = self.base.root(cid)?;
+            match self.health_interfaces(&tpl_root) {
+                Ok(ids) => {
+                    rep.no_home.push(format!(
+                        "HUD: {cname}'s with Halo 1's health meter ({} interfaces; docs/game/health.md)",
+                        ids.len()
+                    ));
+                    Some(ids)
+                }
+                Err(e) => {
+                    rep.no_home.push(format!("HUD: no health meter: {e}"));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let parts = BipedParts {
+            counterpart: Some(counterpart),
+            hud,
+        };
+        let root = crate::rebuild::biped(u, hlmt, &predicted, words, &parts)?;
+        let taken = crate::rebuild::reference_fields(bipd_def)
+            .into_iter()
+            .filter(|p| !BIPED_OWN.contains(&p.as_str()))
+            .count()
+            + BIPED_WITH_REFERENCES.len();
         rep.no_home.push(format!(
-            "bipd: the role's words, Halo 1's camera field of view and {} matched words; references null (no HUD, weapons or character); {} Halo 1 references not converted",
+            "bipd: the role's words, Halo 1's camera field of view, {} matched words and collision size (character shapes sized to it); {taken} reference fields from {cname}; {} Halo 1 references not converted (their groups have no converter here)",
             crate::rebuild::BIPED_WORDS.len(),
             u.references.iter().filter(|r| r.tag.is_some()).count()
         ));
@@ -1993,7 +2091,7 @@ impl<'a> Converter<'a> {
                     mass,
                 }]
             }
-            PhysicsKind::Device => parts
+            PhysicsKind::Device | PhysicsKind::Biped => parts
                 .into_iter()
                 .map(|(node, cells)| {
                     let total = cells.len();
@@ -2023,7 +2121,15 @@ impl<'a> Converter<'a> {
                 ""
             }
         );
-        Ok(Some((crate::rebuild::physics_model(&bodies, &nodes)?, how)))
+        let words = if kind == PhysicsKind::Biped {
+            crate::rebuild::BIPED_BODY
+        } else {
+            crate::rebuild::DEVICE_BODY
+        };
+        Ok(Some((
+            crate::rebuild::physics_model(&bodies, &nodes, words)?,
+            how,
+        )))
     }
 
     /// The tree's tags of `group` that `b` references, in order, each once.
@@ -2084,7 +2190,7 @@ impl<'a> Converter<'a> {
         }
         if &g == b"bipd"
             && self.options.rebuild_bipeds
-            && let Some(role) = crate::rebuild::BipedRole::of_h1(&tag.name)
+            && let Some(role) = self.biped_rebuild_role(&tag.name)
             && let Some(words) = self.biped_role(role)?
         {
             return self.biped_rebuilt(tag, &u, role, &words);
@@ -2136,11 +2242,26 @@ impl Converter<'_> {
     /// many interfaces it points.
     fn health_hud(&mut self, root: &mut Block, tpl_root: &[u8]) -> Result<usize> {
         use health_hud::{HUD_INTERFACE_SIZE, UNIT_HUD_INTERFACES};
+        let ids = self.health_interfaces(tpl_root)?;
+        let count = ids.len();
+        let mut elements = Block::new(vec![0; count * HUD_INTERFACE_SIZE]);
+        for (i, id) in ids.into_iter().enumerate() {
+            elements.tag_ref((i * HUD_INTERFACE_SIZE) as u32, id);
+        }
+        root.block(UNIT_HUD_INTERFACES as u32, count as u32, elements);
+        Ok(count)
+    }
+
+    /// The health-meter copies ([`Self::health_nhdt`]) of the HUD
+    /// interfaces (`unit +0x1a0`) of the unit whose root is `tpl_root`, in
+    /// order.
+    fn health_interfaces(&mut self, tpl_root: &[u8]) -> Result<Vec<TagId>> {
+        use health_hud::{HUD_INTERFACE_SIZE, UNIT_HUD_INTERFACES};
         let count = crate::base::u32_at(tpl_root, UNIT_HUD_INTERFACES) as usize;
         if count == 0 {
             return Err(Error::Invalid("the template unit has no HUD".into()));
         }
-        let mut elements = Block::new(vec![0; count * HUD_INTERFACE_SIZE]);
+        let mut out = Vec::with_capacity(count);
         for i in 0..count {
             let e = self
                 .base
@@ -2151,11 +2272,9 @@ impl Converter<'_> {
             let nhdt = self.base.reference(&e, 0).ok_or_else(|| {
                 Error::Invalid(format!("HUD interface {i} names no nhdt in the base map"))
             })?;
-            let id = self.health_nhdt(nhdt)?;
-            elements.tag_ref((i * HUD_INTERFACE_SIZE) as u32, id);
+            out.push(self.health_nhdt(nhdt)?);
         }
-        root.block(UNIT_HUD_INTERFACES as u32, count as u32, elements);
-        Ok(count)
+        Ok(out)
     }
 
     /// The template `nhdt` with the health widget added, built once.

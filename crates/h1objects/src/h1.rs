@@ -479,8 +479,29 @@ pub struct Unit {
     /// vehicle.
     pub biped_words: Vec<(usize, u32)>,
     pub seats: Vec<Seat>,
+    /// A biped's collision size ([`BIPED_SIZE`]); `None` for a vehicle.
+    pub size: Option<BipedSize>,
     /// Every reference in the tag's bytes (root and its blocks).
     pub references: Vec<crate::refs::Found>,
+}
+
+/// `bipd +0x424`, `+0x428`, `+0x42c`: the standing and crouching
+/// collision heights and the collision radius, world units. V: on the 42
+/// bipeds of the ten campaign levels, heights 0.2 to 1.0 and radii 0.03
+/// to 0.5, crouching no higher than standing but on the flood combat
+/// elite; seven hold zero heights (the pilot, the engineer, the flood
+/// infection forms, the monitor, the sentinel) and keep their role's
+/// (`tests/unit_rebuild_disc.rs`). Halo 2 holds the same three at `bipd
+/// +0x268`, `+0x26c`, `+0x270` ([`crate::rebuild::BIPD_SIZE`]): the
+/// Chief's 0.725, 0.5, 0.175 against the cyborg's 0.7, 0.5, 0.2.
+pub const BIPED_SIZE: usize = 0x424;
+
+/// A biped's collision size ([`BIPED_SIZE`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BipedSize {
+    pub standing_height: f32,
+    pub crouching_height: f32,
+    pub radius: f32,
 }
 
 impl Unit {
@@ -517,6 +538,11 @@ impl Unit {
             camera_field_of_view: f32_at(b, 0x1a0),
             biped_words,
             seats,
+            size: (g == b"bipd" && b.len() >= BIPED_SIZE + 12).then(|| BipedSize {
+                standing_height: f32_at(b, BIPED_SIZE),
+                crouching_height: f32_at(b, BIPED_SIZE + 4),
+                radius: f32_at(b, BIPED_SIZE + 8),
+            }),
             references: crate::refs::scan(map, b),
         })
     }

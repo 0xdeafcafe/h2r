@@ -558,6 +558,15 @@ pub struct PhysNode {
     pub first_child: i16,
 }
 
+/// Rigid body `+0x1a` and `+0x1e` of a built device's bodies (V: the
+/// disc's polyhedron physics models, `high_small_door`, `ghost`,
+/// `pelican`).
+pub const DEVICE_BODY: (u16, u16) = (2, 5);
+/// Rigid body `+0x1a` and `+0x1e` of a built biped's bodies. V: every
+/// rigid body of every retail biped physics model on the base holds 2 and
+/// 1 there (`tests/unit_rebuild_disc.rs`).
+pub const BIPED_BODY: (u16, u16) = (2, 1);
+
 /// The global material every built piece names, with the index retail
 /// shapes of that material hold at header `+6` (V: the disc's
 /// `high_small_door`; the index's table is not established).
@@ -585,13 +594,14 @@ pub const PIECE_MATERIAL: (&str, u16) = ("hard_metal_thick_cov", 76);
 ///   `0x80000004`, unused slots type 0 index 0xffff); a longer one takes
 ///   them from the root `list_children` block, capacity `0x80000000 | n`.
 ///   `+6` 0x80.
-/// - rigid body `+0x1a` 2, `+0x1e` 5, `+0x20` 1.0, `+0x28` 0.05.
+/// - rigid body `+0x1a` and `+0x1e` as `words` ([`DEVICE_BODY`],
+///   [`BIPED_BODY`]), `+0x20` 1.0, `+0x28` 0.05.
 /// - node `+4` flags (0), `+6` parent, `+8` next sibling, `+0xa` first
 ///   child, each `-1` none.
 ///
 /// Every runtime word (shape vtables and pointers) stays zero: the engine
 /// writes them at load (`0x001ea9c0`).
-pub fn physics_model(bodies: &[Body], nodes: &[PhysNode]) -> Result<Block> {
+pub fn physics_model(bodies: &[Body], nodes: &[PhysNode], words: (u16, u16)) -> Result<Block> {
     let d = def(b"phmo")?;
     let mut r = defs::default_record(d);
     let f = |v: f32| Val::Bytes(v.to_le_bytes().to_vec());
@@ -749,8 +759,8 @@ pub fn physics_model(bodies: &[Body], nodes: &[PhysNode]) -> Result<Block> {
         set(&mut rb, "node", Val::Int(body.node.into()))?;
         set(&mut rb, "bounding_sphere_offset", Val::floats(&centre))?;
         set(&mut rb, "bounding_sphere_radius", Val::Float(radius))?;
-        set(&mut rb, "unknown_18", u16_hi(2))?;
-        set(&mut rb, "unknown_1c", u16_hi(5))?;
+        set(&mut rb, "unknown_18", u16_hi(words.0))?;
+        set(&mut rb, "unknown_1c", u16_hi(words.1))?;
         set(&mut rb, "unknown_20", f(1.0))?;
         set(&mut rb, "unknown_28", f(0.05))?;
         set(&mut rb, "shape_type", Val::Int(shape_type))?;
@@ -832,8 +842,9 @@ pub const BIPED_WORDS: &[(&str, usize)] = &[
 ];
 
 /// Which retail bipeds a rebuilt biped takes its unknown spans from: the
-/// Chief, humans, or the Covenant. A biped of none (flood, sentinels,
-/// the monitor) is not rebuilt.
+/// Chief, humans, or the Covenant. A Halo 1 biped of none (flood,
+/// sentinels, the monitor) takes its counterpart's
+/// (`Converter::biped_rebuild_role`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum BipedRole {
     Chief,
@@ -1052,16 +1063,223 @@ fn role_words(r: &mut Record, words: &[(String, u32)]) -> Result<()> {
     Ok(())
 }
 
+/// `bipd +0x268`, `+0x26c`, `+0x270`: the standing and crouching
+/// collision heights and the collision radius ([`h1::BIPED_SIZE`] holds
+/// Halo 1's). V: on every retail biped of the base with character shapes,
+/// the shapes below are these three's ([`biped_shapes`],
+/// `tests/unit_rebuild_disc.rs`).
+pub const BIPD_SIZE: [&str; 3] = ["unknown_268", "unknown_26c", "unknown_270"];
+/// `bipd +0x284`: spheres (`0x80` each), `bipd +0x28c`: pills (`0x50`
+/// each). E: the `bipd` post-process (`0x001c2390`, called from the tag
+/// load dispatch `0x0011c840` on `bipd +0x264`) walks `+0x284` at stride
+/// `0x80` writing a sphere's Havok header at element `+0x20` and a
+/// transform's at `+0x30` (its child, at `+0x3c`, the sphere), `+0x28c`
+/// at `0x50` writing a pill's at `+0x20`, and `+0x294` as `+0x284`;
+/// `0x001c2460` returns pill `i` (standing 0, crouching 1) as the
+/// character's shape, or sphere `i` of `+0x294` with no pills. Every one
+/// of those runtime words stays zero here.
+pub const BIPD_SPHERES: &str = "block_284";
+pub const BIPD_PILLS: &str = "block_28c";
+/// The spheres' radii as multiples of the collision radius, each resting
+/// on the ground (centre one radius up). V: every retail biped of the base
+/// with character shapes holds these three.
+pub const SPHERE_SCALES: [f32; 3] = [1.0, 1.35, 1.7];
+
+/// The character shapes of a biped of `size` ([`BIPD_SPHERES`],
+/// [`BIPD_PILLS`]) as (path, value) pairs for the `bipd` record. A pill
+/// runs from one radius up to its height less a radius (both ends carry
+/// the radius as `w`), standing then crouching; each shape names no
+/// material (`+4` -1) and holds `-1` at `+0x1e`, as retail's all do.
+pub fn biped_shapes(size: &h1::BipedSize) -> Result<Vec<(String, Val)>> {
+    let d = def(b"bipd")?;
+    let r = size.radius;
+    let w = |v: u32| Val::Bytes(v.to_le_bytes().to_vec());
+    let f = |v: f32| w(v.to_bits());
+    let header = |e: &mut Record| -> Result<()> {
+        set(e, "unknown_4", w(0x0000_ffff))?;
+        set(e, "unknown_1c", w(0xffff_0000))
+    };
+    let sphere_def = d.child(BIPD_SPHERES).expect("bipd spheres");
+    let mut spheres = Vec::new();
+    for k in SPHERE_SCALES {
+        let mut e = defs::default_record(sphere_def);
+        header(&mut e)?;
+        set(&mut e, "unknown_2c", f(k * r))?;
+        // The transform: identity rotation rows, then the centre.
+        for at in ["unknown_40", "unknown_54", "unknown_68"] {
+            set(&mut e, at, f(1.0))?;
+        }
+        set(&mut e, "unknown_78", f(k * r))?;
+        spheres.push(e);
+    }
+    let pill_def = d.child(BIPD_PILLS).expect("bipd pills");
+    let mut pills = Vec::new();
+    for h in [size.standing_height, size.crouching_height] {
+        let mut e = defs::default_record(pill_def);
+        header(&mut e)?;
+        set(&mut e, "unknown_2c", f(r))?;
+        set(&mut e, "unknown_38", f((h - r).max(r)))?;
+        set(&mut e, "unknown_3c", f(r))?;
+        set(&mut e, "unknown_48", f(r))?;
+        set(&mut e, "unknown_4c", f(r))?;
+        pills.push(e);
+    }
+    let mut out = vec![
+        (BIPD_SIZE[0].to_owned(), f(size.standing_height)),
+        (BIPD_SIZE[1].to_owned(), f(size.crouching_height)),
+        (BIPD_SIZE[2].to_owned(), f(r)),
+    ];
+    out.push((BIPD_SPHERES.to_owned(), Val::Block(spheres)));
+    out.push((BIPD_PILLS.to_owned(), Val::Block(pills)));
+    Ok(out)
+}
+
+/// Whether a Halo 1 biped's size can size its shapes: all three positive
+/// and finite. A biped with none (Halo 1 leaves some at zero) keeps its
+/// role's size and shapes.
+pub fn usable_size(s: &h1::BipedSize) -> bool {
+    [s.standing_height, s.crouching_height, s.radius]
+        .iter()
+        .all(|v| v.is_finite() && *v > 0.0)
+}
+
+/// Whether elements of `d` hold a tag reference at any depth.
+fn holds_reference(d: &StructDef) -> bool {
+    d.fields.iter().any(|f| match &f.kind {
+        defs::Kind::TagRef { .. } => true,
+        defs::Kind::Block(e) | defs::Kind::Struct(e) => holds_reference(e),
+        _ => false,
+    })
+}
+
+/// The fields of `d` that carry references, as record paths: every tag
+/// reference of the root and its embedded structs, and every block whose
+/// elements hold one at any depth (the block is the unit that carries
+/// them: attachments with their markers, the HUD interfaces, camera
+/// tracks, damage sections). Blocks of plain words never do, so these
+/// never meet [`RoleWords::blocks`].
+pub fn reference_fields(d: &StructDef) -> Vec<String> {
+    fn walk(d: &StructDef, prefix: &str, out: &mut Vec<String>) {
+        for f in &d.fields {
+            let p = format!("{prefix}{}", f.name);
+            match &f.kind {
+                defs::Kind::Struct(s) => walk(s, &format!("{p}."), out),
+                defs::Kind::TagRef { .. } => out.push(p),
+                defs::Kind::Block(e) if holds_reference(e) => out.push(p),
+                _ => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(d, "", &mut out);
+    out
+}
+
+/// `bipd` fields a rebuilt biped never takes from its counterpart: the
+/// model is Halo 1's.
+pub const BIPED_OWN: &[&str] = &["unit.obje.model"];
+/// Taken from the counterpart with its references though they hold
+/// none: attachments and change colours name the object's functions
+/// (`obje +0x64`, matched by name, `0x000bac20`), so the functions come
+/// with them.
+pub const BIPED_WITH_REFERENCES: &[&str] = &["unit.obje.functions"];
+/// `bipd +0x1a0`, the HUD interfaces (one `nhdt` reference each,
+/// [`crate::health_hud::UNIT_HUD_INTERFACES`]).
+pub const BIPD_HUD: &str = "unit.block_1a0";
+/// `hlmt` fields a rebuilt model never takes from a counterpart: its
+/// chain, nodes and regions are Halo 1's, and variants name the
+/// counterpart's regions (the template path clears them too).
+pub const MODEL_OWN: &[&str] = &[
+    "render_model",
+    "collision_model",
+    "phys_ref_18",
+    "physics_model",
+    "variants",
+    "regions",
+    "nodes",
+];
+
+/// The fields of `counterpart` (a record of `d`) a rebuilt tag takes:
+/// [`reference_fields`] less `own`, plus `with`.
+pub fn counterpart_fields(
+    d: &StructDef,
+    counterpart: &Record,
+    own: &[&str],
+    with: &[&str],
+) -> Vec<(String, Val)> {
+    reference_fields(d)
+        .into_iter()
+        .filter(|p| !own.contains(&p.as_str()))
+        .chain(with.iter().map(|p| p.to_string()))
+        .filter_map(|p| counterpart.at(&p).cloned().map(|v| (p, v)))
+        .collect()
+}
+
+/// What a rebuilt biped takes beyond Halo 1's header and its role's words.
+#[derive(Clone, Debug, Default)]
+pub struct BipedParts {
+    /// The Halo 2 counterpart's `bipd` record ([`COUNTERPARTS`]): its
+    /// references ([`counterpart_fields`]).
+    pub counterpart: Option<Record>,
+    /// HUD interfaces in place of the counterpart's ([`BIPD_HUD`]): the
+    /// player's, with the health meter.
+    pub hud: Option<Vec<TagId>>,
+}
+
+/// The Halo 2 biped a Halo 1 biped takes its references from, by words in
+/// the Halo 1 path (all must appear), first match the base holds. The
+/// pairs `tests/unit_rebuild_disc.rs` compares, and each role's nearest.
+/// A biped none names takes the template path's template
+/// ([`crate::convert::template_candidates`]).
+pub const COUNTERPARTS: &[(&[&str], &str)] = &[
+    (
+        &["cyborg"],
+        "objects\\characters\\masterchief\\masterchief_mp",
+    ),
+    (&["cyborg"], "objects\\characters\\masterchief\\masterchief"),
+    (&["elite"], "objects\\characters\\elite\\elite"),
+    (&["grunt"], "objects\\characters\\grunt\\grunt"),
+    (&["jackal"], "objects\\characters\\jackal\\jackal"),
+    (&["engineer"], "objects\\characters\\bugger\\bugger"),
+    (&["hunter"], "objects\\characters\\hunter\\hunter"),
+    (&["marine"], "objects\\characters\\marine\\marine"),
+    (
+        &["crewman"],
+        "objects\\characters\\marine\\crewman\\crewman",
+    ),
+    (&["captain"], "objects\\characters\\marine\\marine"),
+    (&["pilot"], "objects\\characters\\marine\\marine"),
+    (&["johnson"], "objects\\characters\\marine\\marine"),
+    (&["bisenti"], "objects\\characters\\marine\\marine"),
+    (&["mendoza"], "objects\\characters\\marine\\marine"),
+    (&["jenkins"], "objects\\characters\\marine\\marine"),
+    (&["keyes"], "objects\\characters\\marine\\marine"),
+    (&["cortana"], "objects\\characters\\marine\\marine"),
+];
+
+/// [`COUNTERPARTS`] rows matching the Halo 1 biped at `path`, in order.
+pub fn counterpart_candidates(path: &str) -> Vec<&'static str> {
+    let path = path.to_ascii_lowercase();
+    COUNTERPARTS
+        .iter()
+        .filter(|(words, _)| words.iter().all(|w| path.contains(w)))
+        .map(|r| r.1)
+        .collect()
+}
+
 /// A Halo 1 biped written from the `bipd` definition: the object header
 /// (type 0, Halo 1's bounding sphere, the model and its predicted
 /// resources), its role's words ([`biped_role`]), Halo 1's camera field
-/// of view and [`BIPED_WORDS`]. References stay null and blocks other than
-/// the role's plain-word ones empty: no retail template is read.
+/// of view, [`BIPED_WORDS`] and collision size with the character shapes
+/// sized to it ([`biped_shapes`]), and every reference its counterpart
+/// carries ([`BipedParts`]), the HUD interfaces replaced when given.
+/// Blocks other than those stay empty.
 pub fn biped(
     unit: &h1::Unit,
     hlmt: Option<TagId>,
     predicted: &[Predicted],
     role: &RoleWords,
+    parts: &BipedParts,
 ) -> Result<Block> {
     let d = def(b"bipd")?;
     let mut r = defs::default_record(d);
@@ -1077,6 +1295,21 @@ pub fn biped(
             out.push(x);
         }
         set(&mut r, path, Val::Block(out))?;
+    }
+    if let Some(c) = &parts.counterpart {
+        for (path, v) in counterpart_fields(d, c, BIPED_OWN, BIPED_WITH_REFERENCES) {
+            set(&mut r, &path, v)?;
+        }
+    }
+    if let Some(hud) = &parts.hud {
+        let e = d.child(BIPD_HUD).expect("bipd HUD interfaces");
+        let mut out = Vec::new();
+        for id in hud {
+            let mut x = defs::default_record(e);
+            set(&mut x, "ref_0", Val::tag(FourCC(*b"nhdt"), *id))?;
+            out.push(x);
+        }
+        set(&mut r, BIPD_HUD, Val::Block(out))?;
     }
     let obj = &unit.object;
     set(&mut r, "unit.obje.object_type", Val::Enum(BIPED_TYPE))?;
@@ -1104,6 +1337,11 @@ pub fn biped(
     for (path, at) in BIPED_WORDS {
         if let Some((_, w)) = unit.biped_words.iter().find(|x| x.0 == *at) {
             set(&mut r, path, Val::Bytes(w.to_le_bytes().to_vec()))?;
+        }
+    }
+    if let Some(size) = unit.size.filter(usable_size) {
+        for (path, v) in biped_shapes(&size)? {
+            set(&mut r, &path, v)?;
         }
     }
     built(d, &r)

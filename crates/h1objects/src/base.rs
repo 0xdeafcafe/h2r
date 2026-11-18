@@ -89,6 +89,81 @@ impl Base {
         (id != TagId::NULL && self.name(id).is_some()).then_some(id)
     }
 
+    /// Tag `id` read through its typed definition `def`: its root, every
+    /// block and data reference followed in the metadata. References keep
+    /// the base's datums ([`tags::defs::Target::Id`]) and string IDs their
+    /// indices ([`tags::defs::Str::Index`]): a record for a tag installed
+    /// on this base, as the template path's copied bytes are.
+    pub fn record(&self, def: &tags::defs::StructDef, id: TagId) -> Result<tags::defs::Record> {
+        let t = self
+            .tags
+            .iter()
+            .find(|t| t.0 == id)
+            .ok_or_else(|| Error::NoTemplate(format!("{id:?}")))?;
+        let bytes = self.meta.slice(t.3, def.size.into())?.to_vec();
+        let b = self.built(def, bytes, 1)?;
+        tags::defs::from_built(def, &b).map_err(|e| Error::Invalid(format!("{}: {e}", t.2)))
+    }
+
+    /// `count` elements of `def` in `bytes` as a builder block whose
+    /// blocks and data are children, as [`Self::record`] reads them.
+    fn built(
+        &self,
+        def: &tags::defs::StructDef,
+        bytes: Vec<u8>,
+        count: usize,
+    ) -> Result<map::build::Block> {
+        let mut b = map::build::Block::new(bytes).aligned(def.align.max(1));
+        for i in 0..count {
+            self.children(def, &mut b, i * def.size as usize)?;
+        }
+        Ok(b)
+    }
+
+    fn children(
+        &self,
+        def: &tags::defs::StructDef,
+        b: &mut map::build::Block,
+        at: usize,
+    ) -> Result<()> {
+        use tags::defs::Kind;
+        for f in &def.fields {
+            let o = at + f.offset as usize;
+            match &f.kind {
+                Kind::Struct(s) => self.children(s, b, o)?,
+                Kind::Block(e) => {
+                    let n = u32_at(&b.bytes, o) as usize;
+                    if n == 0 {
+                        b.bytes[o..o + 8].fill(0);
+                        continue;
+                    }
+                    let addr = u32_at(&b.bytes, o + 4);
+                    let raw = self
+                        .meta
+                        .slice(addr, (n * e.size as usize) as u64)?
+                        .to_vec();
+                    let child = self.built(e, raw, n)?;
+                    b.block(o as u32, n as u32, child);
+                }
+                Kind::Data { align } => {
+                    let n = u32_at(&b.bytes, o) as u64;
+                    if n == 0 {
+                        b.bytes[o..o + 8].fill(0);
+                        continue;
+                    }
+                    let addr = u32_at(&b.bytes, o + 4);
+                    let raw = self.meta.slice(addr, n)?.to_vec();
+                    b.data(
+                        o as u32,
+                        map::build::Block::new(raw).aligned((*align).max(1)),
+                    );
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
     /// Every live 8-byte reference (group word, datum of a tag of that
     /// group) in `bytes`, at 4-byte steps: (offset, group, name).
     pub fn references(&self, bytes: &[u8]) -> Vec<(usize, FourCC, String)> {
