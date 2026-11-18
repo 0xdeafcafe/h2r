@@ -660,9 +660,12 @@ Each is its own slice, with tests:
      slices. The port mask is 0 until a microphone is chosen on the Voice
      screen (`voice.input_device` not System default). Then every port
      with a pad has a communicator.
-   - **Talker.** In open-mic mode the talker is the first such port.
-     `voice.mic_muted` silences it. Push-to-talk is not read from the pad
-     yet, so that mode is silent.
+   - **Talker.** In open-mic mode the talker is the first such port. In
+     push-to-talk mode it is the first such port whose pad holds the
+     chosen button (`voice.push_to_talk_button`), read from the state the
+     game last got for that port (`Xapi::last_input_state`, no guest
+     call); with no pad holding it nobody talks. `voice.mic_muted`
+     silences it in either mode.
    - **Devices.** The chosen devices open through the host's opener
      (`Host::voice_io`). `h2 play` uses `voice::host::HostVoiceIo`, which
      runs cpal on its own thread. Output plays on its own stream only when
@@ -676,7 +679,6 @@ Each is its own slice, with tests:
      Before this, every port's remote voice was on mixbin 0, the left
      speaker.
    - **Still to do:**
-     - push-to-talk from the pad;
      - the input and output volume settings;
      - "Same as Game" through the DirectSound side sink.
 5. **Voice messages**: the voice-mail mode on the same objects, blob storage
