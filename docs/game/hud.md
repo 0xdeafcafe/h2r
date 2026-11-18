@@ -247,10 +247,18 @@ or animation binding feeds it is not yet established
 
 - **Weapon numbers** (`hud#`, the ammunition counts) and **HUD globals**
   (`hudg`).
-- **Motion sensor sweep and blips**: Halo 1 draws them from the `unhi`'s
-  motion sensor placement (`+0x35c`, E `0x000dd658`..`0x000dd691`),
-  Halo 2 by its own code; whether Halo 2's follow the converted
-  background is for a game run to show.
+- **Motion sensor sweep and blips**: Halo 1 draws them (E `0x000da1e0`)
+  around the point its `unhi` motion sensor placement `+0x35c` gives
+  through the element placement `0x000e07a0` (E `0x000dd658`..`0x000dd691`).
+  Halo 2's `nhdt` does not place them: the retail `ui\hud\masterchief`
+  sensor is only bitmap widgets 5 and 7 (`motion_sensor`, anchor 2,
+  offset (-1, -84), no special type). Its blips are drawn by `0x1a2823`
+  around a point from the code (E `0x00139614`..`0x00139685`: anchor 2
+  through `0x1396c7`, plus a table at `0x47ff40` by screen mode, two
+  `i16` each: (41, -42) fullscreen, (31, -31) half and quarter), the
+  centre of the 83 x 83 background. Carrying Halo 1's placement over
+  means moving that point while the Halo 1 HUD is shown (the HUD swap's
+  runtime side), not writing a field; not done yet.
 
 ## Tests
 
