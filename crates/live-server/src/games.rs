@@ -1139,7 +1139,7 @@ mod tests {
         send(&mut clock, f, 0);
         let mut f = frame(0, 0);
         f.tick = 12;
-        f.machines = vec![machine("a", 0.5)];
+        f.machines = vec![machine("a", 1.0)];
         send(&mut clock, f, 100);
         // Throttled: its shots go to the next sent frame.
         let mut f = frame(2, 0);
@@ -1165,7 +1165,8 @@ mod tests {
             .iter()
             .map(|m| (m.id.as_str(), m.position))
             .collect();
-        assert_eq!(machines, [("a", Some(0.5)), ("b", Some(0.0))]);
+        // Device positions travel in 1023 steps: 0 and 1 are exact.
+        assert_eq!(machines, [("a", Some(1.0)), ("b", Some(0.0))]);
     }
 
     #[test]
