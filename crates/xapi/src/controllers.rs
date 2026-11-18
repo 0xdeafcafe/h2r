@@ -91,14 +91,9 @@ impl<StorageBackend: Storage> Xapi<StorageBackend> {
             memory.check(reinserted_out, 4, true)?;
         }
         self.collect_changes();
-        let (current, previous, reinserted) = if device_type == self.config.devices.gamepad {
-            (
-                self.changes.current,
-                self.changes.previous,
-                self.changes.reinserted(),
-            )
-        } else {
-            (0, 0, 0)
+        let (current, previous, reinserted) = match self.changes_for(device_type) {
+            Some(changes) => (changes.current, changes.previous, changes.reinserted()),
+            None => (0, 0, 0),
         };
         if previous_out != 0 {
             memory.write(previous_out, &previous.to_le_bytes())?;
@@ -124,6 +119,8 @@ impl<StorageBackend: Storage> Xapi<StorageBackend> {
     pub fn get_devices(&self, device_type: u32) -> u32 {
         if device_type == self.config.devices.gamepad {
             self.input.connected_mask()
+        } else if self.is_voice_type(device_type) {
+            self.voice_ports
         } else {
             0
         }
@@ -138,18 +135,83 @@ impl<StorageBackend: Storage> Xapi<StorageBackend> {
         removals_out: u32,
     ) -> Result<bool> {
         memory.check(self.config.devices.gamepad, 12, true)?;
+        let voice = self.is_voice_type(device_type);
+        if voice {
+            memory.check(device_type, 12, true)?;
+        }
         memory.check(insertions_out, 4, true)?;
         memory.check(removals_out, 4, true)?;
         self.collect_changes();
-        let masks = if device_type == self.config.devices.gamepad {
-            self.changes.consume()
-        } else {
-            ChangeMasks::default()
-        };
+        let masks = self
+            .changes_for(device_type)
+            .map_or_else(ChangeMasks::default, DeviceChanges::consume);
         memory.write(insertions_out, &masks.insertions.to_le_bytes())?;
         memory.write(removals_out, &masks.removals.to_le_bytes())?;
         self.publish_device_type(memory)?;
+        if voice {
+            self.publish_voice_type(memory, device_type)?;
+        }
         Ok(masks.insertions != 0 || masks.removals != 0)
+    }
+
+    /// Which ports have a communicator (bits 0..=3). The engine sees an
+    /// insertion or removal on both the microphone and the headphone type
+    /// at its next XGetDeviceChanges. Ignored without
+    /// [`DeviceTypes::voice`](crate::DeviceTypes); 0 until the media
+    /// objects work (docs/live/live-voice.md, 5).
+    pub fn set_voice_ports(&mut self, ports: u32) {
+        let ports = if self.config.devices.voice.is_some() {
+            ports & 0xf
+        } else {
+            0
+        };
+        self.voice_ports = ports;
+        for changes in [&mut self.microphone_changes, &mut self.headphone_changes] {
+            changes.changed |= changes.current ^ ports;
+            changes.current = ports;
+        }
+    }
+
+    pub fn voice_ports(&self) -> u32 {
+        self.voice_ports
+    }
+
+    fn is_voice_type(&self, device_type: u32) -> bool {
+        self.config
+            .devices
+            .voice
+            .is_some_and(|v| device_type == v.microphone || device_type == v.headphone)
+    }
+
+    fn changes_for(&mut self, device_type: u32) -> Option<&mut DeviceChanges> {
+        if device_type == self.config.devices.gamepad {
+            return Some(&mut self.changes);
+        }
+        let voice = self.config.devices.voice?;
+        if device_type == voice.microphone {
+            Some(&mut self.microphone_changes)
+        } else if device_type == voice.headphone {
+            Some(&mut self.headphone_changes)
+        } else {
+            None
+        }
+    }
+
+    /// Cur/Chg/Prev of a communicator type, as [`Self::publish_device_type`]
+    /// does for the gamepad's.
+    fn publish_voice_type(
+        &mut self,
+        memory: &mut impl GuestMemory,
+        device_type: u32,
+    ) -> Result<()> {
+        let Some(changes) = self.changes_for(device_type) else {
+            return Ok(());
+        };
+        let mut bytes = [0; 12];
+        bytes[..4].copy_from_slice(&changes.current.to_le_bytes());
+        bytes[4..8].copy_from_slice(&changes.changed.to_le_bytes());
+        bytes[8..].copy_from_slice(&changes.previous.to_le_bytes());
+        memory.write(device_type, &bytes)
     }
 
     pub fn input_open(

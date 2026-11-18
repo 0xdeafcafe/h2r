@@ -33,7 +33,10 @@ pub fn register(rt: &runtime::Runtime, k: &Arc<kernel::Kernel>) -> anyhow::Resul
 /// mouse and pads), instead of a headless keyboard pad.
 pub fn register_with(rt: &runtime::Runtime, k: &Arc<kernel::Kernel>, input: input::InputManager) -> anyhow::Result<Shared> {
     let storage = xapi::VfsStorage::new(k.vfs().context("VFS not attached")?);
-    let config = xapi::Config::for_gamepad(xapi::register::addr::XDEVICE_TYPE_GAMEPAD);
+    let mut config = xapi::Config::for_gamepad(xapi::register::addr::XDEVICE_TYPE_GAMEPAD);
+    // The communicator types answer, with no port until the media objects
+    // are wired (docs/live/live-voice.md, 5): the same answers as before.
+    config.devices.voice = Some(xapi::VoiceTypes::RETAIL);
     let x = xapi::Xapi::new(config, input, storage).map_err(|e| anyhow::anyhow!("xapi: {e}"))?;
     let x = Arc::new(Mutex::new(x));
     let mut r = None;

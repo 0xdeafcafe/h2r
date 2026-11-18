@@ -63,6 +63,12 @@ pub mod addr {
     /// The gamepad `XPP_DEVICE_TYPE` object (`push 4086f8h` at `0x124aae`).
     /// Pass it to `Config::for_gamepad`.
     pub const XDEVICE_TYPE_GAMEPAD: u32 = 0x0040_86f8;
+    /// The communicator's microphone `XPP_DEVICE_TYPE`, as the engine's
+    /// hot-plug poll passes it (`0x332bb0`) and XVoiceCreateMediaObjectEx
+    /// (`0x411143`) takes it (docs/live/live-voice.md, 3.3).
+    pub const XDEVICE_TYPE_VOICE_MICROPHONE: u32 = 0x0040_88b0;
+    /// The communicator's headphone `XPP_DEVICE_TYPE` (`0x332bbf`).
+    pub const XDEVICE_TYPE_VOICE_HEADPHONE: u32 = 0x0040_88bc;
     /// `_tls_index`, read by GetLastError/SetLastError at `0x2d1d50`/`0x2d1d7f`.
     pub const TLS_INDEX: u32 = 0x0048_0100;
     /// XAPI's selected cache-database ROW (`[0x461d80]`). The mount path

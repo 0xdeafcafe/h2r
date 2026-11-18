@@ -631,13 +631,37 @@ Each is its own slice, with tests:
 2. **Trace the codec** (3.3, "Trace results"): where it lives, the frame
    layout, the bitrate, the PCM format and the voice-mail WAVE header. No
    code (done: the codec is in the title).
-3. **Communicator presence and the media objects with a fake `VoiceIo`**:
-   the game offers voice, the real engine encodes scripted PCM into frames
-   that go out in its packets, a second machine's engine decodes them to
-   the fake output, and the presence voice flag goes out. Tested with two
-   HLE instances and no real audio.
+3. **Communicator presence and the media objects with a fake `VoiceIo`**
+   (built). The pieces:
+   - **Device types.** `xapi::DeviceTypes::voice` makes the microphone and
+     headphone types (0x4088b0, 0x4088bc) answer XGetDevices, XPeekDevices
+     and XGetDeviceChanges from `Xapi::set_voice_ports`, with a change
+     state per type. Boot sets the types with the mask at 0, so the game
+     sees no communicator, as before.
+   - **The `voice` crate.**
+     - `xmo::MediaObjects` holds the objects: the original's creation
+       checks and HRESULTs, Process copying the caller's packet and
+       marking it pending, and a 20 ms tick. On each tick the talker's
+       port gets the host microphone (the other ports get silence), and
+       every headphone object mixes into one output.
+     - `resample` converts between 48 kHz and 8, 16 or 24 kHz.
+     - `io::FakeVoiceIo` scripts the input and records the output.
+     - `hle::register` overrides 0x411143, Process (0x410e77) and Release
+       (0x4112dc). It returns the original's static object slots with the
+       original vtable. It also wraps the engine DPC 0x332f4c: tick, run
+       each completion's callback, then run the original DPC.
+   - **Tests.** Tests against the fake devices and through the real
+     runtime Runner, with stand-ins for the DPC and the callbacks.
+   - **Not done yet.** Running the real engine end to end needs the game,
+     so it waits for slice 4 and a user run.
 4. **Capture and playback on macOS**, through the pause-settings device
-   trait and settings; push-to-talk and mic mute in the microphone XMO.
+   trait and settings; push-to-talk and mic mute set the talker
+   (`MediaObjects::set_talker`). This slice also:
+   - registers `voice::hle` in boot;
+   - sets the voice port mask from host mic presence;
+   - checks that the host's DirectSound runs the per-port voice effects
+     and fills their output rings (3.3, item 7), since remote voice
+     reaches the headphone only through them.
 5. **Voice messages**: the voice-mail mode on the same objects, blob storage
    with the size and header check, inbox delivery (this depends on the
    inbox HLE delivering messages at all).
