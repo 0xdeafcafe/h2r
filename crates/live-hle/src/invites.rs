@@ -39,6 +39,7 @@ struct Task {
     invite: Option<u64>,
     actor: u64,
 }
+#[derive(Clone)]
 struct Accepted {
     invite: Invite,
     controller: usize,
@@ -56,6 +57,10 @@ pub(crate) struct Invites {
     known: BTreeMap<u32, Invite>,
     next_message: u32,
     details: BTreeMap<u32, Invite>,
+    /// The accepted invitation the title read last, until taken.
+    read: Option<Invite>,
+    /// That invitation as queued, to offer it again.
+    last: Option<Accepted>,
 }
 pub(crate) struct Context<'a> {
     pub storage: &'a mut Storage,
@@ -69,6 +74,8 @@ impl Invites {
         self.tasks.clear();
         self.internal.clear();
         self.accepted.clear();
+        self.read = None;
+        self.last = None;
         self.details.clear();
         self.message_ids.clear();
         self.known.clear();
@@ -76,6 +83,13 @@ impl Invites {
     pub fn users_changed(&mut self, users: &[u64; 4]) {
         self.accepted
             .retain(|v| users[v.controller] == v.users[v.controller]);
+        if self
+            .last
+            .as_ref()
+            .is_some_and(|v| users[v.controller] != v.users[v.controller])
+        {
+            self.last = None;
+        }
         self.tasks.retain(|_, v| users[v.controller] == v.actor);
         self.internal.retain(|v| users[v.controller] == v.actor);
         self.details.retain(|_, v| users.contains(&v.to.0));
@@ -98,6 +112,9 @@ impl Invites {
                 {
                     self.cache[task.controller].hidden.insert(invite.id);
                     self.cache[task.controller].next = None;
+                    // A newer invitation from the same host names its
+                    // current session: the older ones would join one gone.
+                    self.accepted.retain(|v| v.invite.from != invite.from);
                     if self.accepted.len() >= 16 {
                         self.accepted.pop_front();
                     }
@@ -305,7 +322,18 @@ impl Invites {
         m.set_u32(a[2], flags)?;
         Ok(found)
     }
-    pub fn accepted(&mut self, m: &mut Guest, out: u32) -> Result<u32, Error> {
+    /// The title's read of the accepted invitation. `guest_now` is the
+    /// guest's system time (its KeQuerySystemTime): the reader at
+    /// `0x0022f3b5` drops a record stamped at or after it, or 15 minutes
+    /// or more before it, so the stamp is a second before the guest's now,
+    /// whatever the host's wall clock says. Without it (no guest clock),
+    /// the time of the acceptance.
+    pub fn accepted(
+        &mut self,
+        m: &mut Guest,
+        out: u32,
+        guest_now: Option<u64>,
+    ) -> Result<u32, Error> {
         m.check(out, ACCEPTED_SIZE, Access::Write, 1)?;
         let mut record = [0; ACCEPTED_SIZE];
         self.accepted.retain(|v| {
@@ -324,11 +352,14 @@ impl Invites {
             record[..86].copy_from_slice(&f);
             record[88..96].copy_from_slice(&v.users[v.controller].to_le_bytes());
             record[96..100].copy_from_slice(&v.flags[v.controller].to_le_bytes());
-            record[100..108].copy_from_slice(&v.at.to_le_bytes());
+            let at = guest_now.map_or(v.at, |now| now.saturating_sub(10_000_000));
+            record[100..108].copy_from_slice(&at.to_le_bytes());
             for (i, user) in v.users.into_iter().enumerate() {
                 record[108 + i * 12..116 + i * 12].copy_from_slice(&user.to_le_bytes());
                 record[116 + i * 12..120 + i * 12].copy_from_slice(&v.flags[i].to_le_bytes());
             }
+            self.read = Some(v.invite.clone());
+            self.last = Some(v);
             0
         } else {
             NO_ACCEPTED_INVITE
@@ -573,6 +604,26 @@ impl Invites {
         });
         Ok(())
     }
+    /// The accepted invitation the title read since the last call.
+    pub fn take_read(&mut self) -> Option<Invite> {
+        self.read.take()
+    }
+    /// Queues the invitation the title read last again, if it is `id`, as
+    /// accepted now (a title that read it and never looked the session up
+    /// gets another go). False if it isn't the last read.
+    pub fn offer_again(&mut self, id: u64) -> bool {
+        let Some(mut v) = self.last.clone().filter(|v| v.invite.id == id) else {
+            return false;
+        };
+        v.at = filetime(time::OffsetDateTime::now_utc().unix_timestamp());
+        self.accepted.retain(|a| a.invite.from != v.invite.from);
+        self.accepted.push_back(v);
+        true
+    }
+    /// Accepted invitations the title hasn't read yet, oldest first.
+    pub fn unread(&self) -> Vec<Invite> {
+        self.accepted.iter().map(|v| v.invite.clone()).collect()
+    }
     /// The invitations waiting for controller `index`'s player, as last
     /// read.
     pub fn pending(&self, index: usize) -> Vec<Invite> {
@@ -728,9 +779,9 @@ mod tests {
             users: ids,
             flags,
         });
-        assert!(state.accepted(&mut memory, 0xfffffff0).is_err());
+        assert!(state.accepted(&mut memory, 0xfffffff0, None).is_err());
         assert_eq!(state.accepted.len(), 1);
-        assert_eq!(state.accepted(&mut memory, 0x700000).ok(), Some(0));
+        assert_eq!(state.accepted(&mut memory, 0x700000, None).ok(), Some(0));
         assert_eq!(memory.u64(0x700000).unwrap(), 0x0009000000000001);
         assert_eq!(
             memory.u64(0x700000 + 40).unwrap(),
@@ -751,12 +802,64 @@ mod tests {
             );
         }
         assert_eq!(
-            state.accepted(&mut memory, 0x700000).ok(),
+            state.accepted(&mut memory, 0x700000, None).ok(),
             Some(NO_ACCEPTED_INVITE)
         );
         let mut bytes = [1; 156];
         memory.read_bytes(0x700000, &mut bytes, 1).unwrap();
         assert_eq!(bytes, [0; 156]);
+    }
+    /// The reader at `0x0022f3b5`: KeQuerySystemTime (`0x0022f3d7`), then
+    /// the record's FILETIME at +100 must be before it and less than
+    /// 0x2_18711a00 (15 minutes) before it, or the invitation is dropped.
+    fn title_takes(record_at: u64, guest_now: u64) -> bool {
+        guest_now > record_at && guest_now - record_at < 0x2_1871_1a00
+    }
+    #[test]
+    fn the_title_takes_an_invitation_stamped_in_its_own_clock() {
+        let mut memory = Guest::new();
+        memory
+            .map_zeroed(0x700000, 0x1000, Permissions::RW)
+            .unwrap();
+        let wall = filetime(time::OffsetDateTime::now_utc().unix_timestamp());
+        let accepted = || Accepted {
+            invite: invite(),
+            controller: 0,
+            at: wall,
+            users: [2, 0, 0, 0],
+            flags: [0; 4],
+        };
+        // The guest's clock starts at the NT epoch (the kernel's epoch is
+        // 0): ten minutes after boot it is still 1601 to the title, so a
+        // wall-clock stamp is in its future and the title drops it.
+        let guest_now = 10 * 60 * 10_000_000;
+        assert!(!title_takes(wall, guest_now));
+        let mut state = Invites::default();
+        state.accepted.push_back(accepted());
+        assert_eq!(
+            state.accepted(&mut memory, 0x700000, Some(guest_now)).ok(),
+            Some(0)
+        );
+        let stamped = memory.u64(0x700000 + 100).unwrap();
+        assert!(title_takes(stamped, guest_now), "{stamped} vs {guest_now}");
+        assert_eq!(state.take_read().map(|v| v.id), Some(invite().id));
+        assert_eq!(state.take_read(), None, "said once");
+        // Offered again: the same record, read once more.
+        assert!(!state.offer_again(invite().id + 1));
+        assert!(state.offer_again(invite().id));
+        assert_eq!(state.unread().len(), 1);
+        assert_eq!(
+            state.accepted(&mut memory, 0x700000, Some(guest_now)).ok(),
+            Some(0)
+        );
+        assert_eq!(
+            memory.u64(0x700000 + 40).unwrap(),
+            u64::from_le_bytes([0x80, 1, 2, 3, 4, 5, 6, 7])
+        );
+        // Without a guest clock the stamp stays the acceptance's.
+        state.accepted.push_back(accepted());
+        assert_eq!(state.accepted(&mut memory, 0x700000, None).ok(), Some(0));
+        assert_eq!(memory.u64(0x700000 + 100).unwrap(), wall);
     }
     #[test]
     fn accepted_invites_expire_and_clear_invalidates_tasks_and_snapshots() {
@@ -773,7 +876,7 @@ mod tests {
             flags: [0; 4],
         });
         assert_eq!(
-            state.accepted(&mut memory, 0x700000).ok(),
+            state.accepted(&mut memory, 0x700000, None).ok(),
             Some(NO_ACCEPTED_INVITE)
         );
         state.details.insert(1, invite());

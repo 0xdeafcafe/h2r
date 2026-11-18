@@ -2759,6 +2759,66 @@ fn invites_nonfriend_join_is_refused_and_peer_never_answer_blocks_future_invitat
     );
 }
 
+/// A lobby that re-advertises gets a new session id; the invitation and
+/// the guest's acceptance follow the newest, whatever the ids' order (the
+/// smallest id was once taken for the lobby's).
+#[test]
+fn coop_auto_invites_to_the_lobbys_current_session_not_the_smallest_id() {
+    let s = Server::new();
+    let a = s.account("Host");
+    let b = s.account("Guest");
+    friend_pair(&s, &a, &b);
+    let port = game_port();
+    let mut peer_port = game_port();
+    while peer_port.abs_diff(port) <= 6 {
+        peer_port = game_port();
+    }
+    let mut host = World::raw_network(
+        &s.embedded.url,
+        json!([a.json()]),
+        Duration::from_secs(30),
+        port,
+    );
+    let mut guest = World::raw_network(
+        &s.embedded.url,
+        json!([b.json()]),
+        Duration::from_secs(30),
+        peer_port,
+    );
+    host.logon();
+    guest.logon();
+    // Advertise until the newest session isn't the smallest id.
+    let mut ids = Vec::new();
+    loop {
+        invite_host(&mut host);
+        let id = u64::from_be_bytes(host.bytes(MATCH_ID, 8).try_into().unwrap());
+        ids.push(id);
+        if ids.len() > 1 && ids.iter().any(|&old| old < id) {
+            break;
+        }
+        assert!(ids.len() < 16, "ids {ids:x?}");
+    }
+    let current = host.bytes(MATCH_ID, 8);
+    host.hle.set_coop_auto(Some("guest"), None);
+    guest.hle.set_coop_auto(None, Some("HOST"));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        host.call("XOnlineFriendsGetLatest", &[0, 100, INV_FRIEND]);
+        guest.call("XOnlineFriendsGetLatest", &[0, 100, INV_FRIEND]);
+        if guest.call("XOnlineFriendsGetAcceptedGameInvite", &[INV_RECORD]) == 0 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "no accepted invitation");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(guest.bytes(INV_RECORD + 40, 8), current);
+    let sent: Vec<_> = s
+        .events()
+        .into_iter()
+        .filter(|e| e.kind == live_proto::mailbox::SENT)
+        .collect();
+    assert_eq!(sent.len(), 1, "one invitation, to the current session");
+}
 #[test]
 fn coop_auto_invites_the_named_friend_and_the_guest_accepts_by_itself() {
     let s = Server::new();

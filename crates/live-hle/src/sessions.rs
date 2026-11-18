@@ -6,7 +6,7 @@ use crate::{
     status::*,
 };
 use runtime::{Guest, GuestFault, guest::Access};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 const MAX_ATTRIBUTES: u32 = 64;
 const MAX_SESSIONS: usize = 32;
@@ -80,6 +80,8 @@ enum Intent {
         limit: u32,
         bytes: u32,
         retail: bool,
+        /// FindFromID's session: the first step of a join, logged.
+        find: Option<[u8; 8]>,
     },
 }
 pub(crate) struct Context<'a> {
@@ -137,6 +139,10 @@ pub(crate) struct Sessions {
     coop_skulls: Option<Vec<u8>>,
     /// A co-op host's last measured round trip ([`Sessions::set_coop_ping`]).
     coop_ping: Option<u16>,
+    /// The session advertised last: the lobby's current one.
+    current: Option<[u8; 8]>,
+    /// The sessions the title looked up (FindFromID): joins it started.
+    looked_up: BTreeSet<[u8; 8]>,
 }
 /// The host's multiplayer skulls as of now (None for none), read with guest
 /// memory held: it must take no lock that guest memory may come after.
@@ -335,6 +341,16 @@ impl Sessions {
     pub fn own_ids(&self) -> Vec<[u8; 8]> {
         self.records.keys().copied().collect()
     }
+    /// The session this console advertised last, while it still does: the
+    /// lobby's current one (a lobby that re-advertises gets a new id, and
+    /// ids are random, so the smallest is no guide).
+    pub fn current_id(&self) -> Option<[u8; 8]> {
+        self.current.filter(|id| self.records.contains_key(id))
+    }
+    /// Whether the title looked `id` up (FindFromID) since sign-in.
+    pub fn looked_up(&self, id: &[u8; 8]) -> bool {
+        self.looked_up.contains(id)
+    }
     pub fn set_probe(&mut self, probe: Option<VisibilityProbe>) {
         self.probe = probe;
     }
@@ -346,6 +362,7 @@ impl Sessions {
     }
     pub fn clear(&mut self) {
         self.records.clear();
+        self.looked_up.clear();
         self.tasks.clear();
         self.results.clear();
     }
@@ -361,7 +378,15 @@ impl Sessions {
         let task = if let Task::Pending { request, intent } = task {
             match request.take() {
                 None => Task::Pending { request, intent },
-                Some(Err(e)) => Task::Failed(e),
+                Some(Err(e)) => {
+                    if let Intent::Search { find: Some(id), .. } = &intent {
+                        eprintln!(
+                            "live: join: find session {}: the server failed it ({e:#x})",
+                            live_proto::sign::hex(id)
+                        );
+                    }
+                    Task::Failed(e)
+                }
                 Some(Ok(Reply::Matches(rows))) => match self.complete(m, intent, rows) {
                     Ok(v) => v,
                     Err(Failure::Hr(e)) => Task::Failed(e),
@@ -558,6 +583,9 @@ impl Sessions {
                     if changed {
                         debug("advertise", &session);
                     }
+                    if op == Op::Create {
+                        self.current = Some(id);
+                    }
                     self.records.insert(id, Record { session, key });
                     self.tasks.insert(h, Task::Session { id, key });
                 }
@@ -649,6 +677,7 @@ impl Sessions {
                                 limit: a[1],
                                 bytes: a[4],
                                 retail: a[0] == 1,
+                                find: None,
                             },
                         ),
                     )
@@ -659,6 +688,10 @@ impl Sessions {
             Op::Find => {
                 work_event(a[2])?;
                 m.check(a[3], 4, Access::Write, 1)?;
+                if self.looked_up.len() >= 64 {
+                    self.looked_up.clear();
+                }
+                self.looked_up.insert(id(a[0], a[1]));
                 if let (Some(service), Some(connection)) = (service, connection) {
                     self.remote_search(
                         m,
@@ -672,10 +705,15 @@ impl Sessions {
                                 limit: 1,
                                 bytes: MAX_RESULTS_BYTES,
                                 retail: true,
+                                find: Some(id(a[0], a[1])),
                             },
                         ),
                     )
                 } else {
+                    eprintln!(
+                        "live: join: find session {}: not signed in to a Live server",
+                        live_proto::sign::hex(&id(a[0], a[1]))
+                    );
                     self.empty_search(m, storage, a[3])
                 }
             }
@@ -735,6 +773,15 @@ impl Sessions {
                 session.slots = row.advertisement.slots;
                 session.attributes = row.advertisement.attributes;
                 debug("server advertise", &session);
+                if !self.records.contains_key(&id) {
+                    eprintln!(
+                        "live: session {} advertised for {}:{}",
+                        live_proto::sign::hex(&id),
+                        row.endpoint.addr,
+                        row.endpoint.port
+                    );
+                    self.current = Some(id);
+                }
                 self.records.insert(
                     id,
                     Record {
@@ -746,13 +793,18 @@ impl Sessions {
             }
             Intent::Delete(id) => {
                 self.records.remove(&id);
+                eprintln!("live: session {} deleted", live_proto::sign::hex(&id));
                 Ok(Task::Done)
             }
             Intent::Search {
                 limit,
                 bytes,
                 retail,
+                find,
             } => {
+                if let Some(id) = find {
+                    eprintln!("{}", find_line(&id, &rows));
+                }
                 let rows: Vec<_> = rows
                     .into_iter()
                     .filter(|v| v.state == "open")
@@ -802,6 +854,27 @@ impl Sessions {
                 return Ok((id, data[8..].try_into().unwrap()));
             }
         }
+    }
+}
+/// What FindFromID found: the host's endpoint (QoS answers on its port
+/// + 2), or why the join stops here.
+fn find_line(id: &[u8; 8], rows: &[live_proto::session::Session]) -> String {
+    let id = live_proto::sign::hex(id);
+    match rows.first() {
+        None => format!("live: join: find session {id}: no such session on the server"),
+        Some(r) if r.state != "open" => {
+            format!("live: join: find session {id}: the session is {}", r.state)
+        }
+        Some(r) => format!(
+            "live: join: find session {id}: {} hosts it at {}:{} ({}), {} of {} public slots \
+             open",
+            r.host_gamertag,
+            r.endpoint.addr,
+            r.endpoint.port,
+            r.endpoint.source,
+            r.advertisement.slots.public_open,
+            r.advertisement.slots.public_open + r.advertisement.slots.public_filled,
+        ),
     }
 }
 fn debug(action: &str, session: &LocalSession) {
