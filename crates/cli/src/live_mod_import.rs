@@ -211,7 +211,7 @@ fn retail_twin(disc: &mut impl Backend, bytes: &[u8]) -> Result<Option<String>> 
             continue;
         }
         let path = format!("maps\\{}", e.name);
-        if Sha256::of(&read_disc_file(disc, &path)?) == want {
+        if Sha256::of(&read_disc_file(&mut *disc, &path)?) == want {
             return Ok(Some(e.name));
         }
     }
