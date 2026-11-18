@@ -135,13 +135,24 @@ impl Kind {
 
     /// A short type label (`f32[3]`, `enum16`, `tagref`, ...).
     pub fn label(&self) -> String {
-        let n = |c: u32| if c == 1 { String::new() } else { format!("[{c}]") };
+        let n = |c: u32| {
+            if c == 1 {
+                String::new()
+            } else {
+                format!("[{c}]")
+            }
+        };
         match self {
             Kind::Int {
                 bytes,
                 signed,
                 count,
-            } => format!("{}{}{}", if *signed { "i" } else { "u" }, bytes * 8, n(*count)),
+            } => format!(
+                "{}{}{}",
+                if *signed { "i" } else { "u" },
+                bytes * 8,
+                n(*count)
+            ),
             Kind::Float { count, hint } => match hint {
                 Hint::Plain => format!("f32{}", n(*count)),
                 Hint::Angle => format!("angle{}", n(*count)),
@@ -381,7 +392,10 @@ fn merge(
 ) -> Layout {
     let def = def.filter(|d| schema.is_none_or(|s| s.size == d.size));
     let size = schema.map(|s| s.size).or(def.map(|d| d.size)).unwrap_or(0);
-    let align = schema.map(|s| s.align).or(def.map(|d| d.align)).unwrap_or(4);
+    let align = schema
+        .map(|s| s.align)
+        .or(def.map(|d| d.align))
+        .unwrap_or(4);
     let empty = BTreeMap::new();
     let sfields = schema.map_or(&empty, |s| &s.fields);
     let mut fields: Vec<Field> = Vec::new();
@@ -396,9 +410,10 @@ fn merge(
                 continue;
             }
             // A schema field inside these bytes must be this field.
-            let clash = sfields.range(lo..hi).next().filter(|(o, s)| {
-                **o != lo || !compatible(&f.kind, s)
-            });
+            let clash = sfields
+                .range(lo..hi)
+                .next()
+                .filter(|(o, s)| **o != lo || !compatible(&f.kind, s));
             // ... and this field, if layout-dependent, must be the schema's
             // (or a field the schema never saw set: definition-only).
             if let Some((o, s)) = clash {

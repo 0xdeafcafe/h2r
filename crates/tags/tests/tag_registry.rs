@@ -23,7 +23,15 @@ fn u32_at(b: &[u8], at: usize) -> u32 {
 }
 
 /// Walks `count` elements of `l` at `addr`; returns the elements seen.
-fn walk(meta: &[u8], base: u32, l: &Layout, addr: u32, count: u32, bad: &mut Vec<String>, path: &str) -> u64 {
+fn walk(
+    meta: &[u8],
+    base: u32,
+    l: &Layout,
+    addr: u32,
+    count: u32,
+    bad: &mut Vec<String>,
+    path: &str,
+) -> u64 {
     let mut seen = u64::from(count);
     for i in 0..count {
         let at = (addr - base) as usize + (i * l.size) as usize;
@@ -37,15 +45,24 @@ fn walk(meta: &[u8], base: u32, l: &Layout, addr: u32, count: u32, bad: &mut Vec
                     }
                     let end = u64::from(a) + u64::from(n) * u64::from(child.size);
                     if a < base || end > u64::from(base) + meta.len() as u64 {
-                        bad.push(format!("{path}.{}[{i}]: {n} elements at {a:#x} outside", f.name));
+                        bad.push(format!(
+                            "{path}.{}[{i}]: {n} elements at {a:#x} outside",
+                            f.name
+                        ));
                         continue;
                     }
                     seen += walk(meta, base, child, a, n, bad, &format!("{path}.{}", f.name));
                 }
                 Kind::Data => {
                     let (n, a) = (u32_at(meta, o), u32_at(meta, o + 4));
-                    if n != 0 && (a < base || u64::from(a) + u64::from(n) > u64::from(base) + meta.len() as u64) {
-                        bad.push(format!("{path}.{}[{i}]: {n} bytes at {a:#x} outside", f.name));
+                    if n != 0
+                        && (a < base
+                            || u64::from(a) + u64::from(n) > u64::from(base) + meta.len() as u64)
+                    {
+                        bad.push(format!(
+                            "{path}.{}[{i}]: {n} bytes at {a:#x} outside",
+                            f.name
+                        ));
                     }
                 }
                 _ => {}
@@ -73,14 +90,23 @@ fn every_disc_tag_walks_through_the_registry() -> Res<()> {
     let mut by_group: BTreeMap<FourCC, (u64, u64)> = BTreeMap::new();
     for (name, base, size) in &maps {
         let mut m = Map::from_region(BufReader::new(File::open(&disc)?), *base, *size)?;
-        let Some(space) = m.metadata_space() else { continue };
+        let Some(space) = m.metadata_space() else {
+            continue;
+        };
         let meta = m.read_file_range(space.file_offset, u64::from(space.size))?;
         for t in m.tags().to_vec() {
             let Some(loc) = t.location else { continue };
+            if loc.size == 0 {
+                continue; // In a shared map: no bytes here.
+            }
             if loc.space != space {
                 continue; // BSP regions: their own spaces.
             }
-            let path = format!("{name}:{}.{}", t.name.as_deref().unwrap_or("?"), tags::defs::fourcc_text(t.group));
+            let path = format!(
+                "{name}:{}.{}",
+                t.name.as_deref().unwrap_or("?"),
+                tags::defs::fourcc_text(t.group)
+            );
             let Some(l) = r.group(t.group) else {
                 bad.push(format!("{path}: no layout"));
                 continue;
@@ -89,7 +115,15 @@ fn every_disc_tag_walks_through_the_registry() -> Res<()> {
                 bad.push(format!("{path}: {:#x} bytes, root {:#x}", loc.size, l.size));
                 continue;
             }
-            let n = walk(&meta, space.virtual_base, l, loc.address, 1, &mut bad, &path);
+            let n = walk(
+                &meta,
+                space.virtual_base,
+                l,
+                loc.address,
+                1,
+                &mut bad,
+                &path,
+            );
             let e = by_group.entry(t.group).or_default();
             e.0 += 1;
             e.1 += n;

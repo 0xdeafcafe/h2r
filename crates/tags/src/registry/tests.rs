@@ -21,11 +21,17 @@ fn check(path: &str, l: &Layout, s: Option<&schema::Struct>, bad: &mut Vec<Strin
         at = f.offset + f.kind.width();
     }
     if at != l.size {
-        bad.push(format!("{path}: fields end at {at:#x}, element {:#x}", l.size));
+        bad.push(format!(
+            "{path}: fields end at {at:#x}, element {:#x}",
+            l.size
+        ));
     }
     let Some(s) = s else { return };
     if s.size != l.size {
-        bad.push(format!("{path}: element {:#x}, schema {:#x}", l.size, s.size));
+        bad.push(format!(
+            "{path}: element {:#x}, schema {:#x}",
+            l.size, s.size
+        ));
     }
     for (o, sf) in &s.fields {
         let p = format!("{path}+{o:#x}");
