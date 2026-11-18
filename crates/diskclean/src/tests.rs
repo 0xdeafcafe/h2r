@@ -211,3 +211,25 @@ fn a_target_a_process_names_is_in_use() {
     let _ = child.wait();
     assert!(busy);
 }
+
+#[test]
+fn under_pressure_a_half_hour_idle_target_goes() {
+    let t = Tmp::new("pressure");
+    let repo = t.0.join("repo");
+    fs::create_dir_all(&repo).unwrap();
+    sh(&repo, &["init", "-q", "-b", "master"]);
+    sh(&repo, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "a"]);
+    let scan = t.0.join("scratch");
+    let (hour, fresh) = (scan.join("a/hour-target"), scan.join("b/fresh-target"));
+    fake_target(&hour);
+    fake_target(&fresh);
+    let then = SystemTime::now() - Duration::from_secs(60 * 60);
+    for p in [hour.clone(), hour.join(".rustc_info.json"), hour.join("debug"), hour.join("debug/deps"), hour.join("debug/.fingerprint")] {
+        set_mtime(&p, then);
+    }
+    let mut o = Options::new(repo);
+    o.scan = vec![scan];
+    assert!(plan(&o).unwrap().actions.is_empty());
+    o.under_pressure();
+    assert_eq!(plan(&o).unwrap().actions, [Action::RemoveTarget { path: hour }]);
+}

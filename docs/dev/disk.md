@@ -24,7 +24,9 @@ h2 disk clean --yes           # remove it
   The branch goes with it (`git branch -d`). Detached worktrees stay: they
   belong to scripts that remove their own.
 - **Idle targets.** A Cargo target goes whole when no build has touched it
-  for two days and nothing uses it. Targets are found in each remaining
+  for two days and nothing uses it. Under 20 GB free (`--low-below`), half
+  an hour untouched is enough: busy machines build into every target daily,
+  and whoever comes back to a removed one rebuilds it. Targets are found in each remaining
   worktree's `target/` and, three levels deep, under every `--scan DIR`. A
   folder counts as a target only if Cargo's `CACHEDIR.TAG` and
   `.rustc_info.json` are both in it.
@@ -45,12 +47,13 @@ from its store (kache) free nothing and count as nothing.
 | `--base BRANCH` | worktrees must be merged into it |
 | `--scan DIR` | also look for targets here (repeatable) |
 | `--if-below GB` | do nothing while more than GB are free |
+| `--low-below GB` | under GB free, targets idle for half an hour go too (default 20) |
 | `--kache PATH` | after cleaning, empty this kache store if still under `--empty-kache-below` GB free (default 20) |
 
 ## Every hour on macOS
 
-A LaunchAgent runs the clean every hour, and it does nothing while 50 GB or
-more are free. Put this in `~/Library/LaunchAgents/red.forbes.h2-disk-clean.plist`,
+A LaunchAgent runs the clean every 15 minutes, and it does nothing while
+50 GB or more are free. Put this in `~/Library/LaunchAgents/red.forbes.h2-disk-clean.plist`,
 replacing the paths in capitals:
 
 ```xml
@@ -69,7 +72,7 @@ replacing the paths in capitals:
   </array>
   <key>EnvironmentVariables</key>
   <dict><key>PATH</key><string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
-  <key>StartInterval</key><integer>3600</integer>
+  <key>StartInterval</key><integer>900</integer>
   <key>RunAtLoad</key><true/>
   <key>Nice</key><integer>15</integer>
   <key>LowPriorityIO</key><true/>
