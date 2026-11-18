@@ -15,8 +15,6 @@ mod coop_probe_cmd;
 mod coop_drive;
 mod coop_test_cmd;
 mod coop_verdict;
-#[cfg(unix)]
-mod disk_cmd;
 mod effects;
 mod emit_cache;
 mod emit_output;
@@ -84,9 +82,6 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           stats, profiles (`h2 lab --help`, docs/runtime/lab.md)
   play --follow <disc>    play, rebuilding each new commit of master in the
                           background; F5 restarts into it (docs/runtime/app.md)
-  disk clean [--yes]      remove merged idle worktrees, idle Cargo targets and
-                          stale build artifacts; a dry run without --yes
-                          (docs/dev/disk.md)
   settings list|get|set   our settings (field of view, frame rate, ...) in
                           <data>/settings.toml (docs/game/settings-menu.md)
   lockstep <a> <b>        compare two H2_LOCKSTEP traces; exit 1 if they differ
@@ -298,12 +293,6 @@ fn main() -> Result<()> {
         return lab::run(args.collect());
         #[cfg(not(unix))]
         bail!("h2 lab needs Unix sockets");
-    }
-    if cmd == "disk" {
-        #[cfg(unix)]
-        return disk_cmd::run(args.collect());
-        #[cfg(not(unix))]
-        bail!("h2 disk clean needs Unix");
     }
     if cmd == "agent" {
         #[cfg(unix)]
