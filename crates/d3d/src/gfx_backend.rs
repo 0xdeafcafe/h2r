@@ -1831,6 +1831,21 @@ impl Backend for GfxBackend {
         self.present_from(None, surface, flags, gamma)
     }
 
+    fn present_replay(
+        &mut self,
+        surface: SurfaceId,
+        gamma: Option<&[u8; 768]>,
+    ) -> Result<(), String> {
+        // A host-only frame (crate::interp): submitted and shown through
+        // the hook; the frame count, shader upkeep, `presented` and the
+        // swap wait belong to the guest's presents.
+        self.flush()?;
+        if let Some(hook) = self.present_hook.as_mut() {
+            hook(&self.ctx, &self.store, surface, 0, gamma);
+        }
+        Ok(())
+    }
+
     fn clear_pixel_count(&mut self) -> Result<(), String> {
         // After the counted draws before it, in the same submission (the
         // report that reads the counter submits; under `submit_per_pass`,
