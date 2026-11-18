@@ -575,7 +575,7 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
         crate::rebuild::Predicted::Bitmap(bitmap),
     ];
     let weapon = map::TagId(0xe001_0005);
-    let markers = vec!["driver".to_string(), "driver enter".to_string()];
+    let markers = vec!["driver".to_string(), "driver enter".to_string(), "camera".to_string()];
     let seats = [crate::rebuild::seat_names(&seat, &markers)];
     let root = crate::rebuild::vehicle(&crate::rebuild::VehicleSpec {
         object: &obj,

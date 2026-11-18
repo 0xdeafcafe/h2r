@@ -447,7 +447,7 @@ pub struct SeatNames {
     /// `-` to `_` form.
     pub label: String,
     /// `string_8`, the rider's marker, as the converted model names it
-    /// (Halo 1's name).
+    /// (Halo 1's name); empty when the model has no such marker.
     pub marker: String,
     /// `string_c`, the entry marker: `<marker> enter` when the model has
     /// one (V: Halo 2's seats hold `driver_enter` beside `driver`; Halo
@@ -465,12 +465,17 @@ pub struct SeatNames {
 pub fn seat_names(seat: &h1::Seat, markers: &[String]) -> SeatNames {
     // The converted model keeps Halo 1's marker names as they are
     // (`h1models::mode`), so a seat names them the same way.
+    // A name the model lacks is written empty: the engine's marker
+    // lookup (`0x000b8d30`) takes an empty name as the object's origin
+    // but fails a name it cannot find, and the seat search (`0x000c7160`)
+    // then never seats a rider (V: a10's fighterbomber and the dropships
+    // name a `driver` their models do not have).
     let found = |n: &str| {
         markers
             .iter()
             .find(|m| m.eq_ignore_ascii_case(n))
             .cloned()
-            .unwrap_or_else(|| n.to_owned())
+            .unwrap_or_default()
     };
     let enter = format!("{} enter", seat.marker);
     SeatNames {
@@ -870,6 +875,19 @@ pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
             SEAT_FLAGS,
             Val::Bytes(seat_flags(s.flags, role_flags).to_le_bytes().to_vec()),
         )?;
+        // An entry test the role leaves zero (no majority among its
+        // seats: coagulation's hover drivers) would admit no one; it takes
+        // the turret drivers' value, the disc-wide driver seat's.
+        for field in SEAT_ENTRY {
+            if matches!(e.get(field), Some(Val::Bytes(b)) if b.iter().all(|x| *x == 0)) {
+                let w = TURRET_SEAT_ROLE
+                    .iter()
+                    .find(|(p, _)| p == field)
+                    .map(|(_, w)| *w)
+                    .expect("entry word");
+                set(&mut e, field, Val::Bytes(w.to_le_bytes().to_vec()))?;
+            }
+        }
         set(&mut e, "label", Val::text(&s.label))?;
         // V: Halo 2's seats hold the rider's marker at +8 (`driver`,
         // `gunner`), the entry marker at +0xc (`driver_enter`) and the

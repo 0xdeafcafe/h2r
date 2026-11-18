@@ -501,14 +501,19 @@ Halo ring were already built this way.
   entered. Now a seat's words are the majority over the role's seats of
   its kind (driver bit 2, gunner bit 3, passenger; boarding seats left
   out), and its flags are Halo 1's bits 0..10 over the rest of that
-  word less bits 11, 16 and 17. V: on 05a bit 11 is set on exactly the
+  word less bits 11, 16 and 17. An entry word the role leaves zero
+  (coagulation's hover drivers share no ghost angle) takes the turret
+  drivers' value, and a marker the model lacks is written empty, the
+  origin (a10's fighterbomber and the dropships name a `driver` their
+  models do not have). V: on 05a bit 11 is set on exactly the
   retail seats labelled `_b_`; Halo 1 sets no bit above 10; on the eight
   pairs Halo 1's bits 0..10 equal the counterpart seat's on most seats
   and the driver bit on every one (`seat_flags_match_halo_2s_counterparts`).
   `every_seat_passes_the_engines_boarding_rule` applies the rule to
   every seat of every vehicle on the ten campaign levels and both
   sandboxes, for the converted Halo 1 player and, on the sandboxes, Halo
-  2's `masterchief_mp`.
+  2's `masterchief_mp` (on the seats Halo 1's player enters; Halo 2's
+  graph has no mode for the scorpion's side seats, listed, not failed).
 - **Friction and hover points** (`+0x2f0`, `+0x2e8`). Halo 1's
   counterparts are the `phys` mass points with a powered mass point:
   the warthog's four tires and the ghost's hull and two wings, the same
