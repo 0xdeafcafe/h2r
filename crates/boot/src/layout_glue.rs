@@ -549,10 +549,7 @@ pub fn install(
         .is_some_and(|m| !m.rows(video_screen::VOICE_LIST).is_empty());
     let with_pause = model
         .as_ref()
-        .is_some_and(|m| !m.rows(List::Pause).is_empty());
-    // Whether each pause menu's row hooks are on the plan: its list grows
-    // only then, so the original never sees a row it does not know.
-    let pause_on = Arc::new((AtomicBool::new(false), AtomicBool::new(false)));
+        .is_some_and(|m| !m.rows(List::GameSettings).is_empty());
     let with_custom_games = custom_games::row_enabled();
     let with_skulls = model
         .as_ref()
@@ -582,6 +579,11 @@ pub fn install(
     });
     let store = Arc::clone(model.store());
     let speaker_on = with_speaker.then(|| store.handle::<bool>(PAD_SPEAKER.key));
+    // Our rows at the end of the pause menu's Settings (crate::pause_menu),
+    // fixed now: the hooks run with guest memory held.
+    let pause_rows = if with_pause { crate::pause_menu::settings_rows(&model) } else { Vec::new() };
+    // The Settings dialog's hooks serve the speaker row, ours, or both.
+    let with_small = with_speaker || !pause_rows.is_empty();
     let fov = with_fov.then(|| store.handle::<u32>(FOV.key));
     let extra_rows =
         model.count(List::Controls, speaker_row::VANILLA_ROWS) - speaker_row::VANILLA_ROWS;
@@ -664,7 +666,7 @@ pub fn install(
     let wanted: Vec<u32> = shared_hooks
         .into_iter()
         .chain(layout_hooks.into_iter().filter(|_| layouts))
-        .chain(speaker_hooks.into_iter().filter(|_| with_speaker))
+        .chain(speaker_hooks.into_iter().filter(|_| with_small))
         .chain(fov_hooks.into_iter().filter(|_| with_fov))
         .chain(video_hooks.into_iter().filter(|_| with_video))
         .chain(text_hooks.into_iter().filter(|_| layouts))
@@ -698,7 +700,7 @@ pub fn install(
             let grew_layouts = AtomicBool::new(false);
             let grew_controls = AtomicBool::new(false);
             let model = Arc::clone(&model);
-            let pause_on = Arc::clone(&pause_on);
+            let grow_pause = !pause_rows.is_empty();
             d.register_override(LIST_DATA_NEW, "layouts:list", move |cpu, ctx, _| {
                 announce(&seen, "layouts: list constructor");
                 let (n, name) = {
@@ -711,16 +713,9 @@ pub fn install(
                     ctx.runtime().memory().set_u8(cpu.esi + video_screen::SETTINGS_THIRD_ITEM, 1)?;
                 }
                 let n = if with_custom_games { custom_games::list_count(name, n) } else { n };
-                // The pause menus get our rows when their hooks are on.
-                let n = match name {
-                    crate::pause_menu::PAUSE_LIST_NAME if pause_on.0.load(Ordering::SeqCst) => {
-                        crate::pause_menu::list_count(&model, name, n)
-                    }
-                    crate::pause_menu::MP_LIST_NAME if pause_on.1.load(Ordering::SeqCst) => {
-                        crate::pause_menu::list_count(&model, name, n)
-                    }
-                    _ => n,
-                };
+                // The pause menu's Settings gets our rows when its hooks
+                // are on.
+                let n = if grow_pause { crate::pause_menu::list_count(&model, name, n) } else { n };
                 // The variant editor's categories get the multiplayer
                 // Skulls row and the More Options row.
                 let n = crate::variant_page::variant_count(
@@ -1055,41 +1050,46 @@ pub fn install(
                 })
             });
         }
-        // The smaller Controls screen: a seventh datum after the constructor.
-        if let (Some(o), true) = (originals.remove(&speaker_row::SMALL_CTOR), with_speaker) {
+        // The smaller Controls screen (the pause menu's Settings): after the
+        // constructor, the speaker's datum (value 6) and one per row of ours
+        // (crate::pause_menu), at the end.
+        if let (Some(o), true) = (originals.remove(&speaker_row::SMALL_CTOR), with_small) {
             let sh = alias(d, &mut next_shadow, &o, speaker_row::SMALL_CTOR);
             let seen = AtomicBool::new(false);
+            let values: Vec<u16> = with_speaker
+                .then_some(speaker_row::SMALL_VALUE)
+                .into_iter()
+                .chain(pause_rows.iter().map(|r| r.value))
+                .collect();
             d.register_override(speaker_row::SMALL_CTOR, "speaker:small-ctor", move |cpu, ctx, _| {
-                announce(&seen, "speaker row: small controls built");
+                announce(&seen, "small controls built");
                 let this = cpu.esi;
                 let rt = Arc::clone(ctx.runtime());
                 let mut mem = rt.memory();
                 let ret_pc = mem.u32(cpu.esp)?;
                 cpu.esp = cpu.esp.wrapping_add(4);
+                let values = values.clone();
                 ctx.call_guest(cpu, &mut mem, sh, move |cpu, ctx| {
-                    let rt = Arc::clone(ctx.runtime());
-                    let mut mem = rt.memory();
-                    let array = mem.u32(this + 0x70)?;
-                    cpu.edx = array;
-                    ctx.call_guest(cpu, &mut mem, speaker_row::DATUM_NEW, move |cpu, ctx| {
-                        let handle = cpu.eax;
-                        if !speaker_row::set_datum_value(&mut *ctx.runtime().memory(), array, handle, speaker_row::SMALL_VALUE) {
-                            eprintln!("speaker row: no room for the small controls row");
-                        }
-                        cpu.eax = this;
-                        Ok(TransferAbi::ret(ret_pc))
-                    })
+                    let array = ctx.runtime().memory().u32(this + 0x70)?;
+                    add_small_datums(cpu, ctx, array, this, values, ret_pc)
                 })
             });
         }
-        if let (Some(o), Some(s)) = (originals.remove(&speaker_row::SMALL_ROW_TEXT), speaker_on.clone()) {
+        if let (Some(o), true) = (originals.remove(&speaker_row::SMALL_ROW_TEXT), with_small) {
             let seen = AtomicBool::new(false);
+            let (s, rows) = (speaker_on.clone(), pause_rows.clone());
             d.register_override(speaker_row::SMALL_ROW_TEXT, "speaker:small-row-text", move |cpu, ctx, _| {
-                let on = s.get();
+                let on = s.as_ref().map(|s| s.get());
                 let rt = Arc::clone(ctx.runtime());
                 let mut mem = rt.memory();
-                if let Some(text) = speaker_row::small_row_text(&*mem, cpu.ecx, cpu.esp, on) {
-                    announce(&seen, "speaker row: small row text");
+                let text = on
+                    .and_then(|on| speaker_row::small_row_text(&*mem, cpu.ecx, cpu.esp, on))
+                    .or_else(|| {
+                        crate::pause_menu::text_row(&*mem, cpu.ecx, cpu.esp, &rows)
+                            .map(|r| (speaker_row::LABEL_TEXT_INDEX, r.label))
+                    });
+                if let Some(text) = text {
+                    announce(&seen, "small controls: row text of ours");
                     let item = mem.u32(cpu.esp + 4)?;
                     return row_texts(cpu, ctx, &mut mem, item, vec![text]);
                 }
@@ -1097,12 +1097,19 @@ pub fn install(
                 Ok(o.invoke(cpu, ctx, speaker_row::SMALL_ROW_TEXT))
             });
         }
-        if let (Some(o), true) = (originals.remove(&speaker_row::SMALL_ROW_CHOSEN), with_speaker) {
+        if let (Some(o), true) = (originals.remove(&speaker_row::SMALL_ROW_CHOSEN), with_small) {
             let store = Arc::clone(&store);
             let seen = AtomicBool::new(false);
+            let rows = pause_rows.clone();
             d.register_override(speaker_row::SMALL_ROW_CHOSEN, "speaker:small-row-chosen", move |cpu, ctx, _| {
-                let ours = speaker_row::small_is_ours(&*ctx.runtime().memory(), cpu.ecx, cpu.esp);
-                if ours {
+                let (speaker, ours) = {
+                    let mem = ctx.runtime().memory();
+                    (
+                        with_speaker && speaker_row::small_is_ours(&*mem, cpu.ecx, cpu.esp),
+                        crate::pause_menu::chosen_row(&*mem, cpu.ecx, cpu.esp, &rows),
+                    )
+                };
+                if speaker {
                     announce(&seen, "speaker row: small row chosen");
                     // Through the store: its change callback applies the
                     // speaker (guest memory is not held here).
@@ -1111,6 +1118,9 @@ pub fn install(
                         Err(e) => eprintln!("pad speaker: {e}"),
                     }
                     return ctx.runtime().memory().ret(cpu, 8);
+                }
+                if let Some(row) = ours {
+                    return open_from_small(cpu, ctx, row);
                 }
                 Ok(o.invoke(cpu, ctx, speaker_row::SMALL_ROW_CHOSEN))
             });
@@ -1327,29 +1337,6 @@ pub fn install(
             Err(e) => eprintln!("voice screen: {e}"),
         }
     }
-    // Video and Voice on the pause menus (crate::pause_menu): the
-    // campaign menu's rows by index, the multiplayer menu's by action.
-    if with_pause {
-        let rows = crate::retail_rows::Extension {
-            id: crate::pause_menu::FEATURE,
-            title: "Our rows on the campaign pause menu",
-            list: List::Pause,
-            text: &feature::points::PAUSE_ROW_TEXT,
-            chosen: &feature::points::PAUSE_ROW_CHOSEN,
-            label_only: true,
-            model: Arc::clone(&model),
-        };
-        match registry.add(&rows) {
-            Ok(on) => pause_on.0.store(on, Ordering::SeqCst),
-            Err(e) => eprintln!("pause menu: {e}"),
-        }
-        match registry.add(&crate::pause_menu::MpPauseRows {
-            model: Arc::clone(&model),
-        }) {
-            Ok(on) => pause_on.1.store(on, Ordering::SeqCst),
-            Err(e) => eprintln!("pause menu: {e}"),
-        }
-    }
     // The Skulls page: our own list class, opened after the difficulty when
     // the pressing profile has a skull (a plan hook on the difficulty
     // press), with the level select's layout.
@@ -1542,6 +1529,67 @@ fn alias(
 }
 
 type Finish = Box<dyn FnOnce(&mut CpuAbi) -> Result<TransferAbi, GuestFault> + Send>;
+
+/// The pause menu's Settings: adds a datum with each of `values` to the
+/// rows' array, one guest call each, then returns from the constructor
+/// (EAX the list) to `ret_pc`.
+fn add_small_datums(
+    cpu: &mut CpuAbi,
+    ctx: &mut ExecCtx,
+    array: u32,
+    this: u32,
+    mut values: Vec<u16>,
+    ret_pc: u32,
+) -> Result<TransferAbi, GuestFault> {
+    if values.is_empty() {
+        cpu.eax = this;
+        return Ok(TransferAbi::ret(ret_pc));
+    }
+    let value = values.remove(0);
+    let rt = Arc::clone(ctx.runtime());
+    let mut mem = rt.memory();
+    cpu.edx = array;
+    ctx.call_guest(cpu, &mut mem, speaker_row::DATUM_NEW, move |cpu, ctx| {
+        let handle = cpu.eax;
+        if !speaker_row::set_datum_value(&mut *ctx.runtime().memory(), array, handle, value) {
+            eprintln!("small controls: no room for the row with value {value}");
+        }
+        add_small_datums(cpu, ctx, array, this, values, ret_pc)
+    })
+}
+
+/// A press on our row of the pause menu's Settings: opens its screen on
+/// the Settings screen's own window and slot (the request on the stack,
+/// handed to the class's loader), then returns as the row chosen does
+/// (`ret 8`).
+fn open_from_small(
+    cpu: &mut CpuAbi,
+    ctx: &mut ExecCtx,
+    row: crate::pause_menu::SettingsRow,
+) -> Result<TransferAbi, GuestFault> {
+    let rt = Arc::clone(ctx.runtime());
+    let mut mem = rt.memory();
+    let loader = crate::list_class::loader_of(row.screen);
+    let request = loader.and_then(|l| crate::pause_menu::open_request(&*mem, cpu.ecx, cpu.esp, l));
+    let (Some(loader), Some(request)) = (loader, request) else {
+        eprintln!("pause menu: {} not opened (its class is off, or no player or stack)", row.screen);
+        return mem.ret(cpu, 8);
+    };
+    eprintln!("pause menu: opening {} from Settings", row.screen);
+    let ret_pc = mem.u32(cpu.esp)?;
+    // Pop the return and the two arguments; the request below the stack.
+    cpu.esp = cpu.esp.wrapping_add(12);
+    let saved = cpu.esp;
+    cpu.esp = cpu.esp.wrapping_sub(0x20);
+    let at = cpu.esp;
+    mem.write(at, request)?;
+    cpu.esp = cpu.esp.wrapping_sub(4);
+    mem.set_u32(cpu.esp, at)?;
+    ctx.call_guest(cpu, &mut mem, loader, move |cpu, _| {
+        cpu.esp = saved;
+        Ok(TransferAbi::ret(ret_pc))
+    })
+}
 
 /// In place of a row text function (`ret 8`, item widget first): set each
 /// `(text index, string id)` of the item by the same two calls the game
