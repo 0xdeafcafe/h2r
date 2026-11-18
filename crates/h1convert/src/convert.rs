@@ -357,7 +357,12 @@ pub fn prepare<R: Read + Seek>(
     let h1_name = h1.header().name.clone();
     let display_name = known(&h1_name).map_or_else(|| h1_name.clone(), |(d, _)| d.to_owned());
 
-    let plan = placements::plan_map(h1)?;
+    let mut plan = placements::plan_map(h1)?;
+    // Halo 1's vehicle spots hold the origin on the floor; the base's
+    // vehicles are raised by how far each reaches below its origin.
+    if let Ok(ctx) = tags::object::Context::read(base) {
+        placements::lift_vehicles(&mut plan, |role| placements::retail_vehicle_depth(&ctx, role));
+    }
     let mp = h1.multiplayer()?;
     let source = SourceCounts {
         spawns: mp.starting_locations.len(),

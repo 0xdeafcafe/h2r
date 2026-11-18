@@ -440,3 +440,32 @@ fn vehicles_without_a_collection_name_a_new_one_for_the_bases_vehicle() {
         ]
     );
 }
+
+#[test]
+fn halo_2_sandbox_vehicles_rise_by_their_depth_and_items_stay() {
+    use crate::placements::*;
+    let spawn = |item| ItemSpawn {
+        position: [1.0, 2.0, 3.0],
+        facing: 0.0,
+        item,
+        respawn: 0,
+    };
+    let mut p = Plan {
+        items: vec![
+            spawn(H2Item::Vehicle("ghost")),
+            spawn(H2Item::Weapon("smg")),
+            spawn(H2Item::Vehicle("wraith")),
+            spawn(H2Item::Vehicle("banshee")),
+        ],
+        ..Default::default()
+    };
+    // The ghost reaches 0.15 below its origin; the wraith's model is all
+    // above it (no lift); the banshee's model can't be read.
+    lift_vehicles(&mut p, |role| match role {
+        "ghost" => Some(0.15),
+        "wraith" => Some(-0.03),
+        _ => None,
+    });
+    let z: Vec<f32> = p.items.iter().map(|i| i.position[2]).collect();
+    assert_eq!(z, [3.15, 3.0, 3.0, 3.0]);
+}

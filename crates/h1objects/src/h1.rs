@@ -961,13 +961,19 @@ impl Effect {
 }
 
 /// One attachment of a Halo 1 object (`obje +0x140`, `0x48`): the
-/// attached tag at `+0` and the model marker it rides at `+0x10` (32
-/// characters).
+/// attached tag at `+0`, the model marker it rides at `+0x10` (32
+/// characters) and its primary scale at `+0x30`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Attachment {
     pub group: Group,
     pub tag: Option<TagId>,
     pub marker: String,
+    /// `+0x30`: 0 none, 1 to 4 the object's A to D output (its function
+    /// of that index, [`Function`]). V (`tests/object_functions_disc.rs`
+    /// `halo1_vehicle_functions_survey`): the warthog's headlights take
+    /// 1, its taillights 2 and its engine sound 3, which are the outputs
+    /// its functions name `headlights`, `taillights` and `speed`.
+    pub primary_scale: u16,
 }
 
 /// Every attachment of the object in `b` (a tag's bytes from `obje +0`).
@@ -978,8 +984,100 @@ pub fn attachments(map: &H1Map, b: &[u8]) -> Result<Vec<Attachment>> {
             group: Group(u32_at(e, 0)),
             tag: reference(map, e, 0),
             marker: name32(e, 0x10),
+            primary_scale: u16_at(e, 0x30),
         })
         .collect())
+}
+
+/// One of a Halo 1 object's functions (`obje +0x158`, `0x168` each): the
+/// output of that index (A to D). V (`halo1_vehicle_functions_survey`,
+/// every vehicle of five levels): each is `function` 0 (one) scaled by
+/// one input (`scale_function_by` 1 to 4, A to D in), mapped linearly,
+/// with its bounds; `turn_off_with` names another function by index (-1
+/// none; the ghost's and scorpion's engines name the one that is the
+/// driver's seat power). Names D.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Function {
+    /// `+0`: bit 0 invert, bit 1 additive, bit 2 always active.
+    pub flags: u32,
+    /// `+0xa`: 0 one, 1 zero, then the periodic shapes.
+    pub function: u16,
+    /// `+0xc`: 0 none, 1 to 4 A to D in, 5 to 8 A to D out.
+    pub scale_function_by: u16,
+    /// `+0x8` scale period by, `+0x1e` map to (0 linear), `+0x22` add,
+    /// `+0x24` scale result by: any nonzero one is a shape this
+    /// conversion doesn't carry.
+    pub scale_period_by: u16,
+    pub map_to: u16,
+    pub add: u16,
+    pub scale_result_by: u16,
+    /// `+0x1c` step count, `+0x20` sawtooth count (0 or 1: none).
+    pub step_count: i16,
+    pub sawtooth_count: i16,
+    /// `+0x26`: 0 clip, 1 clip and normalize, 2 scale to fit, to
+    /// `bounds` (`+0x28`).
+    pub bounds_mode: u16,
+    pub bounds: [f32; 2],
+    /// `+0x36`: the index of the function that turns this one off.
+    pub turn_off_with: i16,
+}
+
+/// Every function of the object in `b` (a tag's bytes from `obje +0`).
+pub fn functions(map: &H1Map, b: &[u8]) -> Result<Vec<Function>> {
+    Ok(elements(map, b, 0x158, 0x168)?
+        .into_iter()
+        .map(|f| Function {
+            flags: u32_at(f, 0),
+            scale_period_by: u16_at(f, 8),
+            function: u16_at(f, 0xa),
+            scale_function_by: u16_at(f, 0xc),
+            step_count: i16_at(f, 0x1c),
+            map_to: u16_at(f, 0x1e),
+            sawtooth_count: i16_at(f, 0x20),
+            add: u16_at(f, 0x22),
+            scale_result_by: u16_at(f, 0x24),
+            bounds_mode: u16_at(f, 0x26),
+            bounds: bounds(f, 0x28),
+            turn_off_with: i16_at(f, 0x36),
+        })
+        .collect())
+}
+
+/// Where an object's A to D inputs come from: its `obje` sources
+/// (`+0x108`), a unit's (`unit +0x198`) and a vehicle's (`vehi +0x31c`),
+/// each four 16-bit enums. V (`halo1_vehicle_functions_survey`): a
+/// vehicle's input takes the vehicle's source where it names one, else
+/// the unit's: the warthog's A (headlights) is the unit's 1 (driver's
+/// seat power) with the vehicle's 0, its B (taillights) the vehicle's 12
+/// (jump), its C (engine) the vehicle's 35 (engine hack); the ghost's B
+/// and the scorpion's D (engines) are 35, the pelican's A to C 33, 34
+/// and 35 (hover, thrust, engine hack). No vehicle names an `obje`
+/// source.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FunctionInputs {
+    pub object: [u16; 4],
+    pub unit: [u16; 4],
+    pub vehicle: [u16; 4],
+}
+
+impl FunctionInputs {
+    /// The inputs of the object in `b` whose type is `object_type`
+    /// ([`OBJECT_TYPES`]): units and vehicles read their own.
+    pub fn read(b: &[u8], object_type: u16) -> Self {
+        let four = |at: usize| -> [u16; 4] {
+            if b.len() >= at + 8 {
+                std::array::from_fn(|i| u16_at(b, at + 2 * i))
+            } else {
+                [0; 4]
+            }
+        };
+        let unit = matches!(object_type, 0 | 1);
+        Self {
+            object: four(0x108),
+            unit: if unit { four(0x198) } else { [0; 4] },
+            vehicle: if object_type == 1 { four(0x31c) } else { [0; 4] },
+        }
+    }
 }
 
 /// Halo 1 `ligh` (`0x160`, no blocks). V (`effects_disc.rs`

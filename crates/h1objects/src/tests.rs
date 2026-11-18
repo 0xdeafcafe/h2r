@@ -592,6 +592,7 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
         role: None,
         points: &[],
         attachments: &[],
+        functions: &[],
         creation_effect: None,
     })
     .unwrap();
@@ -776,6 +777,7 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
         role: Some(&role),
         points: &points,
         attachments: &[],
+        functions: &[],
         creation_effect: None,
     })
     .unwrap();
@@ -1776,4 +1778,123 @@ fn model_sphere_centres_the_model_box() {
     assert!((r - far).abs() < 1e-6, "{r}");
     let empty = Model { geometries: Vec::new(), ..model };
     assert_eq!(crate::rebuild::model_sphere(&empty), None);
+}
+
+/// A Halo 1 function of the shape every Halo 1 vehicle's has: one,
+/// scaled by input `k`, bounded.
+fn h1_function(k: u16, bounds_mode: u16, bounds: [f32; 2]) -> crate::h1::Function {
+    crate::h1::Function {
+        flags: 0,
+        function: 0,
+        scale_function_by: k,
+        scale_period_by: 0,
+        map_to: 0,
+        add: 0,
+        scale_result_by: 0,
+        step_count: 0,
+        sawtooth_count: 0,
+        bounds_mode,
+        bounds,
+        turn_off_with: -1,
+    }
+}
+
+/// The warthog's functions: its inputs from the unit (A, driver's seat
+/// power) and the vehicle (B jump, C engine hack); each output is its
+/// input through Halo 1's bounds, and the engine turns off with A.
+#[test]
+fn halo1_functions_become_halo2_functions_by_their_inputs() {
+    use crate::functions::*;
+    use tags::effects::function::Function;
+    let inputs = crate::h1::FunctionInputs {
+        object: [0; 4],
+        unit: [1, 0, 0, 0],
+        vehicle: [0, 12, 35, 0],
+    };
+    let mut engine = h1_function(3, 0, [0.0, 1.0]);
+    engine.flags = 4;
+    engine.turn_off_with = 0;
+    let fs = [
+        h1_function(1, 0, [0.0, 1.0]),
+        h1_function(2, 2, [0.2, 0.6]),
+        engine,
+        h1_function(4, 1, [0.25, 0.75]),
+        h1_function(4, 0, [0.25, 0.75]),
+    ];
+    let mut notes = Vec::new();
+    let got = convert(&fs, &inputs, &mut notes);
+    assert_eq!(got.len(), 4, "A to D only");
+    // D's input is unset: not converted, and said so.
+    assert!(got[3].is_none());
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    let s: Vec<_> = got.iter().flatten().collect();
+    assert_eq!(
+        s.iter().map(|s| (s.import.as_str(), s.export.as_str(), s.turn_off_with.as_str(), s.flags)).collect::<Vec<_>>(),
+        [
+            ("driver_seat_power", "a_out", "", 0),
+            ("jump", "b_out", "", 0),
+            ("engine_hack", "c_out", "a_out", 4),
+        ]
+    );
+    // Each blob, mapped onto its range, is Halo 1's bounding.
+    let eval = |data: &[u8], x: f32| {
+        let f = Function::parse(data).unwrap();
+        let y = f.evaluate(x, 0.0);
+        f.range[0] + (f.range[1] - f.range[0]) * y
+    };
+    for x in [0.0, 0.3, 1.0] {
+        assert_eq!(eval(&s[0].data, x), x);
+        // Scale to fit [0.2, 0.6].
+        assert!((eval(&s[1].data, x) - (0.2 + 0.4 * x)).abs() < 1e-6);
+    }
+    // Clip to [0.25, 0.75], and clip and normalise.
+    let clip = bounded_for_test(0, [0.25, 0.75]);
+    let norm = bounded_for_test(1, [0.25, 0.75]);
+    for (x, c, n) in [(0.0, 0.25, 0.0), (0.5, 0.5, 0.5), (0.6, 0.6, 0.7), (1.0, 0.75, 1.0)] {
+        assert!((eval(&clip, x) - c).abs() < 1e-6, "clip {x}");
+        assert!((eval(&norm, x) - n).abs() < 1e-6, "normalise {x}");
+    }
+    // Attachments name the outputs that converted.
+    assert_eq!(primary_scale(3, &got), "c_out");
+    assert_eq!(primary_scale(4, &got), "");
+    assert_eq!(primary_scale(0, &got), "");
+}
+
+fn bounded_for_test(mode: u16, bounds: [f32; 2]) -> Vec<u8> {
+    let inputs = crate::h1::FunctionInputs { unit: [1, 0, 0, 0], ..Default::default() };
+    let got = crate::functions::convert(&[h1_function(1, mode, bounds)], &inputs, &mut Vec::new());
+    got[0].as_ref().unwrap().data.clone()
+}
+
+/// A rebuilt vehicle holds the functions given and each attachment's
+/// primary scale.
+#[test]
+fn rebuilt_vehicle_holds_its_functions_and_primary_scales() {
+    use crate::functions::FunctionSpec;
+    use tags::defs::{self, Val};
+    let def = |g: &[u8; 4]| tags::defs::Defs::builtin().group(FourCC(*g));
+    let f = [FunctionSpec {
+        flags: 4,
+        import: "engine_hack".into(),
+        export: "c_out".into(),
+        turn_off_with: "a_out".into(),
+        data: vec![0; 0x14],
+    }];
+    let a = [crate::rebuild::AttachmentSpec {
+        group: *b"lsnd",
+        tag: TagId(0xe100_0007),
+        marker: String::new(),
+        primary_scale: "c_out".into(),
+        h1_primary: 3,
+    }];
+    let d = def(b"vehi").unwrap();
+    let mut r = defs::default_record(d);
+    crate::rebuild::object_effects(b"vehi", &mut r, "unit.obje", &a, None).unwrap();
+    crate::rebuild::object_functions(b"vehi", &mut r, "unit.obje", &f).unwrap();
+    let r = defs::from_built(d, &defs::to_built(d, &r, &mut |_| None).unwrap()).unwrap();
+    assert_eq!(r.at("unit.obje.functions[0].string_4"), Some(&Val::text("engine_hack")));
+    assert_eq!(r.at("unit.obje.functions[0].output"), Some(&Val::text("c_out")));
+    assert_eq!(r.at("unit.obje.functions[0].string_c"), Some(&Val::text("a_out")));
+    assert_eq!(r.at("unit.obje.functions[0].data_14"), Some(&Val::Data(vec![0; 0x14])));
+    assert_eq!(r.at("unit.obje.attachments[0].string_10"), Some(&Val::text("c_out")));
 }
